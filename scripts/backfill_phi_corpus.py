@@ -7,6 +7,7 @@ import importlib.util
 import json
 import os
 import sys
+from collections import Counter
 from pathlib import Path
 
 _SCRIPT_DIR = str(Path(__file__).resolve().parent)
@@ -22,6 +23,7 @@ if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
 from orion.schemas.self_state import SelfStateV1
+from orion.telemetry.corpus_gate import is_corpus_row_healthy
 
 _INNER_STATE_PATH = REPO_ROOT / "services" / "orion-spark-introspector" / "app" / "inner_state.py"
 _SPEC = importlib.util.spec_from_file_location("spark_inner_state_backfill", _INNER_STATE_PATH)
@@ -31,6 +33,7 @@ _SPEC.loader.exec_module(_inner_state)
 
 RollingRobustScaler = _inner_state.RollingRobustScaler
 build_inner_state_features = _inner_state.build_inner_state_features
+COGNITIVE_FEATURE_NAMES = _inner_state.COGNITIVE_FEATURE_NAMES
 
 
 def _parse_args() -> argparse.Namespace:
@@ -49,6 +52,11 @@ def _parse_args() -> argparse.Namespace:
     parser.add_argument("--sample-every", type=int, default=50, help="Keep every Nth self_state row")
     parser.add_argument("--features-version", default="seed-v2")
     parser.add_argument("--exec-trajectory-max-age-sec", type=int, default=120)
+    parser.add_argument(
+        "--allow-degraded",
+        action="store_true",
+        help="Write all rows regardless of the corpus health gate (still computes/reports reasons; for debugging)",
+    )
     return parser.parse_args()
 
 
@@ -80,6 +88,7 @@ def main() -> int:
     degenerate_streak = 0
     written = 0
     skipped = 0
+    skipped_reasons: Counter = Counter()
 
     args.out.parent.mkdir(parents=True, exist_ok=True)
     with args.out.open("w", encoding="utf-8") as fh:
@@ -100,9 +109,14 @@ def main() -> int:
                 degenerate_streak=degenerate_streak,
             )
             prev_headline = inner.headline
-            if inner.phi_health != "ok" or inner.grammar_truth_degraded:
-                skipped += 1
-                continue
+            healthy, reasons = is_corpus_row_healthy(
+                inner, cognitive_feature_names=COGNITIVE_FEATURE_NAMES
+            )
+            if not healthy:
+                skipped_reasons.update(reasons)
+                if not args.allow_degraded:
+                    skipped += 1
+                    continue
             fh.write(json.dumps(inner.model_dump(mode="json"), separators=(",", ":")) + "\n")
             written += 1
 
@@ -114,6 +128,8 @@ def main() -> int:
                 "sample_every": args.sample_every,
                 "written": written,
                 "skipped_unhealthy": skipped,
+                "skipped_reasons": dict(skipped_reasons),
+                "allow_degraded": args.allow_degraded,
             },
             indent=2,
         )

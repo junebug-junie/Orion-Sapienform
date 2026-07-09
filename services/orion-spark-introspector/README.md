@@ -366,6 +366,29 @@ Spark-introspector settings (fields) and their env wiring:
 | `channel_spark_state_snapshot` | `CHANNEL_SPARK_STATE_SNAPSHOT`          | state snapshot channel for UI                       |
 | `channel_spark_signal`         | `CHANNEL_SPARK_SIGNAL`                  | `orion:spark:signal`                                |
 | `channel_vector_semantic_upsert` | `CHANNEL_VECTOR_SEMANTIC_UPSERT`      | **NEW**: defaults to `orion:vector:semantic:upsert` |
+#### Plan 2 inner features (`seed-v2`) + phi encoder corpus
+
+Spark-introspector emits `InnerStateFeaturesV1` on `orion:self:inner_features` and (when enabled) `PhiIntrinsicRewardV1` on `orion:self:phi_reward`. Deployment requirements:
+
+| Requirement | Detail |
+|---|---|
+| `INNER_FEATURES_VERSION` | `seed-v2` (see `.env_example`) |
+| Corpus path | `INNER_FEATURES_CORPUS_PATH=/mnt/telemetry/phi/corpus/inner_state.jsonl` |
+| Telemetry mount | `docker-compose.yml` binds `${TELEMETRY_ROOT:-/mnt/telemetry}:/mnt/telemetry` — pass root `.env` so `TELEMETRY_ROOT` resolves |
+| Substrate prerequisite | `orion-substrate-runtime` must reach conjourney Postgres (`POSTGRES_URI` in substrate `.env_example`) and serve healthy `GET /grammar/truth` + `GET /projections/execution_trajectory`. **Co-deploy:** update substrate `POSTGRES_URI` manually if local `.env` predates this fix — default `sync_local_env_from_example.py` does not rewrite `POSTGRES_URI`. Restart substrate before relying on live cognitive features. |
+| Encoder | `ORION_PHI_ENCODER_ENABLED=false` until corpus + promote gates pass; weights at `ORION_PHI_ENCODER_WEIGHTS` (active symlink under telemetry) |
+
+After `.env_example` edits: `python scripts/sync_local_env_from_example.py orion-spark-introspector`
+
+```bash
+docker compose --env-file .env --env-file services/orion-spark-introspector/.env \
+  -f services/orion-spark-introspector/docker-compose.yml up -d --build
+
+# Prerequisite (same session if substrate DSN was stale):
+docker compose --env-file .env --env-file services/orion-substrate-runtime/.env \
+  -f services/orion-substrate-runtime/docker-compose.yml up -d --build
+```
+
 
 Make sure `CHANNEL_VECTOR_SEMANTIC_UPSERT` is defined in:
 

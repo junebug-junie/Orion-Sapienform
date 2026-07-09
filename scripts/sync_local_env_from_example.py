@@ -121,6 +121,13 @@ SYNC_PREFIXES = (
     "EMBODIMENT_",
     # Durable world-pulse run-result stream (producer dual-write + consumer group)
     "WP_RUN_RESULT_",
+    # Plan 2 phi encoder / inner-state features (seed-v2)
+    "INNER_FEATURES_",
+    "PHI_DEGENERATE_",
+    "PHI_ENCODER_",
+    "ORION_PHI_ENCODER_",
+    "SUBSTRATE_READ_",
+    "EXEC_TRAJECTORY_",
 )
 
 SYNC_EXACT = frozenset(
@@ -156,6 +163,10 @@ SYNC_EXACT = frozenset(
         "ACTIONS_JOURNAL_POST_PERSIST_EMAIL_EXCLUDE_SOURCE_KINDS",
         # Worker log level (stdlib->loguru bridge) — must stay in sync so traces are visible.
         "LOG_LEVEL",
+        # Plan 2 phi encoder / inner-state features
+        "SUBSTRATE_RUNTIME_URL",
+        "CHANNEL_INNER_FEATURES",
+        "CHANNEL_PHI_REWARD",
     }
 )
 

@@ -452,6 +452,104 @@ def test_metacog_frontier_alias_shape_is_normalized() -> None:
     assert telemetry.validation_ok is True
 
 
+def test_frontier_deferred_matter_shape_is_normalized() -> None:
+    from app.appraisal import run_active_frontier_judge, try_normalize_frontier_raw
+    from app.evidence import build_evidence_pack
+    from orion.mind.synthesis_v1 import ActiveCognitiveFrontierV1, SemanticSynthesisV1
+
+    raw = {
+        "schema_version": "mind.active_cognitive_frontier.v1",
+        "selected": [
+            {
+                "matter_id": "m1",
+                "source_claim_id": "c1",
+                "label": "emotional state",
+                "summary": "The user expresses a mix of pleasure and sadness.",
+                "matter_kind": "turn_anchor",
+                "score": 0.85,
+                "features": {"current_turn_relevance": 0.9, "confidence": 0.85},
+                "evidence_refs": ["current_turn:0"],
+                "reason_selected": "grounded in current turn",
+                "recommended_effect": "answer_directly",
+            }
+        ],
+        "deferred": [
+            {
+                "matter_id": "m2",
+                "source_claim_id": "c2",
+                "label": "focus on substrate transport",
+                "summary": "The situation context indicates a focus on substrate transport and related harness closures.",
+                "matter_kind": "contextual",
+                "score": 0.65,
+                "features": {"current_turn_relevance": 0.4, "confidence": 0.65},
+                "evidence_refs": ["situation_compact:1"],
+                "reason_selected": "contextual relevance",
+                "recommended_effect": "defer",
+            }
+        ],
+        "suppressed": [],
+        "hazards": [],
+        "response_directives": [],
+    }
+    normalized, did = try_normalize_frontier_raw(raw, claim_ids={"c1", "c2"})
+    assert did is True
+    frontier = ActiveCognitiveFrontierV1.model_validate(normalized)
+    assert len(frontier.selected) == 1
+    assert len(frontier.deferred) == 1
+    assert frontier.deferred[0].reason_deferred == "contextual relevance"
+    assert "normalized_deferred_matter_shape" in frontier.diagnostics.notes
+
+    pack = build_evidence_pack(
+        {
+            "user_text": "this pleases me. I'm still pretty down today/",
+            "facets": {"situation_compact": {"attention_situation": True, "selected_focus": "substrate transport"}},
+        }
+    )
+    synthesis = SemanticSynthesisV1.model_validate(
+        {
+            "schema_version": "mind.semantic_synthesis.v1",
+            "claims": [
+                {
+                    "claim_id": "c1",
+                    "label": "emotional state",
+                    "summary": "The user expresses a mix of pleasure and sadness.",
+                    "claim_kind": "current_turn_claim",
+                    "evidence_refs": ["current_turn:0"],
+                    "source_kinds": ["current_turn"],
+                    "recommended_effect": "no_effect",
+                },
+                {
+                    "claim_id": "c2",
+                    "label": "focus on substrate transport",
+                    "summary": "The situation context indicates a focus on substrate transport and related harness closures.",
+                    "claim_kind": "current_turn_claim",
+                    "evidence_refs": ["situation_compact:1"],
+                    "source_kinds": ["situation_compact"],
+                    "recommended_effect": "no_effect",
+                },
+            ],
+        }
+    )
+
+    class _Client:
+        def request_json(self, **kwargs):  # type: ignore[no-untyped-def]
+            return raw, None, {"model_used": "metacog"}
+
+    result, err, telemetry = run_active_frontier_judge(
+        synthesis,
+        pack,
+        client=_Client(),  # type: ignore[arg-type]
+        route="metacog",
+        model_id="metacog",
+        max_tokens=512,
+    )
+    assert err is None
+    assert result is not None
+    assert result.selected
+    assert len(result.deferred) == 1
+    assert telemetry.validation_ok is True
+
+
 def test_stance_payload_enum_aliases_are_coerced() -> None:
     from app.stance_handoff import try_coerce_stance_payload
     from orion.mind.validation import validate_merged_stance_brief_optional

@@ -131,6 +131,65 @@ def _coerce_features(item: dict[str, Any]) -> dict[str, Any]:
     }
 
 
+def _is_deferred_frontier_shape(item: dict[str, Any]) -> bool:
+    return bool(str(item.get("reason_deferred") or "").strip()) and bool(str(item.get("label") or "").strip())
+
+
+def _coerce_deferred_item(item: dict[str, Any], *, claim_ids: set[str]) -> dict[str, Any] | None:
+    label = str(item.get("label") or "").strip()
+    if not label:
+        return None
+    source_claim_id = _resolve_source_claim_id(item, claim_ids=claim_ids)
+    if not source_claim_id:
+        return None
+    if _is_deferred_frontier_shape(item):
+        reason_deferred = str(item.get("reason_deferred") or "").strip()
+    else:
+        reason_deferred = str(
+            item.get("reason_deferred")
+            or item.get("reason_selected")
+            or item.get("recommended_effect")
+            or "deferred_by_llm"
+        ).strip()
+    return {
+        "source_claim_id": source_claim_id,
+        "label": label,
+        "reason_deferred": reason_deferred or "deferred_by_llm",
+        "score": _float_field(item, "score", 0.0),
+        "metadata": dict(item.get("metadata") or {}) if isinstance(item.get("metadata"), dict) else {},
+    }
+
+
+def _coerce_suppressed_item(item: dict[str, Any], *, claim_ids: set[str]) -> dict[str, Any] | None:
+    label = str(item.get("label") or "").strip()
+    if not label:
+        return None
+    reason = str(item.get("reason") or item.get("reason_suppressed") or item.get("recommended_effect") or "").strip()
+    valid_reasons = {
+        "source_tag_not_semantic",
+        "identity_background_not_turn_specific",
+        "duplicate",
+        "empty",
+        "too_generic",
+        "stale_or_ungrounded",
+        "unsupported_or_weak",
+        "evidence_too_weak",
+    }
+    if reason not in valid_reasons:
+        reason = "too_generic"
+    source_kind = str(item.get("source_kind") or "semantic_claim").strip() or "semantic_claim"
+    source_ref = item.get("source_ref")
+    if source_ref is None and claim_ids:
+        source_ref = _resolve_source_claim_id(item, claim_ids=claim_ids) or None
+    return {
+        "label": label,
+        "source_kind": source_kind,
+        "source_ref": str(source_ref).strip() if source_ref else None,
+        "reason": reason,
+        "metadata": dict(item.get("metadata") or {}) if isinstance(item.get("metadata"), dict) else {},
+    }
+
+
 def _coerce_matter_item(
     item: dict[str, Any],
     *,
@@ -218,11 +277,49 @@ def try_normalize_frontier_raw(
 
     deferred_in = raw.get("deferred")
     suppressed_in = raw.get("suppressed")
+    deferred: list[dict[str, Any]] = []
+    if isinstance(deferred_in, list):
+        saw_deferred_matter_shape = False
+        for item in deferred_in:
+            if not isinstance(item, dict):
+                continue
+            if not _is_deferred_frontier_shape(item):
+                saw_deferred_matter_shape = True
+            coerced = _coerce_deferred_item(item, claim_ids=claim_ids)
+            if coerced is not None:
+                deferred.append(coerced)
+        if saw_deferred_matter_shape and deferred:
+            notes.append("normalized_deferred_matter_shape")
+
+    suppressed: list[dict[str, Any]] = []
+    if isinstance(suppressed_in, list):
+        saw_suppressed_matter_shape = False
+        valid_reasons = {
+            "source_tag_not_semantic",
+            "identity_background_not_turn_specific",
+            "duplicate",
+            "empty",
+            "too_generic",
+            "stale_or_ungrounded",
+            "unsupported_or_weak",
+            "evidence_too_weak",
+        }
+        for item in suppressed_in:
+            if not isinstance(item, dict):
+                continue
+            if str(item.get("reason") or "").strip() not in valid_reasons:
+                saw_suppressed_matter_shape = True
+            coerced = _coerce_suppressed_item(item, claim_ids=claim_ids)
+            if coerced is not None:
+                suppressed.append(coerced)
+        if saw_suppressed_matter_shape and suppressed:
+            notes.append("normalized_suppressed_matter_shape")
+
     out: dict[str, Any] = {
         "schema_version": _FRONTIER_SCHEMA_VERSION,
         "selected": selected,
-        "deferred": list(deferred_in) if isinstance(deferred_in, list) else [],
-        "suppressed": list(suppressed_in) if isinstance(suppressed_in, list) else [],
+        "deferred": deferred,
+        "suppressed": suppressed,
         "hazards": _coerce_string_list(raw.get("hazards")),
         "response_directives": _coerce_string_list(raw.get("response_directives")),
         "diagnostics": dict(raw.get("diagnostics") or {}) if isinstance(raw.get("diagnostics"), dict) else {},

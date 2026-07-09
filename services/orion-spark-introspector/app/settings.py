@@ -112,7 +112,7 @@ class Settings(BaseSettings):
 
     # --- Honest inner-state features (phi Plan 1) ---
     inner_features_enabled: bool = Field(True, alias="INNER_FEATURES_ENABLED")
-    inner_features_version: str = Field("seed-v2", alias="INNER_FEATURES_VERSION")
+    inner_features_version: str = Field("seed-v3", alias="INNER_FEATURES_VERSION")
     inner_features_scaler_window_sec: int = Field(900, alias="INNER_FEATURES_SCALER_WINDOW_SEC")
     inner_features_scaler_maxlen: int = Field(256, alias="INNER_FEATURES_SCALER_MAXLEN")
     channel_inner_features: str = Field("orion:self:inner_features", alias="CHANNEL_INNER_FEATURES")

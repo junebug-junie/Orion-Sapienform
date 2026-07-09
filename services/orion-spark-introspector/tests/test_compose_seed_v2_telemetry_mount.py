@@ -11,9 +11,9 @@ def test_compose_mounts_telemetry_root_for_plan2() -> None:
     assert "${TELEMETRY_ROOT:-/mnt/telemetry}:/mnt/telemetry" in text
 
 
-def test_compose_defaults_inner_features_to_seed_v2() -> None:
+def test_compose_defaults_inner_features_to_seed_v3() -> None:
     text = COMPOSE.read_text(encoding="utf-8")
-    assert "INNER_FEATURES_VERSION: ${INNER_FEATURES_VERSION:-seed-v2}" in text
+    assert "INNER_FEATURES_VERSION: ${INNER_FEATURES_VERSION:-seed-v3}" in text
     assert "INNER_FEATURES_CORPUS_PATH: ${INNER_FEATURES_CORPUS_PATH:-/mnt/telemetry/phi/corpus/inner_state.jsonl}" in text
     assert "ORION_PHI_ENCODER_ENABLED: ${ORION_PHI_ENCODER_ENABLED:-false}" in text
     assert "ORION_PHI_ENCODER_WEIGHTS: ${ORION_PHI_ENCODER_WEIGHTS:-/mnt/telemetry/models/phi/encoders/active}" in text

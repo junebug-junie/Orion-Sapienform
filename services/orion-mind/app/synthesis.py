@@ -201,6 +201,74 @@ def try_wrap_singleton_semantic_claim(raw: dict[str, Any]) -> tuple[dict[str, An
     return out, True
 
 
+def _coerce_array_claim_item(item: dict[str, Any], *, index: int) -> dict[str, Any] | None:
+    if _has_current_claim_shape(item) or _is_bare_semantic_claim_root(item):
+        return _coerce_semantic_claim_item(item, index=index)
+    if not _is_legacy_claim_shape(item):
+        return None
+    claim_text = str(item.get("claim") or "").strip()
+    evidence_refs = _coerce_evidence_refs(item)
+    source_kinds = item.get("source_kinds")
+    if not isinstance(source_kinds, list) or not source_kinds:
+        source_kinds = ["current_turn"] if evidence_refs else []
+    default_kind = "current_turn_claim" if evidence_refs else "situation_claim"
+    return {
+        "claim_id": _legacy_claim_id(index, claim_text),
+        "label": _short_label(claim_text),
+        "summary": claim_text,
+        "claim_kind": default_kind,
+        "evidence_refs": evidence_refs,
+        "source_kinds": [str(k) for k in source_kinds if str(k).strip()],
+        "anchor": item.get("anchor") or "unknown",
+        "confidence": _float_field(item, "confidence", 0.5),
+        "salience_hint": _float_field(item, "salience_hint", 0.5),
+        "recommended_effect": item.get("recommended_effect") or "no_effect",
+        "metadata": {
+            **(item.get("metadata") if isinstance(item.get("metadata"), dict) else {}),
+            "normalized_from_legacy_claim_shape": True,
+        },
+    }
+
+
+def try_wrap_claims_array_root(raw: list[Any]) -> tuple[dict[str, Any] | None, bool]:
+    """Wrap a top-level JSON array of claim objects into SemanticSynthesisV1."""
+    if not raw:
+        return None, False
+    normalized_claims: list[dict[str, Any]] = []
+    for index, item in enumerate(raw):
+        if not isinstance(item, dict):
+            return None, False
+        coerced = _coerce_array_claim_item(item, index=index)
+        if coerced is None:
+            return None, False
+        normalized_claims.append(coerced)
+    out: dict[str, Any] = {
+        "schema_version": "mind.semantic_synthesis.v1",
+        "claims": normalized_claims,
+        "suppressed": [],
+        "diagnostics": {"notes": ["normalized_from_claims_array_root"]},
+    }
+    return out, True
+
+
+def coerce_semantic_llm_root(raw: Any) -> tuple[dict[str, Any] | None, bool, str | None]:
+    """Normalize common non-object LLM JSON roots before schema validation.
+
+    Returns (coerced_dict, normalized_from_root, failure_reason).
+    failure_reason is set when raw is a list that could not be coerced.
+    """
+    if isinstance(raw, dict):
+        return raw, False, None
+    if isinstance(raw, list):
+        if not raw or any(not isinstance(item, dict) for item in raw):
+            return None, False, None
+        wrapped, did_wrap = try_wrap_claims_array_root(raw)
+        if did_wrap and wrapped is not None:
+            return wrapped, True, None
+        return None, False, "array_root_not_claims"
+    return None, False, None
+
+
 def try_normalize_legacy_semantic_raw(raw: dict[str, Any]) -> tuple[dict[str, Any] | None, bool]:
     """Convert obvious legacy claim objects into SemanticSynthesisV1 claim shape."""
     claims_in = raw.get("claims")
@@ -344,13 +412,18 @@ def run_semantic_synthesis(
     if raw is None:
         telemetry.status = "failed"
         return None, err or "semantic_synthesis_failed", telemetry
-    if not isinstance(raw, dict):
+    raw, normalized_from_root, coerce_failure = coerce_semantic_llm_root(raw)
+    if raw is None:
         telemetry.validation_ok = False
         telemetry.status = "schema_invalid"
-        telemetry.error = "semantic_schema_invalid:not_object"
+        if coerce_failure == "array_root_not_claims":
+            telemetry.error = "semantic_schema_invalid:array_root_not_claims"
+        else:
+            telemetry.error = "semantic_schema_invalid:not_object"
         return None, "semantic_schema_invalid", telemetry
 
     synthesis, normalized_from_shape = _validate_semantic_raw(raw)
+    normalized_from_shape = normalized_from_shape or normalized_from_root
     if synthesis is None:
         telemetry.validation_ok = False
         telemetry.ok = False

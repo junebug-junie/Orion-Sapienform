@@ -28,6 +28,7 @@ from scripts.service_logs_ws import service_logs_websocket_endpoint
 from scripts.biometrics_cache import BiometricsCache
 from scripts.notification_cache import NotificationCache
 from scripts.agent_step_relay import AgentStepRelay
+from scripts.harness_step_relay import HarnessStepRelay
 from scripts.signals_inspect_cache import SignalsInspectCache
 from scripts.cognition_trace_cache import CognitionTraceCache
 from scripts.embodiment_outcome_cache import EmbodimentOutcomeCache
@@ -258,6 +259,7 @@ html_content: str = "<html><body><h1>Error loading UI</h1></body></html>"
 biometrics_cache: Optional[BiometricsCache] = None
 notification_cache: Optional[NotificationCache] = None
 agent_step_relay: Optional[AgentStepRelay] = None
+harness_step_relay: Optional[HarnessStepRelay] = None
 signals_inspect_cache: Optional[SignalsInspectCache] = None
 cognition_trace_cache: Optional[CognitionTraceCache] = None
 embodiment_outcome_cache: Optional[EmbodimentOutcomeCache] = None
@@ -336,7 +338,7 @@ async def startup_event():
     Initializes all shared services at application startup.
     OrionBus + Clients + UI template.
     """
-    global bus, rpc_bus, cortex_client, tts_client, html_content, biometrics_cache, notification_cache, agent_step_relay, signals_inspect_cache, cognition_trace_cache, embodiment_outcome_cache, presence_state, presence_context_store, substrate_autonomy_task
+    global bus, rpc_bus, cortex_client, tts_client, html_content, biometrics_cache, notification_cache, agent_step_relay, harness_step_relay, signals_inspect_cache, cognition_trace_cache, embodiment_outcome_cache, presence_state, presence_context_store, substrate_autonomy_task
 
     # ------------------------------------------------------------
     # Orion Bus Initialization
@@ -379,6 +381,9 @@ async def startup_event():
 
             agent_step_relay = AgentStepRelay(channel=settings.HUB_CONTEXT_EXEC_EVENT_CHANNEL)
             await agent_step_relay.start(bus)
+
+            harness_step_relay = HarnessStepRelay(channel=settings.CHANNEL_HARNESS_RUN_STEP)
+            await harness_step_relay.start(bus)
 
             sic: Optional[SignalsInspectCache] = None
             try:
@@ -540,7 +545,7 @@ async def startup_event():
 
 @app.on_event("shutdown")
 async def shutdown_event() -> None:
-    global bus, rpc_bus, biometrics_cache, notification_cache, agent_step_relay, signals_inspect_cache, cognition_trace_cache, embodiment_outcome_cache, substrate_autonomy_task
+    global bus, rpc_bus, biometrics_cache, notification_cache, agent_step_relay, harness_step_relay, signals_inspect_cache, cognition_trace_cache, embodiment_outcome_cache, substrate_autonomy_task
     pool = getattr(app.state, "memory_pg_pool", None)
     if pool is not None:
         try:
@@ -563,6 +568,11 @@ async def shutdown_event() -> None:
     if agent_step_relay is not None:
         try:
             await agent_step_relay.stop()
+        except Exception:
+            pass
+    if harness_step_relay is not None:
+        try:
+            await harness_step_relay.stop()
         except Exception:
             pass
     if signals_inspect_cache is not None:

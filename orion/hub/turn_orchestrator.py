@@ -7,7 +7,6 @@ from typing import Any, Awaitable, Callable, Protocol
 
 from orion.schemas.cognition.answer_contract import AnswerContract
 from orion.hub.association import build_hub_association_bundle
-from orion.hub.harness_step_stream import relay_harness_run_steps
 from orion.hub.turn_request import build_orion_turn_request
 from orion.schemas.context_exec import ContextExecPermissionV1
 from orion.schemas.harness_finalize import HarnessRunRequestV1, HarnessRunV1
@@ -24,7 +23,6 @@ logger = logging.getLogger("orion.hub.turn_orchestrator")
 DEFAULT_UNIFIED_TURN_FCC_MODEL_LABEL = "MODEL_SONNET"
 
 EmitObservationFn = Callable[..., Any]
-FrameSender = Callable[[dict[str, Any]], Awaitable[None]]
 
 
 class _WebSocketLike(Protocol):
@@ -195,7 +193,9 @@ async def execute_unified_turn(
     continuity_messages: list[dict[str, Any]] | None = None,
     emit_observation_fn: EmitObservationFn | None = None,
     settings: Any | None = None,
-    send_frame: FrameSender | None = None,
+    harness_rpc_bus: Any | None = None,
+    harness_step_relay: Any | None = None,
+    harness_step_queue: asyncio.Queue | None = None,
 ) -> list[dict[str, Any]]:
     """Run the unified Orion turn saga and return WS frames (never includes draft_text)."""
     from scripts.settings import settings as hub_settings
@@ -289,27 +289,14 @@ async def execute_unified_turn(
         repair_pressure_contract=_repair_pressure_contract(repair_bundle),
         fcc_model_label=payload.get("fcc_model_label") or DEFAULT_UNIFIED_TURN_FCC_MODEL_LABEL,
     )
-    step_stop = asyncio.Event()
-    step_task = None
-    if send_frame is not None and bus is not None:
-        step_channel = getattr(cfg, "CHANNEL_HARNESS_RUN_STEP", "orion:harness:run:step")
-        step_task = asyncio.create_task(
-            relay_harness_run_steps(
-                bus,
-                correlation_id=correlation_id,
-                channel=step_channel,
-                send_frame=send_frame,
-                stop_event=step_stop,
-            )
-        )
+    harness_bus = harness_rpc_bus or bus
+    if harness_step_relay is not None and harness_step_queue is not None:
+        harness_step_relay.register_queue(correlation_id, harness_step_queue)
     try:
-        run = await HarnessGovernorClient(bus).run(harness_req, correlation_id=correlation_id)
+        run = await HarnessGovernorClient(harness_bus).run(harness_req, correlation_id=correlation_id)
     finally:
-        step_stop.set()
-        if step_task is not None:
-            step_task.cancel()
-            with contextlib.suppress(asyncio.CancelledError):
-                await step_task
+        if harness_step_relay is not None and harness_step_queue is not None:
+            harness_step_relay.unregister_queue(correlation_id, harness_step_queue)
     if run is None:
         return [
             {
@@ -488,23 +475,59 @@ async def run_unified_turn(
     continuity_messages: list[dict[str, Any]] | None = None,
     with_biometrics: Callable[[dict[str, Any], Any], Awaitable[dict[str, Any]]] | None = None,
     biometrics_cache: Any = None,
+    harness_rpc_bus: Any | None = None,
+    harness_step_relay: Any | None = None,
 ) -> list[dict[str, Any]]:
     """Execute unified turn and emit WS frames."""
-    async def _send_live_frame(frame: dict[str, Any]) -> None:
-        outbound = frame
-        if with_biometrics is not None:
-            outbound = await with_biometrics(frame, cache=biometrics_cache)
-        await websocket.send_json(outbound)
+    step_queue: asyncio.Queue | None = None
+    drain_task: asyncio.Task | None = None
+    if harness_step_relay is not None:
+        step_queue = asyncio.Queue(maxsize=256)
 
-    frames = await execute_unified_turn(
-        bus=bus,
-        correlation_id=correlation_id,
-        session_id=session_id,
-        user_message=user_message,
-        payload=payload,
-        continuity_messages=continuity_messages,
-        send_frame=_send_live_frame,
-    )
+        async def _drain_harness_steps() -> None:
+            assert step_queue is not None
+            try:
+                while True:
+                    frame = await step_queue.get()
+                    outbound = frame
+                    if with_biometrics is not None:
+                        outbound = await with_biometrics(frame, cache=biometrics_cache)
+                    await websocket.send_json(outbound)
+            except asyncio.CancelledError:
+                pass
+
+        drain_task = asyncio.create_task(
+            _drain_harness_steps(),
+            name=f"harness-steps-{correlation_id}",
+        )
+
+    try:
+        frames = await execute_unified_turn(
+            bus=bus,
+            correlation_id=correlation_id,
+            session_id=session_id,
+            user_message=user_message,
+            payload=payload,
+            continuity_messages=continuity_messages,
+            harness_rpc_bus=harness_rpc_bus,
+            harness_step_relay=harness_step_relay,
+            harness_step_queue=step_queue,
+        )
+    finally:
+        if harness_step_relay is not None and step_queue is not None:
+            while not step_queue.empty():
+                try:
+                    frame = step_queue.get_nowait()
+                except asyncio.QueueEmpty:
+                    break
+                outbound = frame
+                if with_biometrics is not None:
+                    outbound = await with_biometrics(frame, cache=biometrics_cache)
+                await websocket.send_json(outbound)
+        if drain_task is not None:
+            drain_task.cancel()
+            with contextlib.suppress(asyncio.CancelledError):
+                await drain_task
     for frame in frames:
         outbound = frame
         if with_biometrics is not None:

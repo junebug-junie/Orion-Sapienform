@@ -129,7 +129,7 @@
     if (panel) return panel;
     panel = (doc || document).createElement('div');
     panel.id = panelId;
-    panel.className = 'agent-live-trace claude-live-trace';
+    panel.className = 'agent-live-trace claude-live-trace is-streaming';
     const heading = (doc || document).createElement('div');
     heading.className = 'agent-live-trace__heading';
     heading.textContent = 'FCC harness (live)';
@@ -137,7 +137,7 @@
     const steps = (doc || document).createElement('div');
     steps.className = 'agent-live-trace__steps';
     panel.appendChild(steps);
-    anchor.appendChild(panel);
+    anchor.insertBefore(panel, anchor.firstChild);
     return panel;
   }
 
@@ -155,6 +155,10 @@
     row.textContent = `#${list.length - 1} ${summarizeStep(step)}`;
     host.appendChild(row);
     host.scrollTop = host.scrollHeight;
+    const heading = panel.querySelector('.agent-live-trace__heading');
+    if (heading) {
+      heading.textContent = `FCC harness (live) · ${list.length} step${list.length === 1 ? '' : 's'}`;
+    }
   }
 
   global.appendLiveClaudeStep = appendLiveClaudeStep;

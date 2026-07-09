@@ -594,6 +594,8 @@ async def websocket_endpoint(websocket: WebSocket):
     biometrics_cache = scripts.main.biometrics_cache
     notification_cache = scripts.main.notification_cache
     agent_step_relay = scripts.main.agent_step_relay
+    harness_step_relay = scripts.main.harness_step_relay
+    rpc_bus = scripts.main.rpc_bus
     presence_state = scripts.main.presence_state
     presence_context_store = getattr(scripts.main, "presence_context_store", None)
 
@@ -883,6 +885,8 @@ async def websocket_endpoint(websocket: WebSocket):
                     ),
                     with_biometrics=_with_biometrics,
                     biometrics_cache=biometrics_cache,
+                    harness_rpc_bus=rpc_bus or bus,
+                    harness_step_relay=harness_step_relay,
                 )
                 continue
 

@@ -57,12 +57,17 @@ input[type=range]::-moz-range-thumb {
   display: flex;
   flex-direction: column;
   min-height: 0;
-  max-height: 12rem;
+  max-height: 20rem;
   margin-bottom: 0.5rem;
   padding: 0.5rem 0.75rem;
   border: 1px solid rgba(55, 65, 81, 0.85);
   border-radius: 0.75rem;
   background: rgba(3, 7, 18, 0.75);
+}
+
+.agent-live-trace.is-streaming {
+  border-color: rgba(99, 102, 241, 0.55);
+  box-shadow: 0 0 0 1px rgba(99, 102, 241, 0.15);
 }
 
 .agent-live-trace__heading {

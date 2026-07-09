@@ -16,6 +16,15 @@ _DARK_CLASSIFICATIONS = frozenset(
     }
 )
 
+# Cursor name execution_trajectory's reducer commits under (see
+# orion.substrate.execution_loop.constants.EXECUTION_GRAMMAR_CURSOR_NAME --
+# duplicated here as a stable literal rather than importing orion.substrate.*
+# into this service). Used to scope wall-clock cursor-lag detection to just
+# this lane; substrate's own reducer_health `classification` field never
+# reflects cursor_wall_lag_sec (only heartbeat/stream-backlog state), so that
+# signal has to be read from `degraded_reasons` directly.
+_EXECUTION_TRAJECTORY_CURSOR_NAME = "execution_grammar_reducer"
+
 
 @dataclass(frozen=True)
 class GrammarTruthSnapshot:
@@ -102,7 +111,13 @@ def cognitive_lane_dark(snapshot: GrammarTruthSnapshot) -> bool:
     if not snapshot.enabled_reducers.get("execution_trajectory"):
         return True
     health = snapshot.reducer_health_by_name.get("execution_trajectory") or {}
-    return health.get("classification") in _DARK_CLASSIFICATIONS
+    if health.get("classification") in _DARK_CLASSIFICATIONS:
+        return True
+    reasons = snapshot.degraded_reasons if isinstance(snapshot.degraded_reasons, list) else []
+    return any(
+        isinstance(reason, str) and reason.startswith(f"cursor_lag:{_EXECUTION_TRAJECTORY_CURSOR_NAME}")
+        for reason in reasons
+    )
 
 
 class SubstrateReadCache:

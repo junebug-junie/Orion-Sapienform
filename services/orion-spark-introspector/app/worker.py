@@ -2395,7 +2395,17 @@ async def handle_self_state(env: BaseEnvelope) -> None:
         gt = await _fetch_substrate_grammar_truth()
         traj = await _fetch_substrate_execution_trajectory()
         reasoning_activity = await _fetch_orion_thought_reasoning_activity()
-        grammar_degraded = gt.degraded or cognitive_lane_dark(gt)
+        # Scope phi_health to the reducer lane that actually feeds this row's
+        # cognitive features (execution_trajectory) rather than substrate's
+        # blanket `degraded` flag, which trips on ANY reducer's cursor lag --
+        # including chat_grammar_consumer, whose lag just means "no chat
+        # happened recently" and has nothing to do with phi's signals. A
+        # blanket check freezes every row (and, since spec 3, rejects it at
+        # the corpus-hygiene gate) for an unrelated subsystem being quiet.
+        # cognitive_lane_dark already covers the "fetch failed entirely" case
+        # too: a failed fetch returns enabled_reducers={}, which it treats as
+        # dark.
+        grammar_degraded = cognitive_lane_dark(gt)
         projection = traj.projection if traj.ok else None
         reasoning_activity_projection = reasoning_activity.projection if reasoning_activity.ok else None
 

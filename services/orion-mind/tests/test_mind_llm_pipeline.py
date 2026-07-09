@@ -324,6 +324,86 @@ def test_singleton_root_semantic_claim_is_wrapped_and_retained() -> None:
     assert telemetry.retained_claim_count == 1
 
 
+def test_claims_array_root_is_wrapped_and_retained() -> None:
+    from app.evidence import build_evidence_pack
+    from app.synthesis import run_semantic_synthesis, try_wrap_claims_array_root
+    from orion.mind.synthesis_v1 import SemanticSynthesisV1
+
+    array_root = [
+        {
+            "claim_id": "c1",
+            "label": "request for repetition",
+            "summary": "User asks to try again and asks for backup.",
+            "claim_kind": "current_turn_claim",
+            "evidence_refs": ["current_turn:0"],
+            "source_kinds": ["current_turn"],
+            "recommended_effect": "acknowledge",
+        },
+        {
+            "claim_id": "c2",
+            "label": "situation retry",
+            "summary": "User wants to retry a prior attempt.",
+            "claim_kind": "situation_claim",
+            "evidence_refs": ["current_turn:0"],
+            "source_kinds": ["current_turn"],
+            "recommended_effect": "no_effect",
+        },
+    ]
+    wrapped, did = try_wrap_claims_array_root(array_root)
+    assert did is True
+    synthesis = SemanticSynthesisV1.model_validate(wrapped)
+    assert len(synthesis.claims) == 2
+    assert "normalized_from_claims_array_root" in synthesis.diagnostics.notes
+
+    pack = build_evidence_pack({"user_text": "let's try that again, you back up?"})
+    result, err, telemetry = run_semantic_synthesis(
+        pack,
+        client=type("_C", (), {"request_json": lambda self, **kw: (array_root, None, {"model_used": "quick"})})(),  # type: ignore[arg-type]
+        route="quick",
+        model_id="quick",
+        max_tokens=512,
+    )
+    assert err is None and result and len(result.claims) == 2
+    assert telemetry.retained_claim_count == 2
+    assert telemetry.error is None
+
+
+def test_non_claim_array_root_still_fails_not_object() -> None:
+    from app.evidence import build_evidence_pack
+    from app.synthesis import run_semantic_synthesis
+
+    pack = build_evidence_pack({"user_text": "hello"})
+    result, err, telemetry = run_semantic_synthesis(
+        pack,
+        client=type("_C", (), {"request_json": lambda self, **kw: (["not", "claims"], None, {"model_used": "quick"})})(),  # type: ignore[arg-type]
+        route="quick",
+        model_id="quick",
+        max_tokens=512,
+    )
+    assert result is None
+    assert err == "semantic_schema_invalid"
+    assert telemetry.error == "semantic_schema_invalid:not_object"
+    assert telemetry.parse_ok is True
+
+
+def test_non_claim_object_array_root_reports_array_failure() -> None:
+    from app.evidence import build_evidence_pack
+    from app.synthesis import run_semantic_synthesis
+
+    pack = build_evidence_pack({"user_text": "hello"})
+    result, err, telemetry = run_semantic_synthesis(
+        pack,
+        client=type("_C", (), {"request_json": lambda self, **kw: ([{"foo": "bar"}], None, {"model_used": "quick"})})(),  # type: ignore[arg-type]
+        route="quick",
+        model_id="quick",
+        max_tokens=512,
+    )
+    assert result is None
+    assert err == "semantic_schema_invalid"
+    assert telemetry.error == "semantic_schema_invalid:array_root_not_claims"
+    assert telemetry.parse_ok is True
+
+
 def test_metacog_frontier_alias_shape_is_normalized() -> None:
     from app.appraisal import run_active_frontier_judge, try_normalize_frontier_raw
     from app.evidence import build_evidence_pack

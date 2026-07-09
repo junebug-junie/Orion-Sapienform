@@ -180,6 +180,25 @@ def test_speech_disabled_short_circuits():
     si.assert_not_called()
 
 
+def test_prompt_sent_to_cortex_centers_latest_partner_line():
+    w = _worker()
+    perc = _perception_in_convo()
+    perc.active_conversation["messages"] = [
+        {"author_id": "p9", "author": "Juniper", "text": "hey Orion"},
+        {"author_id": "orion", "author": "Orion", "text": "I am with you."},
+        {"author_id": "p9", "author": "Juniper", "text": "can you answer me?"},
+    ]
+    req = AsyncMock(return_value="Yes, I can answer you.")
+    with patch.object(w, "_request_utterance", new=req), \
+         patch("app.worker.aitown_client.send_input", return_value={"ok": True}), \
+         patch("app.worker.aitown_client.convex_mutation", return_value={"ok": True}):
+        result = asyncio.run(w._speak_once(perc))
+    assert result == "Yes, I can answer you."
+    prompt = req.await_args.args[0]
+    assert "Your task is to answer this latest line from Juniper:\ncan you answer me?" in prompt
+    assert "I am with you." in prompt
+
+
 def test_heartbeat_logs_once_then_throttles():
     """Observability seam: a healthy loop (all other logs exception-only) must still
     emit one INFO heartbeat, and it must throttle so a tight perception interval

@@ -131,6 +131,8 @@ SYNC_PREFIXES = (
     "EXEC_TRAJECTORY_",
     # Reasoning telemetry adapter (cortex-exec -> orion-thought -> phi, default-off)
     "REASONING_ACTIVITY_",
+    # Corpus hygiene: execution_trajectory projection cap (orion-substrate-runtime)
+    "EXECUTION_TRAJECTORY_",
 )
 
 SYNC_EXACT = frozenset(

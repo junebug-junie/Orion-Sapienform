@@ -8,7 +8,9 @@ import pytest
 from httpx import ASGITransport, AsyncClient
 
 from orion.schemas.execution_projection import ExecutionRunStateV1, ExecutionTrajectoryProjectionV1
+from orion.schemas.grammar import GrammarAtomV1, GrammarEventV1, GrammarProvenanceV1
 from orion.substrate.execution_loop.constants import EXECUTION_TRAJECTORY_PROJECTION_ID
+from orion.substrate.execution_loop.reducer import reduce_execution_trace_events
 
 REPO_ROOT = Path(__file__).resolve().parents[3]
 
@@ -78,3 +80,60 @@ async def test_execution_trajectory_endpoint_no_projection(monkeypatch) -> None:
 
     assert resp.status_code == 200
     assert resp.json() == {"ok": False, "reason": "no_projection"}
+
+
+@pytest.mark.asyncio
+async def test_execution_trajectory_endpoint_serves_capped_runs(monkeypatch) -> None:
+    main = _import_main(monkeypatch)
+
+    base_ts = datetime(2026, 7, 8, 12, 0, tzinfo=timezone.utc)
+    projection = ExecutionTrajectoryProjectionV1(
+        projection_id=EXECUTION_TRAJECTORY_PROJECTION_ID,
+        generated_at=base_ts,
+        runs={},
+    )
+    for i in range(5):
+        ts = base_ts.replace(second=i)
+        trace_id = f"cortex.exec:athena:corr-{i}"
+        atom = GrammarAtomV1(
+            atom_id=f"{trace_id}:exec_result_emitted",
+            trace_id=trace_id,
+            atom_type="observation",
+            semantic_role="exec_result_emitted",
+            layer="execution",
+            summary="Cortex exec result emitted to reply_to=True, status=success",
+        )
+        event = GrammarEventV1(
+            event_id=f"gev_{i}",
+            event_kind="atom_emitted",
+            trace_id=trace_id,
+            emitted_at=ts,
+            observed_at=ts,
+            atom=atom,
+            provenance=GrammarProvenanceV1(
+                source_service="orion-cortex-exec",
+                source_component="cortex_exec_grammar_emit",
+            ),
+            correlation_id=f"corr-{i}",
+        )
+        projection, _ = reduce_execution_trace_events(
+            events=[event],
+            projection=projection,
+            now=ts,
+            max_runs=3,
+        )
+
+    assert len(projection.runs) <= 3
+
+    store = MagicMock()
+    store.load_execution_trajectory.return_value = projection
+    monkeypatch.setattr(main.worker, "_store", store, raising=False)
+
+    transport = ASGITransport(app=main.app)
+    async with AsyncClient(transport=transport, base_url="http://test") as client:
+        resp = await client.get("/projections/execution_trajectory")
+
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["ok"] is True
+    assert len(body["projection"]["runs"]) <= 3

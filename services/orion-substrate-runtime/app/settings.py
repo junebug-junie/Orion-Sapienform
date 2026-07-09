@@ -21,6 +21,12 @@ class Settings(BaseSettings):
         True,
         alias="ENABLE_EXECUTION_TRAJECTORY_REDUCER",
     )
+    # Caps on active_execution_trajectory.runs (LRU by last_updated_at). Only the
+    # freshest ~120s of runs are ever consumed downstream (orion-spark-introspector).
+    execution_trajectory_max_runs: int = Field(2000, alias="EXECUTION_TRAJECTORY_MAX_RUNS")
+    execution_trajectory_max_age_sec: int = Field(
+        86400, alias="EXECUTION_TRAJECTORY_MAX_AGE_SEC"
+    )
     enable_transport_bus_reducer: bool = Field(
         False,
         alias="ENABLE_TRANSPORT_BUS_REDUCER",

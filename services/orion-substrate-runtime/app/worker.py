@@ -1506,6 +1506,8 @@ class BiometricsSubstrateWorker:
                 save_projection=self._store.save_execution_trajectory,
                 save_receipt=self._store.save_receipt,
                 now=now,
+                max_runs=self._settings.execution_trajectory_max_runs,
+                max_age_sec=self._settings.execution_trajectory_max_age_sec,
             )
 
         last_id = self._process_events_with_poison_isolation(

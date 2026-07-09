@@ -29,6 +29,19 @@ def _hash_id(*parts: object, prefix: str) -> str:
     return f"{prefix}_{hashlib.sha1(raw.encode('utf-8')).hexdigest()[:16]}"
 
 
+CORTEX_EXEC_ISOLATED_TRACE_LANES = frozenset({
+    "harness_finalize_reflect",
+    "orion_voice_finalize",
+})
+
+
+def trace_lane_for_verb(verb_name: str | None) -> str | None:
+    verb = (verb_name or "").strip()
+    if verb in CORTEX_EXEC_ISOLATED_TRACE_LANES:
+        return verb
+    return None
+
+
 @dataclass
 class CortexExecGrammarCollector:
     node_name: str
@@ -37,13 +50,14 @@ class CortexExecGrammarCollector:
     observed_at: datetime
     session_id: str | None = None
     turn_id: str | None = None
+    trace_lane: str | None = None
     _atoms: dict[str, GrammarAtomV1] = field(default_factory=dict)
     _edge_specs: list[tuple[str, str, str]] = field(default_factory=list)
     _last_completed_atom_id: str | None = None
 
     @property
     def trace_id(self) -> str:
-        return cortex_exec_trace_id(self.node_name, self.correlation_id)
+        return cortex_exec_trace_id(self.node_name, self.correlation_id, lane=self.trace_lane)
 
     def _provenance(self, payload_ref: str) -> GrammarProvenanceV1:
         return GrammarProvenanceV1(
@@ -376,6 +390,7 @@ def get_or_create_collector(
     correlation_id: str,
     node_name: str,
     code_version: str | None,
+    trace_lane: str | None = None,
 ) -> CortexExecGrammarCollector:
     collector = ctx.get("_cortex_exec_grammar_collector")
     if collector is None:
@@ -384,6 +399,7 @@ def get_or_create_collector(
             ctx=ctx,
             code_version=code_version,
             node_name=node_name,
+            trace_lane=trace_lane,
         )
         ctx["_cortex_exec_grammar_collector"] = collector
     return collector
@@ -402,11 +418,13 @@ def begin_plan_grammar(
     node_name: str,
     code_version: str | None,
 ) -> CortexExecGrammarCollector:
+    lane = trace_lane_for_verb(req.plan.verb_name)
     collector = get_or_create_collector(
         ctx,
         correlation_id=correlation_id,
         node_name=node_name,
         code_version=code_version,
+        trace_lane=lane,
     )
     if not ctx.get("_cortex_exec_grammar_request_recorded"):
         collector.record_request_received(req=req, mode=mode)
@@ -445,6 +463,7 @@ def new_cortex_exec_collector(
     ctx: dict[str, Any],
     code_version: str | None,
     node_name: str,
+    trace_lane: str | None = None,
 ) -> CortexExecGrammarCollector:
     session_id = str(ctx.get("session_id") or ctx.get("sessionId") or "") or None
     turn_id = str(ctx.get("turn_id") or ctx.get("message_id") or ctx.get("messageId") or "") or None
@@ -455,6 +474,7 @@ def new_cortex_exec_collector(
         observed_at=datetime.now(timezone.utc),
         session_id=session_id,
         turn_id=turn_id,
+        trace_lane=trace_lane,
     )
 
 

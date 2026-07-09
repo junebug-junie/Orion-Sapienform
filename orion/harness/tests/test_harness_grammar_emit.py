@@ -1,0 +1,53 @@
+from datetime import datetime, timezone
+
+from orion.harness.grammar_emit import (
+    HarnessGrammarCollector,
+    build_harness_grammar_events,
+    compute_harness_reasoning_present,
+    publish_harness_lifecycle_grammar,
+)
+from orion.substrate.execution_loop.ids import cortex_exec_trace_id
+
+NODE = "athena"
+CORR = "corr-harness-1"
+FIXED = datetime(2026, 7, 9, 12, 0, tzinfo=timezone.utc)
+
+
+def test_trace_id_matches_cortex_exec_shape() -> None:
+    c = HarnessGrammarCollector(node_name=NODE, correlation_id=CORR, observed_at=FIXED)
+    assert c.trace_id == cortex_exec_trace_id(NODE, CORR)
+
+
+def test_compute_reasoning_present_rules() -> None:
+    assert compute_harness_reasoning_present(step_count=2, reflection_ran=False, quick_lane_skipped_5b=True, grammar_receipt_count=0) is True
+    assert compute_harness_reasoning_present(step_count=0, reflection_ran=True, quick_lane_skipped_5b=False, grammar_receipt_count=0) is True
+    assert compute_harness_reasoning_present(step_count=0, reflection_ran=True, quick_lane_skipped_5b=True, grammar_receipt_count=0) is False
+    assert compute_harness_reasoning_present(step_count=0, reflection_ran=False, quick_lane_skipped_5b=False, grammar_receipt_count=3) is True
+
+
+def test_build_events_include_lifecycle_roles() -> None:
+    c = HarnessGrammarCollector(node_name=NODE, correlation_id=CORR, observed_at=FIXED)
+    c.record_request_received()
+    c.record_plan_started(step_count=0)
+    c.record_step_started(order=1, summary="fcc step")
+    c.record_step_completed(order=1)
+    c.record_result_assembled(
+        status="success",
+        final_text_present=True,
+        step_count=1,
+        grammar_receipt_count=1,
+        reflection_ran=False,
+        quick_lane_skipped_5b=True,
+    )
+    events = build_harness_grammar_events(c)
+    roles = {e.atom.semantic_role for e in events if e.atom}
+    assert {
+        "exec_request_received",
+        "exec_plan_started",
+        "exec_step_started",
+        "exec_step_completed",
+        "exec_result_assembled",
+    } <= roles
+    assembled = next(e for e in events if e.atom and e.atom.semantic_role == "exec_result_assembled")
+    assert "reasoning_present=True" in assembled.atom.summary
+    assert "thinking_source=harness_fcc" in assembled.atom.summary

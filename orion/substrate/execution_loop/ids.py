@@ -1,6 +1,10 @@
 from __future__ import annotations
 
 
+def cortex_exec_trace_id(node_name: str, correlation_id: str) -> str:
+    return f"cortex.exec:{node_name}:{correlation_id}"
+
+
 def parse_execution_trace_id(trace_id: str) -> tuple[str, str] | None:
     if not trace_id.startswith("cortex.exec:"):
         return None

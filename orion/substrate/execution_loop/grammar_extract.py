@@ -6,7 +6,7 @@ from datetime import datetime, timezone
 from orion.schemas.execution_projection import ExecutionRunStateV1
 from orion.schemas.grammar import GrammarEventV1
 
-from .constants import EXECUTION_SOURCE_SERVICE
+from .constants import EXECUTION_SOURCE_SERVICES
 from .ids import parse_execution_trace_id
 
 _KV_RE = re.compile(r"(\w+)=([^,;\s]+)")
@@ -76,12 +76,14 @@ def extract_execution_state_from_events(
 
     egress_emitted = False
     for event in events:
-        if event.provenance.source_service != EXECUTION_SOURCE_SERVICE:
+        if event.provenance.source_service not in EXECUTION_SOURCE_SERVICES:
             continue
         atom = event.atom
         if not atom:
             continue
         role = atom.semantic_role or ""
+        if role == "harness_fcc_step":
+            continue
         kv = _parse_summary_kv(atom.summary or "")
         run.evidence_event_ids.append(event.event_id)
 

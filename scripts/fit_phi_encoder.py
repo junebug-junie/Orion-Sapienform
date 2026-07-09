@@ -53,7 +53,7 @@ _SPEC.loader.exec_module(_inner_state)
 FELT_DIMENSIONS: tuple[str, ...] = _inner_state.FELT_DIMENSIONS
 COGNITIVE_FEATURE_NAMES: tuple[str, ...] = _inner_state.COGNITIVE_FEATURE_NAMES
 
-DEFAULT_FEATURES_VERSION = "seed-v2"
+DEFAULT_FEATURES_VERSION = "seed-v3"
 ARCHITECTURE = "mlp_shallow_v1"
 PROMOTE_FIXTURE = REPO_ROOT / "fixtures" / "phi_encoder_promote_gate.jsonl"
 PROMOTE_MIN_RECON_RATIO = 2.0
@@ -101,15 +101,26 @@ class TrainConfig:
     seed: int = 42
 
 
-def input_features(*, legacy_corpus: bool) -> list[str]:
-    felt = list(FELT_DIMENSIONS) + ["overall_intensity"]
+def input_features_for_version(features_version: str, *, legacy_corpus: bool = False) -> list[str]:
     if legacy_corpus:
-        return felt
-    return felt + list(COGNITIVE_FEATURE_NAMES)
+        return list(FELT_DIMENSIONS) + ["overall_intensity"]
+    return _inner_state.encoder_trainable_feature_names(features_version)
 
 
-def features_version(*, legacy_corpus: bool) -> str:
-    return "seed-v1" if legacy_corpus else DEFAULT_FEATURES_VERSION
+def resolve_features_version(row: InnerStateFeaturesV1, *, legacy_flag: bool) -> str:
+    if legacy_flag:
+        return "seed-v1"
+    return row.features_version or DEFAULT_FEATURES_VERSION
+
+
+def input_features(*, legacy_corpus: bool, features_version: str = DEFAULT_FEATURES_VERSION) -> list[str]:
+    return input_features_for_version(features_version, legacy_corpus=legacy_corpus)
+
+
+def features_version(*, legacy_corpus: bool, features_version_arg: str = DEFAULT_FEATURES_VERSION) -> str:
+    if legacy_corpus:
+        return "seed-v1"
+    return features_version_arg
 
 
 def _parse_args(argv: list[str] | None = None) -> argparse.Namespace:
@@ -117,6 +128,12 @@ def _parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--corpus", type=Path, help="InnerStateFeaturesV1 JSONL corpus")
     parser.add_argument("--out", type=Path, help="Output directory for trained artifacts")
     parser.add_argument("--legacy-corpus", action="store_true", help="seed-v1 felt-only rows (no cognitive features)")
+    parser.add_argument(
+        "--features-version",
+        type=str,
+        default=DEFAULT_FEATURES_VERSION,
+        help="Corpus features_version slice to train (default: seed-v3)",
+    )
     parser.add_argument("--min-rows", type=int, default=DEFAULT_MIN_ROWS)
     parser.add_argument("--min-hours", type=float, default=DEFAULT_MIN_HOURS)
     parser.add_argument("--variance-fraction", type=float, default=DEFAULT_VARIANCE_FRACTION)
@@ -187,10 +204,16 @@ def _filter_training_rows(
     rows: Iterable[InnerStateFeaturesV1],
     *,
     feature_names: list[str],
+    features_version: str,
+    legacy_corpus: bool,
 ) -> tuple[list[LoadedRow], int]:
     loaded: list[LoadedRow] = []
     excluded = 0
     for inner in rows:
+        row_fv = resolve_features_version(inner, legacy_flag=legacy_corpus)
+        if row_fv != features_version:
+            excluded += 1
+            continue
         if inner.phi_health != "ok" or inner.grammar_truth_degraded:
             excluded += 1
             continue
@@ -513,10 +536,15 @@ def write_artifacts(
 def cmd_train(args: argparse.Namespace) -> int:
     if args.corpus is None or args.out is None:
         raise SystemExit("train mode requires --corpus and --out")
-    feature_names = input_features(legacy_corpus=args.legacy_corpus)
-    fv = features_version(legacy_corpus=args.legacy_corpus)
+    fv = features_version(legacy_corpus=args.legacy_corpus, features_version_arg=args.features_version)
+    feature_names = input_features(legacy_corpus=args.legacy_corpus, features_version=fv)
     raw_rows = _load_jsonl(args.corpus)
-    loaded, excluded = _filter_training_rows(raw_rows, feature_names=feature_names)
+    loaded, excluded = _filter_training_rows(
+        raw_rows,
+        feature_names=feature_names,
+        features_version=fv,
+        legacy_corpus=args.legacy_corpus,
+    )
     matrix = np.stack([r.x for r in loaded], axis=0) if loaded else np.zeros((0, len(feature_names)))
     gate_cfg = CorpusGateConfig(
         min_rows=args.min_rows,

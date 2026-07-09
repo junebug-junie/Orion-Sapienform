@@ -1,13 +1,13 @@
 from __future__ import annotations
 
 import hashlib
+import logging
 import re
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
-from typing import Any
+from typing import Any, Awaitable, Callable
 from uuid import uuid4
 
-from orion.schemas.cortex.schemas import PlanExecutionRequest
 from orion.schemas.grammar import (
     GrammarAtomV1,
     GrammarEdgeV1,
@@ -15,6 +15,10 @@ from orion.schemas.grammar import (
     GrammarProvenanceV1,
 )
 from orion.substrate.execution_loop.ids import cortex_exec_trace_id
+
+PublishFn = Callable[..., Awaitable[None]]
+
+logger = logging.getLogger("orion.harness.grammar_emit")
 
 
 def short_error_kind(error: str | None) -> str:
@@ -24,17 +28,44 @@ def short_error_kind(error: str | None) -> str:
     return (token or "unknown")[:64]
 
 
+def compute_harness_reasoning_present(
+    *,
+    step_count: int,
+    reflection_ran: bool,
+    quick_lane_skipped_5b: bool,
+    grammar_receipt_count: int,
+) -> bool:
+    if step_count > 0:
+        return True
+    if reflection_ran and not quick_lane_skipped_5b:
+        return True
+    return grammar_receipt_count > 0
+
+
+def compute_harness_thinking_source(
+    *,
+    step_count: int,
+    reflection_ran: bool,
+    quick_lane_skipped_5b: bool,
+) -> str:
+    if step_count > 0:
+        return "harness_fcc"
+    if reflection_ran and not quick_lane_skipped_5b:
+        return "finalize_reflect"
+    return "none"
+
+
 def _hash_id(*parts: object, prefix: str) -> str:
     raw = "|".join(str(p) for p in parts)
     return f"{prefix}_{hashlib.sha1(raw.encode('utf-8')).hexdigest()[:16]}"
 
 
 @dataclass
-class CortexExecGrammarCollector:
+class HarnessGrammarCollector:
     node_name: str
     correlation_id: str
-    code_version: str | None
     observed_at: datetime
+    code_version: str | None = None
     session_id: str | None = None
     turn_id: str | None = None
     _atoms: dict[str, GrammarAtomV1] = field(default_factory=dict)
@@ -47,8 +78,8 @@ class CortexExecGrammarCollector:
 
     def _provenance(self, payload_ref: str) -> GrammarProvenanceV1:
         return GrammarProvenanceV1(
-            source_service="orion-cortex-exec",
-            source_component="cortex_exec_grammar_emit",
+            source_service="orion-harness-governor",
+            source_component="harness_grammar_emit",
             source_event_id=f"{self.correlation_id}:{payload_ref}",
             source_trace_id=self.trace_id,
             source_payload_ref=payload_ref,
@@ -61,10 +92,8 @@ class CortexExecGrammarCollector:
     def _put_atom(self, key: str, atom: GrammarAtomV1) -> None:
         self._atoms[key] = atom
 
-    def record_request_received(self, *, req: PlanExecutionRequest, mode: str) -> None:
-        verb = req.plan.verb_name or "unknown"
-        n = len(req.plan.steps or [])
-        ref = f"cortex.exec.request:{self.correlation_id}"
+    def record_request_received(self) -> None:
+        ref = f"harness.exec.request:{self.correlation_id}"
         self._put_atom(
             "exec_request_received",
             GrammarAtomV1(
@@ -73,8 +102,8 @@ class CortexExecGrammarCollector:
                 atom_type="observation",
                 semantic_role="exec_request_received",
                 layer="intake",
-                dimensions=["execution", "request", "cortex"],
-                summary=f"Cortex exec received plan request for verb={verb}, mode={mode}, steps={n}",
+                dimensions=["execution", "request", "harness"],
+                summary="Harness exec received plan request for verb=orion_unified, mode=orion, steps=0",
                 confidence=1.0,
                 salience=1.0,
                 source_event_id=self.correlation_id,
@@ -82,30 +111,8 @@ class CortexExecGrammarCollector:
             ),
         )
 
-    def record_validation_failed(self, *, error_kind: str = "validation_failed") -> None:
-        ref = f"cortex.exec.request_invalid:{self.correlation_id}"
-        self._put_atom(
-            "exec_request_invalid",
-            GrammarAtomV1(
-                atom_id=self._atom_id("exec_request_invalid"),
-                trace_id=self.trace_id,
-                atom_type="uncertainty_marker",
-                semantic_role="exec_request_invalid",
-                layer="intake",
-                dimensions=["execution", "request", "validation"],
-                summary=f"Cortex exec request validation failed: error_kind={error_kind}",
-                confidence=1.0,
-                salience=0.9,
-                source_event_id=self.correlation_id,
-                payload_ref=ref,
-            ),
-        )
-
-    def record_plan_started(
-        self, *, req: PlanExecutionRequest, depth: int | None, step_count: int
-    ) -> None:
-        verb = req.plan.verb_name or "unknown"
-        ref = f"cortex.exec.plan:{self.correlation_id}"
+    def record_plan_started(self, *, step_count: int) -> None:
+        ref = f"harness.exec.plan:{self.correlation_id}"
         self._put_atom(
             "exec_plan_started",
             GrammarAtomV1(
@@ -115,10 +122,7 @@ class CortexExecGrammarCollector:
                 semantic_role="exec_plan_started",
                 layer="plan",
                 dimensions=["execution", "plan", "agency"],
-                summary=(
-                    f"Execution plan started for verb={verb}; "
-                    f"step_count={step_count}; depth={depth if depth is not None else 'none'}"
-                ),
+                summary=f"Execution plan started for verb=orion_unified; step_count={step_count}",
                 confidence=1.0,
                 salience=0.9,
                 source_event_id=self.correlation_id,
@@ -137,7 +141,7 @@ class CortexExecGrammarCollector:
     def record_recall_gate_observed(
         self, *, run_recall: bool, profile: str | None, reason: str
     ) -> None:
-        ref = f"cortex.exec.recall_gate:{self.correlation_id}"
+        ref = f"harness.exec.recall_gate:{self.correlation_id}"
         self._put_atom(
             "exec_recall_gate_observed",
             GrammarAtomV1(
@@ -166,28 +170,18 @@ class CortexExecGrammarCollector:
                 )
             )
 
-    def record_step_started(
-        self,
-        *,
-        order: int,
-        step_name: str,
-        verb_name: str,
-        services: list[str],
-    ) -> None:
-        key = f"exec_step_started:{order}:{step_name}"
-        ref = f"cortex.exec.step:{self.correlation_id}:{order}:{step_name}"
-        svc_list = ",".join(services) if services else "none"
+    def record_step_started(self, *, order: int, summary: str) -> None:
+        key = f"exec_step_started:{order}"
+        ref = f"harness.exec.step:{self.correlation_id}:{order}"
+        clipped = summary[:500]
         atom = GrammarAtomV1(
             atom_id=self._atom_id(key),
             trace_id=self.trace_id,
             atom_type="action_candidate",
             semantic_role="exec_step_started",
             layer="step",
-            dimensions=["execution", "step", "service"],
-            summary=(
-                f"Step started: order={order}, step={step_name}, "
-                f"verb={verb_name}, services={svc_list}"
-            ),
+            dimensions=["execution", "step", "harness"],
+            summary=f"Step started: order={order}, summary={clipped}",
             confidence=1.0,
             salience=0.85,
             source_event_id=f"{self.correlation_id}:{order}",
@@ -206,19 +200,19 @@ class CortexExecGrammarCollector:
                     "contains",
                 )
             )
+        elif "exec_plan_started" in self._atoms:
+            self._edge_specs.append(
+                (
+                    self._atoms["exec_plan_started"].atom_id,
+                    atom.atom_id,
+                    "contains",
+                )
+            )
 
-    def record_step_completed(
-        self,
-        *,
-        order: int,
-        step_name: str,
-        latency_ms: int | None,
-        result_service_keys: list[str],
-    ) -> None:
-        started_key = f"exec_step_started:{order}:{step_name}"
-        key = f"exec_step_completed:{order}:{step_name}"
-        ref = f"cortex.exec.step_result:{self.correlation_id}:{order}:{step_name}"
-        keys = ",".join(sorted(result_service_keys)) if result_service_keys else "none"
+    def record_step_completed(self, *, order: int) -> None:
+        started_key = f"exec_step_started:{order}"
+        key = f"exec_step_completed:{order}"
+        ref = f"harness.exec.step_result:{self.correlation_id}:{order}"
         atom = GrammarAtomV1(
             atom_id=self._atom_id(key),
             trace_id=self.trace_id,
@@ -226,10 +220,7 @@ class CortexExecGrammarCollector:
             semantic_role="exec_step_completed",
             layer="step",
             dimensions=["execution", "step", "result"],
-            summary=(
-                f"Step completed: step={step_name}, status=success, "
-                f"latency_ms={latency_ms or 0}, result_services={keys}"
-            ),
+            summary=f"Step completed: order={order}, status=success",
             confidence=0.95,
             salience=0.8,
             source_event_id=f"{self.correlation_id}:{order}",
@@ -241,10 +232,10 @@ class CortexExecGrammarCollector:
             self._edge_specs.append((started.atom_id, atom.atom_id, "derived_from"))
         self._last_completed_atom_id = atom.atom_id
 
-    def record_step_failed(self, *, order: int, step_name: str, error_kind: str) -> None:
-        started_key = f"exec_step_started:{order}:{step_name}"
-        key = f"exec_step_failed:{order}:{step_name}"
-        ref = f"cortex.exec.step_result:{self.correlation_id}:{order}:{step_name}"
+    def record_step_failed(self, *, order: int, error_kind: str) -> None:
+        started_key = f"exec_step_started:{order}"
+        key = f"exec_step_failed:{order}"
+        ref = f"harness.exec.step_result:{self.correlation_id}:{order}"
         atom = GrammarAtomV1(
             atom_id=self._atom_id(key),
             trace_id=self.trace_id,
@@ -252,7 +243,7 @@ class CortexExecGrammarCollector:
             semantic_role="exec_step_failed",
             layer="step",
             dimensions=["execution", "failure", "step"],
-            summary=f"Step failed: step={step_name}, error_kind={error_kind}",
+            summary=f"Step failed: order={order}, error_kind={error_kind}",
             confidence=0.9,
             salience=0.9,
             source_event_id=f"{self.correlation_id}:{order}",
@@ -269,10 +260,23 @@ class CortexExecGrammarCollector:
         *,
         status: str,
         final_text_present: bool,
-        reasoning_present: bool,
-        thinking_source: str,
+        step_count: int,
+        grammar_receipt_count: int,
+        reflection_ran: bool,
+        quick_lane_skipped_5b: bool,
     ) -> None:
-        ref = f"cortex.exec.result:{self.correlation_id}"
+        reasoning_present = compute_harness_reasoning_present(
+            step_count=step_count,
+            reflection_ran=reflection_ran,
+            quick_lane_skipped_5b=quick_lane_skipped_5b,
+            grammar_receipt_count=grammar_receipt_count,
+        )
+        thinking_source = compute_harness_thinking_source(
+            step_count=step_count,
+            reflection_ran=reflection_ran,
+            quick_lane_skipped_5b=quick_lane_skipped_5b,
+        )
+        ref = f"harness.exec.result:{self.correlation_id}"
         self._put_atom(
             "exec_result_assembled",
             GrammarAtomV1(
@@ -304,7 +308,7 @@ class CortexExecGrammarCollector:
             )
 
     def record_result_emitted(self, *, reply_present: bool, status: str) -> None:
-        ref = f"cortex.exec.egress:{self.correlation_id}"
+        ref = f"harness.exec.egress:{self.correlation_id}"
         self._put_atom(
             "exec_result_emitted",
             GrammarAtomV1(
@@ -315,7 +319,7 @@ class CortexExecGrammarCollector:
                 layer="egress",
                 dimensions=["execution", "result", "bus"],
                 summary=(
-                    f"Cortex exec result emitted to reply_to={reply_present}, status={status}"
+                    f"Harness exec result emitted to reply_to={reply_present}, status={status}"
                 ),
                 confidence=1.0,
                 salience=0.8,
@@ -370,101 +374,13 @@ def _event(
     )
 
 
-def get_or_create_collector(
-    ctx: dict[str, Any],
-    *,
-    correlation_id: str,
-    node_name: str,
-    code_version: str | None,
-) -> CortexExecGrammarCollector:
-    collector = ctx.get("_cortex_exec_grammar_collector")
-    if collector is None:
-        collector = new_cortex_exec_collector(
-            correlation_id=correlation_id,
-            ctx=ctx,
-            code_version=code_version,
-            node_name=node_name,
-        )
-        ctx["_cortex_exec_grammar_collector"] = collector
-    return collector
-
-
-def begin_plan_grammar(
-    ctx: dict[str, Any],
-    *,
-    correlation_id: str,
-    req: PlanExecutionRequest,
-    mode: str,
-    depth: int | None,
-    run_recall: bool,
-    recall_profile: str | None,
-    recall_reason: str,
-    node_name: str,
-    code_version: str | None,
-) -> CortexExecGrammarCollector:
-    collector = get_or_create_collector(
-        ctx,
-        correlation_id=correlation_id,
-        node_name=node_name,
-        code_version=code_version,
-    )
-    if not ctx.get("_cortex_exec_grammar_request_recorded"):
-        collector.record_request_received(req=req, mode=mode)
-        ctx["_cortex_exec_grammar_request_recorded"] = True
-    collector.record_plan_started(req=req, depth=depth, step_count=len(req.plan.steps or []))
-    collector.record_recall_gate_observed(
-        run_recall=run_recall,
-        profile=recall_profile,
-        reason=recall_reason,
-    )
-    return collector
-
-
-def record_assembled_grammar(
-    ctx: dict[str, Any],
-    *,
-    status: str,
-    final_text_present: bool,
-    reasoning_present: bool,
-    thinking_source: str,
-) -> None:
-    collector = ctx.get("_cortex_exec_grammar_collector")
-    if collector is None:
-        return
-    collector.record_result_assembled(
-        status=status,
-        final_text_present=final_text_present,
-        reasoning_present=reasoning_present,
-        thinking_source=thinking_source,
-    )
-
-
-def new_cortex_exec_collector(
-    *,
-    correlation_id: str,
-    ctx: dict[str, Any],
-    code_version: str | None,
-    node_name: str,
-) -> CortexExecGrammarCollector:
-    session_id = str(ctx.get("session_id") or ctx.get("sessionId") or "") or None
-    turn_id = str(ctx.get("turn_id") or ctx.get("message_id") or ctx.get("messageId") or "") or None
-    return CortexExecGrammarCollector(
-        node_name=node_name,
-        correlation_id=correlation_id,
-        code_version=code_version,
-        observed_at=datetime.now(timezone.utc),
-        session_id=session_id,
-        turn_id=turn_id,
-    )
-
-
-def build_cortex_exec_grammar_events(
-    collector: CortexExecGrammarCollector,
+def build_harness_grammar_events(
+    collector: HarnessGrammarCollector,
 ) -> list[GrammarEventV1]:
     observed_at = collector.observed_at
     emitted_at = datetime.now(timezone.utc)
     trace_id = collector.trace_id
-    provenance = collector._provenance(f"cortex.exec.trace:{collector.correlation_id}")
+    provenance = collector._provenance(f"harness.exec.trace:{collector.correlation_id}")
 
     root = _event(
         event_kind="trace_started",
@@ -473,7 +389,7 @@ def build_cortex_exec_grammar_events(
         observed_at=observed_at,
         provenance=provenance,
         layer="execution",
-        dimensions=["execution", "cortex", "plan"],
+        dimensions=["execution", "harness", "plan"],
         session_id=collector.session_id,
         turn_id=collector.turn_id,
         correlation_id=collector.correlation_id,
@@ -539,10 +455,107 @@ def build_cortex_exec_grammar_events(
             parent_event_id=root_id,
             root_event_id=root_id,
             layer="execution",
-            dimensions=["execution", "cortex", "plan"],
+            dimensions=["execution", "harness", "plan"],
             session_id=collector.session_id,
             turn_id=collector.turn_id,
             correlation_id=collector.correlation_id,
         )
     )
     return events
+
+
+def build_harness_grammar_finalize_events(
+    collector: HarnessGrammarCollector,
+) -> list[GrammarEventV1]:
+    """Emit only post-motor finalize atoms (refreshed assembled + egress).
+
+    Motor publish already sent request/plan/step lifecycle; finalize must not
+    replay the full trace (duplicate trace_started / step atoms on the bus).
+    """
+    roles = ("exec_result_assembled", "exec_result_emitted")
+    atoms = [collector._atoms[r] for r in roles if r in collector._atoms]
+    if not atoms:
+        return []
+
+    observed_at = collector.observed_at
+    emitted_at = datetime.now(timezone.utc)
+    trace_id = collector.trace_id
+    provenance = collector._provenance(f"harness.exec.finalize:{collector.correlation_id}")
+    events: list[GrammarEventV1] = []
+    for atom in atoms:
+        events.append(
+            _event(
+                event_kind="atom_emitted",
+                trace_id=trace_id,
+                emitted_at=emitted_at,
+                observed_at=observed_at,
+                provenance=provenance,
+                atom=atom,
+                layer=atom.layer,
+                dimensions=atom.dimensions,
+                session_id=collector.session_id,
+                turn_id=collector.turn_id,
+                correlation_id=collector.correlation_id,
+            )
+        )
+
+    assembled = collector._atoms.get("exec_result_assembled")
+    emitted = collector._atoms.get("exec_result_emitted")
+    if assembled and emitted:
+        edge = GrammarEdgeV1(
+            edge_id=f"{trace_id}:edge:{assembled.atom_id}:rendered_as:{emitted.atom_id}",
+            trace_id=trace_id,
+            from_atom_id=assembled.atom_id,
+            to_atom_id=emitted.atom_id,
+            relation_type="rendered_as",  # type: ignore[arg-type]
+            confidence=0.9,
+            salience=0.7,
+            evidence_event_ids=[collector.correlation_id],
+        )
+        events.append(
+            _event(
+                event_kind="edge_emitted",
+                trace_id=trace_id,
+                emitted_at=emitted_at,
+                observed_at=observed_at,
+                provenance=provenance,
+                edge=edge,
+                layer="step",
+                dimensions=["execution", "plan", "step"],
+                session_id=collector.session_id,
+                turn_id=collector.turn_id,
+                correlation_id=collector.correlation_id,
+            )
+        )
+    return events
+
+
+async def publish_harness_lifecycle_grammar(
+    bus: Any,
+    *,
+    channel: str,
+    events: list[GrammarEventV1],
+    publish_fn: PublishFn | None = None,
+) -> None:
+    if not events:
+        return
+    for event in events:
+        try:
+            if publish_fn is not None:
+                await publish_fn(bus, event=event, channel=channel)
+            else:
+                from orion.grammar.publish import publish_grammar_event
+
+                await publish_grammar_event(
+                    bus,
+                    event,
+                    source_name="orion-harness-governor",
+                    channel=channel,
+                )
+        except Exception:
+            logger.warning(
+                "harness_lifecycle_grammar_publish_failed corr=%s event_kind=%s",
+                event.correlation_id or "unknown",
+                event.event_kind,
+                exc_info=True,
+            )

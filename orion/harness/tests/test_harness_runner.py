@@ -80,6 +80,42 @@ async def test_harness_runner_collects_grammar_receipts_and_draft() -> None:
 
 
 @pytest.mark.asyncio
+async def test_harness_runner_publishes_lifecycle_grammar_on_motor_run() -> None:
+    thought = make_thought()
+    request = HarnessRunRequestV1(
+        correlation_id="c-lifecycle",
+        thought_event=thought,
+        user_message="hello",
+        permissions=ContextExecPermissionV1(),
+        answer_contract=AnswerContract(),
+    )
+    bus = AsyncMock()
+    runner = HarnessRunner(bus, fcc_runner=_mock_fcc_runner, node_name="test-node")
+    lifecycle_publish = AsyncMock()
+
+    with patch(
+        "orion.harness.runner.publish_harness_lifecycle_grammar",
+        lifecycle_publish,
+    ):
+        result = await runner.run(request)
+
+    assert result.step_count > 0
+    lifecycle_publish.assert_awaited_once()
+    events = lifecycle_publish.await_args.kwargs["events"]
+    roles = {e.atom.semantic_role for e in events if e.atom}
+    assert "exec_request_received" in roles
+    assert "exec_plan_started" in roles
+    assert "exec_step_started" in roles
+    assert "exec_step_completed" in roles
+    assert "exec_result_assembled" in roles
+    assembled = next(
+        e for e in events if e.atom and e.atom.semantic_role == "exec_result_assembled"
+    )
+    assert "reasoning_present=True" in assembled.atom.summary
+    assert "thinking_source=harness_fcc" in assembled.atom.summary
+
+
+@pytest.mark.asyncio
 async def test_harness_runner_uses_compile_harness_prefix() -> None:
     thought = make_thought(imperative="Check logs first.", tone="direct")
     captured: dict[str, str] = {}

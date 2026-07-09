@@ -11,7 +11,7 @@ from orion.substrate.ids import stable_delta_id, stable_receipt_id
 
 from .constants import (
     EXECUTION_REDUCER_ID,
-    EXECUTION_SOURCE_SERVICE,
+    EXECUTION_SOURCE_SERVICES,
     EXECUTION_TRAJECTORY_PROJECTION_ID,
 )
 from .grammar_extract import extract_execution_state_from_events
@@ -62,7 +62,7 @@ def reduce_execution_trace_events(
             created_at=clock,
         )
 
-    if any(e.provenance.source_service != EXECUTION_SOURCE_SERVICE for e in events):
+    if any(e.provenance.source_service not in EXECUTION_SOURCE_SERVICES for e in events):
         noop_ids = [e.event_id for e in events]
         return projection, ReductionReceiptV1(
             receipt_id=stable_receipt_id(
@@ -75,6 +75,31 @@ def reduce_execution_trace_events(
             noop_event_ids=noop_ids,
             created_at=clock,
         )
+
+    processable: list[GrammarEventV1] = []
+    harness_fcc_noop_ids: list[str] = []
+    for event in events:
+        role = (event.atom.semantic_role or "") if event.atom else ""
+        if role == "harness_fcc_step":
+            harness_fcc_noop_ids.append(event.event_id)
+        else:
+            processable.append(event)
+
+    if not processable:
+        return projection, ReductionReceiptV1(
+            receipt_id=stable_receipt_id(
+                reducer_id=reducer_id,
+                accepted_event_ids=[],
+                rejected_event_ids=[],
+                merged_event_ids=[],
+                noop_event_ids=harness_fcc_noop_ids,
+            ),
+            noop_event_ids=harness_fcc_noop_ids,
+            created_at=clock,
+        )
+
+    events = processable
+    fcc_noop_ids = harness_fcc_noop_ids
 
     updated = deepcopy(projection)
     updated.generated_at = clock
@@ -112,9 +137,10 @@ def reduce_execution_trace_events(
             accepted_event_ids=event_ids,
             rejected_event_ids=[],
             merged_event_ids=[],
-            noop_event_ids=[],
+            noop_event_ids=fcc_noop_ids,
         ),
         accepted_event_ids=event_ids,
+        noop_event_ids=fcc_noop_ids,
         state_deltas=[
             StateDeltaV1(
                 delta_id=stable_delta_id(

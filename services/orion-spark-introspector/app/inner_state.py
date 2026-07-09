@@ -87,6 +87,13 @@ FELT_DIMENSIONS: Tuple[str, ...] = (
 
 DROPPED_DIMENSIONS: frozenset[str] = frozenset({"policy_pressure", "uncertainty"})
 
+ENCODER_EXCLUDED_FELT: frozenset[str] = frozenset({
+    "field_intensity",
+    "resource_pressure",
+    "introspection_pressure",
+})
+INFRA_ONLY_FELT: frozenset[str] = frozenset({"reliability_pressure"})
+
 # Retained for provenance only; φ never reads these.
 INFRA_CHANNELS: Tuple[str, ...] = (
     "bus_health",
@@ -102,6 +109,17 @@ COGNITIVE_FEATURE_NAMES: Tuple[str, ...] = (
     "exec_step_fail_rate",
     "execution_friction",
 )
+
+
+def encoder_trainable_feature_names(features_version: str) -> list[str]:
+    if features_version == "seed-v3":
+        felt = [
+            k for k in FELT_DIMENSIONS
+            if k not in ENCODER_EXCLUDED_FELT and k not in INFRA_ONLY_FELT
+        ]
+        return felt + ["overall_intensity"] + list(COGNITIVE_FEATURE_NAMES)
+    felt = [k for k in FELT_DIMENSIONS if k not in DROPPED_DIMENSIONS]
+    return felt + ["overall_intensity"] + list(COGNITIVE_FEATURE_NAMES)
 
 
 def _dim_score(ss, key: str, default: float = 0.0) -> float:
@@ -208,9 +226,20 @@ def build_inner_state_features(
 
     features: List[InnerFeatureV1] = []
     raw_map: Dict[str, float] = {}
+    infra_only_felt: List[InnerFeatureV1] = []
     for key in FELT_DIMENSIONS:
         raw = _dim_score(ss, key)
         raw_map[key] = raw
+        if features_version == "seed-v3" and key in INFRA_ONLY_FELT:
+            infra_only_felt.append(
+                InnerFeatureV1(
+                    name=key,
+                    raw_value=round(raw, 4),
+                    scaled_value=0.0,
+                    source=f"self_state.dimensions.{key}",
+                )
+            )
+            continue
         features.append(
             InnerFeatureV1(
                 name=key,
@@ -232,10 +261,14 @@ def build_inner_state_features(
         )
     )
 
-    # seed-v2 always emits the four cognitive slots so encoder/corpus dims stay
+    # seed-v2/v3 always emit the four cognitive slots so encoder/corpus dims stay
     # stable even when trajectory HTTP fails (zeros + execution_trajectory.none).
     # seed-v1 and other versions only append when a projection was provided.
-    include_cognitive = features_version.startswith("seed-v2") or trajectory_projection is not None
+    include_cognitive = (
+        features_version.startswith("seed-v2")
+        or features_version == "seed-v3"
+        or trajectory_projection is not None
+    )
     if include_cognitive:
         gen_for_traj = getattr(ss, "generated_at", None) or datetime.now(timezone.utc)
         for feat in cognitive_features_from_trajectory(
@@ -252,7 +285,7 @@ def build_inner_state_features(
                 )
             )
 
-    infra: List[InnerFeatureV1] = []
+    infra: List[InnerFeatureV1] = list(infra_only_felt)
     dom = getattr(ss, "dominant_field_channels", {}) or {}
     for ch in INFRA_CHANNELS:
         if ch in dom:

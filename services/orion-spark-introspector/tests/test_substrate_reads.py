@@ -6,7 +6,9 @@ from unittest.mock import AsyncMock
 import pytest
 
 from app.substrate_reads import (
+    GrammarTruthSnapshot,
     SubstrateReadCache,
+    cognitive_lane_dark,
     fetch_execution_trajectory,
     fetch_grammar_truth,
     fetch_reasoning_activity,
@@ -84,3 +86,64 @@ def test_cache_reasoning_activity_expires_past_ttl() -> None:
     cache.put_reasoning_activity({"ok": True, "projection": {}})
     time.sleep(0.01)
     assert cache.get_reasoning_activity() is None
+
+
+# --- cognitive_lane_dark ------------------------------------------------------
+# Regression coverage for the live bug where an UNRELATED reducer's cursor lag
+# (chat_grammar_consumer going quiet because no chat happened) tripped
+# substrate's blanket `degraded` flag, which spark-introspector used to OR
+# into grammar_degraded -- freezing phi_health, and therefore rejecting every
+# corpus row at spec 3's ingestion-time health gate, even though
+# execution_trajectory (the only reducer phi's cognitive features actually
+# depend on) was fully healthy.
+
+
+def _snapshot(
+    *,
+    degraded_reasons: list[str] | None = None,
+    enabled: bool = True,
+    classification: str | None = "healthy",
+) -> GrammarTruthSnapshot:
+    reducer_health_by_name = {"execution_trajectory": {"classification": classification}} if classification else {}
+    return GrammarTruthSnapshot(
+        degraded=bool(degraded_reasons),
+        degraded_reasons=degraded_reasons or [],
+        enabled_reducers={"execution_trajectory": enabled},
+        reducer_health_by_name=reducer_health_by_name,
+    )
+
+
+def test_cognitive_lane_dark_false_when_unrelated_reducer_lags() -> None:
+    """The exact live bug: chat_grammar_consumer lagging must NOT freeze phi."""
+    snap = _snapshot(degraded_reasons=["cursor_lag:chat_grammar_consumer"])
+    assert cognitive_lane_dark(snap) is False
+
+
+def test_cognitive_lane_dark_true_when_execution_trajectory_cursor_lags() -> None:
+    """execution_trajectory's OWN cursor lagging must still freeze phi, even
+    though `classification` (heartbeat/stream-backlog only) doesn't reflect
+    wall-clock cursor lag at all."""
+    snap = _snapshot(degraded_reasons=["cursor_lag:execution_grammar_reducer"])
+    assert cognitive_lane_dark(snap) is True
+
+
+def test_cognitive_lane_dark_true_when_multiple_reducers_lag_including_own() -> None:
+    snap = _snapshot(
+        degraded_reasons=["cursor_lag:chat_grammar_consumer", "cursor_lag:execution_grammar_reducer"]
+    )
+    assert cognitive_lane_dark(snap) is True
+
+
+def test_cognitive_lane_dark_true_on_dark_classification_even_without_lag_reason() -> None:
+    snap = _snapshot(degraded_reasons=[], classification="dead_no_heartbeat")
+    assert cognitive_lane_dark(snap) is True
+
+
+def test_cognitive_lane_dark_true_when_execution_trajectory_reducer_disabled() -> None:
+    snap = _snapshot(degraded_reasons=[], enabled=False)
+    assert cognitive_lane_dark(snap) is True
+
+
+def test_cognitive_lane_dark_false_when_fully_healthy_no_reasons() -> None:
+    snap = _snapshot(degraded_reasons=[])
+    assert cognitive_lane_dark(snap) is False

@@ -612,3 +612,78 @@ async def test_handle_self_state_corpus_gate_uses_seedv4_cognitive_names(monkeyp
 
     assert captured_names["names"] == worker.SEEDV4_COGNITIVE_FEATURE_NAMES
     assert "exec_step_fail_rate" not in captured_names["names"]
+
+
+@pytest.mark.asyncio
+async def test_handle_self_state_unrelated_cursor_lag_does_not_freeze_or_reject(monkeypatch) -> None:
+    """Regression for the live incident: substrate reporting degraded=True
+    solely because chat_grammar_consumer (unrelated to phi) is lagging must
+    NOT freeze phi_health or trip the corpus-hygiene gate, as long as
+    execution_trajectory (the reducer phi's cognitive features depend on) is
+    itself healthy."""
+    monkeypatch.setattr(worker, "_SUBSTRATE_CACHE", None, raising=False)
+    monkeypatch.setattr(worker, "fetch_grammar_truth", AsyncMock(
+        return_value=GrammarTruthSnapshot(
+            degraded=True,
+            degraded_reasons=["cursor_lag:chat_grammar_consumer"],
+            enabled_reducers={"execution_trajectory": True},
+            reducer_health_by_name={"execution_trajectory": {"classification": "healthy"}},
+        )
+    ))
+    monkeypatch.setattr(worker, "fetch_execution_trajectory", AsyncMock(
+        return_value=ExecutionTrajectorySnapshot(
+            ok=True,
+            projection={
+                "runs": {
+                    "a": {
+                        "reasoning_present": True,
+                        "recall_observed": True,
+                        "step_count": 4,
+                        "failed_step_count": 0,
+                        "pressure_hints": {},
+                        "last_updated_at": _NOW.isoformat(),
+                    }
+                }
+            },
+        )
+    ))
+    monkeypatch.setattr(worker, "fetch_reasoning_activity", AsyncMock(
+        return_value=ReasoningActivitySnapshot(
+            ok=True,
+            projection={
+                "call_count": 8,
+                "reasoning_present_rate": 0.5,
+                "completion_tokens_sum": 200,
+                "thinking_tokens_sum": None,
+            },
+        )
+    ))
+    captured = {}
+
+    class _Bus:
+        enabled = True
+
+        async def publish(self, channel, env):
+            if channel == worker.settings.channel_inner_features:
+                captured["payload"] = env.payload
+
+    monkeypatch.setattr(worker, "_pub_bus", _Bus(), raising=False)
+    monkeypatch.setattr(worker.manager, "broadcast", AsyncMock(), raising=False)
+    monkeypatch.setattr(worker, "_INNER_SCALER", worker._new_inner_scaler(), raising=False)
+    monkeypatch.setattr(worker, "_INNER_PREV_FELT", None, raising=False)
+    monkeypatch.setattr(worker, "_INNER_PREV_HEADLINE", None, raising=False)
+    monkeypatch.setattr(worker, "_INNER_DEGENERATE_STREAK", 0, raising=False)
+
+    mock_sink = MagicMock()
+    monkeypatch.setattr(worker, "_INNER_SINK", mock_sink, raising=False)
+
+    env = BaseEnvelope(
+        kind="substrate.self_state.v1",
+        source=ServiceRef(name="substrate-runtime", node="athena"),
+        payload=_self_state_payload(),
+    )
+    await worker.handle_self_state(env)
+
+    assert captured["payload"].phi_health == "ok"
+    assert captured["payload"].grammar_truth_degraded is False
+    mock_sink.append.assert_called_once()

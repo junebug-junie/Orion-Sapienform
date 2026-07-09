@@ -23,7 +23,7 @@ class Settings(BaseSettings):
 
     PORT: int = Field(default=6611, alias="PORT")
     MIND_SNAPSHOT_MAX_BYTES: int = Field(default=512_000, alias="MIND_SNAPSHOT_MAX_BYTES")
-    MIND_WALL_MS_DEFAULT: int = Field(default=120_000, alias="MIND_WALL_MS_DEFAULT")
+    MIND_WALL_MS_DEFAULT: int = Field(default=180_000, alias="MIND_WALL_MS_DEFAULT")
     MIND_N_LOOPS_DEFAULT: int = Field(default=1, alias="MIND_N_LOOPS_DEFAULT")
     MIND_ROUTER_PROFILES_PATH: str = Field(
         default="",
@@ -40,7 +40,7 @@ class Settings(BaseSettings):
     MIND_SEMANTIC_MODEL_ROUTE: str = Field(default="quick", alias="MIND_SEMANTIC_MODEL_ROUTE")
     MIND_APPRAISAL_MODEL_ROUTE: str = Field(default="metacog", alias="MIND_APPRAISAL_MODEL_ROUTE")
     MIND_STANCE_MODEL_ROUTE: str = Field(default="chat", alias="MIND_STANCE_MODEL_ROUTE")
-    MIND_LLM_TIMEOUT_SEC: float = Field(default=25.0, alias="MIND_LLM_TIMEOUT_SEC")
+    MIND_LLM_TIMEOUT_SEC: float = Field(default=60.0, alias="MIND_LLM_TIMEOUT_SEC")
     MIND_LLM_MAX_TOKENS_SEMANTIC: int = Field(default=2048, alias="MIND_LLM_MAX_TOKENS_SEMANTIC")
     MIND_LLM_MAX_TOKENS_APPRAISAL: int = Field(default=3072, alias="MIND_LLM_MAX_TOKENS_APPRAISAL")
     MIND_LLM_MAX_TOKENS_STANCE: int = Field(default=1536, alias="MIND_LLM_MAX_TOKENS_STANCE")

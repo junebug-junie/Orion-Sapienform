@@ -12,11 +12,11 @@ load_dotenv(Path(__file__).resolve().parent.parent / ".env", override=False)
 logger = logging.getLogger("orion-thought.settings")
 
 # orion-mind runs 3 sequential LLM phases (semantic → appraisal → stance), each
-# capped by MIND_LLM_TIMEOUT_SEC (default 25s on the orion-mind service). A wall
+# capped by MIND_LLM_TIMEOUT_SEC (default 60s on the orion-mind service). A wall
 # budget below ~3× that ceiling guarantees synthesis is cut off mid-pipeline and
 # the Mind degrades to contract_only (the empty-shell cognition failure mode).
 # See fix/mind-enrichment-wall-budget.
-MIND_LLM_TIMEOUT_SEC_ASSUMED: float = 25.0
+MIND_LLM_TIMEOUT_SEC_ASSUMED: float = 60.0
 MIND_ENRICHMENT_PHASE_COUNT: int = 3
 MIND_ENRICHMENT_MIN_VIABLE_WALL_MS: int = int(
     MIND_LLM_TIMEOUT_SEC_ASSUMED * MIND_ENRICHMENT_PHASE_COUNT * 1000
@@ -127,15 +127,15 @@ class ThoughtSettings(BaseSettings):
     # (a separate service — not visible to this service's env-parity check).
     #
     # Wall/timeout budget: orion-mind runs THREE sequential LLM phases (semantic →
-    # appraisal → stance), each capped by MIND_LLM_TIMEOUT_SEC (default 25s on the
+    # appraisal → stance), each capped by MIND_LLM_TIMEOUT_SEC (default 60s on the
     # orion-mind service). A wall below ~3× that ceiling cuts synthesis off
     # mid-pipeline and forces contract_only degradation, so the wall default must
     # stay >= MIND_ENRICHMENT_MIN_VIABLE_WALL_MS and the HTTP read timeout must
     # exceed the wall (so Mind's own fail-open result is returned, not aborted).
     mind_enrichment_enabled: bool = Field(False, alias="ORION_THOUGHT_MIND_ENRICHMENT_ENABLED")
     mind_base_url: str = Field("http://orion-mind:6611", alias="ORION_MIND_BASE_URL")
-    mind_timeout_sec: float = Field(100.0, alias="ORION_THOUGHT_MIND_TIMEOUT_SEC")
-    mind_wall_ms: int = Field(90_000, alias="ORION_THOUGHT_MIND_WALL_MS")
+    mind_timeout_sec: float = Field(210.0, alias="ORION_THOUGHT_MIND_TIMEOUT_SEC")
+    mind_wall_ms: int = Field(180_000, alias="ORION_THOUGHT_MIND_WALL_MS")
     mind_router_profile: str = Field("default", alias="ORION_THOUGHT_MIND_ROUTER_PROFILE")
     mind_max_response_bytes: int = Field(2_000_000, alias="ORION_THOUGHT_MIND_MAX_RESPONSE_BYTES")
     mind_artifact_publish_enabled: bool = Field(

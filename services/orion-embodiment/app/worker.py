@@ -22,7 +22,11 @@ from orion.embodiment.worldmap import walkable_tiles
 from orion.embodiment.perception import build_perception
 from orion.embodiment.resolver import resolve_destination
 from orion.embodiment.salience import SalienceState, evaluate_salience
-from orion.embodiment.speech import build_speech_prompt, is_injectable, should_speak
+from orion.embodiment.speech import (
+    build_speech_prompt,
+    is_injectable,
+    should_speak,
+)
 from orion.journaler.schemas import JournalTriggerV1
 from orion.schemas.embodiment import (
     EMBODIMENT_OUTCOME_KIND,

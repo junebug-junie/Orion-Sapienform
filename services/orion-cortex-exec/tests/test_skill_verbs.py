@@ -30,6 +30,8 @@ assert spec and spec.loader
 sys.modules[spec.name] = verb_adapters
 spec.loader.exec_module(verb_adapters)
 
+_GITHUB_RECENT_PRS_EXECUTE = verb_adapters.GithubRecentPullRequestsVerb.execute
+
 REPO_ROOT = SERVICE_DIR.parents[1]
 if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
@@ -412,6 +414,66 @@ def test_mesh_ops_round_happy_path_with_journal_write():
     assert data["overall_health"] == "ok"
     assert data["journal_write"]["status"] == "published"
     assert bus.published and bus.published[0][0] == "orion:journal:write"
+
+
+def test_github_recent_prs_includes_truncated_body(monkeypatch):
+    monkeypatch.setattr(
+        verb_adapters.GithubRecentPullRequestsVerb,
+        "execute",
+        _GITHUB_RECENT_PRS_EXECUTE,
+    )
+    sample_prs = [
+        {
+            "number": 42,
+            "title": "Add compactor",
+            "user": {"login": "juniper"},
+            "state": "closed",
+            "merged_at": "2026-07-08T12:00:00Z",
+            "created_at": "2026-07-07T12:00:00Z",
+            "updated_at": "2026-07-08T12:00:00Z",
+            "labels": [],
+            "base": {"ref": "main"},
+            "head": {"ref": "feat/compactor"},
+            "html_url": "https://github.com/acme/widgets/pull/42",
+            "changed_files": 3,
+            "body": "x" * 2500,
+        }
+    ]
+
+    class _Resp:
+        def __init__(self, payload):
+            self._payload = payload
+
+        def read(self):
+            return json.dumps(self._payload).encode("utf-8")
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *args):
+            return False
+
+    def _urlopen(request, timeout=0):
+        url = request.full_url
+        if url.endswith("/pulls?state=closed&sort=updated&direction=desc&per_page=20"):
+            return _Resp(sample_prs)
+        if url.endswith("/files?per_page=100"):
+            return _Resp([{"filename": "services/orion-hub/app/main.py"}])
+        raise AssertionError(f"unexpected url: {url}")
+
+    monkeypatch.setattr(verb_adapters, "urlopen", _urlopen)
+    monkeypatch.setattr(verb_adapters.settings, "github_owner", "acme")
+    monkeypatch.setattr(verb_adapters.settings, "github_repo", "widgets")
+    monkeypatch.setattr(verb_adapters.settings, "github_token", "test-token")
+    monkeypatch.setattr(verb_adapters.settings, "mesh_default_lookback_days", 7)
+
+    req = _plan_request("skills.repo.github_recent_prs.v1", skill_args={"lookback_days": 7})
+    ctx = VerbContext(meta={"correlation_id": str(uuid4())})
+    out, _ = asyncio.run(verb_adapters.GithubRecentPullRequestsVerb().execute(ctx, req))
+    data = json.loads(out.final_text)
+    assert data["available"] is True
+    assert len(data["items"]) == 1
+    assert data["items"][0]["body"] == ("x" * 2000)
 
 
 def test_mesh_ops_round_partial_failure_without_journal():

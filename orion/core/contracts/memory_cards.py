@@ -10,7 +10,13 @@ MemoryCardStatus = Literal["pending_review", "active", "rejected", "superseded",
 MemoryConfidence = Literal["certain", "likely", "possible", "uncertain"]
 MemorySensitivity = Literal["public", "private", "intimate"]
 MemoryPriority = Literal["always_inject", "high_recall", "episodic_detail", "archival"]
-MemoryProvenance = Literal["operator_highlight", "operator_distiller", "auto_extractor", "imported"]
+MemoryProvenance = Literal[
+    "operator_highlight",
+    "operator_distiller",
+    "auto_extractor",
+    "imported",
+    "repo_compactor",
+]
 AnchorClass = Literal[
     "person",
     "place",

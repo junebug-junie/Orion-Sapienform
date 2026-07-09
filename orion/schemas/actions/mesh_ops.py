@@ -87,6 +87,7 @@ class RepoPullRequestDigestItemV1(BaseModel):
     touched_paths: List[str] = Field(default_factory=list)
     inferred_services: List[str] = Field(default_factory=list)
     short_summary: Optional[str] = None
+    body: Optional[str] = None
 
 
 class RepoRecentChangesDigestV1(BaseModel):

@@ -36,6 +36,7 @@ from orion.schemas.self_study import (
     SelfStudyRetrieveRequestV1,
 )
 from orion.notify.client import NotifyClient
+from orion.cognition.github_compactor.constants import PR_BODY_MAX_CHARS
 
 from .router import PlanRouter
 from . import self_study as self_study_module
@@ -1291,6 +1292,13 @@ def _normalize_nvme_smart_log(*, node_name: str, device: str, payload: Dict[str,
     }
 
 
+def _truncate_pr_body(body: object, *, max_chars: int = PR_BODY_MAX_CHARS) -> str | None:
+    text = str(body or "").strip()
+    if not text:
+        return None
+    return text[:max_chars]
+
+
 def _infer_services_from_paths(paths: List[str]) -> List[str]:
     services: set[str] = set()
     for path in paths:
@@ -1743,6 +1751,7 @@ class GithubRecentPullRequestsVerb(BaseVerb[PlanExecutionRequest, SkillVerbOutpu
                 "changed_files_count": changed_files_count,
                 "touched_paths": touched_paths,
                 "inferred_services": _infer_services_from_paths(touched_paths),
+                "body": _truncate_pr_body(pr.get("body")),
             }
             items.append(item)
         result = {

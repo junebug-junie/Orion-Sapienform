@@ -1,0 +1,36 @@
+You compact merged GitHub pull request activity into Orion's internal repo-development digest.
+
+BOUNDARY
+- Use ONLY the payload below.
+- Do NOT use chat history, recall memory, or unstated assumptions.
+- Do not invent PRs not present in input.
+
+GROUNDED PAYLOAD (authoritative)
+Input JSON is in metadata key `github_compactor_input`. It contains:
+- repo: string
+- lookback_days: integer
+- items: list of merged PR objects (number, title, body, touched_paths, inferred_services, merged_at, url)
+
+{{ metadata.get("github_compactor_input", {}) | tojson(indent=2) }}
+
+TASK
+Return exactly one JSON object.
+- The response MUST be valid JSON.
+- The response MUST begin with `{` and end with `}`.
+- Do NOT wrap the JSON in markdown fences.
+- Do NOT include any explanatory prose before or after the JSON.
+- Do NOT output `<think>` tags, chain-of-thought, reasoning traces, or hidden-analysis markers.
+- If the model/runtime supports reasoning controls, comply with no-reasoning / final-answer-only mode for this response.
+- Use exactly these keys at top level: `card_summary`, `journal_title`, `journal_body`, `pr_refs`.
+- Set `card_summary` to a compact gut-sense of what was built (max 800 chars).
+- Set `journal_title` to a concise title (max 120 chars).
+- Set `journal_body` to a richer narrative with PR refs and service groupings (max 4000 chars).
+- Set `pr_refs` to an array of strings like "#123" for PRs referenced in the digest.
+
+RESPONSE SHAPE (example)
+{"card_summary":"<compact summary>","journal_title":"<title>","journal_body":"<narrative>","pr_refs":["#123"]}
+
+RULES
+- Use PR descriptions when present; fall back to title + touched paths when body is empty.
+- Prefer themes ("hub UI polish", "substrate wiring") over file lists.
+- Never fabricate PRs, services, or changes not present in the payload.

@@ -186,6 +186,30 @@ _WORKFLOWS: tuple[WorkflowDefinition, ...] = (
         ],
         planner_hints=["Use when the user explicitly asks to run or inspect concept induction graphs/profiles."],
     ),
+    WorkflowDefinition(
+        workflow_id="github_compactor_pass",
+        display_name="GitHub Compactor",
+        description="Daily compaction of merged PR descriptions into a repo development digest (memory card + journal).",
+        aliases=[
+            "run github compactor",
+            "compact recent prs",
+            "github compactor pass",
+            "what have we been building",
+        ],
+        user_invocable=True,
+        autonomous_invocable=True,
+        execution_mode="sync",
+        may_call_actions=False,
+        persistence_policy="Supersede one active memory card (repo_dev_snapshot slot) and append one journal entry per run.",
+        result_surface="Return PR count, card summary preview, and journal entry id.",
+        steps=[
+            WorkflowStepDefinition(step_id="fetch_prs", description="Fetch merged PRs with descriptions.", adapter="verb:skills.repo.github_recent_prs.v1"),
+            WorkflowStepDefinition(step_id="compact", description="LLM compact digest JSON.", adapter="verb:github_compactor_digest_v1"),
+            WorkflowStepDefinition(step_id="persist_card", description="Supersede repo_dev_snapshot card.", adapter="memory_cards:compactor_slot"),
+            WorkflowStepDefinition(step_id="persist_journal", description="Append journal entry.", adapter="journaler:append_only_write"),
+        ],
+        planner_hints=["Use when the user asks to compact recent GitHub PR activity into repo development memory."],
+    ),
 )
 
 _WORKFLOW_INDEX = {workflow.workflow_id: workflow for workflow in _WORKFLOWS}

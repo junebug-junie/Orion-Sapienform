@@ -141,7 +141,7 @@
   const MEMORY_CONFIDENCE = ["certain", "likely", "possible", "uncertain"];
   const MEMORY_SENSITIVITY = ["public", "private", "intimate"];
   const MEMORY_PRIORITY = ["always_inject", "high_recall", "episodic_detail", "archival"];
-  const MEMORY_PROVENANCE = ["operator_highlight", "operator_distiller", "auto_extractor", "imported"];
+  const MEMORY_PROVENANCE = ["operator_highlight", "operator_distiller", "auto_extractor", "imported", "repo_compactor"];
   const MEMORY_VISIBILITY = ["chat", "social", "intimate", "all"];
   const MEMORY_TIME_KIND = ["timeless", "era_bound", "current", "expiring"];
 

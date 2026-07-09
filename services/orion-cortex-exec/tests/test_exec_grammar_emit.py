@@ -42,9 +42,19 @@ def test_trace_id_stable_for_node_and_correlation() -> None:
 def test_trace_lane_isolates_harness_finalize_verbs() -> None:
     from app.grammar_emit import trace_lane_for_verb
 
+    assert trace_lane_for_verb("stance_react") == "stance_react"
     assert trace_lane_for_verb("harness_finalize_reflect") == "harness_finalize_reflect"
     assert trace_lane_for_verb("orion_voice_finalize") == "orion_voice_finalize"
     assert trace_lane_for_verb("chat_general") is None
+
+    stance = CortexExecGrammarCollector(
+        node_name=NODE,
+        correlation_id=CORR,
+        code_version="0.2.0",
+        observed_at=FIXED_OBS,
+        trace_lane="stance_react",
+    )
+    assert stance.trace_id == f"cortex.exec:{NODE}:{CORR}:stance_react"
 
     collector = CortexExecGrammarCollector(
         node_name=NODE,

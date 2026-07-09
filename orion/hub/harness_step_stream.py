@@ -22,18 +22,12 @@ async def relay_harness_run_steps(
     """Forward harness governor FCC steps to Hub WS as claude_step frames."""
     if bus is None:
         return
+    forwarded = 0
     try:
         async with bus.subscribe(channel) as pubsub:
-            while not stop_event.is_set():
-                try:
-                    msg = await asyncio.wait_for(
-                        pubsub.get_message(ignore_subscribe_messages=True, timeout=0.5),
-                        timeout=0.6,
-                    )
-                except asyncio.TimeoutError:
-                    continue
-                if not msg or msg.get("type") not in ("message", "pmessage"):
-                    continue
+            async for msg in bus.iter_messages(pubsub):
+                if stop_event.is_set():
+                    break
                 decoded = bus.codec.decode(msg.get("data"))
                 if not decoded.ok:
                     continue
@@ -55,7 +49,19 @@ async def relay_harness_run_steps(
                         "step_index": step_event.step_index,
                     }
                 )
+                forwarded += 1
     except asyncio.CancelledError:
         raise
     except Exception:
-        logger.warning("harness step relay failed corr=%s", correlation_id, exc_info=True)
+        logger.warning(
+            "harness step relay failed corr=%s forwarded=%s",
+            correlation_id,
+            forwarded,
+            exc_info=True,
+        )
+    else:
+        logger.debug(
+            "harness step relay stopped corr=%s forwarded=%s",
+            correlation_id,
+            forwarded,
+        )

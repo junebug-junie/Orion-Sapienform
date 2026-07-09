@@ -39,15 +39,16 @@ def _log_mind_http_timeout_config() -> None:
     s = get_settings()
     logger.info(
         "orch_mind_startup_config ORION_MIND_TIMEOUT_SEC=%s ORION_MIND_BASE_URL=%s "
-        "recommended inner Mind MIND_LLM_TIMEOUT_SEC=25",
+        "recommended inner Mind MIND_LLM_TIMEOUT_SEC=60 wall_ms=180000",
         s.orion_mind_timeout_sec,
         (s.orion_mind_base_url or "").rstrip("/") or "(unset)",
     )
-    if float(s.orion_mind_timeout_sec) <= 25.0:
+    if float(s.orion_mind_timeout_sec) * 1000.0 <= float(s.mind_wall_ms_default):
         logger.warning(
             "orch_mind_timeout_hierarchy_risky ORION_MIND_TIMEOUT_SEC=%s "
-            "should exceed Mind MIND_LLM_TIMEOUT_SEC (recommended 45 > 25)",
+            "should exceed MIND_WALL_MS_DEFAULT=%s (recommended 210s > 180s)",
             s.orion_mind_timeout_sec,
+            s.mind_wall_ms_default,
         )
 
 

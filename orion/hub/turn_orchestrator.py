@@ -17,6 +17,11 @@ from orion.schemas.pre_turn_appraisal import (
 )
 from orion.schemas.thought import StanceReactRequestV1, ThoughtEventV1
 from orion.substrate.appraisal.turn_window import build_turn_window
+from orion.fcc.context_budget import (
+    apply_context_overflow_hint,
+    is_context_overflow_text,
+    max_context_tokens,
+)
 
 logger = logging.getLogger("orion.hub.turn_orchestrator")
 
@@ -59,6 +64,14 @@ def _thought_deferred_frame(thought: ThoughtEventV1, *, correlation_id: str) -> 
 _PARTIAL_DRAFT_MAX_LEN = 2000
 
 
+def _with_overflow_hint(text: str | None) -> str | None:
+    if not text:
+        return text
+    if not is_context_overflow_text(text):
+        return text
+    return apply_context_overflow_hint(text, n_ctx=max_context_tokens())
+
+
 def _partial_draft_from_run(run: HarnessRunV1) -> str | None:
     draft = run.draft_text
     if not draft:
@@ -85,7 +98,10 @@ def _harness_error_frame(run: HarnessRunV1, *, correlation_id: str) -> dict[str,
         "finalize_ran": bool(run.finalize_ran),
     }
     if run.grounding_status:
-        base["error"] = run.grounding_status
+        base["error"] = _with_overflow_hint(run.grounding_status) or run.grounding_status
+        if is_context_overflow_text(run.grounding_status or ""):
+            base["error_code"] = "context_overflow"
+            base["context_overflow"] = True
     if run.draft_text and run.substrate_appraisal is None and not _finalize_phase_error(run):
         base["phase"] = "harness" if (run.compliance_verdict or "").strip().lower() in {
             "partial",
@@ -93,7 +109,7 @@ def _harness_error_frame(run: HarnessRunV1, *, correlation_id: str) -> dict[str,
         } else "substrate_appraisal"
         partial = _partial_draft_from_run(run)
         if partial:
-            base["partial_draft"] = partial
+            base["partial_draft"] = _with_overflow_hint(partial) or partial
         return base
     if _finalize_phase_error(run) or (
         run.substrate_appraisal is not None and (run.reflection is None or not run.final_text)
@@ -101,18 +117,24 @@ def _harness_error_frame(run: HarnessRunV1, *, correlation_id: str) -> dict[str,
         base["phase"] = "finalize"
         partial = _partial_draft_from_run(run)
         if partial:
-            base["partial_draft"] = partial
+            base["partial_draft"] = _with_overflow_hint(partial) or partial
         if run.grounding_status:
-            base["error"] = run.grounding_status
+            base["error"] = _with_overflow_hint(run.grounding_status) or run.grounding_status
+            if is_context_overflow_text(run.grounding_status or ""):
+                base["error_code"] = "context_overflow"
+                base["context_overflow"] = True
         return base
     base["phase"] = "harness"
     if run.step_count:
         base["partial"] = run.step_count
     partial = _partial_draft_from_run(run)
     if partial:
-        base["partial_draft"] = partial
+        base["partial_draft"] = _with_overflow_hint(partial) or partial
     if run.grounding_status:
-        base["error"] = run.grounding_status
+        base["error"] = _with_overflow_hint(run.grounding_status) or run.grounding_status
+        if is_context_overflow_text(run.grounding_status or ""):
+            base["error_code"] = "context_overflow"
+            base["context_overflow"] = True
     return base
 
 
@@ -134,16 +156,19 @@ def _success_frames(run: HarnessRunV1, *, correlation_id: str) -> list[dict[str,
                 "reflection": run.reflection.model_dump(mode="json"),
             }
         )
+    final_text = _with_overflow_hint(run.final_text) or run.final_text
     final_frame: dict[str, Any] = {
         "type": "final",
         "correlation_id": correlation_id,
         "mode": "orion",
-        "llm_response": run.final_text,
+        "llm_response": final_text,
         "finalize_ran": run.finalize_ran,
         "finalize_changed": run.finalize_changed,
         "harness_step_count": run.step_count,
         "harness_grounding_status": run.grounding_status,
     }
+    if is_context_overflow_text(run.final_text or ""):
+        final_frame["context_overflow"] = True
     if run.recall_debug is not None:
         final_frame["recall_debug"] = run.recall_debug
     if run.memory_digest:
@@ -248,26 +273,22 @@ async def execute_unified_turn(
     from scripts.harness_governor_client import HarnessGovernorClient
     from scripts.thought_client import ThoughtClient
 
-    surface_context = payload.get("surface_context") if isinstance(payload.get("surface_context"), dict) else {}
-    surface_context = {**surface_context, "hub_chat_lane": "orion"}
     stance_req = StanceReactRequestV1(
         correlation_id=correlation_id,
         session_id=session_id,
         user_message=user_message,
         association=association,
         repair_bundle=repair_bundle,
-        stance_inputs={
-            "user_message": user_message,
-            "surface_context": surface_context,
-        },
+        stance_inputs={"user_message": user_message},
     )
-    thought = await ThoughtClient(bus).react(stance_req, correlation_id=correlation_id)
+    react_result = await ThoughtClient(bus).react(stance_req, correlation_id=correlation_id)
+    thought = react_result.thought
     if thought is None:
         return [
             {
                 "type": "turn_deferred",
                 "correlation_id": correlation_id,
-                "reason": "stance_react_timeout",
+                "reason": react_result.failure_reason or "stance_react_timeout",
             }
         ]
     if thought.disposition in ("defer", "refuse"):

@@ -17,19 +17,28 @@ logger = logging.getLogger("orion-mind")
 def _log_timeout_hierarchy_warnings() -> None:
     mind_llm = float(settings.MIND_LLM_TIMEOUT_SEC)
     orch_outer = settings.ORION_MIND_TIMEOUT_SEC
+    min_viable_wall_ms = mind_llm * 3.0 * 1000.0
+    if float(settings.MIND_WALL_MS_DEFAULT) < min_viable_wall_ms:
+        logger.warning(
+            "mind_wall_hierarchy_risky MIND_WALL_MS_DEFAULT=%s min_viable_wall_ms=%s "
+            "recommended MIND_WALL_MS_DEFAULT=180000",
+            settings.MIND_WALL_MS_DEFAULT,
+            int(min_viable_wall_ms),
+        )
     if orch_outer is not None and mind_llm >= float(orch_outer):
         logger.warning(
             "mind_timeout_hierarchy_invalid MIND_LLM_TIMEOUT_SEC=%s ORION_MIND_TIMEOUT_SEC=%s "
-            "recommended MIND_LLM_TIMEOUT_SEC=25 ORION_MIND_TIMEOUT_SEC=45 "
+            "recommended MIND_LLM_TIMEOUT_SEC=60 ORION_MIND_TIMEOUT_SEC=210 "
             "(inner LLM phase timeout must be less than Orch Mind HTTP timeout)",
             mind_llm,
             orch_outer,
         )
-    elif mind_llm >= 45.0:
+    elif orch_outer is not None and (float(orch_outer) * 1000.0) <= float(settings.MIND_WALL_MS_DEFAULT):
         logger.warning(
-            "mind_timeout_hierarchy_risky MIND_LLM_TIMEOUT_SEC=%s "
-            "recommended=25 with ORION_MIND_TIMEOUT_SEC=45 on Orch",
-            mind_llm,
+            "mind_timeout_hierarchy_risky ORION_MIND_TIMEOUT_SEC=%s MIND_WALL_MS_DEFAULT=%s "
+            "recommended ORION_MIND_TIMEOUT_SEC=210",
+            orch_outer,
+            settings.MIND_WALL_MS_DEFAULT,
         )
     logger.info(
         "mind_startup_config MIND_LLM_TIMEOUT_SEC=%s MIND_LLM_SYNTHESIS_ENABLED=%s "

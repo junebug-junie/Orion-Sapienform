@@ -52,12 +52,13 @@ async def lifespan(app: FastAPI):
     app.state.reverie_stop_event.set()
     app.state.reverie_chain_stop_event.set()
     app.state.reasoning_stop_event.set()
-    for task in (
-        app.state.bus_task,
-        app.state.reverie_task,
-        app.state.reverie_chain_task,
-        app.state.reasoning_task,
-    ):
+    with suppress(asyncio.TimeoutError):
+        await asyncio.wait_for(app.state.bus_task, timeout=125.0)
+    if not app.state.bus_task.done():
+        app.state.bus_task.cancel()
+        with suppress(asyncio.CancelledError):
+            await app.state.bus_task
+    for task in (app.state.reverie_task, app.state.reverie_chain_task, app.state.reasoning_task):
         task.cancel()
         with suppress(asyncio.CancelledError):
             await task

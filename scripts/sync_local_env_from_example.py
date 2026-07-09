@@ -103,6 +103,7 @@ SYNC_PREFIXES = (
     "ORION_THOUGHT_MIND_",
     "ORION_MIND_",
     "HARNESS_FCC_",
+    "ORION_FCC_",
     "HARNESS_AITOWN_",
     "HARNESS_GOVERNOR_",
     "FCC_",

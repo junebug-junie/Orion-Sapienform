@@ -69,6 +69,16 @@ def _client_request(metadata: dict | None = None) -> CortexClientRequest:
     )
 
 
+def test_orch_mind_timeout_defaults_exceed_mind_wall() -> None:
+    _orch_prep()
+    from app.settings import get_settings
+
+    settings = get_settings()
+    assert settings.orion_mind_timeout_sec == 210.0
+    assert settings.mind_wall_ms_default == 180_000
+    assert settings.orion_mind_timeout_sec * 1000 > settings.mind_wall_ms_default
+
+
 def test_meaningful_mind_synthesis_may_skip_stance_synthesis() -> None:
     _orch_prep()
     from app.mind_runtime import merge_mind_brief_into_plan_metadata

@@ -35,7 +35,7 @@ def test_github_mcp_brief_lines_are_passive_and_optional(
     monkeypatch.setenv("ORION_GITHUB_OWNER", "junebug-junie")
     monkeypatch.setenv("ORION_GITHUB_REPO", "Orion-Sapienform")
     lines = github_mcp_brief_lines(workspace=Path("/tmp"))
-    assert len(lines) == 2
+    assert len(lines) == 5
     # First line frames the tool as an optional capability, not a directive to run it.
     capability = lines[0]
     assert "available" in capability
@@ -47,6 +47,8 @@ def test_github_mcp_brief_lines_are_passive_and_optional(
     assert "state=all" in guardrail
     assert "search_pull_requests" in guardrail
     assert "never paste raw MCP JSON" in guardrail
+    assert "get_pull_request" in lines[2]
+    assert "orion-fcc-mcp-proxy" in lines[4]
 
 
 def test_append_github_mcp_harness_brief_warns_when_unresolved(

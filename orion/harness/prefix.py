@@ -4,8 +4,8 @@ import os
 
 from orion.fcc.github_repo_context import append_github_mcp_harness_brief
 from orion.harness.operator_brief import (
-    HARNESS_MOTOR_MAX_READ_LINES,
     HARNESS_UNIFIED_OPERATOR_BRIEF,
+    harness_motor_instruction as _stance_motor_instruction,
 )
 from orion.schemas.cognition.answer_contract import AnswerContract
 from orion.schemas.harness_finalize import HarnessRepairOverlayV1
@@ -50,14 +50,8 @@ def harness_motor_instruction(
     thought: ThoughtEventV1,
     answer_contract: AnswerContract | None,
 ) -> str:
-    _ = thought
     _ = answer_contract  # deprecated on unified motor path; kept for signature compat
-    return (
-        "Execute your imperative. Use tools when the turn requires verified facts "
-        "from the repo or runtime. "
-        f"Do not Read whole files over {HARNESS_MOTOR_MAX_READ_LINES} lines — "
-        "use rg/Grep or Read offset/limit."
-    )
+    return _stance_motor_instruction(thought=thought)
 
 
 def compile_harness_prefix(

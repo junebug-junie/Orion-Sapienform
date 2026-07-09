@@ -90,9 +90,9 @@ class Settings(BaseSettings):
 
     # Orion Mind (HTTP control-plane; Orch is sole canonical caller for binding runs)
     orion_mind_base_url: str = Field("", alias="ORION_MIND_BASE_URL")
-    orion_mind_timeout_sec: float = Field(45.0, alias="ORION_MIND_TIMEOUT_SEC")
+    orion_mind_timeout_sec: float = Field(210.0, alias="ORION_MIND_TIMEOUT_SEC")
     mind_n_loops_default: int = Field(1, alias="MIND_N_LOOPS_DEFAULT")
-    mind_wall_ms_default: int = Field(120_000, alias="MIND_WALL_MS_DEFAULT")
+    mind_wall_ms_default: int = Field(180_000, alias="MIND_WALL_MS_DEFAULT")
     orion_mind_max_response_bytes: int = Field(2_000_000, alias="ORION_MIND_MAX_RESPONSE_BYTES")
 
     orion_substrate_telemetry_base_url: str = Field("", alias="ORION_SUBSTRATE_TELEMETRY_BASE_URL")

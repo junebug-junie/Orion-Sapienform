@@ -13,6 +13,17 @@ from pathlib import Path
 from typing import Any, AsyncIterator, Dict, List, Optional, Tuple
 
 from orion.fcc.claude_spawn import claude_permission_argv, extend_mcp_argv
+from orion.fcc.context_budget import (
+    annotate_harness_step,
+    apply_context_overflow_hint,
+    build_context_pressure_step,
+    context_fill_pct,
+    context_pressure_threshold_chars,
+    is_context_overflow_text,
+    max_context_chars,
+    measure_step_payload_chars,
+    summarize_context_risk_suffix,
+)
 
 logger = logging.getLogger("orion.harness.fcc_motor")
 
@@ -143,16 +154,18 @@ def summarize_harness_step(step: Dict[str, Any], *, index: int) -> str:
         message = raw.get("message") if isinstance(raw.get("message"), dict) else raw
         summary = _summarize_content_blocks(message.get("content"))
         if summary:
-            return f"[{index}] {rtype}: {summary}"
-        return f"[{index}] {rtype}"
+            return f"[{index}] {rtype}: {summary}" + summarize_context_risk_suffix(step)
+        return f"[{index}] {rtype}" + summarize_context_risk_suffix(step)
     if rtype == "result":
         result = raw.get("result")
         if isinstance(result, str) and result.strip():
             return f"[{index}] result: {result.strip()[:500]}"
     if rtype == "system":
         subtype = raw.get("subtype") or raw.get("system_subtype")
-        return f"[{index}] system {subtype}" if subtype else f"[{index}] system"
-    return f"[{index}] {rtype}"
+        base = f"[{index}] system {subtype}" if subtype else f"[{index}] system"
+        return base + summarize_context_risk_suffix(step)
+    base = f"[{index}] {rtype}"
+    return base + summarize_context_risk_suffix(step)
 
 
 def _extract_tool_name(step: Dict[str, Any]) -> str | None:
@@ -272,6 +285,12 @@ def _fcc_context_env(env: dict[str, str]) -> None:
     if 0 < autocompact_pct <= 100:
         pct = int(autocompact_pct) if autocompact_pct == int(autocompact_pct) else autocompact_pct
         env["CLAUDE_AUTOCOMPACT_PCT_OVERRIDE"] = str(pct)
+    from orion.fcc.context_budget import extend_fcc_subprocess_env
+
+    extend_fcc_subprocess_env(
+        env,
+        workspace=os.environ.get("HARNESS_FCC_WORKSPACE"),
+    )
 
 
 def _build_subprocess_env(*, fcc_server_url: str, auth_token: str) -> Dict[str, str]:
@@ -346,6 +365,9 @@ async def run_fcc_turn(
     accumulated = ""
     claude_session_id: Optional[str] = None
     exit_code = 1
+    budget_chars = len(prompt)
+    ceiling_chars = max_context_chars()
+    context_nudge_sent = False
     if stream_read_limit < 65536:
         stream_read_limit = 65536
 
@@ -389,7 +411,23 @@ async def run_fcc_turn(
                 continue
 
             step = build_step_frame(parsed)
+            step = annotate_harness_step(step, accumulated_chars=budget_chars, max_chars=ceiling_chars)
+            budget_chars += measure_step_payload_chars(step)
             yield {"type": "step", "step": step}
+            if (
+                not context_nudge_sent
+                and budget_chars >= context_pressure_threshold_chars()
+            ):
+                fill = context_fill_pct(accumulated_chars=budget_chars, max_chars=ceiling_chars)
+                yield {
+                    "type": "step",
+                    "step": annotate_harness_step(
+                        build_context_pressure_step(fill_pct=fill),
+                        accumulated_chars=budget_chars,
+                        max_chars=ceiling_chars,
+                    ),
+                }
+                context_nudge_sent = True
 
             text, sid, _dur = extract_final_from_stream_event(parsed, accumulated=accumulated)
             if text:
@@ -432,6 +470,9 @@ async def run_fcc_turn(
         err_msg = f"claude exited with code {exit_code}"
         if stderr_snippet:
             err_msg = f"{err_msg}: {stderr_snippet}"
+        if is_context_overflow_text(accumulated) or is_context_overflow_text(err_msg):
+            accumulated = apply_context_overflow_hint(accumulated)
+            err_msg = apply_context_overflow_hint(err_msg)
         yield {
             "type": "error",
             "error": err_msg,
@@ -440,6 +481,9 @@ async def run_fcc_turn(
             "llm_response": accumulated,
         }
         return
+
+    if is_context_overflow_text(accumulated):
+        accumulated = apply_context_overflow_hint(accumulated)
 
     yield {
         "type": "final",

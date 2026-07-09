@@ -2,6 +2,7 @@
   const _liveClaudeSteps = new Map();
   const LIVE_ANCHOR_ID = 'conversation';
   const PREVIEW_MAX = 240;
+  const CONTEXT_PRESSURE_NUDGE = 'Context nearly full — answer from what you have; no more tools.';
 
   function resolveAnchor(doc) {
     const root = doc || (typeof document !== 'undefined' ? document : null);
@@ -79,6 +80,18 @@
     return parts.filter(Boolean).join(' | ');
   }
 
+  function contextRiskSuffix(step) {
+    const obs = step && step.context_obs && typeof step.context_obs === 'object' ? step.context_obs : null;
+    if (!obs) return '';
+    const risk = String(obs.risk || '').trim();
+    const stepChars = Number(obs.step_chars || 0);
+    const fill = Number(obs.fill_pct || 0);
+    if (risk === 'critical') return ` ⚠ context critical (${stepChars} chars, ${fill}% fill)`;
+    if (risk === 'warn') return ` ⚠ context risk (${stepChars} chars, ${fill}% fill)`;
+    if (stepChars >= 8000) return ` (${stepChars} chars)`;
+    return '';
+  }
+
   function summarizeStep(step) {
     if (!step || typeof step !== 'object') return 'step';
     const raw = step.raw && typeof step.raw === 'object' ? step.raw : step;
@@ -87,21 +100,25 @@
     if (type === 'assistant') {
       const msg = raw.message && typeof raw.message === 'object' ? raw.message : raw;
       const summary = summarizeContentBlocks(msg.content);
-      if (summary) return summary;
-      return 'assistant';
+      if (summary) return summary + contextRiskSuffix(step);
+      return 'assistant' + contextRiskSuffix(step);
     }
 
     if (type === 'user') {
       const msg = raw.message && typeof raw.message === 'object' ? raw.message : raw;
       const summary = summarizeContentBlocks(msg.content);
-      if (summary) return summary;
+      if (summary) return summary + contextRiskSuffix(step);
       const text = typeof msg.content === 'string' ? msg.content : raw.content;
-      if (text) return clip(text);
-      return 'user';
+      if (text) return clip(text) + contextRiskSuffix(step);
+      return 'user' + contextRiskSuffix(step);
     }
 
     if (type === 'system') {
       const subtype = raw.subtype || raw.system_subtype;
+      if (subtype === 'context_pressure') {
+        const fill = raw.context_fill_pct != null ? ` (${raw.context_fill_pct}% fill)` : '';
+        return `context pressure${fill}: ${clip(raw.message || CONTEXT_PRESSURE_NUDGE, 160)}`;
+      }
       return subtype ? `system ${subtype}` : 'system';
     }
 
@@ -118,7 +135,13 @@
       return clip(String(raw.result || 'result'), PREVIEW_MAX) || 'result';
     }
 
-    return type;
+    if (type === 'context_pressure') {
+      const msg = raw.message || CONTEXT_PRESSURE_NUDGE;
+      const fill = raw.context_fill_pct != null ? ` (${raw.context_fill_pct}% fill)` : '';
+      return `context pressure${fill}: ${clip(msg, 160)}`;
+    }
+
+    return type + contextRiskSuffix(step);
   }
 
   function ensurePanel(correlationId, doc) {
@@ -164,7 +187,10 @@
     const host = panel.querySelector('.agent-live-trace__steps');
     if (!host) return;
     const row = (doc || document).createElement('div');
-    row.className = 'agent-live-trace__step';
+    const risk = step && step.context_obs && step.context_obs.risk;
+    row.className = risk === 'critical' || risk === 'warn'
+      ? 'agent-live-trace__step agent-live-trace__step--context-risk'
+      : 'agent-live-trace__step';
     row.textContent = `#${list.length - 1} ${summarizeStep(step)}`;
     host.appendChild(row);
     host.scrollTop = host.scrollHeight;

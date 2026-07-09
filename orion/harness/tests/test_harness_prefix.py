@@ -4,11 +4,12 @@ from pathlib import Path
 
 import pytest
 
-from orion.harness.operator_brief import HARNESS_MOTOR_MAX_READ_LINES
+from orion.harness.operator_brief import HARNESS_MOTOR_MAX_READ_LINES, is_relational_motor_stance
 from orion.harness.prefix import compile_harness_prefix, harness_motor_instruction
 from orion.harness.tests.fixtures import make_thought
 from orion.schemas.cognition.answer_contract import AnswerContract
 from orion.schemas.harness_finalize import HarnessRepairOverlayV1
+from orion.schemas.thought import StanceHarnessSliceV1
 
 
 def test_compile_harness_prefix_includes_stance_slice() -> None:
@@ -72,6 +73,7 @@ def test_compile_harness_prefix_includes_github_repo_when_mcp_enabled(
     assert "owner='junebug-junie'" in prompt
     assert "repo='Orion-Sapienform'" in prompt
     assert "perPage=1" in prompt
+    assert "get_pull_request" in prompt
     assert "search_pull_requests" in prompt
 
 
@@ -93,6 +95,22 @@ def test_compile_harness_prefix_resolves_github_repo_from_workspace(
     )
     assert "owner='junebug-junie'" in prompt
     assert "repo='Orion-Sapienform'" in prompt
+
+
+def test_harness_motor_instruction_relational_discourages_tools() -> None:
+    thought = make_thought(
+        imperative="Stay present; acknowledge status — no task tracking.",
+        stance_harness_slice=StanceHarnessSliceV1(
+            task_mode="reflective_dialogue",
+            conversation_frame="reflective",
+            interaction_regime="minimal",
+            answer_strategy="companion_presence",
+        ),
+    )
+    assert is_relational_motor_stance(thought) is True
+    instruction = harness_motor_instruction(thought=thought, answer_contract=None)
+    assert "do NOT use GitHub MCP" in instruction
+    assert "Execute your imperative" in instruction
 
 
 def test_harness_motor_instruction_imperative_forward() -> None:

@@ -56,7 +56,7 @@ input[type=range]::-moz-range-thumb {
 .agent-live-trace {
   display: flex;
   flex-direction: column;
-  min-height: 0;
+  flex-shrink: 0;
   max-height: 20rem;
   margin-bottom: 0.5rem;
   padding: 0.5rem 0.75rem;
@@ -70,6 +70,11 @@ input[type=range]::-moz-range-thumb {
   box-shadow: 0 0 0 1px rgba(99, 102, 241, 0.15);
 }
 
+.agent-live-trace.is-complete {
+  border-color: rgba(55, 65, 81, 0.85);
+  box-shadow: none;
+}
+
 .agent-live-trace__heading {
   flex-shrink: 0;
   margin-bottom: 0.35rem;
@@ -81,8 +86,7 @@ input[type=range]::-moz-range-thumb {
 }
 
 .agent-live-trace__steps {
-  flex: 1;
-  min-height: 0;
+  max-height: 17rem;
   overflow-y: auto;
   font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
   font-size: 0.68rem;

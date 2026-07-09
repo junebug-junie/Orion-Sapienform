@@ -7176,6 +7176,17 @@ document.addEventListener("DOMContentLoaded", () => {
     return merged.filter((v, i, a) => a.indexOf(v) === i).join(' · ');
   }
 
+  function pinLiveClaudeTraceToMessage(meta, messageEl) {
+    if (!meta || !messageEl) return;
+    const corr = meta.correlationId || meta.correlation_id;
+    if (!corr || typeof finalizeLiveClaudeTrace !== 'function') return;
+    try {
+      finalizeLiveClaudeTrace(corr, document, messageEl);
+    } catch (err) {
+      console.warn('claude trace finalize failed', err);
+    }
+  }
+
   function appendMessage(sender, text, colorClass = 'text-white') {
     if (!conversationDiv) return;
     const meta = arguments.length > 3 && arguments[3] && typeof arguments[3] === 'object' ? arguments[3] : {};
@@ -7222,6 +7233,9 @@ document.addEventListener("DOMContentLoaded", () => {
     if (workflowPanel) div.appendChild(workflowPanel);
     if (!workflowOnlyTurn) div.appendChild(body);
     conversationDiv.appendChild(div);
+    if (sender === 'Orion') {
+      pinLiveClaudeTraceToMessage(meta, div);
+    }
     conversationDiv.scrollTop = conversationDiv.scrollHeight;
 
     if (sender === 'Orion') {

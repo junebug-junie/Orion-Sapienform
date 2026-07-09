@@ -130,6 +130,7 @@
     panel = (doc || document).createElement('div');
     panel.id = panelId;
     panel.className = 'agent-live-trace claude-live-trace is-streaming';
+    panel.dataset.correlationId = String(correlationId);
     const heading = (doc || document).createElement('div');
     heading.className = 'agent-live-trace__heading';
     heading.textContent = 'FCC harness (live)';
@@ -137,8 +138,20 @@
     const steps = (doc || document).createElement('div');
     steps.className = 'agent-live-trace__steps';
     panel.appendChild(steps);
-    anchor.insertBefore(panel, anchor.firstChild);
+    anchor.appendChild(panel);
     return panel;
+  }
+
+  function formatHarnessHeading(stepCount, live) {
+    const suffix = stepCount === 1 ? '' : 's';
+    if (live) {
+      return stepCount
+        ? `FCC harness (live) · ${stepCount} step${suffix}`
+        : 'FCC harness (live)';
+    }
+    return stepCount
+      ? `FCC harness · ${stepCount} step${suffix}`
+      : 'FCC harness';
   }
 
   function appendLiveClaudeStep(correlationId, step, doc) {
@@ -157,10 +170,39 @@
     host.scrollTop = host.scrollHeight;
     const heading = panel.querySelector('.agent-live-trace__heading');
     if (heading) {
-      heading.textContent = `FCC harness (live) · ${list.length} step${list.length === 1 ? '' : 's'}`;
+      heading.textContent = formatHarnessHeading(list.length, true);
+    }
+    const anchor = resolveAnchor(doc);
+    if (anchor && typeof anchor.scrollTop === 'number') {
+      anchor.scrollTop = anchor.scrollHeight;
     }
   }
 
+  function finalizeLiveClaudeTrace(correlationId, doc, beforeEl) {
+    if (!correlationId) return null;
+    const root = doc || (typeof document !== 'undefined' ? document : null);
+    if (!root || typeof root.getElementById !== 'function') return null;
+    const panelId = `claude-live-${correlationId}`;
+    const panel = root.getElementById(panelId);
+    if (!panel) return null;
+
+    panel.classList.remove('is-streaming');
+    panel.classList.add('is-complete');
+
+    const list = _liveClaudeSteps.get(correlationId) || [];
+    const heading = panel.querySelector('.agent-live-trace__heading');
+    if (heading) {
+      heading.textContent = formatHarnessHeading(list.length, false);
+    }
+
+    if (beforeEl && beforeEl.parentNode && panel.parentNode === beforeEl.parentNode) {
+      beforeEl.parentNode.insertBefore(panel, beforeEl);
+    }
+
+    return panel;
+  }
+
   global.appendLiveClaudeStep = appendLiveClaudeStep;
-  global.OrionClaudeTrace = { appendLiveClaudeStep, summarizeStep };
+  global.finalizeLiveClaudeTrace = finalizeLiveClaudeTrace;
+  global.OrionClaudeTrace = { appendLiveClaudeStep, finalizeLiveClaudeTrace, summarizeStep };
 })(typeof window !== 'undefined' ? window : globalThis);

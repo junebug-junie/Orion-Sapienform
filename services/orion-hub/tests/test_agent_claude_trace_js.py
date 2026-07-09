@@ -13,7 +13,10 @@ def test_agent_claude_trace_summarizes_tool_use_and_results() -> None:
     assert "function formatToolInput(name, input)" in source
     assert "function summarizeContentBlocks(content)" in source
     assert "tool result" in source
-    assert "OrionClaudeTrace = { appendLiveClaudeStep, summarizeStep }" in source
+    assert "OrionClaudeTrace = { appendLiveClaudeStep, finalizeLiveClaudeTrace, summarizeStep }" in source
+    assert "function finalizeLiveClaudeTrace" in source
+    assert "anchor.appendChild(panel)" in source
+    assert "insertBefore(panel, anchor.firstChild)" not in source
     assert "basename(path)" in source
     assert "Grep" in source
     assert "Bash" in source

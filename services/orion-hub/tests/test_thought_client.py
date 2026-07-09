@@ -42,7 +42,7 @@ from orion.schemas.thought import (
     ThoughtEventV1,
 )
 from scripts.settings import settings
-from scripts.thought_client import ThoughtClient
+from scripts.thought_client import ThoughtClient, ThoughtReactResult
 
 
 _CORR_ID = "00000000-0000-4000-8000-000000000101"
@@ -86,6 +86,7 @@ def _thought_event() -> ThoughtEventV1:
 async def test_thought_client_react_returns_thought_event() -> None:
     bus = MagicMock()
     thought = _thought_event()
+    bus.redis.pubsub_numsub = AsyncMock(return_value=[(settings.CHANNEL_THOUGHT_REQUEST, 1)])
     bus.codec.decode.return_value = MagicMock(
         ok=True,
         envelope=BaseEnvelope(
@@ -100,8 +101,8 @@ async def test_thought_client_react_returns_thought_event() -> None:
 
     result = await client.react(_stance_request())
 
-    assert result is not None
-    assert result.event_id == "t-1"
+    assert result.thought is not None
+    assert result.thought.event_id == "t-1"
     bus.rpc_request.assert_awaited_once()
     call_kwargs = bus.rpc_request.await_args.kwargs
     assert call_kwargs["reply_channel"] == f"{settings.CHANNEL_THOUGHT_RESULT_PREFIX}{_CORR_ID}"
@@ -113,9 +114,81 @@ async def test_thought_client_react_returns_thought_event() -> None:
 @pytest.mark.asyncio
 async def test_thought_client_react_timeout_returns_none() -> None:
     bus = MagicMock()
+    bus.redis.pubsub_numsub = AsyncMock(return_value=[(settings.CHANNEL_THOUGHT_REQUEST, 1)])
     bus.rpc_request = AsyncMock(side_effect=TimeoutError())
     client = ThoughtClient(bus)
 
     result = await client.react(_stance_request(), timeout_sec=0.2)
 
-    assert result is None
+    assert result.thought is None
+    assert result.failure_reason == "stance_react_timeout"
+
+
+@pytest.mark.asyncio
+async def test_thought_client_react_waits_for_subscriber(monkeypatch) -> None:
+    bus = MagicMock()
+    thought = _thought_event()
+    bus.codec.decode.return_value = MagicMock(
+        ok=True,
+        envelope=BaseEnvelope(
+            kind="thought.event.v1",
+            source=ServiceRef(name="orion-thought", version="0.1.0"),
+            correlation_id=_CORR_ID,
+            payload=thought.model_dump(mode="json"),
+        ),
+    )
+    bus.rpc_request = AsyncMock(return_value={"data": b"x"})
+    bus.redis.pubsub_numsub = AsyncMock(
+        side_effect=[
+            [(settings.CHANNEL_THOUGHT_REQUEST, 0)],
+            [(settings.CHANNEL_THOUGHT_REQUEST, 0)],
+            [(settings.CHANNEL_THOUGHT_REQUEST, 1)],
+        ]
+    )
+    monkeypatch.setattr("scripts.thought_client._THOUGHT_SUBSCRIBER_WAIT_SEC", 0.0)
+    client = ThoughtClient(bus)
+
+    result = await client.react(_stance_request())
+
+    assert result.thought is not None
+    assert bus.redis.pubsub_numsub.await_count == 3
+    bus.rpc_request.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_thought_client_react_skips_rpc_when_no_subscriber(monkeypatch) -> None:
+    bus = MagicMock()
+    bus.redis.pubsub_numsub = AsyncMock(return_value=[(settings.CHANNEL_THOUGHT_REQUEST, 0)])
+    bus.rpc_request = AsyncMock()
+    monkeypatch.setattr("scripts.thought_client._THOUGHT_SUBSCRIBER_WAIT_SEC", 0.0)
+    client = ThoughtClient(bus)
+
+    result = await client.react(_stance_request(), timeout_sec=0.2)
+
+    assert result.thought is None
+    assert result.failure_reason == "thought_no_subscriber"
+    assert bus.redis.pubsub_numsub.await_count == 3
+    bus.rpc_request.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_thought_client_react_proceeds_when_subscriber_probe_fails() -> None:
+    bus = MagicMock()
+    thought = _thought_event()
+    bus.redis.pubsub_numsub = AsyncMock(side_effect=ConnectionError("redis down"))
+    bus.codec.decode.return_value = MagicMock(
+        ok=True,
+        envelope=BaseEnvelope(
+            kind="thought.event.v1",
+            source=ServiceRef(name="orion-thought", version="0.1.0"),
+            correlation_id=_CORR_ID,
+            payload=thought.model_dump(mode="json"),
+        ),
+    )
+    bus.rpc_request = AsyncMock(return_value={"data": b"x"})
+    client = ThoughtClient(bus)
+
+    result = await client.react(_stance_request())
+
+    assert result.thought is not None
+    bus.rpc_request.assert_awaited_once()

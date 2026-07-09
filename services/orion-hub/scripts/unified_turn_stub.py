@@ -42,8 +42,8 @@ async def run_orion_unified_turn_stub(
             stance_inputs={"user_message": user_message},
         )
         try:
-            thought = await ThoughtClient(bus).react(stance_req, correlation_id=correlation_id)
-            thought_received = thought is not None
+            react_result = await ThoughtClient(bus).react(stance_req, correlation_id=correlation_id)
+            thought_received = react_result.thought is not None
         except Exception:
             logger.debug("unified turn stub thought RPC failed", exc_info=True)
     return {

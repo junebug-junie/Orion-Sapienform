@@ -7,7 +7,19 @@ services:
   bus-core:
     image: redis:7-alpine
     container_name: orion-${PROJECT}-bus-core
-    command: ["redis-server", "--appendonly", "yes", "--maxmemory-policy", "allkeys-lru"]
+    command:
+      [
+        "redis-server",
+        "--appendonly",
+        "yes",
+        "--maxmemory-policy",
+        "allkeys-lru",
+        "--client-output-buffer-limit",
+        "pubsub",
+        "64mb",
+        "32mb",
+        "120",
+      ]
     ports:
       - "${REDIS_PORT:-6379}:6379"
     volumes:

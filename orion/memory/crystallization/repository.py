@@ -92,6 +92,7 @@ def _row_to_crystallization(
         links=links,
         projection_refs=CrystallizationProjectionRefsV1.model_validate(proj_raw),
         governance=CrystallizationGovernanceV1.model_validate(gov_raw),
+        provenance=_parse_jsonb(row.get("provenance")) or {},
         created_at=row["created_at"],
         updated_at=row["updated_at"],
     )
@@ -182,13 +183,13 @@ async def insert_crystallization(pool: asyncpg.Pool, crystallization: MemoryCrys
                     INSERT INTO memory_crystallizations (
                         crystallization_id, kind, subject, summary, status, confidence, salience,
                         dynamics, scope, tags, grammar_envelope, planning_effects, retrieval_affordances,
-                        governance, projection_refs, source_card_ids, source_grammar_event_ids,
+                        governance, projection_refs, provenance, source_card_ids, source_grammar_event_ids,
                         source_atom_ids, created_at, updated_at
                     ) VALUES (
                         $1::uuid, $2, $3, $4, $5, $6, $7,
                         $8::jsonb, $9, $10, $11::jsonb, $12, $13,
-                        $14::jsonb, $15::jsonb, $16, $17,
-                        $18, $19, $20
+                        $14::jsonb, $15::jsonb, $16::jsonb, $17, $18,
+                        $19, $20, $21
                     )
                     RETURNING crystallization_id
                     """,
@@ -207,6 +208,7 @@ async def insert_crystallization(pool: asyncpg.Pool, crystallization: MemoryCrys
                     crystallization.retrieval_affordances,
                     _jsonb(crystallization.governance.model_dump(mode="json")),
                     _jsonb(crystallization.projection_refs.model_dump(mode="json")),
+                    _jsonb(crystallization.provenance or {}),
                     crystallization.source_card_ids,
                     crystallization.source_grammar_event_ids,
                     crystallization.source_atom_ids,
@@ -219,13 +221,13 @@ async def insert_crystallization(pool: asyncpg.Pool, crystallization: MemoryCrys
                     INSERT INTO memory_crystallizations (
                         kind, subject, summary, status, confidence, salience,
                         dynamics, scope, tags, grammar_envelope, planning_effects, retrieval_affordances,
-                        governance, projection_refs, source_card_ids, source_grammar_event_ids,
+                        governance, projection_refs, provenance, source_card_ids, source_grammar_event_ids,
                         source_atom_ids, created_at, updated_at
                     ) VALUES (
                         $1, $2, $3, $4, $5, $6,
                         $7::jsonb, $8, $9, $10::jsonb, $11, $12,
-                        $13::jsonb, $14::jsonb, $15, $16,
-                        $17, $18, $19
+                        $13::jsonb, $14::jsonb, $15::jsonb, $16, $17,
+                        $18, $19, $20
                     )
                     RETURNING crystallization_id
                     """,
@@ -243,6 +245,7 @@ async def insert_crystallization(pool: asyncpg.Pool, crystallization: MemoryCrys
                     crystallization.retrieval_affordances,
                     _jsonb(crystallization.governance.model_dump(mode="json")),
                     _jsonb(crystallization.projection_refs.model_dump(mode="json")),
+                    _jsonb(crystallization.provenance or {}),
                     crystallization.source_card_ids,
                     crystallization.source_grammar_event_ids,
                     crystallization.source_atom_ids,
@@ -321,8 +324,8 @@ async def update_crystallization(pool: asyncpg.Pool, crystallization: MemoryCrys
                 salience = $7, dynamics = $8::jsonb, scope = $9, tags = $10,
                 grammar_envelope = $11::jsonb, planning_effects = $12,
                 retrieval_affordances = $13, governance = $14::jsonb,
-                projection_refs = $15::jsonb, source_card_ids = $16,
-                source_grammar_event_ids = $17, source_atom_ids = $18, updated_at = $19
+                projection_refs = $15::jsonb, provenance = $16::jsonb, source_card_ids = $17,
+                source_grammar_event_ids = $18, source_atom_ids = $19, updated_at = $20
             WHERE crystallization_id = $1::uuid
             """,
             cid,
@@ -340,6 +343,7 @@ async def update_crystallization(pool: asyncpg.Pool, crystallization: MemoryCrys
             crystallization.retrieval_affordances,
             _jsonb(crystallization.governance.model_dump(mode="json")),
             _jsonb(crystallization.projection_refs.model_dump(mode="json")),
+            _jsonb(crystallization.provenance or {}),
             crystallization.source_card_ids,
             crystallization.source_grammar_event_ids,
             crystallization.source_atom_ids,

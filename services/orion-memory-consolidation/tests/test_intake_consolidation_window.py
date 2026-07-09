@@ -94,3 +94,28 @@ def test_semantic_window_has_no_planning_or_retrieval_enrichment():
     assert crys.kind == "semantic"
     assert crys.planning_effects == []
     assert crys.retrieval_affordances == []
+
+
+def test_window_provenance_persists_gate_scores():
+    turns = [
+        {
+            "correlation_id": "corr-a",
+            "prompt": "I'm down today",
+            "response": "I hear you",
+            "memory_significance_score": 0.97,
+            "conversation_boundary_score": 0.88,
+            "spark_meta": {"turn_change_appraisal": {"novelty_score": 0.99, "shift_kind": "STANCE"}},
+        }
+    ]
+    gate = ConsolidationGateResult(
+        action="propose",
+        reasons=["substantive_shift"],
+        dominant_shift="STANCE",
+        window_novelty_max=0.99,
+        window_significance_max=0.97,
+    )
+    crys = build_crystallization_from_window(memory_window_id="win-prov", turns=turns, gate=gate)
+    assert crys.provenance["gate_reasons"] == ["substantive_shift"]
+    assert crys.provenance["dominant_shift"] == "STANCE"
+    assert crys.evidence[0].note and "memory_sig=0.97" in crys.evidence[0].note
+    assert "I'm down today" in (crys.evidence[0].excerpt or "")

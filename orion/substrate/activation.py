@@ -2,8 +2,8 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from datetime import datetime, timezone
-import math
 
+from orion.core.activation_decay import decay_activation
 from orion.core.schemas.cognitive_substrate import BaseSubstrateNodeV1
 
 
@@ -46,13 +46,7 @@ def recency_score(node: BaseSubstrateNodeV1, *, now: datetime, horizon_seconds: 
     return _clamp(1.0 - (age_seconds / float(horizon_seconds)))
 
 
-def decay_activation(*, current: float, elapsed_seconds: float, half_life_seconds: int | None, floor: float) -> float:
-    if elapsed_seconds <= 0:
-        return _clamp(current)
-    if not half_life_seconds:
-        return _clamp(max(floor, current))
-    decay_multiplier = math.pow(0.5, elapsed_seconds / float(half_life_seconds))
-    return _clamp(max(floor, current * decay_multiplier))
+# Re-export shared decay helper (implementation in orion.core.activation_decay).
 
 
 def seed_activation(

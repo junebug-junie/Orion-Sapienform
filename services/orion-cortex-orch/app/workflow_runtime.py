@@ -2258,8 +2258,8 @@ async def _run_chat_history_compactor_digest(
         try:
             assert_chat_compactor_digest_within_budget(digest)
         except ValueError as exc:
-            last_error = str(exc)
-            continue
+            # Budget is fail-loud: do not retry quick for over-budget digests.
+            raise WorkflowExecutionError(str(exc)) from exc
         return digest, route
     raise WorkflowExecutionError(last_error or "chat_compactor_digest_failed:exhausted")
 

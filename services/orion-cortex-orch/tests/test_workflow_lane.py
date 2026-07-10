@@ -2689,6 +2689,7 @@ def test_chat_history_compactor_pass_digest_chat_then_quick_retry(monkeypatch) -
 def test_chat_history_compactor_pass_over_budget_fails_without_persist(monkeypatch) -> None:
     bus = DummyBus()
     card_called = {"n": 0}
+    routes: list[str] = []
 
     async def _fake_call_verb_runtime(*args, **kwargs):
         req = kwargs["client_request"]
@@ -2718,6 +2719,7 @@ def test_chat_history_compactor_pass_over_budget_fails_without_persist(monkeypat
                 }
             )
         if req.verb == "chat_history_compactor_digest_v1":
+            routes.append(str((req.options or {}).get("llm_route") or ""))
             digest = {
                 "card_summary": "x" * 801,
                 "journal_title": "Title",
@@ -2756,5 +2758,6 @@ def test_chat_history_compactor_pass_over_budget_fails_without_persist(monkeypat
                 call_verb_runtime=_fake_call_verb_runtime,
             )
         )
+    assert routes == ["chat"]
     assert card_called["n"] == 0
     assert not any(ch == "orion:journal:write" for ch, _ in bus.published)

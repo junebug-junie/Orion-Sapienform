@@ -84,3 +84,28 @@ def test_no_text_matching_in_module() -> None:
     src = inspect.getsource(sdm_mod)
     for banned in (".summary", ".notes", "re.search", "re.match", "lower()", "keyword"):
         assert banned not in src, f"map module must not touch {banned!r}"
+
+
+def test_chat_social_hazard_exact_dims_present() -> None:
+    m = load_signal_drive_map()
+    assert "chat_social_hazard" in m.signal_kinds()
+    for dim in ("cooldown_active", "duplicate_message", "self_message_loop"):
+        rule = m.match("chat_social_hazard", dim)
+        assert rule is not None, dim
+        assert rule.worse == "up"
+        assert "relational" in rule.drives
+
+
+def test_chat_reasoning_quality_fallback_present() -> None:
+    m = load_signal_drive_map()
+    rule = m.match("chat_reasoning_quality", "fallback")
+    assert rule is not None
+    assert rule.worse == "up"
+    assert "coherence" in rule.drives
+    assert "predictive" in rule.drives
+
+
+def test_unmapped_chat_hazard_dimension_is_none() -> None:
+    m = load_signal_drive_map()
+    assert m.match("chat_social_hazard", "context_excluded:foo") is None
+    assert m.match("chat_social_hazard", "peer_targeted_elsewhere") is None

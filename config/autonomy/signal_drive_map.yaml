@@ -49,3 +49,21 @@ signal_kinds:
     severity:
       worse: up
       drives: {capability: 0.5, coherence: 0.3}
+
+  # Chat AutonomyStateV2 evidence (direct adapter; no DeviationGate).
+  # Exact hazard keys only — prefix hazards like context_excluded:* are audit-only in v1.
+  chat_social_hazard:
+    cooldown_active:
+      worse: up
+      drives: {relational: 0.5, capability: 0.2}
+    duplicate_message:
+      worse: up
+      drives: {relational: 0.4}
+    self_message_loop:
+      worse: up
+      drives: {relational: 0.5, capability: 0.3}
+
+  chat_reasoning_quality:
+    fallback:
+      worse: up
+      drives: {coherence: 0.5, predictive: 0.3}

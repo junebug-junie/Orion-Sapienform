@@ -1,14 +1,15 @@
 from __future__ import annotations
 
-import hashlib
 import json
 import logging
 import os
 import re
 import time
+from datetime import datetime, timezone
 from typing import Any, Dict, Iterable, List
 
 from orion.autonomy.action_outcomes import load_action_outcomes
+from orion.autonomy.evidence_compiler import compile_autonomy_evidence
 from orion.autonomy.fanout_policy import autonomy_subject_fanout_from_runtime_ctx
 from orion.autonomy.graph_gate import (
     AutonomyGraphReadPlan,
@@ -16,7 +17,6 @@ from orion.autonomy.graph_gate import (
     log_autonomy_graph_backend_decision,
     resolve_autonomy_graph_read_plan,
 )
-from orion.autonomy.models import AutonomyEvidenceRefV1
 from orion.autonomy.reducer import AutonomyReducerInputV1, reduce_autonomy_state
 from orion.autonomy.summary import summarize_autonomy_lookup, summarize_autonomy_state
 from orion.autonomy.repository import (
@@ -2162,72 +2162,59 @@ def _situation_summary_from_ctx(ctx: Dict[str, Any]) -> dict[str, Any]:
     }
 
 
-def _build_autonomy_reducer_evidence(ctx: Dict[str, Any], autonomy: Dict[str, Any]) -> List[AutonomyEvidenceRefV1]:
-    evidence: List[AutonomyEvidenceRefV1] = []
-    msg = ctx.get("user_message") or ctx.get("message") or ""
-    if msg:
-        digest = hashlib.sha256(str(msg)[:200].encode()).hexdigest()[:16]
-        evidence.append(
-            AutonomyEvidenceRefV1(
-                evidence_id=f"user_turn:{digest}",
-                source="user_message",
-                kind="user_turn",
-                summary=str(msg)[:200],
-                confidence=0.9,
-            )
-        )
-    debug = autonomy.get("debug") if isinstance(autonomy.get("debug"), dict) else {}
-    orion_dbg = debug.get("orion") if isinstance(debug.get("orion"), dict) else {}
-    avail = str(orion_dbg.get("availability") or "").strip()
-    if avail:
-        evidence.append(
-            AutonomyEvidenceRefV1(
-                evidence_id=f"infra_health:autonomy_graph:{avail}",
-                source="infra",
-                kind="infra_health",
-                summary=f"autonomy graph availability={avail}",
-                confidence=1.0,
-            )
-        )
-    rs = ctx.get("chat_reasoning_summary") if isinstance(ctx.get("chat_reasoning_summary"), dict) else {}
-    if rs.get("fallback_recommended"):
-        evidence.append(
-            AutonomyEvidenceRefV1(
-                evidence_id="reasoning:fallback_recommended",
-                source="reasoning",
-                kind="reasoning_quality",
-                summary="reasoning fallback recommended",
-                confidence=0.6,
-            )
-        )
-    social = ctx.get("chat_social_bridge_summary") if isinstance(ctx.get("chat_social_bridge_summary"), dict) else {}
-    for hazard in social.get("hazards") or []:
-        hid = hashlib.sha256(str(hazard)[:80].encode()).hexdigest()[:12]
-        evidence.append(
-            AutonomyEvidenceRefV1(
-                evidence_id=f"social_bridge:{hid}",
-                source="social_bridge",
-                kind="relational_signal",
-                summary=str(hazard)[:200],
-                confidence=0.6,
-            )
-        )
-    return evidence
+def _reasoning_upstream_nonempty(ctx: Dict[str, Any]) -> bool:
+    raw = ctx.get("reasoning_artifacts")
+    if isinstance(raw, list) and raw:
+        return True
+    repo = ctx.get("reasoning_repository")
+    if repo is None:
+        return False
+    try:
+        latest = repo.list_latest(limit=1)
+        return bool(latest)
+    except Exception:
+        return False
 
 
-def _run_autonomy_reducer(ctx: Dict[str, Any], autonomy: Dict[str, Any]):
-    evidence = _build_autonomy_reducer_evidence(ctx, autonomy)
+def _run_autonomy_reducer(
+    ctx: Dict[str, Any],
+    autonomy: Dict[str, Any],
+    *,
+    social: Dict[str, Any],
+    social_bridge: Dict[str, Any],
+    reasoning: Dict[str, Any],
+):
+    now = datetime.now(timezone.utc)
+    compile_result = compile_autonomy_evidence(
+        user_message=ctx.get("user_message") or ctx.get("message") or "",
+        social=social,
+        social_bridge=social_bridge,
+        reasoning_summary=(reasoning.get("summary") if isinstance(reasoning, dict) else {}) or {},
+        reasoning_upstream_nonempty=_reasoning_upstream_nonempty(ctx),
+        autonomy_debug=autonomy.get("debug") if isinstance(autonomy.get("debug"), dict) else {},
+        now=now,
+    )
+    ctx["chat_autonomy_evidence_debug"] = {
+        "emitted_kinds": [e.kind for e in compile_result.evidence],
+        "omitted": list(compile_result.omitted),
+        **(compile_result.debug or {}),
+    }
+
     state_obj = autonomy.get("state")
     subj = getattr(state_obj, "subject", None) if state_obj is not None else None
     subject = str(subj or "orion")
-    return reduce_autonomy_state(
+    result = reduce_autonomy_state(
         AutonomyReducerInputV1(
             subject=subject,
             previous_state=state_obj,
-            evidence=evidence,
+            evidence=compile_result.evidence,
             action_outcomes=load_action_outcomes(subject=subject),
+            now=now,
         )
     )
+    # Single mint path: reuse what the reducer actually folded.
+    ctx["chat_autonomy_tension_debug"] = {"minted": list(result.tensions_minted or [])}
+    return result
 
 
 def _inject_prior_stance_to_inputs(ctx: Dict[str, Any], inputs: Dict[str, Any]) -> None:
@@ -2307,9 +2294,26 @@ def build_chat_stance_inputs(ctx: Dict[str, Any]) -> Dict[str, Any]:
 
     if os.getenv("AUTONOMY_STATE_V2_REDUCER_ENABLED", "").strip().lower() == "true":
         try:
-            v2_result = _run_autonomy_reducer(ctx, autonomy)
+            before_pressures = None
+            if autonomy.get("state") is not None:
+                before_pressures = dict(getattr(autonomy["state"], "drive_pressures", None) or {})
+            v2_result = _run_autonomy_reducer(
+                ctx,
+                autonomy,
+                social=social,
+                social_bridge=social_bridge,
+                reasoning=reasoning,
+            )
             ctx["chat_autonomy_state_v2"] = v2_result.state.model_dump(mode="json")
             ctx["chat_autonomy_state_delta"] = v2_result.delta.model_dump(mode="json")
+            ctx["chat_autonomy_movement_debug"] = {
+                "dominant_drive_before": getattr(autonomy.get("state"), "dominant_drive", None),
+                "dominant_drive_after": v2_result.state.dominant_drive,
+                "pressures_before": before_pressures,
+                "pressures_after": dict(v2_result.state.drive_pressures or {}),
+                "new_tensions": list(v2_result.delta.new_tensions or []),
+                "resolved_tensions": list(v2_result.delta.resolved_tensions or []),
+            }
             inputs["autonomy"]["state_v2"] = ctx["chat_autonomy_state_v2"]
             inputs["autonomy"]["delta"] = ctx["chat_autonomy_state_delta"]
         except Exception as exc:

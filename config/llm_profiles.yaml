@@ -338,7 +338,7 @@ profiles:
       ctx_size: 65536
       n_gpu_layers: 99
       threads: 16
-      n_parallel: 1
+      n_parallel: 4
       batch_size: 1024
 
       reasoning: "off"
@@ -348,9 +348,9 @@ profiles:
       #  enable_thinking: true
 
       no_context_shift: true
-      split_mode: "row"
+      split_mode: "layer"
       tensor_split: "1,1"
-      flash_attn: "on"
+      flash_attn: "off"
 
       temperature: 0.48
       top_k: 20

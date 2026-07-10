@@ -116,8 +116,8 @@ def test_reducer_user_message_and_infra_no_drive_pressure() -> None:
     assert r.state.drive_pressures.get("continuity", 0.0) == 0.2
 
 
-def test_reducer_capability_timeout_unavailable() -> None:
-    prior = _base_v2(drive_pressures={"capability": 0.1})
+def test_reducer_mapped_hazard_moves_relational_pressure() -> None:
+    prior = _base_v2(drive_pressures={"relational": 0.05, "coherence": 0.1})
     fixed = datetime(2026, 5, 2, 12, 0, 0)
     r = reduce_autonomy_state(
         AutonomyReducerInputV1(
@@ -125,11 +125,41 @@ def test_reducer_capability_timeout_unavailable() -> None:
             previous_state=prior,
             evidence=[
                 AutonomyEvidenceRefV1(
-                    evidence_id="e1",
-                    source="graph",
-                    kind="incident",
-                    summary="GraphDB timeout unavailable",
-                    confidence=0.8,
+                    evidence_id="h1",
+                    source="social_bridge",
+                    kind="relational_signal",
+                    summary="cooldown_active",
+                    confidence=0.6,
+                    observed_at=fixed,
+                    signal_kind="chat_social_hazard",
+                    dimension="cooldown_active",
+                    value=1.0,
+                )
+            ],
+            action_outcomes=[],
+            now=fixed,
+        )
+    )
+    assert r.state.drive_pressures["relational"] > 0.05
+    assert abs(r.delta.drive_deltas.get("relational", 0.0)) > 0.0
+    assert "latest_direct_evidence_at" in r.state.freshness
+
+
+def test_reducer_unmapped_hazard_does_not_move_pressures() -> None:
+    prior = _base_v2(drive_pressures={"relational": 0.2, "coherence": 0.2})
+    fixed = datetime(2026, 5, 2, 12, 0, 0)
+    before = dict(prior.drive_pressures)
+    r = reduce_autonomy_state(
+        AutonomyReducerInputV1(
+            subject="orion",
+            previous_state=prior,
+            evidence=[
+                AutonomyEvidenceRefV1(
+                    evidence_id="h1",
+                    source="social_bridge",
+                    kind="relational_signal",
+                    summary="context_excluded:memory",
+                    confidence=0.6,
                     observed_at=fixed,
                 )
             ],
@@ -137,13 +167,13 @@ def test_reducer_capability_timeout_unavailable() -> None:
             now=fixed,
         )
     )
-    assert r.state.drive_pressures.get("capability", 0.0) > 0.1
-    assert "tension.capability_gap.v1" in r.state.tension_kinds
+    for k in before:
+        assert r.state.drive_pressures.get(k, 0.0) == before.get(k, 0.0)
 
 
-def test_reducer_polarity_blind_no_contradiction_still_raises_coherence() -> None:
-    """Polarity-blind token match: 'contradiction' hits inside 'no contradiction'."""
-    prior = _base_v2(drive_pressures={"coherence": 0.1})
+def test_reducer_prose_keywords_no_longer_move_pressures() -> None:
+    """Acceptance: keyword tokens must not move pressures."""
+    prior = _base_v2(drive_pressures={"coherence": 0.1, "capability": 0.1, "relational": 0.1})
     fixed = datetime(2026, 5, 2, 12, 0, 0)
     r = reduce_autonomy_state(
         AutonomyReducerInputV1(
@@ -154,8 +184,8 @@ def test_reducer_polarity_blind_no_contradiction_still_raises_coherence() -> Non
                     evidence_id="e1",
                     source="graph",
                     kind="note",
-                    summary="no contradiction",
-                    confidence=0.6,
+                    summary="frustration repair contradiction timeout unavailable stale",
+                    confidence=0.8,
                     observed_at=fixed,
                 )
             ],
@@ -163,7 +193,72 @@ def test_reducer_polarity_blind_no_contradiction_still_raises_coherence() -> Non
             now=fixed,
         )
     )
-    assert r.state.drive_pressures.get("coherence", 0.0) > 0.1
+    assert r.state.drive_pressures["coherence"] == 0.1
+    assert r.state.drive_pressures["capability"] == 0.1
+    assert r.state.drive_pressures["relational"] == 0.1
+    # Tension kinds must not OR in from the prose blob either.
+    assert "tension.coherence_break.v1" not in r.state.tension_kinds
+    assert "tension.capability_gap.v1" not in r.state.tension_kinds
+    assert "tension.relational_repair.v1" not in r.state.tension_kinds
+
+
+def test_reducer_reasoning_fallback_moves_coherence() -> None:
+    prior = _base_v2(drive_pressures={"coherence": 0.05, "predictive": 0.05})
+    fixed = datetime(2026, 5, 2, 12, 0, 0)
+    r = reduce_autonomy_state(
+        AutonomyReducerInputV1(
+            subject="orion",
+            previous_state=prior,
+            evidence=[
+                AutonomyEvidenceRefV1(
+                    evidence_id="reasoning:fallback_recommended",
+                    source="reasoning",
+                    kind="reasoning_quality",
+                    summary="reasoning fallback recommended",
+                    confidence=0.6,
+                    observed_at=fixed,
+                    signal_kind="chat_reasoning_quality",
+                    dimension="fallback",
+                    value=1.0,
+                )
+            ],
+            action_outcomes=[],
+            now=fixed,
+        )
+    )
+    assert r.state.drive_pressures["coherence"] > 0.05
+    assert r.state.drive_pressures["predictive"] > 0.05
+
+
+def test_reducer_tension_kinds_from_pressure_thresholds_only() -> None:
+    prior = _base_v2(drive_pressures={"coherence": 0.30})
+    fixed = datetime(2026, 5, 2, 12, 0, 0)
+    # No incoming evidence; prior pressure already at threshold.
+    r = reduce_autonomy_state(
+        AutonomyReducerInputV1(
+            subject="orion",
+            previous_state=prior,
+            evidence=[],
+            action_outcomes=[],
+            now=fixed,
+        )
+    )
+    assert "tension.coherence_break.v1" in r.state.tension_kinds
+
+
+def test_reducer_no_keyword_helpers_in_module() -> None:
+    import inspect
+    from orion.autonomy import reducer as reducer_mod
+
+    src = inspect.getsource(reducer_mod)
+    for banned in (
+        "_apply_single_evidence_pressures",
+        '"contradiction"',
+        '"frustration"',
+        '"stale" in blob',
+        '"timeout" in blob',
+    ):
+        assert banned not in src, banned
 
 
 def test_reducer_all_proxy_inhibition_and_unknown() -> None:
@@ -224,31 +319,23 @@ def test_reducer_high_surprise_outcome_reduces_confidence() -> None:
     assert r.state.confidence < 0.8
 
 
-def test_reducer_determinism_fixed_now() -> None:
+def test_reducer_determinism_fixed_now_typed() -> None:
     fixed = datetime(2026, 5, 2, 12, 0, 0)
-    v1 = AutonomyStateV1(
-        subject="orion",
-        model_layer="self-model",
-        entity_id="self:orion",
-        dominant_drive="coherence",
-        active_drives=["coherence"],
-        drive_pressures={"coherence": 0.3},
-        tension_kinds=[],
-        goal_headlines=[],
-        source="graph",
-        generated_at=fixed,
-    )
+    prior = _base_v2(drive_pressures={"relational": 0.0})
     inp = AutonomyReducerInputV1(
         subject="orion",
-        previous_state=v1,
+        previous_state=prior,
         evidence=[
             AutonomyEvidenceRefV1(
                 evidence_id="z1",
-                source="graph",
-                kind="note",
-                summary="regression detected",
-                confidence=0.8,
+                source="social_bridge",
+                kind="relational_signal",
+                summary="self_message_loop",
+                confidence=0.6,
                 observed_at=fixed,
+                signal_kind="chat_social_hazard",
+                dimension="self_message_loop",
+                value=1.0,
             )
         ],
         action_outcomes=[],

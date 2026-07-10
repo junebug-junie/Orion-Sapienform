@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import hashlib
 from datetime import datetime
-from typing import Iterable
+from typing import Any
 
 from pydantic import BaseModel, Field
 
@@ -18,6 +18,9 @@ from orion.autonomy.models import (
     upgrade_autonomy_state_v1_to_v2,
 )
 from orion.autonomy.repository import SUBJECT_BINDINGS, SubjectBinding
+from orion.autonomy.signal_drive_map import SignalDriveMap, load_signal_drive_map
+from orion.autonomy.signal_tension import chat_evidence_to_tension
+from orion.core.schemas.drives import TensionEventV1
 
 _MAX_EVIDENCE = 20
 _MAX_ATTENTION = 8
@@ -25,6 +28,7 @@ _MAX_CANDIDATE_IMPULSES = 8
 _MAX_INHIBITED_IMPULSES = 8
 _MAX_OUTCOMES = 12
 _MAX_UNKNOWNS = 12
+_MAX_PRESSURE_STEP = 0.15
 
 _DRIVE_KEYS = ("coherence", "continuity", "relational", "autonomy", "capability", "predictive")
 
@@ -74,33 +78,17 @@ def _normalize_pressures(raw: dict[str, float]) -> dict[str, float]:
     return {k: min(1.0, max(0.0, out[k])) for k in _DRIVE_KEYS}
 
 
-def _evidence_text(ev: AutonomyEvidenceRefV1) -> str:
-    return f"{ev.kind} {(ev.summary or '')}".lower()
-
-
-def _apply_single_evidence_pressures(pressures: dict[str, float], ev: AutonomyEvidenceRefV1) -> dict[str, float]:
-    if ev.source == "user_message" or ev.kind == "infra_health":
-        return pressures
-    text = _evidence_text(ev)
-    weight = 0.5 if ev.kind == "proxy_telemetry" else 1.0
-    inc: dict[str, float] = {k: 0.0 for k in _DRIVE_KEYS}
-
-    def hit(tokens: tuple[str, ...], drive: str, delta: float) -> None:
-        if any(t in text for t in tokens):
-            inc[drive] += delta * weight
-
-    hit(("contradiction", "inconsistency", "failure", "bug", "broken", "drift", "confusion"), "coherence", 0.12)
-    hit(("memory", "recall", "thread", "history", "stale", "missing context"), "continuity", 0.10)
-    hit(("frustration", "repair", "trust", "relationship", "social", "apology"), "relational", 0.10)
-    hit(("proposal", "self-modification", "workflow", "autonomous", "action"), "autonomy", 0.08)
-    hit(("tool failure", "missing capability", "timeout", "unavailable", "error"), "capability", 0.10)
-    hit(("surprise", "unexpected", "regression", "mismatch"), "predictive", 0.08)
-
+def _fold_tension_into_pressures(
+    pressures: dict[str, float], tension: TensionEventV1
+) -> dict[str, float]:
     out = dict(pressures)
-    for k in _DRIVE_KEYS:
-        added = min(0.15, inc[k])
-        if added:
-            out[k] = min(1.0, out[k] + added)
+    mag = float(tension.magnitude or 0.0)
+    for drive, impact in (tension.drive_impacts or {}).items():
+        if drive not in _DRIVE_KEYS:
+            continue
+        added = min(_MAX_PRESSURE_STEP, mag * float(impact or 0.0))
+        if added > 0.0:
+            out[drive] = min(1.0, out[drive] + added)
     return out
 
 
@@ -116,30 +104,20 @@ def _dominant_and_active(pressures: dict[str, float], prev_dominant: str | None)
     return dominant, active
 
 
-def _combined_evidence_text(evs: Iterable[AutonomyEvidenceRefV1]) -> str:
-    return " ".join(_evidence_text(e) for e in evs)
-
-
-def _derive_tension_kinds(pressures: dict[str, float], evidence_blob: str) -> list[str]:
+def _derive_tension_kinds(pressures: dict[str, float]) -> list[str]:
     kinds: list[str] = []
-    coh = pressures.get("coherence", 0.0)
-    cont = pressures.get("continuity", 0.0)
-    cap = pressures.get("capability", 0.0)
-    rel = pressures.get("relational", 0.0)
 
     def add(name: str) -> None:
         if name not in kinds:
             kinds.append(name)
 
-    if coh >= 0.25 or any(
-        x in evidence_blob for x in ("contradiction", "inconsistency", "bug", "broken", "confusion")
-    ):
+    if pressures.get("coherence", 0.0) >= 0.25:
         add("tension.coherence_break.v1")
-    if cont >= 0.25 or any(x in evidence_blob for x in ("stale", "missing context", "recall", "memory failure")):
+    if pressures.get("continuity", 0.0) >= 0.25:
         add("tension.continuity_gap.v1")
-    if cap >= 0.25 or any(x in evidence_blob for x in ("unavailable", "timeout", "error", "tool failure")):
+    if pressures.get("capability", 0.0) >= 0.25:
         add("tension.capability_gap.v1")
-    if rel >= 0.25 or any(x in evidence_blob for x in ("frustration", "trust", "apology", "repair")):
+    if pressures.get("relational", 0.0) >= 0.25:
         add("tension.relational_repair.v1")
 
     ranked = sorted(_DRIVE_KEYS, key=lambda k: pressures.get(k, 0.0), reverse=True)
@@ -148,8 +126,17 @@ def _derive_tension_kinds(pressures: dict[str, float], evidence_blob: str) -> li
         p2 = pressures.get(ranked[1], 0.0)
         if p1 >= 0.25 and p2 >= 0.25 and abs(p1 - p2) < 0.08:
             add("tension.drive_competition.v1")
-
     return kinds
+
+
+def _infra_unavailable(evidence: list[AutonomyEvidenceRefV1]) -> bool:
+    for ev in evidence:
+        if ev.kind != "infra_health":
+            continue
+        summary = (ev.summary or "").lower()
+        if "availability=unavailable" in summary or "availability=degraded" in summary:
+            return True
+    return False
 
 
 def _merge_evidence(
@@ -272,15 +259,28 @@ def reduce_autonomy_state(inp: AutonomyReducerInputV1) -> AutonomyReducerResultV
     pressures = _normalize_pressures(dict(working.drive_pressures))
     prev_dom = working.dominant_drive
 
+    sdm: SignalDriveMap = load_signal_drive_map()
+    minted: list[dict[str, Any]] = []
     for ev in inp.evidence:
-        pressures = _apply_single_evidence_pressures(pressures, ev)
+        # user_turn / infra_health are never pressure-eligible (no signal fields).
+        tension = chat_evidence_to_tension(ev, sdm)
+        if tension is None:
+            continue
+        pressures = _fold_tension_into_pressures(pressures, tension)
+        minted.append(
+            {
+                "kind": tension.kind,
+                "signal_kind": ev.signal_kind,
+                "dimension": ev.dimension,
+                "drives": sorted((tension.drive_impacts or {}).keys()),
+            }
+        )
 
     working.drive_pressures = {k: pressures[k] for k in _DRIVE_KEYS}
-    blob = _combined_evidence_text(working.evidence_refs)
     dominant, active_drives = _dominant_and_active(pressures, prev_dom)
     working.dominant_drive = dominant
     working.active_drives = active_drives
-    working.tension_kinds = _derive_tension_kinds(pressures, blob)
+    working.tension_kinds = _derive_tension_kinds(pressures)
 
     attn = _maybe_attention_items(
         subject,
@@ -350,9 +350,7 @@ def reduce_autonomy_state(inp: AutonomyReducerInputV1) -> AutonomyReducerResultV
         conf -= 0.10
     if "no_previous_state" in working.unknowns:
         conf -= 0.05
-    if "stale" in blob or "missing context" in blob:
-        conf -= 0.05
-    if "timeout" in blob or "unavailable" in blob:
+    if _infra_unavailable(working.evidence_refs):
         conf -= 0.05
 
     surprise_budget = 0.0
@@ -394,7 +392,7 @@ def reduce_autonomy_state(inp: AutonomyReducerInputV1) -> AutonomyReducerResultV
             if c.kind == "propose_bounded_action" and pressures.get("autonomy", 0.0) >= 0.35 and working.confidence < 0.45:
                 reason = "low_confidence_for_autonomous_action"
             elif c.kind == "triage_capability_gap" and pressures.get("capability", 0.0) >= 0.35:
-                if "timeout" in blob or "unavailable" in blob:
+                if _infra_unavailable(working.evidence_refs):
                     reason = "dependency_unavailable"
             if reason:
                 inhibited.append(
@@ -453,6 +451,7 @@ def reduce_autonomy_state(inp: AutonomyReducerInputV1) -> AutonomyReducerResultV
         notes=[
             "delta compares against upgraded V1 or copied V2 baseline at turn start",
             "changed_fields are surface diffs vs that baseline, not a persisted prior-turn snapshot",
+            f"tensions_minted={len(minted)}",
         ],
     )
 

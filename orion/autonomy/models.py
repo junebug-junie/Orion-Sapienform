@@ -112,6 +112,11 @@ class AutonomyEvidenceRefV1(BaseModel):
     summary: str | None = None
     confidence: float = Field(default=0.5, ge=0.0, le=1.0)
     observed_at: datetime | None = None
+    # Optional typed pressure fields. Audit-only refs may omit these.
+    # Confidence values remain kind-literal constants in v1 (uncalibrated).
+    signal_kind: str | None = None
+    dimension: str | None = None
+    value: float | None = Field(default=None, ge=0.0, le=1.0)
 
 
 class AttentionItemV1(BaseModel):

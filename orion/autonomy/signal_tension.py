@@ -1,6 +1,6 @@
 """Adapt real bus events into deviation-driven TensionEventV1 (spec §4).
 
-Three entry points, all degrade to ``None`` (never raise) on absent/garbage
+Four entry points, all degrade to ``None`` (never raise) on absent/garbage
 input:
 
 * ``signal_to_tension`` — an ``OrionSignalV1`` through the deviation gate + map.
@@ -12,6 +12,8 @@ input:
   real errors. Severity sizes the magnitude; the map supplies drive weights.
 * ``equilibrium_to_tension`` — edge-triggered health transition (ok -> degraded
   mints once; degraded -> degraded mints nothing).
+* ``chat_evidence_to_tension`` — a pressure-eligible ``AutonomyEvidenceRefV1``
+  maps *directly* (no EWMA / DeviationGate), same family as ``failure_to_tension``.
 
 The per-drive contribution is encoded as ``magnitude * drive_impacts[drive]`` so
 the existing ``compute_tick_attribution`` and ``DriveEngine.update`` (which both
@@ -19,7 +21,7 @@ multiply magnitude by the impact weight) reproduce the intended impulse.
 """
 from __future__ import annotations
 
-from typing import Dict, Mapping, Optional
+from typing import TYPE_CHECKING, Dict, Mapping, Optional
 
 from orion.autonomy.deviation_gate import DeviationGate
 from orion.autonomy.signal_drive_map import SignalDriveMap
@@ -28,9 +30,13 @@ from orion.signals.models import OrionSignalV1
 from orion.signals.stub_detection import is_stub_signal
 from orion.spark.concept_induction.drives import DRIVE_KEYS
 
+if TYPE_CHECKING:
+    from orion.autonomy.models import AutonomyEvidenceRefV1
+
 SIGNAL_TENSION_KIND = "tension.signal.v1"
 FAILURE_TENSION_KIND = "tension.failure.v1"
 HEALTH_TENSION_KIND = "tension.health.v1"
+CHAT_EVIDENCE_TENSION_KIND = "tension.chat_evidence.v1"
 
 
 def _clamp01(x: float) -> float:
@@ -208,6 +214,42 @@ def equilibrium_to_tension(
             channel=channel,
             correlation_id=correlation_id,
             summary="equilibrium degraded",
+        )
+    except Exception:
+        return None
+
+
+def chat_evidence_to_tension(
+    ev: "AutonomyEvidenceRefV1",
+    sdm: SignalDriveMap,
+    *,
+    channel: str = "orion:cortex_exec:chat_stance",
+) -> Optional[TensionEventV1]:
+    """Map a pressure-eligible AutonomyEvidenceRefV1 directly (no EWMA).
+
+    Requires signal_kind + dimension + value. Unmapped / missing → None.
+    Never raises.
+    """
+    try:
+        signal_kind = getattr(ev, "signal_kind", None)
+        dimension = getattr(ev, "dimension", None)
+        value = getattr(ev, "value", None)
+        if not signal_kind or not dimension or value is None:
+            return None
+        rule = sdm.match(str(signal_kind), str(dimension))
+        if rule is None:
+            return None
+        v = _clamp01(float(value))
+        if v <= 0.0:
+            return None
+        raw_by_drive = {d: v * w for d, w in rule.drives.items()}
+        summary = (getattr(ev, "summary", None) or f"{signal_kind}.{dimension}")[:240]
+        return _build_tension(
+            kind=CHAT_EVIDENCE_TENSION_KIND,
+            raw_by_drive=raw_by_drive,
+            channel=channel,
+            correlation_id=getattr(ev, "evidence_id", None),
+            summary=str(summary),
         )
     except Exception:
         return None

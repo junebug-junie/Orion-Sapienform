@@ -1,0 +1,170 @@
+from __future__ import annotations
+
+from datetime import datetime, timezone
+
+import app.worker as worker
+from orion.schemas.self_state import SelfStateDimensionV1, SelfStateV1
+
+_NOW = datetime(2026, 7, 10, 12, 0, tzinfo=timezone.utc)
+
+
+def _dim(name: str, score: float, *, dominant_evidence: list[str] | None = None) -> SelfStateDimensionV1:
+    return SelfStateDimensionV1(
+        dimension_id=name,
+        score=score,
+        confidence=1.0,
+        dominant_evidence=dominant_evidence or [],
+    )
+
+
+def _self_state_payload(
+    *, resource_dim: SelfStateDimensionV1, dimension_trajectory: dict[str, float] | None = None
+) -> dict:
+    dims = {
+        name: _dim(name, score)
+        for name, score in (
+            ("coherence", 1.0),
+            ("field_intensity", 1.0),
+            ("agency_readiness", 0.5),
+            ("execution_pressure", 0.0),
+            ("reasoning_pressure", 0.1),
+            ("reliability_pressure", 0.0),
+            ("continuity_pressure", 0.0),
+            ("social_pressure", 0.0),
+            ("introspection_pressure", 0.0),
+            ("uncertainty", 0.0),
+            ("policy_pressure", 0.0),
+            ("transport_integrity", 1.0),
+        )
+    }
+    dims["resource_pressure"] = resource_dim
+    return SelfStateV1(
+        self_state_id="self.state:tick_arousal_test:policy.v1",
+        generated_at=_NOW,
+        source_field_tick_id="tick_arousal_test",
+        source_field_generated_at=_NOW,
+        source_attention_frame_id="frame_arousal_test",
+        source_attention_generated_at=_NOW,
+        overall_intensity=0.5,
+        overall_confidence=0.8,
+        overall_condition="steady",
+        dimensions=dims,
+        dimension_trajectory=dimension_trajectory or {},
+    ).model_dump(mode="json")
+
+
+def test_hardware_resource_pressure_none_when_dim_missing() -> None:
+    assert worker._hardware_resource_pressure(None) is None
+
+
+def test_hardware_resource_pressure_none_when_only_generic_channel_present() -> None:
+    dim = _dim("resource_pressure", 1.0, dominant_evidence=["pressure=1.00"])
+    assert worker._hardware_resource_pressure(dim) is None
+
+
+def test_hardware_resource_pressure_ignores_generic_and_transport_channels() -> None:
+    dim = _dim(
+        "resource_pressure",
+        1.0,
+        dominant_evidence=["pressure=1.00", "cpu_pressure=0.92", "transport_pressure=0.10"],
+    )
+    assert worker._hardware_resource_pressure(dim) == 0.92
+
+
+def test_hardware_resource_pressure_takes_max_of_multiple_hardware_channels() -> None:
+    dim = _dim(
+        "resource_pressure",
+        1.0,
+        dominant_evidence=["gpu_pressure=0.40", "cpu_pressure=0.92", "memory_pressure=0.10"],
+    )
+    assert worker._hardware_resource_pressure(dim) == 0.92
+
+
+def test_arousal_no_longer_hard_zeroed_by_saturated_generic_pressure_channel() -> None:
+    """Regression for the live incident: resource_pressure.score pinned at 1.0
+    by the untraced capability-graph `pressure` channel used to hard-zero
+    tissue-viz energy/arousal regardless of real hardware load. With real
+    cpu_pressure=0.92 present in dominant_evidence, energy must reflect the
+    genuine 8% headroom instead of 0."""
+    resource_dim = _dim(
+        "resource_pressure",
+        1.0,
+        dominant_evidence=["pressure=1.00", "cpu_pressure=0.92", "memory_pressure=0.05"],
+    )
+    ss = SelfStateV1.model_validate(_self_state_payload(resource_dim=resource_dim))
+    phi = worker._phi_from_self_state(ss)
+    assert phi["energy"] > 0.0
+    # intensity=1.0, resource_cap=1-0.92=0.08, execution_cap=1-0.0=1.0
+    # energy = 1.0 * (0.08 * 1.0) ** 0.5 ~= 0.2828 (trajectory terms are 0
+    # here since dimension_trajectory is empty).
+    assert phi["energy"] == 0.2828
+
+
+def test_arousal_still_zero_when_no_hardware_evidence_present() -> None:
+    """Honest no-signal fallback: when resource_pressure carries no hardware
+    channel in its evidence (e.g. a leaner payload), behavior is unchanged
+    from before this fix -- uses the raw (possibly saturated) score rather
+    than fabricating a value."""
+    resource_dim = _dim("resource_pressure", 1.0, dominant_evidence=[])
+    ss = SelfStateV1.model_validate(_self_state_payload(resource_dim=resource_dim))
+    phi = worker._phi_from_self_state(ss)
+    assert phi["energy"] == 0.0
+
+
+def test_hardware_resource_pressure_ignores_non_finite_values() -> None:
+    """dominant_evidence is an unvalidated list[str] crossing a service
+    boundary. A NaN/inf entry must be dropped, not silently pass float()
+    and later poison resource_cap ** 0.5 into a complex number."""
+    dim = _dim(
+        "resource_pressure",
+        1.0,
+        dominant_evidence=["cpu_pressure=nan", "gpu_pressure=inf", "memory_pressure=0.30"],
+    )
+    assert worker._hardware_resource_pressure(dim) == 0.30
+
+
+def test_hardware_resource_pressure_clamps_out_of_range_values() -> None:
+    """A malformed >1.0 hardware value must be clamped, not passed through
+    raw -- an unclamped value would drive resource_cap negative and
+    (resource_cap * execution_cap) ** 0.5 into complex-number territory."""
+    dim = _dim("resource_pressure", 1.0, dominant_evidence=["cpu_pressure=1.50"])
+    assert worker._hardware_resource_pressure(dim) == 1.0
+
+
+def test_energy_momentum_ignores_raw_resource_pressure_trajectory_when_hardware_evidence_used() -> None:
+    """Regression: dimension_trajectory["resource_pressure"] tracks the delta
+    of the raw, still-poisoned aggregate score -- the same untraced channel
+    the base term was fixed to bypass. When hardware evidence drives the base
+    term, the raw trajectory delta must NOT also feed the momentum term, or
+    the stuck channel's theater re-enters through the back door."""
+    resource_dim = _dim(
+        "resource_pressure",
+        1.0,
+        dominant_evidence=["pressure=1.00", "cpu_pressure=0.92"],
+    )
+    payload = _self_state_payload(
+        resource_dim=resource_dim,
+        dimension_trajectory={"resource_pressure": 1.0, "field_intensity": 0.0},
+    )
+    ss = SelfStateV1.model_validate(payload)
+    phi = worker._phi_from_self_state(ss)
+    # Same 0.2828 as the no-trajectory case: the large resource_pressure
+    # trajectory delta must be ignored while hardware evidence is in use.
+    assert phi["energy"] == 0.2828
+
+
+def test_energy_momentum_still_uses_raw_trajectory_in_fallback_path() -> None:
+    """When there's no hardware evidence (fallback to the raw score), the
+    trajectory momentum term still applies as before this fix -- only the
+    hardware-evidence path skips it."""
+    resource_dim = _dim("resource_pressure", 0.5, dominant_evidence=[])
+    payload = _self_state_payload(
+        resource_dim=resource_dim,
+        dimension_trajectory={"resource_pressure": 0.2, "field_intensity": 0.0},
+    )
+    ss = SelfStateV1.model_validate(payload)
+    phi = worker._phi_from_self_state(ss)
+    # intensity=1.0, resource_cap=1-0.5=0.5, execution_cap=1.0
+    # base = 1.0 * (0.5 * 1.0) ** 0.5 ~= 0.7071
+    # momentum = -0.1 * max(0, 0.2) = -0.02 -> 0.6871
+    assert phi["energy"] == 0.6871

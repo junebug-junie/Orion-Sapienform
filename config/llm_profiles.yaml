@@ -239,8 +239,6 @@ profiles:
       # short structured JSON (~200 tokens observed), so 1024 is generous.
       n_predict: 1024
 
-      no_context_shift: true
-
     notes: |
       Atlas metacog lane on one V100 16GB — optimized for episodic structured JSON (draft + enrich).
       - Q5_K_M (~5.9GB weights): best quality/size tradeoff that still leaves ~6GB for 16k KV + overhead on 16GB.

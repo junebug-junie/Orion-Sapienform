@@ -322,7 +322,7 @@ profiles:
     gpu:
       num_gpus: 2
       tensor_parallel_size: 1
-      device_ids: [0, 1]
+      device_ids: [1, 0]
       max_model_len: 65536
       max_batch_tokens: 1024
       max_concurrent_requests: 2
@@ -337,8 +337,10 @@ profiles:
 
       ctx_size: 65536
       n_gpu_layers: 99
-      threads: 16
-      n_parallel: 4
+      threads: 18
+      # n_parallel=1 keeps the full 64k window for FCC/harness (n_parallel=4
+      # was splitting to 16k slots and 400ing ~52k prompts as exceed_context).
+      n_parallel: 1
       batch_size: 1024
 
       reasoning: "off"
@@ -362,9 +364,9 @@ profiles:
 
     notes: |
       Deep-cognition Qwen 3.6 35B-A3B profile for two V100 32GB GPUs.
-      - Target lane: Cortex / planner / introspection / deep repo reasoning.
+      - Target lane: Cortex / planner / introspection / deep repo reasoning / FCC motor.
       - Uses Unsloth dynamic GGUF UD-Q5_K_M for better reasoning quality.
-      - 64k context supports long task state, repo state, and conversation memory.
+      - 64k context (n_parallel=1) must match HARNESS_FCC_MAX_CONTEXT_TOKENS / Hub agent Claude budget.
       - Row split + equal tensor split mirrors existing Atlas dual-V100 profiles.
       - Single-lane / single-parallel favors depth and stability over throughput.
       - If OOM: lower ctx_size to 49152 before dropping to UD-Q4_K_M.

@@ -340,6 +340,28 @@ ${LLM_CACHE_DIR}/gguf/
 
 The compose files mount that cache into the container at `/models`.
 
+## Speculative decoding (draft model)
+
+Optional profile fields under `llamacpp:`:
+
+- `hf_draft_filename` / `draft_filename` — draft GGUF under `model_root` (enables speculative decoding)
+- `hf_draft_repo_id` / `draft_repo_id` — HF repo for download; defaults to main `hf_repo_id` when omitted
+- `n_gpu_layers_draft` — draft GPU offload (`--n-gpu-layers-draft`)
+- `draft_min` / `draft_max` — `--draft-min` / `--draft-max`
+
+Behavior:
+
+- Unset `draft_filename` → launch argv matches today’s non-draft behavior.
+- Set `draft_filename` → wrapper ensures the GGUF (mmproj-style HF download) and emits long-form flags supported by the pinned `server-cuda-b8740` image (`--model-draft`, `--draft-min`, `--draft-max`, `--n-gpu-layers-draft`).
+- If the binary’s `--help` lacks `--model-draft`, the host logs an error, omits draft flags, and still launches the main model.
+
+Operator caveats:
+
+- Draft and target should share a tokenizer family; poor family match tanks acceptance rate.
+- On Volta / tight multi-GPU layouts (e.g. deep-cognition 131k + `tensor_split: "3,1"`), draft VRAM competes with KV — enable only after a live VRAM + tg/s check.
+- Do not change `HARNESS_FCC_MAX_CONTEXT_TOKENS` / Hub agent-claude budgets just to free VRAM for draft without an explicit follow-up.
+- MTP / `--spec-type draft-mtp` is out of scope for this profile contract.
+
 ---
 
 ## GPU pinning model

@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from datetime import datetime
+from datetime import datetime, timezone
 
 from orion.autonomy.models import ActionOutcomeRefV1, AutonomyEvidenceRefV1, AutonomyStateV1, AutonomyStateV2
 from orion.autonomy.reducer import AutonomyReducerInputV1, reduce_autonomy_state
@@ -398,3 +398,51 @@ def test_reducer_evidence_trim_twenty() -> None:
         )
     )
     assert len(r.state.evidence_refs) <= 20
+
+
+def test_reducer_v1_upgrade_mixes_naive_and_aware_observed_at() -> None:
+    """Graph V1 synthetic evidence is often naive; chat compiler stamps aware UTC.
+
+    Sorting/freshness must not TypeError (live path when flag is on).
+    """
+    naive = datetime(2026, 5, 2, 12, 0, 0)
+    aware = datetime(2026, 7, 10, 16, 0, 0, tzinfo=timezone.utc)
+    v1 = AutonomyStateV1(
+        subject="orion",
+        model_layer="self-model",
+        entity_id="self:orion",
+        latest_identity_snapshot_id="snap-1",
+        latest_drive_audit_id="audit-1",
+        dominant_drive="coherence",
+        active_drives=["coherence"],
+        drive_pressures={"coherence": 0.3, "relational": 0.0},
+        tension_kinds=[],
+        goal_headlines=[],
+        source="graph",
+        generated_at=naive,
+    )
+    r = reduce_autonomy_state(
+        AutonomyReducerInputV1(
+            subject="orion",
+            previous_state=v1,
+            evidence=[
+                AutonomyEvidenceRefV1(
+                    evidence_id="h1",
+                    source="social_bridge",
+                    kind="relational_signal",
+                    summary="cooldown_active",
+                    confidence=0.6,
+                    observed_at=aware,
+                    signal_kind="chat_social_hazard",
+                    dimension="cooldown_active",
+                    value=1.0,
+                )
+            ],
+            action_outcomes=[],
+            now=aware,
+        )
+    )
+    assert r.state.schema_version == "autonomy.state.v2"
+    assert "latest_direct_evidence_at" in r.state.freshness
+    assert r.state.drive_pressures["relational"] > 0.0
+    assert any(m.get("dimension") == "cooldown_active" for m in r.tensions_minted)

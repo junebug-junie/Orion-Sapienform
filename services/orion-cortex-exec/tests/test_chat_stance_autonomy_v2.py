@@ -1,7 +1,12 @@
 from __future__ import annotations
 
+from datetime import datetime, timezone
+
 from orion.autonomy.models import AutonomyStateV1
 from orion.autonomy.summary import summarize_autonomy_state
+from orion.core.schemas.reasoning import ClaimV1
+from orion.core.schemas.reasoning_io import ReasoningWriteContextV1, ReasoningWriteRequestV1
+from orion.reasoning import InMemoryReasoningRepository
 
 from app import chat_stance
 
@@ -20,6 +25,28 @@ def _fake_autonomy_bundle(state: AutonomyStateV1):
             "_runtime": {},
         },
     }
+
+
+def _claim() -> ClaimV1:
+    return ClaimV1(
+        anchor_scope="orion",
+        subject_ref="project:orion_sapienform",
+        status="canonical",
+        authority="local_inferred",
+        confidence=0.9,
+        salience=0.8,
+        novelty=0.4,
+        risk_tier="low",
+        observed_at=datetime.now(timezone.utc),
+        provenance={
+            "evidence_refs": ["ev:1"],
+            "source_channel": "orion:test",
+            "source_kind": "unit",
+            "producer": "pytest",
+        },
+        claim_text="Reasoning continuity is strong.",
+        claim_kind="identity_signal",
+    )
 
 
 def test_chat_stance_autonomy_v2_ctx_and_inputs_when_enabled(monkeypatch) -> None:
@@ -95,35 +122,6 @@ def test_chat_stance_autonomy_v2_reducer_exception_swallowed(monkeypatch) -> Non
     assert isinstance(ctx.get("chat_autonomy_summary"), dict)
 
 
-from datetime import datetime, timezone
-
-from orion.core.schemas.reasoning import ClaimV1
-from orion.core.schemas.reasoning_io import ReasoningWriteContextV1, ReasoningWriteRequestV1
-from orion.reasoning import InMemoryReasoningRepository
-
-
-def _claim() -> ClaimV1:
-    return ClaimV1(
-        anchor_scope="orion",
-        subject_ref="project:orion_sapienform",
-        status="canonical",
-        authority="local_inferred",
-        confidence=0.9,
-        salience=0.8,
-        novelty=0.4,
-        risk_tier="low",
-        observed_at=datetime.now(timezone.utc),
-        provenance={
-            "evidence_refs": ["ev:1"],
-            "source_channel": "orion:test",
-            "source_kind": "unit",
-            "producer": "pytest",
-        },
-        claim_text="Reasoning continuity is strong.",
-        claim_kind="identity_signal",
-    )
-
-
 def test_chat_stance_empty_repo_omits_reasoning_quality_evidence(monkeypatch) -> None:
     state = AutonomyStateV1(
         subject="orion",
@@ -179,7 +177,44 @@ def test_chat_stance_social_locals_reach_reducer(monkeypatch) -> None:
     assert "cooldown_active" in summaries
     assert v2["drive_pressures"]["relational"] > 0.0
     assert isinstance(ctx.get("chat_autonomy_evidence_debug"), dict)
-    assert isinstance(ctx.get("chat_autonomy_tension_debug"), dict)
+    tension_debug = ctx.get("chat_autonomy_tension_debug") or {}
+    minted = tension_debug.get("minted") or []
+    assert any(m.get("dimension") == "cooldown_active" for m in minted)
+    assert any(m.get("signal_kind") == "chat_social_hazard" for m in minted)
+
+
+def test_chat_stance_v1_with_snapshots_survives_aware_compiler_now(monkeypatch) -> None:
+    """Live graph V1 carries naive generated_at + snapshot IDs; stance now is aware UTC."""
+    state = AutonomyStateV1(
+        subject="orion",
+        model_layer="self-model",
+        entity_id="self:orion",
+        latest_identity_snapshot_id="snap-live",
+        latest_drive_audit_id="audit-live",
+        dominant_drive="coherence",
+        drive_pressures={"coherence": 0.2, "relational": 0.0},
+        active_drives=["coherence"],
+        tension_kinds=[],
+        goal_headlines=[],
+        source="graph",
+        generated_at=datetime(2026, 5, 2, 12, 0, 0),  # naive
+    )
+    monkeypatch.setattr(chat_stance, "_load_autonomy_state", lambda _ctx: _fake_autonomy_bundle(state))
+
+    def _fake_social(_beliefs, _ctx):
+        return (
+            {"social_posture": [], "hazards": ["duplicate_message"], "relationship_facets": []},
+            {"posture": [], "hazards": ["duplicate_message"], "framing": [], "summary": []},
+        )
+
+    monkeypatch.setattr(chat_stance, "_project_social_from_beliefs", _fake_social)
+    monkeypatch.setenv("AUTONOMY_STATE_V2_REDUCER_ENABLED", "true")
+    ctx: dict = {"user_message": "hi", "correlation_id": "c-tz"}
+    chat_stance.build_chat_stance_inputs(ctx)
+    assert isinstance(ctx.get("chat_autonomy_state_v2"), dict)
+    assert ctx["chat_autonomy_state_v2"].get("schema_version") == "autonomy.state.v2"
+    assert "latest_direct_evidence_at" in (ctx["chat_autonomy_state_v2"].get("freshness") or {})
+    assert ctx["chat_autonomy_state_v2"]["drive_pressures"]["relational"] > 0.0
 
 
 def test_chat_stance_reasoning_upstream_emits_quality(monkeypatch) -> None:
@@ -198,8 +233,6 @@ def test_chat_stance_reasoning_upstream_emits_quality(monkeypatch) -> None:
     monkeypatch.setenv("AUTONOMY_STATE_V2_REDUCER_ENABLED", "true")
 
     repo = InMemoryReasoningRepository()
-    # Empty-ish path that still has an artifact but compiler may still recommend fallback
-    # depending on subject_refs — force fallback via monkeypatch after compile if needed.
     repo.write_artifacts(
         ReasoningWriteRequestV1(
             context=ReasoningWriteContextV1(

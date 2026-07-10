@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import hashlib
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import Any
 
 from pydantic import BaseModel, Field
@@ -31,12 +31,22 @@ _MAX_UNKNOWNS = 12
 _MAX_PRESSURE_STEP = 0.15
 
 _DRIVE_KEYS = ("coherence", "continuity", "relational", "autonomy", "capability", "predictive")
+_EPOCH_UTC = datetime(1970, 1, 1, tzinfo=timezone.utc)
+
+
+def _as_utc(dt: datetime | None) -> datetime | None:
+    """Normalize naive/aware datetimes to UTC-aware for safe comparisons."""
+    if dt is None:
+        return None
+    if dt.tzinfo is None:
+        return dt.replace(tzinfo=timezone.utc)
+    return dt.astimezone(timezone.utc)
 
 
 def _utc_now(inp_now: datetime | None) -> datetime:
     if inp_now is not None:
-        return inp_now
-    return datetime.utcnow()
+        return _as_utc(inp_now) or datetime.now(timezone.utc)
+    return datetime.now(timezone.utc)
 
 
 def _binding_for_subject(subject: str) -> SubjectBinding:
@@ -155,8 +165,7 @@ def _merge_evidence(
         seq += 1
     ordered = sorted(bucket.items(), key=lambda kv: kv[1][0])
     items = [t[1] for _, t in ordered]
-    epoch = datetime(1970, 1, 1)
-    stamped = [(i, ev.observed_at or epoch, ev) for i, ev in enumerate(items)]
+    stamped = [(i, _as_utc(ev.observed_at) or _EPOCH_UTC, ev) for i, ev in enumerate(items)]
     stamped.sort(key=lambda x: (x[1], x[0]))
     if len(stamped) > _MAX_EVIDENCE:
         stamped = stamped[-_MAX_EVIDENCE:]
@@ -422,12 +431,22 @@ def reduce_autonomy_state(inp: AutonomyReducerInputV1) -> AutonomyReducerResultV
     working.generated_at = now
 
     fresh: dict[str, str] = {"state_generated_at": now.isoformat()}
-    direct_times = [e.observed_at for e in working.evidence_refs if e.kind != "proxy_telemetry" and e.observed_at]
-    proxy_times = [e.observed_at for e in working.evidence_refs if e.kind == "proxy_telemetry" and e.observed_at]
-    if direct_times:
-        fresh["latest_direct_evidence_at"] = max(direct_times).isoformat()
-    if proxy_times:
-        fresh["latest_proxy_evidence_at"] = max(proxy_times).isoformat()
+    direct_times = [
+        _as_utc(e.observed_at)
+        for e in working.evidence_refs
+        if e.kind != "proxy_telemetry" and e.observed_at
+    ]
+    proxy_times = [
+        _as_utc(e.observed_at)
+        for e in working.evidence_refs
+        if e.kind == "proxy_telemetry" and e.observed_at
+    ]
+    direct_times_n = [t for t in direct_times if t is not None]
+    proxy_times_n = [t for t in proxy_times if t is not None]
+    if direct_times_n:
+        fresh["latest_direct_evidence_at"] = max(direct_times_n).isoformat()
+    if proxy_times_n:
+        fresh["latest_proxy_evidence_at"] = max(proxy_times_n).isoformat()
     working.freshness = fresh
 
     base_dump = baseline.model_dump(mode="json")

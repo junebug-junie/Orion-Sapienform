@@ -176,7 +176,7 @@ profiles:
 
       n_predict: 8192
 
-      no_context_shift: true"
+      no_context_shift: true
       flash_attn: "off"
 
     notes: |
@@ -355,7 +355,7 @@ profiles:
       #chat_template_kwargs:
       #  enable_thinking: true
 
-      no_context_shift: "true"
+      no_context_shift: true
       # ~25GB Q5 fits one 32GB V100; skew layers to GPU0 so GPU1 is mostly KV/overflow.
       # Equal 1,1 pays PCIe tax without buying context. No YaRN — native 262k first.
       split_mode: "layer"

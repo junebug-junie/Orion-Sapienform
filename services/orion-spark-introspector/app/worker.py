@@ -19,7 +19,7 @@ from orion.core.bus.bus_schemas import BaseEnvelope, Envelope, ServiceRef
 from orion.core.bus.codec import OrionCodec
 from orion.core.bus.work_queue import RedisStreamWorkQueue
 from orion.schemas.platform import CoreEventV1
-from orion.schemas.self_state import SelfStateV1
+from orion.schemas.self_state import SelfStateDimensionV1, SelfStateV1
 from orion.schemas.telemetry.cognition_trace import CognitionTracePayload
 from orion.schemas.telemetry.inner_state import InnerStateFeaturesV1
 from orion.schemas.telemetry.phi_encoder import PhiIntrinsicRewardV1
@@ -135,6 +135,49 @@ _PHI_ENCODER: PhiEncoderRuntime | None = None
 _PHI_PREV_PHI: float | None = None
 _PHI_PREV_RECON: float | None = None
 
+# resource_pressure.score is a max() over 7 heterogeneous channels (see
+# config/self_state/self_state_policy.v1.yaml channel_dimension_map): real
+# hardware load (cpu/gpu/memory/disk/thermal_pressure) alongside a generic
+# capability-graph `pressure` channel and `transport_pressure`. Live incident
+# 2026-07-10: the generic `pressure` channel sticks saturated at 1.00 from an
+# untraced orion-field-digester capability (see
+# project_tissue_viz_novelty_arousal_theater memory), permanently pinning
+# resource_pressure.score at 1.0 regardless of actual hardware load and
+# hard-zeroing tissue-viz arousal (`energy = intensity * (resource_cap *
+# execution_cap)**0.5` with resource_cap = 1 - resource_pressure = 0).
+# builder.py already puts the raw per-channel breakdown on the wire via
+# SelfStateDimensionV1.dominant_evidence ("channel=value" strings, top 3 by
+# value) -- filtering that to only the real hardware channels bypasses the
+# stuck generic channel without touching orion/self_state/scoring.py, which
+# also feeds agency_readiness_score and stays out of scope for this
+# display-layer fix.
+_HARDWARE_RESOURCE_CHANNELS = frozenset({
+    "cpu_pressure",
+    "gpu_pressure",
+    "memory_pressure",
+    "disk_pressure",
+    "thermal_pressure",
+})
+
+
+def _hardware_resource_pressure(dim: Optional[SelfStateDimensionV1]) -> Optional[float]:
+    """Real resource load from resource_pressure's dominant_evidence, ignoring
+    the generic capability-graph `pressure` and `transport_pressure` channels
+    that can stick saturated. Returns None (honest no-signal) when no hardware
+    channel appears in the evidence -- never fabricates a value."""
+    if dim is None:
+        return None
+    values: List[float] = []
+    for entry in dim.dominant_evidence:
+        name, _, raw = entry.partition("=")
+        if name not in _HARDWARE_RESOURCE_CHANNELS:
+            continue
+        try:
+            values.append(float(raw))
+        except ValueError:
+            continue
+    return max(values) if values else None
+
 
 def set_latest_self_state(ss: SelfStateV1) -> None:
     global _LATEST_SELF_STATE
@@ -163,8 +206,12 @@ def _phi_from_self_state(ss: SelfStateV1) -> Dict[str, float]:
 
     # Energy: activation × available capacity (multiplicative, not additive).
     # Being highly active with no room left isn't energy — it's grinding.
-    intensity     = _s("field_intensity", 0.5)
-    resource_cap  = 1.0 - _s("resource_pressure", 0.5)
+    intensity = _s("field_intensity", 0.5)
+    hardware_pressure = _hardware_resource_pressure(d.get("resource_pressure"))
+    resource_pressure_for_energy = (
+        hardware_pressure if hardware_pressure is not None else _s("resource_pressure", 0.5)
+    )
+    resource_cap  = 1.0 - resource_pressure_for_energy
     execution_cap = 1.0 - _s("execution_pressure", 0.3)
     energy = intensity * (resource_cap * execution_cap) ** 0.5
     # Trajectory: rising intensity or recovering capacity builds energy momentum.

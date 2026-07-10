@@ -16,7 +16,9 @@ def _base_ctx(mode: str = "brain") -> dict:
     }
 
 
-def test_harness_finalize_reflect_uses_metacog_route() -> None:
+def test_harness_finalize_reflect_uses_chat_route() -> None:
+    """Fat finalize prompts exceed metacog's 4k/slot; chat lane has 131k and
+    runs after the FCC motor on the same turn (sequential, one Hub FCC at a time)."""
     step = ExecutionStep(
         step_name="llm_harness_finalize_reflect",
         verb_name="harness_finalize_reflect",
@@ -42,7 +44,7 @@ def test_harness_finalize_reflect_uses_metacog_route() -> None:
 
     assert result.status == "success"
     sent_req = llm_chat.await_args.kwargs["req"]
-    assert sent_req.route == "metacog"
+    assert sent_req.route == "chat"
 
 
 def test_orion_voice_finalize_uses_quick_route() -> None:

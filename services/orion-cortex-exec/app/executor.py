@@ -4085,13 +4085,16 @@ async def call_step_services(
                     llm_route = llm_route_override
                 else:
                     # Default lane mapping:
+                    # - harness_finalize_reflect: DEEP lane ("chat") — fat prompts
+                    #   exceed metacog's multi-slot 4k ctx; runs after FCC motor on
+                    #   the same turn (sequential; one Hub FCC at a time).
                     # - chat_general stance brief: FAST lane ("quick")
                     # - chat_general final response: DEEP lane ("chat")
                     # - chat_quick single-pass: FAST lane ("quick")
                     # - introspect_spark internal analysis: FAST lane ("quick")
                     # - metacog mode: METACOG lane
                     llm_route = (
-                        "metacog"
+                        "chat"
                         if step.verb_name == "harness_finalize_reflect"
                         else "quick"
                         if step.verb_name == "orion_voice_finalize"

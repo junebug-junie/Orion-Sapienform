@@ -257,6 +257,20 @@ def test_build_subprocess_env_sets_context_ceiling(monkeypatch: pytest.MonkeyPat
     assert env["CLAUDE_AUTOCOMPACT_PCT_OVERRIDE"] == "70"
 
 
+def test_build_subprocess_env_enables_tool_search(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.delenv("ENABLE_TOOL_SEARCH", raising=False)
+    env = motor._build_subprocess_env(fcc_server_url="http://127.0.0.1:8082", auth_token="tok")
+    assert env["ENABLE_TOOL_SEARCH"] == "true"
+
+
+def test_build_subprocess_env_preserves_tool_search_override(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("ENABLE_TOOL_SEARCH", "false")
+    env = motor._build_subprocess_env(fcc_server_url="http://127.0.0.1:8082", auth_token="tok")
+    assert env["ENABLE_TOOL_SEARCH"] == "false"
+
+
 @pytest.mark.asyncio
 async def test_run_fcc_turn_root_uses_dont_ask_permission_mode(
     monkeypatch: pytest.MonkeyPatch,

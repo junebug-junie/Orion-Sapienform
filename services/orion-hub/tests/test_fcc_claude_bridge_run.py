@@ -159,6 +159,22 @@ async def test_build_subprocess_env_omits_autocompact_when_zero(monkeypatch: pyt
     assert "CLAUDE_AUTOCOMPACT_PCT_OVERRIDE" not in env
 
 
+@pytest.mark.asyncio
+async def test_build_subprocess_env_enables_tool_search(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.delenv("ENABLE_TOOL_SEARCH", raising=False)
+    env = bridge._build_subprocess_env(fcc_server_url="http://127.0.0.1:8082", auth_token="tok")
+    assert env["ENABLE_TOOL_SEARCH"] == "true"
+
+
+@pytest.mark.asyncio
+async def test_build_subprocess_env_preserves_tool_search_override(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("ENABLE_TOOL_SEARCH", "auto")
+    env = bridge._build_subprocess_env(fcc_server_url="http://127.0.0.1:8082", auth_token="tok")
+    assert env["ENABLE_TOOL_SEARCH"] == "auto"
+
+
 def test_is_context_overflow_text_detects_llamacpp_error() -> None:
     sample = 'exceed_context_size_error n_ctx":65536'
     assert bridge.is_context_overflow_text(sample) is True

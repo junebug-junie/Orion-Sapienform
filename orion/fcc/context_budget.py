@@ -96,6 +96,9 @@ def extend_fcc_subprocess_env(env: dict[str, str], *, workspace: str | None = No
     env.setdefault("ORION_FCC_MCP_TOOL_RESULT_MAX_CHARS", str(mcp_tool_result_max_chars()))
     env.setdefault("HARNESS_FCC_CONTEXT_PRESSURE_PCT", str(context_pressure_threshold_pct()))
     env.setdefault("HARNESS_FCC_MAX_CONTEXT_TOKENS", str(max_context_tokens()))
+    # Claude Code: custom ANTHROPIC_BASE_URL disables ToolSearch unless set explicitly.
+    # Keep MCP attached; defer schema load until the model ToolSearches.
+    env.setdefault("ENABLE_TOOL_SEARCH", "true")
 
 
 def context_pressure_threshold_chars() -> int:

@@ -251,6 +251,8 @@ document.addEventListener("DOMContentLoaded", () => {
       { workflowId: 'self_review', prompt: 'Run a self review.', label: 'Workflow · Run a self review.' },
       { workflowId: 'concept_induction_pass', prompt: 'Run concept induction.', label: 'Workflow · Run concept induction.' },
       { workflowId: 'github_compactor_pass', prompt: 'Run github compactor.', label: 'Workflow · Run github compactor.' },
+      { workflowId: 'chat_history_compactor_pass', prompt: 'Compact the last 24 hours of chat into a memory digest.', label: 'Workflow · Compact last 24h chat digest.' },
+      { workflowId: 'chat_history_compactor_pass', prompt: 'Compact the last 6 hours of chat into a memory digest.', label: 'Workflow · Compact last 6h chat digest.' },
     ];
     const existingByWorkflowId = new Set(
       Array.from(skillRunnerSelect.options || [])

@@ -45,6 +45,9 @@ def test_explicit_workflow_prompts_resolve_for_all_supported_named_workflows() -
         ("Run through your concept induction graphs", "concept_induction_pass"),
         ("Run github compactor", "github_compactor_pass"),
         ("Compact recent prs", "github_compactor_pass"),
+        ("Compact the last 24 hours of chat into a memory digest", "chat_history_compactor_pass"),
+        ("Compact the last 6 hours of chat into a memory digest", "chat_history_compactor_pass"),
+        ("what have we been talking about", "chat_history_compactor_pass"),
     ]
     for prompt, expected_workflow_id in cases:
         req, debug, _ = hub_builder.build_chat_request(

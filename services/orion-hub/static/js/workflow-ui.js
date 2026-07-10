@@ -6,6 +6,7 @@
     self_review: 'Run a self review',
     concept_induction_pass: 'Run through your concept induction graphs',
     github_compactor_pass: 'Run github compactor',
+    chat_history_compactor_pass: 'Chat history compactor',
   };
 
   function toObject(value) {

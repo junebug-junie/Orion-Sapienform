@@ -33,7 +33,7 @@ This service sits between chat/operator intent and execution infrastructure:
 
 Important clarification:
 
-- `dream_cycle`, `journal_pass`, `self_review`, `concept_induction_pass`, and `github_compactor_pass` are **named cognition workflows**, not “Actions skills”.
+- `dream_cycle`, `journal_pass`, `self_review`, `concept_induction_pass`, `github_compactor_pass`, and `chat_history_compactor_pass` are **named cognition workflows**, not “Actions skills”.
 - Scheduled runs are re-dispatched through the same Orch workflow lane as immediate runs.
 - Actions does not execute a shadow copy of those workflows.
 
@@ -206,6 +206,14 @@ These are defined in workflow registry/runtime, not in Actions.
 - **Notify**: yes (via schedule policy).
 - **Typical result**: PR count, card summary preview, journal entry id.
 - **Persisted meaning**: supersedes one active `repo_dev_snapshot` memory card (`high_recall`) and append-only journal entry (`journal.entry.write.v1`).
+
+### `chat_history_compactor_pass`
+- **Purpose**: daily compaction of `chat_history_log` into an indexed memory card digest.
+- **Example phrases**: “Run chat history compactor”, “compact yesterday’s chats”, “digest chat history”.
+- **Schedulable**: yes (bootstrapped daily at 06:00 America/Denver with `window_mode=day`).
+- **Notify**: yes (via schedule policy).
+- **Typical result**: window coverage, card summary preview, journal/memory write ids.
+- **Persisted meaning**: supersedes one active chat-history digest memory card and related journal entry for the compacted window.
 
 ---
 

@@ -972,6 +972,12 @@ async def lifespan(app: FastAPI):
         settings.actions_workflow_schedule_store_path,
         metrics=workflow_schedule_metrics,
     )
+    from .workflow_schedule_bootstrap import ensure_chat_history_compactor_daily_schedule
+
+    try:
+        ensure_chat_history_compactor_daily_schedule(workflow_schedule_store)
+    except Exception:
+        logger.exception("chat_history_compactor_schedule_bootstrap_failed")
     scheduler_cursor_store = SchedulerCursorStore(
         resolve_scheduler_cursor_store_path(
             settings.actions_scheduler_cursor_store_path or None,

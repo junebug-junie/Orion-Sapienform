@@ -45,6 +45,28 @@ class LlamaCppConfig(BaseModel):
         validation_alias=AliasChoices("mmproj_repo_id", "hf_mmproj_repo_id"),
         description="HF repo for mmproj; defaults to repo_id when omitted",
     )
+    draft_filename: Optional[str] = Field(
+        default=None,
+        validation_alias=AliasChoices("draft_filename", "hf_draft_filename"),
+        description="Draft GGUF filename for llama-server speculative decoding (--model-draft)",
+    )
+    draft_repo_id: Optional[str] = Field(
+        default=None,
+        validation_alias=AliasChoices("draft_repo_id", "hf_draft_repo_id"),
+        description="HF repo for draft GGUF; defaults to repo_id when omitted",
+    )
+    n_gpu_layers_draft: Optional[int] = Field(
+        default=None,
+        description="Draft model GPU offload layers (--n-gpu-layers-draft)",
+    )
+    draft_min: Optional[int] = Field(
+        default=None,
+        description="Minimum draft tokens before verify (--draft-min)",
+    )
+    draft_max: Optional[int] = Field(
+        default=None,
+        description="Maximum draft tokens per speculation step (--draft-max)",
+    )
 
     host: str = "0.0.0.0"
     port: int = 8080

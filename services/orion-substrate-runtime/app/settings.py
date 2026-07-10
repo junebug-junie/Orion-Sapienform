@@ -110,6 +110,12 @@ class Settings(BaseSettings):
         True,
         alias="ENABLE_POST_TURN_CLOSURE_LISTENER",
     )
+    # Voluntary attention (ORION_ATTENTION_TOPDOWN_ENABLED) goal-context feed:
+    # populates the in-memory active-goal store from GoalProposalV1 events.
+    channel_goal_proposal: str = Field(
+        "orion:memory:goals:proposed",
+        alias="CHANNEL_GOAL_PROPOSAL",
+    )
     grammar_event_channel: str = Field("orion:grammar:event", alias="GRAMMAR_EVENT_CHANNEL")
     accepted_pressure_grammar_channel: str = Field(
         "orion:grammar:accepted-pressure",

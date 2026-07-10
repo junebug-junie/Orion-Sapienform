@@ -1686,7 +1686,7 @@ channels:
     schema_id: "GoalProposalV1"
     message_kind: "memory.goals.proposed.v1"
     producer_services: ["orion-spark-concept-induction"]
-    consumer_services: ["orion-rdf-writer", "orion-sql-writer", "*"]
+    consumer_services: ["orion-rdf-writer", "orion-sql-writer", "orion-substrate-runtime", "*"]
     stability: "experimental"
     since: "2026-03-19"
 

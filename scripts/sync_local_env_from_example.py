@@ -177,6 +177,8 @@ SYNC_EXACT = frozenset(
         "CHANNEL_REASONING_CALL",
         # Seed-v4 feature set: spark-introspector reads orion-thought's reasoning_activity projection
         "ORION_THOUGHT_BASE_URL",
+        # Voluntary attention goal-context listener (orion-substrate-runtime)
+        "CHANNEL_GOAL_PROPOSAL",
     }
 )
 

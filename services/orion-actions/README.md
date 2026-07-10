@@ -208,12 +208,13 @@ These are defined in workflow registry/runtime, not in Actions.
 - **Persisted meaning**: supersedes one active `repo_dev_snapshot` memory card (`high_recall`) and append-only journal entry (`journal.entry.write.v1`).
 
 ### `chat_history_compactor_pass`
-- **Purpose**: daily compaction of `chat_history_log` into an indexed memory card digest.
-- **Example phrases**: “Run chat history compactor”, “compact yesterday’s chats”, “digest chat history”.
-- **Schedulable**: yes (bootstrapped daily at 06:00 America/Denver with `window_mode=day`).
-- **Notify**: yes (via schedule policy).
-- **Typical result**: window coverage, card summary preview, journal/memory write ids.
-- **Persisted meaning**: supersedes one active chat-history digest memory card and related journal entry for the compacted window.
+- **Purpose**: compact bounded Hub `chat_history_log` windows into indexed `high_recall` memory cards (optional journal).
+- **Example phrases**: “Compact the last 24 hours of chat into a memory digest”, “what have we been talking about”.
+- **Schedulable**: yes. On actions startup, if absent, bootstraps a recurring daily schedule at **06:00 `America/Denver`** with `window_mode=day` (yesterday’s calendar day).
+- **Notify**: bootstrap default `notify_on=completion` (editable/pausable in Hub schedule inventory).
+- **Typical result**: turn count, `compactor_index`, card summary preview, card_id, optional journal entry id.
+- **Persisted meaning**: upserts one active card per `compactor_index` (not supersede); optional append-only journal (`journal.entry.write.v1`).
+- **Requires**: cortex-exec SQL (`DATABASE_URL` / `ENDOGENOUS_RUNTIME_SQL_DATABASE_URL`) for discussion window fetch; cortex-orch `RECALL_PG_DSN` for card writes.
 
 ---
 

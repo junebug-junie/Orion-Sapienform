@@ -131,6 +131,14 @@ class HarnessRunRequestV1(BaseModel):
     fcc_model_label: str | None = None
 
 
+class HarnessRunCancelV1(BaseModel):
+    """Fire-and-forget cancel for an in-flight FCC motor turn (Hub disconnect / abort)."""
+
+    schema_version: Literal["harness.run.cancel.v1"] = "harness.run.cancel.v1"
+    correlation_id: str
+    reason: str = "client_disconnect"
+
+
 class HarnessRunStepV1(BaseModel):
     schema_version: Literal["harness.run.step.v1"] = "harness.run.step.v1"
     correlation_id: str

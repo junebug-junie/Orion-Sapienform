@@ -6,7 +6,7 @@ from typing import Optional
 
 from orion.core.bus.async_service import OrionBusAsync
 from orion.core.bus.bus_schemas import BaseEnvelope, ServiceRef
-from orion.schemas.harness_finalize import HarnessRunRequestV1, HarnessRunV1
+from orion.schemas.harness_finalize import HarnessRunCancelV1, HarnessRunRequestV1, HarnessRunV1
 from scripts.settings import settings
 
 logger = logging.getLogger("hub.bus.harness_governor")
@@ -65,3 +65,26 @@ class HarnessGovernorClient:
         if isinstance(payload, dict):
             return HarnessRunV1.model_validate(payload)
         return None
+
+    async def cancel(
+        self,
+        *,
+        correlation_id: str,
+        reason: str = "client_disconnect",
+    ) -> None:
+        """Fire-and-forget cancel for an in-flight FCC motor (no reply expected)."""
+        channel = str(
+            getattr(settings, "CHANNEL_HARNESS_RUN_CANCEL", None) or "orion:harness:run:cancel"
+        )
+        cancel = HarnessRunCancelV1(correlation_id=str(correlation_id), reason=str(reason or "client_disconnect"))
+        envelope = BaseEnvelope(
+            kind="harness.run.cancel.v1",
+            source=self._source,
+            correlation_id=str(correlation_id),
+            payload=cancel.model_dump(mode="json"),
+        )
+        try:
+            await self.bus.publish(channel, envelope)
+            logger.info("[%s] harness run cancel published reason=%s", correlation_id, cancel.reason)
+        except Exception:
+            logger.warning("[%s] harness run cancel publish failed", correlation_id, exc_info=True)

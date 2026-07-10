@@ -533,6 +533,8 @@ PYTHONPATH=services/orion-hub:. python services/orion-hub/scripts/verify_agent_c
 
 When `HUB_AGENT_CLAUDE_MCP_ENABLED=true`, each agent-claude turn renders an ephemeral MCP config from `config/fcc_claude_mcp.template.json` and passes `--mcp-config` + per-server `--allowedTools` (e.g. `mcp__github`, `mcp__firecrawl`) and `--disallowedTools Bash(gh *)` to `claude -p`. Secrets live in operator `~/.fcc/.env` (not Hub `.env`):
 
+**ToolSearch:** FCC Claude subprocesses set `ENABLE_TOOL_SEARCH=true` through `orion.fcc.context_budget.extend_fcc_subprocess_env` (shared with harness-governor). MCP servers stay attached; Claude Code loads tool schemas into context only when ToolSearch pulls them. This counters the custom-`ANTHROPIC_BASE_URL` fallback that otherwise dumps all MCP schemas at spawn. Operators may override `ENABLE_TOOL_SEARCH` in the process environment for debugging (`false` / `auto` / `auto:N`). Optional further GitHub surface tightening: set `GITHUB_TOOLSETS` in `~/.fcc/.env` (code default remains `repos,pull_requests` when unset).
+
 | Key | Required | Purpose |
 |-----|----------|---------|
 | `GITHUB_PAT` | yes | GitHub MCP (`ghcr.io/github/github-mcp-server` via Docker) |

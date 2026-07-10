@@ -328,7 +328,7 @@ profiles:
       # Keep both cards visible so overflow layers + long KV can land on the second V100.
       device_ids: [1, 0]
       max_model_len: 131072
-      max_batch_tokens: 1024
+      max_batch_tokens: 958
       max_concurrent_requests: 1
       gpu_memory_fraction: 0.90
 
@@ -342,12 +342,13 @@ profiles:
       # Native train ctx is 262k; 131k is the monster-FCC step before full native.
       # Must stay in lockstep with HARNESS_FCC_MAX_CONTEXT_TOKENS / Hub agent-claude budget.
       ctx_size: 131072
-      n_gpu_layers: 99
-      threads: 18
+      n_gpu_layers: 97
+      threads: 27
       # n_parallel=1 keeps the full window for FCC/harness (n_parallel>1 splits slots
       # and 400s long prompts as exceed_context).
       n_parallel: 1
-      batch_size: 1024
+      batch_size: 958
+      ubatch_size: 551
 
       reasoning: "off"
       reasoning_budget: 0
@@ -358,6 +359,10 @@ profiles:
       no_context_shift: true
       # ~25GB Q5 fits one 32GB V100; skew layers to GPU0 so GPU1 is mostly KV/overflow.
       # Equal 1,1 pays PCIe tax without buying context. No YaRN — native 262k first.
+      # Circe llama-optimus 2026-07-10 (mean metric; layout pinned device_ids[1,0]+3/1+layer+FA0):
+      #   Stage_1: batch 1081, ubatch 136, threads 27, ngl 91 (~49.26 mean).
+      #   Stage_3 pick: batch 958, ubatch 551, threads 27, ngl 97 (~48.84 mean).
+      #   Verify (Stage_3): pp256 ~524 (±255), tg128 ~98.8 (±1.0). Layout not searched.
       split_mode: "layer"
       tensor_split: "3,1"
       flash_attn: "off"
@@ -371,15 +376,31 @@ profiles:
 
       n_predict: 16384
 
+      # --- Speculative decoding (OPTIONAL; leave commented until Circe VRAM/tg bench) ---
+      # Draft competes with the 131k KV window on 2xV100. Do NOT lower ctx_size / FCC
+      # budgets in the same change as enabling draft — treat Circe VRAM/tg evidence and
+      # any FCC/Hub budget change as an explicit follow-up, not this annotation.
+      # Candidate: same Qwen3 tokenizer family, tiny draft (~0.6B Q4_K_M).
+      #hf_draft_repo_id: "unsloth/Qwen3-0.6B-GGUF"
+      #hf_draft_filename: "Qwen3-0.6B-Q4_K_M.gguf"
+      #n_gpu_layers_draft: 99
+      #draft_min: 4
+      #draft_max: 16
+
     notes: |
       Deep-cognition Qwen 3.6 35B-A3B profile for two V100 32GB GPUs (monster FCC).
       - Target lane: Cortex / planner / introspection / deep repo reasoning / FCC motor.
       - Uses Unsloth dynamic GGUF UD-Q5_K_M (~25GB) — prefer over Q6 so KV headroom survives.
       - 131k ctx (n_parallel=1) must match HARNESS_FCC_MAX_CONTEXT_TOKENS / Hub agent Claude budget.
-      - tensor_split 1,0 + layer: park weights on primary V100; second card absorbs overflow/KV.
+      - tensor_split 3,1 + layer: park weights on primary V100; second card absorbs overflow/KV.
       - flash_attn off (Volta); sampling kept cooler than Unsloth chat card for agent stability.
+      - Circe llama-optimus (2026-07-10): ngl 97, batch 958, ubatch 551, threads 27 (layout preserved).
       - If OOM at 131k: try tensor_split 3,1 then 2,1, then lower ctx_size to 98304 / 65536.
       - Do not enable YaRN until native 262k is proven and still insufficient.
+      - Speculative decoding: host supports hf_draft_* / draft_min / draft_max / n_gpu_layers_draft.
+        Uncomment the draft block above only after a live Circe VRAM + tg/s check. Draft VRAM
+        competes with KV. Do not change FCC/Hub context budgets without an explicit follow-up.
+        MTP / draft-mtp is out of scope for this profile annotation.
 
 
   qwen3-30b-a3b-q4km-atlas-agent-64k-think:

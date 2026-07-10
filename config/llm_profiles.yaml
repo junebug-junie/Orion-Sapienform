@@ -323,9 +323,9 @@ profiles:
       num_gpus: 2
       tensor_parallel_size: 1
       device_ids: [1, 0]
-      max_model_len: 65536
+      max_model_len: 131072
       max_batch_tokens: 1024
-      max_concurrent_requests: 2
+      max_concurrent_requests: 1
       gpu_memory_fraction: 0.90
 
     llamacpp:
@@ -335,8 +335,8 @@ profiles:
       host: "0.0.0.0"
       port: 8080
 
-      ctx_size: 65536
-      n_gpu_layers: 99
+      ctx_size: 131072
+      n_gpu_layers: 87
       threads: 18
       # n_parallel=1 keeps the full 64k window for FCC/harness (n_parallel=4
       # was splitting to 16k slots and 400ing ~52k prompts as exceed_context).
@@ -351,7 +351,7 @@ profiles:
 
       no_context_shift: true
       split_mode: "layer"
-      tensor_split: "1,1"
+      tensor_split: "1,0"
       flash_attn: "off"
 
       temperature: 0.48

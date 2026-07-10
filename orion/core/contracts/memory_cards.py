@@ -16,6 +16,7 @@ MemoryProvenance = Literal[
     "auto_extractor",
     "imported",
     "repo_compactor",
+    "chat_compactor",
 ]
 AnchorClass = Literal[
     "person",

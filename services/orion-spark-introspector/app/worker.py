@@ -160,18 +160,28 @@ _HARDWARE_RESOURCE_CHANNELS = frozenset({
     "thermal_pressure",
 })
 
+# execution_pressure dimension max-aggregates `execution_load` (real load) with
+# a same-named generic `execution_pressure` channel that can stick saturated
+# at 1.00 (live 2026-07-10: evidence ["execution_pressure=1.00",
+# "execution_load=0.19"] while dim.score=1.0). Prefer the real load channel
+# for tissue-viz energy, same display-layer pattern as hardware resource
+# filtering above.
+_EXECUTION_LOAD_CHANNELS = frozenset({
+    "execution_load",
+})
 
-def _hardware_resource_pressure(dim: Optional[SelfStateDimensionV1]) -> Optional[float]:
-    """Real resource load from resource_pressure's dominant_evidence, ignoring
-    the generic capability-graph `pressure` and `transport_pressure` channels
-    that can stick saturated. Returns None (honest no-signal) when no hardware
-    channel appears in the evidence -- never fabricates a value."""
+
+def _parse_dominant_evidence_channels(
+    dim: Optional[SelfStateDimensionV1],
+    allowed: frozenset[str],
+) -> Optional[float]:
+    """Max of allowed channel values from dominant_evidence. None if none match."""
     if dim is None:
         return None
     values: List[float] = []
     for entry in dim.dominant_evidence:
         name, _, raw = entry.partition("=")
-        if name not in _HARDWARE_RESOURCE_CHANNELS:
+        if name not in allowed:
             continue
         try:
             v = float(raw)
@@ -187,6 +197,21 @@ def _hardware_resource_pressure(dim: Optional[SelfStateDimensionV1]) -> Optional
             continue
         values.append(max(0.0, min(1.0, v)))
     return max(values) if values else None
+
+
+def _hardware_resource_pressure(dim: Optional[SelfStateDimensionV1]) -> Optional[float]:
+    """Real resource load from resource_pressure's dominant_evidence, ignoring
+    the generic capability-graph `pressure` and `transport_pressure` channels
+    that can stick saturated. Returns None (honest no-signal) when no hardware
+    channel appears in the evidence -- never fabricates a value."""
+    return _parse_dominant_evidence_channels(dim, _HARDWARE_RESOURCE_CHANNELS)
+
+
+def _execution_load_pressure(dim: Optional[SelfStateDimensionV1]) -> Optional[float]:
+    """Real execution load from execution_pressure's dominant_evidence, ignoring
+    the saturated generic `execution_pressure` channel. Returns None when
+    `execution_load` is absent -- never fabricates a value."""
+    return _parse_dominant_evidence_channels(dim, _EXECUTION_LOAD_CHANNELS)
 
 
 def set_latest_self_state(ss: SelfStateV1) -> None:
@@ -222,7 +247,11 @@ def _phi_from_self_state(ss: SelfStateV1) -> Dict[str, float]:
         hardware_pressure if hardware_pressure is not None else _s("resource_pressure", 0.5)
     )
     resource_cap  = 1.0 - resource_pressure_for_energy
-    execution_cap = 1.0 - _s("execution_pressure", 0.3)
+    execution_load = _execution_load_pressure(d.get("execution_pressure"))
+    execution_pressure_for_energy = (
+        execution_load if execution_load is not None else _s("execution_pressure", 0.3)
+    )
+    execution_cap = 1.0 - execution_pressure_for_energy
     energy = intensity * (resource_cap * execution_cap) ** 0.5
     # Trajectory: rising intensity or recovering capacity builds energy momentum.
     # dimension_trajectory["resource_pressure"] tracks the delta of the raw,

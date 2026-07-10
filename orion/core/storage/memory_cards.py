@@ -334,6 +334,111 @@ async def supersede_and_insert_compactor_card(
             return await _insert_card_on_conn(conn, card, actor=actor, op="create")
 
 
+async def find_active_card_by_compactor_index(pool: asyncpg.Pool, index: str) -> Optional[MemoryCardV1]:
+    key = (index or "").strip()
+    if not key:
+        return None
+    async with pool.acquire() as conn:
+        row = await conn.fetchrow(
+            """
+            SELECT * FROM memory_cards
+            WHERE status = 'active'
+              AND subschema ->> 'compactor_index' = $1
+            ORDER BY updated_at DESC
+            LIMIT 1
+            """,
+            key,
+        )
+        return _row_to_card(row) if row else None
+
+
+async def upsert_indexed_compactor_card(
+    pool: asyncpg.Pool,
+    *,
+    index: str,
+    card: MemoryCardCreateV1,
+    actor: str,
+) -> UUID:
+    """Update the active card for ``compactor_index`` in place, or insert a new one.
+
+    Unlike ``supersede_and_insert_compactor_card``, this keeps one live card per
+    index key and writes history op ``update`` or ``create`` (never supersede).
+    """
+    key = (index or "").strip()
+    if not key:
+        raise ValueError("compactor index required")
+    sub = dict(card.subschema or {})
+    sub["compactor_index"] = key
+    card = card.model_copy(update={"subschema": sub})
+
+    async with pool.acquire() as conn:
+        async with conn.transaction():
+            existing = await conn.fetchrow(
+                """
+                SELECT card_id FROM memory_cards
+                WHERE status = 'active'
+                  AND subschema ->> 'compactor_index' = $1
+                ORDER BY updated_at DESC
+                LIMIT 1
+                FOR UPDATE
+                """,
+                key,
+            )
+            if existing is None:
+                return await _insert_card_on_conn(conn, card, actor=actor, op="create")
+
+            cid = existing["card_id"]
+            before = await conn.fetchrow(
+                "SELECT to_jsonb(mc.*) AS j FROM memory_cards mc WHERE mc.card_id = $1",
+                cid,
+            )
+            th_val = _jsonb_param(
+                card.time_horizon.model_dump(mode="json") if card.time_horizon else None
+            )
+            evidence_val = _jsonb_param([e.model_dump(mode="json") for e in card.evidence])
+            sub_val = _jsonb_param(dict(card.subschema or {}))
+            await conn.fetchrow(
+                """
+                UPDATE memory_cards SET
+                  title = $2,
+                  summary = $3,
+                  tags = $4,
+                  evidence = $5::jsonb,
+                  time_horizon = $6::jsonb,
+                  subschema = $7::jsonb,
+                  priority = $8,
+                  provenance = $9,
+                  updated_at = now()
+                WHERE card_id = $1
+                RETURNING *
+                """,
+                cid,
+                card.title,
+                card.summary,
+                card.tags,
+                evidence_val,
+                th_val,
+                sub_val,
+                card.priority,
+                card.provenance,
+            )
+            after = await conn.fetchrow(
+                "SELECT to_jsonb(mc.*) AS j FROM memory_cards mc WHERE mc.card_id = $1",
+                cid,
+            )
+            await conn.execute(
+                """
+                INSERT INTO memory_card_history (card_id, edge_id, op, actor, "before", "after")
+                VALUES ($1, NULL, 'update', $2, $3::jsonb, $4::jsonb)
+                """,
+                cid,
+                actor,
+                json.dumps(before["j"] if before else {}),
+                json.dumps(after["j"] if after else {}),
+            )
+            return cid
+
+
 async def get_card(pool: asyncpg.Pool, card_id_or_slug: str) -> Optional[MemoryCardV1]:
     async with pool.acquire() as conn:
         cid = await _resolve_card_id(conn, card_id_or_slug)

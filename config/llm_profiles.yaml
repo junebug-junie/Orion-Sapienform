@@ -176,7 +176,8 @@ profiles:
 
       n_predict: 8192
 
-      no_context_shift: true
+      no_context_shift: true"
+      flash_attn: "off"
 
     notes: |
       Balanced profile for Qwen3-8B on one V100 16GB; thinking disabled only for workers using THIS profile key.
@@ -222,6 +223,9 @@ profiles:
 
       reasoning: "off"
       reasoning_budget: 0
+
+      no_context_shift: true
+      flash_attn: "off"
 
       temperature: 0.35
       top_k: 20
@@ -322,6 +326,8 @@ profiles:
     gpu:
       num_gpus: 2
       tensor_parallel_size: 1
+      # Primary = SXM2 (device 1 on Circe host numbering via CUDA_VISIBLE / override).
+      # Keep both cards visible so overflow layers + long KV can land on the second V100.
       device_ids: [1, 0]
       max_model_len: 131072
       max_batch_tokens: 1024
@@ -335,11 +341,13 @@ profiles:
       host: "0.0.0.0"
       port: 8080
 
+      # Native train ctx is 262k; 131k is the monster-FCC step before full native.
+      # Must stay in lockstep with HARNESS_FCC_MAX_CONTEXT_TOKENS / Hub agent-claude budget.
       ctx_size: 131072
-      n_gpu_layers: 87
+      n_gpu_layers: 99
       threads: 18
-      # n_parallel=1 keeps the full 64k window for FCC/harness (n_parallel=4
-      # was splitting to 16k slots and 400ing ~52k prompts as exceed_context).
+      # n_parallel=1 keeps the full window for FCC/harness (n_parallel>1 splits slots
+      # and 400s long prompts as exceed_context).
       n_parallel: 1
       batch_size: 1024
 
@@ -350,10 +358,13 @@ profiles:
       #  enable_thinking: true
 
       no_context_shift: true
+      # ~25GB Q5 fits one 32GB V100; skew layers to GPU0 so GPU1 is mostly KV/overflow.
+      # Equal 1,1 pays PCIe tax without buying context. No YaRN — native 262k first.
       split_mode: "layer"
-      tensor_split: "1,0"
+      tensor_split: "3,1"
       flash_attn: "off"
 
+      # Cooler than Unsloth chat defaults (0.7/0.8/1.5) for FCC tool+code stability.
       temperature: 0.48
       top_k: 20
       top_p: 0.95
@@ -363,13 +374,14 @@ profiles:
       n_predict: 16384
 
     notes: |
-      Deep-cognition Qwen 3.6 35B-A3B profile for two V100 32GB GPUs.
+      Deep-cognition Qwen 3.6 35B-A3B profile for two V100 32GB GPUs (monster FCC).
       - Target lane: Cortex / planner / introspection / deep repo reasoning / FCC motor.
-      - Uses Unsloth dynamic GGUF UD-Q5_K_M for better reasoning quality.
-      - 64k context (n_parallel=1) must match HARNESS_FCC_MAX_CONTEXT_TOKENS / Hub agent Claude budget.
-      - Row split + equal tensor split mirrors existing Atlas dual-V100 profiles.
-      - Single-lane / single-parallel favors depth and stability over throughput.
-      - If OOM: lower ctx_size to 49152 before dropping to UD-Q4_K_M.
+      - Uses Unsloth dynamic GGUF UD-Q5_K_M (~25GB) — prefer over Q6 so KV headroom survives.
+      - 131k ctx (n_parallel=1) must match HARNESS_FCC_MAX_CONTEXT_TOKENS / Hub agent Claude budget.
+      - tensor_split 1,0 + layer: park weights on primary V100; second card absorbs overflow/KV.
+      - flash_attn off (Volta); sampling kept cooler than Unsloth chat card for agent stability.
+      - If OOM at 131k: try tensor_split 3,1 then 2,1, then lower ctx_size to 98304 / 65536.
+      - Do not enable YaRN until native 262k is proven and still insufficient.
 
 
   qwen3-30b-a3b-q4km-atlas-agent-64k-think:
@@ -502,6 +514,7 @@ profiles:
   # Weights are 4-shard GGUF — pre-download the full quant folder before first boot:
   #   huggingface-cli download Qwen/Qwen3-Coder-Next-GGUF --include "Qwen3-Coder-Next-Q4_K_M/*"
   #   huggingface-cli download Qwen/Qwen3-Coder-Next-GGUF --include "Qwen3-Coder-Next-Q5_K_M/*"
+
   qwen3-coder-next-q4km-2xv100-32gb-agent-breadth:
     display_name: "Qwen3-Coder-Next – Q4_K_M (llama.cpp, 2x V100 32GB, agent breadth)"
     task_type: chat

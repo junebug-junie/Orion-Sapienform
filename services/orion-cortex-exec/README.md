@@ -86,6 +86,33 @@ Provenance: `.env_example` → `docker-compose.yml` → `settings.py`
 | `ORION_REPO_ROOT` | auto-detected | Optional override for self-study repo-root resolution when the container layout differs from local dev. |
 | `ORION_ACTION_OUTCOME_DB_URL` | `postgresql://postgres:postgres@orion-athena-sql-db:5432/conjourney` | Shared SQL store for autonomous action outcomes. When set, chat-stance `load_action_outcomes` reads the `action_outcomes` table (written by sql-writer from `action.outcome.emit.v1`); when blank it falls back to the per-container JSON file `ORION_ACTION_OUTCOME_STORE_PATH`. |
 
+### AutonomyStateV2 on chat stance (default off)
+
+`app/chat_stance.py` can run the AutonomyStateV2 reducer after social/reasoning locals are built and **before** writing `ctx["chat_social_bridge_summary"]`.
+
+| Variable | Default (`.env_example`) | Description |
+| :--- | :--- | :--- |
+| `AUTONOMY_STATE_V2_REDUCER_ENABLED` | empty / not `true` | When `true`, compile typed evidence from stance locals → `reduce_autonomy_state` → `ctx["chat_autonomy_state_v2"]` + delta + debug keys. |
+
+**Flow (flag on)**
+
+1. `_project_social_from_beliefs` / `_compile_reasoning_summary` produce locals.
+2. `compile_autonomy_evidence(...)` (omit-when-empty) stamps optional `signal_kind` / `dimension` / `value`.
+3. `reduce_autonomy_state` mints tensions via `chat_evidence_to_tension` + `signal_drive_map` (no keyword pressure).
+4. Debug: `chat_autonomy_evidence_debug`, `chat_autonomy_tension_debug` (from reducer `tensions_minted`), `chat_autonomy_movement_debug`.
+
+**Do not enable** until the movement eval is green:
+
+```bash
+PYTHONPATH=. python orion/autonomy/evals/run_autonomy_v2_movement_eval.py
+```
+
+Operator notes: [docs/autonomy_state_v2_reducer.md](../../docs/autonomy_state_v2_reducer.md). Package README: [orion/autonomy/README.md](../../orion/autonomy/README.md).
+
+```bash
+pytest services/orion-cortex-exec/tests/test_chat_stance_autonomy_v2.py -q
+```
+
 ### Turn effect and drive tensions (bus)
 
 When the executor computes `turn_effect` / `turn_effect_evidence`, they are included in `PlanExecutionResult.metadata`. Hub merges that metadata into each chat turn `spark_meta`, so `orion-spark-concept-induction` can derive `extract_tensions` from `spark_meta.turn_effect`. For graph-backed tension kinds on `DriveAudit`, `orion-rdf-writer` must still consume `memory.drives.audit.v1` after concept-induction publishes it.

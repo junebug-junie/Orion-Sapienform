@@ -30,7 +30,10 @@ def _dim(name: str, score: float, *, dominant_evidence: list[str] | None = None)
 
 
 def _self_state_payload(
-    *, resource_dim: SelfStateDimensionV1, dimension_trajectory: dict[str, float] | None = None
+    *,
+    resource_dim: SelfStateDimensionV1,
+    execution_dim: SelfStateDimensionV1 | None = None,
+    dimension_trajectory: dict[str, float] | None = None,
 ) -> dict:
     dims = {
         name: _dim(name, score)
@@ -50,6 +53,8 @@ def _self_state_payload(
         )
     }
     dims["resource_pressure"] = resource_dim
+    if execution_dim is not None:
+        dims["execution_pressure"] = execution_dim
     return SelfStateV1(
         self_state_id="self.state:tick_arousal_test:policy.v1",
         generated_at=_NOW,
@@ -232,3 +237,59 @@ async def test_handle_semantic_upsert_arousal_matches_canonical_energy(monkeypat
     # resource_cap=1-0.92=0.08, execution_cap=1.0, no trajectory deltas,
     # no active signals.
     assert tissue[-1]["stats"]["arousal"] == pytest.approx(0.2828, abs=1e-4)
+
+
+def test_execution_load_pressure_none_when_only_generic_channel_present() -> None:
+    dim = _dim("execution_pressure", 1.0, dominant_evidence=["execution_pressure=1.00"])
+    assert worker._execution_load_pressure(dim) is None
+
+
+def test_execution_load_pressure_prefers_execution_load_over_saturated_generic() -> None:
+    dim = _dim(
+        "execution_pressure",
+        1.0,
+        dominant_evidence=["execution_pressure=1.00", "execution_load=0.19"],
+    )
+    assert worker._execution_load_pressure(dim) == 0.19
+
+
+def test_arousal_no_longer_hard_zeroed_by_saturated_execution_pressure_channel() -> None:
+    """Live 2026-07-10 follow-on: after resource_pressure hardware filter,
+    energy was still hard-zeroed because execution_pressure.score=1.0 from a
+    stuck generic `execution_pressure` channel while real execution_load≈0.19.
+    With execution_load in dominant_evidence, energy must reflect real load."""
+    resource_dim = _dim(
+        "resource_pressure",
+        1.0,
+        dominant_evidence=["pressure=1.00", "cpu_pressure=0.92"],
+    )
+    execution_dim = _dim(
+        "execution_pressure",
+        1.0,
+        dominant_evidence=["execution_pressure=1.00", "execution_load=0.19"],
+    )
+    ss = SelfStateV1.model_validate(
+        _self_state_payload(resource_dim=resource_dim, execution_dim=execution_dim)
+    )
+    phi = worker._phi_from_self_state(ss)
+    assert phi["energy"] > 0.0
+    # intensity=1.0, resource_cap=1-0.92=0.08, execution_cap=1-0.19=0.81
+    # energy = 1.0 * (0.08 * 0.81) ** 0.5 ~= 0.2546
+    assert phi["energy"] == pytest.approx(0.2546, abs=1e-4)
+
+
+def test_arousal_still_zero_when_no_execution_load_evidence_and_score_saturated() -> None:
+    """Honest fallback: no execution_load in evidence → use raw dim.score."""
+    resource_dim = _dim(
+        "resource_pressure",
+        1.0,
+        dominant_evidence=["cpu_pressure=0.50"],
+    )
+    execution_dim = _dim(
+        "execution_pressure", 1.0, dominant_evidence=["execution_pressure=1.00"]
+    )
+    ss = SelfStateV1.model_validate(
+        _self_state_payload(resource_dim=resource_dim, execution_dim=execution_dim)
+    )
+    phi = worker._phi_from_self_state(ss)
+    assert phi["energy"] == 0.0

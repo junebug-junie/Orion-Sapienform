@@ -4,6 +4,32 @@ Autonomy goals and drives are keyed by subject (`orion`, `relationship`, `junipe
 
 - [Autonomy subject routing contract](../../docs/architecture/autonomy_subjects.md)
 
+## AutonomyStateV2 evidence (chat, env-gated)
+
+Optional turn-local reducer that upgrades graph `AutonomyStateV1` with **typed** evidence and map-driven pressure math. Keyword substring pressure is **removed**.
+
+| Piece | Path | Role |
+|-------|------|------|
+| Schema | `orion/autonomy/models.py` | `AutonomyEvidenceRefV1` optional `signal_kind` / `dimension` / `value` |
+| Compiler | `orion/autonomy/evidence_compiler.py` | Omit-when-empty gates from stance locals (not `ctx["chat_social_bridge_summary"]`) |
+| Adapter | `orion/autonomy/signal_tension.py` | `chat_evidence_to_tension` — direct map lookup, no DeviationGate/EWMA |
+| Map | `config/autonomy/signal_drive_map.yaml` | `chat_social_hazard` + `chat_reasoning_quality` rows |
+| Reducer | `orion/autonomy/reducer.py` | Fold `magnitude * drive_impacts` into `drive_pressures`; return `tensions_minted` |
+
+**Hard isolation:** this path must not wire into phi, `build_self_state`, or homeostatic `DriveEngine`.
+
+Operator contract + enable bar: [docs/autonomy_state_v2_reducer.md](../../docs/autonomy_state_v2_reducer.md)
+
+```bash
+# Enable bar (must exit 0 before flipping the flag in cortex-exec)
+PYTHONPATH=. python orion/autonomy/evals/run_autonomy_v2_movement_eval.py
+
+pytest orion/autonomy/tests/test_evidence_compiler.py \
+  orion/autonomy/tests/test_signal_tension.py \
+  orion/autonomy/tests/test_autonomy_reducer.py \
+  orion/autonomy/tests/test_autonomy_isolation.py -q
+```
+
 ## Chat stance drives (Hub compact card)
 
 On `chat_stance`, Orion’s drives graph is large and often exceeds SPARQL budgets. Defaults:

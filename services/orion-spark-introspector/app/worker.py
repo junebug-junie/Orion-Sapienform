@@ -1773,7 +1773,14 @@ async def handle_semantic_upsert(env: BaseEnvelope) -> None:
     phi_stats = _get_phi_stats()
     phi_stats = _apply_signal_deltas(phi_stats)
     tissue_valence = float(phi_stats.get("valence", 0.0))
-    arousal_display = max(0.0, min(1.0, 0.15 + (1.2 * novelty)))
+    # Canonical arousal is phi_stats["energy"] -- same source every other
+    # tissue.update broadcast site uses (handle_self_state, handle_trace).
+    # This site used to compute its own novelty-derived proxy here instead
+    # (0.15 + 1.2*novelty), predating the resource_pressure hardware-evidence
+    # fix that made phi_stats["energy"] a live, non-saturated signal -- that
+    # local workaround is no longer needed and was inconsistent with every
+    # other broadcast's definition of "arousal".
+    arousal_display = float(phi_stats.get("energy", 0.0))
     coherence_stat = float(phi_stats.get("coherence", coherence))
     corr_key = str(env.correlation_id or upsert.doc_id)
     tissue_novelty = _display_novelty_for_corr(corr_key, embedding_novelty=float(novelty))

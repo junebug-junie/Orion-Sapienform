@@ -95,3 +95,77 @@ def test_equilibrium_edge_triggered() -> None:
 
 def test_never_raises_on_garbage() -> None:
     assert signal_to_tension(_sig("spark_signal", {}), _gate(), SDM) is None
+
+
+from datetime import datetime
+
+from orion.autonomy.models import AutonomyEvidenceRefV1
+from orion.autonomy.signal_tension import chat_evidence_to_tension
+
+
+def test_chat_evidence_mapped_hazard_mints_tension() -> None:
+    ev = AutonomyEvidenceRefV1(
+        evidence_id="h1",
+        source="social_bridge",
+        kind="relational_signal",
+        summary="cooldown_active",
+        confidence=0.6,
+        observed_at=datetime(2026, 7, 10, 12, 0, 0),
+        signal_kind="chat_social_hazard",
+        dimension="cooldown_active",
+        value=1.0,
+    )
+    t = chat_evidence_to_tension(ev, SDM)
+    assert t is not None
+    assert t.kind == "tension.chat_evidence.v1"
+    assert t.magnitude > 0.0
+    assert t.drive_impacts.get("relational", 0.0) > 0.0
+
+
+def test_chat_evidence_unmapped_or_missing_fields_returns_none() -> None:
+    bare = AutonomyEvidenceRefV1(
+        evidence_id="h2",
+        source="social_bridge",
+        kind="relational_signal",
+        summary="context_excluded:memory",
+        confidence=0.6,
+    )
+    assert chat_evidence_to_tension(bare, SDM) is None
+
+    unmapped = AutonomyEvidenceRefV1(
+        evidence_id="h3",
+        source="social_bridge",
+        kind="relational_signal",
+        summary="peer_targeted_elsewhere",
+        signal_kind="chat_social_hazard",
+        dimension="peer_targeted_elsewhere",
+        value=1.0,
+    )
+    assert chat_evidence_to_tension(unmapped, SDM) is None
+
+
+def test_chat_evidence_zero_value_returns_none() -> None:
+    ev = AutonomyEvidenceRefV1(
+        evidence_id="h4",
+        source="reasoning",
+        kind="reasoning_quality",
+        summary="fallback",
+        signal_kind="chat_reasoning_quality",
+        dimension="fallback",
+        value=0.0,
+    )
+    assert chat_evidence_to_tension(ev, SDM) is None
+
+
+def test_chat_evidence_never_raises_on_garbage() -> None:
+    class Boom:
+        signal_kind = "chat_social_hazard"
+        dimension = "cooldown_active"
+        evidence_id = "x"
+        summary = "x"
+
+        @property
+        def value(self):
+            raise RuntimeError("boom")
+
+    assert chat_evidence_to_tension(Boom(), SDM) is None  # type: ignore[arg-type]

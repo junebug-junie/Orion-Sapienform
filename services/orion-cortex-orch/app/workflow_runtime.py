@@ -8,6 +8,15 @@ from typing import Any, Dict, Iterable, List, Literal, Tuple
 from uuid import NAMESPACE_URL, uuid4, uuid5
 
 from orion.cognition.workflows import get_workflow_definition, workflow_registry_payload
+from orion.cognition.chat_history_compactor.constants import DEFAULT_MAX_TURNS
+from orion.cognition.chat_history_compactor.digest import (
+    assert_chat_compactor_digest_within_budget,
+    build_quiet_day_chat_digest,
+    parse_chat_history_compactor_digest_json,
+    stable_chat_compactor_journal_entry_id,
+    trim_chat_history_compactor_input,
+)
+from orion.cognition.chat_history_compactor.window import resolve_chat_compactor_window
 from orion.cognition.github_compactor.constants import DEFAULT_LOOKBACK_DAYS
 from orion.cognition.github_compactor.digest import (
     assert_digest_within_budget,
@@ -16,6 +25,7 @@ from orion.cognition.github_compactor.digest import (
     stable_github_compactor_journal_entry_id,
     trim_github_compactor_input,
 )
+from orion.schemas.actions.chat_history_compactor import ChatHistoryCompactorDigestV1
 from orion.schemas.actions.github_compactor import GithubCompactorDigestV1
 from orion.core.bus.async_service import OrionBusAsync
 from orion.core.bus.bus_schemas import BaseEnvelope, ServiceRef
@@ -38,6 +48,7 @@ from orion.schemas.cortex.contracts import CortexClientContext, CortexClientRequ
 from orion.schemas.telemetry.spark import SparkStateSnapshotV1
 from orion.spark.concept_induction.profile_repository import build_concept_profile_repository
 from orion.spark.concept_induction.settings import DEFAULT_CONCEPT_STORE_PATH
+from .chat_history_compactor_memory import persist_chat_history_compactor_memory_card
 from .concept_profile_config import build_orch_concept_profile_settings
 from .github_compactor_memory import persist_github_compactor_memory_card
 from .settings import get_settings
@@ -2168,6 +2179,317 @@ async def _execute_github_compactor_pass(
     )
 
 
+async def _run_chat_history_compactor_digest(
+    *,
+    call_verb_runtime,
+    bus: OrionBusAsync,
+    source: ServiceRef,
+    correlation_id: str,
+    causality_chain: list | None,
+    trace: dict | None,
+    req: CortexClientRequest,
+    workflow_id: str,
+    window: DiscussionWindowResultV1,
+) -> Tuple[ChatHistoryCompactorDigestV1, str]:
+    last_error: str | None = None
+    for route in ("chat", "quick"):
+        synth_req = req.model_copy(deep=True)
+        synth_req.mode = "brain"
+        synth_req.route_intent = "none"
+        synth_req.verb = "chat_history_compactor_digest_v1"
+        synth_req.packs = []
+        synth_req.context.messages = []
+        synth_req.context.raw_user_text = "Compact recent Hub chat into a durable memory digest."
+        synth_req.context.user_message = synth_req.context.raw_user_text
+        synth_req.context.metadata = dict(synth_req.context.metadata or {})
+        synth_req.context.metadata["workflow_subverb"] = "chat_history_compactor_digest_v1"
+        synth_req.context.metadata["workflow_id"] = workflow_id
+        synth_req.context.metadata["chat_history_compactor_input"] = trim_chat_history_compactor_input(window)
+        synth_req.context.metadata.update(
+            _workflow_execution_envelope(
+                req=req,
+                correlation_id=correlation_id,
+                workflow_id=workflow_id,
+                workflow_subverb="chat_history_compactor_digest_v1",
+            )
+        )
+        synth_req.recall.enabled = False
+        synth_req.recall.required = False
+        synth_req.recall.max_items = 0
+        synth_req.options = dict(synth_req.options or {})
+        synth_req.options.update(
+            {
+                "workflow_execution": True,
+                "response_format": {"type": "json_object"},
+                "return_json": True,
+                "reasoning": {"effort": "none"},
+                "llm_route": route,
+            }
+        )
+        verb_result = await call_verb_runtime(
+            bus,
+            source=source,
+            client_request=synth_req,
+            correlation_id=correlation_id,
+            causality_chain=causality_chain,
+            trace=_ensure_trace(trace, correlation_id=correlation_id, workflow_id=workflow_id),
+            timeout_sec=float((synth_req.options or {}).get("timeout_sec", 120.0)),
+        )
+        if not verb_result.ok:
+            last_error = f"chat_compactor_digest_failed:{verb_result.error or 'verb_failed'}"
+            continue
+        payload = _extract_result_payload(verb_result)
+        if payload.get("ok") is False:
+            last_error = f"chat_compactor_digest_failed:{payload.get('error') or payload.get('status')}"
+            continue
+        result_metadata = payload.get("metadata") if isinstance(payload.get("metadata"), dict) else {}
+        if result_metadata.get("structured_output_rejected"):
+            last_error = "chat_compactor_digest_failed:structured_output_rejected"
+            continue
+        digest_raw = result_metadata.get("chat_history_compactor_digest")
+        try:
+            if isinstance(digest_raw, dict):
+                digest = ChatHistoryCompactorDigestV1.model_validate(digest_raw)
+            else:
+                digest = parse_chat_history_compactor_digest_json(str(payload.get("final_text") or ""))
+        except (ValueError, TypeError) as exc:
+            last_error = f"chat_compactor_digest_failed:invalid_json:{exc}"
+            continue
+        try:
+            assert_chat_compactor_digest_within_budget(digest)
+        except ValueError as exc:
+            last_error = str(exc)
+            continue
+        return digest, route
+    raise WorkflowExecutionError(last_error or "chat_compactor_digest_failed:exhausted")
+
+
+async def _execute_chat_history_compactor_pass(
+    *,
+    bus: OrionBusAsync,
+    source: ServiceRef,
+    correlation_id: str,
+    causality_chain: list | None,
+    trace: dict | None,
+    req: CortexClientRequest,
+    call_verb_runtime,
+) -> CortexClientResult:
+    workflow_id = "chat_history_compactor_pass"
+    user_text = (req.context.raw_user_text or req.context.user_message or "").strip()
+    request = _workflow_request(req)
+    window_spec = resolve_chat_compactor_window(
+        window_mode=str(request.get("window_mode") or "") or None,
+        lookback_hours=request.get("lookback_hours"),
+        now=datetime.now(timezone.utc),
+        user_text=user_text,
+        workflow_request=request,
+    )
+    md = req.context.metadata if isinstance(req.context.metadata, dict) else {}
+    dw_req = DiscussionWindowRequestV1(
+        lookback_seconds=int(window_spec.lookback_seconds),
+        end_time_utc=window_spec.window_end,
+        user_id=None,
+        source=None,
+        max_turns=DEFAULT_MAX_TURNS,
+        require_prompt_and_response=True,
+    )
+    skill_args = dw_req.model_dump(mode="json", exclude_none=True)
+    skill_client = CortexClientRequest(
+        mode="brain",
+        route_intent="none",
+        verb="skills.chat.discussion_window.v1",
+        packs=[],
+        options={
+            "source": "cortex-orch-workflow",
+            "policy_dispatch_only": True,
+            "workflow_execution": True,
+            "workflow_id": workflow_id,
+        },
+        recall=RecallDirective(enabled=False, required=False, profile=None),
+        context=CortexClientContext(
+            messages=[],
+            raw_user_text=user_text or "Chat history compactor pass",
+            user_message=user_text or "Chat history compactor pass",
+            session_id=req.context.session_id or f"chat-history-compactor:{correlation_id}",
+            user_id=req.context.user_id,
+            trace_id=req.context.trace_id or correlation_id,
+            metadata={
+                **md,
+                "skill_args": skill_args,
+                "workflow_subverb": "skills.chat.discussion_window.v1",
+                "workflow_id": workflow_id,
+            },
+        ),
+    )
+    skill_client.context.metadata.update(
+        _workflow_execution_envelope(
+            req=skill_client,
+            correlation_id=correlation_id,
+            workflow_id=workflow_id,
+            workflow_subverb="skills.chat.discussion_window.v1",
+        )
+    )
+    verb_result = await call_verb_runtime(
+        bus,
+        source=source,
+        client_request=skill_client,
+        correlation_id=_workflow_sub_correlation_id(correlation_id, "discussion_window"),
+        causality_chain=causality_chain,
+        trace=_ensure_trace(trace, correlation_id=correlation_id, workflow_id=workflow_id),
+        timeout_sec=float((skill_client.options or {}).get("timeout_sec", 120.0)),
+    )
+    if not verb_result.ok:
+        raise WorkflowExecutionError(f"discussion_window_skill_failed:{verb_result.error}")
+    pl = _extract_result_payload(verb_result)
+    md_pl = pl.get("metadata") if isinstance(pl.get("metadata"), dict) else {}
+    skill_blob = md_pl.get("skill_result") if isinstance(md_pl.get("skill_result"), dict) else None
+    if skill_blob is None:
+        skill_blob = pl.get("skill_result") if isinstance(pl.get("skill_result"), dict) else _parse_json_text(pl.get("final_text"))
+    if pl.get("ok") is False:
+        raise WorkflowExecutionError(f"discussion_window_skill_failed:{pl.get('error') or pl.get('status')}")
+    if not isinstance(skill_blob, dict):
+        raise WorkflowExecutionError("discussion_window_skill_empty_payload")
+    if skill_blob.get("error"):
+        raise WorkflowExecutionError(f"discussion_window_skill_error:{skill_blob.get('error')}")
+    window = DiscussionWindowResultV1.model_validate(skill_blob)
+
+    card_id: str | None = None
+    card_persist_skipped_reason: str | None = None
+    digest_route: str | None = None
+    persisted: List[str] = []
+    journal_entry: dict | None = None
+
+    if window.turn_count <= 0 or not (window.transcript_text or "").strip():
+        digest = build_quiet_day_chat_digest(
+            window_label=window_spec.calendar_date or window_spec.compactor_index
+        )
+    else:
+        digest, digest_route = await _run_chat_history_compactor_digest(
+            call_verb_runtime=call_verb_runtime,
+            bus=bus,
+            source=source,
+            correlation_id=correlation_id,
+            causality_chain=causality_chain,
+            trace=trace,
+            req=req,
+            workflow_id=workflow_id,
+            window=window,
+        )
+        try:
+            persisted_card_id = await persist_chat_history_compactor_memory_card(
+                digest=digest,
+                window=window_spec,
+                turn_count=window.turn_count,
+            )
+            card_id = str(persisted_card_id) if persisted_card_id is not None else None
+        except RuntimeError as exc:
+            if "recall_pg_dsn_unavailable" not in str(exc):
+                raise
+            card_persist_skipped_reason = "recall_pg_dsn_unavailable"
+            logger.warning(
+                "chat_history_compactor_card_persist_skipped corr=%s reason=%s",
+                correlation_id,
+                card_persist_skipped_reason,
+            )
+
+    if (digest.journal_body or "").strip():
+        draft = JournalEntryDraftV1(
+            mode="digest",
+            title=(digest.journal_title or f"Chat digest — {window_spec.compactor_index}")[:120] or "Chat digest",
+            body=digest.journal_body,
+        )
+        entry_id = stable_chat_compactor_journal_entry_id(
+            workflow_id=workflow_id,
+            compactor_index=window_spec.compactor_index,
+        )
+        write = build_write_payload(
+            draft,
+            trigger=build_manual_trigger(
+                summary=f"Chat history compactor {window_spec.compactor_index}",
+                source_ref=f"chat_history_compactor_pass:{window_spec.compactor_index}",
+            ),
+            correlation_id=correlation_id,
+            author=req.context.user_id or "orion",
+            entry_id=entry_id,
+        )
+        await _publish_journal_entry_write_or_fail(
+            bus=bus,
+            source=source,
+            correlation_id=correlation_id,
+            causality_chain=causality_chain,
+            trace=trace,
+            workflow_id=workflow_id,
+            write=write,
+        )
+        persisted.append(f"journal.entry.write.v1:{write.entry_id}")
+        journal_entry = write.model_dump(mode="json")
+
+    if card_id:
+        persisted.insert(0, f"memory_card:{card_id}")
+
+    if window.turn_count <= 0 or not (window.transcript_text or "").strip():
+        main_result = (
+            f"No Hub chat turns for {window_spec.compactor_index}. "
+            "Indexed chat digest card skipped."
+        )
+        if journal_entry:
+            main_result = f"{main_result} Journal entry {journal_entry.get('entry_id')}."
+    else:
+        main_result = (
+            f"Compacted {window.turn_count} chat turn(s) for {window_spec.compactor_index}."
+        )
+        if journal_entry:
+            main_result = f"{main_result} Journal entry {journal_entry.get('entry_id')}."
+        if card_id:
+            main_result = f"{main_result} Memory card {card_id}."
+
+    metadata = _workflow_metadata_base(request=request, status="completed")
+    metadata["workflow"] = {
+        "workflow_id": workflow_id,
+        "display_name": "Chat History Compactor",
+        "status": "completed",
+        "executed": True,
+        "subverb": (
+            "chat_history_compactor_digest_v1"
+            if window.turn_count > 0 and (window.transcript_text or "").strip()
+            else "skills.chat.discussion_window.v1"
+        ),
+        "persisted": persisted,
+        "scheduled": [],
+        "main_result": main_result,
+        "turn_count": int(window.turn_count),
+        "compactor_index": window_spec.compactor_index,
+        "card_id": card_id,
+        "card_summary_preview": digest.card_summary[:200],
+        "digest_llm_route": digest_route,
+        "window_mode": window_spec.mode,
+        "lookback_hours": window_spec.lookback_hours,
+        "selection_strategy": window.selection_strategy,
+    }
+    if journal_entry is not None:
+        metadata["workflow"]["journal_entry"] = journal_entry
+    if card_persist_skipped_reason:
+        metadata["workflow"]["card_persist_skipped_reason"] = card_persist_skipped_reason
+    return CortexClientResult(
+        ok=True,
+        mode="brain",
+        verb=workflow_id,
+        status="success",
+        final_text=_workflow_summary_text(
+            title="Chat History Compactor",
+            status="completed",
+            main_result=main_result,
+            persisted=persisted,
+        ),
+        memory_used=False,
+        recall_debug={},
+        steps=[],
+        error=None,
+        correlation_id=correlation_id,
+        metadata=metadata,
+    )
+
+
 async def execute_chat_workflow(
     *,
     bus: OrionBusAsync,
@@ -2257,6 +2579,16 @@ async def execute_chat_workflow(
             )
         elif workflow_id == "github_compactor_pass":
             result = await _execute_github_compactor_pass(
+                bus=bus,
+                source=source,
+                correlation_id=correlation_id,
+                causality_chain=causality_chain,
+                trace=trace,
+                req=req,
+                call_verb_runtime=call_verb_runtime,
+            )
+        elif workflow_id == "chat_history_compactor_pass":
+            result = await _execute_chat_history_compactor_pass(
                 bus=bus,
                 source=source,
                 correlation_id=correlation_id,

@@ -7,7 +7,7 @@ import logging
 from datetime import datetime, timezone
 from types import SimpleNamespace
 from pathlib import Path
-from uuid import UUID
+from uuid import UUID, uuid4
 import sys
 import pytest
 
@@ -2466,3 +2466,295 @@ def test_github_compactor_pass_same_day_rerun_uses_stable_journal_entry_id(monke
 
     assert len(entry_ids) == 2
     assert entry_ids[0] == entry_ids[1]
+
+
+def test_chat_history_compactor_pass_upserts_card_and_writes_journal(monkeypatch) -> None:
+    bus = DummyBus()
+    card_calls: dict = {}
+    digest_routes: list[str] = []
+
+    async def _fake_call_verb_runtime(*args, **kwargs):
+        req = kwargs["client_request"]
+        if req.verb == "skills.chat.discussion_window.v1":
+            skill = {
+                "window_start_utc": "2026-07-09T04:00:00+00:00",
+                "window_end_utc": "2026-07-09T10:00:00+00:00",
+                "turn_count": 1,
+                "turns": [
+                    {
+                        "created_at": "2026-07-09T05:00:00+00:00",
+                        "correlation_id": "corr-a",
+                        "prompt": "How is the memory card upsert going?",
+                        "response": "Indexed by compactor_index.",
+                    }
+                ],
+                "transcript_text": "user: How is the memory card upsert going?\norion: Indexed by compactor_index.",
+                "selection_strategy": "time_bound_then_contiguous_suffix",
+            }
+            return DummyVerbResult(
+                payload={
+                    "result": {
+                        "status": "success",
+                        "final_text": json.dumps(skill),
+                        "metadata": {"skill_result": skill},
+                    }
+                }
+            )
+        if req.verb == "chat_history_compactor_digest_v1":
+            digest_routes.append(str((req.options or {}).get("llm_route") or ""))
+            digest = {
+                "card_summary": "Discussed indexed memory card upserts.",
+                "journal_title": "Chat digest — rolling 6h",
+                "journal_body": "Talked through compactor_index upsert semantics.",
+                "turn_refs": ["corr-a"],
+            }
+            return DummyVerbResult(
+                payload={
+                    "result": {
+                        "status": "success",
+                        "final_text": json.dumps(digest),
+                        "metadata": {"chat_history_compactor_digest": digest},
+                    }
+                }
+            )
+        raise AssertionError(f"unexpected verb {req.verb}")
+
+    async def _fake_persist_card(**kwargs):
+        card_calls.update(kwargs)
+        return uuid4()
+
+    monkeypatch.setattr(
+        "app.workflow_runtime.persist_chat_history_compactor_memory_card",
+        _fake_persist_card,
+    )
+
+    req = _req("chat_history_compactor_pass")
+    req.context.raw_user_text = "Compact the last 6 hours of chat into a memory digest."
+    req.context.user_message = req.context.raw_user_text
+
+    result = asyncio.run(
+        execute_chat_workflow(
+            bus=bus,
+            source=ServiceRef(name="cortex-orch"),
+            req=req,
+            correlation_id="00000000-0000-0000-0000-000000000301",
+            causality_chain=[],
+            trace={},
+            call_verb_runtime=_fake_call_verb_runtime,
+        )
+    )
+
+    assert result.ok is True
+    assert result.metadata["workflow"]["workflow_id"] == "chat_history_compactor_pass"
+    assert result.metadata["workflow"]["turn_count"] == 1
+    assert card_calls.get("digest") is not None
+    assert any(ch == "orion:journal:write" for ch, _ in bus.published)
+    assert digest_routes[0] == "chat"
+
+
+def test_chat_history_compactor_pass_quiet_day_skips_card(monkeypatch) -> None:
+    bus = DummyBus()
+    card_called = {"n": 0}
+
+    async def _fake_call_verb_runtime(*args, **kwargs):
+        req = kwargs["client_request"]
+        if req.verb == "skills.chat.discussion_window.v1":
+            skill = {
+                "window_start_utc": "2026-07-08T06:00:00+00:00",
+                "window_end_utc": "2026-07-09T05:59:59.999000+00:00",
+                "turn_count": 0,
+                "turns": [],
+                "transcript_text": "",
+                "selection_strategy": "time_bound_then_contiguous_suffix",
+            }
+            return DummyVerbResult(
+                payload={
+                    "result": {
+                        "status": "success",
+                        "final_text": json.dumps(skill),
+                        "metadata": {"skill_result": skill},
+                    }
+                }
+            )
+        raise AssertionError(f"unexpected verb {req.verb}")
+
+    async def _fake_persist_card(**kwargs):
+        card_called["n"] += 1
+        return uuid4()
+
+    monkeypatch.setattr(
+        "app.workflow_runtime.persist_chat_history_compactor_memory_card",
+        _fake_persist_card,
+    )
+
+    req = _req("chat_history_compactor_pass")
+    req.context.metadata["workflow_request"]["window_mode"] = "day"
+    req.context.metadata["workflow_request"]["scheduled_dispatch"] = {"source": "orion-actions"}
+
+    result = asyncio.run(
+        execute_chat_workflow(
+            bus=bus,
+            source=ServiceRef(name="cortex-orch"),
+            req=req,
+            correlation_id="00000000-0000-0000-0000-000000000302",
+            causality_chain=[],
+            trace={},
+            call_verb_runtime=_fake_call_verb_runtime,
+        )
+    )
+    assert result.ok is True
+    assert card_called["n"] == 0
+    assert result.metadata["workflow"]["turn_count"] == 0
+
+
+def test_chat_history_compactor_pass_digest_chat_then_quick_retry(monkeypatch) -> None:
+    bus = DummyBus()
+    routes: list[str] = []
+
+    async def _fake_call_verb_runtime(*args, **kwargs):
+        req = kwargs["client_request"]
+        if req.verb == "skills.chat.discussion_window.v1":
+            skill = {
+                "window_start_utc": "2026-07-09T04:00:00+00:00",
+                "window_end_utc": "2026-07-09T10:00:00+00:00",
+                "turn_count": 1,
+                "turns": [
+                    {
+                        "created_at": "2026-07-09T05:00:00+00:00",
+                        "correlation_id": "corr-b",
+                        "prompt": "hi",
+                        "response": "hello",
+                    }
+                ],
+                "transcript_text": "user: hi\norion: hello",
+                "selection_strategy": "time_bound_then_contiguous_suffix",
+            }
+            return DummyVerbResult(
+                payload={
+                    "result": {
+                        "status": "success",
+                        "final_text": json.dumps(skill),
+                        "metadata": {"skill_result": skill},
+                    }
+                }
+            )
+        if req.verb == "chat_history_compactor_digest_v1":
+            route = str((req.options or {}).get("llm_route") or "")
+            routes.append(route)
+            if route == "chat":
+                return DummyVerbResult(
+                    payload={"result": {"status": "success", "final_text": "not-json", "metadata": {}}}
+                )
+            digest = {
+                "card_summary": "Quick-route digest recovered.",
+                "journal_title": "Chat digest",
+                "journal_body": "Recovered on quick.",
+                "turn_refs": ["corr-b"],
+            }
+            return DummyVerbResult(
+                payload={
+                    "result": {
+                        "status": "success",
+                        "final_text": json.dumps(digest),
+                        "metadata": {"chat_history_compactor_digest": digest},
+                    }
+                }
+            )
+        raise AssertionError(f"unexpected verb {req.verb}")
+
+    async def _fake_persist_card(**kwargs):
+        return uuid4()
+
+    monkeypatch.setattr(
+        "app.workflow_runtime.persist_chat_history_compactor_memory_card",
+        _fake_persist_card,
+    )
+
+    result = asyncio.run(
+        execute_chat_workflow(
+            bus=bus,
+            source=ServiceRef(name="cortex-orch"),
+            req=_req("chat_history_compactor_pass"),
+            correlation_id="00000000-0000-0000-0000-000000000303",
+            causality_chain=[],
+            trace={},
+            call_verb_runtime=_fake_call_verb_runtime,
+        )
+    )
+    assert result.ok is True
+    assert routes == ["chat", "quick"]
+    assert result.metadata["workflow"].get("digest_llm_route") == "quick"
+
+
+def test_chat_history_compactor_pass_over_budget_fails_without_persist(monkeypatch) -> None:
+    bus = DummyBus()
+    card_called = {"n": 0}
+
+    async def _fake_call_verb_runtime(*args, **kwargs):
+        req = kwargs["client_request"]
+        if req.verb == "skills.chat.discussion_window.v1":
+            skill = {
+                "window_start_utc": "2026-07-09T04:00:00+00:00",
+                "window_end_utc": "2026-07-09T10:00:00+00:00",
+                "turn_count": 1,
+                "turns": [
+                    {
+                        "created_at": "2026-07-09T05:00:00+00:00",
+                        "correlation_id": "corr-c",
+                        "prompt": "hi",
+                        "response": "hello",
+                    }
+                ],
+                "transcript_text": "user: hi\norion: hello",
+                "selection_strategy": "time_bound_then_contiguous_suffix",
+            }
+            return DummyVerbResult(
+                payload={
+                    "result": {
+                        "status": "success",
+                        "final_text": json.dumps(skill),
+                        "metadata": {"skill_result": skill},
+                    }
+                }
+            )
+        if req.verb == "chat_history_compactor_digest_v1":
+            digest = {
+                "card_summary": "x" * 801,
+                "journal_title": "Title",
+                "journal_body": "Body",
+                "turn_refs": ["corr-c"],
+            }
+            return DummyVerbResult(
+                payload={
+                    "result": {
+                        "status": "success",
+                        "final_text": json.dumps(digest),
+                        "metadata": {"chat_history_compactor_digest": digest},
+                    }
+                }
+            )
+        raise AssertionError(f"unexpected verb {req.verb}")
+
+    async def _fake_persist_card(**kwargs):
+        card_called["n"] += 1
+        return uuid4()
+
+    monkeypatch.setattr(
+        "app.workflow_runtime.persist_chat_history_compactor_memory_card",
+        _fake_persist_card,
+    )
+
+    with pytest.raises(Exception, match="compactor_output_over_budget"):
+        asyncio.run(
+            execute_chat_workflow(
+                bus=bus,
+                source=ServiceRef(name="cortex-orch"),
+                req=_req("chat_history_compactor_pass"),
+                correlation_id="00000000-0000-0000-0000-000000000304",
+                causality_chain=[],
+                trace={},
+                call_verb_runtime=_fake_call_verb_runtime,
+            )
+        )
+    assert card_called["n"] == 0
+    assert not any(ch == "orion:journal:write" for ch, _ in bus.published)

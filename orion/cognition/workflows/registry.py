@@ -210,6 +210,32 @@ _WORKFLOWS: tuple[WorkflowDefinition, ...] = (
         ],
         planner_hints=["Use when the user asks to compact recent GitHub PR activity into repo development memory."],
     ),
+    WorkflowDefinition(
+        workflow_id="chat_history_compactor_pass",
+        display_name="Chat History Compactor",
+        description="Compact bounded chat_history_log windows into indexed memory cards (optional journal).",
+        aliases=[
+            "compact chat history",
+            "compact last 24 hours of chat",
+            "compact the last 24 hours of chat into a memory digest",
+            "compact the last 6 hours of chat into a memory digest",
+            "chat history compactor",
+            "what have we been talking about",
+        ],
+        user_invocable=True,
+        autonomous_invocable=True,
+        execution_mode="sync",
+        may_call_actions=False,
+        persistence_policy="Upsert one indexed memory card per window key; optional append-only journal entry.",
+        result_surface="Return turn count, compactor_index, card summary preview, card_id.",
+        steps=[
+            WorkflowStepDefinition(step_id="fetch_window", description="Fetch discussion window from SQL.", adapter="verb:skills.chat.discussion_window.v1"),
+            WorkflowStepDefinition(step_id="compact", description="LLM compact digest JSON.", adapter="verb:chat_history_compactor_digest_v1"),
+            WorkflowStepDefinition(step_id="persist_card", description="Upsert indexed memory card.", adapter="memory_cards:compactor_index"),
+            WorkflowStepDefinition(step_id="persist_journal", description="Optional journal append.", adapter="journaler:append_only_write"),
+        ],
+        planner_hints=["Use when the operator asks to compact recent Hub chat into a durable memory digest."],
+    ),
 )
 
 _WORKFLOW_INDEX = {workflow.workflow_id: workflow for workflow in _WORKFLOWS}

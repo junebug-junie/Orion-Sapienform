@@ -159,15 +159,13 @@ async def test_build_subprocess_env_omits_autocompact_when_zero(monkeypatch: pyt
     assert "CLAUDE_AUTOCOMPACT_PCT_OVERRIDE" not in env
 
 
-@pytest.mark.asyncio
-async def test_build_subprocess_env_enables_tool_search(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_build_subprocess_env_enables_tool_search(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.delenv("ENABLE_TOOL_SEARCH", raising=False)
     env = bridge._build_subprocess_env(fcc_server_url="http://127.0.0.1:8082", auth_token="tok")
     assert env["ENABLE_TOOL_SEARCH"] == "true"
 
 
-@pytest.mark.asyncio
-async def test_build_subprocess_env_preserves_tool_search_override(
+def test_build_subprocess_env_preserves_tool_search_override(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     monkeypatch.setenv("ENABLE_TOOL_SEARCH", "auto")

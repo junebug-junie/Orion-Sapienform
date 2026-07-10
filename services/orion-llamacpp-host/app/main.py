@@ -125,6 +125,26 @@ def _ensure_mmproj_file(cfg: LlamaCppConfig) -> Optional[str]:
     return str(mmproj_path)
 
 
+def _ensure_draft_file(cfg: LlamaCppConfig) -> Optional[str]:
+    """Ensure draft GGUF exists; return concrete path for --model-draft."""
+    if not cfg.draft_filename:
+        return None
+
+    repo_id = cfg.draft_repo_id or cfg.repo_id
+    if not repo_id:
+        raise FileNotFoundError(
+            "Profile requests draft_filename but no draft_repo_id or repo_id is configured"
+        )
+
+    draft_path = _ensure_hf_gguf_file(
+        model_root=cfg.model_root,
+        repo_id=repo_id,
+        filename=cfg.draft_filename,
+        label="draft model",
+    )
+    return str(draft_path)
+
+
 def _resolve_runtime(profile: LLMProfile) -> Tuple[str, LlamaCppConfig, Dict[str, str]]:
     """
     Returns: (model_path, runtime_cfg, env)
@@ -363,6 +383,41 @@ def build_llama_server_cmd_and_env(profile: LLMProfile) -> Tuple[List[str], Dict
         append_flag("--min-p", str(cfg.min_p))
     if cfg.presence_penalty is not None:
         append_flag("--presence-penalty", str(cfg.presence_penalty))
+
+    # Speculative decoding (draft model). Optional; omit cleanly when unsupported.
+    if cfg.draft_filename:
+        draft_supported = (
+            supported_flags is None or "--model-draft" in supported_flags
+        )
+        if not draft_supported:
+            logger.error(
+                "Profile requested draft_filename=%s but this llama-server does not advertise "
+                "--model-draft in --help; omitting draft speculative decoding and launching "
+                "the main model only. Upgrade LLAMACPP_IMAGE_TAG or unset draft_filename.",
+                cfg.draft_filename,
+            )
+        else:
+            draft_path = _ensure_draft_file(cfg)
+            if draft_path is None:
+                logger.error(
+                    "Profile requested draft_filename=%s but draft path resolved to None; "
+                    "omitting draft speculative decoding.",
+                    cfg.draft_filename,
+                )
+            else:
+                append_flag("--model-draft", draft_path)
+                if cfg.n_gpu_layers_draft is not None:
+                    append_flag("--n-gpu-layers-draft", str(int(cfg.n_gpu_layers_draft)))
+                if cfg.draft_min is not None:
+                    append_flag("--draft-min", str(int(cfg.draft_min)))
+                if cfg.draft_max is not None:
+                    append_flag("--draft-max", str(int(cfg.draft_max)))
+                if "--model-draft" not in cmd:
+                    logger.error(
+                        "Profile requested draft_filename=%s but --model-draft was not emitted; "
+                        "omitting draft speculative decoding.",
+                        cfg.draft_filename,
+                    )
 
     if cfg.chat_template_kwargs is not None and "--chat-template-kwargs" not in cmd:
         logger.error(

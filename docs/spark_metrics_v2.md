@@ -30,16 +30,18 @@ flowchart LR
    ```bash
    python -m unittest tests/test_spark_metrics_v2.py
    ```
-2. **Scenario sanity check**
-   ```bash
-   python scripts/spark_metrics_v2_scenario.py
-   ```
-   - Ten routine turns should converge to a non-zero novelty baseline.
-   - The summary turn spikes novelty.
-   - Returning to routine moves novelty back toward the baseline band.
-3. **State read-model**
+   - `test_novelty_baseline_and_spike` is the scenario check: ten routine
+     stimuli converge to a non-zero novelty baseline, then a distinct
+     stimulus spikes novelty relative to that baseline.
+   - `test_adaptive_learning_rate_bounds` covers the coherence/distress
+     learning-rate adaptation.
+   - (2026-07-10: the standalone `scripts/spark_metrics_v2_scenario.py`
+     demo script was removed along with `orion/spark/spark_engine.py`,
+     which it depended on and which had zero production consumers. This
+     unit test file is now the only way to exercise this behavior.)
+2. **State read-model**
    - Call `GET /state/latest` (state-service) or publish `state.get_latest.v1` on the bus and confirm φ contains coherent novelty values per node.
-4. **SQL spot-check**
+3. **SQL spot-check**
    - Query recent telemetry rows that embed the canonical snapshot:
      ```sql
      SELECT metadata->'spark_state_snapshot'

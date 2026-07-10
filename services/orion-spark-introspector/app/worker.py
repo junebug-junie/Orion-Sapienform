@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import math
 import time
 from collections import OrderedDict, deque
 from datetime import datetime, timezone
@@ -19,7 +20,7 @@ from orion.core.bus.bus_schemas import BaseEnvelope, Envelope, ServiceRef
 from orion.core.bus.codec import OrionCodec
 from orion.core.bus.work_queue import RedisStreamWorkQueue
 from orion.schemas.platform import CoreEventV1
-from orion.schemas.self_state import SelfStateV1
+from orion.schemas.self_state import SelfStateDimensionV1, SelfStateV1
 from orion.schemas.telemetry.cognition_trace import CognitionTracePayload
 from orion.schemas.telemetry.inner_state import InnerStateFeaturesV1
 from orion.schemas.telemetry.phi_encoder import PhiIntrinsicRewardV1
@@ -118,9 +119,74 @@ _INNER_DEGENERATE_STREAK = 0
 _INNER_LAST_HEADLINE: Optional[float] = None  # honest headline for WS reads
 _INNER_SINK = InnerStateCorpusSink(getattr(settings, "inner_features_corpus_path", "") or "")
 
+# Last chat-triggered novelty actually shown for a semantic upsert
+# (handle_semantic_upsert's `tissue_novelty` -- prefers cached appraisal
+# novelty via _display_novelty_for_corr, falls back to raw embedding cosine
+# distance), held and reused by the self-state tick's tissue.update broadcast
+# instead of the SelfStateV1 `uncertainty` dimension. `uncertainty` is
+# structurally pinned at 0 whenever coherence is healthy (see
+# orion/self_state/scoring.py::uncertainty_score = salience * (1 - coherence);
+# coherence only drops on active failure/friction), so it can never register
+# the continuous, ambient variation the tissue-viz display wants. None until
+# the first real chat message this process lifetime; read-only fallback to
+# 0.0 (honest "no signal yet"), never a fabricated value.
+_LAST_EMBEDDING_NOVELTY: Optional[float] = None
+
 _PHI_ENCODER: PhiEncoderRuntime | None = None
 _PHI_PREV_PHI: float | None = None
 _PHI_PREV_RECON: float | None = None
+
+# resource_pressure.score is a max() over 7 heterogeneous channels (see
+# config/self_state/self_state_policy.v1.yaml channel_dimension_map): real
+# hardware load (cpu/gpu/memory/disk/thermal_pressure) alongside a generic
+# capability-graph `pressure` channel and `transport_pressure`. Live incident
+# 2026-07-10: the generic `pressure` channel sticks saturated at 1.00 from an
+# untraced orion-field-digester capability (see
+# project_tissue_viz_novelty_arousal_theater memory), permanently pinning
+# resource_pressure.score at 1.0 regardless of actual hardware load and
+# hard-zeroing tissue-viz arousal (`energy = intensity * (resource_cap *
+# execution_cap)**0.5` with resource_cap = 1 - resource_pressure = 0).
+# builder.py already puts the raw per-channel breakdown on the wire via
+# SelfStateDimensionV1.dominant_evidence ("channel=value" strings, top 3 by
+# value) -- filtering that to only the real hardware channels bypasses the
+# stuck generic channel without touching orion/self_state/scoring.py, which
+# also feeds agency_readiness_score and stays out of scope for this
+# display-layer fix.
+_HARDWARE_RESOURCE_CHANNELS = frozenset({
+    "cpu_pressure",
+    "gpu_pressure",
+    "memory_pressure",
+    "disk_pressure",
+    "thermal_pressure",
+})
+
+
+def _hardware_resource_pressure(dim: Optional[SelfStateDimensionV1]) -> Optional[float]:
+    """Real resource load from resource_pressure's dominant_evidence, ignoring
+    the generic capability-graph `pressure` and `transport_pressure` channels
+    that can stick saturated. Returns None (honest no-signal) when no hardware
+    channel appears in the evidence -- never fabricates a value."""
+    if dim is None:
+        return None
+    values: List[float] = []
+    for entry in dim.dominant_evidence:
+        name, _, raw = entry.partition("=")
+        if name not in _HARDWARE_RESOURCE_CHANNELS:
+            continue
+        try:
+            v = float(raw)
+        except ValueError:
+            continue
+        # dominant_evidence is an unvalidated list[str] crossing a service
+        # boundary (unlike dim.score, which the schema bounds to [0, 1]) --
+        # NaN/out-of-range would otherwise poison resource_cap ** 0.5 into a
+        # complex number downstream. Upstream clamp01() calls in scoring.py
+        # already keep this in range today, but this boundary shouldn't rely
+        # on that holding forever.
+        if not math.isfinite(v):
+            continue
+        values.append(max(0.0, min(1.0, v)))
+    return max(values) if values else None
 
 
 def set_latest_self_state(ss: SelfStateV1) -> None:
@@ -150,12 +216,25 @@ def _phi_from_self_state(ss: SelfStateV1) -> Dict[str, float]:
 
     # Energy: activation × available capacity (multiplicative, not additive).
     # Being highly active with no room left isn't energy — it's grinding.
-    intensity     = _s("field_intensity", 0.5)
-    resource_cap  = 1.0 - _s("resource_pressure", 0.5)
+    intensity = _s("field_intensity", 0.5)
+    hardware_pressure = _hardware_resource_pressure(d.get("resource_pressure"))
+    resource_pressure_for_energy = (
+        hardware_pressure if hardware_pressure is not None else _s("resource_pressure", 0.5)
+    )
+    resource_cap  = 1.0 - resource_pressure_for_energy
     execution_cap = 1.0 - _s("execution_pressure", 0.3)
     energy = intensity * (resource_cap * execution_cap) ** 0.5
     # Trajectory: rising intensity or recovering capacity builds energy momentum.
-    energy += 0.1 * max(0.0, _t("field_intensity")) - 0.1 * max(0.0, _t("resource_pressure"))
+    # dimension_trajectory["resource_pressure"] tracks the delta of the raw,
+    # possibly-still-saturated aggregate score -- the same untraced channel
+    # resource_pressure_for_energy was built to bypass above. Only apply that
+    # delta when the base term is also using the raw score (no hardware
+    # evidence available); mixing a hardware-filtered base with a
+    # raw-aggregate momentum term would reintroduce the same stuck-channel
+    # theater into the trajectory component alone.
+    energy += 0.1 * max(0.0, _t("field_intensity"))
+    if hardware_pressure is None:
+        energy -= 0.1 * max(0.0, _t("resource_pressure"))
     energy = max(0.0, min(1.0, energy))
 
     # Novelty: genuine surprise requires a stable ground to notice it against.
@@ -200,6 +279,17 @@ def _headline_stat(phi_stats: Dict[str, float]) -> float:
     if _INNER_LAST_HEADLINE is not None:
         return float(_INNER_LAST_HEADLINE)
     return float(phi_stats.get("coherence", 0.0))
+
+
+def _novelty_stat() -> float:
+    """Last real chat-triggered novelty for WS EKG (see _LAST_EMBEDDING_NOVELTY).
+
+    Never reads phi_stats["novelty"] (SelfStateV1 `uncertainty` dimension,
+    structurally pinned at 0 whenever coherence is healthy -- see
+    orion/self_state/scoring.py::uncertainty_score). Falls back to 0.0
+    (honest "no chat yet this process lifetime") rather than a fabricated value.
+    """
+    return float(_LAST_EMBEDDING_NOVELTY) if _LAST_EMBEDDING_NOVELTY is not None else 0.0
 
 
 def set_publisher_bus(bus: OrionBusAsync):
@@ -1417,7 +1507,7 @@ async def handle_trace(env: BaseEnvelope) -> None:
                     "timestamp": iso_ts,
                     "stats": {
                         "phi": _headline_stat(phi_stats),
-                        "novelty": float(phi_stats.get("novelty", 0.0)),
+                        "novelty": _novelty_stat(),
                         "valence": valence,
                         "arousal": arousal,
                     },
@@ -1591,7 +1681,7 @@ async def handle_trace(env: BaseEnvelope) -> None:
 
 
 async def handle_semantic_upsert(env: BaseEnvelope) -> None:
-    global _VALENCE_INIT_TASK
+    global _VALENCE_INIT_TASK, _LAST_EMBEDDING_NOVELTY
     payload_obj = env.payload if isinstance(env.payload, dict) else {}
     try:
         upsert = VectorUpsertV1.model_validate(payload_obj)
@@ -1683,12 +1773,20 @@ async def handle_semantic_upsert(env: BaseEnvelope) -> None:
     phi_stats = _get_phi_stats()
     phi_stats = _apply_signal_deltas(phi_stats)
     tissue_valence = float(phi_stats.get("valence", 0.0))
-    arousal_display = max(0.0, min(1.0, 0.15 + (1.2 * novelty)))
+    # Canonical arousal is phi_stats["energy"] -- same source every other
+    # tissue.update broadcast site uses (handle_self_state, handle_trace).
+    # This site used to compute its own novelty-derived proxy here instead
+    # (0.15 + 1.2*novelty), predating the resource_pressure hardware-evidence
+    # fix that made phi_stats["energy"] a live, non-saturated signal -- that
+    # local workaround is no longer needed and was inconsistent with every
+    # other broadcast's definition of "arousal".
+    arousal_display = float(phi_stats.get("energy", 0.0))
     coherence_stat = float(phi_stats.get("coherence", coherence))
     corr_key = str(env.correlation_id or upsert.doc_id)
     tissue_novelty = _display_novelty_for_corr(corr_key, embedding_novelty=float(novelty))
     if tissue_novelty is None:
         tissue_novelty = float(novelty)
+    _LAST_EMBEDDING_NOVELTY = tissue_novelty
     TISSUE.snapshot()
 
     try:
@@ -2565,7 +2663,7 @@ async def handle_self_state(env: BaseEnvelope) -> None:
             "timestamp": ss.generated_at.isoformat(),
             "stats": {
                 "phi": float(_INNER_LAST_HEADLINE if _INNER_LAST_HEADLINE is not None else phi_now.get("coherence", 0.5)),
-                "novelty": float(phi_now.get("novelty", 0.0)),
+                "novelty": _novelty_stat(),
                 "valence": float(phi_now.get("valence", 0.0)),
                 "arousal": float(phi_now.get("energy", 0.5)),
             },

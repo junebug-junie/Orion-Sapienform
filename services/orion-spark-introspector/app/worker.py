@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import math
 import time
 from collections import OrderedDict, deque
 from datetime import datetime, timezone
@@ -173,9 +174,18 @@ def _hardware_resource_pressure(dim: Optional[SelfStateDimensionV1]) -> Optional
         if name not in _HARDWARE_RESOURCE_CHANNELS:
             continue
         try:
-            values.append(float(raw))
+            v = float(raw)
         except ValueError:
             continue
+        # dominant_evidence is an unvalidated list[str] crossing a service
+        # boundary (unlike dim.score, which the schema bounds to [0, 1]) --
+        # NaN/out-of-range would otherwise poison resource_cap ** 0.5 into a
+        # complex number downstream. Upstream clamp01() calls in scoring.py
+        # already keep this in range today, but this boundary shouldn't rely
+        # on that holding forever.
+        if not math.isfinite(v):
+            continue
+        values.append(max(0.0, min(1.0, v)))
     return max(values) if values else None
 
 
@@ -215,7 +225,16 @@ def _phi_from_self_state(ss: SelfStateV1) -> Dict[str, float]:
     execution_cap = 1.0 - _s("execution_pressure", 0.3)
     energy = intensity * (resource_cap * execution_cap) ** 0.5
     # Trajectory: rising intensity or recovering capacity builds energy momentum.
-    energy += 0.1 * max(0.0, _t("field_intensity")) - 0.1 * max(0.0, _t("resource_pressure"))
+    # dimension_trajectory["resource_pressure"] tracks the delta of the raw,
+    # possibly-still-saturated aggregate score -- the same untraced channel
+    # resource_pressure_for_energy was built to bypass above. Only apply that
+    # delta when the base term is also using the raw score (no hardware
+    # evidence available); mixing a hardware-filtered base with a
+    # raw-aggregate momentum term would reintroduce the same stuck-channel
+    # theater into the trajectory component alone.
+    energy += 0.1 * max(0.0, _t("field_intensity"))
+    if hardware_pressure is None:
+        energy -= 0.1 * max(0.0, _t("resource_pressure"))
     energy = max(0.0, min(1.0, energy))
 
     # Novelty: genuine surprise requires a stable ground to notice it against.

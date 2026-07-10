@@ -362,3 +362,194 @@ def test_gemma4_31b_multimodal_profile_forwards_mmproj_and_image_flags(monkeypat
     assert _find_flag_value(cmd, "--temp") == "1.0"
     assert _find_flag_value(cmd, "--top-k") == "64"
     assert _find_flag_value(cmd, "--top-p") == "0.95"
+
+
+def test_draft_fields_emit_speculative_decoding_flags(monkeypatch, caplog):
+    import logging
+
+    main = importlib.import_module("app.main")
+    profiles_mod = importlib.import_module("app.profiles")
+    settings_mod = importlib.import_module("app.settings")
+
+    profile = profiles_mod.LLMProfile(
+        name="unit-draft-enabled",
+        backend="llamacpp",
+        model_id="unit-target",
+        gpu=profiles_mod.GPUConfig(num_gpus=1, tensor_parallel_size=1, device_ids=[0]),
+        llamacpp=profiles_mod.LlamaCppConfig(
+            model_root="/models/gguf",
+            repo_id="example/target",
+            filename="target.gguf",
+            draft_filename="Qwen3-0.6B-Q4_K_M.gguf",
+            draft_repo_id="unsloth/Qwen3-0.6B-GGUF",
+            n_gpu_layers_draft=99,
+            draft_min=4,
+            draft_max=16,
+            host="0.0.0.0",
+            port=8080,
+            ctx_size=8192,
+            n_gpu_layers=99,
+            threads=8,
+            n_parallel=1,
+            batch_size=512,
+        ),
+    )
+
+    monkeypatch.setattr(main, "_ensure_model_file", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(
+        main,
+        "_ensure_draft_file",
+        lambda _cfg: "/models/gguf/Qwen3-0.6B-Q4_K_M.gguf",
+    )
+    monkeypatch.setattr(
+        main,
+        "_get_supported_llama_server_flags",
+        lambda _server_bin: {
+            "--model-draft",
+            "--draft-min",
+            "--draft-max",
+            "--n-gpu-layers-draft",
+            "--n-predict",
+            "--temp",
+        },
+    )
+    monkeypatch.setattr(main, "_get_llama_server_build", lambda _server_bin: 8740)
+    monkeypatch.setattr(
+        settings_mod.settings,
+        "llamacpp_model_path_override",
+        "/models/gguf/target.gguf",
+    )
+
+    with caplog.at_level(logging.ERROR):
+        cmd, _env = main.build_llama_server_cmd_and_env(profile)
+
+    assert _find_flag_value(cmd, "--model-draft") == "/models/gguf/Qwen3-0.6B-Q4_K_M.gguf"
+    assert _find_flag_value(cmd, "--n-gpu-layers-draft") == "99"
+    assert _find_flag_value(cmd, "--draft-min") == "4"
+    assert _find_flag_value(cmd, "--draft-max") == "16"
+    assert not any("draft" in rec.message.lower() and rec.levelno >= logging.ERROR for rec in caplog.records)
+
+
+def test_draft_unset_emits_no_draft_flags(monkeypatch):
+    main = importlib.import_module("app.main")
+    profiles_mod = importlib.import_module("app.profiles")
+    settings_mod = importlib.import_module("app.settings")
+
+    profile = profiles_mod.LLMProfile(
+        name="unit-draft-unset",
+        backend="llamacpp",
+        model_id="unit-target",
+        gpu=profiles_mod.GPUConfig(num_gpus=1, tensor_parallel_size=1, device_ids=[0]),
+        llamacpp=profiles_mod.LlamaCppConfig(
+            model_root="/models/gguf",
+            repo_id="example/target",
+            filename="target.gguf",
+            host="0.0.0.0",
+            port=8080,
+            ctx_size=8192,
+            n_gpu_layers=99,
+            threads=8,
+            n_parallel=1,
+            batch_size=512,
+        ),
+    )
+
+    monkeypatch.setattr(main, "_ensure_model_file", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(
+        main,
+        "_get_supported_llama_server_flags",
+        lambda _server_bin: {
+            "--model-draft",
+            "--draft-min",
+            "--draft-max",
+            "--n-gpu-layers-draft",
+        },
+    )
+    monkeypatch.setattr(main, "_get_llama_server_build", lambda _server_bin: 8740)
+    monkeypatch.setattr(
+        settings_mod.settings,
+        "llamacpp_model_path_override",
+        "/models/gguf/target.gguf",
+    )
+
+    ensure_calls: list[object] = []
+
+    def _unexpected_ensure(cfg):
+        ensure_calls.append(cfg)
+        raise AssertionError("_ensure_draft_file must not run when draft_filename is unset")
+
+    monkeypatch.setattr(main, "_ensure_draft_file", _unexpected_ensure)
+
+    cmd, _env = main.build_llama_server_cmd_and_env(profile)
+
+    assert "--model-draft" not in cmd
+    assert "--draft-min" not in cmd
+    assert "--draft-max" not in cmd
+    assert "--n-gpu-layers-draft" not in cmd
+    assert ensure_calls == []
+
+
+def test_draft_requested_but_flags_unsupported_omits_draft_without_crash(monkeypatch, caplog):
+    import logging
+
+    main = importlib.import_module("app.main")
+    profiles_mod = importlib.import_module("app.profiles")
+    settings_mod = importlib.import_module("app.settings")
+
+    profile = profiles_mod.LLMProfile(
+        name="unit-draft-unsupported",
+        backend="llamacpp",
+        model_id="unit-target",
+        gpu=profiles_mod.GPUConfig(num_gpus=1, tensor_parallel_size=1, device_ids=[0]),
+        llamacpp=profiles_mod.LlamaCppConfig(
+            model_root="/models/gguf",
+            repo_id="example/target",
+            filename="target.gguf",
+            draft_filename="Qwen3-0.6B-Q4_K_M.gguf",
+            draft_repo_id="unsloth/Qwen3-0.6B-GGUF",
+            n_gpu_layers_draft=99,
+            draft_min=4,
+            draft_max=16,
+            host="0.0.0.0",
+            port=8080,
+            ctx_size=8192,
+            n_gpu_layers=99,
+            threads=8,
+            n_parallel=1,
+            batch_size=512,
+        ),
+    )
+
+    monkeypatch.setattr(main, "_ensure_model_file", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(
+        main,
+        "_ensure_draft_file",
+        lambda _cfg: "/models/gguf/Qwen3-0.6B-Q4_K_M.gguf",
+    )
+    # Probe succeeded but draft flags absent (old binary).
+    monkeypatch.setattr(
+        main,
+        "_get_supported_llama_server_flags",
+        lambda _server_bin: {"--temp", "--top-k"},
+    )
+    monkeypatch.setattr(main, "_get_llama_server_build", lambda _server_bin: 4719)
+    monkeypatch.setattr(
+        settings_mod.settings,
+        "llamacpp_model_path_override",
+        "/models/gguf/target.gguf",
+    )
+
+    with caplog.at_level(logging.ERROR):
+        cmd, _env = main.build_llama_server_cmd_and_env(profile)
+
+    assert cmd[0].endswith("llama-server") or "llama-server" in cmd[0]
+    assert "-m" in cmd
+    assert "--model-draft" not in cmd
+    assert "--draft-min" not in cmd
+    assert "--draft-max" not in cmd
+    assert "--n-gpu-layers-draft" not in cmd
+    assert any(
+        "draft" in rec.message.lower() and "model-draft" in rec.message.lower()
+        for rec in caplog.records
+        if rec.levelno >= logging.ERROR
+    )

@@ -124,7 +124,9 @@ def test_inner_features_settings_defaults() -> None:
     assert s.inner_features_version == "seed-v4"
     assert s.channel_inner_features == "orion:self:inner_features"
     assert s.phi_degenerate_streak == 20
-    assert s.orion_phi_encoder_enabled is False
+    # Flipped false -> true once the seed-v4 candidate encoder passed its
+    # promote gate and was promoted to active (v20260710-seedv4).
+    assert s.orion_phi_encoder_enabled is True
 
 
 @pytest.mark.asyncio

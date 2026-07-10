@@ -118,6 +118,19 @@ _INNER_DEGENERATE_STREAK = 0
 _INNER_LAST_HEADLINE: Optional[float] = None  # honest headline for WS reads
 _INNER_SINK = InnerStateCorpusSink(getattr(settings, "inner_features_corpus_path", "") or "")
 
+# Last chat-triggered novelty actually shown for a semantic upsert
+# (handle_semantic_upsert's `tissue_novelty` -- prefers cached appraisal
+# novelty via _display_novelty_for_corr, falls back to raw embedding cosine
+# distance), held and reused by the self-state tick's tissue.update broadcast
+# instead of the SelfStateV1 `uncertainty` dimension. `uncertainty` is
+# structurally pinned at 0 whenever coherence is healthy (see
+# orion/self_state/scoring.py::uncertainty_score = salience * (1 - coherence);
+# coherence only drops on active failure/friction), so it can never register
+# the continuous, ambient variation the tissue-viz display wants. None until
+# the first real chat message this process lifetime; read-only fallback to
+# 0.0 (honest "no signal yet"), never a fabricated value.
+_LAST_EMBEDDING_NOVELTY: Optional[float] = None
+
 _PHI_ENCODER: PhiEncoderRuntime | None = None
 _PHI_PREV_PHI: float | None = None
 _PHI_PREV_RECON: float | None = None
@@ -200,6 +213,17 @@ def _headline_stat(phi_stats: Dict[str, float]) -> float:
     if _INNER_LAST_HEADLINE is not None:
         return float(_INNER_LAST_HEADLINE)
     return float(phi_stats.get("coherence", 0.0))
+
+
+def _novelty_stat() -> float:
+    """Last real chat-triggered novelty for WS EKG (see _LAST_EMBEDDING_NOVELTY).
+
+    Never reads phi_stats["novelty"] (SelfStateV1 `uncertainty` dimension,
+    structurally pinned at 0 whenever coherence is healthy -- see
+    orion/self_state/scoring.py::uncertainty_score). Falls back to 0.0
+    (honest "no chat yet this process lifetime") rather than a fabricated value.
+    """
+    return float(_LAST_EMBEDDING_NOVELTY) if _LAST_EMBEDDING_NOVELTY is not None else 0.0
 
 
 def set_publisher_bus(bus: OrionBusAsync):
@@ -1417,7 +1441,7 @@ async def handle_trace(env: BaseEnvelope) -> None:
                     "timestamp": iso_ts,
                     "stats": {
                         "phi": _headline_stat(phi_stats),
-                        "novelty": float(phi_stats.get("novelty", 0.0)),
+                        "novelty": _novelty_stat(),
                         "valence": valence,
                         "arousal": arousal,
                     },
@@ -1591,7 +1615,7 @@ async def handle_trace(env: BaseEnvelope) -> None:
 
 
 async def handle_semantic_upsert(env: BaseEnvelope) -> None:
-    global _VALENCE_INIT_TASK
+    global _VALENCE_INIT_TASK, _LAST_EMBEDDING_NOVELTY
     payload_obj = env.payload if isinstance(env.payload, dict) else {}
     try:
         upsert = VectorUpsertV1.model_validate(payload_obj)
@@ -1689,6 +1713,7 @@ async def handle_semantic_upsert(env: BaseEnvelope) -> None:
     tissue_novelty = _display_novelty_for_corr(corr_key, embedding_novelty=float(novelty))
     if tissue_novelty is None:
         tissue_novelty = float(novelty)
+    _LAST_EMBEDDING_NOVELTY = tissue_novelty
     TISSUE.snapshot()
 
     try:
@@ -2565,7 +2590,7 @@ async def handle_self_state(env: BaseEnvelope) -> None:
             "timestamp": ss.generated_at.isoformat(),
             "stats": {
                 "phi": float(_INNER_LAST_HEADLINE if _INNER_LAST_HEADLINE is not None else phi_now.get("coherence", 0.5)),
-                "novelty": float(phi_now.get("novelty", 0.0)),
+                "novelty": _novelty_stat(),
                 "valence": float(phi_now.get("valence", 0.0)),
                 "arousal": float(phi_now.get("energy", 0.5)),
             },

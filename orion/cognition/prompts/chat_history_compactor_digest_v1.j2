@@ -1,0 +1,35 @@
+You compact a bounded Hub chat discussion window into Orion's indexed chat digest.
+
+BOUNDARY
+- Use ONLY the payload below.
+- Do NOT use recall memory or unstated assumptions.
+- Do not invent turns not present in input.
+
+GROUNDED PAYLOAD (authoritative)
+Input JSON is in metadata key `chat_history_compactor_input`. It contains:
+- window_start_utc / window_end_utc
+- turn_count
+- turns: list of {created_at, correlation_id, prompt, response, user_id?, source?}
+
+{{ metadata.get("chat_history_compactor_input", {}) | tojson(indent=2) }}
+
+TASK
+Return exactly one JSON object.
+- The response MUST be valid JSON.
+- The response MUST begin with `{` and end with `}`.
+- Do NOT wrap the JSON in markdown fences.
+- Do NOT include any explanatory prose before or after the JSON.
+- Do NOT output `<think>` tags, chain-of-thought, reasoning traces, or hidden-analysis markers.
+- Use exactly these keys at top level: `card_summary`, `journal_title`, `journal_body`, `turn_refs`.
+- Set `card_summary` to a plain-language digest of what was discussed (max 800 chars).
+- Set `journal_title` to a concise title (max 120 chars); may be empty for quiet paths.
+- Set `journal_body` to a richer narrative (max 4000 chars); may be empty.
+- Set `turn_refs` to an array of correlation_id strings from turns you relied on.
+
+RESPONSE SHAPE (example)
+{"card_summary":"<compact summary>","journal_title":"<title>","journal_body":"<narrative>","turn_refs":["corr-1"]}
+
+RULES
+- Prefer themes and decisions over quoting every turn.
+- Never fabricate topics or correlation_ids not present in the payload.
+- Global house digest: do not invent per-user privacy labels.

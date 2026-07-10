@@ -14,9 +14,6 @@ from typing import Any
 from orion.autonomy.models import AutonomyEvidenceRefV1
 
 _INFRA_AVAIL = frozenset({"available", "degraded", "empty", "unavailable"})
-_MAPPED_SOCIAL_HAZARDS = frozenset(
-    {"cooldown_active", "duplicate_message", "self_message_loop"}
-)
 
 # Kind-literal confidences (uncalibrated v1 constants).
 _CONF_USER = 0.9
@@ -129,7 +126,7 @@ def compile_autonomy_evidence(
             result.omitted.append({"kind": "relational_signal", "reason": "no_hazards"})
         for hazard in hazards:
             hid = hashlib.sha256(hazard[:80].encode()).hexdigest()[:12]
-            mapped = hazard in _MAPPED_SOCIAL_HAZARDS
+            # Always stamp typed fields; SignalDriveMap.match is the sole pressure gate.
             result.evidence.append(
                 AutonomyEvidenceRefV1(
                     evidence_id=f"social_bridge:{hid}",
@@ -138,9 +135,9 @@ def compile_autonomy_evidence(
                     summary=hazard[:200],
                     confidence=_CONF_RELATIONAL,
                     observed_at=now,
-                    signal_kind="chat_social_hazard" if mapped else None,
-                    dimension=hazard if mapped else None,
-                    value=1.0 if mapped else None,
+                    signal_kind="chat_social_hazard",
+                    dimension=hazard,
+                    value=1.0,
                 )
             )
 

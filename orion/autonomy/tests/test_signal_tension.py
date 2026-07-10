@@ -4,8 +4,10 @@ from __future__ import annotations
 from datetime import datetime, timezone
 
 from orion.autonomy.deviation_gate import DeviationGate
+from orion.autonomy.models import AutonomyEvidenceRefV1
 from orion.autonomy.signal_drive_map import load_signal_drive_map
 from orion.autonomy.signal_tension import (
+    chat_evidence_to_tension,
     equilibrium_to_tension,
     failure_to_tension,
     signal_to_tension,
@@ -95,12 +97,6 @@ def test_equilibrium_edge_triggered() -> None:
 
 def test_never_raises_on_garbage() -> None:
     assert signal_to_tension(_sig("spark_signal", {}), _gate(), SDM) is None
-
-
-from datetime import datetime
-
-from orion.autonomy.models import AutonomyEvidenceRefV1
-from orion.autonomy.signal_tension import chat_evidence_to_tension
 
 
 def test_chat_evidence_mapped_hazard_mints_tension() -> None:

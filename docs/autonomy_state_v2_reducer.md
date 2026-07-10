@@ -23,7 +23,7 @@ Pressure math uses the shared `signal_drive_map` via `chat_evidence_to_tension` 
 | `relational_signal` | hazards on social/social_bridge locals | Yes only for mapped exact keys |
 
 Mapped social dimensions (v1): `cooldown_active`, `duplicate_message`, `self_message_loop`.  
-Prefix hazards (`context_excluded:*`, etc.) are audit-only unless YAML + test grow.
+Unmapped hazards still carry typed `signal_kind` / `dimension` / `value`; `SignalDriveMap.match` is the sole pressure gate (miss → no tension).
 
 Confidence values on evidence are **kind-literal constants (uncalibrated)** in v1.
 
@@ -48,5 +48,5 @@ When unset or not `true`, cortex skips the reducer entirely.
 ## Known limitations
 
 1. **No durable state** — each turn rebuilds prior state from graph V1; delta is relative to the upgrade baseline at turn start.
-2. **Sparse map** — unmapped hazards record evidence but do not move pressures (preferred over fake motion).
+2. **Sparse map** — unmapped hazards still emit typed evidence but do not move pressures (preferred over fake motion).
 3. **Dual pipelines** — chat reducer and endogenous tick both use `signal_drive_map` helpers but chat does not feed `DriveEngine`.

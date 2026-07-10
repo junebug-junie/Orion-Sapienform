@@ -161,6 +161,9 @@ def test_reducer_unmapped_hazard_does_not_move_pressures() -> None:
                     summary="context_excluded:memory",
                     confidence=0.6,
                     observed_at=fixed,
+                    signal_kind="chat_social_hazard",
+                    dimension="context_excluded:memory",
+                    value=1.0,
                 )
             ],
             action_outcomes=[],
@@ -169,6 +172,32 @@ def test_reducer_unmapped_hazard_does_not_move_pressures() -> None:
     )
     for k in before:
         assert r.state.drive_pressures.get(k, 0.0) == before.get(k, 0.0)
+    assert r.tensions_minted == []
+
+
+def test_reducer_infra_unavailable_from_evidence_id() -> None:
+    prior = _base_v2(confidence=0.8, drive_pressures={"capability": 0.4})
+    fixed = datetime(2026, 5, 2, 12, 0, 0)
+    r = reduce_autonomy_state(
+        AutonomyReducerInputV1(
+            subject="orion",
+            previous_state=prior,
+            evidence=[
+                AutonomyEvidenceRefV1(
+                    evidence_id="infra_health:autonomy_graph:degraded",
+                    source="infra",
+                    kind="infra_health",
+                    # Summary wording must not be required for the penalty.
+                    summary="wording can change freely",
+                    confidence=0.5,
+                    observed_at=fixed,
+                )
+            ],
+            action_outcomes=[],
+            now=fixed,
+        )
+    )
+    assert r.state.confidence == 0.75
 
 
 def test_reducer_prose_keywords_no_longer_move_pressures() -> None:

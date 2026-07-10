@@ -10,6 +10,7 @@ REPO = Path(__file__).resolve().parents[3]  # orion/autonomy/tests → repo root
 _BANNED_ROOTS = [
     REPO / "orion" / "self_state",
     REPO / "services" / "orion-spark-introspector",
+    REPO / "services" / "orion-self-state-runtime",
 ]
 
 

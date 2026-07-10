@@ -133,8 +133,10 @@ def _infra_unavailable(evidence: list[AutonomyEvidenceRefV1]) -> bool:
     for ev in evidence:
         if ev.kind != "infra_health":
             continue
-        summary = (ev.summary or "").lower()
-        if "availability=unavailable" in summary or "availability=degraded" in summary:
+        # evidence_id shape from compiler: infra_health:autonomy_graph:{avail}
+        eid = str(ev.evidence_id or "")
+        avail = eid.rsplit(":", 1)[-1].strip().lower() if eid else ""
+        if avail in {"unavailable", "degraded"}:
             return True
     return False
 
@@ -233,6 +235,8 @@ class AutonomyReducerInputV1(BaseModel):
 class AutonomyReducerResultV1(BaseModel):
     state: AutonomyStateV2
     delta: AutonomyStateDeltaV1
+    # Trace of tensions minted this turn (same objects the pressure fold used).
+    tensions_minted: list[dict[str, Any]] = Field(default_factory=list)
 
 
 def reduce_autonomy_state(inp: AutonomyReducerInputV1) -> AutonomyReducerResultV1:
@@ -273,6 +277,7 @@ def reduce_autonomy_state(inp: AutonomyReducerInputV1) -> AutonomyReducerResultV
                 "signal_kind": ev.signal_kind,
                 "dimension": ev.dimension,
                 "drives": sorted((tension.drive_impacts or {}).keys()),
+                "magnitude": tension.magnitude,
             }
         )
 
@@ -455,5 +460,5 @@ def reduce_autonomy_state(inp: AutonomyReducerInputV1) -> AutonomyReducerResultV
         ],
     )
 
-    return AutonomyReducerResultV1(state=working, delta=delta)
+    return AutonomyReducerResultV1(state=working, delta=delta, tensions_minted=minted)
 

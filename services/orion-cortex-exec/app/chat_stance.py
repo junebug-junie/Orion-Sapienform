@@ -5,7 +5,7 @@ import logging
 import os
 import re
 import time
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import Any, Dict, Iterable, List
 
 from orion.autonomy.action_outcomes import load_action_outcomes
@@ -18,8 +18,6 @@ from orion.autonomy.graph_gate import (
     resolve_autonomy_graph_read_plan,
 )
 from orion.autonomy.reducer import AutonomyReducerInputV1, reduce_autonomy_state
-from orion.autonomy.signal_drive_map import load_signal_drive_map
-from orion.autonomy.signal_tension import chat_evidence_to_tension
 from orion.autonomy.summary import summarize_autonomy_lookup, summarize_autonomy_state
 from orion.autonomy.repository import (
     AutonomyLookupV1,
@@ -2186,7 +2184,7 @@ def _run_autonomy_reducer(
     social_bridge: Dict[str, Any],
     reasoning: Dict[str, Any],
 ):
-    now = datetime.utcnow()
+    now = datetime.now(timezone.utc)
     compile_result = compile_autonomy_evidence(
         user_message=ctx.get("user_message") or ctx.get("message") or "",
         social=social,
@@ -2201,28 +2199,11 @@ def _run_autonomy_reducer(
         "omitted": list(compile_result.omitted),
         **(compile_result.debug or {}),
     }
-    # Trace tensions that will be minted (same map the reducer uses).
-    sdm = load_signal_drive_map()
-    tension_debug = []
-    for ev in compile_result.evidence:
-        t = chat_evidence_to_tension(ev, sdm)
-        if t is None:
-            continue
-        tension_debug.append(
-            {
-                "kind": t.kind,
-                "signal_kind": ev.signal_kind,
-                "dimension": ev.dimension,
-                "drives": sorted((t.drive_impacts or {}).keys()),
-                "magnitude": t.magnitude,
-            }
-        )
-    ctx["chat_autonomy_tension_debug"] = {"minted": tension_debug}
 
     state_obj = autonomy.get("state")
     subj = getattr(state_obj, "subject", None) if state_obj is not None else None
     subject = str(subj or "orion")
-    return reduce_autonomy_state(
+    result = reduce_autonomy_state(
         AutonomyReducerInputV1(
             subject=subject,
             previous_state=state_obj,
@@ -2231,6 +2212,9 @@ def _run_autonomy_reducer(
             now=now,
         )
     )
+    # Single mint path: reuse what the reducer actually folded.
+    ctx["chat_autonomy_tension_debug"] = {"minted": list(result.tensions_minted or [])}
+    return result
 
 
 def _inject_prior_stance_to_inputs(ctx: Dict[str, Any], inputs: Dict[str, Any]) -> None:

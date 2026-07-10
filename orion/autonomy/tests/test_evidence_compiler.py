@@ -64,9 +64,10 @@ def test_hazards_from_social_locals_not_ctx() -> None:
     assert mapped["cooldown_active"].signal_kind == "chat_social_hazard"
     assert mapped["cooldown_active"].dimension == "cooldown_active"
     assert mapped["cooldown_active"].value == 1.0
-    # Unmapped prefix hazard is audit-only (no pressure fields).
-    assert mapped["context_excluded:memory"].signal_kind is None
-    assert mapped["context_excluded:memory"].dimension is None
+    # Unmapped prefix hazard still typed; SignalDriveMap.match is the sole pressure gate.
+    assert mapped["context_excluded:memory"].signal_kind == "chat_social_hazard"
+    assert mapped["context_excluded:memory"].dimension == "context_excluded:memory"
+    assert mapped["context_excluded:memory"].value == 1.0
 
     infra = [e for e in result.evidence if e.kind == "infra_health"]
     assert len(infra) == 1

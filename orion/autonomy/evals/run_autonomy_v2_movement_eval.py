@@ -58,7 +58,12 @@ def main() -> int:
     )
     assert any(e.kind == "reasoning_quality" for e in compiled.evidence)
     assert any(e.dimension == "self_message_loop" for e in compiled.evidence)
-    assert any(e.summary == "context_excluded:x" and e.signal_kind is None for e in compiled.evidence)
+    assert any(
+        e.summary == "context_excluded:x"
+        and e.signal_kind == "chat_social_hazard"
+        and e.dimension == "context_excluded:x"
+        for e in compiled.evidence
+    )
 
     baseline = _cold()
     before = dict(baseline.drive_pressures)

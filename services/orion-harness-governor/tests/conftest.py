@@ -23,6 +23,9 @@ def _ensure_governor_paths() -> None:
     sys.path.insert(0, str(_GOVERNOR_ROOT))
 
 
+_ensure_governor_paths()
+
+
 @pytest.fixture(autouse=True)
 def _governor_service_isolation() -> None:
     _ensure_governor_paths()

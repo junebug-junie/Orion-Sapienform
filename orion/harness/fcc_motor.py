@@ -30,6 +30,55 @@ logger = logging.getLogger("orion.harness.fcc_motor")
 DEFAULT_STREAM_READ_LIMIT = 8 * 1024 * 1024
 DEFAULT_FCC_MODEL_LABEL = "MODEL_SONNET"
 
+# Live FCC claude subprocesses keyed by correlation_id (harness cancel path).
+_ACTIVE: Dict[str, asyncio.subprocess.Process] = {}
+# Cancel arrived before spawn finished — kill immediately on register.
+_PENDING_CANCEL: set[str] = set()
+
+
+def _register_process(correlation_id: str, proc: asyncio.subprocess.Process) -> None:
+    cid = str(correlation_id)
+    if cid in _PENDING_CANCEL:
+        _PENDING_CANCEL.discard(cid)
+        try:
+            proc.kill()
+        except ProcessLookupError:
+            pass
+        logger.info("fcc_motor_cancelled_on_register corr=%s", cid)
+        return
+    _ACTIVE[cid] = proc
+
+
+def _unregister_process(correlation_id: str) -> None:
+    cid = str(correlation_id)
+    _ACTIVE.pop(cid, None)
+    _PENDING_CANCEL.discard(cid)
+
+
+def active_fcc_turns() -> list[dict[str, str]]:
+    return [{"correlation_id": cid} for cid in sorted(_ACTIVE.keys())]
+
+
+def cancel_fcc_turn(correlation_id: str) -> bool:
+    """SIGKILL a live FCC claude subprocess for this correlation_id, if any.
+
+    If the process is not registered yet, arm a pending cancel so spawn registration
+    kills immediately (covers Hub disconnect during preflight/spawn).
+    """
+    cid = str(correlation_id)
+    proc = _ACTIVE.get(cid)
+    if proc is None:
+        _PENDING_CANCEL.add(cid)
+        logger.info("fcc_motor_cancel_pending corr=%s", cid)
+        return True
+    try:
+        proc.kill()
+    except ProcessLookupError:
+        pass
+    _unregister_process(cid)
+    logger.info("fcc_motor_cancelled corr=%s", cid)
+    return True
+
 
 def parse_stream_json_line(line: str) -> Optional[Dict[str, Any]]:
     stripped = str(line or "").strip()
@@ -381,6 +430,7 @@ async def run_fcc_turn(
             limit=stream_read_limit,
         )
         assert proc.stdout is not None
+        _register_process(correlation_id, proc)
 
         while True:
             try:
@@ -444,6 +494,7 @@ async def run_fcc_turn(
         }
         return
     finally:
+        _unregister_process(correlation_id)
         if mcp_config_path is not None:
             from orion.fcc.mcp_config import cleanup_mcp_config
 

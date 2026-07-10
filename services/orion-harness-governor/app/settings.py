@@ -70,6 +70,10 @@ class HarnessGovernorSettings(BaseSettings):
         "orion:harness:run:step",
         alias="CHANNEL_HARNESS_RUN_STEP",
     )
+    channel_harness_run_cancel: str = Field(
+        "orion:harness:run:cancel",
+        alias="CHANNEL_HARNESS_RUN_CANCEL",
+    )
 
     fcc_timeout_sec: float = Field(900.0, alias="HARNESS_FCC_TIMEOUT_SEC")
     finalize_reflect_timeout_sec: float = Field(180.0, alias="FINALIZE_REFLECT_TIMEOUT_SEC")

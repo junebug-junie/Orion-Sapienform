@@ -516,6 +516,7 @@ from orion.schemas.harness_finalize import (
     HarnessDraftMoleculeV1,
     HarnessPostTurnClosureV1,
     HarnessRepairOverlayV1,
+    HarnessRunCancelV1,
     HarnessRunRequestV1,
     HarnessRunStepV1,
     HarnessRunV1,
@@ -1227,6 +1228,7 @@ _REGISTRY: Dict[str, Type[BaseModel]] = {
     "HarnessPostTurnClosureV1": HarnessPostTurnClosureV1,
     "HarnessRepairOverlayV1": HarnessRepairOverlayV1,
     "HarnessRunRequestV1": HarnessRunRequestV1,
+    "HarnessRunCancelV1": HarnessRunCancelV1,
     "HarnessRunStepV1": HarnessRunStepV1,
     "HarnessRunV1": HarnessRunV1,
     "EmbodimentIntentV1": EmbodimentIntentV1,
@@ -1345,6 +1347,10 @@ SCHEMA_REGISTRY: Dict[str, SchemaRegistration] = {
     "HarnessRunRequestV1": SchemaRegistration(
         model=HarnessRunRequestV1,
         kind="harness.run.request.v1",
+    ),
+    "HarnessRunCancelV1": SchemaRegistration(
+        model=HarnessRunCancelV1,
+        kind="harness.run.cancel.v1",
     ),
     "HarnessRunStepV1": SchemaRegistration(
         model=HarnessRunStepV1,

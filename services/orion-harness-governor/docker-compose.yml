@@ -29,6 +29,7 @@ services:
       - CHANNEL_HARNESS_RUN_ARTIFACT=${CHANNEL_HARNESS_RUN_ARTIFACT:-orion:harness:run:artifact}
       - CHANNEL_HARNESS_RESULT_PREFIX=${CHANNEL_HARNESS_RESULT_PREFIX:-orion:harness:run:result:}
       - CHANNEL_HARNESS_RUN_STEP=${CHANNEL_HARNESS_RUN_STEP:-orion:harness:run:step}
+      - CHANNEL_HARNESS_RUN_CANCEL=${CHANNEL_HARNESS_RUN_CANCEL:-orion:harness:run:cancel}
       - CHANNEL_GRAMMAR_EVENT=${CHANNEL_GRAMMAR_EVENT:-orion:grammar:event}
       - CHANNEL_CORTEX_EXEC_REQUEST=${CHANNEL_CORTEX_EXEC_REQUEST:-orion:cortex:exec:request:background}
       - CHANNEL_CORTEX_EXEC_RESULT_PREFIX=${CHANNEL_CORTEX_EXEC_RESULT_PREFIX:-orion:exec:result}

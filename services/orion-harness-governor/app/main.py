@@ -8,6 +8,7 @@ from fastapi import FastAPI
 from fastapi.responses import JSONResponse
 
 from .bus_listener import run_bus_worker
+from .cancel_listener import run_cancel_worker
 from .settings import settings
 
 logging.basicConfig(
@@ -27,12 +28,15 @@ async def lifespan(app: FastAPI):
     )
     app.state.bus_stop_event = asyncio.Event()
     app.state.bus_task = asyncio.create_task(run_bus_worker(app.state.bus_stop_event))
+    app.state.cancel_task = asyncio.create_task(run_cancel_worker(app.state.bus_stop_event))
     yield
     app.state.bus_stop_event.set()
-    task = app.state.bus_task
-    task.cancel()
-    with suppress(asyncio.CancelledError):
-        await task
+    for task in (app.state.bus_task, getattr(app.state, "cancel_task", None)):
+        if task is None:
+            continue
+        task.cancel()
+        with suppress(asyncio.CancelledError):
+            await task
 
 
 app = FastAPI(title="Orion Harness Governor", lifespan=lifespan, version=settings.service_version)

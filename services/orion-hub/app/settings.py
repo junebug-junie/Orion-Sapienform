@@ -454,6 +454,10 @@ class Settings(BaseSettings):
         default="orion:harness:run:step",
         alias="CHANNEL_HARNESS_RUN_STEP",
     )
+    CHANNEL_HARNESS_RUN_CANCEL: str = Field(
+        default="orion:harness:run:cancel",
+        alias="CHANNEL_HARNESS_RUN_CANCEL",
+    )
 
     ENABLE_PRE_TURN_APPRAISAL: bool = Field(default=False, alias="ENABLE_PRE_TURN_APPRAISAL")
     PRE_TURN_APPRAISAL_PARADIGMS: str = Field(default="repair_pressure", alias="PRE_TURN_APPRAISAL_PARADIGMS")

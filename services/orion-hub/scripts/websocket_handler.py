@@ -44,6 +44,7 @@ from scripts.fcc_claude_bridge import (
     is_context_overflow_text,
     run_turn_from_settings,
 )
+from scripts.turn_cancel import cancel_in_flight_turn, run_awaitable_cancel_on_ws_disconnect
 from scripts.settings import settings
 from scripts.fcc_model_mapping import DEFAULT_FCC_MODEL_LABEL
 from scripts.trace_payloads import extract_agent_trace_payload
@@ -538,52 +539,62 @@ async def _run_agent_claude_turn_ws(
     final_text = ""
     final_meta: Dict[str, Any] = {}
     harness_steps: List[Dict[str, Any]] = []
-    async for event in run_turn_from_settings(
-        prompt=turn.prompt,
-        fcc_model_label=fcc_label,
-        correlation_id=trace_id,
-    ):
-        etype = str(event.get("type") or "")
-        if etype == "step":
-            step = event.get("step") if isinstance(event.get("step"), dict) else {}
-            harness_steps.append(step)
-            await websocket.send_json(
-                await _with_biometrics(
-                    {
-                        "kind": "claude_step",
-                        "correlation_id": trace_id,
-                        "mode": "agent-claude",
-                        "step": step,
-                    },
-                    cache=biometrics_cache,
-                )
-            )
-        elif etype == "error":
-            partial = str(event.get("llm_response") or "")
-            await websocket.send_json(
-                await _with_biometrics(
-                    {
-                        "error": str(event.get("error") or "agent-claude failed"),
-                        "error_code": str(event.get("error_code") or "fcc_claude_nonzero_exit"),
-                        "mode": "agent-claude",
-                        "correlation_id": trace_id,
-                        "llm_response": partial or None,
-                        "metadata": event.get("metadata"),
-                    },
-                    cache=biometrics_cache,
-                )
-            )
-            return None
-        elif etype == "final":
-            final_text = str(event.get("llm_response") or "")
-            final_meta = event.get("metadata") if isinstance(event.get("metadata"), dict) else {}
 
-    return {
-        "llm_response": final_text,
-        "metadata": final_meta,
-        "fcc_model_label": fcc_label,
-        "harness_steps": harness_steps,
-    }
+    async def _consume() -> Optional[Dict[str, Any]]:
+        nonlocal final_text, final_meta
+        async for event in run_turn_from_settings(
+            prompt=turn.prompt,
+            fcc_model_label=fcc_label,
+            correlation_id=trace_id,
+        ):
+            etype = str(event.get("type") or "")
+            if etype == "step":
+                step = event.get("step") if isinstance(event.get("step"), dict) else {}
+                harness_steps.append(step)
+                await websocket.send_json(
+                    await _with_biometrics(
+                        {
+                            "kind": "claude_step",
+                            "correlation_id": trace_id,
+                            "mode": "agent-claude",
+                            "step": step,
+                        },
+                        cache=biometrics_cache,
+                    )
+                )
+            elif etype == "error":
+                partial = str(event.get("llm_response") or "")
+                await websocket.send_json(
+                    await _with_biometrics(
+                        {
+                            "error": str(event.get("error") or "agent-claude failed"),
+                            "error_code": str(event.get("error_code") or "fcc_claude_nonzero_exit"),
+                            "mode": "agent-claude",
+                            "correlation_id": trace_id,
+                            "llm_response": partial or None,
+                            "metadata": event.get("metadata"),
+                        },
+                        cache=biometrics_cache,
+                    )
+                )
+                return None
+            elif etype == "final":
+                final_text = str(event.get("llm_response") or "")
+                final_meta = event.get("metadata") if isinstance(event.get("metadata"), dict) else {}
+        return {
+            "llm_response": final_text,
+            "fcc_model_label": fcc_label,
+            "metadata": final_meta,
+            "harness_steps": harness_steps,
+        }
+
+    return await run_awaitable_cancel_on_ws_disconnect(
+        websocket,
+        _consume(),
+        bus=None,
+        correlation_id=trace_id,
+        kind="agent-claude",
+    )
 
 
 async def websocket_endpoint(websocket: WebSocket):
@@ -635,6 +646,8 @@ async def websocket_endpoint(websocket: WebSocket):
             interval_sec=float(getattr(settings, "BIOMETRICS_PUSH_INTERVAL_SEC", 5.0)),
         )
     )
+    # Active FCC / harness turn for this socket — cancelled on WS disconnect.
+    active_turn: Dict[str, Optional[str]] = {"correlation_id": None, "kind": None}
 
     try:
         while True:
@@ -871,23 +884,35 @@ async def websocket_endpoint(websocket: WebSocket):
                     continue
                 from orion.hub.turn_orchestrator import run_unified_turn
 
-                await run_unified_turn(
-                    websocket,
-                    bus=bus,
-                    correlation_id=trace_id,
-                    session_id=session_id,
-                    user_message=transcript,
-                    payload=data,
-                    continuity_messages=build_continuity_messages(
-                        history=history,
-                        latest_user_prompt=transcript,
-                        turns=turns,
-                    ),
-                    with_biometrics=_with_biometrics,
-                    biometrics_cache=biometrics_cache,
-                    harness_rpc_bus=rpc_bus or bus,
-                    harness_step_relay=harness_step_relay,
-                )
+                active_turn["correlation_id"] = trace_id
+                active_turn["kind"] = "orion"
+                try:
+                    await run_awaitable_cancel_on_ws_disconnect(
+                        websocket,
+                        run_unified_turn(
+                            websocket,
+                            bus=bus,
+                            correlation_id=trace_id,
+                            session_id=session_id,
+                            user_message=transcript,
+                            payload=data,
+                            continuity_messages=build_continuity_messages(
+                                history=history,
+                                latest_user_prompt=transcript,
+                                turns=turns,
+                            ),
+                            with_biometrics=_with_biometrics,
+                            biometrics_cache=biometrics_cache,
+                            harness_rpc_bus=rpc_bus or bus,
+                            harness_step_relay=harness_step_relay,
+                        ),
+                        bus=rpc_bus or bus,
+                        correlation_id=trace_id,
+                        kind="orion",
+                    )
+                finally:
+                    active_turn["correlation_id"] = None
+                    active_turn["kind"] = None
                 continue
 
             # Build outbound chat request through shared builder to keep WS/HTTP identical
@@ -1143,13 +1168,19 @@ async def websocket_endpoint(websocket: WebSocket):
                 logger.info("voice.chat.start corr=%s session_id=%s", trace_id, session_id)
                 if client_mode == "agent-claude":
                     used_agent_claude_lane = True
-                    agent_claude_out = await _run_agent_claude_turn_ws(
-                        websocket=websocket,
-                        data=data,
-                        transcript=transcript or "",
-                        trace_id=trace_id,
-                        biometrics_cache=biometrics_cache,
-                    )
+                    active_turn["correlation_id"] = trace_id
+                    active_turn["kind"] = "agent-claude"
+                    try:
+                        agent_claude_out = await _run_agent_claude_turn_ws(
+                            websocket=websocket,
+                            data=data,
+                            transcript=transcript or "",
+                            trace_id=trace_id,
+                            biometrics_cache=biometrics_cache,
+                        )
+                    finally:
+                        active_turn["correlation_id"] = None
+                        active_turn["kind"] = None
                     if agent_claude_out is None:
                         continue
                     orion_response_text = str(agent_claude_out.get("llm_response") or "")
@@ -1774,8 +1805,26 @@ async def websocket_endpoint(websocket: WebSocket):
 
     except WebSocketDisconnect:
         logger.info("Client disconnected.")
+        corr = active_turn.get("correlation_id")
+        kind = active_turn.get("kind")
+        if corr:
+            await cancel_in_flight_turn(
+                bus=rpc_bus or bus,
+                correlation_id=str(corr),
+                kind=str(kind or "orion"),
+                reason="client_disconnect",
+            )
     except Exception as e:
         logger.error(f"WebSocket error: {e}", exc_info=True)
+        corr = active_turn.get("correlation_id")
+        kind = active_turn.get("kind")
+        if corr:
+            await cancel_in_flight_turn(
+                bus=rpc_bus or bus,
+                correlation_id=str(corr),
+                kind=str(kind or "orion"),
+                reason="ws_error",
+            )
     finally:
         drain_task.cancel()
         biometrics_task.cancel()

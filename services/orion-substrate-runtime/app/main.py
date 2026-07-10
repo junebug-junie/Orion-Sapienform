@@ -28,6 +28,10 @@ from .post_turn_closure_listener import (
     start_post_turn_closure_listener,
     stop_post_turn_closure_listener,
 )
+from .goal_context_listener import (
+    start_goal_context_listener,
+    stop_goal_context_listener,
+)
 from orion.substrate.execution_loop.constants import EXECUTION_TRAJECTORY_PROJECTION_ID
 
 from .settings import get_settings
@@ -40,11 +44,12 @@ logging.basicConfig(level=getattr(logging, _settings.log_level.upper(), logging.
 worker = BiometricsSubstrateWorker()
 _finalize_listener_task = None
 _closure_listener_task = None
+_goal_context_listener_task = None
 
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    global _finalize_listener_task, _closure_listener_task
+    global _finalize_listener_task, _closure_listener_task, _goal_context_listener_task
     await worker.start()
     if worker.bus is not None:
         _finalize_listener_task = await start_finalize_appraisal_listener(
@@ -56,6 +61,10 @@ async def lifespan(app: FastAPI):
             worker.stop_event,
             on_closure=worker.handle_post_turn_closure,
         )
+        _goal_context_listener_task = await start_goal_context_listener(
+            worker.bus,
+            worker.stop_event,
+        )
     try:
         yield
     finally:
@@ -63,6 +72,8 @@ async def lifespan(app: FastAPI):
         _finalize_listener_task = None
         await stop_post_turn_closure_listener(_closure_listener_task)
         _closure_listener_task = None
+        await stop_goal_context_listener(_goal_context_listener_task)
+        _goal_context_listener_task = None
         await worker.stop()
 
 

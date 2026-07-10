@@ -1,11 +1,23 @@
 from __future__ import annotations
 
 from datetime import datetime, timezone
+from uuid import uuid4
+
+import pytest
 
 import app.worker as worker
+from orion.core.bus.bus_schemas import BaseEnvelope, ServiceRef
 from orion.schemas.self_state import SelfStateDimensionV1, SelfStateV1
 
 _NOW = datetime(2026, 7, 10, 12, 0, tzinfo=timezone.utc)
+
+
+def setup_function(_fn) -> None:
+    worker._LATEST_SELF_STATE = None
+
+
+def teardown_function(_fn) -> None:
+    worker._LATEST_SELF_STATE = None
 
 
 def _dim(name: str, score: float, *, dominant_evidence: list[str] | None = None) -> SelfStateDimensionV1:
@@ -168,3 +180,55 @@ def test_energy_momentum_still_uses_raw_trajectory_in_fallback_path() -> None:
     # base = 1.0 * (0.5 * 1.0) ** 0.5 ~= 0.7071
     # momentum = -0.1 * max(0, 0.2) = -0.02 -> 0.6871
     assert phi["energy"] == 0.6871
+
+
+@pytest.mark.asyncio
+async def test_handle_semantic_upsert_arousal_matches_canonical_energy(monkeypatch) -> None:
+    """Regression: handle_semantic_upsert's tissue.update broadcast used to
+    compute its own bespoke arousal proxy (0.15 + 1.2*novelty) instead of the
+    canonical phi_stats["energy"] every other broadcast site uses
+    (handle_self_state, handle_trace) -- inconsistent within the same
+    process. Confirms the broadcast now reports the same energy value
+    _phi_from_self_state() computes."""
+    monkeypatch.setattr(worker, "_EXPECTED_EMB", {}, raising=False)
+    monkeypatch.setattr(worker, "_SEEN_DOC", {}, raising=False)
+    monkeypatch.setattr(worker, "_pub_bus", None, raising=False)
+    monkeypatch.setattr(worker, "_ACTIVE_SIGNALS", [], raising=False)
+
+    resource_dim = _dim(
+        "resource_pressure",
+        1.0,
+        dominant_evidence=["pressure=1.00", "cpu_pressure=0.92", "memory_pressure=0.05"],
+    )
+    ss = SelfStateV1.model_validate(_self_state_payload(resource_dim=resource_dim))
+    worker.set_latest_self_state(ss)
+
+    broadcasts = []
+
+    async def _capture_broadcast(payload):
+        broadcasts.append(payload)
+
+    monkeypatch.setattr(worker.manager, "broadcast", _capture_broadcast, raising=False)
+
+    env = BaseEnvelope(
+        kind="vector.upsert.v1",
+        source=ServiceRef(name="orion-vector-host", node="n1"),
+        correlation_id=uuid4(),
+        payload={
+            "doc_id": "turn-arousal-1",
+            "collection": "orion_chat_turns",
+            "embedding": [1.0, 0.0, 0.0, 0.0],
+            "embedding_kind": "semantic",
+            "text": "hello world",
+            "meta": {},
+        },
+    )
+
+    await worker.handle_semantic_upsert(env)
+
+    tissue = [b for b in broadcasts if b.get("type") == "tissue.update"]
+    assert tissue, "expected a tissue.update broadcast"
+    # Same 0.2828 as _phi_from_self_state's direct test: intensity=1.0,
+    # resource_cap=1-0.92=0.08, execution_cap=1.0, no trajectory deltas,
+    # no active signals.
+    assert tissue[-1]["stats"]["arousal"] == pytest.approx(0.2828, abs=1e-4)

@@ -24,6 +24,17 @@ if REPO_ROOT not in sys.path:
 
 os.environ.setdefault("SERVICE_NAME", "spark-introspector")
 os.environ.setdefault("ORION_BUS_ENABLED", "false")
+# app.worker constructs a module-level OrionTissue() singleton at import
+# time. Without this override it defaults to loading/writing
+# /mnt/graphdb/orion/spark/tissue-brain.npz -- the live production snapshot
+# actively written by the running orion-spark-introspector service. Tests
+# that exercise handle_semantic_upsert (which calls TISSUE.propagate() and
+# TISSUE.snapshot()) would otherwise read and clobber real production state.
+# Force-set, not setdefault: services/orion-spark-introspector/.env_example
+# (and a sourced .env) already sets this key to the production path, so
+# setdefault would silently no-op under the exact "source .env before
+# running pytest" workflow this repo's own tooling encourages.
+os.environ["ORION_TISSUE_SNAPSHOT_PATH"] = "/tmp/orion-spark-introspector-test-tissue.npy"
 
 # main.py mounts StaticFiles relative to CWD (app/static)
 os.chdir(SERVICE_DIR)

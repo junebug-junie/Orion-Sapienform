@@ -367,6 +367,8 @@ def test_gemma4_31b_multimodal_profile_forwards_mmproj_and_image_flags(monkeypat
 def test_draft_fields_emit_speculative_decoding_flags(monkeypatch, caplog):
     import logging
 
+    monkeypatch.setenv("LLM_PROFILE_NAME", "unit-test")
+
     main = importlib.import_module("app.main")
     profiles_mod = importlib.import_module("app.profiles")
     settings_mod = importlib.import_module("app.settings")
@@ -431,6 +433,8 @@ def test_draft_fields_emit_speculative_decoding_flags(monkeypatch, caplog):
 
 
 def test_draft_unset_emits_no_draft_flags(monkeypatch):
+    monkeypatch.setenv("LLM_PROFILE_NAME", "unit-test")
+
     main = importlib.import_module("app.main")
     profiles_mod = importlib.import_module("app.profiles")
     settings_mod = importlib.import_module("app.settings")
@@ -491,6 +495,8 @@ def test_draft_unset_emits_no_draft_flags(monkeypatch):
 
 def test_draft_requested_but_flags_unsupported_omits_draft_without_crash(monkeypatch, caplog):
     import logging
+
+    monkeypatch.setenv("LLM_PROFILE_NAME", "unit-test")
 
     main = importlib.import_module("app.main")
     profiles_mod = importlib.import_module("app.profiles")

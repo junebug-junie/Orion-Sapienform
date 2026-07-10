@@ -359,7 +359,7 @@ Operator caveats:
 
 - Draft and target should share a tokenizer family; poor family match tanks acceptance rate.
 - On Volta / tight multi-GPU layouts (e.g. deep-cognition 131k + `tensor_split: "3,1"`), draft VRAM competes with KV — enable only after a live VRAM + tg/s check.
-- Do not change `HARNESS_FCC_MAX_CONTEXT_TOKENS` / Hub agent-claude budgets just to free VRAM for draft without an explicit follow-up (see design spec revisit forks A/B/C/D).
+- Do not change `HARNESS_FCC_MAX_CONTEXT_TOKENS` / Hub agent-claude budgets just to free VRAM for draft without an explicit follow-up.
 - MTP / `--spec-type draft-mtp` is out of scope for this profile contract.
 
 ---

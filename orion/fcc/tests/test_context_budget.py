@@ -10,6 +10,7 @@ from orion.fcc.context_budget import (
     apply_context_overflow_hint,
     build_context_pressure_step,
     context_risk_level,
+    extend_fcc_subprocess_env,
     is_context_overflow_text,
     measure_step_payload_chars,
 )
@@ -72,3 +73,21 @@ def test_mcp_proxy_truncates_large_tool_text() -> None:
     text = parsed["result"]["content"][0]["text"]
     assert len(text) < len(huge)
     assert "orion-fcc-mcp-proxy" in text
+
+
+def test_extend_fcc_subprocess_env_sets_enable_tool_search_when_unset() -> None:
+    env: dict[str, str] = {}
+    extend_fcc_subprocess_env(env)
+    assert env["ENABLE_TOOL_SEARCH"] == "true"
+
+
+def test_extend_fcc_subprocess_env_preserves_explicit_tool_search_override() -> None:
+    env = {"ENABLE_TOOL_SEARCH": "false"}
+    extend_fcc_subprocess_env(env)
+    assert env["ENABLE_TOOL_SEARCH"] == "false"
+
+
+def test_extend_fcc_subprocess_env_preserves_auto_tool_search_override() -> None:
+    env = {"ENABLE_TOOL_SEARCH": "auto:5"}
+    extend_fcc_subprocess_env(env)
+    assert env["ENABLE_TOOL_SEARCH"] == "auto:5"

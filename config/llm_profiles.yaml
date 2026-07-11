@@ -342,13 +342,16 @@ profiles:
       # Native train ctx is 262k; 131k is the monster-FCC step before full native.
       # Must stay in lockstep with HARNESS_FCC_MAX_CONTEXT_TOKENS / Hub agent-claude budget.
       ctx_size: 131072
-      n_gpu_layers: 97
-      threads: 27
+      n_gpu_layers: 99
+      #97
+      threads: 18
+      #threads: 27
+
       # n_parallel=1 keeps the full window for FCC/harness (n_parallel>1 splits slots
       # and 400s long prompts as exceed_context).
       n_parallel: 1
-      batch_size: 958
-      ubatch_size: 551
+      batch_size: 1024
+      #ubatch_size: 551
 
       reasoning: "off"
       reasoning_budget: 0
@@ -359,10 +362,9 @@ profiles:
       no_context_shift: true
       # ~25GB Q5 fits one 32GB V100; skew layers to GPU0 so GPU1 is mostly KV/overflow.
       # Equal 1,1 pays PCIe tax without buying context. No YaRN — native 262k first.
-      # Circe llama-optimus 2026-07-10 (mean metric; layout pinned device_ids[1,0]+3/1+layer+FA0):
-      #   Stage_1: batch 1081, ubatch 136, threads 27, ngl 91 (~49.26 mean).
-      #   Stage_3 pick: batch 958, ubatch 551, threads 27, ngl 97 (~48.84 mean).
-      #   Verify (Stage_3): pp256 ~524 (±255), tg128 ~98.8 (±1.0). Layout not searched.
+      # 2026-07-10 note: after llama-optimus, multi-GPU briefly produced token salad on this
+      # host; may have been dirty GPU state. Dual 3,1 was previously stable for ~2 days —
+      # re-verify with a short completion smoke after Circe reboot before trusting FCC.
       split_mode: "layer"
       tensor_split: "3,1"
       flash_attn: "off"
@@ -394,7 +396,6 @@ profiles:
       - 131k ctx (n_parallel=1) must match HARNESS_FCC_MAX_CONTEXT_TOKENS / Hub agent Claude budget.
       - tensor_split 3,1 + layer: park weights on primary V100; second card absorbs overflow/KV.
       - flash_attn off (Volta); sampling kept cooler than Unsloth chat card for agent stability.
-      - Circe llama-optimus (2026-07-10): ngl 97, batch 958, ubatch 551, threads 27 (layout preserved).
       - If OOM at 131k: try tensor_split 3,1 then 2,1, then lower ctx_size to 98304 / 65536.
       - Do not enable YaRN until native 262k is proven and still insufficient.
       - Speculative decoding: host supports hf_draft_* / draft_min / draft_max / n_gpu_layers_draft.

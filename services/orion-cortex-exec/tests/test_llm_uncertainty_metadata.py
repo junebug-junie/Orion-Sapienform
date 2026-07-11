@@ -79,7 +79,7 @@ def test_plan_result_metadata_includes_llm_uncertainty(monkeypatch) -> None:
         error=None,
     )
     monkeypatch.setattr("app.router.call_step_services", AsyncMock(return_value=fake_step))
-    monkeypatch.setattr("app.router.prepare_brain_reply_context", lambda _ctx: None)
+    monkeypatch.setattr("app.router.prepare_brain_reply_context", AsyncMock(return_value=None))
     req = _request()
     result = asyncio.run(
         runner.run_plan(

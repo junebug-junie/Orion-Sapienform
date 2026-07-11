@@ -123,7 +123,7 @@ async def test_stance_react_runs_pcr_phase01_before_stance_step(monkeypatch) -> 
 
     monkeypatch.setattr("app.router.run_pcr_phase0_and_1", _fake_phase01)
     monkeypatch.setattr("app.router.call_step_services", _fake_call_step)
-    monkeypatch.setattr("app.router.prepare_brain_reply_context", lambda _ctx: None)
+    monkeypatch.setattr("app.router.prepare_brain_reply_context", AsyncMock(return_value=None))
     monkeypatch.setattr(
         "app.router.assemble_stance_grounding",
         AsyncMock(

@@ -985,7 +985,7 @@ class PlanRunner:
                 opts_now = ctx.get("options") if isinstance(ctx.get("options"), dict) else {}
                 hub_full = bool(opts_now.get("chat_quick_full_stance"))
                 if hub_full:
-                    prepare_brain_reply_context(ctx)
+                    await prepare_brain_reply_context(ctx)
                 else:
                     prepare_chat_quick_reply_context(ctx)
             elif verb_lc == "chat_kids_story":
@@ -1001,7 +1001,7 @@ class PlanRunner:
                     plan.verb_name,
                 )
             else:
-                prepare_brain_reply_context(ctx)
+                await prepare_brain_reply_context(ctx)
         existing_scope = str(ctx.get("_run_scope_corr_id") or "")
         if existing_scope and existing_scope != correlation_id:
             logger.warning(

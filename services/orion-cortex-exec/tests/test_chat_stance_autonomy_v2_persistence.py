@@ -7,6 +7,8 @@ second call's effective `previous_state` must be the first call's own
 """
 from __future__ import annotations
 
+import pytest
+
 from orion.autonomy.models import AutonomyStateV1
 from orion.autonomy.reducer import reduce_autonomy_state as real_reduce_autonomy_state
 
@@ -27,7 +29,8 @@ def _v1_baseline() -> AutonomyStateV1:
     )
 
 
-def test_run_autonomy_reducer_uses_persisted_state_not_v1_baseline_on_second_call(monkeypatch) -> None:
+@pytest.mark.asyncio
+async def test_run_autonomy_reducer_uses_persisted_state_not_v1_baseline_on_second_call(monkeypatch) -> None:
     store: dict[str, object] = {}
 
     def fake_load(subject):
@@ -52,12 +55,12 @@ def test_run_autonomy_reducer_uses_persisted_state_not_v1_baseline_on_second_cal
     autonomy = {"state": v1_baseline}
 
     ctx1: dict = {"user_message": "first turn, feeling curious about the lab", "correlation_id": "c-1"}
-    result1 = chat_stance._run_autonomy_reducer(
+    result1 = await chat_stance._run_autonomy_reducer(
         ctx1, autonomy, social={}, social_bridge={}, reasoning={}
     )
 
     ctx2: dict = {"user_message": "second turn, entirely different evidence", "correlation_id": "c-2"}
-    result2 = chat_stance._run_autonomy_reducer(
+    result2 = await chat_stance._run_autonomy_reducer(
         ctx2, autonomy, social={}, social_bridge={}, reasoning={}
     )
 
@@ -76,7 +79,8 @@ def test_run_autonomy_reducer_uses_persisted_state_not_v1_baseline_on_second_cal
     assert store["orion"] is result2.state
 
 
-def test_run_autonomy_reducer_movement_debug_before_matches_actual_previous_state(monkeypatch) -> None:
+@pytest.mark.asyncio
+async def test_run_autonomy_reducer_movement_debug_before_matches_actual_previous_state(monkeypatch) -> None:
     """Regression: chat_autonomy_movement_debug['pressures_before'] must reflect
     the SAME previous_state the fold actually used (persisted V2 once warm), not
     autonomy['state'] (the V1/graph baseline) independently -- those two diverge
@@ -92,10 +96,10 @@ def test_run_autonomy_reducer_movement_debug_before_matches_actual_previous_stat
     autonomy = {"state": v1_baseline}
 
     ctx1: dict = {"user_message": "first turn", "correlation_id": "c-1"}
-    result1 = chat_stance._run_autonomy_reducer(ctx1, autonomy, social={}, social_bridge={}, reasoning={})
+    result1 = await chat_stance._run_autonomy_reducer(ctx1, autonomy, social={}, social_bridge={}, reasoning={})
 
     ctx2: dict = {"user_message": "second turn, different evidence entirely", "correlation_id": "c-2"}
-    chat_stance._run_autonomy_reducer(ctx2, autonomy, social={}, social_bridge={}, reasoning={})
+    await chat_stance._run_autonomy_reducer(ctx2, autonomy, social={}, social_bridge={}, reasoning={})
 
     # By turn 2 the store holds result1.state, whose drive_pressures have already
     # moved away from the fixed v1_baseline -- the two are no longer equal.
@@ -106,7 +110,8 @@ def test_run_autonomy_reducer_movement_debug_before_matches_actual_previous_stat
     assert before != dict(v1_baseline.drive_pressures or {})
 
 
-def test_run_autonomy_reducer_falls_back_to_v1_baseline_when_store_unreachable(monkeypatch) -> None:
+@pytest.mark.asyncio
+async def test_run_autonomy_reducer_falls_back_to_v1_baseline_when_store_unreachable(monkeypatch) -> None:
     """Store returning None (unreachable / no DSN) must not change today's
     fallback behavior: previous_state stays the V1/graph baseline."""
 
@@ -127,13 +132,14 @@ def test_run_autonomy_reducer_falls_back_to_v1_baseline_when_store_unreachable(m
     autonomy = {"state": v1_baseline}
     ctx: dict = {"user_message": "hello", "correlation_id": "c-1"}
 
-    chat_stance._run_autonomy_reducer(ctx, autonomy, social={}, social_bridge={}, reasoning={})
+    await chat_stance._run_autonomy_reducer(ctx, autonomy, social={}, social_bridge={}, reasoning={})
 
     assert captured_previous_states == [v1_baseline]
     assert "orion" in saved  # write-back still attempted even though load returned None
 
 
-def test_run_autonomy_reducer_write_failure_is_swallowed(monkeypatch) -> None:
+@pytest.mark.asyncio
+async def test_run_autonomy_reducer_write_failure_is_swallowed(monkeypatch) -> None:
     """save_autonomy_state_v2 raising must not propagate out of the reducer --
     belt-and-suspenders fail-open, even though the store already fails open
     internally."""
@@ -151,5 +157,5 @@ def test_run_autonomy_reducer_write_failure_is_swallowed(monkeypatch) -> None:
     ctx: dict = {"user_message": "hello", "correlation_id": "c-1"}
 
     # Must not raise.
-    result = chat_stance._run_autonomy_reducer(ctx, autonomy, social={}, social_bridge={}, reasoning={})
+    result = await chat_stance._run_autonomy_reducer(ctx, autonomy, social={}, social_bridge={}, reasoning={})
     assert result is not None

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
 import os
@@ -2178,7 +2179,7 @@ def _reasoning_upstream_nonempty(ctx: Dict[str, Any]) -> bool:
         return False
 
 
-def _run_autonomy_reducer(
+async def _run_autonomy_reducer(
     ctx: Dict[str, Any],
     autonomy: Dict[str, Any],
     *,
@@ -2210,7 +2211,7 @@ def _run_autonomy_reducer(
     # output over the V1/graph baseline so state carries turn-to-turn. Falls
     # back to the V1 baseline exactly as before when nothing is persisted yet
     # (first-ever turn for this subject, or the store is unreachable).
-    persisted = load_autonomy_state_v2(subject)
+    persisted = await asyncio.to_thread(load_autonomy_state_v2, subject)
     previous_state = persisted if persisted is not None else state_obj
 
     # Snapshot before-pressures from the SAME baseline the fold actually uses
@@ -2254,7 +2255,7 @@ def _run_autonomy_reducer(
     # never raises, but this is a hot chat-turn path, so guard the call site
     # too rather than depend solely on the callee's contract.
     try:
-        save_autonomy_state_v2(subject, result.state)
+        await asyncio.to_thread(save_autonomy_state_v2, subject, result.state)
     except Exception as exc:
         logger.warning("autonomy_state_v2_write_failed subject=%s error=%s", subject, exc)
 
@@ -2270,7 +2271,7 @@ def _inject_prior_stance_to_inputs(ctx: Dict[str, Any], inputs: Dict[str, Any]) 
         ctx["prior_stance"] = prior
 
 
-def build_chat_stance_inputs(ctx: Dict[str, Any]) -> Dict[str, Any]:
+async def build_chat_stance_inputs(ctx: Dict[str, Any]) -> Dict[str, Any]:
     # Single unified beliefs call replaces independent producer fan-outs for
     # identity, orionmem, recall, and social lanes.
     from app.substrate_felt_state_reader import hydrate_felt_state_ctx
@@ -2338,7 +2339,7 @@ def build_chat_stance_inputs(ctx: Dict[str, Any]) -> Dict[str, Any]:
 
     if os.getenv("AUTONOMY_STATE_V2_REDUCER_ENABLED", "").strip().lower() == "true":
         try:
-            v2_result = _run_autonomy_reducer(
+            v2_result = await _run_autonomy_reducer(
                 ctx,
                 autonomy,
                 social=social,

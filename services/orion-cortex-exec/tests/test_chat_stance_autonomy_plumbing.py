@@ -47,7 +47,8 @@ class _Repo:
         return _Status()
 
 
-def test_chat_stance_inputs_include_autonomy_summary_when_available(monkeypatch, enable_autonomy_graphdb) -> None:
+@pytest.mark.asyncio
+async def test_chat_stance_inputs_include_autonomy_summary_when_available(monkeypatch, enable_autonomy_graphdb) -> None:
     from orion.autonomy.models import AutonomyStateV1
 
     state = AutonomyStateV1(
@@ -64,26 +65,28 @@ def test_chat_stance_inputs_include_autonomy_summary_when_available(monkeypatch,
     monkeypatch.setattr(chat_stance, "build_autonomy_repository", lambda **_: repo)
 
     ctx = {"user_message": "help me synthesize this"}
-    built = chat_stance.build_chat_stance_inputs(ctx)
+    built = await chat_stance.build_chat_stance_inputs(ctx)
 
     assert built["autonomy"]["summary"]["stance_hint"] == "favor synthesis and reduction"
     assert ctx["chat_autonomy_state"]["subject"] == "orion"
     assert "chat_autonomy_summary" in ctx
 
 
-def test_chat_stance_unavailable_autonomy_keeps_behavior_stable(monkeypatch, enable_autonomy_graphdb) -> None:
+@pytest.mark.asyncio
+async def test_chat_stance_unavailable_autonomy_keeps_behavior_stable(monkeypatch, enable_autonomy_graphdb) -> None:
     repo = _Repo({})
     monkeypatch.setattr(chat_stance, "build_autonomy_repository", lambda **_: repo)
 
     ctx = {"user_message": "can you help"}
-    chat_stance.build_chat_stance_inputs(ctx)
+    await chat_stance.build_chat_stance_inputs(ctx)
     fb = chat_stance.fallback_chat_stance_brief(ctx)
 
     assert fb.answer_strategy == "DirectAnswer"
     assert fb.task_mode == "direct_response"
 
 
-def test_chat_stance_inputs_include_mutation_adaptation_context_from_metadata(monkeypatch, enable_autonomy_graphdb) -> None:
+@pytest.mark.asyncio
+async def test_chat_stance_inputs_include_mutation_adaptation_context_from_metadata(monkeypatch, enable_autonomy_graphdb) -> None:
     repo = _Repo({})
     monkeypatch.setattr(chat_stance, "build_autonomy_repository", lambda **_: repo)
     ctx = {
@@ -98,14 +101,15 @@ def test_chat_stance_inputs_include_mutation_adaptation_context_from_metadata(mo
             }
         },
     }
-    built = chat_stance.build_chat_stance_inputs(ctx)
+    built = await chat_stance.build_chat_stance_inputs(ctx)
     assert built["mutation_adaptation"]["mutation_scope"] == "routing_threshold_patch_only"
     assert built["mutation_adaptation"]["latest_routing_adoption"]["adoption_id"] == "adopt-1"
     assert built["mutation_adaptation"]["latest_routing_rollback"]["rollback_id"] == "rb-1"
     assert ctx["chat_mutation_cognition_context"]["live_ramp_active"] is True
 
 
-def test_chat_stance_autonomy_debug_contains_unavailable_reason(monkeypatch, enable_autonomy_graphdb) -> None:
+@pytest.mark.asyncio
+async def test_chat_stance_autonomy_debug_contains_unavailable_reason(monkeypatch, enable_autonomy_graphdb) -> None:
     monkeypatch.setenv("AUTONOMY_GRAPH_TIMEOUT_SEC", "4.5")
     monkeypatch.setenv("AUTONOMY_SUBJECT_MAX_WORKERS", "2")
     monkeypatch.setenv("AUTONOMY_SUBQUERY_MAX_WORKERS", "3")
@@ -124,7 +128,7 @@ def test_chat_stance_autonomy_debug_contains_unavailable_reason(monkeypatch, ena
     monkeypatch.setattr(chat_stance, "build_autonomy_repository", lambda **_: repo)
 
     ctx = {"user_message": "hello"}
-    chat_stance.build_chat_stance_inputs(ctx)
+    await chat_stance.build_chat_stance_inputs(ctx)
 
     assert ctx["chat_autonomy_debug"]["orion"]["availability"] == "unavailable"
     assert ctx["chat_autonomy_debug"]["orion"]["unavailable_reason"] == "timeout"
@@ -138,7 +142,8 @@ def test_chat_stance_autonomy_debug_contains_unavailable_reason(monkeypatch, ena
     assert "chat_autonomy_repository_status" in ctx
 
 
-def test_chat_stance_partial_drives_timeout_falls_back_to_relationship(monkeypatch, enable_autonomy_graphdb) -> None:
+@pytest.mark.asyncio
+async def test_chat_stance_partial_drives_timeout_falls_back_to_relationship(monkeypatch, enable_autonomy_graphdb) -> None:
     from orion.autonomy.models import AutonomyGoalHeadlineV1, AutonomyStateV1
 
     orion_state = AutonomyStateV1(
@@ -191,7 +196,7 @@ def test_chat_stance_partial_drives_timeout_falls_back_to_relationship(monkeypat
     monkeypatch.setattr(chat_stance, "build_autonomy_repository", lambda **_: repo)
 
     ctx = {"user_message": "hello", "verb": "chat_general", "mode": "brain"}
-    chat_stance.build_chat_stance_inputs(ctx)
+    await chat_stance.build_chat_stance_inputs(ctx)
 
     summary = ctx["chat_autonomy_summary"]
     assert ctx["chat_autonomy_selected_subject"] == "relationship"
@@ -202,7 +207,8 @@ def test_chat_stance_partial_drives_timeout_falls_back_to_relationship(monkeypat
     assert ctx["chat_autonomy_debug"]["_runtime"]["contextual_fallback"] is True
 
 
-def test_merge_orion_goals_dedupes_drive_origin_after_contextual_fallback(monkeypatch, enable_autonomy_graphdb) -> None:
+@pytest.mark.asyncio
+async def test_merge_orion_goals_dedupes_drive_origin_after_contextual_fallback(monkeypatch, enable_autonomy_graphdb) -> None:
     from orion.autonomy.models import AutonomyGoalHeadlineV1, AutonomyStateV1
 
     orion_state = AutonomyStateV1(
@@ -270,7 +276,7 @@ def test_merge_orion_goals_dedupes_drive_origin_after_contextual_fallback(monkey
     monkeypatch.setattr(chat_stance, "build_autonomy_repository", lambda **_: repo)
 
     ctx = {"user_message": "hello", "verb": "chat_general", "mode": "brain"}
-    chat_stance.build_chat_stance_inputs(ctx)
+    await chat_stance.build_chat_stance_inputs(ctx)
 
     active = ctx["chat_autonomy_summary"]["active_goals"]
     origins = [g["drive_origin"] for g in active]
@@ -279,7 +285,8 @@ def test_merge_orion_goals_dedupes_drive_origin_after_contextual_fallback(monkey
     assert active[0]["artifact_id"] == "goal-rel-autonomy"
 
 
-def test_chat_stance_partial_drives_timeout_exports_degraded_summary(monkeypatch, enable_autonomy_graphdb) -> None:
+@pytest.mark.asyncio
+async def test_chat_stance_partial_drives_timeout_exports_degraded_summary(monkeypatch, enable_autonomy_graphdb) -> None:
     from orion.autonomy.models import AutonomyGoalHeadlineV1, AutonomyStateV1
 
     state = AutonomyStateV1(
@@ -317,7 +324,7 @@ def test_chat_stance_partial_drives_timeout_exports_degraded_summary(monkeypatch
     monkeypatch.setattr(chat_stance, "build_autonomy_repository", lambda **_: repo)
 
     ctx = {"user_message": "hello", "verb": "chat_general", "mode": "brain"}
-    chat_stance.build_chat_stance_inputs(ctx)
+    await chat_stance.build_chat_stance_inputs(ctx)
 
     summary = ctx["chat_autonomy_summary"]
     assert summary["state_quality"] == "degraded_drives_timeout"
@@ -326,7 +333,8 @@ def test_chat_stance_partial_drives_timeout_exports_degraded_summary(monkeypatch
     assert ctx["chat_autonomy_debug"]["_runtime"]["state_quality"] == "degraded_drives_timeout"
 
 
-def test_autonomy_lookup_turn_log_distinguishes(monkeypatch, enable_autonomy_graphdb, caplog) -> None:
+@pytest.mark.asyncio
+async def test_autonomy_lookup_turn_log_distinguishes(monkeypatch, enable_autonomy_graphdb, caplog) -> None:
     from orion.autonomy.models import AutonomyStateV1
 
     state = AutonomyStateV1(
@@ -345,7 +353,7 @@ def test_autonomy_lookup_turn_log_distinguishes(monkeypatch, enable_autonomy_gra
     monkeypatch.setattr(chat_stance, "build_autonomy_repository", lambda **_: repo)
     caplog.set_level(logging.INFO)
 
-    chat_stance.build_chat_stance_inputs({"user_message": "hello"})
+    await chat_stance.build_chat_stance_inputs({"user_message": "hello"})
 
     assert "autonomy_lookup_turn" in caplog.text
     assert '"availability_counts": {"available": 1, "degraded": 0, "empty": 1, "partial": 0, "unavailable": 1}' in caplog.text
@@ -435,7 +443,8 @@ def test_autonomy_graphdb_config_prefers_generic_vars(monkeypatch) -> None:
     assert cfg["source"] == "generic_graphdb"
 
 
-def test_autonomy_graph_gate_off_skips_build_autonomy_repository(monkeypatch, caplog) -> None:
+@pytest.mark.asyncio
+async def test_autonomy_graph_gate_off_skips_build_autonomy_repository(monkeypatch, caplog) -> None:
     monkeypatch.setenv("AUTONOMY_GRAPH_BACKEND", "disabled")
     monkeypatch.delenv("RDF_STORE_QUERY_URL", raising=False)
     monkeypatch.delenv("AUTONOMY_GRAPH_QUERY_URL", raising=False)
@@ -450,14 +459,15 @@ def test_autonomy_graph_gate_off_skips_build_autonomy_repository(monkeypatch, ca
 
     monkeypatch.setattr(chat_stance, "build_autonomy_repository", _no_build)
     caplog.set_level(logging.INFO)
-    chat_stance.build_chat_stance_inputs(
+    await chat_stance.build_chat_stance_inputs(
         {"verb": "chat_quick", "mode": "brain", "user_message": "ping", "options": {}}
     )
     assert called["n"] == 0
     assert "autonomy_graph_backend_blocked" in caplog.text
 
 
-def test_explicit_graphdb_without_endpoint_logs_degraded_not_blocked(monkeypatch, caplog) -> None:
+@pytest.mark.asyncio
+async def test_explicit_graphdb_without_endpoint_logs_degraded_not_blocked(monkeypatch, caplog) -> None:
     monkeypatch.setenv("AUTONOMY_GRAPH_BACKEND", "graphdb")
     for key in (
         "GRAPHDB_QUERY_ENDPOINT",
@@ -474,7 +484,7 @@ def test_explicit_graphdb_without_endpoint_logs_degraded_not_blocked(monkeypatch
 
     monkeypatch.setattr(chat_stance, "build_autonomy_repository", _no_build)
     caplog.set_level(logging.INFO)
-    chat_stance.build_chat_stance_inputs({"verb": "chat_quick", "mode": "brain", "user_message": "ping", "options": {}})
+    await chat_stance.build_chat_stance_inputs({"verb": "chat_quick", "mode": "brain", "user_message": "ping", "options": {}})
     assert called["n"] == 0
     assert "autonomy_graph_backend_degraded" in caplog.text
     assert "autonomy_graph_backend_blocked" not in caplog.text

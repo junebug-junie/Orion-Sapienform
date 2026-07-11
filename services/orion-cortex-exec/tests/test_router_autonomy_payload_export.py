@@ -85,7 +85,7 @@ def test_router_exports_autonomy_metadata_from_chat_stance_context(monkeypatch) 
         error=None,
     )
     monkeypatch.setattr("app.router.call_step_services", AsyncMock(return_value=fake_step))
-    monkeypatch.setattr("app.router.prepare_brain_reply_context", lambda _ctx: None)
+    monkeypatch.setattr("app.router.prepare_brain_reply_context", AsyncMock(return_value=None))
     req = _request()
     ctx = {
         "mode": "brain",
@@ -145,7 +145,7 @@ def test_router_omits_autonomy_metadata_when_absent(monkeypatch) -> None:
         error=None,
     )
     monkeypatch.setattr("app.router.call_step_services", AsyncMock(return_value=fake_step))
-    monkeypatch.setattr("app.router.prepare_brain_reply_context", lambda _ctx: None)
+    monkeypatch.setattr("app.router.prepare_brain_reply_context", AsyncMock(return_value=None))
     req = _request()
     result = asyncio.run(
         runner.run_plan(
@@ -177,13 +177,12 @@ def test_router_prepares_brain_autonomy_context_for_non_chat_general_verbs(monke
     )
     monkeypatch.setattr("app.router.call_step_services", AsyncMock(return_value=fake_step))
 
-    def _fake_prepare(ctx):
+    async def _fake_prepare(ctx):
         ctx["chat_autonomy_summary"] = {"stance_hint": "stabilize and clarify"}
         ctx["chat_autonomy_debug"] = {"orion": {"availability": "available", "present": True}}
         ctx["chat_autonomy_state"] = {"subject": "orion", "source": "graph"}
         return {"autonomy": {"summary": ctx["chat_autonomy_summary"]}}
 
-    # synchronous helper; keep assertion surface simple
     monkeypatch.setattr("app.router.prepare_brain_reply_context", _fake_prepare)
 
     req = _request(verb_name="analyze_text", step_name="llm_analyze_text")
@@ -215,7 +214,7 @@ def test_router_exports_backend_and_repository_status_when_autonomy_unavailable(
         error=None,
     )
     monkeypatch.setattr("app.router.call_step_services", AsyncMock(return_value=fake_step))
-    monkeypatch.setattr("app.router.prepare_brain_reply_context", lambda _ctx: None)
+    monkeypatch.setattr("app.router.prepare_brain_reply_context", AsyncMock(return_value=None))
     req = _request()
     ctx = {
         "mode": "brain",
@@ -258,7 +257,7 @@ def test_router_exports_none_execution_mode_when_healthy_goals_present(monkeypat
         error=None,
     )
     monkeypatch.setattr("app.router.call_step_services", AsyncMock(return_value=fake_step))
-    monkeypatch.setattr("app.router.prepare_brain_reply_context", lambda _ctx: None)
+    monkeypatch.setattr("app.router.prepare_brain_reply_context", AsyncMock(return_value=None))
     ctx = {
         "mode": "brain",
         "raw_user_text": "hello",
@@ -295,7 +294,7 @@ def test_router_exports_goal_lineage_and_none_execution_mode(monkeypatch) -> Non
         error=None,
     )
     monkeypatch.setattr("app.router.call_step_services", AsyncMock(return_value=fake_step))
-    monkeypatch.setattr("app.router.prepare_brain_reply_context", lambda _ctx: None)
+    monkeypatch.setattr("app.router.prepare_brain_reply_context", AsyncMock(return_value=None))
     req = _request()
     ctx = {
         "mode": "brain",
@@ -341,7 +340,7 @@ def test_router_autonomy_preview_dominant_drive_falls_back_to_top_drive(monkeypa
         error=None,
     )
     monkeypatch.setattr("app.router.call_step_services", AsyncMock(return_value=fake_step))
-    monkeypatch.setattr("app.router.prepare_brain_reply_context", lambda _ctx: None)
+    monkeypatch.setattr("app.router.prepare_brain_reply_context", AsyncMock(return_value=None))
     req = _request()
     ctx = {
         "mode": "brain",
@@ -375,7 +374,7 @@ def test_router_autonomy_preview_dominant_drive_falls_back_to_active_drive(monke
         error=None,
     )
     monkeypatch.setattr("app.router.call_step_services", AsyncMock(return_value=fake_step))
-    monkeypatch.setattr("app.router.prepare_brain_reply_context", lambda _ctx: None)
+    monkeypatch.setattr("app.router.prepare_brain_reply_context", AsyncMock(return_value=None))
     req = _request()
     ctx = {
         "mode": "brain",
@@ -479,7 +478,7 @@ def test_router_exports_turn_effect_in_plan_metadata(monkeypatch) -> None:
         error=None,
     )
     monkeypatch.setattr("app.router.call_step_services", AsyncMock(return_value=fake_step))
-    monkeypatch.setattr("app.router.prepare_brain_reply_context", lambda _ctx: None)
+    monkeypatch.setattr("app.router.prepare_brain_reply_context", AsyncMock(return_value=None))
     req = _request()
     ctx = {
         "mode": "brain",
@@ -515,7 +514,7 @@ def test_router_exports_relationship_fallback_when_orion_drives_deferred(monkeyp
         error=None,
     )
     monkeypatch.setattr("app.router.call_step_services", AsyncMock(return_value=fake_step))
-    monkeypatch.setattr("app.router.prepare_brain_reply_context", lambda _ctx: None)
+    monkeypatch.setattr("app.router.prepare_brain_reply_context", AsyncMock(return_value=None))
     ctx = {
         "mode": "brain",
         "raw_user_text": "hello",
@@ -574,7 +573,7 @@ def test_router_exports_turn_effect_status_for_chat_quick_when_missing(monkeypat
         error=None,
     )
     monkeypatch.setattr("app.router.call_step_services", AsyncMock(return_value=fake_step))
-    monkeypatch.setattr("app.router.prepare_brain_reply_context", lambda _ctx: None)
+    monkeypatch.setattr("app.router.prepare_brain_reply_context", AsyncMock(return_value=None))
     req = _request(verb_name="chat_quick", step_name="llm_chat_quick")
     result = asyncio.run(
         runner.run_plan(

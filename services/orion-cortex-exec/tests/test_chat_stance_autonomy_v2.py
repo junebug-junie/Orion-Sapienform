@@ -2,6 +2,8 @@ from __future__ import annotations
 
 from datetime import datetime, timezone
 
+import pytest
+
 from orion.autonomy.models import AutonomyStateV1
 from orion.autonomy.summary import summarize_autonomy_state
 from orion.core.schemas.reasoning import ClaimV1
@@ -49,7 +51,8 @@ def _claim() -> ClaimV1:
     )
 
 
-def test_chat_stance_autonomy_v2_ctx_and_inputs_when_enabled(monkeypatch) -> None:
+@pytest.mark.asyncio
+async def test_chat_stance_autonomy_v2_ctx_and_inputs_when_enabled(monkeypatch) -> None:
     state = AutonomyStateV1(
         subject="orion",
         model_layer="self-model",
@@ -64,7 +67,7 @@ def test_chat_stance_autonomy_v2_ctx_and_inputs_when_enabled(monkeypatch) -> Non
     monkeypatch.setattr(chat_stance, "_load_autonomy_state", lambda _ctx: _fake_autonomy_bundle(state))
     monkeypatch.setenv("AUTONOMY_STATE_V2_REDUCER_ENABLED", "true")
     ctx: dict = {"user_message": "hello", "correlation_id": "c-v2"}
-    built = chat_stance.build_chat_stance_inputs(ctx)
+    built = await chat_stance.build_chat_stance_inputs(ctx)
     assert isinstance(ctx.get("chat_autonomy_state_v2"), dict)
     assert ctx["chat_autonomy_state_v2"].get("schema_version") == "autonomy.state.v2"
     assert "confidence" in ctx["chat_autonomy_state_v2"]
@@ -74,7 +77,8 @@ def test_chat_stance_autonomy_v2_ctx_and_inputs_when_enabled(monkeypatch) -> Non
     assert built["autonomy"]["delta"] == ctx["chat_autonomy_state_delta"]
 
 
-def test_chat_stance_autonomy_v2_slice_set_before_llm_render(monkeypatch) -> None:
+@pytest.mark.asyncio
+async def test_chat_stance_autonomy_v2_slice_set_before_llm_render(monkeypatch) -> None:
     """Regression: ctx['autonomy_slice'] (the key stance_react.j2's
     {% if autonomy_slice %} block reads) must be set synchronously inside
     build_chat_stance_inputs -- i.e. before the stance_react LLM step ever
@@ -97,7 +101,7 @@ def test_chat_stance_autonomy_v2_slice_set_before_llm_render(monkeypatch) -> Non
     monkeypatch.setenv("AUTONOMY_STATE_V2_REDUCER_ENABLED", "true")
     ctx: dict = {"user_message": "hello", "correlation_id": "c-slice"}
 
-    chat_stance.build_chat_stance_inputs(ctx)
+    await chat_stance.build_chat_stance_inputs(ctx)
 
     assert isinstance(ctx.get("autonomy_slice"), dict), (
         "autonomy_slice must be present on ctx by the time build_chat_stance_inputs "
@@ -111,7 +115,8 @@ def test_chat_stance_autonomy_v2_slice_set_before_llm_render(monkeypatch) -> Non
     assert ctx["autonomy_slice"].get("active_tensions")
 
 
-def test_chat_stance_autonomy_v2_absent_when_disabled(monkeypatch) -> None:
+@pytest.mark.asyncio
+async def test_chat_stance_autonomy_v2_absent_when_disabled(monkeypatch) -> None:
     state = AutonomyStateV1(
         subject="orion",
         model_layer="self-model",
@@ -126,12 +131,13 @@ def test_chat_stance_autonomy_v2_absent_when_disabled(monkeypatch) -> None:
     monkeypatch.setattr(chat_stance, "_load_autonomy_state", lambda _ctx: _fake_autonomy_bundle(state))
     monkeypatch.delenv("AUTONOMY_STATE_V2_REDUCER_ENABLED", raising=False)
     ctx = {"user_message": "hello"}
-    chat_stance.build_chat_stance_inputs(ctx)
+    await chat_stance.build_chat_stance_inputs(ctx)
     assert "chat_autonomy_state_v2" not in ctx
     assert "chat_autonomy_state_delta" not in ctx
 
 
-def test_chat_stance_autonomy_v2_reducer_exception_swallowed(monkeypatch) -> None:
+@pytest.mark.asyncio
+async def test_chat_stance_autonomy_v2_reducer_exception_swallowed(monkeypatch) -> None:
     state = AutonomyStateV1(
         subject="orion",
         model_layer="self-model",
@@ -151,7 +157,7 @@ def test_chat_stance_autonomy_v2_reducer_exception_swallowed(monkeypatch) -> Non
 
     monkeypatch.setattr(chat_stance, "reduce_autonomy_state", _boom)
     ctx: dict = {"user_message": "hello"}
-    built = chat_stance.build_chat_stance_inputs(ctx)
+    built = await chat_stance.build_chat_stance_inputs(ctx)
     assert "chat_autonomy_state_v2" not in ctx
     assert "state_v2" not in built["autonomy"]
     assert "delta" not in built["autonomy"]
@@ -159,7 +165,8 @@ def test_chat_stance_autonomy_v2_reducer_exception_swallowed(monkeypatch) -> Non
     assert isinstance(ctx.get("chat_autonomy_summary"), dict)
 
 
-def test_chat_stance_empty_repo_omits_reasoning_quality_evidence(monkeypatch) -> None:
+@pytest.mark.asyncio
+async def test_chat_stance_empty_repo_omits_reasoning_quality_evidence(monkeypatch) -> None:
     state = AutonomyStateV1(
         subject="orion",
         model_layer="self-model",
@@ -174,7 +181,7 @@ def test_chat_stance_empty_repo_omits_reasoning_quality_evidence(monkeypatch) ->
     monkeypatch.setattr(chat_stance, "_load_autonomy_state", lambda _ctx: _fake_autonomy_bundle(state))
     monkeypatch.setenv("AUTONOMY_STATE_V2_REDUCER_ENABLED", "true")
     ctx: dict = {"user_message": "hello", "correlation_id": "c-omit"}
-    chat_stance.build_chat_stance_inputs(ctx)
+    await chat_stance.build_chat_stance_inputs(ctx)
     debug = ctx.get("chat_autonomy_evidence_debug") or {}
     omitted = debug.get("omitted") or []
     assert any(o.get("kind") == "reasoning_quality" and o.get("reason") == "empty_upstream" for o in omitted)
@@ -183,7 +190,8 @@ def test_chat_stance_empty_repo_omits_reasoning_quality_evidence(monkeypatch) ->
     assert "reasoning_quality" not in kinds
 
 
-def test_chat_stance_social_locals_reach_reducer(monkeypatch) -> None:
+@pytest.mark.asyncio
+async def test_chat_stance_social_locals_reach_reducer(monkeypatch) -> None:
     state = AutonomyStateV1(
         subject="orion",
         model_layer="self-model",
@@ -208,7 +216,7 @@ def test_chat_stance_social_locals_reach_reducer(monkeypatch) -> None:
     ctx: dict = {"user_message": "ping", "correlation_id": "c-haz"}
     # Intentionally do NOT pre-seed chat_social_bridge_summary — ordering bug regression.
     assert "chat_social_bridge_summary" not in ctx
-    chat_stance.build_chat_stance_inputs(ctx)
+    await chat_stance.build_chat_stance_inputs(ctx)
     v2 = ctx["chat_autonomy_state_v2"]
     summaries = [e.get("summary") for e in (v2.get("evidence_refs") or []) if e.get("kind") == "relational_signal"]
     assert "cooldown_active" in summaries
@@ -220,7 +228,8 @@ def test_chat_stance_social_locals_reach_reducer(monkeypatch) -> None:
     assert any(m.get("signal_kind") == "chat_social_hazard" for m in minted)
 
 
-def test_chat_stance_v1_with_snapshots_survives_aware_compiler_now(monkeypatch) -> None:
+@pytest.mark.asyncio
+async def test_chat_stance_v1_with_snapshots_survives_aware_compiler_now(monkeypatch) -> None:
     """Live graph V1 carries naive generated_at + snapshot IDs; stance now is aware UTC."""
     state = AutonomyStateV1(
         subject="orion",
@@ -247,14 +256,15 @@ def test_chat_stance_v1_with_snapshots_survives_aware_compiler_now(monkeypatch) 
     monkeypatch.setattr(chat_stance, "_project_social_from_beliefs", _fake_social)
     monkeypatch.setenv("AUTONOMY_STATE_V2_REDUCER_ENABLED", "true")
     ctx: dict = {"user_message": "hi", "correlation_id": "c-tz"}
-    chat_stance.build_chat_stance_inputs(ctx)
+    await chat_stance.build_chat_stance_inputs(ctx)
     assert isinstance(ctx.get("chat_autonomy_state_v2"), dict)
     assert ctx["chat_autonomy_state_v2"].get("schema_version") == "autonomy.state.v2"
     assert "latest_direct_evidence_at" in (ctx["chat_autonomy_state_v2"].get("freshness") or {})
     assert ctx["chat_autonomy_state_v2"]["drive_pressures"]["relational"] > 0.0
 
 
-def test_chat_stance_reasoning_upstream_emits_quality(monkeypatch) -> None:
+@pytest.mark.asyncio
+async def test_chat_stance_reasoning_upstream_emits_quality(monkeypatch) -> None:
     state = AutonomyStateV1(
         subject="orion",
         model_layer="self-model",
@@ -294,7 +304,7 @@ def test_chat_stance_reasoning_upstream_emits_quality(monkeypatch) -> None:
 
     monkeypatch.setattr(chat_stance, "_compile_reasoning_summary", _compile_force_fallback)
     ctx: dict = {"user_message": "who?", "reasoning_repository": repo}
-    chat_stance.build_chat_stance_inputs(ctx)
+    await chat_stance.build_chat_stance_inputs(ctx)
     v2 = ctx["chat_autonomy_state_v2"]
     kinds = [e.get("kind") for e in (v2.get("evidence_refs") or [])]
     assert "reasoning_quality" in kinds

@@ -75,20 +75,22 @@ def _real_beliefs_with_self_nodes(overall_condition: str) -> UnifiedRelationalBe
     return UnifiedRelationalBeliefSetV1(anchors={"orion": anchor_slice})
 
 
-def test_build_chat_stance_inputs_folds_self_state_hazard_when_strained(monkeypatch: pytest.MonkeyPatch) -> None:
+@pytest.mark.asyncio
+async def test_build_chat_stance_inputs_folds_self_state_hazard_when_strained(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(chat_stance, "_unified_beliefs_for_stance", lambda ctx: _real_beliefs_with_self_nodes("strained"))
 
     ctx = {"user_message": "hello"}
-    built = chat_stance.build_chat_stance_inputs(ctx)
+    built = await chat_stance.build_chat_stance_inputs(ctx)
 
     assert any(h.startswith("self_state overall_condition=strained") for h in built["social"]["hazards"])
     assert ctx["chat_self_state_condition"] == "strained"
 
 
-def test_build_chat_stance_inputs_no_self_state_hazard_when_steady(monkeypatch: pytest.MonkeyPatch) -> None:
+@pytest.mark.asyncio
+async def test_build_chat_stance_inputs_no_self_state_hazard_when_steady(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(chat_stance, "_unified_beliefs_for_stance", lambda ctx: _real_beliefs_with_self_nodes("steady"))
 
     ctx = {"user_message": "hello"}
-    built = chat_stance.build_chat_stance_inputs(ctx)
+    built = await chat_stance.build_chat_stance_inputs(ctx)
 
     assert not any(h.startswith("self_state overall_condition=") for h in built["social"]["hazards"])

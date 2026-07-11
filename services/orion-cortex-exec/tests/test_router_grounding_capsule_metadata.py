@@ -78,7 +78,7 @@ def test_router_attaches_grounding_capsule_to_metadata(monkeypatch) -> None:
         "app.router.call_step_services",
         AsyncMock(return_value=_fake_step(verb_name="stance_react", step_name="llm_stance_react")),
     )
-    monkeypatch.setattr("app.router.prepare_brain_reply_context", lambda _ctx: None)
+    monkeypatch.setattr("app.router.prepare_brain_reply_context", AsyncMock(return_value=None))
     assemble = AsyncMock(return_value=_capsule())
     monkeypatch.setattr("app.router.assemble_stance_grounding", assemble)
 
@@ -105,7 +105,7 @@ def test_router_omits_grounding_capsule_when_assembler_returns_none(monkeypatch)
         "app.router.call_step_services",
         AsyncMock(return_value=_fake_step(verb_name="stance_react", step_name="llm_stance_react")),
     )
-    monkeypatch.setattr("app.router.prepare_brain_reply_context", lambda _ctx: None)
+    monkeypatch.setattr("app.router.prepare_brain_reply_context", AsyncMock(return_value=None))
     monkeypatch.setattr("app.router.assemble_stance_grounding", AsyncMock(return_value=None))
 
     result = asyncio.run(
@@ -128,7 +128,7 @@ def test_router_does_not_assemble_grounding_for_non_stance_verb(monkeypatch) -> 
         "app.router.call_step_services",
         AsyncMock(return_value=_fake_step(verb_name="chat_general", step_name="llm_chat_general")),
     )
-    monkeypatch.setattr("app.router.prepare_brain_reply_context", lambda _ctx: None)
+    monkeypatch.setattr("app.router.prepare_brain_reply_context", AsyncMock(return_value=None))
     assemble = AsyncMock(return_value=_capsule())
     monkeypatch.setattr("app.router.assemble_stance_grounding", assemble)
 

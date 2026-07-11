@@ -22,6 +22,11 @@ def context_mode_enabled() -> bool:
     return _env_truthy("HARNESS_FCC_CONTEXT_MODE_ENABLED")
 
 
+def context_mode_hooks_enabled() -> bool:
+    """Context Mode as a Claude Code plugin that owns its own MCP server."""
+    return _env_truthy("HARNESS_FCC_CONTEXT_MODE_HOOKS_ENABLED")
+
+
 def gitnexus_brief_lines() -> list[str]:
     return [
         (
@@ -65,5 +70,7 @@ def append_self_index_harness_brief(parts: list[str]) -> None:
         return
     if gitnexus_enabled():
         parts.extend(gitnexus_brief_lines())
-    if context_mode_enabled():
+    # Hook mode serves the same ctx_* tools via the context-mode plugin's own
+    # MCP server, so the brief text is identical in both modes.
+    if context_mode_enabled() or context_mode_hooks_enabled():
         parts.extend(context_mode_brief_lines())

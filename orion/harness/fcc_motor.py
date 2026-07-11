@@ -313,13 +313,26 @@ def _maybe_render_mcp_config(*, correlation_id: str) -> Optional[Path]:
         return None
     env = load_fcc_env(expand_env_path(os.environ.get("HARNESS_FCC_ENV_PATH", "~/.fcc/.env")))
     include_aitown = _env_truthy("HARNESS_AITOWN_ENABLED")
+    include_context_mode = _env_truthy("HARNESS_FCC_CONTEXT_MODE_ENABLED")
+    if _env_truthy("HARNESS_FCC_CONTEXT_MODE_HOOKS_ENABLED"):
+        # Hook mode: the context-mode Claude Code plugin owns its MCP server;
+        # a standalone entry would double-register the ctx_* tools.
+        if include_context_mode:
+            logger.warning(
+                "context_mode_hooks_mode_wins corr=%s: both "
+                "HARNESS_FCC_CONTEXT_MODE_HOOKS_ENABLED and "
+                "HARNESS_FCC_CONTEXT_MODE_ENABLED are set; hook mode wins, "
+                "skipping the standalone context-mode MCP server",
+                correlation_id,
+            )
+        include_context_mode = False
     return render_mcp_config(
         correlation_id=correlation_id,
         fcc_env=env,
         include_aitown=include_aitown,
         aitown_env=_harness_aitown_env(env) if include_aitown else None,
         include_gitnexus=_env_truthy("HARNESS_FCC_GITNEXUS_ENABLED"),
-        include_context_mode=_env_truthy("HARNESS_FCC_CONTEXT_MODE_ENABLED"),
+        include_context_mode=include_context_mode,
         context_mode_dir=os.environ.get("HARNESS_FCC_CONTEXT_MODE_DIR"),
         context_mode_project_dir=os.environ.get("HARNESS_FCC_WORKSPACE"),
     )
@@ -353,6 +366,16 @@ def _build_subprocess_env(*, fcc_server_url: str, auth_token: str) -> Dict[str, 
     env["CLAUDE_CODE_ENABLE_GATEWAY_MODEL_DISCOVERY"] = "1"
     env["TERM"] = "dumb"
     _fcc_context_env(env)
+    if _env_truthy("HARNESS_FCC_CONTEXT_MODE_HOOKS_ENABLED"):
+        # Point the context-mode plugin's hooks + MCP server at the same
+        # storage root the standalone stage would use.
+        env["CONTEXT_MODE_PLATFORM"] = "claude-code"
+        env["CONTEXT_MODE_PROJECT_DIR"] = (
+            os.environ.get("HARNESS_FCC_WORKSPACE") or os.getcwd()
+        )
+        env["CONTEXT_MODE_DIR"] = (
+            os.environ.get("HARNESS_FCC_CONTEXT_MODE_DIR") or "/var/lib/orion/context-mode"
+        )
     env.pop("DISABLE_COMPACT", None)
     env.pop("DISABLE_AUTO_COMPACT", None)
     return env
@@ -417,7 +440,13 @@ async def run_fcc_turn(
         model_id,
     ]
     if mcp_config_path is not None:
-        extend_mcp_argv(argv, mcp_config_path)
+        extra_allowed_tools: Optional[List[str]] = None
+        if _env_truthy("HARNESS_FCC_CONTEXT_MODE_HOOKS_ENABLED"):
+            # Claude Code 2.1 pre-approval pattern is the bare server name,
+            # mirroring mcp_allowed_tool_patterns; the plugin-owned server is
+            # not in the rendered config, so pre-approve it explicitly.
+            extra_allowed_tools = ["mcp__plugin_context-mode_context-mode"]
+        extend_mcp_argv(argv, mcp_config_path, extra_allowed_tools=extra_allowed_tools)
     if _should_skip_claude_permissions():
         perm = claude_permission_argv(auto_approve=True)
         if perm:

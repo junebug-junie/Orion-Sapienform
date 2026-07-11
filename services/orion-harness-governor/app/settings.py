@@ -90,6 +90,9 @@ class HarnessGovernorSettings(BaseSettings):
     harness_fcc_context_mode_dir: str = Field(
         "/var/lib/orion/context-mode", alias="HARNESS_FCC_CONTEXT_MODE_DIR"
     )
+    harness_fcc_context_mode_hooks_enabled: bool = Field(
+        False, alias="HARNESS_FCC_CONTEXT_MODE_HOOKS_ENABLED"
+    )
 
     # (D) embodiment: publish a deliberate approach intent on the turn correlation_id
     # after a finalized relational turn. Default-off, fail-open (never breaks a turn).

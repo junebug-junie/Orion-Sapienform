@@ -1,0 +1,6 @@
+# GitNexus index scope — additive to .gitignore, does not modify it.
+# services/orion-hub/node_modules is not caught by the repo's existing
+# .gitignore pattern (anchored at /mnt/services/*, not services/*), so it
+# would otherwise be indexed as vendored JS noise (puppeteer, chromium-bidi,
+# etc.) with no cognitive relevance.
+node_modules/

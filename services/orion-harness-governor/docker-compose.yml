@@ -15,6 +15,13 @@ services:
       - ${HOME}/.fcc:/root/.fcc:ro
       - ${HOME}/.claude.json:/root/.claude.json:ro
       - ${HARNESS_FCC_CLAUDE_BIN_HOST:-${HOME}/.local/bin/claude}:/usr/local/bin/claude:ro
+      # GitNexus global registry (~/.gitnexus/registry.json) — index is built on
+      # the host; MCP inside the container discovers it via this read-only mount.
+      # The per-repo .gitnexus/ index arrives through the repo mount above.
+      - ${HOME}/.gitnexus:/root/.gitnexus:ro
+      # Context Mode working data — operational, project-scoped, NOT an Orion
+      # memory store; never exposed through Hub convenience APIs.
+      - harness-context-mode:${HARNESS_FCC_CONTEXT_MODE_DIR:-/var/lib/orion/context-mode}
       - /var/run/docker.sock:/var/run/docker.sock
     environment:
       - SERVICE_NAME=${SERVICE_NAME:-orion-harness-governor}
@@ -54,6 +61,9 @@ services:
       - HARNESS_FCC_CONTEXT_PRESSURE_PCT=${HARNESS_FCC_CONTEXT_PRESSURE_PCT:-70}
       - ORION_FCC_MCP_TOOL_RESULT_MAX_CHARS=${ORION_FCC_MCP_TOOL_RESULT_MAX_CHARS:-12000}
       - HARNESS_AITOWN_ENABLED=${HARNESS_AITOWN_ENABLED:-false}
+      - HARNESS_FCC_GITNEXUS_ENABLED=${HARNESS_FCC_GITNEXUS_ENABLED:-false}
+      - HARNESS_FCC_CONTEXT_MODE_ENABLED=${HARNESS_FCC_CONTEXT_MODE_ENABLED:-false}
+      - HARNESS_FCC_CONTEXT_MODE_DIR=${HARNESS_FCC_CONTEXT_MODE_DIR:-/var/lib/orion/context-mode}
     networks:
       - app-net
     ports:
@@ -68,3 +78,6 @@ services:
 networks:
   app-net:
     external: true
+
+volumes:
+  harness-context-mode:

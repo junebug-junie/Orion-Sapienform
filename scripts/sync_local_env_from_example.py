@@ -179,6 +179,12 @@ SYNC_EXACT = frozenset(
         "ORION_THOUGHT_BASE_URL",
         # Voluntary attention goal-context listener (orion-substrate-runtime)
         "CHANNEL_GOAL_PROPOSAL",
+        # Unified-turn harness governor RPC wait budget (hub <-> orion-harness-governor)
+        "HUB_HARNESS_GOVERNOR_RPC_TIMEOUT_SEC",
+        "HUB_HARNESS_GOVERNOR_RPC_MAX_WAIT_SEC",
+        "HUB_HARNESS_GOVERNOR_LIVENESS_WINDOW_SEC",
+        "HUB_HARNESS_STEP_RELAY_LIVENESS_TTL_SEC",
+        "HUB_HARNESS_STEP_RELAY_LIVENESS_MAX_ENTRIES",
     }
 )
 

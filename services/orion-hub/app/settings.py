@@ -434,6 +434,49 @@ class Settings(BaseSettings):
         alias="HUB_HARNESS_GOVERNOR_RPC_TIMEOUT_SEC",
         description="Hub bus RPC wait for unified-turn harness governor (FCC motor + finalize chain).",
     )
+    HUB_HARNESS_GOVERNOR_RPC_MAX_WAIT_SEC: float = Field(
+        default=3600.0,
+        alias="HUB_HARNESS_GOVERNOR_RPC_MAX_WAIT_SEC",
+        description=(
+            "Hard ceiling for the harness governor RPC wait. Beyond "
+            "HUB_HARNESS_GOVERNOR_RPC_TIMEOUT_SEC, the wait is extended in that same-size "
+            "increment as long as harness_step_relay observed a step within the last "
+            "HUB_HARNESS_GOVERNOR_LIVENESS_WINDOW_SEC (liveness), up to this ceiling."
+        ),
+    )
+    HUB_HARNESS_GOVERNOR_LIVENESS_WINDOW_SEC: float = Field(
+        default=600.0,
+        alias="HUB_HARNESS_GOVERNOR_LIVENESS_WINDOW_SEC",
+        description=(
+            "Fixed 'still active' recency window for the liveness check, independent of the "
+            "RPC poll interval. A step must have been observed within this many seconds of "
+            "now for the governor to be considered alive. Kept generous (well above typical "
+            "step cadence) because a single slow tool call (e.g. a long Bash/Agent step) can "
+            "legitimately go several minutes without emitting an intermediate step — too tight "
+            "a window would kill exactly the long tool-heavy turns this feature exists for."
+        ),
+    )
+    HUB_HARNESS_STEP_RELAY_LIVENESS_TTL_SEC: float = Field(
+        default=7200.0,
+        alias="HUB_HARNESS_STEP_RELAY_LIVENESS_TTL_SEC",
+        description=(
+            "Safety-net TTL for harness_step_relay's liveness bookkeeping (_last_seen). "
+            "Entries older than this are opportunistically evicted so correlation_ids never "
+            "explicitly forgotten (e.g. observed by a hub replica that isn't the one awaiting "
+            "that turn) cannot grow the map unbounded."
+        ),
+    )
+    HUB_HARNESS_STEP_RELAY_LIVENESS_MAX_ENTRIES: int = Field(
+        default=2000,
+        alias="HUB_HARNESS_STEP_RELAY_LIVENESS_MAX_ENTRIES",
+        description=(
+            "Hard cap on harness_step_relay's liveness bookkeeping (_last_seen), evicting the "
+            "least-recently-touched correlation_id first. The TTL sweep above only runs at "
+            "most every few minutes, so a burst of unique correlation_ids within one sweep "
+            "interval needs this size cap too — same cap+TTL pattern as CognitionTraceCache "
+            "and SignalsInspectCache in this service."
+        ),
+    )
     CHANNEL_THOUGHT_REQUEST: str = Field(
         default="orion:thought:request",
         alias="CHANNEL_THOUGHT_REQUEST",

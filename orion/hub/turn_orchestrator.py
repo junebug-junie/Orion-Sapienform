@@ -313,11 +313,22 @@ async def execute_unified_turn(
     harness_bus = harness_rpc_bus or bus
     if harness_step_relay is not None and harness_step_queue is not None:
         harness_step_relay.register_queue(correlation_id, harness_step_queue)
+    liveness_check = (
+        (lambda within_sec: harness_step_relay.seen_recently(correlation_id, within_sec=within_sec))
+        if harness_step_relay is not None
+        else None
+    )
     try:
-        run = await HarnessGovernorClient(harness_bus).run(harness_req, correlation_id=correlation_id)
+        run = await HarnessGovernorClient(harness_bus).run(
+            harness_req,
+            correlation_id=correlation_id,
+            liveness_check=liveness_check,
+        )
     finally:
         if harness_step_relay is not None and harness_step_queue is not None:
             harness_step_relay.unregister_queue(correlation_id, harness_step_queue)
+        if harness_step_relay is not None:
+            harness_step_relay.forget(correlation_id)
     if run is None:
         return [
             {

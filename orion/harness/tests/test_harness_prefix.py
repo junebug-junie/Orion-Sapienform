@@ -113,11 +113,65 @@ def test_compile_harness_prefix_self_index_briefs_gated_on_master_flag(
     assert "Context Mode MCP" not in prompt
 
 
+def test_compile_harness_prefix_includes_context_mode_brief_in_hook_mode(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Hook mode (plugin-owned MCP server) advertises the same ctx_* brief,
+    even with the standalone context-mode flag off."""
+    monkeypatch.setenv("HARNESS_FCC_MCP_ENABLED", "true")
+    monkeypatch.setenv("ORION_GITHUB_OWNER", "junebug-junie")
+    monkeypatch.setenv("ORION_GITHUB_REPO", "Orion-Sapienform")
+    monkeypatch.delenv("HARNESS_FCC_GITNEXUS_ENABLED", raising=False)
+    monkeypatch.delenv("HARNESS_FCC_CONTEXT_MODE_ENABLED", raising=False)
+    monkeypatch.setenv("HARNESS_FCC_CONTEXT_MODE_HOOKS_ENABLED", "true")
+    thought = make_thought(imperative="Trace the unified turn.")
+    prompt = compile_harness_prefix(
+        thought,
+        repair_overlay=HarnessRepairOverlayV1(),
+    )
+    assert "Context Mode MCP is available" in prompt
+    assert "ctx_search" in prompt
+    assert "GitNexus" not in prompt
+
+
+def test_compile_harness_prefix_omits_context_mode_brief_when_both_modes_off(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("HARNESS_FCC_MCP_ENABLED", "true")
+    monkeypatch.setenv("ORION_GITHUB_OWNER", "junebug-junie")
+    monkeypatch.setenv("ORION_GITHUB_REPO", "Orion-Sapienform")
+    monkeypatch.delenv("HARNESS_FCC_GITNEXUS_ENABLED", raising=False)
+    monkeypatch.delenv("HARNESS_FCC_CONTEXT_MODE_ENABLED", raising=False)
+    monkeypatch.delenv("HARNESS_FCC_CONTEXT_MODE_HOOKS_ENABLED", raising=False)
+    thought = make_thought()
+    prompt = compile_harness_prefix(
+        thought,
+        repair_overlay=HarnessRepairOverlayV1(),
+    )
+    assert "Context Mode MCP" not in prompt
+
+
+def test_compile_harness_prefix_hook_mode_brief_gated_on_master_flag(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.delenv("HARNESS_FCC_MCP_ENABLED", raising=False)
+    monkeypatch.delenv("HARNESS_FCC_GITNEXUS_ENABLED", raising=False)
+    monkeypatch.delenv("HARNESS_FCC_CONTEXT_MODE_ENABLED", raising=False)
+    monkeypatch.setenv("HARNESS_FCC_CONTEXT_MODE_HOOKS_ENABLED", "true")
+    thought = make_thought()
+    prompt = compile_harness_prefix(
+        thought,
+        repair_overlay=HarnessRepairOverlayV1(),
+    )
+    assert "Context Mode MCP" not in prompt
+
+
 def test_compile_harness_prefix_omits_self_index_briefs_by_default(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     monkeypatch.delenv("HARNESS_FCC_GITNEXUS_ENABLED", raising=False)
     monkeypatch.delenv("HARNESS_FCC_CONTEXT_MODE_ENABLED", raising=False)
+    monkeypatch.delenv("HARNESS_FCC_CONTEXT_MODE_HOOKS_ENABLED", raising=False)
     thought = make_thought()
     prompt = compile_harness_prefix(
         thought,

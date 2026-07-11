@@ -5,7 +5,7 @@ from __future__ import annotations
 import json
 import os
 from pathlib import Path
-from typing import Any, List, Mapping
+from typing import Any, List, Mapping, Sequence
 
 
 def mcp_allowed_tool_patterns(mcp_servers: Mapping[str, Any]) -> List[str]:
@@ -25,14 +25,21 @@ def mcp_disallowed_tool_patterns(mcp_servers: Mapping[str, Any]) -> List[str]:
     return blocked
 
 
-def extend_mcp_argv(argv: List[str], mcp_config_path: Path) -> None:
+def extend_mcp_argv(
+    argv: List[str],
+    mcp_config_path: Path,
+    *,
+    extra_allowed_tools: Sequence[str] | None = None,
+) -> None:
     data = json.loads(mcp_config_path.read_text(encoding="utf-8"))
     servers = data.get("mcpServers") or {}
     patterns = mcp_allowed_tool_patterns(servers)
+    extra = list(extra_allowed_tools or [])
     argv.extend(["--mcp-config", str(mcp_config_path)])
-    if patterns:
+    if patterns or extra:
         argv.append("--allowedTools")
         argv.extend(patterns)
+        argv.extend(extra)
     disallowed = mcp_disallowed_tool_patterns(servers)
     if disallowed:
         argv.append("--disallowedTools")

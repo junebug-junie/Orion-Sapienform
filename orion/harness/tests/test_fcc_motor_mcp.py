@@ -115,6 +115,51 @@ async def test_run_fcc_turn_omits_mcp_config_when_disabled(monkeypatch: pytest.M
 
 
 @pytest.mark.asyncio
+async def test_run_fcc_turn_hook_mode_allows_context_mode_plugin_server(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    captured_argv: list = []
+
+    async def fake_exec(*args: Any, **kwargs: Any) -> _FakeProc:
+        captured_argv.extend(args)
+        return _FakeProc([
+            '{"type":"result","result":"Done.","session_id":"s1"}',
+        ])
+
+    monkeypatch.setattr(asyncio, "create_subprocess_exec", fake_exec)
+    monkeypatch.setattr(motor, "_preflight_fcc_server", lambda *a, **k: None)
+    monkeypatch.setattr(motor, "load_fcc_env", _fake_fcc_env)
+    monkeypatch.setenv("HARNESS_FCC_MCP_ENABLED", "true")
+    monkeypatch.delenv("HARNESS_FCC_GITNEXUS_ENABLED", raising=False)
+    monkeypatch.delenv("HARNESS_FCC_CONTEXT_MODE_ENABLED", raising=False)
+    monkeypatch.setenv("HARNESS_FCC_CONTEXT_MODE_HOOKS_ENABLED", "true")
+    fake_cfg = tmp_path / "hooks-mcp.json"
+    fake_cfg.write_text(
+        '{"mcpServers":{"github":{},"firecrawl":{}}}',
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(motor, "_maybe_render_mcp_config", lambda **k: fake_cfg)
+
+    async for _ in motor.run_fcc_turn(
+        prompt="hello",
+        fcc_model_label="MODEL_HAIKU",
+        correlation_id="corr-hooks-argv",
+        workspace="/tmp",
+        fcc_server_url="http://127.0.0.1:8082",
+        auth_token="tok",
+        claude_bin="claude",
+        timeout_sec=30.0,
+    ):
+        pass
+
+    assert "--allowedTools" in captured_argv
+    idx = captured_argv.index("--allowedTools")
+    assert captured_argv[idx + 1] == "mcp__github"
+    assert captured_argv[idx + 2] == "mcp__firecrawl"
+    assert captured_argv[idx + 3] == "mcp__plugin_context-mode_context-mode"
+
+
+@pytest.mark.asyncio
 async def test_run_fcc_turn_surfaces_mcp_preflight_error_code(monkeypatch: pytest.MonkeyPatch) -> None:
     from orion.fcc.mcp_config import McpPreflightError
 
@@ -272,6 +317,38 @@ def test_maybe_render_mcp_config_wires_self_index_flags(
         mcp_config.cleanup_mcp_config(path)
 
 
+def test_maybe_render_mcp_config_hook_mode_skips_standalone_context_mode(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    import json
+
+    import orion.fcc.mcp_config as mcp_config
+
+    monkeypatch.setenv("HARNESS_FCC_MCP_ENABLED", "true")
+    monkeypatch.delenv("HARNESS_AITOWN_ENABLED", raising=False)
+    monkeypatch.setenv("HARNESS_FCC_GITNEXUS_ENABLED", "true")
+    monkeypatch.setenv("HARNESS_FCC_CONTEXT_MODE_ENABLED", "true")
+    monkeypatch.setenv("HARNESS_FCC_CONTEXT_MODE_HOOKS_ENABLED", "true")
+    monkeypatch.setenv("HARNESS_FCC_CONTEXT_MODE_DIR", str(tmp_path / "ctx-data"))
+    monkeypatch.setenv("HARNESS_FCC_WORKSPACE", "/mnt/scripts/Orion-Sapienform")
+    monkeypatch.setattr(
+        motor,
+        "load_fcc_env",
+        lambda _p: {"GITHUB_PAT": "ghp_hooks", "FIRECRAWL_API_KEY": "fc_hooks"},
+    )
+    monkeypatch.setattr(motor, "expand_env_path", lambda _p: Path("/fake/.fcc/.env"))
+    monkeypatch.setattr(mcp_config.shutil, "which", lambda cmd: f"/usr/bin/{cmd}")
+
+    path = motor._maybe_render_mcp_config(correlation_id="corr-hooks-mode")
+    try:
+        assert path is not None
+        servers = json.loads(path.read_text(encoding="utf-8"))["mcpServers"]
+        assert "context-mode" not in servers
+        assert "gitnexus" in servers
+    finally:
+        mcp_config.cleanup_mcp_config(path)
+
+
 def test_maybe_render_mcp_config_self_index_off_by_default(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -317,6 +394,46 @@ def test_build_subprocess_env_sets_context_ceiling(monkeypatch: pytest.MonkeyPat
     assert env["CLAUDE_CODE_MAX_CONTEXT_TOKENS"] == "65536"
     assert env["CLAUDE_CODE_FILE_READ_MAX_OUTPUT_TOKENS"] == "8192"
     assert env["CLAUDE_AUTOCOMPACT_PCT_OVERRIDE"] == "70"
+
+
+def test_build_subprocess_env_hook_mode_sets_context_mode_keys(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    monkeypatch.setenv("HARNESS_FCC_MCP_ENABLED", "true")
+    monkeypatch.delenv("HARNESS_FCC_GITNEXUS_ENABLED", raising=False)
+    monkeypatch.delenv("HARNESS_FCC_CONTEXT_MODE_ENABLED", raising=False)
+    monkeypatch.setenv("HARNESS_FCC_CONTEXT_MODE_HOOKS_ENABLED", "true")
+    monkeypatch.setenv("HARNESS_FCC_WORKSPACE", "/mnt/scripts/Orion-Sapienform")
+    monkeypatch.setenv("HARNESS_FCC_CONTEXT_MODE_DIR", str(tmp_path / "ctx-data"))
+    env = motor._build_subprocess_env(fcc_server_url="http://127.0.0.1:8082", auth_token="tok")
+    assert env["CONTEXT_MODE_PLATFORM"] == "claude-code"
+    assert env["CONTEXT_MODE_PROJECT_DIR"] == "/mnt/scripts/Orion-Sapienform"
+    assert env["CONTEXT_MODE_DIR"] == str(tmp_path / "ctx-data")
+
+
+def test_build_subprocess_env_hook_mode_uses_fallback_paths(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("HARNESS_FCC_CONTEXT_MODE_HOOKS_ENABLED", "true")
+    monkeypatch.delenv("HARNESS_FCC_WORKSPACE", raising=False)
+    monkeypatch.delenv("HARNESS_FCC_CONTEXT_MODE_DIR", raising=False)
+    env = motor._build_subprocess_env(fcc_server_url="http://127.0.0.1:8082", auth_token="tok")
+    assert env["CONTEXT_MODE_PLATFORM"] == "claude-code"
+    assert env["CONTEXT_MODE_PROJECT_DIR"] == motor.os.getcwd()
+    assert env["CONTEXT_MODE_DIR"] == "/var/lib/orion/context-mode"
+
+
+def test_build_subprocess_env_no_context_mode_keys_without_hook_flag(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.delenv("HARNESS_FCC_CONTEXT_MODE_HOOKS_ENABLED", raising=False)
+    monkeypatch.delenv("CONTEXT_MODE_PLATFORM", raising=False)
+    monkeypatch.delenv("CONTEXT_MODE_PROJECT_DIR", raising=False)
+    monkeypatch.delenv("CONTEXT_MODE_DIR", raising=False)
+    env = motor._build_subprocess_env(fcc_server_url="http://127.0.0.1:8082", auth_token="tok")
+    assert "CONTEXT_MODE_PLATFORM" not in env
+    assert "CONTEXT_MODE_PROJECT_DIR" not in env
+    assert "CONTEXT_MODE_DIR" not in env
 
 
 def test_build_subprocess_env_enables_tool_search(monkeypatch: pytest.MonkeyPatch) -> None:

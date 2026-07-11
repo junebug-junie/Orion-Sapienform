@@ -31,10 +31,18 @@ def gitnexus_brief_lines() -> list[str]:
     return [
         (
             "GitNexus code-graph MCP is available for repository introspection. "
-            "Use query to locate a concept or process, context for the 360-degree "
-            "view of one symbol, impact for upstream/downstream blast radius, and "
-            "trace only between two known endpoints. Request full symbol content "
-            "only after narrowing."
+            "When the user asks to use GitNexus, or asks for repo topology, "
+            "pipeline flow, ownership, impact, or symbol discovery, first load "
+            "the GitNexus tool surface (ToolSearch query: gitnexus, if hidden) "
+            "and call mcp__gitnexus__query before Context Mode or raw source "
+            "search. A ctx_* shell search does not satisfy a GitNexus request."
+        ),
+        (
+            "Use mcp__gitnexus__query to locate a concept or process, "
+            "mcp__gitnexus__context for the 360-degree view of one symbol, "
+            "mcp__gitnexus__impact for upstream/downstream blast radius, and "
+            "mcp__gitnexus__trace only between two known endpoints. Request "
+            "full symbol content only after narrowing."
         ),
         (
             "The graph is derived cache, never authority. Before graph-grounded "

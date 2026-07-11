@@ -91,9 +91,29 @@ def test_compile_harness_prefix_includes_self_index_briefs_when_enabled(
         repair_overlay=HarnessRepairOverlayV1(),
     )
     assert "GitNexus code-graph MCP is available" in prompt
+    assert "ToolSearch query: gitnexus" in prompt
+    assert "mcp__gitnexus__query before Context Mode or raw source search" in prompt
+    assert "ctx_* shell search does not satisfy a GitNexus request" in prompt
     assert "derived cache, never authority" in prompt
     assert "Context Mode MCP is available" in prompt
     assert "ctx_search" in prompt
+
+
+def test_compile_harness_prefix_orders_gitnexus_before_context_mode(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("HARNESS_FCC_MCP_ENABLED", "true")
+    monkeypatch.setenv("HARNESS_FCC_GITNEXUS_ENABLED", "true")
+    monkeypatch.setenv("HARNESS_FCC_CONTEXT_MODE_ENABLED", "true")
+    thought = make_thought(imperative="Use GitNexus to trace the unified turn.")
+    prompt = compile_harness_prefix(
+        thought,
+        repair_overlay=HarnessRepairOverlayV1(),
+    )
+
+    assert prompt.index("mcp__gitnexus__query before Context Mode") < prompt.index(
+        "Context Mode MCP is available"
+    )
 
 
 def test_compile_harness_prefix_self_index_briefs_gated_on_master_flag(

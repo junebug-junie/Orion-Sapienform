@@ -96,6 +96,18 @@ def build_hub_association_bundle(
     repair_bundle: TurnAppraisalBundleV1 | None,
     reader_factory: Callable[[], SubstrateFeltStateReader] | None = None,
 ) -> HubAssociationBundleV1:
+    """Orion capability: felt-state context for the stance turn.
+
+    Supplies Thought with what Orion currently attends to — the substrate
+    attention broadcast, execution trajectory slice, and the pre-turn repair
+    bundle — anchored with the hub turn coalition node. Fail-open: a disabled
+    broadcast lane or any read failure yields a stale/empty bundle rather than
+    blocking the turn, with staleness marked on the bundle itself.
+
+    Runtime evidence: broadcast_stale and read_source on the
+    HubAssociationBundleV1 inside the stance request. Start here when Thought
+    stances look context-blind while the substrate broadcast is known live.
+    """
     max_age = substrate_felt_state_max_age_sec()
 
     if not _broadcast_enabled():

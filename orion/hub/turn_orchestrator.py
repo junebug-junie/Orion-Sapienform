@@ -222,7 +222,21 @@ async def execute_unified_turn(
     harness_step_relay: Any | None = None,
     harness_step_queue: asyncio.Queue | None = None,
 ) -> list[dict[str, Any]]:
-    """Run the unified Orion turn saga and return WS frames (never includes draft_text)."""
+    """Orion capability: unified Hub chat turn.
+
+    Owns the Hub-side saga: surface observation, optional pre-turn appraisal,
+    association-bundle construction, the Thought stance RPC, defer/refuse
+    admission, the HarnessRunRequestV1 handoff to the harness governor over
+    bus RPC (with step-relay liveness), and the final WebSocket frames. It
+    delegates the FCC motor and finalize chain to the governor; the returned
+    frames never include draft_text.
+
+    Runtime evidence: correlation_id-linked harness steps, turn_deferred /
+    turn_error / success frames, HarnessRunV1 from the governor, and
+    unified-turn chat envelopes. Start here when an Orion-mode turn never
+    reached the governor (harness_rpc_timeout) or a finalized result was not
+    handed back or persisted.
+    """
     from scripts.settings import settings as hub_settings
 
     cfg = settings or hub_settings
@@ -365,7 +379,18 @@ async def _publish_unified_turn_chat_history(
     run: HarnessRunV1,
     source_label: str = "hub_orion",
 ) -> None:
-    """Persist unified-turn chat to the bus so sql-writer lands chat_history_log rows."""
+    """Orion capability: unified-turn persistence after successful handoff.
+
+    Persists the finalized turn only after the governor returned final text:
+    chat-history envelopes (so sql-writer lands chat_history_log rows), a
+    chat-turn envelope, and the Spark introspection candidate, honoring
+    no_write. When earlier phases fail none of this exists — the governor's
+    run artifact is the evidence trail instead.
+
+    Runtime evidence: chat_history_log rows, chat-turn envelopes, and the
+    spark candidate carrying unified_turn metadata. Start here when a
+    finalized answer reached the client but is missing from history or Spark.
+    """
     if bus is None:
         return
     if payload.get("no_write") or payload.get("x_no_write"):

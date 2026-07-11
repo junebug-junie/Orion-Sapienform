@@ -629,6 +629,18 @@ async def _run_agent_claude_turn_ws(
 
 
 async def websocket_endpoint(websocket: WebSocket):
+    """Orion capability: Hub chat entry.
+
+    Accepts every Hub chat WebSocket and routes each message by client mode;
+    an Orion-mode message with ORION_UNIFIED_TURN_ENABLED routes into
+    run_unified_turn rather than the older direct Cortex request path. This
+    function owns connection lifecycle and frame relay only — turn cognition
+    lives in the unified turn orchestrator.
+
+    Runtime evidence: connection_ready frame, relayed harness step frames, and
+    the turn frames returned by the orchestrator. Start here when an
+    Orion-mode message produced no turn frames at all.
+    """
     import scripts.main
     bus = scripts.main.bus
     cortex_client = scripts.main.cortex_client

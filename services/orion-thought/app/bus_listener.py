@@ -278,6 +278,20 @@ async def run_stance_react(
     bus: OrionBusAsync,
     cortex_client: CortexExecClient | None = None,
 ) -> ThoughtEventV1:
+    """Orion capability: stance/thought assembly for the unified turn.
+
+    Produces the ThoughtEventV1 that constrains the FCC motor: executes the
+    stance_react Cortex plan (a dynamic, bus-mediated edge invisible to static
+    call graphs), optionally colors the request with Mind enrichment, then
+    normalizes the payload and enriches it with the grounding capsule and
+    autonomy slice. Hub honors the resulting defer/refuse disposition before
+    any motor work; the imperative and stance_harness_slice shape the motor
+    prompt.
+
+    Runtime evidence: thought.event.v1 envelopes on the RPC reply and thought
+    artifact channels, with disposition logged. Start here when a turn's
+    imperative or stance slice looks wrong before the motor ever ran.
+    """
     client = cortex_client or CortexExecClient(bus)
     mind_coloring = await _maybe_build_mind_coloring(request, bus=bus)
     plan_request = build_stance_react_plan_request(request, mind_coloring=mind_coloring)

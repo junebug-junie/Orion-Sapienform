@@ -185,6 +185,19 @@ class HarnessRunner:
         publish_grammar_fn: Callable[..., Awaitable[None]] | None = None,
         recall_debug: dict[str, Any] | None = None,
     ) -> HarnessMotorResult:
+        """Orion capability: FCC motor loop for the unified turn.
+
+        Drives one fcc-claude turn from the compiled harness prefix and
+        converts streamed steps into grammar receipts, producing a
+        HarnessMotorResult with a draft molecule. The draft is not the
+        user-visible answer — substrate appraisal, reflection, and voice
+        finalization happen downstream in the finalize chain.
+
+        Runtime evidence: per-step grammar receipts on the grammar channel,
+        step frames relayed to Hub, and HarnessDraftMoleculeV1. Start here
+        when the motor produced no draft, wrong receipts, or a failed or
+        timed-out exit.
+        """
         thought = request.thought_event
         overlay = repair_overlay or map_repair_pressure_contract(request.repair_pressure_contract)
         coalition = coalition_snapshot or build_coalition_snapshot(thought)

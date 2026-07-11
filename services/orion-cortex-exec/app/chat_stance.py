@@ -18,6 +18,7 @@ from orion.autonomy.graph_gate import (
     resolve_autonomy_graph_read_plan,
 )
 from orion.autonomy.reducer import AutonomyReducerInputV1, reduce_autonomy_state
+from orion.autonomy.state_store import load_autonomy_state_v2, save_autonomy_state_v2
 from orion.autonomy.summary import summarize_autonomy_lookup, summarize_autonomy_state
 from orion.autonomy.repository import (
     AutonomyLookupV1,
@@ -2203,10 +2204,18 @@ def _run_autonomy_reducer(
     state_obj = autonomy.get("state")
     subj = getattr(state_obj, "subject", None) if state_obj is not None else None
     subject = str(subj or "orion")
+
+    # Close the reducer's own fold loop: prefer the reducer's own persisted
+    # output over the V1/graph baseline so state carries turn-to-turn. Falls
+    # back to the V1 baseline exactly as before when nothing is persisted yet
+    # (first-ever turn for this subject, or the store is unreachable).
+    persisted = load_autonomy_state_v2(subject)
+    previous_state = persisted if persisted is not None else state_obj
+
     result = reduce_autonomy_state(
         AutonomyReducerInputV1(
             subject=subject,
-            previous_state=state_obj,
+            previous_state=previous_state,
             evidence=compile_result.evidence,
             action_outcomes=load_action_outcomes(subject=subject),
             now=now,
@@ -2214,6 +2223,15 @@ def _run_autonomy_reducer(
     )
     # Single mint path: reuse what the reducer actually folded.
     ctx["chat_autonomy_tension_debug"] = {"minted": list(result.tensions_minted or [])}
+
+    # Belt-and-suspenders fail-open write-back: save_autonomy_state_v2 already
+    # never raises, but this is a hot chat-turn path, so guard the call site
+    # too rather than depend solely on the callee's contract.
+    try:
+        save_autonomy_state_v2(subject, result.state)
+    except Exception as exc:
+        logger.warning("autonomy_state_v2_write_failed subject=%s error=%s", subject, exc)
+
     return result
 
 

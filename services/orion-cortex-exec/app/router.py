@@ -16,6 +16,7 @@ from .executor import (
     prepare_chat_quick_reply_context,
     run_recall_step,
 )
+from .autonomy_slice import build_autonomy_slice
 from .grounding_capsule import assemble_stance_grounding
 from .pcr_chat_memory import CONTINUITY_PROFILE, run_pcr_phase0_and_1, run_pcr_phase3
 from .situation import mark_orion_turn
@@ -1366,6 +1367,15 @@ class PlanRunner:
                 if grounding_capsule is not None:
                     ctx["grounding_capsule"] = grounding_capsule.model_dump(mode="json")
 
+            if (
+                str(plan.verb_name or "").strip().lower() == "stance_react"
+                and step.step_name == "llm_stance_react"
+                and step_res.status == "success"
+            ):
+                autonomy_slice = build_autonomy_slice(ctx)
+                if autonomy_slice is not None:
+                    ctx["autonomy_slice"] = autonomy_slice.model_dump(mode="json")
+
             if step_res.status != "success":
                 overall_status = "partial" if len(step_results) > 1 else "fail"
                 break
@@ -1556,6 +1566,8 @@ class PlanRunner:
                 metadata["structured_rejection_preview"] = str(final_text_diag["structured_rejection_preview"])[:500]
         if isinstance(ctx.get("grounding_capsule"), dict):
             metadata["grounding_capsule"] = ctx["grounding_capsule"]
+        if isinstance(ctx.get("autonomy_slice"), dict):
+            metadata["autonomy_slice"] = ctx["autonomy_slice"]
         mark_orion_turn(str(ctx.get("session_id") or "global"))
 
         record_assembled_grammar(

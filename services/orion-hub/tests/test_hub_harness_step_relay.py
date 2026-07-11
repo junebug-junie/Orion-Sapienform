@@ -94,3 +94,28 @@ def test_harness_step_relay_sweep_is_rate_limited() -> None:
     relay._sweep_last_seen(now=time.monotonic())
 
     assert "stale" in relay._last_seen  # not swept yet, interval hasn't elapsed
+
+
+@pytest.mark.asyncio
+async def test_harness_step_relay_last_seen_bounded_by_max_entries() -> None:
+    """Regression test: a burst of unique correlation_ids within a single sweep interval
+    (before any of them individually crosses the TTL) must still be bounded by a hard
+    entry-count cap, not just the time-gated TTL sweep — same cap+TTL pattern as
+    CognitionTraceCache/SignalsInspectCache elsewhere in this service.
+    """
+    relay = HarnessStepRelay(
+        channel="orion:harness:run:step",
+        last_seen_ttl_sec=100.0,
+        last_seen_max_entries=3,
+    )
+
+    for cid in ("c1", "c2", "c3", "c4", "c5"):
+        step_event = MagicMock()
+        step_event.correlation_id = cid
+        step_event.step_index = 0
+        step_event.step = {"type": "assistant"}
+        await relay._dispatch_step(step_event)
+
+    assert len(relay._last_seen) == 3
+    # Oldest-touched entries evicted first; most recent survive.
+    assert set(relay._last_seen.keys()) == {"c3", "c4", "c5"}

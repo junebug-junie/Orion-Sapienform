@@ -445,12 +445,15 @@ class Settings(BaseSettings):
         ),
     )
     HUB_HARNESS_GOVERNOR_LIVENESS_WINDOW_SEC: float = Field(
-        default=120.0,
+        default=600.0,
         alias="HUB_HARNESS_GOVERNOR_LIVENESS_WINDOW_SEC",
         description=(
             "Fixed 'still active' recency window for the liveness check, independent of the "
             "RPC poll interval. A step must have been observed within this many seconds of "
-            "now for the governor to be considered alive."
+            "now for the governor to be considered alive. Kept generous (well above typical "
+            "step cadence) because a single slow tool call (e.g. a long Bash/Agent step) can "
+            "legitimately go several minutes without emitting an intermediate step — too tight "
+            "a window would kill exactly the long tool-heavy turns this feature exists for."
         ),
     )
     HUB_HARNESS_STEP_RELAY_LIVENESS_TTL_SEC: float = Field(
@@ -461,6 +464,17 @@ class Settings(BaseSettings):
             "Entries older than this are opportunistically evicted so correlation_ids never "
             "explicitly forgotten (e.g. observed by a hub replica that isn't the one awaiting "
             "that turn) cannot grow the map unbounded."
+        ),
+    )
+    HUB_HARNESS_STEP_RELAY_LIVENESS_MAX_ENTRIES: int = Field(
+        default=2000,
+        alias="HUB_HARNESS_STEP_RELAY_LIVENESS_MAX_ENTRIES",
+        description=(
+            "Hard cap on harness_step_relay's liveness bookkeeping (_last_seen), evicting the "
+            "least-recently-touched correlation_id first. The TTL sweep above only runs at "
+            "most every few minutes, so a burst of unique correlation_ids within one sweep "
+            "interval needs this size cap too — same cap+TTL pattern as CognitionTraceCache "
+            "and SignalsInspectCache in this service."
         ),
     )
     CHANNEL_THOUGHT_REQUEST: str = Field(

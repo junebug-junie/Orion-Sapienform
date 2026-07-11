@@ -229,3 +229,73 @@ async def test_liveness_check_receives_fixed_window_not_shrinking_poll_sec() -> 
     assert seen_windows, "liveness_check was never called"
     assert all(within_sec == 7.0 for within_sec in seen_windows)
     assert poll_sec not in seen_windows
+
+
+class _FakeWorkerBus:
+    """Stands in for an OrionBusAsync forked with start_rpc_worker=True: run() should
+    reuse the shared _pending_rpc/_rpc_subscribe machinery instead of opening its own
+    ad-hoc subscribe() connection, to avoid pinning one dedicated Redis connection per
+    concurrent turn.
+    """
+
+    def __init__(self, *, rpc_worker_task: "asyncio.Task", reply_after_sec: float, reply_payload: dict) -> None:
+        self.codec = OrionCodec()
+        self.publish_calls = 0
+        self.subscribe_calls = 0
+        self._rpc_worker_task = rpc_worker_task
+        self._rpc_lock = asyncio.Lock()
+        self._pending_rpc: dict[tuple[str, str], asyncio.Future] = {}
+        self._reply_after_sec = reply_after_sec
+        self._reply_payload = reply_payload
+
+    async def _rpc_subscribe(self, reply_channel: str) -> None:
+        self.subscribe_calls += 1
+
+    async def subscribe(self, *_args, **_kwargs):  # pragma: no cover - must not be used
+        raise AssertionError("worker path must not open an ad-hoc subscribe() connection")
+
+    async def publish(self, channel: str, envelope: BaseEnvelope) -> None:
+        self.publish_calls += 1
+        asyncio.get_event_loop().call_later(self._reply_after_sec, self._resolve_pending)
+
+    def _resolve_pending(self) -> None:
+        envelope = BaseEnvelope(
+            kind="harness.run.v1",
+            source=ServiceRef(name="test", version="0"),
+            correlation_id=_CORR_ID,
+            payload=self._reply_payload,
+        )
+        msg = {"data": self.codec.encode(envelope)}
+        for fut in list(self._pending_rpc.values()):
+            if not fut.done():
+                fut.set_result(msg)
+
+
+@pytest.mark.asyncio
+async def test_run_uses_shared_worker_connection_when_available() -> None:
+    poll_sec = 0.05
+    worker_task = asyncio.ensure_future(asyncio.sleep(1000))
+    try:
+        bus = _FakeWorkerBus(
+            rpc_worker_task=worker_task,
+            reply_after_sec=poll_sec * 2.5,
+            reply_payload=_run_payload(),
+        )
+        client = HarnessGovernorClient(bus)
+
+        result = await client.run(
+            _request(),
+            correlation_id=_CORR_ID,
+            timeout_sec=poll_sec,
+            liveness_check=lambda _within_sec: True,
+        )
+
+        assert result is not None
+        assert result.final_text == "done"
+        assert bus.publish_calls == 1
+        assert bus.subscribe_calls == 1
+        assert bus._pending_rpc == {}  # cleaned up in the finally block
+    finally:
+        worker_task.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await worker_task

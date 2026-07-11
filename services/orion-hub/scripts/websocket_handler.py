@@ -68,6 +68,37 @@ from orion.cognition.verb_activation import is_active
 
 logger = logging.getLogger("orion-hub.ws")
 
+# Registry of the turn each live WS connection currently owns, keyed by a
+# per-connection id (NOT session_id — session_id is persisted client-side in
+# localStorage and shared across every browser tab on the same origin, so keying
+# on it would let a "stop" click in one tab cancel another tab's turn). The main
+# receive loop below blocks awaiting the in-flight turn between
+# websocket.receive_text() calls, so a same-connection "stop" message would sit
+# unread until the turn already finished — a stop command needs a side channel.
+# The HTTP cancel endpoint (api_routes.api_chat_turn_cancel) looks a connection up
+# here and reuses the same cancel_in_flight_turn() path WS-disconnect already uses.
+#
+# Each entry is the connection's own `active_turn` dict, stored by reference and
+# registered once at connection setup — mutating `active_turn` in the main loop
+# (as it already does) is automatically visible here with no separate
+# register/clear calls to keep in sync at every turn site.
+_ACTIVE_TURNS_BY_CONNECTION: Dict[str, Dict[str, Optional[str]]] = {}
+
+
+async def cancel_active_turn_for_connection(
+    connection_id: str, *, bus: Any, reason: str = "user_stop"
+) -> Optional[str]:
+    """Cancel whichever turn `connection_id` currently owns. Returns the cancelled
+    correlation_id, or None if that connection has no turn in flight.
+    """
+    entry = _ACTIVE_TURNS_BY_CONNECTION.get(str(connection_id or "").strip())
+    if not entry or not entry.get("correlation_id"):
+        return None
+    corr = str(entry["correlation_id"])
+    kind = str(entry.get("kind") or "orion")
+    await cancel_in_flight_turn(bus=bus, correlation_id=corr, kind=kind, reason=reason)
+    return corr
+
 
 async def _safe_ws_send_json(websocket: WebSocket, payload: Any) -> bool:
     """Send JSON only if the socket is still open; avoids RuntimeError after client disconnect."""
@@ -615,6 +646,9 @@ async def websocket_endpoint(websocket: WebSocket):
     if presence_state:
         presence_state.connected()
 
+    connection_id = str(uuid.uuid4())
+    await websocket.send_json({"type": "connection_ready", "connection_id": connection_id})
+
     client_meta = {
         "user_agent": websocket.headers.get("user-agent"),
         "origin": websocket.headers.get("origin"),
@@ -648,6 +682,9 @@ async def websocket_endpoint(websocket: WebSocket):
     )
     # Active FCC / harness turn for this socket — cancelled on WS disconnect.
     active_turn: Dict[str, Optional[str]] = {"correlation_id": None, "kind": None}
+    # Registered by reference: mutating active_turn above is automatically visible
+    # to the /api/chat/turn/cancel endpoint's lookup, no separate sync needed.
+    _ACTIVE_TURNS_BY_CONNECTION[connection_id] = active_turn
 
     try:
         while True:
@@ -1826,6 +1863,7 @@ async def websocket_endpoint(websocket: WebSocket):
                 reason="ws_error",
             )
     finally:
+        _ACTIVE_TURNS_BY_CONNECTION.pop(connection_id, None)
         drain_task.cancel()
         biometrics_task.cancel()
         if notification_cache is not None:

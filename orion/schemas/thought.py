@@ -54,6 +54,19 @@ class GroundingCapsuleV1(BaseModel):
     provenance: dict[str, Any] = Field(default_factory=dict)
 
 
+class AutonomySliceV1(BaseModel):
+    """Compact, post-hoc-attached projection of Orion's own current drive/tension
+    state (autonomy V2 reducer output), not authored by the LLM."""
+
+    schema_version: Literal["autonomy.slice.v1"] = "autonomy.slice.v1"
+    dominant_drive: str | None = None
+    # Compact projection, not a full evidence dump — callers should pass at
+    # most 2-3 items here (not enforced at this layer).
+    active_tensions: list[str] = Field(default_factory=list)
+    pressure_trend: str | None = None
+    confidence: float | None = None
+
+
 class ThoughtEventV1(BaseModel):
     model_config = ConfigDict(protected_namespaces=())
 
@@ -78,6 +91,7 @@ class ThoughtEventV1(BaseModel):
 
     stance_harness_slice: StanceHarnessSliceV1
     grounding_capsule: GroundingCapsuleV1 | None = None
+    autonomy_slice: AutonomySliceV1 | None = None
 
     llm_profile: str = "brain"
     producer: str = "stance_react_v1"

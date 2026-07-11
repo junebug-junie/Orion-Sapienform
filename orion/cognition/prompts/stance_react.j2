@@ -33,6 +33,21 @@ PRIOR SELF-SIGNAL (advisory — from Oríon's Mind; reconcile, do not obey)
 - juniper_relevance: {{ mind_coloring.juniper_relevance }}
 - identity_salience: {{ mind_coloring.identity_salience }}
 {% endif %}
+{% if chat_attention_frame %}
+ATTENTION FRAME (advisory — inspectable curiosity/attention policy, not task instruction)
+- This is a deterministic policy artifact, not a request from the user or from Oríon's own voice.
+- Use selected_action, suppressions, and open_loops to color response_priorities only.
+- Do not invent curiosity from scratch and never let it override user_message, association,
+  grounding, or the actual task (technical/agent/coding).
+- If selected_action.action_type is "ask", it is fine for imperative/response_priorities to
+  reflect a single situated question; otherwise (watch, defer, remember, suppress, none) do not
+  fabricate a question — proceed on the actual task.
+- Obey suppressions; they are fail-closed reasons this turn should not add curiosity.
+- It does not add output keys — still emit only valid ThoughtEventV1.
+- selected_action: {{ chat_attention_frame.selected_action }}
+- suppressions: {{ chat_attention_frame.suppressions }}
+- open_loops: {{ chat_attention_frame.open_loops }}
+{% endif %}
 
 POSTURE ASSESSMENT (semantic inference — no keyword lists)
 - Infer interface_cost from whole-turn meaning: costly to type, read, screen-use, act, or continue interaction.

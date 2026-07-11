@@ -24,6 +24,12 @@ services:
       # Context Mode working data — operational, project-scoped, NOT an Orion
       # memory store; never exposed through Hub convenience APIs.
       - harness-context-mode:${HARNESS_FCC_CONTEXT_MODE_DIR:-/var/lib/orion/context-mode}
+      # Harness-scoped Claude state (hook mode). Plugin installs persist here:
+      #   claude plugin marketplace add mksglu/context-mode
+      #   claude plugin install context-mode@context-mode
+      # This is NEVER the operator's own ~/.claude; ~/.claude.json stays a
+      # separate read-only mount above.
+      - harness-claude-config:/root/.claude
       - /var/run/docker.sock:/var/run/docker.sock
     environment:
       - SERVICE_NAME=${SERVICE_NAME:-orion-harness-governor}
@@ -66,6 +72,7 @@ services:
       - HARNESS_FCC_GITNEXUS_ENABLED=${HARNESS_FCC_GITNEXUS_ENABLED:-false}
       - HARNESS_FCC_CONTEXT_MODE_ENABLED=${HARNESS_FCC_CONTEXT_MODE_ENABLED:-false}
       - HARNESS_FCC_CONTEXT_MODE_DIR=${HARNESS_FCC_CONTEXT_MODE_DIR:-/var/lib/orion/context-mode}
+      - HARNESS_FCC_CONTEXT_MODE_HOOKS_ENABLED=${HARNESS_FCC_CONTEXT_MODE_HOOKS_ENABLED:-false}
     networks:
       - app-net
     ports:
@@ -83,3 +90,4 @@ networks:
 
 volumes:
   harness-context-mode:
+  harness-claude-config:

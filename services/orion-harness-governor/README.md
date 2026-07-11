@@ -48,7 +48,19 @@ When `HARNESS_FCC_MCP_ENABLED=true`, harness turns spawn ephemeral MCP config (G
 
 Both are default-off, fail-open, and need no secrets:
 
-- `HARNESS_FCC_GITNEXUS_ENABLED=true` adds the GitNexus code-graph MCP (`gitnexus mcp`). Prerequisite: build the index on the **host** from the repo root — `mkdir -p ~/.gitnexus && gitnexus analyze --index-only --name orion` (host node must be >=22; the generated `.gitnexus/` is gitignored). Compose mounts `~/.gitnexus` read-only for registry discovery.
+- `HARNESS_FCC_GITNEXUS_ENABLED=true` adds the GitNexus code-graph MCP (`gitnexus mcp`). Prerequisite: build the index against the host checkout. The reliable path is the governor image itself (it bakes the LadybugDB FTS extension; without it search silently degrades to "FTS indexes missing"):
+
+  ```bash
+  mkdir -p ~/.gitnexus   # BEFORE first compose up, or docker root-owns it
+  docker run --rm \
+    -v /mnt/scripts/Orion-Sapienform:/mnt/scripts/Orion-Sapienform \
+    -v $HOME/.gitnexus:/root/.gitnexus \
+    -w /mnt/scripts/Orion-Sapienform \
+    --entrypoint gitnexus orion-harness-governor-harness-governor \
+    analyze --index-only --name orion
+  ```
+
+  The generated `.gitnexus/` is gitignored; compose mounts `~/.gitnexus` read-only for registry discovery. Re-run after merges so `gitnexus status` reports up-to-date (the MCP discloses staleness but stale structure is never authority).
 - `HARNESS_FCC_CONTEXT_MODE_ENABLED=true` adds the Context Mode MCP (MCP-only stage, no Claude hooks). Working data lives in the `harness-context-mode` volume at `HARNESS_FCC_CONTEXT_MODE_DIR` — operational data, not an Orion memory store; never expose it through Hub APIs.
 
 The unified-turn introspection experiment for these flags lives at `scripts/run_unified_turn_introspection_eval.py` with its fixture in `orion/harness/evals/fixtures/`.

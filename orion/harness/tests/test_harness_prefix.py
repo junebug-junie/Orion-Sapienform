@@ -77,6 +77,56 @@ def test_compile_harness_prefix_includes_github_repo_when_mcp_enabled(
     assert "search_pull_requests" in prompt
 
 
+def test_compile_harness_prefix_includes_self_index_briefs_when_enabled(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("HARNESS_FCC_MCP_ENABLED", "true")
+    monkeypatch.setenv("ORION_GITHUB_OWNER", "junebug-junie")
+    monkeypatch.setenv("ORION_GITHUB_REPO", "Orion-Sapienform")
+    monkeypatch.setenv("HARNESS_FCC_GITNEXUS_ENABLED", "true")
+    monkeypatch.setenv("HARNESS_FCC_CONTEXT_MODE_ENABLED", "true")
+    thought = make_thought(imperative="Trace the unified turn.")
+    prompt = compile_harness_prefix(
+        thought,
+        repair_overlay=HarnessRepairOverlayV1(),
+    )
+    assert "GitNexus code-graph MCP is available" in prompt
+    assert "derived cache, never authority" in prompt
+    assert "Context Mode MCP is available" in prompt
+    assert "ctx_search" in prompt
+
+
+def test_compile_harness_prefix_self_index_briefs_gated_on_master_flag(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Without the master MCP flag no MCP config is rendered, so the prompt
+    must not advertise GitNexus/Context Mode tools that don't exist."""
+    monkeypatch.delenv("HARNESS_FCC_MCP_ENABLED", raising=False)
+    monkeypatch.setenv("HARNESS_FCC_GITNEXUS_ENABLED", "true")
+    monkeypatch.setenv("HARNESS_FCC_CONTEXT_MODE_ENABLED", "true")
+    thought = make_thought()
+    prompt = compile_harness_prefix(
+        thought,
+        repair_overlay=HarnessRepairOverlayV1(),
+    )
+    assert "GitNexus" not in prompt
+    assert "Context Mode MCP" not in prompt
+
+
+def test_compile_harness_prefix_omits_self_index_briefs_by_default(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.delenv("HARNESS_FCC_GITNEXUS_ENABLED", raising=False)
+    monkeypatch.delenv("HARNESS_FCC_CONTEXT_MODE_ENABLED", raising=False)
+    thought = make_thought()
+    prompt = compile_harness_prefix(
+        thought,
+        repair_overlay=HarnessRepairOverlayV1(),
+    )
+    assert "GitNexus" not in prompt
+    assert "Context Mode MCP" not in prompt
+
+
 def test_compile_harness_prefix_resolves_github_repo_from_workspace(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

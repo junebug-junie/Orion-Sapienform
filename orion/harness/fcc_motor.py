@@ -318,6 +318,10 @@ def _maybe_render_mcp_config(*, correlation_id: str) -> Optional[Path]:
         fcc_env=env,
         include_aitown=include_aitown,
         aitown_env=_harness_aitown_env(env) if include_aitown else None,
+        include_gitnexus=_env_truthy("HARNESS_FCC_GITNEXUS_ENABLED"),
+        include_context_mode=_env_truthy("HARNESS_FCC_CONTEXT_MODE_ENABLED"),
+        context_mode_dir=os.environ.get("HARNESS_FCC_CONTEXT_MODE_DIR"),
+        context_mode_project_dir=os.environ.get("HARNESS_FCC_WORKSPACE"),
     )
 
 
@@ -366,7 +370,19 @@ async def run_fcc_turn(
     timeout_sec: float,
     stream_read_limit: int = DEFAULT_STREAM_READ_LIMIT,
 ) -> AsyncIterator[Dict[str, object]]:
-    """Yield step/final/error frames from an fcc claude subprocess turn."""
+    """Orion capability: the actual FCC-Claude process.
+
+    Spawns `claude -p` against the FCC server and yields step/final/error
+    frames from its stream-json output, annotated with context pressure, with
+    a per-turn ephemeral MCP config (GitHub/Firecrawl and, when flagged,
+    AI Town, GitNexus, Context Mode). This is the lowest seam that still
+    speaks Orion frames; below it is a subprocess.
+
+    Runtime evidence: step frames carrying raw stream-json events, fcc_*
+    error codes, and final metadata with claude_session_id and exit code.
+    Start here when the motor died before producing any steps (spawn, MCP
+    preflight, model label, or timeout failures).
+    """
     label = str(fcc_model_label or DEFAULT_FCC_MODEL_LABEL).strip() or DEFAULT_FCC_MODEL_LABEL
     env = load_fcc_env(expand_env_path(os.environ.get("HARNESS_FCC_ENV_PATH", "~/.fcc/.env")))
     try:

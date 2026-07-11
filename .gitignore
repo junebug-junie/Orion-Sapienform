@@ -137,3 +137,6 @@ TAbort-
 
 # Orion smoke/test logs
 .orion-smoke-logs/
+
+# === GitNexus derived code-graph index (generated state, never authority) ===
+.gitnexus/

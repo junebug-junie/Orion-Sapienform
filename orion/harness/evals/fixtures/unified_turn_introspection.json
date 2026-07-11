@@ -1,0 +1,186 @@
+{
+  "name": "unified-turn-introspection-v1",
+  "description": "Ground-truth assertions for the orion-unified Hub chat introspection experiment (semantic self-indexing proposal, 2026-07-11). Scoring is lexical: an assertion passes when any of its any_of substrings appears (case-insensitive) in the answer. Evidence entries anchor each assertion to a repo file and a literal symbol the gate test verifies still exists.",
+  "questions": [
+    {
+      "id": "unified-turn-trace-01",
+      "prompt": "Trace an Orion-mode Hub WebSocket chat message from receipt through stance/thought assembly, FCC motor execution, finalization, the WebSocket response, and chat-history persistence. Name the concrete functions and services that own each phase.",
+      "assertions": [
+        "route_gate",
+        "hub_orchestration_boundary",
+        "pre_thought_context",
+        "thought_stance_slice",
+        "motor_draft_path",
+        "finalize_beats",
+        "run_result_boundary",
+        "persistence_after_handoff"
+      ]
+    },
+    {
+      "id": "unified-turn-motor-prompt-02",
+      "prompt": "Where is the FCC motor prompt for a unified Hub turn assembled, and which stance, grounding, autonomy, repair, user, and tool inputs can enter it?",
+      "assertions": ["motor_context_assembly", "thought_stance_slice"]
+    },
+    {
+      "id": "unified-turn-draft-vs-final-03",
+      "prompt": "In the unified Hub turn, what intermediate artifacts exist between the FCC motor's raw output and the text the client finally receives, and which component produces each?",
+      "assertions": ["motor_evidence", "draft_not_final", "run_result_boundary"]
+    },
+    {
+      "id": "unified-turn-defer-04",
+      "prompt": "If the Thought service returns a defer or refuse disposition for a unified Hub turn, which later phases are skipped and what does Hub emit to the client?",
+      "assertions": ["defer_refuse_pre_motor", "hub_orchestration_boundary"]
+    },
+    {
+      "id": "unified-turn-finalize-failure-05",
+      "prompt": "The FCC motor produced a draft, but the user received a finalize-phase error. Where should an investigator begin, and which partial artifacts should still exist?",
+      "assertions": ["voice_finalize_failure", "finalize_beats", "run_result_boundary"]
+    },
+    {
+      "id": "unified-turn-draft-mutation-06",
+      "prompt": "Which stage of the unified turn can change the FCC motor draft before it reaches Juniper, and how is that change reported?",
+      "assertions": ["finalize_beats", "draft_not_final"]
+    },
+    {
+      "id": "unified-turn-liveness-07",
+      "prompt": "How does Hub know a long-running harness-governor request is still making progress during a unified turn, and what error does Hub emit when it gives up waiting on that RPC?",
+      "assertions": ["step_relay_liveness", "hub_governor_handoff"]
+    },
+    {
+      "id": "unified-turn-persistence-08",
+      "prompt": "In the unified Hub turn, which outputs are persisted only after a successful final handoff to the client, and which governor artifacts are emitted even when later phases fail?",
+      "assertions": ["persistence_after_handoff", "run_result_boundary"]
+    },
+    {
+      "id": "unified-turn-graph-gaps-09",
+      "prompt": "Which important connections in the unified Hub turn saga would an automatically derived import/call analysis of this repository miss or show incompletely, and why?",
+      "assertions": ["graph_limitations", "hub_governor_handoff"]
+    }
+  ],
+  "assertions": {
+    "route_gate": {
+      "summary": "Identifies the Orion-mode route gate in websocket_handler.py",
+      "any_of": ["orion_unified_turn_enabled", "run_unified_turn"],
+      "evidence": {
+        "file": "services/orion-hub/scripts/websocket_handler.py",
+        "symbol": "ORION_UNIFIED_TURN_ENABLED"
+      }
+    },
+    "hub_orchestration_boundary": {
+      "summary": "Names execute_unified_turn() as the Hub-side saga boundary",
+      "any_of": ["execute_unified_turn"],
+      "evidence": {
+        "file": "orion/hub/turn_orchestrator.py",
+        "symbol": "async def execute_unified_turn"
+      }
+    },
+    "pre_thought_context": {
+      "summary": "Mentions pre-turn appraisal / association bundle construction before Thought",
+      "any_of": ["build_hub_association_bundle", "association bundle", "pre-turn appraisal"],
+      "evidence": {
+        "file": "orion/hub/association.py",
+        "symbol": "def build_hub_association_bundle"
+      }
+    },
+    "thought_stance_slice": {
+      "summary": "Identifies Thought RPC producing ThoughtEventV1.stance_harness_slice",
+      "any_of": ["stance_harness_slice", "thoughteventv1"],
+      "evidence": {
+        "file": "orion/thought/stance_react.py",
+        "symbol": "stance_harness_slice"
+      }
+    },
+    "defer_refuse_pre_motor": {
+      "summary": "Recognizes defer/refuse disposition as a pre-motor terminal path (needles avoid words echoed from the question prompt)",
+      "any_of": ["turn_deferred", "_thought_deferred_frame", "never dispatched", "before the motor", "no motor work"],
+      "evidence": {
+        "file": "orion/hub/turn_orchestrator.py",
+        "symbol": "turn_deferred"
+      }
+    },
+    "hub_governor_handoff": {
+      "summary": "Names HarnessRunRequestV1 as the Hub-to-governor bus RPC handoff",
+      "any_of": ["harnessrunrequestv1"],
+      "evidence": {
+        "file": "orion/schemas/harness_finalize.py",
+        "symbol": "class HarnessRunRequestV1"
+      }
+    },
+    "step_relay_liveness": {
+      "summary": "Explains step relay as WebSocket progress and governor liveness evidence",
+      "any_of": ["harness_rpc_timeout", "liveness", "step relay", "harness step"],
+      "evidence": {
+        "file": "orion/hub/turn_orchestrator.py",
+        "symbol": "harness_rpc_timeout"
+      }
+    },
+    "motor_context_assembly": {
+      "summary": "Names compile_harness_prefix() as the motor-context assembly point",
+      "any_of": ["compile_harness_prefix"],
+      "evidence": {
+        "file": "orion/harness/prefix.py",
+        "symbol": "def compile_harness_prefix"
+      }
+    },
+    "motor_draft_path": {
+      "summary": "Names HarnessRunner.run()/run_fcc_turn() as the draft-producing motor path",
+      "any_of": ["run_fcc_turn", "harnessrunner"],
+      "evidence": {
+        "file": "orion/harness/fcc_motor.py",
+        "symbol": "async def run_fcc_turn"
+      }
+    },
+    "motor_evidence": {
+      "summary": "Cites grammar receipts and the draft molecule as motor evidence",
+      "any_of": ["grammar receipt", "harnessdraftmoleculev1", "draft molecule"],
+      "evidence": {
+        "file": "orion/schemas/harness_finalize.py",
+        "symbol": "class HarnessDraftMoleculeV1"
+      }
+    },
+    "finalize_beats": {
+      "summary": "Distinguishes substrate appraisal, reflection/quick gate, and voice finalization as finalize beats",
+      "any_of": ["run_harness_finalize_chain", "voice finaliz", "substrate appraisal"],
+      "evidence": {
+        "file": "orion/harness/finalize.py",
+        "symbol": "async def run_harness_finalize_chain"
+      }
+    },
+    "draft_not_final": {
+      "summary": "Names finalize_changed as the draft-to-final difference indicator",
+      "any_of": ["finalize_changed"],
+      "evidence": {
+        "file": "orion/harness/finalize.py",
+        "symbol": "finalize_changed"
+      }
+    },
+    "voice_finalize_failure": {
+      "summary": "Starts a finalize-phase failure investigation at the voice finalize stage",
+      "any_of": ["run_orion_voice_finalize", "voice finaliz", "finalize chain"],
+      "evidence": {
+        "file": "orion/harness/finalize.py",
+        "symbol": "async def run_orion_voice_finalize"
+      }
+    },
+    "run_result_boundary": {
+      "summary": "Names HarnessRunV1 / the run artifact as the governor-to-Hub result boundary",
+      "any_of": ["harnessrunv1", "run artifact"],
+      "evidence": {
+        "file": "orion/schemas/harness_finalize.py",
+        "symbol": "class HarnessRunV1"
+      }
+    },
+    "persistence_after_handoff": {
+      "summary": "Identifies post-success chat-history/turn/Spark persistence in Hub",
+      "any_of": ["_publish_unified_turn_chat_history", "chat history", "spark"],
+      "evidence": {
+        "file": "orion/hub/turn_orchestrator.py",
+        "symbol": "async def _publish_unified_turn_chat_history"
+      }
+    },
+    "graph_limitations": {
+      "summary": "Recognizes bus RPC and dynamic plan edges as static-graph blind spots",
+      "any_of": ["bus rpc", "bus-mediated", "dynamic plan", "cortex plan", "stance_react plan", "redis"]
+    }
+  }
+}

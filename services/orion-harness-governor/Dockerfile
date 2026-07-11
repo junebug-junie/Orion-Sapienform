@@ -18,11 +18,20 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     && apt-get update \
     && apt-get install -y --no-install-recommends \
          docker-ce-cli \
-    && curl -fsSL https://deb.nodesource.com/setup_20.x | bash - \
+    && curl -fsSL https://deb.nodesource.com/setup_22.x | bash - \
     && apt-get install -y --no-install-recommends nodejs \
     && rm -rf /var/lib/apt/lists/* \
     && git config --global --add safe.directory /mnt/scripts/Orion-Sapienform \
     && git config --global --add safe.directory '*'
+
+# Self-indexing MCP toolchain: GitNexus (code graph) + Context Mode (context
+# virtualization). Pinned exact versions — both are third-party executables
+# inside the FCC tool loop; upgrade only after reviewing release diffs.
+# context-mode requires node >=22.5 (nodesource 22.x currently ships >=22.5).
+RUN node -e "const [maj,min]=process.versions.node.split('.').map(Number); if (maj<22||(maj===22&&min<5)) { throw new Error('need node >=22.5, got '+process.versions.node); }" \
+    && npm install -g gitnexus@1.6.9 context-mode@1.0.169 \
+    && gitnexus --version \
+    && npm ls -g --depth=0 context-mode
 
 RUN pip3 install --no-cache-dir --upgrade pip
 

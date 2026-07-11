@@ -175,6 +175,18 @@ async def handle_harness_run_request(
     cortex_client: HarnessCortexClient | None = None,
     substrate_client: HarnessSubstrateClient | None = None,
 ) -> HarnessRunV1:
+    """Orion capability: governor saga for one unified-turn run.
+
+    Joins the motor to finalization: validates or refuses the request, runs
+    the HarnessRunner motor, then the 5a/5b/5c finalize chain, and replies
+    with HarnessRunV1 over bus RPC while publishing the run artifact. The
+    reply and artifact are emitted even when the motor or a finalize phase
+    fails — finalize_ran and compliance_verdict mark how far the run got.
+
+    Runtime evidence: HarnessRunV1 on the RPC reply and run-artifact channels
+    plus lifecycle grammar events. Start here when Hub received nothing back,
+    or an error frame whose failing phase is unclear.
+    """
     corr = correlation_id or request.correlation_id or str(uuid4())
     causality = list(causality_chain or [])
     recall_debug, memory_digest = _recall_fields_from_thought(request.thought_event)

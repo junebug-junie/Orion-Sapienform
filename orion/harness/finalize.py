@@ -561,6 +561,18 @@ async def run_orion_voice_finalize(
     grammar_receipts: list[GrammarReceiptV1] | None = None,
     cortex_client: CortexClientFn | None = None,
 ) -> tuple[str, dict[str, Any]]:
+    """Orion capability: Orion's voiced final answer (beat 5c).
+
+    Converts the motor draft into the user-visible text through the voice
+    finalize Cortex plan (bus-mediated, not a local call), then records
+    whether the result differs from the draft. This is the last stage allowed
+    to change what Juniper reads.
+
+    Runtime evidence: finalize_changed and alignment_verdict in the returned
+    metadata, plus the cortex trace id. Start here when the final text
+    diverged from the draft unexpectedly, or 5c failed after appraisal and
+    reflection succeeded.
+    """
     if cortex_client is None:
         raise ValueError("cortex_client is required for orion voice finalize")
 
@@ -890,7 +902,19 @@ async def run_harness_finalize_chain(
     system_error_channel: str = SYSTEM_ERROR_CHANNEL,
     system_error_publish_fn: PublishFn | None = None,
 ) -> HarnessFinalizeChainResult:
-    """Orchestrate finalize beats 5a → 5b → 5c → 6b."""
+    """Orion capability: unified-turn draft-to-voice finalization.
+
+    Orchestrates finalize beats 5a → 5b → 5c → 6b: substrate appraisal (5a),
+    integrative reflection or its deterministic quick lane (5b), verdict
+    emission, Orion voice finalization (5c), turn-outcome emission (6b), and
+    the optional embodiment intent. The motor draft is not the final Hub
+    response; this chain is what may change it.
+
+    Runtime evidence: substrate appraisal, verdict and outcome molecules,
+    finalize_changed in voice metadata, post-turn closure, and failure
+    artifacts when a beat raises. Start here when the motor completed but Hub
+    received no final text or a finalize-phase error.
+    """
     substrate_appraisal = await run_substrate_finalize_appraisal(
         draft_molecule=draft_molecule,
         substrate_client=substrate_client,

@@ -3,6 +3,7 @@ from __future__ import annotations
 import os
 
 from orion.fcc.github_repo_context import append_github_mcp_harness_brief
+from orion.fcc.self_index_brief import append_self_index_harness_brief
 from orion.harness.operator_brief import (
     HARNESS_UNIFIED_OPERATOR_BRIEF,
     harness_motor_instruction as _stance_motor_instruction,
@@ -80,7 +81,18 @@ def compile_harness_prefix(
     answer_contract: AnswerContract | None = None,
     workspace: str | None = None,
 ) -> str:
-    """Deterministic fcc system prefix from stance thought + repair overlay."""
+    """Orion capability: motor-context assembly for the unified turn.
+
+    Deterministically materializes everything the FCC motor is allowed to know
+    at spawn: the unified operator brief, grounding self block, Thought
+    imperative and stance slice, autonomy slice, repair overlay, user message,
+    and enabled MCP tool briefs. Nothing else enters the motor prompt —
+    changing motor behavior means changing an input surfaced here.
+
+    Runtime evidence: the compiled prefix is the `claude -p` prompt passed to
+    run_fcc_turn. Start here when the motor acted without stance or grounding
+    context it should have had, or with context it should not have had.
+    """
     _ = answer_contract  # deprecated on unified motor path; kept for signature compat
     parts: list[str] = [HARNESS_UNIFIED_OPERATOR_BRIEF.strip()]
 
@@ -116,5 +128,6 @@ def compile_harness_prefix(
         parts,
         workspace=workspace or os.environ.get("HARNESS_FCC_WORKSPACE"),
     )
+    append_self_index_harness_brief(parts)
 
     return "\n".join(parts)

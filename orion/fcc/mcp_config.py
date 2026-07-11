@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import json
+import os
 import re
 import shutil
 import urllib.error
@@ -95,6 +96,30 @@ def _require_tool(command: str, *, error_code: str) -> None:
         )
 
 
+def _validate_context_mode_dir(raw: object) -> Path:
+    """Context Mode needs an absolute, writable storage root (Docker volume)."""
+    text = str(raw or "").strip()
+    path = Path(text) if text else None
+    if path is None or not path.is_absolute():
+        raise McpPreflightError(
+            error_code="fcc_mcp_context_mode_dir",
+            message=f"Context Mode storage dir must be an absolute path, got {text!r}",
+        )
+    try:
+        path.mkdir(parents=True, exist_ok=True)
+    except OSError as exc:
+        raise McpPreflightError(
+            error_code="fcc_mcp_context_mode_dir",
+            message=f"Context Mode storage dir not creatable: {path}: {exc}",
+        ) from exc
+    if not os.access(path, os.W_OK):
+        raise McpPreflightError(
+            error_code="fcc_mcp_context_mode_dir",
+            message=f"Context Mode storage dir not writable: {path}",
+        )
+    return path
+
+
 def _deep_replace(obj: Any, replacements: Dict[str, str]) -> Any:
     if isinstance(obj, dict):
         return {k: _deep_replace(v, replacements) for k, v in obj.items()}
@@ -115,6 +140,10 @@ def render_mcp_config(
     tmp_dir: Optional[Path] = None,
     include_aitown: bool = False,
     aitown_env: Optional[Mapping[str, str]] = None,
+    include_gitnexus: bool = False,
+    include_context_mode: bool = False,
+    context_mode_dir: Optional[str] = None,
+    context_mode_project_dir: Optional[str] = None,
 ) -> Path:
     github_pat = _require(fcc_env, "GITHUB_PAT", error_code="fcc_mcp_github_missing")
     firecrawl_key = _require(fcc_env, "FIRECRAWL_API_KEY", error_code="fcc_mcp_firecrawl_missing")
@@ -152,6 +181,39 @@ def render_mcp_config(
                 "AITOWN_WORLD_ID": world_id,
                 "AITOWN_ORION_AGENT_ID": str(ae.get("AITOWN_ORION_AGENT_ID") or ""),
                 "AITOWN_ORION_PLAYER_ID": str(ae.get("AITOWN_ORION_PLAYER_ID") or ""),
+            },
+        }
+
+    if include_gitnexus:
+        # Read-oriented code-graph MCP (query/context/impact/trace) over the
+        # host-built .gitnexus/ index; no secrets required. Requires a global
+        # registry entry (~/.gitnexus/registry.json) resolving to the workspace.
+        _require_tool("gitnexus", error_code="fcc_mcp_gitnexus_missing")
+        rendered["mcpServers"]["gitnexus"] = {
+            "type": "stdio",
+            "command": "gitnexus",
+            "args": ["mcp"],
+        }
+
+    if include_context_mode:
+        # MCP-only stage: bare `context-mode` runs the stdio MCP server.
+        # Plugin/hook mode is a separate patch and must not coexist with this
+        # entry once the plugin owns the server (duplicate tool registration).
+        _require_tool("context-mode", error_code="fcc_mcp_context_mode_missing")
+        storage = _validate_context_mode_dir(context_mode_dir)
+        project_dir = str(context_mode_project_dir or "").strip()
+        if not project_dir:
+            raise McpPreflightError(
+                error_code="fcc_mcp_context_mode_config",
+                message="Context Mode requires a project dir (HARNESS_FCC_WORKSPACE)",
+            )
+        rendered["mcpServers"]["context-mode"] = {
+            "type": "stdio",
+            "command": "context-mode",
+            "env": {
+                "CONTEXT_MODE_PLATFORM": "claude-code",
+                "CONTEXT_MODE_PROJECT_DIR": project_dir,
+                "CONTEXT_MODE_DIR": str(storage),
             },
         }
 

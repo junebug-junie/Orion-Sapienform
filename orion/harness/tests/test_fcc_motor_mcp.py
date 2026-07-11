@@ -239,6 +239,68 @@ def test_maybe_render_mcp_config_defaults_github_toolsets_when_env_absent(
         mcp_config.cleanup_mcp_config(path)
 
 
+def test_maybe_render_mcp_config_wires_self_index_flags(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    import json
+
+    import orion.fcc.mcp_config as mcp_config
+
+    monkeypatch.setenv("HARNESS_FCC_MCP_ENABLED", "true")
+    monkeypatch.delenv("HARNESS_AITOWN_ENABLED", raising=False)
+    monkeypatch.setenv("HARNESS_FCC_GITNEXUS_ENABLED", "true")
+    monkeypatch.setenv("HARNESS_FCC_CONTEXT_MODE_ENABLED", "true")
+    monkeypatch.setenv("HARNESS_FCC_CONTEXT_MODE_DIR", str(tmp_path / "ctx-data"))
+    monkeypatch.setenv("HARNESS_FCC_WORKSPACE", "/mnt/scripts/Orion-Sapienform")
+    monkeypatch.setattr(
+        motor,
+        "load_fcc_env",
+        lambda _p: {"GITHUB_PAT": "ghp_selfidx", "FIRECRAWL_API_KEY": "fc_selfidx"},
+    )
+    monkeypatch.setattr(motor, "expand_env_path", lambda _p: Path("/fake/.fcc/.env"))
+    monkeypatch.setattr(mcp_config.shutil, "which", lambda cmd: f"/usr/bin/{cmd}")
+
+    path = motor._maybe_render_mcp_config(correlation_id="corr-self-index")
+    try:
+        assert path is not None
+        servers = json.loads(path.read_text(encoding="utf-8"))["mcpServers"]
+        assert servers["gitnexus"] == {"type": "stdio", "command": "gitnexus", "args": ["mcp"]}
+        cm_env = servers["context-mode"]["env"]
+        assert cm_env["CONTEXT_MODE_PROJECT_DIR"] == "/mnt/scripts/Orion-Sapienform"
+        assert cm_env["CONTEXT_MODE_DIR"] == str(tmp_path / "ctx-data")
+    finally:
+        mcp_config.cleanup_mcp_config(path)
+
+
+def test_maybe_render_mcp_config_self_index_off_by_default(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import json
+
+    import orion.fcc.mcp_config as mcp_config
+
+    monkeypatch.setenv("HARNESS_FCC_MCP_ENABLED", "true")
+    monkeypatch.delenv("HARNESS_AITOWN_ENABLED", raising=False)
+    monkeypatch.delenv("HARNESS_FCC_GITNEXUS_ENABLED", raising=False)
+    monkeypatch.delenv("HARNESS_FCC_CONTEXT_MODE_ENABLED", raising=False)
+    monkeypatch.setattr(
+        motor,
+        "load_fcc_env",
+        lambda _p: {"GITHUB_PAT": "ghp_defaults", "FIRECRAWL_API_KEY": "fc_defaults"},
+    )
+    monkeypatch.setattr(motor, "expand_env_path", lambda _p: Path("/fake/.fcc/.env"))
+    monkeypatch.setattr(mcp_config.shutil, "which", lambda cmd: f"/usr/bin/{cmd}")
+
+    path = motor._maybe_render_mcp_config(correlation_id="corr-self-index-off")
+    try:
+        assert path is not None
+        servers = json.loads(path.read_text(encoding="utf-8"))["mcpServers"]
+        assert "gitnexus" not in servers
+        assert "context-mode" not in servers
+    finally:
+        mcp_config.cleanup_mcp_config(path)
+
+
 def test_harness_aitown_env_overrides_convex_url(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv("HARNESS_AITOWN_CONVEX_URL", "http://host.docker.internal:3210")
     base = {"AITOWN_CONVEX_URL": "http://127.0.0.1:3210", "AITOWN_ADMIN_KEY": "k"}

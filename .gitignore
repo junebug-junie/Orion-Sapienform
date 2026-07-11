@@ -126,9 +126,6 @@ desktop.ini
 
 .orion_dev/
 
-# === Superpowers specs (local design docs, not tracked) ===
-docs/superpowers/specs/
-
 # === ML training runs (checkpoints/logs; too large for GitHub) ===
 runs/
 **/runs/**/*.pt

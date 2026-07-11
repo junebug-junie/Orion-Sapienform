@@ -293,6 +293,10 @@ class ChatMessageReceiptRequest(BaseModel):
     receipt_type: str = Field("opened")
 
 
+class ChatTurnCancelRequest(BaseModel):
+    connection_id: str
+
+
 class PreferencesResolveProxyRequest(BaseModel):
     recipient_group: str
     event_kind: str
@@ -1760,6 +1764,37 @@ def api_chat_message_receipt(message_id: str, payload: ChatMessageReceiptRequest
     except Exception as exc:
         logger.warning("Failed to send chat message receipt %s: %s", message_id, exc)
         raise HTTPException(status_code=502, detail="Failed to acknowledge chat message") from exc
+
+
+@router.post("/api/chat/turn/cancel")
+async def api_chat_turn_cancel(payload: ChatTurnCancelRequest):
+    """Stop/kill whichever turn the caller's WS connection currently has in flight
+    (Orion unified-harness turn or agent-claude turn). No-ops if nothing is active
+    for that connection — this is a general "stop chat" control, not an error path.
+
+    Keyed by connection_id (from the WS "connection_ready" frame), not session_id:
+    session_id is shared across every browser tab via localStorage, so keying on it
+    would let a stop click in one tab cancel another tab's turn.
+    """
+    from .main import bus, rpc_bus
+    from .websocket_handler import cancel_active_turn_for_connection
+
+    connection_id = str(payload.connection_id or "").strip()
+    if not connection_id:
+        raise HTTPException(status_code=422, detail="connection_id required")
+    if not bus or not getattr(bus, "enabled", False):
+        raise HTTPException(status_code=503, detail="Bus unavailable")
+
+    cancelled_corr = await cancel_active_turn_for_connection(
+        connection_id, bus=rpc_bus or bus, reason="user_stop"
+    )
+    logger.info(
+        "chat_turn_cancel_requested connection_id=%s cancelled_correlation_id=%s",
+        connection_id,
+        cancelled_corr,
+    )
+    return {"cancelled": bool(cancelled_corr), "correlation_id": cancelled_corr}
+
 
 @router.post("/api/chat/response-feedback")
 async def api_chat_response_feedback(payload: Dict[str, Any]):

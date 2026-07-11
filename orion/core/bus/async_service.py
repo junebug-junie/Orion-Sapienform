@@ -110,11 +110,63 @@ class OrionBusAsync:
         self._rpc_pubsub = rpc_redis.pubsub()
         try:
             while self._rpc_worker_running:
-                msg = await self._rpc_pubsub.get_message(ignore_subscribe_messages=True, timeout=1.0)
-                if not msg or msg.get("type") not in ("message", "pmessage"):
+                # No reply-channel is subscribed yet (subscriptions happen lazily,
+                # on-demand, from _rpc_subscribe() as RPC calls come in) — redis-py's
+                # PubSub.get_message() -> parse_response() raises RuntimeError
+                # ("pubsub connection not set") when self.connection is None, since a
+                # subscribe()/psubscribe() call is what actually opens the underlying
+                # connection. Without this guard the worker crashes on its very first
+                # loop iteration, every single startup, before any turn ever runs.
+                if self._rpc_pubsub.connection is None:
+                    await asyncio.sleep(0.05)
                     continue
-                await self._handle_rpc_result(msg)
+                try:
+                    msg = await self._rpc_pubsub.get_message(ignore_subscribe_messages=True, timeout=1.0)
+                    if msg and msg.get("type") in ("message", "pmessage"):
+                        # Handling (decode/dispatch) is inside the same try as the read:
+                        # a bad payload must degrade to reconnect-and-retry like a
+                        # transport error, not kill the worker — otherwise a malformed
+                        # message reintroduces the exact "silently permanent fallback to
+                        # ad-hoc subscribe" failure this fix exists to close, just via a
+                        # different trigger.
+                        await self._handle_rpc_result(msg)
+                except asyncio.CancelledError:
+                    raise
+                except Exception as exc:
+                    # Transport-level failure (e.g. a network blip severing the
+                    # connection mid-read) — reconnect and re-subscribe to whatever
+                    # reply channels were already registered, instead of letting the
+                    # whole worker die silently and permanently degrading every future
+                    # HarnessGovernorClient.run() to the ad-hoc per-turn fallback path.
+                    logger.warning("[rpc-fork] pubsub read/handle failed, reconnecting: %s", exc)
+                    # Hold the same lock every _rpc_subscribe() caller holds while
+                    # touching self._rpc_pubsub/_rpc_subscribed — without it, a
+                    # concurrent caller mid-subscribe() on the object we're about to
+                    # close() can raise or land on a connection we're discarding.
+                    async with self._rpc_lock:
+                        with suppress(Exception):
+                            await self._rpc_pubsub.close()
+                        with suppress(Exception):
+                            await rpc_redis.close()
+                        rpc_redis = self._create_pubsub_redis()
+                        self._rpc_pubsub = rpc_redis.pubsub()
+                        if self._rpc_subscribed:
+                            try:
+                                await self._rpc_pubsub.subscribe(*sorted(self._rpc_subscribed))
+                            except Exception as resub_exc:
+                                # Do not suppress-and-forget: if Redis is still down,
+                                # self._rpc_pubsub.connection stays None and the
+                                # top-of-loop guard above retries on its own — but log
+                                # it, or a sustained outage goes completely invisible.
+                                logger.warning(
+                                    "[rpc-fork] resubscribe failed after reconnect, will retry: %s",
+                                    resub_exc,
+                                )
+                    await asyncio.sleep(0.1)
         except asyncio.CancelledError:
+            raise
+        except Exception:
+            logger.exception("[rpc-fork] worker crashed unexpectedly, RPC calls will fall back to ad-hoc subscribe")
             raise
         finally:
             if self._rpc_pubsub is not None:

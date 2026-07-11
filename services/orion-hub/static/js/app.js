@@ -66,6 +66,15 @@ let animationFrameId;
 let audioQueue = [];
 let isPlayingAudio = false;
 let orionState = 'idle';
+// True from the moment a WS chat message is sent until the server's closing
+// {"state": "idle"} arrives for that turn. orionState alone isn't a reliable signal
+// here — the server only pushes "processing" for voice/STT, not typed WS turns.
+let turnInFlight = false;
+// Set from the WS "connection_ready" frame. Deliberately NOT orionSessionId: that's
+// persisted in localStorage and shared across every browser tab on the same origin,
+// so a stop request keyed on it could cancel a different tab's turn. connection_id
+// is per-WebSocket-connection, so it always names exactly this tab's turn.
+let activeConnectionId = null;
 let particles = [];
 let visionIsFloating = false;
 let currentMode = "orion";
@@ -129,6 +138,7 @@ document.addEventListener("DOMContentLoaded", () => {
   const chatInputExpandModalApply = document.getElementById('chatInputExpandModalApply');
   const chatInputExpandModalSend = document.getElementById('chatInputExpandModalSend');
   const sendButton = document.getElementById('sendButton');
+  const stopButton = document.getElementById('stopButton');
   const skillRunnerSelect = document.getElementById('skillRunnerSelect');
   const skillRunnerRunBtn = document.getElementById('skillRunnerRunBtn');
   const skillRunnerInsertBtn = document.getElementById('skillRunnerInsertBtn');
@@ -3252,6 +3262,8 @@ document.addEventListener("DOMContentLoaded", () => {
     if (orionState === 'idle') updateStatus('Ready.');
     else if (orionState === 'speaking') updateStatus('Speaking...');
     else if (orionState === 'processing') updateStatus('Processing...');
+    if (orionState === 'idle') turnInFlight = false;
+    if (stopButton) stopButton.classList.toggle('hidden', !turnInFlight);
   }
 
   function updateRoutingDebugPanel(data) {
@@ -9142,7 +9154,30 @@ document.addEventListener("DOMContentLoaded", () => {
     recordButton.addEventListener('pointercancel', () => stopRecording());
   }
 
+  async function stopCurrentTurn() {
+    const connectionId = String(activeConnectionId || '').trim();
+    if (!connectionId) {
+      updateStatus('Nothing to stop.');
+      return;
+    }
+    if (stopButton) stopButton.disabled = true;
+    try {
+      const res = await fetch('/api/chat/turn/cancel', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ connection_id: connectionId }),
+      });
+      const data = await res.json().catch(() => ({}));
+      updateStatus(data && data.cancelled ? 'Stopping...' : 'Nothing to stop.');
+    } catch (err) {
+      updateStatus('Stop failed.');
+    } finally {
+      if (stopButton) stopButton.disabled = false;
+    }
+  }
+
   if (sendButton) sendButton.addEventListener('click', sendTextMessage);
+  if (stopButton) stopButton.addEventListener('click', stopCurrentTurn);
   if (chatInput) {
     chatInput.addEventListener('input', () => {
       if (!chatInputExpandModalRoot || chatInputExpandModalRoot.classList.contains('hidden')) return;
@@ -10455,11 +10490,22 @@ document.addEventListener("DOMContentLoaded", () => {
           wsReadyResolve = null;
         }
         updateStatus('Connected.');
+        // A reconnect means any turn from the previous socket is unreachable now
+        // (its closing "state": "idle" frame, if any, will never arrive) — clear
+        // stale client-side turn-in-flight state rather than leave the Stop button
+        // stuck visible forever.
+        turnInFlight = false;
+        activeConnectionId = null;
+        if (stopButton) stopButton.classList.add('hidden');
     };
 
     socket.onmessage = (e) => {
       try {
           const d = JSON.parse(e.data);
+          if (d.type === 'connection_ready') {
+            activeConnectionId = d.connection_id || null;
+            return;
+          }
           if (d.type === 'turn_deferred') {
             appendMessage(
               'System',
@@ -10862,6 +10908,8 @@ document.addEventListener("DOMContentLoaded", () => {
     if (wsOpen && socket && socket.readyState === WebSocket.OPEN) {
         socket.send(JSON.stringify(payload));
         updateStatus('Sent...');
+        turnInFlight = true;
+        if (stopButton) stopButton.classList.remove('hidden');
     } else {
         if (!window.__orionWsFallbackWarned) {
           appendMessage(
@@ -11213,6 +11261,8 @@ document.addEventListener("DOMContentLoaded", () => {
         }
         socket.send(JSON.stringify(audioPayload));
         console.info('[voice] sent audio payload bytes=%d', audioB64.length);
+        turnInFlight = true;
+        if (stopButton) stopButton.classList.remove('hidden');
         updateStatus(
           `Processing audio... peak=${audioMeta.peak.toFixed(5)} duration=${audioMeta.duration_sec.toFixed(2)}s`,
         );

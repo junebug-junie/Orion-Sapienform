@@ -1,3 +1,30 @@
+## The six drives — conceptual audit (2026-07-11)
+
+`DRIVE_KEYS = (coherence, continuity, capability, relational, predictive, autonomy)` (`orion/spark/concept_induction/drives.py`) has no conceptual grounding document anywhere in this repo — no docstring, no design note arguing for this set over any other. It was introduced once, early, and every later spec treats it as fixed ("Six drives stay" — hard constraint in `docs/superpowers/specs/2026-07-07-homeostatic-drives-real-tensions-design.md`). The 2026-07-07 leaky-integrator fix made the *pressure math* honest (no more flat-0.731 pin); it did not make the *taxonomy* honest.
+
+**Not concept-induction-derived.** Despite living in `orion/spark/concept_induction/`, drives never reference `ConceptProfile`/`ConceptProfileDelta` (verified by grep, zero hits). Naming-proximity artifact only.
+
+**Two unsynchronized computations share the six keys:**
+- `orion.spark.concept_induction.drives.DriveEngine` — leaky integrator, feeds `GoalProposalEngine`.
+- `orion.autonomy.reducer.reduce_autonomy_state` — RDF-persisted, feeds `AttentionItemV1` generation + `capability_policy` drive-origin gating (this file's "AutonomyStateV2 evidence" section above).
+
+Same six names, same `config/autonomy/signal_drive_map.yaml`, different math, different store, not read from each other.
+
+**Operational semantics** (what actually fires each one, since no docstring states an intended meaning):
+
+| Drive | Actual triggers |
+|---|---|
+| `coherence` | drop in self-state/turn `coherence` score, `spark_signal.coherence` dip |
+| `continuity` | novelty spikes, uncertainty deltas, biometric volatility, mesh-health drops |
+| `capability` | energy/resource/execution pressure, biometric strain, failure severity |
+| `relational` | valence drops, social-hazard signals (cooldown loops, self-message loops) |
+| `predictive` | coherence deltas, uncertainty, novelty, world-coverage gaps |
+| `autonomy` | novelty, uncertainty, low feedback scores |
+
+`coherence`, `continuity`, and `predictive` draw from largely the same underlying tensions (self-state coherence/uncertainty deltas, novelty) with different weight vectors — three views on one signal, not obviously three distinct constructs. `autonomy` is named for a capacity for self-initiation but its inputs are the same generic distress signals as three other drives; the one mechanism that would actually earn the name — `orion/autonomy/endogenous_origination.py` — is real but `ORION_ENDOGENOUS_ORIGINATION_ENABLED=false` by default. The spec names a known gap (no self-preservation drive; biometric somatic signals get mapped onto `capability`/`continuity` as a workaround) and explicitly declines to solve it.
+
+None of this is theater in the empty-shell sense — every drive has a real, live producer. The open question is whether these are the right six categories, or six labels stamped onto overlapping slices of one tension stream. Full writeup: `docs/superpowers/specs/2026-07-11-drive-taxonomy-conceptual-audit-design.md` (gitignored, local only — ask Juniper if it needs to travel with a specific branch).
+
 ## Subject routing
 
 Autonomy goals and drives are keyed by subject (`orion`, `relationship`, `juniper`). Dyadic chat materializes to **relationship**, not juniper — see the routing contract:

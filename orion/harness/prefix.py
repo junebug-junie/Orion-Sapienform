@@ -83,15 +83,17 @@ def compile_harness_prefix(
 ) -> str:
     """Orion capability: motor-context assembly for the unified turn.
 
-    Deterministically materializes everything the FCC motor is allowed to know
-    at spawn: the unified operator brief, grounding self block, Thought
+    Deterministically materializes the stance-conditioned context of the FCC
+    motor prompt: the unified operator brief, grounding self block, Thought
     imperative and stance slice, autonomy slice, repair overlay, user message,
-    and enabled MCP tool briefs. Nothing else enters the motor prompt —
-    changing motor behavior means changing an input surfaced here.
+    and enabled MCP tool briefs. The full `claude -p` prompt is this prefix
+    plus the harness_motor_instruction that build_harness_prompt (runner.py)
+    appends on user-message turns — check both when chasing unexpected motor
+    context.
 
-    Runtime evidence: the compiled prefix is the `claude -p` prompt passed to
-    run_fcc_turn. Start here when the motor acted without stance or grounding
-    context it should have had, or with context it should not have had.
+    Runtime evidence: the compiled prompt is what run_fcc_turn spawns with.
+    Start here when the motor acted without stance or grounding context it
+    should have had, or with context it should not have had.
     """
     _ = answer_contract  # deprecated on unified motor path; kept for signature compat
     parts: list[str] = [HARNESS_UNIFIED_OPERATOR_BRIEF.strip()]

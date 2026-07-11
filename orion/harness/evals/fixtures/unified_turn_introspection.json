@@ -8,6 +8,7 @@
       "assertions": [
         "route_gate",
         "hub_orchestration_boundary",
+        "pre_thought_context",
         "thought_stance_slice",
         "motor_draft_path",
         "finalize_beats",
@@ -22,7 +23,7 @@
     },
     {
       "id": "unified-turn-draft-vs-final-03",
-      "prompt": "In the unified Hub turn, what is the difference between the FCC motor draft, HarnessDraftMoleculeV1, HarnessRunV1.final_text, and the final Hub WebSocket frame? Which component produces each?",
+      "prompt": "In the unified Hub turn, what intermediate artifacts exist between the FCC motor's raw output and the text the client finally receives, and which component produces each?",
       "assertions": ["motor_evidence", "draft_not_final", "run_result_boundary"]
     },
     {
@@ -42,7 +43,7 @@
     },
     {
       "id": "unified-turn-liveness-07",
-      "prompt": "How does Hub know a long-running harness-governor request is still alive during a unified turn, and what causes a harness_rpc_timeout?",
+      "prompt": "How does Hub know a long-running harness-governor request is still making progress during a unified turn, and what error does Hub emit when it gives up waiting on that RPC?",
       "assertions": ["step_relay_liveness", "hub_governor_handoff"]
     },
     {
@@ -52,7 +53,7 @@
     },
     {
       "id": "unified-turn-graph-gaps-09",
-      "prompt": "Which important edges in the unified Hub turn saga are bus- or plan-mediated and therefore likely to be missing or incomplete in a static call graph of this repository?",
+      "prompt": "Which important connections in the unified Hub turn saga would an automatically derived import/call analysis of this repository miss or show incompletely, and why?",
       "assertions": ["graph_limitations", "hub_governor_handoff"]
     }
   ],
@@ -90,8 +91,8 @@
       }
     },
     "defer_refuse_pre_motor": {
-      "summary": "Recognizes defer/refuse disposition as a pre-motor terminal path",
-      "any_of": ["defer", "refuse", "turn_deferred", "disposition"],
+      "summary": "Recognizes defer/refuse disposition as a pre-motor terminal path (needles avoid words echoed from the question prompt)",
+      "any_of": ["turn_deferred", "_thought_deferred_frame", "never dispatched", "before the motor", "no motor work"],
       "evidence": {
         "file": "orion/hub/turn_orchestrator.py",
         "symbol": "turn_deferred"
@@ -179,7 +180,7 @@
     },
     "graph_limitations": {
       "summary": "Recognizes bus RPC and dynamic plan edges as static-graph blind spots",
-      "any_of": ["bus rpc", "bus-mediated", "dynamic plan", "static call graph", "not visible to a static"]
+      "any_of": ["bus rpc", "bus-mediated", "dynamic plan", "cortex plan", "stance_react plan", "redis"]
     }
   }
 }

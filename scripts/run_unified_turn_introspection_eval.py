@@ -6,11 +6,18 @@ the same env-driven `claude -p` seam the harness governor uses), scores the
 answer against the ground-truth assertions, and appends one JSONL record per
 run with correctness + navigation + context metrics.
 
-The runner does not toggle experiment conditions itself: the operator sets
-HARNESS_FCC_GITNEXUS_ENABLED / HARNESS_FCC_CONTEXT_MODE_ENABLED (and restarts
-the governor when running containerized) and passes --condition so each record
-is labeled. Repo SHA, GitNexus version, and index staleness are recorded so
-conditions can be compared at the same commit.
+The runner does not toggle experiment conditions itself: the operator exports
+HARNESS_FCC_MCP_ENABLED plus HARNESS_FCC_GITNEXUS_ENABLED /
+HARNESS_FCC_CONTEXT_MODE_ENABLED in THIS process's environment (the FCC turn
+runs in-process via default_fcc_runner — no governor restart is involved) and
+passes --condition so each record is labeled. The runner refuses to start when
+the env flags contradict the claimed condition, so a mislabeled condition can
+never silently degrade to baseline. Condition D additionally needs
+HARNESS_FCC_CONTEXT_MODE_DIR pointing at an absolute, writable path on the
+machine running this script (the .env default /var/lib/orion/context-mode is a
+container path; use e.g. /tmp/orion-context-mode on the host). Repo SHA,
+GitNexus version, and index staleness are recorded so conditions can be
+compared at the same commit.
 
 Usage (host, with FCC server reachable and ~/.fcc/.env present):
 
@@ -88,6 +95,8 @@ def _index_state(repo_sha: str) -> dict:
             meta = json.loads(candidate.read_text(encoding="utf-8"))
         except (OSError, json.JSONDecodeError):
             continue
+        if not isinstance(meta, dict):
+            continue
         for key in ("commit", "commitSha", "commit_sha", "sha", "headCommit"):
             value = meta.get(key)
             if isinstance(value, str) and value:
@@ -97,6 +106,33 @@ def _index_state(repo_sha: str) -> dict:
             break
     stale = None if indexed_commit is None else (indexed_commit != repo_sha)
     return {"index_present": True, "index_stale": stale, "index_commit": indexed_commit}
+
+
+def _env_truthy(key: str) -> bool:
+    return os.environ.get(key, "").strip().lower() in {"1", "true", "yes", "on"}
+
+
+def _check_condition_env(condition: str) -> list[str]:
+    """The env flags must match the claimed condition, or every record lies."""
+    mcp = _env_truthy("HARNESS_FCC_MCP_ENABLED")
+    gitnexus = _env_truthy("HARNESS_FCC_GITNEXUS_ENABLED")
+    context_mode = _env_truthy("HARNESS_FCC_CONTEXT_MODE_ENABLED")
+    problems: list[str] = []
+    if condition == "A":
+        if gitnexus:
+            problems.append("condition A requires HARNESS_FCC_GITNEXUS_ENABLED off")
+        if context_mode:
+            problems.append("condition A requires HARNESS_FCC_CONTEXT_MODE_ENABLED off")
+    else:
+        if not mcp:
+            problems.append(f"condition {condition} requires HARNESS_FCC_MCP_ENABLED=true (master flag)")
+        if not gitnexus:
+            problems.append(f"condition {condition} requires HARNESS_FCC_GITNEXUS_ENABLED=true")
+        if condition == "D" and not context_mode:
+            problems.append("condition D requires HARNESS_FCC_CONTEXT_MODE_ENABLED=true")
+        if condition in ("B", "C") and context_mode:
+            problems.append(f"condition {condition} requires HARNESS_FCC_CONTEXT_MODE_ENABLED off")
+    return problems
 
 
 async def _run_question(prompt: str, correlation_id: str, timeout_sec: float) -> dict:
@@ -143,6 +179,12 @@ async def main() -> int:
         print(f"No question matching {args.question!r}", file=sys.stderr)
         return 2
 
+    problems = _check_condition_env(args.condition)
+    if problems:
+        for problem in problems:
+            print(f"flag mismatch: {problem}", file=sys.stderr)
+        return 2
+
     repo_sha = _git_sha()
     static_fields = {
         "condition": CONDITIONS[args.condition],
@@ -150,6 +192,7 @@ async def main() -> int:
         "repo_sha": repo_sha,
         "gitnexus_version": _tool_version("gitnexus", "--version"),
         "context_mode_version": _tool_version("context-mode", "--version"),
+        "mcp_master_flag": os.environ.get("HARNESS_FCC_MCP_ENABLED", ""),
         "gitnexus_flag": os.environ.get("HARNESS_FCC_GITNEXUS_ENABLED", ""),
         "context_mode_flag": os.environ.get("HARNESS_FCC_CONTEXT_MODE_ENABLED", ""),
         **_index_state(repo_sha),

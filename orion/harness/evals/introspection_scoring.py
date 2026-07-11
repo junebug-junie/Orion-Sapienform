@@ -47,7 +47,11 @@ class ToolMetrics:
     truncated_results: int = 0
 
 
-def _iter_tool_use_blocks(raw: Mapping[str, Any]) -> Iterable[Mapping[str, Any]]:
+# Matches the notice mcp_stdio_proxy injects into truncated tool text payloads.
+_PROXY_TRUNCATION_MARKER = "[orion-fcc-mcp-proxy: truncated"
+
+
+def _iter_message_blocks(raw: Mapping[str, Any], block_type: str) -> Iterable[Mapping[str, Any]]:
     message = raw.get("message")
     if not isinstance(message, Mapping):
         return
@@ -55,7 +59,7 @@ def _iter_tool_use_blocks(raw: Mapping[str, Any]) -> Iterable[Mapping[str, Any]]
     if not isinstance(content, list):
         return
     for block in content:
-        if isinstance(block, Mapping) and block.get("type") == "tool_use":
+        if isinstance(block, Mapping) and block.get("type") == block_type:
             yield block
 
 
@@ -67,16 +71,25 @@ def extract_tool_metrics(step_frames: Iterable[Mapping[str, Any]]) -> ToolMetric
         step = frame.get("step") if isinstance(frame, Mapping) else None
         if not isinstance(step, Mapping):
             continue
-        fill = step.get("context_fill_pct")
+        # annotate_harness_step puts fill at step["context_obs"]["fill_pct"];
+        # the synthetic pressure step carries context_fill_pct inside its raw.
+        obs = step.get("context_obs")
+        fill = obs.get("fill_pct") if isinstance(obs, Mapping) else None
+        raw = step.get("raw")
+        if fill is None and isinstance(raw, Mapping):
+            fill = raw.get("context_fill_pct")
         if isinstance(fill, (int, float)):
             metrics.max_context_fill_pct = max(metrics.max_context_fill_pct, float(fill))
-        raw = step.get("raw")
         if not isinstance(raw, Mapping):
             continue
         metrics.observed_chars += len(json.dumps(raw, ensure_ascii=False))
-        if "orion-fcc-mcp-proxy" in json.dumps(raw, ensure_ascii=False):
-            metrics.truncated_results += 1
-        for block in _iter_tool_use_blocks(raw):
+        # Count truncations only inside tool_result payloads — the marker also
+        # appears as source text when the motor reads the proxy module itself.
+        for block in _iter_message_blocks(raw, "tool_result"):
+            metrics.truncated_results += json.dumps(
+                block.get("content"), ensure_ascii=False
+            ).count(_PROXY_TRUNCATION_MARKER)
+        for block in _iter_message_blocks(raw, "tool_use"):
             metrics.tool_calls += 1
             name = str(block.get("name") or "unknown")
             metrics.tool_names.append(name)

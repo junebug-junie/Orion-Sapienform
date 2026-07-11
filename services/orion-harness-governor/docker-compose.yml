@@ -18,6 +18,8 @@ services:
       # GitNexus global registry (~/.gitnexus/registry.json) — index is built on
       # the host; MCP inside the container discovers it via this read-only mount.
       # The per-repo .gitnexus/ index arrives through the repo mount above.
+      # Run `mkdir -p ~/.gitnexus` before first `up`: docker creates a missing
+      # bind source as root, which then breaks host-side `gitnexus analyze`.
       - ${HOME}/.gitnexus:/root/.gitnexus:ro
       # Context Mode working data — operational, project-scoped, NOT an Orion
       # memory store; never exposed through Hub convenience APIs.

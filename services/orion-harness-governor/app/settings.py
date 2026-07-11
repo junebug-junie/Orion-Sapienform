@@ -83,6 +83,13 @@ class HarnessGovernorSettings(BaseSettings):
 
     harness_fcc_mcp_enabled: bool = Field(False, alias="HARNESS_FCC_MCP_ENABLED")
     harness_aitown_enabled: bool = Field(False, alias="HARNESS_AITOWN_ENABLED")
+    # Semantic self-indexing MCPs — read at spawn time from the environment in
+    # orion/harness/fcc_motor; mirrored here so operators see effective flags.
+    harness_fcc_gitnexus_enabled: bool = Field(False, alias="HARNESS_FCC_GITNEXUS_ENABLED")
+    harness_fcc_context_mode_enabled: bool = Field(False, alias="HARNESS_FCC_CONTEXT_MODE_ENABLED")
+    harness_fcc_context_mode_dir: str = Field(
+        "/var/lib/orion/context-mode", alias="HARNESS_FCC_CONTEXT_MODE_DIR"
+    )
 
     # (D) embodiment: publish a deliberate approach intent on the turn correlation_id
     # after a finalized relational turn. Default-off, fail-open (never breaks a turn).

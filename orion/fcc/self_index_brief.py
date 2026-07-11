@@ -53,7 +53,16 @@ def context_mode_brief_lines() -> list[str]:
 
 
 def append_self_index_harness_brief(parts: list[str]) -> None:
-    """Append GitNexus/Context Mode usage lines when their harness flags are on."""
+    """Append GitNexus/Context Mode usage lines when their harness flags are on.
+
+    Gated on the master MCP flag first: without HARNESS_FCC_MCP_ENABLED no MCP
+    config is rendered at all (fcc_motor._maybe_render_mcp_config returns None),
+    so advertising these tools would point the motor at servers that don't exist.
+    """
+    from orion.fcc.github_repo_context import harness_mcp_enabled
+
+    if not harness_mcp_enabled():
+        return
     if gitnexus_enabled():
         parts.extend(gitnexus_brief_lines())
     if context_mode_enabled():

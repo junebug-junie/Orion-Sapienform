@@ -76,6 +76,36 @@ def test_run_autonomy_reducer_uses_persisted_state_not_v1_baseline_on_second_cal
     assert store["orion"] is result2.state
 
 
+def test_run_autonomy_reducer_movement_debug_before_matches_actual_previous_state(monkeypatch) -> None:
+    """Regression: chat_autonomy_movement_debug['pressures_before'] must reflect
+    the SAME previous_state the fold actually used (persisted V2 once warm), not
+    autonomy['state'] (the V1/graph baseline) independently -- those two diverge
+    once persistence kicks in on turn 2+, and the mismatch silently corrupts
+    autonomy_slice.py's pressure_trend derivation (before/after compared against
+    different baselines)."""
+    store: dict[str, object] = {}
+    monkeypatch.setattr(chat_stance, "load_autonomy_state_v2", lambda subject: store.get(subject))
+    monkeypatch.setattr(chat_stance, "save_autonomy_state_v2", lambda subject, state: store.__setitem__(subject, state))
+    monkeypatch.setattr(chat_stance, "load_action_outcomes", lambda subject: [])
+
+    v1_baseline = _v1_baseline()  # drive_pressures={"coherence": 0.4} -- stays fixed all turns
+    autonomy = {"state": v1_baseline}
+
+    ctx1: dict = {"user_message": "first turn", "correlation_id": "c-1"}
+    result1 = chat_stance._run_autonomy_reducer(ctx1, autonomy, social={}, social_bridge={}, reasoning={})
+
+    ctx2: dict = {"user_message": "second turn, different evidence entirely", "correlation_id": "c-2"}
+    chat_stance._run_autonomy_reducer(ctx2, autonomy, social={}, social_bridge={}, reasoning={})
+
+    # By turn 2 the store holds result1.state, whose drive_pressures have already
+    # moved away from the fixed v1_baseline -- the two are no longer equal.
+    assert result1.state.drive_pressures != v1_baseline.drive_pressures
+
+    before = ctx2["chat_autonomy_movement_debug"]["pressures_before"]
+    assert before == dict(result1.state.drive_pressures or {})
+    assert before != dict(v1_baseline.drive_pressures or {})
+
+
 def test_run_autonomy_reducer_falls_back_to_v1_baseline_when_store_unreachable(monkeypatch) -> None:
     """Store returning None (unreachable / no DSN) must not change today's
     fallback behavior: previous_state stays the V1/graph baseline."""

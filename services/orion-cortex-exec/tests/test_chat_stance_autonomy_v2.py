@@ -74,6 +74,43 @@ def test_chat_stance_autonomy_v2_ctx_and_inputs_when_enabled(monkeypatch) -> Non
     assert built["autonomy"]["delta"] == ctx["chat_autonomy_state_delta"]
 
 
+def test_chat_stance_autonomy_v2_slice_set_before_llm_render(monkeypatch) -> None:
+    """Regression: ctx['autonomy_slice'] (the key stance_react.j2's
+    {% if autonomy_slice %} block reads) must be set synchronously inside
+    build_chat_stance_inputs -- i.e. before the stance_react LLM step ever
+    renders its prompt. It must NOT depend on router.py's post-step
+    processing (which runs strictly after that same step's LLM call already
+    returned, and for the single-step stance_react plan is too late for the
+    prompt that already rendered)."""
+    state = AutonomyStateV1(
+        subject="orion",
+        model_layer="self-model",
+        entity_id="self:orion",
+        dominant_drive="coherence",
+        drive_pressures={"coherence": 0.4},
+        active_drives=["coherence"],
+        tension_kinds=["repo_question_unresolved"],
+        goal_headlines=[],
+        source="graph",
+    )
+    monkeypatch.setattr(chat_stance, "_load_autonomy_state", lambda _ctx: _fake_autonomy_bundle(state))
+    monkeypatch.setenv("AUTONOMY_STATE_V2_REDUCER_ENABLED", "true")
+    ctx: dict = {"user_message": "hello", "correlation_id": "c-slice"}
+
+    chat_stance.build_chat_stance_inputs(ctx)
+
+    assert isinstance(ctx.get("autonomy_slice"), dict), (
+        "autonomy_slice must be present on ctx by the time build_chat_stance_inputs "
+        "returns -- this is the same ctx object the stance_react.j2 render uses "
+        "moments later in the same step, before router.py's post-step processing runs"
+    )
+    assert ctx["autonomy_slice"].get("dominant_drive") == "coherence"
+    # Exact tension labels are the reducer's own canonical form (it re-derives
+    # tensions, not a passthrough of the seeded V1 tension_kinds) -- this test
+    # only needs to prove the slice carries real, non-empty signal.
+    assert ctx["autonomy_slice"].get("active_tensions")
+
+
 def test_chat_stance_autonomy_v2_absent_when_disabled(monkeypatch) -> None:
     state = AutonomyStateV1(
         subject="orion",

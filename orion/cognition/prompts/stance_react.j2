@@ -54,10 +54,10 @@ PRIOR SELF-SIGNAL (advisory — Oríon's own current drive/tension state)
 - Use it to color imperative/tone; it is NOT task instruction and never overrides
   user_message, association, grounding, or the actual task.
 - It does not add output keys — still emit only valid ThoughtEventV1.
-- dominant_drive: {{ autonomy_slice.dominant_drive }}
-- active_tensions: {{ autonomy_slice.active_tensions }}
-- pressure_trend: {{ autonomy_slice.pressure_trend }}
-{% endif %}
+{% if autonomy_slice.dominant_drive %}- dominant_drive: {{ autonomy_slice.dominant_drive }}
+{% endif %}{% if autonomy_slice.active_tensions %}- active_tensions: {{ autonomy_slice.active_tensions }}
+{% endif %}{% if autonomy_slice.pressure_trend %}- pressure_trend: {{ autonomy_slice.pressure_trend }}
+{% endif %}{% endif %}
 
 POSTURE ASSESSMENT (semantic inference — no keyword lists)
 - Infer interface_cost from whole-turn meaning: costly to type, read, screen-use, act, or continue interaction.

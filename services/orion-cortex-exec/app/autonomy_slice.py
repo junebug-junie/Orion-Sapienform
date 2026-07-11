@@ -82,7 +82,12 @@ def build_autonomy_slice(ctx: Dict[str, Any]) -> AutonomySliceV1 | None:
     if not isinstance(confidence, (int, float)):
         confidence = None
 
-    if dominant_drive is None and not active_tensions and pressure_trend is None and confidence is None:
+    # confidence deliberately excluded from this check: AutonomyStateV2.confidence
+    # is a required field defaulting to 0.5, so it is present on essentially every
+    # reducer output and would defeat omit-when-empty if allowed to count as
+    # "signal" on its own -- only real content (drive/tensions/trend) justifies
+    # emitting a slice.
+    if dominant_drive is None and not active_tensions and pressure_trend is None:
         return None
 
     try:

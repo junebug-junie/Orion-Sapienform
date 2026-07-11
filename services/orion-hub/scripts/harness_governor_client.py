@@ -16,6 +16,23 @@ logger = logging.getLogger("hub.bus.harness_governor")
 LivenessCheckFn = Callable[[float], bool]
 
 
+async def _get_message_within(pubsub, timeout: float) -> dict | None:
+    """pubsub.get_message() performs exactly one read per call: if that single read
+    consumes a non-publish message (most commonly the subscribe confirmation, which
+    arrives immediately after pubsub.subscribe()), it returns None almost instantly
+    instead of waiting out `timeout`. Loop on the remaining budget so a spurious single
+    read can't cut the wait short.
+    """
+    deadline = perf_counter() + timeout
+    while True:
+        remaining = deadline - perf_counter()
+        if remaining <= 0:
+            return None
+        msg = await pubsub.get_message(ignore_subscribe_messages=True, timeout=remaining)
+        if msg is not None:
+            return msg
+
+
 class HarnessGovernorClient:
     def __init__(self, bus: OrionBusAsync):
         self.bus = bus
@@ -191,10 +208,10 @@ class HarnessGovernorClient:
             await self.bus.publish(settings.CHANNEL_HARNESS_RUN_REQUEST, envelope)
             wait = poll_sec
             while True:
-                # pubsub.get_message's own timeout (not asyncio.wait_for cancelling an
+                # _get_message_within's own timeout (not asyncio.wait_for cancelling an
                 # in-flight read) so a reply landing right at the poll boundary can't be
                 # silently dropped by task cancellation racing message delivery.
-                msg = await pubsub.get_message(ignore_subscribe_messages=True, timeout=wait)
+                msg = await _get_message_within(pubsub, wait)
                 if msg is not None:
                     return msg
                 elapsed = perf_counter() - started

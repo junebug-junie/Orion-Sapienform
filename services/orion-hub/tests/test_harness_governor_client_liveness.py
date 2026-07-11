@@ -110,6 +110,47 @@ class _FakeBus:
         yield _FakePubSub(self)
 
 
+class _SubscribeAckThenRealPubSub:
+    """Mimics the REAL redis.asyncio PubSub.get_message() one-read-per-call semantics:
+    the first call drains the subscribe confirmation and returns None almost instantly
+    (NOT after waiting out `timeout`) — a single ad-hoc `get_message(timeout=X)` call
+    would incorrectly read this as "no reply within X", when in reality the real reply
+    wait hasn't even started yet. Every call after the first behaves like the honest
+    bounded wait in _FakePubSub above.
+    """
+
+    def __init__(self, bus: "_FakeBus") -> None:
+        self._bus = bus
+        self._calls = 0
+
+    async def get_message(self, ignore_subscribe_messages: bool = False, timeout: float = 0.0) -> dict | None:
+        self._calls += 1
+        if self._calls == 1:
+            return None  # subscribe ack consumed the one read this call performs
+        assert self._bus._published_at is not None
+        remaining_to_reply = self._bus._reply_after_sec - (
+            asyncio.get_event_loop().time() - self._bus._published_at
+        )
+        if remaining_to_reply > timeout:
+            await asyncio.sleep(timeout)
+            return None
+        if remaining_to_reply > 0:
+            await asyncio.sleep(remaining_to_reply)
+        envelope = BaseEnvelope(
+            kind="harness.run.v1",
+            source=ServiceRef(name="test", version="0"),
+            correlation_id=_CORR_ID,
+            payload=self._bus._reply_payload,
+        )
+        return {"data": self._bus.codec.encode(envelope)}
+
+
+class _SubscribeAckThenRealBus(_FakeBus):
+    @asynccontextmanager
+    async def subscribe(self, *channels: str, patterns: bool = False):
+        yield _SubscribeAckThenRealPubSub(self)
+
+
 def _run_payload() -> dict:
     return HarnessRunV1(
         correlation_id=_CORR_ID,
@@ -229,6 +270,32 @@ async def test_liveness_check_receives_fixed_window_not_shrinking_poll_sec() -> 
     assert seen_windows, "liveness_check was never called"
     assert all(within_sec == 7.0 for within_sec in seen_windows)
     assert poll_sec not in seen_windows
+
+
+@pytest.mark.asyncio
+async def test_run_survives_spurious_instant_none_from_subscribe_ack() -> None:
+    """Regression test: pubsub.get_message() performs exactly ONE read per call. If
+    that read drains the subscribe confirmation (which arrives immediately after
+    pubsub.subscribe()), it returns None almost instantly instead of waiting out the
+    requested timeout. A naive single get_message(timeout=poll_sec) call would
+    misread this as "no reply within poll_sec" and give up on turn 0 instantly — and
+    liveness_check legitimately reads not-alive that early (the governor hasn't had
+    time to emit its first step yet for a turn that just started), so there's no
+    liveness-retry safety net to mask this: it must be fixed at the wait layer itself.
+    """
+    poll_sec = 5.0  # large relative to how fast the reply actually arrives below
+    bus = _SubscribeAckThenRealBus(reply_after_sec=0.05, reply_payload=_run_payload())
+    client = HarnessGovernorClient(bus)
+
+    result = await client.run(
+        _request(),
+        correlation_id=_CORR_ID,
+        timeout_sec=poll_sec,
+        liveness_check=lambda _within_sec: False,
+    )
+
+    assert result is not None
+    assert result.final_text == "done"
 
 
 class _FakeWorkerBus:

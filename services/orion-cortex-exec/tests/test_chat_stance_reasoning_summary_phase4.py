@@ -2,6 +2,8 @@ from __future__ import annotations
 
 from datetime import datetime, timezone
 
+import pytest
+
 from app.chat_stance import build_chat_stance_inputs, fallback_chat_stance_brief
 from app.endogenous_runtime import EndogenousRuntimeAdoptionService, EndogenousRuntimeConfig
 from orion.core.schemas.reasoning import ClaimV1
@@ -31,7 +33,8 @@ def _claim() -> ClaimV1:
     )
 
 
-def test_chat_stance_uses_reasoning_summary_when_available() -> None:
+@pytest.mark.asyncio
+async def test_chat_stance_uses_reasoning_summary_when_available() -> None:
     repo = InMemoryReasoningRepository()
     repo.write_artifacts(
         ReasoningWriteRequestV1(
@@ -49,20 +52,22 @@ def test_chat_stance_uses_reasoning_summary_when_available() -> None:
         "user_message": "who are you?",
         "reasoning_repository": repo,
     }
-    built = build_chat_stance_inputs(ctx)
+    built = await build_chat_stance_inputs(ctx)
     assert built["reasoning_summary"]["active_claims"]
     assert ctx["chat_reasoning_summary_used"] is True
     assert ctx["chat_reasoning_debug"]["compiler_succeeded"] is True
 
 
-def test_chat_stance_reasoning_fallback_safe_when_unavailable() -> None:
+@pytest.mark.asyncio
+async def test_chat_stance_reasoning_fallback_safe_when_unavailable() -> None:
     ctx = {"user_message": "help me debug"}
-    built = build_chat_stance_inputs(ctx)
+    built = await build_chat_stance_inputs(ctx)
     assert built["reasoning_summary"]["fallback_recommended"] is True
     assert ctx["chat_reasoning_summary_used"] is False
 
 
-def test_chat_stance_records_endogenous_runtime_audit() -> None:
+@pytest.mark.asyncio
+async def test_chat_stance_records_endogenous_runtime_audit() -> None:
     from app import chat_stance as chat_stance_module
 
     original_runtime_service = chat_stance_module.runtime_service
@@ -79,7 +84,7 @@ def test_chat_stance_records_endogenous_runtime_audit() -> None:
     )
     try:
         ctx = {"user_message": "please reflect on contradictions"}
-        _ = build_chat_stance_inputs(ctx)
+        _ = await build_chat_stance_inputs(ctx)
         assert isinstance(ctx.get("chat_endogenous_runtime"), dict)
         assert ctx["chat_endogenous_runtime"]["audit"]["status"] in {"ok", "surface_disabled", "not_selected", "disabled", "sampled_out"}
     finally:

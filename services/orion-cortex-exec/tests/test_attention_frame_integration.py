@@ -2,24 +2,28 @@ from __future__ import annotations
 
 from pathlib import Path
 
+import pytest
+
 from app.chat_stance import build_chat_stance_debug_payload, build_chat_stance_inputs
 
 
 REPO_ROOT = Path(__file__).resolve().parents[3]
 
 
-def test_feature_flag_off_preserves_chat_stance_input_shape(monkeypatch) -> None:
+@pytest.mark.asyncio
+async def test_feature_flag_off_preserves_chat_stance_input_shape(monkeypatch) -> None:
     monkeypatch.delenv("ORION_CURIOSITY_FRAME_ENABLED", raising=False)
     ctx = {"user_message": "I am planning around Zephyr Bridge.", "skip_unified_beliefs": True}
-    built = build_chat_stance_inputs(ctx)
+    built = await build_chat_stance_inputs(ctx)
     assert "attention_frame" not in built
     assert "chat_attention_frame" not in ctx
 
 
-def test_feature_flag_on_adds_attention_frame(monkeypatch) -> None:
+@pytest.mark.asyncio
+async def test_feature_flag_on_adds_attention_frame(monkeypatch) -> None:
     monkeypatch.setenv("ORION_CURIOSITY_FRAME_ENABLED", "true")
     ctx = {"user_message": "I am planning around Zephyr Bridge.", "skip_unified_beliefs": True}
-    built = build_chat_stance_inputs(ctx)
+    built = await build_chat_stance_inputs(ctx)
     assert "attention_frame" in built
     assert ctx["chat_attention_frame"]["schema_version"] == "attention.frame.v1"
     assert built["attention_frame"]["open_loops"]

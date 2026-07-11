@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import pytest
+
 from app.chat_stance import (
     build_chat_stance_debug_payload,
     build_chat_stance_inputs,
@@ -29,7 +31,8 @@ def test_chat_stance_brief_schema_roundtrip() -> None:
     assert reparsed.answer_strategy == "DirectAnswer"
 
 
-def test_build_chat_stance_inputs_maps_social_reflective_and_dream() -> None:
+@pytest.mark.asyncio
+async def test_build_chat_stance_inputs_maps_social_reflective_and_dream() -> None:
     ctx = {
         "orion_identity_summary": ["Distributed self-model"],
         "juniper_relationship_summary": ["Trusted collaborator"],
@@ -60,7 +63,7 @@ def test_build_chat_stance_inputs_maps_social_reflective_and_dream() -> None:
         },
     }
 
-    built = build_chat_stance_inputs(ctx)
+    built = await build_chat_stance_inputs(ctx)
 
     assert built["identity"]["orion"] == ["Distributed self-model"]
     assert "collaborative build" in built["social"]["relationship_facets"]
@@ -72,7 +75,8 @@ def test_build_chat_stance_inputs_maps_social_reflective_and_dream() -> None:
     assert built["reflective"]["dream_motifs"]
 
 
-def test_build_chat_stance_inputs_includes_situation_category() -> None:
+@pytest.mark.asyncio
+async def test_build_chat_stance_inputs_includes_situation_category() -> None:
     ctx = {
         "user_message": "My kid asked why the sky is blue.",
         "situation_prompt_fragment": {
@@ -111,7 +115,7 @@ def test_build_chat_stance_inputs_includes_situation_category() -> None:
             "affordances": [{"kind": "kid_friendly_explanation", "trigger_relevance": "active", "suggestion": "Use age-appropriate explanation", "confidence": "medium"}],
         },
     }
-    built = build_chat_stance_inputs(ctx)
+    built = await build_chat_stance_inputs(ctx)
     assert "situation" in built
     assert built["situation"]["presence"]["audience_mode"] == "kid_present"
     assert built["situation"]["conversation_phase"]["phase_change"] == "long_gap"
@@ -130,19 +134,21 @@ def test_parse_chat_stance_brief_and_fallback() -> None:
     assert "generic assistant self-description" in fb.response_hazards
 
 
-def test_build_chat_stance_inputs_falls_back_when_identity_missing() -> None:
+@pytest.mark.asyncio
+async def test_build_chat_stance_inputs_falls_back_when_identity_missing() -> None:
     from app import chat_stance
 
     chat_stance._UNIFICATION_LAYER = None
     ctx = {"user_message": "who are you and who am i"}
-    built = build_chat_stance_inputs(ctx)
+    built = await build_chat_stance_inputs(ctx)
     assert built["identity"]["orion"]
     assert built["identity"]["juniper"]
     assert built["identity"]["response_policy"]
     assert any("not a generic assistant" in item.lower() for item in built["identity"]["orion"])
 
 
-def test_build_chat_stance_inputs_uses_repository_seam(monkeypatch) -> None:
+@pytest.mark.asyncio
+async def test_build_chat_stance_inputs_uses_repository_seam(monkeypatch) -> None:
     from app import chat_stance
     import orion.spark.concept_induction.profile_repository as profile_repo
 
@@ -188,11 +194,12 @@ def test_build_chat_stance_inputs_uses_repository_seam(monkeypatch) -> None:
             ]
 
     monkeypatch.setattr(profile_repo, "build_concept_profile_repository", lambda: FakeRepository())
-    built = chat_stance.build_chat_stance_inputs({"user_message": "who are you"})
+    built = await chat_stance.build_chat_stance_inputs({"user_message": "who are you"})
     assert "continuity" in built["concept_induction"]["self"]
 
 
-def test_chat_stance_shadow_mode_uses_local_result_and_passes_observer(monkeypatch) -> None:
+@pytest.mark.asyncio
+async def test_chat_stance_shadow_mode_uses_local_result_and_passes_observer(monkeypatch) -> None:
     from app import chat_stance
     import orion.spark.concept_induction.profile_repository as profile_repo
 
@@ -245,7 +252,7 @@ def test_chat_stance_shadow_mode_uses_local_result_and_passes_observer(monkeypat
 
     fake_repository = FakeRepository()
     monkeypatch.setattr(profile_repo, "build_concept_profile_repository", lambda: fake_repository)
-    built = chat_stance.build_chat_stance_inputs(
+    built = await chat_stance.build_chat_stance_inputs(
         {
             "user_message": "who are you",
             "session_id": "sid-1",
@@ -439,18 +446,19 @@ def test_semantic_guard_triage_adds_self_intro_suppression_hazard() -> None:
     assert "triage_operational_blockers_first" in enriched.response_priorities
 
 
-def test_ensure_chat_stance_pipeline_ctx_populates_stance_inputs_for_agent_mode(monkeypatch) -> None:
+@pytest.mark.asyncio
+async def test_ensure_chat_stance_pipeline_ctx_populates_stance_inputs_for_agent_mode(monkeypatch) -> None:
     monkeypatch.setenv("AUTONOMY_REPOSITORY_BACKEND", "local")
     from app.executor import ensure_chat_stance_pipeline_ctx
 
     ctx: dict = {"mode": "agent", "user_message": "hello", "verb": "chat_general", "correlation_id": "pytest-stance-1"}
-    ensure_chat_stance_pipeline_ctx(ctx)
+    await ensure_chat_stance_pipeline_ctx(ctx)
     inputs = ctx.get("chat_stance_inputs")
     assert isinstance(inputs, dict)
     assert inputs.get("identity", {}).get("orion")
     assert "autonomy" in inputs
     first = inputs
-    ensure_chat_stance_pipeline_ctx(ctx)
+    await ensure_chat_stance_pipeline_ctx(ctx)
     assert ctx.get("chat_stance_inputs") is first
 
 

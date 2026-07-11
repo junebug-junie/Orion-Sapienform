@@ -120,7 +120,7 @@ def test_router_passes_none_recall_rpc_override_chat_quick(monkeypatch) -> None:
     monkeypatch.setattr(router, "run_recall_step", _fake_recall_step)
     monkeypatch.setattr(router, "call_step_services", AsyncMock(return_value=fake_llm))
     monkeypatch.setattr(router, "prepare_chat_quick_reply_context", lambda ctx: None)
-    monkeypatch.setattr(router, "prepare_brain_reply_context", lambda ctx, force_refresh=False: None)
+    monkeypatch.setattr(router, "prepare_brain_reply_context", AsyncMock(return_value=None))
 
     runner = PlanRunner()
     result = asyncio.run(
@@ -172,7 +172,7 @@ def test_router_passes_none_rpc_timeout_for_chat_general(monkeypatch) -> None:
 
     monkeypatch.setattr(router, "run_recall_step", _fake_recall_step)
     monkeypatch.setattr(router, "call_step_services", AsyncMock(return_value=fake_llm))
-    monkeypatch.setattr(router, "prepare_brain_reply_context", lambda ctx, force_refresh=False: None)
+    monkeypatch.setattr(router, "prepare_brain_reply_context", AsyncMock(return_value=None))
 
     runner = PlanRunner()
     result = asyncio.run(

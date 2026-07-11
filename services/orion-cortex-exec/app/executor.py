@@ -2683,10 +2683,10 @@ async def call_step_services(
         ctx["prior_step_results"] = list(scoped_list)
 
     if _should_prepare_brain_reply_context(step=step, ctx=ctx):
-        prepare_brain_reply_context(ctx)
+        await prepare_brain_reply_context(ctx)
 
     if str(step.verb_name or "") == "chat_general" and str(step.step_name or "") == "synthesize_chat_stance_brief":
-        ensure_chat_stance_pipeline_ctx(ctx)
+        await ensure_chat_stance_pipeline_ctx(ctx)
 
     # Skill YAMLs may list services: [] while the work is implemented as local verb_adapters.
     # Without this branch the service loop runs zero times and final_text assembly sees no candidates.
@@ -4507,7 +4507,7 @@ async def call_step_services(
     )
 
 
-def ensure_chat_stance_pipeline_ctx(ctx: Dict[str, Any]) -> None:
+async def ensure_chat_stance_pipeline_ctx(ctx: Dict[str, Any]) -> None:
     """Populate identity kernel and chat_stance_inputs for chat_general stance synthesis in any exec mode.
 
     Brain-lane uses prepare_brain_reply_context first; this path covers agent (and other) modes where
@@ -4517,7 +4517,7 @@ def ensure_chat_stance_pipeline_ctx(ctx: Dict[str, Any]) -> None:
     if isinstance(existing, dict) and "identity" in existing and "autonomy" in existing:
         return
     _inject_identity_context(ctx)
-    build_chat_stance_inputs(ctx)
+    await build_chat_stance_inputs(ctx)
 
 
 def prepare_chat_quick_reply_context(ctx: Dict[str, Any]) -> None:
@@ -4525,7 +4525,7 @@ def prepare_chat_quick_reply_context(ctx: Dict[str, Any]) -> None:
     _inject_identity_context(ctx)
 
 
-def prepare_brain_reply_context(ctx: Dict[str, Any], *, force_refresh: bool = False) -> Dict[str, Any] | None:
+async def prepare_brain_reply_context(ctx: Dict[str, Any], *, force_refresh: bool = False) -> Dict[str, Any] | None:
     """
     Canonical preparation hook for brain-lane reply context.
     Ensures identity and stance/autonomy inputs are available for downstream reply verbs,
@@ -4538,7 +4538,7 @@ def prepare_brain_reply_context(ctx: Dict[str, Any], *, force_refresh: bool = Fa
         return ctx.get("chat_stance_inputs")
 
     _inject_identity_context(ctx)
-    stance_inputs = build_chat_stance_inputs(ctx)
+    stance_inputs = await build_chat_stance_inputs(ctx)
     logger.info(
         "chat_stance_inputs_ready has_identity_keys=%s orion_count=%s juniper_count=%s policy_count=%s",
         sorted(list((stance_inputs.get("identity") or {}).keys())),

@@ -985,7 +985,7 @@ class PlanRunner:
                 opts_now = ctx.get("options") if isinstance(ctx.get("options"), dict) else {}
                 hub_full = bool(opts_now.get("chat_quick_full_stance"))
                 if hub_full:
-                    prepare_brain_reply_context(ctx)
+                    await prepare_brain_reply_context(ctx)
                 else:
                     prepare_chat_quick_reply_context(ctx)
             elif verb_lc == "chat_kids_story":
@@ -1001,7 +1001,7 @@ class PlanRunner:
                     plan.verb_name,
                 )
             else:
-                prepare_brain_reply_context(ctx)
+                await prepare_brain_reply_context(ctx)
         existing_scope = str(ctx.get("_run_scope_corr_id") or "")
         if existing_scope and existing_scope != correlation_id:
             logger.warning(
@@ -1556,6 +1556,8 @@ class PlanRunner:
                 metadata["structured_rejection_preview"] = str(final_text_diag["structured_rejection_preview"])[:500]
         if isinstance(ctx.get("grounding_capsule"), dict):
             metadata["grounding_capsule"] = ctx["grounding_capsule"]
+        if isinstance(ctx.get("autonomy_slice"), dict):
+            metadata["autonomy_slice"] = ctx["autonomy_slice"]
         mark_orion_turn(str(ctx.get("session_id") or "global"))
 
         record_assembled_grammar(

@@ -9,7 +9,12 @@ from orion.harness.operator_brief import (
 )
 from orion.schemas.cognition.answer_contract import AnswerContract
 from orion.schemas.harness_finalize import HarnessRepairOverlayV1
-from orion.schemas.thought import GroundingCapsuleV1, StanceHarnessSliceV1, ThoughtEventV1
+from orion.schemas.thought import (
+    AutonomySliceV1,
+    GroundingCapsuleV1,
+    StanceHarnessSliceV1,
+    ThoughtEventV1,
+)
 
 
 def _format_stance_slice(sl: StanceHarnessSliceV1) -> list[str]:
@@ -24,6 +29,19 @@ def _format_stance_slice(sl: StanceHarnessSliceV1) -> list[str]:
         lines.append(f"Response priorities: {', '.join(sl.response_priorities)}")
     if sl.response_hazards:
         lines.append(f"Response hazards: {', '.join(sl.response_hazards)}")
+    return lines
+
+
+def _format_autonomy_slice(sl: AutonomySliceV1) -> list[str]:
+    """Compact self-signal block for the harness system prefix. Only emits
+    lines for fields that are actually present -- never fabricates content."""
+    lines: list[str] = ["SELF SIGNAL (autonomy)"]
+    if sl.dominant_drive:
+        lines.append(f"Dominant drive: {sl.dominant_drive}")
+    if sl.active_tensions:
+        lines.append(f"Active tensions: {', '.join(sl.active_tensions)}")
+    if sl.pressure_trend:
+        lines.append(f"Pressure trend: {sl.pressure_trend}")
     return lines
 
 
@@ -76,6 +94,8 @@ def compile_harness_prefix(
         ]
     )
     parts.extend(_format_stance_slice(thought.stance_harness_slice))
+    if thought.autonomy_slice is not None:
+        parts.extend(_format_autonomy_slice(thought.autonomy_slice))
 
     if thought.strain_refs:
         parts.append(f"Strain refs: {', '.join(thought.strain_refs)}")

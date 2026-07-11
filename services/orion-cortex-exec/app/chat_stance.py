@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
 import os
@@ -18,6 +19,7 @@ from orion.autonomy.graph_gate import (
     resolve_autonomy_graph_read_plan,
 )
 from orion.autonomy.reducer import AutonomyReducerInputV1, reduce_autonomy_state
+from orion.autonomy.state_store import load_autonomy_state_v2, save_autonomy_state_v2
 from orion.autonomy.summary import summarize_autonomy_lookup, summarize_autonomy_state
 from orion.autonomy.repository import (
     AutonomyLookupV1,
@@ -49,6 +51,7 @@ from orion.substrate.relational import (
 from orion.substrate.relational.adapters.spark_ctx import map_spark_ctx_to_substrate
 
 from .attention_frame import attention_frame_enabled, build_attention_frame
+from .autonomy_slice import build_autonomy_slice
 
 from .endogenous_runtime import (
     consume_endogenous_runtime_for_reflective_review,
@@ -2176,7 +2179,7 @@ def _reasoning_upstream_nonempty(ctx: Dict[str, Any]) -> bool:
         return False
 
 
-def _run_autonomy_reducer(
+async def _run_autonomy_reducer(
     ctx: Dict[str, Any],
     autonomy: Dict[str, Any],
     *,
@@ -2203,10 +2206,30 @@ def _run_autonomy_reducer(
     state_obj = autonomy.get("state")
     subj = getattr(state_obj, "subject", None) if state_obj is not None else None
     subject = str(subj or "orion")
+
+    # Close the reducer's own fold loop: prefer the reducer's own persisted
+    # output over the V1/graph baseline so state carries turn-to-turn. Falls
+    # back to the V1 baseline exactly as before when nothing is persisted yet
+    # (first-ever turn for this subject, or the store is unreachable).
+    persisted = await asyncio.to_thread(load_autonomy_state_v2, subject)
+    previous_state = persisted if persisted is not None else state_obj
+
+    # Snapshot before-pressures from the SAME baseline the fold actually uses
+    # (persisted V2 state when present, else the V1/graph baseline) -- not from
+    # autonomy["state"] directly, which can silently diverge from previous_state
+    # once persistence is warm and would otherwise desync movement_debug's
+    # before/after comparison from what the reducer really folded.
+    before_pressures = (
+        dict(getattr(previous_state, "drive_pressures", None) or {})
+        if previous_state is not None
+        else None
+    )
+    dominant_drive_before = getattr(previous_state, "dominant_drive", None) if previous_state is not None else None
+
     result = reduce_autonomy_state(
         AutonomyReducerInputV1(
             subject=subject,
-            previous_state=state_obj,
+            previous_state=previous_state,
             evidence=compile_result.evidence,
             action_outcomes=load_action_outcomes(subject=subject),
             now=now,
@@ -2214,6 +2237,28 @@ def _run_autonomy_reducer(
     )
     # Single mint path: reuse what the reducer actually folded.
     ctx["chat_autonomy_tension_debug"] = {"minted": list(result.tensions_minted or [])}
+
+    # Built here (not by the caller) so before/after always compare against the
+    # SAME previous_state the fold actually used -- see before_pressures comment
+    # above for why deriving "before" from autonomy["state"] independently would
+    # silently desync once persistence is warm.
+    ctx["chat_autonomy_movement_debug"] = {
+        "dominant_drive_before": dominant_drive_before,
+        "dominant_drive_after": result.state.dominant_drive,
+        "pressures_before": before_pressures,
+        "pressures_after": dict(result.state.drive_pressures or {}),
+        "new_tensions": list(result.delta.new_tensions or []),
+        "resolved_tensions": list(result.delta.resolved_tensions or []),
+    }
+
+    # Belt-and-suspenders fail-open write-back: save_autonomy_state_v2 already
+    # never raises, but this is a hot chat-turn path, so guard the call site
+    # too rather than depend solely on the callee's contract.
+    try:
+        await asyncio.to_thread(save_autonomy_state_v2, subject, result.state)
+    except Exception as exc:
+        logger.warning("autonomy_state_v2_write_failed subject=%s error=%s", subject, exc)
+
     return result
 
 
@@ -2226,7 +2271,7 @@ def _inject_prior_stance_to_inputs(ctx: Dict[str, Any], inputs: Dict[str, Any]) 
         ctx["prior_stance"] = prior
 
 
-def build_chat_stance_inputs(ctx: Dict[str, Any]) -> Dict[str, Any]:
+async def build_chat_stance_inputs(ctx: Dict[str, Any]) -> Dict[str, Any]:
     # Single unified beliefs call replaces independent producer fan-outs for
     # identity, orionmem, recall, and social lanes.
     from app.substrate_felt_state_reader import hydrate_felt_state_ctx
@@ -2294,28 +2339,29 @@ def build_chat_stance_inputs(ctx: Dict[str, Any]) -> Dict[str, Any]:
 
     if os.getenv("AUTONOMY_STATE_V2_REDUCER_ENABLED", "").strip().lower() == "true":
         try:
-            before_pressures = None
-            if autonomy.get("state") is not None:
-                before_pressures = dict(getattr(autonomy["state"], "drive_pressures", None) or {})
-            v2_result = _run_autonomy_reducer(
+            v2_result = await _run_autonomy_reducer(
                 ctx,
                 autonomy,
                 social=social,
                 social_bridge=social_bridge,
                 reasoning=reasoning,
             )
+            # _run_autonomy_reducer already set chat_autonomy_movement_debug on
+            # ctx itself (before/after pressures compared against the same
+            # previous_state the fold actually used); state/delta are set here.
             ctx["chat_autonomy_state_v2"] = v2_result.state.model_dump(mode="json")
             ctx["chat_autonomy_state_delta"] = v2_result.delta.model_dump(mode="json")
-            ctx["chat_autonomy_movement_debug"] = {
-                "dominant_drive_before": getattr(autonomy.get("state"), "dominant_drive", None),
-                "dominant_drive_after": v2_result.state.dominant_drive,
-                "pressures_before": before_pressures,
-                "pressures_after": dict(v2_result.state.drive_pressures or {}),
-                "new_tensions": list(v2_result.delta.new_tensions or []),
-                "resolved_tensions": list(v2_result.delta.resolved_tensions or []),
-            }
             inputs["autonomy"]["state_v2"] = ctx["chat_autonomy_state_v2"]
             inputs["autonomy"]["delta"] = ctx["chat_autonomy_state_delta"]
+
+            # Built here (ctx key "autonomy_slice", matching what stance_react.j2
+            # reads directly) so it's present BEFORE the stance_react LLM step
+            # renders its prompt. router.py's post-hoc metadata attach (for the
+            # harness-prefix/ThoughtEventV1 path) reads this same ctx key later
+            # in the same turn -- it does not need to recompute it.
+            autonomy_slice = build_autonomy_slice(ctx)
+            if autonomy_slice is not None:
+                ctx["autonomy_slice"] = autonomy_slice.model_dump(mode="json")
         except Exception as exc:
             logger.warning("autonomy_reducer_v2_failed error=%s", exc)
 

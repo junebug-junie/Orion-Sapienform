@@ -10,7 +10,12 @@ from orion.cognition.plan_loader import build_plan_for_verb
 from orion.core.bus.async_service import OrionBusAsync
 from orion.core.bus.bus_schemas import BaseEnvelope, ServiceRef
 from orion.schemas.cortex.schemas import PlanExecutionArgs, PlanExecutionRequest
-from orion.schemas.thought import GroundingCapsuleV1, StanceReactRequestV1, ThoughtEventV1
+from orion.schemas.thought import (
+    AutonomySliceV1,
+    GroundingCapsuleV1,
+    StanceReactRequestV1,
+    ThoughtEventV1,
+)
 from orion.thought.stance_react import (
     apply_stance_react_pipeline,
     build_stance_react_failure_thought,
@@ -204,6 +209,20 @@ def _extract_grounding_capsule(exec_result: dict[str, Any]) -> GroundingCapsuleV
         return None
 
 
+def _extract_autonomy_slice(exec_result: dict[str, Any]) -> AutonomySliceV1 | None:
+    metadata = exec_result.get("metadata")
+    if not isinstance(metadata, dict):
+        return None
+    raw = metadata.get("autonomy_slice")
+    if not isinstance(raw, dict):
+        return None
+    try:
+        return AutonomySliceV1.model_validate(raw)
+    except Exception:
+        logger.warning("autonomy_slice_parse_failed corr=%s", exec_result.get("request_id"))
+        return None
+
+
 async def _maybe_build_mind_coloring(
     request: StanceReactRequestV1,
     *,
@@ -278,6 +297,9 @@ async def run_stance_react(
     capsule = _extract_grounding_capsule(exec_result)
     if capsule is not None:
         enriched = enriched.model_copy(update={"grounding_capsule": capsule})
+    slice_ = _extract_autonomy_slice(exec_result)
+    if slice_ is not None:
+        enriched = enriched.model_copy(update={"autonomy_slice": slice_})
     return enriched
 
 

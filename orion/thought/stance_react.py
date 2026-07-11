@@ -181,6 +181,10 @@ def parse_stance_react_payload(
     # on from result metadata — never authored by the stance LLM. Drop any model-supplied
     # value so a hallucinated capsule cannot masquerade as grounded self-context.
     raw.pop("grounding_capsule", None)
+    # Same treatment for the autonomy slice: it is the V2 reducer's own persisted
+    # drive/tension state, assembled deterministically in cortex-exec and mapped on
+    # from result metadata — never authored by the stance LLM.
+    raw.pop("autonomy_slice", None)
     if correlation_id:
         raw.setdefault("correlation_id", correlation_id)
     if session_id is not None:

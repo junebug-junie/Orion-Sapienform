@@ -33,6 +33,14 @@ RUN node -e "const [maj,min]=process.versions.node.split('.').map(Number); if (m
     && gitnexus --version \
     && npm ls -g --depth=0 context-mode
 
+# Bake the LadybugDB FTS extension into the image (lands in /root/.lbdb).
+# GitNexus query paths are offline-first (load-only): without a pre-installed
+# extension the MCP degrades to "FTS indexes missing" and keyword search over
+# an FTS-built index returns nothing. --verify-only proves a fresh process can
+# LOAD it so a HOME mismatch fails the build instead of silently degrading.
+RUN node /usr/lib/node_modules/gitnexus/scripts/install-duckdb-extension.mjs fts 4294967296 \
+    && node /usr/lib/node_modules/gitnexus/scripts/install-duckdb-extension.mjs fts 4294967296 --verify-only
+
 RUN pip3 install --no-cache-dir --upgrade pip
 
 COPY services/orion-harness-governor/requirements.txt ./requirements.txt

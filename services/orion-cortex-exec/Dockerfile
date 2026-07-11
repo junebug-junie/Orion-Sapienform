@@ -49,6 +49,9 @@ COPY orion /app/orion
 # Substrate config (repair-pressure v2 weights, etc.)
 COPY config/substrate /app/config/substrate
 
+# Autonomy config (signal->drive map for AutonomyStateV2 reducer)
+COPY config/autonomy /app/config/autonomy
+
 # Copy rest of hub service code
 COPY services/orion-cortex-exec /app
 

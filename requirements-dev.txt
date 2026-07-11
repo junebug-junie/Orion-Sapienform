@@ -1,4 +1,6 @@
 pytest>=8.2,<10.0
+# Required by orion-hub (and others) async test suites: @pytest.mark.asyncio
+pytest-asyncio>=0.23,<1.0
 # orion-hub/tests/test_signals_inspect_api → Orion bus client (import chain needs redis + PyYAML)
 redis[hiredis]>=5.0.7,<6
 PyYAML>=6.0.1,<7.0.0

@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import time
 from collections import defaultdict
 from typing import Any, Dict, Optional, Set
 
@@ -15,11 +16,22 @@ HARNESS_RUN_STEP_KIND = "harness.run.step.v1"
 
 
 class HarnessStepRelay:
-    def __init__(self, *, channel: str) -> None:
+    # Sweep at most this often (cheap amortized cost even under high step volume).
+    _SWEEP_INTERVAL_SEC = 300.0
+
+    def __init__(self, *, channel: str, last_seen_ttl_sec: float = 7200.0) -> None:
         self.channel = channel
         self._bus: Optional[OrionBusAsync] = None
         self._task: Optional[asyncio.Task] = None
         self._queues: Dict[str, Set[asyncio.Queue]] = defaultdict(set)
+        self._last_seen: Dict[str, float] = {}
+        # Safety-net TTL: _dispatch_step writes an entry for EVERY correlation_id this
+        # process observes on the shared step channel, whether or not this process is the
+        # one running execute_unified_turn (and therefore calling forget()) for that turn
+        # (e.g. a sibling hub replica handling the same broadcast). Without this, entries
+        # for turns this instance never explicitly forgets would grow unbounded.
+        self._last_seen_ttl_sec = max(60.0, float(last_seen_ttl_sec))
+        self._last_sweep_monotonic = 0.0
 
     async def start(self, bus: OrionBusAsync) -> None:
         if self._task and not self._task.done():
@@ -44,6 +56,27 @@ class HarnessStepRelay:
         self._queues.get(cid, set()).discard(queue)
         if cid in self._queues and not self._queues[cid]:
             self._queues.pop(cid, None)
+
+    def forget(self, correlation_id: str) -> None:
+        """Drop liveness bookkeeping for a finished correlation_id."""
+        self._last_seen.pop(str(correlation_id), None)
+
+    def seen_recently(self, correlation_id: str, *, within_sec: float) -> bool:
+        """True if a harness step for this correlation_id was observed within `within_sec`."""
+        ts = self._last_seen.get(str(correlation_id))
+        if ts is None:
+            return False
+        return (time.monotonic() - ts) <= within_sec
+
+    def _sweep_last_seen(self, *, now: float) -> None:
+        """Opportunistically evict liveness entries older than the TTL. Cheap: only scans
+        the dict at most once per _SWEEP_INTERVAL_SEC, not on every dispatch."""
+        if now - self._last_sweep_monotonic < self._SWEEP_INTERVAL_SEC:
+            return
+        self._last_sweep_monotonic = now
+        stale = [cid for cid, ts in self._last_seen.items() if now - ts > self._last_seen_ttl_sec]
+        for cid in stale:
+            self._last_seen.pop(cid, None)
 
     async def _run(self) -> None:
         if not self._bus:
@@ -78,6 +111,9 @@ class HarnessStepRelay:
 
     async def _dispatch_step(self, step_event: HarnessRunStepV1) -> None:
         cid = str(step_event.correlation_id)
+        now = time.monotonic()
+        self._last_seen[cid] = now
+        self._sweep_last_seen(now=now)
         queues = self._queues.get(cid)
         if not queues:
             return

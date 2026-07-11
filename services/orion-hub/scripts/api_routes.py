@@ -2374,7 +2374,7 @@ async def handle_chat_request(
                 "phase": "config",
                 "error": "harness_governor_disabled",
             }
-        from .main import bus
+        from .main import bus, harness_step_relay, rpc_bus
         from orion.hub.turn_orchestrator import execute_unified_turn
 
         frames = await execute_unified_turn(
@@ -2383,6 +2383,8 @@ async def handle_chat_request(
             session_id=session_id,
             user_message=user_prompt,
             payload=payload,
+            harness_rpc_bus=rpc_bus or bus,
+            harness_step_relay=harness_step_relay,
         )
         return frames[-1] if frames else {
             "type": "turn_error",

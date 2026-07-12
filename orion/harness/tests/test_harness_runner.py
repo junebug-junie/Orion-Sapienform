@@ -106,6 +106,33 @@ async def test_harness_runner_does_not_promote_fcc_api_error_to_partial_draft() 
 
 
 @pytest.mark.asyncio
+async def test_harness_runner_does_not_promote_unsafe_partial_stream() -> None:
+    async def _partial_timeout_runner(**_: Any) -> AsyncIterator[dict[str, Any]]:
+        yield {
+            "type": "error",
+            "error": "fcc partial stream ran without a complete Claude event",
+            "error_code": "fcc_partial_stream_timeout",
+            "llm_response": "(of course)\n(of course)\n(of course)",
+            "partial_unsafe": True,
+        }
+
+    request = HarnessRunRequestV1(
+        correlation_id="c-partial-timeout",
+        thought_event=make_thought(),
+        user_message="hello",
+        permissions=ContextExecPermissionV1(),
+        answer_contract=AnswerContract(),
+    )
+    runner = HarnessRunner(AsyncMock(), fcc_runner=_partial_timeout_runner)
+    result = await runner.run(request)
+
+    assert result.draft_text == ""
+    assert result.draft_molecule is None
+    assert result.compliance_verdict == "failed"
+    assert result.grounding_status == "fcc_partial_stream_timeout"
+
+
+@pytest.mark.asyncio
 async def test_harness_runner_collects_grammar_receipts_and_draft() -> None:
     thought = make_thought()
     request = HarnessRunRequestV1(

@@ -30,6 +30,8 @@ logger = logging.getLogger("orion.harness.fcc_motor")
 DEFAULT_STREAM_READ_LIMIT = 8 * 1024 * 1024
 DEFAULT_FCC_MODEL_LABEL = "MODEL_SONNET"
 DEFAULT_STREAM_IDLE_TIMEOUT_SEC = 180.0
+DEFAULT_PARTIAL_STREAM_TIMEOUT_SEC = 90.0
+DEFAULT_PARTIAL_PROGRESS_INTERVAL_SEC = 15.0
 NO_THINKING_GATEWAY_MODEL_PREFIX = "claude-3-freecc-no-thinking/"
 
 # Live FCC claude subprocesses keyed by correlation_id (harness cancel path).
@@ -332,11 +334,109 @@ def _stream_idle_timeout_sec(turn_timeout_sec: float) -> float:
     return max(1.0, min(float(turn_timeout_sec), configured))
 
 
+def _float_env_with_default(key: str, default: float) -> float:
+    raw = str(os.environ.get(key) or "").strip()
+    if not raw:
+        return default
+    try:
+        return float(raw)
+    except ValueError:
+        logger.warning("invalid %s=%r; using default %.1fs", key, raw, default)
+        return default
+
+
+def _partial_stream_timeout_sec(turn_timeout_sec: float) -> float:
+    configured = _float_env_with_default(
+        "HARNESS_FCC_PARTIAL_STREAM_TIMEOUT_SEC",
+        DEFAULT_PARTIAL_STREAM_TIMEOUT_SEC,
+    )
+    if configured <= 0:
+        return max(1.0, float(turn_timeout_sec))
+    return max(1.0, min(float(turn_timeout_sec), configured))
+
+
+def _partial_progress_interval_sec() -> float:
+    configured = _float_env_with_default(
+        "HARNESS_FCC_PARTIAL_PROGRESS_INTERVAL_SEC",
+        DEFAULT_PARTIAL_PROGRESS_INTERVAL_SEC,
+    )
+    if configured <= 0:
+        return 0.0
+    return max(1.0, configured)
+
+
+def _include_partial_messages() -> bool:
+    raw = os.environ.get("HARNESS_FCC_INCLUDE_PARTIAL_MESSAGES")
+    if raw is None or not raw.strip():
+        return True
+    return not _env_falsey("HARNESS_FCC_INCLUDE_PARTIAL_MESSAGES")
+
+
+def _inner_stream_event(event: Dict[str, Any]) -> Dict[str, Any]:
+    if event.get("type") != "stream_event":
+        return {}
+    inner = event.get("event")
+    return inner if isinstance(inner, dict) else {}
+
+
+def _partial_text_delta(event: Dict[str, Any]) -> str:
+    inner = _inner_stream_event(event)
+    if inner.get("type") != "content_block_delta":
+        return ""
+    delta = inner.get("delta")
+    if isinstance(delta, dict) and delta.get("type") == "text_delta":
+        text = delta.get("text")
+        return text if isinstance(text, str) else ""
+    return ""
+
+
+def _stream_event_label(event: Dict[str, Any]) -> str:
+    inner = _inner_stream_event(event)
+    if not inner:
+        return str(event.get("type") or "unknown")
+    label = str(inner.get("type") or "stream_event")
+    if label == "content_block_delta":
+        delta = inner.get("delta")
+        if isinstance(delta, dict) and delta.get("type"):
+            return f"{label}.{delta.get('type')}"
+    if label == "content_block_start":
+        block = inner.get("content_block")
+        if isinstance(block, dict) and block.get("type"):
+            return f"{label}.{block.get('type')}"
+    return label
+
+
+def build_partial_progress_step(
+    *,
+    elapsed_sec: float,
+    text_chars: int,
+    preview: str,
+    last_event_type: str,
+    timeout_sec: float,
+) -> Dict[str, Any]:
+    return build_step_frame(
+        {
+            "type": "system",
+            "subtype": "fcc_partial_stream_progress",
+            "elapsed_sec": round(elapsed_sec, 3),
+            "text_chars": text_chars,
+            "preview": preview[-300:],
+            "last_event_type": last_event_type,
+            "partial_stream_timeout_sec": timeout_sec,
+        }
+    )
+
+
 def _tool_names_from_stream_event(event: Dict[str, Any]) -> list[str]:
     message = event.get("message")
-    if not isinstance(message, dict):
-        return []
-    content = message.get("content")
+    if isinstance(message, dict):
+        content = message.get("content")
+    else:
+        inner = _inner_stream_event(event)
+        if inner.get("type") != "content_block_start":
+            return []
+        block = inner.get("content_block")
+        content = [block] if isinstance(block, dict) else []
     if not isinstance(content, list):
         return []
     names: list[str] = []
@@ -506,6 +606,8 @@ async def run_fcc_turn(
         "--model",
         model_id,
     ]
+    if _include_partial_messages():
+        argv.append("--include-partial-messages")
     if mcp_config_path is not None:
         extra_allowed_tools: Optional[List[str]] = None
         if _env_truthy("HARNESS_FCC_CONTEXT_MODE_HOOKS_ENABLED"):
@@ -530,9 +632,14 @@ async def run_fcc_turn(
     ceiling_chars = max_context_chars()
     context_nudge_sent = False
     idle_timeout_sec = _stream_idle_timeout_sec(timeout_sec)
+    partial_timeout_sec = _partial_stream_timeout_sec(timeout_sec)
+    partial_progress_interval_sec = _partial_progress_interval_sec()
     steps_seen = 0
     last_event_type = "none"
     last_tool_name = "none"
+    partial_started_at: Optional[float] = None
+    last_partial_progress_at = 0.0
+    partial_chars = 0
     if stream_read_limit < 65536:
         stream_read_limit = 65536
 
@@ -586,12 +693,65 @@ async def run_fcc_turn(
                 continue
 
             steps_seen += 1
-            last_event_type = str(parsed.get("type") or "unknown")
+            now = time.monotonic()
+            last_event_type = _stream_event_label(parsed)
             tool_names = _tool_names_from_stream_event(parsed)
             if tool_names:
                 last_tool_name = tool_names[-1]
 
-            step = build_step_frame(parsed)
+            delta_text = _partial_text_delta(parsed)
+            if delta_text:
+                accumulated += delta_text
+                partial_chars += len(delta_text)
+                if partial_started_at is None:
+                    partial_started_at = now
+                    last_partial_progress_at = now
+                elapsed_partial = now - partial_started_at
+                if elapsed_partial >= partial_timeout_sec:
+                    proc.kill()
+                    yield {
+                        "type": "error",
+                        "error": (
+                            f"fcc partial stream ran for {elapsed_partial:.1f}s without a "
+                            f"complete Claude event (turn_timeout={timeout_sec:.1f}s, "
+                            f"steps={steps_seen}, partial_chars={partial_chars}, "
+                            f"last_event={last_event_type}, last_tool={last_tool_name})"
+                        ),
+                        "error_code": "fcc_partial_stream_timeout",
+                        "last_event_type": last_event_type,
+                        "last_tool": last_tool_name,
+                        "steps_seen": steps_seen,
+                        "partial_chars": partial_chars,
+                        "partial_unsafe": True,
+                        "llm_response": accumulated,
+                    }
+                    return
+
+                should_publish_partial = (
+                    partial_progress_interval_sec > 0
+                    and (now - last_partial_progress_at) >= partial_progress_interval_sec
+                )
+                if not should_publish_partial:
+                    continue
+                last_partial_progress_at = now
+                step = build_partial_progress_step(
+                    elapsed_sec=elapsed_partial,
+                    text_chars=partial_chars,
+                    preview=accumulated,
+                    last_event_type=last_event_type,
+                    timeout_sec=partial_timeout_sec,
+                )
+            else:
+                step = build_step_frame(parsed)
+                inner = _inner_stream_event(parsed)
+                inner_type = str(inner.get("type") or "")
+                if parsed.get("type") in {"assistant", "result"} or inner_type in {
+                    "content_block_stop",
+                    "message_stop",
+                }:
+                    partial_started_at = None
+                    partial_chars = 0
+
             step = annotate_harness_step(step, accumulated_chars=budget_chars, max_chars=ceiling_chars)
             budget_chars += measure_step_payload_chars(step)
             yield {"type": "step", "step": step}

@@ -140,6 +140,98 @@ async def test_run_fcc_turn_surfaces_stream_idle_timeout(
 
 
 @pytest.mark.asyncio
+async def test_run_fcc_turn_enables_and_accumulates_partial_stream_events(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    captured_argv: list = []
+    proc = _FakeProc(
+        [
+            '{"type":"system","subtype":"init"}',
+            '{"type":"stream_event","event":{"type":"message_start","message":{"id":"m1"}}}',
+            '{"type":"stream_event","event":{"type":"content_block_delta","delta":{"type":"text_delta","text":"Hel"}}}',
+            '{"type":"stream_event","event":{"type":"content_block_delta","delta":{"type":"text_delta","text":"lo"}}}',
+            '{"type":"stream_event","event":{"type":"content_block_stop","index":0}}',
+            '{"type":"stream_event","event":{"type":"message_stop"}}',
+        ]
+    )
+
+    async def fake_exec(*args: Any, **kwargs: Any) -> _FakeProc:
+        captured_argv.extend(args)
+        return proc
+
+    monkeypatch.setattr(asyncio, "create_subprocess_exec", fake_exec)
+    monkeypatch.setattr(motor, "_preflight_fcc_server", lambda *a, **k: None)
+    monkeypatch.setattr(motor, "load_fcc_env", _fake_fcc_env)
+    monkeypatch.setattr(motor, "_maybe_render_mcp_config", lambda **k: None)
+    monkeypatch.setenv("HARNESS_FCC_PARTIAL_PROGRESS_INTERVAL_SEC", "0")
+
+    events = []
+    async for ev in motor.run_fcc_turn(
+        prompt="hello",
+        fcc_model_label="MODEL_HAIKU",
+        correlation_id="corr-partials",
+        workspace="/tmp",
+        fcc_server_url="http://127.0.0.1:8082",
+        auth_token="tok",
+        claude_bin="claude",
+        timeout_sec=30.0,
+    ):
+        events.append(ev)
+
+    assert "--include-partial-messages" in captured_argv
+    assert events[-1]["type"] == "final"
+    assert events[-1]["llm_response"] == "Hello"
+
+
+@pytest.mark.asyncio
+async def test_run_fcc_turn_partial_stream_timeout_is_unsafe(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    proc = _FakeProc(
+        [
+            '{"type":"system","subtype":"init"}',
+            '{"type":"stream_event","event":{"type":"content_block_delta","delta":{"type":"text_delta","text":"loop"}}}',
+            '{"type":"stream_event","event":{"type":"content_block_delta","delta":{"type":"text_delta","text":"ing"}}}',
+        ]
+    )
+    clock = {"value": 0.0}
+
+    def fake_monotonic() -> float:
+        clock["value"] += 2.0
+        return clock["value"]
+
+    async def fake_exec(*args: Any, **kwargs: Any) -> _FakeProc:
+        return proc
+
+    monkeypatch.setattr(asyncio, "create_subprocess_exec", fake_exec)
+    monkeypatch.setattr(motor.time, "monotonic", fake_monotonic)
+    monkeypatch.setattr(motor, "_preflight_fcc_server", lambda *a, **k: None)
+    monkeypatch.setattr(motor, "load_fcc_env", _fake_fcc_env)
+    monkeypatch.setattr(motor, "_maybe_render_mcp_config", lambda **k: None)
+    monkeypatch.setenv("HARNESS_FCC_PARTIAL_STREAM_TIMEOUT_SEC", "0.01")
+    monkeypatch.setenv("HARNESS_FCC_PARTIAL_PROGRESS_INTERVAL_SEC", "0")
+
+    events = []
+    async for ev in motor.run_fcc_turn(
+        prompt="hello",
+        fcc_model_label="MODEL_HAIKU",
+        correlation_id="corr-partial-timeout",
+        workspace="/tmp",
+        fcc_server_url="http://127.0.0.1:8082",
+        auth_token="tok",
+        claude_bin="claude",
+        timeout_sec=30.0,
+    ):
+        events.append(ev)
+
+    assert events[-1]["type"] == "error"
+    assert events[-1]["error_code"] == "fcc_partial_stream_timeout"
+    assert events[-1]["partial_unsafe"] is True
+    assert events[-1]["llm_response"] == "looping"
+    assert proc.killed is True
+
+
+@pytest.mark.asyncio
 async def test_run_fcc_turn_adds_mcp_config_when_enabled(monkeypatch: pytest.MonkeyPatch) -> None:
     captured_argv: list = []
 

@@ -22,10 +22,26 @@ class Settings(BaseSettings):
         False,
         alias="ENABLE_TRANSPORT_FIELD_DIGESTION",
     )
-    enable_idle_tick: bool = Field(False, alias="FIELD_DIGESTER_IDLE_TICK_ENABLED")
+    enable_idle_tick: bool = Field(True, alias="FIELD_DIGESTER_IDLE_TICK_ENABLED")
     field_state_retention_hours: float = Field(72.0, alias="FIELD_STATE_RETENTION_HOURS")
     field_state_prune_interval_sec: float = Field(3600.0, alias="FIELD_STATE_PRUNE_INTERVAL_SEC")
+    field_applied_deltas_prune_min_age_hours: float = Field(
+        1.0, alias="FIELD_APPLIED_DELTAS_PRUNE_MIN_AGE_HOURS"
+    )
     log_level: str = Field("INFO", alias="LOG_LEVEL")
+
+    # Health monitor -> orion-notify attention alerts. Edge-triggered (fires only
+    # on healthy->unhealthy transitions), not polled-and-spammed.
+    health_check_interval_sec: float = Field(900.0, alias="FIELD_DIGESTER_HEALTH_CHECK_INTERVAL_SEC")
+    field_state_stall_multiplier: float = Field(1.5, alias="FIELD_STATE_STALL_MULTIPLIER")
+    applied_deltas_alert_row_count: int = Field(
+        5_000_000, alias="FIELD_APPLIED_DELTAS_ALERT_ROW_COUNT"
+    )
+    # Default set with real headroom above the observed conjourney baseline
+    # (~37.5GB as of 2026-07-12) -- not a round number picked in the abstract.
+    db_size_alert_gb: float = Field(60.0, alias="FIELD_DIGESTER_DB_SIZE_ALERT_GB")
+    notify_base_url: str = Field("http://orion-athena-notify:7140", alias="NOTIFY_BASE_URL")
+    notify_api_token: str | None = Field(None, alias="NOTIFY_API_TOKEN")
 
 
 _settings: Settings | None = None

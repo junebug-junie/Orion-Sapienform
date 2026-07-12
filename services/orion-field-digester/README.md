@@ -34,6 +34,11 @@ A background health monitor (`FIELD_DIGESTER_HEALTH_CHECK_INTERVAL_SEC`, default
 
 This whole chain was originally left disabled after a prior unbounded-Postgres-growth incident on this host; the guardrails above (mirroring the existing `receipt_pruner.py` pattern in `orion-substrate-runtime`) are what made re-enabling it safe.
 
+## `capability_provenance` vs. attention salience (Phase 4, 2026-07-12)
+
+`FieldStateV1.capability_provenance` records which edge source contributed the largest weighted amount to each capability channel this tick (`app/digestion/diffusion.py`) — a magnitude-comparison primitive, distinct from `orion-attention-runtime`'s salience scoring (which factors in novelty/urgency/confidence too, threshold-gated). Cross-checked against live data
+(`docs/notes/2026-07-12-phase4-attention-provenance-crosscheck.md`): they corroborate on structurally-obvious nodes (100% agreement for the two single-source edges into `capability:transport`/`capability:graph`) and diverge in an explainable way on contested ones (`node:atlas` wins `capability:llm_inference`'s provenance 81.7% of ticks but only clears attention's top-5 salience list 52.9% of the time — expected, since salience is a stricter, multi-factor, capped signal, not the same question as "who contributed most"). Verdict: keep both, do not unify — they answer different questions by design.
+
 ## Environment
 
 | Variable | Default | Description |

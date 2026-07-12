@@ -163,3 +163,20 @@ class AttentionRuntimeStore:
             if deleted < batch_size:
                 break
         return total_deleted
+
+    def attention_frame_oldest_age_hours(self) -> float | None:
+        # Keys on created_at -- the same column PRUNE_ATTENTION_FRAMES_SQL's cutoff
+        # filters on -- so staleness detection can never disagree with the pruner
+        # about which column defines "age".
+        with self._engine.connect() as conn:
+            row = (
+                conn.execute(text("SELECT min(created_at) AS oldest FROM substrate_attention_frames"))
+                .mappings()
+                .first()
+            )
+        oldest = row["oldest"] if row else None
+        if oldest is None:
+            return None
+        if oldest.tzinfo is None:
+            oldest = oldest.replace(tzinfo=timezone.utc)
+        return (datetime.now(timezone.utc) - oldest).total_seconds() / 3600.0

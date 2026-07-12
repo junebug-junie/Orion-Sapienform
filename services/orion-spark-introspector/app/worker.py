@@ -20,7 +20,7 @@ from orion.core.bus.bus_schemas import BaseEnvelope, Envelope, ServiceRef
 from orion.core.bus.codec import OrionCodec
 from orion.core.bus.work_queue import RedisStreamWorkQueue
 from orion.schemas.platform import CoreEventV1
-from orion.schemas.self_state import SelfStateDimensionV1, SelfStateV1
+from orion.schemas.self_state import AttentionTargetSummaryV1, SelfStateDimensionV1, SelfStateV1
 from orion.schemas.telemetry.cognition_trace import CognitionTracePayload
 from orion.schemas.telemetry.inner_state import InnerStateFeaturesV1
 from orion.schemas.telemetry.phi_encoder import PhiIntrinsicRewardV1
@@ -346,6 +346,51 @@ def _golden_phi_overrides(
         "energy": round(min(1.0, abs(float(delta_phi))), 4),
         "novelty": round(min(1.0, float(recon_error) / scale), 4),
     }
+
+
+# 2026-07-12, inner-state unification Phase 2: node-attributed phi. These are
+# thin, synthetic subsystem aggregates in FieldStateV1.node_vectors (1 derived
+# channel each, e.g. prediction_error) -- not physical hardware, and never a
+# meaningful answer to "which body part is stressed." Confirmed live: a
+# target_kind="system" entry (field:recent_perturbations) also frequently wins
+# the #1 salience slot in dominant_attention_target_details (attention's
+# dominant_targets is salience-sorted across node/capability/system kinds
+# together, orion/attention/field_attention/builder.py) -- excluding only the
+# two pseudo-nodes is not enough; target_kind must be filtered to "node" too,
+# or dominant_node would frequently report a perturbation-count aggregate
+# instead of a hardware node.
+_SYNTHETIC_PSEUDO_NODES: frozenset[str] = frozenset(
+    {"node:substrate.execution", "node:substrate.transport"}
+)
+# Known limitation (code review, 2026-07-12): this is a maintained blacklist
+# of the two pseudo-nodes known to exist in config/field/orion_field_topology
+# .v1.yaml today, not a whitelist against config/biometrics/node_catalog.yaml
+# (the authoritative real-hardware-node list: atlas/athena/circe/prometheus).
+# A future pseudo-node added to the topology would silently evade this filter
+# until added here too. (One candidate was investigated and ruled out: orion-
+# substrate-runtime's harness_closure:<uuid> prediction-error nodes write to
+# the cognitive-substrate graph store (ConceptNodeV1/ upsert_node) -- a
+# separate subsystem orion-field-digester never reads from, so they can never
+# reach FieldStateV1.node_vectors or this filter in the first place.)
+# Switching to a NodeCatalog whitelist would need a new config mount + setting
+# on this service (it has neither today) -- a real fix, deliberately not done
+# here to keep this phase scoped.
+
+
+def _dominant_hardware_node(
+    details: list[AttentionTargetSummaryV1],
+) -> tuple[Optional[str], Optional[str]]:
+    """First real-hardware-node entry in SelfStateV1.dominant_attention_target_details
+    (already salience-ordered) -- (target_id, reason), or (None, None) if no
+    qualifying node is present this tick.
+    """
+    for detail in details:
+        if detail.target_kind != "node":
+            continue
+        if detail.target_id in _SYNTHETIC_PSEUDO_NODES:
+            continue
+        return detail.target_id, detail.reason
+    return None, None
 
 
 def _get_phi_stats() -> Dict[str, float]:
@@ -2643,6 +2688,9 @@ async def handle_self_state(env: BaseEnvelope) -> None:
                         ),
                     }
                     _PREV_PHI = phi_now
+                    dominant_node, dominant_node_reason = _dominant_hardware_node(
+                        ss.dominant_attention_target_details
+                    )
                     reward = PhiIntrinsicRewardV1(
                         generated_at=inner.generated_at,
                         self_state_id=inner.self_state_id,
@@ -2655,6 +2703,8 @@ async def handle_self_state(env: BaseEnvelope) -> None:
                         latent=out.latent,
                         attribution_top=out.attribution_top,
                         grammar_truth_degraded=inner.grammar_truth_degraded,
+                        dominant_node=dominant_node,
+                        dominant_node_reason=dominant_node_reason,
                     )
                     if _pub_bus and _pub_bus.enabled:
                         try:

@@ -23,6 +23,7 @@ from orion.self_state.prediction import (
     compute_prediction_errors,
 )
 
+from app.health_monitor import HealthMonitor
 from app.settings import get_settings
 from app.store import SelfStateRuntimeStore
 
@@ -49,6 +50,7 @@ class SelfStateRuntimeWorker:
         self._settings = get_settings()
         self._store = SelfStateRuntimeStore(self._settings.postgres_uri)
         self._policy = load_self_state_policy(Path(self._settings.self_state_policy_path))
+        self._health_monitor = HealthMonitor(self._store, self._settings)
         self._stop = asyncio.Event()
         self._tick_count = 0
         # Latest embodied town perception cached off the bus (best-effort,
@@ -64,6 +66,7 @@ class SelfStateRuntimeWorker:
     async def start(self) -> None:
         asyncio.create_task(self._poll_loop(), name="self-state-runtime-poll")
         asyncio.create_task(self._prune_loop(), name="self-state-runtime-prune")
+        asyncio.create_task(self._health_loop(), name="self-state-runtime-health")
         # Gated + fail-open: only subscribe to town perception when enabled and
         # the publisher bus is live.
         if (
@@ -118,6 +121,22 @@ class SelfStateRuntimeWorker:
                 await asyncio.wait_for(
                     self._stop.wait(),
                     timeout=float(self._settings.self_state_prune_interval_sec),
+                )
+            except asyncio.TimeoutError:
+                continue
+            except asyncio.CancelledError:
+                break
+
+    async def _health_loop(self) -> None:
+        while not self._stop.is_set():
+            try:
+                await asyncio.to_thread(self._health_monitor.run_tick)
+            except Exception:
+                logger.exception("self_state_health_check_failed")
+            try:
+                await asyncio.wait_for(
+                    self._stop.wait(),
+                    timeout=float(self._settings.health_check_interval_sec),
                 )
             except asyncio.TimeoutError:
                 continue

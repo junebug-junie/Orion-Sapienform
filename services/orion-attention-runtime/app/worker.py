@@ -7,6 +7,7 @@ from pathlib import Path
 from orion.attention.field_attention.builder import build_attention_frame
 from orion.attention.field_attention.policy import load_attention_policy
 
+from app.health_monitor import HealthMonitor
 from app.settings import get_settings
 from app.store import AttentionRuntimeStore
 
@@ -18,11 +19,13 @@ class AttentionRuntimeWorker:
         self._settings = get_settings()
         self._store = AttentionRuntimeStore(self._settings.postgres_uri)
         self._policy = load_attention_policy(Path(self._settings.attention_policy_path))
+        self._health_monitor = HealthMonitor(self._store, self._settings)
         self._stop = asyncio.Event()
 
     async def start(self) -> None:
         asyncio.create_task(self._poll_loop(), name="attention-runtime-poll")
         asyncio.create_task(self._prune_loop(), name="attention-runtime-prune")
+        asyncio.create_task(self._health_loop(), name="attention-runtime-health")
 
     async def stop(self) -> None:
         self._stop.set()
@@ -63,6 +66,22 @@ class AttentionRuntimeWorker:
                 await asyncio.wait_for(
                     self._stop.wait(),
                     timeout=float(self._settings.attention_frame_prune_interval_sec),
+                )
+            except asyncio.TimeoutError:
+                continue
+            except asyncio.CancelledError:
+                break
+
+    async def _health_loop(self) -> None:
+        while not self._stop.is_set():
+            try:
+                await asyncio.to_thread(self._health_monitor.run_tick)
+            except Exception:
+                logger.exception("attention_runtime_health_check_failed")
+            try:
+                await asyncio.wait_for(
+                    self._stop.wait(),
+                    timeout=float(self._settings.health_check_interval_sec),
                 )
             except asyncio.TimeoutError:
                 continue

@@ -21,7 +21,6 @@ class SelfStateDimensionV1(BaseModel):
         "continuity_pressure",
         "introspection_pressure",
         "social_pressure",
-        "policy_pressure",
         "transport_integrity",
     ]
 

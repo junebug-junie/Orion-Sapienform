@@ -10,7 +10,6 @@ PRESSURE_DIMENSIONS = frozenset({
     "reliability_pressure",
     "field_intensity",
     "uncertainty",
-    "policy_pressure",
 })
 
 

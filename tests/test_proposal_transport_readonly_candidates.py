@@ -27,7 +27,6 @@ def _self_state() -> SelfStateV1:
             "continuity_pressure",
             "introspection_pressure",
             "social_pressure",
-            "policy_pressure",
         )
     }
     dims["reliability_pressure"] = SelfStateDimensionV1(

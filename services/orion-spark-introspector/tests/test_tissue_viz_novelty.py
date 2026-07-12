@@ -53,7 +53,6 @@ def _self_state_payload(*, coherence: float = 1.0) -> dict:
             ("social_pressure", 0.0),
             ("introspection_pressure", 0.0),
             ("uncertainty", 0.0),
-            ("policy_pressure", 0.0),
             ("transport_integrity", 1.0),
         )
     }

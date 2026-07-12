@@ -211,3 +211,37 @@ Endogenous tensions reference self-state dimension ids, not raw private traces. 
 - Not adding new drives beyond the six canonical keys.
 - Not letting endogenous wants trigger effectful/external capabilities — they enter the same readonly-gated loop as any other want.
 - No LLM in the origination path; it is deterministic substrate math.
+
+## Measurement gate verdict (2026-07-08) — NO-GO
+
+Step 0 (the measurement gate this spec is blocked on) was run against 120 days of
+live data with `scripts/analysis/measure_autonomy_gate.py`. Full raw output lives
+at `/tmp/autonomy-gate/report.md` (not durable — this section is the committed
+record). Window: 2026-03-10T01:35:22Z → 2026-07-08T01:35:22Z, 300s buckets.
+
+**Both required verdicts came back NO-GO:**
+
+- **(a) Endogenous drift during exogenous silence — NO-GO.** Rule (a) requires
+  `silent median_abs_trajectory >= 0.03`. Measured: **`median_abs_trajectory` =
+  0.0000** (silent buckets, n=127,577 rows; busy buckets also 0.0000, n=1,033).
+  This is the figure the GO/NO-GO rule actually gates on, and it is `0.0000`
+  against a `>= 0.03` threshold — not close. (Note: `mean_abs_trajectory` was
+  0.0026 silent / 0.0084 busy — a different, non-gating statistic in the same
+  table; do not substitute it for the median when re-reading this verdict.)
+- **(b) Internal economy (drive co-activation + resource pressure) — NO-GO.**
+  Rule (b) requires `coactivation_frac >= 0.10` **and** `resource_pressure frac
+  >= 0.3` itself `>= 0.05`. Measured: **`coactivation_frac` = 0.0004** (444,943
+  `DriveAudit` rows; concurrent-active histogram `0:444734, 1:10, 2:20, 3:31,
+  4:77, 5:13, 6:58`) against a `>= 0.10` threshold. (The second half of rule (b),
+  `resource_pressure frac >= 0.3`, measured `1.0000` and would have passed on
+  its own — the verdict fails solely on the co-activation condition, which is
+  an AND.)
+
+**Consequence:** per the "Build sequence & gate" section above, Step 0(a) failing
+means the origination signal is inert as designed — do not write code for this
+spec (Step 1) until the gate passes, or until the mechanism is redesigned to
+source dynamics from unresolved-pressure persistence instead of self-state
+drift. Step 4 (internal economy) is also blocked by 0(b)'s failure. This spec
+remains design-only; `orion/autonomy/endogenous_origination.py` exists as a
+pre-gate implementation stub only (see its module docstring for current status)
+and must not be treated as adopted.

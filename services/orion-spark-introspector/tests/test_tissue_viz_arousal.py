@@ -1,13 +1,19 @@
 from __future__ import annotations
 
 from datetime import datetime, timezone
+from pathlib import Path
 from uuid import uuid4
 
 import pytest
 
 import app.worker as worker
+from orion.attention.field_attention.builder import build_attention_frame
+from orion.attention.field_attention.policy import load_attention_policy
 from orion.core.bus.bus_schemas import BaseEnvelope, ServiceRef
+from orion.schemas.field_state import FieldStateV1
 from orion.schemas.self_state import SelfStateDimensionV1, SelfStateV1
+from orion.self_state.builder import build_self_state
+from orion.self_state.policy import load_self_state_policy
 
 _NOW = datetime(2026, 7, 10, 12, 0, tzinfo=timezone.utc)
 
@@ -48,7 +54,6 @@ def _self_state_payload(
             ("social_pressure", 0.0),
             ("introspection_pressure", 0.0),
             ("uncertainty", 0.0),
-            ("policy_pressure", 0.0),
             ("transport_integrity", 1.0),
         )
     }
@@ -292,4 +297,38 @@ def test_arousal_still_zero_when_no_execution_load_evidence_and_score_saturated(
         _self_state_payload(resource_dim=resource_dim, execution_dim=execution_dim)
     )
     phi = worker._phi_from_self_state(ss)
+    assert phi["energy"] == 0.0
+
+
+def test_hardware_bypass_survives_real_build_self_state_pipeline() -> None:
+    """End-to-end regression guard (2026-07-12, found by code review): the
+    tests above hand-construct dominant_evidence directly, which doesn't
+    catch a break in the real producer. This test runs the actual
+    orion-self-state-runtime pipeline (build_self_state) and confirms its
+    output still lets _hardware_resource_pressure/_execution_load_pressure
+    find real hardware evidence -- proving evidence_channel_map actually
+    closes the loop, not just that a hand-written fixture says so."""
+    repo_root = Path(__file__).resolve().parents[3]
+    attention_policy = load_attention_policy(
+        repo_root / "config" / "attention" / "field_attention_policy.v1.yaml"
+    )
+    self_state_policy = load_self_state_policy(
+        repo_root / "config" / "self_state" / "self_state_policy.v1.yaml"
+    )
+    now = datetime(2026, 7, 12, 12, 0, tzinfo=timezone.utc)
+    field = FieldStateV1(
+        generated_at=now,
+        tick_id="tick_e2e_hardware_bypass",
+        node_vectors={"node:circe": {"gpu_pressure": 1.0}},
+        capability_vectors={"capability:llm_inference": {"pressure": 0.50}},
+    )
+    attention = build_attention_frame(field=field, policy=attention_policy, now=now)
+    ss = build_self_state(field=field, attention=attention, policy=self_state_policy, now=now)
+
+    hardware_pressure = worker._hardware_resource_pressure(ss.dimensions.get("resource_pressure"))
+    assert hardware_pressure == 1.0
+    phi = worker._phi_from_self_state(ss)
+    # resource_cap = 1 - 1.0 (real hardware pressure) = 0.0, so energy is
+    # capped by the real (saturated) hardware signal, not silently falling
+    # back to a possibly-different raw dimension score.
     assert phi["energy"] == 0.0

@@ -65,10 +65,15 @@ def test_stabilizers_in_stabilizing_factors() -> None:
 
 def test_pressure_channels_in_unresolved_pressures() -> None:
     state = _built_state()
-    assert "execution_load→execution_pressure" in state.unresolved_pressures
     assert "execution_pressure→execution_pressure" in state.unresolved_pressures
-    assert "cpu_pressure→resource_pressure" in state.unresolved_pressures
     assert "pressure→resource_pressure" in state.unresolved_pressures
+    # Phase 1 double-counting fix regression guard: raw node-level
+    # execution_load/cpu_pressure no longer have a channel_dimension_map
+    # entry (config/self_state/self_state_policy.v1.yaml), so they can never
+    # be flagged as unresolved anymore — their signal reaches dimensions only
+    # via the diffused capability channel names above.
+    assert "execution_load→execution_pressure" not in state.unresolved_pressures
+    assert "cpu_pressure→resource_pressure" not in state.unresolved_pressures
 
 
 def test_dimension_evidence_is_dimension_specific() -> None:

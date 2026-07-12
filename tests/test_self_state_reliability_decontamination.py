@@ -34,13 +34,18 @@ def test_contract_pressure_does_not_floor_reliability() -> None:
 
 
 def test_real_failure_still_raises_reliability() -> None:
+    # Phase 1 (2026-07-12): raw "failure_pressure" no longer has a direct
+    # channel_dimension_map entry (double-counting fix). Real capability-level
+    # reliability signal (the diffused channel name failure_pressure would
+    # actually land on post field-digester diffusion) still raises
+    # reliability_pressure.
     field = FieldStateV1(
         generated_at=NOW,
         tick_id="tick_real_failure",
         capability_vectors={
             "capability:transport": {
                 "contract_pressure": 0.0,
-                "failure_pressure": 1.0,
+                "reliability_pressure": 1.0,
             }
         },
     )

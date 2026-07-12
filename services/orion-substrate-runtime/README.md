@@ -146,3 +146,118 @@ or `…_skipped` otherwise). Full Task 21 strain reducers are not implemented he
 `substrate_turn_referent` via `turn_referent_store.persist_turn_referent`. Apply
 `services/orion-sql-db/manual_migration_substrate_turn_referent_v1.sql` before enabling
 `ORION_REVERIE_SEMANTIC_LIFT_ENABLED` on orion-thought.
+
+## Downstream of this service: Layers 6-11
+
+This service (Layers 1-5: grammar events → reducers → `substrate_field_state` via
+`orion-field-digester`) is the root of a full substrate ladder. Each layer below is its
+own service, one Postgres table, one poll loop. This section documents the whole chain
+so nobody has to re-derive it from scratch again — see the 2026-07-12 archaeology in
+`docs/notes/2026-07-12-metrics-swamp-arsonist-review.md` for how this was traced.
+
+```text
+L1-5  substrate_field_state          orion-field-digester        (this service's output)
+  |     decay 0.92/tick, node/capability lattice, real biometrics + cortex-exec receipts
+  v
+L6    substrate_self_state           orion-self-state-runtime    "how is Orion doing"
+  |     13 named 0-1 dimensions, memoryless recompute every 2s (see below)
+  v
+L7    substrate_proposal_frames      orion-proposal-runtime      self_state -> POSSIBLE actions
+  v
+L8    substrate_policy_decision_frames orion-policy-runtime      proposals -> governed decision
+  v
+L9    ExecutionDispatchFrameV1       orion-execution-dispatch-   policy+proposal+self_state ->
+                                      runtime                     dispatch envelope
+                                                                   (EXECUTION_DISPATCH_MODE=
+                                                                    dry_run by default -- L9 has
+                                                                    never mutated the real world)
+  v
+L10   substrate_feedback_frames      orion-feedback-runtime      scores the dry-run outcome
+  v
+L11   consolidation windows/motifs   orion-consolidation-runtime  folds L6-L10 history into
+                                                                   memory windows; consumed by
+                                                                   orion-dream/compaction_applier.py
+```
+
+Each layer's own README states its literal `X + Y -> service -> Z` data flow; this
+diagram just makes the whole chain visible in one place. Whether L11's output actually
+changes anything a human or Orion would notice (vs. terminating in Hub debug tiles) was
+still an open question as of 2026-07-12 -- verify live before assuming either way.
+
+### L6 (`SelfStateV1`) metric shape and mechanics
+
+Schema: `orion/schemas/self_state.py`. Computation: `orion/self_state/{builder,scoring,
+prediction}.py`. Tuning surface: `config/self_state/self_state_policy.v1.yaml` (weights,
+channel->dimension map, thresholds -- config, not code).
+
+**How a score is built:** raw named channels (`cpu_pressure`, `execution_load`,
+`staleness`, `repair_pressure`, ...) come from `substrate_field_state` node/capability
+vectors and from attention targets' channels (weighted by
+`salience x attention_target_weights[target_kind]`), merged by `max()`. Those channels
+route into dimensions via `policy.channel_dimension_map`, again via `max()` when several
+channels land on one dimension. A few dimensions get bespoke formulas on top:
+
+| Dimension | Formula |
+|---|---|
+| `coherence` | `Σ(stabilizing_channel × weight) − 0.25×Σ(penalty_channels)` |
+| `uncertainty` | `overall_salience × (1 − coherence)` |
+| `field_intensity` | `0.6×overall_salience + 0.4×recent_perturbation_saturation` |
+| `agency_readiness` | `coherence − 0.25×execution_p − 0.35×reliability_p − 0.25×uncertainty − 0.15×resource_p` |
+| `resource/execution/reasoning/reliability/continuity/introspection/social_pressure` | pure channel-map `max()`, no extra math |
+| `policy_pressure` | hardcoded `0.0`, always (see Known issues) |
+| `transport_integrity` (conditional 13th dim) | separate formula from field `capability:transport` hints, gated by `ENABLE_TRANSPORT_SELF_STATE_INFLUENCE` |
+
+`overall_intensity` = weighted average of the 12 core dims per `dimension_weights`.
+`overall_condition` buckets `overall_intensity` via `condition_thresholds`
+(quiet/steady/loaded/strained/unstable).
+
+**How it evolves tick-to-tick:** Layer 6 itself is memoryless -- every poll
+(`SELF_STATE_POLL_INTERVAL_SEC=2.0`) fully re-derives from the current field+attention
+snapshot. Decay lives one layer down (this service, `BIOMETRICS_FIELD_DECAY_RATE`), not
+here. The only inter-tick state Layer 6 keeps is:
+
+- **Trajectory**: per-dimension delta vs. `previous_self_state` (age-gated ≤300s), kept
+  if `|delta|≥0.02`; weighted net delta vs. `trajectory_threshold=0.03` →
+  `improving/degrading/stable`.
+- **Prediction/surprise** (`orion/self_state/prediction.py`): each tick emits a naive
+  one-step linear extrapolation (`score + last_delta`). Next tick compares actual vs.
+  that prediction → `prediction_error_scores` (kept if ≥0.01), and
+  `overall_surprise = max(...)` (deliberately max, not mean -- one badly-mispredicted
+  dimension is enough to call the whole self "surprised"). This is the real
+  predictive-coding mechanism in the ladder and feeds the `predictive` drive downstream.
+
+Retention: `SELF_STATE_RETENTION_HOURS=72`, pruned hourly.
+
+### Known issues in the L6 metric shape (2026-07-12 audit)
+
+- **`policy_pressure` is a dead dimension** -- full schema slot, `0.00` weight in the
+  policy, hardcoded `0.0` in `builder.py`, no producer anywhere. Keyword-cathedral entry:
+  a label with zero runtime behavior.
+- **`confidence` and `reasons` carry no per-dimension signal.** Every dimension in a
+  given tick gets the *same* `overall_confidence`
+  (`0.5 + 0.5×(len(dominant_targets)/5)` -- a proxy for "how many attention targets
+  fired," unrelated to the specific dimension), and `reasons` is the fixed template
+  `f"{dim_id} from field+attention channel synthesis"` for all 13 dimensions. Anything
+  reading these fields expecting real differentiation is reading a constant.
+- **`transport_integrity` doesn't affect `overall_intensity`.** It's not in
+  `ALL_DIMENSION_IDS` or `dimension_weights` -- a display-only side channel dressed as a
+  13th dimension.
+- **`max()`-everywhere aggregation likely explains the "resource_pressure saturated at
+  1.0" finding** from the scarcity-economy audit
+  (`docs/notes/2026-07-12-metrics-swamp-arsonist-review.md`). `resource_pressure` is fed
+  by `max(cpu_pressure, gpu_pressure, memory_pressure, disk_pressure, thermal_pressure,
+  "pressure", transport_pressure)`, both at the channel-merge stage and again at the
+  channel→dimension mapping stage. Any single spiking channel pins the whole dimension
+  to 1.0 regardless of the other six being calm -- `resource_pressure` currently measures
+  "worst channel," not an aggregate, everywhere it's computed this way.
+
+### Downstream drive taxonomy overlap
+
+Two independently-computed drive-pressure vectors exist over the same 6-key taxonomy
+(`coherence, continuity, capability, relational, predictive, autonomy`):
+`orion/spark/concept_induction/drives.py` (`DriveEngine`, fed by L6 self-state tensions +
+biometrics/mesh/failure signals) and `orion/autonomy/reducer.py` (`AutonomyStateV2`, fed
+by chat-turn evidence only -- a test explicitly bans it from importing self_state/phi).
+Both import the shared `orion/autonomy/signal_drive_map.py` taxonomy config, but each
+still keeps its own local pressure computation -- not yet one shared store. See the
+arsonist review doc for the full merge/burn assessment.

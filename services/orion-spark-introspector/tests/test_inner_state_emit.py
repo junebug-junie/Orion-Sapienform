@@ -27,7 +27,7 @@ _SCORES = {
     "execution_pressure": 0.0, "reasoning_pressure": 0.05,
     "resource_pressure": 1.0, "reliability_pressure": 1.0,
     "continuity_pressure": 0.0, "introspection_pressure": 0.0,
-    "social_pressure": 0.0, "uncertainty": 0.0, "policy_pressure": 0.0,
+    "social_pressure": 0.0, "uncertainty": 0.0,
 }
 
 

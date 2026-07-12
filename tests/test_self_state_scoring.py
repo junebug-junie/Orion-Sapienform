@@ -35,7 +35,7 @@ def _field_high_execution() -> FieldStateV1:
 
 
 def test_high_execution_load_raises_execution_pressure() -> None:
-    channels = collect_field_channel_pressures(_field_high_execution())
+    channels, _ = collect_field_channel_pressures(_field_high_execution())
     dims = map_channels_to_dimensions(channel_pressures=channels, policy=POLICY)
     assert dims.get("execution_pressure", 0.0) > 0.5
 
@@ -49,7 +49,7 @@ def test_raw_execution_load_alone_no_longer_double_counts() -> None:
         tick_id="tick_scoring_raw_only",
         node_vectors={"node:athena": {"execution_load": 1.0}},
     )
-    channels = collect_field_channel_pressures(field)
+    channels, _ = collect_field_channel_pressures(field)
     dims = map_channels_to_dimensions(channel_pressures=channels, policy=POLICY)
     assert dims.get("execution_pressure", 0.0) == 0.0
 
@@ -61,7 +61,7 @@ def test_high_execution_friction_raises_reliability_pressure() -> None:
         node_vectors={"node:athena": {"execution_friction": 1.0}},
         capability_vectors={"capability:orchestration": {"reliability_pressure": 0.9}},
     )
-    channels = collect_field_channel_pressures(field)
+    channels, _ = collect_field_channel_pressures(field)
     dims = map_channels_to_dimensions(channel_pressures=channels, policy=POLICY)
     assert dims.get("reliability_pressure", 0.0) > 0.5
 
@@ -73,8 +73,9 @@ def test_high_failure_pressure_raises_reliability() -> None:
         node_vectors={"node:athena": {"failure_pressure": 1.0}},
         capability_vectors={"capability:orchestration": {"reliability_pressure": 0.9}},
     )
+    channels, _ = collect_field_channel_pressures(field)
     dims = map_channels_to_dimensions(
-        channel_pressures=collect_field_channel_pressures(field),
+        channel_pressures=channels,
         policy=POLICY,
     )
     assert dims.get("reliability_pressure", 0.0) > 0.5
@@ -137,11 +138,17 @@ def test_double_counting_fix_weighted_diffusion_wins_not_raw_spike() -> None:
         node_vectors={"node:circe": {"gpu_pressure": 1.0}},
         capability_vectors={"capability:llm_inference": {"pressure": 0.50}},
     )
-    channels = collect_field_channel_pressures(field)
+    channels, provenance = collect_field_channel_pressures(field)
     assert channels["gpu_pressure"] == 1.0  # raw value still present in merged channels...
     dims = map_channels_to_dimensions(channel_pressures=channels, policy=POLICY)
     # ...but it must not compete with (and beat) its own weighted diffusion.
     assert dims.get("resource_pressure", 0.0) == 0.50
+    # Phase 3 (2026-07-12): the raw node channel's provenance is the node
+    # itself; the diffused capability channel falls back to the capability_id
+    # since this synthetic fixture never ran real diffusion (no
+    # field.capability_provenance populated) -- exercising the fallback path.
+    assert provenance["gpu_pressure"] == "node:circe"
+    assert provenance["pressure"] == "capability:llm_inference"
 
 
 def test_node_only_channel_staleness_still_reaches_continuity_pressure() -> None:
@@ -154,7 +161,7 @@ def test_node_only_channel_staleness_still_reaches_continuity_pressure() -> None
         tick_id="tick_staleness",
         node_vectors={"node:athena": {"staleness": 0.8}},
     )
-    channels = collect_field_channel_pressures(field)
+    channels, _ = collect_field_channel_pressures(field)
     dims = map_channels_to_dimensions(channel_pressures=channels, policy=POLICY)
     assert dims.get("continuity_pressure", 0.0) == 0.8
 

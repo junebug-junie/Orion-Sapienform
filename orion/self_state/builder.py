@@ -138,6 +138,32 @@ def _emit_summary_labels(
     return sorted(set(labels))
 
 
+def _provenance_label(source_id: str) -> str:
+    """Friendlier evidence label: strip the "node:" prefix (e.g. "node:atlas"
+    -> "atlas"); leave capability-sourced provenance (e.g.
+    "capability:transport") as-is since it's still informative and isn't a
+    node name to shorten."""
+    if source_id.startswith("node:"):
+        return source_id[len("node:") :]
+    return source_id
+
+
+def _reason_for_evidence(ev: str, channel_provenance: dict[str, str]) -> str:
+    """Phase 3 (2026-07-12): fold node/capability provenance into the
+    free-text `reasons` field, NOT `dominant_evidence` -- `dominant_evidence`
+    strings are parsed by downstream consumers (e.g. orion-spark-
+    introspector's `_parse_dominant_evidence_channels`, which does
+    `entry.partition("=")` expecting an exact `channel_name=value` shape) and
+    prefixing the channel name there would silently break that parsing.
+    `reasons` has no such contract.
+    """
+    channel_name = ev.partition("=")[0]
+    node = channel_provenance.get(channel_name)
+    if node:
+        return f"driven by {ev} (node: {_provenance_label(node)})"
+    return f"driven by {ev}"
+
+
 def evidence_for_dimension(
     *,
     dim_id: str,
@@ -177,10 +203,17 @@ def build_self_state(
             f"attention_source_tick_mismatch:{attention.source_field_tick_id}!={field.tick_id}"
         )
 
-    field_channels = collect_field_channel_pressures(field)
+    field_channels, channel_provenance = collect_field_channel_pressures(field)
     attn_channels = collect_attention_channel_pressures(attention, policy)
     merged_channels: dict[str, float] = dict(field_channels)
     for k, v in attn_channels.items():
+        if v > merged_channels.get(k, 0.0):
+            # Attention channels have no known node/capability provenance --
+            # if an attention value overrides the field value for this
+            # channel, drop the (now-stale) field-sourced provenance rather
+            # than mislabel an attention-derived value with a node it didn't
+            # come from.
+            channel_provenance.pop(k, None)
         merged_channels[k] = max(merged_channels.get(k, 0.0), v)
 
     mapped = map_channels_to_dimensions(channel_pressures=merged_channels, policy=policy)
@@ -282,7 +315,7 @@ def build_self_state(
             policy=policy,
         )
         reasons = (
-            [f"driven by {ev}" for ev in dominant_evidence]
+            [_reason_for_evidence(ev, channel_provenance) for ev in dominant_evidence]
             if dominant_evidence
             else ["no contributing channel evidence this tick"]
         )

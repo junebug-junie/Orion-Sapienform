@@ -206,6 +206,37 @@ def test_evidence_channel_map_restores_raw_channel_without_double_counting_score
     assert any(ev.startswith("gpu_pressure=") for ev in resource_dim.dominant_evidence)
 
 
+def _mesh_provenance_field() -> FieldStateV1:
+    # Mirrors what real orion-field-digester diffusion output looks like:
+    # capability_provenance populated by apply_diffusion, recording which
+    # node fed capability:llm_inference's "pressure" channel this tick.
+    return FieldStateV1(
+        generated_at=NOW,
+        tick_id="tick_mesh_provenance",
+        node_vectors={"node:circe": {"gpu_pressure": 0.95}},
+        capability_vectors={"capability:llm_inference": {"pressure": 0.60}},
+        capability_provenance={"capability:llm_inference": {"pressure": "node:circe"}},
+    )
+
+
+def test_resource_pressure_reasons_name_the_contributing_node() -> None:
+    # Phase 3 (2026-07-12, mesh embodiment): the concrete acceptance goal --
+    # a live self-state tick's evidence names a specific non-Athena node,
+    # e.g. "driven by pressure=0.60 (node: circe)" instead of an anonymous
+    # capability-level pressure number.
+    field = _mesh_provenance_field()
+    attention = build_attention_frame(field=field, policy=ATTENTION_POLICY, now=NOW)
+    state = build_self_state(field=field, attention=attention, policy=SELF_POLICY, now=NOW)
+
+    resource_dim = state.dimensions["resource_pressure"]
+    # dominant_evidence keeps its exact channel_name=value format, unchanged --
+    # downstream consumers (orion-spark-introspector's hardware bypass) parse
+    # it by exact shape.
+    assert any(ev == "pressure=0.60" for ev in resource_dim.dominant_evidence)
+    # reasons is where node attribution lives.
+    assert any("(node: circe)" in reason for reason in resource_dim.reasons)
+
+
 def test_no_action_outputs() -> None:
     field = _synthetic_field()
     attention = build_attention_frame(field=field, policy=ATTENTION_POLICY, now=NOW)

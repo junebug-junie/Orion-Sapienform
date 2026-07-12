@@ -24,6 +24,18 @@ class FieldStateV1(BaseModel):
     tick_id: str
     node_vectors: dict[str, dict[str, float]] = Field(default_factory=dict)
     capability_vectors: dict[str, dict[str, float]] = Field(default_factory=dict)
+    # Phase 3 (2026-07-12, self-state/mesh substrate redesign): keyed by
+    # capability target_id -> channel -> the edge source_id (a node_id like
+    # "node:atlas" or another capability_id for a capability_capability edge)
+    # that contributed the single largest weighted amount to that channel in
+    # the most recent diffusion pass (services/orion-field-digester/app/
+    # digestion/diffusion.py). A simple "primary contributor this tick"
+    # proxy, not a full historical attribution ledger -- capability_vectors
+    # values accumulate across ticks, but tracking exact per-tick provenance
+    # of an accumulated value would be a bigger feature than this phase
+    # needs. Lets self-state's evidence say which node is behind a pressure
+    # instead of an anonymous capability-level number.
+    capability_provenance: dict[str, dict[str, str]] = Field(default_factory=dict)
     edges: list[FieldEdgeV1] = Field(default_factory=list)
     recent_perturbations: list[str] = Field(default_factory=list)
     topology_id: str | None = None

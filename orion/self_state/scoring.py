@@ -51,16 +51,37 @@ def condition_from_intensity(
     return "unstable"
 
 
-def collect_field_channel_pressures(field: FieldStateV1) -> dict[str, float]:
+def collect_field_channel_pressures(
+    field: FieldStateV1,
+) -> tuple[dict[str, float], dict[str, str]]:
+    """Merge node_vectors + capability_vectors into one channel-name-keyed
+    pressure dict (unchanged behavior), plus a parallel provenance dict
+    (Phase 3, 2026-07-12) recording which source_id "won" the max() for each
+    channel this tick -- a node_id directly for node_vectors, or the
+    diffusion-tracked edge source (see field.capability_provenance) for
+    capability_vectors, falling back to the capability_id itself when no
+    provenance was recorded for that specific channel.
+    """
     out: dict[str, float] = {}
-    for vector in list(field.node_vectors.values()) + list(field.capability_vectors.values()):
+    provenance: dict[str, str] = {}
+    for source_id, vector in field.node_vectors.items():
         for channel, value in vector.items():
-            if channel in PRESSURE_CHANNELS or float(value) > 0:
-                out[channel] = max(out.get(channel, 0.0), clamp01(float(value)))
+            v = clamp01(float(value))
+            if (channel in PRESSURE_CHANNELS or v > 0) and v >= out.get(channel, 0.0):
+                out[channel] = v
+                provenance[channel] = source_id
+    for capability_id, vector in field.capability_vectors.items():
+        for channel, value in vector.items():
+            v = clamp01(float(value))
+            if (channel in PRESSURE_CHANNELS or v > 0) and v >= out.get(channel, 0.0):
+                out[channel] = v
+                provenance[channel] = field.capability_provenance.get(capability_id, {}).get(
+                    channel, capability_id
+                )
     n = len(field.recent_perturbations)
     if n > 0:
         out["recent_perturbation_count"] = clamp01(min(1.0, n / 20.0))
-    return out
+    return out, provenance
 
 
 def collect_attention_channel_pressures(

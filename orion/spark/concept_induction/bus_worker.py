@@ -545,6 +545,24 @@ class ConceptWorker:
         )
         return True
 
+    def _log_drive_pressure_probe(self, subject: str, pressures: dict) -> None:
+        """Measurement-only (Phase 4, 2026-07-12): log `DriveEngine`'s pressure
+        vector right after every `save_drive_state` so it can be compared
+        offline against `AutonomyStateV2`'s independently-computed pressures
+        (logged from `chat_stance._run_autonomy_reducer`) by grepping both
+        services' logs and correlating on `subject` + nearby timestamp. Never
+        raises: a logging failure here must not break the drive-update rail,
+        which runs on live bus traffic.
+        """
+        try:
+            logger.info(
+                "drive_engine_pressure_probe subject=%s pressures=%s",
+                subject,
+                {k: round(v, 4) for k, v in dict(pressures or {}).items()},
+            )
+        except Exception:
+            logger.warning("drive_engine_pressure_probe_failed subject=%s", subject, exc_info=True)
+
     async def _publish_drive_state(self, payload, corr_id) -> None:
         env = BaseEnvelope(
             kind="memory.drives.state.v1",
@@ -724,6 +742,7 @@ class ConceptWorker:
             self.store.save_drive_state(
                 subject, pressures=pressures, activations=activations, updated_at=now
             )
+            self._log_drive_pressure_probe(subject, pressures)
 
             trace_id = extract_trace_id(env)
             turn_id = extract_turn_id(env)
@@ -852,6 +871,7 @@ class ConceptWorker:
             previous_ts=previous_ts,
         )
         self.store.save_drive_state(subject, pressures=pressures, activations=activations, updated_at=now)
+        self._log_drive_pressure_probe(subject, pressures)
 
         pressure_tensions = derive_pressure_competition_tensions(
             envelope=env,

@@ -2259,7 +2259,29 @@ async def _run_autonomy_reducer(
     except Exception as exc:
         logger.warning("autonomy_state_v2_write_failed subject=%s error=%s", subject, exc)
 
+    _log_autonomy_pressure_probe(subject, dict(result.state.drive_pressures or {}))
+
     return result
+
+
+def _log_autonomy_pressure_probe(subject: str, pressures: dict) -> None:
+    """Measurement-only (Phase 4, 2026-07-12): log `AutonomyStateV2`'s pressure
+    vector right after every `_run_autonomy_reducer` fold so it can be compared
+    offline against `DriveEngine`'s independently-computed pressures (logged
+    from `orion.spark.concept_induction.bus_worker`) by grepping both
+    services' logs and correlating on `subject` + nearby timestamp. Never
+    raises: this is a hot chat-turn path and a logging failure here must not
+    break it, mirroring the guard around the `save_autonomy_state_v2` call
+    directly above.
+    """
+    try:
+        logger.info(
+            "autonomy_state_v2_pressure_probe subject=%s pressures=%s",
+            subject,
+            {k: round(v, 4) for k, v in pressures.items()},
+        )
+    except Exception as exc:
+        logger.warning("autonomy_state_v2_pressure_probe_failed subject=%s error=%s", subject, exc)
 
 
 def _inject_prior_stance_to_inputs(ctx: Dict[str, Any], inputs: Dict[str, Any]) -> None:

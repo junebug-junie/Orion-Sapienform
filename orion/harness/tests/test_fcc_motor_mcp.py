@@ -23,14 +23,30 @@ class _FakeStream:
         return line
 
 
+class _BlockingAfterLinesStream(_FakeStream):
+    async def readline(self) -> bytes:
+        if self._idx >= len(self._lines):
+            await asyncio.sleep(3600)
+            return b""
+        return await super().readline()
+
+
 class _FakeProc:
-    def __init__(self, stdout_lines: List[str], returncode: int = 0) -> None:
-        self.stdout = _FakeStream([ln.encode("utf-8") + b"\n" for ln in stdout_lines])
+    def __init__(
+        self,
+        stdout_lines: List[str],
+        returncode: int = 0,
+        *,
+        block_after_stdout: bool = False,
+    ) -> None:
+        stream_cls = _BlockingAfterLinesStream if block_after_stdout else _FakeStream
+        self.stdout = stream_cls([ln.encode("utf-8") + b"\n" for ln in stdout_lines])
         self.stderr = _FakeStream([])
         self.returncode = returncode
+        self.killed = False
 
     def kill(self) -> None:
-        pass
+        self.killed = True
 
     async def wait(self) -> int:
         return self.returncode
@@ -38,6 +54,60 @@ class _FakeProc:
 
 def _fake_fcc_env(_path: Any) -> dict[str, str]:
     return {"MODEL_HAIKU": "claude-haiku-test"}
+
+
+def test_stream_idle_timeout_defaults_below_turn_timeout(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.delenv("HARNESS_FCC_STREAM_IDLE_TIMEOUT_SEC", raising=False)
+    assert motor._stream_idle_timeout_sec(900.0) == motor.DEFAULT_STREAM_IDLE_TIMEOUT_SEC
+
+
+def test_stream_idle_timeout_can_be_disabled_to_turn_timeout(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("HARNESS_FCC_STREAM_IDLE_TIMEOUT_SEC", "0")
+    assert motor._stream_idle_timeout_sec(900.0) == 900.0
+
+
+@pytest.mark.asyncio
+async def test_run_fcc_turn_surfaces_stream_idle_timeout(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    proc = _FakeProc(
+        [
+            '{"type":"system","subtype":"init"}',
+            '{"type":"assistant","message":{"content":[{"type":"tool_use","name":"ToolSearch"}]}}',
+        ],
+        block_after_stdout=True,
+    )
+
+    async def fake_exec(*args: Any, **kwargs: Any) -> _FakeProc:
+        return proc
+
+    monkeypatch.setattr(asyncio, "create_subprocess_exec", fake_exec)
+    monkeypatch.setattr(motor, "_preflight_fcc_server", lambda *a, **k: None)
+    monkeypatch.setattr(motor, "load_fcc_env", _fake_fcc_env)
+    monkeypatch.setattr(motor, "_maybe_render_mcp_config", lambda **k: None)
+    monkeypatch.setenv("HARNESS_FCC_STREAM_IDLE_TIMEOUT_SEC", "0.01")
+
+    events = []
+    async for ev in motor.run_fcc_turn(
+        prompt="hello",
+        fcc_model_label="MODEL_HAIKU",
+        correlation_id="corr-idle",
+        workspace="/tmp",
+        fcc_server_url="http://127.0.0.1:8082",
+        auth_token="tok",
+        claude_bin="claude",
+        timeout_sec=30.0,
+    ):
+        events.append(ev)
+
+    assert [ev["type"] for ev in events] == ["step", "step", "error"]
+    assert events[-1]["error_code"] == "fcc_idle_timeout"
+    assert events[-1]["steps_seen"] == 2
+    assert events[-1]["last_event_type"] == "assistant"
+    assert events[-1]["last_tool"] == "ToolSearch"
+    assert proc.killed is True
 
 
 @pytest.mark.asyncio
@@ -491,4 +561,3 @@ def test_should_skip_claude_permissions_env_false_overrides_non_root(
     monkeypatch.setattr(motor.os, "geteuid", lambda: 1000)
     monkeypatch.setenv("HARNESS_FCC_SKIP_PERMISSIONS", "false")
     assert motor._should_skip_claude_permissions() is False
-

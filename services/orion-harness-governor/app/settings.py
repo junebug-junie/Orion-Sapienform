@@ -80,6 +80,9 @@ class HarnessGovernorSettings(BaseSettings):
     voice_finalize_timeout_sec: float = Field(300.0, alias="VOICE_FINALIZE_TIMEOUT_SEC")
     substrate_finalize_timeout_sec: float = Field(5.0, alias="SUBSTRATE_FINALIZE_TIMEOUT_SEC")
     finalize_quick_gate_epsilon: float = Field(0.08, alias="FINALIZE_QUICK_GATE_EPSILON")
+    harness_fcc_stream_idle_timeout_sec: float = Field(
+        180.0, alias="HARNESS_FCC_STREAM_IDLE_TIMEOUT_SEC"
+    )
 
     harness_fcc_mcp_enabled: bool = Field(False, alias="HARNESS_FCC_MCP_ENABLED")
     harness_aitown_enabled: bool = Field(False, alias="HARNESS_AITOWN_ENABLED")

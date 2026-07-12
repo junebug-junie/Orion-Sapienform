@@ -80,6 +80,33 @@ def test_self_state_id_stable() -> None:
     assert a.self_state_id == b.self_state_id
 
 
+def test_dimension_reasons_reflect_real_evidence() -> None:
+    field = _synthetic_field()
+    attention = build_attention_frame(field=field, policy=ATTENTION_POLICY, now=NOW)
+    state = build_self_state(field=field, attention=attention, policy=SELF_POLICY, now=NOW)
+
+    execution_dim = state.dimensions["execution_pressure"]
+    reasoning_dim = state.dimensions["reasoning_pressure"]
+
+    # Reasons are not a fixed template repeated across every dimension.
+    assert execution_dim.reasons != reasoning_dim.reasons
+    assert "from field+attention channel synthesis" not in " ".join(
+        execution_dim.reasons + reasoning_dim.reasons
+    )
+
+    # Reasons are derived from the same evidence already computed for
+    # dominant_evidence, not an independent/duplicated computation.
+    assert execution_dim.dominant_evidence
+    for ev in execution_dim.dominant_evidence:
+        assert any(ev in reason for reason in execution_dim.reasons)
+
+    # A dimension with no contributing channel evidence this tick gets an
+    # honest fallback, not a reused fixed string.
+    social_dim = state.dimensions["social_pressure"]
+    assert social_dim.dominant_evidence == []
+    assert social_dim.reasons == ["no contributing channel evidence this tick"]
+
+
 def test_no_action_outputs() -> None:
     field = _synthetic_field()
     attention = build_attention_frame(field=field, policy=ATTENTION_POLICY, now=NOW)

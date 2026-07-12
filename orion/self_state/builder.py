@@ -39,7 +39,6 @@ DimensionId = Literal[
     "continuity_pressure",
     "introspection_pressure",
     "social_pressure",
-    "policy_pressure",
 ]
 
 ALL_DIMENSION_IDS: tuple[DimensionId, ...] = (
@@ -54,7 +53,6 @@ ALL_DIMENSION_IDS: tuple[DimensionId, ...] = (
     "continuity_pressure",
     "introspection_pressure",
     "social_pressure",
-    "policy_pressure",
 )
 
 
@@ -215,7 +213,6 @@ def build_self_state(
         "continuity_pressure": continuity_p,
         "introspection_pressure": mapped.get("introspection_pressure", 0.0),
         "social_pressure": mapped.get("social_pressure", 0.0),
-        "policy_pressure": 0.0,
     }
 
     overall_intensity = weighted_overall_intensity(dimension_scores, policy)
@@ -257,16 +254,22 @@ def build_self_state(
     dimensions: dict[str, SelfStateDimensionV1] = {}
     for dim_id in ALL_DIMENSION_IDS:
         score = dimension_scores.get(dim_id, 0.0)
+        dominant_evidence = evidence_for_dimension(
+            dim_id=dim_id,
+            merged_channels=merged_channels,
+            policy=policy,
+        )
+        reasons = (
+            [f"driven by {ev}" for ev in dominant_evidence]
+            if dominant_evidence
+            else ["no contributing channel evidence this tick"]
+        )
         dimensions[dim_id] = SelfStateDimensionV1(
             dimension_id=dim_id,
             score=clamp01(score),
             confidence=overall_confidence,
-            dominant_evidence=evidence_for_dimension(
-                dim_id=dim_id,
-                merged_channels=merged_channels,
-                policy=policy,
-            ),
-            reasons=[f"{dim_id} from field+attention channel synthesis"],
+            dominant_evidence=dominant_evidence,
+            reasons=reasons,
         )
 
     summary_labels = _emit_summary_labels(

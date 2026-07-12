@@ -91,7 +91,10 @@ def test_compile_harness_prefix_includes_self_index_briefs_when_enabled(
         repair_overlay=HarnessRepairOverlayV1(),
     )
     assert "GitNexus code-graph MCP is available" in prompt
+    assert "call it before falling back to raw source search" in prompt
     assert "derived cache, never authority" in prompt
+    assert "Always read the GitNexus status/context resource before any" in prompt
+    assert "do not skip the status check, without" in prompt
     assert "Context Mode MCP is available" in prompt
     assert "ctx_search" in prompt
 

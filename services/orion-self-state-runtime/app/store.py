@@ -6,6 +6,7 @@ from datetime import datetime, timedelta, timezone
 from typing import Any
 
 from psycopg2.extras import Json
+from pydantic import ValidationError
 from sqlalchemy import create_engine, text
 from sqlalchemy.engine import Engine
 
@@ -219,7 +220,17 @@ class SelfStateRuntimeStore:
         payload = row["self_state_json"]
         if isinstance(payload, str):
             payload = json.loads(payload)
-        return SelfStateV1.model_validate(payload)
+        try:
+            return SelfStateV1.model_validate(payload)
+        except ValidationError:
+            # A schema change (e.g. a removed dimension_id enum value) can
+            # leave the last-saved row incompatible with the current schema.
+            # Treat as "no previous state" -- the same degraded-continuity
+            # path _tick() already takes on a policy_id mismatch or stale
+            # previous -- rather than crash-looping forever on a row that
+            # will never validate under the new code.
+            logger.warning("self_state_previous_incompatible_schema", exc_info=True)
+            return None
 
     def load_recent_self_states(self, limit: int = 10) -> list[SelfStateV1]:
         with self._engine.connect() as conn:
@@ -242,7 +253,13 @@ class SelfStateRuntimeStore:
             payload = row["self_state_json"]
             if isinstance(payload, str):
                 payload = json.loads(payload)
-            out.append(SelfStateV1.model_validate(payload))
+            try:
+                out.append(SelfStateV1.model_validate(payload))
+            except ValidationError:
+                # Same schema-drift tolerance as load_latest_self_state --
+                # skip a row that predates a schema change rather than fail
+                # the whole batch.
+                logger.warning("self_state_recent_row_incompatible_schema", exc_info=True)
         return out
 
     def load_self_state_for_attention_frame(self, frame_id: str) -> SelfStateV1 | None:
@@ -267,7 +284,12 @@ class SelfStateRuntimeStore:
         payload = row["self_state_json"]
         if isinstance(payload, str):
             payload = json.loads(payload)
-        return SelfStateV1.model_validate(payload)
+        try:
+            return SelfStateV1.model_validate(payload)
+        except ValidationError:
+            # Same schema-drift tolerance as load_latest_self_state.
+            logger.warning("self_state_for_frame_incompatible_schema", exc_info=True)
+            return None
 
     def save_self_state(self, state: SelfStateV1) -> None:
         now = datetime.now(timezone.utc)

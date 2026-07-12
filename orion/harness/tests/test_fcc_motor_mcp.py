@@ -56,6 +56,35 @@ def _fake_fcc_env(_path: Any) -> dict[str, str]:
     return {"MODEL_HAIKU": "claude-haiku-test"}
 
 
+def test_normalize_fcc_model_id_forces_no_thinking_for_llamacpp(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.delenv("HARNESS_FCC_FORCE_NO_THINKING_MODEL", raising=False)
+
+    assert (
+        motor.normalize_fcc_model_id_for_claude("llamacpp/chat")
+        == "claude-3-freecc-no-thinking/llamacpp/chat"
+    )
+    assert (
+        motor.normalize_fcc_model_id_for_claude("anthropic/llamacpp/chat")
+        == "claude-3-freecc-no-thinking/llamacpp/chat"
+    )
+    assert (
+        motor.normalize_fcc_model_id_for_claude(
+            "claude-3-freecc-no-thinking/llamacpp/chat"
+        )
+        == "claude-3-freecc-no-thinking/llamacpp/chat"
+    )
+
+
+def test_normalize_fcc_model_id_can_disable_no_thinking_rewrite(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("HARNESS_FCC_FORCE_NO_THINKING_MODEL", "false")
+
+    assert motor.normalize_fcc_model_id_for_claude("llamacpp/chat") == "llamacpp/chat"
+
+
 def test_stream_idle_timeout_defaults_below_turn_timeout(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.delenv("HARNESS_FCC_STREAM_IDLE_TIMEOUT_SEC", raising=False)
     assert motor._stream_idle_timeout_sec(900.0) == motor.DEFAULT_STREAM_IDLE_TIMEOUT_SEC

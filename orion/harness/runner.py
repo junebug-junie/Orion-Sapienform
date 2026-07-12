@@ -39,6 +39,12 @@ logger = logging.getLogger("orion.harness.runner")
 
 FccRunner = Callable[..., AsyncIterator[dict[str, Any]]]
 
+_FCC_TRANSPORT_ERROR_MARKERS = (
+    "api error:",
+    "empty or malformed response",
+    "proxy or gateway intercepting",
+)
+
 
 @dataclass
 class HarnessMotorResult:
@@ -82,6 +88,15 @@ def build_coalition_snapshot(thought: ThoughtEventV1) -> CoalitionSnapshotV1:
 
 def _draft_hash(text: str) -> str:
     return hashlib.sha256(text.encode("utf-8")).hexdigest()[:24]
+
+
+def _looks_like_fcc_transport_error(text: str) -> bool:
+    lowered = str(text or "").strip().lower()
+    if not lowered:
+        return False
+    if lowered.startswith("api error:"):
+        return True
+    return any(marker in lowered for marker in _FCC_TRANSPORT_ERROR_MARKERS)
 
 
 def build_harness_prompt(
@@ -280,13 +295,18 @@ class HarnessRunner:
                 partial = str(event.get("llm_response") or "").strip()
                 error_code = str(event.get("error_code") or "").strip()
                 error_msg = str(event.get("error") or "").strip()
-                if partial:
+                if partial and not _looks_like_fcc_transport_error(partial):
                     draft_text = apply_context_overflow_hint(partial)
                     compliance_verdict = "partial"
                     grounding_status = error_code or "partial"
                 else:
                     compliance_verdict = "failed"
-                    grounding_status = apply_context_overflow_hint(error_msg) or error_code or error_msg or "failed"
+                    grounding_status = (
+                        error_code
+                        or apply_context_overflow_hint(error_msg)
+                        or apply_context_overflow_hint(partial)
+                        or "failed"
+                    )
                     motor_failed = True
                 if step_count > 0:
                     collector.record_step_failed(

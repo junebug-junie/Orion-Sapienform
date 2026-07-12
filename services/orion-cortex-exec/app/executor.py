@@ -4149,7 +4149,10 @@ async def call_step_services(
                     len(prompt or ""),
                 )
 
-                gateway_read_timeout_sec = max(45.0, min(float(effective_timeout) - 5.0, 900.0))
+                gateway_read_timeout_sec = min(
+                    max(1.0, float(effective_timeout) - 5.0),
+                    900.0,
+                )
                 ctx_options = ctx.get("options") if isinstance(ctx.get("options"), dict) else {}
                 gateway_options: Dict[str, Any] = {
                     "temperature": float(ctx.get("temperature", 0.7)),

@@ -3,8 +3,9 @@ from pathlib import Path
 
 from orion.attention.field_attention.builder import build_attention_frame
 from orion.attention.field_attention.policy import load_attention_policy
-from orion.self_state.builder import build_self_state
+from orion.self_state.builder import _attention_target_summary, build_self_state
 from orion.self_state.policy import load_self_state_policy
+from orion.schemas.field_attention_frame import FieldAttentionTargetV1
 from orion.schemas.field_state import FieldStateV1
 
 REPO = Path(__file__).resolve().parents[1]
@@ -63,6 +64,78 @@ def test_dominant_attention_targets() -> None:
     state = build_self_state(field=field, attention=attention, policy=SELF_POLICY, now=NOW)
     ids = set(state.dominant_attention_targets)
     assert "node:athena" in ids or "capability:orchestration" in ids
+
+
+def test_dominant_attention_target_details_carries_structured_data() -> None:
+    # 2026-07-12, inner-state unification Phase 1: dominant_attention_targets
+    # (bare ID strings) previously discarded pressure_score/dominant_channels/
+    # reasons one hop after orion-attention-runtime computed them for real.
+    # This must now survive, additively, alongside the bare-string list.
+    field = _synthetic_field()
+    attention = build_attention_frame(field=field, policy=ATTENTION_POLICY, now=NOW)
+    state = build_self_state(field=field, attention=attention, policy=SELF_POLICY, now=NOW)
+
+    assert state.dominant_attention_target_details
+    # Same target_ids, same order, as the existing bare-string list -- additive,
+    # not a divergent second source of truth.
+    assert [d.target_id for d in state.dominant_attention_target_details] == (
+        state.dominant_attention_targets
+    )
+    for detail in state.dominant_attention_target_details:
+        assert detail.target_kind in ("node", "capability", "channel", "edge", "field", "system")
+        assert 0.0 <= detail.pressure_score <= 1.0
+
+    top = state.dominant_attention_target_details[0]
+    assert top.pressure_score > 0.0
+    assert top.dominant_channel is not None
+    assert top.reason is not None
+
+
+def test_attention_target_summary_picks_first_channel_and_reason() -> None:
+    # 2026-07-12 review finding: the end-to-end test above only checks
+    # presence, not that the "top-1" pick is actually the first entry (the
+    # documented contract -- upstream, weighted_pressure/_reasons_from_dominant
+    # already sort descending before returning; this helper trusts that
+    # ordering rather than re-sorting). A direct unit test on
+    # _attention_target_summary() with an explicit, order-distinguishable
+    # fixture is the only way to catch a regression that silently picked a
+    # different entry (e.g. min instead of max, or last instead of first).
+    target = FieldAttentionTargetV1(
+        target_id="node:atlas",
+        target_kind="node",
+        salience_score=0.9,
+        pressure_score=0.72,
+        novelty_score=0.1,
+        urgency_score=0.5,
+        confidence_score=0.6,
+        dominant_channels={"gpu_pressure": 0.85, "thermal_pressure": 0.40},
+        reasons=["node gpu_pressure is elevated", "node thermal_pressure is elevated"],
+    )
+
+    summary = _attention_target_summary(target)
+
+    assert summary.target_id == "node:atlas"
+    assert summary.target_kind == "node"
+    assert summary.pressure_score == 0.72
+    assert summary.dominant_channel == "gpu_pressure"
+    assert summary.reason == "node gpu_pressure is elevated"
+
+
+def test_attention_target_summary_handles_no_channels_or_reasons() -> None:
+    target = FieldAttentionTargetV1(
+        target_id="field:recent_perturbations",
+        target_kind="system",
+        salience_score=0.2,
+        pressure_score=0.2,
+        novelty_score=0.0,
+        urgency_score=0.0,
+        confidence_score=0.0,
+    )
+
+    summary = _attention_target_summary(target)
+
+    assert summary.dominant_channel is None
+    assert summary.reason is None
 
 
 def test_summary_labels_execution_loaded() -> None:

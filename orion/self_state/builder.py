@@ -26,9 +26,13 @@ from orion.self_state.scoring import (
     weighted_overall_intensity,
 )
 from orion.schemas.attention_frame import AttentionBroadcastProjectionV1
-from orion.schemas.field_attention_frame import FieldAttentionFrameV1
+from orion.schemas.field_attention_frame import FieldAttentionFrameV1, FieldAttentionTargetV1
 from orion.schemas.field_state import FieldStateV1
-from orion.schemas.self_state import SelfStateDimensionV1, SelfStateV1
+from orion.schemas.self_state import (
+    AttentionTargetSummaryV1,
+    SelfStateDimensionV1,
+    SelfStateV1,
+)
 
 DimensionId = Literal[
     "field_intensity",
@@ -105,6 +109,25 @@ def stable_self_state_id(
     policy_id: str,
 ) -> str:
     return f"self.state:{source_field_tick_id}:{source_attention_frame_id}:{policy_id}"
+
+
+def _attention_target_summary(target: FieldAttentionTargetV1) -> AttentionTargetSummaryV1:
+    """Structured summary of one FieldAttentionTargetV1 (2026-07-12, inner-state
+    unification Phase 1). dominant_channel/reason take the top-1 entry --
+    dominant_channels is already sorted descending by contribution
+    (orion/attention/field_attention/scoring.py's weighted_pressure), and
+    reasons is already ordered the same way (_reasons_from_dominant), so
+    the first entry of each is the single most significant one this tick.
+    """
+    dominant_channel = next(iter(target.dominant_channels), None)
+    reason = target.reasons[0] if target.reasons else None
+    return AttentionTargetSummaryV1(
+        target_id=target.target_id,
+        target_kind=target.target_kind,
+        pressure_score=target.pressure_score,
+        dominant_channel=dominant_channel,
+        reason=reason,
+    )
 
 
 def _emit_summary_labels(
@@ -276,7 +299,11 @@ def build_self_state(
         condition_from_intensity(overall_intensity, policy.condition_thresholds),
     )
 
-    dominant_targets = [t.target_id for t in attention.dominant_targets[:5]]
+    top_attention_targets = attention.dominant_targets[:5]
+    dominant_targets = [t.target_id for t in top_attention_targets]
+    dominant_attention_target_details = [
+        _attention_target_summary(t) for t in top_attention_targets
+    ]
     evidence_density = clamp01(len(dominant_targets) / 5.0)
     overall_confidence = clamp01(0.5 + 0.5 * evidence_density)
 
@@ -413,6 +440,7 @@ def build_self_state(
         overall_confidence=overall_confidence,
         dimensions=dimensions,
         dominant_attention_targets=dominant_targets,
+        dominant_attention_target_details=dominant_attention_target_details,
         dominant_field_channels=dominant_field_channels,
         unresolved_pressures=unresolved,
         stabilizing_factors=stabilizing,

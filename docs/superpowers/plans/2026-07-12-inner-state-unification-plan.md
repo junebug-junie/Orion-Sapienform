@@ -23,16 +23,18 @@ Companion to `docs/superpowers/specs/2026-07-12-inner-state-unification-design.m
 
 ## Phase 1 — Widen `dominant_attention_targets` (brainstorm idea #1, now a registry-governed extension)
 
+**Status: implemented, not yet deployed** (branch `feat/self-state-attention-target-composition`).
+
 **Gate to start:** Phase 0 merged (this is the first signal added *through* the registry, proving the pattern works before anything else uses it).
 
-- [ ] `orion/schemas/self_state.py`: additive field carrying structured attention-target data (pressure_score, dominant_channels top-1, reasons top-1) for the top-N targets, alongside (not replacing) the existing bare-string list.
-- [ ] `orion/self_state/builder.py`: populate from `attention.dominant_targets` (already in scope at the point this is currently discarded, `builder.py:279`).
-- [ ] Registry entry added in the same PR — this is the acceptance check for Phase 0's gate actually working, not a separate afterthought.
-- [ ] Log-only for a real traffic window before anything downstream (Phase 2/3) reads it: does the dominant target actually vary tick-to-tick, or is it dominated by one or two nodes constantly? (Flagged as a missing question in the brainstorm — answer it with data, not assumption, before building the narrative layer.)
+- [x] `orion/schemas/self_state.py`: additive `AttentionTargetSummaryV1` (`target_id`, `target_kind`, `pressure_score`, top `dominant_channel`, top `reason`) + `SelfStateV1.dominant_attention_target_details: list[AttentionTargetSummaryV1]`, alongside (not replacing) the existing bare-string `dominant_attention_targets`.
+- [x] `orion/self_state/builder.py`: new `_attention_target_summary()` helper, populated from `attention.dominant_targets[:5]` (the same slice already used for the bare-string list, `builder.py:302` — same target_ids, same order).
+- [x] Registry entry updated in the same PR: `field_attention_frame.v1` flipped from `SHADOW` to `COMPOSED`.
+- [ ] Log-only for a real traffic window before anything downstream (Phase 2/3) reads it: does the dominant target actually vary tick-to-tick, or is it dominated by one or two nodes constantly? **Blocked on deployment** — not yet observable.
 
-**Tests:** schema round-trip; builder unit test asserting the new field is populated from a fixture `FieldAttentionFrameV1` with known target scores.
+**Tests:** schema unchanged behavior for existing consumers (full self-state suite green, 63 tests); new builder test (`test_dominant_attention_target_details_carries_structured_data`) asserting real, non-fixture end-to-end data (via `build_attention_frame()` + `build_self_state()` on a synthetic `FieldStateV1`) — target_id/order parity with the existing list, valid `target_kind`, `pressure_score` in range, and the top target's `dominant_channel`/`reason` populated.
 
-**Acceptance:** the field carries real per-target data in at least one live tick, verified against Postgres, not just a fixture.
+**Acceptance:** the field carries real per-target data in at least one live tick, verified against Postgres, not just a fixture. **Not yet verified — requires merge + redeploy of `orion-self-state-runtime`, not done as of this patch.**
 
 ---
 

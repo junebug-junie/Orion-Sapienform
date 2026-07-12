@@ -95,18 +95,20 @@ REGISTRY: tuple[InnerStateSignal, ...] = (
         schema=FieldAttentionFrameV1,
         producer_service="orion-attention-runtime",
         cadence=Cadence.PER_TICK,
-        composition_status=CompositionStatus.SHADOW,
+        composition_status=CompositionStatus.COMPOSED,
         cognition_consumers=(),
-        shadow_reason=(
-            "orion/self_state/builder.py reads the full FieldAttentionTargetV1 "
-            "list (pressure_score, dominant_channels, reasons per node/capability) "
-            "but keeps only the top-5 target_id strings on "
-            "SelfStateV1.dominant_attention_targets -- every other field is "
-            "discarded at builder.py's dominant_targets extraction. Real, "
-            "non-theater engineering (see field_attention/scoring.py's "
-            "weighted_pressure/urgency_score/confidence_from_vector), thrown "
-            "away one hop downstream. Phase 1 of the companion plan widens "
-            "this to COMPOSED."
+        notes=(
+            "Phase 1 of the companion plan (2026-07-12): widened from SHADOW "
+            "to COMPOSED. orion/self_state/builder.py previously kept only "
+            "the top-5 target_id strings on SelfStateV1."
+            "dominant_attention_targets, discarding pressure_score/"
+            "dominant_channels/reasons -- real, non-theater engineering (see "
+            "field_attention/scoring.py's weighted_pressure/urgency_score/"
+            "confidence_from_vector) thrown away one hop downstream. Now "
+            "structured per-target data (target_kind, pressure_score, top "
+            "dominant_channel, top reason) survives on the additive "
+            "SelfStateV1.dominant_attention_target_details field via "
+            "AttentionTargetSummaryV1 (orion/schemas/self_state.py)."
         ),
     ),
     InnerStateSignal(

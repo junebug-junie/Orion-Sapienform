@@ -37,7 +37,13 @@ of four composition statuses:
   `SelfStateV1.dominant_attention_target_details`
   (`AttentionTargetSummaryV1`: `target_id`, `target_kind`, `pressure_score`,
   top `dominant_channel`, top `reason`) — same target_ids, same order, as
-  the existing bare-string list.
+  the existing bare-string list. Phase 2 (2026-07-12) builds on this:
+  `PhiIntrinsicRewardV1.dominant_node`/`dominant_node_reason`
+  (`orion-spark-introspector`) name the most salient real hardware node,
+  filtered to `target_kind == "node"` and excluding two synthetic
+  pseudo-nodes — confirmed live that a `target_kind == "system"` entry
+  frequently wins the #1 salience slot, so `target_kind` filtering matters
+  as much as the pseudo-node exclusion.
 - `SHADOW` — real, live, deliberately **not** composed, with a required,
   stated reason (`shadow_reason`). The model case: phi's surviving
   `valence` heuristic, explicitly justified because no trained latent

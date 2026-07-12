@@ -378,6 +378,25 @@ Spark-introspector emits `InnerStateFeaturesV1` on `orion:self:inner_features` a
 | Substrate prerequisite | `orion-substrate-runtime` must reach conjourney Postgres (`POSTGRES_URI` in substrate `.env_example`) and serve healthy `GET /grammar/truth` + `GET /projections/execution_trajectory`. **Co-deploy:** update substrate `POSTGRES_URI` manually if local `.env` predates this fix — default `sync_local_env_from_example.py` does not rewrite `POSTGRES_URI`. Restart substrate before relying on live cognitive features. |
 | Encoder | `ORION_PHI_ENCODER_ENABLED=false` until corpus + promote gates pass; weights at `ORION_PHI_ENCODER_WEIGHTS` (active symlink under telemetry) |
 
+#### Golden phi + node attribution (2026-07-12)
+
+`handle_self_state()` overrides `phi_now`'s coherence/energy/novelty with the
+trained encoder's real output (`_golden_phi_overrides`) whenever it's enabled
+and healthy — see `orion/self_state/inner_state_registry.py`'s
+`phi_intrinsic_reward.v1`/`phi_heuristic.valence` entries for what's trained
+vs. what's still the untrained heuristic (only `valence`, deliberately, no
+trained analog exists).
+
+`PhiIntrinsicRewardV1.dominant_node`/`dominant_node_reason` (Phase 2) name
+which real hardware node is most salient this tick, sourced from
+`SelfStateV1.dominant_attention_target_details`. `_dominant_hardware_node()`
+filters to `target_kind == "node"` and excludes the two synthetic pseudo-nodes
+(`node:substrate.execution`, `node:substrate.transport`) — confirmed live
+that a `target_kind == "system"` entry (`field:recent_perturbations`)
+frequently wins the #1 salience slot, so skipping only the pseudo-nodes was
+not enough to avoid misattributing "the stressed body part" to a
+perturbation-count aggregate.
+
 After `.env_example` edits: `python scripts/sync_local_env_from_example.py orion-spark-introspector`
 
 ```bash

@@ -10,6 +10,7 @@ import app.worker as worker
 from app.inner_state import COGNITIVE_FEATURE_NAMES, FELT_DIMENSIONS
 from app.substrate_reads import ExecutionTrajectorySnapshot, GrammarTruthSnapshot
 from orion.core.bus.bus_schemas import BaseEnvelope, ServiceRef
+from orion.schemas.self_state import AttentionTargetSummaryV1
 from orion.schemas.telemetry.phi_encoder import (
     CorpusStatsV1,
     PhiEncoderManifestV1,
@@ -19,6 +20,7 @@ from orion.schemas.telemetry.phi_encoder import (
 from test_inner_state_emit import (
     _NOW,
     _mock_healthy_substrate_reads,
+    _self_state,
     _self_state_payload,
 )
 
@@ -285,3 +287,92 @@ async def test_phi_prev_resets_across_a_skipped_tick(monkeypatch, tmp_path) -> N
     reward_env = published[worker.settings.channel_phi_reward]
     reward = PhiIntrinsicRewardV1.model_validate(reward_env.payload)
     assert reward.delta_phi == 0.0
+
+
+def _target(target_id: str, target_kind: str, reason: str | None = "elevated") -> AttentionTargetSummaryV1:
+    return AttentionTargetSummaryV1(
+        target_id=target_id,
+        target_kind=target_kind,
+        pressure_score=0.5,
+        dominant_channel="gpu_pressure",
+        reason=reason,
+    )
+
+
+def test_dominant_hardware_node_skips_system_and_pseudo_nodes() -> None:
+    # 2026-07-12, Phase 2: confirmed live that attention's dominant_targets is
+    # salience-sorted across node/capability/system kinds together -- a
+    # target_kind="system" entry (e.g. field:recent_perturbations) frequently
+    # wins the #1 slot. Excluding only the two synthetic pseudo-nodes is not
+    # enough; non-"node" kinds must be skipped too.
+    details = [
+        _target("field:recent_perturbations", "system"),
+        _target("capability:llm_inference", "capability"),
+        _target("node:substrate.transport", "node"),  # synthetic pseudo-node
+        _target("node:atlas", "node", reason="node gpu_pressure is elevated"),
+        _target("node:circe", "node"),
+    ]
+
+    node, reason = worker._dominant_hardware_node(details)
+
+    assert node == "node:atlas"
+    assert reason == "node gpu_pressure is elevated"
+
+
+def test_dominant_hardware_node_none_when_no_qualifying_node() -> None:
+    details = [
+        _target("field:recent_perturbations", "system"),
+        _target("node:substrate.execution", "node"),  # synthetic pseudo-node only
+        _target("capability:orchestration", "capability"),
+    ]
+
+    node, reason = worker._dominant_hardware_node(details)
+
+    assert node is None
+    assert reason is None
+
+
+def test_dominant_hardware_node_empty_list() -> None:
+    assert worker._dominant_hardware_node([]) == (None, None)
+
+
+@pytest.mark.asyncio
+async def test_phi_reward_carries_dominant_node(monkeypatch, tmp_path) -> None:
+    published: dict[str, object] = {}
+
+    class _Bus:
+        enabled = True
+
+        async def publish(self, channel, env):
+            published[channel] = env
+
+    monkeypatch.setattr(worker.settings, "orion_phi_encoder_enabled", True, raising=False)
+    monkeypatch.setattr(worker.settings, "orion_phi_encoder_weights", str(tmp_path), raising=False)
+    monkeypatch.setattr(worker.settings, "inner_features_version", "seed-v2", raising=False)
+    _write_tiny_encoder(tmp_path)
+    monkeypatch.setattr(worker, "_pub_bus", _Bus(), raising=False)
+    monkeypatch.setattr(worker.manager, "broadcast", AsyncMock(), raising=False)
+    _reset_inner_state(monkeypatch, tmp_path)
+    _mock_healthy_substrate_reads(monkeypatch)
+
+    state = _self_state().model_copy(
+        update={
+            "dominant_attention_target_details": [
+                _target("field:recent_perturbations", "system"),
+                _target("node:substrate.execution", "node"),
+                _target("node:atlas", "node", reason="node gpu_pressure is elevated"),
+            ]
+        }
+    )
+    env = BaseEnvelope(
+        kind="substrate.self_state.v1",
+        source=ServiceRef(name="substrate-runtime", node="athena"),
+        payload=state.model_dump(mode="json"),
+    )
+
+    await worker.handle_self_state(env)
+
+    reward_env = published[worker.settings.channel_phi_reward]
+    reward = PhiIntrinsicRewardV1.model_validate(reward_env.payload)
+    assert reward.dominant_node == "node:atlas"
+    assert reward.dominant_node_reason == "node gpu_pressure is elevated"

@@ -40,16 +40,18 @@ Companion to `docs/superpowers/specs/2026-07-12-inner-state-unification-design.m
 
 ## Phase 2 — Node-attributed phi (brainstorm idea #2)
 
-**Gate to start:** Phase 1 merged AND its log-only traffic window shows real (non-degenerate) variation in dominant targets — do not build this on top of a signal that turns out to be flat.
+**Status: implemented, not yet deployed** (branch `feat/phi-dominant-node-attribution`).
 
-- [ ] `orion/schemas/telemetry/phi_encoder.py`: additive `dominant_node`/`dominant_node_reason` fields on `PhiIntrinsicRewardV1`.
-- [ ] `services/orion-spark-introspector/app/worker.py`: populate from `ss.dominant_attention_targets`'s widened form (Phase 1) inside `handle_self_state`, alongside the existing golden-phi overrides — same function, same seam, not a new pipeline.
-- [ ] Registry entry updated: `PhiIntrinsicRewardV1` now explicitly composes attention data, not just self-state's dimension scores.
-- [ ] Explicitly filter the two synthetic pseudo-nodes (`node:substrate.execution`, `node:substrate.transport`) from ever being the reported `dominant_node` — named in the brainstorm as a real risk (they aren't bodies, they're derived subsystem metrics; surfacing them as "the body part under stress" would be a category error, not a bug fixed by more data).
+**Gate to start:** Phase 1 merged AND its log-only traffic window shows real (non-degenerate) variation in dominant targets. Phase 1 isn't deployed yet, so this was checked against the OLD bare-string `dominant_attention_targets` field instead (live in production well before today): confirmed real compositional variance over a live 20-sample/~40s window — `node:atlas` and `capability:llm_inference`/`capability:orchestration` cycle in and out, not stuck flat. New finding from that same check, not anticipated when this phase was planned: `dominant_targets` is salience-sorted across node/capability/**system** kinds together (`orion/attention/field_attention/builder.py:34,50`), and a `target_kind == "system"` entry (`field:recent_perturbations`) wins the #1 slot in nearly every tick observed — filtering only the two synthetic pseudo-nodes (as originally planned) would not have been enough; `target_kind == "node"` must be filtered too.
 
-**Tests:** unit test asserting a fixture with a clear dominant node produces the matching `dominant_node`/reason; a second test asserting a pseudo-node is never selected even when it has the highest raw pressure score.
+- [x] `orion/schemas/telemetry/phi_encoder.py`: additive `dominant_node`/`dominant_node_reason` fields on `PhiIntrinsicRewardV1`.
+- [x] `services/orion-spark-introspector/app/worker.py`: new `_dominant_hardware_node()` helper, populated from `ss.dominant_attention_target_details` (Phase 1) inside `handle_self_state`, alongside the existing golden-phi overrides — same function, same seam, not a new pipeline.
+- [x] Registry entry updated: `phi_intrinsic_reward.v1` notes now describe the node-attribution composition.
+- [x] Filters BOTH the two synthetic pseudo-nodes AND non-`"node"` target kinds (the system-kind finding above) from ever being the reported `dominant_node`.
 
-**Acceptance:** `PhiIntrinsicRewardV1.dominant_node` reflects a real hardware node (not a pseudo-node) in live traffic.
+**Tests:** 3 unit tests directly on `_dominant_hardware_node()` (correct node selected over system/capability/pseudo-node entries; `None`/`None` when no qualifying node; empty-list edge case) + 1 end-to-end test through the real `handle_self_state()` pipeline with a custom `SelfStateV1` fixture.
+
+**Acceptance:** `PhiIntrinsicRewardV1.dominant_node` reflects a real hardware node (not a pseudo-node, not a system-kind target) — verified in tests; **live-traffic verification blocked on deployment**, not yet done.
 
 ---
 

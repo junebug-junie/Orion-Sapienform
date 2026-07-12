@@ -1,6 +1,13 @@
-"""Unit tests for apply_diffusion's Phase 3 (2026-07-12) node-provenance
-tracking -- state.capability_provenance recording which edge source
-contributed the largest weighted amount to each diffused channel this tick.
+"""Unit tests for apply_diffusion's node-provenance tracking (Phase 3,
+2026-07-12) and its memoryless-recompute fix (2026-07-12, later same day):
+state.capability_provenance records which edge source contributed the
+largest weighted amount to each diffused channel THIS TICK, and the
+diffused value itself is now recomputed fresh from current node/capability
+state every tick rather than accumulating across ticks -- see
+orion/self_state/deviation.py sibling module and app/digestion/diffusion.py's
+module docstring for the full incident writeup (resource_pressure was
+dead-flat 1.0 for the entire observed history due to additive cross-tick
+accumulation overwhelming an 8%/tick decay).
 """
 
 from __future__ import annotations
@@ -73,10 +80,13 @@ def test_larger_contribution_wins_provenance_over_smaller() -> None:
     assert state.capability_provenance["capability:llm_inference"]["pressure"] == "node:atlas"
 
 
-def test_zero_contribution_does_not_overwrite_existing_provenance() -> None:
-    # A second edge whose source has no value for its mapped channel this
-    # tick (contribution 0.0) must not clobber a real contributor's
-    # provenance recorded moments before in the same pass.
+def test_zero_contribution_edge_does_not_beat_a_real_contribution_same_tick() -> None:
+    # Both atlas's and circe's edges are present (real topology edges are
+    # static -- always in state.edges, every tick) and both target the same
+    # channel. atlas has a real contribution this tick; circe's node vector
+    # has no gpu_pressure at all (contribution 0). The zero-contribution edge
+    # must not win/clobber the real one just by being evaluated in some
+    # iteration order.
     edges = [
         FieldEdgeV1(
             source_id="node:atlas",
@@ -104,45 +114,87 @@ def test_zero_contribution_does_not_overwrite_existing_provenance() -> None:
     apply_diffusion(state, diffusion_rate=1.0)
 
     assert state.capability_provenance["capability:llm_inference"]["pressure"] == "node:atlas"
+    assert state.capability_vectors["capability:llm_inference"]["pressure"] == 0.85
 
 
-def test_zero_contribution_edge_does_not_clobber_prior_tick_provenance() -> None:
-    # Regression found by code review (2026-07-12, empirically reproduced):
-    # 0.0 was both the "no contribution recorded this call" sentinel AND a
-    # legitimate zero-contribution value, so a single edge contributing
-    # nothing this tick (its source has no value for the mapped channel)
-    # would still satisfy the old `contribution >= _max_contribution.get(key,
-    # 0.0)` check on the first edge processed for a (target, channel) key --
-    # silently overwriting real provenance recorded on a prior tick, even
-    # though the accumulated value itself is unchanged (adding 0.0 is a
-    # no-op). This state carries capability_provenance forward from a prior
-    # tick (as the persistent FieldStateV1 object genuinely does across real
-    # ticks) where atlas was the real contributor; this tick's only edge
-    # (circe) contributes nothing and must not claim credit.
+def test_no_current_contributor_resets_value_and_clears_provenance() -> None:
+    # The actual memoryless-recompute fix: a channel that WAS diffused in a
+    # prior tick (simulated here via pre-seeded capability_vectors/
+    # capability_provenance) but has zero real contributors THIS tick must
+    # reset to 0.0 and drop its provenance, not keep displaying a stale value
+    # attributed to a source that isn't contributing anymore.
+    edge = FieldEdgeV1(
+        source_id="node:circe",
+        target_id="capability:llm_inference",
+        edge_type="node_capability",
+        weight=0.50,
+        channel_map={"gpu_pressure": "pressure"},
+    )
     state = FieldStateV1(
         generated_at=NOW,
-        tick_id="tick_stale_zero_contribution",
-        node_vectors={"node:circe": {}},  # no gpu_pressure this tick
+        tick_id="tick_reset",
+        node_vectors={"node:circe": {}},  # circe reporting, but no gpu_pressure this tick
         capability_vectors={"capability:llm_inference": {"pressure": 0.5}},
         capability_provenance={"capability:llm_inference": {"pressure": "node:atlas"}},
-        edges=[
-            FieldEdgeV1(
-                source_id="node:circe",
-                target_id="capability:llm_inference",
-                edge_type="node_capability",
-                weight=0.50,
-                channel_map={"gpu_pressure": "pressure"},
-            ),
-        ],
+        edges=[edge],
     )
 
     apply_diffusion(state, diffusion_rate=1.0)
 
-    # Accumulated value unchanged (0.0 contribution added).
-    assert state.capability_vectors["capability:llm_inference"]["pressure"] == 0.5
-    # Provenance must still credit atlas (the real prior contributor), not
-    # circe (which contributed nothing this tick).
-    assert state.capability_provenance["capability:llm_inference"]["pressure"] == "node:atlas"
+    assert state.capability_vectors["capability:llm_inference"]["pressure"] == 0.0
+    assert "pressure" not in state.capability_provenance.get("capability:llm_inference", {})
+
+
+def test_sustained_real_contribution_does_not_ratchet_up_across_ticks() -> None:
+    # The actual live incident this fix addresses: resource_pressure was
+    # dead-flat 1.0 for the entire observed history because the OLD
+    # implementation added each tick's contribution onto whatever was already
+    # there (min(1.0, tgt.get(ch, 0.0) + contribution)), which an 8%/tick
+    # decay could never keep up with. Calling apply_diffusion repeatedly with
+    # the SAME steady, moderate input must produce the SAME steady value each
+    # time, not a value that climbs toward (and gets stuck at) 1.0.
+    edge = FieldEdgeV1(
+        source_id="node:atlas",
+        target_id="capability:llm_inference",
+        edge_type="node_capability",
+        weight=0.50,
+        channel_map={"gpu_pressure": "pressure"},
+    )
+    state = _state([edge], {"node:atlas": {"gpu_pressure": 0.6}})
+
+    values = []
+    for _ in range(10):
+        apply_diffusion(state, diffusion_rate=1.0)
+        values.append(state.capability_vectors["capability:llm_inference"]["pressure"])
+
+    # 0.6 * 0.50 = 0.30, every single tick -- never climbs.
+    assert all(v == 0.30 for v in values), values
+
+
+def test_multiple_channels_feeding_same_target_use_max_not_sum() -> None:
+    # node:athena -> capability:orchestration maps BOTH cpu_pressure AND
+    # transport_pressure onto "pressure" (real topology edge,
+    # config/field/orion_field_topology.v1.yaml). Two real, legitimate
+    # stressors must combine via max() -- whichever is worse dominates --
+    # not sum, which would let two only-moderately-stressed channels alone
+    # push the target near/at ceiling in a single tick.
+    edge = FieldEdgeV1(
+        source_id="node:athena",
+        target_id="capability:orchestration",
+        edge_type="node_capability",
+        weight=0.90,
+        channel_map={"cpu_pressure": "pressure", "transport_pressure": "pressure"},
+    )
+    state = _state(
+        [edge],
+        {"node:athena": {"cpu_pressure": 0.5, "transport_pressure": 0.5}},
+    )
+
+    apply_diffusion(state, diffusion_rate=1.0)
+
+    # Each contributes 0.5*0.90=0.45. Summed, that's 0.90 (near ceiling from
+    # one tick alone); maxed, it's 0.45 -- whichever channel is worse.
+    assert state.capability_vectors["capability:orchestration"]["pressure"] == 0.45
 
 
 def test_capability_capability_edge_records_capability_id_as_provenance() -> None:
@@ -170,3 +222,52 @@ def test_capability_capability_edge_records_capability_id_as_provenance() -> Non
         state.capability_provenance["capability:orchestration"]["transport_pressure"]
         == "capability:transport"
     )
+
+
+def test_confidence_and_available_capacity_derived_from_final_pressure() -> None:
+    edge = FieldEdgeV1(
+        source_id="node:atlas",
+        target_id="capability:llm_inference",
+        edge_type="node_capability",
+        weight=0.80,
+        channel_map={"gpu_pressure": "pressure"},
+    )
+    state = _state([edge], {"node:atlas": {"gpu_pressure": 0.5}})
+
+    apply_diffusion(state, diffusion_rate=1.0)
+
+    tgt = state.capability_vectors["capability:llm_inference"]
+    assert tgt["pressure"] == 0.40
+    assert tgt["available_capacity"] == 0.60
+    assert tgt["confidence"] == 0.80
+
+
+def test_capability_with_no_pressure_target_keeps_reconciled_baseline() -> None:
+    # A capability whose only diffusion target is NOT "pressure" (e.g. only
+    # receives reliability_pressure) must not have its pre-existing
+    # confidence/available_capacity baseline (set by the caller's lattice
+    # reconciliation before apply_diffusion ever runs) clobbered or dropped --
+    # only channels apply_diffusion actually recomputes should change.
+    edge = FieldEdgeV1(
+        source_id="node:athena",
+        target_id="capability:orchestration",
+        edge_type="node_capability",
+        weight=0.90,
+        channel_map={"execution_friction": "reliability_pressure"},
+    )
+    state = FieldStateV1(
+        generated_at=NOW,
+        tick_id="tick_no_pressure_target",
+        node_vectors={"node:athena": {"execution_friction": 0.5}},
+        capability_vectors={"capability:orchestration": {"confidence": 1.0, "available_capacity": 1.0}},
+        edges=[edge],
+    )
+
+    apply_diffusion(state, diffusion_rate=1.0)
+
+    tgt = state.capability_vectors["capability:orchestration"]
+    assert tgt["reliability_pressure"] == 0.45
+    # Untouched -- "pressure" was never a target for this capability in this
+    # test, so the derived-formula block never ran.
+    assert tgt["confidence"] == 1.0
+    assert tgt["available_capacity"] == 1.0

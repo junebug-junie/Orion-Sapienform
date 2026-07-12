@@ -289,7 +289,7 @@ async def http_get_latest(
     if STORE is None:
         raise HTTPException(status_code=503, detail="state_store_not_ready")
     req = StateGetLatestRequest(scope=scope, node=node)
-    reply = await STORE.get_latest(req)
+    reply = await STORE.get_latest(req, biometrics_stale_after_sec=float(settings.biometrics_stale_after_sec))
     return JSONResponse(reply.model_dump(mode="json"))
 
 

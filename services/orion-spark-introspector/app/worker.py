@@ -300,6 +300,54 @@ def _phi_from_self_state(ss: SelfStateV1) -> Dict[str, float]:
     }
 
 
+def _golden_phi_overrides(
+    *,
+    phi: float,
+    delta_phi: float,
+    recon_error: float,
+    recon_error_p95_reference: float,
+) -> Dict[str, float]:
+    """Trained-encoder-derived replacements for 3 of _phi_from_self_state's 4
+    axes, used whenever the encoder is enabled and healthy this tick (2026-07-12).
+
+    _phi_from_self_state is a hand-tuned, untrained heuristic -- real
+    engineering, but not the trained autoencoder. It was the only thing ever
+    reaching orion-cortex-exec's metacognition prompts
+    (log_orion_metacognition_draft.j2 / _enrich.j2, via
+    spark_narrative.spark_phi_hint/spark_phi_narrative); the trained encoder's
+    actual output (PhiIntrinsicRewardV1) had zero consumers beyond a SQL sink
+    and a debug WebSocket EKG panel. This closes that gap for coherence/energy/
+    novelty, which have principled trained analogs:
+
+    - coherence <- phi (the encoder's own sigmoid output; this IS phi, the
+      thing the heuristic's coherence axis was already trying to approximate
+      via an untrained geometric-mean IIT-flavored formula).
+    - energy <- |delta_phi| (tick-to-tick rate of change in the trained phi;
+      arousal/activation is fundamentally about magnitude of change, not a
+      static level).
+    - novelty <- recon_error scaled by the active encoder's own training-time
+      recon_error_p95 (how anomalous this tick's reconstruction is relative to
+      what the encoder considers "normal" from its own training distribution
+      -- a real surprise signal, unlike the heuristic's novelty axis, which
+      leans on `uncertainty`, a dimension structurally near-zero whenever
+      coherence is healthy).
+
+    valence is deliberately NOT overridden here: the active encoder's latent
+    probes (probes.json) show zero correlation between any z_i and any
+    social/hedonic-adjacent felt dimension (social_pressure, agency_readiness
+    aside, which coherence/energy already draw on) -- there is no trained
+    analog to source it from. Inventing one would be exactly the fabricated-
+    signal pattern this change exists to remove. valence keeps coming from
+    _phi_from_self_state until a real trained signal for it exists.
+    """
+    scale = max(float(recon_error_p95_reference), 1e-6)
+    return {
+        "coherence": round(float(phi), 4),
+        "energy": round(min(1.0, abs(float(delta_phi))), 4),
+        "novelty": round(min(1.0, float(recon_error) / scale), 4),
+    }
+
+
 def _get_phi_stats() -> Dict[str, float]:
     """Return phi dimensions from substrate self-state when available, tissue otherwise."""
     ss = _LATEST_SELF_STATE
@@ -2522,6 +2570,17 @@ async def handle_self_state(env: BaseEnvelope) -> None:
     _PREV_PHI = phi_now
     set_latest_self_state(ss)
 
+    # Whether the trained encoder actually completed this tick. Checked at
+    # the end of this function (after every possible skip/failure path --
+    # disabled, degraded, frozen, missing weights, or an exception during
+    # inference) to decide whether _PHI_PREV_PHI/_PHI_PREV_RECON should carry
+    # forward or reset to None. Without this, a resumed tick after any gap
+    # would compute delta_phi/delta_recon spanning however many ticks were
+    # skipped, landing a stale, misleadingly large value in
+    # phi_now["energy"] -- which now reaches a live LLM metacognition prompt,
+    # not just a SQL sink (found by code review, 2026-07-12).
+    encoder_tick_ok = False
+
     global _INNER_PREV_FELT, _INNER_PREV_HEADLINE, _INNER_DEGENERATE_STREAK, _INNER_LAST_HEADLINE
     if settings.inner_features_enabled:
         gt = await _fetch_substrate_grammar_truth()
@@ -2562,44 +2621,61 @@ async def handle_self_state(env: BaseEnvelope) -> None:
         ):
             enc = _load_phi_encoder()
             if enc is not None:
-                x = enc.feature_vector_from_inner(inner)
-                out = enc.forward(x)
-                inner.headline = round(out.phi, 4)
-                inner.headline_source = "encoder"
-                inner.metadata.update({
-                    "recon_error": out.recon_error,
-                    "latent": out.latent,
-                    "encoder_version": enc.encoder_version,
-                })
-                delta_phi = 0.0 if _PHI_PREV_PHI is None else out.phi - _PHI_PREV_PHI
-                delta_recon = 0.0 if _PHI_PREV_RECON is None else out.recon_error - _PHI_PREV_RECON
-                reward = PhiIntrinsicRewardV1(
-                    generated_at=inner.generated_at,
-                    self_state_id=inner.self_state_id,
-                    encoder_version=enc.encoder_version,
-                    features_version=inner.features_version,
-                    phi=out.phi,
-                    delta_phi=delta_phi,
-                    recon_error=out.recon_error,
-                    delta_recon_error=delta_recon,
-                    latent=out.latent,
-                    attribution_top=out.attribution_top,
-                    grammar_truth_degraded=inner.grammar_truth_degraded,
-                )
-                if _pub_bus and _pub_bus.enabled:
-                    try:
-                        await _pub_bus.publish(
-                            settings.channel_phi_reward,
-                            PhiIntrinsicRewardEnvelope(
-                                source=_svc_ref(),
-                                correlation_id=uuid4(),
-                                payload=reward,
-                            ),
-                        )
-                    except Exception as exc:
-                        logger.warning("Failed to publish phi_reward: %s", exc)
-                _PHI_PREV_PHI = out.phi
-                _PHI_PREV_RECON = out.recon_error
+                try:
+                    x = enc.feature_vector_from_inner(inner)
+                    out = enc.forward(x)
+                    inner.headline = round(out.phi, 4)
+                    inner.headline_source = "encoder"
+                    inner.metadata.update({
+                        "recon_error": out.recon_error,
+                        "latent": out.latent,
+                        "encoder_version": enc.encoder_version,
+                    })
+                    delta_phi = 0.0 if _PHI_PREV_PHI is None else out.phi - _PHI_PREV_PHI
+                    delta_recon = 0.0 if _PHI_PREV_RECON is None else out.recon_error - _PHI_PREV_RECON
+                    phi_now = {
+                        **phi_now,
+                        **_golden_phi_overrides(
+                            phi=out.phi,
+                            delta_phi=delta_phi,
+                            recon_error=out.recon_error,
+                            recon_error_p95_reference=enc.manifest.training.recon_error_p95,
+                        ),
+                    }
+                    _PREV_PHI = phi_now
+                    reward = PhiIntrinsicRewardV1(
+                        generated_at=inner.generated_at,
+                        self_state_id=inner.self_state_id,
+                        encoder_version=enc.encoder_version,
+                        features_version=inner.features_version,
+                        phi=out.phi,
+                        delta_phi=delta_phi,
+                        recon_error=out.recon_error,
+                        delta_recon_error=delta_recon,
+                        latent=out.latent,
+                        attribution_top=out.attribution_top,
+                        grammar_truth_degraded=inner.grammar_truth_degraded,
+                    )
+                    if _pub_bus and _pub_bus.enabled:
+                        try:
+                            await _pub_bus.publish(
+                                settings.channel_phi_reward,
+                                PhiIntrinsicRewardEnvelope(
+                                    source=_svc_ref(),
+                                    correlation_id=uuid4(),
+                                    payload=reward,
+                                ),
+                            )
+                        except Exception as exc:
+                            logger.warning("Failed to publish phi_reward: %s", exc)
+                    _PHI_PREV_PHI = out.phi
+                    _PHI_PREV_RECON = out.recon_error
+                    encoder_tick_ok = True
+                except Exception as exc:
+                    # Any failure here (including mid-inference) must NOT
+                    # leave _PHI_PREV_PHI/_PHI_PREV_RECON at a stale value --
+                    # encoder_tick_ok stays False, so the reset below fires.
+                    logger.warning("phi_encoder_tick_failed error=%s", exc)
         _INNER_PREV_HEADLINE = inner.headline
         _INNER_LAST_HEADLINE = inner.headline
         # Corpus-health gate reads the cognitive names that actually match this
@@ -2629,6 +2705,10 @@ async def handle_self_state(env: BaseEnvelope) -> None:
                 )
             except Exception as exc:
                 logger.warning("Failed to publish inner_features: %s", exc)
+
+    if not encoder_tick_ok:
+        _PHI_PREV_PHI = None
+        _PHI_PREV_RECON = None
 
     # Compute real inter-tick delta — two genuinely time-separated substrate snapshots.
     turn_effect: Optional[Dict[str, float]] = None

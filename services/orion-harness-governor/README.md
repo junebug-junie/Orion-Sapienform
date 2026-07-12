@@ -65,7 +65,7 @@ Both are default-off, fail-open, and need no secrets:
 
 #### Hook mode (Stage B)
 
-`HARNESS_FCC_CONTEXT_MODE_HOOKS_ENABLED=true` runs Context Mode as a Claude Code plugin (PreToolUse/PostToolUse/PreCompact/SessionStart/Stop hooks) instead of the standalone MCP server, adding session continuity across compaction. Keep this off for ordinary turns unless the hook smoke/eval is the active experiment. The plugin is installed once by the operator into the persistent `harness-claude-config` volume (mounted at `/root/.claude`), not baked at image build:
+`HARNESS_FCC_CONTEXT_MODE_HOOKS_ENABLED=true` runs Context Mode as a Claude Code plugin (PreToolUse/PostToolUse/PreCompact/SessionStart/Stop hooks) instead of the standalone MCP server, adding session continuity across compaction. The plugin is installed once by the operator into the persistent `harness-claude-config` volume (mounted at `/root/.claude`), not baked at image build:
 
 ```bash
 docker exec -it <container> claude plugin marketplace add mksglu/context-mode
@@ -74,23 +74,9 @@ docker exec -it <container> claude plugin install context-mode@context-mode
 
 The smoke script `scripts/context_mode_hooks_smoke.py` must pass before enabling this on ordinary turns. No duplicate registration: when both `HARNESS_FCC_CONTEXT_MODE_HOOKS_ENABLED` and `HARNESS_FCC_CONTEXT_MODE_ENABLED` are true, hook mode wins and the standalone server is skipped.
 
-Turning the env flag off stops Orion-side hook wiring, but an already-installed
-Claude plugin can still load from the persistent volume. To fully disable hook
-mode after an experiment:
-
-```bash
-docker exec -it <container> claude plugin disable context-mode
-```
-
 The unified-turn introspection experiment for these flags lives at `scripts/run_unified_turn_introspection_eval.py` with its fixture in `orion/harness/evals/fixtures/`.
 
 `HARNESS_FCC_SKIP_PERMISSIONS=true` (default in compose) passes `--dangerously-skip-permissions` to `claude -p` even when the governor runs as root — otherwise Bash/MCP steps stall on approval prompts with no operator in Orion mode.
-
-`HARNESS_FCC_STREAM_IDLE_TIMEOUT_SEC=180` is the maximum silence between
-Claude `stream-json` events before the governor kills only that FCC subprocess
-and returns `fcc_idle_timeout`. The full turn budget remains
-`HARNESS_FCC_TIMEOUT_SEC`; set the idle value to `0` only for debugging if you
-want the old whole-turn timeout behavior.
 
 ### Required secrets
 

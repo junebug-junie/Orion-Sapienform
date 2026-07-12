@@ -29,7 +29,6 @@ logger = logging.getLogger("orion.harness.fcc_motor")
 
 DEFAULT_STREAM_READ_LIMIT = 8 * 1024 * 1024
 DEFAULT_FCC_MODEL_LABEL = "MODEL_SONNET"
-DEFAULT_STREAM_IDLE_TIMEOUT_SEC = 180.0
 
 # Live FCC claude subprocesses keyed by correlation_id (harness cancel path).
 _ACTIVE: Dict[str, asyncio.subprocess.Process] = {}
@@ -283,46 +282,6 @@ def _env_truthy(key: str) -> bool:
     return os.environ.get(key, "").strip().lower() in {"1", "true", "yes", "on"}
 
 
-def _stream_idle_timeout_sec(turn_timeout_sec: float) -> float:
-    """Max silence between Claude stream-json events.
-
-    HARNESS_FCC_TIMEOUT_SEC is the whole-turn budget and can be very long.
-    A separate idle budget keeps MCP startup/model dead-air from freezing Hub
-    while still allowing active turns to continue emitting steps.
-    """
-    raw = str(os.environ.get("HARNESS_FCC_STREAM_IDLE_TIMEOUT_SEC") or "").strip()
-    configured = DEFAULT_STREAM_IDLE_TIMEOUT_SEC
-    if raw:
-        try:
-            configured = float(raw)
-        except ValueError:
-            logger.warning(
-                "invalid HARNESS_FCC_STREAM_IDLE_TIMEOUT_SEC=%r; using default %.1fs",
-                raw,
-                DEFAULT_STREAM_IDLE_TIMEOUT_SEC,
-            )
-            configured = DEFAULT_STREAM_IDLE_TIMEOUT_SEC
-    if configured <= 0:
-        return max(1.0, float(turn_timeout_sec))
-    return max(1.0, min(float(turn_timeout_sec), configured))
-
-
-def _tool_names_from_stream_event(event: Dict[str, Any]) -> list[str]:
-    message = event.get("message")
-    if not isinstance(message, dict):
-        return []
-    content = message.get("content")
-    if not isinstance(content, list):
-        return []
-    names: list[str] = []
-    for block in content:
-        if not isinstance(block, dict):
-            continue
-        if block.get("type") == "tool_use" and isinstance(block.get("name"), str):
-            names.append(block["name"])
-    return names
-
-
 def _should_skip_claude_permissions() -> bool:
     """Whether to pass --dangerously-skip-permissions to claude -p.
 
@@ -503,10 +462,6 @@ async def run_fcc_turn(
     budget_chars = len(prompt)
     ceiling_chars = max_context_chars()
     context_nudge_sent = False
-    idle_timeout_sec = _stream_idle_timeout_sec(timeout_sec)
-    steps_seen = 0
-    last_event_type = "none"
-    last_tool_name = "none"
     if stream_read_limit < 65536:
         stream_read_limit = 65536
 
@@ -524,22 +479,13 @@ async def run_fcc_turn(
 
         while True:
             try:
-                line_bytes = await asyncio.wait_for(
-                    proc.stdout.readline(), timeout=idle_timeout_sec
-                )
+                line_bytes = await asyncio.wait_for(proc.stdout.readline(), timeout=timeout_sec)
             except asyncio.TimeoutError:
                 proc.kill()
                 yield {
                     "type": "error",
-                    "error": (
-                        f"fcc stream idle for {idle_timeout_sec:.1f}s "
-                        f"(turn_timeout={timeout_sec:.1f}s, steps={steps_seen}, "
-                        f"last_event={last_event_type}, last_tool={last_tool_name})"
-                    ),
-                    "error_code": "fcc_idle_timeout",
-                    "last_event_type": last_event_type,
-                    "last_tool": last_tool_name,
-                    "steps_seen": steps_seen,
+                    "error": f"fcc turn timed out after {timeout_sec}s",
+                    "error_code": "fcc_timeout",
                 }
                 return
             except asyncio.LimitOverrunError as exc:
@@ -558,12 +504,6 @@ async def run_fcc_turn(
             parsed = parse_stream_json_line(line_bytes.decode("utf-8", errors="replace"))
             if parsed is None:
                 continue
-
-            steps_seen += 1
-            last_event_type = str(parsed.get("type") or "unknown")
-            tool_names = _tool_names_from_stream_event(parsed)
-            if tool_names:
-                last_tool_name = tool_names[-1]
 
             step = build_step_frame(parsed)
             step = annotate_harness_step(step, accumulated_chars=budget_chars, max_chars=ceiling_chars)

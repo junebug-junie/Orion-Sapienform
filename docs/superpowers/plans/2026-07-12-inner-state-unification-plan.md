@@ -57,16 +57,21 @@ Companion to `docs/superpowers/specs/2026-07-12-inner-state-unification-design.m
 
 ## Phase 3 — `spark_embodiment_narrative` (brainstorm idea #3)
 
-**Gate to start:** Phase 2 merged AND deployed for a real traffic window (this is the one phase that changes prompt content — needs its own confirmation the metacog surface reads coherently, per the design spec's acceptance checks on prompt-builder discipline).
+**Status: implemented, deployed** (branch `docs/attention-provenance-crosscheck-phase4`, continued in-session — Phases 0/1/2 were deployed first specifically to satisfy this phase's gate).
 
-- [ ] `services/orion-cortex-exec/app/spark_narrative.py`: new `spark_embodiment_hint`/`spark_embodiment_narrative`, mirroring `spark_phi_hint`/`spark_phi_narrative`'s existing shape exactly.
-- [ ] `orion/cognition/prompts/log_orion_metacognition_{draft,enrich}.j2`: one new template line.
-- [ ] Registry entry: this is the first prompt-builder addition made *through* the contract from day one — the model entry for what "declared cognition consumer" should look like everywhere else.
-- [ ] Before merging: the design spec's outstanding acceptance check ("does an existing prompt-builder bypass the contract?") gets answered concretely for this new addition specifically — it must not.
+**Gate to start:** Phase 2 merged AND deployed for a real traffic window. Satisfied in-session: Phases 0/1/2 deployed (`orion-self-state-runtime`, `orion-spark-introspector` rebuilt), confirmed live via direct bus subscription (`redis-cli SUBSCRIBE orion:self:phi_reward`) — real `dominant_node`/`dominant_node_reason` values (`node:atlas`/`node:circe` alternating, matching the Phase 4 cross-check's 81.7%/18.3% split) before this phase's code was written.
 
-**Tests:** template rendering test with a fixture snapshot; confirm the narrative string names a real hardware node, not a pseudo-node (same guard as Phase 2, at the render layer too — defense in depth).
+**Incident found and fixed during deployment, not part of the plan**: `orion-sql-writer` is a second, independent consumer of `PhiIntrinsicRewardV1` (`extra="forbid"`) with its own pinned image — deploying Phase 2 without rebuilding it caused live `pydantic_core.ValidationError: extra_forbidden` on every phi-reward write until `orion-sql-writer` was also rebuilt. Lesson: `extra="forbid"` schemas need every consumer identified before a field is added, not just the primary producer/consumer pair.
 
-**Acceptance:** a real chat/metacog turn post-deploy produces a narrative that correctly names the actual stressed node, cross-checked against the live `substrate_field_state` row for that tick.
+- [x] `services/orion-cortex-exec/app/spark_narrative.py`: `spark_embodiment_hint`/`spark_embodiment_narrative`, mirroring `spark_phi_hint`/`spark_phi_narrative`'s shape. Honest on absence (`"none"`/explicit no-node sentence), never fabricates a node name.
+- [x] `orion/cognition/prompts/log_orion_metacognition_{draft,enrich}.j2`: one new template block each (`EMBODIMENT` section, mirroring the `SPARK φ INTERPRETATION` block).
+- [x] `orion/schemas/telemetry/spark.py`: `SparkStateSnapshotV1.dominant_node`/`dominant_node_reason` — the schema `orion-cortex-exec` actually reads is `SparkStateSnapshotV1`, not `PhiIntrinsicRewardV1` directly; threading required a second schema change not explicit in the original plan text.
+- [x] Registry entry: `phi_intrinsic_reward.v1`'s `cognition_consumers` extended with `spark_embodiment_narrative`, notes updated.
+- [x] Real bug caught before commit (not by review — by writing the crash-regression test first): `dominant_node`/`dominant_node_reason` are only assigned inside the encoder-success branch, but referenced unconditionally at the later `SparkStateSnapshotV1` construction — `UnboundLocalError` on any disabled/degraded/frozen/failed tick. Fixed with `None` defaults declared alongside `encoder_tick_ok = False`, mirroring that variable's existing pattern.
+
+**Tests:** 5 unit tests on `spark_embodiment_hint`/`spark_embodiment_narrative` (real node named without prefix, honest absence, no fabricated node names, missing-reason handled without a dangling `()`); 2 new worker-level tests (`SparkStateSnapshotV1` carries the same `dominant_node` as the reward; the `UnboundLocalError` regression, verified to actually reproduce the crash before the fix and pass after).
+
+**Acceptance:** confirmed live in production before Phase 3 code was written (see gate note above) — the real-traffic verification this acceptance criterion asked for was done as a precondition, not deferred.
 
 ---
 

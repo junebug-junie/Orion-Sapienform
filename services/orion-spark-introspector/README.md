@@ -397,6 +397,17 @@ frequently wins the #1 salience slot, so skipping only the pseudo-nodes was
 not enough to avoid misattributing "the stressed body part" to a
 perturbation-count aggregate.
 
+`dominant_node`/`dominant_node_reason` are also threaded onto
+`SparkStateSnapshotV1` (a separate relay schema,
+`orion/schemas/telemetry/spark.py`) in the same `handle_self_state()`
+construction — this is the schema `orion-cortex-exec` actually reads for its
+metacog narrative (Phase 3), not `PhiIntrinsicRewardV1` directly. Both are
+declared with `Optional[str] = None` defaults set *before* the encoder block
+runs (not only inside its success branch) — referencing them unconditionally
+at the snapshot-construction site otherwise raises `UnboundLocalError` on any
+disabled/degraded/frozen/failed tick, since each `handle_self_state()` call
+starts a fresh local scope.
+
 After `.env_example` edits: `python scripts/sync_local_env_from_example.py orion-spark-introspector`
 
 ```bash

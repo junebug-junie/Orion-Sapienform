@@ -376,3 +376,53 @@ async def test_phi_reward_carries_dominant_node(monkeypatch, tmp_path) -> None:
     reward = PhiIntrinsicRewardV1.model_validate(reward_env.payload)
     assert reward.dominant_node == "node:atlas"
     assert reward.dominant_node_reason == "node gpu_pressure is elevated"
+
+    # 2026-07-12, Phase 3: the same dominant_node/reason must also reach
+    # SparkStateSnapshotV1 -- this is the schema orion-cortex-exec's
+    # spark_embodiment_narrative actually reads, a different object from
+    # PhiIntrinsicRewardV1.
+    snap_env = published[worker.settings.channel_spark_state_snapshot]
+    snap_payload = snap_env.payload
+    snap_dominant_node = (
+        snap_payload.dominant_node if hasattr(snap_payload, "dominant_node") else snap_payload["dominant_node"]
+    )
+    snap_dominant_node_reason = (
+        snap_payload.dominant_node_reason
+        if hasattr(snap_payload, "dominant_node_reason")
+        else snap_payload["dominant_node_reason"]
+    )
+    assert snap_dominant_node == "node:atlas"
+    assert snap_dominant_node_reason == "node gpu_pressure is elevated"
+
+
+@pytest.mark.asyncio
+async def test_spark_snapshot_dominant_node_none_when_encoder_skipped(monkeypatch, tmp_path) -> None:
+    # Regression: dominant_node/dominant_node_reason are assigned only inside
+    # the encoder-success branch, but SparkStateSnapshotV1 is built later,
+    # unconditionally -- referencing them there without a default assigned
+    # earlier in the function would raise UnboundLocalError on any tick where
+    # the encoder is skipped (disabled here). Confirms the fix: the tick
+    # completes and the snapshot carries None, not a crash.
+    published: dict[str, object] = {}
+
+    class _Bus:
+        enabled = True
+
+        async def publish(self, channel, env):
+            published[channel] = env
+
+    monkeypatch.setattr(worker.settings, "orion_phi_encoder_enabled", False, raising=False)
+    monkeypatch.setattr(worker, "_pub_bus", _Bus(), raising=False)
+    monkeypatch.setattr(worker.manager, "broadcast", AsyncMock(), raising=False)
+    _reset_inner_state(monkeypatch, tmp_path)
+    _mock_healthy_substrate_reads(monkeypatch)
+
+    await worker.handle_self_state(_envelope())
+
+    assert worker.settings.channel_phi_reward not in published
+    snap_env = published[worker.settings.channel_spark_state_snapshot]
+    snap_payload = snap_env.payload
+    snap_dominant_node = (
+        snap_payload.dominant_node if hasattr(snap_payload, "dominant_node") else snap_payload["dominant_node"]
+    )
+    assert snap_dominant_node is None

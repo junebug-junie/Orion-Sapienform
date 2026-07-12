@@ -43,7 +43,15 @@ of four composition statuses:
   filtered to `target_kind == "node"` and excluding two synthetic
   pseudo-nodes — confirmed live that a `target_kind == "system"` entry
   frequently wins the #1 salience slot, so `target_kind` filtering matters
-  as much as the pseudo-node exclusion.
+  as much as the pseudo-node exclusion. Phase 3 (2026-07-12) closes the loop:
+  `dominant_node`/`dominant_node_reason` are threaded through
+  `SparkStateSnapshotV1` (the relay schema `orion-cortex-exec` actually
+  reads) into `spark_embodiment_narrative`, rendered into both metacog
+  prompt templates alongside `spark_phi_narrative` — confirmed live in
+  production before this phase shipped (`node:atlas`/`node:circe`
+  alternating as `capability:llm_inference`'s real GPU contention winner,
+  81.7%/18.3% split over a 295-tick window — see
+  `docs/notes/2026-07-12-phase4-attention-provenance-crosscheck.md`).
 - `SHADOW` — real, live, deliberately **not** composed, with a required,
   stated reason (`shadow_reason`). The model case: phi's surviving
   `valence` heuristic, explicitly justified because no trained latent

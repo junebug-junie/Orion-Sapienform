@@ -29,6 +29,7 @@ logger = logging.getLogger("orion.harness.fcc_motor")
 
 DEFAULT_STREAM_READ_LIMIT = 8 * 1024 * 1024
 DEFAULT_FCC_MODEL_LABEL = "MODEL_SONNET"
+DEFAULT_STREAM_STALL_TIMEOUT_SEC = 180.0
 
 # Live FCC claude subprocesses keyed by correlation_id (harness cancel path).
 _ACTIVE: Dict[str, asyncio.subprocess.Process] = {}
@@ -282,6 +283,55 @@ def _env_truthy(key: str) -> bool:
     return os.environ.get(key, "").strip().lower() in {"1", "true", "yes", "on"}
 
 
+def _stream_stall_timeout_sec(turn_timeout_sec: float) -> float:
+    """Max wait for one stream-json line, separate from the whole-turn budget.
+
+    Claude Code only writes a stream-json line once a step fully completes (no
+    --include-partial-messages), so a single message that never reaches a stop
+    condition blocks readline() with no output at all. Before this cap, that
+    wait was `timeout_sec` itself (up to HARNESS_FCC_TIMEOUT_SEC, 900s default)
+    per *line* rather than per turn, so one stuck message could hang a turn for
+    the full 15 minutes. Live-reproduced 2026-07-12: a two-word greeting turn
+    streamed 540KB/4333 upstream chunks with zero stream-json output before
+    being killed manually at ~11 minutes.
+
+    Deliberately not adding `--include-partial-messages` here: an earlier,
+    separate session prototyped that (streamed text deltas, preserved partial
+    `llm_response` on cutoff) alongside this same stall cap and a model-id
+    "no-thinking" normalization, then reverted all of it with no recorded
+    rationale (branch fix/fcc-motor-idle-watchdog, commits a8e8221c/f4c3d5dc,
+    reverted by e995278a/7bd8be83). Checked against this incident: thinking
+    was already off for this model via ENABLE_MODEL_THINKING=false in
+    ~/.fcc/.env, so that piece wasn't the cause here. Partial-message
+    streaming would give real visibility into a runaway generation instead of
+    just killing it blind, but it's a bigger behavioral change with an
+    unknown-but-presumably-real reason it was backed out; revisit only with a
+    fresh understanding of why, not a blind re-apply.
+    """
+    raw = str(os.environ.get("HARNESS_FCC_STREAM_STALL_TIMEOUT_SEC") or "").strip()
+    configured = DEFAULT_STREAM_STALL_TIMEOUT_SEC
+    if raw:
+        try:
+            configured = float(raw)
+        except ValueError:
+            logger.warning(
+                "invalid HARNESS_FCC_STREAM_STALL_TIMEOUT_SEC=%r; using default %.1fs",
+                raw,
+                DEFAULT_STREAM_STALL_TIMEOUT_SEC,
+            )
+    if configured <= 0:
+        return max(1.0, float(turn_timeout_sec))
+    effective = max(1.0, min(float(turn_timeout_sec), configured))
+    if effective != configured:
+        logger.warning(
+            "HARNESS_FCC_STREAM_STALL_TIMEOUT_SEC=%s clamped to %.1fs (turn budget %.1fs)",
+            raw or configured,
+            effective,
+            turn_timeout_sec,
+        )
+    return effective
+
+
 def _should_skip_claude_permissions() -> bool:
     """Whether to pass --dangerously-skip-permissions to claude -p.
 
@@ -455,6 +505,9 @@ async def run_fcc_turn(
                 argv.insert(model_idx + offset, token)
 
     started = time.monotonic()
+    deadline = started + float(timeout_sec)
+    stall_timeout_sec = _stream_stall_timeout_sec(timeout_sec)
+    steps_seen = 0
     proc: Optional[asyncio.subprocess.Process] = None
     accumulated = ""
     claude_session_id: Optional[str] = None
@@ -478,14 +531,29 @@ async def run_fcc_turn(
         _register_process(correlation_id, proc)
 
         while True:
+            remaining = deadline - time.monotonic()
+            read_wait = max(0.0, min(stall_timeout_sec, remaining))
             try:
-                line_bytes = await asyncio.wait_for(proc.stdout.readline(), timeout=timeout_sec)
+                line_bytes = await asyncio.wait_for(proc.stdout.readline(), timeout=read_wait)
             except asyncio.TimeoutError:
                 proc.kill()
+                stalled = stall_timeout_sec < remaining
+                if stalled:
+                    error_code = "fcc_stream_stalled"
+                    error_msg = (
+                        f"fcc stream stalled for {stall_timeout_sec:.1f}s without "
+                        f"completing a step (turn_timeout={timeout_sec:.1f}s, "
+                        f"steps_seen={steps_seen})"
+                    )
+                else:
+                    error_code = "fcc_timeout"
+                    error_msg = f"fcc turn timed out after {timeout_sec}s"
                 yield {
                     "type": "error",
-                    "error": f"fcc turn timed out after {timeout_sec}s",
-                    "error_code": "fcc_timeout",
+                    "error": error_msg,
+                    "error_code": error_code,
+                    "steps_seen": steps_seen,
+                    "llm_response": accumulated or None,
                 }
                 return
             except asyncio.LimitOverrunError as exc:
@@ -504,6 +572,7 @@ async def run_fcc_turn(
             parsed = parse_stream_json_line(line_bytes.decode("utf-8", errors="replace"))
             if parsed is None:
                 continue
+            steps_seen += 1
 
             step = build_step_frame(parsed)
             step = annotate_harness_step(step, accumulated_chars=budget_chars, max_chars=ceiling_chars)

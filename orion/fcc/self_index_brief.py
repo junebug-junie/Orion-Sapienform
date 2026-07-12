@@ -31,17 +31,25 @@ def gitnexus_brief_lines() -> list[str]:
     return [
         (
             "GitNexus code-graph MCP is available for repository introspection. "
-            "Use query to locate a concept or process, context for the 360-degree "
-            "view of one symbol, impact for upstream/downstream blast radius, and "
-            "trace only between two known endpoints. Request full symbol content "
-            "only after narrowing."
+            "For questions about repo topology, ownership, call graphs, blast "
+            "radius, or where a concept lives, call it before falling back to "
+            "raw source search — a ctx_* shell search or grep is not a "
+            "substitute for a GitNexus query on those questions. Use query to "
+            "locate a concept or process, context for the 360-degree view of "
+            "one symbol, impact for upstream/downstream blast radius, and "
+            "trace only between two known endpoints. Request full symbol "
+            "content only after narrowing."
         ),
         (
-            "The graph is derived cache, never authority. Before graph-grounded "
-            "claims, read the GitNexus repo status/context resource; if the index "
-            "is stale, disclose that and fall back to source search — never present "
-            "stale structure as current truth. Verify authority claims in source "
-            "and tests before asserting them."
+            "The graph is derived cache, never authority. Always read the "
+            "GitNexus status/context resource before any graph-grounded claim "
+            "— this check is required every time, not only when a result "
+            "looks thin. If status reports the index stale, disclose that and "
+            "fall back to source search. Do not assume the index is stale or "
+            "sparse, and do not skip the status check, without having "
+            "actually queried this turn; never present stale structure as "
+            "current truth, and verify authority claims in source and tests "
+            "before asserting them."
         ),
     ]
 

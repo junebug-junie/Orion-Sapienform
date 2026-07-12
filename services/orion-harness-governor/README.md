@@ -60,7 +60,18 @@ Both are default-off, fail-open, and need no secrets:
     analyze --index-only --name orion
   ```
 
-  The generated `.gitnexus/` is gitignored; compose mounts `~/.gitnexus` read-only for registry discovery. Re-run after merges so `gitnexus status` reports up-to-date (the MCP discloses staleness but stale structure is never authority).
+  The generated `.gitnexus/` is gitignored; compose mounts `~/.gitnexus` read-only for registry discovery. Re-run after merges so `gitnexus status` reports up-to-date (the MCP discloses staleness but stale structure is never authority, and a stale/unindexed state pushes the model toward source search instead — see the harness motor prefix in `orion/fcc/self_index_brief.py`).
+
+  The incremental update (bare `analyze --index-only`, no `--force`) can fail outright on some repo states (observed 2026-07-12: `Failed calling LOWER: Invalid UTF-8` mid-run), which leaves an `incrementalInProgress` flag and a stale index behind. If a re-run reports that or `gitnexus status` won't clear, force a full rebuild instead of retrying incremental:
+
+  ```bash
+  docker run --rm \
+    -v /mnt/scripts/Orion-Sapienform:/mnt/scripts/Orion-Sapienform \
+    -v $HOME/.gitnexus:/root/.gitnexus \
+    -w /mnt/scripts/Orion-Sapienform \
+    --entrypoint gitnexus orion-harness-governor-harness-governor \
+    analyze --index-only --force --name orion
+  ```
 - `HARNESS_FCC_CONTEXT_MODE_ENABLED=true` adds the Context Mode MCP (MCP-only stage, no Claude hooks). Working data lives in the `harness-context-mode` volume at `HARNESS_FCC_CONTEXT_MODE_DIR` — operational data, not an Orion memory store; never expose it through Hub APIs.
 
 #### Hook mode (Stage B)
@@ -77,6 +88,14 @@ The smoke script `scripts/context_mode_hooks_smoke.py` must pass before enabling
 The unified-turn introspection experiment for these flags lives at `scripts/run_unified_turn_introspection_eval.py` with its fixture in `orion/harness/evals/fixtures/`.
 
 `HARNESS_FCC_SKIP_PERMISSIONS=true` (default in compose) passes `--dangerously-skip-permissions` to `claude -p` even when the governor runs as root — otherwise Bash/MCP steps stall on approval prompts with no operator in Orion mode.
+
+### Stream stall detection
+
+Claude Code only writes a `stream-json` line once a step fully completes — with no `--include-partial-messages`, a single assistant message that never reaches a stop condition produces zero output. Before `HARNESS_FCC_STREAM_STALL_TIMEOUT_SEC` existed, the governor's only defense was `HARNESS_FCC_TIMEOUT_SEC` (900s default) applied to *each* `readline()` call, so one stuck message could hang a turn for the full 15 minutes with the Hub UI showing nothing.
+
+`HARNESS_FCC_STREAM_STALL_TIMEOUT_SEC=180` (default) bounds a single line separately from the whole-turn budget; a turn that goes this long without completing a step fails fast with `error_code=fcc_stream_stalled` instead of running out the whole-turn clock. The whole-turn timeout (`fcc_timeout`) still fires if the aggregate turn — many steps, each individually under the stall cap — exceeds `HARNESS_FCC_TIMEOUT_SEC`. Set the stall value to `0` to fall back to the old whole-turn-only behavior.
+
+This does not fix a runaway upstream generation (e.g. a local model that never emits a stop token) — that failure mode lives in the model-serving stack outside this repo. It bounds how long a turn can be stuck waiting on one before the operator gets a diagnosable, fast failure instead of a silent hang.
 
 ### Required secrets
 

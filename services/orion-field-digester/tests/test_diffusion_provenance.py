@@ -271,3 +271,75 @@ def test_capability_with_no_pressure_target_keeps_reconciled_baseline() -> None:
     # test, so the derived-formula block never ran.
     assert tgt["confidence"] == 1.0
     assert tgt["available_capacity"] == 1.0
+
+
+def test_direct_confidence_and_capacity_diffusion_beats_pressure_derived_formula() -> None:
+    # capability:transport (real topology edge, node:athena -> capability:
+    # transport) has direct edges into "confidence" (from delivery_confidence)
+    # and "available_capacity" (from bus_health) AND a "pressure" target in
+    # the same edge -- the pressure-derived formula must not clobber the
+    # direct diffusion values just because "pressure" is also present.
+    edge = FieldEdgeV1(
+        source_id="node:athena",
+        target_id="capability:transport",
+        edge_type="node_capability",
+        weight=0.85,
+        channel_map={
+            "transport_pressure": "pressure",
+            "delivery_confidence": "confidence",
+            "bus_health": "available_capacity",
+        },
+    )
+    state = _state(
+        [edge],
+        {
+            "node:athena": {
+                "transport_pressure": 0.9,
+                "delivery_confidence": 0.95,
+                "bus_health": 0.7,
+            }
+        },
+    )
+
+    apply_diffusion(state, diffusion_rate=1.0)
+
+    tgt = state.capability_vectors["capability:transport"]
+    # pressure-derived formula would give confidence=1-0.5*0.765=0.6175 and
+    # available_capacity=1-0.765=0.235 -- direct diffusion must win instead.
+    assert tgt["pressure"] == 0.765
+    assert tgt["confidence"] == round(0.95 * 0.85, 10)
+    assert tgt["available_capacity"] == round(0.7 * 0.85, 10)
+
+
+def test_derived_formula_still_falls_back_when_direct_edge_contributes_nothing_this_tick() -> None:
+    # Regression found by code review (2026-07-12): the precedence guard
+    # must key off "did a real (>0) contribution land THIS tick", not "is
+    # this channel ever configured as a diffusion target for this
+    # capability" -- otherwise a capability:transport tick where
+    # delivery_confidence/bus_health are temporarily absent from the source
+    # (0.0 contribution, no entry in best_source) would hard-floor
+    # confidence/available_capacity at 0.0 instead of falling back to the
+    # pressure-derived formula.
+    edge = FieldEdgeV1(
+        source_id="node:athena",
+        target_id="capability:transport",
+        edge_type="node_capability",
+        weight=0.85,
+        channel_map={
+            "transport_pressure": "pressure",
+            "delivery_confidence": "confidence",
+            "bus_health": "available_capacity",
+        },
+    )
+    state = _state(
+        [edge],
+        {"node:athena": {"transport_pressure": 0.9}},  # no delivery_confidence/bus_health this tick
+    )
+
+    apply_diffusion(state, diffusion_rate=1.0)
+
+    tgt = state.capability_vectors["capability:transport"]
+    assert tgt["pressure"] == 0.765
+    # Fallback to the derived formula, not hard-floored at 0.0.
+    assert tgt["confidence"] == max(0.0, 1.0 - 0.5 * 0.765)
+    assert tgt["available_capacity"] == max(0.0, 1.0 - 0.765)

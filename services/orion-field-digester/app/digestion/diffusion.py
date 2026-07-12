@@ -61,18 +61,21 @@ def apply_diffusion(state: FieldStateV1, *, diffusion_rate: float) -> None:
     produced the score displayed this tick, and is cleared (not left stale)
     when nobody contributes.
 
-    Known pre-existing quirk, NOT introduced or fixed by this change: two
-    capability channels ("confidence", "available_capacity") are BOTH a
-    direct diffusion target for some edges (e.g. capability:transport's
-    delivery_confidence->confidence, bus_health->available_capacity) AND
-    unconditionally recomputed from a pressure-derived formula below whenever
-    "pressure" is also a target for that capability -- the derived formula
-    always wins for those capabilities, silently making their direct
-    delivery_confidence/bus_health diffusion pointless. This predates this
-    fix (the original code had the same precedence, just computed multiple
-    times per tick with intermediate/partial pressure values instead of once
-    with the final one). Worth a follow-up decision on which should win; not
-    changed here to keep this patch scoped to the saturation bug.
+    Precedence between direct diffusion and the pressure-derived formula
+    (2026-07-12 follow-up): a capability like capability:transport has BOTH a
+    direct diffusion edge into "confidence"/"available_capacity"
+    (delivery_confidence->confidence, bus_health->available_capacity) AND a
+    "pressure" target, whose derived formula below would otherwise
+    unconditionally overwrite them. Direct diffusion wins when it actually
+    contributed a real (>0) value THIS tick (checked via best_source, not via
+    static channel-map membership -- a capability can be configured with a
+    direct confidence/available_capacity edge yet receive nothing from it in
+    a given tick, e.g. its source is temporarily missing that field; in that
+    case the derived formula must still run as a fallback instead of leaving
+    the channel hard-floored at 0.0). Every other capability (no direct edge
+    into either channel) is unaffected. This was previously masked because
+    transport_pressure has been idle (0.0) in observed traffic, making both
+    formulas agree by coincidence.
     """
     best_contribution: dict[tuple[str, str], float] = {}
     best_source: dict[tuple[str, str], str] = {}
@@ -108,5 +111,16 @@ def apply_diffusion(state: FieldStateV1, *, diffusion_rate: float) -> None:
                 provenance.pop(tgt_ch, None)
 
         if "pressure" in tgt:
-            tgt["available_capacity"] = max(0.0, 1.0 - tgt.get("pressure", 0.0))
-            tgt["confidence"] = max(0.0, 1.0 - 0.5 * tgt.get("pressure", 0.0))
+            # Gate on best_source (a real >0 contribution THIS tick), not on
+            # `channels` (every channel ever configured as a target for this
+            # capability, whether or not it fired this tick) -- a capability
+            # can have "available_capacity"/"confidence" as configured
+            # targets yet receive no contribution some tick (e.g. its source
+            # is temporarily missing that field), in which case the derived
+            # fallback must still run instead of leaving the channel
+            # hard-floored at 0.0 by the `best_contribution.get(key, 0.0)`
+            # reset above.
+            if (target_id, "available_capacity") not in best_source:
+                tgt["available_capacity"] = max(0.0, 1.0 - tgt.get("pressure", 0.0))
+            if (target_id, "confidence") not in best_source:
+                tgt["confidence"] = max(0.0, 1.0 - 0.5 * tgt.get("pressure", 0.0))

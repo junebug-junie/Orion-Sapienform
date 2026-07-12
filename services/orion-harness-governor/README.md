@@ -92,16 +92,6 @@ and returns `fcc_idle_timeout`. The full turn budget remains
 `HARNESS_FCC_TIMEOUT_SEC`; set the idle value to `0` only for debugging if you
 want the old whole-turn timeout behavior.
 
-`HARNESS_FCC_INCLUDE_PARTIAL_MESSAGES=true` passes
-`--include-partial-messages` to `claude -p` so the governor can observe local
-FCC token streams before Claude Code emits a complete assistant/tool event.
-The motor folds text deltas into runtime evidence, throttles progress frames
-with `HARNESS_FCC_PARTIAL_PROGRESS_INTERVAL_SEC=15`, and fails as
-`fcc_partial_stream_timeout` after
-`HARNESS_FCC_PARTIAL_STREAM_TIMEOUT_SEC=90` seconds of partial-only output. The
-partial text is marked unsafe, so finalize will not turn a local-model loop
-into a user-visible answer.
-
 `HARNESS_FCC_FORCE_NO_THINKING_MODEL=true` rewrites local `llamacpp/...` FCC
 model ids to FCC's `claude-3-freecc-no-thinking/...` gateway ids before
 spawning Claude Code. This keeps Claude Code from requesting unsupported

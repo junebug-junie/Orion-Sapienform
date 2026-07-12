@@ -83,15 +83,6 @@ class HarnessGovernorSettings(BaseSettings):
     harness_fcc_stream_idle_timeout_sec: float = Field(
         180.0, alias="HARNESS_FCC_STREAM_IDLE_TIMEOUT_SEC"
     )
-    harness_fcc_include_partial_messages: bool = Field(
-        True, alias="HARNESS_FCC_INCLUDE_PARTIAL_MESSAGES"
-    )
-    harness_fcc_partial_stream_timeout_sec: float = Field(
-        90.0, alias="HARNESS_FCC_PARTIAL_STREAM_TIMEOUT_SEC"
-    )
-    harness_fcc_partial_progress_interval_sec: float = Field(
-        15.0, alias="HARNESS_FCC_PARTIAL_PROGRESS_INTERVAL_SEC"
-    )
 
     harness_fcc_mcp_enabled: bool = Field(False, alias="HARNESS_FCC_MCP_ENABLED")
     harness_aitown_enabled: bool = Field(False, alias="HARNESS_AITOWN_ENABLED")

@@ -295,12 +295,7 @@ class HarnessRunner:
                 partial = str(event.get("llm_response") or "").strip()
                 error_code = str(event.get("error_code") or "").strip()
                 error_msg = str(event.get("error") or "").strip()
-                partial_unsafe = bool(event.get("partial_unsafe"))
-                if (
-                    partial
-                    and not partial_unsafe
-                    and not _looks_like_fcc_transport_error(partial)
-                ):
+                if partial and not _looks_like_fcc_transport_error(partial):
                     draft_text = apply_context_overflow_hint(partial)
                     compliance_verdict = "partial"
                     grounding_status = error_code or "partial"

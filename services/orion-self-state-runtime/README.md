@@ -38,3 +38,17 @@ curl -s http://localhost:8118/latest | jq .
 ## Non-goals (v1)
 
 No bus publish, proposals, policy gates, cortex-exec steering, or LLM interpretation.
+
+## Inner-state registry
+
+`SelfStateV1` is the one schema every cognition-facing prompt-builder is
+expected to read from (directly, or via phi's `InnerStateFeaturesV1`).
+`orion/self_state/inner_state_registry.py` tracks every "what does Orion
+currently feel/perceive" signal in the repo — producer, cadence, whether
+it's composed into `SelfStateV1`, an unresolved duplicate of another signal,
+or a declared, justified shadow — so a new one is a registry entry, not a
+silent duplicate discovered by grep-archaeology (see
+`docs/superpowers/specs/2026-07-12-inner-state-unification-design.md`).
+`python scripts/check_inner_state_registry.py` (`make check-inner-state-registry`)
+gates against the registry going stale or a new inner-state-shaped
+schema/channel appearing unregistered.

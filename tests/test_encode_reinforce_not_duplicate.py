@@ -183,3 +183,59 @@ async def test_governor_queue_records_formation_policy_downgrade(monkeypatch):
     assert outcome == "proposed"
     assert final_row.provenance.get("formation_policy") == "governor_queue"
     assert "formation_policy_downgrade" in final_row.provenance
+
+
+@pytest.mark.asyncio
+async def test_concept_relation_resolution_disabled_by_default_never_invoked(monkeypatch):
+    # Regression guard for the CONCEPT_RELATION_RESOLUTION_ENABLED default: when the flag
+    # is absent from settings (as it is here, and as it ships in .env_example), behavior
+    # must be byte-for-byte identical to before concept_relation.py existed --
+    # maybe_resolve_concept_relation must never even be called.
+    existing = _semantic_proposed()
+    existing.crystallization_id = new_crystallization_id()
+    existing.status = "active"
+
+    candidate = _semantic_proposed()
+    candidate.summary = "We chose Nomad for staging cluster rollout"
+    candidate.subject = candidate.summary
+
+    pool = MagicMock()
+    bus = MagicMock(enabled=True)
+
+    list_mock = AsyncMock(return_value=[existing])
+    insert_mock = AsyncMock(return_value=candidate.crystallization_id)
+    emit_mock = AsyncMock(return_value=True)
+    relation_mock = AsyncMock()
+
+    monkeypatch.setattr(
+        "orion.memory.crystallization.intake_pipeline.list_crystallizations",
+        list_mock,
+    )
+    monkeypatch.setattr(
+        "orion.memory.crystallization.intake_pipeline.insert_crystallization",
+        insert_mock,
+    )
+    monkeypatch.setattr(
+        "orion.memory.crystallization.intake_pipeline.emit_crystallization_lifecycle",
+        emit_mock,
+    )
+    monkeypatch.setattr(
+        "orion.memory.crystallization.concept_relation.maybe_resolve_concept_relation",
+        relation_mock,
+    )
+
+    settings = _Settings()
+    assert not hasattr(settings, "CONCEPT_RELATION_RESOLUTION_ENABLED")
+
+    cid, final_row, outcome = await process_consolidation_crystallization(
+        pool,
+        bus,
+        crystallization=candidate,
+        settings=settings,
+        project_config=ProjectionConfig(),
+    )
+
+    assert outcome == "proposed"
+    assert cid == candidate.crystallization_id
+    relation_mock.assert_not_called()
+    insert_mock.assert_called_once()

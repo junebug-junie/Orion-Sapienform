@@ -6,6 +6,7 @@ import asyncpg
 
 from orion.core.bus.async_service import OrionBusAsync
 from orion.memory.crystallization.bus_emit import emit_crystallization_lifecycle
+from orion.memory.crystallization.concept_relation import merge_new_evidence
 from orion.memory.crystallization.detection import detect_duplicates
 from orion.memory.crystallization.dynamics import reinforce
 from orion.memory.crystallization.formation_executor import GovernorPathRequired, auto_activate
@@ -28,21 +29,6 @@ def _emit_settings(settings: Any) -> dict[str, str]:
     }
 
 
-def _append_new_evidence(
-    target: MemoryCrystallizationV1,
-    candidate: MemoryCrystallizationV1,
-) -> MemoryCrystallizationV1:
-    updated = target.model_copy(deep=True)
-    seen = {(ev.source_kind, ev.source_id) for ev in updated.evidence}
-    for ev in candidate.evidence:
-        key = (ev.source_kind, ev.source_id)
-        if key in seen:
-            continue
-        updated.evidence.append(ev)
-        seen.add(key)
-    return updated
-
-
 async def process_consolidation_crystallization(
     pool: asyncpg.Pool,
     bus: OrionBusAsync | None,
@@ -60,11 +46,25 @@ async def process_consolidation_crystallization(
     existing = await list_crystallizations(pool, status=None, limit=200)
     detection = detect_duplicates(crystallization, existing)
     duplicate_id = detection.duplicates[0] if detection.duplicates else None
+
+    # Mutually exclusive with the REINFORCE_EXISTING branch below by construction: this
+    # only fires when no same-window duplicate was found, so the already-working
+    # scope-gated Jaccard dedup path (guarded on a truthy duplicate_id) always takes
+    # priority whenever it applies, regardless of program order.
+    if duplicate_id is None and getattr(settings, "CONCEPT_RELATION_RESOLUTION_ENABLED", False):
+        from orion.memory.crystallization.concept_relation import maybe_resolve_concept_relation
+
+        relation_result = await maybe_resolve_concept_relation(
+            pool, bus, candidate=crystallization, settings=settings, emit_kw=emit_kw,
+        )
+        if relation_result is not None:
+            return relation_result
+
     policy, _ = resolve_formation_policy(crystallization, duplicate_id=duplicate_id)
 
     if policy == FormationPolicy.REINFORCE_EXISTING and duplicate_id:
         match = next(c for c in existing if c.crystallization_id == duplicate_id)
-        merged = _append_new_evidence(match, crystallization)
+        merged = merge_new_evidence(match, crystallization)
         updated = reinforce(merged, now=_utc_now())
         await update_crystallization(pool, updated)
         await emit_crystallization_lifecycle(

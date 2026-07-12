@@ -445,6 +445,27 @@ class SelfStateRuntimeStore:
             payload = json.loads(payload)
         return SelfStatePredictionV1.model_validate(payload)
 
+    def self_state_oldest_age_hours(self) -> float | None:
+        """Age (hours) of the oldest `substrate_self_state` row, or ``None`` if empty.
+
+        Keys on `created_at` (not `generated_at`) because that's the exact
+        column `_prune_sql`'s cutoff filters on -- staleness detection must
+        agree with the pruner's own column, or the two can silently disagree.
+        Used by the health monitor to detect a stalled prune loop.
+        """
+        with self._engine.connect() as conn:
+            row = (
+                conn.execute(text("SELECT min(created_at) AS oldest FROM substrate_self_state"))
+                .mappings()
+                .first()
+            )
+        oldest = row["oldest"] if row else None
+        if oldest is None:
+            return None
+        if oldest.tzinfo is None:
+            oldest = oldest.replace(tzinfo=timezone.utc)
+        return (datetime.now(timezone.utc) - oldest).total_seconds() / 3600.0
+
     def prune_history(self, *, retention_hours: float, batch_size: int = 5000) -> int:
         if retention_hours <= 0:
             return 0

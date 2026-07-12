@@ -62,3 +62,39 @@ silent duplicate discovered by grep-archaeology (see
 `python scripts/check_inner_state_registry.py` (`make check-inner-state-registry`)
 gates against the registry going stale or a new inner-state-shaped
 schema/channel appearing unregistered.
+
+## Health monitor
+
+`substrate_self_state`, `self_state_predictions`, and `identity_snapshots` are
+all pruned together every `SELF_STATE_PRUNE_INTERVAL_SEC` by one
+`prune_history()` call on one `SELF_STATE_RETENTION_HOURS` cutoff (see
+`app/store.py`'s `PRUNE_HISTORY_SQL`) — all three are written together in the
+same `_tick()`, so if the poll loop stalls, all three go stale in lockstep,
+and checking `substrate_self_state` alone is sufficient.
+
+A background health monitor
+(`SELF_STATE_RUNTIME_HEALTH_CHECK_INTERVAL_SEC`, default 900s) watches for
+`substrate_self_state`'s oldest row (keyed on `created_at`, the same column
+the pruner's cutoff filters on) exceeding `SELF_STATE_STALL_MULTIPLIER` × the
+retention window — i.e. the hourly pruner may have stopped running. This is
+treated as `critical` severity (not just `error`): `substrate_self_state` is
+what `felt_state_reader.py` reads for chat context, and what phi /
+spark-introspector tick off, making it arguably the single most important
+table in the mesh.
+
+The check is edge-triggered — an alert (via `orion-notify`'s
+`POST /attention/request`, surfacing in Hub's existing Pending Attention
+panel) fires only on a healthy→unhealthy transition, plus a lower-severity
+recovery note on the way back, so a persisting condition does not spam a
+fresh attention item every check. On first observation after a process
+restart, if already unhealthy, the monitor first checks `orion-notify` for an
+already-open alert (`GET /attention?status=pending`) before firing a
+duplicate. A failed publish (e.g. `orion-notify` itself down) is retried on
+every subsequent tick instead of being silently dropped.
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `SELF_STATE_RUNTIME_HEALTH_CHECK_INTERVAL_SEC` | `900.0` | Health-monitor check cadence |
+| `SELF_STATE_STALL_MULTIPLIER` | `1.5` | Alert if `substrate_self_state`'s oldest row exceeds this × retention hours |
+| `NOTIFY_BASE_URL` | `http://orion-athena-notify:7140` | `orion-notify` base URL for health-monitor attention alerts |
+| `NOTIFY_API_TOKEN` | (empty) | `orion-notify` auth token, if configured |

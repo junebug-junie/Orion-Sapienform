@@ -31,6 +31,27 @@ class SelfStateDimensionV1(BaseModel):
     reasons: list[str] = Field(default_factory=list)
 
 
+class AttentionTargetSummaryV1(BaseModel):
+    """Structured per-target attention data (2026-07-12, inner-state
+    unification Phase 1). Previously orion/self_state/builder.py read the
+    full FieldAttentionTargetV1 objects and kept only bare target_id strings
+    on dominant_attention_targets -- pressure_score/dominant_channels/reasons
+    were computed by orion-attention-runtime's real, non-theater scoring
+    (weighted_pressure/urgency_score/confidence_from_vector) and discarded
+    one hop downstream. This is additive alongside dominant_attention_targets,
+    not a replacement -- existing consumers of the bare-string list are
+    unaffected.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    target_id: str
+    target_kind: Literal["node", "capability", "channel", "edge", "field", "system"]
+    pressure_score: float = Field(ge=0.0, le=1.0)
+    dominant_channel: str | None = None
+    reason: str | None = None
+
+
 class SelfStateV1(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
@@ -62,6 +83,7 @@ class SelfStateV1(BaseModel):
     dimensions: dict[str, SelfStateDimensionV1] = Field(default_factory=dict)
 
     dominant_attention_targets: list[str] = Field(default_factory=list)
+    dominant_attention_target_details: list[AttentionTargetSummaryV1] = Field(default_factory=list)
     dominant_field_channels: dict[str, float] = Field(default_factory=dict)
 
     unresolved_pressures: list[str] = Field(default_factory=list)

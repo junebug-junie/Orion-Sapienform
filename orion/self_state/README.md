@@ -28,7 +28,16 @@ Each `InnerStateSignal` entry names its producer service, cadence, and one
 of four composition statuses:
 
 - `COMPOSED` — has a named field on `SelfStateV1` (or, for phi, is wired
-  into a cognition-facing narrative).
+  into a cognition-facing narrative). `field_attention_frame.v1` moved from
+  `SHADOW` to `COMPOSED` in Phase 1 (2026-07-12): `builder.py` previously
+  read the full per-node/per-capability `FieldAttentionTargetV1` list and
+  kept only bare `target_id` strings on `dominant_attention_targets`,
+  discarding `pressure_score`/`dominant_channels`/`reasons`. Structured
+  per-target data now survives, additively, on
+  `SelfStateV1.dominant_attention_target_details`
+  (`AttentionTargetSummaryV1`: `target_id`, `target_kind`, `pressure_score`,
+  top `dominant_channel`, top `reason`) — same target_ids, same order, as
+  the existing bare-string list.
 - `SHADOW` — real, live, deliberately **not** composed, with a required,
   stated reason (`shadow_reason`). The model case: phi's surviving
   `valence` heuristic, explicitly justified because no trained latent

@@ -45,6 +45,14 @@ class Settings(BaseSettings):
         "orion:embodiment:perception", alias="EMBODIMENT_CHANNEL_PERCEPTION"
     )
 
+    # Phase 2 (2026-07-12) deviation probe -- measurement-only, log-only,
+    # no schema field or gated behavior. Default on (cheap, in-memory,
+    # fail-open on its own errors) but toggleable without a redeploy in case
+    # it proves noisy at production tick volume.
+    self_state_deviation_probe_enabled: bool = Field(
+        True, alias="SELF_STATE_DEVIATION_PROBE_ENABLED"
+    )
+
 
 _settings: Settings | None = None
 

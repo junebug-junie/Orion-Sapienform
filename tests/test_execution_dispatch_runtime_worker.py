@@ -70,35 +70,53 @@ def test_worker_skips_when_no_policy_pending(monkeypatch) -> None:
     worker._store.save_dispatch_frame.assert_not_called()
 
 
-def test_worker_skips_when_proposal_missing(monkeypatch) -> None:
+def test_worker_records_unevaluable_frame_when_proposal_missing(monkeypatch) -> None:
+    # 2026-07-12: a naive skip-and-return would retry the same oldest
+    # undispatched policy frame forever, blocking every policy frame queued
+    # behind it. The worker must record an honest "could not evaluate" frame
+    # so the FIFO queue advances.
     monkeypatch.setenv("POSTGRES_URI", "postgresql://test:test@localhost/test")
     import app.settings as settings_mod
 
     settings_mod._settings = None
     worker = ExecutionDispatchRuntimeWorker()
-    worker._store.load_latest_policy_frame_without_dispatch = MagicMock(return_value=_policy_frame())
+    policy_frame = _policy_frame()
+    worker._store.load_latest_policy_frame_without_dispatch = MagicMock(return_value=policy_frame)
     worker._store.load_proposal_frame = MagicMock(return_value=None)
     worker._store.save_dispatch_frame = MagicMock()
 
     worker._tick()
 
-    worker._store.save_dispatch_frame.assert_not_called()
+    worker._store.save_dispatch_frame.assert_called_once()
+    saved_frame = worker._store.save_dispatch_frame.call_args[0][0]
+    assert saved_frame.source_policy_frame_id == policy_frame.frame_id
+    assert saved_frame.dispatch_attempted is False
+    assert saved_frame.candidates == []
+    assert any("proposal_frame" in w for w in saved_frame.warnings)
 
 
-def test_worker_skips_when_self_state_missing(monkeypatch) -> None:
+def test_worker_records_unevaluable_frame_when_self_state_missing(monkeypatch) -> None:
+    # Same reasoning as the missing-proposal case above -- live incident,
+    # 2026-07-12 (a schema change made an old self-state row permanently
+    # unloadable, stalling this queue for it).
     monkeypatch.setenv("POSTGRES_URI", "postgresql://test:test@localhost/test")
     import app.settings as settings_mod
 
     settings_mod._settings = None
     worker = ExecutionDispatchRuntimeWorker()
-    worker._store.load_latest_policy_frame_without_dispatch = MagicMock(return_value=_policy_frame())
+    policy_frame = _policy_frame()
+    worker._store.load_latest_policy_frame_without_dispatch = MagicMock(return_value=policy_frame)
     worker._store.load_proposal_frame = MagicMock(return_value=_proposal())
     worker._store.load_self_state = MagicMock(return_value=None)
     worker._store.save_dispatch_frame = MagicMock()
 
     worker._tick()
 
-    worker._store.save_dispatch_frame.assert_not_called()
+    worker._store.save_dispatch_frame.assert_called_once()
+    saved_frame = worker._store.save_dispatch_frame.call_args[0][0]
+    assert saved_frame.source_policy_frame_id == policy_frame.frame_id
+    assert saved_frame.dispatch_attempted is False
+    assert any("self_state" in w for w in saved_frame.warnings)
 
 
 def test_worker_saves_dispatch_frame_for_pending_policy(monkeypatch) -> None:

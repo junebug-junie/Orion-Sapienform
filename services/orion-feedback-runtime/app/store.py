@@ -1,9 +1,11 @@
 from __future__ import annotations
 
 import json
+import logging
 from datetime import datetime, timezone
 
 from psycopg2.extras import Json
+from pydantic import ValidationError
 from sqlalchemy import create_engine, text
 from sqlalchemy.engine import Engine
 
@@ -12,6 +14,8 @@ from orion.schemas.feedback_frame import FeedbackFrameV1
 from orion.schemas.policy_decision_frame import PolicyDecisionFrameV1
 from orion.schemas.proposal_frame import ProposalFrameV1
 from orion.schemas.self_state import SelfStateV1
+
+logger = logging.getLogger("orion.feedback_runtime.store")
 
 
 class FeedbackRuntimeStore:
@@ -141,7 +145,17 @@ class FeedbackRuntimeStore:
         payload = row["self_state_json"]
         if isinstance(payload, str):
             payload = json.loads(payload)
-        return SelfStateV1.model_validate(payload)
+        try:
+            return SelfStateV1.model_validate(payload)
+        except ValidationError:
+            # build_feedback_frame already accepts self_state_before=None
+            # (an intentionally optional input), so degrading here doesn't
+            # stall this service's own FIFO queue the way policy/execution-
+            # dispatch-runtime's fixed-id lookups could.
+            logger.warning(
+                "self_state_incompatible_schema self_state_id=%s", self_state_id, exc_info=True
+            )
+            return None
 
     def load_latest_self_state_after(
         self,
@@ -171,7 +185,11 @@ class FeedbackRuntimeStore:
         payload = row["self_state_json"]
         if isinstance(payload, str):
             payload = json.loads(payload)
-        return SelfStateV1.model_validate(payload)
+        try:
+            return SelfStateV1.model_validate(payload)
+        except ValidationError:
+            logger.warning("self_state_after_incompatible_schema", exc_info=True)
+            return None
 
     def load_latest_feedback_frame(self) -> FeedbackFrameV1 | None:
         with self._engine.connect() as conn:

@@ -1,9 +1,11 @@
 from __future__ import annotations
 
 import json
+import logging
 from datetime import datetime, timezone
 
 from psycopg2.extras import Json
+from pydantic import ValidationError
 from sqlalchemy import create_engine, text
 from sqlalchemy.engine import Engine
 
@@ -11,6 +13,8 @@ from orion.schemas.field_attention_frame import FieldAttentionFrameV1
 from orion.schemas.field_state import FieldStateV1
 from orion.schemas.proposal_frame import ProposalFrameV1
 from orion.schemas.self_state import SelfStateV1
+
+logger = logging.getLogger("orion.proposal_runtime.store")
 
 
 class ProposalRuntimeStore:
@@ -42,7 +46,15 @@ class ProposalRuntimeStore:
         payload = row["self_state_json"]
         if isinstance(payload, str):
             payload = json.loads(payload)
-        return SelfStateV1.model_validate(payload)
+        try:
+            return SelfStateV1.model_validate(payload)
+        except ValidationError:
+            # Looked up as "latest", not a fixed id, so this can't stall a
+            # FIFO queue the way policy/execution-dispatch-runtime's fixed-id
+            # lookups could -- but still degrade instead of crash-looping if
+            # the very latest row is somehow schema-incompatible.
+            logger.warning("self_state_incompatible_schema", exc_info=True)
+            return None
 
     def load_recent_reverie_thought(self, *, max_age_sec: float = 300.0):
         """Latest fresh non-hollow spontaneous thought, or None (Phase B).

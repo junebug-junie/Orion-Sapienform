@@ -4,7 +4,7 @@ import asyncio
 import logging
 from pathlib import Path
 
-from orion.policy.builder import build_policy_decision_frame
+from orion.policy.builder import build_policy_decision_frame, build_unevaluable_policy_decision_frame
 from orion.policy.policy import load_substrate_policy
 
 from app.settings import get_settings
@@ -52,9 +52,27 @@ class PolicyRuntimeWorker:
 
         self_state = self._store.load_self_state(proposal.source_self_state_id)
         if self_state is None:
+            # A naive `return` here would retry this exact same proposal
+            # forever -- it's always "the oldest unresolved" until a policy
+            # frame exists for it, permanently blocking every proposal
+            # queued behind it. Record an honest "could not evaluate" frame
+            # instead so the FIFO queue advances (2026-07-12 live incident:
+            # a schema change made an old self-state row permanently
+            # unloadable, stalling the whole queue for it).
             logger.warning(
-                "policy_skip_missing_self_state self_state_id=%s proposal_frame_id=%s",
+                "policy_self_state_unavailable self_state_id=%s proposal_frame_id=%s",
                 proposal.source_self_state_id,
+                proposal.frame_id,
+            )
+            frame = build_unevaluable_policy_decision_frame(
+                proposal_frame=proposal,
+                policy_id=self._policy.policy_id,
+                reason=f"self_state {proposal.source_self_state_id} unavailable or schema-incompatible",
+            )
+            self._store.save_policy_decision_frame(frame)
+            logger.info(
+                "policy_decision_frame_saved_unevaluable frame_id=%s proposal_frame_id=%s",
+                frame.frame_id,
                 proposal.frame_id,
             )
             return

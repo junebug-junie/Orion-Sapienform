@@ -113,3 +113,43 @@ def test_save_idempotent_by_frame_id(monkeypatch) -> None:
 
     store.save_dispatch_frame(_frame())
     assert any("ON CONFLICT (frame_id)" in sql for sql in calls)
+
+
+def test_load_self_state_degrades_to_none_on_legacy_incompatible_row(monkeypatch) -> None:
+    # Live incident (2026-07-12): see the identical test in
+    # tests/test_policy_runtime_store.py for the full explanation. Looked up
+    # by a fixed self_state_id (a policy frame's source), so a naive raise
+    # would block this (and every queued) dispatch frame forever.
+    legacy_payload = {
+        "schema_version": "self.state.v1",
+        "self_state_id": "self.state:legacy",
+        "generated_at": NOW.isoformat(),
+        "source_field_tick_id": "tick",
+        "source_field_generated_at": NOW.isoformat(),
+        "source_attention_frame_id": "frame",
+        "source_attention_generated_at": NOW.isoformat(),
+        "self_state_policy_id": "self_state_policy.v1",
+        "overall_condition": "steady",
+        "overall_intensity": 0.4,
+        "overall_confidence": 0.8,
+        "dimensions": {
+            "policy_pressure": {
+                "dimension_id": "policy_pressure",
+                "score": 0.0,
+                "confidence": 0.5,
+                "dominant_evidence": [],
+                "reasons": ["policy_pressure from field+attention channel synthesis"],
+            }
+        },
+    }
+    store = ExecutionDispatchRuntimeStore("postgresql://test:test@localhost/test")
+    fake_engine = MagicMock()
+    conn = MagicMock()
+    fake_engine.connect.return_value.__enter__ = MagicMock(return_value=conn)
+    fake_engine.connect.return_value.__exit__ = MagicMock(return_value=False)
+    conn.execute.return_value.mappings.return_value.first.return_value = {
+        "self_state_json": legacy_payload,
+    }
+    monkeypatch.setattr(store, "_engine", fake_engine)
+
+    assert store.load_self_state("self.state:legacy") is None

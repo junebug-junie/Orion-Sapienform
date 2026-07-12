@@ -69,19 +69,33 @@ def test_worker_skips_when_no_proposal_pending(monkeypatch) -> None:
     worker._store.save_policy_decision_frame.assert_not_called()
 
 
-def test_worker_skips_when_self_state_missing(monkeypatch) -> None:
+def test_worker_records_unevaluable_frame_when_self_state_missing(monkeypatch) -> None:
+    # 2026-07-12: a naive skip-and-return here would retry the exact same
+    # oldest unresolved proposal forever (live incident -- a schema change
+    # made an old self-state row permanently unloadable, and this proposal
+    # is always "the oldest without a policy frame" until one exists for
+    # it, blocking every proposal queued behind it). The worker must still
+    # record a frame -- an honest "could not evaluate" one -- so the FIFO
+    # queue advances past it.
     monkeypatch.setenv("POSTGRES_URI", "postgresql://test:test@localhost/test")
     import app.settings as settings_mod
 
     settings_mod._settings = None
     worker = PolicyRuntimeWorker()
-    worker._store.load_next_proposal_without_policy_frame = MagicMock(return_value=_proposal())
+    proposal = _proposal()
+    worker._store.load_next_proposal_without_policy_frame = MagicMock(return_value=proposal)
     worker._store.load_self_state = MagicMock(return_value=None)
     worker._store.save_policy_decision_frame = MagicMock()
 
     worker._tick()
 
-    worker._store.save_policy_decision_frame.assert_not_called()
+    worker._store.save_policy_decision_frame.assert_called_once()
+    saved_frame = worker._store.save_policy_decision_frame.call_args[0][0]
+    assert saved_frame.source_proposal_frame_id == proposal.frame_id
+    assert saved_frame.decisions == []
+    assert saved_frame.operator_review_required is True
+    assert saved_frame.execution_allowed is False
+    assert any("self_state" in w for w in saved_frame.warnings)
 
 
 def test_worker_saves_policy_frame_for_pending_proposal(monkeypatch) -> None:

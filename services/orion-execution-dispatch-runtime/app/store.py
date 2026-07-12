@@ -1,9 +1,11 @@
 from __future__ import annotations
 
 import json
+import logging
 from datetime import datetime, timezone
 
 from psycopg2.extras import Json
+from pydantic import ValidationError
 from sqlalchemy import create_engine, text
 from sqlalchemy.engine import Engine
 
@@ -11,6 +13,8 @@ from orion.schemas.execution_dispatch_frame import ExecutionDispatchFrameV1
 from orion.schemas.policy_decision_frame import PolicyDecisionFrameV1
 from orion.schemas.proposal_frame import ProposalFrameV1
 from orion.schemas.self_state import SelfStateV1
+
+logger = logging.getLogger("orion.execution_dispatch.runtime.store")
 
 
 class ExecutionDispatchRuntimeStore:
@@ -92,7 +96,16 @@ class ExecutionDispatchRuntimeStore:
         payload = row["self_state_json"]
         if isinstance(payload, str):
             payload = json.loads(payload)
-        return SelfStateV1.model_validate(payload)
+        try:
+            return SelfStateV1.model_validate(payload)
+        except ValidationError:
+            # See services/orion-policy-runtime/app/store.py's identical fix
+            # for why: looked up by a fixed self_state_id, so a naive raise
+            # would permanently block this (and every queued) frame.
+            logger.warning(
+                "self_state_incompatible_schema self_state_id=%s", self_state_id, exc_info=True
+            )
+            return None
 
     def load_dispatch_frame_for_policy_frame(
         self, policy_frame_id: str

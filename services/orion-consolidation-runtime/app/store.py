@@ -1,12 +1,16 @@
 from __future__ import annotations
 
 import json
+import logging
 from datetime import datetime, timezone
 from typing import Callable, TypeVar
 
 from psycopg2.extras import Json
+from pydantic import ValidationError
 from sqlalchemy import create_engine, text
 from sqlalchemy.engine import Engine
+
+logger = logging.getLogger("orion.consolidation_runtime.store")
 
 from orion.consolidation.windows import ConsolidationWindowData
 from orion.schemas.consolidation_frame import ConsolidationFrameV1, ExpectationV1, SchemaCandidateV1, SparseTensorSliceV1
@@ -350,14 +354,26 @@ class ConsolidationRuntimeStore:
                     "max_per_source": max_per_source,
                 },
             ).mappings()
-            return [
-                self._parse_json(row[json_column], model)
-                for row in rows
-                if row.get(json_column) is not None
-            ]
+            out: list[T] = []
+            for row in rows:
+                if row.get(json_column) is None:
+                    continue
+                parsed = self._parse_json(row[json_column], model)
+                if parsed is not None:
+                    out.append(parsed)
+            return out
 
     @staticmethod
-    def _parse_json(payload: object, model: Callable[[dict], T]) -> T:
+    def _parse_json(payload: object, model: Callable[[dict], T]) -> T | None:
         if isinstance(payload, str):
             payload = json.loads(payload)
-        return model.model_validate(payload)
+        try:
+            return model.model_validate(payload)
+        except ValidationError:
+            # A row saved before a schema change (e.g. a removed enum value)
+            # can be permanently incompatible with the current model. This
+            # is a windowed batch read, not a single-item lookup -- skip the
+            # bad row and keep the rest of the window rather than fail the
+            # whole consolidation pass over one legacy row.
+            logger.warning("consolidation_row_incompatible_schema model=%s", model, exc_info=True)
+            return None

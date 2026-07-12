@@ -4,7 +4,10 @@ import asyncio
 import logging
 from pathlib import Path
 
-from orion.execution_dispatch.builder import build_execution_dispatch_frame
+from orion.execution_dispatch.builder import (
+    build_execution_dispatch_frame,
+    build_unevaluable_execution_dispatch_frame,
+)
 from orion.execution_dispatch.policy import load_execution_dispatch_policy
 
 from app.settings import get_settings
@@ -54,17 +57,47 @@ class ExecutionDispatchRuntimeWorker:
 
         proposal = self._store.load_proposal_frame(policy_frame.source_proposal_frame_id)
         if proposal is None:
+            # A naive `return` here would retry this exact same policy frame
+            # forever -- it's always "the oldest undispatched" until a
+            # dispatch frame exists for it, permanently blocking every policy
+            # frame queued behind it. Record an honest "could not evaluate"
+            # frame instead so the FIFO queue advances.
             logger.warning(
-                "execution_dispatch_skip_missing_proposal proposal_frame_id=%s",
+                "execution_dispatch_proposal_unavailable proposal_frame_id=%s",
                 policy_frame.source_proposal_frame_id,
+            )
+            frame = build_unevaluable_execution_dispatch_frame(
+                policy_frame=policy_frame,
+                policy_id=self._policy.policy_id,
+                reason=f"proposal_frame {policy_frame.source_proposal_frame_id} unavailable",
+            )
+            self._store.save_dispatch_frame(frame)
+            logger.info(
+                "execution_dispatch_frame_saved_unevaluable frame_id=%s policy_frame_id=%s",
+                frame.frame_id,
+                policy_frame.frame_id,
             )
             return
 
         self_state = self._store.load_self_state(policy_frame.source_self_state_id)
         if self_state is None:
+            # Same reasoning as the missing-proposal branch above (2026-07-12
+            # live incident: a schema change made an old self-state row
+            # permanently unloadable, stalling the whole queue for it).
             logger.warning(
-                "execution_dispatch_skip_missing_self_state self_state_id=%s",
+                "execution_dispatch_self_state_unavailable self_state_id=%s",
                 policy_frame.source_self_state_id,
+            )
+            frame = build_unevaluable_execution_dispatch_frame(
+                policy_frame=policy_frame,
+                policy_id=self._policy.policy_id,
+                reason=f"self_state {policy_frame.source_self_state_id} unavailable or schema-incompatible",
+            )
+            self._store.save_dispatch_frame(frame)
+            logger.info(
+                "execution_dispatch_frame_saved_unevaluable frame_id=%s policy_frame_id=%s",
+                frame.frame_id,
+                policy_frame.frame_id,
             )
             return
 

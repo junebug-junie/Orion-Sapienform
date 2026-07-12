@@ -6,7 +6,10 @@ import asyncpg
 
 from orion.core.bus.async_service import OrionBusAsync
 from orion.memory.crystallization.bus_emit import emit_crystallization_lifecycle
-from orion.memory.crystallization.concept_relation import merge_new_evidence
+from orion.memory.crystallization.concept_relation import (
+    maybe_resolve_concept_relation,
+    merge_new_evidence,
+)
 from orion.memory.crystallization.detection import detect_duplicates
 from orion.memory.crystallization.dynamics import reinforce
 from orion.memory.crystallization.formation_executor import GovernorPathRequired, auto_activate
@@ -39,7 +42,7 @@ async def process_consolidation_crystallization(
 ) -> tuple[str, MemoryCrystallizationV1, str]:
     """Returns (crystallization_id, final_row, outcome).
 
-    Outcome is one of: auto_activated | proposed | reinforced.
+    Outcome is one of: auto_activated | proposed | reinforced | reinforced_by_relation.
     """
     emit_kw = _emit_settings(settings)
 
@@ -52,8 +55,6 @@ async def process_consolidation_crystallization(
     # scope-gated Jaccard dedup path (guarded on a truthy duplicate_id) always takes
     # priority whenever it applies, regardless of program order.
     if duplicate_id is None and getattr(settings, "CONCEPT_RELATION_RESOLUTION_ENABLED", False):
-        from orion.memory.crystallization.concept_relation import maybe_resolve_concept_relation
-
         relation_result = await maybe_resolve_concept_relation(
             pool, bus, candidate=crystallization, settings=settings, emit_kw=emit_kw,
         )

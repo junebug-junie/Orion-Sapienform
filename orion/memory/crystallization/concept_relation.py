@@ -9,6 +9,7 @@ from pydantic import BaseModel, ConfigDict, Field, model_validator
 from orion.core.bus.async_service import OrionBusAsync
 from orion.core.bus.bus_schemas import BaseEnvelope, ChatRequestPayload, LLMMessage, ServiceRef
 from orion.core.llm_json import parse_json_object
+from orion.memory.crystallization.bus_emit import emit_crystallization_lifecycle
 from orion.memory.crystallization.candidate_retrieval import fetch_similar_candidates
 from orion.memory.crystallization.dynamics import reinforce
 from orion.memory.crystallization.repository import update_crystallization
@@ -192,16 +193,13 @@ async def maybe_resolve_concept_relation(
     /api/memory/crystallizations/{id}/links endpoint can supersede manually. This is a
     deliberate, documented scope reduction from the original design doc, not an oversight.
     """
-    embed_host_url = getattr(settings, "CRYSTALLIZER_EMBED_HOST_URL", "") or ""
-    chroma_host = getattr(settings, "CHROMA_HOST", "") or ""
-    if not embed_host_url.strip() or not chroma_host.strip():
-        return None
-
+    # embed_host_url/chroma_host emptiness is not re-checked here: fetch_similar_candidates
+    # already degrades to [] on the same condition, and empty candidates is handled next.
     candidates = await fetch_similar_candidates(
         candidate,
         pool=pool,
-        embed_host_url=embed_host_url,
-        chroma_host=chroma_host,
+        embed_host_url=getattr(settings, "CRYSTALLIZER_EMBED_HOST_URL", "") or "",
+        chroma_host=getattr(settings, "CHROMA_HOST", "") or "",
         chroma_port=int(getattr(settings, "CHROMA_PORT", 8000)),
         chroma_collection=getattr(settings, "CRYSTALLIZER_VECTOR_COLLECTION", "orion_memory_crystallizations") or "orion_memory_crystallizations",
         # Plain getattr default (no `or` fallback) for the same reason as timeout_sec
@@ -237,11 +235,26 @@ async def maybe_resolve_concept_relation(
         # unseen id, fall through to normal handling.
         return None
 
-    if decision.relation == "same":
-        from orion.memory.crystallization.bus_emit import emit_crystallization_lifecycle
+    # Audit trail for the LLM judgment itself, independent of which branch below acts on
+    # it -- the refines/contradicts branch already records this on the link's note/confidence,
+    # but the "same" branch's only other effect (reinforce()) is indistinguishable after the
+    # fact from an ordinary same-window Jaccard reinforce without this.
+    logger.info(
+        "concept_relation_decided candidate_id=%s relation=%s target_id=%s confidence=%.2f",
+        candidate.crystallization_id, decision.relation, target.crystallization_id, decision.confidence,
+    )
+    relation_provenance = {
+        "concept_relation": {
+            "relation": decision.relation,
+            "target_crystallization_id": target.crystallization_id,
+            "confidence": decision.confidence,
+        }
+    }
 
+    if decision.relation == "same":
         merged = merge_new_evidence(target, candidate)
         updated = reinforce(merged, now=_utc_now())
+        updated.provenance = {**(updated.provenance or {}), **relation_provenance}
         await update_crystallization(pool, updated)
         await emit_crystallization_lifecycle(bus, lifecycle="reinforced", crystallization=updated, **emit_kw)
         return target.crystallization_id, updated, "reinforced_by_relation"
@@ -255,6 +268,7 @@ async def maybe_resolve_concept_relation(
                 note="concept_relation_llm",
             )
         )
+        candidate.provenance = {**(candidate.provenance or {}), **relation_provenance}
         return None
 
     return None

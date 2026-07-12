@@ -435,3 +435,34 @@ class TestFetchSimilarCandidates:
 
         assert result == []
         mock_chroma.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_limit_zero_returns_empty_not_one(self):
+        # Regression: CONCEPT_RELATION_CANDIDATE_LIMIT=0 is documented (concept_relation.py)
+        # as a legitimate "throttle to zero" operator setting. n_results=max(1, int(limit))
+        # used to floor the Chroma query at 1 result regardless of limit, so limit=0 still
+        # returned a single candidate instead of [].
+        from unittest.mock import AsyncMock, MagicMock, patch
+
+        from orion.memory.crystallization.candidate_retrieval import fetch_similar_candidates
+
+        candidate = _active_crystallization()
+        pool = MagicMock()
+
+        with patch(
+            "orion.memory.crystallization.candidate_retrieval._embed_query",
+            new=AsyncMock(return_value=[0.1, 0.2, 0.3]),
+        ) as mock_embed, patch(
+            "orion.memory.crystallization.candidate_retrieval.query_chroma_collection"
+        ) as mock_chroma:
+            result = await fetch_similar_candidates(
+                candidate,
+                pool=pool,
+                embed_host_url="http://embed.local",
+                chroma_host="chroma.local",
+                limit=0,
+            )
+
+        assert result == []
+        mock_embed.assert_not_called()
+        mock_chroma.assert_not_called()

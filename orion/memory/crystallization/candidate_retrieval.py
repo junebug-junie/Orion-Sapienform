@@ -32,6 +32,13 @@ async def fetch_similar_candidates(
     if not embed_host_url.strip() or not chroma_host.strip() or pool is None:
         return []
 
+    # limit <= 0 is a legitimate "throttle to zero" operator setting (see
+    # concept_relation.py's CONCEPT_RELATION_CANDIDATE_LIMIT handling) -- must
+    # short-circuit here, not just cap the loop below, or a Chroma n_results
+    # floor of 1 would still return a single candidate.
+    if limit <= 0:
+        return []
+
     query_text = f"{candidate.subject}\n{candidate.summary}".strip()
     if not query_text:
         return []
@@ -55,7 +62,7 @@ async def fetch_similar_candidates(
             port=chroma_port,
             collection=chroma_collection,
             query_embedding=embedding,
-            n_results=max(1, int(limit)),
+            n_results=int(limit),
         )
     except Exception as exc:
         logger.warning("candidate_retrieval_chroma_query_failed error=%s", exc)

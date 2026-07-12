@@ -255,7 +255,7 @@ class TestMaybeResolveConceptRelation:
             "orion.memory.crystallization.concept_relation.update_crystallization",
             new=update_mock,
         ), patch(
-            "orion.memory.crystallization.bus_emit.emit_crystallization_lifecycle",
+            "orion.memory.crystallization.concept_relation.emit_crystallization_lifecycle",
             new=emit_mock,
         ):
             result = await maybe_resolve_concept_relation(
@@ -386,7 +386,7 @@ class TestMaybeResolveConceptRelation:
             "orion.memory.crystallization.concept_relation.update_crystallization",
             new=update_mock,
         ), patch(
-            "orion.memory.crystallization.bus_emit.emit_crystallization_lifecycle",
+            "orion.memory.crystallization.concept_relation.emit_crystallization_lifecycle",
             new=emit_mock,
         ):
             result = await maybe_resolve_concept_relation(
@@ -454,6 +454,10 @@ class TestMaybeResolveConceptRelation:
 
     @pytest.mark.asyncio
     async def test_empty_embed_host_short_circuits(self):
+        # fetch_similar_candidates() is the single source of truth for the empty-host
+        # guard (candidate_retrieval.py:32) -- maybe_resolve_concept_relation no longer
+        # duplicates that check, so this exercises the real function end-to-end rather
+        # than asserting an internal call count.
         candidate = _active_crystallization()
         pool = MagicMock()
         bus = MagicMock()
@@ -462,15 +466,14 @@ class TestMaybeResolveConceptRelation:
         settings.CRYSTALLIZER_EMBED_HOST_URL = ""
 
         with patch(
-            "orion.memory.crystallization.concept_relation.fetch_similar_candidates",
-            new=AsyncMock(),
-        ) as mock_fetch:
+            "orion.memory.crystallization.concept_relation.resolve_concept_relation",
+        ) as mock_resolve:
             result = await maybe_resolve_concept_relation(
                 pool, bus, candidate=candidate, settings=settings, emit_kw={}
             )
 
         assert result is None
-        mock_fetch.assert_not_called()
+        mock_resolve.assert_not_called()
 
     @pytest.mark.asyncio
     async def test_empty_chroma_host_short_circuits(self):
@@ -482,15 +485,14 @@ class TestMaybeResolveConceptRelation:
         settings.CHROMA_HOST = ""
 
         with patch(
-            "orion.memory.crystallization.concept_relation.fetch_similar_candidates",
-            new=AsyncMock(),
-        ) as mock_fetch:
+            "orion.memory.crystallization.concept_relation.resolve_concept_relation",
+        ) as mock_resolve:
             result = await maybe_resolve_concept_relation(
                 pool, bus, candidate=candidate, settings=settings, emit_kw={}
             )
 
         assert result is None
-        mock_fetch.assert_not_called()
+        mock_resolve.assert_not_called()
 
 
 class TestMergeNewEvidence:

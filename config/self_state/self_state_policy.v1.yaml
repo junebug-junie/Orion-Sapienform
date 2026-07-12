@@ -112,6 +112,26 @@ context_channels:
   - recent_perturbation_count
   - overall_salience
 
+dimension_worse_direction:
+  # Phase 2 (2026-07-12) deviation probe (orion/self_state/deviation.py,
+  # measurement-only, no gating behavior yet): which direction is the
+  # notable one per dimension, mirroring the sign conventions already
+  # implicit in orion/self_state/scoring.py's formulas -- coherence_score/
+  # agency_readiness_score treat high=good; every *_pressure dimension,
+  # uncertainty, and field_intensity treat high=bad.
+  field_intensity: up
+  coherence: down
+  uncertainty: up
+  agency_readiness: down
+  resource_pressure: up
+  execution_pressure: up
+  reasoning_pressure: up
+  reliability_pressure: up
+  continuity_pressure: up
+  introspection_pressure: up
+  social_pressure: up
+  transport_integrity: down
+
 unresolved_pressure_threshold: 0.60
 dominant_channel_threshold: 0.25
 trajectory_threshold: 0.03

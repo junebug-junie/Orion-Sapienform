@@ -41,6 +41,13 @@ class SelfStatePolicyV1(BaseModel):
     stabilizing_channels: dict[str, float] = Field(default_factory=dict)
     pressure_channels: list[str] = Field(default_factory=list)
     context_channels: list[str] = Field(default_factory=list)
+    # Per-dimension "worse" direction for the Phase 2 deviation probe
+    # (orion/self_state/deviation.py): "up" if a rising score is the notable
+    # direction, "down" if falling is. Config, not code, per this redesign's
+    # own design invariant -- config/self_state/self_state_policy.v1.yaml is
+    # the single place this fact lives, matching the house pattern already
+    # established for the same concept in config/autonomy/signal_drive_map.yaml.
+    dimension_worse_direction: dict[str, Literal["up", "down"]] = Field(default_factory=dict)
 
     unresolved_pressure_threshold: float = 0.60
     dominant_channel_threshold: float = 0.25

@@ -7,6 +7,7 @@ from pathlib import Path
 from typing import Optional
 from uuid import uuid4
 
+from orion.autonomy.deviation_gate import DeviationGate
 from orion.core.bus.async_service import OrionBusAsync
 from orion.core.bus.bus_schemas import BaseEnvelope, ServiceRef
 from orion.core.bus.resilience import publish_with_reconnect
@@ -14,6 +15,7 @@ from orion.identity.snapshot import build_identity_snapshot
 from orion.schemas.embodiment import WorldPerceptionV1
 from orion.schemas.self_state import SelfStateV1
 from orion.self_state.builder import build_self_state
+from orion.self_state.deviation import observe_dimension_deviation
 from orion.self_state.policy import load_self_state_policy
 from orion.self_state.prediction import (
     build_next_cycle_prediction,
@@ -53,6 +55,11 @@ class SelfStateRuntimeWorker:
         # age-gated observability input). Default-off; None until observed.
         self._latest_perception: Optional[WorldPerceptionV1] = None
         self._latest_perception_at: Optional[datetime] = None
+        # Per-dimension deviation baseline (2026-07-12, Phase 2 measurement
+        # pass -- log-only, no schema field yet). In-memory, per-process:
+        # a restart resets every dimension's learned baseline to cold-start,
+        # same accepted limitation as DriveEngine's pressure store elsewhere.
+        self._deviation_gate = DeviationGate()
 
     async def start(self) -> None:
         asyncio.create_task(self._poll_loop(), name="self-state-runtime-poll")
@@ -278,6 +285,8 @@ class SelfStateRuntimeWorker:
             state.prediction_error_scores = compute_prediction_errors(state, prev_prediction)
             state.overall_surprise = compute_overall_surprise(state.prediction_error_scores)
 
+        self._log_deviation_probe(state)
+
         self._store.save_self_state(state)
 
         next_prediction = build_next_cycle_prediction(state)
@@ -295,6 +304,34 @@ class SelfStateRuntimeWorker:
             self._maybe_emit_identity_snapshot(state)
 
         return state
+
+    def _log_deviation_probe(self, state: SelfStateV1) -> None:
+        """Measurement-only (Phase 2, 2026-07-12): log each dimension's
+        deviation-from-its-own-baseline impulse alongside the confidence
+        value already on the wire, so the two can be compared on real live
+        data before deciding whether channel_dimension_confidence() should
+        be replaced by this variance-based mechanism instead
+        (orion/self_state/scoring.py's spread-based formula was flagged as
+        cruder than DeviationGate's approach in the Phase 1 PR report).
+        Never raises: a failure here must not block persisting self_state.
+        Toggleable via SELF_STATE_DEVIATION_PROBE_ENABLED without a redeploy
+        in case this proves noisy at production tick volume.
+        """
+        if not self._settings.self_state_deviation_probe_enabled:
+            return
+        try:
+            impulses = observe_dimension_deviation(self._deviation_gate, state, self._policy)
+            confidences = {
+                dim_id: round(state.dimensions[dim_id].confidence, 4) for dim_id in impulses
+            }
+            logger.info(
+                "self_state_deviation_probe self_state_id=%s deviation=%s confidence=%s",
+                state.self_state_id,
+                {k: round(v, 4) for k, v in impulses.items()},
+                confidences,
+            )
+        except Exception:
+            logger.exception("self_state_deviation_probe_failed")
 
     def _maybe_emit_identity_snapshot(self, state) -> None:  # type: ignore[type-arg]
         try:

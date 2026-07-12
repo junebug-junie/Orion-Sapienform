@@ -91,9 +91,26 @@ flag matches the documented decision; NO-GO verdict is in a tracked file, not `/
       additive field (e.g. `confidence_v2` or bump `self_state_policy_id`) alongside the
       existing formula for one release before deprecating the old one — design invariant 4.
       Files: `orion/self_state/scoring.py`, `orion/self_state/builder.py:257-270`.
-- [ ] Change `collect_field_channel_pressures` to read `capability_vectors` only — drop
-      `list(field.node_vectors.values())` from the merge loop. This is the hard prerequisite
-      for Phase 3; do not skip or reorder past it. File: `orion/self_state/scoring.py:54-63`.
+- [ ] **Corrected 2026-07-12, before implementation** (verified against the full topology
+      file, not assumed): the original plan here — "read `capability_vectors` only, drop
+      `node_vectors`" — was wrong and would have regressed real signal. Six channels
+      (`availability`, `staleness`, `thermal_pressure`, `expected_offline_suppression`,
+      `conversation_load`, `repair_pressure`) exist **only** in `node_vectors`; no topology
+      edge in `config/field/orion_field_topology.v1.yaml` ever diffuses them into
+      `capability_vectors`. Dropping `node_vectors` wholesale would zero out
+      `continuity_pressure` and `social_pressure` entirely and remove coherence's only
+      stabilizing counterweight. The actual double-counting bug is narrower: 11 channels
+      (`gpu_pressure`, `cpu_pressure`, `memory_pressure`, `disk_pressure`, `execution_load`,
+      `execution_friction`, `failure_pressure`, `reasoning_load`, `transport_pressure`,
+      `bus_health`, `delivery_confidence`) have *both* a direct entry in
+      `config/self_state/self_state_policy.v1.yaml`'s `channel_dimension_map` *and* a
+      topology edge that diffuses them into a capability under a different channel name —
+      so the raw unweighted value competes via `max()` against its own correctly-weighted
+      diffusion, and raw always wins (weight ≤ 1). **Corrected fix:** remove those 11
+      channels' direct `channel_dimension_map` entries from the policy YAML — pure config
+      change, `node_vectors` stays in the read path. This is still the hard prerequisite for
+      Phase 3 (it's the mechanism that would otherwise get worse once Atlas/Circe start
+      contributing raw node channels). File: `config/self_state/self_state_policy.v1.yaml`.
 - [ ] Re-measure `resource_pressure` (and any other multi-channel `max()`-aggregated
       dimension) on live traffic before/after this change — confirm the scarcity-economy
       "saturated at 1.0" finding either resolves or is understood to persist for a different

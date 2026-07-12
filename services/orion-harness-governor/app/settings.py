@@ -94,10 +94,7 @@ class HarnessGovernorSettings(BaseSettings):
         "/var/lib/orion/context-mode", alias="HARNESS_FCC_CONTEXT_MODE_DIR"
     )
     harness_fcc_context_mode_hooks_enabled: bool = Field(
-        True, alias="HARNESS_FCC_CONTEXT_MODE_HOOKS_ENABLED"
-    )
-    harness_fcc_force_no_thinking_model: bool = Field(
-        True, alias="HARNESS_FCC_FORCE_NO_THINKING_MODEL"
+        False, alias="HARNESS_FCC_CONTEXT_MODE_HOOKS_ENABLED"
     )
 
     # (D) embodiment: publish a deliberate approach intent on the turn correlation_id

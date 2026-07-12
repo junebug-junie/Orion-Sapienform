@@ -30,7 +30,6 @@ logger = logging.getLogger("orion.harness.fcc_motor")
 DEFAULT_STREAM_READ_LIMIT = 8 * 1024 * 1024
 DEFAULT_FCC_MODEL_LABEL = "MODEL_SONNET"
 DEFAULT_STREAM_IDLE_TIMEOUT_SEC = 180.0
-NO_THINKING_GATEWAY_MODEL_PREFIX = "claude-3-freecc-no-thinking/"
 
 # Live FCC claude subprocesses keyed by correlation_id (harness cancel path).
 _ACTIVE: Dict[str, asyncio.subprocess.Process] = {}
@@ -270,30 +269,6 @@ def label_to_claude_model_id(label: str, env: Dict[str, str]) -> str:
     return model_id
 
 
-def _env_falsey(key: str) -> bool:
-    return os.environ.get(key, "").strip().lower() in {"0", "false", "no", "off"}
-
-
-def normalize_fcc_model_id_for_claude(model_id: str) -> str:
-    """Prefer FCC's no-thinking gateway id for local llama.cpp models.
-
-    Claude Code 2.1 can request extended thinking for Anthropic-compatible
-    models. The local FCC/llama.cpp rail does not provide a reliable thinking
-    stream contract, so Orion motor turns use FCC's discoverable no-thinking id
-    unless explicitly disabled for debugging.
-    """
-    raw = str(model_id or "").strip()
-    if not raw or _env_falsey("HARNESS_FCC_FORCE_NO_THINKING_MODEL"):
-        return raw
-    if raw.startswith(NO_THINKING_GATEWAY_MODEL_PREFIX):
-        return raw
-    if raw.startswith("anthropic/llamacpp/"):
-        return f"{NO_THINKING_GATEWAY_MODEL_PREFIX}{raw.removeprefix('anthropic/')}"
-    if raw.startswith("llamacpp/"):
-        return f"{NO_THINKING_GATEWAY_MODEL_PREFIX}{raw}"
-    return raw
-
-
 def _preflight_fcc_server(url: str, *, timeout_sec: float = 3.0) -> None:
     health_url = str(url or "").rstrip("/") + "/health"
     try:
@@ -479,7 +454,6 @@ async def run_fcc_turn(
     except ValueError as exc:
         yield {"type": "error", "error": str(exc), "error_code": "fcc_bad_model_label"}
         return
-    model_id = normalize_fcc_model_id_for_claude(model_id)
 
     try:
         _preflight_fcc_server(fcc_server_url)
@@ -643,7 +617,6 @@ async def run_fcc_turn(
     duration_ms = int((time.monotonic() - started) * 1000)
     metadata = {
         "fcc_model_label": label,
-        "fcc_model_id": model_id,
         "claude_session_id": claude_session_id,
         "duration_ms": duration_ms,
         "exit_code": exit_code,

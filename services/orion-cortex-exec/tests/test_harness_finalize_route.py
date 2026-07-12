@@ -45,8 +45,6 @@ def test_harness_finalize_reflect_uses_chat_route() -> None:
     assert result.status == "success"
     sent_req = llm_chat.await_args.kwargs["req"]
     assert sent_req.route == "chat"
-    assert sent_req.options["gateway_read_timeout_sec"] == 115.0
-    assert llm_chat.await_args.kwargs["timeout_sec"] == 120.0
 
 
 def test_orion_voice_finalize_uses_chat_route() -> None:

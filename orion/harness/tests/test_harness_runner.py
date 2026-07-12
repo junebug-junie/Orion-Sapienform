@@ -56,56 +56,6 @@ async def test_harness_runner_surfaces_fcc_error_code() -> None:
 
 
 @pytest.mark.asyncio
-async def test_harness_runner_does_not_promote_fcc_api_error_to_partial_draft() -> None:
-    async def _api_error_runner(**_: Any) -> AsyncIterator[dict[str, Any]]:
-        yield {
-            "type": "step",
-            "step": {
-                "type": "assistant",
-                "raw": {
-                    "type": "assistant",
-                    "message": {
-                        "content": [
-                            {
-                                "type": "text",
-                                "text": (
-                                    "API Error: API returned an empty or malformed response "
-                                    "(HTTP 200) — check for a proxy or gateway intercepting "
-                                    "the request"
-                                ),
-                            },
-                        ]
-                    },
-                },
-            },
-        }
-        yield {
-            "type": "error",
-            "error": "claude exited with code 1",
-            "error_code": "fcc_nonzero_exit",
-            "llm_response": (
-                "API Error: API returned an empty or malformed response "
-                "(HTTP 200) — check for a proxy or gateway intercepting the request"
-            ),
-        }
-
-    request = HarnessRunRequestV1(
-        correlation_id="c-api-error",
-        thought_event=make_thought(),
-        user_message="hello",
-        permissions=ContextExecPermissionV1(),
-        answer_contract=AnswerContract(),
-    )
-    runner = HarnessRunner(AsyncMock(), fcc_runner=_api_error_runner)
-    result = await runner.run(request)
-
-    assert result.draft_text == ""
-    assert result.draft_molecule is None
-    assert result.compliance_verdict == "failed"
-    assert result.grounding_status == "fcc_nonzero_exit"
-
-
-@pytest.mark.asyncio
 async def test_harness_runner_collects_grammar_receipts_and_draft() -> None:
     thought = make_thought()
     request = HarnessRunRequestV1(

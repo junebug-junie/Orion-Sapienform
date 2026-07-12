@@ -70,6 +70,45 @@ def test_gate_proposes_substantive_text_below_floors():
     assert "substantive_text" in result.reasons
 
 
+def test_gate_skips_low_info_window_with_high_novelty():
+    # Regression: a bare high novelty score on a low-info ("hi") turn used to
+    # sail through as "novelty_above_floor" with no relation to the text itself.
+    turns = [_turn("hi", "hey there", novelty=0.9, shift="NONE")]
+    result = consolidation_memory_gate(
+        turns=turns,
+        grammar_repair_signal=False,
+        min_novelty=0.35,
+        min_significance=0.40,
+    )
+    assert result.action == "skip"
+    assert "low_info_social" in result.reasons
+
+
+def test_gate_skips_low_info_window_with_high_significance():
+    # Regression: same bug, but via the significance_above_floor branch.
+    turns = [_turn("hi", "hey there", novelty=0.1, significance=0.9)]
+    result = consolidation_memory_gate(
+        turns=turns,
+        grammar_repair_signal=False,
+        min_novelty=0.35,
+        min_significance=0.40,
+    )
+    assert result.action == "skip"
+    assert "low_info_social" in result.reasons
+
+
+def test_gate_proposes_novelty_above_floor_with_substantive_text():
+    turns = [_turn("move logistics alone", "that sounds heavy", novelty=0.72, shift="NONE", significance=0.55)]
+    result = consolidation_memory_gate(
+        turns=turns,
+        grammar_repair_signal=False,
+        min_novelty=0.35,
+        min_significance=0.40,
+    )
+    assert result.action == "propose"
+    assert "novelty_above_floor" in result.reasons
+
+
 @pytest.mark.asyncio
 async def test_fetch_collects_repair_signal_event_ids():
     pool = AsyncMock()

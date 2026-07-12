@@ -55,6 +55,12 @@ def consolidation_memory_gate(
             best_novelty = n
             dominant_shift = shift
 
+    all_low_info = all(
+        is_low_info_social(str(t.get("prompt") or ""))
+        and is_low_info_social(str(t.get("response") or ""))
+        for t in turns
+    ) if turns else True
+
     if grammar_repair_signal:
         return ConsolidationGateResult(
             action="propose",
@@ -80,7 +86,11 @@ def consolidation_memory_gate(
             window_significance_max=significance_max,
         )
 
-    if novelty_max >= min_novelty:
+    # A bare novelty/significance float has no relation to whether the text has
+    # any content -- a noisy/high score on a low-info turn (e.g. "hi") was
+    # sailing through to crystallization. Require the window not be all
+    # low-info-social as corroboration before trusting the float alone.
+    if novelty_max >= min_novelty and not all_low_info:
         return ConsolidationGateResult(
             action="propose",
             reasons=["novelty_above_floor"],
@@ -90,7 +100,7 @@ def consolidation_memory_gate(
             window_significance_max=significance_max,
         )
 
-    if significance_max >= min_significance:
+    if significance_max >= min_significance and not all_low_info:
         return ConsolidationGateResult(
             action="propose",
             reasons=["significance_above_floor"],
@@ -115,11 +125,6 @@ def consolidation_memory_gate(
             window_significance_max=significance_max,
         )
 
-    all_low_info = all(
-        is_low_info_social(str(t.get("prompt") or ""))
-        and is_low_info_social(str(t.get("response") or ""))
-        for t in turns
-    ) if turns else True
     if all_low_info:
         reasons.append("low_info_social")
 

@@ -2625,6 +2625,14 @@ async def handle_self_state(env: BaseEnvelope) -> None:
     # phi_now["energy"] -- which now reaches a live LLM metacognition prompt,
     # not just a SQL sink (found by code review, 2026-07-12).
     encoder_tick_ok = False
+    # 2026-07-12, Phase 3: defaults so these are always defined at the
+    # SparkStateSnapshotV1 construction site below regardless of whether the
+    # encoder tick ran this call -- only assigned inside the encoder-success
+    # branch otherwise, which would raise UnboundLocalError on any
+    # disabled/degraded/frozen/failed tick (every call starts a fresh local
+    # scope; nothing carries over from a prior invocation).
+    dominant_node: Optional[str] = None
+    dominant_node_reason: Optional[str] = None
 
     global _INNER_PREV_FELT, _INNER_PREV_HEADLINE, _INNER_DEGENERATE_STREAK, _INNER_LAST_HEADLINE
     if settings.inner_features_enabled:
@@ -2807,6 +2815,8 @@ async def handle_self_state(env: BaseEnvelope) -> None:
         valence=float(phi_now.get("valence", 0.0)),
         arousal=float(phi_now.get("energy", 0.5)),
         dominance=0.5,
+        dominant_node=dominant_node,
+        dominant_node_reason=dominant_node_reason,
         vector_present=False,
         metadata=meta,
     )

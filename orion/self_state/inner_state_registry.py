@@ -196,6 +196,7 @@ REGISTRY: tuple[InnerStateSignal, ...] = (
         composition_status=CompositionStatus.COMPOSED,
         cognition_consumers=(
             "services.orion-cortex-exec.app.spark_narrative:spark_phi_narrative",
+            "services.orion-cortex-exec.app.spark_narrative:spark_embodiment_narrative",
         ),
         notes=(
             "Golden phi. Trained MLP autoencoder over InnerStateFeaturesV1. "
@@ -207,7 +208,15 @@ REGISTRY: tuple[InnerStateSignal, ...] = (
             "orion-spark-introspector's _dominant_hardware_node() -- excludes "
             "target_kind!='node' (a system-kind entry like "
             "field:recent_perturbations was confirmed live to frequently win "
-            "top salience) and the two synthetic pseudo-nodes."
+            "top salience) and the two synthetic pseudo-nodes. Phase 3 "
+            "(2026-07-12) threads dominant_node/dominant_node_reason through "
+            "SparkStateSnapshotV1 (a separate relay schema, "
+            "orion/schemas/telemetry/spark.py) into "
+            "spark_embodiment_narrative, rendered into both metacog prompt "
+            "templates alongside spark_phi_narrative -- confirmed live in "
+            "production (node:atlas/node:circe alternating as "
+            "capability:llm_inference's real GPU contention winner) before "
+            "this phase was built."
         ),
     ),
     InnerStateSignal(

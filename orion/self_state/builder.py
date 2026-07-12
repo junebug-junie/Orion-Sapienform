@@ -11,13 +11,15 @@ from orion.self_state.transport import (
 )
 from orion.self_state.scoring import (
     agency_readiness_score,
+    channel_dimension_confidence,
+    channels_mapped_to_dimension,
     clamp,
     clamp01,
     collect_attention_channel_pressures,
     collect_field_channel_pressures,
     condition_from_intensity,
     coherence_score,
-    dimension_confidence,
+    COMPOSITE_DIMENSION_IDS,
     field_intensity_score,
     map_channels_to_dimensions,
     uncertainty_score,
@@ -143,10 +145,15 @@ def evidence_for_dimension(
     policy: SelfStatePolicyV1,
     limit: int = 3,
 ) -> list[str]:
-    pairs: list[tuple[str, float]] = []
-    for channel, value in merged_channels.items():
-        if policy.channel_dimension_map.get(channel) == dim_id:
-            pairs.append((channel, value))
+    # Union of score-contributing channels (channel_dimension_map) and
+    # evidence-only channels (evidence_channel_map, 2026-07-12): a raw
+    # hardware/load channel that's also diffused into a capability channel
+    # under a different name no longer feeds the score directly (fixed
+    # double-counting bug), but downstream consumers (e.g. orion-spark-
+    # introspector's stuck-generic-channel bypass) still need to see it in
+    # dominant_evidence.
+    pairs = channels_mapped_to_dimension(dim_id, merged_channels, policy.channel_dimension_map)
+    pairs = pairs + channels_mapped_to_dimension(dim_id, merged_channels, policy.evidence_channel_map)
     pairs.sort(key=lambda kv: kv[1], reverse=True)
     return [f"{ch}={v:.2f}" for ch, v in pairs[:limit]]
 
@@ -223,8 +230,8 @@ def build_self_state(
     # matter. The SelfStateDimensionV1 object itself is still built later,
     # after `dimensions`/`summary_labels` exist, reusing `transport_hints`/
     # `transport_integrity_value` computed here.
-    transport_hints: dict[str, float] | None = None
-    transport_integrity_value: float | None = None
+    transport_hints: dict[str, float] = {}
+    transport_integrity_value: float = 0.0
     if enable_transport_influence:
         transport_hints = transport_channel_hints(field)
         transport_integrity_value = transport_integrity_score(transport_hints)
@@ -279,14 +286,19 @@ def build_self_state(
             if dominant_evidence
             else ["no contributing channel evidence this tick"]
         )
-        dimensions[dim_id] = SelfStateDimensionV1(
-            dimension_id=dim_id,
-            score=clamp01(score),
-            confidence=dimension_confidence(
+        confidence = (
+            overall_confidence
+            if dim_id in COMPOSITE_DIMENSION_IDS
+            else channel_dimension_confidence(
                 dim_id=dim_id,
                 merged_channels=merged_channels,
                 policy=policy,
-            ),
+            )
+        )
+        dimensions[dim_id] = SelfStateDimensionV1(
+            dimension_id=dim_id,
+            score=clamp01(score),
+            confidence=confidence,
             dominant_evidence=dominant_evidence,
             reasons=reasons,
         )
@@ -298,24 +310,27 @@ def build_self_state(
     )
 
     if enable_transport_influence:
-        # hints/transport_integrity_value were computed earlier (before
-        # overall_intensity) so the dimension's score already contributed to
-        # the weighted average via dimension_scores; here we only build the
-        # display/evidence object.
-        hints = transport_hints or {}
-        integrity = transport_integrity_value if transport_integrity_value is not None else 0.0
+        # transport_hints/transport_integrity_value were computed earlier
+        # (before overall_intensity) so the dimension's score already
+        # contributed to the weighted average via dimension_scores; here we
+        # only build the display/evidence object. confidence is
+        # overall_confidence, same as COMPOSITE_DIMENSION_IDS above:
+        # transport_integrity is synthesized from transport hints, not a
+        # direct channel_dimension_map entry, so channel_dimension_confidence
+        # would always report 0.0 for it too.
         dimensions["transport_integrity"] = SelfStateDimensionV1(
             dimension_id="transport_integrity",
-            score=integrity,
+            score=transport_integrity_value,
             confidence=overall_confidence,
             dominant_evidence=[
-                f"bus_health={hints.get('bus_health', 0):.2f}",
-                f"contract_pressure={hints.get('contract_pressure', 0):.2f}",
+                f"bus_health={transport_hints.get('bus_health', 0):.2f}",
+                f"contract_pressure={transport_hints.get('contract_pressure', 0):.2f}",
             ],
             reasons=["transport substrate synthesis from field capability:transport"],
         )
         summary_labels = sorted(
-            set(summary_labels) | set(transport_summary_labels(hints, integrity))
+            set(summary_labels)
+            | set(transport_summary_labels(transport_hints, transport_integrity_value))
         )
 
     dimension_trajectory: dict[str, float] = {}

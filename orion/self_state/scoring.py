@@ -158,7 +158,32 @@ def weighted_overall_intensity(
     return clamp01(acc / total_w)
 
 
-def dimension_confidence(
+def channels_mapped_to_dimension(
+    dim_id: str,
+    merged_channels: dict[str, float],
+    channel_map: dict[str, str],
+) -> list[tuple[str, float]]:
+    """Channels whose channel_map entry routes to dim_id, as (channel, value) pairs.
+
+    Shared by dimension score-confidence (channel_dimension_map only) and
+    builder.py's evidence formatting (channel_dimension_map + the
+    evidence-only channel_map) so both read the same filter instead of
+    re-implementing it.
+    """
+    return [(ch, v) for ch, v in merged_channels.items() if channel_map.get(ch) == dim_id]
+
+
+# Dimensions synthesized from other dimensions/attention salience rather than
+# a direct channel_dimension_map routing (field_intensity: overall_salience +
+# perturbation saturation; agency_readiness: a formula over other dimension
+# scores). channel_dimension_confidence() can never find a contributing
+# channel for these -- not a transient "no evidence this tick", a permanent
+# structural fact -- so they fall back to the coarser overall_confidence
+# proxy instead of a hardcoded, permanently-misleading 0.0.
+COMPOSITE_DIMENSION_IDS = frozenset({"field_intensity", "agency_readiness"})
+
+
+def channel_dimension_confidence(
     *,
     dim_id: str,
     merged_channels: dict[str, float],
@@ -171,19 +196,21 @@ def dimension_confidence(
     signals: how many channels actually mapped to this dimension this tick
     (contributing-channel count) and how much they agree with each other
     (inverse of their spread). A dimension with zero contributing channels
-    this tick reports 0.0 confidence rather than borrowing a global proxy.
+    this tick reports 0.0 confidence rather than borrowing a global proxy --
+    except COMPOSITE_DIMENSION_IDS, which never have a direct channel and are
+    handled by the caller instead (see builder.py).
     """
     values = [
-        float(v)
-        for ch, v in merged_channels.items()
-        if policy.channel_dimension_map.get(ch) == dim_id
+        v
+        for _, v in channels_mapped_to_dimension(dim_id, merged_channels, policy.channel_dimension_map)
     ]
     n = len(values)
     if n == 0:
         return 0.0
     count_component = min(1.0, n / 3.0)
-    if n >= 2:
-        agreement = 1.0 - clamp01(max(values) - min(values))
-    else:
-        agreement = 0.6
+    # A single contributing channel has no other value to disagree with --
+    # treat it as trivially self-agreeing (spread 0) rather than a second,
+    # undocumented magic constant; count_component already discounts it
+    # (n=1 -> 1/3) relative to multiple corroborating channels.
+    agreement = 1.0 - clamp01(max(values) - min(values)) if n >= 2 else 1.0
     return clamp01(0.3 * count_component + 0.7 * agreement)

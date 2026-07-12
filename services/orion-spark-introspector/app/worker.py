@@ -275,7 +275,12 @@ def _phi_from_self_state(ss: SelfStateV1) -> Dict[str, float]:
     # Valence: hedonic tone from agency, social ease, and constraint load.
     agency      = _s("agency_readiness", 0.5)
     social_ease = 1.0 - _s("social_pressure", 0.0)
-    policy_ease = 1.0 - _s("policy_pressure", 0.0)
+    # policy_pressure was removed from SelfStateV1 entirely (2026-07-12 self-state
+    # redesign) -- it was a dead dimension, permanently hardcoded to 0.0, never
+    # wired to a real signal. This term's value was therefore always 1.0 - 0.0 =
+    # 1.0 even before removal; kept as an explicit constant (not a `.get()` on a
+    # key that can no longer exist) so this doesn't read as a live signal.
+    policy_ease = 1.0
     raw_valence = 0.5 * agency + 0.3 * social_ease + 0.2 * policy_ease  # [0, 1]
     # Coherence modulates: fragmentation mutes affect in both directions —
     # can't feel fully alive, or fully distressed, when scattered.

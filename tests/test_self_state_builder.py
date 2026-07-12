@@ -159,6 +159,53 @@ def test_dimension_confidence_varies_across_dimensions() -> None:
         assert 0.0 <= dim.confidence <= 1.0
 
 
+def test_composite_dimension_confidence_falls_back_to_overall_confidence() -> None:
+    # field_intensity/agency_readiness are synthesized from attention
+    # salience/other dimension scores, never from a direct
+    # channel_dimension_map entry -- channel_dimension_confidence() can never
+    # find a contributing channel for them, so a hardcoded 0.0 there would be
+    # a permanent, structural false signal (not an honest "no evidence this
+    # tick", since this is true every tick forever). Regression found by
+    # code review (2026-07-12): both fall back to overall_confidence instead.
+    field = _synthetic_field()
+    attention = build_attention_frame(field=field, policy=ATTENTION_POLICY, now=NOW)
+    state = build_self_state(field=field, attention=attention, policy=SELF_POLICY, now=NOW)
+
+    assert state.dimensions["field_intensity"].confidence == state.overall_confidence
+    assert state.dimensions["agency_readiness"].confidence == state.overall_confidence
+    assert state.overall_confidence > 0.0
+
+
+def _circe_evidence_field() -> FieldStateV1:
+    return FieldStateV1(
+        generated_at=NOW,
+        tick_id="tick_evidence_channel_map",
+        node_vectors={"node:circe": {"gpu_pressure": 1.0}},
+        capability_vectors={"capability:llm_inference": {"pressure": 0.50}},
+    )
+
+
+def test_evidence_channel_map_restores_raw_channel_without_double_counting_score() -> None:
+    # Regression found by code review (2026-07-12): orion-spark-introspector's
+    # tissue-viz bypass (_hardware_resource_pressure/_execution_load_pressure)
+    # parses dominant_evidence for exact raw channel names (gpu_pressure, etc.)
+    # to avoid a generic diffused channel that can stick saturated (live
+    # incident 2026-07-10). Phase 1's double-counting fix removed those raw
+    # channels from channel_dimension_map so they stop feeding the SCORE --
+    # which also silently removed them from dominant_evidence, breaking that
+    # bypass. evidence_channel_map restores raw-channel visibility in
+    # evidence without reintroducing the double-count into the score.
+    field = _circe_evidence_field()
+    attention = build_attention_frame(field=field, policy=ATTENTION_POLICY, now=NOW)
+    state = build_self_state(field=field, attention=attention, policy=SELF_POLICY, now=NOW)
+
+    resource_dim = state.dimensions["resource_pressure"]
+    # Score reflects only the weighted diffusion (0.50), not the raw spike (1.0).
+    assert resource_dim.score == 0.50
+    # But the raw channel is still visible in evidence for downstream bypass logic.
+    assert any(ev.startswith("gpu_pressure=") for ev in resource_dim.dominant_evidence)
+
+
 def test_no_action_outputs() -> None:
     field = _synthetic_field()
     attention = build_attention_frame(field=field, policy=ATTENTION_POLICY, now=NOW)

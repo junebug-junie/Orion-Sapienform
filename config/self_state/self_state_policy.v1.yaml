@@ -60,6 +60,29 @@ channel_dimension_map:
   prediction_error: uncertainty
   field_coherence_warning: coherence
 
+evidence_channel_map:
+  # Evidence-only (2026-07-12): the same 11 raw channels removed from
+  # channel_dimension_map above, restored here for dominant_evidence/reasons
+  # transparency ONLY -- they do not feed the dimension's score (that would
+  # reintroduce the double-counting bug channel_dimension_map's removal just
+  # fixed). Needed because orion-spark-introspector's tissue-viz bypass
+  # (_hardware_resource_pressure/_execution_load_pressure in
+  # services/orion-spark-introspector/app/worker.py) parses dominant_evidence
+  # for these exact raw channel names to avoid a generic diffused channel
+  # that can stick saturated (live incident 2026-07-10) -- without this map,
+  # that bypass would silently regress to always returning None.
+  transport_pressure: resource_pressure
+  bus_health: coherence
+  delivery_confidence: coherence
+  execution_load: execution_pressure
+  execution_friction: reliability_pressure
+  failure_pressure: reliability_pressure
+  reasoning_load: reasoning_pressure
+  cpu_pressure: resource_pressure
+  gpu_pressure: resource_pressure
+  memory_pressure: resource_pressure
+  disk_pressure: resource_pressure
+
 stabilizing_channels:
   availability: 0.50
   confidence: 0.50

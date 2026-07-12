@@ -29,6 +29,15 @@ class SelfStatePolicyV1(BaseModel):
     dimension_weights: dict[str, float] = Field(default_factory=dict)
     attention_target_weights: dict[str, float] = Field(default_factory=dict)
     channel_dimension_map: dict[str, str] = Field(default_factory=dict)
+    # Evidence-only channel->dimension routing: channels here contribute to a
+    # dimension's dominant_evidence/reasons transparency but NOT to its score
+    # (that's channel_dimension_map's job). Exists for raw channels that are
+    # also diffused into a capability channel under a different name -- the
+    # diffused name stays in channel_dimension_map (so it alone feeds the
+    # score, fixing the 2026-07-12 double-counting bug), while the raw name
+    # stays visible here so downstream consumers can still see which real
+    # signal underlies the dimension.
+    evidence_channel_map: dict[str, str] = Field(default_factory=dict)
     stabilizing_channels: dict[str, float] = Field(default_factory=dict)
     pressure_channels: list[str] = Field(default_factory=list)
     context_channels: list[str] = Field(default_factory=list)

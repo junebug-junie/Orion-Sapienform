@@ -8,6 +8,7 @@ from pathlib import Path
 from orion.field_coherence import check_field_coherence
 
 from app.graph.lattice import load_lattice
+from app.health_monitor import HealthMonitor
 from app.ingest.state_deltas import Perturbation, delta_to_perturbations
 from app.settings import get_settings
 from app.store import FieldDigesterStore, PendingDelta
@@ -23,11 +24,13 @@ class FieldDigesterWorker:
         self._settings = get_settings()
         self._store = FieldDigesterStore(self._settings.postgres_uri)
         self._lattice = load_lattice(Path(self._settings.lattice_path))
+        self._health_monitor = HealthMonitor(self._store, self._settings)
         self._stop = asyncio.Event()
 
     async def start(self) -> None:
         asyncio.create_task(self._poll_loop(), name="field-digester-poll")
         asyncio.create_task(self._prune_loop(), name="field-digester-prune")
+        asyncio.create_task(self._health_loop(), name="field-digester-health")
 
     async def stop(self) -> None:
         self._stop.set()
@@ -50,12 +53,20 @@ class FieldDigesterWorker:
 
     def _prune_tick(self) -> None:
         retention = float(self._settings.field_state_retention_hours)
-        if retention <= 0:
-            return
-        deleted = self._store.prune_field_state(retention_hours=retention)
-        if deleted:
+        if retention > 0:
+            deleted = self._store.prune_field_state(retention_hours=retention)
+            if deleted:
+                logger.info(
+                    "field_state_pruned deleted=%d retention_hours=%.1f", deleted, retention
+                )
+
+        min_age = float(self._settings.field_applied_deltas_prune_min_age_hours)
+        deleted_deltas = self._store.prune_applied_deltas(min_age_hours=min_age)
+        if deleted_deltas:
             logger.info(
-                "field_state_pruned deleted=%d retention_hours=%.1f", deleted, retention
+                "applied_deltas_pruned deleted=%d min_age_hours=%.1f",
+                deleted_deltas,
+                min_age,
             )
 
     async def _prune_loop(self) -> None:
@@ -68,6 +79,22 @@ class FieldDigesterWorker:
                 await asyncio.wait_for(
                     self._stop.wait(),
                     timeout=float(self._settings.field_state_prune_interval_sec),
+                )
+            except asyncio.TimeoutError:
+                continue
+            except asyncio.CancelledError:
+                break
+
+    async def _health_loop(self) -> None:
+        while not self._stop.is_set():
+            try:
+                await asyncio.to_thread(self._health_monitor.run_tick)
+            except Exception:
+                logger.exception("field_digester_health_check_failed")
+            try:
+                await asyncio.wait_for(
+                    self._stop.wait(),
+                    timeout=float(self._settings.health_check_interval_sec),
                 )
             except asyncio.TimeoutError:
                 continue

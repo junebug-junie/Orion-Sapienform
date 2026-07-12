@@ -17,6 +17,13 @@ create table if not exists substrate_field_applied_deltas (
 create index if not exists idx_substrate_field_applied_deltas_receipt
   on substrate_field_applied_deltas (receipt_id);
 
+-- Backs prune_applied_deltas' "WHERE applied_at < :cutoff ORDER BY applied_at ASC"
+-- scan; without it, every prune batch does a full sequential scan + sort of this
+-- table. On an already-live database, apply separately with CONCURRENTLY instead
+-- (see services/orion-field-digester/README.md) to avoid a write lock.
+create index if not exists idx_substrate_field_applied_deltas_applied_at
+  on substrate_field_applied_deltas (applied_at);
+
 create table if not exists substrate_field_state (
     tick_id text primary key,
     generated_at timestamptz not null,

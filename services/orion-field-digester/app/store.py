@@ -34,6 +34,35 @@ WHERE ctid IN (
 )
 """
 
+# Deletes an applied-delta dedup row only once its source receipt is gone from
+# substrate_reduction_receipts -- i.e. once it is structurally impossible for
+# fetch_new_receipts() to ever re-deliver that delta_id. This ties correctness
+# to the receipt's actual lifecycle instead of guessing a retention window long
+# enough to outlive every possible receipt-cursor replay. min_age_hours is only
+# a small safety margin against racing the receipt pruner's own transaction.
+PRUNE_APPLIED_DELTAS_SQL = """
+DELETE FROM substrate_field_applied_deltas
+WHERE ctid IN (
+    SELECT d.ctid
+    FROM substrate_field_applied_deltas d
+    WHERE d.applied_at < :cutoff
+      AND NOT EXISTS (
+          SELECT 1 FROM substrate_reduction_receipts r
+          WHERE r.receipt_id = d.receipt_id
+      )
+    ORDER BY d.applied_at ASC
+    LIMIT :batch_size
+)
+"""
+
+
+@dataclass(frozen=True)
+class HealthSnapshot:
+    field_state_oldest_age_hours: float | None
+    applied_deltas_row_estimate: int
+    database_size_bytes: int
+    database_name: str = "conjourney"
+
 
 @dataclass(frozen=True)
 class FetchedReceipt:
@@ -206,6 +235,65 @@ class FieldDigesterStore:
             if deleted < batch_size:
                 break
         return total_deleted
+
+    def prune_applied_deltas(self, *, min_age_hours: float, batch_size: int = 5000) -> int:
+        if min_age_hours <= 0:
+            return 0
+        cutoff = datetime.now(timezone.utc) - timedelta(hours=min_age_hours)
+        total_deleted = 0
+        while True:
+            with self._engine.begin() as conn:
+                result = conn.execute(
+                    text(PRUNE_APPLIED_DELTAS_SQL),
+                    {"cutoff": cutoff, "batch_size": batch_size},
+                )
+            deleted = result.rowcount or 0
+            total_deleted += deleted
+            if deleted < batch_size:
+                break
+        return total_deleted
+
+    def health_snapshot(self) -> "HealthSnapshot":
+        # One round trip for all three health-monitor signals instead of three,
+        # since this runs every FIELD_DIGESTER_HEALTH_CHECK_INTERVAL_SEC. The
+        # applied-deltas count uses pg_stat_user_tables' planner estimate rather
+        # than COUNT(*): exact accuracy doesn't matter against a 5-million-row
+        # alert threshold, and COUNT(*) would force a full scan of the one table
+        # this whole feature exists to keep from growing unbounded.
+        with self._engine.connect() as conn:
+            row = conn.execute(
+                text(
+                    """
+                    SELECT
+                        (SELECT min(created_at) FROM substrate_field_state) AS field_state_oldest,
+                        (SELECT n_live_tup FROM pg_stat_user_tables
+                         WHERE relname = 'substrate_field_applied_deltas') AS applied_deltas_estimate,
+                        pg_database_size(current_database()) AS db_size,
+                        current_database() AS db_name
+                    """
+                )
+            ).mappings().first()
+
+        oldest = row["field_state_oldest"] if row else None
+        age_hours: float | None = None
+        if oldest is not None:
+            if oldest.tzinfo is None:
+                oldest = oldest.replace(tzinfo=timezone.utc)
+            age_hours = (datetime.now(timezone.utc) - oldest).total_seconds() / 3600.0
+
+        estimate = 0
+        if row and row["applied_deltas_estimate"] is not None:
+            estimate = int(row["applied_deltas_estimate"])
+
+        db_size = int(row["db_size"]) if row else 0
+        db_name = str(row["db_name"]) if row else "unknown"
+
+        return HealthSnapshot(
+            field_state_oldest_age_hours=age_hours,
+            applied_deltas_row_estimate=estimate,
+            database_size_bytes=db_size,
+            database_name=db_name,
+        )
 
     def advance_cursor(self, receipt_id: str, created_at: datetime) -> None:
         now = datetime.now(timezone.utc)

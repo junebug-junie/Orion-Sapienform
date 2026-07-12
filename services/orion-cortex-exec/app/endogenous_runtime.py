@@ -1,3 +1,17 @@
+"""Cortex-exec endogenous runtime (phase 8, live/adopted).
+
+Unrelated to ``orion/autonomy/endogenous_origination.py``. That module is a
+different, separate system — a NO-GO-verdicted (2026-07-08 live-data
+measurement, see
+``docs/superpowers/specs/2026-07-07-endogenous-drive-origination-design.md``),
+mostly-dead "spontaneous want" generator that happens to share the word
+"endogenous". This module, by contrast, is live and adopted
+(``ENDOGENOUS_RUNTIME_ENABLED=true`` in production; see
+``docs/architecture/endogenous_runtime_adoption_phase8.md``). Do not conflate
+the two ``ORION_ENDOGENOUS_*``-style flags or the two systems when debugging or
+reading traces — they do not share code, config, or a bus contract.
+"""
+
 from __future__ import annotations
 
 import hashlib

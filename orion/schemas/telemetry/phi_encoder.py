@@ -72,3 +72,12 @@ class PhiIntrinsicRewardV1(BaseModel):
     phi_health: str = "ok"
     grammar_truth_degraded: bool = False
     attribution_top: List[AttributionV1] = Field(default_factory=list)
+    # 2026-07-12, inner-state unification Phase 2: node-attributed embodiment.
+    # Sourced from SelfStateV1.dominant_attention_target_details, filtered to
+    # real hardware nodes only (excludes synthetic pseudo-nodes and non-node
+    # target kinds like "field:recent_perturbations" -- see
+    # services/orion-spark-introspector/app/worker.py's
+    # _dominant_hardware_node()). None when no qualifying node is present
+    # this tick.
+    dominant_node: Optional[str] = None
+    dominant_node_reason: Optional[str] = None

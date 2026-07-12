@@ -200,7 +200,14 @@ REGISTRY: tuple[InnerStateSignal, ...] = (
         notes=(
             "Golden phi. Trained MLP autoencoder over InnerStateFeaturesV1. "
             "Fixed + deployed 2026-07-12 (654a9803, 79a6d966) -- was dark "
-            "(SQL sink + debug WebSocket EKG panel only) for weeks before that."
+            "(SQL sink + debug WebSocket EKG panel only) for weeks before that. "
+            "Phase 2 (2026-07-12) adds dominant_node/dominant_node_reason, "
+            "sourced from self_state.v1's dominant_attention_target_details "
+            "(Phase 1), filtered to real hardware nodes only via "
+            "orion-spark-introspector's _dominant_hardware_node() -- excludes "
+            "target_kind!='node' (a system-kind entry like "
+            "field:recent_perturbations was confirmed live to frequently win "
+            "top salience) and the two synthetic pseudo-nodes."
         ),
     ),
     InnerStateSignal(

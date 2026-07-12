@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import logging
 from datetime import datetime, timezone
 from typing import Any, Literal, cast
 from uuid import uuid4
@@ -14,6 +15,11 @@ from orion.thought.coalition import (
 )
 from orion.thought.policy_refusal import evaluate_thought_disposition
 from orion.thought.stance_quality import enforce_thought_stance_quality
+
+logger = logging.getLogger(__name__)
+
+IMPERATIVE_MAX_LEN = 400
+TONE_MAX_LEN = 200
 
 
 def _coerce_optional_str(value: Any) -> str | None:
@@ -57,9 +63,33 @@ def _coerce_required_str(value: Any, *, default: str) -> str:
     return text or default
 
 
+def _coerce_and_clamp_str(
+    value: Any,
+    *,
+    default: str,
+    max_len: int,
+    field: str,
+    correlation_id: str | None,
+) -> str:
+    """Coerce like _coerce_required_str, then clamp overlong LLM output instead of
+    letting ThoughtEventV1's Field(max_length=...) reject the whole turn."""
+    text = _coerce_required_str(value, default=default)
+    if len(text) > max_len:
+        logger.warning(
+            "stance_react_field_overflow field=%s len=%d max=%d corr=%s — clamping",
+            field,
+            len(text),
+            max_len,
+            correlation_id,
+        )
+        text = text[:max_len]
+    return text
+
+
 def normalize_stance_react_raw(raw: dict[str, Any]) -> dict[str, Any]:
     """Coerce common LLM JSON mistakes before ThoughtEventV1 validation."""
     data = dict(raw)
+    correlation_id = _coerce_optional_str(data.get("correlation_id"))
     data["event_id"] = _coerce_required_str(data.get("event_id"), default=str(uuid4()))
     data["created_at"] = _coerce_required_str(
         data.get("created_at"),
@@ -68,8 +98,20 @@ def normalize_stance_react_raw(raw: dict[str, Any]) -> dict[str, Any]:
     data["profile"] = _coerce_required_str(data.get("profile"), default="stance_react")
     data["producer"] = _coerce_required_str(data.get("producer"), default="stance_react_v1")
     data["llm_profile"] = _coerce_required_str(data.get("llm_profile"), default="brain")
-    data["imperative"] = _coerce_required_str(data.get("imperative"), default="")
-    data["tone"] = _coerce_required_str(data.get("tone"), default="neutral")
+    data["imperative"] = _coerce_and_clamp_str(
+        data.get("imperative"),
+        default="",
+        max_len=IMPERATIVE_MAX_LEN,
+        field="imperative",
+        correlation_id=correlation_id,
+    )
+    data["tone"] = _coerce_and_clamp_str(
+        data.get("tone"),
+        default="neutral",
+        max_len=TONE_MAX_LEN,
+        field="tone",
+        correlation_id=correlation_id,
+    )
     data["strain_refs"] = _coerce_str_list(data.get("strain_refs"))
     data["evidence_refs"] = _coerce_str_list(data.get("evidence_refs"))
     data["disposition_reasons"] = _coerce_str_list(data.get("disposition_reasons"))

@@ -16,7 +16,12 @@ from orion.schemas.thought import (
 )
 from orion.thought.coalition import coalition_ids_from_association
 from orion.thought.policy_refusal import TRUST_RUPTURE_DEFER_THRESHOLD
-from orion.thought.stance_react import apply_stance_react_pipeline, parse_stance_react_payload
+from orion.thought.stance_react import (
+    IMPERATIVE_MAX_LEN,
+    TONE_MAX_LEN,
+    apply_stance_react_pipeline,
+    parse_stance_react_payload,
+)
 
 
 def _broadcast(
@@ -137,6 +142,37 @@ def test_parse_stance_react_payload_coerces_null_event_id() -> None:
     raw["event_id"] = None
     parsed = parse_stance_react_payload(raw)
     assert parsed.event_id
+
+
+def test_stance_react_clamp_lens_match_schema_max_length() -> None:
+    # Guards against the clamp constants drifting from ThoughtEventV1's Field(max_length=...).
+    # If they drift apart (clamp allows more than the schema accepts), overlong LLM output
+    # would pass the clamp but still raise on ThoughtEventV1.model_validate — reintroducing
+    # the exact fail-closed-defer bug this clamp exists to prevent.
+    imperative_field = ThoughtEventV1.model_fields["imperative"]
+    tone_field = ThoughtEventV1.model_fields["tone"]
+    imperative_max = next(m.max_length for m in imperative_field.metadata if hasattr(m, "max_length"))
+    tone_max = next(m.max_length for m in tone_field.metadata if hasattr(m, "max_length"))
+    assert IMPERATIVE_MAX_LEN == imperative_max
+    assert TONE_MAX_LEN == tone_max
+
+
+def test_parse_stance_react_payload_clamps_overlong_imperative() -> None:
+    raw = _thought().model_dump(mode="json")
+    overlong = "x" * 500
+    raw["imperative"] = overlong
+    parsed = parse_stance_react_payload(raw)
+    assert len(parsed.imperative) == 400
+    assert parsed.imperative == overlong[:400]
+
+
+def test_parse_stance_react_payload_clamps_overlong_tone() -> None:
+    raw = _thought().model_dump(mode="json")
+    overlong_tone = "y" * 300
+    raw["tone"] = overlong_tone
+    parsed = parse_stance_react_payload(raw)
+    assert len(parsed.tone) == 200
+    assert parsed.tone == overlong_tone[:200]
 
 
 def test_apply_stance_react_pipeline_proceed() -> None:

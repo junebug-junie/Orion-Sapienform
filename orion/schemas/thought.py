@@ -76,7 +76,7 @@ class ThoughtEventV1(BaseModel):
     created_at: datetime
     profile: Literal["stance_react"] = "stance_react"
 
-    imperative: str = Field(max_length=300)
+    imperative: str = Field(max_length=400)
     tone: str = Field(max_length=200)
     strain_refs: list[str]
 

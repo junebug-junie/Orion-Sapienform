@@ -255,3 +255,38 @@ def build_execution_dispatch_frame(
         blocked_count=len(blocked),
         warnings=warnings,
     )
+
+
+def build_unevaluable_execution_dispatch_frame(
+    *,
+    policy_frame: PolicyDecisionFrameV1,
+    policy_id: str,
+    reason: str,
+    now: datetime | None = None,
+) -> ExecutionDispatchFrameV1:
+    """A policy frame whose proposal or self-state could not be loaded still
+    needs an execution_dispatch_frame -- otherwise it's the oldest
+    undispatched policy frame forever, permanently blocking every policy
+    frame queued behind it in the FIFO
+    `load_latest_policy_frame_without_dispatch` query. Mirrors
+    orion.policy.builder.build_unevaluable_policy_decision_frame's reasoning
+    exactly: record honestly (dispatch_attempted=False, zero candidates,
+    a warning), don't silently drop or silently dispatch. Uses the same
+    stable_execution_dispatch_frame_id as a real build would, so this is
+    naturally superseded (not duplicated) if the dependency later loads.
+    """
+    return ExecutionDispatchFrameV1(
+        frame_id=stable_execution_dispatch_frame_id(
+            policy_frame_id=policy_frame.frame_id,
+            policy_id=policy_id,
+        ),
+        generated_at=now or datetime.now(timezone.utc),
+        source_policy_frame_id=policy_frame.frame_id,
+        source_proposal_frame_id=policy_frame.source_proposal_frame_id,
+        source_self_state_id=policy_frame.source_self_state_id,
+        execution_dispatch_policy_id=policy_id,
+        dispatch_attempted=False,
+        dispatch_count=0,
+        blocked_count=0,
+        warnings=[*policy_frame.warnings, reason],
+    )

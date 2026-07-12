@@ -1,15 +1,19 @@
 from __future__ import annotations
 
 import json
+import logging
 from datetime import datetime, timezone
 
 from psycopg2.extras import Json
+from pydantic import ValidationError
 from sqlalchemy import create_engine, text
 from sqlalchemy.engine import Engine
 
 from orion.schemas.policy_decision_frame import PolicyDecisionFrameV1
 from orion.schemas.proposal_frame import ProposalFrameV1
 from orion.schemas.self_state import SelfStateV1
+
+logger = logging.getLogger("orion.policy_runtime.store")
 
 
 class PolicyRuntimeStore:
@@ -90,7 +94,19 @@ class PolicyRuntimeStore:
         payload = row["self_state_json"]
         if isinstance(payload, str):
             payload = json.loads(payload)
-        return SelfStateV1.model_validate(payload)
+        try:
+            return SelfStateV1.model_validate(payload)
+        except ValidationError:
+            # A schema change (e.g. a removed dimension_id enum value) can
+            # leave a self-state row saved before that change permanently
+            # incompatible. This is looked up by a fixed self_state_id (a
+            # proposal's source), so a naive raise here would block that
+            # proposal (and everything queued behind it) forever. Degrade to
+            # None, same as "row not found".
+            logger.warning(
+                "self_state_incompatible_schema self_state_id=%s", self_state_id, exc_info=True
+            )
+            return None
 
     def load_policy_frame_for_proposal(self, proposal_frame_id: str) -> PolicyDecisionFrameV1 | None:
         with self._engine.connect() as conn:

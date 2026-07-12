@@ -15,10 +15,17 @@ dimension_weights:
   resource_pressure: 0.10
   execution_pressure: 0.15
   reasoning_pressure: 0.05
-  reliability_pressure: 0.15
+  reliability_pressure: 0.13
   continuity_pressure: 0.03
   introspection_pressure: 0.02
-  social_pressure: 0.04
+  social_pressure: 0.02
+  # transport_integrity is no longer display-only (2026-07-12): it has a real
+  # producer (orion/self_state/transport.py, live behind
+  # ENABLE_TRANSPORT_SELF_STATE_INFLUENCE) so it earns a policy weight and now
+  # contributes to overall_intensity when the flag is on. Small weight: it's
+  # a synthesis of channels already reflected in resource_pressure/
+  # reliability_pressure/coherence, not an independent primary signal.
+  transport_integrity: 0.05
 
 attention_target_weights:
   system: 0.30
@@ -26,17 +33,17 @@ attention_target_weights:
   capability: 0.35
 
 channel_dimension_map:
-  transport_pressure: resource_pressure
-  bus_health: coherence
-  delivery_confidence: coherence
-  execution_load: execution_pressure
-  execution_friction: reliability_pressure
-  failure_pressure: reliability_pressure
-  reasoning_load: reasoning_pressure
-  cpu_pressure: resource_pressure
-  gpu_pressure: resource_pressure
-  memory_pressure: resource_pressure
-  disk_pressure: resource_pressure
+  # NOTE (2026-07-12, self-state mesh substrate redesign Phase 1): the 11 raw
+  # node-level channels that are also diffused into capability_vectors under a
+  # different channel name by a topology edge (config/field/orion_field_topology.v1.yaml)
+  # do NOT get a direct entry here anymore. Direct entries always won max()
+  # against their own correctly edge-weighted diffusion (weight <= 1 always),
+  # which made per-node topology edge weights functionally inert. Removed:
+  # transport_pressure, bus_health, delivery_confidence, execution_load,
+  # execution_friction, failure_pressure, reasoning_load, cpu_pressure,
+  # gpu_pressure, memory_pressure, disk_pressure. Their signal still reaches
+  # dimensions via the diffused capability channel name (e.g. gpu_pressure ->
+  # capability:llm_inference's "pressure", mapped below).
   thermal_pressure: resource_pressure
   staleness: continuity_pressure
   availability: coherence
@@ -60,14 +67,12 @@ stabilizing_channels:
   expected_offline_suppression: 0.30
 
 pressure_channels:
-  - execution_load
-  - execution_friction
-  - failure_pressure
-  - reasoning_load
-  - cpu_pressure
-  - gpu_pressure
-  - memory_pressure
-  - disk_pressure
+  # execution_load, execution_friction, failure_pressure, reasoning_load,
+  # cpu_pressure, gpu_pressure, memory_pressure, disk_pressure removed
+  # alongside their channel_dimension_map entries above (2026-07-12) — a
+  # pressure_channels entry with no channel_dimension_map entry can never be
+  # flagged by build_self_state()'s unresolved-pressure detection, so leaving
+  # them here would be a declared-but-dead config entry.
   - thermal_pressure
   - staleness
   - pressure

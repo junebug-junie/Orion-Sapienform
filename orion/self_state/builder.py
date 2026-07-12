@@ -17,6 +17,7 @@ from orion.self_state.scoring import (
     collect_field_channel_pressures,
     condition_from_intensity,
     coherence_score,
+    dimension_confidence,
     field_intensity_score,
     map_channels_to_dimensions,
     uncertainty_score,
@@ -215,6 +216,20 @@ def build_self_state(
         "social_pressure": mapped.get("social_pressure", 0.0),
     }
 
+    # Compute transport_integrity BEFORE overall_intensity so that, when the
+    # flag is on, its policy weight (config/self_state/self_state_policy.v1.yaml
+    # dimension_weights.transport_integrity) actually feeds the weighted
+    # average instead of being folded into dimension_scores too late to
+    # matter. The SelfStateDimensionV1 object itself is still built later,
+    # after `dimensions`/`summary_labels` exist, reusing `transport_hints`/
+    # `transport_integrity_value` computed here.
+    transport_hints: dict[str, float] | None = None
+    transport_integrity_value: float | None = None
+    if enable_transport_influence:
+        transport_hints = transport_channel_hints(field)
+        transport_integrity_value = transport_integrity_score(transport_hints)
+        dimension_scores["transport_integrity"] = transport_integrity_value
+
     overall_intensity = weighted_overall_intensity(dimension_scores, policy)
     overall_condition = cast(
         Literal["quiet", "steady", "loaded", "strained", "unstable", "unknown"],
@@ -267,7 +282,11 @@ def build_self_state(
         dimensions[dim_id] = SelfStateDimensionV1(
             dimension_id=dim_id,
             score=clamp01(score),
-            confidence=overall_confidence,
+            confidence=dimension_confidence(
+                dim_id=dim_id,
+                merged_channels=merged_channels,
+                policy=policy,
+            ),
             dominant_evidence=dominant_evidence,
             reasons=reasons,
         )
@@ -279,9 +298,12 @@ def build_self_state(
     )
 
     if enable_transport_influence:
-        hints = transport_channel_hints(field)
-        integrity = transport_integrity_score(hints)
-        dimension_scores["transport_integrity"] = integrity
+        # hints/transport_integrity_value were computed earlier (before
+        # overall_intensity) so the dimension's score already contributed to
+        # the weighted average via dimension_scores; here we only build the
+        # display/evidence object.
+        hints = transport_hints or {}
+        integrity = transport_integrity_value if transport_integrity_value is not None else 0.0
         dimensions["transport_integrity"] = SelfStateDimensionV1(
             dimension_id="transport_integrity",
             score=integrity,

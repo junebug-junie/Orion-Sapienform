@@ -141,11 +141,49 @@ def weighted_overall_intensity(
     total_w = 0.0
     acc = 0.0
     for dim_id, weight in policy.dimension_weights.items():
+        # A dimension absent from dimension_scores this tick (e.g.
+        # transport_integrity when ENABLE_TRANSPORT_SELF_STATE_INFLUENCE is
+        # off) is skipped entirely, not defaulted to 0.0 pressure — a phantom
+        # zero would dilute the average with a fabricated "everything's
+        # fine" signal for a dimension that was never actually computed.
+        if dim_id not in dimension_scores:
+            continue
         w = float(weight)
         if w <= 0:
             continue
         total_w += w
-        acc += w * clamp01(dimension_scores.get(dim_id, 0.0))
+        acc += w * clamp01(dimension_scores[dim_id])
     if total_w <= 0:
         return 0.0
     return clamp01(acc / total_w)
+
+
+def dimension_confidence(
+    *,
+    dim_id: str,
+    merged_channels: dict[str, float],
+    policy: SelfStatePolicyV1,
+) -> float:
+    """Real per-dimension confidence from this tick's contributing channels.
+
+    There is no per-channel freshness data available in FieldStateV1 (only a
+    whole-field generated_at) so confidence is based only on two honest
+    signals: how many channels actually mapped to this dimension this tick
+    (contributing-channel count) and how much they agree with each other
+    (inverse of their spread). A dimension with zero contributing channels
+    this tick reports 0.0 confidence rather than borrowing a global proxy.
+    """
+    values = [
+        float(v)
+        for ch, v in merged_channels.items()
+        if policy.channel_dimension_map.get(ch) == dim_id
+    ]
+    n = len(values)
+    if n == 0:
+        return 0.0
+    count_component = min(1.0, n / 3.0)
+    if n >= 2:
+        agreement = 1.0 - clamp01(max(values) - min(values))
+    else:
+        agreement = 0.6
+    return clamp01(0.3 * count_component + 0.7 * agreement)

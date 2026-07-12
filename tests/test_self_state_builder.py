@@ -107,6 +107,58 @@ def test_dimension_reasons_reflect_real_evidence() -> None:
     assert social_dim.reasons == ["no contributing channel evidence this tick"]
 
 
+def _confidence_field() -> FieldStateV1:
+    return FieldStateV1(
+        generated_at=NOW,
+        tick_id="tick_confidence",
+        node_vectors={
+            "node:athena": {
+                "availability": 0.90,
+                "confidence": 0.85,
+                "thermal_pressure": 0.30,
+            },
+        },
+        capability_vectors={
+            "capability:orchestration": {
+                "pressure": 0.70,
+                "reliability_pressure": 0.50,
+            },
+            "capability:transport": {
+                "available_capacity": 0.80,
+            },
+        },
+    )
+
+
+def test_dimension_confidence_varies_across_dimensions() -> None:
+    # Phase 1 (2026-07-12): per-dimension confidence used to be a single
+    # global proxy (0.5 + 0.5*len(dominant_targets)/5) copy-pasted onto all
+    # 13 dimensions, carrying zero per-dimension information. It must now be
+    # a real function of how many channels contributed to each dimension
+    # this tick and how much they agree.
+    field = _confidence_field()
+    attention = build_attention_frame(field=field, policy=ATTENTION_POLICY, now=NOW)
+    state = build_self_state(field=field, attention=attention, policy=SELF_POLICY, now=NOW)
+
+    confidences = {dim_id: dim.confidence for dim_id, dim in state.dimensions.items()}
+    assert len(set(confidences.values())) > 1, confidences
+
+    # coherence has 3 agreeing contributing channels (availability=0.90,
+    # confidence=0.85, available_capacity=0.80); reliability_pressure has
+    # only 1 (reliability_pressure=0.50). More agreeing evidence must mean
+    # higher confidence.
+    assert state.dimensions["coherence"].confidence > state.dimensions["reliability_pressure"].confidence
+
+    # A dimension with zero contributing channels this tick (no channel in
+    # merged_channels maps to continuity_pressure in this fixture) reports
+    # honest zero confidence, not a borrowed global proxy.
+    assert state.dimensions["continuity_pressure"].confidence == 0.0
+
+    # Confidence values stay within the schema's valid range.
+    for dim in state.dimensions.values():
+        assert 0.0 <= dim.confidence <= 1.0
+
+
 def test_no_action_outputs() -> None:
     field = _synthetic_field()
     attention = build_attention_frame(field=field, policy=ATTENTION_POLICY, now=NOW)

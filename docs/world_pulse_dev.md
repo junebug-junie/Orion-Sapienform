@@ -91,6 +91,12 @@ ACTIONS_WORLD_PULSE_ENABLED=false
 - Keep `required: false` during expansion unless the source is operationally critical and stable.
 - If a source fails in this environment, set `enabled: false` with a clear `notes` entry instead of deleting it.
 
+## Known zero-source sections
+
+- `hardware_compute_gpu` (a `recommended`, not `required`, section) has zero passive/RSS sources tagged to it as of 2026-07-13.
+- `nasa_news` previously carried a `hardware_compute_gpu` tag alongside `science_climate_energy`, but NASA press releases (launches, contract awards, Mars missions) are not GPU/hardware/compute content. Since NASA publishes near-daily, that mistagging permanently marked the section `covered` and silently suppressed the curiosity gap-fill (see `_compute_coverage` in `app/services/pipeline.py`) for months. The tag was removed; do not re-add `nasa_news` (or any other off-topic source) to `hardware_compute_gpu` to "fix" the resulting gap.
+- This is an accepted, intentional tradeoff: `hardware_compute_gpu` now relies entirely on the curiosity live-search gap-fill (`build_curiosity_followups` in `app/services/curiosity.py`) firing on every run where the section has zero accepted articles, instead of on a passive feed. Do not add a replacement source for this section without an explicit decision to do so.
+
 ## Source quality guidance
 
 - Prefer official/public-interest sources, wire-style reporting, and stable metadata-rich feeds.

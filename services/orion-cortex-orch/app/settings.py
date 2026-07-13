@@ -49,7 +49,7 @@ class Settings(BaseSettings):
         "orion:cortex:exec:request:background",
         alias="CHANNEL_EXEC_REQUEST_BACKGROUND",
     )
-    exec_lane_routing_enabled: bool = Field(False, alias="EXEC_LANE_ROUTING_ENABLED")
+    exec_lane_routing_enabled: bool = Field(True, alias="EXEC_LANE_ROUTING_ENABLED")
     channel_exec_result_prefix: str = Field(
         "orion:exec:result",
         validation_alias=AliasChoices("CORTEX_EXEC_RESULT_PREFIX", "EXEC_RESULT_PREFIX"),

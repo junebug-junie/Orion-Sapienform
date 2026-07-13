@@ -20,8 +20,13 @@ def _mock_pool():
 
 
 def test_rebuild_batch_ingests_items():
+    # Exercises the generic orion_postgres ingest path (this test predates backend
+    # selection); pin the backend so it doesn't depend on the graphiti_core package,
+    # which is only installed in the service's Docker image, not this test venv.
     pool, conn = _mock_pool()
-    with patch.object(main_mod, "pg_pool", pool), patch(
+    with patch.object(main_mod, "pg_pool", pool), patch.object(
+        main_mod.settings, "GRAPHITI_BACKEND", "orion_postgres"
+    ), patch(
         "app.main.sync_to_falkordb", return_value=None
     ):
         client = TestClient(main_mod.app)
@@ -58,7 +63,9 @@ def test_rebuild_batch_ingests_items():
 
 def test_rebuild_skips_intimate_items():
     pool, _conn = _mock_pool()
-    with patch.object(main_mod, "pg_pool", pool):
+    with patch.object(main_mod, "pg_pool", pool), patch.object(
+        main_mod.settings, "GRAPHITI_BACKEND", "orion_postgres"
+    ):
         client = TestClient(main_mod.app)
         resp = client.post(
             "/v1/rebuild",

@@ -18,15 +18,17 @@ Hub `GraphitiAdapter` calls this service when `GRAPHITI_URL` is set.
 
 ## graphiti_core backend
 
-`GRAPHITI_BACKEND=graphiti_core` is the deployed runtime state for this Orion node's live
-adapter container as of the 2026-07-13 activation pass (see
-`docs/superpowers/specs/2026-07-13-graphiti-core-backend-activation-spec.md`). `settings.py`'s
-and `.env_example`'s code-level default remains `orion_postgres` for fresh deployments —
-`/v1/search` is now proven to find real data end to end (see the smoke table below), but
-flipping the shipped default is a separate operator decision, not made in this patch.
-`orion_postgres` is the fallback/rollback backend; neighborhood/BFS traversal is
-backend-agnostic and identical either way (`get_neighborhood()` always delegates to the
-Postgres projection). Only `POST /v1/search` (hybrid vector+graph) is gated by this flag.
+`GRAPHITI_BACKEND=graphiti_core` is the shipped code-level default (`settings.py`,
+`.env_example`) as of the 2026-07-13 hardening pass (see
+`docs/superpowers/specs/2026-07-13-graphiti-core-backend-activation-spec.md`). `/v1/search` is
+proven to find real data end to end (see the smoke table below), so `graphiti_core` is now the
+default for fresh deployments too — this was previously a live-override-only decision, now
+made. `FALKORDB_ENABLED` defaults to `true` alongside it. `CRYSTALLIZER_EMBED_HOST_URL` is
+still required (`.env_example` ships the real container-DNS value for this node) since
+`graphiti_core` cannot embed without it. `orion_postgres` remains the fallback/rollback
+backend; neighborhood/BFS traversal is backend-agnostic and identical either way
+(`get_neighborhood()` always delegates to the Postgres projection). Only `POST /v1/search`
+(hybrid vector+graph) is gated by this flag.
 
 Entities/edges are written via graphiti-core's own `EntityNode`/`EntityEdge` classes
 (`uuid`-keyed, `RELATES_TO`-shaped, with a self-referential edge per crystallization so

@@ -218,3 +218,76 @@ few have accumulated — `orion/memory/crystallization/detection.py::detect_dupl
 `validation_status=invalid`, blocking approve with HTTP 400. Not a graphiti-core bug; the
 script now varies two independent random tokens per run (Jaccard ~0.5) and checks the approve
 HTTP status explicitly instead of swallowing failures.
+
+---
+
+## Hardening pass (2026-07-13, same day)
+
+With `/v1/search` proven live, three follow-ups closed the loop:
+
+### 1. `graphiti_core` is now the shipped default
+
+`settings.py`/`.env_example`: `GRAPHITI_BACKEND` default `orion_postgres` → `graphiti_core`,
+`FALKORDB_ENABLED` default `false` → `true`, `.env_example`'s `CRYSTALLIZER_EMBED_HOST_URL`
+filled in. Previously this was a live-override-only decision (code-level default stayed
+`orion_postgres` "until search is proven"); it's proven now, so the default follows.
+`orion_postgres` remains the rollback backend, unchanged.
+
+**Regression this uncovered:** `services/orion-graphiti-adapter/tests/{test_episodes,
+test_links,test_rebuild}.py` predate backend selection and exercise the generic ingest/link/
+rebuild path via `TestClient` without pinning a backend — they silently relied on the *old*
+default (`orion_postgres`) to avoid needing the `graphiti_core` package, which is only
+installed in this service's Docker image, not the bare dev venv. Flipping the default routed
+them through `core_backend.ingest_episode()` instead, which hard-crashes on
+`ModuleNotFoundError: graphiti_core` outside Docker. Fixed by pinning
+`patch.object(main_mod.settings, "GRAPHITI_BACKEND", "orion_postgres")` in those specific
+tests (they test generic behavior, not graphiti_core-specific behavior) rather than installing
+`graphiti-core` into the dev venv or skipping them. `test_health.py`'s
+`assert data["backend"] == "orion_postgres"` was a real assertion on the old default, not a
+test-isolation issue — updated to `"graphiti_core"`.
+
+### 2. `/v1/search` driver/client reuse
+
+`search()` previously built a fresh `FalkorDriver` + `Graphiti` instance + no-op llm/cross-
+encoder/embedder stubs on every single request, discarded after one call. `_get_search_stack()`
+memoizes all of it in a process-local `_search_stack_cache` dict keyed by
+`(falkordb_uri, graph_name, embed_url)`, mirroring the existing `_indices_ready` lazy-init-once
+pattern. `FalkorDriver` is a thin redis-protocol client (`graphiti_core/driver/
+falkordb_driver.py`) — no documented long-lived-reuse hazard, confirmed by reading the
+installed package source in the running container.
+
+**Correctness hazard this introduced, and its fix:** `_OrionEmbedderClient` previously tracked
+embed success as instance state (`self.used`). With the embedder instance now cached and
+reused across requests, that would let one request's result leak into a later (or concurrent)
+request's `trace.embed_used`. Fixed by moving the flag to `_embed_used_ctx`, an
+`asyncio.ContextVar` reset to `False` at the start of every `search()` call — each
+request-handling Task gets its own copy of the current context, so concurrent requests sharing
+one embedder instance can't see each other's writes. Regression tests: `_search_stack_cache`
+grows by exactly one entry across repeated calls with the same key (driver/`Graphiti`
+constructor call counts assert this), and a two-call sequence (embed succeeds, then fails)
+asserts `trace.embed_used` reflects only the current call, not a stale value from the prior
+one. `tests/conftest.py` gained an autouse fixture clearing `_search_stack_cache` before/after
+every test — without it, one test's mocked driver/`Graphiti` stack could leak into another
+test keyed by the same tuple.
+
+### 3. Proof the search fix is chat-visible, not just adapter-API-visible
+
+New: `scripts/smoke_graphiti_active_packet_search_e2e.sh`. Design: propose+approve two
+crystallizations A and B with distinctive, unrelated subjects and **no link between them**.
+Call `POST /api/memory/active-packet` (Hub) seeded on A, querying with B's subject text.
+`graphiti_neighborhood` (depth=2 from A) cannot explain B appearing — there is no edge between
+them — so B surfacing in the response's `graphiti_refs` is only explainable by the
+`graphiti_search` rail matching B's own self-referential `RELATES_TO` fact edge. This isolates
+proof of the search-rail fix specifically from `smoke_graphiti_links_e2e.sh` (neighborhood,
+backend-agnostic, was never broken) and `smoke_graphiti_search_e2e.sh` (adapter API directly,
+not the Hub response a live chat turn actually consumes). **PASS**, live, this host.
+
+### Live verification (hardening pass)
+
+| Check | Result |
+|---|---|
+| `pytest services/orion-graphiti-adapter/tests -q` | 23 passed (21 baseline + 2 new caching/context-var regression tests) |
+| `curl localhost:8640/health` | `backend: graphiti_core` (post default-flip rebuild) |
+| `scripts/smoke_graphiti_links_e2e.sh` | PASS (no regression) |
+| `scripts/smoke_graphiti_search_e2e.sh` | PASS (no regression) |
+| `scripts/smoke_graphiti_active_packet_search_e2e.sh` | PASS — unlinked crystallization reachable via search rail alone, surfaced into a real Hub API response |

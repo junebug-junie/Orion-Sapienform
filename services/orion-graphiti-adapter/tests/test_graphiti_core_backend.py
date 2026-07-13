@@ -428,3 +428,132 @@ async def test_search_filters_intimate_crystallization_ids(monkeypatch):
 
     assert "crys_a" in out["crystallization_ids"]
     assert "crys_intimate" not in out["crystallization_ids"]
+
+
+@pytest.mark.asyncio
+async def test_search_reuses_cached_driver_and_graphiti_across_calls():
+    """_get_search_stack() must build the FalkorDriver/Graphiti stack once and reuse it on
+    subsequent /v1/search calls in the same process -- rebuilding it (and the stub
+    llm/cross-encoder/embedder clients) fresh on every request was pure per-request overhead
+    with no correctness benefit (FalkorDriver is a thin redis-protocol client, safe to reuse)."""
+    driver_calls: list[tuple[str, str]] = []
+
+    def fake_falkor_driver(falkordb_uri, graph_name):
+        driver_calls.append((falkordb_uri, graph_name))
+        return MagicMock()
+
+    graphiti_ctor_calls: list[int] = []
+
+    class FakeGraphiti:
+        def __init__(self, graph_driver, llm_client=None, embedder=None, cross_encoder=None):
+            graphiti_ctor_calls.append(1)
+
+        async def search(self, **kwargs):
+            return []
+
+    fake_graphiti_mod = MagicMock()
+    fake_graphiti_mod.Graphiti = FakeGraphiti
+
+    # Bypass _orion_embedder_client/_no_op_llm_client/_no_op_cross_encoder's own internal
+    # `from graphiti_core.<submodule>.client import ...` imports (same reason as the
+    # pre-existing test_search_filters_intimate_crystallization_ids above) -- a MagicMock
+    # for sys.modules["graphiti_core"] doesn't satisfy real submodule imports.
+    with patch.object(
+        core_backend, "_falkor_driver", side_effect=fake_falkor_driver
+    ), patch.object(core_backend, "_no_op_llm_client", lambda: object()), patch.object(
+        core_backend, "_no_op_cross_encoder", lambda: object()
+    ), patch.object(
+        core_backend, "_orion_embedder_client", lambda embed_url: object()
+    ), patch.dict(
+        "sys.modules", {"graphiti_core": fake_graphiti_mod}
+    ):
+        await core_backend.search(
+            "q1",
+            seed_crystallization_id="",
+            limit=10,
+            embed_url="",
+            falkordb_uri="redis://localhost:6379/0",
+            graph_name="orion_graphiti",
+        )
+        await core_backend.search(
+            "q2",
+            seed_crystallization_id="",
+            limit=10,
+            embed_url="",
+            falkordb_uri="redis://localhost:6379/0",
+            graph_name="orion_graphiti",
+        )
+
+    assert len(driver_calls) == 1, f"expected driver built once, built {len(driver_calls)} times"
+    assert len(graphiti_ctor_calls) == 1, (
+        f"expected Graphiti built once, built {len(graphiti_ctor_calls)} times"
+    )
+
+
+@pytest.mark.asyncio
+async def test_search_embed_used_does_not_leak_across_calls_sharing_cached_embedder():
+    """The embedder instance is cached/reused across requests (see test above). Tracking
+    embed success as instance state (the old `self.used` on _OrionEmbedderClient) would let
+    one call's result leak into a later call's trace since they share one embedder object --
+    embed_used must be tracked per-call via the _embed_used_ctx ContextVar instead."""
+
+    class FakeGraphiti:
+        def __init__(self, graph_driver, llm_client=None, embedder=None, cross_encoder=None):
+            self._embedder = embedder
+
+        async def search(self, **kwargs):
+            # Mirrors graphiti-core's real vector-search rail calling the embedder mid-search.
+            await self._embedder.create(["irrelevant text"])
+            return []
+
+    fake_graphiti_mod = MagicMock()
+    fake_graphiti_mod.Graphiti = FakeGraphiti
+
+    # Fake stand-in for the real _OrionEmbedderClient (see _orion_embedder_client's
+    # docstring): calls core_backend._embed_query and sets _embed_used_ctx on success, same
+    # contract as the real one -- but avoids the real one's internal
+    # `from graphiti_core.embedder.client import EmbedderClient` import, which isn't
+    # satisfiable via a bare MagicMock sys.modules["graphiti_core"] in this dev venv.
+    class _FakeOrionEmbedderClient:
+        async def create(self, input_data):
+            text = input_data[0] if isinstance(input_data, list) and input_data else str(input_data)
+            vector = await core_backend._embed_query(str(text), same_embed_url)
+            if vector:
+                core_backend._embed_used_ctx.set(True)
+            return vector or []
+
+    same_embed_url = "http://embed.example/embed"
+
+    with patch.object(core_backend, "_falkor_driver", return_value=MagicMock()), patch.object(
+        core_backend, "_no_op_llm_client", lambda: object()
+    ), patch.object(core_backend, "_no_op_cross_encoder", lambda: object()), patch.object(
+        core_backend, "_orion_embedder_client", lambda embed_url: _FakeOrionEmbedderClient()
+    ), patch.dict(
+        "sys.modules", {"graphiti_core": fake_graphiti_mod}
+    ):
+        # First call: embed succeeds -> embed_used should be True.
+        with patch.object(core_backend, "_embed_query", AsyncMock(return_value=[0.1, 0.2])):
+            out1 = await core_backend.search(
+                "q1",
+                seed_crystallization_id="",
+                limit=10,
+                embed_url=same_embed_url,
+                falkordb_uri="redis://localhost:6379/0",
+                graph_name="orion_graphiti",
+            )
+        # Second call: same (falkordb_uri, graph_name, embed_url) key -> _get_search_stack
+        # returns the SAME cached embedder instance as call 1. Embed itself fails this time.
+        with patch.object(core_backend, "_embed_query", AsyncMock(return_value=None)):
+            out2 = await core_backend.search(
+                "q2",
+                seed_crystallization_id="",
+                limit=10,
+                embed_url=same_embed_url,
+                falkordb_uri="redis://localhost:6379/0",
+                graph_name="orion_graphiti",
+            )
+
+    assert out1["trace"]["embed_used"] is True
+    assert out2["trace"]["embed_used"] is False, (
+        "stale True from the first call's cached embedder leaked into the second call's trace"
+    )

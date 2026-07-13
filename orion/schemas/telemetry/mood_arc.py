@@ -52,6 +52,23 @@ class MoodArcEncoderManifestV1(BaseModel):
     """Item 2's windowed felt-state-trajectory encoder manifest -- dark
     artifact, disk-only, no cognition consumer yet (see roadmap item 2,
     docs/superpowers/specs/2026-07-13-felt-state-arc-roadmap-spec.md).
+
+    2026-07-13 methodology addition (scripts/fit_mood_arc_encoder.py, same
+    session as this manifest's initial fields): the spec's original single
+    shuffle-gate design was found to be too weak on its own -- the corpus's
+    real autocorrelation is largely explained by a known, deliberate
+    leaky-integrator decay mechanism (BIOMETRICS_FIELD_DECAY_RATE=0.92 in
+    services/orion-field-digester/app/digestion/decay.py), so an encoder can
+    pass the shuffle floor purely by learning that already-known mechanism
+    without capturing anything specific to Orion's actual trajectories. The
+    fields below extend the manifest with a second, non-gating "ceiling"
+    comparison against a matched-autocorrelation AR(1) surrogate, plus a
+    purged/embargoed temporal train/held-out split (naive random window
+    sampling leaks given ~10-15 tick autocorrelation from 50%-overlapping
+    windows) and a block-bootstrap confidence interval on the floor ratio.
+    None of this is in the original written spec doc -- it is stricter than
+    what item 2 originally asked for, added after empirical spike work found
+    the original single-gate design passed for the wrong reason.
     """
 
     model_config = ConfigDict(extra="forbid")
@@ -69,6 +86,38 @@ class MoodArcEncoderManifestV1(BaseModel):
     corpus: CorpusStatsV1        # reused as-is from orion.schemas.telemetry.phi_encoder
     training: TrainingStatsV1    # reused as-is
     shuffle_baseline_loss: float # held_out_loss with rows shuffled within-window (see gate)
+    # purge_gap_windows: number of windows dropped as an embargo zone between
+    # the train/held-out temporal boundary (see purged_temporal_split()) --
+    # not in the original spec, added because a held-out window merely
+    # adjacent to a training window is still autocorrelation-leaked even
+    # with zero literal tick overlap (measured ACF stays nonzero out to lag
+    # ~10-15 ticks, ~20-30s). Optional/None only for manifests written before
+    # this methodology addition -- scripts/fit_mood_arc_encoder.py always
+    # populates a real value; None is never fabricated as 0 (0 would falsely
+    # claim "no purge zone was used", a real and different config choice).
+    purge_gap_windows: Optional[int] = None
+    # ar1_surrogate_loss: held-out reconstruction loss against synthetic
+    # windows generated from a per-channel AR(1) null model fit on the
+    # training portion only (see generate_ar1_surrogate_windows()) -- the
+    # "this is already explained by the known decay filter" null. None means
+    # not computed for this manifest, never a fabricated 0.0.
+    ar1_surrogate_loss: Optional[float] = None
+    # ceiling_ratio: real_held_loss / ar1_surrogate_loss. Diagnostic and
+    # exploratory ONLY, not a hard gate -- there is no calibrated pass/fail
+    # threshold for this yet across multiple training runs. Recorded here so
+    # future runs can be compared once enough runs exist to calibrate one.
+    # Do not read a low/high ceiling_ratio as pass/fail; only floor_ratio's
+    # derived floor_pass (see two_tier_gate()) is a hard gate today. None
+    # means not computed for this manifest, never a fabricated 0.0.
+    ceiling_ratio: Optional[float] = None
+    # floor_ratio_ci_low / floor_ratio_ci_high: 95% block-bootstrap
+    # confidence interval on real_held_loss / shuffle_baseline_loss
+    # (block_bootstrap_ratio_ci()), resampling contiguous blocks of
+    # held-out windows rather than individual windows (they're
+    # autocorrelated, so naive i.i.d. bootstrap would overstate confidence).
+    # None means not computed for this manifest, never a fabricated 0.0.
+    floor_ratio_ci_low: Optional[float] = None
+    floor_ratio_ci_high: Optional[float] = None
     git_sha: str
     trained_at: datetime
     promoted_at: Optional[datetime] = None

@@ -17,6 +17,13 @@ class DiscussionWindowRequestV1(BaseModel):
     source: Optional[str] = None
     max_turns: int = Field(30, ge=1, le=200)
     require_prompt_and_response: bool = True
+    # When True (default), only the most recent unbroken run of turns is kept —
+    # selection stops at the first gap wider than the contiguity threshold, so a
+    # long-idle window doesn't resurrect an older, disconnected conversation.
+    # Consumers that want everything in the time-bounded window regardless of
+    # gaps (e.g. "compact the last N hours", not "catch me up on this session")
+    # should set this to False.
+    contiguous_suffix_only: bool = True
 
 
 class DiscussionWindowTurnV1(BaseModel):

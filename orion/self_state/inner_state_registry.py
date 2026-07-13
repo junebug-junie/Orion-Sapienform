@@ -34,6 +34,7 @@ from orion.schemas.field_attention_frame import FieldAttentionFrameV1
 from orion.schemas.field_state import FieldStateV1
 from orion.schemas.self_state import SelfStateV1
 from orion.schemas.telemetry.biometrics import BiometricsClusterV1
+from orion.schemas.telemetry.field_channel_corpus import FieldChannelCorpusRowV1
 from orion.schemas.telemetry.mood_arc import MoodArcCorpusRowV1, MoodArcEncoderManifestV1
 from orion.schemas.telemetry.phi_encoder import PhiIntrinsicRewardV1
 
@@ -314,7 +315,48 @@ REGISTRY: tuple[InnerStateSignal, ...] = (
             "this signal's different growth rate (~8-9MB/day per the "
             "roadmap spec's own estimate). Revisit if/when this corpus is "
             "actually used for training and the shared thresholds turn out "
-            "wrong for its cadence (found by code review, 2026-07-13)."
+            "wrong for its cadence (found by code review, 2026-07-13). "
+            "Superseded by field_channel_corpus.v1 (below) as roadmap item "
+            "2's actual target substrate -- this sink is still real, still "
+            "running, not a gap to close by disabling it here."
+        ),
+    ),
+    InnerStateSignal(
+        signal_id="field_channel_corpus.v1",
+        schema=FieldChannelCorpusRowV1,
+        producer_service="orion-field-digester",
+        cadence=Cadence.PER_TICK,
+        composition_status=CompositionStatus.REHEARSAL,
+        cognition_consumers=(),
+        notes=(
+            "Item 1 v2 of docs/superpowers/specs/2026-07-13-felt-state-arc-"
+            "roadmap-spec.md -- the corrected raw-substrate corpus "
+            "collector, superseding mood_arc_corpus.v1 as roadmap item 2's "
+            "intended input. Same session finding: a full pass at item 2 "
+            "(a windowed autoencoder, feat/mood-arc-encoder-cli) found that "
+            "any 'trajectory structure' detected in mood_arc_corpus.v1 was "
+            "almost entirely explained by orion-field-digester's own "
+            "apply_decay(0.92) leaky-integrator mechanism, not anything "
+            "emergent -- because that corpus captured "
+            "_phi_from_self_state()'s OUTPUT (four already-smoothed, "
+            "already hand-weighted scalars: coherence/energy/novelty/"
+            "valence), not raw substrate. This corpus instead captures "
+            "collect_field_channel_pressures()'s flat channel-name-keyed "
+            "dict (orion/self_state/scoring.py) -- the merged node_vectors/"
+            "capability_vectors pressures BEFORE any dimension-level hand-"
+            "weighting is applied. It still carries apply_decay(0.92) "
+            "(baked in at the point FieldStateV1 itself is computed -- "
+            "unavoidable without touching the digester's own decay "
+            "mechanism, out of scope here), but it is NOT additionally "
+            "hand-composited into 4 scalars, which is the corrected layer "
+            "to test for genuine emergent structure. mood_arc_corpus.v1 "
+            "keeps running, untouched, real data for what it is -- this is "
+            "additive, not a replacement in the running-system sense. Off "
+            "by default (FIELD_CHANNEL_CORPUS_PATH empty). Row width is "
+            "NOT fixed -- channels is a variable-key dict, not four named "
+            "float fields; a future rework of scripts/fit_mood_arc_"
+            "encoder.py (not this patch) will need to handle that directly "
+            "rather than assume MoodArcCorpusRowV1's fixed shape."
         ),
     ),
     InnerStateSignal(

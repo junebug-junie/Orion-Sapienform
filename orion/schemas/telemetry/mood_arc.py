@@ -25,7 +25,10 @@ class MoodArcCorpusRowV1(BaseModel):
     (InnerStateCorpusSink, shared with INNER_FEATURES_CORPUS_PATH) now
     rotates at CORPUS_SINK_MAX_BYTES (default 200MB) and keeps at most
     CORPUS_SINK_ROTATED_KEEP (default 5) rotated siblings -- see
-    services/orion-spark-introspector/app/inner_state_sink.py. Unlike
+    orion/telemetry/corpus_sink.py (promoted here 2026-07-13 from
+    services/orion-spark-introspector/app/inner_state_sink.py when
+    orion-field-digester's field_channel_corpus.v1 became a second
+    consumer). Unlike
     InnerStateFeaturesV1 (recoverable via scripts/backfill_phi_corpus.py
     from Postgres), there is NO backfill path for pruned mood-arc rows --
     once a rotated file ages past the retention count, that slice of

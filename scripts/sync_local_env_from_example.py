@@ -155,6 +155,8 @@ SYNC_PREFIXES = (
     "EXEC_TRAJECTORY_",
     # Mood-arc corpus collector (roadmap item 1, 2026-07-13)
     "MOOD_ARC_",
+    # Field-channel raw-substrate corpus collector (roadmap item 1 v2, 2026-07-13)
+    "FIELD_CHANNEL_",
     # Corpus sink rotation/retention (shared by inner-state + mood-arc sinks)
     "CORPUS_SINK_",
     # Reasoning telemetry adapter (cortex-exec -> orion-thought -> phi, default-off)

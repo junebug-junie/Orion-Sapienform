@@ -6,6 +6,9 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 from orion.field_coherence import check_field_coherence
+from orion.schemas.telemetry.field_channel_corpus import FieldChannelCorpusRowV1
+from orion.self_state.scoring import collect_field_channel_pressures
+from orion.telemetry.corpus_sink import InnerStateCorpusSink
 
 from app.graph.lattice import load_lattice
 from app.health_monitor import HealthMonitor
@@ -17,6 +20,18 @@ from app.tensor.reconcile import reconcile_field_state_with_lattice
 from app.tensor.update_rules import run_digestion_tick
 
 logger = logging.getLogger("orion.field.digester")
+
+# Field-channel raw-substrate corpus collector (Item 1 v2, roadmap item 1
+# correction, 2026-07-13) -- off by default (FIELD_CHANNEL_CORPUS_PATH
+# empty). See orion/schemas/telemetry/field_channel_corpus.py's docstring
+# for why this captures raw FieldStateV1 channel pressures instead of the
+# post-composite mood_arc_corpus.v1 shape. Module-level singleton, same
+# pattern as orion-spark-introspector's _MOOD_ARC_SINK/_INNER_SINK -- but
+# built lazily on first _tick() call rather than at import time, since
+# unlike that service's Settings, this service's Settings.postgres_uri has
+# no default and get_settings() raises if POSTGRES_URI is unset at import
+# (tests construct FieldDigesterWorker without ever importing a real env).
+_FIELD_CHANNEL_SINK: "InnerStateCorpusSink | None" = None
 
 
 class FieldDigesterWorker:
@@ -147,6 +162,26 @@ class FieldDigesterWorker:
 
         for node_id, suspicion in check_field_coherence(state).items():
             state.node_vectors.setdefault(node_id, {})["field_coherence_warning"] = suspicion
+
+        global _FIELD_CHANNEL_SINK
+        if _FIELD_CHANNEL_SINK is None:
+            _FIELD_CHANNEL_SINK = InnerStateCorpusSink(
+                self._settings.field_channel_corpus_path or "",
+                max_bytes=self._settings.corpus_sink_max_bytes,
+                max_rotated_files=self._settings.corpus_sink_rotated_keep,
+            )
+        if _FIELD_CHANNEL_SINK.enabled:
+            try:
+                channel_pressures, _provenance = collect_field_channel_pressures(state)
+                _FIELD_CHANNEL_SINK.append(
+                    FieldChannelCorpusRowV1(
+                        generated_at=state.generated_at,
+                        tick_id=state.tick_id,
+                        channels=channel_pressures,
+                    )
+                )
+            except Exception:
+                logger.warning("field_channel_corpus_append_failed", exc_info=True)
 
         if not fetched:
             self._store.save_field(state)

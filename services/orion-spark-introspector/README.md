@@ -418,6 +418,13 @@ on disk. See `services/orion-spark-introspector/app/inner_state_sink.py`.
 | Rotation | `CORPUS_SINK_MAX_BYTES` (default `200000000`), `CORPUS_SINK_ROTATED_KEEP` (default `5`) — shared with `INNER_FEATURES_CORPUS_PATH`, one policy for both sinks. |
 | Consumer | None yet — see the roadmap spec for the gated next steps (train a windowed autoencoder once enough hours accumulate). |
 
+**Superseded, 2026-07-13 (same day, later session)**: `field_channel_corpus.v1`
+(`orion-field-digester`, a different service — see that service's README)
+is now roadmap item 2's real target substrate, capturing raw
+`FieldStateV1` channel pressures instead of this sink's already-composited
+4-scalar output. `mood_arc_corpus.v1` is **not disabled** by this — it
+keeps running here, unaffected — it is simply no longer the forward path.
+
 #### Mood-arc windowed encoder (2026-07-13, roadmap item 2)
 
 `scripts/fit_mood_arc_encoder.py` (repo root, `train` subcommand) trains

@@ -62,5 +62,47 @@ This whole chain was originally left disabled after a prior unbounded-Postgres-g
 | `NOTIFY_API_TOKEN` | (empty) | `orion-notify` auth token, if configured |
 | `LOG_LEVEL` | `INFO` | Python log level |
 | `FIELD_DIGESTER_PORT` | `8116` | Host port for `docker compose` (compose-only) |
+| `FIELD_CHANNEL_CORPUS_PATH` | (empty) | Field-channel raw-substrate corpus sink path — see section below. Empty/unset = disabled |
+| `CORPUS_SINK_MAX_BYTES` | `200000000` | Corpus sink rotation threshold (bytes) |
+| `CORPUS_SINK_ROTATED_KEEP` | `5` | Corpus sink rotated-file retention count |
 
 v1 persists projections to Postgres only; bus emit is deferred (`orion/bus/channels.yaml` unchanged).
+
+## Field-channel raw-substrate corpus collector (2026-07-13, roadmap item 1 v2)
+
+`_tick()` optionally appends one `FieldChannelCorpusRowV1` row per tick to a
+JSONL sink (`FIELD_CHANNEL_CORPUS_PATH`) — the flat, channel-name-keyed
+output of `orion.self_state.scoring.collect_field_channel_pressures(state)`
+(the merged `node_vectors`/`capability_vectors` pressure dict, e.g.
+`cpu_pressure`/`gpu_pressure`/`memory_pressure`/`execution_load`/etc.,
+typically 10-20 channels, not a fixed set). This is Item 1 v2 of
+`docs/superpowers/specs/2026-07-13-felt-state-arc-roadmap-spec.md` — the
+corrected replacement target for `orion-spark-introspector`'s
+`mood_arc_corpus.v1` sink (that sink is unaffected, still running; see the
+spec doc's "Correction, 2026-07-13" note for why the original 4-scalar
+post-composite design was found insufficient for detecting genuine
+emergent structure).
+
+**Off by default** (`FIELD_CHANNEL_CORPUS_PATH` empty = no-op, no file
+written) — same convention as `MOOD_ARC_CORPUS_PATH`, and for the same
+reason: a sibling corpus sink was found to grow unbounded (~104MB/36.8k
+rows over 5 days) before rotation was added, so anything new stays inert
+until an operator opts in.
+
+The append happens unconditionally on every tick that produces a `state`
+(right after the coherence-warning loop, before the `if not fetched: ...`
+branch that only decides which store-write path runs) — it does not depend
+on whether new receipts were actually fetched this tick.
+
+**Rotation policy** (`CORPUS_SINK_MAX_BYTES`/`CORPUS_SINK_ROTATED_KEEP`) is
+the same shared class (`orion.telemetry.corpus_sink.InnerStateCorpusSink`,
+promoted out of `orion-spark-introspector`'s `app/` folder in this same
+patch since a second service now needs it) and the same default values as
+`orion-spark-introspector`'s corpus sinks — each service reads its own env
+file independently.
+
+**Dark by design (`REHEARSAL`)**: no bus publish, no cognition consumer —
+see `field_channel_corpus.v1` in `orion/self_state/inner_state_registry.py`.
+A future rework of `scripts/fit_mood_arc_encoder.py` to train against this
+dict-shaped corpus instead of `mood_arc_corpus.v1` is separate, not-yet-
+built work.

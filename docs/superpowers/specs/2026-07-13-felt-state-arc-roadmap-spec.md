@@ -59,9 +59,20 @@ section explicitly overrides it):
 
 ## Item 1 — Post-fix corpus collector
 
-**What it is**: an append-only JSONL sink of clean, post-fix felt-state
-ticks, gated on `valence_source is not None` so the six months of
-contaminated pre-fix history can never leak in.
+**SUPERSEDED, 2026-07-13 (same day, later session).** Everything below this
+note through the end of Item 1 is the *original* design (`MoodArcCorpusRowV1`,
+built and merged as PR #989) — left in place for the historical record, not
+deleted, but **it is not the corpus Item 2 should be building against going
+forward.** See "Correction, 2026-07-13 (post-Item-2-spike)" immediately
+after the original design for what replaced it and why, and
+`orion/schemas/telemetry/field_channel_corpus.py` for the actual corrected
+schema. The old `mood_arc_corpus.v1` sink described below is **not
+disabled** by this correction — it keeps running, untouched, real data for
+what it is. This correction only changes what Item 2 should read from next.
+
+**What it is (original design, superseded)**: an append-only JSONL sink of
+clean, post-fix felt-state ticks, gated on `valence_source is not None` so
+the six months of contaminated pre-fix history can never leak in.
 
 **Row schema** (new file, `orion/schemas/telemetry/mood_arc.py`):
 
@@ -184,6 +195,94 @@ jitter.
 see `l7_l11_ladder`'s entry for the precedent, `orion/self_state/inner_state_registry.py:243`).
 
 **Dependencies**: none — this is the floor.
+
+---
+
+**Correction, 2026-07-13 (post-Item-2-spike).** A full session of downstream
+work on Item 2 (`scripts/fit_mood_arc_encoder.py`, branch
+`feat/mood-arc-encoder-cli`) built the two-tier shuffle/AR(1)-surrogate gate
+described in `MoodArcEncoderManifestV1`'s docstring, specifically to check
+whether the windowed autoencoder was learning real sequence structure or
+just re-deriving a known mechanism. The finding: any "trajectory structure"
+the encoder detected in `mood_arc_corpus.v1` was almost entirely explained
+by `orion-field-digester`'s own `apply_decay(0.92)` leaky-integrator
+mechanism (`BIOMETRICS_FIELD_DECAY_RATE`, `services/orion-field-digester/
+app/digestion/decay.py`) — not anything emergent about Orion's actual felt-
+state dynamics.
+
+Root cause, traced: `mood_arc_corpus.v1` captures `_phi_from_self_state()`'s
+**output** — `coherence`/`energy`/`novelty`/`valence`, four hand-tuned
+heuristic scalars. Each of those four is already smoothed by
+`apply_decay(0.92)` (baked in upstream, at the point `FieldStateV1` itself
+is computed) **and** additionally hand-weighted into a composite (e.g.
+`valence = 0.625*agency_readiness + 0.375*social_ease`). An autoencoder
+trained on that corpus can pass a naive shuffle gate purely by learning the
+decay filter's own autocorrelation signature — the two-tier gate exists
+exactly to catch this, and it did.
+
+**The corrected design**: capture the RAW per-node/per-capability channel
+pressures instead — `orion.self_state.scoring.collect_field_channel_pressures
+(field: FieldStateV1) -> tuple[dict[str, float], dict[str, str]]` (already
+exists, already used by `coherence_score()`/`uncertainty_score()`). This
+function merges `node_vectors` + `capability_vectors` into one flat
+channel-name-keyed dict (e.g. `cpu_pressure`, `gpu_pressure`,
+`memory_pressure`, `thermal_pressure`, `execution_load`,
+`execution_friction`, `reliability_pressure` — typically 10-20 channels per
+tick, not a fixed set). This is the layer **before** any of the
+coherence/energy/novelty/valence hand-weighting is applied — the right
+layer to test for genuine emergent structure. It still carries
+`apply_decay(0.92)` (unavoidable without touching the digester's own decay
+mechanism — explicitly out of scope for this correction), but it is not
+*additionally* hand-composited into 4 scalars on top of that.
+
+**New schema** (`orion/schemas/telemetry/field_channel_corpus.py`, new file):
+
+```python
+class FieldChannelCorpusRowV1(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    generated_at: datetime
+    tick_id: str  # FieldStateV1.tick_id
+    channels: dict[str, float]  # flat channel_name -> value, from
+                                  # collect_field_channel_pressures()'s
+                                  # first return value (merged dict, not
+                                  # the provenance dict)
+```
+
+Row width is **not fixed** — `channels`' key set can vary tick to tick
+depending on which nodes/capabilities are active. A future rework of Item
+2's consumer must union observed channels across the corpus and fill
+absence with `0.0`, not assume a fixed shape the way `MoodArcCorpusRowV1`'s
+four named float fields did.
+
+**Producer**: `services/orion-field-digester/app/worker.py`'s `_tick()` —
+NOT `orion-spark-introspector`. This moves the producer service for the
+Item-1-successor corpus to the service that actually computes
+`FieldStateV1`, one hop earlier in the pipeline than
+`orion-spark-introspector`'s `handle_self_state()`. Gated on a new
+`FIELD_CHANNEL_CORPUS_PATH` setting (empty by default, same convention as
+`MOOD_ARC_CORPUS_PATH`), via a second `InnerStateCorpusSink` instance
+(`_FIELD_CHANNEL_SINK`). The append happens unconditionally on every tick
+that produces a `state` (i.e. it is not smuggled behind the `if not
+fetched: ... return` branch that only affects which store-write path runs
+afterward).
+
+**Registry entry**: `field_channel_corpus.v1`, `composition_status=REHEARSAL`
+(no cognition consumer, same precedent as `mood_arc_corpus.v1`) — see
+`orion/self_state/inner_state_registry.py`. The existing
+`mood_arc_corpus.v1` entry's notes were updated in the same patch to record
+the supersession; the sink itself is untouched and keeps running.
+
+**Explicitly out of scope for this correction** (separate, future work):
+- Reworking `scripts/fit_mood_arc_encoder.py` (Item 2's existing training
+  script) to consume this new dict-shaped corpus instead of
+  `mood_arc_corpus.v1`. It still trains against the old corpus unchanged
+  until that rework happens.
+- Touching `apply_decay`/`BIOMETRICS_FIELD_DECAY_RATE` or any other
+  digestion-tick mechanics. This correction captures the raw substrate as
+  it exists today; it does not change how that substrate is computed.
+- Disabling or altering `mood_arc_corpus.v1`/`MOOD_ARC_CORPUS_PATH` — it
+  keeps collecting, untouched, real data for what it is.
 
 ---
 

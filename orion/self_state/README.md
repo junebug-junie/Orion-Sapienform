@@ -71,11 +71,24 @@ of four composition statuses:
   record separately — this registry makes the fact visible, it doesn't
   force the answer).
 - `REHEARSAL` — computed, verified to reach no cognition consumer at all.
-  Four current entries: the L7–L11 ladder; `mood_arc_corpus.v1`
+  Five current entries: the L7–L11 ladder; `mood_arc_corpus.v1`
   (2026-07-13) — an append-only training-data sink for a not-yet-built
   windowed felt-state autoencoder
   (`docs/superpowers/specs/2026-07-13-felt-state-arc-roadmap-spec.md`),
-  deliberately dark until real hours of data accumulate; `mood_arc_encoder.v1`
+  deliberately dark until real hours of data accumulate. Superseded
+  (2026-07-13, same day, later session) by `field_channel_corpus.v1` as
+  roadmap item 2's actual intended input — a full pass at item 2 found
+  that `mood_arc_corpus.v1`'s apparent "trajectory structure" was almost
+  entirely explained by `orion-field-digester`'s own `apply_decay(0.92)`
+  mechanism, because it captured `_phi_from_self_state()`'s already-
+  smoothed, already hand-weighted 4-scalar *output* rather than raw
+  substrate. `field_channel_corpus.v1` (producer: `orion-field-digester`,
+  not `orion-spark-introspector`) instead captures
+  `collect_field_channel_pressures()`'s flat, variable-width channel dict —
+  the layer before that hand-weighting, still carrying the same
+  unavoidable `apply_decay` smoothing but not the additional composite.
+  `mood_arc_corpus.v1` itself is untouched and keeps collecting; this is
+  additive, not a disable; `mood_arc_encoder.v1`
   (2026-07-13, same day, roadmap item 2 now built) —
   `scripts/fit_mood_arc_encoder.py` trains a windowed autoencoder over
   `mood_arc_corpus.v1` rows and writes a dark, disk-only

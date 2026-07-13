@@ -43,6 +43,21 @@ class Settings(BaseSettings):
     notify_base_url: str = Field("http://orion-athena-notify:7140", alias="NOTIFY_BASE_URL")
     notify_api_token: str | None = Field(None, alias="NOTIFY_API_TOKEN")
 
+    # Field-channel raw-substrate corpus collector (Item 1 v2, roadmap item 1
+    # correction, 2026-07-13) -- docs/superpowers/specs/2026-07-13-felt-
+    # state-arc-roadmap-spec.md. Off by default: a real, live precedent of
+    # unbounded corpus growth from a sibling sink (INNER_FEATURES_CORPUS_PATH,
+    # ~104MB/36.8k rows over 5 days) means anything new stays inert until an
+    # operator opts in.
+    field_channel_corpus_path: str = Field("", alias="FIELD_CHANNEL_CORPUS_PATH")
+    # Same rotation/retention policy shape as orion-spark-introspector's
+    # corpus_sink_max_bytes/corpus_sink_rotated_keep (services/orion-spark-
+    # introspector/app/settings.py) -- each service reads its own env file
+    # independently, so there is no collision between the two services'
+    # settings despite the identical field names/aliases/defaults.
+    corpus_sink_max_bytes: int = Field(200_000_000, ge=1_000_000, alias="CORPUS_SINK_MAX_BYTES")
+    corpus_sink_rotated_keep: int = Field(5, ge=0, alias="CORPUS_SINK_ROTATED_KEEP")
+
 
 _settings: Settings | None = None
 

@@ -33,7 +33,7 @@ class Settings(BaseSettings):
     )
     enable_chat_grammar_reducer: bool = Field(True, alias="ENABLE_CHAT_GRAMMAR_REDUCER")
     chat_grammar_batch_limit: int = Field(100, alias="CHAT_GRAMMAR_BATCH_LIMIT")
-    enable_route_grammar_reducer: bool = Field(False, alias="ENABLE_ROUTE_GRAMMAR_REDUCER")
+    enable_route_grammar_reducer: bool = Field(True, alias="ENABLE_ROUTE_GRAMMAR_REDUCER")
     route_grammar_batch_limit: int = Field(100, alias="ROUTE_GRAMMAR_BATCH_LIMIT")
     bus_stream_depth_critical: int = Field(100_000, alias="BUS_STREAM_DEPTH_CRITICAL")
     transport_substrate_maturity: str = Field(

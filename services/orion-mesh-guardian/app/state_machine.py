@@ -82,6 +82,18 @@ def transition(state: ServiceState, inp: TransitionInput, *, service_id: str = "
     corr = new_state.correlation_id
 
     if new_state.phase == ServicePhase.attention_only:
+        if inp.probe_status == "probe_ok" and not inp.equilibrium_bad:
+            new_state.phase = ServicePhase.healthy
+            new_state.consecutive_probe_fails = 0
+            attention_events.append(
+                _attention_event(
+                    severity="info",
+                    message=f"mesh health: {service_id} recovered",
+                    service_id=service_id,
+                    correlation_id=corr,
+                    event="recovery",
+                )
+            )
         return TransitionOutput(new_state=new_state, attention_events=attention_events)
 
     if new_state.phase == ServicePhase.post_check_grace:

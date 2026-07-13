@@ -30,3 +30,21 @@ def test_policy_review_requires_operator_review() -> None:
 def test_dimension_weights_include_execution_pressure() -> None:
     policy = load_proposal_policy(POLICY_PATH)
     assert "execution_pressure" in policy.dimension_weights
+
+
+def test_inspect_node_resource_pressure_template_targets_node() -> None:
+    policy = load_proposal_policy(POLICY_PATH)
+    tmpl = policy.proposal_templates["inspect_node_resource_pressure"]
+    assert tmpl.kind == "inspect"
+    assert tmpl.target_kind == "node"
+    assert tmpl.target_id == "node:atlas"
+    assert "resource_pressure" in tmpl.dimensions
+
+
+def test_inspect_field_topology_catalog_template_targets_field() -> None:
+    policy = load_proposal_policy(POLICY_PATH)
+    tmpl = policy.proposal_templates["inspect_field_topology_catalog"]
+    assert tmpl.kind == "inspect"
+    assert tmpl.target_kind == "field"
+    assert tmpl.target_id == "config/field/orion_field_topology.v1.yaml"
+    assert "field_intensity" in tmpl.dimensions

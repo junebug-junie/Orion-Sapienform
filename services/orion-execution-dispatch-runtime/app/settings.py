@@ -28,7 +28,20 @@ class Settings(BaseSettings):
         True,
         alias="ENABLE_EXECUTION_DISPATCH_RUNTIME",
     )
-    cortex_exec_channel: str = Field("orion:cortex:request", alias="CORTEX_EXEC_CHANNEL")
+    cortex_exec_channel: str = Field(
+        "orion:cortex:exec:request:background", alias="CORTEX_EXEC_CHANNEL"
+    )
+    cortex_exec_result_prefix: str = Field(
+        "orion:exec:result", alias="CORTEX_EXEC_RESULT_PREFIX"
+    )
+    orion_bus_url: str = Field("redis://100.92.216.81:6379/0", alias="ORION_BUS_URL")
+    orion_bus_enabled: bool = Field(True, alias="ORION_BUS_ENABLED")
+    execution_dispatch_rpc_timeout_sec: float = Field(
+        120.0, alias="EXECUTION_DISPATCH_RPC_TIMEOUT_SEC"
+    )
+    orion_dispatch_max_per_day: int = Field(24, alias="ORION_DISPATCH_MAX_PER_DAY")
+    notify_url: str = Field("http://orion-notify:7140", alias="NOTIFY_URL")
+    notify_api_token: str | None = Field(None, alias="NOTIFY_API_TOKEN")
     log_level: str = Field("INFO", alias="LOG_LEVEL")
 
 

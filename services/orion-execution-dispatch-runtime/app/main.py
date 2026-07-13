@@ -39,4 +39,6 @@ async def latest() -> dict[str, Any]:
     frame = store.load_latest_dispatch_frame()
     if frame is None:
         raise HTTPException(status_code=404, detail="not_found")
-    return frame.model_dump(mode="json")
+    payload = frame.model_dump(mode="json")
+    payload["theater_tripwire_active"] = worker.theater_tripwire_active
+    return payload

@@ -214,3 +214,144 @@ def test_load_self_state_degrades_to_none_on_legacy_incompatible_row(monkeypatch
     monkeypatch.setattr(store, "_engine", fake_engine)
 
     assert store.load_self_state("self.state:legacy") is None
+
+
+def test_save_dispatch_result_inserts_expected_row(monkeypatch) -> None:
+    store = ExecutionDispatchRuntimeStore("postgresql://test:test@localhost/test")
+    fake_engine = MagicMock()
+    conn = MagicMock()
+    fake_engine.begin.return_value.__enter__ = MagicMock(return_value=conn)
+    fake_engine.begin.return_value.__exit__ = MagicMock(return_value=False)
+    calls: list[tuple[str, dict]] = []
+
+    def execute_side_effect(stmt, params=None):
+        calls.append((str(stmt), params or {}))
+        return MagicMock()
+
+    conn.execute.side_effect = execute_side_effect
+    monkeypatch.setattr(store, "_engine", fake_engine)
+
+    store.save_dispatch_result(
+        result_id="result:dispatch:1",
+        dispatch_id="dispatch:1",
+        frame_id="execution.dispatch.frame:1",
+        status="success",
+        result_json={"observation": "steady", "salient_facts": [], "confidence": 0.7},
+        raw_len=6,
+    )
+
+    assert len(calls) == 1
+    sql, params = calls[0]
+    assert "INSERT INTO substrate_dispatch_results" in sql
+    assert "ON CONFLICT (result_id) DO UPDATE" in sql
+    assert params["result_id"] == "result:dispatch:1"
+    assert params["dispatch_id"] == "dispatch:1"
+    assert params["status"] == "success"
+    assert params["raw_len"] == 6
+
+
+def test_count_dispatches_today_returns_row_count(monkeypatch) -> None:
+    store = ExecutionDispatchRuntimeStore("postgresql://test:test@localhost/test")
+    fake_engine = MagicMock()
+    conn = MagicMock()
+    fake_engine.connect.return_value.__enter__ = MagicMock(return_value=conn)
+    fake_engine.connect.return_value.__exit__ = MagicMock(return_value=False)
+    conn.execute.return_value.mappings.return_value.first.return_value = {"n": 3}
+    monkeypatch.setattr(store, "_engine", fake_engine)
+
+    assert store.count_dispatches_today() == 3
+
+
+def test_count_dispatches_today_zero_when_no_row(monkeypatch) -> None:
+    store = ExecutionDispatchRuntimeStore("postgresql://test:test@localhost/test")
+    fake_engine = MagicMock()
+    conn = MagicMock()
+    fake_engine.connect.return_value.__enter__ = MagicMock(return_value=conn)
+    fake_engine.connect.return_value.__exit__ = MagicMock(return_value=False)
+    conn.execute.return_value.mappings.return_value.first.return_value = None
+    monkeypatch.setattr(store, "_engine", fake_engine)
+
+    assert store.count_dispatches_today() == 0
+
+
+def test_recent_dispatch_result_statuses_returns_ordered_list(monkeypatch) -> None:
+    store = ExecutionDispatchRuntimeStore("postgresql://test:test@localhost/test")
+    fake_engine = MagicMock()
+    conn = MagicMock()
+    fake_engine.connect.return_value.__enter__ = MagicMock(return_value=conn)
+    fake_engine.connect.return_value.__exit__ = MagicMock(return_value=False)
+    conn.execute.return_value.mappings.return_value.all.return_value = [
+        {"status": "success"},
+        {"status": "empty"},
+        {"status": "failed"},
+    ]
+    monkeypatch.setattr(store, "_engine", fake_engine)
+
+    assert store.recent_dispatch_result_statuses(10) == ["success", "empty", "failed"]
+
+
+def test_recent_dispatch_result_statuses_empty_when_no_rows(monkeypatch) -> None:
+    store = ExecutionDispatchRuntimeStore("postgresql://test:test@localhost/test")
+    fake_engine = MagicMock()
+    conn = MagicMock()
+    fake_engine.connect.return_value.__enter__ = MagicMock(return_value=conn)
+    fake_engine.connect.return_value.__exit__ = MagicMock(return_value=False)
+    conn.execute.return_value.mappings.return_value.all.return_value = []
+    monkeypatch.setattr(store, "_engine", fake_engine)
+
+    assert store.recent_dispatch_result_statuses(10) == []
+
+
+def test_load_dispatch_result_by_dispatch_id_found(monkeypatch) -> None:
+    store = ExecutionDispatchRuntimeStore("postgresql://test:test@localhost/test")
+    fake_engine = MagicMock()
+    conn = MagicMock()
+    fake_engine.connect.return_value.__enter__ = MagicMock(return_value=conn)
+    fake_engine.connect.return_value.__exit__ = MagicMock(return_value=False)
+    conn.execute.return_value.mappings.return_value.first.return_value = {
+        "result_id": "result:dispatch:1",
+        "status": "success",
+        "result_json": {"observation": "steady"},
+        "raw_len": 6,
+    }
+    monkeypatch.setattr(store, "_engine", fake_engine)
+
+    result = store.load_dispatch_result_by_dispatch_id("dispatch:1")
+
+    assert result == {
+        "result_id": "result:dispatch:1",
+        "status": "success",
+        "result_json": {"observation": "steady"},
+        "raw_len": 6,
+    }
+
+
+def test_load_dispatch_result_by_dispatch_id_parses_json_string(monkeypatch) -> None:
+    store = ExecutionDispatchRuntimeStore("postgresql://test:test@localhost/test")
+    fake_engine = MagicMock()
+    conn = MagicMock()
+    fake_engine.connect.return_value.__enter__ = MagicMock(return_value=conn)
+    fake_engine.connect.return_value.__exit__ = MagicMock(return_value=False)
+    conn.execute.return_value.mappings.return_value.first.return_value = {
+        "result_id": "result:dispatch:1",
+        "status": "success",
+        "result_json": '{"observation": "steady"}',
+        "raw_len": 6,
+    }
+    monkeypatch.setattr(store, "_engine", fake_engine)
+
+    result = store.load_dispatch_result_by_dispatch_id("dispatch:1")
+
+    assert result["result_json"] == {"observation": "steady"}
+
+
+def test_load_dispatch_result_by_dispatch_id_none_when_no_row(monkeypatch) -> None:
+    store = ExecutionDispatchRuntimeStore("postgresql://test:test@localhost/test")
+    fake_engine = MagicMock()
+    conn = MagicMock()
+    fake_engine.connect.return_value.__enter__ = MagicMock(return_value=conn)
+    fake_engine.connect.return_value.__exit__ = MagicMock(return_value=False)
+    conn.execute.return_value.mappings.return_value.first.return_value = None
+    monkeypatch.setattr(store, "_engine", fake_engine)
+
+    assert store.load_dispatch_result_by_dispatch_id("dispatch:missing") is None

@@ -132,3 +132,27 @@ proposal_templates:
     dimensions:
       uncertainty: 0.50
       reliability_pressure: 0.50
+
+  inspect_node_resource_pressure:
+    kind: inspect
+    target_kind: node
+    target_id: node:atlas
+    proposed_effect: increase_observability
+    required_policy_gate: read_only
+    base_priority: 0.34
+    base_risk: 0.05
+    reversibility: 1.0
+    dimensions:
+      resource_pressure: 0.50
+
+  inspect_field_topology_catalog:
+    kind: inspect
+    target_kind: field
+    target_id: config/field/orion_field_topology.v1.yaml
+    proposed_effect: increase_observability
+    required_policy_gate: read_only
+    base_priority: 0.33
+    base_risk: 0.05
+    reversibility: 1.0
+    dimensions:
+      field_intensity: 0.45

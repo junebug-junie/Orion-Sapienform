@@ -106,6 +106,8 @@ services:
       - app-net
     ports:
       - "7160:7160"
+    volumes:
+      - ${ORION_DATA_ROOT:-/mnt/graphdb}/orion-actions/state:/data/orion-actions
     healthcheck:
       test: ["CMD", "curl", "-f", "http://localhost:7160/health"]
       start_period: 10s

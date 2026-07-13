@@ -1,14 +1,67 @@
 from __future__ import annotations
 
+import asyncio
 import logging
+from datetime import datetime, timezone
 from typing import Any, Optional
+
+import asyncpg
 
 from orion.memory.crystallization.active_packet import build_active_packet
 from orion.memory.crystallization.chroma_query import query_chroma_collection
+from orion.memory.crystallization.dynamics import recall_boost
 from orion.memory.crystallization.projection_graphiti import GraphitiAdapter
+from orion.memory.crystallization.repository import get_crystallization, update_crystallization
 from orion.memory.crystallization.schemas import ActiveMemoryPacketV1, MemoryCrystallizationV1
 
 logger = logging.getLogger(__name__)
+
+
+async def _persist_recall_boost(
+    pool: "asyncpg.Pool",
+    crystallization_id: str,
+    *,
+    now: datetime,
+) -> None:
+    try:
+        current = await get_crystallization(pool, crystallization_id)
+        if current is None:
+            return
+        updated = recall_boost(current, now=now)
+        await update_crystallization(pool, updated)
+    except Exception as exc:
+        logger.warning(
+            "retriever_recall_boost_failed crystallization_id=%s error=%s", crystallization_id, exc
+        )
+
+
+async def _apply_recall_boost(
+    *,
+    pool: "asyncpg.Pool | None",
+    crystallization_refs: list[str],
+    now: datetime,
+) -> None:
+    """Reinforce every crystallization that actually made it into the render budget.
+
+    Recall is a weaker signal than recurrence (see `dynamics.recall_boost`'s docstring):
+    only what appears in `crystallization_refs` -- not every candidate considered --
+    counts as "this got recalled". Refetches each row immediately before mutating,
+    rather than reusing the in-memory snapshot collected at the start of retrieval --
+    `update_crystallization()` does a full-row UPDATE (existing pattern, matches
+    `reinforce()`'s call sites), so persisting from a stale snapshot risks clobbering a
+    concurrent governance write. Refetching narrows that staleness window from "however
+    long this whole retrieval took" (embed/chroma/graphiti round trips included) down to
+    "between this refetch and this write" -- it does not eliminate the race (no
+    transaction/row-lock), just shrinks it to the cheapest fix available without
+    changing `repository.py`'s persistence contract. Persists concurrently since each
+    row's update is independent. Degrades gracefully to a no-op when `pool` is absent
+    (e.g. offline/test callers), never raises.
+    """
+    if pool is None or not crystallization_refs:
+        return
+    await asyncio.gather(
+        *(_persist_recall_boost(pool, cid, now=now) for cid in crystallization_refs)
+    )
 
 
 async def _embed_query(
@@ -50,6 +103,7 @@ async def retrieve_active_packet(
     embed_host_url: str = "",
     graphiti_adapter: GraphitiAdapter | None = None,
     seed_crystallization_id: str | None = None,
+    pool: "asyncpg.Pool | None" = None,
 ) -> ActiveMemoryPacketV1:
     """Multi-rail retrieval: Postgres crystallizations + cards + Chroma + Graphiti."""
     chroma_hits: list[dict[str, Any]] = []
@@ -124,4 +178,11 @@ async def retrieve_active_packet(
     trace["graphiti_refs"] = len(graphiti_refs)
     trace["extra_crystallization_ids_from_chroma"] = sorted(extra_crystallization_ids)
     packet.retrieval_trace = trace
+
+    await _apply_recall_boost(
+        pool=pool,
+        crystallization_refs=packet.crystallization_refs,
+        now=datetime.now(timezone.utc),
+    )
+
     return packet

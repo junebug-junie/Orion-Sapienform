@@ -160,6 +160,7 @@ async def fetch_active_packet_fragments(
         embed_host_url=str(getattr(settings, "RECALL_CARDS_EMBEDDING_URL", "") or ""),
         graphiti_adapter=graphiti,
         seed_crystallization_id=seed_id or None,
+        pool=pool,
     )
 
     fragments: list[dict[str, Any]] = []

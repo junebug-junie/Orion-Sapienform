@@ -88,9 +88,23 @@ class MoodArcCorpusRowV1(BaseModel):
 **Storage volume estimate**: one JSON line ≈ 180-220 bytes (measured
 against a hand-serialized instance). At ~1,750 rows/hour, ~24h/day →
 ~42,000 rows/day → ~8-9 MB/day. A month of continuous collection is
-~250-270 MB — small enough to keep as a flat file with no rotation logic
-needed for the timescales this roadmap operates on (weeks, not months,
-before item 2 trains on it).
+~250-270 MB.
+
+**Correction, 2026-07-13**: this section originally assumed no rotation
+logic was needed at this scale. Overtaken by events — `_MOOD_ARC_SINK`
+reuses `InnerStateCorpusSink`, which gained size-based rotation the same
+day (shared `CORPUS_SINK_MAX_BYTES`/`CORPUS_SINK_ROTATED_KEEP` policy,
+default 200MB / keep 5) after the sibling `INNER_FEATURES_CORPUS_PATH`
+sink was found to have grown unbounded (~104MB/36.8k rows in 5 days) —
+see `services/orion-spark-introspector/app/inner_state_sink.py`. This
+means item 2's not-yet-built training script must be rotation-aware from
+its first commit (glob `{corpus}.*` + the active file, sorted by
+filename, not a single-path read) — mirroring the fix already applied to
+`scripts/fit_phi_encoder.py`'s `_load_jsonl`/`_resolve_corpus_files` and
+`services/orion-spark-introspector/train/evals/eval_phi_encoder_health.py`'s
+`load_corpus_rows`. Item 2's CLI spec below should be read with that
+correction in mind, not the single-`--corpus`-path assumption it was
+originally written against.
 
 **Producer**: `handle_self_state()`, `services/orion-spark-introspector/app/worker.py`.
 Append one row per tick, immediately after the existing

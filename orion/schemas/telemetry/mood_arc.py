@@ -19,13 +19,19 @@ class MoodArcCorpusRowV1(BaseModel):
     read a null dominant_node here as "no salient node this tick"; it may
     just mean the encoder was down.
 
-    No rotation or retention limit on the sink this writes through
-    (InnerStateCorpusSink, shared with INNER_FEATURES_CORPUS_PATH) -- that
-    sink has already grown unbounded in this deployment (confirmed
-    2026-07-13: ~98MB/36k rows in 5 days for its existing use). Do not
-    leave MOOD_ARC_CORPUS_PATH set indefinitely without a manual retention
-    plan; this project has a prior incident from exactly this class of
-    unbounded-write bug.
+    Rotation (2026-07-13): the sink this writes through
+    (InnerStateCorpusSink, shared with INNER_FEATURES_CORPUS_PATH) now
+    rotates at CORPUS_SINK_MAX_BYTES (default 200MB) and keeps at most
+    CORPUS_SINK_ROTATED_KEEP (default 5) rotated siblings -- see
+    services/orion-spark-introspector/app/inner_state_sink.py. Unlike
+    InnerStateFeaturesV1 (recoverable via scripts/backfill_phi_corpus.py
+    from Postgres), there is NO backfill path for pruned mood-arc rows --
+    once a rotated file ages past the retention count, that slice of
+    history is genuinely gone, not just archived. At the default policy
+    (200MB x 5 = up to ~1GB retained) this is generous relative to the
+    "weeks, not months" scope roadmap item 2 needs, but is a real,
+    permanent-not-recoverable loss if collection runs far longer than
+    that unattended.
     """
 
     model_config = ConfigDict(extra="forbid")

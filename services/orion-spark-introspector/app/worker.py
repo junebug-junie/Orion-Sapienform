@@ -118,8 +118,16 @@ _INNER_PREV_FELT = None
 _INNER_PREV_HEADLINE = None
 _INNER_DEGENERATE_STREAK = 0
 _INNER_LAST_HEADLINE: Optional[float] = None  # honest headline for WS reads
-_INNER_SINK = InnerStateCorpusSink(getattr(settings, "inner_features_corpus_path", "") or "")
-_MOOD_ARC_SINK = InnerStateCorpusSink(getattr(settings, "mood_arc_corpus_path", "") or "")
+_INNER_SINK = InnerStateCorpusSink(
+    getattr(settings, "inner_features_corpus_path", "") or "",
+    max_bytes=settings.corpus_sink_max_bytes,
+    max_rotated_files=settings.corpus_sink_rotated_keep,
+)
+_MOOD_ARC_SINK = InnerStateCorpusSink(
+    getattr(settings, "mood_arc_corpus_path", "") or "",
+    max_bytes=settings.corpus_sink_max_bytes,
+    max_rotated_files=settings.corpus_sink_rotated_keep,
+)
 
 # Last chat-triggered novelty actually shown for a semantic upsert
 # (handle_semantic_upsert's `tissue_novelty` -- prefers cached appraisal

@@ -295,3 +295,33 @@ def test_evaluate_all_runs_end_to_end(health, tmp_path: Path) -> None:
     assert report["active_encoder_version"] == "v-a"
     # Random tiny MLP should not identity-copy headline.
     assert report["ok"] is True
+
+
+def test_load_corpus_rows_reads_across_rotated_files(health, tmp_path: Path) -> None:
+    # 2026-07-13, found by code review: InnerStateCorpusSink gained
+    # size-based rotation the same day this eval's corpus loader existed.
+    # load_corpus_rows(path) reading only the single active file would
+    # silently evaluate encoder health against just the post-rotation
+    # slice once a real corpus ever rotates -- no error, just fewer rows
+    # than an operator would assume. Fixed via orion.telemetry.
+    # corpus_rotation.resolve_rotated_corpus_files, shared with
+    # inner_state_sink.py's pruning and fit_phi_encoder.py's loader; this
+    # test pins eval_phi_encoder_health.py's usage of it specifically
+    # (flagged by review as the one call site with no prior coverage).
+    corpus_path = tmp_path / "inner_state.jsonl"
+    rotated_path = tmp_path / "inner_state.jsonl.20260701T000000.000000Z"
+    stray_path = tmp_path / "inner_state.jsonl.manual-backup"  # must be ignored, wrong pattern
+
+    _write_corpus(rotated_path, features_version="seed-v4", n=3)
+    _write_corpus(corpus_path, features_version="seed-v4", n=2)
+    stray_path.write_text("not a real corpus row\n", encoding="utf-8")
+
+    rows = health.load_corpus_rows(corpus_path)
+    assert len(rows) == 5
+
+
+def test_load_corpus_rows_single_file_unchanged_when_no_rotation_happened(health, tmp_path: Path) -> None:
+    corpus_path = tmp_path / "inner_state.jsonl"
+    _write_corpus(corpus_path, features_version="seed-v4", n=4)
+
+    assert len(health.load_corpus_rows(corpus_path)) == 4

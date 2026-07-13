@@ -41,6 +41,7 @@ from orion.schemas.telemetry.phi_encoder import (
     PhiEncoderManifestV1,
     TrainingStatsV1,
 )
+from orion.telemetry.corpus_rotation import resolve_rotated_corpus_files
 
 _INNER_STATE_PATH = (
     REPO_ROOT / "services" / "orion-spark-introspector" / "app" / "inner_state.py"
@@ -179,17 +180,21 @@ def _git_sha() -> str:
 
 
 def _load_jsonl(path: Path) -> list[InnerStateFeaturesV1]:
+    # 2026-07-13: InnerStateCorpusSink gained size-based rotation for the
+    # same corpus files this script trains/diagnoses on. Reading only
+    # `path` would silently see just the post-rotation slice once the
+    # active file first rotates (found by code review) -- resolve across
+    # rotated siblings too. See orion/telemetry/corpus_rotation.py.
     rows: list[InnerStateFeaturesV1] = []
-    if not path.is_file():
-        return rows
-    for line_no, line in enumerate(path.read_text(encoding="utf-8").splitlines(), start=1):
-        text = line.strip()
-        if not text:
-            continue
-        try:
-            rows.append(InnerStateFeaturesV1.model_validate_json(text))
-        except Exception as exc:  # noqa: BLE001 — corpus loader should skip bad lines with context
-            raise ValueError(f"invalid JSONL at {path}:{line_no}: {exc}") from exc
+    for file in resolve_rotated_corpus_files(path):
+        for line_no, line in enumerate(file.read_text(encoding="utf-8").splitlines(), start=1):
+            text = line.strip()
+            if not text:
+                continue
+            try:
+                rows.append(InnerStateFeaturesV1.model_validate_json(text))
+            except Exception as exc:  # noqa: BLE001 — corpus loader should skip bad lines with context
+                raise ValueError(f"invalid JSONL at {file}:{line_no}: {exc}") from exc
     return rows
 
 

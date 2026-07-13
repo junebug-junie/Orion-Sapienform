@@ -306,7 +306,15 @@ REGISTRY: tuple[InnerStateSignal, ...] = (
             "this is training data collection for a not-yet-built windowed "
             "sequence autoencoder (roadmap item 2), explicitly gated on "
             "accumulating real hours of data first. REHEARSAL is correct "
-            "here, same precedent as l7_l11_ladder -- not a gap to close."
+            "here, same precedent as l7_l11_ladder -- not a gap to close. "
+            "Rotation/retention (CORPUS_SINK_MAX_BYTES/ROTATED_KEEP, "
+            "settings.py) is a SHARED policy with phi_intrinsic_reward.v1's "
+            "own corpus sink -- tuned against that sink's real size/cadence "
+            "(~104MB/36.8k rows/5 days), not independently verified against "
+            "this signal's different growth rate (~8-9MB/day per the "
+            "roadmap spec's own estimate). Revisit if/when this corpus is "
+            "actually used for training and the shared thresholds turn out "
+            "wrong for its cadence (found by code review, 2026-07-13)."
         ),
     ),
     InnerStateSignal(

@@ -117,6 +117,10 @@ services:
       # Deliberately off unless explicitly set.
       MOOD_ARC_CORPUS_PATH: ${MOOD_ARC_CORPUS_PATH:-}
 
+      # Shared rotation/retention policy for both corpus sinks above.
+      CORPUS_SINK_MAX_BYTES: ${CORPUS_SINK_MAX_BYTES:-200000000}
+      CORPUS_SINK_ROTATED_KEEP: ${CORPUS_SINK_ROTATED_KEEP:-5}
+
     ports:
       - "${PORT:-8444}:${PORT:-8444}"
 

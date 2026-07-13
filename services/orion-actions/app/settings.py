@@ -29,8 +29,6 @@ _BLANK_ENV_BOOL_FIELDS = (
     "actions_journaling_enabled",
     "actions_journaling_daily_enabled",
     "actions_journaling_collapse_dense_only",
-    "actions_scheduler_daily_journal_messages_enabled",
-    "actions_scheduler_daily_journal_email_enabled",
     "actions_journal_post_persist_notify_enabled",
     "actions_self_experiments_enabled",
     "actions_daily_goal_archive_enabled",
@@ -147,19 +145,11 @@ class Settings(BaseSettings):
     actions_journaling_daily_enabled: bool = Field(False, alias="ACTIONS_JOURNALING_DAILY_ENABLED")
     actions_journaling_cooldown_seconds: int = Field(21600, alias="ACTIONS_JOURNALING_COOLDOWN_SECONDS")
     actions_journaling_collapse_dense_only: bool = Field(True, alias="ACTIONS_JOURNALING_COLLAPSE_DENSE_ONLY")
-    actions_scheduler_daily_journal_messages_enabled: bool = Field(True, alias="ACTIONS_SCHEDULER_DAILY_JOURNAL_MESSAGES_ENABLED")
-    actions_scheduler_daily_journal_email_enabled: bool = Field(True, alias="ACTIONS_SCHEDULER_DAILY_JOURNAL_EMAIL_ENABLED")
     actions_journal_session_id: str = Field("orion_journal", alias="ACTIONS_JOURNAL_SESSION_ID")
     actions_journal_author: str = Field("orion", alias="ACTIONS_JOURNAL_AUTHOR")
     actions_journal_write_channel: str = Field("orion:journal:write", alias="ACTIONS_JOURNAL_WRITE_CHANNEL")
     actions_journal_created_channel: str = Field("orion:journal:created", alias="ACTIONS_JOURNAL_CREATED_CHANNEL")
     actions_journal_post_persist_notify_enabled: bool = Field(True, alias="ACTIONS_JOURNAL_POST_PERSIST_NOTIFY_ENABLED")
-    # Journal source_kinds excluded from the post-persist EMAIL only (in-app + the
-    # journal write itself are unaffected). Town/embodiment episodes journal and
-    # show in-app, but must not flood Juniper's inbox. Comma-separated.
-    actions_journal_post_persist_email_exclude_source_kinds: str = Field(
-        "embodiment", alias="ACTIONS_JOURNAL_POST_PERSIST_EMAIL_EXCLUDE_SOURCE_KINDS"
-    )
 
     actions_workflow_schedule_store_path: str = Field("/tmp/orion-actions/workflow_schedules.json", alias="ACTIONS_WORKFLOW_SCHEDULE_STORE_PATH")
     actions_scheduler_cursor_store_path: str = Field("", alias="ACTIONS_SCHEDULER_CURSOR_STORE_PATH")
@@ -215,11 +205,6 @@ class Settings(BaseSettings):
         if self.actions_subscribe_channel and self.actions_subscribe_channel not in values:
             values.append(self.actions_subscribe_channel)
         return values
-
-    def post_persist_email_excluded_source_kinds(self) -> set[str]:
-        raw = self.actions_journal_post_persist_email_exclude_source_kinds or ""
-        return {v.strip().lower() for v in str(raw).split(",") if v.strip()}
-
 
 @lru_cache(maxsize=1)
 def get_settings() -> Settings:

@@ -6,13 +6,8 @@ from types import SimpleNamespace
 from app.main import (
     ACTION_DAILY_METACOG_V1,
     ACTION_DAILY_PULSE_V1,
-    _build_post_persist_journal_email_request,
     _build_post_persist_journal_message_payload,
-    _should_email_persisted_journal,
     _daily_notify_request,
-    _build_scheduler_daily_journal_email_request,
-    _build_scheduler_daily_journal_message_payload,
-    _is_scheduler_daily_journal,
     _publish_daily_outputs,
     _publish_workflow_attention_signal,
     _send_orion_async_message,
@@ -20,7 +15,6 @@ from app.main import (
     settings,
 )
 from app.workflow_schedule_store import WorkflowScheduleStore
-from orion.journaler import build_manual_trigger, build_scheduler_trigger
 from orion.journaler.schemas import JournalEntryWriteV1
 from orion.schemas.workflow_execution import WorkflowDispatchRequestV1
 
@@ -214,54 +208,16 @@ def test_publish_daily_outputs_requires_both_async_flags(monkeypatch) -> None:
     assert len(notify.chat_calls) == 1
 
 
-def test_scheduler_daily_journal_helpers_build_message_and_email_request() -> None:
-    trigger = build_scheduler_trigger(summary="Daily cadence", source_ref="2026-04-25")
-    write_payload = {
-        "entry_id": "entry-123",
-        "mode": "daily",
-        "title": "Morning Reflection",
-        "body": "Summarize daily priorities and anchors.",
-        "source_kind": "scheduler",
-        "source_ref": "2026-04-25",
-    }
-    draft = {"mode": "daily", "title": "Morning Reflection", "body": "Summarize daily priorities and anchors."}
-
-    assert _is_scheduler_daily_journal(trigger=trigger, write_payload=write_payload, draft=draft) is True
-    message_payload = _build_scheduler_daily_journal_message_payload(
-        trigger=trigger,
-        write_payload=write_payload,
-        draft=draft,
-        correlation_id="corr-journal-1",
-    )
-    assert message_payload["title"] == "Orion — Daily Journal"
-    assert "Morning Reflection" in message_payload["preview_text"]
-
-    email_req = _build_scheduler_daily_journal_email_request(
-        trigger=trigger,
-        write_payload=write_payload,
-        draft=draft,
-        correlation_id="corr-journal-1",
-    )
-    assert email_req.event_kind == "orion.journal.daily.scheduler"
-    assert email_req.channels_requested == ["email"]
-    assert email_req.body_text == message_payload["full_text"]
-
-
-def test_scheduler_daily_journal_helper_skips_non_scheduler_or_non_daily() -> None:
-    manual_trigger = build_manual_trigger(summary="manual", source_ref="manual-1")
-    write_payload = {
-        "entry_id": "entry-456",
-        "mode": "manual",
-        "title": "Manual Journal",
-        "body": "Operator-authored note.",
-        "source_kind": "manual",
-        "source_ref": "manual-1",
-    }
-    draft = {"mode": "manual", "title": "Manual Journal", "body": "Operator-authored note."}
-    assert _is_scheduler_daily_journal(trigger=manual_trigger, write_payload=write_payload, draft=draft) is False
-
-
-def test_post_persist_journal_helpers_build_message_and_email_request() -> None:
+def test_post_persist_journal_message_payload_builder() -> None:
+    """`_build_post_persist_journal_message_payload` is still used (by
+    `_dispatch_journal_notifications`, see test_journal_actions.py) to build the
+    shared message content for both the in-app and email channels. The old
+    scheduler-daily-specific and post-persist-email-specific builder/gate helpers
+    (`_is_scheduler_daily_journal`, `_build_scheduler_daily_journal_*`,
+    `_should_email_persisted_journal`, `_build_post_persist_journal_email_request`)
+    were retired in favor of `orion.journaler.dispatch_registry.resolve_policy` --
+    see services/orion-actions/tests/test_journal_actions.py for the regression
+    coverage of that unification."""
     entry = JournalEntryWriteV1(
         entry_id="entry-post-1",
         author="orion",
@@ -276,49 +232,6 @@ def test_post_persist_journal_helpers_build_message_and_email_request() -> None:
     assert message_payload["title"] == "Orion — Journal Pass"
     assert "Journal Pass Entry" in message_payload["preview_text"]
     assert "Entry ID" in message_payload["full_text"]
-
-    email_req = _build_post_persist_journal_email_request(entry=entry, correlation_id="corr-post-1")
-    assert email_req.event_kind == "orion.journal.persisted"
-    assert email_req.channels_requested == ["email"]
-    assert email_req.dedupe_key == "actions:journal:persisted:entry-post-1"
-    assert email_req.body_text == message_payload["full_text"]
-
-
-def test_post_persist_email_gate_excludes_embodiment_source_kind() -> None:
-    excluded = {"embodiment"}
-    town = JournalEntryWriteV1(
-        entry_id="entry-town-1",
-        author="orion",
-        mode="digest",
-        title="Town episode",
-        body="Conversation with Alice in the town.",
-        source_kind="embodiment",
-        source_ref="c:1234",
-        correlation_id="corr-town-1",
-    )
-    manual = JournalEntryWriteV1(
-        entry_id="entry-manual-1",
-        author="orion",
-        mode="manual",
-        title="Manual entry",
-        body="Captured insight text.",
-        source_kind="manual",
-        source_ref="manual-1",
-        correlation_id="corr-manual-1",
-    )
-    # Town/embodiment episodes are journaled but NOT emailed.
-    assert _should_email_persisted_journal(entry=town, excluded_source_kinds=excluded) is False
-    # Non-excluded source kinds still email.
-    assert _should_email_persisted_journal(entry=manual, excluded_source_kinds=excluded) is True
-    # Empty exclusion set emails everything (the shipped default excludes "embodiment").
-    assert _should_email_persisted_journal(entry=town, excluded_source_kinds=set()) is True
-
-
-def test_post_persist_email_excluded_source_kinds_parses_csv() -> None:
-    parsed = settings.__class__(
-        ACTIONS_JOURNAL_POST_PERSIST_EMAIL_EXCLUDE_SOURCE_KINDS="Embodiment, world_pulse ,"
-    ).post_persist_email_excluded_source_kinds()
-    assert parsed == {"embodiment", "world_pulse"}
 
 
 def test_send_pending_attention_routes_to_attention_request() -> None:

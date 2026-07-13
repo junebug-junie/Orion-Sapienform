@@ -56,7 +56,11 @@ Important clarification:
 
 ### Daily scheduler and restarts
 
-Built-in daily triggers (daily pulse, world pulse, daily metacog, daily journal) compare local wall time in `ACTIONS_DAILY_TIMEZONE` to configured hour/minute windows. **Before durable cursors**, in-memory `last_*` maps reset on restart; if local time is already past the cutoff, the same calendar day can be **eligible again**, which can queue duplicate downstream work and notify/email bursts. **With cursors** (default path next to the workflow schedule JSON under `/tmp/orion-actions/` in dev), a successful completion is persisted per job; restart hydrates from disk before the first scheduler tick. `ACTIONS_DAILY_RUN_ON_STARTUP` still allows an initial run when no completion is recorded for the process session, but **does not** bypass a cursor that already marks today complete. Tune `ACTIONS_DAILY_TIMEZONE`, per-job hours, and `ACTIONS_DAILY_RUN_ONCE_DATE` for operator overrides.
+Built-in daily triggers (daily pulse, world pulse, daily metacog, daily journal) compare local wall time in `ACTIONS_DAILY_TIMEZONE` to configured hour/minute windows. **Before durable cursors**, in-memory `last_*` maps reset on restart; if local time is already past the cutoff, the same calendar day can be **eligible again**, which can queue duplicate downstream work and notify/email bursts. **With cursors** (default path next to the workflow schedule JSON under the mounted `/data/orion-actions/` volume), a successful completion is persisted per job; restart hydrates from disk before the first scheduler tick. `ACTIONS_DAILY_RUN_ON_STARTUP` still allows an initial run when no completion is recorded for the process session, but **does not** bypass a cursor that already marks today complete. Tune `ACTIONS_DAILY_TIMEZONE`, per-job hours, and `ACTIONS_DAILY_RUN_ONCE_DATE` for operator overrides.
+
+### State persistence volume (fixes restart-driven re-fires)
+
+Scheduler cursors (`ACTIONS_SCHEDULER_CURSOR_STORE_PATH`) and workflow schedules (`ACTIONS_WORKFLOW_SCHEDULE_STORE_PATH`) now persist under a host bind mount (`${ORION_DATA_ROOT:-/mnt/graphdb}/orion-actions/state` on the host, `/data/orion-actions` in the container) instead of ephemeral `/tmp`. `docker-compose.yml` previously had no `volumes:` entry at all, so every container recreate wiped both files; `SchedulerCursorStore._load()` treats a missing file as "nothing ran today" with no error, so the 3 built-in daily jobs (`daily_journal`, `daily_pulse_v1`, `world_pulse`) re-fired on every restart within the same calendar day. Confirmed live 2026-07-13 via cursor-file mtime matching a duplicate journal fire and `journal_entry_index` fire counts climbing from 1/day to 6-17/day as restarts became more frequent.
 
 Cursor JSON keys match the scheduler store: `daily_pulse_v1`, `world_pulse`, `daily_metacog_v1`, `daily_journal`, `autonomy_goal_archive`. **Single writer:** assume one `orion-actions` replica (same as the workflow schedule store); multiple replicas would race on the same cursor file unless you add coordination or split paths in a follow-up.
 
@@ -415,6 +419,56 @@ Goals:
 - proactive operator awareness,
 - minimal spam via transition-awareness and reminder cooldown,
 - backend-truth-derived summaries rather than synthetic monitors.
+
+---
+
+## Journal notification dispatch registry
+
+Journal-entry notifications (email + in-app) are dispatched from exactly one place:
+`_dispatch_journal_notifications` in `app/main.py`, called exactly once from the
+post-persist consumer for `journal.entry.created.v1` (`_handle_journal_created`),
+after the SQL write is confirmed. It resolves policy from
+`orion.journaler.dispatch_registry.JOURNAL_DISPATCH_REGISTRY`, keyed on the journal
+entry's `trigger_kind` (`daily_summary`, `metacog_digest`, `world_pulse_digest`,
+`notify_summary`, `autonomy_episode`, `collapse_response`, `town_episode`, `manual`).
+
+### What this replaced
+
+Before this patch, **two independent codepaths** emailed the same
+`trigger_kind=daily_summary, source_kind=scheduler` journal entry:
+
+- an inline scheduler-daily send fired right after compose, from `_dispatch_journal`
+  (dedupe key `actions:journal:daily:scheduler:{entry_id}`), and
+- a generic post-persist send fired on every persisted journal entry, from
+  `_handle_journal_created` (dedupe key `actions:journal:persisted:{entry_id}`).
+
+Two different dedupe-key namespaces meant neither path's dedupe ever saw the other's
+delivery, so every scheduler daily journal was emailed twice. The registry collapses
+this to one call site and one dedupe-key namespace
+(`actions:journal:notify:{entry_id}`) — double-sending across codepaths is now
+structurally impossible rather than accidentally avoided.
+
+The old fragile exclusion (`ACTIONS_JOURNAL_POST_PERSIST_EMAIL_EXCLUDE_SOURCE_KINDS`,
+a CSV string-match on `source_kind`) is retired in favor of a structural registry
+entry: `JOURNAL_DISPATCH_REGISTRY["town_episode"].email_enabled = False`.
+
+### Why in-app is off by default
+
+Every entry in `JOURNAL_DISPATCH_REGISTRY` currently has `in_app_enabled=False`. This
+is data-backed, not a placeholder: `notify_requests.event_kind='orion.chat.message'`
+showed **1796 notifications sent over 14 days with `message_opened_at` NULL on every
+single one** — zero measured engagement with in-app journal notifications as of
+2026-07-13. Email is the channel Juniper actually reads.
+
+### Fail-closed by design
+
+`resolve_policy(trigger_kind)` returns an all-disabled policy for any `trigger_kind`
+with no registry row, rather than defaulting to "email everything". A new
+`trigger_kind` must be deliberately added to the registry before it can notify anyone.
+`scripts/check_journal_dispatch_registry.py` (`make check-journal-dispatch-registry`)
+gates this: it fails if any `trigger_kind` in
+`orion.journaler.worker._TRIGGER_TO_MODE` has no corresponding
+`JOURNAL_DISPATCH_REGISTRY` row.
 
 ---
 

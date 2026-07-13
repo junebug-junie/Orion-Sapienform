@@ -52,6 +52,31 @@ OK 1 orion:verb:request
 single_consumer gate OK: 31 channel(s) checked, 0 warning(s)
 ```
 
+## Journal Dispatch Registry Gate (unregistered trigger_kind guard)
+Journal-entry notifications (email/in-app) are dispatched from a single, fail-closed table, `orion.journaler.dispatch_registry.JOURNAL_DISPATCH_REGISTRY`, keyed by `trigger_kind` (see `orion/journaler/README.md` and `services/orion-actions/README.md`'s "Journal notification dispatch registry" section). `resolve_policy()` already fails closed for any unknown `trigger_kind` at runtime (sends nothing) — this gate makes that gap loud instead of silent: it fails if any `trigger_kind` in `orion.journaler.worker._TRIGGER_TO_MODE` has no matching `JOURNAL_DISPATCH_REGISTRY` row.
+```bash
+python scripts/check_journal_dispatch_registry.py
+# or: make check-journal-dispatch-registry
+```
+Expected output when the registry is complete:
+```
+check_journal_dispatch_registry: OK -- all 8 trigger_kind(s) in _TRIGGER_TO_MODE have a JOURNAL_DISPATCH_REGISTRY row.
+```
+
+## Daily Schedule Collision Check (orion-actions cadences)
+`services/orion-actions/.env_example` gives Daily Pulse, World Pulse, and Daily Metacog their own hour/minute pairs, but Daily Journal has no env var of its own — `services/orion-actions/app/main.py`'s `journal_should_run` call (~line 2125-2131) reuses `settings.actions_daily_pulse_hour_local`/`minute_local` verbatim, so Daily Journal always fires at the exact same local minute as Daily Pulse, by config. Two independently-LLM-generated daily artifacts landing in the same notification slot reads as duplication even though they're genuinely different pipelines. This script computes pairwise time-of-day distance across all four cadences and flags any pair within `--threshold-minutes` (default 30) of each other. Report-only by default (always exits 0); pass `--fail-on-collision` to make it a real gate.
+```bash
+python scripts/check_daily_schedule_collisions.py
+# or: make check-daily-schedule-collisions
+# gate mode: make check-daily-schedule-collisions FAIL_ON_COLLISION=1
+```
+Expected output today (Daily Pulse and Daily Journal share 08:30 by construction):
+```
+COLLISION: 1 pair(s) within 30 minutes of each other:
+    Daily Journal <-> Daily Pulse: 0m apart
+check_daily_schedule_collisions: report-only by default -- not failing the build. Pass --fail-on-collision to gate on this.
+```
+
 ## ChatGPT Export Import (Bus Fanout)
 
 ### What this does

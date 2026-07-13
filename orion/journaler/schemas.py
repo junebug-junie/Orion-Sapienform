@@ -69,6 +69,7 @@ class JournalEntryWriteV1(BaseModel):
     correlation_id: str | None = None
     spawned_correlation_id: str | None = None
     episode_id: str | None = None
+    trigger_kind: JournalTriggerKind | None = None
 
 
 class JournalEntryIndexV1(BaseModel):

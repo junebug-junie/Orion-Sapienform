@@ -41,9 +41,17 @@ def _store() -> MagicMock:
     return MagicMock()
 
 
-def _truth(*, degraded: bool, reasons: list[str] | None = None) -> dict:
+def _truth(
+    *,
+    degraded: bool,
+    reasons: list[str] | None = None,
+    cursor_positions: list[dict] | None = None,
+) -> dict:
     reasons = reasons or []
-    return {"ok": not degraded, "degraded": degraded, "degraded_reasons": reasons}
+    truth: dict = {"ok": not degraded, "degraded": degraded, "degraded_reasons": reasons}
+    if cursor_positions is not None:
+        truth["cursor_positions"] = cursor_positions
+    return truth
 
 
 def _client_mock(client_cls, *, ok: bool = True):
@@ -93,6 +101,42 @@ def test_run_checks_unhealthy_includes_reasons_in_message():
     assert check.severity == "critical"
     for reason in reasons:
         assert reason in check.message
+
+
+def test_run_checks_annotates_cursor_lag_reason_with_local_denver_time():
+    hm = _hm()
+    reasons = ["cursor_lag:chat_grammar_consumer"]
+    cursor_positions = [
+        {
+            "cursor_name": "chat_grammar_consumer",
+            # 2026-07-13T07:52:47+00:00 is 2026-07-13 01:52 in America/Denver (MDT, UTC-6).
+            "last_event_created_at": "2026-07-13T07:52:47+00:00",
+        }
+    ]
+
+    with patch(
+        "app.health_monitor.build_substrate_grammar_truth",
+        return_value=_truth(degraded=True, reasons=reasons, cursor_positions=cursor_positions),
+    ):
+        checks = hm.run_checks(_store(), _settings())
+
+    check = checks[0]
+    assert "cursor_lag:chat_grammar_consumer" in check.message
+    assert "2026-07-13 01:52 MDT" in check.message
+
+
+def test_run_checks_leaves_reason_unannotated_without_cursor_position_data():
+    hm = _hm()
+    reasons = ["cursor_lag:chat_grammar_consumer"]
+
+    with patch(
+        "app.health_monitor.build_substrate_grammar_truth",
+        return_value=_truth(degraded=True, reasons=reasons),
+    ):
+        checks = hm.run_checks(_store(), _settings())
+
+    check = checks[0]
+    assert check.message == "substrate-runtime grammar production degraded: cursor_lag:chat_grammar_consumer"
 
 
 def test_health_monitor_does_not_alert_on_healthy_first_observation():

@@ -2,8 +2,10 @@ from __future__ import annotations
 
 import logging
 from dataclasses import dataclass
+from datetime import datetime, timezone
 from typing import Literal
 from uuid import uuid4
+from zoneinfo import ZoneInfo
 
 import requests
 
@@ -17,6 +19,34 @@ logger = logging.getLogger("orion.substrate.runtime.health")
 
 _SOURCE_SERVICE = "orion-substrate-runtime"
 Severity = Literal["info", "error", "critical"]
+
+# Juniper's operating timezone. Storage and the /grammar/truth API stay UTC
+# (the source of truth); only this human-facing alert message is localized,
+# so an operator reading it doesn't have to mentally convert from UTC.
+_REPORT_TZ = ZoneInfo("America/Denver")
+
+
+def _format_local(iso_timestamp: str | None) -> str | None:
+    if not iso_timestamp:
+        return None
+    try:
+        dt = datetime.fromisoformat(iso_timestamp)
+    except ValueError:
+        return None
+    if dt.tzinfo is None:
+        dt = dt.replace(tzinfo=timezone.utc)
+    return dt.astimezone(_REPORT_TZ).strftime("%Y-%m-%d %H:%M %Z")
+
+
+def _annotate_reason(reason: str, cursor_by_name: dict[str, dict]) -> str:
+    if not reason.startswith("cursor_lag:"):
+        return reason
+    cursor_name = reason.split(":", 1)[1]
+    last_at = cursor_by_name.get(cursor_name, {}).get("last_event_created_at")
+    local = _format_local(last_at)
+    if not local:
+        return reason
+    return f"{reason} (last event {local})"
 
 
 @dataclass(frozen=True)
@@ -44,7 +74,11 @@ def run_checks(store: BiometricsSubstrateStore, settings: Settings) -> list[Heal
     reasons = truth.get("degraded_reasons") or []
     message = ""
     if degraded:
-        message = f"substrate-runtime grammar production degraded: {', '.join(reasons)}"
+        cursor_by_name = {
+            row["cursor_name"]: row for row in (truth.get("cursor_positions") or [])
+        }
+        annotated = [_annotate_reason(reason, cursor_by_name) for reason in reasons]
+        message = f"substrate-runtime grammar production degraded: {', '.join(annotated)}"
     checks.append(
         _check(
             "substrate_grammar_degraded",

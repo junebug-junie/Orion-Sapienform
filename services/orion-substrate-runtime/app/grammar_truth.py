@@ -26,6 +26,16 @@ ENABLED_BY_REDUCER_KEY: dict[str, Any] = {
     "route_grammar": lambda s: s.enable_route_grammar_reducer,
 }
 
+# Cursors that only advance on real, externally-triggered traffic rather than a
+# continuous internal tick, and can therefore legitimately sit idle past
+# substrate_cursor_lag_resync_hours with nothing wrong. Verified by direct
+# investigation (2026-07-13 substrate-runtime-health-alerting PR): chat_grammar
+# only advances when a real hub-websocket chat session produces events, not on
+# any background/automated traffic. Other cursors are not known to be
+# traffic-gated in the same way, so they keep the original wall-clock-only
+# cursor_lag check -- prolonged silence there is itself a real signal.
+_TRAFFIC_GATED_CURSORS = frozenset({"chat_grammar_consumer"})
+
 
 def build_substrate_grammar_truth(store: BiometricsSubstrateStore) -> dict[str, Any]:
     settings = get_settings()
@@ -61,14 +71,19 @@ def build_substrate_grammar_truth(store: BiometricsSubstrateStore) -> dict[str, 
         cursor = cursor_by_name.get(cursor_name, {})
         lag = cursor.get("lag_sec")
         lag_by_reducer[cursor_name] = lag
-        if lag is not None and lag > max_lag_sec:
-            degraded_reasons.append(f"cursor_lag:{cursor_name}")
 
         metrics = store.grammar_cursor_metrics(cursor_name)
         stream_lag = metrics.get("stream_lag_sec")
         pending = int(metrics.get("pending_backlog") or 0)
         stream_lag_by_reducer[cursor_name] = stream_lag
         backlog_by_reducer[cursor_name] = pending
+
+        if lag is not None and lag > max_lag_sec:
+            # For traffic-gated cursors, wall-clock idleness alone is not
+            # degradation -- only flag it if there's also an actual
+            # unprocessed backlog (events arrived and the reducer fell behind).
+            if cursor_name not in _TRAFFIC_GATED_CURSORS or pending > 0:
+                degraded_reasons.append(f"cursor_lag:{cursor_name}")
 
         reducer_key = REDUCER_KEY_BY_CURSOR.get(cursor_name, cursor_name)
         enabled_fn = ENABLED_BY_REDUCER_KEY.get(reducer_key, lambda _s: True)

@@ -58,6 +58,12 @@ async def lifespan(app: FastAPI):
         pg_pool = await asyncpg.create_pool(dsn=dsn, min_size=1, max_size=4)
         if settings.GRAPHITI_AUTO_APPLY_SCHEMA:
             apply_graphiti_schema(dsn)
+    if (
+        settings.GRAPHITI_BACKEND == "graphiti_core"
+        and settings.FALKORDB_ENABLED
+        and settings.GRAPHITI_AUTO_BUILD_INDICES
+    ):
+        await core_backend.ensure_graphiti_indices(settings.FALKORDB_URI, settings.FALKORDB_GRAPH)
     app.state.pg_pool = pg_pool
     yield
     if pg_pool:
@@ -102,6 +108,7 @@ async def ingest_episode(body: EpisodeIngestV1) -> dict:
             links=link_payload,
             falkordb_uri=settings.FALKORDB_URI,
             graph_name=settings.FALKORDB_GRAPH,
+            embed_url=settings.CRYSTALLIZER_EMBED_HOST_URL,
         )
         if result.get("skipped"):
             return {"skipped": True, "reason": result.get("reason", "intimate_sensitivity"), "canonical_mutated": False}

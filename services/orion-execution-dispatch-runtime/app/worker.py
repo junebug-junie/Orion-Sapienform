@@ -265,8 +265,24 @@ class ExecutionDispatchRuntimeWorker:
                 candidate.dispatch_id,
                 existing["status"],
             )
+            # Re-emit on replay too: action_outcomes.action_id is the SQL
+            # primary key and sql-writer's route upserts by merge(), so a
+            # repeat emit for the same dispatch_id idempotently overwrites
+            # the same row -- it does not duplicate. Skipping the emit here
+            # would risk permanently losing it instead: if the process died
+            # between save_dispatch_result (above, on a prior attempt) and
+            # the emit, or the emit itself failed transiently, no later tick
+            # would ever retry it, since every later tick also hits this
+            # replay branch.
             if existing["status"] == "failed":
                 error = existing["result_json"].get("error", "previous attempt failed")
+                await self._emit_action_outcome(
+                    bus,
+                    candidate=candidate,
+                    summary=f"attempted {candidate.dispatch_kind} on {candidate.target_id}, send failed",
+                    success=False,
+                    observed_at=now,
+                )
                 return candidate.model_copy(
                     update={
                         "dispatch_status": "dispatched",
@@ -274,6 +290,18 @@ class ExecutionDispatchRuntimeWorker:
                         "dispatch_error": str(error)[:500],
                     }
                 )
+            existing_observation = existing["result_json"].get("observation") or ""
+            await self._emit_action_outcome(
+                bus,
+                candidate=candidate,
+                summary=(
+                    existing_observation
+                    if existing_observation
+                    else f"{candidate.dispatch_kind} on {candidate.target_id} returned no observation"
+                ),
+                success=bool(existing_observation),
+                observed_at=now,
+            )
             return candidate.model_copy(
                 update={
                     "dispatch_status": "dispatched",

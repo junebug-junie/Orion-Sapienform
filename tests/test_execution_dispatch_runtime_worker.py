@@ -303,23 +303,37 @@ async def test_send_one_emits_action_outcome_on_rpc_failure(monkeypatch) -> None
 
 
 @pytest.mark.asyncio
-async def test_send_one_does_not_emit_action_outcome_on_idempotent_replay(monkeypatch) -> None:
-    # A replayed result was already emitted (or attempted) the tick it first
-    # happened -- re-emitting on every subsequent replay would duplicate the
-    # outcome record for the same real action.
+async def test_send_one_re_emits_action_outcome_on_idempotent_replay(monkeypatch) -> None:
+    # Re-emitting on replay is safe (action_outcomes.action_id is the SQL
+    # primary key, sql-writer's route upserts by merge() -- a repeat emit
+    # idempotently overwrites the same row, it does not duplicate). NOT
+    # re-emitting would risk permanently losing the outcome if the process
+    # died between the original save_dispatch_result and its emit, or if
+    # that emit itself failed transiently -- every later tick also hits
+    # this same replay branch, so there'd be no other chance to retry it.
     worker = _make_worker(monkeypatch)
     worker._store.recent_dispatch_result_statuses = MagicMock(return_value=[])
     worker._store.count_dispatches_today = MagicMock(return_value=0)
     worker._store.save_dispatch_result = MagicMock()
     worker._store.load_dispatch_result_by_dispatch_id = MagicMock(
-        return_value={"result_id": "result:dispatch:1", "status": "success", "result_json": {}, "raw_len": 6}
+        return_value={
+            "result_id": "result:dispatch:1",
+            "status": "success",
+            "result_json": {"observation": "steady state"},
+            "raw_len": 6,
+        }
     )
     fake_bus = _patch_bus_and_client(monkeypatch, {})
     frame = _frame_with_candidates(_candidate("dispatch:1"))
 
     await worker._send_prepared_candidates(frame)
 
-    fake_bus.publish.assert_not_awaited()
+    fake_bus.publish.assert_awaited_once()
+    _, env = fake_bus.publish.await_args.args
+    assert env.payload["summary"] == "steady state"
+    assert env.payload["success"] is True
+    # The dispatch result itself is NOT re-saved -- only the bus emit repeats.
+    worker._store.save_dispatch_result.assert_not_called()
 
 
 @pytest.mark.asyncio

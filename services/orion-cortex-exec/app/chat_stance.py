@@ -1387,23 +1387,31 @@ _MAX_RECENT_DISPATCH_ACTIONS = 3
 # `summary` per the P2 design doc. This is a generous defensive ceiling only,
 # not the primary truncation point -- do not rely on it as the main guard.
 _DISPATCH_ACTION_SUMMARY_MAX_CHARS = 300
+# Layer 9 (execution-dispatch-runtime) always emits under this subject --
+# it's self-directed autonomous action, never relationship-scoped. Reading
+# ctx["chat_autonomy_state_v2"]["last_action_outcomes"] instead would silently
+# return [] whenever _run_autonomy_reducer resolved a different subject for
+# THIS turn (e.g. "relationship" during contextual fallback when Orion's own
+# drive/autonomy graph is unavailable -- see select_preferred_autonomy_lookup)
+# even though real dispatch actions exist under "orion". Querying directly
+# decouples this feature from whichever subject the ambient reducer used.
+_DISPATCH_ACTION_SUBJECT = "orion"
 
 
 def _project_recent_dispatch_actions(ctx: Dict[str, Any]) -> list[dict]:
     """Projection helper: surface the most recent autonomous dispatch-action
     outcomes as bounded, privacy-safe evidence for chat narration.
 
-    Reads ``ctx['chat_autonomy_state_v2']`` -- the ``AutonomyStateV2`` dict
-    (``model_dump(mode="json")``) set by ``_run_autonomy_reducer`` once
-    ``AUTONOMY_STATE_V2_REDUCER_ENABLED`` is on -- and extracts
-    ``.last_action_outcomes`` (a list of ``ActionOutcomeRefV1``-shaped dicts
-    or objects). Deliberately NOT ``ctx['chat_autonomy_state']``: that key
-    holds the plain ``AutonomyStateV1`` graph-lookup state, which has no
-    ``last_action_outcomes`` field at all (``AutonomyLookupV1.state`` is typed
-    ``AutonomyStateV1 | None`` in ``orion/autonomy/repository.py``;
-    ``last_action_outcomes`` only exists on the ``AutonomyStateV2`` subclass
-    in ``orion/autonomy/models.py``, and is only populated by
-    ``reduce_autonomy_state`` in ``orion/autonomy/reducer.py``).
+    Queries ``load_action_outcomes(subject=_DISPATCH_ACTION_SUBJECT)``
+    directly, independent of ``ctx`` (the ``ctx`` parameter is accepted only
+    to match this file's other ``_project_*`` helpers' call-site shape).
+    Deliberately NOT ``ctx['chat_autonomy_state_v2']['last_action_outcomes']``
+    -- see ``_DISPATCH_ACTION_SUBJECT``'s comment above for why that would
+    silently go blank during autonomy contextual-fallback turns. Also NOT
+    ``ctx['chat_autonomy_state']`` (the plain ``AutonomyStateV1`` graph-lookup
+    state): it has no ``last_action_outcomes`` field at all (that field only
+    exists on the ``AutonomyStateV2`` subclass in ``orion/autonomy/models.py``,
+    populated by ``reduce_autonomy_state`` in ``orion/autonomy/reducer.py``).
 
     Takes at most ``_MAX_RECENT_DISPATCH_ACTIONS`` entries, newest-first by
     ``observed_at``. Entries with a missing/unparsable ``observed_at`` sort
@@ -1416,17 +1424,13 @@ def _project_recent_dispatch_actions(ctx: Dict[str, Any]) -> list[dict]:
     (``evidence_refs``/``coalition``/``chain_id``).
 
     Fail-open: returns ``[]`` on anything missing, malformed, or unparsable.
-    Never raises.
+    Never raises (``load_action_outcomes`` already degrades gracefully on its
+    own SQL/file-store failures; this wraps the projection logic too).
     """
+    del ctx  # accepted only for call-site consistency with sibling _project_* helpers
     try:
-        state = ctx.get("chat_autonomy_state_v2")
-        if state is None:
-            return []
-        if isinstance(state, dict):
-            outcomes = state.get("last_action_outcomes")
-        else:
-            outcomes = getattr(state, "last_action_outcomes", None)
-        if not outcomes or not isinstance(outcomes, (list, tuple)):
+        outcomes = load_action_outcomes(subject=_DISPATCH_ACTION_SUBJECT)
+        if not outcomes:
             return []
 
         def _field(item: Any, name: str) -> Any:
@@ -2539,12 +2543,11 @@ async def build_chat_stance_inputs(ctx: Dict[str, Any]) -> Dict[str, Any]:
         except Exception as exc:
             logger.warning("autonomy_reducer_v2_failed error=%s", exc)
 
-    # Placed here, not alongside chat_reverie_glimpse above, because the
-    # source data (chat_autonomy_state_v2.last_action_outcomes) only exists
-    # once the V2 reducer block above has run -- see
-    # _project_recent_dispatch_actions' docstring for why chat_autonomy_state
-    # (set later, at the bottom of this function) is NOT the right source.
-    # Fail-open: [] when the reducer is disabled or produced nothing.
+    # Queries load_action_outcomes(subject="orion") directly (see
+    # _project_recent_dispatch_actions' docstring) rather than reading ctx,
+    # so placement here isn't order-dependent on the V2 reducer block above --
+    # kept in this general area only for proximity to the other stance
+    # context-building calls. Fail-open: [] on any failure.
     ctx["chat_recent_dispatch_actions"] = _project_recent_dispatch_actions(ctx)
 
     if attention_frame_enabled():

@@ -2209,7 +2209,12 @@ async def lifespan(app: FastAPI):
         patterns.append(settings.actions_journal_created_channel)
     if settings.actions_world_pulse_journal_enabled and "orion:world_pulse:run:result" not in patterns:
         patterns.append("orion:world_pulse:run:result")
-    hunter = Hunter(_cfg(), patterns=patterns, handler=handle_envelope)
+    hunter = Hunter(
+        _cfg(),
+        patterns=patterns,
+        handler=handle_envelope,
+        concurrent_handlers=settings.actions_concurrent_handlers,
+    )
     app.state.bus_handler = handle_envelope
     await hunter.bus.connect()
     from orion.core.bus.rpc_fork import fork_rpc_client

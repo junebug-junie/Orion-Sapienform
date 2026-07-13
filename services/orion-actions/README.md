@@ -60,6 +60,8 @@ Built-in daily triggers (daily pulse, world pulse, daily metacog, daily journal)
 
 Cursor JSON keys match the scheduler store: `daily_pulse_v1`, `world_pulse`, `daily_metacog_v1`, `daily_journal`, `autonomy_goal_archive`. **Single writer:** assume one `orion-actions` replica (same as the workflow schedule store); multiple replicas would race on the same cursor file unless you add coordination or split paths in a follow-up.
 
+**Startup catch-up jobs and bus consumer concurrency.** On every restart, eligible daily triggers (per the cursor logic above) fire immediately, each making an RPC-bound call (`orion:cortex:exec:request:background` / `orion:cortex:request`) with up to a 420s timeout. `ACTIONS_CONCURRENT_HANDLERS` (default `true`) controls whether the bus `Hunter` consumer runs these handlers concurrently or sequentially. With it `false` (or omitted at the `Hunter(...)` call site — the class default), the consumer directly awaits each handler to completion before reading the *next* message off **any** subscribed channel, including `orion:actions:manage:workflow.v1` — meaning a single long-running startup catch-up job can block a live user request (e.g. a chat-triggered workflow-schedule operation) for its entire duration. Confirmed live 2026-07-13: a chat message queued behind two startup catch-up jobs for ~4 minutes before being processed at all. Matches the `concurrent_handlers=True` pattern already established in `orion-recall`, `orion-llm-gateway`, `orion-cortex-exec`, `orion-spark-introspector`, and `orion-cortex-orch`.
+
 ### Autonomy goal archive (built-in — no host cron)
 
 Goal-graph hygiene runs **inside** this container. You do **not** need `scripts/autonomy/archive_stale_goal_proposals.py` on the host.

@@ -23,22 +23,24 @@ Companion to `docs/superpowers/specs/2026-07-12-inner-state-unification-design.m
 
 ## Phase 1 — Widen `dominant_attention_targets` (brainstorm idea #1, now a registry-governed extension)
 
+**Status: implemented, deployed, live-verified.**
+
 **Gate to start:** Phase 0 merged (this is the first signal added *through* the registry, proving the pattern works before anything else uses it).
 
-- [ ] `orion/schemas/self_state.py`: additive field carrying structured attention-target data (pressure_score, dominant_channels top-1, reasons top-1) for the top-N targets, alongside (not replacing) the existing bare-string list.
-- [ ] `orion/self_state/builder.py`: populate from `attention.dominant_targets` (already in scope at the point this is currently discarded, `builder.py:279`).
-- [ ] Registry entry added in the same PR — this is the acceptance check for Phase 0's gate actually working, not a separate afterthought.
-- [ ] Log-only for a real traffic window before anything downstream (Phase 2/3) reads it: does the dominant target actually vary tick-to-tick, or is it dominated by one or two nodes constantly? (Flagged as a missing question in the brainstorm — answer it with data, not assumption, before building the narrative layer.)
+- [x] `orion/schemas/self_state.py`: additive `AttentionTargetSummaryV1` (`target_id`, `target_kind`, `pressure_score`, top `dominant_channel`, top `reason`) + `SelfStateV1.dominant_attention_target_details: list[AttentionTargetSummaryV1]`, alongside (not replacing) the existing bare-string `dominant_attention_targets`.
+- [x] `orion/self_state/builder.py`: new `_attention_target_summary()` helper, populated from `attention.dominant_targets[:5]` (the same slice already used for the bare-string list, `builder.py:302` — same target_ids, same order).
+- [x] Registry entry updated in the same PR: `field_attention_frame.v1` flipped from `SHADOW` to `COMPOSED`.
+- [x] Deployed live on Athena (`orion-self-state-runtime` rebuilt) — confirmed via direct Postgres query that the dominant target genuinely varies tick-to-tick (not stuck on one or two nodes).
 
-**Tests:** schema round-trip; builder unit test asserting the new field is populated from a fixture `FieldAttentionFrameV1` with known target scores.
+**Tests:** schema unchanged behavior for existing consumers (full self-state suite green, 63 tests); new builder test (`test_dominant_attention_target_details_carries_structured_data`) asserting real, non-fixture end-to-end data (via `build_attention_frame()` + `build_self_state()` on a synthetic `FieldStateV1`) — target_id/order parity with the existing list, valid `target_kind`, `pressure_score` in range, and the top target's `dominant_channel`/`reason` populated.
 
-**Acceptance:** the field carries real per-target data in at least one live tick, verified against Postgres, not just a fixture.
+**Acceptance:** confirmed live in production, `2026-07-12`.
 
 ---
 
 ## Phase 2 — Node-attributed phi (brainstorm idea #2)
 
-**Status: implemented, not yet deployed** (branch `feat/phi-dominant-node-attribution`).
+**Status: implemented, deployed, live-verified.**
 
 **Gate to start:** Phase 1 merged AND its log-only traffic window shows real (non-degenerate) variation in dominant targets. Phase 1 isn't deployed yet, so this was checked against the OLD bare-string `dominant_attention_targets` field instead (live in production well before today): confirmed real compositional variance over a live 20-sample/~40s window — `node:atlas` and `capability:llm_inference`/`capability:orchestration` cycle in and out, not stuck flat. New finding from that same check, not anticipated when this phase was planned: `dominant_targets` is salience-sorted across node/capability/**system** kinds together (`orion/attention/field_attention/builder.py:34,50`), and a `target_kind == "system"` entry (`field:recent_perturbations`) wins the #1 slot in nearly every tick observed — filtering only the two synthetic pseudo-nodes (as originally planned) would not have been enough; `target_kind == "node"` must be filtered too.
 
@@ -49,7 +51,7 @@ Companion to `docs/superpowers/specs/2026-07-12-inner-state-unification-design.m
 
 **Tests:** 3 unit tests directly on `_dominant_hardware_node()` (correct node selected over system/capability/pseudo-node entries; `None`/`None` when no qualifying node; empty-list edge case) + 1 end-to-end test through the real `handle_self_state()` pipeline with a custom `SelfStateV1` fixture.
 
-**Acceptance:** `PhiIntrinsicRewardV1.dominant_node` reflects a real hardware node (not a pseudo-node, not a system-kind target) — verified in tests; **live-traffic verification blocked on deployment**, not yet done.
+**Acceptance:** `PhiIntrinsicRewardV1.dominant_node` reflects a real hardware node (not a pseudo-node, not a system-kind target) — verified in tests, and confirmed live in production via direct bus subscription (`node:atlas`/`node:circe` alternating as `capability:llm_inference`'s real GPU contention winner).
 
 ---
 

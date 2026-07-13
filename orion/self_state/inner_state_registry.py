@@ -172,21 +172,46 @@ REGISTRY: tuple[InnerStateSignal, ...] = (
         schema=None,
         producer_service="orion-spark-introspector",
         cadence=Cadence.PER_TICK,
-        composition_status=CompositionStatus.SHADOW,
+        composition_status=CompositionStatus.COMPOSED,
         cognition_consumers=(
             "services.orion-cortex-exec.app.spark_narrative:spark_phi_narrative",
+            "services.orion-cortex-exec.app.spark_narrative:spark_phi_hint",
         ),
-        shadow_reason=(
-            "_phi_from_self_state()'s valence formula is the only surviving "
-            "slice of the pre-2026-07-12 untrained EKG heuristic. No trained "
-            "phi-encoder latent dimension correlates with any hedonic-adjacent "
-            "felt dimension per the active encoder's probes.json -- explicitly "
-            "verified, not assumed. This is the model case for a correctly "
-            "justified, documented SHADOW entry (see "
-            "_golden_phi_overrides()'s docstring in "
-            "services/orion-spark-introspector/app/worker.py)."
+        notes=(
+            "Not a schema -- a formula. Tracked here because it reaches cognition. "
+            "Was SHADOW until 2026-07-13 on the claim that 'no trained phi-encoder "
+            "latent dimension correlates with any hedonic-adjacent felt dimension "
+            "per the active encoder's probes.json'. That claim was checked against "
+            "the real numbers and was false: agency_readiness (50% of this "
+            "formula's weight) is one of the encoder's 8 actual input_features "
+            "and correlates with 6 of 8 latents at |r| up to 0.686. The 0.0 shown "
+            "for coherence/field_intensity/social_pressure/reliability_pressure/"
+            "continuity_pressure/introspection_pressure in probes.json is not a "
+            "verified null result -- none of those six were ever encoder inputs, "
+            "so the probe's zero-variance guard fires trivially for all of them; "
+            "that was misread as 'checked, no relationship'. Fixed by "
+            "_agency_valence_proxy() in worker.py: a probe-weighted linear "
+            "readout of the trained latent space, tanh-squashed to [-1,1], "
+            "applied via _golden_phi_overrides() whenever an encoder tick "
+            "succeeds. Real remaining limitation, not theater: social_pressure "
+            "was never an encoder input, so there is genuinely no trained analog "
+            "for the social_ease half of the heuristic formula -- the fallback "
+            "(_phi_from_self_state, encoder disabled/degraded ticks only) still "
+            "uses agency_readiness + social_ease, with the previously-hardcoded "
+            "policy_ease=1.0 dead constant deleted outright rather than kept. "
+            "Also real, also not theater: the proxy is a post-hoc statistical "
+            "readout (Pearson coefficients, not fitted regression weights), not "
+            "a native encoder output like coherence/energy/novelty are -- and "
+            "agency_readiness is itself one of the encoder's raw inputs, so this "
+            "is a lossy reconstruction of an already-available value, not newly "
+            "discovered structure. A code-review pass also found that swapping "
+            "between the two formulas tick-to-tick produced spurious deltas "
+            "reaching spark_phi_hint/spark_phi_narrative's live metacog prompts "
+            "as unearned valence swings; fixed via _PHI_PREV_VALENCE_SOURCE "
+            "tracking that suppresses turn_effect's valence delta specifically "
+            "on a source-swap tick (worker.py), plus a valence_source field on "
+            "SparkStateSnapshotV1.metadata for observability."
         ),
-        notes="Not a schema -- a formula. Tracked here because it reaches cognition.",
     ),
     InnerStateSignal(
         signal_id="phi_intrinsic_reward.v1",

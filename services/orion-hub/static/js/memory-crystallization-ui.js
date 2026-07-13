@@ -119,16 +119,23 @@
     return parts.join("");
   }
 
+  function retirementBadge(item) {
+    if (!item || !item.retirement_candidate) return "";
+    return `<span class="text-[9px] border rounded px-1 py-0.5 bg-amber-900/40 text-amber-300 border-amber-700 ml-1">stale — review for archive</span>`;
+  }
+
   function renderDetail(row, links, health) {
     const dyn = row.dynamics && typeof row.dynamics === "object" ? row.dynamics : {};
     const planning = Array.isArray(row.planning_effects) ? row.planning_effects : [];
     const retrieval = Array.isArray(row.retrieval_affordances) ? row.retrieval_affordances : [];
     const turnCount = chatTurnCount(row);
+    const isActive = row.status === "active";
+    const decayedActivation = row.decayed_activation != null ? Number(row.decayed_activation).toFixed(3) : "—";
     return `<div class="space-y-2">
-      <div><strong>${escapeHtml(row.subject)}</strong> <span class="text-gray-500">[${escapeHtml(row.kind)}]</span></div>
+      <div><strong>${escapeHtml(row.subject)}</strong> <span class="text-gray-500">[${escapeHtml(row.kind)}]</span>${retirementBadge(row)}</div>
       <div>${escapeHtml(row.summary)}</div>
       <div class="text-gray-500">Status: ${escapeHtml(row.status)} · Confidence: ${escapeHtml(row.confidence)} · Salience: ${escapeHtml(String(row.salience ?? ""))}</div>
-      <div class="text-gray-500">Activation: ${escapeHtml(String(dyn.activation ?? "0"))} · Reinforcements: ${escapeHtml(String(dyn.reinforcement_count ?? "0"))}</div>
+      <div class="text-gray-500">Activation: ${escapeHtml(String(dyn.activation ?? "0"))} · Decayed activation: ${decayedActivation} · Reinforcements: ${escapeHtml(String(dyn.reinforcement_count ?? "0"))}</div>
       <div class="text-gray-500">Source turns in window: ${turnCount}</div>
       <div class="border border-gray-800 rounded p-2">${renderProvenance(row.provenance)}</div>
       ${planning.length ? `<div><span class="text-gray-500">Planning:</span><ul class="list-disc ml-4">${planning.map((p) => `<li>${escapeHtml(p)}</li>`).join("")}</ul></div>` : ""}
@@ -138,10 +145,11 @@
       <div class="text-gray-500">Links: ${(links.items || []).length}</div>
       <div class="text-gray-500">Health: chroma=${escapeHtml(health.chroma_collection || "")}, graphiti=${health.graphiti_enabled ? "on" : "off"}</div>
       <div class="flex gap-2 mt-2">
-        <button type="button" data-act="approve" class="px-2 py-1 rounded border border-emerald-700 text-emerald-200">Approve</button>
-        <button type="button" data-act="reject" class="px-2 py-1 rounded border border-red-800 text-red-200">Reject</button>
-        <button type="button" data-act="validate" class="px-2 py-1 rounded border border-gray-600 text-gray-200">Validate</button>
+        ${!isActive ? `<button type="button" data-act="approve" class="px-2 py-1 rounded border border-emerald-700 text-emerald-200">Approve</button>` : ""}
+        ${!isActive ? `<button type="button" data-act="reject" class="px-2 py-1 rounded border border-red-800 text-red-200">Reject</button>` : ""}
+        ${!isActive ? `<button type="button" data-act="validate" class="px-2 py-1 rounded border border-gray-600 text-gray-200">Validate</button>` : ""}
         <button type="button" data-act="sync-graphiti" class="px-2 py-1 rounded border border-sky-700 text-sky-200">Sync Graphiti</button>
+        ${isActive ? `<button type="button" data-act="deprecate" class="px-2 py-1 rounded border border-amber-700 text-amber-200">Deprecate</button>` : ""}
       </div>
     </div>`;
   }
@@ -150,7 +158,7 @@
     const row = document.createElement("div");
     row.className = "flex justify-between gap-2 border border-gray-800 rounded px-2 py-1 bg-gray-900/60";
     const turns = chatTurnCount(item);
-    row.innerHTML = `<div><div class="font-medium text-gray-100">${escapeHtml(item.subject || "")}</div>
+    row.innerHTML = `<div><div class="font-medium text-gray-100">${escapeHtml(item.subject || "")}${retirementBadge(item)}</div>
       <div class="text-[10px] text-gray-500">${escapeHtml(item.kind || "")} · ${escapeHtml(item.status || "")} · salience ${escapeHtml(String(item.salience ?? ""))}${turns ? ` · ${turns} turn(s)` : ""}</div></div>`;
     const btn = document.createElement("button");
     btn.type = "button";
@@ -161,33 +169,54 @@
     return row;
   }
 
+  async function loadRetirementCandidates() {
+    // Best-effort: retirement surfacing (docs/superpowers/specs/2026-07-13-recall-
+    // followups-loop-retirement-saturation-gate-spec.md section 2) augments the review
+    // queue but must never break proposal-inbox loading if it fails.
+    try {
+      const data = await apiFetch("/api/memory/crystallizations?status=active");
+      return ((data && data.items) || []).filter((item) => item && item.retirement_candidate);
+    } catch {
+      return [];
+    }
+  }
+
   async function loadInbox(listEl, statusEl, detailEl) {
     setStatus(statusEl, "Loading proposals…", false);
     listEl.innerHTML = "";
     try {
       const data = await apiFetch("/api/memory/crystallizations/proposals");
-      const items = (data && data.items) || [];
+      const proposalItems = (data && data.items) || [];
+      const retirementItems = await loadRetirementCandidates();
+      const items = [...retirementItems, ...proposalItems];
+      const summarize = () =>
+        `${proposalItems.length} proposal(s)` +
+        (retirementItems.length ? `, ${retirementItems.length} retirement candidate(s)` : "");
       if (!items.length) {
         setStatus(statusEl, "No proposals in inbox.", false);
         return;
       }
-      setStatus(statusEl, `${items.length} proposal(s)`, false);
+      setStatus(statusEl, summarize(), false);
       items.forEach((item) => {
         listEl.appendChild(
           renderRow(item, async (row) => {
             detailEl.classList.remove("hidden");
-            setStatus(statusEl, "Loading proposal detail…", false);
-            const full = await apiFetch(`/api/memory/crystallizations/proposals/${encodeURIComponent(row.crystallization_id)}`);
+            setStatus(statusEl, "Loading detail…", false);
+            const full = row.retirement_candidate
+              ? await apiFetch(`/api/memory/crystallizations/${encodeURIComponent(row.crystallization_id)}`)
+              : await apiFetch(`/api/memory/crystallizations/proposals/${encodeURIComponent(row.crystallization_id)}`);
             const links = await apiFetch(`/api/memory/crystallizations/${row.crystallization_id}/links`).catch(() => ({ items: [] }));
             const health = await apiFetch("/api/memory/crystallizations/projection/health").catch(() => ({}));
             detailEl.innerHTML = renderDetail(full, links, health);
-            setStatus(statusEl, `${items.length} proposal(s)`, false);
+            setStatus(statusEl, summarize(), false);
             detailEl.querySelectorAll("button[data-act]").forEach((btn) => {
               btn.addEventListener("click", async () => {
                 const act = btn.getAttribute("data-act");
                 try {
                   if (act === "sync-graphiti") {
                     await apiFetch(`/api/memory/graphiti/sync/${row.crystallization_id}`, { method: "POST", body: "{}" });
+                  } else if (act === "deprecate") {
+                    await apiFetch(`/api/memory/crystallizations/${row.crystallization_id}/deprecate`, { method: "POST", body: "{}" });
                   } else {
                     await apiFetch(`/api/memory/crystallizations/proposals/${row.crystallization_id}/${act}`, { method: "POST", body: act === "validate" ? undefined : "{}" });
                   }

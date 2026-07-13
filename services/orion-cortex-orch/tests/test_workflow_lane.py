@@ -17,6 +17,7 @@ for candidate in (REPO_ROOT, APP_ROOT):
     if str(candidate) not in sys.path:
         sys.path.insert(0, str(candidate))
 
+from orion.cognition.chat_history_compactor.constants import CARD_SUMMARY_MAX_CHARS
 from orion.core.bus.bus_schemas import BaseEnvelope, ServiceRef
 from orion.schemas.cortex.contracts import CortexClientRequest, CortexClientResult
 from orion.schemas.discussion_window import DiscussionWindowResultV1, DiscussionWindowTurnV1
@@ -2910,7 +2911,7 @@ def test_chat_history_compactor_pass_over_budget_fails_without_persist(monkeypat
         if req.verb == "chat_history_compactor_digest_v1":
             routes.append(str((req.options or {}).get("llm_route") or ""))
             digest = {
-                "card_summary": "x" * 801,
+                "card_summary": "x" * (CARD_SUMMARY_MAX_CHARS + 1),
                 "journal_title": "Title",
                 "journal_body": "Body",
                 "turn_refs": ["corr-c"],

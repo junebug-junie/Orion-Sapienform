@@ -26,9 +26,22 @@ function resolveHubWebSocketUrl() {
 
 const HUB_LOCAL_TIMEZONE = 'America/Denver';
 
+// Backend timestamp fields are inconsistent about carrying a timezone
+// designator: some (e.g. orion-notify's naive-UTC `created_at`) serialize
+// with no trailing `Z`/offset, which makes `new Date(...)` treat the raw
+// UTC clock reading as browser-local time -- silently shifting the
+// displayed instant by the local UTC offset (and sometimes the displayed
+// day). Fields that already carry `Z` or `+HH:MM`/`-HH:MM` (e.g.
+// notification `received_at`, built from an aware `datetime.isoformat()`)
+// must be left untouched to avoid double-converting an already-correct
+// instant.
+const HUB_TZ_DESIGNATOR_RE = /Z$|[+-]\d{2}:?\d{2}$/;
+
 function formatHubLocalTime(value) {
   if (!value) return null;
-  const d = new Date(value);
+  const hasTzDesignator = typeof value === 'string' && HUB_TZ_DESIGNATOR_RE.test(value);
+  const iso = typeof value === 'string' && !hasTzDesignator ? `${value}Z` : value;
+  const d = new Date(iso);
   if (Number.isNaN(d.getTime())) return null;
   return d.toLocaleString('en-US', {
     timeZone: HUB_LOCAL_TIMEZONE,

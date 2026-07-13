@@ -34,6 +34,7 @@ from orion.schemas.field_attention_frame import FieldAttentionFrameV1
 from orion.schemas.field_state import FieldStateV1
 from orion.schemas.self_state import SelfStateV1
 from orion.schemas.telemetry.biometrics import BiometricsClusterV1
+from orion.schemas.telemetry.mood_arc import MoodArcCorpusRowV1
 from orion.schemas.telemetry.phi_encoder import PhiIntrinsicRewardV1
 
 
@@ -283,6 +284,29 @@ REGISTRY: tuple[InnerStateSignal, ...] = (
             "non-Hub reader (orion-thought reverie grounding) only appends an "
             "inert ID tag to an already-generated thought. Out of scope for "
             "resolution here."
+        ),
+    ),
+    InnerStateSignal(
+        signal_id="mood_arc_corpus.v1",
+        schema=MoodArcCorpusRowV1,
+        producer_service="orion-spark-introspector",
+        cadence=Cadence.PER_TICK,
+        composition_status=CompositionStatus.REHEARSAL,
+        cognition_consumers=(),
+        notes=(
+            "Item 1 of docs/superpowers/specs/2026-07-13-felt-state-arc-"
+            "roadmap-spec.md -- an append-only JSONL corpus sink, not a bus "
+            "signal. Gate is simply MOOD_ARC_CORPUS_PATH being configured "
+            "(off/no-op by default). Earlier drafted as 'gated on "
+            "valence_source being present' -- corrected by code review, "
+            "2026-07-13: valence_source is a plain str defaulting to "
+            "'heuristic', never None on this code path, so that was never "
+            "a real filter, just an accurate-by-accident description. Not "
+            "composed anywhere and has no cognition consumer by design: "
+            "this is training data collection for a not-yet-built windowed "
+            "sequence autoencoder (roadmap item 2), explicitly gated on "
+            "accumulating real hours of data first. REHEARSAL is correct "
+            "here, same precedent as l7_l11_ladder -- not a gap to close."
         ),
     ),
 )

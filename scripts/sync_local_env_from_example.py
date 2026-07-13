@@ -129,6 +129,8 @@ SYNC_PREFIXES = (
     "ORION_PHI_ENCODER_",
     "SUBSTRATE_READ_",
     "EXEC_TRAJECTORY_",
+    # Mood-arc corpus collector (roadmap item 1, 2026-07-13)
+    "MOOD_ARC_",
     # Reasoning telemetry adapter (cortex-exec -> orion-thought -> phi, default-off)
     "REASONING_ACTIVITY_",
     # Corpus hygiene: execution_trajectory projection cap (orion-substrate-runtime)

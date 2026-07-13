@@ -18,22 +18,24 @@ CHAT_HISTORY_COMPACTOR_WORKFLOW_ID = "chat_history_compactor_pass"
 _BOOTSTRAP_REQUEST_ID = "bootstrap:chat_history_compactor_pass:daily:06:00:America/Denver"
 
 
-def _is_matching_daily_chat_compactor(schedule) -> bool:
+def _blocks_bootstrap_seed(schedule) -> bool:
+    """True when an existing record means bootstrap must not (re-)seed.
+
+    Two cases block seeding:
+    - Any record ever created by this bootstrap (matched by request_id), in ANY
+      state — so an operator cancel or time edit sticks across restarts instead
+      of being resurrected or duplicated at 06:00.
+    - Any live recurring schedule for the workflow (operator-created), so a
+      manual replacement schedule is not doubled up by bootstrap.
+    """
+    if getattr(schedule, "request_id", None) == _BOOTSTRAP_REQUEST_ID:
+        return True
     if schedule.workflow_id != CHAT_HISTORY_COMPACTOR_WORKFLOW_ID:
         return False
     if schedule.state in {"cancelled", "completed"}:
         return False
     spec = schedule.execution_policy.schedule if schedule.execution_policy else None
-    if spec is None or spec.kind != "recurring" or spec.cadence != "daily":
-        return False
-    # minute_local=0 is valid; do not use `or` (0 is falsy).
-    if int(-1 if spec.hour_local is None else spec.hour_local) != 6:
-        return False
-    if int(-1 if spec.minute_local is None else spec.minute_local) != 0:
-        return False
-    if (spec.timezone or "") != "America/Denver":
-        return False
-    return True
+    return spec is not None and spec.kind == "recurring"
 
 
 def ensure_chat_history_compactor_daily_schedule(
@@ -43,7 +45,7 @@ def ensure_chat_history_compactor_daily_schedule(
 
     Returns the created record, or None if a matching schedule already exists.
     """
-    existing = [s for s in store.list_schedules(include_inactive=True) if _is_matching_daily_chat_compactor(s)]
+    existing = [s for s in store.list_schedules(include_inactive=True) if _blocks_bootstrap_seed(s)]
     if existing:
         logger.info(
             "chat_history_compactor_schedule_bootstrap_skip existing_schedule_id=%s",

@@ -61,12 +61,14 @@ def resolve_chat_compactor_window(
     mode_raw = (window_mode or req.get("window_mode") or "").strip().lower()
     if not mode_raw:
         mode_raw = "day" if req.get("scheduled_dispatch") else "rolling"
+    if mode_raw not in ("day", "rolling"):
+        raise ValueError(f"unsupported_chat_compactor_window_mode:{mode_raw}")
 
     hours_raw = lookback_hours if lookback_hours is not None else req.get("lookback_hours")
     hours: int | None = None
     if hours_raw is not None:
         try:
-            hours = max(1, int(hours_raw))
+            hours = max(1, min(int(hours_raw), 24 * 14))
         except (TypeError, ValueError):
             hours = None
     if hours is None:
@@ -75,7 +77,7 @@ def resolve_chat_compactor_window(
     if mode_raw == "day":
         yesterday = now_local.date() - timedelta(days=1)
         start_local = datetime.combine(yesterday, time.min, tzinfo=tz)
-        end_local = datetime.combine(yesterday, time(23, 59, 59, 999000), tzinfo=tz)
+        end_local = datetime.combine(yesterday, time.max, tzinfo=tz)
         calendar_date = yesterday.isoformat()
         index = build_compactor_index(
             kind="chat_history_log",

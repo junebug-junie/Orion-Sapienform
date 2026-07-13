@@ -2605,6 +2605,9 @@ def test_chat_history_compactor_pass_quiet_day_skips_card(monkeypatch) -> None:
     assert result.ok is True
     assert card_called["n"] == 0
     assert result.metadata["workflow"]["turn_count"] == 0
+    # Quiet windows must not persist anything: no card, no journal stub.
+    assert not any(ch == "orion:journal:write" for ch, _ in bus.published)
+    assert result.metadata["workflow"]["persisted"] == []
 
 
 def test_chat_history_compactor_pass_digest_chat_then_quick_retry(monkeypatch) -> None:

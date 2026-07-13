@@ -2192,6 +2192,7 @@ async def _run_chat_history_compactor_digest(
     window: DiscussionWindowResultV1,
 ) -> Tuple[ChatHistoryCompactorDigestV1, str]:
     last_error: str | None = None
+    digest_input = trim_chat_history_compactor_input(window)
     for route in ("chat", "quick"):
         synth_req = req.model_copy(deep=True)
         synth_req.mode = "brain"
@@ -2204,7 +2205,7 @@ async def _run_chat_history_compactor_digest(
         synth_req.context.metadata = dict(synth_req.context.metadata or {})
         synth_req.context.metadata["workflow_subverb"] = "chat_history_compactor_digest_v1"
         synth_req.context.metadata["workflow_id"] = workflow_id
-        synth_req.context.metadata["chat_history_compactor_input"] = trim_chat_history_compactor_input(window)
+        synth_req.context.metadata["chat_history_compactor_input"] = digest_input
         synth_req.context.metadata.update(
             _workflow_execution_envelope(
                 req=req,
@@ -2277,13 +2278,16 @@ async def _execute_chat_history_compactor_pass(
     workflow_id = "chat_history_compactor_pass"
     user_text = (req.context.raw_user_text or req.context.user_message or "").strip()
     request = _workflow_request(req)
-    window_spec = resolve_chat_compactor_window(
-        window_mode=str(request.get("window_mode") or "") or None,
-        lookback_hours=request.get("lookback_hours"),
-        now=datetime.now(timezone.utc),
-        user_text=user_text,
-        workflow_request=request,
-    )
+    try:
+        window_spec = resolve_chat_compactor_window(
+            window_mode=str(request.get("window_mode") or "") or None,
+            lookback_hours=request.get("lookback_hours"),
+            now=datetime.now(timezone.utc),
+            user_text=user_text,
+            workflow_request=request,
+        )
+    except ValueError as exc:
+        raise WorkflowExecutionError(f"chat_compactor_window_invalid:{exc}") from exc
     md = req.context.metadata if isinstance(req.context.metadata, dict) else {}
     dw_req = DiscussionWindowRequestV1(
         lookback_seconds=int(window_spec.lookback_seconds),
@@ -2359,7 +2363,8 @@ async def _execute_chat_history_compactor_pass(
     persisted: List[str] = []
     journal_entry: dict | None = None
 
-    if window.turn_count <= 0 or not (window.transcript_text or "").strip():
+    quiet = window.turn_count <= 0 or not (window.transcript_text or "").strip()
+    if quiet:
         digest = build_quiet_day_chat_digest(
             window_label=window_spec.calendar_date or window_spec.compactor_index
         )
@@ -2392,7 +2397,8 @@ async def _execute_chat_history_compactor_pass(
                 card_persist_skipped_reason,
             )
 
-    if (digest.journal_body or "").strip():
+    # Spec: journal append fires only for non-quiet windows (no empty-shell stubs).
+    if not quiet and (digest.journal_body or "").strip():
         draft = JournalEntryDraftV1(
             mode="digest",
             title=(digest.journal_title or f"Chat digest — {window_spec.compactor_index}")[:120] or "Chat digest",
@@ -2427,13 +2433,11 @@ async def _execute_chat_history_compactor_pass(
     if card_id:
         persisted.insert(0, f"memory_card:{card_id}")
 
-    if window.turn_count <= 0 or not (window.transcript_text or "").strip():
+    if quiet:
         main_result = (
             f"No Hub chat turns for {window_spec.compactor_index}. "
-            "Indexed chat digest card skipped."
+            "Indexed chat digest card and journal entry skipped."
         )
-        if journal_entry:
-            main_result = f"{main_result} Journal entry {journal_entry.get('entry_id')}."
     else:
         main_result = (
             f"Compacted {window.turn_count} chat turn(s) for {window_spec.compactor_index}."
@@ -2450,9 +2454,7 @@ async def _execute_chat_history_compactor_pass(
         "status": "completed",
         "executed": True,
         "subverb": (
-            "chat_history_compactor_digest_v1"
-            if window.turn_count > 0 and (window.transcript_text or "").strip()
-            else "skills.chat.discussion_window.v1"
+            "skills.chat.discussion_window.v1" if quiet else "chat_history_compactor_digest_v1"
         ),
         "persisted": persisted,
         "scheduled": [],

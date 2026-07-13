@@ -220,7 +220,6 @@ _WORKFLOWS: tuple[WorkflowDefinition, ...] = (
             "compact the last 24 hours of chat into a memory digest",
             "compact the last 6 hours of chat into a memory digest",
             "chat history compactor",
-            "what have we been talking about",
         ],
         user_invocable=True,
         autonomous_invocable=True,

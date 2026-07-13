@@ -209,7 +209,7 @@ These are defined in workflow registry/runtime, not in Actions.
 
 ### `chat_history_compactor_pass`
 - **Purpose**: compact bounded Hub `chat_history_log` windows into indexed `high_recall` memory cards (optional journal).
-- **Example phrases**: “Compact the last 24 hours of chat into a memory digest”, “what have we been talking about”.
+- **Example phrases**: “Compact the last 24 hours of chat into a memory digest”, “Compact the last 6 hours of chat into a memory digest”.
 - **Schedulable**: yes. On actions startup, if absent, bootstraps a recurring daily schedule at **06:00 `America/Denver`** with `window_mode=day` (yesterday’s calendar day).
 - **Notify**: bootstrap default `notify_on=completion` (editable/pausable in Hub schedule inventory).
 - **Typical result**: turn count, `compactor_index`, card summary preview, card_id, optional journal entry id.

@@ -342,3 +342,54 @@ def test_variance_gate_seedv3_feature_names_unaffected_by_seedv4_policy() -> Non
     ok, got, need = _variance_gate(matrix, fraction=0.8, eps=1e-6, feature_names=names)
     assert need == int(np.ceil(0.8 * len(names)))
     assert got == 9
+
+
+def test_load_jsonl_reads_across_rotated_corpus_files(tmp_path: Path) -> None:
+    """2026-07-13, found by code review: InnerStateCorpusSink gained
+    size-based rotation the same day this eval/training script's corpus
+    loader existed. _load_jsonl(path) reading only the single active file
+    would silently see just the post-rotation slice once a real corpus
+    ever rotates -- no error, just fewer rows than an operator would
+    assume. Fixed via orion.telemetry.corpus_rotation.resolve_rotated_
+    corpus_files, the single shared source of truth for this pattern
+    (also used by inner_state_sink.py's pruning and eval_phi_encoder_
+    health.py's loader -- this test pins fit_phi_encoder.py's usage of it).
+    """
+    from scripts.fit_phi_encoder import _load_jsonl
+
+    corpus_path = tmp_path / "inner_state.jsonl"
+    rotated_path = tmp_path / "inner_state.jsonl.20260701T000000.000000Z"
+    stray_path = tmp_path / "inner_state.jsonl.manual-backup"  # must be ignored, wrong pattern
+
+    old_rows = _synthetic_corpus(n_rows=3, hours_span=1.0)
+    new_rows = _synthetic_corpus(n_rows=2, hours_span=1.0)
+    _write_corpus(rotated_path, old_rows)
+    _write_corpus(corpus_path, new_rows)
+    stray_path.write_text("not a real corpus row\n", encoding="utf-8")
+
+    from orion.telemetry.corpus_rotation import resolve_rotated_corpus_files
+
+    files = resolve_rotated_corpus_files(corpus_path)
+    assert rotated_path in files
+    assert corpus_path in files
+    assert stray_path not in files
+    # Rotated (older) file must come before the active file.
+    assert files.index(rotated_path) < files.index(corpus_path)
+
+    loaded = _load_jsonl(corpus_path)
+    assert len(loaded) == len(old_rows) + len(new_rows)
+
+
+def test_load_jsonl_single_file_unchanged_when_no_rotation_happened(tmp_path: Path) -> None:
+    """The common case today (no rotation has ever fired) must behave
+    identically to the pre-fix single-file read -- no rotated siblings on
+    disk, resolve_rotated_corpus_files returns exactly the one active file."""
+    from scripts.fit_phi_encoder import _load_jsonl
+    from orion.telemetry.corpus_rotation import resolve_rotated_corpus_files
+
+    corpus_path = tmp_path / "inner_state.jsonl"
+    rows = _synthetic_corpus(n_rows=5, hours_span=1.0)
+    _write_corpus(corpus_path, rows)
+
+    assert resolve_rotated_corpus_files(corpus_path) == [corpus_path]
+    assert len(_load_jsonl(corpus_path)) == len(rows)

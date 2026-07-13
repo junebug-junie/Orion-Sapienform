@@ -38,6 +38,7 @@ if str(REPO) not in sys.path:
 
 from orion.schemas.telemetry.inner_state import InnerStateFeaturesV1
 from orion.schemas.telemetry.phi_encoder import PhiEncoderManifestV1
+from orion.telemetry.corpus_rotation import resolve_rotated_corpus_files
 
 DEFAULT_CORPUS = Path("/mnt/telemetry/phi/corpus/inner_state.jsonl")
 DEFAULT_ENCODERS_ROOT = Path("/mnt/telemetry/models/phi/encoders")
@@ -139,17 +140,21 @@ def resolve_active_target(encoders_root: Path) -> Path | None:
 
 
 def load_corpus_rows(corpus_path: Path) -> list[InnerStateFeaturesV1]:
+    # 2026-07-13: InnerStateCorpusSink gained size-based rotation. Reading
+    # only `corpus_path` would silently evaluate encoder health against
+    # just the post-rotation slice once the active file first rotates
+    # (found by code review) -- resolve across rotated siblings too. See
+    # orion/telemetry/corpus_rotation.py.
     rows: list[InnerStateFeaturesV1] = []
-    if not corpus_path.is_file():
-        return rows
-    for line_no, line in enumerate(corpus_path.read_text(encoding="utf-8").splitlines(), start=1):
-        text = line.strip()
-        if not text:
-            continue
-        try:
-            rows.append(InnerStateFeaturesV1.model_validate_json(text))
-        except Exception as exc:  # noqa: BLE001 — skip bad lines with context
-            raise ValueError(f"invalid JSONL at {corpus_path}:{line_no}: {exc}") from exc
+    for file in resolve_rotated_corpus_files(corpus_path):
+        for line_no, line in enumerate(file.read_text(encoding="utf-8").splitlines(), start=1):
+            text = line.strip()
+            if not text:
+                continue
+            try:
+                rows.append(InnerStateFeaturesV1.model_validate_json(text))
+            except Exception as exc:  # noqa: BLE001 — skip bad lines with context
+                raise ValueError(f"invalid JSONL at {file}:{line_no}: {exc}") from exc
     return rows
 
 

@@ -374,6 +374,7 @@ Spark-introspector emits `InnerStateFeaturesV1` on `orion:self:inner_features` a
 |---|---|
 | `INNER_FEATURES_VERSION` | `seed-v4` (see `.env_example` — authoritative; this table drifts) |
 | Corpus path | `INNER_FEATURES_CORPUS_PATH=/mnt/telemetry/phi/corpus/inner_state.jsonl` |
+| Rotation (2026-07-13) | `CORPUS_SINK_MAX_BYTES` (default `200000000`) / `CORPUS_SINK_ROTATED_KEEP` (default `5`) — see the mood-arc corpus collector section below for details; same policy applies here. |
 | Telemetry mount | `docker-compose.yml` binds `${TELEMETRY_ROOT:-/mnt/telemetry}:/mnt/telemetry` — pass root `.env` so `TELEMETRY_ROOT` resolves |
 | Substrate prerequisite | `orion-substrate-runtime` must reach conjourney Postgres (`POSTGRES_URI` in substrate `.env_example`) and serve healthy `GET /grammar/truth` + `GET /projections/execution_trajectory`. **Co-deploy:** update substrate `POSTGRES_URI` manually if local `.env` predates this fix — default `sync_local_env_from_example.py` does not rewrite `POSTGRES_URI`. Restart substrate before relying on live cognitive features. |
 | Encoder | `ORION_PHI_ENCODER_ENABLED=false` until corpus + promote gates pass; weights at `ORION_PHI_ENCODER_WEIGHTS` (active symlink under telemetry) |
@@ -398,18 +399,23 @@ deploy as the `phi_heuristic.valence` SHADOW→COMPOSED fix, PR #985) is
 automatically clean — there is no contaminated-data risk to guard against,
 since the sink itself did not exist before that fix.
 
-**No rotation or retention limit.** The sink this reuses
-(`InnerStateCorpusSink`) has already grown unbounded for its original use
-— confirmed 2026-07-13: ~98MB/36k rows in 5 days for
-`INNER_FEATURES_CORPUS_PATH`. Do not leave `MOOD_ARC_CORPUS_PATH` set
-indefinitely without a manual retention plan; `docker-compose.yml`
-defaults it to empty (off) specifically because of this, unlike
-`INNER_FEATURES_CORPUS_PATH`'s already-accepted always-on default above.
+**Rotation (2026-07-13).** The sink this reuses (`InnerStateCorpusSink`)
+had grown unbounded for its original use — confirmed 2026-07-13:
+~104MB/36.8k rows in 5 days for `INNER_FEATURES_CORPUS_PATH`, a real
+instance of the same unbounded-per-event-write bug class behind a prior
+host-freeze incident in this project. Fixed at the shared class level, so
+both `INNER_FEATURES_CORPUS_PATH` and `MOOD_ARC_CORPUS_PATH` get it: size-
+based rotation (`CORPUS_SINK_MAX_BYTES`, default 200MB) renames the active
+file to a timestamped sibling (`{name}.{YYYYMMDDTHHMMSS.ffffffZ}`,
+collision-safe — see `_rotate_if_needed()`) and starts fresh, with only
+the `CORPUS_SINK_ROTATED_KEEP` most recent rotated files (default 5) kept
+on disk. See `services/orion-spark-introspector/app/inner_state_sink.py`.
 
 | Requirement | Detail |
 |---|---|
 | Corpus path | `MOOD_ARC_CORPUS_PATH=/mnt/telemetry/mood_arc/corpus/mood_arc.jsonl` |
 | Enable | Unset/empty = disabled (no file written). Set to enable collection — no other flag. |
+| Rotation | `CORPUS_SINK_MAX_BYTES` (default `200000000`), `CORPUS_SINK_ROTATED_KEEP` (default `5`) — shared with `INNER_FEATURES_CORPUS_PATH`, one policy for both sinks. |
 | Consumer | None yet — see the roadmap spec for the gated next steps (train a windowed autoencoder once enough hours accumulate). |
 
 #### Golden phi + node attribution (2026-07-12)

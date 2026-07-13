@@ -123,6 +123,20 @@ class Settings(BaseSettings):
     # independently-gated feature from Plan 1 inner-state features above;
     # docs/superpowers/specs/2026-07-13-felt-state-arc-roadmap-spec.md.
     mood_arc_corpus_path: str = Field("", alias="MOOD_ARC_CORPUS_PATH")
+    # Shared rotation/retention policy for InnerStateCorpusSink instances
+    # (both _INNER_SINK and _MOOD_ARC_SINK in worker.py) -- one policy for
+    # both, tuned against INNER_FEATURES_CORPUS_PATH's real size/cadence
+    # (~104MB/36.8k rows over 5 days at spec time), not independently
+    # verified against MOOD_ARC_CORPUS_PATH's (roadmap item 1 estimates
+    # ~8-9MB/day, a real but different rate -- see
+    # orion/self_state/inner_state_registry.py's mood_arc_corpus.v1 entry).
+    # ge=1_000_000 (1MB), not just ge=1: a typo'd tiny value (e.g. losing
+    # three zeros off the intended 200_000_000) would rotate on nearly
+    # every tick instead of failing validation (found by code review,
+    # 2026-07-13) -- 1MB is comfortably below any sane real threshold but
+    # rules out the "rotates every tick" pathological case outright.
+    corpus_sink_max_bytes: int = Field(200_000_000, ge=1_000_000, alias="CORPUS_SINK_MAX_BYTES")
+    corpus_sink_rotated_keep: int = Field(5, ge=0, alias="CORPUS_SINK_ROTATED_KEEP")
     # Substrate runtime HTTP reads (Plan 2)
     substrate_runtime_url: str = Field(
         "http://orion-athena-substrate-runtime:8115",

@@ -17,6 +17,7 @@ CrystallizationKind = Literal[
     "attractor",
     "decision",
     "failure_mode",
+    "reflection",
 ]
 
 CrystallizationStatus = Literal[
@@ -49,6 +50,9 @@ CrystallizationSourceKind = Literal[
     "graphiti_episode",
     "operator_note",
     "autonomy_episode",
+    # scripts/concept_relation_digest.py's evidence ref back onto the
+    # memory_concept_relation_decisions row a "reflection" crystallization summarizes.
+    "concept_relation_decision",
 ]
 
 CrystallizationRelation = Literal[

@@ -104,6 +104,26 @@ CREATE TABLE IF NOT EXISTS memory_crystallization_retrieval_events (
     created_at timestamptz NOT NULL DEFAULT now()
 );
 
+-- Decision log for maybe_resolve_concept_relation() (orion/memory/crystallization/
+-- concept_relation.py). One row per real LLM classification call, regardless of which
+-- way the confidence-floor / relation branch below it goes -- previously only the
+-- decisive outcome reached a log line, so every "unrelated" decision and every
+-- sub-floor "contradicts"/"refines" decision vanished silently. `digested` is a simple
+-- watermark for scripts/concept_relation_digest.py so repeated runs don't reprocess
+-- rows (no separate cursor-state table).
+CREATE TABLE IF NOT EXISTS memory_concept_relation_decisions (
+    decision_id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+    candidate_crystallization_id text NOT NULL,
+    target_crystallization_id text,
+    relation text NOT NULL,
+    confidence numeric NOT NULL,
+    floor_cleared boolean NOT NULL,
+    decided_at timestamptz NOT NULL DEFAULT now(),
+    digested boolean NOT NULL DEFAULT false
+);
+
+CREATE INDEX IF NOT EXISTS idx_mcrd_digested ON memory_concept_relation_decisions (digested, decided_at);
+
 CREATE INDEX IF NOT EXISTS idx_mcr_status ON memory_crystallizations (status);
 CREATE INDEX IF NOT EXISTS idx_mcr_kind ON memory_crystallizations (kind);
 CREATE INDEX IF NOT EXISTS idx_mcr_salience ON memory_crystallizations (salience DESC);

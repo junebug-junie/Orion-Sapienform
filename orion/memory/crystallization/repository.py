@@ -473,3 +473,34 @@ async def insert_retrieval_event(
             _jsonb(trace),
         )
     return str(row["retrieval_event_id"])
+
+
+async def insert_concept_relation_decision(
+    pool: asyncpg.Pool,
+    *,
+    candidate_crystallization_id: str,
+    target_crystallization_id: str | None,
+    relation: str,
+    confidence: float,
+    floor_cleared: bool,
+) -> str:
+    """Records every real `maybe_resolve_concept_relation()` LLM decision, not just the
+    decisive ones -- see memory_concept_relation_decisions in memory_crystallizations.sql.
+    Callers should insert regardless of which way the confidence-floor / relation branch
+    goes so `scripts/concept_relation_digest.py` can see near-misses that would otherwise
+    vanish silently."""
+    async with pool.acquire() as conn:
+        row = await conn.fetchrow(
+            """
+            INSERT INTO memory_concept_relation_decisions
+                (candidate_crystallization_id, target_crystallization_id, relation, confidence, floor_cleared)
+            VALUES ($1, $2, $3, $4, $5)
+            RETURNING decision_id
+            """,
+            candidate_crystallization_id,
+            target_crystallization_id,
+            relation,
+            confidence,
+            floor_cleared,
+        )
+    return str(row["decision_id"])

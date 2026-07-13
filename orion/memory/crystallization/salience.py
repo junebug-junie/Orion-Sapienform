@@ -12,6 +12,11 @@ KIND_BASE = {
     "failure_mode": 0.55,
     "semantic": 0.5,
     "episode": 0.45,
+    # System-generated observations about the concept-relation decision loop itself
+    # (scripts/concept_relation_digest.py), not a first-hand stance/decision/fact --
+    # lowest of the scale, below "episode", since these are meta-observations about
+    # prior reasoning rather than any direct evidence about the world.
+    "reflection": 0.4,
 }
 
 CONFIDENCE_BOOST = {

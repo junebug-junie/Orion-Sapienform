@@ -30,3 +30,21 @@ python -m scripts.test_concept_induction_publish
 ```
 
 This publishes a fake chat event and waits for a profile on `BUS_PROFILE_OUT`.
+
+## Drive-state divergence audit
+
+`drive_state.v1` (this service's `DriveEngine`, persisted to the local
+`LocalProfileStore` JSON file at `CONCEPT_STORE_PATH`) and `autonomy_state_v2`
+(`orion.autonomy.reducer`, persisted to Postgres via
+`ORION_AUTONOMY_STATE_DB_URL`) independently compute pressures over the same
+6-key drive taxonomy. `orion/self_state/inner_state_registry.py` marks both
+`DUPLICATE` of each other and defers the merge-or-keep-separate decision to a
+later phase. `scripts/drive_state_divergence_audit.py` (repo root) is a
+report-only diagnostic that loads the current value of each and prints
+per-drive pressure divergence and activation-flag agreement -- it never
+merges or picks a winner between them, and it always exits 0.
+
+```bash
+python scripts/drive_state_divergence_audit.py
+python scripts/drive_state_divergence_audit.py --json
+```

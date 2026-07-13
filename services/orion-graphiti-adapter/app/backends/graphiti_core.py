@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import contextvars
 import logging
 from datetime import datetime, timezone
 from typing import Any
@@ -24,6 +25,26 @@ ORION_GROUP_ID = "orion"
 # Process-local guard so index/constraint bootstrap only runs once per adapter process
 # even if ensure_graphiti_indices() is invoked from more than one call site.
 _indices_ready = False
+
+# Process-local cache for the search() driver/client/Graphiti stack, keyed by the exact
+# constructor inputs. In practice falkordb_uri/graph_name/embed_url all come straight from
+# the process-wide `settings` singleton (see app/main.py's /v1/search route), so they are
+# constant for the life of the process -- but keying by value (instead of a bare global)
+# means a value change (e.g. across tests with different settings) rebuilds instead of
+# silently returning a stale stack. Mirrors the _indices_ready lazy-init-once pattern above.
+_search_stack_cache: dict[tuple[str, str, str], tuple[Any, Any, Any]] = {}
+
+# Tracks whether _OrionEmbedderClient.create() produced a real vector *for the current
+# search() call*, scoped via a ContextVar rather than instance state on the embedder object.
+# The embedder instance is now cached and reused across /v1/search requests (see
+# _get_search_stack) -- a plain `self.used` instance attribute would let one request's
+# result leak into a concurrent request's trace (both share the same embedder object).
+# asyncio gives each request-handling Task its own copy of the current context, so
+# concurrent requests can't see each other's writes here even though they share one
+# _OrionEmbedderClient instance.
+_embed_used_ctx: contextvars.ContextVar[bool] = contextvars.ContextVar(
+    "_embed_used_ctx", default=False
+)
 
 
 def _parse_falkordb_uri(uri: str) -> tuple[str, int]:
@@ -435,27 +456,59 @@ def _orion_embedder_client(embed_url: str) -> Any:
     """Bridges graphiti-core's cosine-similarity search rail to Orion's own embedding host
     (CRYSTALLIZER_EMBED_HOST_URL) instead of the library's default OpenAIEmbedder.
 
-    Tracks whether a call actually produced a vector on the instance itself (`.used`) so
-    callers can report an honest embed_used trace field without a second, redundant HTTP
-    call to the embed host for the same query text.
+    Records whether a call actually produced a vector via `_embed_used_ctx` (a per-call
+    ContextVar, not instance state) so callers can report an honest embed_used trace field
+    without a second, redundant HTTP call to the embed host for the same query text. This
+    instance is cached and reused across /v1/search requests (see `_get_search_stack`), so
+    tracking success as instance state (`self.used`) would leak one request's result into a
+    concurrent request's trace; the ContextVar is scoped per request-handling asyncio Task
+    instead.
     """
     from graphiti_core.embedder.client import EmbedderClient
 
     class _OrionEmbedderClient(EmbedderClient):
-        def __init__(self) -> None:
-            self.used = False
-
         async def create(self, input_data) -> list[float]:  # type: ignore[override]
             text = input_data[0] if isinstance(input_data, list) and input_data else str(input_data)
             vector = await _embed_query(str(text), embed_url)
             if vector:
-                self.used = True
+                _embed_used_ctx.set(True)
             return vector or []
 
         async def create_batch(self, input_data_list: list[str]) -> list[list[float]]:  # type: ignore[override]
             return [await self.create(item) for item in input_data_list]
 
     return _OrionEmbedderClient()
+
+
+def _get_search_stack(falkordb_uri: str, graph_name: str, embed_url: str) -> tuple[Any, Any, Any]:
+    """Build (or reuse) the FalkorDriver + embedder + Graphiti instance used by search().
+
+    Building this stack fresh on every /v1/search call was pure per-request overhead: a new
+    FalkorDriver (redis-protocol client, graphiti_core/driver/falkordb_driver.py -- thin
+    wrapper over falkordb.asyncio.FalkorDB, no eager connection-pool exhaustion or
+    documented long-lived-reuse hazard) plus a new Graphiti() instance were constructed and
+    thrown away after a single request. Reuse is the intended usage for FalkorDriver; this
+    just stops rebuilding it (and the no-op llm/cross-encoder stubs) every call.
+    """
+    key = (falkordb_uri, graph_name, embed_url)
+    cached = _search_stack_cache.get(key)
+    if cached is not None:
+        return cached
+
+    from graphiti_core import Graphiti
+
+    driver = _falkor_driver(falkordb_uri, graph_name)
+    embedder = _orion_embedder_client(embed_url)
+    graphiti = Graphiti(
+        graph_driver=driver,
+        llm_client=_no_op_llm_client(),
+        embedder=embedder,
+        cross_encoder=_no_op_cross_encoder(),
+    )
+    _search_stack_cache.clear()  # single-entry process cache; drop any stale key first
+    _search_stack_cache[key] = (driver, embedder, graphiti)
+    logger.info("graphiti_search_stack_built falkordb_uri=%s graph=%s", falkordb_uri, graph_name)
+    return driver, embedder, graphiti
 
 
 async def search(
@@ -467,18 +520,17 @@ async def search(
     falkordb_uri: str,
     graph_name: str,
 ) -> dict[str, Any]:
-    from graphiti_core import Graphiti
+    driver, embedder, graphiti = _get_search_stack(falkordb_uri, graph_name, embed_url)
 
-    driver = _falkor_driver(falkordb_uri, graph_name)
-    embedder = _orion_embedder_client(embed_url)
-    graphiti = Graphiti(
-        graph_driver=driver,
-        llm_client=_no_op_llm_client(),
-        embedder=embedder,
-        cross_encoder=_no_op_cross_encoder(),
-    )
-
-    results = await graphiti.search(query=query, num_results=limit)
+    # embedder is cached/reused across requests (see _get_search_stack); _embed_used_ctx is
+    # a per-Task ContextVar (see its definition above) so this reset+read pair can't race
+    # with or leak into a concurrent request's trace even though they share one embedder.
+    ctx_token = _embed_used_ctx.set(False)
+    try:
+        results = await graphiti.search(query=query, num_results=limit)
+        embed_used = _embed_used_ctx.get()
+    finally:
+        _embed_used_ctx.reset(ctx_token)
 
     crystallization_ids = _extract_crystallization_ids(results)
     crystallization_ids = await _filter_intimate_crystallization_ids(driver, crystallization_ids)
@@ -490,7 +542,7 @@ async def search(
             "backend": "graphiti_core",
             "rails": ["vector", "graph"],
             "query": query,
-            "embed_used": embedder.used,
+            "embed_used": embed_used,
             "result_count": len(crystallization_ids),
             "raw_type": type(results).__name__,
         },

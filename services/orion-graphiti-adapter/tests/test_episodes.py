@@ -22,8 +22,15 @@ def mock_pool():
 
 
 def test_ingest_episode_returns_ids(mock_pool):
+    # Exercises the generic orion_postgres ingest path (this test predates backend
+    # selection). graphiti_core is the settings.py/.env_example default as of the
+    # 2026-07-13 hardening pass, but the graphiti_core package itself is only installed
+    # in the service's Docker image, not this bare test venv -- pin the backend so this
+    # test doesn't depend on that package being importable.
     pool, conn = mock_pool
-    with patch.object(main_mod, "pg_pool", pool), patch(
+    with patch.object(main_mod, "pg_pool", pool), patch.object(
+        main_mod.settings, "GRAPHITI_BACKEND", "orion_postgres"
+    ), patch(
         "app.main.sync_to_falkordb", return_value=None
     ):
         client = TestClient(main_mod.app)

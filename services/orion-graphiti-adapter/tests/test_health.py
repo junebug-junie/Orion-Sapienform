@@ -13,4 +13,6 @@ def test_health_without_postgres():
         data = resp.json()
         assert data["postgres"] is False
         assert data["service"] == "orion-graphiti-adapter"
-        assert data["backend"] == "orion_postgres"
+        # graphiti_core is the settings.py/.env_example default as of the 2026-07-13
+        # hardening pass (was orion_postgres before /v1/search was proven live).
+        assert data["backend"] == "graphiti_core"

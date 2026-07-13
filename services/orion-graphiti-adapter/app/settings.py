@@ -15,10 +15,10 @@ class Settings(BaseSettings):
 
     FALKORDB_URI: str = Field(default="", alias="FALKORDB_URI")
     FALKORDB_GRAPH: str = Field(default="graphiti_temporal", alias="FALKORDB_GRAPH")
-    FALKORDB_ENABLED: bool = Field(default=False, alias="FALKORDB_ENABLED")
+    FALKORDB_ENABLED: bool = Field(default=True, alias="FALKORDB_ENABLED")
 
     GRAPHITI_BACKEND: Literal["orion_postgres", "graphiti_core"] = Field(
-        default="orion_postgres", alias="GRAPHITI_BACKEND"
+        default="graphiti_core", alias="GRAPHITI_BACKEND"
     )
     CRYSTALLIZER_EMBED_HOST_URL: str = Field(default="", alias="CRYSTALLIZER_EMBED_HOST_URL")
     # Bootstraps graphiti-core's RELATES_TO fulltext+range indices once at startup when the

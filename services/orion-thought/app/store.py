@@ -255,6 +255,41 @@ def persist_resonance_alert(alert) -> bool:
         return False
 
 
+def load_recent_resonance_alerts(theme_key: str, limit: int = 2) -> list[dict]:
+    """Most recent persisted resonance alerts for one theme, newest first.
+
+    Read-only, best-effort — returns [] on any miss. Used by the health monitor
+    to compare violation_count across the last 2 samples (is this theme's
+    resonance getting worse, or is a new alert just re-reporting the same
+    historical burst still inside the detector's lookback window?).
+    """
+    limit = max(0, int(limit))
+    if limit == 0 or not theme_key:
+        return []
+    try:
+        from sqlalchemy import text
+
+        engine = _get_engine()
+        with engine.connect() as conn:
+            rows = (
+                conn.execute(
+                    text(
+                        "SELECT theme_key, violation_count, refractory_sec, min_gap_sec, "
+                        "occurrences, created_at FROM substrate_reverie_resonance_alert "
+                        "WHERE theme_key = :theme_key "
+                        "ORDER BY created_at DESC LIMIT :limit"
+                    ),
+                    {"theme_key": theme_key, "limit": limit},
+                )
+                .mappings()
+                .all()
+            )
+        return [dict(r) for r in rows]
+    except Exception as exc:
+        logger.debug("resonance alert history load failed theme=%s err=%s", theme_key, exc)
+        return []
+
+
 def reverie_refractory_is_suppressed(theme_key: str, now) -> bool:
     """True if the theme is currently suppressed. Best-effort (False on error)."""
     try:

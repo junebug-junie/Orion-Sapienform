@@ -32,6 +32,7 @@ from orion.core.schemas.reasoning_io import ReasoningWriteContextV1, ReasoningWr
 from orion.core.schemas.reasoning_summary import ReasoningSummaryRequestV1, ReasoningSummaryV1
 from orion.reasoning import InMemoryReasoningRepository, ReasoningSummaryCompiler
 from orion.schemas.chat_stance import ChatStanceBrief
+from orion.schemas.reverie import SpontaneousThoughtV1
 from orion.substrate import build_substrate_store_from_env
 from orion.substrate.relational import (
     CONCEPT_INDUCED,
@@ -1332,6 +1333,55 @@ def _project_self_state_from_beliefs(
     }
 
 
+def _project_reverie_glimpse(ctx: Dict[str, Any]) -> str | None:
+    """Projection helper: surface the latest fresh, non-hollow reverie thought.
+
+    Reads ``ctx['latest_reverie_thought']`` (the ``thought_json`` payload hydrated
+    by ``felt_state_reader``'s ``latest_reverie_thought`` lane, already age-gated
+    there). Extracts ONLY the ``interpretation`` narration string -- never
+    ``evidence_refs``/``coalition``/``chain_id`` or any other field, since those
+    are internal grounding/audit data, not narration meant to be read.
+
+    Gates on BOTH the stored ``hollow`` flag AND an independent re-derivation
+    via ``SpontaneousThoughtV1.is_hollow()`` -- rejecting if either says
+    hollow. The stored flag alone isn't trusted (it could be stale/wrong if
+    the row predates a schema or guard change), and the re-derivation alone
+    isn't trusted either (it can't see ``extra_grounding`` widening the
+    semantic-lift path may have applied at write time, so a thought the
+    producer explicitly marked hollow must never be surfaced just because a
+    simpler re-check happens to pass it).
+
+    Fail-open: returns None on anything missing, malformed, or unparsable
+    (including a payload that no longer validates as ``SpontaneousThoughtV1``
+    at all). Never raises.
+    """
+    try:
+        raw = ctx.get("latest_reverie_thought")
+        if raw is None:
+            return None
+        if isinstance(raw, str):
+            if not raw.strip():
+                return None
+            payload = json.loads(raw)
+        elif isinstance(raw, dict):
+            payload = raw
+        else:
+            return None
+        if not isinstance(payload, dict):
+            return None
+
+        thought = SpontaneousThoughtV1.model_validate(payload)
+        if thought.hollow or thought.is_hollow():
+            return None
+        interpretation = thought.interpretation.strip()
+        if not interpretation:
+            return None
+        return interpretation
+    except Exception:
+        logger.debug("reverie_glimpse_projection_failed", exc_info=True)
+        return None
+
+
 def _concept_summary_from_store(ctx: Dict[str, Any] | None = None) -> dict[str, list[str]]:
     ctx = ctx if isinstance(ctx, dict) else {}
     try:
@@ -2316,6 +2366,9 @@ async def build_chat_stance_inputs(ctx: Dict[str, Any]) -> Dict[str, Any]:
     if self_state_projection:
         social["hazards"] = _unique((social.get("hazards") or []) + list(self_state_projection.get("hazards") or []), limit=8)
         ctx["chat_self_state_condition"] = self_state_projection.get("overall_condition")
+    reverie_glimpse = _project_reverie_glimpse(ctx)
+    if reverie_glimpse:
+        ctx["chat_reverie_glimpse"] = reverie_glimpse
     mutation_cognition = _mutation_cognition_from_ctx(ctx)
     social["hazards"] = _unique((social.get("hazards") or []) + list((reasoning.get("summary") or {}).get("hazards") or []), limit=8)
 

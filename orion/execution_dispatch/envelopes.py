@@ -18,6 +18,7 @@ def build_cortex_request_envelope(
         "verb": route.cortex_verb,
         "mode": route.cortex_mode,
         "source": "orion-execution-dispatch-runtime",
+        "origin": "endogenous.dispatch",
         "dry_run": dry_run,
         "context": {
             "proposal_id": candidate.proposal_id,
@@ -26,6 +27,7 @@ def build_cortex_request_envelope(
             "target_id": candidate.target_id,
             "target_kind": candidate.target_kind,
             "allowed_scope": route.allowed_scope,
+            "origin": "endogenous.dispatch",
         },
         "constraints": {
             "read_only": True,

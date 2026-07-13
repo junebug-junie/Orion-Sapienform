@@ -3,7 +3,11 @@ policy_id: execution_dispatch_policy.v1
 
 mode:
   default_dispatch_mode: dry_run
-  allow_dispatch_read_only: false
+  # Real sends require BOTH this true AND the runtime's own
+  # EXECUTION_DISPATCH_MODE=dispatch_read_only (services/orion-execution-
+  # dispatch-runtime/.env) -- default_dispatch_mode above stays dry_run, so
+  # opening this gate alone does not turn on live dispatch.
+  allow_dispatch_read_only: true
   allow_mutating_dispatch: false
 
 allowed_policy_decisions:

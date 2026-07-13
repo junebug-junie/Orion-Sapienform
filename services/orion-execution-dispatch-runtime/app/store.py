@@ -215,3 +215,106 @@ class ExecutionDispatchRuntimeStore:
                     "created_at": now,
                 },
             )
+
+    def save_dispatch_result(
+        self,
+        *,
+        result_id: str,
+        dispatch_id: str,
+        frame_id: str,
+        status: str,
+        result_json: dict,
+        raw_len: int,
+    ) -> None:
+        now = datetime.now(timezone.utc)
+        with self._engine.begin() as conn:
+            conn.execute(
+                text(
+                    """
+                    INSERT INTO substrate_dispatch_results (
+                        result_id, dispatch_id, frame_id, status, result_json, raw_len, created_at
+                    ) VALUES (
+                        :result_id, :dispatch_id, :frame_id, :status, :result_json, :raw_len, :created_at
+                    )
+                    ON CONFLICT (result_id) DO UPDATE SET
+                        status = EXCLUDED.status,
+                        result_json = EXCLUDED.result_json,
+                        raw_len = EXCLUDED.raw_len
+                    """
+                ),
+                {
+                    "result_id": result_id,
+                    "dispatch_id": dispatch_id,
+                    "frame_id": frame_id,
+                    "status": status,
+                    "result_json": Json(result_json),
+                    "raw_len": raw_len,
+                    "created_at": now,
+                },
+            )
+
+    def load_dispatch_result_by_dispatch_id(self, dispatch_id: str) -> dict | None:
+        with self._engine.connect() as conn:
+            row = (
+                conn.execute(
+                    text(
+                        """
+                        SELECT result_id, status, result_json, raw_len
+                        FROM substrate_dispatch_results
+                        WHERE dispatch_id = :dispatch_id
+                        ORDER BY created_at DESC
+                        LIMIT 1
+                        """
+                    ),
+                    {"dispatch_id": dispatch_id},
+                )
+                .mappings()
+                .first()
+            )
+        if not row:
+            return None
+        result_json = row["result_json"]
+        if isinstance(result_json, str):
+            result_json = json.loads(result_json)
+        return {
+            "result_id": row["result_id"],
+            "status": row["status"],
+            "result_json": result_json,
+            "raw_len": row["raw_len"],
+        }
+
+    def count_dispatches_today(self) -> int:
+        # Explicit UTC bound computed in Python, not date_trunc('day', now())
+        # -- matches this file's own datetime.now(timezone.utc) convention
+        # elsewhere and doesn't depend on the Postgres session's configured
+        # timezone (confirmed Etc/UTC live, but not worth relying on).
+        today_start_utc = datetime.now(timezone.utc).replace(
+            hour=0, minute=0, second=0, microsecond=0
+        )
+        with self._engine.connect() as conn:
+            row = conn.execute(
+                text(
+                    """
+                    SELECT count(*) AS n
+                    FROM substrate_dispatch_results
+                    WHERE created_at >= :today_start
+                    """
+                ),
+                {"today_start": today_start_utc},
+            ).mappings().first()
+        return int(row["n"]) if row else 0
+
+    def recent_dispatch_result_statuses(self, limit: int = 10) -> list[str]:
+        with self._engine.connect() as conn:
+            rows = conn.execute(
+                text(
+                    """
+                    SELECT status
+                    FROM substrate_dispatch_results
+                    ORDER BY created_at DESC
+                    LIMIT :limit
+                    """
+                ),
+                {"limit": limit},
+            ).mappings().all()
+        return [str(row["status"]) for row in rows]

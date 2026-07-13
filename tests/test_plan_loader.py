@@ -32,3 +32,19 @@ def test_mesh_skill_plan_step_has_empty_services():
     plan = build_plan_for_verb("skills.mesh.tailscale_mesh_status.v1", mode="brain")
     assert plan.steps
     assert plan.steps[0].services == []
+
+
+def test_substrate_inspect_summarize_observe_load_with_nonempty_prompts():
+    for verb_name in ("substrate.inspect", "substrate.summarize", "substrate.observe"):
+        plan = build_plan_for_verb(verb_name, mode="brain")
+        assert plan.verb_name == verb_name
+        assert plan.category == "ExecutiveControl"
+        assert plan.steps
+        assert all(step.prompt_template for step in plan.steps)
+        assert all((step.prompt_template or "").strip() for step in plan.steps)
+
+
+def test_substrate_probe_verbs_declare_llm_gateway_service():
+    for verb_name in ("substrate.inspect", "substrate.summarize", "substrate.observe"):
+        plan = build_plan_for_verb(verb_name, mode="brain")
+        assert plan.steps[0].services == ["LLMGatewayService"]

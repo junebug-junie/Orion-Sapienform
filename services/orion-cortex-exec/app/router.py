@@ -88,6 +88,9 @@ def _structured_output_expected(verb_name: str | None) -> bool:
         "memory_graph_suggest",
         "stance_react",
         "harness_finalize_reflect",
+        "substrate.inspect",
+        "substrate.summarize",
+        "substrate.observe",
     }
 
 

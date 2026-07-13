@@ -1,0 +1,37 @@
+name: substrate.observe
+label: Substrate Observe
+description: >
+  Passive, low-stakes stability glance at a substrate target (a node,
+  capability, or field artifact) with proposed_effect preserve_stability —
+  the lowest risk/priority of the substrate probe verbs. Not a diagnostic dig;
+  a routine check-in. Read-only; returns strict structured JSON, no side effects.
+
+category: ExecutiveControl
+priority: low
+
+interruptible: true
+can_interrupt_others: false
+
+requires_gpu: true
+requires_memory: false
+
+timeout_ms: 45000
+max_recursion_depth: 0
+
+services:
+  - LLMGatewayService
+
+prompt_template: substrate_observe.j2
+
+personality_file: orion/cognition/personality/orion_identity.yaml
+
+steps:
+  - name: llm_substrate_observe
+    description: Single-pass routine glance at the target; strict JSON, no planning.
+    order: 0
+    services:
+      - LLMGatewayService
+    prompt_template: substrate_observe.j2
+    requires_gpu: true
+    requires_memory: false
+    timeout_ms: 45000

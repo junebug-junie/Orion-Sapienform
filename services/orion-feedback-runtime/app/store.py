@@ -6,7 +6,7 @@ from datetime import datetime, timezone
 
 from psycopg2.extras import Json
 from pydantic import ValidationError
-from sqlalchemy import create_engine, text
+from sqlalchemy import bindparam, create_engine, text
 from sqlalchemy.engine import Engine
 
 from orion.schemas.execution_dispatch_frame import ExecutionDispatchFrameV1
@@ -259,8 +259,62 @@ class FeedbackRuntimeStore:
     def load_cortex_result_evidence(
         self, dispatch_frame: ExecutionDispatchFrameV1
     ) -> list[dict[str, object]]:
-        del dispatch_frame
-        return []
+        dispatch_ids = [
+            c.dispatch_id
+            for c in (
+                list(dispatch_frame.candidates)
+                + list(dispatch_frame.blocked_candidates)
+                + list(dispatch_frame.dispatched_candidates)
+            )
+        ]
+        if not dispatch_ids:
+            return []
+
+        stmt = text(
+            """
+            SELECT result_id, dispatch_id, status, result_json
+            FROM substrate_dispatch_results
+            WHERE dispatch_id IN :dispatch_ids
+            ORDER BY created_at DESC
+            """
+        ).bindparams(bindparam("dispatch_ids", expanding=True))
+
+        with self._engine.connect() as conn:
+            rows = conn.execute(stmt, {"dispatch_ids": dispatch_ids}).mappings().all()
+        if not rows:
+            return []
+
+        evidence: list[dict[str, object]] = []
+        seen_dispatch_ids: set[str] = set()
+        for row in rows:
+            dispatch_id = row["dispatch_id"]
+            if dispatch_id in seen_dispatch_ids:
+                # Most-recent-first ordering means the first occurrence per
+                # dispatch_id is the latest result; later duplicates are stale.
+                continue
+            try:
+                payload = row["result_json"]
+                if isinstance(payload, str):
+                    payload = json.loads(payload)
+                evidence_refs = list(payload.get("evidence_refs") or []) if isinstance(payload, dict) else []
+                evidence.append(
+                    {
+                        "result_id": row["result_id"],
+                        "dispatch_id": dispatch_id,
+                        "status": row["status"],
+                        "evidence_refs": evidence_refs,
+                    }
+                )
+                seen_dispatch_ids.add(dispatch_id)
+            except (TypeError, ValueError, json.JSONDecodeError):
+                # Malformed result_json on one row shouldn't sink the whole
+                # query -- skip this row and keep the rest, mirroring this
+                # file's degrade-gracefully-on-bad-data convention elsewhere.
+                logger.warning(
+                    "dispatch_result_incompatible_payload dispatch_id=%s", dispatch_id, exc_info=True
+                )
+                continue
+        return evidence
 
     def save_feedback_frame(self, frame: FeedbackFrameV1) -> None:
         now = datetime.now(timezone.utc)

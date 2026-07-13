@@ -7,6 +7,10 @@ Layer 10 of the Orion cognition substrate: observes `ExecutionDispatchFrameV1` o
 ## Inputs
 
 - `substrate_execution_dispatch_frames`
+- `substrate_dispatch_results` — real cortex-exec results for evidenced `dispatched`
+  candidates (P1 of the motor-nerve spec; `load_cortex_result_evidence` was a stub
+  returning `[]` before this, so `cortex_result`-kind observations were previously
+  never produced from a live dispatch)
 - `substrate_policy_decision_frames` (optional linkage)
 - `substrate_proposal_frames` (optional linkage)
 - `substrate_self_state` (before + first state after dispatch timestamp)

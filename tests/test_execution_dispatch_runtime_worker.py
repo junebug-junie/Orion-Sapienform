@@ -200,13 +200,15 @@ class _FakeClient:
 _FAKE_CLIENT_OUTCOMES: dict[str, object] = {}
 
 
-def _patch_bus_and_client(monkeypatch, outcomes: dict[str, object]) -> None:
+def _patch_bus_and_client(monkeypatch, outcomes: dict[str, object]) -> MagicMock:
     _FAKE_CLIENT_OUTCOMES.clear()
     _FAKE_CLIENT_OUTCOMES.update(outcomes)
     fake_bus = MagicMock()
     fake_bus.close = AsyncMock()
+    fake_bus.publish = AsyncMock()
     monkeypatch.setattr(worker_mod, "OrionBusAsync", MagicMock(return_value=fake_bus))
     monkeypatch.setattr(worker_mod, "ExecutionDispatchCortexClient", _FakeClient)
+    return fake_bus
 
 
 @pytest.mark.asyncio
@@ -236,6 +238,129 @@ async def test_send_prepared_candidates_promotes_on_success(monkeypatch) -> None
     worker._store.save_dispatch_result.assert_called_once()
     assert worker._store.save_dispatch_result.call_args.kwargs["status"] == "success"
     assert worker._store.save_dispatch_result.call_args.kwargs["raw_len"] == 6
+
+
+@pytest.mark.asyncio
+async def test_send_one_emits_action_outcome_on_success(monkeypatch) -> None:
+    worker = _make_worker(monkeypatch)
+    worker._store.recent_dispatch_result_statuses = MagicMock(return_value=[])
+    worker._store.count_dispatches_today = MagicMock(return_value=0)
+    worker._store.save_dispatch_result = MagicMock()
+    worker._store.load_dispatch_result_by_dispatch_id = MagicMock(return_value=None)
+    fake_bus = _patch_bus_and_client(
+        monkeypatch,
+        {"dispatch:1": {"result": {"final_text": '{"observation": "steady state observed"}'}}},
+    )
+    frame = _frame_with_candidates(_candidate("dispatch:1"))
+
+    await worker._send_prepared_candidates(frame)
+
+    fake_bus.publish.assert_awaited_once()
+    channel, env = fake_bus.publish.await_args.args
+    assert channel == worker._settings.action_outcome_channel
+    assert env.kind == "action.outcome.emit.v1"
+    assert env.payload["subject"] == "orion"
+    assert env.payload["action_id"] == "dispatch:1"
+    assert env.payload["kind"] == "inspect"
+    assert env.payload["summary"] == "steady state observed"
+    assert env.payload["success"] is True
+
+
+@pytest.mark.asyncio
+async def test_send_one_emits_action_outcome_on_empty_observation(monkeypatch) -> None:
+    worker = _make_worker(monkeypatch)
+    worker._store.recent_dispatch_result_statuses = MagicMock(return_value=[])
+    worker._store.count_dispatches_today = MagicMock(return_value=0)
+    worker._store.save_dispatch_result = MagicMock()
+    worker._store.load_dispatch_result_by_dispatch_id = MagicMock(return_value=None)
+    fake_bus = _patch_bus_and_client(monkeypatch, {"dispatch:1": {"result": {"final_text": ""}}})
+    frame = _frame_with_candidates(_candidate("dispatch:1"))
+
+    await worker._send_prepared_candidates(frame)
+
+    fake_bus.publish.assert_awaited_once()
+    _, env = fake_bus.publish.await_args.args
+    assert env.payload["success"] is False
+    assert "no observation" in env.payload["summary"]
+
+
+@pytest.mark.asyncio
+async def test_send_one_emits_action_outcome_on_rpc_failure(monkeypatch) -> None:
+    worker = _make_worker(monkeypatch)
+    worker._store.recent_dispatch_result_statuses = MagicMock(return_value=[])
+    worker._store.count_dispatches_today = MagicMock(return_value=0)
+    worker._store.save_dispatch_result = MagicMock()
+    worker._store.load_dispatch_result_by_dispatch_id = MagicMock(return_value=None)
+    fake_bus = _patch_bus_and_client(monkeypatch, {"dispatch:1": RuntimeError("rpc timed out")})
+    frame = _frame_with_candidates(_candidate("dispatch:1"))
+
+    await worker._send_prepared_candidates(frame)
+
+    fake_bus.publish.assert_awaited_once()
+    _, env = fake_bus.publish.await_args.args
+    assert env.payload["success"] is False
+    assert "send failed" in env.payload["summary"]
+
+
+@pytest.mark.asyncio
+async def test_send_one_does_not_emit_action_outcome_on_idempotent_replay(monkeypatch) -> None:
+    # A replayed result was already emitted (or attempted) the tick it first
+    # happened -- re-emitting on every subsequent replay would duplicate the
+    # outcome record for the same real action.
+    worker = _make_worker(monkeypatch)
+    worker._store.recent_dispatch_result_statuses = MagicMock(return_value=[])
+    worker._store.count_dispatches_today = MagicMock(return_value=0)
+    worker._store.save_dispatch_result = MagicMock()
+    worker._store.load_dispatch_result_by_dispatch_id = MagicMock(
+        return_value={"result_id": "result:dispatch:1", "status": "success", "result_json": {}, "raw_len": 6}
+    )
+    fake_bus = _patch_bus_and_client(monkeypatch, {})
+    frame = _frame_with_candidates(_candidate("dispatch:1"))
+
+    await worker._send_prepared_candidates(frame)
+
+    fake_bus.publish.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_send_one_action_outcome_publish_failure_does_not_raise(monkeypatch) -> None:
+    worker = _make_worker(monkeypatch)
+    worker._store.recent_dispatch_result_statuses = MagicMock(return_value=[])
+    worker._store.count_dispatches_today = MagicMock(return_value=0)
+    worker._store.save_dispatch_result = MagicMock()
+    worker._store.load_dispatch_result_by_dispatch_id = MagicMock(return_value=None)
+    fake_bus = _patch_bus_and_client(
+        monkeypatch,
+        {"dispatch:1": {"result": {"final_text": '{"observation": "steady"}'}}},
+    )
+    fake_bus.publish = AsyncMock(side_effect=RuntimeError("bus unreachable"))
+    frame = _frame_with_candidates(_candidate("dispatch:1"))
+
+    # Must not raise -- save_dispatch_result already durably recorded the
+    # result; an unreachable bus must not lose that or crash the tick.
+    updated = await worker._send_prepared_candidates(frame)
+
+    assert updated.dispatched_candidates[0].result_ref == "result:dispatch:1"
+
+
+@pytest.mark.asyncio
+async def test_send_one_action_outcome_summary_is_truncated(monkeypatch) -> None:
+    worker = _make_worker(monkeypatch)
+    worker._store.recent_dispatch_result_statuses = MagicMock(return_value=[])
+    worker._store.count_dispatches_today = MagicMock(return_value=0)
+    worker._store.save_dispatch_result = MagicMock()
+    worker._store.load_dispatch_result_by_dispatch_id = MagicMock(return_value=None)
+    long_observation = "x" * 5000
+    fake_bus = _patch_bus_and_client(
+        monkeypatch,
+        {"dispatch:1": {"result": {"final_text": f'{{"observation": "{long_observation}"}}'}}},
+    )
+    frame = _frame_with_candidates(_candidate("dispatch:1"))
+
+    await worker._send_prepared_candidates(frame)
+
+    _, env = fake_bus.publish.await_args.args
+    assert len(env.payload["summary"]) == worker_mod.ACTION_OUTCOME_SUMMARY_MAX_CHARS
 
 
 @pytest.mark.asyncio

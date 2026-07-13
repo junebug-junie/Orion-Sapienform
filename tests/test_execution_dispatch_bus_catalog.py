@@ -23,3 +23,11 @@ def test_execution_dispatch_runtime_is_background_exec_request_producer() -> Non
     assert entry["schema_id"] == "CortexExecRequestPayload"
     assert entry["consumer_services"] == ["orion-cortex-exec"]
     assert "orion-execution-dispatch-runtime" in (entry.get("producer_services") or [])
+
+
+def test_execution_dispatch_runtime_is_action_outcome_producer() -> None:
+    entry = _channel_entry("orion:autonomy:action:outcome")
+    assert entry["schema_id"] == "ActionOutcomeEmitV1"
+    assert "orion-sql-writer" in entry["consumer_services"]
+    assert "orion-spark-concept-induction" in (entry.get("producer_services") or [])
+    assert "orion-execution-dispatch-runtime" in (entry.get("producer_services") or [])

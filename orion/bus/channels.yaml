@@ -1739,7 +1739,7 @@ channels:
     kind: "event"
     schema_id: "ActionOutcomeEmitV1"
     message_kind: "action.outcome.emit.v1"
-    producer_services: ["orion-spark-concept-induction"]
+    producer_services: ["orion-spark-concept-induction", "orion-execution-dispatch-runtime"]
     consumer_services: ["orion-sql-writer", "*"]
     stability: "experimental"
     since: "2026-07-06"

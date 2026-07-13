@@ -4,8 +4,11 @@ import asyncio
 import logging
 from datetime import datetime, timezone
 from pathlib import Path
+from uuid import uuid4
 
+from orion.autonomy.models import ActionOutcomeEmitV1
 from orion.core.bus.async_service import OrionBusAsync
+from orion.core.bus.bus_schemas import BaseEnvelope, ServiceRef
 from orion.execution_dispatch.builder import (
     build_execution_dispatch_frame,
     build_unevaluable_execution_dispatch_frame,
@@ -27,6 +30,13 @@ logger = logging.getLogger("orion.execution_dispatch.runtime")
 
 THEATER_TRIPWIRE_WINDOW = 10
 THEATER_TRIPWIRE_EMPTY_THRESHOLD = 0.5
+# ActionOutcomeEmitV1.summary lands in chat-visible evidence via
+# chat_stance.py's _project_recent_dispatch_actions -- bounded here at the
+# producer so nothing downstream needs to re-truncate raw model output.
+ACTION_OUTCOME_SUMMARY_MAX_CHARS = 280
+# Established self-subject convention across orion/autonomy/* (reducer.py,
+# substrate_metabolism.py, signal_tension.py all default/use this).
+ACTION_OUTCOME_SUBJECT = "orion"
 
 
 class ExecutionDispatchRuntimeWorker:
@@ -192,7 +202,7 @@ class ExecutionDispatchRuntimeWorker:
         newly_dispatched: list[ExecutionDispatchCandidateV1] = []
         try:
             for candidate in to_send:
-                newly_dispatched.append(await self._send_one(client, frame, candidate))
+                newly_dispatched.append(await self._send_one(client, bus, frame, candidate))
         finally:
             await bus.close()
 
@@ -234,6 +244,7 @@ class ExecutionDispatchRuntimeWorker:
     async def _send_one(
         self,
         client: ExecutionDispatchCortexClient,
+        bus: OrionBusAsync,
         frame: ExecutionDispatchFrameV1,
         candidate: ExecutionDispatchCandidateV1,
     ) -> ExecutionDispatchCandidateV1:
@@ -292,6 +303,13 @@ class ExecutionDispatchRuntimeWorker:
                 result_json={"error": str(exc)[:2000], "evidence_refs": [result_id]},
                 raw_len=0,
             )
+            await self._emit_action_outcome(
+                bus,
+                candidate=candidate,
+                summary=f"attempted {candidate.dispatch_kind} on {candidate.target_id}, send failed",
+                success=False,
+                observed_at=now,
+            )
             return candidate.model_copy(
                 update={
                     "dispatch_status": "dispatched",
@@ -318,6 +336,17 @@ class ExecutionDispatchRuntimeWorker:
             status,
             raw_len,
         )
+        await self._emit_action_outcome(
+            bus,
+            candidate=candidate,
+            summary=(
+                observation_data["observation"]
+                if raw_len > 0
+                else f"{candidate.dispatch_kind} on {candidate.target_id} returned no observation"
+            ),
+            success=raw_len > 0,
+            observed_at=now,
+        )
         return candidate.model_copy(
             update={
                 "dispatch_status": "dispatched",
@@ -325,6 +354,48 @@ class ExecutionDispatchRuntimeWorker:
                 "result_ref": result_id,
             }
         )
+
+    async def _emit_action_outcome(
+        self,
+        bus: OrionBusAsync,
+        *,
+        candidate: ExecutionDispatchCandidateV1,
+        summary: str,
+        success: bool,
+        observed_at: datetime,
+    ) -> None:
+        """Publish onto the same always-on ActionOutcomeEmitV1 route
+        orion-spark-concept-induction already uses for curiosity-fetch
+        outcomes -- no new pipe, reusing an existing durable sink
+        (sql-writer -> action_outcomes) so load_action_outcomes() sees
+        Layer 9's real dispatch results the same way it already sees
+        curiosity-fetch ones. Never lets a publish failure raise out of
+        the tick -- an unreachable bus must not lose a result that's
+        already durably recorded via save_dispatch_result above.
+        """
+        try:
+            emit = ActionOutcomeEmitV1(
+                subject=ACTION_OUTCOME_SUBJECT,
+                action_id=candidate.dispatch_id,
+                kind=candidate.dispatch_kind,
+                summary=summary[:ACTION_OUTCOME_SUMMARY_MAX_CHARS],
+                success=success,
+                surprise=0.0,
+                observed_at=observed_at,
+            )
+            env = BaseEnvelope(
+                kind="action.outcome.emit.v1",
+                source=ServiceRef(name=self._settings.service_name),
+                correlation_id=str(uuid4()),
+                payload=emit.model_dump(mode="json"),
+            )
+            await bus.publish(self._settings.action_outcome_channel, env)
+        except Exception:
+            logger.warning(
+                "execution_dispatch_action_outcome_emit_failed dispatch_id=%s",
+                candidate.dispatch_id,
+                exc_info=True,
+            )
 
     def _notify_tripwire(self, empty_count: int, window: int) -> None:
         try:

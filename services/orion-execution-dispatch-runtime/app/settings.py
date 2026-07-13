@@ -40,6 +40,9 @@ class Settings(BaseSettings):
         120.0, alias="EXECUTION_DISPATCH_RPC_TIMEOUT_SEC"
     )
     orion_dispatch_max_per_day: int = Field(24, alias="ORION_DISPATCH_MAX_PER_DAY")
+    action_outcome_channel: str = Field(
+        "orion:autonomy:action:outcome", alias="BUS_ACTION_OUTCOME_OUT"
+    )
     notify_url: str = Field("http://orion-notify:7140", alias="NOTIFY_URL")
     notify_api_token: str | None = Field(None, alias="NOTIFY_API_TOKEN")
     log_level: str = Field("INFO", alias="LOG_LEVEL")

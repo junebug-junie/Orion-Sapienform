@@ -4,24 +4,12 @@
 # against a live FalkorDB — not a mock. Requires GRAPHITI_BACKEND=graphiti_core on the
 # adapter (health.backend == "graphiti_core"); otherwise /v1/search returns HTTP 501.
 #
-# KNOWN FAILING as of 2026-07-13 activation pass (see PR/spec 2026-07-13-graphiti-core-
-# backend-activation): /v1/search runs without crashing and does call the real embed host
-# (trace.embed_used=true), but crystallization_ids comes back empty for data written by
-# this adapter's own ingest_episode(). Root cause: ingest_episode() writes raw Cypher
-# (:Entity)-[:HAS_EPISODE]->(:Episode) and (:Entity)-[:RELATED]->(:Entity) shapes, but
-# graphiti-core==0.19.0's Graphiti.search() only queries (:Entity)-[:RELATES_TO {uuid,
-# fact, fact_embedding, group_id}]->(:Entity) edges (confirmed via
-# graphiti_core.search.search_utils.edge_fulltext_search source) plus a fulltext index
-# this adapter never creates. The write path and graphiti-core's own read path are two
-# different, incompatible graph schemas. Populating the RELATES_TO schema natively means
-# either wiring a real LLM client for graphiti-core's add_episode()/add_triplet() (which
-# internally call resolve_extracted_edge(self.llm_client, ...) even for the no-LLM-needed
-# add_triplet path), or hand-writing RELATES_TO-shaped edges with a synthesized fact +
-# fact_embedding — both larger, separate-decision-required patches, not this activation's
-# scope. Left failing intentionally rather than deleted or weakened: this is the correct,
-# honest signal until a human decides how to close the gap. Neighborhood/BFS (backend-
-# agnostic, scripts/smoke_graphiti_links_e2e.sh) is unaffected and still finds linked
-# crystallizations; so does the graphiti_neighborhood rail inside retrieve_active_packet().
+# Fixed 2026-07-13 (see docs/superpowers/specs/2026-07-13-graphiti-core-backend-
+# activation-spec.md "RELATES_TO schema" follow-up section): ingest_episode() now writes
+# graphiti-core's own EntityNode/EntityEdge payloads (uuid-keyed, RELATES_TO-shaped, with a
+# self-referential edge per crystallization) instead of a custom (:Entity)-[:HAS_EPISODE]
+# /(:Entity)-[:RELATED] shape Graphiti.search() never read. See that spec section for the
+# full root cause and field-mapping detail.
 set -euo pipefail
 : "${ORION_HUB_URL:?}"
 : "${ORION_HUB_SESSION_ID:?}"
@@ -30,7 +18,18 @@ BASE="${ORION_HUB_URL%/}"
 ADAPTER="${GRAPHITI_ADAPTER_URL%/}"
 HDR=(-H "Content-Type: application/json" -H "X-Orion-Session-Id: ${ORION_HUB_SESSION_ID}")
 STAMP="$(date -u +%Y%m%d%H%M%S)"
-SUBJECT="Graphiti search smoke subject zz${STAMP}"
+# crystallization duplicate-detection (orion/memory/crystallization/detection.py,
+# detect_duplicates) flags a proposal as a duplicate candidate whenever word-level Jaccard
+# similarity of "subject summary" against any existing proposed/active crystallization of the
+# same kind is >= 0.72; the validate step then sets validation_status=invalid, which blocks
+# approve. A fixed template with only the timestamp varying (the original form of this script)
+# shares ~6 of ~7 tokens across runs (Jaccard ~0.75) and collides with its own prior runs once
+# a few have accumulated. Two independently-varying tokens (STAMP, RAND) on each side, mixed
+# with a smaller shared vocabulary, keeps Jaccard well under the threshold run over run.
+RAND_A="${RANDOM}${RANDOM}"
+RAND_B="${RANDOM}${RANDOM}"
+SUBJECT="Graphiti probe ${STAMP} token ${RAND_A}"
+SUMMARY="Ephemeral verification note ${STAMP} marker ${RAND_B}"
 
 BACKEND=$(curl -sS "${ADAPTER}/health" | jq -r '.backend')
 if [[ "$BACKEND" != "graphiti_core" ]]; then
@@ -52,10 +51,15 @@ _propose() {
 _approve() {
   local cid="$1"
   curl -sS "${HDR[@]}" -X POST "${BASE}/api/memory/crystallizations/proposals/${cid}/validate" >/dev/null
-  curl -sS "${HDR[@]}" -X POST "${BASE}/api/memory/crystallizations/proposals/${cid}/approve" -d '{}' >/dev/null
+  local approve_status
+  approve_status=$(curl -sS -o /tmp/smoke_graphiti_search_approve.json -w '%{http_code}' "${HDR[@]}" -X POST "${BASE}/api/memory/crystallizations/proposals/${cid}/approve" -d '{}')
+  if [[ "$approve_status" != "200" ]]; then
+    echo "FAIL smoke_graphiti_search_e2e: approve cid=${cid} http=${approve_status} response=$(cat /tmp/smoke_graphiti_search_approve.json)" >&2
+    exit 1
+  fi
 }
 
-CID="$(_propose "$SUBJECT" "smoke summary for graphiti search")"
+CID="$(_propose "$SUBJECT" "$SUMMARY")"
 _approve "$CID"
 
 curl -sS "${HDR[@]}" -X POST "${BASE}/api/memory/graphiti/sync/${CID}" -d '{}' >/dev/null

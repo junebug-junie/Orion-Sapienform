@@ -21,6 +21,11 @@ class Settings(BaseSettings):
         default="orion_postgres", alias="GRAPHITI_BACKEND"
     )
     CRYSTALLIZER_EMBED_HOST_URL: str = Field(default="", alias="CRYSTALLIZER_EMBED_HOST_URL")
+    # Bootstraps graphiti-core's RELATES_TO fulltext+range indices once at startup when the
+    # graphiti_core backend + FalkorDB are both active. See
+    # app/backends/graphiti_core.py::ensure_graphiti_indices for the idempotency handling
+    # (FalkorDB's CREATE FULLTEXT INDEX has no IF NOT EXISTS guard).
+    GRAPHITI_AUTO_BUILD_INDICES: bool = Field(default=True, alias="GRAPHITI_AUTO_BUILD_INDICES")
 
     class Config:
         env_file = ".env"

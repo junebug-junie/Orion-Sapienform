@@ -135,6 +135,24 @@ _LAST_EMBEDDING_NOVELTY: Optional[float] = None
 _PHI_ENCODER: PhiEncoderRuntime | None = None
 _PHI_PREV_PHI: float | None = None
 _PHI_PREV_RECON: float | None = None
+# 2026-07-13: which formula produced the last published valence -- "proxy"
+# (_agency_valence_proxy, trained-encoder-derived) or "heuristic"
+# (_phi_from_self_state's formula, encoder disabled/degraded/no-probes ticks).
+# Tracked so a tick-to-tick formula swap can be told apart from a real state
+# change (see turn_effect construction in handle_self_state): the two
+# formulas are independently computed and not calibrated to agree, so a
+# swap alone can produce a large valence "delta" that is not evidence of
+# anything. Confirmed reachable via SparkStateSnapshotV1.metadata.turn_effect
+# -> spark_phi_hint/spark_phi_narrative (services/orion-cortex-exec/app/
+# spark_narrative.py), which put an unearned "valence tilt" swing straight
+# into live metacognition prompts. (An initial review pass also flagged
+# orion.spark.concept_induction.tensions.py's tension.distress.v1 ->
+# DriveEngine as reachable; traced and ruled out -- that pipeline's
+# substrate.self_state.v1 path uses extract_tensions_from_self_state, which
+# reads raw SelfStateV1.dimensions directly and never touches phi_now/
+# valence, and channel_spark_state_snapshot is not in concept-induction's
+# intake_channels at all, so this signal never reaches it.)
+_PHI_PREV_VALENCE_SOURCE: str | None = None
 
 # resource_pressure.score is a max() over 7 heterogeneous channels (see
 # config/self_state/self_state_policy.v1.yaml channel_dimension_map): real
@@ -272,16 +290,17 @@ def _phi_from_self_state(ss: SelfStateV1) -> Dict[str, float]:
     introspection = _s("introspection_pressure", 0.3)
     novelty = min(1.0, (0.6 * uncertainty + 0.4 * introspection) * (0.3 + 0.7 * coherence))
 
-    # Valence: hedonic tone from agency, social ease, and constraint load.
+    # Valence: hedonic tone from agency and social ease.
+    # A third term, policy_ease, previously contributed a hardcoded 1.0
+    # constant here (policy_pressure was removed from SelfStateV1 entirely in
+    # the 2026-07-12 self-state redesign, leaving no live signal behind it).
+    # Deleted outright 2026-07-13 rather than kept as a disguised constant --
+    # a fixed number added to every tick's valence regardless of state is
+    # exactly the math-theater pattern this formula should not contain.
+    # Weights renormalized to sum to 1 over the two remaining live terms.
     agency      = _s("agency_readiness", 0.5)
     social_ease = 1.0 - _s("social_pressure", 0.0)
-    # policy_pressure was removed from SelfStateV1 entirely (2026-07-12 self-state
-    # redesign) -- it was a dead dimension, permanently hardcoded to 0.0, never
-    # wired to a real signal. This term's value was therefore always 1.0 - 0.0 =
-    # 1.0 even before removal; kept as an explicit constant (not a `.get()` on a
-    # key that can no longer exist) so this doesn't read as a live signal.
-    policy_ease = 1.0
-    raw_valence = 0.5 * agency + 0.3 * social_ease + 0.2 * policy_ease  # [0, 1]
+    raw_valence = 0.625 * agency + 0.375 * social_ease  # [0, 1]
     # Coherence modulates: fragmentation mutes affect in both directions —
     # can't feel fully alive, or fully distressed, when scattered.
     valence = (raw_valence * 2.0 - 1.0) * (0.4 + 0.6 * coherence)
@@ -300,15 +319,80 @@ def _phi_from_self_state(ss: SelfStateV1) -> Dict[str, float]:
     }
 
 
+def _agency_valence_proxy(
+    latent: Optional[Dict[str, float]],
+    probes: Optional[Dict[str, Dict[str, float]]],
+) -> Optional[float]:
+    """Linear-probe readout of valence from the trained encoder's latent space.
+
+    2026-07-13: the previous claim that no trained analog exists for valence
+    was checked against the active encoder's real manifest.json/probes.json
+    and was false for agency_readiness specifically -- see
+    orion/self_state/inner_state_registry.py's phi_heuristic.valence entry
+    for the full numbers and the zero-variance-guard misread that produced
+    the original false claim.
+
+    Known, real limitation (not fixed here -- see registry notes): this is
+    a lossy readout of a value already available unencoded one line away
+    (agency_readiness, the direct self-state dimension _phi_from_self_state
+    reads). agency_readiness is itself one of the encoder's input features,
+    so this proxy is closer to "how does the trained bottleneck reconstruct
+    a value we already have" than a discovered relationship between phi and
+    hedonic tone. It is real (probe-weighted, verified-nonzero correlations,
+    not a fabricated constant), but weaker than the docstring language for
+    coherence/energy/novelty above implies -- those are the encoder's own
+    native forward-pass outputs; this is a post-hoc statistical combination
+    built outside the trained architecture using Pearson coefficients, which
+    are not fitted regression weights (correlated latents are not
+    orthogonalized, so their contributions can partially double-count).
+
+    Returns None if latent/probes are missing, carry no agency_readiness
+    weight at all (e.g. an older manifest without that probe column), or
+    the combined weight is too small to be more than noise.
+    """
+    if not latent or not probes:
+        return None
+    weighted_sum = 0.0
+    weight_total = 0.0
+    for z_name, z_val in latent.items():
+        if not math.isfinite(z_val):
+            # A corrupted weights.npz or an unbounded linear layer (z has no
+            # clamp) producing NaN/Inf must not silently propagate into a
+            # published bus value -- same convention as
+            # _hardware_resource_pressure's isfinite guard in this file.
+            continue
+        weight = probes.get(z_name, {}).get("agency_readiness", 0.0)
+        if not math.isfinite(weight):
+            continue
+        weighted_sum += weight * z_val
+        weight_total += abs(weight)
+    # 0.05 (not the bare nonzero floor a naive guard would use): probes are
+    # rounded to 4 decimals, so a single noise-level residual (e.g. 0.0001)
+    # combined with a large, unclamped latent activation could otherwise
+    # saturate the tanh to +-1 on statistically meaningless evidence (found
+    # by code review, 2026-07-13). Every real agency_readiness correlation
+    # observed in the active manifest is 0.35-0.69 in magnitude, so this
+    # floor only rejects noise, not real signal.
+    if weight_total < 0.05:
+        return None
+    proxy = math.tanh(weighted_sum / weight_total)
+    if not math.isfinite(proxy):
+        return None
+    return round(proxy, 4)
+
+
 def _golden_phi_overrides(
     *,
     phi: float,
     delta_phi: float,
     recon_error: float,
     recon_error_p95_reference: float,
+    latent: Optional[Dict[str, float]] = None,
+    probes: Optional[Dict[str, Dict[str, float]]] = None,
 ) -> Dict[str, float]:
-    """Trained-encoder-derived replacements for 3 of _phi_from_self_state's 4
-    axes, used whenever the encoder is enabled and healthy this tick (2026-07-12).
+    """Trained-encoder-derived replacements for _phi_from_self_state's axes,
+    used whenever the encoder is enabled and healthy this tick (2026-07-12,
+    valence added 2026-07-13).
 
     _phi_from_self_state is a hand-tuned, untrained heuristic -- real
     engineering, but not the trained autoencoder. It was the only thing ever
@@ -316,8 +400,7 @@ def _golden_phi_overrides(
     (log_orion_metacognition_draft.j2 / _enrich.j2, via
     spark_narrative.spark_phi_hint/spark_phi_narrative); the trained encoder's
     actual output (PhiIntrinsicRewardV1) had zero consumers beyond a SQL sink
-    and a debug WebSocket EKG panel. This closes that gap for coherence/energy/
-    novelty, which have principled trained analogs:
+    and a debug WebSocket EKG panel. This closes that gap:
 
     - coherence <- phi (the encoder's own sigmoid output; this IS phi, the
       thing the heuristic's coherence axis was already trying to approximate
@@ -331,21 +414,22 @@ def _golden_phi_overrides(
       -- a real surprise signal, unlike the heuristic's novelty axis, which
       leans on `uncertainty`, a dimension structurally near-zero whenever
       coherence is healthy).
-
-    valence is deliberately NOT overridden here: the active encoder's latent
-    probes (probes.json) show zero correlation between any z_i and any
-    social/hedonic-adjacent felt dimension (social_pressure, agency_readiness
-    aside, which coherence/energy already draw on) -- there is no trained
-    analog to source it from. Inventing one would be exactly the fabricated-
-    signal pattern this change exists to remove. valence keeps coming from
-    _phi_from_self_state until a real trained signal for it exists.
+    - valence <- _agency_valence_proxy(latent, probes), when computable (see
+      that function's docstring). Falls back to _phi_from_self_state's
+      formula-based valence (agency_readiness + social_ease only, as of
+      2026-07-13 -- the dead policy_ease constant term was deleted) when
+      latent/probes aren't available, e.g. an older manifest.
     """
     scale = max(float(recon_error_p95_reference), 1e-6)
-    return {
+    overrides: Dict[str, float] = {
         "coherence": round(float(phi), 4),
         "energy": round(min(1.0, abs(float(delta_phi))), 4),
         "novelty": round(min(1.0, float(recon_error) / scale), 4),
     }
+    valence_proxy = _agency_valence_proxy(latent, probes)
+    if valence_proxy is not None:
+        overrides["valence"] = valence_proxy
+    return overrides
 
 
 # 2026-07-12, inner-state unification Phase 2: node-attributed phi. These are
@@ -2602,7 +2686,7 @@ async def handle_signal(env: BaseEnvelope) -> None:
 
 
 async def handle_self_state(env: BaseEnvelope) -> None:
-    global _PREV_PHI, _PHI_PREV_PHI, _PHI_PREV_RECON
+    global _PREV_PHI, _PHI_PREV_PHI, _PHI_PREV_RECON, _PHI_PREV_VALENCE_SOURCE
     payload = env.payload if isinstance(env.payload, dict) else {}
     try:
         ss = SelfStateV1.model_validate(payload)
@@ -2633,6 +2717,11 @@ async def handle_self_state(env: BaseEnvelope) -> None:
     # scope; nothing carries over from a prior invocation).
     dominant_node: Optional[str] = None
     dominant_node_reason: Optional[str] = None
+    # 2026-07-13: which formula produced phi_now["valence"] this tick --
+    # default "heuristic" covers every skip/failure/disabled path (phi_now
+    # is never touched by _golden_phi_overrides on those ticks), only
+    # reassigned to "proxy" inside the encoder-success branch below.
+    valence_source: str = "heuristic"
 
     global _INNER_PREV_FELT, _INNER_PREV_HEADLINE, _INNER_DEGENERATE_STREAK, _INNER_LAST_HEADLINE
     if settings.inner_features_enabled:
@@ -2686,15 +2775,16 @@ async def handle_self_state(env: BaseEnvelope) -> None:
                     })
                     delta_phi = 0.0 if _PHI_PREV_PHI is None else out.phi - _PHI_PREV_PHI
                     delta_recon = 0.0 if _PHI_PREV_RECON is None else out.recon_error - _PHI_PREV_RECON
-                    phi_now = {
-                        **phi_now,
-                        **_golden_phi_overrides(
-                            phi=out.phi,
-                            delta_phi=delta_phi,
-                            recon_error=out.recon_error,
-                            recon_error_p95_reference=enc.manifest.training.recon_error_p95,
-                        ),
-                    }
+                    golden_overrides = _golden_phi_overrides(
+                        phi=out.phi,
+                        delta_phi=delta_phi,
+                        recon_error=out.recon_error,
+                        recon_error_p95_reference=enc.manifest.training.recon_error_p95,
+                        latent=out.latent,
+                        probes=enc.manifest.probes,
+                    )
+                    valence_source = "proxy" if "valence" in golden_overrides else "heuristic"
+                    phi_now = {**phi_now, **golden_overrides}
                     _PREV_PHI = phi_now
                     dominant_node, dominant_node_reason = _dominant_hardware_node(
                         ss.dominant_attention_target_details
@@ -2772,6 +2862,24 @@ async def handle_self_state(env: BaseEnvelope) -> None:
     turn_effect: Optional[Dict[str, float]] = None
     if phi_prev is not None:
         turn_effect = {k: round(phi_now[k] - phi_prev.get(k, phi_now[k]), 4) for k in phi_now}
+        # 2026-07-13: valence can be produced by two independently-computed,
+        # uncalibrated formulas (_phi_from_self_state's heuristic vs
+        # _agency_valence_proxy) depending on encoder-tick success. A tick
+        # where the formula swaps produces a raw diff that reflects the
+        # swap, not real state change. Confirmed reachable via this
+        # snapshot's metadata.turn_effect -> spark_phi_hint/
+        # spark_phi_narrative (see _PHI_PREV_VALENCE_SOURCE's declaration
+        # above for what was checked and ruled out on the DriveEngine side).
+        # Zero it specifically for this one tick rather than dropping the
+        # whole turn_effect, and rather than generalizing to coherence/
+        # energy/novelty, which don't share this axis's saturate-prone tanh
+        # squashing and are out of scope for this fix.
+        if (
+            _PHI_PREV_VALENCE_SOURCE is not None
+            and _PHI_PREV_VALENCE_SOURCE != valence_source
+        ):
+            turn_effect["valence"] = 0.0
+    _PHI_PREV_VALENCE_SOURCE = valence_source
 
     logger.debug(
         "self_state_updated self_state_id=%s condition=%s intensity=%.3f phi=%s delta=%s",
@@ -2793,6 +2901,10 @@ async def handle_self_state(env: BaseEnvelope) -> None:
         "trajectory": ss.trajectory_condition,
         "phi_before": phi_prev,
         "phi_after": phi_now,
+        # Observability for which formula produced phi_after["valence"] this
+        # tick (found missing by code review, 2026-07-13 -- mirrors the
+        # existing inner.headline_source="encoder" precedent for phi itself).
+        "valence_source": valence_source,
     }
     if turn_effect is not None:
         meta["turn_effect"] = {"turn": turn_effect}

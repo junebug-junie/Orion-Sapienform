@@ -1,6 +1,8 @@
 # Orch route-grammar lane — design spec
 
-Status: implementing. **Second correction, this one load-bearing on Patches A/B: they are void.**
+Status: **implemented** (Patches C, D, E) on branch `feat/orch-route-grammar-lane`. Patches A/B were struck as void before implementation — see correction below. Shadow-only: `PUBLISH_CORTEX_ORCH_GRAMMAR` and `ENABLE_ROUTE_GRAMMAR_REDUCER` both default `false`; `VerbResultV1.output["_route_metadata"]` (Patch E) is always on. Migration `services/orion-sql-db/manual_migration_route_substrate_loop.sql` not yet applied to any database — operator action required before flipping `ENABLE_ROUTE_GRAMMAR_REDUCER=true`.
+
+**Second correction, this one load-bearing on Patches A/B: they are void.**
 
 Deeper trace (found while re-verifying line anchors for implementation) shows `handle_verb_request` → `VerbRuntime.handle_request` dispatches `trigger="legacy.plan"` to `LegacyPlanVerb.execute()` in `services/orion-cortex-exec/app/verb_adapters.py:148-276` — **not** a dead end. That verb builds its own `ctx_payload` and calls `router.run_plan(..., ctx=ctx_payload)` (verb_adapters.py:236), and `PlanRouter.run_plan` calls `begin_plan_grammar(ctx, ...)` unconditionally near its top (`router.py:931`), which lazily creates a `CortexExecGrammarCollector` and writes it into `ctx["_cortex_exec_grammar_collector"]` (`grammar_emit.py:389-407`, `get_or_create_collector`). Every step call records onto that same collector (`router.py:1079-1342`). `LegacyPlanVerb.execute()` then explicitly flushes it (`verb_adapters.py:253-275`, `flush_cortex_exec_grammar`). Trace id is `cortex_exec_trace_id(node_name, correlation_id, lane=...)` = `"cortex.exec:{node}:{corr_id}"` (`orion/substrate/execution_loop/ids.py`) — the exact prefix `EXECUTION_TRACE_PREFIX` the `execution_grammar_reducer` cursor already filters on, and `provenance.source_service` is hardcoded `"orion-cortex-exec"`, already in `EXECUTION_SOURCE_SERVICES`.
 

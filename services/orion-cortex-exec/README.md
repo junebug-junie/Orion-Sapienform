@@ -135,6 +135,18 @@ Fail-open: `[]` on any DB/parse failure, never raises.
 pytest services/orion-cortex-exec/tests/test_chat_stance_autonomy_v2.py -q
 ```
 
+### drive_state.v1 visibility on chat stance (default off)
+
+| Variable | Default (`.env_example`) | Description |
+| :--- | :--- | :--- |
+| `CHAT_STANCE_DRIVE_STATE_VISIBLE` | empty / not `true` | When `true`, `build_chat_stance_inputs` surfaces `DriveAuditV1`/`DriveStateV1` provenance (drive pressures, activations, dominant drive, summary) as a **sibling** `inputs["drive_state"]` key, built from the same unified-beliefs `drive_state`-sourced substrate nodes that `_project_autonomy_from_beliefs` already reads. |
+
+`drive_state.v1` and `autonomy_state_v2` are registered as `DUPLICATE` of each other in `orion/self_state/inner_state_registry.py` — they are independently-computed signals over the same 6-drive taxonomy, with no agreed merge-or-keep-separate resolution yet. This patch keeps them structurally separate everywhere: `inputs["drive_state"]` is never merged, blended, or nested into `inputs["autonomy"]`.
+
+```bash
+pytest services/orion-cortex-exec/tests/test_chat_stance_drive_state_projection.py -q
+```
+
 ### Turn effect and drive tensions (bus)
 
 When the executor computes `turn_effect` / `turn_effect_evidence`, they are included in `PlanExecutionResult.metadata`. Hub merges that metadata into each chat turn `spark_meta`, so `orion-spark-concept-induction` can derive `extract_tensions` from `spark_meta.turn_effect`. For graph-backed tension kinds on `DriveAudit`, `orion-rdf-writer` must still consume `memory.drives.audit.v1` after concept-induction publishes it.

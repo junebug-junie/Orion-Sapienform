@@ -36,6 +36,10 @@ def map_autonomy_artifacts_to_substrate(
 
     if drive_state:
         snapshot_id = f"sub-state-autonomy-{drive_state.artifact_id}"
+        drive_state_metadata: dict = {"activations": dict(drive_state.activations), "artifact_id": drive_state.artifact_id}
+        if drive_audit is not None:
+            drive_state_metadata["dominant_drive"] = drive_audit.dominant_drive
+            drive_state_metadata["summary"] = drive_audit.summary
         nodes.append(
             StateSnapshotNodeV1(
                 node_id=snapshot_id,
@@ -52,7 +56,7 @@ def map_autonomy_artifacts_to_substrate(
                 dimensions={k: float(v) for k, v in drive_state.pressures.items()},
                 snapshot_source="drive_state",
                 signals={"confidence": drive_state.confidence, "salience": max(drive_state.pressures.values(), default=0.0)},
-                metadata={"activations": dict(drive_state.activations), "artifact_id": drive_state.artifact_id},
+                metadata=drive_state_metadata,
             )
         )
 

@@ -105,6 +105,18 @@ pytest tests/test_pre_turn_appraisal_wiring.py tests/test_handle_chat_request_su
 - `scripts/api_routes.py`, `scripts/websocket_handler.py` — chat integration
 - `scripts/substrate_effect_pipeline.py` — legacy skip when v2 enabled
 
+#### Unified-turn chat grammar trace (stance disposition)
+
+`orion/hub/turn_orchestrator.py::execute_unified_turn` (the pipeline `run_unified_turn` routes into when `client_mode == "orion" and ORION_UNIFIED_TURN_ENABLED=true`) publishes the same `hub.chat:` `GrammarEventV1` trace the classic `websocket_handler.py` chat path already produces (session context, utterance word count, repair signal) -- extended with the Thought stance decision (`proceed`/`defer`/`refuse`, `disposition_reasons`, `boundary_register`), a fact unified turn has that the classic path never did. Both paths feed the same `chat_grammar_consumer` reducer on substrate-runtime; whichever pipeline actually produced a given turn, its facts land in the same `active_chat_session` projection.
+
+Gated by the existing `PUBLISH_HUB_CHAT_GRAMMAR` flag (default `true`) -- no new env key. Fires once per turn, right after the stance decision resolves, whether or not the turn goes on to the harness governor. Fail-open: a publish failure is logged and swallowed, never raised into the chat response.
+
+**Code**
+
+- `orion/hub/turn_orchestrator.py::_publish_unified_turn_chat_grammar` — call site, builds the stance-aware event set
+- `scripts/grammar_emit.py::build_chat_turn_grammar_events` — pure builder, `stance_disposition`/`stance_disposition_reasons`/`stance_boundary_register` params
+- `orion/substrate/chat_loop/grammar_extract.py::extract_chat_turn_state` — reducer-side parsing into `ChatTurnStateV1.stance_disposition` etc.
+
 ### 2. Text-to-Speech (TTS)
 
 *   **Intake**: `orion:tts:intake`

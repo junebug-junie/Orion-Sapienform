@@ -95,14 +95,14 @@ async def _filter_intimate_crystallization_ids(
     if not crystallization_ids:
         return crystallization_ids
     try:
-        rows, _ = await driver.execute_query(
+        rows, _header, _summary = await driver.execute_query(
             """
             UNWIND $ids AS cid
             MATCH (n)
             WHERE n.crystallization_id = cid AND n.sensitivity = 'intimate'
             RETURN DISTINCT n.crystallization_id AS cid
             """,
-            {"ids": crystallization_ids},
+            ids=crystallization_ids,
         )
         intimate = {str(row.get("cid") if isinstance(row, dict) else row[0]) for row in (rows or [])}
         return [cid for cid in crystallization_ids if cid not in intimate]
@@ -142,14 +142,12 @@ async def ingest_episode(
         SET ep.kind = $kind, ep.sensitivity = $sensitivity
         MERGE (e)-[:HAS_EPISODE]->(ep)
         """,
-        {
-            "entity_id": entity_id,
-            "crystallization_id": crystallization_id,
-            "episode_id": episode_id,
-            "name": subject,
-            "kind": kind,
-            "sensitivity": sensitivity,
-        },
+        entity_id=entity_id,
+        crystallization_id=crystallization_id,
+        episode_id=episode_id,
+        name=subject,
+        kind=kind,
+        sensitivity=sensitivity,
     )
     edge_ids.append(f"ged_{crystallization_id}")
 
@@ -166,14 +164,12 @@ async def ingest_episode(
             MERGE (e)-[r:RELATED]->(t)
             SET r.relation = $relation, r.confidence = $confidence
             """,
-            {
-                "target_entity_id": target_entity_id,
-                "target_id": target_id,
-                "target_sensitivity": str(link.get("sensitivity") or "public"),
-                "entity_id": entity_id,
-                "relation": relation,
-                "confidence": confidence,
-            },
+            target_entity_id=target_entity_id,
+            target_id=target_id,
+            target_sensitivity=str(link.get("sensitivity") or "public"),
+            entity_id=entity_id,
+            relation=relation,
+            confidence=confidence,
         )
         edge_ids.append(f"ged_{crystallization_id}_{target_id}_{relation}")
 
@@ -203,6 +199,67 @@ async def get_neighborhood(
     return await pg_neighborhood(pool, crystallization_id, depth=depth)
 
 
+def _no_op_llm_client() -> Any:
+    """graphiti-core's Graphiti() eagerly builds an OpenAIClient() for llm_client if one
+    isn't supplied, which raises at import time without OPENAI_API_KEY. Orion never calls
+    add_episode()/entity-extraction through graphiti-core (nodes are written via raw Cypher
+    in ingest_episode above), so search() never actually invokes the LLM client -- this stub
+    only exists to satisfy Graphiti's constructor.
+    """
+    from graphiti_core.llm_client.client import LLMClient
+    from graphiti_core.llm_client.config import LLMConfig
+
+    class _NullLLMClient(LLMClient):
+        def __init__(self) -> None:
+            super().__init__(config=LLMConfig(), cache=False)
+
+        async def _generate_response(self, messages, response_model=None, max_tokens=8192, model_size=None):  # type: ignore[override]
+            return {}
+
+    return _NullLLMClient()
+
+
+def _no_op_cross_encoder() -> Any:
+    """RRF (Orion's search config) doesn't invoke the cross-encoder reranker, but Graphiti()
+    still eagerly builds an OpenAIRerankerClient() by default without one supplied. Identity
+    stub only; never exercised by the reciprocal-rank-fusion search path used here.
+    """
+    from graphiti_core.cross_encoder.client import CrossEncoderClient
+
+    class _NullCrossEncoder(CrossEncoderClient):
+        async def rank(self, query: str, passages: list[str]) -> list[tuple[str, float]]:  # type: ignore[override]
+            return [(p, 0.0) for p in passages]
+
+    return _NullCrossEncoder()
+
+
+def _orion_embedder_client(embed_url: str) -> Any:
+    """Bridges graphiti-core's cosine-similarity search rail to Orion's own embedding host
+    (CRYSTALLIZER_EMBED_HOST_URL) instead of the library's default OpenAIEmbedder.
+
+    Tracks whether a call actually produced a vector on the instance itself (`.used`) so
+    callers can report an honest embed_used trace field without a second, redundant HTTP
+    call to the embed host for the same query text.
+    """
+    from graphiti_core.embedder.client import EmbedderClient
+
+    class _OrionEmbedderClient(EmbedderClient):
+        def __init__(self) -> None:
+            self.used = False
+
+        async def create(self, input_data) -> list[float]:  # type: ignore[override]
+            text = input_data[0] if isinstance(input_data, list) and input_data else str(input_data)
+            vector = await _embed_query(str(text), embed_url)
+            if vector:
+                self.used = True
+            return vector or []
+
+        async def create_batch(self, input_data_list: list[str]) -> list[list[float]]:  # type: ignore[override]
+            return [await self.create(item) for item in input_data_list]
+
+    return _OrionEmbedderClient()
+
+
 async def search(
     query: str,
     *,
@@ -215,18 +272,15 @@ async def search(
     from graphiti_core import Graphiti
 
     driver = _falkor_driver(falkordb_uri, graph_name)
-    graphiti = Graphiti(graph_driver=driver)
-    embedding = await _embed_query(query, embed_url)
+    embedder = _orion_embedder_client(embed_url)
+    graphiti = Graphiti(
+        graph_driver=driver,
+        llm_client=_no_op_llm_client(),
+        embedder=embedder,
+        cross_encoder=_no_op_cross_encoder(),
+    )
 
-    search_kwargs: dict[str, Any] = {"query": query, "num_results": limit}
-    if embedding is not None:
-        search_kwargs["query_vector"] = embedding
-
-    try:
-        results = await graphiti.search(**search_kwargs)
-    except TypeError:
-        # Older graphiti-core builds may not accept query_vector.
-        results = await graphiti.search(query=query, num_results=limit)
+    results = await graphiti.search(query=query, num_results=limit)
 
     crystallization_ids = _extract_crystallization_ids(results)
     crystallization_ids = await _filter_intimate_crystallization_ids(driver, crystallization_ids)
@@ -238,7 +292,7 @@ async def search(
             "backend": "graphiti_core",
             "rails": ["vector", "graph"],
             "query": query,
-            "embed_used": embedding is not None,
+            "embed_used": embedder.used,
             "result_count": len(crystallization_ids),
             "raw_type": type(results).__name__,
         },

@@ -345,6 +345,54 @@ class TestMaybeResolveConceptRelation:
         assert candidate.links[0].relation == "contradicts"
 
     @pytest.mark.asyncio
+    async def test_decision_log_write_failure_does_not_break_formation(self):
+        # Regression (code review finding): insert_concept_relation_decision() is a
+        # purely observational write. Before this guard, a DB error there (pool down,
+        # connection reset, etc.) would propagate all the way up through
+        # intake_pipeline.py and fail the entire consolidation window -- a strictly
+        # worse failure mode than losing one diagnostic log row. resolve_concept_relation()
+        # is documented to never raise; this write must be equally forgiving.
+        candidate = _active_crystallization()
+        target = _active_crystallization()
+        target.crystallization_id = "crys_target"
+
+        pool = MagicMock()
+        bus = MagicMock()
+
+        decision = ConceptRelationDecision(
+            relation="same", target_crystallization_id="crys_target", confidence=0.9
+        )
+
+        update_mock = AsyncMock()
+        emit_mock = AsyncMock(return_value=True)
+
+        with patch(
+            "orion.memory.crystallization.concept_relation.fetch_similar_candidates",
+            new=AsyncMock(return_value=[target]),
+        ), patch(
+            "orion.memory.crystallization.concept_relation.resolve_concept_relation",
+            new=AsyncMock(return_value=decision),
+        ), patch(
+            "orion.memory.crystallization.concept_relation.update_crystallization",
+            new=update_mock,
+        ), patch(
+            "orion.memory.crystallization.concept_relation.emit_crystallization_lifecycle",
+            new=emit_mock,
+        ), patch(
+            "orion.memory.crystallization.concept_relation.insert_concept_relation_decision",
+            new=AsyncMock(side_effect=RuntimeError("connection reset")),
+        ):
+            result = await maybe_resolve_concept_relation(
+                pool, bus, candidate=candidate, settings=_Settings(), emit_kw={}
+            )
+
+        # The decision-log write failed, but the real formation outcome still happened.
+        assert result is not None
+        cid, row, outcome = result
+        assert cid == "crys_target"
+        assert outcome == "reinforced_by_relation"
+
+    @pytest.mark.asyncio
     async def test_confidence_below_floor_returns_none(self):
         candidate = _active_crystallization()
         target = _active_crystallization()

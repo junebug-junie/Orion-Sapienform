@@ -20,6 +20,43 @@ def test_orion_bus_url_never_synced() -> None:
     assert should_sync_key("ORION_BUS_URL", all_keys=True) is False
 
 
+def test_recall_graphiti_chat_keys_never_synced() -> None:
+    """RECALL_GRAPHITI_IN_CHAT and RECALL_GRAPHITI_ADAPTER_URL gate real chat-time graph
+    search (orion-recall). Both must change together by hand or the feature silently
+    no-ops (enabled flag + empty/stale URL) -- the exact bug already hit twice this
+    session with CONCEPT_RELATION_RESOLUTION_ENABLED and GRAPHITI_BACKEND."""
+    for key in ("RECALL_GRAPHITI_IN_CHAT", "RECALL_GRAPHITI_ADAPTER_URL"):
+        assert key in NEVER_SYNC_KEYS
+        assert should_sync_key(key, all_keys=False) is False
+        assert should_sync_key(key, all_keys=True) is False
+
+
+def test_sync_file_force_does_not_touch_recall_graphiti_chat_keys(tmp_path: Path) -> None:
+    """Even --force (which overwrites ordinary diverged keys) must never touch these --
+    NEVER_SYNC_KEYS is a stricter, unconditional exclusion, unlike the diverged/--force
+    behavior that applies to everything else."""
+    svc = tmp_path / "orion-recall"
+    svc.mkdir()
+    (svc / ".env_example").write_text(
+        "RECALL_GRAPHITI_IN_CHAT=true\n"
+        "RECALL_GRAPHITI_ADAPTER_URL=http://orion-athena-graphiti-adapter:8000\n",
+        encoding="utf-8",
+    )
+    (svc / ".env").write_text(
+        "RECALL_GRAPHITI_IN_CHAT=false\nRECALL_GRAPHITI_ADAPTER_URL=\n",
+        encoding="utf-8",
+    )
+
+    result = sync_file(
+        svc / ".env", svc / ".env_example", dry_run=False, all_keys=True, force=True
+    )
+
+    text = (svc / ".env").read_text(encoding="utf-8")
+    assert "RECALL_GRAPHITI_IN_CHAT=false" in text
+    assert "RECALL_GRAPHITI_ADAPTER_URL=\n" in text
+    assert not any("RECALL_GRAPHITI" in c for c in result.updated + result.diverged)
+
+
 def test_placeholder_bus_url_skipped_even_if_all_keys() -> None:
     assert example_value_is_host_placeholder("ORION_BUS_URL", "redis://100.x.x.x:6379/0")
     assert example_value_is_host_placeholder("ORION_BUS_URL", "redis://bus-core:6379/0")

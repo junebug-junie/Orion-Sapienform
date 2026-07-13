@@ -37,6 +37,37 @@ Ships flag-gated off; flipping the flag alone does not activate anything without
 | `CHROMA_HOST` / `CHROMA_PORT` | *(empty)* / `8000` | Chroma vector store for candidate retrieval — must be set alongside the embed host |
 | `CRYSTALLIZER_VECTOR_COLLECTION` | `orion_memory_crystallizations` | Chroma collection name (matches Hub's projection collection) |
 
+### Scheduled maintenance (Athena cron)
+
+`scripts/concept_relation_digest.py` is a standalone script, not a live service loop (see above) -- something external has to run it. Install on the host that runs the memory-consolidation stack (`crontab -e` as the operating user):
+
+```cron
+# Concept-relation decision digest -- turns memory_concept_relation_decisions rows
+# into reflection crystallizations. Idempotent (only acts on digested=false rows),
+# safe to run frequently. Requires POSTGRES_URI in the shell environment or a
+# sourced .env; see services/orion-hub/.env.
+*/30 * * * * cd /mnt/scripts/Orion-Sapienform && POSTGRES_URI=$(grep -m1 '^POSTGRES_URI=' services/orion-hub/.env | cut -d= -f2-) make concept-relation-digest >> /mnt/scripts/Orion-Sapienform/logs/orion-concept-relation-digest.log 2>&1
+```
+
+**If this cron entry dies, is dropped after a host migration, or the job starts failing silently, nothing else will notice on its own.** `make check-concept-relation-digest-liveness` is the fail-safe: it queries the real backlog (oldest undigested decision's age, not a heartbeat file that can go stale independently of the thing it claims to represent) and exits non-zero if it exceeds `MAX_AGE_HOURS` (default 3h -- generous headroom over the 30-minute cadence above). Run it by hand any time you suspect the digest stopped running:
+
+```bash
+POSTGRES_URI=... make check-concept-relation-digest-liveness
+# or, to tighten/loosen the threshold:
+POSTGRES_URI=... make check-concept-relation-digest-liveness MAX_AGE_HOURS=1
+```
+
+A clean exit (0) with "no undigested decisions pending" means the loop is closing. A STALE failure means: check `crontab -l` for the entry above, check `logs/orion-concept-relation-digest.log` for errors, and if this is a fresh host or post-migration box, re-add the crontab line (it does not persist itself -- see "Recreate ops after a fresh host" below).
+
+### Recreate ops after a fresh host, lost crontab, or disaster recovery
+
+Use this checklist any time this service (or its cron dependency) is missing after a host swap:
+
+1. **Confirm the digest cron entry is actually installed:** `crontab -l | grep concept_relation_digest`. If empty, paste the block from "Scheduled maintenance" above.
+2. **Confirm `logs/orion-concept-relation-digest.log` exists** (create the `logs/` dir if this is a fresh checkout: `mkdir -p /mnt/scripts/Orion-Sapienform/logs`).
+3. **Run the liveness check once by hand** (`make check-concept-relation-digest-liveness`) to confirm the new cron entry is actually firing, rather than waiting up to 3 hours to find out.
+4. **Do not assume `CONCEPT_RELATION_RESOLUTION_ENABLED=true` implies the digest is scheduled** -- they are two independent things that must both be true for the loop documented above to actually close. This exact "flag on, dependency not wired" pattern has already caused silent no-ops twice in this repo (`CONCEPT_RELATION_RESOLUTION_ENABLED` itself missing its embed/chroma hosts on first activation, and `RECALL_GRAPHITI_IN_CHAT` missing its adapter URL) -- checking both halves explicitly, every time, is cheaper than re-discovering this.
+
 ## Channels
 
 | Direction | Channel |

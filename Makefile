@@ -1,4 +1,4 @@
-.PHONY: test test-hub test-actions bootstrap-test-envs check-inner-state-registry check-single-consumer-channels check-activation-saturation
+.PHONY: test test-hub test-actions bootstrap-test-envs check-inner-state-registry check-single-consumer-channels check-activation-saturation concept-relation-digest check-concept-relation-digest-liveness check-env-compose-parity
 
 SERVICE ?=
 ARGS ?=
@@ -44,3 +44,28 @@ check-single-consumer-channels:
 # Requires POSTGRES_URI (see services/orion-hub/.env).
 check-activation-saturation:
 	@python scripts/check_activation_saturation.py $(if $(FAIL_ABOVE),--fail-above $(FAIL_ABOVE),)
+
+# Runs the concept-relation decision digest (see services/orion-memory-consolidation/
+# README.md, "Cross-window concept-relation resolution"). This is the actual cron
+# entry point -- see that README's "Scheduled maintenance" section for the crontab
+# line. Requires POSTGRES_URI.
+concept-relation-digest:
+	@python scripts/concept_relation_digest.py
+
+# Fail-safe for the above: fails if the oldest undigested
+# memory_concept_relation_decisions row is older than --max-age-hours (default 3h),
+# which only happens if the digest cron entry died, was dropped after a host
+# migration, or the job is crashing. Requires POSTGRES_URI.
+check-concept-relation-digest-liveness:
+	@python scripts/check_concept_relation_digest_liveness.py $(if $(MAX_AGE_HOURS),--max-age-hours $(MAX_AGE_HOURS),)
+
+# Diffs a service's .env_example keys against its docker-compose.yml environment:
+# list. A missing key is a working accident today only if the service's Dockerfile
+# bakes .env into the image directly (see services/orion-recall's history) -- this
+# gate exists so that accident can't silently rot further.
+check-env-compose-parity:
+	@if [ -z "$(SERVICE)" ]; then \
+		echo "usage: make check-env-compose-parity SERVICE=<service-name>"; \
+		exit 1; \
+	fi
+	@python scripts/check_service_env_compose_parity.py $(SERVICE)

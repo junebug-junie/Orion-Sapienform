@@ -59,6 +59,18 @@ When cortex-exec logs `RPC timeout waiting on orion:exec:result:RecallService:..
 
 Provenance: `.env_example` → `docker-compose.yml` → `services/orion-recall/app/settings.py`
 
+**Gotcha: `docker exec ... env` does not prove what this service actually reads.** This service's `Dockerfile` does `COPY services/orion-recall /app` at build time, baking `.env` directly into the image; `settings.py`'s pydantic-settings `Config` also declares `env_file=".env"`, so it reads that baked-in file directly, not just docker-compose's `environment:` list. `docker exec orion-<node>-recall env` only shows the OS-level environment docker-compose actually injected -- if a key exists in `.env`/`.env_example` but is missing from `docker-compose.yml`'s `environment:` block, `docker exec ... env` will show nothing for it even though the app is reading a real value from the baked-in file. This bit real verification once (`RECALL_GRAPHITI_IN_CHAT`, 2026-07-13) -- the correct way to check what this service actually sees is to ask its own `Settings` object directly:
+
+```bash
+docker exec orion-<node>-recall python -c "from app.settings import settings; print(settings.<KEY>)"
+```
+
+**`docker-compose.yml`'s `environment:` block must still list every `.env_example` key**, even though the baked-`.env` fallback covers today's gap -- if this service's Dockerfile ever moves away from baking `.env` into the image, any key missing from `environment:` would silently stop being read with no baked-in fallback left. Gate this with:
+
+```bash
+make check-env-compose-parity SERVICE=orion-recall
+```
+
 ### Bus + runtime
 
 | Variable | Default | Notes |

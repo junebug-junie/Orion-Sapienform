@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import json
 from typing import Any
 from uuid import NAMESPACE_URL, uuid5
 
@@ -13,6 +12,7 @@ from orion.cognition.chat_history_compactor.constants import (
     JOURNAL_TITLE_MAX_CHARS,
 )
 from orion.cognition.compactor.budget import assert_fields_within_budget
+from orion.cognition.compactor.digest import parse_compactor_digest_json
 from orion.schemas.actions.chat_history_compactor import ChatHistoryCompactorDigestV1
 from orion.schemas.discussion_window import DiscussionWindowResultV1
 
@@ -83,10 +83,7 @@ def build_quiet_day_chat_digest(*, window_label: str) -> ChatHistoryCompactorDig
 
 
 def parse_chat_history_compactor_digest_json(raw: str) -> ChatHistoryCompactorDigestV1:
-    payload = json.loads(raw)
-    if not isinstance(payload, dict):
-        raise ValueError("compactor_digest_not_object")
-    return ChatHistoryCompactorDigestV1.model_validate(payload)
+    return parse_compactor_digest_json(raw, ChatHistoryCompactorDigestV1)
 
 
 def stable_chat_compactor_journal_entry_id(*, workflow_id: str, compactor_index: str) -> str:

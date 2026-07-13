@@ -16,34 +16,12 @@ INDEX = "chat_compactor:day:2026-07-08"
 async def test_upsert_indexed_compactor_card_updates_existing() -> None:
     existing_id = uuid4()
     conn = AsyncMock()
-    # FOR UPDATE → before snapshot → UPDATE RETURNING → after snapshot
+    # FOR UPDATE lookup (with before snapshot) → UPDATE RETURNING after snapshot
     conn.fetchrow = AsyncMock(
         side_effect=[
-            {"card_id": existing_id},
-            {"j": {"card_id": str(existing_id), "summary": "old"}},
             {
                 "card_id": existing_id,
-                "slug": "chat-digest",
-                "types": ["fact"],
-                "anchor_class": "event",
-                "status": "active",
-                "confidence": "likely",
-                "sensitivity": "private",
-                "priority": "high_recall",
-                "visibility_scope": ["chat"],
-                "time_horizon": None,
-                "provenance": "chat_compactor",
-                "trust_source": None,
-                "project": None,
-                "title": "Chat digest",
-                "summary": "Updated summary",
-                "still_true": None,
-                "anchors": None,
-                "tags": ["chat_dev_digest"],
-                "evidence": [],
-                "subschema": {"compactor_index": INDEX},
-                "created_at": "2026-07-09T00:00:00+00:00",
-                "updated_at": "2026-07-09T01:00:00+00:00",
+                "j": {"card_id": str(existing_id), "summary": "old"},
             },
             {"j": {"card_id": str(existing_id), "summary": "Updated summary"}},
         ]

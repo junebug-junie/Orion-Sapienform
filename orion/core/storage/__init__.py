@@ -4,7 +4,6 @@ from orion.core.storage.memory_cards import (  # noqa: F401
     apply_memory_cards_schema,
     add_edge,
     card_exists_by_fingerprint,
-    find_active_card_by_compactor_index,
     find_active_card_by_compactor_slot,
     get_card,
     insert_card,

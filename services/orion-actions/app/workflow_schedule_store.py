@@ -137,7 +137,12 @@ class WorkflowScheduleStore:
         if next_run is None:
             return None
         with self._lock:
-            existing = self._schedules.get(request.request_id)
+            # _schedules is keyed by schedule_id; the dispatch upsert key is the
+            # caller's request_id, so match on the record field.
+            existing = next(
+                (item for item in self._schedules.values() if item.request_id == request.request_id),
+                None,
+            )
             record = WorkflowScheduleRecordV1(
                 schedule_id=(existing.schedule_id if existing else str(uuid4())),
                 request_id=request.request_id,

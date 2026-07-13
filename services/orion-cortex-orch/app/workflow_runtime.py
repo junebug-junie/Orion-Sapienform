@@ -1911,36 +1911,36 @@ def _resolve_github_compactor_lookback_days(req: CortexClientRequest) -> int:
     return DEFAULT_LOOKBACK_DAYS
 
 
-async def _run_github_compactor_digest(
+def _build_compactor_digest_request(
     *,
-    call_verb_runtime,
-    bus: OrionBusAsync,
-    source: ServiceRef,
-    correlation_id: str,
-    causality_chain: list | None,
-    trace: dict | None,
     req: CortexClientRequest,
+    correlation_id: str,
     workflow_id: str,
-    fetch_payload: Dict[str, Any],
-) -> GithubCompactorDigestV1:
+    verb: str,
+    prompt: str,
+    input_key: str,
+    input_payload: Dict[str, Any],
+    llm_route: str | None = None,
+) -> CortexClientRequest:
+    """Shared brain-lane digest request shape for compactor workflows."""
     synth_req = req.model_copy(deep=True)
     synth_req.mode = "brain"
     synth_req.route_intent = "none"
-    synth_req.verb = "github_compactor_digest_v1"
+    synth_req.verb = verb
     synth_req.packs = []
     synth_req.context.messages = []
-    synth_req.context.raw_user_text = "Compact merged PR activity into repo development digest."
-    synth_req.context.user_message = synth_req.context.raw_user_text
+    synth_req.context.raw_user_text = prompt
+    synth_req.context.user_message = prompt
     synth_req.context.metadata = dict(synth_req.context.metadata or {})
-    synth_req.context.metadata["workflow_subverb"] = "github_compactor_digest_v1"
+    synth_req.context.metadata["workflow_subverb"] = verb
     synth_req.context.metadata["workflow_id"] = workflow_id
-    synth_req.context.metadata["github_compactor_input"] = trim_github_compactor_input(fetch_payload)
+    synth_req.context.metadata[input_key] = input_payload
     synth_req.context.metadata.update(
         _workflow_execution_envelope(
             req=req,
             correlation_id=correlation_id,
             workflow_id=workflow_id,
-            workflow_subverb="github_compactor_digest_v1",
+            workflow_subverb=verb,
         )
     )
     synth_req.recall.enabled = False
@@ -1955,6 +1955,59 @@ async def _run_github_compactor_digest(
             "reasoning": {"effort": "none"},
         }
     )
+    if llm_route is not None:
+        synth_req.options["llm_route"] = llm_route
+    return synth_req
+
+
+def _compactor_digest_from_payload(
+    payload: Dict[str, Any],
+    *,
+    metadata_key: str,
+    model_cls,
+    parse_json,
+    error_prefix: str,
+):
+    """Validate a digest verb payload and extract the parsed digest.
+
+    Returns ``(digest, None)`` on success, ``(None, error_token)`` on failure so
+    callers choose between fail-loud (github) and route retry (chat).
+    """
+    if payload.get("ok") is False:
+        return None, f"{error_prefix}:{payload.get('error') or payload.get('status')}"
+    result_metadata = payload.get("metadata") if isinstance(payload.get("metadata"), dict) else {}
+    if result_metadata.get("structured_output_rejected"):
+        return None, f"{error_prefix}:structured_output_rejected"
+    digest_raw = result_metadata.get(metadata_key)
+    try:
+        if isinstance(digest_raw, dict):
+            return model_cls.model_validate(digest_raw), None
+        return parse_json(str(payload.get("final_text") or "")), None
+    except (ValueError, TypeError) as exc:
+        return None, f"{error_prefix}:invalid_json:{exc}"
+
+
+async def _run_github_compactor_digest(
+    *,
+    call_verb_runtime,
+    bus: OrionBusAsync,
+    source: ServiceRef,
+    correlation_id: str,
+    causality_chain: list | None,
+    trace: dict | None,
+    req: CortexClientRequest,
+    workflow_id: str,
+    fetch_payload: Dict[str, Any],
+) -> GithubCompactorDigestV1:
+    synth_req = _build_compactor_digest_request(
+        req=req,
+        correlation_id=correlation_id,
+        workflow_id=workflow_id,
+        verb="github_compactor_digest_v1",
+        prompt="Compact merged PR activity into repo development digest.",
+        input_key="github_compactor_input",
+        input_payload=trim_github_compactor_input(fetch_payload),
+    )
     verb_result = await call_verb_runtime(
         bus,
         source=source,
@@ -1966,20 +2019,15 @@ async def _run_github_compactor_digest(
     )
     if not verb_result.ok:
         raise WorkflowExecutionError(f"github_compactor_digest_failed:{verb_result.error or 'verb_failed'}")
-    payload = _extract_result_payload(verb_result)
-    if payload.get("ok") is False:
-        raise WorkflowExecutionError(f"github_compactor_digest_failed:{payload.get('error') or payload.get('status')}")
-    result_metadata = payload.get("metadata") if isinstance(payload.get("metadata"), dict) else {}
-    if result_metadata.get("structured_output_rejected"):
-        raise WorkflowExecutionError("github_compactor_digest_failed:structured_output_rejected")
-    digest_raw = result_metadata.get("github_compactor_digest")
-    if isinstance(digest_raw, dict):
-        digest = GithubCompactorDigestV1.model_validate(digest_raw)
-    else:
-        try:
-            digest = parse_github_compactor_digest_json(str(payload.get("final_text") or ""))
-        except (ValueError, TypeError) as exc:
-            raise WorkflowExecutionError(f"github_compactor_digest_failed:invalid_json:{exc}") from exc
+    digest, error = _compactor_digest_from_payload(
+        _extract_result_payload(verb_result),
+        metadata_key="github_compactor_digest",
+        model_cls=GithubCompactorDigestV1,
+        parse_json=parse_github_compactor_digest_json,
+        error_prefix="github_compactor_digest_failed",
+    )
+    if error:
+        raise WorkflowExecutionError(error)
     try:
         assert_digest_within_budget(digest)
     except ValueError as exc:
@@ -2194,38 +2242,15 @@ async def _run_chat_history_compactor_digest(
     last_error: str | None = None
     digest_input = trim_chat_history_compactor_input(window)
     for route in ("chat", "quick"):
-        synth_req = req.model_copy(deep=True)
-        synth_req.mode = "brain"
-        synth_req.route_intent = "none"
-        synth_req.verb = "chat_history_compactor_digest_v1"
-        synth_req.packs = []
-        synth_req.context.messages = []
-        synth_req.context.raw_user_text = "Compact recent Hub chat into a durable memory digest."
-        synth_req.context.user_message = synth_req.context.raw_user_text
-        synth_req.context.metadata = dict(synth_req.context.metadata or {})
-        synth_req.context.metadata["workflow_subverb"] = "chat_history_compactor_digest_v1"
-        synth_req.context.metadata["workflow_id"] = workflow_id
-        synth_req.context.metadata["chat_history_compactor_input"] = digest_input
-        synth_req.context.metadata.update(
-            _workflow_execution_envelope(
-                req=req,
-                correlation_id=correlation_id,
-                workflow_id=workflow_id,
-                workflow_subverb="chat_history_compactor_digest_v1",
-            )
-        )
-        synth_req.recall.enabled = False
-        synth_req.recall.required = False
-        synth_req.recall.max_items = 0
-        synth_req.options = dict(synth_req.options or {})
-        synth_req.options.update(
-            {
-                "workflow_execution": True,
-                "response_format": {"type": "json_object"},
-                "return_json": True,
-                "reasoning": {"effort": "none"},
-                "llm_route": route,
-            }
+        synth_req = _build_compactor_digest_request(
+            req=req,
+            correlation_id=correlation_id,
+            workflow_id=workflow_id,
+            verb="chat_history_compactor_digest_v1",
+            prompt="Compact recent Hub chat into a durable memory digest.",
+            input_key="chat_history_compactor_input",
+            input_payload=digest_input,
+            llm_route=route,
         )
         verb_result = await call_verb_runtime(
             bus,
@@ -2239,22 +2264,15 @@ async def _run_chat_history_compactor_digest(
         if not verb_result.ok:
             last_error = f"chat_compactor_digest_failed:{verb_result.error or 'verb_failed'}"
             continue
-        payload = _extract_result_payload(verb_result)
-        if payload.get("ok") is False:
-            last_error = f"chat_compactor_digest_failed:{payload.get('error') or payload.get('status')}"
-            continue
-        result_metadata = payload.get("metadata") if isinstance(payload.get("metadata"), dict) else {}
-        if result_metadata.get("structured_output_rejected"):
-            last_error = "chat_compactor_digest_failed:structured_output_rejected"
-            continue
-        digest_raw = result_metadata.get("chat_history_compactor_digest")
-        try:
-            if isinstance(digest_raw, dict):
-                digest = ChatHistoryCompactorDigestV1.model_validate(digest_raw)
-            else:
-                digest = parse_chat_history_compactor_digest_json(str(payload.get("final_text") or ""))
-        except (ValueError, TypeError) as exc:
-            last_error = f"chat_compactor_digest_failed:invalid_json:{exc}"
+        digest, error = _compactor_digest_from_payload(
+            _extract_result_payload(verb_result),
+            metadata_key="chat_history_compactor_digest",
+            model_cls=ChatHistoryCompactorDigestV1,
+            parse_json=parse_chat_history_compactor_digest_json,
+            error_prefix="chat_compactor_digest_failed",
+        )
+        if error:
+            last_error = error
             continue
         try:
             assert_chat_compactor_digest_within_budget(digest)
@@ -2387,14 +2405,19 @@ async def _execute_chat_history_compactor_pass(
                 turn_count=window.turn_count,
             )
             card_id = str(persisted_card_id) if persisted_card_id is not None else None
-        except RuntimeError as exc:
-            if "recall_pg_dsn_unavailable" not in str(exc):
-                raise
-            card_persist_skipped_reason = "recall_pg_dsn_unavailable"
+        except Exception as exc:
+            # Degrade instead of discarding the digest: the journal write below
+            # still records it, and the indexed upsert self-heals on a re-run.
+            card_persist_skipped_reason = (
+                "recall_pg_dsn_unavailable"
+                if "recall_pg_dsn_unavailable" in str(exc)
+                else f"card_persist_error:{type(exc).__name__}"
+            )
             logger.warning(
                 "chat_history_compactor_card_persist_skipped corr=%s reason=%s",
                 correlation_id,
                 card_persist_skipped_reason,
+                exc_info=True,
             )
 
     # Spec: journal append fires only for non-quiet windows (no empty-shell stubs).

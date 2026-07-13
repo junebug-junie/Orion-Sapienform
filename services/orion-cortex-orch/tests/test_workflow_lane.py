@@ -1065,6 +1065,33 @@ def test_concept_induction_regression_synth_then_journal_emit(monkeypatch, tmp_p
     assert any('"journal_content_source": "llm_synthesis"' in rec.message for rec in caplog.records)
 
 
+def _load_sql_writer_worker():
+    """Load orion-sql-writer's worker under its own ``app`` package.
+
+    The worker imports ``app.settings``/``app.db``/``app.models``; in this test
+    run ``app`` is cortex-orch's package, so swap the name out for the exec and
+    restore it afterwards.
+    """
+    sql_writer_root = REPO_ROOT / "services" / "orion-sql-writer"
+    saved = {name: mod for name, mod in sys.modules.items() if name == "app" or name.startswith("app.")}
+    for name in saved:
+        del sys.modules[name]
+    sys.path.insert(0, str(sql_writer_root))
+    try:
+        spec = importlib.util.spec_from_file_location(
+            "sql_writer_worker_orch_e2e", sql_writer_root / "app" / "worker.py"
+        )
+        assert spec and spec.loader
+        module = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(module)
+        return module
+    finally:
+        sys.path.remove(str(sql_writer_root))
+        for name in [n for n in list(sys.modules) if n == "app" or n.startswith("app.")]:
+            del sys.modules[name]
+        sys.modules.update(saved)
+
+
 def test_concept_induction_synthesize_to_journal_end_to_end_write_then_sql_persist(monkeypatch, tmp_path) -> None:
     from app import workflow_runtime
 
@@ -1111,23 +1138,21 @@ def test_concept_induction_synthesize_to_journal_end_to_end_write_then_sql_persi
     assert write_env.payload["body"] == llm_body
     assert write_env.payload["body"] != result.metadata["workflow"]["main_result"]
 
-    sql_writer_path = REPO_ROOT / "services" / "orion-sql-writer" / "app" / "worker.py"
-    spec = importlib.util.spec_from_file_location("sql_writer_worker_orch_e2e", sql_writer_path)
-    assert spec and spec.loader
-    sql_worker = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(sql_worker)
+    sql_worker = _load_sql_writer_worker()
 
-    captured: dict[str, object] = {}
+    captured: list[tuple[str, dict]] = []
 
     def _fake_write_row(sql_model_cls, data):
-        captured["table"] = sql_model_cls.__tablename__
-        captured["data"] = dict(data)
+        captured.append((sql_model_cls.__tablename__, dict(data)))
         return True
 
     monkeypatch.setattr(sql_worker, "_write_row", _fake_write_row)
     asyncio.run(sql_worker.handle_envelope(write_env, bus=None))
-    assert captured["table"] == "journal_entries"
-    written = captured["data"]
+    # journal.entry.write.v1 may fan out extra rows (e.g. evidence_units);
+    # the journal row itself must be among them.
+    journal_rows = [data for table, data in captured if table == "journal_entries"]
+    assert len(journal_rows) == 1
+    written = journal_rows[0]
     assert written["title"] == "Synth Review"
     assert written["body"] == llm_body
     assert written["body"] != result.metadata["workflow"]["main_result"]
@@ -1644,11 +1669,17 @@ def test_concept_induction_pass_fails_honestly_when_profiles_missing(monkeypatch
     assert result.error['code'] == 'concept_profiles_unavailable'
 
 
-def test_concept_induction_pass_reports_placeholder_store_as_unconfigured(monkeypatch) -> None:
+def test_concept_induction_pass_reports_placeholder_store_as_unconfigured(monkeypatch, tmp_path) -> None:
     from app import workflow_runtime
+    from orion.spark.concept_induction import profile_repository
+
+    # Hermetic placeholder path: the real /tmp default may exist on the host
+    # (leaked from a live run) and would flip this test's outcome.
+    placeholder = str(tmp_path / 'concept-induction-state.json')
+    monkeypatch.setattr(profile_repository, 'DEFAULT_CONCEPT_STORE_PATH', placeholder)
 
     class FakeConceptSettings(SimpleNamespace):
-        store_path = '/tmp/concept-induction-state.json'
+        store_path = placeholder
         subjects = ['orion']
 
     monkeypatch.setattr(workflow_runtime, 'build_orch_concept_profile_settings', lambda *_args, **_kwargs: FakeConceptSettings())
@@ -2687,6 +2718,161 @@ def test_chat_history_compactor_pass_digest_chat_then_quick_retry(monkeypatch) -
     assert result.ok is True
     assert routes == ["chat", "quick"]
     assert result.metadata["workflow"].get("digest_llm_route") == "quick"
+
+
+def test_chat_history_compactor_pass_digest_from_final_text_only(monkeypatch) -> None:
+    """Production path: digest arrives only as final_text JSON, no metadata dict."""
+    bus = DummyBus()
+    card_calls: dict = {}
+
+    async def _fake_call_verb_runtime(*args, **kwargs):
+        req = kwargs["client_request"]
+        if req.verb == "skills.chat.discussion_window.v1":
+            skill = {
+                "window_start_utc": "2026-07-09T04:00:00+00:00",
+                "window_end_utc": "2026-07-09T10:00:00+00:00",
+                "turn_count": 1,
+                "turns": [
+                    {
+                        "created_at": "2026-07-09T05:00:00+00:00",
+                        "correlation_id": "corr-ft",
+                        "prompt": "hi",
+                        "response": "hello",
+                    }
+                ],
+                "transcript_text": "user: hi\norion: hello",
+                "selection_strategy": "time_bound_then_contiguous_suffix",
+            }
+            return DummyVerbResult(
+                payload={
+                    "result": {
+                        "status": "success",
+                        "final_text": json.dumps(skill),
+                        "metadata": {"skill_result": skill},
+                    }
+                }
+            )
+        if req.verb == "chat_history_compactor_digest_v1":
+            digest = {
+                "card_summary": "Digest parsed from final_text.",
+                "journal_title": "Chat digest",
+                "journal_body": "Parsed via the final_text JSON path.",
+                "turn_refs": ["corr-ft"],
+            }
+            return DummyVerbResult(
+                payload={
+                    "result": {
+                        "status": "success",
+                        "final_text": json.dumps(digest),
+                        "metadata": {},
+                    }
+                }
+            )
+        raise AssertionError(f"unexpected verb {req.verb}")
+
+    async def _fake_persist_card(**kwargs):
+        card_calls.update(kwargs)
+        return uuid4()
+
+    monkeypatch.setattr(
+        "app.workflow_runtime.persist_chat_history_compactor_memory_card",
+        _fake_persist_card,
+    )
+
+    result = asyncio.run(
+        execute_chat_workflow(
+            bus=bus,
+            source=ServiceRef(name="cortex-orch"),
+            req=_req("chat_history_compactor_pass"),
+            correlation_id="00000000-0000-0000-0000-000000000306",
+            causality_chain=[],
+            trace={},
+            call_verb_runtime=_fake_call_verb_runtime,
+        )
+    )
+    assert result.ok is True
+    assert card_calls.get("digest") is not None
+    assert card_calls["digest"].card_summary == "Digest parsed from final_text."
+    assert result.metadata["workflow"].get("digest_llm_route") == "chat"
+    assert any(ch == "orion:journal:write" for ch, _ in bus.published)
+
+
+def test_chat_history_compactor_pass_card_persist_error_degrades(monkeypatch) -> None:
+    """A transient DB error on card persist must not discard the digest."""
+    bus = DummyBus()
+
+    async def _fake_call_verb_runtime(*args, **kwargs):
+        req = kwargs["client_request"]
+        if req.verb == "skills.chat.discussion_window.v1":
+            skill = {
+                "window_start_utc": "2026-07-09T04:00:00+00:00",
+                "window_end_utc": "2026-07-09T10:00:00+00:00",
+                "turn_count": 1,
+                "turns": [
+                    {
+                        "created_at": "2026-07-09T05:00:00+00:00",
+                        "correlation_id": "corr-db",
+                        "prompt": "hi",
+                        "response": "hello",
+                    }
+                ],
+                "transcript_text": "user: hi\norion: hello",
+                "selection_strategy": "time_bound_then_contiguous_suffix",
+            }
+            return DummyVerbResult(
+                payload={
+                    "result": {
+                        "status": "success",
+                        "final_text": json.dumps(skill),
+                        "metadata": {"skill_result": skill},
+                    }
+                }
+            )
+        if req.verb == "chat_history_compactor_digest_v1":
+            digest = {
+                "card_summary": "Digest survives persist failure.",
+                "journal_title": "Chat digest",
+                "journal_body": "Journal still records the digest.",
+                "turn_refs": ["corr-db"],
+            }
+            return DummyVerbResult(
+                payload={
+                    "result": {
+                        "status": "success",
+                        "final_text": json.dumps(digest),
+                        "metadata": {"chat_history_compactor_digest": digest},
+                    }
+                }
+            )
+        raise AssertionError(f"unexpected verb {req.verb}")
+
+    async def _failing_persist_card(**kwargs):
+        raise ConnectionError("connection reset by peer")
+
+    monkeypatch.setattr(
+        "app.workflow_runtime.persist_chat_history_compactor_memory_card",
+        _failing_persist_card,
+    )
+
+    result = asyncio.run(
+        execute_chat_workflow(
+            bus=bus,
+            source=ServiceRef(name="cortex-orch"),
+            req=_req("chat_history_compactor_pass"),
+            correlation_id="00000000-0000-0000-0000-000000000307",
+            causality_chain=[],
+            trace={},
+            call_verb_runtime=_fake_call_verb_runtime,
+        )
+    )
+    assert result.ok is True
+    assert result.metadata["workflow"]["card_id"] is None
+    assert result.metadata["workflow"]["card_persist_skipped_reason"] == "card_persist_error:ConnectionError"
+    # Journal write still carries the digest.
+    assert any(ch == "orion:journal:write" for ch, _ in bus.published)
+    assert result.metadata["workflow"]["persisted"] == [
+        f"journal.entry.write.v1:{result.metadata['workflow']['journal_entry']['entry_id']}"
+    ]
 
 
 def test_chat_history_compactor_pass_over_budget_fails_without_persist(monkeypatch) -> None:

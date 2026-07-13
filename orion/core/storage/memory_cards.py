@@ -334,24 +334,6 @@ async def supersede_and_insert_compactor_card(
             return await _insert_card_on_conn(conn, card, actor=actor, op="create")
 
 
-async def find_active_card_by_compactor_index(pool: asyncpg.Pool, index: str) -> Optional[MemoryCardV1]:
-    key = (index or "").strip()
-    if not key:
-        return None
-    async with pool.acquire() as conn:
-        row = await conn.fetchrow(
-            """
-            SELECT * FROM memory_cards
-            WHERE status = 'active'
-              AND subschema ->> 'compactor_index' = $1
-            ORDER BY updated_at DESC
-            LIMIT 1
-            """,
-            key,
-        )
-        return _row_to_card(row) if row else None
-
-
 async def upsert_indexed_compactor_card(
     pool: asyncpg.Pool,
     *,
@@ -375,7 +357,7 @@ async def upsert_indexed_compactor_card(
         async with conn.transaction():
             existing = await conn.fetchrow(
                 """
-                SELECT card_id FROM memory_cards
+                SELECT card_id, to_jsonb(memory_cards.*) AS j FROM memory_cards
                 WHERE status = 'active'
                   AND subschema ->> 'compactor_index' = $1
                 ORDER BY updated_at DESC
@@ -388,16 +370,12 @@ async def upsert_indexed_compactor_card(
                 return await _insert_card_on_conn(conn, card, actor=actor, op="create")
 
             cid = existing["card_id"]
-            before = await conn.fetchrow(
-                "SELECT to_jsonb(mc.*) AS j FROM memory_cards mc WHERE mc.card_id = $1",
-                cid,
-            )
             th_val = _jsonb_param(
                 card.time_horizon.model_dump(mode="json") if card.time_horizon else None
             )
             evidence_val = _jsonb_param([e.model_dump(mode="json") for e in card.evidence])
             sub_val = _jsonb_param(dict(card.subschema or {}))
-            await conn.fetchrow(
+            after = await conn.fetchrow(
                 """
                 UPDATE memory_cards SET
                   title = $2,
@@ -410,7 +388,7 @@ async def upsert_indexed_compactor_card(
                   provenance = $9,
                   updated_at = now()
                 WHERE card_id = $1
-                RETURNING *
+                RETURNING to_jsonb(memory_cards.*) AS j
                 """,
                 cid,
                 card.title,
@@ -422,10 +400,6 @@ async def upsert_indexed_compactor_card(
                 card.priority,
                 card.provenance,
             )
-            after = await conn.fetchrow(
-                "SELECT to_jsonb(mc.*) AS j FROM memory_cards mc WHERE mc.card_id = $1",
-                cid,
-            )
             await conn.execute(
                 """
                 INSERT INTO memory_card_history (card_id, edge_id, op, actor, "before", "after")
@@ -433,7 +407,7 @@ async def upsert_indexed_compactor_card(
                 """,
                 cid,
                 actor,
-                json.dumps(before["j"] if before else {}),
+                json.dumps(existing["j"] or {}),
                 json.dumps(after["j"] if after else {}),
             )
             return cid

@@ -35,6 +35,13 @@ services:
       - CORPUS_SINK_MAX_BYTES=${CORPUS_SINK_MAX_BYTES:-200000000}
       - CORPUS_SINK_ROTATED_KEEP=${CORPUS_SINK_ROTATED_KEEP:-5}
 
+    volumes:
+      # FIELD_CHANNEL_CORPUS_PATH defaults under /mnt/telemetry (same host
+      # mount orion-spark-introspector already uses for its own corpus
+      # paths) -- without this mount the path resolves inside the
+      # container's ephemeral filesystem and silently vanishes on restart.
+      - ${TELEMETRY_ROOT:-/mnt/telemetry}:/mnt/telemetry
+
 networks:
   app-net:
     external: true

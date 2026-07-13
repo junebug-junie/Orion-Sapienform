@@ -33,6 +33,7 @@ Provenance: `.env_example` → `docker-compose.yml` → `settings.py`
 | `REDIS_URL` | ... | Redis connection. |
 | `PUBLISH_CORTEX_ORCH_GRAMMAR` | `true` | Publish route arbitration as a `GrammarEventV1` trace. Fire-and-forget; a publish failure never affects the chat response. |
 | `GRAMMAR_EVENT_CHANNEL` | `orion:grammar:event` | Channel used for the route-arbitration grammar trace above. |
+| `EXEC_LANE_ROUTING_ENABLED` | `true` | Sends `spark`/`background`-lane verbs (`introspect_spark`, `dream_cycle`, `journal.compose`, `log_orion_metacognition`, `agent`/`council` mode) to their own dedicated cortex-exec channel instead of the shared `orion:verb:request` broadcast. Default `true` since 2026-07-13 -- with it off, non-chat verbs were independently double-executed by both the legacy and chat-lane cortex-exec containers (confirmed live, real duplicate LLM calls). Chat-lane traffic always uses the shared channel regardless of this flag -- `use_direct_exec` requires `lane != "chat"`. |
 
 ## Running & Testing
 

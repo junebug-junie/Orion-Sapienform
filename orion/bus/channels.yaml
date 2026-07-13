@@ -61,6 +61,7 @@ channels:
     schema_id: "ChatRequestPayload"
     producer_services: ["orion-hub"]
     consumer_services: ["orion-cortex-orch"]
+    single_consumer: true
     stability: "experimental"
     since: "2026-01-08"
 
@@ -548,6 +549,7 @@ channels:
     schema_id: "WorkflowScheduleManageRequestV1"
     producer_services: ["orion-cortex-orch"]
     consumer_services: ["orion-actions"]
+    single_consumer: true
     stability: "experimental"
     since: "2026-03-24"
 
@@ -680,6 +682,7 @@ channels:
     schema_id: "RdfBuildRequest"
     producer_services: ["orion-cortex-exec"]
     consumer_services: ["orion-rdf-writer"]
+    single_consumer: true
     stability: "experimental"
     since: "2026-01-08"
 
@@ -879,6 +882,7 @@ channels:
     schema_id: "PadRpcRequestV1"
     producer_services: ["*"]
     consumer_services: ["orion-landing-pad"]
+    single_consumer: true
     stability: "experimental"
     since: "2026-01-10"
 
@@ -1437,6 +1441,7 @@ channels:
     schema_id: "EmbeddingGenerateV1"
     producer_services: ["orion-vector-writer", "orion-hub", "orion-cortex-exec", "*"]
     consumer_services: ["orion-vector-host"]
+    single_consumer: true
     stability: "experimental"
     since: "2026-01-10"
 
@@ -1453,6 +1458,7 @@ channels:
     schema_id: "StateGetLatestRequest"
     producer_services: ["*"]
     consumer_services: ["orion-state-service"]
+    single_consumer: true
     stability: "experimental"
     since: "2026-01-10"
 
@@ -1551,6 +1557,7 @@ channels:
     schema_id: "TTSRequestPayload"
     producer_services: ["orion-hub"]
     consumer_services: ["orion-whisper-tts"]
+    single_consumer: true
     stability: "experimental"
     since: "2026-01-14"
 
@@ -1567,6 +1574,7 @@ channels:
     schema_id: "STTRequestPayload"
     producer_services: ["orion-hub"]
     consumer_services: ["orion-whisper-tts"]
+    single_consumer: true
 
   - name: "orion:stt:result:*"
     kind: "result"
@@ -2106,6 +2114,7 @@ channels:
     message_kind: "stance.react.request.v1"
     producer_services: ["orion-hub"]
     consumer_services: ["orion-thought"]
+    single_consumer: true
     stability: "experimental"
     since: "2026-07-05"
 
@@ -2204,6 +2213,7 @@ channels:
     message_kind: "harness.run.request.v1"
     producer_services: ["orion-hub"]
     consumer_services: ["orion-harness-governor"]
+    single_consumer: true
     stability: "experimental"
     since: "2026-07-05"
 
@@ -2248,6 +2258,7 @@ channels:
     message_kind: "harness.draft.molecule.v1"
     producer_services: ["orion-harness-governor"]
     consumer_services: ["orion-substrate-runtime"]
+    single_consumer: true
     stability: "experimental"
     since: "2026-07-05"
 

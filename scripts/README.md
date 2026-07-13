@@ -49,7 +49,7 @@ Expected output when the mesh is clean:
 ```
 OK 1 orion:verb:request
 ...
-single_consumer gate OK: 20 channel(s) checked, 0 warning(s)
+single_consumer gate OK: 31 channel(s) checked, 0 warning(s)
 ```
 
 ## ChatGPT Export Import (Bus Fanout)

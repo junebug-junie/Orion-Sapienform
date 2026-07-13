@@ -28,41 +28,46 @@ CORTEX_EXEC_LANES = (
 def test_evaluate_counts_all_ones_is_clean() -> None:
     counts = {"orion:verb:request": 1, "orion:cortex:exec:request": 1}
 
-    violations, warnings = gate.evaluate_counts(counts)
+    violations, warnings, statuses = gate.evaluate_counts(counts)
 
     assert violations == []
     assert warnings == []
+    assert set(statuses.values()) == {"OK"}
 
 
 def test_evaluate_counts_two_subscribers_is_a_violation_naming_the_channel() -> None:
     counts = {"orion:verb:request": 2, "orion:cortex:exec:request": 1}
 
-    violations, warnings = gate.evaluate_counts(counts)
+    violations, warnings, statuses = gate.evaluate_counts(counts)
 
     assert len(violations) == 1
     assert "orion:verb:request" in violations[0]
     assert "2 subscribers" in violations[0]
     assert warnings == []
+    assert statuses["orion:verb:request"] == "FAIL"
+    assert statuses["orion:cortex:exec:request"] == "OK"
 
 
 def test_evaluate_counts_zero_is_a_warning_by_default() -> None:
     counts = {"orion:dream:trigger": 0}
 
-    violations, warnings = gate.evaluate_counts(counts)
+    violations, warnings, statuses = gate.evaluate_counts(counts)
 
     assert violations == []
     assert len(warnings) == 1
     assert "orion:dream:trigger" in warnings[0]
+    assert statuses["orion:dream:trigger"] == "WARN"
 
 
 def test_evaluate_counts_zero_is_a_violation_under_strict_zero() -> None:
     counts = {"orion:dream:trigger": 0}
 
-    violations, warnings = gate.evaluate_counts(counts, strict_zero=True)
+    violations, warnings, statuses = gate.evaluate_counts(counts, strict_zero=True)
 
     assert len(violations) == 1
     assert "orion:dream:trigger" in violations[0]
     assert warnings == []
+    assert statuses["orion:dream:trigger"] == "FAIL"
 
 
 # --- catalog wiring: the real channels.yaml carries the annotations ----------
@@ -157,22 +162,6 @@ def test_parse_numsub_output_plain_raw_form() -> None:
     }
 
 
-def test_parse_numsub_output_numbered_interactive_form() -> None:
-    stdout = (
-        '1) "orion:verb:request"\n'
-        "2) (integer) 1\n"
-        '3) "orion:cortex:exec:request"\n'
-        "4) (integer) 3\n"
-    )
-
-    counts = gate.parse_numsub_output(stdout)
-
-    assert counts == {
-        "orion:verb:request": 1,
-        "orion:cortex:exec:request": 3,
-    }
-
-
 def test_parse_numsub_output_empty_and_garbage_are_safe() -> None:
     assert gate.parse_numsub_output("") == {}
     assert gate.parse_numsub_output("\n\n") == {}
@@ -230,3 +219,89 @@ def test_main_all_single_subscribers_exits_zero(monkeypatch, capsys) -> None:
 
     assert rc == 0
     assert "gate OK" in capsys.readouterr().out
+
+
+# --- fetch_live_counts fail-closed behavior ------------------------------------
+# redis-cli exits 0 on Redis error replies (NOAUTH, ERR, LOADING, ...) with the
+# error text on stdout. If the gate parsed that as "no counts", every channel
+# would degrade to a benign 0-subscriber warning and the gate would pass while
+# checking nothing. These tests pin the fail-closed contract: a reply that is
+# not a NUMSUB reply is an infra error (RuntimeError -> exit 2), never count 0.
+
+
+class _FakeProc:
+    def __init__(self, stdout: str = "", stderr: str = "", returncode: int = 0):
+        self.stdout = stdout
+        self.stderr = stderr
+        self.returncode = returncode
+
+
+def test_fetch_live_counts_error_reply_raises_not_zero_counts(monkeypatch) -> None:
+    import pytest
+
+    monkeypatch.setattr(
+        gate.subprocess,
+        "run",
+        lambda *a, **kw: _FakeProc(stdout="NOAUTH Authentication required.\n"),
+    )
+
+    with pytest.raises(RuntimeError, match="NOAUTH"):
+        gate.fetch_live_counts("redis://fake:6379/0", ["orion:verb:request"])
+
+
+def test_fetch_live_counts_missing_channel_in_reply_raises(monkeypatch) -> None:
+    import pytest
+
+    # One stray noise line shifts every channel/count pair; a channel with 2
+    # subscribers must surface as an infra error, never as "0 subscribers".
+    noisy = "Warning: banner line\norion:verb:request\n2\n"
+    monkeypatch.setattr(gate.subprocess, "run", lambda *a, **kw: _FakeProc(stdout=noisy))
+
+    with pytest.raises(RuntimeError, match="absent from NUMSUB reply"):
+        gate.fetch_live_counts("redis://fake:6379/0", ["orion:verb:request"])
+
+
+def test_fetch_live_counts_clean_reply_returns_all_channels(monkeypatch) -> None:
+    stdout = "orion:verb:request\n1\norion:dream:trigger\n0\n"
+    monkeypatch.setattr(gate.subprocess, "run", lambda *a, **kw: _FakeProc(stdout=stdout))
+
+    counts = gate.fetch_live_counts(
+        "redis://fake:6379/0", ["orion:verb:request", "orion:dream:trigger"]
+    )
+
+    assert counts == {"orion:verb:request": 1, "orion:dream:trigger": 0}
+
+
+# --- catalog enforcement: annotation cannot silently drift ---------------------
+
+
+def test_every_request_kind_single_consumer_channel_is_annotated() -> None:
+    """Deterministic guard against annotation drift.
+
+    Any catalog entry with kind: request, a concrete (non-glob) name, and
+    exactly one consumer service has execute-once semantics and MUST carry
+    single_consumer: true. A new request channel added without the annotation
+    fails here instead of silently escaping the live gate's coverage.
+    Intentional exceptions go in EXEMPT with a reason.
+    """
+    EXEMPT: set[str] = set()
+
+    import yaml
+
+    data = yaml.safe_load((REPO / "orion" / "bus" / "channels.yaml").read_text())
+    unannotated = []
+    for entry in data["channels"]:
+        name = entry.get("name", "")
+        if (
+            entry.get("kind") == "request"
+            and not any(c in name for c in "*?[")
+            and isinstance(entry.get("consumer_services"), list)
+            and len(entry["consumer_services"]) == 1
+            and entry.get("single_consumer") is not True
+            and name not in EXEMPT
+        ):
+            unannotated.append(name)
+
+    assert unannotated == [], (
+        f"request channels with one consumer missing single_consumer: true: {unannotated}"
+    )

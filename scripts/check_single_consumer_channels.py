@@ -51,21 +51,17 @@ def load_single_consumer_channels(channels_file: Path = DEFAULT_CHANNELS_FILE) -
     Glob-shaped names (e.g. reply patterns like `orion:llm:reply*`) cannot be a
     single concrete pub/sub channel, so a subscriber count is meaningless.
     """
-    entries: list[dict] | None = None
-    if channels_file == DEFAULT_CHANNELS_FILE:
-        # Prefer the shared catalog loader so this gate reads the catalog the
-        # same way scripts/platform/audit_channels.py does.
-        try:
-            from scripts.platform._common import load_channels_catalog
-
-            entries = list(load_channels_catalog(REPO_ROOT).values())
-        except Exception:
-            entries = None  # fall through to plain yaml
-    if entries is None:
+    # Plain yaml only: the shared load_channels_catalog helper falls back to a
+    # regex parse when PyYAML is absent, which silently drops single_consumer
+    # flags -- for a gate, a missing parser must be a loud infra error, not an
+    # empty result.
+    try:
         import yaml
+    except ImportError as exc:
+        raise RuntimeError("PyYAML is required to read channels.yaml") from exc
 
-        data = yaml.safe_load(channels_file.read_text(encoding="utf-8")) or {}
-        entries = [e for e in (data.get("channels") or []) if isinstance(e, dict)]
+    data = yaml.safe_load(channels_file.read_text(encoding="utf-8")) or {}
+    entries = [e for e in (data.get("channels") or []) if isinstance(e, dict)]
 
     names: list[str] = []
     for entry in entries:
@@ -80,26 +76,21 @@ def load_single_consumer_channels(channels_file: Path = DEFAULT_CHANNELS_FILE) -
     return names
 
 
+_REDIS_ERROR_PREFIXES = ("ERR", "NOAUTH", "WRONGPASS", "NOPERM", "LOADING", "MOVED", "CLUSTERDOWN")
+
+
 def parse_numsub_output(stdout: str) -> dict[str, int]:
-    """Parse `redis-cli PUBSUB NUMSUB ch1 ch2 ...` output.
+    """Parse `redis-cli PUBSUB NUMSUB ch1 ch2 ...` piped (non-TTY) output.
 
     redis-cli prints alternating lines: channel name, subscriber count.
-    Parses defensively -- non-integer count lines are skipped rather than
-    crashing, so one weird line cannot take down the whole gate run.
+    Unparseable pairs are skipped here; the caller decides whether missing
+    channels are an infra error (they are -- NUMSUB always echoes every
+    requested channel, so absence means the reply was not a NUMSUB reply).
     """
     lines = [ln.strip() for ln in stdout.splitlines() if ln.strip()]
     counts: dict[str, int] = {}
     for i in range(0, len(lines) - 1, 2):
-        channel, raw_count = lines[i], lines[i + 1]
-        # Some redis-cli versions prefix list output with "N) ".
-        if ") " in channel:
-            channel = channel.split(") ", 1)[1].strip()
-        if ") " in raw_count:
-            raw_count = raw_count.split(") ", 1)[1].strip()
-        channel = channel.strip('"')
-        # "(integer) 2" form appears in non-raw interactive output.
-        if raw_count.startswith("(integer)"):
-            raw_count = raw_count[len("(integer)"):].strip()
+        channel, raw_count = lines[i].strip('"'), lines[i + 1]
         try:
             counts[channel] = int(raw_count)
         except ValueError:
@@ -109,15 +100,18 @@ def parse_numsub_output(stdout: str) -> dict[str, int]:
 
 def evaluate_counts(
     counts: dict[str, int], *, strict_zero: bool = False
-) -> tuple[list[str], list[str]]:
-    """Pure decision core: (violations, warnings) from channel -> subscriber count.
+) -> tuple[list[str], list[str], dict[str, str]]:
+    """Pure decision core: (violations, warnings, status_by_channel).
 
-    count > 1  -> violation (duplicate execution: the PR #994 class of bug)
-    count == 0 -> warning (consumer down = liveness issue, not duplication),
-                  promoted to violation under strict_zero.
+    count > 1  -> FAIL (duplicate execution: the PR #994 class of bug)
+    count == 0 -> WARN (consumer down = liveness issue, not duplication),
+                  promoted to FAIL under strict_zero.
+    The printed per-channel status and the exit code both derive from this
+    one function so they cannot drift apart.
     """
     violations: list[str] = []
     warnings: list[str] = []
+    statuses: dict[str, str] = {}
     for channel in sorted(counts):
         count = counts[channel]
         if count > 1:
@@ -125,13 +119,18 @@ def evaluate_counts(
                 f"{channel} has {count} subscribers, expected exactly 1 "
                 f"(duplicate execution risk)"
             )
+            statuses[channel] = "FAIL"
         elif count == 0:
             msg = f"{channel} has 0 subscribers, expected exactly 1 (consumer down?)"
             if strict_zero:
                 violations.append(msg)
+                statuses[channel] = "FAIL"
             else:
                 warnings.append(msg)
-    return violations, warnings
+                statuses[channel] = "WARN"
+        else:
+            statuses[channel] = "OK"
+    return violations, warnings, statuses
 
 
 def fetch_live_counts(bus_url: str, channels: list[str]) -> dict[str, int]:
@@ -146,11 +145,28 @@ def fetch_live_counts(bus_url: str, channels: list[str]) -> dict[str, int]:
     if proc.returncode != 0:
         detail = (proc.stderr or proc.stdout or "").strip()
         raise RuntimeError(f"redis-cli failed (exit {proc.returncode}): {detail}")
-    # redis-cli sometimes exits 0 but prints the error to stdout/stderr.
+    # redis-cli exits 0 on Redis error replies (NOAUTH, ERR, LOADING, ...)
+    # with the error text on stdout -- a reply that is not a NUMSUB reply.
+    first_line = next((ln.strip() for ln in proc.stdout.splitlines() if ln.strip()), "")
+    if any(first_line.startswith(p) for p in _REDIS_ERROR_PREFIXES):
+        raise RuntimeError(f"redis error reply: {first_line}")
     combined = (proc.stdout + proc.stderr).lower()
     if "could not connect" in combined or "connection refused" in combined:
         raise RuntimeError(f"redis-cli could not connect: {(proc.stderr or proc.stdout).strip()}")
-    return parse_numsub_output(proc.stdout)
+
+    counts = parse_numsub_output(proc.stdout)
+    # NUMSUB echoes every requested channel (0 if no subscribers). A channel
+    # missing from the parsed reply therefore means the output was not a
+    # NUMSUB reply (auth error, banner noise, format drift) -- infra error,
+    # never "0 subscribers". This is what keeps the gate fail-closed.
+    missing = [ch for ch in channels if ch not in counts]
+    if missing:
+        raise RuntimeError(
+            f"{len(missing)} requested channel(s) absent from NUMSUB reply "
+            f"(unparseable redis-cli output?): {', '.join(missing[:5])}"
+            + ("..." if len(missing) > 5 else "")
+        )
+    return counts
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -183,7 +199,11 @@ def main(argv: list[str] | None = None) -> int:
         )
         return 2
 
-    channels = load_single_consumer_channels(args.channels_file)
+    try:
+        channels = load_single_consumer_channels(args.channels_file)
+    except RuntimeError as exc:
+        print(f"single_consumer gate: infra error (not a violation): {exc}", file=sys.stderr)
+        return 2
     if not channels:
         print(
             "single_consumer gate: no channels marked single_consumer: true in "
@@ -198,20 +218,9 @@ def main(argv: list[str] | None = None) -> int:
         print(f"single_consumer gate: infra error (not a violation): {exc}", file=sys.stderr)
         return 2
 
-    # Channels redis-cli did not echo back are reported as 0 rather than dropped.
-    for ch in channels:
-        counts.setdefault(ch, 0)
-
-    violations, warnings = evaluate_counts(counts, strict_zero=args.strict_zero)
+    violations, warnings, statuses = evaluate_counts(counts, strict_zero=args.strict_zero)
     for ch in sorted(counts):
-        count = counts[ch]
-        if count > 1 or (count == 0 and args.strict_zero):
-            status = "FAIL"
-        elif count == 0:
-            status = "WARN"
-        else:
-            status = "OK"
-        print(f"{status} {count} {ch}")
+        print(f"{statuses[ch]} {counts[ch]} {ch}")
 
     if violations:
         print(

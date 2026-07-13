@@ -1,4 +1,4 @@
-.PHONY: test test-hub test-actions bootstrap-test-envs check-inner-state-registry check-single-consumer-channels
+.PHONY: test test-hub test-actions bootstrap-test-envs check-inner-state-registry check-single-consumer-channels check-activation-saturation
 
 SERVICE ?=
 ARGS ?=
@@ -35,3 +35,12 @@ check-inner-state-registry:
 # Requires ORION_BUS_URL=redis://<tailscale-ip>:6379/0.
 check-single-consumer-channels:
 	@python scripts/check_single_consumer_channels.py
+
+# Standing gate from docs/superpowers/specs/2026-07-13-memory-recall-reinforcement-decay-
+# wiring-spec.md acceptance check 1: recall_boost()+decay() must not grow the fraction of
+# active crystallizations pinned at the activation ceiling over time. No persisted baseline
+# by design (see the script's own docstring) -- re-run by hand and compare against a prior
+# run's fraction; pass FAIL_ABOVE=<prior-fraction> to fail automatically on regression.
+# Requires POSTGRES_URI (see services/orion-hub/.env).
+check-activation-saturation:
+	@python scripts/check_activation_saturation.py $(if $(FAIL_ABOVE),--fail-above $(FAIL_ABOVE),)

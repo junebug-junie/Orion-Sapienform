@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import os
 import re
+from datetime import datetime
 from typing import Any, Dict, List, Tuple
 
 import requests
@@ -10,6 +11,40 @@ from app.settings import settings
 
 
 _TOKEN_RE = re.compile(r"[A-Za-z0-9_]{3,}")
+
+# Predicate ChatTurn/Claim timestamps are written under (services/orion-rdf-writer/app/rdf_builder.py:377,608).
+# rdf_builder writes it as an xsd:string literal (ISO-8601-ish, sometimes space- instead of "T"-separated,
+# per services/orion-vector-writer/app/chat_history.py:46-48); some other node types reuse the same
+# predicate with an xsd:double epoch literal (e.g. CognitiveTrace at rdf_builder.py:260), so parsing here
+# tolerates both shapes.
+_RDF_TIMESTAMP_PREDICATE = "http://conjourney.net/orion#timestamp"
+
+
+def _parse_rdf_timestamp(value: Any) -> float:
+    """Parse a ChatTurn/Claim ``ORION.timestamp`` literal into a recall-scoring epoch float.
+
+    Returns 0.0 (the historical placeholder) when the value is missing or unparseable, so
+    ``scoring._compute_recency_factor`` falls back to its neutral 0.5 recency weight rather than
+    exploding on a bad literal.
+    """
+    if value is None:
+        return 0.0
+    text = str(value).strip()
+    if not text:
+        return 0.0
+    try:
+        return float(text)
+    except (TypeError, ValueError):
+        pass
+    normalized = text
+    if " " in normalized and "T" not in normalized:
+        normalized = normalized.replace(" ", "T", 1)
+    normalized = normalized.replace("Z", "+00:00")
+    try:
+        return datetime.fromisoformat(normalized).timestamp()
+    except (TypeError, ValueError):
+        return 0.0
+
 
 _ORION_GRAPH_IRIS: Dict[str, str] = {
     "orion:chat": "http://conjourney.net/graph/orion/chat",
@@ -420,19 +455,20 @@ def fetch_rdf_graphtri_fragments(
     chat_graph = _sparql_graph("orion:chat")
     enrichment_graph = _sparql_graph("orion:enrichment")
     sparql = f"""
-    SELECT ?turn ?claim ?pred ?obj ?conf ?sal
+    SELECT ?turn ?claim ?pred ?obj ?conf ?sal ?ts
     WHERE {{
       {{
-        SELECT DISTINCT ?turn ?prompt ?response
+        SELECT DISTINCT ?turn ?prompt ?response ?ts
         WHERE {{
           {chat_graph} {{
             ?turn a <http://conjourney.net/orion#ChatTurn> ;
                   <http://conjourney.net/orion#prompt> ?prompt ;
                   <http://conjourney.net/orion#response> ?response .
+            OPTIONAL {{ ?turn <{_RDF_TIMESTAMP_PREDICATE}> ?ts }}
           }}
           {filter_clause}
         }}
-        ORDER BY DESC(STR(?turn))
+        ORDER BY DESC(?ts)
         LIMIT {max_turns}
       }}
       {enrichment_graph} {{
@@ -478,6 +514,7 @@ def fetch_rdf_graphtri_fragments(
         obj = b.get("obj", {}).get("value")
         conf = b.get("conf", {}).get("value")
         sal = b.get("sal", {}).get("value")
+        ts_raw = b.get("ts", {}).get("value")
         if not turn or not pred or not obj:
             continue
         pred_tail = pred.rsplit("/", 1)[-1].rsplit("#", 1)[-1]
@@ -495,7 +532,7 @@ def fetch_rdf_graphtri_fragments(
                 "source_ref": "graphdb",
                 "uri": claim or turn,
                 "text": text,
-                "ts": 0.0,
+                "ts": _parse_rdf_timestamp(ts_raw),
                 "tags": ["rdf", "claim"],
                 "score": 0.6,
                 "meta": {"subject": turn},
@@ -550,20 +587,22 @@ def fetch_rdf_chatturn_fragments(
     keywords = _extract_keywords(query_text)
     filter_clause = _build_chatturn_keyword_filter(keywords) if keywords else ""
 
-    # If you have a timestamp predicate, add it here and ORDER BY DESC(?ts).
-    # If not, we order by the turn URI string as a stable proxy.
+    # rdf_builder.py writes ORION.timestamp on every ChatTurn (rdf_builder.py:377); select and
+    # order on it (real recency) instead of the turn URI string (an arbitrary, permanently-stable
+    # UUID sort that used to masquerade as recency).
     chat_graph = _sparql_graph("orion:chat")
     sparql = f"""
-    SELECT ?turn ?prompt ?response
+    SELECT ?turn ?prompt ?response ?ts
     WHERE {{
       {chat_graph} {{
         ?turn a <http://conjourney.net/orion#ChatTurn> ;
               <http://conjourney.net/orion#prompt> ?prompt ;
               <http://conjourney.net/orion#response> ?response .
+        OPTIONAL {{ ?turn <{_RDF_TIMESTAMP_PREDICATE}> ?ts }}
       }}
       {filter_clause}
     }}
-    ORDER BY DESC(STR(?turn))
+    ORDER BY DESC(?ts)
     LIMIT {max_items}
     """
 
@@ -595,6 +634,7 @@ def fetch_rdf_chatturn_fragments(
         turn = b.get("turn", {}).get("value")
         prompt = (b.get("prompt", {}).get("value") or "").strip()
         response = (b.get("response", {}).get("value") or "").strip()
+        ts_raw = b.get("ts", {}).get("value")
         if not turn:
             continue
 
@@ -608,7 +648,7 @@ def fetch_rdf_chatturn_fragments(
                 "source_ref": "graphdb",
                 "uri": turn,
                 "text": text[:1800],
-                "ts": 0.0,
+                "ts": _parse_rdf_timestamp(ts_raw),
                 "tags": ["rdf", "chat", "chatturn"],
                 # Base score is neutral; ranking should happen later.
                 "score": 0.50,

@@ -759,3 +759,7 @@ PY
 
 - If you can see `chat.history.message.v1` on the bus **and** see `vector.upsert.v1` with `meta.session_id` (optional), then embedding is working.
 - If vectors aren’t showing up in Chroma, the writer is either not subscribing, writing to a different collection, or failing on metadata validation.
+
+### RDF fragment recency (fixed 2026-07-13)
+
+`fetch_rdf_chatturn_fragments` and `fetch_rdf_graphtri_fragments` in `app/storage/rdf_adapter.py` used to order candidates with `ORDER BY DESC(STR(?turn))` (a lexical sort on the ChatTurn URI/correlation-id) and hardcode every fragment's `"ts"` to `0.0`. That made the same fixed set of historical turns win every query forever, and `scoring._compute_recency_factor` always fell back to its neutral 0.5 weight since `ts` was never real. Both functions now select and order on the `ORION.timestamp` literal that `services/orion-rdf-writer/app/rdf_builder.py` already writes on every `ChatTurn`/`Claim` (`ORDER BY DESC(?ts)`), and parse it into a real epoch float via `rdf_adapter._parse_rdf_timestamp` so recency decay actually applies to RDF-backed fragments.

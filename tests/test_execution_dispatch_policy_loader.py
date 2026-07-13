@@ -16,9 +16,12 @@ def test_default_mode_dry_run() -> None:
     assert policy.mode.default_dispatch_mode == "dry_run"
 
 
-def test_allow_dispatch_read_only_false() -> None:
+def test_allow_dispatch_read_only_true() -> None:
+    # P1 of the motor-nerve spec: this gate is open, but EXECUTION_DISPATCH_MODE
+    # still defaults to dry_run (test_default_mode_dry_run above), so real
+    # sends require both gates opened, not this one alone.
     policy = load_execution_dispatch_policy(POLICY_PATH)
-    assert policy.mode.allow_dispatch_read_only is False
+    assert policy.mode.allow_dispatch_read_only is True
 
 
 def test_allow_mutating_dispatch_false() -> None:

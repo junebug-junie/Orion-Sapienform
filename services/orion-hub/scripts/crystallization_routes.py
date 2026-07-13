@@ -11,6 +11,7 @@ from datetime import datetime, timezone
 
 from orion.core.storage import memory_cards as mc_dal
 from orion.memory.crystallization.detection import detect_contradictions, detect_duplicates, merge_detection
+from orion.memory.crystallization.dynamics import decayed_activation, should_retire
 from orion.memory.crystallization.recall_eligibility import eligible_for_recall
 from orion.memory.crystallization.retriever import retrieve_active_packet
 from orion.memory.crystallization.bus_emit import emit_active_packet_retrieved, emit_crystallization_lifecycle
@@ -358,7 +359,22 @@ async def crystallization_list(
     except Exception as exc:
         _http_if_missing_schema(exc)
         raise HTTPException(status_code=503, detail="list_failed") from exc
-    return {"items": [i.model_dump(mode="json") for i in items], "count": len(items)}
+    now = datetime.now(timezone.utc)
+    out_items: List[Dict[str, Any]] = []
+    for i in items:
+        row = i.model_dump(mode="json")
+        # Retirement candidacy only applies to the active pool -- matches the same
+        # status scoping recall_eligibility.eligible_for_recall() uses. Computed live,
+        # never persisted (docs/superpowers/specs/2026-07-13-recall-followups-loop-
+        # retirement-saturation-gate-spec.md section 2).
+        if i.status == "active":
+            row["decayed_activation"] = decayed_activation(i, now=now)
+            row["retirement_candidate"] = should_retire(i, now=now)
+        else:
+            row["decayed_activation"] = None
+            row["retirement_candidate"] = False
+        out_items.append(row)
+    return {"items": out_items, "count": len(out_items)}
 
 
 @router.get("/api/memory/crystallizations/{crystallization_id}")

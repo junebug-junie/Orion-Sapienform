@@ -22,7 +22,9 @@ via phi's `InnerStateFeaturesV1`. This module is the registry of every
 "what does Orion currently feel/perceive" signal in the repo, not just the
 ones `SelfStateV1` itself composes: `FieldStateV1`, `FieldAttentionFrameV1`,
 `DriveStateV1`, `AutonomyStateV2`, phi (both the trained encoder and the
-surviving heuristic slice), `BiometricsClusterV1`, and the L7–L11 ladder.
+surviving heuristic slice), `BiometricsClusterV1`, the L7–L11 ladder, and
+`mood_arc_corpus.v1` — a training-data sink, not a bus signal, for a
+not-yet-built downstream model.
 
 Each `InnerStateSignal` entry names its producer service, cadence, and one
 of four composition statuses:
@@ -53,16 +55,27 @@ of four composition statuses:
   81.7%/18.3% split over a 295-tick window — see
   `docs/notes/2026-07-12-phase4-attention-provenance-crosscheck.md`).
 - `SHADOW` — real, live, deliberately **not** composed, with a required,
-  stated reason (`shadow_reason`). The model case: phi's surviving
-  `valence` heuristic, explicitly justified because no trained latent
-  correlates with anything hedonic-adjacent.
+  stated reason (`shadow_reason`). No current entry holds this status: the
+  model case was phi's `valence` heuristic, justified on the claim that no
+  trained latent correlates with anything hedonic-adjacent — checked
+  directly against the active encoder's real `probes.json` on 2026-07-13
+  and found **false** (`agency_readiness` is a real encoder input feature,
+  correlating with 6 of 8 latents up to `|r|=0.686`). Flipped to
+  `COMPOSED` the same day (`fix/valence-probe-readout`, PR #985) via a
+  probe-weighted readout, `_agency_valence_proxy()`. Left here as the
+  standing example of why `shadow_reason` claims need re-checking against
+  real artifacts, not just cited from memory.
 - `DUPLICATE` — an unresolved overlap with another entry (`duplicate_of`),
   e.g. `drive_state.v1`/`autonomy_state_v2` — same 6-drive taxonomy, two
   independent reducers, not yet reconciled (traffic-gated decision, on
   record separately — this registry makes the fact visible, it doesn't
   force the answer).
-- `REHEARSAL` — computed, verified to reach no cognition consumer at all
-  (the L7–L11 ladder).
+- `REHEARSAL` — computed, verified to reach no cognition consumer at all.
+  Two current entries: the L7–L11 ladder, and `mood_arc_corpus.v1`
+  (2026-07-13) — an append-only training-data sink for a not-yet-built
+  windowed felt-state autoencoder
+  (`docs/superpowers/specs/2026-07-13-felt-state-arc-roadmap-spec.md`),
+  deliberately dark until real hours of data accumulate.
 
 This was built because the same failure mode — a real signal silently
 duplicating another, or never reaching cognition — was independently

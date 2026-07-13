@@ -110,6 +110,13 @@ services:
       PHI_ENCODER_HIDDEN_DIM: ${PHI_ENCODER_HIDDEN_DIM:-16}
       PHI_ENCODER_LATENT_DIM: ${PHI_ENCODER_LATENT_DIM:-8}
 
+      # Mood-arc corpus collector (roadmap item 1, 2026-07-13). Empty
+      # default -- unlike INNER_FEATURES_CORPUS_PATH above, this is a new,
+      # not-yet-actively-used research sink with no rotation/retention
+      # story yet (see orion/schemas/telemetry/mood_arc.py's docstring).
+      # Deliberately off unless explicitly set.
+      MOOD_ARC_CORPUS_PATH: ${MOOD_ARC_CORPUS_PATH:-}
+
     ports:
       - "${PORT:-8444}:${PORT:-8444}"
 

@@ -7,8 +7,15 @@
 ### Consumed Channels
 | Channel | Env Var | Kind | Description |
 | :--- | :--- | :--- | :--- |
-| `orion-cortex-exec:request` | `CHANNEL_EXEC_REQUEST` | `cortex.exec.request` | Request from Orchestrator. |
+| `orion-cortex-exec:request` | `CHANNEL_EXEC_REQUEST` | `cortex.exec.request` | Direct-RPC request from Orchestrator (bare channel, one per `EXEC_LANE` container -- see below). Handled by `handle()`/`svc` (`Rabbit` chassis, single-consumer). |
+| `orion:verb:request` | (fixed) | `verb.request` | Shared verb-dispatch broadcast (`Hunter` chassis -- Redis pub/sub, every subscriber runs every message). Only the `chat`-lane container (and unset/empty `EXEC_LANE`, which falls back to `chat`) subscribes to this -- see "Exec lane containers" below. |
 | `orion:cortex:pre_turn_appraisal:request` | `CHANNEL_PRE_TURN_APPRAISAL_REQUEST` | `pre_turn_appraisal.request.v1` | Pre-turn appraisal RPC from Hub (logprob repair pressure). |
+
+### Exec lane containers
+
+Four containers run in production, distinguished by `EXEC_LANE`: `legacy` (base, unset defaults here), `chat`, `spark`, `background` -- each with its own `CHANNEL_EXEC_REQUEST[_LANE]` bare RPC channel. Only `chat` (and empty-string `EXEC_LANE`, which `app/main.py` maps to `chat`) additionally subscribes to the shared `orion:verb:request` broadcast (`app/main.py`, `_lane in {"chat", ""}`) -- this is where chat-lane verbs (`chat_general`/`chat_quick`) actually land, since orion-cortex-orch's lane routing structurally excludes chat from ever using the direct per-lane RPC path.
+
+`legacy` previously also matched that set, meaning both `legacy` and `chat` independently ran every chat-lane verb request in full -- confirmed live, real duplicate LLM gateway calls, fixed 2026-07-13. `legacy` still serves its own real, distinct direct-RPC traffic (e.g. `orion-thought`'s `stance_react`) on its bare `CHANNEL_EXEC_REQUEST` channel -- that's unrelated and unaffected by this fix. See `docs/superpowers/pr-reports/2026-07-13-chat-lane-duplicate-exec-fix-pr.md`.
 
 ### Pre-turn appraisal RPC (repair pressure v2)
 

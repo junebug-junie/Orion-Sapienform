@@ -21,7 +21,7 @@ Return exactly one JSON object.
 - Do NOT include any explanatory prose before or after the JSON.
 - Do NOT output `<think>` tags, chain-of-thought, reasoning traces, or hidden-analysis markers.
 - Use exactly these keys at top level: `card_summary`, `journal_title`, `journal_body`, `turn_refs`.
-- Set `card_summary` to a plain-language digest of what was discussed (max 800 chars).
+- Set `card_summary` to a plain-language digest of what was discussed (max 1600 chars).
 - Set `journal_title` to a concise title (max 120 chars); may be empty for quiet paths.
 - Set `journal_body` to a richer narrative (max 4000 chars); may be empty.
 - Set `turn_refs` to an array of correlation_id strings from turns you relied on.

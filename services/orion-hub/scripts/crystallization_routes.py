@@ -512,6 +512,7 @@ async def memory_active_packet(
         embed_host_url=getattr(s, "CRYSTALLIZER_EMBED_HOST_URL", "") or "",
         graphiti_adapter=_graphiti(request) if seed_id else None,
         seed_crystallization_id=seed_id or None,
+        pool=pool,
     )
 
     event_id = await insert_retrieval_event(

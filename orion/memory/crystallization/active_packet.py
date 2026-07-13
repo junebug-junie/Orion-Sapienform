@@ -1,7 +1,9 @@
 from __future__ import annotations
 
+from datetime import datetime, timezone
 from typing import Any
 
+from orion.memory.crystallization.dynamics import decayed_activation
 from orion.memory.crystallization.recall_eligibility import eligible_for_recall
 from orion.memory.crystallization.schemas import ActiveMemoryPacketV1, MemoryCrystallizationV1
 
@@ -47,12 +49,16 @@ def build_active_packet(
     task_type: str | None = None,
     project_id: str | None = None,
     session_id: str | None = None,
+    now: datetime | None = None,
 ) -> ActiveMemoryPacketV1:
+    ranking_time = now if now is not None else datetime.now(timezone.utc)
     active = [c for c in crystallizations if eligible_for_recall(c)]
     if project_id:
         active = [c for c in active if project_id in c.scope or c.scope == []]
     active.sort(
-        key=lambda c: (c.dynamics.activation or 0.0) * (c.salience or 0.5) + _task_boost(c.kind, task_type),
+        key=lambda c: (
+            decayed_activation(c, now=ranking_time) * (c.salience or 0.5) + _task_boost(c.kind, task_type)
+        ),
         reverse=True,
     )
 

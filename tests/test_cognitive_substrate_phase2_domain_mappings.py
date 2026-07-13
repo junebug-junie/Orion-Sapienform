@@ -135,6 +135,61 @@ def test_autonomy_adapter_maps_drive_goal_tension_state_without_overpromoting() 
     assert all(n.node_kind != "ontology_branch" for n in out.nodes)
 
 
+def test_autonomy_adapter_drive_state_snapshot_carries_drive_audit_dominant_drive_and_summary() -> None:
+    """DriveAuditV1's dominant_drive/summary must reach the drive_state StateSnapshotNodeV1.metadata."""
+    drive_audit = DriveAuditV1(
+        subject="orion",
+        model_layer="autonomy",
+        entity_id="entity:orion",
+        kind="drive.audit",
+        provenance=_provenance(),
+        drive_pressures={"coherence": 0.8, "continuity": 0.6},
+        active_drives=["coherence", "continuity"],
+        dominant_drive="continuity",
+        summary="orion pressure concentrates on continuity",
+    )
+    drive_state = DriveStateV1(
+        subject="orion",
+        model_layer="autonomy",
+        entity_id="entity:orion",
+        kind="drive.state",
+        provenance=_provenance(),
+        pressures={"coherence": 0.9, "continuity": 0.6},
+        activations={"coherence": True},
+    )
+    out = map_autonomy_artifacts_to_substrate(drive_audit=drive_audit, drive_state=drive_state, anchor_scope="orion")
+    snapshot_nodes = [n for n in out.nodes if n.node_kind == "state_snapshot" and n.snapshot_source == "drive_state"]
+    assert len(snapshot_nodes) == 1
+    meta = snapshot_nodes[0].metadata
+    assert meta["dominant_drive"] == "continuity"
+    assert meta["summary"] == "orion pressure concentrates on continuity"
+    # Purely additive: pre-existing metadata keys are untouched.
+    assert meta["artifact_id"] == drive_state.artifact_id
+    assert meta["activations"] == {"coherence": True}
+    # dimensions/snapshot_source untouched by this patch.
+    assert snapshot_nodes[0].dimensions == {"coherence": 0.9, "continuity": 0.6}
+    assert snapshot_nodes[0].snapshot_source == "drive_state"
+
+
+def test_autonomy_adapter_drive_state_snapshot_without_drive_audit_omits_dominant_drive_and_summary() -> None:
+    """When no DriveAuditV1 is passed, the metadata dict must not gain the new keys."""
+    drive_state = DriveStateV1(
+        subject="orion",
+        model_layer="autonomy",
+        entity_id="entity:orion",
+        kind="drive.state",
+        provenance=_provenance(),
+        pressures={"coherence": 0.9},
+        activations={"coherence": True},
+    )
+    out = map_autonomy_artifacts_to_substrate(drive_state=drive_state, anchor_scope="orion")
+    snapshot_nodes = [n for n in out.nodes if n.node_kind == "state_snapshot" and n.snapshot_source == "drive_state"]
+    assert len(snapshot_nodes) == 1
+    meta = snapshot_nodes[0].metadata
+    assert "dominant_drive" not in meta
+    assert "summary" not in meta
+
+
 def test_spark_adapter_maps_snapshots_conservatively() -> None:
     now = datetime.now(timezone.utc)
     source_snapshot = SparkSourceSnapshotV1(

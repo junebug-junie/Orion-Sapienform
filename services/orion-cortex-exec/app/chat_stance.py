@@ -1210,7 +1210,9 @@ def _project_autonomy_from_beliefs(
         drives.extend([n for n in sl.drives if n.node_kind == "drive"])
         goals.extend([n for n in sl.goals if n.node_kind == "goal"])
         tensions.extend([n for n in sl.tensions if n.node_kind == "tension"])
-        snapshots.extend([s for s in sl.snapshots if getattr(s, "snapshot_source", "") == "autonomy"])
+        snapshots.extend(
+            [s for s in sl.snapshots if getattr(s, "snapshot_source", "") in ("autonomy", "drive_state")]
+        )
 
     if not any([drives, goals, tensions, snapshots]):
         return None
@@ -1262,6 +1264,47 @@ def _project_autonomy_from_beliefs(
             }
         )
 
+    # drive_state.v1 projection — kept structurally separate from the `summary`/
+    # `debug` fields above (those are the autonomy_state_v2-lineage signal; see
+    # orion/self_state/inner_state_registry.py's DUPLICATE note: drive_state and
+    # autonomy_state_v2 are independently-computed and must never be crosswalked).
+    pressures: Dict[str, float] = {}
+    for d in drives:
+        dk = str(getattr(d, "drive_kind", "") or "")
+        if not dk or dk in pressures:
+            continue
+        salience = getattr(getattr(d, "signals", None), "salience", None)
+        if salience is not None:
+            pressures[dk] = float(salience)
+
+    drive_state_snapshots = [s for s in snapshots if getattr(s, "snapshot_source", "") == "drive_state"]
+    activations: Dict[str, bool] = {}
+    drive_state_dominant_drive: str | None = None
+    drive_state_summary: str | None = None
+    for snap in drive_state_snapshots:
+        meta = snap.metadata or {}
+        if not activations:
+            raw_activations = meta.get("activations")
+            if isinstance(raw_activations, dict):
+                activations = dict(raw_activations)
+        if drive_state_dominant_drive is None:
+            dd = str(meta.get("dominant_drive") or "").strip()
+            if dd:
+                drive_state_dominant_drive = dd
+        if drive_state_summary is None:
+            sm = str(meta.get("summary") or "").strip()
+            if sm:
+                drive_state_summary = sm
+
+    drive_state_projection: Dict[str, Any] | None = None
+    if pressures or activations or drive_state_dominant_drive or drive_state_summary:
+        drive_state_projection = {
+            "pressures": pressures,
+            "activations": activations,
+            "dominant_drive": drive_state_dominant_drive,
+            "summary": drive_state_summary,
+        }
+
     return {
         "state": None,
         "summary": summary,
@@ -1277,6 +1320,7 @@ def _project_autonomy_from_beliefs(
         "selected_subject": "orion",
         "repository_status": {"source_available": True, "source_path": "substrate"},
         "partial_used": False,
+        "drive_state": drive_state_projection,
     }
 
 
@@ -2411,6 +2455,15 @@ async def build_chat_stance_inputs(ctx: Dict[str, Any]) -> Dict[str, Any]:
     mg_hints = _project_memory_graph_hints_from_beliefs(beliefs) or fetch_chat_stance_memory_graph_hints()
     if mg_hints:
         inputs["memory_graph"] = {"disposition_hints": mg_hints}
+
+    # drive_state.v1 visibility — a sibling of `inputs["autonomy"]`, never merged
+    # into it. drive_state and autonomy_state_v2 are independently-computed
+    # signals per orion/self_state/inner_state_registry.py's DUPLICATE note.
+    # Off by default; flip CHAT_STANCE_DRIVE_STATE_VISIBLE=true to surface it.
+    if os.getenv("CHAT_STANCE_DRIVE_STATE_VISIBLE", "").strip().lower() == "true":
+        drive_state_projection = autonomy.get("drive_state") if isinstance(autonomy, dict) else None
+        if drive_state_projection:
+            inputs["drive_state"] = drive_state_projection
 
     if os.getenv("AUTONOMY_STATE_V2_REDUCER_ENABLED", "").strip().lower() == "true":
         try:

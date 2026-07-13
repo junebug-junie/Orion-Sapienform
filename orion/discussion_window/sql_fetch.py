@@ -72,6 +72,27 @@ def _format_transcript(turns: List[DiscussionWindowTurnV1]) -> str:
     return "\n".join(lines).strip()
 
 
+def select_turns(
+    filtered: Sequence[dict[str, Any]],
+    *,
+    contiguous_suffix_only: bool,
+    max_turns: int,
+) -> tuple[List[dict[str, Any]], str]:
+    """Pick which time-bounded, prompt/response-filtered rows to return.
+
+    `filtered` must already be sorted ascending by created_at. When
+    `contiguous_suffix_only` is True (the default, for "catch me up on the
+    current session" consumers), stop at the first gap wider than the
+    contiguity threshold so an idle period doesn't resurrect an older,
+    disconnected conversation. When False (for "everything in this time
+    window" consumers), a gap doesn't matter — just take the most recent
+    `max_turns` rows.
+    """
+    if contiguous_suffix_only:
+        return _trim_contiguous_suffix(filtered, max_turns=max_turns), "time_bound_then_contiguous_suffix"
+    return (list(filtered[-max_turns:]) if max_turns > 0 else []), "time_bound_recent_n"
+
+
 def fetch_discussion_window(database_url: str, request: DiscussionWindowRequestV1) -> DiscussionWindowResultV1:
     from sqlalchemy import create_engine, text
 
@@ -116,7 +137,11 @@ def fetch_discussion_window(database_url: str, request: DiscussionWindowRequestV
             continue
         filtered.append(r)
 
-    clustered = _trim_contiguous_suffix(filtered, max_turns=request.max_turns)
+    clustered, selection_strategy = select_turns(
+        filtered,
+        contiguous_suffix_only=request.contiguous_suffix_only,
+        max_turns=request.max_turns,
+    )
     turns: List[DiscussionWindowTurnV1] = []
     for r in clustered:
         ca = r.get("created_at")
@@ -150,5 +175,5 @@ def fetch_discussion_window(database_url: str, request: DiscussionWindowRequestV
         user_id=request.user_id,
         turns=turns,
         transcript_text=transcript,
-        selection_strategy="time_bound_then_contiguous_suffix",
+        selection_strategy=selection_strategy,
     )

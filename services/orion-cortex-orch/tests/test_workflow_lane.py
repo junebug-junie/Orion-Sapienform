@@ -2504,10 +2504,12 @@ def test_chat_history_compactor_pass_upserts_card_and_writes_journal(monkeypatch
     bus = DummyBus()
     card_calls: dict = {}
     digest_routes: list[str] = []
+    discussion_window_skill_args: dict = {}
 
     async def _fake_call_verb_runtime(*args, **kwargs):
         req = kwargs["client_request"]
         if req.verb == "skills.chat.discussion_window.v1":
+            discussion_window_skill_args.update(req.context.metadata.get("skill_args") or {})
             skill = {
                 "window_start_utc": "2026-07-09T04:00:00+00:00",
                 "window_end_utc": "2026-07-09T10:00:00+00:00",
@@ -2583,6 +2585,10 @@ def test_chat_history_compactor_pass_upserts_card_and_writes_journal(monkeypatch
     assert any(ch == "orion:journal:write" for ch, _ in bus.published)
     assert digest_routes[0] == "chat"
     assert "Discussed indexed memory card upserts." in (result.final_text or "")
+    # Regression: "compact the last N hours" must fetch everything organic in
+    # the window, not just the trailing contiguous session — a quiet gap must
+    # not wall off real conversation on the other side of it.
+    assert discussion_window_skill_args.get("contiguous_suffix_only") is False
 
 
 def test_chat_history_compactor_pass_completion_notify_carries_full_digest_not_truncated_preview(monkeypatch) -> None:

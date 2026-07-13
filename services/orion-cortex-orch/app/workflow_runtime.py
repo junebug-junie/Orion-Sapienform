@@ -2318,6 +2318,12 @@ async def _execute_chat_history_compactor_pass(
         source=None,
         max_turns=DEFAULT_MAX_TURNS,
         require_prompt_and_response=True,
+        # "Compact the last N hours" means everything organic in that window, not
+        # just the trailing unbroken session — a quiet gap (idle overnight, a burst
+        # of workflow triggers) must not wall off real conversation on the other
+        # side of it. Contrast journal_discussion_window_pass above, which wants
+        # "catch me up on the current session" and keeps the default True.
+        contiguous_suffix_only=False,
     )
     skill_args = dw_req.model_dump(mode="json", exclude_none=True)
     skill_client = CortexClientRequest(

@@ -406,15 +406,26 @@ def parse_sparql_histogram_bindings(bindings: Iterable[dict]) -> dict[int, int]:
     return out
 
 
+UNMEASURABLE = "UNMEASURABLE"
+
+
 def verdict_drift(silent: SelfStateMetrics, busy: SelfStateMetrics) -> str:
     """Verdict (a): GO iff silent-bucket self-state genuinely drifts.
 
-    GO iff, in SILENT buckets:
+    UNMEASURABLE iff there is no self-state data at all in the window (both
+    classes empty) -- a dead/unreachable source resolves every metric to 0.0,
+    which would otherwise read as a real "flat, NO-GO" behavioral finding
+    instead of "we didn't measure anything." Never silently downgrade a dead
+    sensor into a behavioral verdict.
+
+    Otherwise, GO iff, in SILENT buckets:
       median(per-row |trajectory|) >= DRIFT_MIN_MEDIAN_ABS_TRAJECTORY
       AND silent dim_score_variance >= DRIFT_VARIANCE_RATIO * busy variance.
     When busy variance is 0, the ratio test passes iff silent variance > 0.
     """
 
+    if silent.row_count == 0 and busy.row_count == 0:
+        return UNMEASURABLE
     if silent.median_abs_trajectory < DRIFT_MIN_MEDIAN_ABS_TRAJECTORY:
         return "NO-GO"
     if busy.dim_score_variance == 0.0:
@@ -424,13 +435,50 @@ def verdict_drift(silent: SelfStateMetrics, busy: SelfStateMetrics) -> str:
     return "GO" if variance_ok else "NO-GO"
 
 
+def retention_caveat(
+    source_name: str, oldest_available: Optional[datetime], window_start: datetime
+) -> Optional[str]:
+    """Caveat when a source's actual retention doesn't reach back to
+    window_start -- the exact "busy/silent classification validity bound"
+    gap: a longer window silently under-covers older buckets with zero rows
+    (not measured absence) with nothing in the report saying so. Returns
+    None when the source covers the full window, or when oldest_available
+    itself is unknown (a separate unavailability caveat already covers that
+    case). Pure, unit-testable.
+    """
+
+    if oldest_available is None:
+        return None
+    oldest = _as_utc(oldest_available)
+    start = _as_utc(window_start)
+    if oldest <= start:
+        return None
+    gap_hours = (oldest - start).total_seconds() / 3600.0
+    return (
+        f"{source_name} retention only covers back to {oldest.isoformat()}, "
+        f"{gap_hours:.1f}h short of the requested window start ({start.isoformat()}) "
+        "-- classification/metrics for the uncovered period reflect zero rows, "
+        "not measured absence"
+    )
+
+
 def verdict_economy(drive: DriveStats, pressure: ResourcePressureStats) -> str:
     """Verdict (b): GO iff drives co-activate AND resource_pressure rises.
 
-    GO iff coactivation_frac >= COACTIVATION_MIN_FRAC
+    UNMEASURABLE iff EITHER input has zero rows -- the rule reads both
+    drive.coactivation_frac (Fuseki) and pressure.frac_gt_level (Postgres
+    self-state), two independent sources. Guarding only one (e.g. only
+    drive.record_count) would let the other silently degrade to 0.0 and
+    resolve as a real "NO-GO" string -- exactly the failure mode this
+    function exists to prevent, just left open on whichever input isn't
+    checked.
+
+    Otherwise, GO iff coactivation_frac >= COACTIVATION_MIN_FRAC
       AND frac_gt(resource_pressure >= level) >= RESOURCE_PRESSURE_MIN_FRAC.
     """
 
+    if drive.record_count == 0 or pressure.row_count == 0:
+        return UNMEASURABLE
     if drive.coactivation_frac < COACTIVATION_MIN_FRAC:
         return "NO-GO"
     if pressure.frac_gt_level < RESOURCE_PRESSURE_MIN_FRAC:
@@ -593,6 +641,42 @@ def fetch_receipt_timestamps(conn, since: datetime, max_rows: int = MAX_ROWS) ->
     return out, len(rows) >= max_rows
 
 
+def fetch_earliest_self_state_ts(conn) -> Optional[datetime]:
+    """Earliest substrate_self_state row overall (not window-bounded) -- the
+    real retention floor for verdict (a)'s primary source. Degrades to None
+    on any failure or an empty table; never raises.
+    """
+
+    if conn is None:
+        return None
+    try:
+        with conn.cursor() as cur:
+            cur.execute("SELECT MIN(generated_at) FROM substrate_self_state")
+            row = cur.fetchone()
+    except Exception:
+        logger.error("failed to fetch earliest substrate_self_state timestamp", exc_info=True)
+        return None
+    return _coerce_dt(row[0]) if row else None
+
+
+def fetch_earliest_receipt_ts(conn) -> Optional[datetime]:
+    """Earliest substrate_reduction_receipts row overall -- the retention
+    floor for the busy/silent classification signal. Degrades to None on any
+    failure or an empty table; never raises.
+    """
+
+    if conn is None:
+        return None
+    try:
+        with conn.cursor() as cur:
+            cur.execute("SELECT MIN(created_at) FROM substrate_reduction_receipts")
+            row = cur.fetchone()
+    except Exception:
+        logger.error("failed to fetch earliest substrate_reduction_receipts timestamp", exc_info=True)
+        return None
+    return _coerce_dt(row[0]) if row else None
+
+
 def fetch_drive_stats(
     query_url: str,
     since: datetime,
@@ -711,7 +795,7 @@ def write_before_after_csv(path: Path, silent: SelfStateMetrics, busy: SelfState
 
 def render_report(
     *,
-    window_days: int,
+    window_label: str,
     window_start: datetime,
     window_end: datetime,
     silent: SelfStateMetrics,
@@ -728,7 +812,7 @@ def render_report(
         "",
         "Read-only measurement. No writes, no events, no flag changes.",
         "",
-        f"- Window: last {window_days} day(s) ({window_start.isoformat()} -> {window_end.isoformat()})",
+        f"- Window: last {window_label} ({window_start.isoformat()} -> {window_end.isoformat()})",
         f"- Bucket width: {WINDOW_SEC}s",
         "",
         "## Verdicts",
@@ -782,9 +866,9 @@ def render_report(
 # ===========================================================================
 
 
-def run(window_days: int) -> int:
+def run(window: timedelta, window_label: str) -> int:
     now = datetime.now(timezone.utc)
-    window_start = now - timedelta(days=window_days)
+    window_start = now - window
     dsn = os.environ.get("POSTGRES_URI", DEFAULT_POSTGRES_URI)
     fuseki_url = os.environ.get("AUTONOMY_GRAPH_QUERY_URL", DEFAULT_FUSEKI_QUERY_URL)
 
@@ -803,6 +887,11 @@ def run(window_days: int) -> int:
     if ss_trunc:
         caveats.append(f"self-state rows truncated at MAX_ROWS={MAX_ROWS}")
         anomalies += 1
+    ss_retention_note = retention_caveat(
+        "substrate_self_state", fetch_earliest_self_state_ts(conn), window_start
+    )
+    if ss_retention_note:
+        caveats.append(ss_retention_note)
     progress.emit(
         "self_state loaded", percent=40.0, processed=len(self_states), total=len(self_states), anomalies=anomalies
     )
@@ -811,6 +900,11 @@ def run(window_days: int) -> int:
     if r_trunc:
         caveats.append(f"reduction receipts truncated at MAX_ROWS={MAX_ROWS}")
         anomalies += 1
+    receipt_retention_note = retention_caveat(
+        "substrate_reduction_receipts", fetch_earliest_receipt_ts(conn), window_start
+    )
+    if receipt_retention_note:
+        caveats.append(receipt_retention_note)
     progress.emit(
         "receipts loaded", percent=60.0, processed=len(receipts), total=len(receipts), anomalies=anomalies
     )
@@ -854,7 +948,7 @@ def run(window_days: int) -> int:
     # ---- Emit artifacts ----
     write_before_after_csv(CSV_PATH, silent_metrics, busy_metrics)
     report = render_report(
-        window_days=window_days,
+        window_label=window_label,
         window_start=window_start,
         window_end=now,
         silent=silent_metrics,
@@ -884,24 +978,47 @@ def run(window_days: int) -> int:
     print(f"\nverdict (a) endogenous drift : {verdict_a}")
     print(f"verdict (b) internal economy : {verdict_b}")
     print(f"\nartifacts: {REPORT_PATH}, {CSV_PATH}, {PROGRESS_PATH}")
+    # Exit code distinguishes "the instrument didn't work" (2) from a
+    # completed measurement, whichever way it came out (0) -- a caller
+    # (cron, CI, a human) must not have to parse the report text to tell
+    # a dead sensor from a real GO/NO-GO.
+    if UNMEASURABLE in (verdict_a, verdict_b):
+        return 2
     return 0
 
 
 def build_arg_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description="Read-only autonomy-origination measurement gate.")
-    parser.add_argument(
+    window_group = parser.add_mutually_exclusive_group()
+    window_group.add_argument(
         "--window-days",
         type=int,
-        default=DEFAULT_WINDOW_DAYS,
-        help=f"analysis window in days (default {DEFAULT_WINDOW_DAYS})",
+        default=None,
+        help=f"analysis window in days (default {DEFAULT_WINDOW_DAYS} if neither flag given)",
+    )
+    window_group.add_argument(
+        "--window-hours",
+        type=float,
+        default=None,
+        help="analysis window in hours (mutually exclusive with --window-days)",
     )
     return parser
+
+
+def resolve_window(args: argparse.Namespace) -> tuple[timedelta, str]:
+    """Turn parsed args into (timedelta, human label). Pure, unit-testable."""
+
+    if args.window_hours is not None:
+        return timedelta(hours=args.window_hours), f"{args.window_hours:g}h"
+    days = args.window_days if args.window_days is not None else DEFAULT_WINDOW_DAYS
+    return timedelta(days=days), f"{days} day(s)"
 
 
 def main(argv: Optional[list[str]] = None) -> int:
     logging.basicConfig(level=logging.INFO, format="%(message)s")
     args = build_arg_parser().parse_args(argv)
-    return run(args.window_days)
+    window, window_label = resolve_window(args)
+    return run(window, window_label)
 
 
 if __name__ == "__main__":  # pragma: no cover - guarded so import stays I/O-free

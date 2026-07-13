@@ -42,15 +42,21 @@ Generic / in-container form (defaults resolve on the docker `app-net` network):
 
 ```bash
 python scripts/analysis/measure_autonomy_gate.py --window-days 7
+# or a sub-day window:
+python scripts/analysis/measure_autonomy_gate.py --window-hours 1
 ```
 
-- `--window-days` defaults to `7` (`DEFAULT_WINDOW_DAYS`). The window is
-  `now - window_days` through `now`.
+- `--window-days` (int) and `--window-hours` (float) are mutually exclusive.
+  Neither given → defaults to `7` days (`DEFAULT_WINDOW_DAYS`). The window is
+  `now - window` through `now`.
 - Within the window, activity is bucketed into fixed `300`-second buckets
   (`WINDOW_SEC`) to classify each interval as `silent` or `busy`.
 - `psycopg2` is required for live DB metrics. If it is unavailable or the DB is
   unreachable, `open_readonly_connection` degrades gracefully (returns `None`,
   adds a caveat, and self-state/receipt metrics are empty) — it does not crash.
+- **Exit code**: `0` for a completed measurement (either verdict came back `GO`
+  or `NO-GO`); `2` if either verdict is `UNMEASURABLE` (see below) — a caller
+  (cron, CI, a human) can branch on this without parsing the report text.
 
 ### Environment variables
 
@@ -95,15 +101,27 @@ for Fuseki), as shown in the host command above.
   This is reported as a coverage caveat in the output.
 - Every adapter degrades gracefully: missing DB, unreachable Fuseki, or absent
   columns produce empty metrics plus a caveat rather than a crash.
+- **Retention-bound caveat**: if the requested window reaches further back than
+  a source's actual retention (e.g. `substrate_self_state` currently retains
+  only ~3 days live while `substrate_reduction_receipts` retains ~10), the
+  report names which source is the binding constraint and by how many hours —
+  older buckets in an over-long window reflect *zero rows*, not measured
+  absence, and this caveat is how the report says so explicitly instead of
+  silently under-covering.
 
 ## Verdict rules
 
 Thresholds are the **seed decision boundary**. The report always prints the raw
-numbers so a human can override the mechanical verdict.
+numbers so a human can override the mechanical verdict. Both verdicts can
+return a third value, **`UNMEASURABLE`**, distinct from `GO`/`NO-GO` — see
+below.
 
 ### (a) Endogenous drift — `verdict_drift`
 
-**GO** iff, in **silent** buckets:
+**UNMEASURABLE** iff both silent and busy self-state row counts are `0` (dead
+or unreachable Postgres source — nothing was measured, not measured-flat).
+
+Otherwise, **GO** iff, in **silent** buckets:
 
 - `median_abs_trajectory >= DRIFT_MIN_MEDIAN_ABS_TRAJECTORY` (**0.03**), **AND**
 - silent `dim_score_variance >= DRIFT_VARIANCE_RATIO` (**0.25**) × busy
@@ -115,7 +133,19 @@ change its dynamics source before it is built.
 
 ### (b) Internal economy — `verdict_economy`
 
-**GO** iff:
+**UNMEASURABLE** iff **either** input is empty: zero `DriveAudit` records in
+the requested window (dead/unreachable Fuseki, or a source that stopped being
+written to — see the 2026-07-13 re-run in
+`docs/superpowers/specs/2026-07-07-endogenous-drive-origination-design.md`
+for a real example: RDF materialization for `DriveAudit` was disabled
+2026-06-19, and the previous instrument silently reported this as a
+behavioral `NO-GO` for three weeks before anyone noticed), **or** zero
+self-state rows (dead/unreachable Postgres — the source `pressure` is built
+from). Both inputs are checked independently; guarding only one would leave
+the other free to silently degrade to `0.0` and produce a real-looking
+`NO-GO` string.
+
+Otherwise, **GO** iff:
 
 - `coactivation_frac >= COACTIVATION_MIN_FRAC` (**0.10**), **AND**
 - fraction of self-state rows with `resource_pressure >= RESOURCE_PRESSURE_LEVEL`
@@ -123,6 +153,10 @@ change its dynamics source before it is built.
 
 **NO-GO** means the economy allocator would be a cathedral at current
 activation / pressure levels — do not build.
+
+**`UNMEASURABLE` must never be treated as `NO-GO`** by anything reading this
+gate's output — it means the instrument didn't get real data, not that the
+answer is no.
 
 ## Outputs & monitoring
 

@@ -418,6 +418,56 @@ Goals:
 
 ---
 
+## Journal notification dispatch registry
+
+Journal-entry notifications (email + in-app) are dispatched from exactly one place:
+`_dispatch_journal_notifications` in `app/main.py`, called exactly once from the
+post-persist consumer for `journal.entry.created.v1` (`_handle_journal_created`),
+after the SQL write is confirmed. It resolves policy from
+`orion.journaler.dispatch_registry.JOURNAL_DISPATCH_REGISTRY`, keyed on the journal
+entry's `trigger_kind` (`daily_summary`, `metacog_digest`, `world_pulse_digest`,
+`notify_summary`, `autonomy_episode`, `collapse_response`, `town_episode`, `manual`).
+
+### What this replaced
+
+Before this patch, **two independent codepaths** emailed the same
+`trigger_kind=daily_summary, source_kind=scheduler` journal entry:
+
+- an inline scheduler-daily send fired right after compose, from `_dispatch_journal`
+  (dedupe key `actions:journal:daily:scheduler:{entry_id}`), and
+- a generic post-persist send fired on every persisted journal entry, from
+  `_handle_journal_created` (dedupe key `actions:journal:persisted:{entry_id}`).
+
+Two different dedupe-key namespaces meant neither path's dedupe ever saw the other's
+delivery, so every scheduler daily journal was emailed twice. The registry collapses
+this to one call site and one dedupe-key namespace
+(`actions:journal:notify:{entry_id}`) — double-sending across codepaths is now
+structurally impossible rather than accidentally avoided.
+
+The old fragile exclusion (`ACTIONS_JOURNAL_POST_PERSIST_EMAIL_EXCLUDE_SOURCE_KINDS`,
+a CSV string-match on `source_kind`) is retired in favor of a structural registry
+entry: `JOURNAL_DISPATCH_REGISTRY["town_episode"].email_enabled = False`.
+
+### Why in-app is off by default
+
+Every entry in `JOURNAL_DISPATCH_REGISTRY` currently has `in_app_enabled=False`. This
+is data-backed, not a placeholder: `notify_requests.event_kind='orion.chat.message'`
+showed **1796 notifications sent over 14 days with `message_opened_at` NULL on every
+single one** — zero measured engagement with in-app journal notifications as of
+2026-07-13. Email is the channel Juniper actually reads.
+
+### Fail-closed by design
+
+`resolve_policy(trigger_kind)` returns an all-disabled policy for any `trigger_kind`
+with no registry row, rather than defaulting to "email everything". A new
+`trigger_kind` must be deliberately added to the registry before it can notify anyone.
+`scripts/check_journal_dispatch_registry.py` (`make check-journal-dispatch-registry`)
+gates this: it fails if any `trigger_kind` in
+`orion.journaler.worker._TRIGGER_TO_MODE` has no corresponding
+`JOURNAL_DISPATCH_REGISTRY` row.
+
+---
+
 ## Error handling and response contracts
 
 Schedule management returns structured responses with:

@@ -1,4 +1,4 @@
-.PHONY: test test-hub test-actions bootstrap-test-envs check-inner-state-registry check-single-consumer-channels check-activation-saturation concept-relation-digest check-concept-relation-digest-liveness check-env-compose-parity
+.PHONY: test test-hub test-actions bootstrap-test-envs check-inner-state-registry check-single-consumer-channels check-activation-saturation concept-relation-digest check-concept-relation-digest-liveness check-env-compose-parity check-journal-dispatch-registry
 
 SERVICE ?=
 ARGS ?=
@@ -69,3 +69,12 @@ check-env-compose-parity:
 		exit 1; \
 	fi
 	@python scripts/check_service_env_compose_parity.py $(SERVICE)
+
+# Completeness gate for orion/journaler/dispatch_registry.py: fails if any
+# trigger_kind in orion.journaler.worker._TRIGGER_TO_MODE has no matching row in
+# JOURNAL_DISPATCH_REGISTRY (see services/orion-actions/app/main.py's
+# _dispatch_journal_notifications, which resolves policy off this registry --
+# an unregistered trigger_kind silently sends nothing at runtime by design,
+# fail-closed, but that gap should be loud in CI, not silent).
+check-journal-dispatch-registry:
+	@python scripts/check_journal_dispatch_registry.py

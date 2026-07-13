@@ -1635,6 +1635,7 @@ channels:
     consumer_services: ["orion-sql-writer"]
     stability: "experimental"
     since: "2026-03-21"
+    description: "2026-07-13: added optional trigger_kind field (JournalTriggerKind | None, default None) so the originating JournalTriggerV1.trigger_kind survives onto the persisted/bus payload -- backward compatible, existing producers omitting it are unaffected."
 
   - name: "orion:journal:created"
     kind: "event"
@@ -1644,6 +1645,7 @@ channels:
     consumer_services: ["*"]
     stability: "experimental"
     since: "2026-03-21"
+    description: "2026-07-13: now carries the same optional trigger_kind field as journal.entry.write.v1 (propagated automatically via write.model_dump()); consumers (see services/orion-actions post-persist notification dispatch) use it to key orion.journaler.dispatch_registry.resolve_policy()."
 
   - name: "orion:journal:index"
     kind: "event"

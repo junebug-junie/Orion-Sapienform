@@ -37,6 +37,7 @@ from orion.journaler import (
     cooldown_key_for_trigger,
     draft_from_cortex_result,
     merge_world_pulse_curiosity_into_draft,
+    resolve_policy,
 )
 from orion.schemas.actions.daily import DailyMetacogV1, DailyPulseV1
 from orion.schemas.collapse_mirror import CollapseMirrorEntryV2, CollapseMirrorStoredV1
@@ -676,94 +677,6 @@ def _trigger_world_pulse_run(*, date: str, requested_by: str) -> bool:
         return False
 
 
-def _is_scheduler_daily_journal(*, trigger: Any, write_payload: dict[str, Any], draft: dict[str, Any]) -> bool:
-    mode = str(write_payload.get("mode") or draft.get("mode") or "").strip().lower()
-    trigger_kind = str(getattr(trigger, "trigger_kind", "") or "").strip().lower()
-    source_kind = str(write_payload.get("source_kind") or getattr(trigger, "source_kind", "") or "").strip().lower()
-    if mode != "daily":
-        return False
-    if trigger_kind == "daily_summary" and source_kind == "scheduler":
-        return True
-    logger.info(
-        "scheduler_daily_journal_unexpected_fields mode=%s trigger_kind=%s source_kind=%s source_ref=%s",
-        mode or None,
-        trigger_kind or None,
-        source_kind or None,
-        str(write_payload.get("source_ref") or getattr(trigger, "source_ref", None) or ""),
-    )
-    return False
-
-
-def _build_scheduler_daily_journal_message_payload(
-    *,
-    trigger: Any,
-    write_payload: dict[str, Any],
-    draft: dict[str, Any],
-    correlation_id: str,
-) -> dict[str, Any]:
-    title_text = str(write_payload.get("title") or draft.get("title") or "Daily Journal").strip()
-    body_text = str(write_payload.get("body") or draft.get("body") or "").strip()
-    source_ref = str(write_payload.get("source_ref") or getattr(trigger, "source_ref", "") or "").strip()
-    mode = str(write_payload.get("mode") or draft.get("mode") or "").strip()
-    source_kind = str(write_payload.get("source_kind") or getattr(trigger, "source_kind", "") or "").strip()
-    preview = f"{title_text}: {body_text}".strip(": ").replace("\n", " ")[:280]
-    full_text = (
-        "## Orion — Daily Journal\n\n"
-        f"**Title:** {title_text}\n\n"
-        f"**Mode:** {mode or 'daily'}\n\n"
-        f"**Source:** {source_kind or 'scheduler'}"
-        f"{f' ({source_ref})' if source_ref else ''}\n\n"
-        f"{body_text}"
-    )
-    return {
-        "title": "Orion — Daily Journal",
-        "preview_text": preview,
-        "full_text": full_text,
-        "severity": "info",
-        "tags": ["actions", "journal", "daily", "scheduler"],
-        "session_id": settings.actions_journal_session_id or settings.actions_session_id,
-        "source_service": settings.service_name,
-        "correlation_id": correlation_id,
-    }
-
-
-def _build_scheduler_daily_journal_email_request(
-    *,
-    trigger: Any,
-    write_payload: dict[str, Any],
-    draft: dict[str, Any],
-    correlation_id: str,
-) -> NotificationRequest:
-    message_payload = _build_scheduler_daily_journal_message_payload(
-        trigger=trigger,
-        write_payload=write_payload,
-        draft=draft,
-        correlation_id=correlation_id,
-    )
-    dedupe_seed = str(write_payload.get("entry_id") or correlation_id)
-    return NotificationRequest(
-        source_service=settings.service_name,
-        event_kind="orion.journal.daily.scheduler",
-        severity="info",
-        title="Orion — Daily Journal",
-        body_text=message_payload["full_text"],
-        body_md=message_payload["full_text"],
-        recipient_group=settings.actions_recipient_group,
-        session_id=settings.actions_journal_session_id or settings.actions_session_id,
-        correlation_id=correlation_id,
-        tags=["actions", "journal", "daily", "scheduler"],
-        channels_requested=["email"],
-        dedupe_key=f"actions:journal:daily:scheduler:{dedupe_seed}",
-        dedupe_window_seconds=int(settings.actions_notify_dedupe_window_seconds),
-        context={
-            "trigger_kind": str(getattr(trigger, "trigger_kind", "") or ""),
-            "source_kind": str(write_payload.get("source_kind") or getattr(trigger, "source_kind", "") or ""),
-            "source_ref": str(write_payload.get("source_ref") or getattr(trigger, "source_ref", "") or ""),
-            "entry_id": str(write_payload.get("entry_id") or ""),
-        },
-    )
-
-
 def _build_post_persist_journal_message_payload(
     *,
     entry: JournalEntryWriteV1,
@@ -798,46 +711,145 @@ def _build_post_persist_journal_message_payload(
     }
 
 
-def _should_email_persisted_journal(
-    *, entry: JournalEntryWriteV1, excluded_source_kinds: set[str]
-) -> bool:
-    """Pure gate: should a persisted journal entry be emailed?
-
-    The email is suppressed when the entry's ``source_kind`` is in the configured
-    exclusion set (e.g. ``embodiment`` town episodes). In-app notification and the
-    journal write itself are unaffected — this only governs the email channel.
-    """
-    source_kind = str(entry.source_kind or "").strip().lower()
-    return source_kind not in excluded_source_kinds
-
-
-def _build_post_persist_journal_email_request(
-    *,
+def _dispatch_journal_notifications(
     entry: JournalEntryWriteV1,
+    *,
     correlation_id: str,
-) -> NotificationRequest:
-    message_payload = _build_post_persist_journal_message_payload(entry=entry, correlation_id=correlation_id)
-    return NotificationRequest(
-        source_service=settings.service_name,
-        event_kind="orion.journal.persisted",
-        severity="info",
-        title="Orion — Journal Pass",
-        body_text=message_payload["full_text"],
-        body_md=message_payload["full_text"],
-        recipient_group=settings.actions_recipient_group,
-        session_id=settings.actions_journal_session_id or settings.actions_session_id,
-        correlation_id=correlation_id,
-        tags=["actions", "journal", "persisted"],
-        channels_requested=["email"],
-        dedupe_key=f"actions:journal:persisted:{entry.entry_id}",
-        dedupe_window_seconds=int(settings.actions_notify_dedupe_window_seconds),
-        context={
-            "entry_id": str(entry.entry_id or ""),
-            "source_kind": str(entry.source_kind or ""),
-            "source_ref": str(entry.source_ref or ""),
-            "mode": str(entry.mode or ""),
-        },
-    )
+    notify,
+    deduper: ActionDedupe,
+) -> dict[str, Any]:
+    """Single dispatch point for journal-entry notifications, keyed off
+    `entry.trigger_kind` via `orion.journaler.dispatch_registry.resolve_policy`.
+
+    Replaces the old dual codepaths (inline scheduler-daily email fired from
+    `_dispatch_journal`, plus a separate post-persist email fired from every
+    persisted journal entry) that used two different dedupe-key namespaces and
+    therefore double-emailed every `trigger_kind=daily_summary, source_kind=scheduler`
+    entry. There is exactly one dedupe-key namespace now
+    (`actions:journal:notify:{entry_id}`), so double-sending across codepaths is
+    structurally impossible rather than accidentally avoided.
+
+    Fail-closed: an unregistered trigger_kind resolves to an all-disabled policy
+    (see `resolve_policy`), so this sends nothing rather than defaulting to "email
+    everything".
+    """
+    dedupe_key = f"actions:journal:notify:{entry.entry_id}"
+    result: dict[str, Any] = {
+        "dedupe_key": dedupe_key,
+        "deduped": False,
+        "trigger_kind": entry.trigger_kind,
+        "in_app_ok": None,
+        "email_ok": None,
+    }
+    if not deduper.try_acquire(dedupe_key):
+        result["deduped"] = True
+        logger.info(
+            "journal_notify_dedup_skipped correlation_id=%s entry_id=%s",
+            correlation_id,
+            entry.entry_id,
+        )
+        return result
+
+    policy = resolve_policy(entry.trigger_kind or "")
+    in_app_ok: bool | None = None
+    email_ok: bool | None = None
+    try:
+        message_payload = _build_post_persist_journal_message_payload(entry=entry, correlation_id=correlation_id)
+
+        if policy.in_app_enabled:
+            in_app_result = _send_orion_async_message(notify=notify, **message_payload)
+            in_app_ok = bool(getattr(in_app_result, "ok", False))
+            if in_app_ok:
+                logger.info(
+                    "journal_notify_in_app_sent correlation_id=%s entry_id=%s trigger_kind=%s notification_id=%s",
+                    correlation_id,
+                    entry.entry_id,
+                    entry.trigger_kind,
+                    getattr(in_app_result, "notification_id", None),
+                )
+            else:
+                logger.warning(
+                    "journal_notify_in_app_failed correlation_id=%s entry_id=%s trigger_kind=%s detail=%s",
+                    correlation_id,
+                    entry.entry_id,
+                    entry.trigger_kind,
+                    getattr(in_app_result, "detail", None),
+                )
+        else:
+            in_app_ok = True  # not required -> don't block dedupe completion
+            logger.info(
+                "journal_notify_in_app_skipped correlation_id=%s entry_id=%s trigger_kind=%s reason=policy_disabled",
+                correlation_id,
+                entry.entry_id,
+                entry.trigger_kind,
+            )
+
+        if policy.email_enabled:
+            email_req = NotificationRequest(
+                source_service=settings.service_name,
+                event_kind="orion.journal.notify",
+                severity="info",
+                title=message_payload["title"],
+                body_text=message_payload["full_text"],
+                body_md=message_payload["full_text"],
+                recipient_group=settings.actions_recipient_group,
+                session_id=settings.actions_journal_session_id or settings.actions_session_id,
+                correlation_id=correlation_id,
+                tags=["actions", "journal", "notify", entry.trigger_kind or "unknown"],
+                channels_requested=["email"],
+                dedupe_key=dedupe_key,
+                dedupe_window_seconds=int(settings.actions_notify_dedupe_window_seconds),
+                context={
+                    "entry_id": str(entry.entry_id or ""),
+                    "trigger_kind": str(entry.trigger_kind or ""),
+                    "source_kind": str(entry.source_kind or ""),
+                    "source_ref": str(entry.source_ref or ""),
+                    "mode": str(entry.mode or ""),
+                },
+            )
+            email_result = notify.send(email_req)
+            email_ok = bool(getattr(email_result, "ok", False))
+            if email_ok:
+                logger.info(
+                    "journal_notify_email_sent correlation_id=%s entry_id=%s trigger_kind=%s notification_id=%s",
+                    correlation_id,
+                    entry.entry_id,
+                    entry.trigger_kind,
+                    getattr(email_result, "notification_id", None),
+                )
+            else:
+                logger.warning(
+                    "journal_notify_email_failed correlation_id=%s entry_id=%s trigger_kind=%s detail=%s",
+                    correlation_id,
+                    entry.entry_id,
+                    entry.trigger_kind,
+                    getattr(email_result, "detail", None),
+                )
+        else:
+            email_ok = True  # not required -> don't block dedupe completion
+            logger.info(
+                "journal_notify_email_skipped correlation_id=%s entry_id=%s trigger_kind=%s reason=policy_disabled",
+                correlation_id,
+                entry.entry_id,
+                entry.trigger_kind,
+            )
+
+        result["in_app_ok"] = in_app_ok
+        result["email_ok"] = email_ok
+        if in_app_ok and email_ok:
+            deduper.mark_done(dedupe_key)
+        return result
+    except Exception:
+        logger.exception(
+            "journal_notify_dispatch_failed correlation_id=%s entry_id=%s trigger_kind=%s",
+            correlation_id,
+            entry.entry_id,
+            entry.trigger_kind,
+        )
+        raise
+    finally:
+        if not (in_app_ok and email_ok):
+            deduper.release(dedupe_key)
 
 
 async def _publish_workflow_attention_signal(*, signal: ScheduleAttentionSignal, notify) -> None:
@@ -1152,97 +1164,12 @@ async def lifespan(app: FastAPI):
                 trigger=trigger,
                 world_pulse_result=world_pulse_result,
             )
-            draft = result.get("draft") if isinstance(result, dict) else {}
-            write_payload = result.get("write") if isinstance(result, dict) else {}
-            scheduler_daily = _is_scheduler_daily_journal(trigger=trigger, write_payload=write_payload, draft=draft)
-            scheduler_daily_msg_accepted = None
-            scheduler_daily_email_accepted = None
-            scheduler_daily_msg_skip_reason = None
-            scheduler_daily_email_skip_reason = None
-
-            if scheduler_daily:
-                if settings.actions_async_messages_enabled and settings.actions_scheduler_daily_journal_messages_enabled:
-                    logger.info(
-                        "scheduler_daily_journal_message_attempted correlation_id=%s entry_id=%s",
-                        parent.correlation_id,
-                        write_payload.get("entry_id"),
-                    )
-                    message_payload = _build_scheduler_daily_journal_message_payload(
-                        trigger=trigger,
-                        write_payload=write_payload,
-                        draft=draft,
-                        correlation_id=str(parent.correlation_id),
-                    )
-                    scheduler_daily_msg_accepted = await asyncio.to_thread(
-                        _send_orion_async_message,
-                        notify=notify,
-                        **message_payload,
-                    )
-                    if scheduler_daily_msg_accepted.ok:
-                        logger.info(
-                            "scheduler_daily_journal_message_succeeded correlation_id=%s notification_id=%s",
-                            parent.correlation_id,
-                            scheduler_daily_msg_accepted.notification_id,
-                        )
-                    else:
-                        logger.info(
-                            "scheduler_daily_journal_message_failed correlation_id=%s detail=%s",
-                            parent.correlation_id,
-                            scheduler_daily_msg_accepted.detail,
-                        )
-                else:
-                    scheduler_daily_msg_skip_reason = "scheduler_daily_journal_messages_disabled"
-                    logger.info(
-                        "scheduler_daily_journal_message_skipped correlation_id=%s reason=%s",
-                        parent.correlation_id,
-                        scheduler_daily_msg_skip_reason,
-                    )
-
-                if settings.actions_scheduler_daily_journal_email_enabled:
-                    logger.info(
-                        "scheduler_daily_journal_email_attempted correlation_id=%s entry_id=%s",
-                        parent.correlation_id,
-                        write_payload.get("entry_id"),
-                    )
-                    email_req = _build_scheduler_daily_journal_email_request(
-                        trigger=trigger,
-                        write_payload=write_payload,
-                        draft=draft,
-                        correlation_id=str(parent.correlation_id),
-                    )
-                    scheduler_daily_email_accepted = await asyncio.to_thread(notify.send, email_req)
-                    if scheduler_daily_email_accepted.ok:
-                        logger.info(
-                            "scheduler_daily_journal_email_succeeded correlation_id=%s notification_id=%s",
-                            parent.correlation_id,
-                            scheduler_daily_email_accepted.notification_id,
-                        )
-                    else:
-                        logger.info(
-                            "scheduler_daily_journal_email_failed correlation_id=%s detail=%s",
-                            parent.correlation_id,
-                            scheduler_daily_email_accepted.detail,
-                        )
-                else:
-                    scheduler_daily_email_skip_reason = "scheduler_daily_journal_email_disabled"
-                    logger.info(
-                        "scheduler_daily_journal_email_skipped correlation_id=%s reason=%s",
-                        parent.correlation_id,
-                        scheduler_daily_email_skip_reason,
-                    )
-            else:
-                scheduler_daily_msg_skip_reason = "not_scheduler_daily_journal"
-                scheduler_daily_email_skip_reason = "not_scheduler_daily_journal"
-                logger.info(
-                    "scheduler_daily_journal_message_skipped correlation_id=%s reason=%s",
-                    parent.correlation_id,
-                    scheduler_daily_msg_skip_reason,
-                )
-                logger.info(
-                    "scheduler_daily_journal_email_skipped correlation_id=%s reason=%s",
-                    parent.correlation_id,
-                    scheduler_daily_email_skip_reason,
-                )
+            # Notification dispatch (email/in-app) happens exactly once, from the
+            # post-persist consumer (_handle_journal_created) after the SQL write is
+            # confirmed -- see _dispatch_journal_notifications. This function only
+            # composes + publishes the journal.entry.write.v1 write; it must not also
+            # dispatch notifications, or the double-send bug this registry fixed
+            # comes right back.
             dt_ms = int((time.monotonic() - t0) * 1000)
             journal_deduper.mark_done(dedupe_key)
             await _audit(
@@ -1255,12 +1182,6 @@ async def lifespan(app: FastAPI):
                     "journal_mode": result["draft"]["mode"],
                     "write_channel": settings.actions_journal_write_channel,
                     "journal_entry_id": result["write"]["entry_id"],
-                    "scheduler_daily_journal_message_ok": scheduler_daily_msg_accepted.ok if scheduler_daily_msg_accepted else None,
-                    "scheduler_daily_journal_message_notification_id": str(scheduler_daily_msg_accepted.notification_id) if scheduler_daily_msg_accepted and scheduler_daily_msg_accepted.notification_id else None,
-                    "scheduler_daily_journal_message_skipped_reason": scheduler_daily_msg_skip_reason,
-                    "scheduler_daily_journal_email_ok": scheduler_daily_email_accepted.ok if scheduler_daily_email_accepted else None,
-                    "scheduler_daily_journal_email_notification_id": str(scheduler_daily_email_accepted.notification_id) if scheduler_daily_email_accepted and scheduler_daily_email_accepted.notification_id else None,
-                    "scheduler_daily_journal_email_skipped_reason": scheduler_daily_email_skip_reason,
                 },
             )
             return True
@@ -1661,76 +1582,27 @@ async def lifespan(app: FastAPI):
         except Exception:
             return False
 
-        dedupe_key = f"actions:journal:post_persist:{entry.entry_id}"
-        if not journal_post_persist_deduper.try_acquire(dedupe_key):
-            logger.info(
-                "journal_post_persist_dedup_skipped correlation_id=%s entry_id=%s",
-                env.correlation_id,
-                entry.entry_id,
-            )
-            return True
-
-        in_app_ok: bool | None = None
-        email_ok: bool | None = None
+        correlation_id = str(entry.correlation_id or env.correlation_id)
+        logger.info(
+            "journal_post_persist_created_event_received correlation_id=%s entry_id=%s trigger_kind=%s",
+            env.correlation_id,
+            entry.entry_id,
+            entry.trigger_kind,
+        )
         try:
-            logger.info(
-                "journal_post_persist_created_event_received correlation_id=%s entry_id=%s",
-                env.correlation_id,
-                entry.entry_id,
+            result = await asyncio.to_thread(
+                _dispatch_journal_notifications,
+                entry,
+                correlation_id=correlation_id,
+                notify=notify,
+                deduper=journal_post_persist_deduper,
             )
-            correlation_id = str(entry.correlation_id or env.correlation_id)
-            message_payload = _build_post_persist_journal_message_payload(entry=entry, correlation_id=correlation_id)
-            in_app_result = await asyncio.to_thread(_send_orion_async_message, notify=notify, **message_payload)
-            in_app_ok = bool(getattr(in_app_result, "ok", False))
-            if in_app_ok:
+            if result.get("deduped"):
                 logger.info(
-                    "journal_post_persist_in_app_sent correlation_id=%s entry_id=%s notification_id=%s",
-                    correlation_id,
+                    "journal_post_persist_dedup_skipped correlation_id=%s entry_id=%s",
+                    env.correlation_id,
                     entry.entry_id,
-                    getattr(in_app_result, "notification_id", None),
                 )
-            else:
-                logger.warning(
-                    "journal_post_persist_in_app_failed correlation_id=%s entry_id=%s detail=%s",
-                    correlation_id,
-                    entry.entry_id,
-                    getattr(in_app_result, "detail", None),
-                )
-
-            # Gate the EMAIL only (not in-app, not the journal write) by source_kind.
-            # Town/embodiment episodes journal + show in-app but must not email-flood.
-            if not _should_email_persisted_journal(
-                entry=entry,
-                excluded_source_kinds=settings.post_persist_email_excluded_source_kinds(),
-            ):
-                email_ok = True  # not required -> don't block dedupe completion
-                logger.info(
-                    "journal_post_persist_email_skipped correlation_id=%s entry_id=%s source_kind=%s reason=source_kind_excluded",
-                    correlation_id,
-                    entry.entry_id,
-                    str(entry.source_kind or ""),
-                )
-            else:
-                email_req = _build_post_persist_journal_email_request(entry=entry, correlation_id=correlation_id)
-                email_result = await asyncio.to_thread(notify.send, email_req)
-                email_ok = bool(getattr(email_result, "ok", False))
-                if email_ok:
-                    logger.info(
-                        "journal_post_persist_email_sent correlation_id=%s entry_id=%s notification_id=%s",
-                        correlation_id,
-                        entry.entry_id,
-                        getattr(email_result, "notification_id", None),
-                    )
-                else:
-                    logger.warning(
-                        "journal_post_persist_email_failed correlation_id=%s entry_id=%s detail=%s",
-                        correlation_id,
-                        entry.entry_id,
-                        getattr(email_result, "detail", None),
-                    )
-
-            if in_app_ok and email_ok:
-                journal_post_persist_deduper.mark_done(dedupe_key)
             return True
         except Exception:
             logger.exception(
@@ -1739,9 +1611,6 @@ async def lifespan(app: FastAPI):
                 entry.entry_id,
             )
             return True
-        finally:
-            if not (in_app_ok and email_ok):
-                journal_post_persist_deduper.release(dedupe_key)
 
     async def _dispatch_scheduled_workflow(claimed: ClaimedSchedule) -> None:
         entry = claimed.schedule

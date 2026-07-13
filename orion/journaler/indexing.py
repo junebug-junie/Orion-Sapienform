@@ -56,7 +56,7 @@ def build_journal_entry_index_payload(
         "source_kind": write.source_kind,
         "source_ref": write.source_ref,
         "correlation_id": write.correlation_id,
-        "trigger_kind": trigger.trigger_kind if trigger else None,
+        "trigger_kind": (trigger.trigger_kind if trigger else None) or getattr(write, "trigger_kind", None),
         "trigger_summary": trigger.summary if trigger else None,
         "conversation_frame": None,
         "task_mode": None,

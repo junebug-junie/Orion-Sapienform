@@ -1,3 +1,4 @@
+from .dispatch_registry import JOURNAL_DISPATCH_REGISTRY, JournalDispatchPolicy, resolve_policy
 from .indexing import build_journal_entry_index_payload
 from .schemas import JournalEntryDraftV1, JournalEntryIndexV1, JournalEntryWriteV1, JournalTriggerV1
 from .worker import (
@@ -24,6 +25,9 @@ from .worker import (
 )
 
 __all__ = [
+    "JOURNAL_DISPATCH_REGISTRY",
+    "JournalDispatchPolicy",
+    "resolve_policy",
     "JournalTriggerV1",
     "JournalEntryDraftV1",
     "JournalEntryIndexV1",

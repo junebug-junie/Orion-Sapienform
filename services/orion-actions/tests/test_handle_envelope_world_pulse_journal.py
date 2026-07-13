@@ -69,10 +69,11 @@ async def test_handle_envelope_routes_world_pulse_run_result_to_dispatch_journal
     env = _envelope(run_id="wp-route-99")
     captured: dict = {}
 
-    async def capture_dispatch(parent, *, trigger, audit_action: str, dedupe_key: str, reason: str | None = None):
+    async def capture_dispatch(parent, *, trigger, audit_action: str, dedupe_key: str, reason: str | None = None, **kwargs):
         captured["trigger"] = trigger
         captured["audit_action"] = audit_action
         captured["dedupe_key"] = dedupe_key
+        captured.update(kwargs)
         return True
 
     cfg = Settings(
@@ -82,8 +83,8 @@ async def test_handle_envelope_routes_world_pulse_run_result_to_dispatch_journal
 
     class _NoopHunter:
         def __init__(self, *args, **kwargs) -> None:
-            self.bus = MagicMock()
-            self.bus.publish = AsyncMock()
+            # Async bus surface: lifespan awaits connect()/close() on it.
+            self.bus = AsyncMock()
 
         async def start(self) -> None:
             try:

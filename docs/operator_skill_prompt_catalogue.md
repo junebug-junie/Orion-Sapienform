@@ -141,6 +141,13 @@ These prompts target the **read-only** bounded SQL skill `skills.chat.discussion
     - Intended concrete skill: `skills.mesh.refresh_service_envs.v1`
     - Expected result: `mesh-utilities/common/refresh_service_envs.sh` output or precise policy/runtime failure; same policy flag as (22)
 
+## Cognitive workflows (not deterministic skills)
+
+These Hub Skill Runner entries use `data-workflow-id` and stay on the normal chat/workflow path. They are **not** in `SKILL_RUNNER_CATALOGUE_VERBS` (skills-only map).
+
+- Compact the last 24 hours of chat into a memory digest. → workflow `chat_history_compactor_pass`
+- Compact the last 6 hours of chat into a memory digest. → workflow `chat_history_compactor_pass`
+
 ## Notes
 
 - These prompts are examples, not the only valid phrasings.

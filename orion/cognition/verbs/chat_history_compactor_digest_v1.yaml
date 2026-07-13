@@ -1,0 +1,23 @@
+name: chat_history_compactor_digest_v1
+label: Chat History Compactor Digest
+description: >
+  Compact a bounded chat_history_log discussion window into card + journal digest JSON.
+  Uses only chat_history_compactor_input payload passed in metadata.
+
+category: Generative
+priority: high
+
+requires_gpu: true
+requires_memory: false
+timeout_ms: 90000
+
+services:
+  - LLMGatewayService
+
+prompt_template: chat_history_compactor_digest_v1.j2
+
+steps:
+  - name: chat_history_compactor_digest_v1
+    order: 0
+    services: [LLMGatewayService]
+    prompt_template: chat_history_compactor_digest_v1.j2

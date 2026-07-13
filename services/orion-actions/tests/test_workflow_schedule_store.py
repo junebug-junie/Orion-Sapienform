@@ -42,6 +42,18 @@ def test_durable_create_load(tmp_path):
     assert rows[0].schedule_id == created.schedule_id
 
 
+def test_redispatch_same_request_id_updates_in_place(tmp_path):
+    store = WorkflowScheduleStore(str(tmp_path / "schedules.json"))
+    first = store.upsert_from_dispatch(_dispatch("r1", recurring=True))
+    assert first is not None
+    second = store.upsert_from_dispatch(_dispatch("r1", recurring=True))
+    assert second is not None
+    # Same request_id must upsert the existing record, not create a duplicate.
+    assert second.schedule_id == first.schedule_id
+    assert second.revision == first.revision + 1
+    assert len(store.list_schedules(include_inactive=True)) == 1
+
+
 def test_one_shot_claim_marks_completed(tmp_path):
     store = WorkflowScheduleStore(str(tmp_path / "schedules.json"))
     store.upsert_from_dispatch(_dispatch("r1"))

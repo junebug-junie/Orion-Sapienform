@@ -57,3 +57,9 @@ CREATE INDEX IF NOT EXISTS idx_mc_priority ON memory_cards (priority);
 CREATE INDEX IF NOT EXISTS idx_mc_prov     ON memory_cards (provenance);
 CREATE INDEX IF NOT EXISTS idx_mce_from    ON memory_card_edges (from_card_id, edge_type);
 CREATE INDEX IF NOT EXISTS idx_mce_to      ON memory_card_edges (to_card_id, edge_type);
+
+-- One live card per compactor_index window key: blocks concurrent first-run
+-- duplicate inserts and keeps the upsert's active-card lookup off a seq scan.
+CREATE UNIQUE INDEX IF NOT EXISTS idx_mc_active_compactor_index
+    ON memory_cards ((subschema ->> 'compactor_index'))
+    WHERE status = 'active' AND subschema ? 'compactor_index';

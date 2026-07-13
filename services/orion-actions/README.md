@@ -33,7 +33,7 @@ This service sits between chat/operator intent and execution infrastructure:
 
 Important clarification:
 
-- `dream_cycle`, `journal_pass`, `self_review`, `concept_induction_pass`, and `github_compactor_pass` are **named cognition workflows**, not “Actions skills”.
+- `dream_cycle`, `journal_pass`, `self_review`, `concept_induction_pass`, `github_compactor_pass`, and `chat_history_compactor_pass` are **named cognition workflows**, not “Actions skills”.
 - Scheduled runs are re-dispatched through the same Orch workflow lane as immediate runs.
 - Actions does not execute a shadow copy of those workflows.
 
@@ -207,13 +207,24 @@ These are defined in workflow registry/runtime, not in Actions.
 - **Typical result**: PR count, card summary preview, journal entry id.
 - **Persisted meaning**: supersedes one active `repo_dev_snapshot` memory card (`high_recall`) and append-only journal entry (`journal.entry.write.v1`).
 
+### `chat_history_compactor_pass`
+- **Purpose**: compact bounded Hub `chat_history_log` windows into indexed `high_recall` memory cards (optional journal).
+- **Example phrases**: “Compact the last 24 hours of chat into a memory digest”, “Compact the last 6 hours of chat into a memory digest”.
+- **Schedulable**: yes. On actions startup, if absent, bootstraps a recurring daily schedule at **06:00 `America/Denver`** with `window_mode=day` (yesterday’s calendar day).
+- **Bootstrap respects the operator**: the seed uses a stable bootstrap `request_id`, so a schedule you cancel stays cancelled and a schedule you edit (e.g. moved to 07:00) is never re-seeded with a 06:00 twin — any live recurring `chat_history_compactor_pass` schedule blocks the seed. A bootstrap failure is logged and never blocks actions startup.
+- **Notify**: bootstrap default `notify_on=completion` (editable/pausable in Hub schedule inventory).
+- **Window bounds**: `lookback_hours` is capped at 14 days; unknown `window_mode` values fail loud instead of silently running a rolling window.
+- **Typical result**: turn count, `compactor_index`, card summary preview, card_id, optional journal entry id.
+- **Persisted meaning**: upserts one active card per `compactor_index` (not supersede); optional append-only journal (`journal.entry.write.v1`). Quiet windows (no turns) persist nothing — no card, no journal stub. If the card write fails, the journal entry still lands and the result carries `card_persist_skipped_reason`.
+- **Requires**: cortex-exec SQL (`DATABASE_URL` / `ENDOGENOUS_RUNTIME_SQL_DATABASE_URL`) for discussion window fetch; cortex-orch `RECALL_PG_DSN` for card writes.
+
 ---
 
 ## Supported operational action types (as implemented today)
 
 ### Workflow schedule operations
 
-- Schedule workflow dispatch (`workflow.schedule.v1` handling).
+- Schedule workflow dispatch (`workflow.schedule.v1` handling). Re-dispatching with the same `request_id` updates the existing schedule in place (revision bump) instead of creating a duplicate.
 - List schedules.
 - Cancel schedule.
 - Pause schedule.

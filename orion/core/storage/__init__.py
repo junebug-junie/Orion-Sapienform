@@ -14,4 +14,5 @@ from orion.core.storage.memory_cards import (  # noqa: F401
     reverse_history,
     supersede_and_insert_compactor_card,
     update_card,
+    upsert_indexed_compactor_card,
 )

@@ -1,8 +1,9 @@
 from __future__ import annotations
 
-import json
 from uuid import NAMESPACE_URL, uuid5
 
+from orion.cognition.compactor.budget import assert_fields_within_budget
+from orion.cognition.compactor.digest import parse_compactor_digest_json
 from orion.cognition.github_compactor.constants import (
     CARD_SUMMARY_MAX_CHARS,
     DIGEST_INPUT_BODY_MAX_CHARS,
@@ -47,12 +48,13 @@ def trim_github_compactor_input(fetch_payload: dict, *, max_items: int = MAX_DIG
 
 
 def assert_digest_within_budget(digest: GithubCompactorDigestV1) -> None:
-    if len(digest.card_summary) > CARD_SUMMARY_MAX_CHARS:
-        raise ValueError("compactor_output_over_budget:card_summary")
-    if len(digest.journal_title) > JOURNAL_TITLE_MAX_CHARS:
-        raise ValueError("compactor_output_over_budget:journal_title")
-    if len(digest.journal_body) > JOURNAL_BODY_MAX_CHARS:
-        raise ValueError("compactor_output_over_budget:journal_body")
+    assert_fields_within_budget(
+        {
+            "card_summary": (digest.card_summary, CARD_SUMMARY_MAX_CHARS),
+            "journal_title": (digest.journal_title, JOURNAL_TITLE_MAX_CHARS),
+            "journal_body": (digest.journal_body, JOURNAL_BODY_MAX_CHARS),
+        }
+    )
 
 
 def build_quiet_day_digest(*, repo: str, window_label: str) -> GithubCompactorDigestV1:
@@ -69,10 +71,7 @@ def build_quiet_day_digest(*, repo: str, window_label: str) -> GithubCompactorDi
 
 
 def parse_github_compactor_digest_json(raw: str) -> GithubCompactorDigestV1:
-    payload = json.loads(raw)
-    if not isinstance(payload, dict):
-        raise ValueError("compactor_digest_not_object")
-    return GithubCompactorDigestV1.model_validate(payload)
+    return parse_compactor_digest_json(raw, GithubCompactorDigestV1)
 
 
 def stable_github_compactor_journal_entry_id(

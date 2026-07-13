@@ -84,6 +84,7 @@ def _structured_output_expected(verb_name: str | None) -> bool:
         "journal.compose",
         "concept_induction_journal_synthesize",
         "github_compactor_digest_v1",
+        "chat_history_compactor_digest_v1",
         "memory_graph_suggest",
         "stance_react",
         "harness_finalize_reflect",

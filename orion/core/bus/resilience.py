@@ -2,7 +2,11 @@ from __future__ import annotations
 
 from typing import Any
 
-from loguru import logger
+try:
+    from loguru import logger  # type: ignore
+except Exception:  # pragma: no cover - fallback when loguru is unavailable
+    import logging
+    logger = logging.getLogger("orion.bus")
 
 from orion.core.bus.async_service import OrionBusAsync
 from orion.core.bus.bus_schemas import BaseEnvelope

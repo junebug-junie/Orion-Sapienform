@@ -59,6 +59,7 @@ from orion.substrate.route_loop.constants import (
 from orion.substrate.route_loop.pipeline import process_route_grammar_events
 from orion.substrate.route_loop.projection import empty_route_projection
 
+from .health_monitor import HealthMonitor
 from .publish import publish_accepted_events
 from .reducer_health import (
     health_snapshots,
@@ -174,6 +175,7 @@ class BiometricsSubstrateWorker:
         self._settings = get_settings()
         self._store = BiometricsSubstrateStore(self._settings.postgres_uri)
         self._catalog = NodeCatalog.load(self._settings.node_catalog_path)
+        self._health_monitor = HealthMonitor(self._store, self._settings)
         self._stop = asyncio.Event()
         self._bus = None
         self._tasks: list[asyncio.Task[None]] = []
@@ -207,6 +209,7 @@ class BiometricsSubstrateWorker:
             asyncio.create_task(self._chat_poll_loop(), name="chat-substrate-poll"),
             asyncio.create_task(self._route_poll_loop(), name="route-substrate-poll"),
             asyncio.create_task(self._prune_loop(), name="substrate-receipt-pruner"),
+            asyncio.create_task(self._health_loop(), name="substrate-health-monitor"),
             asyncio.create_task(self._dynamics_tick_loop(), name="substrate-dynamics-tick"),
             asyncio.create_task(self._episodic_tick_loop(), name="substrate-episodic-tick"),
             asyncio.create_task(
@@ -275,6 +278,22 @@ class BiometricsSubstrateWorker:
         )
         maybe_run_emergency_prune(self._store._engine, self._settings)
         log_receipt_pressure(self._store._engine, self._settings)
+
+    async def _health_loop(self) -> None:
+        while not self._stop.is_set():
+            try:
+                await asyncio.to_thread(self._health_monitor.run_tick)
+            except Exception:
+                logger.exception("substrate_runtime_health_check_failed")
+            try:
+                await asyncio.wait_for(
+                    self._stop.wait(),
+                    timeout=float(self._settings.health_check_interval_sec),
+                )
+            except asyncio.TimeoutError:
+                continue
+            except asyncio.CancelledError:
+                break
 
     async def _biometrics_poll_loop(self) -> None:
         spec = REDUCER_SPECS[0]

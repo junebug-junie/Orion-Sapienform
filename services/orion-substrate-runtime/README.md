@@ -44,6 +44,10 @@ Set `ENABLE_TRANSPORT_BUS_REDUCER=true` after orion-bus transport traces are pub
 
 Set `ENABLE_ROUTE_GRAMMAR_REDUCER=true` after orch route-arbitration grammar publish is enabled (`PUBLISH_CORTEX_ORCH_GRAMMAR=true` on orion-cortex-orch). Both default `false` -- this lane is shadow-only until verified end-to-end. Projection (`active_route_arbitration`) is capped the same way `active_execution_trajectory` is (`ROUTE_ARBITRATION_MAX_RUNS=2000`, `ROUTE_ARBITRATION_MAX_AGE_SEC=86400`, LRU by `last_updated_at`) -- not settings-configurable yet, unlike execution's cap, since this lane hasn't run at production volume.
 
+## Health monitoring -> hub pending-attention box
+
+`GET /grammar/truth`'s `degraded`/`degraded_reasons` used to be manual-curl-only. `app/health_monitor.py::HealthMonitor` (mirrors `orion-self-state-runtime`'s pattern) polls it every `SUBSTRATE_RUNTIME_HEALTH_CHECK_INTERVAL_SEC` (default `900.0`) and fires an `orion-notify` attention request -- which surfaces as a card in orion-hub's pending-attention UI -- on a healthy->unhealthy transition only (not every tick), plus a recovery note on the way back. Requires `NOTIFY_BASE_URL` (default `http://orion-athena-notify:7140`) to actually reach `orion-notify`; fails open (logs and retries next tick) if unreachable.
+
 ## Run
 
 ```bash

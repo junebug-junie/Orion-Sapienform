@@ -52,6 +52,17 @@ OK 1 orion:verb:request
 single_consumer gate OK: 31 channel(s) checked, 0 warning(s)
 ```
 
+## Journal Dispatch Registry Gate (unregistered trigger_kind guard)
+Journal-entry notifications (email/in-app) are dispatched from a single, fail-closed table, `orion.journaler.dispatch_registry.JOURNAL_DISPATCH_REGISTRY`, keyed by `trigger_kind` (see `orion/journaler/README.md` and `services/orion-actions/README.md`'s "Journal notification dispatch registry" section). `resolve_policy()` already fails closed for any unknown `trigger_kind` at runtime (sends nothing) — this gate makes that gap loud instead of silent: it fails if any `trigger_kind` in `orion.journaler.worker._TRIGGER_TO_MODE` has no matching `JOURNAL_DISPATCH_REGISTRY` row.
+```bash
+python scripts/check_journal_dispatch_registry.py
+# or: make check-journal-dispatch-registry
+```
+Expected output when the registry is complete:
+```
+check_journal_dispatch_registry: OK -- all 8 trigger_kind(s) in _TRIGGER_TO_MODE have a JOURNAL_DISPATCH_REGISTRY row.
+```
+
 ## ChatGPT Export Import (Bus Fanout)
 
 ### What this does

@@ -749,6 +749,7 @@ def build_write_payload(
         source_ref=trigger.source_ref,
         correlation_id=correlation_id,
         spawned_correlation_id=trigger.spawned_correlation_id,
+        trigger_kind=trigger.trigger_kind,
     )
 
 

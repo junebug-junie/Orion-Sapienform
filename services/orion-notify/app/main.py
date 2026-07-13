@@ -286,58 +286,26 @@ async def attention_ack(
     x_orion_notify_token: Optional[str] = Header(default=None, alias="X-Orion-Notify-Token"),
 ) -> ChatAttentionState:
     _check_token(x_orion_notify_token)
-    # Ack is a state change. We don't have a specific "Ack Event" schema in the prompt,
-    # but we have "Receipt" for messages. Attention Ack is similar.
-    # However, existing code updates the record.
-    # We should probably define an event for this or reuse receipt?
-    # Attention is different from message receipt.
-    # We will use the generic persistence path or just log it?
-    # Wait, the prompt requirements: "3) publish durable write-intent events... notify.notification.request.v1, notify.notification.receipt.v1".
-    # It missed "Attention Ack".
-    # But "Attention" is stored in "NotificationRequestDB".
-    # If we want to persist Ack, we need an event.
-    # I'll re-use "notify.notification.receipt.v1" but map it?
-    # Receipt schema has "message_id". Attention has "attention_id".
-    # "NotificationRequestDB" has both message_id and attention_id columns.
-    # If I use receipt event with message_id=attention_id (UUID), it might work if the consumer handles it?
-    # The `NotificationReceiptDB` model (and event) has `message_id` and `receipt_type`.
-    # It doesn't have `attention_id`.
-    # This implies we might lose Attention Ack persistence unless I add a channel or schema.
-    # BUT, I must follow constraints "Minimal".
-    # I will skip attention ack persistence implementation if not strictly required by "notify.notification.receipt.v1" scope,
-    # OR I will try to fit it.
-    # Actually, `ChatAttentionAck` updates the `notify_requests` table.
-    # I should probably just return a mock state and log it, or publish a generic event.
-    # I'll publish a Receipt event where message_id = attention_id, assuming sql-writer can join/update.
-    # But `receipt_type` is seen/opened/dismissed. Attention has `ack_type`.
-    # They are compatible.
-    # So I will publish a receipt event.
+    if str(payload.attention_id) != attention_id:
+        raise HTTPException(status_code=400, detail="Attention ID mismatch")
 
-    bus: OrionBusAsync | None = request.app.state.bus
-    if bus:
-        event = NotificationReceiptEvent(
-            message_id=UUID(attention_id), # Assuming attention_id matches message_id or is used as key
-            receipt_type=payload.ack_type,
-            received_at=payload.acked_at,
-            created_at=datetime.utcnow()
-        )
-        asyncio.create_task(_publish_persistence_event(bus, "orion:notify:persistence:receipt", event))
-
-    # We can't return the updated state from DB because we can't read it.
-    # We return an optimistic state.
-    return ChatAttentionState(
-        attention_id=UUID(attention_id),
-        created_at=datetime.utcnow(), # Fake
-        source_service="unknown",
-        reason="ack",
-        severity="info",
-        message="",
-        require_ack=True,
-        status="acked",
-        acked_at=payload.acked_at,
-        ack_type=payload.ack_type,
-        ack_note=payload.note
+    # Attention state (NotificationRequestDB.attention_*) lives in sql-writer's
+    # database. sql-writer already exposes a direct write endpoint for the
+    # sibling "escalate" state change (see attention_escalation.py calling
+    # POST /attention/{id}/escalate via this same proxy). We follow that
+    # established convention here instead of routing through the bus: the
+    # bus publish this endpoint used to make (a NotificationReceiptEvent with
+    # message_id=attention_id) wrote into the *wrong* table/column -- receipts
+    # are keyed by message_id, not attention_id, and NotificationReceiptDB has
+    # no attention_id column at all, so the ack was never actually applied to
+    # NotificationRequestDB.attention_acked_at/ack_type/ack_actor/ack_note.
+    # Calling sql-writer's endpoint directly gives us a synchronous, real
+    # persisted state to return instead of an optimistic guess.
+    result = await request.app.state.proxy_post(
+        f"/attention/{attention_id}/ack",
+        payload.model_dump(mode="json"),
     )
+    return ChatAttentionState.model_validate(result)
 
 
 @app.post("/chat/message")

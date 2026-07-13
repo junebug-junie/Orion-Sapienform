@@ -25,6 +25,10 @@ def _load_store_class():
 
 FeedbackRuntimeStore = _load_store_class()
 
+from orion.schemas.execution_dispatch_frame import (  # noqa: E402
+    ExecutionDispatchCandidateV1,
+    ExecutionDispatchFrameV1,
+)
 from orion.schemas.feedback_frame import FeedbackFrameV1  # noqa: E402
 
 NOW = datetime(2026, 5, 25, 12, 0, tzinfo=timezone.utc)
@@ -159,6 +163,123 @@ def test_load_latest_dispatch_frame_degrades_to_none_on_legacy_row(monkeypatch) 
     monkeypatch.setattr(store, "_engine", fake_engine)
 
     assert store.load_latest_dispatch_frame() is None
+
+
+def _candidate(dispatch_id: str, status: str = "prepared_for_dispatch") -> ExecutionDispatchCandidateV1:
+    return ExecutionDispatchCandidateV1(
+        dispatch_id=dispatch_id,
+        source_decision_id="pd1",
+        source_proposal_id="proposal:inspect:state",
+        dispatch_status=status,
+        dispatch_mode="dispatch_read_only",
+        dispatch_kind="inspect",
+        target_id="t1",
+        target_kind="capability",
+        risk_score=0.05,
+        confidence_score=0.9,
+    )
+
+
+def _dispatch_frame(candidates: list[ExecutionDispatchCandidateV1]) -> ExecutionDispatchFrameV1:
+    return ExecutionDispatchFrameV1(
+        frame_id="execution.dispatch.frame:pf1:execution_dispatch_policy.v1",
+        generated_at=NOW,
+        source_policy_frame_id="policy.frame:pf1:substrate_policy.v1",
+        source_proposal_frame_id="proposal.frame:pf1:proposal_policy.v1",
+        source_self_state_id="self.state:pf1",
+        candidates=candidates,
+    )
+
+
+def test_load_cortex_result_evidence_returns_matched_rows(monkeypatch) -> None:
+    store = FeedbackRuntimeStore("postgresql://test:test@localhost/test")
+    fake_engine = MagicMock()
+    conn = MagicMock()
+    fake_engine.connect.return_value.__enter__ = MagicMock(return_value=conn)
+    fake_engine.connect.return_value.__exit__ = MagicMock(return_value=False)
+
+    rows = [
+        {
+            "result_id": "result:1",
+            "dispatch_id": "dispatch:1",
+            "status": "success",
+            "result_json": {"observation": "ok", "evidence_refs": ["ev:1"]},
+        }
+    ]
+    conn.execute.return_value.mappings.return_value.all.return_value = rows
+    monkeypatch.setattr(store, "_engine", fake_engine)
+
+    dispatch_frame = _dispatch_frame([_candidate("dispatch:1")])
+    evidence = store.load_cortex_result_evidence(dispatch_frame)
+
+    assert evidence == [
+        {
+            "result_id": "result:1",
+            "dispatch_id": "dispatch:1",
+            "status": "success",
+            "evidence_refs": ["ev:1"],
+        }
+    ]
+
+
+def test_load_cortex_result_evidence_no_matching_rows_returns_empty(monkeypatch) -> None:
+    store = FeedbackRuntimeStore("postgresql://test:test@localhost/test")
+    fake_engine = MagicMock()
+    conn = MagicMock()
+    fake_engine.connect.return_value.__enter__ = MagicMock(return_value=conn)
+    fake_engine.connect.return_value.__exit__ = MagicMock(return_value=False)
+    conn.execute.return_value.mappings.return_value.all.return_value = []
+    monkeypatch.setattr(store, "_engine", fake_engine)
+
+    dispatch_frame = _dispatch_frame([_candidate("dispatch:1")])
+    assert store.load_cortex_result_evidence(dispatch_frame) == []
+
+
+def test_load_cortex_result_evidence_no_candidates_skips_query(monkeypatch) -> None:
+    store = FeedbackRuntimeStore("postgresql://test:test@localhost/test")
+    fake_engine = MagicMock()
+    monkeypatch.setattr(store, "_engine", fake_engine)
+
+    dispatch_frame = _dispatch_frame([])
+    assert store.load_cortex_result_evidence(dispatch_frame) == []
+    fake_engine.connect.assert_not_called()
+
+
+def test_load_cortex_result_evidence_degrades_malformed_row(monkeypatch) -> None:
+    store = FeedbackRuntimeStore("postgresql://test:test@localhost/test")
+    fake_engine = MagicMock()
+    conn = MagicMock()
+    fake_engine.connect.return_value.__enter__ = MagicMock(return_value=conn)
+    fake_engine.connect.return_value.__exit__ = MagicMock(return_value=False)
+
+    rows = [
+        {
+            "result_id": "result:bad",
+            "dispatch_id": "dispatch:1",
+            "status": "failed",
+            "result_json": "{not-valid-json",
+        },
+        {
+            "result_id": "result:good",
+            "dispatch_id": "dispatch:2",
+            "status": "success",
+            "result_json": {"observation": "ok"},
+        },
+    ]
+    conn.execute.return_value.mappings.return_value.all.return_value = rows
+    monkeypatch.setattr(store, "_engine", fake_engine)
+
+    dispatch_frame = _dispatch_frame([_candidate("dispatch:1"), _candidate("dispatch:2")])
+    evidence = store.load_cortex_result_evidence(dispatch_frame)
+
+    assert evidence == [
+        {
+            "result_id": "result:good",
+            "dispatch_id": "dispatch:2",
+            "status": "success",
+            "evidence_refs": [],
+        }
+    ]
 
 
 def test_save_idempotent_by_frame_id(monkeypatch) -> None:

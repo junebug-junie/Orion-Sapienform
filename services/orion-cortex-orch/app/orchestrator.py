@@ -639,6 +639,38 @@ async def call_verb_runtime(
             "output_mode": None,
         }
 
+    # Shadow-only: publish the same route_metadata facts as a GrammarEventV1
+    # trace for the (separately owned) route_loop reducer to materialize.
+    # Off by default (PUBLISH_CORTEX_ORCH_GRAMMAR=false). Fire-and-forget:
+    # a failure here must never affect the chat response, so it is wrapped
+    # in its own try/except and only ever logged at debug level.
+    try:
+        from .grammar_emit import build_route_arbitration_grammar_events
+        from .grammar_publish import publish_orch_route_grammar_trace
+
+        route_grammar_events = build_route_arbitration_grammar_events(
+            correlation_id=correlation_id,
+            node_id=settings.node_name,
+            route_metadata=route_metadata,
+            session_id=plan_request.context.get("session_id"),
+            turn_id=plan_request.context.get("turn_id")
+            or plan_request.context.get("message_id"),
+        )
+        await publish_orch_route_grammar_trace(
+            bus,
+            route_grammar_events,
+            correlation_id=correlation_id,
+            channel=settings.grammar_event_channel,
+            source_name=settings.service_name,
+            enabled=settings.publish_cortex_orch_grammar,
+        )
+    except Exception:
+        logger.debug(
+            "orch_route_grammar_publish_failed corr=%s",
+            correlation_id,
+            exc_info=True,
+        )
+
     use_direct_exec = settings.exec_lane_routing_enabled and lane_decision.lane != "chat"
     # Same id allocation as the verb envelope path so VerbResultV1.request_id is stable per invocation
     # whether orch uses direct PlanExecution RPC or orion:verb:request.

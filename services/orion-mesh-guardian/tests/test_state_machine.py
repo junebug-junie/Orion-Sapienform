@@ -129,3 +129,20 @@ def test_max_attempts_moves_to_attention_only() -> None:
     state = ServiceState(phase=ServicePhase.unhealthy_confirmed, attempts_this_hour=3)
     out = transition(state, _inp(probe_status="probe_bad"), service_id="landing-pad")
     assert out.new_state.phase == ServicePhase.attention_only
+
+
+def test_attention_only_recovers_to_healthy_on_clean_probe() -> None:
+    state = ServiceState(phase=ServicePhase.attention_only, consecutive_probe_fails=4)
+    out = transition(state, _inp(probe_status="probe_ok", equilibrium_bad=False), service_id="landing-pad")
+    assert out.new_state.phase == ServicePhase.healthy
+    assert out.new_state.consecutive_probe_fails == 0
+    assert len(out.attention_events) == 1
+    assert out.attention_events[0]["severity"] == "info"
+    assert out.attention_events[0]["context"]["event"] == "recovery"
+
+
+def test_attention_only_stays_put_on_still_bad_probe() -> None:
+    state = ServiceState(phase=ServicePhase.attention_only, consecutive_probe_fails=4)
+    out = transition(state, _inp(probe_status="probe_bad"), service_id="landing-pad")
+    assert out.new_state.phase == ServicePhase.attention_only
+    assert out.attention_events == []

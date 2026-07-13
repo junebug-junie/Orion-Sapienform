@@ -6,6 +6,8 @@ from typing import Optional, Literal
 
 from pydantic import BaseModel, ConfigDict
 
+from orion.schemas.telemetry.phi_encoder import CorpusStatsV1, TrainingStatsV1
+
 
 class MoodArcCorpusRowV1(BaseModel):
     """One per-tick training-data row for the not-yet-built windowed felt-
@@ -44,3 +46,29 @@ class MoodArcCorpusRowV1(BaseModel):
     valence: float
     valence_source: Literal["proxy", "heuristic"]
     dominant_node: Optional[str] = None
+
+
+class MoodArcEncoderManifestV1(BaseModel):
+    """Item 2's windowed felt-state-trajectory encoder manifest -- dark
+    artifact, disk-only, no cognition consumer yet (see roadmap item 2,
+    docs/superpowers/specs/2026-07-13-felt-state-arc-roadmap-spec.md).
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    encoder_id: str
+    encoder_version: str
+    parent_version: Optional[str] = None
+    status: Literal["candidate", "active", "retired"]
+    architecture: str  # "mlp_shallow_v1", same as phi encoder
+    window_size: int
+    stride: int
+    max_gap_sec: float
+    hidden_dim: int
+    latent_dim: int
+    corpus: CorpusStatsV1        # reused as-is from orion.schemas.telemetry.phi_encoder
+    training: TrainingStatsV1    # reused as-is
+    shuffle_baseline_loss: float # held_out_loss with rows shuffled within-window (see gate)
+    git_sha: str
+    trained_at: datetime
+    promoted_at: Optional[datetime] = None

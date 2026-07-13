@@ -439,6 +439,7 @@ from orion.schemas.self_study import (
     SelfWritebackStatusV1,
 )
 from orion.schemas.telemetry.inner_state import InnerFeatureV1, InnerStateFeaturesV1
+from orion.schemas.telemetry.mood_arc import MoodArcCorpusRowV1, MoodArcEncoderManifestV1
 from orion.schemas.telemetry.phi_encoder import PhiEncoderManifestV1, PhiIntrinsicRewardV1
 from orion.schemas.telemetry.reasoning import ReasoningActivityV1, ReasoningCallV1
 from orion.schemas.telemetry.spark import SparkStateSnapshotV1, SparkTelemetryPayload
@@ -712,6 +713,8 @@ _REGISTRY: Dict[str, Type[BaseModel]] = {
     "MetacogEnrichScorePatchV1": MetacogEnrichScorePatchV1,
     "InnerStateFeaturesV1": InnerStateFeaturesV1,
     "InnerFeatureV1": InnerFeatureV1,
+    "MoodArcCorpusRowV1": MoodArcCorpusRowV1,
+    "MoodArcEncoderManifestV1": MoodArcEncoderManifestV1,
     "PhiEncoderManifestV1": PhiEncoderManifestV1,
     "PhiIntrinsicRewardV1": PhiIntrinsicRewardV1,
     "ReasoningCallV1": ReasoningCallV1,
@@ -1243,6 +1246,14 @@ SCHEMA_REGISTRY: Dict[str, SchemaRegistration] = {
     "InnerStateFeaturesV1": SchemaRegistration(
         model=InnerStateFeaturesV1,
         kind="self.inner_features.v1",
+    ),
+    "MoodArcCorpusRowV1": SchemaRegistration(
+        model=MoodArcCorpusRowV1,
+        kind="self.mood_arc_corpus.v1",
+    ),
+    "MoodArcEncoderManifestV1": SchemaRegistration(
+        model=MoodArcEncoderManifestV1,
+        kind="self.mood_arc_encoder.manifest.v1",
     ),
     "PhiEncoderManifestV1": SchemaRegistration(
         model=PhiEncoderManifestV1,

@@ -335,7 +335,7 @@ def test_failed_cortex_result() -> None:
                 risk_score=0.05,
                 confidence_score=0.9,
                 dispatched_at=NOW,
-                dispatch_error="stub failure",
+                result_ref="stub:result:inspect",
             )
         ],
     )

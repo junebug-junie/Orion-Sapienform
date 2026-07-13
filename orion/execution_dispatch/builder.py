@@ -220,6 +220,10 @@ def build_execution_dispatch_frame(
             risk_score=decision.risk_score,
             confidence_score=decision.confidence_score,
         )
+        # Unreachable from this builder as of the prepared_for_dispatch fix above --
+        # nothing here sets dispatch_status="dispatched" anymore, so max_dispatches_per_tick
+        # is not enforced until a future patch's sender promotes candidates to a real,
+        # evidenced "dispatched" after actually attempting a send.
         if dispatch_status == "dispatched":
             if len(dispatched) < policy.limits.max_dispatches_per_tick:
                 dispatched.append(item)

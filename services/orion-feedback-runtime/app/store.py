@@ -51,7 +51,20 @@ class FeedbackRuntimeStore:
         payload = row["dispatch_frame_json"]
         if isinstance(payload, str):
             payload = json.loads(payload)
-        return ExecutionDispatchFrameV1.model_validate(payload)
+        try:
+            return ExecutionDispatchFrameV1.model_validate(payload)
+        except ValidationError:
+            # Mirrors load_self_state's guard below: this is the FIFO lookup
+            # (oldest dispatch frame without feedback yet) -- a naive raise
+            # would re-select and fail on this exact row every tick forever,
+            # blocking every dispatch frame queued behind it. Degrading to
+            # None here means this tick does no work for a bad row instead of
+            # crash-looping on it; the row itself isn't retired (no feedback
+            # frame is written for it), which is the same acknowledged
+            # limitation self_state's None-degrade already accepts elsewhere
+            # in this file.
+            logger.warning("dispatch_frame_incompatible_schema fifo_lookup", exc_info=True)
+            return None
 
     def load_latest_dispatch_frame(self) -> ExecutionDispatchFrameV1 | None:
         with self._engine.connect() as conn:
@@ -74,7 +87,11 @@ class FeedbackRuntimeStore:
         payload = row["dispatch_frame_json"]
         if isinstance(payload, str):
             payload = json.loads(payload)
-        return ExecutionDispatchFrameV1.model_validate(payload)
+        try:
+            return ExecutionDispatchFrameV1.model_validate(payload)
+        except ValidationError:
+            logger.warning("dispatch_frame_incompatible_schema latest_lookup", exc_info=True)
+            return None
 
     def load_policy_frame(self, frame_id: str) -> PolicyDecisionFrameV1 | None:
         with self._engine.connect() as conn:

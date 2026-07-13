@@ -113,6 +113,15 @@ class ThoughtSettings(BaseSettings):
     # How many recent chain rows to scan for a runaway theme.
     reverie_resonance_window: int = Field(200, alias="ORION_REVERIE_RESONANCE_WINDOW")
 
+    # --- Resonance health monitor (Phase H+, reuses reverie_resonance_alert_enabled) ---
+    # Edge-triggered orion-notify paging when a theme's resonance is actually
+    # worsening (violation_count climbing across its last 2 persisted samples),
+    # not merely "an alert exists" -- a stale historical burst can keep
+    # re-reporting the same old numbers for days as it ages out of the
+    # detector's lookback window, and that must not page anyone.
+    notify_base_url: str = Field("http://orion-athena-notify:7140", alias="NOTIFY_BASE_URL")
+    notify_api_token: str | None = Field(None, alias="NOTIFY_API_TOKEN")
+
     # --- Computed salience v2 (shadow-first, default-off) ---
     attention_salience_v2_enabled: bool = Field(False, alias="ORION_ATTENTION_SALIENCE_V2_ENABLED")
     attention_habituation_enabled: bool = Field(False, alias="ORION_ATTENTION_HABITUATION_ENABLED")

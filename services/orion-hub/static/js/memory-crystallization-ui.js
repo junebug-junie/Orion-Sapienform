@@ -202,8 +202,11 @@
           renderRow(item, async (row) => {
             detailEl.classList.remove("hidden");
             setStatus(statusEl, "Loading detail…", false);
+            // crystallization_get (unlike the list endpoint) does not compute
+            // decayed_activation/retirement_candidate -- carry the values already
+            // known from the list row forward so the badge doesn't vanish on open.
             const full = row.retirement_candidate
-              ? await apiFetch(`/api/memory/crystallizations/${encodeURIComponent(row.crystallization_id)}`)
+              ? { ...(await apiFetch(`/api/memory/crystallizations/${encodeURIComponent(row.crystallization_id)}`)), decayed_activation: row.decayed_activation, retirement_candidate: row.retirement_candidate }
               : await apiFetch(`/api/memory/crystallizations/proposals/${encodeURIComponent(row.crystallization_id)}`);
             const links = await apiFetch(`/api/memory/crystallizations/${row.crystallization_id}/links`).catch(() => ({ items: [] }));
             const health = await apiFetch("/api/memory/crystallizations/projection/health").catch(() => ({}));

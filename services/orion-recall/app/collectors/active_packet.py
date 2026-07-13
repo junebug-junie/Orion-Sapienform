@@ -1,13 +1,16 @@
 from __future__ import annotations
 
+import logging
 from typing import Any
 
 from orion.memory.crystallization.active_packet import KIND_TO_BUCKET
 from orion.memory.crystallization.recall_eligibility import eligible_for_recall
 from orion.memory.crystallization.projection_graphiti import GraphitiAdapter
-from orion.memory.crystallization.repository import list_crystallizations
+from orion.memory.crystallization.repository import insert_retrieval_event, list_crystallizations
 from orion.memory.crystallization.retriever import retrieve_active_packet
 from orion.schemas.recall_pcr import RetrievalIntentV1
+
+logger = logging.getLogger(__name__)
 
 _BUCKET_BY_INTENT: dict[str, frozenset[str]] = {
     "relational": frozenset({"stance"}),
@@ -161,6 +164,22 @@ async def fetch_active_packet_fragments(
         graphiti_adapter=graphiti,
         seed_crystallization_id=seed_id or None,
     )
+
+    crystallization_refs = list(getattr(packet, "crystallization_refs", None) or [])
+    if crystallization_refs:
+        try:
+            await insert_retrieval_event(
+                pool,
+                query=fragment,
+                task_type=str(task_type) if task_type else None,
+                project_id=getattr(query, "project_id", None),
+                session_id=getattr(query, "session_id", None),
+                crystallization_ids=crystallization_refs,
+                card_refs=list(getattr(packet, "card_refs", None) or []),
+                trace=dict(getattr(packet, "retrieval_trace", None) or {}),
+            )
+        except Exception as exc:
+            logger.warning("active_packet_retrieval_event_log_failed error=%s", exc)
 
     fragments: list[dict[str, Any]] = []
     for bucket, entry in _packet_items(packet):

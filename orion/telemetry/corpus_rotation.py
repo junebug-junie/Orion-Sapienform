@@ -1,7 +1,8 @@
 """Shared contract for JSONL corpus-sink rotation naming and file resolution.
 
 Single source of truth for the rotated-filename pattern
-`InnerStateCorpusSink._try_rotate()` (services/orion-spark-introspector/app/
+`InnerStateCorpusSink._try_rotate()` (orion/telemetry/corpus_sink.py,
+promoted 2026-07-13 from services/orion-spark-introspector/app/
 inner_state_sink.py) produces, and for resolving "all files backing one
 corpus path" (the active file plus any rotated siblings) on the read side.
 2026-07-13, found by code review: this pattern/resolver was independently

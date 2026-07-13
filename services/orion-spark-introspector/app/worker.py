@@ -41,6 +41,7 @@ from orion.spark.signal_mapper import SignalMapper
 from orion.spark.surface_encoding import SurfaceEncoding
 from orion.spark.introspection_metadata import build_introspection_context
 from orion.telemetry.corpus_gate import is_corpus_row_healthy
+from orion.telemetry.corpus_sink import InnerStateCorpusSink
 
 from . import introspection_guard as ig
 from .inner_state import (
@@ -49,7 +50,6 @@ from .inner_state import (
     SEEDV4_COGNITIVE_FEATURE_NAMES,
     build_inner_state_features,
 )
-from .inner_state_sink import InnerStateCorpusSink
 from .phi_encoder import PhiEncoderRuntime
 from .substrate_reads import (
     ExecutionTrajectorySnapshot,

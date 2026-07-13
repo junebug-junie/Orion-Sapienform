@@ -4,6 +4,17 @@ Originally written for InnerStateFeaturesV1 only (Plan 2 training data);
 reused as-is (2026-07-13) for MoodArcCorpusRowV1 -- append() only ever
 calls payload.model_dump(mode="json"), so it was already schema-agnostic
 in practice. Type hint widened to match.
+
+Promoted here (2026-07-13, field-channel-raw-corpus-collector) from
+services/orion-spark-introspector/app/inner_state_sink.py: a second
+service (orion-field-digester, for field_channel_corpus.v1) now needs this
+same sink, and per CLAUDE.md's cross-service seam rule a service must not
+import from another service's app/ internals. This class had zero real
+spark-introspector-specific coupling (its only import was already
+orion.telemetry.corpus_rotation), so the move is a pure relocation, no
+behavior change. The old location was deleted outright in the same patch
+(exactly one real caller, services/orion-spark-introspector/app/worker.py,
+updated to import from here) -- no re-export shim left behind.
 """
 from __future__ import annotations
 

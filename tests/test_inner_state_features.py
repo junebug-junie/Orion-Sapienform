@@ -154,21 +154,12 @@ def test_grammar_degraded_forces_frozen() -> None:
 
 
 def test_corpus_sink_appends_jsonl(tmp_path) -> None:
-    import importlib.util as _u
-    from pathlib import Path as _P
-    spec = _u.spec_from_file_location(
-        "spark_inner_sink",
-        _P(__file__).resolve().parents[1]
-        / "services" / "orion-spark-introspector" / "app" / "inner_state_sink.py",
-    )
-    sink_mod = _u.module_from_spec(spec)
-    spec.loader.exec_module(sink_mod)
-
     from datetime import datetime, timezone
     from orion.schemas.telemetry.inner_state import InnerStateFeaturesV1
+    from orion.telemetry.corpus_sink import InnerStateCorpusSink
 
     path = tmp_path / "corpus.jsonl"
-    sink = sink_mod.InnerStateCorpusSink(str(path))
+    sink = InnerStateCorpusSink(str(path))
     p = InnerStateFeaturesV1(generated_at=datetime(2026, 7, 7, tzinfo=timezone.utc), headline=0.5)
     sink.append(p)
     sink.append(p)
@@ -179,33 +170,20 @@ def test_corpus_sink_appends_jsonl(tmp_path) -> None:
 
 
 def test_corpus_sink_disabled_when_no_path() -> None:
-    import importlib.util as _u
-    from pathlib import Path as _P
-    spec = _u.spec_from_file_location(
-        "spark_inner_sink2",
-        _P(__file__).resolve().parents[1]
-        / "services" / "orion-spark-introspector" / "app" / "inner_state_sink.py",
-    )
-    sink_mod = _u.module_from_spec(spec)
-    spec.loader.exec_module(sink_mod)
-    sink = sink_mod.InnerStateCorpusSink("")
-    assert sink.enabled is False
     from datetime import datetime, timezone
     from orion.schemas.telemetry.inner_state import InnerStateFeaturesV1
+    from orion.telemetry.corpus_sink import InnerStateCorpusSink
+
+    sink = InnerStateCorpusSink("")
+    assert sink.enabled is False
     sink.append(InnerStateFeaturesV1(generated_at=datetime(2026, 7, 7, tzinfo=timezone.utc)))  # no-op, no raise
 
 
 def test_corpus_sink_init_does_not_mkdir() -> None:
-    import importlib.util as _u
     from pathlib import Path as _P
-    spec = _u.spec_from_file_location(
-        "spark_inner_sink3",
-        _P(__file__).resolve().parents[1]
-        / "services" / "orion-spark-introspector" / "app" / "inner_state_sink.py",
-    )
-    sink_mod = _u.module_from_spec(spec)
-    spec.loader.exec_module(sink_mod)
+    from orion.telemetry.corpus_sink import InnerStateCorpusSink
+
     deep = _P("/tmp/orion_phi_sink_init_test/deep/nested/corpus.jsonl")
-    sink = sink_mod.InnerStateCorpusSink(str(deep))
+    sink = InnerStateCorpusSink(str(deep))
     assert sink.enabled is True
     assert not deep.parent.exists()

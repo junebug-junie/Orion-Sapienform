@@ -1,6 +1,6 @@
 """Unit tests for InnerStateCorpusSink's size-based rotation + retention pruning.
 
-Exercises app/inner_state_sink.py directly (no bus/handle_self_state mocking
+Exercises orion/telemetry/corpus_sink.py directly (no bus/handle_self_state mocking
 needed) -- these tests protect the already-live production corpus file at
 /mnt/telemetry/phi/corpus/inner_state.jsonl from unbounded growth.
 """
@@ -11,7 +11,7 @@ import re
 
 from pydantic import BaseModel
 
-from app.inner_state_sink import InnerStateCorpusSink
+from orion.telemetry.corpus_sink import InnerStateCorpusSink
 
 ROTATED_SUFFIX_RE = re.compile(r"^\d{8}T\d{6}\.\d{6}Z(\.\d+)?$")
 
@@ -84,7 +84,7 @@ def test_old_rotations_pruned_beyond_max_rotated_files(tmp_path, monkeypatch) ->
     # and deterministic regardless of filesystem mtime granularity.
     import datetime as _dt
 
-    import app.inner_state_sink as sink_module
+    import orion.telemetry.corpus_sink as sink_module
 
     class _FakeDateTime(_dt.datetime):
         _tick = 0
@@ -164,7 +164,7 @@ def test_rotation_collision_counter_avoids_overwriting_existing_rotated_file(tmp
     # other.
     import datetime as _dt
 
-    import app.inner_state_sink as sink_module
+    import orion.telemetry.corpus_sink as sink_module
 
     frozen = _dt.datetime(2026, 7, 13, 0, 0, 0, tzinfo=_dt.timezone.utc)
 
@@ -264,7 +264,7 @@ def test_rotation_failure_does_not_prevent_the_row_from_being_written(tmp_path, 
     # try/except OSError specifically so a filesystem hiccup during
     # housekeeping skips rotation for this tick rather than raising past
     # append() and losing the row entirely.
-    import app.inner_state_sink as sink_module
+    import orion.telemetry.corpus_sink as sink_module
 
     corpus_path = tmp_path / "inner_state.jsonl"
     sink = InnerStateCorpusSink(str(corpus_path), max_bytes=10, max_rotated_files=5)

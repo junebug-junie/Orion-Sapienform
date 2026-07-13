@@ -17,8 +17,9 @@ grammar_events (orion-bus, bus.transport:*) → transport bus projection
 grammar_events (orion-cortex-orch, orch.route:*) → route arbitration projection
   → route_grammar_reducer → StateDeltaV1(target_kind=route_arbitration_run)
   → substrate_reduction_receipts
-  (shadow-only: requires PUBLISH_CORTEX_ORCH_GRAMMAR=true on orion-cortex-orch AND
-  ENABLE_ROUTE_GRAMMAR_REDUCER=true here; both default false)
+  (default on: PUBLISH_CORTEX_ORCH_GRAMMAR=true on orion-cortex-orch AND
+  ENABLE_ROUTE_GRAMMAR_REDUCER=true here, both true by default now.
+  manual_migration_route_substrate_loop.sql must be applied first.)
 ```
 
 ## Setup
@@ -42,7 +43,7 @@ Set `ENABLE_EXECUTION_TRAJECTORY_REDUCER=true` after cortex-exec grammar publish
 
 Set `ENABLE_TRANSPORT_BUS_REDUCER=true` after orion-bus transport traces are publishing (`PUBLISH_ORION_BUS_GRAMMAR=true`). Checked-in `.env_example` default is `true`.
 
-Set `ENABLE_ROUTE_GRAMMAR_REDUCER=true` after orch route-arbitration grammar publish is enabled (`PUBLISH_CORTEX_ORCH_GRAMMAR=true` on orion-cortex-orch). Both default `false` -- this lane is shadow-only until verified end-to-end. Projection (`active_route_arbitration`) is capped the same way `active_execution_trajectory` is (`ROUTE_ARBITRATION_MAX_RUNS=2000`, `ROUTE_ARBITRATION_MAX_AGE_SEC=86400`, LRU by `last_updated_at`) -- not settings-configurable yet, unlike execution's cap, since this lane hasn't run at production volume.
+`ENABLE_ROUTE_GRAMMAR_REDUCER` and orch's `PUBLISH_CORTEX_ORCH_GRAMMAR` both default `true` now (graduated out of shadow mode, matching the `chat_grammar`/`execution_trajectory` precedent in commit `044d5318`). **`manual_migration_route_substrate_loop.sql` must be applied before this reducer can write** -- it will error on every tick against a fresh DB until `substrate_route_arbitration_projection` exists. Projection (`active_route_arbitration`) is capped the same way `active_execution_trajectory` is (`ROUTE_ARBITRATION_MAX_RUNS=2000`, `ROUTE_ARBITRATION_MAX_AGE_SEC=86400`, LRU by `last_updated_at`) -- not settings-configurable yet, unlike execution's cap; revisit if this lane needs a different cap once it's run at real volume.
 
 ## Health monitoring -> hub pending-attention box
 

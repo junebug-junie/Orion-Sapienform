@@ -919,7 +919,7 @@ verb_runtime = VerbRuntime(
     allow_backdoor=settings.orion_verb_backdoor_enabled,
 )
 _lane = str(settings.exec_lane or "chat").strip().lower()
-if _lane in {"chat", "legacy", ""}:
+if _lane in {"chat", ""}:
     verb_listener = Hunter(
         _cfg(),
         handler=handle_verb_request,

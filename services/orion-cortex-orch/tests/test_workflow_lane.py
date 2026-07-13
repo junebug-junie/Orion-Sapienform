@@ -2731,6 +2731,89 @@ def test_chat_history_compactor_pass_quiet_day_skips_card(monkeypatch) -> None:
     assert result.metadata["workflow"]["persisted"] == []
 
 
+def test_chat_history_compactor_pass_window_of_only_workflow_triggers_is_treated_as_quiet(monkeypatch) -> None:
+    # Regression for: user ran a real compaction and got back a digest describing
+    # "compaction events" instead of their actual chat, because prior Skill Runner
+    # workflow trigger round-trips (prompt="Compact the last N hours...", response=
+    # the templated "Workflow: ...\nStatus: ..." block) were logged into
+    # chat_history_log like organic turns and picked up by the next window fetch.
+    bus = DummyBus()
+    card_called = {"n": 0}
+
+    async def _fake_call_verb_runtime(*args, **kwargs):
+        req = kwargs["client_request"]
+        if req.verb == "skills.chat.discussion_window.v1":
+            skill = {
+                "window_start_utc": "2026-07-13T10:00:00+00:00",
+                "window_end_utc": "2026-07-13T16:00:00+00:00",
+                "turn_count": 2,
+                "turns": [
+                    {
+                        "created_at": "2026-07-13T14:00:00+00:00",
+                        "correlation_id": "corr-x",
+                        "prompt": "Compact the last 6 hours of chat into a memory digest.",
+                        "response": (
+                            "Workflow: Chat History Compactor\n"
+                            "Status: completed\n"
+                            "Result: Compacted 1 chat turn(s) for chat_compactor:rolling:6h:x.\n"
+                            "Persisted: memory_card:abc\n"
+                            "Scheduled: none"
+                        ),
+                    },
+                    {
+                        "created_at": "2026-07-13T14:30:00+00:00",
+                        "correlation_id": "corr-y",
+                        "prompt": "Compact the last 24 hours of chat into a memory digest.",
+                        "response": "Workflow failed before completion.",
+                    },
+                ],
+                "transcript_text": "irrelevant: only workflow-notification turns in this window",
+                "selection_strategy": "time_bound_then_contiguous_suffix",
+            }
+            return DummyVerbResult(
+                payload={
+                    "result": {
+                        "status": "success",
+                        "final_text": json.dumps(skill),
+                        "metadata": {"skill_result": skill},
+                    }
+                }
+            )
+        raise AssertionError(f"unexpected verb {req.verb}")
+
+    async def _fake_persist_card(**kwargs):
+        card_called["n"] += 1
+        return uuid4()
+
+    monkeypatch.setattr(
+        "app.workflow_runtime.persist_chat_history_compactor_memory_card",
+        _fake_persist_card,
+    )
+
+    req = _req("chat_history_compactor_pass")
+    req.context.raw_user_text = "Compact the last 6 hours of chat into a memory digest."
+    req.context.user_message = req.context.raw_user_text
+
+    result = asyncio.run(
+        execute_chat_workflow(
+            bus=bus,
+            source=ServiceRef(name="cortex-orch"),
+            req=req,
+            correlation_id="00000000-0000-0000-0000-000000000303",
+            causality_chain=[],
+            trace={},
+            call_verb_runtime=_fake_call_verb_runtime,
+        )
+    )
+    assert result.ok is True
+    # Filtered down to zero organic turns -> must be treated exactly like a quiet
+    # window, not summarized as "workflows ran".
+    assert card_called["n"] == 0
+    assert result.metadata["workflow"]["turn_count"] == 0
+    assert not any(ch == "orion:journal:write" for ch, _ in bus.published)
+    assert result.metadata["workflow"]["persisted"] == []
+
+
 def test_chat_history_compactor_pass_digest_chat_then_quick_retry(monkeypatch) -> None:
     bus = DummyBus()
     routes: list[str] = []

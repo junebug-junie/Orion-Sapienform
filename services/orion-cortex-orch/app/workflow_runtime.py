@@ -16,7 +16,10 @@ from orion.cognition.chat_history_compactor.digest import (
     stable_chat_compactor_journal_entry_id,
     trim_chat_history_compactor_input,
 )
-from orion.cognition.chat_history_compactor.window import resolve_chat_compactor_window
+from orion.cognition.chat_history_compactor.window import (
+    exclude_workflow_notification_turns,
+    resolve_chat_compactor_window,
+)
 from orion.cognition.github_compactor.constants import DEFAULT_LOOKBACK_DAYS
 from orion.cognition.github_compactor.digest import (
     assert_digest_within_budget,
@@ -2375,6 +2378,7 @@ async def _execute_chat_history_compactor_pass(
     if skill_blob.get("error"):
         raise WorkflowExecutionError(f"discussion_window_skill_error:{skill_blob.get('error')}")
     window = DiscussionWindowResultV1.model_validate(skill_blob)
+    window = exclude_workflow_notification_turns(window)
 
     card_id: str | None = None
     card_persist_skipped_reason: str | None = None

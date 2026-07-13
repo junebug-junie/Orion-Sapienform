@@ -204,7 +204,7 @@ sources:
     url: https://www.nasa.gov/news-release/feed/
     domains: ["www.nasa.gov", "nasa.gov"]
     allowed_path_prefixes: ["/news-release/"]
-    categories: ["science_climate_energy", "hardware_compute_gpu"]
+    categories: ["science_climate_energy"]
     region_scope: science
     trust_tier: 1
     factuality: high

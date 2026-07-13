@@ -93,6 +93,25 @@ def test_verdict_a_busy_zero_variance_passes_when_silent_moves():
     assert mod.verdict_drift(silent, busy) == "GO"
 
 
+def test_verdict_a_unmeasurable_when_no_self_state_rows_at_all():
+    # Both classes empty (dead/unreachable Postgres source) -> UNMEASURABLE,
+    # not a numeric "flat, NO-GO" -- distinct from real flat data below.
+    empty = mod.SelfStateMetrics()
+    assert mod.verdict_drift(empty, empty) == mod.UNMEASURABLE
+
+
+def test_verdict_a_flat_but_measured_is_no_go_not_unmeasurable():
+    # Real rows exist and are genuinely flat -- this IS a measured NO-GO,
+    # must not be conflated with the zero-rows UNMEASURABLE case above.
+    silent_rows = [
+        _self_state(i * 10, {"coherence": 0.5}, {"coherence": 0.0}) for i in range(6)
+    ]
+    silent = mod.compute_self_state_metrics(silent_rows)
+    busy = mod.compute_self_state_metrics(silent_rows)
+    assert silent.row_count > 0
+    assert mod.verdict_drift(silent, busy) == "NO-GO"
+
+
 # ---------------------------------------------------------------------------
 # 3. Rare co-activation + flat pressure -> verdict (b) NO-GO
 # ---------------------------------------------------------------------------
@@ -104,6 +123,17 @@ def test_verdict_b_rare_coactivation_is_no_go():
     assert drive.coactivation_frac < mod.COACTIVATION_MIN_FRAC
     assert pressure.frac_gt_level < mod.RESOURCE_PRESSURE_MIN_FRAC
     assert mod.verdict_economy(drive, pressure) == "NO-GO"
+
+
+def test_verdict_b_unmeasurable_when_no_drive_audit_rows():
+    # Dead/unreachable Fuseki source (record_count == 0) -> UNMEASURABLE, not
+    # a numeric "0% co-activation, NO-GO" -- this is the exact failure mode
+    # that motivated this fix (the graph was empty for days without anyone
+    # noticing the verdict was silently reading as a real behavioral NO-GO).
+    empty_drive = mod.drive_stats_from_histogram({})
+    pressure = mod.compute_resource_pressure_stats([])
+    assert empty_drive.record_count == 0
+    assert mod.verdict_economy(empty_drive, pressure) == mod.UNMEASURABLE
 
 
 # ---------------------------------------------------------------------------
@@ -194,9 +224,10 @@ def test_empty_metrics_do_not_raise():
     assert mod.per_row_abs_trajectory([]) == []
     assert mod._percentile([], 0.9) is None
 
-    # Verdicts on empty metrics are well-defined NO-GO.
-    assert mod.verdict_drift(ss, ss) == "NO-GO"
-    assert mod.verdict_economy(drive, pressure) == "NO-GO"
+    # Verdicts on empty metrics are UNMEASURABLE, not a numeric NO-GO -- a
+    # dead/unreachable source must never resolve to a behavioral finding.
+    assert mod.verdict_drift(ss, ss) == mod.UNMEASURABLE
+    assert mod.verdict_economy(drive, pressure) == mod.UNMEASURABLE
 
 
 def test_percentile_and_median():
@@ -268,3 +299,64 @@ def test_parse_sparql_histogram_bindings_retains_zero_bucket():
 def test_parse_sparql_histogram_bindings_degrades():
     # Empty bindings -> empty dict, no raise.
     assert mod.parse_sparql_histogram_bindings([]) == {}
+
+
+# ---------------------------------------------------------------------------
+# 8. --window-hours / --window-days: mutually exclusive, resolve to a timedelta
+# ---------------------------------------------------------------------------
+def test_resolve_window_defaults_to_days_when_neither_flag_given():
+    args = mod.build_arg_parser().parse_args([])
+    window, label = mod.resolve_window(args)
+    assert window == timedelta(days=mod.DEFAULT_WINDOW_DAYS)
+    assert label == f"{mod.DEFAULT_WINDOW_DAYS} day(s)"
+
+
+def test_resolve_window_hours_flag():
+    args = mod.build_arg_parser().parse_args(["--window-hours", "1"])
+    window, label = mod.resolve_window(args)
+    assert window == timedelta(hours=1)
+    assert label == "1h"
+
+
+def test_resolve_window_days_flag_explicit():
+    args = mod.build_arg_parser().parse_args(["--window-days", "3"])
+    window, label = mod.resolve_window(args)
+    assert window == timedelta(days=3)
+    assert label == "3 day(s)"
+
+
+def test_window_hours_and_window_days_are_mutually_exclusive():
+    with pytest.raises(SystemExit):
+        mod.build_arg_parser().parse_args(["--window-days", "3", "--window-hours", "1"])
+
+
+# ---------------------------------------------------------------------------
+# 9. Retention-bound caveat -- window exceeds what a source actually covers
+# ---------------------------------------------------------------------------
+def test_retention_caveat_none_when_source_covers_full_window():
+    window_start = BASE
+    oldest_available = BASE - timedelta(days=1)  # covers further back than needed
+    assert mod.retention_caveat("substrate_self_state", oldest_available, window_start) is None
+
+
+def test_retention_caveat_fires_when_source_retention_is_shorter():
+    window_start = BASE - timedelta(days=7)
+    oldest_available = BASE - timedelta(days=3)  # only 3 of the 7 requested days exist
+    note = mod.retention_caveat("substrate_self_state", oldest_available, window_start)
+    assert note is not None
+    assert "substrate_self_state" in note
+    assert "96.0h" in note  # 4 days short, expressed in hours
+
+
+def test_retention_caveat_none_when_oldest_unknown():
+    # oldest_available=None means "couldn't determine" (empty table / fetch
+    # failure) -- a separate unavailability caveat already covers that case,
+    # this function must not fabricate a bound it doesn't actually know.
+    assert mod.retention_caveat("substrate_self_state", None, BASE) is None
+
+
+# ---------------------------------------------------------------------------
+# 10. Exit code distinguishes UNMEASURABLE from a completed GO/NO-GO
+# ---------------------------------------------------------------------------
+def test_unmeasurable_constant_is_distinct_from_go_and_no_go():
+    assert mod.UNMEASURABLE not in ("GO", "NO-GO")

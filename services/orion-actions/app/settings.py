@@ -133,6 +133,16 @@ class Settings(BaseSettings):
     actions_skills_biometrics_stability_threshold: float = Field(0.3, alias="ACTIONS_SKILLS_BIOMETRICS_STABILITY_THRESHOLD")
     actions_skills_docker_health_enabled: bool = Field(False, alias="ACTIONS_SKILLS_DOCKER_HEALTH_ENABLED")
 
+    # Hunter bus consumer concurrency. Default True to match the pattern already
+    # established in orion-recall/orion-llm-gateway/orion-cortex-exec/
+    # orion-spark-introspector/orion-cortex-orch. Sequential mode (False) means
+    # the consumer directly awaits each handler to completion before reading the
+    # next message off ANY subscribed channel -- a single long-running RPC-bound
+    # handler (e.g. the daily_pulse_v1/journal-trigger startup catch-up jobs,
+    # each waiting up to 420s for a reply) blocks every other incoming message
+    # (including a live user's workflow-manage request) for its full duration.
+    actions_concurrent_handlers: bool = Field(True, alias="ACTIONS_CONCURRENT_HANDLERS")
+
     actions_journaling_enabled: bool = Field(True, alias="ACTIONS_JOURNALING_ENABLED")
     actions_journaling_daily_enabled: bool = Field(False, alias="ACTIONS_JOURNALING_DAILY_ENABLED")
     actions_journaling_cooldown_seconds: int = Field(21600, alias="ACTIONS_JOURNALING_COOLDOWN_SECONDS")

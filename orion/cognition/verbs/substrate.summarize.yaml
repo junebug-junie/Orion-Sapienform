@@ -1,0 +1,36 @@
+name: substrate.summarize
+label: Substrate Summarize
+description: >
+  Wide-angle summary of a single substrate target's overall state (a node,
+  capability, or field artifact) — not framed around any one alarm dimension.
+  Read-only; returns strict structured JSON, no tool selection, no side effects.
+
+category: ExecutiveControl
+priority: normal
+
+interruptible: true
+can_interrupt_others: false
+
+requires_gpu: true
+requires_memory: false
+
+timeout_ms: 90000
+max_recursion_depth: 0
+
+services:
+  - LLMGatewayService
+
+prompt_template: substrate_summarize.j2
+
+personality_file: orion/cognition/personality/orion_identity.yaml
+
+steps:
+  - name: llm_substrate_summarize
+    description: Single-pass wide-angle read of the target; strict JSON, no planning.
+    order: 0
+    services:
+      - LLMGatewayService
+    prompt_template: substrate_summarize.j2
+    requires_gpu: true
+    requires_memory: false
+    timeout_ms: 90000

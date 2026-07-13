@@ -117,6 +117,12 @@ def test_router_allows_chat_history_compactor_digest_v1() -> None:
     assert _structured_output_expected("chat_history_compactor_digest_v1") is True
 
 
+def test_router_allows_substrate_probe_verbs() -> None:
+    assert _structured_output_expected("substrate.inspect") is True
+    assert _structured_output_expected("substrate.summarize") is True
+    assert _structured_output_expected("substrate.observe") is True
+
+
 def test_github_compactor_digest_regression_strips_think_and_returns_json() -> None:
     final_text, _ = _extract_final_text([
         _step({

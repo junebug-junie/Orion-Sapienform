@@ -102,7 +102,7 @@ def _hub_client_patches(*, thought: ThoughtEventV1, harness_run: HarnessRunV1 | 
         patch.object(
             thought_client.ThoughtClient,
             "react",
-            AsyncMock(return_value=thought),
+            AsyncMock(return_value=thought_client.ThoughtReactResult(thought=thought)),
         ),
         patch.object(
             harness_governor_client.HarnessGovernorClient,

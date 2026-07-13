@@ -32,6 +32,7 @@ from orion.core.schemas.reasoning_io import ReasoningWriteContextV1, ReasoningWr
 from orion.core.schemas.reasoning_summary import ReasoningSummaryRequestV1, ReasoningSummaryV1
 from orion.reasoning import InMemoryReasoningRepository, ReasoningSummaryCompiler
 from orion.schemas.chat_stance import ChatStanceBrief
+from orion.schemas.reverie import SpontaneousThoughtV1
 from orion.substrate import build_substrate_store_from_env
 from orion.substrate.relational import (
     CONCEPT_INDUCED,
@@ -1341,12 +1342,18 @@ def _project_reverie_glimpse(ctx: Dict[str, Any]) -> str | None:
     ``evidence_refs``/``coalition``/``chain_id`` or any other field, since those
     are internal grounding/audit data, not narration meant to be read.
 
-    Re-checks ``hollow`` here as a second, independent gate (defense in depth):
-    the producer already filters hollow thoughts before persisting, but this
-    consumer should not trust that invariant blindly.
+    Gates on BOTH the stored ``hollow`` flag AND an independent re-derivation
+    via ``SpontaneousThoughtV1.is_hollow()`` -- rejecting if either says
+    hollow. The stored flag alone isn't trusted (it could be stale/wrong if
+    the row predates a schema or guard change), and the re-derivation alone
+    isn't trusted either (it can't see ``extra_grounding`` widening the
+    semantic-lift path may have applied at write time, so a thought the
+    producer explicitly marked hollow must never be surfaced just because a
+    simpler re-check happens to pass it).
 
-    Fail-open: returns None on anything missing, malformed, or unparsable.
-    Never raises.
+    Fail-open: returns None on anything missing, malformed, or unparsable
+    (including a payload that no longer validates as ``SpontaneousThoughtV1``
+    at all). Never raises.
     """
     try:
         raw = ctx.get("latest_reverie_thought")
@@ -1362,12 +1369,11 @@ def _project_reverie_glimpse(ctx: Dict[str, Any]) -> str | None:
             return None
         if not isinstance(payload, dict):
             return None
-        if payload.get("hollow") is True:
+
+        thought = SpontaneousThoughtV1.model_validate(payload)
+        if thought.hollow or thought.is_hollow():
             return None
-        interpretation = payload.get("interpretation", "")
-        if not isinstance(interpretation, str):
-            return None
-        interpretation = interpretation.strip()
+        interpretation = thought.interpretation.strip()
         if not interpretation:
             return None
         return interpretation

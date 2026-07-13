@@ -30,3 +30,13 @@ def test_substrate_reducers_default_on() -> None:
 def test_hub_chat_grammar_default_on() -> None:
     src = (REPO / "services/orion-hub/app/settings.py").read_text()
     assert 'PUBLISH_HUB_CHAT_GRAMMAR: bool = Field(default=True' in src
+
+
+def test_cortex_orch_grammar_default_on() -> None:
+    src = (REPO / "services/orion-cortex-orch/app/settings.py").read_text()
+    assert 'publish_cortex_orch_grammar: bool = Field(True' in src
+
+
+def test_route_grammar_reducer_default_on() -> None:
+    src = (REPO / "services/orion-substrate-runtime/app/settings.py").read_text()
+    assert 'enable_route_grammar_reducer: bool = Field(True' in src

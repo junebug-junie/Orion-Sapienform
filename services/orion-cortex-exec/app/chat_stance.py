@@ -1382,6 +1382,105 @@ def _project_reverie_glimpse(ctx: Dict[str, Any]) -> str | None:
         return None
 
 
+_MAX_RECENT_DISPATCH_ACTIONS = 3
+# The producer (execution-dispatch-runtime) is expected to already bound
+# `summary` per the P2 design doc. This is a generous defensive ceiling only,
+# not the primary truncation point -- do not rely on it as the main guard.
+_DISPATCH_ACTION_SUMMARY_MAX_CHARS = 300
+
+
+def _project_recent_dispatch_actions(ctx: Dict[str, Any]) -> list[dict]:
+    """Projection helper: surface the most recent autonomous dispatch-action
+    outcomes as bounded, privacy-safe evidence for chat narration.
+
+    Reads ``ctx['chat_autonomy_state_v2']`` -- the ``AutonomyStateV2`` dict
+    (``model_dump(mode="json")``) set by ``_run_autonomy_reducer`` once
+    ``AUTONOMY_STATE_V2_REDUCER_ENABLED`` is on -- and extracts
+    ``.last_action_outcomes`` (a list of ``ActionOutcomeRefV1``-shaped dicts
+    or objects). Deliberately NOT ``ctx['chat_autonomy_state']``: that key
+    holds the plain ``AutonomyStateV1`` graph-lookup state, which has no
+    ``last_action_outcomes`` field at all (``AutonomyLookupV1.state`` is typed
+    ``AutonomyStateV1 | None`` in ``orion/autonomy/repository.py``;
+    ``last_action_outcomes`` only exists on the ``AutonomyStateV2`` subclass
+    in ``orion/autonomy/models.py``, and is only populated by
+    ``reduce_autonomy_state`` in ``orion/autonomy/reducer.py``).
+
+    Takes at most ``_MAX_RECENT_DISPATCH_ACTIONS`` entries, newest-first by
+    ``observed_at``. Entries with a missing/unparsable ``observed_at`` sort
+    last (oldest) rather than crashing the sort.
+
+    Projects each entry to EXACTLY ``{kind, summary, success, observed_at}``
+    -- never ``action_id``, ``query``, ``articles``, or ``salience``, since
+    those are internal correlation/audit fields, the same reasoning
+    ``_project_reverie_glimpse`` documents for its own field
+    (``evidence_refs``/``coalition``/``chain_id``).
+
+    Fail-open: returns ``[]`` on anything missing, malformed, or unparsable.
+    Never raises.
+    """
+    try:
+        state = ctx.get("chat_autonomy_state_v2")
+        if state is None:
+            return []
+        if isinstance(state, dict):
+            outcomes = state.get("last_action_outcomes")
+        else:
+            outcomes = getattr(state, "last_action_outcomes", None)
+        if not outcomes or not isinstance(outcomes, (list, tuple)):
+            return []
+
+        def _field(item: Any, name: str) -> Any:
+            if isinstance(item, dict):
+                return item.get(name)
+            return getattr(item, name, None)
+
+        def _sort_epoch(item: Any) -> float:
+            observed_at = _field(item, "observed_at")
+            dt = observed_at if isinstance(observed_at, datetime) else None
+            if dt is None and isinstance(observed_at, str) and observed_at.strip():
+                try:
+                    dt = datetime.fromisoformat(observed_at.replace("Z", "+00:00"))
+                except Exception:
+                    dt = None
+            if dt is None:
+                return float("-inf")
+            if dt.tzinfo is None:
+                dt = dt.replace(tzinfo=timezone.utc)
+            return dt.timestamp()
+
+        ordered = sorted(outcomes, key=_sort_epoch, reverse=True)[:_MAX_RECENT_DISPATCH_ACTIONS]
+
+        projected: list[dict] = []
+        for item in ordered:
+            observed_at = _field(item, "observed_at")
+            if isinstance(observed_at, datetime):
+                observed_at = observed_at.isoformat()
+            kind = _field(item, "kind")
+            summary = _field(item, "summary")
+            # Skip items that don't validate as a real outcome (non-string
+            # kind/summary) rather than surfacing a hollow {kind: None,
+            # summary: None, ...} row -- an empty-shell entry here would be
+            # exactly the kind of meaningless "evidence" this section exists
+            # to prevent. Only reachable via schema drift in a future writer;
+            # today's sole producer (reduce_autonomy_state) always sets both.
+            if not isinstance(kind, str) or not kind or not isinstance(summary, str) or not summary:
+                continue
+            if len(summary) > _DISPATCH_ACTION_SUMMARY_MAX_CHARS:
+                summary = summary[:_DISPATCH_ACTION_SUMMARY_MAX_CHARS]
+            projected.append(
+                {
+                    "kind": kind,
+                    "summary": summary,
+                    "success": _field(item, "success"),
+                    "observed_at": observed_at,
+                }
+            )
+        return projected
+    except Exception:
+        logger.debug("recent_dispatch_actions_projection_failed", exc_info=True)
+        return []
+
+
 def _concept_summary_from_store(ctx: Dict[str, Any] | None = None) -> dict[str, list[str]]:
     ctx = ctx if isinstance(ctx, dict) else {}
     try:
@@ -2439,6 +2538,14 @@ async def build_chat_stance_inputs(ctx: Dict[str, Any]) -> Dict[str, Any]:
                 ctx["autonomy_slice"] = autonomy_slice.model_dump(mode="json")
         except Exception as exc:
             logger.warning("autonomy_reducer_v2_failed error=%s", exc)
+
+    # Placed here, not alongside chat_reverie_glimpse above, because the
+    # source data (chat_autonomy_state_v2.last_action_outcomes) only exists
+    # once the V2 reducer block above has run -- see
+    # _project_recent_dispatch_actions' docstring for why chat_autonomy_state
+    # (set later, at the bottom of this function) is NOT the right source.
+    # Fail-open: [] when the reducer is disabled or produced nothing.
+    ctx["chat_recent_dispatch_actions"] = _project_recent_dispatch_actions(ctx)
 
     if attention_frame_enabled():
         try:

@@ -4,6 +4,7 @@ channels:
     schema_id: "VerbRequestV1"
     producer_services: ["orion-cortex-orch"]
     consumer_services: ["orion-cortex-exec"]
+    single_consumer: true
     stability: "stable"
     since: "2026-01-08"
 
@@ -60,6 +61,7 @@ channels:
     schema_id: "ChatRequestPayload"
     producer_services: ["orion-hub"]
     consumer_services: ["orion-cortex-orch"]
+    single_consumer: true
     stability: "experimental"
     since: "2026-01-08"
 
@@ -76,6 +78,7 @@ channels:
     schema_id: "CortexClientRequest"
     producer_services: ["orion-hub", "orion-cortex-gateway", "orion-actions", "orion-memory-consolidation"]
     consumer_services: ["orion-cortex-orch"]
+    single_consumer: true
     stability: "experimental"
     since: "2026-01-08"
 
@@ -100,6 +103,7 @@ channels:
     schema_id: "DreamTriggerPayload"
     producer_services: ["orion-dream"]
     consumer_services: ["orion-cortex-orch"]
+    single_consumer: true
     stability: "stable"
     since: "2026-03-23"
 
@@ -116,6 +120,7 @@ channels:
     schema_id: "CortexChatRequest"
     producer_services: ["orion-hub"]
     consumer_services: ["orion-cortex-gateway"]
+    single_consumer: true
     stability: "experimental"
     since: "2026-01-08"
 
@@ -134,6 +139,7 @@ channels:
       - orion-cortex-orch
       - orion-thought
     consumer_services: ["orion-cortex-exec"]
+    single_consumer: true
     stability: "experimental"
     since: "2026-01-08"
 
@@ -142,6 +148,7 @@ channels:
     schema_id: "CortexExecRequestPayload"
     producer_services: ["orion-cortex-orch"]
     consumer_services: ["orion-cortex-exec"]
+    single_consumer: true
     stability: "experimental"
     since: "2026-05-13"
 
@@ -150,6 +157,7 @@ channels:
     schema_id: "CortexExecRequestPayload"
     producer_services: ["orion-cortex-orch"]
     consumer_services: ["orion-cortex-exec"]
+    single_consumer: true
     stability: "experimental"
     since: "2026-05-13"
 
@@ -158,6 +166,7 @@ channels:
     schema_id: "CortexExecRequestPayload"
     producer_services: ["orion-cortex-orch", "orion-actions", "orion-harness-governor"]
     consumer_services: ["orion-cortex-exec"]
+    single_consumer: true
     stability: "experimental"
     since: "2026-05-13"
 
@@ -166,6 +175,7 @@ channels:
     schema_id: "PreTurnAppraisalRequestV1"
     producer_services: ["orion-hub"]
     consumer_services: ["orion-cortex-exec"]
+    single_consumer: true
     stability: "experimental"
     since: "2026-07-03"
 
@@ -188,6 +198,7 @@ channels:
       - "orion-mind"
       - "orion-memory-consolidation"
     consumer_services: ["orion-llm-gateway"]
+    single_consumer: true
     stability: "experimental"
     since: "2026-01-08"
 
@@ -249,6 +260,7 @@ channels:
     schema_id: "RecallQueryV1"
     producer_services: ["orion-cortex-exec", "orion-cortex-orch", "orion-hub", "orion-context-exec"]
     consumer_services: ["orion-recall"]
+    single_consumer: true
     stability: "experimental"
     since: "2026-01-08"
 
@@ -265,6 +277,7 @@ channels:
     schema_id: "ContextExecRequestV1"
     producer_services: ["orion-cortex-exec", "orion-self-experiments"]
     consumer_services: ["orion-context-exec"]
+    single_consumer: true
     stability: "experimental"
     since: "2026-06-10"
 
@@ -297,6 +310,7 @@ channels:
     schema_id: "GenericPayloadV1"
     producer_services: ["orion-hub"]
     consumer_services: ["orion-agent-council"]
+    single_consumer: true
     stability: "experimental"
     since: "2026-01-08"
 
@@ -345,6 +359,7 @@ channels:
     schema_id: "GenericPayloadV1"
     producer_services: ["orion-hub", "orion-cortex-exec"]
     consumer_services: ["orion-agent-council"]
+    single_consumer: true
     stability: "experimental"
     since: "2026-01-08"
 
@@ -370,6 +385,7 @@ channels:
     schema_id: "VisionWindowRequestPayload"
     producer_services: ["orion-vision-window"]
     consumer_services: ["orion-vision-council"]
+    single_consumer: true
     stability: "experimental"
     since: "2026-01-08"
 
@@ -386,6 +402,7 @@ channels:
     schema_id: "VisionCouncilRequestPayload"
     producer_services: ["orion-vision-window"]
     consumer_services: ["orion-vision-council"]
+    single_consumer: true
     stability: "experimental"
     since: "2026-01-08"
 
@@ -403,6 +420,7 @@ channels:
     schema_id: "VisionScribeRequestPayload"
     producer_services: ["orion-vision-council"]
     consumer_services: ["orion-vision-scribe"]
+    single_consumer: true
     stability: "experimental"
     since: "2026-01-08"
 
@@ -420,6 +438,7 @@ channels:
     schema_id: "VisionTaskRequestPayload"
     producer_services: ["orion-cortex-exec", "orion-hub", "orion-vision-host", "orion-vision-frame-router"]
     consumer_services: ["orion-vision-host"]
+    single_consumer: true
     stability: "experimental"
     since: "2026-01-08"
 
@@ -530,6 +549,7 @@ channels:
     schema_id: "WorkflowScheduleManageRequestV1"
     producer_services: ["orion-cortex-orch"]
     consumer_services: ["orion-actions"]
+    single_consumer: true
     stability: "experimental"
     since: "2026-03-24"
 
@@ -662,6 +682,7 @@ channels:
     schema_id: "RdfBuildRequest"
     producer_services: ["orion-cortex-exec"]
     consumer_services: ["orion-rdf-writer"]
+    single_consumer: true
     stability: "experimental"
     since: "2026-01-08"
 
@@ -861,6 +882,7 @@ channels:
     schema_id: "PadRpcRequestV1"
     producer_services: ["*"]
     consumer_services: ["orion-landing-pad"]
+    single_consumer: true
     stability: "experimental"
     since: "2026-01-10"
 
@@ -1419,6 +1441,7 @@ channels:
     schema_id: "EmbeddingGenerateV1"
     producer_services: ["orion-vector-writer", "orion-hub", "orion-cortex-exec", "*"]
     consumer_services: ["orion-vector-host"]
+    single_consumer: true
     stability: "experimental"
     since: "2026-01-10"
 
@@ -1435,6 +1458,7 @@ channels:
     schema_id: "StateGetLatestRequest"
     producer_services: ["*"]
     consumer_services: ["orion-state-service"]
+    single_consumer: true
     stability: "experimental"
     since: "2026-01-10"
 
@@ -1491,6 +1515,7 @@ channels:
     schema_id: "MetaTagsRequestV1"
     producer_services: ["orion-cortex-exec"]
     consumer_services: ["orion-meta-tags"]
+    single_consumer: true
     stability: "experimental"
     since: "2026-01-10"
 
@@ -1501,6 +1526,15 @@ channels:
     consumer_services: ["orion-cortex-exec"]
     stability: "experimental"
     since: "2026-01-10"
+
+  - name: "orion:exec:request:CollapseMirrorService"
+    kind: "request"
+    schema_id: "GenericPayloadV1"
+    producer_services: ["orion-cortex-exec"]
+    consumer_services: ["orion-collapse-mirror"]
+    single_consumer: true
+    stability: "experimental"
+    since: "2026-07-13"
 
   - name: "orion:cognition:trace"
     kind: "event"
@@ -1523,6 +1557,7 @@ channels:
     schema_id: "TTSRequestPayload"
     producer_services: ["orion-hub"]
     consumer_services: ["orion-whisper-tts"]
+    single_consumer: true
     stability: "experimental"
     since: "2026-01-14"
 
@@ -1539,6 +1574,7 @@ channels:
     schema_id: "STTRequestPayload"
     producer_services: ["orion-hub"]
     consumer_services: ["orion-whisper-tts"]
+    single_consumer: true
 
   - name: "orion:stt:result:*"
     kind: "result"
@@ -2078,6 +2114,7 @@ channels:
     message_kind: "stance.react.request.v1"
     producer_services: ["orion-hub"]
     consumer_services: ["orion-thought"]
+    single_consumer: true
     stability: "experimental"
     since: "2026-07-05"
 
@@ -2176,6 +2213,7 @@ channels:
     message_kind: "harness.run.request.v1"
     producer_services: ["orion-hub"]
     consumer_services: ["orion-harness-governor"]
+    single_consumer: true
     stability: "experimental"
     since: "2026-07-05"
 
@@ -2220,6 +2258,7 @@ channels:
     message_kind: "harness.draft.molecule.v1"
     producer_services: ["orion-harness-governor"]
     consumer_services: ["orion-substrate-runtime"]
+    single_consumer: true
     stability: "experimental"
     since: "2026-07-05"
 

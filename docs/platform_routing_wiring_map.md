@@ -16,7 +16,7 @@
 
 ### Direct/bypass paths discovered
 - Legacy direct equilibrium → `orion:verb:request` path is intentionally disabled behind `EQUILIBRIUM_METACOG_PUBLISH_VERB_REQUEST`; code logs an error instead of publishing.
-- `services/orion-equilibrium-service/app/settings.py` still defaults `CHANNEL_CORTEX_ORCH_REQUEST` to `orion:verb:request`, which is drift-prone and misleading even though runtime flow currently uses trigger channel.
+- `services/orion-equilibrium-service/app/settings.py` previously defaulted `CHANNEL_CORTEX_ORCH_REQUEST` to `orion:verb:request`; the key was never read by any code and was removed on 2026-07-13 (runtime flow uses the trigger channel).
 
 ---
 

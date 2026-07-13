@@ -78,7 +78,6 @@ class Settings(BaseSettings):
     )
 
     channel_metacog_trigger: str = Field("orion:equilibrium:metacog:trigger", alias="CHANNEL_EQUILIBRIUM_METACOG_TRIGGER")
-    channel_cortex_orch_request: str = Field("orion:verb:request", alias="CHANNEL_CORTEX_ORCH_REQUEST")
     channel_collapse_mirror_user_event: str = Field("orion:collapse:intake", alias="CHANNEL_COLLAPSE_MIRROR_USER_EVENT")
     channel_pad_signal: str = Field("orion:pad:signal", alias="CHANNEL_PAD_SIGNAL")
 

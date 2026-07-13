@@ -9,10 +9,15 @@ STAMP="$(date -u +%Y%m%d%H%M%S)"
 
 _propose() {
   local subject="$1" summary="$2"
+  # planning_effects/retrieval_affordances required for kind=stance since
+  # orion/memory/crystallization/validator.py::validate_proposal was tightened -- without
+  # them propose() auto-quarantines (status=quarantined) and everything downstream 404s.
   curl -sS "${HDR[@]}" -X POST "${BASE}/api/memory/crystallizations/propose" -d "$(jq -n --arg s "$subject" --arg m "$summary" '{
     kind: "stance", subject: $s, summary: $m, scope: ["project:orion"],
     evidence: [{source_kind: "operator_note", source_id: "smoke-link", excerpt: "smoke"}],
-    proposed_by: "smoke"
+    proposed_by: "smoke",
+    planning_effects: ["smoke_test_context"],
+    retrieval_affordances: ["smoke_test_lookup"]
   }')" | jq -r '.crystallization_id'
 }
 

@@ -78,6 +78,29 @@ class Settings(BaseSettings):
         default=0.4, alias="MEMORY_FORMATION_AUTO_ENCODE_ACTIVATION_RATIO"
     )
 
+    # Cross-window concept-relation resolution (candidate retrieval + typed link dispatch).
+    # Off by default pending review -- see orion/memory/crystallization/concept_relation.py.
+    CRYSTALLIZER_VECTOR_COLLECTION: str = Field(
+        default="orion_memory_crystallizations", alias="CRYSTALLIZER_VECTOR_COLLECTION"
+    )
+    CRYSTALLIZER_EMBED_HOST_URL: str = Field(default="", alias="CRYSTALLIZER_EMBED_HOST_URL")
+    CRYSTALLIZER_EMBED_TIMEOUT_MS: int = Field(default=8000, alias="CRYSTALLIZER_EMBED_TIMEOUT_MS")
+    CHROMA_HOST: str = Field(default="", alias="CHROMA_HOST")
+    CHROMA_PORT: int = Field(default=8000, alias="CHROMA_PORT")
+
+    CONCEPT_RELATION_RESOLUTION_ENABLED: bool = Field(
+        default=False, alias="CONCEPT_RELATION_RESOLUTION_ENABLED"
+    )
+    CONCEPT_RELATION_CONFIDENCE_FLOOR: float = Field(
+        default=0.6, alias="CONCEPT_RELATION_CONFIDENCE_FLOOR"
+    )
+    CONCEPT_RELATION_CANDIDATE_LIMIT: int = Field(
+        default=5, alias="CONCEPT_RELATION_CANDIDATE_LIMIT"
+    )
+    CONCEPT_RELATION_TIMEOUT_SEC: float = Field(
+        default=8.0, alias="CONCEPT_RELATION_TIMEOUT_SEC"
+    )
+
     class Config:
         env_file = ".env"
         extra = "ignore"

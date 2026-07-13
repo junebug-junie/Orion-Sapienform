@@ -151,11 +151,13 @@ In `intake_pipeline.py::process_consolidation_crystallization`, insert the Phase
 | Decision | Action | Existing primitive |
 |---|---|---|
 | `same`, confidence ≥ threshold | Reinforce target, do not insert new row | `dynamics.reinforce()` |
-| `refines`, confidence ≥ threshold | Insert new row, then `supersedes` link + supersede target (gated kinds still require governor path — Phase C does not bypass `formation_policy.py`'s existing gate) | `governor.supersede()`, `links.insert_link()` |
-| `contradicts`, any confidence | Insert new row as `contradiction`-linked, do not auto-resolve | `links.insert_link(relation="contradicts")` |
-| `unrelated`, or LLM call failed/degraded | Existing path, unchanged | `resolve_formation_policy()` as today |
+| `refines`, confidence ≥ threshold | Insert new row unchanged through the normal `resolve_formation_policy()` path, attach a `supersedes` link on the *new* row only | `links.insert_link()` (via `candidate.links`, persisted on the normal insert path) |
+| `contradicts`, confidence ≥ threshold | Insert new row unchanged, attach a `contradicts` link on the *new* row only | `links.insert_link()` (same mechanism) |
+| `unrelated`, low confidence, or LLM call failed/degraded | Existing path, unchanged | `resolve_formation_policy()` as today |
 
-Confidence threshold (`CONCEPT_RELATION_CONFIDENCE_FLOOR`, proposed default `0.6`) gates `same`/`refines` from acting automatically; below floor, fall through to `unrelated` (insert as new, let governor/human review handle it via the normal gated-kind path).
+**Shipped scope reduction (deliberate, decided during implementation, not in the original plan above):** `refines` does **not** call `governor.supersede()` on the existing target, despite the table above as originally drafted. Auto-superseding an already-active belief on the strength of an LLM judgment about a brand-new, not-yet-approved proposal would apply that proposal's consequence onto canonical state automatically — out of scope under the "no auto-apply of proposals" constraint this patch shipped under. Both `refines` and `contradicts` only attach a link to the *new* candidate's own `links`; a human reviewing it via the existing `/api/memory/crystallizations/{id}/links` endpoint supersedes manually. See `orion/memory/crystallization/concept_relation.py::maybe_resolve_concept_relation`'s docstring for the same note at the code site.
+
+Confidence threshold (`CONCEPT_RELATION_CONFIDENCE_FLOOR`, default `0.6`) gates `same`/`refines`/`contradicts` from acting automatically; below floor, fall through to `unrelated` (insert as new, let governor/human review handle it via the normal gated-kind path).
 
 ### C3. Acceptance
 

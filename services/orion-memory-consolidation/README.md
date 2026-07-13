@@ -10,11 +10,30 @@ Subscribes to `orion:memory:turn:persisted` (sql-writer post-commit outbox), cla
 | `graph_draft` | Legacy path: LLM `memory_graph_suggest` + pending graph draft insert (manual bridge only) |
 | `skip_only` | Run gate for traceability; always mark window skipped — no crystallization or graph draft |
 
-Gate thresholds: `MEMORY_CONSOLIDATION_MIN_NOVELTY` (default `0.35`), `MEMORY_CONSOLIDATION_MIN_SIGNIFICANCE` (default `0.40`).
+Gate thresholds: `MEMORY_CONSOLIDATION_MIN_NOVELTY` (default `0.35`), `MEMORY_CONSOLIDATION_MIN_SIGNIFICANCE` (default `0.40`). Both floors require the window not be all low-info-social (`is_low_info_social` on every turn's prompt and response) as corroboration — a bare novelty/significance float alone is not sufficient, since a noisy classifier score on a short greeting-only turn was previously enough to crystallize it (`repair_signal` and `substantive_shift` are unaffected; they already require an independent shift-kind classification).
 
 Grammar repair evidence (read-only): `MEMORY_CONSOLIDATION_FETCH_GRAMMAR_EVIDENCE=true` queries `grammar_events` by `hub.chat:{NODE_NAME}:{correlation_id}` trace. Optional override DSN: `MEMORY_CONSOLIDATION_GRAMMAR_DSN`.
 
 **Note:** Proposed crystallization IDs are stored in `memory_consolidation_windows.draft_id` until a dedicated `crystallization_id` column migration lands.
+
+## Cross-window concept-relation resolution (off by default)
+
+Same-window duplicate detection (`orion.memory.crystallization.detection.detect_duplicates`) requires `scope_overlap`, which is structurally always `False` across two different consolidation windows — every crystallization gets a unique per-window `scope`, so two windows can never share one. `orion.memory.crystallization.concept_relation` adds a second, cross-window path: vector-similarity candidate retrieval (`candidate_retrieval.fetch_similar_candidates`, not scope-gated) followed by one bounded, structured-output LLM call that judges `same` / `refines` / `contradicts` / `unrelated` against the nearest existing active crystallizations of the same `kind`.
+
+Dispatch is deliberately conservative: `same` reinforces the existing target (identical mechanism to the same-window path). `refines` and `contradicts` only attach a typed link to the *new* candidate's own `links` (persisted to `memory_crystallization_links` on insert, same as any other crystallization) — they never mutate or supersede the existing target's status. That stays a human decision via the existing `/api/memory/crystallizations/{id}/links` and supersede endpoints. Every decisive branch (`same`/`refines`/`contradicts`) stamps `provenance.concept_relation` (relation, target id, confidence) on the affected row for audit, independent of which branch acted.
+
+Ships flag-gated off; flipping the flag alone does not activate anything without also configuring the embed/chroma hosts (both default to empty string):
+
+| Env | Default | Purpose |
+|-----|---------|---------|
+| `CONCEPT_RELATION_RESOLUTION_ENABLED` | `false` | Master flag for this path |
+| `CONCEPT_RELATION_CONFIDENCE_FLOOR` | `0.6` | Minimum LLM decision confidence to act; below this, falls through to the normal formation-policy path unchanged |
+| `CONCEPT_RELATION_CANDIDATE_LIMIT` | `5` | Max vector-similar candidates fetched and sent to the LLM prompt |
+| `CONCEPT_RELATION_TIMEOUT_SEC` | `8.0` | RPC timeout for the relation-judgment call |
+| `CRYSTALLIZER_EMBED_HOST_URL` | *(empty)* | Embedding HTTP endpoint for candidate retrieval — must be set for this feature to do anything |
+| `CRYSTALLIZER_EMBED_TIMEOUT_MS` | `8000` | Embed call timeout |
+| `CHROMA_HOST` / `CHROMA_PORT` | *(empty)* / `8000` | Chroma vector store for candidate retrieval — must be set alongside the embed host |
+| `CRYSTALLIZER_VECTOR_COLLECTION` | `orion_memory_crystallizations` | Chroma collection name (matches Hub's projection collection) |
 
 ## Channels
 

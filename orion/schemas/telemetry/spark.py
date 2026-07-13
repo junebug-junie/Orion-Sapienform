@@ -42,6 +42,13 @@ class SparkStateSnapshotV1(BaseModel):
     arousal: float = 0.5
     dominance: float = 0.5
 
+    # 2026-07-12, inner-state unification Phase 3: the real hardware node
+    # most salient this tick (PhiIntrinsicRewardV1.dominant_node, Phase 2),
+    # threaded through so orion-cortex-exec's metacog narrative can name it.
+    # None when no qualifying node is present this tick.
+    dominant_node: Optional[str] = None
+    dominant_node_reason: Optional[str] = None
+
     vector_present: bool = False
     vector_ref: Optional[str] = None
 

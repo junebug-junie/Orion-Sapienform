@@ -71,7 +71,12 @@ from .recall_utils import (
 )
 from .core_event_cache import format_recent_turn_effect_alerts, get_core_event_cache
 from .trace_cache import get_trace_cache
-from .spark_narrative import spark_phi_hint, spark_phi_narrative
+from .spark_narrative import (
+    spark_embodiment_hint,
+    spark_embodiment_narrative,
+    spark_phi_hint,
+    spark_phi_narrative,
+)
 from .chat_stance import (
     build_chat_stance_debug_payload,
     build_chat_stance_inputs,
@@ -165,6 +170,7 @@ _METACOG_DRAFT_CTX_LEN_KEYS: tuple[str, ...] = (
     "context_summary",
     "spark_state_json",
     "spark_phi_narrative",
+    "spark_embodiment_narrative",
     "turn_effect_json",
     "recent_turn_effect_alerts_json",
     "turn_effect_policy_json",
@@ -1500,6 +1506,8 @@ def _render_prompt(template_str: str, ctx: Dict[str, Any]) -> str:
         "spark_state_json": "{}",
         "spark_phi_narrative": "",
         "phi_hint": None,
+        "spark_embodiment_narrative": "",
+        "embodiment_hint": None,
     }
     for k, v in defaults.items():
         if k not in render_ctx:
@@ -3798,6 +3806,8 @@ async def call_step_services(
                                 phi_hint = spark_phi_hint(spark_snap)
                                 ctx["phi_hint"] = phi_hint
                                 ctx["spark_phi_narrative"] = spark_phi_narrative(spark_snap)
+                                ctx["embodiment_hint"] = spark_embodiment_hint(spark_snap)
+                                ctx["spark_embodiment_narrative"] = spark_embodiment_narrative(spark_snap)
                                 ctx["spark_state_json"] = spark_snap.model_dump_json()
 
                                 metadata = spark_snap.metadata if isinstance(spark_snap.metadata, dict) else {}

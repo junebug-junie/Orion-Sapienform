@@ -174,6 +174,14 @@ class Settings(BaseSettings):
         "orion:memory:drives:state", alias="EMBODIMENT_DRIVES_STATE_CHANNEL"
     )
 
+    # Health monitor -> orion-notify attention alerts. Edge-triggered (fires only
+    # on healthy->unhealthy transitions), not polled-and-spammed.
+    health_check_interval_sec: float = Field(
+        900.0, alias="SUBSTRATE_RUNTIME_HEALTH_CHECK_INTERVAL_SEC"
+    )
+    notify_base_url: str = Field("http://orion-athena-notify:7140", alias="NOTIFY_BASE_URL")
+    notify_api_token: str | None = Field(None, alias="NOTIFY_API_TOKEN")
+
 
 _settings: Settings | None = None
 

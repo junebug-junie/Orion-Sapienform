@@ -19,6 +19,15 @@ Primary health metrics (do **not** treat φ↔headline correlation as success):
 Every version directory under `--encoders-root` is included with manifest
 metadata (`git_sha`, `trained_at`, corpus span, training losses, status).
 
+**Rotation-aware (2026-07-13):** `--corpus` no longer has to point at a
+single ever-growing file. `InnerStateCorpusSink`
+(`services/orion-spark-introspector/app/inner_state_sink.py`) now rotates
+the live corpus at `CORPUS_SINK_MAX_BYTES` (default 200MB); this script's
+`load_corpus_rows()` resolves the given `--corpus` path plus any rotated
+siblings (`orion/telemetry/corpus_rotation.py`) so a health report always
+covers the full retained history, not just the slice written since the
+last rotation.
+
 ```bash
 # Live corpus + all encoder runs
 python services/orion-spark-introspector/train/evals/eval_phi_encoder_health.py \

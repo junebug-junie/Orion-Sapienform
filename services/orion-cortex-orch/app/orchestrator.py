@@ -615,6 +615,62 @@ async def call_verb_runtime(
         plan_request.context.setdefault("metadata", {})["mind_requested"] = False
         plan_request.context["metadata"]["mind_skip_reason"] = "mind_enabled_not_true"
 
+    # Route arbitration facts (lane pick, mind projection decision, output mode) are
+    # computed above but historically only ever reached logger.info/debug. Surface them
+    # on the VerbResultV1 that already flows back to the caller so a human can see how a
+    # turn was routed without a new schema/bus channel. Best-effort only: never raise.
+    try:
+        route_meta_map = plan_request.context.get("metadata")
+        if not isinstance(route_meta_map, dict):
+            route_meta_map = {}
+        route_metadata: dict[str, Any] = {
+            "execution_lane": getattr(lane_decision, "lane", None) or "unknown",
+            "execution_lane_reason": getattr(lane_decision, "reason", None) or "unknown",
+            "mind_requested": route_meta_map.get("mind_requested"),
+            "mind_skip_reason": route_meta_map.get("mind_skip_reason"),
+            "output_mode": plan_request.context.get("output_mode"),
+        }
+    except Exception:
+        route_metadata = {
+            "execution_lane": "unknown",
+            "execution_lane_reason": "unknown",
+            "mind_requested": None,
+            "mind_skip_reason": None,
+            "output_mode": None,
+        }
+
+    # Shadow-only: publish the same route_metadata facts as a GrammarEventV1
+    # trace for the (separately owned) route_loop reducer to materialize.
+    # Off by default (PUBLISH_CORTEX_ORCH_GRAMMAR=false). Fire-and-forget:
+    # a failure here must never affect the chat response, so it is wrapped
+    # in its own try/except and only ever logged at debug level.
+    try:
+        from .grammar_emit import build_route_arbitration_grammar_events
+        from .grammar_publish import publish_orch_route_grammar_trace
+
+        route_grammar_events = build_route_arbitration_grammar_events(
+            correlation_id=correlation_id,
+            node_id=settings.node_name,
+            route_metadata=route_metadata,
+            session_id=plan_request.context.get("session_id"),
+            turn_id=plan_request.context.get("turn_id")
+            or plan_request.context.get("message_id"),
+        )
+        await publish_orch_route_grammar_trace(
+            bus,
+            route_grammar_events,
+            correlation_id=correlation_id,
+            channel=settings.grammar_event_channel,
+            source_name=settings.service_name,
+            enabled=settings.publish_cortex_orch_grammar,
+        )
+    except Exception:
+        logger.debug(
+            "orch_route_grammar_publish_failed corr=%s",
+            correlation_id,
+            exc_info=True,
+        )
+
     use_direct_exec = settings.exec_lane_routing_enabled and lane_decision.lane != "chat"
     # Same id allocation as the verb envelope path so VerbResultV1.request_id is stable per invocation
     # whether orch uses direct PlanExecution RPC or orion:verb:request.
@@ -645,10 +701,12 @@ async def call_verb_runtime(
             plan_request=plan_request,
         )
         ok = isinstance(raw, dict) and str(raw.get("status") or "").lower() == "success"
+        direct_output: dict[str, Any] = {"result": raw} if isinstance(raw, dict) else {"result": {}}
+        direct_output["_route_metadata"] = route_metadata
         return VerbResultV1(
             verb="legacy.plan",
             ok=ok,
-            output={"result": raw} if isinstance(raw, dict) else {"result": {}},
+            output=direct_output,
             request_id=verb_runtime_request_id,
         )
 
@@ -724,6 +782,16 @@ async def call_verb_runtime(
                         result.request_id,
                         result.ok,
                     )
+                    try:
+                        verb_output = dict(result.output) if isinstance(result.output, dict) else {}
+                        verb_output["_route_metadata"] = route_metadata
+                        result.output = verb_output
+                    except Exception:
+                        logger.debug(
+                            "orch_route_metadata_attach_failed corr=%s request_id=%s",
+                            correlation_id,
+                            result.request_id,
+                        )
                     return result
                 logger.info(
                     "orch_verb_runtime_skip corr=%s reply=%s expected_request_id=%s got_request_id=%s",

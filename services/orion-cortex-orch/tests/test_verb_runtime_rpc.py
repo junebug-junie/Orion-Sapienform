@@ -175,3 +175,57 @@ def test_call_verb_runtime_waits_on_dedicated_reply_channel(monkeypatch) -> None
 
     assert result.ok is True
     assert bus.subscribed.startswith(f"orion:verb:result:{corr}:")
+
+
+def test_call_verb_runtime_attaches_route_metadata_on_verb_runtime_path(monkeypatch) -> None:
+    """Regression: the verb-runtime (bus reply) return path must also carry lane/mind/
+    output_mode arbitration facts on VerbResultV1.output['_route_metadata'], mirroring
+    the direct-exec path, so this is not lane-dependent behavior."""
+    source = ServiceRef(name="cortex-orch", version="0", node="n")
+    bus = _FakeBus()
+    corr = "11111111-1111-1111-1111-111111111999"
+
+    monkeypatch.setattr(orchestrator, "build_plan_request", lambda *args, **kwargs: PlanExecutionRequest(
+        plan=ExecutionPlan(
+            verb_name="agent_runtime",
+            label="agent-runtime",
+            description="",
+            category="agentic",
+            priority="normal",
+            interruptible=True,
+            can_interrupt_others=False,
+            timeout_ms=1000,
+            max_recursion_depth=1,
+            steps=[ExecutionStep(verb_name="agent_runtime", step_name="context_exec", order=0, services=["ContextExecService"])],
+            metadata={"mode": "agent"},
+        ),
+        args=PlanExecutionArgs(request_id="trace-1", extra={"mode": "agent", "supervised": True}),
+        context={"mode": "agent", "packs": ["executive_pack", "delivery_pack"], "output_mode": "implementation_guide", "response_profile": "technical_delivery"},
+    ))
+
+    async def _fake_maybe_fetch_state(*args, **kwargs):
+        return None
+
+    monkeypatch.setattr(orchestrator, "_maybe_fetch_state", _fake_maybe_fetch_state)
+
+    result = asyncio.run(
+        call_verb_runtime(
+            bus,
+            source=source,
+            client_request=_client_request(),
+            correlation_id=corr,
+            timeout_sec=5.0,
+        )
+    )
+
+    assert result.ok is True
+    assert isinstance(result.output, dict)
+    route_meta = result.output.get("_route_metadata")
+    assert route_meta is not None
+    assert route_meta["execution_lane"] in {"chat", "spark", "background"}
+    assert route_meta["execution_lane_reason"]
+    assert route_meta["mind_requested"] is False
+    assert route_meta["mind_skip_reason"] == "mind_enabled_not_true"
+    assert route_meta["output_mode"] == "implementation_guide"
+    # original bus-decoded output payload must still be present alongside the new metadata
+    assert result.output.get("result", {}).get("status") == "success"

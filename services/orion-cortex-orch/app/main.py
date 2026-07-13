@@ -392,6 +392,9 @@ async def handle(env: BaseEnvelope) -> BaseEnvelope:
         )
 
         result_payload = verb_result.output if isinstance(verb_result.output, dict) else {}
+        orch_route_metadata = result_payload.get("_route_metadata")
+        if not isinstance(orch_route_metadata, dict):
+            orch_route_metadata = None
         if "result" in result_payload and isinstance(result_payload.get("result"), dict):
             result_payload = result_payload["result"]
         steps = [
@@ -423,6 +426,8 @@ async def handle(env: BaseEnvelope) -> BaseEnvelope:
             final_meta["executed_verbs"] = executed_verbs
             if route_meta:
                 final_meta["auto_route"] = route_meta
+            if orch_route_metadata:
+                final_meta["route_metadata"] = orch_route_metadata
 
         # Answer-depth: surface runtime_debug from context-exec or legacy agent-chain payloads
         for s in steps:

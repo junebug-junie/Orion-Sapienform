@@ -163,6 +163,55 @@ def test_direct_exec_passes_router_metadata(monkeypatch: pytest.MonkeyPatch) -> 
     asyncio.run(_run())
 
 
+def test_call_verb_runtime_direct_exec_surfaces_route_metadata(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Regression: lane/mind/output_mode arbitration facts must reach the caller on
+    VerbResultV1.output['_route_metadata'] for the direct-exec (spark/background) path,
+    not just logger.info/debug lines."""
+
+    async def fake_call_cortex_exec(_bus, *, exec_request_channel: str, plan_request=None, **kwargs):  # type: ignore[no-untyped-def]
+        return {
+            "status": "success",
+            "verb_name": "introspect_spark",
+            "final_text": "ok",
+            "steps": [],
+            "memory_used": False,
+            "recall_debug": {},
+            "metadata": {},
+        }
+
+    monkeypatch.setattr(orchestrator, "call_cortex_exec", fake_call_cortex_exec)
+    monkeypatch.setattr(orchestrator, "get_settings", _settings_routing_on)
+
+    async def _none(*_a, **_k):
+        return None
+
+    monkeypatch.setattr(orchestrator, "_maybe_fetch_state", _none)
+
+    bus = MagicMock()
+    from orion.core.bus.bus_schemas import ServiceRef
+
+    async def _run() -> None:
+        res = await orchestrator.call_verb_runtime(
+            bus,
+            source=ServiceRef(name="cortex-orch", version="0", node="n"),
+            client_request=_spark_req(),
+            correlation_id="corr-route-meta",
+            timeout_sec=5.0,
+        )
+        assert isinstance(res.output, dict)
+        route_meta = res.output.get("_route_metadata")
+        assert route_meta is not None
+        assert route_meta["execution_lane"] == "spark"
+        assert route_meta["execution_lane_reason"]
+        assert route_meta["mind_requested"] is False
+        assert route_meta["mind_skip_reason"] == "mind_enabled_not_true"
+        assert route_meta["output_mode"] is None or isinstance(route_meta["output_mode"], str)
+        # original output payload must still be present alongside the new metadata
+        assert res.output.get("result", {}).get("status") == "success"
+
+    asyncio.run(_run())
+
+
 def test_exec_request_channel_for_lane_unknown_warns(caplog: pytest.LogCaptureFixture) -> None:
     import logging
 

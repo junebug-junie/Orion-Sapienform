@@ -2001,6 +2001,7 @@ channels:
       - orion-cortex-exec
       - orion-bus
       - orion-harness-governor
+      - orion-cortex-orch
     consumer_services: ["orion-sql-writer"]
     stability: "experimental"
     since: "2026-05-23"

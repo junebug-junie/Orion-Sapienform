@@ -81,6 +81,16 @@ _LANES: tuple[LaneSpec, ...] = (
         # actually observe a fresh candidate row between writes.
         max_age_sec=120,
     ),
+    LaneSpec(
+        ctx_key="latest_reverie_thought",
+        table="substrate_reverie_thought",
+        payload_col="thought_json",
+        ts_col="created_at",
+        projection_id=None,
+        # 2× the reverie tick interval (90s), same 2x convention as
+        # curiosity_signals above.
+        max_age_sec=180,
+    ),
 )
 
 

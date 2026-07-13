@@ -27,4 +27,9 @@ producers:
   - producer_id: orion-cortex-exec
     lane_id: execution
     source_service: orion-cortex-exec
+    status: live
+
+  - producer_id: orion-cortex-orch
+    lane_id: route
+    source_service: orion-cortex-orch
     status: planned

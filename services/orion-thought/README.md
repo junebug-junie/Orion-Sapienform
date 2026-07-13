@@ -45,6 +45,34 @@ Set `ORION_REVERIE_SEMANTIC_LIFT_ENABLED=true` (default `false`) to lift coaliti
 `substrate_turn_referent` before `reverie_narrate`. Requires referent rows from
 unresolved post-turn closures and routes narration through the background/metacog lane.
 
+## Resonance health monitor (Phase H+)
+
+`ORION_REVERIE_RESONANCE_ALERT_ENABLED` (default `true`) already runs an observation-only
+tripwire (`orion.reverie.resonance.detect_resonance`) after every completed reverie chain,
+persisting a `ResonanceAlertV1` to `substrate_reverie_resonance_alert` whenever a theme
+re-ignites faster than its own refractory bound allows. Until now that alert reached
+Postgres and a Hub debug panel only — nobody got paged.
+
+`app/resonance_monitor.py` closes that gap the same way the field-digester /
+attention-runtime / self-state-runtime health monitors already do (all three merged,
+running in production): an edge-triggered check that pages via `orion-notify`'s
+`POST /attention/request` (surfacing in Hub's existing Pending Attention panel) only on
+a healthy→unhealthy transition, retries a failed delivery until it actually succeeds, and
+checks `orion-notify`'s own pending list before suppressing a first-observation alert (so
+a process restart mid-incident can't go permanently silent).
+
+**"Unhealthy" here is not "an alert exists."** A 2026-07-12 investigation confirmed a real
+historical resonance burst had already self-resolved by the time it was investigated, but
+the detector kept re-reporting the same old `violation_count`/`min_gap_sec` for ~20 hours
+afterward, because those old rows hadn't yet aged out of `detect_resonance`'s 200-row
+lookback window (`ORION_REVERIE_RESONANCE_WINDOW`). Paging on "an alert exists" would have
+paged for ~20 hours about an already-resolved problem. Instead, a theme is only considered
+unhealthy when its `violation_count` strictly **increases** across its last 2 persisted
+samples — i.e. the loop is actually getting worse right now, not just echoing history.
+
+Reuses `NOTIFY_BASE_URL`/`NOTIFY_API_TOKEN` (same values as the other three services'
+health monitors) — no new settings beyond those two.
+
 ## Computed salience v2 (shadow-first)
 
 Flags (default-off): `ORION_ATTENTION_SALIENCE_V2_ENABLED`,

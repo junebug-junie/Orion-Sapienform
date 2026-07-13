@@ -13,6 +13,12 @@ grammar_events (orion-cortex-exec, cortex.exec:*) → execution trajectory proje
 grammar_events (orion-bus, bus.transport:*) → transport bus projection
   → transport_bus_reducer → StateDeltaV1(target_kind=transport_bus)
   → substrate_reduction_receipts → orion-field-digester (when ENABLE_TRANSPORT_FIELD_DIGESTION=true)
+
+grammar_events (orion-cortex-orch, orch.route:*) → route arbitration projection
+  → route_grammar_reducer → StateDeltaV1(target_kind=route_arbitration_run)
+  → substrate_reduction_receipts
+  (shadow-only: requires PUBLISH_CORTEX_ORCH_GRAMMAR=true on orion-cortex-orch AND
+  ENABLE_ROUTE_GRAMMAR_REDUCER=true here; both default false)
 ```
 
 ## Setup
@@ -21,6 +27,7 @@ grammar_events (orion-bus, bus.transport:*) → transport bus projection
 psql "$POSTGRES_URI" -f services/orion-sql-db/manual_migration_biometrics_substrate_loop.sql
 psql "$POSTGRES_URI" -f services/orion-sql-db/manual_migration_execution_substrate_loop.sql
 psql "$POSTGRES_URI" -f services/orion-sql-db/manual_migration_transport_substrate_loop.sql
+psql "$POSTGRES_URI" -f services/orion-sql-db/manual_migration_route_substrate_loop.sql
 psql "$POSTGRES_URI" -f services/orion-sql-db/manual_migration_substrate_reducer_quarantine_v1.sql
 # Self-observability v2 (coalition dwell log + endogenous curiosity candidates):
 psql "$POSTGRES_URI" -f services/orion-sql-db/manual_migration_coalition_dwell_v1.sql
@@ -34,6 +41,8 @@ python scripts/sync_local_env_from_example.py orion-substrate-runtime
 Set `ENABLE_EXECUTION_TRAJECTORY_REDUCER=true` after cortex-exec grammar publish is enabled (`PUBLISH_CORTEX_EXEC_GRAMMAR=true` on orion-cortex-exec). Checked-in `.env_example` default is `true`.
 
 Set `ENABLE_TRANSPORT_BUS_REDUCER=true` after orion-bus transport traces are publishing (`PUBLISH_ORION_BUS_GRAMMAR=true`). Checked-in `.env_example` default is `true`.
+
+Set `ENABLE_ROUTE_GRAMMAR_REDUCER=true` after orch route-arbitration grammar publish is enabled (`PUBLISH_CORTEX_ORCH_GRAMMAR=true` on orion-cortex-orch). Both default `false` -- this lane is shadow-only until verified end-to-end. Projection (`active_route_arbitration`) is capped the same way `active_execution_trajectory` is (`ROUTE_ARBITRATION_MAX_RUNS=2000`, `ROUTE_ARBITRATION_MAX_AGE_SEC=86400`, LRU by `last_updated_at`) -- not settings-configurable yet, unlike execution's cap, since this lane hasn't run at production volume.
 
 ## Run
 
@@ -89,7 +98,7 @@ curl -X POST -H "X-Orion-Operator-Token: $SUBSTRATE_CURSOR_RESET_OPERATOR_TOKEN"
   'http://127.0.0.1:8115/grammar/cursor/reset?cursor_name=biometrics_grammar_consumer&mode=timestamp&at=2026-06-01T00:00:00Z'
 ```
 
-Known cursors: `biometrics_grammar_consumer`, `execution_grammar_reducer`, `transport_grammar_reducer`.
+Known cursors: `biometrics_grammar_consumer`, `execution_grammar_reducer`, `transport_grammar_reducer`, `route_grammar_consumer`.
 
 ### Poison quarantine acknowledgement (internal operator endpoint)
 

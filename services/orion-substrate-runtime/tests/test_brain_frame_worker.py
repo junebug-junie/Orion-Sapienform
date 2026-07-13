@@ -126,11 +126,55 @@ def test_brain_frame_tick_has_no_phantom_or_mislabeled_lanes(monkeypatch):
     # Cursor-name-keyed lanes are phantom/mislabeled and must not appear.
     assert "lane:execution_grammar_reducer" not in lane_region_ids
     assert "lane:transport_grammar_reducer" not in lane_region_ids
-    # At most the 4 canonical friendly lanes — no phantom duplicates.
+    # At most the 5 canonical friendly lanes — no phantom duplicates.
     assert lane_region_ids <= {
         "lane:biometrics",
         "lane:chat_grammar",
         "lane:execution_trajectory",
         "lane:transport_bus",
+        "lane:route_grammar",
     }
-    assert len(lane_region_ids) <= 4
+    assert len(lane_region_ids) <= 5
+
+
+def test_route_grammar_cursor_has_correct_reducer_key_entries():
+    # Regression for the 54997e89-class bug: a cursor existing in
+    # GRAMMAR_CURSOR_REGISTRY without correct entries in BOTH
+    # REDUCER_KEY_BY_CURSOR and ENABLED_BY_REDUCER_KEY produces a phantom
+    # lane in the health snapshot. route_grammar_consumer must have both.
+    import app.grammar_truth as gt
+    from app.store import GRAMMAR_CURSOR_REGISTRY
+
+    assert "route_grammar_consumer" in GRAMMAR_CURSOR_REGISTRY
+    assert gt.REDUCER_KEY_BY_CURSOR.get("route_grammar_consumer") == "route_grammar"
+    assert "route_grammar" in gt.ENABLED_BY_REDUCER_KEY
+
+    settings_off = SimpleNamespace(enable_route_grammar_reducer=False)
+    settings_on = SimpleNamespace(enable_route_grammar_reducer=True)
+    enabled_fn = gt.ENABLED_BY_REDUCER_KEY["route_grammar"]
+    assert enabled_fn(settings_off) is False
+    assert enabled_fn(settings_on) is True
+
+
+def test_route_grammar_lane_remaps_to_friendly_key(monkeypatch):
+    import app.grammar_truth as gt
+
+    truth = dict(_CURSOR_KEYED_TRUTH)
+    truth["cursor_lag_by_reducer"] = dict(truth["cursor_lag_by_reducer"])
+    truth["cursor_lag_by_reducer"]["route_grammar_consumer"] = 1.5
+    truth["pending_backlog_by_reducer"] = dict(truth["pending_backlog_by_reducer"])
+    truth["pending_backlog_by_reducer"]["route_grammar_consumer"] = 3
+
+    monkeypatch.setattr(gt, "build_substrate_grammar_truth", lambda store: truth)
+    w = _worker()
+
+    lane_health = w._brain_frame_lane_health()
+    lag = lane_health["cursor_lag_by_reducer"]
+    backlog = lane_health["pending_backlog_by_reducer"]
+
+    assert "route_grammar" in lag
+    assert lag["route_grammar"] == 1.5
+    assert "route_grammar" in backlog
+    # Raw cursor-name key must NOT leak through.
+    assert "route_grammar_consumer" not in lag
+    assert "route_grammar_consumer" not in backlog

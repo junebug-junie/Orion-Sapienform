@@ -15,6 +15,7 @@ REDUCER_KEY_BY_CURSOR: dict[str, str] = {
     "chat_grammar_consumer": "chat_grammar",
     "execution_grammar_reducer": "execution_trajectory",
     "transport_grammar_reducer": "transport_bus",
+    "route_grammar_consumer": "route_grammar",
 }
 
 ENABLED_BY_REDUCER_KEY: dict[str, Any] = {
@@ -22,6 +23,7 @@ ENABLED_BY_REDUCER_KEY: dict[str, Any] = {
     "chat_grammar": lambda s: s.enable_chat_grammar_reducer,
     "execution_trajectory": lambda s: s.enable_execution_trajectory_reducer,
     "transport_bus": lambda s: s.enable_transport_bus_reducer,
+    "route_grammar": lambda s: s.enable_route_grammar_reducer,
 }
 
 
@@ -148,6 +150,7 @@ def build_substrate_grammar_truth(store: BiometricsSubstrateStore) -> dict[str, 
             "chat_grammar": settings.enable_chat_grammar_reducer,
             "execution_trajectory": settings.enable_execution_trajectory_reducer,
             "transport_bus": settings.enable_transport_bus_reducer,
+            "route_grammar": settings.enable_route_grammar_reducer,
         },
         "grammar_poll_interval_sec": settings.grammar_poll_interval_sec,
         "cursor_settings": {

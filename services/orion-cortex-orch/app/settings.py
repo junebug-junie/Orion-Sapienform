@@ -124,6 +124,14 @@ class Settings(BaseSettings):
     api_host: str = Field("0.0.0.0", alias="API_HOST")
     api_port: int = Field(8072, alias="API_PORT")
 
+    # Route arbitration grammar trace (shadow producer, off by default).
+    # Publishes the same lane/mind/output_mode facts already surfaced on
+    # VerbResultV1.output["_route_metadata"] as a GrammarEventV1 trace so the
+    # (separately owned) route_loop reducer in orion/substrate/route_loop/
+    # can materialize them. Fire-and-forget, never affects the chat response.
+    publish_cortex_orch_grammar: bool = Field(False, alias="PUBLISH_CORTEX_ORCH_GRAMMAR")
+    grammar_event_channel: str = Field("orion:grammar:event", alias="GRAMMAR_EVENT_CHANNEL")
+
     class Config:
         env_file = ".env"
         env_file_encoding = "utf-8"

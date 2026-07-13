@@ -35,6 +35,7 @@ from orion.schemas.reverie import (
     TerminalReason,
 )
 
+from .resonance_monitor import check_resonance_worsening
 from .reverie import _default_broadcast_reader, _source, run_reverie_once
 from .settings import settings
 from .store import (
@@ -148,6 +149,14 @@ async def _maybe_emit_resonance_alert(bus: OrionBusAsync) -> None:
                 events.append(ThemeEvent(theme_key, at))
         alert = detect_resonance(events, refractory_sec=settings.reverie_refractory_sec)
         if alert is None:
+            # No theme is currently resonant. Still let the health monitor
+            # re-check any theme it previously flagged worsening, so a
+            # recovery note fires once that theme's trend has calmed rather
+            # than staying silently "open" forever. Offloaded to a thread:
+            # this makes a blocking DB query + possible orion-notify HTTP
+            # call, and must not stall this coroutine's shared event loop.
+            with suppress(Exception):
+                await asyncio.to_thread(check_resonance_worsening, None)
             return
         with suppress(Exception):
             await bus.publish(
@@ -163,6 +172,13 @@ async def _maybe_emit_resonance_alert(bus: OrionBusAsync) -> None:
             "resonance alert theme=%s violations=%d min_gap=%.1fs refractory=%.0fs",
             alert.theme_key, alert.violation_count, alert.min_gap_sec, alert.refractory_sec,
         )
+        # Phase H+: proactive paging when this theme's violation_count is
+        # actually climbing across its last 2 persisted samples (not merely
+        # "an alert exists" -- see resonance_monitor.py for why that distinction
+        # matters). Observation only; never mutates the alert or the chain.
+        # Offloaded to a thread (blocking DB + orion-notify HTTP calls).
+        with suppress(Exception):
+            await asyncio.to_thread(check_resonance_worsening, alert)
     except Exception as exc:
         logger.debug("resonance tripwire pass failed: %s", exc)
 

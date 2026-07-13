@@ -107,6 +107,56 @@ def test_extract_repair_signal_present():
     assert turn.repair_pressure_confidence == pytest.approx(0.9)
 
 
+def test_extract_stance_disposition_present():
+    trace_id = "hub.chat:athena:turn-201"
+    events = [
+        _atom_event(
+            trace_id,
+            "stance_disposition",
+            "signal",
+            "Stance disposition: defer (stale_broadcast_no_evidence; low_confidence) [boundary_register]",
+            text_value="defer",
+        ),
+    ]
+    turn = extract_chat_turn_state(events)
+    assert turn.stance_disposition == "defer"
+    assert turn.stance_disposition_reasons == ["stale_broadcast_no_evidence", "low_confidence"]
+    assert turn.stance_boundary_register is True
+
+
+def test_extract_stance_disposition_defaults_to_unknown_when_absent():
+    trace_id = "hub.chat:athena:turn-202"
+    events = [
+        _atom_event(
+            trace_id,
+            "user_utterance",
+            "raw_span",
+            "User message in session sess-001 (5 words)",
+        ),
+    ]
+    turn = extract_chat_turn_state(events)
+    assert turn.stance_disposition == "unknown"
+    assert turn.stance_disposition_reasons == []
+    assert turn.stance_boundary_register is False
+
+
+def test_extract_stance_disposition_no_reasons_no_parens_in_summary():
+    trace_id = "hub.chat:athena:turn-203"
+    events = [
+        _atom_event(
+            trace_id,
+            "stance_disposition",
+            "signal",
+            "Stance disposition: proceed",
+            text_value="proceed",
+        ),
+    ]
+    turn = extract_chat_turn_state(events)
+    assert turn.stance_disposition == "proceed"
+    assert turn.stance_disposition_reasons == []
+    assert turn.stance_boundary_register is False
+
+
 def test_extract_noop_on_wrong_source():
     trace_id = "hub.chat:athena:turn-77"
     events = [

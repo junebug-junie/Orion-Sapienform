@@ -484,3 +484,95 @@ async def test_run_unified_turn_emits_trailing_idle_state_frame() -> None:
 
     assert any(f.get("type") == "final" for f in sent), "final frame must still be sent"
     assert sent[-1] == {"state": "idle"}, "must end with an idle-state frame so status resets to Ready"
+
+
+def _settings_stub(*, publish_chat_grammar: bool) -> MagicMock:
+    settings = MagicMock()
+    settings.PUBLISH_HUB_CHAT_GRAMMAR = publish_chat_grammar
+    settings.NODE_NAME = "athena"
+    settings.GRAMMAR_EVENT_CHANNEL = "orion:grammar:event"
+    return settings
+
+
+@pytest.mark.asyncio
+async def test_publish_unified_turn_chat_grammar_noop_when_disabled() -> None:
+    """No bus call at all when PUBLISH_HUB_CHAT_GRAMMAR is off -- chat must work either way."""
+    from orion.hub.turn_orchestrator import _publish_unified_turn_chat_grammar
+
+    _ensure_hub_import_paths()
+    publish_trace = AsyncMock()
+    with patch("scripts.grammar_publish.publish_hub_chat_grammar_trace", publish_trace):
+        await _publish_unified_turn_chat_grammar(
+            bus=MagicMock(),
+            correlation_id=_CORR_ID,
+            session_id="sess-1",
+            user_message="hello there",
+            repair_bundle=None,
+            stance_disposition="proceed",
+            stance_disposition_reasons=[],
+            stance_boundary_register=False,
+            settings=_settings_stub(publish_chat_grammar=False),
+        )
+    publish_trace.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_publish_unified_turn_chat_grammar_carries_stance_fields() -> None:
+    """When enabled, the built events carry the stance disposition through to the publisher."""
+    from orion.hub.turn_orchestrator import _publish_unified_turn_chat_grammar
+
+    _ensure_hub_import_paths()
+    publish_trace = AsyncMock()
+    with patch("scripts.grammar_publish.publish_hub_chat_grammar_trace", publish_trace):
+        await _publish_unified_turn_chat_grammar(
+            bus=MagicMock(),
+            correlation_id=_CORR_ID,
+            session_id="sess-1",
+            user_message="one two three",
+            repair_bundle=None,
+            stance_disposition="defer",
+            stance_disposition_reasons=["stale_broadcast_no_evidence"],
+            stance_boundary_register=True,
+            settings=_settings_stub(publish_chat_grammar=True),
+        )
+    publish_trace.assert_awaited_once()
+    events = publish_trace.await_args.args[1]
+    stance_atoms = [
+        ev.atom
+        for ev in events
+        if ev.atom is not None and ev.atom.semantic_role == "stance_disposition"
+    ]
+    assert len(stance_atoms) == 1
+    assert stance_atoms[0].text_value == "defer"
+    assert "stale_broadcast_no_evidence" in stance_atoms[0].summary
+    assert "[boundary_register]" in stance_atoms[0].summary
+    utterance_atoms = [
+        ev.atom
+        for ev in events
+        if ev.atom is not None and ev.atom.semantic_role == "user_utterance"
+    ]
+    assert utterance_atoms[0].text_value is None, "raw user text must never be stored"
+
+
+@pytest.mark.asyncio
+async def test_publish_unified_turn_chat_grammar_fails_open() -> None:
+    """A publish failure must not raise -- chat must survive even if the substrate side breaks."""
+    from orion.hub.turn_orchestrator import _publish_unified_turn_chat_grammar
+
+    _ensure_hub_import_paths()
+    with patch(
+        "scripts.grammar_publish.publish_hub_chat_grammar_trace",
+        AsyncMock(side_effect=RuntimeError("bus down")),
+    ):
+        await _publish_unified_turn_chat_grammar(
+            bus=MagicMock(),
+            correlation_id=_CORR_ID,
+            session_id="sess-1",
+            user_message="hello",
+            repair_bundle=None,
+            stance_disposition="proceed",
+            stance_disposition_reasons=[],
+            stance_boundary_register=False,
+            settings=_settings_stub(publish_chat_grammar=True),
+        )
+    # No assertion beyond "did not raise" -- that is the whole point of this test.

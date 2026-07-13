@@ -10,6 +10,7 @@ from .constants import CHAT_SOURCE_SERVICE, CHAT_TRACE_PREFIX
 
 _WORD_COUNT_RE = re.compile(r"\((\d+) words?\)")
 _SESSION_RE = re.compile(r"User message in session (\S+)")
+_STANCE_REASONS_RE = re.compile(r"\((.*?)\)")
 
 _EVIDENCE_CAP = 50
 
@@ -49,6 +50,9 @@ def extract_chat_turn_state(
     repair_pressure_level = 0.0
     repair_pressure_confidence = 0.0
     has_repair_signal = False
+    stance_disposition = "unknown"
+    stance_disposition_reasons: list[str] = []
+    stance_boundary_register = False
     evidence_event_ids: list[str] = []
 
     for event in events:
@@ -75,6 +79,15 @@ def extract_chat_turn_state(
         elif role == "session_context":
             if atom.text_value is not None:
                 session_id = atom.text_value
+        elif role == "stance_disposition":
+            if atom.text_value:
+                stance_disposition = atom.text_value
+            m3 = _STANCE_REASONS_RE.search(summary)
+            if m3:
+                stance_disposition_reasons = [
+                    r.strip() for r in m3.group(1).split(";") if r.strip()
+                ]
+            stance_boundary_register = "[boundary_register]" in summary
 
         if event.event_kind == "atom_emitted":
             if len(evidence_event_ids) < _EVIDENCE_CAP:
@@ -90,6 +103,9 @@ def extract_chat_turn_state(
         repair_pressure_level=repair_pressure_level,
         repair_pressure_confidence=repair_pressure_confidence,
         has_repair_signal=has_repair_signal,
+        stance_disposition=stance_disposition,
+        stance_disposition_reasons=stance_disposition_reasons,
+        stance_boundary_register=stance_boundary_register,
         evidence_event_ids=evidence_event_ids,
         last_updated_at=clock,
     )

@@ -46,6 +46,68 @@ def _repair_pressure_contract(repair_bundle: TurnAppraisalBundleV1 | None) -> di
     return None
 
 
+async def _publish_unified_turn_chat_grammar(
+    *,
+    bus: Any,
+    correlation_id: str,
+    session_id: str | None,
+    user_message: str,
+    repair_bundle: TurnAppraisalBundleV1 | None,
+    stance_disposition: str,
+    stance_disposition_reasons: list[str],
+    stance_boundary_register: bool,
+    settings: Any,
+) -> None:
+    """Orion capability: unified-turn conversational-envelope grammar trace.
+
+    Publishes the same hub.chat: trace the classic websocket_handler chat path
+    already produces (session, utterance word count, repair signal), extended
+    with the Thought stance decision (proceed/defer/refuse + reasons +
+    boundary register) -- a fact with no representation anywhere else in the
+    substrate ladder. Fires once per turn, right after the stance decision is
+    known, regardless of whether the turn goes on to the harness or stops
+    here on defer/refuse. Awaited directly (matches this file's other publish
+    calls, e.g. publish_chat_history/publish_chat_turn in
+    _publish_unified_turn_chat_history) rather than scheduled as a background
+    task -- this is a single lightweight bus publish, not a network round
+    trip to an LLM, so the added latency ahead of the harness dispatch is
+    negligible next to the harness call itself. Fail-open: chat must work
+    whether grammar publishing is on or off, or this call fails outright.
+    """
+    if bus is None or not getattr(settings, "PUBLISH_HUB_CHAT_GRAMMAR", False):
+        return
+    try:
+        from scripts.grammar_emit import build_chat_turn_grammar_events
+        from scripts.grammar_publish import publish_hub_chat_grammar_trace
+        from scripts.pre_turn_appraisal_wiring import repair_pressure_grammar_scalars
+
+        repair_pressure_level, repair_pressure_confidence = repair_pressure_grammar_scalars(
+            pre_turn_bundle=repair_bundle,
+            substrate_summary=None,
+        )
+        events = build_chat_turn_grammar_events(
+            turn_id=correlation_id,
+            session_id=str(session_id or "anonymous"),
+            node_id=settings.NODE_NAME,
+            word_count=len((user_message or "").split()),
+            repair_pressure_level=repair_pressure_level,
+            repair_pressure_confidence=repair_pressure_confidence,
+            has_repair_signal=repair_bundle is not None,
+            stance_disposition=stance_disposition,
+            stance_disposition_reasons=stance_disposition_reasons,
+            stance_boundary_register=stance_boundary_register,
+        )
+        await publish_hub_chat_grammar_trace(
+            bus,
+            events,
+            correlation_id=correlation_id,
+            channel=settings.GRAMMAR_EVENT_CHANNEL,
+            enabled=True,
+        )
+    except Exception:
+        logger.warning("unified_turn_chat_grammar_publish_failed corr=%s", correlation_id, exc_info=True)
+
+
 def _thought_deferred_frame(thought: ThoughtEventV1, *, correlation_id: str) -> dict[str, Any]:
     frame: dict[str, Any] = {
         "type": "turn_deferred",
@@ -298,6 +360,17 @@ async def execute_unified_turn(
     react_result = await ThoughtClient(bus).react(stance_req, correlation_id=correlation_id)
     thought = react_result.thought
     if thought is None:
+        await _publish_unified_turn_chat_grammar(
+            bus=bus,
+            correlation_id=correlation_id,
+            session_id=session_id,
+            user_message=user_message,
+            repair_bundle=repair_bundle,
+            stance_disposition="stance_timeout",
+            stance_disposition_reasons=[react_result.failure_reason or "stance_react_timeout"],
+            stance_boundary_register=False,
+            settings=cfg,
+        )
         return [
             {
                 "type": "turn_deferred",
@@ -306,7 +379,30 @@ async def execute_unified_turn(
             }
         ]
     if thought.disposition in ("defer", "refuse"):
+        await _publish_unified_turn_chat_grammar(
+            bus=bus,
+            correlation_id=correlation_id,
+            session_id=session_id,
+            user_message=user_message,
+            repair_bundle=repair_bundle,
+            stance_disposition=thought.disposition,
+            stance_disposition_reasons=thought.disposition_reasons,
+            stance_boundary_register=bool(thought.boundary_register),
+            settings=cfg,
+        )
         return [_thought_deferred_frame(thought, correlation_id=correlation_id)]
+
+    await _publish_unified_turn_chat_grammar(
+        bus=bus,
+        correlation_id=correlation_id,
+        session_id=session_id,
+        user_message=user_message,
+        repair_bundle=repair_bundle,
+        stance_disposition=thought.disposition,
+        stance_disposition_reasons=thought.disposition_reasons,
+        stance_boundary_register=bool(thought.boundary_register),
+        settings=cfg,
+    )
 
     harness_req = HarnessRunRequestV1(
         correlation_id=correlation_id,

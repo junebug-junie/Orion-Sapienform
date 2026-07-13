@@ -133,13 +133,17 @@ change its dynamics source before it is built.
 
 ### (b) Internal economy — `verdict_economy`
 
-**UNMEASURABLE** iff zero `DriveAudit` records exist in the requested window
-(dead or unreachable Fuseki source, or a source that stopped being written to
-— see the 2026-07-13 re-run in
+**UNMEASURABLE** iff **either** input is empty: zero `DriveAudit` records in
+the requested window (dead/unreachable Fuseki, or a source that stopped being
+written to — see the 2026-07-13 re-run in
 `docs/superpowers/specs/2026-07-07-endogenous-drive-origination-design.md`
 for a real example: RDF materialization for `DriveAudit` was disabled
 2026-06-19, and the previous instrument silently reported this as a
-behavioral `NO-GO` for three weeks before anyone noticed).
+behavioral `NO-GO` for three weeks before anyone noticed), **or** zero
+self-state rows (dead/unreachable Postgres — the source `pressure` is built
+from). Both inputs are checked independently; guarding only one would leave
+the other free to silently degrade to `0.0` and produce a real-looking
+`NO-GO` string.
 
 Otherwise, **GO** iff:
 

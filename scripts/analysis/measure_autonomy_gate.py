@@ -465,15 +465,19 @@ def retention_caveat(
 def verdict_economy(drive: DriveStats, pressure: ResourcePressureStats) -> str:
     """Verdict (b): GO iff drives co-activate AND resource_pressure rises.
 
-    UNMEASURABLE iff no DriveAudit records exist in the window at all --
-    same reasoning as verdict_drift: a dead Fuseki source must never resolve
-    to a numeric "0% co-activation, NO-GO" behavioral finding.
+    UNMEASURABLE iff EITHER input has zero rows -- the rule reads both
+    drive.coactivation_frac (Fuseki) and pressure.frac_gt_level (Postgres
+    self-state), two independent sources. Guarding only one (e.g. only
+    drive.record_count) would let the other silently degrade to 0.0 and
+    resolve as a real "NO-GO" string -- exactly the failure mode this
+    function exists to prevent, just left open on whichever input isn't
+    checked.
 
     Otherwise, GO iff coactivation_frac >= COACTIVATION_MIN_FRAC
       AND frac_gt(resource_pressure >= level) >= RESOURCE_PRESSURE_MIN_FRAC.
     """
 
-    if drive.record_count == 0:
+    if drive.record_count == 0 or pressure.row_count == 0:
         return UNMEASURABLE
     if drive.coactivation_frac < COACTIVATION_MIN_FRAC:
         return "NO-GO"

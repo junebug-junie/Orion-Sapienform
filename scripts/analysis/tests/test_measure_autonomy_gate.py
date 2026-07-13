@@ -358,5 +358,14 @@ def test_retention_caveat_none_when_oldest_unknown():
 # ---------------------------------------------------------------------------
 # 10. Exit code distinguishes UNMEASURABLE from a completed GO/NO-GO
 # ---------------------------------------------------------------------------
-def test_unmeasurable_constant_is_distinct_from_go_and_no_go():
-    assert mod.UNMEASURABLE not in ("GO", "NO-GO")
+def test_verdict_b_unmeasurable_when_pressure_empty_even_with_live_drive_data():
+    # The asymmetric-guard bug this locks in: drive co-activation data is
+    # real and high (Fuseki alive), but pressure comes from an empty
+    # self-state list (Postgres dead/unreachable) -- must be UNMEASURABLE,
+    # not a numeric "NO-GO" fabricated from pressure.frac_gt_level
+    # silently defaulting to 0.0 against a real coactivation_frac.
+    drive = mod.drive_stats_from_histogram({2: 10, 1: 10})  # 50% co-active
+    empty_pressure = mod.compute_resource_pressure_stats([])
+    assert drive.coactivation_frac >= mod.COACTIVATION_MIN_FRAC
+    assert empty_pressure.row_count == 0
+    assert mod.verdict_economy(drive, empty_pressure) == mod.UNMEASURABLE

@@ -33,6 +33,8 @@ from .goal_context_listener import (
     stop_goal_context_listener,
 )
 from orion.substrate.execution_loop.constants import EXECUTION_TRAJECTORY_PROJECTION_ID
+from orion.substrate.chat_loop.constants import CHAT_SESSION_PROJECTION_ID
+from orion.substrate.route_loop.constants import ROUTE_ARBITRATION_PROJECTION_ID
 
 from .settings import get_settings
 from .store import GRAMMAR_CURSOR_REGISTRY
@@ -99,6 +101,22 @@ async def grammar_truth() -> dict:
 @app.get("/projections/execution_trajectory")
 async def execution_trajectory() -> dict:
     proj = worker._store.load_execution_trajectory(EXECUTION_TRAJECTORY_PROJECTION_ID)
+    if proj is None:
+        return {"ok": False, "reason": "no_projection"}
+    return {"ok": True, "projection": proj.model_dump(mode="json")}
+
+
+@app.get("/projections/chat_session")
+async def chat_session() -> dict:
+    proj = worker._store.load_chat_session_projection(CHAT_SESSION_PROJECTION_ID)
+    if proj is None:
+        return {"ok": False, "reason": "no_projection"}
+    return {"ok": True, "projection": proj.model_dump(mode="json")}
+
+
+@app.get("/projections/route_arbitration")
+async def route_arbitration() -> dict:
+    proj = worker._store.load_route_arbitration(ROUTE_ARBITRATION_PROJECTION_ID)
     if proj is None:
         return {"ok": False, "reason": "no_projection"}
     return {"ok": True, "projection": proj.model_dump(mode="json")}

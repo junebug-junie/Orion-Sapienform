@@ -69,6 +69,14 @@ Hub debug (node-scoped lineage):
 - `GET /api/substrate/biometrics-node/{node_id}/latest`
 - `GET /api/substrate/receipts/{receipt_id}`
 
+### Projection debug reads (this service, internal)
+
+Same response contract on all three: `{"ok": false, "reason": "no_projection"}` if the reducer hasn't written yet, `{"ok": true, "projection": {...}}` otherwise.
+
+- `GET /projections/execution_trajectory` — `active_execution_trajectory`
+- `GET /projections/chat_session` — `active_chat_session`
+- `GET /projections/route_arbitration` — `active_route_arbitration`
+
 ## Grammar production observe
 
 Truth: `GET http://localhost:8115/grammar/truth`

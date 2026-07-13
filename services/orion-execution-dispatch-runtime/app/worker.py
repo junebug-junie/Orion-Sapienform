@@ -2,18 +2,31 @@ from __future__ import annotations
 
 import asyncio
 import logging
+from datetime import datetime, timezone
 from pathlib import Path
 
+from orion.core.bus.async_service import OrionBusAsync
 from orion.execution_dispatch.builder import (
     build_execution_dispatch_frame,
     build_unevaluable_execution_dispatch_frame,
 )
+from orion.execution_dispatch.cortex_client import ExecutionDispatchCortexClient
 from orion.execution_dispatch.policy import load_execution_dispatch_policy
+from orion.execution_dispatch.result_extraction import (
+    extract_final_text,
+    parse_structured_observation,
+)
+from orion.notify.client import NotifyClient
+from orion.schemas.execution_dispatch_frame import ExecutionDispatchCandidateV1, ExecutionDispatchFrameV1
+from orion.schemas.notify import NotificationRequest
 
 from app.settings import get_settings
 from app.store import ExecutionDispatchRuntimeStore
 
 logger = logging.getLogger("orion.execution_dispatch.runtime")
+
+THEATER_TRIPWIRE_WINDOW = 10
+THEATER_TRIPWIRE_EMPTY_THRESHOLD = 0.5
 
 
 class ExecutionDispatchRuntimeWorker:
@@ -23,7 +36,17 @@ class ExecutionDispatchRuntimeWorker:
         self._policy = load_execution_dispatch_policy(
             Path(self._settings.execution_dispatch_policy_path)
         )
+        self._notify = NotifyClient(
+            base_url=self._settings.notify_url,
+            api_token=self._settings.notify_api_token,
+            timeout=10,
+        )
         self._stop = asyncio.Event()
+        # In-memory only, by design: once tripped, stays tripped until this
+        # process restarts (mirrors the "re-arm is manual" rule in the
+        # parent spec -- a self-clearing tripwire could silently resume
+        # sending on a coincidentally-good sample).
+        self.theater_tripwire_active = False
 
     async def start(self) -> None:
         asyncio.create_task(self._poll_loop(), name="execution-dispatch-runtime-poll")
@@ -108,11 +131,183 @@ class ExecutionDispatchRuntimeWorker:
             policy=self._policy,
             override_dispatch_mode=self._settings.execution_dispatch_mode,
         )
+
+        if (
+            self._settings.execution_dispatch_mode == "dispatch_read_only"
+            and self._policy.mode.allow_dispatch_read_only
+        ):
+            # _tick() runs inside asyncio.to_thread -- this thread has no
+            # running event loop of its own, so asyncio.run() here is safe
+            # and creates one just for this tick's bus RPCs.
+            frame = asyncio.run(self._send_prepared_candidates(frame))
+
         self._store.save_dispatch_frame(frame)
         logger.info(
-            "execution_dispatch_frame_saved frame_id=%s policy_frame_id=%s candidates=%d blocked=%d",
+            "execution_dispatch_frame_saved frame_id=%s policy_frame_id=%s candidates=%d blocked=%d dispatched=%d",
             frame.frame_id,
             policy_frame.frame_id,
             len(frame.candidates),
             frame.blocked_count,
+            frame.dispatch_count,
         )
+
+    async def _send_prepared_candidates(
+        self, frame: ExecutionDispatchFrameV1
+    ) -> ExecutionDispatchFrameV1:
+        if self._check_theater_tripwire():
+            return frame  # tripped (this tick or a prior one) -- send nothing
+
+        remaining_daily_budget = (
+            self._settings.orion_dispatch_max_per_day - self._store.count_dispatches_today()
+        )
+        if remaining_daily_budget <= 0:
+            logger.info(
+                "execution_dispatch_daily_cap_reached max_per_day=%d",
+                self._settings.orion_dispatch_max_per_day,
+            )
+            return frame
+
+        budget = max(0, min(remaining_daily_budget, self._policy.limits.max_dispatches_per_tick))
+        if budget <= 0:
+            return frame
+
+        to_send = [c for c in frame.candidates if c.dispatch_status == "prepared_for_dispatch"][
+            :budget
+        ]
+        if not to_send:
+            return frame
+
+        sent_ids = {c.dispatch_id for c in to_send}
+        remaining_candidates = [c for c in frame.candidates if c.dispatch_id not in sent_ids]
+
+        bus = OrionBusAsync(
+            url=self._settings.orion_bus_url, enabled=self._settings.orion_bus_enabled
+        )
+        client = ExecutionDispatchCortexClient(
+            bus,
+            request_channel=self._settings.cortex_exec_channel,
+            result_prefix=self._settings.cortex_exec_result_prefix,
+            timeout_sec=self._settings.execution_dispatch_rpc_timeout_sec,
+        )
+        newly_dispatched: list[ExecutionDispatchCandidateV1] = []
+        try:
+            for candidate in to_send:
+                newly_dispatched.append(await self._send_one(client, frame, candidate))
+        finally:
+            await bus.close()
+
+        dispatched_candidates = list(frame.dispatched_candidates) + newly_dispatched
+        updated = frame.model_copy(
+            update={
+                "candidates": remaining_candidates,
+                "dispatched_candidates": dispatched_candidates,
+                "dispatch_count": len(dispatched_candidates),
+                "dispatch_attempted": True,
+            }
+        )
+
+        # Re-check after this tick's real sends landed new rows -- lets the
+        # tripwire fire the same tick it actually crosses the threshold,
+        # not one tick late.
+        self._check_theater_tripwire()
+        return updated
+
+    def _check_theater_tripwire(self) -> bool:
+        recent = self._store.recent_dispatch_result_statuses(THEATER_TRIPWIRE_WINDOW)
+        if len(recent) < THEATER_TRIPWIRE_WINDOW:
+            return self.theater_tripwire_active
+        empty_count = sum(1 for s in recent if s == "empty")
+        newly_tripped = (
+            not self.theater_tripwire_active
+            and empty_count > THEATER_TRIPWIRE_WINDOW * THEATER_TRIPWIRE_EMPTY_THRESHOLD
+        )
+        if newly_tripped:
+            self.theater_tripwire_active = True
+            logger.warning(
+                "execution_dispatch_theater_tripwire_active empty=%d window=%d",
+                empty_count,
+                len(recent),
+            )
+            self._notify_tripwire(empty_count, len(recent))
+        return self.theater_tripwire_active
+
+    async def _send_one(
+        self,
+        client: ExecutionDispatchCortexClient,
+        frame: ExecutionDispatchFrameV1,
+        candidate: ExecutionDispatchCandidateV1,
+    ) -> ExecutionDispatchCandidateV1:
+        now = datetime.now(timezone.utc)
+        result_id = f"result:{candidate.dispatch_id}"
+        context = dict(candidate.request_envelope.get("context") or {})
+
+        try:
+            payload = await client.dispatch(
+                verb=candidate.cortex_verb or "",
+                mode=candidate.cortex_mode or "brain",
+                context=context,
+                dispatch_id=candidate.dispatch_id,
+            )
+        except Exception as exc:
+            logger.warning(
+                "execution_dispatch_send_failed dispatch_id=%s error=%s", candidate.dispatch_id, exc
+            )
+            self._store.save_dispatch_result(
+                result_id=result_id,
+                dispatch_id=candidate.dispatch_id,
+                frame_id=frame.frame_id,
+                status="failed",
+                result_json={"error": str(exc)[:2000]},
+                raw_len=0,
+            )
+            return candidate.model_copy(
+                update={
+                    "dispatch_status": "dispatched",
+                    "dispatched_at": now,
+                    "dispatch_error": str(exc)[:500],
+                }
+            )
+
+        final_text = extract_final_text(payload)
+        observation_data = parse_structured_observation(final_text)
+        raw_len = len(observation_data["observation"])
+        status = "success" if raw_len > 0 else "empty"
+        self._store.save_dispatch_result(
+            result_id=result_id,
+            dispatch_id=candidate.dispatch_id,
+            frame_id=frame.frame_id,
+            status=status,
+            result_json=observation_data,
+            raw_len=raw_len,
+        )
+        logger.info(
+            "execution_dispatch_result dispatch_id=%s status=%s raw_len=%d",
+            candidate.dispatch_id,
+            status,
+            raw_len,
+        )
+        return candidate.model_copy(
+            update={
+                "dispatch_status": "dispatched",
+                "dispatched_at": now,
+                "result_ref": result_id,
+            }
+        )
+
+    def _notify_tripwire(self, empty_count: int, window: int) -> None:
+        try:
+            self._notify.send(
+                NotificationRequest(
+                    source_service="orion-execution-dispatch-runtime",
+                    event_kind="execution_dispatch_theater_tripwire",
+                    severity="warning",
+                    title="Execution dispatch theater tripwire tripped",
+                    body_text=(
+                        f"{empty_count}/{window} of the last real dispatches returned empty "
+                        "observations. Dispatch sending is paused until this worker restarts."
+                    ),
+                    tags=["execution_dispatch", "tripwire"],
+                )
+            )
+        except Exception:
+            logger.exception("execution_dispatch_tripwire_notify_failed")

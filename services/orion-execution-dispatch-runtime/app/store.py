@@ -215,3 +215,68 @@ class ExecutionDispatchRuntimeStore:
                     "created_at": now,
                 },
             )
+
+    def save_dispatch_result(
+        self,
+        *,
+        result_id: str,
+        dispatch_id: str,
+        frame_id: str,
+        status: str,
+        result_json: dict,
+        raw_len: int,
+    ) -> None:
+        now = datetime.now(timezone.utc)
+        with self._engine.begin() as conn:
+            conn.execute(
+                text(
+                    """
+                    INSERT INTO substrate_dispatch_results (
+                        result_id, dispatch_id, frame_id, status, result_json, raw_len, created_at
+                    ) VALUES (
+                        :result_id, :dispatch_id, :frame_id, :status, :result_json, :raw_len, :created_at
+                    )
+                    ON CONFLICT (result_id) DO UPDATE SET
+                        status = EXCLUDED.status,
+                        result_json = EXCLUDED.result_json,
+                        raw_len = EXCLUDED.raw_len
+                    """
+                ),
+                {
+                    "result_id": result_id,
+                    "dispatch_id": dispatch_id,
+                    "frame_id": frame_id,
+                    "status": status,
+                    "result_json": Json(result_json),
+                    "raw_len": raw_len,
+                    "created_at": now,
+                },
+            )
+
+    def count_dispatches_today(self) -> int:
+        with self._engine.connect() as conn:
+            row = conn.execute(
+                text(
+                    """
+                    SELECT count(*) AS n
+                    FROM substrate_dispatch_results
+                    WHERE created_at >= date_trunc('day', now())
+                    """
+                ),
+            ).mappings().first()
+        return int(row["n"]) if row else 0
+
+    def recent_dispatch_result_statuses(self, limit: int = 10) -> list[str]:
+        with self._engine.connect() as conn:
+            rows = conn.execute(
+                text(
+                    """
+                    SELECT status
+                    FROM substrate_dispatch_results
+                    ORDER BY created_at DESC
+                    LIMIT :limit
+                    """
+                ),
+                {"limit": limit},
+            ).mappings().all()
+        return [str(row["status"]) for row in rows]

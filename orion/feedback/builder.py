@@ -32,6 +32,7 @@ OutcomeKind = Literal[
     "not_attempted",
     "dry_run",
     "prepared",
+    "prepared_for_dispatch",
     "dispatched",
     "completed",
     "failed",
@@ -80,6 +81,8 @@ def _candidate_outcome_kind(candidate: ExecutionDispatchCandidateV1) -> OutcomeK
         return "blocked"
     if candidate.dispatch_status == "prepared":
         return "prepared"
+    if candidate.dispatch_status == "prepared_for_dispatch":
+        return "prepared_for_dispatch"
     if candidate.dispatch_status == "dry_run":
         return "dry_run"
     if candidate.dispatch_status == "dispatched":
@@ -108,6 +111,7 @@ def _score_for_outcome_kind(outcome_kind: str, scoring) -> float:
     mapping = {
         "dry_run": scoring.dry_run_score,
         "prepared": scoring.prepared_score,
+        "prepared_for_dispatch": scoring.prepared_score,
         "completed": scoring.completed_score,
         "blocked": scoring.blocked_score,
         "deferred": scoring.deferred_score,

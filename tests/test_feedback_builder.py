@@ -157,6 +157,42 @@ def test_prepared_only_dispatch() -> None:
     assert frame.outcome_status == "prepared_only"
 
 
+def test_prepared_for_dispatch_candidate_observation() -> None:
+    dispatch = ExecutionDispatchFrameV1(
+        frame_id="execution.dispatch.frame:pfd:execution_dispatch_policy.v1",
+        generated_at=NOW,
+        source_policy_frame_id="policy.frame:pfd",
+        source_proposal_frame_id="proposal.frame:pfd",
+        source_self_state_id="self.state:pfd",
+        dispatch_mode="dispatch_read_only",
+        candidates=[
+            ExecutionDispatchCandidateV1(
+                dispatch_id="dispatch:proposal:inspect:execution_dispatch_policy.v1",
+                source_decision_id="pd1",
+                source_proposal_id="proposal:inspect:state",
+                dispatch_status="prepared_for_dispatch",
+                dispatch_mode="dispatch_read_only",
+                dispatch_kind="inspect",
+                target_id="t1",
+                target_kind="capability",
+                risk_score=0.05,
+                confidence_score=0.9,
+            )
+        ],
+    )
+    frame = build_feedback_frame(
+        dispatch_frame=dispatch,
+        policy_frame=None,
+        proposal_frame=None,
+        self_state_before=None,
+        self_state_after=None,
+        cortex_results=None,
+        policy=FEEDBACK_POLICY,
+        now=NOW,
+    )
+    assert any(o.outcome_kind == "prepared_for_dispatch" for o in frame.observations)
+
+
 def test_blocked_candidate_observation() -> None:
     dispatch = _dispatch_dry_run()
     dispatch = dispatch.model_copy(
@@ -214,6 +250,8 @@ def test_missing_cortex_result_absence() -> None:
                 target_kind="capability",
                 risk_score=0.05,
                 confidence_score=0.9,
+                dispatched_at=NOW,
+                result_ref="stub:result:inspect",
             )
         ],
     )
@@ -253,6 +291,8 @@ def test_successful_cortex_result_completed() -> None:
                 target_kind="capability",
                 risk_score=0.05,
                 confidence_score=0.9,
+                dispatched_at=NOW,
+                result_ref="stub:result:inspect",
             )
         ],
     )
@@ -294,6 +334,8 @@ def test_failed_cortex_result() -> None:
                 target_kind="capability",
                 risk_score=0.05,
                 confidence_score=0.9,
+                dispatched_at=NOW,
+                dispatch_error="stub failure",
             )
         ],
     )
@@ -389,6 +431,8 @@ def test_partial_dispatch_completed_and_absent_is_mixed() -> None:
                 target_kind="capability",
                 risk_score=0.05,
                 confidence_score=0.9,
+                dispatched_at=NOW,
+                result_ref="stub:result:inspect",
             ),
             ExecutionDispatchCandidateV1(
                 dispatch_id="dispatch:proposal:summarize:execution_dispatch_policy.v1",
@@ -401,6 +445,8 @@ def test_partial_dispatch_completed_and_absent_is_mixed() -> None:
                 target_kind="capability",
                 risk_score=0.05,
                 confidence_score=0.9,
+                dispatched_at=NOW,
+                result_ref="stub:result:summarize",
             ),
         ],
     )
@@ -442,6 +488,8 @@ def test_completed_and_failed_is_mixed() -> None:
                 target_kind="capability",
                 risk_score=0.05,
                 confidence_score=0.9,
+                dispatched_at=NOW,
+                result_ref="stub:result:inspect",
             )
         ],
     )

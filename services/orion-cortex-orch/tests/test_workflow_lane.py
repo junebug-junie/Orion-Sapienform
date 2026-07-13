@@ -2582,6 +2582,95 @@ def test_chat_history_compactor_pass_upserts_card_and_writes_journal(monkeypatch
     assert card_calls.get("digest") is not None
     assert any(ch == "orion:journal:write" for ch, _ in bus.published)
     assert digest_routes[0] == "chat"
+    assert "Discussed indexed memory card upserts." in (result.final_text or "")
+
+
+def test_chat_history_compactor_pass_completion_notify_carries_full_digest_not_truncated_preview(monkeypatch) -> None:
+    bus = DummyBus()
+
+    async def _fake_call_verb_runtime(*args, **kwargs):
+        req = kwargs["client_request"]
+        if req.verb == "skills.chat.discussion_window.v1":
+            skill = {
+                "window_start_utc": "2026-07-09T04:00:00+00:00",
+                "window_end_utc": "2026-07-09T10:00:00+00:00",
+                "turn_count": 1,
+                "turns": [
+                    {
+                        "created_at": "2026-07-09T05:00:00+00:00",
+                        "correlation_id": "corr-a",
+                        "prompt": "hi",
+                        "response": "hello",
+                    }
+                ],
+                "transcript_text": "user: hi\norion: hello",
+                "selection_strategy": "time_bound_then_contiguous_suffix",
+            }
+            return DummyVerbResult(
+                payload={
+                    "result": {
+                        "status": "success",
+                        "final_text": json.dumps(skill),
+                        "metadata": {"skill_result": skill},
+                    }
+                }
+            )
+        if req.verb == "chat_history_compactor_digest_v1":
+            # Long enough that a naive 280-char preview would truncate it away entirely.
+            digest = {
+                "card_summary": "Notable theme discussed at length. " * 12,
+                "journal_title": "Chat digest — daily",
+                "journal_body": "Narrative body.",
+                "turn_refs": ["corr-a"],
+            }
+            return DummyVerbResult(
+                payload={
+                    "result": {
+                        "status": "success",
+                        "final_text": json.dumps(digest),
+                        "metadata": {"chat_history_compactor_digest": digest},
+                    }
+                }
+            )
+        raise AssertionError(f"unexpected verb {req.verb}")
+
+    async def _fake_persist_card(**kwargs):
+        return uuid4()
+
+    monkeypatch.setattr(
+        "app.workflow_runtime.persist_chat_history_compactor_memory_card",
+        _fake_persist_card,
+    )
+
+    req = _req_with_policy(
+        "chat_history_compactor_pass",
+        {
+            "workflow_id": "chat_history_compactor_pass",
+            "invocation_mode": "immediate",
+            "notify_on": "completion",
+            "recipient_group": "juniper_primary",
+        },
+    )
+
+    asyncio.run(
+        execute_chat_workflow(
+            bus=bus,
+            source=ServiceRef(name="cortex-orch"),
+            req=req,
+            correlation_id="00000000-0000-0000-0000-000000000302",
+            causality_chain=[],
+            trace={},
+            call_verb_runtime=_fake_call_verb_runtime,
+        )
+    )
+
+    notify_envelopes = [
+        env for ch, env in bus.published if ch == "orion:notify:persistence:request"
+    ]
+    assert len(notify_envelopes) == 1
+    payload = notify_envelopes[0].payload
+    assert "Notable theme discussed at length." in payload["body_text"]
+    assert len(payload["body_text"]) > 280
 
 
 def test_chat_history_compactor_pass_quiet_day_skips_card(monkeypatch) -> None:

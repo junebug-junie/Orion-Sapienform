@@ -116,6 +116,21 @@ PYTHONPATH=. python orion/autonomy/evals/run_autonomy_v2_movement_eval.py
 
 Operator notes: [docs/autonomy_state_v2_reducer.md](../../docs/autonomy_state_v2_reducer.md). Package README: [orion/autonomy/README.md](../../orion/autonomy/README.md).
 
+### Recent dispatch actions in chat evidence (P2, always on)
+
+`_project_recent_dispatch_actions` (`app/chat_stance.py`) queries
+`load_action_outcomes(subject="orion")` directly — **not** gated by
+`AUTONOMY_STATE_V2_REDUCER_ENABLED` and not read from `ctx`, on purpose:
+reading `ctx["chat_autonomy_state_v2"]["last_action_outcomes"]` instead would
+silently go blank whenever the reducer resolved a different subject for that
+turn (e.g. `"relationship"` during autonomy contextual fallback), even though
+real Layer 9 (`orion-execution-dispatch-runtime`) dispatch outcomes exist
+under `subject="orion"`. Result lands in `ctx["chat_recent_dispatch_actions"]`
+(at most 3, newest-first, projected to exactly `{kind, summary, success,
+observed_at}` — never `action_id`/`query`/`articles`/`salience`) and renders
+in `orion/cognition/prompts/chat_general.j2`'s EVIDENCE-GATED CLAIMS section.
+Fail-open: `[]` on any DB/parse failure, never raises.
+
 ```bash
 pytest services/orion-cortex-exec/tests/test_chat_stance_autonomy_v2.py -q
 ```

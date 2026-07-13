@@ -3,6 +3,21 @@
 
 Default: only keys we routinely change during feature work (memory graph, autonomy, goal archive).
 Use --all-keys to mirror every example key (skips host-specific overrides below).
+
+Default overwrite behavior:
+- A key missing from local .env but present in .env_example is always auto-added.
+  There is no existing value to clobber, so this is safe.
+- A key that already exists in local .env with a value that differs from
+  .env_example is treated as a possible *intentional* deployment-specific
+  override (e.g. a live backend flipped on for real, a host-specific tuning
+  value) and is NOT silently overwritten. It is reported as "diverged" so an
+  operator can review it by hand.
+- Pass --force to restore the old behavior and overwrite diverged keys too
+  (use this when a key's meaning genuinely changed upstream and every host's
+  local value should follow .env_example).
+
+NEVER_SYNC_KEYS keys are excluded from sync entirely (even with --force) and
+are a separate, stricter mechanism from the diverged/--force behavior above.
 """
 
 from __future__ import annotations
@@ -10,6 +25,7 @@ from __future__ import annotations
 import argparse
 import re
 import sys
+from dataclasses import dataclass, field
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -262,17 +278,34 @@ def parse_kv(path: Path) -> dict[str, str]:
     return out
 
 
+@dataclass
+class SyncResult:
+    """Result of syncing one service's .env from its .env_example.
+
+    updated: keys actually written (missing keys auto-added, plus diverged
+        keys overwritten only when force=True).
+    diverged: keys that exist locally with a value different from
+        .env_example and were left untouched (force=False). Informational —
+        not an error.
+    """
+
+    updated: list[str] = field(default_factory=list)
+    diverged: list[str] = field(default_factory=list)
+
+
 def sync_file(
     env_path: Path,
     example_path: Path,
     *,
     dry_run: bool,
     all_keys: bool,
-) -> list[str]:
+    force: bool = False,
+) -> SyncResult:
+    name = env_path.parent.name
     if not example_path.is_file():
-        return [f"skip {env_path.parent.name}: no .env_example"]
+        return SyncResult(updated=[f"skip {name}: no .env_example"])
     if not env_path.is_file():
-        return [f"skip {env_path.parent.name}: no .env"]
+        return SyncResult(updated=[f"skip {name}: no .env"])
 
     desired = {
         k: v
@@ -280,11 +313,12 @@ def sync_file(
         if should_sync_key(k, all_keys=all_keys) and not example_value_is_host_placeholder(k, v)
     }
     if not desired:
-        return []
+        return SyncResult()
 
     lines = env_path.read_text(encoding="utf-8").splitlines(keepends=True)
     seen: set[str] = set()
-    changed: list[str] = []
+    updated: list[str] = []
+    diverged: list[str] = []
     out_lines: list[str] = []
 
     for raw in lines:
@@ -296,8 +330,12 @@ def sync_file(
         key, old = m.group(1), m.group(2)
         seen.add(key)
         if key in desired and desired[key] != old:
-            changed.append(f"{env_path.parent.name}: {key} {old!r} -> {desired[key]!r}")
-            out_lines.append(f"{key}={desired[key]}\n")
+            if force:
+                updated.append(f"{name}: {key} {old!r} -> {desired[key]!r}")
+                out_lines.append(f"{key}={desired[key]}\n")
+            else:
+                diverged.append(f"{name}: {key} local={old!r} example={desired[key]!r}")
+                out_lines.append(raw if raw.endswith("\n") else raw + "\n")
         else:
             out_lines.append(raw if raw.endswith("\n") else raw + "\n")
 
@@ -305,12 +343,12 @@ def sync_file(
     if missing:
         out_lines.append("\n# synced from .env_example\n")
         for key in missing:
-            changed.append(f"{env_path.parent.name}: +{key}={desired[key]!r}")
+            updated.append(f"{name}: +{key}={desired[key]!r}")
             out_lines.append(f"{key}={desired[key]}\n")
 
-    if changed and not dry_run:
+    if updated and not dry_run:
         env_path.write_text("".join(out_lines), encoding="utf-8")
-    return changed
+    return SyncResult(updated=updated, diverged=diverged)
 
 
 def main() -> int:
@@ -322,27 +360,52 @@ def main() -> int:
         action="store_true",
         help="Sync every .env_example key (still skips NEVER_SYNC_KEYS)",
     )
+    parser.add_argument(
+        "--force",
+        action="store_true",
+        help=(
+            "Overwrite local .env values that diverge from .env_example instead of "
+            "just reporting them. Use when a key's meaning genuinely changed upstream. "
+            "NEVER_SYNC_KEYS are still excluded even with --force."
+        ),
+    )
     args = parser.parse_args()
 
     services_dir = ROOT / "services"
     names = args.services or list(DEFAULT_SERVICES)
-    all_changes: list[str] = []
+    all_updated: list[str] = []
+    all_diverged: list[str] = []
     for name in names:
         svc = services_dir / name
         if not svc.is_dir():
             print(f"unknown service: {name}", file=sys.stderr)
             return 1
-        all_changes.extend(
-            sync_file(svc / ".env", svc / ".env_example", dry_run=args.dry_run, all_keys=args.all_keys)
+        result = sync_file(
+            svc / ".env",
+            svc / ".env_example",
+            dry_run=args.dry_run,
+            all_keys=args.all_keys,
+            force=args.force,
         )
+        all_updated.extend(result.updated)
+        all_diverged.extend(result.diverged)
 
-    if not all_changes:
+    if not all_updated and not all_diverged:
         print("No changes needed (feature keys already match .env_example).")
         return 0
-    prefix = "Would update" if args.dry_run else "Updated"
-    print(prefix + ":")
-    for line in all_changes:
-        print(f"  {line}")
+
+    if all_updated:
+        prefix = "Would update" if args.dry_run else "Updated"
+        print(prefix + ":")
+        for line in all_updated:
+            print(f"  {line}")
+    if all_diverged:
+        print(
+            "Diverged (not changed — local value differs from .env_example, "
+            "review manually or pass --force):"
+        )
+        for line in all_diverged:
+            print(f"  {line}")
     return 0
 
 

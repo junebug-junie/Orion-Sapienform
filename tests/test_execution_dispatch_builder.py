@@ -206,6 +206,35 @@ def test_no_mutating_scope_in_envelopes() -> None:
         assert constraints.get("read_only") is True
 
 
+def test_dispatch_read_only_produces_prepared_for_dispatch_not_dispatched() -> None:
+    proposal = _proposal_frame()
+    policy_frame = _policy_frame(proposal)
+    policy = POLICY.model_copy(
+        update={"mode": POLICY.mode.model_copy(update={"allow_dispatch_read_only": True})}
+    )
+    frame = build_execution_dispatch_frame(
+        policy_frame=policy_frame,
+        proposal_frame=proposal,
+        self_state=_loaded_self_state(),
+        policy=policy,
+        now=NOW,
+        override_dispatch_mode="dispatch_read_only",
+    )
+
+    approved_ids = {"proposal:inspect:state", "proposal:summarize:state"}
+    approved_candidates = [c for c in frame.candidates if c.source_proposal_id in approved_ids]
+    assert approved_candidates, "expected approved read-only candidates to be present"
+    assert all(c.dispatch_status == "prepared_for_dispatch" for c in approved_candidates)
+
+    # Never routed into dispatched_candidates: nothing was actually sent.
+    dispatched_ids = {c.source_proposal_id for c in frame.dispatched_candidates}
+    assert not (approved_ids & dispatched_ids)
+    assert frame.dispatch_count == 0
+
+    all_candidates = frame.candidates + frame.blocked_candidates + frame.dispatched_candidates
+    assert all(c.dispatch_status != "dispatched" for c in all_candidates)
+
+
 def test_stable_frame_id() -> None:
     proposal = _proposal_frame()
     policy_frame = _policy_frame(proposal)

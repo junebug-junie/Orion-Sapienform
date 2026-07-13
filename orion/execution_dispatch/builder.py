@@ -197,7 +197,7 @@ def build_execution_dispatch_frame(
         )
         dispatch_status = dispatch_status_default
         if dispatch_mode == "dispatch_read_only" and policy.mode.allow_dispatch_read_only:
-            dispatch_status = "dispatched"
+            dispatch_status = "prepared_for_dispatch"
         elif dispatch_mode == "dispatch_read_only":
             dispatch_status = "dry_run"
             warnings.append("dispatch_read_only_disabled_by_policy")

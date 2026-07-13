@@ -245,3 +245,78 @@ drift. Step 4 (internal economy) is also blocked by 0(b)'s failure. This spec
 remains design-only; `orion/autonomy/endogenous_origination.py` exists as a
 pre-gate implementation stub only (see its module docstring for current status)
 and must not be treated as adopted.
+
+## Measurement gate re-run (2026-07-13) — (a) now GO, (b) corrected to UNMEASURABLE
+
+The 2026-07-08 verdict above was re-run today with a fixed instrument
+(`scripts/analysis/measure_autonomy_gate.py`, `--window-hours`/`UNMEASURABLE`
+patch, same session as this entry). This section corrects, not just updates,
+the 2026-07-08 record: verdict (b)'s NO-GO was never actually measuring live
+data, for a specific, now-identified reason below.
+
+**(a) Endogenous drift — GO**, on both a 1-hour and a 7-day live window (Postgres
+`substrate_self_state`, read-only):
+
+| Window | silent median_abs_trajectory | silent rows | busy rows |
+| --- | --- | --- | --- |
+| 1h (2026-07-13T17:39Z → 18:39Z) | **0.0442** | 731 | 1025 |
+| 7d (2026-07-06T18:40Z → 07-13T18:40Z) | **0.0408** | 61,251 | 1,025 |
+
+Both clear the `>= 0.03` threshold (the 2026-07-08 run measured `0.0000` against
+the same rule — a real change, not noise: the leaky-integrator rebuild
+(`[[project_homeostatic_drives_real_tensions]]`, merged 2026-07-07/08) replaced
+the old `soft_saturate` fixed-point that pinned every drive flat; the 2026-07-08
+gate ran against data from *before or right at* that fix and caught the
+flat-pinned era. Today's data is genuinely post-fix.
+
+**Retention caveat, live-confirmed by the same run:** `substrate_self_state`
+only retains back to `2026-07-10T18:32:24Z` — the 7-day run's requested window
+start (`2026-07-06T18:40Z`) is **95.9h short** of what the table actually
+covers. The 7-day figures above are real for the ~3 days they *do* cover;
+treat the 1-hour run as the cleaner, fully-covered measurement, not a fallback.
+
+**(b) Internal economy — UNMEASURABLE, root-caused precisely (was misreported
+as NO-GO on 2026-07-08):**
+
+Live-queried the Fuseki `autonomy/drives` graph directly (not through the
+gate script) to root-cause the zero-row result:
+
+```
+SELECT (MAX(?ts) as ?latest) (COUNT(*) as ?c) WHERE {
+  GRAPH <http://conjourney.net/graph/autonomy/drives> {
+    ?audit a orion:DriveAudit . ?audit orion:timestamp ?ts .
+  }
+}
+→ latest = 2026-06-19T07:06:29Z, c = 448941 (timestamp triples; audit-row
+  count via the gate's own histogram query = 444,943 distinct audits — the
+  gap is `orion:timestamp` being multi-valued per audit, not new data)
+```
+
+**The graph has not received a single new `DriveAudit` write since
+2026-06-19T07:06:29Z** — 24 days before this re-run, and *before* the
+2026-07-08 gate run that reported NO-GO for verdict (b). This lines up exactly
+with commit `e9b233e9` (2026-06-19, direct-to-main): *"Disable autonomy Fuseki
+reads and graph churn by default... archive and RDF materialization are off
+until re-enabled"* (see `[[project_concept_induction_deactivation_decisions]]`
+for the fuller trace of that commit's scope). **The 2026-07-08 NO-GO verdict
+for (b) was computed against this same frozen, pre-disable snapshot the whole
+time** — it was never measuring 120 days of live co-activation; the co-activation
+math and thresholds were sound, but the input had stopped updating three weeks
+before the window it claimed to cover. This is not a new bug introduced today —
+it is what today's instrument fix (`verdict_economy` now returns
+`UNMEASURABLE` when `drive.record_count == 0` *in the requested window*,
+rather than folding a dead source into `coactivation_frac = 0.0 → NO-GO`) is
+specifically built to catch and never silently repeat.
+
+**Consequence:** Step 0(a) now **passes** — per the "Build sequence & gate"
+section above, Step 1 (this spec, endogenous drive origination) is no longer
+gated on 0(a). Step 0(b) remains **unresolved**, not failed — the internal-economy
+question (Step 4) cannot be answered until either (1) RDF materialization for
+`DriveAudit` is re-enabled (a real infra decision, reintroducing the Fuseki
+load `e9b233e9` was written to relieve — not this doc's call), or (2) the gate's
+(b) adapter is repointed at a different, currently-live source of drive
+co-activation data (`DriveEngine`'s per-tick pressures are computed live but
+not currently persisted anywhere the gate can read — a separate follow-up, not
+attempted here). Until one of those happens, **Step 4 stays blocked on an
+honestly-unmeasured question, not a measured failure** — the distinction this
+session's instrument fix exists to preserve.

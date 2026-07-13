@@ -22,6 +22,18 @@ window. Paging on "an alert exists" would have paged Juniper for ~20 hours
 about an already-resolved problem. Paging on "violation_count is INCREASING
 across the last 2 persisted samples for this theme" only fires while the
 loop is actually getting worse, and recovers once it stops.
+
+A second difference: the check-key space here is *dynamic* (one per theme_key,
+not a fixed small set of infra checks like the prior three ports), so on top
+of `_has_open_alert`'s per-check restart guard, `ResonanceHealthMonitor` also
+reconstructs its entire tracked-theme set from orion-notify's pending list at
+construction time (`_bootstrap_from_notify`) -- otherwise a theme flagged
+unhealthy right before a restart that later stops being `detect_resonance`'s
+single most-severe pick would never be re-added to tracking, and its open
+Pending Attention item could never receive a recovery note. Tracked themes are
+evicted once their recovery is confirmed delivered, so the per-tick DB fan-out
+stays bounded by currently-relevant themes rather than growing for the life of
+the process.
 """
 
 from __future__ import annotations
@@ -88,14 +100,30 @@ def _is_worsening(theme_key: str) -> HealthCheck:
     )
 
 
+_REASON_PREFIX = "reverie_resonance_worsening:"
+
+
 class ResonanceHealthMonitor:
     """Edge-triggered per-theme resonance monitor.
 
-    Tracks every theme it has ever seen flagged (not just the current tick's
-    most-severe theme, since `detect_resonance()` only names one theme per
-    call) so a theme that stops being "most severe" still gets its recovery
-    note fired once its own trend has calmed, rather than staying silently
-    "open" forever.
+    Tracks every theme currently believed to be flagged (not just the current
+    tick's most-severe theme, since `detect_resonance()` only names one theme
+    per call) so a theme that stops being "most severe" still gets its
+    recovery note fired once its own trend has calmed, rather than staying
+    silently "open" forever. Once a theme's recovery note is confirmed
+    delivered, it is evicted from tracking (a future flare-up re-adds it via
+    `check()`'s `alert.theme_key` path) -- this keeps the per-tick DB fan-out
+    bounded by currently-relevant themes, not every theme ever seen over the
+    process's lifetime.
+
+    Tracked-theme membership is also reconstructed at startup from
+    orion-notify's own pending list (`_bootstrap_from_notify`), not just from
+    live ticks: a purely in-memory set would otherwise create a *worse* blind
+    spot than the one `_has_open_alert` already guards against elsewhere --
+    a theme flagged unhealthy right before a restart, that stops being
+    `detect_resonance`'s most-severe pick afterward, would never be
+    re-added to `_tracked_themes` at all, so its open Pending Attention item
+    could never get a recovery note.
     """
 
     def __init__(self, settings_obj: ThoughtSettings | None = None) -> None:
@@ -107,6 +135,21 @@ class ResonanceHealthMonitor:
         )
         self._last_healthy: dict[str, bool] = {}
         self._tracked_themes: set[str] = set()
+        self._bootstrap_from_notify()
+
+    def _bootstrap_from_notify(self) -> None:
+        """Reconstruct tracked themes (and their known-unhealthy state) from
+        orion-notify's own pending list at construction time. Fail-open: any
+        lookup failure just means bootstrap finds nothing -- no worse than
+        this monitor's pre-fix day-one behavior."""
+        for reason in self._fetch_pending_reasons():
+            if not reason.startswith(_REASON_PREFIX):
+                continue
+            theme_key = reason[len(_REASON_PREFIX):]
+            if not theme_key:
+                continue
+            self._tracked_themes.add(theme_key)
+            self._last_healthy[reason] = False
 
     def check(self, alert) -> None:
         """Call once per completed chain, after `_maybe_emit_resonance_alert`
@@ -122,11 +165,11 @@ class ResonanceHealthMonitor:
                     self._tracked_themes.add(theme_key)
 
             for theme_key in themes_to_check:
-                self._run_tick_for_check(_is_worsening(theme_key))
+                self._run_tick_for_check(theme_key, _is_worsening(theme_key))
         except Exception:
             logger.exception("resonance_health_check_failed")
 
-    def _run_tick_for_check(self, check: HealthCheck) -> None:
+    def _run_tick_for_check(self, theme_key: str, check: HealthCheck) -> None:
         previous = self._last_healthy.get(check.key)
 
         if previous is None:
@@ -148,11 +191,17 @@ class ResonanceHealthMonitor:
         elif not previous and check.healthy:
             if self._publish(check, recovered=True):
                 self._last_healthy[check.key] = True
+                # Confirmed recovered and delivered -- stop tracking so this
+                # theme no longer costs a DB round trip on every future tick.
+                self._tracked_themes.discard(theme_key)
+                del self._last_healthy[check.key]
             # else: leave `previous=False` so the next tick retries the note.
         else:
             self._last_healthy[check.key] = check.healthy
 
-    def _has_open_alert(self, reason: str) -> bool:
+    def _fetch_pending_reasons(self) -> list[str]:
+        """All `reason` strings currently pending for this service, per
+        orion-notify. Empty list on any failure."""
         headers = {}
         if self._settings.notify_api_token:
             headers["X-Orion-Notify-Token"] = self._settings.notify_api_token
@@ -166,18 +215,23 @@ class ResonanceHealthMonitor:
             response.raise_for_status()
             items = response.json()
         except Exception:
-            logger.exception("resonance_health_pending_lookup_failed reason=%s", reason)
-            # Fail open: prefer attempting a possibly-duplicate alert over
-            # silently missing a real, worsening incident.
-            return False
+            logger.exception("resonance_health_pending_lookup_failed")
+            return []
         if not isinstance(items, list):
-            return False
-        return any(
-            isinstance(item, dict)
-            and item.get("source_service") == _SOURCE_SERVICE
-            and item.get("reason") == reason
+            return []
+        return [
+            str(item.get("reason"))
             for item in items
-        )
+            if isinstance(item, dict)
+            and item.get("source_service") == _SOURCE_SERVICE
+            and item.get("reason")
+        ]
+
+    def _has_open_alert(self, reason: str) -> bool:
+        # Fail open (via _fetch_pending_reasons returning []): prefer
+        # attempting a possibly-duplicate alert over silently missing a real,
+        # worsening incident.
+        return reason in self._fetch_pending_reasons()
 
     def _publish(self, check: HealthCheck, *, recovered: bool) -> bool:
         if recovered:

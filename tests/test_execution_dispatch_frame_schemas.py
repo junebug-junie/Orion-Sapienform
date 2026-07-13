@@ -101,3 +101,66 @@ def test_roundtrip_json() -> None:
     )
     restored = ExecutionDispatchFrameV1.model_validate(frame.model_dump(mode="json"))
     assert restored.frame_id == frame.frame_id
+
+
+def _base_candidate_kwargs() -> dict:
+    return dict(
+        dispatch_id="dispatch:proposal:inspect:execution_dispatch_policy.v1",
+        source_decision_id="policy.decision:proposal:inspect:substrate_policy.v1",
+        source_proposal_id="proposal:inspect:state",
+        dispatch_mode="dispatch_read_only",
+        dispatch_kind="inspect",
+        target_id="capability:orchestration",
+        target_kind="capability",
+        risk_score=0.05,
+        confidence_score=0.9,
+    )
+
+
+def test_prepared_for_dispatch_needs_no_evidence() -> None:
+    c = ExecutionDispatchCandidateV1(
+        dispatch_status="prepared_for_dispatch",
+        **_base_candidate_kwargs(),
+    )
+    assert c.dispatch_status == "prepared_for_dispatch"
+    assert c.dispatched_at is None
+    assert c.result_ref is None
+
+
+def test_dispatched_without_evidence_rejected() -> None:
+    with pytest.raises(ValidationError):
+        ExecutionDispatchCandidateV1(
+            dispatch_status="dispatched",
+            **_base_candidate_kwargs(),
+        )
+
+
+def test_dispatched_with_only_timestamp_rejected() -> None:
+    with pytest.raises(ValidationError):
+        ExecutionDispatchCandidateV1(
+            dispatch_status="dispatched",
+            dispatched_at=NOW,
+            **_base_candidate_kwargs(),
+        )
+
+
+def test_dispatched_with_result_ref_accepted() -> None:
+    c = ExecutionDispatchCandidateV1(
+        dispatch_status="dispatched",
+        dispatched_at=NOW,
+        result_ref="substrate_dispatch_results:abc123",
+        **_base_candidate_kwargs(),
+    )
+    assert c.dispatch_status == "dispatched"
+    assert c.result_ref == "substrate_dispatch_results:abc123"
+
+
+def test_dispatched_with_error_accepted() -> None:
+    c = ExecutionDispatchCandidateV1(
+        dispatch_status="dispatched",
+        dispatched_at=NOW,
+        dispatch_error="timeout waiting for cortex-exec reply",
+        **_base_candidate_kwargs(),
+    )
+    assert c.dispatch_status == "dispatched"
+    assert c.dispatch_error is not None

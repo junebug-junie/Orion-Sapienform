@@ -49,6 +49,8 @@ Set `ENABLE_TRANSPORT_BUS_REDUCER=true` after orion-bus transport traces are pub
 
 `GET /grammar/truth`'s `degraded`/`degraded_reasons` used to be manual-curl-only. `app/health_monitor.py::HealthMonitor` (mirrors `orion-self-state-runtime`'s pattern) polls it every `SUBSTRATE_RUNTIME_HEALTH_CHECK_INTERVAL_SEC` (default `900.0`) and fires an `orion-notify` attention request -- which surfaces as a card in orion-hub's pending-attention UI -- on a healthy->unhealthy transition only (not every tick), plus a recovery note on the way back. Requires `NOTIFY_BASE_URL` (default `http://orion-athena-notify:7140`) to actually reach `orion-notify`; fails open (logs and retries next tick) if unreachable.
 
+On a *fresh* unhealthy transition (no orion-notify alert already open for it), the monitor waits `SUBSTRATE_RUNTIME_HEALTH_RECHECK_DELAY_SEC` (default `15.0`) and rechecks once before paging. This exists because a single degraded `/grammar/truth` observation can be a self-healing blip -- e.g. `reducer_cursor_commit_failing:biometrics_grammar_consumer` can be set by one cursor-advance write losing a race with transient Postgres load and then clear itself on the very next 1s poll tick, long before the next 900s health-check tick would have seen it recover. The recheck confirms the condition is still true before escalating; a genuinely sustained incident is still unhealthy 15s later and pages exactly as before.
+
 ## Run
 
 ```bash

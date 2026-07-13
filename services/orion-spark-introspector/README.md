@@ -418,6 +418,81 @@ on disk. See `services/orion-spark-introspector/app/inner_state_sink.py`.
 | Rotation | `CORPUS_SINK_MAX_BYTES` (default `200000000`), `CORPUS_SINK_ROTATED_KEEP` (default `5`) — shared with `INNER_FEATURES_CORPUS_PATH`, one policy for both sinks. |
 | Consumer | None yet — see the roadmap spec for the gated next steps (train a windowed autoencoder once enough hours accumulate). |
 
+#### Mood-arc windowed encoder (2026-07-13, roadmap item 2)
+
+`scripts/fit_mood_arc_encoder.py` (repo root, `train` subcommand) trains
+item 2 of the roadmap spec: an MLP-shallow autoencoder over *windows* of
+the mood-arc corpus above, not single ticks — the latent space is a
+compressed representation of a felt-state **trajectory**, not a felt-state
+point. It is an **offline, manual script**, run by hand — not a service
+process, no bus wiring, no container. Producer service is credited as
+`orion-spark-introspector` in `orion/self_state/inner_state_registry.py`'s
+`mood_arc_encoder.v1` entry because it trains on that service's corpus
+sink, not because it runs inside that service.
+
+```bash
+python scripts/fit_mood_arc_encoder.py train \
+  --corpus /mnt/telemetry/mood_arc/corpus/mood_arc.jsonl \
+  --window-size 30 --stride 15 --max-gap-sec 6.0 \
+  --hidden-dim 32 --latent-dim 16 \
+  --epochs 500 --lr 0.003 \
+  --held-out-frac 0.15 --purge-gap-windows 6 \
+  --min-hours 6.0 --min-rows 500 \
+  --out /tmp/mood-arc-encoders/v1-candidate
+```
+
+**Defaults deviate from the original spec doc, on evidence.** The spec's
+original `hidden_dim=8, latent_dim=4` plus a vanilla-SGD/zero-init training
+loop were found (same session) to never converge — they scored *worse*
+than a trivial "repeat the window's own mean" baseline. Root cause: zero-
+init decoder bias plus SGD, not a lack of real structure. Fixed by
+mean-initializing the decoder's output bias to the training set's mean
+(instead of zero) and using Adam instead of vanilla SGD — converges in
+~80-120 epochs. `latent_dim=4` also turned out to lack capacity for this
+problem; `latent_dim=16` (with `hidden_dim=32`) is this script's actual
+default.
+
+**Two-tier gate**, also beyond the original spec (which only had a single
+shuffle gate):
+
+- **Floor** (hard gate, unchanged threshold from the spec): held-out
+  reconstruction loss must beat a within-window-shuffle baseline by at
+  least 2x (`floor_ratio < 0.5`). This is the falsifiable claim that the
+  model learned *sequence structure*, not just per-tick statistics.
+- **Ceiling** (diagnostic only, reported but NOT hard-gated): held-out
+  reconstruction loss compared against a synthetic AR(1) surrogate —
+  windows generated from a simple per-channel lag-1 linear model fit on
+  the training data. This exists because raw-signal analysis (this
+  session) traced most of the corpus's real autocorrelation to a known,
+  deliberate leaky-integrator decay mechanism
+  (`BIOMETRICS_FIELD_DECAY_RATE=0.92`,
+  `services/orion-field-digester/app/digestion/decay.py`) — an encoder
+  could pass the shuffle floor purely by learning that already-known
+  filter, without capturing anything Orion-specific. `ceiling_ratio` has
+  no calibrated pass/fail threshold yet (needs multiple training runs to
+  calibrate); it is recorded in the manifest for future comparison, not
+  invented as a number today.
+
+The train/held-out split is also **purged/embargoed**, not a naive random
+window sample: held-out windows are the temporally-last slice, with
+`purge_gap_windows` (default 6) windows dropped entirely between train and
+held-out as a buffer — 50%-overlapping windows plus real measured
+autocorrelation out to lag ~10-15 ticks mean a naive random split would
+leak. A block-bootstrap 95% confidence interval on the floor ratio is also
+computed and stored in the manifest.
+
+Writes the same artifact triad as `fit_phi_encoder.py`:
+`manifest.json`/`weights.npz`/`probes.json` under `--out`. The manifest is
+`MoodArcEncoderManifestV1` (`orion/schemas/telemetry/mood_arc.py`) —
+`purge_gap_windows`, `ar1_surrogate_loss`, `ceiling_ratio`,
+`floor_ratio_ci_low`/`floor_ratio_ci_high` are new fields added for this
+methodology, documented field-by-field in that schema's docstring.
+
+**Dark by design**: no bus publish, no cognition consumer, same as the
+corpus sink above — see `mood_arc_encoder.v1` in
+`orion/self_state/inner_state_registry.py`. Only `train` is implemented;
+`promote`/`infer` are later roadmap items (3+), not built yet.
+
 #### Golden phi + node attribution (2026-07-12)
 
 `handle_self_state()` overrides `phi_now`'s coherence/energy/novelty with the

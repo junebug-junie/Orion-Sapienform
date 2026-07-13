@@ -34,7 +34,7 @@ from orion.schemas.field_attention_frame import FieldAttentionFrameV1
 from orion.schemas.field_state import FieldStateV1
 from orion.schemas.self_state import SelfStateV1
 from orion.schemas.telemetry.biometrics import BiometricsClusterV1
-from orion.schemas.telemetry.mood_arc import MoodArcCorpusRowV1
+from orion.schemas.telemetry.mood_arc import MoodArcCorpusRowV1, MoodArcEncoderManifestV1
 from orion.schemas.telemetry.phi_encoder import PhiIntrinsicRewardV1
 
 
@@ -315,6 +315,52 @@ REGISTRY: tuple[InnerStateSignal, ...] = (
             "roadmap spec's own estimate). Revisit if/when this corpus is "
             "actually used for training and the shared thresholds turn out "
             "wrong for its cadence (found by code review, 2026-07-13)."
+        ),
+    ),
+    InnerStateSignal(
+        signal_id="mood_arc_encoder.v1",
+        schema=MoodArcEncoderManifestV1,
+        producer_service="orion-spark-introspector",
+        cadence=Cadence.OFFLINE_TRAINED,
+        composition_status=CompositionStatus.REHEARSAL,
+        cognition_consumers=(),
+        notes=(
+            "Item 2 of docs/superpowers/specs/2026-07-13-felt-state-arc-"
+            "roadmap-spec.md -- the windowed felt-state-trajectory "
+            "autoencoder trained by scripts/fit_mood_arc_encoder.py over "
+            "mood_arc_corpus.v1 rows. A dark, disk-only training artifact "
+            "(manifest.json/weights.npz/probes.json under --out): no bus "
+            "publish, no service wiring, no cognition consumer by design -- "
+            "same REHEARSAL precedent as mood_arc_corpus.v1 and "
+            "l7_l11_ladder, not a gap to close. This entry is the exact "
+            "follow-up the sibling schema PR "
+            "(feat/mood-arc-encoder-manifest-schema, MoodArcEncoderManifestV1 "
+            "registered in orion/schemas/registry.py) flagged and correctly "
+            "declined to add itself, since it had no producer yet -- this "
+            "patch is the producer, so the registry gap is now closed. "
+            "Methodology note (2026-07-13, same session): the spec's "
+            "original single shuffle-baseline gate and its "
+            "hidden_dim=8/latent_dim=4 defaults both failed empirically -- "
+            "vanilla-SGD/zero-init training never converged and scored "
+            "worse than a trivial mean-repeat baseline. Fixed via "
+            "mean-initialized decoder bias + Adam (converges in ~80-120 "
+            "epochs) and hidden_dim=32/latent_dim=16 (latent_dim=4 lacked "
+            "capacity). Separately, raw-signal ACF analysis traced the "
+            "corpus's real autocorrelation to a known, deliberate "
+            "leaky-integrator decay mechanism "
+            "(BIOMETRICS_FIELD_DECAY_RATE=0.92, "
+            "services/orion-field-digester/app/digestion/decay.py) -- so "
+            "the original single shuffle gate could pass purely by learning "
+            "that already-known filter, not anything Orion-specific. "
+            "Addressed with a two-tier gate (shuffle floor, hard-gated per "
+            "spec; AR(1)-surrogate ceiling, diagnostic-only, not yet "
+            "calibrated) and a purged/embargoed temporal train/held-out "
+            "split (naive random window sampling leaks given ~10-15 tick "
+            "autocorrelation from 50%-overlapping windows) -- see "
+            "MoodArcEncoderManifestV1's docstring for the full field-level "
+            "rationale. None of this two-tier/purged-split methodology is "
+            "in the original written spec doc; it is stricter than what "
+            "was originally asked for."
         ),
     ),
     InnerStateSignal(

@@ -71,17 +71,38 @@ of four composition statuses:
   record separately — this registry makes the fact visible, it doesn't
   force the answer).
 - `REHEARSAL` — computed, verified to reach no cognition consumer at all.
-  Three current entries: the L7–L11 ladder; `mood_arc_corpus.v1`
+  Four current entries: the L7–L11 ladder; `mood_arc_corpus.v1`
   (2026-07-13) — an append-only training-data sink for a not-yet-built
   windowed felt-state autoencoder
   (`docs/superpowers/specs/2026-07-13-felt-state-arc-roadmap-spec.md`),
-  deliberately dark until real hours of data accumulate; and
-  `chat_stance_disposition` (2026-07-13) — the Thought proceed/defer/refuse
-  decision per unified-turn chat turn, real and correctly computed but
-  dead-ends at the raw `active_chat_session` ledger row today. A composition
-  route into `SelfStateV1.social_pressure` was considered and rejected
-  (that dimension is already excluded from φ's live trainable feature set —
-  see `docs/superpowers/specs/2026-07-13-stance-disposition-inner-state-path.md`
+  deliberately dark until real hours of data accumulate; `mood_arc_encoder.v1`
+  (2026-07-13, same day, roadmap item 2 now built) —
+  `scripts/fit_mood_arc_encoder.py` trains a windowed autoencoder over
+  `mood_arc_corpus.v1` rows and writes a dark, disk-only
+  `MoodArcEncoderManifestV1` artifact triad (`manifest.json`/`weights.npz`/
+  `probes.json`); no bus publish, no cognition consumer, same REHEARSAL
+  reasoning as its corpus sibling. That same session found the spec's
+  original single shuffle-baseline gate too weak on its own — this corpus's
+  real autocorrelation is largely explained by a known, deliberate
+  leaky-integrator decay mechanism (`BIOMETRICS_FIELD_DECAY_RATE=0.92`,
+  `services/orion-field-digester/app/digestion/decay.py`), so an encoder
+  could pass the original gate purely by learning that already-known filter.
+  Addressed with a two-tier gate (a shuffle floor, hard-gated, unchanged
+  threshold from the spec; an AR(1)-surrogate ceiling, diagnostic-only, not
+  yet calibrated) plus a purged/embargoed temporal train/held-out split
+  (naive random window sampling leaks given measured autocorrelation out to
+  lag ~10-15 ticks across 50%-overlapping windows) and a block-bootstrap
+  confidence interval on the floor ratio — none of this is in the original
+  written spec doc, it is stricter than what item 2 originally asked for;
+  see `MoodArcEncoderManifestV1`'s docstring
+  (`orion/schemas/telemetry/mood_arc.py`) for the field-level rationale so a
+  future reader doesn't have to re-derive it; and `chat_stance_disposition`
+  (2026-07-13) — the Thought proceed/defer/refuse decision per unified-turn
+  chat turn, real and correctly computed but dead-ends at the raw
+  `active_chat_session` ledger row today. A composition route into
+  `SelfStateV1.social_pressure` was considered and rejected (that dimension
+  is already excluded from φ's live trainable feature set — see
+  `docs/superpowers/specs/2026-07-13-stance-disposition-inner-state-path.md`
   for the full trace and the candidate paths forward, none chosen yet).
 
 This was built because the same failure mode — a real signal silently

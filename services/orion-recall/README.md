@@ -351,6 +351,10 @@ If you see `rdf_chat` counts high but your desired quote didn’t appear in the 
 - ensure recall can reach `orion-athena-vector-db:8000` from its runtime namespace
 - ensure stored vectors represent *chat turn docs*, not only embedding request artifacts
 
+### D) Verify what real chat turns actually recalled (crystallizations)
+
+`app/collectors/active_packet.py::fetch_active_packet_fragments()` (real `chat_general` PCR calls, not the Hub API route) logs every non-empty retrieval to `memory_crystallization_retrieval_events` — same table Hub's `/api/memory/active-packet` route writes to. Query by `session_id` to see exactly which `crystallization_ids` a given turn actually pulled in, and the fusion `trace` (rails, hit counts) that produced them. Empty-result retrievals are not logged (no empty-shell rows).
+
 ---
 
 ## 9) Running & Testing

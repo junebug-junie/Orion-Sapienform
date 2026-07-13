@@ -11,6 +11,7 @@ from app.models.notify_models import (
 )
 from orion.schemas.cortex.contracts import AgentTraceSummaryV1
 from orion.schemas.notify import (
+    ChatAttentionAck,
     ChatAttentionState,
     ChatMessageState,
 )
@@ -132,6 +133,29 @@ async def list_attention(limit: int = 50, status: Optional[str] = None):
             query = query.filter(NotificationRequestDB.attention_acked_at.isnot(None))
         rows = query.order_by(NotificationRequestDB.created_at.desc()).limit(limit).all()
         return [_attention_to_schema(row) for row in rows]
+    finally:
+        remove_session()
+
+
+@router.post("/attention/{attention_id}/ack")
+async def mark_attention_acked(attention_id: str, payload: ChatAttentionAck) -> ChatAttentionState:
+    db = get_session()
+    try:
+        row = (
+            db.query(NotificationRequestDB)
+            .filter(NotificationRequestDB.attention_id == attention_id)
+            .first()
+        )
+        if row is None:
+            raise HTTPException(status_code=404, detail="attention_not_found")
+        if row.attention_acked_at is None:
+            row.attention_acked_at = payload.acked_at
+            row.attention_ack_type = payload.ack_type
+            row.attention_ack_actor = payload.actor
+            row.attention_ack_note = payload.note
+            db.commit()
+            db.refresh(row)
+        return _attention_to_schema(row)
     finally:
         remove_session()
 

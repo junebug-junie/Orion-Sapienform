@@ -3,6 +3,8 @@ from __future__ import annotations
 import sys
 from pathlib import Path
 
+import pytest
+
 _REPO_ROOT = Path(__file__).resolve().parents[1]
 _SCRIPTS_DIR = _REPO_ROOT / "scripts"
 if str(_SCRIPTS_DIR) not in sys.path:
@@ -45,7 +47,23 @@ def test_compose_env_keys_matches_list_items():
         )
         path = Path(f.name)
     try:
-        keys, has_env_file = parity._read_compose_env_keys(path)
+        keys, has_env_file = parity._read_compose_env_keys(path, "orion-fake")
+        assert keys == {"FOO", "BAZ"}
+        assert has_env_file is False
+    finally:
+        path.unlink()
+
+
+def test_compose_env_keys_matches_mapping_form():
+    """docker-compose also supports `environment:` as a mapping (KEY: value) instead
+    of a list of "KEY=value" strings -- both forms are legal and used in this repo."""
+    import tempfile
+
+    with tempfile.NamedTemporaryFile("w", suffix=".yml", delete=False) as f:
+        f.write("services:\n  fake:\n    environment:\n      FOO: bar\n      BAZ: ${BAZ}\n")
+        path = Path(f.name)
+    try:
+        keys, has_env_file = parity._read_compose_env_keys(path, "orion-fake")
         assert keys == {"FOO", "BAZ"}
         assert has_env_file is False
     finally:
@@ -59,7 +77,7 @@ def test_compose_env_file_directive_detected_inline():
         f.write("services:\n  fake:\n    env_file: .env\n")
         path = Path(f.name)
     try:
-        _, has_env_file = parity._read_compose_env_keys(path)
+        _, has_env_file = parity._read_compose_env_keys(path, "orion-fake")
         assert has_env_file is True
     finally:
         path.unlink()
@@ -72,10 +90,64 @@ def test_compose_env_file_directive_detected_list_form():
         f.write("services:\n  fake:\n    env_file:\n      - .env\n      - .env.local\n")
         path = Path(f.name)
     try:
-        _, has_env_file = parity._read_compose_env_keys(path)
+        _, has_env_file = parity._read_compose_env_keys(path, "orion-fake")
         assert has_env_file is True
     finally:
         path.unlink()
+
+
+def test_compose_env_file_directive_detected_extended_mapping_form():
+    """Real syntax from services/orion-hub/docker-compose.yml -- the plain string-list
+    regex this script used before couldn't recognize `- path: .env` entries, producing
+    a false-negative has_env_file=False and a wall of bogus 'missing' keys."""
+    import tempfile
+
+    with tempfile.NamedTemporaryFile("w", suffix=".yml", delete=False) as f:
+        f.write(
+            "services:\n  fake:\n    env_file:\n      - path: .env\n        required: false\n"
+        )
+        path = Path(f.name)
+    try:
+        _, has_env_file = parity._read_compose_env_keys(path, "orion-fake")
+        assert has_env_file is True
+    finally:
+        path.unlink()
+
+
+def test_multi_service_compose_scopes_to_matching_service(tmp_path):
+    """A sidecar service's own environment: keys must never leak into the checked
+    service's result -- e.g. a bundled monitoring container's env vars getting
+    reported as if they were the app's own."""
+    compose = tmp_path / "docker-compose.yml"
+    compose.write_text(
+        "services:\n"
+        "  recall:\n"
+        "    environment:\n"
+        "      - FOO=${FOO}\n"
+        "  sidecar-metrics:\n"
+        "    environment:\n"
+        "      - SIDECAR_ONLY_KEY=${SIDECAR_ONLY_KEY}\n",
+        encoding="utf-8",
+    )
+    keys, has_env_file = parity._read_compose_env_keys(compose, "orion-recall")
+    assert keys == {"FOO"}
+    assert "SIDECAR_ONLY_KEY" not in keys
+
+
+def test_multi_service_compose_raises_when_ambiguous(tmp_path):
+    compose = tmp_path / "docker-compose.yml"
+    compose.write_text(
+        "services:\n"
+        "  app-a:\n"
+        "    environment:\n"
+        "      - FOO=${FOO}\n"
+        "  app-b:\n"
+        "    environment:\n"
+        "      - BAR=${BAR}\n",
+        encoding="utf-8",
+    )
+    with pytest.raises(parity.ServiceSelectionError):
+        parity._read_compose_env_keys(compose, "orion-unrelated")
 
 
 def test_main_reports_missing_keys_and_fails(tmp_path, monkeypatch, capsys):

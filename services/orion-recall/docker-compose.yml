@@ -42,8 +42,14 @@ services:
       - RECALL_ACTIVE_PACKET_ENABLED=${RECALL_ACTIVE_PACKET_ENABLED:-true}
       - ACTIVATION_RECALL_FLOOR=${ACTIVATION_RECALL_FLOOR:-0.08}
       - RECALL_BELIEF_RENDER_BUDGET=${RECALL_BELIEF_RENDER_BUDGET}
-      - RECALL_GRAPHITI_IN_CHAT=${RECALL_GRAPHITI_IN_CHAT:-false}
-      - RECALL_GRAPHITI_ADAPTER_URL=${RECALL_GRAPHITI_ADAPTER_URL:-}
+      # No compose-level default on these two: they are NEVER_SYNC_KEYS-protected in
+      # scripts/sync_local_env_from_example.py (must be set by hand in .env) and their
+      # real default lives in .env_example (currently true / a real adapter URL) --
+      # duplicating that value here as a ":-" fallback would drift from .env_example
+      # over time and silently reintroduce the exact "flag on, dependency empty"
+      # footgun this key pair already caused once.
+      - RECALL_GRAPHITI_IN_CHAT=${RECALL_GRAPHITI_IN_CHAT}
+      - RECALL_GRAPHITI_ADAPTER_URL=${RECALL_GRAPHITI_ADAPTER_URL}
       - RECALL_GRAPHITI_FALKORDB_URI=${RECALL_GRAPHITI_FALKORDB_URI:-}
       - RECALL_GRAPHITI_TIMEOUT_SEC=${RECALL_GRAPHITI_TIMEOUT_SEC:-10.0}
       - RECALL_CRYSTALLIZATION_VECTOR_COLLECTION=${RECALL_CRYSTALLIZATION_VECTOR_COLLECTION}

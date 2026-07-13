@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import logging
+import time
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from typing import Literal
@@ -103,6 +104,14 @@ class HealthMonitor:
     same host pressure that triggered the alert -- the transition is retried on
     every subsequent tick until it is actually delivered, instead of being
     silently dropped.
+
+    Before paging on a *fresh* unhealthy transition (one not already backed by
+    an existing open orion-notify alert), it waits ``health_recheck_delay_sec``
+    and rechecks once. A single degraded reducer-health tick can be a
+    self-healing blip (e.g. one cursor commit losing a race with transient DB
+    load, corrected on the very next poll); the recheck absorbs that class of
+    false alarm without meaningfully delaying a genuinely sustained incident,
+    which will still be unhealthy on recheck.
     """
 
     def __init__(self, store: BiometricsSubstrateStore, settings: Settings) -> None:
@@ -114,10 +123,17 @@ class HealthMonitor:
             timeout=10,
         )
         self._last_healthy: dict[str, bool] = {}
+        # Keys that have already passed their once-per-streak recheck. Consulted
+        # so a transition stuck retrying (e.g. orion-notify unreachable) doesn't
+        # pay the recheck delay and a duplicate DB read on every retry tick --
+        # cleared as soon as the key is observed healthy again.
+        self._recheck_confirmed: set[str] = set()
 
     def run_tick(self) -> None:
         for check in run_checks(self._store, self._settings):
             previous = self._last_healthy.get(check.key)
+            if check.healthy:
+                self._recheck_confirmed.discard(check.key)
 
             if previous is None:
                 if check.healthy:
@@ -126,21 +142,58 @@ class HealthMonitor:
                 # First observation since this process started, and already
                 # unhealthy: consult orion-notify itself (not just local memory,
                 # which a restart would have wiped) for an already-open alert.
-                if self._has_open_alert(check.key) or self._publish(check, recovered=False):
+                # An existing open alert is already-confirmed real -- no need
+                # to re-delay behind a recheck.
+                if self._has_open_alert(check.key):
                     self._last_healthy[check.key] = False
-                # else: leave unset so the next tick retries.
+                    continue
+                self._page_if_confirmed(check)
                 continue
 
             if previous and not check.healthy:
-                if self._publish(check, recovered=False):
-                    self._last_healthy[check.key] = False
-                # else: leave `previous=True` so the next tick retries the alert.
+                self._page_if_confirmed(check)
             elif not previous and check.healthy:
                 if self._publish(check, recovered=True):
                     self._last_healthy[check.key] = True
                 # else: leave `previous=False` so the next tick retries the note.
             else:
                 self._last_healthy[check.key] = check.healthy
+
+    def _page_if_confirmed(self, check: HealthCheck) -> None:
+        if not self._recheck_confirmed_or_confirm(check):
+            # Transient blip (or the recheck delay hasn't elapsed yet on the
+            # first attempt) -- leave `_last_healthy` untouched so the next
+            # tick re-evaluates rather than wrongly recording healthy.
+            return
+        if self._publish(check, recovered=False):
+            self._last_healthy[check.key] = False
+        # else: leave state as-is so the next tick retries the publish (without
+        # paying the recheck delay again -- `_recheck_confirmed` already has it).
+
+    def _recheck_confirmed_or_confirm(self, check: HealthCheck) -> bool:
+        if check.key in self._recheck_confirmed:
+            return True
+        if not self._confirm_still_unhealthy(check.key):
+            return False
+        self._recheck_confirmed.add(check.key)
+        return True
+
+    def _confirm_still_unhealthy(self, key: str) -> bool:
+        delay = float(self._settings.health_recheck_delay_sec)
+        if delay > 0:
+            time.sleep(delay)
+        try:
+            rechecked = {c.key: c for c in run_checks(self._store, self._settings)}
+        except Exception:
+            logger.exception("substrate_runtime_health_recheck_failed key=%s", key)
+            # Fail toward alerting, mirroring `_has_open_alert`'s own fail-open
+            # bias: if the same DB pressure that caused the degradation also
+            # breaks this recheck query, that is not evidence of recovery --
+            # don't let an unconfirmable recheck silently swallow a real,
+            # already-observed incident.
+            return True
+        check = rechecked.get(key)
+        return bool(check is not None and not check.healthy)
 
     def _has_open_alert(self, reason: str) -> bool:
         headers = {}

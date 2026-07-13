@@ -179,6 +179,13 @@ class Settings(BaseSettings):
     health_check_interval_sec: float = Field(
         900.0, alias="SUBSTRATE_RUNTIME_HEALTH_CHECK_INTERVAL_SEC"
     )
+    # Before paging on a fresh unhealthy transition, wait this long and recheck
+    # once -- filters out single-tick reducer-health blips (e.g. one cursor
+    # commit racing transient DB pressure, self-healing on the very next poll)
+    # without delaying a genuinely sustained incident by more than this.
+    health_recheck_delay_sec: float = Field(
+        15.0, alias="SUBSTRATE_RUNTIME_HEALTH_RECHECK_DELAY_SEC"
+    )
     notify_base_url: str = Field("http://orion-athena-notify:7140", alias="NOTIFY_BASE_URL")
     notify_api_token: str | None = Field(None, alias="NOTIFY_API_TOKEN")
 

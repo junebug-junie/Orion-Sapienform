@@ -236,6 +236,30 @@ class TestSalienceAndBus:
         assert three_sources.confidence == "certain"
         assert score_salience(one_source) != score_salience(three_sources)
 
+    def test_reflection_kind_scores_real_nonzero_salience(self):
+        # "reflection" (scripts/concept_relation_digest.py's belief-revision output) must
+        # participate in the same salience/ranking machinery as every other kind, not be
+        # a schema-valid-but-inert stub ("no empty-shell cognition") -- confirm it scores
+        # a real, non-error value, sits below "episode" (the previous floor of the scale,
+        # 0.45) since these are system meta-observations rather than direct evidence, and
+        # still moves with evidence/confidence like every other kind.
+        req = _base_request(kind="reflection")
+        crys = apply_salience(propose(req))
+        assert 0.0 < score_salience(crys) <= 0.45
+        assert score_salience(crys) != 0.5  # not silently falling back to the KIND_BASE.get() default
+
+        # Real signal, not a stub: more/stronger evidence still moves the score, same as
+        # every other kind.
+        stronger_req = _base_request(
+            kind="reflection",
+            evidence=[
+                CrystallizationEvidenceRefV1(source_kind="memory_card", source_id="c1", strength=0.9),
+                CrystallizationEvidenceRefV1(source_kind="memory_card", source_id="c2", strength=0.9),
+            ],
+        )
+        stronger_crys = apply_salience(propose(stronger_req))
+        assert score_salience(stronger_crys) > score_salience(crys)
+
 
 def _bare_crystallization(
     *,

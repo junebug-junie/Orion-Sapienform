@@ -365,13 +365,14 @@ async def _emit_workflow_notify(
     status = "completed" if ok else "failed"
     event_kind = "orion.workflow.completed" if ok else "orion.workflow.failed"
     title = f"Workflow {workflow_name} {status}"
-    preview = f"{workflow_name} {status}. {final_text}".strip()[:280]
+    body = f"{workflow_name} {status}.\n\n{final_text}".strip()
+    preview = body[:280]
     notification = NotificationRequest(
         source_service=source.name or "orion-cortex-orch",
         event_kind=event_kind,
         severity="info" if ok else "warning",
         title=title,
-        body_text=preview,
+        body_text=body,
         body_md=final_text,
         recipient_group=recipient_group or "juniper_primary",
         session_id=req.context.session_id or "workflow",
@@ -2465,8 +2466,10 @@ async def _execute_chat_history_compactor_pass(
         main_result = (
             f"Compacted {window.turn_count} chat turn(s) for {window_spec.compactor_index}."
         )
+        if digest.card_summary:
+            main_result = f"{main_result}\n\n{digest.card_summary}"
         if journal_entry:
-            main_result = f"{main_result} Journal entry {journal_entry.get('entry_id')}."
+            main_result = f"{main_result}\n\nJournal entry {journal_entry.get('entry_id')}."
         if card_id:
             main_result = f"{main_result} Memory card {card_id}."
 

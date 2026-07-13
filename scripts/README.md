@@ -39,6 +39,19 @@ Expected output when live generation prerequisites are healthy:
 collapse_mirror_live_path_truth: PASS
 ```
 
+## Single-Consumer Channel Gate (duplicate-execution guard)
+The bus is Redis pub/sub, so every subscriber executes every message. Channels with execute-once semantics (RPC request / work dispatch) are marked `single_consumer: true` in `orion/bus/channels.yaml`; this gate fails if any of them has more than one live subscriber — the failure mode behind the duplicate-LLM-execution bug fixed in PR #994. Zero subscribers is a warning (consumer down = liveness, not duplication) unless `--strict-zero`. Requires `redis-cli`.
+```bash
+ORION_BUS_URL=redis://<tailscale-ip>:6379/0 python scripts/check_single_consumer_channels.py
+# or: make check-single-consumer-channels
+```
+Expected output when the mesh is clean:
+```
+OK 1 orion:verb:request
+...
+single_consumer gate OK: 20 channel(s) checked, 0 warning(s)
+```
+
 ## ChatGPT Export Import (Bus Fanout)
 
 ### What this does

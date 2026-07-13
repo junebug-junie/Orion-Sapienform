@@ -1,4 +1,4 @@
-.PHONY: test test-hub test-actions bootstrap-test-envs check-inner-state-registry
+.PHONY: test test-hub test-actions bootstrap-test-envs check-inner-state-registry check-single-consumer-channels
 
 SERVICE ?=
 ARGS ?=
@@ -28,3 +28,10 @@ test-actions:
 # rest.
 check-inner-state-registry:
 	@python scripts/check_inner_state_registry.py
+
+# Live-bus gate: every channel marked single_consumer: true in
+# orion/bus/channels.yaml must have exactly one live subscriber
+# (Redis pub/sub duplicates execution otherwise -- see PR #994).
+# Requires ORION_BUS_URL=redis://<tailscale-ip>:6379/0.
+check-single-consumer-channels:
+	@python scripts/check_single_consumer_channels.py

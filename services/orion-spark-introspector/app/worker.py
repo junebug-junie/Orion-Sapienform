@@ -23,6 +23,7 @@ from orion.schemas.platform import CoreEventV1
 from orion.schemas.self_state import AttentionTargetSummaryV1, SelfStateDimensionV1, SelfStateV1
 from orion.schemas.telemetry.cognition_trace import CognitionTracePayload
 from orion.schemas.telemetry.inner_state import InnerStateFeaturesV1
+from orion.schemas.telemetry.mood_arc import MoodArcCorpusRowV1
 from orion.schemas.telemetry.phi_encoder import PhiIntrinsicRewardV1
 from orion.schemas.telemetry.spark import SparkTelemetryPayload, SparkStateSnapshotV1
 from orion.schemas.telemetry.spark_signal import SparkSignalV1
@@ -118,6 +119,7 @@ _INNER_PREV_HEADLINE = None
 _INNER_DEGENERATE_STREAK = 0
 _INNER_LAST_HEADLINE: Optional[float] = None  # honest headline for WS reads
 _INNER_SINK = InnerStateCorpusSink(getattr(settings, "inner_features_corpus_path", "") or "")
+_MOOD_ARC_SINK = InnerStateCorpusSink(getattr(settings, "mood_arc_corpus_path", "") or "")
 
 # Last chat-triggered novelty actually shown for a semantic upsert
 # (handle_semantic_upsert's `tissue_novelty` -- prefers cached appraisal
@@ -2889,6 +2891,37 @@ async def handle_self_state(env: BaseEnvelope) -> None:
         phi_now,
         turn_effect,
     )
+
+    # 2026-07-13, mood-arc corpus collector (roadmap item 1). Deliberately
+    # placed here, before the _pub_bus.enabled gate below -- found by code
+    # review to have originally sat after it, silently coupling this
+    # training-data sink to bus health for no reason (a bus outage would
+    # fragment the corpus into gap-broken windows with no warning, since
+    # roadmap item 2's windowing breaks a run on any timestamp gap). Guarded
+    # first on _MOOD_ARC_SINK.enabled so a disabled deployment (the default;
+    # MOOD_ARC_CORPUS_PATH unset) pays zero construction cost and carries
+    # zero of this block's failure risk. except Exception, not except
+    # OSError: MoodArcCorpusRowV1(...) construction itself happens inside
+    # this block, and this consumer-less, REHEARSAL-status sink must never
+    # be able to raise past this point -- everything below publishes real,
+    # consumed telemetry (spark_state_snapshot) that a corpus-collection
+    # defect has no business taking down.
+    if _MOOD_ARC_SINK.enabled:
+        try:
+            _MOOD_ARC_SINK.append(
+                MoodArcCorpusRowV1(
+                    generated_at=ss.generated_at,
+                    self_state_id=ss.self_state_id,
+                    coherence=phi_now["coherence"],
+                    energy=phi_now["energy"],
+                    novelty=phi_now["novelty"],
+                    valence=phi_now["valence"],
+                    valence_source=valence_source,
+                    dominant_node=dominant_node,
+                )
+            )
+        except Exception as exc:
+            logger.warning("Failed to append mood_arc corpus: %s", exc)
 
     if not (_pub_bus and _pub_bus.enabled):
         return

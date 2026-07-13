@@ -1,11 +1,17 @@
-"""Append-only JSONL corpus sink for InnerStateFeaturesV1 (Plan 2 training data)."""
+"""Generic append-only JSONL corpus sink, any pydantic BaseModel payload.
+
+Originally written for InnerStateFeaturesV1 only (Plan 2 training data);
+reused as-is (2026-07-13) for MoodArcCorpusRowV1 -- append() only ever
+calls payload.model_dump(mode="json"), so it was already schema-agnostic
+in practice. Type hint widened to match.
+"""
 from __future__ import annotations
 
 import json
 from pathlib import Path
 from typing import Optional
 
-from orion.schemas.telemetry.inner_state import InnerStateFeaturesV1
+from pydantic import BaseModel
 
 
 class InnerStateCorpusSink:
@@ -16,7 +22,7 @@ class InnerStateCorpusSink:
     def enabled(self) -> bool:
         return self._path is not None
 
-    def append(self, payload: InnerStateFeaturesV1) -> None:
+    def append(self, payload: BaseModel) -> None:
         if self._path is None:
             return
         self._path.parent.mkdir(parents=True, exist_ok=True)

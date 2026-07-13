@@ -378,6 +378,40 @@ Spark-introspector emits `InnerStateFeaturesV1` on `orion:self:inner_features` a
 | Substrate prerequisite | `orion-substrate-runtime` must reach conjourney Postgres (`POSTGRES_URI` in substrate `.env_example`) and serve healthy `GET /grammar/truth` + `GET /projections/execution_trajectory`. **Co-deploy:** update substrate `POSTGRES_URI` manually if local `.env` predates this fix — default `sync_local_env_from_example.py` does not rewrite `POSTGRES_URI`. Restart substrate before relying on live cognitive features. |
 | Encoder | `ORION_PHI_ENCODER_ENABLED=false` until corpus + promote gates pass; weights at `ORION_PHI_ENCODER_WEIGHTS` (active symlink under telemetry) |
 
+#### Mood-arc corpus collector (2026-07-13, roadmap item 1)
+
+`handle_self_state()` also appends one `MoodArcCorpusRowV1` row per tick to
+a second, independent JSONL sink — `MOOD_ARC_CORPUS_PATH` — whenever
+`mood_arc_corpus_path` is set (empty/unset is a safe no-op, same
+convention as `INNER_FEATURES_CORPUS_PATH`; both `docker-compose.yml` and
+`scripts/sync_local_env_from_example.py` were updated for this key in the
+same patch, unlike an earlier draft of this feature). This is
+training-data collection only, no bus channel, no cognition consumer: the
+first rung of
+`docs/superpowers/specs/2026-07-13-felt-state-arc-roadmap-spec.md`'s
+windowed sequence-autoencoder roadmap. The append is placed *before* the
+`_pub_bus.enabled` check in `handle_self_state()` (found by code review to
+have originally sat after it, silently coupling collection to bus health)
+— the only real gate is `MOOD_ARC_CORPUS_PATH` being configured.
+Every row written since this sink shipped (2026-07-13 02:52 UTC, same
+deploy as the `phi_heuristic.valence` SHADOW→COMPOSED fix, PR #985) is
+automatically clean — there is no contaminated-data risk to guard against,
+since the sink itself did not exist before that fix.
+
+**No rotation or retention limit.** The sink this reuses
+(`InnerStateCorpusSink`) has already grown unbounded for its original use
+— confirmed 2026-07-13: ~98MB/36k rows in 5 days for
+`INNER_FEATURES_CORPUS_PATH`. Do not leave `MOOD_ARC_CORPUS_PATH` set
+indefinitely without a manual retention plan; `docker-compose.yml`
+defaults it to empty (off) specifically because of this, unlike
+`INNER_FEATURES_CORPUS_PATH`'s already-accepted always-on default above.
+
+| Requirement | Detail |
+|---|---|
+| Corpus path | `MOOD_ARC_CORPUS_PATH=/mnt/telemetry/mood_arc/corpus/mood_arc.jsonl` |
+| Enable | Unset/empty = disabled (no file written). Set to enable collection — no other flag. |
+| Consumer | None yet — see the roadmap spec for the gated next steps (train a windowed autoencoder once enough hours accumulate). |
+
 #### Golden phi + node attribution (2026-07-12)
 
 `handle_self_state()` overrides `phi_now`'s coherence/energy/novelty with the

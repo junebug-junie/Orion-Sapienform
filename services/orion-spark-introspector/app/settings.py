@@ -118,6 +118,11 @@ class Settings(BaseSettings):
     channel_inner_features: str = Field("orion:self:inner_features", alias="CHANNEL_INNER_FEATURES")
     inner_features_corpus_path: str = Field("", alias="INNER_FEATURES_CORPUS_PATH")
     phi_degenerate_streak: int = Field(20, alias="PHI_DEGENERATE_STREAK")
+
+    # Mood-arc corpus collector (roadmap item 1, 2026-07-13) -- a separate,
+    # independently-gated feature from Plan 1 inner-state features above;
+    # docs/superpowers/specs/2026-07-13-felt-state-arc-roadmap-spec.md.
+    mood_arc_corpus_path: str = Field("", alias="MOOD_ARC_CORPUS_PATH")
     # Substrate runtime HTTP reads (Plan 2)
     substrate_runtime_url: str = Field(
         "http://orion-athena-substrate-runtime:8115",

@@ -1,4 +1,4 @@
-.PHONY: test test-hub test-actions bootstrap-test-envs check-inner-state-registry check-single-consumer-channels check-activation-saturation concept-relation-digest check-concept-relation-digest-liveness check-env-compose-parity check-journal-dispatch-registry
+.PHONY: test test-hub test-actions bootstrap-test-envs check-inner-state-registry check-single-consumer-channels check-activation-saturation concept-relation-digest check-concept-relation-digest-liveness check-env-compose-parity check-journal-dispatch-registry check-daily-schedule-collisions
 
 SERVICE ?=
 ARGS ?=
@@ -78,3 +78,12 @@ check-env-compose-parity:
 # fail-closed, but that gap should be loud in CI, not silent).
 check-journal-dispatch-registry:
 	@python scripts/check_journal_dispatch_registry.py
+
+# Report-only: flags orion-actions daily cadences (Daily Pulse, World Pulse, Daily
+# Metacog, and Daily Journal -- which has no env var of its own and reuses Daily
+# Pulse's hour/minute, see services/orion-actions/app/main.py's journal_should_run
+# call) that land within --threshold-minutes of each other. Always exits 0 unless
+# THRESHOLD/FAIL_ON_COLLISION make it a real gate -- see the script's docstring for why
+# this isn't a hard gate today.
+check-daily-schedule-collisions:
+	@python scripts/check_daily_schedule_collisions.py $(if $(THRESHOLD_MINUTES),--threshold-minutes $(THRESHOLD_MINUTES),) $(if $(FAIL_ON_COLLISION),--fail-on-collision,)

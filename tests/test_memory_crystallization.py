@@ -12,10 +12,11 @@ from orion.memory.crystallization.projection_chroma import build_chroma_upsert, 
 from orion.memory.crystallization.projection_graphiti import GraphitiAdapter
 from orion.memory.crystallization.projection_rdf import build_rdf_projection_hint
 from orion.memory.crystallization.proposer import propose
-from orion.memory.crystallization.salience import score_salience, apply_salience
+from orion.memory.crystallization.salience import infer_confidence, score_salience, apply_salience
 from orion.memory.crystallization.bus_emit import LIFECYCLE_KINDS, CHANNEL_DEFAULTS
 from orion.memory.crystallization.detection import detect_contradictions, detect_duplicates, merge_detection
 from orion.memory.crystallization.schemas import (
+    CrystallizationDynamicsV1,
     CrystallizationEvidenceRefV1,
     CrystallizationGovernanceV1,
     CrystallizationLinkV1,
@@ -192,6 +193,167 @@ class TestSalienceAndBus:
     def test_bus_lifecycle_kinds_registered(self):
         assert "approved" in LIFECYCLE_KINDS
         assert CHANNEL_DEFAULTS["project"] == "orion:memory:crystallization:project"
+
+    def test_apply_salience_sets_real_confidence_not_stale_default(self):
+        # Spec acceptance check: formation call site produces a non-default confidence
+        # when evidence supports it, computed on the same pass apply_salience() runs.
+        req = _base_request(
+            evidence=[
+                CrystallizationEvidenceRefV1(source_kind="memory_card", source_id="c1", strength=0.6),
+                CrystallizationEvidenceRefV1(source_kind="memory_card", source_id="c2", strength=0.6),
+            ]
+        )
+        crys = apply_salience(propose(req))
+        assert crys.confidence == "likely"
+
+    def test_salience_moves_with_evidence_count(self):
+        # Spec acceptance check 2: two otherwise-identical crystallizations that differ
+        # only in evidence count get different confidence and therefore different
+        # salience post-formation. Before this patch this was impossible by
+        # construction (confidence was always the stale "likely" default).
+        one_source = apply_salience(
+            propose(
+                _base_request(
+                    evidence=[
+                        CrystallizationEvidenceRefV1(source_kind="memory_card", source_id="c1", strength=0.5)
+                    ]
+                )
+            )
+        )
+        three_sources = apply_salience(
+            propose(
+                _base_request(
+                    evidence=[
+                        CrystallizationEvidenceRefV1(source_kind="memory_card", source_id="c1", strength=0.5),
+                        CrystallizationEvidenceRefV1(source_kind="memory_card", source_id="c2", strength=0.5),
+                        CrystallizationEvidenceRefV1(source_kind="memory_card", source_id="c3", strength=0.5),
+                    ]
+                )
+            )
+        )
+        assert one_source.confidence != three_sources.confidence
+        assert one_source.confidence == "possible"
+        assert three_sources.confidence == "certain"
+        assert score_salience(one_source) != score_salience(three_sources)
+
+
+def _bare_crystallization(
+    *,
+    evidence: list[CrystallizationEvidenceRefV1] | None = None,
+    reinforcement_count: int = 0,
+) -> MemoryCrystallizationV1:
+    """Construct a raw MemoryCrystallizationV1 with no formation-pipeline side effects,
+    for exercising infer_confidence() directly against arbitrary evidence/reinforcement
+    combinations that don't need real duplicate-detection/governor machinery."""
+    now = _now()
+    return MemoryCrystallizationV1(
+        crystallization_id="crys_test",
+        kind="semantic",
+        subject="subject",
+        summary="summary",
+        evidence=list(evidence or []),
+        dynamics=CrystallizationDynamicsV1(reinforcement_count=reinforcement_count),
+        governance=CrystallizationGovernanceV1(proposed_by="test"),
+        created_at=now,
+        updated_at=now,
+    )
+
+
+class TestInferConfidence:
+    def test_no_evidence_no_reinforcement_is_uncertain(self):
+        crys = _bare_crystallization(evidence=[], reinforcement_count=0)
+        assert infer_confidence(crys) == "uncertain"
+
+    def test_weak_evidence_no_reinforcement_is_uncertain(self):
+        crys = _bare_crystallization(
+            evidence=[
+                CrystallizationEvidenceRefV1(source_kind="chat_turn", source_id="c1", strength=0.1)
+            ],
+            reinforcement_count=0,
+        )
+        assert infer_confidence(crys) == "uncertain"
+
+    def test_multiple_weak_evidence_avg_below_floor_no_reinforcement_is_uncertain(self):
+        crys = _bare_crystallization(
+            evidence=[
+                CrystallizationEvidenceRefV1(source_kind="chat_turn", source_id="c1", strength=0.1),
+                CrystallizationEvidenceRefV1(source_kind="chat_turn", source_id="c2", strength=0.2),
+            ],
+            reinforcement_count=0,
+        )
+        assert infer_confidence(crys) == "uncertain"
+
+    def test_single_moderate_evidence_no_reinforcement_is_possible(self):
+        crys = _bare_crystallization(
+            evidence=[
+                CrystallizationEvidenceRefV1(source_kind="chat_turn", source_id="c1", strength=0.5)
+            ],
+            reinforcement_count=0,
+        )
+        assert infer_confidence(crys) == "possible"
+
+    def test_two_moderate_evidence_no_reinforcement_is_likely(self):
+        crys = _bare_crystallization(
+            evidence=[
+                CrystallizationEvidenceRefV1(source_kind="chat_turn", source_id="c1", strength=0.5),
+                CrystallizationEvidenceRefV1(source_kind="chat_turn", source_id="c2", strength=0.5),
+            ],
+            reinforcement_count=0,
+        )
+        assert infer_confidence(crys) == "likely"
+
+    def test_no_evidence_reinforcement_one_is_likely(self):
+        crys = _bare_crystallization(evidence=[], reinforcement_count=1)
+        assert infer_confidence(crys) == "likely"
+
+    def test_no_evidence_reinforcement_two_is_likely(self):
+        crys = _bare_crystallization(evidence=[], reinforcement_count=2)
+        assert infer_confidence(crys) == "likely"
+
+    def test_single_evidence_reinforcement_one_is_likely(self):
+        crys = _bare_crystallization(
+            evidence=[
+                CrystallizationEvidenceRefV1(source_kind="chat_turn", source_id="c1", strength=0.1)
+            ],
+            reinforcement_count=1,
+        )
+        assert infer_confidence(crys) == "likely"
+
+    def test_three_evidence_sources_is_certain_regardless_of_reinforcement(self):
+        crys = _bare_crystallization(
+            evidence=[
+                CrystallizationEvidenceRefV1(source_kind="chat_turn", source_id="c1", strength=0.3),
+                CrystallizationEvidenceRefV1(source_kind="chat_turn", source_id="c2", strength=0.3),
+                CrystallizationEvidenceRefV1(source_kind="chat_turn", source_id="c3", strength=0.3),
+            ],
+            reinforcement_count=0,
+        )
+        assert infer_confidence(crys) == "certain"
+
+    def test_reinforcement_three_is_certain_regardless_of_evidence(self):
+        crys = _bare_crystallization(evidence=[], reinforcement_count=3)
+        assert infer_confidence(crys) == "certain"
+
+    def test_two_evidence_and_one_reinforcement_is_certain(self):
+        crys = _bare_crystallization(
+            evidence=[
+                CrystallizationEvidenceRefV1(source_kind="chat_turn", source_id="c1", strength=0.5),
+                CrystallizationEvidenceRefV1(source_kind="chat_turn", source_id="c2", strength=0.5),
+            ],
+            reinforcement_count=1,
+        )
+        assert infer_confidence(crys) == "certain"
+
+    def test_high_reinforcement_overrides_weak_evidence(self):
+        # Recurrence is real evidentiary support even when the original evidence
+        # excerpt was weak -- this is the "floor" only applying when reinforcement==0.
+        crys = _bare_crystallization(
+            evidence=[
+                CrystallizationEvidenceRefV1(source_kind="chat_turn", source_id="c1", strength=0.05)
+            ],
+            reinforcement_count=3,
+        )
+        assert infer_confidence(crys) == "certain"
 
 
 class TestRdfProjection:

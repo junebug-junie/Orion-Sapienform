@@ -98,6 +98,36 @@ class TestReinforce:
         assert crys.dynamics.activation > 0.99
 
 
+class TestReinforceConfidence:
+    def test_reinforce_climbs_confidence_tiers_as_reinforcement_count_grows(self):
+        # _crys() proposes with 1 moderate-strength evidence source (default strength
+        # 0.5) and reinforcement_count starts at 0 -> apply_salience's infer_confidence
+        # call lands on "possible" at formation.
+        crys = _crys()
+        assert crys.confidence == "possible"
+
+        r1 = reinforce(crys, now=_now())
+        assert r1.dynamics.reinforcement_count == 1
+        assert r1.confidence == "likely"
+
+        r2 = reinforce(r1, now=_now())
+        assert r2.dynamics.reinforcement_count == 2
+        assert r2.confidence == "likely"
+
+        r3 = reinforce(r2, now=_now())
+        assert r3.dynamics.reinforcement_count == 3
+        assert r3.confidence == "certain"
+
+    def test_reinforce_never_lowers_confidence_via_stale_recompute(self):
+        crys = _crys()
+        r1 = reinforce(crys, now=_now())
+        r2 = reinforce(r1, now=_now())
+        r3 = reinforce(r2, now=_now())
+        tiers = ["uncertain", "possible", "likely", "certain"]
+        ranks = [tiers.index(c.confidence) for c in (crys, r1, r2, r3)]
+        assert ranks == sorted(ranks)
+
+
 class TestRecallBoost:
     def test_recall_is_weaker_than_reinforce_and_marks_recall(self):
         crys = _crys()
@@ -105,6 +135,14 @@ class TestRecallBoost:
         assert abs(recalled.dynamics.activation - 0.08) < 1e-9
         assert recalled.dynamics.last_recalled_at == _now()
         assert recalled.dynamics.reinforcement_count == 0
+
+    def test_recall_boost_never_touches_confidence(self):
+        # Hard invariant: being recalled is not evidence something is true, only
+        # that it's relevant. recall_boost() must never move confidence.
+        crys = _crys()
+        before = crys.confidence
+        recalled = recall_boost(crys, now=_now(), boost=0.08)
+        assert recalled.confidence == before
 
 
 class TestDecay:

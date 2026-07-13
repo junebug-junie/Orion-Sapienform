@@ -14,6 +14,7 @@ from __future__ import annotations
 from datetime import datetime, timezone
 
 from orion.core.activation_decay import decay_activation
+from orion.memory.crystallization.salience import infer_confidence
 from orion.memory.crystallization.schemas import MemoryCrystallizationV1
 
 _SECONDS_PER_DAY = 86400.0
@@ -67,12 +68,19 @@ def reinforce(
 
     Multiplicative-toward-ceiling so repeated reinforcement has diminishing returns
     (never overshoots 1.0), matching how rehearsal consolidates but saturates.
+
+    Also recomputes `confidence` via `infer_confidence()` now that
+    `reinforcement_count` has moved -- recurrence (the same fact independently
+    re-derived) is real evidentiary support. This is the one and only place
+    outside formation that confidence changes; `recall_boost()` deliberately does
+    not touch it (being looked up is not evidence something is true).
     """
     updated = crystallization.model_copy(deep=True)
     current = _clamp(updated.dynamics.activation)
     updated.dynamics.activation = _clamp(current + (1.0 - current) * _clamp(boost))
     updated.dynamics.reinforcement_count += 1
     updated.dynamics.last_reinforced_at = _aware(now)
+    updated.confidence = infer_confidence(updated)
     updated.updated_at = _aware(now)
     return updated
 

@@ -42,6 +42,29 @@ cortex-exec call never fires twice for the same candidate.
 **Rollback**: set `EXECUTION_DISPATCH_MODE=dry_run` and restart this one container. Single kill
 switch for all real sending.
 
+## Experience loop (P2)
+
+Every real send (success, empty observation, or RPC failure) also publishes an
+`ActionOutcomeEmitV1` event onto `orion:autonomy:action:outcome`
+(`BUS_ACTION_OUTCOME_OUT`, default `orion:autonomy:action:outcome`) — the same
+always-on route `orion-spark-concept-induction` already produces onto for
+curiosity-fetch outcomes, consumed by `orion-sql-writer` into the durable
+`action_outcomes` table. `subject="orion"` (self-directed action, never
+relationship-scoped). This is how a real Layer 9 dispatch becomes something
+`load_action_outcomes()` — and therefore chat-turn stance context — can see;
+see `services/orion-cortex-exec/README.md` for the read side.
+
+The idempotent-replay path (see Idempotency above) re-emits on every replay,
+not just the first attempt: `action_outcomes.action_id` is the SQL primary
+key and sql-writer's route upserts by `merge()`, so a repeat emit for the
+same `dispatch_id` overwrites the same row rather than duplicating it — this
+is what makes replay-safe re-emission correct instead of risky.
+
+A publish failure here is caught and logged, never raises out of the tick —
+`substrate_dispatch_results` already durably recorded the result before the
+emit is attempted, so an unreachable bus loses only chat-visible narration,
+never the underlying record.
+
 ## Status vocabulary
 
 `ExecutionDispatchCandidateV1.dispatch_status`:

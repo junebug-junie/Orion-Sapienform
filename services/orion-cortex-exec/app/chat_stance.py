@@ -1382,6 +1382,109 @@ def _project_reverie_glimpse(ctx: Dict[str, Any]) -> str | None:
         return None
 
 
+_MAX_RECENT_DISPATCH_ACTIONS = 3
+# The producer (execution-dispatch-runtime) is expected to already bound
+# `summary` per the P2 design doc. This is a generous defensive ceiling only,
+# not the primary truncation point -- do not rely on it as the main guard.
+_DISPATCH_ACTION_SUMMARY_MAX_CHARS = 300
+# Layer 9 (execution-dispatch-runtime) always emits under this subject --
+# it's self-directed autonomous action, never relationship-scoped. Reading
+# ctx["chat_autonomy_state_v2"]["last_action_outcomes"] instead would silently
+# return [] whenever _run_autonomy_reducer resolved a different subject for
+# THIS turn (e.g. "relationship" during contextual fallback when Orion's own
+# drive/autonomy graph is unavailable -- see select_preferred_autonomy_lookup)
+# even though real dispatch actions exist under "orion". Querying directly
+# decouples this feature from whichever subject the ambient reducer used.
+_DISPATCH_ACTION_SUBJECT = "orion"
+
+
+def _project_recent_dispatch_actions(ctx: Dict[str, Any]) -> list[dict]:
+    """Projection helper: surface the most recent autonomous dispatch-action
+    outcomes as bounded, privacy-safe evidence for chat narration.
+
+    Queries ``load_action_outcomes(subject=_DISPATCH_ACTION_SUBJECT)``
+    directly, independent of ``ctx`` (the ``ctx`` parameter is accepted only
+    to match this file's other ``_project_*`` helpers' call-site shape).
+    Deliberately NOT ``ctx['chat_autonomy_state_v2']['last_action_outcomes']``
+    -- see ``_DISPATCH_ACTION_SUBJECT``'s comment above for why that would
+    silently go blank during autonomy contextual-fallback turns. Also NOT
+    ``ctx['chat_autonomy_state']`` (the plain ``AutonomyStateV1`` graph-lookup
+    state): it has no ``last_action_outcomes`` field at all (that field only
+    exists on the ``AutonomyStateV2`` subclass in ``orion/autonomy/models.py``,
+    populated by ``reduce_autonomy_state`` in ``orion/autonomy/reducer.py``).
+
+    Takes at most ``_MAX_RECENT_DISPATCH_ACTIONS`` entries, newest-first by
+    ``observed_at``. Entries with a missing/unparsable ``observed_at`` sort
+    last (oldest) rather than crashing the sort.
+
+    Projects each entry to EXACTLY ``{kind, summary, success, observed_at}``
+    -- never ``action_id``, ``query``, ``articles``, or ``salience``, since
+    those are internal correlation/audit fields, the same reasoning
+    ``_project_reverie_glimpse`` documents for its own field
+    (``evidence_refs``/``coalition``/``chain_id``).
+
+    Fail-open: returns ``[]`` on anything missing, malformed, or unparsable.
+    Never raises (``load_action_outcomes`` already degrades gracefully on its
+    own SQL/file-store failures; this wraps the projection logic too).
+    """
+    del ctx  # accepted only for call-site consistency with sibling _project_* helpers
+    try:
+        outcomes = load_action_outcomes(subject=_DISPATCH_ACTION_SUBJECT)
+        if not outcomes:
+            return []
+
+        def _field(item: Any, name: str) -> Any:
+            if isinstance(item, dict):
+                return item.get(name)
+            return getattr(item, name, None)
+
+        def _sort_epoch(item: Any) -> float:
+            observed_at = _field(item, "observed_at")
+            dt = observed_at if isinstance(observed_at, datetime) else None
+            if dt is None and isinstance(observed_at, str) and observed_at.strip():
+                try:
+                    dt = datetime.fromisoformat(observed_at.replace("Z", "+00:00"))
+                except Exception:
+                    dt = None
+            if dt is None:
+                return float("-inf")
+            if dt.tzinfo is None:
+                dt = dt.replace(tzinfo=timezone.utc)
+            return dt.timestamp()
+
+        ordered = sorted(outcomes, key=_sort_epoch, reverse=True)[:_MAX_RECENT_DISPATCH_ACTIONS]
+
+        projected: list[dict] = []
+        for item in ordered:
+            observed_at = _field(item, "observed_at")
+            if isinstance(observed_at, datetime):
+                observed_at = observed_at.isoformat()
+            kind = _field(item, "kind")
+            summary = _field(item, "summary")
+            # Skip items that don't validate as a real outcome (non-string
+            # kind/summary) rather than surfacing a hollow {kind: None,
+            # summary: None, ...} row -- an empty-shell entry here would be
+            # exactly the kind of meaningless "evidence" this section exists
+            # to prevent. Only reachable via schema drift in a future writer;
+            # today's sole producer (reduce_autonomy_state) always sets both.
+            if not isinstance(kind, str) or not kind or not isinstance(summary, str) or not summary:
+                continue
+            if len(summary) > _DISPATCH_ACTION_SUMMARY_MAX_CHARS:
+                summary = summary[:_DISPATCH_ACTION_SUMMARY_MAX_CHARS]
+            projected.append(
+                {
+                    "kind": kind,
+                    "summary": summary,
+                    "success": _field(item, "success"),
+                    "observed_at": observed_at,
+                }
+            )
+        return projected
+    except Exception:
+        logger.debug("recent_dispatch_actions_projection_failed", exc_info=True)
+        return []
+
+
 def _concept_summary_from_store(ctx: Dict[str, Any] | None = None) -> dict[str, list[str]]:
     ctx = ctx if isinstance(ctx, dict) else {}
     try:
@@ -2439,6 +2542,13 @@ async def build_chat_stance_inputs(ctx: Dict[str, Any]) -> Dict[str, Any]:
                 ctx["autonomy_slice"] = autonomy_slice.model_dump(mode="json")
         except Exception as exc:
             logger.warning("autonomy_reducer_v2_failed error=%s", exc)
+
+    # Queries load_action_outcomes(subject="orion") directly (see
+    # _project_recent_dispatch_actions' docstring) rather than reading ctx,
+    # so placement here isn't order-dependent on the V2 reducer block above --
+    # kept in this general area only for proximity to the other stance
+    # context-building calls. Fail-open: [] on any failure.
+    ctx["chat_recent_dispatch_actions"] = _project_recent_dispatch_actions(ctx)
 
     if attention_frame_enabled():
         try:

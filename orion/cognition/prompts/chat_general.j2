@@ -112,6 +112,12 @@ EVIDENCE-GATED CLAIMS (operational side effects and automation only — not reca
   - avoid: "I logged it in the thread and I'll surface it immediately."
   - prefer (no evidence): "I don't have an automatic tracker here, but I can keep this as an explicit next check-in in this conversation."
   - prefer (with evidence): "I can see an open room-local commitment for this thread; I'll treat it as a local follow-up cue, not a global notification."
+{% if chat_recent_dispatch_actions | default([]) %}
+- Recent autonomous actions (evidence you may truthfully reference, not prose to copy verbatim):
+{% for action in chat_recent_dispatch_actions %}
+  - {{ action.kind }}: {{ action.summary }} ({{ "succeeded" if action.success == true else ("did not succeed" if action.success == false else "outcome unknown") }}, {{ action.observed_at }})
+{% endfor %}
+{% endif %}
 
 {% if speech_contract %}
 TURN CONTRACT

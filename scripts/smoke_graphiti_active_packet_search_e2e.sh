@@ -20,13 +20,23 @@ set -euo pipefail
 BASE="${ORION_HUB_URL%/}"
 ADAPTER="${GRAPHITI_ADAPTER_URL%/}"
 HDR=(-H "Content-Type: application/json" -H "X-Orion-Session-Id: ${ORION_HUB_SESSION_ID}")
-STAMP="$(date -u +%Y%m%d%H%M%S)"
-# See scripts/smoke_graphiti_search_e2e.sh's header for why tokens vary per run
-# (crystallization duplicate-detection Jaccard collision on fixed templates).
-RAND_A="${RANDOM}${RANDOM}"
-RAND_B="${RANDOM}${RANDOM}"
-SUBJECT_A="Active packet probe alpha ${STAMP} token ${RAND_A}"
-SUBJECT_B="Active packet probe bravo ${STAMP} token ${RAND_B}"
+# orion/memory/crystallization/detection.py::detect_duplicates scores word-level Jaccard
+# (regex [a-z0-9]{3,}, threshold 0.72) over "subject summary" against EVERY existing
+# non-rejected/archived/quarantined crystallization of the same kind+scope — not just this
+# script's own prior runs. A shared timestamp/RANDOM-digit template collided in practice:
+# generic verification vocabulary ("probe", "note", "marker", "target", "seed") recurs
+# across the OTHER graphiti smoke scripts too (they run in the same session, same scope,
+# same kind=stance), so the real existing pool this compares against is large and
+# vocabulary-heavy well before this script's own repeat-run count would predict a collision.
+# UUIDs split into hex segments by _token_set's regex give ~5 effectively-unique tokens per
+# entry with zero realistic collision probability, keeping fixed/shared vocabulary to just 2
+# short anchor words per entry (well under threshold regardless of pool size or history).
+UUID_A="$(cat /proc/sys/kernel/random/uuid 2>/dev/null || uuidgen | tr 'A-Z' 'a-z')"
+UUID_B="$(cat /proc/sys/kernel/random/uuid 2>/dev/null || uuidgen | tr 'A-Z' 'a-z')"
+SUBJECT_A="Probe alpha ${UUID_A}"
+SUBJECT_B="Probe bravo ${UUID_B}"
+SUMMARY_A="Seed note ${UUID_A}"
+SUMMARY_B="Target note ${UUID_B}"
 
 BACKEND=$(curl -sS "${ADAPTER}/health" | jq -r '.backend')
 if [[ "$BACKEND" != "graphiti_core" ]]; then
@@ -56,8 +66,8 @@ _approve() {
   fi
 }
 
-CID_A="$(_propose "$SUBJECT_A" "seed crystallization, unrelated to bravo")"
-CID_B="$(_propose "$SUBJECT_B" "target crystallization, unrelated to alpha, no link to seed")"
+CID_A="$(_propose "$SUBJECT_A" "$SUMMARY_A")"
+CID_B="$(_propose "$SUBJECT_B" "$SUMMARY_B")"
 _approve "$CID_A"
 _approve "$CID_B"
 

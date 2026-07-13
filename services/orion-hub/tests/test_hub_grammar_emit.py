@@ -83,6 +83,40 @@ def test_repair_signal_present_when_flag_true():
     assert repair_atoms[0].confidence == pytest.approx(0.9)
 
 
+def test_stance_disposition_absent_when_not_provided():
+    events = _build()
+    roles = [ev.atom.semantic_role for ev in events if ev.atom is not None]
+    assert "stance_disposition" not in roles
+
+
+def test_stance_disposition_present_when_provided():
+    events = _build(
+        stance_disposition="defer",
+        stance_disposition_reasons=["stale_broadcast_no_evidence"],
+        stance_boundary_register=True,
+    )
+    stance_atoms = [
+        ev.atom
+        for ev in events
+        if ev.atom is not None and ev.atom.semantic_role == "stance_disposition"
+    ]
+    assert len(stance_atoms) == 1
+    atom = stance_atoms[0]
+    assert atom.text_value == "defer"
+    assert "stale_broadcast_no_evidence" in atom.summary
+    assert "[boundary_register]" in atom.summary
+
+
+def test_stance_disposition_edge_links_to_user_utterance():
+    events = _build(stance_disposition="proceed")
+    edges = [ev.edge for ev in events if ev.edge is not None]
+    stance_edges = [
+        e for e in edges if e is not None and "stance_disposition" in e.from_atom_id
+    ]
+    assert len(stance_edges) == 1
+    assert "user_utterance" in stance_edges[0].to_atom_id
+
+
 def test_atom_types_are_valid():
     import typing
 

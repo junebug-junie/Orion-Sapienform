@@ -71,6 +71,9 @@ def build_chat_turn_grammar_events(
     repair_pressure_confidence: float = 0.0,
     repair_pressure_dims: dict[str, float] | None = None,
     has_repair_signal: bool = False,
+    stance_disposition: str | None = None,
+    stance_disposition_reasons: list[str] | None = None,
+    stance_boundary_register: bool = False,
     observed_at: datetime | None = None,
     code_version: str | None = None,
 ) -> list[GrammarEventV1]:
@@ -188,6 +191,46 @@ def build_chat_turn_grammar_events(
             )
         )
 
+    # Optionally emit stance_disposition atom (Thought's proceed/defer/refuse decision --
+    # only meaningful for the unified-turn pipeline, which is the only producer that has
+    # a stance decision to report; the classic path leaves stance_disposition=None).
+    stance_disposition_atom: GrammarAtomV1 | None = None
+    if stance_disposition:
+        reasons = stance_disposition_reasons or []
+        summary = f"Stance disposition: {stance_disposition}"
+        if reasons:
+            summary += f" ({'; '.join(reasons)})"
+        if stance_boundary_register:
+            summary += " [boundary_register]"
+        stance_disposition_atom = GrammarAtomV1(
+            atom_id=atom_id("stance_disposition"),
+            trace_id=trace_id,
+            atom_type="signal",
+            semantic_role="stance_disposition",
+            layer="organ_signal",
+            dimensions=["conversation", "turn", "stance"],
+            summary=summary,
+            text_value=stance_disposition,
+            confidence=1.0,
+            salience=1.0 if stance_disposition != "proceed" else 0.3,
+            source_event_id=turn_id,
+            payload_ref=f"hub.stance:{turn_id}",
+        )
+        events.append(
+            _event(
+                event_kind="atom_emitted",
+                trace_id=trace_id,
+                emitted_at=emitted_at,
+                observed_at=observed_at_,
+                provenance=provenance,
+                atom=stance_disposition_atom,
+                parent_event_id=root_id,
+                root_event_id=root_id,
+                layer=stance_disposition_atom.layer,
+                dimensions=stance_disposition_atom.dimensions,
+            )
+        )
+
     # Edge: user_utterance → derived_from → session_context
     edge_utterance_context = GrammarEdgeV1(
         edge_id=f"{trace_id}:edge:user_utterance:derived_from:session_context",
@@ -242,6 +285,35 @@ def build_chat_turn_grammar_events(
                 root_event_id=root_id,
                 layer=edge_repair_utterance.layer_to,
                 dimensions=["conversation", "turn", "repair"],
+            )
+        )
+
+    # Edge: stance_disposition → derived_from → user_utterance
+    if stance_disposition_atom is not None:
+        edge_stance_utterance = GrammarEdgeV1(
+            edge_id=f"{trace_id}:edge:stance_disposition:derived_from:user_utterance",
+            trace_id=trace_id,
+            from_atom_id=stance_disposition_atom.atom_id,
+            to_atom_id=user_utterance_atom.atom_id,
+            relation_type="derived_from",
+            confidence=1.0,
+            salience=stance_disposition_atom.salience or 0.0,
+            layer_from=stance_disposition_atom.layer,
+            layer_to=user_utterance_atom.layer,
+            evidence_event_ids=[turn_id],
+        )
+        events.append(
+            _event(
+                event_kind="edge_emitted",
+                trace_id=trace_id,
+                emitted_at=emitted_at,
+                observed_at=observed_at_,
+                provenance=provenance,
+                edge=edge_stance_utterance,
+                parent_event_id=root_id,
+                root_event_id=root_id,
+                layer=edge_stance_utterance.layer_to,
+                dimensions=["conversation", "turn", "stance"],
             )
         )
 

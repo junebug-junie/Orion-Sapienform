@@ -15,6 +15,9 @@ class ChatTurnStateV1(BaseModel):
     repair_pressure_level: float = 0.0
     repair_pressure_confidence: float = 0.0
     has_repair_signal: bool = False
+    stance_disposition: str = "unknown"
+    stance_disposition_reasons: list[str] = Field(default_factory=list)
+    stance_boundary_register: bool = False
     evidence_event_ids: list[str] = Field(default_factory=list)
     last_updated_at: datetime
 

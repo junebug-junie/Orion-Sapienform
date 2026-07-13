@@ -11,6 +11,7 @@ from orion.cognition.chat_history_compactor.constants import (
     DEFAULT_TIMEZONE,
 )
 from orion.cognition.compactor.index import build_compactor_index
+from orion.schemas.discussion_window import DiscussionWindowResultV1, DiscussionWindowTurnV1
 
 
 @dataclass(frozen=True)
@@ -115,4 +116,65 @@ def resolve_chat_compactor_window(
         lookback_hours=hours,
         calendar_date=None,
         timezone_name=tz_name,
+    )
+
+
+def _is_workflow_notification_response(response: str) -> bool:
+    """True for a turn whose response is our own workflow-status text, not organic
+    conversation — e.g. a Skill Runner trigger like "Compact the last 6 hours of
+    chat..." replied to with the templated "Workflow: ...\\nStatus: ..." block from
+    `_workflow_summary_text`. Left in the digest window, these turns make the
+    compactor recursively summarize its own (or another workflow's) invocations
+    instead of what was actually discussed.
+
+    Matches only the exact literal prefixes cortex-orch's workflow_runtime emits,
+    so organic chat that happens to mention "workflow" cannot false-positive.
+    """
+    lines = (response or "").strip().split("\n")
+    if not lines:
+        return False
+    first = lines[0]
+    if first.startswith("Workflow request accepted:"):
+        return True
+    if first.strip() == "Workflow failed before completion.":
+        return True
+    if first.startswith("Workflow: ") and len(lines) > 1 and lines[1].startswith("Status: "):
+        return True
+    # execute_workflow_schedule_management's summary, e.g.
+    # "Workflow schedule cancel: ok" / "Workflow schedule list: failed".
+    if first.startswith("Workflow schedule "):
+        return True
+    # main.py's outer-exception fallback when a matched workflow errors before
+    # dispatch, e.g. "Workflow 'chat_history_compactor_pass' failed and was not
+    # replaced with chat_general."
+    if first.startswith("Workflow '") and "failed and was not replaced with chat_general" in first:
+        return True
+    return False
+
+
+def _rebuild_transcript_text(turns: list[DiscussionWindowTurnV1]) -> str:
+    lines: list[str] = []
+    for t in turns:
+        ts = t.created_at.strftime("%Y-%m-%d %H:%M:%S UTC")
+        head = f"[{ts}]"
+        if t.source:
+            head += f" source={t.source}"
+        if t.correlation_id:
+            head += f" correlation_id={t.correlation_id}"
+        lines.append(f"{head}\nUser: {t.prompt.strip()}\nAssistant: {t.response.strip()}\n")
+    return "\n".join(lines).strip()
+
+
+def exclude_workflow_notification_turns(window: DiscussionWindowResultV1) -> DiscussionWindowResultV1:
+    """Drop turns that are workflow trigger/status round-trips rather than organic
+    conversation, so the chat digest reflects what was actually discussed."""
+    kept = [t for t in window.turns if not _is_workflow_notification_response(t.response)]
+    if len(kept) == len(window.turns):
+        return window
+    return window.model_copy(
+        update={
+            "turns": kept,
+            "turn_count": len(kept),
+            "transcript_text": _rebuild_transcript_text(kept),
+        }
     )

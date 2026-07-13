@@ -3,7 +3,7 @@ from __future__ import annotations
 from datetime import datetime
 from typing import Literal
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 
 class ExecutionDispatchCandidateV1(BaseModel):
@@ -18,6 +18,7 @@ class ExecutionDispatchCandidateV1(BaseModel):
         "prepared",
         "dry_run",
         "blocked",
+        "prepared_for_dispatch",
         "dispatched",
         "skipped",
     ]
@@ -50,6 +51,21 @@ class ExecutionDispatchCandidateV1(BaseModel):
 
     risk_score: float = Field(ge=0.0, le=1.0)
     confidence_score: float = Field(ge=0.0, le=1.0)
+
+    result_ref: str | None = None
+    dispatch_error: str | None = None
+    dispatched_at: datetime | None = None
+
+    @model_validator(mode="after")
+    def _dispatched_requires_evidence(self) -> "ExecutionDispatchCandidateV1":
+        if self.dispatch_status == "dispatched":
+            if self.dispatched_at is None or (self.result_ref is None and self.dispatch_error is None):
+                raise ValueError(
+                    "dispatch_status='dispatched' requires dispatched_at and one of "
+                    "result_ref/dispatch_error as evidence a send was actually attempted; "
+                    "use 'prepared_for_dispatch' for a candidate that has not been sent yet"
+                )
+        return self
 
 
 class ExecutionDispatchFrameV1(BaseModel):

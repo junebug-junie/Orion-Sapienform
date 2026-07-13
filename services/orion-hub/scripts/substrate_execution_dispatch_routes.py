@@ -7,6 +7,7 @@ import os
 from typing import Any
 
 from fastapi import APIRouter, HTTPException
+from pydantic import ValidationError
 from sqlalchemy import create_engine, text
 
 from orion.schemas.execution_dispatch_frame import ExecutionDispatchFrameV1
@@ -41,7 +42,10 @@ def _load_latest_dispatch_frame() -> ExecutionDispatchFrameV1 | None:
     payload = row["dispatch_frame_json"]
     if isinstance(payload, str):
         payload = json.loads(payload)
-    return ExecutionDispatchFrameV1.model_validate(payload)
+    try:
+        return ExecutionDispatchFrameV1.model_validate(payload)
+    except ValidationError:
+        return None
 
 
 @router.get("/latest")

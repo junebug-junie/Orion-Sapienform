@@ -8,6 +8,20 @@ Layer 9 of the Orion cognition substrate: converts `PolicyDecisionFrameV1` + `Pr
 - No bus publish and no cortex-exec calls in the default worker path
 - Mutating dispatch is disabled in policy config (`allow_mutating_dispatch: false`)
 
+## Status vocabulary
+
+`ExecutionDispatchCandidateV1.dispatch_status`:
+
+- `prepared`, `dry_run`, `blocked`, `skipped` — no send involved.
+- `prepared_for_dispatch` — cleared every gate for `dispatch_read_only` mode, but this
+  builder never sends anything; it only constructs the request envelope. This is the
+  honest terminal state until a future sender exists.
+- `dispatched` — reserved for a real, evidenced send attempt. `ExecutionDispatchCandidateV1`
+  enforces this at the schema level: `dispatch_status="dispatched"` requires `dispatched_at`
+  plus one of `result_ref`/`dispatch_error`, or construction raises. Nothing in this
+  service produces an evidenced `dispatched` candidate yet — that requires a sender
+  (planned, not built).
+
 ## Prerequisites
 
 1. `substrate_policy_decision_frames` populated (`orion-policy-runtime`, port 8120)

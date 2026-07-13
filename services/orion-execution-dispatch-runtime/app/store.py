@@ -132,7 +132,16 @@ class ExecutionDispatchRuntimeStore:
         payload = row["dispatch_frame_json"]
         if isinstance(payload, str):
             payload = json.loads(payload)
-        return ExecutionDispatchFrameV1.model_validate(payload)
+        try:
+            return ExecutionDispatchFrameV1.model_validate(payload)
+        except ValidationError:
+            # Same reasoning as load_self_state's guard above: looked up by a
+            # fixed policy_frame_id, so a naive raise would permanently block
+            # this caller on a schema-incompatible historical row.
+            logger.warning(
+                "dispatch_frame_incompatible_schema policy_frame_id=%s", policy_frame_id, exc_info=True
+            )
+            return None
 
     def load_latest_dispatch_frame(self) -> ExecutionDispatchFrameV1 | None:
         with self._engine.connect() as conn:
@@ -155,7 +164,11 @@ class ExecutionDispatchRuntimeStore:
         payload = row["dispatch_frame_json"]
         if isinstance(payload, str):
             payload = json.loads(payload)
-        return ExecutionDispatchFrameV1.model_validate(payload)
+        try:
+            return ExecutionDispatchFrameV1.model_validate(payload)
+        except ValidationError:
+            logger.warning("dispatch_frame_incompatible_schema latest_lookup", exc_info=True)
+            return None
 
     def save_dispatch_frame(self, frame: ExecutionDispatchFrameV1) -> None:
         now = datetime.now(timezone.utc)

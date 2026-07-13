@@ -29,6 +29,7 @@ class OutcomeObservationV1(BaseModel):
         "not_attempted",
         "dry_run",
         "prepared",
+        "prepared_for_dispatch",
         "dispatched",
         "completed",
         "failed",

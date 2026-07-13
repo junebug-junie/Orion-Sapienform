@@ -197,7 +197,7 @@ def build_execution_dispatch_frame(
         )
         dispatch_status = dispatch_status_default
         if dispatch_mode == "dispatch_read_only" and policy.mode.allow_dispatch_read_only:
-            dispatch_status = "dispatched"
+            dispatch_status = "prepared_for_dispatch"
         elif dispatch_mode == "dispatch_read_only":
             dispatch_status = "dry_run"
             warnings.append("dispatch_read_only_disabled_by_policy")
@@ -220,6 +220,10 @@ def build_execution_dispatch_frame(
             risk_score=decision.risk_score,
             confidence_score=decision.confidence_score,
         )
+        # Unreachable from this builder as of the prepared_for_dispatch fix above --
+        # nothing here sets dispatch_status="dispatched" anymore, so max_dispatches_per_tick
+        # is not enforced until a future patch's sender promotes candidates to a real,
+        # evidenced "dispatched" after actually attempting a send.
         if dispatch_status == "dispatched":
             if len(dispatched) < policy.limits.max_dispatches_per_tick:
                 dispatched.append(item)

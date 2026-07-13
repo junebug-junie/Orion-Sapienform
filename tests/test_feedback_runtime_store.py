@@ -100,6 +100,67 @@ def test_load_by_dispatch_frame_id(monkeypatch) -> None:
     )
 
 
+def _incompatible_dispatch_frame_payload() -> dict:
+    # dispatch_status="dispatched" without dispatched_at/result_ref/dispatch_error
+    # is now rejected by ExecutionDispatchCandidateV1's evidence validator
+    # (2026-07-13 status-honesty patch). load_latest_dispatch_frame_without_feedback
+    # is a FIFO lookup (oldest dispatch frame lacking feedback) -- a naive raise
+    # here would re-select and fail on the same row every tick forever.
+    return {
+        "schema_version": "execution.dispatch.frame.v1",
+        "frame_id": "execution.dispatch.frame:policy.frame:legacy:execution_dispatch_policy.v1",
+        "generated_at": NOW.isoformat(),
+        "source_policy_frame_id": "policy.frame:legacy:substrate_policy.v1",
+        "source_proposal_frame_id": "proposal.frame:legacy:proposal_policy.v1",
+        "source_self_state_id": "self.state:legacy",
+        "dispatch_mode": "dispatch_read_only",
+        "dispatched_candidates": [
+            {
+                "dispatch_id": "dispatch:proposal:inspect:execution_dispatch_policy.v1",
+                "source_decision_id": "pd1",
+                "source_proposal_id": "proposal:inspect:state",
+                "dispatch_status": "dispatched",
+                "dispatch_mode": "dispatch_read_only",
+                "dispatch_kind": "inspect",
+                "target_id": "t1",
+                "target_kind": "capability",
+                "risk_score": 0.05,
+                "confidence_score": 0.9,
+            }
+        ],
+    }
+
+
+def test_load_latest_dispatch_frame_without_feedback_degrades_to_none_on_legacy_row(
+    monkeypatch,
+) -> None:
+    store = FeedbackRuntimeStore("postgresql://test:test@localhost/test")
+    fake_engine = MagicMock()
+    conn = MagicMock()
+    fake_engine.connect.return_value.__enter__ = MagicMock(return_value=conn)
+    fake_engine.connect.return_value.__exit__ = MagicMock(return_value=False)
+    conn.execute.return_value.mappings.return_value.first.return_value = {
+        "dispatch_frame_json": _incompatible_dispatch_frame_payload(),
+    }
+    monkeypatch.setattr(store, "_engine", fake_engine)
+
+    assert store.load_latest_dispatch_frame_without_feedback() is None
+
+
+def test_load_latest_dispatch_frame_degrades_to_none_on_legacy_row(monkeypatch) -> None:
+    store = FeedbackRuntimeStore("postgresql://test:test@localhost/test")
+    fake_engine = MagicMock()
+    conn = MagicMock()
+    fake_engine.connect.return_value.__enter__ = MagicMock(return_value=conn)
+    fake_engine.connect.return_value.__exit__ = MagicMock(return_value=False)
+    conn.execute.return_value.mappings.return_value.first.return_value = {
+        "dispatch_frame_json": _incompatible_dispatch_frame_payload(),
+    }
+    monkeypatch.setattr(store, "_engine", fake_engine)
+
+    assert store.load_latest_dispatch_frame() is None
+
+
 def test_save_idempotent_by_frame_id(monkeypatch) -> None:
     store = FeedbackRuntimeStore("postgresql://test:test@localhost/test")
     fake_engine = MagicMock()

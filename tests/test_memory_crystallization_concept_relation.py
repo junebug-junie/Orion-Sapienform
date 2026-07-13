@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from uuid import uuid4
+
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
@@ -13,6 +15,7 @@ from orion.memory.crystallization.concept_relation import (
 )
 from orion.memory.crystallization.governor import approve
 from orion.memory.crystallization.proposer import propose
+from orion.memory.crystallization.repository import insert_concept_relation_decision
 from orion.memory.crystallization.schemas import (
     CrystallizationEvidenceRefV1,
     MemoryCrystallizationProposeRequestV1,
@@ -245,6 +248,8 @@ class TestMaybeResolveConceptRelation:
         update_mock = AsyncMock()
         emit_mock = AsyncMock(return_value=True)
 
+        decision_log_mock = AsyncMock(return_value="decision-1")
+
         with patch(
             "orion.memory.crystallization.concept_relation.fetch_similar_candidates",
             new=AsyncMock(return_value=[target]),
@@ -257,6 +262,9 @@ class TestMaybeResolveConceptRelation:
         ), patch(
             "orion.memory.crystallization.concept_relation.emit_crystallization_lifecycle",
             new=emit_mock,
+        ), patch(
+            "orion.memory.crystallization.concept_relation.insert_concept_relation_decision",
+            new=decision_log_mock,
         ):
             result = await maybe_resolve_concept_relation(
                 pool, bus, candidate=candidate, settings=_Settings(), emit_kw={"service_name": "x"}
@@ -268,6 +276,9 @@ class TestMaybeResolveConceptRelation:
         assert outcome == "reinforced_by_relation"
         update_mock.assert_called_once()
         emit_mock.assert_called_once()
+        decision_log_mock.assert_called_once()
+        assert decision_log_mock.call_args.kwargs["relation"] == "same"
+        assert decision_log_mock.call_args.kwargs["floor_cleared"] is True
 
     @pytest.mark.asyncio
     async def test_refines_attaches_link_without_returning(self):
@@ -288,6 +299,9 @@ class TestMaybeResolveConceptRelation:
         ), patch(
             "orion.memory.crystallization.concept_relation.resolve_concept_relation",
             new=AsyncMock(return_value=decision),
+        ), patch(
+            "orion.memory.crystallization.concept_relation.insert_concept_relation_decision",
+            new=AsyncMock(return_value="decision-1"),
         ):
             result = await maybe_resolve_concept_relation(
                 pool, bus, candidate=candidate, settings=_Settings(), emit_kw={}
@@ -318,6 +332,9 @@ class TestMaybeResolveConceptRelation:
         ), patch(
             "orion.memory.crystallization.concept_relation.resolve_concept_relation",
             new=AsyncMock(return_value=decision),
+        ), patch(
+            "orion.memory.crystallization.concept_relation.insert_concept_relation_decision",
+            new=AsyncMock(return_value="decision-1"),
         ):
             result = await maybe_resolve_concept_relation(
                 pool, bus, candidate=candidate, settings=_Settings(), emit_kw={}
@@ -326,6 +343,54 @@ class TestMaybeResolveConceptRelation:
         assert result is None
         assert len(candidate.links) == 1
         assert candidate.links[0].relation == "contradicts"
+
+    @pytest.mark.asyncio
+    async def test_decision_log_write_failure_does_not_break_formation(self):
+        # Regression (code review finding): insert_concept_relation_decision() is a
+        # purely observational write. Before this guard, a DB error there (pool down,
+        # connection reset, etc.) would propagate all the way up through
+        # intake_pipeline.py and fail the entire consolidation window -- a strictly
+        # worse failure mode than losing one diagnostic log row. resolve_concept_relation()
+        # is documented to never raise; this write must be equally forgiving.
+        candidate = _active_crystallization()
+        target = _active_crystallization()
+        target.crystallization_id = "crys_target"
+
+        pool = MagicMock()
+        bus = MagicMock()
+
+        decision = ConceptRelationDecision(
+            relation="same", target_crystallization_id="crys_target", confidence=0.9
+        )
+
+        update_mock = AsyncMock()
+        emit_mock = AsyncMock(return_value=True)
+
+        with patch(
+            "orion.memory.crystallization.concept_relation.fetch_similar_candidates",
+            new=AsyncMock(return_value=[target]),
+        ), patch(
+            "orion.memory.crystallization.concept_relation.resolve_concept_relation",
+            new=AsyncMock(return_value=decision),
+        ), patch(
+            "orion.memory.crystallization.concept_relation.update_crystallization",
+            new=update_mock,
+        ), patch(
+            "orion.memory.crystallization.concept_relation.emit_crystallization_lifecycle",
+            new=emit_mock,
+        ), patch(
+            "orion.memory.crystallization.concept_relation.insert_concept_relation_decision",
+            new=AsyncMock(side_effect=RuntimeError("connection reset")),
+        ):
+            result = await maybe_resolve_concept_relation(
+                pool, bus, candidate=candidate, settings=_Settings(), emit_kw={}
+            )
+
+        # The decision-log write failed, but the real formation outcome still happened.
+        assert result is not None
+        cid, row, outcome = result
+        assert cid == "crys_target"
+        assert outcome == "reinforced_by_relation"
 
     @pytest.mark.asyncio
     async def test_confidence_below_floor_returns_none(self):
@@ -340,12 +405,17 @@ class TestMaybeResolveConceptRelation:
             relation="same", target_crystallization_id="crys_target", confidence=0.3
         )
 
+        decision_log_mock = AsyncMock(return_value="decision-1")
+
         with patch(
             "orion.memory.crystallization.concept_relation.fetch_similar_candidates",
             new=AsyncMock(return_value=[target]),
         ), patch(
             "orion.memory.crystallization.concept_relation.resolve_concept_relation",
             new=AsyncMock(return_value=decision),
+        ), patch(
+            "orion.memory.crystallization.concept_relation.insert_concept_relation_decision",
+            new=decision_log_mock,
         ):
             result = await maybe_resolve_concept_relation(
                 pool, bus, candidate=candidate, settings=_Settings(), emit_kw={}
@@ -353,6 +423,90 @@ class TestMaybeResolveConceptRelation:
 
         assert result is None
         assert candidate.links == []
+
+        # Regression: previously this sub-floor "same" decision vanished silently --
+        # only the decisive outcome (past the floor filter below) ever reached a log
+        # line. It must still be recorded so scripts/concept_relation_digest.py's
+        # threshold-tuning report can surface it as a near-miss.
+        decision_log_mock.assert_called_once()
+        assert decision_log_mock.call_args.kwargs["relation"] == "same"
+        assert decision_log_mock.call_args.kwargs["confidence"] == 0.3
+        assert decision_log_mock.call_args.kwargs["floor_cleared"] is False
+
+    @pytest.mark.asyncio
+    async def test_unrelated_decision_is_logged_even_though_it_returns_none(self):
+        # Regression: an "unrelated" decision (the common case -- resolve_concept_relation
+        # degrades to this on any LLM failure, and it's the model's own explicit choice
+        # otherwise) previously never reached the logger.info line at all, since that line
+        # sits after this exact filter. Every one of these vanished silently.
+        candidate = _active_crystallization()
+        target = _active_crystallization()
+        target.crystallization_id = "crys_target"
+
+        pool = MagicMock()
+        bus = MagicMock()
+
+        decision = ConceptRelationDecision(relation="unrelated", confidence=0.0)
+
+        decision_log_mock = AsyncMock(return_value="decision-1")
+
+        with patch(
+            "orion.memory.crystallization.concept_relation.fetch_similar_candidates",
+            new=AsyncMock(return_value=[target]),
+        ), patch(
+            "orion.memory.crystallization.concept_relation.resolve_concept_relation",
+            new=AsyncMock(return_value=decision),
+        ), patch(
+            "orion.memory.crystallization.concept_relation.insert_concept_relation_decision",
+            new=decision_log_mock,
+        ):
+            result = await maybe_resolve_concept_relation(
+                pool, bus, candidate=candidate, settings=_Settings(), emit_kw={}
+            )
+
+        assert result is None
+        decision_log_mock.assert_called_once()
+        assert decision_log_mock.call_args.kwargs["relation"] == "unrelated"
+        assert decision_log_mock.call_args.kwargs["target_crystallization_id"] is None
+        assert decision_log_mock.call_args.kwargs["floor_cleared"] is False
+
+    @pytest.mark.asyncio
+    async def test_subfloor_contradicts_is_logged_even_though_it_returns_none(self):
+        # Regression: a "contradicts" decision below the confidence floor previously
+        # vanished silently too (same filter, same missing log line) -- not just "same".
+        candidate = _active_crystallization()
+        target = _active_crystallization()
+        target.crystallization_id = "crys_target"
+
+        pool = MagicMock()
+        bus = MagicMock()
+
+        decision = ConceptRelationDecision(
+            relation="contradicts", target_crystallization_id="crys_target", confidence=0.45
+        )
+
+        decision_log_mock = AsyncMock(return_value="decision-1")
+
+        with patch(
+            "orion.memory.crystallization.concept_relation.fetch_similar_candidates",
+            new=AsyncMock(return_value=[target]),
+        ), patch(
+            "orion.memory.crystallization.concept_relation.resolve_concept_relation",
+            new=AsyncMock(return_value=decision),
+        ), patch(
+            "orion.memory.crystallization.concept_relation.insert_concept_relation_decision",
+            new=decision_log_mock,
+        ):
+            result = await maybe_resolve_concept_relation(
+                pool, bus, candidate=candidate, settings=_Settings(), emit_kw={}
+            )
+
+        assert result is None
+        assert candidate.links == []
+        decision_log_mock.assert_called_once()
+        assert decision_log_mock.call_args.kwargs["relation"] == "contradicts"
+        assert decision_log_mock.call_args.kwargs["target_crystallization_id"] == "crys_target"
+        assert decision_log_mock.call_args.kwargs["floor_cleared"] is False
 
     @pytest.mark.asyncio
     async def test_confidence_floor_zero_is_respected_not_clobbered(self):
@@ -388,6 +542,9 @@ class TestMaybeResolveConceptRelation:
         ), patch(
             "orion.memory.crystallization.concept_relation.emit_crystallization_lifecycle",
             new=emit_mock,
+        ), patch(
+            "orion.memory.crystallization.concept_relation.insert_concept_relation_decision",
+            new=AsyncMock(return_value="decision-1"),
         ):
             result = await maybe_resolve_concept_relation(
                 pool, bus, candidate=candidate, settings=settings, emit_kw={}
@@ -416,6 +573,9 @@ class TestMaybeResolveConceptRelation:
         ), patch(
             "orion.memory.crystallization.concept_relation.resolve_concept_relation",
             new=AsyncMock(return_value=decision),
+        ), patch(
+            "orion.memory.crystallization.concept_relation.insert_concept_relation_decision",
+            new=AsyncMock(return_value="decision-1"),
         ):
             result = await maybe_resolve_concept_relation(
                 pool, bus, candidate=candidate, settings=_Settings(), emit_kw={}
@@ -493,6 +653,76 @@ class TestMaybeResolveConceptRelation:
 
         assert result is None
         mock_resolve.assert_not_called()
+
+
+class _FakeDecisionConn:
+    """Minimal double for the single INSERT ... RETURNING decision_id query that
+    insert_concept_relation_decision() issues -- proves the write round-trips (the
+    params passed in come back out as the row read from the "database") without a
+    live Postgres, matching this repo's existing convention of mocking at the
+    pool/connection boundary."""
+
+    def __init__(self) -> None:
+        self.captured_sql: str | None = None
+        self.captured_args: tuple | None = None
+
+    async def fetchrow(self, sql, *args):
+        self.captured_sql = sql
+        self.captured_args = args
+        return {"decision_id": str(uuid4())}
+
+
+class _FakePool:
+    def __init__(self, conn: _FakeDecisionConn) -> None:
+        self._conn = conn
+
+    def acquire(self) -> "_FakePool":
+        return self
+
+    async def __aenter__(self):
+        return self._conn
+
+    async def __aexit__(self, *exc_info):
+        return False
+
+
+class TestInsertConceptRelationDecision:
+    @pytest.mark.asyncio
+    async def test_round_trips_all_fields(self):
+        conn = _FakeDecisionConn()
+        pool = _FakePool(conn)
+
+        decision_id = await insert_concept_relation_decision(
+            pool,
+            candidate_crystallization_id="crys_candidate",
+            target_crystallization_id="crys_target",
+            relation="refines",
+            confidence=0.73,
+            floor_cleared=True,
+        )
+
+        assert decision_id  # a real id came back from the "INSERT ... RETURNING"
+        assert conn.captured_args == ("crys_candidate", "crys_target", "refines", 0.73, True)
+        assert "INSERT INTO memory_concept_relation_decisions" in conn.captured_sql
+        assert "RETURNING decision_id" in conn.captured_sql
+
+    @pytest.mark.asyncio
+    async def test_round_trips_unrelated_with_null_target(self):
+        # "unrelated" decisions never have a target_crystallization_id -- confirm the
+        # write path tolerates None and it comes back through unchanged.
+        conn = _FakeDecisionConn()
+        pool = _FakePool(conn)
+
+        await insert_concept_relation_decision(
+            pool,
+            candidate_crystallization_id="crys_candidate",
+            target_crystallization_id=None,
+            relation="unrelated",
+            confidence=0.0,
+            floor_cleared=False,
+        )
+
+        assert conn.captured_args == ("crys_candidate", None, "unrelated", 0.0, False)
 
 
 class TestMergeNewEvidence:

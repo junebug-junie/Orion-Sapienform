@@ -22,6 +22,8 @@ Same-window duplicate detection (`orion.memory.crystallization.detection.detect_
 
 Dispatch is deliberately conservative: `same` reinforces the existing target (identical mechanism to the same-window path). `refines` and `contradicts` only attach a typed link to the *new* candidate's own `links` (persisted to `memory_crystallization_links` on insert, same as any other crystallization) — they never mutate or supersede the existing target's status. That stays a human decision via the existing `/api/memory/crystallizations/{id}/links` and supersede endpoints. Every decisive branch (`same`/`refines`/`contradicts`) stamps `provenance.concept_relation` (relation, target id, confidence) on the affected row for audit, independent of which branch acted.
 
+**Decision log + belief-revision digest.** Every real LLM decision — including `unrelated` and sub-floor `contradicts`/`refines` that the dispatch above discards — is written to `memory_concept_relation_decisions` (`orion.memory.crystallization.repository.insert_concept_relation_decision`, guarded to never raise). `scripts/concept_relation_digest.py` (repo root, run on demand or via cron — not a live service loop) reads undigested rows and reports call volume / relation distribution / near-miss counts under `CONCEPT_RELATION_CONFIDENCE_FLOOR`, then creates one `reflection`-kind crystallization per real belief-revision decision (`same`/`refines`/`contradicts` that cleared the floor) — a structured, deterministic trace of Orion revising its own beliefs, not just a link nobody reads back.
+
 Ships flag-gated off; flipping the flag alone does not activate anything without also configuring the embed/chroma hosts (both default to empty string):
 
 | Env | Default | Purpose |

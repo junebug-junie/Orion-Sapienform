@@ -12,7 +12,7 @@ from orion.core.llm_json import parse_json_object
 from orion.memory.crystallization.bus_emit import emit_crystallization_lifecycle
 from orion.memory.crystallization.candidate_retrieval import fetch_similar_candidates
 from orion.memory.crystallization.dynamics import reinforce
-from orion.memory.crystallization.repository import update_crystallization
+from orion.memory.crystallization.repository import insert_concept_relation_decision, update_crystallization
 from orion.memory.crystallization.schemas import (
     CrystallizationLinkV1,
     MemoryCrystallizationV1,
@@ -226,7 +226,35 @@ async def maybe_resolve_concept_relation(
     # Plain getattr default (no `or` fallback): CONCEPT_RELATION_CONFIDENCE_FLOOR=0.0
     # is a legitimate "accept every LLM decision" operator setting.
     confidence_floor = float(getattr(settings, "CONCEPT_RELATION_CONFIDENCE_FLOOR", 0.6))
-    if decision.relation == "unrelated" or decision.confidence < confidence_floor:
+    floor_cleared = decision.confidence >= confidence_floor
+
+    # Record every real decision here, before the filter below discards anything --
+    # previously only the decisive outcome reached a log line (see logger.info below),
+    # so every "unrelated" decision and every sub-floor "contradicts"/"refines" decision
+    # vanished silently. scripts/concept_relation_digest.py reads this table to surface
+    # those near-misses (threshold-tuning report) and to produce belief-revision
+    # "reflection" crystallizations for the ones that did clear the floor.
+    #
+    # This write is purely observational -- unlike resolve_concept_relation() above
+    # (which is documented to NEVER raise), a DB error here must not propagate and take
+    # down the whole formation flow. Before this patch nothing between here and the
+    # caller's insert_crystallization() could fail this early; a swallowed exception on
+    # a diagnostic log write is a strictly better failure mode than losing an entire
+    # consolidation window over it (see services/orion-memory-consolidation's
+    # mark_failed(window_id) on any uncaught exception).
+    try:
+        await insert_concept_relation_decision(
+            pool,
+            candidate_crystallization_id=candidate.crystallization_id,
+            target_crystallization_id=decision.target_crystallization_id,
+            relation=decision.relation,
+            confidence=decision.confidence,
+            floor_cleared=floor_cleared,
+        )
+    except Exception as exc:
+        logger.warning("concept_relation_decision_log_failed error=%s", exc)
+
+    if decision.relation == "unrelated" or not floor_cleared:
         return None
 
     target = next((c for c in candidates if c.crystallization_id == decision.target_crystallization_id), None)

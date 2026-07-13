@@ -1332,6 +1332,50 @@ def _project_self_state_from_beliefs(
     }
 
 
+def _project_reverie_glimpse(ctx: Dict[str, Any]) -> str | None:
+    """Projection helper: surface the latest fresh, non-hollow reverie thought.
+
+    Reads ``ctx['latest_reverie_thought']`` (the ``thought_json`` payload hydrated
+    by ``felt_state_reader``'s ``latest_reverie_thought`` lane, already age-gated
+    there). Extracts ONLY the ``interpretation`` narration string -- never
+    ``evidence_refs``/``coalition``/``chain_id`` or any other field, since those
+    are internal grounding/audit data, not narration meant to be read.
+
+    Re-checks ``hollow`` here as a second, independent gate (defense in depth):
+    the producer already filters hollow thoughts before persisting, but this
+    consumer should not trust that invariant blindly.
+
+    Fail-open: returns None on anything missing, malformed, or unparsable.
+    Never raises.
+    """
+    try:
+        raw = ctx.get("latest_reverie_thought")
+        if raw is None:
+            return None
+        if isinstance(raw, str):
+            if not raw.strip():
+                return None
+            payload = json.loads(raw)
+        elif isinstance(raw, dict):
+            payload = raw
+        else:
+            return None
+        if not isinstance(payload, dict):
+            return None
+        if payload.get("hollow") is True:
+            return None
+        interpretation = payload.get("interpretation", "")
+        if not isinstance(interpretation, str):
+            return None
+        interpretation = interpretation.strip()
+        if not interpretation:
+            return None
+        return interpretation
+    except Exception:
+        logger.debug("reverie_glimpse_projection_failed", exc_info=True)
+        return None
+
+
 def _concept_summary_from_store(ctx: Dict[str, Any] | None = None) -> dict[str, list[str]]:
     ctx = ctx if isinstance(ctx, dict) else {}
     try:
@@ -2316,6 +2360,9 @@ async def build_chat_stance_inputs(ctx: Dict[str, Any]) -> Dict[str, Any]:
     if self_state_projection:
         social["hazards"] = _unique((social.get("hazards") or []) + list(self_state_projection.get("hazards") or []), limit=8)
         ctx["chat_self_state_condition"] = self_state_projection.get("overall_condition")
+    reverie_glimpse = _project_reverie_glimpse(ctx)
+    if reverie_glimpse:
+        ctx["chat_reverie_glimpse"] = reverie_glimpse
     mutation_cognition = _mutation_cognition_from_ctx(ctx)
     social["hazards"] = _unique((social.get("hazards") or []) + list((reasoning.get("summary") or {}).get("hazards") or []), limit=8)
 

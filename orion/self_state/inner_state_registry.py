@@ -309,6 +309,44 @@ REGISTRY: tuple[InnerStateSignal, ...] = (
             "here, same precedent as l7_l11_ladder -- not a gap to close."
         ),
     ),
+    InnerStateSignal(
+        signal_id="chat_stance_disposition",
+        schema=None,
+        producer_service="orion-hub",
+        cadence=Cadence.CHAT_TURN_GATED,
+        composition_status=CompositionStatus.REHEARSAL,
+        cognition_consumers=(),
+        notes=(
+            "Not a standalone schema -- a field group (stance_disposition, "
+            "stance_disposition_reasons, stance_boundary_register) on "
+            "ChatTurnStateV1 (orion/schemas/chat_projection.py), same "
+            "schema-vs-formula distinction as phi_heuristic.valence. Captures "
+            "the Thought stance decision (proceed/defer/refuse, reasons, "
+            "boundary_register) every unified-turn chat turn resolves "
+            "(orion/hub/turn_orchestrator.py::execute_unified_turn), via the "
+            "chat_grammar reducer (orion/substrate/chat_loop/"
+            "grammar_extract.py). Reaches active_chat_session (Postgres "
+            "JSONB) only. compute_chat_pressure_hints does not read it, so it "
+            "never reaches orion-field-digester's delta_to_perturbations, "
+            "substrate_field_state, or SelfStateV1 -- traced, not assumed. "
+            "The obvious composition target (map to social_pressure, the "
+            "dimension repair_pressure/conversation_load already feed) was "
+            "considered and rejected 2026-07-13: SEEDV4_THEATER_FELT "
+            "(services/orion-spark-introspector/app/inner_state.py) already "
+            "excludes social_pressure from phi's live seed-v4 trainable "
+            "feature set (docs/superpowers/specs/2026-07-09-phi-seedv4-"
+            "feature-set-design.md), so that route reaches no cognition "
+            "consumer while mutating an existing tracked dimension's "
+            "provenance the same day mood_arc_corpus.v1 started real "
+            "corpus collection. Full trace and three candidate paths "
+            "forward (own SelfStateV1 dimension, feed mood_arc_corpus.v1 "
+            "directly, or defer to a seed-v5 feature-set redesign once real "
+            "data exists) in docs/superpowers/specs/2026-07-13-stance-"
+            "disposition-inner-state-path.md -- none chosen yet. REHEARSAL "
+            "is the honest status: real, computed, no cognition consumer, "
+            "not a gap to silently close."
+        ),
+    ),
 )
 
 

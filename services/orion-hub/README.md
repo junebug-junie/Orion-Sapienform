@@ -111,6 +111,8 @@ pytest tests/test_pre_turn_appraisal_wiring.py tests/test_handle_chat_request_su
 
 Gated by the existing `PUBLISH_HUB_CHAT_GRAMMAR` flag (default `true`) -- no new env key. Fires once per turn, right after the stance decision resolves, whether or not the turn goes on to the harness governor. Fail-open: a publish failure is logged and swallowed, never raised into the chat response.
 
+The stance fields land in `active_chat_session` and go no further today -- `compute_chat_pressure_hints` doesn't read them, so they never reach `SelfStateV1` or phi. Registered `REHEARSAL` in `orion/self_state/inner_state_registry.py` (`chat_stance_disposition`) rather than left implicit; see `docs/superpowers/specs/2026-07-13-stance-disposition-inner-state-path.md` for why the obvious composition route (into `SelfStateV1.social_pressure`) was rejected and what the real paths forward look like.
+
 **Code**
 
 - `orion/hub/turn_orchestrator.py::_publish_unified_turn_chat_grammar` — call site, builds the stance-aware event set

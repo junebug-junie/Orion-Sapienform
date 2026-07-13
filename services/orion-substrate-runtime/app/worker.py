@@ -52,6 +52,12 @@ from orion.substrate.chat_loop.constants import (
     CHAT_SESSION_PROJECTION_ID,
 )
 from orion.substrate.chat_loop.pipeline import process_chat_grammar_events
+from orion.substrate.route_loop.constants import (
+    ROUTE_ARBITRATION_PROJECTION_ID,
+    ROUTE_GRAMMAR_CURSOR_NAME,
+)
+from orion.substrate.route_loop.pipeline import process_route_grammar_events
+from orion.substrate.route_loop.projection import empty_route_projection
 
 from .publish import publish_accepted_events
 from .reducer_health import (
@@ -153,6 +159,13 @@ REDUCER_SPECS: tuple[ReducerSpec, ...] = (
         enabled=lambda s: s.enable_chat_grammar_reducer,
         batch_limit=lambda s: s.chat_grammar_batch_limit,
     ),
+    ReducerSpec(
+        reducer_key="route_grammar",
+        cursor_name=ROUTE_GRAMMAR_CURSOR_NAME,
+        source_service="orion-cortex-orch",
+        enabled=lambda s: s.enable_route_grammar_reducer,
+        batch_limit=lambda s: s.route_grammar_batch_limit,
+    ),
 )
 
 
@@ -192,6 +205,7 @@ class BiometricsSubstrateWorker:
             asyncio.create_task(self._execution_poll_loop(), name="execution-substrate-poll"),
             asyncio.create_task(self._transport_poll_loop(), name="transport-substrate-poll"),
             asyncio.create_task(self._chat_poll_loop(), name="chat-substrate-poll"),
+            asyncio.create_task(self._route_poll_loop(), name="route-substrate-poll"),
             asyncio.create_task(self._prune_loop(), name="substrate-receipt-pruner"),
             asyncio.create_task(self._dynamics_tick_loop(), name="substrate-dynamics-tick"),
             asyncio.create_task(self._episodic_tick_loop(), name="substrate-episodic-tick"),
@@ -308,6 +322,9 @@ class BiometricsSubstrateWorker:
     async def _chat_poll_loop(self) -> None:
         await self._grammar_reducer_poll_loop(REDUCER_SPECS[3], self._chat_tick)
 
+    async def _route_poll_loop(self) -> None:
+        await self._grammar_reducer_poll_loop(REDUCER_SPECS[4], self._route_tick)
+
     async def _grammar_reducer_poll_loop(
         self,
         spec: ReducerSpec,
@@ -333,6 +350,8 @@ class BiometricsSubstrateWorker:
                         advance_fn = self._store.advance_execution_cursor
                     elif spec.cursor_name == CHAT_GRAMMAR_CURSOR_NAME:
                         advance_fn = self._store.advance_chat_cursor
+                    elif spec.cursor_name == ROUTE_GRAMMAR_CURSOR_NAME:
+                        advance_fn = self._store.advance_route_cursor
                     else:
                         advance_fn = self._store.advance_transport_cursor
                     await asyncio.to_thread(
@@ -1563,6 +1582,35 @@ class BiometricsSubstrateWorker:
                 events=batch,
                 load_projection=_load_chat_projection,
                 save_projection=_save_chat_projection,
+                save_receipt=self._store.save_receipt,
+                now=now,
+            )
+
+        return self._process_events_with_poison_isolation(
+            spec=spec,
+            events=events,
+            process_batch=process_batch,
+        )
+
+    def _route_tick(self) -> str | None:
+        spec = REDUCER_SPECS[4]
+        events = self._store.fetch_route_grammar_events(
+            limit=spec.batch_limit(self._settings),
+        )
+        if not events:
+            return None
+
+        now = datetime.now(timezone.utc)
+
+        def load_projection():
+            loaded = self._store.load_route_arbitration(ROUTE_ARBITRATION_PROJECTION_ID)
+            return loaded or empty_route_projection(now=now)
+
+        def process_batch(batch: list[GrammarEventV1]) -> None:
+            process_route_grammar_events(
+                events=batch,
+                load_projection=load_projection,
+                save_projection=self._store.save_route_arbitration,
                 save_receipt=self._store.save_receipt,
                 now=now,
             )

@@ -57,7 +57,7 @@ Companion to `docs/superpowers/specs/2026-07-12-inner-state-unification-design.m
 
 ## Phase 3 — `spark_embodiment_narrative` (brainstorm idea #3)
 
-**Status: implemented, deployed** (branch `docs/attention-provenance-crosscheck-phase4`, continued in-session — Phases 0/1/2 were deployed first specifically to satisfy this phase's gate).
+**Status: implemented, deployed, live-verified** (branch `feat/spark-embodiment-narrative-phase3` — the commits were first pushed onto `docs/attention-provenance-crosscheck-phase4`, whose own PR #978 had already merged, which confused GitHub's compare UI into showing "nothing to compare" for the new commits; re-cherry-picked onto this fresh branch name to get a clean PR). Phases 0/1/2 were deployed first specifically to satisfy this phase's own gate.
 
 **Gate to start:** Phase 2 merged AND deployed for a real traffic window. Satisfied in-session: Phases 0/1/2 deployed (`orion-self-state-runtime`, `orion-spark-introspector` rebuilt), confirmed live via direct bus subscription (`redis-cli SUBSCRIBE orion:self:phi_reward`) — real `dominant_node`/`dominant_node_reason` values (`node:atlas`/`node:circe` alternating, matching the Phase 4 cross-check's 81.7%/18.3% split) before this phase's code was written.
 

@@ -354,6 +354,55 @@ def test_failed_cortex_result() -> None:
     assert frame.outcome_status == "failed"
 
 
+def test_empty_cortex_result_scores_as_failed_not_unknown() -> None:
+    # execution-dispatch's raw_len=0 result ("empty" status) is a real
+    # attempt that produced no usable content -- the empty-shell-cognition
+    # rule requires this score as a failure, not fall into the same
+    # "unknown" bucket as a genuinely untracked/missing result.
+    dispatch = ExecutionDispatchFrameV1(
+        frame_id="execution.dispatch.frame:empty:execution_dispatch_policy.v1",
+        generated_at=NOW,
+        source_policy_frame_id="policy.frame:empty",
+        source_proposal_frame_id="proposal.frame:empty",
+        source_self_state_id="self.state:empty",
+        dispatch_mode="dispatch_read_only",
+        dispatch_attempted=True,
+        dispatch_count=1,
+        dispatched_candidates=[
+            ExecutionDispatchCandidateV1(
+                dispatch_id="dispatch:proposal:inspect:execution_dispatch_policy.v1",
+                source_decision_id="pd1",
+                source_proposal_id="proposal:inspect:state",
+                dispatch_status="dispatched",
+                dispatch_mode="dispatch_read_only",
+                dispatch_kind="inspect",
+                target_id="t1",
+                target_kind="capability",
+                risk_score=0.05,
+                confidence_score=0.9,
+                dispatched_at=NOW,
+                result_ref="stub:result:inspect",
+            )
+        ],
+    )
+    frame = build_feedback_frame(
+        dispatch_frame=dispatch,
+        policy_frame=None,
+        proposal_frame=None,
+        self_state_before=None,
+        self_state_after=None,
+        cortex_results=[
+            {"dispatch_id": "dispatch:proposal:inspect:execution_dispatch_policy.v1", "status": "empty"}
+        ],
+        policy=FEEDBACK_POLICY,
+        now=NOW,
+    )
+    assert frame.outcome_status == "failed"
+    empty_obs = [o for o in frame.observations if o.source_kind == "cortex_result"][0]
+    assert empty_obs.outcome_kind == "failed"
+    assert empty_obs.score == FEEDBACK_POLICY.scoring.failed_score
+
+
 def test_self_state_improvement_positive_evidence() -> None:
     dispatch = _dispatch_dry_run()
     before = _self_state("self.state:before", {"execution_pressure": 1.0, "agency_readiness": 0.2})

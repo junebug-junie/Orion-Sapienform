@@ -239,6 +239,38 @@ class ExecutionDispatchRuntimeWorker:
     ) -> ExecutionDispatchCandidateV1:
         now = datetime.now(timezone.utc)
         result_id = f"result:{candidate.dispatch_id}"
+
+        # Idempotency guard: dispatch_id is deterministic (stable_dispatch_id
+        # hashes proposal_id+policy_id), so if this process crashed after a
+        # prior successful send but before save_dispatch_frame() recorded
+        # that this policy frame is now dispatched, the next tick re-selects
+        # the same policy frame and rebuilds the identical dispatch_id. A
+        # real cortex-exec RPC must never fire twice for the same candidate
+        # -- replay the stored result instead of resending.
+        existing = self._store.load_dispatch_result_by_dispatch_id(candidate.dispatch_id)
+        if existing is not None:
+            logger.info(
+                "execution_dispatch_result_replayed dispatch_id=%s status=%s",
+                candidate.dispatch_id,
+                existing["status"],
+            )
+            if existing["status"] == "failed":
+                error = existing["result_json"].get("error", "previous attempt failed")
+                return candidate.model_copy(
+                    update={
+                        "dispatch_status": "dispatched",
+                        "dispatched_at": now,
+                        "dispatch_error": str(error)[:500],
+                    }
+                )
+            return candidate.model_copy(
+                update={
+                    "dispatch_status": "dispatched",
+                    "dispatched_at": now,
+                    "result_ref": existing["result_id"],
+                }
+            )
+
         context = dict(candidate.request_envelope.get("context") or {})
 
         try:
@@ -257,7 +289,7 @@ class ExecutionDispatchRuntimeWorker:
                 dispatch_id=candidate.dispatch_id,
                 frame_id=frame.frame_id,
                 status="failed",
-                result_json={"error": str(exc)[:2000]},
+                result_json={"error": str(exc)[:2000], "evidence_refs": [result_id]},
                 raw_len=0,
             )
             return candidate.model_copy(
@@ -277,7 +309,7 @@ class ExecutionDispatchRuntimeWorker:
             dispatch_id=candidate.dispatch_id,
             frame_id=frame.frame_id,
             status=status,
-            result_json=observation_data,
+            result_json={**observation_data, "evidence_refs": [result_id]},
             raw_len=raw_len,
         )
         logger.info(

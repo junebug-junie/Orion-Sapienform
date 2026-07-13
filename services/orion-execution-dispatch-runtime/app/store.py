@@ -253,16 +253,54 @@ class ExecutionDispatchRuntimeStore:
                 },
             )
 
+    def load_dispatch_result_by_dispatch_id(self, dispatch_id: str) -> dict | None:
+        with self._engine.connect() as conn:
+            row = (
+                conn.execute(
+                    text(
+                        """
+                        SELECT result_id, status, result_json, raw_len
+                        FROM substrate_dispatch_results
+                        WHERE dispatch_id = :dispatch_id
+                        ORDER BY created_at DESC
+                        LIMIT 1
+                        """
+                    ),
+                    {"dispatch_id": dispatch_id},
+                )
+                .mappings()
+                .first()
+            )
+        if not row:
+            return None
+        result_json = row["result_json"]
+        if isinstance(result_json, str):
+            result_json = json.loads(result_json)
+        return {
+            "result_id": row["result_id"],
+            "status": row["status"],
+            "result_json": result_json,
+            "raw_len": row["raw_len"],
+        }
+
     def count_dispatches_today(self) -> int:
+        # Explicit UTC bound computed in Python, not date_trunc('day', now())
+        # -- matches this file's own datetime.now(timezone.utc) convention
+        # elsewhere and doesn't depend on the Postgres session's configured
+        # timezone (confirmed Etc/UTC live, but not worth relying on).
+        today_start_utc = datetime.now(timezone.utc).replace(
+            hour=0, minute=0, second=0, microsecond=0
+        )
         with self._engine.connect() as conn:
             row = conn.execute(
                 text(
                     """
                     SELECT count(*) AS n
                     FROM substrate_dispatch_results
-                    WHERE created_at >= date_trunc('day', now())
+                    WHERE created_at >= :today_start
                     """
                 ),
+                {"today_start": today_start_utc},
             ).mappings().first()
         return int(row["n"]) if row else 0
 

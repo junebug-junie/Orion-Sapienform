@@ -215,6 +215,7 @@ async def test_send_prepared_candidates_promotes_on_success(monkeypatch) -> None
     worker._store.recent_dispatch_result_statuses = MagicMock(return_value=[])
     worker._store.count_dispatches_today = MagicMock(return_value=0)
     worker._store.save_dispatch_result = MagicMock()
+    worker._store.load_dispatch_result_by_dispatch_id = MagicMock(return_value=None)
     _patch_bus_and_client(
         monkeypatch,
         {"dispatch:1": {"result": {"final_text": '{"observation": "steady", "confidence": 0.8}'}}},
@@ -243,6 +244,7 @@ async def test_send_prepared_candidates_records_failure_on_rpc_exception(monkeyp
     worker._store.recent_dispatch_result_statuses = MagicMock(return_value=[])
     worker._store.count_dispatches_today = MagicMock(return_value=0)
     worker._store.save_dispatch_result = MagicMock()
+    worker._store.load_dispatch_result_by_dispatch_id = MagicMock(return_value=None)
     _patch_bus_and_client(monkeypatch, {"dispatch:1": RuntimeError("rpc timed out")})
     frame = _frame_with_candidates(_candidate("dispatch:1"))
 
@@ -262,6 +264,7 @@ async def test_send_prepared_candidates_empty_observation_status_empty(monkeypat
     worker._store.recent_dispatch_result_statuses = MagicMock(return_value=[])
     worker._store.count_dispatches_today = MagicMock(return_value=0)
     worker._store.save_dispatch_result = MagicMock()
+    worker._store.load_dispatch_result_by_dispatch_id = MagicMock(return_value=None)
     _patch_bus_and_client(monkeypatch, {"dispatch:1": {"result": {"final_text": ""}}})
     frame = _frame_with_candidates(_candidate("dispatch:1"))
 
@@ -285,6 +288,7 @@ async def test_send_prepared_candidates_respects_per_tick_budget(monkeypatch) ->
     worker._store.recent_dispatch_result_statuses = MagicMock(return_value=[])
     worker._store.count_dispatches_today = MagicMock(return_value=0)
     worker._store.save_dispatch_result = MagicMock()
+    worker._store.load_dispatch_result_by_dispatch_id = MagicMock(return_value=None)
     _patch_bus_and_client(
         monkeypatch,
         {
@@ -300,6 +304,61 @@ async def test_send_prepared_candidates_respects_per_tick_budget(monkeypatch) ->
     assert len(updated.candidates) == 1
     assert updated.candidates[0].dispatch_status == "prepared_for_dispatch"
     worker._store.save_dispatch_result.assert_called_once()
+
+
+@pytest.mark.asyncio
+async def test_send_one_replays_existing_result_without_resending(monkeypatch) -> None:
+    # Crash-recovery scenario: dispatch_id is deterministic, so if a prior
+    # tick already sent this exact candidate and recorded a result (but the
+    # process died before save_dispatch_frame persisted that), the next
+    # tick must NOT fire a second real cortex-exec RPC for it.
+    worker = _make_worker(monkeypatch)
+    worker._store.recent_dispatch_result_statuses = MagicMock(return_value=[])
+    worker._store.count_dispatches_today = MagicMock(return_value=0)
+    worker._store.save_dispatch_result = MagicMock()
+    worker._store.load_dispatch_result_by_dispatch_id = MagicMock(
+        return_value={
+            "result_id": "result:dispatch:1",
+            "status": "success",
+            "result_json": {"observation": "steady", "evidence_refs": ["result:dispatch:1"]},
+            "raw_len": 6,
+        }
+    )
+    _patch_bus_and_client(monkeypatch, {})  # no outcome registered -- a real send would KeyError
+    frame = _frame_with_candidates(_candidate("dispatch:1"))
+
+    updated = await worker._send_prepared_candidates(frame)
+
+    promoted = updated.dispatched_candidates[0]
+    assert promoted.dispatch_status == "dispatched"
+    assert promoted.result_ref == "result:dispatch:1"
+    worker._store.save_dispatch_result.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_send_one_replays_existing_failed_result_without_resending(monkeypatch) -> None:
+    worker = _make_worker(monkeypatch)
+    worker._store.recent_dispatch_result_statuses = MagicMock(return_value=[])
+    worker._store.count_dispatches_today = MagicMock(return_value=0)
+    worker._store.save_dispatch_result = MagicMock()
+    worker._store.load_dispatch_result_by_dispatch_id = MagicMock(
+        return_value={
+            "result_id": "result:dispatch:1",
+            "status": "failed",
+            "result_json": {"error": "rpc timed out"},
+            "raw_len": 0,
+        }
+    )
+    _patch_bus_and_client(monkeypatch, {})
+    frame = _frame_with_candidates(_candidate("dispatch:1"))
+
+    updated = await worker._send_prepared_candidates(frame)
+
+    promoted = updated.dispatched_candidates[0]
+    assert promoted.dispatch_status == "dispatched"
+    assert promoted.result_ref is None
+    assert promoted.dispatch_error == "rpc timed out"
+    worker._store.save_dispatch_result.assert_not_called()
 
 
 @pytest.mark.asyncio

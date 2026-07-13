@@ -28,6 +28,10 @@ def extract_final_text(result_payload: dict[str, Any]) -> str:
                     text = payload.get("text") or payload.get("content")
                     if isinstance(text, str) and text.strip():
                         return text.strip()
+                    raw = payload.get("raw") if isinstance(payload.get("raw"), dict) else {}
+                    raw_text = raw.get("text")
+                    if isinstance(raw_text, str) and raw_text.strip():
+                        return raw_text.strip()
     return ""
 
 

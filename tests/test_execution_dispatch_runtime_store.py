@@ -300,3 +300,58 @@ def test_recent_dispatch_result_statuses_empty_when_no_rows(monkeypatch) -> None
     monkeypatch.setattr(store, "_engine", fake_engine)
 
     assert store.recent_dispatch_result_statuses(10) == []
+
+
+def test_load_dispatch_result_by_dispatch_id_found(monkeypatch) -> None:
+    store = ExecutionDispatchRuntimeStore("postgresql://test:test@localhost/test")
+    fake_engine = MagicMock()
+    conn = MagicMock()
+    fake_engine.connect.return_value.__enter__ = MagicMock(return_value=conn)
+    fake_engine.connect.return_value.__exit__ = MagicMock(return_value=False)
+    conn.execute.return_value.mappings.return_value.first.return_value = {
+        "result_id": "result:dispatch:1",
+        "status": "success",
+        "result_json": {"observation": "steady"},
+        "raw_len": 6,
+    }
+    monkeypatch.setattr(store, "_engine", fake_engine)
+
+    result = store.load_dispatch_result_by_dispatch_id("dispatch:1")
+
+    assert result == {
+        "result_id": "result:dispatch:1",
+        "status": "success",
+        "result_json": {"observation": "steady"},
+        "raw_len": 6,
+    }
+
+
+def test_load_dispatch_result_by_dispatch_id_parses_json_string(monkeypatch) -> None:
+    store = ExecutionDispatchRuntimeStore("postgresql://test:test@localhost/test")
+    fake_engine = MagicMock()
+    conn = MagicMock()
+    fake_engine.connect.return_value.__enter__ = MagicMock(return_value=conn)
+    fake_engine.connect.return_value.__exit__ = MagicMock(return_value=False)
+    conn.execute.return_value.mappings.return_value.first.return_value = {
+        "result_id": "result:dispatch:1",
+        "status": "success",
+        "result_json": '{"observation": "steady"}',
+        "raw_len": 6,
+    }
+    monkeypatch.setattr(store, "_engine", fake_engine)
+
+    result = store.load_dispatch_result_by_dispatch_id("dispatch:1")
+
+    assert result["result_json"] == {"observation": "steady"}
+
+
+def test_load_dispatch_result_by_dispatch_id_none_when_no_row(monkeypatch) -> None:
+    store = ExecutionDispatchRuntimeStore("postgresql://test:test@localhost/test")
+    fake_engine = MagicMock()
+    conn = MagicMock()
+    fake_engine.connect.return_value.__enter__ = MagicMock(return_value=conn)
+    fake_engine.connect.return_value.__exit__ = MagicMock(return_value=False)
+    conn.execute.return_value.mappings.return_value.first.return_value = None
+    monkeypatch.setattr(store, "_engine", fake_engine)
+
+    assert store.load_dispatch_result_by_dispatch_id("dispatch:missing") is None

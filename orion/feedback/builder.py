@@ -102,7 +102,10 @@ def _cortex_status_to_outcome(status: str) -> OutcomeKind:
     s = status.lower()
     if s in ("success", "ok", "completed"):
         return "completed"
-    if s in ("failed", "error"):
+    # "empty" (execution-dispatch's raw_len=0 result) is a real attempt that
+    # produced no usable content -- the empty-shell-cognition rule treats
+    # that as a failure to score, never as an unscored unknown or a success.
+    if s in ("failed", "error", "empty"):
         return "failed"
     return "unknown"
 

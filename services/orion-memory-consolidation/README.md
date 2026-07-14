@@ -68,6 +68,77 @@ Use this checklist any time this service (or its cron dependency) is missing aft
 3. **Run the liveness check once by hand** (`make check-concept-relation-digest-liveness`) to confirm the new cron entry is actually firing, rather than waiting up to 3 hours to find out.
 4. **Do not assume `CONCEPT_RELATION_RESOLUTION_ENABLED=true` implies the digest is scheduled** -- they are two independent things that must both be true for the loop documented above to actually close. This exact "flag on, dependency not wired" pattern has already caused silent no-ops twice in this repo (`CONCEPT_RELATION_RESOLUTION_ENABLED` itself missing its embed/chroma hosts on first activation, and `RECALL_GRAPHITI_IN_CHAT` missing its adapter URL) -- checking both halves explicitly, every time, is cheaper than re-discovering this.
 
+## Drive-history reflection synthesis (manual/on-demand only -- NOT cron'd)
+
+`scripts/drive_history_reflection_synthesis.py` (repo root) reads Orion's own real,
+persisted drive-activation history and synthesizes ONE `reflection`-kind
+`MemoryCrystallizationV1` observing a long-horizon pattern -- e.g. "continuity has
+been the dominant drive in most audited ticks this week." Source data: `DriveAuditV1`
+(`orion/core/schemas/drives.py`) is computed on every DriveEngine tick and persisted,
+append-only, by `services/orion-rdf-writer` to the Fuseki `drives` graph
+(`http://conjourney.net/graph/autonomy/drives`) -- unlike the "latest value only"
+stores this repo already has for the same signal (`LocalProfileStore` /
+`autonomy_state_v2`'s single-row UPSERT), this graph is a genuine historical
+time-series, one triple-set per tick.
+
+**Architecture is deliberately split into a deterministic reducer stage and a
+narrow LLM-phrasing stage** (event -> schema -> trace -> reducer -> projection ->
+LLM phrasing -> crystallization, per this repo's event-substrate-first mandate) --
+the LLM is never shown raw per-tick SPARQL rows:
+
+1. Fetch real `DriveAuditV1` ticks from Fuseki (bounded by `--max-events`, most
+   recent first).
+2. `reduce_drive_history()` -- a **pure, unit-tested Python function** (same bar as
+   `orion/spark/concept_induction/drive_tension.py`: synthetic-input/known-output
+   tests, zero LLM involvement) -- aggregates them into dominant-drive counts/shares,
+   a per-day breakdown, active-drive frequency, and mean pressures.
+3. `build_fact_sheet()` renders that aggregation into a small numbered list of
+   already-computed, already-verified fact strings (real dates, real counts, real
+   percentages, real timestamps).
+4. The LLM (bus RPC, same pattern as `concept_relation.py::resolve_concept_relation()`)
+   receives ONLY the fact sheet and is asked to phrase ONE narrative sentence,
+   citing specific facts by number.
+5. `parse_and_validate_narrative()` enforces the grounding guardrail: every cited
+   fact's real literal tokens (drive name, date, percentage, or timestamp) must
+   appear verbatim in the narrative text, or the run is rejected -- an LLM cannot
+   pass validation by inventing plausible-sounding but fake specifics.
+6. Only then is a `reflection` crystallization written, with evidence refs citing
+   both the aggregation object and the real cited `DriveAuditV1` artifacts, so a
+   human reviewer can verify the narrative against what was actually computed.
+
+**Guardrail: refuses to synthesize on thin data.** Below `MIN_EVENTS=5` real ticks
+or `MIN_DISTINCT_DAYS=2` distinct calendar days in the queried window, the reducer
+marks the aggregation insufficient and the script exits cleanly reporting exactly
+why -- no LLM call is made, nothing is written. `MIN_DISTINCT_DAYS` exists because
+DriveEngine ticks several times a minute in a single session, so event *count*
+alone can be satisfied entirely within one sitting; requiring real day-spread is
+what distinguishes an actual long-horizon pattern from a burst.
+
+Run:
+
+```bash
+POSTGRES_URI=postgresql://user:pass@host:port/db python scripts/drive_history_reflection_synthesis.py
+python scripts/drive_history_reflection_synthesis.py --postgres-uri postgresql://... --since-days 14
+python scripts/drive_history_reflection_synthesis.py --json
+```
+
+| Env / flag | Default | Purpose |
+|---|---|---|
+| `--postgres-uri` / `$POSTGRES_URI` | *(required)* | Same convention as `concept_relation_digest.py` |
+| `--subject` | `orion` | `DriveAuditV1.subjectKey` to read |
+| `--since-days` | `30` | Window size; real coverage found is always reported, never assumed |
+| `--max-events` | `500` | Cap on raw ticks fetched from Fuseki (most recent first) |
+| `--query-url` | *(resolved)* | Explicit Fuseki SPARQL query URL; else `AUTONOMY_GRAPH_QUERY_URL` / `RDF_STORE_QUERY_URL` / Fuseki derivation |
+| `--redis` / `$ORION_BUS_URL` | `redis://localhost:6379/0` | Bus URL for the LLM gateway RPC |
+| `--llm-route` | `metacog` | Gateway route for the narrative-phrasing call |
+
+**This is NOT scheduled or cron'd in this patch, unlike `concept_relation_digest.py`
+above.** It is explicitly a manual/on-demand tool: its output (a narrative claim
+about Orion's own long-horizon tendencies) needs human review before anyone should
+trust it as a recurring automated process. Run it by hand, read the generated
+`summary` text critically, and decide separately whether a cron entry is warranted
+once the grounding guardrail and prompt have been proven out on real data.
+
 ## Channels
 
 | Direction | Channel |

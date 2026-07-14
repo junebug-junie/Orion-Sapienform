@@ -28,6 +28,11 @@ set -e
 # A linked worktree has its own private git-dir (typically under
 # <common-dir>/worktrees/<name>) that differs from the common git-dir shared
 # by all worktrees. The primary/shared checkout's git-dir IS the common-dir.
+#
+# NOTE: this detection block is intentionally byte-for-byte duplicated in
+# scripts/git_hooks/pre-commit rather than sourced from a shared file --
+# that file gets copied verbatim by git into .git/hooks/ and must stay
+# self-contained. If you fix a bug here, fix it there too.
 _GITDIR=$(cd "$(git rev-parse --git-dir 2>/dev/null)" 2>/dev/null && pwd)
 _COMMONDIR=$(cd "$(git rev-parse --git-common-dir 2>/dev/null)" 2>/dev/null && pwd)
 IS_SHARED_CHECKOUT=0
@@ -70,7 +75,18 @@ if [ ! -f "services/$SERVICE/docker-compose.yml" ]; then
     exit 1
 fi
 
-# --- 3. Run docker compose from the service directory, forwarding args -----
-# exec replaces this shell process so the wrapper's exit code is exactly
-# docker compose's exit code.
-cd "services/$SERVICE" && exec docker compose "$@"
+# --- 3. Run docker compose with this repo's mandatory dual --env-file  -----
+# AGENTS.md section 8 requires every docker compose invocation in this repo
+# to load BOTH the root .env and the service's own .env, root first --
+# docker compose only auto-loads a .env from its own working directory, and
+# many services reference root-only vars (e.g. ${ORION_BUS_URL}) with no
+# per-service duplicate, so cd'ing into the service dir and running plain
+# `docker compose` (the original shape of this script) silently drops those
+# vars. Stay at repo root and pass both --env-file flags plus -f explicitly,
+# matching AGENTS.md's own documented pattern exactly. exec replaces this
+# shell process so the wrapper's exit code is exactly docker compose's.
+exec docker compose \
+    --env-file .env \
+    --env-file "services/$SERVICE/.env" \
+    -f "services/$SERVICE/docker-compose.yml" \
+    "$@"

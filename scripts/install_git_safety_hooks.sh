@@ -11,9 +11,8 @@
 #   scripts/install_git_safety_hooks.sh [target-repo-dir]
 #
 # If target-repo-dir is omitted, the current working directory is used.
-# The script walks up from there to find the repo (a directory containing
-# a .git entry -- directory or file, so this also works from inside a
-# linked worktree).
+# Any path inside the repo (including a subdirectory) works -- resolution
+# goes through `git rev-parse`, same as git itself uses.
 #
 # POSIX sh only -- no bashisms.
 
@@ -34,46 +33,40 @@ if [ ! -d "$TARGET_DIR" ]; then
     exit 1
 fi
 
-# Walk up from TARGET_DIR looking for a .git entry (dir or file -- a file
-# means we're in a linked worktree, which is fine).
-find_repo_root() {
-    dir=$(cd "$1" && pwd)
-    while [ "$dir" != "/" ]; do
-        if [ -e "$dir/.git" ]; then
-            printf '%s\n' "$dir"
-            return 0
-        fi
-        dir=$(dirname "$dir")
-    done
-    return 1
-}
-
-REPO_ROOT=$(find_repo_root "$TARGET_DIR") || {
-    echo "[install-git-safety-hooks] ERROR: no .git found walking up from $TARGET_DIR" >&2
-    exit 1
-}
-
-if ! git -C "$REPO_ROOT" rev-parse --git-common-dir >/dev/null 2>&1; then
-    echo "[install-git-safety-hooks] ERROR: '$REPO_ROOT' is not a git repository" >&2
+if ! git -C "$TARGET_DIR" rev-parse --git-common-dir >/dev/null 2>&1; then
+    echo "[install-git-safety-hooks] ERROR: '$TARGET_DIR' is not inside a git repository" >&2
     exit 1
 fi
 
 # Resolve the shared/common git dir (this is where hooks live even for a
 # linked worktree checkout -- hooks are not per-worktree).
-COMMON_DIR_RAW=$(git -C "$REPO_ROOT" rev-parse --git-common-dir)
+COMMON_DIR_RAW=$(git -C "$TARGET_DIR" rev-parse --git-common-dir)
 case "$COMMON_DIR_RAW" in
     /*)
         COMMON_DIR="$COMMON_DIR_RAW"
         ;;
     *)
-        COMMON_DIR=$(cd "$REPO_ROOT/$COMMON_DIR_RAW" && pwd)
+        COMMON_DIR=$(cd "$TARGET_DIR/$COMMON_DIR_RAW" && pwd)
         ;;
 esac
 
+TOPLEVEL=$(git -C "$TARGET_DIR" rev-parse --show-toplevel)
+
 # Respect core.hooksPath if the repo has customized it.
-HOOKS_PATH_CFG=$(git -C "$REPO_ROOT" config --get core.hooksPath 2>/dev/null) || HOOKS_PATH_CFG=""
+HOOKS_PATH_CFG=$(git -C "$TARGET_DIR" config --get core.hooksPath 2>/dev/null) || HOOKS_PATH_CFG=""
 
 if [ -n "$HOOKS_PATH_CFG" ]; then
+    # Git expands a leading ~ (or ~user) in core.hooksPath to the home
+    # directory; do the same here, since a value read out of `git config
+    # --get` at runtime never goes through the shell's own tilde expansion.
+    case "$HOOKS_PATH_CFG" in
+        "~")
+            HOOKS_PATH_CFG="$HOME"
+            ;;
+        "~/"*)
+            HOOKS_PATH_CFG="$HOME/${HOOKS_PATH_CFG#\~/}"
+            ;;
+    esac
     case "$HOOKS_PATH_CFG" in
         /*)
             HOOKS_DIR="$HOOKS_PATH_CFG"
@@ -81,7 +74,6 @@ if [ -n "$HOOKS_PATH_CFG" ]; then
         *)
             # A relative core.hooksPath is resolved by git relative to the
             # top level of the working tree, NOT relative to $GIT_DIR.
-            TOPLEVEL=$(git -C "$REPO_ROOT" rev-parse --show-toplevel)
             HOOKS_DIR="$TOPLEVEL/$HOOKS_PATH_CFG"
             ;;
     esac
@@ -94,8 +86,24 @@ mkdir -p "$HOOKS_DIR"
 DEST_HOOK="$HOOKS_DIR/pre-commit"
 MARKER="# orion-git-safety-guard"
 
+# Refuse to write through an existing symlink rather than silently following
+# it -- a symlinked hooks dir (e.g. dotfiles/chezmoi-managed hooks) would
+# otherwise get its *target* file overwritten, which can live outside this
+# repo entirely and outside what an operator expects this script to touch.
+if [ -L "$DEST_HOOK" ]; then
+    echo "[install-git-safety-hooks] ERROR: $DEST_HOOK is a symlink (-> $(readlink "$DEST_HOOK" 2>/dev/null || echo '?'))." >&2
+    echo "  Refusing to write through it. Remove the symlink or point it at" >&2
+    echo "  $SOURCE_HOOK yourself, then re-run this script." >&2
+    exit 1
+fi
+
 if [ -f "$DEST_HOOK" ] && grep -qF "$MARKER" "$DEST_HOOK" 2>/dev/null; then
-    echo "[install-git-safety-hooks] already installed at $DEST_HOOK"
+    # Already our hook -- always refresh to the current version rather than
+    # skipping, so a later fix to scripts/git_hooks/pre-commit actually
+    # reaches an already-installed checkout when this script is re-run.
+    cp "$SOURCE_HOOK" "$DEST_HOOK"
+    chmod +x "$DEST_HOOK"
+    echo "[install-git-safety-hooks] refreshed orion git-safety pre-commit hook at $DEST_HOOK"
     exit 0
 fi
 

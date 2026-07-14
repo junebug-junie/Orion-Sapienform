@@ -507,6 +507,10 @@ If `git status` shows `.env` staged or unstaged as a tracked file, stop and fix 
 
 If the change affects runtime behavior, config read at boot, dependencies, ports, health checks, workers, Redis, or compose wiring, run the affected Docker build or service smoke.
 
+Run docker compose builds/deploys through `scripts/safe_docker_build.sh <service_name> <args...>` instead of calling `docker compose` directly. It refuses to run from the shared/primary checkout (worktrees only, same policy as commits) and applies the `--env-file`/`-f` pattern below automatically. This exists because a concurrent agent session once ran `docker compose build`+`up` straight from the shared checkout and silently reverted another session's already-verified fix — see `scripts/safe_docker_build.sh`'s own header and `docs/superpowers/pr-reports/2026-07-14-agent-git-safety-hooks-pr.md` for the full story.
+
+The examples below show the equivalent raw `docker compose` invocation for reference (e.g. for one-off `logs`/`ps` commands the wrapper doesn't need to cover) — prefer the wrapper for anything that builds or brings services up.
+
 Example pattern:
 
 ```bash

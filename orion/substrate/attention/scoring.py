@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import re
+from datetime import datetime
 from typing import Any
 
 from orion.schemas.attention_frame import AttentionSignalV1, OpenLoopV1
@@ -78,6 +79,7 @@ def build_open_loops(
     stale_thread_active: bool,
     max_open: int,
     history: "SalienceHistory | None" = None,
+    now: datetime | None = None,
 ) -> list[OpenLoopV1]:
     user_text = compact(ctx.get("user_message") or ctx.get("raw_user_text") or "", 600)
     known = known_blob(inputs, ctx)
@@ -127,7 +129,7 @@ def build_open_loops(
         # traces are real even when the v2 flag is off. score_loop decides whether
         # to consume this value or the legacy weighted sum.
         loop_history = history or SalienceHistory()
-        sal, feats = compute_salience(loop=loop, signals=[signal], history=loop_history)
+        sal, feats = compute_salience(loop=loop, signals=[signal], history=loop_history, now=now)
         loop = loop.model_copy(update={"salience": sal, "salience_features": feats.model_dump(mode="json")})
         loops.append(loop)
     return loops

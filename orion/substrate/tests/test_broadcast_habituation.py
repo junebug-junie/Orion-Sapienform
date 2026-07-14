@@ -15,12 +15,14 @@ class _Node:
 @pytest.fixture(autouse=True)
 def _reset_broadcast_state():
     ab._recent_selected_counts.clear()
+    ab._first_selected_at.clear()
     ab._dwell_ticks = 0
     ab._coalition_history.clear()
     ab._current_active_coalition = None
     ab._transition_history.clear()
     yield
     ab._recent_selected_counts.clear()
+    ab._first_selected_at.clear()
     ab._dwell_ticks = 0
     ab._coalition_history.clear()
     ab._current_active_coalition = None

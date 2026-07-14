@@ -241,6 +241,81 @@ incident rather than a hypothetical. Scope any first build to the single
 narrowest claim/ground-truth pair, per the recommendation in #4 — resist
 building the general claim-extraction pipeline first.
 
+## The reduction organ (axis 4's producer half — design thread, 2026-07-14)
+
+Not a from-scratch build — a genuine extension of infrastructure that
+already exists and already has the right discipline. This is the
+architecture that closes axis 4's loop: it's the *producer* of the claims
+axis 4's fidelity-check *verifies*.
+
+### What already exists (verified in code, not assumed)
+
+`services/orion-thought/app/reverie.py` — "spontaneous thought" mode,
+default-off (`ORION_REVERIE_ENABLED=false`). A self-driven tick reads a
+windowed aggregation (currently: the winning attention coalition, via
+`orion.reverie.referent_loader`), narrates it through an LLM verb
+(`reverie_narrate`) into a `SpontaneousThoughtV1` (`orion/schemas/reverie.py:37`).
+Two pieces of already-built discipline this new organ inherits directly:
+
+- **`SpontaneousThoughtV1.is_hollow()`** (`orion/schemas/reverie.py:90-99`):
+  rejects the thought if there's no real grounding, the narration is too
+  short, or evidence refs aren't actually anchored in real coalition data.
+  Hollow thoughts are "stamped and dropped, not published, rather than
+  masqueraded as cognition" — the anti-confabulation discipline axis 4
+  needs, already enforced, not proposed.
+- **`ConcernCardV1`** (`orion/schemas/reverie.py:134`): "a *deterministic*
+  human referent lifted from coalition pointers" — the existing pattern
+  already separates deterministic pre-computed fact from the LLM's
+  narrated voice (`interpretation`, explicitly latent/LLM-authored),
+  keeping that boundary explicit and inspectable.
+
+### The new organ
+
+A sibling thought-type to `SpontaneousThoughtV1`, same architectural
+shape, but the "coalition" it reads is a genuine cross-mesh window:
+`grammar_events` + metacog output + chat activity + relevant telemetry
+buses — reduced the same way, narrated with the same hollow-guard
+discipline. Explicitly **not** another freeform journal — the narrated
+output names *which* real signals are affecting *which* named category
+(illustrative placeholder categories floated: mood, cognitive health,
+coherence — not final, see decisions below).
+
+**Decided (2026-07-14):**
+
+1. **Output emits back into the grammar substrate** — a new `GrammarEventV1`
+   (new `atom_type`/`semantic_role`, e.g. a `self_state_synthesis` role),
+   not just published on a side channel like `orion:reverie:thought`. This
+   closes the loop structurally in the data model, not just conceptually —
+   the self-narration becomes causally traceable and queryable the same
+   way everything else now is, post the wall-clock timing fix. Also means
+   this organ's own output becomes a future input to itself and to axis 4's
+   verifier, recursively.
+2. **Category labels are deterministically grounded, not LLM-invented** —
+   derived from real mesh activity (the same discipline `ConcernCardV1`
+   already uses). **The LLM's role is classifier/scorer, not author** — it
+   selects/scores among a fixed, deliberately-versioned label vocabulary
+   using **logprobs**, not free-text generation of new category names each
+   time. Real existing precedent to build on, not invented fresh:
+   `services/orion-mind/app/uncertainty_metacog.py`'s
+   `low_logprob_token_count`/`high_low_logprob_ratio` pattern already does
+   logprob-based confidence scoring for a different purpose. This is the
+   design choice that avoids repeating phi's failure mode (an unstable,
+   ad hoc, freely-repatched taxonomy) — the vocabulary is fixed and
+   versioned; only which-label-applies-with-what-confidence is inferred
+   per tick.
+
+**Still TBD, explicitly not decided yet:**
+
+3. **Trigger/window mechanism** — not a default fixed cadence chosen
+   upfront. To be derived from the actual shape of the input signals
+   (natural batch boundaries, event density, etc.) once we look at them,
+   not assumed in advance.
+4. **Does this replace or sit alongside the existing attention-coalition
+   reverie mode** — both would share the same hollow-guard/semantic-lift
+   machinery (`orion.reverie.semantic_lift`). Not decided.
+5. The actual label vocabulary (mood/cognitive-health/coherence were
+   explicitly floated as illustrative, not final) — not chosen.
+
 ## Open questions / next steps
 
 1. Populate actual north-star metric candidates (top level) — Juniper's call, not started.
@@ -252,9 +327,6 @@ building the general claim-extraction pipeline first.
    ground-truth pair first — see "Standing decision from this pass" above.
    Execution-risk calibrator, latency-aware pacing, and trace-shape/Self-tab
    remain real candidates but are not the current priority.
-8. Pick the first narrow self-claim/ground-truth pair for axis 4 (not yet
-   chosen — needs a concrete candidate: which claim, checked against which
-   grammar_events-derived ground truth).
 6. Investigate Hub's existing Self tab and `substrate_self_state_router` before designing #3.
 7. Cross-reference with the existing, unbuilt metric-lineage-registry design
    (`docs/superpowers/specs/2026-07-10-cognition-metric-lineage-registry-design.md`)
@@ -262,3 +334,17 @@ building the general claim-extraction pipeline first.
    theater, per that design's audit methodology) before being wired into
    the hierarchy. That registry's liveness-audit work may be a real
    prerequisite here, not a parallel, unrelated effort.
+8. Pick the first narrow self-claim/ground-truth pair for axis 4 (not yet
+   chosen — needs a concrete candidate: which claim, checked against which
+   grammar_events-derived ground truth). Now a natural candidate exists:
+   the reduction organ's own `self_state_synthesis` grammar atoms, once
+   built, become exactly the claims to verify.
+9. Design the reduction organ's trigger/window mechanism, once the shape of
+   the real input signals (grammar_events density, metacog/chat cadence)
+   is looked at — not an arbitrary fixed cadence chosen in advance.
+10. Decide whether the new reduction organ replaces or sits alongside the
+    existing attention-coalition reverie mode (both would share
+    `orion.reverie.semantic_lift`).
+11. Choose the actual label vocabulary for the reduction organ's
+    classifier/scorer (mood/cognitive-health/coherence were explicitly
+    floated as illustrative placeholders, not final).

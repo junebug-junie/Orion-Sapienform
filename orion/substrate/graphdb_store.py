@@ -3,6 +3,8 @@ from __future__ import annotations
 import json
 import logging
 import os
+import threading
+import time
 from dataclasses import dataclass
 from hashlib import sha256
 from typing import Any, Optional
@@ -49,6 +51,14 @@ class GraphDBSubstrateStoreConfig:
     timeout_sec: float = 5.0
     user: str | None = None
     password: str | None = None
+    # How long snapshot() may serve its last successful fetch before issuing a new
+    # live query. 0 disables caching (every call is live, matching pre-fix behavior).
+    # Conservative default: the tightest known periodic caller (dynamics tick) runs
+    # every 30s; this only collapses near-simultaneous calls from different callers
+    # (brain-frame tick, dynamics, attention, curiosity, beliefs_for_stance) into one
+    # shared fetch -- see docs/superpowers/specs/2026-07-14-substrate-graph-store-
+    # snapshot-cache-spec.md.
+    snapshot_cache_ttl_sec: float = 2.0
 
 
 NODE_ADAPTER = TypeAdapter(SubstrateNodeV1)
@@ -61,6 +71,14 @@ class GraphDBSubstrateStore(SubstrateGraphStore):
         self._cfg = cfg
         self._cache = InMemorySubstrateGraphStore()
         self._result_source_kind = "graphdb"
+        self._last_snapshot_at: float | None = None
+        # snapshot() is called from multiple OS threads in this deployment (e.g.
+        # orion-substrate-runtime's brain-frame tick runs via asyncio.to_thread) --
+        # this guards the check-then-act TTL read/write and the cache refresh that
+        # follows a live query, so two threads racing past an expired TTL can't both
+        # fire independent live queries and race to write _last_snapshot_at/self._cache
+        # (2026-07-14 review finding).
+        self._snapshot_lock = threading.Lock()
 
     def _sparql_update_endpoint(self) -> str:
         """GraphDB accepts SPARQL UPDATE only on the RDF4J statements endpoint, not the repo root."""
@@ -215,14 +233,24 @@ WHERE {{ OPTIONAL {{ GRAPH <{self._cfg.graph_uri}> {{ {edge_iri} ?p ?o . }} }} }
         self._upsert_identity(identity_key=identity_key, canonical_id=edge.edge_id, identity_kind="edge")
 
     def snapshot(self) -> MaterializedSubstrateGraphState:
-        try:
-            nodes, _ = self._query_nodes(limit_nodes=500)
-            node_ids = [n.node_id for n in nodes]
-            edges, _ = self._query_edges_for_node_ids(node_ids=node_ids, limit_edges=1000)
-        except GraphDBSubstrateStoreError:
+        with self._snapshot_lock:
+            now_mono = time.monotonic()
+            ttl = float(self._cfg.snapshot_cache_ttl_sec)
+            if (
+                ttl > 0.0
+                and self._last_snapshot_at is not None
+                and (now_mono - self._last_snapshot_at) < ttl
+            ):
+                return self._cache.snapshot()
+            try:
+                nodes, _ = self._query_nodes(limit_nodes=500)
+                node_ids = [n.node_id for n in nodes]
+                edges, _ = self._query_edges_for_node_ids(node_ids=node_ids, limit_edges=1000)
+            except GraphDBSubstrateStoreError:
+                return self._cache.snapshot()
+            self._refresh_cache(nodes=nodes, edges=edges)
+            self._last_snapshot_at = now_mono
             return self._cache.snapshot()
-        self._refresh_cache(nodes=nodes, edges=edges)
-        return self._cache.snapshot()
 
     # ---- primary query layer (GraphDB-first) ----
     def query_focal_slice(self, *, node_ids: list[str], max_edges: int = 64) -> SubstrateQueryResultV1:
@@ -586,6 +614,7 @@ class SparqlSubstrateStoreConfig:
     user: str | None = None
     password: str | None = None
     auth_source: str = "none"
+    snapshot_cache_ttl_sec: float = 2.0
 
 
 class SparqlSubstrateStore(GraphDBSubstrateStore):
@@ -599,6 +628,7 @@ class SparqlSubstrateStore(GraphDBSubstrateStore):
                 timeout_sec=cfg.timeout_sec,
                 user=cfg.user,
                 password=cfg.password,
+                snapshot_cache_ttl_sec=cfg.snapshot_cache_ttl_sec,
             )
         )
         self._result_source_kind = "sparql"
@@ -687,6 +717,21 @@ def _resolve_substrate_named_graph_uri() -> str:
     return raw or DEFAULT_SUBSTRATE_GRAPH_URI
 
 
+def _resolve_snapshot_cache_ttl_sec() -> float:
+    """See GraphDBSubstrateStoreConfig.snapshot_cache_ttl_sec for the reasoning behind
+    the 2.0s default -- conservative relative to every known real caller's freshness
+    requirement (tightest is a 30s tick); this only collapses near-simultaneous calls
+    from different callers into one shared fetch."""
+    raw = str(os.getenv("SUBSTRATE_SNAPSHOT_CACHE_TTL_SEC", "")).strip()
+    if not raw:
+        return 2.0
+    try:
+        return float(raw)
+    except ValueError:
+        logger.warning("substrate_snapshot_cache_ttl_invalid value=%r; using default 2.0", raw)
+        return 2.0
+
+
 def _redact_endpoint_for_log(endpoint: str) -> str:
     """Log-safe endpoint (host + path only; strips userinfo)."""
     p = urlparse(endpoint)
@@ -751,6 +796,7 @@ def build_substrate_store_from_env() -> SubstrateGraphStore:
             user=auth_user,
             password=auth_pass,
             auth_source=auth_src,
+            snapshot_cache_ttl_sec=_resolve_snapshot_cache_ttl_sec(),
         )
         return SparqlSubstrateStore(cfg)
 
@@ -769,6 +815,7 @@ def build_substrate_store_from_env() -> SubstrateGraphStore:
             timeout_sec=float(os.getenv("SUBSTRATE_GRAPHDB_TIMEOUT_SEC", "5.0")),
             user=str(os.getenv("SUBSTRATE_GRAPHDB_USER", "")).strip() or None,
             password=str(os.getenv("SUBSTRATE_GRAPHDB_PASS", "")).strip() or None,
+            snapshot_cache_ttl_sec=_resolve_snapshot_cache_ttl_sec(),
         )
         return GraphDBSubstrateStore(cfg)
 

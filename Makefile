@@ -1,4 +1,4 @@
-.PHONY: test test-hub test-actions bootstrap-test-envs check-inner-state-registry check-single-consumer-channels check-activation-saturation concept-relation-digest check-concept-relation-digest-liveness check-env-compose-parity check-journal-dispatch-registry check-daily-schedule-collisions
+.PHONY: test test-hub test-actions bootstrap-test-envs check-inner-state-registry check-single-consumer-channels check-activation-saturation concept-relation-digest check-concept-relation-digest-liveness check-env-compose-parity check-journal-dispatch-registry check-daily-schedule-collisions worktree-status worktree-status-summary worktree-status-stale prune-merged-worktrees
 
 SERVICE ?=
 ARGS ?=
@@ -87,3 +87,24 @@ check-journal-dispatch-registry:
 # this isn't a hard gate today.
 check-daily-schedule-collisions:
 	@python scripts/check_daily_schedule_collisions.py $(if $(THRESHOLD_MINUTES),--threshold-minutes $(THRESHOLD_MINUTES),) $(if $(FAIL_ON_COLLISION),--fail-on-collision,)
+
+# Reconciled worktree view -- path, branch, merged-into-main status, open PR,
+# disk size -- regardless of which of this repo's several worktree location
+# conventions (sibling dir, .worktrees/, .claude/worktrees/agent-<id>) each
+# one uses. See scripts/worktree_status.py.
+# BASE overrides the branch merge status is compared against (default:
+# origin/main) -- e.g. `make worktree-status BASE=origin/release`.
+worktree-status:
+	@python3 scripts/worktree_status.py $(if $(BASE),--base $(BASE),)
+
+worktree-status-summary:
+	@python3 scripts/worktree_status.py --summary $(if $(BASE),--base $(BASE),)
+
+worktree-status-stale:
+	@python3 scripts/worktree_status.py --stale-only $(if $(BASE),--base $(BASE),)
+
+# Dry-run by default; pass YES=1 to actually remove merged worktrees. Never
+# force-removes a worktree with uncommitted changes -- see
+# scripts/prune_merged_worktrees.py.
+prune-merged-worktrees:
+	@python3 scripts/prune_merged_worktrees.py $(if $(YES),--yes,) $(if $(BASE),--base $(BASE),)

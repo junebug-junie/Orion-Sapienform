@@ -1,0 +1,20 @@
+#!/bin/sh
+# orion-git-safety-guard (post-merge)
+#
+# Advisory-only nudge: after a merge completes (in ANY worktree -- `git
+# worktree list` is repo-wide, not worktree-scoped, so this doesn't need to
+# gate on shared-vs-linked checkout the way pre-commit does), prints a count
+# of worktrees whose branch is now merged and have no open PR, i.e. safe
+# candidates for `python3 scripts/prune_merged_worktrees.py`.
+#
+# Never blocks anything and never fails the merge it fires on -- if python3
+# isn't reachable, or the script errors, this hook silently does nothing.
+#
+# POSIX sh only -- no bashisms.
+
+REPO_ROOT=$(git rev-parse --show-toplevel 2>/dev/null) || exit 0
+[ -f "$REPO_ROOT/scripts/worktree_status.py" ] || exit 0
+
+command -v python3 >/dev/null 2>&1 || exit 0
+
+python3 "$REPO_ROOT/scripts/worktree_status.py" --summary 2>/dev/null || true

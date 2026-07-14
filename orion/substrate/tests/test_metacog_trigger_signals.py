@@ -78,3 +78,10 @@ def test_build_metacog_substrate_cue_compact():
     assert "self_state:" in cue
     assert "strained" in cue
     assert len(cue) <= 400
+
+
+def test_build_metacog_substrate_cue_tags_its_own_provenance():
+    ss = _self_state()
+    ctx = {"self_state": ss.model_dump(mode="json")}
+    cue = build_metacog_substrate_cue(ctx)
+    assert "source=live_runtime_projection" in cue

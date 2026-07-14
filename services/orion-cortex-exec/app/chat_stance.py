@@ -1377,6 +1377,36 @@ def _project_self_state_from_beliefs(
     }
 
 
+def _project_context_provenance_hazard(ctx: Dict[str, Any]) -> str | None:
+    """Projection helper: name which of this turn's ctx keys are genuinely
+    live substrate/biometric signal vs. retrieved/static/tool content.
+
+    Reads the shared ``orion.schemas.context_provenance`` registry against
+    whatever keys are actually present in ``ctx`` this turn. Returns a
+    compact hazard string naming the live keys, or None when none are
+    present -- exists so a self-referential claim about "what's happening
+    right now" has a ground truth to check against instead of a
+    plausible-sounding guess (see
+    project_orion_substrate_bridge_confabulation for the incident this
+    closes: a GitHub file fetch narrated as live substrate computation).
+    """
+    from .grounding_capsule import context_provenance_for_ctx
+
+    live_keys = sorted(
+        key
+        for key, kind in context_provenance_for_ctx(ctx).items()
+        if kind == "live_runtime_projection"
+    )
+    if not live_keys:
+        return None
+    return (
+        "context_provenance: only " + ", ".join(live_keys) + " are live "
+        "signal computed this turn; anything else in context (memory "
+        "recall, static identity config, or a tool call you made) is not "
+        "live and must not be described as happening right now."
+    )
+
+
 def _project_reverie_glimpse(ctx: Dict[str, Any]) -> str | None:
     """Projection helper: surface the latest fresh, non-hollow reverie thought.
 
@@ -2513,6 +2543,14 @@ async def build_chat_stance_inputs(ctx: Dict[str, Any]) -> Dict[str, Any]:
     if self_state_projection:
         social["hazards"] = _unique((social.get("hazards") or []) + list(self_state_projection.get("hazards") or []), limit=8)
         ctx["chat_self_state_condition"] = self_state_projection.get("overall_condition")
+    context_provenance_hazard = _project_context_provenance_hazard(ctx)
+    if context_provenance_hazard:
+        # Prepended, not appended: this is a standing epistemic constraint, not
+        # a reactive risk flag, and _unique(..., limit=8) truncates in order --
+        # appending after two prior hazard folds means it silently drops on any
+        # turn where those already filled the cap, which is exactly the kind of
+        # eventful turn most likely to tempt a confabulated liveness claim.
+        social["hazards"] = _unique([context_provenance_hazard] + list(social.get("hazards") or []), limit=8)
     reverie_glimpse = _project_reverie_glimpse(ctx)
     if reverie_glimpse:
         ctx["chat_reverie_glimpse"] = reverie_glimpse

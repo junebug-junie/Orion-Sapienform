@@ -5,6 +5,7 @@ from typing import Any, Dict
 
 from orion.core.bus.async_service import OrionBusAsync
 from orion.core.bus.bus_schemas import ServiceRef
+from orion.schemas.context_provenance import CONTEXT_PROVENANCE_REGISTRY
 from orion.schemas.thought import GroundingCapsuleV1
 from orion.thought.json_extract import extract_first_json_object_text
 
@@ -57,6 +58,20 @@ def stance_slice_brief_from_step_text(text: str) -> Dict[str, Any]:
     }
 
 
+def context_provenance_for_ctx(ctx: Dict[str, Any]) -> Dict[str, str]:
+    """Map every ctx key present this turn to its registered source kind.
+
+    Keys with no registry entry (unclassified, not plumbing-exempt) are
+    omitted rather than guessed — see CONTEXT_PROVENANCE_REGISTRY's coverage
+    test for the gate that catches new ctx keys shipping unclassified.
+    """
+    return {
+        key: entry.source_kind
+        for key, entry in CONTEXT_PROVENANCE_REGISTRY.items()
+        if key in ctx
+    }
+
+
 def build_grounding_capsule(ctx: Dict[str, Any], *, pcr_ran: bool) -> GroundingCapsuleV1:
     """Assemble the capsule from identity summaries + PCR digests already in ctx."""
     return GroundingCapsuleV1(
@@ -70,6 +85,7 @@ def build_grounding_capsule(ctx: Dict[str, Any], *, pcr_ran: bool) -> GroundingC
             "identity_source": str(ctx.get("identity_kernel_source") or "unknown"),
             "pcr_ran": bool(pcr_ran),
         },
+        context_provenance=context_provenance_for_ctx(ctx),
     )
 
 

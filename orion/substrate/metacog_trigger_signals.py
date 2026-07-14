@@ -5,6 +5,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Any, Mapping
 
+from orion.schemas.context_provenance import classify
 from orion.schemas.execution_projection import ExecutionTrajectoryProjectionV1
 from orion.schemas.self_state import SelfStateV1
 
@@ -103,7 +104,14 @@ def build_metacog_substrate_cue(
     max_chars: int = 400,
     eventfulness: SubstrateEventfulness | None = None,
 ) -> str:
-    """Compact substrate cue for metacog prompts (not raw JSON)."""
+    """Compact substrate cue for metacog prompts (not raw JSON).
+
+    Tags itself with its registry source kind (``classify("self_state")``,
+    always "live_runtime_projection") so a claim built from this cue can be
+    told apart from one built by reading source off a repo/tool -- see
+    project_orion_substrate_bridge_confabulation for why that distinction
+    has to be legible in the cue itself, not just in a registry nobody reads.
+    """
     parts: list[str] = []
     ss = ctx.get("self_state")
     if isinstance(ss, dict):
@@ -125,5 +133,11 @@ def build_metacog_substrate_cue(
     )
     if ev.reasons:
         parts.append(f"eventfulness={ev.score:.2f} ({'; '.join(ev.reasons[:3])})")
+    if parts:
+        # self_state, execution_trajectory_projection, and the eventfulness
+        # score derived from them are all registered live_runtime_projection --
+        # one suffix for the whole cue, not just the first clause, so every
+        # segment carries the same provenance signal.
+        parts.append(f"(source={classify('self_state')})")
     cue = " | ".join(parts)
     return cue[:max_chars] if len(cue) > max_chars else cue

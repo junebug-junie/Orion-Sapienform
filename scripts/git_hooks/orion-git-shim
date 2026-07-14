@@ -1,0 +1,276 @@
+#!/bin/sh
+# orion-git-shim -- vendor-neutral, system-wide enforcement layer.
+#
+# This is a `git` replacement meant to be installed earlier in PATH than
+# the real git binary (see scripts/install_orion_git_shim.sh). Every
+# PATH-resolved git invocation on the machine passes through here first.
+#
+# Why this exists: scripts/hooks/destructive_git_guard.py (a Claude Code
+# PreToolUse hook) blocks the same commands this does, but only for
+# sessions running through that one tool. This shim receives the REAL
+# argv after the shell has already done its own parsing/quoting/expansion
+# -- no regex-over-a-command-string guessing required, which was the
+# largest source of bugs in the Python hook.
+#
+# Honest scope -- what this does NOT catch, by the nature of a PATH shim:
+#   - A caller that resolves and caches an ABSOLUTE path to git once (many
+#     libraries/tools do this) rather than re-searching PATH per
+#     invocation never reaches this file at all.
+#   - `sudo git ...` -- sudo's secure_path typically excludes user-local
+#     bin directories and resets PATH before running the command.
+#   - A `!`-prefixed git alias (an arbitrary shell command, not a git
+#     argument sequence) cannot be meaningfully argv-analyzed; it passes
+#     through unexamined.
+# These are disclosed, not silently glossed over: this shim is strictly
+# more coverage than destructive_git_guard.py (catches a plain terminal, a
+# different AI tool, anything using a normal PATH lookup), not total
+# coverage of every conceivable way to invoke git.
+#
+# Opt-in per repo, not a blanket policy: this only blocks anything for a
+# repo with the marker file .git/orion-safety-guard-enabled present (see
+# scripts/install_orion_git_shim.sh). Every other repo on this machine
+# passes through with a single, cheap `[ -f ... ]` check and nothing more
+# -- installing this shim system-wide does NOT mean every git repo on the
+# machine is now guarded.
+#
+# Blocks: `git clean` with a force flag (no dry-run) OR clean.requireForce
+# set to false (either makes clean destructive without needing an explicit
+# -f), `git reset --hard`, `git checkout`/`git switch` with a force flag.
+# Also resolves simple (non-`!`) git aliases that expand to one of these,
+# since aliasing destructive commands is extremely common. Same scope as
+# destructive_git_guard.py otherwise -- push --force and branch -D remain
+# intentionally out of scope, see that file for why.
+#
+# Escape hatch: ORION_ALLOW_SHARED_CHECKOUT_WRITE=1 (a real env var).
+#
+# Known, disclosed gaps beyond the "honest scope" list above:
+#   - Only a single --git-dir (space-separated form) is safely consumed
+#     (so it can't be misread as the subcommand) but its VALUE isn't used
+#     for target-dir resolution unless --work-tree is also given.
+#     --work-tree's value IS used and takes priority over -C.
+#   - Aliases whose expansion appends args positionally in ways more
+#     complex than "the alias's own tokens plus the user's trailing args"
+#     aren't modeled beyond that simple union.
+#   - TOCTOU: like any PATH-based tool, a directory earlier in PATH than
+#     the real git that's writable by a less-trusted principal than the
+#     invoking user could have its `git` file swapped between this
+#     script's checks -- the same trust assumption every PATH-dependent
+#     tool already makes, not something unique to this shim.
+#
+# POSIX sh only -- no bashisms. Must never break normal git usage: every
+# non-matching invocation execs straight through to the real git with
+# zero behavioral difference, and the common case (any repo without the
+# marker file) costs one cheap file-existence check, no subprocess.
+
+set -e
+
+_MARKER="# orion-git-shim"
+
+# --- Resolve the real git binary --------------------------------------
+# Skip ANY file containing this shim's own marker (content-based, not
+# exact-path identity) -- if two independently-installed shim copies
+# ever end up on PATH together (e.g. the installer re-run with a
+# different ORION_GIT_SHIM_DIR, old copy never removed), path-identity
+# comparison alone lets them treat each other as "the real git" and
+# exec into one another forever. Content-marker matching makes any
+# shim copy, however it got there, correctly recognized and skipped.
+_REAL_GIT=""
+_OLD_IFS="$IFS"
+IFS=:
+for _dir in $PATH; do
+    IFS="$_OLD_IFS"
+    [ -z "$_dir" ] && continue
+    _candidate="$_dir/git"
+    if [ -f "$_candidate" ] && [ -x "$_candidate" ]; then
+        if ! grep -qF "$_MARKER" "$_candidate" 2>/dev/null; then
+            _REAL_GIT="$_candidate"
+            break
+        fi
+    fi
+    IFS=:
+done
+IFS="$_OLD_IFS"
+
+if [ -z "$_REAL_GIT" ]; then
+    echo "[orion-git-shim] ERROR: could not find the real git binary on PATH (every 'git' found on PATH was another orion-git-shim copy). Refusing to proceed rather than loop." >&2
+    exit 127
+fi
+
+# --- Parse argv: subcommand, target dir (-C / --work-tree, chained
+# correctly), and swallow other value-taking global flags so their
+# value can't be misread as the subcommand. ------------------------------
+_SUBCOMMAND=""
+_TARGET_DIR="$PWD"
+_saw_subcommand=0
+_skip_mode=""
+for _arg in "$@"; do
+    if [ "$_skip_mode" = "C" ]; then
+        case "$_arg" in
+            /*) _TARGET_DIR="$_arg" ;;
+            *) _TARGET_DIR="$_TARGET_DIR/$_arg" ;;
+        esac
+        _skip_mode=""
+        continue
+    fi
+    if [ "$_skip_mode" = "worktree" ]; then
+        _TARGET_DIR="$_arg"
+        _skip_mode=""
+        continue
+    fi
+    if [ "$_skip_mode" = "swallow" ]; then
+        _skip_mode=""
+        continue
+    fi
+    if [ "$_saw_subcommand" = "0" ]; then
+        case "$_arg" in
+            -C)
+                _skip_mode="C"
+                continue
+                ;;
+            --work-tree)
+                _skip_mode="worktree"
+                continue
+                ;;
+            -c|--namespace|--git-dir|--exec-path)
+                _skip_mode="swallow"
+                continue
+                ;;
+            -*)
+                continue
+                ;;
+            *)
+                _SUBCOMMAND="$_arg"
+                _saw_subcommand=1
+                continue
+                ;;
+        esac
+    fi
+done
+
+# --- Cheap opt-in check, no subprocess -----------------------------------
+# Bounds the cost of everything below (alias resolution, clean.requireForce
+# lookup, shared-checkout rev-parse) to repos that explicitly opted in --
+# every other repo on the machine pays only this one file-existence check.
+if [ ! -f "$_TARGET_DIR/.git/orion-safety-guard-enabled" ]; then
+    exec "$_REAL_GIT" "$@"
+fi
+
+# --- Resolve simple (non-`!`) aliases if the literal subcommand isn't
+# already one we guard. `!`-prefixed (shell) aliases are an arbitrary
+# shell command, not argv-analyzable -- disclosed known gap, passes
+# through unexamined rather than guessing. -------------------------------
+_EFFECTIVE_SUBCOMMAND="$_SUBCOMMAND"
+_ALIAS_EXTRA=""
+case "$_SUBCOMMAND" in
+    clean|reset|checkout|switch) ;;
+    *)
+        _ALIAS_VAL=$("$_REAL_GIT" -C "$_TARGET_DIR" config --get "alias.$_SUBCOMMAND" 2>/dev/null) || _ALIAS_VAL=""
+        case "$_ALIAS_VAL" in
+            "")
+                ;;
+            "!"*)
+                ;;
+            *)
+                _EFFECTIVE_SUBCOMMAND=$(echo "$_ALIAS_VAL" | awk '{print $1}')
+                _ALIAS_EXTRA="$_ALIAS_VAL"
+                ;;
+        esac
+        ;;
+esac
+
+case "$_EFFECTIVE_SUBCOMMAND" in
+    clean|reset|checkout|switch) ;;
+    *)
+        exec "$_REAL_GIT" "$@"
+        ;;
+esac
+
+# --- Destructive-shape detection -----------------------------------------
+# Scans both the real argv and (if an alias resolved) the alias's own
+# expansion tokens -- deliberately unquoted below so $_ALIAS_EXTRA word-
+# splits, since these tokens are only ever compared via case/[, never
+# executed or eval'd, so word-splitting here is a correctness mechanism,
+# not an injection risk.
+_IS_DESTRUCTIVE=0
+case "$_EFFECTIVE_SUBCOMMAND" in
+    clean)
+        _has_force=0
+        _has_dry_run=0
+        for _arg in "$@" $_ALIAS_EXTRA; do
+            case "$_arg" in
+                --force) _has_force=1 ;;
+                --dry-run) _has_dry_run=1 ;;
+                -[a-zA-Z]*)
+                    case "$_arg" in *f*) _has_force=1 ;; esac
+                    case "$_arg" in *n*) _has_dry_run=1 ;; esac
+                    ;;
+            esac
+        done
+        if [ "$_has_force" = "0" ]; then
+            # clean.requireForce=false makes `git clean -d` (no -f at all)
+            # destructive -- verified live, this is a real config some
+            # repos carry, not a theoretical case.
+            _REQUIRE_FORCE=$("$_REAL_GIT" -C "$_TARGET_DIR" config --get clean.requireForce 2>/dev/null) || _REQUIRE_FORCE=""
+            [ "$_REQUIRE_FORCE" = "false" ] && _has_force=1
+        fi
+        # git clean treats -n as authoritative even combined with -f:
+        # nothing is deleted, so a dry-run preview is not destructive.
+        [ "$_has_force" = "1" ] && [ "$_has_dry_run" = "0" ] && _IS_DESTRUCTIVE=1
+        ;;
+    reset)
+        for _arg in "$@" $_ALIAS_EXTRA; do
+            [ "$_arg" = "--hard" ] && _IS_DESTRUCTIVE=1
+        done
+        ;;
+    checkout|switch)
+        for _arg in "$@" $_ALIAS_EXTRA; do
+            case "$_arg" in
+                -f|--force) _IS_DESTRUCTIVE=1 ;;
+            esac
+        done
+        ;;
+esac
+
+if [ "$_IS_DESTRUCTIVE" = "0" ]; then
+    exec "$_REAL_GIT" "$@"
+fi
+
+# --- Escape hatch: real env var ------------------------------------------
+if [ "$ORION_ALLOW_SHARED_CHECKOUT_WRITE" = "1" ]; then
+    exec "$_REAL_GIT" "$@"
+fi
+
+# --- Shared/primary checkout detection (same comparison as
+# scripts/git_hooks/pre-commit, scripts/safe_docker_build.sh, and
+# scripts/hooks/destructive_git_guard.py's _is_shared_checkout -- if you
+# fix a bug in the detection logic itself, check whether it applies to
+# those three too). One combined rev-parse call instead of two. ----------
+_RAW=$("$_REAL_GIT" -C "$_TARGET_DIR" rev-parse --git-dir --git-common-dir 2>/dev/null) || _RAW=""
+_GITDIR_RAW=$(echo "$_RAW" | sed -n '1p')
+_COMMONDIR_RAW=$(echo "$_RAW" | sed -n '2p')
+
+if [ -z "$_GITDIR_RAW" ] || [ -z "$_COMMONDIR_RAW" ]; then
+    exec "$_REAL_GIT" "$@"
+fi
+
+_GITDIR=$(cd "$_TARGET_DIR" && cd "$_GITDIR_RAW" 2>/dev/null && pwd) || _GITDIR=""
+_COMMONDIR=$(cd "$_TARGET_DIR" && cd "$_COMMONDIR_RAW" 2>/dev/null && pwd) || _COMMONDIR=""
+
+if [ -z "$_COMMONDIR" ] || [ "$_GITDIR" != "$_COMMONDIR" ]; then
+    exec "$_REAL_GIT" "$@"
+fi
+
+cat >&2 <<BLOCKMSG
+[orion-git-shim] BLOCKED: git $_EFFECTIVE_SUBCOMMAND (destructive form) targeting the
+shared/primary checkout ($_TARGET_DIR).
+
+This repo's policy is worktrees-only for writing/building/running code --
+concurrent sessions have silently destroyed each other's uncommitted work
+this way before. Redo this in a worktree instead:
+  git worktree add ../<repo>-<name> -b <type>/<name>
+
+If this is genuinely intentional:
+  ORION_ALLOW_SHARED_CHECKOUT_WRITE=1 git $_SUBCOMMAND ...
+BLOCKMSG
+
+exit 1

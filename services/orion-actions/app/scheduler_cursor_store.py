@@ -31,6 +31,8 @@ def resolve_scheduler_cursor_store_path(path: str | None, *, workflow_schedule_s
             return candidate / "scheduler_cursors.json"
         return candidate
     wf = Path(workflow_schedule_store_path or "").expanduser()
+    # Intentionally /tmp -- see the comment on settings.py's
+    # actions_workflow_schedule_store_path default for why.
     parent = wf.parent if wf.parent.parts else Path("/tmp/orion-actions")
     return parent / "scheduler_cursors.json"
 

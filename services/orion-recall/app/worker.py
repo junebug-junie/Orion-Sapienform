@@ -586,11 +586,15 @@ async def _window_rdf_chatturn_candidates(
 ) -> Tuple[List[Dict[str, Any]], int]:
     """Drop RDF chat-turn candidates older than ``since_minutes``, stamping real timestamps.
 
-    The graph stores no usable ChatTurn timestamp, so these rails otherwise leak months-old
-    turns into reflective recall regardless of the profile window. We resolve each turn's
-    created_at from chat_history_log and keep only those inside the window. Non chat-turn
-    candidates (SQL, cards, RDF claims, etc.) are returned untouched. Memory cards are never
-    touched here.
+    As of 2026-07-14, `storage/rdf_adapter.py`'s chat-turn fetch does select and order by a
+    real `ORION.timestamp` literal, which feeds `scoring._compute_recency_factor`'s soft,
+    continuous decay -- it no longer orders by an arbitrary UUID string sort. That fix does
+    not replace this function's job, though: recency *scoring* down-weights old turns, it
+    does not *exclude* them, and profiles that need a hard `since_minutes` cutoff (not just a
+    lower score) still need turns outside the window dropped entirely. We resolve each turn's
+    created_at from chat_history_log (the durable SQL source of truth) and keep only those
+    inside the window. Non chat-turn candidates (SQL, cards, RDF claims, etc.) are returned
+    untouched. Memory cards are never touched here.
     """
     if since_minutes <= 0:
         return candidates, 0

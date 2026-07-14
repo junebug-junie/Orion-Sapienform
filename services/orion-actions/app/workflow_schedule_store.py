@@ -84,6 +84,8 @@ class WorkflowScheduleStore:
     def _resolve_path(path: str) -> Path:
         candidate = Path(path or "").expanduser()
         if not str(candidate).strip():
+            # Intentionally /tmp -- see the comment on settings.py's
+            # actions_workflow_schedule_store_path default for why.
             candidate = Path("/tmp/orion-actions/workflow_schedules.json")
         if candidate.exists() and candidate.is_dir():
             return candidate / "workflow_schedules.json"

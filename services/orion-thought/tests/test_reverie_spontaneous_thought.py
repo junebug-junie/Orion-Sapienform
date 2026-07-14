@@ -7,6 +7,7 @@ cognition.
 from __future__ import annotations
 
 import json
+from datetime import datetime, timedelta, timezone
 from unittest.mock import AsyncMock
 
 import pytest
@@ -118,6 +119,76 @@ def test_derive_salience_fallback_to_stability():
     assert reverie.derive_salience(bcast) == pytest.approx(0.33)
 
 
+# --- verdict-aware narration: outcome threading into the prompt context -------
+
+def test_open_loops_for_prompt_includes_outcome_when_present():
+    from app import reverie
+
+    entries = reverie._open_loops_for_prompt(
+        _broadcast(loops=(("ol-1", {}), ("ol-2", {}))),
+        loop_outcomes={"ol-1": {"verdict": "resolved", "note": "n", "age_days": 3}},
+    )
+    by_id = {e["id"]: e for e in entries}
+    assert by_id["ol-1"]["outcome"] == {"verdict": "resolved", "note": "n", "age_days": 3}
+    assert "outcome" not in by_id["ol-2"]
+
+
+def test_open_loops_for_prompt_omits_outcome_when_none_given():
+    from app import reverie
+
+    entries = reverie._open_loops_for_prompt(_broadcast())
+    assert all("outcome" not in e for e in entries)
+
+
+def test_build_reverie_context_threads_loop_outcomes_into_open_loops():
+    from app import reverie
+
+    ctx = reverie.build_reverie_context(
+        _broadcast(),
+        loop_outcomes={"ol-1": {"verdict": "dismissed", "note": "", "age_days": 1}},
+    )
+    assert ctx["open_loops"][0]["outcome"]["verdict"] == "dismissed"
+
+
+def test_build_reverie_context_concern_cards_branch_ignores_loop_outcomes():
+    """Semantic-lift branch has no open_loops in context at all — outcomes must
+    not be silently expected there; this changeset scopes them to the base
+    coalition-narration branch only."""
+    from app import reverie
+    from orion.schemas.reverie import ConcernCardV1
+
+    card = ConcernCardV1(card_id="c1", coalition_ref="harness_closure:x", human_text="t" * 40)
+    ctx = reverie.build_reverie_context(
+        _broadcast(), concern_cards=[card],
+        loop_outcomes={"ol-1": {"verdict": "resolved", "note": "", "age_days": 1}},
+    )
+    assert "open_loops" not in ctx
+
+
+@pytest.mark.asyncio
+async def test_tick_fetches_and_threads_loop_outcomes(monkeypatch):
+    """The tick must look up outcomes for the live broadcast's loops and pass
+    them through to the plan request context the LLM actually sees."""
+    from app import reverie
+
+    monkeypatch.setattr(
+        reverie, "load_recent_loop_outcomes",
+        lambda ids: {"ol-1": {"verdict": "resolved", "note": "closed", "age_days": 2}},
+    )
+    bus = AsyncMock()
+    cortex = AsyncMock()
+    cortex.execute_plan = AsyncMock(return_value={
+        "final_text": json.dumps({"interpretation": GROUNDED_TEXT, "evidence_refs": ["ol-1"]}),
+    })
+    result = await reverie.run_reverie_once(
+        bus, broadcast_reader=lambda: _broadcast(), cortex_client=cortex,
+    )
+    assert result is not None
+    plan_request = cortex.execute_plan.call_args.kwargs["req"]
+    open_loops = plan_request.context["open_loops"]
+    assert open_loops[0]["outcome"]["verdict"] == "resolved"
+
+
 def test_parse_reverie_payload_marks_unanchored_hollow():
     from app import reverie
 
@@ -194,6 +265,144 @@ def test_persist_never_raises_on_bad_db(monkeypatch):
     t = SpontaneousThoughtV1(thought_id="t", correlation_id="c", coalition=_coalition(),
                              interpretation=GROUNDED_TEXT, evidence_refs=["ol-1"]).marked_hollow()
     assert store.persist_reverie_thought(t) is False  # returned, not raised
+
+
+# --- verdict-aware narration: loop outcome lookup ------------------------------
+
+def test_load_recent_loop_outcomes_empty_ids_short_circuits(monkeypatch):
+    from app import store
+
+    def boom():
+        raise AssertionError("must not touch the DB for an empty id list")
+
+    monkeypatch.setattr(store, "_get_engine", boom)
+    assert store.load_recent_loop_outcomes([]) == {}
+
+
+def test_load_recent_loop_outcomes_never_raises_on_bad_db(monkeypatch):
+    from app import store
+
+    monkeypatch.setattr(store, "_engine", None)
+    monkeypatch.setattr(store, "_database_url", lambda: "postgresql://x:x@127.0.0.1:1/nope")
+    assert store.load_recent_loop_outcomes(["ol-1"]) == {}  # returned, not raised
+
+
+def test_load_recent_loop_outcomes_shapes_rows(monkeypatch):
+    from app import store
+
+    # A bit over 6 days old, to stay clear of the floor-division boundary.
+    created = datetime.now(timezone.utc) - timedelta(days=6, hours=1)
+
+    class _Result:
+        def mappings(self):
+            return self
+
+        def all(self):
+            return [
+                {"loop_id": "ol-1", "verdict": "resolved", "note": "fixed it",
+                 "created_at": created},
+            ]
+
+    class _Conn:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *a):
+            return False
+
+        def execute(self, *a, **k):
+            return _Result()
+
+    class _Engine:
+        def connect(self):
+            return _Conn()
+
+    monkeypatch.setattr(store, "_get_engine", lambda: _Engine())
+    out = store.load_recent_loop_outcomes(["ol-1", "ol-2"])
+    assert out == {"ol-1": {"verdict": "resolved", "note": "fixed it", "age_days": 6}}
+
+
+def test_load_recent_loop_outcomes_omits_age_days_when_unreadable(monkeypatch):
+    """A row with no usable created_at must never surface age_days: None into the
+    prompt — the key is omitted rather than emitting a null the LLM could echo
+    literally (e.g. "closed None days ago")."""
+    from app import store
+
+    class _Result:
+        def mappings(self):
+            return self
+
+        def all(self):
+            return [{"loop_id": "ol-1", "verdict": "dismissed", "note": "",
+                      "created_at": None}]
+
+    class _Conn:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *a):
+            return False
+
+        def execute(self, *a, **k):
+            return _Result()
+
+    class _Engine:
+        def connect(self):
+            return _Conn()
+
+    monkeypatch.setattr(store, "_get_engine", lambda: _Engine())
+    out = store.load_recent_loop_outcomes(["ol-1"])
+    assert "age_days" not in out["ol-1"]
+    assert out["ol-1"]["verdict"] == "dismissed"
+
+
+def test_load_recent_loop_outcomes_never_raises_on_bad_row_shape(monkeypatch):
+    """The 'never raises' guarantee must hold for row-shaping failures too, not
+    just for the DB round-trip -- a malformed/renamed column must degrade to {}
+    rather than propagate out of a function whose whole contract is best-effort."""
+    from app import store
+
+    class _Result:
+        def mappings(self):
+            return self
+
+        def all(self):
+            return [{"loop_id": "ol-1"}]  # missing verdict/note/created_at entirely
+
+    class _Conn:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *a):
+            return False
+
+        def execute(self, *a, **k):
+            return _Result()
+
+    class _Engine:
+        def connect(self):
+            return _Conn()
+
+    monkeypatch.setattr(store, "_get_engine", lambda: _Engine())
+    # dict.get on a plain dict row never raises for a missing key, so force the
+    # failure via a row object whose .get() raises -- the point under test is
+    # that the shaping loop is inside the try/except, not that this exact input
+    # is realistic.
+    class _BoomRow(dict):
+        def get(self, *a, **k):
+            raise KeyError("simulated malformed row")
+
+    class _BoomResult:
+        def mappings(self):
+            return self
+
+        def all(self):
+            return [_BoomRow(loop_id="ol-1")]
+
+    monkeypatch.setattr(
+        _Conn, "execute", lambda self, *a, **k: _BoomResult()
+    )
+    assert store.load_recent_loop_outcomes(["ol-1"]) == {}  # returned, not raised
 
 
 @pytest.mark.asyncio

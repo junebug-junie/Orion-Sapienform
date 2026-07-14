@@ -140,12 +140,12 @@ class BaseChassis:
                 )
                 await self.bus.publish(self.cfg.health_channel, v1_env)
             except Exception as e:
-                logger.warning("Heartbeat publish failed: {}; reconnecting", e)
+                logger.warning(f"Heartbeat publish failed: {e}; reconnecting")
                 try:
                     await self.bus.reconnect()
                     await self.bus.publish(self.cfg.health_channel, v1_env)
                 except Exception as retry_exc:
-                    logger.warning("Heartbeat publish retry failed: {}", retry_exc)
+                    logger.warning(f"Heartbeat publish retry failed: {retry_exc}")
             await asyncio.sleep(float(self.cfg.heartbeat_interval_sec or 10.0))
 
     async def _publish_error(self, err: BaseException, *, when: str, env: BaseEnvelope | None = None) -> None:
@@ -197,19 +197,15 @@ class BaseChassis:
                 if self._stop.is_set():
                     break
                 logger.warning(
-                    "subscriber run loop exited without stop service={} bus={}; restarting in {:.1f}s",
-                    self.cfg.service_name,
-                    self.cfg.bus_url,
-                    backoff_sec,
+                    f"subscriber run loop exited without stop service={self.cfg.service_name} "
+                    f"bus={self.cfg.bus_url}; restarting in {backoff_sec:.1f}s"
                 )
             except asyncio.CancelledError:
                 raise
             except Exception as exc:
                 logger.error(
-                    "subscriber run loop crashed service={} err={}; restarting in {:.1f}s",
-                    self.cfg.service_name,
-                    exc,
-                    backoff_sec,
+                    f"subscriber run loop crashed service={self.cfg.service_name} "
+                    f"err={exc}; restarting in {backoff_sec:.1f}s"
                 )
             if self._stop.is_set():
                 break
@@ -289,11 +285,8 @@ class Rabbit(BaseChassis):
                 result_status = "error" if getattr(out, "kind", None) == "system.error" else "ok"
                 logger.info(
                     "gateway_llm_reply_publish_start event=gateway_llm_reply_publish_start "
-                    "correlation_id=%s reply_to=%s result_status=%s payload_kind=%s",
-                    corr_id,
-                    env.reply_to,
-                    result_status,
-                    getattr(out, "kind", None),
+                    f"correlation_id={corr_id} reply_to={env.reply_to} result_status={result_status} "
+                    f"payload_kind={getattr(out, 'kind', None)}"
                 )
             try:
                 await self.bus.publish(env.reply_to, out)
@@ -304,20 +297,14 @@ class Rabbit(BaseChassis):
                         catalog_hint = "catalog_enforcement_suspected"
                     logger.error(
                         "gateway_llm_reply_publish_failed event=gateway_llm_reply_publish_failed "
-                        "correlation_id=%s reply_to=%s error_type=%s err=%s catalog_hint=%s",
-                        corr_id,
-                        env.reply_to,
-                        type(exc).__name__,
-                        exc,
-                        catalog_hint or "none",
+                        f"correlation_id={corr_id} reply_to={env.reply_to} "
+                        f"error_type={type(exc).__name__} err={exc} catalog_hint={catalog_hint or 'none'}"
                     )
                 raise
             if is_gateway:
                 logger.info(
                     "gateway_llm_reply_publish_ok event=gateway_llm_reply_publish_ok "
-                    "correlation_id=%s reply_to=%s",
-                    corr_id,
-                    env.reply_to,
+                    f"correlation_id={corr_id} reply_to={env.reply_to}"
                 )
 
     async def _run(self) -> None:
@@ -384,10 +371,8 @@ class Rabbit(BaseChassis):
                 raise
             except Exception as exc:
                 logger.warning(
-                    "Rabbit subscriber loop failed channel={} err={}; reconnecting in {:.1f}s",
-                    self.request_channel,
-                    exc,
-                    backoff_sec,
+                    f"Rabbit subscriber loop failed channel={self.request_channel} "
+                    f"err={exc}; reconnecting in {backoff_sec:.1f}s"
                 )
                 try:
                     await self.bus.reconnect()
@@ -450,10 +435,8 @@ class Hunter(BaseChassis):
         backoff_sec = 1.0
         while not self._stop.is_set():
             logger.info(
-                "Hunter subscribing patterns={} use_patterns={} bus={}",
-                self.patterns,
-                uses_glob,
-                self.cfg.bus_url,
+                f"Hunter subscribing patterns={self.patterns} use_patterns={uses_glob} "
+                f"bus={self.cfg.bus_url}"
             )
             try:
                 if not self.bus.enabled:
@@ -523,10 +506,8 @@ class Hunter(BaseChassis):
                 raise
             except Exception as exc:
                 logger.warning(
-                    "Hunter subscriber loop failed patterns={} err={}; reconnecting in {:.1f}s",
-                    self.patterns,
-                    exc,
-                    backoff_sec,
+                    f"Hunter subscriber loop failed patterns={self.patterns} "
+                    f"err={exc}; reconnecting in {backoff_sec:.1f}s"
                 )
                 try:
                     await self.bus.reconnect()

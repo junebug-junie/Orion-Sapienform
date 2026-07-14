@@ -46,9 +46,19 @@ def test_high_pressure_node_wins_over_calm() -> None:
 
 
 def test_prediction_error_beats_equal_plain_pressure() -> None:
+    # dynamic_pressure carries magnitude for both nodes (what the dynamics
+    # engine would have populated by the time either node is scored --
+    # magnitude must never come from the raw, non-decaying prediction_error
+    # field directly, see _node_salience()). prediction_error is still set
+    # on node:surprise purely for its anomaly-vs-concept typing effect.
     nodes = [
         _node("node:pressure", "steady pressure region", dynamic_pressure=0.8),
-        _node("node:surprise", "surprising transport batch", prediction_error=0.8),
+        _node(
+            "node:surprise",
+            "surprising transport batch",
+            dynamic_pressure=0.8,
+            prediction_error=0.8,
+        ),
     ]
     frame = build_substrate_attention_frame(nodes=nodes, now=_NOW)
     assert frame.selected_action is not None
@@ -57,6 +67,31 @@ def test_prediction_error_beats_equal_plain_pressure() -> None:
     )
     assert winner.description == "surprising transport batch"
     assert winner.target_type == "anomaly"
+
+
+def test_salience_uses_decayed_pressure_not_raw_prediction_error() -> None:
+    """A node whose prediction_error seed has decayed (dynamic_pressure near
+    zero, as SubstrateDynamicsEngine.tick() would compute after enough
+    elapsed time) must report low salience -- not near-maximal salience just
+    because the raw, non-decaying metadata['prediction_error'] field is
+    still 1.0. Regression for the live bug where _node_salience() raced the
+    two and always picked the raw value (dynamic_pressure = raw * weight(<1)
+    * decay(<=1) can mathematically never exceed it), silently discarding
+    the dynamics engine's decay on every tick, forever, for any node that
+    ever had a prediction_error written. `kind` should still resolve to
+    "prediction_error" (anomaly typing) even though magnitude is low."""
+    nodes = [
+        _node(
+            "node:stale-surprise",
+            "long-stale transport anomaly",
+            dynamic_pressure=0.02,  # decayed by the dynamics engine over time
+            prediction_error=1.0,  # raw seed -- never decays on its own
+        ),
+    ]
+    signals = substrate_pressure_signals(nodes, min_salience=0.0)
+    assert signals
+    assert signals[0].salience == 0.02
+    assert signals[0].target_type_hint == "anomaly"
 
 
 def test_broadcast_never_generates_questions() -> None:

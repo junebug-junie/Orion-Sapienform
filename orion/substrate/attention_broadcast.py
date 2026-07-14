@@ -41,6 +41,15 @@ DEFAULT_MAX_SIGNALS = 24
 _coalition_history: deque[frozenset[str]] = deque(maxlen=3)
 _current_active_coalition: frozenset[str] | None = None
 _dwell_ticks: int = 0
+# The open-loop id whose selection produced the currently-active coalition
+# (mirrors _current_active_coalition's own lifecycle exactly -- set/cleared
+# at the same transition points in broadcast_projection_from_frame). Lets
+# salience._loop_dwell() apply the dwell habituation signal only to the loop
+# actually dwelling, instead of the tick-count scalar being applied
+# uniformly to every competing loop (found live 2026-07-14: dwell could
+# never demote the specific stuck loop relative to its competitors, since a
+# per-tick offset shared by everyone changes nothing about who wins).
+_current_dwelling_loop_id: str | None = None
 # Transition log: last 10 activation/decay events, mirrored into
 # AttentionBroadcastProjectionV1.coalition_history (schema caps at 10).
 _transition_history: deque[dict[str, Any]] = deque(maxlen=10)
@@ -89,6 +98,7 @@ def _current_history(resonance_theme_keys: set[str] | None = None) -> "SalienceH
         }
     return SalienceHistory(
         dwell_ticks=_dwell_ticks,
+        dwelling_loop_id=_current_dwelling_loop_id,
         recent_theme_counts=dict(_recent_selected_counts),
         resonance_theme_keys=set(resonance_theme_keys),
         first_seen_at=dict(_first_selected_at),
@@ -100,7 +110,22 @@ def attention_broadcast_enabled() -> bool:
 
 
 def _node_salience(metadata: dict[str, Any]) -> tuple[float, str]:
-    """Salience for the workspace competition, and which signal drove it."""
+    """Salience for the workspace competition, and which signal drove it.
+
+    Magnitude always comes from ``dynamic_pressure`` -- the dynamics engine's
+    single time-decayed pressure signal (seeded from ``prediction_error`` via
+    ``prediction_error_pressure()``, or from drive/contradiction pressure;
+    see ``orion/substrate/dynamics.py``/``pressure.py``). The raw
+    ``prediction_error`` metadata value must NOT be read as a magnitude here:
+    it never decays on its own, and since ``dynamic_pressure`` is derived
+    from it via ``raw * weight(<1) * decay(<=1)``, racing the two always
+    picks the raw value -- silently discarding the dynamics engine's decay
+    on every tick (found live 2026-07-14: a node's raw prediction_error sat
+    at 1.0, undecayed, for 6+ days while dynamic_pressure correctly decayed
+    around it and was never actually used). Still surface whether a
+    prediction-error seed exists at all, for the anomaly-vs-concept typing
+    downstream -- that's a stable category, not the buggy part.
+    """
 
     def _f(key: str) -> float:
         try:
@@ -109,10 +134,8 @@ def _node_salience(metadata: dict[str, Any]) -> tuple[float, str]:
             return 0.0
 
     pressure = _f("dynamic_pressure")
-    prediction_error = _f("prediction_error")
-    if prediction_error >= pressure:
-        return prediction_error, "prediction_error"
-    return pressure, "pressure"
+    kind = "prediction_error" if _f("prediction_error") > 0.0 else "pressure"
+    return pressure, kind
 
 
 def substrate_pressure_signals(
@@ -293,7 +316,7 @@ def _apply_voluntary_attention(
 
 
 def broadcast_projection_from_frame(frame: AttentionFrameV1) -> AttentionBroadcastProjectionV1:
-    global _current_active_coalition, _dwell_ticks, _coalition_history
+    global _current_active_coalition, _dwell_ticks, _coalition_history, _current_dwelling_loop_id
 
     selected = frame.selected_action
     selected_loop = None
@@ -322,6 +345,7 @@ def broadcast_projection_from_frame(frame: AttentionFrameV1) -> AttentionBroadca
                 }
             )
         _dwell_ticks += 1
+        _current_dwelling_loop_id = selected.open_loop_id if selected is not None else None
     else:
         # Decay: active coalition has left the recent window entirely
         if _current_active_coalition is not None and all(
@@ -336,6 +360,7 @@ def broadcast_projection_from_frame(frame: AttentionFrameV1) -> AttentionBroadca
             )
             _current_active_coalition = None
             _dwell_ticks = 0
+            _current_dwelling_loop_id = None
 
     # Compute stability score from recent salience consistency
     # (simplified: high if dwell_ticks > 3, medium if transitioning, low if flickering)

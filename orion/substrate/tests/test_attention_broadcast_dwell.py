@@ -21,6 +21,7 @@ def _reset_broadcast_globals():
     attention_broadcast._coalition_history.clear()
     attention_broadcast._current_active_coalition = None
     attention_broadcast._dwell_ticks = 0
+    attention_broadcast._current_dwelling_loop_id = None
     attention_broadcast._transition_history.clear()
     attention_broadcast._recent_selected_counts.clear()
     attention_broadcast._first_selected_at.clear()
@@ -28,6 +29,7 @@ def _reset_broadcast_globals():
     attention_broadcast._coalition_history.clear()
     attention_broadcast._current_active_coalition = None
     attention_broadcast._dwell_ticks = 0
+    attention_broadcast._current_dwelling_loop_id = None
     attention_broadcast._transition_history.clear()
     attention_broadcast._recent_selected_counts.clear()
     attention_broadcast._first_selected_at.clear()

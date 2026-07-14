@@ -88,3 +88,44 @@ def test_build_open_loops_now_param_reaches_recency_calculation():
     assert fresh.salience_features["recency"] == 1.0
     # One half-life (see salience._recency's docstring: half-life ~6h).
     assert six_hours_later.salience_features["recency"] == pytest.approx(0.5, abs=0.01)
+
+
+def test_dwell_scoped_to_dwelling_loop_only():
+    """dwell must only penalize the loop actually recorded as dwelling.
+
+    Previously `history.dwell_ticks` (a single module-level tick counter,
+    see attention_broadcast.py's `_dwell_ticks`) was applied uniformly to
+    every competing loop scored in a tick -- a uniform per-tick offset
+    shared by every candidate cannot demote the specific stuck loop
+    relative to its competitors, since it changes nothing about who wins.
+    Found live 2026-07-14 alongside the recency bug."""
+    from orion.substrate.attention.common import compact, stable_id
+
+    signals = [
+        AttentionSignalV1(
+            signal_id="s1", source="current_turn", target_text="the reactor plan",
+            target_type_hint="plan", signal_kind="test", salience=0.9, confidence=0.9,
+            evidence_refs=["r1"],
+        ),
+        AttentionSignalV1(
+            signal_id="s2", source="current_turn", target_text="a fresh competitor thread",
+            target_type_hint="concept", signal_kind="test", salience=0.9, confidence=0.9,
+            evidence_refs=["r2"],
+        ),
+    ]
+    dwelling_id = stable_id("open-loop", compact("the reactor plan", 120).lower())
+    history = SalienceHistory(dwell_ticks=5, dwelling_loop_id=dwelling_id)
+
+    loops = build_open_loops(
+        signals=signals,
+        ctx={"user_message": "the reactor plan a fresh competitor thread"},
+        inputs={}, belief_lineage=[], direct_turn=False, generic_reversal=False,
+        stale_thread_active=False, max_open=5, history=history,
+    )
+    by_id = {loop.id: loop for loop in loops}
+    assert len(by_id) == 2
+    other_id = next(lid for lid in by_id if lid != dwelling_id)
+
+    assert by_id[dwelling_id].salience_features["dwell"] > 0.0
+    assert by_id[other_id].salience_features["dwell"] == 0.0
+    assert by_id[dwelling_id].salience_features["habituation"] > by_id[other_id].salience_features["habituation"]

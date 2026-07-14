@@ -274,6 +274,16 @@ git worktree add ../Orion-Sapienform-<short-task-name> -b <type>/<short-task-nam
 cd ../Orion-Sapienform-<short-task-name>
 ```
 
+This is enforced, not just advised. A `pre-commit` hook refuses commits made from the shared/primary checkout — plain git, not tied to any specific tool or subscription, so it fires the same way for this session, a different agent, or a human's own terminal. If a commit gets blocked here, that is the hook working as intended, not a bug: redo the work in a worktree instead of reaching for a workaround. Escape hatch for a genuinely intentional exception, set consciously per command, never as a habit:
+
+```bash
+ORION_ALLOW_SHARED_CHECKOUT_WRITE=1 git commit ...
+```
+
+Already have uncommitted work sitting in the shared checkout when you realize this? `git stash` is shared across every worktree of a repo, not per-worktree — `git stash -u` here, create the worktree, `git stash pop` there.
+
+New clone, or a worktree where the hook doesn't seem to be firing? Run `scripts/install_git_safety_hooks.sh .` once — hooks live in the shared common git dir, so this protects every worktree of the repo, not just the one it's run from. Full rationale and the incident that prompted this: `docs/superpowers/pr-reports/2026-07-14-agent-git-safety-hooks-pr.md`.
+
 Branch type examples:
 
 ```text

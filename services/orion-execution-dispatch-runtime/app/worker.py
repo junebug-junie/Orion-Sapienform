@@ -193,6 +193,7 @@ class ExecutionDispatchRuntimeWorker:
         bus = OrionBusAsync(
             url=self._settings.orion_bus_url, enabled=self._settings.orion_bus_enabled
         )
+        await bus.connect()
         client = ExecutionDispatchCortexClient(
             bus,
             request_channel=self._settings.cortex_exec_channel,

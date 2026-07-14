@@ -204,6 +204,7 @@ def _patch_bus_and_client(monkeypatch, outcomes: dict[str, object]) -> MagicMock
     _FAKE_CLIENT_OUTCOMES.clear()
     _FAKE_CLIENT_OUTCOMES.update(outcomes)
     fake_bus = MagicMock()
+    fake_bus.connect = AsyncMock()
     fake_bus.close = AsyncMock()
     fake_bus.publish = AsyncMock()
     monkeypatch.setattr(worker_mod, "OrionBusAsync", MagicMock(return_value=fake_bus))
@@ -218,7 +219,7 @@ async def test_send_prepared_candidates_promotes_on_success(monkeypatch) -> None
     worker._store.count_dispatches_today = MagicMock(return_value=0)
     worker._store.save_dispatch_result = MagicMock()
     worker._store.load_dispatch_result_by_dispatch_id = MagicMock(return_value=None)
-    _patch_bus_and_client(
+    fake_bus = _patch_bus_and_client(
         monkeypatch,
         {"dispatch:1": {"result": {"final_text": '{"observation": "steady", "confidence": 0.8}'}}},
     )
@@ -226,6 +227,10 @@ async def test_send_prepared_candidates_promotes_on_success(monkeypatch) -> None
 
     updated = await worker._send_prepared_candidates(frame)
 
+    # Regression guard: bus.connect() must be called before any RPC is attempted --
+    # a missing call here degrades every real send to "OrionBusAsync not connected"
+    # while every candidate still burns the daily dispatch budget as status=failed.
+    fake_bus.connect.assert_awaited_once()
     assert updated.candidates == []
     assert len(updated.dispatched_candidates) == 1
     promoted = updated.dispatched_candidates[0]

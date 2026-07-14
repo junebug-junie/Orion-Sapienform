@@ -23,6 +23,7 @@ from orion.substrate.graphdb_store import (
     GraphDBSubstrateStoreConfig,
     GraphDBSubstrateStoreError,
     SparqlSubstrateStore,
+    SparqlSubstrateStoreConfig,
     SubstrateSparqlBackendUnconfiguredError,
     build_substrate_store_from_env,
 )
@@ -559,3 +560,144 @@ def test_sparql_http_client_strips_credentials_from_redacted_update_url():
     red = c.update_url_redacted
     assert "admin" not in red
     assert "fuseki:3030/orion/update" in red
+
+
+# ===========================================================================
+# snapshot() TTL cache -- 2026-07-14, see docs/superpowers/specs/2026-07-14-
+# substrate-graph-store-snapshot-cache-spec.md. Root cause: snapshot() issued a
+# full live query on every call with no freshness check, hit by a 5s-forever
+# brain-frame tick (among ~5 other periodic/per-turn callers), driving Fuseki
+# to 99.99% of its memory limit while the entire chat pipeline was idle.
+# ===========================================================================
+
+
+def _counting_post(fake: _FakeGraphDB) -> MagicMock:
+    """MagicMock wrapping _FakeGraphDB.post, so tests can assert how many live
+    queries actually reached the backend via the mock's own .call_count (2 per
+    live snapshot(): one node query, one edge query -- confirmed via
+    _query_nodes/_query_edges_for_node_ids each issuing exactly one
+    self._select() call). .call_count is a plain writable int attribute, so
+    tests can reset it (e.g. after materializer setup writes) with a direct
+    assignment."""
+    return MagicMock(side_effect=fake.post)
+
+
+def test_snapshot_within_ttl_reuses_cache_no_new_query(monkeypatch):
+    fake = _FakeGraphDB()
+    counting_post = _counting_post(fake)
+    monkeypatch.setattr("orion.substrate.graphdb_store.requests.post", counting_post)
+
+    store = GraphDBSubstrateStore(
+        GraphDBSubstrateStoreConfig(
+            endpoint="http://graphdb.local/repositories/collapse",
+            snapshot_cache_ttl_sec=60.0,
+        )
+    )
+    SubstrateGraphMaterializer(store=store).apply_record(_sample_record())
+    counting_post.call_count = 0  # ignore the materializer's own writes
+
+    first = store.snapshot()
+    calls_after_first = counting_post.call_count
+    assert calls_after_first == 2  # one node query, one edge query
+    assert len(first.nodes) >= 1
+
+    second = store.snapshot()
+    assert counting_post.call_count == calls_after_first  # no new live query
+    assert second.nodes.keys() == first.nodes.keys()
+
+
+def test_snapshot_after_ttl_expires_issues_new_query(monkeypatch):
+    import time
+
+    fake = _FakeGraphDB()
+    counting_post = _counting_post(fake)
+    monkeypatch.setattr("orion.substrate.graphdb_store.requests.post", counting_post)
+
+    store = GraphDBSubstrateStore(
+        GraphDBSubstrateStoreConfig(
+            endpoint="http://graphdb.local/repositories/collapse",
+            snapshot_cache_ttl_sec=0.01,
+        )
+    )
+    SubstrateGraphMaterializer(store=store).apply_record(_sample_record())
+    counting_post.call_count = 0
+
+    store.snapshot()
+    assert counting_post.call_count == 2
+
+    time.sleep(0.02)
+    store.snapshot()
+    assert counting_post.call_count == 4  # a second live query was issued
+
+
+def test_snapshot_ttl_zero_disables_cache_matches_pre_fix_behavior(monkeypatch):
+    fake = _FakeGraphDB()
+    counting_post = _counting_post(fake)
+    monkeypatch.setattr("orion.substrate.graphdb_store.requests.post", counting_post)
+
+    store = GraphDBSubstrateStore(
+        GraphDBSubstrateStoreConfig(
+            endpoint="http://graphdb.local/repositories/collapse",
+            snapshot_cache_ttl_sec=0.0,
+        )
+    )
+    SubstrateGraphMaterializer(store=store).apply_record(_sample_record())
+    counting_post.call_count = 0
+
+    store.snapshot()
+    store.snapshot()
+    assert counting_post.call_count == 4  # every call is live, ttl disabled
+
+
+def test_snapshot_failure_fallback_still_returns_cache(monkeypatch):
+    """Pre-existing behavior must be unchanged: a live-query failure still falls
+    back to the last good in-memory cache, independent of the TTL guard."""
+    fake = _FakeGraphDB()
+    monkeypatch.setattr("orion.substrate.graphdb_store.requests.post", fake.post)
+
+    store = GraphDBSubstrateStore(
+        GraphDBSubstrateStoreConfig(
+            endpoint="http://graphdb.local/repositories/collapse",
+            snapshot_cache_ttl_sec=0.0,
+        )
+    )
+    SubstrateGraphMaterializer(store=store).apply_record(_sample_record())
+    warm = store.snapshot()
+    assert len(warm.nodes) >= 1
+
+    def _raise(*args, **kwargs):  # noqa: ANN001
+        raise GraphDBSubstrateStoreError("simulated backend outage")
+
+    monkeypatch.setattr(store, "_query_nodes", _raise)
+    degraded = store.snapshot()
+    assert degraded.nodes.keys() == warm.nodes.keys()
+
+
+def test_sparql_substrate_store_ttl_defaults_to_2_seconds_from_config():
+    cfg = SparqlSubstrateStoreConfig(query_url="http://fuseki:3030/orion/query", update_url="http://fuseki:3030/orion/update")
+    assert cfg.snapshot_cache_ttl_sec == 2.0
+    store = SparqlSubstrateStore(cfg)
+    assert store._cfg.snapshot_cache_ttl_sec == 2.0
+
+
+def test_build_substrate_store_sparql_backend_reads_snapshot_ttl_env(monkeypatch):
+    monkeypatch.setenv("SUBSTRATE_STORE_BACKEND", "sparql")
+    monkeypatch.setenv("SUBSTRATE_GRAPH_QUERY_URL", "http://fuseki:3030/orion/query")
+    monkeypatch.setenv("SUBSTRATE_GRAPH_UPDATE_URL", "http://fuseki:3030/orion/update")
+    monkeypatch.setenv("SUBSTRATE_SNAPSHOT_CACHE_TTL_SEC", "7.5")
+    store = build_substrate_store_from_env()
+    assert isinstance(store, SparqlSubstrateStore)
+    assert store._cfg.snapshot_cache_ttl_sec == 7.5
+
+
+def test_resolve_snapshot_cache_ttl_invalid_value_falls_back_to_default(monkeypatch, caplog):
+    import logging
+
+    monkeypatch.setenv("SUBSTRATE_STORE_BACKEND", "sparql")
+    monkeypatch.setenv("SUBSTRATE_GRAPH_QUERY_URL", "http://fuseki:3030/orion/query")
+    monkeypatch.setenv("SUBSTRATE_GRAPH_UPDATE_URL", "http://fuseki:3030/orion/update")
+    monkeypatch.setenv("SUBSTRATE_SNAPSHOT_CACHE_TTL_SEC", "not-a-number")
+    caplog.set_level(logging.WARNING, logger="orion.substrate.graphdb_store")
+    store = build_substrate_store_from_env()
+    assert store._cfg.snapshot_cache_ttl_sec == 2.0
+    assert any("substrate_snapshot_cache_ttl_invalid" in r.message for r in caplog.records)

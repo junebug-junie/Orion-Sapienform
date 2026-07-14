@@ -1,8 +1,11 @@
 """RDF chat-turn recall must honor the profile time window.
 
-The graph stores no usable ChatTurn timestamp, so these rails otherwise leak months-old
-turns into reflective recall. worker resolves each turn's created_at from chat_history_log
-and drops turns outside the window. Memory cards / SQL / RDF-claim candidates are untouched.
+As of 2026-07-14, `storage/rdf_adapter.py`'s chat-turn fetch does select and order by a
+real timestamp (feeding `scoring._compute_recency_factor`'s soft decay) -- but that only
+down-weights old turns, it does not exclude them from a profile's hard `since_minutes`
+window. `worker` resolves each turn's created_at from chat_history_log (the durable SQL
+source) and drops turns outside the window entirely. Memory cards / SQL / RDF-claim
+candidates are untouched.
 """
 
 from __future__ import annotations

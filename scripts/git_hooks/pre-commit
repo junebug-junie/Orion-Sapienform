@@ -46,7 +46,11 @@ fi
 # git copies this hook file verbatim into .git/hooks/, so it must stay a
 # single self-contained file with no runtime dependency on this repo's
 # scripts/ directory being reachable. If you fix a bug here, fix it there
-# too.
+# too. A THIRD, Python reimplementation of this same detection (not a
+# byte-for-byte copy, but the same git-dir/git-common-dir comparison) lives
+# in scripts/hooks/destructive_git_guard.py's _is_shared_checkout() -- if
+# you fix a bug in the detection logic itself (not shell-specific plumbing),
+# check whether it applies there too.
 _GITDIR=$(cd "$(git rev-parse --git-dir 2>/dev/null)" 2>/dev/null && pwd)
 _COMMONDIR=$(cd "$(git rev-parse --git-common-dir 2>/dev/null)" 2>/dev/null && pwd)
 IS_SHARED_CHECKOUT=0

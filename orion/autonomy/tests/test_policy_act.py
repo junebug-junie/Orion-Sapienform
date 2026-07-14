@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from datetime import datetime, timezone
+from typing import Any
 from unittest.mock import AsyncMock, MagicMock
 from uuid import uuid4
 
@@ -11,9 +12,11 @@ from orion.autonomy.policy_act import (
     build_readonly_fetch_query,
     maybe_compose_autonomy_episode_after_fetch,
     maybe_execute_readonly_fetch_after_goal,
+    maybe_execute_readonly_recall_after_goal,
     maybe_execute_substrate_act_after_metabolism,
     resolve_episode_intent,
 )
+from orion.core.contracts.recall import MemoryBundleV1, MemoryItemV1, RecallReplyV1
 from orion.core.schemas.drives import DriveStateV1, GoalProposalV1
 from orion.core.schemas.frontier_curiosity import FrontierInvocationSignalV1
 
@@ -406,3 +409,217 @@ async def test_substrate_act_preserves_fetch_when_journal_dispatch_fails(monkeyp
     # Journal was attempted but failed, so no journal entry recorded.
     assert result.journal_attempted is False
     journal_dispatch.assert_awaited_once()
+
+
+def _fake_recall_reply(*, n: int = 1) -> RecallReplyV1:
+    items = [
+        MemoryItemV1(id=f"mem-{i}", source="journal", snippet=f"snippet {i}", score=0.8)
+        for i in range(n)
+    ]
+    return RecallReplyV1(bundle=MemoryBundleV1(items=items, rendered="digest"))
+
+
+def _fake_recall_bus(reply: RecallReplyV1 | None = None, *, exc: Exception | None = None) -> MagicMock:
+    """Mirrors ``orion/cognition/tests/test_recall_prefetch.py``'s bus double."""
+    bus = MagicMock()
+    if exc is not None:
+
+        async def _rpc(*_a: Any, **_k: Any) -> Any:
+            raise exc
+
+        bus.rpc_request = AsyncMock(side_effect=_rpc)
+        return bus
+
+    reply_payload = reply.model_dump(mode="json") if reply is not None else {"error": "fail"}
+
+    class _Decoded:
+        ok = True
+        error = None
+
+        class _Env:
+            payload = reply_payload
+
+        envelope = _Env()
+
+    async def _rpc(*_a: Any, **_k: Any) -> dict[str, Any]:
+        return {"data": b"x"}
+
+    bus.codec.decode.return_value = _Decoded()
+    bus.rpc_request = AsyncMock(side_effect=_rpc)
+    return bus
+
+
+@pytest.mark.asyncio
+async def test_recall_capability_denied_without_gap_signal(monkeypatch) -> None:
+    monkeypatch.setenv("ORION_CAPABILITY_POLICY_AUTO_READONLY_ENABLED", "true")
+    decision, outcome = await maybe_execute_readonly_recall_after_goal(
+        goal=_goal(),
+        drive_state=_drive_state(),
+        curiosity_signals=[],
+        spawned_correlation_id="wp-run-gap-gpu",
+        bus=_fake_recall_bus(_fake_recall_reply()),
+    )
+    assert decision.outcome == "denied"
+    assert decision.reason_code == "missing_signal_kinds"
+    assert outcome is None
+
+
+@pytest.mark.asyncio
+async def test_recall_capability_finds_content(monkeypatch, tmp_path) -> None:
+    monkeypatch.setenv("ORION_CAPABILITY_POLICY_AUTO_READONLY_ENABLED", "true")
+    monkeypatch.setenv("ORION_ACTION_OUTCOME_STORE_PATH", str(tmp_path / "outcomes.json"))
+    bus = _fake_recall_bus(_fake_recall_reply(n=2))
+    decision, outcome = await maybe_execute_readonly_recall_after_goal(
+        goal=_goal(),
+        drive_state=_drive_state(),
+        curiosity_signals=[_gap_signal()],
+        spawned_correlation_id="wp-run-gap-gpu",
+        bus=bus,
+    )
+    assert decision.outcome == "allowed"
+    assert outcome is not None
+    assert outcome.success is True
+    assert outcome.kind == "recall.query.readonly"
+    bus.rpc_request.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_recall_capability_empty_reply_degrades(monkeypatch, tmp_path) -> None:
+    monkeypatch.setenv("ORION_CAPABILITY_POLICY_AUTO_READONLY_ENABLED", "true")
+    monkeypatch.setenv("ORION_ACTION_OUTCOME_STORE_PATH", str(tmp_path / "outcomes.json"))
+    bus = _fake_recall_bus(_fake_recall_reply(n=0))
+    decision, outcome = await maybe_execute_readonly_recall_after_goal(
+        goal=_goal(),
+        drive_state=_drive_state(),
+        curiosity_signals=[_gap_signal()],
+        spawned_correlation_id="wp-run-gap-gpu",
+        bus=bus,
+    )
+    assert decision.outcome == "allowed"
+    assert outcome is not None
+    assert outcome.success is False
+
+
+@pytest.mark.asyncio
+async def test_recall_capability_rpc_timeout_never_raises(monkeypatch, tmp_path) -> None:
+    monkeypatch.setenv("ORION_CAPABILITY_POLICY_AUTO_READONLY_ENABLED", "true")
+    monkeypatch.setenv("ORION_ACTION_OUTCOME_STORE_PATH", str(tmp_path / "outcomes.json"))
+    bus = _fake_recall_bus(exc=TimeoutError("rpc timeout"))
+    decision, outcome = await maybe_execute_readonly_recall_after_goal(
+        goal=_goal(),
+        drive_state=_drive_state(),
+        curiosity_signals=[_gap_signal()],
+        spawned_correlation_id="wp-run-gap-gpu",
+        bus=bus,
+    )
+    assert decision.outcome == "allowed"
+    assert outcome is not None
+    assert outcome.success is False
+    assert "recall rpc failed" in outcome.summary
+
+
+@pytest.mark.asyncio
+async def test_recall_capability_no_bus_degrades_to_none(monkeypatch) -> None:
+    monkeypatch.setenv("ORION_CAPABILITY_POLICY_AUTO_READONLY_ENABLED", "true")
+    decision, outcome = await maybe_execute_readonly_recall_after_goal(
+        goal=_goal(),
+        drive_state=_drive_state(),
+        curiosity_signals=[_gap_signal()],
+        spawned_correlation_id="wp-run-gap-gpu",
+        bus=None,
+    )
+    assert decision.outcome == "allowed"
+    assert outcome is None
+
+
+@pytest.mark.asyncio
+async def test_substrate_act_recall_hit_skips_fetch_budget(monkeypatch, tmp_path) -> None:
+    """Recall-first: when recall finds real content, the fetch capability is never
+    invoked and its budget is not consumed that cycle."""
+    monkeypatch.setenv("ORION_CAPABILITY_POLICY_AUTO_READONLY_ENABLED", "true")
+    monkeypatch.setenv("ORION_ACTION_OUTCOME_STORE_PATH", str(tmp_path / "outcomes.json"))
+    fetch_backend = AsyncMock(return_value={"success": True, "urls": ["https://example.com/a"]})
+    bus = _fake_recall_bus(_fake_recall_reply(n=1))
+    budget: dict[str, int] = {}
+
+    result = await maybe_execute_substrate_act_after_metabolism(
+        episode_intent=_intent(),
+        drive_state=_drive_state(),
+        curiosity_signals=[_gap_signal()],
+        spawned_correlation_id="wp-run-gap-gpu",
+        fetch_backend=fetch_backend,
+        budget_used=budget,
+        recall_bus=bus,
+    )
+
+    fetch_backend.assert_not_awaited()
+    bus.rpc_request.assert_awaited_once()
+    assert budget.get("web.fetch.readonly", 0) == 0
+    assert budget.get("recall.query.readonly", 0) == 1
+    assert result.fetch_attempted is False
+    assert result.fetch_outcome is None
+
+
+@pytest.mark.asyncio
+async def test_substrate_act_recall_miss_falls_through_to_fetch(monkeypatch, tmp_path) -> None:
+    """Recall coming up empty must not block the tick: the fetch path still runs."""
+    monkeypatch.setenv("ORION_CAPABILITY_POLICY_AUTO_READONLY_ENABLED", "true")
+    monkeypatch.setenv("ORION_ACTION_OUTCOME_STORE_PATH", str(tmp_path / "outcomes.json"))
+    fetch_backend = AsyncMock(return_value={"success": True, "urls": ["https://example.com/a"]})
+    bus = _fake_recall_bus(_fake_recall_reply(n=0))
+
+    result = await maybe_execute_substrate_act_after_metabolism(
+        episode_intent=_intent(),
+        drive_state=_drive_state(),
+        curiosity_signals=[_gap_signal()],
+        spawned_correlation_id="wp-run-gap-gpu",
+        fetch_backend=fetch_backend,
+        recall_bus=bus,
+    )
+
+    fetch_backend.assert_awaited_once()
+    assert result.fetch_attempted is True
+    assert result.fetch_outcome is not None
+    assert result.fetch_outcome.success is True
+
+
+@pytest.mark.asyncio
+async def test_substrate_act_recall_rpc_failure_falls_through_to_fetch(monkeypatch, tmp_path) -> None:
+    """Recall RPC failure/timeout never raises and never blocks the tick."""
+    monkeypatch.setenv("ORION_CAPABILITY_POLICY_AUTO_READONLY_ENABLED", "true")
+    monkeypatch.setenv("ORION_ACTION_OUTCOME_STORE_PATH", str(tmp_path / "outcomes.json"))
+    fetch_backend = AsyncMock(return_value={"success": True, "urls": ["https://example.com/a"]})
+    bus = _fake_recall_bus(exc=TimeoutError("rpc timeout"))
+
+    result = await maybe_execute_substrate_act_after_metabolism(
+        episode_intent=_intent(),
+        drive_state=_drive_state(),
+        curiosity_signals=[_gap_signal()],
+        spawned_correlation_id="wp-run-gap-gpu",
+        fetch_backend=fetch_backend,
+        recall_bus=bus,
+    )
+
+    fetch_backend.assert_awaited_once()
+    assert result.fetch_attempted is True
+    assert result.fetch_outcome is not None
+    assert result.fetch_outcome.success is True
+
+
+@pytest.mark.asyncio
+async def test_substrate_act_no_recall_bus_falls_through_to_fetch(monkeypatch, tmp_path) -> None:
+    """Default behavior (no recall_bus wired) is unchanged: fetch runs as before."""
+    monkeypatch.setenv("ORION_CAPABILITY_POLICY_AUTO_READONLY_ENABLED", "true")
+    monkeypatch.setenv("ORION_ACTION_OUTCOME_STORE_PATH", str(tmp_path / "outcomes.json"))
+    fetch_backend = AsyncMock(return_value={"success": True, "urls": ["https://example.com/a"]})
+
+    result = await maybe_execute_substrate_act_after_metabolism(
+        episode_intent=_intent(),
+        drive_state=_drive_state(),
+        curiosity_signals=[_gap_signal()],
+        spawned_correlation_id="wp-run-gap-gpu",
+        fetch_backend=fetch_backend,
+    )
+
+    fetch_backend.assert_awaited_once()
+    assert result.fetch_attempted is True

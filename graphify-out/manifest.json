@@ -4,6 +4,11 @@
     "ast_hash": "612bd60d0903ad81b4bd319a074d580e",
     "semantic_hash": "612bd60d0903ad81b4bd319a074d580e"
   },
+  ".claude/settings.local.json": {
+    "mtime": 1781757826.5226443,
+    "ast_hash": "711eaddfadf9c93a51750d7d33bbb155",
+    "semantic_hash": "711eaddfadf9c93a51750d7d33bbb155"
+  },
   ".verify-run/disk.json": {
     "mtime": 1775948546.048512,
     "ast_hash": "c0cfbb1db29836ae4a3767bc29a4c39e",
@@ -19473,5 +19478,10 @@
     "mtime": 1784008374.246501,
     "ast_hash": "0c2e463317dce3ea4bc31c3550841ff1",
     "semantic_hash": "0c2e463317dce3ea4bc31c3550841ff1"
+  },
+  "reviews/pending/2026-07-14-agent-worktree-discipline-and-graphify-sync-spec.md": {
+    "mtime": 1784008006.0574543,
+    "ast_hash": "fad87289461d90a247ce68fb178e4b1e",
+    "semantic_hash": "fad87289461d90a247ce68fb178e4b1e"
   }
 }

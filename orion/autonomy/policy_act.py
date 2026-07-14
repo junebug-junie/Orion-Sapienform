@@ -532,6 +532,22 @@ async def maybe_execute_substrate_act_after_metabolism(
             )
             recall_outcome = None
 
+        if recall_outcome is not None:
+            # Recorded whenever an attempt happened (RPC issued, whatever the
+            # result), mirroring fetch_attempted/fetch_outcome's own semantics
+            # below -- "attempted" tracks that a real check happened, success
+            # lives inside the outcome object itself. Without this, a recall
+            # attempt was only ever visible via the local append_action_outcome
+            # file-store fallback inside maybe_execute_readonly_recall_after_goal,
+            # never reaching the durable bus-emit -> sql-writer -> SQL path a
+            # fetch outcome does (see the publish site below this function).
+            result = result.model_copy(
+                update={
+                    "recall_attempted": True,
+                    "recall_outcome": recall_outcome,
+                }
+            )
+
         if recall_outcome is not None and recall_outcome.success:
             fetch_outcome = None
         else:

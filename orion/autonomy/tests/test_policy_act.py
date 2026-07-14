@@ -558,6 +558,14 @@ async def test_substrate_act_recall_hit_skips_fetch_budget(monkeypatch, tmp_path
     assert budget.get("recall.query.readonly", 0) == 1
     assert result.fetch_attempted is False
     assert result.fetch_outcome is None
+    # A recall success must be visible on the result object the same way a
+    # fetch success is (result.fetch_attempted/fetch_outcome) -- without this,
+    # a successful recall-first check was invisible to the bus_worker.py
+    # caller and never reached the durable action.outcome.emit.v1 bus path,
+    # only the local append_action_outcome file-store fallback.
+    assert result.recall_attempted is True
+    assert result.recall_outcome is not None
+    assert result.recall_outcome.success is True
 
 
 @pytest.mark.asyncio
@@ -581,6 +589,12 @@ async def test_substrate_act_recall_miss_falls_through_to_fetch(monkeypatch, tmp
     assert result.fetch_attempted is True
     assert result.fetch_outcome is not None
     assert result.fetch_outcome.success is True
+    # Recall was still attempted (an RPC really happened) even though it
+    # found nothing -- "attempted" tracks the attempt, not the outcome,
+    # mirroring fetch_attempted's own semantics.
+    assert result.recall_attempted is True
+    assert result.recall_outcome is not None
+    assert result.recall_outcome.success is False
 
 
 @pytest.mark.asyncio

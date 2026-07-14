@@ -1070,6 +1070,14 @@ class ConceptWorker:
                     budget_used=policy_budget,
                     episode_journal_enabled=self.cfg.autonomy_episode_journal_enabled,
                     prefetched_outcome=prefetched_outcome,
+                    # Without these, maybe_execute_readonly_recall_after_goal's
+                    # own `if bus is None: return decision, None` guard degrades
+                    # silently before any RPC is attempted -- the recall-first
+                    # capability would evaluate policy, log "allowed", and never
+                    # actually fire. Reuse this worker's own bus connection and
+                    # identity, same as every other bus call this class makes.
+                    recall_bus=self.bus,
+                    recall_source=_service_ref(self.cfg),
                 )
                 if act_result.fetch_outcome is not None:
                     try:
@@ -1087,6 +1095,29 @@ class ConceptWorker:
                             subject,
                             act_result.fetch_outcome.action_id,
                             act_result.fetch_outcome.success,
+                            spawned_correlation_id,
+                        )
+                    except Exception:
+                        logger.warning(
+                            "action_outcome_emit_failed subject=%s spawned=%s",
+                            subject,
+                            spawned_correlation_id,
+                            exc_info=True,
+                        )
+                if act_result.recall_outcome is not None:
+                    try:
+                        await self._publish_action_outcome(
+                            ActionOutcomeEmitV1.from_outcome(
+                                subject=subject,
+                                outcome=act_result.recall_outcome,
+                            ),
+                            env.correlation_id,
+                        )
+                        logger.info(
+                            "action_outcome_emitted subject=%s action_id=%s success=%s spawned=%s",
+                            subject,
+                            act_result.recall_outcome.action_id,
+                            act_result.recall_outcome.success,
                             spawned_correlation_id,
                         )
                     except Exception:

@@ -277,6 +277,87 @@ def test_main_prose_one_missing_exits_zero_reports_na(capsys):
     assert "n/a" in out
 
 
+# --------------------------------------------------------------------------
+# store_path provenance warning (2026-07-13 incident: an operator ran this
+# with neither --store-path nor $CONCEPT_STORE_PATH set, silently landed on
+# DEFAULT_CONCEPT_STORE_PATH, and a stale dev-leftover file sitting at that
+# path was misread as a 24h+-stale live drive_state.v1 signal.)
+# --------------------------------------------------------------------------
+
+def test_main_warns_when_store_path_falls_back_to_default(capsys, monkeypatch):
+    monkeypatch.delenv("CONCEPT_STORE_PATH", raising=False)
+    with patch.object(dsa, "LocalProfileStore", _mock_store({})), patch.object(
+        dsa, "load_autonomy_state_v2", return_value=None
+    ):
+        exit_code = dsa.main([])
+    assert exit_code == 0
+    out = capsys.readouterr().out
+    assert "WARNING:" in out
+    assert "almost certainly NOT the path the live Docker container writes to" in out
+    assert dsa.DEFAULT_CONCEPT_STORE_PATH in out
+
+
+def test_main_no_warning_when_store_path_given_explicitly(capsys, monkeypatch):
+    monkeypatch.delenv("CONCEPT_STORE_PATH", raising=False)
+    with patch.object(dsa, "LocalProfileStore", _mock_store({})), patch.object(
+        dsa, "load_autonomy_state_v2", return_value=None
+    ):
+        exit_code = dsa.main(["--store-path", "/data/concept-induction-state.json"])
+    assert exit_code == 0
+    out = capsys.readouterr().out
+    assert "WARNING:" not in out
+
+
+def test_main_no_warning_when_env_var_set(capsys, monkeypatch):
+    monkeypatch.setenv("CONCEPT_STORE_PATH", "/mnt/graphdb/orion/concepts/concept-induction-state.json")
+    with patch.object(dsa, "LocalProfileStore", _mock_store({})), patch.object(
+        dsa, "load_autonomy_state_v2", return_value=None
+    ):
+        exit_code = dsa.main([])
+    assert exit_code == 0
+    out = capsys.readouterr().out
+    assert "WARNING:" not in out
+
+
+def test_main_json_reports_store_path_source_and_warning(monkeypatch, capsys):
+    monkeypatch.delenv("CONCEPT_STORE_PATH", raising=False)
+    with patch.object(dsa, "LocalProfileStore", _mock_store({})), patch.object(
+        dsa, "load_autonomy_state_v2", return_value=None
+    ):
+        exit_code = dsa.main(["--json"])
+    assert exit_code == 0
+    out = json.loads(capsys.readouterr().out)
+    assert out["drive_state_v1"]["store_path_source"] == "default_fallback"
+    assert out["drive_state_v1"]["store_path_warning"] is not None
+    assert out["drive_state_v1"]["store_path"] == dsa.DEFAULT_CONCEPT_STORE_PATH
+
+
+def test_main_json_store_path_source_env(monkeypatch, capsys):
+    monkeypatch.setenv("CONCEPT_STORE_PATH", "/mnt/graphdb/orion/concepts/concept-induction-state.json")
+    with patch.object(dsa, "LocalProfileStore", _mock_store({})), patch.object(
+        dsa, "load_autonomy_state_v2", return_value=None
+    ):
+        exit_code = dsa.main(["--json"])
+    assert exit_code == 0
+    out = json.loads(capsys.readouterr().out)
+    assert out["drive_state_v1"]["store_path_source"] == "env:CONCEPT_STORE_PATH"
+    assert out["drive_state_v1"]["store_path_warning"] is None
+    assert out["drive_state_v1"]["store_path"] == "/mnt/graphdb/orion/concepts/concept-induction-state.json"
+
+
+def test_main_json_store_path_source_cli(monkeypatch, capsys):
+    monkeypatch.delenv("CONCEPT_STORE_PATH", raising=False)
+    with patch.object(dsa, "LocalProfileStore", _mock_store({})), patch.object(
+        dsa, "load_autonomy_state_v2", return_value=None
+    ):
+        exit_code = dsa.main(["--json", "--store-path", "/data/concept-induction-state.json"])
+    assert exit_code == 0
+    out = json.loads(capsys.readouterr().out)
+    assert out["drive_state_v1"]["store_path_source"] == "cli:--store-path"
+    assert out["drive_state_v1"]["store_path_warning"] is None
+    assert out["drive_state_v1"]["store_path"] == "/data/concept-induction-state.json"
+
+
 def test_main_never_crashes_on_loader_exceptions(capsys):
     with patch.object(dsa, "LocalProfileStore", _mock_store(RuntimeError("boom"))), patch.object(
         dsa, "load_autonomy_state_v2", side_effect=RuntimeError("boom2")

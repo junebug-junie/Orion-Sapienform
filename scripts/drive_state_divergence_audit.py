@@ -32,7 +32,18 @@ report. It is a snapshot comparison, safe to re-run any time.
 Usage:
     python scripts/drive_state_divergence_audit.py
     python scripts/drive_state_divergence_audit.py --subject orion --json
-    CONCEPT_STORE_PATH=/tmp/concept-induction-state.json \\
+
+If neither --store-path nor $CONCEPT_STORE_PATH is given, this falls back to a
+host-local dev default that is almost never the live Docker container's real
+store, and prints a loud warning saying so (2026-07-13 incident: a stale file
+sitting at that fallback path was misread as a 24h+-stale live drive_state.v1
+-- the live container was fine and ticking every few seconds). Point this at
+the real store instead -- find it with:
+    docker inspect <concept-induction-container> \\
+        --format '{{json .Config.Env}}' | grep CONCEPT_STORE_PATH
+then cross-reference services/orion-spark-concept-induction/docker-compose.yml's
+volumes: section for the host-side bind mount, e.g.:
+    CONCEPT_STORE_PATH=/mnt/graphdb/orion/concepts/concept-induction-state.json \\
     ORION_AUTONOMY_STATE_DB_URL=postgresql://user:pass@host:port/db \\
         python scripts/drive_state_divergence_audit.py
 
@@ -191,15 +202,50 @@ def main(argv: list[str] | None = None) -> int:
     )
     parser.add_argument(
         "--store-path",
-        default=os.getenv("CONCEPT_STORE_PATH", DEFAULT_CONCEPT_STORE_PATH),
+        default=None,
         help=(
             "path to the concept-induction LocalProfileStore JSON file. "
             "Defaults to $CONCEPT_STORE_PATH, falling back to "
-            f"{DEFAULT_CONCEPT_STORE_PATH!r}."
+            f"{DEFAULT_CONCEPT_STORE_PATH!r} (a host-local dev default that is "
+            "almost never the live Docker container's real store -- see the "
+            "printed warning when this fallback is used)."
         ),
     )
     parser.add_argument("--json", action="store_true", help="emit machine-readable JSON instead of prose.")
     args = parser.parse_args(argv)
+
+    # Track *why* store_path has its value, distinct from the value itself, so
+    # we can warn when nobody actually pointed this at a real store (2026-07-13
+    # incident: an operator ran this with neither --store-path nor
+    # $CONCEPT_STORE_PATH set, silently landed on DEFAULT_CONCEPT_STORE_PATH, and
+    # that path happened to hold an unrelated stale dev-leftover file -- read as
+    # "drive_state.v1 is 24h+ stale" when the live container's actual store,
+    # a bind-mounted host path configured in
+    # services/orion-spark-concept-induction/docker-compose.yml /
+    # .env's CONCEPT_STORE_PATH, was updating every few seconds).
+    env_store_path = os.getenv("CONCEPT_STORE_PATH")
+    store_path_warning: Optional[str] = None
+    if args.store_path is not None:
+        store_path_source = "cli:--store-path"
+    elif env_store_path:
+        store_path_source = "env:CONCEPT_STORE_PATH"
+        args.store_path = env_store_path
+    else:
+        store_path_source = "default_fallback"
+        args.store_path = DEFAULT_CONCEPT_STORE_PATH
+        store_path_warning = (
+            f"neither --store-path nor $CONCEPT_STORE_PATH was set -- falling back to "
+            f"{DEFAULT_CONCEPT_STORE_PATH!r}, a host-local dev default. This is almost "
+            "certainly NOT the path the live Docker container writes to. The live "
+            "container's real CONCEPT_STORE_PATH is set in "
+            "services/orion-spark-concept-induction/docker-compose.yml + .env, typically "
+            "a bind-mounted host path under $ORION_DATA_ROOT (e.g. "
+            "/mnt/graphdb/orion/concepts/concept-induction-state.json). Verify with: "
+            "docker inspect <container> --format '{{json .Config.Env}}' | grep CONCEPT_STORE_PATH "
+            "-- then cross-reference the compose file's volumes: section for the host-side "
+            "mount. A stale file left over from an old local run can sit at the fallback "
+            "path and look like real staleness."
+        )
 
     drive_raw, drive_error = load_drive_state_v1(args.store_path, args.subject)
     autonomy_state, autonomy_error = load_autonomy_state(args.subject)
@@ -215,6 +261,8 @@ def main(argv: list[str] | None = None) -> int:
             "drive_state_v1": {
                 "available": drive_available,
                 "store_path": args.store_path,
+                "store_path_source": store_path_source,
+                "store_path_warning": store_path_warning,
                 "error": drive_error,
                 "pressures": (drive_raw or {}).get("pressures") if drive_available else None,
                 "activations": (drive_raw or {}).get("activations") if drive_available else None,
@@ -240,6 +288,9 @@ def main(argv: list[str] | None = None) -> int:
 
     print(f"drive_state_divergence_audit: subject={args.subject!r}")
     print()
+    if store_path_warning:
+        print(f"WARNING: {store_path_warning}")
+        print()
     if drive_available:
         updated_at = (drive_raw or {}).get("updated_at")
         print(f"drive_state.v1: available (store_path={args.store_path}, updated_at={updated_at})")

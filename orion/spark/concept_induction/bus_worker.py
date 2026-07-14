@@ -688,11 +688,20 @@ class ConceptWorker:
         except Exception:
             logger.warning("action_outcome_parse_failed kind=%s", env.kind)
             return []
-        return extract_tensions_from_action_outcome(
+        logger.info(
+            "action_outcome_received source=%s kind=%s action_id=%s success=%s",
+            source_name, outcome.kind, outcome.action_id, outcome.success,
+        )
+        result = extract_tensions_from_action_outcome(
             envelope=env,
             intake_channel=intake_channel,
             outcome=outcome,
         )
+        logger.info(
+            "action_outcome_tensions_extracted count=%d drive_impacts=%s",
+            len(result), [t.drive_impacts for t in result],
+        )
+        return result
 
     def _parse_signal(self, env: BaseEnvelope) -> Optional[OrionSignalV1]:
         try:

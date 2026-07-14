@@ -8,6 +8,8 @@ from datetime import datetime, timezone
 from types import SimpleNamespace
 from uuid import uuid4
 
+import pytest
+
 SERVICE_DIR = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
 if SERVICE_DIR not in sys.path:
     sys.path.insert(0, SERVICE_DIR)
@@ -17,7 +19,11 @@ if REPO_ROOT not in sys.path:
     sys.path.insert(0, REPO_ROOT)
 
 from app.logic import ActionDedupe, build_journal_cortex_orch_envelope  # noqa: E402
-from app.main import _dispatch_journal_notifications, should_journal_from_collapse  # noqa: E402
+from app.main import (  # noqa: E402
+    _dispatch_journal_notifications,
+    _journal_email_daily_cap_key,
+    should_journal_from_collapse,
+)
 from orion.core.bus.bus_schemas import BaseEnvelope, ServiceRef  # noqa: E402
 from orion.journaler.schemas import JournalEntryWriteV1  # noqa: E402
 from orion.journaler.worker import (  # noqa: E402
@@ -238,7 +244,7 @@ def test_daily_cap_slot_is_released_when_notify_raises_instead_of_leaking_foreve
     deduper = ActionDedupe(ttl_seconds=3600)
     moment = datetime(2026, 7, 13, 15, 0, tzinfo=timezone.utc)
 
-    with unittest.TestCase().assertRaises(RuntimeError):
+    with pytest.raises(RuntimeError):
         _dispatch_journal_notifications(
             _daily_summary_entry(entry_id="entry-daily-1"),
             correlation_id="corr-1",
@@ -277,6 +283,45 @@ def test_action_dedupe_try_acquire_is_thread_safe_under_concurrent_callers() -> 
 
     winners = [r for r in results if r]
     assert len(winners) == 1
+
+
+def test_daily_cap_key_rejects_a_naive_now_utc_instead_of_silently_misreading_it() -> None:
+    """A naive datetime passed as `now_utc` would otherwise be silently
+    reinterpreted by `.astimezone()` as the server's local system time rather than
+    UTC, producing a wrong calendar-day cap key with no error. Fail loud instead."""
+    naive = datetime(2026, 7, 13, 15, 0)  # no tzinfo
+    with pytest.raises(ValueError):
+        _journal_email_daily_cap_key(now_utc=naive)
+
+
+def test_daily_cap_duration_is_independent_of_the_dedupers_generic_ttl() -> None:
+    """Regression: the cap's `mark_done` used to inherit whatever `ttl_seconds` the
+    passed-in `ActionDedupe` instance happened to be constructed with -- which in
+    production is `ACTIONS_NOTIFY_DEDUPE_WINDOW_SECONDS`, a setting that also governs
+    unrelated per-notification redelivery-dedupe windows elsewhere in the file. If an
+    operator ever tunes that setting down for its original purpose, the cap would
+    silently stop holding for the full day. Prove the cap now survives well past a
+    deliberately tiny generic ttl, because `mark_done` is called with an explicit
+    `ttl_seconds` override computed from time-until-local-midnight, not the
+    deduper's own `self.ttl_seconds`."""
+    notify = _FakeNotify()
+    deduper = ActionDedupe(ttl_seconds=1)  # absurdly short generic ttl
+    moment = datetime(2026, 7, 13, 15, 0, tzinfo=timezone.utc)
+
+    first = _dispatch_journal_notifications(
+        _daily_summary_entry(entry_id="entry-daily-1"), correlation_id="corr-1", notify=notify, deduper=deduper, now_utc=moment
+    )
+    assert first["email_ok"] is True
+    assert len(notify.send_calls) == 1
+
+    # Well past the deduper's 1-second generic ttl, but still the same local day --
+    # the cap must still hold because mark_done overrode the ttl to "until midnight."
+    later_same_day = datetime(2026, 7, 13, 20, 0, tzinfo=timezone.utc)
+    second = _dispatch_journal_notifications(
+        _metacog_digest_entry(), correlation_id="corr-2", notify=notify, deduper=deduper, now_utc=later_same_day
+    )
+    assert second["email_ok"] is True  # not required -> True, but nothing was actually sent
+    assert len(notify.send_calls) == 1  # still just the first email
 
 
 def test_resolve_policy_is_fail_closed_for_an_unregistered_trigger_kind() -> None:

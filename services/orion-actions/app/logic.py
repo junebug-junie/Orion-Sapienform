@@ -127,14 +127,19 @@ class ActionDedupe:
             with self._lock:
                 self._inflight.discard(key)
 
-    def mark_done(self, key: str, *, now: Optional[float] = None) -> None:
+    def mark_done(self, key: str, *, now: Optional[float] = None, ttl_seconds: Optional[float] = None) -> None:
+        """`ttl_seconds` overrides `self.ttl_seconds` for this key only -- lets a
+        caller express a duration tied to its own invariant (e.g. "until local
+        midnight") instead of silently inheriting whatever generic TTL this
+        instance happens to be constructed with for an unrelated purpose."""
         if not key:
             return
         if now is None:
             now = self._now()
+        ttl = float(self.ttl_seconds) if ttl_seconds is None else float(ttl_seconds)
         with self._lock:
             self._inflight.discard(key)
-            self._done_expiry[key] = now + float(self.ttl_seconds)
+            self._done_expiry[key] = now + ttl
             self._prune(now)
 
 

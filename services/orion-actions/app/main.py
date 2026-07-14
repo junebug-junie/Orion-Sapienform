@@ -664,15 +664,42 @@ def _world_pulse_daily_dedupe_key(window: DailyWindow) -> str:
     return f"actions:world_pulse:daily:{window.request_date}:{settings.node_name}"
 
 
+def _resolve_now_utc(now_utc: datetime | None) -> datetime:
+    """Fails loud on a naive `now_utc` instead of letting `.astimezone()` silently
+    reinterpret it as the server's local system time -- a naive datetime here means
+    a caller mistook this for `datetime.utcnow()`-style naive UTC rather than the
+    aware-UTC this function requires."""
+    now = now_utc or datetime.now(timezone.utc)
+    if now.tzinfo is None:
+        raise ValueError("now_utc must be timezone-aware (use datetime.now(timezone.utc))")
+    return now.astimezone(timezone.utc)
+
+
 def _journal_email_daily_cap_key(*, now_utc: datetime | None = None) -> str:
     """One key per local calendar day, shared across every `trigger_kind` --
     caps freeform journal emails (daily_summary, metacog_digest, world_pulse_digest,
     notify_summary, autonomy_episode, collapse_response, manual) at one send/day
     regardless of which trigger fires first. Journal entries still persist either
     way; only the email step is gated."""
-    now = (now_utc or datetime.now(timezone.utc)).astimezone(timezone.utc)
+    now = _resolve_now_utc(now_utc)
     local_date = now.astimezone(ZoneInfo(settings.actions_daily_timezone)).date().isoformat()
     return f"actions:journal:notify:daily_email_cap:{local_date}:{settings.node_name}"
+
+
+def _seconds_until_next_local_midnight(*, now_utc: datetime | None = None) -> float:
+    """How long a daily-cap `mark_done` entry must survive to actually hold until
+    the local calendar day rolls over. Passed explicitly to `ActionDedupe.mark_done`
+    as a `ttl_seconds` override rather than relying on the deduper's generic
+    `ttl_seconds` (`ACTIONS_NOTIFY_DEDUPE_WINDOW_SECONDS`), which also drives
+    unrelated per-notification redelivery-dedup windows elsewhere in this file --
+    coupling the cap's actual duration to that setting would silently reopen the
+    multi-email-per-day bug this cap exists to close if that setting is ever tuned
+    down for its original purpose."""
+    now = _resolve_now_utc(now_utc)
+    tz = ZoneInfo(settings.actions_daily_timezone)
+    local_now = now.astimezone(tz)
+    local_midnight = datetime(local_now.year, local_now.month, local_now.day, tzinfo=tz) + timedelta(days=1)
+    return max((local_midnight - local_now).total_seconds(), 0.0)
 
 
 def _trigger_world_pulse_run(*, date: str, requested_by: str) -> bool:
@@ -848,9 +875,7 @@ def _dispatch_journal_notifications(
                     )
                 return ok
 
-            if not policy.subject_to_daily_cap:
-                email_ok = _send_journal_email()
-            else:
+            if policy.subject_to_daily_cap:
                 daily_cap_key = _journal_email_daily_cap_key(now_utc=now_utc)
                 if not deduper.try_acquire(daily_cap_key):
                     email_ok = True  # not required -> don't block dedupe completion
@@ -870,9 +895,19 @@ def _dispatch_journal_notifications(
                         # never released here stays stuck "in-flight" and silently
                         # blocks every journal email for the rest of the day.
                         if email_ok:
-                            deduper.mark_done(daily_cap_key)
+                            # Explicit ttl_seconds override: the cap must hold until
+                            # local midnight regardless of what the deduper's generic
+                            # ttl_seconds (ACTIONS_NOTIFY_DEDUPE_WINDOW_SECONDS, also
+                            # used for unrelated per-notification dedupe windows) is
+                            # tuned to -- see _seconds_until_next_local_midnight.
+                            deduper.mark_done(
+                                daily_cap_key,
+                                ttl_seconds=_seconds_until_next_local_midnight(now_utc=now_utc),
+                            )
                         else:
                             deduper.release(daily_cap_key)
+            else:
+                email_ok = _send_journal_email()
         else:
             email_ok = True  # not required -> don't block dedupe completion
             logger.info(

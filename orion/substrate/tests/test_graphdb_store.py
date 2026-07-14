@@ -25,6 +25,7 @@ from orion.substrate.graphdb_store import (
     SparqlSubstrateStore,
     SparqlSubstrateStoreConfig,
     SubstrateSparqlBackendUnconfiguredError,
+    _resolve_snapshot_force_refresh_ceiling_sec,
     build_substrate_store_from_env,
 )
 from orion.substrate.materializer import SubstrateGraphMaterializer
@@ -582,7 +583,10 @@ def _counting_post(fake: _FakeGraphDB) -> MagicMock:
     return MagicMock(side_effect=fake.post)
 
 
-def test_snapshot_within_ttl_reuses_cache_no_new_query(monkeypatch):
+def test_snapshot_same_generation_reuses_cache_no_new_query(monkeypatch):
+    """The baseline case: nothing written since the first fetch -- the second call is
+    served from cache with zero new live queries, regardless of how the ceiling is
+    configured (well within it here)."""
     fake = _FakeGraphDB()
     counting_post = _counting_post(fake)
     monkeypatch.setattr("orion.substrate.graphdb_store.requests.post", counting_post)
@@ -590,7 +594,7 @@ def test_snapshot_within_ttl_reuses_cache_no_new_query(monkeypatch):
     store = GraphDBSubstrateStore(
         GraphDBSubstrateStoreConfig(
             endpoint="http://graphdb.local/repositories/collapse",
-            snapshot_cache_ttl_sec=60.0,
+            snapshot_force_refresh_ceiling_sec=60.0,
         )
     )
     SubstrateGraphMaterializer(store=store).apply_record(_sample_record())
@@ -606,7 +610,13 @@ def test_snapshot_within_ttl_reuses_cache_no_new_query(monkeypatch):
     assert second.nodes.keys() == first.nodes.keys()
 
 
-def test_snapshot_after_ttl_expires_issues_new_query(monkeypatch):
+def test_snapshot_same_generation_still_skips_live_query_over_time(monkeypatch):
+    """The actual point of this fix: elapsed time alone is never sufficient to force a
+    live query -- if nothing this process wrote has changed, the cache is trusted
+    regardless of how much time passed (up to the ceiling, covered separately below).
+    This is the fix for the traced incident: a 5s-forever tick used to always requery
+    on a blind timer; now it only requeries when something real changed, or the
+    ceiling forces a periodic safety-net refresh."""
     import time
 
     fake = _FakeGraphDB()
@@ -616,7 +626,153 @@ def test_snapshot_after_ttl_expires_issues_new_query(monkeypatch):
     store = GraphDBSubstrateStore(
         GraphDBSubstrateStoreConfig(
             endpoint="http://graphdb.local/repositories/collapse",
-            snapshot_cache_ttl_sec=0.01,
+            snapshot_force_refresh_ceiling_sec=60.0,
+        )
+    )
+    SubstrateGraphMaterializer(store=store).apply_record(_sample_record())
+    counting_post.call_count = 0
+
+    store.snapshot()
+    assert counting_post.call_count == 2
+
+    time.sleep(0.02)  # real elapsed time, but nothing was written -- same generation
+    store.snapshot()
+    assert counting_post.call_count == 2  # no new live query
+
+
+def test_snapshot_write_between_calls_forces_new_query(monkeypatch):
+    """The real change-detection path: a write bumps the generation counter, so the
+    very next snapshot() call issues a live query even though it's well within the
+    ceiling -- a real change is detected immediately, not after waiting for a timer.
+    Uses a real identity_key (not None) for upsert_node, matching its documented
+    signature -- a prior draft of this test passed identity_key=None, which happens
+    to be tolerated by upsert_node's own internal guard but is not representative
+    real usage and would have silently masked an unrelated identity-handling bug in
+    upsert_edge if reused there (upsert_edge calls _upsert_identity unconditionally,
+    with no such guard)."""
+    fake = _FakeGraphDB()
+    counting_post = _counting_post(fake)
+    monkeypatch.setattr("orion.substrate.graphdb_store.requests.post", counting_post)
+
+    store = GraphDBSubstrateStore(
+        GraphDBSubstrateStoreConfig(
+            endpoint="http://graphdb.local/repositories/collapse",
+            snapshot_force_refresh_ceiling_sec=60.0,
+        )
+    )
+    SubstrateGraphMaterializer(store=store).apply_record(_sample_record())
+    counting_post.call_count = 0
+
+    store.snapshot()
+    assert counting_post.call_count == 2
+
+    extra_node = ConceptNodeV1(
+        node_id="node-extra",
+        anchor_scope="orion",
+        subject_ref="orion",
+        temporal=SubstrateTemporalWindowV1(observed_at=datetime.now(timezone.utc)),
+        provenance=SubstrateProvenanceV1(
+            authority="local_inferred", source_kind="test", source_channel="pytest", producer="unit"
+        ),
+        signals=SubstrateSignalBundleV1(confidence=0.7, salience=0.5),
+        label="Extra",
+        definition="Added between snapshots",
+        metadata={"concept_id": "concept-extra"},
+    )
+    store.upsert_node(identity_key="concept-extra", node=extra_node)  # bumps the write generation
+    counting_post.call_count = 0
+
+    result = store.snapshot()
+    assert counting_post.call_count == 2  # new live query, not served from stale cache
+    assert "node-extra" in result.nodes
+
+
+def test_snapshot_write_generation_captured_before_live_query_not_after(monkeypatch):
+    """The TOCTOU fix (2026-07-14 review finding): if a write races in while a live
+    query is in flight, the generation recorded for that fetch must be the value from
+    BEFORE the query started, not after it completes -- otherwise a concurrent write
+    gets silently credited to data that was actually fetched before it happened,
+    permanently masking the write until the next unrelated write or the ceiling fires.
+    Simulated here by monkeypatching _query_nodes to perform a write mid-fetch."""
+    fake = _FakeGraphDB()
+    monkeypatch.setattr("orion.substrate.graphdb_store.requests.post", fake.post)
+
+    store = GraphDBSubstrateStore(
+        GraphDBSubstrateStoreConfig(
+            endpoint="http://graphdb.local/repositories/collapse",
+            snapshot_force_refresh_ceiling_sec=60.0,
+        )
+    )
+    SubstrateGraphMaterializer(store=store).apply_record(_sample_record())
+    store.snapshot()  # establish a baseline generation
+
+    # Force the NEXT snapshot() call past the same-generation cache-reuse gate by
+    # writing first -- otherwise the call below would be served from cache without
+    # ever reaching the live fetch this test needs to race against, and the test
+    # would pass without exercising anything (caught by running this test and
+    # finding it green for the wrong reason before this setup write was added).
+    setup_node = ConceptNodeV1(
+        node_id="node-setup",
+        anchor_scope="orion",
+        subject_ref="orion",
+        temporal=SubstrateTemporalWindowV1(observed_at=datetime.now(timezone.utc)),
+        provenance=SubstrateProvenanceV1(
+            authority="local_inferred", source_kind="test", source_channel="pytest", producer="unit"
+        ),
+        signals=SubstrateSignalBundleV1(confidence=0.7, salience=0.5),
+        label="Setup",
+        definition="Forces the next snapshot() past cache reuse",
+        metadata={"concept_id": "concept-setup"},
+    )
+    store.upsert_node(identity_key="concept-setup", node=setup_node)
+    generation_before_race = store._write_generation
+
+    real_query_nodes = store._query_nodes
+    racing_node = ConceptNodeV1(
+        node_id="node-race",
+        anchor_scope="orion",
+        subject_ref="orion",
+        temporal=SubstrateTemporalWindowV1(observed_at=datetime.now(timezone.utc)),
+        provenance=SubstrateProvenanceV1(
+            authority="local_inferred", source_kind="test", source_channel="pytest", producer="unit"
+        ),
+        signals=SubstrateSignalBundleV1(confidence=0.7, salience=0.5),
+        label="Race",
+        definition="Written mid-fetch",
+        metadata={"concept_id": "concept-race"},
+    )
+
+    def _query_nodes_that_races_a_write(*args, **kwargs):  # noqa: ANN001
+        # Simulates a write landing in another thread while this fetch is in flight,
+        # i.e. after this fetch already decided what to return but before snapshot()
+        # records the generation for it.
+        store.upsert_node(identity_key="concept-race", node=racing_node)
+        return real_query_nodes(*args, **kwargs)
+
+    monkeypatch.setattr(store, "_query_nodes", _query_nodes_that_races_a_write)
+    store.snapshot()
+
+    # The generation recorded for this fetch must be the pre-race value, not the
+    # post-race one -- proving the next snapshot() call will see a mismatch and
+    # correctly re-fetch rather than trusting data that predates the race's write.
+    assert store._last_snapshot_generation == generation_before_race
+    assert store._last_snapshot_generation != store._write_generation
+
+
+def test_snapshot_ceiling_forces_refresh_despite_same_generation(monkeypatch):
+    """The safety net: even with no writes at all (same_generation stays true
+    indefinitely), the ceiling forces a periodic live re-check to catch changes made
+    by a different process this instance's write counter can't see."""
+    import time
+
+    fake = _FakeGraphDB()
+    counting_post = _counting_post(fake)
+    monkeypatch.setattr("orion.substrate.graphdb_store.requests.post", counting_post)
+
+    store = GraphDBSubstrateStore(
+        GraphDBSubstrateStoreConfig(
+            endpoint="http://graphdb.local/repositories/collapse",
+            snapshot_force_refresh_ceiling_sec=0.01,
         )
     )
     SubstrateGraphMaterializer(store=store).apply_record(_sample_record())
@@ -627,10 +783,16 @@ def test_snapshot_after_ttl_expires_issues_new_query(monkeypatch):
 
     time.sleep(0.02)
     store.snapshot()
-    assert counting_post.call_count == 4  # a second live query was issued
+    assert counting_post.call_count == 4  # ceiling forced a live query
 
 
-def test_snapshot_ttl_zero_disables_cache_matches_pre_fix_behavior(monkeypatch):
+def test_snapshot_ceiling_zero_trusts_generation_forever(monkeypatch):
+    """ceiling <= 0 disables the periodic safety-net refresh entirely -- the cache is
+    trusted for as long as the write generation hasn't moved, with no time bound at
+    all. Documented, deliberate behavior (see the config field's docstring), not an
+    oversight."""
+    import time
+
     fake = _FakeGraphDB()
     counting_post = _counting_post(fake)
     monkeypatch.setattr("orion.substrate.graphdb_store.requests.post", counting_post)
@@ -638,66 +800,144 @@ def test_snapshot_ttl_zero_disables_cache_matches_pre_fix_behavior(monkeypatch):
     store = GraphDBSubstrateStore(
         GraphDBSubstrateStoreConfig(
             endpoint="http://graphdb.local/repositories/collapse",
-            snapshot_cache_ttl_sec=0.0,
+            snapshot_force_refresh_ceiling_sec=0.0,
         )
     )
     SubstrateGraphMaterializer(store=store).apply_record(_sample_record())
     counting_post.call_count = 0
 
     store.snapshot()
+    assert counting_post.call_count == 2
+
+    time.sleep(0.02)
     store.snapshot()
-    assert counting_post.call_count == 4  # every call is live, ttl disabled
+    assert counting_post.call_count == 2  # still cached, no ceiling to force a refresh
 
 
 def test_snapshot_failure_fallback_still_returns_cache(monkeypatch):
     """Pre-existing behavior must be unchanged: a live-query failure still falls
-    back to the last good in-memory cache, independent of the TTL guard."""
+    back to the last good in-memory cache. Forces a real write between the two
+    snapshot() calls so the second call can't short-circuit via same-generation
+    cache reuse (default ceiling is 30s, comfortably longer than this test takes) --
+    without that write, this test would never actually reach the live-query-raises
+    code path at all and would falsely appear to pass."""
     fake = _FakeGraphDB()
     monkeypatch.setattr("orion.substrate.graphdb_store.requests.post", fake.post)
 
     store = GraphDBSubstrateStore(
-        GraphDBSubstrateStoreConfig(
-            endpoint="http://graphdb.local/repositories/collapse",
-            snapshot_cache_ttl_sec=0.0,
-        )
+        GraphDBSubstrateStoreConfig(endpoint="http://graphdb.local/repositories/collapse")
     )
     SubstrateGraphMaterializer(store=store).apply_record(_sample_record())
     warm = store.snapshot()
     assert len(warm.nodes) >= 1
+
+    extra_node = ConceptNodeV1(
+        node_id="node-extra-2",
+        anchor_scope="orion",
+        subject_ref="orion",
+        temporal=SubstrateTemporalWindowV1(observed_at=datetime.now(timezone.utc)),
+        provenance=SubstrateProvenanceV1(
+            authority="local_inferred", source_kind="test", source_channel="pytest", producer="unit"
+        ),
+        signals=SubstrateSignalBundleV1(confidence=0.7, salience=0.5),
+        label="Extra2",
+        definition="Forces same_generation=False for this test",
+        metadata={"concept_id": "concept-extra-2"},
+    )
+    store.upsert_node(identity_key="concept-extra-2", node=extra_node)
 
     def _raise(*args, **kwargs):  # noqa: ANN001
         raise GraphDBSubstrateStoreError("simulated backend outage")
 
     monkeypatch.setattr(store, "_query_nodes", _raise)
     degraded = store.snapshot()
-    assert degraded.nodes.keys() == warm.nodes.keys()
+    assert degraded.nodes.keys() == warm.nodes.keys() | {"node-extra-2"}
 
 
-def test_sparql_substrate_store_ttl_defaults_to_2_seconds_from_config():
+def test_sparql_substrate_store_ceiling_defaults_to_30_seconds_from_config():
     cfg = SparqlSubstrateStoreConfig(query_url="http://fuseki:3030/orion/query", update_url="http://fuseki:3030/orion/update")
-    assert cfg.snapshot_cache_ttl_sec == 2.0
+    assert cfg.snapshot_force_refresh_ceiling_sec == 30.0
     store = SparqlSubstrateStore(cfg)
-    assert store._cfg.snapshot_cache_ttl_sec == 2.0
+    assert store._cfg.snapshot_force_refresh_ceiling_sec == 30.0
 
 
-def test_build_substrate_store_sparql_backend_reads_snapshot_ttl_env(monkeypatch):
+def test_build_substrate_store_sparql_backend_reads_snapshot_ceiling_env(monkeypatch):
     monkeypatch.setenv("SUBSTRATE_STORE_BACKEND", "sparql")
     monkeypatch.setenv("SUBSTRATE_GRAPH_QUERY_URL", "http://fuseki:3030/orion/query")
     monkeypatch.setenv("SUBSTRATE_GRAPH_UPDATE_URL", "http://fuseki:3030/orion/update")
-    monkeypatch.setenv("SUBSTRATE_SNAPSHOT_CACHE_TTL_SEC", "7.5")
+    monkeypatch.setenv("SUBSTRATE_SNAPSHOT_FORCE_REFRESH_CEILING_SEC", "45.0")
     store = build_substrate_store_from_env()
     assert isinstance(store, SparqlSubstrateStore)
-    assert store._cfg.snapshot_cache_ttl_sec == 7.5
+    assert store._cfg.snapshot_force_refresh_ceiling_sec == 45.0
 
 
-def test_resolve_snapshot_cache_ttl_invalid_value_falls_back_to_default(monkeypatch, caplog):
+def test_resolve_snapshot_force_refresh_ceiling_invalid_value_falls_back_to_default(monkeypatch, caplog):
     import logging
 
     monkeypatch.setenv("SUBSTRATE_STORE_BACKEND", "sparql")
     monkeypatch.setenv("SUBSTRATE_GRAPH_QUERY_URL", "http://fuseki:3030/orion/query")
     monkeypatch.setenv("SUBSTRATE_GRAPH_UPDATE_URL", "http://fuseki:3030/orion/update")
-    monkeypatch.setenv("SUBSTRATE_SNAPSHOT_CACHE_TTL_SEC", "not-a-number")
+    monkeypatch.setenv("SUBSTRATE_SNAPSHOT_FORCE_REFRESH_CEILING_SEC", "not-a-number")
     caplog.set_level(logging.WARNING, logger="orion.substrate.graphdb_store")
     store = build_substrate_store_from_env()
-    assert store._cfg.snapshot_cache_ttl_sec == 2.0
-    assert any("substrate_snapshot_cache_ttl_invalid" in r.message for r in caplog.records)
+    assert store._cfg.snapshot_force_refresh_ceiling_sec == 30.0
+    assert any("substrate_snapshot_force_refresh_ceiling_invalid" in r.message for r in caplog.records)
+
+
+@pytest.mark.parametrize("raw_value", ["nan", "NaN", "-nan", "inf", "-inf"])
+def test_resolve_snapshot_force_refresh_ceiling_non_finite_falls_back_to_default(monkeypatch, caplog, raw_value):
+    """float("nan")/float("inf") parse without raising ValueError, so the plain
+    try/except ValueError guard alone doesn't catch them. A NaN ceiling makes every
+    comparison in snapshot()'s within_ceiling check False, silently disabling the
+    cache entirely (every call goes live) -- the exact regression this whole
+    mechanism exists to prevent. 2026-07-14 review finding."""
+    import logging
+
+    monkeypatch.setenv("SUBSTRATE_STORE_BACKEND", "sparql")
+    monkeypatch.setenv("SUBSTRATE_GRAPH_QUERY_URL", "http://fuseki:3030/orion/query")
+    monkeypatch.setenv("SUBSTRATE_GRAPH_UPDATE_URL", "http://fuseki:3030/orion/update")
+    monkeypatch.setenv("SUBSTRATE_SNAPSHOT_FORCE_REFRESH_CEILING_SEC", raw_value)
+    caplog.set_level(logging.WARNING, logger="orion.substrate.graphdb_store")
+    store = build_substrate_store_from_env()
+    assert store._cfg.snapshot_force_refresh_ceiling_sec == 30.0
+    assert any("substrate_snapshot_force_refresh_ceiling_invalid" in r.message for r in caplog.records)
+
+
+def test_snapshot_zero_ceiling_logs_warning_distinguishing_from_removed_ttl_semantics(monkeypatch, caplog):
+    """The 0 sentinel's meaning inverted between the removed snapshot_cache_ttl_sec
+    (0 = always live) and this field (0 = trust cache forever) -- an operator reusing
+    the old 'set to 0 to force live reads' habit gets the opposite of what they
+    intend. A runtime log is the only signal available short of reading source, since
+    the env var was fully renamed (not aliased). 2026-07-14 review finding."""
+    import logging
+
+    monkeypatch.setenv("SUBSTRATE_SNAPSHOT_FORCE_REFRESH_CEILING_SEC", "0")
+    caplog.set_level(logging.INFO, logger="orion.substrate.graphdb_store")
+    value = _resolve_snapshot_force_refresh_ceiling_sec()
+    assert value == 0.0
+    assert any("substrate_snapshot_force_refresh_ceiling_zero_or_negative" in r.message for r in caplog.records)
+
+
+def test_write_generation_bumps_on_upsert_node_and_edge(monkeypatch):
+    """The counter the whole real-change-detection mechanism relies on: every real
+    write through upsert_node/upsert_edge must bump it, or same_generation would
+    silently paper over a real change."""
+    fake = _FakeGraphDB()
+    monkeypatch.setattr("orion.substrate.graphdb_store.requests.post", fake.post)
+
+    store = GraphDBSubstrateStore(GraphDBSubstrateStoreConfig(endpoint="http://graphdb.local/repositories/collapse"))
+    assert store._write_generation == 0
+
+    record = _sample_record()
+    for node in record.nodes:
+        # identity_key=None is legitimate for upsert_node (it internally guards
+        # _upsert_identity on a truthy check) -- unlike upsert_edge below, which has
+        # no such guard and requires a real key (see the identity-collision note on
+        # test_snapshot_write_between_calls_forces_new_query).
+        store.upsert_node(identity_key=None, node=node)
+    assert store._write_generation >= len(record.nodes)  # at least one bump per node
+
+    gen_before_edge = store._write_generation
+    for i, edge in enumerate(record.edges):
+        store.upsert_edge(identity_key=f"edge-identity-{i}", edge=edge)
+    assert store._write_generation > gen_before_edge

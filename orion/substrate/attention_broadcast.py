@@ -47,6 +47,18 @@ _transition_history: deque[dict[str, Any]] = deque(maxlen=10)
 
 # Recent selected-loop counts for habituation (inhibition-of-return). Capped.
 _recent_selected_counts: dict[str, int] = {}
+# First real-clock moment each loop_id was ever selected. Feeds
+# salience._recency()'s half-life decay -- previously never wired up here,
+# so history.first_seen_at was always an empty dict and _recency() always
+# hit its "never seen before" branch and returned 1.0 unconditionally,
+# forever, for every loop (found live 2026-07-14: a loop verdicted
+# "resolved" on 07-08 and "dismissed" on 07-10 was still winning selection
+# on 07-14 with byte-identical salience_features to the 07-10 snapshot,
+# including recency=1.0). Same in-memory-only, capped-dict lifecycle as
+# _recent_selected_counts -- resets on service restart, consistent with
+# that field's existing, already-accepted behavior; not attempting to add
+# cross-restart persistence here, out of scope for this fix.
+_first_selected_at: dict[str, datetime] = {}
 _MAX_TRACKED_THEMES = 64
 
 # A theme selected at least this many times is "resonating" (stuck) — engage
@@ -54,13 +66,15 @@ _MAX_TRACKED_THEMES = 64
 _RESONANCE_MIN_COUNT = 3
 
 
-def _record_selection(loop_id: str | None) -> None:
+def _record_selection(loop_id: str | None, *, now: datetime | None = None) -> None:
     if not loop_id:
         return
     _recent_selected_counts[loop_id] = _recent_selected_counts.get(loop_id, 0) + 1
+    _first_selected_at.setdefault(loop_id, now or datetime.now(timezone.utc))
     if len(_recent_selected_counts) > _MAX_TRACKED_THEMES:
         drop = min(_recent_selected_counts, key=_recent_selected_counts.get)
         _recent_selected_counts.pop(drop, None)
+        _first_selected_at.pop(drop, None)
 
 
 def _current_history(resonance_theme_keys: set[str] | None = None) -> "SalienceHistory":
@@ -77,6 +91,7 @@ def _current_history(resonance_theme_keys: set[str] | None = None) -> "SalienceH
         dwell_ticks=_dwell_ticks,
         recent_theme_counts=dict(_recent_selected_counts),
         resonance_theme_keys=set(resonance_theme_keys),
+        first_seen_at=dict(_first_selected_at),
     )
 
 
@@ -163,6 +178,14 @@ def build_substrate_attention_frame(
     from orion.substrate.attention.salience import habituation_enabled
 
     lineage = list(belief_lineage or [])
+    # Resolve once, reuse everywhere below -- previously build_open_loops()
+    # (and therefore compute_salience()/_recency()) never received `now` at
+    # all and always defaulted to real wall-clock execution time internally,
+    # decoupled from this frame's own generated_at. Harmless in production
+    # (both were "real now" anyway) but meant recency could never be tested
+    # deterministically, and masked the real bug this patch fixes (see
+    # _first_selected_at above) during development.
+    resolved_now = now or datetime.now(timezone.utc)
     signals = substrate_pressure_signals(nodes, min_salience=min_salience, limit=max_signals)
     merged = merge_signals(signals, limit=max_open * 3)
     history = _current_history() if habituation_enabled() else None
@@ -176,6 +199,7 @@ def build_substrate_attention_frame(
         stale_thread_active=False,
         max_open=max_open,
         history=history,
+        now=resolved_now,
     )
     actions, selected, suppressions, deferred = select_actions(
         open_loops=open_loops,
@@ -186,7 +210,7 @@ def build_substrate_attention_frame(
         stale_thread_active=False,
     )
     frame = AttentionFrameV1(
-        generated_at=now or datetime.now(timezone.utc),
+        generated_at=resolved_now,
         open_loops=open_loops,
         live_unknowns=[loop.description for loop in open_loops if not loop.already_known],
         candidate_actions=actions,
@@ -322,7 +346,9 @@ def broadcast_projection_from_frame(frame: AttentionFrameV1) -> AttentionBroadca
     else:
         stability_score = 0.3
 
-    _record_selection(selected.open_loop_id if selected is not None else None)
+    _record_selection(
+        selected.open_loop_id if selected is not None else None, now=frame.generated_at
+    )
 
     return AttentionBroadcastProjectionV1(
         generated_at=frame.generated_at,

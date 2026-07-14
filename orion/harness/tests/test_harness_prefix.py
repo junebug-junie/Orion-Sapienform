@@ -6,7 +6,7 @@ import pytest
 
 from orion.harness.operator_brief import HARNESS_MOTOR_MAX_READ_LINES, is_relational_motor_stance
 from orion.harness.prefix import compile_harness_prefix, harness_motor_instruction
-from orion.harness.tests.fixtures import make_thought
+from orion.harness.tests.fixtures import make_grounding_capsule, make_thought
 from orion.schemas.cognition.answer_contract import AnswerContract
 from orion.schemas.harness_finalize import HarnessRepairOverlayV1
 from orion.schemas.thought import AutonomySliceV1, StanceHarnessSliceV1
@@ -44,6 +44,42 @@ def test_compile_harness_prefix_includes_autonomy_slice_recent_actions() -> None
         user_message="what have you been doing?",
     )
     assert "Recent actions: inspect: checked substrate graph health" in prompt
+
+
+def test_compile_harness_prefix_includes_context_provenance_when_capsule_has_it() -> None:
+    """The motor has its own tool access (e.g. GitHub MCP file reads) -- the
+    provenance legend has to reach this literal prompt, not just live on an
+    unread GroundingCapsuleV1 field, or a tool-fetched read can still get
+    narrated as live substrate computation. See
+    project_orion_substrate_bridge_confabulation for the incident this closes.
+    """
+    capsule = make_grounding_capsule(
+        context_provenance={
+            "self_state": "live_runtime_projection",
+            "attention_broadcast": "live_runtime_projection",
+            "recall_bundle": "memory_recall",
+        }
+    )
+    thought = make_thought(imperative="Inspect the module.", tone="direct", grounding_capsule=capsule)
+    prompt = compile_harness_prefix(
+        thought,
+        repair_overlay=HarnessRepairOverlayV1(),
+        user_message="what's live right now?",
+    )
+    assert "CONTEXT PROVENANCE" in prompt
+    assert "live now: attention_broadcast, self_state" in prompt
+    assert "retrieved memory: recall_bundle" in prompt
+
+
+def test_compile_harness_prefix_omits_context_provenance_when_capsule_empty() -> None:
+    capsule = make_grounding_capsule(context_provenance={})
+    thought = make_thought(imperative="Inspect the module.", tone="direct", grounding_capsule=capsule)
+    prompt = compile_harness_prefix(
+        thought,
+        repair_overlay=HarnessRepairOverlayV1(),
+        user_message="hi",
+    )
+    assert "CONTEXT PROVENANCE" not in prompt
 
 
 def test_compile_harness_prefix_omits_recent_actions_line_when_empty() -> None:

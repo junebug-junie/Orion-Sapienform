@@ -5,6 +5,7 @@ from typing import Any, Dict
 
 from orion.core.bus.async_service import OrionBusAsync
 from orion.core.bus.bus_schemas import ServiceRef
+from orion.schemas.context_provenance import CONTEXT_PROVENANCE_REGISTRY
 from orion.schemas.thought import GroundingCapsuleV1
 from orion.thought.json_extract import extract_first_json_object_text
 
@@ -57,6 +58,48 @@ def stance_slice_brief_from_step_text(text: str) -> Dict[str, Any]:
     }
 
 
+def _has_content(value: Any) -> bool:
+    """True unless the value carries no evidence at all (None, or an empty
+    dict/list/tuple/set/str). A key present in ctx only via a fallback like
+    ``ctx["pad_frame"] = pad_frame_result or {}`` degrades to an empty
+    container when the live computation didn't run or failed -- classifying
+    that as "live_runtime_projection" would be exactly the false-liveness
+    claim this registry exists to prevent. Falsy scalars (0, 0.0, False) are
+    deliberately NOT excluded here -- e.g. a real eventfulness score of 0.0 is
+    a genuine live result, not evidence of absence.
+    """
+    if value is None:
+        return False
+    if isinstance(value, (dict, list, tuple, set, str)) and len(value) == 0:
+        return False
+    return True
+
+
+def context_provenance_for_ctx(ctx: Dict[str, Any]) -> Dict[str, str]:
+    """Map every ctx key present this turn (with actual content) to its
+    registered source kind.
+
+    Keys with no registry entry (unclassified, not plumbing-exempt) are
+    omitted rather than guessed — see CONTEXT_PROVENANCE_REGISTRY's coverage
+    test for the gate that catches new ctx keys shipping unclassified.
+
+    Cached on ctx itself: this and the chat_stance.py provenance hazard both
+    scan the full registry against ctx once per turn on the live default
+    path (ORION_UNIFIED_GROUNDING_ENABLED=True) -- caching avoids doing that
+    scan twice for the same ctx.
+    """
+    cached = ctx.get("_context_provenance_cache")
+    if isinstance(cached, dict):
+        return cached
+    computed = {
+        key: entry.source_kind
+        for key, entry in CONTEXT_PROVENANCE_REGISTRY.items()
+        if key in ctx and _has_content(ctx.get(key))
+    }
+    ctx["_context_provenance_cache"] = computed
+    return computed
+
+
 def build_grounding_capsule(ctx: Dict[str, Any], *, pcr_ran: bool) -> GroundingCapsuleV1:
     """Assemble the capsule from identity summaries + PCR digests already in ctx."""
     return GroundingCapsuleV1(
@@ -70,6 +113,7 @@ def build_grounding_capsule(ctx: Dict[str, Any], *, pcr_ran: bool) -> GroundingC
             "identity_source": str(ctx.get("identity_kernel_source") or "unknown"),
             "pcr_ran": bool(pcr_ran),
         },
+        context_provenance=context_provenance_for_ctx(ctx),
     )
 
 

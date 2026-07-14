@@ -48,6 +48,33 @@ def _format_autonomy_slice(sl: AutonomySliceV1) -> list[str]:
     return lines
 
 
+_PROVENANCE_LABELS: dict[str, str] = {
+    "live_runtime_projection": "live now",
+    "derived_summary": "derived from context",
+    "memory_recall": "retrieved memory",
+    "static_identity_config": "static identity/config",
+    "user_input": "user input",
+}
+
+
+def _format_context_provenance_block(context_provenance: dict[str, str]) -> list[str]:
+    """One line per source kind present this turn, so the motor (which has its
+    own tool access, e.g. MCP file reads) can tell live substrate signal apart
+    from retrieved/static/tool-fetched content instead of guessing. See
+    project_orion_substrate_bridge_confabulation for the incident this closes:
+    a GitHub file fetch narrated as live computation "this turn"."""
+    if not context_provenance:
+        return []
+    by_kind: dict[str, list[str]] = {}
+    for key, kind in context_provenance.items():
+        by_kind.setdefault(kind, []).append(key)
+    lines = ["CONTEXT PROVENANCE (only 'live now' items are happening this turn)"]
+    for kind in sorted(by_kind):
+        label = _PROVENANCE_LABELS.get(kind, kind)
+        lines.append(f"- {label}: {', '.join(sorted(by_kind[kind]))}")
+    return lines
+
+
 def _format_grounding_self_block(capsule: GroundingCapsuleV1) -> list[str]:
     """Compact motor self block: identity + relationship + continuity/memory only.
 
@@ -63,6 +90,7 @@ def _format_grounding_self_block(capsule: GroundingCapsuleV1) -> list[str]:
     if digest:
         lines.append("DURABLE MEMORY / CONTINUITY")
         lines.append(digest)
+    lines.extend(_format_context_provenance_block(capsule.context_provenance))
     return lines
 
 

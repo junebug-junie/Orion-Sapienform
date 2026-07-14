@@ -1377,6 +1377,41 @@ def _project_self_state_from_beliefs(
     }
 
 
+def _project_context_provenance_hazard(ctx: Dict[str, Any]) -> str | None:
+    """Projection helper: name which of this turn's ctx keys are genuinely
+    live substrate/biometric signal vs. retrieved/static/tool content.
+
+    Reads the shared ``orion.schemas.context_provenance`` registry against
+    whatever keys are actually present in ``ctx`` this turn. Returns a fixed,
+    compact hazard string when any live_runtime_projection key is present, or
+    None otherwise -- exists so a self-referential claim about "what's
+    happening right now" has a ground truth to check against instead of a
+    plausible-sounding guess (see
+    project_orion_substrate_bridge_confabulation for the incident this
+    closes: a GitHub file fetch narrated as live substrate computation).
+
+    Deliberately fixed-length, not enumerating which keys qualify: this
+    string passes through ``_unique()``, which hard-truncates every hazard
+    to 140 chars, and the live-key list can be long enough to push an
+    enumerated message past that limit and cut off the actual instruction.
+    The enumerated version lives in the FCC motor prompt instead (see
+    orion/harness/prefix.py's CONTEXT PROVENANCE block), which has no such
+    length cap.
+    """
+    from .grounding_capsule import context_provenance_for_ctx
+
+    has_live_key = any(
+        kind == "live_runtime_projection"
+        for kind in context_provenance_for_ctx(ctx).values()
+    )
+    if not has_live_key:
+        return None
+    return (
+        "context_provenance: only live_runtime_projection context is "
+        "happening now; recalled/static/tool content is not live."
+    )
+
+
 def _project_reverie_glimpse(ctx: Dict[str, Any]) -> str | None:
     """Projection helper: surface the latest fresh, non-hollow reverie thought.
 
@@ -2510,9 +2545,24 @@ async def build_chat_stance_inputs(ctx: Dict[str, Any]) -> Dict[str, Any]:
     ctx["chat_reasoning_summary"] = reasoning["summary"]
     autonomy = _project_autonomy_from_beliefs(beliefs, ctx) or _load_autonomy_state(ctx)
     self_state_projection = _project_self_state_from_beliefs(beliefs, ctx)
+    context_provenance_hazard = _project_context_provenance_hazard(ctx)
+    # self_state severity and context-provenance are both standing epistemic/
+    # safety signals from this function's own reasoning, not reactive social
+    # hazards -- fold them in together, prepended ahead of the social/
+    # social_bridge hazards already in the list, so _unique(..., limit=8)'s
+    # truncation-in-order falls on the lower-stakes social hazards first
+    # instead of silently evicting one safety signal to make room for the
+    # other (a prior version prepended context_provenance_hazard alone,
+    # which could evict an already-folded self_state severity hazard once
+    # the list was full).
+    priority_hazards: list[str] = []
     if self_state_projection:
-        social["hazards"] = _unique((social.get("hazards") or []) + list(self_state_projection.get("hazards") or []), limit=8)
+        priority_hazards.extend(self_state_projection.get("hazards") or [])
         ctx["chat_self_state_condition"] = self_state_projection.get("overall_condition")
+    if context_provenance_hazard:
+        priority_hazards.append(context_provenance_hazard)
+    if priority_hazards:
+        social["hazards"] = _unique(priority_hazards + list(social.get("hazards") or []), limit=8)
     reverie_glimpse = _project_reverie_glimpse(ctx)
     if reverie_glimpse:
         ctx["chat_reverie_glimpse"] = reverie_glimpse

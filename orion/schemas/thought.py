@@ -52,6 +52,11 @@ class GroundingCapsuleV1(BaseModel):
     belief_digest: str | None = None
     memory_digest: str | None = None
     provenance: dict[str, Any] = Field(default_factory=dict)
+    # key -> ContextSourceKind, for every ctx key present this turn that the
+    # registry (orion.schemas.context_provenance) classifies. Lets Orion (and
+    # any downstream check) tell live substrate signal apart from retrieved
+    # memory, static identity config, or the user's own message.
+    context_provenance: dict[str, str] = Field(default_factory=dict)
 
 
 class AutonomySliceV1(BaseModel):

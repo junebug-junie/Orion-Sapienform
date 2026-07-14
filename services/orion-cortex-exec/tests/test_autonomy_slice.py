@@ -217,3 +217,11 @@ def test_returns_none_when_everything_including_recent_actions_is_empty() -> Non
     assert build_autonomy_slice({}) is None
     assert build_autonomy_slice({"chat_recent_dispatch_actions": []}) is None
     assert build_autonomy_slice({"chat_recent_dispatch_actions": [_dispatch_action(success=False)]}) is None
+
+
+def test_recent_actions_respects_zero_or_negative_limit() -> None:
+    """Regression: the cap check must run before appending, not after --
+    otherwise max_recent_actions=0 still let exactly one entry through."""
+    ctx = {"chat_recent_dispatch_actions": [_dispatch_action(summary="entry one")]}
+    assert build_autonomy_slice(ctx, max_recent_actions=0) is None
+    assert build_autonomy_slice(ctx, max_recent_actions=-1) is None

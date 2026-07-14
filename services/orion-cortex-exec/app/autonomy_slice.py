@@ -79,10 +79,12 @@ def _format_recent_actions(entries: Any, limit: int) -> list[str]:
     ``extract_tensions_from_action_outcome``'s existing success-only
     convention. Never raises; malformed input just yields fewer/no lines.
     """
-    if not isinstance(entries, list):
+    if not isinstance(entries, list) or limit <= 0:
         return []
     out: list[str] = []
     for item in entries:
+        if len(out) >= limit:
+            break
         if not isinstance(item, dict):
             continue
         if item.get("success") is not True:
@@ -95,8 +97,6 @@ def _format_recent_actions(entries: Any, limit: int) -> list[str]:
         if len(line) > _RECENT_ACTION_LINE_MAX_CHARS:
             line = line[:_RECENT_ACTION_LINE_MAX_CHARS]
         out.append(line)
-        if len(out) >= limit:
-            break
     return out
 
 

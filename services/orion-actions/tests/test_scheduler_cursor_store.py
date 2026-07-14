@@ -26,6 +26,21 @@ def test_resolve_scheduler_cursor_store_path_explicit_file(tmp_path: Path) -> No
     assert resolved == target
 
 
+def test_resolve_scheduler_cursor_store_path_degenerate_fallback_stays_tmp() -> None:
+    """The degenerate fallback (both the explicit path and the workflow-schedule-store
+    path empty) is intentionally /tmp/orion-actions, NOT .env_example's durable
+    /data/orion-actions/... default. /data only exists inside the container's bind
+    mount; defaulting the *code-level* fallback to it turns a missing env var into a
+    hard FileNotFoundError in any bare/test/CI context instead of a working (if
+    ephemeral) fallback. .env_example + the docker-compose volume mount are what
+    actually fix the container-bounce bug -- this fallback is last-resort only and
+    must always work unprivileged. Do not "fix" this to /data again without reading
+    docs/superpowers/pr-reports/2026-07-13-journal-notification-flood-fix-pr.md's
+    follow-up section."""
+    resolved = resolve_scheduler_cursor_store_path(None, workflow_schedule_store_path="")
+    assert resolved == Path("/tmp/orion-actions/scheduler_cursors.json")
+
+
 def test_scheduler_cursor_store_round_trip(tmp_path: Path) -> None:
     path = tmp_path / "scheduler_cursors.json"
     store = SchedulerCursorStore(path)

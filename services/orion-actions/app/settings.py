@@ -151,6 +151,14 @@ class Settings(BaseSettings):
     actions_journal_created_channel: str = Field("orion:journal:created", alias="ACTIONS_JOURNAL_CREATED_CHANNEL")
     actions_journal_post_persist_notify_enabled: bool = Field(True, alias="ACTIONS_JOURNAL_POST_PERSIST_NOTIFY_ENABLED")
 
+    # Intentionally /tmp, not .env_example's durable /data/orion-actions/... default:
+    # this is the last-resort fallback for when the env var is genuinely unset (bare
+    # tests, CI, a host without the ${ORION_DATA_ROOT}/orion-actions/state mount) and
+    # must always work unprivileged. /data doesn't exist outside the container's bind
+    # mount, so defaulting to it here turns a missing env var into a hard crash
+    # instead of a (still-correct-when-.env_example-is-honored) ephemeral fallback --
+    # confirmed by a real FileNotFoundError when this was tried (see PR follow-up,
+    # docs/superpowers/pr-reports/2026-07-13-journal-notification-flood-fix-pr.md).
     actions_workflow_schedule_store_path: str = Field("/tmp/orion-actions/workflow_schedules.json", alias="ACTIONS_WORKFLOW_SCHEDULE_STORE_PATH")
     actions_scheduler_cursor_store_path: str = Field("", alias="ACTIONS_SCHEDULER_CURSOR_STORE_PATH")
     actions_workflow_schedule_claim_batch_size: int = Field(10, alias="ACTIONS_WORKFLOW_SCHEDULE_CLAIM_BATCH_SIZE")

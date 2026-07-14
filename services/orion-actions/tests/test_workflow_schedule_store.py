@@ -1,10 +1,32 @@
 from __future__ import annotations
 
 from datetime import datetime, timezone
+from pathlib import Path
 
 from app.workflow_schedule_metrics import WorkflowScheduleMetrics
 from app.workflow_schedule_store import WorkflowScheduleStore
 from orion.schemas.workflow_execution import WorkflowDispatchRequestV1, WorkflowScheduleManageRequestV1, WorkflowScheduleUpdatePatchV1
+
+
+def test_resolve_path_whitespace_fallback_stays_tmp() -> None:
+    """The whitespace/empty-path fallback is intentionally /tmp/orion-actions/
+    workflow_schedules.json, NOT .env_example's durable /data/orion-actions/...
+    default. /data only exists inside the container's bind mount; defaulting this
+    code-level fallback to it turns a missing/blank env var into a hard
+    FileNotFoundError in any bare/test/CI context. .env_example + the docker-compose
+    volume mount are what actually fix the container-bounce bug -- this fallback is
+    last-resort only and must always work unprivileged. Do not "fix" this to /data
+    again without reading
+    docs/superpowers/pr-reports/2026-07-13-journal-notification-flood-fix-pr.md's
+    follow-up section.
+
+    Note: an *empty* string does not exercise this branch -- Path("").expanduser()
+    stringifies to "." (cwd), which is truthy and also happens to already exist as a
+    directory, so _resolve_path("") short-circuits to "./workflow_schedules.json"
+    before ever reaching the fallback assignment. Only a whitespace-only string
+    reaches it (str(Path(" ")).strip() == "")."""
+    resolved = WorkflowScheduleStore._resolve_path("   ")
+    assert resolved == Path("/tmp/orion-actions/workflow_schedules.json")
 
 
 def _dispatch(request_id: str, *, workflow_id: str = "journal_pass", recurring: bool = False) -> WorkflowDispatchRequestV1:

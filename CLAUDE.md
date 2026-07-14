@@ -1059,3 +1059,16 @@ Do not pad. Do not hand-wave. Do not hide uncertainty. Speak simply.
 When something is broken, say what is broken and where.
 
 End with the next action.
+
+## graphify
+
+This project has a knowledge graph at graphify-out/ with god nodes, community structure, and cross-file relationships.
+
+Rules:
+- For codebase questions, first run `graphify query "<question>"` when graphify-out/graph.json exists. Use `graphify path "<A>" "<B>"` for relationships and `graphify explain "<concept>"` for focused concepts. These return a scoped subgraph, usually much smaller than GRAPH_REPORT.md or raw grep output.
+- If graphify-out/wiki/index.md exists, use it for broad navigation instead of raw source browsing.
+- Read graphify-out/GRAPH_REPORT.md only for broad architecture review or when query/path/explain do not surface enough context.
+- After modifying code, run `graphify update .` to keep the graph current (AST-only, no API cost).
+- Before starting new work or opening a PR, run `graphify prs --worktrees` to see the live worktree → branch → PR mapping, and `graphify prs --conflicts` to check whether an open PR shares graph communities with what you're about to touch (merge-order risk, not just file-level collision). This is read-only reporting, safe to run any time.
+- When a `graphify query`/`path`/`explain` result turns out useful, wrong, or needed correction, record it: `graphify save-result --question "Q" --answer "A" --nodes Foo Bar --outcome useful|dead_end|corrected`. Run `graphify reflect --if-stale` occasionally to aggregate recorded outcomes into `graphify-out/reflections/LESSONS.md` (cheap no-op if nothing changed). This only builds real value if actually used consistently — an unused save-result is just as inert as an unread report.
+- Not installed: MCP server mode. Considered and deliberately skipped — persistent tool-schema context cost for every session outweighed the benefit over the PreToolUse nudge approach already in place.

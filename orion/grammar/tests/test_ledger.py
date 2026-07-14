@@ -3,7 +3,7 @@ from __future__ import annotations
 from datetime import datetime, timezone
 from unittest.mock import MagicMock, patch
 
-from orion.grammar.ledger import apply_grammar_event, apply_grammar_trace_batch
+from orion.grammar.ledger import _upsert_trace, apply_grammar_event, apply_grammar_trace_batch
 from orion.schemas.grammar import GrammarAtomV1, GrammarEventV1, GrammarProvenanceV1
 
 
@@ -60,3 +60,54 @@ def test_trace_batch_dedupes_existing_event_ids() -> None:
 
     session.execute.return_value.fetchall.return_value = [("evt:1",)]
     assert apply_grammar_event(session, event) is True
+
+
+def test_trace_started_prefers_observed_at_over_emitted_at() -> None:
+    """started_at/ended_at should reflect real occurrence time (observed_at,
+    via _created_at()'s existing fallback chain) not bus-publish time
+    (emitted_at, uniform across one flush batch by design -- never a
+    meaningful trace-duration signal). Found by review 2026-07-14: this was
+    previously hardcoded to emitted_at, which is why grammar_traces.started_at/
+    ended_at collapsed to zero duration even for producers with real
+    per-atom observed_at."""
+    session = MagicMock()
+    emitted = datetime(2026, 1, 1, 0, 0, 0, tzinfo=timezone.utc)
+    observed = datetime(2026, 1, 1, 0, 0, 5, tzinfo=timezone.utc)
+    event = GrammarEventV1(
+        event_id="evt:1",
+        event_kind="trace_started",
+        trace_id="trace:t1",
+        emitted_at=emitted,
+        observed_at=observed,
+        provenance=GrammarProvenanceV1(source_service="test"),
+    )
+
+    _upsert_trace(session, event)
+
+    stmt = session.execute.call_args[0][0]
+    params = stmt.compile().params
+    assert params["started_at"] == observed
+    assert params["started_at"] != emitted
+
+
+def test_trace_started_falls_back_to_emitted_at_when_observed_at_missing() -> None:
+    """Producers that don't populate observed_at (or haven't been fixed to
+    populate it accurately yet) must not regress -- _created_at()'s existing
+    fallback chain (observed_at or emitted_at or now()) already handles
+    this; this test locks that behavior in for _upsert_trace specifically."""
+    session = MagicMock()
+    emitted = datetime(2026, 1, 1, 0, 0, 0, tzinfo=timezone.utc)
+    event = GrammarEventV1(
+        event_id="evt:1",
+        event_kind="trace_started",
+        trace_id="trace:t1",
+        emitted_at=emitted,
+        observed_at=None,
+        provenance=GrammarProvenanceV1(source_service="test"),
+    )
+
+    _upsert_trace(session, event)
+
+    stmt = session.execute.call_args[0][0]
+    params = stmt.compile().params
+    assert params["started_at"] == emitted

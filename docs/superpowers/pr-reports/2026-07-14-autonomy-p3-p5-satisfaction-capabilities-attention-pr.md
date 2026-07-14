@@ -124,14 +124,13 @@ Before this patch:
 - Removed keys: none.
 - Renamed keys: none.
 - **Changed key value** (`.env_example` updated): `BUS_INTAKE_CHANNELS` gains `"orion:autonomy:action:outcome"` in `services/orion-spark-concept-induction/.env_example`.
-- local `.env` synced: **N/A -- no local `.env` exists in this worktree** (checked: `services/orion-spark-concept-induction/.env` does not exist here). `scripts/sync_local_env_from_example.py` has nothing to do in this worktree.
-- **Skipped keys requiring operator action**: the **live, deployed** `.env` for `orion-spark-concept-induction` (in the shared main checkout, which this session does not write to directly per the established "main checkout is shared across concurrent sessions" rule) almost certainly still has the old `BUS_INTAKE_CHANNELS` value, because `Pydantic`'s `List[str]` field with a `validation_alias` **replaces** the Python code default entirely when the env var is set -- it does not merge. **Until an operator applies this change to the live `.env`, P3's entire satisfaction-tension pipeline (the DriveEngine relief fix, the new tension extractor, the self-publish filter) is built, tested, and reviewed, but the worker will never actually subscribe to the channel that feeds it.**
-
-  Required operator action -- add `"orion:autonomy:action:outcome"` to the existing `BUS_INTAKE_CHANNELS` JSON list in the live `services/orion-spark-concept-induction/.env`:
+- local `.env` synced: **no local `.env` exists in this worktree** (only `.env_example` is tracked/branched). The live `.env` lives in the shared main checkout at `services/orion-spark-concept-induction/.env` -- `scripts/sync_local_env_from_example.py --all-keys` was run from the main checkout, but it reads the main checkout's *own* `.env_example` (still on `main`, pre-this-branch) to decide what's "correct," so it could not see this branch's `BUS_INTAKE_CHANNELS` addition and reported no divergence for that key. The script did apply several unrelated missing-key adds from origination config that were already sitting undone in the live `.env` (`ORION_ENDOGENOUS_ORIGINATION_ENABLED=false` + its tuning keys, matching `.env_example` exactly -- pre-existing drift, not part of this patch, all default-off).
+  `BUS_INTAKE_CHANNELS` was therefore **updated by hand** in the live `services/orion-spark-concept-induction/.env` (gitignored, not committed, verified via `git check-ignore`) to add `"orion:autonomy:action:outcome"`, matching this branch's `.env_example` exactly:
   ```
   BUS_INTAKE_CHANNELS=["orion:chat:history:log","orion:chat:history:turn","orion:chat:social:turn","orion:chat:social:stored","orion:chat:gpt:turn","orion:chat:gpt:message:log","orion:collapse:sql-write","orion:spark:telemetry","orion:metacognition:tick","orion:cognition:trace","orion:substrate:self_state","orion:feedback:frame","orion:world_pulse:run:result","orion:autonomy:action:outcome"]
   ```
-  Confirmed via `scripts/check_service_env_compose_parity.py orion-spark-concept-induction`: this service's `docker-compose.yml` uses `env_file:`, so the full `.env` reaches the container regardless of the `environment:` list -- the only gap is the `.env` file's own content, not compose wiring.
+  Confirmed via `scripts/check_service_env_compose_parity.py orion-spark-concept-induction`: this service's `docker-compose.yml` uses `env_file:`, so the full `.env` reaches the container regardless of the `environment:` list -- no compose change needed. P3's satisfaction-tension pipeline will subscribe correctly on next container restart (see Restart required below); no further operator action needed for this key.
+- **Skipped keys requiring operator action**: none for this patch.
 
 ## Tests run
 
@@ -291,20 +290,11 @@ docker compose \
 `orion-execution-dispatch-runtime` itself has no code changes in this patch
 (only its README changed) -- no restart needed for that service.
 
-**Before restarting `orion-spark-concept-induction`, apply the live-`.env`
-operator action documented under Env/config changes above** -- restarting
-with the old `BUS_INTAKE_CHANNELS` value ships P3's code with the
-subscription still missing.
+The live `.env`'s `BUS_INTAKE_CHANNELS` was already updated by hand (see Env/config
+changes above), so restarting `orion-spark-concept-induction` with this branch's
+code is sufficient -- no separate operator step required.
 
 ## Risks / concerns
-
-- Severity: HIGH (operator-action-dependent, not code-dependent)
-  Concern: P3's satisfaction-tension pipeline is inert until the live `.env`'s
-  `BUS_INTAKE_CHANNELS` is updated by an operator (this session did not and
-  should not write to the shared main checkout's live `.env` directly).
-  Mitigation: exact key/value diff provided above; `check_service_env_compose_parity.py`
-  confirms no other config surface (compose `environment:` list) needs a
-  matching change.
 
 - Severity: MEDIUM (accepted, named)
   Concern: double-tension-fire risk between the feedback-frame and

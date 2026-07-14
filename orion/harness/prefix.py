@@ -54,7 +54,6 @@ _PROVENANCE_LABELS: dict[str, str] = {
     "memory_recall": "retrieved memory",
     "static_identity_config": "static identity/config",
     "user_input": "user input",
-    "external_tool_fetch": "fetched via tool call",
 }
 
 

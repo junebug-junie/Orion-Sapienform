@@ -22,8 +22,16 @@ ContextSourceKind = Literal[
     "memory_recall",
     "static_identity_config",
     "user_input",
-    "external_tool_fetch",
 ]
+# Deliberately no "external_tool_fetch" kind yet: the literal incident this
+# registry was built for (a GitHub MCP fetch narrated as live computation)
+# happens at the harness/agent-session level, invisible to this repo's own
+# ctx dict -- orion/harness/fcc_motor.py's tool-result formatting
+# (_tool_result_body_text / _summarize_content_blocks) is where that content
+# actually gets produced, and nothing here tags it. A kind with no producer
+# and no consumer is exactly the "names the world without changing what
+# Orion can perceive" pattern AGENTS.md bans -- add it back only alongside
+# that wiring, not before.
 
 
 class ContextKeyProvenance(BaseModel):
@@ -159,6 +167,8 @@ PLUMBING_KEYS: frozenset[str] = frozenset(
         "metacog_enrich_prompt_chars",
         "metacog_enrich_section_sizes",
         "metacog_entry_id",
+        # memoization for context_provenance_for_ctx itself, not turn content:
+        "_context_provenance_cache",
     }
 )
 

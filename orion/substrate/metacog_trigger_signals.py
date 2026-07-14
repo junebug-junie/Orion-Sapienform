@@ -133,11 +133,18 @@ def build_metacog_substrate_cue(
     )
     if ev.reasons:
         parts.append(f"eventfulness={ev.score:.2f} ({'; '.join(ev.reasons[:3])})")
-    if parts:
-        # self_state, execution_trajectory_projection, and the eventfulness
-        # score derived from them are all registered live_runtime_projection --
-        # one suffix for the whole cue, not just the first clause, so every
-        # segment carries the same provenance signal.
-        parts.append(f"(source={classify('self_state')})")
-    cue = " | ".join(parts)
-    return cue[:max_chars] if len(cue) > max_chars else cue
+    if not parts:
+        return ""
+    # self_state, execution_trajectory_projection, and the eventfulness score
+    # derived from them are all registered live_runtime_projection -- one
+    # suffix for the whole cue. Budget is reserved for it and it's appended
+    # after truncation, not before: on an eventful turn the joined clauses can
+    # already approach max_chars, and a tag appended before truncation is the
+    # first thing a tail-truncate cuts, silently dropping the provenance
+    # signal on exactly the turns most likely to need it.
+    tag = f" (source={classify('self_state')})"
+    body = " | ".join(parts)
+    budget = max_chars - len(tag)
+    if len(body) > budget:
+        body = body[:budget]
+    return body + tag

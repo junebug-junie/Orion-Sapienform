@@ -47,6 +47,34 @@ def test_context_provenance_for_ctx_omits_unregistered_keys() -> None:
     assert context_provenance_for_ctx(ctx) == {}
 
 
+def test_context_provenance_for_ctx_excludes_empty_fallback_values() -> None:
+    # ctx["pad_frame"] = pad_frame_result or {} degrades to an empty dict when
+    # the live computation didn't run or failed -- must not be classified as
+    # "live_runtime_projection" just because the key is present.
+    ctx = {
+        "self_state": {"overall_condition": "steady"},
+        "pad_frame": {},
+        "system_alert_tags": [],
+        "belief_digest": None,
+        "substrate_eventfulness_score": 0.0,
+    }
+    provenance = context_provenance_for_ctx(ctx)
+    assert provenance == {
+        "self_state": "live_runtime_projection",
+        # a real live score of exactly 0.0 is genuine content, not absence:
+        "substrate_eventfulness_score": "live_runtime_projection",
+    }
+
+
+def test_context_provenance_for_ctx_caches_on_ctx() -> None:
+    ctx = {"self_state": {"overall_condition": "steady"}}
+    first = context_provenance_for_ctx(ctx)
+    assert ctx["_context_provenance_cache"] is first
+    ctx["self_state"] = {"overall_condition": "strained"}  # mutate after caching
+    second = context_provenance_for_ctx(ctx)
+    assert second is first  # cache reused, not recomputed
+
+
 def test_build_grounding_capsule_identity_only_when_pcr_missing() -> None:
     ctx = {
         "orion_identity_summary": ["I am Oríon."],

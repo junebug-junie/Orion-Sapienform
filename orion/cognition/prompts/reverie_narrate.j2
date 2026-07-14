@@ -40,6 +40,15 @@ SOURCE (bounded internal input — the current winning coalition)
 - open_loops: {{ open_loops }}
 {% endif %}
 
+ALREADY-SETTLED LOOPS (read this before you narrate urgency)
+- Some entries in open_loops carry an "outcome" field: {"verdict": "resolved" |
+  "dismissed" | "decayed_unattended", "note": "...", "age_days": N}. That verdict
+  was recorded by a human closing this loop — it is ground truth, not a guess.
+- If the loop you are about to narrate has an "outcome", you MUST describe it as
+  settled, past-tense, closed N days ago — never as an open struggle, an active
+  strain, or something "requiring sustained attention". It is still showing up in
+  the coalition because of scoring, not because it is actually still live.
+
 GROUNDING DISCIPLINE (the anti-hollow rule — this is the whole point)
 - There is no user question anchoring you, so you must anchor yourself.
 - interpretation MUST be about THESE coalition ids — what recurs, what strains,

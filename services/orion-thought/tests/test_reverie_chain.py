@@ -49,7 +49,9 @@ def _step_always(salience=0.8):
 
 def test_theme_key_prefers_selected_loop():
     from app import chain
-    assert chain.theme_key_for(_thought().coalition) == "loop:ol-1"
+    # Bare loop id — must match attention_loops_store.suppress_loop's key format
+    # (orion-hub) so a human's Resolve/Dismiss action actually suppresses this chain.
+    assert chain.theme_key_for(_thought().coalition) == "ol-1"
 
 
 def test_theme_key_none_is_unknown():
@@ -106,7 +108,7 @@ async def test_chain_none_when_no_coalition():
 async def test_chain_suppressed_by_refractory():
     from app import chain
     store = chain.InMemoryRefractoryStore()
-    store.suppress("loop:ol-1", NOW + timedelta(seconds=600))
+    store.suppress("ol-1", NOW + timedelta(seconds=600))
     c = await chain.run_reverie_chain(
         AsyncMock(), step_fn=_step_always(), refractory_store=store,
         broadcast_reader=_broadcast, publish=False, now_fn=lambda: NOW,
@@ -122,7 +124,7 @@ async def test_chain_suppresses_theme_after_completion():
         AsyncMock(), step_fn=_step_always(), refractory_store=store,
         broadcast_reader=_broadcast, max_steps=2, refractory_sec=900, publish=False, now_fn=lambda: NOW,
     )
-    assert store.is_suppressed("loop:ol-1", NOW) is True
+    assert store.is_suppressed("ol-1", NOW) is True
 
 
 @pytest.mark.asyncio

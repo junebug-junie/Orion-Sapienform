@@ -85,11 +85,21 @@ class DbRefractoryStore:
 
 
 def theme_key_for(coalition: Any) -> str:
-    """Deterministic theme key for a coalition — the unit refractory acts on."""
+    """Deterministic theme key for a coalition — the unit refractory acts on.
+
+    A loop-selected theme key is the *bare* loop id — deliberately matching
+    `attention_salience_trace.theme_key` and `attention_loops_store.suppress_loop`
+    (both orion-hub), which already write/read this same
+    `substrate_reverie_refractory` table keyed by bare loop id. A chain must see
+    the refractory suppression a human's Resolve/Dismiss action in the Hub just
+    wrote, or a closed loop keeps re-igniting chains indefinitely. (Previously
+    prefixed `loop:...` — a format only this function ever wrote or read, so it
+    silently never matched the Hub's suppression writes.)
+    """
     if coalition is None:
         return "unknown"
     if getattr(coalition, "selected_open_loop_id", None):
-        return f"loop:{coalition.selected_open_loop_id}"
+        return str(coalition.selected_open_loop_id)
     attended = sorted(getattr(coalition, "attended_node_ids", []) or [])
     if attended:
         return "nodes:" + ",".join(attended)

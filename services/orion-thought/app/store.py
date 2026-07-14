@@ -14,7 +14,8 @@ from __future__ import annotations
 import json
 import logging
 import os
-from typing import TYPE_CHECKING
+from datetime import datetime, timezone
+from typing import TYPE_CHECKING, Any
 
 logger = logging.getLogger("orion-thought.store")
 
@@ -314,6 +315,56 @@ def reverie_refractory_is_suppressed(theme_key: str, now) -> bool:
         return until is not None and until > now
     except Exception:
         return False
+
+
+def load_recent_loop_outcomes(loop_ids: list[str]) -> dict[str, dict[str, Any]]:
+    """Most recent `attention_loop_outcome` verdict per loop_id (orion-hub table,
+    written by a human's Resolve/Dismiss action; read directly, no orion-hub import).
+
+    Read-only, best-effort — returns {} on any miss or empty input, so a lookup
+    failure never breaks a reverie tick. Keyed by the *bare* loop id, matching
+    `attention_loops_store.suppress_loop`'s write format (see `chain.theme_key_for`
+    for the sibling refractory-key fix this mirrors).
+
+    Returns {loop_id: {"verdict": str, "note": str, "age_days": int}} — age is
+    computed here (deterministic code), not left for the prompt/LLM to infer from
+    a raw timestamp.
+    """
+    ids = [str(i) for i in (loop_ids or []) if i]
+    if not ids:
+        return {}
+    try:
+        from sqlalchemy import bindparam, text
+
+        engine = _get_engine()
+        stmt = text(
+            """
+            SELECT DISTINCT ON (loop_id) loop_id, verdict, note, created_at
+            FROM attention_loop_outcome
+            WHERE loop_id IN :ids
+            ORDER BY loop_id, created_at DESC
+            """
+        ).bindparams(bindparam("ids", expanding=True))
+        with engine.connect() as conn:
+            rows = conn.execute(stmt, {"ids": ids}).mappings().all()
+    except Exception as exc:
+        logger.debug("loop outcome load failed ids=%s err=%s", ids, exc)
+        return {}
+
+    now = datetime.now(timezone.utc)
+    out: dict[str, dict[str, Any]] = {}
+    for r in rows:
+        created = r.get("created_at")
+        age_days = None
+        if isinstance(created, datetime):
+            c = created if created.tzinfo else created.replace(tzinfo=timezone.utc)
+            age_days = max(0, int((now - c).total_seconds() // 86400))
+        out[str(r["loop_id"])] = {
+            "verdict": str(r.get("verdict") or ""),
+            "note": str(r.get("note") or ""),
+            "age_days": age_days,
+        }
+    return out
 
 
 def reverie_refractory_suppress(theme_key: str, until) -> bool:

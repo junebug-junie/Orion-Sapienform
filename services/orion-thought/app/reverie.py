@@ -41,7 +41,7 @@ from orion.schemas.thought import CoalitionSnapshotV1
 from .bus_listener import extract_stance_react_payload
 from .cortex_client import CortexExecClient
 from .settings import settings
-from .store import persist_reverie_thought, persist_salience_trace
+from .store import load_recent_loop_outcomes, persist_reverie_thought, persist_salience_trace
 
 logger = logging.getLogger("orion-thought.reverie")
 
@@ -194,22 +194,32 @@ def build_salience_trace(
     )
 
 
-def _open_loops_for_prompt(broadcast: AttentionBroadcastProjectionV1) -> list[dict[str, Any]]:
-    return [
-        {
+def _open_loops_for_prompt(
+    broadcast: AttentionBroadcastProjectionV1,
+    *,
+    loop_outcomes: dict[str, dict[str, Any]] | None = None,
+) -> list[dict[str, Any]]:
+    outcomes = loop_outcomes or {}
+    entries = []
+    for loop in broadcast.frame.open_loops:
+        entry: dict[str, Any] = {
             "id": loop.id,
             "description": loop.description,
             "why_it_matters": loop.why_it_matters,
             "target_type": loop.target_type,
         }
-        for loop in broadcast.frame.open_loops
-    ]
+        outcome = outcomes.get(loop.id)
+        if outcome:
+            entry["outcome"] = outcome
+        entries.append(entry)
+    return entries
 
 
 def build_reverie_context(
     broadcast: AttentionBroadcastProjectionV1,
     *,
     concern_cards: list[ConcernCardV1] | None = None,
+    loop_outcomes: dict[str, dict[str, Any]] | None = None,
 ) -> dict[str, Any]:
     if concern_cards:
         coalition_refs = coalition_audit_refs(broadcast)
@@ -234,7 +244,7 @@ def build_reverie_context(
             "coalition_stability_score": broadcast.coalition_stability_score,
             "dwell_ticks": broadcast.dwell_ticks,
         },
-        "open_loops": _open_loops_for_prompt(broadcast),
+        "open_loops": _open_loops_for_prompt(broadcast, loop_outcomes=loop_outcomes),
         "metadata": {"mode": "reverie", "llm_profile": "brain"},
     }
 
@@ -244,6 +254,7 @@ def build_reverie_plan_request(
     *,
     correlation_id: str,
     concern_cards: list[ConcernCardV1] | None = None,
+    loop_outcomes: dict[str, dict[str, Any]] | None = None,
 ) -> PlanExecutionRequest:
     use_lift = settings.reverie_semantic_lift_enabled and bool(concern_cards)
     mode = "metacog" if use_lift else "brain"
@@ -262,7 +273,9 @@ def build_reverie_plan_request(
             trigger_source=settings.service_name,
             extra=extra,
         ),
-        context=build_reverie_context(broadcast, concern_cards=concern_cards),
+        context=build_reverie_context(
+            broadcast, concern_cards=concern_cards, loop_outcomes=loop_outcomes
+        ),
     )
 
 
@@ -364,10 +377,16 @@ async def run_reverie_once(
         ),
     )
     try:
+        loop_outcomes: dict[str, dict[str, Any]] | None = None
+        if not (settings.reverie_semantic_lift_enabled and concern_cards):
+            loop_outcomes = load_recent_loop_outcomes(
+                [loop.id for loop in broadcast.frame.open_loops]
+            )
         plan_request = build_reverie_plan_request(
             broadcast,
             correlation_id=correlation_id,
             concern_cards=concern_cards,
+            loop_outcomes=loop_outcomes,
         )
         exec_result = await client.execute_plan(
             source=_source(),

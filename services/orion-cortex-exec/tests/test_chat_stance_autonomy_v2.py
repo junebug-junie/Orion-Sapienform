@@ -165,6 +165,63 @@ async def test_chat_stance_autonomy_v2_reducer_exception_swallowed(monkeypatch) 
     assert isinstance(ctx.get("chat_autonomy_summary"), dict)
 
 
+def _fake_action_outcome():
+    return {
+        "kind": "inspect",
+        "summary": "checked substrate graph health",
+        "success": True,
+        "observed_at": "2026-07-14T00:00:00+00:00",
+    }
+
+
+@pytest.mark.asyncio
+async def test_chat_stance_recent_actions_survive_when_reducer_disabled(monkeypatch) -> None:
+    """Regression: recent_actions must reach ctx["autonomy_slice"] even when
+    AUTONOMY_STATE_V2_REDUCER_ENABLED is off -- it has nothing to do with the
+    V2 reducer's health, per this block's own documented intent."""
+    monkeypatch.setattr(chat_stance, "load_action_outcomes", lambda subject: [_fake_action_outcome()])
+    monkeypatch.delenv("AUTONOMY_STATE_V2_REDUCER_ENABLED", raising=False)
+    ctx: dict = {"user_message": "hello"}
+    await chat_stance.build_chat_stance_inputs(ctx)
+    assert "chat_autonomy_state_v2" not in ctx
+    slice_ = ctx.get("autonomy_slice")
+    assert slice_ is not None
+    assert slice_["recent_actions"] == ["inspect: checked substrate graph health"]
+
+
+@pytest.mark.asyncio
+async def test_chat_stance_recent_actions_survive_when_reducer_throws(monkeypatch) -> None:
+    """Regression: an unrelated V2 reducer exception must not take
+    recent_actions down with it -- the dispatch-action evidence was already
+    fetched successfully, outside the reducer's try/except, before this
+    diff's fix moved build_autonomy_slice() out of that block too."""
+    state = AutonomyStateV1(
+        subject="orion",
+        model_layer="self-model",
+        entity_id="self:orion",
+        dominant_drive="coherence",
+        drive_pressures={"coherence": 0.4},
+        active_drives=["coherence"],
+        tension_kinds=[],
+        goal_headlines=[],
+        source="graph",
+    )
+    monkeypatch.setattr(chat_stance, "_load_autonomy_state", lambda _ctx: _fake_autonomy_bundle(state))
+    monkeypatch.setattr(chat_stance, "load_action_outcomes", lambda subject: [_fake_action_outcome()])
+    monkeypatch.setenv("AUTONOMY_STATE_V2_REDUCER_ENABLED", "true")
+
+    def _boom(*_a, **_k):
+        raise RuntimeError("reducer failure")
+
+    monkeypatch.setattr(chat_stance, "reduce_autonomy_state", _boom)
+    ctx: dict = {"user_message": "hello"}
+    await chat_stance.build_chat_stance_inputs(ctx)
+    assert "chat_autonomy_state_v2" not in ctx
+    slice_ = ctx.get("autonomy_slice")
+    assert slice_ is not None
+    assert slice_["recent_actions"] == ["inspect: checked substrate graph health"]
+
+
 @pytest.mark.asyncio
 async def test_chat_stance_empty_repo_omits_reasoning_quality_evidence(monkeypatch) -> None:
     state = AutonomyStateV1(

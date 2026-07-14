@@ -2568,6 +2568,15 @@ async def build_chat_stance_inputs(ctx: Dict[str, Any]) -> Dict[str, Any]:
         if drive_state_projection:
             inputs["drive_state"] = drive_state_projection
 
+    # Queries load_action_outcomes(subject="orion") directly (see
+    # _project_recent_dispatch_actions' docstring) rather than reading ctx, so
+    # it is unconditional -- independent of AUTONOMY_STATE_V2_REDUCER_ENABLED
+    # below. Computed here (before that gated block) so build_autonomy_slice()
+    # can fold it into recent_actions when the V2 reducer is enabled, while
+    # chat_general.j2's direct read of ctx["chat_recent_dispatch_actions"]
+    # keeps working unchanged either way. Fail-open: [] on any failure.
+    ctx["chat_recent_dispatch_actions"] = _project_recent_dispatch_actions(ctx)
+
     if os.getenv("AUTONOMY_STATE_V2_REDUCER_ENABLED", "").strip().lower() == "true":
         try:
             v2_result = await _run_autonomy_reducer(
@@ -2590,18 +2599,14 @@ async def build_chat_stance_inputs(ctx: Dict[str, Any]) -> Dict[str, Any]:
             # renders its prompt. router.py's post-hoc metadata attach (for the
             # harness-prefix/ThoughtEventV1 path) reads this same ctx key later
             # in the same turn -- it does not need to recompute it.
-            autonomy_slice = build_autonomy_slice(ctx)
+            # max_recent_actions is passed explicitly (this file's own
+            # _MAX_RECENT_DISPATCH_ACTIONS) so the cap has one source of truth
+            # rather than a second hardcoded "3" living inside autonomy_slice.py.
+            autonomy_slice = build_autonomy_slice(ctx, max_recent_actions=_MAX_RECENT_DISPATCH_ACTIONS)
             if autonomy_slice is not None:
                 ctx["autonomy_slice"] = autonomy_slice.model_dump(mode="json")
         except Exception as exc:
             logger.warning("autonomy_reducer_v2_failed error=%s", exc)
-
-    # Queries load_action_outcomes(subject="orion") directly (see
-    # _project_recent_dispatch_actions' docstring) rather than reading ctx,
-    # so placement here isn't order-dependent on the V2 reducer block above --
-    # kept in this general area only for proximity to the other stance
-    # context-building calls. Fail-open: [] on any failure.
-    ctx["chat_recent_dispatch_actions"] = _project_recent_dispatch_actions(ctx)
 
     if attention_frame_enabled():
         try:

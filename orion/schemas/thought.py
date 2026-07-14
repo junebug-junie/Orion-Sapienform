@@ -56,7 +56,8 @@ class GroundingCapsuleV1(BaseModel):
 
 class AutonomySliceV1(BaseModel):
     """Compact, post-hoc-attached projection of Orion's own current drive/tension
-    state (autonomy V2 reducer output), not authored by the LLM."""
+    state (autonomy V2 reducer output) and recent self-directed action outcomes
+    (Layer 9 dispatch), not authored by the LLM."""
 
     schema_version: Literal["autonomy.slice.v1"] = "autonomy.slice.v1"
     dominant_drive: str | None = None
@@ -65,6 +66,11 @@ class AutonomySliceV1(BaseModel):
     active_tensions: list[str] = Field(default_factory=list)
     pressure_trend: str | None = None
     confidence: float | None = None
+    # Compact, one-line-per-entry summaries of recent successful Layer-9
+    # dispatch outcomes. Same cap discipline as active_tensions (at most
+    # _MAX_RECENT_DISPATCH_ACTIONS entries) -- not enforced at this layer,
+    # callers are responsible for the bound.
+    recent_actions: list[str] = Field(default_factory=list)
 
 
 class ThoughtEventV1(BaseModel):

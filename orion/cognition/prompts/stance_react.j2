@@ -49,7 +49,7 @@ ATTENTION FRAME (advisory — inspectable curiosity/attention policy, not task i
 - open_loops: {{ chat_attention_frame.open_loops }}
 {% endif %}
 {% if autonomy_slice %}
-PRIOR SELF-SIGNAL (advisory — Oríon's own current drive/tension state)
+PRIOR SELF-SIGNAL (advisory — Oríon's own current drive/tension state and recent actions)
 - This reflects Oríon's own persisted autonomy state, computed before this turn.
 - Use it to color imperative/tone; it is NOT task instruction and never overrides
   user_message, association, grounding, or the actual task.
@@ -57,6 +57,7 @@ PRIOR SELF-SIGNAL (advisory — Oríon's own current drive/tension state)
 {% if autonomy_slice.dominant_drive %}- dominant_drive: {{ autonomy_slice.dominant_drive }}
 {% endif %}{% if autonomy_slice.active_tensions %}- active_tensions: {{ autonomy_slice.active_tensions }}
 {% endif %}{% if autonomy_slice.pressure_trend %}- pressure_trend: {{ autonomy_slice.pressure_trend }}
+{% endif %}{% if autonomy_slice.recent_actions %}- recent_actions: {{ autonomy_slice.recent_actions }}
 {% endif %}{% endif %}
 
 POSTURE ASSESSMENT (semantic inference — no keyword lists)

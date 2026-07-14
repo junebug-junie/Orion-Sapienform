@@ -1,0 +1,84 @@
+#!/bin/sh
+# orion-git-safety-guard
+#
+# Refuses commits made from the shared/primary git checkout of this repo.
+# Concurrent AI coding-agent sessions (and humans) MUST use `git worktree`
+# for any writing/building/running work. This hook is the deterministic
+# gate for that policy -- see AGENTS.md section 2 ("Clean git and worktree
+# rules") for the human-readable rationale.
+#
+# Escape hatch: set ORION_ALLOW_SHARED_CHECKOUT_WRITE=1 for a genuinely
+# intentional commit from the primary checkout.
+#
+# POSIX sh only -- no bashisms (no arrays, no [[ ]]).
+
+# --- Safety: never interfere with an in-progress rebase/merge/cherry-pick ---
+# `git rebase --continue`/`git merge`/`git cherry-pick --continue` create
+# commits internally as part of their own machinery, and this hook still
+# fires for those. Blocking them here would break the rebase/merge itself
+# with no way through except --no-verify, which this repo's own rules
+# forbid. So these states are let through unconditionally -- KNOWN GAP: if
+# a rebase/merge/cherry-pick is started directly in the shared checkout
+# (which this hook does not gate -- it only gates `git commit`, not
+# `git rebase`/`git merge` themselves), every commit it replays bypasses
+# the guard below for the whole sequence. A warning is printed so this
+# isn't silent; closing the gap fully would need to distinguish "this
+# sequence was started from a worktree" from "started here", which none of
+# rebase-merge/rebase-apply/MERGE_HEAD/CHERRY_PICK_HEAD record.
+GIT_DIR=${GIT_DIR:-$(git rev-parse --git-dir 2>/dev/null)}
+if [ -d "$GIT_DIR/rebase-merge" ] || [ -d "$GIT_DIR/rebase-apply" ] || \
+   [ -f "$GIT_DIR/MERGE_HEAD" ] || [ -f "$GIT_DIR/CHERRY_PICK_HEAD" ]; then
+    _COMMONDIR_CHECK=$(cd "$(git rev-parse --git-common-dir 2>/dev/null)" 2>/dev/null && pwd)
+    _GITDIR_CHECK=$(cd "$GIT_DIR" 2>/dev/null && pwd)
+    if [ -n "$_COMMONDIR_CHECK" ] && [ "$_GITDIR_CHECK" = "$_COMMONDIR_CHECK" ]; then
+        echo "[git-safety] NOTE: committing mid-rebase/merge/cherry-pick in the shared checkout -- this guard does not gate rebase/merge continuations, only fresh commits. If this sequence wasn't started deliberately, stop and investigate." >&2
+    fi
+    exit 0
+fi
+
+# --- Detect shared/primary checkout vs. linked worktree ---
+# A linked worktree's --git-dir resolves to .git/worktrees/<name>/, which
+# differs from --git-common-dir. The primary checkout's --git-dir IS the
+# common dir.
+#
+# NOTE: this detection block is intentionally byte-for-byte duplicated in
+# scripts/safe_docker_build.sh rather than sourced from a shared file --
+# git copies this hook file verbatim into .git/hooks/, so it must stay a
+# single self-contained file with no runtime dependency on this repo's
+# scripts/ directory being reachable. If you fix a bug here, fix it there
+# too.
+_GITDIR=$(cd "$(git rev-parse --git-dir 2>/dev/null)" 2>/dev/null && pwd)
+_COMMONDIR=$(cd "$(git rev-parse --git-common-dir 2>/dev/null)" 2>/dev/null && pwd)
+IS_SHARED_CHECKOUT=0
+if [ -n "$_COMMONDIR" ] && [ "$_GITDIR" = "$_COMMONDIR" ]; then
+    IS_SHARED_CHECKOUT=1
+fi
+
+if [ "$IS_SHARED_CHECKOUT" = "0" ]; then
+    # We're in a linked worktree -- nothing to enforce here.
+    exit 0
+fi
+
+if [ "$ORION_ALLOW_SHARED_CHECKOUT_WRITE" = "1" ]; then
+    echo "[git-safety] shared-checkout write allowed via ORION_ALLOW_SHARED_CHECKOUT_WRITE=1" >&2
+    exit 0
+fi
+
+cat >&2 <<'EOF'
+[git-safety] COMMIT BLOCKED: this is the shared/primary git checkout.
+
+This repo's policy is worktrees-only for writing, building, and running
+code. Concurrent sessions (AI agents, humans, CI) sharing the primary
+checkout have silently reverted each other's already-verified work.
+
+Fix it:
+  git worktree add ../Orion-Sapienform-<name> -b <type>/<name>
+  cd ../Orion-Sapienform-<name>
+  # redo your change there, then commit from that worktree
+
+Escape hatch (only if this commit from the primary checkout is genuinely
+intentional):
+  ORION_ALLOW_SHARED_CHECKOUT_WRITE=1 git commit ...
+EOF
+
+exit 1

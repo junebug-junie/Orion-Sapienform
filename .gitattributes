@@ -1,0 +1,5 @@
+# graphify-out/graph.json is a large generated networkx node-link JSON blob.
+# Git's default line-based text merge produces useless conflict markers on it.
+# Use graphify's own union merge driver instead (registered locally via
+# scripts/setup_graphify_merge_driver.sh — see that script for details).
+graphify-out/graph.json merge=graphify

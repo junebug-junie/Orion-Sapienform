@@ -30,6 +30,10 @@ class ProposalTemplateV1(BaseModel):
     base_risk: float = 0.0
     reversibility: float = 1.0
     dimensions: dict[str, float] = Field(default_factory=dict)
+    # Optional attention-binding path. Only one recognized literal in v1:
+    # "self_state.dominant_attention_targets[0]" (see orion/proposals/builder.py).
+    # No general binding-expression DSL -- matched exactly, nothing fancier.
+    target_binding: str | None = None
 
 
 class ProposalPolicyV1(BaseModel):

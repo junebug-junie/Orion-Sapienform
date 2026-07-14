@@ -1,9 +1,14 @@
 from datetime import datetime, timezone
 from pathlib import Path
 
-from orion.proposals.builder import build_proposal_frame, stable_proposal_frame_id
-from orion.proposals.policy import load_proposal_policy
-from orion.schemas.self_state import SelfStateDimensionV1, SelfStateV1
+from orion.proposals.builder import (
+    ATTENTION_FIRST_TARGET_BINDING,
+    _build_candidate,
+    build_proposal_frame,
+    stable_proposal_frame_id,
+)
+from orion.proposals.policy import ProposalTemplateV1, load_proposal_policy
+from orion.schemas.self_state import AttentionTargetSummaryV1, SelfStateDimensionV1, SelfStateV1
 
 REPO = Path(__file__).resolve().parents[1]
 POLICY = load_proposal_policy(REPO / "config" / "proposals" / "proposal_policy.v1.yaml")
@@ -155,3 +160,125 @@ def test_suppressed_candidates_separate() -> None:
     active_ids = {c.proposal_id for c in frame.candidates}
     suppressed_ids = {c.proposal_id for c in frame.suppressed_candidates}
     assert active_ids.isdisjoint(suppressed_ids)
+
+
+# --- P5: attention-bound proposal target binding -----------------------------
+
+_BINDING_TEMPLATE = ProposalTemplateV1(
+    kind="inspect",
+    target_kind="capability",
+    target_id="capability:orchestration",
+    target_binding=ATTENTION_FIRST_TARGET_BINDING,
+    proposed_effect="increase_observability",
+    required_policy_gate="read_only",
+    base_priority=0.34,
+    base_risk=0.05,
+    reversibility=1.0,
+    dimensions={"field_intensity": 0.30},
+)
+
+
+def _self_state_with_attention_details(
+    details: list[AttentionTargetSummaryV1],
+) -> SelfStateV1:
+    state = _loaded_self_state()
+    return state.model_copy(update={"dominant_attention_target_details": details})
+
+
+def test_binding_resolves_target_from_attention_details() -> None:
+    details = [
+        AttentionTargetSummaryV1(
+            target_id="node:mycelium",
+            target_kind="node",
+            pressure_score=0.8,
+        ),
+        AttentionTargetSummaryV1(
+            target_id="capability:orchestration",
+            target_kind="capability",
+            pressure_score=0.5,
+        ),
+    ]
+    candidate = _build_candidate(
+        template_key="inspect_attended_target",
+        template=_BINDING_TEMPLATE,
+        self_state=_self_state_with_attention_details(details),
+        attention=None,
+        policy=POLICY,
+    )
+    assert candidate.target_id == "node:mycelium"
+    assert candidate.target_kind == "node"
+    assert candidate.binding_resolved_from == ATTENTION_FIRST_TARGET_BINDING
+
+
+def test_binding_falls_back_to_literal_when_details_empty() -> None:
+    candidate = _build_candidate(
+        template_key="inspect_attended_target",
+        template=_BINDING_TEMPLATE,
+        self_state=_self_state_with_attention_details([]),
+        attention=None,
+        policy=POLICY,
+    )
+    assert candidate.target_id == _BINDING_TEMPLATE.target_id
+    assert candidate.target_kind == _BINDING_TEMPLATE.target_kind
+    assert candidate.binding_resolved_from is None
+
+
+def test_binding_falls_back_to_literal_when_kind_unaccepted() -> None:
+    # "channel" is a valid AttentionTargetSummaryV1.target_kind but is not in
+    # ProposalCandidateV1's target_kind Literal -- must fail closed, not raise.
+    details = [
+        AttentionTargetSummaryV1(
+            target_id="channel:orion.bus.thoughts",
+            target_kind="channel",
+            pressure_score=0.7,
+        ),
+    ]
+    candidate = _build_candidate(
+        template_key="inspect_attended_target",
+        template=_BINDING_TEMPLATE,
+        self_state=_self_state_with_attention_details(details),
+        attention=None,
+        policy=POLICY,
+    )
+    assert candidate.target_id == _BINDING_TEMPLATE.target_id
+    assert candidate.target_kind == _BINDING_TEMPLATE.target_kind
+    assert candidate.binding_resolved_from is None
+
+
+def test_binding_resolved_from_none_for_non_binding_template() -> None:
+    template = POLICY.proposal_templates["inspect_execution_pressure"]
+    assert template.target_binding is None
+    candidate = _build_candidate(
+        template_key="inspect_execution_pressure",
+        template=template,
+        self_state=_loaded_self_state(),
+        attention=None,
+        policy=POLICY,
+    )
+    assert candidate.binding_resolved_from is None
+    assert candidate.target_id == template.target_id
+
+
+def test_build_proposal_frame_includes_binding_resolved_candidate() -> None:
+    details = [
+        AttentionTargetSummaryV1(
+            target_id="field:recent_perturbations",
+            target_kind="field",
+            pressure_score=0.9,
+        ),
+    ]
+    frame = build_proposal_frame(
+        self_state=_self_state_with_attention_details(details),
+        attention=None,
+        field=None,
+        policy=POLICY,
+        now=NOW,
+    )
+    attended = [
+        c for c in frame.candidates + frame.suppressed_candidates
+        if c.proposal_id.startswith("proposal:inspect_attended_target:")
+    ]
+    assert len(attended) == 1
+    assert attended[0].binding_resolved_from == ATTENTION_FIRST_TARGET_BINDING
+    assert attended[0].target_id == "field:recent_perturbations"
+    assert attended[0].target_kind == "field"

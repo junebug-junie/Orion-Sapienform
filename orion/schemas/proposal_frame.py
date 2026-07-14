@@ -70,6 +70,12 @@ class ProposalCandidateV1(BaseModel):
     source: str | None = None
     thought_id: str | None = None
 
+    # Provenance for template target_id/target_kind resolved from live attention
+    # (P5: attention-bound proposal template) rather than the template's literal
+    # fallback. Set to the recognized binding path string when resolution
+    # succeeded; None when the candidate used the template's literal target.
+    binding_resolved_from: str | None = None
+
 
 class ProposalFrameV1(BaseModel):
     model_config = ConfigDict(extra="forbid")

@@ -156,3 +156,27 @@ proposal_templates:
     reversibility: 1.0
     dimensions:
       field_intensity: 0.45
+
+  # P5: attention-bound proposal target. target_id/target_kind below are the
+  # fallback literal, used only if target_binding fails to resolve (empty
+  # dominant_attention_target_details, or a resolved target_kind outside the
+  # accepted whitelist). When it resolves, the candidate's target_id/target_kind
+  # follow self_state.dominant_attention_target_details[0] instead.
+  #
+  # Kill criterion (falsifiable by design, not yet run -- needs live traffic):
+  # over a 7-day window, distinct(target_id) across this template's candidates
+  # must be >= 3, or the binding isn't doing anything Orion's attention doesn't
+  # already do via the literal templates above. See
+  # orion/autonomy/evals/run_attention_bound_proposal_eval.py.
+  inspect_attended_target:
+    kind: inspect
+    target_kind: capability   # placeholder default kind; overridden per-candidate when binding resolves to a different kind
+    target_id: capability:orchestration   # fallback literal, used only if the binding fails to resolve
+    target_binding: "self_state.dominant_attention_targets[0]"
+    proposed_effect: increase_observability
+    required_policy_gate: read_only
+    base_priority: 0.34   # shipped live per explicit user go-ahead ("turn on whatever you need"), not dark-shipped at 0.0 -- read-only inspect proposal under the existing policy gate, same risk class as every other already-live inspect template
+    base_risk: 0.05
+    reversibility: 1.0
+    dimensions:
+      field_intensity: 0.30

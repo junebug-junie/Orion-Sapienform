@@ -51,14 +51,24 @@ class GraphDBSubstrateStoreConfig:
     timeout_sec: float = 5.0
     user: str | None = None
     password: str | None = None
-    # How long snapshot() may serve its last successful fetch before issuing a new
-    # live query. 0 disables caching (every call is live, matching pre-fix behavior).
-    # Conservative default: the tightest known periodic caller (dynamics tick) runs
-    # every 30s; this only collapses near-simultaneous calls from different callers
-    # (brain-frame tick, dynamics, attention, curiosity, beliefs_for_stance) into one
-    # shared fetch -- see docs/superpowers/specs/2026-07-14-substrate-graph-store-
-    # snapshot-cache-spec.md.
-    snapshot_cache_ttl_sec: float = 2.0
+    # Real change detection, not a blind timer (2026-07-14 incident + follow-up -- see
+    # docs/superpowers/specs/2026-07-14-substrate-graph-store-snapshot-cache-spec.md).
+    # An earlier version of this fix used a short blind ttl instead; removed same-day
+    # once code review found it was provably dead under every real default (a 2s ttl
+    # is always subsumed by this field once it's >= 2s) and its docstring contradicted
+    # this one. If this store's OWN write generation hasn't moved since the last
+    # successful fetch (see GraphDBSubstrateStore._write), snapshot() trusts the cache
+    # for up to this many seconds without re-querying at all -- this is what actually
+    # suppresses a dominant periodic caller's own solo query rate (e.g. a 5s-forever
+    # tick), which a short ttl alone could never do (5s > 2s never finds itself
+    # still-fresh on that caller's own cadence). Bounds worst-case staleness from
+    # writes made by a DIFFERENT process this instance can't see via its own counter.
+    # 0 means trust the cache forever once a write generation has been recorded (no
+    # periodic forced refresh at all) -- deliberate, not an oversight; a pure-reader
+    # process that never writes through this instance would then rely entirely on
+    # process restart to ever see external changes, so leave this at its default
+    # unless you have a specific reason not to.
+    snapshot_force_refresh_ceiling_sec: float = 30.0
 
 
 NODE_ADAPTER = TypeAdapter(SubstrateNodeV1)
@@ -79,6 +89,27 @@ class GraphDBSubstrateStore(SubstrateGraphStore):
         # fire independent live queries and race to write _last_snapshot_at/self._cache
         # (2026-07-14 review finding).
         self._snapshot_lock = threading.Lock()
+        # Real change detection, not just a blind timer (2026-07-14 follow-up): every
+        # write this process makes through _write() bumps this counter. snapshot()
+        # trusts the cache indefinitely as long as OUR OWN write generation hasn't
+        # moved -- this is the actual fix for the traced incident, since
+        # orion-substrate-runtime's dominant read callers (brain-frame tick, dynamics
+        # tick, attention-broadcast, endogenous-curiosity) and its writers (dynamics
+        # tick, prediction-error nodes) all share ONE store instance, so a same-process
+        # write is a reliable "something really changed" signal. snapshot_force_refresh_
+        # ceiling_sec remains as a safety-net ceiling for changes written by a DIFFERENT
+        # process this instance can't see via its own counter (e.g. cortex-exec's
+        # beliefs_for_stance writing via its own separate store instance).
+        self._write_generation = 0
+        self._last_snapshot_generation: int | None = None
+
+    def _write(self, sparql: str) -> None:
+        """All real writes funnel through here (not directly through self._update(),
+        which is per-backend and overridden in SparqlSubstrateStore) so the write
+        generation counter is bumped exactly once per successful write regardless of
+        backend."""
+        self._update(sparql)
+        self._write_generation += 1
 
     def _sparql_update_endpoint(self) -> str:
         """GraphDB accepts SPARQL UPDATE only on the RDF4J statements endpoint, not the repo root."""
@@ -191,7 +222,7 @@ INSERT {{
 }}
 WHERE {{ OPTIONAL {{ GRAPH <{self._cfg.graph_uri}> {{ {node_iri} ?p ?o . }} }} }}
 """.strip()
-        self._update(update)
+        self._write(update)
         self._cache.upsert_node(identity_key=identity_key, node=node)
         if identity_key:
             self._upsert_identity(identity_key=identity_key, canonical_id=node.node_id, identity_kind="node")
@@ -228,20 +259,46 @@ INSERT {{
 }}
 WHERE {{ OPTIONAL {{ GRAPH <{self._cfg.graph_uri}> {{ {edge_iri} ?p ?o . }} }} }}
 """.strip()
-        self._update(update)
+        self._write(update)
         self._cache.upsert_edge(identity_key=identity_key, edge=edge)
         self._upsert_identity(identity_key=identity_key, canonical_id=edge.edge_id, identity_kind="edge")
 
     def snapshot(self) -> MaterializedSubstrateGraphState:
         with self._snapshot_lock:
             now_mono = time.monotonic()
-            ttl = float(self._cfg.snapshot_cache_ttl_sec)
-            if (
-                ttl > 0.0
-                and self._last_snapshot_at is not None
-                and (now_mono - self._last_snapshot_at) < ttl
-            ):
+            elapsed = (now_mono - self._last_snapshot_at) if self._last_snapshot_at is not None else None
+            ceiling = float(self._cfg.snapshot_force_refresh_ceiling_sec)
+
+            same_generation = (
+                self._last_snapshot_generation is not None
+                and self._last_snapshot_generation == self._write_generation
+            )
+            # A write since our last fetch is a KNOWN, certain change -- the cache is
+            # never reused in that case, regardless of ceiling. This is the actual
+            # correctness fix: without this gate, a caller that just wrote something
+            # (e.g. _write_prediction_error_node) followed immediately by a caller that
+            # reads it (e.g. _dynamics_tick) could be served pre-write stale data.
+            # ceiling <= 0 means "trust same_generation forever" (no periodic forced
+            # refresh at all); otherwise the ceiling forces a real refresh once elapsed,
+            # even though same_generation is still true -- the safety net that bounds
+            # staleness from writes made by a process other than this one, whose
+            # write-generation counter this instance can't see.
+            within_ceiling = ceiling <= 0.0 or elapsed is None or elapsed < ceiling
+
+            if elapsed is not None and same_generation and within_ceiling:
                 return self._cache.snapshot()
+
+            # Capture the generation BEFORE issuing the live query (which releases the
+            # GIL during network I/O), not after. If a write races in while this query
+            # is in flight, capturing after would credit that write to data fetched
+            # before it happened, silently masking the write until the next unrelated
+            # write or the ceiling fires -- the exact bug this whole mechanism exists to
+            # prevent. Capturing before means any such race is resolved safely: the next
+            # snapshot() call sees a generation mismatch and re-fetches (one possibly-
+            # redundant extra query), never a falsely-trusted stale cache. _write() is
+            # deliberately not lock-protected against this method -- serializing writes
+            # against reads isn't needed once the capture-before-fetch ordering holds.
+            generation_at_fetch_start = self._write_generation
             try:
                 nodes, _ = self._query_nodes(limit_nodes=500)
                 node_ids = [n.node_id for n in nodes]
@@ -250,6 +307,7 @@ WHERE {{ OPTIONAL {{ GRAPH <{self._cfg.graph_uri}> {{ {edge_iri} ?p ?o . }} }} }
                 return self._cache.snapshot()
             self._refresh_cache(nodes=nodes, edges=edges)
             self._last_snapshot_at = now_mono
+            self._last_snapshot_generation = generation_at_fetch_start
             return self._cache.snapshot()
 
     # ---- primary query layer (GraphDB-first) ----
@@ -514,7 +572,7 @@ INSERT {{
 }}
 WHERE {{ OPTIONAL {{ GRAPH <{self._cfg.graph_uri}> {{ {iri} ?p ?o . }} }} }}
 """.strip()
-        self._update(update)
+        self._write(update)
 
     def _select(self, sparql: str) -> list[dict[str, dict[str, str]]]:
         try:
@@ -614,7 +672,7 @@ class SparqlSubstrateStoreConfig:
     user: str | None = None
     password: str | None = None
     auth_source: str = "none"
-    snapshot_cache_ttl_sec: float = 2.0
+    snapshot_force_refresh_ceiling_sec: float = 30.0
 
 
 class SparqlSubstrateStore(GraphDBSubstrateStore):
@@ -628,7 +686,7 @@ class SparqlSubstrateStore(GraphDBSubstrateStore):
                 timeout_sec=cfg.timeout_sec,
                 user=cfg.user,
                 password=cfg.password,
-                snapshot_cache_ttl_sec=cfg.snapshot_cache_ttl_sec,
+                snapshot_force_refresh_ceiling_sec=cfg.snapshot_force_refresh_ceiling_sec,
             )
         )
         self._result_source_kind = "sparql"
@@ -717,19 +775,18 @@ def _resolve_substrate_named_graph_uri() -> str:
     return raw or DEFAULT_SUBSTRATE_GRAPH_URI
 
 
-def _resolve_snapshot_cache_ttl_sec() -> float:
-    """See GraphDBSubstrateStoreConfig.snapshot_cache_ttl_sec for the reasoning behind
-    the 2.0s default -- conservative relative to every known real caller's freshness
-    requirement (tightest is a 30s tick); this only collapses near-simultaneous calls
-    from different callers into one shared fetch."""
-    raw = str(os.getenv("SUBSTRATE_SNAPSHOT_CACHE_TTL_SEC", "")).strip()
+def _resolve_snapshot_force_refresh_ceiling_sec() -> float:
+    """See GraphDBSubstrateStoreConfig.snapshot_force_refresh_ceiling_sec for the
+    reasoning -- real change detection via a same-process write-generation counter,
+    with this as the periodic safety-net ceiling for cross-process writes."""
+    raw = str(os.getenv("SUBSTRATE_SNAPSHOT_FORCE_REFRESH_CEILING_SEC", "")).strip()
     if not raw:
-        return 2.0
+        return 30.0
     try:
         return float(raw)
     except ValueError:
-        logger.warning("substrate_snapshot_cache_ttl_invalid value=%r; using default 2.0", raw)
-        return 2.0
+        logger.warning("substrate_snapshot_force_refresh_ceiling_invalid value=%r; using default 30.0", raw)
+        return 30.0
 
 
 def _redact_endpoint_for_log(endpoint: str) -> str:
@@ -796,7 +853,7 @@ def build_substrate_store_from_env() -> SubstrateGraphStore:
             user=auth_user,
             password=auth_pass,
             auth_source=auth_src,
-            snapshot_cache_ttl_sec=_resolve_snapshot_cache_ttl_sec(),
+            snapshot_force_refresh_ceiling_sec=_resolve_snapshot_force_refresh_ceiling_sec(),
         )
         return SparqlSubstrateStore(cfg)
 
@@ -815,7 +872,7 @@ def build_substrate_store_from_env() -> SubstrateGraphStore:
             timeout_sec=float(os.getenv("SUBSTRATE_GRAPHDB_TIMEOUT_SEC", "5.0")),
             user=str(os.getenv("SUBSTRATE_GRAPHDB_USER", "")).strip() or None,
             password=str(os.getenv("SUBSTRATE_GRAPHDB_PASS", "")).strip() or None,
-            snapshot_cache_ttl_sec=_resolve_snapshot_cache_ttl_sec(),
+            snapshot_force_refresh_ceiling_sec=_resolve_snapshot_force_refresh_ceiling_sec(),
         )
         return GraphDBSubstrateStore(cfg)
 

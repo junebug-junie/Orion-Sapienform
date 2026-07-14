@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import logging
+import math
 import os
 import threading
 import time
@@ -68,6 +69,12 @@ class GraphDBSubstrateStoreConfig:
     # process that never writes through this instance would then rely entirely on
     # process restart to ever see external changes, so leave this at its default
     # unless you have a specific reason not to.
+    # WARNING -- inverted vs. the removed field: the old SUBSTRATE_SNAPSHOT_CACHE_TTL_SEC
+    # used 0 to mean "always live, no caching." This field's 0 means the OPPOSITE:
+    # "cache forever." Do not reuse the old "set to 0 to force live reads" habit here
+    # (2026-07-14 review finding) -- there is no setting of this field that reproduces
+    # that old always-live behavior; a same-process write is now what forces a live
+    # read instead.
     snapshot_force_refresh_ceiling_sec: float = 30.0
 
 
@@ -89,19 +96,16 @@ class GraphDBSubstrateStore(SubstrateGraphStore):
         # fire independent live queries and race to write _last_snapshot_at/self._cache
         # (2026-07-14 review finding).
         self._snapshot_lock = threading.Lock()
-        # Real change detection, not just a blind timer (2026-07-14 follow-up): every
-        # write this process makes through _write() bumps this counter. snapshot()
-        # trusts the cache indefinitely as long as OUR OWN write generation hasn't
-        # moved -- this is the actual fix for the traced incident, since
-        # orion-substrate-runtime's dominant read callers (brain-frame tick, dynamics
-        # tick, attention-broadcast, endogenous-curiosity) and its writers (dynamics
-        # tick, prediction-error nodes) all share ONE store instance, so a same-process
-        # write is a reliable "something really changed" signal. snapshot_force_refresh_
-        # ceiling_sec remains as a safety-net ceiling for changes written by a DIFFERENT
-        # process this instance can't see via its own counter (e.g. cortex-exec's
-        # beliefs_for_stance writing via its own separate store instance).
+        # See GraphDBSubstrateStoreConfig.snapshot_force_refresh_ceiling_sec above for
+        # the full change-detection design (single source of truth -- kept out of sync
+        # once already, 2026-07-14 review finding). Short version: _write() bumps
+        # _write_generation on every real write; snapshot() trusts the cache as long as
+        # OUR OWN generation hasn't moved since the last fetch.
         self._write_generation = 0
-        self._last_snapshot_generation: int | None = None
+        # -1 sentinel for "no successful fetch yet" -- _write_generation only ever
+        # starts at 0 and increments, so -1 can never collide with a real value,
+        # letting this stay a plain int instead of int | None (2026-07-14 review).
+        self._last_snapshot_generation: int = -1
 
     def _write(self, sparql: str) -> None:
         """All real writes funnel through here (not directly through self._update(),
@@ -269,15 +273,15 @@ WHERE {{ OPTIONAL {{ GRAPH <{self._cfg.graph_uri}> {{ {edge_iri} ?p ?o . }} }} }
             elapsed = (now_mono - self._last_snapshot_at) if self._last_snapshot_at is not None else None
             ceiling = float(self._cfg.snapshot_force_refresh_ceiling_sec)
 
-            same_generation = (
-                self._last_snapshot_generation is not None
-                and self._last_snapshot_generation == self._write_generation
-            )
             # A write since our last fetch is a KNOWN, certain change -- the cache is
             # never reused in that case, regardless of ceiling. This is the actual
             # correctness fix: without this gate, a caller that just wrote something
             # (e.g. _write_prediction_error_node) followed immediately by a caller that
             # reads it (e.g. _dynamics_tick) could be served pre-write stale data.
+            # The -1 sentinel guarantees same_generation is False on the first call
+            # (before elapsed/ceiling even matter), so no separate "first call" check
+            # is needed here.
+            same_generation = self._last_snapshot_generation == self._write_generation
             # ceiling <= 0 means "trust same_generation forever" (no periodic forced
             # refresh at all); otherwise the ceiling forces a real refresh once elapsed,
             # even though same_generation is still true -- the safety net that bounds
@@ -285,7 +289,7 @@ WHERE {{ OPTIONAL {{ GRAPH <{self._cfg.graph_uri}> {{ {edge_iri} ?p ?o . }} }} }
             # write-generation counter this instance can't see.
             within_ceiling = ceiling <= 0.0 or elapsed is None or elapsed < ceiling
 
-            if elapsed is not None and same_generation and within_ceiling:
+            if same_generation and within_ceiling:
                 return self._cache.snapshot()
 
             # Capture the generation BEFORE issuing the live query (which releases the
@@ -783,10 +787,27 @@ def _resolve_snapshot_force_refresh_ceiling_sec() -> float:
     if not raw:
         return 30.0
     try:
-        return float(raw)
+        value = float(raw)
     except ValueError:
         logger.warning("substrate_snapshot_force_refresh_ceiling_invalid value=%r; using default 30.0", raw)
         return 30.0
+    if not math.isfinite(value):
+        # float("nan") and float("inf") both parse without raising ValueError, but a
+        # NaN ceiling makes every comparison in snapshot()'s within_ceiling check
+        # False, which silently disables caching entirely (every call goes live) --
+        # the exact regression this mechanism exists to prevent. 2026-07-14 review
+        # finding.
+        logger.warning("substrate_snapshot_force_refresh_ceiling_invalid value=%r (non-finite); using default 30.0", raw)
+        return 30.0
+    if value <= 0.0:
+        logger.info(
+            "substrate_snapshot_force_refresh_ceiling_zero_or_negative value=%r; "
+            "cache will be trusted indefinitely once a write generation is recorded "
+            "(no periodic forced refresh) -- this is NOT the same as the removed "
+            "SUBSTRATE_SNAPSHOT_CACHE_TTL_SEC=0 convention, which forced every call live",
+            raw,
+        )
+    return value
 
 
 def _redact_endpoint_for_log(endpoint: str) -> str:

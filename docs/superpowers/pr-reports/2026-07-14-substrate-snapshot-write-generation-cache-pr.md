@@ -35,20 +35,21 @@ None. `MaterializedSubstrateGraphState`'s shape is unchanged.
 
 ## Env/config changes
 
-- Removed: `SUBSTRATE_SNAPSHOT_CACHE_TTL_SEC` (from `.env_example` × 3, `docker-compose.yml` × 1, live `.env` × 3).
-- Unchanged/carried over from #1040: `SUBSTRATE_SNAPSHOT_FORCE_REFRESH_CEILING_SEC` (default `30.0`), already present in all three services' `.env_example`/live `.env` from that PR.
+- Removed: `SUBSTRATE_SNAPSHOT_CACHE_TTL_SEC` (from `.env_example` × 3, `docker-compose.yml` × 1, live `.env` × 3). Main's #1040 state had only this field (2.0s default) bounding ALL staleness, same-process and cross-process alike.
+- Added, new to this branch (not carried over from #1040 — confirmed via `git show main:orion/substrate/graphdb_store.py`, which has no `snapshot_force_refresh_ceiling_sec` field at all): `SUBSTRATE_SNAPSHOT_FORCE_REFRESH_CEILING_SEC` (default `30.0`), in all three services' `.env_example`/live `.env`. **Correction from an earlier draft of this report, caught by code review**: this field and its default are genuinely new, not "unchanged/carried over" — see Risks/concerns below for the real magnitude of the resulting behavior change.
 - Verified zero remaining references to the removed field anywhere in the repo or live `.env` files (`grep -rn` came back empty).
 
 ## Tests run
 
 ```text
 $ python -m pytest orion/substrate/tests/test_graphdb_store.py -q
-29 passed
+35 passed   # was 29 before round-2 review fixes; 6 new tests added (NaN/inf ceiling
+            # parsing x5 parametrized cases, zero-ceiling warning log)
 
 $ python -m pytest orion/substrate/ -q --ignore=orion/substrate/experiments
-310 passed
+316 passed  # was 310 before round-2 review fixes
 ```
-Both independently re-run after every round of review fixes, not just once at the end.
+Re-run after every round of review fixes (both round 1 and round 2), not just once at the end.
 
 ## Evals run
 
@@ -75,7 +76,23 @@ Resolves correctly against the real live `.env`; old field confirmed absent.
   - Fix: removed the field entirely rather than patch the docstring, per the reasoning above (same-day, before it's load-bearing anywhere).
 - **CONFIRMED**: a new test called `upsert_edge(identity_key=None, ...)`, exercising (not catching) a real, pre-existing, out-of-scope bug — `upsert_edge` calls `_upsert_identity` unconditionally, unlike `upsert_node`'s guarded call, so a `None` identity key would write a bogus identity record rather than being safely skipped.
   - Fix: changed the test to use a real identity key, matching `upsert_edge`'s documented non-Optional signature. The underlying `upsert_edge` bug itself is left unfixed — out of scope for this patch, noted in a test comment for whoever next touches that method.
-- Not fixed (considered, confirmed correct as-is): review verified the `_write()`-wrapper-in-base-class layering correctly covers both `GraphDBSubstrateStore` and `SparqlSubstrateStore` without duplication (confirmed by reading the full `SparqlSubstrateStore` class body — it only overrides `_update`, never the write call sites). Review also confirmed a harmless double-bump of the generation counter when `upsert_edge`/`upsert_node` internally call `_upsert_identity` (two `_write()` calls per logical operation) — not fixed, since the counter is only ever used for equality comparison, not exact counting, so a double-bump has no observable effect.
+- Not fixed (considered, confirmed correct as-is): review verified the `_write()`-wrapper-in-base-class layering correctly covers both `GraphDBSubstrateStore` and `SparqlSubstrateStore` without duplication (confirmed by reading the full `SparqlSubstrateStore` class body — it only overrides `_update`, never the write call sites).
+
+### Round 2 (high-effort, 8-angle recall-biased review, run after the branch was already pushed)
+
+- **CONFIRMED**: `SUBSTRATE_SNAPSHOT_FORCE_REFRESH_CEILING_SEC=nan` parsed successfully via `float()` (no `ValueError`) and silently disabled the cache entirely — every comparison against NaN is `False`, so `within_ceiling` could never be satisfied and every `snapshot()` call went live, with zero log signal. Reproduces the original incident's exact symptom under a realistic misconfiguration (a broken env-interpolation emitting `"nan"`).
+  - Fix: `_resolve_snapshot_force_refresh_ceiling_sec()` now checks `math.isfinite(value)` and falls back to 30.0 with a warning log if the parsed value is NaN or infinite.
+  - Evidence: verifier agent confirmed via direct Python execution (`float('nan') <= 0.0` → `False`, etc.) and by reading the exact resolver/`within_ceiling` lines.
+- **CONFIRMED**: the PR report itself (this file) contained a factual error — it described `SUBSTRATE_SNAPSHOT_FORCE_REFRESH_CEILING_SEC`'s 30.0s default as "unchanged/carried over from #1040," but `git show main:orion/substrate/graphdb_store.py` proves main never had this field; only `snapshot_cache_ttl_sec=2.0` existed, bounding all staleness. The real change: cross-process staleness bound widened 15x (2s → 30s).
+  - Fix: corrected the Env/config changes and Risks/concerns sections above.
+  - Evidence: verifier agent ran `git show main:...` directly and quoted the pre-diff field list.
+- **CONFIRMED**: the `0` sentinel's meaning silently inverted between the removed `snapshot_cache_ttl_sec` (0 = disable caching, always live) and the new `snapshot_force_refresh_ceiling_sec` (0 = trust cache forever) — the literal opposite. The old always-live regression test was deleted rather than kept as a compatibility case.
+  - Fix: added a runtime warning log whenever `ceiling <= 0` resolves, and an explicit inline warning in the config docstring plus all three `.env_example` files, calling out that this is not the old convention.
+  - Evidence: verifier agent confirmed both old and new `snapshot()` gating logic via `git show main:...` vs. the current file, and confirmed the old regression test's deletion via `git show 46f5aa71 -- orion/substrate/tests/test_graphdb_store.py`.
+- **CONFIRMED (low severity, not fixed)**: `upsert_node`/`upsert_edge` each cause two `_write()` calls (entity write + `_upsert_identity`'s own write), double-bumping `_write_generation` per logical upsert. Confirmed currently benign — `snapshot()`'s gate is pure equality, never magnitude, and no code depends on the exact count. Left as a documented latent trap rather than fixed, since `_upsert_identity`'s call pattern predates this patch and reworking it is out of scope.
+- **CONFIRMED (simplification, fixed)**: `snapshot()`'s cache-hit gate had a redundant `elapsed is not None` check, always already implied by `same_generation` given `_last_snapshot_at`/`_last_snapshot_generation` are only ever set together. Simplified by switching `_last_snapshot_generation` from `int | None` to a plain `int` with a `-1` sentinel (verified zero external references to the field), removing the need for the redundant check entirely.
+- **CONFIRMED (cleanup, fixed)**: the ceiling field's behavior was explained in 5 near-duplicate locations (dataclass docstring, `__init__` comment, 3 `.env_example` files) with inconsistent re-wrapping across copies. Reduced the `__init__` comment and all three `.env_example` files to short pointers back to the dataclass docstring as the single source of truth.
+- **REFUTED**: a candidate finding claimed `self._cache`'s unsynchronized mutation by writers (outside `_snapshot_lock`) could crash `snapshot()`'s `dict(self._nodes)` copy with `RuntimeError: dictionary changed size during iteration`. Empirically refuted by the verifier agent: a 5-second, 4-writer/4-reader stress test against `dict(d)` produced zero `RuntimeError`s (CPython's `dict()` constructor is an atomic C-level bulk copy, not interruptible mid-copy, unlike an explicit `for k in d:` loop, which the same test *did* break 45% of the time). The unsynchronized-access structure is real and pre-existing from #1040 (not introduced by this diff), but the specific crash mechanism doesn't occur — not fixed, since it isn't a live bug.
 
 ## Restart required
 
@@ -91,7 +108,9 @@ docker compose --env-file .env --env-file services/orion-cortex-exec/.env \
 ## Risks / concerns
 
 - Severity: Medium — not yet observed reducing real production query volume; only unit-tested. The honest, still-open question from the last live status check (memory climbing again post-#1040-restart, query rate not meaningfully lower than pre-fix) is whether *this* patch actually closes that gap. Recommend a live re-check after deploy, same methodology as before (`docker stats`, Fuseki access log query counts, real triple-count as a data-growth control).
+- Severity: Medium — the cross-process staleness bound genuinely widened 15x versus #1040 (2.0s → 30.0s), not "unchanged" as an earlier draft of this report incorrectly claimed (caught by a second code-review pass). Same-process writes are caught instantly via the new generation counter regardless of this value, but data written by a *different* process (e.g. cortex-exec's `beliefs_for_stance` vs. orion-substrate-runtime's read ticks, each on separate store instances) can now be up to 30s stale instead of 2s. Fixed in this patch: the `0`-value warning log and doc corrections below; not fixed: whether 30s is actually an acceptable bound for every real cross-process consumer — worth a deliberate re-check, not just inherited from a default that was picked for a different reason (collapsing overlapping same-process callers, not bounding cross-process staleness).
 - Severity: Low — per-process write-generation tracking only catches writes made by *this instance's own* store object. Multiple real services each construct separate instances; the 30s ceiling bounds cross-instance staleness but a pure-reader instance that never writes relies entirely on that periodic ceiling refresh (or process restart) to ever see external changes. Documented explicitly in the config field's docstring, not a silent gap.
+- Severity: Low — the `0` sentinel's meaning inverted between the removed `snapshot_cache_ttl_sec` (0 = always live) and the new `snapshot_force_refresh_ceiling_sec` (0 = trust forever, the opposite). An operator reusing the old "set to 0 to force live reads" habit on the renamed var gets unbounded staleness instead. Mitigated (not eliminated) by the env var being fully renamed rather than aliased, plus a new runtime warning log fired whenever `ceiling <= 0` is resolved, plus explicit inline documentation in the dataclass docstring and all three `.env_example` files.
 - Severity: Low — this patch supersedes the still-open `fix/substrate-runtime-snapshot-ttl-compose-env` PR (that PR fixed a compose gap for a field this patch deletes). Recommend closing that PR without merging once this one lands, to avoid confusion.
 
 ## PR link

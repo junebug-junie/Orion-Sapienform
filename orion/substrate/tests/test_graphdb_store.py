@@ -25,6 +25,7 @@ from orion.substrate.graphdb_store import (
     SparqlSubstrateStore,
     SparqlSubstrateStoreConfig,
     SubstrateSparqlBackendUnconfiguredError,
+    _resolve_snapshot_force_refresh_ceiling_sec,
     build_substrate_store_from_env,
 )
 from orion.substrate.materializer import SubstrateGraphMaterializer
@@ -881,6 +882,40 @@ def test_resolve_snapshot_force_refresh_ceiling_invalid_value_falls_back_to_defa
     store = build_substrate_store_from_env()
     assert store._cfg.snapshot_force_refresh_ceiling_sec == 30.0
     assert any("substrate_snapshot_force_refresh_ceiling_invalid" in r.message for r in caplog.records)
+
+
+@pytest.mark.parametrize("raw_value", ["nan", "NaN", "-nan", "inf", "-inf"])
+def test_resolve_snapshot_force_refresh_ceiling_non_finite_falls_back_to_default(monkeypatch, caplog, raw_value):
+    """float("nan")/float("inf") parse without raising ValueError, so the plain
+    try/except ValueError guard alone doesn't catch them. A NaN ceiling makes every
+    comparison in snapshot()'s within_ceiling check False, silently disabling the
+    cache entirely (every call goes live) -- the exact regression this whole
+    mechanism exists to prevent. 2026-07-14 review finding."""
+    import logging
+
+    monkeypatch.setenv("SUBSTRATE_STORE_BACKEND", "sparql")
+    monkeypatch.setenv("SUBSTRATE_GRAPH_QUERY_URL", "http://fuseki:3030/orion/query")
+    monkeypatch.setenv("SUBSTRATE_GRAPH_UPDATE_URL", "http://fuseki:3030/orion/update")
+    monkeypatch.setenv("SUBSTRATE_SNAPSHOT_FORCE_REFRESH_CEILING_SEC", raw_value)
+    caplog.set_level(logging.WARNING, logger="orion.substrate.graphdb_store")
+    store = build_substrate_store_from_env()
+    assert store._cfg.snapshot_force_refresh_ceiling_sec == 30.0
+    assert any("substrate_snapshot_force_refresh_ceiling_invalid" in r.message for r in caplog.records)
+
+
+def test_snapshot_zero_ceiling_logs_warning_distinguishing_from_removed_ttl_semantics(monkeypatch, caplog):
+    """The 0 sentinel's meaning inverted between the removed snapshot_cache_ttl_sec
+    (0 = always live) and this field (0 = trust cache forever) -- an operator reusing
+    the old 'set to 0 to force live reads' habit gets the opposite of what they
+    intend. A runtime log is the only signal available short of reading source, since
+    the env var was fully renamed (not aliased). 2026-07-14 review finding."""
+    import logging
+
+    monkeypatch.setenv("SUBSTRATE_SNAPSHOT_FORCE_REFRESH_CEILING_SEC", "0")
+    caplog.set_level(logging.INFO, logger="orion.substrate.graphdb_store")
+    value = _resolve_snapshot_force_refresh_ceiling_sec()
+    assert value == 0.0
+    assert any("substrate_snapshot_force_refresh_ceiling_zero_or_negative" in r.message for r in caplog.records)
 
 
 def test_write_generation_bumps_on_upsert_node_and_edge(monkeypatch):

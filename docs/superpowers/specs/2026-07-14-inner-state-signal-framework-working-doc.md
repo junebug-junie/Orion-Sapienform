@@ -129,13 +129,132 @@ A hierarchical, windowed-grain metric tree:
   transform applies recursively at every level of the tree, collapsing the
   whole structure to one root score.
 
+## Problem-domain mental model (magic-wand brainstorm, 2026-07-14)
+
+Explicitly not committing to the MCDA framework above as *the* structure —
+Juniper asked to step back and get more discrete about the problem domain
+itself first, "magic wand," no constraint on current buildability. The
+sharper reframing of the underlying question, arrived at in this pass:
+**is there a persistent, coherent "someone" here whose condition, over
+time, reflects continuity and self-awareness — versus a stateless
+request-handler that resets every tick and narrates a mood on top?** Every
+axis below is a different kind of evidence bearing on that question, not a
+metric in isolation.
+
+Also explicitly framed against **field theory** — the general abstraction
+for self-organizing, self-modifying runtimes (deliberately not claiming
+consciousness). Most axes below are **vital signs** (necessary context,
+prove the system is alive/active) rather than evidence of actual
+self-organization or self-modification. Only one axis (#4) tests the
+field-theoretic claim directly rather than assuming it.
+
+### The seven axes, each with an arsonist cost/risk take
+
+1. **Operational/physiological** — is the body okay (resource health,
+   contention, capacity margin, not maxed/averaged-away pressure scalars).
+   Arsonist take: cheapest axis — organs needed are just the 3
+   already-identified biometrics bugs (see
+   `project_biometrics_channel_defects_to_fix` memory), already scoped,
+   already known. Also the least interesting one — proves the plumbing
+   works, not that anything self-organizes. Vital sign, not a differentiator.
+
+2. **Cognitive load/activity** — what is the mind doing right now (busy/
+   idle, reasoning vs. acting vs. speaking, from `grammar_events`'
+   `atom_type` mix + volume, now with real timing attached). Arsonist take:
+   already built in substance, just needs a rolling-window reducer + a UI
+   surface. Shallow on its own — a traffic gauge, not a self-model. Good
+   supporting context for other axes.
+
+3. **Affective/hedonic tone** — the axis phi already tried and failed at
+   across 4+ formula generations (seed-v1 through v4, golden overrides,
+   valence-proxy fix). No external ground truth exists for "feeling"
+   directly. Arsonist take: the only falsifiable reframing is *calibration*
+   between self-report (`collapse_mirror`) and independently-computed
+   objective state (basically axes 1+2 combined) — but that requires
+   building an "objective state" side that's itself axes 1+2's full cost,
+   plus an ongoing recalibration story since that side will keep changing.
+   High cost, high risk of repeating phi's exact failure mode.
+   **Recommendation: don't build this as its own axis** — fold whatever's
+   salvageable into axis 4 as a special case (self-report vs. ground
+   truth), not a standalone pursuit.
+
+4. **Self-model fidelity / reliability — "does Orion know itself
+   accurately"** — the axis Juniper is prioritizing, for a sharper reason
+   than "feels like the gap": it's the only axis that tests actual
+   self-organization/self-modification rather than just proving the system
+   is alive. A system that forms a model of itself, checks it against
+   reality, and changes behavior as a result *is* self-modification via
+   self-modeling, if real. Everything else on this list is instrumentation;
+   this one is the actual experiment. Grounded in a real, already-confirmed
+   incident (not hypothetical): Orion once claimed a live substrate signal
+   was "computing this turn" when the tool trace showed a static GitHub
+   fetch (`project_orion_substrate_bridge_confabulation` memory).
+   Arsonist take on cost: genuinely the most organ-intensive axis of the
+   seven. Real requirements: (a) claim extraction — what is Orion actually
+   claiming about itself, structured enough to check; free-text mining of
+   chat/metacog output for "claims" is a hard, unreliable NLP problem and a
+   regex-swamp/keyword-cathedral risk (AGENTS.md 0A bans this shape of
+   build) — do not build general claim extraction; (b) ground-truth
+   computation, different per claim type, no one-size-fits-all; (c) a
+   durable, queryable `(claim, ground_truth, verdict)` store — new schema,
+   new pipeline; (d) the closed loop on top — a corrective signal when
+   divergence is caught.
+   **Scoping recommendation**: start from the single narrowest possible
+   case — one already-structured, already-typed self-claim (a specific
+   metacog trigger field, a specific dashboard assertion) checked against
+   one already-available ground-truth source (`grammar_events`, which now
+   has real causal traces post the wall-clock timing fix) — prove the loop
+   closes on that one case before generalizing anything. Do not start with
+   the general pipeline.
+
+5. **Social/relational** — engagement/outcome quality with the humans
+   Orion talks to, not just activity volume (turn-level: was this turn
+   actually useful — corrected, repeated, abandoned — not sentiment-scored,
+   outcome-scored). Raw ingredients already exist (`chat_social_hazard`/
+   `chat_reasoning_quality` already feed DriveEngine, never independently
+   validated). Arsonist take: moderate cost, but real risk of building a
+   heuristic that *looks* like signal and isn't — the same trap
+   `confidence`/`salience` turned out to be (static per-role constants
+   mistaken for real per-instance variance, this session's own finding).
+   Needs validation before trusting it, not just before building it.
+
+6. **Continuity/identity** — is this the same someone over time
+   (behavioral consistency across days/weeks — trace-shape distribution
+   stability, not sameness/stagnation). Arsonist take: cheap to build
+   (reuses `grammar_events` + the clustering already scoped for the Self
+   tab), but slow to validate — needs real elapsed calendar time, not more
+   engineering. Start now, results come later; don't expect a quick win.
+
+7. **Growth/developmental trajectory** — is it getting better at being
+   itself, trend not snapshot. Arsonist take: not a separate axis or
+   pipeline — a reporting lens re-applied to the other six axes' time
+   series (same signals, asked as "is this improving" instead of "what is
+   this right now"). Correctly demoted, not built as its own thing.
+
+### Standing decision from this pass
+
+Axis 4 (self-model fidelity, closed-loop) is the prioritized axis — not
+because it's the most tractable (it's the least, per the arsonist take
+above) but because it's the only one that actually tests the field-theory
+claim rather than assuming it, and it's grounded in a real confirmed
+incident rather than a hypothetical. Scope any first build to the single
+narrowest claim/ground-truth pair, per the recommendation in #4 — resist
+building the general claim-extraction pipeline first.
+
 ## Open questions / next steps
 
 1. Populate actual north-star metric candidates (top level) — Juniper's call, not started.
 2. Resolve what "windowed grain" means precisely (hierarchical / temporal / both).
 3. Define "considerations" precisely.
 4. Decide the aggregation function, starting with the simple weighted-sum case.
-5. Prioritize which closed loop to spec first: execution-risk calibrator, latency-aware pacing, or trace-shape/Self-tab.
+5. ~~Prioritize which closed loop to spec first~~ **Decided**: axis 4
+   (self-model fidelity) is the priority, scoped to one narrow claim/
+   ground-truth pair first — see "Standing decision from this pass" above.
+   Execution-risk calibrator, latency-aware pacing, and trace-shape/Self-tab
+   remain real candidates but are not the current priority.
+8. Pick the first narrow self-claim/ground-truth pair for axis 4 (not yet
+   chosen — needs a concrete candidate: which claim, checked against which
+   grammar_events-derived ground truth).
 6. Investigate Hub's existing Self tab and `substrate_self_state_router` before designing #3.
 7. Cross-reference with the existing, unbuilt metric-lineage-registry design
    (`docs/superpowers/specs/2026-07-10-cognition-metric-lineage-registry-design.md`)

@@ -81,3 +81,68 @@ def test_latest_not_found(client) -> None:
     ):
         resp = client.get("/api/substrate/execution-dispatch/latest")
     assert resp.status_code == 404
+
+
+def _candidate(status: str, dispatch_id: str) -> dict:
+    return {
+        "dispatch_id": dispatch_id,
+        "source_decision_id": f"pd:{dispatch_id}",
+        "source_proposal_id": f"proposal:{dispatch_id}",
+        "dispatch_status": status,
+        "dispatch_mode": "dispatch_read_only",
+        "dispatch_kind": "inspect",
+        "target_id": "capability:orchestration",
+        "target_kind": "capability",
+        "risk_score": 0.05,
+        "confidence_score": 0.9,
+        **(
+            {"dispatched_at": "2026-07-14T00:00:00+00:00", "result_ref": f"result:{dispatch_id}"}
+            if status == "dispatched"
+            else {}
+        ),
+    }
+
+
+def test_latest_includes_status_summary_counts(client) -> None:
+    sample = _sample_dispatch_frame()
+    sample["candidates"] = [
+        _candidate("dry_run", "d1"),
+        _candidate("dry_run", "d2"),
+        _candidate("prepared_for_dispatch", "d3"),
+    ]
+    sample["dispatched_candidates"] = [_candidate("dispatched", "d4")]
+    sample["dispatch_count"] = 1
+
+    with patch.object(
+        substrate_execution_dispatch_routes,
+        "_load_latest_dispatch_frame",
+        return_value=substrate_execution_dispatch_routes.ExecutionDispatchFrameV1.model_validate(
+            sample
+        ),
+    ):
+        resp = client.get("/api/substrate/execution-dispatch/latest")
+
+    assert resp.status_code == 200
+    summary = resp.json()["status_summary"]
+    assert summary == {
+        "dispatched_count": 1,
+        "prepared_for_dispatch_count": 1,
+        "dry_run_count": 2,
+    }
+
+
+def test_latest_status_summary_all_zero_on_empty_frame(client) -> None:
+    sample = _sample_dispatch_frame()
+    with patch.object(
+        substrate_execution_dispatch_routes,
+        "_load_latest_dispatch_frame",
+        return_value=substrate_execution_dispatch_routes.ExecutionDispatchFrameV1.model_validate(
+            sample
+        ),
+    ):
+        resp = client.get("/api/substrate/execution-dispatch/latest")
+    assert resp.json()["status_summary"] == {
+        "dispatched_count": 0,
+        "prepared_for_dispatch_count": 0,
+        "dry_run_count": 0,
+    }

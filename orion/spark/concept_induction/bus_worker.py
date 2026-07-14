@@ -59,6 +59,7 @@ from .summarizer import Summarizer
 from .tensions import (
     derive_pressure_competition_tensions,
     extract_tensions,
+    extract_tensions_from_action_outcome,
     extract_tensions_from_feedback,
     extract_tensions_from_self_state,
 )
@@ -669,6 +670,30 @@ class ConceptWorker:
             feedback_frame=frame,
         )
 
+    def _tensions_from_action_outcome(self, env: BaseEnvelope, intake_channel: str) -> List[TensionEventV1]:
+        # Self-publish guard: this service is itself already a producer on
+        # orion:autonomy:action:outcome (curiosity-fetch outcomes, via
+        # _publish_action_outcome below) with no self-filter anywhere in
+        # this file today. Redis pub/sub delivers to all subscribers
+        # including the publisher, so without this check a curiosity-fetch
+        # outcome would loop back through this NEW path too, on top of its
+        # own dedicated in-process handling -- double-processing the same
+        # event. Only outcomes from OTHER services (today: Layer 9 /
+        # orion-execution-dispatch-runtime) reach the extractor below.
+        source_name = getattr(getattr(env, "source", None), "name", None)
+        if source_name == self.cfg.service_name:
+            return []
+        try:
+            outcome = ActionOutcomeEmitV1.model_validate(self._payload_dict(env))
+        except Exception:
+            logger.warning("action_outcome_parse_failed kind=%s", env.kind)
+            return []
+        return extract_tensions_from_action_outcome(
+            envelope=env,
+            intake_channel=intake_channel,
+            outcome=outcome,
+        )
+
     def _parse_signal(self, env: BaseEnvelope) -> Optional[OrionSignalV1]:
         try:
             return OrionSignalV1.model_validate(self._payload_dict(env))
@@ -811,6 +836,11 @@ class ConceptWorker:
             model_layer = model_layer_for_subject(subject)
             entity_id = entity_id_for_subject(subject, model_layer)
             spark_tensions = self._tensions_from_feedback(env, intake_channel)
+        elif env.kind == "action.outcome.emit.v1":
+            subject = "orion"
+            model_layer = model_layer_for_subject(subject)
+            entity_id = entity_id_for_subject(subject, model_layer)
+            spark_tensions = self._tensions_from_action_outcome(env, intake_channel)
         else:
             subject = self._detect_subject(env, intake_channel)
             model_layer = self._model_layer(subject, intake_channel)
@@ -1094,7 +1124,7 @@ class ConceptWorker:
         await self._publish_dossier(dossier, env.correlation_id)
 
         # Structured substrate/feedback signals carry no text: skip concept induction.
-        if env.kind in {"substrate.self_state.v1", "feedback.frame.v1"}:
+        if env.kind in {"substrate.self_state.v1", "feedback.frame.v1", "action.outcome.emit.v1"}:
             return
 
         source_kind = self._source_kind(env, intake_channel)

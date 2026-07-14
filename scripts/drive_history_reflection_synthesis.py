@@ -427,7 +427,12 @@ def _build_narrative_prompt(agg: DriveHistoryAggregationV1, facts: list[Grounded
         "your sentence must contain the literal text '100%'; do NOT substitute words like 'all', "
         "'every', 'always', or 'entirely' in place of the percentage, even when they are accurate in "
         "meaning. The same applies to counts and drive names: write them exactly as shown, never "
-        "paraphrased, summarized, or rounded differently.\n\n"
+        "paraphrased, summarized, or rounded differently. IMPORTANT: some facts contain MORE THAN ONE "
+        "number (e.g. both a raw count like '500' AND a percentage like '100%' in the same fact) -- you "
+        "MUST include EVERY one of those numbers in your sentence, even if one seems to make another "
+        "redundant. Do not drop the raw count just because you already stated the percentage, and do "
+        "not drop the percentage just because you already stated the count -- a fact with two numbers "
+        "requires both numbers to appear, not just whichever one reads more naturally.\n\n"
         "Respond with ONLY a single JSON object, no prose, no markdown fences, shaped exactly like:\n"
         '{"narrative": "<your 2-4 sentence observation>", "cited_fact_numbers": [<int>, ...]}\n'
     )

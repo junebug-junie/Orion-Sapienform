@@ -13,6 +13,10 @@
           {
             "type": "command",
             "command": "/home/athena/.local/bin/graphify hook-guard search"
+          },
+          {
+            "type": "command",
+            "command": "python3 \"$CLAUDE_PROJECT_DIR/scripts/hooks/destructive_git_guard.py\""
           }
         ]
       },

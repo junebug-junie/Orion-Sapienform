@@ -422,8 +422,12 @@ def _build_narrative_prompt(agg: DriveHistoryAggregationV1, facts: list[Grounded
         "date(s)/timestamp(s), percentage(s), count(s), and drive name(s) MUST appear verbatim in your "
         "narrative text -- partially reproducing a fact (e.g. only its drive name, without its exact "
         "percentage or count) does not count as citing it. Reproduce dates/timestamps in EXACTLY the "
-        "same format shown in the fact (e.g. 2026-06-14, not 'June 14'), and reproduce drive names, "
-        "percentages, and counts exactly as written, not paraphrased or rounded differently.\n\n"
+        "same format shown in the fact (e.g. write '2026-06-14', not 'June 14'). Reproduce every "
+        "percentage EXACTLY as the digits+percent-sign shown in the fact -- e.g. if a fact says '100%', "
+        "your sentence must contain the literal text '100%'; do NOT substitute words like 'all', "
+        "'every', 'always', or 'entirely' in place of the percentage, even when they are accurate in "
+        "meaning. The same applies to counts and drive names: write them exactly as shown, never "
+        "paraphrased, summarized, or rounded differently.\n\n"
         "Respond with ONLY a single JSON object, no prose, no markdown fences, shaped exactly like:\n"
         '{"narrative": "<your 2-4 sentence observation>", "cited_fact_numbers": [<int>, ...]}\n'
     )

@@ -1,0 +1,60 @@
+#!/bin/sh
+# orion-git-safety-guard
+#
+# Refuses commits made from the shared/primary git checkout of this repo.
+# Concurrent AI coding-agent sessions (and humans) MUST use `git worktree`
+# for any writing/building/running work. This hook is the deterministic
+# gate for that policy -- see AGENTS.md section 2 ("Clean git and worktree
+# rules") for the human-readable rationale.
+#
+# Escape hatch: set ORION_ALLOW_SHARED_CHECKOUT_WRITE=1 for a genuinely
+# intentional commit from the primary checkout.
+#
+# POSIX sh only -- no bashisms (no arrays, no [[ ]]).
+
+# --- Safety: never interfere with an in-progress rebase/merge/cherry-pick ---
+GIT_DIR=${GIT_DIR:-$(git rev-parse --git-dir 2>/dev/null)}
+[ -d "$GIT_DIR/rebase-merge" ] && exit 0
+[ -d "$GIT_DIR/rebase-apply" ] && exit 0
+[ -f "$GIT_DIR/MERGE_HEAD" ] && exit 0
+[ -f "$GIT_DIR/CHERRY_PICK_HEAD" ] && exit 0
+
+# --- Detect shared/primary checkout vs. linked worktree ---
+# A linked worktree's --git-dir resolves to .git/worktrees/<name>/, which
+# differs from --git-common-dir. The primary checkout's --git-dir IS the
+# common dir.
+_GITDIR=$(cd "$(git rev-parse --git-dir 2>/dev/null)" 2>/dev/null && pwd)
+_COMMONDIR=$(cd "$(git rev-parse --git-common-dir 2>/dev/null)" 2>/dev/null && pwd)
+IS_SHARED_CHECKOUT=0
+if [ -n "$_COMMONDIR" ] && [ "$_GITDIR" = "$_COMMONDIR" ]; then
+    IS_SHARED_CHECKOUT=1
+fi
+
+if [ "$IS_SHARED_CHECKOUT" = "0" ]; then
+    # We're in a linked worktree -- nothing to enforce here.
+    exit 0
+fi
+
+if [ "$ORION_ALLOW_SHARED_CHECKOUT_WRITE" = "1" ]; then
+    echo "[git-safety] shared-checkout write allowed via ORION_ALLOW_SHARED_CHECKOUT_WRITE=1" >&2
+    exit 0
+fi
+
+cat >&2 <<'EOF'
+[git-safety] COMMIT BLOCKED: this is the shared/primary git checkout.
+
+This repo's policy is worktrees-only for writing, building, and running
+code. Concurrent sessions (AI agents, humans, CI) sharing the primary
+checkout have silently reverted each other's already-verified work.
+
+Fix it:
+  git worktree add ../Orion-Sapienform-<name> -b <type>/<name>
+  cd ../Orion-Sapienform-<name>
+  # redo your change there, then commit from that worktree
+
+Escape hatch (only if this commit from the primary checkout is genuinely
+intentional):
+  ORION_ALLOW_SHARED_CHECKOUT_WRITE=1 git commit ...
+EOF
+
+exit 1

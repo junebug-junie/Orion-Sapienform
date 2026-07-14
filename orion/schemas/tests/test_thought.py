@@ -56,6 +56,7 @@ def test_autonomy_slice_v1_defaults() -> None:
     assert slice_.active_tensions == []
     assert slice_.pressure_trend is None
     assert slice_.confidence is None
+    assert slice_.recent_actions == []
 
 
 def test_autonomy_slice_v1_round_trips_through_json() -> None:
@@ -72,9 +73,38 @@ def test_autonomy_slice_v1_round_trips_through_json() -> None:
         "active_tensions": ["load_vs_recovery"],
         "pressure_trend": "falling",
         "confidence": 0.41,
+        "recent_actions": [],
     }
     restored = AutonomySliceV1.model_validate(dumped)
     assert restored == slice_
+
+
+def test_autonomy_slice_v1_recent_actions_round_trips_through_json() -> None:
+    """Acceptance check for the P4 stance_react dispatch-evidence patch: a
+    payload carrying the new recent_actions field survives
+    dict -> JSON -> dict -> model unchanged, proving router.py's metadata
+    map-on and orion-thought/app/bus_listener.py's _extract_autonomy_slice
+    need zero code changes to carry this field end to end.
+    """
+    slice_ = AutonomySliceV1(
+        dominant_drive="coherence",
+        active_tensions=["unresolved_thread"],
+        pressure_trend="rising",
+        confidence=0.63,
+        recent_actions=["inspect: checked substrate graph health"],
+    )
+    dumped = slice_.model_dump(mode="json")
+    assert dumped == {
+        "schema_version": "autonomy.slice.v1",
+        "dominant_drive": "coherence",
+        "active_tensions": ["unresolved_thread"],
+        "pressure_trend": "rising",
+        "confidence": 0.63,
+        "recent_actions": ["inspect: checked substrate graph health"],
+    }
+    restored = AutonomySliceV1.model_validate(dumped)
+    assert restored == slice_
+    assert restored.recent_actions == ["inspect: checked substrate graph health"]
 
 
 def test_thought_event_with_autonomy_slice_round_trips_through_json() -> None:

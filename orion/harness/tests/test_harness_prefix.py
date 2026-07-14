@@ -9,7 +9,7 @@ from orion.harness.prefix import compile_harness_prefix, harness_motor_instructi
 from orion.harness.tests.fixtures import make_thought
 from orion.schemas.cognition.answer_contract import AnswerContract
 from orion.schemas.harness_finalize import HarnessRepairOverlayV1
-from orion.schemas.thought import StanceHarnessSliceV1
+from orion.schemas.thought import AutonomySliceV1, StanceHarnessSliceV1
 
 
 def test_compile_harness_prefix_includes_stance_slice() -> None:
@@ -22,6 +22,42 @@ def test_compile_harness_prefix_includes_stance_slice() -> None:
     assert "Task mode: direct_response" in prompt
     assert "Answer strategy: direct" in prompt
     assert "how does coalition work?" in prompt
+
+
+def test_compile_harness_prefix_includes_autonomy_slice_recent_actions() -> None:
+    """Regression for the stance_react dispatch-evidence patch: the FCC
+    motor's own prefix must render recent_actions directly, not just leave
+    it to the upstream stance LLM's imperative/tone. A prior version of
+    _format_autonomy_slice only emitted dominant_drive/active_tensions/
+    pressure_trend and silently dropped recent_actions."""
+    thought = make_thought(
+        imperative="Inspect the module.",
+        tone="direct",
+        autonomy_slice=AutonomySliceV1(
+            dominant_drive="coherence",
+            recent_actions=["inspect: checked substrate graph health"],
+        ),
+    )
+    prompt = compile_harness_prefix(
+        thought,
+        repair_overlay=HarnessRepairOverlayV1(),
+        user_message="what have you been doing?",
+    )
+    assert "Recent actions: inspect: checked substrate graph health" in prompt
+
+
+def test_compile_harness_prefix_omits_recent_actions_line_when_empty() -> None:
+    thought = make_thought(
+        imperative="Inspect the module.",
+        tone="direct",
+        autonomy_slice=AutonomySliceV1(dominant_drive="coherence"),
+    )
+    prompt = compile_harness_prefix(
+        thought,
+        repair_overlay=HarnessRepairOverlayV1(),
+        user_message="what have you been doing?",
+    )
+    assert "Recent actions:" not in prompt
 
 
 def test_compile_harness_prefix_imperative_first_unified_brief() -> None:

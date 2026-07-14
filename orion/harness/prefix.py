@@ -43,6 +43,8 @@ def _format_autonomy_slice(sl: AutonomySliceV1) -> list[str]:
         lines.append(f"Active tensions: {', '.join(sl.active_tensions)}")
     if sl.pressure_trend:
         lines.append(f"Pressure trend: {sl.pressure_trend}")
+    if sl.recent_actions:
+        lines.append(f"Recent actions: {'; '.join(sl.recent_actions)}")
     return lines
 
 

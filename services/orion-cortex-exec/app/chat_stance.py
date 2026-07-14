@@ -2568,6 +2568,15 @@ async def build_chat_stance_inputs(ctx: Dict[str, Any]) -> Dict[str, Any]:
         if drive_state_projection:
             inputs["drive_state"] = drive_state_projection
 
+    # Queries load_action_outcomes(subject="orion") directly (see
+    # _project_recent_dispatch_actions' docstring) rather than reading ctx, so
+    # it is unconditional -- independent of AUTONOMY_STATE_V2_REDUCER_ENABLED
+    # below. Computed here (before that gated block) so build_autonomy_slice()
+    # can fold it into recent_actions regardless of the reducer's flag/success,
+    # while chat_general.j2's direct read of ctx["chat_recent_dispatch_actions"]
+    # keeps working unchanged either way. Fail-open: [] on any failure.
+    ctx["chat_recent_dispatch_actions"] = _project_recent_dispatch_actions(ctx)
+
     if os.getenv("AUTONOMY_STATE_V2_REDUCER_ENABLED", "").strip().lower() == "true":
         try:
             v2_result = await _run_autonomy_reducer(
@@ -2584,24 +2593,36 @@ async def build_chat_stance_inputs(ctx: Dict[str, Any]) -> Dict[str, Any]:
             ctx["chat_autonomy_state_delta"] = v2_result.delta.model_dump(mode="json")
             inputs["autonomy"]["state_v2"] = ctx["chat_autonomy_state_v2"]
             inputs["autonomy"]["delta"] = ctx["chat_autonomy_state_delta"]
-
-            # Built here (ctx key "autonomy_slice", matching what stance_react.j2
-            # reads directly) so it's present BEFORE the stance_react LLM step
-            # renders its prompt. router.py's post-hoc metadata attach (for the
-            # harness-prefix/ThoughtEventV1 path) reads this same ctx key later
-            # in the same turn -- it does not need to recompute it.
-            autonomy_slice = build_autonomy_slice(ctx)
-            if autonomy_slice is not None:
-                ctx["autonomy_slice"] = autonomy_slice.model_dump(mode="json")
         except Exception as exc:
             logger.warning("autonomy_reducer_v2_failed error=%s", exc)
 
-    # Queries load_action_outcomes(subject="orion") directly (see
-    # _project_recent_dispatch_actions' docstring) rather than reading ctx,
-    # so placement here isn't order-dependent on the V2 reducer block above --
-    # kept in this general area only for proximity to the other stance
-    # context-building calls. Fail-open: [] on any failure.
-    ctx["chat_recent_dispatch_actions"] = _project_recent_dispatch_actions(ctx)
+    # Built here (ctx key "autonomy_slice", matching what stance_react.j2 reads
+    # directly) so it's present BEFORE the stance_react LLM step renders its
+    # prompt. router.py's post-hoc metadata attach (for the harness-prefix/
+    # ThoughtEventV1 path) reads this same ctx key later in the same turn -- it
+    # does not need to recompute it.
+    #
+    # Deliberately OUTSIDE the AUTONOMY_STATE_V2_REDUCER_ENABLED gate and its
+    # try/except above: recent_actions (real Layer-9 dispatch evidence) has
+    # nothing to do with the V2 reducer's health, so it must not go dark just
+    # because the reducer is disabled or threw. build_autonomy_slice() already
+    # treats an empty/missing chat_autonomy_state_v2 as "no drive/tension
+    # signal" rather than raising -- calling it unconditionally is safe and
+    # was the actual intent stated in this block's own comment above (recent
+    # actions are "independent of AUTONOMY_STATE_V2_REDUCER_ENABLED"); a prior
+    # version of this code contradicted that by nesting the call inside the
+    # gate anyway. Own try/except so a genuinely unexpected failure here can
+    # never take out the reducer block above it (or vice versa).
+    #
+    # max_recent_actions is passed explicitly (this file's own
+    # _MAX_RECENT_DISPATCH_ACTIONS) so the cap has one source of truth rather
+    # than a second hardcoded "3" living inside autonomy_slice.py.
+    try:
+        autonomy_slice = build_autonomy_slice(ctx, max_recent_actions=_MAX_RECENT_DISPATCH_ACTIONS)
+        if autonomy_slice is not None:
+            ctx["autonomy_slice"] = autonomy_slice.model_dump(mode="json")
+    except Exception as exc:
+        logger.warning("autonomy_slice_build_failed error=%s", exc)
 
     if attention_frame_enabled():
         try:

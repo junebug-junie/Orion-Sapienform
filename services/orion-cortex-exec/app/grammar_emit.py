@@ -54,6 +54,14 @@ class CortexExecGrammarCollector:
     turn_id: str | None = None
     trace_lane: str | None = None
     _atoms: dict[str, GrammarAtomV1] = field(default_factory=dict)
+    # Real wall-clock moment each atom was actually recorded, keyed by
+    # atom_id (not the internal `_atoms` string key) so edge lookups
+    # (which reference atom_id, not that key) can use it directly too.
+    # Populated by _put_atom() -- see 2026-07-14-cortex-exec-grammar-atom-
+    # wall-clock-spec.md. Before this, every atom in a trace shared one
+    # flush-time timestamp (confirmed live: median intra-trace duration
+    # across 35,994 real traces was 0.00s).
+    _atom_observed_at: dict[str, datetime] = field(default_factory=dict)
     _edge_specs: list[tuple[str, str, str]] = field(default_factory=list)
     _last_completed_atom_id: str | None = None
 
@@ -76,6 +84,7 @@ class CortexExecGrammarCollector:
 
     def _put_atom(self, key: str, atom: GrammarAtomV1) -> None:
         self._atoms[key] = atom
+        self._atom_observed_at[atom.atom_id] = datetime.now(timezone.utc)
 
     def record_request_received(self, *, req: PlanExecutionRequest, mode: str) -> None:
         verb = req.plan.verb_name or "unknown"
@@ -209,7 +218,7 @@ class CortexExecGrammarCollector:
             source_event_id=f"{self.correlation_id}:{order}",
             payload_ref=ref,
         )
-        self._atoms[key] = atom
+        self._put_atom(key, atom)
         if self._last_completed_atom_id:
             self._edge_specs.append(
                 (self._last_completed_atom_id, atom.atom_id, "temporal_successor")
@@ -251,7 +260,7 @@ class CortexExecGrammarCollector:
             source_event_id=f"{self.correlation_id}:{order}",
             payload_ref=ref,
         )
-        self._atoms[key] = atom
+        self._put_atom(key, atom)
         started = self._atoms.get(started_key)
         if started:
             self._edge_specs.append((started.atom_id, atom.atom_id, "derived_from"))
@@ -274,7 +283,7 @@ class CortexExecGrammarCollector:
             source_event_id=f"{self.correlation_id}:{order}",
             payload_ref=ref,
         )
-        self._atoms[key] = atom
+        self._put_atom(key, atom)
         started = self._atoms.get(started_key)
         if started:
             self._edge_specs.append((started.atom_id, atom.atom_id, "derived_from"))
@@ -504,12 +513,19 @@ def build_cortex_exec_grammar_events(
     events: list[GrammarEventV1] = [root]
 
     for atom in collector._atoms.values():
+        # observed_at = real wall-clock moment the atom was actually recorded
+        # (captured in _put_atom()), not the single flush-time value every
+        # atom in a trace previously shared. Falls back to trace-start
+        # observed_at only if an atom somehow bypassed _put_atom(). emitted_at
+        # stays the shared flush-time value -- that one was never wrong, every
+        # event genuinely was published to the bus in the same flush batch.
+        atom_ts = collector._atom_observed_at.get(atom.atom_id, observed_at)
         events.append(
             _event(
                 event_kind="atom_emitted",
                 trace_id=trace_id,
                 emitted_at=emitted_at,
-                observed_at=observed_at,
+                observed_at=atom_ts,
                 provenance=provenance,
                 atom=atom,
                 parent_event_id=root_id,
@@ -533,12 +549,15 @@ def build_cortex_exec_grammar_events(
             salience=0.7,
             evidence_event_ids=[collector.correlation_id],
         )
+        # observed_at = real moment the target atom happened; emitted_at
+        # stays the shared flush-time value, same reasoning as atom_emitted above.
+        edge_ts = collector._atom_observed_at.get(to_atom_id, observed_at)
         events.append(
             _event(
                 event_kind="edge_emitted",
                 trace_id=trace_id,
                 emitted_at=emitted_at,
-                observed_at=observed_at,
+                observed_at=edge_ts,
                 provenance=provenance,
                 edge=edge,
                 parent_event_id=root_id,

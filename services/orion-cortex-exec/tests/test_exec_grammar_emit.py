@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from typing import get_args
 
 import pytest
@@ -305,3 +305,122 @@ def test_atom_types_are_allowed_literals() -> None:
     for event in build_cortex_exec_grammar_events(collector):
         if event.atom:
             assert event.atom.atom_type in allowed
+
+
+def _install_fake_clock(monkeypatch: pytest.MonkeyPatch) -> dict[str, int]:
+    """Patch app.grammar_emit's datetime.now() to return strictly increasing,
+    deterministic timestamps -- one tick per call -- so tests can assert real
+    ordering/distinctness without depending on wall-clock speed."""
+    import app.grammar_emit as ge
+
+    counter = {"n": 0}
+    base = datetime(2026, 5, 24, 12, 0, 0, tzinfo=timezone.utc)
+
+    class _FakeDatetime(datetime):
+        @classmethod
+        def now(cls, tz=None):  # noqa: ANN001 -- matches datetime.now's signature
+            counter["n"] += 1
+            return base + timedelta(milliseconds=counter["n"])
+
+    monkeypatch.setattr(ge, "datetime", _FakeDatetime)
+    return counter
+
+
+def _record_two_step_trace(collector: CortexExecGrammarCollector) -> None:
+    req = _minimal_plan(steps=2)
+    collector.record_request_received(req=req, mode="brain")
+    collector.record_plan_started(req=req, depth=None, step_count=2)
+    collector.record_recall_gate_observed(run_recall=False, profile="p", reason="r")
+    for i in (1, 2):
+        collector.record_step_started(
+            order=i, step_name=f"step_{i}", verb_name="chat_general", services=["LLMGatewayService"]
+        )
+        collector.record_step_completed(
+            order=i, step_name=f"step_{i}", latency_ms=10, result_service_keys=["LLMGatewayService"]
+        )
+    collector.record_result_assembled(
+        status="success", final_text_present=True, reasoning_present=False, thinking_source="none"
+    )
+    collector.record_result_emitted(reply_present=True, status="success")
+
+
+def test_atoms_get_distinct_real_observed_at_not_shared_flush_time(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Before this fix: every atom in a trace shared one flush-time
+    timestamp (confirmed live: median intra-trace duration across 35,994
+    real cortex-exec traces was 0.00s). Each record_*() call must now stamp
+    its own real observed_at, in recording order."""
+    _install_fake_clock(monkeypatch)
+    collector = CortexExecGrammarCollector(
+        node_name=NODE, correlation_id=CORR, code_version="0.2.0", observed_at=FIXED_OBS,
+    )
+    _record_two_step_trace(collector)
+
+    events = build_cortex_exec_grammar_events(collector)
+    atom_events = [e for e in events if e.atom is not None]
+    observed_ats = [e.observed_at for e in atom_events]
+
+    assert len(set(observed_ats)) == len(observed_ats), (
+        f"expected distinct observed_at per atom, got duplicates: {observed_ats}"
+    )
+    assert observed_ats == sorted(observed_ats), "expected observed_at in recording order"
+
+
+def test_emitted_at_stays_shared_flush_time_across_all_atoms(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """emitted_at was never wrong -- every event in a trace genuinely is
+    published to the bus in the same flush batch. Only observed_at (real
+    occurrence time) should change; emitted_at stays uniform, same as the
+    pre-existing trace_started/trace_ended behavior."""
+    _install_fake_clock(monkeypatch)
+    collector = CortexExecGrammarCollector(
+        node_name=NODE, correlation_id=CORR, code_version="0.2.0", observed_at=FIXED_OBS,
+    )
+    _record_two_step_trace(collector)
+
+    events = build_cortex_exec_grammar_events(collector)
+    atom_events = [e for e in events if e.atom is not None]
+    emitted_ats = {e.emitted_at for e in atom_events}
+    assert len(emitted_ats) == 1, f"expected one shared emitted_at, got {emitted_ats}"
+
+
+def test_edge_observed_at_matches_target_atom_real_timestamp(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _install_fake_clock(monkeypatch)
+    collector = CortexExecGrammarCollector(
+        node_name=NODE, correlation_id=CORR, code_version="0.2.0", observed_at=FIXED_OBS,
+    )
+    _record_two_step_trace(collector)
+
+    events = build_cortex_exec_grammar_events(collector)
+    atom_observed_at = {e.atom.atom_id: e.observed_at for e in events if e.atom is not None}
+    edge_events = [e for e in events if e.edge is not None]
+    assert edge_events, "expected at least one edge in a two-step trace"
+    for edge_event in edge_events:
+        target_id = edge_event.edge.to_atom_id
+        assert target_id in atom_observed_at
+        assert edge_event.observed_at == atom_observed_at[target_id]
+
+
+def test_atom_missing_from_observed_at_map_falls_back_to_trace_start(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Defensive fallback: if an atom somehow bypassed _put_atom() and has no
+    captured observed_at, use the collector's trace-start observed_at rather
+    than crashing or emitting None."""
+    _install_fake_clock(monkeypatch)
+    collector = CortexExecGrammarCollector(
+        node_name=NODE, correlation_id=CORR, code_version="0.2.0", observed_at=FIXED_OBS,
+    )
+    req = _minimal_plan(steps=1)
+    collector.record_request_received(req=req, mode="brain")
+    # Simulate a bypass: drop the captured timestamp for one real atom.
+    missing_atom_id = next(iter(collector._atoms.values())).atom_id
+    del collector._atom_observed_at[missing_atom_id]
+
+    events = build_cortex_exec_grammar_events(collector)
+    atom_event = next(e for e in events if e.atom is not None and e.atom.atom_id == missing_atom_id)
+    assert atom_event.observed_at == FIXED_OBS

@@ -13,6 +13,7 @@ from orion.schemas.grammar import (
     GrammarEdgeV1,
     GrammarEventV1,
     GrammarProvenanceV1,
+    TimeRangeV1,
 )
 from orion.substrate.execution_loop.ids import cortex_exec_trace_id
 
@@ -58,9 +59,14 @@ class CortexExecGrammarCollector:
     # atom_id (not the internal `_atoms` string key) so edge lookups
     # (which reference atom_id, not that key) can use it directly too.
     # Populated by _put_atom() -- see 2026-07-14-cortex-exec-grammar-atom-
-    # wall-clock-spec.md. Before this, every atom in a trace shared one
-    # flush-time timestamp (confirmed live: median intra-trace duration
-    # across 35,994 real traces was 0.00s).
+    # wall-clock-spec.md. Before this, every GrammarEventV1's observed_at
+    # in a trace was the same value captured once at TRACE-START (collector
+    # construction, not flush time -- emitted_at is the separate,
+    # legitimately-shared flush-time value, unaffected by this field).
+    # Re-verified live directly against observed_at (not just emitted_at,
+    # the field an earlier draft of this fix's evidence mistakenly queried):
+    # median intra-trace observed_at spread across real pre-fix
+    # orion-cortex-exec traces is 0.0000s.
     _atom_observed_at: dict[str, datetime] = field(default_factory=dict)
     _edge_specs: list[tuple[str, str, str]] = field(default_factory=list)
     _last_completed_atom_id: str | None = None
@@ -83,8 +89,17 @@ class CortexExecGrammarCollector:
         return f"{self.trace_id}:{key}"
 
     def _put_atom(self, key: str, atom: GrammarAtomV1) -> None:
+        now = datetime.now(timezone.utc)
+        # Also stamp the atom's own time_range (GrammarAtomV1.time_range,
+        # orion/schemas/grammar.py) -- previously never populated by this
+        # producer, so orion/grammar/ledger.py's atom-row persistence
+        # (grammar_atoms.time_start/time_end) and the Grammar Atlas API
+        # that reads it stayed null even after observed_at was fixed on
+        # the sibling GrammarEventV1 envelope. Same source timestamp as
+        # _atom_observed_at, set together so the two can never drift.
+        atom.time_range = TimeRangeV1(start=now, end=now)
         self._atoms[key] = atom
-        self._atom_observed_at[atom.atom_id] = datetime.now(timezone.utc)
+        self._atom_observed_at[atom.atom_id] = now
 
     def record_request_received(self, *, req: PlanExecutionRequest, mode: str) -> None:
         verb = req.plan.verb_name or "unknown"
@@ -514,11 +529,13 @@ def build_cortex_exec_grammar_events(
 
     for atom in collector._atoms.values():
         # observed_at = real wall-clock moment the atom was actually recorded
-        # (captured in _put_atom()), not the single flush-time value every
-        # atom in a trace previously shared. Falls back to trace-start
-        # observed_at only if an atom somehow bypassed _put_atom(). emitted_at
-        # stays the shared flush-time value -- that one was never wrong, every
-        # event genuinely was published to the bus in the same flush batch.
+        # (captured in _put_atom()), not the single trace-START value every
+        # atom in a trace previously shared (collector.observed_at, set once
+        # at collector construction -- not "flush time", that's the separate
+        # emitted_at local below). Falls back to trace-start observed_at only
+        # if an atom somehow bypassed _put_atom(). emitted_at stays the
+        # shared flush-time value -- that one was never wrong, every event
+        # genuinely was published to the bus in the same flush batch.
         atom_ts = collector._atom_observed_at.get(atom.atom_id, observed_at)
         events.append(
             _event(
@@ -570,12 +587,20 @@ def build_cortex_exec_grammar_events(
             )
         )
 
+    # Real trace-end moment = the last atom actually recorded, not
+    # collector.observed_at (trace-START, which trace_ended previously
+    # reused, making trace_started/trace_ended's observed_at identical --
+    # the exact "grammar_traces.started_at/ended_at collapse to zero
+    # duration" symptom found downstream in orion/grammar/ledger.py).
+    # Falls back to trace-start observed_at only for a trace with zero
+    # recorded atoms (e.g. failed before any record_*() call).
+    trace_ended_at = max(collector._atom_observed_at.values(), default=observed_at)
     events.append(
         _event(
             event_kind="trace_ended",
             trace_id=trace_id,
             emitted_at=datetime.now(timezone.utc),
-            observed_at=observed_at,
+            observed_at=trace_ended_at,
             provenance=provenance,
             parent_event_id=root_id,
             root_event_id=root_id,

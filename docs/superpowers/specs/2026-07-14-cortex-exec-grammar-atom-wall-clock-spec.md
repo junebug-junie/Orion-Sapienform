@@ -10,14 +10,27 @@ trace start/end pairs), causally chained via `parent_event_id`/`root_event_id`,
 semantically labeled (`atom_type`, `semantic_role`, `salience`, `confidence`).
 This is the strongest raw-cognitive-signal substrate found this session —
 categorically richer than anything built from hardware telemetry today. But
-every atom inside one execution trace currently shares a single flush-time
-timestamp: querying real data, median intra-trace duration (`max(emitted_at) -
-min(emitted_at)` per `trace_id`) across 35,994 real cortex-exec traces is
-**0.00 seconds**. The timing is fake. Real per-step timing already exists in
-memory during execution (`executor.py`'s `t0 = time.time()` / `latency_ms`
-pattern, confirmed at `executor.py:2394` and 9 other call sites) — it's
-measured, then thrown away before it reaches the grammar-event record. This
-spec fixes that, and only that.
+every atom inside one execution trace currently shares a single
+`GrammarEventV1.observed_at` value, captured once at trace-**START**
+(`collector.observed_at`, set at collector construction) — **not** "flush
+time" as an earlier draft of this spec claimed. `emitted_at` is the separate,
+genuinely-flush-time field, and it was never buggy (every event in a trace
+really is published to the bus in the same flush batch). Correction, found
+during a `/code-review max` pass on the first round's already-pushed fix: the
+original live-evidence query below measured `emitted_at`, not `observed_at`
+— the wrong field for this claim, even though the underlying "timing is
+fake" conclusion happens to still be correct for the right field too
+(re-verified directly, see below). Querying real data, median intra-trace
+duration (`max(observed_at) - min(observed_at)` per `trace_id`) across real
+cortex-exec traces is **0.0000 seconds**, confirmed live against the actual
+field this spec fixes. The timing is fake. Real per-step timing already
+exists in memory during execution (`executor.py`'s `t0 = time.time()` /
+`latency_ms` pattern, confirmed at `executor.py:2394` and 9 other call
+sites) — it's measured, then thrown away before it reaches the grammar-event
+record. This spec fixes that, plus two adjacent already-live consumers
+(`GrammarAtomV1.time_range`, `grammar_traces.started_at`/`ended_at` via
+`orion/grammar/ledger.py`) found to have the same symptom for a different
+reason, discovered in the same review pass.
 
 ## Current architecture
 

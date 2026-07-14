@@ -49,13 +49,22 @@ def _upsert_trace(session: Any, event: GrammarEventV1) -> None:
     trace_type = _trace_type_from_event(event)
     root_event_id = event.root_event_id or event.event_id
     table = GrammarTraceSQL.__table__
+    # started_at/ended_at prefer event.observed_at (real occurrence time,
+    # via _created_at()'s existing fallback chain) over event.emitted_at
+    # (bus-publish time -- always uniform across one flush batch, by
+    # design, never a meaningful trace-duration signal). Found by review
+    # 2026-07-14: producers whose observed_at is itself accurate per-atom
+    # (see services/orion-cortex-exec/app/grammar_emit.py) now get a real
+    # started_at/ended_at spread here too; producers that don't yet have
+    # accurate observed_at are no worse off than before.
+    trace_ts = _created_at(event)
     values = {
         "trace_id": event.trace_id,
         "trace_type": trace_type,
         "session_id": event.session_id,
         "turn_id": event.turn_id,
         "root_event_id": root_event_id,
-        "started_at": event.emitted_at,
+        "started_at": trace_ts,
         "ended_at": None,
         "status": "open",
         "summary": None,
@@ -69,14 +78,14 @@ def _upsert_trace(session: Any, event: GrammarEventV1) -> None:
                 "session_id": event.session_id,
                 "turn_id": event.turn_id,
                 "root_event_id": root_event_id,
-                "started_at": event.emitted_at,
+                "started_at": trace_ts,
                 "status": "open",
             },
         )
     elif event.event_kind == "trace_ended":
         stmt = pg_insert(table).values(**values).on_conflict_do_update(
             index_elements=["trace_id"],
-            set_={"status": "closed", "ended_at": event.emitted_at},
+            set_={"status": "closed", "ended_at": trace_ts},
         )
     else:
         stmt = pg_insert(table).values(**values).on_conflict_do_nothing(

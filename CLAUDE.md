@@ -284,6 +284,8 @@ Already have uncommitted work sitting in the shared checkout when you realize th
 
 New clone, or a worktree where the hook doesn't seem to be firing? Run `scripts/install_git_safety_hooks.sh .` once — hooks live in the shared common git dir, so this protects every worktree of the repo, not just the one it's run from. Full rationale and the incident that prompted this: `docs/superpowers/pr-reports/2026-07-14-agent-git-safety-hooks-pr.md`.
 
+The `pre-commit` hook only gates `git commit` — it can't stop `git clean -fd`/`git reset --hard`/`git checkout|switch --force` in the shared checkout, since those destroy uncommitted files *before* any commit happens. Two more layers cover that: `scripts/hooks/destructive_git_guard.py` (a Claude Code PreToolUse hook, live for any session using this repo's `.claude/settings.json`) and `scripts/git_hooks/orion-git-shim` (vendor-neutral — a system-wide `git` replacement installed earlier in PATH than the real binary, catches any caller doing a normal PATH lookup, not just Claude Code). The shim is opt-in per repo (a marker file, not a blanket policy) — run `scripts/install_orion_git_shim.sh .` once to both install the shim on PATH and opt this repo in. Same `ORION_ALLOW_SHARED_CHECKOUT_WRITE=1` escape hatch as the commit hook. Neither layer implements section 13's blanket approval rule for these commands — see that section for what's actually covered versus not.
+
 This repo actually has three worktree location conventions in live use, not one — worth knowing when you're trying to figure out where a piece of work already lives, or why `git worktree list` shows paths that don't look like the pattern above:
 
 - **`../Orion-Sapienform-<name>`** (sibling directory) — the pattern shown above, the only one this file documented until a live worktree-count audit turned up the other two. Use `scripts/new_worktree.sh <type> <name>` to create one; it also warns if a worktree mentioning the same name already exists under either convention below.
@@ -682,6 +684,8 @@ docker volume rm
 destructive migrations
 production writes
 ```
+
+Note on `git reset --hard`/`git clean -fd`/`git push --force`: `scripts/hooks/destructive_git_guard.py` (Claude Code sessions) and `scripts/git_hooks/orion-git-shim` (system-wide, opt-in per repo via `scripts/install_orion_git_shim.sh` — see section 2) mechanically block the first two, but *only* when the target is this repo's shared/primary checkout and only for `clean`/`reset --hard`/`checkout`+`switch --force`. Neither implements this section's blanket "never without explicit Juniper approval" rule — that still applies everywhere else (a normal worktree, `push --force`, any repo that hasn't opted in). A live block from either mechanism is not the same thing as this rule being satisfied; don't treat "the guard didn't fire" as approval.
 
 Never use:
 

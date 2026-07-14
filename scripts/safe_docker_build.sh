@@ -34,8 +34,10 @@ set -e
 # that file gets copied verbatim by git into .git/hooks/ and must stay
 # self-contained. If you fix a bug here, fix it there too. A THIRD, Python
 # reimplementation of this same detection lives in
-# scripts/hooks/destructive_git_guard.py's _is_shared_checkout() -- if you
-# fix a bug in the detection logic itself, check whether it applies there.
+# scripts/hooks/destructive_git_guard.py's _is_shared_checkout(), and a
+# FOURTH lives in scripts/git_hooks/orion-git-shim -- if you fix a bug in
+# the detection logic itself, check whether it applies to all three of the
+# others too.
 _GITDIR=$(cd "$(git rev-parse --git-dir 2>/dev/null)" 2>/dev/null && pwd)
 _COMMONDIR=$(cd "$(git rev-parse --git-common-dir 2>/dev/null)" 2>/dev/null && pwd)
 IS_SHARED_CHECKOUT=0

@@ -14,12 +14,13 @@ Deliberately scoped to Claude Code, not vendor-neutral: unlike `git
 commit`, git has no hook point at all for `clean`/`reset`/`checkout`, so
 there is no equivalent of scripts/git_hooks/pre-commit for these commands
 -- the only way to get the same tool-independent guarantee is to
-intercept the `git` binary itself (e.g. a PATH-shadowing wrapper), which
-is a materially bigger change than this file. That wrapper is deferred,
-not abandoned -- it's next up once the underlying question of *why*
-agents end up in the shared checkout at all (worktree-discipline
-noncompliance) is addressed; this hook is a real, live block in the
-meantime, not just a placeholder.
+intercept the `git` binary itself. That vendor-neutral layer now exists:
+scripts/git_hooks/orion-git-shim (installed via
+scripts/install_orion_git_shim.sh), a system-wide PATH shim that catches
+any caller doing a normal PATH-resolved `git` lookup, not just Claude
+Code sessions. This hook remains a real, live, complementary layer, not
+a placeholder superseded by the shim -- it still protects sessions where
+the shim isn't installed or PATH doesn't route through it.
 
 Escape hatch: ORION_ALLOW_SHARED_CHECKOUT_WRITE=1, same as the commit
 hook -- either set in the hook process's own environment, or as a leading

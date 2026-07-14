@@ -328,7 +328,8 @@ def load_recent_loop_outcomes(loop_ids: list[str]) -> dict[str, dict[str, Any]]:
 
     Returns {loop_id: {"verdict": str, "note": str, "age_days": int}} — age is
     computed here (deterministic code), not left for the prompt/LLM to infer from
-    a raw timestamp.
+    a raw timestamp. `age_days` is omitted (never `None`) when `created_at` can't
+    be read, so the prompt never has to render a null age.
     """
     ids = [str(i) for i in (loop_ids or []) if i]
     if not ids:
@@ -347,24 +348,23 @@ def load_recent_loop_outcomes(loop_ids: list[str]) -> dict[str, dict[str, Any]]:
         ).bindparams(bindparam("ids", expanding=True))
         with engine.connect() as conn:
             rows = conn.execute(stmt, {"ids": ids}).mappings().all()
+
+        now = datetime.now(timezone.utc)
+        out: dict[str, dict[str, Any]] = {}
+        for r in rows:
+            entry: dict[str, Any] = {
+                "verdict": str(r.get("verdict") or ""),
+                "note": str(r.get("note") or ""),
+            }
+            created = r.get("created_at")
+            if isinstance(created, datetime):
+                c = created if created.tzinfo else created.replace(tzinfo=timezone.utc)
+                entry["age_days"] = max(0, int((now - c).total_seconds() // 86400))
+            out[str(r["loop_id"])] = entry
+        return out
     except Exception as exc:
         logger.debug("loop outcome load failed ids=%s err=%s", ids, exc)
         return {}
-
-    now = datetime.now(timezone.utc)
-    out: dict[str, dict[str, Any]] = {}
-    for r in rows:
-        created = r.get("created_at")
-        age_days = None
-        if isinstance(created, datetime):
-            c = created if created.tzinfo else created.replace(tzinfo=timezone.utc)
-            age_days = max(0, int((now - c).total_seconds() // 86400))
-        out[str(r["loop_id"])] = {
-            "verdict": str(r.get("verdict") or ""),
-            "note": str(r.get("note") or ""),
-            "age_days": age_days,
-        }
-    return out
 
 
 def reverie_refractory_suppress(theme_key: str, until) -> bool:

@@ -232,6 +232,7 @@ def build_reverie_context(
             "llm_route": "metacog",
             "options": {"llm_lane": "background", "allow_chat_fallback": False},
         }
+    open_loops = _open_loops_for_prompt(broadcast, loop_outcomes=loop_outcomes)
     return {
         "user_message": None,  # the defining difference from stance_react
         "coalition_projection": {
@@ -244,7 +245,8 @@ def build_reverie_context(
             "coalition_stability_score": broadcast.coalition_stability_score,
             "dwell_ticks": broadcast.dwell_ticks,
         },
-        "open_loops": _open_loops_for_prompt(broadcast, loop_outcomes=loop_outcomes),
+        "open_loops": open_loops,
+        "has_settled_loops": any("outcome" in loop for loop in open_loops),
         "metadata": {"mode": "reverie", "llm_profile": "brain"},
     }
 
@@ -379,8 +381,12 @@ async def run_reverie_once(
     try:
         loop_outcomes: dict[str, dict[str, Any]] | None = None
         if not (settings.reverie_semantic_lift_enabled and concern_cards):
-            loop_outcomes = load_recent_loop_outcomes(
-                [loop.id for loop in broadcast.frame.open_loops]
+            # Offloaded to a thread: a blocking DB round-trip here must not stall
+            # this coroutine's shared event loop (same rationale as chain.py's
+            # asyncio.to_thread use around its own blocking DB/HTTP calls).
+            loop_outcomes = await asyncio.to_thread(
+                load_recent_loop_outcomes,
+                [loop.id for loop in broadcast.frame.open_loops],
             )
         plan_request = build_reverie_plan_request(
             broadcast,

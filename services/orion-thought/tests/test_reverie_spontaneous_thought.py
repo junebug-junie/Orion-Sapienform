@@ -322,6 +322,89 @@ def test_load_recent_loop_outcomes_shapes_rows(monkeypatch):
     assert out == {"ol-1": {"verdict": "resolved", "note": "fixed it", "age_days": 6}}
 
 
+def test_load_recent_loop_outcomes_omits_age_days_when_unreadable(monkeypatch):
+    """A row with no usable created_at must never surface age_days: None into the
+    prompt — the key is omitted rather than emitting a null the LLM could echo
+    literally (e.g. "closed None days ago")."""
+    from app import store
+
+    class _Result:
+        def mappings(self):
+            return self
+
+        def all(self):
+            return [{"loop_id": "ol-1", "verdict": "dismissed", "note": "",
+                      "created_at": None}]
+
+    class _Conn:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *a):
+            return False
+
+        def execute(self, *a, **k):
+            return _Result()
+
+    class _Engine:
+        def connect(self):
+            return _Conn()
+
+    monkeypatch.setattr(store, "_get_engine", lambda: _Engine())
+    out = store.load_recent_loop_outcomes(["ol-1"])
+    assert "age_days" not in out["ol-1"]
+    assert out["ol-1"]["verdict"] == "dismissed"
+
+
+def test_load_recent_loop_outcomes_never_raises_on_bad_row_shape(monkeypatch):
+    """The 'never raises' guarantee must hold for row-shaping failures too, not
+    just for the DB round-trip -- a malformed/renamed column must degrade to {}
+    rather than propagate out of a function whose whole contract is best-effort."""
+    from app import store
+
+    class _Result:
+        def mappings(self):
+            return self
+
+        def all(self):
+            return [{"loop_id": "ol-1"}]  # missing verdict/note/created_at entirely
+
+    class _Conn:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *a):
+            return False
+
+        def execute(self, *a, **k):
+            return _Result()
+
+    class _Engine:
+        def connect(self):
+            return _Conn()
+
+    monkeypatch.setattr(store, "_get_engine", lambda: _Engine())
+    # dict.get on a plain dict row never raises for a missing key, so force the
+    # failure via a row object whose .get() raises -- the point under test is
+    # that the shaping loop is inside the try/except, not that this exact input
+    # is realistic.
+    class _BoomRow(dict):
+        def get(self, *a, **k):
+            raise KeyError("simulated malformed row")
+
+    class _BoomResult:
+        def mappings(self):
+            return self
+
+        def all(self):
+            return [_BoomRow(loop_id="ol-1")]
+
+    monkeypatch.setattr(
+        _Conn, "execute", lambda self, *a, **k: _BoomResult()
+    )
+    assert store.load_recent_loop_outcomes(["ol-1"]) == {}  # returned, not raised
+
+
 @pytest.mark.asyncio
 async def test_tick_drops_hollow_thought():
     from app import reverie

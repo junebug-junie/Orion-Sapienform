@@ -630,6 +630,11 @@ def main() -> int:
         help="Docker logs + bus subscribe (same as --docker --bus)",
     )
     p_live.add_argument(
+        "--bus",
+        action="store_true",
+        help="Subscribe to the bus channels in _LIVE_BUS_CHANNELS instead of docker-log-only mode",
+    )
+    p_live.add_argument(
         "--docker",
         action="store_true",
         help="With --bus, also tail docker logs (default live mode is docker-only)",

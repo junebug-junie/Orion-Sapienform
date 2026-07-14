@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import re
+import threading
 import time
 from dataclasses import dataclass
 from typing import Any, Dict, Optional, Tuple
@@ -80,17 +81,26 @@ ACTION_CATALOG: Dict[str, ActionSpec] = {
 
 
 class ActionDedupe:
-    """Tiny in-memory dedupe with inflight protection."""
+    """Tiny in-memory dedupe with inflight protection.
+
+    Guarded by a lock: `_dispatch_journal_notifications` in
+    services/orion-actions/app/main.py is invoked via `asyncio.to_thread` from a bus
+    consumer that runs with `concurrent_handlers` enabled by default, so two journal
+    entries can call `try_acquire` on the *same* key (the shared daily-email-cap key)
+    from two real OS threads at once. Without a lock, the check-then-add in
+    `try_acquire` is a TOCTOU race that lets both threads win the same key."""
 
     def __init__(self, ttl_seconds: int = 86400):
         self.ttl_seconds = int(ttl_seconds)
         self._done_expiry: Dict[str, float] = {}
         self._inflight: set[str] = set()
+        self._lock = threading.Lock()
 
     def _now(self) -> float:
         return time.time()
 
     def _prune(self, now: Optional[float] = None) -> None:
+        """Caller must hold `self._lock`."""
         if now is None:
             now = self._now()
         expired = [k for k, exp in self._done_expiry.items() if exp <= now]
@@ -102,27 +112,30 @@ class ActionDedupe:
             return True
         if now is None:
             now = self._now()
-        self._prune(now)
-        exp = self._done_expiry.get(key)
-        if exp is not None and exp > now:
-            return False
-        if key in self._inflight:
-            return False
-        self._inflight.add(key)
-        return True
+        with self._lock:
+            self._prune(now)
+            exp = self._done_expiry.get(key)
+            if exp is not None and exp > now:
+                return False
+            if key in self._inflight:
+                return False
+            self._inflight.add(key)
+            return True
 
     def release(self, key: str) -> None:
         if key:
-            self._inflight.discard(key)
+            with self._lock:
+                self._inflight.discard(key)
 
     def mark_done(self, key: str, *, now: Optional[float] = None) -> None:
         if not key:
             return
         if now is None:
             now = self._now()
-        self._inflight.discard(key)
-        self._done_expiry[key] = now + float(self.ttl_seconds)
-        self._prune(now)
+        with self._lock:
+            self._inflight.discard(key)
+            self._done_expiry[key] = now + float(self.ttl_seconds)
+            self._prune(now)
 
 
 def should_trigger(entry: CollapseMirrorEntryV2) -> bool:

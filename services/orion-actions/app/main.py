@@ -664,6 +664,17 @@ def _world_pulse_daily_dedupe_key(window: DailyWindow) -> str:
     return f"actions:world_pulse:daily:{window.request_date}:{settings.node_name}"
 
 
+def _journal_email_daily_cap_key(*, now_utc: datetime | None = None) -> str:
+    """One key per local calendar day, shared across every `trigger_kind` --
+    caps freeform journal emails (daily_summary, metacog_digest, world_pulse_digest,
+    notify_summary, autonomy_episode, collapse_response, manual) at one send/day
+    regardless of which trigger fires first. Journal entries still persist either
+    way; only the email step is gated."""
+    now = (now_utc or datetime.now(timezone.utc)).astimezone(timezone.utc)
+    local_date = now.astimezone(ZoneInfo(settings.actions_daily_timezone)).date().isoformat()
+    return f"actions:journal:notify:daily_email_cap:{local_date}:{settings.node_name}"
+
+
 def _trigger_world_pulse_run(*, date: str, requested_by: str) -> bool:
     try:
         resp = requests.post(
@@ -717,6 +728,7 @@ def _dispatch_journal_notifications(
     correlation_id: str,
     notify,
     deduper: ActionDedupe,
+    now_utc: datetime | None = None,
 ) -> dict[str, Any]:
     """Single dispatch point for journal-entry notifications, keyed off
     `entry.trigger_kind` via `orion.journaler.dispatch_registry.resolve_policy`.
@@ -725,9 +737,16 @@ def _dispatch_journal_notifications(
     `_dispatch_journal`, plus a separate post-persist email fired from every
     persisted journal entry) that used two different dedupe-key namespaces and
     therefore double-emailed every `trigger_kind=daily_summary, source_kind=scheduler`
-    entry. There is exactly one dedupe-key namespace now
-    (`actions:journal:notify:{entry_id}`), so double-sending across codepaths is
-    structurally impossible rather than accidentally avoided.
+    entry. There is exactly one per-entry dedupe-key namespace now
+    (`actions:journal:notify:{entry_id}`), so double-sending across codepaths for the
+    *same* entry is structurally impossible rather than accidentally avoided.
+
+    A second, date-scoped key namespace (`actions:journal:notify:daily_email_cap:*`,
+    see `_journal_email_daily_cap_key`) caps freeform journal emails at one send per
+    local calendar day *across* `trigger_kind`s, for any policy with
+    `subject_to_daily_cap=True` -- journal entries still persist regardless; only the
+    email step is gated. `now_utc` is test-injectable so cap/no-cap behavior can be
+    pinned to a specific day rather than depending on wall-clock time.
 
     Fail-closed: an unregistered trigger_kind resolves to an all-disabled policy
     (see `resolve_policy`), so this sends nothing rather than defaulting to "email
@@ -785,46 +804,75 @@ def _dispatch_journal_notifications(
             )
 
         if policy.email_enabled:
-            email_req = NotificationRequest(
-                source_service=settings.service_name,
-                event_kind="orion.journal.notify",
-                severity="info",
-                title=message_payload["title"],
-                body_text=message_payload["full_text"],
-                body_md=message_payload["full_text"],
-                recipient_group=settings.actions_recipient_group,
-                session_id=settings.actions_journal_session_id or settings.actions_session_id,
-                correlation_id=correlation_id,
-                tags=["actions", "journal", "notify", entry.trigger_kind or "unknown"],
-                channels_requested=["email"],
-                dedupe_key=dedupe_key,
-                dedupe_window_seconds=int(settings.actions_notify_dedupe_window_seconds),
-                context={
-                    "entry_id": str(entry.entry_id or ""),
-                    "trigger_kind": str(entry.trigger_kind or ""),
-                    "source_kind": str(entry.source_kind or ""),
-                    "source_ref": str(entry.source_ref or ""),
-                    "mode": str(entry.mode or ""),
-                },
-            )
-            email_result = notify.send(email_req)
-            email_ok = bool(getattr(email_result, "ok", False))
-            if email_ok:
-                logger.info(
-                    "journal_notify_email_sent correlation_id=%s entry_id=%s trigger_kind=%s notification_id=%s",
-                    correlation_id,
-                    entry.entry_id,
-                    entry.trigger_kind,
-                    getattr(email_result, "notification_id", None),
+
+            def _send_journal_email() -> bool:
+                email_req = NotificationRequest(
+                    source_service=settings.service_name,
+                    event_kind="orion.journal.notify",
+                    severity="info",
+                    title=message_payload["title"],
+                    body_text=message_payload["full_text"],
+                    body_md=message_payload["full_text"],
+                    recipient_group=settings.actions_recipient_group,
+                    session_id=settings.actions_journal_session_id or settings.actions_session_id,
+                    correlation_id=correlation_id,
+                    tags=["actions", "journal", "notify", entry.trigger_kind or "unknown"],
+                    channels_requested=["email"],
+                    dedupe_key=dedupe_key,
+                    dedupe_window_seconds=int(settings.actions_notify_dedupe_window_seconds),
+                    context={
+                        "entry_id": str(entry.entry_id or ""),
+                        "trigger_kind": str(entry.trigger_kind or ""),
+                        "source_kind": str(entry.source_kind or ""),
+                        "source_ref": str(entry.source_ref or ""),
+                        "mode": str(entry.mode or ""),
+                    },
                 )
+                email_result = notify.send(email_req)
+                ok = bool(getattr(email_result, "ok", False))
+                if ok:
+                    logger.info(
+                        "journal_notify_email_sent correlation_id=%s entry_id=%s trigger_kind=%s notification_id=%s",
+                        correlation_id,
+                        entry.entry_id,
+                        entry.trigger_kind,
+                        getattr(email_result, "notification_id", None),
+                    )
+                else:
+                    logger.warning(
+                        "journal_notify_email_failed correlation_id=%s entry_id=%s trigger_kind=%s detail=%s",
+                        correlation_id,
+                        entry.entry_id,
+                        entry.trigger_kind,
+                        getattr(email_result, "detail", None),
+                    )
+                return ok
+
+            if not policy.subject_to_daily_cap:
+                email_ok = _send_journal_email()
             else:
-                logger.warning(
-                    "journal_notify_email_failed correlation_id=%s entry_id=%s trigger_kind=%s detail=%s",
-                    correlation_id,
-                    entry.entry_id,
-                    entry.trigger_kind,
-                    getattr(email_result, "detail", None),
-                )
+                daily_cap_key = _journal_email_daily_cap_key(now_utc=now_utc)
+                if not deduper.try_acquire(daily_cap_key):
+                    email_ok = True  # not required -> don't block dedupe completion
+                    logger.info(
+                        "journal_notify_email_skipped correlation_id=%s entry_id=%s trigger_kind=%s reason=daily_cap_reached",
+                        correlation_id,
+                        entry.entry_id,
+                        entry.trigger_kind,
+                    )
+                else:
+                    try:
+                        email_ok = _send_journal_email()
+                    finally:
+                        # Must run even if _send_journal_email raised (e.g. a
+                        # NotificationRequest validation error) -- ActionDedupe has no
+                        # TTL on in-flight entries, only on completed ones, so a key
+                        # never released here stays stuck "in-flight" and silently
+                        # blocks every journal email for the rest of the day.
+                        if email_ok:
+                            deduper.mark_done(daily_cap_key)
+                        else:
+                            deduper.release(daily_cap_key)
         else:
             email_ok = True  # not required -> don't block dedupe completion
             logger.info(

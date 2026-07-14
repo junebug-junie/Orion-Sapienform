@@ -46,6 +46,15 @@ class JournalDispatchPolicy:
     in_app_enabled: bool
     dedupe_scope: Literal["entry_id"] = "entry_id"
     recall_profile_setting: str = ""
+    # 2026-07-14: freeform journal emails (daily_summary, metacog_digest,
+    # world_pulse_digest, notify_summary, ...) could each fire independently,
+    # landing as up to 4 separate reflective-prose emails per day. Default True caps
+    # every email-enabled trigger_kind at one send per local calendar day, shared
+    # across trigger_kinds (see `_journal_email_daily_cap_key` in
+    # services/orion-actions/app/main.py). A future trigger_kind that legitimately
+    # needs its own uncapped or independently-capped email is a one-line registry
+    # edit here, not new branching logic in the dispatch function.
+    subject_to_daily_cap: bool = True
 
 
 JOURNAL_DISPATCH_REGISTRY: dict[str, JournalDispatchPolicy] = {

@@ -16,6 +16,13 @@ scripts/.state/
 # === Git worktrees (superpowers / local isolation) ===
 .worktrees/
 
+# Claude Code's own isolation:worktree Agent-tool feature creates worktrees
+# here. Each one has its own .git, which `git add` from the parent repo
+# mistakes for a submodule and tracks as a gitlink (mode 160000) instead of
+# ignoring -- happened for real (.claude/worktrees/feat+substrate-signal-
+# bridge-v1, cleaned up in the same commit that adds this line).
+.claude/worktrees/
+
 # === Python ===
 __pycache__/
 *.py[cod]

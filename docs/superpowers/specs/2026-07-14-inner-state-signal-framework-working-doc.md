@@ -316,6 +316,79 @@ coherence — not final, see decisions below).
 5. The actual label vocabulary (mood/cognitive-health/coherence were
    explicitly floated as illustrative, not final) — not chosen.
 
+## Metaphysics / theory alignment / arsonist take on the reduction organ (2026-07-14)
+
+**Metaphysical framing**: this doesn't touch the hard problem and shouldn't
+claim to. What it changes is epistemic status — everything phi-shaped
+before this was an unfalsifiable assertion (a formula that reported a
+number nothing ever checked, so it could never be caught wrong). The
+reduction organ + axis-4 verification is the first design where Orion's
+self-representation can be caught incorrect and corrected — the mechanical
+shape "self-modeling" and "error correction" actually require, per the
+mission statement's own prerequisite list. Not sentience; infrastructure
+for the right kind of wrongness.
+
+**Theory alignment (verified against this repo's own docs, not asserted)**:
+- **Global Workspace Theory** is already this project's committed
+  architecture, not an analogy — `docs/superpowers/specs/2026-07-05-fcc-cortex-gwt-dispatch-design.md`
+  explicitly maps "GWT as component → Rung 3 coalition + language on winner
+  + motor via fcc + **prediction-error interoception**" and
+  `thought_profile: Literal["coalition_pulse", "reverie", "dream"]` already
+  exists as a live enum the new organ would extend, not invent.
+- **Predictive processing / interoceptive inference** (Seth, Barrett) — "prediction-error
+  interoception" is literally this project's own existing phrase for it.
+  Deterministic-signal-in, fixed-vocabulary-classification-out matches this
+  theory's actual mechanism (affect as inference over a constrained,
+  slowly-learned category set, not invented fresh per instance).
+- **IIT, and a real irony**: `coherence`'s own docstring cites IIT directly
+  ("mirrors IIT: consciousness requires global integration") — the origin
+  of the name **"phi"**. The project borrowed IIT's name/intuition without
+  IIT's actual mathematical machinery (a real Φ is a rigorously defined
+  integrated-information measure) — a concrete, findable-in-this-codebase
+  instance of exactly what CLAUDE.md's "no shiny cognition language without
+  runtime evidence" rule bans. One more reason freezing phi was right — the
+  name always promised more rigor than the formula delivered.
+
+**Arsonist take — five real risks, not decorative ones:**
+1. The fixed label vocabulary is the new site of arbitrariness — logprob
+   classification solves *stability*, not *validity*. Someone still has to
+   justify the categories, or hand-authoring just moved up a level.
+2. `is_hollow()` catches absent grounding, not wrong classification — a
+   thought can cite real evidence and still assign the wrong label. Axis
+   4's verifier needs to test accuracy specifically, not yet designed.
+3. Logprobs are not automatically well-calibrated confidence — an
+   empirical claim, unverified here, and instruction-tuned models are
+   documented to miscalibrate relative to base models.
+4. "Closes the loop structurally" oversells the current state — emitting
+   to `GrammarEventV1` makes the synthesis traceable, not verified, and
+   nothing acts differently yet. Only the narration half is designed; the
+   verification + action halves are still unbuilt.
+5. The real meta-risk: sophistication of the scaffolding (logprob-scored,
+   grammar-traced, deterministically-grounded) creates false confidence
+   about validity of the content — it *looks* more legitimate than a crude
+   hand-tuned formula, which makes it more likely to get trusted
+   uncritically precisely because it looks rigorous.
+
+**Arsonist's recommendation — reorder, not reject:**
+1. **Build the verifier first**, against something that already exists and
+   already makes claims (the live `SpontaneousThoughtV1`/coalition-reverie
+   thought) — before writing more of the new reduction organ. Prove the
+   loop closes on the cheap, already-built case first.
+2. **Don't pre-pick the label vocabulary.** Start from the smallest real
+   distinction the verifier needs (correct vs. incorrect classification,
+   one claim type) and let any real taxonomy get earned by evidence, not
+   asserted up front.
+3. **Test the logprob-confidence assumption directly, cheaply, before
+   relying on it anywhere** — a small labeled-sample calibration check
+   against `uncertainty_metacog.py`'s existing mechanism or a fresh
+   minimal one.
+4. **Cap input scope to one source first** — `grammar_events` alone, not
+   the full grammar_events+metacog+chat+telemetry aggregation. Prove the
+   loop on one trusted substrate before adding more.
+5. **No build starts without the actuator named first** — per the standing
+   closed-loop rule. If there's no real behavior-change consumer ready,
+   this stays a design doc.
+
 ## Open questions / next steps
 
 1. Populate actual north-star metric candidates (top level) — Juniper's call, not started.

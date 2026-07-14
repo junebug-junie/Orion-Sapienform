@@ -17,8 +17,17 @@ from orion.core.schemas.drives import TensionEventV1
 
 def _signature(t: TensionEventV1) -> Tuple[str, Tuple[str, ...]]:
     """Source identity: kind + the set of drives it pushes. Two tensions with the
-    same kind and drive-set are the same recurring pressure."""
-    drives = tuple(sorted(d for d, w in (t.drive_impacts or {}).items() if w > 0.0))
+    same kind and drive-set are the same recurring pressure.
+
+    Includes relief (negative-weight) drives, not just growth (positive)
+    ones -- every producer before the P3 satisfaction tension only ever
+    emitted non-negative weights, so this is a no-op for them (w != 0.0 vs.
+    w > 0.0 select the same drives when no weight is ever negative).
+    Without this, an all-negative-weight tension collides into an empty-
+    tuple signature shared with any other zero-positive-weight tension of
+    the same kind, rate-limiting them together instead of independently.
+    """
+    drives = tuple(sorted(d for d, w in (t.drive_impacts or {}).items() if w != 0.0))
     return (t.kind, drives)
 
 

@@ -139,6 +139,81 @@ def test_frequent_ticks_do_not_inflate() -> None:
     assert all(p < 1e-6 for p in lp.values()), lp
 
 
+def test_negative_impact_relieves_pressure() -> None:
+    """A relief (negative-weight) tension reduces existing pressure, floored
+    at 0 -- the mandatory companion fix for P3's satisfaction mechanic."""
+    engine = _leaky_engine()
+    # Build up real pressure first.
+    pressures, activations = engine.update(
+        previous_pressures={k: 0.0 for k in DRIVE_KEYS},
+        previous_activations={k: False for k in DRIVE_KEYS},
+        tensions=[_tension({"predictive": 0.9})],
+        now=T0 + timedelta(seconds=10),
+        previous_ts=T0,
+    )
+    before = pressures["predictive"]
+    assert before > 0.0
+
+    # Relief tension, same tick cadence so decay is negligible.
+    pressures, activations = engine.update(
+        previous_pressures=pressures,
+        previous_activations=activations,
+        tensions=[_tension({"predictive": -0.5}, magnitude=0.3)],
+        now=T0 + timedelta(seconds=20),
+        previous_ts=T0 + timedelta(seconds=10),
+    )
+    after = pressures["predictive"]
+    assert after < before
+    assert after >= 0.0
+
+
+def test_relief_floors_at_zero_never_negative() -> None:
+    """A relief impulse larger than the remaining pressure floors at 0, never
+    goes negative -- this must hold even with an extreme relief weight."""
+    engine = _leaky_engine()
+    pressures, activations = engine.update(
+        previous_pressures={k: 0.05 for k in DRIVE_KEYS},
+        previous_activations={k: False for k in DRIVE_KEYS},
+        tensions=[_tension({"coherence": -1.0}, magnitude=1.0)],
+        now=T0 + timedelta(seconds=10),
+        previous_ts=T0,
+    )
+    assert pressures["coherence"] == 0.0
+    assert all(p >= 0.0 for p in pressures.values())
+
+
+def test_relief_at_zero_pressure_is_a_no_op() -> None:
+    """Relief has nothing to relieve when pressure is already at rest --
+    diminishing-effect-toward-floor means this doesn't depend on the outer
+    clamp to "save" a would-be-negative value; the term itself is zero."""
+    engine = _leaky_engine()
+    pressures, _ = engine.update(
+        previous_pressures={k: 0.0 for k in DRIVE_KEYS},
+        previous_activations={k: False for k in DRIVE_KEYS},
+        tensions=[_tension({"relational": -0.8}, magnitude=1.0)],
+        now=T0 + timedelta(seconds=10),
+        previous_ts=T0,
+    )
+    assert pressures["relational"] == 0.0
+
+
+def test_positive_only_tensions_unaffected_by_signed_clamp() -> None:
+    """Regression guard: the [-1,1] signed clamp must be byte-identical to
+    the old [0,1] clamp for any weight that was already non-negative."""
+    engine = _leaky_engine()
+    pressures, _ = engine.update(
+        previous_pressures={k: 0.0 for k in DRIVE_KEYS},
+        previous_activations={k: False for k in DRIVE_KEYS},
+        tensions=[_tension({"capability": 0.6, "coherence": 0.2, "relational": 0.05})],
+        now=T0 + timedelta(seconds=10),
+        previous_ts=T0,
+    )
+    # Exact same assertions as test_no_uniform_pin, unchanged by the clamp fix.
+    assert pressures["capability"] > pressures["coherence"] > pressures["relational"]
+    assert pressures["autonomy"] == 0.0
+    assert all(abs(p - 0.7309) > 0.01 for p in pressures.values()), pressures
+
+
 def test_legacy_path_preserved() -> None:
     """Flag off ⇒ soft_saturate path drives the fixed-point inflation."""
     legacy = DriveEngine(DriveMathConfig(leaky_math_enabled=False))

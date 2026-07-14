@@ -48,3 +48,22 @@ def test_inspect_field_topology_catalog_template_targets_field() -> None:
     assert tmpl.target_kind == "field"
     assert tmpl.target_id == "config/field/orion_field_topology.v1.yaml"
     assert "field_intensity" in tmpl.dimensions
+
+
+def test_inspect_attended_target_template_has_attention_binding() -> None:
+    policy = load_proposal_policy(POLICY_PATH)
+    tmpl = policy.proposal_templates["inspect_attended_target"]
+    assert tmpl.kind == "inspect"
+    assert tmpl.target_kind == "capability"
+    assert tmpl.target_id == "capability:orchestration"
+    assert tmpl.target_binding == "self_state.dominant_attention_targets[0]"
+    assert tmpl.required_policy_gate == "read_only"
+    assert "field_intensity" in tmpl.dimensions
+
+
+def test_other_templates_have_no_target_binding() -> None:
+    policy = load_proposal_policy(POLICY_PATH)
+    for key, tmpl in policy.proposal_templates.items():
+        if key == "inspect_attended_target":
+            continue
+        assert tmpl.target_binding is None

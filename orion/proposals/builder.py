@@ -25,12 +25,47 @@ from orion.schemas.proposal_frame import ProposalCandidateV1, ProposalFrameV1
 from orion.schemas.self_state import SelfStateV1
 
 
+# The only recognized attention-binding literal in v1 -- no general
+# binding-expression DSL, matched exactly against ProposalTemplateV1.target_binding.
+ATTENTION_FIRST_TARGET_BINDING = "self_state.dominant_attention_targets[0]"
+
+# Intersection of AttentionTargetSummaryV1.target_kind's Literal
+# ("node", "capability", "channel", "edge", "field", "system") and
+# ProposalCandidateV1.target_kind's Literal
+# ("node", "capability", "field", "self_state", "service", "system").
+# A resolved attention target outside this set fails closed to the
+# template's literal target_id/target_kind rather than raising.
+_ATTENTION_BOUND_TARGET_KINDS = frozenset({"node", "capability", "field", "system"})
+
+
 def stable_proposal_frame_id(*, self_state_id: str, policy_id: str) -> str:
     return f"proposal.frame:{self_state_id}:{policy_id}"
 
 
 def stable_proposal_id(*, template_key: str, self_state_id: str) -> str:
     return f"proposal:{template_key}:{self_state_id}"
+
+
+def _resolve_binding_target(
+    *,
+    template: ProposalTemplateV1,
+    self_state: SelfStateV1,
+) -> tuple[str, str, str | None]:
+    """Resolve a template's target_id/target_kind from live attention if the
+    template declares a recognized binding and resolution succeeds; otherwise
+    fail closed to the template's literal target_id/target_kind. Never raises.
+
+    Returns (target_id, target_kind, binding_resolved_from).
+    """
+    if template.target_binding != ATTENTION_FIRST_TARGET_BINDING:
+        return template.target_id, template.target_kind, None
+    details = self_state.dominant_attention_target_details
+    if not details:
+        return template.target_id, template.target_kind, None
+    resolved = details[0]
+    if resolved.target_kind not in _ATTENTION_BOUND_TARGET_KINDS:
+        return template.target_id, template.target_kind, None
+    return resolved.target_id, resolved.target_kind, template.target_binding
 
 
 def _build_candidate(
@@ -59,9 +94,13 @@ def _build_candidate(
         self_state=self_state,
         template=template,
     )
+    resolved_target_id, resolved_target_kind, binding_resolved_from = _resolve_binding_target(
+        template=template,
+        self_state=self_state,
+    )
     title, description, reasons = template_title_description(
         template_key,
-        target_id=template.target_id,
+        target_id=resolved_target_id,
     )
     evidence_refs = [
         f"self_state:{self_state.self_state_id}",
@@ -86,8 +125,8 @@ def _build_candidate(
         proposal_kind=cast_proposal_kind(template.kind),
         title=title,
         description=description,
-        target_id=template.target_id,
-        target_kind=cast_target_kind(template.target_kind),
+        target_id=resolved_target_id,
+        target_kind=cast_target_kind(resolved_target_kind),
         priority_score=priority,
         urgency_score=urgency,
         confidence_score=confidence,
@@ -100,6 +139,7 @@ def _build_candidate(
         proposed_effect=cast_proposed_effect(template.proposed_effect),
         required_policy_gate=cast_policy_gate(template.required_policy_gate),
         execution_intent=execution_intent,
+        binding_resolved_from=binding_resolved_from,
     )
 
 

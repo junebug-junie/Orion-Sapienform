@@ -244,6 +244,14 @@ class SubstrateActResultV1(BaseModel):
     # Full outcome carried up to the worker so it can emit action.outcome.emit.v1
     # onto the bus for durable, cross-service persistence.
     fetch_outcome: ActionOutcomeRefV1 | None = None
+    # P4: recall-first check, tried before fetch. Mirrors fetch_attempted/
+    # fetch_outcome exactly so a successful recall reaches the same bus-emit
+    # -> sql-writer -> action_outcomes durability path a fetch success does --
+    # without this, a recall success is recorded only via the local
+    # append_action_outcome file-store fallback inside policy_act.py, never
+    # the durable SQL path load_action_outcomes reads from in production.
+    recall_attempted: bool = False
+    recall_outcome: ActionOutcomeRefV1 | None = None
 
 
 class AutonomyStateDeltaV1(BaseModel):

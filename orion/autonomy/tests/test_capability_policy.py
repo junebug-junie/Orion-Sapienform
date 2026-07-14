@@ -81,6 +81,52 @@ def test_capability_policy_allows_episode_journal_at_proposed(monkeypatch) -> No
     assert decision.auto_execute is True
 
 
+def test_capability_policy_allows_recall_when_goal_proposed(monkeypatch) -> None:
+    monkeypatch.setenv("ORION_CAPABILITY_POLICY_AUTO_READONLY_ENABLED", "true")
+    monkeypatch.setenv("ORION_METABOLISM_MIN_PREDICTIVE_PRESSURE", "0.55")
+    monkeypatch.setenv("ORION_METABOLISM_MIN_CURIOSITY_STRENGTH", "0.5")
+    ctx = CapabilityEvaluationContext(
+        predictive_pressure=0.7,
+        curiosity_strength=0.65,
+        signal_kinds=["world_coverage_gap"],
+        goal=_goal(),
+        budget_used={},
+    )
+    decision = evaluate_capability("recall.query.readonly", ctx)
+    assert decision.outcome == "allowed"
+    assert decision.auto_execute is True
+
+
+def test_capability_policy_denies_recall_without_goal(monkeypatch) -> None:
+    monkeypatch.setenv("ORION_CAPABILITY_POLICY_AUTO_READONLY_ENABLED", "true")
+    ctx = CapabilityEvaluationContext(
+        predictive_pressure=0.7,
+        curiosity_strength=0.65,
+        signal_kinds=["world_coverage_gap"],
+        goal=None,
+        budget_used={},
+    )
+    decision = evaluate_capability("recall.query.readonly", ctx)
+    assert decision.outcome == "denied"
+    assert decision.reason_code == "missing_goal"
+
+
+def test_capability_policy_denies_recall_when_auto_readonly_disabled(monkeypatch) -> None:
+    monkeypatch.setenv("ORION_CAPABILITY_POLICY_AUTO_READONLY_ENABLED", "false")
+    monkeypatch.setenv("ORION_METABOLISM_MIN_PREDICTIVE_PRESSURE", "0.55")
+    monkeypatch.setenv("ORION_METABOLISM_MIN_CURIOSITY_STRENGTH", "0.5")
+    ctx = CapabilityEvaluationContext(
+        predictive_pressure=0.7,
+        curiosity_strength=0.65,
+        signal_kinds=["world_coverage_gap"],
+        goal=_goal(),
+        budget_used={},
+    )
+    decision = evaluate_capability("recall.query.readonly", ctx)
+    assert decision.outcome == "denied"
+    assert decision.reason_code == "policy_auto_disabled"
+
+
 def test_capability_policy_denies_episode_journal_when_disabled(monkeypatch) -> None:
     monkeypatch.setenv("ORION_AUTONOMY_EPISODE_JOURNAL_ENABLED", "false")
     monkeypatch.setenv("ORION_CAPABILITY_POLICY_AUTO_READONLY_ENABLED", "true")

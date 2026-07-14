@@ -31,3 +31,12 @@ def test_execution_dispatch_runtime_is_action_outcome_producer() -> None:
     assert "orion-sql-writer" in entry["consumer_services"]
     assert "orion-spark-concept-induction" in (entry.get("producer_services") or [])
     assert "orion-execution-dispatch-runtime" in (entry.get("producer_services") or [])
+
+
+def test_concept_induction_is_recall_service_request_producer() -> None:
+    """recall.query.readonly (P4): the autonomy tick issues an inline recall RPC
+    from orion-spark-concept-induction's ConceptWorker before the readonly fetch."""
+    entry = _channel_entry("orion:exec:request:RecallService")
+    assert entry["schema_id"] == "RecallQueryV1"
+    assert entry["consumer_services"] == ["orion-recall"]
+    assert "orion-spark-concept-induction" in (entry.get("producer_services") or [])

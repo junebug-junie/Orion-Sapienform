@@ -39,6 +39,7 @@ class ConceptSettings(BaseSettings):
             "orion:substrate:self_state",
             "orion:feedback:frame",
             "orion:world_pulse:run:result",
+            "orion:autonomy:action:outcome",
         ],
         validation_alias=AliasChoices("BUS_INTAKE_CHANNELS", "CONCEPT_INTAKE_CHANNELS"),
     )

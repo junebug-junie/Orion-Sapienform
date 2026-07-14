@@ -32,6 +32,15 @@ class DriveEngine:
     def _clamp01(value: float) -> float:
         return max(0.0, min(1.0, float(value)))
 
+    @staticmethod
+    def _clamp_signed(value: float) -> float:
+        """Clamp to [-1, 1] -- same shape as _clamp01 but preserves sign, for
+        drive_impacts weights that carry relief (negative) as well as growth
+        (positive). Growth-only producers never emit a negative weight, so
+        this is a strict superset of _clamp01's behavior for them.
+        """
+        return max(-1.0, min(1.0, float(value)))
+
     def _decay_factor(self, elapsed_sec: float) -> float:
         if elapsed_sec <= 0:
             return 1.0
@@ -64,7 +73,11 @@ class DriveEngine:
             for drive, weight in sorted(event.drive_impacts.items()):
                 if drive not in impact_sum:
                     continue
-                impact_sum[drive] += mag * self._clamp01(weight)
+                # weight is signed: positive = growth (existing producers),
+                # negative = relief (e.g. a satisfaction tension on a
+                # successfully completed action). magnitude itself stays
+                # non-negative (schema-enforced) -- direction lives in weight.
+                impact_sum[drive] += mag * self._clamp_signed(weight)
 
         pressures: Dict[str, float] = {}
         activations: Dict[str, bool] = {}
@@ -75,8 +88,16 @@ class DriveEngine:
                 # impulse pushes it a fraction of the remaining headroom (1 - base).
                 # No fixed point: with impulse=0, pressure=base < prev; the 55/s
                 # scene_state flood mints impulse≈0, so it cannot inflate anything.
-                impulse = self._clamp01(impact_sum[drive])
-                pressures[drive] = self._clamp01(base + impulse * (1.0 - base))
+                impulse = self._clamp_signed(impact_sum[drive])
+                if impulse >= 0.0:
+                    pressures[drive] = self._clamp01(base + impulse * (1.0 - base))
+                else:
+                    # Relief is the mirror image of growth: diminishing effect
+                    # as pressure approaches its OTHER bound (0 instead of 1),
+                    # scaled by how much pressure is actually there to relieve
+                    # (base, not 1-base) -- at base=0 a relief impulse is
+                    # naturally a no-op without depending on the outer clamp.
+                    pressures[drive] = self._clamp01(base + impulse * base)
             else:
                 raw = base + impact_sum[drive]
                 pressures[drive] = self._soft_saturate(raw)

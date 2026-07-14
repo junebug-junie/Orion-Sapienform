@@ -102,7 +102,12 @@ docker compose up -d --build
 
 - `GET http://localhost:8121/health`
 - `GET http://localhost:8121/latest` (includes `theater_tripwire_active`)
-- Hub: `GET http://localhost:8080/api/substrate/execution-dispatch/latest`
+- Hub: `GET http://localhost:8080/api/substrate/execution-dispatch/latest` (P6:
+  also includes `status_summary` -- `dispatched_count` / `prepared_for_dispatch_count`
+  / `dry_run_count`, derived purely from the frame's own candidate statuses.
+  Does not surface `theater_tripwire_active`; that's in-process state on the
+  execution-dispatch-runtime service itself, a different process than the hub
+  route serving this summary.)
 
 ## Smoke
 

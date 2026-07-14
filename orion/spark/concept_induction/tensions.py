@@ -4,6 +4,7 @@ import hashlib
 from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional, Sequence
 
+from orion.autonomy.models import ActionOutcomeEmitV1
 from orion.core.bus.bus_schemas import BaseEnvelope
 from orion.core.schemas.drives import ArtifactProvenance, TensionEventV1
 from orion.schemas.feedback_frame import FeedbackFrameV1
@@ -463,3 +464,72 @@ def extract_tensions_from_feedback(
     for event in events:
         event.provenance.tension_refs = [event.artifact_id]
     return events
+
+
+# Closed, explicit map -- deliberately not a fuzzy inference. Each of P1's
+# three verbs relieves the one drive its own tone/intent most directly
+# targets (per docs/superpowers/specs/2026-07-13-execution-dispatch-motor-nerve-p1-design.md's
+# tone design): inspect is diagnostic (relieves coherence, the drive most
+# associated with "something's unclear, go look"); summarize is a wide-angle
+# picture (relieves predictive, "what's the state of things"); observe is a
+# deliberately lighter, lower-stakes stability check (smaller relief,
+# continuity -- "still steady").
+_ACTION_OUTCOME_DRIVE_RELIEF: Dict[str, Dict[str, float]] = {
+    "inspect": {"coherence": -0.10},
+    "summarize": {"predictive": -0.10},
+    "observe": {"continuity": -0.05},
+}
+_ACTION_OUTCOME_RELIEF_MAGNITUDE = 0.3
+
+
+def extract_tensions_from_action_outcome(
+    *,
+    envelope: BaseEnvelope,
+    intake_channel: str,
+    outcome: ActionOutcomeEmitV1,
+) -> List[TensionEventV1]:
+    """Relief tension when a real autonomous action (Layer 9 dispatch, P1/P2)
+    succeeds. Mints nothing on failure -- extract_tensions_from_feedback's
+    existing failed/absent/blocked branch already covers that side; this is
+    deliberately one-directional, not a duplicate of both directions.
+    """
+    if not outcome.success:
+        return []
+    weights = _ACTION_OUTCOME_DRIVE_RELIEF.get(outcome.kind)
+    if not weights:
+        return []
+
+    subject = "orion"
+    model_layer = "self-model"
+    entity_id = "self:orion"
+
+    ts = envelope.created_at if envelope.created_at.tzinfo else envelope.created_at.replace(tzinfo=timezone.utc)
+    trace_id = extract_trace_id(envelope)
+    turn_id = extract_turn_id(envelope)
+    source_event_ref = build_source_event_ref(envelope, intake_channel)
+    evidence_text = f"action_outcome kind={outcome.kind} action_id={outcome.action_id} success=True"
+    evidence_items = build_evidence_items(envelope, intake_channel, evidence_text)
+    prov = ArtifactProvenance(
+        intake_channel=intake_channel,
+        correlation_id=str(envelope.correlation_id),
+        trace_id=str(trace_id) if trace_id else None,
+        turn_id=turn_id,
+        evidence_text=evidence_text,
+        evidence_summary=evidence_items[0].summary if evidence_items else None,
+        source_event_refs=[source_event_ref],
+        evidence_items=evidence_items,
+    )
+
+    event = TensionEventV1(
+        artifact_id=_artifact_id(envelope, entity_id, "tension.satisfaction.v1"),
+        subject=subject, model_layer=model_layer, entity_id=entity_id,
+        kind="tension.satisfaction.v1", ts=ts, confidence=1.0,
+        correlation_id=str(envelope.correlation_id),
+        trace_id=str(trace_id) if trace_id else None, turn_id=turn_id,
+        provenance=prov,
+        related_nodes=[f"action_outcome:{outcome.action_id}"] + [f"drive:{d}" for d in weights],
+        magnitude=_ACTION_OUTCOME_RELIEF_MAGNITUDE,
+        drive_impacts=weights,
+    )
+    event.provenance.tension_refs = [event.artifact_id]
+    return [event]

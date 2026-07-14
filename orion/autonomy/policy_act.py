@@ -1,13 +1,19 @@
 from __future__ import annotations
 
 import logging
+import uuid
+from datetime import datetime, timezone
 from typing import Any, Awaitable, Callable, Sequence
 
+from orion.autonomy.action_outcomes import append_action_outcome
 from orion.autonomy.capability_policy import CapabilityEvaluationContext, evaluate_capability
 from orion.autonomy.episode_fetch import EpisodeFetchRequest, execute_readonly_fetch
 from orion.autonomy.fetch_backend_resolve import resolve_fetch_backend
 from orion.autonomy.models import ActionOutcomeRefV1, CapabilityDecisionV1, SubstrateActResultV1, SubstrateEpisodeIntentV1
 from orion.autonomy.salience import gap_terms_from_signals, iter_gap_section_labels
+from orion.cognition.recall_query import DEFAULT_RECALL_REPLY_PREFIX, build_recall_query_v1
+from orion.core.bus.bus_schemas import BaseEnvelope, ServiceRef
+from orion.core.contracts.recall import RecallReplyV1
 from orion.core.schemas.drives import DriveStateV1, GoalProposalV1
 from orion.core.schemas.frontier_curiosity import FrontierInvocationSignalV1
 
@@ -15,6 +21,8 @@ logger = logging.getLogger(__name__)
 
 _READONLY_CAPABILITY = "web.fetch.readonly"
 _EPISODE_JOURNAL_CAPABILITY = "journal.compose.episode"
+_RECALL_CAPABILITY = "recall.query.readonly"
+_RECALL_REQUEST_CHANNEL = "orion:exec:request:RecallService"
 _GAP_SIGNAL = "world_coverage_gap"
 
 
@@ -96,6 +104,211 @@ async def maybe_execute_readonly_fetch_after_goal(
     outcome = await execute_readonly_fetch(req, fetch_backend=fetch_backend)
     if budget_used is not None:
         budget_used[_READONLY_CAPABILITY] = budget_used.get(_READONLY_CAPABILITY, 0) + 1
+    return decision, outcome
+
+
+async def _execute_readonly_recall(
+    *,
+    subject: str,
+    query: str,
+    bus: Any,
+    source: ServiceRef | None,
+    recall_channel: str,
+    timeout_sec: float,
+    spawned_correlation_id: str,
+) -> ActionOutcomeRefV1:
+    """Inline recall RPC (mirrors ``recall_prefetch.py:169-183``'s exact pattern).
+
+    Degrades gracefully on any failure -- never raises. The caller falls through
+    to the readonly-fetch path when the returned outcome is not a success.
+    """
+    action_id = f"recall-{spawned_correlation_id}-{uuid.uuid4().hex[:8]}"
+    observed_at = datetime.now(timezone.utc)
+    reply_channel = f"{DEFAULT_RECALL_REPLY_PREFIX}:{uuid.uuid4()}"
+    envelope_source = source or ServiceRef(name="orion-spark-concept-induction")
+    # BaseEnvelope.correlation_id requires a real UUID; autonomy run ids (e.g.
+    # "wp-run-gap-gpu") are opaque strings, not UUIDs. Reuse spawned_correlation_id
+    # verbatim when it happens to already be one; otherwise mint a fresh envelope
+    # correlation id rather than raise.
+    try:
+        envelope_correlation_id = uuid.UUID(str(spawned_correlation_id))
+    except (ValueError, AttributeError, TypeError):
+        envelope_correlation_id = uuid.uuid4()
+
+    try:
+        req = build_recall_query_v1(
+            {"raw_user_text": query, "verb": "autonomy_recall_check"},
+            correlation_id=spawned_correlation_id,
+            reply_to=reply_channel,
+        )
+        if req is None:
+            outcome = ActionOutcomeRefV1(
+                action_id=action_id,
+                kind=_RECALL_CAPABILITY,
+                summary="recall query build failed",
+                success=False,
+                surprise=1.0,
+                observed_at=observed_at,
+                query=query,
+            )
+        else:
+            env = BaseEnvelope(
+                kind="recall.query.v1",
+                source=envelope_source,
+                correlation_id=envelope_correlation_id,
+                reply_to=reply_channel,
+                payload=req.model_dump(mode="json"),
+            )
+            msg = await bus.rpc_request(
+                recall_channel,
+                env,
+                reply_channel=reply_channel,
+                timeout_sec=timeout_sec,
+            )
+            decoded = bus.codec.decode(msg.get("data"))
+            if not decoded.ok:
+                outcome = ActionOutcomeRefV1(
+                    action_id=action_id,
+                    kind=_RECALL_CAPABILITY,
+                    summary=f"recall decode failed: {decoded.error}",
+                    success=False,
+                    surprise=1.0,
+                    observed_at=observed_at,
+                    query=query,
+                )
+            else:
+                payload = decoded.envelope.payload if isinstance(decoded.envelope.payload, dict) else {}
+                if payload.get("error"):
+                    outcome = ActionOutcomeRefV1(
+                        action_id=action_id,
+                        kind=_RECALL_CAPABILITY,
+                        summary=f"recall service error: {payload.get('error')}",
+                        success=False,
+                        surprise=1.0,
+                        observed_at=observed_at,
+                        query=query,
+                    )
+                else:
+                    reply = RecallReplyV1.model_validate(payload)
+                    items = reply.bundle.items or []
+                    found = bool(items)
+                    outcome = ActionOutcomeRefV1(
+                        action_id=action_id,
+                        kind=_RECALL_CAPABILITY,
+                        summary=f"recall found {len(items)} item(s)" if found else "recall found nothing",
+                        success=found,
+                        surprise=0.0 if found else 1.0,
+                        observed_at=observed_at,
+                        query=query,
+                    )
+    except Exception as exc:
+        logger.warning(
+            "autonomy_recall_rpc_failed subject=%s query=%r error=%s",
+            subject,
+            query,
+            exc,
+            exc_info=True,
+        )
+        outcome = ActionOutcomeRefV1(
+            action_id=action_id,
+            kind=_RECALL_CAPABILITY,
+            summary=f"recall rpc failed: {exc}",
+            success=False,
+            surprise=1.0,
+            observed_at=observed_at,
+            query=query,
+        )
+
+    append_action_outcome(subject=subject, outcome=outcome)
+    return outcome
+
+
+async def maybe_execute_readonly_recall_after_goal(
+    *,
+    goal: GoalProposalV1,
+    drive_state: DriveStateV1,
+    curiosity_signals: Sequence[FrontierInvocationSignalV1],
+    spawned_correlation_id: str | None,
+    bus: Any = None,
+    source: ServiceRef | None = None,
+    recall_channel: str = _RECALL_REQUEST_CHANNEL,
+    timeout_sec: float = 3.0,
+    budget_used: dict[str, int] | None = None,
+) -> tuple[CapabilityDecisionV1, ActionOutcomeRefV1 | None]:
+    """Layer C gate + recall-first check, tried before the readonly web fetch.
+
+    "Check what I already know first": mirrors
+    ``maybe_execute_readonly_fetch_after_goal`` in shape exactly. On allow, issues
+    an inline recall RPC and records the outcome via ``append_action_outcome``
+    the same way the fetch path does. Never raises -- any RPC failure, timeout,
+    or missing ``bus`` degrades to a ``None`` outcome so the caller falls through
+    to the existing readonly-fetch path without consuming its budget.
+    """
+    if not curiosity_signals or _GAP_SIGNAL not in signal_kinds_from_curiosity(curiosity_signals):
+        decision = CapabilityDecisionV1(
+            capability_id=_RECALL_CAPABILITY,
+            outcome="denied",
+            reason_code="missing_signal_kinds",
+            auto_execute=False,
+        )
+        return decision, None
+
+    if not spawned_correlation_id:
+        decision = CapabilityDecisionV1(
+            capability_id=_RECALL_CAPABILITY,
+            outcome="denied",
+            reason_code="missing_spawned_correlation_id",
+            auto_execute=False,
+        )
+        return decision, None
+
+    ctx = CapabilityEvaluationContext(
+        predictive_pressure=float(drive_state.pressures.get("predictive", 0.0)),
+        curiosity_strength=curiosity_strength_from_signals(curiosity_signals),
+        signal_kinds=signal_kinds_from_curiosity(curiosity_signals),
+        goal=goal,
+        budget_used=budget_used or {},
+    )
+    decision = evaluate_capability(_RECALL_CAPABILITY, ctx)
+    logger.info(
+        "substrate_policy_act capability=%s outcome=%s reason=%s auto_execute=%s goal=%s spawned=%s",
+        decision.capability_id,
+        decision.outcome,
+        decision.reason_code,
+        decision.auto_execute,
+        goal.artifact_id,
+        spawned_correlation_id,
+    )
+    if decision.outcome != "allowed" or not decision.auto_execute:
+        return decision, None
+
+    if bus is None:
+        # No bus wired for this call site -- degrade gracefully rather than raise;
+        # the caller falls through to the fetch path with its budget untouched.
+        return decision, None
+
+    if budget_used is not None:
+        budget_used[_RECALL_CAPABILITY] = budget_used.get(_RECALL_CAPABILITY, 0) + 1
+
+    query = build_readonly_fetch_query(curiosity_signals)
+    try:
+        outcome = await _execute_readonly_recall(
+            subject=goal.subject,
+            query=query,
+            bus=bus,
+            source=source,
+            recall_channel=recall_channel,
+            timeout_sec=timeout_sec,
+            spawned_correlation_id=spawned_correlation_id,
+        )
+    except Exception:
+        logger.warning(
+            "autonomy_recall_execute_failed goal=%s spawned=%s",
+            goal.artifact_id,
+            spawned_correlation_id,
+            exc_info=True,
+        )
+        return decision, None
     return decision, outcome
 
 
@@ -272,6 +485,10 @@ async def maybe_execute_substrate_act_after_metabolism(
     budget_used: dict[str, int] | None = None,
     prefetched_outcome: ActionOutcomeRefV1 | None = None,
     episode_journal_enabled: bool = False,
+    recall_bus: Any = None,
+    recall_source: ServiceRef | None = None,
+    recall_channel: str = _RECALL_REQUEST_CHANNEL,
+    recall_timeout_sec: float = 3.0,
 ) -> SubstrateActResultV1:
     run_id = spawned_correlation_id or episode_intent.spawned_correlation_id
     synthetic_goal = goal_proposal_from_episode_intent(episode_intent)
@@ -289,22 +506,67 @@ async def maybe_execute_substrate_act_after_metabolism(
             }
         )
     else:
-        fetch_decision, fetch_outcome = await maybe_execute_readonly_fetch_after_goal(
-            goal=synthetic_goal,
-            drive_state=drive_state,
-            curiosity_signals=curiosity_signals,
-            spawned_correlation_id=run_id,
-            fetch_backend=fetch_backend,
-            budget_used=budget_used,
-        )
-        if fetch_decision.outcome == "allowed" and fetch_outcome is not None:
+        # Recall-first: check what Orion already knows before spending a live
+        # web fetch. Tried before the fetch call in the same tick; if recall
+        # surfaces real content, the fetch capability's budget is left untouched
+        # this cycle. Any recall failure/timeout/empty result degrades to None
+        # and falls straight through to the existing fetch path below.
+        try:
+            _, recall_outcome = await maybe_execute_readonly_recall_after_goal(
+                goal=synthetic_goal,
+                drive_state=drive_state,
+                curiosity_signals=curiosity_signals,
+                spawned_correlation_id=run_id,
+                bus=recall_bus,
+                source=recall_source,
+                recall_channel=recall_channel,
+                timeout_sec=recall_timeout_sec,
+                budget_used=budget_used,
+            )
+        except Exception:
+            logger.warning(
+                "substrate_recall_check_failed goal=%s spawned=%s",
+                synthetic_goal.artifact_id,
+                run_id,
+                exc_info=True,
+            )
+            recall_outcome = None
+
+        if recall_outcome is not None:
+            # Recorded whenever an attempt happened (RPC issued, whatever the
+            # result), mirroring fetch_attempted/fetch_outcome's own semantics
+            # below -- "attempted" tracks that a real check happened, success
+            # lives inside the outcome object itself. Without this, a recall
+            # attempt was only ever visible via the local append_action_outcome
+            # file-store fallback inside maybe_execute_readonly_recall_after_goal,
+            # never reaching the durable bus-emit -> sql-writer -> SQL path a
+            # fetch outcome does (see the publish site below this function).
             result = result.model_copy(
                 update={
-                    "fetch_attempted": True,
-                    "fetch_outcome_id": fetch_outcome.action_id,
-                    "fetch_outcome": fetch_outcome,
+                    "recall_attempted": True,
+                    "recall_outcome": recall_outcome,
                 }
             )
+
+        if recall_outcome is not None and recall_outcome.success:
+            fetch_outcome = None
+        else:
+            fetch_decision, fetch_outcome = await maybe_execute_readonly_fetch_after_goal(
+                goal=synthetic_goal,
+                drive_state=drive_state,
+                curiosity_signals=curiosity_signals,
+                spawned_correlation_id=run_id,
+                fetch_backend=fetch_backend,
+                budget_used=budget_used,
+            )
+            if fetch_decision.outcome == "allowed" and fetch_outcome is not None:
+                result = result.model_copy(
+                    update={
+                        "fetch_attempted": True,
+                        "fetch_outcome_id": fetch_outcome.action_id,
+                        "fetch_outcome": fetch_outcome,
+                    }
+                )
 
     if not episode_journal_enabled or fetch_outcome is None:
         return result

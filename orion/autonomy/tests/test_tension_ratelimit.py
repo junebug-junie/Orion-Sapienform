@@ -38,6 +38,31 @@ def test_distinct_signatures_have_own_budget() -> None:
     assert len(kept) == 3
 
 
+def test_negative_weight_drives_get_their_own_budget() -> None:
+    """A relief (negative-weight) tension must be rate-limited by which
+    drives it targets, same as a growth tension -- not collapsed into one
+    shared empty-signature bucket with every other zero-positive-weight
+    tension of the same kind."""
+    rl = TensionRateLimiter(cap=1, window_sec=60.0)
+    kept = rl.bounded(
+        [
+            _t(kind="tension.satisfaction.v1", drives={"predictive": -0.3}),
+            _t(kind="tension.satisfaction.v1", drives={"coherence": -0.1}),
+        ],
+        now=5.0,
+    )
+    # Different targeted drives -> distinct signatures -> both admitted,
+    # each under its own cap=1 budget.
+    assert len(kept) == 2
+
+
+def test_same_negative_signature_still_capped() -> None:
+    rl = TensionRateLimiter(cap=1, window_sec=60.0)
+    storm = [_t(kind="tension.satisfaction.v1", drives={"predictive": -0.3}) for _ in range(5)]
+    kept = rl.bounded(storm, now=5.0)
+    assert len(kept) == 1
+
+
 def test_state_bounded() -> None:
     rl = TensionRateLimiter(cap=3, window_sec=60.0, max_keys=10)
     # Distinct signatures (kind varies) so the key map would grow unbounded

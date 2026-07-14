@@ -284,6 +284,14 @@ Already have uncommitted work sitting in the shared checkout when you realize th
 
 New clone, or a worktree where the hook doesn't seem to be firing? Run `scripts/install_git_safety_hooks.sh .` once — hooks live in the shared common git dir, so this protects every worktree of the repo, not just the one it's run from. Full rationale and the incident that prompted this: `docs/superpowers/pr-reports/2026-07-14-agent-git-safety-hooks-pr.md`.
 
+This repo actually has three worktree location conventions in live use, not one — worth knowing when you're trying to figure out where a piece of work already lives, or why `git worktree list` shows paths that don't look like the pattern above:
+
+- **`../Orion-Sapienform-<name>`** (sibling directory) — the pattern shown above, the only one this file documented until a live worktree-count audit turned up the other two. Use `scripts/new_worktree.sh <type> <name>` to create one; it also warns if a worktree mentioning the same name already exists under either convention below.
+- **`.worktrees/<name>`** (nested inside the main checkout, gitignored) — driven by other tooling in this environment, not by anything in `scripts/`. Left alone; not something a manual `git worktree add` should imitate.
+- **`.claude/worktrees/agent-<id>`** — Claude Code's own `isolation: "worktree"` Agent-tool feature, auto-created per dispatched agent when that option is used. Also left alone.
+
+Regardless of which convention created it, `git worktree list` sees all of them, and so does this repo's cleanup tooling — `make worktree-status` (add `BASE=<branch>` to compare against something other than `origin/main`), `make worktree-status-stale` (merged worktrees with no open PR — the actual prune candidates), and `make prune-merged-worktrees` (dry-run by default; `YES=1` to actually remove — never force-removes a worktree with uncommitted changes, and never touches the branch itself, only the worktree directory). A `post-merge` hook (installed by the same `scripts/install_git_safety_hooks.sh` above) prints a one-line reminder of how many worktrees are now prunable after every merge, and a `SessionStart` hook does the same at the top of every session.
+
 Branch type examples:
 
 ```text

@@ -3,12 +3,14 @@
 history into ONE narrative `reflection`-kind crystallization.
 
 Context: `DriveAuditV1` (`orion/core/schemas/drives.py`) is computed live on every
-DriveEngine tick and written, append-only, by `services/orion-rdf-writer/app/
-autonomy.py::_handle_drive_audit()` to the Fuseki `drives` graph
-(`http://conjourney.net/graph/autonomy/drives`) as a timestamped `orion:DriveAudit` --
-a genuine historical time-series, unlike the "latest value only" stores this repo
-already has for the same drive signal (see `orion/spark/concept_induction/store.py`'s
-`LocalProfileStore` and `orion.autonomy.state_store`'s single-row-per-subject UPSERT).
+DriveEngine tick and persisted, append-only, to the Postgres `drive_audits` table
+(written by orion-sql-writer) as a timestamped row -- a genuine historical
+time-series, unlike the "latest value only" stores this repo already has for the
+same drive signal (see `orion/spark/concept_induction/store.py`'s
+`LocalProfileStore` and `orion.autonomy.state_store`'s single-row-per-subject
+UPSERT). (Historical note: the original source was the RDF drives graph, which
+stopped receiving writes on 2026-06-19 and was removed as a read path entirely --
+Postgres `drive_audits` is the only source, with no graph fallback.)
 
 This script is the first real reader of that history for self-modeling purposes.
 
@@ -16,8 +18,9 @@ Architecture (event -> schema -> trace -> reducer -> projection -> eval/LLM phra
 -> crystallization -- per AGENTS.md's mandated path, NOT "vague theory -> LLM invents
 a pattern"):
 
-    1. FETCH   -- read real DriveAuditV1-derived triples from Fuseki via
-                  orion.graph.sparql_client.SparqlQueryClient (`fetch_drive_history_events`).
+    1. FETCH   -- read real DriveAuditV1-derived rows from the Postgres
+                  `drive_audits` table (`fetch_drive_history_events`), over the
+                  same DSN this script already uses for crystallization writes.
     2. REDUCE  -- `reduce_drive_history()`: a PURE, deterministic, unit-tested Python
                   function (no I/O, no LLM) that aggregates the raw per-tick events
                   into `DriveHistoryAggregationV1` -- dominant-drive counts/shares,
@@ -34,7 +37,7 @@ a pattern"):
                   list of already-computed, already-verified fact strings. The LLM
                   (`_call_llm_narrative`, bus RPC per
                   `orion/memory/crystallization/concept_relation.py`'s established
-                  pattern) receives ONLY this fact sheet -- never raw per-tick SPARQL
+                  pattern) receives ONLY this fact sheet -- never raw per-tick
                   rows. Its job shrinks to "phrase these facts as one narrative
                   sentence and cite which facts you used" -- it cannot invent a
                   pattern that was not already established deterministically, because
@@ -87,28 +90,25 @@ import argparse
 import asyncio
 import json
 import logging
+import math
 import os
-from dataclasses import dataclass, field, replace
+from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
 from typing import Any, Iterable, Mapping, Sequence
 from uuid import uuid4
 
 logger = logging.getLogger("orion.scripts.drive_history_reflection_synthesis")
 
-ORION_NS = "http://conjourney.net/orion#"
-RDFS_NS = "http://www.w3.org/2000/01/rdf-schema#"
-XSD_NS = "http://www.w3.org/2001/XMLSchema#"
-AUTONOMY_DRIVES_GRAPH = "http://conjourney.net/graph/autonomy/drives"
-
 DEFAULT_SINCE_DAYS = 30
 DEFAULT_SUBJECT = "orion"
-# Hard cap on raw events fetched from Fuseki -- DriveEngine ticks can run several
+# Hard cap on raw events fetched from Postgres -- DriveEngine ticks can run several
 # times a minute (live volume observed: tens of thousands of audits in a 30-day
 # window), so an uncapped fetch would transfer an unbounded result set. This caps
 # the *fetch*, not the reduction: reduce_drive_history() aggregates over exactly
 # whatever was fetched and reports that honestly (see DriveHistoryAggregationV1.
-# total_events). ORDER BY DESC(created_at) means a capped fetch is the most recent
-# `max_events` real ticks in the window, not a fabricated or estimated sample.
+# total_events). ORDER BY COALESCE(observed_at, created_at) DESC means a capped
+# fetch is the most recent `max_events` real ticks in the window, not a fabricated
+# or estimated sample.
 DEFAULT_MAX_EVENTS = 500
 
 # Guardrail thresholds (module-level constants, visible + testable, mirrors
@@ -136,11 +136,9 @@ MIN_CITED_FACTS = 2
 
 @dataclass(frozen=True)
 class DriveAuditEvent:
-    """One real, already-persisted DriveAuditV1 tick, as read back from Fuseki.
-
-    `artifact_uri` is the RDF subject IRI (used only to join the detail query);
-    it is optional so synthetic events built directly in tests do not need one.
-    """
+    """One real, already-persisted DriveAuditV1 tick, as read back from the
+    Postgres `drive_audits` table. `created_at` carries the event time,
+    i.e. COALESCE(observed_at, created_at) per the table contract."""
 
     artifact_id: str
     created_at: datetime
@@ -148,7 +146,6 @@ class DriveAuditEvent:
     summary: str | None = None
     active_drives: tuple[str, ...] = ()
     drive_pressures: Mapping[str, float] = field(default_factory=dict)
-    artifact_uri: str | None = None
 
 
 # ===========================================================================
@@ -297,7 +294,7 @@ def reduce_drive_history(
 # ===========================================================================
 # Fact sheet -- deterministic rendering of the aggregation into short,
 # citable, already-verified fact strings. This is the ONLY thing the LLM
-# sees; it never sees raw per-tick SPARQL rows.
+# sees; it never sees raw per-tick rows.
 # ===========================================================================
 
 
@@ -412,7 +409,7 @@ def _build_narrative_prompt(agg: DriveHistoryAggregationV1, facts: list[Grounded
     event_fact_numbers = [f.index for f in facts if f.artifact_id]
     instructions = (
         "You are given a set of ALREADY-COMPUTED, verified facts about Orion's own drive-activation "
-        "history over a real time window (queried directly from Orion's persisted drive-audit graph; "
+        "history over a real time window (queried directly from Orion's persisted drive-audit history; "
         "every fact below was computed deterministically, not inferred or estimated by you). Do not "
         "invent any fact, number, date, or drive name that is not explicitly listed below.\n\n"
         "Write ONE short narrative observation (2-4 sentences) in Orion's own reflective voice, about "
@@ -524,110 +521,52 @@ def parse_and_validate_narrative(
 
 
 # ===========================================================================
-# SPARQL fetch layer -- query builders are pure (unit-testable without a
-# live endpoint); `fetch_drive_history_events` is the only I/O function here.
+# Postgres fetch layer -- row->event conversion is pure (unit-testable
+# without a live database); `fetch_drive_history_events` is the only I/O
+# function here.
 # ===========================================================================
 
 
-# _escape_sparql / _literal below are intentionally NOT imported from
-# orion.autonomy.repository (which has the same two tiny helpers) --
-# importing that module was measured at ~2.6s just to load its transitive
-# dependency chain, which is a real, disproportionate cost for a script whose
-# whole point is a light, occasional batch job. This repeats a pattern
-# already independently duplicated 4+ times elsewhere in the repo (no single
-# canonical orion.graph-level home exists to import from without the same
-# cost); a shared low-weight `orion.graph.sparql_bindings` module would be
-# the real fix, but is out of scope for this patch.
-def _escape_sparql(value: str) -> str:
-    return value.replace("\\", "\\\\").replace('"', '\\"')
+# Local copy of scripts/analysis/measure_autonomy_gate.py::is_undefined_table_error
+# -- scripts in this repo are standalone (deliberately not importable from each
+# other; same script-to-script sharing precedent as extract_final_text), so a
+# small verbatim copy with this pointer is the established pattern.
+def is_undefined_table_error(exc: BaseException) -> bool:
+    """True iff ``exc`` is Postgres "relation does not exist" (SQLSTATE 42P01).
 
-
-def _is_safe_sparql_iri(uri: str) -> bool:
-    """Defensive validation before interpolating a URI raw into a SPARQL
-    `VALUES ?x { <uri> ... }` clause (unlike string literals, IRIREFs cannot
-    be escaped -- illegal characters must be rejected instead). These URIs
-    are always ones this same process just read back from our own list
-    query's `?artifact` bindings (never user input), so this is defense in
-    depth against a malformed/legacy artifact URI breaking the query, not a
-    response to any known live issue."""
-    if not uri or "<" in uri or ">" in uri or '"' in uri or "{" in uri or "}" in uri:
-        return False
-    return not any(ch.isspace() or ord(ch) < 0x20 for ch in uri)
-
-
-def build_drive_audit_event_list_sparql(
-    *, since: datetime, subject: str, graph_uri: str = AUTONOMY_DRIVES_GRAPH, limit: int
-) -> str:
-    """Single-valued fields only (artifact_id/created_at/dominant_drive/summary) --
-    no multi-valued predicate (`orion:hasDriveAssessment`, `orion:highlightsActiveDrive`)
-    is joined here, so this query cannot fan out and LIMIT means what it says.
-    `orion:timestamp` is multi-valued per audit (up to several per artifact per
-    scripts/analysis/measure_autonomy_gate.py's documented live finding); the inner
-    subquery aggregates with MIN(?ts) per artifact so each artifact contributes
-    exactly one row to the outer query, using only the timestamp(s) that actually
-    fall in-window.
+    Checked structurally (``pgcode`` attribute / exception class name) so the
+    caller can distinguish "the drive_audits table hasn't been created yet by
+    the writer track" from any other query failure WITHOUT importing psycopg2
+    at module scope. Message sniffing is a last-resort fallback for driver
+    objects that carry neither. Pure + unit-testable.
     """
-    since_iso = since.astimezone(timezone.utc).isoformat()
-    return f"""PREFIX orion: <{ORION_NS}>
-PREFIX xsd: <{XSD_NS}>
-SELECT ?artifact ?artifact_id ?created_at ?dominant_drive ?summary WHERE {{
-  GRAPH <{graph_uri}> {{
-    {{
-      SELECT ?artifact ?artifact_id (MIN(?ts) AS ?created_at) WHERE {{
-        ?artifact a orion:DriveAudit ;
-          orion:subjectKey "{_escape_sparql(subject)}" ;
-          orion:artifactId ?artifact_id ;
-          orion:timestamp ?ts .
-        FILTER(?ts >= "{since_iso}"^^xsd:dateTime)
-      }}
-      GROUP BY ?artifact ?artifact_id
-    }}
-    OPTIONAL {{ ?artifact orion:dominantDriveName ?dominant_drive . }}
-    OPTIONAL {{ ?artifact orion:auditSummary ?summary . }}
-  }}
-}}
-ORDER BY DESC(?created_at)
-LIMIT {int(limit)}
+    if getattr(exc, "pgcode", None) == "42P01":
+        return True
+    if type(exc).__name__ == "UndefinedTable":
+        return True
+    msg = str(exc).lower()
+    return "relation" in msg and "does not exist" in msg
+
+
+# Event time = COALESCE(observed_at, created_at) per the drive_audits table
+# contract (expression-indexed DESC, so the ORDER BY + window filter below are
+# both index-served). The `subject` predicate preserves the previous fetch's
+# per-subject scoping (--subject / DriveAuditV1 subject key): without it, rows
+# from any other subject would be silently aggregated under this run's subject
+# label, which would fabricate attribution.
+_DRIVE_AUDIT_EVENTS_SQL = """
+SELECT artifact_id,
+       COALESCE(observed_at, created_at) AS created_at,
+       dominant_drive,
+       summary,
+       drive_pressures,
+       active_drives
+FROM drive_audits
+WHERE subject = %s
+  AND COALESCE(observed_at, created_at) >= %s
+ORDER BY COALESCE(observed_at, created_at) DESC
+LIMIT %s
 """.strip()
-
-
-def build_drive_audit_detail_sparql(*, artifact_uris: Sequence[str], graph_uri: str = AUTONOMY_DRIVES_GRAPH) -> str:
-    """Per-drive pressure + active-drive detail for a bounded, explicit set of
-    artifact URIs (the events the list query already selected) -- fan-out from
-    the multi-valued `hasDriveAssessment` / `highlightsActiveDrive` predicates
-    is safe here because it is scoped to exactly this small VALUES set, not the
-    whole window. Malformed URIs (see _is_safe_sparql_iri) are silently
-    dropped rather than raising -- a single bad artifact URI should not abort
-    detail enrichment for every other artifact in the set."""
-    safe_uris = [uri for uri in artifact_uris if _is_safe_sparql_iri(uri)]
-    values = " ".join(f"<{uri}>" for uri in safe_uris)
-    return f"""PREFIX orion: <{ORION_NS}>
-PREFIX rdfs: <{RDFS_NS}>
-SELECT ?artifact ?drive_name ?drive_pressure ?active_drive WHERE {{
-  VALUES ?artifact {{ {values} }}
-  GRAPH <{graph_uri}> {{
-    OPTIONAL {{
-      ?artifact orion:hasDriveAssessment ?assessment .
-      ?assessment orion:driveDimension ?drive_ref ;
-        orion:drivePressure ?drive_pressure .
-      OPTIONAL {{ FILTER(isIRI(?drive_ref)) ?drive_ref rdfs:label ?drive_name_label . }}
-      BIND(COALESCE(?drive_name_label, STR(?drive_ref)) AS ?drive_name)
-    }}
-    OPTIONAL {{
-      ?artifact orion:highlightsActiveDrive ?active_drive_ref .
-      OPTIONAL {{ FILTER(isIRI(?active_drive_ref)) ?active_drive_ref rdfs:label ?active_drive_label . }}
-      BIND(COALESCE(?active_drive_label, STR(?active_drive_ref)) AS ?active_drive)
-    }}
-  }}
-}}
-""".strip()
-
-
-def _literal(binding: Mapping[str, Mapping[str, str]], key: str) -> str | None:
-    val = binding.get(key, {}).get("value")
-    if isinstance(val, str) and val.strip():
-        return val.strip()
-    return None
 
 
 def _parse_dt(value: str | None) -> datetime | None:
@@ -642,117 +581,141 @@ def _parse_dt(value: str | None) -> datetime | None:
     return dt
 
 
-def parse_event_list_bindings(bindings: Iterable[dict]) -> list[DriveAuditEvent]:
+def _coerce_event_time(value: Any) -> datetime | None:
+    """Event-time column -> aware datetime. psycopg2 hands back tz-aware
+    datetimes for timestamptz; a naive datetime or ISO string is coerced
+    defensively (assume UTC), anything else degrades to None (row skipped)."""
+    if isinstance(value, datetime):
+        return value if value.tzinfo is not None else value.replace(tzinfo=timezone.utc)
+    if isinstance(value, str):
+        return _parse_dt(value)
+    return None
+
+
+def _coerce_drive_pressures(value: Any) -> dict[str, float]:
+    """JSONB `drive_pressures` column -> dict[str, float]. Degrades to {} on
+    None or a non-dict value; individual entries whose value is not a real,
+    finite, non-negative number (or whose key is not a non-empty string) are
+    skipped. Never raises."""
+    if not isinstance(value, dict):
+        return {}
+    out: dict[str, float] = {}
+    for key, raw in value.items():
+        if not isinstance(key, str) or not key.strip():
+            continue
+        if isinstance(raw, bool):
+            continue
+        try:
+            p = float(raw)
+        except (TypeError, ValueError):
+            continue
+        if not math.isfinite(p) or p < 0.0:
+            continue
+        out[key] = p
+    return out
+
+
+def _coerce_active_drives(value: Any) -> tuple[str, ...]:
+    """JSONB `active_drives` column -> tuple[str, ...]. Degrades to () on None
+    or a non-list value; non-string/empty entries are skipped; duplicates are
+    collapsed (order preserved) so active_drive_frequency counts each drive at
+    most once per tick. Never raises."""
+    if not isinstance(value, (list, tuple)):
+        return ()
+    return tuple(dict.fromkeys(v for v in value if isinstance(v, str) and v.strip()))
+
+
+def drive_audit_row_to_event(row: Any) -> DriveAuditEvent | None:
+    """Pure conversion of one `drive_audits` row (column order of
+    _DRIVE_AUDIT_EVENTS_SQL) into a DriveAuditEvent. Returns None (row
+    skipped) when the identity fields (artifact_id / event time) are unusable;
+    the JSONB detail columns degrade to empty rather than dropping the whole
+    row -- a tick with a garbled pressure map is still a real tick."""
+    if not isinstance(row, (list, tuple)) or len(row) != 6:
+        return None
+    artifact_id_raw, created_raw, dominant_raw, summary_raw, pressures_raw, actives_raw = row
+    artifact_id = artifact_id_raw.strip() if isinstance(artifact_id_raw, str) else ""
+    created_at = _coerce_event_time(created_raw)
+    if not artifact_id or created_at is None:
+        return None
+    dominant = dominant_raw.strip() if isinstance(dominant_raw, str) and dominant_raw.strip() else None
+    summary = summary_raw.strip() if isinstance(summary_raw, str) and summary_raw.strip() else None
+    return DriveAuditEvent(
+        artifact_id=artifact_id,
+        created_at=created_at,
+        dominant_drive=dominant,
+        summary=summary,
+        active_drives=_coerce_active_drives(actives_raw),
+        drive_pressures=_coerce_drive_pressures(pressures_raw),
+    )
+
+
+def parse_drive_audit_rows(rows: Iterable[Any]) -> list[DriveAuditEvent]:
     events: list[DriveAuditEvent] = []
-    for row in bindings:
-        if not isinstance(row, dict):
-            continue
-        artifact_uri = _literal(row, "artifact")
-        artifact_id = _literal(row, "artifact_id")
-        created_at = _parse_dt(_literal(row, "created_at"))
-        if not artifact_id or created_at is None:
-            continue
-        events.append(
-            DriveAuditEvent(
-                artifact_id=artifact_id,
-                created_at=created_at,
-                dominant_drive=_literal(row, "dominant_drive"),
-                summary=_literal(row, "summary"),
-                artifact_uri=artifact_uri,
-            )
-        )
+    for row in rows:
+        ev = drive_audit_row_to_event(row)
+        if ev is not None:
+            events.append(ev)
     return events
 
 
-def merge_event_details(events: list[DriveAuditEvent], detail_bindings: Iterable[dict]) -> list[DriveAuditEvent]:
-    pressures: dict[str, dict[str, float]] = {}
-    actives: dict[str, set[str]] = {}
-    for row in detail_bindings:
-        if not isinstance(row, dict):
-            continue
-        artifact_uri = _literal(row, "artifact")
-        if not artifact_uri:
-            continue
-        drive_name = _literal(row, "drive_name")
-        drive_pressure = _literal(row, "drive_pressure")
-        if drive_name and drive_pressure is not None:
-            try:
-                pressures.setdefault(artifact_uri, {})[drive_name] = float(drive_pressure)
-            except ValueError:
-                pass
-        active_drive = _literal(row, "active_drive")
-        if active_drive:
-            actives.setdefault(artifact_uri, set()).add(active_drive)
-
-    merged: list[DriveAuditEvent] = []
-    for ev in events:
-        key = ev.artifact_uri
-        merged.append(
-            replace(
-                ev,
-                drive_pressures=pressures.get(key, {}) if key else {},
-                active_drives=tuple(sorted(actives.get(key, set()))) if key else (),
-            )
-        )
-    return merged
-
-
 def fetch_drive_history_events(
-    client: Any,
+    postgres_uri: str,
     *,
     since: datetime,
     subject: str,
-    graph_uri: str = AUTONOMY_DRIVES_GRAPH,
     max_events: int = DEFAULT_MAX_EVENTS,
 ) -> list[DriveAuditEvent]:
-    """I/O function: `client` needs only a `.select(sparql: str) -> list[dict]`
-    method (the shape of `orion.graph.sparql_client.SparqlQueryClient`, and
-    trivially fakeable in tests). Any exception from `client.select()`
-    propagates to the caller -- this function does not swallow SPARQL errors,
-    unlike the LLM call below (which is documented to degrade); a failed graph
-    read must abort the run cleanly, not silently report "no history".
+    """I/O function: reads the drive-audit time-series from the Postgres
+    `drive_audits` table (written by orion-sql-writer) over the SAME DSN this
+    script already uses for crystallization writes -- one DSN concept, no
+    second config surface.
 
-    Returns list-level fields only (artifact_id/created_at/dominant_drive/
-    summary) -- `drive_pressures`/`active_drives` are left at their empty
-    defaults here. Measured live against real Fuseki: a detail join
-    (`orion:hasDriveAssessment`/`orion:highlightsActiveDrive`, both
-    multi-valued) scoped to `max_events` (up to `DEFAULT_MAX_EVENTS=500`)
-    artifacts did not return within several minutes -- the VALUES+double-
-    OPTIONAL combinatorics do not scale to hundreds of artifacts. Per-drive
-    detail is fetched separately, ONLY for the bounded citable sample
-    (`DriveHistoryAggregationV1.cited_event_ids`, capped at 8) via
-    `fetch_event_details()` below, which is fast at that scale. This is a
-    deliberate, disclosed scope reduction: `mean_pressure_by_drive` /
-    `active_drive_frequency` on the resulting aggregation therefore reflect
-    only whichever events actually got enriched, not the full window --
-    callers must not read them as full-window statistics.
+    Degrade posture (mirrors scripts/analysis/measure_autonomy_gate.py::
+    fetch_drive_stats_postgres): a missing table (SQLSTATE 42P01 -- the writer
+    track not deployed yet), a failed connection, an unavailable driver, or
+    any query failure returns an EMPTY event list with a clear log line --
+    never raises, and never falls back to any other source. An empty result
+    flows into reduce_drive_history(), which reports it honestly as
+    insufficient history rather than fabricating a pattern.
+
+    Unlike the removed graph read path, every returned event is FULLY
+    populated: `drive_pressures`/`active_drives` come straight off the row's
+    JSONB columns, so downstream `mean_pressure_by_drive` /
+    `active_drive_frequency` are genuine full-window statistics.
     """
-    list_sparql = build_drive_audit_event_list_sparql(since=since, subject=subject, graph_uri=graph_uri, limit=max_events)
-    bindings = client.select(list_sparql)
-    return parse_event_list_bindings(bindings)
+    try:
+        import psycopg2  # lazy import so the module imports cleanly for tests
+    except Exception:
+        logger.error("drive_audits fetch unavailable: psycopg2 not importable; returning empty event list")
+        return []
 
+    try:
+        conn = psycopg2.connect(postgres_uri)
+    except Exception as exc:
+        logger.error("drive_audits fetch failed: could not connect to postgres (%s); returning empty event list", exc)
+        return []
 
-def fetch_event_details(
-    client: Any,
-    events: Sequence[DriveAuditEvent],
-    *,
-    graph_uri: str = AUTONOMY_DRIVES_GRAPH,
-) -> list[DriveAuditEvent]:
-    """Enrich a SMALL, already-selected set of events (real live measurement:
-    safe at citable-sample scale, i.e. <=8-20 artifacts -- see
-    fetch_drive_history_events's docstring for why this is not run over the
-    full fetched window). Any exception from `client.select()` propagates;
-    callers that consider detail enrichment non-critical (current caller,
-    `_run_once`, does -- pressures/active-drives are not referenced by the
-    narrative prompt today, only carried for evidence completeness) should
-    catch it themselves rather than relying on this function to degrade."""
-    uris = [ev.artifact_uri for ev in events if ev.artifact_uri and _is_safe_sparql_iri(ev.artifact_uri)]
-    if not uris:
-        return list(events)
+    try:
+        with conn.cursor() as cur:
+            cur.execute(_DRIVE_AUDIT_EVENTS_SQL, (subject, since, int(max_events)))
+            rows = cur.fetchall()
+    except Exception as exc:
+        if is_undefined_table_error(exc):
+            logger.warning(
+                "drive_audits table does not exist yet (sql-writer track not deployed?); "
+                "returning empty event list"
+            )
+        else:
+            logger.error("drive_audits query failed (%s); returning empty event list", exc)
+        return []
+    finally:
+        try:
+            conn.close()
+        except Exception:  # pragma: no cover - close failure is not actionable
+            pass
 
-    detail_sparql = build_drive_audit_detail_sparql(artifact_uris=uris, graph_uri=graph_uri)
-    detail_bindings = client.select(detail_sparql)
-    return merge_event_details(list(events), detail_bindings)
+    return parse_drive_audit_rows(rows)
 
 
 # ===========================================================================
@@ -851,8 +814,10 @@ def _build_reflection_crystallization(
     ]
 
     # Evidence refs #2..N: the real underlying DriveAuditV1 artifacts the LLM
-    # actually cited, each traceable back to the Fuseki drives graph by
-    # artifact_id.
+    # actually cited, each traceable back to the Postgres drive_audits table
+    # by artifact_id. (source_kind stays "rdf_memory_graph" for dedup
+    # continuity with previously synthesized reflections -- the same-day dedup
+    # guard in _run_once matches on this exact source_kind.)
     for fact in cited_facts:
         if not fact.artifact_id:
             continue
@@ -860,10 +825,11 @@ def _build_reflection_crystallization(
         if ev is None:
             continue
         note = f"raw_event: ts={ev.created_at.isoformat()} dominant_drive={ev.dominant_drive}"
-        # Pressures/active-drives are only present when detail enrichment
-        # succeeded (best-effort, see fetch_event_details) -- included when
-        # available so this evidence note is actually useful for the "per-drive
-        # detail" a human reviewer would want, not just timestamp+dominant.
+        # Pressures/active-drives come straight off the drive_audits row's
+        # JSONB columns (populated for every fetched event whose columns held
+        # valid data) -- included when present so this evidence note carries
+        # the per-drive detail a human reviewer would want, not just
+        # timestamp+dominant.
         if ev.drive_pressures:
             note += f" pressures={dict(sorted(ev.drive_pressures.items()))}"
         if ev.active_drives:
@@ -966,7 +932,6 @@ class RunResult:
 
 async def _run_once(
     *,
-    sparql_client: Any,
     bus: Any,
     postgres_uri: str,
     subject: str,
@@ -975,30 +940,27 @@ async def _run_once(
     llm_route: str = "metacog",
     llm_request_channel: str = "orion:exec:request:LLMGatewayService",
     llm_timeout_sec: float = 30.0,
-    graph_uri: str = AUTONOMY_DRIVES_GRAPH,
-    detail_sparql_client: Any | None = None,
+    fetch_events: Any = None,
 ) -> RunResult:
-    """Core orchestration, fully injectable (sparql_client / bus / postgres_uri)
-    for testing without a live Fuseki/Redis/Postgres. `sparql_client` needs only
-    `.select()`; `bus` needs only `.rpc_request()` + `.codec.decode()`."""
+    """Core orchestration, fully injectable (fetch_events / bus / postgres_uri)
+    for testing without a live Postgres/Redis. `bus` needs only
+    `.rpc_request()` + `.codec.decode()`; `fetch_events` (defaults to the real
+    `fetch_drive_history_events`) needs only the same call signature."""
     result = RunResult(status="unknown", subject=subject, since=since, max_events=max_events)
 
-    try:
-        # fetch_drive_history_events is a blocking `requests`-based call (real
-        # windows have been observed to take 20+ seconds against Fuseki) --
-        # run it off the event loop so it cannot stall bus/asyncio machinery.
-        events = await asyncio.to_thread(
-            fetch_drive_history_events,
-            sparql_client,
-            since=since,
-            subject=subject,
-            graph_uri=graph_uri,
-            max_events=max_events,
-        )
-    except Exception as exc:
-        result.status = "sparql_query_failed"
-        result.error = str(exc)
-        return result
+    # fetch_drive_history_events is a blocking psycopg2 call -- run it off the
+    # event loop so it cannot stall bus/asyncio machinery. It degrades to an
+    # empty list on any DB failure (see its docstring), which the reducer then
+    # reports honestly as insufficient history -- there is no separate
+    # "query failed" status and no fallback source.
+    fetcher = fetch_events if fetch_events is not None else fetch_drive_history_events
+    events = await asyncio.to_thread(
+        fetcher,
+        postgres_uri,
+        since=since,
+        subject=subject,
+        max_events=max_events,
+    )
 
     agg = reduce_drive_history(events, subject=subject, since=since)
     result.aggregation = agg
@@ -1046,47 +1008,11 @@ async def _run_once(
         )
         return result
 
+    # Events arrive fully populated from the single Postgres query
+    # (drive_pressures/active_drives come off the row's JSONB columns), so
+    # there is no separate detail-enrichment pass and no re-reduce: the
+    # aggregation computed above already reflects real full-window data.
     events_by_id = {ev.artifact_id: ev for ev in events}
-
-    # Per-drive pressure/active-drive detail is fetched ONLY for the bounded
-    # citable sample (see fetch_drive_history_events's docstring for the real
-    # live-measured performance reason this is not done for the full fetched
-    # window). Not fatal on failure -- the narrative prompt does not reference
-    # raw pressures/active-drives today, only timestamp/dominant_drive/summary,
-    # so a detail-enrichment failure degrades to plainer evidence notes rather
-    # than aborting an otherwise-valid, already-reduced run.
-    #
-    # Live measurement finding: the detail join (VALUES + double OPTIONAL
-    # through orion:hasDriveAssessment / orion:highlightsActiveDrive) did not
-    # return within 60s against a live Fuseki instance with ~437k persisted
-    # DriveAudit artifacts (~2.6M assessment triples) EVEN at citable-sample
-    # scale (8 artifacts) -- the slowness is not proportional to the VALUES
-    # set size, so it is very likely Jena/Fuseki failing to push the VALUES
-    # restriction down before scanning DriveAssessment triples. A dedicated,
-    # short `detail_sparql_client` (default well under `sparql_client`'s
-    # timeout) is used here so this best-effort enrichment fails fast and
-    # degrades rather than stalling an otherwise-successful run -- especially
-    # important because `orion.graph.fuseki_http.call_with_fuseki_retry`
-    # retries transient failures up to 4x with backoff, which would otherwise
-    # multiply a single slow query into several minutes of blocking.
-    cited_events = [events_by_id[eid] for eid in agg.cited_event_ids if eid in events_by_id]
-    if cited_events:
-        try:
-            enriched = await asyncio.to_thread(
-                fetch_event_details, detail_sparql_client or sparql_client, cited_events, graph_uri=graph_uri
-            )
-            for ev in enriched:
-                events_by_id[ev.artifact_id] = ev
-            # Re-reduce over the now-enriched events so mean_pressure_by_drive /
-            # active_drive_frequency on the reported aggregation reflect real
-            # data instead of staying unconditionally empty (reduce_drive_history
-            # is pure and deterministic over cited_event_ids/day/dominant-drive
-            # counts, so re-running it here changes nothing except the two
-            # pressure/active fields, which now see the enriched subset).
-            agg = reduce_drive_history(list(events_by_id.values()), subject=subject, since=since)
-            result.aggregation = agg
-        except Exception as exc:
-            logger.warning("drive_history_reflection_synthesis: event-detail enrichment failed: %s", exc)
 
     facts = build_fact_sheet(agg, events_by_id)
     prompt = _build_narrative_prompt(agg, facts)
@@ -1158,8 +1084,6 @@ def _print_report(result: RunResult) -> None:
         print(f"  refusing to synthesize: {result.error}")
     elif result.status == "already_synthesized_today":
         print(f"  skipping duplicate: {result.error}")
-    elif result.status == "sparql_query_failed":
-        print(f"  SPARQL query failed: {result.error}")
     elif result.status == "llm_call_failed":
         print(f"  LLM call failed: {result.error}")
     elif result.status == "llm_output_ungrounded":
@@ -1193,32 +1117,8 @@ def main(argv: list[str] | None = None) -> int:
         "--max-events",
         type=int,
         default=DEFAULT_MAX_EVENTS,
-        help=f"Cap on raw ticks fetched from Fuseki (default: {DEFAULT_MAX_EVENTS}, most recent first).",
-    )
-    parser.add_argument(
-        "--query-url",
-        default="",
-        help="Explicit Fuseki SPARQL query URL. Defaults to autonomy-graph resolution "
-        "(AUTONOMY_GRAPH_QUERY_URL / RDF_STORE_QUERY_URL / RDF_STORE_BASE_URL derivation).",
-    )
-    parser.add_argument(
-        "--sparql-timeout-sec",
-        type=float,
-        default=60.0,
-        help="Live measurement: a 30-day/500-event list query took ~24s against real "
-        "Fuseki -- default gives headroom over that.",
-    )
-    parser.add_argument(
-        "--detail-timeout-sec",
-        type=float,
-        default=10.0,
-        help="Timeout for the small, best-effort per-drive detail enrichment query "
-        "(see fetch_event_details). Deliberately short and separate from "
-        "--sparql-timeout-sec: live measurement found this specific join did not "
-        "return within 60s even at citable-sample scale (~8 artifacts), and "
-        "orion.graph.fuseki_http.call_with_fuseki_retry retries transient failures "
-        "up to 4x -- a short timeout here keeps a slow/stuck detail join from "
-        "blocking an otherwise-successful run for minutes.",
+        help=f"Cap on raw ticks fetched from the Postgres drive_audits table "
+        f"(default: {DEFAULT_MAX_EVENTS}, most recent first).",
     )
     parser.add_argument("--redis", default=os.getenv("ORION_BUS_URL", "redis://localhost:6379/0"), help="Orion bus URL.")
     parser.add_argument(
@@ -1238,24 +1138,7 @@ def main(argv: list[str] | None = None) -> int:
         )
         return 2
 
-    from orion.graph.backend_config import resolve_autonomy_read_query_url, resolve_rdf_store_auth
-    from orion.graph.sparql_client import SparqlQueryClient
     from orion.core.bus.async_service import OrionBusAsync
-
-    query_url = args.query_url.strip() or resolve_autonomy_read_query_url()[0]
-    if not query_url:
-        print(
-            "drive_history_reflection_synthesis: no SPARQL query endpoint resolved. "
-            "Set --query-url, AUTONOMY_GRAPH_QUERY_URL, RDF_STORE_QUERY_URL, or RDF_STORE_BASE_URL.",
-            file=sys.stderr,
-        )
-        return 2
-
-    user, password = resolve_rdf_store_auth()
-    sparql_client = SparqlQueryClient(query_url, timeout_sec=args.sparql_timeout_sec, user=user, password=password)
-    detail_sparql_client = SparqlQueryClient(
-        query_url, timeout_sec=args.detail_timeout_sec, user=user, password=password
-    )
 
     since = datetime.now(timezone.utc) - timedelta(days=args.since_days)
 
@@ -1264,8 +1147,6 @@ def main(argv: list[str] | None = None) -> int:
         await bus.connect()
         try:
             return await _run_once(
-                sparql_client=sparql_client,
-                detail_sparql_client=detail_sparql_client,
                 bus=bus,
                 postgres_uri=args.postgres_uri,
                 subject=args.subject,

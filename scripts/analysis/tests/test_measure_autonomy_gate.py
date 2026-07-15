@@ -356,7 +356,180 @@ def test_retention_caveat_none_when_oldest_unknown():
 
 
 # ---------------------------------------------------------------------------
-# 10. Exit code distinguishes UNMEASURABLE from a completed GO/NO-GO
+# 10. Postgres drive_audits source -- histogram parse, degrade, and preference
+# ---------------------------------------------------------------------------
+class _FakeCursor:
+    """Stub cursor: records executed SQL, returns canned rows or raises."""
+
+    def __init__(self, rows=None, exc=None):
+        self._rows = rows if rows is not None else []
+        self._exc = exc
+        self.executed: list[tuple[str, tuple]] = []
+
+    def execute(self, sql, params=None):
+        self.executed.append((sql, params))
+        if self._exc is not None:
+            raise self._exc
+
+    def fetchall(self):
+        return self._rows
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *exc_info):
+        return False
+
+
+class _FakeConn:
+    def __init__(self, cursor: _FakeCursor):
+        self._cursor = cursor
+
+    def cursor(self):
+        return self._cursor
+
+
+class _FakeUndefinedTable(Exception):
+    """Structurally mimics psycopg2.errors.UndefinedTable without the import."""
+
+    pgcode = "42P01"
+
+
+def test_parse_postgres_histogram_rows():
+    rows = [
+        (0, 100),
+        (2, 5),
+        ("3", "7"),          # driver returning strings still parses
+        ("junk", 5),         # bad count -> skipped
+        (1,),                # short row -> skipped
+        (None, None),        # nulls -> skipped
+        (-1, -4),            # clamped to 0
+    ]
+    assert mod.parse_postgres_histogram_rows(rows) == {0: 0, 2: 5, 3: 7}
+    assert mod.parse_postgres_histogram_rows([]) == {}
+
+
+def test_fetch_drive_stats_postgres_histogram_path():
+    cursor = _FakeCursor(rows=[(1, 20), (2, 4), (3, 1)])
+    stats, note = mod.fetch_drive_stats_postgres(_FakeConn(cursor), BASE)
+    assert stats.record_count == 25
+    assert stats.coactivation_frac == pytest.approx(5 / 25)
+    assert stats.concurrent_active_hist == {1: 20, 2: 4, 3: 1}
+    assert "drive source: postgres drive_audits (25 rows" in note
+    # SQL follows the pinned table contract: derived active_count histogram,
+    # windowed by COALESCE(observed_at, created_at).
+    sql, params = cursor.executed[0]
+    assert "FROM drive_audits" in sql
+    assert "COALESCE(observed_at, created_at) >= %s" in sql
+    assert "GROUP BY active_count" in sql
+    assert params == (BASE,)
+
+
+def test_fetch_drive_stats_postgres_table_missing_degrades():
+    # The table is being built in a parallel track -- until the writer ships,
+    # the gate must degrade with an honest note, never raise.
+    cursor = _FakeCursor(exc=_FakeUndefinedTable('relation "drive_audits" does not exist'))
+    stats, note = mod.fetch_drive_stats_postgres(_FakeConn(cursor), BASE)
+    assert stats.record_count == 0
+    assert "does not exist yet" in note
+
+
+def test_fetch_drive_stats_postgres_other_error_degrades():
+    cursor = _FakeCursor(exc=RuntimeError("connection reset"))
+    stats, note = mod.fetch_drive_stats_postgres(_FakeConn(cursor), BASE)
+    assert stats.record_count == 0
+    assert "query failed" in note
+    assert "does not exist" not in note  # distinct from the missing-table note
+
+
+def test_fetch_drive_stats_postgres_no_connection_degrades():
+    stats, note = mod.fetch_drive_stats_postgres(None, BASE)
+    assert stats.record_count == 0
+    assert "no read-only postgres connection" in note
+
+
+def test_is_undefined_table_error():
+    assert mod.is_undefined_table_error(_FakeUndefinedTable())
+    # Class-name detection (psycopg2.errors.UndefinedTable without pgcode set).
+    UndefinedTable = type("UndefinedTable", (Exception,), {})
+    assert mod.is_undefined_table_error(UndefinedTable())
+    # Message fallback.
+    assert mod.is_undefined_table_error(Exception('relation "drive_audits" does not exist'))
+    assert not mod.is_undefined_table_error(RuntimeError("connection reset"))
+
+
+def test_resolve_drive_stats_postgres_wins_when_nonempty():
+    pg = (mod.drive_stats_from_histogram({1: 10, 2: 5}), "drive source: postgres drive_audits (15 rows)")
+    fuseki_called = []
+
+    def _fetch_fuseki():
+        fuseki_called.append(True)
+        return mod.drive_stats_from_histogram({1: 999}), "fuseki note"
+
+    stats, source, notes = mod.resolve_drive_stats(pg, _fetch_fuseki)
+    assert stats.record_count == 15
+    assert not fuseki_called  # Fuseki must not even be queried
+    assert "postgres drive_audits (15 rows)" in source
+    assert notes == ["drive source: postgres drive_audits (15 rows)"]
+
+
+def test_resolve_drive_stats_falls_back_to_fuseki_when_postgres_empty():
+    pg = (mod.DriveStats(), "postgres drive_audits: table present but 0 rows in window since X")
+
+    def _fetch_fuseki():
+        return mod.drive_stats_from_histogram({1: 8, 2: 2}), "fuseki histogram note"
+
+    stats, source, notes = mod.resolve_drive_stats(pg, _fetch_fuseki)
+    assert stats.record_count == 10
+    # Source label distinguishes "fell back" from a plain fuseki read.
+    assert "fell back to fuseki" in source
+    assert "postgres drive_audits had no rows in window" in source
+    # Notes carry both the postgres reason and the fuseki coverage note.
+    assert any("fell back to fuseki" in n for n in notes)
+    assert "fuseki histogram note" in notes
+
+
+def test_resolve_drive_stats_both_empty_stays_unmeasurable():
+    # BOTH sources dead -> record_count stays 0 so the P6 guard in
+    # verdict_economy still resolves (b) to UNMEASURABLE, never a numeric
+    # NO-GO fabricated from two dead sources.
+    pg = (mod.DriveStats(), "postgres drive_audits table does not exist yet")
+
+    def _fetch_fuseki():
+        return mod.DriveStats(), "fuseki returned no DriveAudit rows"
+
+    stats, source, notes = mod.resolve_drive_stats(pg, _fetch_fuseki)
+    assert stats.record_count == 0
+    assert source.startswith("none:")
+    assert len(notes) == 2
+    pressure = mod.compute_resource_pressure_stats(
+        [_self_state(i, {"resource_pressure": 0.5}, {}) for i in range(5)]
+    )
+    assert pressure.row_count > 0
+    assert mod.verdict_economy(stats, pressure) == mod.UNMEASURABLE
+
+
+def test_render_report_names_drive_source():
+    report = mod.render_report(
+        window_label="7 day(s)",
+        window_start=BASE,
+        window_end=BASE + timedelta(days=7),
+        silent=mod.SelfStateMetrics(),
+        busy=mod.SelfStateMetrics(),
+        drive=mod.drive_stats_from_histogram({1: 10, 2: 5}),
+        drive_source="postgres drive_audits (15 rows)",
+        pressure=mod.compute_resource_pressure_stats([]),
+        verdict_a=mod.UNMEASURABLE,
+        verdict_b=mod.UNMEASURABLE,
+        caveats=["drive source: postgres drive_audits (15 rows since X)"],
+    )
+    assert "- drive audit source: postgres drive_audits (15 rows)" in report
+    assert "Drive histogram read from: postgres drive_audits (15 rows)." in report
+    assert "drive source: postgres drive_audits (15 rows since X)" in report
+
+
+# ---------------------------------------------------------------------------
+# 11. Exit code distinguishes UNMEASURABLE from a completed GO/NO-GO
 # ---------------------------------------------------------------------------
 def test_verdict_b_unmeasurable_when_pressure_empty_even_with_live_drive_data():
     # The asymmetric-guard bug this locks in: drive co-activation data is

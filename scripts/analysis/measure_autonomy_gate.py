@@ -20,9 +20,12 @@ Design contract (see AGENTS.md / task brief):
   exercise. Window classification, metric computation, and the verdict rules
   all live here.
 * I/O ADAPTERS (this module's bottom half) fetch rows over a read-only psycopg2
-  session and read the durable drive-audit time-series via a read-only Fuseki
-  SPARQL SELECT. Every adapter degrades gracefully to empty / None on absent
-  input and NEVER raises on missing data or columns.
+  session and read the durable drive-audit time-series Postgres-first (the
+  ``drive_audits`` table written by orion-sql-writer), falling back to a
+  read-only Fuseki SPARQL SELECT when Postgres has no in-window rows (the
+  Fuseki DriveAudit graph is frozen since 2026-06-19, so the fallback exists
+  for historical windows only). Every adapter degrades gracefully to empty /
+  None on absent input and NEVER raises on missing data or columns.
 
 Run:
     python scripts/analysis/measure_autonomy_gate.py --window-days 7
@@ -406,6 +409,85 @@ def parse_sparql_histogram_bindings(bindings: Iterable[dict]) -> dict[int, int]:
     return out
 
 
+def parse_postgres_histogram_rows(rows: Iterable[Any]) -> dict[int, int]:
+    """Parse ``SELECT active_count, count(*) ... GROUP BY active_count`` rows
+    into ``{active_count: audits}``.
+
+    Mirrors ``parse_sparql_histogram_bindings`` for the Postgres source:
+    malformed rows (short tuples, non-numeric values) are skipped; negative
+    values are clamped to 0; never raises. Pure + unit-testable.
+    """
+
+    out: dict[int, int] = {}
+    for row in rows:
+        try:
+            active_count = int(row[0])
+            audits = int(row[1])
+        except (TypeError, ValueError, IndexError, OverflowError):
+            continue
+        out[max(0, active_count)] = max(0, audits)
+    return out
+
+
+def is_undefined_table_error(exc: BaseException) -> bool:
+    """True iff ``exc`` is Postgres "relation does not exist" (SQLSTATE 42P01).
+
+    Checked structurally (``pgcode`` attribute / exception class name) so the
+    caller can distinguish "the drive_audits table hasn't been created yet by
+    the parallel writer track" from any other query failure WITHOUT importing
+    psycopg2 at module scope. Message sniffing is a last-resort fallback for
+    driver objects that carry neither. Pure + unit-testable.
+    """
+
+    if getattr(exc, "pgcode", None) == "42P01":
+        return True
+    if type(exc).__name__ == "UndefinedTable":
+        return True
+    msg = str(exc).lower()
+    return "relation" in msg and "does not exist" in msg
+
+
+def resolve_drive_stats(
+    postgres_result: tuple[DriveStats, str],
+    fetch_fuseki,
+) -> tuple[DriveStats, str, list[str]]:
+    """Pick the drive co-activation source: Postgres first, Fuseki fallback.
+
+    ``postgres_result`` is the already-fetched ``(DriveStats, note)`` from
+    ``fetch_drive_stats_postgres``; ``fetch_fuseki`` is a zero-arg callable
+    returning ``(DriveStats, note)`` and is invoked ONLY when Postgres yielded
+    zero in-window rows (missing table, empty window, or query failure — all
+    already folded to record_count == 0 by the adapter). Selection logic is
+    pure; the I/O is injected via the callable so unit tests can stub it.
+
+    Returns ``(stats, source_label, notes)``. When both sources are empty the
+    returned stats keep record_count == 0 so ``verdict_economy`` still resolves
+    (b) to UNMEASURABLE — this function must never fabricate a measurable
+    result out of two dead sources.
+    """
+
+    pg_stats, pg_note = postgres_result
+    if pg_stats.record_count > 0:
+        return (
+            pg_stats,
+            f"postgres drive_audits ({pg_stats.record_count} rows)",
+            [pg_note],
+        )
+    fuseki_stats, fuseki_note = fetch_fuseki()
+    notes = [f"{pg_note}; fell back to fuseki", fuseki_note]
+    if fuseki_stats.record_count > 0:
+        source = (
+            f"fuseki DriveAudit graph ({fuseki_stats.record_count} rows; "
+            "postgres drive_audits had no rows in window, fell back to fuseki)"
+        )
+    else:
+        source = (
+            "none: postgres drive_audits and fuseki DriveAudit graph both "
+            "returned zero rows in window"
+        )
+    return fuseki_stats, source, notes
+
+
 UNMEASURABLE = "UNMEASURABLE"
 
 
@@ -677,6 +759,59 @@ def fetch_earliest_receipt_ts(conn) -> Optional[datetime]:
     return _coerce_dt(row[0]) if row else None
 
 
+def fetch_drive_stats_postgres(conn, window_start: datetime) -> tuple[DriveStats, str]:
+    """Read the drive co-activation histogram from the Postgres ``drive_audits``
+    table (written by orion-sql-writer; the successor source to the frozen
+    Fuseki DriveAudit graph).
+
+    ``active_count`` is already derived at write time, so the histogram is a
+    single server-side ``GROUP BY active_count`` — no JSONB parsing here.
+    Windowing follows the table contract:
+    ``COALESCE(observed_at, created_at) >= window_start``.
+
+    Reuses the script's existing read-only connection. Returns
+    ``(DriveStats, note)`` and degrades to ``(DriveStats(), note)`` — never
+    raises. A missing table (the parallel writer track may not have created it
+    yet) is reported as such, distinct from "table present but 0 rows in
+    window" and from any other query failure.
+    """
+
+    if conn is None:
+        return DriveStats(), "postgres drive_audits unavailable: no read-only postgres connection"
+    try:
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                SELECT active_count, COUNT(*)
+                FROM drive_audits
+                WHERE COALESCE(observed_at, created_at) >= %s
+                GROUP BY active_count
+                """,
+                (window_start,),
+            )
+            rows = cur.fetchall()
+    except Exception as exc:
+        if is_undefined_table_error(exc):
+            logger.warning("drive_audits table does not exist yet; postgres drive source unavailable")
+            return DriveStats(), (
+                "postgres drive_audits table does not exist yet "
+                "(sql-writer track not deployed?); source unavailable"
+            )
+        logger.error("failed to fetch drive_audits histogram", exc_info=True)
+        return DriveStats(), "postgres drive_audits query failed; source unavailable"
+    hist = parse_postgres_histogram_rows(rows)
+    stats = drive_stats_from_histogram(hist)
+    if stats.record_count == 0:
+        return stats, (
+            f"postgres drive_audits: table present but 0 rows in window since "
+            f"{window_start.isoformat()}"
+        )
+    return stats, (
+        f"drive source: postgres drive_audits ({stats.record_count} rows since "
+        f"{window_start.isoformat()})"
+    )
+
+
 def fetch_drive_stats(
     query_url: str,
     since: datetime,
@@ -801,6 +936,7 @@ def render_report(
     silent: SelfStateMetrics,
     busy: SelfStateMetrics,
     drive: DriveStats,
+    drive_source: str,
     pressure: ResourcePressureStats,
     verdict_a: str,
     verdict_b: str,
@@ -838,6 +974,7 @@ def render_report(
         "",
         "## Q(b) internal economy (whole window)",
         "",
+        f"- drive audit source: {drive_source}",
         f"- drive audit records: {drive.record_count}",
         f"- coactivation_frac (active_count >= 2): {_fmt(drive.coactivation_frac)}",
         f"- concurrent_active_hist: {hist}",
@@ -848,7 +985,8 @@ def render_report(
         "",
         "Rule (b) GO iff coactivation_frac >= "
         f"{COACTIVATION_MIN_FRAC} AND resource_pressure frac >= "
-        f"{RESOURCE_PRESSURE_LEVEL} is >= {RESOURCE_PRESSURE_MIN_FRAC}.",
+        f"{RESOURCE_PRESSURE_LEVEL} is >= {RESOURCE_PRESSURE_MIN_FRAC}. "
+        f"Drive histogram read from: {drive_source}.",
         "",
         "## Coverage caveats",
         "",
@@ -913,8 +1051,13 @@ def run(window: timedelta, window_label: str) -> int:
     turn_timestamps: list[datetime] = []
     caveats.append("turns unavailable, turn_count=0 (no turn store wired into this measurement)")
 
-    drive_stats, coverage_note = fetch_drive_stats(fuseki_url, window_start)
-    caveats.append(coverage_note)
+    # Drive co-activation: Postgres drive_audits first (live source), Fuseki
+    # DriveAudit graph as fallback (frozen since 2026-06-19 — historical only).
+    drive_stats, drive_source, drive_notes = resolve_drive_stats(
+        fetch_drive_stats_postgres(conn, window_start),
+        lambda: fetch_drive_stats(fuseki_url, window_start),
+    )
+    caveats.extend(drive_notes)
     if drive_stats.record_count == 0:
         anomalies += 1
     progress.emit(
@@ -954,6 +1097,7 @@ def run(window: timedelta, window_label: str) -> int:
         silent=silent_metrics,
         busy=busy_metrics,
         drive=drive_stats,
+        drive_source=drive_source,
         pressure=pressure,
         verdict_a=verdict_a,
         verdict_b=verdict_b,

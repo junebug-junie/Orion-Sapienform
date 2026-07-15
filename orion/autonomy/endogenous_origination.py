@@ -1,37 +1,40 @@
 """Deterministic endogenous "spontaneous want" generator.
 
-STATUS (2026-07-08): NO-GO on live-data measurement, kept but effectively dead.
+STATUS (2026-07-15): gate (a) re-measured GO; gate (b) UNMEASURABLE from its
+original source; enable flag being operator-flipped ON.
 
-The real-world enable gate for this module, ``ORION_ENDOGENOUS_ORIGINATION_ENABLED``,
-was measured NO-GO against 120 days of live data via
-``scripts/analysis/measure_autonomy_gate.py``:
-  - (a) self-state drift during exogenous silence: ``median_abs_trajectory`` =
-    0.0000 vs. a required threshold of >= 0.03.
-  - (b) drive co-activation: ``coactivation_frac`` = 0.0004 vs. a required
-    threshold of >= 0.10.
-See the full verdict in
+The enable gate for this module, ``ORION_ENDOGENOUS_ORIGINATION_ENABLED``, was
+originally measured NO-GO on 2026-07-08 via
+``scripts/analysis/measure_autonomy_gate.py``. That verdict is superseded — it
+was measuring flat-pinned-era self-state data. Re-measured 2026-07-13/15:
+  - (a) self-state drift during exogenous silence: **GO** —
+    ``median_abs_trajectory`` = 0.0448 on a 1h window and 0.0408 on a 7d
+    window, against the required threshold >= 0.03.
+  - (b) drive co-activation: **UNMEASURABLE** from the original source — the
+    Fuseki DriveAudit graph has had zero writes since 2026-06-19 (commit
+    e9b233e9 made orion-rdf-writer skip the kind), so ``coactivation_frac``
+    cannot be read from it. A Postgres ``drive_audits`` table (written by
+    orion-sql-writer, read Postgres-first by the gate script with Fuseki as
+    historical fallback) is being added to re-measure (b).
+``ORION_ENDOGENOUS_ORIGINATION_ENABLED`` is being operator-flipped to true as
+part of this same work cycle (2026-07-15). The superseded 2026-07-08 NO-GO
+text is preserved for history in
 ``docs/superpowers/specs/2026-07-07-endogenous-drive-origination-design.md``
-(section "Measurement gate verdict (2026-07-08) — NO-GO") for the raw numbers
-and rule text. Per that spec's own build-sequence gate, code in this module was
-not supposed to activate until the gate passed; it has not passed.
+(section "Measurement gate verdict (2026-07-08) — NO-GO").
 
-This module is kept in the tree (not deleted) only because
-``orion/spark/concept_induction/bus_worker.py`` still eagerly imports
-``OriginationConfig``/``OriginationEngine`` and instantiates ``OriginationEngine``
-at worker startup. That is safe today because the only place the engine's
-*output* is actually used is guarded by the same always-false flag
-(``self.cfg.endogenous_origination_enabled``) before any behavior runs — but the
-import/instantiation itself is unconditional. Fully removing this module would
-require editing that live service's integration (import, instantiation, and
-call site in ``bus_worker.py``), which is deliberately out of scope for this
-hygiene pass. Do not delete this file without also editing ``bus_worker.py``.
+Integration coupling note: ``orion/spark/concept_induction/bus_worker.py``
+eagerly imports ``OriginationConfig``/``OriginationEngine`` and instantiates
+``OriginationEngine`` at worker startup — the import/instantiation is
+unconditional, while the engine's *output* is only acted on behind
+``self.cfg.endogenous_origination_enabled``. Do not delete this file without
+also editing ``bus_worker.py`` (import, instantiation, and call site).
 
 Do not confuse this with ``services/orion-cortex-exec/app/endogenous_runtime.py``
 — that is a different, unrelated, LIVE/adopted system ("phase 8 adoption",
 ``ENDOGENOUS_RUNTIME_ENABLED=true``) that happens to share the word
 "endogenous". This module (``orion/autonomy/endogenous_origination.py``) is the
-NO-GO, mostly-dead one; ``endogenous_runtime.py`` is the live one. They do not
-share code, config, or a bus contract.
+flag-gated origination engine; ``endogenous_runtime.py`` is a separate runtime.
+They do not share code, config, or a bus contract.
 
 Reads Orion's continuous internal ``SelfStateV1`` stream and, in the ABSENCE of
 external input, mints a ``TensionEventV1(origin="endogenous")`` when internal

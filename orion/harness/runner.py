@@ -23,10 +23,11 @@ from orion.harness.grammar_emit import (
     short_error_kind,
 )
 from orion.harness.grammar_publish import publish_harness_step_grammar
+from orion.harness.last_tool_fetch_cache import publish_last_tool_fetch, read_last_tool_fetch
 from orion.harness.prefix import compile_harness_prefix, harness_motor_instruction
 from orion.harness.repair import map_repair_pressure_contract
 from orion.harness.step_stream import publish_harness_run_step
-from orion.harness.tool_provenance_audit import detect_tool_provenance_mismatch
+from orion.harness.tool_provenance_audit import detect_tool_provenance_mismatch, fetch_shaped_tool_names
 from orion.schemas.cognition.answer_contract import AnswerContract
 from orion.schemas.harness_finalize import (
     GrammarReceiptV1,
@@ -98,6 +99,7 @@ def build_harness_prompt(
     repair_overlay: HarnessRepairOverlayV1,
     answer_contract: AnswerContract | None = None,
     workspace: str | None = None,
+    prior_tool_fetch_names: list[str] | None = None,
 ) -> str:
     prefix = compile_harness_prefix(
         thought,
@@ -105,6 +107,7 @@ def build_harness_prompt(
         user_message=user_message,
         answer_contract=answer_contract,
         workspace=workspace or os.environ.get("HARNESS_FCC_WORKSPACE"),
+        prior_tool_fetch_names=prior_tool_fetch_names,
     )
     instruction = harness_motor_instruction(
         thought=thought,
@@ -210,12 +213,17 @@ class HarnessRunner:
         thought = request.thought_event
         overlay = repair_overlay or map_repair_pressure_contract(request.repair_pressure_contract)
         coalition = coalition_snapshot or build_coalition_snapshot(thought)
+
+        prior_tool_fetch = await read_last_tool_fetch(self.bus, session_id=thought.session_id)
+        prior_tool_fetch_names = (prior_tool_fetch or {}).get("tool_names")
+
         prompt = build_harness_prompt(
             thought=thought,
             user_message=request.user_message,
             repair_overlay=overlay,
             answer_contract=request.answer_contract,
             workspace=os.environ.get("HARNESS_FCC_WORKSPACE"),
+            prior_tool_fetch_names=prior_tool_fetch_names,
         )
 
         collector = HarnessGrammarCollector(
@@ -234,6 +242,12 @@ class HarnessRunner:
         compliance_verdict = "completed"
         grounding_status = "grounded"
         motor_failed = False
+        # Distinct from `motor_failed`: that's only True on a *fully* failed
+        # turn (no partial text). This tracks the "error" event branch
+        # regardless of whether a partial draft was salvaged, so a
+        # timed-out/errored turn that still produced some visible text
+        # doesn't get treated as clean for cross-turn continuity purposes.
+        error_path_taken = False
 
         async for event in self.fcc_runner(
             prompt=prompt,
@@ -286,6 +300,7 @@ class HarnessRunner:
                     if isinstance(raw_exit, int):
                         exit_code = raw_exit
             elif etype == "error":
+                error_path_taken = True
                 partial = str(event.get("llm_response") or "").strip()
                 error_code = str(event.get("error_code") or "").strip()
                 error_msg = str(event.get("error") or "").strip()
@@ -376,6 +391,23 @@ class HarnessRunner:
             )
 
         await _publish_motor_lifecycle(status="success", final_text_present=False)
+
+        # Cross-turn continuity within this same session: only on a turn that
+        # completed cleanly via the "final" event, not one that crashed/timed
+        # out after using a fetch tool (error_path_taken) even if a partial
+        # draft was salvaged -- a fetch tied to a turn the user may not have
+        # fully seen isn't worth surfacing to the next one. (The `if not
+        # draft_text` branch above already excludes the fully-empty-draft
+        # case; error_path_taken additionally excludes the partial-draft
+        # error case, which reaches this point with non-empty draft_text.)
+        fetch_tool_names = fetch_shaped_tool_names(receipts) if not error_path_taken else []
+        if fetch_tool_names:
+            await publish_last_tool_fetch(
+                self.bus,
+                session_id=thought.session_id,
+                correlation_id=request.correlation_id,
+                tool_names=fetch_tool_names,
+            )
 
         molecule = build_draft_molecule(
             correlation_id=request.correlation_id,

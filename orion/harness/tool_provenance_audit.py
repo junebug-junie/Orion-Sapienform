@@ -43,7 +43,7 @@ _IMMEDIACY_PATTERN = re.compile(
 )
 
 
-def _fetch_shaped_tool_names(receipts: Sequence[GrammarReceiptV1]) -> list[str]:
+def fetch_shaped_tool_names(receipts: Sequence[GrammarReceiptV1]) -> list[str]:
     return sorted(
         {
             receipt.tool_name
@@ -64,7 +64,7 @@ def detect_tool_provenance_mismatch(
     tool fetch involved."""
     if not draft_text or not receipts:
         return None
-    fetch_tools = _fetch_shaped_tool_names(receipts)
+    fetch_tools = fetch_shaped_tool_names(receipts)
     if not fetch_tools:
         return None
     if not _IMMEDIACY_PATTERN.search(draft_text):

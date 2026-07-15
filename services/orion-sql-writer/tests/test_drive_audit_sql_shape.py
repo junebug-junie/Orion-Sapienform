@@ -34,6 +34,7 @@ EXPECTED_COLUMNS = {
     "active_count",
     "active_drives",
     "dominant_drive",
+    "summary",
     "drive_pressures",
     "correlation_id",
     "observed_at",
@@ -102,10 +103,26 @@ def test_column_shape_is_the_slim_measurement_contract() -> None:
 
 
 def test_archive_fields_are_not_columns() -> None:
+    # summary is deliberately NOT in this list: it is the one archive-ish
+    # field stored (drive_history_reflection_synthesis reads it).
     mapper = inspect(DriveAuditSQL)
     cols = {attr.key for attr in mapper.attrs}
-    for archive_field in ("evidence_items", "source_event_refs", "summary", "tick_attribution"):
+    for archive_field in ("evidence_items", "source_event_refs", "tick_attribution"):
         assert archive_field not in cols
+
+
+def test_summary_passes_through_to_column() -> None:
+    """`summary` is a plain `DriveAuditV1` field, so once the mapper column
+    exists the generic `_write_row` filter passes it through — no worker
+    change. None (schema default) is fine too."""
+    row = _row_dict(_make_audit(summary="drive tick summary"))
+    assert row["summary"] == "drive tick summary"
+    obj = DriveAuditSQL(**row)
+    assert obj.summary == "drive tick summary"
+
+    row_none = _row_dict(_make_audit(summary=None))
+    assert row_none.get("summary") is None
+    assert DriveAuditSQL(**row_none).summary is None
 
 
 def test_active_count_derived_from_active_drives() -> None:

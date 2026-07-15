@@ -1,0 +1,21 @@
+-- Drive audit slim table v2: add the `summary` column.
+-- Producer: orion-spark-concept-induction (memory.drives.audit.v1 on orion:memory:drives:audit)
+-- New consumer: scripts/drive_history_reflection_synthesis.py, repointed from
+-- the frozen Fuseki DriveAudit graph to Postgres drive_audits. Its fetch needs
+-- artifact_id / created_at / dominant_drive / summary — the v1 slim table had
+-- everything except summary.
+--
+-- v1 deliberately dropped summary along with the other archive fields. This
+-- adds it back as the one archive-ish exception, with a stated reason: it is
+-- a single bounded sentence per audit (`DriveAuditV1.summary`,
+-- orion/core/schemas/drives.py) and is the per-audit text input the reflection
+-- synthesis reads. evidence_items / source_event_refs / tick_attribution
+-- remain intentionally NOT stored — this is still a slim measurement table,
+-- not a full artifact archive.
+--
+-- On boot, sql-writer applies this same ALTER via app/main.py lifespan
+-- (ADD COLUMN IF NOT EXISTS), so pre-existing deployments are upgraded
+-- automatically. This file is the standalone equivalent for manual application
+-- against a running Postgres; it is a harmless no-op once applied.
+
+ALTER TABLE drive_audits ADD COLUMN IF NOT EXISTS summary TEXT;

@@ -126,7 +126,7 @@ def test_verdict_b_rare_coactivation_is_no_go():
 
 
 def test_verdict_b_unmeasurable_when_no_drive_audit_rows():
-    # Dead/unreachable Fuseki source (record_count == 0) -> UNMEASURABLE, not
+    # Dead/unreachable drive-audit source (record_count == 0) -> UNMEASURABLE, not
     # a numeric "0% co-activation, NO-GO" -- this is the exact failure mode
     # that motivated this fix (the graph was empty for days without anyone
     # noticing the verdict was silently reading as a real behavioral NO-GO).
@@ -236,69 +236,6 @@ def test_percentile_and_median():
     assert stats.median == 0.3
     assert stats.p90 == pytest.approx(0.7, abs=1e-9)
     assert stats.frac_gt_level == pytest.approx(3 / 5)
-
-
-# ---------------------------------------------------------------------------
-# 7. Durable drive-audit source (Fuseki SPARQL) — pure query + parse layer
-# ---------------------------------------------------------------------------
-def test_build_drive_coactivation_histogram_sparql_shape():
-    q = mod.build_drive_coactivation_histogram_sparql(BASE)
-    assert mod.AUTONOMY_DRIVES_GRAPH in q
-    assert "orion:DriveAudit" in q
-    # Assessment-level boolean shape, counted DISTINCT (bounded by drive keys).
-    assert "hasDriveAssessment" in q
-    assert "orion:driveActive true" in q
-    assert "COUNT(DISTINCT ?activeDa)" in q
-    # ts is multi-valued -> windowed via FILTER EXISTS so it cannot fan out the
-    # assessment count. ?ts must NOT be bound in the aggregation group.
-    assert "FILTER EXISTS" in q
-    assert "orion:timestamp" in q
-    assert f'FILTER(?ts >= "{BASE.isoformat()}"^^xsd:dateTime)' in q
-    # Nested aggregation: inner reduces per audit, outer bins into a histogram.
-    assert "GROUP BY ?audit" in q
-    assert "GROUP BY ?activeCount" in q
-    # Old markers (fan-out / unbound-SUM / stale predicate) must be gone.
-    assert "SUM(IF" not in q
-    assert "BOUND(?act)" not in q
-    assert "highlightsActiveDrive" not in q
-    assert "COUNT(DISTINCT ?d)" not in q
-
-
-def test_parse_sparql_histogram_bindings_happy():
-    bindings = [
-        {"activeCount": {"value": "0"}, "audits": {"value": "444734"}},
-        {"activeCount": {"value": "2"}, "audits": {"value": "20"}},
-        {"activeCount": {"value": "3.0"}, "audits": {"value": "31"}},
-        "not-a-dict",  # skipped, no crash
-        {"activeCount": {"value": "junk"}, "audits": {"value": "5"}},  # bad count -> skipped
-        {"activeCount": {"value": "1"}},  # missing audits -> skipped
-    ]
-    hist = mod.parse_sparql_histogram_bindings(bindings)
-    assert hist == {0: 444734, 2: 20, 3: 31}
-    # Feeds the pure drive-stats path.
-    stats = mod.drive_stats_from_histogram(hist)
-    assert stats.record_count == 444785
-    assert stats.coactivation_frac == pytest.approx(51 / 444785)
-
-
-def test_parse_sparql_histogram_bindings_retains_zero_bucket():
-    # The query emits an explicit 0 bucket for assessment-less / all-inactive
-    # audits (OPTIONAL + COUNT(DISTINCT ?activeDa) yields 0, not unbound); lock
-    # in that the parser keeps a 0 row so those audits stay in the denominator.
-    bindings = [
-        {"activeCount": {"value": "0"}, "audits": {"value": "5"}},
-        {"activeCount": {"value": "2"}, "audits": {"value": "3"}},
-    ]
-    hist = mod.parse_sparql_histogram_bindings(bindings)
-    assert hist == {0: 5, 2: 3}
-    stats = mod.drive_stats_from_histogram(hist)
-    assert stats.record_count == 8  # the 5 zero-active audits are counted
-    assert stats.coactivation_frac == pytest.approx(3 / 8)
-
-
-def test_parse_sparql_histogram_bindings_degrades():
-    # Empty bindings -> empty dict, no raise.
-    assert mod.parse_sparql_histogram_bindings([]) == {}
 
 
 # ---------------------------------------------------------------------------
@@ -413,18 +350,6 @@ def test_parse_postgres_histogram_rows():
     assert mod.parse_postgres_histogram_rows([]) == {}
 
 
-def test_parse_sparql_histogram_bindings_skips_negatives():
-    # Same semantics as the postgres parser: a bogus negative row is skipped,
-    # never clamped onto the real 0 bucket (review finding: the two parsers
-    # had diverged after the postgres side was fixed).
-    bindings = [
-        {"activeCount": {"value": "0"}, "audits": {"value": "100"}},
-        {"activeCount": {"value": "-1"}, "audits": {"value": "-4"}},
-        {"activeCount": {"value": "2"}, "audits": {"value": "5"}},
-    ]
-    assert mod.parse_sparql_histogram_bindings(bindings) == {0: 100, 2: 5}
-
-
 def test_fetch_earliest_drive_audit_ts_degrades():
     # No connection -> None
     assert mod.fetch_earliest_drive_audit_ts(None) is None
@@ -499,53 +424,14 @@ def test_is_undefined_table_error():
     assert not mod.is_undefined_table_error(RuntimeError("connection reset"))
 
 
-def test_resolve_drive_stats_postgres_wins_when_nonempty():
-    pg = (mod.drive_stats_from_histogram({1: 10, 2: 5}), "drive source: postgres drive_audits (15 rows)")
-    fuseki_called = []
-
-    def _fetch_fuseki():
-        fuseki_called.append(True)
-        return mod.drive_stats_from_histogram({1: 999}), "fuseki note"
-
-    stats, source_kind, source, notes = mod.resolve_drive_stats(pg, _fetch_fuseki)
-    assert stats.record_count == 15
-    assert not fuseki_called  # Fuseki must not even be queried
-    assert source_kind == "postgres"
-    assert "postgres drive_audits (15 rows)" in source
-    assert notes == ["drive source: postgres drive_audits (15 rows)"]
-
-
-def test_resolve_drive_stats_falls_back_to_fuseki_when_postgres_empty():
-    pg = (mod.DriveStats(), "postgres drive_audits: table present but 0 rows in window since X")
-
-    def _fetch_fuseki():
-        return mod.drive_stats_from_histogram({1: 8, 2: 2}), "fuseki histogram note"
-
-    stats, source_kind, source, notes = mod.resolve_drive_stats(pg, _fetch_fuseki)
-    assert stats.record_count == 10
-    assert source_kind == "fuseki"
-    assert "fuseki DriveAudit graph (10 rows)" in source
-    # The "fell back" fact is carried exactly once, in the notes -- the label
-    # stays a short display string (control flow branches on source_kind).
-    assert any("fell back to fuseki" in n for n in notes)
-    assert "fell back to fuseki" not in source
-    assert "fuseki histogram note" in notes
-
-
-def test_resolve_drive_stats_both_empty_stays_unmeasurable():
-    # BOTH sources dead -> record_count stays 0 so the P6 guard in
-    # verdict_economy still resolves (b) to UNMEASURABLE, never a numeric
-    # NO-GO fabricated from two dead sources.
-    pg = (mod.DriveStats(), "postgres drive_audits table does not exist yet")
-
-    def _fetch_fuseki():
-        return mod.DriveStats(), "fuseki returned no DriveAudit rows"
-
-    stats, source_kind, source, notes = mod.resolve_drive_stats(pg, _fetch_fuseki)
+def test_postgres_empty_source_stays_unmeasurable():
+    # The gate reads ONLY drive_audits (the frozen Fuseki graph is gone from
+    # this instrument). An empty/missing table keeps record_count == 0 so the
+    # P6 guard in verdict_economy resolves (b) to UNMEASURABLE, never a
+    # numeric NO-GO fabricated from a dead source.
+    stats, note = mod.fetch_drive_stats_postgres(None, BASE)
     assert stats.record_count == 0
-    assert source_kind == "none"
-    assert source.startswith("none:")
-    assert len(notes) == 2
+    assert "no read-only postgres connection" in note
     pressure = mod.compute_resource_pressure_stats(
         [_self_state(i, {"resource_pressure": 0.5}, {}) for i in range(5)]
     )

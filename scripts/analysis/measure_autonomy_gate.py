@@ -20,12 +20,12 @@ Design contract (see AGENTS.md / task brief):
   exercise. Window classification, metric computation, and the verdict rules
   all live here.
 * I/O ADAPTERS (this module's bottom half) fetch rows over a read-only psycopg2
-  session and read the durable drive-audit time-series Postgres-first (the
-  ``drive_audits`` table written by orion-sql-writer), falling back to a
-  read-only Fuseki SPARQL SELECT when Postgres has no in-window rows (the
-  Fuseki DriveAudit graph is frozen since 2026-06-19, so the fallback exists
-  for historical windows only). Every adapter degrades gracefully to empty /
-  None on absent input and NEVER raises on missing data or columns.
+  session. The drive-audit time-series is read ONLY from the ``drive_audits``
+  Postgres table written by orion-sql-writer. The old Fuseki DriveAudit graph
+  (frozen since 2026-06-19, flat-pinned-era data) is deliberately NOT read --
+  windows the table does not cover are honestly UNMEASURABLE, never backfilled
+  from a dead sensor. Every adapter degrades gracefully to empty / None on
+  absent input and NEVER raises on missing data or columns.
 
 Run:
     python scripts/analysis/measure_autonomy_gate.py --window-days 7
@@ -76,22 +76,6 @@ PROGRESS_PATH = OUTPUT_DIR / "progress.log"
 
 DEFAULT_POSTGRES_URI = "postgresql://postgres:postgres@orion-athena-sql-db:5432/conjourney"
 
-# Durable drive co-activation source. DriveAuditV1 is ephemeral on the bus
-# (redis pub/sub, no history), but orion-rdf-writer persists every audit to
-# Fuseki as a `orion:DriveAudit` whose active-drive signal lives at the
-# assessment level: DriveAudit --orion:hasDriveAssessment--> DriveAssessment,
-# each assessment carrying a boolean `orion:driveActive`. An audit's
-# active-drive count == number of its assessments with driveActive == true.
-# (An older `orion:highlightsActiveDrive` projection is equivalent — one triple
-# per active drive — but we read the assessment-level boolean as the primary
-# schema.) We aggregate this server-side into a co-activation histogram so
-# Fuseki returns ~7 rows regardless of window size, instead of transferring
-# hundreds of thousands of per-audit rows (which timed out on large windows).
-ORION_NS = "http://conjourney.net/orion#"
-AUTONOMY_DRIVES_GRAPH = "http://conjourney.net/graph/autonomy/drives"
-DEFAULT_FUSEKI_QUERY_URL = "http://orion-athena-fuseki:3030/orion/query"
-# Server-side aggregation measured ~16s over full history; 60s gives headroom.
-FUSEKI_TIMEOUT_SEC = 60.0
 
 
 # ===========================================================================
@@ -333,92 +317,11 @@ def drive_stats_from_histogram(hist: dict[int, int]) -> DriveStats:
     )
 
 
-def build_drive_coactivation_histogram_sparql(
-    since: datetime, graph_uri: str = AUTONOMY_DRIVES_GRAPH
-) -> str:
-    """SPARQL: co-activation histogram (active-count -> #audits) since ``since``.
-
-    The inner query reduces per audit: each ``?audit``'s ``?activeCount`` is
-    ``COUNT(DISTINCT ?activeDa)`` where ``?activeDa`` is bound ONLY to that
-    audit's active assessments — the pattern matches the boolean literal
-    directly (``?activeDa orion:driveActive true``), so no per-assessment IF is
-    needed. Strictly this counts distinct active *assessment nodes*; that equals
-    the number of active drive keys while the writer emits at most one assessment
-    per drive per audit (live max=6 confirms 1:1 today).
-
-    Two subtleties, both verified live against Jena/Fuseki:
-
-    * ``orion:timestamp`` is MULTI-VALUED (up to 8 per audit). It MUST NOT be
-      bound in the aggregation group: binding ``?ts`` alongside the assessment
-      join cross-products (5 timestamps x 6 active assessments = 30 counted),
-      producing impossible active counts and inflating co-activation. Instead
-      the window is applied with ``FILTER EXISTS { ?audit orion:timestamp ?ts .
-      FILTER(?ts >= since) }`` — an audit is in-window iff ANY of its timestamps
-      is ``>= since``, which is correct for a multi-valued timestamp and cannot
-      fan out the count.
-    * The assessment join is OPTIONAL, so an assessment-less / all-inactive
-      audit has ``?activeDa`` unbound and ``COUNT(DISTINCT ?activeDa) = 0``,
-      landing it in the ``activeCount = 0`` bucket. ``COUNT(DISTINCT ...)`` also
-      dedupes any duplicate assessment edges.
-
-    The outer query bins the per-audit counts into a histogram, so Fuseki
-    returns only ~7 rows regardless of window size — no per-audit transfer of
-    hundreds of thousands of rows, no timeout. Pure (returns a string) so it is
-    unit-testable without a SPARQL endpoint.
-    """
-
-    since_iso = _as_utc(since).isoformat()
-    return (
-        f"PREFIX orion: <{ORION_NS}>\n"
-        "PREFIX xsd: <http://www.w3.org/2001/XMLSchema#>\n"
-        "SELECT ?activeCount (COUNT(*) AS ?audits) WHERE {\n"
-        "  SELECT ?audit (COUNT(DISTINCT ?activeDa) AS ?activeCount) WHERE {\n"
-        f"    GRAPH <{graph_uri}> {{\n"
-        "      ?audit a orion:DriveAudit .\n"
-        f'      FILTER EXISTS {{ ?audit orion:timestamp ?ts . FILTER(?ts >= "{since_iso}"^^xsd:dateTime) }}\n'
-        "      OPTIONAL { ?audit orion:hasDriveAssessment ?activeDa . ?activeDa orion:driveActive true . }\n"
-        "    }\n"
-        "  } GROUP BY ?audit\n"
-        "} GROUP BY ?activeCount ORDER BY ?activeCount"
-    )
-
-
-def parse_sparql_histogram_bindings(bindings: Iterable[dict]) -> dict[int, int]:
-    """Parse SPARQL-results-JSON histogram bindings into ``{activeCount: audits}``.
-
-    Each binding carries ``activeCount`` and ``audits``, both SUM/COUNT literals
-    Fuseki may return as integer or decimal strings (e.g. ``"2"`` or ``"2.0"``).
-    Malformed rows (missing/garbage values) are skipped; never raises. Pure +
-    unit-testable.
-    """
-
-    out: dict[int, int] = {}
-    for binding in bindings:
-        if not isinstance(binding, dict):
-            continue
-        cnt_node = binding.get("activeCount")
-        aud_node = binding.get("audits")
-        raw_cnt = cnt_node.get("value") if isinstance(cnt_node, dict) else None
-        raw_aud = aud_node.get("value") if isinstance(aud_node, dict) else None
-        try:
-            active_count = int(float(raw_cnt))
-            audits = int(float(raw_aud))
-        except (TypeError, ValueError, OverflowError):
-            continue
-        # Skip negatives, same as parse_postgres_histogram_rows: clamping a
-        # bogus row to 0 could overwrite the real 0 bucket.
-        if active_count < 0 or audits < 0:
-            continue
-        out[active_count] = audits
-    return out
-
-
 def parse_postgres_histogram_rows(rows: Iterable[Any]) -> dict[int, int]:
     """Parse ``SELECT active_count, count(*) ... GROUP BY active_count`` rows
     into ``{active_count: audits}``.
 
-    Mirrors ``parse_sparql_histogram_bindings`` for the Postgres source:
-    malformed rows (short tuples, non-numeric values) are skipped; negative
+    Malformed rows (short tuples, non-numeric values) are skipped; negative
     values are ALSO skipped, not clamped -- this writer derives
     ``active_count = len(active_drives) >= 0``, so a negative can only come
     from foreign/manual writes, and clamping it to 0 could overwrite the
@@ -455,55 +358,6 @@ def is_undefined_table_error(exc: BaseException) -> bool:
         return True
     msg = str(exc).lower()
     return "relation" in msg and "does not exist" in msg
-
-
-def resolve_drive_stats(
-    postgres_result: tuple[DriveStats, str],
-    fetch_fuseki,
-) -> tuple[DriveStats, str, str, list[str]]:
-    """Pick the drive co-activation source: Postgres first, Fuseki fallback.
-
-    ``postgres_result`` is the already-fetched ``(DriveStats, note)`` from
-    ``fetch_drive_stats_postgres``; ``fetch_fuseki`` is a zero-arg callable
-    returning ``(DriveStats, note)`` and is invoked ONLY when Postgres yielded
-    zero in-window rows (missing table, empty window, or query failure — all
-    already folded to record_count == 0 by the adapter). Selection logic is
-    pure; the I/O is injected via the callable so unit tests can stub it.
-
-    Returns ``(stats, source_kind, source_label, notes)``. ``source_kind`` is
-    the structured discriminant — ``"postgres"`` / ``"fuseki"`` / ``"none"`` —
-    and is what callers must branch on; the label is display-only, so a
-    wording change can never silently alter control flow (e.g. the retention
-    caveat in ``run()``). When both sources are empty the returned stats keep
-    record_count == 0 so ``verdict_economy`` still resolves (b) to
-    UNMEASURABLE — this function must never fabricate a measurable result out
-    of two dead sources. The "fell back" fact is carried once, in ``notes``,
-    not duplicated into the label.
-    """
-
-    pg_stats, pg_note = postgres_result
-    if pg_stats.record_count > 0:
-        return (
-            pg_stats,
-            "postgres",
-            f"postgres drive_audits ({pg_stats.record_count} rows)",
-            [pg_note],
-        )
-    fuseki_stats, fuseki_note = fetch_fuseki()
-    notes = [f"{pg_note}; fell back to fuseki", fuseki_note]
-    if fuseki_stats.record_count > 0:
-        return (
-            fuseki_stats,
-            "fuseki",
-            f"fuseki DriveAudit graph ({fuseki_stats.record_count} rows)",
-            notes,
-        )
-    return (
-        fuseki_stats,
-        "none",
-        "none: postgres drive_audits and fuseki DriveAudit graph both returned zero rows in window",
-        notes,
-    )
 
 
 UNMEASURABLE = "UNMEASURABLE"
@@ -566,7 +420,7 @@ def verdict_economy(drive: DriveStats, pressure: ResourcePressureStats) -> str:
     """Verdict (b): GO iff drives co-activate AND resource_pressure rises.
 
     UNMEASURABLE iff EITHER input has zero rows -- the rule reads both
-    drive.coactivation_frac (Postgres drive_audits, Fuseki fallback) and
+    drive.coactivation_frac (Postgres drive_audits) and
     pressure.frac_gt_level (Postgres self-state), two independent sources. Guarding only one (e.g. only
     drive.record_count) would let the other silently degrade to 0.0 and
     resolve as a real "NO-GO" string -- exactly the failure mode this
@@ -587,7 +441,7 @@ def verdict_economy(drive: DriveStats, pressure: ResourcePressureStats) -> str:
 
 
 # ===========================================================================
-# I/O LAYER — psycopg2 read-only + Fuseki SPARQL SELECT. Never exercised by unit tests.
+# I/O LAYER — psycopg2 read-only. Never exercised by unit tests.
 # Every adapter degrades to empty / None on absent input; none raise on
 # missing data or columns.
 # ===========================================================================
@@ -780,9 +634,8 @@ def fetch_earliest_receipt_ts(conn) -> Optional[datetime]:
 def fetch_earliest_drive_audit_ts(conn) -> Optional[datetime]:
     """Earliest drive_audits row by ``COALESCE(observed_at, created_at)`` --
     the retention floor for the Postgres drive co-activation source. The
-    table was only born 2026-07-15 while the frozen Fuseki graph holds
-    history up to 2026-06-19, so a long window (e.g. the original NO-GO's
-    120 days) can have Postgres rows for only its tail: without this floor
+    table was only born 2026-07-15, so a long window (e.g. the original
+    NO-GO's 120 days) can have rows for only its tail: without this floor
     feeding ``retention_caveat``, that tail would be silently presented as
     the full window. Degrades to None on any failure, including the table
     not existing yet; never raises.
@@ -851,66 +704,6 @@ def fetch_drive_stats_postgres(conn, window_start: datetime) -> tuple[DriveStats
     return stats, (
         f"drive source: postgres drive_audits ({stats.record_count} rows since "
         f"{window_start.isoformat()})"
-    )
-
-
-def fetch_drive_stats(
-    query_url: str,
-    since: datetime,
-    graph_uri: str = AUTONOMY_DRIVES_GRAPH,
-    timeout_sec: float = FUSEKI_TIMEOUT_SEC,
-) -> tuple[DriveStats, str]:
-    """Read durable drive co-activation stats from Fuseki via read-only SPARQL.
-
-    The bus audit channel (``orion:memory:drives:audit``) is redis pub/sub with
-    no replayable history, so it is useless for a backward-looking measurement.
-    orion-rdf-writer, however, persists every DriveAuditV1 to the Fuseki
-    autonomy/drives graph as a timestamped ``orion:DriveAudit`` whose active
-    signal lives at the assessment level: ``orion:hasDriveAssessment`` ->
-    ``DriveAssessment`` with a boolean ``orion:driveActive`` — a real historical
-    time-series. We aggregate ``driveActive = true`` counts per audit into a
-    co-activation histogram *server-side*, so Fuseki returns ~7 rows regardless
-    of window size (transferring all per-audit rows blows the timeout on large
-    windows).
-
-    Read-only SPARQL SELECT (no UPDATE). Returns (DriveStats, coverage_note);
-    degrades to (DriveStats(), note) on any endpoint/parse failure — never raises.
-    """
-
-    if not query_url:
-        return DriveStats(), "drive co-activation unavailable: no AUTONOMY_GRAPH_QUERY_URL configured"
-
-    import urllib.error  # lazy imports keep module import I/O-free for tests
-    import urllib.parse
-    import urllib.request
-
-    sparql = build_drive_coactivation_histogram_sparql(since, graph_uri)
-    body = urllib.parse.urlencode({"query": sparql}).encode("utf-8")
-    req = urllib.request.Request(
-        query_url,
-        data=body,
-        headers={
-            "Accept": "application/sparql-results+json",
-            "Content-Type": "application/x-www-form-urlencoded",
-        },
-        method="POST",
-    )
-    try:
-        with urllib.request.urlopen(req, timeout=timeout_sec) as resp:
-            payload = json.loads(resp.read().decode("utf-8"))
-    except Exception:
-        logger.error("drive-audit SPARQL query failed", exc_info=True)
-        return DriveStats(), f"drive co-activation unavailable: SPARQL query to {query_url} failed"
-
-    bindings = (((payload or {}).get("results") or {}).get("bindings")) or []
-    hist = parse_sparql_histogram_bindings(bindings)
-    stats = drive_stats_from_histogram(hist)
-    if stats.record_count == 0:
-        return stats, f"drive co-activation: Fuseki returned no DriveAudit rows since {since.isoformat()}"
-
-    return stats, (
-        f"drive co-activation: {stats.record_count} DriveAudit rows since "
-        f"{since.isoformat()} (Fuseki histogram)"
     )
 
 
@@ -1049,7 +842,6 @@ def run(window: timedelta, window_label: str) -> int:
     now = datetime.now(timezone.utc)
     window_start = now - window
     dsn = os.environ.get("POSTGRES_URI", DEFAULT_POSTGRES_URI)
-    fuseki_url = os.environ.get("AUTONOMY_GRAPH_QUERY_URL", DEFAULT_FUSEKI_QUERY_URL)
 
     OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
     progress = ProgressLog(PROGRESS_PATH)
@@ -1092,32 +884,22 @@ def run(window: timedelta, window_label: str) -> int:
     turn_timestamps: list[datetime] = []
     caveats.append("turns unavailable, turn_count=0 (no turn store wired into this measurement)")
 
-    # Drive co-activation: Postgres drive_audits first (live source), Fuseki
-    # DriveAudit graph as fallback (frozen since 2026-06-19 — historical only).
-    drive_stats, drive_source_kind, drive_source, drive_notes = resolve_drive_stats(
-        fetch_drive_stats_postgres(conn, window_start),
-        lambda: fetch_drive_stats(fuseki_url, window_start),
+    # Drive co-activation reads ONLY the live drive_audits table. The frozen
+    # Fuseki DriveAudit graph (dead since 2026-06-19, flat-pinned-era data) is
+    # deliberately NOT read -- windows the table does not cover are honestly
+    # UNMEASURABLE, never backfilled from a dead sensor.
+    drive_stats, drive_note = fetch_drive_stats_postgres(conn, window_start)
+    caveats.append(drive_note)
+    drive_source = (
+        f"postgres drive_audits ({drive_stats.record_count} rows)"
+        if drive_stats.record_count > 0
+        else "postgres drive_audits (0 rows in window)"
     )
-    caveats.extend(drive_notes)
-    if drive_source_kind == "postgres":
-        # Postgres won, which suppresses any in-window Fuseki history -- so
-        # the report must say when the table's own retention starts inside
-        # the window (partial coverage, not measured absence), and how many
-        # in-window rows the frozen Fuseki graph holds that verdict (b) is
-        # therefore NOT counting.
-        drive_retention_note = retention_caveat(
-            "drive_audits", fetch_earliest_drive_audit_ts(conn), window_start
-        )
-        if drive_retention_note:
-            caveats.append(drive_retention_note)
-            excluded, _ = fetch_drive_stats(fuseki_url, window_start)
-            if excluded.record_count > 0:
-                caveats.append(
-                    f"fuseki DriveAudit graph holds {excluded.record_count} in-window "
-                    "rows predating drive_audits coverage that are NOT included in "
-                    "verdict (b) -- the verdict reflects only the drive_audits "
-                    "portion of the window"
-                )
+    drive_retention_note = retention_caveat(
+        "drive_audits", fetch_earliest_drive_audit_ts(conn), window_start
+    )
+    if drive_retention_note:
+        caveats.append(drive_retention_note)
     if drive_stats.record_count == 0:
         anomalies += 1
     progress.emit(

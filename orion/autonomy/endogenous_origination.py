@@ -14,8 +14,9 @@ was measuring flat-pinned-era self-state data. Re-measured 2026-07-13/15:
     Fuseki DriveAudit graph has had zero writes since 2026-06-19 (commit
     e9b233e9 made orion-rdf-writer skip the kind), so ``coactivation_frac``
     cannot be read from it. A Postgres ``drive_audits`` table (written by
-    orion-sql-writer, read Postgres-first by the gate script with Fuseki as
-    historical fallback) is being added to re-measure (b).
+    orion-sql-writer; the gate script reads ONLY this table — the frozen
+    Fuseki graph was removed from the instrument entirely) is being added to
+    re-measure (b).
 ``ORION_ENDOGENOUS_ORIGINATION_ENABLED`` is being operator-flipped to true as
 part of this same work cycle (2026-07-15). The superseded 2026-07-08 NO-GO
 text is preserved for history in

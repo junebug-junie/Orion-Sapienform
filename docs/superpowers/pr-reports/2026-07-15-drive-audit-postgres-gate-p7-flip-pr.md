@@ -9,10 +9,13 @@ Series: endogenous action motor-nerve follow-through — makes gate (b) drive co
   orion-spark-concept-induction on every DriveEngine tick) into a new slim Postgres
   table `drive_audits` — the first live sink for this stream since orion-rdf-writer
   stopped materializing it to Fuseki on 2026-06-19 (`e9b233e9`, `RDF_SKIP_KINDS`).
-- `scripts/analysis/measure_autonomy_gate.py` reads drive co-activation Postgres-first
-  and only falls back to the frozen Fuseki DriveAudit graph for historical windows; the
-  report names which source produced the number. Two dead sources still yield
-  `UNMEASURABLE`, never a fabricated zero — the P6 guard is untouched.
+- `scripts/analysis/measure_autonomy_gate.py` reads drive co-activation from
+  **Postgres only** — the Fuseki/SPARQL path was removed from the instrument entirely
+  (SPARQL query builder, bindings parser, fetcher, source-selection machinery, env
+  hook: all deleted). Killing the graph path is a main point of Option B: the frozen
+  graph is a dead sensor holding flat-pinned-era data, and every verdict it produced
+  was garbage. Windows the table does not cover are honestly `UNMEASURABLE`, never
+  backfilled from a corpse — the P6 guard is untouched.
 - Stale NO-GO STATUS docstring on `orion/autonomy/endogenous_origination.py` refreshed
   to the current measured reality (gate (a) GO since 2026-07-13; gate (b) UNMEASURABLE
   from the dead source, being re-instrumented by this patch).
@@ -74,9 +77,11 @@ NO-GO docstring.
   idempotency
 - `scripts/analysis/measure_autonomy_gate.py`: `fetch_drive_stats_postgres` (reuses the
   existing read-only autocommit connection; table-missing / empty-window / query-failure
-  degrade to distinct notes, never raise), pure `resolve_drive_stats` source selection
-  (Fuseki IO injected as a lazy callable — not queried at all when Postgres has rows),
-  `render_report` names the drive source
+  degrade to distinct notes, never raise) is now the ONLY drive source. The entire
+  Fuseki/SPARQL surface was deleted: `build_drive_coactivation_histogram_sparql`,
+  `parse_sparql_histogram_bindings`, the Fuseki `fetch_drive_stats`, `resolve_drive_stats`,
+  `AUTONOMY_GRAPH_QUERY_URL`/`DEFAULT_FUSEKI_QUERY_URL`. `render_report` names the drive
+  source; retention caveat applies unconditionally
 - `scripts/analysis/tests/test_measure_autonomy_gate.py`: 10 new tests (36 total green)
 - `orion/autonomy/endogenous_origination.py`: docstring-only STATUS refresh
 - `services/orion-sql-writer/README.md`: channel table row + persistence paragraph
@@ -175,19 +180,16 @@ UNVERIFIED until the sql-writer restart below; first verification query included
 
 - Finding: (PLAUSIBLE, most severe) a single in-window Postgres row suppresses all
   in-window Fuseki history — verdict (b) computed on the drive_audits tail with only
-  a caveat disclosing it; on long windows the headline can differ from the
-  full-window value.
-  - Fix: when the Postgres source wins with partial coverage (retention floor inside
-    the window), the gate now also queries Fuseki and reports exactly how many
-    in-window rows are excluded from the verdict. Full source-merging was
-    deliberately NOT done: neither source covers the 2026-06-19→07-15 sensor gap, so
-    any long window is partial regardless — disclosure with numbers is the honest
-    altitude, and histogram-merging would silently double-count if RDF
-    materialization is ever re-enabled.
+  a caveat disclosing it.
+  - Fix (superseded by the Fuseki kill): the interim fix disclosed excluded Fuseki
+    row counts; Juniper then correctly called out that keeping any Fuseki read
+    contradicted Option B's point, so the entire graph path was removed. The finding
+    class is now structurally impossible — there is one source, and the retention
+    caveat (always applied) names when it doesn't cover the window.
 - Finding: (PLAUSIBLE) retention-caveat control flow keyed off the display label
   (`drive_source.startswith("postgres")`) — a relabel would silently disable it.
-  - Fix: `resolve_drive_stats` now returns a structured `source_kind`
-    ("postgres"/"fuseki"/"none") that `run()` branches on; labels are display-only.
+  - Fix (superseded by the Fuseki kill): `resolve_drive_stats` and the branch are
+    gone entirely; the retention caveat is now unconditional on the single source.
 - Finding: (CONFIRMED) `drive_audits` had no retention while siblings
   (`orion_metacognitive_trace`, `grammar_events`) prune at startup.
   - Fix: `DRIVE_AUDITS_RETENTION_DAYS` (default 90, 0 disables) + startup DELETE on
@@ -204,7 +206,7 @@ UNVERIFIED until the sql-writer restart below; first verification query included
     design doc ("do NOT assume it is dead").
 - Finding: (PLAUSIBLE) the two histogram parsers diverged — Postgres skips negative
   rows, the SPARQL parser still clamped them into bucket 0.
-  - Fix: SPARQL parser now skips negatives too, with a regression test.
+  - Fix (superseded by the Fuseki kill): the SPARQL parser no longer exists.
 - Finding: (CONFIRMED) `drive_source` printed twice in the same report section and
   the fallback fact duplicated between note and label.
   - Fix: one render site (the bullet), short labels, fallback stated once in caveats.

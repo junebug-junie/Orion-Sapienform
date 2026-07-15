@@ -115,11 +115,12 @@ Jena 5 compacts **in-place** (creates a new `Data-NNNN` tree, then `--deleteOld`
 
 The script:
 
-1. Creates **`FUSEKI_DATA_DIR/.compact-in-progress`** so `make recover` skips restarts during compact
-2. Stops **`orion-athena-fuseki`** and **`orion-athena-rdf-writer`**
-3. Runs **`tdb2.tdbcompact`** via host Java, or **`eclipse-temurin:21-jre-jammy`** Docker if no host JDK
-4. **`chown -R 100:101`** on the dataset (compact in Docker runs as root; without this step Fuseki returns **503** / `AccessDeniedException` on `tdb.lock`)
-5. Restarts Fuseki + rdf-writer, runs **`make health-probe`**
+1. Acquires an exclusive `flock` on **`FUSEKI_DATA_DIR/.compact-in-progress`** (2026-07-15: was a plain `touch`/existence check, which raced against `make recover`'s cron — see [Scheduled maintenance](#scheduled-maintenance-athena-cron)) so `make recover` skips restarts during compact
+2. Validates the dataset shape and free space (still runs under `DRY_RUN=1`, matching the "checks disk space, prints plan" behavior below)
+3. Stops **`orion-athena-fuseki`** and **`orion-athena-rdf-writer`**
+4. Runs **`tdb2.tdbcompact`** via host Java, or **`eclipse-temurin:21-jre-jammy`** Docker if no host JDK
+5. **`chown -R 100:101`** on the dataset (compact in Docker runs as root; without this step Fuseki returns **503** / `AccessDeniedException` on `tdb.lock`)
+6. Restarts Fuseki + rdf-writer, runs **`make health-probe`**
 
 Requires free space on the dataset filesystem **≥ current dataset size** (peak usage during compact).
 
@@ -152,7 +153,7 @@ Under heavy write load, Fuseki/TDB2 can return **`Maximum lock count exceeded`**
 4. Cron every 20 min: `make recover` (see [Scheduled maintenance](#scheduled-maintenance-athena-cron))
 5. Lower writer concurrency: `RDF_WRITE_WORKERS=2`, `RDF_WRITE_MAX_IN_FLIGHT=8`
 6. Client retries via `FUSEKI_HTTP_RETRY_*` on Hub/writer paths
-7. Weekly **`make compact`** — primary defense against index bloat causing lock/GC pressure
+7. Nightly **`make compact`** — primary defense against index bloat causing lock/GC pressure
 
 ---
 
@@ -161,21 +162,27 @@ Under heavy write load, Fuseki/TDB2 can return **`Maximum lock count exceeded`**
 Install on the host that runs Fuseki (`crontab -e` as `athena`):
 
 ```cron
-# Fuseki lock recovery — restarts when health-probe fails; skips if compact lock present
-*/20 * * * * cd /mnt/scripts/Orion-Sapienform/services/orion-rdf-store && make recover >> /mnt/scripts/Orion-Sapienform/logs/orion-fuseki-recover.log 2>&1
+# Fuseki lock recovery — restarts when health-probe fails; skips if compact holds the lock (flock-checked, see below)
+5,25,45 * * * * cd /mnt/scripts/Orion-Sapienform/services/orion-rdf-store && make recover >> /mnt/scripts/Orion-Sapienform/logs/orion-fuseki-recover.log 2>&1
 
-# Weekly TDB compact — reclaims index bloat; ~downtime scales with dataset size
-0 3 * * 0 cd /mnt/scripts/Orion-Sapienform/services/orion-rdf-store && SOURCE=/mnt/graphdb/rdf-store/fuseki/databases/orion make compact >> /mnt/graphdb/rdf_logs/fuseki-compact-run.log 2>&1
+# Nightly TDB compact, 5am MST (12:00 UTC year-round — MST has no DST) — reclaims index bloat
+0 12 * * * cd /mnt/scripts/Orion-Sapienform/services/orion-rdf-store && SOURCE=/mnt/graphdb/rdf-store/fuseki/databases/orion make compact >> /mnt/graphdb/rdf_logs/fuseki-compact-run.log 2>&1
 ```
+
+**2026-07-15**: was `*/20 * * * *` (recover) + `0 3 * * 0` (weekly compact). Both changes fix a real, live bug, not just a schedule preference:
+
+- **Recover's minutes were shifted off `:00`** so it can never fire in the exact same minute as compact's `0 12 * * *` (or any future compact time landing on the hour). This is defense in depth, not the actual fix — see next point.
+- **`fuseki_tdb_compact.sh` and `fuseki_recover.sh` now coordinate via `flock`** on the same lock file, not a plain `[ -f lockfile ]` existence check. The old check-then-act was a genuine TOCTOU race: compact didn't create its marker file until *after* a `du -sb` that takes 30s+ on a large dataset, leaving a real window where recover's cron (same-minute collision under the old weekly-Sunday schedule) could see "no lock yet" and restart Fuseki mid-compact — corrupting the shutdown sequence and leaving compact fighting a live `tdb.lock` it didn't expect. This exact race caused **4 consecutive weekly compact failures** (Jun 21, 28, Jul 5, Jul 12) after the one successful run on Jun 17-18, with the dataset growing unchecked the whole time. `flock -n` is kernel-atomic — there's no gap between check and act regardless of cron timing, so this is fixed at the root, not just avoided by scheduling.
+- **Compact now posts to Hub's Pending Attention on any failure** (same pattern as `orion-mesh-guardian` — `POST {NOTIFY_BASE_URL}/attention/request`, `source_service=orion-rdf-store-compact`, `severity=error`, escalates via email after 60 min unacked). A silent weekly failure that nobody notices for a month is exactly what happened here; this closes that gap going forward.
 
 | Job | Prevents bloat? | What it does |
 |-----|-----------------|--------------|
-| **`make recover`** (every 20 min) | No | Ping + query + write probe; restart on failure |
-| **`make compact`** (weekly) | **Yes** | Offline in-place TDB rebuild; keeps all triples |
+| **`make recover`** (every 20 min, `:05/:25/:45`) | No | Ping + query + write probe; restart on failure; skips if compact holds the flock |
+| **`make compact`** (nightly, 5am MST) | **Yes** | Offline in-place TDB rebuild; keeps all triples; posts to Hub Pending Attention on failure |
 | Writer `RDF_WRITE_*` limits | Slows bloat | Continuous; configured in orion-rdf-writer |
 | **`make disk-guard`** | No (ENOSPC guard) | Only runs on manual `make up` |
 
-After weekly compact, confirm success:
+After compact, confirm success:
 
 ```bash
 tail -30 /mnt/graphdb/rdf_logs/fuseki-compact-run.log   # look for "Compact complete"
@@ -183,7 +190,7 @@ cd services/orion-rdf-store && make health-probe
 du -sh /mnt/graphdb/rdf-store/fuseki/databases/orion
 ```
 
-Schedule compact more often if `make storage-status` shows dataset size creeping up while triple count is stable.
+If nightly compact stops working again, you'll see it in Hub's Pending Attention (severity `error`, `source_service=orion-rdf-store-compact`) — don't rely on manually tailing the log.
 
 ---
 
@@ -204,19 +211,20 @@ Usually **`tdb.lock` owned by root** after Docker compact. Fix and restart:
 docker stop orion-athena-fuseki
 docker run --rm -v /mnt/graphdb/rdf-store/fuseki/databases/orion:/db alpine \
   sh -c 'chown -R 100:101 /db && chmod -R u+rwX,g+rwX /db'
-rm -f /mnt/graphdb/rdf-store/fuseki/.compact-in-progress
 cd services/orion-rdf-store && docker compose restart orion-athena-fuseki && make health-probe
 ```
+
+2026-07-15: do **not** `rm -f .compact-in-progress` as part of this recipe. It provides no benefit under the current `flock`-based coordination (a genuinely stale, unheld lock file is already instantly acquirable by the next `flock -n`) and is actively unsafe if compact is still alive and holding the lock on that file's inode — deleting the path and letting another process create a fresh file there gives that new file no lock at all, defeating the coordination. See [Recover cron restarted Fuseki during compact](#recover-cron-restarted-fuseki-during-compact) below.
 
 The compact script performs this chown automatically; manual fix only needed if compact was interrupted or run outside the script.
 
 ### Recover cron restarted Fuseki during compact
 
-`make recover` checks **`$FUSEKI_DATA_DIR/.compact-in-progress`** and exits without restarting. If compact was killed mid-run, remove a stale lock:
+**Fixed 2026-07-15** — `make recover` and `make compact` now coordinate via `flock` on `$FUSEKI_DATA_DIR/.compact-in-progress` instead of a plain existence check, closing the TOCTOU race that let this actually happen (see [Scheduled maintenance](#scheduled-maintenance-athena-cron) for the incident this fixed: 4 consecutive weekly compact failures). This should no longer occur.
 
-```bash
-rm -f /mnt/graphdb/rdf-store/fuseki/.compact-in-progress
-```
+If compact was killed by something other than recover (e.g. host reboot, OOM-killer) and left a stale marker file, `flock` self-heals on the next run automatically — a leftover file with no process holding its lock is immediately acquirable, no manual cleanup needed.
+
+**Do not `rm -f .compact-in-progress` as a manual fix, ever, under the new scheme** — this is a real behavior change from the old advice, not a harmless no-op. If compact's process is genuinely still alive but hung (not dead — e.g. `docker stop` or `tdb2.tdbcompact` itself wedged, not OOM-killed), it still holds a real flock on that file's current inode. Deleting the file and letting the next process create a fresh one at that path gives the new file no lock on it at all, silently defeating the coordination and reopening the exact race this fix closes. If you suspect a genuinely stuck (not dead) holder, identify and deal with the actual process instead: `fuser /mnt/graphdb/rdf-store/fuseki/.compact-in-progress` or `lsof /mnt/graphdb/rdf-store/fuseki/.compact-in-progress` to find it, confirm what it's doing before killing it.
 
 ### `Maximum lock count exceeded`
 

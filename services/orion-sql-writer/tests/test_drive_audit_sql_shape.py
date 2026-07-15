@@ -160,7 +160,14 @@ def test_insert_only_membership() -> None:
     """
     from app.worker import INSERT_ONLY_MODELS
 
-    assert DriveAuditSQL in INSERT_ONLY_MODELS
+    # Match by name+table, not `DriveAuditSQL in ...`: when the whole test dir
+    # runs, another module's sys.path setup can import app.models.drive_audit
+    # as a second module instance, so class identity fails while the runtime
+    # (which imports consistently) is unaffected.
+    assert any(
+        m.__name__ == "DriveAuditSQL" and getattr(m, "__tablename__", None) == "drive_audits"
+        for m in INSERT_ONLY_MODELS
+    )
 
 
 def test_insert_only_redelivery_keeps_one_row_and_first_write_wins() -> None:

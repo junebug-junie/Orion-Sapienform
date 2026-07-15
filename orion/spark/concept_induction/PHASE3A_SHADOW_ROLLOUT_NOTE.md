@@ -43,3 +43,10 @@ Before any graph-default cutover:
 - No default cutover to graph
 - No LocalProfileStore removal
 - No RPC/service boundary
+
+## Status (2026-07-14)
+
+Moot as of 2026-07-14: the underlying `spark/concept-profile` RDF graph was
+deleted from the live Fuseki store (backed up first). The shadow-vs-graph
+parity comparisons described above have no graph to compare against. A
+replacement store is planned but not yet built.

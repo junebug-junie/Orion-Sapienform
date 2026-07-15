@@ -1706,7 +1706,10 @@ channels:
     schema_id: "DriveAuditV1"
     message_kind: "memory.drives.audit.v1"
     producer_services: ["orion-spark-concept-induction"]
-    consumer_services: ["orion-rdf-writer", "orion-sql-writer", "*"]
+    # orion-rdf-writer removed 2026-07-15: drive audits are Postgres-only
+    # (drive_audits via orion-sql-writer); the Fuseki write path was deleted,
+    # not just skipped. Do not re-add.
+    consumer_services: ["orion-sql-writer", "*"]
     stability: "experimental"
     since: "2026-03-19"
 

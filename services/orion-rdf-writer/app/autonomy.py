@@ -8,7 +8,6 @@ from rdflib.namespace import RDF, RDFS, XSD
 from orion.core.schemas.drives import (
     ArtifactEvidence,
     ArtifactEventRef,
-    DriveAuditV1,
     GoalProposalV1,
     GraphReadyArtifact,
     IdentitySnapshotV1,
@@ -36,9 +35,11 @@ def _graph_uri(name: str) -> str:
 
 
 def _artifact_uri(kind: str, artifact_id: str) -> URIRef:
+    # NOTE: drive audits (memory.drives.audit.v1) are Postgres-only
+    # (`drive_audits` via orion-sql-writer) as of 2026-07-15. The RDF write
+    # path was deliberately removed — do not re-add it here.
     suffix = {
         "memory.identity.snapshot.v1": "identitySnapshot",
-        "memory.drives.audit.v1": "driveAudit",
         "memory.goals.proposed.v1": "proposedGoal",
     }.get(kind, "artifact")
     return URIRef(f"{BASE}/{suffix}/{_sanitize_fragment(artifact_id)}")
@@ -88,7 +89,6 @@ def _entity_type(model_layer: str) -> URIRef:
 def _artifact_type(kind: str) -> URIRef:
     return {
         "memory.identity.snapshot.v1": ORION.IdentitySnapshot,
-        "memory.drives.audit.v1": ORION.DriveAudit,
         "memory.goals.proposed.v1": ORION.ProposedGoal,
     }[kind]
 
@@ -240,27 +240,6 @@ def _handle_identity_snapshot(g: Graph, snapshot: IdentitySnapshotV1) -> Tuple[s
     return g.serialize(format="nt"), _graph_uri("identity")
 
 
-def _handle_drive_audit(g: Graph, audit: DriveAuditV1) -> Tuple[str, str]:
-    artifact_uri, _, provenance_uri = _add_common_artifact(g, audit)
-    _add_literal(g, artifact_uri, ORION.auditSummary, audit.summary, XSD.string)
-    _add_literal(g, artifact_uri, ORION.dominantDriveName, audit.dominant_drive, XSD.string)
-    _add_tensions(g, artifact_uri, audit.provenance.tension_refs, audit.tension_kinds)
-    for drive_name, pressure in sorted(audit.drive_pressures.items()):
-        drive_uri = _add_drive_dimension(g, drive_name)
-        g.add((artifact_uri, ORION.referencesDriveDimension, drive_uri))
-        assessment_uri = URIRef(f"{artifact_uri}/drive/{_sanitize_fragment(drive_name)}")
-        g.add((assessment_uri, RDF.type, ORION.DriveAssessment))
-        g.add((assessment_uri, ORION.driveDimension, drive_uri))
-        _add_literal(g, assessment_uri, ORION.drivePressure, pressure, XSD.float)
-        _add_literal(g, assessment_uri, ORION.driveActive, bool(audit.drive_activations.get(drive_name)), XSD.boolean)
-        g.add((artifact_uri, ORION.hasDriveAssessment, assessment_uri))
-        g.add((provenance_uri, ORION.referencesDriveDimension, drive_uri))
-    for active_drive in audit.active_drives:
-        drive_uri = _add_drive_dimension(g, active_drive)
-        g.add((artifact_uri, ORION.highlightsActiveDrive, drive_uri))
-    return g.serialize(format="nt"), _graph_uri("drives")
-
-
 def _handle_goal_proposal(g: Graph, goal: GoalProposalV1) -> Tuple[str, str]:
     artifact_uri, _, _ = _add_common_artifact(g, goal)
     _add_literal(g, artifact_uri, ORION.goalStatement, goal.goal_statement, XSD.string)
@@ -297,9 +276,6 @@ def build_autonomy_triples(env_kind: str, payload: object) -> Tuple[Optional[str
     if env_kind == "memory.identity.snapshot.v1":
         snapshot = IdentitySnapshotV1.model_validate(payload)
         return _handle_identity_snapshot(g, snapshot)
-    if env_kind == "memory.drives.audit.v1":
-        audit = DriveAuditV1.model_validate(payload)
-        return _handle_drive_audit(g, audit)
     if env_kind == "memory.goals.proposed.v1":
         goal = GoalProposalV1.model_validate(payload)
         return _handle_goal_proposal(g, goal)

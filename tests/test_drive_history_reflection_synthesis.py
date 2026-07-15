@@ -434,6 +434,19 @@ class TestDriveAuditRowToEvent:
         assert ev.drive_pressures == {}
         assert ev.active_drives == ()
 
+    def test_jsonb_returned_as_text_is_parsed_not_silently_emptied(self):
+        # If a driver ever hands JSONB back as text (psycopg2 normally returns
+        # dict/list), the value is parsed rather than silently emptied --
+        # review finding: silent {} here would report success while zeroing
+        # the full-window statistics.
+        ev = dhrs.drive_audit_row_to_event(
+            _row(pressures='{"continuity": 0.7}', actives='["continuity", "novelty"]')
+        )
+
+        assert ev is not None
+        assert ev.drive_pressures == {"continuity": 0.7}
+        assert ev.active_drives == ("continuity", "novelty")
+
     def test_negative_and_garbage_pressure_entries_are_skipped(self):
         ev = dhrs.drive_audit_row_to_event(
             _row(

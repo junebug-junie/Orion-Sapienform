@@ -592,11 +592,28 @@ def _coerce_event_time(value: Any) -> datetime | None:
     return None
 
 
+def _maybe_parse_json_str(value: Any) -> Any:
+    """If a driver hands a JSONB column back as text (psycopg2's default
+    adaptation returns dict/list, so this normally never fires), parse it
+    rather than silently emptying the full-window statistics; a parse failure
+    warns once per row instead of masquerading as measured-empty. Never
+    raises."""
+    if not isinstance(value, str):
+        return value
+    try:
+        return json.loads(value)
+    except (ValueError, TypeError):
+        logger.warning("drive_audits JSONB column returned unparseable text; treating as empty")
+        return None
+
+
 def _coerce_drive_pressures(value: Any) -> dict[str, float]:
     """JSONB `drive_pressures` column -> dict[str, float]. Degrades to {} on
-    None or a non-dict value; individual entries whose value is not a real,
+    None or a non-dict value (str values are first parsed as JSON, see
+    `_maybe_parse_json_str`); individual entries whose value is not a real,
     finite, non-negative number (or whose key is not a non-empty string) are
     skipped. Never raises."""
+    value = _maybe_parse_json_str(value)
     if not isinstance(value, dict):
         return {}
     out: dict[str, float] = {}
@@ -617,9 +634,11 @@ def _coerce_drive_pressures(value: Any) -> dict[str, float]:
 
 def _coerce_active_drives(value: Any) -> tuple[str, ...]:
     """JSONB `active_drives` column -> tuple[str, ...]. Degrades to () on None
-    or a non-list value; non-string/empty entries are skipped; duplicates are
-    collapsed (order preserved) so active_drive_frequency counts each drive at
-    most once per tick. Never raises."""
+    or a non-list value (str values are first parsed as JSON, see
+    `_maybe_parse_json_str`); non-string/empty entries are skipped; duplicates
+    are collapsed (order preserved) so active_drive_frequency counts each drive
+    at most once per tick. Never raises."""
+    value = _maybe_parse_json_str(value)
     if not isinstance(value, (list, tuple)):
         return ()
     return tuple(dict.fromkeys(v for v in value if isinstance(v, str) and v.strip()))

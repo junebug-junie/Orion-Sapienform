@@ -72,6 +72,7 @@ DEFAULT_ROUTE_MAP: dict[str, str] = {
     "chat.history.spark_meta.patch.v1": "__patch_chat_history__",
     "vision.event.v1": "VisionEventSQL",
     "action.outcome.emit.v1": "ActionOutcomeSQL",
+    "memory.drives.audit.v1": "DriveAuditSQL",
     "self.phi_reward.v1": "PhiRewardSQL",
 }
 
@@ -156,6 +157,7 @@ class Settings(BaseSettings):
             "orion:grammar:event",
             "orion:chat:history:spark_meta:patch",
             "orion:autonomy:action:outcome",
+            "orion:memory:drives:audit",
             "orion:self:phi_reward",
         ],
         alias="SQL_WRITER_SUBSCRIBE_CHANNELS"
@@ -191,6 +193,10 @@ class Settings(BaseSettings):
         "orion:chat:history:spark_meta:patch", alias="CHANNEL_CHAT_HISTORY_SPARK_META_PATCH"
     )
     metacog_trace_retention_days: int = Field(14, alias="METACOG_TRACE_RETENTION_DAYS")
+    # drive_audits is written on every DriveEngine tick (thousands/day, append-only);
+    # 90 days keeps long-window autonomy-gate measurement possible while bounding growth.
+    # 0 disables pruning.
+    drive_audits_retention_days: int = Field(90, alias="DRIVE_AUDITS_RETENTION_DAYS")
 
     # Guardrails: grammar lane is async-isolated; operational writes use concurrent Hunter + pool limits.
     sql_writer_concurrent_handlers: bool = Field(True, alias="SQL_WRITER_CONCURRENT_HANDLERS")

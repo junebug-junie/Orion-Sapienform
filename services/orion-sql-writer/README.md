@@ -25,8 +25,11 @@ Configured via `SQL_WRITER_SUBSCRIBE_CHANNELS` (JSON list).
 | `orion:spark:telemetry` | `spark.telemetry` | `SparkTelemetrySQL` |
 | `orion:vision:events:sql-write` | `vision.event.v1` | `VisionEventSQL` |
 | `orion:autonomy:action:outcome` | `action.outcome.emit.v1` | `ActionOutcomeSQL` |
+| `orion:memory:drives:audit` | `memory.drives.audit.v1` | `DriveAuditSQL` |
 
 **Action outcome persistence:** `action.outcome.emit.v1` (produced by `orion-spark-concept-induction` after an autonomous readonly fetch) is projected into `action_outcomes` (PK `action_id`, idempotent upsert). `orion-cortex-exec` reads it back per-subject for chat-stance action feedback. DDL is applied on boot (`app/main.py` lifespan) and also lives in `services/orion-sql-db/manual_migration_action_outcomes_v1.sql`.
+
+**Drive audit persistence:** `memory.drives.audit.v1` (produced by `orion-spark-concept-induction` on every DriveEngine tick) is projected into the slim measurement table `drive_audits` (PK `artifact_id`, idempotent upsert; `active_count` derived at write time as `len(active_drives)`). Read by `scripts/analysis/measure_autonomy_gate.py` for the drive co-activation verdict — the successor source to the Fuseki DriveAudit graph, frozen since 2026-06-19. DDL is applied on boot (`app/main.py` lifespan) and also lives in `services/orion-sql-db/manual_migration_drive_audits_v1.sql`. Rows older than `DRIVE_AUDITS_RETENTION_DAYS` (default 90; 0 disables) are pruned at startup.
 
 ### Environment Variables
 Provenance: repo root `.env` (mesh globals: `ORION_BUS_URL`, `PROJECT`, `NET`, …) → service `.env_example` → `docker-compose.yml` → `settings.py`

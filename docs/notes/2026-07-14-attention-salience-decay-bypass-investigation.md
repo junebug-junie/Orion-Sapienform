@@ -161,6 +161,47 @@ independently real and low-risk:
 - No change to `recurrence` or `resonance` weighting — both are already
   correctly loop-scoped (keyed by `theme_key`), just small in magnitude.
 
+## Review findings (code-review skill, high effort, 8 finder angles)
+
+Fixed (see commit `f707d67f`):
+
+- A third pre-existing test file (`test_attention_broadcast_recency.py`)
+  reset `attention_broadcast`'s module globals but was missed when adding
+  `_current_dwelling_loop_id` — found independently by 2 of 8 angles.
+- Two pre-existing tests (`test_rumination_replay.py`,
+  `test_salience_combiner.py`) construct `SalienceHistory(dwell_ticks=N,
+  ...)` directly without the new `dwelling_loop_id` field — found
+  independently by 3 of 8 angles, live-verified: both still passed, but the
+  dwell term silently contributed nothing, shrinking
+  `test_rumination_replay`'s own documented margin from ~0.02 to ~0.015 by
+  accident. Restored by setting `dwelling_loop_id` on both.
+- Dead redundant `is None` guard in `_loop_dwell()`.
+- `_current_dwelling_loop_id` was set from `selected.open_loop_id`
+  unconditionally, even when that id didn't resolve to a real loop in
+  `frame.open_loops` — now guarded the same way `attended_node_ids` already
+  is.
+
+Not fixed, accepted as documented tradeoffs (would expand this patch beyond
+its two files):
+
+- A freshly-written `prediction_error` node reports 0 salience (filtered
+  below `min_salience`) until the next dynamics tick (default 30s) populates
+  `dynamic_pressure`. Direct, minor, bounded consequence of no longer
+  trusting the undecaying raw value.
+- `kind`/`target_type_hint` stays `"prediction_error"`/`"anomaly"` forever
+  once any nonzero raw `prediction_error` was ever written, even after
+  `dynamic_pressure` is driven by an unrelated source. Affects
+  display/typing only, not salience ranking. A real fix needs
+  `dynamics.py`'s `_compute_pressures()` to persist its own `reason` onto
+  node metadata instead of discarding it after `tick()` — a separate change.
+- **New sibling-bug finding**: `orion/substrate/endogenous_curiosity.py`'s
+  `_prediction_error_candidates()` reads the same raw, never-decaying
+  `metadata["prediction_error"]` field directly as a "sustained prediction
+  error" signal, with no staleness check — the identical bug pattern found
+  and fixed here, in a sibling consumer. Currently dormant behind
+  `ORION_ENDOGENOUS_CURIOSITY_ENABLED=false`; worth revisiting before that
+  flag is ever flipped on.
+
 ## Acceptance checks
 
 - A node whose `dynamic_pressure` has decayed well below its raw

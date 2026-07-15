@@ -24,6 +24,27 @@ def test_compile_harness_prefix_includes_stance_slice() -> None:
     assert "how does coalition work?" in prompt
 
 
+def test_compile_harness_prefix_includes_prior_tool_fetch_line() -> None:
+    thought = make_thought(imperative="Inspect the module.", tone="direct")
+    prompt = compile_harness_prefix(
+        thought,
+        repair_overlay=HarnessRepairOverlayV1(),
+        user_message="what did you fetch?",
+        prior_tool_fetch_names=["mcp__github__get_file_contents", "WebFetch"],
+    )
+    assert "Last turn you fetched content via tool: mcp__github__get_file_contents, WebFetch" in prompt
+
+
+def test_compile_harness_prefix_omits_prior_tool_fetch_line_when_none() -> None:
+    thought = make_thought(imperative="Inspect the module.", tone="direct")
+    prompt = compile_harness_prefix(
+        thought,
+        repair_overlay=HarnessRepairOverlayV1(),
+        user_message="hello",
+    )
+    assert "Last turn you fetched content via tool" not in prompt
+
+
 def test_compile_harness_prefix_includes_autonomy_slice_recent_actions() -> None:
     """Regression for the stance_react dispatch-evidence patch: the FCC
     motor's own prefix must render recent_actions directly, not just leave

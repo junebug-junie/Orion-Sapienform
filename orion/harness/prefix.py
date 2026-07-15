@@ -110,6 +110,7 @@ def compile_harness_prefix(
     user_message: str = "",
     answer_contract: AnswerContract | None = None,
     workspace: str | None = None,
+    prior_tool_fetch_names: list[str] | None = None,
 ) -> str:
     """Orion capability: motor-context assembly for the unified turn.
 
@@ -143,6 +144,17 @@ def compile_harness_prefix(
 
     if thought.strain_refs:
         parts.append(f"Strain refs: {', '.join(thought.strain_refs)}")
+
+    if prior_tool_fetch_names:
+        # Cross-turn continuity within this same session (see
+        # orion/harness/last_tool_fetch_cache.py): what you fetched via a
+        # tool last turn, not what's computing live right now -- named
+        # explicitly so it isn't confused with the latter (see
+        # project_orion_substrate_bridge_confabulation for why that
+        # distinction matters).
+        parts.append(
+            "Last turn you fetched content via tool: " + ", ".join(prior_tool_fetch_names)
+        )
 
     if user_message.strip():
         parts.append(f"User message: {user_message.strip()}")

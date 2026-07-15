@@ -220,27 +220,22 @@ class TestBuildFactSheet:
         assert day_facts[-1].tokens[0] == sorted(agg.day_dominant_drive)[-1]
 
 
-class TestIsSafeSparqlIri:
-    def test_normal_uri_is_safe(self):
-        assert dhrs._is_safe_sparql_iri("http://conjourney.net/orion/autonomy/driveAudit/abc123") is True
+class TestIsUndefinedTableError:
+    # Local copy of measure_autonomy_gate.py's helper -- same contract.
+    def test_pgcode_42p01_is_undefined_table(self):
+        exc = RuntimeError("boom")
+        exc.pgcode = "42P01"
+        assert dhrs.is_undefined_table_error(exc) is True
 
-    def test_uri_with_angle_bracket_is_unsafe(self):
-        assert dhrs._is_safe_sparql_iri("http://x/a>bogus<http://evil/") is False
+    def test_class_name_undefined_table_matches(self):
+        exc = type("UndefinedTable", (Exception,), {})("relation missing")
+        assert dhrs.is_undefined_table_error(exc) is True
 
-    def test_uri_with_whitespace_is_unsafe(self):
-        assert dhrs._is_safe_sparql_iri("http://x/a b") is False
+    def test_message_sniff_fallback(self):
+        assert dhrs.is_undefined_table_error(RuntimeError('relation "drive_audits" does not exist')) is True
 
-    def test_empty_uri_is_unsafe(self):
-        assert dhrs._is_safe_sparql_iri("") is False
-
-
-class TestDetailSparqlSkipsUnsafeUris:
-    def test_unsafe_uri_is_dropped_not_interpolated(self):
-        sparql = dhrs.build_drive_audit_detail_sparql(
-            artifact_uris=["http://x/good", "http://x/bad>injected"]
-        )
-        assert "<http://x/good>" in sparql
-        assert "bad>injected" not in sparql
+    def test_other_errors_are_not_undefined_table(self):
+        assert dhrs.is_undefined_table_error(RuntimeError("connection refused")) is False
 
 
 # ===========================================================================
@@ -366,195 +361,249 @@ class TestParseAndValidateNarrative:
 
 
 # ===========================================================================
-# SPARQL query builders -- pure.
+# Row -> event conversion -- pure (the I/O half of the fetch, psycopg2, stays
+# untested; everything convertible is exercised here without a live DB).
+# Row column order follows _DRIVE_AUDIT_EVENTS_SQL:
+#   (artifact_id, created_at, dominant_drive, summary, drive_pressures, active_drives)
 # ===========================================================================
 
 
-class TestSparqlBuilders:
-    def test_event_list_sparql_embeds_subject_and_since(self):
-        since = datetime(2026, 6, 1, tzinfo=timezone.utc)
-        sparql = dhrs.build_drive_audit_event_list_sparql(since=since, subject="orion", limit=100)
-
-        assert 'orion:subjectKey "orion"' in sparql
-        assert "2026-06-01T00:00:00" in sparql
-        assert "LIMIT 100" in sparql
-        assert "orion:DriveAudit" in sparql
-
-    def test_event_list_sparql_escapes_subject(self):
-        since = datetime(2026, 6, 1, tzinfo=timezone.utc)
-        sparql = dhrs.build_drive_audit_event_list_sparql(since=since, subject='ori"on', limit=10)
-
-        assert '\\"' in sparql
-
-    def test_detail_sparql_uses_values_clause(self):
-        sparql = dhrs.build_drive_audit_detail_sparql(artifact_uris=["http://x/a", "http://x/b"])
-
-        assert "VALUES ?artifact" in sparql
-        assert "<http://x/a>" in sparql
-        assert "<http://x/b>" in sparql
+def _row(
+    artifact_id="a1",
+    created_at=None,
+    dominant="continuity",
+    summary="continuity pressure concentrates",
+    pressures=None,
+    actives=None,
+):
+    return (
+        artifact_id,
+        created_at if created_at is not None else datetime(2026, 6, 14, 9, tzinfo=timezone.utc),
+        dominant,
+        summary,
+        pressures if pressures is not None else {"continuity": 0.7},
+        actives if actives is not None else ["continuity"],
+    )
 
 
-class TestParseBindings:
-    def test_parse_event_list_bindings_skips_incomplete_rows(self):
-        bindings = [
-            {
-                "artifact": {"type": "uri", "value": "http://x/a"},
-                "artifact_id": {"type": "literal", "value": "a1"},
-                "created_at": {"type": "literal", "value": "2026-06-14T09:00:00+00:00"},
-                "dominant_drive": {"type": "literal", "value": "continuity"},
-            },
-            {"artifact_id": {"type": "literal", "value": "a2"}},  # missing created_at -- skipped
+class TestDriveAuditRowToEvent:
+    def test_happy_row_is_fully_populated(self):
+        ev = dhrs.drive_audit_row_to_event(_row())
+
+        assert ev is not None
+        assert ev.artifact_id == "a1"
+        assert ev.created_at == datetime(2026, 6, 14, 9, tzinfo=timezone.utc)
+        assert ev.dominant_drive == "continuity"
+        assert ev.summary == "continuity pressure concentrates"
+        assert ev.drive_pressures == {"continuity": 0.7}
+        assert ev.active_drives == ("continuity",)
+
+    def test_none_summary_and_dominant_are_kept_as_none(self):
+        ev = dhrs.drive_audit_row_to_event(_row(dominant=None, summary=None))
+
+        assert ev is not None
+        assert ev.dominant_drive is None
+        assert ev.summary is None
+
+    def test_missing_artifact_id_skips_row(self):
+        assert dhrs.drive_audit_row_to_event(_row(artifact_id=None)) is None
+        assert dhrs.drive_audit_row_to_event(_row(artifact_id="   ")) is None
+
+    def test_missing_or_garbage_created_at_skips_row(self):
+        assert dhrs.drive_audit_row_to_event(_row(created_at="not-a-timestamp")) is None
+        row = list(_row())
+        row[1] = None
+        assert dhrs.drive_audit_row_to_event(tuple(row)) is None
+
+    def test_string_created_at_is_parsed_and_naive_datetime_coerced_utc(self):
+        ev = dhrs.drive_audit_row_to_event(_row(created_at="2026-06-14T09:00:00+00:00"))
+        assert ev is not None
+        assert ev.created_at == datetime(2026, 6, 14, 9, tzinfo=timezone.utc)
+
+        ev_naive = dhrs.drive_audit_row_to_event(_row(created_at=datetime(2026, 6, 14, 9)))
+        assert ev_naive is not None
+        assert ev_naive.created_at.tzinfo is not None
+        assert ev_naive.created_at == datetime(2026, 6, 14, 9, tzinfo=timezone.utc)
+
+    def test_malformed_jsonb_degrades_to_empty_not_raise(self):
+        # Wrong-typed JSONB columns (a bare string / int instead of dict /
+        # list) degrade to {} / () -- the tick itself is still real and kept.
+        ev = dhrs.drive_audit_row_to_event(_row(pressures="garbage", actives=42))
+
+        assert ev is not None
+        assert ev.drive_pressures == {}
+        assert ev.active_drives == ()
+
+    def test_jsonb_returned_as_text_is_parsed_not_silently_emptied(self):
+        # If a driver ever hands JSONB back as text (psycopg2 normally returns
+        # dict/list), the value is parsed rather than silently emptied --
+        # review finding: silent {} here would report success while zeroing
+        # the full-window statistics.
+        ev = dhrs.drive_audit_row_to_event(
+            _row(pressures='{"continuity": 0.7}', actives='["continuity", "novelty"]')
+        )
+
+        assert ev is not None
+        assert ev.drive_pressures == {"continuity": 0.7}
+        assert ev.active_drives == ("continuity", "novelty")
+
+    def test_negative_and_garbage_pressure_entries_are_skipped(self):
+        ev = dhrs.drive_audit_row_to_event(
+            _row(
+                pressures={
+                    "continuity": 0.7,
+                    "autonomy": -0.2,  # negative: not a real pressure
+                    "novelty": "high",  # non-numeric garbage
+                    "social": None,
+                    "": 0.5,  # empty key
+                    "curiosity": float("nan"),  # non-finite
+                }
+            )
+        )
+
+        assert ev is not None
+        assert ev.drive_pressures == {"continuity": 0.7}
+
+    def test_non_string_active_drive_entries_are_skipped_and_deduped(self):
+        ev = dhrs.drive_audit_row_to_event(_row(actives=["continuity", 3, None, "", "continuity", "autonomy"]))
+
+        assert ev is not None
+        assert ev.active_drives == ("continuity", "autonomy")
+
+    def test_wrong_shaped_row_is_skipped(self):
+        assert dhrs.drive_audit_row_to_event(None) is None
+        assert dhrs.drive_audit_row_to_event("not a row") is None
+        assert dhrs.drive_audit_row_to_event(("a1", datetime.now(timezone.utc))) is None  # wrong length
+
+
+class TestParseDriveAuditRows:
+    def test_bad_rows_are_skipped_good_rows_kept(self):
+        rows = [
+            _row(artifact_id="a1"),
+            _row(artifact_id=None),  # skipped: no identity
+            _row(artifact_id="a2", pressures="garbage"),  # kept, pressures degrade
         ]
 
-        events = dhrs.parse_event_list_bindings(bindings)
+        events = dhrs.parse_drive_audit_rows(rows)
+
+        assert [e.artifact_id for e in events] == ["a1", "a2"]
+        assert events[1].drive_pressures == {}
+
+    def test_populated_jsonb_flows_into_reducer_aggregations(self):
+        # The old graph fetch left drive_pressures/active_drives empty (a
+        # disclosed SPARQL-transfer-cost scope reduction), so
+        # mean_pressure_by_drive/active_drive_frequency reflected nothing.
+        # Postgres rows arrive fully populated -- prove the full path
+        # row -> event -> reduce now yields real full-window statistics.
+        rows = [
+            _row(
+                artifact_id="a1",
+                created_at=datetime(2026, 6, 14, 9, tzinfo=timezone.utc),
+                pressures={"continuity": 0.8, "autonomy": 0.4},
+                actives=["continuity", "autonomy"],
+            ),
+            _row(
+                artifact_id="a2",
+                created_at=datetime(2026, 6, 15, 9, tzinfo=timezone.utc),
+                pressures={"continuity": 0.6},
+                actives=["continuity"],
+            ),
+        ]
+
+        events = dhrs.parse_drive_audit_rows(rows)
+        agg = dhrs.reduce_drive_history(
+            events, subject="orion", since=datetime(2026, 6, 14, tzinfo=timezone.utc), min_events=2, min_distinct_days=2
+        )
+
+        assert agg.sufficient is True
+        assert abs(agg.mean_pressure_by_drive["continuity"] - 0.7) < 1e-9
+        assert abs(agg.mean_pressure_by_drive["autonomy"] - 0.4) < 1e-9
+        assert agg.active_drive_frequency == {"continuity": 2, "autonomy": 1}
+
+
+# ===========================================================================
+# Fetch layer degrade posture -- psycopg2 mocked at its boundary. The fetch
+# must NEVER raise and NEVER fall back to another source: missing table /
+# no connection / query failure all degrade to an empty event list.
+# ===========================================================================
+
+
+class TestFetchDriveHistoryEventsDegrades:
+    def _since(self):
+        return datetime(2026, 6, 14, tzinfo=timezone.utc)
+
+    def test_happy_path_parses_rows_and_passes_params(self):
+        psycopg2 = pytest.importorskip("psycopg2")
+        cur = MagicMock()
+        cur.fetchall.return_value = [_row()]
+        conn = MagicMock()
+        conn.cursor.return_value.__enter__.return_value = cur
+
+        with patch.object(psycopg2, "connect", return_value=conn) as connect_mock:
+            events = dhrs.fetch_drive_history_events(
+                "postgresql://fake/db", since=self._since(), subject="orion", max_events=50
+            )
 
         assert len(events) == 1
         assert events[0].artifact_id == "a1"
-        assert events[0].dominant_drive == "continuity"
+        assert events[0].drive_pressures == {"continuity": 0.7}
+        connect_mock.assert_called_once_with("postgresql://fake/db")
+        sql, params = cur.execute.call_args[0]
+        assert "drive_audits" in sql
+        assert "COALESCE(observed_at, created_at)" in sql
+        assert params == ("orion", self._since(), 50)
+        conn.close.assert_called_once()
 
-    def test_merge_event_details_attaches_pressures_and_active_drives(self):
-        events = [
-            dhrs.DriveAuditEvent(
-                artifact_id="a1",
-                created_at=datetime(2026, 6, 14, 9, tzinfo=timezone.utc),
-                artifact_uri="http://x/a",
-            )
-        ]
-        detail_bindings = [
-            {
-                "artifact": {"value": "http://x/a"},
-                "drive_name": {"value": "continuity"},
-                "drive_pressure": {"value": "0.7"},
-            },
-            {"artifact": {"value": "http://x/a"}, "active_drive": {"value": "continuity"}},
-        ]
-
-        merged = dhrs.merge_event_details(events, detail_bindings)
-
-        assert merged[0].drive_pressures == {"continuity": 0.7}
-        assert merged[0].active_drives == ("continuity",)
-
-
-# ===========================================================================
-# Fetch layer -- fake SPARQL client (boundary mock, no live Fuseki).
-# ===========================================================================
-
-
-class FakeSparqlClient:
-    def __init__(self, list_bindings, detail_bindings=None, list_error: Exception | None = None):
-        self.list_bindings = list_bindings
-        self.detail_bindings = detail_bindings or []
-        self.list_error = list_error
-        self.calls: list[str] = []
-
-    def select(self, sparql: str):
-        self.calls.append(sparql)
-        if "VALUES ?artifact" in sparql:
-            return self.detail_bindings
-        if self.list_error is not None:
-            raise self.list_error
-        return self.list_bindings
-
-
-def _binding(artifact_id: str, day: str, hour: int, dominant: str, uri: str | None = None) -> dict:
-    row = {
-        "artifact": {"type": "uri", "value": uri or f"http://conjourney.net/orion/autonomy/driveAudit/{artifact_id}"},
-        "artifact_id": {"type": "literal", "value": artifact_id},
-        "created_at": {"type": "literal", "value": f"{day}T{hour:02d}:00:00+00:00"},
-        "dominant_drive": {"type": "literal", "value": dominant},
-        "summary": {"type": "literal", "value": f"{dominant} pressure concentrates"},
-    }
-    return row
-
-
-class TestFetchDriveHistoryEvents:
-    """fetch_drive_history_events is list-only (no detail join) -- see its
-    docstring: a detail join at the full fetched-window scale (up to
-    DEFAULT_MAX_EVENTS=500 artifacts) was measured live against real Fuseki
-    and did not return within minutes, so per-drive detail is fetched
-    separately, only for the bounded citable sample, via fetch_event_details."""
-
-    def test_only_list_query_runs(self):
-        client = FakeSparqlClient(list_bindings=[])
-
-        events = dhrs.fetch_drive_history_events(client, since=datetime.now(timezone.utc), subject="orion")
+    def test_connection_failure_returns_empty_never_raises(self):
+        psycopg2 = pytest.importorskip("psycopg2")
+        with patch.object(psycopg2, "connect", side_effect=RuntimeError("db down")):
+            events = dhrs.fetch_drive_history_events("postgresql://fake/db", since=self._since(), subject="orion")
 
         assert events == []
-        assert len(client.calls) == 1
-        assert "VALUES ?artifact" not in client.calls[0]
 
-    def test_events_are_returned_without_detail_fetch(self):
-        bindings = [_binding("a1", "2026-06-14", 9, "continuity")]
-        client = FakeSparqlClient(list_bindings=bindings, detail_bindings=[])
+    def test_missing_table_returns_empty_never_raises(self):
+        psycopg2 = pytest.importorskip("psycopg2")
+        exc = RuntimeError('relation "drive_audits" does not exist')
+        conn = MagicMock()
+        conn.cursor.return_value.__enter__.return_value.execute.side_effect = exc
 
-        events = dhrs.fetch_drive_history_events(client, since=datetime.now(timezone.utc), subject="orion")
+        with patch.object(psycopg2, "connect", return_value=conn):
+            events = dhrs.fetch_drive_history_events("postgresql://fake/db", since=self._since(), subject="orion")
 
-        assert len(events) == 1
-        assert len(client.calls) == 1  # list query only -- no detail join here
-        assert events[0].drive_pressures == {}
-        assert events[0].active_drives == ()
+        assert events == []
+        conn.close.assert_called_once()
 
-    def test_sparql_error_propagates(self):
-        client = FakeSparqlClient(list_bindings=[], list_error=RuntimeError("fuseki down"))
+    def test_query_failure_returns_empty_never_raises(self):
+        psycopg2 = pytest.importorskip("psycopg2")
+        conn = MagicMock()
+        conn.cursor.return_value.__enter__.return_value.execute.side_effect = RuntimeError("timeout")
 
-        with pytest.raises(RuntimeError):
-            dhrs.fetch_drive_history_events(client, since=datetime.now(timezone.utc), subject="orion")
+        with patch.object(psycopg2, "connect", return_value=conn):
+            events = dhrs.fetch_drive_history_events("postgresql://fake/db", since=self._since(), subject="orion")
+
+        assert events == []
+        conn.close.assert_called_once()
 
 
-class TestFetchEventDetails:
-    def test_enriches_given_small_event_set(self):
-        events = [
-            dhrs.DriveAuditEvent(
-                artifact_id="a1",
-                created_at=datetime(2026, 6, 14, 9, tzinfo=timezone.utc),
-                artifact_uri="http://x/a",
-            )
-        ]
-        client = FakeSparqlClient(
-            list_bindings=[],
-            detail_bindings=[
-                {"artifact": {"value": "http://x/a"}, "drive_name": {"value": "continuity"}, "drive_pressure": {"value": "0.6"}},
-            ],
+# ===========================================================================
+# End-to-end orchestration (_run_once) -- event fetch + bus mocked at their
+# boundaries; Postgres write path mocked with a FakeConn double, same style
+# as tests/test_concept_relation_digest.py.
+# ===========================================================================
+
+
+class FakeFetcher:
+    """Stands in for fetch_drive_history_events (same call signature)."""
+
+    def __init__(self, events):
+        self.events = list(events)
+        self.calls: list[dict] = []
+
+    def __call__(self, postgres_uri, *, since, subject, max_events=dhrs.DEFAULT_MAX_EVENTS):
+        self.calls.append(
+            {"postgres_uri": postgres_uri, "since": since, "subject": subject, "max_events": max_events}
         )
-
-        enriched = dhrs.fetch_event_details(client, events)
-
-        assert enriched[0].drive_pressures == {"continuity": 0.6}
-        assert any("VALUES ?artifact" in c for c in client.calls)
-
-    def test_no_artifact_uris_short_circuits(self):
-        events = [dhrs.DriveAuditEvent(artifact_id="a1", created_at=datetime.now(timezone.utc))]
-        client = FakeSparqlClient(list_bindings=[], detail_bindings=[])
-
-        enriched = dhrs.fetch_event_details(client, events)
-
-        assert enriched == events
-        assert client.calls == []
-
-    def test_detail_error_propagates(self):
-        events = [
-            dhrs.DriveAuditEvent(
-                artifact_id="a1", created_at=datetime.now(timezone.utc), artifact_uri="http://x/a"
-            )
-        ]
-        client = FakeSparqlClient(list_bindings=[], list_error=RuntimeError("fuseki down"))
-        # Force the VALUES-clause branch to also raise:
-        client.list_error = RuntimeError("fuseki down")
-
-        def _select(sparql):
-            raise RuntimeError("fuseki down")
-
-        client.select = _select
-
-        with pytest.raises(RuntimeError):
-            dhrs.fetch_event_details(client, events)
-
-
-# ===========================================================================
-# End-to-end orchestration (_run_once) -- SPARQL client + bus mocked at their
-# boundaries; Postgres mocked with a FakeConn double, same style as
-# tests/test_concept_relation_digest.py.
-# ===========================================================================
+        return list(self.events)
 
 
 class _NullAsyncCtx:
@@ -605,14 +654,20 @@ class FakeConn:
         raise AssertionError(f"FakeConn.execute: unexpected query: {sql}")
 
 
-def _sufficient_history_bindings() -> list[dict]:
+def _sufficient_history_events(*, with_detail: bool = False) -> list[dhrs.DriveAuditEvent]:
+    # with_detail=True populates JSONB-derived pressures/active-drives on the
+    # earliest event (a1, always in the cited sample) -- what a real Postgres
+    # fetch returns for every row.
+    a1_kwargs = (
+        {"active": ("continuity",), "pressures": {"continuity": 0.71}} if with_detail else {}
+    )
     return [
-        _binding("a1", "2026-06-14", 9, "continuity"),
-        _binding("a2", "2026-06-14", 10, "continuity"),
-        _binding("a3", "2026-06-14", 11, "autonomy"),
-        _binding("a4", "2026-06-15", 9, "continuity"),
-        _binding("a5", "2026-06-15", 10, "continuity"),
-        _binding("a6", "2026-06-15", 11, "continuity"),
+        _ev("2026-06-14", 9, dominant="continuity", artifact_id="a1", **a1_kwargs),
+        _ev("2026-06-14", 10, dominant="continuity", artifact_id="a2"),
+        _ev("2026-06-14", 11, dominant="autonomy", artifact_id="a3"),
+        _ev("2026-06-15", 9, dominant="continuity", artifact_id="a4"),
+        _ev("2026-06-15", 10, dominant="continuity", artifact_id="a5"),
+        _ev("2026-06-15", 11, dominant="continuity", artifact_id="a6"),
     ]
 
 
@@ -650,13 +705,13 @@ def _make_bus(reply_content: str | None = None, *, raise_exc: Exception | None =
 
 @pytest.mark.asyncio
 async def test_sufficient_history_creates_grounded_crystallization():
-    client = FakeSparqlClient(list_bindings=_sufficient_history_bindings(), detail_bindings=[])
+    fetcher = FakeFetcher(_sufficient_history_events())
     bus = _make_bus(_grounded_llm_content())
     conn = FakeConn()
 
     with patch("asyncpg.connect", new=AsyncMock(return_value=conn)):
         result = await dhrs._run_once(
-            sparql_client=client,
+            fetch_events=fetcher,
             bus=bus,
             postgres_uri="postgresql://fake/db",
             subject="orion",
@@ -676,34 +731,30 @@ async def test_sufficient_history_creates_grounded_crystallization():
     source_kinds = {row["args"][1] for row in conn.sources}
     assert source_kinds == {"rdf_memory_graph"}
     bus.rpc_request.assert_awaited_once()
+    # The fetch got the SAME DSN the write path uses -- one DSN concept.
+    assert fetcher.calls == [
+        {
+            "postgres_uri": "postgresql://fake/db",
+            "since": datetime(2026, 6, 14, tzinfo=timezone.utc),
+            "subject": "orion",
+            "max_events": dhrs.DEFAULT_MAX_EVENTS,
+        }
+    ]
 
 
 @pytest.mark.asyncio
-async def test_successful_enrichment_repopulates_pressure_aggregation_and_evidence_note():
-    # reduce_drive_history runs once before enrichment (drive_pressures/
-    # active_drives are empty defaults at that point) and _run_once must
-    # re-reduce afterward so mean_pressure_by_drive/active_drive_frequency on
-    # the reported aggregation reflect the real enriched data, and the
-    # per-event evidence note includes it too -- otherwise those fields (and
-    # the enrichment RPC itself) are dead weight on every real run.
-    detail_bindings = [
-        {
-            "artifact": {"value": "http://conjourney.net/orion/autonomy/driveAudit/a1"},
-            "drive_name": {"value": "continuity"},
-            "drive_pressure": {"value": "0.71"},
-        },
-        {
-            "artifact": {"value": "http://conjourney.net/orion/autonomy/driveAudit/a1"},
-            "active_drive": {"value": "continuity"},
-        },
-    ]
-    client = FakeSparqlClient(list_bindings=_sufficient_history_bindings(), detail_bindings=detail_bindings)
+async def test_fetched_jsonb_detail_populates_aggregation_and_evidence_note():
+    # Events now arrive from Postgres with drive_pressures/active_drives
+    # already populated (no separate enrichment pass) -- the single reduce
+    # must surface them in mean_pressure_by_drive/active_drive_frequency,
+    # and the per-event evidence note must carry them too.
+    fetcher = FakeFetcher(_sufficient_history_events(with_detail=True))
     bus = _make_bus(_grounded_llm_content())
     conn = FakeConn()
 
     with patch("asyncpg.connect", new=AsyncMock(return_value=conn)):
         result = await dhrs._run_once(
-            sparql_client=client,
+            fetch_events=fetcher,
             bus=bus,
             postgres_uri="postgresql://fake/db",
             subject="orion",
@@ -713,7 +764,6 @@ async def test_successful_enrichment_repopulates_pressure_aggregation_and_eviden
     assert result.status == "created"
     assert result.aggregation.mean_pressure_by_drive == {"continuity": 0.71}
     assert result.aggregation.active_drive_frequency == {"continuity": 1}
-    # sufficiency-relevant fields must be unchanged by the re-reduce
     assert result.aggregation.total_events == 6
     assert result.aggregation.distinct_days == 2
 
@@ -727,16 +777,17 @@ async def test_successful_enrichment_repopulates_pressure_aggregation_and_eviden
 @pytest.mark.asyncio
 async def test_insufficient_history_refuses_cleanly_no_llm_no_write():
     # Only 2 events, both the same day -- fails both thresholds.
-    bindings = [
-        _binding("a1", "2026-06-14", 9, "continuity"),
-        _binding("a2", "2026-06-14", 10, "continuity"),
-    ]
-    client = FakeSparqlClient(list_bindings=bindings, detail_bindings=[])
+    fetcher = FakeFetcher(
+        [
+            _ev("2026-06-14", 9, dominant="continuity", artifact_id="a1"),
+            _ev("2026-06-14", 10, dominant="continuity", artifact_id="a2"),
+        ]
+    )
     bus = _make_bus("")
 
     with patch("asyncpg.connect", new=AsyncMock()) as connect_mock:
         result = await dhrs._run_once(
-            sparql_client=client,
+            fetch_events=fetcher,
             bus=bus,
             postgres_uri="postgresql://fake/db",
             subject="orion",
@@ -751,21 +802,26 @@ async def test_insufficient_history_refuses_cleanly_no_llm_no_write():
 
 
 @pytest.mark.asyncio
-async def test_sparql_query_failure_is_clean_not_a_crash():
-    client = FakeSparqlClient(list_bindings=[], list_error=RuntimeError("fuseki unreachable"))
+async def test_fetch_degrade_to_empty_reports_insufficient_history_no_llm_no_write():
+    # The fetch layer NEVER raises: a down Postgres / missing table degrades
+    # to an empty event list (see fetch_drive_history_events), which must
+    # surface as an honest insufficient_history refusal -- no LLM call, no
+    # write, no fabricated pattern, and no fallback source.
+    fetcher = FakeFetcher([])
     bus = _make_bus("")
 
     with patch("asyncpg.connect", new=AsyncMock()) as connect_mock:
         result = await dhrs._run_once(
-            sparql_client=client,
+            fetch_events=fetcher,
             bus=bus,
             postgres_uri="postgresql://fake/db",
             subject="orion",
             since=datetime(2026, 6, 14, tzinfo=timezone.utc),
         )
 
-    assert result.status == "sparql_query_failed"
-    assert "fuseki unreachable" in result.error
+    assert result.status == "insufficient_history"
+    assert "0 event" in result.error
+    assert result.crystallization_id is None
     bus.rpc_request.assert_not_called()
     connect_mock.assert_not_called()
 
@@ -776,13 +832,13 @@ async def test_llm_call_failure_writes_nothing():
     # before the LLM call even for a sufficient/non-duplicate window, so
     # asyncpg.connect IS called once for that check; the assertion that
     # matters is that no crystallization/source row is ever written.
-    client = FakeSparqlClient(list_bindings=_sufficient_history_bindings(), detail_bindings=[])
+    fetcher = FakeFetcher(_sufficient_history_events())
     bus = _make_bus(raise_exc=RuntimeError("gateway timeout"))
     conn = FakeConn()
 
     with patch("asyncpg.connect", new=AsyncMock(return_value=conn)):
         result = await dhrs._run_once(
-            sparql_client=client,
+            fetch_events=fetcher,
             bus=bus,
             postgres_uri="postgresql://fake/db",
             subject="orion",
@@ -798,7 +854,7 @@ async def test_llm_call_failure_writes_nothing():
 
 @pytest.mark.asyncio
 async def test_llm_output_ungrounded_writes_nothing():
-    client = FakeSparqlClient(list_bindings=_sufficient_history_bindings(), detail_bindings=[])
+    fetcher = FakeFetcher(_sufficient_history_events())
     # Cites nothing real -- generic filler, no verbatim tokens.
     ungrounded_content = json.dumps(
         {"narrative": "Orion has been exploring many interesting things lately.", "cited_fact_numbers": [1, 2]}
@@ -808,7 +864,7 @@ async def test_llm_output_ungrounded_writes_nothing():
 
     with patch("asyncpg.connect", new=AsyncMock(return_value=conn)):
         result = await dhrs._run_once(
-            sparql_client=client,
+            fetch_events=fetcher,
             bus=bus,
             postgres_uri="postgresql://fake/db",
             subject="orion",
@@ -827,12 +883,12 @@ async def test_dedup_guard_skips_when_already_synthesized_same_window():
     dedup_source_id = f"drive_history_aggregation:orion:{since.date().isoformat()}"
     existing = [{"args": ("existing-crys-id", "rdf_memory_graph", dedup_source_id, None, 1.0, "note")}]
     conn = FakeConn(existing_sources=existing)
-    client = FakeSparqlClient(list_bindings=_sufficient_history_bindings(), detail_bindings=[])
+    fetcher = FakeFetcher(_sufficient_history_events())
     bus = _make_bus("")  # must never be called
 
     with patch("asyncpg.connect", new=AsyncMock(return_value=conn)):
         result = await dhrs._run_once(
-            sparql_client=client,
+            fetch_events=fetcher,
             bus=bus,
             postgres_uri="postgresql://fake/db",
             subject="orion",
@@ -849,7 +905,7 @@ async def test_dedup_guard_skips_when_already_synthesized_same_window():
 async def test_dedup_guard_failure_does_not_block_synthesis():
     # A dedup-check failure (e.g. transient DB error) must degrade to
     # "proceed" rather than blocking an otherwise-valid, already-reduced run.
-    client = FakeSparqlClient(list_bindings=_sufficient_history_bindings(), detail_bindings=[])
+    fetcher = FakeFetcher(_sufficient_history_events())
     bus = _make_bus(_grounded_llm_content())
 
     call_count = {"n": 0}
@@ -863,7 +919,7 @@ async def test_dedup_guard_failure_does_not_block_synthesis():
 
     with patch("asyncpg.connect", new=_flaky_connect):
         result = await dhrs._run_once(
-            sparql_client=client,
+            fetch_events=fetcher,
             bus=bus,
             postgres_uri="postgresql://fake/db",
             subject="orion",

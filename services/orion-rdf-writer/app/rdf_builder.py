@@ -149,7 +149,9 @@ def build_triples_from_envelope(env_kind: str, payload: Any) -> Tuple[Optional[s
             return g.serialize(format="nt"), "orion:enrichment"
 
         # 5. Phase 3 autonomy artifact materialization
-        elif env_kind in ("memory.identity.snapshot.v1", "memory.drives.audit.v1", "memory.goals.proposed.v1"):
+        # (memory.drives.audit.v1 deliberately absent: drive audits are
+        # Postgres-only via orion-sql-writer as of 2026-07-15 — do not re-add.)
+        elif env_kind in ("memory.identity.snapshot.v1", "memory.goals.proposed.v1"):
             return build_autonomy_triples(env_kind, payload)
 
         # 6. Cognition Trace

@@ -16,12 +16,16 @@ sys.path.insert(0, str(ROOT))
 sys.path.insert(0, str(SERVICE_ROOT))
 AUTONOMY_SPEC = importlib.util.spec_from_file_location("rdf_writer_autonomy", SERVICE_ROOT / "app" / "autonomy.py")
 RDF_BUILDER_SPEC = importlib.util.spec_from_file_location("rdf_writer_builder", SERVICE_ROOT / "app" / "rdf_builder.py")
+SETTINGS_SPEC = importlib.util.spec_from_file_location("rdf_writer_settings", SERVICE_ROOT / "app" / "settings.py")
 assert AUTONOMY_SPEC and AUTONOMY_SPEC.loader
 assert RDF_BUILDER_SPEC and RDF_BUILDER_SPEC.loader
+assert SETTINGS_SPEC and SETTINGS_SPEC.loader
 autonomy_mod = importlib.util.module_from_spec(AUTONOMY_SPEC)
 rdf_builder_mod = importlib.util.module_from_spec(RDF_BUILDER_SPEC)
+settings_mod = importlib.util.module_from_spec(SETTINGS_SPEC)
 AUTONOMY_SPEC.loader.exec_module(autonomy_mod)
 RDF_BUILDER_SPEC.loader.exec_module(rdf_builder_mod)
+SETTINGS_SPEC.loader.exec_module(settings_mod)
 build_autonomy_triples = autonomy_mod.build_autonomy_triples
 build_triples_from_envelope = rdf_builder_mod.build_triples_from_envelope
 
@@ -113,43 +117,40 @@ def test_identity_snapshot_materialization_preserves_world_anchor_and_provenance
     assert not list(graph.subjects(ORION.entityId, Literal("world", datatype=XSD.string)))
 
 
-def test_drive_audit_materialization_preserves_lineage_and_tensions():
-    payload = {
-        "artifact_id": "drive-audit-1",
-        "subject": "orion",
-        "model_layer": "self-model",
-        "entity_id": "self:orion",
-        "kind": "memory.drives.audit.v1",
-        "ts": "2026-03-19T12:00:00+00:00",
-        "confidence": 0.74,
-        "correlation_id": "corr-123",
-        "trace_id": "trace-abc",
-        "turn_id": "turn-789",
-        "join_keys": ["correlation_id", "trace_id", "turn_id", "artifact_id"],
-        "provenance": _provenance(),
-        "related_nodes": ["tension-1", "tension-2"],
-        "drive_pressures": {"coherence": 0.91, "predictive": 0.62},
-        "drive_activations": {"coherence": True, "predictive": True},
-        "active_drives": ["coherence", "predictive"],
-        "dominant_drive": "coherence",
-        "tension_kinds": ["tension.contradiction.v1", "tension.identity_drift.v1"],
-        "source_event_refs": _provenance()["source_event_refs"],
-        "evidence_items": _provenance()["evidence_items"],
-        "summary": "orion pressure concentrates on coherence",
-    }
+def test_drive_audit_kind_is_not_materialized_to_rdf():
+    """Regression guard: drive audits are Postgres-only (`drive_audits` via
+    orion-sql-writer) as of 2026-07-15. The RDF write path for
+    memory.drives.audit.v1 was deliberately deleted — do not re-add it.
+    """
+    # No autonomy handler for the kind.
+    nt, graph_name = build_autonomy_triples("memory.drives.audit.v1", {"artifact_id": "drive-audit-1"})
+    assert nt is None
+    assert graph_name is None
 
-    nt, graph_name = build_autonomy_triples("memory.drives.audit.v1", payload)
-    graph = _parse(nt)
-    audit_uri = next(graph.subjects(ORION.artifactId, Literal("drive-audit-1", datatype=XSD.string)))
+    # The kind→class map must not contain the kind (re-adding it would
+    # resurrect the graph write path).
+    try:
+        autonomy_mod._artifact_type("memory.drives.audit.v1")
+    except KeyError:
+        pass
+    else:
+        raise AssertionError("memory.drives.audit.v1 must not be in the autonomy kind->class map")
 
-    assert graph_name == "http://conjourney.net/graph/autonomy/drives"
-    assert (audit_uri, RDF.type, ORION.DriveAudit) in graph
-    assert (audit_uri, ORION.hasCorrelation, None) in graph
-    assert (audit_uri, ORION.hasTrace, None) in graph
-    assert (audit_uri, ORION.hasTurnContext, None) in graph
-    assert (audit_uri, ORION.highlightsActiveDrive, None) in graph
-    assert (audit_uri, ORION.hasDriveAssessment, None) in graph
-    assert (audit_uri, ORION.derivedFromTension, None) in graph
+    # The kind→name map must fall back to the generic suffix.
+    uri = str(autonomy_mod._artifact_uri("memory.drives.audit.v1", "drive-audit-1"))
+    assert "/artifact/" in uri
+    assert "driveAudit" not in uri
+
+    # The rdf_builder dispatch must treat the kind as unknown (quiet no-op).
+    nt, graph_name = build_triples_from_envelope("memory.drives.audit.v1", {"artifact_id": "drive-audit-1"})
+    assert nt is None
+    assert graph_name is None
+
+
+def test_drives_audit_channel_not_in_default_subscriptions():
+    """rdf-writer must not subscribe to orion:memory:drives:audit by default."""
+    channels = settings_mod.Settings(ORION_BUS_URL="redis://example.test/0").get_all_subscribe_channels()
+    assert "orion:memory:drives:audit" not in channels
 
 
 def test_goal_materialization_writes_proposal_status_and_base():

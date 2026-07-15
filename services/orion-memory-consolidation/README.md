@@ -75,19 +75,20 @@ persisted drive-activation history and synthesizes ONE `reflection`-kind
 `MemoryCrystallizationV1` observing a long-horizon pattern -- e.g. "continuity has
 been the dominant drive in most audited ticks this week." Source data: `DriveAuditV1`
 (`orion/core/schemas/drives.py`) is computed on every DriveEngine tick and persisted,
-append-only, by `services/orion-rdf-writer` to the Fuseki `drives` graph
-(`http://conjourney.net/graph/autonomy/drives`) -- unlike the "latest value only"
-stores this repo already has for the same signal (`LocalProfileStore` /
-`autonomy_state_v2`'s single-row UPSERT), this graph is a genuine historical
-time-series, one triple-set per tick.
+append-only, by `services/orion-sql-writer` to the Postgres `drive_audits` table
+(the old Fuseki `drives` graph froze on 2026-06-19 and was removed as both a write
+and read path on 2026-07-15) -- unlike the "latest value only" stores this repo
+already has for the same signal (`LocalProfileStore` / `autonomy_state_v2`'s
+single-row UPSERT), this table is a genuine historical time-series, one row per
+tick, including per-tick `drive_pressures` / `active_drives` JSONB.
 
 **Architecture is deliberately split into a deterministic reducer stage and a
 narrow LLM-phrasing stage** (event -> schema -> trace -> reducer -> projection ->
 LLM phrasing -> crystallization, per this repo's event-substrate-first mandate) --
-the LLM is never shown raw per-tick SPARQL rows:
+the LLM is never shown raw per-tick rows:
 
-1. Fetch real `DriveAuditV1` ticks from Fuseki (bounded by `--max-events`, most
-   recent first).
+1. Fetch real `DriveAuditV1` ticks from Postgres `drive_audits` (bounded by
+   `--max-events`, most recent first, same DSN as the crystallization write path).
 2. `reduce_drive_history()` -- a **pure, unit-tested Python function** (same bar as
    `orion/spark/concept_induction/drive_tension.py`: synthetic-input/known-output
    tests, zero LLM involvement) -- aggregates them into dominant-drive counts/shares,
@@ -127,8 +128,7 @@ python scripts/drive_history_reflection_synthesis.py --json
 | `--postgres-uri` / `$POSTGRES_URI` | *(required)* | Same convention as `concept_relation_digest.py` |
 | `--subject` | `orion` | `DriveAuditV1.subjectKey` to read |
 | `--since-days` | `30` | Window size; real coverage found is always reported, never assumed |
-| `--max-events` | `500` | Cap on raw ticks fetched from Fuseki (most recent first) |
-| `--query-url` | *(resolved)* | Explicit Fuseki SPARQL query URL; else `AUTONOMY_GRAPH_QUERY_URL` / `RDF_STORE_QUERY_URL` / Fuseki derivation |
+| `--max-events` | `500` | Cap on raw ticks fetched from `drive_audits` (most recent first) |
 | `--redis` / `$ORION_BUS_URL` | `redis://localhost:6379/0` | Bus URL for the LLM gateway RPC |
 | `--llm-route` | `metacog` | Gateway route for the narrative-phrasing call |
 

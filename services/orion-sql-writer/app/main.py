@@ -648,12 +648,19 @@ async def lifespan(app: FastAPI):
                     active_count INTEGER NOT NULL,
                     active_drives JSONB,
                     dominant_drive TEXT NULL,
+                    summary TEXT NULL,
                     drive_pressures JSONB,
                     correlation_id TEXT NULL,
                     observed_at TIMESTAMPTZ NULL,
                     created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
                 );
                 """
+            )
+            # summary was added after the live table already existed (v2:
+            # drive_history_reflection_synthesis reads it from Postgres), so
+            # CREATE TABLE IF NOT EXISTS alone won't add it — upgrade in place.
+            conn.exec_driver_sql(
+                "ALTER TABLE drive_audits ADD COLUMN IF NOT EXISTS summary TEXT;"
             )
             # The autonomy measurement gate windows on COALESCE(observed_at,
             # created_at); a bare created_at index would never serve that

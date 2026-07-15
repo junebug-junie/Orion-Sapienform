@@ -24,8 +24,11 @@ class DriveAuditSQL(Base):
     miss).
 
     This is intentionally NOT an archive of the full artifact:
-    evidence_items/source_event_refs/summary/tick_attribution are dropped by
-    the generic `_write_row` column filter. `active_count` is derived in the
+    evidence_items/source_event_refs/tick_attribution are dropped by the
+    generic `_write_row` column filter. `summary` (one bounded sentence per
+    audit, `DriveAuditV1.summary`) IS stored — the one archive-ish exception —
+    because `scripts/drive_history_reflection_synthesis.py` reads it as its
+    per-audit text input. `active_count` is derived in the
     sql-writer worker as `len(active_drives)` (0 when malformed/absent) — it is
     not on the wire payload. `active_drives`/`drive_pressures` are already
     bounded upstream to the 6 fixed DRIVE_KEYS, so no capping is needed here.
@@ -47,6 +50,7 @@ class DriveAuditSQL(Base):
     active_count = Column(Integer, nullable=False)
     active_drives = Column(_JSONB, nullable=True)
     dominant_drive = Column(String, nullable=True)
+    summary = Column(String, nullable=True)
     drive_pressures = Column(_JSONB, nullable=True)
     correlation_id = Column(String, nullable=True)
     observed_at = Column(DateTime(timezone=True), nullable=True)

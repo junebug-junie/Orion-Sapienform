@@ -5,7 +5,6 @@ from unittest.mock import MagicMock, patch
 
 from orion.grammar.ledger import _upsert_trace, apply_grammar_event, apply_grammar_trace_batch
 from orion.schemas.grammar import GrammarAtomV1, GrammarEventV1, GrammarProvenanceV1
-from orion.substrate.execution_loop.ids import cortex_exec_trace_id
 
 
 def _atom_event(*, event_id: str = "evt:1") -> GrammarEventV1:
@@ -108,12 +107,22 @@ def test_harness_and_unlaned_cortex_exec_trace_ids_no_longer_share_ledger_key() 
     two distinct grammar_traces rows instead of one shared row."""
     session = MagicMock()
     node, corr = "athena", "99487e95-709c-4340-8bf5-c4c9840a247b"
+    # Inlined rather than imported from orion.substrate.execution_loop.ids:
+    # importing that module pulls in orion/substrate/__init__.py's full
+    # import chain (materializer -> graphdb_store -> requests), which broke
+    # collection for services/orion-sql-writer's thin CI environment (no
+    # requests installed there) -- this test only needs the string SHAPE
+    # cortex_exec_trace_id() produces, not the real helper. Same class of
+    # issue as project_orion_thought_thin_bus_no_substrate: never let a
+    # thin service's test suite transitively import orion.substrate.*.
+    harness_trace_id_value = f"cortex.exec:{node}:{corr}:harness_motor"
+    cortex_exec_root_trace_id_value = f"cortex.exec:{node}:{corr}"
 
     harness_started = GrammarEventV1(
         event_id="evt:harness:started",
         event_kind="trace_started",
         # Mirrors HarnessGrammarCollector.trace_id's fixed lane.
-        trace_id=cortex_exec_trace_id(node, corr, lane="harness_motor"),
+        trace_id=harness_trace_id_value,
         emitted_at=datetime(2026, 7, 15, 15, 58, 20, tzinfo=timezone.utc),
         observed_at=datetime(2026, 7, 15, 15, 58, 20, tzinfo=timezone.utc),
         provenance=GrammarProvenanceV1(source_service="orion-harness-governor"),
@@ -125,7 +134,7 @@ def test_harness_and_unlaned_cortex_exec_trace_ids_no_longer_share_ledger_key() 
         # (trace_lane_for_verb() returns None for any verb outside
         # CORTEX_EXEC_ISOLATED_TRACE_LANES) -- the exact slot that used to
         # collide with the harness governor's own trace_id.
-        trace_id=cortex_exec_trace_id(node, corr, lane=None),
+        trace_id=cortex_exec_root_trace_id_value,
         emitted_at=datetime(2026, 7, 15, 15, 59, 27, tzinfo=timezone.utc),
         observed_at=datetime(2026, 7, 15, 15, 59, 27, tzinfo=timezone.utc),
         provenance=GrammarProvenanceV1(source_service="orion-cortex-exec"),

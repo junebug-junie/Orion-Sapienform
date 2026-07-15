@@ -64,6 +64,7 @@ class SalienceHistory:
     """
 
     dwell_ticks: int = 0
+    dwelling_loop_id: str | None = None
     recent_theme_counts: dict[str, int] = field(default_factory=dict)
     resonance_theme_keys: set[str] = field(default_factory=set)
     first_seen_at: dict[str, datetime] = field(default_factory=dict)
@@ -113,9 +114,24 @@ def _recency(theme_key: str, history: SalienceHistory, now: datetime) -> float:
     return bounded(0.5 ** (age_hours / 6.0))
 
 
+def _loop_dwell(theme_key: str, history: SalienceHistory) -> float:
+    """Dwell, scoped to the loop actually dwelling -- not every competitor.
+
+    `history.dwell_ticks` counts how long ONE coalition (`dwelling_loop_id`)
+    has held the workspace. Previously this scalar was applied to every
+    candidate loop scored in a tick, which cannot demote the specific
+    dwelling loop relative to its competitors: a uniform per-tick offset
+    changes nothing about who wins. Only the loop that IS the dwelling one
+    should carry a dwell signal; everyone else gets 0.
+    """
+    if theme_key != history.dwelling_loop_id:
+        return 0.0
+    return min(1.0, history.dwell_ticks / DWELL_NORM)
+
+
 def _habituation(theme_key: str, history: SalienceHistory) -> float:
     recurrence = min(1.0, history.recent_theme_counts.get(theme_key, 0) / RECURRENCE_NORM)
-    dwell = min(1.0, history.dwell_ticks / DWELL_NORM)
+    dwell = _loop_dwell(theme_key, history)
     resonance = 1.0 if theme_key in history.resonance_theme_keys else 0.0
     return bounded(0.5 * recurrence + 0.3 * dwell + 0.2 * resonance)
 
@@ -144,7 +160,7 @@ def compute_features(
     recurrence = bounded(history.recent_theme_counts.get(theme_key, 0) / RECURRENCE_NORM)
     recency = _recency(theme_key, history, now)
     novelty_vs_known = 0.15 if loop.already_known else evidence_strength
-    dwell = bounded(history.dwell_ticks / DWELL_NORM)
+    dwell = bounded(_loop_dwell(theme_key, history))
     habituation = _habituation(theme_key, history)
 
     return SalienceFeaturesV1(

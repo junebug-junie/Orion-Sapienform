@@ -17,6 +17,7 @@ def _reset_broadcast_state():
     ab._recent_selected_counts.clear()
     ab._first_selected_at.clear()
     ab._dwell_ticks = 0
+    ab._current_dwelling_loop_id = None
     ab._coalition_history.clear()
     ab._current_active_coalition = None
     ab._transition_history.clear()
@@ -24,6 +25,7 @@ def _reset_broadcast_state():
     ab._recent_selected_counts.clear()
     ab._first_selected_at.clear()
     ab._dwell_ticks = 0
+    ab._current_dwelling_loop_id = None
     ab._coalition_history.clear()
     ab._current_active_coalition = None
     ab._transition_history.clear()

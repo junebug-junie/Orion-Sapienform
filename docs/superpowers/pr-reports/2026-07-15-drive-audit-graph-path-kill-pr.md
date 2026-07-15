@@ -188,4 +188,6 @@ psql -h localhost -p 55432 -U postgres -d conjourney \
 
 ## PR link
 
-(filled after push)
+https://github.com/junebug-junie/Orion-Sapienform/pull/1069 (base: main — #1064
+merged mid-build and its branch auto-deleted; this branch stacks directly on its
+final commit, no rebase)

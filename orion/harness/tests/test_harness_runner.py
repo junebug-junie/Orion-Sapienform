@@ -79,6 +79,71 @@ async def test_harness_runner_collects_grammar_receipts_and_draft() -> None:
     assert result.compliance_verdict == "completed"
 
 
+async def _mock_fcc_runner_fetch_then_confabulate(**_: Any) -> AsyncIterator[dict[str, Any]]:
+    yield {
+        "type": "step",
+        "step": {
+            "type": "assistant",
+            "raw": {
+                "type": "assistant",
+                "message": {
+                    "content": [
+                        {"type": "tool_use", "name": "mcp__github__get_file_contents", "input": {}},
+                    ]
+                },
+            },
+        },
+    }
+    yield {
+        "type": "final",
+        "llm_response": "This is computing in the background right now.",
+        "metadata": {"exit_code": 0},
+    }
+
+
+@pytest.mark.asyncio
+async def test_harness_runner_flags_tool_provenance_mismatch() -> None:
+    thought = make_thought()
+    request = HarnessRunRequestV1(
+        correlation_id="c-mismatch",
+        thought_event=thought,
+        user_message="what's live right now?",
+        permissions=ContextExecPermissionV1(),
+        answer_contract=AnswerContract(),
+    )
+    bus = AsyncMock()
+    runner = HarnessRunner(bus, fcc_runner=_mock_fcc_runner_fetch_then_confabulate)
+
+    result = await runner.run(request)
+
+    assert result.tool_provenance_audit is not None
+    assert "mcp__github__get_file_contents" in result.tool_provenance_audit
+    assert result.draft_molecule is not None
+    assert result.draft_molecule.tool_provenance_audit == result.tool_provenance_audit
+    # Not a motor failure -- grounding_status/compliance_verdict untouched.
+    assert result.compliance_verdict == "completed"
+    assert result.grounding_status == "grounded"
+
+
+@pytest.mark.asyncio
+async def test_harness_runner_no_tool_provenance_mismatch_on_normal_turn() -> None:
+    thought = make_thought()
+    request = HarnessRunRequestV1(
+        correlation_id="c-normal",
+        thought_event=thought,
+        user_message="hello",
+        permissions=ContextExecPermissionV1(),
+        answer_contract=AnswerContract(),
+    )
+    bus = AsyncMock()
+    runner = HarnessRunner(bus, fcc_runner=_mock_fcc_runner)
+
+    result = await runner.run(request)
+
+    assert result.tool_provenance_audit is None
+    assert result.draft_molecule.tool_provenance_audit is None
+
+
 @pytest.mark.asyncio
 async def test_harness_runner_publishes_lifecycle_grammar_on_motor_run() -> None:
     thought = make_thought()

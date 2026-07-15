@@ -255,6 +255,44 @@ class HarnessGrammarCollector:
             self._edge_specs.append((started.atom_id, atom.atom_id, "derived_from"))
         self._last_completed_atom_id = atom.atom_id
 
+    def record_tool_provenance_mismatch(self, *, mismatch: str) -> None:
+        """Draft used live-immediacy language while this turn's own tool
+        trace shows a fetch-shaped call -- the confabulation pattern from
+        project_orion_substrate_bridge_confabulation. uncertainty_marker is
+        the right atom_type here (same as record_step_failed): not a hard
+        motor failure, but a flag on the claim's own grounding."""
+        ref = f"harness.exec.tool_provenance:{self.correlation_id}"
+        self._put_atom(
+            "exec_tool_provenance_mismatch",
+            GrammarAtomV1(
+                atom_id=self._atom_id("exec_tool_provenance_mismatch"),
+                trace_id=self.trace_id,
+                atom_type="uncertainty_marker",
+                semantic_role="exec_tool_provenance_mismatch",
+                layer="result",
+                dimensions=["execution", "grounding", "tool_use"],
+                summary=mismatch,
+                confidence=0.7,
+                salience=0.8,
+                source_event_id=self.correlation_id,
+                payload_ref=ref,
+            ),
+        )
+        if self._last_completed_atom_id:
+            self._edge_specs.append(
+                (
+                    self._last_completed_atom_id,
+                    self._atoms["exec_tool_provenance_mismatch"].atom_id,
+                    "derived_from",
+                )
+            )
+        # Unlike record_step_failed, this atom was missing this update --
+        # without it, record_result_assembled's own derived_from edge still
+        # points at the last *step* atom instead of this one, leaving the
+        # mismatch atom a graph leaf with no outgoing edge into the
+        # result-assembled/emitted chain despite being about the result.
+        self._last_completed_atom_id = self._atoms["exec_tool_provenance_mismatch"].atom_id
+
     def record_result_assembled(
         self,
         *,

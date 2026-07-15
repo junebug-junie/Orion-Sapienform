@@ -89,7 +89,23 @@ class CortexExecGrammarCollector:
         return f"{self.trace_id}:{key}"
 
     def _put_atom(self, key: str, atom: GrammarAtomV1) -> None:
-        now = datetime.now(timezone.utc)
+        # Idempotent per atom_id, not per call: get_or_create_collector()
+        # caches one collector per ctx (below), and record_assembled_grammar()
+        # reads that same cached instance from 4 separate call sites in
+        # router.py (motor/finalize/voice-finalize lanes) -- the exact
+        # same-collector-reinvoked-across-phases shape found live in the
+        # sibling HarnessGrammarCollector (orion/harness/grammar_emit.py,
+        # 2026-07-15). record_result_assembled's atom_id is deterministic
+        # (trace_id + fixed key), so a second call would otherwise advance
+        # _atom_observed_at and publish the same atom_id/event_id twice with
+        # contradictory observed_at -- orion/grammar/ledger.py's
+        # on_conflict_do_nothing masks this at the DB layer (first write
+        # wins there too), but a raw bus consumer would see it directly.
+        # Reusing the first-seen timestamp keeps every publish for a given
+        # atom_id self-consistent, matching the DB's own dedup semantics.
+        # The atom's content (self._atoms[key]) still updates on every call
+        # -- only its recorded occurrence time is pinned to first sight.
+        now = self._atom_observed_at.get(atom.atom_id) or datetime.now(timezone.utc)
         # Also stamp the atom's own time_range (GrammarAtomV1.time_range,
         # orion/schemas/grammar.py) -- previously never populated by this
         # producer, so orion/grammar/ledger.py's atom-row persistence

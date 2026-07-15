@@ -361,9 +361,10 @@ def test_retention_caveat_none_when_oldest_unknown():
 class _FakeCursor:
     """Stub cursor: records executed SQL, returns canned rows or raises."""
 
-    def __init__(self, rows=None, exc=None):
+    def __init__(self, rows=None, exc=None, fetchone_row=None):
         self._rows = rows if rows is not None else []
         self._exc = exc
+        self._fetchone_row = fetchone_row
         self.executed: list[tuple[str, tuple]] = []
 
     def execute(self, sql, params=None):
@@ -373,6 +374,9 @@ class _FakeCursor:
 
     def fetchall(self):
         return self._rows
+
+    def fetchone(self):
+        return self._fetchone_row
 
     def __enter__(self):
         return self
@@ -403,10 +407,35 @@ def test_parse_postgres_histogram_rows():
         ("junk", 5),         # bad count -> skipped
         (1,),                # short row -> skipped
         (None, None),        # nulls -> skipped
-        (-1, -4),            # clamped to 0
+        (-1, -4),            # negative -> skipped, must NOT clamp onto the real 0 bucket
     ]
-    assert mod.parse_postgres_histogram_rows(rows) == {0: 0, 2: 5, 3: 7}
+    assert mod.parse_postgres_histogram_rows(rows) == {0: 100, 2: 5, 3: 7}
     assert mod.parse_postgres_histogram_rows([]) == {}
+
+
+def test_fetch_earliest_drive_audit_ts_degrades():
+    # No connection -> None
+    assert mod.fetch_earliest_drive_audit_ts(None) is None
+    # Missing table -> None, silently (undefined-table is expected pre-deploy)
+    missing = _FakeCursor(exc=_FakeUndefinedTable('relation "drive_audits" does not exist'))
+    assert mod.fetch_earliest_drive_audit_ts(_FakeConn(missing)) is None
+    # Happy path: MIN over COALESCE comes back
+    cursor = _FakeCursor(rows=[], fetchone_row=(BASE,))
+    got = mod.fetch_earliest_drive_audit_ts(_FakeConn(cursor))
+    assert got == BASE
+    sql, _ = cursor.executed[0]
+    assert "MIN(COALESCE(observed_at, created_at))" in sql
+    assert "FROM drive_audits" in sql
+
+
+def test_drive_audits_retention_caveat_fires_for_predating_window():
+    # Window starts before the table's first row -> partial coverage must be named.
+    earliest = BASE
+    window_start = BASE - timedelta(days=30)
+    note = mod.retention_caveat("drive_audits", earliest, window_start)
+    assert note is not None and "drive_audits retention only covers back to" in note
+    # Full coverage -> no caveat.
+    assert mod.retention_caveat("drive_audits", earliest, BASE + timedelta(hours=1)) is None
 
 
 def test_fetch_drive_stats_postgres_histogram_path():

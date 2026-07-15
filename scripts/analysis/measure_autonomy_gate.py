@@ -415,7 +415,11 @@ def parse_postgres_histogram_rows(rows: Iterable[Any]) -> dict[int, int]:
 
     Mirrors ``parse_sparql_histogram_bindings`` for the Postgres source:
     malformed rows (short tuples, non-numeric values) are skipped; negative
-    values are clamped to 0; never raises. Pure + unit-testable.
+    values are ALSO skipped, not clamped -- this writer derives
+    ``active_count = len(active_drives) >= 0``, so a negative can only come
+    from foreign/manual writes, and clamping it to 0 could overwrite the
+    real 0 bucket (destroying genuine audits from the denominator). Never
+    raises. Pure + unit-testable.
     """
 
     out: dict[int, int] = {}
@@ -425,7 +429,9 @@ def parse_postgres_histogram_rows(rows: Iterable[Any]) -> dict[int, int]:
             audits = int(row[1])
         except (TypeError, ValueError, IndexError, OverflowError):
             continue
-        out[max(0, active_count)] = max(0, audits)
+        if active_count < 0 or audits < 0:
+            continue
+        out[active_count] = audits
     return out
 
 
@@ -548,8 +554,8 @@ def verdict_economy(drive: DriveStats, pressure: ResourcePressureStats) -> str:
     """Verdict (b): GO iff drives co-activate AND resource_pressure rises.
 
     UNMEASURABLE iff EITHER input has zero rows -- the rule reads both
-    drive.coactivation_frac (Fuseki) and pressure.frac_gt_level (Postgres
-    self-state), two independent sources. Guarding only one (e.g. only
+    drive.coactivation_frac (Postgres drive_audits, Fuseki fallback) and
+    pressure.frac_gt_level (Postgres self-state), two independent sources. Guarding only one (e.g. only
     drive.record_count) would let the other silently degrade to 0.0 and
     resolve as a real "NO-GO" string -- exactly the failure mode this
     function exists to prevent, just left open on whichever input isn't
@@ -755,6 +761,30 @@ def fetch_earliest_receipt_ts(conn) -> Optional[datetime]:
             row = cur.fetchone()
     except Exception:
         logger.error("failed to fetch earliest substrate_reduction_receipts timestamp", exc_info=True)
+        return None
+    return _coerce_dt(row[0]) if row else None
+
+
+def fetch_earliest_drive_audit_ts(conn) -> Optional[datetime]:
+    """Earliest drive_audits row by ``COALESCE(observed_at, created_at)`` --
+    the retention floor for the Postgres drive co-activation source. The
+    table was only born 2026-07-15 while the frozen Fuseki graph holds
+    history up to 2026-06-19, so a long window (e.g. the original NO-GO's
+    120 days) can have Postgres rows for only its tail: without this floor
+    feeding ``retention_caveat``, that tail would be silently presented as
+    the full window. Degrades to None on any failure, including the table
+    not existing yet; never raises.
+    """
+
+    if conn is None:
+        return None
+    try:
+        with conn.cursor() as cur:
+            cur.execute("SELECT MIN(COALESCE(observed_at, created_at)) FROM drive_audits")
+            row = cur.fetchone()
+    except Exception as exc:
+        if not is_undefined_table_error(exc):
+            logger.error("failed to fetch earliest drive_audits timestamp", exc_info=True)
         return None
     return _coerce_dt(row[0]) if row else None
 
@@ -1058,6 +1088,15 @@ def run(window: timedelta, window_label: str) -> int:
         lambda: fetch_drive_stats(fuseki_url, window_start),
     )
     caveats.extend(drive_notes)
+    if drive_source.startswith("postgres"):
+        # Postgres won, which suppresses any in-window Fuseki history -- so
+        # the report must say when the table's own retention starts inside
+        # the window (partial coverage, not measured absence).
+        drive_retention_note = retention_caveat(
+            "drive_audits", fetch_earliest_drive_audit_ts(conn), window_start
+        )
+        if drive_retention_note:
+            caveats.append(drive_retention_note)
     if drive_stats.record_count == 0:
         anomalies += 1
     progress.emit(

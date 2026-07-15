@@ -413,6 +413,18 @@ def test_parse_postgres_histogram_rows():
     assert mod.parse_postgres_histogram_rows([]) == {}
 
 
+def test_parse_sparql_histogram_bindings_skips_negatives():
+    # Same semantics as the postgres parser: a bogus negative row is skipped,
+    # never clamped onto the real 0 bucket (review finding: the two parsers
+    # had diverged after the postgres side was fixed).
+    bindings = [
+        {"activeCount": {"value": "0"}, "audits": {"value": "100"}},
+        {"activeCount": {"value": "-1"}, "audits": {"value": "-4"}},
+        {"activeCount": {"value": "2"}, "audits": {"value": "5"}},
+    ]
+    assert mod.parse_sparql_histogram_bindings(bindings) == {0: 100, 2: 5}
+
+
 def test_fetch_earliest_drive_audit_ts_degrades():
     # No connection -> None
     assert mod.fetch_earliest_drive_audit_ts(None) is None
@@ -495,9 +507,10 @@ def test_resolve_drive_stats_postgres_wins_when_nonempty():
         fuseki_called.append(True)
         return mod.drive_stats_from_histogram({1: 999}), "fuseki note"
 
-    stats, source, notes = mod.resolve_drive_stats(pg, _fetch_fuseki)
+    stats, source_kind, source, notes = mod.resolve_drive_stats(pg, _fetch_fuseki)
     assert stats.record_count == 15
     assert not fuseki_called  # Fuseki must not even be queried
+    assert source_kind == "postgres"
     assert "postgres drive_audits (15 rows)" in source
     assert notes == ["drive source: postgres drive_audits (15 rows)"]
 
@@ -508,13 +521,14 @@ def test_resolve_drive_stats_falls_back_to_fuseki_when_postgres_empty():
     def _fetch_fuseki():
         return mod.drive_stats_from_histogram({1: 8, 2: 2}), "fuseki histogram note"
 
-    stats, source, notes = mod.resolve_drive_stats(pg, _fetch_fuseki)
+    stats, source_kind, source, notes = mod.resolve_drive_stats(pg, _fetch_fuseki)
     assert stats.record_count == 10
-    # Source label distinguishes "fell back" from a plain fuseki read.
-    assert "fell back to fuseki" in source
-    assert "postgres drive_audits had no rows in window" in source
-    # Notes carry both the postgres reason and the fuseki coverage note.
+    assert source_kind == "fuseki"
+    assert "fuseki DriveAudit graph (10 rows)" in source
+    # The "fell back" fact is carried exactly once, in the notes -- the label
+    # stays a short display string (control flow branches on source_kind).
     assert any("fell back to fuseki" in n for n in notes)
+    assert "fell back to fuseki" not in source
     assert "fuseki histogram note" in notes
 
 
@@ -527,8 +541,9 @@ def test_resolve_drive_stats_both_empty_stays_unmeasurable():
     def _fetch_fuseki():
         return mod.DriveStats(), "fuseki returned no DriveAudit rows"
 
-    stats, source, notes = mod.resolve_drive_stats(pg, _fetch_fuseki)
+    stats, source_kind, source, notes = mod.resolve_drive_stats(pg, _fetch_fuseki)
     assert stats.record_count == 0
+    assert source_kind == "none"
     assert source.startswith("none:")
     assert len(notes) == 2
     pressure = mod.compute_resource_pressure_stats(
@@ -553,7 +568,11 @@ def test_render_report_names_drive_source():
         caveats=["drive source: postgres drive_audits (15 rows since X)"],
     )
     assert "- drive audit source: postgres drive_audits (15 rows)" in report
-    assert "Drive histogram read from: postgres drive_audits (15 rows)." in report
+    # The label appears exactly once -- the old duplicate in the rule (b)
+    # text ("Drive histogram read from: ...") was removed (review finding:
+    # same string printed twice in the same section).
+    assert report.count("postgres drive_audits (15 rows)") == 1
+    assert "Drive histogram read from" not in report
     assert "drive source: postgres drive_audits (15 rows since X)" in report
 
 

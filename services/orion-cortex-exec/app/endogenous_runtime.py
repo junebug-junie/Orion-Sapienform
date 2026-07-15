@@ -1,11 +1,11 @@
 """Cortex-exec endogenous runtime (phase 8, live/adopted).
 
 Unrelated to ``orion/autonomy/endogenous_origination.py``. That module is a
-different, separate system — a NO-GO-verdicted (2026-07-08 live-data
-measurement, see
-``docs/superpowers/specs/2026-07-07-endogenous-drive-origination-design.md``),
-mostly-dead "spontaneous want" generator that happens to share the word
-"endogenous". This module, by contrast, is live and adopted
+different, separate system — a flag-gated "spontaneous want" generator
+(``ORION_ENDOGENOUS_ORIGINATION_ENABLED``; see its own STATUS docstring and
+``docs/superpowers/specs/2026-07-07-endogenous-drive-origination-design.md``
+for the current measurement verdicts — do NOT assume it is dead) that happens
+to share the word "endogenous". This module, by contrast, is live and adopted
 (``ENDOGENOUS_RUNTIME_ENABLED=true`` in production; see
 ``docs/architecture/endogenous_runtime_adoption_phase8.md``). Do not conflate
 the two ``ORION_ENDOGENOUS_*``-style flags or the two systems when debugging or

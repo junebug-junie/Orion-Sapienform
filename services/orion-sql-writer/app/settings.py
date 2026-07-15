@@ -193,6 +193,10 @@ class Settings(BaseSettings):
         "orion:chat:history:spark_meta:patch", alias="CHANNEL_CHAT_HISTORY_SPARK_META_PATCH"
     )
     metacog_trace_retention_days: int = Field(14, alias="METACOG_TRACE_RETENTION_DAYS")
+    # drive_audits is written on every DriveEngine tick (thousands/day, append-only);
+    # 90 days keeps long-window autonomy-gate measurement possible while bounding growth.
+    # 0 disables pruning.
+    drive_audits_retention_days: int = Field(90, alias="DRIVE_AUDITS_RETENTION_DAYS")
 
     # Guardrails: grammar lane is async-isolated; operational writes use concurrent Hunter + pool limits.
     sql_writer_concurrent_handlers: bool = Field(True, alias="SQL_WRITER_CONCURRENT_HANDLERS")

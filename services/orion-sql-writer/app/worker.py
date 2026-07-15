@@ -169,7 +169,7 @@ _WRITE_SEMAPHORE: asyncio.Semaphore | None = None
 _SPARK_CONTRACT_METRICS = SparkContractMetrics()
 COLLAPSE_STORED_KIND = "collapse.mirror.stored.v1"
 SOCIAL_TURN_STORED_KIND = "social.turn.stored.v1"
-INSERT_ONLY_MODELS = {JournalEntrySQL, SocialRoomTurnSQL, ChatResponseFeedbackSQL, MindRunSQL}
+INSERT_ONLY_MODELS = {JournalEntrySQL, SocialRoomTurnSQL, ChatResponseFeedbackSQL, MindRunSQL, DriveAuditSQL}
 
 
 def _get_write_semaphore() -> asyncio.Semaphore:

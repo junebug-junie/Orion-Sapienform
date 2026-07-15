@@ -93,8 +93,10 @@ NO-GO docstring.
 
 ## Env/config changes
 
-- Added keys: none (existing `SQL_WRITER_SUBSCRIBE_CHANNELS` / `SQL_WRITER_ROUTE_MAP_JSON`
-  values extended)
+- Added keys: `DRIVE_AUDITS_RETENTION_DAYS=90` (services/orion-sql-writer — startup
+  prune window for the new table, 0 disables; added in the second review pass).
+  Existing `SQL_WRITER_SUBSCRIBE_CHANNELS` / `SQL_WRITER_ROUTE_MAP_JSON` values
+  extended.
 - `.env_example` updated: `services/orion-sql-writer/.env_example`
 - Local `.env` synced: hand-edited `services/orion-sql-writer/.env` (channel + route
   entry) — the sync script diffs against the main checkout's own `.env_example` and
@@ -166,8 +168,64 @@ UNVERIFIED until the sql-writer restart below; first verification query included
   evidence on record in the 2026-07-07 design doc and this report.
 - Review verdict: approve. Clean checks: full dead-wiring path trace (channel →
   settings → route map → MODEL_MAP → `_write_row` derivation ordering), genuine
-  `sess.merge()` PK upsert on redelivery, zero writer/reader contract drift, all
-  degrade paths non-fatal, UNMEASURABLE guard intact and test-locked.
+  idempotent redelivery, zero writer/reader contract drift, all degrade paths
+  non-fatal, UNMEASURABLE guard intact and test-locked.
+
+### Second pass (/code-review high, 8 angles × verify): 10 findings, fixes applied
+
+- Finding: (PLAUSIBLE, most severe) a single in-window Postgres row suppresses all
+  in-window Fuseki history — verdict (b) computed on the drive_audits tail with only
+  a caveat disclosing it; on long windows the headline can differ from the
+  full-window value.
+  - Fix: when the Postgres source wins with partial coverage (retention floor inside
+    the window), the gate now also queries Fuseki and reports exactly how many
+    in-window rows are excluded from the verdict. Full source-merging was
+    deliberately NOT done: neither source covers the 2026-06-19→07-15 sensor gap, so
+    any long window is partial regardless — disclosure with numbers is the honest
+    altitude, and histogram-merging would silently double-count if RDF
+    materialization is ever re-enabled.
+- Finding: (PLAUSIBLE) retention-caveat control flow keyed off the display label
+  (`drive_source.startswith("postgres")`) — a relabel would silently disable it.
+  - Fix: `resolve_drive_stats` now returns a structured `source_kind`
+    ("postgres"/"fuseki"/"none") that `run()` branches on; labels are display-only.
+- Finding: (CONFIRMED) `drive_audits` had no retention while siblings
+  (`orion_metacognitive_trace`, `grammar_events`) prune at startup.
+  - Fix: `DRIVE_AUDITS_RETENTION_DAYS` (default 90, 0 disables) + startup DELETE on
+    `COALESCE(observed_at, created_at)`, mirroring the metacog pattern.
+    `.env_example` + live `.env` + README updated.
+- Finding: (CONFIRMED) `DriveAuditSQL` paid `merge()`'s always-missing PK SELECT per
+  event.
+  - Fix: added to `INSERT_ONLY_MODELS` (fast path: add + duplicate-key skip); model
+    docstring and redelivery test updated to insert-once semantics.
+- Finding: (CONFIRMED) stale cross-reference in
+  `services/orion-cortex-exec/app/endogenous_runtime.py` still called the
+  origination module "NO-GO-verdicted, mostly-dead" after this cycle flipped it live.
+  - Fix: cross-reference rewritten to point at the module's STATUS docstring and
+    design doc ("do NOT assume it is dead").
+- Finding: (PLAUSIBLE) the two histogram parsers diverged — Postgres skips negative
+  rows, the SPARQL parser still clamped them into bucket 0.
+  - Fix: SPARQL parser now skips negatives too, with a regression test.
+- Finding: (CONFIRMED) `drive_source` printed twice in the same report section and
+  the fallback fact duplicated between note and label.
+  - Fix: one render site (the bullet), short labels, fallback stated once in caveats.
+- Findings accepted without code change: docstring runtime claims (informational,
+  accepted above); strict-validation dead-lettering silently shrinking the gate
+  denominator (house pattern for every schema-validated kind — tracked in
+  Follow-ups); design-rationale prose triplicated across model/migration/README
+  (matches the sibling `action_outcomes` convention exactly — not churning it in
+  this PR).
+
+## Follow-ups (tracked issues per CLAUDE.md §11)
+
+1. **Eval harness gap (orion-sql-writer + gate script)**: neither has an eval lane;
+   the gate script is itself a measurement instrument but has no eval asserting its
+   verdict behavior end-to-end against a seeded database. Smallest useful eval: seed
+   a scratch Postgres with known audit distributions and assert GO/NO-GO/UNMEASURABLE
+   verdicts. File as an issue when opening this PR.
+2. **Dead-lettered drive audits are invisible to the gate**: a schema-drifted
+   producer's rows land in `bus_fallback_log`, silently shrinking verdict (b)'s
+   denominator. Consider a gate caveat sourced from `bus_fallback_log` counts for
+   this kind.
 
 ## Restart required
 

@@ -17,7 +17,11 @@ class DriveAuditSQL(Base):
     `orion:memory:drives:audit`. Read by the autonomy measurement gate, which
     does windowed range scans over `COALESCE(observed_at, created_at)` and
     reads `active_count`.
-    `artifact_id` is the primary key so re-delivered events upsert idempotently.
+    `artifact_id` is the primary key; rows are immutable, so the model is in
+    the worker's `INSERT_ONLY_MODELS` fast path — a re-delivered event hits the
+    duplicate-key catch and is skipped (idempotent), with no per-event merge
+    SELECT (every tick mints a fresh artifact_id, so that SELECT would always
+    miss).
 
     This is intentionally NOT an archive of the full artifact:
     evidence_items/source_event_refs/summary/tick_attribution are dropped by

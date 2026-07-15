@@ -150,27 +150,46 @@ def test_row_dict_constructs_drive_audit_sql_without_raising() -> None:
     assert row.active_count == 2
 
 
-def test_merge_redelivery_upserts_one_row_and_preserves_created_at() -> None:
-    """Re-delivery of the same artifact_id must upsert (one row), not duplicate.
+def test_insert_only_membership() -> None:
+    """DriveAuditSQL takes the INSERT_ONLY fast path, not merge().
 
-    Mirrors the sql-writer generic write path (`sess.merge(Model(**filtered))`)
-    against in-memory SQLite. Asserts the idempotency claim in the model
-    docstring and that server-defaulted `created_at` survives a re-merge that
-    omits it.
+    Every tick mints a fresh artifact_id, so merge()'s PK SELECT would always
+    miss — pure per-event overhead at drive-tick volume (review finding). The
+    fast path (add + duplicate-key catch) gives equivalent idempotency for
+    these immutable rows.
     """
+    from app.worker import INSERT_ONLY_MODELS
+
+    assert DriveAuditSQL in INSERT_ONLY_MODELS
+
+
+def test_insert_only_redelivery_keeps_one_row_and_first_write_wins() -> None:
+    """Re-delivery of the same artifact_id is skipped, not duplicated.
+
+    Mirrors the INSERT_ONLY fast path (`sess.add` + IntegrityError catch →
+    rollback + skip) against in-memory SQLite. Asserts the idempotency claim
+    in the model docstring: one row survives, the first write's values win.
+    """
+    from sqlalchemy.exc import IntegrityError
+
     engine = create_engine("sqlite://")
     DriveAuditSQL.__table__.create(bind=engine)
     Session = sessionmaker(bind=engine)
 
-    def _merge(audit: DriveAuditV1) -> None:
+    def _insert_only(audit: DriveAuditV1) -> bool:
         sess = Session()
         try:
-            sess.merge(DriveAuditSQL(**_row_dict(audit)))
-            sess.commit()
+            try:
+                sess.add(DriveAuditSQL(**_row_dict(audit)))
+                sess.commit()
+                return True
+            except IntegrityError:
+                sess.rollback()
+                return False
         finally:
             sess.close()
 
-    _merge(_make_audit())
+    assert _insert_only(_make_audit()) is True
 
     sess = Session()
     try:
@@ -181,15 +200,15 @@ def test_merge_redelivery_upserts_one_row_and_preserves_created_at() -> None:
         sess.close()
     assert original_created_at is not None
 
-    _merge(_make_audit(active_drives=["novelty"], dominant_drive="novelty"))
+    # Redelivery (same PK, different content) is skipped — first write wins.
+    assert _insert_only(_make_audit(active_drives=["novelty"], dominant_drive="novelty")) is False
 
     sess = Session()
     try:
         rows = sess.query(DriveAuditSQL).all()
         assert len(rows) == 1
         row = rows[0]
-        assert row.active_count == 1
-        assert row.active_drives == ["novelty"]
+        assert row.active_count == 2
         assert row.created_at == original_created_at
     finally:
         sess.close()

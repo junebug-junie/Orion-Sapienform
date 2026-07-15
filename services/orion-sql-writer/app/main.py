@@ -719,6 +719,18 @@ async def lifespan(app: FastAPI):
     except Exception as e:
         logger.warning("chat_message migration warning: %s", e)
 
+    drive_audits_retention_days = int(getattr(settings, "drive_audits_retention_days", 0) or 0)
+    if drive_audits_retention_days > 0:
+        try:
+            with engine.begin() as conn:
+                conn.exec_driver_sql(
+                    "DELETE FROM drive_audits WHERE COALESCE(observed_at, created_at) < (NOW() - (%s || ' days')::INTERVAL);",
+                    (str(drive_audits_retention_days),),
+                )
+            logger.info("🧹 Applied drive_audits retention window=%s days", drive_audits_retention_days)
+        except Exception as exc:
+            logger.warning("drive_audits retention startup failed (continuing boot): %s", exc)
+
     grammar_retention_days = int(getattr(settings, "grammar_events_retention_days", 0) or 0)
     if grammar_retention_days > 0:
         try:

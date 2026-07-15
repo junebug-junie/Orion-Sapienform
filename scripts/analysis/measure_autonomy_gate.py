@@ -405,7 +405,11 @@ def parse_sparql_histogram_bindings(bindings: Iterable[dict]) -> dict[int, int]:
             audits = int(float(raw_aud))
         except (TypeError, ValueError, OverflowError):
             continue
-        out[max(0, active_count)] = max(0, audits)
+        # Skip negatives, same as parse_postgres_histogram_rows: clamping a
+        # bogus row to 0 could overwrite the real 0 bucket.
+        if active_count < 0 or audits < 0:
+            continue
+        out[active_count] = audits
     return out
 
 
@@ -456,7 +460,7 @@ def is_undefined_table_error(exc: BaseException) -> bool:
 def resolve_drive_stats(
     postgres_result: tuple[DriveStats, str],
     fetch_fuseki,
-) -> tuple[DriveStats, str, list[str]]:
+) -> tuple[DriveStats, str, str, list[str]]:
     """Pick the drive co-activation source: Postgres first, Fuseki fallback.
 
     ``postgres_result`` is the already-fetched ``(DriveStats, note)`` from
@@ -466,32 +470,40 @@ def resolve_drive_stats(
     already folded to record_count == 0 by the adapter). Selection logic is
     pure; the I/O is injected via the callable so unit tests can stub it.
 
-    Returns ``(stats, source_label, notes)``. When both sources are empty the
-    returned stats keep record_count == 0 so ``verdict_economy`` still resolves
-    (b) to UNMEASURABLE — this function must never fabricate a measurable
-    result out of two dead sources.
+    Returns ``(stats, source_kind, source_label, notes)``. ``source_kind`` is
+    the structured discriminant — ``"postgres"`` / ``"fuseki"`` / ``"none"`` —
+    and is what callers must branch on; the label is display-only, so a
+    wording change can never silently alter control flow (e.g. the retention
+    caveat in ``run()``). When both sources are empty the returned stats keep
+    record_count == 0 so ``verdict_economy`` still resolves (b) to
+    UNMEASURABLE — this function must never fabricate a measurable result out
+    of two dead sources. The "fell back" fact is carried once, in ``notes``,
+    not duplicated into the label.
     """
 
     pg_stats, pg_note = postgres_result
     if pg_stats.record_count > 0:
         return (
             pg_stats,
+            "postgres",
             f"postgres drive_audits ({pg_stats.record_count} rows)",
             [pg_note],
         )
     fuseki_stats, fuseki_note = fetch_fuseki()
     notes = [f"{pg_note}; fell back to fuseki", fuseki_note]
     if fuseki_stats.record_count > 0:
-        source = (
-            f"fuseki DriveAudit graph ({fuseki_stats.record_count} rows; "
-            "postgres drive_audits had no rows in window, fell back to fuseki)"
+        return (
+            fuseki_stats,
+            "fuseki",
+            f"fuseki DriveAudit graph ({fuseki_stats.record_count} rows)",
+            notes,
         )
-    else:
-        source = (
-            "none: postgres drive_audits and fuseki DriveAudit graph both "
-            "returned zero rows in window"
-        )
-    return fuseki_stats, source, notes
+    return (
+        fuseki_stats,
+        "none",
+        "none: postgres drive_audits and fuseki DriveAudit graph both returned zero rows in window",
+        notes,
+    )
 
 
 UNMEASURABLE = "UNMEASURABLE"
@@ -1015,8 +1027,7 @@ def render_report(
         "",
         "Rule (b) GO iff coactivation_frac >= "
         f"{COACTIVATION_MIN_FRAC} AND resource_pressure frac >= "
-        f"{RESOURCE_PRESSURE_LEVEL} is >= {RESOURCE_PRESSURE_MIN_FRAC}. "
-        f"Drive histogram read from: {drive_source}.",
+        f"{RESOURCE_PRESSURE_LEVEL} is >= {RESOURCE_PRESSURE_MIN_FRAC}.",
         "",
         "## Coverage caveats",
         "",
@@ -1083,20 +1094,30 @@ def run(window: timedelta, window_label: str) -> int:
 
     # Drive co-activation: Postgres drive_audits first (live source), Fuseki
     # DriveAudit graph as fallback (frozen since 2026-06-19 — historical only).
-    drive_stats, drive_source, drive_notes = resolve_drive_stats(
+    drive_stats, drive_source_kind, drive_source, drive_notes = resolve_drive_stats(
         fetch_drive_stats_postgres(conn, window_start),
         lambda: fetch_drive_stats(fuseki_url, window_start),
     )
     caveats.extend(drive_notes)
-    if drive_source.startswith("postgres"):
+    if drive_source_kind == "postgres":
         # Postgres won, which suppresses any in-window Fuseki history -- so
         # the report must say when the table's own retention starts inside
-        # the window (partial coverage, not measured absence).
+        # the window (partial coverage, not measured absence), and how many
+        # in-window rows the frozen Fuseki graph holds that verdict (b) is
+        # therefore NOT counting.
         drive_retention_note = retention_caveat(
             "drive_audits", fetch_earliest_drive_audit_ts(conn), window_start
         )
         if drive_retention_note:
             caveats.append(drive_retention_note)
+            excluded, _ = fetch_drive_stats(fuseki_url, window_start)
+            if excluded.record_count > 0:
+                caveats.append(
+                    f"fuseki DriveAudit graph holds {excluded.record_count} in-window "
+                    "rows predating drive_audits coverage that are NOT included in "
+                    "verdict (b) -- the verdict reflects only the drive_audits "
+                    "portion of the window"
+                )
     if drive_stats.record_count == 0:
         anomalies += 1
     progress.emit(

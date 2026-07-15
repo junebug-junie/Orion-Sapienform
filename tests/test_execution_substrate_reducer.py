@@ -487,6 +487,48 @@ def test_isolated_lane_trace_does_not_merge_with_primary_motor_trace() -> None:
     assert proj.runs[isolated_trace].reasoning_present is False
 
 
+def test_extract_correlation_id_not_polluted_by_harness_motor_lane_suffix() -> None:
+    """Regression: HarnessGrammarCollector.trace_id now always carries the
+    "harness_motor" lane (fix for the ledger trace_id collision,
+    2026-07-15). parse_execution_trace_id() only splits on the first two
+    colons, so for a laned trace_id the parsed "correlation_id" slot
+    actually contains "{correlation_id}:{lane}". Found by review of that
+    fix: extract_execution_state_from_events() must prefer the event's own
+    clean correlation_id field over the parsed value, or every
+    harness-governor execution run's ExecutionRunStateV1.correlation_id
+    (exposed as-is on services/orion-substrate-runtime's
+    GET /projections/execution_trajectory debug endpoint) gets silently
+    suffixed with ":harness_motor"."""
+    laned_trace = f"{TRACE}:harness_motor"
+    event = GrammarEventV1(
+        event_id="harness-motor-intake",
+        event_kind="atom_emitted",
+        trace_id=laned_trace,
+        emitted_at=FIXED_TS,
+        observed_at=FIXED_TS,
+        atom=GrammarAtomV1(
+            atom_id=f"{laned_trace}:exec_request_received",
+            trace_id=laned_trace,
+            atom_type="observation",
+            semantic_role="exec_request_received",
+            layer="intake",
+            summary="Harness exec received plan request for verb=orion_unified, mode=orion, steps=0",
+        ),
+        provenance=GrammarProvenanceV1(
+            source_service="orion-harness-governor",
+            source_component="harness_grammar_emit",
+        ),
+        # Real HarnessGrammarCollector-emitted events always populate this
+        # cleanly, regardless of trace_id's lane -- see
+        # orion/harness/grammar_emit.py's _event()/_provenance().
+        correlation_id="corr-abc",
+    )
+    run = extract_execution_state_from_events([event], now=FIXED_TS)
+    assert run.correlation_id == "corr-abc"
+    assert run.trace_id == laned_trace
+    assert run.node_id == "athena"
+
+
 def _event_for_trace(
     trace_id: str,
     role: str,

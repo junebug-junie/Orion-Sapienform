@@ -90,6 +90,71 @@ def test_trace_started_prefers_observed_at_over_emitted_at() -> None:
     assert params["started_at"] != emitted
 
 
+def test_harness_and_unlaned_cortex_exec_trace_ids_no_longer_share_ledger_key() -> None:
+    """Regression for the trace_id collision confirmed live 2026-07-15 (corr
+    99487e95-709c-4340-8bf5-c4c9840a247b): before this fix,
+    HarnessGrammarCollector.trace_id and an unrelated, unlaned (root,
+    trace_lane=None) CortexExecGrammarCollector call sharing the same
+    node_name/correlation_id both computed the exact same bare
+    `cortex.exec:{node}:{correlation_id}` string. _upsert_trace's
+    on_conflict_do_update(index_elements=["trace_id"]) keys grammar_traces
+    on trace_id alone (no source_service in the key), so whichever
+    producer's trace_started/trace_ended landed last in the ledger silently
+    overwrote the other's started_at/ended_at -- live evidence: a real ~30s
+    harness motor run was erased and replaced by an unrelated ~0.7s
+    cortex-exec blip. HarnessGrammarCollector now passes lane="harness_motor"
+    (see orion/harness/grammar_emit.py), so the two producers upsert into
+    two distinct grammar_traces rows instead of one shared row."""
+    session = MagicMock()
+    node, corr = "athena", "99487e95-709c-4340-8bf5-c4c9840a247b"
+    # Inlined rather than imported from orion.substrate.execution_loop.ids:
+    # importing that module pulls in orion/substrate/__init__.py's full
+    # import chain (materializer -> graphdb_store -> requests), which broke
+    # collection for services/orion-sql-writer's thin CI environment (no
+    # requests installed there) -- this test only needs the string SHAPE
+    # cortex_exec_trace_id() produces, not the real helper. Same class of
+    # issue as project_orion_thought_thin_bus_no_substrate: never let a
+    # thin service's test suite transitively import orion.substrate.*.
+    harness_trace_id_value = f"cortex.exec:{node}:{corr}:harness_motor"
+    cortex_exec_root_trace_id_value = f"cortex.exec:{node}:{corr}"
+
+    harness_started = GrammarEventV1(
+        event_id="evt:harness:started",
+        event_kind="trace_started",
+        # Mirrors HarnessGrammarCollector.trace_id's fixed lane.
+        trace_id=harness_trace_id_value,
+        emitted_at=datetime(2026, 7, 15, 15, 58, 20, tzinfo=timezone.utc),
+        observed_at=datetime(2026, 7, 15, 15, 58, 20, tzinfo=timezone.utc),
+        provenance=GrammarProvenanceV1(source_service="orion-harness-governor"),
+    )
+    cortex_exec_root_started = GrammarEventV1(
+        event_id="evt:cortex_exec:started",
+        event_kind="trace_started",
+        # Mirrors CortexExecGrammarCollector.trace_id for a root call
+        # (trace_lane_for_verb() returns None for any verb outside
+        # CORTEX_EXEC_ISOLATED_TRACE_LANES) -- the exact slot that used to
+        # collide with the harness governor's own trace_id.
+        trace_id=cortex_exec_root_trace_id_value,
+        emitted_at=datetime(2026, 7, 15, 15, 59, 27, tzinfo=timezone.utc),
+        observed_at=datetime(2026, 7, 15, 15, 59, 27, tzinfo=timezone.utc),
+        provenance=GrammarProvenanceV1(source_service="orion-cortex-exec"),
+    )
+
+    _upsert_trace(session, harness_started)
+    harness_stmt = session.execute.call_args[0][0]
+    harness_trace_id = harness_stmt.compile().params["trace_id"]
+
+    _upsert_trace(session, cortex_exec_root_started)
+    cortex_exec_stmt = session.execute.call_args[0][0]
+    cortex_exec_root_trace_id = cortex_exec_stmt.compile().params["trace_id"]
+
+    assert harness_trace_id != cortex_exec_root_trace_id
+    # Both real-world producers still compute a valid cortex.exec-shaped
+    # trace_id -- only the lane slot changed, not the overall shape.
+    assert harness_trace_id.startswith(f"cortex.exec:{node}:{corr}")
+    assert cortex_exec_root_trace_id == f"cortex.exec:{node}:{corr}"
+
+
 def test_trace_started_falls_back_to_emitted_at_when_observed_at_missing() -> None:
     """Producers that don't populate observed_at (or haven't been fixed to
     populate it accurately yet) must not regress -- _created_at()'s existing

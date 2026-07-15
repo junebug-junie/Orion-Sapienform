@@ -88,7 +88,25 @@ class HarnessGrammarCollector:
 
     @property
     def trace_id(self) -> str:
-        return cortex_exec_trace_id(self.node_name, self.correlation_id)
+        # lane="harness_motor" gives the harness governor's own primary
+        # unified-turn motor trace a namespace slot that no real
+        # CortexExecGrammarCollector root call (trace_lane=None) can ever
+        # land in -- without this, a harness-governed turn's trace_id and an
+        # unrelated, unlaned cortex-exec root call sharing the same
+        # correlation_id collide on the exact same bare
+        # `cortex.exec:{node}:{correlation_id}` string. Confirmed live
+        # 2026-07-15 (corr 99487e95-709c-4340-8bf5-c4c9840a247b):
+        # orion/grammar/ledger.py's `_upsert_trace()` upserts grammar_traces
+        # keyed on trace_id alone, so whichever producer's trace_started/
+        # trace_ended lands last in the ledger silently overwrites the
+        # other's started_at/ended_at -- a real ~30s harness motor run was
+        # erased and replaced by an unrelated ~0.7s cortex-exec blip. This
+        # reuses cortex_exec_trace_id's existing lane mechanism (see
+        # orion/substrate/execution_loop/ids.py's docstring, which already
+        # names "the primary unified-turn motor trace" as the thing lanes
+        # are meant to protect) rather than inventing a new mechanism or
+        # touching the ledger's conflict key.
+        return cortex_exec_trace_id(self.node_name, self.correlation_id, lane="harness_motor")
 
     def _provenance(self, payload_ref: str) -> GrammarProvenanceV1:
         return GrammarProvenanceV1(

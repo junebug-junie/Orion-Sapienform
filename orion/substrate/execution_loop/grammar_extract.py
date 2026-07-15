@@ -63,7 +63,26 @@ def extract_execution_state_from_events(
     trace_id = events[0].trace_id
     parsed = parse_execution_trace_id(trace_id or "")
     node_id = parsed[0] if parsed else "unknown"
-    correlation_id = parsed[1] if parsed else (events[0].correlation_id or "unknown")
+    # Prefer the event's own explicit correlation_id over the value parsed
+    # out of trace_id. parse_execution_trace_id() only splits on the first
+    # two colons (trace_id.split(":", 2)), so for any lane-suffixed trace_id
+    # (e.g. HarnessGrammarCollector's "harness_motor" lane, or
+    # CortexExecGrammarCollector's stance_react/harness_finalize_reflect/
+    # orion_voice_finalize lanes) the parsed "correlation_id" slot actually
+    # contains "{correlation_id}:{lane}" -- both real producers already
+    # populate event.correlation_id cleanly (see
+    # orion/harness/grammar_emit.py's _event()/build_harness_grammar_events()
+    # and the cortex-exec sibling), so falling back to the parsed value only
+    # when the clean field is genuinely absent avoids silently polluting
+    # ExecutionRunStateV1.correlation_id -- a field whose name has an
+    # established, unsuffixed meaning elsewhere in the system, and which is
+    # exposed as-is on services/orion-substrate-runtime's
+    # GET /projections/execution_trajectory debug endpoint. Found in review
+    # of the trace_id lane fix (2026-07-15): before that fix,
+    # HarnessGrammarCollector's trace_id was unlaned, so this precedence
+    # inversion was latent; laning it made the pollution live for every
+    # harness-governor execution run.
+    correlation_id = events[0].correlation_id or (parsed[1] if parsed else "unknown")
 
     run = ExecutionRunStateV1(
         trace_id=trace_id or "",

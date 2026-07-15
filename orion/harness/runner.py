@@ -26,6 +26,7 @@ from orion.harness.grammar_publish import publish_harness_step_grammar
 from orion.harness.prefix import compile_harness_prefix, harness_motor_instruction
 from orion.harness.repair import map_repair_pressure_contract
 from orion.harness.step_stream import publish_harness_run_step
+from orion.harness.tool_provenance_audit import detect_tool_provenance_mismatch
 from orion.schemas.cognition.answer_contract import AnswerContract
 from orion.schemas.harness_finalize import (
     GrammarReceiptV1,
@@ -50,6 +51,12 @@ class HarnessMotorResult:
     grounding_status: str = "grounded"
     draft_molecule: HarnessDraftMoleculeV1 | None = None
     grammar_collector: HarnessGrammarCollector | None = None
+    # Distinct from grounding_status: that field is an overloaded error/
+    # overflow code already surfaced as a user-visible error by downstream
+    # consumers (orion/hub/turn_orchestrator.py, orion-harness-governor).
+    # This is a soft audit signal, not a motor failure -- never repurpose
+    # grounding_status for it.
+    tool_provenance_audit: str | None = None
 
 
 def _default_harness_node_name() -> str:
@@ -116,6 +123,7 @@ def build_draft_molecule(
     grammar_receipts: list[GrammarReceiptV1],
     coalition_snapshot: CoalitionSnapshotV1,
     repair_overlay: HarnessRepairOverlayV1,
+    tool_provenance_audit: str | None = None,
 ) -> HarnessDraftMoleculeV1:
     return HarnessDraftMoleculeV1(
         correlation_id=correlation_id,
@@ -126,6 +134,7 @@ def build_draft_molecule(
         grammar_receipts=list(grammar_receipts),
         coalition_snapshot=coalition_snapshot,
         repair_overlay_mode=repair_overlay.mode if repair_overlay.mode != "default" else None,
+        tool_provenance_audit=tool_provenance_audit,
     )
 
 
@@ -301,6 +310,21 @@ class HarnessRunner:
                 )
                 break
 
+        # Post-hoc audit, not prevention: the fcc subprocess has already run
+        # to completion by this point, so this can only flag a mismatch
+        # between what the draft claims and this turn's own tool trace, not
+        # stop it before generation. Computed once here (before either
+        # _publish_motor_lifecycle call) so both the empty-draft and success
+        # paths' grammar events pick it up via build_harness_grammar_events.
+        tool_provenance_audit = detect_tool_provenance_mismatch(draft_text, receipts)
+        if tool_provenance_audit:
+            collector.record_tool_provenance_mismatch(mismatch=tool_provenance_audit)
+            logger.warning(
+                "harness_tool_provenance_mismatch corr=%s detail=%s",
+                request.correlation_id,
+                tool_provenance_audit,
+            )
+
         async def _publish_motor_lifecycle(*, status: str, final_text_present: bool) -> None:
             collector.record_result_assembled(
                 status=status,
@@ -348,6 +372,7 @@ class HarnessRunner:
                 compliance_verdict=compliance_verdict if compliance_verdict != "completed" else "failed",
                 grounding_status=grounding_status if grounding_status != "grounded" else "empty_draft",
                 grammar_collector=collector,
+                tool_provenance_audit=tool_provenance_audit,
             )
 
         await _publish_motor_lifecycle(status="success", final_text_present=False)
@@ -359,6 +384,7 @@ class HarnessRunner:
             grammar_receipts=receipts,
             coalition_snapshot=coalition,
             repair_overlay=overlay,
+            tool_provenance_audit=tool_provenance_audit,
         )
         logger.info(
             "harness_motor_complete corr=%s steps=%s grammar_receipts=%s verdict=%s grounding=%s draft_len=%s",
@@ -378,4 +404,5 @@ class HarnessRunner:
             grounding_status=grounding_status,
             draft_molecule=molecule,
             grammar_collector=collector,
+            tool_provenance_audit=tool_provenance_audit,
         )

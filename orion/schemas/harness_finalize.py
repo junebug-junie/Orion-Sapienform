@@ -26,6 +26,10 @@ class HarnessDraftMoleculeV1(BaseModel):
     grammar_receipts: list[GrammarReceiptV1] = Field(default_factory=list)
     coalition_snapshot: CoalitionSnapshotV1
     repair_overlay_mode: str | None = None
+    # Set by orion.harness.tool_provenance_audit.detect_tool_provenance_mismatch
+    # when draft_text uses live-immediacy language but grammar_receipts show a
+    # fetch-shaped tool call this same turn. None on every normal turn.
+    tool_provenance_audit: str | None = None
 
 
 class SubstrateFinalizeAppraisalV1(BaseModel):

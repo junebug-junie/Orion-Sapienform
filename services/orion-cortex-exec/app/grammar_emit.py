@@ -35,6 +35,13 @@ CORTEX_EXEC_ISOLATED_TRACE_LANES = frozenset({
     "stance_react",
     "harness_finalize_reflect",
     "orion_voice_finalize",
+    # "harness_motor" is RESERVED -- it is HarnessGrammarCollector's own
+    # lane (orion/harness/grammar_emit.py), added to isolate the harness
+    # governor's primary trace from an unlaned cortex-exec root call
+    # sharing the same correlation_id (fix 2026-07-15). A cortex-exec verb
+    # literally named "harness_motor" being added here would silently
+    # recreate that exact collision in a new (lane, lane) pairing instead
+    # of the original (unlaned, unlaned) one.
 })
 
 

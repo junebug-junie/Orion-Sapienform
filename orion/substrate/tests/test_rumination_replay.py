@@ -36,7 +36,8 @@ def test_habituation_demotes_stuck_loop_below_competitor():
                                  history=SalienceHistory(), apply_habituation=True)
     assert stuck0 > fresh0
 
-    stuck_hist = SalienceHistory(dwell_ticks=8, recent_theme_counts={"open-loop-stuck": 8},
+    stuck_hist = SalienceHistory(dwell_ticks=8, dwelling_loop_id="open-loop-stuck",
+                                 recent_theme_counts={"open-loop-stuck": 8},
                                  resonance_theme_keys={"open-loop-stuck"})
     stuckN, feats = compute_salience(loop=stuck, signals=[_sig("open-loop-stuck", 0.9)],
                                      history=stuck_hist, apply_habituation=True)

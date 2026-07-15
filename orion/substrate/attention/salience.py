@@ -124,7 +124,7 @@ def _loop_dwell(theme_key: str, history: SalienceHistory) -> float:
     changes nothing about who wins. Only the loop that IS the dwelling one
     should carry a dwell signal; everyone else gets 0.
     """
-    if history.dwelling_loop_id is None or theme_key != history.dwelling_loop_id:
+    if theme_key != history.dwelling_loop_id:
         return 0.0
     return min(1.0, history.dwell_ticks / DWELL_NORM)
 

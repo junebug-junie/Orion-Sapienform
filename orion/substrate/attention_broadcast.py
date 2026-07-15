@@ -345,7 +345,13 @@ def broadcast_projection_from_frame(frame: AttentionFrameV1) -> AttentionBroadca
                 }
             )
         _dwell_ticks += 1
-        _current_dwelling_loop_id = selected.open_loop_id if selected is not None else None
+        # Mirror attended_node_ids' own guard above: only attribute dwell to a
+        # loop id that actually resolved against frame.open_loops. A dangling
+        # selected.open_loop_id (no matching loop) must not be recorded as
+        # dwelling -- _loop_dwell would just never match it anyway, but
+        # leaving it unset here keeps dwelling_loop_id meaning "a real loop
+        # is dwelling" rather than "some id was selected, resolved or not."
+        _current_dwelling_loop_id = selected_loop.id if selected_loop is not None else None
     else:
         # Decay: active coalition has left the recent window entirely
         if _current_active_coalition is not None and all(

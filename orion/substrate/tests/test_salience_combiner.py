@@ -128,7 +128,8 @@ def test_recency_decays_with_age():
 
 def test_apply_habituation_toggle_changes_score():
     loop = _loop()
-    hist = SalienceHistory(dwell_ticks=6, recent_theme_counts={loop.id: 5},
+    hist = SalienceHistory(dwell_ticks=6, dwelling_loop_id=loop.id,
+                           recent_theme_counts={loop.id: 5},
                            resonance_theme_keys={loop.id})
     with_hab, _ = compute_salience(loop=loop, signals=[_signal(0.9, 0.9)],
                                    history=hist, apply_habituation=True)

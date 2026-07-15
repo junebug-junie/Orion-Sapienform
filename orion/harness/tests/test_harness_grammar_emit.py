@@ -288,6 +288,54 @@ def test_finalize_atoms_use_real_observed_at(monkeypatch: pytest.MonkeyPatch) ->
     assert edge_events[0].observed_at == emitted_atom.observed_at
 
 
+def test_result_assembled_reinvoked_keeps_first_observed_at(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """record_result_assembled (and record_result_emitted) really is called
+    twice on the SAME collector in production: orion/harness/runner.py's
+    motor-lifecycle publish calls it once, then
+    services/orion-harness-governor/app/bus_listener.py's finalize-lifecycle
+    publish calls it again on motor.grammar_collector -- the identical
+    instance. Both calls produce the same deterministic atom_id/event_id.
+    Before this test's fix: the second call would advance
+    _atom_observed_at, so a motor-time publish and a later finalize-time
+    publish would carry the SAME atom_id/event_id but DIFFERENT
+    observed_at/time_range -- exactly the 'same identity, contradictory
+    timestamp' shape this whole patch exists to eliminate, just moved from
+    'always identical' (the original bug) to 'identical id, drifting
+    timestamp' (a new variant). orion/grammar/ledger.py's
+    on_conflict_do_nothing masks this at the DB layer, but a raw bus
+    consumer of orion:grammar:event would see the drift directly."""
+    _install_fake_clock(monkeypatch)
+    c = HarnessGrammarCollector(node_name=NODE, correlation_id=CORR, observed_at=FIXED)
+    _record_two_step_trace(c)
+    first_events = build_harness_grammar_events(c)
+    first_assembled = next(
+        e for e in first_events if e.atom and e.atom.semantic_role == "exec_result_assembled"
+    )
+    first_ts = first_assembled.observed_at
+
+    # Simulate the finalize chain re-invoking these on the same instance,
+    # as bus_listener.py's _emit_finalize_lifecycle_grammar really does --
+    # step_count=0 here (vs. the first call's 2) so the refreshed content
+    # is observably different from the first call's summary text.
+    c.record_result_assembled(
+        status="success", final_text_present=True, step_count=0,
+        grammar_receipt_count=1, reflection_ran=True, quick_lane_skipped_5b=False,
+    )
+    c.record_result_emitted(reply_present=True, status="success")
+
+    second_events = build_harness_grammar_finalize_events(c)
+    second_assembled = next(
+        e for e in second_events if e.atom and e.atom.semantic_role == "exec_result_assembled"
+    )
+    assert second_assembled.atom.atom_id == first_assembled.atom.atom_id
+    assert second_assembled.observed_at == first_ts
+    assert second_assembled.atom.time_range.start == first_ts
+    # Content still refreshes on the second call -- only timing is pinned.
+    assert "thinking_source=finalize_reflect" in second_assembled.atom.summary
+
+
 def test_finalize_events_emit_only_assembled_and_egress() -> None:
     c = HarnessGrammarCollector(node_name=NODE, correlation_id=CORR, observed_at=FIXED)
     c.record_request_received()

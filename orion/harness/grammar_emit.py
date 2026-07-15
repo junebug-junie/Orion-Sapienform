@@ -73,7 +73,7 @@ class HarnessGrammarCollector:
     # Real wall-clock moment each atom was actually recorded, keyed by
     # atom_id. Populated by _put_atom() -- same fix shape as
     # CortexExecGrammarCollector's _atom_observed_at
-    # (services/orion-cortex-exec/app/grammar_emit.py, PR #1039/spec
+    # (services/orion-cortex-exec/app/grammar_emit.py, PR #1042/spec
     # 2026-07-14-cortex-exec-grammar-atom-wall-clock-spec.md). Before this,
     # every GrammarEventV1's observed_at in a harness trace was the same
     # value captured once at collector construction (self.observed_at,
@@ -104,7 +104,20 @@ class HarnessGrammarCollector:
         return f"{self.trace_id}:{key}"
 
     def _put_atom(self, key: str, atom: GrammarAtomV1) -> None:
-        now = datetime.now(timezone.utc)
+        # Idempotent per atom_id, not per call: record_result_assembled() is
+        # genuinely re-invoked on the SAME collector in production (motor
+        # publish in runner.py, then a second call from the finalize chain
+        # in services/orion-harness-governor/app/bus_listener.py) with a
+        # deterministic atom_id both times. Advancing the timestamp on the
+        # second call would publish the same atom_id/event_id twice with
+        # contradictory observed_at -- orion/grammar/ledger.py's
+        # on_conflict_do_nothing masks this at the DB layer (first write
+        # wins there too), but a raw bus consumer would see it directly.
+        # Reusing the first-seen timestamp keeps every publish for a given
+        # atom_id self-consistent, matching the DB's own dedup semantics.
+        # The atom's content (self._atoms[key]) still updates on every call
+        # -- only its recorded occurrence time is pinned to first sight.
+        now = self._atom_observed_at.get(atom.atom_id) or datetime.now(timezone.utc)
         # Same source timestamp for both, set together so they can never
         # drift -- see CortexExecGrammarCollector._put_atom's identical
         # pattern for why time_range is stamped here too (ledger.py's
@@ -112,6 +125,15 @@ class HarnessGrammarCollector:
         atom.time_range = TimeRangeV1(start=now, end=now)
         self._atoms[key] = atom
         self._atom_observed_at[atom.atom_id] = now
+
+    def observed_at_for(self, atom_id: str) -> datetime:
+        """Real recorded timestamp for a given atom_id, falling back to
+        trace-start observed_at only if that atom somehow bypassed
+        _put_atom(). Single source for the lookup build_harness_grammar_events()
+        and build_harness_grammar_finalize_events() both need per atom and
+        per edge, so a future change to the fallback policy can't be applied
+        to some call sites and missed at others."""
+        return self._atom_observed_at.get(atom_id, self.observed_at)
 
     def record_request_received(self) -> None:
         ref = f"harness.exec.request:{self.correlation_id}"
@@ -462,7 +484,7 @@ def build_harness_grammar_events(
         # trace-START value every atom in a trace previously shared. Falls
         # back to trace-start observed_at only if an atom somehow bypassed
         # _put_atom(). emitted_at stays the shared flush-time value.
-        atom_ts = collector._atom_observed_at.get(atom.atom_id, observed_at)
+        atom_ts = collector.observed_at_for(atom.atom_id)
         events.append(
             _event(
                 event_kind="atom_emitted",
@@ -494,7 +516,7 @@ def build_harness_grammar_events(
         )
         # observed_at = real moment the target atom happened; emitted_at
         # stays the shared flush-time value, same reasoning as above.
-        edge_ts = collector._atom_observed_at.get(to_atom_id, observed_at)
+        edge_ts = collector.observed_at_for(to_atom_id)
         events.append(
             _event(
                 event_kind="edge_emitted",
@@ -557,7 +579,7 @@ def build_harness_grammar_finalize_events(
     provenance = collector._provenance(f"harness.exec.finalize:{collector.correlation_id}")
     events: list[GrammarEventV1] = []
     for atom in atoms:
-        atom_ts = collector._atom_observed_at.get(atom.atom_id, observed_at)
+        atom_ts = collector.observed_at_for(atom.atom_id)
         events.append(
             _event(
                 event_kind="atom_emitted",
@@ -587,7 +609,7 @@ def build_harness_grammar_finalize_events(
             salience=0.7,
             evidence_event_ids=[collector.correlation_id],
         )
-        edge_ts = collector._atom_observed_at.get(emitted.atom_id, observed_at)
+        edge_ts = collector.observed_at_for(emitted.atom_id)
         events.append(
             _event(
                 event_kind="edge_emitted",

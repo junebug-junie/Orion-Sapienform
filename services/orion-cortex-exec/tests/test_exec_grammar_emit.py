@@ -482,6 +482,50 @@ def test_trace_ended_observed_at_reflects_last_atom_not_trace_start(
     assert trace_ended.observed_at == max(e.observed_at for e in atom_events)
 
 
+def test_result_assembled_reinvoked_keeps_first_observed_at(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """record_result_assembled really can be called more than once on the
+    SAME collector in production: get_or_create_collector() caches one
+    collector per ctx, and record_assembled_grammar() reads that same
+    cached instance from 4 separate call sites in router.py (motor/
+    finalize/voice-finalize lanes) -- the exact same-collector-reinvoked-
+    across-phases shape found live in the sibling HarnessGrammarCollector
+    (orion/harness/grammar_emit.py, 2026-07-15). Before this fix: the
+    second call would advance _atom_observed_at, so an earlier-phase
+    publish and a later-phase publish would carry the SAME atom_id/
+    event_id (deterministic, trace_id + fixed key) but DIFFERENT
+    observed_at/time_range -- the 'same identity, contradictory timestamp'
+    shape this whole fix exists to eliminate. on_conflict_do_nothing masks
+    it at the DB layer, but a raw bus consumer of the event stream
+    wouldn't be."""
+    _install_fake_clock(monkeypatch)
+    collector = CortexExecGrammarCollector(
+        node_name=NODE, correlation_id=CORR, code_version="0.2.0", observed_at=FIXED_OBS,
+    )
+    _record_two_step_trace(collector)
+    first_events = build_cortex_exec_grammar_events(collector)
+    first_assembled = next(
+        e for e in first_events if e.atom and e.atom.semantic_role == "exec_result_assembled"
+    )
+    first_ts = first_assembled.observed_at
+
+    collector.record_result_assembled(
+        status="success", final_text_present=True, reasoning_present=True,
+        thinking_source="finalize_reflect",
+    )
+
+    second_events = build_cortex_exec_grammar_events(collector)
+    second_assembled = next(
+        e for e in second_events if e.atom and e.atom.semantic_role == "exec_result_assembled"
+    )
+    assert second_assembled.atom.atom_id == first_assembled.atom.atom_id
+    assert second_assembled.observed_at == first_ts
+    assert second_assembled.atom.time_range.start == first_ts
+    # Content still refreshes on the second call -- only timing is pinned.
+    assert "thinking_source=finalize_reflect" in second_assembled.atom.summary
+
+
 def test_trace_ended_falls_back_to_trace_start_with_zero_atoms(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

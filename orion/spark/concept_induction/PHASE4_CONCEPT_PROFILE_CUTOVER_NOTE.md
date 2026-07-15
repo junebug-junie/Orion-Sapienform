@@ -1,5 +1,15 @@
 # Phase 4: ConceptProfile Runtime Cutover (concept_induction_pass)
 
+## Status (2026-07-14)
+
+The underlying `spark/concept-profile` RDF graph was deleted from the live
+Fuseki store on 2026-07-14 (backed up first: 1.2GB, 5,611,466 triples). The
+`graph` backend described below is **not currently usable** — selecting it
+will return empty/error results against a dropped graph, not a functioning
+read path. A replacement store is planned but not yet built. The
+local/fallback semantics documented below remain accurate and are unaffected
+by the graph deletion.
+
 ## Scope
 - `concept_induction_pass` is the first consumer with runtime cutover controls.
 - `chat_stance` is intentionally excluded in this phase and continues to follow global repository backend behavior.

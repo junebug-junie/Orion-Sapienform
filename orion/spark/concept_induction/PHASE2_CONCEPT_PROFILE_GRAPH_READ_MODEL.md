@@ -1,5 +1,14 @@
 # Phase 2: Spark ConceptProfile Graph Read Model
 
+## Status (2026-07-14)
+
+The `spark/concept-profile` RDF graph this read model targets was deleted
+from the live Fuseki store on 2026-07-14 (backed up first: 1.2GB, 5,611,466
+triples). It had no live readers — the repository backend has always been
+`local` in every deployed environment since this shipped. This document is
+retained as a historical design record of the graph read model, not a
+currently-usable spec; a replacement store is planned but not yet built.
+
 ## What was added
 
 A graph-backed Spark concept-profile read backend now exists behind the existing repository seam.

@@ -641,6 +641,28 @@ async def lifespan(app: FastAPI):
                 "CREATE INDEX IF NOT EXISTS idx_action_outcomes_correlation_id ON action_outcomes (correlation_id);"
             )
             conn.exec_driver_sql(
+                """
+                CREATE TABLE IF NOT EXISTS drive_audits (
+                    artifact_id TEXT PRIMARY KEY,
+                    subject TEXT NOT NULL,
+                    active_count INTEGER NOT NULL,
+                    active_drives JSONB,
+                    dominant_drive TEXT NULL,
+                    drive_pressures JSONB,
+                    correlation_id TEXT NULL,
+                    observed_at TIMESTAMPTZ NULL,
+                    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+                );
+                """
+            )
+            # The autonomy measurement gate windows on COALESCE(observed_at,
+            # created_at); a bare created_at index would never serve that
+            # predicate (observed_at is nearly always set), so index the
+            # expression itself.
+            conn.exec_driver_sql(
+                "CREATE INDEX IF NOT EXISTS idx_drive_audits_window ON drive_audits ((COALESCE(observed_at, created_at)) DESC);"
+            )
+            conn.exec_driver_sql(
                 "ALTER TABLE bus_fallback_log ADD COLUMN IF NOT EXISTS created_at_ts TIMESTAMPTZ;"
             )
             conn.exec_driver_sql(

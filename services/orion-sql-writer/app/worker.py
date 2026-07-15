@@ -72,10 +72,12 @@ from app.models import (
     MindRunSQL,
     VisionEventSQL,
     ActionOutcomeSQL,
+    DriveAuditSQL,
     PhiRewardSQL,
     GrammarEventSQL,
 )
 from orion.autonomy.models import ActionOutcomeEmitV1
+from orion.core.schemas.drives import DriveAuditV1
 from orion.evidence_index import build_evidence_units
 
 from orion.core.bus.bus_service_chassis import ChassisConfig, Hunter
@@ -422,6 +424,7 @@ MODEL_MAP: Dict[str, Tuple[Type[Any], Optional[Type[BaseModel]]]] = {
     "GrammarEventSQL": (GrammarEventSQL, GrammarEventV1),
     "VisionEventSQL": (VisionEventSQL, VisionEventBundleItem),
     "ActionOutcomeSQL": (ActionOutcomeSQL, ActionOutcomeEmitV1),
+    "DriveAuditSQL": (DriveAuditSQL, DriveAuditV1),
     "PhiRewardSQL": (PhiRewardSQL, PhiIntrinsicRewardV1),
 }
 
@@ -1062,6 +1065,21 @@ def _ensure_chat_history_from_message(
         existing.client_meta = _json_sanitize(client_meta)
 
 
+def _apply_drive_audit_derivations(write_data: dict, filtered_data: dict) -> None:
+    """Per-model derivations for DriveAuditSQL (slim measurement row).
+
+    `active_count` is derived (it is not on the wire payload) as
+    `len(active_drives)`; malformed/absent active_drives degrades to 0, never
+    raises. `observed_at` maps from the artifact's canonical `ts` field
+    (GraphReadyArtifact), which is not a column and would otherwise be dropped
+    by the mapper-column filter in `_write_row`.
+    """
+    active = write_data.get("active_drives")
+    filtered_data["active_count"] = len(active) if isinstance(active, list) else 0
+    if filtered_data.get("observed_at") is None:
+        filtered_data["observed_at"] = write_data.get("ts")
+
+
 def _write_row(sql_model_cls, data: dict) -> bool:
     sess = get_session()
     try:
@@ -1128,6 +1146,9 @@ def _write_row(sql_model_cls, data: dict) -> bool:
                 f"preview={_preview_text(persisted_value)}",
                 flush=True,
             )
+
+        if sql_model_cls is DriveAuditSQL:
+            _apply_drive_audit_derivations(write_data, filtered_data)
 
         # Standard coercion
         for col in mapper.columns:

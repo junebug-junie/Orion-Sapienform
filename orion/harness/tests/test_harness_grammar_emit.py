@@ -50,8 +50,37 @@ def _record_two_step_trace(collector: HarnessGrammarCollector) -> None:
 
 
 def test_trace_id_matches_cortex_exec_shape() -> None:
+    """HarnessGrammarCollector's trace_id lives in its own lane
+    (lane="harness_motor") within the cortex.exec trace_id namespace, not
+    the bare/no-lane slot -- a real CortexExecGrammarCollector root call
+    (trace_lane=None) can also land in the bare slot for the same
+    correlation_id, and orion/grammar/ledger.py's _upsert_trace() keys
+    grammar_traces on trace_id alone, so two producers landing on the same
+    bare trace_id silently overwrite each other's started_at/ended_at.
+    See test_harness_trace_id_distinct_from_unlaned_cortex_exec_root below
+    for the direct collision-shaped regression test."""
     c = HarnessGrammarCollector(node_name=NODE, correlation_id=CORR, observed_at=FIXED)
-    assert c.trace_id == cortex_exec_trace_id(NODE, CORR)
+    assert c.trace_id == cortex_exec_trace_id(NODE, CORR, lane="harness_motor")
+    assert c.trace_id != cortex_exec_trace_id(NODE, CORR)
+
+
+def test_harness_trace_id_distinct_from_unlaned_cortex_exec_root() -> None:
+    """Live-data-shaped regression test for the collision confirmed
+    2026-07-15 (corr 99487e95-709c-4340-8bf5-c4c9840a247b): a harness-
+    governed turn's HarnessGrammarCollector and a separate, unrelated
+    CortexExecGrammarCollector root call (trace_lane=None) sharing the same
+    node_name/correlation_id must never produce the same trace_id, or the
+    ledger's trace_id-keyed upsert lets one producer's trace_started/
+    trace_ended silently overwrite the other's."""
+    harness = HarnessGrammarCollector(node_name=NODE, correlation_id=CORR, observed_at=FIXED)
+    # trace_lane=None mirrors CortexExecGrammarCollector's root/default case
+    # (trace_lane_for_verb() returns None for any verb not in
+    # CORTEX_EXEC_ISOLATED_TRACE_LANES) -- reproduced directly via
+    # cortex_exec_trace_id rather than importing the sibling service's
+    # collector, since orion/harness has no dependency on
+    # services/orion-cortex-exec.
+    unlaned_cortex_exec_root_trace_id = cortex_exec_trace_id(NODE, CORR, lane=None)
+    assert harness.trace_id != unlaned_cortex_exec_root_trace_id
 
 
 def test_compute_reasoning_present_rules() -> None:

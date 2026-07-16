@@ -9,8 +9,6 @@ logger = logging.getLogger("orion.cortex.autonomy_slice")
 
 # Compact projection, not a full evidence dump: cap active_tensions hard.
 _MAX_ACTIVE_TENSIONS = 3
-# Minimum |after - before| pressure movement to call a trend rather than "stable".
-_PRESSURE_TREND_EPSILON = 0.02
 # Default cap for recent_actions when a caller doesn't pass max_recent_actions
 # explicitly (e.g. direct/test callers). The real production call site
 # (chat_stance.py) always passes its own _MAX_RECENT_DISPATCH_ACTIONS
@@ -38,33 +36,6 @@ def _bounded_unique_tensions(values: Any, limit: int = _MAX_ACTIVE_TENSIONS) -> 
         if len(out) >= limit:
             break
     return out
-
-
-def _pressure_trend(movement_debug: Any) -> str | None:
-    """Cheap before/after pressure comparison from ctx['chat_autonomy_movement_debug'].
-
-    Never fabricates a trend: returns None unless both before/after pressure
-    dicts are actually present (e.g. first-ever turn for a subject has no
-    'before' pressures to compare against).
-    """
-    if not isinstance(movement_debug, dict):
-        return None
-    before = movement_debug.get("pressures_before")
-    after = movement_debug.get("pressures_after")
-    if not isinstance(before, dict) or not isinstance(after, dict):
-        return None
-    keys = set(before) | set(after)
-    if not keys:
-        return None
-    try:
-        delta_sum = sum(float(after.get(k, 0.0)) - float(before.get(k, 0.0)) for k in keys)
-    except (TypeError, ValueError):
-        return None
-    if delta_sum > _PRESSURE_TREND_EPSILON:
-        return "rising"
-    if delta_sum < -_PRESSURE_TREND_EPSILON:
-        return "falling"
-    return "stable"
 
 
 def _format_recent_actions(entries: Any, limit: int) -> list[str]:
@@ -104,82 +75,43 @@ def build_autonomy_slice(
     ctx: Dict[str, Any],
     max_recent_actions: int = _DEFAULT_MAX_RECENT_ACTIONS,
 ) -> AutonomySliceV1 | None:
-    """Assemble the compact slice. ``dominant_drive`` prefers DriveEngine's
-    ``drive_state`` projection (``ctx["chat_drive_state"]``, stashed
-    unconditionally by chat_stance.py) as the live signal per
-    orion/autonomy/drives_and_autonomy_retrospective.md §8, falling back to
-    the turn-local AutonomyStateV2 reducer output
-    (``ctx["chat_autonomy_state_v2"]``) when ``chat_drive_state`` is absent or
-    empty -- AutonomyStateV2 is being demoted, not deleted, by this change.
+    """Assemble the compact slice from DriveEngine's ``drive_state`` projection
+    (``ctx["chat_drive_state"]``, stashed unconditionally by chat_stance.py) --
+    the single live signal per orion/autonomy/drives_and_autonomy_retrospective.md
+    §9. The AutonomyStateV2 reducer this used to also read is retired; there is
+    no fallback path anymore.
 
-    ``active_tensions``/``pressure_trend``/``confidence`` are always sourced
-    from AutonomyStateV2 (when present), regardless of which source supplied
-    ``dominant_drive``. DriveEngine's ``drive_state`` projection has no
-    tension-*kind* concept (only which drive *kinds* are active, a different
-    thing -- conflating the two would mislabel drive names as tensions in
-    Orion's own rendered self-report, see orion/harness/prefix.py) and no
-    honest per-turn before/after to report a trend from (it evolves on its
-    own async tick cadence, not per chat turn) or a confidence estimate.
-    Sourcing these three fields exclusively from drive_state -- and dropping
-    real, simultaneously-present AutonomyStateV2 signal whenever drive_state
-    had any dominant_drive at all -- was tried and reverted; see the
-    drives_and_autonomy_retrospective.md §8 note on this file's git history.
+    ``pressure_trend`` and ``confidence`` are always ``None``: DriveEngine's
+    state evolves on its own async tick cadence, not per chat turn, so there is
+    no honest single-turn before/after to report a trend from, and its
+    projection carries no confidence estimate. Never fabricated.
 
-    Either way, also folds in recent successful Layer-9 dispatch-action
-    outcomes (also read from ctx, under ``ctx["chat_recent_dispatch_actions"]``
-    -- populated by ``chat_stance._project_recent_dispatch_actions`` before
-    this is called).
+    Also folds in recent successful Layer-9 dispatch-action outcomes (read
+    from ``ctx["chat_recent_dispatch_actions"]`` -- populated by
+    ``chat_stance._project_recent_dispatch_actions`` before this is called).
 
-    Returns None (omit, not empty) when neither source nor recent dispatch
-    actions produced any meaningful signal -- never fabricates a
-    dominant_drive, tension, trend, or confidence.
+    Returns None (omit, not empty) when neither drive_state nor recent
+    dispatch actions produced any meaningful signal -- never fabricates a
+    dominant_drive or tension.
     """
     recent_actions = _format_recent_actions(ctx.get("chat_recent_dispatch_actions"), max_recent_actions)
 
-    state = ctx.get("chat_autonomy_state_v2")
-    if not isinstance(state, dict):
-        state = {}
-
-    delta = ctx.get("chat_autonomy_state_delta")
-    if not isinstance(delta, dict):
-        delta = {}
-
     drive_state = ctx.get("chat_drive_state")
-    dominant_drive: str | None = None
-    if isinstance(drive_state, dict) and drive_state:
-        dominant_drive = str(drive_state.get("dominant_drive") or "").strip() or None
-    if dominant_drive is None:
-        dominant_drive = str(state.get("dominant_drive") or "").strip() or None
+    if not isinstance(drive_state, dict):
+        drive_state = {}
 
-    # tension_kinds is AutonomyStateV2's own current-tension set (same field
-    # summarize_autonomy_state() uses to derive AutonomySummaryV1.active_tensions).
-    # Falls back to this turn's newly-minted tensions if tension_kinds is absent.
-    # Never populated from drive_state's `activations` -- see docstring above.
-    active_tensions = _bounded_unique_tensions(state.get("tension_kinds"))
-    if not active_tensions:
-        active_tensions = _bounded_unique_tensions(delta.get("new_tensions"))
+    dominant_drive = str(drive_state.get("dominant_drive") or "").strip() or None
+    active_tensions = _bounded_unique_tensions(drive_state.get("tension_kinds"))
 
-    pressure_trend = _pressure_trend(ctx.get("chat_autonomy_movement_debug"))
-
-    confidence = state.get("confidence")
-    if not isinstance(confidence, (int, float)):
-        confidence = None
-
-    # confidence deliberately excluded from this check: AutonomyStateV2.confidence
-    # is a required field defaulting to 0.5, so it is present on essentially every
-    # reducer output and would defeat omit-when-empty if allowed to count as
-    # "signal" on its own -- only real content (drive/tensions/trend/recent
-    # actions) justifies emitting a slice. A turn with only recent-action
-    # signal and no drive/tension/trend still emits a slice here.
-    if dominant_drive is None and not active_tensions and pressure_trend is None and not recent_actions:
+    if dominant_drive is None and not active_tensions and not recent_actions:
         return None
 
     try:
         return AutonomySliceV1(
             dominant_drive=dominant_drive,
             active_tensions=active_tensions,
-            pressure_trend=pressure_trend,
-            confidence=confidence,
+            pressure_trend=None,
+            confidence=None,
             recent_actions=recent_actions,
         )
     except Exception:

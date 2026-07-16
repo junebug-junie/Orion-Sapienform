@@ -71,6 +71,26 @@
 # If the repair itself fails (corruption redis-check-aof cannot resolve),
 # fail loudly and refuse to start redis-server, rather than silently
 # starting on an unknown/lossy state or silently skipping the check.
+#
+# HAND-OFF (fixed 2026-07-16, code review): this script fully replaces the
+# stock image's own ENTRYPOINT (see Dockerfile.bus-core), so its final
+# hand-off must chain to that stock entrypoint (/usr/local/bin/docker-
+# entrypoint.sh, still present unused in the built image) rather than a
+# bare `exec "$@"`. The stock entrypoint does two things a bare exec
+# silently drops: (1) privilege drop -- chowns /data to the unprivileged
+# `redis` user and re-execs itself via `setpriv --reuid redis --regid redis
+# --clear-groups` before starting redis-server, so the process (and every
+# file it writes to the host-bind-mounted volume) stops running as root;
+# (2) CLI-arg normalization -- prepends `redis-server` when $1 is a bare
+# flag or a .conf path, so the shorthand invocation form the stock image
+# documents keeps working. Confirmed live: before this fix, `docker exec
+# <container> id` returned uid=0(root) and the host volume's AOF/manifest
+# files were world-readable (644/755) instead of the stock image's 600/700
+# owned by uid 999 -- a real privilege-escalation surface on bus-core, the
+# mesh's shared, network-facing broker. This repair step's own pre-boot
+# work (check, backup, --fix) still runs as root, same as it always has --
+# only the final long-running redis-server process now drops privileges,
+# matching the stock image's own behavior exactly.
 
 set -e
 
@@ -124,5 +144,5 @@ else
   echo "[entrypoint] No AOF file found under $DATA_DIR (first boot, fresh volume, or AOF disabled) -- skipping repair step."
 fi
 
-echo "[entrypoint] Starting: $*"
-exec "$@"
+echo "[entrypoint] Starting (via stock entrypoint, for privilege-drop + arg-normalization): $*"
+exec /usr/local/bin/docker-entrypoint.sh "$@"

@@ -275,10 +275,20 @@ docker compose -f services/orion-bus/docker-compose.yml logs --tail=50 bus-core
 
 The rebuild pulls no new base image (still `redis:7-alpine`, same floating
 tag as before this patch — not a new pinning regression, see Risks below)
-and only adds the entrypoint layer, so the running container's actual
-Redis behavior is unaffected except for the new pre-boot repair step. On
-a healthy AOF (the expected case, since the live volume isn't currently
-corrupted) the repair step is a fast no-op, confirmed idempotent above.
+and only adds the entrypoint layer. Redis behavior itself is unaffected,
+but the process's runtime uid changes: `entrypoint.sh` now hands off to
+the stock image's own `docker-entrypoint.sh` (see its HAND-OFF comment),
+which `chown`s `/data` to the unprivileged `redis` user (uid 999) and
+re-execs `redis-server` under that uid via `setpriv` before it binds any
+port — previously (bare `exec "$@"`) redis-server ran as root and the
+live `/data` volume's files were root-owned. After this restart, files
+under the bind-mounted `/data` volume will be owned by uid 999 instead of
+root — confirmed correct behavior via `/proc/1/status` inside the
+container (`Uid: 999 999 999 999`), not a regression, but worth knowing
+if any other tooling reads that volume directly expecting root ownership.
+On a healthy AOF (the expected case, since the live volume isn't
+currently corrupted) the repair step is a fast no-op, confirmed
+idempotent above.
 
 ## Risks / concerns
 

@@ -60,6 +60,21 @@ cleanup() {
 }
 trap cleanup EXIT
 
+# entrypoint.sh now correctly hands off to the stock image's own
+# docker-entrypoint.sh (fixed 2026-07-16 -- see entrypoint.sh's own
+# HAND-OFF comment), which chowns /data to the unprivileged `redis` user
+# (uid 999) and locks it to 0700 before redis-server starts. That's the
+# whole point of the fix, but it means every host-mounted subtree any
+# container in this test writes into becomes unreadable by the host user
+# running this script -- call this after any container that wrote to
+# $WORKDIR stops, before this script does its own host-side file
+# assertions (sha1sum, [ -f ... ], cp, python3 open()). Throwaway,
+# root-context container against a test-only scratch dir -- never touches
+# the live /mnt/telemetry volume.
+fix_host_read_perms() {
+  docker run --rm -v "$WORKDIR:/w" "$IMAGE" sh -c 'chmod -R a+rX /w' >/dev/null 2>&1 || true
+}
+
 echo "== bus-core AOF auto-repair smoke test =="
 echo "Image under test: $IMAGE"
 echo "Scratch dir: $WORKDIR"
@@ -76,6 +91,7 @@ docker exec "$C1" redis-cli set baz qux >/dev/null
 sleep 1
 docker stop "$C1" >/dev/null
 docker rm "$C1" >/dev/null
+fix_host_read_perms
 
 if [ ! -f "$WORKDIR/healthy/data/appendonlydir/appendonly.aof.manifest" ]; then
   echo "FAIL: expected multi-part AOF manifest not found after seeding"
@@ -115,8 +131,28 @@ if echo "$C2_LOG" | grep -q "Backed up pre-repair AOF state"; then
 else
   echo "OK: destructive --fix path (and its backup step) was skipped entirely for a healthy AOF"
 fi
+# Regression: entrypoint.sh must chain to the stock image's own
+# docker-entrypoint.sh, not exec redis-server directly, or the stock
+# entrypoint's privilege-drop (chown /data + setpriv --reuid redis) never
+# runs and redis-server stays root for the container's whole lifetime.
+#
+# NOTE: `docker exec "$C2" id -u` does NOT test this -- `docker exec` spawns
+# a fresh process using the image's default USER (root, since Dockerfile.
+# bus-core sets none), independent of what uid PID 1 (redis-server) actually
+# runs as after setpriv re-execs it. Confirmed by direct reproduction:
+# `docker exec ... id -u` reports 0 even when PID 1 correctly dropped to
+# uid 999. The real signal is PID 1's own /proc/1/status, which setpriv's
+# re-exec does change.
+C2_UID=$(docker exec "$C2" sh -c "awk '/^Uid:/{print \$2}' /proc/1/status")
+if [ "$C2_UID" = "0" ]; then
+  echo "FAIL: redis-server (pid 1) is running as root (uid 0) -- entrypoint.sh did not hand off to the stock image's privilege-drop entrypoint"
+  FAIL=1
+else
+  echo "OK: redis-server (pid 1) dropped privileges correctly (uid $C2_UID, not root)"
+fi
 docker stop "$C2" >/dev/null
 docker rm "$C2" >/dev/null
+fix_host_read_perms
 
 AFTER_SUM=$(sha1sum "$WORKDIR/healthy/data/appendonlydir/appendonly.aof.1.incr.aof" | awk '{print $1}')
 if [ "$BEFORE_SUM" != "$AFTER_SUM" ]; then
@@ -192,6 +228,7 @@ else
   echo "FAIL: expected pre-repair backup log line not found"
   FAIL=1
 fi
+fix_host_read_perms
 BACKUP_DIR_HOST="$WORKDIR/corrupt/data/aof-repair-backups"
 if [ -d "$BACKUP_DIR_HOST" ] && find "$BACKUP_DIR_HOST" -mindepth 1 -maxdepth 1 -type d | grep -q .; then
   BACKUP_TS_DIR=$(find "$BACKUP_DIR_HOST" -mindepth 1 -maxdepth 1 -type d | head -n1)

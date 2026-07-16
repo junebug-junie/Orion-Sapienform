@@ -134,25 +134,71 @@ The founding charter's actual bar for success was self-initiated, sometimes-subo
 behavior — Orion doing something nobody asked for, or declining the smooth answer to protect
 its own coherence. As of this writing, that has never been built:
 
-- `autonomous_cycle_v1` doesn't exist.
-- The one mechanism that could produce true self-origination (`endogenous_origination.py`)
+- `autonomous_cycle_v1` doesn't exist. *(Still literally true as a scheduled cycle — but
+  see §5a: substantial pieces of its function shipped 2026-07-13/15 on other rails.)*
+- ~~The one mechanism that could produce true self-origination (`endogenous_origination.py`)
   is code-complete but flag-disabled on a NO-GO whose underlying measurement needs
-  re-verification against fresh (non-stale) data.
+  re-verification against fresh (non-stale) data.~~ Stale as written — see §5a: the flag
+  was operator-flipped ON 2026-07-15 after the measurement was re-run against fresh data.
 - The one live consumer of drive state (`chat_stance.py`) is reactive by construction — it
   only runs inside a turn something else already triggered — and reads from the
   turn-scoped, non-decaying `AutonomyStateV2`, not the tested, persistent `DriveEngine`.
+  *(Resolved by §9/§10's own patch: DriveEngine now feeds stance and Mind live;
+  AutonomyStateV2 retired.)*
 
 The instrument (pressure measurement) is real and well-built. The actuator (unprompted
 action) was never built. That is the single most load-bearing fact in this document.
+
+### 5a. Status update (2026-07-16): the actuator partially exists now, and the signal is the new bottleneck
+
+Written by the parallel motor-nerve work stream (PRs #1010/#1017/#1020, #1030, #1064, #1069
+— see `docs/superpowers/specs/2026-07-13-endogenous-action-motor-nerve-spec.md` and its PR
+reports), which §5 above predates. Corrections to the record:
+
+- **Unprompted action exists on two rails today.** Layer 9 (`orion-execution-dispatch-runtime`)
+  has been live in `dispatch_read_only` since 2026-07-14 — real cortex-exec dispatches
+  (`substrate.inspect/summarize/observe`), budget-capped per day, with honest statuses,
+  results persisted, and outcomes fed back as tensions (P3 relief). Separately, the
+  metabolism loop fires drive-goal-triggered readonly actions (web fetch, recall query,
+  episode journal) through the capability policy. Neither is `autonomous_cycle_v1` by name;
+  together they are most of its function. What remains genuinely unbuilt from the charter:
+  nothing fires on a `DriveEngine` threshold crossing *itself*, and dispatch timing is
+  clock/backlog-driven, not pressure-driven (a designed-but-unbuilt pacing patch exists).
+- **`ORION_ENDOGENOUS_ORIGINATION_ENABLED` is ON** (live operator flip, 2026-07-15;
+  `.env_example` default stays false). Gate (a) re-measured GO (0.0448 @ 1h / 0.0408 @ 7d vs
+  0.03). Gate (b) became measurable again the same day via the new Postgres `drive_audits`
+  instrument (the Fuseki graph path was killed end-to-end, #1064/#1069) and read GO
+  (coactivation 0.9506) — **but a same-day deep dive showed that GO is saturation, not
+  economy**, with two distinct mechanisms (the second pinned down precisely during the O1
+  fix's consumer trace): (1) `derive_pressure_competition_tensions` — a derived meta-signal
+  over the pressure vector, minted with near-max magnitude on every tick because a dead
+  `predictive` drive (median 0.016, never active) kept the spread permanently above
+  threshold — dominated `compute_tick_attribution`/`dominant_drive_from_attribution` every
+  tick, producing `dominant_drive=relational` in 96% of ticks and 1,643 byte-identical
+  audit summaries (and dominance is what stance/Mind consume post-§10); (2) independently,
+  the event-rate/decay mismatch (~13 substrate events/min vs decay τ=1800s ≈ 0.3% decay
+  between events) pins three drives' *pressures* at median 0.975–0.986. The fix branch this
+  note ships in makes the competition tension signal-only (O1 — cleans dominance
+  attribution, and guarantees zero pressure fold on every present or future consumer path)
+  and teaches the gate a distinct `SATURATED` verdict (O4). The pressure pinning itself
+  persists until the named follow-ups land: `predictive` re-grounding on the live
+  `prediction_error` signal (O3) and event-rate normalization (O2) — expect the gate to
+  read SATURATED, not GO, until then; that is the instrument working, not failing.
+- **Net restatement of §5's load-bearing fact:** the actuator now exists (trigger-starved
+  and clock-paced, but real and observed acting); the router exists (§9/§10). The bottleneck
+  has moved to the *signal*: until the drive economy desaturates, everything downstream —
+  origination bands, stance prompts, Mind facets — consumes a monoculture.
 
 ## 6. Open questions
 
 1. Is self-initiated, sometimes-suboptimal behavior still the actual target? If yes, the
    next concrete patch is narrow: wire something to fire without a prompt when `DriveEngine`
    pressure crosses threshold (a journal entry, a probing question) and observe what happens.
-2. Re-run the `coactivation_frac` gate against a source certified fresh before treating the
+2. ~~Re-run the `coactivation_frac` gate against a source certified fresh before treating the
    endogenous-origination NO-GO as still current — the original reading was proven stale once
-   already.
+   already.~~ Done 2026-07-15 — see §5a: fresh source built (Postgres `drive_audits`), gate
+   re-read GO, and the GO itself was then diagnosed as saturation; the gate now has a
+   `SATURATED` verdict so this failure class is instrument-visible.
 3. ~~Trace whether/how `services/orion-mind` actually consumes `DriveEngine` state today.~~
    Resolved 2026-07-16 — see §8. It doesn't consume `DriveEngine`; it consumes
    `AutonomyStateV2`.

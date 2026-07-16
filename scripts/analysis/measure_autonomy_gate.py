@@ -40,7 +40,7 @@ import logging
 import os
 import statistics
 import time
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any, Iterable, Optional
@@ -62,6 +62,15 @@ DRIFT_VARIANCE_RATIO: float = 0.25
 COACTIVATION_MIN_FRAC: float = 0.10
 RESOURCE_PRESSURE_LEVEL: float = 0.3
 RESOURCE_PRESSURE_MIN_FRAC: float = 0.05
+
+# Verdict (b) saturation guards. Co-activation >= COACTIVATION_MIN_FRAC is
+# trivially satisfied by an always-on saturated state (live 2026-07-15:
+# coactivation_frac 0.9506 with 74% of ticks at 5-of-6 drives active and one
+# drive dominant in 96% of ticks). GO must mean a functioning economy with
+# churn and turn-taking, so a monoculture surfaces as its own verdict.
+SATURATION_DOMINANT_SHARE: float = 0.90  # one drive dominant in >=90% of audits = no turn-taking
+SATURATION_MIN_ACTIVE: int = 5  # 5 of the 6 drives simultaneously active = near-all-on
+SATURATION_ALL_ACTIVE_FRAC: float = 0.75  # >=75% of audits in that near-all-on state
 
 # Hard cap so no query result set grows unbounded.
 MAX_ROWS: int = 500_000
@@ -132,6 +141,14 @@ class DriveStats:
     record_count: int = 0
     coactivation_frac: float = 0.0
     concurrent_active_hist: dict[int, int] = field(default_factory=dict)
+    # Fraction of audits with active_count >= SATURATION_MIN_ACTIVE (derived
+    # from the same histogram -- the "near-all-on" saturation signal).
+    all_active_frac: float = 0.0
+    # dominant_drive -> audit count over the window (NULL dominants excluded
+    # from the counts but still present in record_count's denominator).
+    dominant_counts: dict[str, int] = field(default_factory=dict)
+    # Share of the most common non-null dominant_drive over ALL records.
+    top_dominant_share: float = 0.0
 
 
 # ===========================================================================
@@ -310,10 +327,60 @@ def drive_stats_from_histogram(hist: dict[int, int]) -> DriveStats:
     if record_count == 0:
         return DriveStats()
     coactive = sum(n for k, n in hist.items() if k >= 2)
+    all_active = sum(n for k, n in hist.items() if k >= SATURATION_MIN_ACTIVE)
     return DriveStats(
         record_count=record_count,
         coactivation_frac=coactive / record_count,
         concurrent_active_hist=dict(hist),
+        all_active_frac=all_active / record_count,
+    )
+
+
+def parse_dominant_rows(rows: Iterable[Any]) -> dict[str, int]:
+    """Parse ``SELECT dominant_drive, count(*) ... GROUP BY dominant_drive``
+    rows into ``{dominant_drive: audits}``.
+
+    A NULL dominant_drive is allowed (rows where no drive dominated): it is
+    excluded from the returned counts but its rows still sit in the share
+    denominator via the histogram's ``record_count`` (live shape check:
+    84 of 1727 rows had NULL dominant). Malformed rows (short tuples,
+    non-numeric counts) and negative counts are skipped. Never raises.
+    Pure + unit-testable, mirrors ``parse_postgres_histogram_rows``.
+    """
+
+    out: dict[str, int] = {}
+    for row in rows:
+        try:
+            key = row[0]
+            audits = int(row[1])
+        except (TypeError, ValueError, IndexError, OverflowError):
+            continue
+        if audits < 0:
+            continue
+        if key is None:
+            continue
+        out[str(key)] = audits
+    return out
+
+
+def apply_dominant_counts(stats: DriveStats, dominant_counts: dict[str, int]) -> DriveStats:
+    """Return a copy of ``stats`` with dominance fields filled in.
+
+    ``top_dominant_share`` uses ``stats.record_count`` (ALL audits in the
+    window, NULL dominants included) as the denominator, not the sum of the
+    non-null dominant counts -- a drive dominating every row that HAS a
+    dominant must not be inflated by dropping the NULL rows. Empty counts or
+    zero records -> share 0.0 (the dominance clause simply can't fire).
+    Pure + unit-testable.
+    """
+
+    share = 0.0
+    if dominant_counts and stats.record_count > 0:
+        share = max(dominant_counts.values()) / stats.record_count
+    return replace(
+        stats,
+        dominant_counts=dict(dominant_counts),
+        top_dominant_share=share,
     )
 
 
@@ -361,6 +428,7 @@ def is_undefined_table_error(exc: BaseException) -> bool:
 
 
 UNMEASURABLE = "UNMEASURABLE"
+SATURATED = "SATURATED"
 
 
 def verdict_drift(silent: SelfStateMetrics, busy: SelfStateMetrics) -> str:
@@ -427,6 +495,23 @@ def verdict_economy(drive: DriveStats, pressure: ResourcePressureStats) -> str:
     function exists to prevent, just left open on whichever input isn't
     checked.
 
+    SATURATED iff the co-activation bar IS met but the underlying state is a
+    monoculture: one drive dominant in >= SATURATION_DOMINANT_SHARE of audits
+    (no turn-taking), OR >= SATURATION_ALL_ACTIVE_FRAC of audits have
+    >= SATURATION_MIN_ACTIVE drives simultaneously active (always-on). This is
+    the same "instrument blesses a degenerate state" failure class the
+    UNMEASURABLE guard fixed for zero rows -- live 2026-07-15 the gate read GO
+    with coactivation_frac 0.9506 while dominant_drive was "relational" in 96%
+    of ticks and 74% of ticks sat at 5-of-6 drives active. Co-activation alone
+    cannot distinguish an economy (churn, turn-taking) from saturation, so
+    saturation gets its own honest verdict. If dominance data degraded
+    (empty dominant_counts) the dominance clause can't fire, but the
+    histogram-only all_active_frac clause still can.
+
+    Precedence: UNMEASURABLE > SATURATED > NO-GO/GO (a coactivation shortfall
+    still short-circuits to NO-GO before the saturation check -- saturation is
+    only a meaningful diagnosis of a coactivation bar that was met).
+
     Otherwise, GO iff coactivation_frac >= COACTIVATION_MIN_FRAC
       AND frac_gt(resource_pressure >= level) >= RESOURCE_PRESSURE_MIN_FRAC.
     """
@@ -435,6 +520,11 @@ def verdict_economy(drive: DriveStats, pressure: ResourcePressureStats) -> str:
         return UNMEASURABLE
     if drive.coactivation_frac < COACTIVATION_MIN_FRAC:
         return "NO-GO"
+    if (
+        drive.top_dominant_share >= SATURATION_DOMINANT_SHARE
+        or drive.all_active_frac >= SATURATION_ALL_ACTIVE_FRAC
+    ):
+        return SATURATED
     if pressure.frac_gt_level < RESOURCE_PRESSURE_MIN_FRAC:
         return "NO-GO"
     return "GO"
@@ -660,9 +750,17 @@ def fetch_drive_stats_postgres(conn, window_start: datetime) -> tuple[DriveStats
     Fuseki DriveAudit graph).
 
     ``active_count`` is already derived at write time, so the histogram is a
-    single server-side ``GROUP BY active_count`` — no JSONB parsing here.
+    single server-side ``GROUP BY active_count`` — no JSONB parsing here. A
+    second cheap ``GROUP BY dominant_drive`` on the same connection fills the
+    dominance fields for the SATURATED verdict; if it fails, the histogram
+    result stands with empty ``dominant_counts`` and a note.
     Windowing follows the table contract:
-    ``COALESCE(observed_at, created_at) >= window_start``.
+    ``window_start <= COALESCE(observed_at, created_at) < window_end``, where
+    ``window_end`` is captured ONCE and shared by both queries — on an
+    autocommit connection they are separate statements, and without a shared
+    upper bound rows landing between them would appear in ``dominant_counts``
+    but not in ``record_count`` (the share denominator), letting
+    ``top_dominant_share`` drift past its ≤1 contract (review finding).
 
     Reuses the script's existing read-only connection. Returns
     ``(DriveStats, note)`` and degrades to ``(DriveStats(), note)`` — never
@@ -673,6 +771,7 @@ def fetch_drive_stats_postgres(conn, window_start: datetime) -> tuple[DriveStats
 
     if conn is None:
         return DriveStats(), "postgres drive_audits unavailable: no read-only postgres connection"
+    window_end = datetime.now(timezone.utc)
     try:
         with conn.cursor() as cur:
             cur.execute(
@@ -680,9 +779,10 @@ def fetch_drive_stats_postgres(conn, window_start: datetime) -> tuple[DriveStats
                 SELECT active_count, COUNT(*)
                 FROM drive_audits
                 WHERE COALESCE(observed_at, created_at) >= %s
+                  AND COALESCE(observed_at, created_at) < %s
                 GROUP BY active_count
                 """,
-                (window_start,),
+                (window_start, window_end),
             )
             rows = cur.fetchall()
     except Exception as exc:
@@ -701,9 +801,37 @@ def fetch_drive_stats_postgres(conn, window_start: datetime) -> tuple[DriveStats
             f"postgres drive_audits: table present but 0 rows in window since "
             f"{window_start.isoformat()}"
         )
+    # Second cheap query on the same connection: dominant-drive counts feeding
+    # the SATURATED dominance clause. Same degrade posture as the histogram
+    # query -- a dominance failure must NOT discard the histogram result, it
+    # just leaves dominant_counts empty (the all_active_frac clause still
+    # works histogram-only) with an honest note.
+    dominance_note = ""
+    try:
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                SELECT dominant_drive, COUNT(*)
+                FROM drive_audits
+                WHERE COALESCE(observed_at, created_at) >= %s
+                  AND COALESCE(observed_at, created_at) < %s
+                GROUP BY dominant_drive
+                """,
+                (window_start, window_end),
+            )
+            dominant_rows = cur.fetchall()
+    except Exception:
+        logger.error("failed to fetch drive_audits dominant-drive counts", exc_info=True)
+        dominant_rows = None
+        dominance_note = (
+            "; dominant_drive query failed -- dominance saturation check "
+            "unavailable (histogram result stands)"
+        )
+    if dominant_rows is not None:
+        stats = apply_dominant_counts(stats, parse_dominant_rows(dominant_rows))
     return stats, (
         f"drive source: postgres drive_audits ({stats.record_count} rows since "
-        f"{window_start.isoformat()})"
+        f"{window_start.isoformat()}){dominance_note}"
     )
 
 
@@ -778,6 +906,15 @@ def render_report(
     caveats: list[str],
 ) -> str:
     hist = ", ".join(f"{k}:{v}" for k, v in sorted(drive.concurrent_active_hist.items())) or "(none)"
+    dominants = ", ".join(
+        f"{name}:{count}"
+        for name, count in sorted(drive.dominant_counts.items(), key=lambda kv: (-kv[1], kv[0]))
+    ) or "(none)"
+    if drive.dominant_counts:
+        top_name = max(drive.dominant_counts.items(), key=lambda kv: kv[1])[0]
+        top_dominant = f"{top_name} (share {_fmt(drive.top_dominant_share)} of all audits)"
+    else:
+        top_dominant = "(none -- dominance data empty or unavailable)"
     lines = [
         "# Autonomy Origination Measurement Gate",
         "",
@@ -813,6 +950,9 @@ def render_report(
         f"- drive audit records: {drive.record_count}",
         f"- coactivation_frac (active_count >= 2): {_fmt(drive.coactivation_frac)}",
         f"- concurrent_active_hist: {hist}",
+        f"- all_active_frac (active_count >= {SATURATION_MIN_ACTIVE}): {_fmt(drive.all_active_frac)}",
+        f"- dominant_drive counts: {dominants}",
+        f"- top dominant drive: {top_dominant}",
         f"- resource_pressure rows: {pressure.row_count}",
         f"- resource_pressure median: {_fmt(pressure.median)}",
         f"- resource_pressure p90: {_fmt(pressure.p90)}",
@@ -821,10 +961,31 @@ def render_report(
         "Rule (b) GO iff coactivation_frac >= "
         f"{COACTIVATION_MIN_FRAC} AND resource_pressure frac >= "
         f"{RESOURCE_PRESSURE_LEVEL} is >= {RESOURCE_PRESSURE_MIN_FRAC}.",
-        "",
-        "## Coverage caveats",
+        f"Rule (b) {SATURATED} iff the co-activation bar is met but "
+        f"top_dominant_share >= {SATURATION_DOMINANT_SHARE} OR "
+        f"all_active_frac >= {SATURATION_ALL_ACTIVE_FRAC}.",
         "",
     ]
+    if verdict_b == SATURATED:
+        lines.extend([
+            f"Verdict {SATURATED} means the co-activation bar was met only by an "
+            "always-on monoculture (one drive dominating nearly every audit and/or "
+            "nearly all drives simultaneously active), not by a functioning economy "
+            "with churn and turn-taking.",
+        ])
+        if pressure.frac_gt_level < RESOURCE_PRESSURE_MIN_FRAC:
+            # Review note: SATURATED returns before the pressure check, so
+            # without this line a reader could infer "fix saturation -> GO"
+            # while the pressure bar would still fail.
+            lines.append(
+                "Note: the resource_pressure bar is ALSO currently unmet -- "
+                "resolving saturation alone would read NO-GO, not GO."
+            )
+        lines.append("")
+    lines.extend([
+        "## Coverage caveats",
+        "",
+    ])
     if caveats:
         lines.extend(f"- {c}" for c in caveats)
     else:
@@ -967,7 +1128,10 @@ def run(window: timedelta, window_label: str) -> int:
     # Exit code distinguishes "the instrument didn't work" (2) from a
     # completed measurement, whichever way it came out (0) -- a caller
     # (cron, CI, a human) must not have to parse the report text to tell
-    # a dead sensor from a real GO/NO-GO.
+    # a dead sensor from a real GO/NO-GO. SATURATED is a completed
+    # measurement (the sensor worked; the economy is degenerate), so it
+    # exits 0 exactly like NO-GO -- it is NOT a pass, and nothing here
+    # or downstream may treat it as GO.
     if UNMEASURABLE in (verdict_a, verdict_b):
         return 2
     return 0

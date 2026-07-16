@@ -214,6 +214,75 @@ def test_positive_only_tensions_unaffected_by_signed_clamp() -> None:
     assert all(abs(p - 0.7309) > 0.01 for p in pressures.values()), pressures
 
 
+def test_signal_only_competition_tension_contributes_zero_pressure() -> None:
+    """Regression (2026-07-15 saturation): tension.drive_competition.v1 is
+    signal-only -- empty drive_impacts. Fed to update() alongside a normal
+    tension, it must contribute exactly zero pressure change: the result is
+    identical to running update() with the normal tension alone."""
+    competition = TensionEventV1(
+        artifact_id="t-competition",
+        subject="orion",
+        model_layer="self-model",
+        entity_id="self:orion",
+        kind="tension.drive_competition.v1",
+        magnitude=0.96,  # the live pinned spread from the diagnosis
+        drive_impacts={},  # signal-only by design
+        provenance={"intake_channel": "test:leaky"},
+    )
+    normal = _tension({"capability": 0.6, "coherence": 0.2})
+
+    with_competition, act_with = _leaky_engine().update(
+        previous_pressures={k: 0.1 for k in DRIVE_KEYS},
+        previous_activations={k: False for k in DRIVE_KEYS},
+        tensions=[normal, competition],
+        now=T0 + timedelta(seconds=10),
+        previous_ts=T0,
+    )
+    without_competition, act_without = _leaky_engine().update(
+        previous_pressures={k: 0.1 for k in DRIVE_KEYS},
+        previous_activations={k: False for k in DRIVE_KEYS},
+        tensions=[normal],
+        now=T0 + timedelta(seconds=10),
+        previous_ts=T0,
+    )
+    assert with_competition == without_competition
+    assert act_with == act_without
+    # And the normal tension really did move something (the tick happened).
+    assert with_competition["capability"] > 0.1
+
+
+def test_competition_tension_alone_is_pure_decay() -> None:
+    """A tick carrying ONLY the competition tension behaves exactly like an
+    empty tick: pure wall-clock decay, no subsidy to any drive."""
+    competition = TensionEventV1(
+        artifact_id="t-competition-solo",
+        subject="orion",
+        model_layer="self-model",
+        entity_id="self:orion",
+        kind="tension.drive_competition.v1",
+        magnitude=0.96,
+        drive_impacts={},
+        provenance={"intake_channel": "test:leaky"},
+    )
+    start = {k: 0.5 for k in DRIVE_KEYS}
+    with_tension, _ = _leaky_engine().update(
+        previous_pressures=dict(start),
+        previous_activations={k: False for k in DRIVE_KEYS},
+        tensions=[competition],
+        now=T0 + timedelta(seconds=60),
+        previous_ts=T0,
+    )
+    empty_tick, _ = _leaky_engine().update(
+        previous_pressures=dict(start),
+        previous_activations={k: False for k in DRIVE_KEYS},
+        tensions=[],
+        now=T0 + timedelta(seconds=60),
+        previous_ts=T0,
+    )
+    assert with_tension == empty_tick
+    assert all(with_tension[k] < start[k] for k in DRIVE_KEYS)  # decay happened
+
+
 def test_legacy_path_preserved() -> None:
     """Flag off ⇒ soft_saturate path drives the fixed-point inflation."""
     legacy = DriveEngine(DriveMathConfig(leaky_math_enabled=False))

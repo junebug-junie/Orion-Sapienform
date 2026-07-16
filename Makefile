@@ -1,4 +1,4 @@
-.PHONY: test test-hub test-actions bootstrap-test-envs check-inner-state-registry check-single-consumer-channels check-activation-saturation concept-relation-digest check-concept-relation-digest-liveness check-env-compose-parity check-journal-dispatch-registry check-daily-schedule-collisions worktree-status worktree-status-summary worktree-status-stale prune-merged-worktrees
+.PHONY: test test-hub test-actions bootstrap-test-envs check-inner-state-registry check-single-consumer-channels check-activation-saturation concept-relation-digest check-concept-relation-digest-liveness check-env-compose-parity check-journal-dispatch-registry check-daily-schedule-collisions bus-core-health-watchdog worktree-status worktree-status-summary worktree-status-stale prune-merged-worktrees
 
 SERVICE ?=
 ARGS ?=
@@ -87,6 +87,18 @@ check-journal-dispatch-registry:
 # this isn't a hard gate today.
 check-daily-schedule-collisions:
 	@python scripts/check_daily_schedule_collisions.py $(if $(THRESHOLD_MINUTES),--threshold-minutes $(THRESHOLD_MINUTES),) $(if $(FAIL_ON_COLLISION),--fail-on-collision,)
+
+# Host-level crash-loop detector for bus-core (Redis, services/orion-bus/docker-
+# compose.yml). Reads container health/restart-count via `docker inspect` ONLY --
+# no Redis connection, no Postgres connection -- so it still works when both are
+# down at the same time (a confirmed, not hypothetical, dev failure mode). Writes
+# local JSON state and, on a crash-loop signature, a plain marker file (this repo
+# has no notify-send/osascript/desktop-notification mechanism to reuse -- see
+# scripts/bus_core_health_watchdog.py's docstring). Intended to run via host cron
+# or a systemd timer (see that script's docstring / scripts/README.md for install
+# instructions), not from inside a container.
+bus-core-health-watchdog:
+	@python scripts/bus_core_health_watchdog.py $(if $(PROJECT),--project $(PROJECT),)
 
 # Reconciled worktree view -- path, branch, merged-into-main status, open PR,
 # disk size -- regardless of which of this repo's several worktree location

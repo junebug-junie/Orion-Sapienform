@@ -59,15 +59,6 @@ class Settings(BaseSettings):
         default=10.0,
         alias="WORLD_PULSE_PROXY_TIMEOUT_SEC",
     )
-    KNOWLEDGE_FORGE_BASE_URL: str = Field(
-        default="http://orion-knowledge-forge:8630",
-        alias="KNOWLEDGE_FORGE_BASE_URL",
-    )
-    KNOWLEDGE_FORGE_PROXY_TIMEOUT_SEC: float = Field(
-        default=15.0,
-        alias="KNOWLEDGE_FORGE_PROXY_TIMEOUT_SEC",
-    )
-
     # --- Proposal review API (Pending Decisions attention + review actions) ---
     HUB_PROPOSAL_REVIEW_ENABLED: bool = Field(default=False, alias="HUB_PROPOSAL_REVIEW_ENABLED")
     HUB_PROPOSAL_REVIEW_API_URL: str = Field(

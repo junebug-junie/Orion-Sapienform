@@ -34,7 +34,6 @@ KEY_LINE = re.compile(r"^([A-Za-z_][A-Za-z0-9_]*)=(.*)$")
 # Host .env may legitimately differ from docker-oriented .env_example.
 NEVER_SYNC_KEYS = frozenset(
     {
-        "ORION_KNOWLEDGE_ROOT",
         "PUBLISH_CORTEX_EXEC_GRAMMAR",
         # Host-specific Tailscale / mesh address — never overwrite from docker-oriented templates.
         "ORION_BUS_URL",

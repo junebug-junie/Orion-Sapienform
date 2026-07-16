@@ -1,7 +1,6 @@
 ## service to exclude from auto rebuilding
 # one service per line
 orion-context-exec
-orion-knowledge-forge
 orion-llamacpp-neural-host
 #orion-security-watcher
 orion-vllm-host

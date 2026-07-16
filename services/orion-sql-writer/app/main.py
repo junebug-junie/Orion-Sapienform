@@ -669,6 +669,14 @@ async def lifespan(app: FastAPI):
             conn.exec_driver_sql(
                 "CREATE INDEX IF NOT EXISTS idx_drive_audits_window ON drive_audits ((COALESCE(observed_at, created_at)) DESC);"
             )
+            # v3: Mind's drive_state_compact facet fetch (mind_runtime.py,
+            # fetch_drive_state_facet_for_mind) additionally filters WHERE subject='orion'
+            # under a tight timeout budget; leading-subject composite serves that query
+            # shape directly instead of falling back to idx_drive_audits_window above.
+            conn.exec_driver_sql(
+                "CREATE INDEX IF NOT EXISTS idx_drive_audits_subject_window "
+                "ON drive_audits (subject, (COALESCE(observed_at, created_at)) DESC);"
+            )
             conn.exec_driver_sql(
                 "ALTER TABLE bus_fallback_log ADD COLUMN IF NOT EXISTS created_at_ts TIMESTAMPTZ;"
             )

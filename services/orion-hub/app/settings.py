@@ -505,6 +505,12 @@ class Settings(BaseSettings):
         alias="CHANNEL_PRE_TURN_APPRAISAL_RESULT_PREFIX",
     )
     HUB_AUTONOMY_SUBJECT_DISPLAY: str = Field(default="two", alias="HUB_AUTONOMY_SUBJECT_DISPLAY")
+    # Seeds the 3 golden concepts (Orion, Juniper, Orion-Juniper relationship) into
+    # SUBSTRATE_SEMANTIC_STORE at startup -- see orion/substrate/seed.py. Idempotent
+    # (same node_ids every call), safe to leave enabled. Runs in a background thread
+    # (see main.py's startup_event) since SUBSTRATE_STORE_BACKEND=sparql (this
+    # service's own default) makes the underlying writes blocking HTTP calls to Fuseki.
+    SUBSTRATE_CONCEPT_SEED_ENABLED: bool = Field(default=True, alias="SUBSTRATE_CONCEPT_SEED_ENABLED")
     SUBSTRATE_AUTONOMY_ENABLED: bool = Field(default=False, alias="SUBSTRATE_AUTONOMY_ENABLED")
     SUBSTRATE_AUTONOMY_PROPOSALS_ENABLED: bool = Field(default=True, alias="SUBSTRATE_AUTONOMY_PROPOSALS_ENABLED")
     SUBSTRATE_AUTONOMY_APPLY_ENABLED: bool = Field(default=False, alias="SUBSTRATE_AUTONOMY_APPLY_ENABLED")

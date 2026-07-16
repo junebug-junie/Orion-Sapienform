@@ -231,6 +231,26 @@ SUBSTRATE_REVIEW_TELEMETRY_STORE = GraphReviewTelemetryRecorder(
     postgres_url=_resolve_control_plane_postgres_url(),
 )
 SUBSTRATE_SEMANTIC_STORE = build_substrate_store_from_env()
+
+
+def seed_golden_concepts_at_startup() -> int:
+    """Load the 3 golden concepts (Orion, Juniper, relationship) into
+    SUBSTRATE_SEMANTIC_STORE. Idempotent (fixed node_ids), safe to call on
+    every startup. Never raises -- the try/except below degrades to 0 on
+    any failure (missing/malformed fixture, or a store-level error such as
+    a Fuseki write timeout when SUBSTRATE_STORE_BACKEND=sparql). Callers on
+    an async event loop should run this via asyncio.to_thread (see main.py's
+    startup_event) since store writes can be blocking network calls.
+    """
+    try:
+        from orion.substrate.seed import load_seed_concepts_into_store
+
+        return load_seed_concepts_into_store(SUBSTRATE_SEMANTIC_STORE)
+    except Exception as exc:  # pragma: no cover - defensive, mirrors other startup steps
+        logger.warning("substrate_concept_seed_failed error=%s", exc)
+        return 0
+
+
 SUBSTRATE_POLICY_STORE = build_substrate_policy_store_from_env()
 SUBSTRATE_POLICY_COMPARISON = SubstratePolicyComparisonService(
     policy_store=SUBSTRATE_POLICY_STORE,

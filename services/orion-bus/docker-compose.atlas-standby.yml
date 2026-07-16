@@ -25,12 +25,19 @@
 # now fails loudly with a clear error instead of interpolating empty
 # strings if either var isn't actually set by the chained --env-file(s).
 #
-# Run on the atlas host, from its own checkout's repo root:
+# Run on the atlas host, from its own checkout's repo root. `app-net` is
+# declared `external: true` below (matches every other compose file in this
+# repo) -- it is NOT created by this file, so create it first if this is the
+# first Orion compose file ever brought up on this host (idempotent, matches
+# services/orion-bus/README.md's own bootstrap step and
+# services/orion-llamacpp-host/README.md's atlas-workers precedent):
+#   docker network inspect app-net >/dev/null 2>&1 || docker network create app-net
+#
 #   docker compose \
 #     --env-file .env \
 #     --env-file services/orion-bus/.env.atlas-standby \
 #     -f services/orion-bus/docker-compose.atlas-standby.yml \
-#     up -d
+#     up -d --build
 #
 # Confirm atlas's own root .env has real values first:
 #   grep -E "^(PROJECT|NODE_NAME|TELEMETRY_ROOT)=" .env
@@ -45,7 +52,25 @@
 
 services:
   bus-core-standby:
-    image: redis:7-alpine
+    # Same image as the primary bus-core, including the AOF auto-repair
+    # entrypoint (see Dockerfile.bus-core / entrypoint.sh) -- this container
+    # runs `restart: unless-stopped` unattended on atlas the same way the
+    # primary does on athena, so it is exposed to the exact same unclean-
+    # shutdown AOF-corruption failure mode the primary's auto-repair exists
+    # for. A standby that itself silently crash-loops on a corrupted AOF the
+    # moment it's needed defeats the whole point of having it.
+    #
+    # DEPENDENCY: Dockerfile.bus-core and entrypoint.sh are added by
+    # fix/bus-core-aof-auto-repair, a sibling branch, not yet on main as of
+    # this writing (confirmed: neither file exists in this branch's own
+    # checkout). This branch must be rebased/merged on top of that one
+    # before `docker compose build` here will succeed -- if it's run first,
+    # this fails LOUDLY with a clear "Dockerfile.bus-core not found" error
+    # (a safe failure, not a silent fallback to an unpatched image), which
+    # is the signal to go merge that branch first.
+    build:
+      context: .
+      dockerfile: Dockerfile.bus-core
     container_name: orion-${PROJECT:?PROJECT must be set -- chain --env-file .env before --env-file services/orion-bus/.env.atlas-standby}-bus-core-standby
     command:
       [
@@ -61,7 +86,7 @@ services:
         "120",
       ]
     ports:
-      - "${BUS_STANDBY_PORT:-6380}:6379"
+      - "${BUS_STANDBY_PORT:-6381}:6379"
     volumes:
       - ${TELEMETRY_ROOT:?TELEMETRY_ROOT must be set -- chain --env-file .env before --env-file services/orion-bus/.env.atlas-standby}/${PROJECT:?PROJECT must be set -- chain --env-file .env before --env-file services/orion-bus/.env.atlas-standby}/bus-standby/data:/data
     restart: unless-stopped

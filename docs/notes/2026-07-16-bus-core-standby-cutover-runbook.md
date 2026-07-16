@@ -83,12 +83,24 @@ trusting this runbook in an actual incident:**
   was tested on `athena` against a synthetic node identity, which proves
   the compose file and the AOF-restore mechanism work, but does **not**
   prove atlas-specific things: that atlas has a `TELEMETRY_ROOT` with
-  enough free disk, that atlas's Docker has the `app-net` network created,
-  that atlas's own `.env`/`PROJECT`/`NODE_NAME` are what this runbook
-  assumes, or that atlas is reachable from every other mesh node the way
-  athena is.
+  enough free disk (Step 1 now includes a check command, but it was never
+  run against real atlas disk), that atlas's Docker has the `app-net`
+  network created (Step 1's deploy command now includes the idempotent
+  create-if-missing step, matching services/orion-bus/README.md's own
+  bootstrap), that atlas's own `.env`/`PROJECT`/`NODE_NAME` are what this
+  runbook assumes, or that atlas is reachable from every other mesh node the
+  way athena is.
+- Whether `TELEMETRY_ROOT` (default `/mnt/telemetry`, root `.env_example`)
+  is a node-local mount or a mesh-shared one on atlas specifically was never
+  established this session — the root `.env_example` doesn't say either way,
+  and this matters a lot here: if it turns out to be shared (e.g. an NFS/SMB
+  mount visible from multiple nodes), the standby's `bus-standby/data`
+  subdirectory could unintentionally collide with or shadow something else
+  already using that path on atlas. Confirm with `df -h /mnt/telemetry` and
+  `mount | grep telemetry` on atlas directly before trusting this runbook's
+  path assumptions.
 - Whether atlas's Tailscale ACLs/firewall allow inbound Redis traffic
-  (`6380` by default, or `6379` if `BUS_STANDBY_PORT` is overridden for a
+  (`6381` by default, or `6379` if `BUS_STANDBY_PORT` is overridden for a
   real cutover — see Step 2) from the rest of the mesh the same way
   athena's does. Nothing in this session checked that.
 - The full mesh-wide `ORION_BUS_URL` audit below (which services actually
@@ -160,15 +172,27 @@ grep -E "^(PROJECT|NODE_NAME|TELEMETRY_ROOT)=" .env
 mkdir -p <TELEMETRY_ROOT>/<PROJECT>/bus-standby/data
 rsync -a --exclude=primary_keys.txt /tmp/bus-core-snapshot/ <TELEMETRY_ROOT>/<PROJECT>/bus-standby/data/
 
+# Disk space: the standby's data dir needs to hold at least the size of the
+# snapshot just rsynced in, plus headroom for ongoing AOF growth. Check
+# before seeding, not after a failed write mid-restore:
+df -h "$(dirname <TELEMETRY_ROOT>/<PROJECT>/bus-standby/data)"
+du -sh /tmp/bus-core-snapshot
+
 cp services/orion-bus/.env_example services/orion-bus/.env.atlas-standby
 # .env.atlas-standby only carries orion-bus-specific keys (BUS_STANDBY_PORT,
 # etc). PROJECT/TELEMETRY_ROOT/NODE_NAME come from root .env, chained first:
+
+# app-net must exist before `up` -- it's declared external:true in the
+# compose file (same as every other compose file in this repo), not created
+# by it. Idempotent create-if-missing, matches
+# services/orion-bus/README.md's own bootstrap step:
+docker network inspect app-net >/dev/null 2>&1 || docker network create app-net
 
 docker compose \
   --env-file .env \
   --env-file services/orion-bus/.env.atlas-standby \
   -f services/orion-bus/docker-compose.atlas-standby.yml \
-  up -d
+  up -d --build
 
 # Verify the restore actually happened -- do not skip this. Substitute the
 # real <PROJECT> value; the container name is orion-<PROJECT>-bus-core-standby:
@@ -242,6 +266,15 @@ for f in services/*/docker-compose.yml; do grep -q "ORION_BUS_URL" "$f" || echo 
 
 ### Cutover steps
 
+**Stop here before running any step below in a real incident.** This
+repoints the live root `.env` of the whole mesh and recreates every
+consuming service's container -- a production write with mesh-wide blast
+radius, exactly the kind of action AGENTS.md §13 requires explicit sign-off
+for ("if touching production, state the exact action and wait for
+confirmation"). Get that sign-off first. Steps 1-2 above (restoring and
+verifying the standby's data) are read-mostly against athena and don't need
+this gate; the cutover steps below do.
+
 1. Confirm Step 1's restore is verified (matching `DBSIZE`/`KEYS`).
 2. Stop `bus-core` on athena, or confirm it is already down/crash-looping:
    ```bash
@@ -261,19 +294,21 @@ for f in services/*/docker-compose.yml; do grep -q "ORION_BUS_URL" "$f" || echo 
    checking.
 
    Which port to use: **this runbook's own recorded assumption is
-   `BUS_STANDBY_PORT=6380`** (the template default in
-   `services/orion-bus/.env_example`, chosen so the standby can be
-   co-located with the primary on one host for testing without a port
-   collision) — treat this as the deployed value unless you have direct,
-   live-verified knowledge it was overridden to `6379` at initial deploy
-   time on atlas (e.g. you did that deploy yourself, or a prior operator
-   left a note recording it — check for one before assuming 6380). If you
-   can reach atlas via SSH, confirm directly instead of relying on this
-   assumption: `docker port orion-<PROJECT>-bus-core-standby` on atlas. If
-   you cannot reach atlas (this runbook was itself authored during a
-   session where atlas SSH access was unavailable — don't assume it'll be
-   available during a real incident either), fall back to the `6380`
-   assumption above rather than being stuck with no path forward.
+   `BUS_STANDBY_PORT=6381`** (the template default in
+   `services/orion-bus/.env_example` -- chosen instead of the originally
+   drafted `6380` after review found that port already hardcoded by
+   `services/orion-graphiti-adapter/docker-compose.yml`'s own falkordb
+   container; `6381` was confirmed free across every `services/*/docker-
+   compose*.yml` as of 2026-07-16) — treat this as the deployed value unless
+   you have direct, live-verified knowledge it was overridden to `6379` at
+   initial deploy time on atlas (e.g. you did that deploy yourself, or a
+   prior operator left a note recording it — check for one before assuming
+   6381). If you can reach atlas via SSH, confirm directly instead of
+   relying on this assumption: `docker port orion-<PROJECT>-bus-core-standby`
+   on atlas. If you cannot reach atlas (this runbook was itself authored
+   during a session where atlas SSH access was unavailable — don't assume
+   it'll be available during a real incident either), fall back to the
+   `6381` assumption above rather than being stuck with no path forward.
 
    Edit the root `.env` on athena (and anywhere else mesh services actually
    read their root `.env` from — e.g. any other node's own checkout):
@@ -302,13 +337,21 @@ for f in services/*/docker-compose.yml; do grep -q "ORION_BUS_URL" "$f" || echo 
      -f services/<svc>/docker-compose.yml up -d
    ```
 7. Restart order: no strict dependency ordering is required for the bus
-   swap itself — Redis client libraries reconnect on next use, and
-   consumer groups resume from where they left off as long as the stream
-   data is present on the new instance (which Step 1 verified). As a
-   practical sequencing preference, restart the central hub/orchestration
-   layer first (`orion-hub`, `orion-cortex-orch`, `orion-cortex-gateway`)
-   so downstream services reconnecting shortly after have something to
-   talk to, then everything else in any order.
+   swap itself — Redis client libraries generally reconnect on next use.
+   **Not independently verified this session:** whether consumer groups
+   actually resume delivery from the correct position on the new instance.
+   Step 1 only confirmed `DBSIZE`/`KEYS` match, which proves the data
+   restored correctly but says nothing about consumer-group cursor state
+   (`XINFO GROUPS <stream>` on both primary and standby, before and after
+   cutover, is the real check — not done here). Redis persists consumer
+   group state in the same RDB/AOF as the keys themselves, so it should
+   carry over with the snapshot, but this repo has no live evidence of that
+   for this specific setup — treat it as a real check to run during the
+   next test cutover, not a settled fact. As a practical sequencing
+   preference, restart the central hub/orchestration layer first
+   (`orion-hub`, `orion-cortex-orch`, `orion-cortex-gateway`) so downstream
+   services reconnecting shortly after have something to talk to, then
+   everything else in any order.
 8. Verify: pick 2-3 services from each bucket in Step 2 and confirm
    `docker exec <container> env | grep ORION_BUS_URL` shows the new value,
    and that `docker logs` shows a fresh Redis connection with no repeated

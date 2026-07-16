@@ -46,12 +46,16 @@ def count_schema_mismatches(
     declared schema_id (orion/bus/channels.yaml).
 
     Returns (mismatch_count, sampled_count). Reuses OrionCodec.decode()'s
-    DecodeResult/error mechanism for the envelope-decode step (same pattern
-    as OrionBusAsync._validate_payload()), then validates the decoded
-    envelope's payload against the resolved schema model. An entry that
-    fails to decode at all, or whose envelope carries a payload that does
-    not fit the declared schema, counts as a mismatch -- both are real
-    contract violations for this stream, just at different layers.
+    DecodeResult/error mechanism for the envelope-decode step -- note this is
+    NOT literally the same call path as OrionBusAsync._validate_payload():
+    that method validates an in-memory payload before encoding/publish and
+    never calls codec.decode() at all. What IS shared with it is the
+    downstream step: resolve_schema_id() + model.model_validate(payload).
+    After decode, this validates the decoded envelope's payload against the
+    resolved schema model. An entry that fails to decode at all, or whose
+    envelope carries a payload that does not fit the declared schema, counts
+    as a mismatch -- both are real contract violations for this stream, just
+    at different layers.
 
     Never returns raw payload content -- counts only (see
     SUBSTRATE_TRACE_MAP.md: bus-observer emits bounded counts, never

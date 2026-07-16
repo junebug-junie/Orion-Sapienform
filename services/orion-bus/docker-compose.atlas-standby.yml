@@ -1,0 +1,58 @@
+# ───────────────────────────────────────────────────────────────
+# 🚌 Orion Bus — Cold Standby (Atlas node)
+# Passive Redis replica-target. NOT wired into ORION_BUS_URL.
+# NOT auto-failover. NOT leader-elected. Manual cutover only —
+# see docs/notes/2026-07-16-bus-core-standby-cutover-runbook.md.
+# ───────────────────────────────────────────────────────────────
+#
+# Deploy pattern matches services/orion-llamacpp-host/docker-compose.atlas-workers.yml:
+# a separate, node-scoped compose file run FROM the target node's own checkout,
+# with a dedicated env file (copy services/orion-bus/.env_example to
+# services/orion-bus/.env.atlas-standby on the atlas host, then set NODE_NAME=atlas
+# and PROJECT=orion-atlas if not already set by that host's rebuild-services.sh).
+#
+# Run on the atlas host:
+#   docker compose \
+#     --env-file services/orion-bus/.env.atlas-standby \
+#     -f services/orion-bus/docker-compose.atlas-standby.yml \
+#     up -d
+#
+# This file intentionally omits bus-exporter and bus-observer. It is a cold
+# data target only -- no metrics scraping, no grammar emission, no client
+# ever points ORION_BUS_URL here automatically.
+
+services:
+  bus-core-standby:
+    image: redis:7-alpine
+    container_name: orion-${PROJECT}-bus-core-standby
+    command:
+      [
+        "redis-server",
+        "--appendonly",
+        "yes",
+        "--maxmemory-policy",
+        "allkeys-lru",
+        "--client-output-buffer-limit",
+        "pubsub",
+        "64mb",
+        "32mb",
+        "120",
+      ]
+    ports:
+      - "${BUS_STANDBY_PORT:-6379}:6379"
+    volumes:
+      - ${TELEMETRY_ROOT}/${PROJECT}/bus-standby/data:/data
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD-SHELL", "redis-cli ping | grep PONG || exit 1"]
+      interval: 5s
+      timeout: 2s
+      retries: 5
+    networks:
+      app-net:
+        aliases:
+          - bus-core-standby
+
+networks:
+  app-net:
+    external: true

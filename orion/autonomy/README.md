@@ -1,3 +1,8 @@
+## Origin and current gap
+
+Why any of this exists, the founding theory, and the biggest unresolved gap (self-initiation
+was never built): [drives_and_autonomy_retrospective.md](drives_and_autonomy_retrospective.md)
+
 ## Subject routing
 
 Autonomy goals and drives are keyed by subject (`orion`, `relationship`, `juniper`). Dyadic chat materializes to **relationship**, not juniper — see the routing contract:

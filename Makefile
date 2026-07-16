@@ -98,7 +98,11 @@ check-daily-schedule-collisions:
 # or a systemd timer (see that script's docstring / scripts/README.md for install
 # instructions), not from inside a container.
 bus-core-health-watchdog:
-	@python scripts/bus_core_health_watchdog.py $(if $(PROJECT),--project $(PROJECT),)
+	@python scripts/bus_core_health_watchdog.py $(if $(PROJECT),--project $(PROJECT),) \
+		$(if $(TELEMETRY_ROOT),--telemetry-root $(TELEMETRY_ROOT),) \
+		$(if $(UNHEALTHY_STREAK_THRESHOLD),--unhealthy-streak-threshold $(UNHEALTHY_STREAK_THRESHOLD),) \
+		$(if $(RESTART_COUNT_THRESHOLD),--restart-count-threshold $(RESTART_COUNT_THRESHOLD),) \
+		$(if $(RESTART_WINDOW_MINUTES),--restart-window-minutes $(RESTART_WINDOW_MINUTES),)
 
 # Reconciled worktree view -- path, branch, merged-into-main status, open PR,
 # disk size -- regardless of which of this repo's several worktree location

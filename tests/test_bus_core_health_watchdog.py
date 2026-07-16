@@ -530,6 +530,101 @@ def test_main_exits_two_when_docker_binary_missing(tmp_path):
     assert exit_code == 2
 
 
+def test_main_exits_three_on_unexpected_exception(tmp_path):
+    # Anything not covered by the specific except clauses is a bug in the
+    # watchdog itself, not a crash-loop signal -- must get its own exit code
+    # (3), never alias exit 1's "crash loop detected" meaning.
+    payload = json.dumps([{"State": {"Status": "running", "Health": {"Status": "healthy"}}, "RestartCount": 0}])
+    with patch("subprocess.run", return_value=_fake_completed(0, payload)):
+        with patch.object(watchdog, "evaluate", side_effect=RuntimeError("boom")):
+            exit_code = watchdog.main([
+                "--container", "fake-container",
+                "--state-file", str(tmp_path / "state.json"),
+                "--alert-marker", str(tmp_path / "ALERT.txt"),
+            ])
+    assert exit_code == 3
+
+
+def test_inspect_container_degrades_on_malformed_restart_count():
+    # A non-numeric RestartCount from docker inspect's own JSON must degrade
+    # to 0 with a warning, not raise -- matching inspect_container()'s
+    # documented "never raises" contract.
+    payload = json.dumps([{"State": {"Status": "running", "Health": {"Status": "healthy"}}, "RestartCount": "not-a-number"}])
+    with patch("subprocess.run", return_value=_fake_completed(0, payload)):
+        result = watchdog.inspect_container("fake-container")
+    assert result["restart_count"] == 0
+
+
+def test_evaluate_degrades_on_malformed_consecutive_unhealthy_count():
+    # Same coercion gap, evaluate()'s side: a hand-edited/partially-migrated
+    # state file with a non-numeric consecutive_unhealthy_count must not
+    # crash the check path.
+    state = watchdog._empty_state()
+    state["consecutive_unhealthy_count"] = "garbage"
+    new_state, crash_loop_detected, _reasons = watchdog.evaluate(
+        state, "unhealthy", 0, _now(),
+        unhealthy_streak_threshold=3, restart_count_threshold=3, restart_window_minutes=10,
+    )
+    assert new_state["consecutive_unhealthy_count"] == 1  # degraded to 0, then incremented
+    assert crash_loop_detected is False
+
+
+def test_write_alert_marker_docker_unreachable_gets_distinct_guidance(tmp_path):
+    # docker logs/docker inspect would also fail for the same reason that
+    # produced this alert -- the marker must not recommend them, and must
+    # say plainly that health could not even be checked.
+    marker = tmp_path / "ALERT.txt"
+    state = watchdog._empty_state()
+    state["last_health_status"] = "docker_unreachable"
+    watchdog.write_alert_marker(marker, "fake-container", state, ["docker daemon unreachable"], _now())
+    text = marker.read_text()
+    assert "Docker daemon itself was unreachable" in text
+    assert "systemctl status docker" in text
+    # docker logs/inspect may still be mentioned to explain they won't help,
+    # but must not be presented as the recommended "Check:" next step the
+    # way the regular crash-loop branch presents them.
+    assert "Check:\n  docker logs" not in text
+
+
+def test_write_alert_marker_regular_crash_loop_keeps_original_guidance(tmp_path):
+    marker = tmp_path / "ALERT.txt"
+    state = watchdog._empty_state()
+    state["last_health_status"] = "unhealthy"
+    watchdog.write_alert_marker(marker, "fake-container", state, ["unhealthy streak"], _now())
+    text = marker.read_text()
+    assert "docker logs" in text
+    assert "docker inspect" in text
+
+
+def test_run_preserves_human_note_across_ongoing_incident_ticks(tmp_path):
+    # Regression: write_alert_marker used to clobber the file from scratch on
+    # every tick while the incident was still active, silently destroying
+    # any investigation note a human appended mid-incident.
+    state_file = tmp_path / "state.json"
+    marker = tmp_path / "ALERT.txt"
+    payload = json.dumps([{"State": {"Status": "restarting", "Health": {"Status": "unhealthy"}}, "RestartCount": 9}])
+    with patch("subprocess.run", return_value=_fake_completed(0, payload)):
+        for _ in range(3):
+            watchdog.main([
+                "--container", "fake-container",
+                "--state-file", str(state_file),
+                "--alert-marker", str(marker),
+                "--unhealthy-streak-threshold", "3",
+            ])
+        assert marker.exists()
+        with marker.open("a") as f:
+            f.write("\nfiled JIRA-123, do not delete yet\n")
+        # One more tick of the SAME ongoing incident (still unhealthy).
+        exit_code = watchdog.main([
+            "--container", "fake-container",
+            "--state-file", str(state_file),
+            "--alert-marker", str(marker),
+            "--unhealthy-streak-threshold", "3",
+        ])
+    assert exit_code == 1
+    assert "filed JIRA-123, do not delete yet" in marker.read_text()
+
+
 def test_main_uses_project_default_container_name(tmp_path):
     payload = json.dumps([{"State": {"Status": "running", "Health": {"Status": "healthy"}}, "RestartCount": 0}])
     captured_args = {}

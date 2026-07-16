@@ -77,6 +77,12 @@ Exit codes: 0 = healthy, no crash-loop signature met (also returned if this run
                 services/orion-bus/README.md's watchdog section). Deliberately
                 distinct from exit 1 so a permissions failure can never be
                 misread as "crash loop detected."
+            3 = the watchdog itself broke on an unexpected/unhandled exception
+                (a bug in this script, not a signal about bus-core). Deliberately
+                distinct from BOTH exit 1 and exit 2 so a monitoring wrapper
+                keying off exit code can tell "watchdog crashed" apart from
+                "real crash loop detected" -- an uncaught exception must never
+                silently alias exit 1's meaning.
 """
 from __future__ import annotations
 
@@ -127,6 +133,26 @@ class DockerUnavailableError(RuntimeError):
     themselves alarming signals, not script errors)."""
 
 
+def _safe_int(value: Any, default: int, warn_label: str) -> int:
+    """Coerce `value` to int, degrading to `default` with a logged warning
+    instead of raising. Used anywhere an int is read from a source this
+    script does not fully control (docker inspect's JSON output, a
+    hand-edited or partially-migrated state file) -- a malformed/non-numeric
+    value there must never crash the check path, matching the "never raises,
+    only genuine tooling failure surfaces as a distinct signal" contract
+    documented on inspect_container() and enforced end-to-end via main()'s
+    catch-all (see its docstring's Exit codes section)."""
+    try:
+        return int(value if value is not None else default)
+    except (TypeError, ValueError) as exc:
+        print(
+            f"bus_core_health_watchdog: WARNING -- could not parse {warn_label} "
+            f"({value!r}: {exc}), defaulting to {default}.",
+            file=sys.stderr,
+        )
+        return default
+
+
 def inspect_container(container: str, docker_bin: str = "docker") -> dict[str, Any]:
     """Runs `docker inspect <container>` and returns a normalized dict:
 
@@ -167,7 +193,7 @@ def inspect_container(container: str, docker_bin: str = "docker") -> dict[str, A
         return {"health_status": "docker_unreachable", "restart_count": 0, "container_status": f"unparseable docker inspect output: {exc}"}
 
     state = entry.get("State", {}) or {}
-    restart_count = int(entry.get("RestartCount", 0) or 0)
+    restart_count = _safe_int(entry.get("RestartCount", 0), 0, "RestartCount from docker inspect output")
     container_status = state.get("Status", "unknown")
     health = state.get("Health")
     if not health:
@@ -283,13 +309,17 @@ def evaluate(
         new_state["consecutive_unhealthy_count"] = 0
         new_state["last_known_healthy_at"] = now_iso
     elif health_status in _UNHEALTHY_LIKE_STATUSES:
-        new_state["consecutive_unhealthy_count"] = int(state.get("consecutive_unhealthy_count", 0)) + 1
+        new_state["consecutive_unhealthy_count"] = (
+            _safe_int(state.get("consecutive_unhealthy_count", 0), 0, "consecutive_unhealthy_count from state file") + 1
+        )
     elif health_status in _NEUTRAL_STATUSES:
         pass  # leave streak unchanged -- ambiguous signal (e.g. just restarted)
     else:
         # Unknown health_status string -- treat conservatively like "unhealthy"
         # rather than silently ignoring it (no empty-shell success states).
-        new_state["consecutive_unhealthy_count"] = int(state.get("consecutive_unhealthy_count", 0)) + 1
+        new_state["consecutive_unhealthy_count"] = (
+            _safe_int(state.get("consecutive_unhealthy_count", 0), 0, "consecutive_unhealthy_count from state file") + 1
+        )
 
     samples = prune_restart_samples(list(state.get("restart_samples", [])), now, restart_window_minutes)
     samples.append({"at": now_iso, "restart_count": restart_count})
@@ -337,11 +367,39 @@ def evaluate(
     return new_state, crash_loop_detected, reasons
 
 
-def write_alert_marker(path: Path, container: str, state: dict[str, Any], reasons: list[str], now: datetime) -> None:
+def write_alert_marker(
+    path: Path,
+    container: str,
+    state: dict[str, Any],
+    reasons: list[str],
+    now: datetime,
+    is_new_incident: bool = True,
+) -> None:
+    """Writes the crash-loop alert marker.
+
+    `is_new_incident` distinguishes "this tick just transitioned into a crash
+    loop" (state.crash_loop_active flipped False -> True) from "this tick is
+    just re-confirming an crash loop already flagged on a prior tick." `run()`
+    calls this on every tick while crash_loop_detected stays True -- if this
+    function always clobbered the file from scratch, any investigation notes
+    a human appended to the marker mid-incident would silently vanish on the
+    very next poll (reproduced before this fix). So: a brand-new incident
+    always gets fresh content (even if a stale marker from a PAST, already-
+    resolved incident still exists on disk -- that stale content must not
+    survive into a new incident's report); an ONGOING incident leaves an
+    already-existing marker file untouched entirely.
+    """
+    if not is_new_incident and path.exists():
+        return
+
+    last_health_status = state.get("last_health_status")
+    docker_unreachable = last_health_status == "docker_unreachable"
+
     lines = [
         "ORION BUS-CORE CRASH-LOOP ALERT",
         "================================",
         f"container:            {container}",
+        f"last_health_status:   {last_health_status}",
         f"detected_first_at:    {state.get('crash_loop_first_detected_at')}",
         f"last_check_at:        {now.isoformat()}",
         f"last_known_healthy_at:{state.get('last_known_healthy_at')}",
@@ -351,22 +409,47 @@ def write_alert_marker(path: Path, container: str, state: dict[str, Any], reason
         "Reason(s):",
     ]
     lines += [f"  - {r}" for r in reasons]
-    lines += [
-        "",
-        "This means bus-core (Redis) is very likely stuck in a crash loop.",
-        "Everything routed through the bus, and anything that depends on the",
-        "bus to report its own failures, may be silently degraded right now.",
-        "",
-        "Check:",
-        f"  docker logs --tail=200 {container}",
-        f"  docker inspect {container} --format '{{{{json .State}}}}'",
-        "  services/orion-bus/docker-compose.yml (AOF corruption is the known",
-        "  recurring cause -- a separate task is adding auto-repair for that).",
-        "",
-        "This file is written by scripts/bus_core_health_watchdog.py and is",
-        "NOT auto-deleted. Once you've looked, delete it by hand:",
-        f"  rm {path}",
-    ]
+
+    if docker_unreachable:
+        # The Docker daemon itself was unreachable -- this is NOT necessarily
+        # bus-core crash-looping (health could not be checked at all), and
+        # `docker logs`/`docker inspect` would fail for the exact same reason
+        # that produced this alert, so recommending them as next steps here
+        # would be actively misleading.
+        lines += [
+            "",
+            "This means the Docker daemon itself was unreachable from this host --",
+            "NOT necessarily that bus-core is crash-looping (its health could not",
+            "even be checked). `docker logs`/`docker inspect` will likely also fail",
+            "for the same reason, so they are not useful next steps right now.",
+            "",
+            "Check instead:",
+            "  systemctl status docker   (or the equivalent for this host's init system)",
+            "  Disk space / permissions on the Docker daemon socket",
+            "  Host-level resource exhaustion (e.g. OOM) that could have killed dockerd",
+            "",
+            "This file is written by scripts/bus_core_health_watchdog.py and is",
+            "NOT auto-deleted. Once you've looked, delete it by hand:",
+            f"  rm {path}",
+        ]
+    else:
+        lines += [
+            "",
+            "This means bus-core (Redis) is very likely stuck in a crash loop.",
+            "Everything routed through the bus, and anything that depends on the",
+            "bus to report its own failures, may be silently degraded right now.",
+            "",
+            "Check:",
+            f"  docker logs --tail=200 {container}",
+            f"  docker inspect {container} --format '{{{{json .State}}}}'",
+            "  services/orion-bus/docker-compose.yml (AOF corruption is the known",
+            "  recurring cause -- a separate task is adding auto-repair for that).",
+            "",
+            "This file is written by scripts/bus_core_health_watchdog.py and is",
+            "NOT auto-deleted. Once you've looked, delete it by hand:",
+            f"  rm {path}",
+        ]
+
     # Atomic (mkstemp + os.replace), matching _atomic_write_json -- this file
     # is human-read during a live incident, so it gets the same no-torn-write
     # guarantee as the state file rather than a plain write().
@@ -457,7 +540,10 @@ def run(
         _atomic_write_json(state_file, new_state)
 
         if crash_loop_detected:
-            write_alert_marker(alert_marker, container, new_state, reasons, now)
+            write_alert_marker(
+                alert_marker, container, new_state, reasons, now,
+                is_new_incident=not was_active,
+            )
         elif was_active and not crash_loop_detected:
             append_resolved_footer(alert_marker, now)
 
@@ -543,6 +629,18 @@ def main(argv: list[str] | None = None) -> int:
             file=sys.stderr,
         )
         return 2
+    except Exception as exc:  # noqa: BLE001 -- deliberate catch-all, see docstring's Exit codes
+        # Anything not covered by the specific except clauses above is a bug
+        # in this script, not a signal about bus-core. Must never exit 1 --
+        # that would be indistinguishable from a genuine crash-loop detection
+        # to anything consuming only the exit code.
+        print(
+            f"bus_core_health_watchdog: UNEXPECTED ERROR -- {type(exc).__name__}: {exc}. "
+            "This is a bug in the watchdog itself, not a crash-loop detection. "
+            "See scripts/bus_core_health_watchdog.py docstring's Exit codes section.",
+            file=sys.stderr,
+        )
+        return 3
 
     if args.json:
         print(json.dumps({

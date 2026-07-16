@@ -678,6 +678,10 @@ document.addEventListener("DOMContentLoaded", () => {
   const substrateAtlasPanel = document.getElementById("substrate-atlas");
   const substrateAtlasPanelFrame = document.getElementById("substrateAtlasPanelFrame");
   const substrateAtlasPanelRefresh = document.getElementById("substrateAtlasPanelRefresh");
+  const conceptAtlasTabButton = document.getElementById("conceptAtlasTabButton");
+  const conceptAtlasPanel = document.getElementById("concept-atlas");
+  const conceptAtlasPanelFrame = document.getElementById("conceptAtlasPanelFrame");
+  const conceptAtlasPanelRefresh = document.getElementById("conceptAtlasPanelRefresh");
   const pressureAnalyticsTabButton = document.getElementById("pressureAnalyticsTabButton");
   const pressurePanel = document.getElementById("pressure");
   const collapseMirrorTabButton = document.getElementById("collapseMirrorTabButton");
@@ -962,6 +966,9 @@ document.addEventListener("DOMContentLoaded", () => {
     if (tabKey === "substrate-atlas" && !substrateAtlasPanel) {
       effectiveTab = "hub";
     }
+    if (tabKey === "concept-atlas" && !conceptAtlasPanel) {
+      effectiveTab = "hub";
+    }
     if (tabKey === "substrate-lattice" && !substrateLatticePanelEl) {
       effectiveTab = "hub";
     }
@@ -976,6 +983,7 @@ document.addEventListener("DOMContentLoaded", () => {
     const isServiceLogs = effectiveTab === "service-logs";
     const isSubstrate = effectiveTab === "substrate";
     const isSubstrateAtlas = effectiveTab === "substrate-atlas";
+    const isConceptAtlas = effectiveTab === "concept-atlas";
     const isMemory = effectiveTab === "memory";
     const isPressure = effectiveTab === "pressure";
     const isSubstrateLattice = effectiveTab === "substrate-lattice";
@@ -1002,6 +1010,35 @@ document.addEventListener("DOMContentLoaded", () => {
           }
         };
         setTimeout(pingAtlasFrame, 150);
+      }
+    }
+    if (conceptAtlasPanel) {
+      const wasConceptAtlasVisible = !conceptAtlasPanel.classList.contains("hidden");
+      conceptAtlasPanel.classList.toggle("hidden", !isConceptAtlas);
+      if (isConceptAtlas && conceptAtlasPanelFrame) {
+        const pingConceptAtlasFrame = () => {
+          try {
+            const atlasWin = conceptAtlasPanelFrame.contentWindow;
+            if (atlasWin && atlasWin.OrionConceptAtlas && typeof atlasWin.OrionConceptAtlas.activate === "function") {
+              atlasWin.OrionConceptAtlas.activate();
+            }
+          } catch {
+            /* iframe not ready */
+          }
+        };
+        setTimeout(pingConceptAtlasFrame, 150);
+      } else if (!isConceptAtlas && wasConceptAtlasVisible && conceptAtlasPanelFrame) {
+        // Actually invoke cleanup on tab-hide (Organ Signals' reference
+        // implementation defines destroy() but never calls it here on
+        // tab-switch -- this closes that gap for Concept Atlas).
+        try {
+          const atlasWin = conceptAtlasPanelFrame.contentWindow;
+          if (atlasWin && atlasWin.OrionConceptAtlas && typeof atlasWin.OrionConceptAtlas.deactivate === "function") {
+            atlasWin.OrionConceptAtlas.deactivate();
+          }
+        } catch {
+          /* iframe not ready */
+        }
       }
     }
     if (memoryPanel) {
@@ -1060,6 +1097,9 @@ document.addEventListener("DOMContentLoaded", () => {
     styleTabButton(substrateTabButton, isSubstrate);
     if (substrateAtlasTabButton) {
       styleTabButton(substrateAtlasTabButton, isSubstrateAtlas);
+    }
+    if (conceptAtlasTabButton) {
+      styleTabButton(conceptAtlasTabButton, isConceptAtlas);
     }
     if (memoryTabButton) {
       styleTabButton(memoryTabButton, isMemory);
@@ -1647,6 +1687,8 @@ document.addEventListener("DOMContentLoaded", () => {
       setActiveTab("substrate");
     } else if (h === "#substrate-atlas" && substrateAtlasPanel && substrateAtlasTabButton) {
       setActiveTab("substrate-atlas");
+    } else if (h === "#concept-atlas" && conceptAtlasPanel && conceptAtlasTabButton) {
+      setActiveTab("concept-atlas");
     } else if (h === "#pressure" && pressurePanel && pressureAnalyticsTabButton) {
       setActiveTab("pressure");
     } else if (h === "#substrate-lattice" && substrateLatticePanelEl && substrateLatticeTabButton) {
@@ -1672,6 +1714,7 @@ document.addEventListener("DOMContentLoaded", () => {
         || h === "#signals"
         || h === "#forge"
         || h === "#substrate-atlas"
+        || h === "#concept-atlas"
         || h === "#collapse-mirror"
         || h === "#ai-town"
       ) {
@@ -11750,6 +11793,13 @@ document.addEventListener("DOMContentLoaded", () => {
         history.replaceState(null, "", "#substrate-atlas");
       });
     }
+    if (conceptAtlasTabButton && conceptAtlasPanel) {
+      conceptAtlasTabButton.addEventListener("click", (event) => {
+        event.preventDefault();
+        setActiveTab("concept-atlas");
+        history.replaceState(null, "", "#concept-atlas");
+      });
+    }
     if (memoryTabButton) {
       memoryTabButton.addEventListener("click", (event) => {
         event.preventDefault();
@@ -11822,6 +11872,21 @@ document.addEventListener("DOMContentLoaded", () => {
     substrateAtlasPanelRefresh.addEventListener("click", () => {
       try {
         substrateAtlasPanelFrame.contentWindow?.location.reload();
+      } catch {
+        /* ignore */
+      }
+    });
+  }
+
+  if (conceptAtlasPanelRefresh && conceptAtlasPanelFrame) {
+    conceptAtlasPanelRefresh.addEventListener("click", () => {
+      try {
+        const atlasWin = conceptAtlasPanelFrame.contentWindow;
+        if (atlasWin && atlasWin.OrionConceptAtlas && typeof atlasWin.OrionConceptAtlas.refresh === "function") {
+          atlasWin.OrionConceptAtlas.refresh();
+        } else {
+          atlasWin?.location.reload();
+        }
       } catch {
         /* ignore */
       }

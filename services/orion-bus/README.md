@@ -77,6 +77,104 @@ To quickly view the top of the metrics stream:
 make metrics
 ```
 
+### Host-level crash-loop watchdog (survives bus AND Postgres both being down)
+
+`bus-core` periodically crash-loops from AOF corruption (auto-repair for that is a
+separate, parallel piece of work -- not covered here). The gap this closes:
+detecting "bus is stuck in a crash loop" today depends on either a human noticing
+cascading failures across many *other* services, or on signals that themselves
+route through the bus or Postgres -- both of which can be down at the same time in
+dev (confirmed, not hypothetical). `scripts/bus_core_health_watchdog.py` is a
+detection floor that survives both being down simultaneously: it reads
+`docker inspect`'s `.State.Health.Status` / `.RestartCount` for the real
+`orion-${PROJECT}-bus-core` container only -- **no Redis connection, no Postgres
+connection, ever**. It persists its own state as a local JSON file and, on a
+crash-loop signature, writes a plain, impossible-to-miss marker file (this repo
+has no `notify-send`/`osascript`/desktop-notification mechanism to reuse; the one
+HTTP alert path that exists, `orion-notify`'s `/attention/request`, is itself
+infrastructure that can plausibly be down in the same incident this watchdog
+exists to catch).
+
+Two independent crash-loop signatures, either fires an alert (both overridable):
+
+- **Consecutive-unhealthy streak** -- default 3 consecutive watchdog runs where
+  health was not `healthy` (`unhealthy`, the container missing, or the Docker
+  daemon itself unreachable all count; `starting`/`none` are neutral).
+- **Restart-count-in-window** -- default 3 restarts within a 10-minute rolling
+  window, from `docker inspect`'s cumulative `.RestartCount`. Catches a crash
+  loop that never settles into `unhealthy` between polls.
+
+State file (default): `${TELEMETRY_ROOT}/${PROJECT}/bus/watchdog/health_watchdog_state.json`
+-- a sibling of, not inside, the AOF data mount at `${TELEMETRY_ROOT}/${PROJECT}/bus/data`.
+
+Alert marker (default, never auto-deleted, updated with a RESOLVED footer instead
+of removed if the condition clears): `${TELEMETRY_ROOT}/${PROJECT}/bus/ORION_BUS_CRASH_LOOP_ALERT.txt`
+-- **this is where Juniper should look** if bus-core is suspected to be
+crash-looping and other symptoms (bus-dependent services failing, Postgres also
+possibly down) are inconclusive.
+
+```bash
+python3 scripts/bus_core_health_watchdog.py
+# or: make bus-core-health-watchdog
+```
+
+Both default to `$PROJECT`/`$TELEMETRY_ROOT` from `.env` (`orion-athena`/`/mnt/telemetry`
+today) if unset; override with `--project`/`--telemetry-root`, or pin exact paths
+with `--container`/`--state-file`/`--alert-marker`. See the script's own docstring
+for the full flag list and exit-code contract (0 healthy, 1 crash-loop detected, 2
+the `docker` binary itself could not be run).
+
+The default state/marker paths live under `/mnt/telemetry/${PROJECT}/bus/`, which
+on this host is owned by `root:root` (755) -- the first run needs the directory
+either pre-created and chowned to whichever user runs the cron job, or run once
+manually with `sudo` to create it:
+
+```bash
+sudo mkdir -p /mnt/telemetry/${PROJECT}/bus/watchdog
+sudo chown "$(whoami)":"$(whoami)" /mnt/telemetry/${PROJECT}/bus/watchdog
+```
+
+#### Scheduled maintenance (Athena cron)
+
+Install on the host that runs `bus-core` (`crontab -e` as `athena`), matching this
+repo's established pattern for host-level scheduled checks (see
+`services/orion-rdf-store/README.md`'s "Scheduled maintenance" section and
+`services/orion-memory-consolidation/README.md`'s, both crontab-based). The one
+systemd-timer precedent in this repo (`docs/superpowers/plans/2026-05-09-local-mnt-scripts-backup-implementation.md`,
+units generated into a gitignored `.worktrees/` path, not present in a fresh
+checkout) is for a single long-running nightly backup job, not this
+repeated-fast-poll shape -- crontab is the better fit here, and matches the
+dominant house convention:
+
+```cron
+# bus-core crash-loop watchdog -- docker-inspect only, no Redis/Postgres dependency
+* * * * * cd /mnt/scripts/Orion-Sapienform && make bus-core-health-watchdog >> /mnt/scripts/Orion-Sapienform/logs/orion-bus-core-health-watchdog.log 2>&1
+```
+
+Every-minute cadence matches the default thresholds (3 consecutive unhealthy checks
+~= 3 minutes; 3 restarts within a 10-minute window) -- fast enough to catch a real
+crash loop within a few minutes, slow enough not to flap on a single transient
+health-check blip (`bus-core`'s own Docker healthcheck already requires 5
+consecutive internal failures at 5s intervals, ~25s, before it reports `unhealthy`
+in the first place). If you change the cron cadence, re-derive the threshold
+defaults (`--unhealthy-streak-threshold`, `--restart-count-threshold`,
+`--restart-window-minutes`) so they stay a real multiple of the new interval,
+same caveat noted in the concept-relation-digest precedent.
+
+Not installed automatically -- per this repo's safety rules, host crontab is
+host-level shared infrastructure and is not modified without explicit sign-off.
+Install the line above by hand.
+
+The `>> ... 2>&1` redirect to a log file is deliberate, not an alerting gap:
+this script prints a status line on *every* run, healthy or not, so an
+unredirected cron job would mail on every single invocation (every minute)
+rather than only on failure. The real alert path for a human is the
+`ORION_BUS_CRASH_LOOP_ALERT.txt` marker file described above (survives both
+Redis and Postgres being down, which cron's own MTA-dependent mail delivery
+does not) plus this exit code (1 = crash loop, 2/3 = watchdog itself
+failed) -- a wrapper that needs to escalate further should key off those,
+not off cron's mail-on-output behavior.
+
 ---
 
 ## 🧩 Interacting with the Bus

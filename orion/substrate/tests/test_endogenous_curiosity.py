@@ -60,6 +60,20 @@ def test_sustained_prediction_error_seeds_candidates() -> None:
     assert "endogenous_seed" in seed.notes
 
 
+def test_missing_prediction_error_never_seeds_even_at_zero_threshold() -> None:
+    """Locks in the `raw_error <= 0.0: continue` short-circuit (review finding):
+    a node with no/zero `prediction_error` must not seed a spurious "sustained
+    prediction error" candidate at signal_strength=0.0, even when the threshold
+    itself is configured at 0.0 (which would otherwise let `0.0 < 0.0 == False`
+    pass through, as it did before this fix)."""
+    no_error = _node("node:quiet", 0.0)
+    missing = SimpleNamespace(node_id="node:no-key", metadata={})
+    candidates = endogenous_curiosity_candidates(
+        nodes=[no_error, missing], config=_enabled(min_prediction_error=0.0)
+    )
+    assert candidates == []
+
+
 def test_stale_prediction_error_decays_and_is_not_sustained() -> None:
     """Regression for the sibling of PR #1061's salience decay-bypass bug:
     `metadata["prediction_error"]` never decays on its own (it's a raw upsert

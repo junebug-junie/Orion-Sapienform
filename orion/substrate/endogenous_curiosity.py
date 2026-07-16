@@ -42,29 +42,29 @@ MIN_REPAIR_LEVEL_ENV = "ORION_ENDOGENOUS_CURIOSITY_MIN_REPAIR_LEVEL"
 HARD_BUDGET_CEILING = 8
 
 # Prediction-error staleness ceiling. `metadata["prediction_error"]` is a raw
-# snapshot written by the transport reducer whenever `transport_prediction_error()`
-# fires (`services/orion-substrate-runtime/app/worker.py`); it never decays on its
-# own -- see `orion/substrate/pressure.py::prediction_error_pressure()`'s docstring.
-# Left unguarded, a node that was surprising once is "sustained prediction error"
-# forever, and since candidates are sorted strongest-first, it wins the bounded
-# endogenous-curiosity budget on every single tick regardless of what else is
-# happening. Live-confirmed 2026-07-16: `node:substrate.transport` held
-# `signal_strength=1.0` identically across all 1,428 persisted candidate sets in
-# `substrate_endogenous_curiosity_candidates` over the prior 24h (this path has been
-# live since 2026-07-02, `ORION_ENDOGENOUS_CURIOSITY_ENABLED=true` in the real .env).
+# snapshot (never decays on its own; see `pressure.py::prediction_error_pressure()`'s
+# docstring) written by the transport reducer whenever `transport_prediction_error()`
+# fires. Left unguarded, a node that was surprising once is "sustained prediction
+# error" forever and, since candidates sort strongest-first, wins the bounded
+# per-cycle budget on every tick. Live-confirmed 2026-07-16: `node:substrate.transport`
+# held `signal_strength=1.0` identically across all 1,428 persisted candidate sets
+# over the prior 24h (path live since 2026-07-02, not dormant).
 #
-# Deliberately NOT switched to reading `dynamic_pressure` directly (the sibling fix
-# in `attention_broadcast.py::_node_salience()`, PR #1061): `dynamic_pressure` is a
-# composite field -- the max of drive, prediction-error, and contradiction pressure,
-# each propagated across graph edges -- so a node's `dynamic_pressure` can be driven
-# entirely by an unrelated neighbor's contradiction or drive pressure with zero
-# prediction error of its own. Reading it here would make
-# `evidence_summary="sustained prediction error on {node_id}"` sometimes literally
-# false. Instead, the raw `prediction_error` value is decayed by the node's own age,
-# using the same horizon the pressure engine already applies to the identical raw
-# field -- this keeps the signal specifically about prediction error (so
-# "sustained" stays a true claim: this node keeps getting re-surprised, not merely
-# "was surprising once") while fixing the actual bug: unbounded staleness.
+# Deliberately NOT switched to reading `dynamic_pressure` directly, unlike the
+# sibling fix in `attention_broadcast.py::_node_salience()` (PR #1061):
+# `dynamic_pressure` is a composite of drive/prediction-error/contradiction pressure
+# propagated across edges (`dynamics.py::_compute_pressures()`), so it can be driven
+# entirely by an unrelated neighbor's pressure with zero prediction error of its
+# own -- reading it here would sometimes make
+# `evidence_summary="sustained prediction error on {node_id}"` literally false.
+# Instead the raw value is decayed by the node's own age, reusing the same horizon
+# `prediction_error_pressure()` already applies to this same field -- keeps the
+# signal specifically about prediction error while fixing the staleness.
+#
+# Captured once at import time from `PressureConfig()`'s bare default (matching
+# `pressure.py`'s own current usage -- neither module reads this from env today).
+# If `PressureConfig` ever becomes env-configurable, this constant would silently
+# pin to whatever was true at process start; re-derive per-call if that happens.
 _PREDICTION_ERROR_DECAY_HORIZON_SECONDS = PressureConfig().prediction_error_decay_horizon_seconds
 
 

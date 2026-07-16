@@ -634,30 +634,6 @@ async def _proxy_world_pulse_request(path: str, request: Request) -> Response:
             raise HTTPException(status_code=502, detail="World Pulse proxy request failed") from exc
 
 
-async def _proxy_knowledge_forge_request(path: str, request: Request) -> Response:
-    if not settings.KNOWLEDGE_FORGE_BASE_URL:
-        raise HTTPException(status_code=400, detail="Knowledge Forge base URL not configured")
-    url = f"{settings.KNOWLEDGE_FORGE_BASE_URL.rstrip('/')}/{path.lstrip('/')}"
-    headers = {key: value for key, value in request.headers.items() if key.lower() not in {"host", "content-length"}}
-    body = await request.body()
-    timeout = aiohttp.ClientTimeout(total=settings.KNOWLEDGE_FORGE_PROXY_TIMEOUT_SEC)
-    async with aiohttp.ClientSession(timeout=timeout) as session:
-        try:
-            async with session.request(
-                request.method,
-                url,
-                params=dict(request.query_params),
-                data=body if body else None,
-                headers=headers,
-            ) as response:
-                payload = await response.read()
-                content_type = response.headers.get("content-type", "application/json")
-                return Response(content=payload, status_code=response.status, media_type=content_type)
-        except aiohttp.ClientError as exc:
-            logger.warning("Knowledge Forge proxy error: %s", exc)
-            raise HTTPException(status_code=502, detail="Knowledge Forge proxy request failed") from exc
-
-
 async def _fetch_landing_pad(path: str, params: Dict[str, Any]) -> Dict[str, Any]:
     base_url = settings.LANDING_PAD_URL.rstrip("/")
     url = f"{base_url}{path}"
@@ -1494,86 +1470,6 @@ async def aitown_proxy(path: str, request: Request) -> Response:
 @router.api_route("/aitown", methods=["GET", "HEAD"])
 async def aitown_proxy_root(request: Request) -> Response:
     return await _proxy_aitown_request("", request)
-
-
-@router.api_route("/api/knowledge/health", methods=["GET"])
-async def proxy_knowledge_forge_health(request: Request) -> Response:
-    return await _proxy_knowledge_forge_request("health", request)
-
-
-@router.api_route("/api/knowledge/status", methods=["GET"])
-async def proxy_knowledge_forge_status(request: Request) -> Response:
-    return await _proxy_knowledge_forge_request("v1/status", request)
-
-
-@router.api_route("/api/knowledge/claims/search", methods=["GET"])
-async def proxy_knowledge_forge_claims_search(request: Request) -> Response:
-    return await _proxy_knowledge_forge_request("v1/claims/search", request)
-
-
-@router.api_route("/api/knowledge/claims", methods=["GET"])
-async def proxy_knowledge_forge_claims(request: Request) -> Response:
-    return await _proxy_knowledge_forge_request("v1/claims", request)
-
-
-@router.api_route("/api/knowledge/specs/{spec_id}", methods=["GET"])
-async def proxy_knowledge_forge_spec(spec_id: str, request: Request) -> Response:
-    return await _proxy_knowledge_forge_request(f"v1/specs/{spec_id}", request)
-
-
-@router.api_route("/api/knowledge/specs", methods=["GET"])
-async def proxy_knowledge_forge_specs(request: Request) -> Response:
-    return await _proxy_knowledge_forge_request("v1/specs", request)
-
-
-@router.api_route("/api/knowledge/decisions", methods=["GET"])
-async def proxy_knowledge_forge_decisions(request: Request) -> Response:
-    return await _proxy_knowledge_forge_request("v1/decisions", request)
-
-
-@router.api_route("/api/knowledge/context-packs/compile", methods=["POST"])
-async def proxy_knowledge_forge_context_packs_compile(request: Request) -> Response:
-    return await _proxy_knowledge_forge_request("v1/context-packs/compile", request)
-
-
-@router.api_route("/api/knowledge/ideation/run", methods=["POST"])
-async def proxy_knowledge_forge_ideation_run(request: Request) -> Response:
-    return await _proxy_knowledge_forge_request("v1/ideation/run", request)
-
-
-@router.api_route("/api/knowledge/sources/ingest", methods=["POST"])
-async def proxy_knowledge_forge_sources_ingest(request: Request) -> Response:
-    return await _proxy_knowledge_forge_request("v1/sources/ingest", request)
-
-
-@router.api_route("/api/knowledge/context-packs/{pack_id}", methods=["GET"])
-async def proxy_knowledge_forge_context_pack(pack_id: str, request: Request) -> Response:
-    return await _proxy_knowledge_forge_request(f"v1/context-packs/{pack_id}", request)
-
-
-@router.api_route("/api/knowledge/context-packs", methods=["GET"])
-async def proxy_knowledge_forge_context_packs(request: Request) -> Response:
-    return await _proxy_knowledge_forge_request("v1/context-packs", request)
-
-
-@router.api_route("/api/knowledge/reviews/pending", methods=["GET"])
-async def proxy_knowledge_forge_reviews_pending(request: Request) -> Response:
-    return await _proxy_knowledge_forge_request("v1/reviews/pending", request)
-
-
-@router.api_route("/api/knowledge/sources", methods=["GET"])
-async def proxy_knowledge_forge_sources(request: Request) -> Response:
-    return await _proxy_knowledge_forge_request("v1/sources", request)
-
-
-@router.api_route("/api/knowledge/search", methods=["GET"])
-async def proxy_knowledge_forge_search(request: Request) -> Response:
-    return await _proxy_knowledge_forge_request("v1/search", request)
-
-
-@router.api_route("/api/knowledge/{path:path}", methods=["GET", "POST", "PUT", "PATCH", "DELETE"])
-async def proxy_knowledge_forge(path: str, request: Request) -> Response:
-    return await _proxy_knowledge_forge_request(path, request)
 
 
 @router.get("/api/social-memory/inspection")

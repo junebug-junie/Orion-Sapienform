@@ -508,7 +508,6 @@ python scripts/sync_local_env_from_example.py
 Known skip-list keys that may require manual operator handling:
 
 ```text
-ORION_KNOWLEDGE_ROOT
 PUBLISH_CORTEX_EXEC_GRAMMAR
 ```
 

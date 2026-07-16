@@ -144,3 +144,11 @@ TAbort-
 
 # === GitNexus derived code-graph index (generated state, never authority) ===
 .gitnexus/
+
+# graphify's ephemeral pipeline state (interpreter path, scan root, detect
+# cache, per-chunk extraction fragments, semantic-cache staging files, etc).
+# Local scratch state written during a /graphify run, never meant to be
+# tracked -- only graphify-out/graph.json, GRAPH_REPORT.md, and manifest.json
+# are the real committed outputs. Left untracked repeatedly by past sessions
+# (e.g. graphify-out/.graphify_python) and had to be cleaned up by hand.
+graphify-out/.graphify_*

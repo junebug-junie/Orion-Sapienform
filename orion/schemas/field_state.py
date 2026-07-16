@@ -14,6 +14,8 @@ class FieldEdgeV1(BaseModel):
     edge_type: Literal["node_capability", "node_service", "service_organ", "capability_cognitive", "node_dependency", "capability_capability"]
     weight: float = Field(ge=0.0, le=1.0)
     channel_map: dict[str, str] = Field(default_factory=dict)
+    weight_source: Literal["designed", "learned"] = "designed"
+    learned_at: datetime | None = None
 
 
 class FieldStateV1(BaseModel):

@@ -36,6 +36,7 @@ MutationClassV1 = Literal[
     "cognitive_identity_continuity_adjustment",
     "cognitive_stance_continuity_adjustment",
     "cognitive_social_continuity_repair",
+    "field_topology_weight_patch",
 ]
 MutationDecisionActionV1 = Literal["reject", "hold", "require_review", "auto_promote"]
 MutationTrialStatusV1 = Literal["passed", "failed", "inconclusive"]

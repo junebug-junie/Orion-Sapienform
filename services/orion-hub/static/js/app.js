@@ -678,6 +678,10 @@ document.addEventListener("DOMContentLoaded", () => {
   const substrateAtlasPanel = document.getElementById("substrate-atlas");
   const substrateAtlasPanelFrame = document.getElementById("substrateAtlasPanelFrame");
   const substrateAtlasPanelRefresh = document.getElementById("substrateAtlasPanelRefresh");
+  const causalGeometryTabButton = document.getElementById("causalGeometryTabButton");
+  const causalGeometryPanel = document.getElementById("causal-geometry");
+  const causalGeometryPanelFrame = document.getElementById("causalGeometryPanelFrame");
+  const causalGeometryPanelRefresh = document.getElementById("causalGeometryPanelRefresh");
   const conceptAtlasTabButton = document.getElementById("conceptAtlasTabButton");
   const conceptAtlasPanel = document.getElementById("concept-atlas");
   const conceptAtlasPanelFrame = document.getElementById("conceptAtlasPanelFrame");
@@ -966,6 +970,9 @@ document.addEventListener("DOMContentLoaded", () => {
     if (tabKey === "substrate-atlas" && !substrateAtlasPanel) {
       effectiveTab = "hub";
     }
+    if (tabKey === "causal-geometry" && !causalGeometryPanel) {
+      effectiveTab = "hub";
+    }
     if (tabKey === "concept-atlas" && !conceptAtlasPanel) {
       effectiveTab = "hub";
     }
@@ -983,6 +990,7 @@ document.addEventListener("DOMContentLoaded", () => {
     const isServiceLogs = effectiveTab === "service-logs";
     const isSubstrate = effectiveTab === "substrate";
     const isSubstrateAtlas = effectiveTab === "substrate-atlas";
+    const isCausalGeometry = effectiveTab === "causal-geometry";
     const isConceptAtlas = effectiveTab === "concept-atlas";
     const isMemory = effectiveTab === "memory";
     const isPressure = effectiveTab === "pressure";
@@ -1011,6 +1019,9 @@ document.addEventListener("DOMContentLoaded", () => {
         };
         setTimeout(pingAtlasFrame, 150);
       }
+    }
+    if (causalGeometryPanel) {
+      causalGeometryPanel.classList.toggle("hidden", !isCausalGeometry);
     }
     if (conceptAtlasPanel) {
       const wasConceptAtlasVisible = !conceptAtlasPanel.classList.contains("hidden");
@@ -1097,6 +1108,9 @@ document.addEventListener("DOMContentLoaded", () => {
     styleTabButton(substrateTabButton, isSubstrate);
     if (substrateAtlasTabButton) {
       styleTabButton(substrateAtlasTabButton, isSubstrateAtlas);
+    }
+    if (causalGeometryTabButton) {
+      styleTabButton(causalGeometryTabButton, isCausalGeometry);
     }
     if (conceptAtlasTabButton) {
       styleTabButton(conceptAtlasTabButton, isConceptAtlas);
@@ -1687,6 +1701,8 @@ document.addEventListener("DOMContentLoaded", () => {
       setActiveTab("substrate");
     } else if (h === "#substrate-atlas" && substrateAtlasPanel && substrateAtlasTabButton) {
       setActiveTab("substrate-atlas");
+    } else if (h === "#causal-geometry" && causalGeometryPanel && causalGeometryTabButton) {
+      setActiveTab("causal-geometry");
     } else if (h === "#concept-atlas" && conceptAtlasPanel && conceptAtlasTabButton) {
       setActiveTab("concept-atlas");
     } else if (h === "#pressure" && pressurePanel && pressureAnalyticsTabButton) {
@@ -11803,6 +11819,13 @@ document.addEventListener("DOMContentLoaded", () => {
         history.replaceState(null, "", "#substrate-atlas");
       });
     }
+    if (causalGeometryTabButton && causalGeometryPanel) {
+      causalGeometryTabButton.addEventListener("click", (event) => {
+        event.preventDefault();
+        setActiveTab("causal-geometry");
+        history.replaceState(null, "", "#causal-geometry");
+      });
+    }
     if (conceptAtlasTabButton && conceptAtlasPanel) {
       conceptAtlasTabButton.addEventListener("click", (event) => {
         event.preventDefault();
@@ -11885,6 +11908,12 @@ document.addEventListener("DOMContentLoaded", () => {
       } catch {
         /* ignore */
       }
+    });
+  }
+
+  if (causalGeometryPanelRefresh && causalGeometryPanelFrame) {
+    causalGeometryPanelRefresh.addEventListener("click", () => {
+      causalGeometryPanelFrame.contentWindow?.location.reload();
     });
   }
 

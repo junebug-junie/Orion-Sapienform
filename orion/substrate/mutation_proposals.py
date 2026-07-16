@@ -20,6 +20,7 @@ SURFACE_TO_CLASS = {
     "cognitive_identity_continuity_adjustment": "cognitive_identity_continuity_adjustment",
     "cognitive_stance_continuity_adjustment": "cognitive_stance_continuity_adjustment",
     "cognitive_social_continuity_repair": "cognitive_social_continuity_repair",
+    "field_topology": "field_topology_weight_patch",
 }
 
 SURFACE_TO_LANE = {
@@ -35,6 +36,7 @@ SURFACE_TO_LANE = {
     "cognitive_identity_continuity_adjustment": "cognitive",
     "cognitive_stance_continuity_adjustment": "cognitive",
     "cognitive_social_continuity_repair": "cognitive",
+    "field_topology": "operational",
 }
 
 
@@ -116,6 +118,8 @@ def _default_patch_for_class(mutation_class: str) -> dict[str, float | str]:
             "not_applied_status": "proposal_only_not_applied",
             "shadow_only_status": "recall_v2_shadow_only",
         }
+    if mutation_class == "field_topology_weight_patch":
+        return {"edge_weight_delta": 0.0}
     if mutation_class == "graph_consolidation_param_patch":
         return {"query_limit_nodes": 96, "query_limit_edges": 192, "normal_revisit_seconds": 3600}
     if mutation_class == "cognitive_contradiction_reconciliation":
@@ -162,6 +166,8 @@ def _default_rollback_for_class(mutation_class: str) -> dict[str, float | str]:
         return {"chat_reflective_lane_threshold": 0.50}
     if mutation_class == "recall_weighting_patch":
         return {"semantic_weight": 0.50, "episodic_weight": 0.35, "recency_weight": 0.15}
+    if mutation_class == "field_topology_weight_patch":
+        return {"edge_weight_delta": 0.0}
     if mutation_class == "graph_consolidation_param_patch":
         return {"query_limit_nodes": 64, "query_limit_edges": 128, "normal_revisit_seconds": 7200}
     if mutation_class.startswith("cognitive_") or mutation_class.startswith("recall_"):

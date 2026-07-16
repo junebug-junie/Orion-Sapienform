@@ -199,6 +199,17 @@ CONTRACTS: dict[MutationClassV1, MutationClassContract] = {
         evaluation_metrics=("operator_acceptance_rate",),
         auto_promote_default=False,
     ),
+    "field_topology_weight_patch": MutationClassContract(
+        mutation_class="field_topology_weight_patch",
+        allowed_targets=("field_topology",),
+        allowed_fields=("edge_weight_delta",),
+        bounds={"edge_weight_delta": (-0.15, 0.15)},
+        risk_tier="low",
+        required_evidence_types=("causal_geometry:snapshot",),
+        trial_method="replay_field_topology_comparison",
+        evaluation_metrics=("divergence_delta",),
+        auto_promote_default=False,
+    ),
 }
 
 

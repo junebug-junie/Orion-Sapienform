@@ -1,10 +1,84 @@
 from __future__ import annotations
 
+import logging
+import os
+from datetime import datetime, timezone
+
 from orion.schemas.field_state import FieldStateV1
+from orion.substrate.field_topology_plasticity import edge_ref_for
+
+logger = logging.getLogger(__name__)
+
+# Same truthy-parsing convention used repo-wide for boolean env flags (e.g.
+# orion/substrate/endogenous_curiosity.py, orion/substrate/attention/salience.py,
+# orion/substrate/felt_state_reader.py) -- str(os.getenv(name, "false")).strip()
+# .lower() in _TRUTHY. Matched here rather than invented fresh so this flag reads
+# the same way every other on/off switch in the codebase does.
+_TRUTHY = {"1", "true", "yes", "on"}
+
+FIELD_PLASTICITY_ENABLED_ENV = "FIELD_PLASTICITY_ENABLED"
+
+# Must resolve to the same file the hub's CAUSAL_GEOMETRY_PROPOSAL_STORE writes to
+# (services/orion-hub/scripts/api_routes.py) -- an operator's HITL adopt() only ever
+# reaches this process's diffusion tick if both processes point at the same sqlite
+# file. Unset (the .env_example default) means "in-memory, this process only" -- the
+# overlay will never see a cross-process adoption, matching pre-plasticity behavior.
+FIELD_PLASTICITY_SQL_DB_PATH_ENV = "FIELD_PLASTICITY_SQL_DB_PATH"
+
+_LEARNED_STORE = None  # lazily constructed once; see _get_learned_store()
+
+# cap->cap edges only, per the Causal Geometry v1 design spec (Phase B) --
+# node_capability/node_service/etc. edges never consult the learned overlay,
+# even defensively (the read-path below gates on this every time, regardless
+# of whether an overlay entry happens to exist for a non-cap-cap edge's
+# (source_id, target_id) pair).
+CAPABILITY_CAPABILITY_EDGE_TYPE = "capability_capability"
 
 
 def _clamp01(x: float) -> float:
     return max(0.0, min(1.0, float(x)))
+
+
+def _plasticity_enabled() -> bool:
+    return str(os.getenv(FIELD_PLASTICITY_ENABLED_ENV, "false")).strip().lower() in _TRUTHY
+
+
+def _get_learned_store():
+    """Lazily construct (once, not per-tick) the shared
+    `FieldTopologyLearnedWeightsStore`, backed by `FIELD_PLASTICITY_SQL_DB_PATH` when
+    set so adoptions made in the hub process are actually visible here.
+
+    Constructing this once and caching it (rather than fresh per `apply_diffusion`
+    call) avoids reconnecting + reloading the sqlite file on every diffusion tick for
+    state that only changes on a rare HITL adopt/reject action.
+    """
+    global _LEARNED_STORE
+    if _LEARNED_STORE is None:
+        from orion.substrate.field_topology_learned_store import (
+            FieldTopologyLearnedWeightsStore,
+        )
+
+        sql_db_path = str(os.getenv(FIELD_PLASTICITY_SQL_DB_PATH_ENV, "")).strip() or None
+        _LEARNED_STORE = FieldTopologyLearnedWeightsStore(sql_db_path=sql_db_path)
+    return _LEARNED_STORE
+
+
+def _load_learned_overlay() -> dict[str, float]:
+    """Best-effort read of HITL-adopted cap->cap edge-weight overrides
+    (`orion/substrate/field_topology_learned_store.py`'s
+    `FieldTopologyLearnedWeightsStore.current_overlay()`).
+
+    Never raises: construction of the store (e.g. a misconfigured sqlite
+    path) or the `current_overlay()` call itself failing for any reason
+    degrades to an empty overlay -- equivalent to no learned deltas being
+    applied this tick, i.e. every cap->cap edge falls back to its raw
+    designed weight, exactly as if `FIELD_PLASTICITY_ENABLED` were off.
+    """
+    try:
+        return _get_learned_store().current_overlay()
+    except Exception as exc:  # pragma: no cover - defensive, see docstring above
+        logger.warning("field_plasticity_overlay_load_failed: %s", exc, exc_info=True)
+        return {}
 
 
 def apply_diffusion(state: FieldStateV1, *, diffusion_rate: float) -> None:
@@ -81,12 +155,41 @@ def apply_diffusion(state: FieldStateV1, *, diffusion_rate: float) -> None:
     best_source: dict[tuple[str, str], str] = {}
     possible_targets: dict[str, set[str]] = {}
 
+    # Causal Geometry v1, Rung 3A: when FIELD_PLASTICITY_ENABLED is off (the
+    # default), the store is never constructed and the overlay dict stays
+    # empty -- zero extra work, and every edge below falls straight through
+    # to its raw designed `edge.weight`, byte-identical to pre-plasticity
+    # behavior. `edge.weight` itself is never mutated; the effective weight
+    # is computed locally per-edge inside the loop.
+    plasticity_enabled = _plasticity_enabled()
+    learned_overlay: dict[str, float] = _load_learned_overlay() if plasticity_enabled else {}
+
     for edge in state.edges:
         src = state.node_vectors.get(edge.source_id) or state.capability_vectors.get(edge.source_id, {})
+        effective_weight = edge.weight
+        if (
+            plasticity_enabled
+            and learned_overlay
+            and edge.edge_type == CAPABILITY_CAPABILITY_EDGE_TYPE
+        ):
+            edge_ref = edge_ref_for(edge.source_id, edge.target_id)
+            delta = learned_overlay.get(edge_ref, 0.0)
+            if delta:
+                effective_weight = _clamp01(edge.weight + delta)
+                edge.weight_source = "learned"
+                edge.learned_at = datetime.now(timezone.utc)
+                logger.info(
+                    "field_plasticity_learned_weight_applied edge_ref=%s designed_weight=%.4f "
+                    "delta=%.4f effective_weight=%.4f",
+                    edge_ref,
+                    edge.weight,
+                    delta,
+                    effective_weight,
+                )
         for src_ch, tgt_ch in edge.channel_map.items():
             possible_targets.setdefault(edge.target_id, set()).add(tgt_ch)
             src_val = float(src.get(src_ch, 0.0))
-            contribution = _clamp01(src_val * edge.weight * diffusion_rate)
+            contribution = _clamp01(src_val * effective_weight * diffusion_rate)
             key = (edge.target_id, tgt_ch)
             # Only a real (>0) contribution may claim provenance/win the
             # max -- a zero contribution (source has no value for its mapped

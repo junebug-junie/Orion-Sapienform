@@ -87,19 +87,41 @@ earlier in this same investigation) was inaccurate — correcting it here for th
 
 What *is* still an open, documented tension (the reducer doc's own words, not an external
 critique): **"Dual pipelines — chat reducer and endogenous tick both use `signal_drive_map`
-helpers but chat does not feed `DriveEngine`."** The isolation is intentional (avoids
-phi-corpus multicollinearity); whether it's the right long-term shape is still unresolved.
+helpers but chat does not feed `DriveEngine`."** The isolation is intentional; whether it's
+the right long-term shape is resolved below (§3a) — it isn't.
 
 `services/orion-cortex-exec/app/chat_stance.py` reads `drive_pressures` / `dominant_drive`
 from `AutonomyStateV2` (not `DriveEngine`) to influence stance — confirmed at
 `chat_stance.py:1248-1304, 2455-2494`, including a code comment (`:2502-2503`) noting the two
 pipelines are only cross-checked "offline... by grepping both."
 
+### 3a. The phi-multicollinearity rationale doesn't hold up, and the real signal favors DriveEngine
+
+Traced further in a follow-up pass (2026-07-16). `orion/self_state/inner_state_registry.py`
+formally tracks both `drive_state.v1` and `autonomy_state_v2` with
+`composition_status=DUPLICATE`, `duplicate_of` each other — this is acknowledged, tracked
+architectural debt, not an oversight (there's a whole `CompositionStatus.DUPLICATE =
+"unresolved_duplicate"` enum built to flag exactly this).
+
+The phi-multicollinearity story (§3) is **not why they stay split**. The registry entry for
+`drive_state.v1` (`inner_state_registry.py:143-151`) says the drives-vs-self_state crosswalk
+was traced and rejected in a design spec, with the finding that the two are "siblings over
+disjoint evidence with exactly one narrow, event-gated overlap point" — the risk was
+investigated and downgraded, not confirmed. The actual reason `DriveEngine` and
+`AutonomyStateV2` stay split is that the merge-or-keep-separate call was explicitly deferred to
+"Phase 4 of the mesh-substrate-redesign plan" (`inner_state_registry.py:167-169`) and never
+resolved after that Phase 4 PR (2026-07-12, logging-only, no decision made).
+
+Live traffic data, same registry entry, confirmed 2026-07-12, settles which signal deserves
+to win: `drive_state.v1` — 363 samples/24h, real variance (coherence~0.20, continuity~0.35,
+capability~0.47). `autonomy_state_v2` — **9 samples/24h, all zero**. AutonomyStateV2 isn't
+just architecturally thinner, it's nearly inert in production.
+
 ## 4. Current architecture snapshot
 
 | Component | Location | Role | Tested? | Live/wired? |
 |---|---|---|---|---|
-| `DriveEngine` | `orion/spark/concept_induction/drives.py` | Persistent leaky-integrator pressure, 6 drives | Yes — real numeric regression tests | Runs via `ConceptWorker` (`bus_worker.py`), publishes `DriveStateV1`/`DriveAuditV1`. No confirmed prompt/stance consumer as of 2026-07-13 PR notes. |
+| `DriveEngine` | `orion/spark/concept_induction/drives.py` | Persistent leaky-integrator pressure, 6 drives | Yes — real numeric regression tests | Runs via `ConceptWorker` (`bus_worker.py`), publishes `DriveStateV1`/`DriveAuditV1`. Reaches `chat_stance.py`'s `drive_state_projection` (`:1280-1304`) but dead-ends there, gated behind `CHAT_STANCE_DRIVE_STATE_VISIBLE` (default off) — no prompt template or Mind facet reads it. |
 | `AutonomyStateV2` reducer | `orion/autonomy/reducer.py` | Turn-local, non-durable evidence→pressure fold for chat stance | Yes — eval-gated, ~1,100 lines of tests | Flag-gated (`AUTONOMY_STATE_V2_REDUCER_ENABLED`), consumed by `chat_stance.py`. Deliberately isolated from `DriveEngine`. |
 | `DeviationGate` | `orion/autonomy/deviation_gate.py` | EWMA baseline + z-threshold noise filter feeding `DriveEngine` | Yes | Live in `ConceptWorker` |
 | `endogenous_origination.py` | `orion/autonomy/` | The mechanism that would let a drive *originate* action, not just react | Wired at call site | **Disabled** — `ORION_ENDOGENOUS_ORIGINATION_ENABLED=False` default. Formal NO-GO recorded 2026-07-12 (`coactivation_frac=0.0004` vs required ≥0.10; that gate measurement was later found to have run on 3-week-stale data and has not been re-certified fresh since). |
@@ -131,13 +153,57 @@ action) was never built. That is the single most load-bearing fact in this docum
 2. Re-run the `coactivation_frac` gate against a source certified fresh before treating the
    endogenous-origination NO-GO as still current — the original reading was proven stale once
    already.
-3. Trace whether/how `services/orion-mind` actually consumes `DriveEngine` state today —
-   not established in this pass.
+3. ~~Trace whether/how `services/orion-mind` actually consumes `DriveEngine` state today.~~
+   Resolved 2026-07-16 — see §8. It doesn't consume `DriveEngine`; it consumes
+   `AutonomyStateV2`.
 4. The six-drive taxonomy (`coherence, continuity, capability, relational, predictive,
    autonomy`) came from the founding GPT conversation, not from an independent derivation
    against Orion's mission. Worth deciding consciously whether that's sufficient grounding or
    whether it needs revisiting — see `docs/superpowers/specs/2026-07-11-drive-taxonomy-conceptual-audit-design.md`
    for the prior internal audit that found no in-repo rationale for it.
+
+## 8. Downstream consumer audit (2026-07-16) and the corrected implementation order
+
+Before retiring `AutonomyStateV2` in favor of `DriveEngine`, every real reader of
+`ctx["chat_autonomy_state_v2"]` was traced. Two are behavior-relevant; the rest are cosmetic.
+
+**Behavior-relevant (must be repointed before AutonomyStateV2 goes away, not after):**
+
+- `services/orion-cortex-exec/app/autonomy_slice.py:116` — `build_autonomy_slice()` reads
+  `ctx.get("chat_autonomy_state_v2")` exclusively. This feeds the *only* prompt template that
+  surfaces drive/tension state to the model at all:
+  `orion/cognition/prompts/stance_react.j2` (`dominant_drive`, `active_tensions`,
+  `pressure_trend`, `recent_actions`). It does not read `drive_state` / `DriveEngine` in any
+  form.
+- `services/orion-cortex-orch/app/mind_runtime.py:481-484` — Orion's Mind reads
+  `plan_ctx.get("chat_autonomy_state_v2")` (falling back to `metadata["autonomy_state"]`) as a
+  cognition-loop input facet. Same story: `DriveEngine` state never reaches Mind today.
+
+**Cosmetic only (safe to repoint or leave broken, no behavioral risk):**
+
+- `services/orion-hub/scripts/autonomy_payloads.py` + `services/orion-hub/static/js/app.js`
+  (`autonomy_state_v2_preview`) — pure debug/telemetry surface for a Hub UI panel. Logs and
+  displays; nothing reads it back into generation.
+- `services/orion-cortex-exec/app/router.py:640-661` — just the export step that supplies the
+  Hub preview and Mind's metadata fallback; not itself a decision-maker.
+
+**Why this changes the order of operations:** `AutonomyStateV2` is nearly inert (9
+samples/24h, all zero — §3a) but it is currently the *only* wire carrying any drive signal
+into a real prompt and into Mind. Deleting it before rewiring `autonomy_slice.py` and
+`mind_runtime.py` would not be an improvement — both consumers fail open on missing/empty
+state, so the model and Mind would silently go from "near-nothing" to "literally nothing,"
+with no error to notice it by.
+
+**Corrected order:**
+
+1. Point `autonomy_slice.py:116` and `mind_runtime.py:481` at `DriveEngine`'s `drive_state`
+   instead of (or in addition to, during transition) `chat_autonomy_state_v2`.
+2. Verify `stance_react.j2`'s rendered output actually changes turn-to-turn with real
+   `DriveEngine` variance (it has real variance to show — §3a).
+3. Only then retire the `_run_autonomy_reducer` turn-local fold and
+   `AUTONOMY_STATE_V2_REDUCER_ENABLED`.
+4. Repoint or accept breakage of the Hub preview panel — lowest priority, no behavioral risk
+   either way.
 
 ## 7. Source material index
 

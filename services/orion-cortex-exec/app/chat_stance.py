@@ -10,7 +10,6 @@ from datetime import datetime, timezone
 from typing import Any, Dict, Iterable, List
 
 from orion.autonomy.action_outcomes import load_action_outcomes
-from orion.autonomy.evidence_compiler import compile_autonomy_evidence
 from orion.autonomy.fanout_policy import autonomy_subject_fanout_from_runtime_ctx
 from orion.autonomy.graph_gate import (
     AutonomyGraphReadPlan,
@@ -18,8 +17,6 @@ from orion.autonomy.graph_gate import (
     log_autonomy_graph_backend_decision,
     resolve_autonomy_graph_read_plan,
 )
-from orion.autonomy.reducer import AutonomyReducerInputV1, reduce_autonomy_state
-from orion.autonomy.state_store import load_autonomy_state_v2, save_autonomy_state_v2
 from orion.autonomy.summary import summarize_autonomy_lookup, summarize_autonomy_state
 from orion.autonomy.repository import (
     AutonomyLookupV1,
@@ -1266,8 +1263,12 @@ def _project_autonomy_from_beliefs(
 
     # drive_state.v1 projection — kept structurally separate from the `summary`/
     # `debug` fields above (those are the autonomy_state_v2-lineage signal; see
-    # orion/self_state/inner_state_registry.py's DUPLICATE note: drive_state and
-    # autonomy_state_v2 are independently-computed and must never be crosswalked).
+    # orion/self_state/inner_state_registry.py's DUPLICATE note). Isolation rule
+    # superseded 2026-07-16 (orion/autonomy/drives_and_autonomy_retrospective.md
+    # §8): drive_state is now the live signal for downstream consumers
+    # (autonomy_slice.py, mind_runtime.py); kept as a separate dict/key here
+    # rather than merged field-by-field into `summary`, since provenance
+    # (which snapshot_source a field came from) still matters for debugging.
     pressures: Dict[str, float] = {}
     for d in drives:
         dk = str(getattr(d, "drive_kind", "") or "")
@@ -1277,32 +1278,42 @@ def _project_autonomy_from_beliefs(
         if salience is not None:
             pressures[dk] = float(salience)
 
+    # All three fields below are taken from a single snapshot, not mixed across
+    # several -- drive_state snapshots are not deduplicated/collapsed upstream
+    # (substrate/reconcile.py treats them as distinct events by design), so if
+    # a stale snapshot ever sits ahead of a fresher one in `snapshots`, taking
+    # each field independently from "the first snapshot that has it" could
+    # produce a dominant_drive from one tick paired with activations from
+    # another -- an internally inconsistent projection. Taking every field
+    # from the same (first-with-any-content) snapshot avoids that.
     drive_state_snapshots = [s for s in snapshots if getattr(s, "snapshot_source", "") == "drive_state"]
     activations: Dict[str, bool] = {}
     drive_state_dominant_drive: str | None = None
     drive_state_summary: str | None = None
+    drive_state_tension_kinds: list[str] = []
     for snap in drive_state_snapshots:
         meta = snap.metadata or {}
-        if not activations:
-            raw_activations = meta.get("activations")
-            if isinstance(raw_activations, dict):
-                activations = dict(raw_activations)
-        if drive_state_dominant_drive is None:
-            dd = str(meta.get("dominant_drive") or "").strip()
-            if dd:
-                drive_state_dominant_drive = dd
-        if drive_state_summary is None:
-            sm = str(meta.get("summary") or "").strip()
-            if sm:
-                drive_state_summary = sm
+        raw_activations = meta.get("activations")
+        candidate_activations = dict(raw_activations) if isinstance(raw_activations, dict) else {}
+        candidate_dominant_drive = str(meta.get("dominant_drive") or "").strip() or None
+        candidate_summary = str(meta.get("summary") or "").strip() or None
+        raw_tension_kinds = meta.get("tension_kinds")
+        candidate_tension_kinds = [str(t) for t in raw_tension_kinds if str(t).strip()] if isinstance(raw_tension_kinds, list) else []
+        if candidate_activations or candidate_dominant_drive or candidate_summary or candidate_tension_kinds:
+            activations = candidate_activations
+            drive_state_dominant_drive = candidate_dominant_drive
+            drive_state_summary = candidate_summary
+            drive_state_tension_kinds = candidate_tension_kinds
+            break
 
     drive_state_projection: Dict[str, Any] | None = None
-    if pressures or activations or drive_state_dominant_drive or drive_state_summary:
+    if pressures or activations or drive_state_dominant_drive or drive_state_summary or drive_state_tension_kinds:
         drive_state_projection = {
             "pressures": pressures,
             "activations": activations,
             "dominant_drive": drive_state_dominant_drive,
             "summary": drive_state_summary,
+            "tension_kinds": drive_state_tension_kinds,
         }
 
     return {
@@ -2397,125 +2408,6 @@ def _situation_summary_from_ctx(ctx: Dict[str, Any]) -> dict[str, Any]:
     }
 
 
-def _reasoning_upstream_nonempty(ctx: Dict[str, Any]) -> bool:
-    raw = ctx.get("reasoning_artifacts")
-    if isinstance(raw, list) and raw:
-        return True
-    repo = ctx.get("reasoning_repository")
-    if repo is None:
-        return False
-    try:
-        latest = repo.list_latest(limit=1)
-        return bool(latest)
-    except Exception:
-        return False
-
-
-async def _run_autonomy_reducer(
-    ctx: Dict[str, Any],
-    autonomy: Dict[str, Any],
-    *,
-    social: Dict[str, Any],
-    social_bridge: Dict[str, Any],
-    reasoning: Dict[str, Any],
-):
-    now = datetime.now(timezone.utc)
-    compile_result = compile_autonomy_evidence(
-        user_message=ctx.get("user_message") or ctx.get("message") or "",
-        social=social,
-        social_bridge=social_bridge,
-        reasoning_summary=(reasoning.get("summary") if isinstance(reasoning, dict) else {}) or {},
-        reasoning_upstream_nonempty=_reasoning_upstream_nonempty(ctx),
-        autonomy_debug=autonomy.get("debug") if isinstance(autonomy.get("debug"), dict) else {},
-        now=now,
-    )
-    ctx["chat_autonomy_evidence_debug"] = {
-        "emitted_kinds": [e.kind for e in compile_result.evidence],
-        "omitted": list(compile_result.omitted),
-        **(compile_result.debug or {}),
-    }
-
-    state_obj = autonomy.get("state")
-    subj = getattr(state_obj, "subject", None) if state_obj is not None else None
-    subject = str(subj or "orion")
-
-    # Close the reducer's own fold loop: prefer the reducer's own persisted
-    # output over the V1/graph baseline so state carries turn-to-turn. Falls
-    # back to the V1 baseline exactly as before when nothing is persisted yet
-    # (first-ever turn for this subject, or the store is unreachable).
-    persisted = await asyncio.to_thread(load_autonomy_state_v2, subject)
-    previous_state = persisted if persisted is not None else state_obj
-
-    # Snapshot before-pressures from the SAME baseline the fold actually uses
-    # (persisted V2 state when present, else the V1/graph baseline) -- not from
-    # autonomy["state"] directly, which can silently diverge from previous_state
-    # once persistence is warm and would otherwise desync movement_debug's
-    # before/after comparison from what the reducer really folded.
-    before_pressures = (
-        dict(getattr(previous_state, "drive_pressures", None) or {})
-        if previous_state is not None
-        else None
-    )
-    dominant_drive_before = getattr(previous_state, "dominant_drive", None) if previous_state is not None else None
-
-    result = reduce_autonomy_state(
-        AutonomyReducerInputV1(
-            subject=subject,
-            previous_state=previous_state,
-            evidence=compile_result.evidence,
-            action_outcomes=load_action_outcomes(subject=subject),
-            now=now,
-        )
-    )
-    # Single mint path: reuse what the reducer actually folded.
-    ctx["chat_autonomy_tension_debug"] = {"minted": list(result.tensions_minted or [])}
-
-    # Built here (not by the caller) so before/after always compare against the
-    # SAME previous_state the fold actually used -- see before_pressures comment
-    # above for why deriving "before" from autonomy["state"] independently would
-    # silently desync once persistence is warm.
-    ctx["chat_autonomy_movement_debug"] = {
-        "dominant_drive_before": dominant_drive_before,
-        "dominant_drive_after": result.state.dominant_drive,
-        "pressures_before": before_pressures,
-        "pressures_after": dict(result.state.drive_pressures or {}),
-        "new_tensions": list(result.delta.new_tensions or []),
-        "resolved_tensions": list(result.delta.resolved_tensions or []),
-    }
-
-    # Belt-and-suspenders fail-open write-back: save_autonomy_state_v2 already
-    # never raises, but this is a hot chat-turn path, so guard the call site
-    # too rather than depend solely on the callee's contract.
-    try:
-        await asyncio.to_thread(save_autonomy_state_v2, subject, result.state)
-    except Exception as exc:
-        logger.warning("autonomy_state_v2_write_failed subject=%s error=%s", subject, exc)
-
-    _log_autonomy_pressure_probe(subject, dict(result.state.drive_pressures or {}))
-
-    return result
-
-
-def _log_autonomy_pressure_probe(subject: str, pressures: dict) -> None:
-    """Measurement-only (Phase 4, 2026-07-12): log `AutonomyStateV2`'s pressure
-    vector right after every `_run_autonomy_reducer` fold so it can be compared
-    offline against `DriveEngine`'s independently-computed pressures (logged
-    from `orion.spark.concept_induction.bus_worker`) by grepping both
-    services' logs and correlating on `subject` + nearby timestamp. Never
-    raises: this is a hot chat-turn path and a logging failure here must not
-    break it, mirroring the guard around the `save_autonomy_state_v2` call
-    directly above.
-    """
-    try:
-        logger.info(
-            "autonomy_state_v2_pressure_probe subject=%s pressures=%s",
-            subject,
-            {k: round(v, 4) for k, v in pressures.items()},
-        )
-    except Exception as exc:
-        logger.warning("autonomy_state_v2_pressure_probe_failed subject=%s error=%s", subject, exc)
-
-
 def _inject_prior_stance_to_inputs(ctx: Dict[str, Any], inputs: Dict[str, Any]) -> None:
     """Copy prior brief summary into stance inputs and expose it as a TOP-LEVEL ctx
     key for the chat_stance_brief.j2 render (which uses ctx.copy()), when present and non-empty."""
@@ -2609,60 +2501,43 @@ async def build_chat_stance_inputs(ctx: Dict[str, Any]) -> Dict[str, Any]:
     if mg_hints:
         inputs["memory_graph"] = {"disposition_hints": mg_hints}
 
+    # drive_state is now the live signal for downstream consumers (see
+    # orion/autonomy/drives_and_autonomy_retrospective.md §8, and this
+    # worktree's first commit striking the old "must never be crosswalked"
+    # isolation language). Stash unconditionally onto ctx so
+    # autonomy_slice.build_autonomy_slice() can prefer it over the
+    # AutonomyStateV2 reducer output -- this is deliberately independent of
+    # CHAT_STANCE_DRIVE_STATE_VISIBLE below, which only gates whether the
+    # projection is exposed to the prompt template via inputs["drive_state"].
+    drive_state_for_ctx = autonomy.get("drive_state") if isinstance(autonomy, dict) else None
+    if isinstance(drive_state_for_ctx, dict) and drive_state_for_ctx:
+        ctx["chat_drive_state"] = drive_state_for_ctx
+
     # drive_state.v1 visibility — a sibling of `inputs["autonomy"]`, never merged
     # into it. drive_state and autonomy_state_v2 are independently-computed
     # signals per orion/self_state/inner_state_registry.py's DUPLICATE note.
     # Off by default; flip CHAT_STANCE_DRIVE_STATE_VISIBLE=true to surface it.
     if os.getenv("CHAT_STANCE_DRIVE_STATE_VISIBLE", "").strip().lower() == "true":
-        drive_state_projection = autonomy.get("drive_state") if isinstance(autonomy, dict) else None
-        if drive_state_projection:
-            inputs["drive_state"] = drive_state_projection
+        if drive_state_for_ctx:
+            inputs["drive_state"] = drive_state_for_ctx
 
     # Queries load_action_outcomes(subject="orion") directly (see
-    # _project_recent_dispatch_actions' docstring) rather than reading ctx, so
-    # it is unconditional -- independent of AUTONOMY_STATE_V2_REDUCER_ENABLED
-    # below. Computed here (before that gated block) so build_autonomy_slice()
-    # can fold it into recent_actions regardless of the reducer's flag/success,
-    # while chat_general.j2's direct read of ctx["chat_recent_dispatch_actions"]
-    # keeps working unchanged either way. Fail-open: [] on any failure.
+    # _project_recent_dispatch_actions' docstring) rather than reading ctx.
+    # Fail-open: [] on any failure.
     ctx["chat_recent_dispatch_actions"] = _project_recent_dispatch_actions(ctx)
 
-    if os.getenv("AUTONOMY_STATE_V2_REDUCER_ENABLED", "").strip().lower() == "true":
-        try:
-            v2_result = await _run_autonomy_reducer(
-                ctx,
-                autonomy,
-                social=social,
-                social_bridge=social_bridge,
-                reasoning=reasoning,
-            )
-            # _run_autonomy_reducer already set chat_autonomy_movement_debug on
-            # ctx itself (before/after pressures compared against the same
-            # previous_state the fold actually used); state/delta are set here.
-            ctx["chat_autonomy_state_v2"] = v2_result.state.model_dump(mode="json")
-            ctx["chat_autonomy_state_delta"] = v2_result.delta.model_dump(mode="json")
-            inputs["autonomy"]["state_v2"] = ctx["chat_autonomy_state_v2"]
-            inputs["autonomy"]["delta"] = ctx["chat_autonomy_state_delta"]
-        except Exception as exc:
-            logger.warning("autonomy_reducer_v2_failed error=%s", exc)
+    # AutonomyStateV2 reducer retired 2026-07-16 (orion/autonomy/
+    # drives_and_autonomy_retrospective.md §9): DriveEngine's drive_state is
+    # the single live signal now (dominant_drive/pressures/summary/
+    # tension_kinds, stashed above as ctx["chat_drive_state"]). No fallback
+    # reducer call here anymore -- see git history on this file for the prior
+    # AUTONOMY_STATE_V2_REDUCER_ENABLED-gated block if you need the old shape.
 
     # Built here (ctx key "autonomy_slice", matching what stance_react.j2 reads
     # directly) so it's present BEFORE the stance_react LLM step renders its
     # prompt. router.py's post-hoc metadata attach (for the harness-prefix/
     # ThoughtEventV1 path) reads this same ctx key later in the same turn -- it
     # does not need to recompute it.
-    #
-    # Deliberately OUTSIDE the AUTONOMY_STATE_V2_REDUCER_ENABLED gate and its
-    # try/except above: recent_actions (real Layer-9 dispatch evidence) has
-    # nothing to do with the V2 reducer's health, so it must not go dark just
-    # because the reducer is disabled or threw. build_autonomy_slice() already
-    # treats an empty/missing chat_autonomy_state_v2 as "no drive/tension
-    # signal" rather than raising -- calling it unconditionally is safe and
-    # was the actual intent stated in this block's own comment above (recent
-    # actions are "independent of AUTONOMY_STATE_V2_REDUCER_ENABLED"); a prior
-    # version of this code contradicted that by nesting the call inside the
-    # gate anyway. Own try/except so a genuinely unexpected failure here can
-    # never take out the reducer block above it (or vice versa).
     #
     # max_recent_actions is passed explicitly (this file's own
     # _MAX_RECENT_DISPATCH_ACTIONS) so the cap has one source of truth rather

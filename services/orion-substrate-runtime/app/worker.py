@@ -10,7 +10,7 @@ from typing import Any
 from uuid import uuid4
 
 from orion.biometrics.node_catalog import NodeCatalog
-from orion.core.schemas.drives import DriveStateV1
+from orion.core.schemas.drives import DriveAuditV1, DriveStateV1
 from orion.schemas.biometrics_projection import (
     ActiveNodePressureProjectionV1,
     NodeBiometricsProjectionV1,
@@ -185,6 +185,11 @@ class BiometricsSubstrateWorker:
         # mapped to one involuntary intent per dynamics tick. Default-off.
         self._latest_drive_state: DriveStateV1 | None = None
         self._latest_drive_state_at: datetime | None = None
+        # Latest DriveAuditV1 cached off the bus, used alongside drive_state to
+        # materialize drive_state substrate snapshots (dominant_drive, summary,
+        # tension_kinds). Independent of the embodiment C producer above.
+        self._latest_drive_audit: DriveAuditV1 | None = None
+        self._latest_drive_audit_at: datetime | None = None
         self._brain_frame_seq: int = 0
 
     @property
@@ -220,12 +225,27 @@ class BiometricsSubstrateWorker:
             ),
             asyncio.create_task(self._brain_frame_loop(), name="substrate-brain-frame"),
         ]
-        # Orion embodiment C producer: cache DriveStateV1 off the bus so the
-        # dynamics tick can map it to an involuntary intent. Gated + fail-open.
-        if self._bus is not None and s.embodiment_c_tick_enabled:
+        # Drive-state listener: two independent consumers share this one bus
+        # subscription -- (a) the embodiment C producer (embodiment_c_tick_enabled,
+        # default off) and (b) drive_state substrate materialization
+        # (drive_state_substrate_materialization_enabled, default on, this is the
+        # live signal chat stance/Mind depend on). Deliberately `or`, not `and`:
+        # neither feature should be silently gated by the other's flag.
+        if self._bus is not None and (
+            s.embodiment_c_tick_enabled or s.drive_state_substrate_materialization_enabled
+        ):
             self._tasks.append(
                 asyncio.create_task(
                     self._drive_state_listener_loop(), name="substrate-embodiment-drive-listener"
+                )
+            )
+        # Drive-audit listener: feeds dominant_drive/summary/tension_kinds
+        # alongside drive_state for materialization only (the embodiment C
+        # producer doesn't use audit data). Same gate as materialization.
+        if self._bus is not None and s.drive_state_substrate_materialization_enabled:
+            self._tasks.append(
+                asyncio.create_task(
+                    self._drive_audit_listener_loop(), name="substrate-drive-audit-listener"
                 )
             )
         # Orion embodiment perception ingest: fold town perception into the
@@ -951,6 +971,102 @@ class BiometricsSubstrateWorker:
             return
         self._latest_drive_state = drive
         self._latest_drive_state_at = datetime.now(timezone.utc)
+        if self._settings.drive_state_substrate_materialization_enabled:
+            try:
+                self._materialize_drive_state_to_substrate()
+            except Exception:
+                logger.exception("substrate_drive_state_materialize_failed")
+
+    async def _drive_audit_listener_loop(self) -> None:
+        """Subscribe to the drive-audit channel and cache the latest DriveAuditV1.
+
+        Mirrors _drive_state_listener_loop. Feeds dominant_drive/summary/
+        tension_kinds into drive_state materialization only; fail-open on
+        decode/validate errors.
+        """
+        channel = self._settings.drives_audit_channel
+        logger.info("substrate_drive_audit_listener subscribing channel=%s", channel)
+        try:
+            async with self._bus.subscribe(channel) as pubsub:
+                while not self._stop.is_set():
+                    try:
+                        msg = await asyncio.wait_for(
+                            pubsub.get_message(ignore_subscribe_messages=True, timeout=1.0),
+                            timeout=1.2,
+                        )
+                    except asyncio.TimeoutError:
+                        continue
+                    except asyncio.CancelledError:
+                        break
+                    if not msg or msg.get("type") not in ("message", "pmessage"):
+                        continue
+                    try:
+                        self._cache_drive_audit_message(msg)
+                    except Exception:
+                        logger.exception("substrate_drive_audit_handle_failed")
+        except asyncio.CancelledError:
+            raise
+        finally:
+            logger.info("substrate_drive_audit_listener stopped channel=%s", channel)
+
+    def _cache_drive_audit_message(self, raw_msg: dict[str, Any]) -> None:
+        decoded = self._bus.codec.decode(raw_msg.get("data"))
+        if not decoded.ok:
+            logger.warning("substrate_drive_audit_decode_failed: %s", decoded.error)
+            return
+        try:
+            audit = DriveAuditV1.model_validate(decoded.envelope.payload or {})
+        except ValueError as exc:
+            logger.error("substrate_drive_audit_invalid err=%s", exc)
+            return
+        self._latest_drive_audit = audit
+        self._latest_drive_audit_at = datetime.now(timezone.utc)
+
+    def _materialize_drive_state_to_substrate(self) -> None:
+        """Fold the latest cached DriveStateV1 (+ DriveAuditV1 if available) into
+        the substrate graph as a snapshot_source="drive_state" node, so
+        chat_stance.py's drive-state projection (and Mind's facet fetch) receive
+        real DriveEngine data instead of an always-empty snapshot list.
+
+        Runs synchronously off the drive-state listener's cache step (fast,
+        pure Python + one store write, no extra bus round-trip); fail-open on
+        missing store or write errors -- never blocks drive-state caching.
+        """
+        drive_state = self._latest_drive_state
+        if drive_state is None:
+            return
+        from orion.substrate.adapters.autonomy import map_autonomy_artifacts_to_substrate
+
+        record = map_autonomy_artifacts_to_substrate(
+            drive_state=drive_state,
+            drive_audit=self._latest_drive_audit,
+        )
+        if not record.nodes:
+            return
+
+        store = self._get_substrate_graph_store(
+            log_label="substrate_drive_state_store_init_failed"
+        )
+        if store is None:
+            logger.warning("substrate_drive_state_materialize_skipped_no_store")
+            return
+
+        written = 0
+        for node in record.nodes:
+            try:
+                store.upsert_node(identity_key=node.node_id, node=node)
+                written += 1
+            except Exception:
+                logger.warning(
+                    "substrate_drive_state_node_upsert_failed node_id=%s",
+                    node.node_id,
+                    exc_info=True,
+                )
+        logger.info(
+            "substrate_drive_state_materialized nodes=%d dominant_drive=%s",
+            written,
+            self._latest_drive_audit.dominant_drive if self._latest_drive_audit else None,
+        )
 
     async def _perception_ingest_loop(self) -> None:
         """Subscribe to town perception and fold it into the substrate graph.

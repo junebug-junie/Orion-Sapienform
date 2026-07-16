@@ -173,6 +173,19 @@ class Settings(BaseSettings):
     drives_state_channel: str = Field(
         "orion:memory:drives:state", alias="EMBODIMENT_DRIVES_STATE_CHANNEL"
     )
+    drives_audit_channel: str = Field(
+        "orion:memory:drives:audit", alias="DRIVES_AUDIT_CHANNEL"
+    )
+    # Materializes DriveEngine's live drive_state/drive_audit into the substrate
+    # graph (snapshot_source="drive_state") so chat_stance.py's drive-state
+    # projection actually receives real data instead of reading an always-empty
+    # list. Deliberately independent of embodiment_c_tick_enabled -- that flag
+    # gates an unrelated embodiment feature and defaults off; this is the live
+    # signal chat stance/Mind depend on and defaults on. Shares the existing
+    # drive-state bus subscription (no second listener for the same channel).
+    drive_state_substrate_materialization_enabled: bool = Field(
+        True, alias="DRIVE_STATE_SUBSTRATE_MATERIALIZATION_ENABLED"
+    )
 
     # Health monitor -> orion-notify attention alerts. Edge-triggered (fires only
     # on healthy->unhealthy transitions), not polled-and-spammed.

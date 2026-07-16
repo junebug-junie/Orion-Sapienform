@@ -413,6 +413,33 @@ def test_autonomy_payload_includes_v2_preview_and_delta() -> None:
     assert md["autonomy_state_delta"]["confidence_delta"] == 0.1
 
 
+def test_autonomy_payload_includes_drive_state_preview_alongside_v2_preview() -> None:
+    # Additive, side-by-side signal (see orion/autonomy/drives_and_autonomy_retrospective.md
+    # §8): drive_state_preview must not replace or alter autonomy_state_v2_preview.
+    ctx = {
+        "chat_autonomy_state_v2": {
+            "schema_version": "autonomy.state.v2",
+            "dominant_drive": "coherence",
+        },
+        "chat_drive_state": {
+            "pressures": {"coherence": 0.7, "curiosity": 0.4},
+            "activations": {"coherence": True},
+            "dominant_drive": "coherence",
+            "summary": "coherence pressure elevated",
+        },
+    }
+    md = _autonomy_payload_from_ctx(ctx)
+    assert md["autonomy_state_v2_preview"]["dominant_drive"] == "coherence"
+    assert md["drive_state_preview"]["dominant_drive"] == "coherence"
+    assert md["drive_state_preview"]["pressures"]["coherence"] == 0.7
+    assert md["drive_state_preview"]["summary"] == "coherence pressure elevated"
+
+
+def test_autonomy_payload_omits_drive_state_preview_when_ctx_key_absent() -> None:
+    md = _autonomy_payload_from_ctx({})
+    assert "drive_state_preview" not in md
+
+
 def test_situation_grounding_metadata_from_ctx() -> None:
     md = _situation_grounding_metadata_from_ctx(
         {

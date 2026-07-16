@@ -10,7 +10,11 @@
 
 ## Substrate trace stance
 Emit **bounded periodic transport rollups** only:
-health, stream depth, backpressure, uncataloged configured streams.
+health, stream depth, backpressure, uncataloged configured streams, and a
+bounded per-stream schema-validation sample (`bus_schema_validation_failed`:
+counts only -- `mismatch_count`/`sampled_count` from a small `XREVRANGE`
+sample of cataloged streams checked against their declared `schema_id`, see
+`BUS_OBSERVER_SCHEMA_SAMPLE_COUNT`).
 Never emit full message payloads or per-packet traces.
 
 ## Implementation

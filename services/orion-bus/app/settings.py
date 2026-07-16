@@ -28,6 +28,14 @@ class Settings(BaseSettings):
     bus_stream_depth_warning: int = Field(25000, alias="BUS_STREAM_DEPTH_WARNING")
     bus_stream_depth_critical: int = Field(100000, alias="BUS_STREAM_DEPTH_CRITICAL")
     bus_observer_node_id: str = Field("athena", alias="BUS_OBSERVER_NODE_ID")
+    # Bounded per-stream XREVRANGE sample size used to check recent entries on
+    # each *cataloged* configured stream against that channel's registered
+    # schema_id (orion/bus/channels.yaml). Kept small: cost is
+    # len(observer_stream_list) * this value extra Redis reads per tick, on
+    # top of the existing 1 PING + len(observer_stream_list) XLEN calls.
+    bus_observer_schema_sample_count: int = Field(
+        5, alias="BUS_OBSERVER_SCHEMA_SAMPLE_COUNT"
+    )
 
     channels_catalog_path: str = Field(
         "orion/bus/channels.yaml",

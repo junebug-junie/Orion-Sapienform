@@ -222,13 +222,14 @@ make stream STREAM=orion:bus:out
 
 Optional `bus-observer` sidecar emits bounded periodic `GrammarEventV1` rollups on `orion:grammar:event` when `PUBLISH_ORION_BUS_GRAMMAR=true` (default **off**).
 
-Observes transport health (`PING`), stream depth (`XLEN`), backpressure thresholds, and configured streams missing from `orion/bus/channels.yaml`. Does **not** emit per-message traces.
+Observes transport health (`PING`), stream depth (`XLEN`), backpressure thresholds, configured streams missing from `orion/bus/channels.yaml`, and — for streams that ARE in the catalog — a bounded `XREVRANGE` sample checked against that channel's declared `schema_id` (backs `contract_pressure`). Does **not** emit per-message traces: only aggregate `mismatch_count`/`sampled_count` per stream ever leave the process.
 
 | Variable | Default | Purpose |
 | -------- | ------- | ------- |
 | `PUBLISH_ORION_BUS_GRAMMAR` | `false` | Publish grammar traces to bus |
 | `BUS_OBSERVER_STREAMS` | `orion:evt:gateway,orion:bus:out` | Streams to sample (not `orion:grammar:event` by default) |
 | `BUS_OBSERVER_POLL_INTERVAL_SEC` | `10` | Rollup interval |
+| `BUS_OBSERVER_SCHEMA_SAMPLE_COUNT` | `5` | Per-cataloged-stream `XREVRANGE` sample size for the schema-mismatch check |
 
 Smoke: `../../scripts/smoke_orion_bus_substrate_trace.sh`
 

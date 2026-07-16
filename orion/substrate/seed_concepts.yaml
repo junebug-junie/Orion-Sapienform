@@ -1,0 +1,49 @@
+# Golden concept seed fixture (Phase 1, concept-atlas-graph-pipeline).
+#
+# Fixed, hand-authored concepts written directly into the substrate graph
+# store at promotion_state="canonical" -- bypassing extraction/clustering.
+# Gives Orion's cognition an immediate, inspectable self/other/relationship
+# floor before organic concept induction produces anything.
+#
+# Loaded by orion/substrate/seed.py::load_seed_concepts_into_store().
+#
+# Each entry under `concepts` maps 1:1 to a ConceptNodeV1
+# (orion/core/schemas/cognitive_substrate.py). `key` is a short local
+# identifier used only within this fixture to build node ids and to wire
+# `related_concept_keys` into SubstrateEdgeV1 edges -- it is not itself a
+# schema field.
+concepts:
+  - key: orion
+    anchor_scope: orion
+    subject_ref: orion
+    label: "Orion"
+    definition: >-
+      Orion is the persistent, inspectable digital-mind system this codebase
+      builds: a cognitive architecture with memory, self-coherence,
+      introspection, world contact, and operational agency, developed
+      collaboratively with Juniper.
+
+  - key: juniper
+    anchor_scope: juniper
+    subject_ref: juniper
+    label: "Juniper"
+    definition: >-
+      Juniper is Orion's primary human collaborator and operator: the person
+      who directs, reviews, and works alongside Orion's development and
+      day-to-day operation.
+
+  - key: orion_juniper_relationship
+    anchor_scope: relationship
+    subject_ref: orion_juniper
+    label: "Orion-Juniper relationship"
+    definition: >-
+      The ongoing collaborative relationship between Orion and Juniper:
+      Juniper directs and operates Orion, and Orion is built to develop
+      increasing continuity, perception, memory, and coherent agency through
+      that collaboration.
+    # Local seed-only field (not a ConceptNodeV1 field): keys of the other
+    # concepts in this fixture that this concept should be linked to via
+    # SubstrateEdgeV1(predicate="associated_with") edges.
+    related_concept_keys:
+      - orion
+      - juniper

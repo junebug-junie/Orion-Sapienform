@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import hashlib
+import math
 from dataclasses import dataclass
 from typing import Any
 
@@ -8,6 +9,7 @@ from orion.core.schemas.cognitive_substrate import (
     BaseSubstrateNodeV1,
     SubstrateEdgeV1,
 )
+from .store import SubstrateGraphStore
 
 
 _TIER_RANK_NAMES: dict[int, str] = {
@@ -16,6 +18,46 @@ _TIER_RANK_NAMES: dict[int, str] = {
     3: "concept_induced",
     4: "snapshot_ephemeral",
 }
+
+# Fixed contract with the Phase 2 concept-embedding producer: an incoming concept
+# node may carry a plain list[float] embedding at this exact metadata key. Do not
+# rename -- do not promote to a typed schema field (see
+# docs/superpowers/specs/2026-07-15-concept-atlas-graph-pipeline-design.md Phase 3).
+_CONCEPT_EMBEDDING_METADATA_KEY = "concept_embedding"
+
+# Mirrors ConceptClusterer.threshold in orion/spark/concept_induction/clusterer.py --
+# reused deliberately for consistency with that already-validated behavior, not
+# re-derived.
+_CONCEPT_EMBEDDING_SIMILARITY_THRESHOLD = 0.8
+
+# How many existing concept nodes to scan for an embedding match per incoming node.
+# Mirrors the 500-node cap GraphDBSubstrateStore.snapshot() already uses -- a
+# familiar order of magnitude for this store, not a new tuning knob.
+_CONCEPT_REGION_SCAN_LIMIT = 500
+
+
+def _cosine(a: Any, b: Any) -> float:
+    """Plain-Python cosine similarity -- copied from
+    ConceptClusterer._cosine (orion/spark/concept_induction/clusterer.py) rather than
+    imported, to avoid coupling orion.substrate to orion.spark.concept_induction for a
+    ten-line helper. Keep in sync if that implementation changes."""
+    if not a or not b or len(a) != len(b):
+        return 0.0
+    dot = sum(x * y for x, y in zip(a, b))
+    na = math.sqrt(sum(x * x for x in a))
+    nb = math.sqrt(sum(y * y for y in b))
+    if na == 0 or nb == 0:
+        return 0.0
+    return dot / (na * nb)
+
+
+def _is_valid_embedding(value: Any) -> bool:
+    """A concept embedding must be a non-empty list/tuple of real numbers. Anything
+    else (missing, wrong type, empty, non-numeric elements) is treated as "no
+    embedding available" so callers degrade to string match instead of raising."""
+    if not isinstance(value, (list, tuple)) or not value:
+        return False
+    return all(isinstance(component, (int, float)) and not isinstance(component, bool) for component in value)
 
 
 @dataclass(frozen=True)
@@ -35,19 +77,39 @@ class EdgeMergeDecision:
 
 
 class SubstrateIdentityResolver:
-    """Conservative deterministic identity resolver for substrate materialization."""
+    """Conservative deterministic identity resolver for substrate materialization.
+
+    Concept identity has two layers:
+
+    1. Embedding similarity (when the incoming node and a same-scope/subject
+       existing concept node both carry ``metadata["concept_embedding"]`` and
+       cosine similarity is >= ``_CONCEPT_EMBEDDING_SIMILARITY_THRESHOLD``): the
+       incoming node resolves to the *existing* node's identity, so paraphrases
+       ("surface encodings" vs "surface-level representations") merge instead of
+       becoming permanent duplicates.
+    2. The original exact-string match on ``concept_id`` then ``label`` -- used
+       whenever no embedding is available on the incoming node, an existing
+       match, or this resolver was constructed without a ``store`` (the default,
+       matching today's behavior for every existing caller).
+
+    ``store`` is optional and defaults to ``None`` so existing callers (e.g.
+    ``SubstrateGraphMaterializer``'s ``identity_resolver or
+    SubstrateIdentityResolver()`` default construction) see zero behavior change
+    unless a store is explicitly wired in.
+    """
+
+    def __init__(self, *, store: SubstrateGraphStore | None = None, concept_region_scan_limit: int = _CONCEPT_REGION_SCAN_LIMIT) -> None:
+        self._store = store
+        self._concept_region_scan_limit = concept_region_scan_limit
 
     def canonical_node_key(self, node: BaseSubstrateNodeV1) -> str | None:
         subject = str(node.subject_ref or "")
         scope = node.anchor_scope
         if node.node_kind == "concept":
-            concept_id = str(node.metadata.get("concept_id") or "").strip().lower()
-            if concept_id:
-                return f"concept|{scope}|{subject}|{concept_id}"
-            label = str(getattr(node, "label", "")).strip().lower()
-            if label:
-                return f"concept|{scope}|{subject}|label:{label}"
-            return None
+            embedding_match_key = self._concept_embedding_match_key(node, scope=scope, subject=subject)
+            if embedding_match_key is not None:
+                return embedding_match_key
+            return self._legacy_concept_key(node, scope=scope, subject=subject)
         if node.node_kind == "drive":
             drive_kind = str(getattr(node, "drive_kind", "")).strip().lower()
             return f"drive|{scope}|{subject}|{drive_kind}" if drive_kind else None
@@ -78,6 +140,67 @@ class SubstrateIdentityResolver:
             return None
         if node.node_kind == "hypothesis":
             return None
+        return None
+
+    def _concept_embedding_match_key(self, node: BaseSubstrateNodeV1, *, scope: str, subject: str) -> str | None:
+        """If ``node`` carries a usable embedding and a same-scope/subject existing
+        concept node in the store is similar enough (cosine >= threshold), return
+        THAT existing node's own identity key (recomputed via
+        ``_legacy_concept_key`` from its own concept_id/label) so the store's
+        identity-index lookup collides with it and the two merge. Returns ``None``
+        -- never raises -- for any reason this can't be determined: no store wired,
+        no/invalid embedding, or no candidate met the threshold."""
+        if self._store is None:
+            return None
+        embedding = node.metadata.get(_CONCEPT_EMBEDDING_METADATA_KEY)
+        if not _is_valid_embedding(embedding):
+            return None
+        try:
+            region = self._store.read_concept_region(limit_nodes=self._concept_region_scan_limit)
+            candidates = region.nodes if region is not None else []
+        except Exception:
+            return None
+
+        best_candidate: BaseSubstrateNodeV1 | None = None
+        best_similarity = 0.0
+        for candidate in candidates:
+            if candidate is None or candidate.node_kind != "concept":
+                continue
+            if candidate.node_id == node.node_id:
+                continue
+            if candidate.anchor_scope != scope or str(candidate.subject_ref or "") != subject:
+                continue
+            candidate_embedding = candidate.metadata.get(_CONCEPT_EMBEDDING_METADATA_KEY)
+            if not _is_valid_embedding(candidate_embedding):
+                continue
+            try:
+                similarity = _cosine(embedding, candidate_embedding)
+            except Exception:
+                continue
+            if similarity >= _CONCEPT_EMBEDDING_SIMILARITY_THRESHOLD and similarity > best_similarity:
+                best_similarity = similarity
+                best_candidate = candidate
+
+        if best_candidate is None:
+            return None
+        return self._legacy_concept_key(
+            best_candidate,
+            scope=best_candidate.anchor_scope,
+            subject=str(best_candidate.subject_ref or ""),
+        )
+
+    @staticmethod
+    def _legacy_concept_key(node: BaseSubstrateNodeV1, *, scope: str, subject: str) -> str | None:
+        """The original exact-string concept identity: ``concept_id`` first, then
+        ``label``. Extracted unchanged so both the plain string-match path and the
+        embedding-match path (which recomputes an existing node's own key) share
+        exactly one implementation."""
+        concept_id = str(node.metadata.get("concept_id") or "").strip().lower()
+        if concept_id:
+            return f"concept|{scope}|{subject}|{concept_id}"
+        label = str(getattr(node, "label", "")).strip().lower()
+        if label:
+            return f"concept|{scope}|{subject}|label:{label}"
         return None
 
     @staticmethod

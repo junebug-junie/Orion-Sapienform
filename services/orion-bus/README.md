@@ -247,7 +247,7 @@ is `expected_online: false` and was ruled out for that reason).
 This is **not** automatic failover, **not** leader election, and **not** wired into
 `ORION_BUS_URL` or any client. It exists so a human has a real place to restore AOF
 data to and cut traffic over manually if `bus-core` is down for an extended period.
-See `docs/notes/2026-07-16-bus-core-standby-cutover-runbook.md` for the full manual
+See `services/orion-bus/docs/2026-07-16-bus-core-standby-cutover-runbook.md` for the full manual
 cutover/cutback procedure.
 
 ```bash

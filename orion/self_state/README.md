@@ -7,6 +7,9 @@ attention scoring, `orion-attention-runtime`). Consumed by the
 
 - `builder.py` — `build_self_state()`, the per-tick composer.
 - `scoring.py` — per-dimension scoring formulas, channel merge/max rules.
+  For what each of the 29 raw `field_channel_corpus.v1` channels means, how
+  it's calculated, and which dimension (if any) it feeds, see
+  `services/orion-field-digester/README.md`'s "Field channel glossary".
 - `policy.py` — loads `config/self_state/self_state_policy.v1.yaml`
   (`channel_dimension_map`, `evidence_channel_map`, `dimension_worse_direction`).
 - `deviation.py` — Phase 2 deviation-probe instrumentation (measurement only,

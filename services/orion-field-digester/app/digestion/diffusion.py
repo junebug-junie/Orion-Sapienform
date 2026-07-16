@@ -1,10 +1,59 @@
 from __future__ import annotations
 
+import logging
+import os
+from datetime import datetime, timezone
+
 from orion.schemas.field_state import FieldStateV1
+from orion.substrate.field_topology_plasticity import edge_ref_for
+
+logger = logging.getLogger(__name__)
+
+# Same truthy-parsing convention used repo-wide for boolean env flags (e.g.
+# orion/substrate/endogenous_curiosity.py, orion/substrate/attention/salience.py,
+# orion/substrate/felt_state_reader.py) -- str(os.getenv(name, "false")).strip()
+# .lower() in _TRUTHY. Matched here rather than invented fresh so this flag reads
+# the same way every other on/off switch in the codebase does.
+_TRUTHY = {"1", "true", "yes", "on"}
+
+FIELD_PLASTICITY_ENABLED_ENV = "FIELD_PLASTICITY_ENABLED"
+
+# cap->cap edges only, per the Causal Geometry v1 design spec (Phase B) --
+# node_capability/node_service/etc. edges never consult the learned overlay,
+# even defensively (the read-path below gates on this every time, regardless
+# of whether an overlay entry happens to exist for a non-cap-cap edge's
+# (source_id, target_id) pair).
+CAPABILITY_CAPABILITY_EDGE_TYPE = "capability_capability"
 
 
 def _clamp01(x: float) -> float:
     return max(0.0, min(1.0, float(x)))
+
+
+def _plasticity_enabled() -> bool:
+    return str(os.getenv(FIELD_PLASTICITY_ENABLED_ENV, "false")).strip().lower() in _TRUTHY
+
+
+def _load_learned_overlay() -> dict[str, float]:
+    """Best-effort read of HITL-adopted cap->cap edge-weight overrides
+    (`orion/substrate/field_topology_learned_store.py`'s
+    `FieldTopologyLearnedWeightsStore.current_overlay()`).
+
+    Never raises: construction of the store (e.g. a misconfigured sqlite
+    path) or the `current_overlay()` call itself failing for any reason
+    degrades to an empty overlay -- equivalent to no learned deltas being
+    applied this tick, i.e. every cap->cap edge falls back to its raw
+    designed weight, exactly as if `FIELD_PLASTICITY_ENABLED` were off.
+    """
+    try:
+        from orion.substrate.field_topology_learned_store import (
+            FieldTopologyLearnedWeightsStore,
+        )
+
+        return FieldTopologyLearnedWeightsStore().current_overlay()
+    except Exception as exc:  # pragma: no cover - defensive, see docstring above
+        logger.warning("field_plasticity_overlay_load_failed: %s", exc, exc_info=True)
+        return {}
 
 
 def apply_diffusion(state: FieldStateV1, *, diffusion_rate: float) -> None:
@@ -81,12 +130,32 @@ def apply_diffusion(state: FieldStateV1, *, diffusion_rate: float) -> None:
     best_source: dict[tuple[str, str], str] = {}
     possible_targets: dict[str, set[str]] = {}
 
+    # Causal Geometry v1, Rung 3A: when FIELD_PLASTICITY_ENABLED is off (the
+    # default), the store is never constructed and the overlay dict stays
+    # empty -- zero extra work, and every edge below falls straight through
+    # to its raw designed `edge.weight`, byte-identical to pre-plasticity
+    # behavior. `edge.weight` itself is never mutated; the effective weight
+    # is computed locally per-edge inside the loop.
+    plasticity_enabled = _plasticity_enabled()
+    learned_overlay: dict[str, float] = _load_learned_overlay() if plasticity_enabled else {}
+
     for edge in state.edges:
         src = state.node_vectors.get(edge.source_id) or state.capability_vectors.get(edge.source_id, {})
+        effective_weight = edge.weight
+        if (
+            plasticity_enabled
+            and learned_overlay
+            and edge.edge_type == CAPABILITY_CAPABILITY_EDGE_TYPE
+        ):
+            delta = learned_overlay.get(edge_ref_for(edge.source_id, edge.target_id), 0.0)
+            if delta:
+                effective_weight = _clamp01(edge.weight + delta)
+                edge.weight_source = "learned"
+                edge.learned_at = datetime.now(timezone.utc)
         for src_ch, tgt_ch in edge.channel_map.items():
             possible_targets.setdefault(edge.target_id, set()).add(tgt_ch)
             src_val = float(src.get(src_ch, 0.0))
-            contribution = _clamp01(src_val * edge.weight * diffusion_rate)
+            contribution = _clamp01(src_val * effective_weight * diffusion_rate)
             key = (edge.target_id, tgt_ch)
             # Only a real (>0) contribution may claim provenance/win the
             # max -- a zero contribution (source has no value for its mapped

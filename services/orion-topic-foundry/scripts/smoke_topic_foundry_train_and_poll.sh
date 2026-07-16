@@ -12,10 +12,10 @@ SLEEP_SECS=${SLEEP_SECS:-2}
 MAX_CHARS=${MAX_CHARS:-6000}
 
 SOURCE_TABLE=${SOURCE_TABLE:-chat_history_log}
-ID_COLUMN=${ID_COLUMN:-chat_id}
+ID_COLUMN=${ID_COLUMN:-correlation_id}
 TIME_COLUMN=${TIME_COLUMN:-created_at}
 TEXT_COLUMNS=${TEXT_COLUMNS:-prompt,response}
-EMBEDDING_URL=${EMBEDDING_URL:-"http://orion-vector-host:8320/embedding"}
+EMBEDDING_URL=${EMBEDDING_URL:-"http://orion-athena-vector-host:8320/embedding"}
 MODEL_NAME=${MODEL_NAME:-topic-foundry}
 MODEL_VERSION=${MODEL_VERSION:-v1}
 
@@ -62,7 +62,7 @@ if [[ -z "$MODEL_ID" ]]; then
         algorithm: "hdbscan",
         embedding_source_url: $embedding_url,
         min_cluster_size: 15,
-        metric: "cosine",
+        metric: "euclidean",
         params: {}
       },
       windowing_spec: {

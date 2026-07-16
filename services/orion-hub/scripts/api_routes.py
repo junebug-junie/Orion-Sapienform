@@ -2386,12 +2386,20 @@ async def handle_chat_request(
             harness_rpc_bus=rpc_bus or bus,
             harness_step_relay=harness_step_relay,
         )
-        return frames[-1] if frames else {
+        final_frame = frames[-1] if frames else {
             "type": "turn_error",
             "phase": "harness",
             "correlation_id": corr_id,
             "finalize_ran": False,
         }
+        degraded_frame = next((f for f in frames if f.get("type") == "turn_degraded"), None)
+        if degraded_frame is not None:
+            # HTTP callers only ever see the last frame; without this, the soft
+            # degraded-turn notice (surfaced to websocket clients as its own frame)
+            # would silently vanish for this call path even though the response
+            # itself is delivered correctly.
+            final_frame = {**final_frame, "finalize_degraded_reason": degraded_frame.get("reason")}
+        return final_frame
 
     # ─── Hub presence (best-effort, never blocks chat) ──────────────────
     # One timestamp per turn; mirrors a liveness snapshot for self-state.

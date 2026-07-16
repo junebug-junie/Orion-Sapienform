@@ -13,7 +13,6 @@ from orion.harness.cortex_client import HarnessCortexClient
 from orion.harness.finalize import (
     DEFAULT_FINALIZE_INTERLOCUTOR,
     HarnessFinalizeFailedError,
-    emit_harness_finalize_system_error,
     emit_post_turn_closure,
     run_harness_finalize_chain,
 )
@@ -35,6 +34,13 @@ logger = logging.getLogger("orion-harness-governor.bus")
 
 class SubstrateAppraisalUnavailableError(Exception):
     """Substrate finalize-appraisal RPC timed out (infra outage, not a content failure)."""
+
+
+# User-facing text for a degraded turn -- deliberately generic. The real exception
+# (bus channel name + correlation id) is logged for operators only; this constant is
+# what flows into HarnessRunV1.finalize_degraded_reason and the turn_degraded frame
+# rendered directly in the chat UI.
+_SUBSTRATE_UNAVAILABLE_USER_REASON = "substrate appraisal unavailable (RPC timeout)"
 
 
 def _source() -> ServiceRef:
@@ -314,27 +320,54 @@ async def handle_harness_run_request(
         await _reply_and_artifact(bus, run, reply_to=reply_to, corr=corr, causality=causality)
         return run
     except SubstrateAppraisalUnavailableError as exc:
+        # Log the real exception (bus channel + correlation id) for operators only --
+        # finalize_degraded_reason below is a sanitized constant because it flows
+        # verbatim into the user-visible turn_degraded frame (orion/hub/turn_orchestrator.py)
+        # and must not leak internal RPC plumbing to the chat UI.
         logger.warning(
             "harness finalize substrate unavailable corr=%s err=%s — passing draft through as final",
             corr,
             exc,
         )
-        await emit_harness_finalize_system_error(
-            correlation_id=corr,
-            error=str(exc),
-            phase="substrate_appraisal_unavailable",
-            channel=settings.channel_system_error,
-            bus=bus,
-        )
+        # No emit_harness_finalize_system_error here: that channel's one tension-rate-limit
+        # bucket (cap=3/60s, shared across every failure_event in the mesh -- see
+        # orion/autonomy/tension_ratelimit.py's kind+drive_names signature) would be
+        # exhausted within 2-3 turns of a sustained substrate outage, silently starving
+        # out unrelated failure visibility mesh-wide for the rest of each window. The
+        # warning log above is the durable operator-facing trace for this path instead.
+        #
+        # No turn_outcome_molecule/post_turn_closure emission here either: those require
+        # a real substrate_appraisal + reflection (emit_turn_outcome_molecule's params are
+        # non-optional and its surprise_resolved computation reads both) -- fabricating
+        # placeholder ones to force the emission would be exactly the empty-shell-cognition
+        # anti-pattern this repo prohibits. The grammar lifecycle event below is the honest,
+        # no-fabrication-required trace for this path.
+        if motor.grammar_collector is not None:
+            await _emit_finalize_lifecycle_grammar(
+                bus,
+                collector=motor.grammar_collector,
+                step_count=motor.step_count,
+                grammar_receipt_count=len(motor.grammar_receipts),
+                reflection_ran=False,
+                quick_lane_skipped_5b=False,
+                final_text_present=True,
+                status="degraded_passthrough",
+            )
         run = HarnessRunV1(
             correlation_id=corr,
             final_text=motor.draft_text,
             draft_text=motor.draft_text,
             finalize_ran=False,
-            finalize_degraded_reason=str(exc),
+            finalize_degraded_reason=_SUBSTRATE_UNAVAILABLE_USER_REASON,
             step_count=motor.step_count,
             exit_code=motor.exit_code,
-            compliance_verdict=motor.compliance_verdict,
+            # Finalize/reflection genuinely did not complete for this turn even though the
+            # motor stage did -- downgrade a "completed" motor verdict to "partial" so
+            # compliance_verdict=="completed" never coexists with finalize_ran=False here,
+            # matching every other branch in this function forcing a non-full-success verdict.
+            compliance_verdict=(
+                "partial" if motor.compliance_verdict == "completed" else motor.compliance_verdict
+            ),
             grounding_status=motor.grounding_status,
             grammar_event_ids=_grammar_event_ids(motor.grammar_receipts),
             recall_debug=recall_debug,

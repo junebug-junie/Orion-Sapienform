@@ -229,11 +229,20 @@ async def test_harness_run_substrate_timeout_degrades_to_draft_passthrough() -> 
     assert run.final_text == "internal draft"
     assert run.draft_text == "internal draft"
     assert run.finalize_degraded_reason is not None
-    assert "RPC timeout" in run.finalize_degraded_reason
-    assert run.compliance_verdict == motor.compliance_verdict
+    # Sanitized: the raw exception text (bus channel name + correlation id) must never
+    # flow into this field, since it's rendered verbatim in the user-facing chat UI.
+    assert run.finalize_degraded_reason == "substrate appraisal unavailable (RPC timeout)"
+    assert "orion:substrate:finalize_appraisal" not in run.finalize_degraded_reason
+    assert "c-substrate-timeout" not in run.finalize_degraded_reason
+    # motor fixture's compliance_verdict defaults to "completed"; it must be downgraded
+    # to "partial" here since finalize genuinely did not run for this turn.
+    assert motor.compliance_verdict == "completed"
+    assert run.compliance_verdict == "partial"
     channels = [call.args[0] for call in bus.publish.await_args_list]
     assert "orion:harness:run:result:c-substrate-timeout" in channels
-    assert bus_listener.settings.channel_system_error in channels
+    # No system-error event: that channel's tension-rate-limit budget is shared mesh-wide
+    # and would be exhausted within a few turns of a sustained substrate outage.
+    assert bus_listener.settings.channel_system_error not in channels
 
 
 @pytest.mark.asyncio

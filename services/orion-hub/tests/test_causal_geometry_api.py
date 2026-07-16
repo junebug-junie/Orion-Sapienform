@@ -1,8 +1,10 @@
 from __future__ import annotations
 
+import json
 import os
 import sys
 import importlib.util
+from datetime import datetime, timezone
 from pathlib import Path
 
 import pytest
@@ -82,30 +84,280 @@ requires_field_topology_store = pytest.mark.skipif(
 )
 
 
-# --- Graceful degradation: snapshot / history (no live persistence yet, Phase A) ---
+# --- Graceful degradation + live Postgres read: snapshot / history ---
+#
+# These endpoints now read from the `causal_geometry_snapshots` table (see
+# services/orion-hub/scripts/api_routes.py::_causal_geometry_snapshot_payload /
+# _causal_geometry_history_payload) via the same `app.state.memory_pg_pool` asyncpg pool the
+# memory-cards routes use. We fake the pool/connection rather than hitting real Postgres.
+
+@pytest.fixture
+def hub_main():
+    """Fresh import of scripts.main, taken *inside* the test.
+
+    tests/conftest.py's autouse `_hub_service_isolation` fixture purges `scripts`/`scripts.*`
+    from sys.modules before every test to keep the Hub package resolving correctly across test
+    files. A module-level `import scripts.main` here would bind to a module object that gets
+    evicted before the test body runs, so patching its `app.state` would have no effect on the
+    `app` object `_causal_geometry_snapshot_payload`'s `from .main import app` actually resolves
+    at call time. Importing fresh inside the test (after the autouse fixture's reset) keeps both
+    in sync via sys.modules["scripts.main"].
+    """
+
+    import scripts.main as _hub_main
+
+    return _hub_main
 
 
-def test_snapshot_endpoint_degrades_gracefully_never_500() -> None:
-    payload = api_routes.api_causal_geometry_snapshot()
+class _FakeConn:
+    def __init__(self, *, fetchrow_result=None, fetch_result=None, raise_exc: BaseException | None = None):
+        self._fetchrow_result = fetchrow_result
+        self._fetch_result = fetch_result if fetch_result is not None else []
+        self._raise_exc = raise_exc
+
+    async def fetchrow(self, *_args, **_kwargs):
+        if self._raise_exc is not None:
+            raise self._raise_exc
+        return self._fetchrow_result
+
+    async def fetch(self, *_args, **_kwargs):
+        if self._raise_exc is not None:
+            raise self._raise_exc
+        return self._fetch_result
+
+
+class _FakeAcquireCtx:
+    def __init__(self, conn: _FakeConn):
+        self._conn = conn
+
+    async def __aenter__(self):
+        return self._conn
+
+    async def __aexit__(self, *_exc_info):
+        return False
+
+
+class _FakePool:
+    def __init__(self, conn: _FakeConn):
+        self._conn = conn
+
+    def acquire(self):
+        return _FakeAcquireCtx(self._conn)
+
+
+def _sample_row(snapshot_id: str = "snap-1") -> dict:
+    now = datetime(2026, 7, 16, 12, 0, 0, tzinfo=timezone.utc)
+    return {
+        "snapshot_id": snapshot_id,
+        "generated_at": now,
+        "window_start": now,
+        "window_end": now,
+        "designed_topology_version": "v3",
+        "insufficient_data": False,
+        "edges_json": json.dumps(
+            [
+                {
+                    "source_id": "a",
+                    "target_id": "b",
+                    "lag_sec": 1.0,
+                    "strength": 0.5,
+                    "significance": 0.9,
+                    "n_samples": 10,
+                    "window_start": now.isoformat(),
+                    "window_end": now.isoformat(),
+                }
+            ]
+        ),
+        "divergence_json": json.dumps(
+            [
+                {
+                    "source_id": "a",
+                    "target_id": "b",
+                    "observed_strength": 0.5,
+                    "designed_weight": 0.4,
+                    "delta": 0.1,
+                    "status": "aligned",
+                }
+            ]
+        ),
+        "notes_json": json.dumps(["note-1"]),
+    }
+
+
+@pytest.mark.asyncio
+async def test_snapshot_endpoint_degrades_gracefully_when_pool_unavailable(monkeypatch, hub_main) -> None:
+    monkeypatch.setattr(hub_main.app.state, "memory_pg_pool", None, raising=False)
+    payload = await api_routes.api_causal_geometry_snapshot()
     assert "source" in payload
     assert "data" in payload
+    assert payload["source"]["degraded"] is True
+    assert payload["source"]["kind"] == "unavailable"
+    assert payload["source"]["error"] == "memory_pg_pool_unavailable"
+    assert payload["data"] is None
+
+
+@pytest.mark.asyncio
+async def test_history_endpoint_degrades_gracefully_when_pool_unavailable(monkeypatch, hub_main) -> None:
+    monkeypatch.setattr(hub_main.app.state, "memory_pg_pool", None, raising=False)
+    payload = await api_routes.api_causal_geometry_history(limit=20)
+    assert "source" in payload
+    assert "data" in payload
+    assert payload["source"]["degraded"] is True
+    assert payload["source"]["kind"] == "unavailable"
+    assert payload["source"]["error"] == "memory_pg_pool_unavailable"
+    assert payload["data"] == []
+
+
+@pytest.mark.asyncio
+async def test_history_endpoint_respects_limit_query_bounds(monkeypatch, hub_main) -> None:
+    monkeypatch.setattr(hub_main.app.state, "memory_pg_pool", None, raising=False)
+    payload = await api_routes.api_causal_geometry_history(limit=5)
+    assert payload["source"]["query"]["limit"] == 5
+
+
+@pytest.mark.asyncio
+async def test_snapshot_endpoint_returns_real_row_from_pool(monkeypatch, hub_main) -> None:
+    conn = _FakeConn(fetchrow_result=_sample_row("snap-live"))
+    monkeypatch.setattr(hub_main.app.state, "memory_pg_pool", _FakePool(conn), raising=False)
+
+    payload = await api_routes.api_causal_geometry_snapshot()
+    assert payload["source"]["degraded"] is False
+    assert payload["source"]["kind"] == "postgres"
+    assert payload["data"]["snapshot_id"] == "snap-live"
+    assert payload["data"]["edges"] == [
+        {
+            "source_id": "a",
+            "target_id": "b",
+            "lag_sec": 1.0,
+            "strength": 0.5,
+            "significance": 0.9,
+            "n_samples": 10,
+            "window_start": "2026-07-16T12:00:00+00:00",
+            "window_end": "2026-07-16T12:00:00+00:00",
+        }
+    ]
+    assert payload["data"]["divergence"][0]["status"] == "aligned"
+    assert payload["data"]["notes"] == ["note-1"]
+    assert payload["data"]["designed_topology_version"] == "v3"
+    assert payload["data"]["insufficient_data"] is False
+
+
+@pytest.mark.asyncio
+async def test_history_endpoint_returns_real_rows_from_pool(monkeypatch, hub_main) -> None:
+    rows = [_sample_row("snap-1"), _sample_row("snap-2")]
+    conn = _FakeConn(fetch_result=rows)
+    monkeypatch.setattr(hub_main.app.state, "memory_pg_pool", _FakePool(conn), raising=False)
+
+    payload = await api_routes.api_causal_geometry_history(limit=20)
+    assert payload["source"]["degraded"] is False
+    assert payload["source"]["kind"] == "postgres"
+    assert [item["snapshot_id"] for item in payload["data"]] == ["snap-1", "snap-2"]
+
+
+@pytest.mark.asyncio
+async def test_snapshot_endpoint_empty_table_is_degraded_with_honest_message(monkeypatch, hub_main) -> None:
+    conn = _FakeConn(fetchrow_result=None)
+    monkeypatch.setattr(hub_main.app.state, "memory_pg_pool", _FakePool(conn), raising=False)
+
+    payload = await api_routes.api_causal_geometry_snapshot()
+    assert payload["source"]["degraded"] is True
+    assert payload["source"]["error"] == "no causal-geometry snapshot persisted yet"
+    assert payload["data"] is None
+
+
+@pytest.mark.asyncio
+async def test_history_endpoint_empty_table_is_not_degraded_returns_empty_list(monkeypatch, hub_main) -> None:
+    conn = _FakeConn(fetch_result=[])
+    monkeypatch.setattr(hub_main.app.state, "memory_pg_pool", _FakePool(conn), raising=False)
+
+    payload = await api_routes.api_causal_geometry_history(limit=20)
+    assert payload["source"]["degraded"] is False
+    assert payload["source"]["kind"] == "postgres"
+    assert payload["data"] == []
+
+
+@pytest.mark.asyncio
+async def test_snapshot_endpoint_undefined_table_degrades_not_500(monkeypatch, hub_main) -> None:
+    from asyncpg.exceptions import UndefinedTableError
+
+    conn = _FakeConn(raise_exc=UndefinedTableError("relation \"causal_geometry_snapshots\" does not exist"))
+    monkeypatch.setattr(hub_main.app.state, "memory_pg_pool", _FakePool(conn), raising=False)
+
+    payload = await api_routes.api_causal_geometry_snapshot()
+    assert payload["source"]["degraded"] is True
+    assert payload["source"]["kind"] == "unavailable"
+    assert "does not exist yet" in payload["source"]["error"]
+    assert payload["data"] is None
+
+
+@pytest.mark.asyncio
+async def test_history_endpoint_undefined_table_degrades_not_500(monkeypatch, hub_main) -> None:
+    from asyncpg.exceptions import UndefinedTableError
+
+    conn = _FakeConn(raise_exc=UndefinedTableError("relation \"causal_geometry_snapshots\" does not exist"))
+    monkeypatch.setattr(hub_main.app.state, "memory_pg_pool", _FakePool(conn), raising=False)
+
+    payload = await api_routes.api_causal_geometry_history(limit=20)
+    assert payload["source"]["degraded"] is True
+    assert payload["source"]["kind"] == "unavailable"
+    assert "does not exist yet" in payload["source"]["error"]
+    assert payload["data"] == []
+
+
+@pytest.mark.asyncio
+async def test_snapshot_endpoint_unexpected_exception_degrades_never_raises(monkeypatch, hub_main) -> None:
+    conn = _FakeConn(raise_exc=RuntimeError("connection reset by peer"))
+    monkeypatch.setattr(hub_main.app.state, "memory_pg_pool", _FakePool(conn), raising=False)
+
+    payload = await api_routes.api_causal_geometry_snapshot()
+    assert payload["source"]["degraded"] is True
+    assert payload["source"]["kind"] == "unavailable"
+    assert payload["source"]["error"] == "connection reset by peer"
+    assert payload["data"] is None
+
+
+@pytest.mark.asyncio
+async def test_history_endpoint_unexpected_exception_degrades_never_raises(monkeypatch, hub_main) -> None:
+    conn = _FakeConn(raise_exc=RuntimeError("connection reset by peer"))
+    monkeypatch.setattr(hub_main.app.state, "memory_pg_pool", _FakePool(conn), raising=False)
+
+    payload = await api_routes.api_causal_geometry_history(limit=20)
+    assert payload["source"]["degraded"] is True
+    assert payload["source"]["kind"] == "unavailable"
+    assert payload["source"]["error"] == "connection reset by peer"
+    assert payload["data"] == []
+
+
+@pytest.mark.asyncio
+async def test_snapshot_endpoint_malformed_row_degrades_never_raises(monkeypatch, hub_main) -> None:
+    """A row that fails to convert (e.g. an unexpected column type) must degrade, not 500.
+
+    The row-to-dict transform happens after a successful query, so it must still be covered by
+    the same never-500 contract -- not just the query call itself.
+    """
+
+    bad_row = _sample_row("snap-bad")
+    bad_row["generated_at"] = "not-a-datetime"  # .isoformat() will raise AttributeError
+    conn = _FakeConn(fetchrow_result=bad_row)
+    monkeypatch.setattr(hub_main.app.state, "memory_pg_pool", _FakePool(conn), raising=False)
+
+    payload = await api_routes.api_causal_geometry_snapshot()
     assert payload["source"]["degraded"] is True
     assert payload["source"]["kind"] == "unavailable"
     assert payload["data"] is None
 
 
-def test_history_endpoint_degrades_gracefully_never_500() -> None:
-    payload = api_routes.api_causal_geometry_history(limit=20)
-    assert "source" in payload
-    assert "data" in payload
+@pytest.mark.asyncio
+async def test_history_endpoint_malformed_row_degrades_never_raises(monkeypatch, hub_main) -> None:
+    bad_row = _sample_row("snap-bad")
+    bad_row["generated_at"] = "not-a-datetime"  # .isoformat() will raise AttributeError
+    conn = _FakeConn(fetch_result=[bad_row])
+    monkeypatch.setattr(hub_main.app.state, "memory_pg_pool", _FakePool(conn), raising=False)
+
+    payload = await api_routes.api_causal_geometry_history(limit=20)
     assert payload["source"]["degraded"] is True
     assert payload["source"]["kind"] == "unavailable"
     assert payload["data"] == []
-
-
-def test_history_endpoint_respects_limit_query_bounds() -> None:
-    payload = api_routes.api_causal_geometry_history(limit=5)
-    assert payload["source"]["query"]["limit"] == 5
 
 
 # --- Proposals: real backing store when importable, fallback store otherwise ---

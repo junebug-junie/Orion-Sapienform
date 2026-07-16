@@ -3271,40 +3271,167 @@ def _sql_review_queue_payload(*, limit: int = 50) -> Dict[str, Any]:
     }
 
 
-def _causal_geometry_snapshot_payload() -> Dict[str, Any]:
-    """Latest CausalGeometrySnapshotV1, or a gracefully-degraded stub.
+try:
+    from asyncpg.exceptions import UndefinedTableError as _CausalGeometryUndefinedTableError
+except ImportError:  # pragma: no cover - optional in minimal dev envs
+    _CausalGeometryUndefinedTableError = None  # type: ignore[misc, assignment]
 
-    Phase A's report script (scripts/causal_geometry_report.py) does not persist snapshots to
-    Postgres/bus yet this sprint -- it's a standalone report tool. Until a live snapshot source
-    is wired up, this must never 500; it reports source.degraded=True / kind="unavailable".
-    """
+_CAUSAL_GEOMETRY_SNAPSHOT_COLUMNS = (
+    "snapshot_id, generated_at, window_start, window_end, designed_topology_version, "
+    "insufficient_data, edges_json, divergence_json, notes_json"
+)
 
+
+def _causal_geometry_parse_jsonb(value: Any) -> Any:
+    if isinstance(value, str):
+        try:
+            return json.loads(value)
+        except (TypeError, ValueError):
+            logger.warning("causal_geometry_jsonb_parse_failed raw=%r", value)
+            return value
+    return value
+
+
+def _causal_geometry_row_to_dict(row: Any) -> Dict[str, Any]:
     return {
-        "source": _source_meta(
-            kind="unavailable",
-            degraded=True,
-            limit=1,
-            error="no live causal-geometry snapshot source wired yet (Phase A report script does not persist)",
-        ),
-        "data": None,
+        "snapshot_id": row["snapshot_id"],
+        "generated_at": row["generated_at"].isoformat() if row["generated_at"] is not None else None,
+        "window_start": row["window_start"].isoformat() if row["window_start"] is not None else None,
+        "window_end": row["window_end"].isoformat() if row["window_end"] is not None else None,
+        "designed_topology_version": row["designed_topology_version"],
+        "insufficient_data": row["insufficient_data"],
+        "edges": _causal_geometry_parse_jsonb(row["edges_json"]),
+        "divergence": _causal_geometry_parse_jsonb(row["divergence_json"]),
+        "notes": _causal_geometry_parse_jsonb(row["notes_json"]),
     }
 
 
-def _causal_geometry_history_payload(*, limit: int = 20) -> Dict[str, Any]:
-    """Bounded snapshot history, or a gracefully-degraded empty list.
+async def _causal_geometry_snapshot_payload() -> Dict[str, Any]:
+    """Latest CausalGeometrySnapshotV1 read live from Postgres, or a gracefully-degraded stub.
 
-    Same posture as _causal_geometry_snapshot_payload: no persistence exists yet, so this
-    returns an empty, explicitly-degraded list rather than erroring.
+    Reads from the `causal_geometry_snapshots` table that orion-field-digester persists into
+    (one row per measurement cycle). This must never 500; on any failure it reports
+    source.degraded=True / kind="unavailable" with an honest error message.
     """
 
+    from .main import app
+
+    pool = getattr(app.state, "memory_pg_pool", None)
+    if pool is None:
+        return {
+            "source": _source_meta(
+                kind="unavailable",
+                degraded=True,
+                limit=1,
+                error="memory_pg_pool_unavailable",
+            ),
+            "data": None,
+        }
+
+    try:
+        async with pool.acquire() as conn:
+            row = await conn.fetchrow(
+                f"SELECT {_CAUSAL_GEOMETRY_SNAPSHOT_COLUMNS} FROM causal_geometry_snapshots "
+                "ORDER BY generated_at DESC LIMIT 1"
+            )
+
+        if row is None:
+            return {
+                "source": _source_meta(
+                    kind="postgres",
+                    degraded=True,
+                    limit=1,
+                    error="no causal-geometry snapshot persisted yet",
+                ),
+                "data": None,
+            }
+
+        data = _causal_geometry_row_to_dict(row)
+    except Exception as exc:  # noqa: BLE001 - must degrade gracefully, never 500
+        if _CausalGeometryUndefinedTableError is not None and isinstance(exc, _CausalGeometryUndefinedTableError):
+            logger.warning("causal_geometry_snapshot_table_missing error=%s", exc)
+            return {
+                "source": _source_meta(
+                    kind="unavailable",
+                    degraded=True,
+                    limit=1,
+                    error="causal_geometry_snapshots table does not exist yet",
+                ),
+                "data": None,
+            }
+        logger.warning("causal_geometry_snapshot_query_failed error=%s", exc)
+        return {
+            "source": _source_meta(
+                kind="unavailable",
+                degraded=True,
+                limit=1,
+                error=str(exc),
+            ),
+            "data": None,
+        }
+
     return {
-        "source": _source_meta(
-            kind="unavailable",
-            degraded=True,
-            limit=limit,
-            error="no live causal-geometry snapshot store wired yet (Phase A report script does not persist)",
-        ),
-        "data": [],
+        "source": _source_meta(kind="postgres", degraded=False, limit=1, error=None),
+        "data": data,
+    }
+
+
+async def _causal_geometry_history_payload(*, limit: int = 20) -> Dict[str, Any]:
+    """Bounded snapshot history read live from Postgres, or a gracefully-degraded empty list.
+
+    An empty-but-queryable table is a normal, non-degraded empty history -- only a missing pool,
+    a missing table, or an unexpected query failure sets degraded=True.
+    """
+
+    from .main import app
+
+    pool = getattr(app.state, "memory_pg_pool", None)
+    if pool is None:
+        return {
+            "source": _source_meta(
+                kind="unavailable",
+                degraded=True,
+                limit=limit,
+                error="memory_pg_pool_unavailable",
+            ),
+            "data": [],
+        }
+
+    try:
+        async with pool.acquire() as conn:
+            rows = await conn.fetch(
+                f"SELECT {_CAUSAL_GEOMETRY_SNAPSHOT_COLUMNS} FROM causal_geometry_snapshots "
+                "ORDER BY generated_at DESC LIMIT $1",
+                limit,
+            )
+
+        data = [_causal_geometry_row_to_dict(row) for row in rows]
+    except Exception as exc:  # noqa: BLE001 - must degrade gracefully, never 500
+        if _CausalGeometryUndefinedTableError is not None and isinstance(exc, _CausalGeometryUndefinedTableError):
+            logger.warning("causal_geometry_history_table_missing error=%s", exc)
+            return {
+                "source": _source_meta(
+                    kind="unavailable",
+                    degraded=True,
+                    limit=limit,
+                    error="causal_geometry_snapshots table does not exist yet",
+                ),
+                "data": [],
+            }
+        logger.warning("causal_geometry_history_query_failed error=%s", exc)
+        return {
+            "source": _source_meta(
+                kind="unavailable",
+                degraded=True,
+                limit=limit,
+                error=str(exc),
+            ),
+            "data": [],
+        }
+
+    return {
+        "source": _source_meta(kind="postgres", degraded=False, limit=limit, error=None),
+        "data": data,
     }
 
 
@@ -5122,15 +5249,15 @@ def api_substrate_review_runtime_smoke_check(request: SubstrateReviewSmokeCheckR
 
 
 @router.get("/api/causal-geometry/snapshot")
-def api_causal_geometry_snapshot() -> Dict[str, Any]:
+async def api_causal_geometry_snapshot() -> Dict[str, Any]:
     """Latest CausalGeometrySnapshotV1. Degrades gracefully (never 500) if no live source exists."""
-    return _causal_geometry_snapshot_payload()
+    return await _causal_geometry_snapshot_payload()
 
 
 @router.get("/api/causal-geometry/history")
-def api_causal_geometry_history(limit: int = Query(default=20, ge=1, le=200)) -> Dict[str, Any]:
+async def api_causal_geometry_history(limit: int = Query(default=20, ge=1, le=200)) -> Dict[str, Any]:
     """Bounded snapshot history. Degrades gracefully (never 500) if no live store exists."""
-    return _causal_geometry_history_payload(limit=limit)
+    return await _causal_geometry_history_payload(limit=limit)
 
 
 @router.get("/api/causal-geometry/proposals")

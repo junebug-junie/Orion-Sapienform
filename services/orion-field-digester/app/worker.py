@@ -10,6 +10,7 @@ from orion.schemas.telemetry.field_channel_corpus import FieldChannelCorpusRowV1
 from orion.self_state.scoring import collect_field_channel_pressures
 from orion.telemetry.corpus_sink import InnerStateCorpusSink
 
+from app.digestion.diffusion import get_learned_store
 from app.graph.lattice import load_lattice
 from app.health_monitor import HealthMonitor
 from app.ingest.state_deltas import Perturbation, delta_to_perturbations
@@ -18,6 +19,7 @@ from app.store import FieldDigesterStore, PendingDelta
 from app.tensor.field_state import empty_field_state, new_tick_id
 from app.tensor.reconcile import reconcile_field_state_with_lattice
 from app.tensor.update_rules import run_digestion_tick
+from orion.substrate.causal_geometry_producer import run_causal_geometry_production_cycle
 
 logger = logging.getLogger("orion.field.digester")
 
@@ -46,6 +48,9 @@ class FieldDigesterWorker:
         asyncio.create_task(self._poll_loop(), name="field-digester-poll")
         asyncio.create_task(self._prune_loop(), name="field-digester-prune")
         asyncio.create_task(self._health_loop(), name="field-digester-health")
+        asyncio.create_task(
+            self._causal_geometry_producer_loop(), name="field-digester-causal-geometry-producer"
+        )
 
     async def stop(self) -> None:
         self._stop.set()
@@ -94,6 +99,50 @@ class FieldDigesterWorker:
                 await asyncio.wait_for(
                     self._stop.wait(),
                     timeout=float(self._settings.field_state_prune_interval_sec),
+                )
+            except asyncio.TimeoutError:
+                continue
+            except asyncio.CancelledError:
+                break
+
+    def _causal_geometry_producer_tick(self) -> None:
+        if not self._settings.field_plasticity_producer_enabled:
+            return
+        result = run_causal_geometry_production_cycle(
+            postgres_uri=self._settings.postgres_uri,
+            topology_path=self._settings.lattice_path,
+            field_edges=self._lattice.edges,
+            store=get_learned_store(),
+            window_hours=self._settings.field_plasticity_producer_window_hours,
+        )
+        if result["ok"]:
+            logger.info(
+                "causal_geometry_production_cycle_completed snapshot_id=%s "
+                "insufficient_data=%s candidates_found=%d proposals_created=%d "
+                "proposals_skipped_pending_duplicate=%d",
+                result["snapshot_id"],
+                result["insufficient_data"],
+                result["candidates_found"],
+                result["proposals_created"],
+                result["proposals_skipped_pending_duplicate"],
+            )
+        else:
+            logger.warning(
+                "causal_geometry_production_cycle_failed stage=%s error=%s",
+                result["stage"],
+                result["error"],
+            )
+
+    async def _causal_geometry_producer_loop(self) -> None:
+        while not self._stop.is_set():
+            try:
+                await asyncio.to_thread(self._causal_geometry_producer_tick)
+            except Exception:
+                logger.exception("field_digester_causal_geometry_producer_tick_failed")
+            try:
+                await asyncio.wait_for(
+                    self._stop.wait(),
+                    timeout=float(self._settings.field_plasticity_producer_interval_hours) * 3600.0,
                 )
             except asyncio.TimeoutError:
                 continue

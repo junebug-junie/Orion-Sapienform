@@ -43,7 +43,7 @@ def _plasticity_enabled() -> bool:
     return str(os.getenv(FIELD_PLASTICITY_ENABLED_ENV, "false")).strip().lower() in _TRUTHY
 
 
-def _get_learned_store():
+def get_learned_store():
     """Lazily construct (once, not per-tick) the shared
     `FieldTopologyLearnedWeightsStore`, backed by `FIELD_PLASTICITY_SQL_DB_PATH` when
     set so adoptions made in the hub process are actually visible here.
@@ -51,6 +51,11 @@ def _get_learned_store():
     Constructing this once and caching it (rather than fresh per `apply_diffusion`
     call) avoids reconnecting + reloading the sqlite file on every diffusion tick for
     state that only changes on a rare HITL adopt/reject action.
+
+    Public (not `_`-prefixed): `app/worker.py`'s causal-geometry producer loop
+    calls this too, so the read side (this module) and the write side (the
+    producer's `store.propose()`) share one store instance/sqlite connection
+    within this process instead of each opening their own.
     """
     global _LEARNED_STORE
     if _LEARNED_STORE is None:
@@ -75,7 +80,7 @@ def _load_learned_overlay() -> dict[str, float]:
     designed weight, exactly as if `FIELD_PLASTICITY_ENABLED` were off.
     """
     try:
-        return _get_learned_store().current_overlay()
+        return get_learned_store().current_overlay()
     except Exception as exc:  # pragma: no cover - defensive, see docstring above
         logger.warning("field_plasticity_overlay_load_failed: %s", exc, exc_info=True)
         return {}

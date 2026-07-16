@@ -58,6 +58,26 @@ class Settings(BaseSettings):
     corpus_sink_max_bytes: int = Field(200_000_000, ge=1_000_000, alias="CORPUS_SINK_MAX_BYTES")
     corpus_sink_rotated_keep: int = Field(5, ge=0, alias="CORPUS_SINK_ROTATED_KEEP")
 
+    # Causal Geometry v1 follow-up: the scheduled Phase A -> Phase B producer
+    # (orion/substrate/causal_geometry_producer.py, run from
+    # app/worker.py's _causal_geometry_producer_loop). Independent of
+    # FIELD_PLASTICITY_ENABLED (which gates *consuming* the learned overlay in
+    # diffusion) -- this gates *producing* proposals into the HITL queue.
+    # Off by default: an operator must opt in explicitly, same posture as
+    # every other plasticity flag in this file.
+    field_plasticity_producer_enabled: bool = Field(False, alias="FIELD_PLASTICITY_PRODUCER_ENABLED")
+    # 24h: matches the design spec's "deterministic nightly job" framing for
+    # Phase A. This is a full Postgres pull + O(channels^2) lagged-correlation
+    # + surrogate-significance computation, not something to run on the
+    # digester's own ~2s tick cadence.
+    field_plasticity_producer_interval_hours: float = Field(
+        24.0, alias="FIELD_PLASTICITY_PRODUCER_INTERVAL_HOURS"
+    )
+    # Matches causal_geometry_engine.DEFAULT_WINDOW_HOURS (168h / 7 days).
+    field_plasticity_producer_window_hours: float = Field(
+        168.0, alias="FIELD_PLASTICITY_PRODUCER_WINDOW_HOURS"
+    )
+
 
 _settings: Settings | None = None
 

@@ -25,6 +25,9 @@ from typing import Any, Optional
 from fastapi import APIRouter, HTTPException, Query
 from fastapi.responses import HTMLResponse
 
+from .settings import settings
+from .topic_foundry_client import TopicFoundryClientError, fetch_run_topics_and_keywords
+
 logger = logging.getLogger("orion-hub.concept_atlas")
 
 router = APIRouter(tags=["concept-atlas"])
@@ -294,6 +297,132 @@ async def concept_atlas_network(
         "truncated": bool(result.truncated),
         "degraded": degraded,
         "degraded_error": getattr(result, "error", None) if degraded else None,
+    }
+
+
+@router.post("/api/substrate/concepts/ingest-topic-foundry")
+def concept_atlas_ingest_topic_foundry() -> dict[str, Any]:
+    """Operator-triggered, on-demand ingestion of topic-foundry's latest completed run.
+
+    Deliberately a sync ``def`` (not ``async def``): the underlying HTTP calls
+    use the blocking ``requests`` library (see ``topic_foundry_client.py``),
+    and FastAPI runs sync route handlers in a worker thread pool automatically
+    -- an ``async def`` wrapper here would block the event loop for the
+    duration of every topic-foundry round trip instead.
+
+    Fetches the latest completed run + its topics + per-topic keywords from
+    topic-foundry over HTTP, converts them via
+    ``orion.substrate.adapters.topic_foundry.map_topic_foundry_run_to_substrate``,
+    and writes the resulting concept/evidence nodes and edges into the shared
+    ``SUBSTRATE_SEMANTIC_STORE``.
+
+    This is a manual trigger only -- not wired into Hub's startup event or any
+    scheduler, mirroring ``/api/substrate/review-runtime/debug-run``'s shape
+    (operator-triggered multi-step pipeline, not an automatic background job).
+    Every failure mode below degrades to an honest, non-500 response rather
+    than fabricating a success result.
+
+    Scoping note: ``segment_topic_map`` is passed as empty in this first cut,
+    so no ``co_occurs_with`` co-occurrence edges are produced yet -- only
+    concept nodes (+ backing evidence nodes/edges) per real topic. See the PR
+    report for why this was scoped out rather than attempted.
+    """
+    store = _get_substrate_store()
+    if store is None:
+        return _unavailable("substrate_store_unavailable", concepts_written=0, edges_written=0)
+
+    base_url = str(getattr(settings, "TOPIC_FOUNDRY_BASE_URL", "") or "").strip()
+    if not base_url:
+        return _unavailable(
+            "topic_foundry_base_url_not_configured",
+            concepts_written=0,
+            edges_written=0,
+        )
+
+    try:
+        fetched = fetch_run_topics_and_keywords(base_url)
+    except TopicFoundryClientError as exc:
+        logger.warning("concept_atlas_ingest_topic_foundry_fetch_failed error=%s", exc)
+        return _unavailable(
+            "topic_foundry_fetch_failed",
+            str(exc),
+            concepts_written=0,
+            edges_written=0,
+        )
+    except Exception as exc:  # pragma: no cover - defensive, never let a client bug 500 this route
+        logger.warning("concept_atlas_ingest_topic_foundry_unexpected_fetch_error error=%s", exc)
+        return _unavailable(
+            "topic_foundry_unexpected_error",
+            str(exc),
+            concepts_written=0,
+            edges_written=0,
+        )
+
+    run_id = fetched["run_id"]
+    topics = fetched["topics"]
+    keywords_by_topic = fetched["keywords_by_topic"]
+
+    try:
+        from orion.substrate.adapters.topic_foundry import map_topic_foundry_run_to_substrate
+
+        record = map_topic_foundry_run_to_substrate(
+            run_id=run_id,
+            topics=topics,
+            keywords_by_topic=keywords_by_topic,
+            segment_topic_map={},
+        )
+    except Exception as exc:  # pragma: no cover - the adapter itself never raises, but don't trust across the boundary
+        logger.warning("concept_atlas_ingest_topic_foundry_adapter_failed run_id=%s error=%s", run_id, exc)
+        return _unavailable(
+            "topic_foundry_adapter_failed",
+            str(exc),
+            run_id=run_id,
+            concepts_written=0,
+            edges_written=0,
+        )
+
+    if not record.nodes:
+        return _unavailable(
+            "topic_foundry_no_usable_topics",
+            run_id=run_id,
+            topics_fetched=len(topics),
+            concepts_written=0,
+            edges_written=0,
+        )
+
+    concept_count = 0
+    evidence_count = 0
+    edge_count = 0
+    try:
+        for node in record.nodes:
+            store.upsert_node(identity_key=node.node_id, node=node)
+            if node.node_kind == "concept":
+                concept_count += 1
+            elif node.node_kind == "evidence":
+                evidence_count += 1
+        for edge in record.edges:
+            identity_key = f"{edge.source.node_id}|{edge.predicate}|{edge.target.node_id}"
+            store.upsert_edge(identity_key=identity_key, edge=edge)
+            edge_count += 1
+    except Exception as exc:
+        logger.warning("concept_atlas_ingest_topic_foundry_store_write_failed run_id=%s error=%s", run_id, exc)
+        return _unavailable(
+            "substrate_store_write_failed",
+            str(exc),
+            run_id=run_id,
+            concepts_written=concept_count,
+            evidence_nodes_written=evidence_count,
+            edges_written=edge_count,
+        )
+
+    return {
+        "available": True,
+        "run_id": run_id,
+        "topics_fetched": len(topics),
+        "concepts_written": concept_count,
+        "evidence_nodes_written": evidence_count,
+        "edges_written": edge_count,
+        "co_occurrence_edges_skipped": "segment_topic_map not supplied in this ingestion route (empty by design)",
     }
 
 

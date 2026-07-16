@@ -38,6 +38,30 @@ Provenance: `.env_example` → `docker-compose.yml` → `settings.py`
 
 Node identity for grammar traces is resolved via `config/biometrics/node_catalog.yaml` (aliases canonicalize hostnames, e.g. `prometheous` → `prometheus`).
 
+### Grammar node `pressure_hints` (consumed by `orion-field-digester`)
+
+`app/grammar_emit.py::build_biometrics_node_grammar_events` emits one atom per
+hardware-pressure signal on the `orion:grammar:event` trace. Each atom's
+`salience` is later read by `orion/substrate/biometrics_loop/grammar_extract.py`
+and surfaced on the `node_biometrics` projection's `pressure_hints` dict, which
+`services/orion-field-digester/app/ingest/state_deltas.py`'s `node_biometrics`
+block turns into lattice `Perturbation`s:
+
+| Atom `semantic_role` | `pressure_hints` key | Lattice channel (`NODE_CHANNELS`) |
+| :--- | :--- | :--- |
+| `body_state` (composite `strain`) | `strain` | `cpu_pressure` |
+| `capability_surface` (gated on `local_llm_heavy`) | `gpu` | `gpu_pressure` |
+| `memory_pressure_signal` | `memory_pressure` | `memory_pressure` |
+| `thermal_pressure_signal` | `thermal_pressure` | `thermal_pressure` |
+| `disk_pressure_signal` | `disk_pressure` | `disk_pressure` |
+
+`memory_pressure_signal`/`thermal_pressure_signal`/`disk_pressure_signal` carry
+the individually-computed `mem`/`thermal`/`disk` values from
+`orion/telemetry/biometrics_pipeline.py`'s `pressures` dict (2026-07-16 fix --
+these were previously only folded into the `strain` composite and never
+reached the field lattice, so the corresponding channels stayed pinned at
+`0.0`). This is additive: `strain`/`gpu` are unchanged.
+
 ## Running & Testing
 
 ### Run via Docker

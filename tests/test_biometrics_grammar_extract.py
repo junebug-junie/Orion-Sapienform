@@ -112,6 +112,54 @@ def test_extract_sets_last_seen_and_event_ids(catalog: NodeCatalog) -> None:
     assert state.pressure_hints.get("strain") == 0.4
 
 
+def test_extract_sets_memory_thermal_disk_pressure_hints(catalog: NodeCatalog) -> None:
+    trace_id = "biometrics.node:atlas:2026-05-24T12:00:00Z"
+    events = [
+        _atom_event(
+            trace_id=trace_id,
+            event_id="gev_mem",
+            role="memory_pressure_signal",
+            observed_at=FIXED_TS,
+            salience=0.61,
+        ),
+        _atom_event(
+            trace_id=trace_id,
+            event_id="gev_thermal",
+            role="thermal_pressure_signal",
+            observed_at=FIXED_TS,
+            salience=0.33,
+        ),
+        _atom_event(
+            trace_id=trace_id,
+            event_id="gev_disk",
+            role="disk_pressure_signal",
+            observed_at=FIXED_TS,
+            salience=0.12,
+        ),
+    ]
+    state = extract_node_state_from_events(events, catalog, stale_after_sec=180, now=FIXED_TS)
+    assert state.pressure_hints.get("memory_pressure") == pytest.approx(0.61)
+    assert state.pressure_hints.get("thermal_pressure") == pytest.approx(0.33)
+    assert state.pressure_hints.get("disk_pressure") == pytest.approx(0.12)
+
+
+def test_extract_ignores_memory_thermal_disk_signals_with_no_salience(
+    catalog: NodeCatalog,
+) -> None:
+    trace_id = "biometrics.node:atlas:2026-05-24T12:00:00Z"
+    events = [
+        _atom_event(
+            trace_id=trace_id,
+            event_id="gev_mem",
+            role="memory_pressure_signal",
+            observed_at=FIXED_TS,
+            salience=None,
+        ),
+    ]
+    state = extract_node_state_from_events(events, catalog, stale_after_sec=180, now=FIXED_TS)
+    assert "memory_pressure" not in state.pressure_hints
+
+
 def test_extract_availability_online_when_fresh(catalog: NodeCatalog) -> None:
     trace_id = "biometrics.node:atlas:2026-05-24T12:00:00Z"
     events = [

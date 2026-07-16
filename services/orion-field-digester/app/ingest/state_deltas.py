@@ -74,6 +74,38 @@ def delta_to_perturbations(delta: StateDeltaV1) -> list[Perturbation]:
                     label=delta.delta_id,
                 )
             )
+        # memory_pressure/thermal_pressure/disk_pressure (2026-07-16 fix):
+        # previously only computed upstream and folded into the composite
+        # "strain" hint above -- these three lattice channels sat pinned at
+        # 0.0 for the whole live corpus. Additive: unlike gpu/strain, these
+        # hint keys map 1:1 onto their own NODE_CHANNELS name (no remap).
+        if "memory_pressure" in hints:
+            out.append(
+                Perturbation(
+                    node_id=node_id,
+                    channel="memory_pressure",
+                    intensity=float(hints["memory_pressure"]),
+                    label=delta.delta_id,
+                )
+            )
+        if "thermal_pressure" in hints:
+            out.append(
+                Perturbation(
+                    node_id=node_id,
+                    channel="thermal_pressure",
+                    intensity=float(hints["thermal_pressure"]),
+                    label=delta.delta_id,
+                )
+            )
+        if "disk_pressure" in hints:
+            out.append(
+                Perturbation(
+                    node_id=node_id,
+                    channel="disk_pressure",
+                    intensity=float(hints["disk_pressure"]),
+                    label=delta.delta_id,
+                )
+            )
         status = str(after.get("availability_status") or "")
         if status == "stale":
             out.append(Perturbation(node_id=node_id, channel="staleness", intensity=0.5, label=delta.delta_id))

@@ -1,12 +1,15 @@
 from __future__ import annotations
 
+import logging
 import re
 from datetime import datetime
-from typing import Any
+from typing import Any, Callable
 
 from orion.schemas.attention_frame import AttentionSignalV1, OpenLoopV1
 from orion.substrate.attention.common import bounded, compact, stable_id
 from orion.substrate.attention.salience import SalienceHistory, compute_salience
+
+logger = logging.getLogger("orion.substrate.attention.scoring")
 
 _EMOTION_RE = re.compile(r"\b(frustrated|pissed|worried|excited|afraid|stuck|blocked|confused|love|hate|urgent)\b", re.I)
 _PLAN_RE = re.compile(r"\b(plan|planning|going to|tomorrow|next|later|schedule|deadline|future)\b", re.I)
@@ -80,12 +83,55 @@ def build_open_loops(
     max_open: int,
     history: "SalienceHistory | None" = None,
     now: datetime | None = None,
+    verdict_lookup: "Callable[[list[str]], set[str]] | None" = None,
 ) -> list[OpenLoopV1]:
+    """Build the competing open loops for one tick.
+
+    ``verdict_lookup``, when given, is called once with the loop_ids of every
+    deduped candidate signal in play this tick (before the ``max_open`` cap --
+    see below) and must return the subset that a human has already
+    resolved/dismissed (see
+    ``orion.substrate.attention.verdicts.load_terminal_verdict_loop_ids``).
+    Those loops are excluded entirely -- not down-weighted -- so a closed loop
+    can never win ``selected_action`` again. Default ``None`` preserves prior
+    behavior exactly (chat-scoped callers do not currently pass this).
+    Never raises: any failure from the lookup is treated as "no verdicts
+    known" so a DB hiccup never blocks this tick.
+
+    Exclusion is applied to the full deduped signal pool, before truncating
+    to ``max_open`` -- not after -- so a resolved/dismissed loop that would
+    otherwise have made the cut frees its slot for the next-best candidate
+    instead of just shrinking the field by one. Callers that want this
+    backfill to matter (``attention_broadcast.py``) already pass in a signal
+    pool wider than ``max_open`` for exactly this reason.
+    """
     user_text = compact(ctx.get("user_message") or ctx.get("raw_user_text") or "", 600)
     known = known_blob(inputs, ctx)
     autonomy_value, autonomy_signals = autonomy_pressure_from_signals(signals)
+
+    # Dedupe by target_text without capping yet (limit=len(signals) is a
+    # no-op cap -- merge_signals can never produce more entries than its
+    # input). loop_id is computed exactly once per deduped signal here and
+    # threaded through everywhere below, so there is one source of truth for
+    # "what id does this candidate use" -- no risk of two call sites drifting
+    # apart if the id formula ever changes.
+    deduped = merge_signals(signals, limit=len(signals))
+    id_signal_pairs = [
+        (stable_id("open-loop", compact(s.target_text, 120).lower()), s) for s in deduped
+    ]
+
+    excluded_loop_ids: set[str] = set()
+    if verdict_lookup is not None and id_signal_pairs:
+        try:
+            excluded_loop_ids = set(verdict_lookup([lid for lid, _ in id_signal_pairs]))
+        except Exception:
+            logger.warning("attention_verdict_lookup_failed", exc_info=True)
+            excluded_loop_ids = set()
+
+    candidates = [pair for pair in id_signal_pairs if pair[0] not in excluded_loop_ids][:max_open]
+
     loops: list[OpenLoopV1] = []
-    for signal in merge_signals(signals, limit=max_open):
+    for loop_id, signal in candidates:
         phrase = compact(signal.target_text, 120)
         already_known = phrase.lower() in known
         target_type = target_type_for(signal, user_text)
@@ -99,7 +145,7 @@ def build_open_loops(
         if generic_reversal or stale_thread_active:
             askability = min(askability, 0.25)
         loop = OpenLoopV1(
-            id=stable_id("open-loop", phrase.lower()),
+            id=loop_id,
             target_type=target_type,  # type: ignore[arg-type]
             description=phrase,
             source_text=user_text,

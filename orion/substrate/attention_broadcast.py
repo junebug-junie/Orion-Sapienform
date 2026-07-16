@@ -29,6 +29,7 @@ from orion.schemas.attention_frame import (
 from orion.substrate.attention.common import compact, stable_id
 from orion.substrate.attention.policy import select_actions
 from orion.substrate.attention.scoring import build_open_loops, merge_signals
+from orion.substrate.attention.verdicts import load_terminal_verdict_loop_ids
 
 _TRUTHY = {"1", "true", "yes", "on"}
 
@@ -223,6 +224,15 @@ def build_substrate_attention_frame(
         max_open=max_open,
         history=history,
         now=resolved_now,
+        # Substrate broadcast is rung-3's continuous re-broadcast, the exact
+        # path a resolved/dismissed loop was found live still winning
+        # indefinitely (2026-07-14 investigation). Excludes those loops
+        # entirely rather than down-weighting them -- see
+        # orion.substrate.attention.verdicts. Not wired into the chat-scoped
+        # build_open_loops() caller (attention_frame.py): that path is
+        # per-turn and ephemeral, and this fix is scoped to the workspace
+        # competition that actually dominated indefinitely.
+        verdict_lookup=load_terminal_verdict_loop_ids,
     )
     actions, selected, suppressions, deferred = select_actions(
         open_loops=open_loops,

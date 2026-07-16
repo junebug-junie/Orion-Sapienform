@@ -3837,6 +3837,9 @@ document.addEventListener("DOMContentLoaded", () => {
     const safeV2Preview = meta && meta.autonomyStateV2Preview && typeof meta.autonomyStateV2Preview === 'object'
       ? meta.autonomyStateV2Preview
       : (meta && meta.autonomy_state_v2_preview && typeof meta.autonomy_state_v2_preview === 'object' ? meta.autonomy_state_v2_preview : null);
+    const safeDrivePreview = meta && meta.driveStatePreview && typeof meta.driveStatePreview === 'object'
+      ? meta.driveStatePreview
+      : (meta && meta.drive_state_preview && typeof meta.drive_state_preview === 'object' ? meta.drive_state_preview : null);
     const safeDelta = meta && meta.autonomyStateDelta && typeof meta.autonomyStateDelta === 'object'
       ? meta.autonomyStateDelta
       : (meta && meta.autonomy_state_delta && typeof meta.autonomy_state_delta === 'object' ? meta.autonomy_state_delta : null);
@@ -3910,6 +3913,7 @@ document.addEventListener("DOMContentLoaded", () => {
       || (safePreview.goal_lineage && Object.keys(safePreview.goal_lineage).length)
     ));
     const hasV2PreviewSignal = !!(safeV2Preview && Object.keys(safeV2Preview).length);
+    const hasDrivePreviewSignal = !!(safeDrivePreview && Object.keys(safeDrivePreview).length);
     const hasDeltaSignal = !!(safeDelta && Object.keys(safeDelta).length);
     const hasChatStanceDebugSignal = !!(safeChatStanceDebug && Object.keys(safeChatStanceDebug).length);
     const hasLineageMeta = !!(executionMode || (goalLineageRaw && Object.keys(goalLineageRaw).length));
@@ -3918,6 +3922,7 @@ document.addEventListener("DOMContentLoaded", () => {
       || hasDebugSignal
       || hasPreviewSignal
       || hasV2PreviewSignal
+      || hasDrivePreviewSignal
       || hasDeltaSignal
       || hasChatStanceDebugSignal
       || String((safeSummary && safeSummary.stance_hint) || '').trim()
@@ -3938,6 +3943,7 @@ document.addEventListener("DOMContentLoaded", () => {
       hasDebugSignal,
       hasPreviewSignal,
       hasV2PreviewSignal,
+      hasDrivePreviewSignal,
       hasDeltaSignal,
       hasChatStanceDebugSignal,
       executionMode,
@@ -3969,6 +3975,7 @@ document.addEventListener("DOMContentLoaded", () => {
         debug: safeDebug || {},
         state_preview: safePreview || {},
         state_v2_preview: safeV2Preview || {},
+        drive_state_preview: safeDrivePreview || {},
         state_delta: safeDelta || {},
         chat_stance_debug: safeChatStanceDebug || {},
         runtime: {
@@ -4008,6 +4015,7 @@ document.addEventListener("DOMContentLoaded", () => {
       || hasStanceHint
       || model.hasPreviewSignal
       || model.hasV2PreviewSignal
+      || model.hasDrivePreviewSignal
       || model.hasDeltaSignal
       || model.hasChatStanceDebugSignal
       || hasLineage
@@ -10579,6 +10587,7 @@ document.addEventListener("DOMContentLoaded", () => {
               autonomySelectedSubject: d.autonomy_selected_subject,
               autonomyRepositoryStatus: d.autonomy_repository_status,
               autonomyStateV2Preview: d.autonomy_state_v2_preview,
+              driveStatePreview: d.drive_state_preview,
               autonomyStateDelta: d.autonomy_state_delta,
               chatStanceDebug: d.chat_stance_debug,
               situationBrief: d.situation_brief,
@@ -10990,6 +10999,7 @@ document.addEventListener("DOMContentLoaded", () => {
                 autonomySelectedSubject: d.autonomy_selected_subject,
                 autonomyRepositoryStatus: d.autonomy_repository_status,
                 autonomyStateV2Preview: d.autonomy_state_v2_preview,
+                driveStatePreview: d.drive_state_preview,
                 autonomyStateDelta: d.autonomy_state_delta,
                 chatStanceDebug: d.chat_stance_debug,
                 situationBrief: d.situation_brief,

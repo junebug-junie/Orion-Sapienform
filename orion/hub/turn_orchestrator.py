@@ -449,6 +449,23 @@ async def execute_unified_turn(
                 "error": "harness_rpc_timeout",
             }
         ]
+    if run.finalize_degraded_reason and run.final_text:
+        await _publish_unified_turn_chat_history(
+            bus=bus,
+            correlation_id=correlation_id,
+            session_id=session_id,
+            user_message=user_message,
+            response_text=str(run.final_text),
+            payload=payload,
+            run=run,
+            source_label=str(payload.get("chat_history_source") or "hub_orion"),
+        )
+        degraded_frame = {
+            "type": "turn_degraded",
+            "correlation_id": correlation_id,
+            "reason": run.finalize_degraded_reason,
+        }
+        return [degraded_frame, *_success_frames(run, correlation_id=correlation_id)]
     if not run.finalize_ran or not run.final_text:
         return [_harness_error_frame(run, correlation_id=correlation_id)]
     await _publish_unified_turn_chat_history(

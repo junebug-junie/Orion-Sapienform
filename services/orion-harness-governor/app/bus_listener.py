@@ -13,6 +13,7 @@ from orion.harness.cortex_client import HarnessCortexClient
 from orion.harness.finalize import (
     DEFAULT_FINALIZE_INTERLOCUTOR,
     HarnessFinalizeFailedError,
+    emit_harness_finalize_system_error,
     emit_post_turn_closure,
     run_harness_finalize_chain,
 )
@@ -30,6 +31,10 @@ from orion.schemas.harness_finalize import HarnessRunRequestV1, HarnessRunV1
 from .settings import settings
 
 logger = logging.getLogger("orion-harness-governor.bus")
+
+
+class SubstrateAppraisalUnavailableError(Exception):
+    """Substrate finalize-appraisal RPC timed out (infra outage, not a content failure)."""
 
 
 def _source() -> ServiceRef:
@@ -258,7 +263,10 @@ async def handle_harness_run_request(
         return run
 
     async def _substrate_client(molecule: Any) -> Any:
-        return await substrate.finalize_appraisal(molecule, correlation_id=corr)
+        try:
+            return await substrate.finalize_appraisal(molecule, correlation_id=corr)
+        except TimeoutError as exc:
+            raise SubstrateAppraisalUnavailableError(str(exc)) from exc
 
     try:
         chain = await run_harness_finalize_chain(
@@ -299,6 +307,35 @@ async def handle_harness_run_request(
             exit_code=motor.exit_code,
             compliance_verdict="failed",
             grounding_status=str(exc),
+            grammar_event_ids=_grammar_event_ids(motor.grammar_receipts),
+            recall_debug=recall_debug,
+            memory_digest=memory_digest,
+        )
+        await _reply_and_artifact(bus, run, reply_to=reply_to, corr=corr, causality=causality)
+        return run
+    except SubstrateAppraisalUnavailableError as exc:
+        logger.warning(
+            "harness finalize substrate unavailable corr=%s err=%s — passing draft through as final",
+            corr,
+            exc,
+        )
+        await emit_harness_finalize_system_error(
+            correlation_id=corr,
+            error=str(exc),
+            phase="substrate_appraisal_unavailable",
+            channel=settings.channel_system_error,
+            bus=bus,
+        )
+        run = HarnessRunV1(
+            correlation_id=corr,
+            final_text=motor.draft_text,
+            draft_text=motor.draft_text,
+            finalize_ran=False,
+            finalize_degraded_reason=str(exc),
+            step_count=motor.step_count,
+            exit_code=motor.exit_code,
+            compliance_verdict=motor.compliance_verdict,
+            grounding_status=motor.grounding_status,
             grammar_event_ids=_grammar_event_ids(motor.grammar_receipts),
             recall_debug=recall_debug,
             memory_digest=memory_digest,

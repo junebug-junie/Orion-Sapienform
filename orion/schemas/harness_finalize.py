@@ -161,6 +161,11 @@ class HarnessRunV1(BaseModel):
     finalize_ran: bool
     finalize_changed: bool = False
     quick_lane_skipped_5b: bool = False
+    # Set only when finalize (5a substrate appraisal) could not be reached due to an
+    # infra failure (e.g. substrate RPC timeout) and draft_text was used as final_text
+    # instead. finalize_ran stays False (the real chain did not run) so this is the
+    # signal Hub uses to treat the turn as a degraded success rather than a hard error.
+    finalize_degraded_reason: str | None = None
     step_count: int
     exit_code: int | None = None
     compliance_verdict: Literal["completed", "partial", "failed", "refused"]

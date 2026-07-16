@@ -9998,6 +9998,14 @@ document.addEventListener("DOMContentLoaded", () => {
             );
             return;
           }
+          if (d.type === 'turn_degraded') {
+            appendMessage(
+              'System',
+              `Response delivered without reflection (${d.reason || 'substrate unavailable'})`,
+              'text-yellow-400',
+            );
+            return;
+          }
           if (d.type === 'turn_error') {
             const phase = d.phase ? ` (${d.phase})` : '';
             const detail = d.error || d.grounding_status || 'turn failed';

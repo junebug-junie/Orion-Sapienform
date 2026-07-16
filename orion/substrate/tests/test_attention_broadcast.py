@@ -49,8 +49,10 @@ def test_prediction_error_beats_equal_plain_pressure() -> None:
     # dynamic_pressure carries magnitude for both nodes (what the dynamics
     # engine would have populated by the time either node is scored --
     # magnitude must never come from the raw, non-decaying prediction_error
-    # field directly, see _node_salience()). prediction_error is still set
-    # on node:surprise purely for its anomaly-vs-concept typing effect.
+    # field directly, see _node_salience()). dynamic_pressure_reason is what
+    # a real dynamics tick would have written for node:surprise -- typing
+    # comes from that, not the raw prediction_error field (also set here,
+    # purely to prove it is no longer what drives typing).
     nodes = [
         _node("node:pressure", "steady pressure region", dynamic_pressure=0.8),
         _node(
@@ -58,6 +60,7 @@ def test_prediction_error_beats_equal_plain_pressure() -> None:
             "surprising transport batch",
             dynamic_pressure=0.8,
             prediction_error=0.8,
+            dynamic_pressure_reason="prediction_error_seed",
         ),
     ]
     frame = build_substrate_attention_frame(nodes=nodes, now=_NOW)
@@ -79,19 +82,79 @@ def test_salience_uses_decayed_pressure_not_raw_prediction_error() -> None:
     * decay(<=1) can mathematically never exceed it), silently discarding
     the dynamics engine's decay on every tick, forever, for any node that
     ever had a prediction_error written. `kind` should still resolve to
-    "prediction_error" (anomaly typing) even though magnitude is low."""
+    "prediction_error" (anomaly typing) even though magnitude is low --
+    driven by dynamic_pressure_reason (what a real tick would persist here),
+    not the raw, never-decaying prediction_error field."""
     nodes = [
         _node(
             "node:stale-surprise",
             "long-stale transport anomaly",
             dynamic_pressure=0.02,  # decayed by the dynamics engine over time
             prediction_error=1.0,  # raw seed -- never decays on its own
+            dynamic_pressure_reason="prediction_error_seed",
         ),
     ]
     signals = substrate_pressure_signals(nodes, min_salience=0.0)
     assert signals
     assert signals[0].salience == 0.02
     assert signals[0].target_type_hint == "anomaly"
+
+
+def test_drive_seed_reason_types_as_pressure_despite_stale_raw_prediction_error() -> None:
+    """Regression for the PR #1061 review finding: a node's `kind` must stop
+    being pinned to "anomaly" once its *current* dynamic_pressure is driven
+    by an unrelated source, even if the node has an old, nonzero raw
+    metadata['prediction_error'] sitting untouched from some earlier tick.
+    dynamic_pressure_reason == "drive_seed" (what a real tick would persist
+    once a drive seed, not a prediction error, is the active driver) must
+    win typing over the stale raw field."""
+    nodes = [
+        _node(
+            "node:reclaimed",
+            "now driven by an unrelated drive",
+            dynamic_pressure=0.6,
+            prediction_error=0.9,  # stale raw seed from a much earlier tick
+            dynamic_pressure_reason="drive_seed",
+        ),
+    ]
+    signals = substrate_pressure_signals(nodes, min_salience=0.0)
+    assert signals
+    assert signals[0].target_type_hint == "concept"
+    assert signals[0].signal_kind == "substrate_pressure"
+
+
+def test_prediction_error_propagation_reason_types_as_anomaly() -> None:
+    """A neighbor node that never had a raw prediction_error field at all,
+    but whose pressure was propagated to it from a prediction-error seed,
+    must still type as anomaly -- dynamic_pressure_reason carries that
+    signal even when the raw seed field lives on a different node."""
+    nodes = [
+        _node(
+            "node:propagated",
+            "downstream of a surprising node",
+            dynamic_pressure=0.4,
+            dynamic_pressure_reason="prediction_error_propagation:supports",
+        ),
+    ]
+    signals = substrate_pressure_signals(nodes, min_salience=0.0)
+    assert signals
+    assert signals[0].target_type_hint == "anomaly"
+    assert signals[0].signal_kind == "substrate_prediction_error"
+
+
+def test_no_reason_metadata_falls_back_to_raw_prediction_error_presence() -> None:
+    """A node that has never been through a dynamics tick (no
+    dynamic_pressure_reason key at all -- e.g. freshly materialized) must
+    keep today's pre-fix behavior: type from the raw prediction_error
+    presence check. This is the fallback path, not the primary one."""
+    nodes = [
+        _node("node:pretick-anomaly", "pre-tick surprise", dynamic_pressure=0.5, prediction_error=0.7),
+        _node("node:pretick-plain", "pre-tick plain concept", dynamic_pressure=0.5),
+    ]
+    signals = substrate_pressure_signals(nodes, min_salience=0.0)
+    by_id = {s.evidence_refs[0]: s for s in signals}
+    assert by_id["node:pretick-anomaly"].target_type_hint == "anomaly"
+    assert by_id["node:pretick-plain"].target_type_hint == "concept"
 
 
 def test_broadcast_never_generates_questions() -> None:

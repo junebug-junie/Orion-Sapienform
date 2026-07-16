@@ -1,0 +1,11 @@
+# bus-core is a stock redis:7-alpine image with one addition: an entrypoint
+# that runs `redis-check-aof --fix` against the AOF before every boot, so an
+# unclean shutdown (host reboot, OOM, disk pressure) doesn't leave the
+# service crash-looping forever on a corrupted AOF tail. See entrypoint.sh
+# for the full rationale and verified redis-check-aof behavior.
+FROM redis:7-alpine
+
+COPY entrypoint.sh /usr/local/bin/entrypoint.sh
+RUN chmod +x /usr/local/bin/entrypoint.sh
+
+ENTRYPOINT ["entrypoint.sh"]

@@ -67,6 +67,7 @@ def extract_autonomy_payload(cortex_result: Any) -> Dict[str, Any]:
         "temporal_phase",
         "situation_affordances",
         "autonomy_state_v2_preview",
+        "drive_state_preview",
         "autonomy_state_delta",
     ):
         value = metadata.get(key)

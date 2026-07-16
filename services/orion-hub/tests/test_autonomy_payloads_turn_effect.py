@@ -47,3 +47,17 @@ def test_extract_autonomy_payload_forwards_v2_keys() -> None:
     payload = extract_autonomy_payload(cortex_result)
     assert payload["autonomy_state_v2_preview"]["dominant_drive"] == "coherence"
     assert payload["autonomy_state_delta"]["subject"] == "orion"
+
+
+def test_extract_autonomy_payload_forwards_drive_state_preview_alongside_v2_preview() -> None:
+    # Additive, side-by-side signal -- must not replace autonomy_state_v2_preview.
+    cortex_result = SimpleNamespace(
+        metadata={
+            "autonomy_state_v2_preview": {"dominant_drive": "coherence"},
+            "drive_state_preview": {"dominant_drive": "curiosity", "pressures": {"curiosity": 0.6}},
+        }
+    )
+    payload = extract_autonomy_payload(cortex_result)
+    assert payload["autonomy_state_v2_preview"]["dominant_drive"] == "coherence"
+    assert payload["drive_state_preview"]["dominant_drive"] == "curiosity"
+    assert payload["drive_state_preview"]["pressures"]["curiosity"] == 0.6

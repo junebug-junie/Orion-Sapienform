@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import asyncio
+import json
 import logging
 import time
 from datetime import datetime, timezone
@@ -228,36 +230,59 @@ async def prepare_plan_context_for_mind_projection(
     """Enrich plan ctx with Exec-parity producer inputs before Mind preflight projection."""
     ctx = _plan_projection_context(client_request, plan_request, correlation_id)
     settings = get_settings()
+
+    # Recall prefetch (bus RPC, up to MIND_RECALL_PREFETCH_TIMEOUT_SEC) and the
+    # drive-state fetch (Postgres, up to MIND_DRIVE_STATE_FETCH_TIMEOUT_SEC) read
+    # disjoint data with no dependency between them -- run concurrently via
+    # asyncio.gather rather than paying both latencies serially. Both callees
+    # are already internally fail-open/exception-bounded, so return_exceptions
+    # is not needed here.
+    recall_merge: dict[str, Any] | None = None
     recall_prefetch_diag: dict[str, Any] | None = None
-    if settings.mind_recall_prefetch_enabled and client_request.recall.enabled:
-        recall_merge, recall_prefetch_diag = await prefetch_recall_bundle_for_projection(
-            bus,
-            source=source,
-            ctx=ctx,
-            correlation_id=correlation_id,
-            recall_enabled=True,
-            recall_profile=client_request.recall.profile,
-            recall_channel=settings.channel_recall_intake,
-            timeout_sec=float(settings.mind_recall_prefetch_timeout_sec),
-            recall_cfg=recall_cfg_from_recall_directive(client_request.recall),
-            recall_reply_prefix=settings.channel_recall_reply_prefix,
-        )
-        if isinstance(recall_merge, dict):
-            ctx.update(recall_merge)
-    elif not settings.mind_recall_prefetch_enabled:
-        recall_prefetch_diag = {
-            "correlation_id": correlation_id,
-            "enabled": False,
-            "reason": "MIND_RECALL_PREFETCH_ENABLED=false",
-            "ok": False,
-        }
-    elif not client_request.recall.enabled:
-        recall_prefetch_diag = {
-            "correlation_id": correlation_id,
-            "enabled": False,
-            "reason": "client_recall_disabled",
-            "ok": False,
-        }
+
+    async def _run_recall_prefetch() -> None:
+        nonlocal recall_merge, recall_prefetch_diag
+        if settings.mind_recall_prefetch_enabled and client_request.recall.enabled:
+            recall_merge, recall_prefetch_diag = await prefetch_recall_bundle_for_projection(
+                bus,
+                source=source,
+                ctx=ctx,
+                correlation_id=correlation_id,
+                recall_enabled=True,
+                recall_profile=client_request.recall.profile,
+                recall_channel=settings.channel_recall_intake,
+                timeout_sec=float(settings.mind_recall_prefetch_timeout_sec),
+                recall_cfg=recall_cfg_from_recall_directive(client_request.recall),
+                recall_reply_prefix=settings.channel_recall_reply_prefix,
+            )
+        elif not settings.mind_recall_prefetch_enabled:
+            recall_prefetch_diag = {
+                "correlation_id": correlation_id,
+                "enabled": False,
+                "reason": "MIND_RECALL_PREFETCH_ENABLED=false",
+                "ok": False,
+            }
+        elif not client_request.recall.enabled:
+            recall_prefetch_diag = {
+                "correlation_id": correlation_id,
+                "enabled": False,
+                "reason": "client_recall_disabled",
+                "ok": False,
+            }
+
+    drive_state_compact: dict[str, Any] | None = None
+    drive_state_fetch_diag: dict[str, Any] | None = None
+
+    async def _run_drive_state_fetch() -> None:
+        nonlocal drive_state_compact, drive_state_fetch_diag
+        drive_state_compact, drive_state_fetch_diag = await fetch_drive_state_facet_for_mind(correlation_id)
+
+    await asyncio.gather(_run_recall_prefetch(), _run_drive_state_fetch())
+
+    if isinstance(recall_merge, dict):
+        ctx.update(recall_merge)
+    if isinstance(drive_state_compact, dict):
+        ctx["drive_state_compact"] = drive_state_compact
     prebuild_summary = log_mind_projection_prebuild_ctx_summary(
         correlation_id=correlation_id,
         ctx=ctx,
@@ -271,6 +296,8 @@ async def prepare_plan_context_for_mind_projection(
         meta["orch_preflight_input_summary"] = summarize_projection_inputs(ctx, phase="orch_mind_preflight")
         if recall_prefetch_diag is not None:
             meta["recall_prefetch"] = recall_prefetch_diag
+        if drive_state_fetch_diag is not None:
+            meta["mind_drive_state_fetch_diag"] = drive_state_fetch_diag
         meta["mind_projection_prebuild_ctx_summary"] = prebuild_summary
 
 
@@ -460,6 +487,143 @@ def _record_mind_projection_resolution(plan_request: PlanExecutionRequest, resol
     metadata["mind_orch_before_exec"] = True
 
 
+DRIVE_AUDITS_LATEST_QUERY_FOR_MIND = (
+    "SELECT dominant_drive, active_drives, drive_pressures, summary, "
+    "COALESCE(observed_at, created_at) AS observed_at "
+    "FROM drive_audits WHERE subject = 'orion' "
+    "ORDER BY COALESCE(observed_at, created_at) DESC LIMIT 1"
+)
+
+
+async def _query_latest_drive_audit_row() -> Any:
+    # Reuses memory_extractor's existing lazy asyncpg pool rather than
+    # maintaining a second one -- same RECALL_PG_DSN, same Postgres instance
+    # (`orion-athena-sql-db:5432/conjourney`) that `orion-sql-writer`'s
+    # `DATABASE_URL`/`POSTGRES_URI` point at when it writes `drive_audits`
+    # rows, confirmed by comparing `services/orion-sql-writer/.env_example`
+    # against `services/orion-cortex-orch/.env_example`. A prior version of
+    # this function maintained its own near-identical pool/lazy-init/fail-latch
+    # copy; that duplicated (not fixed) memory_extractor's pre-existing
+    # check-then-act race and one-way failure latch instead of avoiding them.
+    # Reusing the one pool doesn't fix those pre-existing bugs (out of scope
+    # here), but it stops this module from carrying a second copy of them.
+    from .memory_extractor import _get_memory_pool
+
+    pool = await _get_memory_pool()
+    if pool is None:
+        raise RuntimeError("drive_state_pool_unavailable")
+    return await pool.fetchrow(DRIVE_AUDITS_LATEST_QUERY_FOR_MIND)
+
+
+def _coerce_jsonb(value: Any) -> Any:
+    """asyncpg's default codec decodes JSONB columns to python objects already; this is a
+    guard for pool/codec configurations where the column instead comes back as a raw
+    JSON string."""
+    if isinstance(value, str):
+        try:
+            return json.loads(value)
+        except (TypeError, ValueError):
+            return None
+    return value
+
+
+async def fetch_drive_state_facet_for_mind(correlation_id: str) -> tuple[dict[str, Any] | None, dict[str, Any]]:
+    """Bounded, fail-open fetch of the latest DriveEngine `drive_audits` row (subject='orion').
+
+    Returns ``(drive_state_compact_or_none, diagnostics)``. On timeout, connection failure,
+    missing table, or no matching row (a `subject='orion'` row may not exist yet), this
+    returns ``(None, diagnostics)`` without raising -- Mind must never stall or break on
+    this facet's absence. Mirrors the bounding shape of
+    `orion.cognition.recall_prefetch.prefetch_recall_bundle_for_projection`.
+    """
+    settings = get_settings()
+    timeout_sec = max(0.01, float(settings.mind_drive_state_fetch_timeout_sec))
+    diagnostics: dict[str, Any] = {
+        "correlation_id": correlation_id,
+        "timeout_sec": timeout_sec,
+        "ok": False,
+        "elapsed_ms": 0,
+        "timed_out": False,
+        "exception_type": None,
+        "reason": "start",
+    }
+    t0 = time.perf_counter()
+    try:
+        row = await asyncio.wait_for(_query_latest_drive_audit_row(), timeout=timeout_sec)
+    except asyncio.TimeoutError as exc:
+        elapsed_ms = int((time.perf_counter() - t0) * 1000)
+        diagnostics.update(
+            {
+                "elapsed_ms": elapsed_ms,
+                "timed_out": True,
+                "exception_type": type(exc).__name__,
+                "reason": "timeout",
+            }
+        )
+        logger.warning(
+            "mind_drive_state_fetch_timeout correlation_id=%s elapsed_ms=%s timeout_sec=%s",
+            correlation_id,
+            elapsed_ms,
+            timeout_sec,
+        )
+        return None, diagnostics
+    except Exception as exc:
+        elapsed_ms = int((time.perf_counter() - t0) * 1000)
+        diagnostics.update(
+            {
+                "elapsed_ms": elapsed_ms,
+                "exception_type": type(exc).__name__,
+                "reason": "exception",
+                "degradation_reason": str(exc),
+            }
+        )
+        logger.warning(
+            "mind_drive_state_fetch_failed correlation_id=%s elapsed_ms=%s exc_type=%s err=%s",
+            correlation_id,
+            elapsed_ms,
+            type(exc).__name__,
+            exc,
+        )
+        return None, diagnostics
+
+    elapsed_ms = int((time.perf_counter() - t0) * 1000)
+    diagnostics["elapsed_ms"] = elapsed_ms
+    if row is None:
+        diagnostics.update({"ok": True, "reason": "no_rows"})
+        return None, diagnostics
+
+    active_drives = _coerce_jsonb(row["active_drives"])
+    dominant_drive = row["dominant_drive"]
+    summary = row["summary"]
+    # Content check, not just row-existence: a quiet tick (nothing crossed
+    # activation threshold that tick -- routine, not an error) writes
+    # dominant_drive=None, summary=None, active_drives=[] to drive_audits.
+    # Attaching that as if it were a real signal would be exactly the
+    # "schema-valid payload with meaningless content" pattern this repo's
+    # CLAUDE.md Section 0A calls out -- fail open here the same way a
+    # missing row does, rather than let Mind treat silence as content.
+    if not dominant_drive and not summary and not (isinstance(active_drives, list) and active_drives):
+        diagnostics.update({"ok": True, "reason": "no_meaningful_content"})
+        return None, diagnostics
+
+    observed_at = row["observed_at"]
+    compact = {
+        "dominant_drive": dominant_drive,
+        "active_drives": active_drives,
+        "drive_pressures": _coerce_jsonb(row["drive_pressures"]),
+        "summary": summary,
+        "observed_at": observed_at.isoformat() if hasattr(observed_at, "isoformat") else observed_at,
+    }
+    diagnostics.update({"ok": True, "reason": "success"})
+    logger.info(
+        "mind_drive_state_fetch_result correlation_id=%s ok=true elapsed_ms=%s dominant_drive=%s",
+        correlation_id,
+        elapsed_ms,
+        compact["dominant_drive"],
+    )
+    return compact, diagnostics
+
+
 def _attach_mind_evidence_facets(
     facets: dict[str, Any],
     *,
@@ -478,6 +642,15 @@ def _attach_mind_evidence_facets(
             "citations": recall_bundle.get("citations") if isinstance(recall_bundle.get("citations"), list) else [],
         }
 
+    # KNOWN-DEAD as of 2026-07-16: neither `plan_ctx["chat_autonomy_state_v2"]`
+    # nor `metadata["autonomy_state"]` is ever populated anywhere in
+    # orion-cortex-orch (traced during the drive_state_compact work below --
+    # see orion/autonomy/drives_and_autonomy_retrospective.md §8), so this
+    # block is unreachable content in practice, not merely superseded. Left
+    # in place rather than deleted because retiring it is a separate,
+    # untraced decision (something upstream may be relying on the key
+    # existing even if empty); `drive_state_compact` below is the live
+    # replacement for Mind's drive/tension awareness.
     autonomy = plan_ctx.get("chat_autonomy_state_v2")
     if not isinstance(autonomy, dict):
         autonomy = metadata.get("autonomy_state") if isinstance(metadata.get("autonomy_state"), dict) else None
@@ -495,6 +668,18 @@ def _attach_mind_evidence_facets(
             )
             if autonomy.get(key) is not None
         }
+
+    # Live replacement for the dead autonomy_compact block above: DriveEngine's
+    # `drive_state`, bounded-fetched from Postgres in
+    # prepare_plan_context_for_mind_projection() and stashed onto
+    # ctx["drive_state_compact"] before this function runs. NOTE: this only
+    # covers the orch-triggered Mind path -- orion-thought's independent
+    # "light Mind" path (services/orion-thought/app/mind_enrichment.py
+    # build_light_mind_request) has its own separate MindRunRequestV1
+    # construction and does not include this facet; known gap, not yet fixed.
+    drive_state = plan_ctx.get("drive_state_compact")
+    if isinstance(drive_state, dict) and drive_state:
+        facets["drive_state_compact"] = dict(drive_state)
 
     social_keys = (
         "social_inspection_snapshot",

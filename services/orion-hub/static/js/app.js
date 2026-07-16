@@ -682,6 +682,10 @@ document.addEventListener("DOMContentLoaded", () => {
   const causalGeometryPanel = document.getElementById("causal-geometry");
   const causalGeometryPanelFrame = document.getElementById("causalGeometryPanelFrame");
   const causalGeometryPanelRefresh = document.getElementById("causalGeometryPanelRefresh");
+  const conceptAtlasTabButton = document.getElementById("conceptAtlasTabButton");
+  const conceptAtlasPanel = document.getElementById("concept-atlas");
+  const conceptAtlasPanelFrame = document.getElementById("conceptAtlasPanelFrame");
+  const conceptAtlasPanelRefresh = document.getElementById("conceptAtlasPanelRefresh");
   const pressureAnalyticsTabButton = document.getElementById("pressureAnalyticsTabButton");
   const pressurePanel = document.getElementById("pressure");
   const collapseMirrorTabButton = document.getElementById("collapseMirrorTabButton");
@@ -969,6 +973,9 @@ document.addEventListener("DOMContentLoaded", () => {
     if (tabKey === "causal-geometry" && !causalGeometryPanel) {
       effectiveTab = "hub";
     }
+    if (tabKey === "concept-atlas" && !conceptAtlasPanel) {
+      effectiveTab = "hub";
+    }
     if (tabKey === "substrate-lattice" && !substrateLatticePanelEl) {
       effectiveTab = "hub";
     }
@@ -984,6 +991,7 @@ document.addEventListener("DOMContentLoaded", () => {
     const isSubstrate = effectiveTab === "substrate";
     const isSubstrateAtlas = effectiveTab === "substrate-atlas";
     const isCausalGeometry = effectiveTab === "causal-geometry";
+    const isConceptAtlas = effectiveTab === "concept-atlas";
     const isMemory = effectiveTab === "memory";
     const isPressure = effectiveTab === "pressure";
     const isSubstrateLattice = effectiveTab === "substrate-lattice";
@@ -1014,6 +1022,35 @@ document.addEventListener("DOMContentLoaded", () => {
     }
     if (causalGeometryPanel) {
       causalGeometryPanel.classList.toggle("hidden", !isCausalGeometry);
+    }
+    if (conceptAtlasPanel) {
+      const wasConceptAtlasVisible = !conceptAtlasPanel.classList.contains("hidden");
+      conceptAtlasPanel.classList.toggle("hidden", !isConceptAtlas);
+      if (isConceptAtlas && conceptAtlasPanelFrame) {
+        const pingConceptAtlasFrame = () => {
+          try {
+            const atlasWin = conceptAtlasPanelFrame.contentWindow;
+            if (atlasWin && atlasWin.OrionConceptAtlas && typeof atlasWin.OrionConceptAtlas.activate === "function") {
+              atlasWin.OrionConceptAtlas.activate();
+            }
+          } catch {
+            /* iframe not ready */
+          }
+        };
+        setTimeout(pingConceptAtlasFrame, 150);
+      } else if (!isConceptAtlas && wasConceptAtlasVisible && conceptAtlasPanelFrame) {
+        // Actually invoke cleanup on tab-hide (Organ Signals' reference
+        // implementation defines destroy() but never calls it here on
+        // tab-switch -- this closes that gap for Concept Atlas).
+        try {
+          const atlasWin = conceptAtlasPanelFrame.contentWindow;
+          if (atlasWin && atlasWin.OrionConceptAtlas && typeof atlasWin.OrionConceptAtlas.deactivate === "function") {
+            atlasWin.OrionConceptAtlas.deactivate();
+          }
+        } catch {
+          /* iframe not ready */
+        }
+      }
     }
     if (memoryPanel) {
       memoryPanel.classList.toggle("hidden", !isMemory);
@@ -1074,6 +1111,9 @@ document.addEventListener("DOMContentLoaded", () => {
     }
     if (causalGeometryTabButton) {
       styleTabButton(causalGeometryTabButton, isCausalGeometry);
+    }
+    if (conceptAtlasTabButton) {
+      styleTabButton(conceptAtlasTabButton, isConceptAtlas);
     }
     if (memoryTabButton) {
       styleTabButton(memoryTabButton, isMemory);
@@ -1663,6 +1703,8 @@ document.addEventListener("DOMContentLoaded", () => {
       setActiveTab("substrate-atlas");
     } else if (h === "#causal-geometry" && causalGeometryPanel && causalGeometryTabButton) {
       setActiveTab("causal-geometry");
+    } else if (h === "#concept-atlas" && conceptAtlasPanel && conceptAtlasTabButton) {
+      setActiveTab("concept-atlas");
     } else if (h === "#pressure" && pressurePanel && pressureAnalyticsTabButton) {
       setActiveTab("pressure");
     } else if (h === "#substrate-lattice" && substrateLatticePanelEl && substrateLatticeTabButton) {
@@ -1688,6 +1730,7 @@ document.addEventListener("DOMContentLoaded", () => {
         || h === "#signals"
         || h === "#forge"
         || h === "#substrate-atlas"
+        || h === "#concept-atlas"
         || h === "#collapse-mirror"
         || h === "#ai-town"
       ) {
@@ -3853,6 +3896,9 @@ document.addEventListener("DOMContentLoaded", () => {
     const safeV2Preview = meta && meta.autonomyStateV2Preview && typeof meta.autonomyStateV2Preview === 'object'
       ? meta.autonomyStateV2Preview
       : (meta && meta.autonomy_state_v2_preview && typeof meta.autonomy_state_v2_preview === 'object' ? meta.autonomy_state_v2_preview : null);
+    const safeDrivePreview = meta && meta.driveStatePreview && typeof meta.driveStatePreview === 'object'
+      ? meta.driveStatePreview
+      : (meta && meta.drive_state_preview && typeof meta.drive_state_preview === 'object' ? meta.drive_state_preview : null);
     const safeDelta = meta && meta.autonomyStateDelta && typeof meta.autonomyStateDelta === 'object'
       ? meta.autonomyStateDelta
       : (meta && meta.autonomy_state_delta && typeof meta.autonomy_state_delta === 'object' ? meta.autonomy_state_delta : null);
@@ -3926,6 +3972,7 @@ document.addEventListener("DOMContentLoaded", () => {
       || (safePreview.goal_lineage && Object.keys(safePreview.goal_lineage).length)
     ));
     const hasV2PreviewSignal = !!(safeV2Preview && Object.keys(safeV2Preview).length);
+    const hasDrivePreviewSignal = !!(safeDrivePreview && Object.keys(safeDrivePreview).length);
     const hasDeltaSignal = !!(safeDelta && Object.keys(safeDelta).length);
     const hasChatStanceDebugSignal = !!(safeChatStanceDebug && Object.keys(safeChatStanceDebug).length);
     const hasLineageMeta = !!(executionMode || (goalLineageRaw && Object.keys(goalLineageRaw).length));
@@ -3934,6 +3981,7 @@ document.addEventListener("DOMContentLoaded", () => {
       || hasDebugSignal
       || hasPreviewSignal
       || hasV2PreviewSignal
+      || hasDrivePreviewSignal
       || hasDeltaSignal
       || hasChatStanceDebugSignal
       || String((safeSummary && safeSummary.stance_hint) || '').trim()
@@ -3954,6 +4002,7 @@ document.addEventListener("DOMContentLoaded", () => {
       hasDebugSignal,
       hasPreviewSignal,
       hasV2PreviewSignal,
+      hasDrivePreviewSignal,
       hasDeltaSignal,
       hasChatStanceDebugSignal,
       executionMode,
@@ -3985,6 +4034,7 @@ document.addEventListener("DOMContentLoaded", () => {
         debug: safeDebug || {},
         state_preview: safePreview || {},
         state_v2_preview: safeV2Preview || {},
+        drive_state_preview: safeDrivePreview || {},
         state_delta: safeDelta || {},
         chat_stance_debug: safeChatStanceDebug || {},
         runtime: {
@@ -4024,6 +4074,7 @@ document.addEventListener("DOMContentLoaded", () => {
       || hasStanceHint
       || model.hasPreviewSignal
       || model.hasV2PreviewSignal
+      || model.hasDrivePreviewSignal
       || model.hasDeltaSignal
       || model.hasChatStanceDebugSignal
       || hasLineage
@@ -10595,6 +10646,7 @@ document.addEventListener("DOMContentLoaded", () => {
               autonomySelectedSubject: d.autonomy_selected_subject,
               autonomyRepositoryStatus: d.autonomy_repository_status,
               autonomyStateV2Preview: d.autonomy_state_v2_preview,
+              driveStatePreview: d.drive_state_preview,
               autonomyStateDelta: d.autonomy_state_delta,
               chatStanceDebug: d.chat_stance_debug,
               situationBrief: d.situation_brief,
@@ -11006,6 +11058,7 @@ document.addEventListener("DOMContentLoaded", () => {
                 autonomySelectedSubject: d.autonomy_selected_subject,
                 autonomyRepositoryStatus: d.autonomy_repository_status,
                 autonomyStateV2Preview: d.autonomy_state_v2_preview,
+                driveStatePreview: d.drive_state_preview,
                 autonomyStateDelta: d.autonomy_state_delta,
                 chatStanceDebug: d.chat_stance_debug,
                 situationBrief: d.situation_brief,
@@ -11773,6 +11826,13 @@ document.addEventListener("DOMContentLoaded", () => {
         history.replaceState(null, "", "#causal-geometry");
       });
     }
+    if (conceptAtlasTabButton && conceptAtlasPanel) {
+      conceptAtlasTabButton.addEventListener("click", (event) => {
+        event.preventDefault();
+        setActiveTab("concept-atlas");
+        history.replaceState(null, "", "#concept-atlas");
+      });
+    }
     if (memoryTabButton) {
       memoryTabButton.addEventListener("click", (event) => {
         event.preventDefault();
@@ -11854,6 +11914,21 @@ document.addEventListener("DOMContentLoaded", () => {
   if (causalGeometryPanelRefresh && causalGeometryPanelFrame) {
     causalGeometryPanelRefresh.addEventListener("click", () => {
       causalGeometryPanelFrame.contentWindow?.location.reload();
+    });
+  }
+
+  if (conceptAtlasPanelRefresh && conceptAtlasPanelFrame) {
+    conceptAtlasPanelRefresh.addEventListener("click", () => {
+      try {
+        const atlasWin = conceptAtlasPanelFrame.contentWindow;
+        if (atlasWin && atlasWin.OrionConceptAtlas && typeof atlasWin.OrionConceptAtlas.refresh === "function") {
+          atlasWin.OrionConceptAtlas.refresh();
+        } else {
+          atlasWin?.location.reload();
+        }
+      } catch {
+        /* ignore */
+      }
     });
   }
 

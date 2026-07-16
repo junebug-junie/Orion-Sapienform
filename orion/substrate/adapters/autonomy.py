@@ -40,6 +40,7 @@ def map_autonomy_artifacts_to_substrate(
         if drive_audit is not None:
             drive_state_metadata["dominant_drive"] = drive_audit.dominant_drive
             drive_state_metadata["summary"] = drive_audit.summary
+            drive_state_metadata["tension_kinds"] = list(drive_audit.tension_kinds)
         nodes.append(
             StateSnapshotNodeV1(
                 node_id=snapshot_id,

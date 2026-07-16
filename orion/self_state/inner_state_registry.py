@@ -135,7 +135,11 @@ REGISTRY: tuple[InnerStateSignal, ...] = (
         cadence=Cadence.EVENT_GATED,
         composition_status=CompositionStatus.DUPLICATE,
         duplicate_of="autonomy_state_v2",
-        cognition_consumers=(),
+        cognition_consumers=(
+            "services.orion-cortex-exec.app.chat_stance:build_chat_stance_inputs (ctx['chat_drive_state'])",
+            "services.orion-cortex-exec.app.autonomy_slice:build_autonomy_slice",
+            "services.orion-cortex-orch.app.mind_runtime:fetch_drive_state_facet_for_mind",
+        ),
         notes=(
             "Computed from config/autonomy/signal_drive_map.yaml, a CLOSED "
             "typed map over biometrics_state/mesh_health/spark_signal/"
@@ -147,7 +151,15 @@ REGISTRY: tuple[InnerStateSignal, ...] = (
             "novelty}, itself only published by orion-spark-introspector on a "
             "turn_effect_alert, not continuously). Live: 363 samples/24h "
             "confirmed 2026-07-12, real variance "
-            "(coherence~0.20, continuity~0.35, capability~0.47)."
+            "(coherence~0.20, continuity~0.35, capability~0.47). Resolved "
+            "2026-07-16: the sole live drive-pressure signal (autonomy_state_v2 "
+            "retired, see that entry below) -- materialized into the substrate "
+            "graph by services/orion-substrate-runtime/app/worker.py's "
+            "_materialize_drive_state_to_substrate (drive-state/drive-audit bus "
+            "listeners, snapshot_source='drive_state'), read by chat_stance.py's "
+            "drive-state projection and by Mind's bounded Postgres facet fetch. "
+            "DUPLICATE/duplicate_of still marked pending an explicit registry "
+            "status for 'formerly duplicate, now sole' -- see CompositionStatus."
         ),
     ),
     InnerStateSignal(
@@ -155,18 +167,22 @@ REGISTRY: tuple[InnerStateSignal, ...] = (
         schema=AutonomyStateV2,
         producer_service="orion.autonomy.reducer",
         cadence=Cadence.CHAT_TURN_GATED,
-        composition_status=CompositionStatus.DUPLICATE,
-        duplicate_of="drive_state.v1",
-        cognition_consumers=(
-            "services.orion-cortex-exec.app.chat_stance:_run_autonomy_reducer",
-        ),
+        composition_status=CompositionStatus.REHEARSAL,
+        shadow_reason=None,
+        cognition_consumers=(),
         notes=(
-            "Same 6-drive taxonomy (DRIVE_KEYS) as drive_state.v1, "
-            "independently reduced, gated behind AUTONOMY_STATE_V2_REDUCER_ENABLED. "
-            "9 samples/24h confirmed 2026-07-12, all zero -- too little traffic "
-            "to compare against drive_state.v1 yet. Merge-or-keep-separate "
-            "decision is Phase 4 of the mesh-substrate-redesign plan, already "
-            "on record; NOT resolved by this registry."
+            "RETIRED 2026-07-16 (orion/autonomy/drives_and_autonomy_retrospective.md "
+            "§9): the chat_stance.py call site (_run_autonomy_reducer) was deleted "
+            "entirely, not just flag-gated off -- AUTONOMY_STATE_V2_REDUCER_ENABLED "
+            "no longer exists anywhere. drive_state.v1 is the sole live signal now. "
+            "The reducer module itself (orion/autonomy/reducer.py, "
+            "evidence_compiler.py, state_store.py, models.py) is left in place, "
+            "unused by any live caller -- deleting it outright is separate, "
+            "not-yet-done cleanup (verify no other importer first). Historical "
+            "context: same 6-drive taxonomy (DRIVE_KEYS) as drive_state.v1, "
+            "independently reduced; 9 samples/24h confirmed 2026-07-12, all zero, "
+            "vs. drive_state.v1's 363 samples/24h with real variance -- the "
+            "traffic data that motivated retiring it."
         ),
     ),
     InnerStateSignal(

@@ -63,6 +63,18 @@ Expected output when the registry is complete:
 check_journal_dispatch_registry: OK -- all 8 trigger_kind(s) in _TRIGGER_TO_MODE have a JOURNAL_DISPATCH_REGISTRY row.
 ```
 
+## Bus-Core Health Watchdog (crash-loop detector, no Redis/Postgres dependency)
+`bus-core` (`services/orion-bus/docker-compose.yml`, Redis) periodically crash-loops from AOF corruption. Detecting this today depends on a human noticing cascading failures elsewhere, or on signals that themselves route through the bus or Postgres — both of which can be down at the same time in dev. This is a host-level detection floor that survives both being down simultaneously: it reads `docker inspect`'s `.State.Health.Status`/`.RestartCount` for the real `orion-${PROJECT}-bus-core` container only, no Redis or Postgres connection at all. Persists state to a local JSON file; on a crash-loop signature (default: 3 consecutive unhealthy checks, or 3 restarts within a 10-minute window), writes a loud, never-auto-deleted marker file — see `services/orion-bus/README.md`'s "Host-level crash-loop watchdog" section for the exact marker path and cron install instructions.
+```bash
+python scripts/bus_core_health_watchdog.py
+# or: make bus-core-health-watchdog
+```
+Expected output when healthy:
+```
+bus_core_health_watchdog: orion-orion-athena-bus-core health=healthy consecutive_unhealthy=0 restarts_in_window=0
+bus_core_health_watchdog: OK -- no crash-loop signature.
+```
+
 ## Daily Schedule Collision Check (orion-actions cadences)
 `services/orion-actions/.env_example` gives Daily Pulse, World Pulse, and Daily Metacog their own hour/minute pairs, but Daily Journal has no env var of its own — `services/orion-actions/app/main.py`'s `journal_should_run` call (~line 2125-2131) reuses `settings.actions_daily_pulse_hour_local`/`minute_local` verbatim, so Daily Journal always fires at the exact same local minute as Daily Pulse, by config. Two independently-LLM-generated daily artifacts landing in the same notification slot reads as duplication even though they're genuinely different pipelines. This script computes pairwise time-of-day distance across all four cadences and flags any pair within `--threshold-minutes` (default 30) of each other. Report-only by default (always exits 0); pass `--fail-on-collision` to make it a real gate.
 ```bash

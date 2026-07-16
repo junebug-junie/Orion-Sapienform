@@ -51,6 +51,7 @@ def test_drive_state_snapshot_source_is_now_collected_and_populates_drive_state_
                             "artifact_id": "drive-state-1",
                             "dominant_drive": "coherence",
                             "summary": "orion pressure concentrates on coherence",
+                            "tension_kinds": ["drive_competition.coherence_continuity"],
                         },
                     )
                 ],
@@ -65,6 +66,41 @@ def test_drive_state_snapshot_source_is_now_collected_and_populates_drive_state_
     assert ds["activations"] == {"coherence": True, "continuity": False}
     assert ds["dominant_drive"] == "coherence"
     assert ds["summary"] == "orion pressure concentrates on coherence"
+    assert ds["tension_kinds"] == ["drive_competition.coherence_continuity"]
+
+
+def test_drive_state_fields_taken_atomically_from_one_snapshot_not_mixed_across_several():
+    """Regression guard for the cross-snapshot field-mixing bug: if a snapshot
+    with only dominant_drive sits ahead of a later snapshot with only
+    activations/summary/tension_kinds, fields must NOT be mixed across them --
+    the first content-bearing snapshot wins entirely, or nothing from it does."""
+    beliefs = SimpleNamespace(
+        anchors={
+            "orion": _anchor_slice(
+                snapshots=[
+                    _snapshot_node("drive_state", {"dominant_drive": "coherence"}),
+                    _snapshot_node(
+                        "drive_state",
+                        {
+                            "activations": {"continuity": True},
+                            "summary": "continuity rising",
+                            "tension_kinds": ["unresolved_thread"],
+                        },
+                    ),
+                ],
+            )
+        }
+    )
+    result = _project_autonomy_from_beliefs(beliefs, {})
+    assert result is not None
+    ds = result["drive_state"]
+    assert ds is not None
+    # First snapshot (dominant_drive only) wins entirely -- nothing from the
+    # second snapshot bleeds in, even though it has real content too.
+    assert ds["dominant_drive"] == "coherence"
+    assert ds["activations"] == {}
+    assert ds["summary"] is None
+    assert ds["tension_kinds"] == []
 
 
 def test_autonomy_snapshot_source_still_works_alongside_drive_state():

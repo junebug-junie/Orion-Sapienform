@@ -63,6 +63,13 @@
             role="button"
           >Causal Geometry</a>
           <a
+            id="conceptAtlasTabButton"
+            href="#concept-atlas"
+            data-hash-target="#concept-atlas"
+            class="px-3 py-1.5 text-xs font-semibold rounded-full bg-gray-800 text-gray-200 border border-gray-700 hover:bg-gray-700"
+            role="button"
+          >Concept Atlas</a>
+          <a
             id="memoryTabButton"
             href="#memory"
             data-hash-target="#memory"
@@ -2744,6 +2751,28 @@
             class="w-full h-full border-0 min-h-[40rem]"
             loading="lazy"
             title="Causal Geometry Inspector"
+          ></iframe>
+        </div>
+      </section>
+
+      <section id="concept-atlas" data-panel="concept-atlas" class="hidden w-full bg-gray-900 rounded-2xl shadow-lg p-5 flex flex-col gap-4 min-h-[56rem]">
+        <div class="flex items-center justify-between gap-3">
+          <div>
+            <h2 class="text-xl font-bold text-white">Concept Atlas</h2>
+            <p class="text-xs text-gray-400">Read-only interpretability view of the substrate concept graph.</p>
+          </div>
+          <div class="flex items-center gap-2">
+            <button id="conceptAtlasPanelRefresh" class="text-xs bg-gray-800 hover:bg-gray-700 text-gray-200 rounded-lg px-3 py-1 border border-gray-700" type="button">Refresh</button>
+            <a id="conceptAtlasPanelStandaloneLink" href="/concept-atlas" class="text-xs bg-gray-800 hover:bg-gray-700 text-gray-200 rounded-lg px-3 py-1 border border-gray-700">Open standalone</a>
+          </div>
+        </div>
+        <div class="rounded-xl border border-gray-800 bg-gray-950/40 overflow-hidden flex-1 min-h-[40rem]">
+          <iframe
+            id="conceptAtlasPanelFrame"
+            src="/concept-atlas"
+            class="w-full h-full border-0 min-h-[40rem]"
+            loading="lazy"
+            title="Concept Atlas"
           ></iframe>
         </div>
       </section>

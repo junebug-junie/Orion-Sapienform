@@ -115,6 +115,11 @@ class Settings(BaseSettings):
     )
     mind_recall_prefetch_enabled: bool = Field(True, alias="MIND_RECALL_PREFETCH_ENABLED")
     mind_recall_prefetch_timeout_sec: float = Field(30.0, alias="MIND_RECALL_PREFETCH_TIMEOUT_SEC")
+    # Bounded Postgres read of the latest drive_audits row (DriveEngine) for Mind's
+    # drive_state_compact facet. Same RECALL_PG_DSN Postgres sql-writer writes drive_audits to.
+    # Kept far below MIND_RECALL_PREFETCH_TIMEOUT_SEC -- this is a single indexed row lookup,
+    # not a bus RPC -- so it fails open fast rather than eating into Mind's preflight budget.
+    mind_drive_state_fetch_timeout_sec: float = Field(0.4, alias="MIND_DRIVE_STATE_FETCH_TIMEOUT_SEC")
     orion_always_inject_token_budget: int = Field(300, alias="ORION_ALWAYS_INJECT_TOKEN_BUDGET")
     orion_always_inject_enabled: bool = Field(True, alias="ORION_ALWAYS_INJECT_ENABLED")
     orion_auto_extractor_enabled: bool = Field(False, alias="ORION_AUTO_EXTRACTOR_ENABLED")

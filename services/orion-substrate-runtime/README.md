@@ -152,6 +152,27 @@ Only meaningful once `SUBSTRATE_WRITE_PREDICTION_ERROR_NODES=true` and
 `SUBSTRATE_STORE_BACKEND=sparql` (Fuseki) are set — with the in-memory default store the
 prediction-error nodes are process-local and this tick has nothing durable to consume.
 
+**Write guard:** `SubstrateDynamicsEngine.tick()` (`orion/substrate/dynamics.py`) only calls
+`store.upsert_node()` for a node when its activation crossed the existing `1e-6` change
+threshold, its dormancy state flipped, or its pressure actually moved — not unconditionally
+for every node on every tick. On the SPARQL backend each `upsert_node()` is a full
+DELETE+INSERT transaction; with the tick's default 30s cadence, writing every node
+regardless of change was found (2026-07-16) driving ~2.5 SPARQL updates/sec against Fuseki
+sustained (78 substrate nodes / 30s), which is indistinguishable from real data growth on
+disk until the next `tdbcompact` and was a material contributor to `orion-rdf-store` running
+out of compaction headroom. If you add new per-node fields to the tick, route their writes
+through this same changed-gate rather than bypassing it.
+
+Gotcha the guard exposed: `recency_score` decays every tick regardless of whether activation
+changed, so a node whose activation has ratcheted to a peak (common — `decay_half_life_seconds`
+defaults to `None`, i.e. no time-based decay) can go indefinitely without a real write once the
+guard skips it. The dormancy check in the same loop must read *this tick's* freshly computed
+recency (`activations[f"{node_id}:recency"]`), not `node.signals.activation.recency_score` off
+the top-of-tick store snapshot — otherwise a node can never cross into dormant via pure recency
+decay once persistence stops, since the stale stored value never moves. Fixed in the same patch
+that added the guard; if you touch this loop again, keep the dormancy decision reading fresh
+recency even though the stored copy may lag.
+
 ## Unified turn bus listeners
 
 Besides grammar poll reducers, substrate-runtime subscribes to RPC-style harness channels:

@@ -387,8 +387,11 @@ def test_fetch_drive_stats_postgres_histogram_path():
     sql, params = cursor.executed[0]
     assert "FROM drive_audits" in sql
     assert "COALESCE(observed_at, created_at) >= %s" in sql
+    assert "COALESCE(observed_at, created_at) < %s" in sql
     assert "GROUP BY active_count" in sql
-    assert params == (BASE,)
+    # (window_start, window_end): the upper bound is captured once and shared
+    # with the dominant query so the two statements see the same row set.
+    assert params[0] == BASE and len(params) == 2
 
 
 def test_fetch_drive_stats_postgres_table_missing_degrades():
@@ -613,8 +616,13 @@ def test_fetch_drive_stats_postgres_dominant_query_happy_path():
     sql, params = dom_cursor.executed[0]
     assert "FROM drive_audits" in sql
     assert "COALESCE(observed_at, created_at) >= %s" in sql
+    assert "COALESCE(observed_at, created_at) < %s" in sql
     assert "GROUP BY dominant_drive" in sql
-    assert params == (BASE,)
+    assert params[0] == BASE and len(params) == 2
+    # Snapshot-skew guard: BOTH queries must carry the exact same upper bound
+    # (captured once), or rows landing between the two statements would count
+    # in dominant_counts but not in the share denominator.
+    assert params[1] == hist_cursor.executed[0][1][1]
 
 
 def test_fetch_drive_stats_postgres_dominant_query_failure_keeps_histogram():

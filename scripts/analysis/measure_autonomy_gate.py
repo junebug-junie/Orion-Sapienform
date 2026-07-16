@@ -755,7 +755,12 @@ def fetch_drive_stats_postgres(conn, window_start: datetime) -> tuple[DriveStats
     dominance fields for the SATURATED verdict; if it fails, the histogram
     result stands with empty ``dominant_counts`` and a note.
     Windowing follows the table contract:
-    ``COALESCE(observed_at, created_at) >= window_start``.
+    ``window_start <= COALESCE(observed_at, created_at) < window_end``, where
+    ``window_end`` is captured ONCE and shared by both queries — on an
+    autocommit connection they are separate statements, and without a shared
+    upper bound rows landing between them would appear in ``dominant_counts``
+    but not in ``record_count`` (the share denominator), letting
+    ``top_dominant_share`` drift past its ≤1 contract (review finding).
 
     Reuses the script's existing read-only connection. Returns
     ``(DriveStats, note)`` and degrades to ``(DriveStats(), note)`` — never
@@ -766,6 +771,7 @@ def fetch_drive_stats_postgres(conn, window_start: datetime) -> tuple[DriveStats
 
     if conn is None:
         return DriveStats(), "postgres drive_audits unavailable: no read-only postgres connection"
+    window_end = datetime.now(timezone.utc)
     try:
         with conn.cursor() as cur:
             cur.execute(
@@ -773,9 +779,10 @@ def fetch_drive_stats_postgres(conn, window_start: datetime) -> tuple[DriveStats
                 SELECT active_count, COUNT(*)
                 FROM drive_audits
                 WHERE COALESCE(observed_at, created_at) >= %s
+                  AND COALESCE(observed_at, created_at) < %s
                 GROUP BY active_count
                 """,
-                (window_start,),
+                (window_start, window_end),
             )
             rows = cur.fetchall()
     except Exception as exc:
@@ -807,9 +814,10 @@ def fetch_drive_stats_postgres(conn, window_start: datetime) -> tuple[DriveStats
                 SELECT dominant_drive, COUNT(*)
                 FROM drive_audits
                 WHERE COALESCE(observed_at, created_at) >= %s
+                  AND COALESCE(observed_at, created_at) < %s
                 GROUP BY dominant_drive
                 """,
-                (window_start,),
+                (window_start, window_end),
             )
             dominant_rows = cur.fetchall()
     except Exception:
@@ -964,8 +972,16 @@ def render_report(
             "always-on monoculture (one drive dominating nearly every audit and/or "
             "nearly all drives simultaneously active), not by a functioning economy "
             "with churn and turn-taking.",
-            "",
         ])
+        if pressure.frac_gt_level < RESOURCE_PRESSURE_MIN_FRAC:
+            # Review note: SATURATED returns before the pressure check, so
+            # without this line a reader could infer "fix saturation -> GO"
+            # while the pressure bar would still fail.
+            lines.append(
+                "Note: the resource_pressure bar is ALSO currently unmet -- "
+                "resolving saturation alone would read NO-GO, not GO."
+            )
+        lines.append("")
     lines.extend([
         "## Coverage caveats",
         "",

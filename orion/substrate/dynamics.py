@@ -111,6 +111,7 @@ class SubstrateDynamicsEngine:
         activations = self._compute_activations(updated_nodes, outgoing, pressures, tick_at)
         activation_updates: list[ActivationUpdateV1] = []
         dormancy_transitions: list[DormancyTransitionV1] = []
+        pressure_changed_ids = {update.node_id for update in pressure_updates}
 
         for node_id, node in updated_nodes.items():
             prev_activation = node.signals.activation.activation
@@ -126,7 +127,17 @@ class SubstrateDynamicsEngine:
             dormant_prev = bool(metadata.get("dormant", False))
             dormant_new = dormant_prev
 
-            if new_activation <= self._dormancy_threshold and node.signals.activation.recency_score <= self._dormancy_threshold:
+            # Use the freshly-computed recency for this tick's dormancy decision, not
+            # node.signals.activation.recency_score (the value from the top-of-tick
+            # store snapshot). Recency decays continuously every tick regardless of
+            # whether this node's activation/pressure changed, so once the write guard
+            # below can skip persisting a node, the stored recency_score stops being
+            # refreshed -- a dormancy check reading the stale stored value would then
+            # never see a node's recency cross the threshold on its own, leaving it
+            # stuck non-dormant indefinitely even as real time keeps passing.
+            fresh_recency = activations.get(f"{node_id}:recency", node.signals.activation.recency_score)
+
+            if new_activation <= self._dormancy_threshold and fresh_recency <= self._dormancy_threshold:
                 dormant_new = True
             elif new_activation >= self._revival_threshold:
                 dormant_new = False
@@ -143,17 +154,26 @@ class SubstrateDynamicsEngine:
                     )
                 )
 
-            activation_bundle = node.signals.activation.model_copy(
-                update={
-                    "activation": round(new_activation, 6),
-                    "recency_score": round(activations.get(f"{node_id}:recency", node.signals.activation.recency_score), 6),
-                }
-            )
-            updated_signal = node.signals.model_copy(update={"activation": activation_bundle})
-            updated_node = node.model_copy(update={"signals": updated_signal, "metadata": metadata})
-            self._store.upsert_node(identity_key=identity_by_node_id.get(node_id), node=updated_node)
+            activation_changed = abs(new_activation - prev_activation) >= 1e-6
 
-            if abs(new_activation - prev_activation) >= 1e-6:
+            # Guard: only persist a node this tick if something about it actually moved.
+            # upsert_node() is a full DELETE+INSERT SPARQL transaction against the store;
+            # calling it unconditionally for every node on every tick (previously the
+            # case here) churns TDB2's journal at the tick cadence regardless of whether
+            # any node changed, which is indistinguishable on disk from real growth and
+            # forces far more frequent compaction than actual data volume warrants.
+            if activation_changed or dormant_new != dormant_prev or node_id in pressure_changed_ids:
+                activation_bundle = node.signals.activation.model_copy(
+                    update={
+                        "activation": round(new_activation, 6),
+                        "recency_score": round(fresh_recency, 6),
+                    }
+                )
+                updated_signal = node.signals.model_copy(update={"activation": activation_bundle})
+                updated_node = node.model_copy(update={"signals": updated_signal, "metadata": metadata})
+                self._store.upsert_node(identity_key=identity_by_node_id.get(node_id), node=updated_node)
+
+            if activation_changed:
                 activation_updates.append(
                     ActivationUpdateV1(
                         node_id=node_id,

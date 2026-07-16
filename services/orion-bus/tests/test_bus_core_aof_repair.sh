@@ -98,10 +98,23 @@ if [ "$(docker exec "$C2" redis-cli get foo)" != "bar" ]; then
   echo "FAIL: healthy container lost pre-existing data (foo)"
   FAIL=1
 fi
-docker logs "$C2" 2>&1 | grep -q "No AOF file found" && {
+C2_LOG=$(docker logs "$C2" 2>&1)
+echo "$C2_LOG" | grep -q "No AOF file found" && {
   echo "FAIL: repair step did not detect the existing AOF (logic bug)"
   FAIL=1
 }
+if echo "$C2_LOG" | grep -q "AOF check passed -- healthy, no repair needed"; then
+  echo "OK: two-pass gating confirmed -- non-destructive check reported healthy"
+else
+  echo "FAIL: expected non-destructive-check-passed log line not found (two-pass gating not exercised)"
+  FAIL=1
+fi
+if echo "$C2_LOG" | grep -q "Backed up pre-repair AOF state"; then
+  echo "FAIL: a healthy AOF should never reach the destructive --fix path, so no backup should ever be taken"
+  FAIL=1
+else
+  echo "OK: destructive --fix path (and its backup step) was skipped entirely for a healthy AOF"
+fi
 docker stop "$C2" >/dev/null
 docker rm "$C2" >/dev/null
 
@@ -171,6 +184,25 @@ if [ "$(docker exec "$C3" redis-cli get foo 2>/dev/null)" = "bar" ]; then
   echo "OK: data written before the corruption point survived the repair (foo=bar)"
 else
   echo "FAIL: data before the corruption point was lost -- repair over-truncated"
+  FAIL=1
+fi
+if echo "$REPAIR_LOG" | grep -q "Backed up pre-repair AOF state to"; then
+  echo "OK: entrypoint logged a pre-repair backup before running --fix"
+else
+  echo "FAIL: expected pre-repair backup log line not found"
+  FAIL=1
+fi
+BACKUP_DIR_HOST="$WORKDIR/corrupt/data/aof-repair-backups"
+if [ -d "$BACKUP_DIR_HOST" ] && find "$BACKUP_DIR_HOST" -mindepth 1 -maxdepth 1 -type d | grep -q .; then
+  BACKUP_TS_DIR=$(find "$BACKUP_DIR_HOST" -mindepth 1 -maxdepth 1 -type d | head -n1)
+  if [ -f "$BACKUP_TS_DIR/appendonlydir/appendonly.aof.1.incr.aof" ]; then
+    echo "OK: pre-repair backup directory exists on disk with the corrupted incr file preserved ($BACKUP_TS_DIR)"
+  else
+    echo "FAIL: backup directory exists but does not contain the expected pre-repair appendonlydir contents"
+    FAIL=1
+  fi
+else
+  echo "FAIL: no pre-repair backup directory found under $BACKUP_DIR_HOST"
   FAIL=1
 fi
 docker stop "$C3" >/dev/null

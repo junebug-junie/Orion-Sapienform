@@ -91,8 +91,9 @@ def delta_to_perturbations(delta: StateDeltaV1) -> list[Perturbation]:
         # "this node is known offline" should latch, not fade on a timer),
         # but until this branch existed there was no path anywhere that ever
         # set it back to 0.0: the only two writers were this block's
-        # `is False` case and the active_node_pressure "suppress" op below,
-        # both one-directional. mode="replace" bypasses the add-mode ceiling
+        # `is False` case and the active_node_pressure "suppress" op above
+        # (target_kind == "active_node_pressure"), both one-directional.
+        # mode="replace" bypasses the add-mode ceiling
         # entirely so a prior 1.0 is fully cleared, not just added to.
         if after.get("expected_online") is True:
             out.append(

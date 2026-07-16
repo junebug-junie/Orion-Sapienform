@@ -10,6 +10,7 @@ from orion.schemas.grammar import (
     GrammarEdgeV1,
     GrammarEventV1,
     GrammarProvenanceV1,
+    TimeRangeV1,
 )
 
 
@@ -29,6 +30,20 @@ class BusTransportGrammarCollector:
     observed_at: datetime
     code_version: str | None = None
     _atoms: dict[str, GrammarAtomV1] = field(default_factory=dict)
+    # Real wall-clock moment each atom was actually recorded, keyed by
+    # atom_id. Populated by _put_atom() -- same fix shape as
+    # CortexExecGrammarCollector/HarnessGrammarCollector's _atom_observed_at
+    # (services/orion-cortex-exec/app/grammar_emit.py,
+    # orion/harness/grammar_emit.py). Before this, every GrammarEventV1's
+    # observed_at in a bus-transport trace was the same value captured once
+    # at collector construction (self.observed_at, trace-START). Unlike the
+    # other two siblings, no idempotency-per-atom_id guard is needed here:
+    # a fresh BusTransportGrammarCollector is constructed per observer tick
+    # (ObserverRollup.to_collector() in bus_observer.py, and the except-path
+    # fail_collector in run_observer_tick()) and every record_*() method is
+    # called at most once per instance -- confirmed by tracing the real call
+    # sites, not assumed.
+    _atom_observed_at: dict[str, datetime] = field(default_factory=dict)
     _edge_specs: list[tuple[str, str, str]] = field(default_factory=list)
 
     @property
@@ -49,7 +64,23 @@ class BusTransportGrammarCollector:
         return f"{self.trace_id}:{role}"
 
     def _put_atom(self, role: str, atom: GrammarAtomV1) -> None:
+        now = datetime.now(timezone.utc)
+        # Same source timestamp for both, set together so they can never
+        # drift -- see CortexExecGrammarCollector/HarnessGrammarCollector's
+        # identical pattern for why time_range is stamped here too
+        # (ledger.py's atom-row persistence and the Grammar Atlas API
+        # read it).
+        atom.time_range = TimeRangeV1(start=now, end=now)
         self._atoms[role] = atom
+        self._atom_observed_at[atom.atom_id] = now
+
+    def observed_at_for(self, atom_id: str) -> datetime:
+        """Real recorded timestamp for a given atom_id, falling back to
+        trace-start observed_at only if that atom somehow bypassed
+        _put_atom(). Single source for the lookup build_bus_transport_grammar_events()
+        needs per atom and per edge, so a future change to the fallback
+        policy can't be applied to some call sites and missed at others."""
+        return self._atom_observed_at.get(atom_id, self.observed_at)
 
     def record_tick_started(self) -> None:
         self._put_atom(
@@ -293,12 +324,18 @@ def build_bus_transport_grammar_events(
     events: list[GrammarEventV1] = [root]
 
     for atom in collector._atoms.values():
+        # Real wall-clock moment this atom was actually recorded (see
+        # _put_atom / _atom_observed_at docstring above), not the single
+        # trace-START value every atom in a trace previously shared. Falls
+        # back to trace-start observed_at only if an atom somehow bypassed
+        # _put_atom(). emitted_at stays the shared flush-time value.
+        atom_ts = collector.observed_at_for(atom.atom_id)
         events.append(
             _event(
                 event_kind="atom_emitted",
                 trace_id=trace_id,
                 emitted_at=emitted_at,
-                observed_at=observed_at,
+                observed_at=atom_ts,
                 provenance=provenance,
                 atom=atom,
                 parent_event_id=root_id,
@@ -319,12 +356,15 @@ def build_bus_transport_grammar_events(
             salience=0.6,
             evidence_event_ids=[collector.sample_window_id],
         )
+        # observed_at = real moment the target atom happened; emitted_at
+        # stays the shared flush-time value, same reasoning as above.
+        edge_ts = collector.observed_at_for(to_atom_id)
         events.append(
             _event(
                 event_kind="edge_emitted",
                 trace_id=trace_id,
                 emitted_at=emitted_at,
-                observed_at=observed_at,
+                observed_at=edge_ts,
                 provenance=provenance,
                 edge=edge,
                 parent_event_id=root_id,
@@ -334,12 +374,18 @@ def build_bus_transport_grammar_events(
             )
         )
 
+    # Real trace-end moment = the last atom actually recorded, not
+    # collector.observed_at (trace-START, which trace_ended previously
+    # reused, collapsing trace_started/trace_ended's observed_at to the
+    # same instant). Falls back to trace-start observed_at only for a
+    # trace with zero recorded atoms.
+    trace_ended_at = max(collector._atom_observed_at.values(), default=observed_at)
     events.append(
         _event(
             event_kind="trace_ended",
             trace_id=trace_id,
             emitted_at=datetime.now(timezone.utc),
-            observed_at=observed_at,
+            observed_at=trace_ended_at,
             provenance=provenance,
             parent_event_id=root_id,
             root_event_id=root_id,

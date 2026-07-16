@@ -1,6 +1,6 @@
 # PR report — endogenous curiosity prediction-error staleness
 
-PR: (create at https://github.com/junebug-junie/Orion-Sapienform/pull/new/fix/endogenous-curiosity-prediction-error-staleness)
+PR: https://github.com/junebug-junie/Orion-Sapienform/pull/1072
 Branch: `fix/endogenous-curiosity-prediction-error-staleness`
 Status: **DONE**
 
@@ -267,4 +267,4 @@ restarted with this branch merged.
 
 ## PR link
 
-`gh` is authenticated in this environment — link filled in after push.
+https://github.com/junebug-junie/Orion-Sapienform/pull/1072

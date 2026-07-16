@@ -1,6 +1,6 @@
 # PR report — bus-core cold-standby target + cutover runbook
 
-PR: (create at https://github.com/junebug-junie/Orion-Sapienform/pull/new/chore/bus-core-standby-runbook)
+PR: https://github.com/junebug-junie/Orion-Sapienform/pull/1084
 Branch: `chore/bus-core-standby-runbook`
 Status: **DONE_WITH_CONCERNS**
 
@@ -313,5 +313,4 @@ No restart required.
 
 ## PR link
 
-https://github.com/junebug-junie/Orion-Sapienform/pull/new/chore/bus-core-standby-runbook
-(branch pushed; PR to be opened via `gh pr create`)
+https://github.com/junebug-junie/Orion-Sapienform/pull/1084

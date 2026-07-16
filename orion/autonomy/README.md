@@ -9,11 +9,22 @@ Autonomy goals and drives are keyed by subject (`orion`, `relationship`, `junipe
 
 - [Autonomy subject routing contract](../../docs/architecture/autonomy_subjects.md)
 
-## AutonomyStateV2 evidence (chat, env-gated)
+## AutonomyStateV2 evidence — RETIRED 2026-07-16
 
-Optional turn-local reducer that upgrades graph `AutonomyStateV1` with **typed** evidence and map-driven pressure math. Keyword substring pressure is **removed**.
+~~Optional turn-local reducer that upgrades graph `AutonomyStateV1` with **typed** evidence and map-driven pressure math.~~
+**Retired, not demoted.** `chat_stance.py`'s call site (`_run_autonomy_reducer`) was deleted
+outright — not flag-gated off. `AUTONOMY_STATE_V2_REDUCER_ENABLED` no longer exists anywhere.
+`DriveEngine`'s `drive_state` (including its real `tension_kinds`, pulled through as of this
+round — see the retrospective §10) is the sole live drive/tension signal for chat stance and
+the `orion-cortex-orch`-triggered Mind path now, with no fallback. See
+[drives_and_autonomy_retrospective.md §10](drives_and_autonomy_retrospective.md#10-second-round-fix-the-wiring-was-dead-in-production-and-v2-is-now-fully-retired-2026-07-16)
+for the full story, including why the wiring in the first round of this fix never actually
+activated in production.
 
-| Piece | Path | Role |
+The module below is left in place, unused by any live caller — full deletion is separate,
+not-yet-done cleanup.
+
+| Piece | Path | Role (historical) |
 |-------|------|------|
 | Schema | `orion/autonomy/models.py` | `AutonomyEvidenceRefV1` optional `signal_kind` / `dimension` / `value` |
 | Compiler | `orion/autonomy/evidence_compiler.py` | Omit-when-empty gates from stance locals (not `ctx["chat_social_bridge_summary"]`) |
@@ -21,16 +32,10 @@ Optional turn-local reducer that upgrades graph `AutonomyStateV1` with **typed**
 | Map | `config/autonomy/signal_drive_map.yaml` | `chat_social_hazard` + `chat_reasoning_quality` rows |
 | Reducer | `orion/autonomy/reducer.py` | Fold `magnitude * drive_impacts` into `drive_pressures`; return `tensions_minted` |
 
-~~**Hard isolation:** this path must not wire into phi, `build_self_state`, or homeostatic `DriveEngine`.~~
-Superseded 2026-07-16: `DriveEngine`'s `drive_state` is being wired into chat stance and the
-`orion-cortex-orch`-triggered Mind path as the live signal, replacing this reducer's role
-there. `orion-thought`'s separate "light Mind" path is not yet covered (known gap). See
-[drives_and_autonomy_retrospective.md §8](drives_and_autonomy_retrospective.md#8-downstream-consumer-audit-2026-07-16-and-the-corrected-implementation-order).
+Operator contract (historical): [docs/autonomy_state_v2_reducer.md](../../docs/autonomy_state_v2_reducer.md)
 
-Operator contract + enable bar: [docs/autonomy_state_v2_reducer.md](../../docs/autonomy_state_v2_reducer.md)
-
+The module's own tests still pass (it's dead code, not broken code) if you need to verify it in isolation:
 ```bash
-# Enable bar (must exit 0 before flipping the flag in cortex-exec)
 PYTHONPATH=. python orion/autonomy/evals/run_autonomy_v2_movement_eval.py
 
 pytest orion/autonomy/tests/test_evidence_compiler.py \

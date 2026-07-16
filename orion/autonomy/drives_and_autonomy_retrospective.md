@@ -238,6 +238,74 @@ code review (verified 1-vote each) were fixed in the same patch:
   intentionally **not done** — the flag is off by default already, and actually retiring the
   reducer is a separate decision from wiring its replacement in.
 
+## 10. Second-round fix: the wiring was dead in production, and V2 is now fully retired (2026-07-16)
+
+A second independent code review of PR #1085 (same 8-angle/1-vote-verify process as §9) found
+something more consequential than any single bug: **the whole "DriveEngine feeds chat
+stance" premise was inert in production.** `chat_stance.py` reads `drive_state` from
+substrate snapshots tagged `snapshot_source="drive_state"` — but the only function that ever
+produced one, `orion/substrate/adapters/autonomy.py`'s `map_autonomy_artifacts_to_substrate()`,
+had zero live callers anywhere in the repo. The function actually registered as the live
+"autonomy" producer (`orion/substrate/relational/adapters/autonomy_ctx.py`'s
+`map_autonomy_ctx_to_substrate`) hardcodes `snapshot_source="autonomy"` and never calls the
+DriveEngine one, despite its own module docstring claiming to. Every test in §9's patch passed
+because they all hand-constructed `ctx["chat_drive_state"]`/synthetic snapshots directly,
+bypassing the actual broken seam. Net effect: `dominant_drive` in production stayed sourced
+from `AutonomyStateV2` the whole time, byte-identical to pre-PR behavior — §9's fixes were
+real and correct, just never actually exercised live.
+
+**Fixed by wiring a live producer**, reusing existing infrastructure rather than building a
+new one: `services/orion-substrate-runtime/app/worker.py` already ran a
+`_drive_state_listener_loop` (previously only caching `DriveStateV1` for an unrelated,
+default-off embodiment feature) and already had an established
+`store.upsert_node(...)` materialization pattern used by four other live producers in the
+same file. Extended that existing subscription — on `DriveStateV1` receipt,
+`_materialize_drive_state_to_substrate()` now calls `map_autonomy_artifacts_to_substrate()`
+and upserts the resulting nodes into the substrate graph. Added a sibling
+`_drive_audit_listener_loop`/`_cache_drive_audit_message` (mirroring the existing
+drive-state listener exactly) to also cache the latest `DriveAuditV1`, so
+`dominant_drive`/`summary`/`tension_kinds` are available alongside `pressures`/`activations`.
+Gated by a new `DRIVE_STATE_SUBSTRATE_MATERIALIZATION_ENABLED` (default **on** — this is the
+live signal chat stance/Mind depend on, deliberately independent of
+`EMBODIMENT_C_TICK_ENABLED`, which gates an unrelated feature and defaults off; the two share
+the one bus subscription via `or`, not `and`, so neither silently gates the other).
+
+**AutonomyStateV2 is now fully retired, not demoted.** Per direct instruction: killing it
+partially (keep it alive as a fallback, or keep sourcing `active_tensions`/`confidence` from
+it) would have repeated the exact "duplicative things serving overlapping purposes" pattern
+this whole investigation kept surfacing. The fix that made this possible: `DriveAuditV1`
+already had a real `tension_kinds` field (`orion/core/schemas/drives.py`), computed from real
+tension events (`orion/spark/concept_induction/audit.py`) — it just was never pulled through
+`chat_stance.py`'s projection. Adding that one field closed the only real gap V2 was covering.
+`confidence` is dropped entirely, not replaced — V2's version was never real signal (its own
+doc: "kind-literal constants (uncalibrated)"). `pressure_trend` stays `None` — no honest
+single-turn signal exists for an async-tick system, and this codebase's own convention is to
+never fabricate one.
+
+Concretely: `_run_autonomy_reducer` and `_log_autonomy_pressure_probe` deleted outright from
+`chat_stance.py` (not flag-gated off — the functions no longer exist), along with their
+now-dead imports and the three test files that existed only to exercise them
+(`test_chat_stance_autonomy_v2.py`, `test_chat_stance_autonomy_v2_pressure_probe.py`,
+`test_chat_stance_autonomy_v2_persistence.py`). `AUTONOMY_STATE_V2_REDUCER_ENABLED` removed
+from `.env_example` — it's read nowhere anymore. `autonomy_slice.py` simplified to a single
+unified path sourced only from `drive_state` (`dominant_drive`, `active_tensions` from real
+`tension_kinds`, `pressure_trend`/`confidence` always `None`) — no more branching, no more
+fallback. `orion/self_state/inner_state_registry.py` updated: `autonomy_state_v2`'s status
+changed to `REHEARSAL` (`no_cognition_consumer`) with an explicit "RETIRED 2026-07-16" note;
+`drive_state.v1`'s `cognition_consumers` now lists its three real live consumers instead of an
+empty tuple. The reducer module itself (`orion/autonomy/reducer.py`, `evidence_compiler.py`,
+`state_store.py`, `models.py`) is left in place, unused by any live caller — full deletion is
+separate, not-yet-done cleanup requiring its own check for stray importers.
+
+Also fixed in this round (from the second review): a missing regression test for the
+snapshot cross-field-atomicity fix (§9 shipped the fix but no test could distinguish it from
+the pre-fix buggy behavior); a missing regression test that could distinguish "shared pool"
+from "duplicate pool" (same issue for the pool-reuse fix); and the new eval file's
+import-safety guard, which reimplemented a thinner, weaker copy of an existing guard built
+specifically for this repo's three-services-each-ship-a-package-named-`app` collision class
+(a class of bug this repo has already hit once, not hypothetical) — now imports the real
+guard instead.
+
 ## 7. Source material index
 
 - Founding design conversations: external (GPT), not committed anywhere prior to this file —

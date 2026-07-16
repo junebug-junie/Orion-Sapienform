@@ -1281,24 +1281,29 @@ def _project_autonomy_from_beliefs(
         if salience is not None:
             pressures[dk] = float(salience)
 
+    # All three fields below are taken from a single snapshot, not mixed across
+    # several -- drive_state snapshots are not deduplicated/collapsed upstream
+    # (substrate/reconcile.py treats them as distinct events by design), so if
+    # a stale snapshot ever sits ahead of a fresher one in `snapshots`, taking
+    # each field independently from "the first snapshot that has it" could
+    # produce a dominant_drive from one tick paired with activations from
+    # another -- an internally inconsistent projection. Taking every field
+    # from the same (first-with-any-content) snapshot avoids that.
     drive_state_snapshots = [s for s in snapshots if getattr(s, "snapshot_source", "") == "drive_state"]
     activations: Dict[str, bool] = {}
     drive_state_dominant_drive: str | None = None
     drive_state_summary: str | None = None
     for snap in drive_state_snapshots:
         meta = snap.metadata or {}
-        if not activations:
-            raw_activations = meta.get("activations")
-            if isinstance(raw_activations, dict):
-                activations = dict(raw_activations)
-        if drive_state_dominant_drive is None:
-            dd = str(meta.get("dominant_drive") or "").strip()
-            if dd:
-                drive_state_dominant_drive = dd
-        if drive_state_summary is None:
-            sm = str(meta.get("summary") or "").strip()
-            if sm:
-                drive_state_summary = sm
+        raw_activations = meta.get("activations")
+        candidate_activations = dict(raw_activations) if isinstance(raw_activations, dict) else {}
+        candidate_dominant_drive = str(meta.get("dominant_drive") or "").strip() or None
+        candidate_summary = str(meta.get("summary") or "").strip() or None
+        if candidate_activations or candidate_dominant_drive or candidate_summary:
+            activations = candidate_activations
+            drive_state_dominant_drive = candidate_dominant_drive
+            drive_state_summary = candidate_summary
+            break
 
     drive_state_projection: Dict[str, Any] | None = None
     if pressures or activations or drive_state_dominant_drive or drive_state_summary:
@@ -2613,14 +2618,25 @@ async def build_chat_stance_inputs(ctx: Dict[str, Any]) -> Dict[str, Any]:
     if mg_hints:
         inputs["memory_graph"] = {"disposition_hints": mg_hints}
 
+    # drive_state is now the live signal for downstream consumers (see
+    # orion/autonomy/drives_and_autonomy_retrospective.md §8, and this
+    # worktree's first commit striking the old "must never be crosswalked"
+    # isolation language). Stash unconditionally onto ctx so
+    # autonomy_slice.build_autonomy_slice() can prefer it over the
+    # AutonomyStateV2 reducer output -- this is deliberately independent of
+    # CHAT_STANCE_DRIVE_STATE_VISIBLE below, which only gates whether the
+    # projection is exposed to the prompt template via inputs["drive_state"].
+    drive_state_for_ctx = autonomy.get("drive_state") if isinstance(autonomy, dict) else None
+    if isinstance(drive_state_for_ctx, dict) and drive_state_for_ctx:
+        ctx["chat_drive_state"] = drive_state_for_ctx
+
     # drive_state.v1 visibility — a sibling of `inputs["autonomy"]`, never merged
     # into it. drive_state and autonomy_state_v2 are independently-computed
     # signals per orion/self_state/inner_state_registry.py's DUPLICATE note.
     # Off by default; flip CHAT_STANCE_DRIVE_STATE_VISIBLE=true to surface it.
     if os.getenv("CHAT_STANCE_DRIVE_STATE_VISIBLE", "").strip().lower() == "true":
-        drive_state_projection = autonomy.get("drive_state") if isinstance(autonomy, dict) else None
-        if drive_state_projection:
-            inputs["drive_state"] = drive_state_projection
+        if drive_state_for_ctx:
+            inputs["drive_state"] = drive_state_for_ctx
 
     # Queries load_action_outcomes(subject="orion") directly (see
     # _project_recent_dispatch_actions' docstring) rather than reading ctx, so

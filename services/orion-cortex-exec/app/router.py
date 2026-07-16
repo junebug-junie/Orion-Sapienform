@@ -656,6 +656,14 @@ def _autonomy_payload_from_ctx(ctx: Dict[str, Any]) -> Dict[str, Any]:
                 if isinstance(item, dict)
             ],
         }
+    drive_state = ctx.get("chat_drive_state")
+    if isinstance(drive_state, dict):
+        payload["drive_state_preview"] = {
+            "pressures": drive_state.get("pressures") or {},
+            "activations": drive_state.get("activations") or {},
+            "dominant_drive": drive_state.get("dominant_drive"),
+            "summary": drive_state.get("summary"),
+        }
     delta = ctx.get("chat_autonomy_state_delta")
     if isinstance(delta, dict):
         payload["autonomy_state_delta"] = delta

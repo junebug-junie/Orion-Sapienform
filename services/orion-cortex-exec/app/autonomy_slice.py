@@ -104,15 +104,38 @@ def build_autonomy_slice(
     ctx: Dict[str, Any],
     max_recent_actions: int = _DEFAULT_MAX_RECENT_ACTIONS,
 ) -> AutonomySliceV1 | None:
-    """Assemble the compact slice from the V2 reducer output already in ctx,
-    plus recent successful Layer-9 dispatch-action outcomes (also read from
-    ctx, under ``ctx["chat_recent_dispatch_actions"]`` -- populated by
-    ``chat_stance._project_recent_dispatch_actions`` before this is called).
+    """Assemble the compact slice. ``dominant_drive`` prefers DriveEngine's
+    ``drive_state`` projection (``ctx["chat_drive_state"]``, stashed
+    unconditionally by chat_stance.py) as the live signal per
+    orion/autonomy/drives_and_autonomy_retrospective.md §8, falling back to
+    the turn-local AutonomyStateV2 reducer output
+    (``ctx["chat_autonomy_state_v2"]``) when ``chat_drive_state`` is absent or
+    empty -- AutonomyStateV2 is being demoted, not deleted, by this change.
 
-    Returns None (omit, not empty) when neither the reducer nor recent
-    dispatch actions produced any meaningful signal -- never fabricates a
-    dominant_drive, tension, or action.
+    ``active_tensions``/``pressure_trend``/``confidence`` are always sourced
+    from AutonomyStateV2 (when present), regardless of which source supplied
+    ``dominant_drive``. DriveEngine's ``drive_state`` projection has no
+    tension-*kind* concept (only which drive *kinds* are active, a different
+    thing -- conflating the two would mislabel drive names as tensions in
+    Orion's own rendered self-report, see orion/harness/prefix.py) and no
+    honest per-turn before/after to report a trend from (it evolves on its
+    own async tick cadence, not per chat turn) or a confidence estimate.
+    Sourcing these three fields exclusively from drive_state -- and dropping
+    real, simultaneously-present AutonomyStateV2 signal whenever drive_state
+    had any dominant_drive at all -- was tried and reverted; see the
+    drives_and_autonomy_retrospective.md §8 note on this file's git history.
+
+    Either way, also folds in recent successful Layer-9 dispatch-action
+    outcomes (also read from ctx, under ``ctx["chat_recent_dispatch_actions"]``
+    -- populated by ``chat_stance._project_recent_dispatch_actions`` before
+    this is called).
+
+    Returns None (omit, not empty) when neither source nor recent dispatch
+    actions produced any meaningful signal -- never fabricates a
+    dominant_drive, tension, trend, or confidence.
     """
+    recent_actions = _format_recent_actions(ctx.get("chat_recent_dispatch_actions"), max_recent_actions)
+
     state = ctx.get("chat_autonomy_state_v2")
     if not isinstance(state, dict):
         state = {}
@@ -121,11 +144,17 @@ def build_autonomy_slice(
     if not isinstance(delta, dict):
         delta = {}
 
-    dominant_drive = str(state.get("dominant_drive") or "").strip() or None
+    drive_state = ctx.get("chat_drive_state")
+    dominant_drive: str | None = None
+    if isinstance(drive_state, dict) and drive_state:
+        dominant_drive = str(drive_state.get("dominant_drive") or "").strip() or None
+    if dominant_drive is None:
+        dominant_drive = str(state.get("dominant_drive") or "").strip() or None
 
-    # tension_kinds is the state's own current-tension set (same field
+    # tension_kinds is AutonomyStateV2's own current-tension set (same field
     # summarize_autonomy_state() uses to derive AutonomySummaryV1.active_tensions).
     # Falls back to this turn's newly-minted tensions if tension_kinds is absent.
+    # Never populated from drive_state's `activations` -- see docstring above.
     active_tensions = _bounded_unique_tensions(state.get("tension_kinds"))
     if not active_tensions:
         active_tensions = _bounded_unique_tensions(delta.get("new_tensions"))
@@ -135,8 +164,6 @@ def build_autonomy_slice(
     confidence = state.get("confidence")
     if not isinstance(confidence, (int, float)):
         confidence = None
-
-    recent_actions = _format_recent_actions(ctx.get("chat_recent_dispatch_actions"), max_recent_actions)
 
     # confidence deliberately excluded from this check: AutonomyStateV2.confidence
     # is a required field defaulting to 0.5, so it is present on essentially every

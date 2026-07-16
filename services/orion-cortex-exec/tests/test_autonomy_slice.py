@@ -225,3 +225,125 @@ def test_recent_actions_respects_zero_or_negative_limit() -> None:
     ctx = {"chat_recent_dispatch_actions": [_dispatch_action(summary="entry one")]}
     assert build_autonomy_slice(ctx, max_recent_actions=0) is None
     assert build_autonomy_slice(ctx, max_recent_actions=-1) is None
+
+
+def _drive_state(**overrides) -> dict:
+    base = dict(
+        pressures={"coherence": 0.72, "continuity": 0.41},
+        activations={"coherence": True, "continuity": False, "capability": True},
+        dominant_drive="coherence",
+        summary="coherence pressure elevated",
+    )
+    base.update(overrides)
+    return base
+
+
+def test_build_autonomy_slice_prefers_drive_state_for_dominant_drive_but_keeps_v2_signal() -> None:
+    """chat_drive_state present -> dominant_drive is sourced from DriveEngine
+    (the live, well-tested signal). But active_tensions/pressure_trend/
+    confidence are always sourced from AutonomyStateV2 when it's also
+    present in ctx -- these are real, simultaneously-computed values that
+    must not be silently dropped just because drive_state supplied a
+    dominant_drive. (Previously this branch discarded them entirely and
+    fabricated active_tensions from drive *kinds* instead of real tension
+    kinds -- both were bugs, fixed here.)"""
+    ctx = {
+        "chat_drive_state": _drive_state(),
+        "chat_autonomy_state_v2": _state_v2(
+            dominant_drive="continuity",
+            tension_kinds=["drive_competition.coherence_continuity", "unresolved_thread"],
+        ),
+        "chat_autonomy_movement_debug": {
+            "pressures_before": {"coherence": 0.5},
+            "pressures_after": {"coherence": 0.72},
+        },
+    }
+    slice_ = build_autonomy_slice(ctx)
+    assert slice_ is not None
+    assert slice_.schema_version == "autonomy.slice.v1"
+    # dominant_drive: drive_state wins over V2's "continuity".
+    assert slice_.dominant_drive == "coherence"
+    # active_tensions: real V2 tension kinds, not drive_state's activation keys.
+    assert slice_.active_tensions == ["drive_competition.coherence_continuity", "unresolved_thread"]
+    # pressure_trend/confidence: real V2 values, no longer dropped.
+    assert slice_.pressure_trend == "rising"
+    assert slice_.confidence == 0.63
+
+
+def test_build_autonomy_slice_falls_back_when_drive_state_empty_or_all_inactive() -> None:
+    """chat_drive_state present but empty or all-inactive -> falls through to
+    the V2 path (or the existing omit rule) rather than emitting a slice
+    with no dominant_drive/active_tensions from an empty drive_state."""
+    # Empty dict: falls through to V2, which has real signal here.
+    ctx_empty = {
+        "chat_drive_state": {},
+        "chat_autonomy_state_v2": _state_v2(),
+    }
+    slice_empty = build_autonomy_slice(ctx_empty)
+    assert slice_empty is not None
+    assert slice_empty.dominant_drive == "coherence"
+    assert slice_empty.pressure_trend is None  # no movement_debug in ctx_empty
+
+    # All-inactive + no dominant_drive, no V2 fallback, no recent actions ->
+    # existing omit rule applies (None, not an empty-content slice).
+    ctx_inactive = {
+        "chat_drive_state": _drive_state(
+            dominant_drive=None,
+            activations={"coherence": False, "continuity": False},
+        ),
+    }
+    assert build_autonomy_slice(ctx_inactive) is None
+
+
+def test_build_autonomy_slice_uses_v2_path_when_drive_state_absent() -> None:
+    """chat_drive_state absent, chat_autonomy_state_v2 present -> existing V2
+    behavior is unchanged (regression guard for the pre-existing path)."""
+    ctx = {
+        "chat_autonomy_state_v2": _state_v2(),
+        "chat_autonomy_state_delta": _delta(),
+        "chat_autonomy_movement_debug": {
+            "pressures_before": {"coherence": 0.5, "continuity": 0.4},
+            "pressures_after": {"coherence": 0.72, "continuity": 0.41},
+        },
+    }
+    slice_ = build_autonomy_slice(ctx)
+    assert slice_ is not None
+    assert slice_.dominant_drive == "coherence"
+    assert slice_.active_tensions == [
+        "drive_competition.coherence_continuity",
+        "unresolved_thread",
+        "identity_drift",
+    ]
+    assert slice_.pressure_trend == "rising"
+    assert slice_.confidence == 0.63
+
+
+def test_build_autonomy_slice_returns_none_when_both_drive_state_and_v2_absent() -> None:
+    """Both sources absent, no recent actions -> None (unchanged)."""
+    assert build_autonomy_slice({}) is None
+    assert build_autonomy_slice({"chat_drive_state": None, "chat_autonomy_state_v2": None}) is None
+    assert build_autonomy_slice({"chat_drive_state": {}, "chat_autonomy_state_v2": {}}) is None
+
+
+def test_build_autonomy_slice_drive_state_folds_in_recent_actions() -> None:
+    """recent_actions is sourced independently of which drive/tension source
+    won -- must still be folded in when drive_state is the active source."""
+    ctx = {
+        "chat_drive_state": _drive_state(),
+        "chat_recent_dispatch_actions": [_dispatch_action(kind="inspect", summary="real success")],
+    }
+    slice_ = build_autonomy_slice(ctx)
+    assert slice_ is not None
+    assert slice_.dominant_drive == "coherence"
+    assert slice_.recent_actions == ["inspect: real success"]
+
+
+def test_build_autonomy_slice_drive_state_malformed_activations_fails_open() -> None:
+    """drive_state's `activations` field is not read by build_autonomy_slice
+    at all (only `dominant_drive` is) -- a malformed value there must not
+    raise and must not affect dominant_drive extraction."""
+    ctx = {"chat_drive_state": _drive_state(activations="not-a-dict")}
+    slice_ = build_autonomy_slice(ctx)
+    assert slice_ is not None
+    assert slice_.dominant_drive == "coherence"
+    assert slice_.active_tensions == []

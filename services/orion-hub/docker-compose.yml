@@ -33,11 +33,12 @@ services:
       - ${HUB_AGENT_CLAUDE_BIN_HOST:-${HOME}/.local/bin/claude}:/usr/local/bin/claude:ro
       - /var/run/docker.sock:/var/run/docker.sock
       #- /mnt/telemetry/models/whisper/${WHISPER_MODEL_SIZE}:/root/.cache/huggingface/hub/models--distil-whisper--${WHISPER_MODEL_SIZE}
-      # Same host mount orion-field-digester already uses for FIELD_CHANNEL_CORPUS_PATH --
-      # shared here so FIELD_PLASTICITY_SQL_DB_PATH can point both containers at one sqlite
-      # file (otherwise a Causal Geometry proposal adopted in this container is invisible
-      # to orion-field-digester's diffusion tick, which runs in a separate container).
-      - ${TELEMETRY_ROOT:-/mnt/telemetry}:/mnt/telemetry
+      # FIELD_PLASTICITY_SQL_DB_PATH lives on the same disk as Postgres (a sibling
+      # directory to postgres_data, never inside it), shared with orion-field-digester's
+      # identical mount so both containers see the same sqlite file -- otherwise a Causal
+      # Geometry proposal adopted in this container is invisible to orion-field-digester's
+      # diffusion tick, which runs in a separate container.
+      - ${STORAGE_ROOT:-/mnt/postgres}/field_topology:/mnt/postgres/field_topology
     environment:
       # Core service identity
       - PROJECT=${PROJECT}

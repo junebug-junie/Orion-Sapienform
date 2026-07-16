@@ -38,6 +38,9 @@ services:
       - FIELD_PLASTICITY_MAX_DRIFT=${FIELD_PLASTICITY_MAX_DRIFT:-0.15}
       - FIELD_PLASTICITY_DECAY_HALF_LIFE_HOURS=${FIELD_PLASTICITY_DECAY_HALF_LIFE_HOURS:-168}
       - FIELD_PLASTICITY_SQL_DB_PATH=${FIELD_PLASTICITY_SQL_DB_PATH:-}
+      - FIELD_PLASTICITY_PRODUCER_ENABLED=${FIELD_PLASTICITY_PRODUCER_ENABLED:-false}
+      - FIELD_PLASTICITY_PRODUCER_INTERVAL_HOURS=${FIELD_PLASTICITY_PRODUCER_INTERVAL_HOURS:-24}
+      - FIELD_PLASTICITY_PRODUCER_WINDOW_HOURS=${FIELD_PLASTICITY_PRODUCER_WINDOW_HOURS:-168}
 
     volumes:
       # FIELD_CHANNEL_CORPUS_PATH defaults under /mnt/telemetry (same host
@@ -45,6 +48,11 @@ services:
       # paths) -- without this mount the path resolves inside the
       # container's ephemeral filesystem and silently vanishes on restart.
       - ${TELEMETRY_ROOT:-/mnt/telemetry}:/mnt/telemetry
+      # FIELD_PLASTICITY_SQL_DB_PATH lives on the same disk as Postgres (a
+      # sibling directory to postgres_data, never inside it) -- shared with
+      # orion-hub's identical mount below so both containers see the same
+      # sqlite file.
+      - ${STORAGE_ROOT:-/mnt/postgres}/field_topology:/mnt/postgres/field_topology
 
 networks:
   app-net:

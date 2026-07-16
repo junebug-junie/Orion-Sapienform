@@ -54,19 +54,34 @@ auto-deleted -- if the condition later clears, the file is updated in place
 with a RESOLVED footer rather than removed, so a human still sees that an
 incident happened. A human removes the file once they've looked.
 
+Concurrency: a lockfile (`--state-file` + `.lock`, `flock`-based, non-blocking)
+guards the read-evaluate-write cycle against overlapping cron invocations (e.g.
+one run still waiting on a hung `docker inspect` when the next minute's cron
+fires). If the lock is already held, this run skips cleanly (exit 0, no state
+mutation) rather than racing the in-progress run for the write -- the repo's
+own `services/orion-rdf-store/README.md` documents a real incident from a
+plain existence-check lock (not `flock`) racing its own cron job.
+
 Usage:
     python scripts/bus_core_health_watchdog.py
     python scripts/bus_core_health_watchdog.py --project orion-athena --json
     python scripts/bus_core_health_watchdog.py --container orion-orion-athena-bus-core \\
         --unhealthy-streak-threshold 3 --restart-count-threshold 3 --restart-window-minutes 10
 
-Exit codes: 0 = healthy, no crash-loop signature met.
+Exit codes: 0 = healthy, no crash-loop signature met (also returned if this run
+                was skipped because another run already holds the lock).
             1 = crash-loop signature met -- alert marker written/updated.
-            2 = could not run the check at all (docker binary missing).
+            2 = could not run or complete the check (docker binary missing, or
+                a filesystem error writing state/marker -- e.g. the telemetry
+                directory not yet created/chowned on a fresh host, see
+                services/orion-bus/README.md's watchdog section). Deliberately
+                distinct from exit 1 so a permissions failure can never be
+                misread as "crash loop detected."
 """
 from __future__ import annotations
 
 import argparse
+import fcntl
 import json
 import os
 import subprocess
@@ -168,12 +183,20 @@ def inspect_container(container: str, docker_bin: str = "docker") -> dict[str, A
 
 
 def _atomic_write_json(path: Path, data: dict[str, Any]) -> None:
+    _atomic_write_text(path, json.dumps(data, indent=2, sort_keys=True) + "\n", suffix=".json")
+
+
+def _atomic_write_text(path: Path, content: str, suffix: str = ".txt") -> None:
+    """Shared by the state file and the alert marker -- both get the same
+    no-torn-write guarantee (mkstemp in the same directory + os.replace, which
+    is atomic on the same filesystem). The marker file is human-read during a
+    live incident, so it gets the identical treatment as the state file rather
+    than a plain write()/append()."""
     path.parent.mkdir(parents=True, exist_ok=True)
-    fd, tmp_path = tempfile.mkstemp(prefix=".tmp-", suffix=".json", dir=str(path.parent))
+    fd, tmp_path = tempfile.mkstemp(prefix=".tmp-", suffix=suffix, dir=str(path.parent))
     try:
         with os.fdopen(fd, "w") as fh:
-            json.dump(data, fh, indent=2, sort_keys=True)
-            fh.write("\n")
+            fh.write(content)
         os.replace(tmp_path, path)
     except BaseException:
         try:
@@ -218,12 +241,17 @@ def _parse_iso(ts: str) -> datetime:
 def prune_restart_samples(
     samples: list[dict[str, Any]], now: datetime, window_minutes: float
 ) -> list[dict[str, Any]]:
+    """Drops both out-of-window samples and malformed ones (missing/non-int
+    `restart_count`, unparseable `at`) -- a hand-edited or partially-migrated
+    state file must never crash evaluate()'s later `min()` over this list."""
     cutoff = now.timestamp() - (window_minutes * 60.0)
     kept = []
     for sample in samples:
         try:
             at = _parse_iso(sample["at"])
-        except (KeyError, ValueError):
+        except (KeyError, ValueError, TypeError):
+            continue
+        if not isinstance(sample.get("restart_count"), int):
             continue
         if at.timestamp() >= cutoff:
             kept.append(sample)
@@ -269,6 +297,18 @@ def evaluate(
 
     restarts_in_window = 0
     if samples:
+        # Deliberately min() over the window's *values*, not the
+        # chronologically-earliest sample's value -- RestartCount is only
+        # monotonic within one container's lifetime. If bus-core is removed
+        # and recreated mid-window (not just restarted), Docker resets
+        # RestartCount to 0, and a fixed "earliest sample" baseline would
+        # read as a huge *negative* restart burst (clamped to 0 below,
+        # silently hiding a real recreation event) followed by an
+        # under-counted climb back toward the old high-water mark. Using the
+        # window's minimum instead re-baselines automatically the moment the
+        # counter resets, so post-recreation restarts are counted correctly
+        # from the new baseline. Covered by
+        # test_restart_count_reset_from_container_recreation_rebaselines.
         oldest_in_window = min(s["restart_count"] for s in samples)
         restarts_in_window = max(0, restart_count - oldest_in_window)
 
@@ -298,7 +338,6 @@ def evaluate(
 
 
 def write_alert_marker(path: Path, container: str, state: dict[str, Any], reasons: list[str], now: datetime) -> None:
-    path.parent.mkdir(parents=True, exist_ok=True)
     lines = [
         "ORION BUS-CORE CRASH-LOOP ALERT",
         "================================",
@@ -328,15 +367,64 @@ def write_alert_marker(path: Path, container: str, state: dict[str, Any], reason
         "NOT auto-deleted. Once you've looked, delete it by hand:",
         f"  rm {path}",
     ]
-    path.write_text("\n".join(lines) + "\n")
+    # Atomic (mkstemp + os.replace), matching _atomic_write_json -- this file
+    # is human-read during a live incident, so it gets the same no-torn-write
+    # guarantee as the state file rather than a plain write().
+    _atomic_write_text(path, "\n".join(lines) + "\n", suffix=".txt")
 
 
 def append_resolved_footer(path: Path, now: datetime) -> None:
     if not path.exists():
         return
-    with path.open("a") as fh:
-        fh.write(f"\n[RESOLVED as of {now.isoformat()} -- watchdog no longer sees a crash-loop signature.\n")
-        fh.write(" This file is left in place so the incident isn't silently lost. Delete by hand once reviewed.]\n")
+    # Read + concatenate + atomic replace, rather than open(path, "a") --
+    # append() is not safe against a concurrent write to the same path (see
+    # write_alert_marker's atomic replace), and this function can run
+    # immediately after a prior alert-marker write in the same process.
+    existing = path.read_text()
+    footer = (
+        f"\n[RESOLVED as of {now.isoformat()} -- watchdog no longer sees a crash-loop signature.\n"
+        " This file is left in place so the incident isn't silently lost. Delete by hand once reviewed.]\n"
+    )
+    _atomic_write_text(path, existing + footer, suffix=".txt")
+
+
+class WatchdogLockedError(RuntimeError):
+    """Another watchdog run already holds the state-file lock. Not an error in
+    the "couldn't run the check" sense -- it means a run IS in progress right
+    now, so this run skips cleanly rather than racing it for the write."""
+
+
+class _StateLock:
+    """Non-blocking flock on `<state_file>.lock`, guarding the
+    load_state -> evaluate -> write read-modify-write cycle against
+    overlapping cron invocations (e.g. one run still waiting on a hung
+    `docker inspect` -- up to the 15s subprocess timeout -- when the next
+    minute's cron fires). See services/orion-rdf-store/README.md for the
+    real incident this pattern is modeled after: a plain existence-check
+    lock (not flock) raced its own cron job and corrupted a shutdown
+    sequence. `flock` is kernel-atomic -- no check-then-act gap."""
+
+    def __init__(self, state_file: Path) -> None:
+        self._lock_path = state_file.with_suffix(state_file.suffix + ".lock")
+        self._fh = None
+
+    def __enter__(self) -> "_StateLock":
+        self._lock_path.parent.mkdir(parents=True, exist_ok=True)
+        fh = open(self._lock_path, "w")
+        try:
+            fcntl.flock(fh.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except OSError as exc:
+            fh.close()
+            raise WatchdogLockedError(
+                f"lock {self._lock_path} already held -- another watchdog run is in progress, skipping"
+            ) from exc
+        self._fh = fh
+        return self
+
+    def __exit__(self, *exc_info: object) -> None:
+        if self._fh is not None:
+            fcntl.flock(self._fh.fileno(), fcntl.LOCK_UN)
+            self._fh.close()
 
 
 def run(
@@ -351,25 +439,27 @@ def run(
 ) -> tuple[dict[str, Any], bool, list[str]]:
     now = now or datetime.now(timezone.utc)
     observation = inspect_container(container, docker_bin=docker_bin)
-    state = load_state(state_file)
-    was_active = bool(state.get("crash_loop_active", False))
 
-    new_state, crash_loop_detected, reasons = evaluate(
-        state,
-        observation["health_status"],
-        observation["restart_count"],
-        now,
-        unhealthy_streak_threshold=unhealthy_streak_threshold,
-        restart_count_threshold=restart_count_threshold,
-        restart_window_minutes=restart_window_minutes,
-    )
-    new_state["container_status"] = observation["container_status"]
-    _atomic_write_json(state_file, new_state)
+    with _StateLock(state_file):
+        state = load_state(state_file)
+        was_active = bool(state.get("crash_loop_active", False))
 
-    if crash_loop_detected:
-        write_alert_marker(alert_marker, container, new_state, reasons, now)
-    elif was_active and not crash_loop_detected:
-        append_resolved_footer(alert_marker, now)
+        new_state, crash_loop_detected, reasons = evaluate(
+            state,
+            observation["health_status"],
+            observation["restart_count"],
+            now,
+            unhealthy_streak_threshold=unhealthy_streak_threshold,
+            restart_count_threshold=restart_count_threshold,
+            restart_window_minutes=restart_window_minutes,
+        )
+        new_state["container_status"] = observation["container_status"]
+        _atomic_write_json(state_file, new_state)
+
+        if crash_loop_detected:
+            write_alert_marker(alert_marker, container, new_state, reasons, now)
+        elif was_active and not crash_loop_detected:
+            append_resolved_footer(alert_marker, now)
 
     return new_state, crash_loop_detected, reasons
 
@@ -433,6 +523,25 @@ def main(argv: list[str] | None = None) -> int:
         )
     except DockerUnavailableError as exc:
         print(f"bus_core_health_watchdog: {exc}", file=sys.stderr)
+        return 2
+    except WatchdogLockedError as exc:
+        # Another run is already in progress -- not a failure, just skip this
+        # cycle cleanly. No state mutation happened, so nothing to report.
+        print(f"bus_core_health_watchdog: SKIPPED -- {exc}", file=sys.stderr)
+        return 0
+    except OSError as exc:
+        # Covers permission errors creating/writing the state file, lock
+        # file, or alert marker directories (e.g. the telemetry tree not yet
+        # created/chowned on a fresh host -- see services/orion-bus/README.md).
+        # Deliberately a distinct, non-1 exit code: a filesystem error here
+        # must never be misread as "crash loop detected" (exit 1) by anything
+        # consuming only the exit code.
+        print(
+            f"bus_core_health_watchdog: FAILED -- could not write state/marker files: {exc}. "
+            "Check directory ownership/permissions -- see services/orion-bus/README.md's "
+            "'Host-level crash-loop watchdog' section.",
+            file=sys.stderr,
+        )
         return 2
 
     if args.json:

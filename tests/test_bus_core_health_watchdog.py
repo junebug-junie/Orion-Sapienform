@@ -146,6 +146,58 @@ def test_restart_count_samples_prune_outside_window():
     assert detected is False
 
 
+def test_restart_count_reset_from_container_recreation_rebaselines():
+    # If bus-core is removed and recreated (not just restarted), Docker resets
+    # .RestartCount to 0. evaluate() must re-baseline against the new low
+    # value (via min() over the window), not keep comparing against the old
+    # pre-recreation high-water mark -- see the comment on `oldest_in_window`
+    # in evaluate() for why min() over values (not the earliest sample) is
+    # deliberate.
+    state = watchdog._empty_state()
+    # Pre-recreation: RestartCount climbing normally.
+    for i, rc in enumerate([47, 48, 49]):
+        state, detected, _ = watchdog.evaluate(
+            state, "healthy", restart_count=rc, now=_now(i), restart_count_threshold=3, restart_window_minutes=10
+        )
+    assert detected is False  # steady climb of 2 over 3 samples, below threshold=3
+
+    # Recreation: RestartCount resets to 0. Must not read as a "-49 restarts"
+    # anomaly, and must not silently keep comparing against 47.
+    state, detected, reasons = watchdog.evaluate(
+        state, "starting", restart_count=0, now=_now(3), restart_count_threshold=3, restart_window_minutes=10
+    )
+    assert state["restarts_in_window"] == 0
+    assert detected is False
+
+    # Post-recreation restarts climb from the new baseline and must be
+    # counted correctly (not muted by the stale old high-water mark).
+    for i, rc in enumerate([1, 2, 3], start=4):
+        state, detected, reasons = watchdog.evaluate(
+            state, "starting", restart_count=rc, now=_now(i), restart_count_threshold=3, restart_window_minutes=10
+        )
+    assert state["restarts_in_window"] == 3
+    assert detected is True
+    assert any("restart" in r for r in reasons)
+
+
+def test_evaluate_ignores_malformed_restart_samples_without_crashing():
+    # A hand-edited or partially-migrated state file could carry a sample
+    # missing/with a non-int restart_count. evaluate() must never crash on
+    # this (prune_restart_samples drops it), matching the "never raises
+    # except for genuine tooling failure" contract of the rest of this module.
+    state = watchdog._empty_state()
+    state["restart_samples"] = [
+        {"at": _now(0).isoformat(), "restart_count": "not-an-int"},
+        {"at": _now(0).isoformat()},  # missing restart_count entirely
+        {"restart_count": 5},  # missing "at" entirely
+    ]
+    new_state, detected, reasons = watchdog.evaluate(state, "healthy", restart_count=1, now=_now(1))
+    assert detected is False
+    assert new_state["restarts_in_window"] == 0
+    # Only the current, well-formed sample survives.
+    assert len(new_state["restart_samples"]) == 1
+
+
 def test_restart_count_threshold_not_crossed_stays_healthy():
     state = watchdog._empty_state()
     for i, rc in enumerate([0, 1]):
@@ -350,6 +402,90 @@ def test_atomic_write_survives_no_partial_file_on_success(tmp_path):
     # no leftover temp files
     leftovers = list(state_file.parent.glob(".tmp-*"))
     assert leftovers == []
+
+
+def test_alert_marker_write_is_atomic_no_leftover_temp_files(tmp_path):
+    marker = tmp_path / "nested" / "ALERT.txt"
+    watchdog.write_alert_marker(marker, "fake-container", watchdog._empty_state(), ["reason"], _now())
+    assert marker.exists()
+    assert "CRASH-LOOP ALERT" in marker.read_text()
+    leftovers = list(marker.parent.glob(".tmp-*"))
+    assert leftovers == []
+
+
+def test_resolved_footer_append_is_atomic_and_preserves_original_content(tmp_path):
+    marker = tmp_path / "ALERT.txt"
+    watchdog.write_alert_marker(marker, "fake-container", watchdog._empty_state(), ["reason"], _now())
+    original = marker.read_text()
+    watchdog.append_resolved_footer(marker, _now(5))
+    updated = marker.read_text()
+    assert updated.startswith(original)
+    assert "RESOLVED" in updated
+    leftovers = list(marker.parent.glob(".tmp-*"))
+    assert leftovers == []
+
+
+# ---------------------------------------------------------------------------
+# Locking -- overlapping-run protection
+# ---------------------------------------------------------------------------
+
+
+def test_state_lock_blocks_concurrent_acquisition(tmp_path):
+    state_file = tmp_path / "state.json"
+    with watchdog._StateLock(state_file):
+        with pytest.raises(watchdog.WatchdogLockedError):
+            with watchdog._StateLock(state_file):
+                pass  # pragma: no cover -- must raise before reaching here
+
+
+def test_state_lock_is_released_after_context_exit(tmp_path):
+    state_file = tmp_path / "state.json"
+    with watchdog._StateLock(state_file):
+        pass
+    # Lock released -- a second acquisition must succeed cleanly.
+    with watchdog._StateLock(state_file):
+        pass
+
+
+def test_run_skips_cleanly_when_lock_already_held(tmp_path):
+    state_file = tmp_path / "state.json"
+    alert_marker = tmp_path / "ALERT.txt"
+    payload = json.dumps([{"State": {"Status": "running", "Health": {"Status": "healthy"}}, "RestartCount": 0}])
+    with watchdog._StateLock(state_file):
+        with patch("subprocess.run", return_value=_fake_completed(0, payload)):
+            with pytest.raises(watchdog.WatchdogLockedError):
+                watchdog.run(container="fake-container", state_file=state_file, alert_marker=alert_marker, now=_now())
+    # No state file was written by the skipped run.
+    assert not state_file.exists()
+
+
+def test_main_exits_zero_when_lock_already_held(tmp_path):
+    state_file = tmp_path / "state.json"
+    alert_marker = tmp_path / "ALERT.txt"
+    with watchdog._StateLock(state_file):
+        exit_code = watchdog.main([
+            "--container", "fake-container",
+            "--state-file", str(state_file),
+            "--alert-marker", str(alert_marker),
+        ])
+    assert exit_code == 0
+
+
+def test_main_exits_two_not_one_on_permission_error_writing_state(tmp_path):
+    # A filesystem permission error while writing state/marker files must
+    # never be misread as "crash loop detected" (exit 1) -- it gets its own
+    # distinct exit code (2), same family as DockerUnavailableError.
+    state_file = tmp_path / "state.json"
+    alert_marker = tmp_path / "ALERT.txt"
+    payload = json.dumps([{"State": {"Status": "running", "Health": {"Status": "healthy"}}, "RestartCount": 0}])
+    with patch("subprocess.run", return_value=_fake_completed(0, payload)):
+        with patch.object(watchdog, "_atomic_write_json", side_effect=PermissionError("denied")):
+            exit_code = watchdog.main([
+                "--container", "fake-container",
+                "--state-file", str(state_file),
+                "--alert-marker", str(alert_marker),
+            ])
+    assert exit_code == 2
 
 
 # ---------------------------------------------------------------------------

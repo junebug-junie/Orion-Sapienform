@@ -13,9 +13,13 @@ Pressure math uses the shared `signal_drive_map` via `chat_evidence_to_tension` 
 - Empty reasoning repositories do **not** emit `reasoning_quality` theater.
 
 ~~Previously: not an input to phi features, `build_self_state`, or homeostatic `DriveEngine`.~~
-Superseded 2026-07-16: `DriveEngine`'s `drive_state` now feeds chat stance and Mind directly
-(see `orion/autonomy/drives_and_autonomy_retrospective.md` §8). This reducer's own pressure
-output is being retired from those consumers in favor of it.
+Superseded 2026-07-16: `DriveEngine`'s `drive_state` now feeds chat stance and the
+`orion-cortex-orch`-triggered Mind path directly (see
+`orion/autonomy/drives_and_autonomy_retrospective.md` §8). This reducer's own pressure
+output is being retired from those consumers in favor of it. **Not yet covered**:
+`orion-thought`'s independent "light Mind" path
+(`services/orion-thought/app/mind_enrichment.py`) builds its own `MindRunRequestV1` and
+does not include this facet -- known gap, not a claim this doc makes.
 
 ## Evidence contract (omit-when-empty)
 

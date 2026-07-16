@@ -205,6 +205,39 @@ with no error to notice it by.
 4. Repoint or accept breakage of the Hub preview panel — lowest priority, no behavioral risk
    either way.
 
+## 9. Implementation status (2026-07-16 patch)
+
+Steps 1, 2 (partially), and the Hub preview repoint above shipped. Findings from an 8-angle
+code review (verified 1-vote each) were fixed in the same patch:
+
+- `autonomy_slice.py` now sources `dominant_drive` from `DriveEngine`'s `drive_state` (as
+  planned) but `active_tensions`/`pressure_trend`/`confidence` always come from
+  `AutonomyStateV2` when present — an earlier version of this patch made the branch
+  exclusive, which fabricated `active_tensions` from drive *kind* labels (mislabeled as
+  tensions all the way into Orion's own rendered system prefix,
+  `orion/harness/prefix.py`) and silently dropped real, simultaneously-present V2
+  trend/confidence/tension data. Both were caught by review and fixed before merge.
+- `mind_runtime.py`'s new `drive_state_compact` fetch now has a content check: a
+  `drive_audits` row that exists but carries no meaningful content (a routine "quiet tick"
+  where nothing crossed activation threshold — `dominant_drive=None`, `summary=None`,
+  `active_drives=[]`) fails open the same way a missing row does, rather than being attached
+  to Mind's facets as if it were real signal.
+- The new asyncpg pool was removed in favor of reusing `memory_extractor._get_memory_pool()`
+  (same `RECALL_PG_DSN`, same service) — the new pool had duplicated (not fixed)
+  `memory_extractor`'s pre-existing check-then-act race and one-way failure latch; reuse
+  stops carrying a second copy of those bugs. The underlying bugs in `memory_extractor.py`
+  itself are pre-existing and out of scope for this patch.
+- **Known, unfixed gap**: `services/orion-thought/app/mind_enrichment.py`'s
+  `build_light_mind_request()` is a second, independent, live Mind-request path (used by
+  `orion-thought`'s stance-react flow) that constructs its own `MindRunRequestV1` and does
+  not include `drive_state_compact` at all. §8's "Behavior-relevant" list above only covers
+  the `orion-cortex-orch`-triggered path. Fixing this is a separate, untraced task in a
+  different service — not done here, and the doc claims in `docs/autonomy_state_v2_reducer.md`
+  and this module's `README.md` have been qualified to say so rather than overclaim.
+- Step 3 (retiring `_run_autonomy_reducer`/`AUTONOMY_STATE_V2_REDUCER_ENABLED`) is
+  intentionally **not done** — the flag is off by default already, and actually retiring the
+  reducer is a separate decision from wiring its replacement in.
+
 ## 7. Source material index
 
 - Founding design conversations: external (GPT), not committed anywhere prior to this file —

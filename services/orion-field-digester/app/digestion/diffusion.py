@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import logging
 import os
+import threading
 from datetime import datetime, timezone
 
 from orion.schemas.field_state import FieldStateV1
@@ -21,11 +22,21 @@ FIELD_PLASTICITY_ENABLED_ENV = "FIELD_PLASTICITY_ENABLED"
 # Must resolve to the same file the hub's CAUSAL_GEOMETRY_PROPOSAL_STORE writes to
 # (services/orion-hub/scripts/api_routes.py) -- an operator's HITL adopt() only ever
 # reaches this process's diffusion tick if both processes point at the same sqlite
-# file. Unset (the .env_example default) means "in-memory, this process only" -- the
-# overlay will never see a cross-process adoption, matching pre-plasticity behavior.
+# file. Defaults (.env_example) to a real shared path on the same disk as Postgres;
+# unset/empty means "in-memory, this process only" -- the overlay will never see a
+# cross-process adoption, matching pre-plasticity behavior.
 FIELD_PLASTICITY_SQL_DB_PATH_ENV = "FIELD_PLASTICITY_SQL_DB_PATH"
 
-_LEARNED_STORE = None  # lazily constructed once; see _get_learned_store()
+_LEARNED_STORE = None  # lazily constructed once; see get_learned_store()
+# Guards first-construction of _LEARNED_STORE: app/worker.py's poll loop
+# (_load_learned_overlay, via apply_diffusion) and its causal-geometry producer
+# loop both call get_learned_store() from their own asyncio.to_thread thread, so
+# on cold start both can race the "if _LEARNED_STORE is None" check below before
+# either assigns. Without this lock that race would construct the store twice
+# (wasted, self-healing work, not a correctness bug -- __post_init__ doesn't hold
+# an open connection between calls) but still violates this function's own
+# "constructed once" contract.
+_LEARNED_STORE_LOCK = threading.Lock()
 
 # cap->cap edges only, per the Causal Geometry v1 design spec (Phase B) --
 # node_capability/node_service/etc. edges never consult the learned overlay,
@@ -59,12 +70,14 @@ def get_learned_store():
     """
     global _LEARNED_STORE
     if _LEARNED_STORE is None:
-        from orion.substrate.field_topology_learned_store import (
-            FieldTopologyLearnedWeightsStore,
-        )
+        with _LEARNED_STORE_LOCK:
+            if _LEARNED_STORE is None:  # re-check: another thread may have won the race
+                from orion.substrate.field_topology_learned_store import (
+                    FieldTopologyLearnedWeightsStore,
+                )
 
-        sql_db_path = str(os.getenv(FIELD_PLASTICITY_SQL_DB_PATH_ENV, "")).strip() or None
-        _LEARNED_STORE = FieldTopologyLearnedWeightsStore(sql_db_path=sql_db_path)
+                sql_db_path = str(os.getenv(FIELD_PLASTICITY_SQL_DB_PATH_ENV, "")).strip() or None
+                _LEARNED_STORE = FieldTopologyLearnedWeightsStore(sql_db_path=sql_db_path)
     return _LEARNED_STORE
 
 

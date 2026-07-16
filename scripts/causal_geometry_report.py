@@ -13,10 +13,15 @@ fetch, resampling, lagged correlation, surrogate significance, divergence) has
 moved to `orion/substrate/causal_geometry_engine.py`, an importable module, so
 `orion/substrate/causal_geometry_producer.py` (called periodically from
 `services/orion-field-digester/app/worker.py`) can call the exact same code
-this CLI uses instead of duplicating it. This file re-exports every engine
-name it previously defined, so existing callers/tests of this module are
-unaffected. What remains here is CLI-only: argument parsing and human/JSON
-output formatting.
+this CLI uses instead of duplicating it. This file re-exports the engine
+names actually needed by its own CLI code and by
+tests/test_causal_geometry_report.py, so existing callers/tests of this
+module are unaffected -- names the engine module defines but nothing outside
+it ever referenced (e.g. `PairResult`, `build_edges`, `build_divergence`,
+`compute_pairwise_results`) are not re-exported here; import them directly
+from `orion.substrate.causal_geometry_engine` if a future caller needs them.
+What remains here is CLI-only: argument parsing and human/JSON output
+formatting.
 
 What this measures
 -------------------
@@ -182,23 +187,11 @@ from orion.substrate.causal_geometry_engine import (  # noqa: E402,F401
     DEFAULT_POSTGRES_URI,
     DEFAULT_SEED,
     DEFAULT_WINDOW_HOURS,
-    LAG_GRID_SECONDS,
-    ChannelPoints,
-    ChannelSeries,
-    DirectionResult,
-    PairResult,
-    _aligned_arrays,
-    _best_direction,
-    _best_strength_for_channel,
-    _bucket_idx_to_datetime,
     _pearson,
     build_capability_channel_index,
-    build_divergence,
-    build_edges,
     build_snapshot,
     bucketize,
     circular_shift_pvalue,
-    compute_pairwise_results,
     fetch_channels,
     load_field_topology,
 )

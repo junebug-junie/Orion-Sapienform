@@ -151,6 +151,44 @@ def test_insufficient_data_snapshot_yields_zero_candidates_not_an_error(monkeypa
     assert result["proposals_created"] == 0
 
 
+def test_intra_cycle_duplicate_candidates_for_the_same_edge_enqueue_only_one_proposal(monkeypatch) -> None:
+    """Regression: two different capability channels can alias to the same physical
+    (source_id, target_id) edge (causal_geometry_engine.build_divergence()'s
+    `#<capability_channel>` disambiguation suffix exists exactly for this case). If
+    both aliased channels diverge meaningfully in the same cycle,
+    propose_field_topology_patches() legitimately returns two candidates with the
+    identical (stripped) target_ref -- the producer's dedup must catch the second
+    one against the first *within* the same cycle, not just across cycles."""
+    rng = np.random.default_rng(11)
+    transport = rng.normal(size=200)
+    orch_a = transport * 0.95 + rng.normal(scale=0.05, size=200)
+    orch_b = transport * 0.9 + rng.normal(scale=0.08, size=200)
+    channels = {
+        "cap:transport": _points_for(transport),
+        "cap:orch_a": _points_for(orch_a),
+        "cap:orch_b": _points_for(orch_b),
+    }
+    topology = {
+        "schema_version": "field_lattice.v1.test",
+        "edges": [
+            {
+                "source_id": "cap:transport",
+                "target_id": "cap:orchestration",
+                "edge_type": "capability_capability",
+                "weight": 0.1,
+                "channel_map": {"orch_a": "orch_a", "orch_b": "orch_b"},
+            }
+        ],
+    }
+
+    result, store = _run(monkeypatch, channels=channels, topology=topology)
+
+    assert result["ok"] is True
+    pending = store.list_pending()
+    assert len(pending) == 1, f"expected exactly one pending proposal, got {len(pending)}: {[p.patch.target_ref for p in pending]}"
+    assert pending[0].patch.target_ref == "cap:transport->cap:orchestration"
+
+
 def test_module_never_imports_patch_applier() -> None:
     source = Path(producer_module.__file__).read_text(encoding="utf-8")
     tree = ast.parse(source)

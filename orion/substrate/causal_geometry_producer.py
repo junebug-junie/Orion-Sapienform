@@ -1,10 +1,12 @@
 """Causal Geometry v1, follow-up rung: the scheduled Phase A -> Phase B producer.
 
-PR #1087 shipped Phase A (`orion/substrate/causal_geometry_engine.py`, observed-
-vs-designed measurement) and Phase B (`field_topology_plasticity.py` +
+PR #1087 shipped Phase A (`scripts/causal_geometry_report.py`, observed-vs-
+designed measurement) and Phase B (`field_topology_plasticity.py` +
 `field_topology_learned_store.py`, HITL-gated weight-patch proposals), but
 nothing ever called them together on a schedule -- the HITL proposal queue was
-real but permanently empty. This module is that missing link: one function,
+real but permanently empty. `orion/substrate/causal_geometry_engine.py` (Phase
+A's core logic, extracted into an importable module) is new in this same
+follow-up commit, alongside this module. This module is that missing link: one function,
 `run_causal_geometry_production_cycle()`, that a periodic caller (see
 `services/orion-field-digester/app/worker.py`'s `_causal_geometry_producer_loop`)
 invokes to measure, propose, and enqueue.
@@ -124,6 +126,12 @@ def run_causal_geometry_production_cycle(
                 skipped += 1
                 continue
             store.propose(proposal)
+            # Two different capability channels can alias to the same physical
+            # (source_id, target_id) edge (see causal_geometry_engine.build_divergence()'s
+            # docstring) -- without this, two such candidates in one `proposals` list would
+            # both pass the check above and both get enqueued, since existing_pending_refs
+            # is otherwise only ever checked against the store's *pre-loop* state.
+            existing_pending_refs.add(proposal.patch.target_ref)
             created += 1
     except Exception as exc:
         logger.warning("causal_geometry_production_cycle_proposal_stage_failed: %s", exc, exc_info=True)

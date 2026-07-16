@@ -476,3 +476,205 @@ def test_verdict_b_unmeasurable_when_pressure_empty_even_with_live_drive_data():
     assert drive.coactivation_frac >= mod.COACTIVATION_MIN_FRAC
     assert empty_pressure.row_count == 0
     assert mod.verdict_economy(drive, empty_pressure) == mod.UNMEASURABLE
+
+
+# ---------------------------------------------------------------------------
+# 12. SATURATED -- verdict (b) must never bless a monoculture as an economy
+# ---------------------------------------------------------------------------
+def _passing_pressure():
+    """Pressure rows that clear the RESOURCE_PRESSURE_MIN_FRAC bar."""
+
+    rows = [
+        _self_state(i, {"resource_pressure": 0.5 if i < 3 else 0.1}, {})
+        for i in range(20)
+    ]
+    return mod.compute_resource_pressure_stats(rows)
+
+
+def test_verdict_b_saturated_by_dominance():
+    # Co-activation clears the bar and all_active_frac stays low, but one
+    # drive is dominant in 96% of audits -- the live 2026-07-15 monoculture.
+    drive = mod.drive_stats_from_histogram({2: 50, 1: 50})
+    drive = mod.apply_dominant_counts(drive, {"relational": 96, "novelty": 4})
+    pressure = _passing_pressure()
+    assert drive.coactivation_frac >= mod.COACTIVATION_MIN_FRAC
+    assert drive.all_active_frac < mod.SATURATION_ALL_ACTIVE_FRAC
+    assert drive.top_dominant_share >= mod.SATURATION_DOMINANT_SHARE
+    assert mod.verdict_economy(drive, pressure) == mod.SATURATED
+
+
+def test_verdict_b_saturated_by_all_active_even_without_dominance_data():
+    # Histogram mostly 5s/6s (near-all-on). Dominant data degraded (empty
+    # dominant_counts, e.g. the second query failed) -- the histogram-only
+    # all_active_frac clause must still fire.
+    drive = mod.drive_stats_from_histogram({5: 80, 6: 10, 1: 10})
+    assert drive.dominant_counts == {}
+    assert drive.top_dominant_share == 0.0
+    assert drive.all_active_frac == pytest.approx(0.9)
+    assert drive.all_active_frac >= mod.SATURATION_ALL_ACTIVE_FRAC
+    assert mod.verdict_economy(drive, _passing_pressure()) == mod.SATURATED
+
+
+def test_verdict_b_healthy_churn_is_still_go():
+    # Real turn-taking: co-activation clears the bar, dominance is spread
+    # across drives, and the near-all-on state is rare -> GO, not SATURATED.
+    drive = mod.drive_stats_from_histogram({1: 60, 2: 25, 3: 10, 5: 5})
+    drive = mod.apply_dominant_counts(
+        drive, {"relational": 30, "novelty": 25, "predictive": 25, "homeostatic": 15}
+    )
+    assert drive.coactivation_frac >= mod.COACTIVATION_MIN_FRAC
+    assert drive.top_dominant_share < mod.SATURATION_DOMINANT_SHARE
+    assert drive.all_active_frac < mod.SATURATION_ALL_ACTIVE_FRAC
+    assert mod.verdict_economy(drive, _passing_pressure()) == "GO"
+
+
+def test_verdict_b_unmeasurable_takes_precedence_over_saturated():
+    # Zero rows must stay UNMEASURABLE even if saturation-shaped fields are
+    # somehow set -- a dead sensor is never diagnosed as a degenerate economy.
+    drive = mod.DriveStats(
+        record_count=0,
+        coactivation_frac=0.95,
+        all_active_frac=0.9,
+        dominant_counts={"relational": 96},
+        top_dominant_share=0.96,
+    )
+    assert mod.verdict_economy(drive, _passing_pressure()) == mod.UNMEASURABLE
+    # And the natural zero-rows path stays UNMEASURABLE too.
+    empty = mod.drive_stats_from_histogram({})
+    assert mod.verdict_economy(empty, _passing_pressure()) == mod.UNMEASURABLE
+
+
+def test_verdict_b_low_coactivation_no_go_unaffected_by_saturation_fields():
+    # Low co-activation short-circuits to NO-GO before the saturation check:
+    # saturation only diagnoses a co-activation bar that was actually met.
+    drive = mod.drive_stats_from_histogram({1: 19, 5: 1})  # 5% co-active
+    drive = mod.apply_dominant_counts(drive, {"relational": 19})  # 95% dominant
+    assert drive.coactivation_frac < mod.COACTIVATION_MIN_FRAC
+    assert drive.top_dominant_share >= mod.SATURATION_DOMINANT_SHARE
+    assert mod.verdict_economy(drive, _passing_pressure()) == "NO-GO"
+
+
+def test_drive_stats_from_histogram_all_active_frac():
+    # 74% of ticks at >= SATURATION_MIN_ACTIVE drives -- the live shape.
+    stats = mod.drive_stats_from_histogram({5: 60, 6: 14, 2: 16, 1: 10})
+    assert stats.all_active_frac == pytest.approx(0.74)
+    # Empty histogram keeps the default.
+    assert mod.drive_stats_from_histogram({}).all_active_frac == 0.0
+
+
+def test_parse_dominant_rows():
+    rows = [
+        ("relational", 1600),
+        ("novelty", "43"),    # driver returning string counts still parses
+        (None, 84),           # NULL dominant -> excluded from counts (still in record_count denominator)
+        ("junk",),            # short row -> skipped
+        ("epistemic", "bad"), # non-numeric count -> skipped
+        ("negative", -3),     # negative -> skipped
+    ]
+    assert mod.parse_dominant_rows(rows) == {"relational": 1600, "novelty": 43}
+    assert mod.parse_dominant_rows([]) == {}
+
+
+def test_apply_dominant_counts_uses_all_records_as_denominator():
+    # Live shape: 1727 audits, 84 NULL dominants -- the NULL rows stay in the
+    # denominator, so the share is 1643/1727, not 1643/1643.
+    stats = mod.drive_stats_from_histogram({5: 1278, 4: 200, 1: 249})
+    assert stats.record_count == 1727
+    stats = mod.apply_dominant_counts(stats, {"relational": 1643})
+    assert stats.top_dominant_share == pytest.approx(1643 / 1727)
+    assert stats.dominant_counts == {"relational": 1643}
+    # Empty counts -> share 0.0 (dominance clause simply can't fire).
+    cleared = mod.apply_dominant_counts(stats, {})
+    assert cleared.top_dominant_share == 0.0
+    assert cleared.dominant_counts == {}
+    # Histogram fields survive untouched.
+    assert cleared.record_count == 1727
+    assert cleared.coactivation_frac == stats.coactivation_frac
+
+
+class _SequenceConn:
+    """Conn handing out one canned cursor per .cursor() call (multi-query fetch)."""
+
+    def __init__(self, cursors):
+        self._cursors = list(cursors)
+
+    def cursor(self):
+        return self._cursors.pop(0)
+
+
+def test_fetch_drive_stats_postgres_dominant_query_happy_path():
+    hist_cursor = _FakeCursor(rows=[(1, 20), (2, 4), (3, 1)])
+    dom_cursor = _FakeCursor(rows=[("relational", 20), (None, 3), ("novelty", 2)])
+    stats, note = mod.fetch_drive_stats_postgres(_SequenceConn([hist_cursor, dom_cursor]), BASE)
+    assert stats.record_count == 25
+    assert stats.dominant_counts == {"relational": 20, "novelty": 2}
+    assert stats.top_dominant_share == pytest.approx(20 / 25)
+    assert "drive source: postgres drive_audits (25 rows" in note
+    sql, params = dom_cursor.executed[0]
+    assert "FROM drive_audits" in sql
+    assert "COALESCE(observed_at, created_at) >= %s" in sql
+    assert "GROUP BY dominant_drive" in sql
+    assert params == (BASE,)
+
+
+def test_fetch_drive_stats_postgres_dominant_query_failure_keeps_histogram():
+    # A dominance failure must NOT discard the histogram result: the stats
+    # keep their real record_count/coactivation, dominance stays empty (so
+    # only the all_active_frac clause can fire), and the note says so.
+    hist_cursor = _FakeCursor(rows=[(1, 20), (5, 5)])
+    dom_cursor = _FakeCursor(exc=RuntimeError("connection reset"))
+    stats, note = mod.fetch_drive_stats_postgres(_SequenceConn([hist_cursor, dom_cursor]), BASE)
+    assert stats.record_count == 25
+    assert stats.coactivation_frac == pytest.approx(5 / 25)
+    assert stats.all_active_frac == pytest.approx(5 / 25)
+    assert stats.dominant_counts == {}
+    assert stats.top_dominant_share == 0.0
+    assert "drive source: postgres drive_audits (25 rows" in note
+    assert "dominant_drive query failed" in note
+
+
+def test_render_report_names_saturation_fields_and_explains_saturated():
+    drive = mod.drive_stats_from_histogram({5: 74, 6: 6, 2: 10, 1: 10})
+    drive = mod.apply_dominant_counts(drive, {"relational": 96, "novelty": 4})
+    report = mod.render_report(
+        window_label="7 day(s)",
+        window_start=BASE,
+        window_end=BASE + timedelta(days=7),
+        silent=mod.SelfStateMetrics(),
+        busy=mod.SelfStateMetrics(),
+        drive=drive,
+        drive_source="postgres drive_audits (100 rows)",
+        pressure=_passing_pressure(),
+        verdict_a="NO-GO",
+        verdict_b=mod.SATURATED,
+        caveats=[],
+    )
+    assert f"- all_active_frac (active_count >= {mod.SATURATION_MIN_ACTIVE}): 0.8000" in report
+    assert "- dominant_drive counts: relational:96, novelty:4" in report
+    assert "- top dominant drive: relational (share 0.9600 of all audits)" in report
+    assert f"**{mod.SATURATED}**" in report
+    # Rule text names the saturation thresholds...
+    assert f"top_dominant_share >= {mod.SATURATION_DOMINANT_SHARE}" in report
+    assert f"all_active_frac >= {mod.SATURATION_ALL_ACTIVE_FRAC}" in report
+    # ...and the SATURATED verdict is explained in plain language.
+    assert "always-on" in report and "monoculture" in report and "turn-taking" in report
+
+
+def test_render_report_no_saturated_explanation_when_not_saturated():
+    report = mod.render_report(
+        window_label="7 day(s)",
+        window_start=BASE,
+        window_end=BASE + timedelta(days=7),
+        silent=mod.SelfStateMetrics(),
+        busy=mod.SelfStateMetrics(),
+        drive=mod.drive_stats_from_histogram({1: 10, 2: 5}),
+        drive_source="postgres drive_audits (15 rows)",
+        pressure=_passing_pressure(),
+        verdict_a="GO",
+        verdict_b="GO",
+        caveats=[],
+    )
+    # Empty dominance renders honestly rather than fabricating a top drive.
+    assert "- dominant_drive counts: (none)" in report
+    assert "- top dominant drive: (none -- dominance data empty or unavailable)" in report
+    assert "monoculture" not in report

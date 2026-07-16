@@ -105,22 +105,44 @@ host (repeat the athena-side test above, on atlas, against real primary
 data — not synthetic):
 
 ```bash
-# On athena, snapshot bus-core's data without touching the live path directly:
+# --- Everything up to the rsync line below runs ON ATHENA. ---
+
+# On athena, capture the primary's key list and DBSIZE BEFORE snapshotting,
+# so there is a real point-in-time baseline to diff against later. Write it
+# INTO the snapshot directory itself so the one rsync below carries both
+# the data and the key list to atlas together -- no separate transfer step
+# to forget:
 mkdir -p /tmp/bus-core-snapshot
+docker exec orion-orion-athena-bus-core redis-cli DBSIZE
+docker exec orion-orion-athena-bus-core redis-cli KEYS '*' | sort > /tmp/bus-core-snapshot/primary_keys.txt
+
+# On athena, snapshot bus-core's data without touching the live path directly:
 docker run --rm \
   -v /mnt/telemetry/orion-athena/bus/data:/src:ro \
   -v /tmp/bus-core-snapshot:/dst \
   alpine sh -c "cp -a /src/. /dst/ && chown -R $(id -u):$(id -g) /dst"
 
-# Copy the snapshot to atlas (adjust path/user for the real atlas layout):
+# Copy the snapshot (data + primary_keys.txt together) to atlas (adjust
+# path/user for the real atlas layout). This is the one and only file
+# transfer between the two hosts this step needs -- everything below reads
+# from the copy that lands here, nothing later reaches back across hosts:
 rsync -a /tmp/bus-core-snapshot/ athena@atlas.tail348bbe.ts.net:/tmp/bus-core-snapshot/
 
 # --- Everything below runs ON ATLAS, from atlas's own checkout's repo root. ---
 cd /path/to/Orion-Sapienform  # atlas's own checkout
 
-# Confirm atlas's own root .env has real values BEFORE using them below --
-# do not assume, print them and read them:
+# Confirm atlas's own root .env has real, ATLAS-APPROPRIATE values BEFORE
+# using them below -- do not assume, print them and read them:
 grep -E "^(PROJECT|NODE_NAME|TELEMETRY_ROOT)=" .env
+# A non-empty result here is NOT enough by itself: this repo's own root
+# .env_example ships plausible-looking, non-placeholder defaults
+# (PROJECT=orion-athena, NODE_NAME=athena) -- a stale or accidentally-copied
+# athena .env on atlas would pass a bare "is it empty" check while still
+# being wrong, producing a standby quietly named/pathed as if it were
+# athena's own (a quieter, more confusing failure than the empty-string case
+# below, which at least fails loudly). If this is genuinely atlas's own
+# checkout, NODE_NAME must NOT read "athena" -- if it does, this is athena's
+# .env, not atlas's, and every command below will target the wrong node.
 # Substitute the real printed values for <PROJECT>/<TELEMETRY_ROOT> in every
 # command below by hand. Do not rely on shell variable expansion here --
 # these are docker-compose --env-file values, not exported shell vars, and
@@ -131,9 +153,12 @@ grep -E "^(PROJECT|NODE_NAME|TELEMETRY_ROOT)=" .env
 
 # Seed the standby's own data dir from the snapshot, then start it (first
 # time only -- afterwards bus-core-standby keeps its own AOF and this step
-# is not needed again unless re-seeding from a fresher primary snapshot):
+# is not needed again unless re-seeding from a fresher primary snapshot).
+# Exclude primary_keys.txt -- it rode along in the same rsync payload for
+# convenience but is not Redis data and must not land inside the AOF/RDB
+# data dir:
 mkdir -p <TELEMETRY_ROOT>/<PROJECT>/bus-standby/data
-cp -a /tmp/bus-core-snapshot/. <TELEMETRY_ROOT>/<PROJECT>/bus-standby/data/
+rsync -a --exclude=primary_keys.txt /tmp/bus-core-snapshot/ <TELEMETRY_ROOT>/<PROJECT>/bus-standby/data/
 
 cp services/orion-bus/.env_example services/orion-bus/.env.atlas-standby
 # .env.atlas-standby only carries orion-bus-specific keys (BUS_STANDBY_PORT,
@@ -151,11 +176,11 @@ docker logs orion-<PROJECT>-bus-core-standby 2>&1 | grep -E "Done loading RDB|DB
 docker exec orion-<PROJECT>-bus-core-standby redis-cli DBSIZE
 docker exec orion-<PROJECT>-bus-core-standby redis-cli KEYS '*' | sort > /tmp/standby_keys.txt
 
-# Compare against the primary's key count/names at snapshot time
-# (run this on athena BEFORE the snapshot, save it, compare after):
-docker exec orion-orion-athena-bus-core redis-cli DBSIZE
-docker exec orion-orion-athena-bus-core redis-cli KEYS '*' | sort > /tmp/primary_keys.txt
-diff /tmp/primary_keys.txt /tmp/standby_keys.txt   # expect no diff (modulo TTL expiry between snapshot and check)
+# Compare against the primary's key list captured on athena BEFORE the
+# snapshot (/tmp/bus-core-snapshot/primary_keys.txt, transferred here by the
+# same rsync that carried the data -- see above). Both files are already on
+# atlas at this point; this diff needs no further cross-host step:
+diff /tmp/bus-core-snapshot/primary_keys.txt /tmp/standby_keys.txt   # expect no diff (modulo TTL expiry between snapshot and check)
 ```
 
 If `DBSIZE` and `KEYS *` don't match (accounting for keys that legitimately
@@ -223,23 +248,43 @@ for f in services/*/docker-compose.yml; do grep -q "ORION_BUS_URL" "$f" || echo 
    docker compose --env-file .env --env-file services/orion-bus/.env \
      -f services/orion-bus/docker-compose.yml stop bus-core
    ```
-3. Edit the root `.env` on athena (and anywhere else mesh services actually
+3. **Before editing anything**, re-verify atlas's Tailscale IP is still
+   `100.121.214.30` — it was only confirmed once, at the time this runbook
+   was authored (Step 0 above), and a stale copy-pasted IP during a real
+   incident would silently repoint the whole mesh at a dead or reassigned
+   address:
+   ```bash
+   tailscale status | grep atlas   # or: ping -c1 atlas.tail348bbe.ts.net
+   ```
+   If the IP has changed, use the current one in place of
+   `100.121.214.30` below — do not proceed on the value in this doc without
+   checking.
+
+   Which port to use: **this runbook's own recorded assumption is
+   `BUS_STANDBY_PORT=6380`** (the template default in
+   `services/orion-bus/.env_example`, chosen so the standby can be
+   co-located with the primary on one host for testing without a port
+   collision) — treat this as the deployed value unless you have direct,
+   live-verified knowledge it was overridden to `6379` at initial deploy
+   time on atlas (e.g. you did that deploy yourself, or a prior operator
+   left a note recording it — check for one before assuming 6380). If you
+   can reach atlas via SSH, confirm directly instead of relying on this
+   assumption: `docker port orion-<PROJECT>-bus-core-standby` on atlas. If
+   you cannot reach atlas (this runbook was itself authored during a
+   session where atlas SSH access was unavailable — don't assume it'll be
+   available during a real incident either), fall back to the `6380`
+   assumption above rather than being stuck with no path forward.
+
+   Edit the root `.env` on athena (and anywhere else mesh services actually
    read their root `.env` from — e.g. any other node's own checkout):
    ```
    ORION_BUS_URL=redis://100.121.214.30:<BUS_STANDBY_PORT>/0
    ```
-   `BUS_STANDBY_PORT` defaults to `6380` (`services/orion-bus/.env_example`)
-   so the standby is safe to co-locate with the primary on one host for
-   testing without a port collision. On the real, separate atlas node this
-   default is unnecessary — set `BUS_STANDBY_PORT=6379` in
-   `services/orion-bus/.env.atlas-standby` before deploying if you want
-   cutover to be a pure IP swap; otherwise use whatever port the standby
-   was actually deployed with (check `docker port
-   orion-<PROJECT>-bus-core-standby` on atlas if unsure).
-   (atlas's Tailscale IP; use the hostname `atlas.tail348bbe.ts.net` if DNS
-   resolution over Tailscale is confirmed reliable for every consuming
-   service's container network — IP is safer/simpler and matches how the
-   existing value is a literal IP, not a hostname.)
+   (atlas's Tailscale IP, re-verified above; use the hostname
+   `atlas.tail348bbe.ts.net` if DNS resolution over Tailscale is confirmed
+   reliable for every consuming service's container network — IP is
+   safer/simpler and matches how the existing value is a literal IP, not a
+   hostname.)
 4. For the 3 services that hardcode the IP directly in their own
    `docker-compose.yml` (Step 2's list), edit those files' `environment:`
    blocks directly to the same IP.
@@ -278,13 +323,20 @@ Choose one of two paths depending on why you cut over in the first place:
 
 - **Primary's own data was never lost** (e.g. cut over for a hardware/network
   outage on athena, not data corruption): repoint `ORION_BUS_URL` back to
-  `redis://100.92.216.81:6379/0` and repeat the recreate steps above. Any
-  writes that landed on the standby during the cutover window are lost
-  unless manually merged (see below) — acceptable for most of this bus's
-  traffic (ephemeral pub/sub, short-TTL state keys), a real loss for
-  anything durable that was only appended to the standby's stream. Check
-  `orion:evt:gateway`/`orion:bus:out` stream length on the standby against
-  what's expected before discarding it.
+  `redis://100.92.216.81:6379/0` and repeat the recreate steps above. **There
+  is no vetted merge procedure for writes that landed on the standby during
+  the cutover window — they are lost when you cut back**, full stop. This is
+  acceptable for most of this bus's traffic (ephemeral pub/sub, short-TTL
+  state keys), a real loss for anything durable that was only appended to
+  the standby's stream. Check `orion:evt:gateway`/`orion:bus:out` stream
+  length on the standby against what's expected before discarding it — if
+  the loss looks significant, a manual per-key `redis-cli --rdb`/`DUMP`+
+  `RESTORE` copy of specific known keys from standby to the restored primary
+  is possible in principle, but has not been built, tested, or written up
+  as a runbook step here; treat it as a from-scratch incident-time task, not
+  something this document has already solved. The real mitigation is
+  avoiding writes during the cutover window in the first place, not
+  recovering them after.
 - **Primary's data was corrupted/lost** (the AOF-crash-loop scenario this
   standby exists for): do **not** cut back to the old, empty/corrupt
   primary data directory. Instead, promote the standby's data: snapshot

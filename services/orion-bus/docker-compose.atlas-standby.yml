@@ -15,12 +15,15 @@
 # copied services/orion-bus/.env.atlas-standby file. Per AGENTS.md section 8,
 # every docker compose invocation in this repo chains the root .env FIRST,
 # then the service .env, exactly like the primary bus-core's own restart
-# command. Do the same here -- do not run this with only one --env-file, or
-# PROJECT/TELEMETRY_ROOT interpolate to empty strings and the data volume
-# silently binds to the wrong path (confirmed during review: a single
-# --env-file invocation produced container_name "orion--bus-core-standby"
-# and bound the data volume at the filesystem root, "/bus-standby/data",
-# instead of under /mnt/telemetry/).
+# command. Do the same here -- do not run this with only one --env-file.
+# A single --env-file invocation used to silently interpolate PROJECT/
+# TELEMETRY_ROOT to empty strings (confirmed during review: container_name
+# "orion--bus-core-standby", data volume bound at the filesystem root
+# "/bus-standby/data" instead of under /mnt/telemetry/). That is no longer
+# possible to do silently: PROJECT and TELEMETRY_ROOT below use Compose's
+# required-variable syntax (${VAR:?msg}), so `docker compose config`/`up`
+# now fails loudly with a clear error instead of interpolating empty
+# strings if either var isn't actually set by the chained --env-file(s).
 #
 # Run on the atlas host, from its own checkout's repo root:
 #   docker compose \
@@ -43,7 +46,7 @@
 services:
   bus-core-standby:
     image: redis:7-alpine
-    container_name: orion-${PROJECT}-bus-core-standby
+    container_name: orion-${PROJECT:?PROJECT must be set -- chain --env-file .env before --env-file services/orion-bus/.env.atlas-standby}-bus-core-standby
     command:
       [
         "redis-server",
@@ -60,7 +63,7 @@ services:
     ports:
       - "${BUS_STANDBY_PORT:-6380}:6379"
     volumes:
-      - ${TELEMETRY_ROOT}/${PROJECT}/bus-standby/data:/data
+      - ${TELEMETRY_ROOT:?TELEMETRY_ROOT must be set -- chain --env-file .env before --env-file services/orion-bus/.env.atlas-standby}/${PROJECT:?PROJECT must be set -- chain --env-file .env before --env-file services/orion-bus/.env.atlas-standby}/bus-standby/data:/data
     restart: unless-stopped
     healthcheck:
       test: ["CMD-SHELL", "redis-cli ping | grep PONG || exit 1"]

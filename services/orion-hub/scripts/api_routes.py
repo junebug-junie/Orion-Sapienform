@@ -258,6 +258,51 @@ SUBSTRATE_MUTATION_SURFACES: Dict[str, Dict[str, Any]] = {}
 SUBSTRATE_AUTONOMY_LOCAL_CYCLE_LOCK = threading.Lock()
 
 
+class _UnavailableCausalGeometryProposalStore:
+    """Fallback used when field_topology_learned_store hasn't landed yet (or fails to build).
+
+    Mirrors the FieldTopologyLearnedWeightsStore interface (source_kind/degraded/last_error/
+    list_pending/adopt/reject) so route code never has to branch on "does the real store exist".
+    Always reports degraded=True; mutating calls raise so operators get a clear 503 instead of a
+    silent no-op that looks like success.
+    """
+
+    def __init__(self, *, error: str) -> None:
+        self._error = error
+
+    def source_kind(self) -> str:
+        return "unavailable"
+
+    def degraded(self) -> bool:
+        return True
+
+    def last_error(self) -> str | None:
+        return self._error
+
+    def list_pending(self, *, limit: int = 50) -> list:
+        return []
+
+    def adopt(self, proposal_id: str, *, operator_id: str) -> Any:
+        raise RuntimeError(f"causal_geometry_proposal_store_unavailable: {self._error}")
+
+    def reject(self, proposal_id: str, *, operator_id: str, reason: str = "") -> Any:
+        raise RuntimeError(f"causal_geometry_proposal_store_unavailable: {self._error}")
+
+
+def _build_causal_geometry_proposal_store() -> Any:
+    try:
+        from orion.substrate.field_topology_learned_store import FieldTopologyLearnedWeightsStore
+    except Exception as exc:  # module not landed yet (parallel rung), or import-time failure
+        return _UnavailableCausalGeometryProposalStore(error=f"import_failed: {exc}")
+    try:
+        return FieldTopologyLearnedWeightsStore()
+    except Exception as exc:  # construction failure (e.g. missing env/backing store)
+        return _UnavailableCausalGeometryProposalStore(error=f"init_failed: {exc}")
+
+
+CAUSAL_GEOMETRY_PROPOSAL_STORE = _build_causal_geometry_proposal_store()
+
+
 def _thought_debug_enabled() -> bool:
     return str(os.getenv("DEBUG_THOUGHT_PROCESS", "false")).strip().lower() in {"1", "true", "yes", "on"}
 
@@ -484,6 +529,26 @@ class SubstratePolicyAdoptHubRequest(BaseModel):
     target_zones: list[FrontierTargetZoneV1] = Field(default_factory=list)
     operator_only: bool = False
     policy_overrides: SubstratePolicyOverridesV1 = Field(default_factory=SubstratePolicyOverridesV1)
+
+
+class CausalGeometryProposalAdoptRequest(BaseModel):
+    """Operator-invoked adoption of a learned causal-geometry field-topology overlay proposal.
+
+    No autonomous caller in this codebase should ever hit this route -- adopt/reject are
+    operator-invoked only, full stop.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    operator_id: str
+    rationale: str = ""
+
+
+class CausalGeometryProposalRejectRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    operator_id: str
+    reason: str = ""
 
 
 async def _execute_workflow_schedule_management(*, session_id: str, user_id: Optional[str], request: WorkflowScheduleManageRequestV1) -> Dict[str, Any]:
@@ -3278,6 +3343,60 @@ def _sql_review_queue_payload(*, limit: int = 50) -> Dict[str, Any]:
     }
 
 
+def _causal_geometry_snapshot_payload() -> Dict[str, Any]:
+    """Latest CausalGeometrySnapshotV1, or a gracefully-degraded stub.
+
+    Phase A's report script (scripts/causal_geometry_report.py) does not persist snapshots to
+    Postgres/bus yet this sprint -- it's a standalone report tool. Until a live snapshot source
+    is wired up, this must never 500; it reports source.degraded=True / kind="unavailable".
+    """
+
+    return {
+        "source": _source_meta(
+            kind="unavailable",
+            degraded=True,
+            limit=1,
+            error="no live causal-geometry snapshot source wired yet (Phase A report script does not persist)",
+        ),
+        "data": None,
+    }
+
+
+def _causal_geometry_history_payload(*, limit: int = 20) -> Dict[str, Any]:
+    """Bounded snapshot history, or a gracefully-degraded empty list.
+
+    Same posture as _causal_geometry_snapshot_payload: no persistence exists yet, so this
+    returns an empty, explicitly-degraded list rather than erroring.
+    """
+
+    return {
+        "source": _source_meta(
+            kind="unavailable",
+            degraded=True,
+            limit=limit,
+            error="no live causal-geometry snapshot store wired yet (Phase A report script does not persist)",
+        ),
+        "data": [],
+    }
+
+
+def _causal_geometry_proposals_payload(*, limit: int = 50) -> Dict[str, Any]:
+    store = CAUSAL_GEOMETRY_PROPOSAL_STORE
+    pending = store.list_pending(limit=limit)
+    return {
+        "source": _source_meta(
+            kind=store.source_kind(),
+            degraded=store.degraded(),
+            limit=limit,
+            error=store.last_error(),
+        ),
+        "data": [
+            item.model_dump(mode="json") if hasattr(item, "model_dump") else item
+            for item in pending
+        ],
+    }
+
+
 def _sql_review_executions_payload(*, limit: int = 50) -> Dict[str, Any]:
     records = SUBSTRATE_REVIEW_TELEMETRY_STORE.query(GraphReviewTelemetryQueryV1(limit=limit))
     return {
@@ -5054,6 +5173,72 @@ def api_substrate_review_runtime_smoke_check(request: SubstrateReviewSmokeCheckR
             "semantic_truncated": bool(semantic_probe.truncated),
             "semantic_error": semantic_probe.error,
         },
+    }
+
+
+@router.get("/api/causal-geometry/snapshot")
+def api_causal_geometry_snapshot() -> Dict[str, Any]:
+    """Latest CausalGeometrySnapshotV1. Degrades gracefully (never 500) if no live source exists."""
+    return _causal_geometry_snapshot_payload()
+
+
+@router.get("/api/causal-geometry/history")
+def api_causal_geometry_history(limit: int = Query(default=20, ge=1, le=200)) -> Dict[str, Any]:
+    """Bounded snapshot history. Degrades gracefully (never 500) if no live store exists."""
+    return _causal_geometry_history_payload(limit=limit)
+
+
+@router.get("/api/causal-geometry/proposals")
+def api_causal_geometry_proposals(limit: int = Query(default=50, ge=1, le=200)) -> Dict[str, Any]:
+    """Pending learned field-topology overlay proposals awaiting operator review."""
+    return _causal_geometry_proposals_payload(limit=limit)
+
+
+@router.post("/api/causal-geometry/proposals/{proposal_id}/adopt")
+def api_causal_geometry_proposal_adopt(
+    proposal_id: str,
+    request: CausalGeometryProposalAdoptRequest,
+) -> Dict[str, Any]:
+    """Operator-invoked adoption of a pending proposal. No autonomous caller may hit this route."""
+    store = CAUSAL_GEOMETRY_PROPOSAL_STORE
+    try:
+        result = store.adopt(proposal_id, operator_id=request.operator_id)
+    except Exception as exc:
+        raise HTTPException(status_code=503, detail=f"causal_geometry_proposal_adopt_failed: {exc}") from exc
+    return {
+        "source": _source_meta(
+            kind=store.source_kind(),
+            degraded=store.degraded(),
+            limit=1,
+            error=store.last_error(),
+        ),
+        "data": result.model_dump(mode="json") if hasattr(result, "model_dump") else result,
+    }
+
+
+@router.post("/api/causal-geometry/proposals/{proposal_id}/reject")
+def api_causal_geometry_proposal_reject(
+    proposal_id: str,
+    request: CausalGeometryProposalRejectRequest,
+) -> Dict[str, Any]:
+    """Operator-invoked rejection of a pending proposal. No autonomous caller may hit this route."""
+    store = CAUSAL_GEOMETRY_PROPOSAL_STORE
+    try:
+        # FieldTopologyLearnedWeightsStore.reject() returns None (no result payload); build a
+        # useful response from status_for() rather than surfacing a bare null.
+        store.reject(proposal_id, operator_id=request.operator_id, reason=request.reason)
+    except Exception as exc:
+        raise HTTPException(status_code=503, detail=f"causal_geometry_proposal_reject_failed: {exc}") from exc
+    status_for = getattr(store, "status_for", None)
+    status = status_for(proposal_id) if callable(status_for) else None
+    return {
+        "source": _source_meta(
+            kind=store.source_kind(),
+            degraded=store.degraded(),
+            limit=1,
+            error=store.last_error(),
+        ),
+        "data": {"proposal_id": proposal_id, "status": status},
     }
 
 

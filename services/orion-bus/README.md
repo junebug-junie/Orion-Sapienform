@@ -114,7 +114,7 @@ crash-looping and other symptoms (bus-dependent services failing, Postgres also
 possibly down) are inconclusive.
 
 ```bash
-python scripts/bus_core_health_watchdog.py
+python3 scripts/bus_core_health_watchdog.py
 # or: make bus-core-health-watchdog
 ```
 
@@ -164,6 +164,16 @@ same caveat noted in the concept-relation-digest precedent.
 Not installed automatically -- per this repo's safety rules, host crontab is
 host-level shared infrastructure and is not modified without explicit sign-off.
 Install the line above by hand.
+
+The `>> ... 2>&1` redirect to a log file is deliberate, not an alerting gap:
+this script prints a status line on *every* run, healthy or not, so an
+unredirected cron job would mail on every single invocation (every minute)
+rather than only on failure. The real alert path for a human is the
+`ORION_BUS_CRASH_LOOP_ALERT.txt` marker file described above (survives both
+Redis and Postgres being down, which cron's own MTA-dependent mail delivery
+does not) plus this exit code (1 = crash loop, 2/3 = watchdog itself
+failed) -- a wrapper that needs to escalate further should key off those,
+not off cron's mail-on-output behavior.
 
 ---
 

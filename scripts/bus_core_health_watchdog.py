@@ -111,6 +111,11 @@ DEFAULT_RESTART_WINDOW_MINUTES = 10.0
 
 _UNHEALTHY_LIKE_STATUSES = {"unhealthy", "missing", "docker_unreachable"}
 _NEUTRAL_STATUSES = {"starting", "none"}
+# inspect_container() reports restart_count=0 for these two statuses as a
+# PLACEHOLDER, not a real `docker inspect` reading (the container wasn't
+# found, or docker itself couldn't be reached) -- never treat that 0 as a
+# genuine RestartCount sample.
+_UNKNOWN_RESTART_COUNT_STATUSES = {"missing", "docker_unreachable"}
 
 
 def container_name_for_project(project: str) -> str:
@@ -322,11 +327,32 @@ def evaluate(
         )
 
     samples = prune_restart_samples(list(state.get("restart_samples", [])), now, restart_window_minutes)
-    samples.append({"at": now_iso, "restart_count": restart_count})
+    # inspect_container() reports restart_count=0 as a PLACEHOLDER (not a
+    # real reading) whenever the container is "missing" or Docker itself was
+    # "docker_unreachable" -- see its docstring. Recording that placeholder
+    # as a real sample poisons the window's min() the moment a real
+    # observation returns: a container that was genuinely at restart_count=5
+    # before a transient docker-unreachable blip would compute
+    # restarts_in_window = 5 - min(..., 0) = 5 on the very next healthy poll,
+    # a false crash-loop positive from a blip that caused zero real restarts.
+    # Reproduced: healthy(5) -> docker_unreachable(0) -> healthy(5) yielded
+    # crash_loop_detected=True before this fix. Simply not recording the
+    # placeholder sample keeps the window's min() anchored to real
+    # RestartCount readings only.
+    if health_status not in _UNKNOWN_RESTART_COUNT_STATUSES:
+        samples.append({"at": now_iso, "restart_count": restart_count})
     new_state["restart_samples"] = samples
 
-    restarts_in_window = 0
-    if samples:
+    # Carry forward the last known real restarts_in_window during a
+    # placeholder tick (see the _UNKNOWN_RESTART_COUNT_STATUSES note above)
+    # rather than recomputing off the current call's fake restart_count=0 --
+    # that would otherwise transiently zero out a real in-progress restart
+    # count for the duration of the blip, masking the restart-count signature
+    # right when a docker hiccup coincides with a genuine crash loop.
+    restarts_in_window = _safe_int(
+        state.get("restarts_in_window", 0), 0, "restarts_in_window from state file"
+    )
+    if samples and health_status not in _UNKNOWN_RESTART_COUNT_STATUSES:
         # Deliberately min() over the window's *values*, not the
         # chronologically-earliest sample's value -- RestartCount is only
         # monotonic within one container's lifetime. If bus-core is removed

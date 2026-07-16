@@ -180,6 +180,37 @@ def test_restart_count_reset_from_container_recreation_rebaselines():
     assert any("restart" in r for r in reasons)
 
 
+def test_docker_unreachable_blip_does_not_poison_restart_window():
+    """Regression: inspect_container() reports restart_count=0 as a
+    PLACEHOLDER (not a real reading) for "missing"/"docker_unreachable"
+    observations. Before this fix, evaluate() recorded that placeholder 0
+    as a real restart_samples entry, so a transient docker-unreachable blip
+    between two genuinely-unchanged healthy readings poisoned the window's
+    min() and produced a false crash-loop positive on the very next healthy
+    poll. Reproduced: healthy(rc=5) -> docker_unreachable(rc=0) ->
+    healthy(rc=5) used to yield crash_loop_detected=True despite zero real
+    restarts having occurred."""
+    state = watchdog._empty_state()
+    state, detected, _ = watchdog.evaluate(
+        state, "healthy", restart_count=5, now=_now(0), restart_count_threshold=3, restart_window_minutes=10
+    )
+    assert detected is False
+
+    state, detected, _ = watchdog.evaluate(
+        state, "docker_unreachable", restart_count=0, now=_now(1), restart_count_threshold=3, restart_window_minutes=10
+    )
+    assert state["restarts_in_window"] == 0
+    assert detected is False
+    # the placeholder 0 must not have been recorded as a real sample
+    assert all(s["restart_count"] != 0 for s in state["restart_samples"])
+
+    state, detected, reasons = watchdog.evaluate(
+        state, "healthy", restart_count=5, now=_now(2), restart_count_threshold=3, restart_window_minutes=10
+    )
+    assert state["restarts_in_window"] == 0
+    assert detected is False, f"false crash-loop positive from a docker-unreachable blip: {reasons}"
+
+
 def test_evaluate_ignores_malformed_restart_samples_without_crashing():
     # A hand-edited or partially-migrated state file could carry a sample
     # missing/with a non-int restart_count. evaluate() must never crash on
@@ -421,6 +452,64 @@ def test_resolved_footer_append_is_atomic_and_preserves_original_content(tmp_pat
     updated = marker.read_text()
     assert updated.startswith(original)
     assert "RESOLVED" in updated
+    leftovers = list(marker.parent.glob(".tmp-*"))
+    assert leftovers == []
+
+
+def test_atomic_write_leaves_destination_untouched_on_mid_write_failure(tmp_path, monkeypatch):
+    """The two tests above only exercise the success path -- they'd pass just
+    as well against a naive `open(path, "w")` write, so they don't actually
+    prove atomicity. The real guarantee _atomic_write_text/_atomic_write_json
+    claim is: a failure *during* the write must never leave the destination
+    path torn/partial, because the write lands in a same-directory tmp file
+    first and only `os.replace()`s it in on success. Simulate a crash
+    mid-write (after mkstemp, before the write completes) and confirm the
+    pre-existing destination content survives byte-for-byte, and the failed
+    temp file is cleaned up rather than left behind."""
+    path = tmp_path / "state.json"
+    path.write_text('{"original": true}')
+
+    real_fdopen = watchdog.os.fdopen
+
+    def crashing_fdopen(fd, mode):
+        fh = real_fdopen(fd, mode)
+        fh.write = MagicMock(side_effect=OSError("simulated crash mid-write"))
+        return fh
+
+    monkeypatch.setattr(watchdog.os, "fdopen", crashing_fdopen)
+
+    with pytest.raises(OSError):
+        watchdog._atomic_write_json(path, {"new": True})
+
+    # os.replace() never ran -- original content must survive untouched.
+    assert path.read_text() == '{"original": true}'
+    # the except-clause cleanup must have removed the half-written tmp file.
+    leftovers = list(path.parent.glob(".tmp-*"))
+    assert leftovers == []
+
+
+def test_resolved_footer_append_leaves_marker_untouched_on_mid_write_failure(tmp_path, monkeypatch):
+    """Same gap as above, applied to append_resolved_footer specifically:
+    a crash while writing the footer must not corrupt or truncate the
+    existing incident report -- a human reading the marker mid-incident must
+    never see a torn file."""
+    marker = tmp_path / "ALERT.txt"
+    watchdog.write_alert_marker(marker, "fake-container", watchdog._empty_state(), ["reason"], _now())
+    original = marker.read_text()
+
+    real_fdopen = watchdog.os.fdopen
+
+    def crashing_fdopen(fd, mode):
+        fh = real_fdopen(fd, mode)
+        fh.write = MagicMock(side_effect=OSError("simulated crash mid-write"))
+        return fh
+
+    monkeypatch.setattr(watchdog.os, "fdopen", crashing_fdopen)
+
+    with pytest.raises(OSError):
+        watchdog.append_resolved_footer(marker, _now(5))
+
+    assert marker.read_text() == original
     leftovers = list(marker.parent.glob(".tmp-*"))
     assert leftovers == []
 

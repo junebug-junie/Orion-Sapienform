@@ -98,7 +98,7 @@ check-daily-schedule-collisions:
 # or a systemd timer (see that script's docstring / scripts/README.md for install
 # instructions), not from inside a container.
 bus-core-health-watchdog:
-	@python scripts/bus_core_health_watchdog.py $(if $(PROJECT),--project $(PROJECT),) \
+	@python3 scripts/bus_core_health_watchdog.py $(if $(PROJECT),--project $(PROJECT),) \
 		$(if $(TELEMETRY_ROOT),--telemetry-root $(TELEMETRY_ROOT),) \
 		$(if $(UNHEALTHY_STREAK_THRESHOLD),--unhealthy-streak-threshold $(UNHEALTHY_STREAK_THRESHOLD),) \
 		$(if $(RESTART_COUNT_THRESHOLD),--restart-count-threshold $(RESTART_COUNT_THRESHOLD),) \

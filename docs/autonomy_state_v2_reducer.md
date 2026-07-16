@@ -10,8 +10,12 @@ Pressure math uses the shared `signal_drive_map` via `chat_evidence_to_tension` 
 
 - **Not** sentience, consciousness, or moral status.
 - **Not** durable persistence: V2 exists in **request context only**.
-- **Not** an input to phi features, `build_self_state`, or homeostatic `DriveEngine`.
 - Empty reasoning repositories do **not** emit `reasoning_quality` theater.
+
+~~Previously: not an input to phi features, `build_self_state`, or homeostatic `DriveEngine`.~~
+Superseded 2026-07-16: `DriveEngine`'s `drive_state` now feeds chat stance and Mind directly
+(see `orion/autonomy/drives_and_autonomy_retrospective.md` §8). This reducer's own pressure
+output is being retired from those consumers in favor of it.
 
 ## Evidence contract (omit-when-empty)
 
@@ -49,4 +53,4 @@ When unset or not `true`, cortex skips the reducer entirely.
 
 1. **No durable state** — each turn rebuilds prior state from graph V1; delta is relative to the upgrade baseline at turn start.
 2. **Sparse map** — unmapped hazards still emit typed evidence but do not move pressures (preferred over fake motion).
-3. **Dual pipelines** — chat reducer and endogenous tick both use `signal_drive_map` helpers but chat does not feed `DriveEngine`.
+3. ~~**Dual pipelines** — chat reducer and endogenous tick both use `signal_drive_map` helpers but chat does not feed `DriveEngine`.~~ Being resolved 2026-07-16: `autonomy_slice.py` and `mind_runtime.py` are being repointed at `DriveEngine`'s `drive_state`; this reducer's typed evidence-compiler pattern is kept as a mapping layer feeding `DriveEngine` asynchronously via the bus instead.

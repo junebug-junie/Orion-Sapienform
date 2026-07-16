@@ -1266,8 +1266,12 @@ def _project_autonomy_from_beliefs(
 
     # drive_state.v1 projection — kept structurally separate from the `summary`/
     # `debug` fields above (those are the autonomy_state_v2-lineage signal; see
-    # orion/self_state/inner_state_registry.py's DUPLICATE note: drive_state and
-    # autonomy_state_v2 are independently-computed and must never be crosswalked).
+    # orion/self_state/inner_state_registry.py's DUPLICATE note). Isolation rule
+    # superseded 2026-07-16 (orion/autonomy/drives_and_autonomy_retrospective.md
+    # §8): drive_state is now the live signal for downstream consumers
+    # (autonomy_slice.py, mind_runtime.py); kept as a separate dict/key here
+    # rather than merged field-by-field into `summary`, since provenance
+    # (which snapshot_source a field came from) still matters for debugging.
     pressures: Dict[str, float] = {}
     for d in drives:
         dk = str(getattr(d, "drive_kind", "") or "")

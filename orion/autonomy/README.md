@@ -21,7 +21,10 @@ Optional turn-local reducer that upgrades graph `AutonomyStateV1` with **typed**
 | Map | `config/autonomy/signal_drive_map.yaml` | `chat_social_hazard` + `chat_reasoning_quality` rows |
 | Reducer | `orion/autonomy/reducer.py` | Fold `magnitude * drive_impacts` into `drive_pressures`; return `tensions_minted` |
 
-**Hard isolation:** this path must not wire into phi, `build_self_state`, or homeostatic `DriveEngine`.
+~~**Hard isolation:** this path must not wire into phi, `build_self_state`, or homeostatic `DriveEngine`.~~
+Superseded 2026-07-16: `DriveEngine`'s `drive_state` is being wired into chat stance and Mind
+as the live signal, replacing this reducer's role there. See
+[drives_and_autonomy_retrospective.md §8](drives_and_autonomy_retrospective.md#8-downstream-consumer-audit-2026-07-16-and-the-corrected-implementation-order).
 
 Operator contract + enable bar: [docs/autonomy_state_v2_reducer.md](../../docs/autonomy_state_v2_reducer.md)
 

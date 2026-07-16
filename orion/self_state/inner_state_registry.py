@@ -163,10 +163,13 @@ REGISTRY: tuple[InnerStateSignal, ...] = (
         notes=(
             "Same 6-drive taxonomy (DRIVE_KEYS) as drive_state.v1, "
             "independently reduced, gated behind AUTONOMY_STATE_V2_REDUCER_ENABLED. "
-            "9 samples/24h confirmed 2026-07-12, all zero -- too little traffic "
-            "to compare against drive_state.v1 yet. Merge-or-keep-separate "
-            "decision is Phase 4 of the mesh-substrate-redesign plan, already "
-            "on record; NOT resolved by this registry."
+            "9 samples/24h confirmed 2026-07-12, all zero, vs. drive_state.v1's "
+            "363 samples/24h with real variance. Merge decision resolved "
+            "2026-07-16: drive_state.v1 wins as the live signal for chat stance "
+            "and Mind (orion/autonomy/drives_and_autonomy_retrospective.md §8); "
+            "this reducer's evidence-compiler pattern is kept as an async "
+            "mapping layer feeding drive_state.v1 rather than as its own "
+            "consumer-facing pressure output."
         ),
     ),
     InnerStateSignal(

@@ -153,11 +153,20 @@ See `docs/notes/2026-07-16-bus-core-standby-cutover-runbook.md` for the full man
 cutover/cutback procedure.
 
 ```bash
-# On the atlas host, from its own checkout:
+# On the atlas host, from its own checkout's repo root:
 cp services/orion-bus/.env_example services/orion-bus/.env.atlas-standby
-# edit .env.atlas-standby: confirm PROJECT/NODE_NAME are atlas's own values
 
+# PROJECT/TELEMETRY_ROOT/NODE_NAME are root-level vars (root .env_example,
+# not services/orion-bus/.env_example) -- confirm atlas's own root .env
+# already has real values for these before deploying:
+grep -E "^(PROJECT|NODE_NAME|TELEMETRY_ROOT)=" .env
+
+# Chain root .env FIRST, then the service env file (AGENTS.md section 8
+# pattern) -- a single --env-file here leaves PROJECT/TELEMETRY_ROOT empty
+# and silently binds the data volume at the filesystem root instead of
+# under /mnt/telemetry/.
 docker compose \
+  --env-file .env \
   --env-file services/orion-bus/.env.atlas-standby \
   -f services/orion-bus/docker-compose.atlas-standby.yml \
   up -d

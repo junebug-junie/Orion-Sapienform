@@ -8,14 +8,33 @@
 # Deploy pattern matches services/orion-llamacpp-host/docker-compose.atlas-workers.yml:
 # a separate, node-scoped compose file run FROM the target node's own checkout,
 # with a dedicated env file (copy services/orion-bus/.env_example to
-# services/orion-bus/.env.atlas-standby on the atlas host, then set NODE_NAME=atlas
-# and PROJECT=orion-atlas if not already set by that host's rebuild-services.sh).
+# services/orion-bus/.env.atlas-standby on the atlas host).
 #
-# Run on the atlas host:
+# PROJECT/TELEMETRY_ROOT/NODE_NAME are root-level vars (see the repo root
+# .env_example, not services/orion-bus/.env_example) -- they are NOT in the
+# copied services/orion-bus/.env.atlas-standby file. Per AGENTS.md section 8,
+# every docker compose invocation in this repo chains the root .env FIRST,
+# then the service .env, exactly like the primary bus-core's own restart
+# command. Do the same here -- do not run this with only one --env-file, or
+# PROJECT/TELEMETRY_ROOT interpolate to empty strings and the data volume
+# silently binds to the wrong path (confirmed during review: a single
+# --env-file invocation produced container_name "orion--bus-core-standby"
+# and bound the data volume at the filesystem root, "/bus-standby/data",
+# instead of under /mnt/telemetry/).
+#
+# Run on the atlas host, from its own checkout's repo root:
 #   docker compose \
+#     --env-file .env \
 #     --env-file services/orion-bus/.env.atlas-standby \
 #     -f services/orion-bus/docker-compose.atlas-standby.yml \
 #     up -d
+#
+# Confirm atlas's own root .env has real values first:
+#   grep -E "^(PROJECT|NODE_NAME|TELEMETRY_ROOT)=" .env
+# If PROJECT/NODE_NAME aren't already atlas's own values (e.g. left over
+# from a fresh clone or a copied .env), set them by hand before deploying --
+# this repo has no verified auto-detection script for that as of this
+# writing.
 #
 # This file intentionally omits bus-exporter and bus-observer. It is a cold
 # data target only -- no metrics scraping, no grammar emission, no client
@@ -39,7 +58,7 @@ services:
         "120",
       ]
     ports:
-      - "${BUS_STANDBY_PORT:-6379}:6379"
+      - "${BUS_STANDBY_PORT:-6380}:6379"
     volumes:
       - ${TELEMETRY_ROOT}/${PROJECT}/bus-standby/data:/data
     restart: unless-stopped

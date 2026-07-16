@@ -64,4 +64,30 @@ def test_pressure_competition_emits_when_spread_high() -> None:
     assert len(out) == 1
     assert out[0].kind == "tension.drive_competition.v1"
     assert out[0].magnitude >= 0.12
-    assert "autonomy" in out[0].drive_impacts
+    # Signal-only by design: the event still carries the competition (magnitude,
+    # related_nodes, provenance) but must NOT mint pressure impacts -- it is a
+    # derived meta-signal over the pressure vector, and feeding it back as
+    # pressure is data incest (2026-07-15 saturation diagnosis).
+    assert out[0].drive_impacts == {}
+    assert "drive:autonomy" in out[0].related_nodes
+    assert out[0].related_nodes[0] == "drive:autonomy"  # top drive first
+    assert out[0].provenance.tension_refs == [out[0].artifact_id]
+
+
+def test_pressure_competition_is_signal_only_never_impacts() -> None:
+    """Regression: drive_impacts stays empty even under the stability-alias path."""
+    env = _envelope()
+    out = derive_pressure_competition_tensions(
+        envelope=env,
+        intake_channel="orion:chat:intake",
+        subject="orion",
+        model_layer="self-model",
+        entity_id="self:orion",
+        pressures={
+            "relational_stability": 0.8,
+            "predictive": 0.65,
+            "continuity": 0.6,
+        },
+    )
+    assert len(out) == 1
+    assert out[0].drive_impacts == {}

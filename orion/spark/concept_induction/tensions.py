@@ -211,7 +211,8 @@ def derive_pressure_competition_tensions(
     entity_id: str,
     pressures: Dict[str, float],
 ) -> List[TensionEventV1]:
-    """Emit at most one tension when max-min drive pressure spread exceeds threshold (no turn_effect required)."""
+    """Emit at most one signal-only tension (empty drive_impacts) when max-min drive
+    pressure spread exceeds threshold (no turn_effect required)."""
     canon = _canonical_pressures_for_spread(pressures)
     vals = list(canon.values())
     if len(vals) < 2:
@@ -256,7 +257,17 @@ def derive_pressure_competition_tensions(
         provenance=prov,
         related_nodes=[f"drive:{top}", f"drive:{runner}", "tension.drive_competition.v1"],
         magnitude=clamp01(spread),
-        drive_impacts={top: 0.9, runner: 0.75},
+        # Signal-only BY DESIGN -- do not re-add drive_impacts here. This tension is
+        # a derived meta-signal computed FROM the drive pressure vector; feeding it
+        # back as pressure impacts is data incest (rich-get-richer). The 2026-07-15
+        # saturation diagnosis: with one dead drive (predictive, median 0.016) the
+        # spread sits permanently above threshold (~0.96 vs 0.06), this fired on
+        # essentially every tick, and the top drives were subsidized to a pinned
+        # fixed point (relational/autonomy/continuity at median 0.975-0.986,
+        # dominant_drive=relational 96% of ticks). Attention/projection/observers
+        # still get the competition signal via kind/magnitude/related_nodes; it just
+        # must never feed the pressure state that generated it.
+        drive_impacts={},
     )
     event.provenance.tension_refs = [event.artifact_id]
     return [event]

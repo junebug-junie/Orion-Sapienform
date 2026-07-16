@@ -5,7 +5,9 @@
 
 services:
   bus-core:
-    image: redis:7-alpine
+    build:
+      context: .
+      dockerfile: Dockerfile.bus-core
     container_name: orion-${PROJECT}-bus-core
     command:
       [

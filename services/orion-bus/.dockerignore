@@ -1,0 +1,21 @@
+# Applies to any `docker build` whose context is this directory
+# (services/orion-bus). Both Dockerfile (bus-observer, Python) and
+# Dockerfile.bus-core (bus-core, Redis) build from here.
+#
+# Dockerfile.bus-core only COPYs entrypoint.sh explicitly today, so this
+# has no effect on its current build -- it's a defensive guard against a
+# future edit (e.g. an accidental `COPY . .` copy-pasted from the sibling
+# Dockerfile) silently pulling the unrelated bus-observer Python app tree
+# into the Redis image.
+app/
+tests/
+__pycache__/
+*.pyc
+.pytest_cache/
+requirements.txt
+README.md
+AGENT_CONTEXT.md
+LAYER_PIPELINE_PLAN.md
+SUBSTRATE_TRACE_MAP.md
+.env
+.env_example

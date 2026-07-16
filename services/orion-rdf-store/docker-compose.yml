@@ -36,6 +36,6 @@ services:
     deploy:
       resources:
         limits:
-          memory: ${FUSEKI_MEM_LIMIT:-40g}
+          memory: ${FUSEKI_MEM_LIMIT:-110g}
         reservations:
           memory: ${FUSEKI_MEM_RESERVATION:-8g}

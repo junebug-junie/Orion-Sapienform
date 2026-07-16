@@ -144,3 +144,8 @@ TAbort-
 
 # === GitNexus derived code-graph index (generated state, never authority) ===
 .gitnexus/
+
+# graphify's local per-file extraction cache -- derived, reconstructable from
+# graphify-out/graph.json via scripts/graphify_seed_semantic_cache.py. Never
+# commit local cache files (CLAUDE.md section 2).
+graphify-out/cache/

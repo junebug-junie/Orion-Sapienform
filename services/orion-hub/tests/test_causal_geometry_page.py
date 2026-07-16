@@ -5,6 +5,8 @@ from pathlib import Path
 
 import os
 
+import pytest
+
 os.environ.setdefault("CHANNEL_VOICE_TRANSCRIPT", "orion:voice:transcript")
 os.environ.setdefault("CHANNEL_VOICE_LLM", "orion:voice:llm")
 os.environ.setdefault("CHANNEL_VOICE_TTS", "orion:voice:tts")
@@ -50,6 +52,41 @@ def test_causal_geometry_route_and_template_and_bundle_are_standalone() -> None:
     assert "/api/causal-geometry/proposals" in route_paths
     assert "/api/causal-geometry/proposals/{proposal_id}/adopt" in route_paths
     assert "/api/causal-geometry/proposals/{proposal_id}/reject" in route_paths
+
+
+def test_causal_geometry_js_renders_real_tables_not_raw_json_dumps() -> None:
+    js_path = HUB_ROOT / "static" / "js" / "causal-geometry.js"
+    script = js_path.read_text(encoding="utf-8")
+
+    # Snapshot/history must build real DOM tables, not `target.textContent = JSON.stringify(...)`.
+    assert 'createElement(\'table\')' in script
+    assert "function renderEdgesTable(" in script
+    assert "function renderDivergenceTable(" in script
+    assert "function renderHistory(" in script
+
+    # Divergence rows must carry a status-derived class for visual highlighting.
+    assert "status-both" in script
+    assert "status-designed_only" in script
+    assert "status-observed_only" in script
+    assert "status-insufficient_data" in script
+
+    # Degraded/empty payloads must be handled explicitly, not fed straight into a table builder.
+    assert "No edges in this snapshot." in script
+    assert "No divergence entries in this snapshot." in script
+    assert "No snapshot history available" in script or "No history available" in script
+
+    # No bare `target.textContent = JSON.stringify(payload` render path left for these sections.
+    assert "target.textContent = JSON.stringify(payload, null, 2);" not in script
+
+
+def test_causal_geometry_js_has_gentle_polling_with_visibility_pause_resume() -> None:
+    js_path = HUB_ROOT / "static" / "js" / "causal-geometry.js"
+    script = js_path.read_text(encoding="utf-8")
+
+    assert "visibilitychange" in script
+    assert "setInterval(" in script
+    assert "clearInterval(" in script
+    assert 'document.visibilityState === \'hidden\'' in script or 'document.visibilityState === "hidden"' in script
 
 
 def test_main_hub_has_causal_geometry_navigation_link_in_shell_tabs() -> None:
@@ -126,7 +163,8 @@ def test_app_js_never_navigates_the_parent_window_for_causal_geometry_tab() -> N
     assert "causalGeometryPanelFrame.contentWindow?.location.reload();" in reload_lines[0]
 
 
-def test_api_causal_geometry_snapshot_route_registered_and_degrades_gracefully() -> None:
-    payload = api_routes.api_causal_geometry_snapshot()
+@pytest.mark.asyncio
+async def test_api_causal_geometry_snapshot_route_registered_and_degrades_gracefully() -> None:
+    payload = await api_routes.api_causal_geometry_snapshot()
     assert "source" in payload
     assert "data" in payload

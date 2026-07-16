@@ -1,0 +1,105 @@
+# ───────────────────────────────────────────────────────────────
+# 🚌 Orion Bus — Cold Standby (Atlas node)
+# Passive Redis replica-target. NOT wired into ORION_BUS_URL.
+# NOT auto-failover. NOT leader-elected. Manual cutover only —
+# see docs/notes/2026-07-16-bus-core-standby-cutover-runbook.md.
+# ───────────────────────────────────────────────────────────────
+#
+# Deploy pattern matches services/orion-llamacpp-host/docker-compose.atlas-workers.yml:
+# a separate, node-scoped compose file run FROM the target node's own checkout,
+# with a dedicated env file (copy services/orion-bus/.env_example to
+# services/orion-bus/.env.atlas-standby on the atlas host).
+#
+# PROJECT/TELEMETRY_ROOT/NODE_NAME are root-level vars (see the repo root
+# .env_example, not services/orion-bus/.env_example) -- they are NOT in the
+# copied services/orion-bus/.env.atlas-standby file. Per AGENTS.md section 8,
+# every docker compose invocation in this repo chains the root .env FIRST,
+# then the service .env, exactly like the primary bus-core's own restart
+# command. Do the same here -- do not run this with only one --env-file.
+# A single --env-file invocation used to silently interpolate PROJECT/
+# TELEMETRY_ROOT to empty strings (confirmed during review: container_name
+# "orion--bus-core-standby", data volume bound at the filesystem root
+# "/bus-standby/data" instead of under /mnt/telemetry/). That is no longer
+# possible to do silently: PROJECT and TELEMETRY_ROOT below use Compose's
+# required-variable syntax (${VAR:?msg}), so `docker compose config`/`up`
+# now fails loudly with a clear error instead of interpolating empty
+# strings if either var isn't actually set by the chained --env-file(s).
+#
+# Run on the atlas host, from its own checkout's repo root. `app-net` is
+# declared `external: true` below (matches every other compose file in this
+# repo) -- it is NOT created by this file, so create it first if this is the
+# first Orion compose file ever brought up on this host (idempotent, matches
+# services/orion-bus/README.md's own bootstrap step and
+# services/orion-llamacpp-host/README.md's atlas-workers precedent):
+#   docker network inspect app-net >/dev/null 2>&1 || docker network create app-net
+#
+#   docker compose \
+#     --env-file .env \
+#     --env-file services/orion-bus/.env.atlas-standby \
+#     -f services/orion-bus/docker-compose.atlas-standby.yml \
+#     up -d --build
+#
+# Confirm atlas's own root .env has real values first:
+#   grep -E "^(PROJECT|NODE_NAME|TELEMETRY_ROOT)=" .env
+# If PROJECT/NODE_NAME aren't already atlas's own values (e.g. left over
+# from a fresh clone or a copied .env), set them by hand before deploying --
+# this repo has no verified auto-detection script for that as of this
+# writing.
+#
+# This file intentionally omits bus-exporter and bus-observer. It is a cold
+# data target only -- no metrics scraping, no grammar emission, no client
+# ever points ORION_BUS_URL here automatically.
+
+services:
+  bus-core-standby:
+    # Same image as the primary bus-core, including the AOF auto-repair
+    # entrypoint (see Dockerfile.bus-core / entrypoint.sh) -- this container
+    # runs `restart: unless-stopped` unattended on atlas the same way the
+    # primary does on athena, so it is exposed to the exact same unclean-
+    # shutdown AOF-corruption failure mode the primary's auto-repair exists
+    # for. A standby that itself silently crash-loops on a corrupted AOF the
+    # moment it's needed defeats the whole point of having it.
+    #
+    # DEPENDENCY: Dockerfile.bus-core and entrypoint.sh are added by
+    # fix/bus-core-aof-auto-repair, a sibling branch, not yet on main as of
+    # this writing (confirmed: neither file exists in this branch's own
+    # checkout). This branch must be rebased/merged on top of that one
+    # before `docker compose build` here will succeed -- if it's run first,
+    # this fails LOUDLY with a clear "Dockerfile.bus-core not found" error
+    # (a safe failure, not a silent fallback to an unpatched image), which
+    # is the signal to go merge that branch first.
+    build:
+      context: .
+      dockerfile: Dockerfile.bus-core
+    container_name: orion-${PROJECT:?PROJECT must be set -- chain --env-file .env before --env-file services/orion-bus/.env.atlas-standby}-bus-core-standby
+    command:
+      [
+        "redis-server",
+        "--appendonly",
+        "yes",
+        "--maxmemory-policy",
+        "allkeys-lru",
+        "--client-output-buffer-limit",
+        "pubsub",
+        "64mb",
+        "32mb",
+        "120",
+      ]
+    ports:
+      - "${BUS_STANDBY_PORT:-6381}:6379"
+    volumes:
+      - ${TELEMETRY_ROOT:?TELEMETRY_ROOT must be set -- chain --env-file .env before --env-file services/orion-bus/.env.atlas-standby}/${PROJECT:?PROJECT must be set -- chain --env-file .env before --env-file services/orion-bus/.env.atlas-standby}/bus-standby/data:/data
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD-SHELL", "redis-cli ping | grep PONG || exit 1"]
+      interval: 5s
+      timeout: 2s
+      retries: 5
+    networks:
+      app-net:
+        aliases:
+          - bus-core-standby
+
+networks:
+  app-net:
+    external: true

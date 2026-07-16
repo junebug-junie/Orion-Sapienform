@@ -236,6 +236,47 @@ Layer 3 `bus_transport_reducer` is deferred — see `LAYER_PIPELINE_PLAN.md`.
 
 ---
 
+## 🧊 Cold standby (`bus-core-standby`)
+
+`bus-core` is a single `redis:7-alpine` instance — a real single point of failure. A
+passive, cold-standby target lives in a separate, node-scoped compose file:
+`docker-compose.atlas-standby.yml`, deployed on the `atlas` mesh node (see
+`config/biometrics/node_catalog.yaml` — `atlas` is `expected_online: true`; `circe`
+is `expected_online: false` and was ruled out for that reason).
+
+This is **not** automatic failover, **not** leader election, and **not** wired into
+`ORION_BUS_URL` or any client. It exists so a human has a real place to restore AOF
+data to and cut traffic over manually if `bus-core` is down for an extended period.
+See `docs/notes/2026-07-16-bus-core-standby-cutover-runbook.md` for the full manual
+cutover/cutback procedure.
+
+```bash
+# On the atlas host, from its own checkout's repo root:
+cp services/orion-bus/.env_example services/orion-bus/.env.atlas-standby
+
+# PROJECT/TELEMETRY_ROOT/NODE_NAME are root-level vars (root .env_example,
+# not services/orion-bus/.env_example) -- confirm atlas's own root .env
+# already has real values for these before deploying:
+grep -E "^(PROJECT|NODE_NAME|TELEMETRY_ROOT)=" .env
+
+# Chain root .env FIRST, then the service env file (AGENTS.md section 8
+# pattern) -- a single --env-file here leaves PROJECT/TELEMETRY_ROOT empty
+# and silently binds the data volume at the filesystem root instead of
+# under /mnt/telemetry/.
+docker compose \
+  --env-file .env \
+  --env-file services/orion-bus/.env.atlas-standby \
+  -f services/orion-bus/docker-compose.atlas-standby.yml \
+  up -d
+```
+
+This follows the same node-scoped separate-compose-file convention as
+`services/orion-llamacpp-host/docker-compose.atlas-workers.yml` rather than a
+profile inside the primary `docker-compose.yml`, since the standby runs on
+different physical hardware, not alongside `bus-core` on the same host.
+
+---
+
 ## 🛠️ Future Roadmap
 
 * Transition from Redis Streams to a custom event-bus abstraction.

@@ -86,6 +86,24 @@ def delta_to_perturbations(delta: StateDeltaV1) -> list[Perturbation]:
                     label=delta.delta_id,
                 )
             )
+        # Mirror of the branch above. expected_offline_suppression is
+        # intentionally sticky (mode="add", never in NODE_DECAY_CHANNELS --
+        # "this node is known offline" should latch, not fade on a timer),
+        # but until this branch existed there was no path anywhere that ever
+        # set it back to 0.0: the only two writers were this block's
+        # `is False` case and the active_node_pressure "suppress" op below,
+        # both one-directional. mode="replace" bypasses the add-mode ceiling
+        # entirely so a prior 1.0 is fully cleared, not just added to.
+        if after.get("expected_online") is True:
+            out.append(
+                Perturbation(
+                    node_id=node_id,
+                    channel="expected_offline_suppression",
+                    intensity=0.0,
+                    label=delta.delta_id,
+                    mode="replace",
+                )
+            )
 
     if delta.target_kind == "execution_run":
         hints = dict(after.get("pressure_hints") or {})
@@ -141,9 +159,49 @@ def delta_to_perturbations(delta: StateDeltaV1) -> list[Perturbation]:
     if delta.target_kind == "transport_bus":
         hints = dict((delta.after or {}).get("pressure_hints") or {})
         node_key = _node_key(str((delta.after or {}).get("node_id") or delta.target_id.replace("bus:", "")))
+        # bus_health / delivery_confidence are fresh-value-per-report readings
+        # (orion/substrate/transport_loop/reducer.py::reduce_transport_trace_events
+        # recomputes them from scratch via extract_transport_bus_state_from_events
+        # every time it reduces new bus-trace events -- not an incremental delta),
+        # the same "here's the current reading" shape already used for
+        # execution_load/execution_friction/reasoning_load/failure_pressure/
+        # egress_confidence_deficit/prediction_error elsewhere in this file, all
+        # of which use mode="replace". Left as default mode="add" here, these two
+        # channels ratchet to 1.0 and stay there (add-mode ceiling, never cleared)
+        # since nothing else in this file wrote a downward value for them.
+        # mode="replace" alone is the fix: worker.py::_transport_tick() only
+        # reduces when fetch_transport_grammar_events() actually returns events
+        # (`if not events: return None`), i.e. bus_health/delivery_confidence
+        # deltas arrive only when there is genuine transport bus trace activity,
+        # not unconditionally every field-digester tick. Deliberately NOT added
+        # to NODE_DECAY_CHANNELS: both are "current health/confidence reading"
+        # scores (0.0-1.0, default 0.5 -- see orion/schemas/transport_projection.py
+        # and extract.py), not pressure accumulators. A health score fading
+        # toward 0.0 between reports, just because the bus went quiet, would
+        # misrepresent a quiet bus as a degrading one; mode="replace" already
+        # guarantees the value reflects the most recent genuine report, and decay
+        # would only distort that between reports rather than bound anything.
+        if "bus_health" in hints:
+            out.append(
+                Perturbation(
+                    node_id=node_key,
+                    channel="bus_health",
+                    intensity=float(hints["bus_health"]),
+                    label=delta.delta_id,
+                    mode="replace",
+                )
+            )
+        if "delivery_confidence" in hints:
+            out.append(
+                Perturbation(
+                    node_id=node_key,
+                    channel="delivery_confidence",
+                    intensity=float(hints["delivery_confidence"]),
+                    label=delta.delta_id,
+                    mode="replace",
+                )
+            )
         for channel, key in (
-            ("bus_health", "bus_health"),
-            ("delivery_confidence", "delivery_confidence"),
             ("transport_pressure", "transport_pressure"),
             ("catalog_drift_pressure", "catalog_drift_pressure"),
             ("observer_failure_pressure", "observer_failure_pressure"),

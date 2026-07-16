@@ -39,6 +39,17 @@ from orion.schemas.field_state import FieldEdgeV1, FieldStateV1
 
 NOW = datetime(2026, 7, 16, 12, 0, tzinfo=timezone.utc)
 
+
+@pytest.fixture(autouse=True)
+def _reset_learned_store_cache():
+    """`_get_learned_store()` caches its store at module level (so production
+    doesn't reconnect sqlite every diffusion tick) -- reset it before and after
+    every test so a store constructed/monkeypatched in one test can never leak
+    into the next."""
+    diffusion_module._LEARNED_STORE = None
+    yield
+    diffusion_module._LEARNED_STORE = None
+
 CAP_CAP_EDGE_REF = "capability:transport->capability:orchestration"
 
 
@@ -264,6 +275,37 @@ def test_flag_on_current_overlay_call_failure_degrades_to_raw_weight_without_rai
 
     assert state.capability_vectors["capability:orchestration"]["transport_pressure"] == pytest.approx(0.56)
     assert edge.weight_source == "designed"
+
+
+def test_learned_store_is_constructed_once_and_reused_across_ticks(monkeypatch) -> None:
+    """Regression: `_load_learned_overlay` previously built a brand-new
+    `FieldTopologyLearnedWeightsStore()` (a sqlite reconnect once persistence lands)
+    on every single `apply_diffusion` call/tick. `_get_learned_store()` must cache it
+    instead -- construct once, reuse across ticks."""
+    construction_count = 0
+
+    class _CountingStore:
+        def __init__(self, *, sql_db_path=None) -> None:
+            nonlocal construction_count
+            construction_count += 1
+
+        def current_overlay(self, *, now=None):
+            return {}
+
+    monkeypatch.setenv("FIELD_PLASTICITY_ENABLED", "true")
+    monkeypatch.setattr(
+        "orion.substrate.field_topology_learned_store.FieldTopologyLearnedWeightsStore",
+        _CountingStore,
+    )
+
+    edge = _cap_cap_edge(weight=0.70)
+    state = _state([edge], capability_vectors={"capability:transport": {"transport_pressure": 0.8}})
+
+    apply_diffusion(state, diffusion_rate=1.0)
+    apply_diffusion(state, diffusion_rate=1.0)
+    apply_diffusion(state, diffusion_rate=1.0)
+
+    assert construction_count == 1
 
 
 def test_load_learned_overlay_helper_itself_never_raises_on_store_failure(monkeypatch) -> None:

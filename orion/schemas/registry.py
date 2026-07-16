@@ -571,7 +571,11 @@ from orion.schemas.situation import (
 )
 from orion.schemas.field_attention_frame import FieldAttentionFrameV1, FieldAttentionTargetV1
 from orion.schemas.field_state import FieldEdgeV1, FieldStateV1
-from orion.schemas.causal_geometry import CausalGeometrySnapshotV1
+from orion.schemas.causal_geometry import (
+    CausalGeometryDivergenceEntryV1,
+    CausalGeometryEdgeV1,
+    CausalGeometrySnapshotV1,
+)
 from orion.schemas.execution_dispatch_frame import (
     ExecutionDispatchCandidateV1,
     ExecutionDispatchFrameV1,
@@ -1132,6 +1136,8 @@ _REGISTRY: Dict[str, Type[BaseModel]] = {
     "FeedbackFrameV1": FeedbackFrameV1,
     "OutcomeObservationV1": OutcomeObservationV1,
     "SubstrateBrainFrameV1": SubstrateBrainFrameV1,
+    "CausalGeometryEdgeV1": CausalGeometryEdgeV1,
+    "CausalGeometryDivergenceEntryV1": CausalGeometryDivergenceEntryV1,
     "CausalGeometrySnapshotV1": CausalGeometrySnapshotV1,
     "BrainRegionV1": BrainRegionV1,
     "BrainSpotlightV1": BrainSpotlightV1,

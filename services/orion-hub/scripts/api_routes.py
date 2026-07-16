@@ -279,7 +279,7 @@ class _UnavailableCausalGeometryProposalStore:
     def last_error(self) -> str | None:
         return self._error
 
-    def list_pending(self, *, limit: int = 50) -> list:
+    def list_pending(self, limit: int = 50) -> list:
         return []
 
     def adopt(self, proposal_id: str, *, operator_id: str) -> Any:
@@ -295,7 +295,11 @@ def _build_causal_geometry_proposal_store() -> Any:
     except Exception as exc:  # module not landed yet (parallel rung), or import-time failure
         return _UnavailableCausalGeometryProposalStore(error=f"import_failed: {exc}")
     try:
-        return FieldTopologyLearnedWeightsStore()
+        # Must resolve to the same file services/orion-field-digester/app/digestion/diffusion.py
+        # reads via the same env key -- otherwise an operator's adopt() here never reaches that
+        # process's diffusion tick (two separate containers, two separate in-memory stores).
+        sql_db_path = str(os.getenv("FIELD_PLASTICITY_SQL_DB_PATH", "")).strip() or None
+        return FieldTopologyLearnedWeightsStore(sql_db_path=sql_db_path)
     except Exception as exc:  # construction failure (e.g. missing env/backing store)
         return _UnavailableCausalGeometryProposalStore(error=f"init_failed: {exc}")
 

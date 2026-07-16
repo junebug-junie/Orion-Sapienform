@@ -33,6 +33,11 @@ services:
       - ${HUB_AGENT_CLAUDE_BIN_HOST:-${HOME}/.local/bin/claude}:/usr/local/bin/claude:ro
       - /var/run/docker.sock:/var/run/docker.sock
       #- /mnt/telemetry/models/whisper/${WHISPER_MODEL_SIZE}:/root/.cache/huggingface/hub/models--distil-whisper--${WHISPER_MODEL_SIZE}
+      # Same host mount orion-field-digester already uses for FIELD_CHANNEL_CORPUS_PATH --
+      # shared here so FIELD_PLASTICITY_SQL_DB_PATH can point both containers at one sqlite
+      # file (otherwise a Causal Geometry proposal adopted in this container is invisible
+      # to orion-field-digester's diffusion tick, which runs in a separate container).
+      - ${TELEMETRY_ROOT:-/mnt/telemetry}:/mnt/telemetry
     environment:
       # Core service identity
       - PROJECT=${PROJECT}
@@ -215,6 +220,7 @@ services:
       - SUBSTRATE_MUTATION_RETENTION_MAX_ROLLBACKS=${SUBSTRATE_MUTATION_RETENTION_MAX_ROLLBACKS:-500}
       - SUBSTRATE_MUTATION_CONTROL_SQL_DB_PATH=${SUBSTRATE_MUTATION_CONTROL_SQL_DB_PATH:-}
       - SUBSTRATE_MUTATION_OPERATOR_TOKEN=${SUBSTRATE_MUTATION_OPERATOR_TOKEN:-}
+      - FIELD_PLASTICITY_SQL_DB_PATH=${FIELD_PLASTICITY_SQL_DB_PATH:-}
       # Substrate semantic store: default sparql (Fuseki). graphdb = legacy; in_memory via explicit .env.
       - GRAPH_BACKEND=${GRAPH_BACKEND:-fuseki}
       - RDF_STORE_BACKEND=${RDF_STORE_BACKEND:-fuseki}

@@ -157,7 +157,16 @@ class FieldTopologyLearnedWeightsStore:
         }
 
     def reject(self, proposal_id: str, *, operator_id: str, reason: str = "") -> None:
+        """Reject a pending proposal. A no-op on an already-adopted proposal --
+
+        rejecting must never leave a live overlay entry (`self._adopted`) attached
+        to a proposal whose visible status says "rejected". Undoing an adoption is a
+        distinct action (not implemented here); this method only ever moves a
+        proposal out of `pending_review`.
+        """
         if proposal_id not in self._proposals:
+            return
+        if self._status.get(proposal_id) != "pending_review":
             return
         self._status[proposal_id] = "rejected"
         self._rejections[proposal_id] = {

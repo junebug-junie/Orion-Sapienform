@@ -18,6 +18,15 @@ _TRUTHY = {"1", "true", "yes", "on"}
 
 FIELD_PLASTICITY_ENABLED_ENV = "FIELD_PLASTICITY_ENABLED"
 
+# Must resolve to the same file the hub's CAUSAL_GEOMETRY_PROPOSAL_STORE writes to
+# (services/orion-hub/scripts/api_routes.py) -- an operator's HITL adopt() only ever
+# reaches this process's diffusion tick if both processes point at the same sqlite
+# file. Unset (the .env_example default) means "in-memory, this process only" -- the
+# overlay will never see a cross-process adoption, matching pre-plasticity behavior.
+FIELD_PLASTICITY_SQL_DB_PATH_ENV = "FIELD_PLASTICITY_SQL_DB_PATH"
+
+_LEARNED_STORE = None  # lazily constructed once; see _get_learned_store()
+
 # cap->cap edges only, per the Causal Geometry v1 design spec (Phase B) --
 # node_capability/node_service/etc. edges never consult the learned overlay,
 # even defensively (the read-path below gates on this every time, regardless
@@ -34,6 +43,26 @@ def _plasticity_enabled() -> bool:
     return str(os.getenv(FIELD_PLASTICITY_ENABLED_ENV, "false")).strip().lower() in _TRUTHY
 
 
+def _get_learned_store():
+    """Lazily construct (once, not per-tick) the shared
+    `FieldTopologyLearnedWeightsStore`, backed by `FIELD_PLASTICITY_SQL_DB_PATH` when
+    set so adoptions made in the hub process are actually visible here.
+
+    Constructing this once and caching it (rather than fresh per `apply_diffusion`
+    call) avoids reconnecting + reloading the sqlite file on every diffusion tick for
+    state that only changes on a rare HITL adopt/reject action.
+    """
+    global _LEARNED_STORE
+    if _LEARNED_STORE is None:
+        from orion.substrate.field_topology_learned_store import (
+            FieldTopologyLearnedWeightsStore,
+        )
+
+        sql_db_path = str(os.getenv(FIELD_PLASTICITY_SQL_DB_PATH_ENV, "")).strip() or None
+        _LEARNED_STORE = FieldTopologyLearnedWeightsStore(sql_db_path=sql_db_path)
+    return _LEARNED_STORE
+
+
 def _load_learned_overlay() -> dict[str, float]:
     """Best-effort read of HITL-adopted cap->cap edge-weight overrides
     (`orion/substrate/field_topology_learned_store.py`'s
@@ -46,11 +75,7 @@ def _load_learned_overlay() -> dict[str, float]:
     designed weight, exactly as if `FIELD_PLASTICITY_ENABLED` were off.
     """
     try:
-        from orion.substrate.field_topology_learned_store import (
-            FieldTopologyLearnedWeightsStore,
-        )
-
-        return FieldTopologyLearnedWeightsStore().current_overlay()
+        return _get_learned_store().current_overlay()
     except Exception as exc:  # pragma: no cover - defensive, see docstring above
         logger.warning("field_plasticity_overlay_load_failed: %s", exc, exc_info=True)
         return {}
@@ -147,11 +172,20 @@ def apply_diffusion(state: FieldStateV1, *, diffusion_rate: float) -> None:
             and learned_overlay
             and edge.edge_type == CAPABILITY_CAPABILITY_EDGE_TYPE
         ):
-            delta = learned_overlay.get(edge_ref_for(edge.source_id, edge.target_id), 0.0)
+            edge_ref = edge_ref_for(edge.source_id, edge.target_id)
+            delta = learned_overlay.get(edge_ref, 0.0)
             if delta:
                 effective_weight = _clamp01(edge.weight + delta)
                 edge.weight_source = "learned"
                 edge.learned_at = datetime.now(timezone.utc)
+                logger.info(
+                    "field_plasticity_learned_weight_applied edge_ref=%s designed_weight=%.4f "
+                    "delta=%.4f effective_weight=%.4f",
+                    edge_ref,
+                    edge.weight,
+                    delta,
+                    effective_weight,
+                )
         for src_ch, tgt_ch in edge.channel_map.items():
             possible_targets.setdefault(edge.target_id, set()).add(tgt_ch)
             src_val = float(src.get(src_ch, 0.0))

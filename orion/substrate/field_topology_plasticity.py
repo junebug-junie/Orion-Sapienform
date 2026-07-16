@@ -59,6 +59,21 @@ def _cap_cap_pairs(field_edges: list[FieldEdgeV1]) -> set[tuple[str, str]]:
     return {(edge.source_id, edge.target_id) for edge in field_edges if edge.edge_type == CAP_CAP_EDGE_TYPE}
 
 
+def _base_target_id(target_id: str) -> str:
+    """Strip `causal_geometry_report.build_divergence()`'s `#<capability_channel>`
+    disambiguation suffix, so joins against `FieldEdgeV1.target_id` (which never
+    carries that suffix) actually match.
+
+    Rung 2A's divergence entries always carry the suffixed form for "both" /
+    "designed_only" status (see `causal_geometry_report.py`'s `build_divergence()`
+    docstring) -- it exists to disambiguate multiple capability channels aliasing to
+    the same physical (source_id, target_id) YAML edge, but the physical edge itself,
+    and the weight patch this module proposes against it, is keyed on the unsuffixed
+    id.
+    """
+    return target_id.split("#", 1)[0]
+
+
 def find_cap_cap_divergence_candidates(
     snapshot: CausalGeometrySnapshotV1,
     *,
@@ -71,16 +86,20 @@ def find_cap_cap_divergence_candidates(
     own -- only `FieldEdgeV1` (the designed lattice topology) does. So membership in
     the cap->cap class has to be resolved by joining on (source_id, target_id) against
     the caller-supplied field-lattice edges (typically the current
-    `FieldStateV1.edges`), not against the snapshot alone.
+    `FieldStateV1.edges`), not against the snapshot alone. The join must use the
+    unsuffixed target_id (`_base_target_id`) since Rung 2A suffixes it.
     """
     bounds = CONTRACTS[MUTATION_CLASS].bounds["edge_weight_delta"]
     lo, hi = bounds
     cap_cap_pairs = _cap_cap_pairs(field_edges)
     candidates: list[FieldTopologyDivergenceCandidate] = []
     for entry in snapshot.divergence:
-        if (entry.source_id, entry.target_id) not in cap_cap_pairs:
+        base_target_id = _base_target_id(entry.target_id)
+        if (entry.source_id, base_target_id) not in cap_cap_pairs:
             continue
-        candidate = _candidate_from_entry(entry, lo=lo, hi=hi, min_meaningful_delta=min_meaningful_delta)
+        candidate = _candidate_from_entry(
+            entry, base_target_id=base_target_id, lo=lo, hi=hi, min_meaningful_delta=min_meaningful_delta
+        )
         if candidate is not None:
             candidates.append(candidate)
     return candidates
@@ -89,6 +108,7 @@ def find_cap_cap_divergence_candidates(
 def _candidate_from_entry(
     entry: CausalGeometryDivergenceEntryV1,
     *,
+    base_target_id: str,
     lo: float,
     hi: float,
     min_meaningful_delta: float,
@@ -103,9 +123,9 @@ def _candidate_from_entry(
         return None
     clamped_delta = _clamp(raw_delta, lo, hi)
     return FieldTopologyDivergenceCandidate(
-        edge_ref=edge_ref_for(entry.source_id, entry.target_id),
+        edge_ref=edge_ref_for(entry.source_id, base_target_id),
         source_id=entry.source_id,
-        target_id=entry.target_id,
+        target_id=base_target_id,
         observed_strength=float(entry.observed_strength),
         designed_weight=float(entry.designed_weight),
         raw_delta=raw_delta,

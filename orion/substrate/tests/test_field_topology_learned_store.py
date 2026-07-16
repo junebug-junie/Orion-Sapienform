@@ -4,6 +4,8 @@ import ast
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
+import pytest
+
 from orion.core.schemas.substrate_mutation import MutationPatchV1, MutationProposalV1
 from orion.substrate.field_topology_learned_store import (
     EFFECTIVE_DELTA_EPSILON,
@@ -75,6 +77,24 @@ def test_reject_does_not_appear_in_overlay() -> None:
     assert store.list_pending() == []
     overlay = store.current_overlay()
     assert "cap:x->cap:y" not in overlay
+
+
+def test_reject_after_adopt_is_a_no_op_and_leaves_overlay_live() -> None:
+    """Regression: reject() previously had no pending-status guard (unlike adopt()),
+    so rejecting an already-adopted proposal flipped its visible status to
+    "rejected" while leaving the live overlay entry untouched -- an operator using
+    the hub's Reject button on an adopted proposal would see it marked rejected
+    while the weight override kept silently applying in diffusion."""
+    store = FieldTopologyLearnedWeightsStore()
+    proposal = _proposal(edge_ref="cap:m->cap:n", delta=0.09)
+    store.propose(proposal)
+    store.adopt(proposal.proposal_id, operator_id="june")
+
+    store.reject(proposal.proposal_id, operator_id="june", reason="changed my mind")
+
+    assert store.status_for(proposal.proposal_id) == "adopted"
+    overlay = store.current_overlay()
+    assert overlay.get("cap:m->cap:n") == pytest.approx(0.09)
 
 
 def test_adopt_is_the_only_way_into_overlay_and_rejects_non_pending() -> None:

@@ -166,6 +166,8 @@ def _default_rollback_for_class(mutation_class: str) -> dict[str, float | str]:
         return {"chat_reflective_lane_threshold": 0.50}
     if mutation_class == "recall_weighting_patch":
         return {"semantic_weight": 0.50, "episodic_weight": 0.35, "recency_weight": 0.15}
+    if mutation_class == "field_topology_weight_patch":
+        return {"edge_weight_delta": 0.0}
     if mutation_class == "graph_consolidation_param_patch":
         return {"query_limit_nodes": 64, "query_limit_edges": 128, "normal_revisit_seconds": 7200}
     if mutation_class.startswith("cognitive_") or mutation_class.startswith("recall_"):

@@ -87,6 +87,32 @@ def test_below_threshold_divergence_produces_no_proposal() -> None:
     assert proposals == []
 
 
+def test_suffixed_target_id_from_real_divergence_builder_still_joins_to_cap_cap_edge() -> None:
+    """Regression: causal_geometry_report.build_divergence() always appends
+    '#<capability_channel>' to target_id for "both"/"designed_only" entries (to
+    disambiguate multiple capability channels aliasing to the same physical YAML
+    edge). The cap->cap join must strip that suffix before matching against
+    FieldEdgeV1.target_id, which never carries it -- otherwise every real snapshot
+    produces zero candidates regardless of how much real divergence exists."""
+    divergence = [
+        CausalGeometryDivergenceEntryV1(
+            source_id="cap:transport",
+            target_id="cap:orchestration#reasoning_pressure",
+            observed_strength=0.9,
+            designed_weight=0.4,
+            delta=0.5,
+            status="both",
+        )
+    ]
+    snapshot = _snapshot(divergence)
+    field_edges = [_cap_cap_edge("cap:transport", "cap:orchestration")]
+
+    proposals = propose_field_topology_patches(snapshot, field_edges=field_edges)
+
+    assert len(proposals) == 1
+    assert proposals[0].patch.target_ref == edge_ref_for("cap:transport", "cap:orchestration")
+
+
 def test_non_cap_cap_edge_is_excluded_even_with_large_divergence() -> None:
     divergence = [
         CausalGeometryDivergenceEntryV1(

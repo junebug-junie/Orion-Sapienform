@@ -10,17 +10,36 @@ facet Mind would treat as real signal.
 from __future__ import annotations
 
 import asyncio
+import importlib.util
+import os
+import sys
 import time
+from pathlib import Path
 
 import pytest
 
+# Reuses services/orion-cortex-orch/tests/_orch_import_guard.py rather than a
+# thinner reimplementation: this monorepo has three services (orion-mind,
+# orion-cortex-exec, orion-cortex-orch) that each ship a package literally
+# named `app`, which collide in a shared pytest session unless the foreign
+# `app` module is purged from sys.modules and other services' paths are
+# stripped from sys.path first -- a real, previously-hit collision class
+# (see the guard's introducing commit and
+# scripts/eval_spark_introspection_contract.sh's "Separate pytest processes
+# avoid app package collisions between services" comment), not hypothetical.
+_guard = Path(__file__).resolve().parents[1] / "tests" / "_orch_import_guard.py"
+_spec = importlib.util.spec_from_file_location("_orch_guard_boot", _guard)
+assert _spec and _spec.loader
+_guard_mod = importlib.util.module_from_spec(_spec)
+_spec.loader.exec_module(_guard_mod)
+
 
 def _orch_prep() -> None:
-    import os
-    import sys
-
     os.environ.setdefault("RECALL_PG_DSN", "")
-    sys.path.insert(0, "services/orion-cortex-orch")
+    _guard_mod.ensure_orion_cortex_orch_app()
+    root = Path(__file__).resolve().parents[3]
+    if str(root) not in sys.path:
+        sys.path.insert(0, str(root))
 
 
 def test_eval_timeout_budget_is_honored_under_real_delay() -> None:

@@ -427,3 +427,28 @@ def test_prepare_plan_context_merges_drive_state_and_diag() -> None:
         )
     assert plan.context["drive_state_compact"]["dominant_drive"] == "capability"
     assert plan.context["metadata"]["mind_drive_state_fetch_diag"]["ok"] is True
+
+
+def test_query_latest_drive_audit_row_uses_memory_extractors_pool_not_a_duplicate() -> None:
+    """Regression guard: _query_latest_drive_audit_row must call
+    memory_extractor's own _get_memory_pool(), not a second, independently
+    maintained pool. A reverted implementation (mind_runtime keeping its own
+    duplicate pool/lazy-init/fail-latch globals) would not call this mock at
+    all and this test would fail with mock.assert_called_once() -- the
+    earlier version of this fix shipped with no test able to tell shared-pool
+    and duplicate-pool implementations apart."""
+    import asyncio
+    from unittest.mock import AsyncMock, MagicMock, patch
+
+    _orch_prep()
+    from app import mind_runtime as mod
+
+    fake_pool = MagicMock()
+    fake_pool.fetchrow = AsyncMock(return_value={"dominant_drive": "coherence"})
+
+    with patch("app.memory_extractor._get_memory_pool", new=AsyncMock(return_value=fake_pool)) as mocked_get_pool:
+        row = asyncio.run(mod._query_latest_drive_audit_row())
+
+    mocked_get_pool.assert_called_once()
+    fake_pool.fetchrow.assert_called_once()
+    assert row == {"dominant_drive": "coherence"}

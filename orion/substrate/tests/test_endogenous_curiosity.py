@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from datetime import datetime, timedelta, timezone
 from types import SimpleNamespace
 from unittest.mock import MagicMock
 
@@ -7,13 +8,25 @@ from orion.core.schemas.frontier_curiosity import FrontierInvocationSignalV1
 from orion.substrate.endogenous_curiosity import (
     HARD_BUDGET_CEILING,
     EndogenousCuriosityConfig,
+    _PREDICTION_ERROR_DECAY_HORIZON_SECONDS,
     endogenous_curiosity_candidates,
 )
 from orion.substrate.frontier_curiosity import FrontierCuriosityEvaluator
 
+_NOW = datetime(2026, 7, 16, 0, 0, 0, tzinfo=timezone.utc)
 
-def _node(node_id: str, prediction_error: float) -> SimpleNamespace:
-    return SimpleNamespace(node_id=node_id, metadata={"prediction_error": prediction_error})
+
+def _node(node_id: str, prediction_error: float, *, observed_at: datetime | None = None) -> SimpleNamespace:
+    """``observed_at`` defaults to ``None`` (no ``.temporal``), matching every
+    pre-existing test in this file -- those nodes are treated as unaged (decay
+    factor 1.0) by ``_prediction_error_staleness_decay``, so this default keeps
+    all of them behaving exactly as before the staleness fix. Tests that care
+    about age pass ``observed_at`` explicitly and also pass ``now=_NOW`` to
+    ``endogenous_curiosity_candidates`` so the two are measured consistently."""
+    node = SimpleNamespace(node_id=node_id, metadata={"prediction_error": prediction_error})
+    if observed_at is not None:
+        node.temporal = SimpleNamespace(observed_at=observed_at)
+    return node
 
 
 def _enabled(**overrides) -> EndogenousCuriosityConfig:
@@ -45,6 +58,63 @@ def test_sustained_prediction_error_seeds_candidates() -> None:
     assert seed.focal_node_refs == ["node:hot"]
     assert seed.signal_strength == 0.8
     assert "endogenous_seed" in seed.notes
+
+
+def test_missing_prediction_error_never_seeds_even_at_zero_threshold() -> None:
+    """Locks in the `raw_error <= 0.0: continue` short-circuit (review finding):
+    a node with no/zero `prediction_error` must not seed a spurious "sustained
+    prediction error" candidate at signal_strength=0.0, even when the threshold
+    itself is configured at 0.0 (which would otherwise let `0.0 < 0.0 == False`
+    pass through, as it did before this fix)."""
+    no_error = _node("node:quiet", 0.0)
+    missing = SimpleNamespace(node_id="node:no-key", metadata={})
+    candidates = endogenous_curiosity_candidates(
+        nodes=[no_error, missing], config=_enabled(min_prediction_error=0.0)
+    )
+    assert candidates == []
+
+
+def test_stale_prediction_error_decays_and_is_not_sustained() -> None:
+    """Regression for the sibling of PR #1061's salience decay-bypass bug:
+    `metadata["prediction_error"]` never decays on its own (it's a raw upsert
+    snapshot), so an unguarded read let a node surprising once, days ago, stay
+    labeled "sustained prediction error" at full strength forever -- live-
+    confirmed 2026-07-16 (node:substrate.transport pinned at signal_strength=1.0
+    across 1,428 consecutive persisted candidate sets). A node last observed
+    well past the decay horizon must score strictly lower than an
+    identically-seeded node observed right now, and must not clear the default
+    threshold once decayed below it."""
+    fresh = _node("node:fresh", 0.9, observed_at=_NOW)
+    stale = _node(
+        "node:stale",
+        0.9,
+        observed_at=_NOW - timedelta(seconds=_PREDICTION_ERROR_DECAY_HORIZON_SECONDS * 4),
+    )
+
+    candidates = endogenous_curiosity_candidates(
+        nodes=[fresh, stale], config=_enabled(min_prediction_error=0.0), now=_NOW
+    )
+    by_node = {c.focal_node_refs[0]: c for c in candidates if c.notes and "source:prediction_error" in c.notes}
+
+    assert by_node["node:fresh"].signal_strength == 0.9
+    assert by_node["node:stale"].signal_strength == 0.0
+    assert by_node["node:stale"].signal_strength < by_node["node:fresh"].signal_strength
+
+    # At the default (non-zero) threshold, the decayed-to-zero stale node must
+    # not surface as a candidate at all -- it should not win any share of the
+    # bounded per-cycle budget just because it was surprising once, long ago.
+    thresholded = endogenous_curiosity_candidates(nodes=[fresh, stale], config=_enabled(), now=_NOW)
+    assert all(c.focal_node_refs != ["node:stale"] for c in thresholded)
+
+
+def test_prediction_error_staleness_decay_is_linear_within_horizon() -> None:
+    half_horizon = _NOW - timedelta(seconds=_PREDICTION_ERROR_DECAY_HORIZON_SECONDS / 2)
+    node = _node("node:half-decayed", 1.0, observed_at=half_horizon)
+    candidates = endogenous_curiosity_candidates(
+        nodes=[node], config=_enabled(min_prediction_error=0.0), now=_NOW
+    )
+    assert len(candidates) == 1
+    assert abs(candidates[0].signal_strength - 0.5) < 1e-6
 
 
 def test_budget_cap_and_hard_ceiling() -> None:

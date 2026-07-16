@@ -5,7 +5,10 @@ when an operator asks (``explicit_operator_request``). This module lets
 intrinsic signals seed ``curiosity_candidate`` signals with no operator
 trigger:
 
-- sustained prediction error on substrate nodes (rung 1's surprise);
+- sustained prediction error on substrate nodes (rung 1's surprise) --
+  staleness-decayed by node age so "sustained" means currently still
+  surprising, not merely surprising once (see
+  ``_prediction_error_staleness_decay`` below);
 - repair-pressure appraisals (``appraisal/repair_pressure.py``);
 - unresolved open-loops from the rung-3 attention broadcast.
 
@@ -24,9 +27,11 @@ from __future__ import annotations
 
 import os
 from dataclasses import dataclass
+from datetime import datetime, timezone
 from typing import Any, Sequence
 
 from orion.core.schemas.frontier_curiosity import FrontierInvocationSignalV1
+from orion.substrate.pressure import PressureConfig
 
 _TRUTHY = {"1", "true", "yes", "on"}
 
@@ -35,6 +40,52 @@ KILL_SWITCH_FLAG = "ORION_ENDOGENOUS_CURIOSITY_KILL_SWITCH"
 BUDGET_ENV = "ORION_ENDOGENOUS_CURIOSITY_BUDGET"
 MIN_REPAIR_LEVEL_ENV = "ORION_ENDOGENOUS_CURIOSITY_MIN_REPAIR_LEVEL"
 HARD_BUDGET_CEILING = 8
+
+# Prediction-error staleness ceiling. `metadata["prediction_error"]` is a raw
+# snapshot (never decays on its own; see `pressure.py::prediction_error_pressure()`'s
+# docstring) written by the transport reducer whenever `transport_prediction_error()`
+# fires. Left unguarded, a node that was surprising once is "sustained prediction
+# error" forever and, since candidates sort strongest-first, wins the bounded
+# per-cycle budget on every tick. Live-confirmed 2026-07-16: `node:substrate.transport`
+# held `signal_strength=1.0` identically across all 1,428 persisted candidate sets
+# over the prior 24h (path live since 2026-07-02, not dormant).
+#
+# Deliberately NOT switched to reading `dynamic_pressure` directly, unlike the
+# sibling fix in `attention_broadcast.py::_node_salience()` (PR #1061):
+# `dynamic_pressure` is a composite of drive/prediction-error/contradiction pressure
+# propagated across edges (`dynamics.py::_compute_pressures()`), so it can be driven
+# entirely by an unrelated neighbor's pressure with zero prediction error of its
+# own -- reading it here would sometimes make
+# `evidence_summary="sustained prediction error on {node_id}"` literally false.
+# Instead the raw value is decayed by the node's own age, reusing the same horizon
+# `prediction_error_pressure()` already applies to this same field -- keeps the
+# signal specifically about prediction error while fixing the staleness.
+#
+# Captured once at import time from `PressureConfig()`'s bare default (matching
+# `pressure.py`'s own current usage -- neither module reads this from env today).
+# If `PressureConfig` ever becomes env-configurable, this constant would silently
+# pin to whatever was true at process start; re-derive per-call if that happens.
+_PREDICTION_ERROR_DECAY_HORIZON_SECONDS = PressureConfig().prediction_error_decay_horizon_seconds
+
+
+def _prediction_error_staleness_decay(node: Any, *, now: datetime) -> float:
+    """Linear decay-to-zero by node age, mirroring `prediction_error_pressure()`.
+
+    A node with no ``temporal.observed_at`` (duck-typed test doubles, mainly --
+    real ``BaseSubstrateNodeV1`` instances always carry ``temporal``) is treated as
+    unaged: decay factor 1.0, i.e. no staleness penalty, rather than raising or
+    silently zeroing it out.
+    """
+    observed = getattr(getattr(node, "temporal", None), "observed_at", None)
+    if observed is None:
+        return 1.0
+    if observed.tzinfo is None:
+        observed = observed.replace(tzinfo=timezone.utc)
+    horizon = _PREDICTION_ERROR_DECAY_HORIZON_SECONDS
+    if horizon <= 0:
+        return 1.0
+    age_seconds = max(0.0, (now - observed).total_seconds())
+    return max(0.0, 1.0 - (age_seconds / horizon))
 
 
 def _env_flag(name: str) -> bool:
@@ -84,12 +135,16 @@ def _prediction_error_candidates(
     anchor_scope: str,
     subject_ref: str | None,
     min_error: float,
+    now: datetime,
 ) -> list[FrontierInvocationSignalV1]:
     candidates: list[FrontierInvocationSignalV1] = []
     for node in nodes:
         try:
             metadata = dict(getattr(node, "metadata", None) or {})
-            error = _clamp01(metadata.get("prediction_error"))
+            raw_error = _clamp01(metadata.get("prediction_error"))
+            if raw_error <= 0.0:
+                continue
+            error = raw_error * _prediction_error_staleness_decay(node, now=now)
             if error < min_error:
                 continue
             node_id = str(getattr(node, "node_id", "") or "")
@@ -230,6 +285,7 @@ def endogenous_curiosity_candidates(
     attention_frame: Any = None,
     coverage_gap_signals: Sequence[FrontierInvocationSignalV1] = (),
     config: EndogenousCuriosityConfig | None = None,
+    now: datetime | None = None,
 ) -> list[FrontierInvocationSignalV1]:
     """Bounded set of self-seeded curiosity candidates; [] unless enabled.
 
@@ -240,12 +296,14 @@ def endogenous_curiosity_candidates(
     cfg = config if config is not None else EndogenousCuriosityConfig.from_env()
     if not cfg.enabled or cfg.kill_switch:
         return []
+    resolved_now = now or datetime.now(timezone.utc)
 
     candidates = _prediction_error_candidates(
         nodes,
         anchor_scope=anchor_scope,
         subject_ref=subject_ref,
         min_error=cfg.min_prediction_error,
+        now=resolved_now,
     )
     repair = _repair_pressure_candidate(
         repair_appraisal,

@@ -322,6 +322,116 @@ def test_prediction_error_seeds_pressure_propagates_and_leaves_calm_nodes_cold()
     assert calm_pressure == 0.0
 
 
+def test_dynamic_pressure_reason_is_persisted_on_node_metadata() -> None:
+    """SubstrateDynamicsEngine.tick() must write metadata["dynamic_pressure_reason"]
+    alongside dynamic_pressure so downstream typing (attention_broadcast's
+    _node_salience()) can key off what actually drove *this tick's* pressure
+    instead of a raw seed field that never clears. Cover all three source
+    kinds plus the "no active driver" default."""
+    drive = DriveNodeV1(
+        node_id="drive-reason",
+        anchor_scope="orion",
+        subject_ref="entity:orion",
+        drive_kind="stability",
+        temporal=_temporal(0),
+        provenance=_prov(),
+        signals={"salience": 0.9},
+        metadata={"drive_status": "active", "pressure": 0.8},
+    )
+    surprising = ConceptNodeV1(
+        node_id="concept-surprising-reason",
+        anchor_scope="orion",
+        subject_ref="entity:orion",
+        label="Surprising",
+        temporal=_temporal(0),
+        provenance=_prov(),
+        metadata={"prediction_error": 0.8},
+    )
+    neighbor = ConceptNodeV1(
+        node_id="concept-neighbor-reason",
+        anchor_scope="orion",
+        subject_ref="entity:orion",
+        label="Neighbor",
+        temporal=_temporal(0),
+        provenance=_prov(),
+    )
+    calm = ConceptNodeV1(
+        node_id="concept-calm-reason",
+        anchor_scope="orion",
+        subject_ref="entity:orion",
+        label="Calm",
+        temporal=_temporal(0),
+        provenance=_prov(),
+    )
+    record = SubstrateGraphRecordV1(
+        anchor_scope="orion",
+        subject_ref="entity:orion",
+        nodes=[drive, surprising, neighbor, calm],
+        edges=[_edge("concept-surprising-reason", "concept", "concept-neighbor-reason", "concept", "supports")],
+    )
+    materializer = SubstrateGraphMaterializer(store=InMemorySubstrateGraphStore())
+    materializer.apply_record(record)
+    engine = SubstrateDynamicsEngine(store=materializer.store)
+    engine.tick(now=datetime.now(timezone.utc))
+    snap = materializer.store.snapshot()
+
+    assert snap.nodes["drive-reason"].metadata.get("dynamic_pressure_reason") == "drive_seed"
+    assert snap.nodes["concept-surprising-reason"].metadata.get("dynamic_pressure_reason") == "prediction_error_seed"
+    assert snap.nodes["concept-neighbor-reason"].metadata.get("dynamic_pressure_reason") == "prediction_error_propagation:supports"
+    # calm node's pressure never changes from its 0.0 default, so tick()
+    # skips the metadata rewrite entirely (same short-circuit dynamic_pressure
+    # itself already relies on) -- no reason key is written at all.
+    assert "dynamic_pressure_reason" not in snap.nodes["concept-calm-reason"].metadata
+
+
+def test_dynamic_pressure_reason_attributes_to_the_dominant_source_not_the_last_pass() -> None:
+    """_compute_pressures() runs three passes in a fixed order (drive_seed,
+    prediction_error, contradiction) that all write into the same shared
+    `pressure`/`reasons` dicts. A single node with both a dominant
+    prediction_error seed (0.8, scored by weight 0.6 -> ~0.48, from the
+    2nd/prediction_error pass) and a smaller, unrelated open contradiction on
+    itself (severity 0.3 -> amp ~0.15, from the 3rd/contradiction pass) must
+    keep dynamic_pressure_reason == "prediction_error_seed" -- the later
+    contradiction pass must not unconditionally clobber the reason string
+    just because it runs last, even though it doesn't actually raise the
+    node's pressure (0.15 < 0.48). Regression for a review finding on the
+    reason-typing patch: only the prediction_error pass originally guarded
+    its reason write with `if seed > pressure[node_id]`; the drive_seed and
+    contradiction passes wrote their reason unconditionally whenever their
+    own seed/amp was positive, silently overwriting a correctly-dominant
+    reason from an earlier pass. prediction_error_pressure() reads
+    metadata['prediction_error'] regardless of node_kind, so a single
+    ContradictionNodeV1 can carry both signals at once."""
+    node = ContradictionNodeV1(
+        node_id="contra-with-prediction-error",
+        anchor_scope="orion",
+        subject_ref="entity:orion",
+        summary="minor unrelated conflict, but also a bigger surprise",
+        involved_node_ids=["concept-other-a", "concept-other-b"],
+        temporal=_temporal(0),
+        provenance=_prov(),
+        metadata={"resolved": False, "severity": 0.3, "prediction_error": 0.8},
+    )
+    record = SubstrateGraphRecordV1(
+        anchor_scope="orion",
+        subject_ref="entity:orion",
+        nodes=[node],
+        edges=[],
+    )
+    materializer = SubstrateGraphMaterializer(store=InMemorySubstrateGraphStore())
+    materializer.apply_record(record)
+    engine = SubstrateDynamicsEngine(store=materializer.store)
+    engine.tick(now=datetime.now(timezone.utc))
+    snap = materializer.store.snapshot()
+
+    updated = snap.nodes["contra-with-prediction-error"]
+    pressure = updated.metadata.get("dynamic_pressure", 0.0)
+    # sanity: the prediction-error seed really is the larger contributor
+    # (~0.48) over the contradiction amplification (~0.15)
+    assert pressure > 0.4
+    assert updated.metadata.get("dynamic_pressure_reason") == "prediction_error_seed"
+
+
 def test_prediction_error_pressure_decays_with_age() -> None:
     fresh = ConceptNodeV1(
         node_id="concept-fresh",

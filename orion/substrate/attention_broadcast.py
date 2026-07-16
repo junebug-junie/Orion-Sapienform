@@ -126,6 +126,22 @@ def _node_salience(metadata: dict[str, Any]) -> tuple[float, str]:
     around it and was never actually used). Still surface whether a
     prediction-error seed exists at all, for the anomaly-vs-concept typing
     downstream -- that's a stable category, not the buggy part.
+
+    Typing itself has the same staleness problem the magnitude fix above
+    solved: the raw ``prediction_error`` metadata field never clears once
+    set, so a node whose *current* ``dynamic_pressure`` is now driven
+    entirely by an unrelated source (a drive seed, contradiction
+    propagation) still gets typed "anomaly" forever off an old, no-longer
+    relevant prediction-error value. ``SubstrateDynamicsEngine.tick()``
+    persists ``metadata["dynamic_pressure_reason"]`` -- the actual driver of
+    *this tick's* pressure value (``"prediction_error_seed"``,
+    ``"prediction_error_propagation:{predicate}"``, ``"drive_seed"``,
+    ``"drive_propagation:{predicate}"``, ``"contradiction_unresolved"``,
+    ``"contradiction_involved"``, or ``"none"``) -- so typing is derived from
+    that instead. Nodes that predate a dynamics tick (no reason key present
+    at all, e.g. freshly materialized or in tests that model synthetic
+    pre-tick state) fall back to the old presence-check behavior so this
+    change does not regress typing for those.
     """
 
     def _f(key: str) -> float:
@@ -135,7 +151,11 @@ def _node_salience(metadata: dict[str, Any]) -> tuple[float, str]:
             return 0.0
 
     pressure = _f("dynamic_pressure")
-    kind = "prediction_error" if _f("prediction_error") > 0.0 else "pressure"
+    reason = metadata.get("dynamic_pressure_reason")
+    if reason is not None:
+        kind = "prediction_error" if str(reason).startswith("prediction_error") else "pressure"
+    else:
+        kind = "prediction_error" if _f("prediction_error") > 0.0 else "pressure"
     return pressure, kind
 
 

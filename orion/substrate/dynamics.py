@@ -89,6 +89,14 @@ class SubstrateDynamicsEngine:
                 continue
             metadata = dict(node.metadata)
             metadata["dynamic_pressure"] = round(new_pressure, 6)
+            # Persist which source actually drove this tick's pressure value
+            # (drive_seed, prediction_error_seed/propagation:*, contradiction_*,
+            # or "none" if this node has no active driver) so downstream
+            # consumers -- attention_broadcast._node_salience() in particular --
+            # can type a node by what is CURRENTLY moving its pressure, instead
+            # of a raw metadata field that never decays and never clears once
+            # set (see orion/substrate/attention_broadcast.py::_node_salience).
+            metadata["dynamic_pressure_reason"] = pressure_reasons.get(node_id, "none")
             updated = node.model_copy(update={"metadata": metadata})
             updated_nodes[node_id] = updated
             pressure_updates.append(
@@ -184,8 +192,9 @@ class SubstrateDynamicsEngine:
             seed = drive_seed_pressure(node, self._pressure_config)
             if seed <= 0:
                 continue
-            pressure[node.node_id] = max(pressure[node.node_id], seed)
-            reasons[node.node_id] = "drive_seed"
+            if seed > pressure[node.node_id]:
+                pressure[node.node_id] = seed
+                reasons[node.node_id] = "drive_seed"
             frontier: list[tuple[str, float, int]] = [(node.node_id, seed, 0)]
             visited: set[tuple[str, int]] = set()
             while frontier:
@@ -245,8 +254,9 @@ class SubstrateDynamicsEngine:
             amp, involved = contradiction_amplification(node, now=now)
             if amp <= 0:
                 continue
-            pressure[node.node_id] = max(pressure[node.node_id], amp)
-            reasons[node.node_id] = "contradiction_unresolved"
+            if amp > pressure[node.node_id]:
+                pressure[node.node_id] = amp
+                reasons[node.node_id] = "contradiction_unresolved"
             for involved_id in involved:
                 propagated = max(0.0, min(self._pressure_config.max_pressure, amp * self._pressure_config.contradiction_neighbor_attenuation))
                 if propagated > pressure[involved_id]:

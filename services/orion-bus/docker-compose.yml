@@ -5,7 +5,9 @@
 
 services:
   bus-core:
-    image: redis:7-alpine
+    build:
+      context: .
+      dockerfile: Dockerfile.bus-core
     container_name: orion-${PROJECT}-bus-core
     command:
       [
@@ -30,6 +32,15 @@ services:
       interval: 5s
       timeout: 2s
       retries: 5
+      # entrypoint.sh runs a non-destructive redis-check-aof pass before
+      # redis-server even starts listening, and escalates to a destructive
+      # --fix (+ pre-fix backup copy of appendonlydir) when it finds
+      # corruption -- both add real time before the port is up. On a
+      # healthy AOF this is well under a second, but give real repairs room
+      # to complete before Docker starts counting failed checks, same
+      # convention as services/orion-fcc/docker-compose.yml's start_period
+      # for a comparable entrypoint-side wait.
+      start_period: 30s
     networks:
       app-net:
         aliases:

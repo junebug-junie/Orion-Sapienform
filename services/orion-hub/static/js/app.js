@@ -678,6 +678,10 @@ document.addEventListener("DOMContentLoaded", () => {
   const substrateAtlasPanel = document.getElementById("substrate-atlas");
   const substrateAtlasPanelFrame = document.getElementById("substrateAtlasPanelFrame");
   const substrateAtlasPanelRefresh = document.getElementById("substrateAtlasPanelRefresh");
+  const causalGeometryTabButton = document.getElementById("causalGeometryTabButton");
+  const causalGeometryPanel = document.getElementById("causal-geometry");
+  const causalGeometryPanelFrame = document.getElementById("causalGeometryPanelFrame");
+  const causalGeometryPanelRefresh = document.getElementById("causalGeometryPanelRefresh");
   const pressureAnalyticsTabButton = document.getElementById("pressureAnalyticsTabButton");
   const pressurePanel = document.getElementById("pressure");
   const collapseMirrorTabButton = document.getElementById("collapseMirrorTabButton");
@@ -962,6 +966,9 @@ document.addEventListener("DOMContentLoaded", () => {
     if (tabKey === "substrate-atlas" && !substrateAtlasPanel) {
       effectiveTab = "hub";
     }
+    if (tabKey === "causal-geometry" && !causalGeometryPanel) {
+      effectiveTab = "hub";
+    }
     if (tabKey === "substrate-lattice" && !substrateLatticePanelEl) {
       effectiveTab = "hub";
     }
@@ -976,6 +983,7 @@ document.addEventListener("DOMContentLoaded", () => {
     const isServiceLogs = effectiveTab === "service-logs";
     const isSubstrate = effectiveTab === "substrate";
     const isSubstrateAtlas = effectiveTab === "substrate-atlas";
+    const isCausalGeometry = effectiveTab === "causal-geometry";
     const isMemory = effectiveTab === "memory";
     const isPressure = effectiveTab === "pressure";
     const isSubstrateLattice = effectiveTab === "substrate-lattice";
@@ -1003,6 +1011,9 @@ document.addEventListener("DOMContentLoaded", () => {
         };
         setTimeout(pingAtlasFrame, 150);
       }
+    }
+    if (causalGeometryPanel) {
+      causalGeometryPanel.classList.toggle("hidden", !isCausalGeometry);
     }
     if (memoryPanel) {
       memoryPanel.classList.toggle("hidden", !isMemory);
@@ -1060,6 +1071,9 @@ document.addEventListener("DOMContentLoaded", () => {
     styleTabButton(substrateTabButton, isSubstrate);
     if (substrateAtlasTabButton) {
       styleTabButton(substrateAtlasTabButton, isSubstrateAtlas);
+    }
+    if (causalGeometryTabButton) {
+      styleTabButton(causalGeometryTabButton, isCausalGeometry);
     }
     if (memoryTabButton) {
       styleTabButton(memoryTabButton, isMemory);
@@ -1647,6 +1661,8 @@ document.addEventListener("DOMContentLoaded", () => {
       setActiveTab("substrate");
     } else if (h === "#substrate-atlas" && substrateAtlasPanel && substrateAtlasTabButton) {
       setActiveTab("substrate-atlas");
+    } else if (h === "#causal-geometry" && causalGeometryPanel && causalGeometryTabButton) {
+      setActiveTab("causal-geometry");
     } else if (h === "#pressure" && pressurePanel && pressureAnalyticsTabButton) {
       setActiveTab("pressure");
     } else if (h === "#substrate-lattice" && substrateLatticePanelEl && substrateLatticeTabButton) {
@@ -11750,6 +11766,13 @@ document.addEventListener("DOMContentLoaded", () => {
         history.replaceState(null, "", "#substrate-atlas");
       });
     }
+    if (causalGeometryTabButton && causalGeometryPanel) {
+      causalGeometryTabButton.addEventListener("click", (event) => {
+        event.preventDefault();
+        setActiveTab("causal-geometry");
+        history.replaceState(null, "", "#causal-geometry");
+      });
+    }
     if (memoryTabButton) {
       memoryTabButton.addEventListener("click", (event) => {
         event.preventDefault();
@@ -11825,6 +11848,12 @@ document.addEventListener("DOMContentLoaded", () => {
       } catch {
         /* ignore */
       }
+    });
+  }
+
+  if (causalGeometryPanelRefresh && causalGeometryPanelFrame) {
+    causalGeometryPanelRefresh.addEventListener("click", () => {
+      causalGeometryPanelFrame.contentWindow?.location.reload();
     });
   }
 

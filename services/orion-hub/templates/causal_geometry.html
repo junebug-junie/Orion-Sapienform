@@ -1,0 +1,41 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Orion Hub — Causal Geometry Inspector</title>
+  <script src="https://cdn.tailwindcss.com"></script>
+  <link rel="stylesheet" href="/static/css/style.css?v=1.0.8" />
+</head>
+<body class="bg-black text-gray-200 min-h-screen p-6">
+  <div class="max-w-6xl mx-auto space-y-4">
+    <div class="flex items-center justify-between">
+      <h1 class="text-xl font-semibold">Causal Geometry Inspector</h1>
+      <div class="flex gap-2">
+        <button id="causalGeometryRefreshButton" class="px-3 py-2 text-xs rounded border border-gray-700 bg-gray-900 hover:bg-gray-800">Refresh</button>
+        <a href="/" class="px-3 py-2 text-xs rounded border border-gray-700 bg-gray-900 hover:bg-gray-800">Back to Hub</a>
+      </div>
+    </div>
+
+    <div id="causalGeometryActionError" class="hidden text-xs text-red-300 bg-red-950/40 border border-red-800 rounded p-2"></div>
+    <div id="causalGeometrySourceMeta" class="text-xs text-gray-400"></div>
+
+    <section class="bg-gray-900 border border-gray-800 rounded p-4">
+      <h2 class="font-medium mb-2">Latest Snapshot</h2>
+      <pre id="causalGeometrySnapshot" class="text-xs bg-gray-950 border border-gray-800 rounded p-3 overflow-auto">Loading…</pre>
+    </section>
+
+    <section class="bg-gray-900 border border-gray-800 rounded p-4">
+      <h2 class="font-medium mb-2">Snapshot History</h2>
+      <pre id="causalGeometryHistory" class="text-xs bg-gray-950 border border-gray-800 rounded p-3 overflow-auto">Loading…</pre>
+    </section>
+
+    <section class="bg-gray-900 border border-gray-800 rounded p-4">
+      <h2 class="font-medium mb-2">Pending Proposals</h2>
+      <div id="causalGeometryProposals" class="text-xs bg-gray-950 border border-gray-800 rounded p-3 overflow-auto space-y-2">Loading…</div>
+    </section>
+  </div>
+
+  <script src="/static/js/causal-geometry.js?v={{HUB_UI_ASSET_VERSION}}"></script>
+</body>
+</html>

@@ -7,7 +7,10 @@ ThoughtEventV1 and reconciles this coloring. Everything fails open.
 """
 from __future__ import annotations
 
+import asyncio
+import json
 import logging
+import time
 from datetime import datetime, timezone
 from typing import Any
 from uuid import UUID, uuid4
@@ -166,17 +169,186 @@ def _situation_compact_from_broadcast(request: StanceReactRequestV1) -> dict[str
     return compact
 
 
+# --- drive_state_compact facet (bounded, fail-open Postgres fetch) ---
+#
+# Mirrors orion-cortex-orch's `fetch_drive_state_facet_for_mind` in
+# services/orion-cortex-orch/app/mind_runtime.py (same query, same diagnostics
+# shape, same fail-open contract) for orion-thought's independent "light Mind"
+# path. orion-cortex-orch uses asyncpg via a shared lazy pool; orion-thought
+# has no asyncpg dependency, so this rides the existing sync psycopg2/
+# SQLAlchemy seam already used by store.py (`_get_engine()`/`_database_url()`)
+# and bounds it with asyncio.wait_for(asyncio.to_thread(...)) so a slow/failed
+# query can never block the event loop past the configured timeout.
+DRIVE_AUDITS_LATEST_QUERY_FOR_THOUGHT = (
+    "SELECT dominant_drive, active_drives, drive_pressures, summary, "
+    "COALESCE(observed_at, created_at) AS observed_at "
+    "FROM drive_audits WHERE subject = 'orion' "
+    "ORDER BY COALESCE(observed_at, created_at) DESC LIMIT 1"
+)
+
+# asyncio.wait_for/asyncio.to_thread cannot kill a stuck OS thread -- on the
+# asyncio-level timeout the executor thread (and whatever Postgres connection
+# it checked out from store.py's shared `_get_engine()` pool) keeps running
+# until it naturally returns. A server-side statement_timeout, scoped to just
+# this query's own transaction via SET LOCAL (reverts automatically, so it
+# never leaks into the pooled connection for the *next* checkout by any of
+# store.py's other callers), bounds that residual exposure. Same idiom as
+# services/orion-cortex-orch/app/memory_inject.py's psycopg2 SET LOCAL
+# statement_timeout for its own bounded, fail-open Postgres read.
+_DRIVE_STATE_QUERY_STATEMENT_TIMEOUT_MS = 300
+
+
+def _coerce_jsonb(value: Any) -> Any:
+    """psycopg2's default JSONB codec decodes to python objects already; this is a
+    guard for driver/codec configurations where the column instead comes back as a
+    raw JSON string (mirrors orion-cortex-orch mind_runtime._coerce_jsonb)."""
+    if isinstance(value, str):
+        try:
+            return json.loads(value)
+        except (TypeError, ValueError):
+            return None
+    return value
+
+
+def _query_latest_drive_audit_row_sync() -> dict[str, Any] | None:
+    """Sync single-row fetch via orion-thought's existing SQLAlchemy engine.
+
+    Reuses `store._get_engine()` rather than duplicating engine-creation logic —
+    the same lazy module-level engine already used for reverie persistence,
+    pointed at the same `conjourney` Postgres instance `orion-sql-writer`
+    writes `drive_audits` to (see `store._database_url()`). Runs on a worker
+    thread via `asyncio.to_thread` in the caller; must stay synchronous.
+    """
+    from sqlalchemy import text
+
+    from .store import _get_engine
+
+    engine = _get_engine()
+    # engine.begin() (not .connect()) so `SET LOCAL statement_timeout` is
+    # transaction-scoped: it bounds only this query and reverts automatically
+    # when the transaction ends, instead of persisting on the pooled
+    # connection for whichever store.py caller checks it out next.
+    with engine.begin() as conn:
+        conn.execute(
+            text(f"SET LOCAL statement_timeout = '{_DRIVE_STATE_QUERY_STATEMENT_TIMEOUT_MS}ms'")
+        )
+        row = conn.execute(text(DRIVE_AUDITS_LATEST_QUERY_FOR_THOUGHT)).mappings().first()
+    return dict(row) if row is not None else None
+
+
+async def fetch_drive_state_facet_for_thought(
+    correlation_id: str, *, settings: Any
+) -> tuple[dict[str, Any] | None, dict[str, Any]]:
+    """Bounded, fail-open fetch of the latest DriveEngine `drive_audits` row (subject='orion').
+
+    Returns ``(drive_state_compact_or_none, diagnostics)``. On timeout, connection
+    failure, missing table, or no matching/meaningful row, this returns
+    ``(None, diagnostics)`` without raising — the Mind request must never stall
+    or break on this facet's absence. Same contract as orion-cortex-orch's
+    `fetch_drive_state_facet_for_mind`, adapted to orion-thought's sync DB seam.
+    """
+    timeout_sec = max(0.01, float(getattr(settings, "mind_drive_state_fetch_timeout_sec", 0.4)))
+    diagnostics: dict[str, Any] = {
+        "correlation_id": correlation_id,
+        "timeout_sec": timeout_sec,
+        "ok": False,
+        "elapsed_ms": 0,
+        "timed_out": False,
+        "exception_type": None,
+        "reason": "start",
+    }
+    t0 = time.perf_counter()
+    try:
+        row = await asyncio.wait_for(
+            asyncio.to_thread(_query_latest_drive_audit_row_sync), timeout=timeout_sec
+        )
+    except asyncio.TimeoutError as exc:
+        elapsed_ms = int((time.perf_counter() - t0) * 1000)
+        diagnostics.update(
+            {
+                "elapsed_ms": elapsed_ms,
+                "timed_out": True,
+                "exception_type": type(exc).__name__,
+                "reason": "timeout",
+            }
+        )
+        logger.warning(
+            "mind_drive_state_fetch_timeout corr=%s elapsed_ms=%s timeout_sec=%s",
+            correlation_id,
+            elapsed_ms,
+            timeout_sec,
+        )
+        return None, diagnostics
+    except Exception as exc:  # noqa: BLE001 — fail-open by contract
+        elapsed_ms = int((time.perf_counter() - t0) * 1000)
+        diagnostics.update(
+            {
+                "elapsed_ms": elapsed_ms,
+                "exception_type": type(exc).__name__,
+                "reason": "exception",
+                "degradation_reason": str(exc),
+            }
+        )
+        logger.warning(
+            "mind_drive_state_fetch_failed corr=%s elapsed_ms=%s exc_type=%s err=%s",
+            correlation_id,
+            elapsed_ms,
+            type(exc).__name__,
+            exc,
+        )
+        return None, diagnostics
+
+    elapsed_ms = int((time.perf_counter() - t0) * 1000)
+    diagnostics["elapsed_ms"] = elapsed_ms
+    if row is None:
+        diagnostics.update({"ok": True, "reason": "no_rows"})
+        return None, diagnostics
+
+    active_drives = _coerce_jsonb(row.get("active_drives"))
+    dominant_drive = row.get("dominant_drive")
+    summary = row.get("summary")
+    # Content check, not just row-existence: a quiet tick (nothing crossed
+    # activation threshold that tick) writes dominant_drive=None, summary=None,
+    # active_drives=[] to drive_audits. Attaching that as a real signal would be
+    # the "schema-valid payload with meaningless content" pattern CLAUDE.md
+    # Section 0A calls out — fail open here the same way a missing row does.
+    if not dominant_drive and not summary and not (isinstance(active_drives, list) and active_drives):
+        diagnostics.update({"ok": True, "reason": "no_meaningful_content"})
+        return None, diagnostics
+
+    observed_at = row.get("observed_at")
+    compact = {
+        "dominant_drive": dominant_drive,
+        "active_drives": active_drives,
+        "drive_pressures": _coerce_jsonb(row.get("drive_pressures")),
+        "summary": summary,
+        "observed_at": observed_at.isoformat() if hasattr(observed_at, "isoformat") else observed_at,
+    }
+    diagnostics.update({"ok": True, "reason": "success"})
+    logger.info(
+        "mind_drive_state_fetch_result corr=%s ok=true elapsed_ms=%s dominant_drive=%s",
+        correlation_id,
+        elapsed_ms,
+        compact["dominant_drive"],
+    )
+    return compact, diagnostics
+
+
 def build_light_mind_request(
     request: StanceReactRequestV1,
     *,
     wall_time_ms: int,
     router_profile: str,
+    drive_state_compact: dict[str, Any] | None = None,
 ) -> MindRunRequestV1:
     """Build a bounded Mind request with NO cognitive-projection cold rebuild.
 
     Evidence in v1 is the current user turn (as a single current_turn item),
-    plus recall_bundle (only if already threaded on stance_inputs) and a
-    situation_compact facet derived from the attention broadcast.
+    plus recall_bundle (only if already threaded on stance_inputs), a
+    situation_compact facet derived from the attention broadcast, and an
+    optional drive_state_compact facet (bounded-fetched by the caller via
+    `fetch_drive_state_facet_for_thought`). This function stays synchronous/pure;
+    the async DB fetch happens in the caller.
     """
     user_text = (request.user_message or "").strip()[:_MAX_USER_TEXT_CHARS]
     snapshot: dict[str, Any] = {"user_text": user_text, "messages_tail": []}
@@ -189,6 +361,8 @@ def build_light_mind_request(
     situation = _situation_compact_from_broadcast(request)
     if situation:
         facets["situation_compact"] = situation
+    if isinstance(drive_state_compact, dict) and drive_state_compact:
+        facets["drive_state_compact"] = drive_state_compact
     if facets:
         snapshot["facets"] = facets
 

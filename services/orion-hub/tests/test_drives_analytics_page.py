@@ -172,3 +172,86 @@ def test_divergence_card_surfaces_fallback_banner_and_autonomy_note() -> None:
     script = JS_PATH.read_text(encoding="utf-8")
     assert "store_path_is_fallback_default" in script
     assert "autonomy_state_v2_note" in script
+
+
+# ---------------------------------------------------------------------------
+# Hub shell tab wiring (Task 8) -- mirrors test_causal_geometry_page.py's
+# shell-level tests for the #drives tab.
+# ---------------------------------------------------------------------------
+
+APP_JS_PATH = HUB_ROOT / "static" / "js" / "app.js"
+INDEX_HTML_PATH = HUB_ROOT / "templates" / "index.html"
+
+
+def test_main_hub_has_drives_navigation_link_in_shell_tabs() -> None:
+    index_html = INDEX_HTML_PATH.read_text(encoding="utf-8")
+
+    assert 'id="drivesAnalyticsTabButton"' in index_html
+    assert 'href="#drives"' in index_html
+    assert 'data-hash-target="#drives"' in index_html
+    assert ">Drives<" in index_html
+    drives_link_block = index_html.split('id="drivesAnalyticsTabButton"', 1)[1].split("</a>", 1)[0]
+    assert 'role="button"' in drives_link_block
+
+
+def test_main_hub_has_isolated_drives_shell_panel_embedding_standalone_page() -> None:
+    index_html = INDEX_HTML_PATH.read_text(encoding="utf-8")
+
+    assert '<section id="drives" data-panel="drives"' in index_html
+    assert 'id="drivesAnalyticsPanelFrame"' in index_html
+    assert 'src="/drives-analytics"' in index_html
+    assert 'id="drivesAnalyticsPanelStandaloneLink" href="/drives-analytics"' in index_html
+
+
+def test_drives_page_keeps_main_shell_untouched() -> None:
+    index_html = INDEX_HTML_PATH.read_text(encoding="utf-8")
+    app_js = APP_JS_PATH.read_text(encoding="utf-8")
+
+    assert "drives-analytics.js" not in index_html
+    assert 'id="drivesAnalyticsPanelFrame"' in index_html
+    assert "/api/drives-analytics" not in app_js
+    assert "drivesRefreshButton" not in app_js
+
+
+def test_app_js_includes_drives_in_shell_tab_switching_without_full_navigation() -> None:
+    app_js = APP_JS_PATH.read_text(encoding="utf-8")
+
+    assert 'const drivesAnalyticsTabButton = document.getElementById("drivesAnalyticsTabButton");' in app_js
+    assert 'const drivesAnalyticsPanel = document.getElementById("drives");' in app_js
+    assert 'const isDrivesAnalytics = effectiveTab === "drives";' in app_js
+    assert 'drivesAnalyticsPanel.classList.toggle("hidden", !isDrivesAnalytics);' in app_js
+    assert 'styleTabButton(drivesAnalyticsTabButton, isDrivesAnalytics);' in app_js
+    assert 'drivesAnalyticsTabButton.addEventListener("click", (event) => {' in app_js
+    assert 'setActiveTab("drives");' in app_js
+    assert 'history.replaceState(null, "", "#drives");' in app_js
+    assert 'h === "#drives"' in app_js
+
+
+def test_app_js_supports_drives_embed_refresh_without_merging_bundle() -> None:
+    app_js = APP_JS_PATH.read_text(encoding="utf-8")
+
+    assert 'const drivesAnalyticsPanelFrame = document.getElementById("drivesAnalyticsPanelFrame");' in app_js
+    assert 'const drivesAnalyticsPanelRefresh = document.getElementById("drivesAnalyticsPanelRefresh");' in app_js
+    assert 'drivesAnalyticsPanelFrame.contentWindow?.location.reload();' in app_js
+    assert "drives-analytics.js" not in app_js
+
+
+def test_app_js_never_navigates_the_parent_window_for_drives_tab() -> None:
+    """The crux of 'doesn't kill the session': no full-page navigation for this tab.
+
+    The only reload allowed for this feature is on the iframe's own contentWindow, triggered
+    by the explicit refresh button -- never window.location/href on the parent Hub page.
+    """
+    app_js = APP_JS_PATH.read_text(encoding="utf-8")
+
+    lines = app_js.splitlines()
+    drives_lines = [line for line in lines if "drivesAnalytics" in line]
+    assert drives_lines, "expected drivesAnalytics lines to exist in app.js"
+
+    for line in drives_lines:
+        assert "window.location.href" not in line
+        assert "window.location =" not in line
+
+    reload_lines = [line for line in drives_lines if ".reload()" in line]
+    assert len(reload_lines) == 1
+    assert "drivesAnalyticsPanelFrame.contentWindow?.location.reload();" in reload_lines[0]

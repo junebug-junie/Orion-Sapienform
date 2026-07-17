@@ -4980,6 +4980,23 @@ async def causal_geometry_page() -> HTMLResponse:
     )
 
 
+@router.get("/drives-analytics")
+async def drives_analytics_page() -> HTMLResponse:
+    from .main import TEMPLATES_DIR, build_hub_ui_asset_version
+
+    template = (TEMPLATES_DIR / "drives-analytics.html").read_text(encoding="utf-8")
+    rendered = template.replace("{{HUB_UI_ASSET_VERSION}}", build_hub_ui_asset_version())
+    return HTMLResponse(
+        content=rendered,
+        status_code=200,
+        headers={
+            "Cache-Control": "no-store, no-cache, must-revalidate, max-age=0",
+            "Pragma": "no-cache",
+            "Expires": "0",
+        },
+    )
+
+
 @router.get("/substrate-atlas")
 async def substrate_atlas_page() -> HTMLResponse:
     from app.settings import get_settings

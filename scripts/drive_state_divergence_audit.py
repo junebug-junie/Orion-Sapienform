@@ -11,8 +11,10 @@ drive-pressure signals that share the 6-key `DRIVE_KEYS` taxonomy
    (orion/spark/concept_induction/store.py), path from
    `ConceptSettings.store_path` (env `CONCEPT_STORE_PATH`, default
    `DEFAULT_CONCEPT_STORE_PATH` in orion/spark/concept_induction/settings.py).
-2. `autonomy_state_v2` -- computed by `orion.autonomy.reducer`, consumed in
-   services/orion-cortex-exec/app/chat_stance.py::_run_autonomy_reducer. Only
+2. `autonomy_state_v2` -- historically computed by `orion.autonomy.reducer`,
+   which was retired 2026-07-16 and deleted 2026-07-17 (see
+   orion/self_state/inner_state_registry.py); this script now reads a
+   frozen/historical persisted row rather than a live-updating signal. Only
    the *current* value is persisted: a single-row-per-subject UPSERT in
    Postgres via `load_autonomy_state_v2("orion")`
    (orion/autonomy/state_store.py), DSN from env `ORION_AUTONOMY_STATE_DB_URL`.

@@ -380,7 +380,9 @@ Two Falkor *usages* may share one FalkorDB instance with **separate graph names*
       confirms idempotent upsert against a real persistent backend, not a store recreated fresh
       on every boot.
 - [x] Concept-induction post-save no longer RDF-materializes when `CONCEPT_PROFILE_GRAPH_BACKEND=falkor`
-      (concept-only Cypher-native writes into shared `orion_substrate`; unit-tested)
+      (concept-only Cypher-native writes into shared `orion_substrate`; unit-tested). Live outcome is
+      concept **nodes** only — the profile mapper emits no concept↔concept edges yet, and induction
+      writes bypass Hub's identity materializer (parallel identity islands; merge is a named follow-up).
 
 ---
 

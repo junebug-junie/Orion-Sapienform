@@ -537,9 +537,13 @@ class ConceptWorker:
                 destination = f"falkor:{self.cfg.falkordb_substrate_graph}"
                 schema_kind = "substrate.concept_atlas.falkor.v1"
                 graph_write_attempted = True
-                materialize_concept_profile_to_falkor(
+                # Falkor client is a sync redis client; keep GRAPH.QUERY off the
+                # event loop so induction ticks don't stall bus intake.
+                store = self._get_substrate_store()
+                await asyncio.to_thread(
+                    materialize_concept_profile_to_falkor,
                     profile=profile,
-                    store=self._get_substrate_store(),
+                    store=store,
                 )
                 graph_write_succeeded = True
             elif backend == "rdf":

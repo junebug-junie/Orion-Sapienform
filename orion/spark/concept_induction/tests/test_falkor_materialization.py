@@ -121,6 +121,11 @@ def test_materialize_writes_native_cypher_without_payload_json_sor() -> None:
     result = materialize_concept_profile_to_falkor(profile=_fixture_profile(), store=store)
     assert result.concept_nodes == 2
     assert result.skipped_nodes >= 1
+    # The profile mapper emits no concept↔concept edges today: live outcome is
+    # concept NODES only. If this assertion breaks, the mapper gained
+    # concept↔concept relations — update docs and verify Hub identity merge.
+    assert result.concept_edges == 0
+    assert result.skipped_edges >= 1
 
     node_calls = [(c, p) for c, p in client.calls if "MERGE (n:SubstrateNode" in c]
     assert node_calls
@@ -285,3 +290,65 @@ def test_falkor_materialization_failure_isolated_from_local_write() -> None:
 def test_invalid_graph_backend_fails_closed_to_disabled() -> None:
     cfg = ConceptSettings(concept_profile_graph_backend="wat")
     assert cfg.concept_profile_graph_backend == "disabled"
+
+
+def test_disabled_backend_writes_nothing_and_succeeds() -> None:
+    with tempfile.TemporaryDirectory() as td:
+        client = RecordingFalkorClient()
+        store = FalkorSubstrateStore(
+            FalkorSubstrateStoreConfig(uri="redis://127.0.0.1:6380", graph_name="orion_substrate"),
+            client=client,
+            hydrate=False,
+        )
+        worker = ConceptWorker(
+            ConceptSettings(
+                orion_bus_enabled=False,
+                store_path=str(Path(td) / "state.json"),
+                concept_profile_graph_backend="disabled",
+            ),
+            substrate_store=store,
+        )
+        profile = _fixture_profile(with_cluster=False)
+        worker.inducer = StubInducer(profile=profile)
+        worker.bus = FakeBus()
+        worker.window["orion"] = [
+            WindowEvent(
+                text="Orion keeps coherence.",
+                timestamp=datetime.now(timezone.utc),
+                envelope=_env_with_text("Orion keeps coherence."),
+                intake_channel="orion:chat:history:log",
+            )
+        ]
+        asyncio.run(worker.run_for_subject("orion"))
+        published = worker.bus.published
+        assert not any(env.kind == "rdf.write.request" for _, env in published)
+        assert client.calls == []
+        assert any(env.kind == "memory.concepts.profile.v1" for _, env in published)
+
+
+def test_edge_identity_matches_store_canonical_format() -> None:
+    """edge_identity_key must match FalkorSubstrateStore._edge_identity
+    (``src|pred|tgt``) so identity caches agree with Hub when
+    concept↔concept edges appear."""
+    from orion.core.schemas.cognitive_substrate import (
+        NodeRefV1,
+        SubstrateEdgeV1,
+        SubstrateProvenanceV1,
+        SubstrateTemporalWindowV1,
+    )
+    from orion.spark.concept_induction.falkor_materialization import edge_identity_key
+
+    edge = SubstrateEdgeV1(
+        source=NodeRefV1(node_id="sub-concept-a", node_kind="concept"),
+        target=NodeRefV1(node_id="sub-concept-b", node_kind="concept"),
+        predicate="associated_with",
+        temporal=SubstrateTemporalWindowV1(observed_at=datetime.now(timezone.utc)),
+        provenance=SubstrateProvenanceV1(
+            authority="local_inferred",
+            source_kind="test",
+            source_channel="test",
+            producer="test_falkor_materialization",
+        ),
+    )
+    assert edge_identity_key(edge) == FalkorSubstrateStore._edge_identity(edge)
+    assert edge_identity_key(edge) == "sub-concept-a|associated_with|sub-concept-b"

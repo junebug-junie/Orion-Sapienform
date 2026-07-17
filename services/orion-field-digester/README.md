@@ -271,6 +271,70 @@ actively applied every tick via `reconcile_field_state_with_lattice()`
 default is redundant defensive coding on top of that, not the actual source
 of the observed 1.0 baseline.
 
+### Semantic categories
+
+The per-channel entries below are organized mechanically (by `NODE_CHANNELS`
+vs `CAPABILITY_CHANNELS`, roughly alphabetical within each). That's the right
+order for looking up a specific channel, but it doesn't show what the 29
+channels actually *mean* as a set. Grouping by real-world meaning instead
+(not by producer mechanism, decay membership, or any other code-structural
+property) surfaces 7 categories — written up here because no such taxonomy
+existed anywhere in the repo before this section (checked: neither this
+glossary, `orion/self_state/README.md`, nor any `docs/superpowers/specs/`
+felt-state-arc doc groups channels by meaning rather than by mechanism or
+producer). This grouping was originally derived while selecting a feature
+subset for the mood-arc windowed-autoencoder spike (see
+`docs/superpowers/specs/2026-07-13-felt-state-arc-roadmap-spec.md` and
+`project_mood_arc_roadmap_status` in memory) but applies to the full
+29-channel set, not just that spike's pruned subset.
+
+1. **Physical substrate / embodiment** — `cpu_pressure`, `gpu_pressure`,
+   `thermal_pressure`, `memory_pressure`, `disk_pressure`. Pure hardware
+   sensor readings. Nothing cognitive here at all.
+2. **Task-execution domain** — `execution_load`, `execution_friction`,
+   `execution_pressure`, `reasoning_load`, `reasoning_pressure`,
+   `failure_pressure`, `egress_confidence_deficit`. What Orion is actively
+   *doing* computationally right now (all sourced from `execution_run`
+   deltas) and how well it's going.
+3. **Social / conversational domain** — `conversation_load`,
+   `repair_pressure`. The texture of the current chat interaction (sourced
+   from `chat_turn` deltas) — a genuinely separate axis from execution: a
+   conversation can be smooth while execution struggles, or vice versa.
+4. **Infrastructure / transport workload** — `catalog_drift_pressure`,
+   `transport_pressure`, `contract_pressure`, `observer_failure_pressure`.
+   The bus's own workload/health as infrastructure (sourced from
+   `transport_bus` deltas), not a compute resource — a distinct axis from
+   both hardware and task execution.
+5. **Sensor trust / liveness** — `availability`, `staleness`,
+   `expected_offline_suppression` at the node level; `bus_health`,
+   `delivery_confidence` are the direct transport-layer parallel to the
+   same question applied to the bus rather than a node. None of these five
+   say what a node (or the bus) is *doing* — all five say whether that
+   source's *other* readings can be trusted right now. This is a meta-layer
+   over categories 1-4, not a peer to them.
+6. **Synthesized / aggregate rollups** — `pressure`, `available_capacity`,
+   `confidence`, `reliability_pressure`. Capability-level composites that
+   already blend multiple node-level signals (from categories 1-2) into one
+   summary per functional capability (orchestration, transport, etc) — no
+   direct sensor among them.
+7. **Self-monitoring / introspection** — `prediction_error`,
+   `field_coherence_warning`. The most distinct category: neither measures
+   the world or the hardware body — both measure whether Orion's own
+   internal model is internally consistent (`field_coherence_warning`: do
+   two reducers that should agree actually disagree) or accurate
+   (`prediction_error`: did the prediction hold). No physical-sensor analog.
+   This is the one category in the raw channel set that is already closer
+   to genuine introspection than external-world sensing — directly relevant
+   to the felt-state-arc roadmap's actual premise (testing "whether Orion
+   has recurring felt-state trajectory structure beyond single-tick phi"):
+   categories 1-6 are all substrate/task/social/infra telemetry: prediction
+   error and cross-reducer coherence are the one place self-referential
+   signal already exists in this corpus. Worth deliberately checking
+   whether a trained encoder's latent dimensions correlate more with
+   category 7 than with the others (mirrors
+   `scripts/fit_mood_arc_encoder.py::compute_window_probes()`'s existing
+   valence-correlation-probe pattern, generalized to this channel set).
+
 ### Node channels (`NODE_CHANNELS`, 23)
 
 #### `availability`

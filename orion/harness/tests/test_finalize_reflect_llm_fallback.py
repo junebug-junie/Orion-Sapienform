@@ -10,6 +10,10 @@ from orion.harness.tests.fixtures import make_appraisal, make_repair_overlay, ma
 
 @pytest.mark.asyncio
 async def test_reflect_llm_failure_uses_degraded_reflection_when_quick_lane_blocked() -> None:
+    """Degraded fallback must fail closed: reflect LLM failure is not proof the
+    draft is aligned, so the fallback verdict is "misaligned" (not "aligned").
+    This forces the downstream voice-finalize pass (5c) to materially revise
+    the draft instead of shipping it through unreviewed."""
     thought = make_thought(repair_pressure_level=0.9)
     appraisal = make_appraisal(surprise_level=0.5)
 
@@ -27,4 +31,4 @@ async def test_reflect_llm_failure_uses_degraded_reflection_when_quick_lane_bloc
 
     assert quick_skipped is False
     assert reflection.reflection_source == "degraded_llm_failure_fallback"
-    assert reflection.alignment_verdict == "aligned"
+    assert reflection.alignment_verdict == "misaligned"

@@ -387,7 +387,7 @@ async def run_finalize_reflection(
                 imperative=thought.imperative,
                 tone=thought.tone,
                 strain_refs=list(thought.strain_refs),
-                alignment_verdict="aligned",
+                alignment_verdict="misaligned",
                 alignment_notes=[f"reflect_llm_failed: {_excerpt(str(exc), max_len=200)}"],
                 strain_unresolved=False,
                 reflection_source="degraded_llm_failure_fallback",

@@ -67,59 +67,86 @@ Node types confirmed by reading `rdf_builder.py` this session: `ChatSession`/`Ch
 
 ## Property-graph schema proposal (per doctrine's anti-cathedral allowlist rules)
 
-The doctrine already settled the *rules* (closed allowlists, edges carry meaning, no property without a consumer, `metadata` is a capped quarantine bag, one canonical identity field, `graph_name`/workload label not IRIs). Applying them to the recall-relevant RDF shapes:
+**Revision note:** the first version of this section carried the RDF triple shape forward almost unchanged — a generic `Claim` node with `predicate`/`object` string properties is a reified triple, not a property-graph redesign, and directly violates the doctrine's own rule 1 ("edges carry meaning; properties carry measurements"). Juniper caught this. The section below replaces it, grounded in a live query against the running `orion-athena-fuseki` container (2026-07-17) rather than the write/read code shape alone — reading `rdf_builder.py`/`rdf_adapter.py` tells you the *container* RDF uses, not what's actually *in* it, and the two turned out to differ in an important way.
+
+### Ground truth (verified live, 2026-07-17, direct SPARQL against `orion-athena-fuseki`)
+
+| Claim | Evidence |
+|---|---|
+| `Claim` nodes are 100% redundant with direct `hasTag`/`hasEntity` edges | `SELECT DISTINCT ?pred WHERE { ?claim a Claim ; predicate ?pred }` → exactly 2 values across all 1,451 Claims: `hasTag` (844), `mentionsEntity` (607). No open-vocabulary claim predicates exist in the live store. |
+| The same fact is sometimes double-written | Direct `orion.ai/collapse#hasTag` edges: 704. Reified `Claim{predicate=hasTag}`: 844. Same pattern for `hasEntity` (540) vs `mentionsEntity` (607). Counts don't match — `_build_enrichment_graph`'s `emit_claims` flag was evidently added after some enrichment events already existed, so older events only have the direct edge, newer ones have both. Confirmed inconsistency, not a design choice. |
+| Tag values are heterogeneous, mostly non-graph-shaped | Sample of 11 distinct `hasTag` values: `"Bruce"`, `"LinkedIn"`, `"dozen"`, `"18 years ago"`, `"about 13 years ago"`, `"about a month ago"`, `"last week"`, `"that day on"`, `"yesterday"`, `"sentiment:negative"`, `"sentiment:positive"`. At least 3 categories tangled into one predicate: real short labels, relative-time expressions, and a `sentiment:` string-prefix convention that is actually a scalar field pretending to be a tag. |
+| Entity values include real recurring canonicalizable entities *and* noise | Top `hasEntity` values by frequency: `Juniper` (53), `Orion` (44), `today` (37 — not an entity), `one` (11 — not an entity), `Athena` (10), `2` (8 — not an entity), `Atlas` (8), `Circe` (8), `1` (7), `SMX2` (7), `3`/`4` (6 each), `a DL380 G10` (6), `v100` (6), `32GB`/`350 GB`/`384 GB` (5 each). The mesh's own node names (Juniper/Orion/Athena/Atlas/Circe) recur constantly — exactly the traversal-worthy case a property graph is for. Bare numbers and generic words are NER noise, not entities. |
+| Scale is small | 922 distinct `ChatTurn`s total. `orion:enrichment` graph: 1,451 Claims, 704 `hasTag` + 540 `hasEntity` direct edges, 235 separate `Enrichment` provenance records (`collapseId`/`enrichmentType`/`processedBy`/`enriches` — describes the enrichment *process*, not memory content). Well under AGENTS.md §14's 100k-row backfill threshold even combined with chat/social. |
+| Graph-name fragmentation already exists in the live store | The same logical graph is split across differently-normalized IRIs from different eras — e.g. `http://conjourney.net/graph/orion/cognition` (652,217 triples) vs `orion:cognition` (493,210 triples) are two *separate* physical Fuseki graphs holding what should be one logical stream, per `graph_iri_for_sparql()`'s normalization changing over time. A naive per-graph-name backfill would double-count or split identical logical data. Query must `UNION` all IRI variants of a logical graph, not trust one name. |
+| Most of Fuseki's current content isn't migrating to Falkor at all | `orion:cognition` (~1.1M triples combined) + `orion:metacog` (~434K combined) are being deleted outright, not migrated (PR #1155) — Postgres already owns this data. That's the large majority of everything currently in the store. What's left for `recall.*` (chat/enrichment/social) is comparatively tiny, ~2-3K logical records. |
+
+### Corrected design
+
+1. **Kill the generic `Claim` node entirely.** It has no content that isn't already a direct edge. Two real typed edges replace it:
+   - `(:ChatTurn)-[:HAS_TAG {confidence?, salience?, extractor_service?, extractor_version?, ts}]->(:Tag)`
+   - `(:ChatTurn)-[:MENTIONS_ENTITY {confidence?, salience?, extractor_service?, extractor_version?, ts}]->(:Entity)`
+
+   Confidence/salience move from node properties on a reified `Claim` to **edge properties** — they're a measurement of *this particular tag/entity assignment*, which is exactly what doctrine rule 1 means by "edges carry meaning; properties carry measurements." No information is lost versus the RDF shape; the reification layer that existed only to let a triple carry a confidence score is gone because Cypher edges can carry properties natively.
+
+2. **`sentiment:*` values are not tags.** Split at ingest (write-time and backfill-time, same transform) into a `sentiment: "positive" | "negative"` property directly on `(:ChatTurn)`. This is real information (an LLM classification of the turn) that was being smuggled through a string-tag mechanism because RDF triples don't have a cheap "just add a field" option — Cypher property graphs do, so use it instead of carrying the workaround forward.
+
+3. **`(:Entity)` is canonical and deduplicated, not one-node-per-mention.** Identity key: normalized name (case-fold, trim). `Juniper` mentioned in 53 different turns is **one** `(:Entity {name: "Juniper"})` node with 53 incoming `MENTIONS_ENTITY` edges — not 53 separate literal-valued nodes. This is the actual point of migrating off RDF-as-triples: real neighbor traversal ("every turn that mentions Circe") becomes a 1-hop query against a stable node instead of a `CONTAINS(LCASE(...))` string scan repeated per query, which is what `rdf_adapter.py` does today (see `_build_chatturn_keyword_filter`). `(:Tag)` gets the same treatment for the subset of tag values worth keeping (see next point).
+
+4. **Filter noise at backfill/write time, don't graph it.** Bare numbers (`"1"`, `"2"`, `"511"`), generic words (`"one"`, `"today"`), and relative-time expressions (`"yesterday"`, `"18 years ago"`, `"about a month ago"`) are not entities or tags with traversal value — nothing in `orion-recall` queries on `tag="today"` today (confirmed: `rdf_adapter.py` never filters by exact tag value, only full-text CONTAINS scans). Doctrine rule 3 ("no property without a consumer") applies at the value level here, not just the field level. Proposed filter: reject `hasEntity`/`hasTag` values that are pure digits, on a small stopword list, or match a relative-time regex, logging `property_cathedral_rejected` per the doctrine's existing observability contract rather than silently dropping — so this decision is inspectable and reversible if a real consumer for temporal tags shows up later.
+
+5. **`Enrichment` provenance records (235, `collapseId`/`enrichmentType`/`processedBy`/`enriches`) are audit/process metadata, not memory content** — per doctrine rule 4 ("scalars and short evidence refs on the graph; large/process data in Postgres"), these are a Postgres candidate, not a Falkor node type. Not designing this further here; flagged for its own live-consumer audit (same PR #1155 methodology) before deciding kill-vs-migrate, matching how `cognition.trace`/`metacog.trace` turned out to be pure redundancy once actually checked.
+
+6. **`(:ChatTurn)`** — the one part of the original draft that was already reasonably grounded (checked against `rdf_builder.py`'s actual write fields, not guessed):
+```text
+turn_id, session_id, prompt, response, ts, verb?, model?, node?,
+prompt_tokens?, completion_tokens?, total_tokens?, intent?, topic?, sentiment?
+```
+Edge: `(:ChatSession)-[:HAS_TURN]->(:ChatTurn)`.
+
+7. **The double-write bug (direct edge + redundant Claim) is a producer fix, not something to carry forward.** Once `Claim` is killed per point 1, `orion-rdf-writer`'s `_build_enrichment_graph(..., emit_claims=True)` path should stop emitting the second copy — this is in scope for the Phase 2 writer patch (roadmap below), not deferred.
 
 ### New graph name: `orion_recall`
 
-Per doctrine Appendix B ("two Falkor usages may share one instance with separate graph names... do not silently share labels/properties across rails"): chat/claim/social data has a different vocabulary and write cadence than both `orion_substrate` (concept nodes/edges, tick-rate writes) and `graphiti_temporal` (uuid-keyed episodes/entities). Recommend a **third graph name, `orion_recall`**, same shared FalkorDB instance (`services/orion-falkordb`), not merged into either existing graph.
+Per doctrine Appendix B ("two Falkor usages may share one instance with separate graph names... do not silently share labels/properties across rails"): chat/entity/tag data has a different vocabulary and write cadence than both `orion_substrate` (concept nodes/edges, tick-rate writes) and `graphiti_temporal` (uuid-keyed episodes/entities). Recommend a **third graph name, `orion_recall`**, same shared FalkorDB instance (`services/orion-falkordb`), not merged into either existing graph. Note the *name* collision risk this doctrine already warns about: recall's `(:Entity)` and Graphiti's `(:Entity)` are different schemas under the same label in different graphs — fine because graph names isolate them, but worth calling out explicitly so nobody later "unifies" them casually.
 
 ### Workload keys (extending the doctrine's route table)
 
 ```text
 recall.chat_turn      {"primary": "falkor", "shadow": "sparql"}   # ladder stage A initially
-recall.claim          {"primary": "falkor", "shadow": "sparql"}
+recall.tag_entity     {"primary": "falkor", "shadow": "sparql"}   # replaces recall.claim — no Claim node in the new design
 recall.social_turn    {"primary": "falkor", "shadow": "sparql"}
 recall.step_execution {"primary": "?", "shadow": "?"}             # needs live-consumer audit first (PR #1155 pattern) before committing to migrate
 memory.affective_disposition {"primary": "?", "shadow": "?"}       # Hub ontology — see Q2 below, do not assume same graph as recall.*
 ```
 
-### Starting allowlists (draft — needs Juniper/review sign-off before implementation, per doctrine rule 3 "no property without a consumer")
+**`(:SocialRoomTurn)`** — mirrors `ChatTurn` shape plus `redaction_level`, `recall_safe`, `continuity_anchor`; `(:SocialConceptEvidence)` as a separate node with `(:SocialRoomTurn)-[:SUPPORTED_BY]->(:SocialConceptEvidence)`. **Not yet ground-truthed against live data** the way ChatTurn/Claim/Tag/Entity now are (545 combined triples across graph-name variants, per the scale table above, but the *value* distribution — is `SocialConceptEvidence` similarly redundant with something else? — has not been queried). Do the same live-query pass before finalizing, not before Phase 2 implementation starts.
 
-**`(:ChatTurn)`** — replaces `ORION.ChatTurn` triples:
-```text
-turn_id, session_id, prompt, response, ts, verb?, model?, node?,
-prompt_tokens?, completion_tokens?, total_tokens?, intent?, topic?
-```
-Edge: `(:ChatSession)-[:HAS_TURN]->(:ChatTurn)`, `(:ChatTurn)-[:HAS_TAG]->(:Tag)`, `(:ChatTurn)-[:HAS_ENTITY]->(:Entity)`.
-
-**`(:Claim)`** — replaces `ORION.Claim` triples:
-```text
-claim_id, subject_turn_id, predicate, object, confidence?, salience?,
-extractor_service, extractor_version?, node?, ts?
-```
-Edge: `(:ChatTurn)-[:HAS_CLAIM]->(:Claim)` (currently modeled as `subject` property in RDF; property-graph should make this a real edge per rule 1 — "edges carry meaning").
-
-**`(:SocialRoomTurn)`** — mirrors `ChatTurn` shape plus `redaction_level`, `recall_safe`, `continuity_anchor`; `(:SocialConceptEvidence)` as a separate node with `(:SocialRoomTurn)-[:SUPPORTED_BY]->(:SocialConceptEvidence)`.
-
-**Explicitly not proposed here:** a schema for `identity_snapshot`/`goals_proposed`/`world_pulse_graph`/`CognitiveStepExecution` or Hub's `orionmem` ontology — those need their own audit-then-schema pass (see roadmap).
+**Explicitly not proposed here:** a schema for `identity_snapshot`/`goals_proposed`/`world_pulse_graph`/`CognitiveStepExecution`, the `Enrichment` provenance record type, or Hub's `orionmem` ontology — those need the same live-data-grounding pass this section just did for Claim/Tag/Entity, not a guess from reading the writer code. Do not let Phase 1's audits skip this step — reading `rdf_builder.py` alone would have shipped the wrong `Claim` schema.
 
 ---
 
 ## Historical data migration plan (the piece missing from the doctrine)
 
-The doctrine's substrate wedge never needed this — Concept Atlas was in-memory before Falkor, so there was no "historical Fuseki data" to carry forward. Chat/Claim/SocialRoomTurn data is different: it has been accumulating in Fuseki for months and has real recall value (this is literally what `reflect.v1`/`deep.graph.v1` profiles query today).
+The doctrine's substrate wedge never needed this — Concept Atlas was in-memory before Falkor, so there was no "historical Fuseki data" to carry forward. Chat/Tag/Entity/SocialRoomTurn data is different: it has been accumulating in Fuseki for months and has real recall value (this is literally what `reflect.v1`/`deep.graph.v1` profiles query today). At real measured scale (922 ChatTurns, ~1,244 real tag/entity facts after dedup, ~545 social-turn triples) this is a small backfill, not a big-data problem — well under AGENTS.md §14's 100k-row/100MB stop-and-ask threshold. Confirm the same for `SocialRoomTurn`/`SocialConceptEvidence` once that schema is ground-truthed (still open per above).
 
 Proposed shape, once a workload's schema is frozen and reviewed:
 
 1. **Freeze the schema for that workload** (e.g. `recall.chat_turn`) via the allowlist review above — no backfill against a schema that's still moving.
-2. **Batch ETL script** (`scripts/`, deterministic, not agent judgment — matches AGENTS.md §4): SPARQL `CONSTRUCT`/`SELECT` per named graph (`orion:chat`, `orion:enrichment`, `orion:chat:social`), paginated, mapped through the same allowlist model the new writer uses (shared Pydantic model — one schema, two producers: live writer and backfill script), `MERGE`d into Falkor keyed on the doctrine's mandated stable identity field (`turn_id`/`claim_id`), so a partial/re-run backfill is idempotent.
-3. **Snapshot before writing**, per AGENTS.md §14 (background jobs/backfills) — row counts and a sample to `/tmp/<job-name>/` before any Falkor write, `/tmp/<job-name>/progress.log` during, before/after counts in `/tmp/<job-name>/report.md` after.
-4. **Verification**: row-count parity per graph, spot-check N real turns/claims resolvable in Falkor that only existed in Fuseki pre-backfill, confirm `orion-recall`'s adapter (once cut over) returns them.
-5. **Cutover the live writer** (`orion-rdf-writer` → Falkor for that workload) using the doctrine's dual-run ladder A→D — do this *after* backfill, not before, so there's no gap between "backfill snapshot taken" and "live writer switched," which would silently drop turns written in between.
-6. **Cutover the readers** (`orion-recall`'s adapter) once writer + backfill are both verified.
-7. Fuseki stays up, read-only, for that workload until Juniper decides to decommission (matches the substrate-runtime precedent — cut-forward the write path, don't force a Fuseki teardown in the same patch).
+2. **Batch ETL script** (`scripts/`, deterministic, not agent judgment — matches AGENTS.md §4): SPARQL `SELECT` per **logical** named graph — `UNION`ing all IRI variants of that graph (see the "graph-name fragmentation" ground-truth row above; querying only `orion:chat` and missing `http://conjourney.net/graph/orion/chat` would silently drop ~25% of the turns), paginated, mapped through the same allowlist model the new writer uses (shared Pydantic model — one schema, two producers: live writer and backfill script).
+3. **Transform, not just copy**: this is where the corrected schema actually gets applied, not just a syntax port —
+   - Collapse duplicate `Claim`-vs-direct-edge pairs into one `HAS_TAG`/`MENTIONS_ENTITY` edge (dedup key: `(turn_id, tag_or_entity_value)`).
+   - Split `sentiment:*` tag values into the `ChatTurn.sentiment` property; they never become `Tag` nodes.
+   - Reject digit-only / stopword / relative-time-regex tag and entity values (logged `property_cathedral_rejected`, per doctrine's observability contract, not silently dropped — auditable and reversible).
+   - Normalize remaining `Entity`/`Tag` values to a canonical identity key (case-fold + trim) so `MERGE` actually deduplicates `"Juniper"` across all 53 mentions into one node, rather than creating near-duplicate nodes per casing variant.
+4. `MERGE`d into Falkor keyed on the doctrine's mandated stable identity field (`turn_id` for ChatTurn, `(name)` normalized for Entity/Tag — not a synthetic `claim_id`, since `Claim` no longer exists), so a partial/re-run backfill is idempotent.
+5. **Snapshot before writing**, per AGENTS.md §14 (background jobs/backfills) — row counts and a sample to `/tmp/<job-name>/` before any Falkor write, `/tmp/<job-name>/progress.log` during, before/after counts plus the reject-log summary (how many tag/entity values were filtered, and which) in `/tmp/<job-name>/report.md` after.
+6. **Verification**: row-count parity per graph (accounting for the intentional dedup/filter — the after-count for `recall.tag_entity` should be *lower* than raw triple count, and that's correct, not a bug), spot-check N real turns/entities resolvable in Falkor that only existed in Fuseki pre-backfill, confirm a real Falkor entity node (e.g. `Circe`) has all 8 expected incoming edges, confirm `orion-recall`'s adapter (once cut over) returns them.
+7. **Cutover the live writer** (`orion-rdf-writer` → Falkor for that workload, with the `emit_claims` double-write removed per the Corrected design section above) using the doctrine's dual-run ladder A→D — do this *after* backfill, not before, so there's no gap between "backfill snapshot taken" and "live writer switched," which would silently drop turns written in between.
+8. **Cutover the readers** (`orion-recall`'s adapter) once writer + backfill are both verified.
+9. Fuseki stays up, read-only, for that workload until Juniper decides to decommission (matches the substrate-runtime precedent — cut-forward the write path, don't force a Fuseki teardown in the same patch).
 
-This plan is intentionally generic across `recall.chat_turn`/`recall.claim`/`recall.social_turn` — each gets its own backfill run since they're different named graphs, but the mechanism is the same script parameterized by workload.
+This plan is intentionally generic across `recall.chat_turn`/`recall.tag_entity`/`recall.social_turn` — each gets its own backfill run since they're different named graphs, but the mechanism is the same script parameterized by workload.
 
 ---
 
@@ -135,12 +162,15 @@ Phase 1: per-channel live-consumer audits for the not-yet-read node kinds
   Can run as independent, parallel PRs — no shared code touched.
 
 Phase 2: FalkorRdfStoreClient (or equivalently-named Cypher writer) added to
-  orion-rdf-writer for recall.chat_turn + recall.claim, behind the doctrine's
-  route table, ladder stage A (primary=fuseki, shadow=falkor) — dark, no
-  behavior change yet.
+  orion-rdf-writer for recall.chat_turn + recall.tag_entity, behind the
+  doctrine's route table, ladder stage A (primary=fuseki, shadow=falkor) —
+  dark, no behavior change yet. Includes removing the emit_claims double-write
+  (Corrected design point 7 above) since the new writer emits real HAS_TAG/
+  MENTIONS_ENTITY edges directly, no reified Claim to duplicate.
 
-Phase 3: historical backfill script for recall.chat_turn + recall.claim,
-  run against the shadow graph written in Phase 2, verified per the plan above.
+Phase 3: historical backfill script for recall.chat_turn + recall.tag_entity,
+  run against the shadow graph written in Phase 2, verified per the plan
+  above — including the dedup/filter transform, not a raw copy.
 
 Phase 4: orion-recall's rdf_adapter.py Cypher rewrite for the two functions
   that matter most (fetch_rdf_chatturn_fragments, fetch_rdf_graphtri_fragments),
@@ -180,7 +210,7 @@ Phase 10: Fuseki decommission checklist, once all above are verified in
 
 ## Open questions for Juniper
 
-1. **Schema allowlists above** (ChatTurn/Claim/SocialRoomTurn draft) — approve, or specific fields to cut/add before Phase 2 starts? Doctrine rule 3 requires a named consumer per property; the draft above only includes fields `rdf_adapter.py` demonstrably reads today.
-2. **Hub's `orionmem` ontology**: fold into `orion_recall`'s graph/schema, or keep as its own graph name entirely (`orion_memory_graph`)? It's a materially different workflow (human-approval, not bus-driven) — recommend its own graph name and its own phase (Phase 8), not blocking Phases 1-7.
+1. **Schema design (ChatTurn/Tag/Entity, "Corrected design" section)** — approve killing `Claim` and replacing with real `HAS_TAG`/`MENTIONS_ENTITY` edges plus a `sentiment` property, or object to any of the 7 points? The noise-filtering rule (point 4 — reject digit-only/stopword/relative-time values) is the one most worth a second look: it's a real, lossy decision, not just a rename. Alternative if full rejection feels too aggressive: keep filtered values but flag them `low_quality: true` instead of dropping, so they're excluded from default traversal/recall scoring but not destroyed.
+2. **Hub's `orionmem` ontology**: fold into `orion_recall`'s graph/schema, or keep as its own graph name entirely (`orion_memory_graph`)? It's a materially different workflow (human-approval, not bus-driven) — recommend its own graph name and its own phase (Phase 8), not blocking Phases 1-7. Needs the same live-query grounding pass as ChatTurn/Claim before its schema is drafted — not done in this document.
 3. **`chat_stance.py`'s duplicate `orionmem` SPARQL query** — intentional second consumer, or drift to collapse? Low cost to answer now, avoids carrying a stale duplicate through the whole migration.
-4. **Backfill scope**: all historical Fuseki data for `recall.chat_turn`/`recall.claim`, or a bounded window (e.g. last N months)? Affects Phase 3's runtime and snapshot size (AGENTS.md §14's 100k-row/100MB stop-and-ask threshold may bind here — real row count not yet measured this session).
+4. **Backfill scope**: real measured scale is small (922 ChatTurns, ~1,244 tag/entity facts pre-dedup, ~545 social-turn triples) — well under the AGENTS.md §14 threshold, so recommend backfilling all of it rather than a bounded window, unless there's a reason (PII, staleness) to want a cutoff Juniper knows about that isn't visible from row count alone.

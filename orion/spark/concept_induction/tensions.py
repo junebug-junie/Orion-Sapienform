@@ -403,6 +403,32 @@ def extract_tensions_from_self_state(
             drive_impacts={"capability": 0.9, "coherence": 0.45},
         ))
 
+    # Prediction-error rise -> predictive re-grounding tension (O3). predictive
+    # previously only ever received *secondary* drive_impacts riding other
+    # dimensions' tensions and sat dead (median 0.016, never active) -- this is
+    # its first primary source, read directly off overall_surprise (self_state's
+    # own top-level prediction-error aggregate, already clamped 0-1 by its
+    # producer -- see orion/substrate/pressure.py::prediction_error_pressure()).
+    # Absolute-threshold firing (not delta-based) is intentional here: unlike
+    # the dimensions above (quality scores where a *drop* signals tension),
+    # overall_surprise IS already a magnitude of surprise/error -- the absolute
+    # level itself is the tension.
+    surprise_now = clamp01(self_state.overall_surprise)
+    fire_pred = surprise_now > 0.30
+    mag_pred = clamp01(surprise_now * traj_mul)
+    if fire_pred and mag_pred > 0.0:
+        events.append(TensionEventV1(
+            artifact_id=_artifact_id(envelope, entity_id, "tension.prediction_surprise.v1"),
+            subject=subject, model_layer=model_layer, entity_id=entity_id,
+            kind="tension.prediction_surprise.v1", ts=ts, confidence=0.75,
+            correlation_id=str(envelope.correlation_id),
+            trace_id=str(trace_id) if trace_id else None, turn_id=turn_id,
+            provenance=prov,
+            related_nodes=["substrate:overall_surprise", "drive:predictive"],
+            magnitude=mag_pred,
+            drive_impacts={"predictive": 1.0},
+        ))
+
     for event in events:
         event.provenance.tension_refs = [event.artifact_id]
     return events

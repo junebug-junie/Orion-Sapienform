@@ -1,0 +1,19 @@
+{
+  "version": 1,
+  "hooks": {
+    "sessionStart": [
+      {
+        "type": "command",
+        "command": "python3 scripts/hooks/session_start_agent_board.py",
+        "timeout": 25
+      }
+    ],
+    "stop": [
+      {
+        "type": "command",
+        "command": "python3 scripts/hooks/session_stop_agent_board.py",
+        "timeout": 10
+      }
+    ]
+  }
+}

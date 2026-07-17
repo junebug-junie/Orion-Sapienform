@@ -517,18 +517,12 @@ class ConceptWorker:
 
         if backend == "disabled":
             logger.info(
-                "concept_profile_graph_materialization subject=%s revision=%s concept_count=%d "
-                "cluster_count=%d graph_write_attempted=%s graph_write_succeeded=%s destination=%s "
-                "schema_kind=%s error_kind=%s",
+                "concept_profile_graph_materialization_skipped backend=disabled subject=%s "
+                "revision=%s concept_count=%d cluster_count=%d",
                 profile.subject,
                 profile.revision,
                 concept_count,
                 cluster_count,
-                False,
-                True,
-                "disabled",
-                schema_kind,
-                None,
             )
             return True
 
@@ -1414,22 +1408,32 @@ class ConceptWorker:
             result.profile.revision,
             corr_id,
         )
-        logger.info(
-            "concept_profile_postsave stage=graph_materialization_attempted subject=%s revision=%s correlation_id=%s destination=%s",
-            result.profile.subject,
-            result.profile.revision,
-            corr_id,
-            self._graph_materialization_destination(),
-        )
-        materialized = await self._materialize_profile_graph(result.profile, corr_id)
-        if materialized:
+        graph_backend = str(self.cfg.concept_profile_graph_backend or "disabled").strip().lower()
+        if graph_backend == "disabled":
             logger.info(
-                "concept_profile_postsave stage=graph_materialization_published subject=%s revision=%s correlation_id=%s destination=%s",
+                "concept_profile_postsave stage=graph_materialization_skipped subject=%s revision=%s correlation_id=%s destination=disabled",
+                result.profile.subject,
+                result.profile.revision,
+                corr_id,
+            )
+            await self._materialize_profile_graph(result.profile, corr_id)
+        else:
+            logger.info(
+                "concept_profile_postsave stage=graph_materialization_attempted subject=%s revision=%s correlation_id=%s destination=%s",
                 result.profile.subject,
                 result.profile.revision,
                 corr_id,
                 self._graph_materialization_destination(),
             )
+            materialized = await self._materialize_profile_graph(result.profile, corr_id)
+            if materialized:
+                logger.info(
+                    "concept_profile_postsave stage=graph_materialization_published subject=%s revision=%s correlation_id=%s destination=%s",
+                    result.profile.subject,
+                    result.profile.revision,
+                    corr_id,
+                    self._graph_materialization_destination(),
+                )
         if result.delta:
             await self._publish_delta(result.delta, corr_id)
             logger.info(

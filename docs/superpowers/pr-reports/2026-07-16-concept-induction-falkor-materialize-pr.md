@@ -95,8 +95,12 @@ Not run in this session (code + unit tests only). Restart commands below for ope
 ```bash
 cd /mnt/scripts/Orion-Sapienform-concept-induction-falkor-materialize
 ./scripts/safe_docker_build.sh orion-spark-concept-induction up -d --build
-# Hub restart not required unless you want to re-check Atlas against newly written induction concepts:
-# ./scripts/safe_docker_build.sh orion-hub up -d --build
+# Hub restart IS required for Atlas to SEE induction-written concepts:
+# FalkorSubstrateStore hydrates its in-process cache once at construction and
+# query_concept_region reads only that cache, so cross-process Spark writes are
+# invisible to an already-running Hub until its store re-hydrates (restart).
+# Locked down by test_hub_store_sees_spark_writes_only_after_rehydrate.
+./scripts/safe_docker_build.sh orion-hub up -d --build
 ```
 
 ## Risks / concerns
@@ -108,6 +112,10 @@ cd /mnt/scripts/Orion-Sapienform-concept-induction-falkor-materialize
 - Severity: low
 - Concern: Induction concepts and topic-foundry Atlas concepts live as parallel identity islands in `orion_substrate` (no embedding/label merge).
 - Mitigation: follow-up to route induction writes through `SubstrateGraphMaterializer` if Atlas coexistence needs reconciliation.
+
+- Severity: medium
+- Concern: Hub's `FalkorSubstrateStore` hydrates once at construction and serves Atlas reads from its in-process cache — Spark's cross-process writes are invisible to a running Hub until restart (contract locked by `test_hub_store_sees_spark_writes_only_after_rehydrate`).
+- Mitigation: Hub restart listed in restart commands; named follow-up: refresh-on-query or TTL re-hydrate in `FalkorSubstrateStore` (touches `orion/substrate`, out of this PR's service scope).
 
 ## PR link
 

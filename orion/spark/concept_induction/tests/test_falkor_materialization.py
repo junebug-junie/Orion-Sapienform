@@ -288,6 +288,65 @@ def test_falkor_materialization_failure_isolated_from_local_write() -> None:
         assert not any(env.kind == "rdf.write.request" for _, env in worker.bus.published)
 
 
+def test_hub_store_sees_spark_writes_only_after_rehydrate() -> None:
+    """Cross-process visibility contract: a Hub-side FalkorSubstrateStore reads
+    from its in-process cache hydrated at construction. Spark writes from a
+    separate process are invisible to an already-running Hub until its store
+    re-hydrates (today: Hub restart). This test locks that contract down so a
+    future refresh-on-query change surfaces here."""
+
+    class SharedDurableClient:
+        """Simulates the shared FalkorDB: records writes, serves hydrate reads
+        from what has been written so far (native rows via encode params)."""
+
+        def __init__(self) -> None:
+            self.node_rows: dict[str, dict] = {}
+            self.calls: list[tuple[str, dict | None]] = []
+
+        def graph_query(self, cypher: str, params: dict | None = None):
+            self.calls.append((cypher, params))
+            if "MERGE (n:SubstrateNode" in cypher and params:
+                self.node_rows[params["node_id"]] = dict(params)
+                return []
+            if "WHERE n.payload_json IS NOT NULL" in cypher or "WHERE e.payload_json IS NOT NULL" in cypher:
+                return []
+            if "MATCH (n:SubstrateNode) RETURN" in cypher:
+                return list(self.node_rows.values())
+            return []
+
+    shared = SharedDurableClient()
+
+    # Hub hydrates first, before Spark has written anything.
+    hub_store = FalkorSubstrateStore(
+        FalkorSubstrateStoreConfig(uri="redis://127.0.0.1:6380", graph_name="orion_substrate"),
+        client=shared,
+        hydrate=True,
+    )
+    assert hub_store.get_node_by_id("sub-concept-concept-1") is None
+
+    # Spark writes through its own store instance (separate process in prod).
+    spark_store = FalkorSubstrateStore(
+        FalkorSubstrateStoreConfig(uri="redis://127.0.0.1:6380", graph_name="orion_substrate"),
+        client=shared,
+        hydrate=False,
+    )
+    materialize_concept_profile_to_falkor(profile=_fixture_profile(), store=spark_store)
+    assert "sub-concept-concept-1" in shared.node_rows
+
+    # Already-running Hub store is stale — the durable write is NOT visible.
+    assert hub_store.get_node_by_id("sub-concept-concept-1") is None
+
+    # A re-hydrated Hub store (restart) sees the Spark-written concept natively.
+    hub_store_restarted = FalkorSubstrateStore(
+        FalkorSubstrateStoreConfig(uri="redis://127.0.0.1:6380", graph_name="orion_substrate"),
+        client=shared,
+        hydrate=True,
+    )
+    node = hub_store_restarted.get_node_by_id("sub-concept-concept-1")
+    assert node is not None
+    assert node.label == "coherence"
+
+
 def test_invalid_graph_backend_fails_closed_to_disabled() -> None:
     cfg = ConceptSettings(concept_profile_graph_backend="wat")
     assert cfg.concept_profile_graph_backend == "disabled"

@@ -1,5 +1,10 @@
 # Local `/mnt/scripts` Backup Implementation Plan
 
+> **Location update (2026-07-16):** The runner now lives at
+> `scripts/backup/orion_backup_mnt_scripts.py` with package docs in
+> `scripts/backup/README.md`. Paths below that say `scripts/orion_backup_mnt_scripts.py`
+> are historical to this plan.
+
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
 **Goal:** Build a local-first nightly backup runner that snapshots `/mnt/scripts` into `/mnt/storage-warm` with hard-linked rsync snapshots, 14-snapshot retention, local evidence, and failure notification.

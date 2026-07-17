@@ -1,5 +1,6 @@
 [Unit]
 Description=Orion local /mnt/scripts backup
+Documentation=file:/mnt/scripts/Orion-Sapienform/scripts/backup/README.md
 Documentation=file:/mnt/scripts/Orion-Sapienform/docs/operations/local-mnt-scripts-backup.md
 Wants=network-online.target
 After=network-online.target
@@ -9,7 +10,7 @@ Type=oneshot
 TimeoutStartSec=infinity
 WorkingDirectory=/mnt/scripts/Orion-Sapienform
 EnvironmentFile=-/etc/orion-backup-mnt-scripts.env
-ExecStart=/mnt/scripts/Orion-Sapienform/venv/bin/python /mnt/scripts/Orion-Sapienform/scripts/orion_backup_mnt_scripts.py
+ExecStart=/mnt/scripts/Orion-Sapienform/venv/bin/python /mnt/scripts/Orion-Sapienform/scripts/backup/orion_backup_mnt_scripts.py
 Nice=10
 IOSchedulingClass=best-effort
 IOSchedulingPriority=7

@@ -2,6 +2,9 @@
 
 This runbook installs and operates the local-first backup for `/mnt/scripts`.
 
+Package home (design + usage summary): [`scripts/backup/README.md`](../../scripts/backup/README.md).
+Runner: `scripts/backup/orion_backup_mnt_scripts.py`.
+
 ## What It Does
 
 - Copies `/mnt/scripts/` to `/mnt/storage-warm/backups/<node-name>/mnt-scripts/snapshots/<run-id>/`, where `<run-id>` is UTC time to second resolution plus the process ID (for example `2026-05-09T22-39-35Z-966029`) so consecutive runs in the same second do not collide.
@@ -34,14 +37,14 @@ Dry-run validates that the backup root is writable by the user running the comma
 
 ```bash
 cd /mnt/scripts/Orion-Sapienform
-sudo PYTHONPATH=. ./venv/bin/python scripts/orion_backup_mnt_scripts.py --dry-run
+sudo PYTHONPATH=. ./venv/bin/python scripts/backup/orion_backup_mnt_scripts.py --dry-run
 ```
 
 ## First Manual Run
 
 ```bash
 cd /mnt/scripts/Orion-Sapienform
-sudo PYTHONPATH=. ./venv/bin/python scripts/orion_backup_mnt_scripts.py
+sudo PYTHONPATH=. ./venv/bin/python scripts/backup/orion_backup_mnt_scripts.py
 ```
 
 Inspect:

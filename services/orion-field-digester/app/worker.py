@@ -113,14 +113,20 @@ class FieldDigesterWorker:
             topology_path=self._settings.lattice_path,
             field_edges=self._lattice.edges,
             store=get_learned_store(),
+            bus_url=self._settings.orion_bus_url,
+            bus_enabled=self._settings.orion_bus_enabled,
+            service_name=self._settings.service_name,
+            service_version=self._settings.service_version,
+            node_name=self._settings.node_name,
             window_hours=self._settings.field_plasticity_producer_window_hours,
         )
         if result["ok"]:
             logger.info(
                 "causal_geometry_production_cycle_completed snapshot_id=%s "
-                "insufficient_data=%s candidates_found=%d proposals_created=%d "
-                "proposals_skipped_pending_duplicate=%d",
+                "snapshot_published=%s insufficient_data=%s candidates_found=%d "
+                "proposals_created=%d proposals_skipped_pending_duplicate=%d",
                 result["snapshot_id"],
+                result["snapshot_published"],
                 result["insufficient_data"],
                 result["candidates_found"],
                 result["proposals_created"],

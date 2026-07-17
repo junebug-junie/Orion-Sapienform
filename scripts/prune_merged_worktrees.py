@@ -33,6 +33,7 @@ from worktree_lib import (  # noqa: E402
     parallel_map,
     repo_toplevel,
 )
+from agent_board_lib import board_config_from_env, close_presence  # noqa: E402
 
 
 def main() -> int:
@@ -71,6 +72,10 @@ def main() -> int:
         if result.returncode == 0:
             print(f"[removed] {label}")
             removed += 1
+            try:
+                close_presence(board_config_from_env(), worktree_path=str(w.path.resolve()))
+            except Exception as exc:
+                print(f"[agent-board close skipped] {w.path} -- {exc}", file=sys.stderr)
         else:
             print(f"[skipped, not removed] {label} -- {result.stderr.strip()}")
             skipped += 1

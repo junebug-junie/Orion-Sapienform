@@ -46,11 +46,22 @@ Run `python scripts/sync_local_env_from_example.py`.
 **Verify:** `git diff services/orion-graphiti-adapter/.env` shows exactly these 3 lines changed.
 
 ### 2. Bring up FalkorDB + restart adapter
+
+**Updated 2026-07-16:** FalkorDB moved to the shared operator stack (`services/orion-falkordb/`). The graphiti `--profile falkordb` sidecar was removed.
+
 ```bash
-docker compose --profile falkordb \
-  --env-file .env --env-file services/orion-graphiti-adapter/.env \
+cd services/orion-falkordb
+cp .env_example .env
+make preflight up health-probe
+cd ../..
+
+docker compose \
+  --env-file .env \
+  --env-file services/orion-graphiti-adapter/.env \
   -f services/orion-graphiti-adapter/docker-compose.yml up -d --build
 ```
+
+Full cutover runbook (ephemeral → durable mount, Postgres rebuild): `services/orion-falkordb/README.md`.
 **Verify:** `curl -fsS http://localhost:8640/health | jq '.backend'` → `"graphiti_core"`
 
 ### 3. Backfill 48 active crystallizations (one-time)
@@ -119,8 +130,11 @@ No `.env_example` shape changes (keys pre-exist). Local `.env` sync required per
 ## Restart required
 
 ```bash
-docker compose --profile falkordb \
-  --env-file .env --env-file services/orion-graphiti-adapter/.env \
+(cd services/orion-falkordb && make up)
+
+docker compose \
+  --env-file .env \
+  --env-file services/orion-graphiti-adapter/.env \
   -f services/orion-graphiti-adapter/docker-compose.yml up -d --build
 ```
 

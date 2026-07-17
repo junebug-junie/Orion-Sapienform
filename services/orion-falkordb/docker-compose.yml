@@ -1,0 +1,22 @@
+# ───────────────────────────────────────────────────────────────
+# Orion FalkorDB — shared property-graph operator stack
+# ───────────────────────────────────────────────────────────────
+# Preferred compose home for the mesh-wide FalkorDB instance.
+# Consumers: orion-graphiti-adapter (today), orion-substrate-runtime (future).
+
+networks:
+  app-net:
+    name: ${NET}
+    external: true
+
+services:
+  falkordb:
+    image: ${FALKORDB_IMAGE:-falkordb/falkordb:latest}
+    container_name: orion-${NODE_NAME}-falkordb
+    restart: unless-stopped
+    networks:
+      - app-net
+    ports:
+      - "${FALKORDB_PORT:-6380}:6379"
+    volumes:
+      - ${FALKORDB_DATA_DIR:-/mnt/graphdb/falkordb}:/var/lib/falkordb/data

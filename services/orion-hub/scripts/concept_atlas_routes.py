@@ -25,6 +25,9 @@ from typing import Any, Optional
 from fastapi import APIRouter, HTTPException, Query
 from fastapi.responses import HTMLResponse
 
+from .settings import settings
+from .topic_foundry_client import TopicFoundryClientError, fetch_run_topics_and_keywords
+
 logger = logging.getLogger("orion-hub.concept_atlas")
 
 router = APIRouter(tags=["concept-atlas"])
@@ -74,6 +77,38 @@ def _unavailable(reason: str, error: Optional[str] = None, **extra: Any) -> dict
         payload["error"] = error
     payload.update(extra)
     return payload
+
+
+class _CountingSubstrateStore:
+    """Thin store wrapper that counts successful concept/evidence/edge upserts.
+
+    ``SubstrateGraphMaterializer.apply_record`` writes incrementally and raises
+    without returning a partial ``MaterializationResultV1``. Delegating through
+    this wrapper lets the ingest route report precise successful counts on
+    mid-record failure, while preserving all other store operations (including
+    identity-resolver reads) via ``__getattr__``.
+    """
+
+    def __init__(self, inner: Any) -> None:
+        self._inner = inner
+        self.concepts_written = 0
+        self.evidence_nodes_written = 0
+        self.edges_written = 0
+
+    def __getattr__(self, name: str) -> Any:
+        return getattr(self._inner, name)
+
+    def upsert_node(self, *, identity_key: str | None, node: Any) -> None:
+        self._inner.upsert_node(identity_key=identity_key, node=node)
+        kind = getattr(node, "node_kind", None)
+        if kind == "concept":
+            self.concepts_written += 1
+        elif kind == "evidence":
+            self.evidence_nodes_written += 1
+
+    def upsert_edge(self, *, identity_key: str, edge: Any) -> None:
+        self._inner.upsert_edge(identity_key=identity_key, edge=edge)
+        self.edges_written += 1
 
 
 def _concept_nodes(store: Any) -> list[Any]:
@@ -294,6 +329,133 @@ async def concept_atlas_network(
         "truncated": bool(result.truncated),
         "degraded": degraded,
         "degraded_error": getattr(result, "error", None) if degraded else None,
+    }
+
+
+@router.post("/api/substrate/concepts/ingest-topic-foundry")
+def concept_atlas_ingest_topic_foundry() -> dict[str, Any]:
+    """Operator-triggered, on-demand ingestion of topic-foundry's latest completed run.
+
+    Deliberately a sync ``def`` (not ``async def``): the underlying HTTP calls
+    use the blocking ``requests`` library (see ``topic_foundry_client.py``),
+    and FastAPI runs sync route handlers in a worker thread pool automatically
+    -- an ``async def`` wrapper here would block the event loop for the
+    duration of every topic-foundry round trip instead.
+
+    Fetches the latest completed run + its topics + per-topic keywords from
+    topic-foundry over HTTP, converts them via
+    ``orion.substrate.adapters.topic_foundry.map_topic_foundry_run_to_substrate``,
+    and writes the resulting concept/evidence nodes and edges into the shared
+    ``SUBSTRATE_SEMANTIC_STORE``.
+
+    This is a manual trigger only -- not wired into Hub's startup event or any
+    scheduler, mirroring ``/api/substrate/review-runtime/debug-run``'s shape
+    (operator-triggered multi-step pipeline, not an automatic background job).
+    Every failure mode below degrades to an honest, non-500 response rather
+    than fabricating a success result.
+
+    Scoping note: ``segment_topic_map`` is passed as empty in this first cut,
+    so no ``co_occurs_with`` co-occurrence edges are produced yet -- only
+    concept nodes (+ backing evidence nodes/edges) per real topic. See the PR
+    report for why this was scoped out rather than attempted.
+    """
+    store = _get_substrate_store()
+    if store is None:
+        return _unavailable("substrate_store_unavailable", concepts_written=0, edges_written=0)
+
+    base_url = str(getattr(settings, "TOPIC_FOUNDRY_BASE_URL", "") or "").strip()
+    if not base_url:
+        return _unavailable(
+            "topic_foundry_base_url_not_configured",
+            concepts_written=0,
+            edges_written=0,
+        )
+
+    try:
+        fetched = fetch_run_topics_and_keywords(base_url)
+    except TopicFoundryClientError as exc:
+        logger.warning("concept_atlas_ingest_topic_foundry_fetch_failed error=%s", exc)
+        return _unavailable(
+            "topic_foundry_fetch_failed",
+            str(exc),
+            concepts_written=0,
+            edges_written=0,
+        )
+    except Exception as exc:  # pragma: no cover - defensive, never let a client bug 500 this route
+        logger.warning("concept_atlas_ingest_topic_foundry_unexpected_fetch_error error=%s", exc)
+        return _unavailable(
+            "topic_foundry_unexpected_error",
+            str(exc),
+            concepts_written=0,
+            edges_written=0,
+        )
+
+    run_id = fetched["run_id"]
+    topics = fetched["topics"]
+    keywords_by_topic = fetched["keywords_by_topic"]
+
+    try:
+        from orion.substrate.adapters.topic_foundry import map_topic_foundry_run_to_substrate
+
+        record = map_topic_foundry_run_to_substrate(
+            run_id=run_id,
+            topics=topics,
+            keywords_by_topic=keywords_by_topic,
+            segment_topic_map={},
+        )
+    except Exception as exc:  # pragma: no cover - the adapter itself never raises, but don't trust across the boundary
+        logger.warning("concept_atlas_ingest_topic_foundry_adapter_failed run_id=%s error=%s", run_id, exc)
+        return _unavailable(
+            "topic_foundry_adapter_failed",
+            str(exc),
+            run_id=run_id,
+            concepts_written=0,
+            edges_written=0,
+        )
+
+    if not record.nodes:
+        return _unavailable(
+            "topic_foundry_no_usable_topics",
+            run_id=run_id,
+            topics_fetched=len(topics),
+            concepts_written=0,
+            edges_written=0,
+        )
+
+    counting_store = _CountingSubstrateStore(store)
+    try:
+        from orion.substrate.materializer import SubstrateGraphMaterializer
+        from orion.substrate.reconcile import SubstrateIdentityResolver
+
+        # Exact-label identity works through the resolver's legacy key path;
+        # explicitly wiring the store also activates embedding matches whenever
+        # a caller supplies metadata['concept_embedding'].
+        materializer = SubstrateGraphMaterializer(
+            store=counting_store,
+            identity_resolver=SubstrateIdentityResolver(store=counting_store),
+        )
+        materializer.apply_record(record)
+    except Exception as exc:
+        logger.warning("concept_atlas_ingest_topic_foundry_store_write_failed run_id=%s error=%s", run_id, exc)
+        return _unavailable(
+            "substrate_store_write_failed",
+            str(exc),
+            run_id=run_id,
+            concepts_written=counting_store.concepts_written,
+            evidence_nodes_written=counting_store.evidence_nodes_written,
+            edges_written=counting_store.edges_written,
+        )
+
+    # Same counter owns success and failure accounting. Counts are successful
+    # upserts (including merges), not unique durable nodes after merge.
+    return {
+        "available": True,
+        "run_id": run_id,
+        "topics_fetched": len(topics),
+        "concepts_written": counting_store.concepts_written,
+        "evidence_nodes_written": counting_store.evidence_nodes_written,
+        "edges_written": counting_store.edges_written,
+        "co_occurrence_edges_skipped": "segment_topic_map not supplied in this ingestion route (empty by design)",
     }
 
 

@@ -11,6 +11,12 @@ class Settings(BaseSettings):
     node_name: str = Field("athena", alias="NODE_NAME")
 
     postgres_uri: str = Field(..., alias="POSTGRES_URI")
+    # Repo-wide bus convention (see root CLAUDE.md): always the real tailscale
+    # node address, never a docker-compose service name -- this service had no
+    # bus-publish capability at all before the Causal Geometry v1 producer
+    # (orion/substrate/causal_geometry_bus_publish.py) needed one.
+    orion_bus_url: str = Field("redis://100.92.216.81:6379/0", alias="ORION_BUS_URL")
+    orion_bus_enabled: bool = Field(True, alias="ORION_BUS_ENABLED")
     lattice_path: str = Field(
         "config/field/orion_field_topology.v1.yaml",
         alias="LATTICE_PATH",

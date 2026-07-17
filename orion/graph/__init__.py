@@ -1,5 +1,12 @@
 """Shared graph backend resolution and SPARQL HTTP clients."""
 
+from orion.graph.persistence_router import GraphPersistenceRouter
+from orion.graph.persistence_routes import (
+    RouteTarget,
+    WorkloadRoute,
+    load_persistence_routes,
+    resolve_workload_route,
+)
 from orion.graph.backend_config import (
     GraphBackendConfig,
     is_legacy_graphdb_enabled,
@@ -21,7 +28,12 @@ from orion.graph.sparql_client import (
 )
 
 __all__ = [
+    "GraphPersistenceRouter",
     "GraphBackendConfig",
+    "RouteTarget",
+    "WorkloadRoute",
+    "load_persistence_routes",
+    "resolve_workload_route",
     "GraphStoreClient",
     "SparqlHttpClient",
     "SparqlQueryClient",

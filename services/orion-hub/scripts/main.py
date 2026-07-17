@@ -463,6 +463,20 @@ async def startup_event():
     presence_state = PresenceState()
     presence_context_store = PresenceContextStore(ttl_seconds=int(getattr(settings, "ORION_PRESENCE_SESSION_TTL_SECONDS", 14400)))
 
+    if settings.SUBSTRATE_CONCEPT_SEED_ENABLED:
+        # Offloaded to a thread: when SUBSTRATE_STORE_BACKEND=sparql (this
+        # service's own .env_example default), the underlying upsert_node/
+        # upsert_edge calls are synchronous, blocking HTTP requests to Fuseki
+        # (see orion/substrate/graphdb_store.py). Running them directly here
+        # would block the event loop for the duration of Hub's boot on every
+        # restart if Fuseki is slow/unreachable. seed_golden_concepts_at_startup()
+        # still never raises either way -- this is purely to keep a slow/degraded
+        # graph backend from stalling startup.
+        seeded_count = await asyncio.to_thread(api_routes_runtime.seed_golden_concepts_at_startup)
+        logger.info("substrate_concept_seed_loaded count=%s", seeded_count)
+    else:
+        logger.info("substrate_concept_seed_disabled reason=env_disabled")
+
     if settings.SUBSTRATE_AUTONOMY_ENABLED:
         supported, reason = api_routes_runtime.substrate_autonomy_runtime_supported()
         if not supported:

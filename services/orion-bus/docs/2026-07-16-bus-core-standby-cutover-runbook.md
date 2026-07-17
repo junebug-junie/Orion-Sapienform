@@ -297,7 +297,7 @@ this gate; the cutover steps below do.
    `BUS_STANDBY_PORT=6381`** (the template default in
    `services/orion-bus/.env_example` -- chosen instead of the originally
    drafted `6380` after review found that port already hardcoded by
-   `services/orion-graphiti-adapter/docker-compose.yml`'s own falkordb
+   `services/orion-falkordb/` (shared FalkorDB operator stack on host port 6380).
    container; `6381` was confirmed free across every `services/*/docker-
    compose*.yml` as of 2026-07-16) — treat this as the deployed value unless
    you have direct, live-verified knowledge it was overridden to `6379` at

@@ -320,3 +320,70 @@ not currently persisted anywhere the gate can read — a separate follow-up, not
 attempted here). Until one of those happens, **Step 4 stays blocked on an
 honestly-unmeasured question, not a measured failure** — the distinction this
 session's instrument fix exists to preserve.
+
+## Measurement gate re-run (2026-07-17) — (a) NO-GO again (close), (b) GO (saturation-adjacent, unverified)
+
+Re-run with `scripts/analysis/measure_autonomy_gate.py --window-days 120`
+(`POSTGRES_URI` pointed at the live host, read-only, no writes/events/flag
+changes). By this point `drive_audits` reads Postgres exclusively (PR #1064,
+merged 2026-07-15 — the Fuseki path this doc's 2026-07-13 entry named as a
+blocker is gone) and `orion/autonomy/drives_and_autonomy_retrospective.md`
+§10 had just wired a live substrate producer for `DriveEngine`'s own state,
+so this is the first fully-live, non-stale run of this gate.
+
+**(a) Endogenous drift — NO-GO, and this is a real change from the
+2026-07-13 "passes" declaration above, not a first-time check.** Rule (a) has
+always been two conditions AND'd together (`git log -S DRIFT_VARIANCE_RATIO`
+shows the constant has been in the script since the original Step 0 commit,
+`b58e312c` — this is not a threshold added after this doc's prose was
+written):
+
+```
+silent median_abs_trajectory >= 0.03            -- DRIFT_MIN_MEDIAN_ABS_TRAJECTORY
+silent dim_score_variance >= 0.25 * busy variance -- DRIFT_VARIANCE_RATIO
+```
+
+Measured today (120-day window): `median_abs_trajectory = 0.0432` (clears
+0.03 comfortably) but `dim_score_variance = 0.0052` against a required
+`0.0069` (25% of busy variance `0.0277`) — **18.8% of busy variance, short of
+the 25% bar.** The median half was the only condition this doc's 2026-07-13
+entry reported; whether the variance half also passed on that specific 1h/7d
+window and has since drifted below the bar, or was never separately verified
+that day, is not established here — worth checking before assuming
+regression, but the current live measurement is unambiguous: **NO-GO on the
+variance condition specifically**, not the median one.
+
+**(b) Internal economy — GO, but close enough to the SATURATED band to
+distrust without a follow-up check.** `coactivation_frac = 0.9523` against
+the `>= 0.10` bar (8,070 live `drive_audits` rows, real data — not the
+frozen 2026-06-19 snapshot the 2026-07-08/07-13 entries diagnosed).
+`resource_pressure frac >= 0.3` measured `0.9171`, also clears its `>= 0.05`
+bar. Neither of the script's own `SATURATED` disqualifiers technically
+tripped (`top_dominant_share=0.7674 < 0.90`, `all_active_frac=0.7447 <
+0.75`) — but `all_active_frac` sits 0.5 percentage points under its bar, and
+`relational` alone accounts for 76.7% of all dominant-drive audits, with 4+
+drives simultaneously active in 92.6% of ticks (`concurrent_active_hist`:
+`0:368, 1:17, 3:215, 4:1460, 5:6010`). This reads as either a genuinely
+differentiated internal economy or one-or-two-drives-pinned-active-together
+via the wide hysteresis band (`activate=0.62`/`deactivate=0.42`, 1800s
+decay) — the raw fraction alone can't distinguish those, and this run did
+not check which specific drives co-activate with which.
+
+**On thresholds — do not tune either bar to make this pass.** `DRIFT_VARIANCE_RATIO`
+being short (18.8% vs 25%) is close enough that the honest next step is
+re-running (a) over a different/longer window to see if that gap is
+consistent or a one-off, not lowering the constant to declare victory on
+today's specific number. Rule (b)'s `>= 0.10` GO bar is irrelevant to touch
+(cleared 10x over); if any (b) threshold deserves scrutiny it's the
+`SATURATED` band, which today's numbers sit uncomfortably close to from the
+"pass" side — tightening, not loosening, is the direction that would matter.
+
+**Consequence:** per the "Build sequence & gate" section above, **Step 1
+(this spec) is gated solely on Step 0(a)**, and 0(a) reads NO-GO again today.
+Step 1 remains **not** cleared to build. Step 4 (internal economy) depends on
+Step 3 (φ intrinsic reward), which itself "wants Step 1's richer episode
+stream" per the Build sequence — so 0(b)'s GO does not unblock anything on
+its own; Step 4 is still gated transitively through Step 1. **The single
+concrete next action per this doc's own build sequence is re-verifying
+0(a)** (different/longer window, and ideally understanding why silent-period
+variance is where it is) before anything downstream can move.

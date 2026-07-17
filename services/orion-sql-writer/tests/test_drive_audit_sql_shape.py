@@ -104,6 +104,24 @@ def test_column_shape_is_the_slim_measurement_contract() -> None:
     assert {attr.key for attr in mapper.attrs} == EXPECTED_COLUMNS
 
 
+def test_boot_ddl_create_and_alter_include_attribution_columns() -> None:
+    """Greenfield CREATE and upgrade ALTER must both name the v4 columns.
+
+    CREATE TABLE IF NOT EXISTS alone does not upgrade live tables, so ALTER
+    ADD COLUMN IF NOT EXISTS must stay. CREATE must also list the columns so
+    a fresh DB matches the model without relying on ALTER alone.
+    """
+    main_py = (SERVICE_ROOT / "app" / "main.py").read_text(encoding="utf-8")
+    assert "CREATE TABLE IF NOT EXISTS drive_audits" in main_py
+    create_block = main_py.split("CREATE TABLE IF NOT EXISTS drive_audits", 1)[1].split(
+        ");", 1
+    )[0]
+    assert "tick_attribution JSONB" in create_block
+    assert "tension_kinds JSONB" in create_block
+    assert "ADD COLUMN IF NOT EXISTS tick_attribution JSONB" in main_py
+    assert "ADD COLUMN IF NOT EXISTS tension_kinds JSONB" in main_py
+
+
 def test_bounded_attribution_fields_are_columns_but_archive_fields_are_not() -> None:
     # summary is deliberately NOT in this list: it and the bounded attribution
     # fields are stored, while the full evidence archive remains excluded.

@@ -30,8 +30,9 @@ class DriveAuditSQL(Base):
     `scripts/drive_history_reflection_synthesis.py` reads the summary as its
     per-audit text input. `active_count` is derived in the
     sql-writer worker as `len(active_drives)` (0 when malformed/absent) — it is
-    not on the wire payload. `active_drives`/`drive_pressures` are already
-    bounded upstream to the 6 fixed DRIVE_KEYS, so no capping is needed here.
+    not on the wire payload. `active_drives`/`drive_pressures`/`tick_attribution`
+    are already bounded upstream to the 6 fixed DRIVE_KEYS (and tension_kinds
+    is a short per-tick list), so no capping is needed here.
 
     Secondary indexes are intentionally NOT declared here via `index=True`.
     They are owned by the boot DDL in `app/main.py` (and the standalone

@@ -4,11 +4,12 @@
 -- fields; sql-writer previously dropped them at the mapper-column filter because
 -- they were not columns on DriveAuditSQL.
 --
--- New consumer: Hub Drives Analytics
--- (docs/superpowers/specs/2026-07-16-hub-drives-analytics-design.md) — windowed
--- contributor history and live/window attribution cards. Bounded payload:
--- tick_attribution is the 6 fixed DRIVE_KEYS floats; tension_kinds is a short
--- list of kind strings per tick.
+-- New consumer: Hub Drives Analytics (forthcoming operator surface; design
+-- lives as docs/superpowers/specs/2026-07-16-hub-drives-analytics-design.md
+-- on the docs/hub-drives-analytics branch until that lands on main) —
+-- windowed contributor history and live/window attribution cards. Bounded
+-- payload: tick_attribution is the 6 fixed DRIVE_KEYS floats; tension_kinds
+-- is a short list of kind strings per tick.
 --
 -- No backfill. Pre-migration rows remain NULL; the Hub UI must label windows
 -- that mix attributed and null rows ("attribution not recorded before <ts>").

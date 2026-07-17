@@ -42,11 +42,12 @@ services:
       # Worker intake for Cortex (RPC)
       - CHANNEL_WORKER_RDF=${CHANNEL_WORKER_RDF}
       - CORTEX_LOG_CHANNEL=${CORTEX_LOG_CHANNEL}
-      - CHANNEL_COGNITION_TRACE_PUB=${CHANNEL_COGNITION_TRACE_PUB}
       - CHANNEL_CHAT_HISTORY_TURN=${CHANNEL_CHAT_HISTORY_TURN}
       - CHANNEL_CHAT_HISTORY_LOG=${CHANNEL_CHAT_HISTORY_LOG}
       - CHANNEL_MEMORY_IDENTITY_SNAPSHOT=${CHANNEL_MEMORY_IDENTITY_SNAPSHOT}
       # CHANNEL_MEMORY_DRIVES_AUDIT removed 2026-07-15: drive audits are Postgres-only (orion-sql-writer).
+      # CHANNEL_COGNITION_TRACE_PUB and orion:metacog:trace removed 2026-07-17: both
+      # cognition.trace and metacognitive.trace.v1 are Postgres-only (orion-sql-writer).
       - CHANNEL_MEMORY_GOALS_PROPOSED=${CHANNEL_MEMORY_GOALS_PROPOSED}
       - CHANNEL_WORLD_PULSE_GRAPH=${CHANNEL_WORLD_PULSE_GRAPH}
 

@@ -403,6 +403,45 @@ def extract_tensions_from_self_state(
             drive_impacts={"capability": 0.9, "coherence": 0.45},
         ))
 
+    # Prediction-error rise -> predictive re-grounding tension (O3). predictive
+    # previously only ever received *secondary* drive_impacts riding other
+    # dimensions' tensions and sat dead (median 0.016, never active) -- this is
+    # its first primary source, read directly off overall_surprise (self_state's
+    # own top-level prediction-error aggregate, already clamped 0-1 by its
+    # producer -- see orion/substrate/pressure.py::prediction_error_pressure()).
+    # Delta-gated to match the blocks above (NOT absolute-threshold-every-tick,
+    # despite overall_surprise itself being a magnitude, not a quality score):
+    # review found overall_surprise has no upstream smoothing/decay of its own
+    # (recomputed fresh from a naive one-step prediction every tick), so firing
+    # on the absolute level alone would mint a full-weight tension on every
+    # single tick of a sustained surprise episode -- the leaky integrator's
+    # decay is negligible at bus-tick cadence vs its 1800s tau, so that pins
+    # `predictive` near 1.0 within ~5 ticks, reproducing the exact
+    # cpu/gpu_pressure saturation pattern (PRs #1108-1111) this is meant to
+    # avoid. Delta-gating self-limits the same way the sibling blocks do.
+    surprise_now = clamp01(self_state.overall_surprise)
+    surprise_delta = (
+        surprise_now - clamp01(previous_self_state.overall_surprise)
+        if previous_self_state is not None else None
+    )
+    fire_pred = surprise_delta > 0.05 if surprise_delta is not None else surprise_now > 0.30
+    mag_pred = (
+        clamp01(surprise_delta * traj_mul) if surprise_delta is not None
+        else clamp01(surprise_now * traj_mul)
+    )
+    if fire_pred and mag_pred > 0.0:
+        events.append(TensionEventV1(
+            artifact_id=_artifact_id(envelope, entity_id, "tension.prediction_surprise.v1"),
+            subject=subject, model_layer=model_layer, entity_id=entity_id,
+            kind="tension.prediction_surprise.v1", ts=ts, confidence=0.75,
+            correlation_id=str(envelope.correlation_id),
+            trace_id=str(trace_id) if trace_id else None, turn_id=turn_id,
+            provenance=prov,
+            related_nodes=["substrate:overall_surprise", "drive:predictive"],
+            magnitude=mag_pred,
+            drive_impacts={"predictive": 1.0},
+        ))
+
     for event in events:
         event.provenance.tension_refs = [event.artifact_id]
     return events

@@ -62,6 +62,19 @@ these were previously only folded into the `strain` composite and never
 reached the field lattice, so the corresponding channels stayed pinned at
 `0.0`). This is additive: `strain`/`gpu` are unchanged.
 
+Their `Perturbation`s use `mode="replace"`, not the `strain`/`gpu` default
+`mode="add"`: `orion/substrate/biometrics_loop/node_reducer.py` emits one
+`StateDeltaV1` per *grammar event* in a trace (not just the atom that sets a
+given hint -- `trace_started`/edges/`trace_ended` all produce their own delta
+carrying the cumulative `pressure_hints` forward), so a single trace yields
+well over a dozen deltas that each still contain these hints once set. Under
+`"add"` mode that re-adds the same intensity that many times per telemetry
+cycle and saturates the channel to the `1.0` clamp almost immediately,
+independent of real load -- the same class of bug `execution_run`/`chat_turn`
+already hit and fixed with `mode="replace"` for their own `pressure_hints`
+snapshots. `strain`/`gpu` still use `mode="add"` and are believed to already
+be affected by this; that is pre-existing and out of scope for this change.
+
 ## Running & Testing
 
 ### Run via Docker

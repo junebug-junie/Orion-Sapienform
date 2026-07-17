@@ -79,6 +79,23 @@ def delta_to_perturbations(delta: StateDeltaV1) -> list[Perturbation]:
         # "strain" hint above -- these three lattice channels sat pinned at
         # 0.0 for the whole live corpus. Additive: unlike gpu/strain, these
         # hint keys map 1:1 onto their own NODE_CHANNELS name (no remap).
+        #
+        # mode="replace" (not the gpu_pressure/cpu_pressure default "add"
+        # above): every grammar event in a node_biometrics trace -- not just
+        # the atom that first sets a given hint -- reaches this function with
+        # its own uniquely-keyed StateDeltaV1 (node_reducer.py runs once per
+        # trace event, including trace_started/edge_emitted/trace_ended, and
+        # each carries the cumulative merged.pressure_hints forward). A single
+        # ~22-event biometrics trace produces on the order of 14-16 separate
+        # deltas that each still contain "memory_pressure"/"thermal_pressure"/
+        # "disk_pressure" once those hints are first set. Under "add" mode
+        # (raw += with no cross-delta dedup, see apply_perturbations) that
+        # would re-add the same intensity that many times per telemetry
+        # cycle, saturating the channel to the 1.0 clamp almost immediately
+        # regardless of real load. execution_run/chat_turn below already hit
+        # this exact class of bug for their own pressure_hints snapshots and
+        # fixed it with mode="replace"; applying the same precedent here so
+        # these three new channels don't inherit it.
         if "memory_pressure" in hints:
             out.append(
                 Perturbation(
@@ -86,6 +103,7 @@ def delta_to_perturbations(delta: StateDeltaV1) -> list[Perturbation]:
                     channel="memory_pressure",
                     intensity=float(hints["memory_pressure"]),
                     label=delta.delta_id,
+                    mode="replace",
                 )
             )
         if "thermal_pressure" in hints:
@@ -95,6 +113,7 @@ def delta_to_perturbations(delta: StateDeltaV1) -> list[Perturbation]:
                     channel="thermal_pressure",
                     intensity=float(hints["thermal_pressure"]),
                     label=delta.delta_id,
+                    mode="replace",
                 )
             )
         if "disk_pressure" in hints:
@@ -104,6 +123,7 @@ def delta_to_perturbations(delta: StateDeltaV1) -> list[Perturbation]:
                     channel="disk_pressure",
                     intensity=float(hints["disk_pressure"]),
                     label=delta.delta_id,
+                    mode="replace",
                 )
             )
         status = str(after.get("availability_status") or "")

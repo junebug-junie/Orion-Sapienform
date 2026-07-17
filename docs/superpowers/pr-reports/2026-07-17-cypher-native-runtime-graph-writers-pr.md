@@ -78,6 +78,11 @@ No eval harness exists for the Falkor adapter / substrate-runtime dynamics seam;
 
 ```text
 No Docker smoke run. No runtime/config/dependency/port changes in this patch. Live Falkor restart smoke against a real Hub deployment remains required before any live cutover decision (tracked as an open acceptance check in the design spec, unchanged by this patch).
+
+scripts/safe_graphify_update.sh REFUSED (~92% node-loss guard, the known 2026-07-14
+destructive-update failure mode) and auto-restored graph.json/manifest.json; left
+graphify-out unchanged rather than re-running or trusting the raw `graphify update`
+output.
 ```
 
 ## Review findings fixed

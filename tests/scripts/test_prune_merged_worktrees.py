@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import os
 import subprocess
 import sys
 from pathlib import Path
@@ -67,3 +68,43 @@ def test_no_mergeable_worktrees_reports_cleanly(primary_repo: Path) -> None:
     proc = _run_prune(primary_repo)
     assert proc.returncode == 0
     assert "No worktrees found" in proc.stdout
+
+
+def test_yes_closes_agent_board_presence_for_removed_worktree(
+    repo_with_worktrees: tuple[Path, Path, Path],
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    primary, merged_wt, _ = repo_with_worktrees
+    board_path = tmp_path / "agent-board.jsonl"
+    monkeypatch.setenv("ORION_AGENT_BOARD_PATH", str(board_path))
+
+    subprocess.run(
+        [
+            sys.executable,
+            str(ROOT / "scripts" / "agent_board.py"),
+            "heartbeat",
+            "--summary",
+            "Merged worktree presence.",
+            "--task",
+            "Will be pruned.",
+        ],
+        cwd=merged_wt,
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+
+    proc = _run_prune(primary, "--yes")
+
+    assert proc.returncode == 0
+    listed = subprocess.run(
+        [sys.executable, str(ROOT / "scripts" / "agent_board.py"), "list", "--all"],
+        cwd=primary,
+        check=True,
+        capture_output=True,
+        text=True,
+        env={**os.environ, "ORION_AGENT_BOARD_PATH": str(board_path)},
+    )
+    assert str(merged_wt) in listed.stdout
+    assert "closed" in listed.stdout

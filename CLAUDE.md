@@ -294,6 +294,19 @@ This repo actually has three worktree location conventions in live use, not one 
 
 Regardless of which convention created it, `git worktree list` sees all of them, and so does this repo's cleanup tooling — `make worktree-status` (add `BASE=<branch>` to compare against something other than `origin/main`), `make worktree-status-stale` (merged worktrees with no open PR — the actual prune candidates), and `make prune-merged-worktrees` (dry-run by default; `YES=1` to actually remove — never force-removes a worktree with uncommitted changes, and never touches the branch itself, only the worktree directory). A `post-merge` hook (installed by the same `scripts/install_git_safety_hooks.sh` above) prints a one-line reminder of how many worktrees are now prunable after every merge, and a `SessionStart` hook does the same at the top of every session.
 
+### Agent workspace board
+
+Concurrent agents should keep the host-local board current:
+
+```bash
+python3 scripts/agent_board.py checkin
+python3 scripts/agent_board.py heartbeat --summary "Working on the agent board implementation; current risk is hook wiring." --task "Wire Claude and Cursor hooks"
+python3 scripts/agent_board.py add --kind finding --severity should --summary "Review found a collision risk in hook ordering." --files scripts/hooks/session_start_agent_board.py
+python3 scripts/agent_board.py checkout
+```
+
+The live board is `~/.orion/agent-board.jsonl`, protected by a lock and intentionally not committed. `checkin` shows this-worktree items, global blockers/Juniper escalations, other active/stale worktrees, and disclosure-only collision warnings. Track current-worktree items by default; if the item belongs elsewhere, set an explicit scope note.
+
 Branch type examples:
 
 ```text

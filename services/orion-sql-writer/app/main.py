@@ -662,6 +662,12 @@ async def lifespan(app: FastAPI):
             conn.exec_driver_sql(
                 "ALTER TABLE drive_audits ADD COLUMN IF NOT EXISTS summary TEXT;"
             )
+            conn.exec_driver_sql(
+                "ALTER TABLE drive_audits ADD COLUMN IF NOT EXISTS tick_attribution JSONB;"
+            )
+            conn.exec_driver_sql(
+                "ALTER TABLE drive_audits ADD COLUMN IF NOT EXISTS tension_kinds JSONB;"
+            )
             # The autonomy measurement gate windows on COALESCE(observed_at,
             # created_at); a bare created_at index would never serve that
             # predicate (observed_at is nearly always set), so index the

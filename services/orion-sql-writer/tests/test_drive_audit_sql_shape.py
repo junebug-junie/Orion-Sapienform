@@ -36,6 +36,8 @@ EXPECTED_COLUMNS = {
     "dominant_drive",
     "summary",
     "drive_pressures",
+    "tick_attribution",
+    "tension_kinds",
     "correlation_id",
     "observed_at",
     "created_at",
@@ -102,13 +104,35 @@ def test_column_shape_is_the_slim_measurement_contract() -> None:
     assert {attr.key for attr in mapper.attrs} == EXPECTED_COLUMNS
 
 
-def test_archive_fields_are_not_columns() -> None:
-    # summary is deliberately NOT in this list: it is the one archive-ish
-    # field stored (drive_history_reflection_synthesis reads it).
+def test_bounded_attribution_fields_are_columns_but_archive_fields_are_not() -> None:
+    # summary is deliberately NOT in this list: it and the bounded attribution
+    # fields are stored, while the full evidence archive remains excluded.
     mapper = inspect(DriveAuditSQL)
     cols = {attr.key for attr in mapper.attrs}
-    for archive_field in ("evidence_items", "source_event_refs", "tick_attribution"):
+    for archive_field in ("evidence_items", "source_event_refs"):
         assert archive_field not in cols
+    for bounded_field in ("tick_attribution", "tension_kinds"):
+        assert bounded_field in cols
+
+
+def test_tick_attribution_and_tension_kinds_pass_through() -> None:
+    attribution = {
+        "coherence": 0.1,
+        "continuity": 0.0,
+        "capability": 0.0,
+        "relational": 0.2,
+        "predictive": 0.5,
+        "autonomy": 0.0,
+    }
+    kinds = ["substrate.world_coverage_gap", "tension.contradiction.v1"]
+    row = _row_dict(
+        _make_audit(tick_attribution=attribution, tension_kinds=kinds)
+    )
+    assert row["tick_attribution"] == attribution
+    assert row["tension_kinds"] == kinds
+    obj = DriveAuditSQL(**row)
+    assert obj.tick_attribution["predictive"] == 0.5
+    assert obj.tension_kinds[0] == "substrate.world_coverage_gap"
 
 
 def test_summary_passes_through_to_column() -> None:

@@ -50,12 +50,14 @@ def _self_state(*, overall_surprise: float | None = None, trajectory_condition: 
     return SelfStateV1(**kwargs)
 
 
-def _prediction_surprise_events(self_state: SelfStateV1) -> list:
+def _prediction_surprise_events(
+    self_state: SelfStateV1, *, previous_self_state: SelfStateV1 | None = None
+) -> list:
     out = extract_tensions_from_self_state(
         envelope=_envelope(),
         intake_channel="orion:substrate:self_state",
         self_state=self_state,
-        previous_self_state=None,
+        previous_self_state=previous_self_state,
     )
     return [e for e in out if e.kind == "tension.prediction_surprise.v1"]
 
@@ -94,4 +96,33 @@ def test_surprise_at_max_clamps_at_one() -> None:
 def test_surprise_default_zero_does_not_fire() -> None:
     ss = _self_state()  # overall_surprise omitted -> defaults to 0.0
     events = _prediction_surprise_events(ss)
+    assert events == []
+
+
+def test_sustained_elevated_surprise_does_not_refire_every_tick() -> None:
+    """Regression: a prior version fired on the absolute level alone, every
+    tick, with no gating -- reproducing the leaky integrator's saturation
+    pattern (pressure pins near 1.0 within ~5 ticks at bus-tick cadence,
+    since decay is negligible against tau=1800s). Once a previous_self_state
+    exists, firing must be delta-gated like every sibling block, so a
+    sustained-but-unchanging elevated surprise level does not re-fire."""
+    prev = _self_state(overall_surprise=0.5)
+    now = _self_state(overall_surprise=0.5)  # unchanged tick-to-tick
+    events = _prediction_surprise_events(now, previous_self_state=prev)
+    assert events == []
+
+
+def test_surprise_rising_with_previous_state_fires_on_delta_not_absolute() -> None:
+    prev = _self_state(overall_surprise=0.10)
+    now = _self_state(overall_surprise=0.40)  # delta 0.30 > 0.05 threshold
+    events = _prediction_surprise_events(now, previous_self_state=prev)
+    assert len(events) == 1
+    assert abs(events[0].magnitude - 0.30) < 1e-9
+    assert events[0].drive_impacts == {"predictive": 1.0}
+
+
+def test_surprise_small_delta_below_gate_does_not_fire() -> None:
+    prev = _self_state(overall_surprise=0.50)
+    now = _self_state(overall_surprise=0.53)  # delta 0.03 < 0.05 threshold
+    events = _prediction_surprise_events(now, previous_self_state=prev)
     assert events == []

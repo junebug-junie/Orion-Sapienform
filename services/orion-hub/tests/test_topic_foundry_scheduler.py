@@ -117,6 +117,63 @@ def test_list_models_returns_items(monkeypatch: pytest.MonkeyPatch) -> None:
     assert result == [{"model_id": FAKE_MODEL_ID, "name": "m"}]
 
 
+def test_fetch_segments_for_run_returns_items(monkeypatch: pytest.MonkeyPatch) -> None:
+    from scripts import topic_foundry_client as tfc
+
+    captured = {}
+
+    def fake_get(url, params=None, timeout=None):
+        captured["url"] = url
+        captured["params"] = params
+        return _FakeResponse(
+            200,
+            {
+                "run_id": FAKE_RUN_ID,
+                "items": [{"segment_id": "s1", "topic_id": 0, "start_at": "2026-07-15T10:00:00Z"}],
+                "limit": 1000,
+                "offset": 0,
+                "total": 1,
+            },
+        )
+
+    monkeypatch.setattr(tfc.requests, "get", fake_get)
+    result = tfc.fetch_segments_for_run(FAKE_BASE_URL, FAKE_RUN_ID)
+    assert captured["url"] == f"{FAKE_BASE_URL}/segments"
+    assert captured["params"]["run_id"] == FAKE_RUN_ID
+    assert captured["params"]["format"] == "wrapped"
+    assert captured["params"]["include_bounds"] is True
+    assert result == [{"segment_id": "s1", "topic_id": 0, "start_at": "2026-07-15T10:00:00Z"}]
+
+
+def test_fetch_segments_for_run_malformed_response_raises(monkeypatch: pytest.MonkeyPatch) -> None:
+    from scripts import topic_foundry_client as tfc
+
+    monkeypatch.setattr(tfc.requests, "get", lambda *a, **k: _FakeResponse(200, {"not_items": []}))
+    with pytest.raises(tfc.TopicFoundryClientError):
+        tfc.fetch_segments_for_run(FAKE_BASE_URL, FAKE_RUN_ID)
+
+
+def test_fetch_segments_for_run_logs_warning_when_total_exceeds_fetched(
+    monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+) -> None:
+    """Regression for silent truncation at the 1000-segment fetch ceiling: when
+    the response's own total exceeds what was actually fetched, this must be
+    logged (not silently dropped) even though no pagination loop backfills it."""
+    from scripts import topic_foundry_client as tfc
+
+    monkeypatch.setattr(
+        tfc.requests,
+        "get",
+        lambda *a, **k: _FakeResponse(
+            200, {"run_id": FAKE_RUN_ID, "items": [{"segment_id": "s1"}], "limit": 1, "offset": 0, "total": 5}
+        ),
+    )
+    with caplog.at_level("WARNING", logger="orion-hub.topic_foundry_client"):
+        result = tfc.fetch_segments_for_run(FAKE_BASE_URL, FAKE_RUN_ID)
+    assert len(result) == 1
+    assert any("topic_foundry_segments_truncated" in rec.message for rec in caplog.records)
+
+
 def test_create_dataset_posts_payload_and_returns_response(monkeypatch: pytest.MonkeyPatch) -> None:
     from scripts import topic_foundry_client as tfc
 

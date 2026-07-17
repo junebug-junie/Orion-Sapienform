@@ -32,6 +32,7 @@ from .topic_foundry_client import (
     create_dataset,
     create_model,
     fetch_run_topics_and_keywords,
+    fetch_segments_for_run,
     list_datasets,
     list_models,
     trigger_training_run,
@@ -85,6 +86,34 @@ _TOPIC_FOUNDRY_SOURCE_TABLE = "chat_history_log"
 _TOPIC_FOUNDRY_ID_COLUMN = "correlation_id"
 _TOPIC_FOUNDRY_TIME_COLUMN = "created_at"
 _TOPIC_FOUNDRY_TEXT_COLUMNS = ["prompt", "response"]
+
+# HDBSCAN's noise/outlier bucket (topic-foundry side). Never a real topic --
+# same convention as orion/substrate/adapters/topic_foundry.py's own
+# OUTLIER_TOPIC_ID, not imported from there since this module deliberately
+# has no import-time dependency on the adapter (it's only imported lazily
+# inside concept_atlas_ingest_topic_foundry()).
+_OUTLIER_TOPIC_ID = -1
+
+
+def _day_bucket_from_timestamp(value: Any) -> Optional[str]:
+    """Parse a topic-foundry segment's ``start_at`` (a plain string over the
+    wire, typically ISO-8601, e.g. ``"2026-07-15T10:23:00Z"`` or
+    ``"...+00:00"``) into a UTC-day bucket key (``"2026-07-15"``).
+
+    Used as the ``segment_topic_map`` grouping key -- ``SegmentRecord`` has
+    no direct session/conversation id, so day-bucketing is the best
+    available real proxy for "same conversation window." Never raises --
+    any unparseable value degrades to ``None`` (caller skips it).
+    """
+    if not value:
+        return None
+    try:
+        text = str(value)
+        if text.endswith("Z"):
+            text = text[:-1] + "+00:00"
+        return datetime.fromisoformat(text).date().isoformat()
+    except (TypeError, ValueError):
+        return None
 
 
 def _ensure_topic_foundry_dataset_and_model(base_url: str) -> Optional[tuple[str, str]]:
@@ -629,10 +658,20 @@ def concept_atlas_ingest_topic_foundry() -> dict[str, Any]:
     (the scheduler path logs the same dict's fields rather than checking an
     HTTP status).
 
-    Scoping note: ``segment_topic_map`` is passed as empty in this first cut,
-    so no ``co_occurs_with`` co-occurrence edges are produced yet -- only
-    concept nodes (+ backing evidence nodes/edges) per real topic. See the PR
-    report for why this was scoped out rather than attempted.
+    ``segment_topic_map`` (the co-occurrence input -- see
+    ``map_topic_foundry_run_to_substrate``'s docstring) is built here from a
+    real ``GET /segments`` fetch, grouped by UTC-day bucket of each
+    segment's ``start_at``. ``SegmentRecord`` carries no direct session/
+    conversation id -- day-bucketing is the best available real (not
+    fabricated) proxy for "same conversation window" without inventing new
+    schema. This is what feeds real candidate pairs to
+    ``_classify_typed_concept_relations`` below (which only ever looks at
+    ``co_occurs_with`` edges): before this, that classifier had zero real
+    input and never fired in production despite being fully wired (PR
+    #1132). A segments-fetch failure degrades to an empty
+    ``segment_topic_map`` (no ``co_occurs_with`` edges produced for this
+    call) rather than aborting the route -- concept/evidence node ingestion
+    below is independent of it.
     """
     store = _get_substrate_store()
     if store is None:
@@ -669,6 +708,38 @@ def concept_atlas_ingest_topic_foundry() -> dict[str, Any]:
     topics = fetched["topics"]
     keywords_by_topic = fetched["keywords_by_topic"]
 
+    segment_topic_map: dict[str, list[int]] = {}
+    segments_fetched = 0
+    try:
+        segments = fetch_segments_for_run(base_url, run_id)
+        segments_fetched = len(segments)
+        for seg in segments:
+            topic_id = seg.get("topic_id")
+            start_at = seg.get("start_at")
+            if topic_id is None or start_at is None:
+                continue
+            try:
+                topic_id_int = int(topic_id)
+            except (TypeError, ValueError):
+                continue
+            if topic_id_int == _OUTLIER_TOPIC_ID:
+                continue
+            day_bucket = _day_bucket_from_timestamp(start_at)
+            if day_bucket is None:
+                continue
+            segment_topic_map.setdefault(day_bucket, []).append(topic_id_int)
+    except TopicFoundryClientError as exc:
+        logger.warning(
+            "concept_atlas_ingest_topic_foundry_segments_fetch_failed run_id=%s error=%s", run_id, exc
+        )
+        # Degrade to empty segment_topic_map -- co_occurs_with edges just
+        # won't be produced for this ingestion call; concept/evidence node
+        # ingestion below proceeds normally regardless.
+    except Exception as exc:  # pragma: no cover - defensive, never let a client bug abort the route
+        logger.warning(
+            "concept_atlas_ingest_topic_foundry_segments_unexpected_error run_id=%s error=%s", run_id, exc
+        )
+
     try:
         from orion.substrate.adapters.topic_foundry import map_topic_foundry_run_to_substrate
 
@@ -676,7 +747,7 @@ def concept_atlas_ingest_topic_foundry() -> dict[str, Any]:
             run_id=run_id,
             topics=topics,
             keywords_by_topic=keywords_by_topic,
-            segment_topic_map={},
+            segment_topic_map=segment_topic_map,
         )
     except Exception as exc:  # pragma: no cover - the adapter itself never raises, but don't trust across the boundary
         logger.warning("concept_atlas_ingest_topic_foundry_adapter_failed run_id=%s error=%s", run_id, exc)
@@ -745,7 +816,8 @@ def concept_atlas_ingest_topic_foundry() -> dict[str, Any]:
         "concepts_written": counting_store.concepts_written,
         "evidence_nodes_written": counting_store.evidence_nodes_written,
         "edges_written": counting_store.edges_written,
-        "co_occurrence_edges_skipped": "segment_topic_map not supplied in this ingestion route (empty by design)",
+        "segments_fetched": segments_fetched,
+        "segment_topic_map_buckets": len(segment_topic_map),
         "typed_edges_written": typed_edges_written,
     }
 

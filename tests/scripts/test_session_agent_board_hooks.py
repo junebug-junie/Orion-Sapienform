@@ -41,12 +41,64 @@ def test_session_start_hook_emits_valid_json(primary_repo: Path, tmp_path: Path)
 
 
 def test_session_stop_hook_emits_checkout_context(primary_repo: Path, tmp_path: Path) -> None:
-    proc = _run_hook(STOP_HOOK, primary_repo, tmp_path / "agent-board.jsonl")
+    board = tmp_path / "agent-board.jsonl"
+    add = _run_board_cli(
+        primary_repo, board, "add", "--kind", "finding", "--severity", "note", "--summary", "found something"
+    )
+    assert add.returncode == 0, add.stderr
+
+    proc = _run_hook(STOP_HOOK, primary_repo, board)
 
     assert proc.returncode == 0
     payload = json.loads(proc.stdout)
     assert payload["hookSpecificOutput"]["hookEventName"] == "Stop"
     assert "agent board checkout" in payload["hookSpecificOutput"]["additionalContext"].lower()
+
+
+def test_session_stop_hook_silent_when_no_open_items(primary_repo: Path, tmp_path: Path) -> None:
+    """No open items means nothing actionable -- announcing that on every
+    single Stop is pure token noise, not a reminder. Stay silent instead of
+    emitting a "no open board items" message every turn."""
+    proc = _run_hook(STOP_HOOK, primary_repo, tmp_path / "agent-board.jsonl")
+
+    assert proc.returncode == 0
+    assert proc.stdout == ""
+
+
+def test_hooks_noop_for_fcc_subprocess(primary_repo: Path, tmp_path: Path) -> None:
+    """orion/harness/fcc_motor.py spawns `claude -p` with cwd set to this
+    repo checkout, so it picks up .claude/settings.json's SessionStart/Stop
+    hooks the same as a real interactive session -- without this gate, every
+    Orion chat turn would write a spurious presence row to the shared board
+    and add noise to the FCC harness step count. fcc_motor.py tags its
+    subprocess env with ORION_FCC_SUBPROCESS=1 for exactly this check."""
+    board = tmp_path / "agent-board.jsonl"
+    env = {**os.environ, "ORION_AGENT_BOARD_PATH": str(board), "ORION_FCC_SUBPROCESS": "1"}
+
+    start = subprocess.run(
+        [sys.executable, str(START_HOOK)],
+        cwd=primary_repo,
+        env=env,
+        input="",
+        capture_output=True,
+        text=True,
+        timeout=30,
+    )
+    stop = subprocess.run(
+        [sys.executable, str(STOP_HOOK)],
+        cwd=primary_repo,
+        env=env,
+        input="",
+        capture_output=True,
+        text=True,
+        timeout=30,
+    )
+
+    assert start.returncode == 0
+    assert start.stdout == ""
+    assert stop.returncode == 0
+    assert stop.stdout == ""
+    assert not board.exists(), "FCC subprocess must not write a board presence row"
 
 
 def test_hooks_fail_open_outside_git_repo(tmp_path: Path) -> None:
@@ -125,12 +177,13 @@ def test_stop_hook_falls_back_to_cwd_when_session_id_has_no_match(
 ) -> None:
     """No git-hook-driven heartbeat has landed for this session_id yet (e.g.
     the very first hook fire in a session) -- must fall back to the old
-    git-rev-parse-based resolution rather than erroring or misreporting."""
+    git-rev-parse-based resolution rather than erroring or misreporting.
+    No open items exist for the fallback-resolved worktree, so the hook
+    stays silent (see test_session_stop_hook_silent_when_no_open_items)."""
     board = tmp_path / "agent-board.jsonl"
     proc = _run_hook(STOP_HOOK, primary_repo, board, stdin_payload={"session_id": "no-such-session"})
     assert proc.returncode == 0, proc.stderr
-    payload = json.loads(proc.stdout)
-    assert "no open board items" in payload["hookSpecificOutput"]["additionalContext"].lower()
+    assert proc.stdout == ""
 
 
 def test_session_start_hook_resolves_via_session_id_not_fixed_cwd(

@@ -415,6 +415,15 @@ def _build_subprocess_env(*, fcc_server_url: str, auth_token: str) -> Dict[str, 
     env["ANTHROPIC_AUTH_TOKEN"] = auth_token
     env["CLAUDE_CODE_ENABLE_GATEWAY_MODEL_DISCOVERY"] = "1"
     env["TERM"] = "dumb"
+    # cwd=workspace below is the repo checkout, so this claude -p subprocess
+    # picks up .claude/settings.json's SessionStart/Stop hooks same as any
+    # interactive session. Those hooks (agent board checkin/checkout) are
+    # scoped to human/agent coding sessions in a worktree, not per-turn FCC
+    # chat calls -- without this marker they fire on every Orion chat turn,
+    # inflating step counts and writing spurious board presence rows for the
+    # shared checkout. See scripts/hooks/session_start_agent_board.py and
+    # session_stop_agent_board.py, which no-op when this is set.
+    env["ORION_FCC_SUBPROCESS"] = "1"
     _fcc_context_env(env)
     if _env_truthy("HARNESS_FCC_CONTEXT_MODE_HOOKS_ENABLED"):
         # Point the context-mode plugin's hooks + MCP server at the same

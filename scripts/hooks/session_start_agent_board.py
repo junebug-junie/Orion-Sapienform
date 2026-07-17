@@ -6,6 +6,7 @@ Fails silently (no output) on any error -- never blocks session start.
 from __future__ import annotations
 
 import json
+import os
 import sys
 from pathlib import Path
 
@@ -19,6 +20,13 @@ from agent_board_lib import (  # noqa: E402
 
 
 def main() -> None:
+    if os.environ.get("ORION_FCC_SUBPROCESS"):
+        # This is a per-turn `claude -p` call spawned by orion/harness/fcc_motor.py,
+        # not a human/agent coding session -- it has no worktree of its own to
+        # check in/out of. Without this, every Orion chat turn writes a
+        # spurious presence row to the shared board (see AGENTS.md's agent
+        # workspace board section) and inflates the FCC harness step count.
+        return
     session_id = read_session_id_from_stdin_hook_payload()
     try:
         context = render_checkin_context(board_config_from_env(), session_id=session_id)

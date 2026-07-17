@@ -95,7 +95,8 @@ author of `ThoughtEventV1` and reconciles the coloring (existing inputs win —
 it never forces chat framing on technical/agent turns).
 
 Module: `app/mind_enrichment.py` (snapshot builder, fail-open HTTP client,
-allow-list coloring selector, artifact publisher).
+allow-list coloring selector, artifact publisher, bounded `drive_state_compact`
+Postgres fetch).
 
 Flags:
 
@@ -109,6 +110,20 @@ Flags:
 | `ORION_THOUGHT_MIND_MAX_RESPONSE_BYTES` | `2000000` | Response body cap |
 | `ORION_THOUGHT_MIND_ARTIFACT_PUBLISH_ENABLED` | `false` | Publish `mind_runs` artifact (`mode=orion`) |
 | `ORION_THOUGHT_MIND_COLORING_MAX_ITEMS` | `3` | Coloring list cap |
+| `ORION_THOUGHT_MIND_DRIVE_STATE_FETCH_TIMEOUT_SEC` | `0.4` | Bounded single-row `drive_audits` lookup timeout |
+
+**`drive_state_compact` facet:** before building the Mind request,
+`_maybe_build_mind_coloring` (`app/bus_listener.py`) fetches the latest
+`drive_audits` row (`subject = 'orion'`) via `fetch_drive_state_facet_for_thought`,
+bounded by `ORION_THOUGHT_MIND_DRIVE_STATE_FETCH_TIMEOUT_SEC`. On timeout,
+connection failure, missing table, no row, or a row with no meaningful content
+(a quiet DriveEngine tick), it degrades to `None` and the facet is simply
+omitted — this never raises or slows the turn beyond the bounded timeout.
+Mirrors `orion-cortex-orch`'s `drive_state_compact` facet
+(`services/orion-cortex-orch/app/mind_runtime.py`), adapted to `orion-thought`'s
+sync `psycopg2`/`SQLAlchemy` DB seam (reuses `app/store.py`'s lazy engine —
+`orion-thought` has no `asyncpg` dependency) instead of that service's asyncpg
+pool.
 
 **Preconditions (silent no-op if unmet):**
 1. `orion-mind` must have `MIND_LLM_SYNTHESIS_ENABLED=true` — `meaningful_synthesis`

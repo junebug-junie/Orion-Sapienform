@@ -152,6 +152,13 @@ class ThoughtSettings(BaseSettings):
     )
     mind_coloring_max_items: int = Field(3, alias="ORION_THOUGHT_MIND_COLORING_MAX_ITEMS")
     channel_mind_artifact: str = Field("orion:mind:artifact", alias="CHANNEL_MIND_ARTIFACT")
+    # Bounded single-row Postgres lookup (latest drive_audits row for the
+    # drive_state_compact facet) kept far below mind_wall_ms/mind_timeout_sec
+    # so a slow/unavailable DB fails open fast without slowing the turn.
+    # Mirrors orion-cortex-orch's mind_drive_state_fetch_timeout_sec.
+    mind_drive_state_fetch_timeout_sec: float = Field(
+        0.4, alias="ORION_THOUGHT_MIND_DRIVE_STATE_FETCH_TIMEOUT_SEC"
+    )
 
     # --- Reasoning activity projection (always-on consumer; harmless when idle) ---
     # Consume per-call ReasoningCallV1 telemetry and materialize a rolling-window

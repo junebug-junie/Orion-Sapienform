@@ -27,6 +27,7 @@ from orion.thought.stance_react import (
 from .cortex_client import CortexExecClient
 from .mind_enrichment import (
     build_light_mind_request,
+    fetch_drive_state_facet_for_thought,
     publish_mind_run_artifact_for_thought,
     run_mind_for_thought,
     select_mind_coloring,
@@ -232,10 +233,22 @@ async def _maybe_build_mind_coloring(
     if not settings.mind_enrichment_enabled:
         return None
     try:
+        drive_state_compact, drive_diag = await fetch_drive_state_facet_for_thought(
+            request.correlation_id, settings=settings
+        )
+        logger.info(
+            "mind_drive_state_fetch corr=%s ok=%s reason=%s elapsed_ms=%s timed_out=%s",
+            request.correlation_id,
+            drive_diag.get("ok"),
+            drive_diag.get("reason"),
+            drive_diag.get("elapsed_ms"),
+            drive_diag.get("timed_out"),
+        )
         mind_req = build_light_mind_request(
             request,
             wall_time_ms=settings.mind_wall_ms,
             router_profile=settings.mind_router_profile,
+            drive_state_compact=drive_state_compact,
         )
         result = await run_mind_for_thought(
             mind_req,

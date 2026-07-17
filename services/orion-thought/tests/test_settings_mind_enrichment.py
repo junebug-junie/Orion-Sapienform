@@ -26,6 +26,7 @@ def test_mind_enrichment_defaults_off(monkeypatch):
         "ORION_THOUGHT_MIND_ROUTER_PROFILE",
         "ORION_THOUGHT_MIND_MAX_RESPONSE_BYTES",
         "ORION_THOUGHT_MIND_COLORING_MAX_ITEMS",
+        "ORION_THOUGHT_MIND_DRIVE_STATE_FETCH_TIMEOUT_SEC",
         "ORION_MIND_BASE_URL",
     ):
         monkeypatch.delenv(key, raising=False)
@@ -39,6 +40,7 @@ def test_mind_enrichment_defaults_off(monkeypatch):
     assert s.settings.mind_coloring_max_items == 3
     assert s.settings.mind_base_url == "http://orion-mind:6611"
     assert s.settings.channel_mind_artifact == "orion:mind:artifact"
+    assert s.settings.mind_drive_state_fetch_timeout_sec == 0.4
     assert s.MIND_LLM_TIMEOUT_SEC_ASSUMED == 60.0
     assert s.MIND_ENRICHMENT_MIN_VIABLE_WALL_MS == 180000
 
@@ -49,6 +51,12 @@ def test_mind_enrichment_reads_env(monkeypatch):
     s = _reload_settings(monkeypatch)
     assert s.settings.mind_enrichment_enabled is True
     assert s.settings.mind_wall_ms == 9000
+
+
+def test_mind_drive_state_fetch_timeout_reads_env(monkeypatch):
+    monkeypatch.setenv("ORION_THOUGHT_MIND_DRIVE_STATE_FETCH_TIMEOUT_SEC", "0.75")
+    s = _reload_settings(monkeypatch)
+    assert s.settings.mind_drive_state_fetch_timeout_sec == 0.75
 
 
 def test_default_wall_is_viable_for_three_phase_synthesis(monkeypatch):

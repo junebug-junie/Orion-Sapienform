@@ -434,7 +434,7 @@ def concept_atlas_ingest_topic_foundry() -> dict[str, Any]:
             store=counting_store,
             identity_resolver=SubstrateIdentityResolver(store=counting_store),
         )
-        result = materializer.apply_record(record)
+        materializer.apply_record(record)
     except Exception as exc:
         logger.warning("concept_atlas_ingest_topic_foundry_store_write_failed run_id=%s error=%s", run_id, exc)
         return _unavailable(
@@ -446,19 +446,15 @@ def concept_atlas_ingest_topic_foundry() -> dict[str, Any]:
             edges_written=counting_store.edges_written,
         )
 
-    # Response fields remain total record items processed/written (not unique
-    # durable nodes after merge). Materializer edges_seen matches that meaning.
-    concept_count = sum(1 for n in record.nodes if n.node_kind == "concept")
-    evidence_count = sum(1 for n in record.nodes if n.node_kind == "evidence")
-    edge_count = result.edges_seen
-
+    # Same counter owns success and failure accounting. Counts are successful
+    # upserts (including merges), not unique durable nodes after merge.
     return {
         "available": True,
         "run_id": run_id,
         "topics_fetched": len(topics),
-        "concepts_written": concept_count,
-        "evidence_nodes_written": evidence_count,
-        "edges_written": edge_count,
+        "concepts_written": counting_store.concepts_written,
+        "evidence_nodes_written": counting_store.evidence_nodes_written,
+        "edges_written": counting_store.edges_written,
         "co_occurrence_edges_skipped": "segment_topic_map not supplied in this ingestion route (empty by design)",
     }
 

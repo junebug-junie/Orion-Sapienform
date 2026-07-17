@@ -249,7 +249,8 @@ def test_ingest_is_idempotent_on_repeated_calls(client: TestClient, monkeypatch:
 
     snapshot = store.snapshot()
     concept_nodes = [n for n in snapshot.nodes.values() if n.node_kind == "concept"]
-    assert len(concept_nodes) == 2  # not 4 -- deterministic node_ids upsert in place
+    # Not 4: identity-key merge upserts in place across repeated same-run ingest.
+    assert len(concept_nodes) == 2
 
 
 def test_ingest_cross_run_same_label_merges_to_one_durable_concept(
@@ -334,6 +335,101 @@ def test_ingest_cross_run_same_label_merges_to_one_durable_concept(
         assert edge.target.node_id != run_b_concept_id
 
 
+def test_ingest_cross_run_similar_embeddings_merge_paraphrased_labels(
+    client: TestClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Paraphrased labels with similar embeddings must merge at the Hub ingest route.
+
+    The Topic Foundry HTTP client does not expose centroids yet, so this test
+    injects ``topic_embeddings`` into the adapter call while keeping the real
+    route + materializer + store-backed resolver path.
+    """
+    import orion.substrate.adapters.topic_foundry as tf_adapter
+    from orion.substrate.store import InMemorySubstrateGraphStore
+
+    store = InMemorySubstrateGraphStore()
+    _patch_base_url(monkeypatch, FAKE_BASE_URL)
+    _patch_store(monkeypatch, store)
+
+    run_a = "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa"
+    run_b = "bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb"
+    topic_a = 0
+    topic_b = 7
+    # Cosine ~0.9986 — same pair as orion/substrate/tests/test_reconcile.py.
+    embeddings_by_run = {
+        run_a: {topic_a: [1.0, 1.0, 0.0]},
+        run_b: {topic_b: [1.0, 0.9, 0.0]},
+    }
+    labels_by_run = {
+        run_a: "surface encodings",
+        run_b: "surface-level representations",
+    }
+
+    real_map = tf_adapter.map_topic_foundry_run_to_substrate
+
+    def map_with_embeddings(*, run_id, topics, keywords_by_topic, segment_topic_map=None, **kwargs):
+        return real_map(
+            run_id=run_id,
+            topics=topics,
+            keywords_by_topic=keywords_by_topic,
+            segment_topic_map=segment_topic_map or {},
+            topic_embeddings=embeddings_by_run.get(str(run_id), {}),
+            **kwargs,
+        )
+
+    monkeypatch.setattr(tf_adapter, "map_topic_foundry_run_to_substrate", map_with_embeddings)
+
+    def _ingest_run(*, run_id: str, topic_id: int, label: str) -> None:
+        def fake_get(url: str, params: Optional[dict[str, Any]] = None, timeout: Optional[float] = None):
+            if url.endswith("/runs"):
+                return _FakeResponse(200, _runs_payload(run_id))
+            if url.endswith("/topics"):
+                return _FakeResponse(
+                    200,
+                    {
+                        "items": [
+                            {"topic_id": -1, "count": 10, "outlier_pct": 1.0, "label": None},
+                            {"topic_id": topic_id, "count": 50, "outlier_pct": 0.0, "label": label},
+                        ],
+                        "limit": 200,
+                        "offset": 0,
+                        "total": 2,
+                    },
+                )
+            if "/topics/" in url and url.endswith("/keywords"):
+                return _FakeResponse(200, {"topic_id": topic_id, "keywords": []})
+            raise AssertionError(f"unexpected URL in fake_get: {url}")
+
+        _patch_topic_foundry_client(monkeypatch, fake_get)
+        r = client.post("/api/substrate/concepts/ingest-topic-foundry")
+        assert r.status_code == 200
+        body = r.json()
+        assert body["available"] is True
+        assert body["run_id"] == run_id
+        assert body["concepts_written"] == 1
+
+    _ingest_run(run_id=run_a, topic_id=topic_a, label=labels_by_run[run_a])
+    canonical_concept_id = f"sub-concept-topicfoundry-{run_a}-{topic_a}"
+    run_b_concept_id = f"sub-concept-topicfoundry-{run_b}-{topic_b}"
+
+    _ingest_run(run_id=run_b, topic_id=topic_b, label=labels_by_run[run_b])
+
+    snapshot = store.snapshot()
+    concept_nodes = [n for n in snapshot.nodes.values() if n.node_kind == "concept"]
+    assert len(concept_nodes) == 1, (
+        f"expected one durable concept after embedding merge, got {len(concept_nodes)}: "
+        f"{[n.node_id for n in concept_nodes]}"
+    )
+    durable = concept_nodes[0]
+    assert durable.node_id == canonical_concept_id
+    assert run_b_concept_id not in snapshot.nodes
+
+    supports_edges = [e for e in snapshot.edges.values() if e.predicate == "supports"]
+    assert len(supports_edges) == 2
+    for edge in supports_edges:
+        assert edge.target.node_id == canonical_concept_id
+
+
 # --- partial write honesty: counters must match durable upserts ---
 
 
@@ -397,6 +493,7 @@ def test_ingest_partial_store_write_reports_precise_successful_counts(
     assert body["available"] is False
     assert body["reason"] == "substrate_store_write_failed"
     assert body["run_id"] == FAKE_RUN_ID
+    assert "error" in body
     # Precise partial progress — not the pre-fix lie of all zeros.
     assert body["concepts_written"] == 1
     assert body["evidence_nodes_written"] == 0

@@ -114,6 +114,96 @@ async def test_run_fcc_turn_fails_fast_on_stalled_stream(
 
 
 @pytest.mark.asyncio
+async def test_run_fcc_turn_fails_fast_on_draft_length_ceiling(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A draft that keeps streaming text without ever finishing the turn must be
+
+    killed once accumulated chars cross the context ceiling, instead of being
+    allowed to run away (live incident: an FCC draft narrated a fabricated
+    multi-turn dialogue instead of stopping after one bounded reply — it
+    completed and was caught downstream by finalize, but a worse case could
+    burn far more compute before finishing). This mirrors the existing
+    stream-stall-timeout safety valve above, but caps total draft size rather
+    than per-line silence.
+    """
+    monkeypatch.setenv("HARNESS_FCC_MAX_CONTEXT_TOKENS", "20")
+    monkeypatch.setenv("ORION_FCC_CHARS_PER_TOKEN", "1")
+    # ceiling_chars = 20 * 1 = 20
+
+    proc = _FakeProc(
+        [
+            '{"type":"assistant","message":{"content":[{"type":"text","text":"0123456789"}]}}',
+            '{"type":"assistant","message":{"content":[{"type":"text","text":"9876543210"}]}}',
+        ],
+    )
+
+    async def fake_exec(*args: Any, **kwargs: Any) -> _FakeProc:
+        return proc
+
+    monkeypatch.setattr(asyncio, "create_subprocess_exec", fake_exec)
+    monkeypatch.setattr(motor, "_preflight_fcc_server", lambda *a, **k: None)
+    monkeypatch.setattr(motor, "load_fcc_env", _fake_fcc_env)
+    monkeypatch.setattr(motor, "_maybe_render_mcp_config", lambda **k: None)
+
+    events = []
+    async for ev in motor.run_fcc_turn(
+        prompt="hi",
+        fcc_model_label="MODEL_HAIKU",
+        correlation_id="corr-draft-ceiling",
+        workspace="/tmp",
+        fcc_server_url="http://127.0.0.1:8082",
+        auth_token="tok",
+        claude_bin="claude",
+        timeout_sec=30.0,
+    ):
+        events.append(ev)
+
+    assert events[-1]["type"] == "error"
+    assert events[-1]["error_code"] == "fcc_draft_length_ceiling_exceeded"
+    assert proc.killed is True
+
+
+@pytest.mark.asyncio
+async def test_run_fcc_turn_normal_turn_unaffected_by_draft_length_ceiling(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A normal, well-under-budget turn must not trip the new hard ceiling."""
+
+    async def fake_exec(*args: Any, **kwargs: Any) -> _FakeProc:
+        return _FakeProc(
+            [
+                '{"type":"assistant","message":{"content":[{"type":"text","text":"Hi there."}]}}',
+                '{"type":"result","result":"Hi there.","session_id":"s1"}',
+            ],
+        )
+
+    monkeypatch.setattr(asyncio, "create_subprocess_exec", fake_exec)
+    monkeypatch.setattr(motor, "_preflight_fcc_server", lambda *a, **k: None)
+    monkeypatch.setattr(motor, "load_fcc_env", _fake_fcc_env)
+    monkeypatch.setattr(motor, "_maybe_render_mcp_config", lambda **k: None)
+    monkeypatch.delenv("HARNESS_FCC_MAX_CONTEXT_TOKENS", raising=False)
+    monkeypatch.delenv("ORION_FCC_CHARS_PER_TOKEN", raising=False)
+
+    events = []
+    async for ev in motor.run_fcc_turn(
+        prompt="hello",
+        fcc_model_label="MODEL_HAIKU",
+        correlation_id="corr-draft-ceiling-ok",
+        workspace="/tmp",
+        fcc_server_url="http://127.0.0.1:8082",
+        auth_token="tok",
+        claude_bin="claude",
+        timeout_sec=30.0,
+    ):
+        events.append(ev)
+
+    assert [ev["type"] for ev in events] == ["step", "step", "final"]
+    assert all(ev["type"] != "error" for ev in events)
+    assert all(ev.get("error_code") != "fcc_draft_length_ceiling_exceeded" for ev in events)
+
+
+@pytest.mark.asyncio
 async def test_run_fcc_turn_whole_turn_timeout_wins_near_deadline(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

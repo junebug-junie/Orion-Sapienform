@@ -593,6 +593,20 @@ async def run_fcc_turn(
                 }
                 context_nudge_sent = True
 
+            if budget_chars >= ceiling_chars:
+                proc.kill()
+                yield {
+                    "type": "error",
+                    "error": (
+                        f"fcc draft exceeded context ceiling ({budget_chars} >= "
+                        f"{ceiling_chars} chars) without completing the turn"
+                    ),
+                    "error_code": "fcc_draft_length_ceiling_exceeded",
+                    "steps_seen": steps_seen,
+                    "llm_response": accumulated or None,
+                }
+                return
+
             text, sid, _dur = extract_final_from_stream_event(parsed, accumulated=accumulated)
             if text:
                 accumulated = text

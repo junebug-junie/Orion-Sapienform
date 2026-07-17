@@ -42,6 +42,24 @@ def delta_to_perturbations(delta: StateDeltaV1) -> list[Perturbation]:
                     channel="availability",
                     intensity=max(0.0, 1.0 - min(1.0, score + 0.2)),
                     label=delta.delta_id,
+                    # mode="replace" (2026-07-17 fix, live post-deploy finding):
+                    # this intensity is a full current-availability estimate
+                    # recomputed fresh from this tick's pressure_score, not an
+                    # incremental delta -- same "current reading" shape as
+                    # bus_health/delivery_confidence/execution_load elsewhere
+                    # in this file. Without mode="replace",
+                    # apply_perturbations() special-cases channel=="availability"
+                    # to floor-only (min(current, intensity)): can decrease but
+                    # never recover, even when a LATER event reports genuinely
+                    # improved conditions (a higher intensity just gets min()'d
+                    # away against the old low value). Confirmed live:
+                    # node:atlas's availability was pinned at exactly 0.0 with
+                    # staleness ~0 and gpu_pressure=0.72 (fresh, plausible
+                    # telemetry) -- not a real ongoing outage, a one-way ratchet
+                    # with the same shape as expected_offline_suppression's
+                    # original bug (PR #1109), just via min()-floor instead of
+                    # add-no-decay.
+                    mode="replace",
                 )
             )
         if delta.operation == "suppress":

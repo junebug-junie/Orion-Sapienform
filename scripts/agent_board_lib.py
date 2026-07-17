@@ -15,7 +15,7 @@ from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Iterator
 
-from worktree_lib import repo_toplevel
+from worktree_lib import list_worktrees, repo_toplevel
 
 DEFAULT_BOARD_PATH = Path.home() / ".orion" / "agent-board.jsonl"
 STALE_AFTER_MINUTES = 30
@@ -291,3 +291,114 @@ def close_presence(config: BoardConfig, worktree_path: str | None = None) -> Non
     if path is None:
         path = current_worktree_identity()["worktree_path"]
     append_event(config, "presence_closed", {"worktree_path": path, "status": "closed"})
+
+
+def live_worktree_paths() -> set[str]:
+    return {str(info.path.resolve()) for info in list_worktrees()}
+
+
+def reconcile_closed_worktrees(
+    config: BoardConfig,
+    live_paths: set[str] | None = None,
+) -> BoardState:
+    live = live_paths if live_paths is not None else live_worktree_paths()
+    state = load_state(config, live_worktrees=live)
+    for worktree_path, row in state.presence.items():
+        if row.get("status") == "closed":
+            continue
+        if worktree_path not in live:
+            append_event(config, "presence_closed", {"worktree_path": worktree_path, "status": "closed"})
+    return load_state(config, live_worktrees=live)
+
+
+def _active_item_files(state: BoardState, worktree_path: str) -> set[str]:
+    files: set[str] = set()
+    for item in state.items.values():
+        if item.get("worktree_path") != worktree_path:
+            continue
+        if item.get("status") not in {"open", "parked"}:
+            continue
+        for path in item.get("related_files") or []:
+            files.add(str(path))
+    return files
+
+
+def detect_collisions(state: BoardState, current_worktree_path: str) -> list[str]:
+    current_files = _active_item_files(state, current_worktree_path)
+    if not current_files:
+        return []
+    warnings: list[str] = []
+    for worktree_path, presence in sorted(state.presence.items()):
+        if worktree_path == current_worktree_path:
+            continue
+        if presence.get("status") not in {"active", "stale"}:
+            continue
+        overlap = sorted(current_files & _active_item_files(state, worktree_path))
+        if overlap:
+            warnings.append(
+                f"Potential collision with {worktree_path}: overlapping files {', '.join(overlap)}"
+            )
+    return warnings
+
+
+def _open_items_for(state: BoardState, worktree_path: str) -> list[dict[str, object]]:
+    return [
+        item for item in state.items.values()
+        if item.get("worktree_path") == worktree_path and item.get("status") in {"open", "parked"}
+    ]
+
+
+def _global_items(state: BoardState) -> list[dict[str, object]]:
+    return [
+        item for item in state.items.values()
+        if item.get("status") in {"open", "parked"}
+        and (item.get("severity") == "blocker" or item.get("owner_scope") == "juniper")
+    ]
+
+
+def render_checkin_context(config: BoardConfig) -> str:
+    identity = current_worktree_identity()
+    live = live_worktree_paths()
+    state = reconcile_closed_worktrees(config, live_paths=live)
+    upsert_presence(config)
+    state = load_state(config, live_worktrees=live)
+    current = identity["worktree_path"]
+    lines: list[str] = ["Agent workspace board"]
+
+    lines.append("This worktree:")
+    current_items = _open_items_for(state, current)
+    if current_items:
+        for item in current_items:
+            lines.append(f"- {item['severity']}/{item['kind']}: {item['summary']}")
+    else:
+        lines.append("- No open items for this worktree.")
+
+    lines.append("Global strip:")
+    global_items = _global_items(state)
+    if global_items:
+        for item in global_items:
+            lines.append(f"- {item['severity']}/{item['kind']}: {item['summary']} ({item['worktree_path']})")
+    else:
+        lines.append("- No global blockers or Juniper escalations.")
+
+    lines.append("Workspace presence:")
+    others = [
+        row for path, row in sorted(state.presence.items())
+        if path != current and row.get("status") in {"active", "stale"}
+    ]
+    if others:
+        for row in others:
+            lines.append(
+                f"- {row.get('status')} {row.get('worktree_path')} "
+                f"{row.get('branch', '')}: {row.get('thread_summary', '')} "
+                f"| task: {row.get('current_task', '')}".rstrip()
+            )
+    else:
+        lines.append("- No other active or stale worktrees on the board.")
+
+    collisions = detect_collisions(state, current)
+    if collisions:
+        lines.append("Collision warnings:")
+        for warning in collisions:
+            lines.append(f"- {warning}")
+    return "\n".join(lines)

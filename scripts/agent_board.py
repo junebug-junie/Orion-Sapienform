@@ -13,6 +13,8 @@ from agent_board_lib import (  # noqa: E402
     change_item_status,
     close_presence,
     load_state,
+    reconcile_closed_worktrees,
+    render_checkin_context,
     upsert_presence,
 )
 
@@ -66,6 +68,9 @@ def main(argv: list[str] | None = None) -> int:
 
     sub.add_parser("checkout")
 
+    sub.add_parser("checkin")
+    sub.add_parser("reconcile")
+
     args = parser.parse_args(argv)
     cfg = board_config_from_env()
 
@@ -104,6 +109,13 @@ def main(argv: list[str] | None = None) -> int:
             if open_items:
                 print(f"Open items remain: {len(open_items)}")
             print("presence: closed")
+            return 0
+        if args.command == "checkin":
+            print(render_checkin_context(cfg))
+            return 0
+        if args.command == "reconcile":
+            reconcile_closed_worktrees(cfg)
+            print("reconciled")
             return 0
     except ValueError as exc:
         print(str(exc), file=sys.stderr)

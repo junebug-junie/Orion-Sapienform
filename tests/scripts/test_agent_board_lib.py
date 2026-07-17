@@ -14,7 +14,10 @@ sys.path.insert(0, str(ROOT / "scripts"))
 from agent_board_lib import (  # noqa: E402
     BoardConfig,
     append_event,
+    detect_collisions,
     load_state,
+    reconcile_closed_worktrees,
+    render_checkin_context,
     validate_item_payload,
 )
 
@@ -147,3 +150,136 @@ def test_concurrent_appends_do_not_corrupt_jsonl(tmp_path: Path) -> None:
     assert len(lines) == 50
     decoded = [json.loads(line) for line in lines]
     assert {row["payload"]["id"] for row in decoded} == {f"item-{index}" for index in range(50)}
+
+
+def test_render_checkin_includes_this_worktree_global_strip_and_presence(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    cfg = _config(tmp_path)
+    append_event(
+        cfg,
+        "presence_upserted",
+        {
+            "worktree_path": "/repo/current",
+            "branch": "feat/current",
+            "status": "active",
+            "thread_summary": "Current thread.",
+            "current_task": "Implementing checkin.",
+        },
+    )
+    append_event(
+        cfg,
+        "presence_upserted",
+        {
+            "worktree_path": "/repo/other",
+            "branch": "feat/other",
+            "status": "active",
+            "thread_summary": "Other agent summary.",
+            "current_task": "Touching scripts.",
+        },
+    )
+    append_event(
+        cfg,
+        "item_upserted",
+        {
+            "id": "current-item",
+            "kind": "finding",
+            "severity": "should",
+            "owner_scope": "this-worktree",
+            "worktree_path": "/repo/current",
+            "summary": "Current worktree finding.",
+            "status": "open",
+            "related_files": ["scripts/agent_board.py"],
+        },
+    )
+    append_event(
+        cfg,
+        "item_upserted",
+        {
+            "id": "global-blocker",
+            "kind": "blocker",
+            "severity": "blocker",
+            "owner_scope": "juniper",
+            "scope_note": "Needs Juniper decision.",
+            "worktree_path": "/repo/other",
+            "summary": "Global blocker.",
+            "status": "open",
+            "related_files": [],
+        },
+    )
+    monkeypatch.setattr(
+        "agent_board_lib.current_worktree_identity",
+        lambda: {"worktree_path": "/repo/current", "branch": "feat/current"},
+    )
+    monkeypatch.setattr("agent_board_lib.live_worktree_paths", lambda: {"/repo/current", "/repo/other"})
+
+    output = render_checkin_context(cfg)
+
+    assert "This worktree" in output
+    assert "Current worktree finding." in output
+    assert "Global strip" in output
+    assert "Global blocker." in output
+    assert "Workspace presence" in output
+    assert "Other agent summary." in output
+
+
+def test_detect_collisions_reports_overlapping_related_files(tmp_path: Path) -> None:
+    cfg = _config(tmp_path)
+    append_event(
+        cfg,
+        "presence_upserted",
+        {"worktree_path": "/repo/current", "branch": "feat/current", "status": "active"},
+    )
+    append_event(
+        cfg,
+        "presence_upserted",
+        {"worktree_path": "/repo/other", "branch": "feat/other", "status": "active"},
+    )
+    append_event(
+        cfg,
+        "item_upserted",
+        {
+            "id": "current-item",
+            "kind": "finding",
+            "severity": "note",
+            "owner_scope": "this-worktree",
+            "worktree_path": "/repo/current",
+            "summary": "Current file touch.",
+            "status": "open",
+            "related_files": ["scripts/agent_board.py"],
+        },
+    )
+    append_event(
+        cfg,
+        "item_upserted",
+        {
+            "id": "other-item",
+            "kind": "finding",
+            "severity": "note",
+            "owner_scope": "this-worktree",
+            "worktree_path": "/repo/other",
+            "summary": "Other file touch.",
+            "status": "open",
+            "related_files": ["scripts/agent_board.py"],
+        },
+    )
+    state = load_state(cfg, live_worktrees={"/repo/current", "/repo/other"})
+
+    collisions = detect_collisions(state, "/repo/current")
+
+    assert collisions == [
+        "Potential collision with /repo/other: overlapping files scripts/agent_board.py"
+    ]
+
+
+def test_reconcile_closed_worktrees_persists_closed_event(tmp_path: Path) -> None:
+    cfg = _config(tmp_path)
+    append_event(
+        cfg,
+        "presence_upserted",
+        {"worktree_path": "/repo/old", "branch": "feat/old", "status": "active"},
+    )
+
+    state = reconcile_closed_worktrees(cfg, live_paths={"/repo/current"})
+    reloaded = load_state(cfg, live_worktrees={"/repo/current"})
+
+    assert state.presence["/repo/old"]["status"] == "closed"
+    assert reloaded.presence["/repo/old"]["status"] == "closed"

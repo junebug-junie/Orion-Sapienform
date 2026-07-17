@@ -127,3 +127,30 @@ def test_checkout_closes_presence_but_does_not_fail_on_open_items(primary_repo: 
     assert checkout.returncode == 0
     assert "Open items remain" in checkout.stdout
     assert "closed" in listed.stdout
+
+
+def test_checkin_prints_three_layer_context(primary_repo: Path, tmp_path: Path) -> None:
+    board = tmp_path / "agent-board.jsonl"
+    _run(
+        primary_repo,
+        board,
+        "add",
+        "--kind",
+        "blocker",
+        "--severity",
+        "blocker",
+        "--summary",
+        "Global issue visible at checkin.",
+        "--scope",
+        "juniper",
+        "--scope-note",
+        "Needs Juniper decision.",
+    )
+
+    proc = _run(primary_repo, board, "checkin")
+
+    assert proc.returncode == 0
+    assert "This worktree" in proc.stdout
+    assert "Global strip" in proc.stdout
+    assert "Workspace presence" in proc.stdout
+    assert "Global issue visible at checkin." in proc.stdout

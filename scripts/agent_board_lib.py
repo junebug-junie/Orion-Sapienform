@@ -302,8 +302,8 @@ def reconcile_closed_worktrees(
     live_paths: set[str] | None = None,
 ) -> BoardState:
     live = live_paths if live_paths is not None else live_worktree_paths()
-    state = load_state(config, live_worktrees=live)
-    for worktree_path, row in state.presence.items():
+    persisted = load_state(config)
+    for worktree_path, row in persisted.presence.items():
         if row.get("status") == "closed":
             continue
         if worktree_path not in live:

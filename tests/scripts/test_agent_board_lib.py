@@ -279,7 +279,15 @@ def test_reconcile_closed_worktrees_persists_closed_event(tmp_path: Path) -> Non
     )
 
     state = reconcile_closed_worktrees(cfg, live_paths={"/repo/current"})
-    reloaded = load_state(cfg, live_worktrees={"/repo/current"})
 
+    lines = cfg.board_path.read_text(encoding="utf-8").splitlines()
+    closed_events = [
+        json.loads(line) for line in lines if json.loads(line)["type"] == "presence_closed"
+    ]
+    assert any(
+        event["payload"]["worktree_path"] == "/repo/old" for event in closed_events
+    )
+
+    persisted = load_state(cfg)
+    assert persisted.presence["/repo/old"]["status"] == "closed"
     assert state.presence["/repo/old"]["status"] == "closed"
-    assert reloaded.presence["/repo/old"]["status"] == "closed"

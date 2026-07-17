@@ -204,6 +204,62 @@ async def test_run_fcc_turn_normal_turn_unaffected_by_draft_length_ceiling(
 
 
 @pytest.mark.asyncio
+async def test_run_fcc_turn_does_not_kill_on_terminal_result_event(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A "result" event is the CLI's own signal the turn already finished --
+
+    it must never be treated as ceiling-exceeding runaway, even though
+    measure_step_payload_chars has no result-specific branch and falls back
+    to json.dumps(raw) for it (re-measuring text already counted via the
+    preceding assistant deltas, which alone can push budget_chars over a
+    tight ceiling on the very event that completes the turn). Regression
+    test for a review finding on this same patch: before the fix, this
+    scenario killed an already-finished process and discarded its answer as
+    fcc_draft_length_ceiling_exceeded instead of yielding it.
+    """
+    monkeypatch.setenv("HARNESS_FCC_MAX_CONTEXT_TOKENS", "30")
+    monkeypatch.setenv("ORION_FCC_CHARS_PER_TOKEN", "1")
+    # ceiling_chars = 30; prompt "hi" (2 chars) + assistant delta (17 chars)
+    # = budget_chars 19, still under ceiling. The result event's own
+    # json.dumps(raw) fallback size (well over 11 chars of headroom, since
+    # it restates the answer text plus JSON structure/session_id) is what
+    # used to push budget_chars over 30 on the completing event.
+    proc = _FakeProc(
+        [
+            '{"type":"assistant","message":{"content":[{"type":"text","text":"0123456789012345"}]}}',
+            '{"type":"result","result":"0123456789012345","session_id":"s1"}',
+        ],
+    )
+
+    async def fake_exec(*args: Any, **kwargs: Any) -> _FakeProc:
+        return proc
+
+    monkeypatch.setattr(asyncio, "create_subprocess_exec", fake_exec)
+    monkeypatch.setattr(motor, "_preflight_fcc_server", lambda *a, **k: None)
+    monkeypatch.setattr(motor, "load_fcc_env", _fake_fcc_env)
+    monkeypatch.setattr(motor, "_maybe_render_mcp_config", lambda **k: None)
+
+    events = []
+    async for ev in motor.run_fcc_turn(
+        prompt="hi",
+        fcc_model_label="MODEL_HAIKU",
+        correlation_id="corr-draft-ceiling-result-guard",
+        workspace="/tmp",
+        fcc_server_url="http://127.0.0.1:8082",
+        auth_token="tok",
+        claude_bin="claude",
+        timeout_sec=30.0,
+    ):
+        events.append(ev)
+
+    assert all(ev["type"] != "error" for ev in events)
+    assert events[-1]["type"] == "final"
+    assert events[-1]["llm_response"] == "0123456789012345"
+    assert proc.killed is False
+
+
+@pytest.mark.asyncio
 async def test_run_fcc_turn_whole_turn_timeout_wins_near_deadline(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

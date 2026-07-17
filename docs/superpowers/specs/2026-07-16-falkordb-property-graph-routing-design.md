@@ -1,7 +1,7 @@
 # FalkorDB property-graph doctrine + persistence router — design spec
 
 **Date:** 2026-07-16
-**Status:** DESIGN — awaiting Juniper review before implementation plans
+**Status:** DESIGN — guts implemented on `feat/falkordb-property-graph-routing` (intent, routes, property guard, Falkor/routed stores, `services/orion-falkordb/`). Concept Atlas / concept-induction wiring and live SPARQL cutover deferred.
 **Mode:** Proposal (touches memory / cognitive-graph persistence; AGENTS.md §0A proposal mode)
 **Related:**
 - `docs/superpowers/specs/2026-07-15-concept-atlas-graph-pipeline-design.md` (first consumer seam)

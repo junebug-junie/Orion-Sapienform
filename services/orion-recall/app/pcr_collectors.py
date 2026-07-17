@@ -5,11 +5,11 @@ from typing import Any
 from orion.schemas.recall_pcr import RetrievalIntentV1
 
 _COLLECTOR_PLANS: dict[str, dict[str, bool]] = {
-    "relational": {"cards": True, "rdf": True, "rdf_chat": True, "active_packet": True},
-    "semantic": {"cards": True, "rdf": True, "rdf_chat": True, "active_packet": True},
-    "procedural": {"cards": True, "active_packet": True},
-    "open_loop": {"cards": True, "rdf_chat": True, "active_packet": True},
-    "contradiction": {"cards": True, "rdf": True, "active_packet": True, "graphiti": True},
+    "relational": {"cards": True, "rdf": True, "rdf_chat": True, "active_packet": True, "concept_region": True},
+    "semantic": {"cards": True, "rdf": True, "rdf_chat": True, "active_packet": True, "concept_region": True},
+    "procedural": {"cards": True, "active_packet": True, "concept_region": True},
+    "open_loop": {"cards": True, "rdf_chat": True, "active_packet": True, "concept_region": True},
+    "contradiction": {"cards": True, "rdf": True, "active_packet": True, "graphiti": True, "concept_region": True},
 }
 
 

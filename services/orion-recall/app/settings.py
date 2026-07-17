@@ -222,6 +222,17 @@ class Settings(BaseSettings):
     RECALL_ACTIVE_PACKET_ENABLED: bool = Field(
         default=True, validation_alias=AliasChoices("RECALL_ACTIVE_PACKET_ENABLED")
     )
+    # Turn-scoped concept-region collector (services/orion-recall/app/collectors/
+    # concept_region.py) -- cheap, self-gating label-substring match against the
+    # substrate concept graph (golden Orion/Juniper/relationship concepts +
+    # organically-grown topic-foundry concepts, see orion/substrate/seed.py and
+    # orion/substrate/adapters/topic_foundry.py). Reads via
+    # app/substrate_store.py's lazily-initialized store handle (env-driven
+    # backend selection: SUBSTRATE_STORE_BACKEND/FALKORDB_URI/
+    # FALKORDB_SUBSTRATE_GRAPH below), never raises.
+    RECALL_CONCEPT_REGION_ENABLED: bool = Field(
+        default=True, validation_alias=AliasChoices("RECALL_CONCEPT_REGION_ENABLED")
+    )
     RECALL_BELIEF_RENDER_BUDGET: int = Field(
         default=128, validation_alias=AliasChoices("RECALL_BELIEF_RENDER_BUDGET")
     )

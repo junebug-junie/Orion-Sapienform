@@ -51,9 +51,13 @@ def test_rerun_refreshes_all_without_duplicating_marker(tmp_path: Path) -> None:
     proc = _run_installer(repo)
     assert proc.returncode == 0
     assert "refreshed" in proc.stdout
+    # pre-commit/post-merge each carry one marker line; post-commit carries
+    # two (an explicit BEGIN and END, so a refresh can find both ends of its
+    # own block and preserve whatever another tool put on either side of it).
+    expected_marker_count = {"pre-commit": 1, "post-merge": 1, "post-commit": 2}
     for name in ALL_HOOKS:
         hook = repo / ".git" / "hooks" / name
-        assert hook.read_text(encoding="utf-8").count("# orion-git-safety-guard") == 1
+        assert hook.read_text(encoding="utf-8").count("# orion-git-safety-guard") == expected_marker_count[name]
 
 
 def test_preserves_existing_foreign_hook_as_backup(tmp_path: Path) -> None:
@@ -100,14 +104,43 @@ def test_post_commit_appends_to_existing_foreign_hook_without_backup(tmp_path: P
     assert "orion-git-safety-guard" in text
     assert text.index("some-other-tools-post-commit-hook-ran") < text.index("orion-git-safety-guard")
 
-    # Re-running must refresh only our own trailing block -- the foreign
-    # hook's content must not be duplicated or disturbed.
+    # Re-running must refresh only our own block -- the foreign hook's
+    # content must not be duplicated or disturbed.
     proc2 = _run_installer(repo)
     assert proc2.returncode == 0, proc2.stderr
     text2 = (hooks_dir / "post-commit").read_text(encoding="utf-8")
     assert text2.count("some-other-tools-post-commit-hook-ran") == 1
-    assert text2.count("# orion-git-safety-guard") == 1
+    assert text2.count("# orion-git-safety-guard") == 2  # explicit BEGIN + END
     assert not backup.exists()
+
+
+def test_post_commit_refresh_preserves_content_appended_after_our_block(tmp_path: Path) -> None:
+    """Regression test for a real bug caught live: re-running
+    `graphify hook install` after our hook was already appended causes
+    graphify to append ITS content after ours (graphify's own installer
+    uses the same append-to-whatever-exists strategy). An earlier version
+    of this refresh logic assumed our block was always the file's tail and
+    silently discarded that trailing content on the next
+    `install_git_safety_hooks.sh` run. Our block must track its own BEGIN
+    *and* END so a refresh preserves content on both sides of it."""
+    repo = tmp_path / "repo"
+    _init_repo(repo)
+
+    _run_installer(repo)
+
+    hooks_dir = repo / ".git" / "hooks"
+    post_commit = hooks_dir / "post-commit"
+    with post_commit.open("a", encoding="utf-8") as f:
+        f.write("\necho appended-by-another-tool-after-ours\n")
+
+    proc = _run_installer(repo)
+    assert proc.returncode == 0, proc.stderr
+
+    text = post_commit.read_text(encoding="utf-8")
+    assert "echo appended-by-another-tool-after-ours" in text
+    assert text.count("echo appended-by-another-tool-after-ours") == 1
+    assert text.count("# orion-git-safety-guard") == 2
+    assert text.index("(post-commit) END") < text.index("appended-by-another-tool-after-ours")
 
 
 def test_post_commit_heartbeat_survives_foreign_hook_early_exit(tmp_path: Path) -> None:

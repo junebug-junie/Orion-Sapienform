@@ -128,6 +128,19 @@ install_one_hook() {
     echo "[install-git-safety-hooks] installed orion git-safety $HOOK_NAME hook at $DEST_HOOK"
 }
 
+_emit_post_commit_block() {
+    # Emits our post-commit fragment, bounded by exact BEGIN/END marker
+    # lines (not just the loose "$MARKER" substring) so a refresh can find
+    # BOTH ends of our own block and preserve whatever sits on either side
+    # of it -- including content some OTHER tool appended after ours later
+    # (e.g. a `graphify hook install` re-run). $1 = source hook file path.
+    echo "$MARKER (post-commit) BEGIN"
+    echo "("
+    tail -n +3 "$1"
+    echo ") || true"
+    echo "$MARKER (post-commit) END"
+}
+
 install_post_commit_hook() {
     # post-commit gets its own install path instead of install_one_hook's
     # overwrite-and-backup behavior: unlike pre-commit/post-merge, post-commit
@@ -164,10 +177,7 @@ install_post_commit_hook() {
         {
             echo "#!/bin/sh"
             echo ""
-            echo "$MARKER (post-commit)"
-            echo "("
-            tail -n +3 "$SOURCE_HOOK"
-            echo ") || true"
+            _emit_post_commit_block "$SOURCE_HOOK"
         } > "$DEST_HOOK"
         chmod +x "$DEST_HOOK"
         echo "[install-git-safety-hooks] installed orion git-safety post-commit hook at $DEST_HOOK"
@@ -175,47 +185,75 @@ install_post_commit_hook() {
     fi
 
     if grep -qF "$MARKER" "$DEST_HOOK" 2>/dev/null; then
-        # Our block is already present and, by construction (see below),
-        # always runs from the marker line to EOF -- refresh just that
-        # trailing block, leaving anything before it (a subshell-wrapped
-        # foreign hook from an earlier append, or our own prior install)
-        # untouched.
-        local MARKER_LINE
-        MARKER_LINE=$(grep -nF "$MARKER" "$DEST_HOOK" | head -1 | cut -d: -f1)
-        local TMP_FILE
-        TMP_FILE=$(mktemp)
-        if [ "$MARKER_LINE" -gt 1 ]; then
-            head -n "$((MARKER_LINE - 1))" "$DEST_HOOK" > "$TMP_FILE"
-        else
-            : > "$TMP_FILE"
+        # Our block is already present. Find BOTH its BEGIN and END lines
+        # (not just where it starts) so a refresh can preserve content on
+        # EITHER side of it -- including anything another tool appended
+        # after ours since the last install (confirmed live: re-running
+        # `graphify hook install` after ours was already in place appends
+        # graphify's content past our old block's end; an earlier version
+        # of this refresh logic assumed our block was always the file's
+        # tail and silently discarded that on the next refresh).
+        local BEGIN_LINE END_LINE
+        BEGIN_LINE=$(grep -nF "$MARKER (post-commit) BEGIN" "$DEST_HOOK" | head -1 | cut -d: -f1)
+        END_LINE=$(grep -nF "$MARKER (post-commit) END" "$DEST_HOOK" | head -1 | cut -d: -f1)
+
+        if [ -n "$BEGIN_LINE" ] && [ -n "$END_LINE" ]; then
+            local PREFIX_FILE SUFFIX_FILE
+            PREFIX_FILE=$(mktemp)
+            SUFFIX_FILE=$(mktemp)
+            if [ "$BEGIN_LINE" -gt 1 ]; then
+                head -n "$((BEGIN_LINE - 1))" "$DEST_HOOK" > "$PREFIX_FILE"
+            else
+                : > "$PREFIX_FILE"
+            fi
+            tail -n "+$((END_LINE + 1))" "$DEST_HOOK" > "$SUFFIX_FILE"
+
+            # Trim trailing blank lines from the prefix and leading blank
+            # lines from the suffix so repeated refreshes don't accumulate
+            # blank-line padding on either side of our block every time
+            # this script is re-run.
+            awk 'BEGIN{n=0} {lines[++n]=$0} END{while (n>0 && lines[n]=="") n--; for (i=1;i<=n;i++) print lines[i]}' "$PREFIX_FILE" > "$PREFIX_FILE.trimmed"
+            awk 'BEGIN{started=0} {if (!started && $0=="") next; started=1; print}' "$SUFFIX_FILE" > "$SUFFIX_FILE.trimmed"
+
+            {
+                cat "$PREFIX_FILE.trimmed"
+                echo ""
+                _emit_post_commit_block "$SOURCE_HOOK"
+                if [ -s "$SUFFIX_FILE.trimmed" ]; then
+                    echo ""
+                    cat "$SUFFIX_FILE.trimmed"
+                fi
+            } > "$DEST_HOOK.tmp"
+            rm -f "$PREFIX_FILE" "$PREFIX_FILE.trimmed" "$SUFFIX_FILE" "$SUFFIX_FILE.trimmed"
+            mv "$DEST_HOOK.tmp" "$DEST_HOOK"
+            chmod +x "$DEST_HOOK"
+            echo "[install-git-safety-hooks] refreshed orion git-safety post-commit hook block at $DEST_HOOK (any other hook content, before or after ours, preserved)"
+            return 0
         fi
-        {
-            cat "$TMP_FILE"
-            echo ""
-            echo "$MARKER (post-commit)"
-            echo "("
-            tail -n +3 "$SOURCE_HOOK"
-            echo ") || true"
-        } > "$DEST_HOOK.tmp"
-        rm -f "$TMP_FILE"
-        mv "$DEST_HOOK.tmp" "$DEST_HOOK"
-        chmod +x "$DEST_HOOK"
-        echo "[install-git-safety-hooks] refreshed orion git-safety post-commit hook block at $DEST_HOOK (any other hook content preserved)"
-        return 0
+        # "$MARKER" matched as a loose substring (e.g. mentioned in some
+        # other tool's comments) but this isn't a well-formed BEGIN/END
+        # block of ours -- fall through to the append branch below rather
+        # than guessing at boundaries that don't exist.
     fi
 
     # Foreign hook with no orion block yet -- wrap its existing body in a
     # subshell (isolating any `exit` it calls) and append ours, also
-    # subshell-wrapped, rather than overwriting/backing up.
+    # subshell-wrapped, rather than overwriting/backing up. Only skip the
+    # foreign hook's own first line if it's actually a shebang -- a foreign
+    # hook with no shebang would otherwise silently lose its real first
+    # line of code.
+    local FOREIGN_FIRST_LINE FOREIGN_BODY_START
+    FOREIGN_FIRST_LINE=$(head -n 1 "$DEST_HOOK")
+    case "$FOREIGN_FIRST_LINE" in
+        "#!"*) FOREIGN_BODY_START=2 ;;
+        *) FOREIGN_BODY_START=1 ;;
+    esac
     {
         echo "("
-        tail -n +2 "$DEST_HOOK"
+        tail -n "+$FOREIGN_BODY_START" "$DEST_HOOK"
         echo ") || true"
         echo ""
-        echo "$MARKER (post-commit)"
-        echo "("
-        tail -n +3 "$SOURCE_HOOK"
-        echo ") || true"
+        _emit_post_commit_block "$SOURCE_HOOK"
     } > "$DEST_HOOK.tmp"
     {
         echo "#!/bin/sh"

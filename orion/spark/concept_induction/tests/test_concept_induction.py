@@ -481,10 +481,70 @@ class ConceptInductionTests(unittest.TestCase):
             source=ServiceRef(name="hub", version="0.0.0"),
             payload={"prompt": "How are you, Orion?", "response": "I feel steady and curious."},
         )
-        extracted = worker._extract_text(env_turn)
+        extracted = asyncio.run(worker._extract_text(env_turn, ""))
         self.assertIsNotNone(extracted)
         self.assertIn("How are you, Orion?", extracted)
         self.assertIn("I feel steady and curious.", extracted)
+
+    def test_extract_text_prefers_postgres_chat_history_row_over_envelope(self):
+        worker = ConceptWorker(ConceptSettings(orion_bus_enabled=False))
+        env_turn = BaseEnvelope(
+            kind="chat.history",
+            source=ServiceRef(name="hub", version="0.0.0"),
+            correlation_id=uuid4(),
+            payload={"prompt": "envelope prompt (noisy)", "response": "envelope response (noisy)"},
+        )
+
+        async def _fake_fetch(correlation_id, **kwargs):
+            return "canonical prompt", "canonical response"
+
+        with patch(
+            "orion.spark.concept_induction.bus_worker.fetch_chat_turn_by_correlation_id",
+            _fake_fetch,
+        ):
+            extracted = asyncio.run(worker._extract_text(env_turn, "orion:chat:history:log"))
+        self.assertIn("canonical prompt", extracted)
+        self.assertIn("canonical response", extracted)
+        self.assertNotIn("noisy", extracted)
+
+    def test_extract_text_falls_back_to_envelope_when_postgres_lookup_misses(self):
+        worker = ConceptWorker(ConceptSettings(orion_bus_enabled=False))
+        env_turn = BaseEnvelope(
+            kind="chat.history",
+            source=ServiceRef(name="hub", version="0.0.0"),
+            correlation_id=uuid4(),
+            payload={"prompt": "envelope prompt", "response": "envelope response"},
+        )
+
+        async def _fake_fetch_miss(correlation_id, **kwargs):
+            return None
+
+        with patch(
+            "orion.spark.concept_induction.bus_worker.fetch_chat_turn_by_correlation_id",
+            _fake_fetch_miss,
+        ):
+            extracted = asyncio.run(worker._extract_text(env_turn, "orion:chat:history:turn"))
+        self.assertIn("envelope prompt", extracted)
+        self.assertIn("envelope response", extracted)
+
+    def test_extract_text_skips_postgres_lookup_for_non_chat_history_channels(self):
+        worker = ConceptWorker(ConceptSettings(orion_bus_enabled=False))
+        env_turn = BaseEnvelope(
+            kind="chat.message",
+            source=ServiceRef(name="hub", version="0.0.0"),
+            correlation_id=uuid4(),
+            payload={"content": "a metacognition tick note"},
+        )
+
+        def _fail_if_called(*args, **kwargs):
+            raise AssertionError("postgres lookup should not run for non chat-history channels")
+
+        with patch(
+            "orion.spark.concept_induction.bus_worker.fetch_chat_turn_by_correlation_id",
+            _fail_if_called,
+        ):
+            extracted = asyncio.run(worker._extract_text(env_turn, "orion:metacognition:tick"))
+        self.assertEqual(extracted, "a metacognition tick note")
 
     def test_deterministic_subject_selection(self):
         worker = ConceptWorker(ConceptSettings(orion_bus_enabled=False))

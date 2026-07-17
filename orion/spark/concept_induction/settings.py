@@ -104,6 +104,29 @@ class ConceptSettings(BaseSettings):
         alias="CONCEPT_SUBJECTS",
     )
 
+    # Chat-history source of truth for the intake channels backed by the hub's
+    # chat_history_log Postgres table (orion:chat:history:log / :turn). Reads the
+    # persisted row instead of the bus envelope's own prompt/response so induction
+    # sees one canonical, already-committed text per turn rather than whatever
+    # shape a given intake channel's envelope carries -- NOT a content-cleaning
+    # step (orion-sql-writer writes prompt/response verbatim from the same
+    # bus-published payload, so envelope and row carry identical text). Lookup is
+    # fail-open: any DB error or not-yet-written row falls back to the envelope.
+    concept_chat_pg_lookup_enabled: bool = Field(True, alias="CONCEPT_CHAT_PG_LOOKUP_ENABLED")
+    concept_chat_pg_dsn: str = Field(
+        "postgresql://postgres:postgres@orion-athena-sql-db:5432/conjourney",
+        validation_alias=AliasChoices(
+            "CONCEPT_CHAT_PG_DSN", "RECALL_PG_DSN", "POSTGRES_URI", "POSTGRES_DSN"
+        ),
+    )
+    # The SQL writer commits the row asynchronously off the same bus event this
+    # worker consumes, so the row can briefly not exist yet — short bounded retry
+    # rather than a single miss silently falling back to the noisier envelope text.
+    concept_chat_pg_lookup_retries: int = Field(3, alias="CONCEPT_CHAT_PG_LOOKUP_RETRIES")
+    concept_chat_pg_lookup_retry_delay_sec: float = Field(
+        0.3, alias="CONCEPT_CHAT_PG_LOOKUP_RETRY_DELAY_SEC"
+    )
+
     # Extraction / Embedding / Clustering
     spacy_model: str = Field("en_core_web_sm", alias="SPACY_MODEL")
     max_candidates: int = Field(50, alias="CONCEPT_MAX_CANDIDATES")

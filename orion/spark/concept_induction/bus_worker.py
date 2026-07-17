@@ -25,6 +25,8 @@ from orion.schemas.self_state import SelfStateV1
 from orion.schemas.vector.schemas import VectorWriteRequest
 
 from .audit import build_drive_audit
+from .chat_history_pg import close_pool as close_chat_history_pg_pool
+from .chat_history_pg import fetch_chat_turn_by_correlation_id
 from .drive_attribution import (
     compute_tick_attribution,
     dominant_drive_from_attribution,
@@ -218,6 +220,10 @@ class ConceptWorker:
         self.inflight_subjects: Set[str] = set()
         self.recent_event_seen: Dict[str, datetime] = {}
         self.trigger_decisions: List[dict] = []
+        # Runtime evidence that the Postgres chat-history lookup is actually taking
+        # effect in production rather than silently falling back on every event
+        # (e.g. a bad DSN or missing table) — surfaced via trigger_status().
+        self.chat_pg_lookup_stats: Dict[str, int] = {"hit": 0, "miss": 0, "skipped": 0}
         self._previous_self_state: Optional[SelfStateV1] = None
         self._stopped = False
         self._liveness = WorkerLivenessState(
@@ -361,7 +367,38 @@ class ConceptWorker:
     def _entity_id(self, subject: str, model_layer: str) -> str:
         return entity_id_for_subject(subject, model_layer)
 
-    def _extract_text(self, env: BaseEnvelope) -> Optional[str]:
+    async def _extract_text(self, env: BaseEnvelope, intake_channel: str = "") -> Optional[str]:
+        """Resolve the text to run extraction on for this envelope.
+
+        For the hub chat-history channels (backed 1:1 by the ``chat_history_log``
+        Postgres table), prefer the persisted row over the bus envelope's own
+        ``prompt``/``response`` fields: reading the canonical, already-written row
+        keeps induction on one consistent text per turn rather than whatever a given
+        intake channel's envelope shape happens to carry. Falls back to the envelope
+        (the previous behavior) whenever the lookup is disabled, unavailable, or the
+        row isn't found — this is a refinement, not a hard dependency on Postgres.
+        """
+        if self.cfg.concept_chat_pg_lookup_enabled and "chat:history" in (intake_channel or "").lower():
+            corr_id = str(env.correlation_id or "").strip()
+            if corr_id:
+                pg_pair = await fetch_chat_turn_by_correlation_id(
+                    corr_id,
+                    dsn=self.cfg.concept_chat_pg_dsn,
+                    retries=self.cfg.concept_chat_pg_lookup_retries,
+                    retry_delay_sec=self.cfg.concept_chat_pg_lookup_retry_delay_sec,
+                )
+                if pg_pair is not None:
+                    prompt, response = pg_pair
+                    merged = f"{prompt}\n{response}".strip()
+                    if merged:
+                        self.chat_pg_lookup_stats["hit"] += 1
+                        return merged
+                self.chat_pg_lookup_stats["miss"] += 1
+            else:
+                self.chat_pg_lookup_stats["skipped"] += 1
+        return self._extract_text_from_envelope(env)
+
+    def _extract_text_from_envelope(self, env: BaseEnvelope) -> Optional[str]:
         payload = env.payload
         if hasattr(payload, "model_dump"):
             payload = payload.model_dump()
@@ -983,7 +1020,7 @@ class ConceptWorker:
                 await self._handle_signal_drive_tick(env, intake_channel, source)
                 return
 
-        text = self._extract_text(env)
+        text = await self._extract_text(env, intake_channel)
 
         if env.kind == "substrate.self_state.v1":
             subject = "orion"
@@ -1538,6 +1575,7 @@ class ConceptWorker:
             },
             "inflight_subjects": sorted(self.inflight_subjects),
             "recent_decisions": list(self.trigger_decisions),
+            "chat_pg_lookup_stats": dict(self.chat_pg_lookup_stats),
         }
 
     def worker_liveness_status(self) -> dict:
@@ -1673,4 +1711,6 @@ class ConceptWorker:
         if self._wp_stream_queue is not None:
             with suppress(Exception):
                 await self._wp_stream_queue.close()
+        with suppress(Exception):
+            await close_chat_history_pg_pool()
         await self.bus.close()

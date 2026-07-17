@@ -5260,7 +5260,7 @@ async def api_causal_geometry_snapshot() -> Dict[str, Any]:
 @router.get("/api/drives-analytics/subjects")
 async def api_drives_analytics_subjects() -> Dict[str, Any]:
     """Allowlist ∪ discovered drive_audits subjects with coverage badges."""
-    from . import drives_analytics as da
+    from . import drives_analytics_queries as da
     from .main import app
 
     pool = getattr(app.state, "memory_pg_pool", None)
@@ -5272,7 +5272,7 @@ async def api_drives_analytics_snapshot(
     subject: str = Query(default="orion"),
 ) -> Dict[str, Any]:
     """Latest drive audit for subject. Degrades never 500."""
-    from . import drives_analytics as da
+    from . import drives_analytics_queries as da
     from .main import app
 
     pool = getattr(app.state, "memory_pg_pool", None)
@@ -5285,7 +5285,7 @@ async def api_drives_analytics_window(
     hours: int = Query(default=24),
 ) -> Dict[str, Any]:
     """Window KPIs + attribution aggregate. Degrades never 500."""
-    from . import drives_analytics as da
+    from . import drives_analytics_queries as da
     from .main import app
 
     pool = getattr(app.state, "memory_pg_pool", None)
@@ -5298,7 +5298,7 @@ async def api_drives_analytics_series(
     hours: int = Query(default=24),
 ) -> Dict[str, Any]:
     """Tick-rate + pressure series. Degrades never 500."""
-    from . import drives_analytics as da
+    from . import drives_analytics_queries as da
     from .main import app
 
     pool = getattr(app.state, "memory_pg_pool", None)
@@ -5310,7 +5310,7 @@ async def api_drives_analytics_goal_alignment(
     subject: str = Query(default="orion"),
 ) -> Dict[str, Any]:
     """Per-drive goal match for align coloring. Fail-open / degrade never 500."""
-    from . import drives_analytics as da
+    from . import drives_analytics_queries as da
     from .main import app
 
     pool = getattr(app.state, "memory_pg_pool", None)
@@ -5322,7 +5322,7 @@ async def api_drives_analytics_divergence(
     subject: str = Query(default="orion"),
 ) -> Dict[str, Any]:
     """drive_state.v1 vs latest audit pressures. Fail-open / degrade never 500."""
-    from . import drives_analytics as da
+    from . import drives_analytics_queries as da
     from .main import app
 
     pool = getattr(app.state, "memory_pg_pool", None)

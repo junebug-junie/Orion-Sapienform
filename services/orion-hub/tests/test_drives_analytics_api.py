@@ -170,17 +170,9 @@ async def test_subjects_include_allowlist_and_discovered(monkeypatch, hub_main) 
 
 @pytest.mark.asyncio
 async def test_window_builds_kpis(monkeypatch, hub_main) -> None:
-    import scripts.drives_analytics as da_live
+    import scripts.drives_analytics_queries as daq
 
     now = datetime(2026, 7, 16, 12, tzinfo=timezone.utc)
-    pressures = {
-        "coherence": 0.2,
-        "continuity": 0.2,
-        "capability": 0.2,
-        "relational": 0.4,
-        "predictive": 0.6,
-        "autonomy": 0.1,
-    }
 
     def _handler(query, _args):
         q = " ".join(str(query).lower().split())
@@ -194,8 +186,15 @@ async def test_window_builds_kpis(monkeypatch, hub_main) -> None:
                 "oldest_ts": now - timedelta(hours=3),
                 "newest_ts": now,
             }
-        if "select drive_pressures" in q:
-            return [{"drive_pressures": pressures} for _ in range(3)]
+        if "avg(nullif(drive_pressures" in q:
+            return {
+                "coherence": 0.2,
+                "continuity": 0.2,
+                "capability": 0.2,
+                "relational": 0.4,
+                "predictive": 0.6,
+                "autonomy": 0.1,
+            }
         if "select tick_attribution" in q:
             return [
                 {"tick_attribution": {"predictive": 0.5}, "observed_at": now},
@@ -211,9 +210,10 @@ async def test_window_builds_kpis(monkeypatch, hub_main) -> None:
         )
     )
     monkeypatch.setattr(hub_main.app.state, "memory_pg_pool", pool, raising=False)
-    monkeypatch.setattr(da_live, "_now_utc", lambda: now)
+    monkeypatch.setattr(daq, "_now_utc", lambda: now)
     payload = await api_routes.api_drives_analytics_window(subject="orion", hours=24)
     assert payload["degraded"] is False
+    assert payload["mean_pressures"]["predictive"] == 0.6
     assert payload["kpis"]["gate_verdict_drive_only"] in {
         "GO_DRIVE_ONLY",
         "SATURATED",
@@ -227,6 +227,7 @@ async def test_window_builds_kpis(monkeypatch, hub_main) -> None:
 @pytest.mark.asyncio
 async def test_series_returns_tick_rate_and_pressures(monkeypatch, hub_main) -> None:
     import scripts.drives_analytics as da_live
+    import scripts.drives_analytics_queries as daq
 
     now = datetime(2026, 7, 16, 12, tzinfo=timezone.utc)
     pressures = {k: 0.3 for k in da_live.DRIVE_KEYS}
@@ -249,7 +250,7 @@ async def test_series_returns_tick_rate_and_pressures(monkeypatch, hub_main) -> 
 
     pool = _FakePool(_FakeConn(handlers={"from drive_audits": _handler}))
     monkeypatch.setattr(hub_main.app.state, "memory_pg_pool", pool, raising=False)
-    monkeypatch.setattr(da_live, "_now_utc", lambda: now)
+    monkeypatch.setattr(daq, "_now_utc", lambda: now)
     payload = await api_routes.api_drives_analytics_series(subject="orion", hours=1)
     assert payload["degraded"] is False
     assert isinstance(payload["tick_rate"], list)
@@ -272,10 +273,11 @@ def test_no_mutation_routes_under_drives_analytics_prefix() -> None:
 @pytest.mark.asyncio
 async def test_goal_alignment_degrades_when_goals_unavailable(monkeypatch, hub_main) -> None:
     import scripts.drives_analytics as da_live
+    import scripts.drives_analytics_queries as daq
 
     monkeypatch.setattr(hub_main.app.state, "memory_pg_pool", None, raising=False)
     monkeypatch.setattr(
-        da_live,
+        daq,
         "fetch_goal_alignment_sync",
         lambda **kwargs: {
             "degraded": True,
@@ -295,6 +297,7 @@ async def test_goal_alignment_degrades_when_goals_unavailable(monkeypatch, hub_m
                 "completed": 0,
                 "archived": 0,
             },
+            "funnel_scope": "active_headlines_only",
             "notes": ["goals unavailable"],
         },
     )
@@ -306,6 +309,7 @@ async def test_goal_alignment_degrades_when_goals_unavailable(monkeypatch, hub_m
 
 def test_divergence_fallback_banner_flag(monkeypatch) -> None:
     import scripts.drives_analytics as da_live
+    import scripts.drives_analytics_queries as daq
 
     monkeypatch.delenv("CONCEPT_STORE_PATH", raising=False)
 
@@ -315,9 +319,21 @@ def test_divergence_fallback_banner_flag(monkeypatch) -> None:
             return None, "missing"
 
     monkeypatch.setitem(sys.modules, "_orion_drive_state_divergence_audit_for_hub", _Mod())
-    payload = da_live.fetch_divergence_sync(
+    payload = daq.fetch_divergence_sync(
         subject="orion", audit_pressures={k: 0.1 for k in da_live.DRIVE_KEYS}
     )
     assert payload["store_path_is_fallback_default"] is True
     assert payload["degraded"] is True
     assert payload["autonomy_state_v2_note"]
+
+
+def test_goal_alignment_sync_exposes_funnel_scope() -> None:
+    import scripts.drives_analytics_queries as daq
+
+    payload = daq.fetch_goal_alignment_sync(
+        subject="orion",
+        pressures={"predictive": 0.8},
+        saturated=False,
+        stale=False,
+    )
+    assert payload["funnel_scope"] == "active_headlines_only"

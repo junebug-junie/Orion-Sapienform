@@ -10,6 +10,7 @@ from app.bus_observer import (
     _fetch_redis_snapshot,
     build_rollup_from_redis_snapshot,
     count_schema_mismatches,
+    load_channel_catalog_names,
     load_channel_catalog_schema_ids,
     run_observer_tick,
 )
@@ -285,3 +286,158 @@ async def test_fetch_snapshot_skips_sampling_when_sample_count_zero() -> None:
 
     fake_client.xrevrange.assert_not_awaited()
     assert snapshot["stream_samples"] == {}
+
+
+# ── shipped-default regression (review finding, HIGH) ────────────
+#
+# The original 8 tests above all injected a synthetic catalog_schema_ids
+# override, so none of them would have caught this: the REAL shipped default
+# BUS_OBSERVER_STREAMS (orion:evt:gateway,orion:bus:out) had NEITHER stream
+# cataloged in the real orion/bus/channels.yaml -- both exist purely for
+# depth/backpressure monitoring, a different, older purpose. That meant
+# catalog_schema_ids was always empty for the deployed config,
+# count_schema_mismatches() never ran, schema_mismatch_stream_count stayed
+# permanently 0, and contract_pressure stayed permanently 0.0 -- dead on
+# arrival under the config that's actually deployed.
+#
+# A first attempted fix added orion:grammar:event (cataloged,
+# schema_id=GrammarEventV1) to the default. That looked right on paper but
+# was ALSO dead: verified live against bus-core Redis with TYPE/XLEN that
+# orion:grammar:event is TYPE=none -- it is delivered purely via Redis
+# PUBLISH (OrionBusAsync.publish(), never XADD'd anywhere in this repo), so
+# XLEN/XREVRANGE structurally can never see it, no matter how much traffic
+# flows through it. "Cataloged with a schema_id" is necessary but not
+# sufficient -- the stream also has to genuinely be a Redis Stream (XADD'd),
+# not a Pub/Sub-only channel that happens to be cataloged too. Kept in the
+# default anyway (harmless) but it's not the fix.
+#
+# The real fix is orion:stream:world_pulse:run:result: cataloged
+# (schema_id=WorldPulseRunResultV1, kind=stream in channels.yaml) AND
+# genuinely XADD'd by orion-world-pulse via RedisStreamWorkQueue.enqueue()
+# (WP_RUN_RESULT_STREAM_ENABLED=true by default). Verified live: TYPE=stream,
+# XLEN=82 real entries, and a live-sampled XREVRANGE entry decodes via the
+# "envelope" field exactly as count_schema_mismatches() expects.
+#
+# These tests use the real Settings() default and the real channels.yaml on
+# disk -- no synthetic overrides of either -- so a regression back to "no
+# genuinely-Stream cataloged stream in the default" fails loudly here.
+
+
+def test_shipped_default_streams_includes_a_real_cataloged_schema_stream() -> None:
+    settings = Settings()
+    # The genuinely-fixing stream: cataloged AND (verified live, not
+    # asserted here since that needs a Redis connection) a real XADD Stream.
+    assert "orion:stream:world_pulse:run:result" in settings.observer_stream_list
+    # Kept for the reasons above, but neither one is what makes sampling
+    # fire -- see the module comment above this test.
+    assert "orion:grammar:event" in settings.observer_stream_list
+    assert "orion:evt:gateway" in settings.observer_stream_list
+    assert "orion:bus:out" in settings.observer_stream_list
+
+    schema_ids = load_channel_catalog_schema_ids(settings.channels_catalog_path)
+    assert schema_ids.get("orion:stream:world_pulse:run:result") == "WorldPulseRunResultV1"
+    assert schema_ids.get("orion:grammar:event") == "GrammarEventV1"
+    # Confirm the finding itself, so this test stays honest if channels.yaml
+    # is ever edited to catalog these two.
+    assert "orion:evt:gateway" not in schema_ids
+    assert "orion:bus:out" not in schema_ids
+
+
+@pytest.mark.asyncio
+async def test_shipped_default_produces_nonzero_mismatch_count_for_malformed_sample() -> None:
+    """End-to-end with the REAL default BUS_OBSERVER_STREAMS and the REAL
+    orion/bus/channels.yaml catalog on disk (no synthetic overrides of
+    either) -- a malformed orion:stream:world_pulse:run:result entry (the
+    genuinely-Stream-backed cataloged channel, not the Pub/Sub-only
+    orion:grammar:event) must actually move schema_mismatch_stream_count off
+    zero. Shaped after a real sampled entry from live bus-core Redis: the
+    "envelope" field holds a JSON orion.envelope whose payload is
+    WorldPulseRunResultV1-shaped."""
+    settings = Settings()
+    # WorldPulseRunResultV1.run is required (orion/schemas/world_pulse.py) --
+    # this envelope's payload has no "run" key at all, a realistic
+    # "producer sent something that doesn't match its declared contract"
+    # case, same shape as the real entries seen live (schema="orion.envelope"
+    # top-level, not the legacy-wrap path).
+    malformed_envelope = json.dumps(
+        {
+            "schema": "orion.envelope",
+            "schema_version": "2.0.0",
+            "id": "11111111-1111-1111-1111-111111111111",
+            "correlation_id": "22222222-2222-2222-2222-222222222222",
+            "kind": "world.pulse.run.result.v1",
+            "source": {"name": "orion-world-pulse"},
+            "payload": {"not_run": "missing the required 'run' key"},
+        }
+    )
+    snapshot = {
+        "ping_ok": True,
+        "stream_lengths": {sk: 1 for sk in settings.observer_stream_list},
+        "catalog_names": load_channel_catalog_names(settings.channels_catalog_path),
+        "catalog_schema_ids": load_channel_catalog_schema_ids(settings.channels_catalog_path),
+        "stream_samples": {
+            "orion:stream:world_pulse:run:result": [
+                ("1-0", {"envelope": malformed_envelope}),
+            ],
+        },
+    }
+    rollup = build_rollup_from_redis_snapshot(
+        settings=settings,
+        snapshot=snapshot,
+        observed_at=datetime(2026, 5, 25, 17, 0, 0, tzinfo=timezone.utc),
+        sample_window_id="20260525T170000Z",
+    )
+    assert rollup.schema_mismatches, (
+        "expected a schema mismatch for orion:stream:world_pulse:run:result "
+        "under the real shipped BUS_OBSERVER_STREAMS default -- if this is "
+        "empty, schema-mismatch sampling is dead on arrival again"
+    )
+    stream_key, mismatch_count, sampled_count = rollup.schema_mismatches[0]
+    assert stream_key == "orion:stream:world_pulse:run:result"
+    assert mismatch_count == 1
+    assert sampled_count == 1
+
+
+@pytest.mark.asyncio
+async def test_shipped_default_no_mismatch_for_well_formed_sample() -> None:
+    """Same real default + real catalog, but a well-formed
+    WorldPulseRunResultV1 payload (minimal valid WorldPulseRunV1: only
+    run_id/date/started_at are required, orion/schemas/world_pulse.py)
+    must NOT be flagged -- proves the check discriminates, not just
+    "always mismatch"."""
+    settings = Settings()
+    valid_envelope = json.dumps(
+        {
+            "schema": "orion.envelope",
+            "schema_version": "2.0.0",
+            "id": "11111111-1111-1111-1111-111111111111",
+            "correlation_id": "22222222-2222-2222-2222-222222222222",
+            "kind": "world.pulse.run.result.v1",
+            "source": {"name": "orion-world-pulse"},
+            "payload": {
+                "run": {
+                    "run_id": "test-run-id",
+                    "date": "2026-07-17",
+                    "started_at": "2026-07-17T00:00:00Z",
+                }
+            },
+        }
+    )
+    snapshot = {
+        "ping_ok": True,
+        "stream_lengths": {sk: 1 for sk in settings.observer_stream_list},
+        "catalog_names": load_channel_catalog_names(settings.channels_catalog_path),
+        "catalog_schema_ids": load_channel_catalog_schema_ids(settings.channels_catalog_path),
+        "stream_samples": {
+            "orion:stream:world_pulse:run:result": [
+                ("1-0", {"envelope": valid_envelope}),
+            ],
+        },
+    }
+    rollup = build_rollup_from_redis_snapshot(
+        settings=settings,
+        snapshot=snapshot,
+        observed_at=datetime(2026, 5, 25, 17, 0, 0, tzinfo=timezone.utc),
+        sample_window_id="20260525T170000Z",
+    )
+    assert rollup.schema_mismatches == []

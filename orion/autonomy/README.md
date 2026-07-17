@@ -3,6 +3,33 @@
 Why any of this exists, the founding theory, and the biggest unresolved gap (self-initiation
 was never built): [drives_and_autonomy_retrospective.md](drives_and_autonomy_retrospective.md)
 
+## Drive-economy desaturation series — O2/O3 shipped, two new bugs found live (2026-07-17)
+
+O3 (`predictive` re-grounding, PR #1114) and O2 (event-rate normalization, PR #1126) — the two
+named follow-ups from the 2026-07-16 desaturation diagnosis — both shipped and merged. Live
+post-deploy verification confirmed the dominance-attribution fix (O1) and the starved-`predictive`
+fix (O3) are genuinely working in production: top dominant-drive share dropped from a 96%
+`relational` monoculture to 31.65%, and `predictive` went from ~0% presence to a real 7.8%.
+
+But the gate still reads SATURATED, for a *different* reason than before, and a full multi-hop
+investigation traced it all the way back to a **confirmed root cause in `orion-field-digester`**
+— not a new bug this series introduced, but a longer-standing one it surfaced. Two real,
+confirmed, currently-unpatched bugs are sitting open as a result:
+
+1. `DriveEngine.update()`'s fold-batch clamp collapse — a large enough batch of same-tick
+   tensions can snap all six drives to an identical ceiling value, erasing real differentiation.
+2. `orion-field-digester`'s `apply_decay`/`apply_perturbations` mismatch — an unconditional
+   per-tick decay fighting a full-overwrite-on-fresh-data reset produces a mechanical sawtooth on
+   biometrics-sourced field channels, independent of real host telemetry. This resolves a
+   previously-unconfirmed question in that service's own README (see
+   [services/orion-field-digester/README.md](../../services/orion-field-digester/README.md)'s
+   channel glossary, `cpu_pressure`/`gpu_pressure` entries).
+
+Full trace, live evidence, exact mechanisms, and the still-open design questions (rate-limit
+tension minting upstream vs. redesign `DriveEngine`'s aggregation math, a sketched
+log-odds/logit-space alternative):
+[drives_and_autonomy_retrospective.md §5b](drives_and_autonomy_retrospective.md#5b-status-update-2026-07-17-o2-and-o3-shipped-live-verified-and-a-full-trace-from-a-new-fold-batch-saturation-mechanism-all-the-way-back-to-a-pre-existing-one-day-old-open-question-in-orion-field-digesters-own-channel-glossary)
+
 ## Hub Drives Analytics
 
 Design: [docs/superpowers/specs/2026-07-16-hub-drives-analytics-design.md](../../docs/superpowers/specs/2026-07-16-hub-drives-analytics-design.md).

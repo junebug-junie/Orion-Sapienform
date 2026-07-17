@@ -34,6 +34,68 @@ A background health monitor (`FIELD_DIGESTER_HEALTH_CHECK_INTERVAL_SEC`, default
 
 This whole chain was originally left disabled after a prior unbounded-Postgres-growth incident on this host; the guardrails above (mirroring the existing `receipt_pruner.py` pattern in `orion-substrate-runtime`) are what made re-enabling it safe.
 
+## Decay vs. injection-interval mismatch — confirmed root cause of the "accumulator-oscillation artifact" (2026-07-17)
+
+The "Field channel glossary" section below (written 2026-07-16) flagged `cpu_pressure`/`gpu_pressure`
+as *"a known accumulator-oscillation artifact (~60s beat); not confirmed whether that beat
+reflects real hardware load or a polling-architecture artifact."* This section resolves that
+question, found while tracing a separate, unrelated-looking symptom (a drive-pressure economy
+saturation bug in `orion/spark/concept_induction/drives.py`, unpacked in full in
+[`orion/autonomy/drives_and_autonomy_retrospective.md` §5b](../../orion/autonomy/drives_and_autonomy_retrospective.md)) all the way back to this service.
+
+**It is a polling-architecture artifact, not real hardware load**, and it is a straightforward
+consequence of two mechanisms in this pipeline working against each other:
+
+- `apply_decay()` (`app/digestion/decay.py`) multiplies every channel in `NODE_DECAY_CHANNELS`
+  (`cpu_pressure`, `memory_pressure`, `gpu_pressure`, `thermal_pressure`, `disk_pressure`,
+  `staleness`, `failure_pressure`, `execution_friction`, `reliability_pressure`, and more) by
+  `BIOMETRICS_FIELD_DECAY_RATE` (default `0.92`) on **every single `RECEIPT_POLL_INTERVAL_SEC`
+  tick (default 2.0s), unconditionally** — whether or not fresh biometrics data arrived that
+  tick.
+- `apply_perturbations()` (`app/digestion/perturbation.py`) applies a fresh `node_biometrics`/
+  `active_node_pressure` reading via `mode="replace"` (the default mode for most hardware
+  channels — see the node-channel entries below): `node_vec[channel] = max(0.0, min(1.0,
+  p.intensity))`, a **full overwrite**, not a blend, discarding whatever the decayed value had
+  drifted to.
+
+`orion-biometrics` only publishes fresh readings every `CLUSTER_PUBLISH_INTERVAL` (default 15s,
+a re-broadcast of the latest received summary) or `TELEMETRY_INTERVAL` (default 30s, the actual
+host re-measurement) — see `services/orion-biometrics/.env_example`. Between those publishes,
+`apply_decay` erodes the channel continuously: `0.92^7 ≈ 0.56`, i.e. a ~44% loss over the ~15s
+gap between publishes (7-8 ticks at 2s each). The next publish then snaps the value straight back
+up via the full-overwrite `mode="replace"` path, with zero memory of the decayed trajectory.
+**This produces a mechanical sawtooth regardless of whether the real underlying host metric is
+stable or bursty** — it is an artifact of decay-every-tick-unconditionally plus
+reset-via-full-replace, not a reflection of genuine host volatility.
+
+Downstream, this channel-level sawtooth propagates into `SelfStateV1`'s `coherence` dimension
+(`coherence_score()` in `orion/self_state/scoring.py` subtracts a penalty over the diffused
+generic `pressure` channel, which is fed by `cpu_pressure`/`gpu_pressure`/`memory_pressure`/
+`disk_pressure` via the topology edges in `config/field/orion_field_topology.v1.yaml`), producing
+a ~16-second-period sawtooth in `coherence` (observed live: smooth rise 0.47→0.84, then a hard
+snap back, repeating), which in turn drives `uncertainty` (derived directly from `coherence`) and
+`agency_readiness` (a weighted composite of `coherence` and other dimensions) into their own
+synchronized sawtooths. This is *not* organic cognitive signal — it mechanically fires
+`tension.distress.v1` in `orion/spark/concept_induction/tensions.py` on a schedule tied to this
+service's own publish/decay cadence, feeding artificially elevated tension volume into the
+drive-pressure economy. See the autonomy retrospective §5b linked above for the full downstream
+trace (self-state → tensions → `DriveEngine`) and why this is the same bug *class* — a decay
+mechanism whose injection cadence isn't reconciled against its own decay rate — as two other bugs
+found and fixed in the same investigation, just in the opposite parameter regime (decay here is
+*strong enough* relative to the injection interval to swing dramatically, rather than pinning
+flat).
+
+**Blast radius is wider than the drive economy.** `NODE_DECAY_CHANNELS` feeds every consumer of
+`FieldStateV1` node/capability vectors, not just self-state's `coherence`/`agency_readiness`/
+`resource_pressure` — attention scoring and any other capability-vector consumer reads the same
+channels and would show the same artifact.
+
+**Not yet fixed.** This is confirmed but unpatched as of 2026-07-17 — it needs a decision (skip
+decay on channels that received a fresh perturbation this tick, track true per-channel
+time-since-last-real-update instead of decaying unconditionally every tick, or something else)
+before anyone touches `apply_decay`/`apply_perturbations`, since both are foundational to this
+service and used well beyond the biometrics/self-state path this was traced through.
+
 ## `capability_provenance` vs. attention salience (Phase 4, 2026-07-12)
 
 `FieldStateV1.capability_provenance` records which edge source contributed the largest weighted amount to each capability channel this tick (`app/digestion/diffusion.py`) — a magnitude-comparison primitive, distinct from `orion-attention-runtime`'s salience scoring (which factors in novelty/urgency/confidence too, threshold-gated). Cross-checked against live data
@@ -254,10 +316,15 @@ of the observed 1.0 baseline.
   (removed 2026-07-12 — its diffused capability value is what's mapped
   instead). `evidence_channel_map`: `cpu_pressure` → `resource_pressure`
   (evidence/transparency only).
-- **Live-data verdict**: real signal — continuous, but flagged as a known
-  accumulator-oscillation artifact (~60s beat); not confirmed whether that
-  beat reflects real hardware load or a polling-architecture artifact.
-  Confirmed live 2026-07-16.
+- **Live-data verdict**: real signal, continuous — but the "known
+  accumulator-oscillation artifact" flagged 2026-07-16 is now **confirmed as
+  a polling-architecture artifact, not real hardware load**. See "Decay vs.
+  injection-interval mismatch" below for the full mechanism and the trace
+  that resolved this (2026-07-17): `apply_decay()`'s unconditional
+  `0.92`-per-2s decay against `orion-biometrics`' ~15-30s publish cadence
+  produces a mechanical sawtooth (~16s period observed downstream in
+  `coherence`) independent of whether the underlying CPU load is actually
+  bursty.
 
 #### `memory_pressure`
 - **Meaning**: node RAM pressure.
@@ -288,7 +355,8 @@ of the observed 1.0 baseline.
   `evidence_channel_map`: `gpu_pressure` → `resource_pressure`
   (evidence-only).
 - **Live-data verdict**: real signal, continuous — same accumulator-
-  oscillation caveat as `cpu_pressure`. Confirmed live 2026-07-16.
+  oscillation mechanism as `cpu_pressure`, now confirmed as the
+  decay/injection-interval mismatch described below, not real hardware load.
 
 #### `thermal_pressure`
 - **Meaning**: node thermal/temperature pressure.

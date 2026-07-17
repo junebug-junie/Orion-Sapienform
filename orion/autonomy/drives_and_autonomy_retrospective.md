@@ -189,6 +189,277 @@ reports), which §5 above predates. Corrections to the record:
   has moved to the *signal*: until the drive economy desaturates, everything downstream —
   origination bands, stance prompts, Mind facets — consumes a monoculture.
 
+### 5b. Status update (2026-07-17): O2 and O3 shipped, live-verified, and a full trace from a
+new fold-batch saturation mechanism all the way back to a pre-existing, one-day-old open
+question in `orion-field-digester`'s own channel glossary
+
+This is the long version, written so nobody has to re-derive any of it from scratch. Short
+version first, detail after.
+
+**Short version.** O3 (`predictive` re-grounding) and O2 (event-rate normalization) — §5a's two
+named follow-ups — both shipped and merged same-day. Live post-deploy verification showed the
+dominance-attribution fix (O1) and the starved-drive fix (O3) both genuinely working in
+production (top dominant-drive share dropped from 96% to 31.65%; `predictive` went from ~0% to a
+real 7.8% presence) — but the gate still read SATURATED, and a live agent-board finding showed
+why: O2's fold-batching design has its own saturation failure mode, distinct from the one it
+fixed, which a subsequent multi-hop investigation traced all the way upstream through the
+self-state substrate, through `orion-biometrics`' publish cadence, and into a **confirmed root
+cause in `orion-field-digester`'s decay/injection-interval mismatch** — the exact mechanism
+behind an "accumulator-oscillation artifact" that service's own channel glossary had already
+flagged as unconfirmed one day earlier (2026-07-16). Nothing here has been patched yet except O2
+and O3 themselves; the field-digester fix and the DriveEngine fold-batch fix are both still open,
+both cognition/substrate-adjacent infrastructure changes that need explicit sign-off before
+anyone touches them.
+
+**O3 shipped** (PR #1114, merged 2026-07-17T04:31:47Z, branch
+`feat/drive-predictive-reground-o3`). `predictive` had never had a primary tension source — only
+secondary `drive_impacts` weights (0.4–0.7) riding other tensions (`tension.contradiction.v1`,
+`tension.identity_drift.v1`) — and sat dead at a 0.016 median pressure. Fix: a new block in
+`extract_tensions_from_self_state()` (`orion/spark/concept_induction/tensions.py`) minting
+`tension.prediction_surprise.v1` off `self_state.overall_surprise`, a real, already-clamped
+top-level field on `SelfStateV1` that this function had simply never read. The first version of
+this patch fired unconditionally whenever `overall_surprise > 0.30`, on every tick — a full
+`/code-review medium` pass caught that this had no delta-gating (unlike its four sibling blocks
+in the same function) and proved, with real numbers, that it would pin `predictive`'s pressure
+above 0.95 within ~5 ticks (~23 seconds) at bus cadence: the exact saturation pattern this patch
+existed to fix, reintroduced for a different drive. Fixed by switching to the same delta-gated
+pattern (`surprise_delta > 0.05` once a previous self-state exists; absolute-threshold fallback
+only on the very first tick) every sibling block already used. This is the first of several times
+this same lesson recurs in this write-up: **a decay mechanism whose injection frequency isn't
+gated against its own decay rate will eventually saturate, and every fix in this whole
+investigation is a variation on that one failure mode.**
+
+**O2 shipped** (PR #1126, merged 2026-07-17T08:07:34Z, branch `feat/drive-cadence-fold-o2`).
+`DriveEngine.update()` was called once per raw bus event (~13/min, ~4.6s apart); with
+`decay_tau_sec=1800.0`, decay between consecutive calls is ~0.997 (negligible), so repeated
+same-direction impulses converge pressure toward 1.0 within seconds regardless of tau — the
+event-rate/decay mismatch §5a named as the still-open half of the diagnosis, and the same
+mechanism behind the cpu/gpu_pressure saturation bugs fixed in PRs #1108-1111. Fix: a new
+`ConceptWorker._update_drive_pressures()` (`orion/spark/concept_induction/bus_worker.py`) splits
+read from write — every bus event still gets a fresh decay-only pressure projection
+(`tensions=[]`, so goal proposal / dossier / identity snapshot / publish all keep getting a live
+`drive_state` every event, unchanged), but new tension impulses are buffered per-subject in
+memory and only actually folded into the persisted integrator at most once per 900 seconds
+(`_DRIVE_FOLD_INTERVAL_SEC`, a plain module constant, not an env key — first-pass calibration,
+`p* = impulse/(1-decay*(1-impulse))` worked out to ≈0.63 at a representative 0.4 impulse, right
+at the 0.62 activation threshold). `DriveEngine` itself is completely untouched — this is purely
+a call-cadence fix in the stateful caller. An 8-angle review found and fixed a real unbounded
+pending-tension buffer (capped at 500, drop-oldest — matching this repo's established
+`evidence_event_ids <= 200` convention) and a duplicate `DriveEngine.update()` call in the
+fold/non-fold branches (collapsed to one); it also traced and *cleared* three other candidates as
+accepted, documented tradeoffs rather than bugs: goal-proposal priority scoring's pressure term
+can lag a freshly-dominant drive by up to 900s (accepted — `dominant_drive` itself still reacts
+immediately), `scripts/drive_state_divergence_audit.py`'s `AutonomyStateV2` comparison side is
+already frozen/historical (retired 2026-07-16) so a less-frequently-updated `DriveEngine` side
+introduces no new noise, and the in-memory pending buffer is lost on worker restart with the same
+risk profile every other per-subject buffer in this file already carries (`self.window`,
+`self.last_run`, `self.recent_event_seen`). The PR report explicitly flagged, as an **unverified
+risk**: *"if the folded impulse itself gets clamped near 1.0 (many co-firing tensions summed
+within the 900s window before the `_clamp_signed([-1,1])` ceiling in `DriveEngine.update()`),
+decay stops mattering and pressure still approaches 1.0 regardless of interval choice... cannot
+be ruled out without live data."* This risk materialized within hours of deploy — see below.
+
+**Live post-deploy verification** (2026-07-17, ~08:27 UTC, ~20 minutes after O2 deployed).
+`scripts/analysis/measure_autonomy_gate.py --window-hours 6` needs `POSTGRES_URI` overridden to
+`postgresql://postgres:postgres@localhost:55432/conjourney` when run from the host — its default
+DSN uses the Docker-internal hostname `orion-athena-sql-db`, unresolvable outside the compose
+network. Results: dominance attribution is genuinely fixed live, not just in tests — top
+dominant-drive share dropped from the 96% relational monoculture §5a documented down to **31.65%**,
+and `predictive` went from ~0% presence to **356 audits (7.8%)**, real and nonzero for the first
+time. But gate verdict (b) still read **SATURATED**: `all_active_frac` (drives at pressure ≥0.62)
+was 95.9% — most drives still elevated. A close look at the raw time series in the ~20 minutes
+immediately after restart showed genuinely smooth decay in progress (`predictive` 0.951→0.90,
+`relational` 0.988→0.91) — proof the decay-only-projection mechanism was working correctly — but
+this reflected the *legacy*, pre-fix saturated baseline still unwinding from a JSON store file
+that survives worker restarts; the 6-hour gate window was still ~95% pre-deploy data. The
+original plan at this point was to wait 4-6 hours for a genuinely clean post-deploy window before
+re-measuring. That plan turned out to be moot — see below.
+
+**The fold-batch collapse regression** (found live by a separate agent, posted to the shared
+agent board, independently verified here). Live container log evidence:
+
+```text
+08:39:40  pressures={'coherence': 0.5726, 'capability': 0.4951, 'predictive': 0.5883, ...}
+          folded=False, pending_buffered=209
+08:39:44  pressures={'coherence': 1.0,    'capability': 1.0,    'predictive': 1.0,    ...}
+          folded=True,  tensions_folded=209
+```
+
+Real, differentiated per-drive pressure going in; all six drives pinned to the *exact same*
+ceiling value coming out of a single fold. Mechanism: `DriveEngine.update()`'s `impact_sum[drive]`
+(`orion/spark/concept_induction/drives.py:70-80`) accumulates *unbounded* across every tension in
+a fold batch — only the final sum is clamped to `[-1, 1]` via `_clamp_signed`
+(`drives.py:91`). Once that clamp hits exactly `1.0`, `pressures[drive] = clamp01(base +
+1.0*(1-base)) = 1.0` **regardless of `base`** — the prior differentiated pressure is completely
+erased. With ~200 tensions accumulating per 900s fold window (verified: ~0.2-0.25/sec sustained,
+matching the raw self-state tick rate) and most tension-minting blocks in this codebase touching
+multiple drives per tension, a fold batch this large plausibly saturates every drive's
+`impact_sum` simultaneously — explaining why *all six* collapsed together, not just one dominant
+drive, and then decayed together in lockstep afterward (still exactly equal to each other). This
+is, in one sense, *worse* than the pre-O2 state: before, different drives had different
+saturation levels (relational pinned near 0.98, predictive dead at 0.016); the fold-collapse
+regression homogenizes all six into one indistinguishable value every ~900 seconds.
+
+Working through the math independently confirmed this is real, and also confirmed something
+non-obvious: **a shorter fold interval alone does not reliably fix it.** Total exponential decay
+over any wall-clock window is the same regardless of batching granularity — `exp(-900/1800) ≈
+0.607` for one 900-second chunk is essentially identical to `exp(-4.6/1800)^195 ≈ 0.602` for 195
+tiny ~4.6-second chunks, since exponential decay composes multiplicatively independent of step
+size. If roughly 200 same-direction tensions arrive within about one decay half-life-ish window
+regardless of how you batch them, *any* reasonable aggregation strategy — summed-then-clamped
+(today's design) or applied sequentially with diminishing per-tension headroom (`p += impulse *
+(1-p)`, repeated) — converges close to the ceiling; sequential application would at least avoid
+the "all six land on the *exact same* value" symptom (200 iterations of that recurrence still
+asymptotes near 1.0, just without the hard collapse-to-identical-ceiling that the current
+sum-then-clamp design produces), but it does not solve saturation on its own. **The real lever is
+upstream: how many tensions get *minted* in a given window, not how the integrator aggregates
+them once they exist.** This repo already has a primitive built for exactly that job
+(`orion.autonomy.tension_ratelimit.TensionRateLimiter`, a sliding-window drop-over-cap limiter),
+just not wired into the main `handle_envelope` tension-minting path.
+
+A genuinely useful side discussion (still exploratory, not decided, raised while reasoning
+through the above): a log-odds/logit-space accumulation with exponential forgetting (a
+Beta/logistic filter — evidence summed in an unbounded logit space, squashed through a sigmoid
+only at the very end) would structurally avoid the "many drives collapse to the identical
+ceiling" symptom specifically, since different total evidence amounts always map to numerically
+distinguishable sigmoid outputs even near saturation, and it would give a natural
+confidence/variance signal alongside the point estimate almost for free. It does **not** by
+itself answer whether ~200 tensions/900s is legitimate accumulated evidence or an artifact of
+redundant re-minting from one upstream source (see below — turns out to be the latter, at least
+in large part), and it is a meaningfully bigger lift than anything in this series so far:
+`DriveEngine`'s activation thresholds (0.62/0.42) and the SATURATED gate's own calibration
+constants are all tuned against the current linear `[0, 1]` pressure scale and would all need
+re-deriving against a logit scale. Not started. Not decided. Named here so it doesn't have to be
+re-derived if it comes up again.
+
+**"Look for realness first" — tracing whether the tension volume is genuine evidence or an
+artifact, hop by hop.** Live query against `drive_audits.tension_kinds` over a trailing hour:
+`tension.distress.v1` 392/hr (by far the largest contributor), `tension.drive_competition.v1`
+160/hr (signal-only since O1, contributes zero pressure by design), `tension.prediction_surprise.v1`
+135/hr, `tension.cognitive_load.v1` 62/hr, `tension.identity_drift.v1` 56/hr,
+`tension.contradiction.v1` 56/hr, `tension.signal.v1` 26/hr — roughly 887/hr total, matching the
+raw self-state tick rate closely enough that essentially every tick mints at least one tension.
+
+Querying `substrate_self_state` (Postgres) directly over a 20-minute window surfaced the real
+finding: `agency_readiness` is not drifting, it is executing a **mechanical, near-perfect
+sawtooth** — a smooth ramp from ~0.28 up to ~0.95 over roughly 15-16 ticks (~30-32 seconds), then
+a hard snap straight back down to ~0.28, repeating continuously, for as long as the window was
+sampled. `social_pressure` is not near-zero organically — it is **numerically dead**, decaying by
+a constant ~92% ratio every tick from some ancient seed value down through `1e-156`/`7e-157`
+territory (the same "decayed to numerical dust, functionally inert" pattern this project already
+found once before, for `predictive`, ahead of O3).
+
+Since `agency_readiness_score = coherence − 0.25·execution_pressure − 0.35·reliability_pressure −
+0.25·uncertainty − 0.15·resource_pressure` (`orion/self_state/scoring.py`), the sawtooth traces to
+its inputs: `coherence`, `uncertainty`, and `resource_pressure` are locked in a **tighter,
+synchronized sawtooth with an almost-exact ~16-second period** (7-8 ticks) — `coherence` rises
+smoothly 0.47→0.84 then snaps back on schedule every cycle, while `uncertainty` and
+`resource_pressure` mirror it inversely in perfect sync (expected for `uncertainty`, since
+`uncertainty_score = overall_salience * (1 - coherence)` is directly derived from `coherence`).
+`reliability_pressure` is completely dead (subnormal float `3e-323`). `execution_pressure` is
+smoothly, monotonically decaying with no fresh input at all across the sampled window. The
+`tension.distress.v1` fire condition (`combined = -(agency_delta) + social_delta) / 2`, fires when
+`combined > 0.04`) fires with large magnitude on exactly the tick `agency_readiness` snaps down —
+this is the concrete mechanism behind that tension kind's 392/hr dominance.
+
+Tracing further upstream: `coherence_score()` (`orion/self_state/scoring.py`) subtracts a penalty
+over four raw channel-pressure keys — `failure_pressure`, `execution_friction`, `staleness`, and a
+generic `pressure` key. That generic `pressure` channel (which also directly feeds
+`resource_pressure`'s `channel_dimension_map` entry) is a **diffused aggregate of
+`cpu_pressure`/`gpu_pressure`/`memory_pressure`/`disk_pressure`/`thermal_pressure`** per the
+topology edges in `config/field/orion_field_topology.v1.yaml`. `config/self_state/self_state_policy.v1.yaml`'s
+own comments document that this diffused channel has a known history of "sticking saturated" — a
+live incident dated 2026-07-10, with a dedicated evidence-only bypass built specifically to work
+around it (`orion-spark-introspector` reads the raw hardware-channel names directly rather than
+the diffused `pressure` value, precisely to avoid this).
+
+Tracing into `orion-biometrics`: `TELEMETRY_INTERVAL=30` (the actual host-metrics re-measurement
+cadence) and `CLUSTER_PUBLISH_INTERVAL=15` (a re-broadcast of a weighted average of the latest
+received summaries) — matching the observed ~30s and ~16s periods closely enough to be the
+obvious first suspect. `BiometricsHub.publish_cluster()` was read in full and is **not** itself
+injecting anything artificial: it's a straightforward weighted-average re-broadcast of whatever
+its `_latest_summary` cache holds, nothing more. `services/orion-biometrics/app/metrics.py` (raw
+`/proc/stat`/`/proc/meminfo`/`nvidia-smi` collection via `collect_gpu_stats`) and
+`orion/telemetry/biometrics_pipeline.py`'s `_summarize()` (`cpu_pressure = clamp01(max(cpu_util,
+load1/cores))`, `mem_pressure = clamp01((mem_total-mem_avail)/mem_total)`, etc.) were both read in
+full — both are straightforward, correct, *instantaneous*-fraction calculations. No ratchet, no
+unbounded accumulator, no periodic reset anywhere in either file. This is where the trace nearly
+stopped, on the (reasonable but incorrect) hypothesis that the sawtooth was genuine, if mysterious,
+periodic host telemetry rather than a code defect.
+
+**The confirmed root cause: `orion-field-digester`'s decay/injection-interval mismatch.**
+`orion-field-digester` (`services/orion-field-digester/`) is the actual consumer that turns
+biometrics readings into `FieldStateV1` node/capability vectors, on a `perturb → decay → diffuse →
+suppress` pipeline (`run_digestion_tick`, `app/tensor/update_rules.py`) ticking every
+`RECEIPT_POLL_INTERVAL_SEC=2.0` seconds. Two mechanisms, both real, working against each other:
+
+- `apply_decay()` (`app/digestion/decay.py`) multiplies every channel in `NODE_DECAY_CHANNELS`
+  (`cpu_pressure`, `memory_pressure`, `gpu_pressure`, `thermal_pressure`, `disk_pressure`,
+  `staleness`, `failure_pressure`, `execution_friction`, `reliability_pressure`, and more) by
+  `BIOMETRICS_FIELD_DECAY_RATE=0.92` **every single 2-second tick, unconditionally** — whether or
+  not fresh biometrics data arrived that tick.
+- `apply_perturbations()` (`app/digestion/perturbation.py`) applies a fresh biometrics reading via
+  `mode="replace"`: `node_vec[channel] = max(0.0, min(1.0, p.intensity))` — a **full overwrite**,
+  not a blend, whenever new data lands (every ~15-30s, per `orion-biometrics`' own publish
+  cadence).
+
+The math: `0.92^7 ≈ 0.56` — a channel loses ~44% of its value across the ~15-second gap between
+publishes (7-8 ticks at 2s each), then gets snapped straight back up to whatever the current real
+measurement is on the next publish, with zero memory of the decayed trajectory in between. This
+produces a mechanical sawtooth **regardless of whether the real underlying host metric is stable
+or bursty** — it is an artifact of decay-every-tick-unconditionally plus reset-via-full-replace,
+not a reflection of genuine host volatility.
+
+This is the exact same bug *class* as O2's fold-batch collapse and O3's original absolute-threshold
+firing: a decay mechanism whose injection cadence isn't reconciled against its own decay rate.
+The parameter regime is the mirror image, though — `DriveEngine`'s decay was too *weak* relative
+to its injection frequency (pinning upward); `orion-field-digester`'s decay is *strong enough*
+relative to its injection interval to produce a dramatic, visible swing (a sawtooth) rather than
+pinning flat. This almost certainly **predates today's work entirely** — `RECEIPT_POLL_INTERVAL_SEC=2.0`
+and `BIOMETRICS_FIELD_DECAY_RATE=0.92` are long-standing configured defaults
+(`services/orion-field-digester/.env_example`), and this exact service's own README — in a "Field
+channel glossary" section written 2026-07-16, one day before this investigation — already flagged
+`cpu_pressure`/`gpu_pressure` as *"real signal — continuous, but flagged as a known
+accumulator-oscillation artifact (~60s beat); not confirmed whether that beat reflects real
+hardware load or a polling-architecture artifact."* This investigation resolves that open
+question: it is the polling-architecture artifact, specifically the decay/injection-interval
+mismatch above, not real hardware load — see
+[`services/orion-field-digester/README.md`](../../services/orion-field-digester/README.md)'s
+updated channel-glossary entries for the full mechanism written up in place.
+
+Blast radius is wider than the drive economy: `NODE_DECAY_CHANNELS` feeds every consumer of
+`FieldStateV1` node/capability vectors, not just self-state's `coherence`/`agency_readiness`/
+`resource_pressure` — attention scoring and capability-vector consumers read the same channels and
+would show the same artifact.
+
+**Where this leaves things (2026-07-17, end of this investigation).** Two real, confirmed bugs are
+sitting open, unpatched, both requiring explicit sign-off before anyone touches them (both are
+cognition/substrate-adjacent infrastructure, not a narrow, low-risk seam):
+
+1. `DriveEngine.update()`'s fold-batch clamp collapse (`drives.py:70-91`) — all six drives can
+   snap to an identical ceiling value on a large enough fold batch. Fixing this alone, without
+   addressing item 2, would likely just move the saturation symptom around rather than resolve it
+   (per the "shorter interval doesn't fix it" math above) — the tension *volume* is the deeper
+   problem, not solely how the integrator aggregates a given volume.
+2. `orion-field-digester`'s `apply_decay`/`apply_perturbations` mismatch (`decay.py`,
+   `perturbation.py`) — the mechanical source of a meaningful fraction of that tension volume
+   (via `tension.distress.v1`'s dependence on `agency_readiness`'s sawtooth), and a
+   longer-standing bug than anything else in this whole series.
+
+The originally-planned "wait 4-6 hours, re-run the clean-window gate measurement" plan (end of
+the previous status update above) is now understood to be premature: the gate will very likely
+keep reading SATURATED regardless of elapsed time until at least one of these two issues is
+addressed, since neither is a matter of the legacy baseline simply needing more time to decay.
+The Bayesian/log-odds redesign for `DriveEngine` (discussed above) remains a live, undecided
+design option, not yet worth committing to until it's clear how much of the volume problem item 2
+actually resolves on its own.
+
+Two open, unrelated-but-adjacent agent-board items worth cross-referencing if picking this up:
+`pressure_organ.py`'s untested blast-radius expansion from the 3 new memory/thermal/disk hint keys
+(PR #1111), and a live field-channel-glossary/`bus_observer` investigation thread that overlaps
+this exact territory (`orion-field-digester`'s channel corpus) but was not the source used to
+reach the conclusions above.
+
 ## 6. Open questions
 
 1. Is self-initiated, sometimes-suboptimal behavior still the actual target? If yes, the
@@ -207,6 +478,19 @@ reports), which §5 above predates. Corrections to the record:
    against Orion's mission. Worth deciding consciously whether that's sufficient grounding or
    whether it needs revisiting — see `docs/superpowers/specs/2026-07-11-drive-taxonomy-conceptual-audit-design.md`
    for the prior internal audit that found no in-repo rationale for it.
+5. Open, confirmed, unpatched (see §5b): `DriveEngine.update()`'s fold-batch clamp collapse can
+   snap all six drives to an identical ceiling value on a large enough batch of same-tick
+   tensions. Needs a decision on whether to rate-limit tension *minting* upstream (this repo
+   already has `TensionRateLimiter` for exactly this, unwired from this path), redesign
+   `DriveEngine`'s aggregation math (the log-odds/logit-space option sketched in §5b), or both.
+6. Open, confirmed, unpatched (see §5b): `orion-field-digester`'s `apply_decay` (unconditional
+   per-tick multiplicative decay) vs. `apply_perturbations`' `mode="replace"` full-overwrite
+   produces a mechanical sawtooth on every biometrics-sourced field channel, independent of real
+   host telemetry. This predates the O1-O4/O2/O3 series and has a wider blast radius (attention
+   scoring, capability vectors) than just the drive economy. Resolves a previously-unconfirmed
+   question in `services/orion-field-digester/README.md`'s own channel glossary
+   (`cpu_pressure`/`gpu_pressure`'s "accumulator-oscillation artifact, not confirmed... hardware
+   or polling-architecture", written 2026-07-16).
 
 ## 8. Downstream consumer audit (2026-07-16) and the corrected implementation order
 
@@ -371,3 +655,13 @@ guard instead.
 - `docs/superpowers/pr-reports/2026-07-08-homeostatic-drives-real-tensions-design-pr.md`
   through `2026-07-14-drive-history-reflection-synthesis-pr.md` — execution history, phased
   gates, honest `DONE_WITH_CONCERNS` reporting throughout.
+- `docs/superpowers/pr-reports/2026-07-16-drive-economy-desaturation-o1-o4-pr.md` — O1+O4,
+  the dominance-attribution/SATURATED-verdict fix that started the diagnosis §5b completes.
+- `docs/superpowers/pr-reports/2026-07-17-drive-predictive-reground-o3-pr.md` — O3 (PR #1114),
+  including the delta-gating fix a full code review caught before merge.
+- `docs/superpowers/pr-reports/2026-07-17-drive-cadence-fold-o2-pr.md` — O2 (PR #1126),
+  including the explicitly-flagged-as-unverified fold-batch-clamp risk that materialized live
+  hours later (§5b).
+- `services/orion-field-digester/README.md`'s "Field channel glossary" section — the
+  2026-07-16 channel-by-channel audit that first flagged the `cpu_pressure`/`gpu_pressure`
+  "accumulator-oscillation artifact" as unconfirmed; §5b resolves it.

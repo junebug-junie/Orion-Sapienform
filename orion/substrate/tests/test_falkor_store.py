@@ -7,6 +7,7 @@ import pytest
 from orion.core.schemas.cognitive_substrate import (
     ConceptNodeV1,
     DriveNodeV1,
+    EvidenceNodeV1,
     NodeRefV1,
     SubstrateEdgeV1,
     SubstrateProvenanceV1,
@@ -28,6 +29,24 @@ def _concept(*, node_id: str = "sub-node-a", metadata: dict | None = None) -> Co
         node_id=node_id,
         label="alpha",
         taxonomy_path=["root"],
+        anchor_scope="orion",
+        temporal=SubstrateTemporalWindowV1(observed_at=datetime.now(timezone.utc)),
+        provenance=SubstrateProvenanceV1(
+            authority="local_inferred",
+            source_kind="test",
+            source_channel="test",
+            producer="test_falkor_store",
+            evidence_refs=["ev:store"],
+        ),
+        metadata=metadata or {},
+    )
+
+
+def _evidence(*, node_id: str = "evidence-node-a", metadata: dict | None = None) -> EvidenceNodeV1:
+    return EvidenceNodeV1(
+        node_id=node_id,
+        evidence_type="chat_turn",
+        content_ref="ev-content-ref-store",
         anchor_scope="orion",
         temporal=SubstrateTemporalWindowV1(observed_at=datetime.now(timezone.utc)),
         provenance=SubstrateProvenanceV1(
@@ -210,10 +229,123 @@ def test_falkor_rejects_non_concept_durable_write():
         ),
     )
 
-    with pytest.raises(ValueError, match="concept nodes only"):
+    with pytest.raises(ValueError, match="concept and evidence nodes only"):
         store.upsert_node(identity_key="drive:curiosity", node=drive)
 
     assert client.calls == []
+
+
+def test_falkor_upsert_evidence_uses_native_cypher_properties():
+    client = RecordingFalkorClient()
+    store = FalkorSubstrateStore(
+        FalkorSubstrateStoreConfig(uri="redis://localhost:6379", graph_name="orion_substrate"),
+        client=client,
+        hydrate=False,
+    )
+    node = _evidence(node_id="evidence-native-alpha")
+
+    store.upsert_node(identity_key="evidence:alpha", node=node)
+
+    cypher, params = client.calls[-1]
+    _assert_no_payload_json_sor(cypher, params)
+    assert "REMOVE n.payload_json" in cypher
+    assert "MERGE (n:SubstrateNode:Evidence {node_id: $node_id})" in cypher
+    assert "n.evidence_type = $evidence_type" in cypher
+    assert "n.content_ref = $content_ref" in cypher
+    assert params["node_id"] == "evidence-native-alpha"
+    assert params["node_kind"] == "evidence"
+    assert params["identity_key"] == "evidence:alpha"
+    assert params["evidence_type"] == "chat_turn"
+    assert params["content_ref"] == "ev-content-ref-store"
+    assert "label" not in params
+    assert "definition" not in params
+    assert "taxonomy_path_json" not in params
+
+
+def test_falkor_hydrates_concept_and_evidence_from_mixed_native_rows():
+    client = RecordingFalkorClient(
+        hydrate_node_rows=[
+            {
+                "node_id": "concept-mixed",
+                "node_kind": "concept",
+                "identity_key": "concept:mixed",
+                "label": "Mixed concept",
+                "definition": None,
+                "taxonomy_path_json": "[]",
+                "anchor_scope": "orion",
+                "subject_ref": None,
+                "promotion_state": "canonical",
+                "risk_tier": "low",
+                "confidence": 0.7,
+                "salience": 0.6,
+                "activation": 0.5,
+                "recency_score": 0.4,
+                "decay_floor": 0.0,
+                "decay_half_life_seconds": None,
+                "observed_at": "2026-07-16T00:00:00+00:00",
+                "valid_from": None,
+                "valid_to": None,
+                "provenance_authority": "local_inferred",
+                "provenance_source_kind": "test",
+                "provenance_source_channel": "test:falkor",
+                "provenance_producer": "test_falkor_store",
+                "provenance_model_name": None,
+                "provenance_correlation_id": None,
+                "provenance_trace_id": None,
+                "provenance_tier_rank": None,
+                "evidence_refs_json": "[]",
+            },
+            {
+                "node_id": "evidence-mixed",
+                "node_kind": "evidence",
+                "identity_key": "evidence:mixed",
+                "evidence_type": "chat_turn",
+                "content_ref": "ev-content-ref-mixed",
+                "anchor_scope": "orion",
+                "subject_ref": None,
+                "promotion_state": "proposed",
+                "risk_tier": "low",
+                "confidence": 0.65,
+                "salience": 0.55,
+                "activation": 0.45,
+                "recency_score": 0.35,
+                "decay_floor": 0.0,
+                "decay_half_life_seconds": None,
+                "observed_at": "2026-07-16T00:00:00+00:00",
+                "valid_from": None,
+                "valid_to": None,
+                "provenance_authority": "local_inferred",
+                "provenance_source_kind": "test",
+                "provenance_source_channel": "test:falkor",
+                "provenance_producer": "test_falkor_store",
+                "provenance_model_name": None,
+                "provenance_correlation_id": None,
+                "provenance_trace_id": None,
+                "provenance_tier_rank": None,
+                "evidence_refs_json": '["ev:mixed"]',
+            },
+        ]
+    )
+
+    store = FalkorSubstrateStore(
+        FalkorSubstrateStoreConfig(uri="redis://localhost:6379", graph_name="orion_substrate"),
+        client=client,
+        hydrate=True,
+    )
+
+    concept_node = store.get_node_by_id("concept-mixed")
+    assert concept_node is not None
+    assert concept_node.node_kind == "concept"
+    assert concept_node.label == "Mixed concept"
+    assert store.get_node_id_by_identity("concept:mixed") == "concept-mixed"
+
+    evidence_node = store.get_node_by_id("evidence-mixed")
+    assert evidence_node is not None
+    assert evidence_node.node_kind == "evidence"
+    assert evidence_node.evidence_type == "chat_turn"
+    assert evidence_node.content_ref == "ev-content-ref-mixed"
+    assert evidence_node.provenance.evidence_refs == ["ev:mixed"]
+    assert store.get_node_id_by_identity("evidence:mixed") == "evidence-mixed"
 
 
 def test_falkor_hydrates_concept_from_native_properties():

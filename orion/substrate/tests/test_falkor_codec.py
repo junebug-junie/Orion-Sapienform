@@ -7,6 +7,7 @@ import pytest
 from orion.core.schemas.cognitive_substrate import (
     ConceptNodeV1,
     DriveNodeV1,
+    EvidenceNodeV1,
     NodeRefV1,
     SubstrateActivationV1,
     SubstrateEdgeV1,
@@ -17,6 +18,8 @@ from orion.core.schemas.cognitive_substrate import (
 from orion.substrate.falkor_codec import (
     decode_concept_node,
     decode_edge,
+    decode_evidence_node,
+    decode_node,
     encode_edge_properties,
     encode_node_properties,
     node_label_for_kind,
@@ -44,6 +47,28 @@ def _concept() -> ConceptNodeV1:
         label="Alpha",
         definition="A test concept",
         taxonomy_path=["root", "branch"],
+        anchor_scope="orion",
+        promotion_state="canonical",
+        temporal=_temporal(),
+        provenance=_provenance(evidence_refs=["ev:1", "ev:2"]),
+        signals=SubstrateSignalBundleV1(
+            confidence=0.8,
+            salience=0.7,
+            activation=SubstrateActivationV1(
+                activation=0.6,
+                recency_score=0.5,
+                decay_floor=0.1,
+            ),
+        ),
+        metadata={"quarantine": "not durable SoR"},
+    )
+
+
+def _evidence() -> EvidenceNodeV1:
+    return EvidenceNodeV1(
+        node_id="evidence-alpha",
+        evidence_type="chat_turn",
+        content_ref="ev-content-ref-1",
         anchor_scope="orion",
         promotion_state="canonical",
         temporal=_temporal(),
@@ -126,7 +151,7 @@ def test_encode_node_properties_rejects_non_concept():
         temporal=_temporal(),
         provenance=_provenance(),
     )
-    with pytest.raises(ValueError, match="concept nodes only"):
+    with pytest.raises(ValueError, match="concept and evidence nodes only"):
         encode_node_properties(drive, identity_key="drive:curiosity")
 
 
@@ -150,6 +175,73 @@ def test_decode_concept_node_reconstructs_minimal_typed_model():
     # see test_concept_with_no_dynamics_metadata_encodes_and_decodes_with_sane_defaults
     # for the full defaults contract.
     assert node.metadata == {"dynamic_pressure": 0.0, "dormant": False}
+
+
+def test_encode_evidence_node_properties_are_native_scalars():
+    props = encode_node_properties(_evidence(), identity_key="evidence:alpha")
+
+    assert "payload_json" not in props
+    assert "metadata" not in props
+    assert "label" not in props
+    assert "definition" not in props
+    assert "taxonomy_path_json" not in props
+    assert props == {
+        "node_id": "evidence-alpha",
+        "node_kind": "evidence",
+        "identity_key": "evidence:alpha",
+        "anchor_scope": "orion",
+        "subject_ref": None,
+        "promotion_state": "canonical",
+        "risk_tier": "low",
+        "confidence": 0.8,
+        "salience": 0.7,
+        "activation": 0.6,
+        "recency_score": 0.5,
+        "decay_half_life_seconds": None,
+        "decay_floor": 0.1,
+        "observed_at": "2026-07-16T00:00:00+00:00",
+        "valid_from": None,
+        "valid_to": None,
+        "provenance_authority": "local_inferred",
+        "provenance_source_kind": "test",
+        "provenance_source_channel": "test:falkor_codec",
+        "provenance_producer": "test_falkor_codec",
+        "provenance_model_name": None,
+        "provenance_correlation_id": None,
+        "provenance_trace_id": None,
+        "provenance_tier_rank": None,
+        "evidence_refs_json": '["ev:1", "ev:2"]',
+        "evidence_type": "chat_turn",
+        "content_ref": "ev-content-ref-1",
+    }
+
+
+def test_decode_evidence_node_reconstructs_minimal_typed_model():
+    row = encode_node_properties(_evidence(), identity_key="evidence:alpha")
+
+    node = decode_evidence_node(row)
+
+    assert node is not None
+    assert node.node_id == "evidence-alpha"
+    assert node.node_kind == "evidence"
+    assert node.evidence_type == "chat_turn"
+    assert node.content_ref == "ev-content-ref-1"
+    assert node.provenance.evidence_refs == ["ev:1", "ev:2"]
+
+
+def test_decode_node_dispatches_to_concept_or_evidence():
+    concept_row = encode_node_properties(_concept(), identity_key="concept:alpha")
+    evidence_row = encode_node_properties(_evidence(), identity_key="evidence:alpha")
+
+    concept_result = decode_node(concept_row)
+    evidence_result = decode_node(evidence_row)
+
+    assert isinstance(concept_result, ConceptNodeV1)
+    assert isinstance(evidence_result, EvidenceNodeV1)
+
+    unrelated_row = dict(concept_row)
+    unrelated_row["node_kind"] = "drive"
+    assert decode_node(unrelated_row) is None
 
 
 def test_encode_edge_properties_are_native_scalars_without_payload_json():

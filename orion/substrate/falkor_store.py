@@ -4,10 +4,10 @@ Queries and reads are served from the in-process cache (same shape as a warm
 GraphDBSubstrateStore). Durable writes go through an injectable sync client so
 unit tests never need a live FalkorDB.
 
-Durable support is Concept + SubstrateEdge first. Cold-start hydration prefers
-native scalar properties and falls back to legacy ``payload_json`` rows,
-rewriting them to native properties (and removing the blob) on successful
-concept/edge decode.
+Durable support is Concept + Evidence + SubstrateEdge. Cold-start hydration
+prefers native scalar properties and falls back to legacy ``payload_json``
+rows, rewriting them to native properties (and removing the blob) on
+successful concept/edge decode.
 """
 
 from __future__ import annotations
@@ -27,8 +27,8 @@ from orion.core.schemas.cognitive_substrate import (
 )
 from orion.graph.property_guard import sanitize_metadata
 from orion.substrate.falkor_codec import (
-    decode_concept_node,
     decode_edge,
+    decode_node,
     encode_edge_properties,
     encode_node_properties,
     node_label_for_kind,
@@ -62,6 +62,8 @@ NATIVE_NODE_RETURN_FIELDS: tuple[str, ...] = (
     "label",
     "definition",
     "taxonomy_path_json",
+    "evidence_type",
+    "content_ref",
     "anchor_scope",
     "subject_ref",
     "promotion_state",
@@ -232,8 +234,9 @@ def _with_sanitized_metadata(model: Any) -> Any:
 class FalkorSubstrateStore:
     """SubstrateGraphStore with Falkor write-through and in-memory read cache.
 
-    Durable persistence is Concept + SubstrateEdge only. Non-concept node
-    upserts raise ``ValueError`` rather than writing incomplete native rows.
+    Durable persistence is Concept + Evidence + SubstrateEdge only. Node
+    upserts for any other node kind raise ``ValueError`` rather than writing
+    incomplete native rows.
     """
 
     def __init__(
@@ -276,7 +279,7 @@ class FalkorSubstrateStore:
 
         for row in _normalize_rows(node_rows, fields=NATIVE_NODE_RETURN_FIELDS):
             try:
-                node = decode_concept_node(row)
+                node = decode_node(row)
             except Exception:
                 logger.warning("falkor_substrate_hydrate_node_invalid")
                 continue
@@ -382,9 +385,9 @@ class FalkorSubstrateStore:
         return self._cache.get_edge_id_by_identity(identity_key)
 
     def upsert_node(self, *, identity_key: str | None, node: BaseSubstrateNodeV1) -> None:
-        if getattr(node, "node_kind", None) != "concept":
+        if getattr(node, "node_kind", None) not in ("concept", "evidence"):
             raise ValueError(
-                "FalkorSubstrateStore durable writes support concept nodes only; "
+                "FalkorSubstrateStore durable writes support concept and evidence nodes only; "
                 f"got node_kind={getattr(node, 'node_kind', None)!r}"
             )
         node = _with_sanitized_metadata(node)

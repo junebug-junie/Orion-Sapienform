@@ -50,6 +50,7 @@ not propagated.
 
 from __future__ import annotations
 
+import hashlib
 import math
 from datetime import datetime, timezone
 from typing import Callable, Literal, Optional
@@ -325,7 +326,30 @@ def classify_relation(
         return None
 
     try:
+        # Deterministic edge_id (derived from the (source, predicate, target)
+        # identity triple), not the model's uuid4 default_factory -- a caller
+        # that re-classifies the same pair on a later pass (co-occurrence
+        # count only grows, so the same pair keeps clearing the threshold)
+        # must land on the SAME edge_id so store.upsert_edge()'s
+        # self._edges[edge.edge_id] = edge (in-memory) and Falkor's
+        # `MERGE ... {edge_id: $edge_id}` (durable) both overwrite the prior
+        # judgment in place instead of accumulating an unbounded duplicate
+        # relationship per repeat call. A uuid4 edge_id here was the root
+        # cause of exactly that: every call built a schema-valid but
+        # brand-new edge_id, so identity-keyed upsert_edge only ever
+        # repointed its identity index while the previous edge_id's row/
+        # relationship stayed behind, orphaned but still visible in
+        # snapshot(). (If a later call for the same pair yields a *different*
+        # predicate, this still produces a distinct edge_id per predicate --
+        # both edges persist rather than the older one being retracted. That
+        # residual case needs store-level identity retraction to close
+        # fully; deliberately not solved here to keep this fix to the
+        # non-determinism defect, not a broader edge-lifecycle change.)
+        edge_id = "sub-edge-" + hashlib.sha1(
+            f"{node_a.node_id}|{predicate}|{node_b.node_id}".encode("utf-8")
+        ).hexdigest()[:24]
         return SubstrateEdgeV1(
+            edge_id=edge_id,
             source=NodeRefV1(node_id=node_a.node_id, node_kind=node_a.node_kind),
             target=NodeRefV1(node_id=node_b.node_id, node_kind=node_b.node_kind),
             predicate=predicate,

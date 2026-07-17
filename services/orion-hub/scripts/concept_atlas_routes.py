@@ -50,6 +50,17 @@ _VALID_ANCHOR_SCOPES = {"orion", "juniper", "relationship", "world", "session"}
 # comment in ``_at_risk_concepts`` below.
 _AT_RISK_MARGIN = 0.05
 
+# Max co_occurs_with pairs classified for a typed relationship (supports/
+# contradicts/refines) per ingestion call. Each classified pair costs one
+# bounded LLM RPC (see concept_relation_classifier.py), so this directly
+# bounds the added route latency: worst case (every RPC timing out at
+# HUB_LLM_GATEWAY_TIMEOUT_SEC, default 5s) is roughly
+# _RELATION_CLASSIFICATION_PAIR_CAP * 5s of extra route time. Picked at the
+# low end of the task's suggested 10-20 range for that reason -- this is a
+# manual, operator-triggered route (not a hot path), but an unbounded or
+# high cap could still make one ingest call take minutes.
+_RELATION_CLASSIFICATION_PAIR_CAP = 10
+
 
 def _get_substrate_store() -> Any:
     """Best-effort resolution of the shared substrate store, never raises.
@@ -119,6 +130,110 @@ def _concept_nodes(store: Any) -> list[Any]:
         logger.warning("concept_atlas_snapshot_failed error=%s", exc)
         return []
     return [n for n in snapshot.nodes.values() if getattr(n, "node_kind", None) == "concept"]
+
+
+def _typed_relation_classification_candidates(store: Any) -> tuple[dict[str, Any], list[Any]]:
+    """Current concept nodes (by node_id) and not-yet-classified ``co_occurs_with``
+    edges between them, read fresh from the store's snapshot. Returns ``({}, [])``
+    on any store failure -- never raises.
+
+    Excludes any ``co_occurs_with`` edge that already produced a typed edge in
+    a prior pass -- ``classify_relation()`` stamps the typed edge's
+    ``metadata["source_edge_id"]`` with the ``co_occurs_with`` edge's own
+    ``edge_id`` (``orion/substrate/relation_classification.py``), so that
+    marker is how "already classified" is recognized here. Without this
+    filter, every ingestion call would re-spend its entire
+    ``_RELATION_CLASSIFICATION_PAIR_CAP``-pair budget reclassifying pairs it
+    already has an answer for (co-occurrence count only grows, so a
+    qualifying pair keeps qualifying forever), permanently starving any
+    candidate pair beyond the cap once the corpus grows past it. A pair whose
+    prior judgment was "none" (no typed edge written) is deliberately NOT
+    excluded -- its co-occurrence evidence keeps strengthening over time, so
+    retrying it on a later pass is a reasonable, cheap use of a cap slot.
+    """
+    try:
+        snapshot = store.snapshot()
+    except Exception as exc:
+        logger.warning("concept_atlas_relation_classification_snapshot_failed error=%s", exc)
+        return {}, []
+    concept_nodes = {
+        n.node_id: n for n in snapshot.nodes.values() if getattr(n, "node_kind", None) == "concept"
+    }
+    already_classified_source_edge_ids = {
+        e.metadata.get("source_edge_id")
+        for e in snapshot.edges.values()
+        if isinstance(e.metadata, dict) and e.metadata.get("source_edge_id")
+    }
+    co_occurs_edges = [
+        e
+        for e in snapshot.edges.values()
+        if e.predicate == "co_occurs_with"
+        and e.source.node_id in concept_nodes
+        and e.target.node_id in concept_nodes
+        and e.edge_id not in already_classified_source_edge_ids
+    ]
+    return concept_nodes, co_occurs_edges
+
+
+def _classify_typed_concept_relations(store: Any) -> int:
+    """Post-ingestion step (Phase 4 of the concept-graph-pipeline design):
+    for ``co_occurs_with`` edges among current concept nodes that clear the
+    ``count`` worth-classifying threshold
+    (``orion.substrate.relation_classification.is_worth_classifying``,
+    capped at ``_RELATION_CLASSIFICATION_PAIR_CAP`` pairs), ask a real LLM
+    classifier whether the pair is a typed ``supports``/``contradicts``/
+    ``refines`` relationship, and write any resulting typed edge into the
+    same store.
+
+    Additive best-effort enrichment, not required for the route's core
+    success -- returns ``0`` (an honest count, not an error) on any failure
+    or when nothing was worth classifying. Never raises past this function.
+    """
+    from orion.substrate.relation_classification import classify_relation, is_worth_classifying
+
+    from .concept_relation_classifier import build_llm_relation_classifier
+
+    try:
+        concept_nodes, co_occurs_edges = _typed_relation_classification_candidates(store)
+        if not co_occurs_edges:
+            return 0
+
+        candidate_pairs: list[tuple[Any, Any, Any]] = []
+        for edge in co_occurs_edges:
+            node_a = concept_nodes.get(edge.source.node_id)
+            node_b = concept_nodes.get(edge.target.node_id)
+            if node_a is None or node_b is None:
+                continue
+            # "count" strategy: the simplest baseline, matches the design
+            # spec's called-out safe default. pmi/activation strategies exist
+            # in relation_classification.py but wiring all three behind a
+            # live flag is out of scope for this patch.
+            if not is_worth_classifying(node_a, node_b, edge, strategy="count"):
+                continue
+            candidate_pairs.append((node_a, node_b, edge))
+            if len(candidate_pairs) >= _RELATION_CLASSIFICATION_PAIR_CAP:
+                break
+
+        if not candidate_pairs:
+            return 0
+
+        classifier = build_llm_relation_classifier(candidate_pairs, settings=settings)
+
+        typed_edges_written = 0
+        for node_a, node_b, edge in candidate_pairs:
+            new_edge = classify_relation(node_a, node_b, edge, classifier=classifier, strategy="count")
+            if new_edge is None:
+                continue
+            try:
+                identity_key = f"{new_edge.source.node_id}|{new_edge.predicate}|{new_edge.target.node_id}"
+                store.upsert_edge(identity_key=identity_key, edge=new_edge)
+                typed_edges_written += 1
+            except Exception as exc:
+                logger.warning("concept_atlas_typed_edge_write_failed error=%s", exc)
+        return typed_edges_written
+    except Exception as exc:  # pragma: no cover - defensive, mirrors this module's degrade-never-500 convention
+        logger.warning("concept_atlas_relation_classification_failed error=%s", exc)
+        return 0
 
 
 def _at_risk_concepts(concept_nodes: list[Any]) -> tuple[list[dict[str, Any]], Optional[str]]:
@@ -446,6 +561,21 @@ def concept_atlas_ingest_topic_foundry() -> dict[str, Any]:
             edges_written=counting_store.edges_written,
         )
 
+    # Post-ingestion typed-relation classification (Phase 4 wiring): scans the
+    # store (not counting_store -- this must not inflate edges_written above,
+    # which reports only the materializer's own co_occurs_with/supports
+    # writes) for co_occurs_with edges worth an LLM classification call and
+    # writes any resulting typed edge directly. Best-effort, capped, never
+    # raises -- see _classify_typed_concept_relations for the honest-0 vs
+    # error distinction. Adds real latency: up to
+    # _RELATION_CLASSIFICATION_PAIR_CAP sequential bounded LLM RPCs (see
+    # concept_relation_classifier.py's module docstring and the cap comment
+    # above) -- acceptable here since this route is a manual, operator-
+    # triggered trigger, not a hot path, and the route already runs as a sync
+    # def in FastAPI's threadpool (see this function's own docstring), so the
+    # added synchronous LLM round trips do not block the event loop.
+    typed_edges_written = _classify_typed_concept_relations(store)
+
     # Same counter owns success and failure accounting. Counts are successful
     # upserts (including merges), not unique durable nodes after merge.
     return {
@@ -456,6 +586,7 @@ def concept_atlas_ingest_topic_foundry() -> dict[str, Any]:
         "evidence_nodes_written": counting_store.evidence_nodes_written,
         "edges_written": counting_store.edges_written,
         "co_occurrence_edges_skipped": "segment_topic_map not supplied in this ingestion route (empty by design)",
+        "typed_edges_written": typed_edges_written,
     }
 
 

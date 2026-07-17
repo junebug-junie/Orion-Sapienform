@@ -3,8 +3,8 @@
 This module is intentionally pure: no Redis client, no store cache, no graph
 queries. It owns the durable property allowlist used by FalkorSubstrateStore.
 
-Durable Falkor support is intentionally Concept + SubstrateEdge first. Other
-node kinds must not be silently persisted as incomplete native rows.
+Durable Falkor support is intentionally Concept + Evidence + SubstrateEdge.
+Other node kinds must not be silently persisted as incomplete native rows.
 """
 
 from __future__ import annotations
@@ -17,6 +17,7 @@ from typing import Any
 from orion.core.schemas.cognitive_substrate import (
     BaseSubstrateNodeV1,
     ConceptNodeV1,
+    EvidenceNodeV1,
     NodeRefV1,
     SubstrateActivationV1,
     SubstrateEdgeV1,
@@ -100,15 +101,20 @@ def _common_node_properties(node: BaseSubstrateNodeV1, identity_key: str | None)
 
 
 def encode_node_properties(node: BaseSubstrateNodeV1, identity_key: str | None) -> dict[str, Any]:
-    if node.node_kind != "concept":
+    if node.node_kind not in ("concept", "evidence"):
         raise ValueError(
-            f"falkor durable path supports concept nodes only; got node_kind={node.node_kind!r}"
+            "falkor durable path supports concept and evidence nodes only; "
+            f"got node_kind={node.node_kind!r}"
         )
     props = _common_node_properties(node, identity_key)
-    props["label"] = getattr(node, "label")
-    props["definition"] = getattr(node, "definition", None)
-    props["taxonomy_path_json"] = _json_list(getattr(node, "taxonomy_path", None))
-    props.update(_dynamics_properties_from_metadata(node.metadata))
+    if node.node_kind == "concept":
+        props["label"] = getattr(node, "label")
+        props["definition"] = getattr(node, "definition", None)
+        props["taxonomy_path_json"] = _json_list(getattr(node, "taxonomy_path", None))
+        props.update(_dynamics_properties_from_metadata(node.metadata))
+    else:
+        props["evidence_type"] = getattr(node, "evidence_type")
+        props["content_ref"] = getattr(node, "content_ref")
     return props
 
 
@@ -278,6 +284,31 @@ def decode_concept_node(row: Mapping[str, Any]) -> ConceptNodeV1 | None:
         provenance=_provenance_from_row(row),
         metadata=_dynamics_metadata_from_row(row),
     )
+
+
+def decode_evidence_node(row: Mapping[str, Any]) -> EvidenceNodeV1 | None:
+    if row.get("node_kind") != "evidence":
+        return None
+    return EvidenceNodeV1(
+        node_id=str(row["node_id"]),
+        evidence_type=str(row["evidence_type"]),
+        content_ref=str(row["content_ref"]),
+        anchor_scope=row["anchor_scope"],
+        subject_ref=row.get("subject_ref"),
+        promotion_state=row.get("promotion_state") or "proposed",
+        risk_tier=row.get("risk_tier") or "low",
+        temporal=_temporal_from_row(row),
+        signals=_signals_from_row(row),
+        provenance=_provenance_from_row(row),
+        metadata={},
+    )
+
+
+def decode_node(row: Mapping[str, Any]) -> BaseSubstrateNodeV1 | None:
+    node = decode_concept_node(row)
+    if node is not None:
+        return node
+    return decode_evidence_node(row)
 
 
 def decode_edge(row: Mapping[str, Any]) -> SubstrateEdgeV1 | None:

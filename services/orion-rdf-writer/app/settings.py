@@ -53,11 +53,14 @@ class Settings(BaseSettings):
     CHANNEL_CORE_EVENTS: str = Field(default="orion:core:events", env="CHANNEL_CORE_EVENTS")
     CHANNEL_WORKER_RDF: str = Field(default="orion:rdf:worker", env="CHANNEL_WORKER_RDF")
     CHANNEL_COGNITION_TRACE_PUB: str = Field(default="orion:cognition:trace", env="CHANNEL_COGNITION_TRACE_PUB")
-    CHANNEL_CHAT_HISTORY_TURN: str = Field(default="orion:chat:history:turn", env="CHANNEL_CHAT_HISTORY_TURN")
-    CHANNEL_CHAT_HISTORY_LOG: str = Field(default="orion:chat:history:log", env="CHANNEL_CHAT_HISTORY_LOG")
     CHANNEL_MEMORY_IDENTITY_SNAPSHOT: str = Field(default="orion:memory:identity:snapshot", env="CHANNEL_MEMORY_IDENTITY_SNAPSHOT")
     # orion:memory:drives:audit deliberately not subscribed: drive audits are
     # Postgres-only (`drive_audits` via orion-sql-writer) as of 2026-07-15.
+    # orion:chat:history:turn / orion:chat:history:log deliberately not
+    # subscribed (2026-07-17): both are Postgres-only via orion-sql-writer
+    # (`chat_message`, `chat_history_log`) -- the RDF copy covered only
+    # ~11-18% of real chat volume, live-checked. See split-design spec's open
+    # questions for the still-unexplained coverage gap.
     CHANNEL_MEMORY_GOALS_PROPOSED: str = Field(default="orion:memory:goals:proposed", env="CHANNEL_MEMORY_GOALS_PROPOSED")
 
     # === PUBLISH CHANNELS ===
@@ -98,8 +101,6 @@ class Settings(BaseSettings):
             self.CHANNEL_WORKER_RDF,
             self.CORTEX_LOG_CHANNEL,
             self.CHANNEL_COGNITION_TRACE_PUB,
-            self.CHANNEL_CHAT_HISTORY_TURN,
-            self.CHANNEL_CHAT_HISTORY_LOG,
             self.CHANNEL_MEMORY_IDENTITY_SNAPSHOT,
             self.CHANNEL_MEMORY_GOALS_PROPOSED,
             "orion:metacog:trace",

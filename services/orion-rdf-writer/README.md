@@ -2,7 +2,7 @@
 
 The **RDF Writer** service constructs the Knowledge Graph by converting incoming events and structured requests into RDF triples. It persists these triples through a small **`RdfStoreClient`** abstraction (GraphDB by default; Fuseki or generic SPARQL graph-store/update endpoints as alternates).
 
-**Chat is an acceptance canary only:** `chat.history` is a convenient smoke path, but the writer is general-purpose across all subscribed kinds—do not treat chat-specific behavior as the whole contract.
+**Chat history is no longer written here (2026-07-17):** `chat.history` / `chat.history.message.v1` are Postgres-only via `orion-sql-writer` (`chat_message`, `chat_history_log`) — the Fuseki `orion:chat` copy covered only ~11-18% of real chat volume with almost none of the richer fields populated (live-checked). rdf-writer no longer subscribes to or handles either kind; do not use chat as a smoke path for this service (see "Store-aware chat smoke" note below).
 
 ### Backends (`RDF_STORE_BACKEND`)
 
@@ -29,8 +29,6 @@ Tune `RDF_WRITE_*` and `RDF_STORE_TIMEOUT_SEC` before scaling bus traffic; for t
 | `orion:tags:enriched` | `CHANNEL_EVENTS_TAGGED` | `tags.enriched`, `telemetry.meta_tags` | Enriched metadata tags. |
 | `orion:core:events` | `CHANNEL_CORE_EVENTS` | `orion.event` | Legacy events targeted for RDF. |
 | `orion:rdf:worker` | `CHANNEL_WORKER_RDF` | `cortex.worker.rdf_build` | Worker tasks from Cortex. |
-| `orion:chat:history:turn` | `CHANNEL_CHAT_HISTORY_TURN` | `chat.history` | Chat turn history (prompt + response). |
-| `orion:chat:history:log` | `CHANNEL_CHAT_HISTORY_LOG` | `chat.history.message.v1` | Chat message history (per-message). |
 
 ### Published Channels
 | Channel | Env Var | Kind | Description |
@@ -46,8 +44,6 @@ Provenance: `.env_example` → `docker-compose.yml` → `settings.py`
 | `CHANNEL_RDF_ENQUEUE` | `orion:rdf:enqueue` | Direct enqueue channel. |
 | `CHANNEL_EVENTS_COLLAPSE` | `orion:collapse:intake` | Collapse event source. |
 | `CHANNEL_EVENTS_TAGGED` | `orion:tags:enriched` | Tagged event source. |
-| `CHANNEL_CHAT_HISTORY_TURN` | `orion:chat:history:turn` | Chat turn history intake. |
-| `CHANNEL_CHAT_HISTORY_LOG` | `orion:chat:history:log` | Chat message history intake. |
 | `GRAPHDB_URL` | Optional when backend ≠ `graphdb` | GraphDB base URL. |
 | `RDF_STORE_*`, `RDF_WRITE_*` | See `.env_example` | Backend selection, HTTP pool sizing, async queue, retries, dead-letter. |
 
@@ -64,16 +60,20 @@ Check connection to GraphDB in logs.
 docker compose -f services/orion-rdf-writer/docker-compose.yml logs -f rdf-writer | grep "Connected"
 ```
 
-### Store-aware chat smoke (GraphDB or Fuseki)
+### Store-aware chat smoke (GraphDB or Fuseki) — STALE as of 2026-07-17
 
-Publishes a synthetic `chat.history` turn on the bus and polls SPARQL until readback succeeds (tolerates async writer latency).
+`scripts/smoke_chat_to_rdf_store.py` and `scripts/smoke_chat_to_rdf.py` publish a
+synthetic `chat.history` turn and poll SPARQL for a resulting `orion:ChatTurn`.
+Since rdf-writer no longer subscribes to `chat.history` / `chat.history.message.v1`
+(see note above), both scripts will now always report `FAIL` — that is expected,
+not a regression. Retiring or repointing them at a still-handled kind is a
+recommended follow-up; do not use them to validate `orion-rdf-writer` behavior
+until then.
 
-```bash
-PYTHONPATH=/path/to/Orion-Sapienform:/path/to/Orion-Sapienform/services/orion-rdf-writer \
-  ./venv/bin/python scripts/smoke_chat_to_rdf_store.py
-```
+### SPARQL Smoke Query (last 10 chat turns by sessionId) — reads historical data only
 
-### SPARQL Smoke Query (last 10 chat turns by sessionId)
+No longer populated by rdf-writer going forward; useful only for inspecting
+whatever `orion:ChatTurn` data already exists in the store from before 2026-07-17.
 ```sparql
 PREFIX orion: <http://conjourney.net/orion#>
 

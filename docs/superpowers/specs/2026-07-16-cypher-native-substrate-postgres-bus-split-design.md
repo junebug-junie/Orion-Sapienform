@@ -229,7 +229,12 @@ Postgres reducer loops inside runtime (biometrics / execution / transport / chat
 
 - [ ] Spec reviewed by Juniper
 - [ ] Implementation plan exists (Cypher-native adapter first; drive SoR second; runtime graph writers third)
-- [ ] `FalkorSubstrateStore` writes typed Cypher properties; unit tests assert MERGE/SET shape **without** `payload_json` as SoR
+- [x] `FalkorSubstrateStore` writes typed Cypher properties; unit tests assert MERGE/SET shape **without** `payload_json` as SoR
+
+**Adapter evidence:** `orion/substrate/tests/test_falkor_store.py` and
+`orion/substrate/tests/test_falkor_codec.py` verify native Cypher properties,
+native hydration, metadata quarantine behavior, and Hub Concept Atlas route
+compatibility through a hydrated Falkor store test double.
 - [ ] Concept Atlas Hub summary/network survives restart against real Falkor after redesign
 - [ ] Chat stance drive projection reads Postgres measurement rail (bus-fed); graph drive snapshot materialization off or deleted
 - [ ] No new producer path calls sql-writer over HTTP for drive measurement

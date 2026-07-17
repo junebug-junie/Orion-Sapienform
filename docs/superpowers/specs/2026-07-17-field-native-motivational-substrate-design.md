@@ -65,6 +65,69 @@ real, sustained internal pressure instead of a flat per-cycle allowance.
 - No competition, no attention-scarcity, no emergence anywhere in this stack. Every channel
   that fires gets to vote, diluted, into a fixed bucket, every tick, forever.
 
+## Correction (same day): most of "Proposed architecture" point 2 already exists, live
+
+Juniper asked directly where `orion-substrate-runtime` and its lattice/GWT-flavored pieces
+fit into this design. Tracing the answer found something load-bearing enough to change the
+proposal: **the competition layer this document originally proposed *building* already
+exists, is already live, and this whole investigation never checked.**
+
+`docs/context-engineering/04_layer_1_to_11_pipeline.md` documents a canonical, repo-wide
+11-layer pipeline: Organs (L1) → Trace (L2) → Reducers (L3) → **Field digestion (L4,
+`FieldStateV1`)** → **Attention (L5, `FieldAttentionFrameV1`)** → Self-state (L6,
+`SelfStateV1`) → Proposal (L7, `ProposalFrameV1`) → Policy (L8, `PolicyDecisionFrameV1`) →
+Dispatch (L9, `ExecutionDispatchFrameV1`) → Feedback (L10, `FeedbackFrameV1`) →
+Consolidation (L11, `ConsolidationFrameV1`/`MotifObservationV1`). Every one of these schemas
+is a real, implemented file, not aspirational documentation.
+
+Layer 5 specifically — `orion/attention/field_attention/{scoring,selectors}.py` — is almost
+exactly the "coalition selector" this document proposed as new work: `compute_salience()`
+combines pressure, novelty, urgency, and confidence per field target (weighted, not a single
+formula guessed from scratch), `select_node_targets()`/`select_capability_targets()`
+competitively score every node and every capability in the field, and
+`observation_mode_for()` gates a real watch/inspect/summarize/ignore ceiling off the result
+— the exact salience→threshold→action-ceiling pattern this document's baseline design
+called for. It runs live: `services/orion-attention-runtime` (`ENABLE_ATTENTION_RUNTIME=
+true`, polling every 2s, ~43k rows/day retained 72h). `orion/self_state/builder.py` already
+consumes its output (`FieldAttentionFrameV1` is a real parameter to the canonical self-state
+builder). `orion-proposal-runtime` (Layer 7, `ENABLE_PROPOSAL_RUNTIME=true`) is also live.
+
+**Confirmed, directly, by grep: `orion/spark/concept_induction/` (`DriveEngine`,
+`tensions.py`, `bus_worker.py`, `GoalProposalEngine`) imports nothing from
+`orion.attention` or `orion.proposals`.** Zero connection. The entire drives/autonomy
+apparatus this investigation has spent two-plus weeks on is not just disconnected from one
+underused field — it is a full, parallel, poorer reimplementation of Layers 4-9 of a
+pipeline that already exists, is already live, and already does the field-digestion,
+competitive-attention, self-state, and proposal work better than the shadow system built
+next to it.
+
+A separate, third mechanism exists too: the FCC-Cortex GWT Dispatch design
+(`docs/superpowers/specs/2026-07-05-fcc-cortex-gwt-dispatch-design.md`) maps its own GWT
+stages (processors → Rung-3 coalition competition → `AttentionBroadcastProjectionV1`
+broadcast → `orion-thought`'s `ThoughtV1` as conscious content → policy-gated fcc action) —
+confirmed, by reading `orion/substrate/attention_broadcast.py`, to reference neither
+`FieldStateV1` nor `FieldAttentionFrameV1`. This is a real, separate, agent-dispatch-scoped
+competition mechanism, not built on Layer 5's output either. **Three attention/competition
+mechanisms exist in this codebase right now, none of which talk to each other**: Layer 5's
+general field attention (live, general-purpose), the FCC-dispatch GWT coalition (live,
+scoped to agent-dispatch specifically), and the drives system's ad hoc bucket voting (the
+poorest of the three, and the one this whole investigation has been trying to fix).
+
+The lattice Juniper also asked about (`config/substrate-lattice/
+transport_lattice_policy.v1.yaml`) is a fourth instance of the same underlying pattern
+(salience-weighted channels → watch/summarize/propose thresholds → an `action_ceiling` that
+literally gates capability tier: `read_only`/`summarize`/`watch`) — but scoped narrowly to
+bus/transport health, not general motivation. It is direct, working precedent for this
+document's point 5 (pressure-coupled capability ceiling) — proof the pattern already works
+in this codebase, just nowhere near general enough.
+
+**Revision to "Proposed architecture" below:** point 2 (competition layer) is no longer
+proposed as new code — it is "wire the drives/capability system to consume the already-live
+`orion-attention-runtime` output instead of building a fourth parallel mechanism." Point 5
+(capability coupling) gets concretely easier: `select_capability_targets()` already produces
+a live, per-capability salience score today — `capability_policy.py` coupling to it is a
+wiring change, not new math.
+
 ## Missing questions
 
 1. Can the "emergent clustering" step avoid becoming unfalsifiable — can we tell a real,
@@ -92,12 +155,14 @@ frames, action outcomes, biometrics) writes directly as a perturbation onto the 
 pipeline as the one motivational integrator instead of running a second, parallel, poorer
 one beside it.
 
-**2. A competition layer, not a bucket vote (Global-Workspace-style).** A new, thin reducer
-— the *coalition selector* — runs each tick over the field's current channel values and
-short-window trajectory, scores each channel's salience (magnitude × recency × how long it's
-stayed unresolved), and selects the top-K channels or most strongly co-moving group as *this
-tick's winning coalition*. Many specialists, one narrow-bandwidth winner — not fifty
-channels each casting a diluted vote into six pre-drawn buckets.
+**2. A competition layer, not a bucket vote (Global-Workspace-style) — already built, wire
+to it instead of building a fourth one.** `orion/attention/field_attention/{scoring,
+selectors}.py`, live via `orion-attention-runtime`, already computes exactly this: per-node
+and per-capability salience (pressure × novelty × urgency × confidence, not a formula
+guessed from scratch) and a real watch/inspect/summarize/ignore ceiling off the result. The
+work here is not building a coalition selector — it's making the drives/capability system
+*consume* `FieldAttentionFrameV1`'s `dominant_targets`/`node_targets`/`capability_targets`
+instead of running its own disconnected, poorer version of the same idea.
 
 **3. Emergent, not hand-labeled, drives.** Off the hot path (consolidation cadence), cluster
 the *history* of which channels have won coalitions together — correlation grouping to
@@ -110,11 +175,16 @@ the substrate graph directly — it already exists there structurally as `FieldS
 node/capability vectors — no more local JSON file materialized into substrate as an
 afterthought.
 
-**5. Capability coupled to sustained coalition strength, with a hard ceiling.**
-`capability_policy.py`'s budget stops being a flat per-cycle integer gated on categorical
-`drive_origin` membership. It becomes a function of the currently- or recently-winning
-coalition's strength and persistence, capped by an explicit ceiling — real, sustained
-internal pressure genuinely buys Orion more autonomous-action headroom, bounded.
+**5. Capability coupled to sustained coalition strength, with a hard ceiling — a wiring
+change, not new math.** `select_capability_targets()` already produces a live, per-
+capability salience score today. `capability_policy.py`'s budget stops being a flat
+per-cycle integer gated on categorical `drive_origin` membership and becomes a function of
+the matching capability target's current/recent salience from the already-live attention
+frame, capped by an explicit ceiling — real, sustained internal pressure genuinely buys
+Orion more autonomous-action headroom, bounded. The transport lattice
+(`config/substrate-lattice/transport_lattice_policy.v1.yaml`) is direct, working precedent
+for exactly this salience→ceiling shape, just scoped to bus health instead of general
+capability.
 
 **6. Outcomes close the loop on the specific channels that produced them.** A dispatched
 action's real outcome (`action_outcomes.py`, already exists) perturbs the *same field
@@ -258,13 +328,18 @@ expensive to retrofit later.
 
 ## Recommended next patch
 
-Smallest real slice: build the coalition selector as a pure, read-only function over a
-snapshot of `FieldStateV1` — no wiring, no capability coupling, no clustering yet. Run it
-against historical field data (same replay-real-code discipline as
-`scripts/analysis/measure_origination_gate.py`) and show, with real numbers, whether
-"top-K salient channels this tick" produces something a human would call recognizable and
-different from the current dominant-drive monoculture pattern. Cheap, reversible, answers
-the load-bearing question first before any of the rest of this gets built.
+Revised by the correction above: the coalition selector does not need building. Smallest
+real slice now: pull real, historical `FieldAttentionFrameV1` rows already produced by
+`orion-attention-runtime` (live since before this investigation started) and check, with
+real numbers, whether its `dominant_targets`/`capability_targets` already produce something
+a human would call recognizable and different from the drives system's dominant-drive
+monoculture pattern — same replay-real-data discipline as
+`scripts/analysis/measure_origination_gate.py`, but this time reading data that already
+exists instead of replaying code that doesn't run live yet. If it already looks better than
+the drives system on real history, that's the strongest possible case for retiring
+`DriveEngine`/`tensions.py`/`signal_drive_map.yaml` outright rather than iterating on them
+further, and for wiring `capability_policy.py` to `select_capability_targets()`'s live
+output next.
 
 ## Source material
 

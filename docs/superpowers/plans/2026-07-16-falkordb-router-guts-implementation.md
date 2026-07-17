@@ -16,7 +16,7 @@ Ship the library + store + operator stack so later phases can flip workloads wit
 - No concept-induction / hub Concept Atlas route changes
 - No rdf-writer kind changes
 - No new microservice for the router (module only)
-- One FalkorDB container; two graph names (`orion_graphiti`, `orion_substrate`)
+- One FalkorDB container; two graph names (`graphiti_temporal`, `orion_substrate`)
 - Tests must pass without a live Falkor (mock driver/client)
 - Commit per task; do not commit `.env`
 - After code: prefer focused pytest; do not run `graphify update` unless asked
@@ -124,8 +124,8 @@ Ship the library + store + operator stack so later phases can flip workloads wit
 **Create:** `services/orion-falkordb/` mirroring `orion-rdf-store` lightness:
 - `docker-compose.yml` — service `falkordb`, container `orion-${NODE_NAME}-falkordb`, port 6380:6379, `app-net`, volume for data
 - `.env_example` — `FALKORDB_URI=redis://orion-athena-falkordb:6379`, graph name docs
-- `README.md` — ownership: shared by graphiti + future substrate; graph names `orion_graphiti` / `orion_substrate`
-- Update `services/orion-graphiti-adapter/docker-compose.yml` comment or README pointing to shared stack (optional: keep profile for backward compat but document preferred home)
+- `README.md` — ownership: shared by graphiti + future substrate; graph names `graphiti_temporal` / `orion_substrate`
+- Update `services/orion-graphiti-adapter/docker-compose.yml` — **done:** falkordb profile removed; README points to shared stack
 
 **Acceptance:** `docker compose … config` validates; no requirement to migrate running container in this task.
 

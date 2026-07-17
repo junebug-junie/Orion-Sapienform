@@ -4,6 +4,8 @@ from datetime import datetime, timezone
 
 from orion.core.schemas.cognitive_substrate import (
     ConceptNodeV1,
+    NodeRefV1,
+    SubstrateEdgeV1,
     SubstrateProvenanceV1,
     SubstrateTemporalWindowV1,
 )
@@ -11,6 +13,8 @@ from orion.substrate.falkor_store import (
     FalkorSubstrateStore,
     FalkorSubstrateStoreConfig,
     RecordingFalkorClient,
+    RedisGraphQueryClient,
+    _normalize_rows,
 )
 from orion.substrate.graphdb_store import build_substrate_store_from_env
 from orion.substrate.store import InMemorySubstrateGraphStore
@@ -64,6 +68,37 @@ def test_falkor_sanitizes_metadata_cathedral():
     assert len(stored.metadata) <= 16
 
 
+def test_falkor_edge_is_persisted_as_typed_relationship():
+    client = RecordingFalkorClient()
+    store = FalkorSubstrateStore(
+        FalkorSubstrateStoreConfig(uri="redis://localhost:6379"),
+        client=client,
+        hydrate=False,
+    )
+    edge = SubstrateEdgeV1(
+        edge_id="sub-edge-a",
+        source=NodeRefV1(node_id="sub-node-a", node_kind="concept"),
+        target=NodeRefV1(node_id="sub-node-b", node_kind="concept"),
+        predicate="supports",
+        temporal=SubstrateTemporalWindowV1(observed_at=datetime.now(timezone.utc)),
+        provenance=SubstrateProvenanceV1(
+            authority="local_inferred",
+            source_kind="test",
+            source_channel="test",
+            producer="test_falkor_store",
+        ),
+    )
+
+    store.upsert_edge(identity_key="edge-a", edge=edge)
+
+    cypher, params = client.calls[-1]
+    assert "MERGE (source)-[e:`supports`" in cypher
+    assert "e.substrate_edge = true" in cypher
+    assert params is not None
+    assert params["source_id"] == "sub-node-a"
+    assert params["target_id"] == "sub-node-b"
+
+
 def test_build_substrate_store_falkor(monkeypatch):
     monkeypatch.setenv("SUBSTRATE_STORE_BACKEND", "falkor")
     monkeypatch.setenv("FALKORDB_URI", "redis://orion-athena-falkordb:6379")
@@ -88,3 +123,37 @@ def test_build_substrate_store_falkor_missing_uri(monkeypatch):
     monkeypatch.delenv("FALKORDB_URI", raising=False)
     store = build_substrate_store_from_env()
     assert isinstance(store, InMemorySubstrateGraphStore)
+
+
+def test_redis_graph_client_uses_redis_py_parameter_header():
+    class _Result:
+        result_set = [["payload", "identity"]]
+
+    class _Graph:
+        def __init__(self):
+            self.calls = []
+
+        def query(self, cypher, params=None):
+            self.calls.append((cypher, params))
+            return _Result()
+
+    graph = _Graph()
+    client = RedisGraphQueryClient.__new__(RedisGraphQueryClient)
+    client._graph = graph
+
+    result = client.graph_query("RETURN $node_id", {"node_id": "sub-node-a"})
+
+    assert result == [["payload", "identity"]]
+    assert graph.calls == [("RETURN $node_id", {"node_id": "sub-node-a"})]
+
+
+def test_normalize_rows_parses_raw_graph_query_header_and_stats():
+    raw = [
+        [["n.payload_json", 1], ["n.identity_key", 1]],
+        [["{\"node_id\":\"sub-node-a\"}", "id-a"]],
+        ["Cached execution: 0", "Query internal execution time: 0.1 milliseconds"],
+    ]
+
+    assert _normalize_rows(raw) == [
+        {"payload_json": "{\"node_id\":\"sub-node-a\"}", "identity_key": "id-a"}
+    ]

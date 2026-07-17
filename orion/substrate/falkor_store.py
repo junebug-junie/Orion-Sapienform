@@ -60,25 +60,20 @@ class RedisGraphQueryClient:
 
     def __init__(self, *, uri: str, graph_name: str) -> None:
         import redis
+        from redis.commands.graph import Graph
 
         parsed = urlparse(uri or "redis://localhost:6379")
-        self._graph_name = graph_name
         self._r = redis.Redis(
             host=parsed.hostname or "localhost",
             port=int(parsed.port or 6379),
             db=int((parsed.path or "/0").lstrip("/") or 0),
             decode_responses=True,
         )
+        self._graph = Graph(self._r, graph_name)
 
     def graph_query(self, cypher: str, params: dict[str, Any] | None = None) -> Any:
-        # Falkor/RedisGraph: GRAPH.QUERY key cypher [params...]
-        # Keep params embedded via $name and Redis graph parameter map when available.
-        if params:
-            # redis-py graph module is optional; fall back to string replace for simple scalars
-            # by using the official GRAPH.QUERY with --params JSON when supported.
-            args: list[Any] = [self._graph_name, cypher, "--params", json.dumps(params)]
-            return self._r.execute_command("GRAPH.QUERY", *args)
-        return self._r.execute_command("GRAPH.QUERY", self._graph_name, cypher)
+        result = self._graph.query(cypher, params=params)
+        return result.result_set
 
 
 def _with_sanitized_metadata(model: Any) -> Any:
@@ -113,7 +108,8 @@ class FalkorSubstrateStore:
                 "MATCH (n:SubstrateNode) RETURN n.payload_json AS payload_json, n.identity_key AS identity_key"
             )
             edge_rows = self._client.graph_query(
-                "MATCH (e:SubstrateEdge) RETURN e.payload_json AS payload_json, e.identity_key AS identity_key"
+                "MATCH ()-[e]->() WHERE e.substrate_edge = true "
+                "RETURN e.payload_json AS payload_json, e.identity_key AS identity_key"
             )
         except Exception as exc:
             logger.warning("falkor_substrate_hydrate_failed error=%s", exc)
@@ -188,15 +184,20 @@ class FalkorSubstrateStore:
             "identity_key": identity_key,
             "source_id": edge.source.node_id,
             "target_id": edge.target.node_id,
-            "predicate": edge.predicate,
             "salience": float(edge.salience),
         }
+        # SubstrateEdgeV1 validates predicate against a closed Literal, so it
+        # is safe to use as the relationship type (Cypher cannot parameterize
+        # relationship types).
+        relationship_type = edge.predicate
         cypher = (
-            "MERGE (e:SubstrateEdge {edge_id: $edge_id}) "
+            "MERGE (source:SubstrateNode {node_id: $source_id}) "
+            "MERGE (target:SubstrateNode {node_id: $target_id}) "
+            f"MERGE (source)-[e:`{relationship_type}` {{edge_id: $edge_id}}]->(target) "
             "SET e.payload_json = $payload_json, e.identity_key = $identity_key, "
-            "e.source_id = $source_id, e.target_id = $target_id, "
-            "e.predicate = $predicate, e.salience = $salience"
+            "e.substrate_edge = true, e.predicate = $predicate, e.salience = $salience"
         )
+        params["predicate"] = relationship_type
         try:
             self._client.graph_query(cypher, params)
         except Exception as exc:
@@ -277,6 +278,22 @@ def _normalize_rows(raw: Any) -> list[dict[str, Any]]:
     if raw is None:
         return []
     if isinstance(raw, list):
+        # Raw GRAPH.QUERY response: [header, records, statistics]. redis-py's
+        # Graph.query normally strips this shape, but retain compatibility
+        # with injected clients that return the wire response.
+        if (
+            len(raw) == 3
+            and isinstance(raw[0], list)
+            and isinstance(raw[1], list)
+            and raw[0]
+            and all(isinstance(column, (list, tuple)) for column in raw[0])
+        ):
+            names = [str(column[0]).split(".")[-1] for column in raw[0]]
+            return [
+                dict(zip(names, record))
+                for record in raw[1]
+                if isinstance(record, (list, tuple))
+            ]
         out: list[dict[str, Any]] = []
         for item in raw:
             if isinstance(item, dict):

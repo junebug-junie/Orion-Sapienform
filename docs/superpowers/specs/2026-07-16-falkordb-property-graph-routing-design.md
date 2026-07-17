@@ -1,7 +1,7 @@
 # FalkorDB property-graph doctrine + persistence router — design spec
 
 **Date:** 2026-07-16
-**Status:** DESIGN — guts implemented on `feat/falkordb-property-graph-routing` (intent, routes, property guard, Falkor/routed stores, `services/orion-falkordb/`). Concept Atlas / concept-induction wiring and live SPARQL cutover deferred.
+**Status:** DESIGN — guts implemented on `feat/falkordb-property-graph-routing` (intent, routes, property guard, Falkor/routed stores, `services/orion-falkordb/`). **2026-07-16:** graphiti `--profile falkordb` removed; live Falkor cutover to shared stack documented in `services/orion-falkordb/README.md`. Concept Atlas / concept-induction wiring and live SPARQL cutover deferred.
 **Mode:** Proposal (touches memory / cognitive-graph persistence; AGENTS.md §0A proposal mode)
 **Related:**
 - `docs/superpowers/specs/2026-07-15-concept-atlas-graph-pipeline-design.md` (first consumer seam)
@@ -333,7 +333,7 @@ Concept cognition ── SubstrateGraphStore ── Router ── Falkor (Concep
 Legacy RDF dumps ── rdf-writer ── Fuseki (traces, residual named graphs)
 ```
 
-Two Falkor *usages* may share one FalkorDB instance with **separate graph names** (e.g. `orion_graphiti` vs `orion_substrate`) until a unification design exists. Do not silently share labels/properties across rails.
+Two Falkor *usages* may share one FalkorDB instance with **separate graph names** (`graphiti_temporal` vs `orion_substrate`) until a unification design exists. Do not silently share labels/properties across rails.
 
 ---
 
@@ -386,7 +386,7 @@ Do not start with rdf-writer kind migration or Fuseki compact theater.
 
 ## Open questions for Juniper
 
-1. Prefer **one FalkorDB database, two graph names** (`orion_graphiti`, `orion_substrate`) vs two containers? (Recommendation: one container, two graph names. Promote compose ownership to `services/orion-falkordb/` when substrate becomes a second dependent — same pattern as `orion-rdf-store` / `orion-sql-db`; do not leave the engine nested only under graphiti-adapter.)
+1. Prefer **one FalkorDB database, two graph names** (`graphiti_temporal`, `orion_substrate`) vs two containers? (Recommendation: one container, two graph names. Promote compose ownership to `services/orion-falkordb/` when substrate becomes a second dependent — same pattern as `orion-rdf-store` / `orion-sql-db`; do not leave the engine nested only under graphiti-adapter.)
 2. For Concept Atlas durability, is **Falkor-only** enough for v1, or do we also want a Postgres substrate snapshot table as SoR with Falkor as projection? (Recommendation: Falkor primary for graph queries; optional Postgres snapshot later if backup/ops demand it — do not dual-SoR in wedge.)
 3. Should `GraphWriteIntent` be a bus schema from day one, or an in-process library contract first? (Recommendation: in-process + SubstrateGraphStore wrap first; bus schema when a second process must enqueue intents without calling the store.)
 

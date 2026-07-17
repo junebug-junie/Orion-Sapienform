@@ -19,4 +19,4 @@ services:
     ports:
       - "${FALKORDB_PORT:-6380}:6379"
     volumes:
-      - ${FALKORDB_DATA_DIR:-/mnt/graphdb/falkordb}:/data
+      - ${FALKORDB_DATA_DIR:-/mnt/graphdb/falkordb}:/var/lib/falkordb/data

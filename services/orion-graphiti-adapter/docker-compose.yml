@@ -23,18 +23,8 @@ services:
     networks:
       - app-net
 
-  # Legacy co-located FalkorDB (--profile falkordb). Preferred operator home:
-  # services/orion-falkordb/ (shared by graphiti + future substrate-runtime).
-  falkordb:
-    image: falkordb/falkordb:latest
-    container_name: orion-${NODE_NAME}-falkordb
-    restart: unless-stopped
-    profiles:
-      - falkordb
-    ports:
-      - "6380:6379"
-    networks:
-      - app-net
+  # FalkorDB runs in services/orion-falkordb/ (shared operator stack).
+  # Start it before this adapter when FALKORDB_ENABLED=true.
 
 networks:
   app-net:

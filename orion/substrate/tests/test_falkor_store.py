@@ -53,6 +53,91 @@ def test_falkor_upsert_round_trip_via_cache():
     assert any("MERGE (n:SubstrateNode" in cypher for cypher, _ in client.calls)
 
 
+def test_falkor_upsert_concept_uses_native_cypher_properties():
+    client = RecordingFalkorClient()
+    store = FalkorSubstrateStore(
+        FalkorSubstrateStoreConfig(uri="redis://localhost:6379", graph_name="orion_substrate"),
+        client=client,
+        hydrate=False,
+    )
+    node = _concept(node_id="concept-native-alpha")
+
+    store.upsert_node(identity_key="concept:alpha", node=node)
+
+    cypher, params = client.calls[-1]
+    assert "payload_json" not in cypher
+    assert params is not None
+    assert "payload_json" not in params
+    assert "MERGE (n:SubstrateNode:Concept {node_id: $node_id})" in cypher
+    assert "n.label = $label" in cypher
+    assert "n.promotion_state = $promotion_state" in cypher
+    assert "n.salience = $salience" in cypher
+    assert params["node_id"] == "concept-native-alpha"
+    assert params["node_kind"] == "concept"
+    assert params["identity_key"] == "concept:alpha"
+    assert params["label"] == "alpha"
+    assert params["anchor_scope"] == "orion"
+    assert params["promotion_state"] == "proposed"
+    assert params["risk_tier"] == "low"
+    assert params["salience"] == 0.0
+    assert params["activation"] == 0.0
+    assert params["recency_score"] == 0.0
+    assert params["confidence"] == 0.5
+
+
+def test_falkor_hydrates_concept_from_native_properties():
+    client = RecordingFalkorClient(
+        hydrate_rows=[
+            {
+                "node_id": "concept-hydrated",
+                "node_kind": "concept",
+                "identity_key": "concept:hydrated",
+                "label": "Hydrated concept",
+                "definition": "Loaded from Falkor native properties",
+                "anchor_scope": "orion",
+                "subject_ref": None,
+                "promotion_state": "canonical",
+                "risk_tier": "low",
+                "confidence": 0.75,
+                "salience": 0.66,
+                "activation": 0.44,
+                "recency_score": 0.33,
+                "decay_floor": 0.1,
+                "decay_half_life_seconds": None,
+                "observed_at": "2026-07-16T00:00:00+00:00",
+                "valid_from": None,
+                "valid_to": None,
+                "provenance_authority": "local_inferred",
+                "provenance_source_kind": "test",
+                "provenance_source_channel": "test:falkor",
+                "provenance_producer": "test_falkor_store",
+                "provenance_model_name": None,
+                "provenance_correlation_id": None,
+                "provenance_trace_id": None,
+                "provenance_tier_rank": None,
+            }
+        ]
+    )
+
+    store = FalkorSubstrateStore(
+        FalkorSubstrateStoreConfig(uri="redis://localhost:6379", graph_name="orion_substrate"),
+        client=client,
+        hydrate=True,
+    )
+
+    node = store.get_node_by_id("concept-hydrated")
+    assert node is not None
+    assert node.node_kind == "concept"
+    assert node.label == "Hydrated concept"
+    assert node.definition == "Loaded from Falkor native properties"
+    assert node.promotion_state == "canonical"
+    assert node.signals.confidence == 0.75
+    assert node.signals.salience == 0.66
+    assert node.signals.activation.activation == 0.44
+    assert node.signals.activation.recency_score == 0.33
+    assert store.get_node_id_by_identity("concept:hydrated") == "concept-hydrated"
+
+
 def test_falkor_sanitizes_metadata_cathedral():
     client = RecordingFalkorClient()
     store = FalkorSubstrateStore(

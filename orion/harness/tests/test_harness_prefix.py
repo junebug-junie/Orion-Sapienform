@@ -313,6 +313,42 @@ def test_harness_motor_instruction_relational_discourages_tools() -> None:
     assert "Execute your imperative" in instruction
 
 
+def test_harness_motor_instruction_relational_enforces_single_turn_reply() -> None:
+    """Regression for the fabricated-simulated-dialogue incidents: on a
+    relational/minimal stance the FCC motor narrated BOTH "Orion" and "You"
+    turns instead of producing one bounded reply. One incident was caught by
+    finalize's alignment check (topically off-drift); the other shipped
+    verbatim because the fabricated content was topically on-point (the
+    imperative was "hold space, acknowledge shared solitude" and the
+    fabricated text was thematically about solitude, so the alignment check
+    found nothing wrong). See project_fcc_harness_step_noise_and_memory_digest_confabulation
+    and the wider substrate-bridge confabulation investigation thread."""
+    thought = make_thought(
+        imperative="Hold space; acknowledge our shared solitude.",
+        stance_harness_slice=StanceHarnessSliceV1(
+            task_mode="reflective_dialogue",
+            conversation_frame="reflective",
+            interaction_regime="minimal",
+            answer_strategy="companion_presence",
+        ),
+    )
+    assert is_relational_motor_stance(thought) is True
+    instruction = harness_motor_instruction(thought=thought, answer_contract=None)
+    assert "exactly one reply" in instruction
+    assert "Never write dialogue" in instruction
+
+
+def test_harness_motor_instruction_instrumental_omits_single_turn_language() -> None:
+    """Companion check: the single-turn-boundary instruction is scoped to the
+    relational branch only. An instrumental-stance thought must not pick up
+    HARNESS_RELATIONAL_TOOL_DISCIPLINE's language at all."""
+    thought = make_thought(imperative="Inspect docker logs for orion-hub.")
+    assert is_relational_motor_stance(thought) is False
+    instruction = harness_motor_instruction(thought=thought, answer_contract=None)
+    assert "exactly one reply" not in instruction
+    assert "Never write dialogue" not in instruction
+
+
 def test_harness_motor_instruction_imperative_forward() -> None:
     thought = make_thought(imperative="Inspect docker logs for orion-hub.")
     instruction = harness_motor_instruction(thought=thought, answer_contract=None)

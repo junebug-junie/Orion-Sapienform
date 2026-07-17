@@ -6,7 +6,7 @@ from typing import Any
 
 import pytest
 
-from scripts.orion_backup_mnt_scripts import (
+from scripts.backup.orion_backup_mnt_scripts import (
     BackupConfig,
     RunOutcome,
     acquire_lock,
@@ -314,7 +314,7 @@ def test_run_backup_cleans_stale_incomplete_dirs(tmp_path: Path) -> None:
 
 
 def test_cli_dry_run_allows_non_mount_fixture_paths(tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
-    from scripts.orion_backup_mnt_scripts import main
+    from scripts.backup.orion_backup_mnt_scripts import main
 
     source = tmp_path / "scripts"
     target = tmp_path / "storage-warm"
@@ -408,7 +408,7 @@ def test_send_failure_notification_message_includes_run_context(
         return _FakeResponse()
 
     monkeypatch.setattr(
-        "scripts.orion_backup_mnt_scripts.urllib.request.urlopen", fake_urlopen
+        "scripts.backup.orion_backup_mnt_scripts.urllib.request.urlopen", fake_urlopen
     )
 
     result = send_failure_notification(outcome, cfg)

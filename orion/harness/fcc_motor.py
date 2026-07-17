@@ -593,6 +593,28 @@ async def run_fcc_turn(
                 }
                 context_nudge_sent = True
 
+            # A "result" event is the CLI's own authoritative signal that the
+            # turn already completed -- never kill on it. Without this guard,
+            # a legitimately long-but-successful answer can get its own
+            # already-generated result payload counted against the ceiling
+            # (measure_step_payload_chars has no result-specific branch, so
+            # it falls back to json.dumps(raw), re-measuring text already
+            # counted via the preceding assistant deltas) and lose the
+            # completed answer to a false-positive runaway-draft error.
+            if str(parsed.get("type") or "") != "result" and budget_chars >= ceiling_chars:
+                proc.kill()
+                yield {
+                    "type": "error",
+                    "error": (
+                        f"fcc draft exceeded context ceiling ({budget_chars} >= "
+                        f"{ceiling_chars} chars) without completing the turn"
+                    ),
+                    "error_code": "fcc_draft_length_ceiling_exceeded",
+                    "steps_seen": steps_seen,
+                    "llm_response": accumulated or None,
+                }
+                return
+
             text, sid, _dur = extract_final_from_stream_event(parsed, accumulated=accumulated)
             if text:
                 accumulated = text

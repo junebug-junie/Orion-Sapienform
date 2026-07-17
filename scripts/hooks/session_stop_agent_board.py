@@ -6,6 +6,7 @@ Fails silently (no output) on any error -- never blocks session stop.
 from __future__ import annotations
 
 import json
+import os
 import sys
 from pathlib import Path
 
@@ -20,6 +21,11 @@ from agent_board_lib import (  # noqa: E402
 
 
 def main() -> None:
+    if os.environ.get("ORION_FCC_SUBPROCESS"):
+        # See matching guard in session_start_agent_board.py: this is a
+        # per-turn FCC chat subprocess, not a coding session with a worktree
+        # to check out of.
+        return
     session_id = read_session_id_from_stdin_hook_payload()
     try:
         cfg = board_config_from_env()

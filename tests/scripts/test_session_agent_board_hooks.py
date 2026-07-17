@@ -49,6 +49,42 @@ def test_session_stop_hook_emits_checkout_context(primary_repo: Path, tmp_path: 
     assert "agent board checkout" in payload["hookSpecificOutput"]["additionalContext"].lower()
 
 
+def test_hooks_noop_for_fcc_subprocess(primary_repo: Path, tmp_path: Path) -> None:
+    """orion/harness/fcc_motor.py spawns `claude -p` with cwd set to this
+    repo checkout, so it picks up .claude/settings.json's SessionStart/Stop
+    hooks the same as a real interactive session -- without this gate, every
+    Orion chat turn would write a spurious presence row to the shared board
+    and add noise to the FCC harness step count. fcc_motor.py tags its
+    subprocess env with ORION_FCC_SUBPROCESS=1 for exactly this check."""
+    board = tmp_path / "agent-board.jsonl"
+    env = {**os.environ, "ORION_AGENT_BOARD_PATH": str(board), "ORION_FCC_SUBPROCESS": "1"}
+
+    start = subprocess.run(
+        [sys.executable, str(START_HOOK)],
+        cwd=primary_repo,
+        env=env,
+        input="",
+        capture_output=True,
+        text=True,
+        timeout=30,
+    )
+    stop = subprocess.run(
+        [sys.executable, str(STOP_HOOK)],
+        cwd=primary_repo,
+        env=env,
+        input="",
+        capture_output=True,
+        text=True,
+        timeout=30,
+    )
+
+    assert start.returncode == 0
+    assert start.stdout == ""
+    assert stop.returncode == 0
+    assert stop.stdout == ""
+    assert not board.exists(), "FCC subprocess must not write a board presence row"
+
+
 def test_hooks_fail_open_outside_git_repo(tmp_path: Path) -> None:
     outside = tmp_path / "outside"
     outside.mkdir()

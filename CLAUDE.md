@@ -305,7 +305,7 @@ python3 scripts/agent_board.py add --kind finding --severity should --summary "R
 python3 scripts/agent_board.py checkout
 ```
 
-The live board is `~/.orion/agent-board.jsonl`, protected by a lock, created with owner-only permissions, and intentionally not committed. `checkin` shows this-worktree items, global blockers/Juniper escalations, other active/stale worktrees, and disclosure-only collision warnings from explicit `--files`, dirty git paths, shared `services/<name>` paths, and best-effort `graphify prs --conflicts` branch overlap. Track current-worktree items by default; if the item belongs elsewhere, set an explicit scope note.
+The live board is `~/.orion/agent-board.jsonl`, protected by a lock, created with owner-only permissions, and intentionally not committed. `checkin` shows this-worktree items, global blockers/Juniper escalations, other active/stale worktrees, and disclosure-only collision warnings from explicit `--files`, dirty git paths, and shared `services/<name>` paths. Track current-worktree items by default; if the item belongs elsewhere, set an explicit scope note.
 
 Branch type examples:
 

@@ -125,8 +125,8 @@ SessionStart / checkin
 
 On `checkin` / SessionStart for cwd:
 
-- Other `active`/`stale` presence rows whose `related_files` or inferred service path overlap cwd's dirty/recent paths or declared `related_files`
-- When both sides have a PR: surface `graphify prs --conflicts` hits that involve either branch (best-effort; fail open if graphify unavailable)
+- Other `active`/`stale` presence rows whose `related_files`, dirty git paths, or inferred `services/<name>` paths overlap the current worktree.
+- Graphify community-overlap collision detection is deferred until there is a structured branch/PR mapping for `graphify prs --conflicts`; do not substring-match formatted graphify output.
 
 Print a clear warning block. Do **not** block the session. No `--ack-collision` in v1.
 
@@ -213,7 +213,7 @@ Do **not** start with PR scraping or git export.
 | System | Relationship |
 |---|---|
 | Worktree SessionStart summary | Complementary; keep both (counts vs board content) |
-| `graphify prs --conflicts` | Best-effort input to collision disclosure |
+| `graphify prs --conflicts` | Manual merge-order risk report; runtime collision integration deferred until output can be mapped structurally to branches/PRs |
 | `reviews/pending/` | Unrelated brainstorm parking; do not overload |
 | Hub Pending Decisions | Orion cognition; do not overload |
 | PR-report Concerns | Still required for shipped PRs; board is the live parking lot so those concerns are not the *only* copy |
@@ -225,3 +225,4 @@ Do **not** start with PR scraping or git export.
 - Soft gate (`checkout --strict`) once the board has real usage  
 - Compact/GC of closed rows  
 - graphify surface for open items
+- Structured graphify PR/community collision integration

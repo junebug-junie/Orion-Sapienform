@@ -357,30 +357,6 @@ def test_detect_collisions_reports_same_service_path(tmp_path: Path) -> None:
     ]
 
 
-def test_detect_collisions_reports_graphify_branch_overlap(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    cfg = _config(tmp_path)
-    append_event(
-        cfg,
-        "presence_upserted",
-        {"worktree_path": "/repo/current", "branch": "feat/current", "status": "active"},
-    )
-    append_event(
-        cfg,
-        "presence_upserted",
-        {"worktree_path": "/repo/other", "branch": "feat/other", "status": "active"},
-    )
-    state = load_state(cfg, live_worktrees={"/repo/current", "/repo/other"})
-    monkeypatch.setattr("agent_board_lib._graphify_conflicts_output", lambda: "feat/current\nfeat/other\n")
-
-    collisions = detect_collisions(state, "/repo/current")
-
-    assert collisions == [
-        "Potential collision with /repo/other: graphify PR community overlap (feat/current / feat/other)"
-    ]
-
-
 def test_reconcile_closed_worktrees_persists_closed_event(tmp_path: Path) -> None:
     cfg = _config(tmp_path)
     append_event(

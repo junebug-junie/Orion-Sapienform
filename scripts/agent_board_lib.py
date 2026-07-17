@@ -367,27 +367,10 @@ def _service_paths(paths: set[str]) -> set[str]:
     return services
 
 
-def _graphify_conflicts_output() -> str:
-    try:
-        result = subprocess.run(
-            ["graphify", "prs", "--conflicts"],
-            capture_output=True,
-            text=True,
-            timeout=10,
-        )
-    except Exception:
-        return ""
-    if result.returncode != 0:
-        return ""
-    return result.stdout
-
-
 def detect_collisions(state: BoardState, current_worktree_path: str) -> list[str]:
     current_files = _active_item_files(state, current_worktree_path) | _dirty_files(current_worktree_path)
     current_services = _service_paths(current_files)
     warnings: list[str] = []
-    graphify_conflicts = _graphify_conflicts_output()
-    current_branch = str(state.presence.get(current_worktree_path, {}).get("branch") or "")
     for worktree_path, presence in sorted(state.presence.items()):
         if worktree_path == current_worktree_path:
             continue
@@ -407,11 +390,6 @@ def detect_collisions(state: BoardState, current_worktree_path: str) -> list[str
                     f"Potential collision with {worktree_path}: shared service paths {', '.join(service_overlap)}"
                 )
                 continue
-        other_branch = str(presence.get("branch") or "")
-        if current_branch and other_branch and current_branch in graphify_conflicts and other_branch in graphify_conflicts:
-            warnings.append(
-                f"Potential collision with {worktree_path}: graphify PR community overlap ({current_branch} / {other_branch})"
-            )
     return warnings
 
 

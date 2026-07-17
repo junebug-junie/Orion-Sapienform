@@ -10,7 +10,7 @@
 
 ## Outcome moved
 
-Concurrent agents can see this-worktree items, global blockers/Juniper escalations, other active/stale worktrees, and disclosure-only collision warnings without git round-trips. Collision signals cover explicit `--files`, dirty git paths, shared `services/<name>` paths, and best-effort `graphify prs --conflicts` branch overlap. Live smoke: second worktree `checkin` saw the first worktree's global blocker and presence summary in real time via a shared host board file.
+Concurrent agents can see this-worktree items, global blockers/Juniper escalations, other active/stale worktrees, and disclosure-only collision warnings without git round-trips. Collision signals cover explicit `--files`, dirty git paths, and shared `services/<name>` paths. Live smoke: second worktree `checkin` saw the first worktree's global blocker and presence summary in real time via a shared host board file.
 
 ## Current architecture
 
@@ -62,7 +62,7 @@ Scripts and hooks only: `scripts/agent_board*.py`, `scripts/hooks/session_*_agen
   tests/scripts/test_session_start_worktree_summary.py \
   tests/scripts/test_worktree_lib.py \
   -q
-47 passed in 24.62s
+46 passed in 15.04s
 ```
 
 Note: pytest-asyncio prints a deprecation warning about unset `asyncio_default_fixture_loop_scope` (pre-existing environment noise, unrelated to this patch).
@@ -118,9 +118,12 @@ No Docker restart required.
 - Finding: final review found prune close-on-remove used unresolved paths while presence keys are resolved.
   - Fix: prune passes `str(w.path.resolve())`; `close_presence` also normalizes explicit paths.
   - Evidence: updated prune close test asserts the resolved path.
-- Finding: final review found collision detection narrowed to explicit `--files`, missing design-level dirty/service/graphify signals.
-  - Fix: collision detection now includes dirty git paths, shared `services/<name>` paths, and best-effort graphify branch overlap.
-  - Evidence: `test_detect_collisions_reports_same_service_path`, `test_detect_collisions_reports_graphify_branch_overlap`; dirty paths are fail-open and covered by checkin behavior.
+- Finding: final review found collision detection narrowed to explicit `--files`, missing design-level dirty/service signals and making an unsafe graphify substring signal tempting.
+  - Fix: collision detection now includes dirty git paths and shared `services/<name>` paths; graphify community overlap is explicitly deferred until branch/PR mapping is structured.
+  - Evidence: `test_detect_collisions_reports_same_service_path`; dirty paths are fail-open and covered by checkin behavior.
+- Finding: post-fix review found the first graphify branch-overlap implementation was substring-based against formatted output and could false-positive.
+  - Fix: removed runtime graphify collision matching and updated design/report/docs to state graphify integration is deferred.
+  - Evidence: focused suite passes with no graphify runtime collision dependency.
 - Finding: `reconcile_closed_worktrees` never persisted `presence_closed` (load-with-live-paths first made the append loop dead).
   - Fix: load persisted state without `live_worktrees`, append closes, then reload with live paths (`830dd979`).
   - Evidence: strengthened `test_reconcile_closed_worktrees_persists_closed_event` asserts JSONL event + closed status without live set; 16/16 board tests pass.

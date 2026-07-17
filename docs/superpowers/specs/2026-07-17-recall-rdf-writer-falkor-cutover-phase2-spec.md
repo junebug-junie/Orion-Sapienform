@@ -160,11 +160,46 @@ This plan is intentionally generic across `recall.chat_turn`/`recall.tag_entity`
 ```text
 Phase 0 (this document): schema + inventory spec. Needs Juniper review before Phase 1 starts.
 
-Phase 1: per-channel live-consumer audits for the not-yet-read node kinds
-  (identity_snapshot, goals_proposed, world_pulse_graph, CognitiveStepExecution,
-  Hub orionmem/memory-graph-approval), using PR #1155's methodology: check for
-  a real Postgres/other consumer before assuming Falkor-migrate is the answer.
-  Can run as independent, parallel PRs — no shared code touched.
+Phase 1: DONE (2026-07-17, this session) — per-channel live-consumer audits
+  for the not-yet-read node kinds, using PR #1155's methodology. Findings:
+
+  - `orion:cortex:telemetry` (CognitiveStepExecution, CORTEX_LOG_CHANNEL) —
+    KILL. Zero producers anywhere in the repo, not even registered in
+    channels.yaml. Dead subscription with zero possible live traffic —
+    trivial: unsubscribe `orion-rdf-writer`, delete the handler. No Falkor
+    work, no backfill (there is nothing to backfill).
+  - `orion:world_pulse:graph:upsert` (GraphDeltaPlanV1) — KILL /
+    deprioritize. Real producer (`orion-world-pulse`) and real dispatch code
+    exist, but `WORLD_PULSE_GRAPH_ENABLED=false` in the live `.env` — fully
+    inert today, and even enabled it defaults to dry-run. Not worth reviving
+    a dormant SPARQL path; if world-pulse ever needs graph storage, design
+    it fresh against Falkor rather than migrate dead code.
+  - `orion:memory:identity:snapshot` / `orion:memory:goals:proposed`
+    (IdentitySnapshotV1/GoalProposalV1) — KILL. Live Fuseki query found
+    **zero** graphs matching autonomy/identity/goals — this path has never
+    recorded a single triple in the running store, despite a real producer
+    (`orion/spark/concept_induction`) existing. Meanwhile `identity_snapshots`
+    already has a real, actively-pruned Postgres store
+    (`services/orion-self-state-runtime/app/store.py::SelfStateRuntimeStore`,
+    real SQLAlchemy engine + batched prune job) and `goal_context_listener.py`
+    in `orion-substrate-runtime` already consumes goal proposals for live
+    active-goal state. Same shape as the cognition/metacog kill (PR #1155):
+    a real consumer already exists elsewhere; RDF was never actually load-bearing.
+  - Hub `orionmem`/memory-graph-approval — MIGRATE, not kill (confirms the
+    original Phase-2-spec framing). `memory_graph_routes.py::approve_memory_graph_draft`
+    genuinely writes both Postgres (draft/workflow state — `asyncpg.PostgresError`
+    handled explicitly) and Fuseki (the graph content itself — separate
+    `requests.RequestException`/Fuseki-lock-exhaustion handling) — Postgres
+    does not duplicate the graph content, only the approval workflow around
+    it. Real downstream consumers exist (`orion-recall`'s `memory_graph_sparql.py`,
+    `orion-cortex-exec`'s `chat_stance.py`). Stays its own phase (8) with its
+    own schema design, not started here.
+
+  **Net effect: 3 of 5 audited kinds are trivial kills with no Falkor work
+  and nothing to backfill (never had live data, or already durably owned by
+  Postgres). Only Hub's `orionmem` is real migration work.** This meaningfully
+  shrinks total scope — most of what's left in Fuseki outside chat/tag/entity
+  turns out to already be dead weight, not migration debt.
 
 Phase 2: FalkorRdfStoreClient (or equivalently-named Cypher writer) added to
   orion-rdf-writer for recall.chat_turn + recall.tag_entity, behind the

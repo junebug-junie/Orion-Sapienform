@@ -133,15 +133,22 @@
   // Card 1: Six-drive gauges
   // -------------------------------------------------------------------------
 
-  function gaugeColorClass(key, { colorMode, goalAlignment, kpis }) {
+  // Shared by the gauge fill and the goal-card border (align mode): both need the same
+  // per-drive color_align lookup from goal-alignment, just rendered as a different
+  // Tailwind class family. Keeping the lookup itself in one place avoids the two call
+  // sites drifting out of sync on which field they read.
+  function alignColorForKey(key, goalAlignment) {
+    const perDrive = goalAlignment && goalAlignment.per_drive ? goalAlignment.per_drive[key] : null;
+    return perDrive && perDrive.color_align ? perDrive.color_align : 'neutral';
+  }
+
+  function gaugeColorClass(key, { colorMode, goalAlignment }) {
     if (colorMode === 'funnel') {
       return 'drive-color-neutral';
     }
     // 'align' and 'combined' both use goal-aligned per-drive coloring for the gauges
     // themselves (combined applies funnel/gate rules to the KPI strip instead).
-    const perDrive = goalAlignment && goalAlignment.per_drive ? goalAlignment.per_drive[key] : null;
-    const color = perDrive && perDrive.color_align ? perDrive.color_align : 'neutral';
-    return `drive-color-${color}`;
+    return `drive-color-${alignColorForKey(key, goalAlignment)}`;
   }
 
   function gaugeOutlineClass(colorMode, kpis) {
@@ -506,15 +513,14 @@
   // -------------------------------------------------------------------------
 
   // Coloring model for goal cards (spec: "KPI strip / goals card" column): align mode
-  // borders each goal by its drive_origin's per-drive alignment color; funnel/combined
-  // both border by funnel/pipeline stage instead, since that column is funnel/gate-ruled
-  // in both those modes.
+  // borders each goal by its drive_origin's per-drive alignment color (shared with the
+  // gauges via alignColorForKey); funnel/combined instead border by this goal's own
+  // proposal_status -- i.e. its individual position in the funnel/pipeline -- since that
+  // column is funnel/gate-ruled in both those modes.
   function goalBorderClass(goal, { colorMode, goalAlignmentPayload }) {
     if (colorMode === 'align') {
       const key = String(goal.drive_origin || '').trim().toLowerCase();
-      const perDrive = (goalAlignmentPayload && goalAlignmentPayload.per_drive) || {};
-      const entry = perDrive[key];
-      const color = entry && entry.color_align ? entry.color_align : 'neutral';
+      const color = alignColorForKey(key, goalAlignmentPayload);
       if (color === 'red') return 'border-red-700';
       if (color === 'yellow') return 'border-amber-700';
       if (color === 'green') return 'border-emerald-700';
@@ -765,14 +771,29 @@
     }
   }
 
+  // Monotonic request token: a poll tick and a control-driven refresh (subject/window
+  // change) can overlap in flight. Without this guard, an older request that resolves
+  // after a newer one would overwrite `payloads` with stale-selection data while the
+  // URL/selects already reflect the newer selection -- cards would silently show the
+  // wrong subject/window with no visible error.
+  let refreshToken = 0;
+
   async function refreshAll() {
+    const token = ++refreshToken;
+    let nextPayloads;
     try {
-      payloads = await fetchAll();
+      nextPayloads = await fetchAll();
     } catch (error) {
       // Hard fetch-error fallback only -- every card above already has a real DOM-builder
       // path for degraded/empty payloads; this branch only fires if fetchAll itself throws.
-      payloads = { _degradedAny: true, _fetchError: String(error) };
+      nextPayloads = { _degradedAny: true, _fetchError: String(error) };
     }
+    if (token !== refreshToken) {
+      // A newer refresh started (and possibly already finished) while this one was in
+      // flight -- drop this stale result instead of clobbering more current data.
+      return;
+    }
+    payloads = nextPayloads;
     renderAll();
     writeUrl();
   }

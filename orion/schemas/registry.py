@@ -74,6 +74,7 @@ from orion.schemas.execution_projection import (
     ExecutionTrajectoryProjectionV1,
 )
 from orion.schemas.grammar import GrammarEventV1
+from orion.schemas.graph_write_intent import GraphWriteIntentV1
 from orion.schemas.memory_consolidation import (
     ChatHistorySparkMetaPatchV1,
     MemoryConsolidationWindowV1,
@@ -1012,6 +1013,7 @@ _REGISTRY: Dict[str, Type[BaseModel]] = {
     "GraphReviewTelemetrySummaryV1": GraphReviewTelemetrySummaryV1,
     "GraphReviewCalibrationRequestV1": GraphReviewCalibrationRequestV1,
     "GraphReviewCalibrationRecommendationV1": GraphReviewCalibrationRecommendationV1,
+    "GraphWriteIntentV1": GraphWriteIntentV1,
     "SubstratePolicyRolloutScopeV1": SubstratePolicyRolloutScopeV1,
     "SubstratePolicyOverridesV1": SubstratePolicyOverridesV1,
     "SubstratePolicyProfileV1": SubstratePolicyProfileV1,
@@ -1414,6 +1416,10 @@ SCHEMA_REGISTRY: Dict[str, SchemaRegistration] = {
     "CausalGeometrySnapshotV1": SchemaRegistration(
         model=CausalGeometrySnapshotV1,
         kind="causal.geometry.snapshot.v1",
+    ),
+    "GraphWriteIntentV1": SchemaRegistration(
+        model=GraphWriteIntentV1,
+        kind="graph.write_intent.v1",
     ),
 }
 

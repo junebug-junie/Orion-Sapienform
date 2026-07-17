@@ -67,41 +67,78 @@ class DriveEngine:
         elapsed = (now - previous_ts).total_seconds() if previous_ts else 0.0
         decay = self._decay_factor(elapsed)
 
-        impact_sum = {k: 0.0 for k in DRIVE_KEYS}
-        for event in tensions:
-            mag = self._clamp01(event.magnitude)
-            for drive, weight in sorted(event.drive_impacts.items()):
-                if drive not in impact_sum:
-                    continue
-                # weight is signed: positive = growth (existing producers),
-                # negative = relief (e.g. a satisfaction tension on a
-                # successfully completed action). magnitude itself stays
-                # non-negative (schema-enforced) -- direction lives in weight.
-                impact_sum[drive] += mag * self._clamp_signed(weight)
-
-        pressures: Dict[str, float] = {}
-        activations: Dict[str, bool] = {}
-        for drive in DRIVE_KEYS:
-            base = prev_p[drive] * decay
-            if self.cfg.leaky_math_enabled:
-                # Leaky integrator: pressure decays toward 0 with no input, and each
-                # impulse pushes it a fraction of the remaining headroom (1 - base).
-                # No fixed point: with impulse=0, pressure=base < prev; the 55/s
-                # scene_state flood mints impulse≈0, so it cannot inflate anything.
-                impulse = self._clamp_signed(impact_sum[drive])
-                if impulse >= 0.0:
-                    pressures[drive] = self._clamp01(base + impulse * (1.0 - base))
-                else:
-                    # Relief is the mirror image of growth: diminishing effect
-                    # as pressure approaches its OTHER bound (0 instead of 1),
-                    # scaled by how much pressure is actually there to relieve
-                    # (base, not 1-base) -- at base=0 a relief impulse is
-                    # naturally a no-op without depending on the outer clamp.
-                    pressures[drive] = self._clamp01(base + impulse * base)
-            else:
-                raw = base + impact_sum[drive]
+        p = {drive: prev_p[drive] * decay for drive in DRIVE_KEYS}
+        if self.cfg.leaky_math_enabled:
+            # Leaky integrator, applied SEQUENTIALLY once per tension event
+            # (not summed across the whole fold batch and clamped once at the
+            # end -- that sum-then-clamp design let a batch of many same-sign
+            # tensions collapse every drive that exceeded the clamp bound to
+            # the exact same value, independent of starting pressure or how
+            # much it exceeded by; see docs/superpowers/specs/2026-07-17-
+            # drive-engine-fold-batch-clamp-collapse-fix-design.md). Each
+            # event's own impulse pushes pressure a fraction of the remaining
+            # headroom (1 - p) toward growth, or a fraction of the existing
+            # pressure (p) toward relief -- no fixed point: with impulse=0,
+            # pressure=base < prev.
+            #
+            # Unlike the old sum-then-clamp math (commutative -- batch order
+            # never mattered), sequential application makes the exact result
+            # depend on event order. The caller buffers tensions in arrival
+            # order (bus_worker.py's `pending.extend(...)`), which is stable
+            # for a normal run but not guaranteed order-identical across bus
+            # redelivery/retries (found by code review). Sort by (ts,
+            # artifact_id) -- both always present on every TensionEventV1 --
+            # so the result is fully order-independent regardless of delivery
+            # order, not just deterministic for one fixed arrival order.
+            for event in sorted(tensions, key=lambda e: (e.ts, e.artifact_id)):
+                mag = self._clamp01(event.magnitude)
+                for drive, weight in sorted(event.drive_impacts.items()):
+                    if drive not in p:
+                        continue
+                    # weight is signed: positive = growth (existing
+                    # producers), negative = relief (e.g. a satisfaction
+                    # tension on a successfully completed action). magnitude
+                    # itself stays non-negative (schema-enforced) --
+                    # direction lives in weight.
+                    #
+                    # The outer clamp_signed() is a defensive no-op, not load-
+                    # bearing: mag is already in [0,1] and clamp_signed(weight)
+                    # is already in [-1,1], so their product is mathematically
+                    # already within [-1,1] (found by code review, kept as a
+                    # cheap safety net rather than trusting that invariant to
+                    # never be violated by a future producer).
+                    impulse = self._clamp_signed(mag * self._clamp_signed(weight))
+                    if impulse >= 0.0:
+                        p[drive] = self._clamp01(p[drive] + impulse * (1.0 - p[drive]))
+                    else:
+                        # Relief is the mirror image of growth: diminishing
+                        # effect as pressure approaches its OTHER bound (0
+                        # instead of 1), scaled by how much pressure is
+                        # actually there to relieve (p[drive], not
+                        # 1-p[drive]) -- at p[drive]=0 a relief impulse is
+                        # naturally a no-op without depending on the outer
+                        # clamp.
+                        p[drive] = self._clamp01(p[drive] + impulse * p[drive])
+            pressures: Dict[str, float] = p
+        else:
+            # Legacy soft_saturate path: UNCHANGED, still sum-then-saturate.
+            # Not the live path (default leaky_math_enabled=True), kept only
+            # as a documented rollback -- out of scope for the fold-batch
+            # collapse fix above.
+            impact_sum = {k: 0.0 for k in DRIVE_KEYS}
+            for event in tensions:
+                mag = self._clamp01(event.magnitude)
+                for drive, weight in sorted(event.drive_impacts.items()):
+                    if drive not in impact_sum:
+                        continue
+                    impact_sum[drive] += mag * self._clamp_signed(weight)
+            pressures = {}
+            for drive in DRIVE_KEYS:
+                raw = p[drive] + impact_sum[drive]
                 pressures[drive] = self._soft_saturate(raw)
 
+        activations: Dict[str, bool] = {}
+        for drive in DRIVE_KEYS:
             if prev_a[drive]:
                 activations[drive] = pressures[drive] >= self.cfg.deactivate_threshold
             else:

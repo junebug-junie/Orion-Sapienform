@@ -14,10 +14,26 @@ _BANNED_ROOTS = [
 ]
 
 
+# inner_state_registry.py lives under the banned orion/self_state root but is
+# not a cognition consumer -- it's the cross-cutting signal registry itself,
+# and its one AutonomyStateV2 reference (the retired autonomy_state_v2 entry's
+# `schema=` field) documents a dead signal's historical pydantic type for
+# audit purposes, never instantiates or feeds it into cognition. This guard
+# exists to catch AutonomyStateV2 being wired back into a live cognition path
+# (see orion/autonomy/drives_and_autonomy_retrospective.md §9/§10); a
+# registry entry naming a retired type is the opposite of that, so it is
+# excluded by name rather than weakening the AST check itself.
+_ALLOWED_REGISTRY_DOC_REFERENCE = "inner_state_registry.py"
+
+
 def _python_files(root: Path) -> list[Path]:
     if not root.exists():
         return []
-    return [p for p in root.rglob("*.py") if p.is_file()]
+    return [
+        p
+        for p in root.rglob("*.py")
+        if p.is_file() and p.name != _ALLOWED_REGISTRY_DOC_REFERENCE
+    ]
 
 
 def _imports_autonomy_v2(path: Path) -> list[str]:

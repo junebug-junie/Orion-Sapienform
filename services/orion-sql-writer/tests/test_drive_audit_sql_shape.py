@@ -134,6 +134,14 @@ def test_tick_attribution_and_tension_kinds_pass_through() -> None:
     assert obj.tick_attribution["predictive"] == 0.5
     assert obj.tension_kinds[0] == "substrate.world_coverage_gap"
 
+    # Schema defaults (empty dict / empty list) also survive the mapper filter.
+    row_empty = _row_dict(_make_audit(tick_attribution={}, tension_kinds=[]))
+    assert row_empty["tick_attribution"] == {}
+    assert row_empty["tension_kinds"] == []
+    obj_empty = DriveAuditSQL(**row_empty)
+    assert obj_empty.tick_attribution == {}
+    assert obj_empty.tension_kinds == []
+
 
 def test_summary_passes_through_to_column() -> None:
     """`summary` is a plain `DriveAuditV1` field, so once the mapper column

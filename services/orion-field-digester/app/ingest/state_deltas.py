@@ -56,6 +56,19 @@ def delta_to_perturbations(delta: StateDeltaV1) -> list[Perturbation]:
 
     if delta.target_kind == "node_biometrics":
         hints = dict(after.get("pressure_hints") or {})
+        # mode="replace" (2026-07-17 fix, same reasoning as memory_pressure/
+        # thermal_pressure/disk_pressure below): live corpus verification
+        # (/mnt/telemetry/field_channels/corpus/field_channels.jsonl,
+        # 133,968 rows / 2026-07-13..17) confirmed gpu_pressure/cpu_pressure
+        # were hitting their post-decay ceiling of exactly
+        # BIOMETRICS_FIELD_DECAY_RATE (0.92) in 16.60%/12.98% of all rows --
+        # vs. 0.01%/0.00% for execution_load/execution_friction, which
+        # already use mode="replace" -- and were bit-identical to each other
+        # in 60.60% of rows despite deriving from independent strain/gpu
+        # hints. Both signatures match repeated re-saturation from add-mode
+        # duplicate deltas (see the memory/thermal/disk-pressure comment
+        # below for the full per-trace fan-out mechanism), not real,
+        # independent CPU/GPU utilization.
         if "gpu" in hints:
             out.append(
                 Perturbation(
@@ -63,6 +76,7 @@ def delta_to_perturbations(delta: StateDeltaV1) -> list[Perturbation]:
                     channel="gpu_pressure",
                     intensity=float(hints["gpu"]),
                     label=delta.delta_id,
+                    mode="replace",
                 )
             )
         if "strain" in hints:
@@ -72,6 +86,7 @@ def delta_to_perturbations(delta: StateDeltaV1) -> list[Perturbation]:
                     channel="cpu_pressure",
                     intensity=float(hints["strain"]),
                     label=delta.delta_id,
+                    mode="replace",
                 )
             )
         # memory_pressure/thermal_pressure/disk_pressure (2026-07-16 fix):
@@ -80,12 +95,12 @@ def delta_to_perturbations(delta: StateDeltaV1) -> list[Perturbation]:
         # 0.0 for the whole live corpus. Additive: unlike gpu/strain, these
         # hint keys map 1:1 onto their own NODE_CHANNELS name (no remap).
         #
-        # mode="replace" (not the gpu_pressure/cpu_pressure default "add"
-        # above): every grammar event in a node_biometrics trace -- not just
-        # the atom that first sets a given hint -- reaches this function with
-        # its own uniquely-keyed StateDeltaV1 (node_reducer.py runs once per
-        # trace event, including trace_started/edge_emitted/trace_ended, and
-        # each carries the cumulative merged.pressure_hints forward). A single
+        # mode="replace" (same reasoning as gpu_pressure/cpu_pressure above):
+        # every grammar event in a node_biometrics trace -- not just the atom
+        # that first sets a given hint -- reaches this function with its own
+        # uniquely-keyed StateDeltaV1 (node_reducer.py runs once per trace
+        # event, including trace_started/edge_emitted/trace_ended, and each
+        # carries the cumulative merged.pressure_hints forward). A single
         # ~22-event biometrics trace produces on the order of 14-16 separate
         # deltas that each still contain "memory_pressure"/"thermal_pressure"/
         # "disk_pressure" once those hints are first set. Under "add" mode

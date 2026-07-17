@@ -65,6 +65,22 @@ def _transport_bus_delta(*, node_id: str = "athena", hints: dict) -> StateDeltaV
     )
 
 
+def _active_node_pressure_delta(
+    *, node_id: str = "atlas", score: float, delta_id: str = "delta_pressure_1"
+) -> StateDeltaV1:
+    after = {"node_id": node_id, "pressure_score": score, "active_pressures": ["availability"]}
+    return StateDeltaV1(
+        delta_id=delta_id,
+        target_projection="active_node_pressure",
+        target_kind="active_node_pressure",
+        target_id=f"node:{node_id}",
+        operation="update",
+        after=after,
+        caused_by_event_ids=["gev_pressure_1"],
+        reducer_id="active_node_pressure_reducer",
+    )
+
+
 # ---------------------------------------------------------------------------
 # expected_offline_suppression clear path (item 1)
 # ---------------------------------------------------------------------------
@@ -380,3 +396,51 @@ def test_other_transport_bus_channels_still_default_add_mode() -> None:
     perturbations = delta_to_perturbations(delta)
     for p in perturbations:
         assert p.mode == "add", f"{p.channel} unexpectedly changed mode to {p.mode}"
+
+
+# ---------------------------------------------------------------------------
+# availability recovery path (item 3, live post-deploy finding 2026-07-17)
+# ---------------------------------------------------------------------------
+
+
+def test_active_node_pressure_availability_delta_uses_replace_mode() -> None:
+    delta = _active_node_pressure_delta(score=0.9)
+    perturbations = delta_to_perturbations(delta)
+    availability = next(p for p in perturbations if p.channel == "availability")
+    assert availability.mode == "replace"
+
+
+def test_high_pressure_then_recovery_reflects_current_reading_not_floor() -> None:
+    """Reproduces the live bug: node:atlas pinned at availability=0.0 with fresh,
+    non-stale telemetry elsewhere (staleness~0, real gpu_pressure) -- not an
+    ongoing outage, a one-way floor that could never recover. A later event
+    reporting genuinely improved conditions (low pressure_score) must now be
+    reflected, not min()'d away against the old low value."""
+    state = _state(node_vectors={"node:atlas": {"availability": 1.0}})
+
+    bad_delta = _active_node_pressure_delta(score=0.9, delta_id="delta_bad")
+    perturbations = delta_to_perturbations(bad_delta)
+    apply_perturbations(state, perturbations, now=NOW)
+    assert state.node_vectors["node:atlas"]["availability"] == 0.0, "sanity: high pressure drives availability to 0"
+
+    good_delta = _active_node_pressure_delta(score=0.0, delta_id="delta_good")
+    perturbations = delta_to_perturbations(good_delta)
+    apply_perturbations(state, perturbations, now=NOW)
+    assert state.node_vectors["node:atlas"]["availability"] == 0.8, (
+        "availability must recover to reflect the improved reading (1 - min(1, 0+0.2) = 0.8), "
+        "not stay floor-clamped at the old low value"
+    )
+
+
+def test_availability_can_still_drop_on_a_later_worse_reading() -> None:
+    """Not just one-way-up: mode="replace" reflects whatever the current
+    reading says, so a later genuinely worse score must still lower it."""
+    state = _state(node_vectors={"node:atlas": {"availability": 1.0}})
+
+    ok_delta = _active_node_pressure_delta(score=0.0, delta_id="delta_ok")
+    apply_perturbations(state, delta_to_perturbations(ok_delta), now=NOW)
+    assert state.node_vectors["node:atlas"]["availability"] == 0.8
+
+    worse_delta = _active_node_pressure_delta(score=0.9, delta_id="delta_worse")
+    apply_perturbations(state, delta_to_perturbations(worse_delta), now=NOW)
+    assert state.node_vectors["node:atlas"]["availability"] == 0.0

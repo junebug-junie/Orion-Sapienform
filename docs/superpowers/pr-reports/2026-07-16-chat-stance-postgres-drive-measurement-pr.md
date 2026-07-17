@@ -10,9 +10,11 @@ Series: Cypher-native substrate + Postgres-via-bus split (after Falkor adapter #
 - `_project_autonomy_from_beliefs` no longer projects measurement from graph
   `snapshot_source="drive_state"` (returns `drive_state: None`).
 - Substrate-runtime `DRIVE_STATE_SUBSTRATE_MATERIALIZATION_ENABLED` defaults **false**;
-  writer remains behind the flag as a rollback ladder only.
+  writer remains as an optional legacy graph writer only (flag flip does **not**
+  restore stance reads — that requires reverting cortex-exec).
 - No Hub→HTTP→sql-writer path; no new measurement table (`activations` approximated from
   `active_drives`).
+- Graph `drive_state` snapshots are ignored for autonomy summary as well (not dual-SoR).
 
 ## Outcome moved
 
@@ -99,6 +101,12 @@ Not rebuilt in this session. Restart commands below pick up env default flip + s
 - Finding: materialization key missing from substrate compose
   - Fix: added `DRIVE_STATE_SUBSTRATE_MATERIALIZATION_ENABLED` (+ drive channels) to compose
   - Evidence: docker-compose.yml
+- Finding (pre-merge review): residual graph `drive_state` still fed autonomy summary
+  - Fix: snapshot filter is `autonomy` only; regression asserts `raw_state_present is False`
+  - Evidence: `test_graph_drive_state_snapshot_is_not_sor_for_drive_state_key`
+- Finding (pre-merge review): "rollback ladder" oversold / stale default-on comments
+  - Fix: docs/comments clarify flag restores writes only; stance rollback = code revert
+  - Evidence: worker.py / settings / .env_example / this report
 
 ## Restart required
 

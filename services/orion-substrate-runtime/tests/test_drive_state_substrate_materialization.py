@@ -116,9 +116,9 @@ def test_materialization_enabled_upserts_state_snapshot_and_drive_nodes(monkeypa
     node_kinds = {call.kwargs["node"].__class__.__name__ for call in store.upsert_node.call_args_list}
     assert "StateSnapshotNodeV1" in node_kinds
 
-    # The state snapshot node must carry drive_state="drive_state" and the
-    # audit's tension_kinds through its metadata -- this is the exact field
-    # chat_stance.py's drive-state projection reads.
+    # The state snapshot node must carry snapshot_source="drive_state" and the
+    # audit's tension_kinds through its metadata (legacy optional writer shape).
+    # Chat stance no longer reads these nodes for measurement SoR.
     snapshot_calls = [
         c for c in store.upsert_node.call_args_list if c.kwargs["node"].__class__.__name__ == "StateSnapshotNodeV1"
     ]

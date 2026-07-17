@@ -177,11 +177,9 @@ class Settings(BaseSettings):
         "orion:memory:drives:audit", alias="DRIVES_AUDIT_CHANNEL"
     )
     # Formerly materialized DriveEngine drive_state/drive_audit into the substrate
-    # graph (snapshot_source="drive_state") so chat_stance could read measurement
-    # from unified beliefs. Chat stance now reads Postgres drive_audits (bus →
-    # sql-writer) — same rail as Mind. Default off; leave enabled only as a
-    # short rollback ladder. No neighborhood/activation consumer ships with a
-    # graph drive hook in this cutover.
+    # graph (snapshot_source="drive_state"). Chat stance / Mind measurement SoR is
+    # Postgres drive_audits (bus → sql-writer). Default off. Enabling this only
+    # restores graph writes — it does not restore stance reads.
     drive_state_substrate_materialization_enabled: bool = Field(
         False, alias="DRIVE_STATE_SUBSTRATE_MATERIALIZATION_ENABLED"
     )

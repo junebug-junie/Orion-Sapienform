@@ -227,10 +227,11 @@ class BiometricsSubstrateWorker:
         ]
         # Drive-state listener: two independent consumers share this one bus
         # subscription -- (a) the embodiment C producer (embodiment_c_tick_enabled,
-        # default off) and (b) drive_state substrate materialization
-        # (drive_state_substrate_materialization_enabled, default on, this is the
-        # live signal chat stance/Mind depend on). Deliberately `or`, not `and`:
-        # neither feature should be silently gated by the other's flag.
+        # default off) and (b) optional legacy graph materialization
+        # (drive_state_substrate_materialization_enabled, default off). Chat stance
+        # / Mind measurement SoR is Postgres drive_audits, not this writer.
+        # Deliberately `or`, not `and`: neither feature should be silently gated
+        # by the other's flag.
         if self._bus is not None and (
             s.embodiment_c_tick_enabled or s.drive_state_substrate_materialization_enabled
         ):
@@ -240,8 +241,8 @@ class BiometricsSubstrateWorker:
                 )
             )
         # Drive-audit listener: feeds dominant_drive/summary/tension_kinds
-        # alongside drive_state for materialization only (the embodiment C
-        # producer doesn't use audit data). Same gate as materialization.
+        # alongside drive_state for optional legacy materialization only (the
+        # embodiment C producer doesn't use audit data). Same gate as materialization.
         if self._bus is not None and s.drive_state_substrate_materialization_enabled:
             self._tasks.append(
                 asyncio.create_task(
@@ -1023,12 +1024,14 @@ class BiometricsSubstrateWorker:
         self._latest_drive_audit_at = datetime.now(timezone.utc)
 
     def _materialize_drive_state_to_substrate(self) -> None:
-        """Optional rollback ladder: fold cached DriveStateV1 (+ DriveAuditV1)
+        """Optional legacy writer: fold cached DriveStateV1 (+ DriveAuditV1)
         into the substrate graph as snapshot_source="drive_state".
 
-        Chat stance measurement SoR is Postgres drive_audits (bus → sql-writer).
-        This writer is gated by DRIVE_STATE_SUBSTRATE_MATERIALIZATION_ENABLED
-        (default off). Fail-open on missing store or write errors.
+        Chat stance / Mind measurement SoR is Postgres drive_audits
+        (bus → sql-writer). Enabling DRIVE_STATE_SUBSTRATE_MATERIALIZATION_ENABLED
+        only restores graph *writes* — it does not restore stance reads. Stance
+        rollback requires reverting the cortex-exec Postgres fetch path.
+        Fail-open on missing store or write errors.
         """
         drive_state = self._latest_drive_state
         if drive_state is None:

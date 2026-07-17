@@ -35,7 +35,7 @@ def _anchor_slice(*, drives=None, snapshots=None, goals=None, tensions=None, deg
 
 
 def test_graph_drive_state_snapshot_is_not_sor_for_drive_state_key():
-    """Graph snapshot_source=drive_state must not populate drive_state (Postgres is SoR)."""
+    """Graph snapshot_source=drive_state must not populate drive_state or autonomy summary."""
     beliefs = SimpleNamespace(
         anchors={
             "orion": _anchor_slice(
@@ -58,9 +58,11 @@ def test_graph_drive_state_snapshot_is_not_sor_for_drive_state_key():
     result = _project_autonomy_from_beliefs(beliefs, {})
     assert result is not None
     assert result["drive_state"] is None
-    # Autonomy summary may still see dominant_drive from the snapshot metadata
-    # for legacy autonomy-lineage fields; measurement SoR is Postgres-only.
+    # drive_state snapshots are ignored entirely; dominant_drive falls back to
+    # first DriveNode label when no autonomy snapshot is present.
     assert result["summary"].dominant_drive == "coherence"
+    assert result["summary"].top_drives == ["coherence", "continuity"]
+    assert result["summary"].raw_state_present is False
 
 
 def test_autonomy_snapshot_source_still_works_without_drive_state_projection():

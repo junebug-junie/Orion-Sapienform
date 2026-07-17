@@ -1208,7 +1208,7 @@ def _project_autonomy_from_beliefs(
         goals.extend([n for n in sl.goals if n.node_kind == "goal"])
         tensions.extend([n for n in sl.tensions if n.node_kind == "tension"])
         snapshots.extend(
-            [s for s in sl.snapshots if getattr(s, "snapshot_source", "") in ("autonomy", "drive_state")]
+            [s for s in sl.snapshots if getattr(s, "snapshot_source", "") == "autonomy"]
         )
 
     if not any([drives, goals, tensions, snapshots]):
@@ -1263,9 +1263,10 @@ def _project_autonomy_from_beliefs(
 
     # drive_state.v1 measurement SoR moved off graph snapshots to Postgres
     # drive_audits (bus → sql-writer). build_chat_stance_inputs fills
-    # ctx["chat_drive_state"] via fetch_drive_state_for_chat_stance; this
-    # beliefs projector must not reintroduce graph snapshot_source="drive_state"
-    # as SoR. Autonomy summary above may still use DriveNode / autonomy snaps.
+    # ctx["chat_drive_state"] via fetch_drive_state_for_chat_stance. Graph
+    # snapshot_source="drive_state" is ignored here (not even for autonomy
+    # summary.dominant_drive). Autonomy summary may still use DriveNode /
+    # snapshot_source="autonomy" nodes.
     return {
         "state": None,
         "summary": summary,

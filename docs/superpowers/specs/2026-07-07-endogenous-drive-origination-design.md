@@ -387,3 +387,56 @@ its own; Step 4 is still gated transitively through Step 1. **The single
 concrete next action per this doc's own build sequence is re-verifying
 0(a)** (different/longer window, and ideally understanding why silent-period
 variance is where it is) before anything downstream can move.
+
+## Measurement gate re-verification (2026-07-17, later same day) — (a) does NOT reproduce as NO-GO; instrument is unstable on the current data, not confirmed NO-GO
+
+Per the recommended next action above, re-ran `measure_autonomy_gate.py` several
+hours after the 18.8%-vs-25% NO-GO entry immediately above, across three
+different window shapes, read-only, no writes/events/flag changes:
+
+| Run | silent dim_score_variance | busy dim_score_variance | ratio | verdict (a) |
+| --- | --- | --- | --- | --- |
+| `--window-days 30` | 0.0066 | 0.0074 | 89.2% | **GO** |
+| `--window-hours 72` | 0.0067 | 0.0071 | 94.4% | **GO** |
+| `--window-days 120` (identical command to the NO-GO entry above) | 0.0067 | 0.0073 | 91.8% | **GO** |
+
+All three cleared the `>= 0.25` bar comfortably, and all three landed within a
+tight band of each other (busy variance 0.0071–0.0074) — a materially
+different number from the 0.0277 busy variance the NO-GO entry above recorded
+for the **same `--window-days 120` command** earlier that day.
+
+**Why this happened, root-caused via the coverage caveats on these runs (not
+guessed):** `substrate_self_state` retention covers back only to
+2026-07-14T03:58Z, `substrate_reduction_receipts` back to 2026-07-03T12:14Z,
+and `drive_audits` back to 2026-07-15T18:51Z — all far short of even a 30-day
+window, let alone 120. So every one of these "different window" requests
+(30d/72h/120d) draws from essentially the **same ~3-day pool of real
+self-state rows**, not genuinely more or different data. `bucket_index()` is
+computed relative to the *requested* `window_start`, though, so different
+window lengths shift every row into different absolute 300s buckets even when
+the underlying row set barely changes — and the busy class has only
+~1,000–1,200 rows total (vs ~126,000 silent rows), so `dim_score_variance`
+over that thin, bucket-sensitive busy sample is the single most volatile
+number in the whole report. Re-running the identical `--window-days 120`
+command a few hours apart, with a live self-state stream still writing new
+rows the whole time, was enough to move the busy variance from 0.0277 to
+0.0073 — a ~4x swing on the exact same command.
+
+**Consequence:** the NO-GO entry immediately above should not be read as a
+settled "0(a) fails" result — it was one sample of a metric that is not
+stable at the current retention depth. Conversely, today's GO readings should
+not be read as a settled "0(a) passes" result either, for the same reason.
+**0(a) is currently un-decidable with confidence given how thin the
+retention window and busy-bucket sample are; the instrument itself needs to
+mature (via longer retention accrual, or a busy-sample-size floor added to
+`verdict_drift` before it will emit a non-noise verdict) before this gate
+can be trusted either direction.** Per the "do not tune either threshold to
+make it pass" guidance already in this doc, the honest move is not to declare
+GO and unblock Step 1 on today's numbers — it is to wait for retention to
+accrue past the current ~3-day floor (all three source tables were only
+recently created/reset; `drive_audits` in particular is 2 days old as of this
+entry) and re-run once there is enough busy-bucket volume for the variance
+statistic to stop swinging 4x between identical back-to-back invocations.
+**Step 1 remains not cleared to build** — not because 0(a) failed again, but
+because neither a GO nor a NO-GO reading is currently trustworthy enough to
+act on.

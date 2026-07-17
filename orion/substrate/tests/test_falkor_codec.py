@@ -101,6 +101,11 @@ def test_encode_concept_node_properties_are_native_scalars_without_payload_json(
         "label": "Alpha",
         "definition": "A test concept",
         "taxonomy_path_json": '["root", "branch"]',
+        "dynamic_pressure": 0.0,
+        "dynamic_pressure_reason": None,
+        "dormant": False,
+        "dormancy_updated_at": None,
+        "prediction_error": None,
     }
 
 
@@ -139,7 +144,12 @@ def test_decode_concept_node_reconstructs_minimal_typed_model():
     assert node.signals.confidence == 0.8
     assert node.signals.salience == 0.7
     assert node.signals.activation.activation == 0.6
-    assert node.metadata == {}
+    # dynamic_pressure/dormant always come back as real scalars (0.0/False
+    # defaults); dynamics.py/pressure.py already tolerate these via
+    # `.get(key) or default`, so this is not an empty-metadata regression --
+    # see test_concept_with_no_dynamics_metadata_encodes_and_decodes_with_sane_defaults
+    # for the full defaults contract.
+    assert node.metadata == {"dynamic_pressure": 0.0, "dormant": False}
 
 
 def test_encode_edge_properties_are_native_scalars_without_payload_json():
@@ -175,6 +185,84 @@ def test_decode_rejects_corrupt_evidence_refs_json():
 
     with pytest.raises(ValueError, match="evidence_refs_json"):
         decode_concept_node(row)
+
+
+def _concept_with_dynamics_metadata() -> ConceptNodeV1:
+    base = _concept()
+    return base.model_copy(
+        update={
+            "metadata": {
+                "dynamic_pressure": 0.42,
+                "dynamic_pressure_reason": "prediction_error_seed",
+                "dormant": True,
+                "dormancy_updated_at": "2026-07-17T00:00:00+00:00",
+                "prediction_error": 0.8,
+            }
+        }
+    )
+
+
+def test_encode_promotes_dynamics_metadata_keys_to_native_scalars():
+    props = encode_node_properties(_concept_with_dynamics_metadata(), identity_key="concept:alpha")
+
+    assert "metadata" not in props
+    assert "payload_json" not in props
+    assert props["dynamic_pressure"] == 0.42
+    assert props["dynamic_pressure_reason"] == "prediction_error_seed"
+    assert props["dormant"] is True
+    assert props["dormancy_updated_at"] == "2026-07-17T00:00:00+00:00"
+    assert props["prediction_error"] == 0.8
+
+
+def test_decode_reconstructs_dynamics_metadata_from_row():
+    row = encode_node_properties(_concept_with_dynamics_metadata(), identity_key="concept:alpha")
+
+    node = decode_concept_node(row)
+
+    assert node is not None
+    assert node.metadata.get("dynamic_pressure") == 0.42
+    assert node.metadata.get("dynamic_pressure_reason") == "prediction_error_seed"
+    assert node.metadata.get("dormant") is True
+    assert node.metadata.get("dormancy_updated_at") == "2026-07-17T00:00:00+00:00"
+    assert node.metadata.get("prediction_error") == 0.8
+
+
+def test_dynamics_metadata_round_trips_through_encode_decode():
+    original = _concept_with_dynamics_metadata()
+
+    decoded = decode_concept_node(encode_node_properties(original, identity_key="concept:alpha"))
+
+    assert decoded is not None
+    for key in (
+        "dynamic_pressure",
+        "dynamic_pressure_reason",
+        "dormant",
+        "dormancy_updated_at",
+        "prediction_error",
+    ):
+        assert decoded.metadata.get(key) == original.metadata.get(key)
+
+
+def test_concept_with_no_dynamics_metadata_encodes_and_decodes_with_sane_defaults():
+    node = _concept()  # metadata has no dynamics keys at all -- the common case
+    row = encode_node_properties(node, identity_key="concept:alpha")
+
+    assert row["dynamic_pressure"] == 0.0
+    assert row["dynamic_pressure_reason"] is None
+    assert row["dormant"] is False
+    assert row["dormancy_updated_at"] is None
+    assert row["prediction_error"] is None
+
+    decoded = decode_concept_node(row)
+    assert decoded is not None
+
+    # Mirror the exact accessor patterns dynamics.py/pressure.py/attention_broadcast.py
+    # use in production -- no KeyError, no None-vs-0.0 confusion.
+    assert float(decoded.metadata.get("dynamic_pressure") or 0.0) == 0.0
+    assert bool(decoded.metadata.get("dormant", False)) is False
+    assert decoded.metadata.get("dynamic_pressure_reason") is None
+    assert float(decoded.metadata.get("prediction_error") or 0.0) == 0.0
+    assert decoded.metadata.get("dormancy_updated_at") is None
 
 
 def test_decode_edge_reconstructs_typed_edge():

@@ -101,6 +101,95 @@ def test_falkor_upsert_concept_uses_native_cypher_properties():
     assert params["taxonomy_path_json"] == '["root"]'
 
 
+def test_falkor_upsert_concept_sets_native_dynamics_properties():
+    client = RecordingFalkorClient()
+    store = FalkorSubstrateStore(
+        FalkorSubstrateStoreConfig(uri="redis://localhost:6379", graph_name="orion_substrate"),
+        client=client,
+        hydrate=False,
+    )
+    node = _concept(
+        node_id="concept-dynamics-alpha",
+        metadata={
+            "dynamic_pressure": 0.42,
+            "dynamic_pressure_reason": "prediction_error_seed",
+            "dormant": True,
+            "dormancy_updated_at": "2026-07-17T00:00:00+00:00",
+            "prediction_error": 0.8,
+        },
+    )
+
+    store.upsert_node(identity_key="concept:dynamics-alpha", node=node)
+
+    cypher, params = client.calls[-1]
+    assert "n.dynamic_pressure = $dynamic_pressure" in cypher
+    assert "n.dynamic_pressure_reason = $dynamic_pressure_reason" in cypher
+    assert "n.dormant = $dormant" in cypher
+    assert "n.dormancy_updated_at = $dormancy_updated_at" in cypher
+    assert "n.prediction_error = $prediction_error" in cypher
+    assert params["dynamic_pressure"] == 0.42
+    assert params["dynamic_pressure_reason"] == "prediction_error_seed"
+    assert params["dormant"] is True
+    assert params["dormancy_updated_at"] == "2026-07-17T00:00:00+00:00"
+    assert params["prediction_error"] == 0.8
+
+
+def test_falkor_hydrates_dynamics_properties_into_metadata():
+    client = RecordingFalkorClient(
+        hydrate_node_rows=[
+            {
+                "node_id": "concept-dynamics-hydrated",
+                "node_kind": "concept",
+                "identity_key": "concept:dynamics-hydrated",
+                "label": "Hydrated dynamics concept",
+                "definition": None,
+                "taxonomy_path_json": "[]",
+                "anchor_scope": "orion",
+                "subject_ref": None,
+                "promotion_state": "canonical",
+                "risk_tier": "low",
+                "confidence": 0.75,
+                "salience": 0.66,
+                "activation": 0.44,
+                "recency_score": 0.33,
+                "decay_floor": 0.1,
+                "decay_half_life_seconds": None,
+                "observed_at": "2026-07-16T00:00:00+00:00",
+                "valid_from": None,
+                "valid_to": None,
+                "provenance_authority": "local_inferred",
+                "provenance_source_kind": "test",
+                "provenance_source_channel": "test:falkor",
+                "provenance_producer": "test_falkor_store",
+                "provenance_model_name": None,
+                "provenance_correlation_id": None,
+                "provenance_trace_id": None,
+                "provenance_tier_rank": None,
+                "evidence_refs_json": "[]",
+                "dynamic_pressure": 0.55,
+                "dynamic_pressure_reason": "drive_seed",
+                "dormant": True,
+                "dormancy_updated_at": "2026-07-17T01:00:00+00:00",
+                "prediction_error": 0.9,
+            }
+        ]
+    )
+
+    store = FalkorSubstrateStore(
+        FalkorSubstrateStoreConfig(uri="redis://localhost:6379", graph_name="orion_substrate"),
+        client=client,
+        hydrate=True,
+    )
+
+    node = store.get_node_by_id("concept-dynamics-hydrated")
+    assert node is not None
+    assert node.metadata.get("dynamic_pressure") == 0.55
+    assert node.metadata.get("dynamic_pressure_reason") == "drive_seed"
+    assert node.metadata.get("dormant") is True
+    assert node.metadata.get("dormancy_updated_at") == "2026-07-17T01:00:00+00:00"
+    assert node.metadata.get("prediction_error") == 0.9
+
+
 def test_falkor_rejects_non_concept_durable_write():
     client = RecordingFalkorClient()
     store = FalkorSubstrateStore(

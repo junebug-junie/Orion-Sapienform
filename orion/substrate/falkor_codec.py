@@ -108,7 +108,41 @@ def encode_node_properties(node: BaseSubstrateNodeV1, identity_key: str | None) 
     props["label"] = getattr(node, "label")
     props["definition"] = getattr(node, "definition", None)
     props["taxonomy_path_json"] = _json_list(getattr(node, "taxonomy_path", None))
+    props.update(_dynamics_properties_from_metadata(node.metadata))
     return props
+
+
+# Closed allowlist of dynamics-engine metadata keys promoted to native Cypher
+# scalar properties (concept nodes only). These are the only metadata keys two
+# already-shipped consumers (SubstrateDynamicsEngine.tick() and
+# attention_broadcast._node_salience()) actually read/write; see
+# docs/superpowers/specs/2026-07-16-cypher-native-substrate-postgres-bus-split-design.md
+# item 3's "promote to first-class Cypher properties only with a second
+# consumer" escape hatch. Do NOT add a generic metadata-dump path here.
+def _safe_float(value: Any, *, default: float | None) -> float | None:
+    """Tolerant numeric coercion matching the `.get(key) or default` pattern
+    every current consumer of these keys already uses (attention_broadcast.py's
+    `_f()`, dynamics.py, pressure.py). A corrupted/non-numeric metadata value
+    must not abort the whole encode call -- and by extension must not abort
+    SubstrateDynamicsEngine.tick()'s per-node loop -- just for one bad node.
+    """
+    if value is None:
+        return default
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return default
+
+
+def _dynamics_properties_from_metadata(metadata: Mapping[str, Any] | None) -> dict[str, Any]:
+    meta = metadata or {}
+    return {
+        "dynamic_pressure": _safe_float(meta.get("dynamic_pressure"), default=0.0),
+        "dynamic_pressure_reason": meta.get("dynamic_pressure_reason"),
+        "dormant": bool(meta.get("dormant", False)),
+        "dormancy_updated_at": meta.get("dormancy_updated_at"),
+        "prediction_error": _safe_float(meta.get("prediction_error"), default=None),
+    }
 
 
 def encode_edge_properties(edge: SubstrateEdgeV1, identity_key: str) -> dict[str, Any]:
@@ -175,6 +209,35 @@ def _signals_from_row(row: Mapping[str, Any]) -> SubstrateSignalBundleV1:
     )
 
 
+def _dynamics_metadata_from_row(row: Mapping[str, Any]) -> dict[str, Any]:
+    # dynamic_pressure/dormant always come back as a real scalar -- dynamics.py
+    # and pressure.py already tolerate a present-but-default value via
+    # `.get(key) or default`/`.get(key, False)`, so there is no ambiguity in
+    # always including them. prediction_error/dynamic_pressure_reason/
+    # dormancy_updated_at are omitted entirely when absent so this codec keeps
+    # "no prediction error yet" (key absent) distinguishable from "computed
+    # prediction error of exactly 0" (key present, value 0.0) at the storage
+    # layer -- even though today's readers of prediction_error (pressure.py,
+    # attention_broadcast.py) still read it via `.get(key) or 0.0` and so do
+    # not yet observe the difference themselves. This preserves headroom for
+    # a future consumer that does need the distinction, per the closed
+    # 5-key allowlist this codec owns.
+    metadata: dict[str, Any] = {
+        "dynamic_pressure": _safe_float(row.get("dynamic_pressure"), default=0.0),
+        "dormant": bool(row.get("dormant") or False),
+    }
+    reason = row.get("dynamic_pressure_reason")
+    if reason is not None:
+        metadata["dynamic_pressure_reason"] = reason
+    dormancy_updated_at = row.get("dormancy_updated_at")
+    if dormancy_updated_at is not None:
+        metadata["dormancy_updated_at"] = dormancy_updated_at
+    prediction_error = _safe_float(row.get("prediction_error"), default=None)
+    if prediction_error is not None:
+        metadata["prediction_error"] = prediction_error
+    return metadata
+
+
 def decode_concept_node(row: Mapping[str, Any]) -> ConceptNodeV1 | None:
     if row.get("node_kind") != "concept":
         return None
@@ -190,7 +253,7 @@ def decode_concept_node(row: Mapping[str, Any]) -> ConceptNodeV1 | None:
         temporal=_temporal_from_row(row),
         signals=_signals_from_row(row),
         provenance=_provenance_from_row(row),
-        metadata={},
+        metadata=_dynamics_metadata_from_row(row),
     )
 
 

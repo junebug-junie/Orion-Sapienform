@@ -84,6 +84,11 @@ NATIVE_NODE_RETURN_FIELDS: tuple[str, ...] = (
     "provenance_trace_id",
     "provenance_tier_rank",
     "evidence_refs_json",
+    "dynamic_pressure",
+    "dynamic_pressure_reason",
+    "dormant",
+    "dormancy_updated_at",
+    "prediction_error",
 )
 
 NATIVE_EDGE_RETURN_FIELDS: tuple[str, ...] = (

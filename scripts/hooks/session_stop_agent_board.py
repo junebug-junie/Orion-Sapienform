@@ -37,10 +37,12 @@ def main() -> None:
         ]
     except Exception:
         return
-    if open_items:
-        detail = f"Agent board checkout reminder: {len(open_items)} open item(s) remain for this worktree. Run `python3 scripts/agent_board.py checkout` or resolve/park them."
-    else:
-        detail = "Agent board checkout reminder: no open board items are recorded for this worktree."
+    if not open_items:
+        # Nothing actionable -- saying so on every single Stop is pure token
+        # noise, not a reminder. Stay silent, matching the fail-silent
+        # pattern already used for errors above.
+        return
+    detail = f"Agent board checkout reminder: {len(open_items)} open item(s) remain for this worktree. Run `python3 scripts/agent_board.py checkout` or resolve/park them."
     payload = {
         "hookSpecificOutput": {
             "hookEventName": "Stop",

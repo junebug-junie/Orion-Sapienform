@@ -4,6 +4,7 @@ import ast
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Dict, List, Tuple
+from unittest.mock import MagicMock
 
 import numpy as np
 import pytest
@@ -59,7 +60,16 @@ def _field_edges() -> List[FieldEdgeV1]:
     ]
 
 
-def _run(monkeypatch, *, channels=None, topology=None, store=None, fetch_raises=False, propose_raises=False):
+def _run(
+    monkeypatch,
+    *,
+    channels=None,
+    topology=None,
+    store=None,
+    fetch_raises=False,
+    propose_raises=False,
+    publish_snapshot_mock=None,
+):
     if fetch_raises:
         def _boom_fetch(*args, **kwargs):
             raise RuntimeError("postgres unreachable")
@@ -81,18 +91,27 @@ def _run(monkeypatch, *, channels=None, topology=None, store=None, fetch_raises=
 
         monkeypatch.setattr(producer_module, "propose_field_topology_patches", _boom_propose)
 
+    # Bus publishing is a side effect unrelated to this module's own
+    # measurement/proposal/dedup logic -- stub it out to a no-op success by
+    # default so these tests don't need a real Redis bus. Tests that care about
+    # the publish call itself pass their own mock via `publish_snapshot_mock`.
+    mock_publish = publish_snapshot_mock or MagicMock(return_value={"ok": True, "error": None})
+    monkeypatch.setattr(producer_module, "publish_snapshot", mock_publish)
+
     used_store = store if store is not None else FieldTopologyLearnedWeightsStore()
-    return producer_module.run_causal_geometry_production_cycle(
+    result = producer_module.run_causal_geometry_production_cycle(
         postgres_uri="postgresql://unused/unused",
         topology_path="/unused/path.yaml",
         field_edges=_field_edges(),
         store=used_store,
+        bus_url="redis://unused/0",
         now=BASE_TS + timedelta(seconds=250 * BUCKET_SECONDS),
-    ), used_store
+    )
+    return result, used_store, mock_publish
 
 
 def test_successful_cycle_creates_a_new_pending_proposal(monkeypatch) -> None:
-    result, store = _run(monkeypatch)
+    result, store, _mock = _run(monkeypatch)
 
     assert result["ok"] is True
     assert result["stage"] == "completed"
@@ -104,10 +123,10 @@ def test_successful_cycle_creates_a_new_pending_proposal(monkeypatch) -> None:
 
 
 def test_dedup_skips_edge_with_existing_pending_proposal(monkeypatch) -> None:
-    result_first, store = _run(monkeypatch)
+    result_first, store, _mock = _run(monkeypatch)
     assert result_first["proposals_created"] == 1
 
-    result_second, _store = _run(monkeypatch, store=store)
+    result_second, _store, _mock2 = _run(monkeypatch, store=store)
 
     assert result_second["ok"] is True
     assert result_second["proposals_created"] == 0
@@ -117,7 +136,7 @@ def test_dedup_skips_edge_with_existing_pending_proposal(monkeypatch) -> None:
 
 
 def test_measurement_failure_degrades_without_raising(monkeypatch) -> None:
-    result, _store = _run(monkeypatch, fetch_raises=True)
+    result, _store, _mock = _run(monkeypatch, fetch_raises=True)
 
     assert result["ok"] is False
     assert result["stage"] == "measurement"
@@ -126,7 +145,7 @@ def test_measurement_failure_degrades_without_raising(monkeypatch) -> None:
 
 
 def test_proposal_stage_failure_degrades_without_raising(monkeypatch) -> None:
-    result, _store = _run(monkeypatch, propose_raises=True)
+    result, _store, _mock = _run(monkeypatch, propose_raises=True)
 
     assert result["ok"] is False
     assert result["stage"] == "proposal"
@@ -143,7 +162,7 @@ def test_insufficient_data_snapshot_yields_zero_candidates_not_an_error(monkeypa
         "cap:transport": _points_for(rng.normal(size=200)),
         "cap:orchestration": _points_for(rng.normal(size=200)),
     }
-    result, _store = _run(monkeypatch, channels=channels)
+    result, _store, _mock = _run(monkeypatch, channels=channels)
 
     assert result["ok"] is True
     assert result["insufficient_data"] is True
@@ -181,12 +200,61 @@ def test_intra_cycle_duplicate_candidates_for_the_same_edge_enqueue_only_one_pro
         ],
     }
 
-    result, store = _run(monkeypatch, channels=channels, topology=topology)
+    result, store, _mock = _run(monkeypatch, channels=channels, topology=topology)
 
     assert result["ok"] is True
     pending = store.list_pending()
     assert len(pending) == 1, f"expected exactly one pending proposal, got {len(pending)}: {[p.patch.target_ref for p in pending]}"
     assert pending[0].patch.target_ref == "cap:transport->cap:orchestration"
+
+
+def test_successful_cycle_publishes_the_built_snapshot(monkeypatch) -> None:
+    mock_publish = MagicMock(return_value={"ok": True, "error": None})
+    result, _store, mock_publish = _run(monkeypatch, publish_snapshot_mock=mock_publish)
+
+    assert result["ok"] is True
+    mock_publish.assert_called_once()
+    call_kwargs = mock_publish.call_args.kwargs
+    assert call_kwargs["bus_url"] == "redis://unused/0"
+    assert call_kwargs["snapshot"].snapshot_id == result["snapshot_id"]
+
+
+def test_summary_dict_reports_snapshot_published_true_on_success(monkeypatch) -> None:
+    result, _store, _mock = _run(
+        monkeypatch, publish_snapshot_mock=MagicMock(return_value={"ok": True, "error": None})
+    )
+
+    assert result["ok"] is True
+    assert result["snapshot_published"] is True
+
+
+def test_summary_dict_reports_snapshot_published_false_when_publish_fails(monkeypatch) -> None:
+    result, _store, _mock = _run(
+        monkeypatch, publish_snapshot_mock=MagicMock(return_value={"ok": False, "error": "boom"})
+    )
+
+    assert result["ok"] is True
+    assert result["snapshot_published"] is False
+
+
+def test_summary_dict_reports_snapshot_published_false_on_measurement_failure(monkeypatch) -> None:
+    result, _store, _mock = _run(monkeypatch, fetch_raises=True)
+
+    assert result["ok"] is False
+    assert result["snapshot_published"] is False
+
+
+def test_proposal_notes_contain_trial_status_after_successful_cycle(monkeypatch) -> None:
+    result, store, _mock = _run(monkeypatch)
+
+    assert result["ok"] is True
+    pending = store.list_pending()
+    assert len(pending) == 1
+    notes = pending[0].notes
+    assert any(note.startswith("trial_status:") for note in notes)
+    # No replay corpus is registered for field_topology_weight_patch, so this
+    # always short-circuits to inconclusive -- that is expected, not a bug.
+    assert "trial_status:inconclusive" in notes
 
 
 def test_module_never_imports_patch_applier() -> None:

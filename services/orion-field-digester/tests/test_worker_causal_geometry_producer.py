@@ -36,6 +36,7 @@ def test_producer_tick_calls_production_cycle_with_expected_args_when_enabled(mo
         return_value={
             "ok": True,
             "snapshot_id": "snap-1",
+            "snapshot_published": True,
             "insufficient_data": False,
             "candidates_found": 2,
             "proposals_created": 1,
@@ -54,6 +55,11 @@ def test_producer_tick_calls_production_cycle_with_expected_args_when_enabled(mo
     assert kwargs["topology_path"] == worker._settings.lattice_path
     assert kwargs["field_edges"] == worker._lattice.edges
     assert kwargs["store"] is mock_store
+    assert kwargs["bus_url"] == worker._settings.orion_bus_url
+    assert kwargs["bus_enabled"] == worker._settings.orion_bus_enabled
+    assert kwargs["service_name"] == worker._settings.service_name
+    assert kwargs["service_version"] == worker._settings.service_version
+    assert kwargs["node_name"] == worker._settings.node_name
     assert kwargs["window_hours"] == worker._settings.field_plasticity_producer_window_hours
 
 
@@ -68,6 +74,7 @@ def test_producer_tick_never_raises_on_a_failed_cycle(monkeypatch) -> None:
                 "stage": "measurement",
                 "error": "postgres unreachable",
                 "snapshot_id": None,
+                "snapshot_published": False,
                 "insufficient_data": None,
                 "candidates_found": 0,
                 "proposals_created": 0,

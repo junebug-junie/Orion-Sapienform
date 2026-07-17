@@ -12,6 +12,7 @@ from .dreams import Dream
 from .biometrics_telemetry import BiometricsTelemetry
 from .biometrics_summary import BiometricsSummarySQL
 from .biometrics_induction import BiometricsInductionSQL
+from .causal_geometry_snapshot import CausalGeometrySnapshotSQL
 from .spark_introspection_log import SparkIntrospectionLogSQL
 from .spark_telemetry import SparkTelemetrySQL
 from .notify_models import (
@@ -84,6 +85,7 @@ __all__ = [
     "BiometricsTelemetry",
     "BiometricsSummarySQL",
     "BiometricsInductionSQL",
+    "CausalGeometrySnapshotSQL",
     "SparkIntrospectionLogSQL",
     "SparkTelemetrySQL",
     "BusFallbackLog",

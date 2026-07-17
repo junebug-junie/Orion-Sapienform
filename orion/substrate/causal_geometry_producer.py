@@ -22,6 +22,7 @@ from datetime import datetime, timedelta, timezone
 from typing import Any, Dict, List
 
 from orion.schemas.field_state import FieldEdgeV1
+from orion.substrate.causal_geometry_bus_publish import publish_snapshot
 from orion.substrate.causal_geometry_engine import (
     DEFAULT_ALPHA,
     DEFAULT_BIOMETRICS_NODE,
@@ -38,8 +39,24 @@ from orion.substrate.field_topology_plasticity import (
     MIN_MEANINGFUL_DELTA,
     propose_field_topology_patches,
 )
+from orion.substrate.mutation_scoring import ClassSpecificScorer
+from orion.substrate.mutation_trials import ReplayCorpusRegistry, SubstrateTrialRunner
 
 logger = logging.getLogger(__name__)
+
+# Stateless and cheap to construct -- a module-level singleton avoids rebuilding
+# it every cycle. No replay corpus is registered for `field_topology_weight_patch`
+# (confirmed: no `ReplayCorpusRegistry` anywhere in this repo has an entry for it),
+# so `run_trial()` always short-circuits to `status="inconclusive"` with
+# `notes=["missing_replay_corpus_or_baseline_metrics"]`. That is expected and
+# correct: the point of wiring this in is that the trial step is genuinely
+# invoked and its (honest, inconclusive) result is recorded on the proposal, not
+# silently skipped. It must never gate or block enqueueing -- adoption is HITL,
+# a trial result here is informational only.
+_TRIAL_RUNNER = SubstrateTrialRunner(
+    scorer=ClassSpecificScorer(),
+    corpus_registry=ReplayCorpusRegistry(corpus_by_class={}, baseline_metric_ref_by_class={}),
+)
 
 # How many pending proposals to scan for de-duplication purposes. Generously
 # above any realistic queue size (proposals only exist for diverging cap->cap
@@ -55,6 +72,11 @@ def run_causal_geometry_production_cycle(
     topology_path: str,
     field_edges: List[FieldEdgeV1],
     store: FieldTopologyLearnedWeightsStore,
+    bus_url: str,
+    bus_enabled: bool = True,
+    service_name: str = "orion-field-digester",
+    service_version: str = "0.1.0",
+    node_name: str = "athena",
     window_hours: float = DEFAULT_WINDOW_HOURS,
     min_samples: int = DEFAULT_MIN_SAMPLES,
     n_surrogates: int = DEFAULT_N_SURROGATES,
@@ -110,7 +132,26 @@ def run_causal_geometry_production_cycle(
             "candidates_found": 0,
             "proposals_created": 0,
             "proposals_skipped_pending_duplicate": 0,
+            "snapshot_published": False,
         }
+
+    # Publishing is best-effort and must never fail the measurement/proposal
+    # cycle -- `publish_snapshot()` itself never raises (see
+    # `causal_geometry_bus_publish.py`'s module docstring), but the result is
+    # also guarded here in case of an unexpected error constructing the call.
+    try:
+        publish_result = publish_snapshot(
+            bus_url=bus_url,
+            bus_enabled=bus_enabled,
+            snapshot=snapshot,
+            service_name=service_name,
+            service_version=service_version,
+            node_name=node_name,
+        )
+        snapshot_published = bool(publish_result.get("ok"))
+    except Exception as exc:  # pragma: no cover - defensive, publish_snapshot() itself never raises
+        logger.warning("causal_geometry_production_cycle_snapshot_publish_unexpected_error: %s", exc, exc_info=True)
+        snapshot_published = False
 
     try:
         proposals = propose_field_topology_patches(
@@ -125,6 +166,16 @@ def run_causal_geometry_production_cycle(
             if proposal.patch.target_ref in existing_pending_refs:
                 skipped += 1
                 continue
+            trial = _TRIAL_RUNNER.run_trial(
+                proposal=proposal,
+                measured_metrics={"divergence_delta": abs(float(proposal.patch.patch.get("edge_weight_delta", 0.0)))},
+            )
+            proposal.notes.append(f"trial_status:{trial.status}")
+            proposal.notes.extend(trial.notes)
+            logger.info(
+                "causal_geometry_proposal_trial_completed proposal_id=%s mutation_class=%s status=%s",
+                proposal.proposal_id, trial.mutation_class, trial.status,
+            )
             store.propose(proposal)
             # Two different capability channels can alias to the same physical
             # (source_id, target_id) edge (see causal_geometry_engine.build_divergence()'s
@@ -144,12 +195,14 @@ def run_causal_geometry_production_cycle(
             "candidates_found": 0,
             "proposals_created": 0,
             "proposals_skipped_pending_duplicate": 0,
+            "snapshot_published": snapshot_published,
         }
 
     return {
         "ok": True,
         "stage": "completed",
         "error": None,
+        "snapshot_published": snapshot_published,
         "snapshot_id": snapshot.snapshot_id,
         "insufficient_data": snapshot.insufficient_data,
         "candidates_found": len(proposals),

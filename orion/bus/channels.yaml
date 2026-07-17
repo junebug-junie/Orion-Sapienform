@@ -2107,8 +2107,19 @@ channels:
     kind: "event"
     schema_id: "CausalGeometrySnapshotV1"
     message_kind: "causal.geometry.snapshot.v1"
+    # orion-field-digester publishes (orion/substrate/causal_geometry_bus_publish.py,
+    # called from causal_geometry_producer.py's scheduled cycle). orion-sql-writer
+    # consumes it via the standard MODEL_MAP/DEFAULT_ROUTE_MAP routing
+    # (services/orion-sql-writer/app/models/causal_geometry_snapshot.py,
+    # CausalGeometrySnapshotSQL) and writes the causal_geometry_snapshots table;
+    # orion-hub reads that table directly (its own Postgres pool, not the bus)
+    # for /api/causal-geometry/*. An earlier version of this feature had
+    # orion-field-digester write Postgres directly, bypassing the bus entirely --
+    # corrected, since the bus is this repo's mechanism for tracking load/failures
+    # across services, and a new write path silently bypassing it is a real
+    # observability regression, not a stylistic choice.
     producer_services: ["orion-field-digester"]
-    consumer_services: []
+    consumer_services: ["orion-sql-writer"]
     stability: "experimental"
     since: "2026-07-16"
 

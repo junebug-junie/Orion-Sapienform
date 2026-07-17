@@ -26,11 +26,12 @@ def catalog() -> NodeCatalog:
     return NodeCatalog.load(CATALOG_PATH)
 
 
-def _fixtures(node: str, *, strain: float = 0.42):
+def _fixtures(node: str, *, strain: float = 0.42, pressures: dict | None = None):
     sample = BiometricsSampleV1(timestamp=FIXED_TS, node=node, cpu={"util": 0.1})
     summary = BiometricsSummaryV1(
         timestamp=FIXED_TS,
         node=node,
+        pressures=pressures or {},
         composites={"strain": strain},
         telemetry_error_rate=0.0,
     )
@@ -134,6 +135,50 @@ def test_trace_has_start_atoms_edges_end(catalog: NodeCatalog) -> None:
     assert "edge_emitted" in kinds
     assert kinds[-1] == "trace_ended"
     assert events[0].trace_id.startswith("biometrics.node:prometheus:")
+
+
+def test_memory_thermal_disk_pressure_signals_carry_individual_values(
+    catalog: NodeCatalog,
+) -> None:
+    sample, summary, induction = _fixtures(
+        "atlas", pressures={"mem": 0.61, "thermal": 0.33, "disk": 0.12, "cpu": 0.9}
+    )
+    profile = catalog.resolve("atlas")
+    events = build_biometrics_node_grammar_events(
+        sample=sample,
+        summary=summary,
+        induction=induction,
+        node_profile=profile,
+        source_channel="orion:biometrics:induction",
+    )
+    atoms_by_role = {
+        e.atom.semantic_role: e.atom for e in events if e.atom is not None
+    }
+    assert atoms_by_role["memory_pressure_signal"].salience == pytest.approx(0.61)
+    assert atoms_by_role["thermal_pressure_signal"].salience == pytest.approx(0.33)
+    assert atoms_by_role["disk_pressure_signal"].salience == pytest.approx(0.12)
+    # strain/gpu remain the composite/capability-derived values, unaffected.
+    assert atoms_by_role["body_state"].salience == pytest.approx(summary.composites["strain"])
+
+
+def test_memory_thermal_disk_pressure_signals_default_to_zero_when_absent(
+    catalog: NodeCatalog,
+) -> None:
+    sample, summary, induction = _fixtures("atlas")
+    profile = catalog.resolve("atlas")
+    events = build_biometrics_node_grammar_events(
+        sample=sample,
+        summary=summary,
+        induction=induction,
+        node_profile=profile,
+        source_channel="orion:biometrics:induction",
+    )
+    atoms_by_role = {
+        e.atom.semantic_role: e.atom for e in events if e.atom is not None
+    }
+    assert atoms_by_role["memory_pressure_signal"].salience == 0.0
+    assert atoms_by_role["thermal_pressure_signal"].salience == 0.0
+    assert atoms_by_role["disk_pressure_signal"].salience == 0.0
 
 
 def test_circe_node_availability_reflects_expected_offline(catalog: NodeCatalog) -> None:

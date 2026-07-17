@@ -38,6 +38,55 @@ Provenance: `.env_example` → `docker-compose.yml` → `settings.py`
 
 Node identity for grammar traces is resolved via `config/biometrics/node_catalog.yaml` (aliases canonicalize hostnames, e.g. `prometheous` → `prometheus`).
 
+### Grammar node `pressure_hints` (consumed by `orion-field-digester`)
+
+`app/grammar_emit.py::build_biometrics_node_grammar_events` emits one atom per
+hardware-pressure signal on the `orion:grammar:event` trace. Each atom's
+`salience` is later read by `orion/substrate/biometrics_loop/grammar_extract.py`
+and surfaced on the `node_biometrics` projection's `pressure_hints` dict, which
+`services/orion-field-digester/app/ingest/state_deltas.py`'s `node_biometrics`
+block turns into lattice `Perturbation`s:
+
+| Atom `semantic_role` | `pressure_hints` key | Lattice channel (`NODE_CHANNELS`) |
+| :--- | :--- | :--- |
+| `body_state` (composite `strain`) | `strain` | `cpu_pressure` |
+| `capability_surface` (gated on `local_llm_heavy`) | `gpu` | `gpu_pressure` |
+| `memory_pressure_signal` | `memory_pressure` | `memory_pressure` |
+| `thermal_pressure_signal` | `thermal_pressure` | `thermal_pressure` |
+| `disk_pressure_signal` | `disk_pressure` | `disk_pressure` |
+
+`memory_pressure_signal`/`thermal_pressure_signal`/`disk_pressure_signal` carry
+the individually-computed `mem`/`thermal`/`disk` values from
+`orion/telemetry/biometrics_pipeline.py`'s `pressures` dict (2026-07-16 fix --
+these were previously only folded into the `strain` composite and never
+reached the field lattice, so the corresponding channels stayed pinned at
+`0.0`). This is additive: `strain`/`gpu` are unchanged.
+
+All five of these `Perturbation`s (`strain`/`gpu`/`memory_pressure`/
+`thermal_pressure`/`disk_pressure`) use `mode="replace"`, not the library
+default `mode="add"`: `orion/substrate/biometrics_loop/node_reducer.py`
+emits one `StateDeltaV1` per *grammar event* in a trace (not just the atom
+that sets a given hint -- `trace_started`/edges/`trace_ended` all produce
+their own delta carrying the cumulative `pressure_hints` forward), so a
+single trace yields well over a dozen deltas that each still contain these
+hints once set. Under `"add"` mode that re-adds the same intensity that
+many times per telemetry cycle and saturates the channel to the `1.0` clamp
+almost immediately, independent of real load -- the same class of bug
+`execution_run`/`chat_turn` already hit and fixed with `mode="replace"` for
+their own `pressure_hints` snapshots.
+
+`strain`/`gpu` (2026-07-17 fix) were the pre-existing pattern this repeated
+-- and, per live verification, actually were saturating this way in
+production. Querying `/mnt/telemetry/field_channels/corpus/field_channels.jsonl`
+(133,968 rows spanning 2026-07-13..17) showed `cpu_pressure`/`gpu_pressure`
+sitting exactly at their post-decay ceiling (`1.0 * BIOMETRICS_FIELD_DECAY_RATE`
+= `0.92`) in 16.60%/12.98% of all rows -- vs. 0.01%/0.00% for
+`execution_load`/`execution_friction`, which already used `mode="replace"`
+-- and bit-identical to each other in 60.60% of rows despite deriving from
+independent `strain`/`gpu` hints. Both signatures match repeated
+re-saturation from add-mode duplicate deltas, not real, independent CPU/GPU
+utilization, so `strain`/`gpu` were switched to `mode="replace"` too.
+
 ## Running & Testing
 
 ### Run via Docker

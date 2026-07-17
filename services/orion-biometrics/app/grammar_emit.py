@@ -189,6 +189,52 @@ def build_biometrics_node_grammar_events(
             source_event_id=f"{node_id}:{ts}",
             payload_ref=f"biometrics.availability:{node_id}:{ts}",
         ),
+        # Individually-computed hardware pressures (memory/thermal/disk).
+        # These are already computed as named intermediates in
+        # orion/telemetry/biometrics_pipeline.py's `pressures` dict (keys
+        # "mem"/"thermal"/"disk") but were previously only folded into the
+        # composite "strain" salience on `body_state` above -- no downstream
+        # consumer could ever see them individually. Additive: `strain` and
+        # `capability_surface`'s "gpu" hint are untouched.
+        "memory_pressure_signal": GrammarAtomV1(
+            atom_id=atom_id("memory_pressure_signal"),
+            trace_id=trace_id,
+            atom_type="signal",
+            semantic_role="memory_pressure_signal",
+            layer="organ_signal",
+            dimensions=["physiology", "telemetry", "node", "resource"],
+            summary=f"{node_id} memory pressure observed",
+            confidence=0.9,
+            salience=float((summary.pressures or {}).get("mem", 0.0)),
+            source_event_id=f"{node_id}:{ts}",
+            payload_ref=f"biometrics.pressure.memory:{node_id}:{ts}",
+        ),
+        "thermal_pressure_signal": GrammarAtomV1(
+            atom_id=atom_id("thermal_pressure_signal"),
+            trace_id=trace_id,
+            atom_type="signal",
+            semantic_role="thermal_pressure_signal",
+            layer="organ_signal",
+            dimensions=["physiology", "telemetry", "node", "resource"],
+            summary=f"{node_id} thermal pressure observed",
+            confidence=0.9,
+            salience=float((summary.pressures or {}).get("thermal", 0.0)),
+            source_event_id=f"{node_id}:{ts}",
+            payload_ref=f"biometrics.pressure.thermal:{node_id}:{ts}",
+        ),
+        "disk_pressure_signal": GrammarAtomV1(
+            atom_id=atom_id("disk_pressure_signal"),
+            trace_id=trace_id,
+            atom_type="signal",
+            semantic_role="disk_pressure_signal",
+            layer="organ_signal",
+            dimensions=["physiology", "telemetry", "node", "resource"],
+            summary=f"{node_id} disk pressure observed",
+            confidence=0.9,
+            salience=float((summary.pressures or {}).get("disk", 0.0)),
+            source_event_id=f"{node_id}:{ts}",
+            payload_ref=f"biometrics.pressure.disk:{node_id}:{ts}",
+        ),
     }
 
     edge_specs = [
@@ -198,6 +244,12 @@ def build_biometrics_node_grammar_events(
         ("body_state", "capability_surface", "influenced"),
         ("node_availability", "capability_surface", "influenced"),
         ("node_context", "capability_surface", "supports"),
+        ("telemetry_sample", "memory_pressure_signal", "derived_from"),
+        ("telemetry_sample", "thermal_pressure_signal", "derived_from"),
+        ("telemetry_sample", "disk_pressure_signal", "derived_from"),
+        ("memory_pressure_signal", "capability_surface", "influenced"),
+        ("thermal_pressure_signal", "capability_surface", "influenced"),
+        ("disk_pressure_signal", "capability_surface", "influenced"),
     ]
 
     events: list[GrammarEventV1] = [root_event]

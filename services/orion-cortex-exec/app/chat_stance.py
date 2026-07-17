@@ -1208,7 +1208,7 @@ def _project_autonomy_from_beliefs(
         goals.extend([n for n in sl.goals if n.node_kind == "goal"])
         tensions.extend([n for n in sl.tensions if n.node_kind == "tension"])
         snapshots.extend(
-            [s for s in sl.snapshots if getattr(s, "snapshot_source", "") in ("autonomy", "drive_state")]
+            [s for s in sl.snapshots if getattr(s, "snapshot_source", "") == "autonomy"]
         )
 
     if not any([drives, goals, tensions, snapshots]):
@@ -1261,61 +1261,12 @@ def _project_autonomy_from_beliefs(
             }
         )
 
-    # drive_state.v1 projection — kept structurally separate from the `summary`/
-    # `debug` fields above (those are the autonomy_state_v2-lineage signal; see
-    # orion/self_state/inner_state_registry.py's DUPLICATE note). Isolation rule
-    # superseded 2026-07-16 (orion/autonomy/drives_and_autonomy_retrospective.md
-    # §8): drive_state is now the live signal for downstream consumers
-    # (autonomy_slice.py, mind_runtime.py); kept as a separate dict/key here
-    # rather than merged field-by-field into `summary`, since provenance
-    # (which snapshot_source a field came from) still matters for debugging.
-    pressures: Dict[str, float] = {}
-    for d in drives:
-        dk = str(getattr(d, "drive_kind", "") or "")
-        if not dk or dk in pressures:
-            continue
-        salience = getattr(getattr(d, "signals", None), "salience", None)
-        if salience is not None:
-            pressures[dk] = float(salience)
-
-    # All three fields below are taken from a single snapshot, not mixed across
-    # several -- drive_state snapshots are not deduplicated/collapsed upstream
-    # (substrate/reconcile.py treats them as distinct events by design), so if
-    # a stale snapshot ever sits ahead of a fresher one in `snapshots`, taking
-    # each field independently from "the first snapshot that has it" could
-    # produce a dominant_drive from one tick paired with activations from
-    # another -- an internally inconsistent projection. Taking every field
-    # from the same (first-with-any-content) snapshot avoids that.
-    drive_state_snapshots = [s for s in snapshots if getattr(s, "snapshot_source", "") == "drive_state"]
-    activations: Dict[str, bool] = {}
-    drive_state_dominant_drive: str | None = None
-    drive_state_summary: str | None = None
-    drive_state_tension_kinds: list[str] = []
-    for snap in drive_state_snapshots:
-        meta = snap.metadata or {}
-        raw_activations = meta.get("activations")
-        candidate_activations = dict(raw_activations) if isinstance(raw_activations, dict) else {}
-        candidate_dominant_drive = str(meta.get("dominant_drive") or "").strip() or None
-        candidate_summary = str(meta.get("summary") or "").strip() or None
-        raw_tension_kinds = meta.get("tension_kinds")
-        candidate_tension_kinds = [str(t) for t in raw_tension_kinds if str(t).strip()] if isinstance(raw_tension_kinds, list) else []
-        if candidate_activations or candidate_dominant_drive or candidate_summary or candidate_tension_kinds:
-            activations = candidate_activations
-            drive_state_dominant_drive = candidate_dominant_drive
-            drive_state_summary = candidate_summary
-            drive_state_tension_kinds = candidate_tension_kinds
-            break
-
-    drive_state_projection: Dict[str, Any] | None = None
-    if pressures or activations or drive_state_dominant_drive or drive_state_summary or drive_state_tension_kinds:
-        drive_state_projection = {
-            "pressures": pressures,
-            "activations": activations,
-            "dominant_drive": drive_state_dominant_drive,
-            "summary": drive_state_summary,
-            "tension_kinds": drive_state_tension_kinds,
-        }
-
+    # drive_state.v1 measurement SoR moved off graph snapshots to Postgres
+    # drive_audits (bus → sql-writer). build_chat_stance_inputs fills
+    # ctx["chat_drive_state"] via fetch_drive_state_for_chat_stance. Graph
+    # snapshot_source="drive_state" is ignored here (not even for autonomy
+    # summary.dominant_drive). Autonomy summary may still use DriveNode /
+    # snapshot_source="autonomy" nodes.
     return {
         "state": None,
         "summary": summary,
@@ -1331,7 +1282,7 @@ def _project_autonomy_from_beliefs(
         "selected_subject": "orion",
         "repository_status": {"source_available": True, "source_path": "substrate"},
         "partial_used": False,
-        "drive_state": drive_state_projection,
+        "drive_state": None,
     }
 
 
@@ -2501,22 +2452,25 @@ async def build_chat_stance_inputs(ctx: Dict[str, Any]) -> Dict[str, Any]:
     if mg_hints:
         inputs["memory_graph"] = {"disposition_hints": mg_hints}
 
-    # drive_state is now the live signal for downstream consumers (see
-    # orion/autonomy/drives_and_autonomy_retrospective.md §8, and this
-    # worktree's first commit striking the old "must never be crosswalked"
-    # isolation language). Stash unconditionally onto ctx so
-    # autonomy_slice.build_autonomy_slice() can prefer it over the
-    # AutonomyStateV2 reducer output -- this is deliberately independent of
-    # CHAT_STANCE_DRIVE_STATE_VISIBLE below, which only gates whether the
-    # projection is exposed to the prompt template via inputs["drive_state"].
-    drive_state_for_ctx = autonomy.get("drive_state") if isinstance(autonomy, dict) else None
+    # drive_state.v1 measurement: Postgres drive_audits (same rail as Mind),
+    # fail-open. Graph snapshot_source="drive_state" is no longer SoR.
+    # Stash onto ctx so autonomy_slice can prefer it; CHAT_STANCE_DRIVE_STATE_VISIBLE
+    # only gates prompt inputs["drive_state"].
+    from app.drive_state_postgres import fetch_drive_state_for_chat_stance
+
+    correlation_id = str(
+        ctx.get("correlation_id")
+        or ctx.get("request_id")
+        or ctx.get("turn_id")
+        or "chat_stance"
+    )
+    drive_state_for_ctx, drive_state_diag = await fetch_drive_state_for_chat_stance(correlation_id)
+    ctx["chat_drive_state_diagnostics"] = drive_state_diag
     if isinstance(drive_state_for_ctx, dict) and drive_state_for_ctx:
         ctx["chat_drive_state"] = drive_state_for_ctx
 
     # drive_state.v1 visibility — a sibling of `inputs["autonomy"]`, never merged
-    # into it. drive_state and autonomy_state_v2 are independently-computed
-    # signals per orion/self_state/inner_state_registry.py's DUPLICATE note.
-    # Off by default; flip CHAT_STANCE_DRIVE_STATE_VISIBLE=true to surface it.
+    # into it. Off by default; flip CHAT_STANCE_DRIVE_STATE_VISIBLE=true to surface it.
     if os.getenv("CHAT_STANCE_DRIVE_STATE_VISIBLE", "").strip().lower() == "true":
         if drive_state_for_ctx:
             inputs["drive_state"] = drive_state_for_ctx

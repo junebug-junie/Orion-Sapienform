@@ -1,8 +1,7 @@
-"""Unit tests for materializing DriveEngine's drive_state/drive_audit into the
-substrate graph (snapshot_source="drive_state"), so chat_stance.py's
-drive-state projection actually receives real data instead of reading an
-always-empty snapshot list -- see
-orion/autonomy/drives_and_autonomy_retrospective.md §9.
+"""Unit tests for optional DriveEngine → substrate graph materialization
+(snapshot_source="drive_state"). Chat stance measurement SoR is now Postgres
+drive_audits; this writer defaults off and remains only as a legacy optional
+graph writer (flag restores writes, not stance reads).
 
 Mirrors test_embodiment_c_hook.py's worker-construction pattern.
 """
@@ -75,6 +74,16 @@ def _audit(**overrides) -> DriveAuditV1:
     return DriveAuditV1(**base)
 
 
+def test_settings_default_materialization_off(monkeypatch):
+    monkeypatch.delenv("DRIVE_STATE_SUBSTRATE_MATERIALIZATION_ENABLED", raising=False)
+    monkeypatch.setenv("POSTGRES_URI", "postgresql://unused/unused")
+    import app.settings as settings_mod
+
+    settings_mod._settings = None
+    assert settings_mod.get_settings().drive_state_substrate_materialization_enabled is False
+    settings_mod._settings = None
+
+
 def test_materialization_disabled_writes_nothing(monkeypatch):
     worker = _make_worker(monkeypatch, materialization_enabled=False)
     store = MagicMock()
@@ -108,9 +117,9 @@ def test_materialization_enabled_upserts_state_snapshot_and_drive_nodes(monkeypa
     node_kinds = {call.kwargs["node"].__class__.__name__ for call in store.upsert_node.call_args_list}
     assert "StateSnapshotNodeV1" in node_kinds
 
-    # The state snapshot node must carry drive_state="drive_state" and the
-    # audit's tension_kinds through its metadata -- this is the exact field
-    # chat_stance.py's drive-state projection reads.
+    # The state snapshot node must carry snapshot_source="drive_state" and the
+    # audit's tension_kinds through its metadata (legacy optional writer shape).
+    # Chat stance no longer reads these nodes for measurement SoR.
     snapshot_calls = [
         c for c in store.upsert_node.call_args_list if c.kwargs["node"].__class__.__name__ == "StateSnapshotNodeV1"
     ]

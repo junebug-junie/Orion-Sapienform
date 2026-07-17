@@ -139,11 +139,14 @@ pytest services/orion-cortex-exec/tests/test_chat_stance_autonomy_v2.py -q
 
 | Variable | Default (`.env_example`) | Description |
 | :--- | :--- | :--- |
-| `CHAT_STANCE_DRIVE_STATE_VISIBLE` | empty / not `true` | When `true`, `build_chat_stance_inputs` surfaces `DriveAuditV1`/`DriveStateV1` provenance (drive pressures, activations, dominant drive, summary) as a **sibling** `inputs["drive_state"]` key, built from the same unified-beliefs `drive_state`-sourced substrate nodes that `_project_autonomy_from_beliefs` already reads. |
+| `CHAT_STANCE_DRIVE_STATE_VISIBLE` | empty / not `true` | When `true`, `build_chat_stance_inputs` surfaces drive measurement as a **sibling** `inputs["drive_state"]` key. |
+| `CHAT_STANCE_DRIVE_STATE_FETCH_TIMEOUT_SEC` | `0.4` | Bounded fail-open timeout for the latest `drive_audits` row fetch. |
+| `ORION_ACTION_OUTCOME_DB_URL` | conjourney DSN | Same Postgres sql-writer writes; chat stance reads latest `drive_audits` (`subject='orion'`) here. |
 
-`drive_state.v1` and `autonomy_state_v2` are registered as `DUPLICATE` of each other in `orion/self_state/inner_state_registry.py` — they are independently-computed signals over the same 6-drive taxonomy, with no agreed merge-or-keep-separate resolution yet. This patch keeps them structurally separate everywhere: `inputs["drive_state"]` is never merged, blended, or nested into `inputs["autonomy"]`.
+Measurement SoR is Postgres `drive_audits` (bus → sql-writer), not substrate graph snapshots. `ctx["chat_drive_state"]` is filled unconditionally when a meaningful row exists; the visibility flag only gates prompt `inputs["drive_state"]`.
 
 ```bash
+pytest services/orion-cortex-exec/tests/test_drive_state_postgres.py -q
 pytest services/orion-cortex-exec/tests/test_chat_stance_drive_state_projection.py -q
 ```
 

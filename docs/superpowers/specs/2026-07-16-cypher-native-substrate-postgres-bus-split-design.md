@@ -236,8 +236,8 @@ Postgres reducer loops inside runtime (biometrics / execution / transport / chat
 native hydration, metadata quarantine behavior, and Hub Concept Atlas route
 compatibility through a hydrated Falkor store test double.
 - [ ] Concept Atlas Hub summary/network survives restart against real Falkor after redesign
-- [ ] Chat stance drive projection reads Postgres measurement rail (bus-fed); graph drive snapshot materialization off or deleted
-- [ ] No new producer path calls sql-writer over HTTP for drive measurement
+- [x] Chat stance drive projection reads Postgres measurement rail (bus-fed); graph drive snapshot materialization off or deleted
+- [x] No new producer path calls sql-writer over HTTP for drive measurement
 - [ ] Runtime SPARQL cutover (if included in same plan series) uses Cypher-native adapter, not blob port
 - [ ] Fuseki update-rate attribution after runtime graph cutover (graph-shaped writers only)
 

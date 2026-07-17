@@ -1,0 +1,128 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Orion Hub — Drives Analytics</title>
+  <script src="https://cdn.tailwindcss.com"></script>
+  <link rel="stylesheet" href="/static/css/style.css?v=1.0.8" />
+  <style>
+    .drives-tooltip { position: absolute; z-index: 40; max-width: 22rem; }
+    .drive-gauge { display: flex; flex-direction: column; align-items: center; gap: 0.35rem; width: 4.5rem; }
+    .drive-gauge-tube { position: relative; width: 1.75rem; height: 7rem; border-radius: 9999px; background: #111827; border: 1px solid #374151; overflow: hidden; }
+    .drive-gauge-fill { position: absolute; bottom: 0; left: 0; right: 0; transition: height 0.4s ease; }
+    .drive-color-green { background: #10b981; }
+    .drive-color-yellow { background: #f59e0b; }
+    .drive-color-red { background: #ef4444; }
+    .drive-color-neutral { background: #6b7280; }
+    .drive-gauge-dominant { outline: 2px solid #38bdf8; outline-offset: 2px; }
+    .drives-sparkline { width: 100%; height: 2.5rem; display: block; }
+  </style>
+</head>
+<body class="bg-black text-gray-200 min-h-screen p-6">
+  <div class="max-w-6xl mx-auto space-y-4">
+    <div class="flex items-center justify-between flex-wrap gap-2">
+      <h1 class="text-xl font-semibold">Drives Analytics</h1>
+      <div class="flex gap-2">
+        <button id="drivesRefreshButton" type="button" class="px-3 py-2 text-xs rounded border border-gray-700 bg-gray-900 hover:bg-gray-800">Refresh</button>
+        <a href="/" class="px-3 py-2 text-xs rounded border border-gray-700 bg-gray-900 hover:bg-gray-800">Back to Hub</a>
+      </div>
+    </div>
+
+    <div class="flex flex-wrap items-end gap-3 bg-gray-900 border border-gray-800 rounded p-3">
+      <label class="text-xs text-gray-400 flex flex-col gap-1">
+        Subject
+        <select id="drivesSubjectSelect" class="text-xs bg-gray-950 border border-gray-700 rounded px-2 py-1 min-w-[12rem]"></select>
+      </label>
+      <label class="text-xs text-gray-400 flex flex-col gap-1">
+        Window
+        <select id="drivesWindowSelect" class="text-xs bg-gray-950 border border-gray-700 rounded px-2 py-1">
+          <option value="1">1h</option>
+          <option value="6">6h</option>
+          <option value="24" selected>24h</option>
+          <option value="168">7d</option>
+        </select>
+      </label>
+      <label class="text-xs text-gray-400 flex flex-col gap-1">
+        Color mode
+        <select id="drivesColorMode" class="text-xs bg-gray-950 border border-gray-700 rounded px-2 py-1">
+          <option value="combined" selected>combined</option>
+          <option value="align">align</option>
+          <option value="funnel">funnel</option>
+        </select>
+      </label>
+      <label class="text-xs text-gray-400 flex items-center gap-1 pb-1">
+        <input id="drivesAutoRefresh" type="checkbox" checked />
+        Auto-refresh
+      </label>
+      <div class="text-xs text-gray-500 pb-1">Last loaded: <span id="drivesLastLoaded">—</span></div>
+    </div>
+
+    <div id="drivesCoverageBanner" class="hidden text-xs text-amber-400 border border-amber-900/60 bg-amber-950/30 rounded px-3 py-2"></div>
+
+    <section id="drivesGaugesCard" class="bg-gray-900 border border-gray-800 rounded p-4 relative">
+      <div class="flex items-center justify-between mb-2">
+        <h2 class="font-medium">Six-Drive Gauges</h2>
+        <button type="button" class="drives-info-button text-xs text-gray-400 border border-gray-700 rounded-full w-5 h-5" data-card="gauges">i</button>
+      </div>
+      <div id="drivesGaugesBody" class="flex flex-wrap gap-4">Loading…</div>
+    </section>
+
+    <section id="drivesContributorsCard" class="bg-gray-900 border border-gray-800 rounded p-4 relative">
+      <div class="flex items-center justify-between mb-2">
+        <h2 class="font-medium">Contributors</h2>
+        <button type="button" class="drives-info-button text-xs text-gray-400 border border-gray-700 rounded-full w-5 h-5" data-card="contributors">i</button>
+      </div>
+      <div class="flex gap-2 mb-2 text-xs">
+        <button type="button" id="drivesContributorsLiveButton" class="px-2 py-1 rounded border border-gray-700 bg-gray-800">Live</button>
+        <button type="button" id="drivesContributorsWindowButton" class="px-2 py-1 rounded border border-gray-700">Window</button>
+      </div>
+      <div id="drivesContributorsBody" class="text-xs">Loading…</div>
+    </section>
+
+    <section id="drivesKpiStrip" class="bg-gray-900 border border-gray-800 rounded p-4 relative">
+      <div class="flex items-center justify-between mb-2">
+        <h2 class="font-medium">Program-Health KPIs</h2>
+        <button type="button" class="drives-info-button text-xs text-gray-400 border border-gray-700 rounded-full w-5 h-5" data-card="kpi">i</button>
+      </div>
+      <div id="drivesKpiBody" class="flex flex-wrap gap-2 text-xs">Loading…</div>
+    </section>
+
+    <section id="drivesSeriesCard" class="bg-gray-900 border border-gray-800 rounded p-4 relative">
+      <div class="flex items-center justify-between mb-2">
+        <h2 class="font-medium">Tick-Rate and Pressure Series</h2>
+        <button type="button" class="drives-info-button text-xs text-gray-400 border border-gray-700 rounded-full w-5 h-5" data-card="series">i</button>
+      </div>
+      <div id="drivesSeriesBody" class="text-xs">Loading…</div>
+    </section>
+
+    <section id="drivesDivergenceCard" class="bg-gray-900 border border-gray-800 rounded p-4 relative">
+      <div class="flex items-center justify-between mb-2">
+        <h2 class="font-medium">Divergence / Integrity</h2>
+        <button type="button" class="drives-info-button text-xs text-gray-400 border border-gray-700 rounded-full w-5 h-5" data-card="divergence">i</button>
+      </div>
+      <div id="drivesDivergenceBody" class="text-xs">Loading…</div>
+    </section>
+
+    <section id="drivesGoalsCard" class="bg-gray-900 border border-gray-800 rounded p-4 relative">
+      <div class="flex items-center justify-between mb-2">
+        <h2 class="font-medium">Goal Pipeline (read-only)</h2>
+        <button type="button" class="drives-info-button text-xs text-gray-400 border border-gray-700 rounded-full w-5 h-5" data-card="goals">i</button>
+      </div>
+      <div id="drivesGoalsBody" class="text-xs">Loading…</div>
+    </section>
+
+    <section id="drivesCrossLinks" class="bg-gray-900 border border-gray-800 rounded p-4 relative">
+      <div class="flex items-center justify-between mb-2">
+        <h2 class="font-medium">Cross-links</h2>
+        <button type="button" class="drives-info-button text-xs text-gray-400 border border-gray-700 rounded-full w-5 h-5" data-card="crosslinks">i</button>
+      </div>
+      <div id="drivesCrossLinksBody" class="text-xs">Loading…</div>
+    </section>
+
+    <div id="drivesTooltipPopover" class="drives-tooltip hidden bg-gray-950 border border-gray-700 rounded p-3 text-xs text-gray-300 shadow-lg"></div>
+  </div>
+
+  <script src="/static/js/drives-analytics.js?v={{HUB_UI_ASSET_VERSION}}"></script>
+</body>
+</html>

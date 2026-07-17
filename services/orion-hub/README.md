@@ -337,6 +337,70 @@ section degrades to `null` independently (missing table, unset
   endogenous candidates (`HUB_AGENT_CURIOSITY_HINT_ENABLED`, default off;
   advisory only, structural gate, no keyword classification).
 
+### 5.4 Drives Analytics panel (`Drives` tab)
+
+**What it is:** an operator orientation view onto the six-drive `DriveEngine` economy
+(`DRIVE_KEYS = coherence, continuity, capability, relational, predictive, autonomy` from
+`orion.spark.concept_induction.drives`) — gauges, real contributor history, a program-health KPI
+strip, dual time series, goal-alignment coloring, and a divergence/integrity check. Strictly
+read-only: no endpoint under `/api/drives-analytics/*` mounts a mutating method.
+
+**What it is NOT:** it is not the **Pressure Analytics** tab (`#pressure`). Pressure Analytics
+tracks substrate mutation pressure — a completely different signal from the `DriveEngine`
+pressures shown here. Do not conflate the two when triaging an operator report; check which tab
+they actually mean.
+
+**Isolation pattern:** same session-preserving iframe pattern as Causal Geometry. The standalone
+page `/drives-analytics` (`templates/drives-analytics.html` + dedicated
+`static/js/drives-analytics.js`, which never references `window.OrionHub`) is embedded via
+`<iframe id="drivesAnalyticsPanelFrame">` in the Hub shell tab `#drives`. Toggling the `Drives` tab
+button only shows/hides that section and updates the shell hash — it never reloads the Hub chat
+session. The tab's refresh control reloads only `drivesAnalyticsPanelFrame.contentWindow`, not the
+Hub shell.
+
+**Endpoints (all read-only, all degrade instead of 500):**
+
+- `GET /api/drives-analytics/subjects`
+- `GET /api/drives-analytics/snapshot?subject=`
+- `GET /api/drives-analytics/window?subject=&hours=`
+- `GET /api/drives-analytics/series?subject=&hours=`
+- `GET /api/drives-analytics/goal-alignment?subject=`
+- `GET /api/drives-analytics/divergence?subject=`
+
+**Hash/query params** (standalone page and Hub tab both read these; default shown):
+
+| Param | Values | Default |
+|---|---|---|
+| `window` | `1`, `6`, `24`, `168` (hours) | `24` |
+| `subject` | allowlist (`orion`, `relationship`, `juniper`) ∪ discovered DB subjects | `orion` |
+| `color` | `combined`, `align`, `funnel` | `combined` |
+
+**Data dependency:** reads Postgres `drive_audits` via the same `RECALL_PG_DSN`-backed
+`app.state.memory_pg_pool` asyncpg pool used by Causal Geometry and the Memory tab (set up in
+`scripts/main.py`, `apply_*_schema` calls at startup). If the pool is unavailable, or the table is
+undefined, every endpoint above returns `{"degraded": true, "error": ..., "source": {...}}` rather
+than a 500.
+
+`tick_attribution` and `tension_kinds` are JSONB columns added to `drive_audits` by
+`services/orion-sql-db/manual_migration_drive_audits_v4_tick_attribution.sql` (also applied as boot
+DDL by `orion-sql-writer`). They are **only populated for audits written after that migration** —
+there is no backfill. Rows written before the migration show as an explicit coverage note (attributed
+vs. null row counts, `retention_note` from `coverage_meta`) in the Contributors card and the
+`window` endpoint's `attribution` payload — never as a fake zero.
+
+**Restart required after deploy:** sql-writer must restart first so new `drive_audits` rows actually
+carry the new columns, then Hub so the new routes/UI load:
+
+```bash
+scripts/safe_docker_build.sh orion-sql-writer up -d --build
+scripts/safe_docker_build.sh orion-hub up -d --build
+```
+
+See also: [orion/autonomy/README.md § Hub Drives Analytics](../../orion/autonomy/README.md#hub-drives-analytics)
+for what the surface means to an operator, and
+[docs/superpowers/specs/2026-07-16-hub-drives-analytics-design.md](../../docs/superpowers/specs/2026-07-16-hub-drives-analytics-design.md)
+for the full design.
+
 ---
 
 ## 🚀 Running Hub

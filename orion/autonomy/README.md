@@ -3,6 +3,41 @@
 Why any of this exists, the founding theory, and the biggest unresolved gap (self-initiation
 was never built): [drives_and_autonomy_retrospective.md](drives_and_autonomy_retrospective.md)
 
+## Hub Drives Analytics
+
+Design: [docs/superpowers/specs/2026-07-16-hub-drives-analytics-design.md](../../docs/superpowers/specs/2026-07-16-hub-drives-analytics-design.md).
+
+**Why this surface exists.** The six-drive `DriveEngine` economy (`orion/spark/concept_induction/drives.py`,
+`DRIVE_KEYS = ("coherence", "continuity", "capability", "relational", "predictive", "autonomy")`) has run
+live for a while — per-tick audits, `tick_attribution`/`tension_kinds` on the wire, Postgres history, offline
+gate scripts — but until this patch, seeing any of it meant CLI archaeology
+(`scripts/analysis/measure_autonomy_gate.py`, `scripts/drive_state_divergence_audit.py`) or a per-turn chat
+side panel. The Hub **Drives** tab (`#drives`, standalone page `/drives-analytics`) is an orientation and
+observability surface: gauges for current pressure per drive, real contributor history pulled from
+`tick_attribution` (not invented), a program-health KPI strip, dual time series (tick-rate + six pressure
+sparklines), goal-alignment coloring, and a divergence/integrity check against the `drive_state.v1` concept
+store. It **does not mutate** drives, tensions, or goals — there is no promote/dismiss/complete/adjust control
+anywhere on this tab, by design (see the spec's non-goals).
+
+**What "good" looks like on this tab.** Healthy is *churn* — pressures rising and falling across the six
+drives as tensions resolve — combined with goals actually forming out of elevated pressure (a drive's
+pressure is high **and** an active goal's `drive_origin` matches it: goal-aligned "green" in `align`/`combined`
+color mode). It is explicitly **not** "all six pressures pinned high." Six-way saturation/monoculture is a
+regime the tab colors **red**, the same as a stale audit rail or a starved drive — high magnitude alone never
+reads as healthy. `build_window_kpis`/`drive_economy_verdict_from_drive_stats`
+(`services/orion-hub/scripts/drives_analytics.py`) reuse the saturation/coactivation thresholds from
+`scripts/analysis/measure_autonomy_gate.py` so the Hub strip's `gate_verdict_drive_only` agrees with the
+offline gate's math; it can report `GO_DRIVE_ONLY` (drive-rail coactivation cleared, not saturated) but never
+claims a full offline-gate `GO`, since that also requires `resource_pressure`, which this drive-only endpoint
+does not have.
+
+**Where to look next.**
+
+- Full origin story and the still-open self-initiation gap: [drives_and_autonomy_retrospective.md](drives_and_autonomy_retrospective.md)
+- Operator tab mechanics (iframe isolation, endpoints, hash params, restart order): [services/orion-hub/README.md](../../services/orion-hub/README.md)
+- The tab itself: Hub shell hash `#drives`, standalone page `/drives-analytics`
+- Deeper offline measurement (GO/NO-GO/SATURATED/UNMEASURABLE including `resource_pressure`): `scripts/analysis/measure_autonomy_gate.py`
+
 ## Subject routing
 
 Autonomy goals and drives are keyed by subject (`orion`, `relationship`, `juniper`). Dyadic chat materializes to **relationship**, not juniper — see the routing contract:

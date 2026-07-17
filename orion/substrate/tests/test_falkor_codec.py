@@ -2,8 +2,11 @@ from __future__ import annotations
 
 from datetime import datetime, timezone
 
+import pytest
+
 from orion.core.schemas.cognitive_substrate import (
     ConceptNodeV1,
+    DriveNodeV1,
     NodeRefV1,
     SubstrateActivationV1,
     SubstrateEdgeV1,
@@ -20,13 +23,15 @@ from orion.substrate.falkor_codec import (
 )
 
 
-def _provenance() -> SubstrateProvenanceV1:
-    return SubstrateProvenanceV1(
+def _provenance(**kwargs) -> SubstrateProvenanceV1:
+    base = dict(
         authority="local_inferred",
         source_kind="test",
         source_channel="test:falkor_codec",
         producer="test_falkor_codec",
     )
+    base.update(kwargs)
+    return SubstrateProvenanceV1(**base)
 
 
 def _temporal() -> SubstrateTemporalWindowV1:
@@ -38,10 +43,11 @@ def _concept() -> ConceptNodeV1:
         node_id="concept-alpha",
         label="Alpha",
         definition="A test concept",
+        taxonomy_path=["root", "branch"],
         anchor_scope="orion",
         promotion_state="canonical",
         temporal=_temporal(),
-        provenance=_provenance(),
+        provenance=_provenance(evidence_refs=["ev:1", "ev:2"]),
         signals=SubstrateSignalBundleV1(
             confidence=0.8,
             salience=0.7,
@@ -91,9 +97,32 @@ def test_encode_concept_node_properties_are_native_scalars_without_payload_json(
         "provenance_correlation_id": None,
         "provenance_trace_id": None,
         "provenance_tier_rank": None,
+        "evidence_refs_json": '["ev:1", "ev:2"]',
         "label": "Alpha",
         "definition": "A test concept",
+        "taxonomy_path_json": '["root", "branch"]',
     }
+
+
+def test_encode_preserves_evidence_refs_and_taxonomy_path_round_trip():
+    row = encode_node_properties(_concept(), identity_key="concept:alpha")
+    node = decode_concept_node(row)
+
+    assert node is not None
+    assert node.provenance.evidence_refs == ["ev:1", "ev:2"]
+    assert node.taxonomy_path == ["root", "branch"]
+
+
+def test_encode_node_properties_rejects_non_concept():
+    drive = DriveNodeV1(
+        node_id="drive-curiosity",
+        drive_kind="curiosity",
+        anchor_scope="orion",
+        temporal=_temporal(),
+        provenance=_provenance(),
+    )
+    with pytest.raises(ValueError, match="concept nodes only"):
+        encode_node_properties(drive, identity_key="drive:curiosity")
 
 
 def test_decode_concept_node_reconstructs_minimal_typed_model():
@@ -122,7 +151,7 @@ def test_encode_edge_properties_are_native_scalars_without_payload_json():
         temporal=_temporal(),
         confidence=0.9,
         salience=0.4,
-        provenance=_provenance(),
+        provenance=_provenance(evidence_refs=["edge-ev:1"]),
         metadata={"ignored": "not durable SoR"},
     )
 
@@ -137,6 +166,7 @@ def test_encode_edge_properties_are_native_scalars_without_payload_json():
     assert props["identity_key"] == "edge:alpha-beta"
     assert props["confidence"] == 0.9
     assert props["salience"] == 0.4
+    assert props["evidence_refs_json"] == '["edge-ev:1"]'
 
 
 def test_decode_edge_reconstructs_typed_edge():
@@ -148,7 +178,7 @@ def test_decode_edge_reconstructs_typed_edge():
         temporal=_temporal(),
         confidence=0.9,
         salience=0.4,
-        provenance=_provenance(),
+        provenance=_provenance(evidence_refs=["edge-ev:1"]),
     )
     row = encode_edge_properties(edge, identity_key="edge:alpha-beta")
 
@@ -161,3 +191,4 @@ def test_decode_edge_reconstructs_typed_edge():
     assert decoded.predicate == "contradicts"
     assert decoded.confidence == 0.9
     assert decoded.salience == 0.4
+    assert decoded.provenance.evidence_refs == ["edge-ev:1"]

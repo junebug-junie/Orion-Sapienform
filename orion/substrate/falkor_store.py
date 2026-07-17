@@ -2,8 +2,12 @@
 
 Queries and reads are served from the in-process cache (same shape as a warm
 GraphDBSubstrateStore). Durable writes go through an injectable sync client so
-unit tests never need a live FalkorDB. Cold-start hydration is best-effort via
-MATCH … RETURN native scalar properties when the client can answer.
+unit tests never need a live FalkorDB.
+
+Durable support is Concept + SubstrateEdge first. Cold-start hydration prefers
+native scalar properties and falls back to legacy ``payload_json`` rows,
+rewriting them to native properties (and removing the blob) on successful
+concept/edge decode.
 """
 
 from __future__ import annotations
@@ -14,7 +18,13 @@ from dataclasses import dataclass, replace
 from typing import Any, Protocol
 from urllib.parse import urlparse
 
-from orion.core.schemas.cognitive_substrate import BaseSubstrateNodeV1, SubstrateEdgeV1
+from pydantic import TypeAdapter
+
+from orion.core.schemas.cognitive_substrate import (
+    BaseSubstrateNodeV1,
+    SubstrateEdgeV1,
+    SubstrateNodeV1,
+)
 from orion.graph.property_guard import sanitize_metadata
 from orion.substrate.falkor_codec import (
     decode_concept_node,
@@ -31,6 +41,8 @@ from orion.substrate.store import (
 )
 
 logger = logging.getLogger("orion.substrate.falkor_store")
+
+NODE_ADAPTER = TypeAdapter(SubstrateNodeV1)
 
 
 class FalkorGraphClient(Protocol):
@@ -49,6 +61,7 @@ NATIVE_NODE_RETURN_FIELDS: tuple[str, ...] = (
     "identity_key",
     "label",
     "definition",
+    "taxonomy_path_json",
     "anchor_scope",
     "subject_ref",
     "promotion_state",
@@ -70,6 +83,7 @@ NATIVE_NODE_RETURN_FIELDS: tuple[str, ...] = (
     "provenance_correlation_id",
     "provenance_trace_id",
     "provenance_tier_rank",
+    "evidence_refs_json",
 )
 
 NATIVE_EDGE_RETURN_FIELDS: tuple[str, ...] = (
@@ -94,6 +108,7 @@ NATIVE_EDGE_RETURN_FIELDS: tuple[str, ...] = (
     "provenance_correlation_id",
     "provenance_trace_id",
     "provenance_tier_rank",
+    "evidence_refs_json",
 )
 
 
@@ -109,14 +124,34 @@ def _set_assignments(alias: str, params: dict[str, Any], *, skip: set[str]) -> s
 class RecordingFalkorClient:
     """Test double that records Cypher and optionally returns scripted rows."""
 
-    def __init__(self, *, hydrate_rows: list[dict[str, Any]] | None = None) -> None:
+    def __init__(
+        self,
+        *,
+        hydrate_node_rows: list[dict[str, Any]] | None = None,
+        hydrate_edge_rows: list[dict[str, Any]] | None = None,
+        hydrate_legacy_node_rows: list[dict[str, Any]] | None = None,
+        hydrate_legacy_edge_rows: list[dict[str, Any]] | None = None,
+        hydrate_rows: list[dict[str, Any]] | None = None,
+    ) -> None:
+        # hydrate_rows is a compatibility alias for hydrate_node_rows.
+        if hydrate_rows is not None and hydrate_node_rows is None:
+            hydrate_node_rows = hydrate_rows
         self.calls: list[tuple[str, dict[str, Any] | None]] = []
-        self._hydrate_rows = list(hydrate_rows or [])
+        self._hydrate_node_rows = list(hydrate_node_rows or [])
+        self._hydrate_edge_rows = list(hydrate_edge_rows or [])
+        self._hydrate_legacy_node_rows = list(hydrate_legacy_node_rows or [])
+        self._hydrate_legacy_edge_rows = list(hydrate_legacy_edge_rows or [])
 
     def graph_query(self, cypher: str, params: dict[str, Any] | None = None) -> Any:
         self.calls.append((cypher, params))
-        if "RETURN n.node_id AS node_id" in cypher or "RETURN e.edge_id AS edge_id" in cypher:
-            return self._hydrate_rows
+        if "WHERE n.payload_json IS NOT NULL" in cypher:
+            return self._hydrate_legacy_node_rows
+        if "WHERE e.payload_json IS NOT NULL" in cypher:
+            return self._hydrate_legacy_edge_rows
+        if "RETURN n.node_id AS node_id" in cypher:
+            return self._hydrate_node_rows
+        if "RETURN e.edge_id AS edge_id" in cypher:
+            return self._hydrate_edge_rows
         return []
 
 
@@ -149,7 +184,11 @@ def _with_sanitized_metadata(model: Any) -> Any:
 
 
 class FalkorSubstrateStore:
-    """SubstrateGraphStore with Falkor write-through and in-memory read cache."""
+    """SubstrateGraphStore with Falkor write-through and in-memory read cache.
+
+    Durable persistence is Concept + SubstrateEdge only. Non-concept node
+    upserts raise ``ValueError`` rather than writing incomplete native rows.
+    """
 
     def __init__(
         self,
@@ -177,9 +216,18 @@ class FalkorSubstrateStore:
                 "WHERE e.substrate_edge = true "
                 "RETURN " + _return_clause("e", NATIVE_EDGE_RETURN_FIELDS)
             )
+            legacy_node_rows = self._client.graph_query(
+                "MATCH (n:SubstrateNode) WHERE n.payload_json IS NOT NULL "
+                "RETURN n.payload_json AS payload_json, n.identity_key AS identity_key"
+            )
+            legacy_edge_rows = self._client.graph_query(
+                "MATCH ()-[e]->() WHERE e.payload_json IS NOT NULL "
+                "RETURN e.payload_json AS payload_json, e.identity_key AS identity_key"
+            )
         except Exception as exc:
             logger.warning("falkor_substrate_hydrate_failed error=%s", exc)
             return
+
         for row in _normalize_rows(node_rows):
             try:
                 node = decode_concept_node(row)
@@ -190,6 +238,7 @@ class FalkorSubstrateStore:
                 continue
             identity = row.get("identity_key")
             self._cache.upsert_node(identity_key=str(identity) if identity else None, node=node)
+
         for row in _normalize_rows(edge_rows):
             try:
                 edge = decode_edge(row)
@@ -200,6 +249,68 @@ class FalkorSubstrateStore:
                 continue
             identity = row.get("identity_key") or self._edge_identity(edge)
             self._cache.upsert_edge(identity_key=str(identity), edge=edge)
+
+        self._migrate_legacy_payload_nodes(_normalize_rows(legacy_node_rows))
+        self._migrate_legacy_payload_edges(_normalize_rows(legacy_edge_rows))
+
+    def _migrate_legacy_payload_nodes(self, rows: list[dict[str, Any]]) -> None:
+        for row in rows:
+            payload = row.get("payload_json")
+            if not payload:
+                continue
+            try:
+                node = NODE_ADAPTER.validate_json(payload)
+            except Exception:
+                logger.warning("falkor_substrate_legacy_node_invalid")
+                continue
+            if getattr(node, "node_kind", None) != "concept":
+                logger.warning(
+                    "falkor_substrate_legacy_node_skipped node_kind=%s node_id=%s",
+                    getattr(node, "node_kind", None),
+                    getattr(node, "node_id", None),
+                )
+                continue
+            identity = row.get("identity_key")
+            identity_key = str(identity) if identity else None
+            try:
+                # Rewrite to native properties and REMOVE payload_json.
+                self.upsert_node(identity_key=identity_key, node=node)
+                logger.info(
+                    "falkor_substrate_legacy_node_migrated node_id=%s identity_key=%s",
+                    node.node_id,
+                    identity_key or "",
+                )
+            except Exception as exc:
+                logger.warning(
+                    "falkor_substrate_legacy_node_migrate_failed node_id=%s error=%s",
+                    getattr(node, "node_id", None),
+                    exc,
+                )
+
+    def _migrate_legacy_payload_edges(self, rows: list[dict[str, Any]]) -> None:
+        for row in rows:
+            payload = row.get("payload_json")
+            if not payload:
+                continue
+            try:
+                edge = SubstrateEdgeV1.model_validate_json(payload)
+            except Exception:
+                logger.warning("falkor_substrate_legacy_edge_invalid")
+                continue
+            identity = row.get("identity_key") or self._edge_identity(edge)
+            try:
+                self.upsert_edge(identity_key=str(identity), edge=edge)
+                logger.info(
+                    "falkor_substrate_legacy_edge_migrated edge_id=%s identity_key=%s",
+                    edge.edge_id,
+                    identity,
+                )
+            except Exception as exc:
+                logger.warning(
+                    "falkor_substrate_legacy_edge_migrate_failed edge_id=%s error=%s",
+                    edge.edge_id,
+                    exc,
+                )
 
     @staticmethod
     def _edge_identity(edge: SubstrateEdgeV1) -> str:
@@ -218,11 +329,20 @@ class FalkorSubstrateStore:
         return self._cache.get_edge_id_by_identity(identity_key)
 
     def upsert_node(self, *, identity_key: str | None, node: BaseSubstrateNodeV1) -> None:
+        if getattr(node, "node_kind", None) != "concept":
+            raise ValueError(
+                "FalkorSubstrateStore durable writes support concept nodes only; "
+                f"got node_kind={getattr(node, 'node_kind', None)!r}"
+            )
         node = _with_sanitized_metadata(node)
         params = encode_node_properties(node, identity_key)
         label = node_label_for_kind(str(node.node_kind))
         assignments = _set_assignments("n", params, skip={"node_id"})
-        cypher = f"MERGE (n:SubstrateNode:{label} {{node_id: $node_id}}) SET {assignments}"
+        cypher = (
+            f"MERGE (n:SubstrateNode:{label} {{node_id: $node_id}}) "
+            f"SET {assignments} "
+            "REMOVE n.payload_json"
+        )
         try:
             self._client.graph_query(cypher, params)
         except Exception as exc:
@@ -239,7 +359,8 @@ class FalkorSubstrateStore:
             "MERGE (source:SubstrateNode {node_id: $source_id}) "
             "MERGE (target:SubstrateNode {node_id: $target_id}) "
             f"MERGE (source)-[e:`{relationship_type}` {{edge_id: $edge_id}}]->(target) "
-            f"SET {assignments}"
+            f"SET {assignments} "
+            "REMOVE e.payload_json"
         )
         try:
             self._client.graph_query(cypher, params)

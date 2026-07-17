@@ -2,10 +2,14 @@
 
 This module is intentionally pure: no Redis client, no store cache, no graph
 queries. It owns the durable property allowlist used by FalkorSubstrateStore.
+
+Durable Falkor support is intentionally Concept + SubstrateEdge first. Other
+node kinds must not be silently persisted as incomplete native rows.
 """
 
 from __future__ import annotations
 
+import json
 from collections.abc import Mapping
 from datetime import datetime
 from typing import Any
@@ -44,6 +48,22 @@ def _dt(value: datetime | None) -> str | None:
     return value.isoformat() if value is not None else None
 
 
+def _json_list(values: list[Any] | None) -> str:
+    return json.dumps(list(values or []), ensure_ascii=False, sort_keys=True)
+
+
+def _parse_json_list(raw: Any) -> list[Any]:
+    if raw is None or raw == "":
+        return []
+    if isinstance(raw, list):
+        return list(raw)
+    try:
+        parsed = json.loads(str(raw))
+    except (TypeError, ValueError, json.JSONDecodeError):
+        return []
+    return list(parsed) if isinstance(parsed, list) else []
+
+
 def _common_node_properties(node: BaseSubstrateNodeV1, identity_key: str | None) -> dict[str, Any]:
     activation = node.signals.activation
     provenance = node.provenance
@@ -73,14 +93,19 @@ def _common_node_properties(node: BaseSubstrateNodeV1, identity_key: str | None)
         "provenance_correlation_id": provenance.correlation_id,
         "provenance_trace_id": provenance.trace_id,
         "provenance_tier_rank": provenance.tier_rank,
+        "evidence_refs_json": _json_list(provenance.evidence_refs),
     }
 
 
 def encode_node_properties(node: BaseSubstrateNodeV1, identity_key: str | None) -> dict[str, Any]:
+    if node.node_kind != "concept":
+        raise ValueError(
+            f"falkor durable path supports concept nodes only; got node_kind={node.node_kind!r}"
+        )
     props = _common_node_properties(node, identity_key)
-    if node.node_kind == "concept":
-        props["label"] = getattr(node, "label")
-        props["definition"] = getattr(node, "definition", None)
+    props["label"] = getattr(node, "label")
+    props["definition"] = getattr(node, "definition", None)
+    props["taxonomy_path_json"] = _json_list(getattr(node, "taxonomy_path", None))
     return props
 
 
@@ -109,6 +134,7 @@ def encode_edge_properties(edge: SubstrateEdgeV1, identity_key: str) -> dict[str
         "provenance_correlation_id": provenance.correlation_id,
         "provenance_trace_id": provenance.trace_id,
         "provenance_tier_rank": provenance.tier_rank,
+        "evidence_refs_json": _json_list(provenance.evidence_refs),
     }
 
 
@@ -129,7 +155,7 @@ def _provenance_from_row(row: Mapping[str, Any]) -> SubstrateProvenanceV1:
         model_name=row.get("provenance_model_name"),
         correlation_id=row.get("provenance_correlation_id"),
         trace_id=row.get("provenance_trace_id"),
-        evidence_refs=[],
+        evidence_refs=[str(item) for item in _parse_json_list(row.get("evidence_refs_json"))],
         tier_rank=row.get("provenance_tier_rank"),
     )
 
@@ -154,6 +180,7 @@ def decode_concept_node(row: Mapping[str, Any]) -> ConceptNodeV1 | None:
         node_id=str(row["node_id"]),
         label=str(row["label"]),
         definition=row.get("definition"),
+        taxonomy_path=[str(item) for item in _parse_json_list(row.get("taxonomy_path_json"))],
         anchor_scope=row["anchor_scope"],
         subject_ref=row.get("subject_ref"),
         promotion_state=row.get("promotion_state") or "proposed",

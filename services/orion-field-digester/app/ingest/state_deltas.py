@@ -95,6 +95,15 @@ def delta_to_perturbations(delta: StateDeltaV1) -> list[Perturbation]:
         # (target_kind == "active_node_pressure"), both one-directional.
         # mode="replace" bypasses the add-mode ceiling
         # entirely so a prior 1.0 is fully cleared, not just added to.
+        #
+        # Precedence (Juniper's explicit call, 2026-07-17 review follow-up):
+        # if this clear and an active_node_pressure "suppress" op both land
+        # on expected_offline_suppression for the same node in the same
+        # tick, the clear wins -- biometrics liveness ground truth beats a
+        # same-tick suppress signal. That's enforced order-independently in
+        # app/digestion/perturbation.py::apply_perturbations() (not here),
+        # since both perturbations only meet each other once they're
+        # flattened into one list in app/worker.py::_tick().
         if after.get("expected_online") is True:
             out.append(
                 Perturbation(

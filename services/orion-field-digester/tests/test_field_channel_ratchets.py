@@ -139,6 +139,92 @@ def test_suppression_latch_then_clear_end_to_end() -> None:
     )
 
 
+def test_same_tick_clear_beats_suppress_regardless_of_arrival_order() -> None:
+    """Juniper's explicit precedence call (2026-07-17 review follow-up): if a
+    node_biometrics "back online" clear (mode="replace", intensity=0.0) and an
+    active_node_pressure "suppress" perturbation (mode="add", intensity=1.0) both
+    land on expected_offline_suppression for the same node in the same
+    apply_perturbations() batch, the clear must win -- regardless of which one
+    happens to be later in the flattened per-tick perturbations list. Before the
+    precedence fix in apply_perturbations(), this was purely an accident of list
+    order: whichever perturbation was applied last would win, with no policy
+    behind it."""
+    suppress = Perturbation(
+        node_id="node:circe",
+        channel="expected_offline_suppression",
+        intensity=1.0,
+        label="delta_suppress_1",
+    )
+    clear = Perturbation(
+        node_id="node:circe",
+        channel="expected_offline_suppression",
+        intensity=0.0,
+        label="delta_clear_1",
+        mode="replace",
+    )
+
+    # Order 1: suppress arrives first, clear arrives last in the same batch.
+    # Under naive last-write-wins this would already clear correctly -- included
+    # for completeness, not because it's the risky order.
+    state_suppress_then_clear = _state()
+    apply_perturbations(state_suppress_then_clear, [suppress, clear])
+    assert state_suppress_then_clear.node_vectors["node:circe"]["expected_offline_suppression"] == 0.0
+
+    # Order 2: clear arrives first, suppress arrives last in the same batch.
+    # Under naive last-write-wins this would incorrectly re-latch to 1.0 -- this
+    # is the order that exposed the original ordering hazard.
+    state_clear_then_suppress = _state()
+    apply_perturbations(state_clear_then_suppress, [clear, suppress])
+    assert state_clear_then_suppress.node_vectors["node:circe"]["expected_offline_suppression"] == 0.0, (
+        "a same-tick clear must win over a same-tick suppress even when the "
+        "suppress is applied after the clear in the batch"
+    )
+
+    # Both perturbations' labels should still be recorded in recent_perturbations
+    # for audit purposes even though the suppress's node_vec write was overridden.
+    assert "delta_suppress_1" in state_clear_then_suppress.recent_perturbations
+    assert "delta_clear_1" in state_clear_then_suppress.recent_perturbations
+
+
+def test_same_tick_clear_beats_suppress_via_real_delta_to_perturbations() -> None:
+    """Same precedence guarantee, but exercised end-to-end through
+    delta_to_perturbations() for both signal sources rather than hand-built
+    Perturbation objects, and through the full digestion tick."""
+    state = _state()
+
+    suppress_delta = StateDeltaV1(
+        delta_id="delta_suppress_real_1",
+        target_projection="active_node_pressure_projection",
+        target_kind="active_node_pressure",
+        target_id="node:circe",
+        operation="suppress",
+        after={"node_id": "circe", "pressure_score": 0.0, "active_pressures": []},
+        caused_by_event_ids=["gev_suppress_1"],
+        reducer_id="node_pressure_reducer",
+    )
+    clear_delta = _node_biometrics_delta(node_id="circe", expected_online=True)
+
+    suppress_perturbations = delta_to_perturbations(suppress_delta)
+    clear_perturbations = delta_to_perturbations(clear_delta)
+    assert any(p.channel == "expected_offline_suppression" and p.mode == "add" for p in suppress_perturbations)
+    assert any(
+        p.channel == "expected_offline_suppression" and p.mode == "replace" and p.intensity == 0.0
+        for p in clear_perturbations
+    )
+
+    # Flatten in the order that exposed the hazard: clear landing first, suppress
+    # landing after it in the same batch, exactly as app/worker.py::_tick() would
+    # if the suppress delta's receipt happened to be fetched after the clear
+    # delta's receipt. Naive last-write-wins would incorrectly re-latch to 1.0 here.
+    run_digestion_tick(
+        state,
+        perturbations=clear_perturbations + suppress_perturbations,
+        decay_rate=1.0,
+        diffusion_rate=0.0,
+    )
+    assert state.node_vectors["node:circe"]["expected_offline_suppression"] == 0.0
+
+
 # ---------------------------------------------------------------------------
 # Collateral damage: apply_suppression's floor/zero effect on availability/staleness
 # ---------------------------------------------------------------------------

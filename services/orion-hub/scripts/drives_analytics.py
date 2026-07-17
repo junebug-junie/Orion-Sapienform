@@ -145,6 +145,7 @@ def build_window_kpis(
         drive_stats_from_histogram(dict(active_count_hist or {})),
         dict(dominant_counts or {}),
     )
+    verdict = drive_economy_verdict_from_drive_stats(stats)
     return {
         "record_count": stats.record_count,
         "coactivation_frac": stats.coactivation_frac,
@@ -153,12 +154,12 @@ def build_window_kpis(
         "dominant_counts": dict(stats.dominant_counts),
         "concurrent_active_hist": dict(stats.concurrent_active_hist),
         "mean_pressures": {k: float(mean_pressures.get(k, 0.0)) for k in DRIVE_KEYS},
-        "gate_verdict_drive_only": drive_economy_verdict_from_drive_stats(stats),
+        "gate_verdict_drive_only": verdict,
         "coverage": dict(coverage or {}),
         # Explicit: Hub strip never claims full offline-gate GO.
         "gate_note": (
             "GO_DRIVE_ONLY is drive-rail only; full GO still needs resource_pressure"
-            if drive_economy_verdict_from_drive_stats(stats) == GO_DRIVE_ONLY
+            if verdict == GO_DRIVE_ONLY
             else None
         ),
     }

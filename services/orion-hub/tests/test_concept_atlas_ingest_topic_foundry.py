@@ -151,7 +151,18 @@ def _keywords_payload(topic_id: int) -> dict[str, Any]:
     return {"topic_id": topic_id, "keywords": fixtures.get(topic_id, [])}
 
 
-def _make_fake_get(*, topics_payload: dict[str, Any], run_id: str = FAKE_RUN_ID, unreachable: bool = False):
+def _segments_payload_empty(run_id: str = FAKE_RUN_ID) -> dict[str, Any]:
+    return {"run_id": run_id, "items": [], "limit": 1000, "offset": 0, "total": 0}
+
+
+def _make_fake_get(
+    *,
+    topics_payload: dict[str, Any],
+    run_id: str = FAKE_RUN_ID,
+    unreachable: bool = False,
+    segments_payload: Optional[dict[str, Any]] = None,
+    segments_unreachable: bool = False,
+):
     calls: list[tuple[str, Optional[dict[str, Any]]]] = []
 
     def fake_get(url: str, params: Optional[dict[str, Any]] = None, timeout: Optional[float] = None):
@@ -165,6 +176,10 @@ def _make_fake_get(*, topics_payload: dict[str, Any], run_id: str = FAKE_RUN_ID,
         if "/topics/" in url and url.endswith("/keywords"):
             topic_id = int(url.rsplit("/", 2)[1])
             return _FakeResponse(200, _keywords_payload(topic_id))
+        if url.endswith("/segments"):
+            if segments_unreachable:
+                raise requests.exceptions.ConnectionError("connection refused")
+            return _FakeResponse(200, segments_payload if segments_payload is not None else _segments_payload_empty(run_id))
         raise AssertionError(f"unexpected URL in fake_get: {url}")
 
     return fake_get, calls
@@ -213,7 +228,9 @@ def test_ingest_normal_run_writes_concepts_excludes_outlier_and_below_floor(
     # is below the adapter's default min_doc_count floor of 3.
     assert body["concepts_written"] == 2
     assert body["evidence_nodes_written"] == 2
-    assert body["edges_written"] == 2  # supports edges only; no co_occurs_with (empty segment_topic_map)
+    assert body["edges_written"] == 2  # supports edges only; no co_occurs_with (no segments fixture -> empty map)
+    assert body["segments_fetched"] == 0
+    assert body["segment_topic_map_buckets"] == 0
 
     snapshot = store.snapshot()
     concept_nodes = [n for n in snapshot.nodes.values() if n.node_kind == "concept"]
@@ -864,3 +881,167 @@ def test_ingest_second_call_does_not_duplicate_or_reclassify_already_typed_pair(
     ]
     # Exactly one typed edge for this pair -- not two.
     assert len(typed_edges) == 1
+
+
+# --- segment_topic_map construction (co_occurs_with edges from real segments) ---
+#
+# Regression coverage for the bug found via live verification: the ingest route
+# used to always pass segment_topic_map={} to map_topic_foundry_run_to_substrate(),
+# so co_occurs_with edges were never produced, so _classify_typed_concept_relations
+# (above) never had any real candidate pairs to classify -- despite being fully
+# wired and tested against synthetic fixtures. Confirmed live: the running
+# FalkorDB substrate graph had zero co_occurs_with edges despite real ingestion
+# having run. Fixed by fetching GET /segments and grouping by UTC-day bucket of
+# each segment's start_at (SegmentRecord has no direct session/conversation id).
+
+
+def _segments_payload_same_day(run_id: str = FAKE_RUN_ID) -> dict[str, Any]:
+    # Two segments for topic 0 and two for topic 1, all on 2026-07-15 (same UTC
+    # day bucket) -- topics 0 and 1 co-occurring in that bucket should produce a
+    # co_occurs_with edge between them. A third segment for topic -1 (outlier)
+    # and a fourth with no start_at must both be excluded from the map entirely.
+    return {
+        "run_id": run_id,
+        "items": [
+            {"segment_id": "seg-0a", "topic_id": 0, "start_at": "2026-07-15T09:00:00Z"},
+            {"segment_id": "seg-1a", "topic_id": 1, "start_at": "2026-07-15T14:30:00+00:00"},
+            {"segment_id": "seg-outlier", "topic_id": -1, "start_at": "2026-07-15T10:00:00Z"},
+            {"segment_id": "seg-no-ts", "topic_id": 0, "start_at": None},
+        ],
+        "limit": 1000,
+        "offset": 0,
+        "total": 4,
+    }
+
+
+def test_ingest_builds_segment_topic_map_and_produces_co_occurs_with_edges(
+    client: TestClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from orion.substrate.store import InMemorySubstrateGraphStore
+
+    store = InMemorySubstrateGraphStore()
+    fake_get, calls = _make_fake_get(
+        topics_payload=_topics_payload_normal(),
+        segments_payload=_segments_payload_same_day(),
+    )
+    _patch_topic_foundry_client(monkeypatch, fake_get)
+    _patch_base_url(monkeypatch, FAKE_BASE_URL)
+    _patch_store(monkeypatch, store)
+
+    r = client.post("/api/substrate/concepts/ingest-topic-foundry")
+    assert r.status_code == 200
+    body = r.json()
+    assert body["available"] is True
+
+    segments_call_urls = [url for url, _params in calls if url.endswith("/segments")]
+    assert len(segments_call_urls) == 1
+
+    snapshot = store.snapshot()
+    co_occurs_edges = [e for e in snapshot.edges.values() if e.predicate == "co_occurs_with"]
+    assert len(co_occurs_edges) == 1
+    edge = co_occurs_edges[0]
+    node_ids = {edge.source.node_id, edge.target.node_id}
+    assert node_ids == {
+        f"sub-concept-topicfoundry-{FAKE_RUN_ID}-0",
+        f"sub-concept-topicfoundry-{FAKE_RUN_ID}-1",
+    }
+    # edges_written in the response counts the co_occurs_with edge too (plus
+    # the 2 supports edges from the normal-topics fixture).
+    assert body["edges_written"] == 3
+    assert body["segments_fetched"] == 4  # includes the excluded outlier + no-timestamp segments
+    assert body["segment_topic_map_buckets"] == 1  # all real segments land in the same UTC day
+
+
+def test_ingest_segments_fetch_failure_still_ingests_concepts(
+    client: TestClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A segments-fetch failure must degrade to an empty segment_topic_map, not
+    abort the route -- concept/evidence ingestion is independent of it."""
+    from orion.substrate.store import InMemorySubstrateGraphStore
+
+    store = InMemorySubstrateGraphStore()
+    fake_get, _calls = _make_fake_get(topics_payload=_topics_payload_normal(), segments_unreachable=True)
+    _patch_topic_foundry_client(monkeypatch, fake_get)
+    _patch_base_url(monkeypatch, FAKE_BASE_URL)
+    _patch_store(monkeypatch, store)
+
+    r = client.post("/api/substrate/concepts/ingest-topic-foundry")
+    assert r.status_code == 200
+    body = r.json()
+    assert body["available"] is True
+    assert body["concepts_written"] == 2  # unaffected by the segments failure
+    assert body["edges_written"] == 2  # supports edges only; no co_occurs_with
+    assert body["segments_fetched"] == 0
+    assert body["segment_topic_map_buckets"] == 0
+
+    snapshot = store.snapshot()
+    co_occurs_edges = [e for e in snapshot.edges.values() if e.predicate == "co_occurs_with"]
+    assert co_occurs_edges == []
+
+
+def test_ingest_co_occurs_with_edge_clears_classification_threshold(
+    client: TestClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Prove the fix actually unblocks _classify_typed_concept_relations, not
+    just that a co_occurs_with edge exists: a single ingestion call with enough
+    same-day segment overlap must produce an edge whose co_occurrence_count
+    clears orion.substrate.relation_classification's DEFAULT_COUNT_THRESHOLD (5),
+    and is_worth_classifying() must say yes for it."""
+    from orion.substrate.relation_classification import is_worth_classifying
+    from orion.substrate.store import InMemorySubstrateGraphStore
+
+    store = InMemorySubstrateGraphStore()
+
+    # 6 distinct day-buckets, each with one segment for topic 0 and one for
+    # topic 1 -- 6 co-occurrences of the (0, 1) pair, clearing threshold=5.
+    items = []
+    for day in range(15, 21):  # 2026-07-15 .. 2026-07-20
+        items.append({"segment_id": f"seg-0-{day}", "topic_id": 0, "start_at": f"2026-07-{day}T09:00:00Z"})
+        items.append({"segment_id": f"seg-1-{day}", "topic_id": 1, "start_at": f"2026-07-{day}T14:00:00Z"})
+    segments_payload = {"run_id": FAKE_RUN_ID, "items": items, "limit": 1000, "offset": 0, "total": len(items)}
+
+    fake_get, _calls = _make_fake_get(topics_payload=_topics_payload_normal(), segments_payload=segments_payload)
+    _patch_topic_foundry_client(monkeypatch, fake_get)
+    _patch_base_url(monkeypatch, FAKE_BASE_URL)
+    _patch_store(monkeypatch, store)
+
+    r = client.post("/api/substrate/concepts/ingest-topic-foundry")
+    assert r.status_code == 200
+
+    snapshot = store.snapshot()
+    co_occurs_edges = [e for e in snapshot.edges.values() if e.predicate == "co_occurs_with"]
+    assert len(co_occurs_edges) == 1
+    edge = co_occurs_edges[0]
+    assert edge.metadata.get("co_occurrence_count") == 6
+
+    concept_nodes = {n.node_id: n for n in snapshot.nodes.values() if n.node_kind == "concept"}
+    node_a = concept_nodes[edge.source.node_id]
+    node_b = concept_nodes[edge.target.node_id]
+    assert is_worth_classifying(node_a, node_b, edge, strategy="count") is True
+
+
+# --- _day_bucket_from_timestamp -----------------------------------------------
+
+
+def test_day_bucket_from_timestamp_parses_z_suffixed_iso() -> None:
+    from scripts.concept_atlas_routes import _day_bucket_from_timestamp
+
+    assert _day_bucket_from_timestamp("2026-07-15T10:23:00Z") == "2026-07-15"
+
+
+def test_day_bucket_from_timestamp_parses_offset_iso() -> None:
+    from scripts.concept_atlas_routes import _day_bucket_from_timestamp
+
+    assert _day_bucket_from_timestamp("2026-07-15T10:23:00+00:00") == "2026-07-15"
+
+
+def test_day_bucket_from_timestamp_garbage_returns_none() -> None:
+    from scripts.concept_atlas_routes import _day_bucket_from_timestamp
+
+    assert _day_bucket_from_timestamp("not-a-timestamp") is None
+
+
+def test_day_bucket_from_timestamp_none_returns_none() -> None:
+    from scripts.concept_atlas_routes import _day_bucket_from_timestamp
+
+    assert _day_bucket_from_timestamp(None) is None

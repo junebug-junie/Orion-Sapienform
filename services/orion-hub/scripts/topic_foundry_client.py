@@ -256,6 +256,65 @@ def trigger_training_run(
         raise TopicFoundryClientError(f"topic_foundry_train_trigger_invalid_json: {exc}") from exc
 
 
+def fetch_segments_for_run(
+    base_url: str,
+    run_id: str,
+    *,
+    timeout: float = DEFAULT_TIMEOUT_SEC,
+    limit: int = 1000,
+) -> list[dict[str, Any]]:
+    """Return the raw ``SegmentRecord`` dicts for ``run_id`` (``GET /segments``,
+    ``format=wrapped`` for the paginated ``SegmentListPage`` shape,
+    ``include_bounds=True`` so each item carries ``start_at``/``end_at``).
+
+    Raises ``TopicFoundryClientError`` on any network/HTTP/parse failure or a
+    response missing the expected ``items`` list. An empty ``items`` list (a
+    real run with zero segments) is not an error -- returns ``[]``.
+
+    ``limit`` is capped by the API itself at 1000 (``ge=1, le=1000`` on
+    ``GET /segments``); this function's own default matches that ceiling
+    since the caller (segment_topic_map construction) wants the whole run's
+    segments, not a page. No pagination loop -- a run with more than 1000
+    segments silently only gets co-occurrence built from the first 1000
+    (API's default `sort_by=created_at, sort_dir=desc`, a near-arbitrary
+    subset for same-run segments). Logs a warning (not silent) when the
+    response's own `total` exceeds what was fetched, so this is at least
+    visible in logs even though nothing here backfills the rest via
+    pagination.
+    """
+    url = f"{base_url.rstrip('/')}/segments"
+    try:
+        resp = requests.get(
+            url,
+            params={"run_id": run_id, "format": "wrapped", "include_bounds": True, "limit": limit},
+            timeout=timeout,
+        )
+        resp.raise_for_status()
+        payload = resp.json()
+    except requests.RequestException as exc:
+        raise TopicFoundryClientError(f"topic_foundry_segments_request_failed: {exc}") from exc
+    except ValueError as exc:
+        raise TopicFoundryClientError(f"topic_foundry_segments_invalid_json: {exc}") from exc
+
+    items = payload.get("items") if isinstance(payload, dict) else None
+    if items is None:
+        raise TopicFoundryClientError("topic_foundry_segments_malformed_response")
+    result = [item for item in items if isinstance(item, dict)]
+
+    total = payload.get("total") if isinstance(payload, dict) else None
+    if isinstance(total, int) and total > len(result):
+        logger.warning(
+            "topic_foundry_segments_truncated run_id=%s fetched=%s total=%s limit=%s -- "
+            "segment_topic_map co-occurrence will only reflect the fetched subset",
+            run_id,
+            len(result),
+            total,
+            limit,
+        )
+
+    return result
+
+
 def fetch_run_topics_and_keywords(
     base_url: str,
     *,

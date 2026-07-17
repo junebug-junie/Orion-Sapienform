@@ -4,6 +4,16 @@ Status: DESIGN, not implemented. Ground truth verified live 2026-07-15
 against `main` via direct file reads (not grep-only) for every load-bearing
 claim below.
 
+**Update (2026-07-17):** all 8 phases below shipped across PRs #1079, #1086,
+#1092, #1094, #1096, #1097, #1101. This spec's own non-goal ("no new graph
+infrastructure ... do not wire into `GraphDBSubstrateStore`/SPARQL") held —
+the persistence backend that actually shipped is FalkorDB, not SPARQL/RDF,
+per `docs/superpowers/specs/2026-07-16-falkordb-property-graph-routing-design.md`
+(PR #1105) — a decision made after this spec was written, superseding the
+"in-memory for now" framing in the original Phase 8/Concept Atlas sections
+below. Live-verified: Concept Atlas's concept graph persists in FalkorDB
+across Hub restarts, not just Hub process memory.
+
 Scope decided by Juniper: replace concept-induction's NLP extractor with the
 already-built, already-unsupervised `orion-topic-foundry` clustering
 pipeline, fix the concept-identity merge bug, add a thin typed-edge layer on

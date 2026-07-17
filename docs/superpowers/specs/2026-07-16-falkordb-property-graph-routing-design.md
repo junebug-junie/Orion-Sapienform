@@ -1,7 +1,7 @@
 # FalkorDB property-graph doctrine + persistence router — design spec
 
 **Date:** 2026-07-16
-**Status:** DESIGN — guts implemented on `feat/falkordb-property-graph-routing` (intent, routes, property guard, Falkor/routed stores, `services/orion-falkordb/`). **2026-07-16:** graphiti `--profile falkordb` removed; live Falkor cutover to shared stack documented in `services/orion-falkordb/README.md`. Concept Atlas / concept-induction wiring and live SPARQL cutover deferred.
+**Status:** WEDGE LIVE — guts implemented on `feat/falkordb-property-graph-routing` (intent, routes, property guard, Falkor/routed stores, `services/orion-falkordb/`), merged via #1099. **2026-07-16:** graphiti `--profile falkordb` removed; live Falkor cutover to shared stack documented in `services/orion-falkordb/README.md`. **2026-07-17:** Concept Atlas / Hub wiring done and live-verified (`SUBSTRATE_STORE_BACKEND=falkor`, PR #1105) — no longer deferred; see the acceptance-checks update below. `substrate-runtime`'s own cutover (still `sparql` as of this note) and the `orion:kg:edge:ingest.v1` → rdf-writer deprecation remain open, tracked separately.
 **Mode:** Proposal (touches memory / cognitive-graph persistence; AGENTS.md §0A proposal mode)
 **Related:**
 - `docs/superpowers/specs/2026-07-15-concept-atlas-graph-pipeline-design.md` (first consumer seam)
@@ -366,10 +366,17 @@ Two Falkor *usages* may share one FalkorDB instance with **separate graph names*
 - [ ] Spec reviewed by Juniper
 - [ ] Implementation plan exists for wedge only (substrate + concept atlas), linking back to this doctrine
 - [ ] `GraphWriteIntentV1` (or equivalent) registered in schema registry with producer+consumer tests
-- [ ] Route table documented in `.env_example` for substrate-runtime and hub
+- [x] Route table documented in `.env_example` for substrate-runtime (#1099) and hub (#1105)
 - [ ] Property allowlist tests include a cathedral rejection case
 - [ ] Live metric: Fuseki update rate attribution by workload after wedge deploy
-- [ ] Concept Atlas durability demo (restart hub, concepts remain)
+- [x] Concept Atlas durability demo (restart hub, concepts remain) — 2026-07-17, live-verified against
+      the real `orion-athena-falkordb` container, not just Hub's API response (which would look
+      identical on the old `in_memory` backend): `redis-cli GRAPH.QUERY orion_substrate "MATCH (n)
+      RETURN count(n)"` → 3 nodes, `MATCH ()-[e]->() RETURN type(e), count(e)` → `associated_with`:
+      2, matching Hub's `/api/substrate/concepts/summary` exactly. Hub container restarted a second
+      time with no config change; FalkorDB's node count stayed at 3 (not 6, same `node_id`s) —
+      confirms idempotent upsert against a real persistent backend, not a store recreated fresh
+      on every boot.
 
 ---
 

@@ -6,15 +6,27 @@ against the current live system (post `AutonomyStateV2` retirement, post
 O1-O4/O2/O3 signal-integrity fixes — see
 `orion/autonomy/drives_and_autonomy_retrospective.md`). Produced by an
 independent brainstorming pass (2026-07-17) that traced `tensions.py` and
-`signal_drive_map.yaml` directly rather than re-deriving the question from
-scratch.
+`signal_drive_map.yaml` directly, then measured (not guessed) whether
+`autonomy`'s dedicated grounding mechanism actually fires live
+(`scripts/analysis/measure_origination_gate.py`, PR #1156).
 
-No code changes are proposed here. `DRIVE_KEYS`
+**This revision (same day) supersedes this doc's own first-pass verdict on
+`autonomy`.** The first pass proposed re-grounding `autonomy` the way O3
+re-grounded `predictive` — give it a distinguishing signal source. That
+signal source already existed (`OriginationEngine`, flag-on, wired live) and
+was measured directly: it has never fired, and its composite score never
+gets within 0.13 of its own activation threshold across 84,511 real ticks.
+Two independent grounding attempts for `autonomy` have now failed on
+evidence. The revised verdict below retires `autonomy` as a sixth drive
+rather than attempting a third grounding pass.
+
+This document proposes a code change (dropping `autonomy` from
+`DRIVE_KEYS`, reframing self-initiation as an event rather than a drive).
+Per root `CLAUDE.md` §0A, changes to this taxonomy are cognition-loop-adjacent
+and need explicit sign-off before implementation — this document is that
+sign-off request, not the implementation. `DRIVE_KEYS`
 (`orion/spark/concept_induction/drives.py:10`), `signal_drive_map.yaml`, and
-`DriveStateV1`'s shape are all left untouched. Per root `CLAUDE.md` §0A,
-changes to this taxonomy are cognition-loop-adjacent and need explicit
-sign-off before implementation — this document is that sign-off request,
-not the implementation.
+`DriveStateV1`'s shape are all still untouched by this document itself.
 
 ## The five questions, answered
 
@@ -51,11 +63,31 @@ readings, not three drives computing the same thing with different labels.
 
 **3. Does `autonomy`'s name match what actually fires it?**
 
-No — confirmed live, not just in the prior audit. Its inputs (novelty,
-uncertainty, low feedback score) are the same generic-distress signature as
-`continuity`, with no differentiator. This is exactly the state `predictive`
-was in before O3 re-grounded it on `overall_surprise`. `autonomy` has not
-had the equivalent fix. See "Recommended next patch" below.
+No, and this is now settled by measurement, not argument. Two independent
+mechanisms feed `autonomy`, and both fail to ground it:
+
+- Its generic tension inputs (novelty, uncertainty, low feedback score) are
+  the same distress signature as `continuity`, with no differentiator —
+  this was the first-pass finding, unchanged.
+- Its *dedicated* mechanism, `OriginationEngine`
+  (`orion/autonomy/endogenous_origination.py`, wired live in
+  `bus_worker.py:735-750`, flag-on since 2026-07-15), was measured directly
+  via `scripts/analysis/measure_origination_gate.py` (PR #1156), replaying
+  the real production code over 84,511 historical self-state ticks (48h).
+  Result: zero fires, matching zero `tension.endogenous.v1` rows in live
+  `drive_audits` over the same window. Its composite score `P` never
+  exceeded 0.4193 against a 0.55 activation threshold, and barely varied at
+  all (p50=0.317, p99.9=0.382). The weakest sub-signal, `drift` (from
+  `dimension_trajectory`), capped at 0.207 against a theoretical [0,1]
+  range — the same "structurally flat, not just under-threshold" pattern
+  already found and fixed for `predictive` before O3, and for several
+  biometrics channels earlier in this investigation.
+
+Unlike `predictive`, which had exactly one grounding attempt before O3 fixed
+it, `autonomy` has now had two independent attempts fail. **Verdict: retire
+`autonomy` as a distinct drive.** See "Reimagined taxonomy" below — this
+replaces the first-pass recommendation (re-ground it, mirroring O3) with a
+structural change instead of a third grounding attempt.
 
 **4. Is six a hard technical constraint?**
 
@@ -89,9 +121,11 @@ action over time.*
 | `capability` | resource/execution pressure, biometric strain, failure severity | none directly — see below | **Keep, reclassify** — infra/enabling, not a mission-peer category |
 | `relational` | valence drop, social hazards (cooldown loops, self-message loops) | social grounding (direct name match) | **Keep** — real, distinct signal |
 | `predictive` | `prediction_surprise` off `overall_surprise` (since O3) | perception, error correction | **Keep** — freshly re-grounded, don't undo |
-| `autonomy` | novelty, uncertainty, low feedback score (generic distress) | coherent action over time / self-initiation — nominally, not actually | **Re-ground, don't rename** — see below |
+| `autonomy` | novelty, uncertainty, low feedback score (generic distress); dedicated `OriginationEngine` signal measured dead (PR #1156) | coherent action over time / self-initiation — nominally, not actually, twice-measured | **Retire as a drive** — reframe self-initiation as an event over the other four, see below |
 
-Two mission items have **no drive coverage**: `memory` and `reflection`.
+The reimagined taxonomy is **five drives**: `coherence, continuity,
+capability (reclassified), relational, predictive`. Two mission items still
+have **no drive coverage**: `memory` and `reflection`.
 See the brainstorm section below — this is deliberately not resolved by
 inventing a seventh/eighth drive today.
 
@@ -107,29 +141,65 @@ infrastructural/enabling drive rather than treated as a peer of
 `relational` or `predictive` in future taxonomy reviews. This is a
 documentation change only — no code implication.
 
-### Recommended next patch: re-ground `autonomy`, don't rename it
+### Reimagined taxonomy: five drives, self-initiation reframed as an event
 
-Renaming `autonomy` to something that matches its current generic-distress
-inputs (e.g. `agency-frustration`) would just relabel the same problem under
-a new name. The move that actually worked for `predictive` was giving it a
-distinguishing *signal*, not a new label. The equivalent for `autonomy`:
-route `endogenous_origination`'s outcome events (success/failure of a
-self-initiated action, dispatch outcome status) into `signal_drive_map.yaml`
-as `autonomy`'s primary tension source, the same way `overall_surprise`
-became `predictive`'s.
+`autonomy` was asked to be a peer of `coherence`/`continuity`/`relational`/
+`predictive` — its own felt pressure, minted from its own tensions, with its
+own activation threshold. That framing has now failed twice on evidence
+(above). The founding charter itself never actually required this framing —
+its own words (retrospective §1): *"Autonomy doesn't come from tools. It
+comes from pressure."* Not "autonomy is a pressure" — self-initiated action
+*emerges from* pressure, any of the real pressures. Making it a sixth,
+parallel channel competing for its own tension-minting share was the
+category error, not a naming problem, not a threshold problem, not a
+missing-signal problem to patch a third time.
 
-This is **not implemented here** — it is a proposal for a future patch,
-scoped the same way O3 was: a new tension block in
-`extract_tensions_from_self_state()` or a new signal-kind entry in
-`signal_drive_map.yaml`, with the same delta-gating discipline O3's review
-caught missing on its first pass (unconditional firing on every tick
-reproduces the exact saturation pattern the O1-O4/O2/O3 series spent two
-weeks fixing).
+**The reimagining:** drop `autonomy` from `DRIVE_KEYS`. Keep
+`OriginationEngine`/endogenous origination as the mechanism — the "fire
+during exogenous silence" idea from the founding charter is sound — but stop
+computing a bespoke composite `D/W/A -> P` signal that has now been measured
+dead. Instead, gate origination on the four *real* drives' own activation
+state: fire when at least one of `coherence`/`continuity`/`relational`/
+`predictive` is genuinely active (crossing its real 0.62 threshold — signal
+already proven live and varying, per the retrospective's own dominance
+data) AND exogenous silence holds AND cooldown has elapsed. This reuses
+signal that is already proven to move, instead of a parallel signal that
+has never once moved enough to matter.
 
-**Files a future patch would touch:** `config/autonomy/signal_drive_map.yaml`,
-`orion/spark/concept_induction/tensions.py`, `orion/autonomy/
-endogenous_origination.py` (as a new event source), plus the regression
-tests in `orion/spark/concept_induction/tests/test_drives_leaky.py`.
+Concretely, this means:
+
+- `TensionEventV1.drive_impacts` never needs an `"autonomy"` key again —
+  `DRIVE_KEYS` drops to five.
+- The origination-fired tension's magnitude and *which* drive it's
+  attributed to comes from whichever real drive triggered it (already
+  active, already distinct), not a synthetic `_map_drive()` classification
+  over D/W/A sub-signals that don't discriminate well (three of its four
+  branches — drift-dominant, dwell-dominant, agency-dominant — were always
+  somewhat arbitrary; the unresolved-pressure override branches, which map
+  to `relational`/`continuity` directly, were the only ones with a real
+  behavioral basis).
+- `chat_stance.py`, Hub `drives-analytics.js`, and both eval files
+  (`run_homeostatic_drives_eval.py`, `test_mind_drive_state_facet_eval.py`)
+  need updating to a five-key iteration instead of six — the same bounded,
+  enumerable blast radius named under Q4 above.
+
+**This is not implemented here.** It is the sign-off request per `CLAUDE.md`
+§0A: a real structural change to `DRIVE_KEYS`, `signal_drive_map.yaml`
+(dropping `autonomy` weight entries), and `orion/autonomy/
+endogenous_origination.py` (replacing the D/W/A composite with a
+real-drive-activation gate). Scoped the same discipline as O3/O2 — delta-
+gated, reviewed, live-verified post-deploy before being called done, not
+just merged and assumed to work.
+
+**Files a future patch would touch:** `orion/spark/concept_induction/drives.py`
+(`DRIVE_KEYS`), `config/autonomy/signal_drive_map.yaml`, `orion/autonomy/
+endogenous_origination.py`, `orion/spark/concept_induction/tensions.py`,
+`orion/core/schemas/drives.py` (if `DriveStateV1`/`DriveAuditV1` validate
+against the key set anywhere), `services/orion-hub/static/js/
+drives-analytics.js`, `orion/autonomy/evals/run_homeostatic_drives_eval.py`,
+`services/orion-cortex-orch/evals/test_mind_drive_state_facet_eval.py`, plus
+regression tests in `orion/spark/concept_induction/tests/test_drives_leaky.py`
+and `orion/spark/concept_induction/tests/test_endogenous_origination_wiring.py`.
 
 ## Brainstorm: the two uncovered mission items
 
@@ -208,24 +278,28 @@ repeats exactly the mistake this whole document exists to correct.
 
 ## Non-goals
 
-- Not implementing any change to `DRIVE_KEYS`, `signal_drive_map.yaml`, or
-  `DriveStateV1` in this document.
-- Not deciding whether Candidates A/B become real signals — that requires
-  the "observe first" step named above, not a decision made from this
-  document alone.
+- Not implementing the `DRIVE_KEYS`/`signal_drive_map.yaml`/
+  `endogenous_origination.py` change described above **in this document** —
+  it is proposed and scoped here, sign-off requested, implementation is a
+  separate patch.
+- Not deciding whether Candidates A/B (memory, reflection) become real
+  signals — that requires the "observe first" step named above, not a
+  decision made from this document alone.
 - Not re-litigating the O1-O4/O2/O3 signal-integrity fixes — those are
-  done, live, and out of scope (per the session that produced this doc).
+  done, live, and out of scope.
 
 ## Acceptance / next step
 
 This document satisfies outcome (b) from the prior audit's acceptance
-check: the taxonomy is revised in disposition (five drives kept as-is with
-stated rationale, one flagged for re-grounding, one reclassified as
-infrastructural) rather than either left fully unexamined (c) or requiring
-a from-scratch replacement (a). The concrete next patch, if Juniper wants to
-proceed, is the `autonomy` re-grounding scoped above — everything else here
-is documentation of a decision already reasoned through, not new work
-in flight.
+check, and does so decisively rather than leaving a sixth open question:
+four drives (`coherence`, `continuity`, `relational`, `predictive`) keep
+their names with stated, traced rationale; `capability` is reclassified as
+infrastructural rather than a mission-peer category; `autonomy` is retired
+as a drive after two independently measured, failed grounding attempts, with
+self-initiation reframed as an event over the four real drives instead of a
+fifth attempt at finding it a bespoke signal. The concrete next patch, if
+Juniper wants to proceed, is the five-drive/event-reframe change scoped
+above — a real structural change, not another round of measurement.
 
 ## Source material
 
@@ -237,3 +311,9 @@ in flight.
 - `orion/spark/concept_induction/drives.py`, `orion/spark/concept_induction/
   tensions.py`, `config/autonomy/signal_drive_map.yaml` — the live code this
   document's claims are traced against.
+- `scripts/analysis/measure_origination_gate.py` (PR #1156) — the
+  measurement that settled `autonomy`'s fate: replays the real
+  `extract_tensions_from_self_state` + `OriginationEngine` production code
+  over 84,511 historical self-state ticks; zero fires, `P` never within 0.13
+  of threshold, matching zero live `tension.endogenous.v1` rows in
+  `drive_audits` over the same 48h window.

@@ -1,7 +1,7 @@
 # FalkorDB property-graph doctrine + persistence router — design spec
 
 **Date:** 2026-07-16
-**Status:** WEDGE LIVE — guts implemented on `feat/falkordb-property-graph-routing` (intent, routes, property guard, Falkor/routed stores, `services/orion-falkordb/`), merged via #1099. **2026-07-16:** graphiti `--profile falkordb` removed; live Falkor cutover to shared stack documented in `services/orion-falkordb/README.md`. **2026-07-17:** Concept Atlas / Hub wiring done and live-verified (`SUBSTRATE_STORE_BACKEND=falkor`, PR #1105) — no longer deferred; see the acceptance-checks update below. `substrate-runtime`'s own cutover (still `sparql` as of this note) and the `orion:kg:edge:ingest.v1` → rdf-writer deprecation remain open, tracked separately.
+**Status:** WEDGE LIVE — guts implemented on `feat/falkordb-property-graph-routing` (intent, routes, property guard, Falkor/routed stores, `services/orion-falkordb/`), merged via #1099. **2026-07-16:** graphiti `--profile falkordb` removed; live Falkor cutover to shared stack documented in `services/orion-falkordb/README.md`. **2026-07-17:** Concept Atlas / Hub wiring done and live-verified (`SUBSTRATE_STORE_BACKEND=falkor`, PR #1105) — no longer deferred; see the acceptance-checks update below. `substrate-runtime`'s own cutover remains open (freshly re-checked 2026-07-17, not just carried over from the ground-truth table above: `services/orion-substrate-runtime/.env` still reads `SUBSTRATE_STORE_BACKEND=sparql`) and the `orion:kg:edge:ingest.v1` → rdf-writer deprecation remain open, tracked separately.
 **Mode:** Proposal (touches memory / cognitive-graph persistence; AGENTS.md §0A proposal mode)
 **Related:**
 - `docs/superpowers/specs/2026-07-15-concept-atlas-graph-pipeline-design.md` (first consumer seam)

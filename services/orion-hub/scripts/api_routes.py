@@ -3276,10 +3276,12 @@ try:
 except ImportError:  # pragma: no cover - optional in minimal dev envs
     _CausalGeometryUndefinedTableError = None  # type: ignore[misc, assignment]
 
-_CAUSAL_GEOMETRY_SNAPSHOT_COLUMNS = (
-    "snapshot_id, generated_at, window_start, window_end, designed_topology_version, "
-    "insufficient_data, edges_json, divergence_json, notes_json"
-)
+# Imported (not re-declared) so the writer (orion-field-digester's
+# causal_geometry_snapshot_store.py) and this reader can never drift out of
+# sync on column names/order -- both sides import the same tuple.
+from orion.substrate.causal_geometry_snapshot_store import SNAPSHOT_COLUMNS as _CAUSAL_GEOMETRY_SNAPSHOT_COLUMN_TUPLE
+
+_CAUSAL_GEOMETRY_SNAPSHOT_COLUMNS = ", ".join(_CAUSAL_GEOMETRY_SNAPSHOT_COLUMN_TUPLE)
 
 
 def _causal_geometry_parse_jsonb(value: Any) -> Any:

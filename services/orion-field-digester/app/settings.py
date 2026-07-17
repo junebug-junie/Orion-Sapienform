@@ -77,6 +77,14 @@ class Settings(BaseSettings):
     field_plasticity_producer_window_hours: float = Field(
         168.0, alias="FIELD_PLASTICITY_PRODUCER_WINDOW_HOURS"
     )
+    # Retention for the causal_geometry_snapshots Postgres table, pruned on the
+    # same _prune_tick() cadence as this service's other tables (see
+    # field_state_retention_hours above). 720h = 30 days: at the producer's
+    # default 24h cadence that's ~30 rows kept, plenty for the hub's History
+    # panel while still bounding growth -- 0 disables pruning entirely.
+    field_plasticity_snapshot_retention_hours: float = Field(
+        720.0, alias="FIELD_PLASTICITY_SNAPSHOT_RETENTION_HOURS"
+    )
 
 
 _settings: Settings | None = None

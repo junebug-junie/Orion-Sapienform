@@ -156,9 +156,19 @@
     summary.textContent =
       `snapshot_id=${data.snapshot_id ?? '—'} | generated_at=${data.generated_at ?? '—'} | ` +
       `window=${data.window_start ?? '—'}..${data.window_end ?? '—'} | ` +
-      `designed_topology_version=${data.designed_topology_version ?? '—'} | ` +
-      `insufficient_data=${Boolean(data.insufficient_data)}`;
+      `designed_topology_version=${data.designed_topology_version ?? '—'}`;
     target.appendChild(summary);
+
+    // insufficient_data means the measurement ran but found nothing significant --
+    // a real, honest result, but one that must not read as "everything's fine and
+    // quiet" the same way a genuinely healthy quiet snapshot would. Give it its own
+    // visible banner instead of burying it in the dense summary line above.
+    if (data.insufficient_data) {
+      const banner = document.createElement('div');
+      banner.className = 'text-xs text-amber-400 border border-amber-900/60 bg-amber-950/30 rounded px-2 py-1 mb-2';
+      banner.textContent = 'insufficient_data: true — this cycle measured real data but nothing cleared the significance bar.';
+      target.appendChild(banner);
+    }
 
     const edgesHeading = document.createElement('div');
     edgesHeading.className = 'text-xs font-medium text-gray-300 mt-2 mb-1';
@@ -277,6 +287,26 @@
       rationale.className = 'text-xs text-gray-300';
       rationale.textContent = proposal.rationale;
       card.appendChild(rationale);
+    }
+
+    // Surface the trial-runner's status (see orion/substrate/causal_geometry_producer.py --
+    // every proposal gets a "trial_status:<status>" note appended before enqueueing). An
+    // operator adopting a proposal should be able to tell at a glance whether real replay-
+    // corpus evaluation backed it ("passed"/"failed") or none exists yet ("inconclusive") --
+    // this must never be silently dropped between backend and UI.
+    const notes = Array.isArray(proposal.notes) ? proposal.notes : [];
+    const trialNote = notes.find((note) => typeof note === 'string' && note.startsWith('trial_status:'));
+    if (trialNote) {
+      const status = trialNote.slice('trial_status:'.length);
+      const trial = document.createElement('div');
+      const trialColor =
+        status === 'passed' ? 'text-emerald-400' : status === 'failed' ? 'text-red-400' : 'text-amber-400';
+      trial.className = `text-[11px] ${trialColor}`;
+      trial.textContent =
+        status === 'inconclusive'
+          ? 'trial: inconclusive (no replay corpus registered for this mutation class yet)'
+          : `trial: ${status}`;
+      card.appendChild(trial);
     }
 
     const actions = document.createElement('div');

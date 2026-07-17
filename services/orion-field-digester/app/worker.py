@@ -19,6 +19,7 @@ from app.store import FieldDigesterStore, PendingDelta
 from app.tensor.field_state import empty_field_state, new_tick_id
 from app.tensor.reconcile import reconcile_field_state_with_lattice
 from app.tensor.update_rules import run_digestion_tick
+from orion.substrate import causal_geometry_snapshot_store
 from orion.substrate.causal_geometry_producer import run_causal_geometry_production_cycle
 
 logger = logging.getLogger("orion.field.digester")
@@ -88,6 +89,18 @@ class FieldDigesterWorker:
                 deleted_deltas,
                 min_age,
             )
+
+        snapshot_retention = float(self._settings.field_plasticity_snapshot_retention_hours)
+        if snapshot_retention > 0:
+            snapshot_prune_result = causal_geometry_snapshot_store.prune_snapshots(
+                self._settings.postgres_uri, retention_hours=snapshot_retention
+            )
+            if snapshot_prune_result.get("deleted"):
+                logger.info(
+                    "causal_geometry_snapshots_pruned deleted=%d retention_hours=%.1f",
+                    snapshot_prune_result["deleted"],
+                    snapshot_retention,
+                )
 
     async def _prune_loop(self) -> None:
         while not self._stop.is_set():

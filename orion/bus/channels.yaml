@@ -2107,7 +2107,15 @@ channels:
     kind: "event"
     schema_id: "CausalGeometrySnapshotV1"
     message_kind: "causal.geometry.snapshot.v1"
-    producer_services: ["orion-field-digester"]
+    # No producer currently publishes to this channel. orion-field-digester
+    # persists CausalGeometrySnapshotV1 rows directly to a dedicated Postgres
+    # table (orion/substrate/causal_geometry_snapshot_store.py,
+    # causal_geometry_snapshots) instead of the bus -- routing through this
+    # channel was judged unnecessary for the only current consumer (orion-hub's
+    # /api/causal-geometry/* endpoints, which read the table directly). This
+    # channel entry is kept registered (schema/kind still valid) in case a
+    # future bus consumer needs live notification, but nothing publishes today.
+    producer_services: []
     consumer_services: []
     stability: "experimental"
     since: "2026-07-16"

@@ -70,6 +70,18 @@ def test_causal_geometry_js_renders_real_tables_not_raw_json_dumps() -> None:
     assert "status-observed_only" in script
     assert "status-insufficient_data" in script
 
+
+def test_causal_geometry_js_surfaces_trial_status_on_proposal_cards() -> None:
+    # orion/substrate/causal_geometry_producer.py appends a "trial_status:<status>"
+    # note to every proposal before enqueueing it -- an operator adopting a proposal
+    # must be able to see whether real trial evaluation backed it, not just a
+    # plausible-looking rationale. This must not be silently dropped in the UI.
+    js_path = HUB_ROOT / "static" / "js" / "causal-geometry.js"
+    script = js_path.read_text(encoding="utf-8")
+
+    assert "trial_status:" in script
+    assert "inconclusive" in script
+
     # Degraded/empty payloads must be handled explicitly, not fed straight into a table builder.
     assert "No edges in this snapshot." in script
     assert "No divergence entries in this snapshot." in script

@@ -264,9 +264,18 @@ def _compute_current_distribution(
     clusterer = _load_clusterer(model_name, model_version)
     if clusterer is None:
         return {}, 0.0, 0.0
+    # If the clusterer was fit on UMAP-reduced embeddings (training.py's
+    # _build_reducer), new points must go through the SAME fitted reducer
+    # before approximate_predict -- the clusterer's internal space is
+    # reducer.n_components-D, not the raw embedding dimensionality.
+    # No reducer.joblib means this model was trained without reduction
+    # (skipped for a tiny run, or trained before this fix) -- raw embeddings
+    # are the correct input in that case, not an error.
+    reducer = _load_reducer(model_name, model_version)
+    predict_input = reducer.transform(embeddings) if reducer is not None else embeddings
     _require_hdbscan_predict()
     try:
-        labels, _ = approximate_predict(clusterer, embeddings)
+        labels, _ = approximate_predict(clusterer, predict_input)
     except Exception as exc:  # noqa: BLE001
         logger.warning("Approximate predict failed for model=%s error=%s", model_name, exc)
         return {}, 0.0, 0.0
@@ -291,6 +300,22 @@ def _load_clusterer(model_name: str, model_version: Optional[str]):
         logger.warning("Clusterer not found at %s", clusterer_path)
         return None
     return joblib_load(clusterer_path)
+
+
+def _load_reducer(model_name: str, model_version: Optional[str]):
+    """Best-effort load of the UMAP reducer a model's clusterer was fit
+    through (see training.py::_write_artifacts). No warning on a missing
+    file -- that's the normal case for models trained before this reduction
+    step existed, or trained on a run too small for `_build_reducer` to use
+    one; `_compute_current_distribution` must fall back to raw embeddings
+    for those, not treat it as an error."""
+    if not model_version:
+        return None
+    model_dir = Path(settings.topic_foundry_model_dir)
+    reducer_path = model_dir / "registry" / model_name / "versions" / model_version / "model" / "reducer.joblib"
+    if not reducer_path.exists():
+        return None
+    return joblib_load(reducer_path)
 
 
 def _normalize_counts(counts: Dict[str, int], total: int) -> Dict[str, float]:

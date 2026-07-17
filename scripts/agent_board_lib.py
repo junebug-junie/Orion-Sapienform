@@ -20,7 +20,6 @@ from worktree_lib import list_worktrees, repo_toplevel
 DEFAULT_BOARD_PATH = Path.home() / ".orion" / "agent-board.jsonl"
 STALE_AFTER_MINUTES = 30
 
-_PRESENCE_STATUSES = {"active", "stale", "closed"}
 _ITEM_KINDS = {"decision", "finding", "blocker", "followup", "theme"}
 _ITEM_SEVERITIES = {"blocker", "should", "note"}
 _OWNER_SCOPES = {"this-worktree", "other-worktree", "juniper", "unassigned"}
@@ -56,6 +55,14 @@ def _iso(dt: datetime) -> str:
     return dt.astimezone(UTC).isoformat()
 
 
+def _chmod_best_effort(path: Path, mode: int) -> None:
+    """Owner-only modes when possible; fail soft for shared parents like /tmp."""
+    try:
+        os.chmod(path, mode)
+    except OSError:
+        return
+
+
 def board_config_from_env() -> BoardConfig:
     raw = os.environ.get("ORION_AGENT_BOARD_PATH")
     if raw:
@@ -66,10 +73,10 @@ def board_config_from_env() -> BoardConfig:
 @contextmanager
 def _locked_board(config: BoardConfig) -> Iterator[None]:
     config.board_path.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
-    os.chmod(config.board_path.parent, 0o700)
+    _chmod_best_effort(config.board_path.parent, 0o700)
     lock_path = config.board_path.with_suffix(config.board_path.suffix + ".lock")
     with lock_path.open("a+", encoding="utf-8") as lock_file:
-        os.chmod(lock_path, 0o600)
+        _chmod_best_effort(lock_path, 0o600)
         fcntl.flock(lock_file.fileno(), fcntl.LOCK_EX)
         try:
             yield
@@ -87,7 +94,7 @@ def append_event(
     event = BoardEvent(type=event_type, at=_iso(now or _utc_now()), payload=dict(payload))
     with _locked_board(config):
         with config.board_path.open("a", encoding="utf-8") as handle:
-            os.chmod(config.board_path, 0o600)
+            _chmod_best_effort(config.board_path, 0o600)
             handle.write(json.dumps(event.__dict__, sort_keys=True) + "\n")
             handle.flush()
             os.fsync(handle.fileno())

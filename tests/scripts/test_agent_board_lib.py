@@ -166,6 +166,29 @@ def test_append_event_creates_private_board_file_and_directory(tmp_path: Path) -
     assert oct(cfg.board_path.stat().st_mode & 0o777) == "0o600"
 
 
+def test_append_event_tolerates_unwritable_shared_parent() -> None:
+    """Board files may live under shared parents like /tmp for smoke isolation.
+    chmod on that parent must fail soft rather than break board writes."""
+    shared = Path("/tmp")
+    board = shared / f"orion-agent-board-test-{os.getpid()}.jsonl"
+    lock = Path(str(board) + ".lock")
+    board.unlink(missing_ok=True)
+    lock.unlink(missing_ok=True)
+    cfg = BoardConfig(board_path=board, stale_after_minutes=30)
+
+    try:
+        append_event(
+            cfg,
+            "presence_upserted",
+            {"worktree_path": "/repo/wt-a", "branch": "feat/a", "status": "active"},
+        )
+        assert board.exists()
+        assert oct(board.stat().st_mode & 0o777) == "0o600"
+    finally:
+        board.unlink(missing_ok=True)
+        lock.unlink(missing_ok=True)
+
+
 def test_load_state_skips_corrupt_jsonl_lines(tmp_path: Path) -> None:
     cfg = _config(tmp_path)
     append_event(

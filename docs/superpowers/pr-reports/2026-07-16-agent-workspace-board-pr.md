@@ -62,7 +62,7 @@ Scripts and hooks only: `scripts/agent_board*.py`, `scripts/hooks/session_*_agen
   tests/scripts/test_session_start_worktree_summary.py \
   tests/scripts/test_worktree_lib.py \
   -q
-46 passed in 15.04s
+47 passed in 16.17s
 ```
 
 Note: pytest-asyncio prints a deprecation warning about unset `asyncio_default_fixture_loop_scope` (pre-existing environment noise, unrelated to this patch).
@@ -103,6 +103,9 @@ No Docker restart required.
 
 ## Review findings fixed
 
+- Finding: pre-merge review found `os.chmod` on the board parent raised `PermissionError` when `ORION_AGENT_BOARD_PATH` pointed at a file under shared parents like `/tmp`, breaking smoke isolation and any non-owned parent path.
+  - Fix: `_chmod_best_effort` fails soft on `OSError`; owned `.orion` dirs still get `0700`/`0600`.
+  - Evidence: `test_append_event_tolerates_unwritable_shared_parent`.
 - Finding: final review found `checkout` counted every open/parked item on the host board, not only the current worktree.
   - Fix: checkout now filters open items to `current_worktree_identity()["worktree_path"]`.
   - Evidence: `test_checkout_counts_only_this_worktree_open_items`.

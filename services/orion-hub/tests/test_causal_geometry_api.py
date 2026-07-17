@@ -154,7 +154,7 @@ def _sample_row(snapshot_id: str = "snap-1") -> dict:
         "window_end": now,
         "designed_topology_version": "v3",
         "insufficient_data": False,
-        "edges_json": json.dumps(
+        "edges": json.dumps(
             [
                 {
                     "source_id": "a",
@@ -168,7 +168,7 @@ def _sample_row(snapshot_id: str = "snap-1") -> dict:
                 }
             ]
         ),
-        "divergence_json": json.dumps(
+        "divergence": json.dumps(
             [
                 {
                     "source_id": "a",
@@ -180,7 +180,7 @@ def _sample_row(snapshot_id: str = "snap-1") -> dict:
                 }
             ]
         ),
-        "notes_json": json.dumps(["note-1"]),
+        "notes": json.dumps(["note-1"]),
     }
 
 

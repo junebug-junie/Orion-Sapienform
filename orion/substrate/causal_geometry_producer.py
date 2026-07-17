@@ -22,7 +22,7 @@ from datetime import datetime, timedelta, timezone
 from typing import Any, Dict, List
 
 from orion.schemas.field_state import FieldEdgeV1
-from orion.substrate import causal_geometry_snapshot_store
+from orion.substrate.causal_geometry_bus_publish import publish_snapshot
 from orion.substrate.causal_geometry_engine import (
     DEFAULT_ALPHA,
     DEFAULT_BIOMETRICS_NODE,
@@ -72,6 +72,11 @@ def run_causal_geometry_production_cycle(
     topology_path: str,
     field_edges: List[FieldEdgeV1],
     store: FieldTopologyLearnedWeightsStore,
+    bus_url: str,
+    bus_enabled: bool = True,
+    service_name: str = "orion-field-digester",
+    service_version: str = "0.1.0",
+    node_name: str = "athena",
     window_hours: float = DEFAULT_WINDOW_HOURS,
     min_samples: int = DEFAULT_MIN_SAMPLES,
     n_surrogates: int = DEFAULT_N_SURROGATES,
@@ -127,19 +132,26 @@ def run_causal_geometry_production_cycle(
             "candidates_found": 0,
             "proposals_created": 0,
             "proposals_skipped_pending_duplicate": 0,
-            "snapshot_persisted": False,
+            "snapshot_published": False,
         }
 
-    # Persistence is best-effort and must never fail the measurement/proposal
-    # cycle -- `persist_snapshot()` itself never raises (see
-    # `causal_geometry_snapshot_store.py`'s module docstring), but the result is
+    # Publishing is best-effort and must never fail the measurement/proposal
+    # cycle -- `publish_snapshot()` itself never raises (see
+    # `causal_geometry_bus_publish.py`'s module docstring), but the result is
     # also guarded here in case of an unexpected error constructing the call.
     try:
-        persist_result = causal_geometry_snapshot_store.persist_snapshot(postgres_uri, snapshot)
-        snapshot_persisted = bool(persist_result.get("ok"))
-    except Exception as exc:  # pragma: no cover - defensive, persist_snapshot() itself never raises
-        logger.warning("causal_geometry_production_cycle_snapshot_persist_unexpected_error: %s", exc, exc_info=True)
-        snapshot_persisted = False
+        publish_result = publish_snapshot(
+            bus_url=bus_url,
+            bus_enabled=bus_enabled,
+            snapshot=snapshot,
+            service_name=service_name,
+            service_version=service_version,
+            node_name=node_name,
+        )
+        snapshot_published = bool(publish_result.get("ok"))
+    except Exception as exc:  # pragma: no cover - defensive, publish_snapshot() itself never raises
+        logger.warning("causal_geometry_production_cycle_snapshot_publish_unexpected_error: %s", exc, exc_info=True)
+        snapshot_published = False
 
     try:
         proposals = propose_field_topology_patches(
@@ -183,14 +195,14 @@ def run_causal_geometry_production_cycle(
             "candidates_found": 0,
             "proposals_created": 0,
             "proposals_skipped_pending_duplicate": 0,
-            "snapshot_persisted": snapshot_persisted,
+            "snapshot_published": snapshot_published,
         }
 
     return {
         "ok": True,
         "stage": "completed",
         "error": None,
-        "snapshot_persisted": snapshot_persisted,
+        "snapshot_published": snapshot_published,
         "snapshot_id": snapshot.snapshot_id,
         "insufficient_data": snapshot.insufficient_data,
         "candidates_found": len(proposals),

@@ -68,7 +68,7 @@ def _run(
     store=None,
     fetch_raises=False,
     propose_raises=False,
-    persist_snapshot_mock=None,
+    publish_snapshot_mock=None,
 ):
     if fetch_raises:
         def _boom_fetch(*args, **kwargs):
@@ -91,12 +91,12 @@ def _run(
 
         monkeypatch.setattr(producer_module, "propose_field_topology_patches", _boom_propose)
 
-    # Persistence is a Postgres side effect unrelated to this module's own
+    # Bus publishing is a side effect unrelated to this module's own
     # measurement/proposal/dedup logic -- stub it out to a no-op success by
-    # default so these tests don't need a real DB. Tests that care about the
-    # persistence call itself pass their own mock via `persist_snapshot_mock`.
-    mock_persist = persist_snapshot_mock or MagicMock(return_value={"ok": True, "error": None})
-    monkeypatch.setattr(producer_module.causal_geometry_snapshot_store, "persist_snapshot", mock_persist)
+    # default so these tests don't need a real Redis bus. Tests that care about
+    # the publish call itself pass their own mock via `publish_snapshot_mock`.
+    mock_publish = publish_snapshot_mock or MagicMock(return_value={"ok": True, "error": None})
+    monkeypatch.setattr(producer_module, "publish_snapshot", mock_publish)
 
     used_store = store if store is not None else FieldTopologyLearnedWeightsStore()
     result = producer_module.run_causal_geometry_production_cycle(
@@ -104,9 +104,10 @@ def _run(
         topology_path="/unused/path.yaml",
         field_edges=_field_edges(),
         store=used_store,
+        bus_url="redis://unused/0",
         now=BASE_TS + timedelta(seconds=250 * BUCKET_SECONDS),
     )
-    return result, used_store, mock_persist
+    return result, used_store, mock_publish
 
 
 def test_successful_cycle_creates_a_new_pending_proposal(monkeypatch) -> None:
@@ -207,40 +208,40 @@ def test_intra_cycle_duplicate_candidates_for_the_same_edge_enqueue_only_one_pro
     assert pending[0].patch.target_ref == "cap:transport->cap:orchestration"
 
 
-def test_successful_cycle_persists_the_built_snapshot(monkeypatch) -> None:
-    mock_persist = MagicMock(return_value={"ok": True, "error": None})
-    result, _store, mock_persist = _run(monkeypatch, persist_snapshot_mock=mock_persist)
+def test_successful_cycle_publishes_the_built_snapshot(monkeypatch) -> None:
+    mock_publish = MagicMock(return_value={"ok": True, "error": None})
+    result, _store, mock_publish = _run(monkeypatch, publish_snapshot_mock=mock_publish)
 
     assert result["ok"] is True
-    mock_persist.assert_called_once()
-    call_args = mock_persist.call_args.args
-    assert call_args[0] == "postgresql://unused/unused"
-    assert call_args[1].snapshot_id == result["snapshot_id"]
+    mock_publish.assert_called_once()
+    call_kwargs = mock_publish.call_args.kwargs
+    assert call_kwargs["bus_url"] == "redis://unused/0"
+    assert call_kwargs["snapshot"].snapshot_id == result["snapshot_id"]
 
 
-def test_summary_dict_reports_snapshot_persisted_true_on_success(monkeypatch) -> None:
+def test_summary_dict_reports_snapshot_published_true_on_success(monkeypatch) -> None:
     result, _store, _mock = _run(
-        monkeypatch, persist_snapshot_mock=MagicMock(return_value={"ok": True, "error": None})
+        monkeypatch, publish_snapshot_mock=MagicMock(return_value={"ok": True, "error": None})
     )
 
     assert result["ok"] is True
-    assert result["snapshot_persisted"] is True
+    assert result["snapshot_published"] is True
 
 
-def test_summary_dict_reports_snapshot_persisted_false_when_persist_fails(monkeypatch) -> None:
+def test_summary_dict_reports_snapshot_published_false_when_publish_fails(monkeypatch) -> None:
     result, _store, _mock = _run(
-        monkeypatch, persist_snapshot_mock=MagicMock(return_value={"ok": False, "error": "boom"})
+        monkeypatch, publish_snapshot_mock=MagicMock(return_value={"ok": False, "error": "boom"})
     )
 
     assert result["ok"] is True
-    assert result["snapshot_persisted"] is False
+    assert result["snapshot_published"] is False
 
 
-def test_summary_dict_reports_snapshot_persisted_false_on_measurement_failure(monkeypatch) -> None:
+def test_summary_dict_reports_snapshot_published_false_on_measurement_failure(monkeypatch) -> None:
     result, _store, _mock = _run(monkeypatch, fetch_raises=True)
 
     assert result["ok"] is False
-    assert result["snapshot_persisted"] is False
+    assert result["snapshot_published"] is False
 
 
 def test_proposal_notes_contain_trial_status_after_successful_cycle(monkeypatch) -> None:

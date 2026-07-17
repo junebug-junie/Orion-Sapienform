@@ -22,6 +22,7 @@ from app.models import (
     BiometricsTelemetry,
     BiometricsSummarySQL,
     BiometricsInductionSQL,
+    CausalGeometrySnapshotSQL,
     ChatHistoryLogSQL,
     ChatGptLogSQL,
     ChatGptMessageSQL,
@@ -97,6 +98,7 @@ from orion.schemas.chat_stance import ChatStanceBrief
 from orion.schemas.collapse_mirror import CollapseMirrorEntry, CollapseMirrorStoredV1
 from orion.schemas.telemetry.meta_tags import MetaTagsPayload
 from orion.schemas.telemetry.biometrics import BiometricsPayload, BiometricsSummaryV1, BiometricsInductionV1
+from orion.schemas.causal_geometry import CausalGeometrySnapshotV1
 from orion.schemas.telemetry.dream import DreamRequest, DreamResultV1
 from orion.schemas.telemetry.cognition_trace import CognitionTracePayload
 from orion.schemas.chat_history import ChatHistoryMessageV1
@@ -169,7 +171,14 @@ _WRITE_SEMAPHORE: asyncio.Semaphore | None = None
 _SPARK_CONTRACT_METRICS = SparkContractMetrics()
 COLLAPSE_STORED_KIND = "collapse.mirror.stored.v1"
 SOCIAL_TURN_STORED_KIND = "social.turn.stored.v1"
-INSERT_ONLY_MODELS = {JournalEntrySQL, SocialRoomTurnSQL, ChatResponseFeedbackSQL, MindRunSQL, DriveAuditSQL}
+INSERT_ONLY_MODELS = {
+    JournalEntrySQL,
+    SocialRoomTurnSQL,
+    ChatResponseFeedbackSQL,
+    MindRunSQL,
+    DriveAuditSQL,
+    CausalGeometrySnapshotSQL,
+}
 
 
 def _get_write_semaphore() -> asyncio.Semaphore:
@@ -385,6 +394,7 @@ MODEL_MAP: Dict[str, Tuple[Type[Any], Optional[Type[BaseModel]]]] = {
     "BiometricsTelemetry": (BiometricsTelemetry, BiometricsPayload),
     "BiometricsSummarySQL": (BiometricsSummarySQL, BiometricsSummaryV1),
     "BiometricsInductionSQL": (BiometricsInductionSQL, BiometricsInductionV1),
+    "CausalGeometrySnapshotSQL": (CausalGeometrySnapshotSQL, CausalGeometrySnapshotV1),
     "CognitionTraceSQL": (CognitionTraceSQL, CognitionTracePayload),
     "SparkIntrospectionLogSQL": (SparkIntrospectionLogSQL, None),
     "SparkTelemetrySQL": (SparkTelemetrySQL, SparkTelemetryPayload),

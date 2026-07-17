@@ -29,6 +29,7 @@ DEFAULT_ROUTE_MAP: dict[str, str] = {
     "biometrics.telemetry": "BiometricsTelemetry",
     "biometrics.summary.v1": "BiometricsSummarySQL",
     "biometrics.induction.v1": "BiometricsInductionSQL",
+    "causal.geometry.snapshot.v1": "CausalGeometrySnapshotSQL",
     "spark.telemetry": "SparkTelemetrySQL",
     "spark.state.snapshot.v1": "SparkTelemetrySQL",
     "cognition.trace": "CognitionTraceSQL",
@@ -159,6 +160,7 @@ class Settings(BaseSettings):
             "orion:autonomy:action:outcome",
             "orion:memory:drives:audit",
             "orion:self:phi_reward",
+            "orion:causal_geometry:snapshot",
         ],
         alias="SQL_WRITER_SUBSCRIBE_CHANNELS"
     )

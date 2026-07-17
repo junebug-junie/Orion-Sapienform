@@ -3276,10 +3276,11 @@ try:
 except ImportError:  # pragma: no cover - optional in minimal dev envs
     _CausalGeometryUndefinedTableError = None  # type: ignore[misc, assignment]
 
-# Imported (not re-declared) so the writer (orion-field-digester's
-# causal_geometry_snapshot_store.py) and this reader can never drift out of
-# sync on column names/order -- both sides import the same tuple.
-from orion.substrate.causal_geometry_snapshot_store import SNAPSHOT_COLUMNS as _CAUSAL_GEOMETRY_SNAPSHOT_COLUMN_TUPLE
+# Imported (not re-declared) from orion.schemas.causal_geometry, the shared
+# package both this service and orion-sql-writer already depend on -- so the
+# writer's CausalGeometrySnapshotSQL model and this reader's SELECT can never
+# drift out of sync on column names/order.
+from orion.schemas.causal_geometry import CAUSAL_GEOMETRY_SNAPSHOT_SQL_COLUMNS as _CAUSAL_GEOMETRY_SNAPSHOT_COLUMN_TUPLE
 
 _CAUSAL_GEOMETRY_SNAPSHOT_COLUMNS = ", ".join(_CAUSAL_GEOMETRY_SNAPSHOT_COLUMN_TUPLE)
 
@@ -3302,9 +3303,9 @@ def _causal_geometry_row_to_dict(row: Any) -> Dict[str, Any]:
         "window_end": row["window_end"].isoformat() if row["window_end"] is not None else None,
         "designed_topology_version": row["designed_topology_version"],
         "insufficient_data": row["insufficient_data"],
-        "edges": _causal_geometry_parse_jsonb(row["edges_json"]),
-        "divergence": _causal_geometry_parse_jsonb(row["divergence_json"]),
-        "notes": _causal_geometry_parse_jsonb(row["notes_json"]),
+        "edges": _causal_geometry_parse_jsonb(row["edges"]),
+        "divergence": _causal_geometry_parse_jsonb(row["divergence"]),
+        "notes": _causal_geometry_parse_jsonb(row["notes"]),
     }
 
 

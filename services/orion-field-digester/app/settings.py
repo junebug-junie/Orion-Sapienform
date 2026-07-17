@@ -11,6 +11,12 @@ class Settings(BaseSettings):
     node_name: str = Field("athena", alias="NODE_NAME")
 
     postgres_uri: str = Field(..., alias="POSTGRES_URI")
+    # Repo-wide bus convention (see root CLAUDE.md): always the real tailscale
+    # node address, never a docker-compose service name -- this service had no
+    # bus-publish capability at all before the Causal Geometry v1 producer
+    # (orion/substrate/causal_geometry_bus_publish.py) needed one.
+    orion_bus_url: str = Field("redis://100.92.216.81:6379/0", alias="ORION_BUS_URL")
+    orion_bus_enabled: bool = Field(True, alias="ORION_BUS_ENABLED")
     lattice_path: str = Field(
         "config/field/orion_field_topology.v1.yaml",
         alias="LATTICE_PATH",
@@ -76,14 +82,6 @@ class Settings(BaseSettings):
     # Matches causal_geometry_engine.DEFAULT_WINDOW_HOURS (168h / 7 days).
     field_plasticity_producer_window_hours: float = Field(
         168.0, alias="FIELD_PLASTICITY_PRODUCER_WINDOW_HOURS"
-    )
-    # Retention for the causal_geometry_snapshots Postgres table, pruned on the
-    # same _prune_tick() cadence as this service's other tables (see
-    # field_state_retention_hours above). 720h = 30 days: at the producer's
-    # default 24h cadence that's ~30 rows kept, plenty for the hub's History
-    # panel while still bounding growth -- 0 disables pruning entirely.
-    field_plasticity_snapshot_retention_hours: float = Field(
-        720.0, alias="FIELD_PLASTICITY_SNAPSHOT_RETENTION_HOURS"
     )
 
 

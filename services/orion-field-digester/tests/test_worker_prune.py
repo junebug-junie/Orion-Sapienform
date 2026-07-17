@@ -2,22 +2,16 @@ from __future__ import annotations
 
 from unittest.mock import MagicMock
 
-import app.worker as worker_module
 from app.store import PRUNE_APPLIED_DELTAS_SQL, PRUNE_FIELD_STATE_SQL
 from app.worker import FieldDigesterWorker
 
 
 def _make_worker(
-    monkeypatch,
-    *,
-    retention_hours: str,
-    applied_deltas_min_age_hours: str = "1.0",
-    snapshot_retention_hours: str = "0",
+    monkeypatch, *, retention_hours: str, applied_deltas_min_age_hours: str = "1.0"
 ) -> FieldDigesterWorker:
     monkeypatch.setenv("POSTGRES_URI", "postgresql://unused/unused")
     monkeypatch.setenv("FIELD_STATE_RETENTION_HOURS", retention_hours)
     monkeypatch.setenv("FIELD_APPLIED_DELTAS_PRUNE_MIN_AGE_HOURS", applied_deltas_min_age_hours)
-    monkeypatch.setenv("FIELD_PLASTICITY_SNAPSHOT_RETENTION_HOURS", snapshot_retention_hours)
     import app.settings as settings_mod
 
     settings_mod._settings = None
@@ -58,28 +52,6 @@ def test_prune_tick_always_prunes_applied_deltas_even_when_field_state_retention
     worker._prune_tick()
 
     worker._store.prune_applied_deltas.assert_called_once_with(min_age_hours=2.0)
-
-
-def test_prune_tick_calls_causal_geometry_snapshot_prune_with_configured_retention(monkeypatch):
-    worker = _make_worker(monkeypatch, retention_hours="0", snapshot_retention_hours="720.0")
-    worker._store.prune_applied_deltas.return_value = 0
-    mock_prune = MagicMock(return_value={"ok": True, "deleted": 5, "error": None})
-    monkeypatch.setattr(worker_module.causal_geometry_snapshot_store, "prune_snapshots", mock_prune)
-
-    worker._prune_tick()
-
-    mock_prune.assert_called_once_with(worker._settings.postgres_uri, retention_hours=720.0)
-
-
-def test_prune_tick_skips_causal_geometry_snapshot_prune_when_retention_zero(monkeypatch):
-    worker = _make_worker(monkeypatch, retention_hours="0", snapshot_retention_hours="0")
-    worker._store.prune_applied_deltas.return_value = 0
-    mock_prune = MagicMock()
-    monkeypatch.setattr(worker_module.causal_geometry_snapshot_store, "prune_snapshots", mock_prune)
-
-    worker._prune_tick()
-
-    mock_prune.assert_not_called()
 
 
 def test_prune_sql_is_batched_and_guards_latest_tick():

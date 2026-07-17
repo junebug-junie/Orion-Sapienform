@@ -1,14 +1,14 @@
 # Concept induction → Cypher-native Falkor materialization
 
-**Date:** 2026-07-16  
-**Branch:** `feat/concept-induction-falkor-materialize`  
-**Worktree:** `/mnt/scripts/Orion-Sapienform-concept-induction-falkor-materialize`  
-**Depends on:** PR #1120 (merged) — Cypher-native `FalkorSubstrateStore`  
+**Date:** 2026-07-16
+**Branch:** `feat/concept-induction-falkor-materialize`
+**Worktree:** `/mnt/scripts/Orion-Sapienform-concept-induction-falkor-materialize`
+**Depends on:** PR #1120 (merged) — Cypher-native `FalkorSubstrateStore`
 **Ambiguity resolution:** **Option A** — concept-only Falkor writes (skip evidence/hypothesis/contradiction nodes and non-concept↔concept edges). Do not extend codec in this PR.
 
 ## Goal
 
-Stop Spark concept induction from materializing profiles via RDF (`rdf.write.request` → Fuseki). Persist Concept Atlas–compatible concept nodes/edges through `FalkorSubstrateStore` into the shared `orion_substrate` graph Hub already uses.
+Stop Spark concept induction from materializing profiles via RDF (`rdf.write.request` → Fuseki). Persist Concept Atlas–compatible concept nodes through `FalkorSubstrateStore` into the shared `orion_substrate` graph Hub already uses (concept↔concept edges when the mapper emits them; live outcome today is nodes only).
 
 ## Global Constraints
 

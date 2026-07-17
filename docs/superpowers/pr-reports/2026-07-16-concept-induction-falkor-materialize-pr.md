@@ -4,7 +4,7 @@
 
 - Cut Spark concept-induction post-save graph materialization off RDF (`rdf.write.request` → Fuseki) onto Cypher-native `FalkorSubstrateStore` (shared Hub Concept Atlas graph `orion_substrate`).
 - Added env contract: `CONCEPT_PROFILE_GRAPH_BACKEND=falkor|rdf|disabled`, `FALKORDB_URI`, `FALKORDB_SUBSTRATE_GRAPH` (synced into local `.env`).
-- Concept-only durable writes (Option A): filter mapper output to `ConceptNodeV1` + concept↔concept edges; skip evidence/hypothesis/contradiction until codec is extended.
+- Concept-only durable writes (Option A): filter mapper output to `ConceptNodeV1` + concept↔concept edges when present; skip evidence/hypothesis/contradiction until codec is extended. Live outcome today is **concept nodes only** (mapper emits no concept↔concept edges yet).
 - `LocalProfileStore` remains profile SoR; graph path stays additive and failure-isolated.
 
 ## Outcome moved
@@ -58,7 +58,7 @@ Default `FALKORDB_URI=redis://orion-athena-falkordb:6379` (bridge DNS). Hub host
   orion/spark/concept_induction/tests/test_falkor_materialization.py \
   orion/spark/concept_induction/tests/test_concept_induction.py \
   orion/spark/concept_induction/tests/test_rdf_materialization.py -q
-→ 39 passed
+→ 41 passed (after review-fix commit 22d1c58c)
 ```
 
 ## Evals run

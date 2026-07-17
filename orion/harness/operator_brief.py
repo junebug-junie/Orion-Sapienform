@@ -37,6 +37,9 @@ answering. Record each meaningful step. Do not guess repo structure or service s
 HARNESS_RELATIONAL_TOOL_DISCIPLINE = """\
 Relational/minimal turn: do NOT use GitHub MCP or repo/runtime tools unless the imperative
 explicitly commands verified facts for this turn. Acknowledge and stay present — no task tracking.
+Produce exactly one reply in your own voice. Never write dialogue, narration, or replies
+attributed to the other person — do not simulate how they might respond or continue the
+conversation on their behalf.
 """
 
 HARNESS_INSTRUMENTAL_TOOL_DISCIPLINE = """\

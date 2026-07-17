@@ -47,6 +47,9 @@ def _record_full_tick(collector: BusTransportGrammarCollector) -> None:
         severity="warning",
     )
     collector.record_uncataloged_stream(stream_key="orion:evt:gateway")
+    collector.record_schema_mismatch(
+        stream_key="orion:bus:out", mismatch_count=2, sampled_count=5,
+    )
     collector.record_tick_completed(streams_observed=1)
 
 
@@ -71,6 +74,9 @@ def test_builds_transport_rollup_trace() -> None:
         severity="warning",
     )
     collector.record_uncataloged_stream(stream_key="orion:evt:gateway")
+    collector.record_schema_mismatch(
+        stream_key="orion:bus:out", mismatch_count=1, sampled_count=5,
+    )
     collector.record_tick_completed(streams_observed=3)
 
     events = build_bus_transport_grammar_events(collector)
@@ -87,6 +93,7 @@ def test_builds_transport_rollup_trace() -> None:
         "bus_stream_depth_observed",
         "bus_backpressure_observed",
         "bus_configured_stream_uncataloged",
+        "bus_schema_validation_failed",
         "bus_observer_tick_completed",
     }
 
@@ -108,6 +115,40 @@ def test_builds_transport_rollup_trace() -> None:
         if e.atom and e.atom.semantic_role == "bus_configured_stream_uncataloged"
     )
     assert "not declared in channel catalog" in uncataloged.summary.lower()
+
+    schema_mismatch = next(
+        e.atom
+        for e in events
+        if e.atom and e.atom.semantic_role == "bus_schema_validation_failed"
+    )
+    assert "stream_key=orion:bus:out" in schema_mismatch.summary
+    assert "mismatch_count=1" in schema_mismatch.summary
+    assert "sampled_count=5" in schema_mismatch.summary
+
+
+def test_schema_mismatch_summary_is_counts_only_no_payload_leak() -> None:
+    """Same hygiene contract as every other bus-observer atom: only counts
+    and stream_key ever leave the process, never sampled message content
+    (AGENT_CONTEXT.md: 'Never emit full message payloads or per-packet
+    traces')."""
+    collector = BusTransportGrammarCollector(
+        node_id=NODE, sample_window_id=WINDOW, observed_at=FIXED_OBS,
+    )
+    collector.record_tick_started()
+    collector.record_schema_mismatch(
+        stream_key="orion:bus:out", mismatch_count=3, sampled_count=5,
+    )
+    collector.record_tick_completed(streams_observed=1)
+    events = build_bus_transport_grammar_events(collector)
+    atom = next(
+        e.atom for e in events if e.atom and e.atom.semantic_role == "bus_schema_validation_failed"
+    )
+    forbidden_fragments = (
+        "{", "}", '"kind"', "BaseEnvelope", "XREVRANGE", "redis://", "password",
+    )
+    for frag in forbidden_fragments:
+        assert frag not in atom.summary, f"forbidden fragment {frag!r} in {atom.summary!r}"
+    assert atom.text_value is None
 
 
 def test_no_payload_blobs_in_summaries() -> None:

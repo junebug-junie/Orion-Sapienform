@@ -271,6 +271,40 @@ class BusTransportGrammarCollector:
             ),
         )
 
+    def record_schema_mismatch(
+        self,
+        *,
+        stream_key: str,
+        mismatch_count: int,
+        sampled_count: int,
+    ) -> None:
+        """A bounded sample of this cataloged stream's recent entries failed
+        to validate against its declared schema_id (orion/bus/channels.yaml).
+        Counts only -- never the sampled payload content itself (see
+        SUBSTRATE_TRACE_MAP.md/AGENT_CONTEXT.md: bus-observer emits bounded
+        rollups, never per-message content)."""
+        role = f"bus_schema_validation_failed:{stream_key}"
+        self._put_atom(
+            role,
+            GrammarAtomV1(
+                atom_id=self._atom_id(role),
+                trace_id=self.trace_id,
+                atom_type="uncertainty_marker",
+                semantic_role="bus_schema_validation_failed",
+                layer="transport",
+                dimensions=["bus", "schema", "contract"],
+                summary=(
+                    f"Sampled stream entries failed schema validation "
+                    f"stream_key={stream_key} mismatch_count={mismatch_count} "
+                    f"sampled_count={sampled_count} sample_window_id={self.sample_window_id}"
+                ),
+                confidence=0.9,
+                salience=0.85,
+                source_event_id=self.sample_window_id,
+                payload_ref=f"bus.transport.schema_mismatch:{stream_key}",
+            ),
+        )
+
 
 def _event(
     *,

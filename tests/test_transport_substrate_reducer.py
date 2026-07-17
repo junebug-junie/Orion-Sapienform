@@ -93,8 +93,85 @@ def test_extract_live_athena_rollup_pressures() -> None:
     assert pressures["bus_health"] == 1.0
     assert pressures["catalog_drift_pressure"] == 1.0
     assert pressures["transport_pressure"] == 0.0
-    assert pressures["contract_pressure"] == 1.0
+    # contract_pressure is now genuinely independent of catalog_drift_pressure
+    # (see test_contract_pressure_diverges_from_catalog_drift_pressure below):
+    # _live_events() has no bus_schema_validation_failed atoms, so
+    # schema_mismatch_stream_count stays 0 and contract_pressure is 0.0 here
+    # even though catalog_drift_pressure is 1.0 -- before the fix these two
+    # were a literal alias (contract_pressure = catalog_drift_pressure) and
+    # this assertion would have read 1.0.
+    assert pressures["contract_pressure"] == 0.0
     assert state.target_id == "bus:athena"
+
+
+def test_contract_pressure_diverges_from_catalog_drift_pressure() -> None:
+    """Regression test for the original bug this task started from:
+    contract_pressure and catalog_drift_pressure were a literal alias
+    (orion/substrate/transport_loop/extract.py used to read
+    `contract_pressure = catalog_drift_pressure`), byte-identical across
+    122,509+ live corpus rows with 0 mismatches. They must now be able to
+    differ given genuinely different inputs: a stream that IS cataloged but
+    fails schema validation (bus_schema_validation_failed) vs. a stream that
+    is uncataloged entirely (bus_configured_stream_uncataloged) are different
+    failure modes and must not collapse to the same pressure value."""
+    events = [
+        _event(
+            "gev_h",
+            "bus_health_observed",
+            "redis_ping_ok=true node_id=athena sample_window_id=20260525T233010Z",
+        ),
+        _event(
+            "gev_d1",
+            "bus_stream_depth_observed",
+            "stream_key=orion:core:events stream_length=0 sample_window_id=20260525T233010Z",
+        ),
+        _event(
+            "gev_d2",
+            "bus_stream_depth_observed",
+            "stream_key=orion:no:schema stream_length=0 sample_window_id=20260525T233010Z",
+        ),
+        # Only ONE of the two streams is uncataloged...
+        _event(
+            "gev_u1",
+            "bus_configured_stream_uncataloged",
+            "stream_key=orion:no:schema sample_window_id=20260525T233010Z",
+        ),
+        # ...and only the OTHER (cataloged) stream fails schema validation --
+        # genuinely different streams, genuinely different failure modes.
+        _event(
+            "gev_s1",
+            "bus_schema_validation_failed",
+            "stream_key=orion:core:events mismatch_count=1 sampled_count=5 "
+            "sample_window_id=20260525T233010Z",
+        ),
+        _event("gev_done", "bus_observer_tick_completed", "streams_observed=2 sample_window_id=20260525T233010Z"),
+    ]
+    state = extract_transport_bus_state_from_events(events, now=NOW)
+    pressures = compute_transport_pressures(state, stream_depth_critical=100_000)
+    assert state.uncataloged_stream_count == 1
+    assert state.schema_mismatch_stream_count == 1
+    # Same magnitude here (1/2 each) by coincidence of this fixture, but they
+    # are computed from two entirely independent counters now -- prove that
+    # by changing just one of the two inputs and checking only that pressure
+    # moves.
+    assert pressures["catalog_drift_pressure"] == 0.5
+    assert pressures["contract_pressure"] == 0.5
+
+    events_more_mismatch = events + [
+        _event(
+            "gev_s2",
+            "bus_schema_validation_failed",
+            "stream_key=orion:another:stream mismatch_count=1 sampled_count=5 "
+            "sample_window_id=20260525T233010Z",
+        ),
+    ]
+    state2 = extract_transport_bus_state_from_events(events_more_mismatch, now=NOW)
+    pressures2 = compute_transport_pressures(state2, stream_depth_critical=100_000)
+    # catalog_drift_pressure is untouched by the extra schema-mismatch atom...
+    assert pressures2["catalog_drift_pressure"] == 0.5
+    # ...while contract_pressure moves independently.
+    assert pressures2["contract_pressure"] == 1.0
+    assert pressures2["contract_pressure"] != pressures2["catalog_drift_pressure"]
 
 
 def test_reducer_emits_transport_bus_delta_with_pressure_hints() -> None:

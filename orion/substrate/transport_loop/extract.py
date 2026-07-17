@@ -25,6 +25,7 @@ _ATOM_ROLES = frozenset(
         "bus_stream_depth_observed",
         "bus_backpressure_observed",
         "bus_configured_stream_uncataloged",
+        "bus_schema_validation_failed",
         "bus_observer_tick_failed",
         "bus_observer_tick_completed",
     }
@@ -85,6 +86,12 @@ def compute_transport_pressures(
     stream_depth_pressure = min(state.max_stream_depth / critical, 1.0)
     backpressure = min(state.backpressure_count / denom, 1.0)
     catalog_drift_pressure = min(state.uncataloged_stream_count / denom, 1.0)
+    # Genuinely independent of catalog_drift_pressure: this counts cataloged
+    # streams whose sampled traffic failed schema validation, not streams
+    # missing from the catalog. Same "count of affected streams / denom"
+    # shape as catalog_drift_pressure on purpose -- keeps both channels'
+    # dynamic range comparable under the shared watch_at thresholds in
+    # config/substrate-lattice/transport_lattice_policy.v1.yaml.
 
     if observer_failure_pressure > 0.0:
         delivery_confidence = 0.0
@@ -96,7 +103,7 @@ def compute_transport_pressures(
         delivery_confidence = 0.0
 
     transport_pressure = max(stream_depth_pressure, backpressure)
-    contract_pressure = catalog_drift_pressure
+    contract_pressure = min(state.schema_mismatch_stream_count / denom, 1.0)
     reliability_pressure = max(observer_failure_pressure, 1.0 - delivery_confidence)
 
     return {
@@ -136,6 +143,7 @@ def extract_transport_bus_state_from_events(
     uncataloged_stream_count = 0
     backpressure_count = 0
     observer_failure_count = 0
+    schema_mismatch_stream_count = 0
     redis_ping_ok: bool | None = None
     evidence_event_ids: list[str] = []
 
@@ -175,6 +183,8 @@ def extract_transport_bus_state_from_events(
             max_stream_depth = max(max_stream_depth, length)
         elif role == "bus_configured_stream_uncataloged":
             uncataloged_stream_count += 1
+        elif role == "bus_schema_validation_failed":
+            schema_mismatch_stream_count += 1
         elif role == "bus_observer_tick_failed":
             observer_failure_count += 1
         elif role == "bus_observer_tick_completed":
@@ -195,6 +205,7 @@ def extract_transport_bus_state_from_events(
         uncataloged_stream_count=uncataloged_stream_count,
         backpressure_count=backpressure_count,
         observer_failure_count=observer_failure_count,
+        schema_mismatch_stream_count=schema_mismatch_stream_count,
         evidence_event_ids=evidence_event_ids,
         observed_at=clock,
     )

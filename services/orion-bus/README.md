@@ -222,13 +222,14 @@ make stream STREAM=orion:bus:out
 
 Optional `bus-observer` sidecar emits bounded periodic `GrammarEventV1` rollups on `orion:grammar:event` when `PUBLISH_ORION_BUS_GRAMMAR=true` (default **off**).
 
-Observes transport health (`PING`), stream depth (`XLEN`), backpressure thresholds, and configured streams missing from `orion/bus/channels.yaml`. Does **not** emit per-message traces.
+Observes transport health (`PING`), stream depth (`XLEN`), backpressure thresholds, configured streams missing from `orion/bus/channels.yaml`, and — for streams that ARE in the catalog — a bounded `XREVRANGE` sample checked against that channel's declared `schema_id` (backs `contract_pressure`). Does **not** emit per-message traces: only aggregate `mismatch_count`/`sampled_count` per stream ever leave the process.
 
 | Variable | Default | Purpose |
 | -------- | ------- | ------- |
 | `PUBLISH_ORION_BUS_GRAMMAR` | `false` | Publish grammar traces to bus |
-| `BUS_OBSERVER_STREAMS` | `orion:evt:gateway,orion:bus:out` | Streams to sample (not `orion:grammar:event` by default) |
+| `BUS_OBSERVER_STREAMS` | `orion:evt:gateway,orion:bus:out,orion:grammar:event,orion:stream:world_pulse:run:result` | Streams to sample. Of these, only `orion:stream:world_pulse:run:result` is both cataloged AND a real Stream (verified live: `TYPE`=`stream`) -- it's what makes the schema-mismatch check (`contract_pressure`) actually fire under the shipped default. `orion:grammar:event` is cataloged but Pub/Sub-only (verified live: `TYPE`=`none`, never `XADD`'d), so it never contributes a sample. `orion:evt:gateway`/`orion:bus:out` are depth/backpressure-only, also `TYPE`=`none` live, and not cataloged either way. |
 | `BUS_OBSERVER_POLL_INTERVAL_SEC` | `10` | Rollup interval |
+| `BUS_OBSERVER_SCHEMA_SAMPLE_COUNT` | `5` | Per-cataloged-stream `XREVRANGE` sample size for the schema-mismatch check |
 
 Smoke: `../../scripts/smoke_orion_bus_substrate_trace.sh`
 

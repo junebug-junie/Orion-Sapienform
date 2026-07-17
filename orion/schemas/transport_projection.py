@@ -26,6 +26,14 @@ class TransportBusStateV1(BaseModel):
     uncataloged_stream_count: int = 0
     backpressure_count: int = 0
     observer_failure_count: int = 0
+    # Distinct cataloged streams where a bounded XREVRANGE sample failed
+    # schema validation against the stream's declared schema_id
+    # (orion/bus/channels.yaml). Backs contract_pressure -- genuinely
+    # independent of uncataloged_stream_count/catalog_drift_pressure (which
+    # measures streams missing from the catalog entirely, a different
+    # failure mode). See services/orion-bus/app/bus_observer.py:
+    # count_schema_mismatches().
+    schema_mismatch_stream_count: int = 0
 
     bus_health: float = Field(ge=0.0, le=1.0, default=0.5)
     delivery_confidence: float = Field(ge=0.0, le=1.0, default=0.5)

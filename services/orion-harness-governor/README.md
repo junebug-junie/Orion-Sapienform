@@ -103,6 +103,14 @@ Claude Code only writes a `stream-json` line once a step fully completes — wit
 
 This does not fix a runaway upstream generation (e.g. a local model that never emits a stop token) — that failure mode lives in the model-serving stack outside this repo. It bounds how long a turn can be stuck waiting on one before the operator gets a diagnosable, fast failure instead of a silent hang.
 
+### Draft length ceiling
+
+`orion/harness/fcc_motor.py::run_fcc_turn` kills the fcc subprocess with `error_code=fcc_draft_length_ceiling_exceeded` if the accumulated draft size reaches the model's context ceiling (`max_context_chars()` in `orion/fcc/context_budget.py` — `HARNESS_FCC_MAX_CONTEXT_TOKENS` tokens times `ORION_FCC_CHARS_PER_TOKEN`, 65536 × 4 chars by default). The ceiling is deliberately generous: it never fires on normal turns, and it explicitly skips the terminal `"result"` stream event (the CLI's own signal that a turn already finished), so a legitimately long-but-completed answer can't get its own already-generated payload double-counted into a false-positive kill. It only fires on true runaway generation.
+
+### Reflection fail-closed fallback
+
+If the 5b reflect LLM call itself fails (`run_finalize_reflection` in `orion/harness/finalize.py`) and the deterministic quick-lane gate is also blocked, the degraded fallback verdict is `alignment_verdict="misaligned"` (`reflection_source="degraded_llm_failure_fallback"`) — not `"aligned"`. Reflection failing is not evidence the draft is fine, so the fallback fails closed instead of open. The 5c voice-finalize pass always runs regardless of verdict, but a `"misaligned"` verdict is the documented signal (in `orion_voice_finalize.j2`) to materially revise the draft rather than pass it through unreviewed. This does not fix why 5b failed — check `alignment_notes` on the verdict artifact (`reflect_llm_failed: <exception excerpt>`) for that.
+
 ### Required secrets
 
 Mount host `~/.fcc` (already wired in compose). In `~/.fcc/.env` (or path from `HARNESS_FCC_ENV_PATH`):

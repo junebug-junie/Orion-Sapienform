@@ -1,0 +1,10 @@
+[Unit]
+Description=Nightly Orion local /mnt/scripts backup
+
+[Timer]
+OnCalendar=*-*-* 03:15:00
+Persistent=true
+Unit=orion-backup-mnt-scripts.service
+
+[Install]
+WantedBy=timers.target

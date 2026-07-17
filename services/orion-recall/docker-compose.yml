@@ -47,6 +47,18 @@ services:
       - RECALL_CONTINUITY_RENDER_BUDGET=${RECALL_CONTINUITY_RENDER_BUDGET:-96}
       - RECALL_ACTIVE_PACKET_ENABLED=${RECALL_ACTIVE_PACKET_ENABLED:-true}
       - ACTIVATION_RECALL_FLOOR=${ACTIVATION_RECALL_FLOOR:-0.08}
+      - RECALL_CONCEPT_REGION_ENABLED=${RECALL_CONCEPT_REGION_ENABLED:-true}
+      # SUBSTRATE_STORE_BACKEND/FALKORDB_URI/FALKORDB_SUBSTRATE_GRAPH are read directly
+      # from the process environment by orion/substrate/graphdb_store.py's
+      # build_substrate_store_from_env() (no matching pydantic Settings field in this
+      # service) -- this service has no env_file: directive, so without these three
+      # entries here they never reach the container's real OS environment regardless
+      # of what .env/.env_example say, and the concept_region collector silently
+      # degrades to an empty in-memory store forever. Same shared FalkorDB
+      # instance/graph as orion-cortex-exec and orion-hub.
+      - SUBSTRATE_STORE_BACKEND=${SUBSTRATE_STORE_BACKEND:-falkor}
+      - FALKORDB_URI=${FALKORDB_URI}
+      - FALKORDB_SUBSTRATE_GRAPH=${FALKORDB_SUBSTRATE_GRAPH:-orion_substrate}
       - RECALL_BELIEF_RENDER_BUDGET=${RECALL_BELIEF_RENDER_BUDGET:-128}
       # No compose-level default on these two: they are NEVER_SYNC_KEYS-protected in
       # scripts/sync_local_env_from_example.py (must be set by hand in .env) and their

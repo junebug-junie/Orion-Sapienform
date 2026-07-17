@@ -769,3 +769,37 @@ Note this only affects *scoring* (a continuous, soft decay) — it does not give
 ### Compose env-var defaults hardened (fixed 2026-07-14)
 
 `docker-compose.yml`'s `environment:` list (added by the compose-parity PR, #1021) crash-looped this service in production: `RECALL_SKIP_MAX_NOVELTY`, `RECALL_SKIP_SHIFT_NOVELTY_FLOOR`, `RECALL_CONTINUITY_SQL_MINUTES`, `RECALL_CONTINUITY_RENDER_BUDGET`, `RECALL_BELIEF_RENDER_BUDGET`, and `RECALL_CRYSTALLIZATION_VECTOR_COLLECTION` were missing from live `.env` and had no `${VAR:-default}` fallback, so compose substituted empty strings and pydantic Settings validation failed on every boot (`float_parsing`/`int_parsing` errors). Fixed live by syncing the missing keys into `.env` (`python scripts/sync_local_env_from_example.py --all-keys orion-recall`) and, in this changeset, adding compose-level `:-default` fallbacks matching `.env_example` so a missing `.env` key can't crash the service again — see `services/orion-recall/tests/test_docker_compose_numeric_defaults.py`. `RECALL_GRAPHITI_IN_CHAT`/`RECALL_GRAPHITI_ADAPTER_URL` remain deliberately unguarded (see the comment above them in `docker-compose.yml`) — they're `NEVER_SYNC_KEYS`-protected and a duplicated default here would drift from `.env_example` over time.
+
+## 15) Concept-region collector (substrate concept graph in belief-lane recall)
+
+`app/collectors/concept_region.py::fetch_concept_region_fragment()` is a PCR collector
+alongside `active_packet`, wired into `process_recall`'s purposeful phase in `app/worker.py`.
+It matches the current turn's text against concept labels already materialized in the
+shared substrate graph (golden Orion/Juniper/relationship concepts seeded by `orion-hub`,
+plus organically-grown topic-foundry concepts) and, on a match, returns a bounded
+neighborhood fragment scoped to that turn. Matching is deliberately dumb — case-insensitive
+label substring match, no embedding/LLM call — and it never does a store read at all if the
+turn text matches nothing.
+
+**Env vars:**
+
+| Var | Default | Meaning |
+|---|---|---|
+| `RECALL_CONCEPT_REGION_ENABLED` | `true` | Master on/off switch for this collector. |
+| `SUBSTRATE_STORE_BACKEND` | `falkor` | Which substrate store backend `app/substrate_store.py::get_substrate_store()` builds (shared with `orion-cortex-exec`/`orion-hub`, same `FalkorDB` instance/graph). |
+| `FALKORDB_URI` | `redis://orion-athena-falkordb:6379` | Bridge-network Docker DNS — this service runs in bridge mode, **not** Hub's host-mode `127.0.0.1:6380` convention. |
+| `FALKORDB_SUBSTRATE_GRAPH` | `orion_substrate` | Graph name inside FalkorDB. |
+
+**Verify it's live:** trigger a purposeful-phase turn whose text mentions a known concept
+label (e.g. a golden concept's name), then check `decision.recall_debug["pcr"]["backend_plan"]`
+includes `concept_region`, and look for a `source: "concept_region"` candidate/item. If the
+substrate store failed to construct (bad `FALKORDB_URI`, FalkorDB unreachable), the collector
+degrades to `[]` silently — check Hub's own Concept Atlas tab or `orion-hub` logs for
+`recall_substrate_store_init_failed` first.
+
+**Known limitation:** `FalkorSubstrateStore` hydrates its snapshot once at process start and
+never refreshes — concepts added by `orion-hub`'s topic-foundry scheduler after this service's
+first `concept_region` call are invisible here until `orion-recall` restarts. Not specific to
+this collector (shared `orion/substrate/falkor_store.py` behavior), but this is the first
+continuously-changing-data consumer of the store in this service, so it's the first place the
+limitation is actually load-bearing. See PR #1133.

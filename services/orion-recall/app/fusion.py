@@ -685,11 +685,12 @@ def render_continuity_bundle(
 
 _BELIEF_SOURCE_ORDER = {
     "active_packet": 0,
-    "cards": 1,
-    "rdf": 2,
-    "rdf_chat": 3,
-    "memory_graph_sparql": 4,
-    "graphiti": 5,
+    "concept_region": 1,
+    "cards": 2,
+    "rdf": 3,
+    "rdf_chat": 4,
+    "memory_graph_sparql": 5,
+    "graphiti": 6,
 }
 
 

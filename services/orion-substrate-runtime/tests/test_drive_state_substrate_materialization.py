@@ -1,6 +1,7 @@
 """Unit tests for optional DriveEngine → substrate graph materialization
 (snapshot_source="drive_state"). Chat stance measurement SoR is now Postgres
-drive_audits; this writer defaults off and remains only as a rollback ladder.
+drive_audits; this writer defaults off and remains only as a legacy optional
+graph writer (flag restores writes, not stance reads).
 
 Mirrors test_embodiment_c_hook.py's worker-construction pattern.
 """

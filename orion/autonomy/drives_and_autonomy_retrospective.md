@@ -478,6 +478,68 @@ on its own before deciding whether item 1 is still necessary. That live measurem
 taken yet as of this writing — the gate should be re-run against a post-deploy window before
 concluding either way on item 1 (§6 item 5).
 
+### 5d. Status update (2026-07-17): the gate re-run answered §5c's open question — item 1
+(`DriveEngine`'s fold-batch clamp collapse) was still live, caught mid-collapse, and its
+aggregation math is now fixed. The stuck tie it left behind is not.
+
+Live post-deploy verification of §5c's field-digester fix (`measure_autonomy_gate.py
+--window-hours 0.15` against Postgres data since deploy) answered the open question directly:
+dominance monoculture stayed fixed (top share 32.05%, matching the earlier O1/O3 measurement,
+unchanged as expected), but the gate still read **SATURATED** — now because `all_active_frac =
+0.9872` (98.7% of audits have ≥5 of 6 drives simultaneously active), not the dominance bug.
+Pulling live `drive_pressures` at that moment caught the mechanism directly:
+`coherence`/`capability`/`predictive` pinned to the exact byte-identical value
+`0.45036942460343243` across multiple consecutive audits, while `autonomy`/`continuity`/
+`relational` stayed differentiated — the fold-batch clamp collapse (§6 item 5), confirmed live
+and in progress, not hypothetical.
+
+**Fixed same-day**
+(`docs/superpowers/specs/2026-07-17-drive-engine-fold-batch-clamp-collapse-fix-design.md`).
+`DriveEngine.update()`'s live path summed every tension's impact into `impact_sum[drive]`
+unbounded across a whole fold batch, then clamped the final sum once (`orion/spark/
+concept_induction/drives.py:70-91`, pre-fix). Once that clamp saturated to exactly `±1.0`, the
+leaky-integrator formula collapsed to exactly `1.0` (or `0.0`) regardless of starting pressure —
+any two drives whose batch-summed impact both exceeded the clamp bound landed on the identical
+value. Fixed by applying the recurrence sequentially, once per tension event, inside the same
+single pass the code already made over `tensions` — each event's own impulse is already
+individually bounded before the outer clamp, so saturation still happens with enough same-sign
+events, but different drives with different exact tension sequences no longer land on a
+forced-identical value. A follow-up code review found sequential application makes the result
+order-dependent (unlike the old commutative sum), and the caller's arrival-order buffer isn't
+guaranteed order-identical across bus redelivery — fixed by sorting tensions by `(ts,
+artifact_id)` before applying them, restoring full determinism regardless of delivery order.
+
+**Important, and easy to misread from the outside: this does not resolve the live tie the
+investigation started from.** A deeper investigation (prompted by re-deriving the old clamp
+math by hand and finding it can only ever produce exactly `0.0` or `1.0`, never a mid-range
+number like `0.45036942460343243`) traced the actual origin: a fold at `2026-07-17 08:39:42 UTC`
+snapped all six drives to exactly `1.0` in one tick (the prior tick, 2.5s earlier, had six
+distinct values) — the exact collapse mechanism just fixed, caught at its moment of occurrence.
+Three of those six (`coherence`, `capability`, `predictive`) never received a differentiating
+impulse afterward, so the tie persisted under pure decay — identical decay factor applied to
+already-identical values preserves float equality exactly — all the way down to
+`0.45036942460343243` by the time this was investigated ten hours later. Same original `1.0`,
+just decayed, not a fresh mid-range collapse. `orion/spark/concept_induction/bus_worker.py`'s
+`_update_drive_pressures` feeds `prior.get("pressures")` straight back in as `previous_pressures`
+on every fold with no tie-detection or reconciliation step, so this fix prevents the mechanism
+that *creates* a new tie but does nothing to *un-stick* one that already exists — that requires
+either a genuinely differentiating tension eventually reaching those three drives, or resolving
+the new open question below (§6 item 7), which turns out to be the one that actually decides
+whether that ever happens on its own.
+
+**A new, previously-unknown finding, surfaced only by tracing the stuck tie's exact origin (not
+by anything this PR set out to look for):** live `tension_kinds` audit data over a trailing
+window shows real, weight-differentiated tension kinds — `contradiction`, `cognitive_load`,
+`identity_drift`, `prediction_surprise` — being minted and *logged as attributed* roughly 600
+times in a 9.6-hour span, with `drive_impacts` weights in `orion/spark/concept_induction/
+tensions.py` that are **not** equal across `coherence`/`capability`/`predictive`. Despite that,
+those three drives have never diverged from each other in the entire window checked (0 rows out
+of thousands). That means these differentiated tensions are being minted and attributed in the
+audit log, but are **not reaching** `_update_drive_pressures`'s pending/fold buffer for this
+trio — a distinct, unexplained gap between tension-minting and drive-pressure-folding that this
+PR did not investigate further (out of scope, per its own spec's Non-goals) and that is now the
+actual blocker on the live tie ever resolving. See §6 item 7.
+
 ## 6. Open questions
 
 1. Is self-initiated, sometimes-suboptimal behavior still the actual target? If yes, the
@@ -496,15 +558,12 @@ concluding either way on item 1 (§6 item 5).
    against Orion's mission. Worth deciding consciously whether that's sufficient grounding or
    whether it needs revisiting — see `docs/superpowers/specs/2026-07-11-drive-taxonomy-conceptual-audit-design.md`
    for the prior internal audit that found no in-repo rationale for it.
-5. Open, confirmed, unpatched (see §5b): `DriveEngine.update()`'s fold-batch clamp collapse can
+5. ~~Open, confirmed, unpatched (see §5b): `DriveEngine.update()`'s fold-batch clamp collapse can
    snap all six drives to an identical ceiling value on a large enough batch of same-tick
-   tensions. Needs a decision on whether to rate-limit tension *minting* upstream (this repo
-   already has `TensionRateLimiter` for exactly this, unwired from this path), redesign
-   `DriveEngine`'s aggregation math (the log-odds/logit-space option sketched in §5b), or both.
-   **Deliberately not started yet** — see §5c: item 6 was fixed first on the theory that most of
-   the fold-batch volume traces to item 6's sawtooth (`tension.distress.v1`); still needs a live
-   post-deploy gate re-run to confirm whether that alone was enough before committing to a fix
-   here.
+   tensions.~~ **Aggregation math fixed 2026-07-17 — see §5d.** Caught mid-collapse live (three
+   drives pinned to a shared value, traced to an exact fold event), fixed by sequential
+   per-tension application instead of sum-then-clamp. **The live tie this caused is not fixed by
+   this change** — see §5d and item 7 below for why.
 6. ~~Open, confirmed, unpatched (see §5b): `orion-field-digester`'s `apply_decay` (unconditional
    per-tick multiplicative decay) vs. `apply_perturbations`' `mode="replace"` full-overwrite
    produces a mechanical sawtooth on every biometrics-sourced field channel, independent of real
@@ -513,6 +572,17 @@ concluding either way on item 1 (§6 item 5).
    Resolved a previously-unconfirmed question in `services/orion-field-digester/README.md`'s own
    channel glossary (`cpu_pressure`/`gpu_pressure`'s "accumulator-oscillation artifact, not
    confirmed... hardware or polling-architecture", written 2026-07-16).
+7. **New, open, unstarted (see §5d).** Real, weight-differentiated tension kinds
+   (`contradiction`, `cognitive_load`, `identity_drift`, `prediction_surprise`) are being minted
+   and logged as attributed for `coherence`/`capability`/`predictive` (~600 times/9.6h in live
+   `tension_kinds` data) but are not reaching `_update_drive_pressures`'s fold buffer for those
+   drives — they've never diverged from each other in the entire window checked. This is the
+   actual blocker on the item-5 tie ever resolving on its own; item 5's fix only stops *new* ties
+   from forming, it does nothing to explain or fix why differentiated evidence that clearly
+   exists isn't reaching the drives it's attributed to. Needs its own investigation, not yet
+   started — the gap could be anywhere between tension-minting and the fold buffer
+   (`orion/spark/concept_induction/bus_worker.py`, `tensions.py`, or the audit/attribution path
+   itself logging something that never actually gets passed to `DriveEngine.update()`).
 
 ## 8. Downstream consumer audit (2026-07-16) and the corrected implementation order
 
@@ -687,3 +757,8 @@ guard instead.
 - `services/orion-field-digester/README.md`'s "Field channel glossary" section — the
   2026-07-16 channel-by-channel audit that first flagged the `cpu_pressure`/`gpu_pressure`
   "accumulator-oscillation artifact" as unconfirmed; §5b resolves it.
+- `docs/superpowers/specs/2026-07-17-field-digester-decay-hold-fix-design.md` — §5c/PR #1144,
+  the field-digester decay-hold fix and its own live post-deploy verification.
+- `docs/superpowers/specs/2026-07-17-drive-engine-fold-batch-clamp-collapse-fix-design.md` —
+  §5d, the `DriveEngine` sequential-update fix and the investigation that found it doesn't
+  un-stick an already-existing tie (§6 item 7).

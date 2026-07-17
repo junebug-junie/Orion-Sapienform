@@ -16,10 +16,21 @@ investigation traced it all the way back to a **confirmed root cause in `orion-f
 — not a new bug this series introduced, but a longer-standing one it surfaced. Two real,
 confirmed bugs were found; one is now fixed:
 
-1. `DriveEngine.update()`'s fold-batch clamp collapse — a large enough batch of same-tick
-   tensions can snap all six drives to an identical ceiling value, erasing real differentiation.
-   **Still open, deliberately deferred** pending live data on whether item 2's fix alone drops
-   fold-batch tension volume enough to stop triggering this.
+1. **Aggregation math fixed 2026-07-17; the live tie it caused is not.** `DriveEngine.update()`'s
+   fold-batch clamp collapse — a large enough batch of same-tick tensions could snap multiple
+   drives to an identical value, erasing real differentiation — was confirmed live (post-deploy
+   of item 2's fix, before this fix shipped: `coherence`/`capability`/`predictive` byte-identical
+   at `0.45036942460343243` across consecutive `drive_audits` rows) and fixed by switching
+   `update()`'s live path from sum-then-clamp-once to a sequential per-tension update
+   (`docs/superpowers/specs/2026-07-17-drive-engine-fold-batch-clamp-collapse-fix-design.md`).
+   This prevents *future* collapse events. It does **not** retroactively un-stick the
+   already-persisted tie: once two drives share an identical pressure, the same decay factor
+   applied to both preserves that equality exactly, forever, until a genuinely differentiating
+   tension reaches them. A live investigation (same PR) traced the origin to one collapse event
+   at `2026-07-17 08:39:42 UTC` and found that real, weight-differentiated tension kinds for this
+   trio *are* being minted and logged (~600 times/9.6h in `tension_kinds`) but are **not**
+   reaching `_update_drive_pressures`'s fold buffer — a separate, still-open, unscheduled
+   question (see §5d) that actually determines whether the live tie ever resolves on its own.
 2. **Fixed 2026-07-17.** `orion-field-digester`'s `apply_decay`/`apply_perturbations` mismatch —
    an unconditional per-tick decay fighting a full-overwrite-on-fresh-data reset produced a
    mechanical sawtooth on biometrics-sourced field channels, independent of real host telemetry.

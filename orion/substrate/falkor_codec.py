@@ -119,6 +119,29 @@ def encode_node_properties(node: BaseSubstrateNodeV1, identity_key: str | None) 
 # docs/superpowers/specs/2026-07-16-cypher-native-substrate-postgres-bus-split-design.md
 # item 3's "promote to first-class Cypher properties only with a second
 # consumer" escape hatch. Do NOT add a generic metadata-dump path here.
+DYNAMICS_METADATA_KEYS: tuple[str, ...] = (
+    "dynamic_pressure",
+    "dynamic_pressure_reason",
+    "dormant",
+    "dormancy_updated_at",
+    "prediction_error",
+)
+
+# Subset of DYNAMICS_METADATA_KEYS owned by SubstrateDynamicsEngine.tick()
+# rather than by whichever writer is upserting this call -- any caller that
+# upserts a concept node via a freshly-constructed model (not one round-tripped
+# from the store) must carry these forward from the pre-existing node or its
+# own upsert_node() call will durably reset dynamics.py's computed pressure/
+# dormancy state back to defaults. See
+# services/orion-substrate-runtime/app/worker.py::_write_prediction_error_node.
+DYNAMICS_ENGINE_OWNED_METADATA_KEYS: tuple[str, ...] = (
+    "dynamic_pressure",
+    "dynamic_pressure_reason",
+    "dormant",
+    "dormancy_updated_at",
+)
+
+
 def _safe_float(value: Any, *, default: float | None) -> float | None:
     """Tolerant numeric coercion matching the `.get(key) or default` pattern
     every current consumer of these keys already uses (attention_broadcast.py's

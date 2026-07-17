@@ -696,6 +696,17 @@ class BiometricsSubstrateWorker:
         enabled it writes a single node under a fixed identity_key so re-writes
         collapse (no unbounded node growth), letting the dynamics engine seed
         pressure from ``metadata['prediction_error']``.
+
+        This builds a fresh ``ConceptNodeV1`` on every call rather than
+        round-tripping the existing one, so any dynamics-engine-owned metadata
+        already durably set on this same ``node_id`` (``dynamic_pressure``,
+        ``dynamic_pressure_reason``, ``dormant``, ``dormancy_updated_at`` --
+        now native Cypher properties, see falkor_codec.py) must be carried
+        forward explicitly. Without this, a repeat prediction-error event for
+        the same fixed node_id -- the documented, intended "re-writes collapse"
+        path -- would durably clobber SubstrateDynamicsEngine.tick()'s computed
+        state back to 0.0/False on every re-write, since encode_node_properties()
+        now always includes those keys in the upsert's SET clause.
         """
         if not _prediction_error_nodes_enabled():
             return
@@ -718,8 +729,26 @@ class BiometricsSubstrateWorker:
                 SubstrateSignalBundleV1,
             )
             from orion.substrate.adapters._common import make_temporal
+            from orion.substrate.falkor_codec import DYNAMICS_ENGINE_OWNED_METADATA_KEYS
 
             salience = max(0.0, min(1.0, error))
+            metadata: dict[str, Any] = {
+                "source_kind": "substrate_prediction_error",
+                "prediction_error": round(salience, 6),
+                "reducer_key": reducer_key,
+            }
+            # Best-effort: not every injected store double implements
+            # get_node_by_id (e.g. unit-test fakes that only cover
+            # upsert_node), and a lookup failure must not block the write
+            # itself -- this stays fail-open like the rest of this method.
+            try:
+                existing = store.get_node_by_id(node_id)
+            except Exception:
+                existing = None
+            if existing is not None:
+                for key in DYNAMICS_ENGINE_OWNED_METADATA_KEYS:
+                    if key in existing.metadata:
+                        metadata[key] = existing.metadata[key]
             node = ConceptNodeV1(
                 node_id=node_id,
                 anchor_scope="orion",
@@ -734,11 +763,7 @@ class BiometricsSubstrateWorker:
                     tier_rank=2,
                 ),
                 signals=SubstrateSignalBundleV1(confidence=1.0, salience=salience),
-                metadata={
-                    "source_kind": "substrate_prediction_error",
-                    "prediction_error": round(salience, 6),
-                    "reducer_key": reducer_key,
-                },
+                metadata=metadata,
             )
             store.upsert_node(
                 identity_key=f"substrate_prediction_error|{node_id}",

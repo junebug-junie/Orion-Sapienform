@@ -165,6 +165,55 @@ def test_write_prediction_error_node_against_falkor_routed_store(monkeypatch) ->
     assert params["prediction_error"] == pytest.approx(expected_prediction_error)
 
 
+def test_write_prediction_error_node_preserves_dynamics_state_on_rewrite(monkeypatch) -> None:
+    """Regression test: _write_prediction_error_node's docstring says it "writes
+    a single node under a fixed identity_key so re-writes collapse" -- i.e. the
+    same node_id is upserted repeatedly (see worker.py's _execution_tick /
+    _transport_tick callers, both using a fixed node_id every cycle). Now that
+    falkor_codec.py always includes dynamic_pressure/dormant/etc in every
+    upsert's SET clause, a naive re-write that doesn't carry forward the
+    dynamics engine's already-computed state would durably reset it to
+    0.0/False on every single re-write -- defeating the very durability this
+    branch exists to add.
+    """
+    from orion.substrate.dynamics import SubstrateDynamicsEngine
+
+    monkeypatch.setenv(_PREDICTION_ERROR_NODE_FLAG, "true")
+    routed, client = _make_falkor_routed_store()
+    worker = _make_worker_with_store(routed)
+
+    node_id = "node:substrate.execution"
+
+    worker._write_prediction_error_node(
+        node_id=node_id, error=0.7, now=_NOW, reducer_key="execution_trajectory"
+    )
+
+    engine = SubstrateDynamicsEngine(store=routed)
+    tick_result = engine.tick(now=_NOW)
+    assert tick_result.pressure_updates, "expected the standing prediction_error to seed pressure"
+
+    node_after_tick = routed.get_node_by_id(node_id)
+    assert node_after_tick is not None
+    dynamic_pressure_after_tick = node_after_tick.metadata.get("dynamic_pressure")
+    assert dynamic_pressure_after_tick, "expected dynamics.tick() to have set a non-zero dynamic_pressure"
+
+    # Same fixed node_id re-written by a fresh prediction-error event.
+    worker._write_prediction_error_node(
+        node_id=node_id, error=0.65, now=_NOW, reducer_key="execution_trajectory"
+    )
+
+    node_after_rewrite = routed.get_node_by_id(node_id)
+    assert node_after_rewrite is not None
+    assert node_after_rewrite.metadata.get("dynamic_pressure") == pytest.approx(
+        dynamic_pressure_after_tick
+    ), "dynamics-engine-owned dynamic_pressure must survive an unrelated prediction-error rewrite"
+    assert node_after_rewrite.metadata.get("dynamic_pressure_reason") == node_after_tick.metadata.get(
+        "dynamic_pressure_reason"
+    )
+    # The writer's own field still updates to the new value.
+    assert node_after_rewrite.metadata.get("prediction_error") == pytest.approx(round(0.65, 6))
+
+
 # ---------------------------------------------------------------------------
 # 2. _dynamics_tick end-to-end against the same Falkor-primary routed store.
 # ---------------------------------------------------------------------------

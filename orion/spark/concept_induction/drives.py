@@ -80,7 +80,17 @@ class DriveEngine:
             # headroom (1 - p) toward growth, or a fraction of the existing
             # pressure (p) toward relief -- no fixed point: with impulse=0,
             # pressure=base < prev.
-            for event in tensions:
+            #
+            # Unlike the old sum-then-clamp math (commutative -- batch order
+            # never mattered), sequential application makes the exact result
+            # depend on event order. The caller buffers tensions in arrival
+            # order (bus_worker.py's `pending.extend(...)`), which is stable
+            # for a normal run but not guaranteed order-identical across bus
+            # redelivery/retries (found by code review). Sort by (ts,
+            # artifact_id) -- both always present on every TensionEventV1 --
+            # so the result is fully order-independent regardless of delivery
+            # order, not just deterministic for one fixed arrival order.
+            for event in sorted(tensions, key=lambda e: (e.ts, e.artifact_id)):
                 mag = self._clamp01(event.magnitude)
                 for drive, weight in sorted(event.drive_impacts.items()):
                     if drive not in p:
@@ -90,6 +100,13 @@ class DriveEngine:
                     # tension on a successfully completed action). magnitude
                     # itself stays non-negative (schema-enforced) --
                     # direction lives in weight.
+                    #
+                    # The outer clamp_signed() is a defensive no-op, not load-
+                    # bearing: mag is already in [0,1] and clamp_signed(weight)
+                    # is already in [-1,1], so their product is mathematically
+                    # already within [-1,1] (found by code review, kept as a
+                    # cheap safety net rather than trusting that invariant to
+                    # never be violated by a future producer).
                     impulse = self._clamp_signed(mag * self._clamp_signed(weight))
                     if impulse >= 0.0:
                         p[drive] = self._clamp01(p[drive] + impulse * (1.0 - p[drive]))

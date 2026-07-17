@@ -2,6 +2,9 @@
 
 **Date:** 2026-07-06  
 **Status:** Approved for implementation planning  
+**Operator update (2026-07-16):** Commands using graphiti-adapter's
+`--profile falkordb` are historical. The sidecar was removed; use
+`services/orion-falkordb/README.md` for current bring-up and cutover steps.
 **Problem:** The Graphiti seam (Phases A–E, commit `ab40f277`) is architecturally sound but operationally dormant — default env wiring may skip auto-projection on approve, smoke never exercises the rail, adapter has no tests, and the graph is one node per crystallization with no cross-link traversal.
 
 ---

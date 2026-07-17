@@ -1,6 +1,10 @@
 # Graphiti Rail Activation Implementation Plan
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
+>
+> **Operator update (2026-07-16):** Commands using graphiti-adapter's
+> `--profile falkordb` are historical. The sidecar was removed; use
+> `services/orion-falkordb/README.md` for current bring-up and cutover steps.
 
 **Goal:** Activate the dormant Graphiti projection rail in three sequential vertical slices — operational hardening (A), cross-crystallization link projection (B), and optional `graphiti-core` hybrid retrieval (C).
 

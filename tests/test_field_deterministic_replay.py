@@ -27,6 +27,7 @@ def _replay(receipts: list[ReductionReceiptV1], *, decay_rate: float, diffusion_
             perturbations=perturbations,
             decay_rate=decay_rate,
             diffusion_rate=diffusion_rate,
+            staleness_threshold_sec=90.0,
         )
     return state
 

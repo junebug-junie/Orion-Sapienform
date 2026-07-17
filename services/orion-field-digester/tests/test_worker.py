@@ -61,3 +61,25 @@ def test_non_idle_tick_still_uses_commit_digest_tick(monkeypatch):
 
     worker._store.commit_digest_tick.assert_called_once()
     worker._store.save_field.assert_not_called()
+
+
+def test_field_coherence_warning_records_node_vector_updated_at(monkeypatch):
+    """field_coherence_warning (services/orion-field-digester/app/worker.py) is
+    a NODE_DECAY_CHANNELS entry but is written directly to node_vectors,
+    outside apply_perturbations() -- code review (2026-07-17) found this
+    channel was never getting the decay-hold fix's node_vector_updated_at
+    tracking, so it silently kept decaying every tick regardless of the fix.
+    Verifies the fix: after a tick where check_field_coherence flags a node,
+    that node's field_coherence_warning entry has a matching
+    node_vector_updated_at stamp."""
+    worker = _make_worker(monkeypatch, idle_tick_enabled=True)
+    worker._store.fetch_new_receipts.return_value = []
+    existing = empty_field_state(lattice=worker._lattice, now=datetime.now(timezone.utc), tick_id="tick_old")
+    worker._store.load_latest_field.return_value = existing
+    monkeypatch.setattr("app.worker.check_field_coherence", lambda state: {"n1": 0.9})
+
+    worker._tick()
+
+    saved_state = worker._store.save_field.call_args.args[0]
+    assert saved_state.node_vectors["n1"]["field_coherence_warning"] == 0.9
+    assert saved_state.node_vector_updated_at["n1"]["field_coherence_warning"] == saved_state.generated_at

@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from datetime import datetime, timezone
+
 from orion.schemas.field_state import FieldStateV1
 
 NODE_DECAY_CHANNELS = {
@@ -38,11 +40,44 @@ CAPABILITY_DECAY_CHANNELS = {
 }
 
 
-def apply_decay(state: FieldStateV1, *, decay_rate: float) -> None:
-    for vec in state.node_vectors.values():
+def _aware_utc(dt: datetime) -> datetime:
+    return dt if dt.tzinfo else dt.replace(tzinfo=timezone.utc)
+
+
+def apply_decay(
+    state: FieldStateV1,
+    *,
+    decay_rate: float,
+    now: datetime,
+    staleness_threshold_sec: float,
+) -> None:
+    # Decay/injection-interval mismatch fix (2026-07-17, docs/superpowers/specs/
+    # 2026-07-17-field-digester-decay-hold-fix-design.md): hold each channel's
+    # value by default; only decay once it has actually gone stale (no fresh
+    # perturbation within staleness_threshold_sec). Previously this loop
+    # decayed every NODE_DECAY_CHANNELS entry unconditionally every 2s tick
+    # regardless of whether fresh data arrived that tick, producing a
+    # mechanical sawtooth against the ~15-30s real biometrics publish cadence
+    # (0.92^7 ~= 0.56 -- ~44% lost between two real publishes, then snapped
+    # straight back up with zero memory of the decayed trajectory).
+    now_aware = _aware_utc(now)
+    for node_id, vec in state.node_vectors.items():
+        updated_at = state.node_vector_updated_at.get(node_id, {})
         for ch in NODE_DECAY_CHANNELS:
-            if ch in vec:
-                vec[ch] = vec[ch] * decay_rate
+            if ch not in vec:
+                continue
+            last_updated_at = updated_at.get(ch)
+            # Missing (never perturbed, or persisted from before this fix):
+            # safe default, decay as today. Present but still fresh (within
+            # staleness_threshold_sec of its last real write): hold, skip
+            # decay this tick. Otherwise (present and genuinely stale):
+            # decay as today.
+            is_fresh = last_updated_at is not None and (
+                now_aware - _aware_utc(last_updated_at)
+            ).total_seconds() < staleness_threshold_sec
+            if is_fresh:
+                continue
+            vec[ch] = vec[ch] * decay_rate
     # NOTE (2026-07-12, found by code review on the diffusion memoryless-
     # recompute fix): this capability_vectors loop -- and its
     # "available_capacity" recompute below -- is currently dead weight for

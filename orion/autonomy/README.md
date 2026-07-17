@@ -11,19 +11,23 @@ post-deploy verification confirmed the dominance-attribution fix (O1) and the st
 fix (O3) are genuinely working in production: top dominant-drive share dropped from a 96%
 `relational` monoculture to 31.65%, and `predictive` went from ~0% presence to a real 7.8%.
 
-But the gate still reads SATURATED, for a *different* reason than before, and a full multi-hop
+The gate then read SATURATED for a *different* reason than before, and a full multi-hop
 investigation traced it all the way back to a **confirmed root cause in `orion-field-digester`**
 — not a new bug this series introduced, but a longer-standing one it surfaced. Two real,
-confirmed, currently-unpatched bugs are sitting open as a result:
+confirmed bugs were found; one is now fixed:
 
 1. `DriveEngine.update()`'s fold-batch clamp collapse — a large enough batch of same-tick
    tensions can snap all six drives to an identical ceiling value, erasing real differentiation.
-2. `orion-field-digester`'s `apply_decay`/`apply_perturbations` mismatch — an unconditional
-   per-tick decay fighting a full-overwrite-on-fresh-data reset produces a mechanical sawtooth on
-   biometrics-sourced field channels, independent of real host telemetry. This resolves a
-   previously-unconfirmed question in that service's own README (see
+   **Still open, deliberately deferred** pending live data on whether item 2's fix alone drops
+   fold-batch tension volume enough to stop triggering this.
+2. **Fixed 2026-07-17.** `orion-field-digester`'s `apply_decay`/`apply_perturbations` mismatch —
+   an unconditional per-tick decay fighting a full-overwrite-on-fresh-data reset produced a
+   mechanical sawtooth on biometrics-sourced field channels, independent of real host telemetry.
+   This resolved a previously-unconfirmed question in that service's own README (see
    [services/orion-field-digester/README.md](../../services/orion-field-digester/README.md)'s
-   channel glossary, `cpu_pressure`/`gpu_pressure` entries).
+   channel glossary, `cpu_pressure`/`gpu_pressure` entries) and was fixed the same day: channels
+   now hold flat until genuinely stale instead of decaying unconditionally every tick
+   (`docs/superpowers/specs/2026-07-17-field-digester-decay-hold-fix-design.md`).
 
 Full trace, live evidence, exact mechanisms, and the still-open design questions (rate-limit
 tension minting upstream vs. redesign `DriveEngine`'s aggregation math, a sketched

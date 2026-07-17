@@ -213,10 +213,21 @@ class FieldDigesterWorker:
             perturbations=perturbations,
             decay_rate=self._settings.biometrics_field_decay_rate,
             diffusion_rate=self._settings.biometrics_field_diffusion_rate,
+            staleness_threshold_sec=self._settings.field_decay_staleness_threshold_sec,
         )
 
         for node_id, suspicion in check_field_coherence(state).items():
             state.node_vectors.setdefault(node_id, {})["field_coherence_warning"] = suspicion
+            # field_coherence_warning is a NODE_DECAY_CHANNELS entry (decay.py)
+            # but is written here directly rather than through
+            # apply_perturbations() -- must record the same
+            # node_vector_updated_at stamp, or this channel silently never
+            # gets the 2026-07-17 decay-hold fix and keeps decaying every
+            # tick unconditionally (found by code review, confirmed live
+            # trace: a node that clears suspicion for one tick then decays
+            # its last warning value every 2s from then on, reproducing the
+            # exact sawtooth this fix exists to eliminate).
+            state.node_vector_updated_at.setdefault(node_id, {})["field_coherence_warning"] = state.generated_at
 
         global _FIELD_CHANNEL_SINK
         if _FIELD_CHANNEL_SINK is None:

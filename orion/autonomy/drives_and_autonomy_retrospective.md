@@ -460,6 +460,24 @@ Two open, unrelated-but-adjacent agent-board items worth cross-referencing if pi
 this exact territory (`orion-field-digester`'s channel corpus) but was not the source used to
 reach the conclusions above.
 
+### 5c. Status update (2026-07-17): item 2 fixed — `orion-field-digester` now holds decay
+channels flat until genuinely stale
+
+Following discussion of §5b's two open findings, item 2 (`orion-field-digester`'s
+`apply_decay`/`apply_perturbations` mismatch) was fixed same-day
+(`docs/superpowers/specs/2026-07-17-field-digester-decay-hold-fix-design.md`). New
+`FieldStateV1.node_vector_updated_at` field tracks each `(node_id, channel)`'s last real
+perturbation timestamp; `apply_decay()` now skips decaying a `NODE_DECAY_CHANNELS` entry while it
+is within `FIELD_DECAY_STALENESS_THRESHOLD_SEC` (default 90s) of its last real write, and only
+applies decay once genuinely stale. A channel never perturbed (or persisted from before this fix)
+keeps decaying every tick unconditionally — the same safe default as before, no special migration
+needed. `capability_vectors`/`CAPABILITY_DECAY_CHANNELS` and item 1 (`DriveEngine`'s fold-batch
+clamp collapse) were both explicitly left untouched, per the agreed sequencing: ship the
+field-digester fix alone first, then measure live whether fold-batch tension volume drops enough
+on its own before deciding whether item 1 is still necessary. That live measurement has not been
+taken yet as of this writing — the gate should be re-run against a post-deploy window before
+concluding either way on item 1 (§6 item 5).
+
 ## 6. Open questions
 
 1. Is self-initiated, sometimes-suboptimal behavior still the actual target? If yes, the
@@ -483,14 +501,18 @@ reach the conclusions above.
    tensions. Needs a decision on whether to rate-limit tension *minting* upstream (this repo
    already has `TensionRateLimiter` for exactly this, unwired from this path), redesign
    `DriveEngine`'s aggregation math (the log-odds/logit-space option sketched in §5b), or both.
-6. Open, confirmed, unpatched (see §5b): `orion-field-digester`'s `apply_decay` (unconditional
+   **Deliberately not started yet** — see §5c: item 6 was fixed first on the theory that most of
+   the fold-batch volume traces to item 6's sawtooth (`tension.distress.v1`); still needs a live
+   post-deploy gate re-run to confirm whether that alone was enough before committing to a fix
+   here.
+6. ~~Open, confirmed, unpatched (see §5b): `orion-field-digester`'s `apply_decay` (unconditional
    per-tick multiplicative decay) vs. `apply_perturbations`' `mode="replace"` full-overwrite
    produces a mechanical sawtooth on every biometrics-sourced field channel, independent of real
-   host telemetry. This predates the O1-O4/O2/O3 series and has a wider blast radius (attention
-   scoring, capability vectors) than just the drive economy. Resolves a previously-unconfirmed
-   question in `services/orion-field-digester/README.md`'s own channel glossary
-   (`cpu_pressure`/`gpu_pressure`'s "accumulator-oscillation artifact, not confirmed... hardware
-   or polling-architecture", written 2026-07-16).
+   host telemetry.~~ **Fixed 2026-07-17 — see §5c.** This predated the O1-O4/O2/O3 series and had
+   a wider blast radius (attention scoring, capability vectors) than just the drive economy.
+   Resolved a previously-unconfirmed question in `services/orion-field-digester/README.md`'s own
+   channel glossary (`cpu_pressure`/`gpu_pressure`'s "accumulator-oscillation artifact, not
+   confirmed... hardware or polling-architecture", written 2026-07-16).
 
 ## 8. Downstream consumer audit (2026-07-16) and the corrected implementation order
 

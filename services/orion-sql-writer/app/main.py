@@ -650,6 +650,8 @@ async def lifespan(app: FastAPI):
                     dominant_drive TEXT NULL,
                     summary TEXT NULL,
                     drive_pressures JSONB,
+                    tick_attribution JSONB,
+                    tension_kinds JSONB,
                     correlation_id TEXT NULL,
                     observed_at TIMESTAMPTZ NULL,
                     created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
@@ -661,6 +663,15 @@ async def lifespan(app: FastAPI):
             # CREATE TABLE IF NOT EXISTS alone won't add it — upgrade in place.
             conn.exec_driver_sql(
                 "ALTER TABLE drive_audits ADD COLUMN IF NOT EXISTS summary TEXT;"
+            )
+            # v4: Hub Drives Analytics contributor history. Wire DriveAuditV1 already
+            # carries these; older tables need the ALTER. Greenfield CREATE above
+            # already includes them; ADD COLUMN IF NOT EXISTS is a no-op there.
+            conn.exec_driver_sql(
+                "ALTER TABLE drive_audits ADD COLUMN IF NOT EXISTS tick_attribution JSONB;"
+            )
+            conn.exec_driver_sql(
+                "ALTER TABLE drive_audits ADD COLUMN IF NOT EXISTS tension_kinds JSONB;"
             )
             # The autonomy measurement gate windows on COALESCE(observed_at,
             # created_at); a bare created_at index would never serve that

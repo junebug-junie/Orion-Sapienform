@@ -26,6 +26,10 @@ DRIVE_AUDITS_LATEST_QUERY_FOR_STANCE = (
 )
 
 _DRIVE_STATE_QUERY_STATEMENT_TIMEOUT_MS = 300
+# Hard cap for the in-transaction Postgres statement_timeout. Keep this at or
+# below CHAT_STANCE_DRIVE_STATE_FETCH_TIMEOUT_SEC (default 0.4s) so the asyncio
+# wait_for and the DB kill agree on budget. Raising the env timeout alone does
+# not raise this cap.
 _ENGINE = None
 _ENGINE_URL: str | None = None
 
@@ -142,6 +146,9 @@ async def fetch_drive_state_for_chat_stance(
 
     t0 = time.perf_counter()
     try:
+        # wait_for cannot cancel the worker thread; on asyncio timeout the
+        # thread keeps the pooled connection until SET LOCAL statement_timeout
+        # kills the query (≤ _DRIVE_STATE_QUERY_STATEMENT_TIMEOUT_MS).
         row = await asyncio.wait_for(
             asyncio.to_thread(_query_latest_drive_audit_row_sync),
             timeout=timeout_sec,

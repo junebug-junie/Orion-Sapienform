@@ -49,6 +49,32 @@ python scripts/drive_state_divergence_audit.py
 python scripts/drive_state_divergence_audit.py --json
 ```
 
+### This service is the producer of `DriveAuditV1` (Hub Drives Analytics)
+
+This service is the sole **producer** of `DriveAuditV1` audit artifacts (schema
+`orion/core/schemas/drives.py`, `kind="memory.drives.audit.v1"`) — including the
+`tick_attribution` (per-drive float weights) and `tension_kinds` (short list of
+contributing tension kinds) fields. `orion/spark/concept_induction/audit.py::build_drive_audit`
+builds each audit from the current `DriveStateV1` plus the tick's tensions and attribution, then
+`ConceptWorker._publish_artifact` (`bus_worker.py`) publishes it on `self.cfg.drive_audit_channel`
+(`orion/spark/concept_induction/settings.py`). `tick_attribution` itself comes from
+`compute_tick_attribution()` in `orion/spark/concept_induction/drive_attribution.py`, which also
+derives `dominant_drive` when it isn't passed explicitly.
+
+**This service does not serve the Hub UI.** The Hub **Drives** tab (`#drives`,
+`/drives-analytics`) never talks to concept-induction directly. Instead: `orion-sql-writer`
+subscribes to the audit channel and persists each audit (including, as of
+`services/orion-sql-db/manual_migration_drive_audits_v4_tick_attribution.sql`, the
+`tick_attribution`/`tension_kinds` columns — previously dropped by the sql-writer column filter) to
+the Postgres `drive_audits` table (`services/orion-sql-writer/app/models/drive_audit.py`). Hub then
+reads that Postgres history via its own `RECALL_PG_DSN`-backed pool
+(`services/orion-hub/scripts/drives_analytics_queries.py`). This service is upstream producer only —
+it has no dependency on Hub, and a Hub outage does not affect audit production.
+
+See also: [Hub Drives tab operator docs](../orion-hub/README.md) (`#drives`) and
+[orion/autonomy/README.md § Hub Drives Analytics](../../orion/autonomy/README.md#hub-drives-analytics)
+for what the persisted audits mean to an operator.
+
 ## Satisfaction tensions (drive relief)
 
 `DriveEngine.update()` supports signed drive impacts: a `TensionEventV1` with a

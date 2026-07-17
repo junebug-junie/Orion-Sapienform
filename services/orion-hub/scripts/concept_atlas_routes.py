@@ -20,13 +20,22 @@ to an honest "unavailable" response instead of fabricating data or raising a
 from __future__ import annotations
 
 import logging
+from datetime import datetime, timedelta, timezone
 from typing import Any, Optional
 
 from fastapi import APIRouter, HTTPException, Query
 from fastapi.responses import HTMLResponse
 
 from .settings import settings
-from .topic_foundry_client import TopicFoundryClientError, fetch_run_topics_and_keywords
+from .topic_foundry_client import (
+    TopicFoundryClientError,
+    create_dataset,
+    create_model,
+    fetch_run_topics_and_keywords,
+    list_datasets,
+    list_models,
+    trigger_training_run,
+)
 
 logger = logging.getLogger("orion-hub.concept_atlas")
 
@@ -60,6 +69,150 @@ _AT_RISK_MARGIN = 0.05
 # manual, operator-triggered route (not a hot path), but an unbounded or
 # high cap could still make one ingest call take minutes.
 _RELATION_CLASSIFICATION_PAIR_CAP = 10
+
+# Well-known, fixed names for the scheduler's own topic-foundry dataset/model
+# (Gap 5). Idempotent get-or-create by name -- see
+# _ensure_topic_foundry_dataset_and_model -- so the scheduler survives Hub
+# restarts and topic-foundry redeploys without losing track of "its"
+# dataset/model. Same source-table/columns/windowing/model-spec shape as
+# services/orion-topic-foundry/scripts/smoke_topic_foundry_train_and_poll.sh's
+# defaults (the only other place this pipeline has been exercised end-to-end
+# against real chat history).
+_TOPIC_FOUNDRY_DATASET_NAME = "orion-hub-autonomous-dataset"
+_TOPIC_FOUNDRY_MODEL_NAME = "orion-hub-autonomous"
+_TOPIC_FOUNDRY_MODEL_VERSION = "v1"
+_TOPIC_FOUNDRY_SOURCE_TABLE = "chat_history_log"
+_TOPIC_FOUNDRY_ID_COLUMN = "correlation_id"
+_TOPIC_FOUNDRY_TIME_COLUMN = "created_at"
+_TOPIC_FOUNDRY_TEXT_COLUMNS = ["prompt", "response"]
+
+
+def _ensure_topic_foundry_dataset_and_model(base_url: str) -> Optional[tuple[str, str]]:
+    """Idempotent get-or-create for the scheduler's dataset+model, by name.
+
+    Returns ``(dataset_id, model_id)``, or ``None`` on any failure -- never
+    raises. Safe to call on every scheduler tick: after the first tick
+    creates both, every later tick finds them by name and reuses the same
+    ids.
+    """
+    try:
+        datasets = list_datasets(base_url)
+        dataset = next((d for d in datasets if d.get("name") == _TOPIC_FOUNDRY_DATASET_NAME), None)
+        if dataset is None:
+            dataset = create_dataset(
+                base_url,
+                {
+                    "name": _TOPIC_FOUNDRY_DATASET_NAME,
+                    "source_table": _TOPIC_FOUNDRY_SOURCE_TABLE,
+                    "id_column": _TOPIC_FOUNDRY_ID_COLUMN,
+                    "time_column": _TOPIC_FOUNDRY_TIME_COLUMN,
+                    "text_columns": _TOPIC_FOUNDRY_TEXT_COLUMNS,
+                    "timezone": "UTC",
+                },
+            )
+        dataset_id = str(dataset["dataset_id"])
+
+        models = list_models(base_url)
+        model = next((m for m in models if m.get("name") == _TOPIC_FOUNDRY_MODEL_NAME), None)
+        if model is None:
+            model = create_model(
+                base_url,
+                {
+                    "name": _TOPIC_FOUNDRY_MODEL_NAME,
+                    "version": _TOPIC_FOUNDRY_MODEL_VERSION,
+                    "stage": "development",
+                    "dataset_id": dataset_id,
+                    "model_spec": {
+                        "algorithm": "hdbscan",
+                        "embedding_source_url": str(settings.SUBSTRATE_TOPIC_FOUNDRY_EMBEDDING_URL),
+                        "min_cluster_size": 15,
+                        "metric": "euclidean",
+                        "params": {},
+                    },
+                    "windowing_spec": {
+                        "block_mode": "turn_pairs",
+                        "include_roles": ["user", "assistant"],
+                        "time_gap_seconds": 900,
+                        "max_window_seconds": 7200,
+                        "min_blocks_per_segment": 1,
+                        "max_chars": 6000,
+                    },
+                    "metadata": {},
+                },
+            )
+        model_id = str(model["model_id"])
+        return dataset_id, model_id
+    except Exception as exc:
+        logger.warning("topic_foundry_dataset_model_ensure_failed error=%s", exc)
+        return None
+
+
+def trigger_topic_foundry_training_run() -> dict[str, Any]:
+    """Scheduler entry point (Gap 5): ensure the scheduler's dataset/model
+    exist, then trigger a training run for a rolling
+    ``SUBSTRATE_TOPIC_FOUNDRY_WINDOW_DAYS``-day window ending now.
+
+    Fire-and-forget from this function's perspective -- training runs as a
+    background task on topic-foundry's side (see
+    ``services/orion-topic-foundry/app/routers/runs.py::train_run_endpoint``);
+    this function returns as soon as the run is queued (or immediately, if
+    topic-foundry's own ``spec_hash`` dedup finds an identical run already
+    exists). Ingesting the run's results once it completes is a separate
+    step -- see ``concept_atlas_ingest_topic_foundry()`` -- deliberately not
+    called from here, since the two are wired as two independent steps of
+    the same scheduler tick in ``main.py``, not a blocking call chain.
+
+    Never raises. Returns a summary dict, always including ``"triggered":
+    bool``.
+    """
+    base_url = str(getattr(settings, "TOPIC_FOUNDRY_BASE_URL", "") or "").strip()
+    if not base_url:
+        return {"triggered": False, "reason": "topic_foundry_base_url_not_configured"}
+
+    ids = _ensure_topic_foundry_dataset_and_model(base_url)
+    if ids is None:
+        return {"triggered": False, "reason": "dataset_or_model_resolution_failed"}
+    dataset_id, model_id = ids
+
+    window_days = max(1, int(getattr(settings, "SUBSTRATE_TOPIC_FOUNDRY_WINDOW_DAYS", 30)))
+    # Floor to a day boundary (UTC midnight), NOT datetime.now(timezone.utc)
+    # verbatim. topic-foundry's own train-trigger route dedups by a spec_hash
+    # computed over the exact start_at/end_at it receives (see
+    # services/orion-topic-foundry/app/routers/runs.py::train_run_endpoint
+    # and app/services/spec_hash.py) -- with microsecond-precision "now" on
+    # every call, spec_hash would differ on literally every tick, so the
+    # dedup this scheduler's safety argument depends on (re-triggering an
+    # unchanged window is a cheap no-op) would never actually fire, and every
+    # single tick would kick off a brand-new HDBSCAN training run regardless
+    # of interval. Flooring to a day boundary means every tick within the
+    # same UTC day computes the identical (start_at, end_at) pair, so
+    # repeated ticks within a day correctly resolve to topic-foundry's
+    # existing queued/running/complete run instead of enqueueing a duplicate.
+    end_at = datetime.now(timezone.utc).replace(hour=0, minute=0, second=0, microsecond=0)
+    start_at = end_at - timedelta(days=window_days)
+
+    try:
+        run = trigger_training_run(
+            base_url,
+            model_id=model_id,
+            dataset_id=dataset_id,
+            start_at=start_at.isoformat(),
+            end_at=end_at.isoformat(),
+        )
+        return {
+            "triggered": True,
+            "run_id": run.get("run_id"),
+            "status": run.get("status"),
+            "dataset_id": dataset_id,
+            "model_id": model_id,
+            "window_days": window_days,
+        }
+    except TopicFoundryClientError as exc:
+        logger.warning("topic_foundry_train_trigger_failed error=%s", exc)
+        return {"triggered": False, "reason": "train_trigger_failed", "error": str(exc)}
+    except Exception as exc:  # pragma: no cover - defensive, never let a client bug crash the scheduler
+        logger.warning("topic_foundry_train_trigger_unexpected_error error=%s", exc)
+        return {"triggered": False, "reason": "unexpected_error", "error": str(exc)}
 
 
 def _get_substrate_store() -> Any:
@@ -463,11 +616,18 @@ def concept_atlas_ingest_topic_foundry() -> dict[str, Any]:
     and writes the resulting concept/evidence nodes and edges into the shared
     ``SUBSTRATE_SEMANTIC_STORE``.
 
-    This is a manual trigger only -- not wired into Hub's startup event or any
-    scheduler, mirroring ``/api/substrate/review-runtime/debug-run``'s shape
-    (operator-triggered multi-step pipeline, not an automatic background job).
-    Every failure mode below degrades to an honest, non-500 response rather
-    than fabricating a success result.
+    Reachable two ways: as this HTTP route (an operator-triggered manual
+    call, mirroring ``/api/substrate/review-runtime/debug-run``'s shape), and
+    -- as of Gap 5 -- as a plain function call from ``main.py``'s
+    ``_run_substrate_topic_foundry_scheduler`` background task (gated by
+    ``SUBSTRATE_TOPIC_FOUNDRY_SCHEDULER_ENABLED``, default off), which calls
+    this once per scheduler tick after triggering a training run. Both call
+    paths are safe: this function is a plain zero-argument sync ``def`` with
+    no FastAPI dependency injection, so direct invocation behaves identically
+    to going through the route. Every failure mode below degrades to an
+    honest, non-500-shaped response rather than fabricating a success result
+    (the scheduler path logs the same dict's fields rather than checking an
+    HTTP status).
 
     Scoping note: ``segment_topic_map`` is passed as empty in this first cut,
     so no ``co_occurs_with`` co-occurrence edges are produced yet -- only

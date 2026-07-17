@@ -138,6 +138,124 @@ def fetch_keywords_for_topic(
     return [str(k) for k in keywords if isinstance(k, (str, int, float))]
 
 
+def list_datasets(base_url: str, *, timeout: float = DEFAULT_TIMEOUT_SEC) -> list[dict[str, Any]]:
+    """Return every ``DatasetSpec`` dict topic-foundry currently has.
+
+    Raises ``TopicFoundryClientError`` on any network/HTTP/parse failure.
+    An empty list (no datasets yet) is not an error.
+    """
+    url = f"{base_url.rstrip('/')}/datasets"
+    try:
+        resp = requests.get(url, timeout=timeout)
+        resp.raise_for_status()
+        payload = resp.json()
+    except requests.RequestException as exc:
+        raise TopicFoundryClientError(f"topic_foundry_datasets_request_failed: {exc}") from exc
+    except ValueError as exc:
+        raise TopicFoundryClientError(f"topic_foundry_datasets_invalid_json: {exc}") from exc
+
+    datasets = payload.get("datasets") if isinstance(payload, dict) else None
+    if datasets is None:
+        raise TopicFoundryClientError("topic_foundry_datasets_malformed_response")
+    return [d for d in datasets if isinstance(d, dict)]
+
+
+def list_models(base_url: str, *, timeout: float = DEFAULT_TIMEOUT_SEC) -> list[dict[str, Any]]:
+    """Return every ``ModelSummary`` dict topic-foundry currently has.
+
+    Raises ``TopicFoundryClientError`` on any network/HTTP/parse failure.
+    An empty list (no models yet) is not an error.
+    """
+    url = f"{base_url.rstrip('/')}/models"
+    try:
+        resp = requests.get(url, timeout=timeout)
+        resp.raise_for_status()
+        payload = resp.json()
+    except requests.RequestException as exc:
+        raise TopicFoundryClientError(f"topic_foundry_models_request_failed: {exc}") from exc
+    except ValueError as exc:
+        raise TopicFoundryClientError(f"topic_foundry_models_invalid_json: {exc}") from exc
+
+    models = payload.get("models") if isinstance(payload, dict) else None
+    if models is None:
+        raise TopicFoundryClientError("topic_foundry_models_malformed_response")
+    return [m for m in models if isinstance(m, dict)]
+
+
+def create_dataset(
+    base_url: str, payload: dict[str, Any], *, timeout: float = DEFAULT_TIMEOUT_SEC
+) -> dict[str, Any]:
+    """Create a topic-foundry dataset (``DatasetCreateRequest`` shape).
+
+    Raises ``TopicFoundryClientError`` on any network/HTTP/parse failure.
+    Returns the raw ``DatasetCreateResponse`` dict (``dataset_id``, ``created_at``).
+    """
+    url = f"{base_url.rstrip('/')}/datasets"
+    try:
+        resp = requests.post(url, json=payload, timeout=timeout)
+        resp.raise_for_status()
+        return resp.json()
+    except requests.RequestException as exc:
+        raise TopicFoundryClientError(f"topic_foundry_create_dataset_failed: {exc}") from exc
+    except ValueError as exc:
+        raise TopicFoundryClientError(f"topic_foundry_create_dataset_invalid_json: {exc}") from exc
+
+
+def create_model(
+    base_url: str, payload: dict[str, Any], *, timeout: float = DEFAULT_TIMEOUT_SEC
+) -> dict[str, Any]:
+    """Create a topic-foundry model (``ModelCreateRequest`` shape).
+
+    Raises ``TopicFoundryClientError`` on any network/HTTP/parse failure.
+    Returns the raw ``ModelCreateResponse`` dict (``model_id``, ``created_at``).
+    """
+    url = f"{base_url.rstrip('/')}/models"
+    try:
+        resp = requests.post(url, json=payload, timeout=timeout)
+        resp.raise_for_status()
+        return resp.json()
+    except requests.RequestException as exc:
+        raise TopicFoundryClientError(f"topic_foundry_create_model_failed: {exc}") from exc
+    except ValueError as exc:
+        raise TopicFoundryClientError(f"topic_foundry_create_model_invalid_json: {exc}") from exc
+
+
+def trigger_training_run(
+    base_url: str,
+    *,
+    model_id: str,
+    dataset_id: str,
+    start_at: str,
+    end_at: str,
+    timeout: float = DEFAULT_TIMEOUT_SEC,
+) -> dict[str, Any]:
+    """``POST /runs/train`` (``RunTrainRequest`` shape) -- starts training as a
+    background task on topic-foundry's side and returns immediately with
+    ``{"run_id": ..., "status": "queued"}`` (or an existing run's id/status
+    if topic-foundry's own ``spec_hash`` dedup finds an identical
+    dataset+model+window run already exists -- see
+    ``services/orion-topic-foundry/app/routers/runs.py::train_run_endpoint``,
+    not duplicated here).
+
+    Raises ``TopicFoundryClientError`` on any network/HTTP/parse failure.
+    """
+    url = f"{base_url.rstrip('/')}/runs/train"
+    payload = {
+        "model_id": model_id,
+        "dataset_id": dataset_id,
+        "start_at": start_at,
+        "end_at": end_at,
+    }
+    try:
+        resp = requests.post(url, json=payload, timeout=timeout)
+        resp.raise_for_status()
+        return resp.json()
+    except requests.RequestException as exc:
+        raise TopicFoundryClientError(f"topic_foundry_train_trigger_failed: {exc}") from exc
+    except ValueError as exc:
+        raise TopicFoundryClientError(f"topic_foundry_train_trigger_invalid_json: {exc}") from exc
+
+
 def fetch_run_topics_and_keywords(
     base_url: str,
     *,

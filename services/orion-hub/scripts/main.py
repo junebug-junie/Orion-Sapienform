@@ -25,6 +25,7 @@ from scripts.memory_consolidation_draft_routes import router as memory_consolida
 from scripts.proposal_review_routes import router as proposal_review_router
 from scripts.concept_atlas_routes import router as concept_atlas_router
 import scripts.api_routes as api_routes_runtime
+import scripts.concept_atlas_routes as concept_atlas_routes_runtime
 from scripts.websocket_handler import websocket_endpoint
 from scripts.service_logs_ws import service_logs_websocket_endpoint
 from scripts.biometrics_cache import BiometricsCache
@@ -269,6 +270,7 @@ presence_state: Optional["PresenceState"] = None
 presence_context_store: Optional["PresenceContextStore"] = None
 substrate_autonomy_task: Optional[asyncio.Task] = None
 substrate_decay_task: Optional[asyncio.Task] = None
+substrate_topic_foundry_scheduler_task: Optional[asyncio.Task] = None
 
 
 class PresenceState:
@@ -341,7 +343,7 @@ async def startup_event():
     Initializes all shared services at application startup.
     OrionBus + Clients + UI template.
     """
-    global bus, rpc_bus, cortex_client, tts_client, html_content, biometrics_cache, notification_cache, agent_step_relay, harness_step_relay, signals_inspect_cache, cognition_trace_cache, embodiment_outcome_cache, presence_state, presence_context_store, substrate_autonomy_task, substrate_decay_task
+    global bus, rpc_bus, cortex_client, tts_client, html_content, biometrics_cache, notification_cache, agent_step_relay, harness_step_relay, signals_inspect_cache, cognition_trace_cache, embodiment_outcome_cache, presence_state, presence_context_store, substrate_autonomy_task, substrate_decay_task, substrate_topic_foundry_scheduler_task
 
     # ------------------------------------------------------------
     # Orion Bus Initialization
@@ -547,6 +549,64 @@ async def startup_event():
     else:
         logger.info("substrate_decay_scheduler_disabled reason=env_disabled")
 
+    if settings.SUBSTRATE_TOPIC_FOUNDRY_SCHEDULER_ENABLED:
+        topic_foundry_interval_sec = max(
+            1.0, float(settings.SUBSTRATE_TOPIC_FOUNDRY_SCHEDULER_INTERVAL_SEC)
+        )
+
+        async def _run_substrate_topic_foundry_scheduler() -> None:
+            # Two independent steps per tick, not a blocking call chain: (1)
+            # trigger a training run for the current rolling window (async on
+            # topic-foundry's own side -- this returns as soon as the run is
+            # queued, or immediately if spec_hash dedup finds an identical
+            # run already exists), (2) ingest whatever the latest COMPLETED
+            # run currently is. Step 2 may ingest a run from a PREVIOUS tick
+            # (training takes real time), or find nothing new -- both are
+            # expected, not errors. See
+            # trigger_topic_foundry_training_run()'s docstring.
+            while True:
+                await asyncio.sleep(topic_foundry_interval_sec)
+                try:
+                    trigger_summary = await asyncio.to_thread(
+                        concept_atlas_routes_runtime.trigger_topic_foundry_training_run
+                    )
+                    logger.info(
+                        "substrate_topic_foundry_scheduler_trigger_tick triggered=%s run_id=%s status=%s reason=%s",
+                        trigger_summary.get("triggered"),
+                        trigger_summary.get("run_id"),
+                        trigger_summary.get("status"),
+                        trigger_summary.get("reason"),
+                    )
+                except Exception as exc:  # advisory runtime loop; never crash service startup
+                    logger.warning("substrate_topic_foundry_scheduler_trigger_error error=%s", exc)
+
+                try:
+                    ingest_summary = await asyncio.to_thread(
+                        concept_atlas_routes_runtime.concept_atlas_ingest_topic_foundry
+                    )
+                    logger.info(
+                        "substrate_topic_foundry_scheduler_ingest_tick available=%s run_id=%s concepts_written=%s edges_written=%s typed_edges_written=%s",
+                        ingest_summary.get("available"),
+                        ingest_summary.get("run_id"),
+                        ingest_summary.get("concepts_written"),
+                        ingest_summary.get("edges_written"),
+                        ingest_summary.get("typed_edges_written"),
+                    )
+                except Exception as exc:  # advisory runtime loop; never crash service startup
+                    logger.warning("substrate_topic_foundry_scheduler_ingest_error error=%s", exc)
+
+        substrate_topic_foundry_scheduler_task = asyncio.create_task(
+            _run_substrate_topic_foundry_scheduler(),
+            name="hub-substrate-topic-foundry-scheduler",
+        )
+        logger.info(
+            "substrate_topic_foundry_scheduler_enabled interval_sec=%s window_days=%s",
+            topic_foundry_interval_sec,
+            settings.SUBSTRATE_TOPIC_FOUNDRY_WINDOW_DAYS,
+        )
+    else:
+        logger.info("substrate_topic_foundry_scheduler_disabled reason=env_disabled")
+
 
     # ------------------------------------------------------------
     # Validate UI HTML Template (served fresh from disk on each GET /)
@@ -606,7 +666,7 @@ async def startup_event():
 
 @app.on_event("shutdown")
 async def shutdown_event() -> None:
-    global bus, rpc_bus, biometrics_cache, notification_cache, agent_step_relay, harness_step_relay, signals_inspect_cache, cognition_trace_cache, embodiment_outcome_cache, substrate_autonomy_task, substrate_decay_task
+    global bus, rpc_bus, biometrics_cache, notification_cache, agent_step_relay, harness_step_relay, signals_inspect_cache, cognition_trace_cache, embodiment_outcome_cache, substrate_autonomy_task, substrate_decay_task, substrate_topic_foundry_scheduler_task
     pool = getattr(app.state, "memory_pg_pool", None)
     if pool is not None:
         try:
@@ -629,6 +689,13 @@ async def shutdown_event() -> None:
         except asyncio.CancelledError:
             pass
         substrate_decay_task = None
+    if substrate_topic_foundry_scheduler_task is not None:
+        substrate_topic_foundry_scheduler_task.cancel()
+        try:
+            await substrate_topic_foundry_scheduler_task
+        except asyncio.CancelledError:
+            pass
+        substrate_topic_foundry_scheduler_task = None
     if biometrics_cache is not None:
         await biometrics_cache.stop()
     if notification_cache is not None:

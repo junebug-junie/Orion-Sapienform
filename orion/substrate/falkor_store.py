@@ -1,14 +1,17 @@
-"""FalkorDB-backed SubstrateGraphStore (write-through cache + payload_json).
+"""FalkorDB-backed SubstrateGraphStore (write-through cache + Cypher-native properties).
 
 Queries and reads are served from the in-process cache (same shape as a warm
 GraphDBSubstrateStore). Durable writes go through an injectable sync client so
-unit tests never need a live FalkorDB. Cold-start hydration is best-effort via
-MATCH … RETURN payload_json when the client can answer.
+unit tests never need a live FalkorDB.
+
+Durable support is Concept + SubstrateEdge first. Cold-start hydration prefers
+native scalar properties and falls back to legacy ``payload_json`` rows,
+rewriting them to native properties (and removing the blob) on successful
+concept/edge decode.
 """
 
 from __future__ import annotations
 
-import json
 import logging
 import os
 from dataclasses import dataclass, replace
@@ -17,8 +20,19 @@ from urllib.parse import urlparse
 
 from pydantic import TypeAdapter
 
-from orion.core.schemas.cognitive_substrate import BaseSubstrateNodeV1, SubstrateEdgeV1, SubstrateNodeV1
+from orion.core.schemas.cognitive_substrate import (
+    BaseSubstrateNodeV1,
+    SubstrateEdgeV1,
+    SubstrateNodeV1,
+)
 from orion.graph.property_guard import sanitize_metadata
+from orion.substrate.falkor_codec import (
+    decode_concept_node,
+    decode_edge,
+    encode_edge_properties,
+    encode_node_properties,
+    node_label_for_kind,
+)
 from orion.substrate.store import (
     InMemorySubstrateGraphStore,
     MaterializedSubstrateGraphState,
@@ -41,17 +55,103 @@ class FalkorSubstrateStoreConfig:
     graph_name: str = "orion_substrate"
 
 
+NATIVE_NODE_RETURN_FIELDS: tuple[str, ...] = (
+    "node_id",
+    "node_kind",
+    "identity_key",
+    "label",
+    "definition",
+    "taxonomy_path_json",
+    "anchor_scope",
+    "subject_ref",
+    "promotion_state",
+    "risk_tier",
+    "confidence",
+    "salience",
+    "activation",
+    "recency_score",
+    "decay_half_life_seconds",
+    "decay_floor",
+    "observed_at",
+    "valid_from",
+    "valid_to",
+    "provenance_authority",
+    "provenance_source_kind",
+    "provenance_source_channel",
+    "provenance_producer",
+    "provenance_model_name",
+    "provenance_correlation_id",
+    "provenance_trace_id",
+    "provenance_tier_rank",
+    "evidence_refs_json",
+)
+
+NATIVE_EDGE_RETURN_FIELDS: tuple[str, ...] = (
+    "edge_id",
+    "identity_key",
+    "source_id",
+    "source_kind",
+    "target_id",
+    "target_kind",
+    "predicate",
+    "substrate_edge",
+    "confidence",
+    "salience",
+    "observed_at",
+    "valid_from",
+    "valid_to",
+    "provenance_authority",
+    "provenance_source_kind",
+    "provenance_source_channel",
+    "provenance_producer",
+    "provenance_model_name",
+    "provenance_correlation_id",
+    "provenance_trace_id",
+    "provenance_tier_rank",
+    "evidence_refs_json",
+)
+
+
+def _return_clause(alias: str, fields: tuple[str, ...]) -> str:
+    return ", ".join(f"{alias}.{field} AS {field}" for field in fields)
+
+
+def _set_assignments(alias: str, params: dict[str, Any], *, skip: set[str]) -> str:
+    keys = sorted(k for k in params if k not in skip)
+    return ", ".join(f"{alias}.{key} = ${key}" for key in keys)
+
+
 class RecordingFalkorClient:
     """Test double that records Cypher and optionally returns scripted rows."""
 
-    def __init__(self, *, hydrate_rows: list[dict[str, Any]] | None = None) -> None:
+    def __init__(
+        self,
+        *,
+        hydrate_node_rows: list[dict[str, Any]] | None = None,
+        hydrate_edge_rows: list[dict[str, Any]] | None = None,
+        hydrate_legacy_node_rows: list[dict[str, Any]] | None = None,
+        hydrate_legacy_edge_rows: list[dict[str, Any]] | None = None,
+        hydrate_rows: list[dict[str, Any]] | None = None,
+    ) -> None:
+        # hydrate_rows is a compatibility alias for hydrate_node_rows.
+        if hydrate_rows is not None and hydrate_node_rows is None:
+            hydrate_node_rows = hydrate_rows
         self.calls: list[tuple[str, dict[str, Any] | None]] = []
-        self._hydrate_rows = list(hydrate_rows or [])
+        self._hydrate_node_rows = list(hydrate_node_rows or [])
+        self._hydrate_edge_rows = list(hydrate_edge_rows or [])
+        self._hydrate_legacy_node_rows = list(hydrate_legacy_node_rows or [])
+        self._hydrate_legacy_edge_rows = list(hydrate_legacy_edge_rows or [])
 
     def graph_query(self, cypher: str, params: dict[str, Any] | None = None) -> Any:
         self.calls.append((cypher, params))
-        if "RETURN n.payload_json" in cypher or "RETURN e.payload_json" in cypher:
-            return self._hydrate_rows
+        if "WHERE n.payload_json IS NOT NULL" in cypher:
+            return self._hydrate_legacy_node_rows
+        if "WHERE e.payload_json IS NOT NULL" in cypher:
+            return self._hydrate_legacy_edge_rows
+        if "RETURN n.node_id AS node_id" in cypher:
+            return self._hydrate_node_rows
+        if "RETURN e.edge_id AS edge_id" in cypher:
+            return self._hydrate_edge_rows
         return []
 
 
@@ -73,7 +173,48 @@ class RedisGraphQueryClient:
 
     def graph_query(self, cypher: str, params: dict[str, Any] | None = None) -> Any:
         result = self._graph.query(cypher, params=params)
-        return result.result_set
+        # redis-py exposes list-shaped result_set rows and keeps column names on
+        # QueryResult.header as [type, name] pairs. Zip to dicts so hydrate can
+        # address fields by name (native multi-column and legacy 2-column alike).
+        return _rows_from_query_result(getattr(result, "header", None), result.result_set)
+
+
+def _header_field_names(header: Any) -> list[str]:
+    names: list[str] = []
+    if not header:
+        return names
+    for column in header:
+        if isinstance(column, (list, tuple)) and len(column) >= 2:
+            left, right = column[0], column[1]
+            # redis-py QueryResult: [column_type:int, column_name:str]
+            # some raw wire fixtures: [column_name:str, column_type:int]
+            if isinstance(left, int) or (isinstance(left, str) and str(left).isdigit()):
+                names.append(str(right).split(".")[-1])
+            elif isinstance(right, int) or (isinstance(right, str) and str(right).isdigit()):
+                names.append(str(left).split(".")[-1])
+            else:
+                names.append(str(right).split(".")[-1])
+        elif isinstance(column, (list, tuple)) and column:
+            names.append(str(column[0]).split(".")[-1])
+        else:
+            names.append(str(column).split(".")[-1])
+    return names
+
+
+def _rows_from_query_result(header: Any, result_set: Any) -> list[dict[str, Any]]:
+    if result_set is None:
+        return []
+    names = _header_field_names(header)
+    out: list[dict[str, Any]] = []
+    for record in result_set:
+        if isinstance(record, dict):
+            out.append(record)
+        elif isinstance(record, (list, tuple)):
+            if names and len(names) == len(record):
+                out.append(dict(zip(names, record)))
+            else:
+                out.append({"_positional": list(record)})
+    return out
 
 
 def _with_sanitized_metadata(model: Any) -> Any:
@@ -84,7 +225,11 @@ def _with_sanitized_metadata(model: Any) -> Any:
 
 
 class FalkorSubstrateStore:
-    """SubstrateGraphStore with Falkor write-through and in-memory read cache."""
+    """SubstrateGraphStore with Falkor write-through and in-memory read cache.
+
+    Durable persistence is Concept + SubstrateEdge only. Non-concept node
+    upserts raise ``ValueError`` rather than writing incomplete native rows.
+    """
 
     def __init__(
         self,
@@ -105,37 +250,115 @@ class FalkorSubstrateStore:
     def _hydrate_from_durable(self) -> None:
         try:
             node_rows = self._client.graph_query(
-                "MATCH (n:SubstrateNode) RETURN n.payload_json AS payload_json, n.identity_key AS identity_key"
+                "MATCH (n:SubstrateNode) RETURN " + _return_clause("n", NATIVE_NODE_RETURN_FIELDS)
             )
             edge_rows = self._client.graph_query(
-                "MATCH ()-[e]->() WHERE e.substrate_edge = true "
+                "MATCH (source:SubstrateNode)-[e]->(target:SubstrateNode) "
+                "WHERE e.substrate_edge = true "
+                "RETURN " + _return_clause("e", NATIVE_EDGE_RETURN_FIELDS)
+            )
+            legacy_node_rows = self._client.graph_query(
+                "MATCH (n:SubstrateNode) WHERE n.payload_json IS NOT NULL "
+                "RETURN n.payload_json AS payload_json, n.identity_key AS identity_key"
+            )
+            legacy_edge_rows = self._client.graph_query(
+                "MATCH ()-[e]->() WHERE e.payload_json IS NOT NULL "
                 "RETURN e.payload_json AS payload_json, e.identity_key AS identity_key"
             )
         except Exception as exc:
             logger.warning("falkor_substrate_hydrate_failed error=%s", exc)
             return
-        for row in _normalize_rows(node_rows):
+
+        for row in _normalize_rows(node_rows, fields=NATIVE_NODE_RETURN_FIELDS):
+            try:
+                node = decode_concept_node(row)
+            except Exception:
+                logger.warning("falkor_substrate_hydrate_node_invalid")
+                continue
+            if node is None:
+                continue
+            identity = row.get("identity_key")
+            self._cache.upsert_node(identity_key=str(identity) if identity else None, node=node)
+
+        for row in _normalize_rows(edge_rows, fields=NATIVE_EDGE_RETURN_FIELDS):
+            try:
+                edge = decode_edge(row)
+            except Exception:
+                logger.warning("falkor_substrate_hydrate_edge_invalid")
+                continue
+            if edge is None:
+                continue
+            identity = row.get("identity_key") or self._edge_identity(edge)
+            self._cache.upsert_edge(identity_key=str(identity), edge=edge)
+
+        self._migrate_legacy_payload_nodes(
+            _normalize_rows(legacy_node_rows, fields=("payload_json", "identity_key"))
+        )
+        self._migrate_legacy_payload_edges(
+            _normalize_rows(legacy_edge_rows, fields=("payload_json", "identity_key"))
+        )
+
+    def _migrate_legacy_payload_nodes(self, rows: list[dict[str, Any]]) -> None:
+        for row in rows:
             payload = row.get("payload_json")
             if not payload:
                 continue
             try:
                 node = NODE_ADAPTER.validate_json(payload)
             except Exception:
-                logger.warning("falkor_substrate_hydrate_node_invalid")
+                logger.warning("falkor_substrate_legacy_node_invalid")
+                continue
+            if getattr(node, "node_kind", None) != "concept":
+                logger.warning(
+                    "falkor_substrate_legacy_node_skipped node_kind=%s node_id=%s",
+                    getattr(node, "node_kind", None),
+                    getattr(node, "node_id", None),
+                )
                 continue
             identity = row.get("identity_key")
-            self._cache.upsert_node(identity_key=str(identity) if identity else None, node=node)
-        for row in _normalize_rows(edge_rows):
+            identity_key = str(identity) if identity else None
+            # Seed cache first so a transient rewrite failure cannot empty Atlas.
+            self._cache.upsert_node(identity_key=identity_key, node=node)
+            try:
+                # Rewrite to native properties and REMOVE payload_json.
+                self.upsert_node(identity_key=identity_key, node=node)
+                logger.info(
+                    "falkor_substrate_legacy_node_migrated node_id=%s identity_key=%s",
+                    node.node_id,
+                    identity_key or "",
+                )
+            except Exception as exc:
+                logger.warning(
+                    "falkor_substrate_legacy_node_migrate_failed node_id=%s error=%s",
+                    getattr(node, "node_id", None),
+                    exc,
+                )
+
+    def _migrate_legacy_payload_edges(self, rows: list[dict[str, Any]]) -> None:
+        for row in rows:
             payload = row.get("payload_json")
             if not payload:
                 continue
             try:
                 edge = SubstrateEdgeV1.model_validate_json(payload)
             except Exception:
-                logger.warning("falkor_substrate_hydrate_edge_invalid")
+                logger.warning("falkor_substrate_legacy_edge_invalid")
                 continue
             identity = row.get("identity_key") or self._edge_identity(edge)
             self._cache.upsert_edge(identity_key=str(identity), edge=edge)
+            try:
+                self.upsert_edge(identity_key=str(identity), edge=edge)
+                logger.info(
+                    "falkor_substrate_legacy_edge_migrated edge_id=%s identity_key=%s",
+                    edge.edge_id,
+                    identity,
+                )
+            except Exception as exc:
+                logger.warning(
+                    "falkor_substrate_legacy_edge_migrate_failed edge_id=%s error=%s",
+                    edge.edge_id,
+                    exc,
+                )
 
     @staticmethod
     def _edge_identity(edge: SubstrateEdgeV1) -> str:
@@ -154,19 +377,19 @@ class FalkorSubstrateStore:
         return self._cache.get_edge_id_by_identity(identity_key)
 
     def upsert_node(self, *, identity_key: str | None, node: BaseSubstrateNodeV1) -> None:
+        if getattr(node, "node_kind", None) != "concept":
+            raise ValueError(
+                "FalkorSubstrateStore durable writes support concept nodes only; "
+                f"got node_kind={getattr(node, 'node_kind', None)!r}"
+            )
         node = _with_sanitized_metadata(node)
-        payload_json = json.dumps(node.model_dump(mode="json"), ensure_ascii=False, sort_keys=True)
-        params = {
-            "node_id": node.node_id,
-            "node_kind": node.node_kind,
-            "payload_json": payload_json,
-            "identity_key": identity_key or "",
-            "salience": float(node.signals.salience),
-        }
+        params = encode_node_properties(node, identity_key)
+        label = node_label_for_kind(str(node.node_kind))
+        assignments = _set_assignments("n", params, skip={"node_id"})
         cypher = (
-            "MERGE (n:SubstrateNode {node_id: $node_id}) "
-            "SET n.node_kind = $node_kind, n.payload_json = $payload_json, "
-            "n.identity_key = $identity_key, n.salience = $salience"
+            f"MERGE (n:SubstrateNode:{label} {{node_id: $node_id}}) "
+            f"SET {assignments} "
+            "REMOVE n.payload_json"
         )
         try:
             self._client.graph_query(cypher, params)
@@ -177,27 +400,16 @@ class FalkorSubstrateStore:
 
     def upsert_edge(self, *, identity_key: str, edge: SubstrateEdgeV1) -> None:
         edge = _with_sanitized_metadata(edge)
-        payload_json = json.dumps(edge.model_dump(mode="json"), ensure_ascii=False, sort_keys=True)
-        params = {
-            "edge_id": edge.edge_id,
-            "payload_json": payload_json,
-            "identity_key": identity_key,
-            "source_id": edge.source.node_id,
-            "target_id": edge.target.node_id,
-            "salience": float(edge.salience),
-        }
-        # SubstrateEdgeV1 validates predicate against a closed Literal, so it
-        # is safe to use as the relationship type (Cypher cannot parameterize
-        # relationship types).
+        params = encode_edge_properties(edge, identity_key)
         relationship_type = edge.predicate
+        assignments = _set_assignments("e", params, skip={"edge_id", "source_id", "target_id"})
         cypher = (
             "MERGE (source:SubstrateNode {node_id: $source_id}) "
             "MERGE (target:SubstrateNode {node_id: $target_id}) "
             f"MERGE (source)-[e:`{relationship_type}` {{edge_id: $edge_id}}]->(target) "
-            "SET e.payload_json = $payload_json, e.identity_key = $identity_key, "
-            "e.substrate_edge = true, e.predicate = $predicate, e.salience = $salience"
+            f"SET {assignments} "
+            "REMOVE e.payload_json"
         )
-        params["predicate"] = relationship_type
         try:
             self._client.graph_query(cypher, params)
         except Exception as exc:
@@ -214,19 +426,25 @@ class FalkorSubstrateStore:
             self._result_source_kind,
         )
 
-    def query_hotspot_region(self, *, min_salience: float = 0.6, limit_nodes: int = 32, limit_edges: int = 64) -> SubstrateQueryResultV1:
+    def query_hotspot_region(
+        self, *, min_salience: float = 0.6, limit_nodes: int = 32, limit_edges: int = 64
+    ) -> SubstrateQueryResultV1:
         result = self._cache.query_hotspot_region(
             min_salience=min_salience, limit_nodes=limit_nodes, limit_edges=limit_edges
         )
         return _retag_source(result, self._result_source_kind)
 
-    def query_contradiction_region(self, *, limit_nodes: int = 32, limit_edges: int = 64) -> SubstrateQueryResultV1:
+    def query_contradiction_region(
+        self, *, limit_nodes: int = 32, limit_edges: int = 64
+    ) -> SubstrateQueryResultV1:
         return _retag_source(
             self._cache.query_contradiction_region(limit_nodes=limit_nodes, limit_edges=limit_edges),
             self._result_source_kind,
         )
 
-    def query_concept_region(self, *, limit_nodes: int = 32, limit_edges: int = 64) -> SubstrateQueryResultV1:
+    def query_concept_region(
+        self, *, limit_nodes: int = 32, limit_edges: int = 64
+    ) -> SubstrateQueryResultV1:
         return _retag_source(
             self._cache.query_concept_region(limit_nodes=limit_nodes, limit_edges=limit_edges),
             self._result_source_kind,
@@ -274,7 +492,9 @@ def _retag_source(result: SubstrateQueryResultV1, source_kind: str) -> Substrate
     return replace(result, source_kind=source_kind)
 
 
-def _normalize_rows(raw: Any) -> list[dict[str, Any]]:
+def _normalize_rows(
+    raw: Any, *, fields: tuple[str, ...] | list[str] | None = None
+) -> list[dict[str, Any]]:
     if raw is None:
         return []
     if isinstance(raw, list):
@@ -288,22 +508,36 @@ def _normalize_rows(raw: Any) -> list[dict[str, Any]]:
             and raw[0]
             and all(isinstance(column, (list, tuple)) for column in raw[0])
         ):
-            names = [str(column[0]).split(".")[-1] for column in raw[0]]
+            names = _header_field_names(raw[0])
             return [
                 dict(zip(names, record))
                 for record in raw[1]
-                if isinstance(record, (list, tuple))
+                if isinstance(record, (list, tuple)) and len(record) == len(names)
             ]
+        field_names = list(fields) if fields else []
         out: list[dict[str, Any]] = []
         for item in raw:
             if isinstance(item, dict):
+                if "_positional" in item and field_names:
+                    values = item.get("_positional")
+                    if isinstance(values, list) and len(values) == len(field_names):
+                        out.append(dict(zip(field_names, values)))
+                        continue
                 out.append(item)
-            elif isinstance(item, (list, tuple)) and len(item) >= 1:
-                # hydrate script may return [[payload, identity], ...]
-                if len(item) >= 2:
-                    out.append({"payload_json": item[0], "identity_key": item[1]})
-                else:
-                    out.append({"payload_json": item[0], "identity_key": ""})
+            elif isinstance(item, (list, tuple)):
+                if field_names and len(item) == len(field_names):
+                    out.append(dict(zip(field_names, item)))
+                elif field_names:
+                    logger.warning(
+                        "falkor_substrate_normalize_row_width_mismatch expected=%s got=%s",
+                        len(field_names),
+                        len(item),
+                    )
+                elif len(item) >= 2:
+                    # Legacy two-column fallback only when caller omitted fields.
+                    out.append({"node_id": item[0], "identity_key": item[1]})
+                elif item:
+                    out.append({"node_id": item[0], "identity_key": ""})
         return out
     return []
 

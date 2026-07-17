@@ -11,7 +11,6 @@ import logging
 import os
 import sys
 from datetime import datetime, timedelta, timezone
-from pathlib import Path
 from typing import Any
 
 from orion.spark.concept_induction.drives import DRIVE_KEYS

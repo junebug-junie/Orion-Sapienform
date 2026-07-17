@@ -8,11 +8,14 @@ from __future__ import annotations
 import fcntl
 import json
 import os
+import subprocess
 from contextlib import contextmanager
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Iterator
+
+from worktree_lib import repo_toplevel
 
 DEFAULT_BOARD_PATH = Path.home() / ".orion" / "agent-board.jsonl"
 STALE_AFTER_MINUTES = 30
@@ -178,3 +181,113 @@ def load_state(
         stale_after_minutes=config.stale_after_minutes,
     )
     return BoardState(presence=presence, items=items)
+
+
+def _git_branch(cwd: Path) -> str:
+    result = subprocess.run(
+        ["git", "branch", "--show-current"],
+        cwd=cwd,
+        capture_output=True,
+        text=True,
+        timeout=10,
+    )
+    if result.returncode != 0:
+        return ""
+    return result.stdout.strip()
+
+
+def current_worktree_identity(cwd: Path | None = None) -> dict[str, str]:
+    root = Path(repo_toplevel()).resolve()
+    branch = _git_branch(root)
+    return {"worktree_path": str(root), "branch": branch}
+
+
+def upsert_presence(
+    config: BoardConfig,
+    *,
+    summary: str | None = None,
+    task: str | None = None,
+    session_id: str | None = None,
+) -> dict[str, object]:
+    identity = current_worktree_identity()
+    payload: dict[str, object] = {
+        "worktree_path": identity["worktree_path"],
+        "branch": identity["branch"],
+        "status": "active",
+        "heartbeat_at": _iso(_utc_now()),
+    }
+    if summary is not None:
+        payload["thread_summary"] = summary
+    if task is not None:
+        payload["current_task"] = task
+    if session_id is not None:
+        payload["session_id"] = session_id
+    append_event(config, "presence_upserted", payload)
+    return payload
+
+
+def _new_item_id() -> str:
+    """Return a UUID string without importing uuid at module load time.
+
+    ``scripts/platform/`` shadows stdlib ``platform`` when this module is loaded
+    from ``scripts/`` on ``sys.path`` (including Python's automatic script-dir
+    insertion for ``agent_board.py``).
+    """
+    import sys
+
+    scripts_dir = str(Path(__file__).resolve().parent)
+    sys.modules.pop("platform", None)
+    sys.modules.pop("uuid", None)
+    old_path = sys.path
+    try:
+        sys.path = [entry for entry in old_path if entry != scripts_dir]
+        import uuid
+
+        return str(uuid.uuid4())
+    finally:
+        sys.path = old_path
+
+
+def add_item(
+    config: BoardConfig,
+    *,
+    kind: str,
+    severity: str,
+    summary: str,
+    owner_scope: str = "this-worktree",
+    scope_note: str = "",
+    related_files: list[str] | None = None,
+    parent_id: str | None = None,
+) -> str:
+    identity = current_worktree_identity()
+    item_id = _new_item_id()
+    payload: dict[str, object] = {
+        "id": item_id,
+        "kind": kind,
+        "severity": severity,
+        "owner_scope": owner_scope,
+        "scope_note": scope_note,
+        "worktree_path": identity["worktree_path"],
+        "branch": identity["branch"],
+        "summary": summary,
+        "status": "open",
+        "related_files": related_files or [],
+    }
+    if parent_id:
+        payload["parent_id"] = parent_id
+    validate_item_payload(payload)
+    append_event(config, "item_upserted", payload)
+    return item_id
+
+
+def change_item_status(config: BoardConfig, item_id: str, status: str = "resolved") -> None:
+    if status not in _ITEM_STATUSES:
+        raise ValueError(f"invalid status: {status!r}")
+    append_event(config, "item_status_changed", {"id": item_id, "status": status})
+
+
+def close_presence(config: BoardConfig, worktree_path: str | None = None) -> None:
+    path = worktree_path
+    if path is None:
+        path = current_worktree_identity()["worktree_path"]
+    append_event(config, "presence_closed", {"worktree_path": path, "status": "closed"})

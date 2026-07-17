@@ -1,0 +1,35 @@
+#!/bin/sh
+# orion-git-safety-guard (post-commit)
+#
+# Advisory-only nudge: after every commit (in ANY worktree), sends a
+# heartbeat to the host-local agent workspace board (scripts/agent_board.py)
+# with the just-made commit's subject line as the thread summary.
+#
+# Why a git hook and not a reminder to run `agent_board.py heartbeat` by
+# hand: a live session found that a passive stop-hook banner ("no open
+# board items are recorded for this worktree") got ignored across ~20
+# consecutive turns even though the agent read it every time -- a reminder
+# with no cost to skipping it doesn't change behavior. Committing, by
+# contrast, is a step this repo's own AGENTS.md already makes universal
+# ("commit as you go at logical checkpoints"), so riding the heartbeat on
+# top of it means board hygiene no longer depends on an agent noticing a
+# banner -- it depends on a habit that's already load-bearing. This
+# matters most when multiple concurrent agents are actually working the
+# same repo (real collisions reported, not hypothetical); the board's
+# checkin/checkout flow exists specifically to surface that.
+#
+# Never blocks anything and never fails the commit it fires on -- if
+# python3 isn't reachable, or the script errors, this hook silently does
+# nothing.
+#
+# POSIX sh only -- no bashisms.
+
+REPO_ROOT=$(git rev-parse --show-toplevel 2>/dev/null) || exit 0
+[ -f "$REPO_ROOT/scripts/agent_board.py" ] || exit 0
+
+command -v python3 >/dev/null 2>&1 || exit 0
+
+SUBJECT=$(git log -1 --pretty=%s 2>/dev/null) || exit 0
+[ -n "$SUBJECT" ] || exit 0
+
+python3 "$REPO_ROOT/scripts/agent_board.py" heartbeat --summary "$SUBJECT" >/dev/null 2>&1 || true

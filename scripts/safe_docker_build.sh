@@ -80,6 +80,29 @@ if [ ! -f "services/$SERVICE/docker-compose.yml" ]; then
     exit 1
 fi
 
+# --- 2.5. Best-effort collision-visibility heartbeat ------------------------
+# Advisory only, never blocks the build: this repo has had a real incident
+# of concurrent agents stepping on each other's docker deploys (see header),
+# and separately, live sessions have reported real collisions from multiple
+# concurrent agents working similar topics. Announce the action on the
+# shared host-local agent board (scripts/agent_board.py) before running it,
+# so a concurrent session's `agent_board.py checkin` sees it. Every call
+# through this wrapper heartbeats, not just build/up -- config/logs/ps calls
+# are cheap to announce too and the wrapper has no reliable way to tell
+# which subcommands are read-only vs mutating across arbitrary compose args.
+#
+# Resolve agent_board.py relative to THIS script's own location, not the
+# caller's cwd/git-toplevel -- this wrapper can be invoked via a relative
+# path or from a subdirectory, and cwd is not guaranteed to be the repo root
+# even in normal use. `$0`'s directory is always this repo's scripts/, where
+# agent_board.py lives as a sibling file.
+_SCRIPT_DIR_FOR_BOARD=$(cd "$(dirname "$0")" && pwd)
+if [ -f "$_SCRIPT_DIR_FOR_BOARD/agent_board.py" ] && command -v python3 >/dev/null 2>&1; then
+    python3 "$_SCRIPT_DIR_FOR_BOARD/agent_board.py" heartbeat \
+        --summary "docker compose $* for services/$SERVICE" \
+        --task "deploy:$SERVICE" >/dev/null 2>&1 || true
+fi
+
 # --- 3. Run docker compose with this repo's mandatory dual --env-file  -----
 # AGENTS.md section 8 requires every docker compose invocation in this repo
 # to load BOTH the root .env and the service's own .env, root first --

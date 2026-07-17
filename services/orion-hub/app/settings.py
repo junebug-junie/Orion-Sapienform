@@ -519,6 +519,44 @@ class Settings(BaseSettings):
     # the underlying writes blocking HTTP calls to Fuseki.
     SUBSTRATE_DECAY_SCHEDULER_ENABLED: bool = Field(default=True, alias="SUBSTRATE_DECAY_SCHEDULER_ENABLED")
     SUBSTRATE_DECAY_SCHEDULER_INTERVAL_SEC: float = Field(default=120.0, alias="SUBSTRATE_DECAY_SCHEDULER_INTERVAL_SEC")
+    # Autonomous topic-foundry training + concept ingestion (Gap 5 of the
+    # concept-graph-pipeline design). Each tick: (1) ensure a well-known
+    # dataset+model exist on topic-foundry (idempotent get-or-create by name,
+    # see concept_atlas_routes.py::_ensure_topic_foundry_dataset_and_model),
+    # (2) trigger a training run for a rolling window, floored to a UTC day
+    # boundary (NOT datetime.now() verbatim) so every tick within the same
+    # day computes an identical (start_at, end_at) pair -- this is what lets
+    # topic-foundry's own spec_hash dedup (services/orion-topic-foundry/app/
+    # routers/runs.py::train_run_endpoint) return the existing run as a cheap
+    # no-op instead of retraining; without the day-flooring, spec_hash would
+    # differ on literally every tick and this would train a brand-new HDBSCAN
+    # model every single tick regardless of interval, (3) ingest whatever the
+    # latest COMPLETED run currently is via the existing
+    # concept_atlas_ingest_topic_foundry() route logic -- this may lag the
+    # run just triggered by one or more ticks/days since training is
+    # genuinely async on topic-foundry's side; that is expected, not a bug.
+    # Defaults to DISABLED, unlike the decay scheduler above: this is a
+    # real-compute-cost, autonomy-touching background job (training a
+    # clustering model), not a cheap idempotent decay pass -- operator must
+    # opt in explicitly. Known limitation (not fixed here): nothing checks
+    # whether a previously-triggered run is still queued/running before a
+    # later tick fires again -- day-flooring covers the default 24h interval
+    # exactly (one tick per day -> one unique window per day), but a shorter
+    # custom interval combined with training slower than that interval could
+    # still pile up concurrent runs on topic-foundry's side.
+    SUBSTRATE_TOPIC_FOUNDRY_SCHEDULER_ENABLED: bool = Field(
+        default=False, alias="SUBSTRATE_TOPIC_FOUNDRY_SCHEDULER_ENABLED"
+    )
+    SUBSTRATE_TOPIC_FOUNDRY_SCHEDULER_INTERVAL_SEC: float = Field(
+        default=86400.0, alias="SUBSTRATE_TOPIC_FOUNDRY_SCHEDULER_INTERVAL_SEC"
+    )
+    SUBSTRATE_TOPIC_FOUNDRY_WINDOW_DAYS: int = Field(
+        default=30, alias="SUBSTRATE_TOPIC_FOUNDRY_WINDOW_DAYS"
+    )
+    SUBSTRATE_TOPIC_FOUNDRY_EMBEDDING_URL: str = Field(
+        default="http://orion-athena-vector-host:8320/embedding",
+        alias="SUBSTRATE_TOPIC_FOUNDRY_EMBEDDING_URL",
+    )
     SUBSTRATE_AUTONOMY_ENABLED: bool = Field(default=False, alias="SUBSTRATE_AUTONOMY_ENABLED")
     SUBSTRATE_AUTONOMY_PROPOSALS_ENABLED: bool = Field(default=True, alias="SUBSTRATE_AUTONOMY_PROPOSALS_ENABLED")
     SUBSTRATE_AUTONOMY_APPLY_ENABLED: bool = Field(default=False, alias="SUBSTRATE_AUTONOMY_APPLY_ENABLED")

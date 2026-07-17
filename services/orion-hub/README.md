@@ -401,6 +401,72 @@ for what the surface means to an operator, and
 [docs/superpowers/specs/2026-07-16-hub-drives-analytics-design.md](../../docs/superpowers/specs/2026-07-16-hub-drives-analytics-design.md)
 for the full design.
 
+### 5.5 Concept Atlas: golden concepts, decay, typed relations, autonomous ingestion
+
+**What it is:** the concept-graph-pipeline design's live substrate. A shared FalkorDB-backed
+concept graph (`SUBSTRATE_STORE_BACKEND=falkor`, graph `orion_substrate` — same instance
+`orion-cortex-exec` and `orion-recall` read from) seeded with three golden concepts (Orion,
+Juniper, the Orion↔Juniper relationship, see `orion/substrate/seed.py`) plus concepts that
+grow organically from real conversation via topic-foundry clustering
+(`orion/substrate/adapters/topic_foundry.py`). Inspect it live at the **Concept Atlas** Hub
+tab (`GET /concept-atlas`, backed by `GET /api/substrate/concepts/summary` and `.../network`).
+
+**Pipeline stages, each independently gated by its own env flag:**
+
+| Stage | Where | Flag (default) |
+|---|---|---|
+| Seed golden concepts at startup | `api_routes.py::seed_golden_concepts_at_startup()` | `SUBSTRATE_CONCEPT_SEED_ENABLED` (`true`) |
+| Live activation decay | `api_routes.py::decay_concept_activations()`, ticked by `main.py`'s `substrate_decay_task` | `SUBSTRATE_DECAY_SCHEDULER_ENABLED` (`true`), interval `SUBSTRATE_DECAY_SCHEDULER_INTERVAL_SEC` (`120`) |
+| Manual topic-foundry ingestion | `POST /api/substrate/concepts/ingest-topic-foundry` (`concept_atlas_routes.py`) | operator-triggered, no flag |
+| Typed relation classification (supports/contradicts/refines) | `concept_atlas_routes.py::_classify_typed_concept_relations()`, called from the ingestion route above | runs automatically as part of ingestion, capped at `_RELATION_CLASSIFICATION_PAIR_CAP=10` pairs/call — see `services/orion-hub/scripts/concept_relation_classifier.py` for the real LLM classifier |
+| Autonomous scheduled training + ingestion | `main.py`'s `substrate_topic_foundry_scheduler_task`, calling `concept_atlas_routes.py::trigger_topic_foundry_training_run()` then the ingestion route above | `SUBSTRATE_TOPIC_FOUNDRY_SCHEDULER_ENABLED` (**`false`** — real compute cost, opt-in), interval `SUBSTRATE_TOPIC_FOUNDRY_SCHEDULER_INTERVAL_SEC` (`86400`), window `SUBSTRATE_TOPIC_FOUNDRY_WINDOW_DAYS` (`30`) |
+
+**Surfaced into live cognition two ways**, not as permanent context bloat — only when
+salient:
+
+- `orion-cortex-exec`'s always-on chat-stance producer lane reads golden/relationship
+  concepts via `orion/substrate/relational/adapters/concept_induction_ctx.py` (repointed at
+  this store in PR #1128 — it previously read a dead spaCy pipeline that never returned
+  anything).
+- `orion-recall`'s purposeful-phase belief lane reads a turn-scoped neighborhood via the
+  `concept_region` collector (see `services/orion-recall/README.md` § 15, PR #1133) — a
+  cheap label-substring match against the current turn's text, empty when nothing matches.
+
+**Decay math, if you're debugging why an activation value looks wrong:**
+`decay_concept_activations()` takes an explicit `elapsed_seconds` parameter from its caller
+(the scheduler passes true wall-clock time since the previous tick, tracked via
+`time.monotonic()`) rather than deriving elapsed time from `node.temporal.observed_at`
+internally — the latter is only a documented one-shot fallback for ad-hoc/manual invocation.
+A function called repeatedly on a loop that re-derives elapsed time from a never-advancing
+`observed_at` on every call compounds: each tick re-decays an already-shrunk value against
+an ever-growing elapsed-since-creation window, collapsing activation to `decay_floor` within
+roughly one configured half-life regardless of the half-life value (a real bug caught in
+review during PR #1131 — see that PR's description for the numeric trace).
+
+**Autonomous scheduler window math, if debugging why a training run didn't fire:**
+`trigger_topic_foundry_training_run()` floors its rolling window's `end_at` to a UTC day
+boundary before computing `start_at` from it — NOT `datetime.now()` verbatim. This is load-
+bearing: topic-foundry's own `POST /runs/train` dedups by a `spec_hash` computed over the
+exact `start_at`/`end_at` it receives, so a microsecond-unique window on every tick would
+mean the dedup never fires and every tick trains a brand-new HDBSCAN model from scratch
+regardless of interval (also a real bug caught in review, PR #1136). Practically: repeated
+ticks within the same UTC day resolve to the same already-queued/running/complete run;
+you'll see a new training run at most once per day at the default interval.
+
+**Restart required after enabling the autonomous scheduler:** none beyond the normal Hub
+restart — the flag defaults off, so turning it on is a deliberate `.env` edit + restart, not
+a silent behavior change on an existing deploy.
+
+```bash
+scripts/safe_docker_build.sh orion-hub up -d --build
+```
+
+See also: PRs #1128 (stance repoint), #1131 (decay scheduler), #1132 (relation classifier),
+#1133 (recall wiring), #1136 (autonomous scheduler) for the full review history including
+every bug caught and fixed before each shipped, and
+[docs/superpowers/specs/2026-07-15-concept-atlas-graph-pipeline-design.md](../../docs/superpowers/specs/2026-07-15-concept-atlas-graph-pipeline-design.md)
+for the original design.
+
 ---
 
 ## 🚀 Running Hub

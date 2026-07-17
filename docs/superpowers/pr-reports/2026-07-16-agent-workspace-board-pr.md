@@ -2,7 +2,7 @@
 
 ## Summary
 
-- Added host-local `~/.orion/agent-board.jsonl` workspace board with `fcntl` locking and append-only JSONL events.
+- Added host-local `~/.orion/agent-board.jsonl` workspace board with `fcntl` locking, owner-only file modes, and append-only JSONL events.
 - Added vendor-neutral CLI (`scripts/agent_board.py`) for `checkin`, `heartbeat`, `add`, `resolve`, `list`, `checkout`, and `reconcile`.
 - Added Claude/Cursor SessionStart/Stop hook adapters that fail open.
 - Wired prune close-on-remove so deleted worktrees close board presence.
@@ -10,7 +10,7 @@
 
 ## Outcome moved
 
-Concurrent agents can see this-worktree items, global blockers/Juniper escalations, other active/stale worktrees, and disclosure-only collision warnings without git round-trips. Live smoke: second worktree `checkin` saw the first worktree's global blocker and presence summary in real time via a shared host board file.
+Concurrent agents can see this-worktree items, global blockers/Juniper escalations, other active/stale worktrees, and disclosure-only collision warnings without git round-trips. Collision signals cover explicit `--files`, dirty git paths, shared `services/<name>` paths, and best-effort `graphify prs --conflicts` branch overlap. Live smoke: second worktree `checkin` saw the first worktree's global blocker and presence summary in real time via a shared host board file.
 
 ## Current architecture
 
@@ -62,7 +62,7 @@ Scripts and hooks only: `scripts/agent_board*.py`, `scripts/hooks/session_*_agen
   tests/scripts/test_session_start_worktree_summary.py \
   tests/scripts/test_worktree_lib.py \
   -q
-41 passed in 13.08s
+47 passed in 24.62s
 ```
 
 Note: pytest-asyncio prints a deprecation warning about unset `asyncio_default_fixture_loop_scope` (pre-existing environment noise, unrelated to this patch).
@@ -103,13 +103,31 @@ No Docker restart required.
 
 ## Review findings fixed
 
+- Finding: final review found `checkout` counted every open/parked item on the host board, not only the current worktree.
+  - Fix: checkout now filters open items to `current_worktree_identity()["worktree_path"]`.
+  - Evidence: `test_checkout_counts_only_this_worktree_open_items`.
+- Finding: final review found `resolve` accepted unknown IDs and reported success even though replay ignored the orphan status event.
+  - Fix: `change_item_status` validates the item exists before appending `item_status_changed`.
+  - Evidence: `test_resolve_rejects_unknown_item_id`.
+- Finding: final review found one malformed JSONL line made the board unreadable.
+  - Fix: `_read_events` skips malformed/incomplete lines and append flushes/fsyncs each event.
+  - Evidence: `test_load_state_skips_corrupt_jsonl_lines`.
+- Finding: final review found board directories/files defaulted to world-readable permissions.
+  - Fix: board directory is forced to `0700`; board and lock files are forced to `0600`.
+  - Evidence: `test_append_event_creates_private_board_file_and_directory`.
+- Finding: final review found prune close-on-remove used unresolved paths while presence keys are resolved.
+  - Fix: prune passes `str(w.path.resolve())`; `close_presence` also normalizes explicit paths.
+  - Evidence: updated prune close test asserts the resolved path.
+- Finding: final review found collision detection narrowed to explicit `--files`, missing design-level dirty/service/graphify signals.
+  - Fix: collision detection now includes dirty git paths, shared `services/<name>` paths, and best-effort graphify branch overlap.
+  - Evidence: `test_detect_collisions_reports_same_service_path`, `test_detect_collisions_reports_graphify_branch_overlap`; dirty paths are fail-open and covered by checkin behavior.
 - Finding: `reconcile_closed_worktrees` never persisted `presence_closed` (load-with-live-paths first made the append loop dead).
   - Fix: load persisted state without `live_worktrees`, append closes, then reload with live paths (`830dd979`).
   - Evidence: strengthened `test_reconcile_closed_worktrees_persists_closed_event` asserts JSONL event + closed status without live set; 16/16 board tests pass.
 - Finding (Task 1 Important, deferred then satisfied): heartbeat must refresh `heartbeat_at`.
   - Fix: Task 2 `upsert_presence` always sets `heartbeat_at` in payload.
   - Evidence: Task 2 review Approved.
-- Nested whole-branch review: deferred to orchestrator final review after this report.
+- Whole-branch review: completed after PR creation; Critical none; Important findings above fixed in follow-up commit.
 
 ## Restart required
 
@@ -128,10 +146,6 @@ Existing sessions need a new session to load updated hook settings.
 - Severity: Low
 - Concern: `scripts/safe_graphify_update.sh` refused (~92% node drop); graph not updated for new scripts.
 - Mitigation: Documented; full re-extraction may be needed later; not blocking agent-board functionality.
-
-- Severity: Low
-- Concern: Optional path resolve mismatch between prune `w.path` and identity `.resolve()` on symlink-heavy hosts.
-- Mitigation: Noted in Task 5 review; follow-up if observed live.
 
 ## PR link
 

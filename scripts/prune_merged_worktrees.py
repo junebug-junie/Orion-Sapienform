@@ -73,7 +73,7 @@ def main() -> int:
             print(f"[removed] {label}")
             removed += 1
             try:
-                close_presence(board_config_from_env(), worktree_path=str(w.path))
+                close_presence(board_config_from_env(), worktree_path=str(w.path.resolve()))
             except Exception as exc:
                 print(f"[agent-board close skipped] {w.path} -- {exc}", file=sys.stderr)
         else:

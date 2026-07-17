@@ -106,6 +106,13 @@ def test_resolve_marks_item_resolved(primary_repo: Path, tmp_path: Path) -> None
     assert "resolved" in listed.stdout
 
 
+def test_resolve_rejects_unknown_item_id(primary_repo: Path, tmp_path: Path) -> None:
+    proc = _run(primary_repo, tmp_path / "agent-board.jsonl", "resolve", "missing-item")
+
+    assert proc.returncode == 2
+    assert "unknown item id: missing-item" in proc.stderr
+
+
 def test_checkout_closes_presence_but_does_not_fail_on_open_items(primary_repo: Path, tmp_path: Path) -> None:
     board = tmp_path / "agent-board.jsonl"
     _run(primary_repo, board, "heartbeat", "--summary", "Short session.", "--task", "Parking an item.")
@@ -127,6 +134,30 @@ def test_checkout_closes_presence_but_does_not_fail_on_open_items(primary_repo: 
     assert checkout.returncode == 0
     assert "Open items remain" in checkout.stdout
     assert "closed" in listed.stdout
+
+
+def test_checkout_counts_only_this_worktree_open_items(
+    repo_with_worktrees: tuple[Path, Path, Path], tmp_path: Path
+) -> None:
+    primary, _, other_wt = repo_with_worktrees
+    board = tmp_path / "agent-board.jsonl"
+    _run(
+        other_wt,
+        board,
+        "add",
+        "--kind",
+        "finding",
+        "--severity",
+        "note",
+        "--summary",
+        "Other worktree item.",
+    )
+
+    checkout = _run(primary, board, "checkout")
+
+    assert checkout.returncode == 0
+    assert "Open items remain" not in checkout.stdout
+    assert "presence: closed" in checkout.stdout
 
 
 def test_checkin_prints_three_layer_context(primary_repo: Path, tmp_path: Path) -> None:

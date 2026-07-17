@@ -106,5 +106,5 @@ def test_yes_closes_agent_board_presence_for_removed_worktree(
         text=True,
         env={**os.environ, "ORION_AGENT_BOARD_PATH": str(board_path)},
     )
-    assert str(merged_wt) in listed.stdout
+    assert str(merged_wt.resolve()) in listed.stdout
     assert "closed" in listed.stdout

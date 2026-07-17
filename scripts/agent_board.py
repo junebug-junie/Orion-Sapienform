@@ -12,6 +12,7 @@ from agent_board_lib import (  # noqa: E402
     board_config_from_env,
     change_item_status,
     close_presence,
+    current_worktree_identity,
     load_state,
     reconcile_closed_worktrees,
     render_checkin_context,
@@ -100,11 +101,13 @@ def main(argv: list[str] | None = None) -> int:
             _print_state(load_state(cfg), worktree=args.worktree)
             return 0
         if args.command == "checkout":
+            current_worktree = current_worktree_identity()["worktree_path"]
             close_presence(cfg)
             state = load_state(cfg)
             open_items = [
                 item for item in state.items.values()
-                if item.get("status") in {"open", "parked"}
+                if item.get("worktree_path") == current_worktree
+                and item.get("status") in {"open", "parked"}
             ]
             if open_items:
                 print(f"Open items remain: {len(open_items)}")

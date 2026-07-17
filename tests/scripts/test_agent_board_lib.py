@@ -1,9 +1,10 @@
 from __future__ import annotations
 
 import json
+import os
 import sys
 from concurrent.futures import ThreadPoolExecutor
-from datetime import UTC, datetime, timedelta
+from datetime import UTC, datetime
 from pathlib import Path
 
 import pytest
@@ -152,6 +153,43 @@ def test_concurrent_appends_do_not_corrupt_jsonl(tmp_path: Path) -> None:
     assert {row["payload"]["id"] for row in decoded} == {f"item-{index}" for index in range(50)}
 
 
+def test_append_event_creates_private_board_file_and_directory(tmp_path: Path) -> None:
+    cfg = _config(tmp_path / "nested")
+
+    append_event(
+        cfg,
+        "presence_upserted",
+        {"worktree_path": "/repo/wt-a", "branch": "feat/a", "status": "active"},
+    )
+
+    assert oct(cfg.board_path.parent.stat().st_mode & 0o777) == "0o700"
+    assert oct(cfg.board_path.stat().st_mode & 0o777) == "0o600"
+
+
+def test_load_state_skips_corrupt_jsonl_lines(tmp_path: Path) -> None:
+    cfg = _config(tmp_path)
+    append_event(
+        cfg,
+        "presence_upserted",
+        {"worktree_path": "/repo/wt-a", "branch": "feat/a", "status": "active"},
+    )
+    with cfg.board_path.open("a", encoding="utf-8") as handle:
+        handle.write("{bad\n")
+    append_event(
+        cfg,
+        "presence_upserted",
+        {
+            "worktree_path": "/repo/wt-b",
+            "branch": "feat/b",
+            "status": "active",
+        },
+    )
+
+    state = load_state(cfg, live_worktrees={"/repo/wt-a", "/repo/wt-b"})
+
+    assert set(state.presence) == {"/repo/wt-a", "/repo/wt-b"}
+
+
 def test_render_checkin_includes_this_worktree_global_strip_and_presence(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     cfg = _config(tmp_path)
     append_event(
@@ -267,6 +305,79 @@ def test_detect_collisions_reports_overlapping_related_files(tmp_path: Path) -> 
 
     assert collisions == [
         "Potential collision with /repo/other: overlapping files scripts/agent_board.py"
+    ]
+
+
+def test_detect_collisions_reports_same_service_path(tmp_path: Path) -> None:
+    cfg = _config(tmp_path)
+    append_event(
+        cfg,
+        "presence_upserted",
+        {"worktree_path": "/repo/current", "branch": "feat/current", "status": "active"},
+    )
+    append_event(
+        cfg,
+        "presence_upserted",
+        {"worktree_path": "/repo/other", "branch": "feat/other", "status": "active"},
+    )
+    append_event(
+        cfg,
+        "item_upserted",
+        {
+            "id": "current-item",
+            "kind": "finding",
+            "severity": "note",
+            "owner_scope": "this-worktree",
+            "worktree_path": "/repo/current",
+            "summary": "Current service touch.",
+            "status": "open",
+            "related_files": ["services/orion-hub/app/main.py"],
+        },
+    )
+    append_event(
+        cfg,
+        "item_upserted",
+        {
+            "id": "other-item",
+            "kind": "finding",
+            "severity": "note",
+            "owner_scope": "this-worktree",
+            "worktree_path": "/repo/other",
+            "summary": "Other service touch.",
+            "status": "open",
+            "related_files": ["services/orion-hub/tests/test_main.py"],
+        },
+    )
+    state = load_state(cfg, live_worktrees={"/repo/current", "/repo/other"})
+
+    collisions = detect_collisions(state, "/repo/current")
+
+    assert collisions == [
+        "Potential collision with /repo/other: shared service paths services/orion-hub"
+    ]
+
+
+def test_detect_collisions_reports_graphify_branch_overlap(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    cfg = _config(tmp_path)
+    append_event(
+        cfg,
+        "presence_upserted",
+        {"worktree_path": "/repo/current", "branch": "feat/current", "status": "active"},
+    )
+    append_event(
+        cfg,
+        "presence_upserted",
+        {"worktree_path": "/repo/other", "branch": "feat/other", "status": "active"},
+    )
+    state = load_state(cfg, live_worktrees={"/repo/current", "/repo/other"})
+    monkeypatch.setattr("agent_board_lib._graphify_conflicts_output", lambda: "feat/current\nfeat/other\n")
+
+    collisions = detect_collisions(state, "/repo/current")
+
+    assert collisions == [
+        "Potential collision with /repo/other: graphify PR community overlap (feat/current / feat/other)"
     ]
 
 

@@ -65,9 +65,11 @@ def board_config_from_env() -> BoardConfig:
 
 @contextmanager
 def _locked_board(config: BoardConfig) -> Iterator[None]:
-    config.board_path.parent.mkdir(parents=True, exist_ok=True)
+    config.board_path.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
+    os.chmod(config.board_path.parent, 0o700)
     lock_path = config.board_path.with_suffix(config.board_path.suffix + ".lock")
     with lock_path.open("a+", encoding="utf-8") as lock_file:
+        os.chmod(lock_path, 0o600)
         fcntl.flock(lock_file.fileno(), fcntl.LOCK_EX)
         try:
             yield
@@ -85,7 +87,10 @@ def append_event(
     event = BoardEvent(type=event_type, at=_iso(now or _utc_now()), payload=dict(payload))
     with _locked_board(config):
         with config.board_path.open("a", encoding="utf-8") as handle:
+            os.chmod(config.board_path, 0o600)
             handle.write(json.dumps(event.__dict__, sort_keys=True) + "\n")
+            handle.flush()
+            os.fsync(handle.fileno())
     return event
 
 
@@ -117,8 +122,11 @@ def _read_events(config: BoardConfig) -> list[BoardEvent]:
         for line in config.board_path.read_text(encoding="utf-8").splitlines():
             if not line.strip():
                 continue
-            row = json.loads(line)
-            events.append(BoardEvent(type=row["type"], at=row["at"], payload=row["payload"]))
+            try:
+                row = json.loads(line)
+                events.append(BoardEvent(type=row["type"], at=row["at"], payload=row["payload"]))
+            except (json.JSONDecodeError, KeyError, TypeError):
+                continue
     return events
 
 
@@ -283,6 +291,8 @@ def add_item(
 def change_item_status(config: BoardConfig, item_id: str, status: str = "resolved") -> None:
     if status not in _ITEM_STATUSES:
         raise ValueError(f"invalid status: {status!r}")
+    if item_id not in load_state(config).items:
+        raise ValueError(f"unknown item id: {item_id}")
     append_event(config, "item_status_changed", {"id": item_id, "status": status})
 
 
@@ -290,6 +300,8 @@ def close_presence(config: BoardConfig, worktree_path: str | None = None) -> Non
     path = worktree_path
     if path is None:
         path = current_worktree_identity()["worktree_path"]
+    else:
+        path = str(Path(path).resolve())
     append_event(config, "presence_closed", {"worktree_path": path, "status": "closed"})
 
 
@@ -323,20 +335,82 @@ def _active_item_files(state: BoardState, worktree_path: str) -> set[str]:
     return files
 
 
+def _dirty_files(worktree_path: str) -> set[str]:
+    try:
+        result = subprocess.run(
+            ["git", "-C", worktree_path, "status", "--short", "--untracked-files=no"],
+            capture_output=True,
+            text=True,
+            timeout=5,
+        )
+    except Exception:
+        return set()
+    if result.returncode != 0:
+        return set()
+    files: set[str] = set()
+    for line in result.stdout.splitlines():
+        if len(line) < 4:
+            continue
+        path = line[3:]
+        if " -> " in path:
+            path = path.rsplit(" -> ", 1)[1]
+        files.add(path)
+    return files
+
+
+def _service_paths(paths: set[str]) -> set[str]:
+    services: set[str] = set()
+    for raw in paths:
+        parts = Path(raw).parts
+        if len(parts) >= 2 and parts[0] == "services":
+            services.add(str(Path(parts[0]) / parts[1]))
+    return services
+
+
+def _graphify_conflicts_output() -> str:
+    try:
+        result = subprocess.run(
+            ["graphify", "prs", "--conflicts"],
+            capture_output=True,
+            text=True,
+            timeout=10,
+        )
+    except Exception:
+        return ""
+    if result.returncode != 0:
+        return ""
+    return result.stdout
+
+
 def detect_collisions(state: BoardState, current_worktree_path: str) -> list[str]:
-    current_files = _active_item_files(state, current_worktree_path)
-    if not current_files:
-        return []
+    current_files = _active_item_files(state, current_worktree_path) | _dirty_files(current_worktree_path)
+    current_services = _service_paths(current_files)
     warnings: list[str] = []
+    graphify_conflicts = _graphify_conflicts_output()
+    current_branch = str(state.presence.get(current_worktree_path, {}).get("branch") or "")
     for worktree_path, presence in sorted(state.presence.items()):
         if worktree_path == current_worktree_path:
             continue
         if presence.get("status") not in {"active", "stale"}:
             continue
-        overlap = sorted(current_files & _active_item_files(state, worktree_path))
-        if overlap:
+        if current_files:
+            other_files = _active_item_files(state, worktree_path) | _dirty_files(worktree_path)
+            overlap = sorted(current_files & other_files)
+            if overlap:
+                warnings.append(
+                    f"Potential collision with {worktree_path}: overlapping files {', '.join(overlap)}"
+                )
+                continue
+            service_overlap = sorted(current_services & _service_paths(other_files))
+            if service_overlap:
+                warnings.append(
+                    f"Potential collision with {worktree_path}: shared service paths {', '.join(service_overlap)}"
+                )
+                continue
+        other_branch = str(presence.get("branch") or "")
+        if current_branch and other_branch and current_branch in graphify_conflicts and other_branch in graphify_conflicts:
             warnings.append(
-                f"Potential collision with {worktree_path}: overlapping files {', '.join(overlap)}"
+                f"Potential collision with {worktree_path}: graphify PR community overlap ({current_branch} / {other_branch})"
             )
     return warnings
 

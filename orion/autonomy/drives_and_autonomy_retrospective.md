@@ -540,6 +540,42 @@ trio — a distinct, unexplained gap between tension-minting and drive-pressure-
 PR did not investigate further (out of scope, per its own spec's Non-goals) and that is now the
 actual blocker on the live tie ever resolving. See §6 item 7.
 
+### 5e. Correction (2026-07-17, post-deploy of PR #1148): the tie was not permanently stuck —
+it resolved on its own in ~10.5 hours, and the "never reaches" framing above was wrong
+
+Live post-deploy verification of PR #1148's fix, done properly rather than assumed: confirmed
+**zero** collapse events (any pair of the six drives becoming identical) in live `drive_audits`
+data since the fix deployed (`2026-07-17 19:23:48 UTC`) — the aggregation fix works as intended
+in production, not just in tests.
+
+While tracing that, the §5d/§6-item-7 claim that differentiated tensions "are not reaching" the
+fold buffer for `coherence`/`capability`/`predictive` turned out to be based on too short a
+window. Tracing the full history: the trio tied at exactly `1.0` at `08:39:42`; `capability`/
+`predictive` re-tied again at `18:59:53` (a second, live collapse event under the still-running
+pre-fix code); and then **the tie genuinely broke** — `capability`/`predictive` fully
+differentiated by `19:14:54` (`0.824` vs `0.958`), with `coherence` differentiating even earlier
+(`18:59:53`, `0.590` vs the pair's `1.0`). That is a real fold event, roughly 900s after the
+prior one, carrying `tension.cognitive_load.v1`/`tension.contradiction.v1`/
+`tension.prediction_surprise.v1` in its `tension_kinds` — tension kinds whose `drive_impacts` in
+`orion/spark/concept_induction/tensions.py` do carry real, non-equal weights for exactly this
+trio (`related_nodes` on those three tension kinds name `drive:coherence`/`drive:predictive`/
+`drive:capability` directly). So differentiated tensions **do** reach the fold buffer — the
+original "not reaching" conclusion was drawn from a window that happened to end before this
+particular fold occurred, not from an actual permanent block.
+
+**What's still genuinely unexplained, and worth narrowing §6 item 7 to instead of dropping it
+entirely:** the tie took roughly 10.5 hours to break, despite `tension_kinds` logging these four
+kinds combined at a rate on the order of 50-150/hour in the original §5b trace. `extract_
+tensions_from_self_state()` (`tensions.py`) delta-gates each of these kinds against
+`self._previous_self_state` — a single shared instance, not per-drive — so most self-state ticks
+plausibly produce no new tension of the relevant kind at all, and only a delta crossing a
+threshold mints one; combined with the 900s fold cadence, a rare-enough minting rate for the
+*specific* tension kinds that touch this exact trio could plausibly explain a multi-hour gap
+without there being a bug at all. Not traced further here — this needs its own pass through the
+delta-gating thresholds and mint rate specifically for `contradiction`/`cognitive_load` (the two
+kinds that actually name this trio in their `related_nodes`) if the lag itself is worth
+explaining, rather than assumed to be a defect.
+
 ## 6. Open questions
 
 1. Is self-initiated, sometimes-suboptimal behavior still the actual target? If yes, the
@@ -572,17 +608,17 @@ actual blocker on the live tie ever resolving. See §6 item 7.
    Resolved a previously-unconfirmed question in `services/orion-field-digester/README.md`'s own
    channel glossary (`cpu_pressure`/`gpu_pressure`'s "accumulator-oscillation artifact, not
    confirmed... hardware or polling-architecture", written 2026-07-16).
-7. **New, open, unstarted (see §5d).** Real, weight-differentiated tension kinds
-   (`contradiction`, `cognitive_load`, `identity_drift`, `prediction_surprise`) are being minted
-   and logged as attributed for `coherence`/`capability`/`predictive` (~600 times/9.6h in live
-   `tension_kinds` data) but are not reaching `_update_drive_pressures`'s fold buffer for those
-   drives — they've never diverged from each other in the entire window checked. This is the
-   actual blocker on the item-5 tie ever resolving on its own; item 5's fix only stops *new* ties
-   from forming, it does nothing to explain or fix why differentiated evidence that clearly
-   exists isn't reaching the drives it's attributed to. Needs its own investigation, not yet
-   started — the gap could be anywhere between tension-minting and the fold buffer
-   (`orion/spark/concept_induction/bus_worker.py`, `tensions.py`, or the audit/attribution path
-   itself logging something that never actually gets passed to `DriveEngine.update()`).
+7. ~~New, open, unstarted (see §5d). Real, weight-differentiated tension kinds... are not
+   reaching `_update_drive_pressures`'s fold buffer for those drives.~~ **Narrowed 2026-07-17 —
+   see §5e.** Wrong as originally stated: live data confirmed the item-5 tie broke on its own via
+   a real fold ~10.5h after forming, carrying exactly the tension kinds expected
+   (`cognitive_load`/`contradiction`/`prediction_surprise`). Differentiated tensions do reach the
+   fold buffer. What's still open and low-priority: why the gap was ~10.5h given a ~50-150/hr
+   combined mint rate for these tension kinds — plausibly just delta-gating (`tensions.py`'s
+   `self._previous_self_state` single-instance gate) making the *specific* kinds that touch this
+   trio rare, not a bug. Not investigated further; worth a focused pass through
+   `contradiction`/`cognitive_load`'s exact fire conditions only if the lag itself turns out to
+   matter for something downstream.
 
 ## 8. Downstream consumer audit (2026-07-16) and the corrected implementation order
 

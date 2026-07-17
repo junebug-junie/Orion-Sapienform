@@ -708,7 +708,10 @@ channels:
     kind: "event"
     schema_id: "MetacognitiveTraceV1"
     producer_services: ["orion-cortex-exec", "orion-hub"]
-    consumer_services: ["orion-sql-writer", "orion-vector-writer", "orion-rdf-writer"]
+    # orion-rdf-writer removed 2026-07-17: pure redundancy with orion-sql-writer's
+    # `orion_metacognitive_trace` table (already the real durable copy) with no
+    # real Fuseki-side reader (see split-design spec).
+    consumer_services: ["orion-sql-writer", "orion-vector-writer"]
     stability: "experimental"
     since: "2026-03-29"
 
@@ -1540,7 +1543,12 @@ channels:
     kind: "event"
     schema_id: "CognitionTracePayload"
     producer_services: ["orion-cortex-exec"]
-    consumer_services: ["orion-spark-introspector", "orion-landing-pad", "orion-bus-tap"]
+    # orion-sql-writer added 2026-07-17: was already a real, live consumer
+    # (durably persists to Postgres `cognition_traces`, confirmed 61k+ live
+    # rows) but had never been declared here -- registry accuracy fix, not a
+    # new wire-up. orion-rdf-writer intentionally NOT a consumer: the RDF copy
+    # was pure redundancy with no real reader (see split-design spec).
+    consumer_services: ["orion-spark-introspector", "orion-landing-pad", "orion-bus-tap", "orion-sql-writer"]
     stability: "experimental"
     since: "2026-01-10"
 

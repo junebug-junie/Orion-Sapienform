@@ -153,6 +153,32 @@ def test_drives_audit_channel_not_in_default_subscriptions():
     assert "orion:memory:drives:audit" not in channels
 
 
+def test_cognition_and_metacog_trace_channels_not_in_default_subscriptions():
+    """rdf-writer must not subscribe to orion:cognition:trace or orion:metacog:trace
+    by default (2026-07-17): both are Postgres-only via orion-sql-writer
+    (cognition_traces, orion_metacognitive_trace) -- the RDF copy was pure
+    redundancy with no real reader."""
+    channels = settings_mod.Settings(ORION_BUS_URL="redis://example.test/0").get_all_subscribe_channels()
+    assert "orion:cognition:trace" not in channels
+    assert "orion:metacog:trace" not in channels
+
+
+def test_cognition_trace_dispatch_is_quiet_no_op():
+    """The rdf_builder dispatch must treat cognition.trace as unknown (quiet no-op)."""
+    nt, graph_name = build_triples_from_envelope("cognition.trace", {"correlation_id": "corr-1"})
+    assert nt is None
+    assert graph_name is None
+
+
+def test_metacognitive_trace_dispatch_is_quiet_no_op():
+    """The rdf_builder dispatch must treat metacognitive.trace.v1 as unknown (quiet no-op)."""
+    nt, graph_name = build_triples_from_envelope(
+        "metacognitive.trace.v1", {"trace_id": "trace-1", "correlation_id": "corr-1"}
+    )
+    assert nt is None
+    assert graph_name is None
+
+
 def test_goal_materialization_writes_proposal_status_and_base():
     payload = {
         "artifact_id": "goal-new",

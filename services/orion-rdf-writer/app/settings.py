@@ -52,12 +52,15 @@ class Settings(BaseSettings):
     CHANNEL_EVENTS_TAGGED_CHAT: str = Field(default="orion:tags:chat:enriched", env="CHANNEL_EVENTS_TAGGED_CHAT")
     CHANNEL_CORE_EVENTS: str = Field(default="orion:core:events", env="CHANNEL_CORE_EVENTS")
     CHANNEL_WORKER_RDF: str = Field(default="orion:rdf:worker", env="CHANNEL_WORKER_RDF")
-    CHANNEL_COGNITION_TRACE_PUB: str = Field(default="orion:cognition:trace", env="CHANNEL_COGNITION_TRACE_PUB")
     CHANNEL_CHAT_HISTORY_TURN: str = Field(default="orion:chat:history:turn", env="CHANNEL_CHAT_HISTORY_TURN")
     CHANNEL_CHAT_HISTORY_LOG: str = Field(default="orion:chat:history:log", env="CHANNEL_CHAT_HISTORY_LOG")
     CHANNEL_MEMORY_IDENTITY_SNAPSHOT: str = Field(default="orion:memory:identity:snapshot", env="CHANNEL_MEMORY_IDENTITY_SNAPSHOT")
     # orion:memory:drives:audit deliberately not subscribed: drive audits are
     # Postgres-only (`drive_audits` via orion-sql-writer) as of 2026-07-15.
+    # orion:cognition:trace and orion:metacog:trace deliberately not subscribed
+    # (as of 2026-07-17): both are Postgres-only via orion-sql-writer
+    # (`cognition_traces`, `orion_metacognitive_trace`) — the RDF copy was pure
+    # redundancy with no real reader.
     CHANNEL_MEMORY_GOALS_PROPOSED: str = Field(default="orion:memory:goals:proposed", env="CHANNEL_MEMORY_GOALS_PROPOSED")
 
     # === PUBLISH CHANNELS ===
@@ -97,12 +100,10 @@ class Settings(BaseSettings):
             self.CHANNEL_CORE_EVENTS,
             self.CHANNEL_WORKER_RDF,
             self.CORTEX_LOG_CHANNEL,
-            self.CHANNEL_COGNITION_TRACE_PUB,
             self.CHANNEL_CHAT_HISTORY_TURN,
             self.CHANNEL_CHAT_HISTORY_LOG,
             self.CHANNEL_MEMORY_IDENTITY_SNAPSHOT,
             self.CHANNEL_MEMORY_GOALS_PROPOSED,
-            "orion:metacog:trace",
             self.CHANNEL_WORLD_PULSE_GRAPH,
         ]
         seen = set()

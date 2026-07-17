@@ -14,8 +14,6 @@ from orion.schemas.collapse_mirror import CollapseMirrorEntry
 from orion.schemas.telemetry.meta_tags import MetaTagsPayload
 from orion.schemas.rdf import RdfWriteRequest, RdfBuildRequest
 from orion.schemas.social_chat import SocialRoomTurnStoredV1
-from orion.schemas.telemetry.cognition_trace import CognitionTracePayload
-from orion.schemas.metacognitive_trace import MetacognitiveTraceV1
 from orion.schemas.world_pulse import GraphDeltaPlanV1
 
 from app.autonomy import build_autonomy_triples
@@ -154,17 +152,10 @@ def build_triples_from_envelope(env_kind: str, payload: Any) -> Tuple[Optional[s
         elif env_kind in ("memory.identity.snapshot.v1", "memory.goals.proposed.v1"):
             return build_autonomy_triples(env_kind, payload)
 
-        # 6. Cognition Trace
-        elif env_kind == "cognition.trace":
-            if isinstance(payload, dict):
-                trace = CognitionTracePayload.model_validate(payload)
-            else:
-                trace = payload
-            return _handle_cognition_trace(g, trace)
-
-        elif env_kind == "metacognitive.trace.v1":
-            trace = MetacognitiveTraceV1.model_validate(payload if isinstance(payload, dict) else payload.model_dump())
-            return _handle_metacognitive_trace(g, trace)
+        # 6. Cognition Trace / Metacognitive Trace deliberately absent (2026-07-17):
+        # both are Postgres-only via orion-sql-writer (cognition_traces,
+        # orion_metacognitive_trace) — the RDF copy was pure redundancy with no
+        # real reader. Do not re-add without a real consumer.
 
         # 7. Core Events (Legacy Fallback or "targets": ["rdf"])
         elif env_kind == "orion.event" or "targets" in str(payload):
@@ -248,56 +239,6 @@ def _handle_cortex_build(g: Graph, args: Any) -> Tuple[str, str]:
     return g.serialize(format="nt"), "orion:cognition"
 
 
-def _handle_cognition_trace(g: Graph, trace: CognitionTracePayload) -> Tuple[str, str]:
-    """
-    Builds a connectable graph for a CognitionTrace.
-    """
-    run_uri = ORION[f"run_{trace.correlation_id}"]
-
-    # Run Metadata
-    g.add((run_uri, RDF.type, ORION.CognitionRun))
-    g.add((run_uri, ORION.correlationId, Literal(str(trace.correlation_id), datatype=XSD.string)))
-    g.add((run_uri, ORION.mode, Literal(trace.mode, datatype=XSD.string)))
-    g.add((run_uri, ORION.verb, Literal(trace.verb, datatype=XSD.string)))
-    g.add((run_uri, ORION.timestamp, Literal(trace.timestamp, datatype=XSD.double)))
-    g.add((run_uri, ORION.sourceService, Literal(trace.source_service, datatype=XSD.string)))
-
-    # final_text omitted: full text lives in Postgres; IRI is the join key
-
-    # Steps
-    prev_step_uri = None
-
-    for i, step in enumerate(trace.steps):
-        step_uri = ORION[f"step_{trace.correlation_id}_{i}"]
-        g.add((step_uri, RDF.type, ORION.CognitionStep))
-        g.add((step_uri, ORION.stepIndex, Literal(i, datatype=XSD.integer)))
-        g.add((step_uri, ORION.stepName, Literal(step.step_name)))
-        g.add((step_uri, ORION.stepVerb, Literal(step.verb_name)))
-        g.add((step_uri, ORION.status, Literal(step.status)))
-
-        # Link to Run
-        g.add((run_uri, ORION.hasStep, step_uri))
-
-        # Sequence
-        if prev_step_uri:
-            g.add((prev_step_uri, ORION.nextStep, step_uri))
-            g.add((step_uri, ORION.prevStep, prev_step_uri))
-        prev_step_uri = step_uri
-
-        # thought/reasoning text omitted: full text lives in Postgres; IRI is the join key
-
-        # Used Services/Tools
-        # We don't have explicit 'tools used' in StepExecutionResult other than artifacts?
-        # Assuming artifacts might contain refs
-        if step.artifacts:
-            for key, val in step.artifacts.items():
-                # Naive check for IDs
-                if isinstance(val, str) and (val.startswith("http") or val.startswith("uuid:")):
-                     g.add((step_uri, ORION.hasEvidenceRef, Literal(val)))
-
-    return g.serialize(format="nt"), "orion:cognition"
-
-
 def _handle_social_room_turn(g: Graph, payload: dict[str, Any]) -> Tuple[str, str]:
     turn = SocialRoomTurnStoredV1.model_validate(payload)
     turn_uri = URIRef(f"http://conjourney.net/orion/socialTurn/{_sanitize_fragment(turn.turn_id)}")
@@ -327,33 +268,6 @@ def _handle_social_room_turn(g: Graph, payload: dict[str, Any]) -> Tuple[str, st
         g.add((turn_uri, ORION.supportedByEvidence, evidence_uri))
     attach_provenance(g, turn_uri, turn.source)
     return g.serialize(format="nt"), "orion:chat:social"
-
-
-def _handle_metacognitive_trace(g: Graph, trace: MetacognitiveTraceV1) -> Tuple[str, str]:
-    trace_uri = ORION[f"trace_{_sanitize_fragment(trace.trace_id)}"]
-    turn_ref = _sanitize_fragment(trace.message_id or trace.correlation_id)
-    turn_uri = ORION[f"turn_{turn_ref}"]
-
-    g.add((trace_uri, RDF.type, ORION.CognitiveTrace))
-    role_map = {
-        "reasoning": ORION.ReasoningTrace,
-        "planning": ORION.PlanTrace,
-        "reflection": ORION.ReflectionTrace,
-        "self_check": ORION.SelfCritique,
-        "critique": ORION.SelfCritique,
-    }
-    g.add((trace_uri, RDF.type, role_map.get(trace.trace_role, ORION.CognitiveTrace)))
-    g.add((trace_uri, ORION.traceOfTurn, turn_uri))
-    g.add((trace_uri, ORION.generatedByModel, Literal(trace.model, datatype=XSD.string)))
-    g.add((trace_uri, ORION.traceStage, Literal(trace.trace_stage, datatype=XSD.string)))
-    g.add((trace_uri, ORION.traceRole, Literal(trace.trace_role, datatype=XSD.string)))
-    # traceText omitted: full text lives in Postgres; IRI is the join key
-    g.add((trace_uri, ORION.correlationId, Literal(trace.correlation_id, datatype=XSD.string)))
-    if trace.session_id:
-        g.add((trace_uri, ORION.sessionId, Literal(trace.session_id, datatype=XSD.string)))
-    if trace.token_count is not None:
-        g.add((trace_uri, ORION.tokenCount, Literal(trace.token_count, datatype=XSD.integer)))
-    return g.serialize(format="nt"), "orion:metacog"
 
 
 # === Chat History ===

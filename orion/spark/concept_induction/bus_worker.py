@@ -814,6 +814,12 @@ class ConceptWorker:
         getting a fresh drive_state every event -- only the WRITE side is
         throttled, not the READ side. Returns (pressures, activations, folded).
 
+        See this directory's CLAUDE.md and orion/autonomy/drives_and_autonomy_
+        retrospective.md sec5b-sec5e before changing this function or DriveEngine's
+        aggregation math -- if two drives ever end up sharing an identical persisted
+        pressure, this function does not detect or break that tie; it only self-heals
+        once a differentiating tension happens to land (took ~10.5h once, see sec5e).
+
         Note: the pressure component of goal-proposal priority scoring
         (GoalProposalEngine._priority) can lag up to _DRIVE_FOLD_INTERVAL_SEC
         behind a freshly-dominant drive's own tick -- accepted, documented

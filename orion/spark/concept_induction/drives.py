@@ -1,3 +1,8 @@
+"""Read orion/autonomy/drives_and_autonomy_retrospective.md (sec5b-sec5e) and this
+directory's CLAUDE.md before changing DriveEngine.update()'s aggregation math -- the
+sum-then-clamp-once collapse bug this module used to have was found and re-derived
+independently more than once because that write-up wasn't checked first."""
+
 from __future__ import annotations
 
 import math

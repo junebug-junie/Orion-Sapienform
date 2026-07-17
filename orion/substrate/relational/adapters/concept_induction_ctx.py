@@ -1,11 +1,31 @@
-"""Concept induction + Spark context adapter — concept_induced tier.
+"""Concept induction adapter — concept_induced tier.
 
-Wraps ``build_concept_profile_repository`` + ``map_concept_profile_to_substrate``
-so that the concept induction and Spark producer lanes can be registered in
-ProducerRegistryV1.
+Reads live ``ConceptNodeV1`` nodes from the substrate store's concept region
+(``SubstrateGraphStore.query_concept_region``) — the concept graph populated
+by golden seed concepts (``orion/substrate/seed.py``) and topic-foundry
+derived concepts (``orion/substrate/adapters/topic_foundry.py``) — and maps
+them into a ``SubstrateGraphRecordV1`` with concept_induced tier nodes.
 
-Queries orion, relationship, and juniper profiles and returns a combined
-``SubstrateGraphRecordV1`` with concept_induced tier nodes.
+This replaces the previous data source, the old spaCy-based
+``orion.spark.concept_induction.profile_repository`` pipeline, which is dead
+(``CONCEPT_AUTONOMOUS_TRIGGER_ENABLED=false``) and always yielded an empty
+repository, so this adapter always returned ``None`` and nothing from the
+concept substrate ever reached a live chat turn.
+
+Filters to the three subjects ``chat_stance`` cares about (orion,
+relationship, juniper — matching this producer's own ``anchor_scopes``
+registration) and derives ``metadata["concept_type"]`` bucketing from each
+node's ``anchor_scope`` when not already set, mirroring the exact fallback
+precedent already established in
+``chat_stance.py::_concept_summary_from_store``: only ``anchor_scope ==
+"relationship"`` auto-routes to the relationship bucket downstream in
+``_project_concept_from_beliefs`` (via ``anchor_key == "relationship"``); both
+``orion`` and ``juniper`` subjects fall into the "self" bucket by default in
+that same legacy function, so this adapter reproduces that mapping rather
+than inventing a new one.
+
+Never raises: degrades to ``None`` on any store connectivity failure,
+malformed data, or empty result.
 """
 
 from __future__ import annotations
@@ -13,71 +33,90 @@ from __future__ import annotations
 import logging
 from typing import Any
 
-from datetime import datetime, timezone
-
 from orion.core.schemas.cognitive_substrate import SubstrateGraphRecordV1
-from orion.core.schemas.cognitive_substrate import (
-    ConceptNodeV1,
-    SubstrateProvenanceV1,
-    SubstrateSignalBundleV1,
-)
-from orion.substrate.adapters._common import make_temporal
+from orion.substrate import build_substrate_store_from_env
+from orion.substrate.store import SubstrateGraphStore
 
 logger = logging.getLogger("orion.substrate.relational.adapters.concept_induction_ctx")
 
 _TIER_RANK = 3  # concept_induced
 _SUBJECTS = ("orion", "relationship", "juniper")
 
+# Fallback concept_type derived from a node's anchor_scope when the node has
+# no explicit metadata["concept_type"]. Mirrors the subject-based bucketing
+# precedent in chat_stance.py::_concept_summary_from_store: only
+# "relationship" auto-routes to the relationship bucket; "orion" and
+# "juniper" both default to "self".
+_ANCHOR_TO_CONCEPT_TYPE: dict[str, str] = {
+    "orion": "self",
+    "relationship": "relationship",
+    "juniper": "self",
+}
+
+_STORE: SubstrateGraphStore | None = None
+
+
+def _get_store() -> SubstrateGraphStore | None:
+    """Return (or lazily initialise) the process-level substrate store.
+
+    Mirrors the singleton-caching pattern in
+    ``services/orion-cortex-exec/app/chat_stance.py::_get_unification_layer``
+    without importing from that module — ``chat_stance.py`` lazily imports
+    this adapter inside ``_build_unification_registry``, so importing back
+    from here would be circular. Never raises: a construction failure is
+    logged and the caller degrades to ``None``.
+    """
+    global _STORE
+    if _STORE is None:
+        try:
+            _STORE = build_substrate_store_from_env()
+        except Exception as exc:
+            logger.debug("concept_induction_ctx_store_init_failed error=%s", exc)
+            return None
+    return _STORE
+
 
 def map_concept_induction_ctx_to_substrate(ctx: dict[str, Any]) -> SubstrateGraphRecordV1 | None:  # noqa: ARG001
-    """Fetch concept profiles for all subjects and map to substrate nodes (concept_induced)."""
-    try:
-        from orion.spark.concept_induction.profile_repository import build_concept_profile_repository  # noqa: PLC0415 — lazy to avoid spacy at import time
-        from orion.substrate.adapters.concept_induction import map_concept_profile_to_substrate  # noqa: PLC0415
-    except ImportError as exc:
-        logger.debug("concept_induction_ctx_adapter_import_failed error=%s", exc)
+    """Fetch live concept-region nodes from the substrate store (concept_induced tier)."""
+    store = _get_store()
+    if store is None:
         return None
 
     try:
-        repository = build_concept_profile_repository()
+        result = store.query_concept_region(limit_nodes=64, limit_edges=64)
     except Exception as exc:
-        logger.debug("concept_induction_ctx_adapter_init_failed error=%s", exc)
+        logger.debug("concept_induction_ctx_query_failed error=%s", exc)
         return None
 
-    correlation_id = str(ctx.get("correlation_id") or ctx.get("trace_id") or "")
-    session_id = str(ctx.get("session_id") or "")
-    observer = {
-        "consumer": "concept_induction_ctx_adapter",
-        "correlation_id": correlation_id,
-        "session_id": session_id,
-    }
+    if result is None or getattr(result, "degraded", False):
+        return None
 
-    try:
-        lookups = repository.list_latest(_SUBJECTS, observer=observer)
-    except Exception as exc:
-        logger.debug("concept_induction_ctx_adapter_fetch_failed error=%s", exc)
+    region_slice = getattr(result, "slice", None)
+    raw_nodes = list(getattr(region_slice, "nodes", None) or [])
+    if not raw_nodes:
         return None
 
     all_nodes: list[Any] = []
-    for lookup in lookups:
-        profile = lookup.profile
-        if profile is None:
-            continue
-
-        anchor = lookup.subject
-        if anchor not in ("orion", "relationship", "juniper"):
-            continue
-
+    for node in raw_nodes:
         try:
-            record = map_concept_profile_to_substrate(profile=profile, anchor_scope=anchor)
-        except Exception as exc:
-            logger.debug("concept_induction_ctx_map_failed subject=%s error=%s", anchor, exc)
-            continue
+            if getattr(node, "node_kind", None) != "concept":
+                continue
+            anchor = getattr(node, "anchor_scope", None)
+            if anchor not in _SUBJECTS:
+                continue
 
-        # Stamp tier_rank on provenance of each mapped node (adapter is unchanged, so we
-        # post-process to apply the tier_rank field introduced by the unified layer).
-        for node in record.nodes:
+            metadata = dict(node.metadata or {})
+            if not str(metadata.get("concept_type") or "").strip():
+                metadata["concept_type"] = _ANCHOR_TO_CONCEPT_TYPE.get(anchor, "self")
+
             patched_prov = node.provenance.model_copy(update={"tier_rank": _TIER_RANK})
-            all_nodes.append(node.model_copy(update={"provenance": patched_prov}))
+            all_nodes.append(node.model_copy(update={"provenance": patched_prov, "metadata": metadata}))
+        except Exception as exc:
+            logger.debug(
+                "concept_induction_ctx_node_map_failed node_id=%s error=%s",
+                getattr(node, "node_id", "?"),
+                exc,
+            )
+            continue
 
     return SubstrateGraphRecordV1(anchor_scope="orion", nodes=all_nodes) if all_nodes else None

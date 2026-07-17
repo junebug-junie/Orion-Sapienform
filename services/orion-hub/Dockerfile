@@ -53,6 +53,10 @@ RUN if [ "${INSTALL_DEV_DEPS}" = "true" ]; then pip3 install --no-cache-dir -r /
 # copy schemas into the container
 COPY orion /app/orion
 
+# Vendor autonomy-gate pure helpers for Hub Drives Analytics (avoids relying solely
+# on the repo volume mount for ORION_REPO_ROOT=/repo).
+COPY scripts/analysis/measure_autonomy_gate.py /app/vendor/measure_autonomy_gate.py
+
 # Copy rest of hub service code
 COPY services/orion-hub /app
 

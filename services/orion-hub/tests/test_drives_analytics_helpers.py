@@ -123,3 +123,36 @@ def test_downsample_and_bucket_tick_rates() -> None:
     buckets = da.bucket_tick_rates(stamps, window_start=start, bucket_sec=60)
     assert buckets[0] == {"t": start.isoformat(), "count": 2}
     assert buckets[1]["count"] == 1
+
+
+def test_gate_script_candidates_include_vendor_and_orion_repo_root(monkeypatch, tmp_path) -> None:
+    """Hub Docker parents[3] is `/`; resolution must prefer ORION_REPO_ROOT / vendor."""
+    import scripts.drives_analytics as da_live
+
+    gate_dir = tmp_path / "scripts" / "analysis"
+    gate_dir.mkdir(parents=True)
+    gate_file = gate_dir / "measure_autonomy_gate.py"
+    gate_file.write_text(
+        "# stub\nSATURATION_DOMINANT_SHARE = 0.90\n",
+        encoding="utf-8",
+    )
+    monkeypatch.setenv("ORION_REPO_ROOT", str(tmp_path))
+    monkeypatch.delenv("HUB_AGENT_CLAUDE_WORKSPACE", raising=False)
+    candidates = da_live._gate_script_candidates()
+    assert any(p.resolve() == gate_file.resolve() for p in candidates)
+    # Vendor path under Hub service root always listed first.
+    assert candidates[0].name == "measure_autonomy_gate.py"
+    assert "vendor" in candidates[0].parts
+
+
+def test_embedded_gate_fallback_preserves_thresholds() -> None:
+    import scripts.drives_analytics as da_live
+
+    fallback = da_live._build_embedded_gate_fallback()
+    assert fallback.SATURATION_DOMINANT_SHARE == 0.90
+    assert fallback.COACTIVATION_MIN_FRAC == 0.10
+    stats = fallback.apply_dominant_counts(
+        fallback.drive_stats_from_histogram({2: 100}),
+        {"predictive": 96},
+    )
+    assert stats.top_dominant_share == 0.96

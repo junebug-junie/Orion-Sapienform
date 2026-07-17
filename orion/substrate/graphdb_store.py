@@ -829,6 +829,8 @@ def build_substrate_store_from_env() -> SubstrateGraphStore:
     Resolution:
     - ``SUBSTRATE_STORE_BACKEND`` unset / empty → in-memory (default).
     - ``in_memory`` / ``memory`` / ``mem`` / ``local`` → in-memory.
+    - ``falkor`` / ``falkordb`` → ``FalkorSubstrateStore`` when ``FALKORDB_URI`` is set; else in-memory + warning.
+    - ``routed`` → ``RoutedSubstrateGraphStore`` using ``SUBSTRATE_STORE_PRIMARY`` / ``SUBSTRATE_STORE_SHADOW``.
     - ``sparql`` / ``sparql_http`` → ``SparqlSubstrateStore`` when query and update URLs resolve
       (``SUBSTRATE_GRAPH_QUERY_URL`` / ``SUBSTRATE_GRAPH_UPDATE_URL``, else ``RDF_STORE_QUERY_URL`` /
       ``RDF_STORE_UPDATE_URL``). If still missing, logs ``substrate_sparql_backend_unconfigured`` and raises
@@ -847,6 +849,16 @@ def build_substrate_store_from_env() -> SubstrateGraphStore:
     if not backend:
         logger.info("substrate_store_backend_selected backend=in_memory reason=default_v1_safety")
         return InMemorySubstrateGraphStore()
+
+    if backend in {"falkor", "falkordb"}:
+        from orion.substrate.falkor_store import build_falkor_substrate_store_from_env
+
+        return build_falkor_substrate_store_from_env()
+
+    if backend in {"routed"}:
+        from orion.substrate.routed_store import build_routed_substrate_store_from_env
+
+        return build_routed_substrate_store_from_env()
 
     if backend in {"sparql", "sparql_http"}:
         q, u = _resolve_substrate_sparql_http_urls()

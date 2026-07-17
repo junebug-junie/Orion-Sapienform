@@ -90,11 +90,19 @@ flat).
 `resource_pressure` — attention scoring and any other capability-vector consumer reads the same
 channels and would show the same artifact.
 
-**Not yet fixed.** This is confirmed but unpatched as of 2026-07-17 — it needs a decision (skip
-decay on channels that received a fresh perturbation this tick, track true per-channel
-time-since-last-real-update instead of decaying unconditionally every tick, or something else)
-before anyone touches `apply_decay`/`apply_perturbations`, since both are foundational to this
-service and used well beyond the biometrics/self-state path this was traced through.
+**Fixed 2026-07-17** (`docs/superpowers/specs/2026-07-17-field-digester-decay-hold-fix-design.md`).
+`FieldStateV1.node_vector_updated_at` (new field) tracks the wall-clock timestamp of each
+`(node_id, channel)`'s last real write from `apply_perturbations()`. `apply_decay()` now holds a
+`NODE_DECAY_CHANNELS` entry flat instead of decaying it, as long as it is within
+`FIELD_DECAY_STALENESS_THRESHOLD_SEC` (default 90s — ~3x `TELEMETRY_INTERVAL`/~6x
+`CLUSTER_PUBLISH_INTERVAL` of real margin for jitter/backlog) of its last real perturbation, and
+only decays it once genuinely stale. A channel that has never been perturbed (or was persisted
+from before this fix) keeps decaying every tick unconditionally — the same safe default as
+before, so there is no special migration step. `capability_vectors`/`CAPABILITY_DECAY_CHANNELS`
+is untouched (already flagged dead under the live diffusion model, out of scope here). This closes
+the mechanical-sawtooth mechanism described above; it does **not** by itself address `DriveEngine`'s
+separate fold-batch clamp collapse (see the autonomy retrospective §5b/§6 item 5), which is
+explicitly deferred pending live data on whether tension volume drops enough after this fix alone.
 
 ## `capability_provenance` vs. attention salience (Phase 4, 2026-07-12)
 
@@ -316,15 +324,15 @@ of the observed 1.0 baseline.
   (removed 2026-07-12 — its diffused capability value is what's mapped
   instead). `evidence_channel_map`: `cpu_pressure` → `resource_pressure`
   (evidence/transparency only).
-- **Live-data verdict**: real signal, continuous — but the "known
-  accumulator-oscillation artifact" flagged 2026-07-16 is now **confirmed as
-  a polling-architecture artifact, not real hardware load**. See "Decay vs.
-  injection-interval mismatch" below for the full mechanism and the trace
-  that resolved this (2026-07-17): `apply_decay()`'s unconditional
-  `0.92`-per-2s decay against `orion-biometrics`' ~15-30s publish cadence
-  produces a mechanical sawtooth (~16s period observed downstream in
-  `coherence`) independent of whether the underlying CPU load is actually
-  bursty.
+- **Live-data verdict**: real signal, continuous. The "known
+  accumulator-oscillation artifact" flagged 2026-07-16 was confirmed
+  2026-07-17 as a polling-architecture artifact, not real hardware load
+  (`apply_decay()`'s unconditional `0.92`-per-2s decay against
+  `orion-biometrics`' ~15-30s publish cadence produced a mechanical sawtooth,
+  ~16s period observed downstream in `coherence`, independent of whether the
+  underlying CPU load was actually bursty) — **and fixed the same day**. See
+  "Decay vs. injection-interval mismatch" below for the mechanism and the
+  fix (hold-flat-until-stale via `node_vector_updated_at`).
 
 #### `memory_pressure`
 - **Meaning**: node RAM pressure.
@@ -355,8 +363,9 @@ of the observed 1.0 baseline.
   `evidence_channel_map`: `gpu_pressure` → `resource_pressure`
   (evidence-only).
 - **Live-data verdict**: real signal, continuous — same accumulator-
-  oscillation mechanism as `cpu_pressure`, now confirmed as the
-  decay/injection-interval mismatch described below, not real hardware load.
+  oscillation mechanism as `cpu_pressure`, confirmed as the
+  decay/injection-interval mismatch described below, not real hardware load,
+  and fixed by the same 2026-07-17 patch.
 
 #### `thermal_pressure`
 - **Meaning**: node thermal/temperature pressure.

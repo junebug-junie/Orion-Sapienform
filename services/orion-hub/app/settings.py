@@ -535,17 +535,17 @@ class Settings(BaseSettings):
     # concept_atlas_ingest_topic_foundry() route logic -- this may lag the
     # run just triggered by one or more ticks/days since training is
     # genuinely async on topic-foundry's side; that is expected, not a bug.
-    # Defaults to DISABLED, unlike the decay scheduler above: this is a
-    # real-compute-cost, autonomy-touching background job (training a
-    # clustering model), not a cheap idempotent decay pass -- operator must
-    # opt in explicitly. Known limitation (not fixed here): nothing checks
-    # whether a previously-triggered run is still queued/running before a
-    # later tick fires again -- day-flooring covers the default 24h interval
-    # exactly (one tick per day -> one unique window per day), but a shorter
-    # custom interval combined with training slower than that interval could
-    # still pile up concurrent runs on topic-foundry's side.
+    # Shipped disabled by default (real-compute-cost, autonomy-touching
+    # background job -- training a clustering model, not a cheap idempotent
+    # decay pass); flipped on live 2026-07-17 per operator decision. Known
+    # limitation (not fixed here): nothing checks whether a previously-
+    # triggered run is still queued/running before a later tick fires again
+    # -- day-flooring covers the default 24h interval exactly (one tick per
+    # day -> one unique window per day), but a shorter custom interval
+    # combined with training slower than that interval could still pile up
+    # concurrent runs on topic-foundry's side.
     SUBSTRATE_TOPIC_FOUNDRY_SCHEDULER_ENABLED: bool = Field(
-        default=False, alias="SUBSTRATE_TOPIC_FOUNDRY_SCHEDULER_ENABLED"
+        default=True, alias="SUBSTRATE_TOPIC_FOUNDRY_SCHEDULER_ENABLED"
     )
     SUBSTRATE_TOPIC_FOUNDRY_SCHEDULER_INTERVAL_SEC: float = Field(
         default=86400.0, alias="SUBSTRATE_TOPIC_FOUNDRY_SCHEDULER_INTERVAL_SEC"

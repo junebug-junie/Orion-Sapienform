@@ -139,7 +139,8 @@ def test_materialize_writes_native_cypher_without_payload_json_sor() -> None:
     assert all("Evidence" not in c and "Hypothesis" not in c for c, _ in client.calls)
 
 
-def test_materialize_cache_hydrates_for_atlas_read() -> None:
+def test_materialize_populates_write_through_cache() -> None:
+    """Write-through cache readback (hydrate=False) — not a durable Falkor hydrate."""
     client = RecordingFalkorClient()
     store = FalkorSubstrateStore(
         FalkorSubstrateStoreConfig(uri="redis://localhost:6379", graph_name="orion_substrate"),

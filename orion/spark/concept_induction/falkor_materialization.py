@@ -61,9 +61,13 @@ def filter_concept_atlas_record(record) -> tuple[list[ConceptNodeV1], list[Subst
 
 
 def edge_identity_key(edge: SubstrateEdgeV1) -> str:
-    """Canonical edge identity — must match FalkorSubstrateStore._edge_identity
-    (``src|pred|tgt``) so identity caches agree with Hub and re-materialized
-    revisions MERGE instead of duplicating relationships."""
+    """Canonical edge identity for the in-process identity cache.
+
+    Must match ``FalkorSubstrateStore._edge_identity`` (``src|pred|tgt``) so
+    identity lookups agree with Hub. Durable Cypher still MERGEs relationships
+    on ``edge_id`` today — deterministic ``edge_id`` (or identity-based MERGE)
+    is required before concept↔concept edge writes go live.
+    """
     return f"{edge.source.node_id}|{edge.predicate}|{edge.target.node_id}"
 
 

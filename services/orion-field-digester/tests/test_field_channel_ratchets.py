@@ -237,6 +237,7 @@ def test_same_tick_clear_beats_suppress_via_real_delta_to_perturbations() -> Non
         perturbations=clear_perturbations + suppress_perturbations,
         decay_rate=1.0,
         diffusion_rate=0.0,
+        staleness_threshold_sec=90.0,
     )
     assert state.node_vectors["node:circe"]["expected_offline_suppression"] == 0.0
 
@@ -330,7 +331,13 @@ def test_full_tick_no_longer_permanently_floors_once_cleared() -> None:
     perturbations = [
         Perturbation(node_id="node:circe", channel="availability", intensity=0.2, label="p1"),
     ]
-    run_digestion_tick(state, perturbations=perturbations, decay_rate=0.92, diffusion_rate=0.0)
+    run_digestion_tick(
+        state,
+        perturbations=perturbations,
+        decay_rate=0.92,
+        diffusion_rate=0.0,
+        staleness_threshold_sec=90.0,
+    )
     assert state.node_vectors["node:circe"]["availability"] == 0.2
 
 

@@ -83,10 +83,13 @@ def apply_perturbations(
             node_vec = state.node_vectors.setdefault(p.node_id, {})
             if p.mode == "replace":
                 node_vec[p.channel] = max(0.0, min(1.0, p.intensity))
+                state.node_vector_updated_at.setdefault(p.node_id, {})[p.channel] = ts
             elif p.channel == "availability":
                 node_vec[p.channel] = min(node_vec.get(p.channel, 1.0), p.intensity)
+                state.node_vector_updated_at.setdefault(p.node_id, {})[p.channel] = ts
             else:
                 node_vec[p.channel] = min(1.0, node_vec.get(p.channel, 0.0) + p.intensity)
+                state.node_vector_updated_at.setdefault(p.node_id, {})[p.channel] = ts
         if p.label not in state.recent_perturbations:
             state.recent_perturbations.append(p.label)
             state.recent_perturbation_at.append(ts)

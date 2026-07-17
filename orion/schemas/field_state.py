@@ -56,6 +56,21 @@ class FieldStateV1(BaseModel):
     # list) -- an immediate, one-tick reset, not gated by window expiry --
     # and it repopulates normally from there.
     recent_perturbation_at: list[datetime] = Field(default_factory=list)
+    # Decay/injection-interval mismatch fix (2026-07-17): keyed node_id ->
+    # channel -> the wall-clock timestamp of that channel's last real write
+    # from apply_perturbations() (services/orion-field-digester/app/
+    # digestion/perturbation.py). Mirrors node_vectors' own node_id -> channel
+    # shape, one level deeper only in value type (datetime instead of float).
+    # apply_decay() (app/digestion/decay.py) uses this to hold a channel's
+    # value flat while it is still fresh and only apply this tick's decay
+    # factor once the channel has gone genuinely stale, instead of decaying
+    # every NODE_DECAY_CHANNELS entry unconditionally every 2s tick regardless
+    # of whether new data arrived. Same backward-compatibility precedent as
+    # recent_perturbation_at (2026-07-16): a FieldStateV1 persisted before
+    # this fix loads with an empty dict, so every existing channel is "unknown
+    # freshness" until its next real perturbation -- apply_decay() treats a
+    # missing entry as the safe default (decay as before today).
+    node_vector_updated_at: dict[str, dict[str, datetime]] = Field(default_factory=dict)
     topology_id: str | None = None
     topology_version: str | None = None
     topology_loaded_from: str | None = None

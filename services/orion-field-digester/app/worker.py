@@ -213,6 +213,7 @@ class FieldDigesterWorker:
             perturbations=perturbations,
             decay_rate=self._settings.biometrics_field_decay_rate,
             diffusion_rate=self._settings.biometrics_field_diffusion_rate,
+            staleness_threshold_sec=self._settings.field_decay_staleness_threshold_sec,
         )
 
         for node_id, suspicion in check_field_coherence(state).items():

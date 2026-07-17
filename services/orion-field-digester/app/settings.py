@@ -23,6 +23,16 @@ class Settings(BaseSettings):
     )
     receipt_poll_interval_sec: float = Field(2.0, alias="RECEIPT_POLL_INTERVAL_SEC")
     biometrics_field_decay_rate: float = Field(0.92, alias="BIOMETRICS_FIELD_DECAY_RATE")
+    # Decay/injection-interval mismatch fix (2026-07-17): a channel in
+    # NODE_DECAY_CHANNELS is held flat (not decayed) until it has gone this
+    # many seconds without a fresh perturbation. Default (~90s) is ~3x
+    # orion-biometrics' TELEMETRY_INTERVAL (30s) / ~6x its
+    # CLUSTER_PUBLISH_INTERVAL (15s) -- real margin for jitter/backlog before
+    # a channel is treated as genuinely stale, not just "hasn't republished
+    # yet this tick".
+    field_decay_staleness_threshold_sec: float = Field(
+        90.0, alias="FIELD_DECAY_STALENESS_THRESHOLD_SEC"
+    )
     biometrics_field_diffusion_rate: float = Field(1.0, alias="BIOMETRICS_FIELD_DIFFUSION_RATE")
     enable_transport_field_digestion: bool = Field(
         False,

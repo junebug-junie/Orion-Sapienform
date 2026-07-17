@@ -15,9 +15,20 @@ def run_digestion_tick(
     perturbations: list[Perturbation],
     decay_rate: float,
     diffusion_rate: float,
+    staleness_threshold_sec: float,
 ) -> FieldStateV1:
     apply_perturbations(state, perturbations)
-    apply_decay(state, decay_rate=decay_rate)
+    # now=state.generated_at, NOT datetime.now(): apply_perturbations() above
+    # already defaults to state.generated_at as its own source of truth (see
+    # that function's docstring), and worker.py sets state.generated_at = now
+    # immediately before calling this tick -- keeps decay's staleness check
+    # deterministic/replay-safe, no wall-clock call introduced here.
+    apply_decay(
+        state,
+        decay_rate=decay_rate,
+        now=state.generated_at,
+        staleness_threshold_sec=staleness_threshold_sec,
+    )
     apply_diffusion(state, diffusion_rate=diffusion_rate)
     apply_suppression(state)
     return state

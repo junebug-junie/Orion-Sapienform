@@ -67,6 +67,7 @@ def test_transport_perturbations_diffuse_to_transport_capability() -> None:
         perturbations=delta_to_perturbations(delta),
         decay_rate=1.0,
         diffusion_rate=1.0,
+        staleness_threshold_sec=90.0,
     )
     cap = field.capability_vectors.get("capability:transport") or {}
     assert cap.get("contract_pressure", 0.0) > 0.0

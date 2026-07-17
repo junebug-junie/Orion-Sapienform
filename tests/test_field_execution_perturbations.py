@@ -68,7 +68,13 @@ def test_execution_perturbations_use_replace_mode() -> None:
 
     # Apply first (maxed) delta then a second (low) delta in the same tick
     all_perturbations = delta_to_perturbations(delta_a) + delta_to_perturbations(delta_b)
-    field = run_digestion_tick(field, perturbations=all_perturbations, decay_rate=1.0, diffusion_rate=1.0)
+    field = run_digestion_tick(
+        field,
+        perturbations=all_perturbations,
+        decay_rate=1.0,
+        diffusion_rate=1.0,
+        staleness_threshold_sec=90.0,
+    )
 
     node = field.node_vectors.get("node:athena") or {}
     # replace mode: last write wins — execution_load should be 0.25, not 1.0
@@ -105,6 +111,7 @@ def test_execution_perturbations_diffuse_to_orchestration_capability() -> None:
         perturbations=delta_to_perturbations(delta),
         decay_rate=1.0,
         diffusion_rate=1.0,
+        staleness_threshold_sec=90.0,
     )
     cap = field.capability_vectors.get("capability:orchestration") or {}
     assert cap.get("execution_pressure", 0.0) > 0.0

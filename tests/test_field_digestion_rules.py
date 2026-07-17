@@ -28,7 +28,12 @@ def test_decay_fades_pressure_channels() -> None:
         capability_vectors={},
         edges=[],
     )
-    apply_decay(state, decay_rate=0.5)
+    apply_decay(
+        state,
+        decay_rate=0.5,
+        now=state.generated_at,
+        staleness_threshold_sec=90.0,
+    )
     assert state.node_vectors["node:atlas"]["gpu_pressure"] == 0.4
     assert state.node_vectors["node:atlas"]["availability"] == 1.0
 
@@ -63,7 +68,12 @@ def test_decay_covers_execution_and_transport_channels() -> None:
         },
         edges=[],
     )
-    apply_decay(state, decay_rate=0.92)
+    apply_decay(
+        state,
+        decay_rate=0.92,
+        now=state.generated_at,
+        staleness_threshold_sec=90.0,
+    )
     node = state.node_vectors["node:athena"]
     cap = state.capability_vectors["capability:orchestration"]
 
@@ -148,6 +158,7 @@ def test_reasoning_load_diffuses_to_orchestration() -> None:
         perturbations=[Perturbation(node_id="node:athena", channel="reasoning_load", intensity=1.0, label="test")],
         decay_rate=1.0,
         diffusion_rate=1.0,
+        staleness_threshold_sec=90.0,
     )
     cap = field.capability_vectors.get("capability:orchestration") or {}
     assert cap.get("reasoning_pressure", 0.0) > 0.0, "reasoning_load on athena must reach orchestration.reasoning_pressure"

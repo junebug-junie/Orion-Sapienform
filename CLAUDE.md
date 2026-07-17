@@ -314,6 +314,8 @@ Manual `checkin`/`heartbeat`/`add`/`checkout` calls above are still the right to
 
 Both heartbeats are best-effort and never fail the commit or the build they ride on — a board write error is swallowed, not surfaced as a failure of the underlying git/docker operation.
 
+**A separate, previously-undiscovered bug in `scripts/hooks/session_start_agent_board.py`/`session_stop_agent_board.py`** (the Claude-Code-specific SessionStart/Stop hooks, distinct from the git hooks above): confirmed live that these run with a process `cwd` fixed to wherever the session originally started (its own stdin payload's `cwd` field reported the shared/primary checkout even while real git work had been happening in a linked worktree for many turns) — it does not track `cd` calls a Bash tool makes mid-session, so `git rev-parse --show-toplevel` from that same fixed cwd resolved to the same wrong worktree every time, and `render_checkin_context` was additionally *writing* a spurious presence row under that wrong path on every SessionStart. Fixed with `agent_board_lib.resolve_current_identity()`: both hooks now read `session_id` from their own stdin payload and look up the most recently heartbeated presence row tagged with that same session_id instead of trusting their own cwd — `scripts/git_hooks/post-commit` and `scripts/safe_docker_build.sh` tag their heartbeats with `$CLAUDE_CODE_SESSION_ID` (inherited from the Claude Code Bash tool's own subprocess environment) precisely so this lookup has something real to find. Falls back to the old cwd-based resolution when no matching session_id is on the board yet (e.g. the very first hook fire in a session, before any git-hook-driven heartbeat has landed).
+
 Branch type examples:
 
 ```text

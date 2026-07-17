@@ -11,13 +11,19 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
-from agent_board_lib import board_config_from_env, current_worktree_identity, load_state  # noqa: E402
+from agent_board_lib import (  # noqa: E402
+    board_config_from_env,
+    load_state,
+    read_session_id_from_stdin_hook_payload,
+    resolve_current_identity,
+)
 
 
 def main() -> None:
+    session_id = read_session_id_from_stdin_hook_payload()
     try:
         cfg = board_config_from_env()
-        current = current_worktree_identity()["worktree_path"]
+        current = resolve_current_identity(cfg, session_id=session_id)["worktree_path"]
         state = load_state(cfg)
         open_items = [
             item for item in state.items.values()

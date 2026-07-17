@@ -217,14 +217,101 @@ def current_worktree_identity(cwd: Path | None = None) -> dict[str, str]:
     return {"worktree_path": str(root), "branch": branch}
 
 
+def _parse_timestamp(value: str) -> datetime:
+    try:
+        dt = datetime.fromisoformat(value)
+    except (ValueError, TypeError):
+        return datetime.min.replace(tzinfo=UTC)
+    if dt.tzinfo is None:
+        dt = dt.replace(tzinfo=UTC)
+    return dt
+
+
+def read_session_id_from_stdin_hook_payload(stream=None) -> str | None:
+    """Extract `session_id` from a Claude Code hook's own stdin JSON payload.
+
+    Shared by session_start_agent_board.py and session_stop_agent_board.py
+    (both previously duplicated this logic verbatim). Never raises and
+    never blocks past whatever the caller's stream naturally does -- skips
+    reading entirely when stdin is a live TTY (a human running the hook
+    script by hand to debug it, not the harness piping a payload in and
+    closing it), since `.read()` on an open TTY blocks until EOF/interrupt.
+    """
+    import sys as _sys
+
+    stream = stream if stream is not None else _sys.stdin
+    try:
+        if hasattr(stream, "isatty") and stream.isatty():
+            return None
+        raw = stream.read()
+    except Exception:
+        return None
+    if not raw.strip():
+        return None
+    try:
+        payload_in = json.loads(raw)
+    except (json.JSONDecodeError, TypeError):
+        return None
+    if not isinstance(payload_in, dict):
+        return None
+    session_id = payload_in.get("session_id")
+    return str(session_id) if session_id else None
+
+
+def resolve_current_identity(
+    config: BoardConfig,
+    *,
+    session_id: str | None = None,
+) -> dict[str, str]:
+    """Resolve the worktree identity to use for a board call.
+
+    Claude Code's SessionStart/Stop hooks run with a process cwd fixed to
+    the session's original project directory -- it does NOT track `cd`
+    calls a Bash tool makes mid-session (confirmed live: a Stop hook's own
+    stdin payload reported `cwd` as the shared/primary checkout even while
+    the agent's actual git work was happening in a linked worktree several
+    turns earlier). `git rev-parse --show-toplevel` from that same fixed
+    cwd resolves to the same wrong answer, so it can't be fixed by cwd
+    detection alone.
+
+    When `session_id` is given (the hook's own stdin payload carries one),
+    look up the most recently heartbeated presence row tagged with that
+    same session_id -- git-hook-driven heartbeats (`scripts/git_hooks/
+    post-commit`, `scripts/safe_docker_build.sh`) pass `$CLAUDE_CODE_SESSION_ID`
+    when set, and those DO run with the correct worktree cwd (they're
+    invoked by `git`/`docker`, not by the Claude Code harness's own hook
+    mechanism). Falls back to the normal git-rev-parse-based resolution if
+    no matching session_id is found yet (e.g. the very first hook fire in a
+    session, before any git-hook-driven heartbeat has landed).
+    """
+    if session_id:
+        state = load_state(config)
+        candidates = [
+            row for row in state.presence.values()
+            if row.get("session_id") == session_id and row.get("worktree_path")
+        ]
+        if candidates:
+            best = max(candidates, key=lambda row: _parse_timestamp(str(row.get("heartbeat_at") or "")))
+            return {
+                "worktree_path": str(best["worktree_path"]),
+                "branch": str(best.get("branch") or ""),
+            }
+    return current_worktree_identity()
+
+
 def upsert_presence(
     config: BoardConfig,
     *,
     summary: str | None = None,
     task: str | None = None,
     session_id: str | None = None,
+    worktree_path: str | None = None,
+    branch: str | None = None,
 ) -> dict[str, object]:
-    identity = current_worktree_identity()
+    if worktree_path is not None:
+        identity = {"worktree_path": worktree_path, "branch": branch or ""}
+    else:
+        identity = current_worktree_identity()
     payload: dict[str, object] = {
         "worktree_path": identity["worktree_path"],
         "branch": identity["branch"],
@@ -415,11 +502,16 @@ def _global_items(state: BoardState) -> list[dict[str, object]]:
     ]
 
 
-def render_checkin_context(config: BoardConfig) -> str:
-    identity = current_worktree_identity()
+def render_checkin_context(config: BoardConfig, *, session_id: str | None = None) -> str:
+    identity = resolve_current_identity(config, session_id=session_id)
     live = live_worktree_paths()
     state = reconcile_closed_worktrees(config, live_paths=live)
-    upsert_presence(config)
+    upsert_presence(
+        config,
+        session_id=session_id,
+        worktree_path=identity["worktree_path"],
+        branch=identity["branch"],
+    )
     state = load_state(config, live_worktrees=live)
     current = identity["worktree_path"]
     lines: list[str] = ["Agent workspace board"]

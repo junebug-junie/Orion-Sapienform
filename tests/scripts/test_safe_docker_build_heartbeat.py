@@ -89,6 +89,40 @@ def test_heartbeats_before_running_docker_compose(tmp_path: Path) -> None:
     assert "deploy:orion-fake-service" in listed.stdout
 
 
+def test_heartbeat_tags_claude_session_id_when_set(tmp_path: Path) -> None:
+    """The Stop/SessionStart hooks need a session_id-tagged presence row to
+    resolve the real worktree despite their own fixed process cwd (see
+    resolve_current_identity() in agent_board_lib.py) -- this only works if
+    the docker-build heartbeat actually passes $CLAUDE_CODE_SESSION_ID
+    through when Claude Code set it for the wrapper's own subprocess."""
+    worktree = _init_worktree_repo(tmp_path, "orion-fake-service")
+
+    fake_bin = tmp_path / "fake-bin"
+    fake_bin.mkdir()
+    _make_fake_docker(fake_bin)
+
+    board = tmp_path / "agent-board.jsonl"
+    env = {
+        **os.environ,
+        "PATH": f"{fake_bin}:{os.environ.get('PATH', '')}",
+        "ORION_AGENT_BOARD_PATH": str(board),
+        "CLAUDE_CODE_SESSION_ID": "sess-docker-456",
+    }
+
+    proc = subprocess.run(
+        ["sh", str(SCRIPT), "orion-fake-service", "up", "-d"],
+        cwd=worktree,
+        env=env,
+        capture_output=True,
+        text=True,
+        timeout=30,
+    )
+    assert proc.returncode == 0, proc.stderr
+
+    raw_events = board.read_text(encoding="utf-8")
+    assert '"session_id": "sess-docker-456"' in raw_events
+
+
 def test_never_fails_the_build_when_board_path_is_unwritable(tmp_path: Path) -> None:
     """The heartbeat is advisory-only -- an agent-board failure must never
     block a real deploy."""

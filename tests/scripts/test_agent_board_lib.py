@@ -19,6 +19,7 @@ from agent_board_lib import (  # noqa: E402
     load_state,
     reconcile_closed_worktrees,
     render_checkin_context,
+    resolve_current_identity,
     validate_item_payload,
 )
 
@@ -401,3 +402,96 @@ def test_reconcile_closed_worktrees_persists_closed_event(tmp_path: Path) -> Non
     persisted = load_state(cfg)
     assert persisted.presence["/repo/old"]["status"] == "closed"
     assert state.presence["/repo/old"]["status"] == "closed"
+
+
+def test_resolve_current_identity_finds_worktree_by_session_id(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Core regression coverage for the Claude-Code hook-cwd bug: a Stop/
+    SessionStart hook's own process cwd is fixed to wherever the session
+    originally started and does not track mid-session `cd` calls, so
+    resolving identity via git-rev-parse-from-cwd resolves to the wrong
+    worktree. A git-hook-driven heartbeat (which DOES run with correct cwd)
+    tags its presence row with a session_id; resolve_current_identity must
+    prefer that over the ambient cwd when a session_id is given."""
+    cfg = _config(tmp_path)
+    append_event(
+        cfg,
+        "presence_upserted",
+        {"worktree_path": "/repo/real-worktree", "branch": "feat/real", "session_id": "sess-1"},
+    )
+    monkeypatch.setattr(
+        "agent_board_lib.current_worktree_identity",
+        lambda: {"worktree_path": "/repo/wrong-fixed-cwd", "branch": "main"},
+    )
+
+    identity = resolve_current_identity(cfg, session_id="sess-1")
+
+    assert identity["worktree_path"] == "/repo/real-worktree"
+    assert identity["branch"] == "feat/real"
+
+
+def test_resolve_current_identity_picks_most_recent_when_session_touched_multiple_worktrees(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The same session_id can legitimately appear on multiple worktrees'
+    presence rows over a session's lifetime (an agent working across several
+    worktrees in one conversation) -- resolution must pick the most
+    recently heartbeated one, not just any match."""
+    cfg = _config(tmp_path)
+    append_event(
+        cfg,
+        "presence_upserted",
+        {
+            "worktree_path": "/repo/earlier-worktree",
+            "branch": "feat/earlier",
+            "session_id": "sess-2",
+            "heartbeat_at": "2026-07-17T10:00:00+00:00",
+        },
+    )
+    append_event(
+        cfg,
+        "presence_upserted",
+        {
+            "worktree_path": "/repo/later-worktree",
+            "branch": "feat/later",
+            "session_id": "sess-2",
+            "heartbeat_at": "2026-07-17T12:00:00+00:00",
+        },
+    )
+    monkeypatch.setattr(
+        "agent_board_lib.current_worktree_identity",
+        lambda: {"worktree_path": "/repo/wrong-fixed-cwd", "branch": "main"},
+    )
+
+    identity = resolve_current_identity(cfg, session_id="sess-2")
+
+    assert identity["worktree_path"] == "/repo/later-worktree"
+
+
+def test_resolve_current_identity_falls_back_to_cwd_when_no_session_match(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    cfg = _config(tmp_path)
+    monkeypatch.setattr(
+        "agent_board_lib.current_worktree_identity",
+        lambda: {"worktree_path": "/repo/fallback", "branch": "main"},
+    )
+
+    identity = resolve_current_identity(cfg, session_id="no-such-session")
+
+    assert identity["worktree_path"] == "/repo/fallback"
+
+
+def test_resolve_current_identity_falls_back_when_session_id_is_none(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    cfg = _config(tmp_path)
+    monkeypatch.setattr(
+        "agent_board_lib.current_worktree_identity",
+        lambda: {"worktree_path": "/repo/fallback", "branch": "main"},
+    )
+
+    identity = resolve_current_identity(cfg, session_id=None)
+
+    assert identity["worktree_path"] == "/repo/fallback"

@@ -40,6 +40,10 @@ CAPABILITY_DECAY_CHANNELS = {
 }
 
 
+def _aware_utc(dt: datetime) -> datetime:
+    return dt if dt.tzinfo else dt.replace(tzinfo=timezone.utc)
+
+
 def apply_decay(
     state: FieldStateV1,
     *,
@@ -56,26 +60,22 @@ def apply_decay(
     # mechanical sawtooth against the ~15-30s real biometrics publish cadence
     # (0.92^7 ~= 0.56 -- ~44% lost between two real publishes, then snapped
     # straight back up with zero memory of the decayed trajectory).
-    now_aware = now if now.tzinfo else now.replace(tzinfo=timezone.utc)
+    now_aware = _aware_utc(now)
     for node_id, vec in state.node_vectors.items():
         updated_at = state.node_vector_updated_at.get(node_id, {})
         for ch in NODE_DECAY_CHANNELS:
             if ch not in vec:
                 continue
             last_updated_at = updated_at.get(ch)
-            if last_updated_at is None:
-                # Never perturbed, or persisted from before this fix: safe
-                # default, decay as today.
-                vec[ch] = vec[ch] * decay_rate
-                continue
-            last_updated_aware = (
-                last_updated_at
-                if last_updated_at.tzinfo
-                else last_updated_at.replace(tzinfo=timezone.utc)
-            )
-            elapsed_sec = (now_aware - last_updated_aware).total_seconds()
-            if elapsed_sec < staleness_threshold_sec:
-                # Fresh: hold the value, skip decay this tick.
+            # Missing (never perturbed, or persisted from before this fix):
+            # safe default, decay as today. Present but still fresh (within
+            # staleness_threshold_sec of its last real write): hold, skip
+            # decay this tick. Otherwise (present and genuinely stale):
+            # decay as today.
+            is_fresh = last_updated_at is not None and (
+                now_aware - _aware_utc(last_updated_at)
+            ).total_seconds() < staleness_threshold_sec
+            if is_fresh:
                 continue
             vec[ch] = vec[ch] * decay_rate
     # NOTE (2026-07-12, found by code review on the diffusion memoryless-

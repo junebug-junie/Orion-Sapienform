@@ -20,6 +20,7 @@ from datetime import datetime, timedelta, timezone
 
 from app.digestion.decay import apply_decay
 from app.digestion.perturbation import apply_perturbations
+from app.digestion.suppression import apply_suppression
 from app.ingest.state_deltas import Perturbation
 
 from orion.schemas.field_state import FieldStateV1
@@ -159,3 +160,19 @@ def test_decay_resumes_normally_once_genuinely_stale() -> None:
         )
         expected = expected * DECAY_RATE
         assert state.node_vectors["node:atlas"]["thermal_pressure"] == expected
+
+
+def test_suppression_staleness_reset_records_node_vector_updated_at() -> None:
+    """staleness (services/orion-field-digester/app/digestion/suppression.py)
+    is a NODE_DECAY_CHANNELS entry but apply_suppression() writes it directly,
+    outside apply_perturbations() -- code review (2026-07-17) found this
+    bypassed node_vector_updated_at tracking, same class of gap as
+    field_coherence_warning in worker.py. Currently inert (decaying 0.0 is a
+    no-op) but fixed for consistency: verifies the reset value gets a
+    matching node_vector_updated_at stamp."""
+    state = _state(
+        node_vectors={"node:circe": {"expected_offline_suppression": 1.0, "staleness": 0.5}}
+    )
+    apply_suppression(state)
+    assert state.node_vectors["node:circe"]["staleness"] == 0.0
+    assert state.node_vector_updated_at["node:circe"]["staleness"] == state.generated_at

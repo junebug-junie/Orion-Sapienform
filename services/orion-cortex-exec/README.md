@@ -135,6 +135,32 @@ Fail-open: `[]` on any DB/parse failure, never raises.
 pytest services/orion-cortex-exec/tests/test_chat_stance_autonomy_v2.py -q
 ```
 
+### Golden concepts in chat evidence (always on)
+
+`chat_stance.py`'s `CognitiveUnificationLayer` runs an always-on (`pull_on_cold=True`)
+`concept_induction` producer lane, backed by
+`orion/substrate/relational/adapters/concept_induction_ctx.py`. It reads golden concepts
+(Orion, Juniper, the Orion↔Juniper relationship) and organically-grown topic-foundry
+concepts from the shared FalkorDB substrate graph (`SUBSTRATE_STORE_BACKEND=falkor`,
+`FALKORDB_URI`, `FALKORDB_SUBSTRATE_GRAPH=orion_substrate` in `.env` — same instance
+`orion-hub` seeds/decays and `orion-recall` reads from) via `query_concept_region()`,
+filtered to `anchor_scope in ("orion", "relationship", "juniper")` and bucketed into
+`concept_type` (`self` for orion/juniper, `relationship` for the relationship anchor).
+
+Before PR #1128 this adapter read a dead spaCy pipeline
+(`orion.spark.concept_induction.profile_repository`) that always returned `None` — the
+producer lane existed and was correctly wired end-to-end, but had nothing real behind it.
+Uses a lazily-initialized module-level store singleton (avoids a circular import with
+`chat_stance.py`, which lazily imports this adapter) and never raises — a construction or
+query failure degrades to `None`, same as an empty result.
+
+```bash
+pytest orion/substrate/relational/tests/test_concept_induction_ctx_adapter.py -q
+```
+
+See `services/orion-hub/README.md` § 5.5 for the full concept-atlas pipeline this reads
+from (seeding, decay, typed relation classification, autonomous ingestion).
+
 ### drive_state.v1 visibility on chat stance (default off)
 
 | Variable | Default (`.env_example`) | Description |

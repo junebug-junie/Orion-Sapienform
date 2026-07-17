@@ -102,6 +102,18 @@ def prune_successful_snapshots(snapshots_dir: Path, *, keep: int) -> list[str]:
     return removed
 
 
+def cleanup_incomplete_snapshots(snapshots_dir: Path) -> list[str]:
+    """Remove leftover .incomplete-* dirs from failed or interrupted runs."""
+    if not snapshots_dir.exists():
+        return []
+    removed: list[str] = []
+    for path in sorted(snapshots_dir.iterdir()):
+        if path.is_dir() and path.name.startswith(".incomplete-"):
+            shutil.rmtree(path)
+            removed.append(str(path))
+    return removed
+
+
 def _coerce_datetime(value: str | dt.datetime | None) -> dt.datetime:
     if value is None:
         return dt.datetime.now(dt.timezone.utc)
@@ -279,6 +291,7 @@ def run_backup(
     try:
         paths.snapshots_dir.mkdir(parents=True, exist_ok=True)
         paths.log_path.parent.mkdir(parents=True, exist_ok=True)
+        cleanup_incomplete_snapshots(paths.snapshots_dir)
         previous = find_previous_snapshot(paths)
         cmd = build_rsync_command(cfg, paths, previous_snapshot=previous)
         rsync_exit: int | None = None
@@ -288,8 +301,6 @@ def run_backup(
         try:
             if paths.final_snapshot.exists():
                 raise RuntimeError(f"snapshot already exists: {paths.final_snapshot}")
-            if paths.incomplete_snapshot.exists():
-                shutil.rmtree(paths.incomplete_snapshot)
             paths.incomplete_snapshot.mkdir(parents=True)
             rsync_exit = process_runner(cmd, paths.log_path)
             if rsync_exit != 0:

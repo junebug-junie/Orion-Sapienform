@@ -12,6 +12,7 @@ from scripts.orion_backup_mnt_scripts import (
     acquire_lock,
     build_paths,
     build_rsync_command,
+    cleanup_incomplete_snapshots,
     find_previous_snapshot,
     prune_successful_snapshots,
     run_backup,
@@ -255,6 +256,85 @@ def test_run_backup_writes_failure_evidence_before_notification(tmp_path: Path) 
     assert Path(outcome.manifest_path).exists()
 
 
+def test_run_backup_failure_preserves_previous_latest_symlink(tmp_path: Path) -> None:
+    source = tmp_path / "scripts"
+    target = tmp_path / "storage-warm"
+    source.mkdir()
+    target.mkdir()
+    cfg = BackupConfig(source_path=source, storage_warm_path=target, node_name="node-a", require_mounts=False)
+
+    def fake_ok(cmd: list[str], log_path: Path) -> int:
+        destination = Path(cmd[-1].rstrip("/"))
+        destination.mkdir(parents=True, exist_ok=True)
+        (destination / "hello.txt").write_text("ok\n")
+        log_path.write_text("ok\n")
+        return 0
+
+    first = run_backup(cfg, now="2026-05-09T22:00:00+00:00", process_runner=fake_ok)
+    assert first.status == "success"
+    previous_snapshot = Path(first.snapshot_path or "")
+    latest = target / "backups" / "node-a" / "mnt-scripts" / "latest"
+    assert latest.resolve() == previous_snapshot.resolve()
+
+    def fake_fail(cmd: list[str], log_path: Path) -> int:
+        log_path.parent.mkdir(parents=True, exist_ok=True)
+        log_path.write_text("rsync failed\n")
+        return 23
+
+    second = run_backup(cfg, now="2026-05-09T22:01:00+00:00", process_runner=fake_fail)
+    assert second.status == "failure"
+    assert latest.is_symlink()
+    assert latest.resolve() == previous_snapshot.resolve()
+
+
+def test_run_backup_cleans_stale_incomplete_dirs(tmp_path: Path) -> None:
+    source = tmp_path / "scripts"
+    target = tmp_path / "storage-warm"
+    source.mkdir()
+    target.mkdir()
+    snapshots = target / "backups" / "node-a" / "mnt-scripts" / "snapshots"
+    snapshots.mkdir(parents=True)
+    stale = snapshots / ".incomplete-old-run"
+    stale.mkdir()
+    (stale / "partial.txt").write_text("leftover\n")
+    cfg = BackupConfig(source_path=source, storage_warm_path=target, node_name="node-a", require_mounts=False)
+
+    def fake_run(cmd: list[str], log_path: Path) -> int:
+        destination = Path(cmd[-1].rstrip("/"))
+        destination.mkdir(parents=True, exist_ok=True)
+        (destination / "hello.txt").write_text("world\n")
+        log_path.write_text("ok\n")
+        return 0
+
+    outcome = run_backup(cfg, now="2026-05-09T22:00:00+00:00", process_runner=fake_run)
+
+    assert outcome.status == "success"
+    assert not stale.exists()
+    assert cleanup_incomplete_snapshots(snapshots) == []
+
+
+def test_cli_dry_run_allows_non_mount_fixture_paths(tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
+    from scripts.orion_backup_mnt_scripts import main
+
+    source = tmp_path / "scripts"
+    target = tmp_path / "storage-warm"
+    source.mkdir()
+    target.mkdir()
+
+    rc = main([
+        "--source", str(source),
+        "--storage-warm", str(target),
+        "--node-name", "node-a",
+        "--no-require-mounts",
+        "--dry-run",
+    ])
+
+    assert rc == 0
+    assert '"dry_run": true' in capsys.readouterr().out
+    lock_path = target / "backups" / "node-a" / "mnt-scripts" / "backup.lock"
+    assert not lock_path.exists()
+
+
 def test_prune_successful_snapshots_keeps_latest_14(tmp_path: Path) -> None:
     snapshots = tmp_path / "snapshots"
     snapshots.mkdir()
@@ -341,23 +421,3 @@ def test_send_failure_notification_message_includes_run_context(
     assert target_root in message
     assert "2026-05-09T22-00-00Z-12345" in message
     assert "rsync exited with 23" in message
-
-
-def test_cli_dry_run_allows_non_mount_fixture_paths(tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
-    from scripts.orion_backup_mnt_scripts import main
-
-    source = tmp_path / "scripts"
-    target = tmp_path / "storage-warm"
-    source.mkdir()
-    target.mkdir()
-
-    rc = main([
-        "--source", str(source),
-        "--storage-warm", str(target),
-        "--node-name", "node-a",
-        "--no-require-mounts",
-        "--dry-run",
-    ])
-
-    assert rc == 0
-    assert '"dry_run": true' in capsys.readouterr().out

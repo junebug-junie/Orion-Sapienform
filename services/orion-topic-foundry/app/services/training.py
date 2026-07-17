@@ -15,6 +15,10 @@ try:
     from hdbscan import HDBSCAN
 except ImportError:  # pragma: no cover - exercised in minimal test envs
     HDBSCAN = None
+try:
+    from umap import UMAP
+except ImportError:  # pragma: no cover - exercised in minimal test envs
+    UMAP = None
 
 from app.models import DatasetSpec, EnrichmentSpec, ModelSpec, RunRecord, RunSpecSnapshot, RunTrainRequest, SegmentRecord, WindowingSpec
 from app.services.data_access import fetch_dataset_rows
@@ -35,6 +39,11 @@ logger = logging.getLogger("topic-foundry.training")
 def _require_hdbscan() -> None:
     if HDBSCAN is None:
         raise RuntimeError("hdbscan dependency is required for Topic Foundry training runtime")
+
+
+def _require_umap() -> None:
+    if UMAP is None:
+        raise RuntimeError("umap-learn dependency is required for Topic Foundry training runtime")
 
 
 def _parse_timestamp(value: Any) -> Optional[datetime]:
@@ -188,8 +197,10 @@ def _run_training(
         embed_secs = time.monotonic() - embed_start
 
         cluster_start = time.monotonic()
+        reducer = _build_reducer(run.specs.model, n_samples=len(embeddings))
+        cluster_input = reducer.fit_transform(embeddings) if reducer is not None else embeddings
         clusterer = _build_clusterer(run.specs.model)
-        labels = clusterer.fit_predict(embeddings)
+        labels = clusterer.fit_predict(cluster_input)
         probabilities = getattr(clusterer, "probabilities_", None)
         cluster_secs = time.monotonic() - cluster_start
 
@@ -212,6 +223,7 @@ def _run_training(
             clusterer,
             embedder,
             stats,
+            reducer,
         )
 
         segment_records = []
@@ -362,12 +374,75 @@ def _prepare_segments(run: RunRecord, payload: RunTrainRequest) -> tuple[List[Ro
     return segments, blocks_generated
 
 
+# Keys in ModelSpec.params reserved for _build_reducer (UMAP), not forwarded to
+# HDBSCAN. HDBSCAN's constructor accepts **kwargs and stores anything it
+# doesn't recognize in self._metric_kwargs, which gets forwarded unconditionally
+# into the actual distance computation at fit time (pairwise_distances/KDTree/
+# BallTree) -- an unrecognized kwarg there raises TypeError, not a clean
+# constructor-level rejection. Without this exclusion, using the documented
+# umap_* override mechanism (or `random_state`, which HDBSCAN's constructor
+# does not accept at all) would crash clusterer.fit_predict() the moment an
+# operator actually used it.
+_UMAP_RESERVED_PARAM_KEYS = frozenset(
+    {"umap_n_neighbors", "umap_n_components", "umap_min_dist", "umap_metric", "random_state"}
+)
+
+
 def _build_clusterer(spec: ModelSpec) -> HDBSCAN:
     _require_hdbscan()
     params = {"min_cluster_size": spec.min_cluster_size, "metric": spec.metric}
-    params.update(spec.params)
+    params.update({k: v for k, v in spec.params.items() if k not in _UMAP_RESERVED_PARAM_KEYS})
     params.setdefault("prediction_data", True)
     return HDBSCAN(**params)
+
+
+def _build_reducer(spec: ModelSpec, *, n_samples: int) -> Optional["UMAP"]:
+    """UMAP dimensionality reduction before HDBSCAN clustering.
+
+    Standard practice for embedding-based topic clustering (the same
+    UMAP->HDBSCAN pipeline `app/topic_engine.py::build_topic_engine` already
+    implements correctly, but for a different code path -- this service's
+    real `/runs/train` training flow went straight from raw high-dimensional
+    embeddings into HDBSCAN with no reduction step at all). HDBSCAN's
+    density-based clustering degrades badly in raw high-dimensional
+    embedding space (curse of dimensionality: most points end up roughly
+    equidistant, so density differences HDBSCAN relies on wash out) --
+    confirmed live: a real 654-segment run against this un-reduced path
+    produced only 2 clusters at 63% outliers. UMAP's `n_components`-D
+    output is the space HDBSCAN actually clusters; `metric="cosine"`
+    (UMAP's default here, unlike HDBSCAN's own euclidean default) is what
+    text embeddings are designed to be compared with.
+
+    Params come from `spec.params` (matching `_build_clusterer`'s override
+    convention -- `umap_n_neighbors`/`umap_n_components`/`umap_min_dist`/
+    `umap_metric`) falling back to this service's `TOPIC_FOUNDRY_UMAP_*`
+    settings, so no `ModelSpec` schema change is needed.
+
+    `n_neighbors` is clamped to `n_samples - 1` (UMAP requires strictly
+    fewer neighbors than samples; raises otherwise) -- this keeps small
+    runs (a handful of segments) safe rather than only working at the
+    ~15-neighbor scale a full production run has. Returns `None` (caller
+    skips reduction, clusters on raw embeddings) if `n_samples` is too
+    small for UMAP to run meaningfully (fewer than 4 points).
+    """
+    if n_samples < 4:
+        # Below UMAP's minimum meaningful sample size: skip reduction, caller
+        # falls back to clustering on raw embeddings. Checked before
+        # _require_umap() so a tiny/debug run never needs umap-learn
+        # installed to take this branch.
+        return None
+    _require_umap()
+    n_neighbors = int(spec.params.get("umap_n_neighbors", settings.topic_foundry_umap_n_neighbors))
+    n_neighbors = max(2, min(n_neighbors, n_samples - 1))
+    n_components = int(spec.params.get("umap_n_components", settings.topic_foundry_umap_n_components))
+    n_components = max(2, min(n_components, n_samples - 2))
+    return UMAP(
+        n_neighbors=n_neighbors,
+        n_components=n_components,
+        min_dist=float(spec.params.get("umap_min_dist", settings.topic_foundry_umap_min_dist)),
+        metric=str(spec.params.get("umap_metric", settings.topic_foundry_umap_metric)),
+        random_state=int(spec.params.get("random_state", settings.topic_foundry_random_state)),
+    )
 
 
 def _compute_stats(labels: np.ndarray, segments: List[RowBlock]) -> Dict[str, Any]:
@@ -395,6 +470,7 @@ def _write_artifacts(
     clusterer: HDBSCAN,
     embedder: VectorHostEmbeddingProvider,
     stats: Dict[str, Any],
+    reducer: Optional["UMAP"] = None,
 ) -> Dict[str, Any]:
     base_dir = Path(settings.topic_foundry_model_dir)
     model_name = model_row["name"]
@@ -407,6 +483,20 @@ def _write_artifacts(
     run_dir.mkdir(parents=True, exist_ok=True)
 
     dump(clusterer, model_dir / "clusterer.joblib")
+    # Persist the fitted UMAP reducer alongside the clusterer whenever one was
+    # used to fit it -- drift.py's approximate_predict() must transform new
+    # embeddings through the SAME reducer before feeding them to the
+    # clusterer (it was fit on reducer.n_components-D UMAP output, not the
+    # raw embedding space). Without this, drift.py's own fresh embeddings
+    # (still raw/high-dimensional) would hit a space mismatch against a
+    # clusterer fit on reduced space -- silently caught by drift.py's own
+    # broad except, so drift detection would just quietly stop producing any
+    # signal for every model trained with reduction, with no visible error.
+    # No reducer.joblib for models trained with reduction skipped (e.g. tiny
+    # runs below the n_samples floor in _build_reducer) -- drift.py must
+    # treat a missing file as "no reduction was used", not an error.
+    if reducer is not None:
+        dump(reducer, model_dir / "reducer.joblib")
 
     model_meta = {
         "model_id": model_row["model_id"],

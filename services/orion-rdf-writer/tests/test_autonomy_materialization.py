@@ -153,6 +153,32 @@ def test_drives_audit_channel_not_in_default_subscriptions():
     assert "orion:memory:drives:audit" not in channels
 
 
+def test_chat_history_channels_not_in_default_subscriptions():
+    """rdf-writer must not subscribe to orion:chat:history:turn or
+    orion:chat:history:log by default (2026-07-17): both are Postgres-only via
+    orion-sql-writer (chat_message, chat_history_log) -- the RDF copy covered
+    only ~11-18% of real chat volume, live-checked."""
+    channels = settings_mod.Settings(ORION_BUS_URL="redis://example.test/0").get_all_subscribe_channels()
+    assert "orion:chat:history:turn" not in channels
+    assert "orion:chat:history:log" not in channels
+
+
+def test_chat_history_dispatch_is_quiet_no_op():
+    """The rdf_builder dispatch must treat chat.history as unknown (quiet no-op)."""
+    nt, graph_name = build_triples_from_envelope("chat.history", {"session_id": "s1", "id": "t1"})
+    assert nt is None
+    assert graph_name is None
+
+
+def test_chat_history_message_dispatch_is_quiet_no_op():
+    """The rdf_builder dispatch must treat chat.history.message.v1 as unknown (quiet no-op)."""
+    nt, graph_name = build_triples_from_envelope(
+        "chat.history.message.v1", {"session_id": "s1", "message_id": "m1"}
+    )
+    assert nt is None
+    assert graph_name is None
+
+
 def test_goal_materialization_writes_proposal_status_and_base():
     payload = {
         "artifact_id": "goal-new",

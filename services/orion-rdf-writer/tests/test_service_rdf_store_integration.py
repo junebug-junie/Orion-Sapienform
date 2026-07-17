@@ -65,8 +65,6 @@ def svc_sync(monkeypatch: pytest.MonkeyPatch, tmp_path: Path):
 @pytest.mark.parametrize(
     "kind",
     [
-        "chat.history",
-        "chat.history.message.v1",
         "cognition.trace",
         "metacognitive.trace.v1",
         "tags.enriched",

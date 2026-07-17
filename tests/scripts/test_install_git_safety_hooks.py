@@ -1,6 +1,8 @@
 from __future__ import annotations
 
+import os
 import subprocess
+import sys
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -18,41 +20,40 @@ def _run_installer(target: Path) -> subprocess.CompletedProcess:
     )
 
 
-def test_installs_both_hooks(tmp_path: Path) -> None:
+ALL_HOOKS = ("pre-commit", "post-merge", "post-commit")
+
+
+def test_installs_all_hooks(tmp_path: Path) -> None:
     repo = tmp_path / "repo"
     _init_repo(repo)
     proc = _run_installer(repo)
     assert proc.returncode == 0, proc.stderr
-    pre_commit = repo / ".git" / "hooks" / "pre-commit"
-    post_merge = repo / ".git" / "hooks" / "post-merge"
-    assert pre_commit.exists()
-    assert post_merge.exists()
-    assert "orion-git-safety-guard" in pre_commit.read_text(encoding="utf-8")
-    assert "orion-git-safety-guard" in post_merge.read_text(encoding="utf-8")
+    for name in ALL_HOOKS:
+        hook = repo / ".git" / "hooks" / name
+        assert hook.exists()
+        assert "orion-git-safety-guard" in hook.read_text(encoding="utf-8")
 
 
-def test_both_hooks_executable(tmp_path: Path) -> None:
+def test_all_hooks_executable(tmp_path: Path) -> None:
     repo = tmp_path / "repo"
     _init_repo(repo)
     _run_installer(repo)
-    import os
 
-    for name in ("pre-commit", "post-merge"):
+    for name in ALL_HOOKS:
         hook = repo / ".git" / "hooks" / name
         assert os.access(hook, os.X_OK)
 
 
-def test_rerun_refreshes_both_without_duplicating_marker(tmp_path: Path) -> None:
+def test_rerun_refreshes_all_without_duplicating_marker(tmp_path: Path) -> None:
     repo = tmp_path / "repo"
     _init_repo(repo)
     _run_installer(repo)
     proc = _run_installer(repo)
     assert proc.returncode == 0
     assert "refreshed" in proc.stdout
-    pre_commit = repo / ".git" / "hooks" / "pre-commit"
-    post_merge = repo / ".git" / "hooks" / "post-merge"
-    assert pre_commit.read_text(encoding="utf-8").count("# orion-git-safety-guard") == 1
-    assert post_merge.read_text(encoding="utf-8").count("# orion-git-safety-guard") == 1
+    for name in ALL_HOOKS:
+        hook = repo / ".git" / "hooks" / name
+        assert hook.read_text(encoding="utf-8").count("# orion-git-safety-guard") == 1
 
 
 def test_preserves_existing_foreign_hook_as_backup(tmp_path: Path) -> None:
@@ -68,3 +69,107 @@ def test_preserves_existing_foreign_hook_as_backup(tmp_path: Path) -> None:
     assert backup.exists()
     assert "unrelated-hook" in backup.read_text(encoding="utf-8")
     assert "orion-git-safety-guard" in (hooks_dir / "post-merge").read_text(encoding="utf-8")
+
+
+def test_post_commit_appends_to_existing_foreign_hook_without_backup(tmp_path: Path) -> None:
+    """post-commit is a hook name real tooling in this repo already claims --
+    `graphify hook install` ships a post-commit hook that rebuilds the
+    knowledge graph after every commit, confirmed live against this repo's
+    own primary checkout during development of this feature. Installing our
+    hook there the way pre-commit/post-merge install (overwrite + backup)
+    would silently disable that feature on first install. This must append
+    instead: the foreign hook's own content stays in place, unbackuped
+    (nothing was destroyed), and runs before ours since git executes the
+    hook script top-to-bottom."""
+    repo = tmp_path / "repo"
+    _init_repo(repo)
+    hooks_dir = repo / ".git" / "hooks"
+    hooks_dir.mkdir(exist_ok=True)
+    (hooks_dir / "post-commit").write_text(
+        "#!/bin/sh\necho some-other-tools-post-commit-hook-ran\n", encoding="utf-8"
+    )
+    (hooks_dir / "post-commit").chmod(0o755)
+
+    proc = _run_installer(repo)
+    assert proc.returncode == 0, proc.stderr
+
+    backup = hooks_dir / "post-commit.pre-orion-safety.bak"
+    assert not backup.exists()
+    text = (hooks_dir / "post-commit").read_text(encoding="utf-8")
+    assert "some-other-tools-post-commit-hook-ran" in text
+    assert "orion-git-safety-guard" in text
+    assert text.index("some-other-tools-post-commit-hook-ran") < text.index("orion-git-safety-guard")
+
+    # Re-running must refresh only our own trailing block -- the foreign
+    # hook's content must not be duplicated or disturbed.
+    proc2 = _run_installer(repo)
+    assert proc2.returncode == 0, proc2.stderr
+    text2 = (hooks_dir / "post-commit").read_text(encoding="utf-8")
+    assert text2.count("some-other-tools-post-commit-hook-ran") == 1
+    assert text2.count("# orion-git-safety-guard") == 1
+    assert not backup.exists()
+
+
+def test_installed_post_commit_hook_heartbeats_the_agent_board(tmp_path: Path) -> None:
+    """End-to-end: a real `git commit` in a repo with the installed hook must
+    write a presence heartbeat to the agent board carrying the commit's own
+    subject line -- this is the actual coupling this hook exists for, not
+    just "the file got copied somewhere".
+
+    Two things this repo's own conventions require of the fixture:
+    - the hook looks for a sibling `scripts/agent_board.py` in the repo it's
+      installed into (same pattern as the existing post-merge hook's
+      `scripts/worktree_status.py` lookup), so the fake repo needs a real
+      copy of it, not just an empty tree;
+    - the installed pre-commit hook itself refuses commits made directly in
+      a repo with no linked worktree (that's what "shared/primary checkout"
+      collapses to for a solo repo) -- so the actual commit under test has
+      to happen from a linked worktree, matching how this repo is meant to
+      be used, not by working around the guard.
+    """
+    primary = tmp_path / "primary"
+    _init_repo(primary)
+    subprocess.run(["git", "config", "user.email", "test@example.com"], cwd=primary, check=True)
+    subprocess.run(["git", "config", "user.name", "Test"], cwd=primary, check=True)
+
+    board_scripts_dir = primary / "scripts"
+    board_scripts_dir.mkdir()
+    for name in ("agent_board.py", "agent_board_lib.py", "worktree_lib.py"):
+        (board_scripts_dir / name).write_text(
+            (ROOT / "scripts" / name).read_text(encoding="utf-8"), encoding="utf-8"
+        )
+    subprocess.run(["git", "add", "-A"], cwd=primary, check=True)
+    subprocess.run(["git", "commit", "-q", "-m", "init"], cwd=primary, check=True)
+
+    proc = _run_installer(primary)
+    assert proc.returncode == 0, proc.stderr
+
+    worktree = tmp_path / "worktree"
+    subprocess.run(
+        ["git", "worktree", "add", "-q", str(worktree), "-b", "chore/test-commit"],
+        cwd=primary,
+        check=True,
+    )
+
+    board = tmp_path / "agent-board.jsonl"
+    env = {**os.environ, "ORION_AGENT_BOARD_PATH": str(board)}
+
+    (worktree / "f.txt").write_text("x", encoding="utf-8")
+    subprocess.run(["git", "add", "f.txt"], cwd=worktree, check=True, env=env)
+    subprocess.run(
+        ["git", "commit", "-q", "-m", "test: verify post-commit board heartbeat"],
+        cwd=worktree,
+        check=True,
+        env=env,
+    )
+
+    listed = subprocess.run(
+        [sys.executable, str(ROOT / "scripts" / "agent_board.py"), "list", "--all"],
+        cwd=worktree,
+        env=env,
+        capture_output=True,
+        text=True,
+        timeout=30,
+    )
+    assert listed.returncode == 0, listed.stderr
+    assert "test: verify post-commit board heartbeat" in listed.stdout

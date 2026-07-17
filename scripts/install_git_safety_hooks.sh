@@ -1,8 +1,9 @@
 #!/bin/sh
 # orion-git-safety-guard installer
 #
-# Installs scripts/git_hooks/pre-commit (the shared/primary-checkout guard)
-# and scripts/git_hooks/post-merge (the worktree-hygiene nudge) into the
+# Installs scripts/git_hooks/pre-commit (the shared/primary-checkout guard),
+# scripts/git_hooks/post-merge (the worktree-hygiene nudge), and
+# scripts/git_hooks/post-commit (the agent-board heartbeat nudge) into the
 # correct git hooks directory for a repo -- respecting core.hooksPath when
 # it's configured, and resolving linked-worktree hook locations correctly
 # (hooks live in the shared/common git dir, not per-worktree).
@@ -74,10 +75,10 @@ else
     HOOKS_DIR="$COMMON_DIR/hooks"
 fi
 
-# Validate both source hooks exist BEFORE any mutation (mkdir -p below) --
+# Validate all source hooks exist BEFORE any mutation (mkdir -p below) --
 # failing here must not leave a side effect like a freshly-created, empty
 # custom hooks directory behind.
-for _hook_name in pre-commit post-merge; do
+for _hook_name in pre-commit post-merge post-commit; do
     if [ ! -f "$SCRIPT_DIR/git_hooks/$_hook_name" ]; then
         echo "[install-git-safety-hooks] ERROR: source hook not found at $SCRIPT_DIR/git_hooks/$_hook_name" >&2
         exit 1
@@ -127,5 +128,71 @@ install_one_hook() {
     echo "[install-git-safety-hooks] installed orion git-safety $HOOK_NAME hook at $DEST_HOOK"
 }
 
+install_post_commit_hook() {
+    # post-commit gets its own install path instead of install_one_hook's
+    # overwrite-and-backup behavior: unlike pre-commit/post-merge, post-commit
+    # is a hook name real, independently-installed tooling in this repo
+    # already uses (`graphify hook install` ships a post-commit hook that
+    # rebuilds the knowledge graph after every commit). Running install_one_hook
+    # here would silently disable that on first install -- confirmed live
+    # against this repo's own primary checkout, not a hypothetical. Appending
+    # our marked block to the end of whatever is already there means both
+    # hooks keep running: git executes one hook script top-to-bottom, so any
+    # foreign hook's own logic runs first, then ours.
+    local SOURCE_HOOK="$SCRIPT_DIR/git_hooks/post-commit"
+    local DEST_HOOK="$HOOKS_DIR/post-commit"
+    local MARKER="# orion-git-safety-guard"
+
+    if [ -L "$DEST_HOOK" ]; then
+        echo "[install-git-safety-hooks] ERROR: $DEST_HOOK is a symlink (-> $(readlink "$DEST_HOOK" 2>/dev/null || echo '?'))." >&2
+        echo "  Refusing to write through it. Remove the symlink or point it at" >&2
+        echo "  $SOURCE_HOOK yourself, then re-run this script." >&2
+        exit 1
+    fi
+
+    if [ ! -f "$DEST_HOOK" ]; then
+        cp "$SOURCE_HOOK" "$DEST_HOOK"
+        chmod +x "$DEST_HOOK"
+        echo "[install-git-safety-hooks] installed orion git-safety post-commit hook at $DEST_HOOK"
+        return 0
+    fi
+
+    if grep -qF "$MARKER" "$DEST_HOOK" 2>/dev/null; then
+        # Our block is already present and, by construction (see the append
+        # branch below), always runs from the marker line to EOF -- refresh
+        # just that trailing block, leaving anything before it (our own
+        # earlier install, or a foreign hook's real content) untouched.
+        local MARKER_LINE
+        MARKER_LINE=$(grep -nF "$MARKER" "$DEST_HOOK" | head -1 | cut -d: -f1)
+        local TMP_FILE
+        TMP_FILE=$(mktemp)
+        if [ "$MARKER_LINE" -gt 1 ]; then
+            head -n "$((MARKER_LINE - 1))" "$DEST_HOOK" > "$TMP_FILE"
+        else
+            : > "$TMP_FILE"
+        fi
+        {
+            cat "$TMP_FILE"
+            echo ""
+            tail -n +2 "$SOURCE_HOOK"
+        } > "$DEST_HOOK.tmp"
+        rm -f "$TMP_FILE"
+        mv "$DEST_HOOK.tmp" "$DEST_HOOK"
+        chmod +x "$DEST_HOOK"
+        echo "[install-git-safety-hooks] refreshed orion git-safety post-commit hook block at $DEST_HOOK (any other hook content preserved)"
+        return 0
+    fi
+
+    # Foreign hook with no orion block yet -- append ours rather than
+    # overwriting/backing-up.
+    {
+        echo ""
+        tail -n +2 "$SOURCE_HOOK"
+    } >> "$DEST_HOOK"
+    chmod +x "$DEST_HOOK"
+    echo "[install-git-safety-hooks] appended orion git-safety post-commit hook block to existing $DEST_HOOK (existing hook content preserved, not backed up or replaced)"
+}
+
 install_one_hook pre-commit
 install_one_hook post-merge
+install_post_commit_hook

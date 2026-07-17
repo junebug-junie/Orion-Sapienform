@@ -283,6 +283,124 @@ def test_competition_tension_alone_is_pure_decay() -> None:
     assert all(with_tension[k] < start[k] for k in DRIVE_KEYS)  # decay happened
 
 
+def test_fold_batch_no_collapse_at_shared_clamp_boundary() -> None:
+    """The core collapse-fix proof (2026-07-17 fold-batch clamp collapse bug).
+
+    Live production symptom: coherence/capability/predictive pinned to a
+    byte-identical mid-range value (0.45036942460343243) across consecutive
+    drive_audits rows. That is only possible under the OLD sum-then-clamp
+    design: impact_sum[drive] accumulates unbounded across a whole fold
+    batch, then gets clamped ONCE at the end to [-1, 1]. Once that clamp
+    saturates to exactly 1.0, `clamp01(base + 1.0*(1-base)) == 1.0`
+    regardless of `base` -- any drive whose batch-summed impact exceeds the
+    clamp lands on the exact same final value as every other drive that also
+    exceeded it, independent of how much it exceeded by.
+
+    Reproduction, hand-verified (see
+    docs/superpowers/specs/2026-07-17-drive-engine-fold-batch-clamp-collapse-
+    fix-design.md):
+
+    Both drives start at the same mid-range base pressure (0.3, decay=1.0
+    since elapsed=0). Each contributing tension has magnitude=1.0 and
+    weight=0.3 -> per-event impulse = 0.3, already well inside [-1, 1] on
+    its own (a single event never triggers the old bug).
+
+    "coherence" receives 4 such tensions in the batch; "capability" receives
+    8. Under the OLD code:
+        impact_sum[coherence] = 4 * 0.3 = 1.2  -> clamp_signed -> 1.0
+        impact_sum[capability] = 8 * 0.3 = 2.4 -> clamp_signed -> 1.0
+    Both clamped impulses are exactly 1.0, so BOTH drives collapse to the
+    identical final value clamp01(0.3 + 1.0*(1 - 0.3)) == 1.0, regardless of
+    N=4 vs N=8 -- the exact collapse signature from production (a shared
+    value that doesn't depend on how many tensions actually contributed).
+
+    Under the NEW sequential code, each event's impulse (0.3) is applied one
+    at a time via the diminishing-headroom recurrence
+    p = clamp01(p + 0.3*(1-p)):
+        N=4: 0.3 -> 0.51 -> 0.657 -> 0.7599 -> 0.83193
+        N=8: continuing the same recurrence for 4 more events -> 0.959646393
+    Both land in a genuinely high/mid-high range (not at the exact 0/1
+    ceiling) and, critically, they DIFFER -- proving the batch no longer
+    collapses distinct drives to an identical value.
+    """
+    engine = _leaky_engine()
+    coherence_tensions = [_tension({"coherence": 0.3}, magnitude=1.0) for _ in range(4)]
+    capability_tensions = [_tension({"capability": 0.3}, magnitude=1.0) for _ in range(8)]
+
+    pressures, _ = engine.update(
+        previous_pressures={k: 0.3 for k in DRIVE_KEYS},
+        previous_activations={k: False for k in DRIVE_KEYS},
+        tensions=coherence_tensions + capability_tensions,
+        now=T0,
+        previous_ts=T0,
+    )
+
+    # Neither drive collapsed to the old code's shared clamp-boundary value.
+    assert pressures["coherence"] != 1.0
+    assert pressures["capability"] != 1.0
+    # The core proof: different tension counts -> different final pressures,
+    # not the identical value the old sum-then-clamp design would produce.
+    assert pressures["coherence"] != pressures["capability"]
+    # Both genuinely moved into a high/mid-high range (saturation still
+    # works, see test_fold_batch_saturation_still_reaches_bound below).
+    assert 0.7 < pressures["coherence"] < 1.0
+    assert 0.9 < pressures["capability"] < 1.0
+    # Pin the hand-derived values so a future change to the recurrence is
+    # caught explicitly, not just by the inequality above.
+    assert abs(pressures["coherence"] - 0.83193) < 1e-9
+    assert abs(pressures["capability"] - 0.959646393) < 1e-9
+
+
+def test_fold_batch_saturation_still_reaches_bound() -> None:
+    """Saturation itself is not disabled by the collapse fix -- a drive that
+    legitimately receives enough same-sign tensions in one batch still moves
+    substantially toward 1.0 (mirrored: toward 0.0 for relief)."""
+    engine = _leaky_engine()
+    tensions = [_tension({"predictive": 0.3}, magnitude=1.0) for _ in range(20)]
+
+    pressures, _ = engine.update(
+        previous_pressures={k: 0.0 for k in DRIVE_KEYS},
+        previous_activations={k: False for k in DRIVE_KEYS},
+        tensions=tensions,
+        now=T0,
+        previous_ts=T0,
+    )
+    assert pressures["predictive"] > 0.99
+
+
+def test_fold_batch_update_is_deterministic_across_repeated_calls() -> None:
+    """Running update() twice with the exact same tensions list (same order,
+    same objects) produces byte-identical pressure output both times --
+    sequential application is order-sensitive but still fully deterministic
+    for a fixed input list."""
+    tensions = [
+        _tension({"coherence": 0.4, "capability": -0.2}, magnitude=0.8),
+        _tension({"capability": 0.5}, magnitude=0.6),
+        _tension({"coherence": -0.3, "predictive": 0.7}, magnitude=0.9),
+    ]
+
+    engine_a = _leaky_engine()
+    pressures_a, activations_a = engine_a.update(
+        previous_pressures={k: 0.35 for k in DRIVE_KEYS},
+        previous_activations={k: False for k in DRIVE_KEYS},
+        tensions=tensions,
+        now=T0 + timedelta(seconds=10),
+        previous_ts=T0,
+    )
+
+    engine_b = _leaky_engine()
+    pressures_b, activations_b = engine_b.update(
+        previous_pressures={k: 0.35 for k in DRIVE_KEYS},
+        previous_activations={k: False for k in DRIVE_KEYS},
+        tensions=tensions,
+        now=T0 + timedelta(seconds=10),
+        previous_ts=T0,
+    )
+
+    assert pressures_a == pressures_b
+    assert activations_a == activations_b
+
+
 def test_legacy_path_preserved() -> None:
     """Flag off ⇒ soft_saturate path drives the fixed-point inflation."""
     legacy = DriveEngine(DriveMathConfig(leaky_math_enabled=False))

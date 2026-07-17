@@ -72,6 +72,28 @@ from .wp_stream_consumer import WorldPulseStreamConsumer, utcnow
 
 logger = logging.getLogger("orion.spark.concept.worker")
 
+# O2 (event-rate/decay mismatch fix): DriveEngine.update() is called once per
+# raw bus event (~13/min), but decay_tau_sec=1800.0 means decay between
+# consecutive calls is negligible (~0.3%) -- repeated same-direction impulses
+# converge pressure toward 1.0 within seconds regardless of tau, reproducing
+# the cpu/gpu_pressure saturation bugs (PRs #1108-1111) from a different
+# mechanism. This throttles how often NEW impulses get folded into the
+# persisted integrator (see _update_drive_pressures) while every event still
+# gets a fresh decay-only projection for display/audit/goal-proposal. 900s is
+# a first-pass calibration (matches the SATURATED-verdict math worked out
+# during the O3 review), trivially tunable, deliberately not a new env key
+# (same convention as O3's/O4's own threshold constants).
+_DRIVE_FOLD_INTERVAL_SEC = 900.0
+
+# Cap on tensions buffered between folds, matching this repo's established
+# collection-cap convention (e.g. evidence_event_ids <= 200 in the pressure
+# reducer and execution merge). At real production rates this cap should
+# never be reached (900s of buffering, not unbounded time), but each
+# TensionEventV1 carries a full ArtifactProvenance -- bound it defensively
+# rather than trust the time window alone. Drops oldest-first on overflow
+# (same "keep most recent" convention as _prune_window's window trimming).
+_MAX_PENDING_DRIVE_TENSIONS = 500
+
 
 @dataclass
 class ConceptInductionTrigger:
@@ -187,6 +209,12 @@ class ConceptWorker:
             service_ref=service_ref,
         )
         self.window: Dict[str, List[WindowEvent]] = {s: [] for s in cfg.subjects}
+        # O2 drive-pressure fold buffers. Plain {} (not pre-keyed by cfg.subjects
+        # like self.window): the homeostatic rail's subject is always the
+        # hardcoded string "orion", which may or may not be pre-listed in
+        # cfg.subjects, so _update_drive_pressures uses .setdefault()/.get().
+        self._pending_drive_tensions: Dict[str, List[TensionEventV1]] = {}
+        self._last_drive_fold_at: Dict[str, datetime] = {}
         self.inflight_subjects: Set[str] = set()
         self.recent_event_seen: Dict[str, datetime] = {}
         self.trigger_decisions: List[dict] = []
@@ -609,13 +637,16 @@ class ConceptWorker:
         return True
 
     def _log_drive_pressure_probe(self, subject: str, pressures: dict) -> None:
-        """Measurement-only (Phase 4, 2026-07-12): log `DriveEngine`'s pressure
-        vector right after every `save_drive_state` so it can be compared
-        offline against `AutonomyStateV2`'s independently-computed pressures
-        (logged from `chat_stance._run_autonomy_reducer`) by grepping both
-        services' logs and correlating on `subject` + nearby timestamp. Never
-        raises: a logging failure here must not break the drive-update rail,
-        which runs on live bus traffic.
+        """Measurement-only (Phase 4, 2026-07-12; historical -- the original
+        AutonomyStateV2 comparison this was built for was retired 2026-07-16).
+        Logs `DriveEngine`'s pressure vector on every event, called from
+        `_update_drive_pressures`'s caller regardless of whether that call
+        actually folded (persisted) or just returned a decay-only projection
+        (see `_DRIVE_FOLD_INTERVAL_SEC`, O2) -- do not assume every logged
+        line here corresponds to a `save_drive_state` write; check the
+        `drive_pressure_fold folded=` log line from the same call for that.
+        Never raises: a logging failure here must not break the drive-update
+        rail, which runs on live bus traffic.
         """
         try:
             logger.info(
@@ -771,6 +802,76 @@ class ConceptWorker:
         except Exception:
             return None
 
+    def _update_drive_pressures(
+        self, subject: str, tensions: List[TensionEventV1], now: datetime,
+    ) -> tuple[Dict[str, float], Dict[str, bool], bool]:
+        """O2: apply new tension impulses to the persisted drive-pressure
+        integrator at most once per _DRIVE_FOLD_INTERVAL_SEC, folding everything
+        buffered since the last fold in one DriveEngine.update() call. Every
+        call still returns a live pressure/activation snapshot (a decay-only
+        projection on non-fold ticks, tensions=[] so no impulse is applied) so
+        every caller (goal proposal, dossier, identity snapshot, publish) keeps
+        getting a fresh drive_state every event -- only the WRITE side is
+        throttled, not the READ side. Returns (pressures, activations, folded).
+
+        Note: the pressure component of goal-proposal priority scoring
+        (GoalProposalEngine._priority) can lag up to _DRIVE_FOLD_INTERVAL_SEC
+        behind a freshly-dominant drive's own tick -- accepted, documented
+        consequence of this fix (dominant_drive/tension_weight still react
+        immediately; only the persisted pressure integrator is throttled),
+        not a bug."""
+        prior = self.store.load_drive_state(subject)
+        previous_ts: Optional[datetime] = None
+        if isinstance(prior.get("updated_at"), str):
+            try:
+                previous_ts = datetime.fromisoformat(prior["updated_at"])
+                if previous_ts.tzinfo is None:
+                    previous_ts = previous_ts.replace(tzinfo=timezone.utc)
+            except ValueError:
+                previous_ts = None
+
+        pending = self._pending_drive_tensions.setdefault(subject, [])
+        pending.extend(tensions)
+        if len(pending) > _MAX_PENDING_DRIVE_TENSIONS:
+            dropped = len(pending) - _MAX_PENDING_DRIVE_TENSIONS
+            del pending[:dropped]
+            logger.warning(
+                "drive_pressure_fold_buffer_overflow subject=%s dropped=%d cap=%d",
+                subject, dropped, _MAX_PENDING_DRIVE_TENSIONS,
+            )
+
+        last_fold_at = self._last_drive_fold_at.get(subject)
+        should_fold = (
+            last_fold_at is None
+            or (now - last_fold_at).total_seconds() >= _DRIVE_FOLD_INTERVAL_SEC
+        )
+        tensions_to_apply = pending if should_fold else []
+
+        pressures, activations = self.drive_engine.update(
+            previous_pressures=prior.get("pressures"),
+            previous_activations=prior.get("activations"),
+            tensions=tensions_to_apply,
+            now=now,
+            previous_ts=previous_ts,
+        )
+
+        if should_fold:
+            self.store.save_drive_state(
+                subject, pressures=pressures, activations=activations, updated_at=now
+            )
+            self._pending_drive_tensions[subject] = []
+            self._last_drive_fold_at[subject] = now
+            logger.info(
+                "drive_pressure_fold subject=%s folded=True tensions_folded=%d",
+                subject, len(tensions_to_apply),
+            )
+        else:
+            logger.info(
+                "drive_pressure_fold subject=%s folded=False pending_buffered=%d",
+                subject, len(pending),
+            )
+        return pressures, activations, should_fold
+
     async def _handle_signal_drive_tick(
         self, env: BaseEnvelope, intake_channel: str, source: str
     ) -> None:
@@ -818,26 +919,7 @@ class ConceptWorker:
             for tension in tensions:
                 await self._publish_tension_event(tension, env.correlation_id)
 
-            prior = self.store.load_drive_state(subject)
-            previous_ts: Optional[datetime] = None
-            if isinstance(prior.get("updated_at"), str):
-                try:
-                    previous_ts = datetime.fromisoformat(prior["updated_at"])
-                    if previous_ts.tzinfo is None:
-                        previous_ts = previous_ts.replace(tzinfo=timezone.utc)
-                except ValueError:
-                    previous_ts = None
-
-            pressures, activations = self.drive_engine.update(
-                previous_pressures=prior.get("pressures"),
-                previous_activations=prior.get("activations"),
-                tensions=tensions,
-                now=now,
-                previous_ts=previous_ts,
-            )
-            self.store.save_drive_state(
-                subject, pressures=pressures, activations=activations, updated_at=now
-            )
+            pressures, activations, _folded = self._update_drive_pressures(subject, tensions, now)
             self._log_drive_pressure_probe(subject, pressures)
 
             trace_id = extract_trace_id(env)
@@ -956,22 +1038,8 @@ class ConceptWorker:
 
         all_spark_tensions = spark_tensions + metabolism_tensions
 
-        prior_drive_state = self.store.load_drive_state(subject)
-        previous_ts = None
-        if isinstance(prior_drive_state.get("updated_at"), str):
-            try:
-                previous_ts = datetime.fromisoformat(prior_drive_state["updated_at"])
-            except ValueError:
-                previous_ts = None
         now = datetime.now(timezone.utc)
-        pressures, activations = self.drive_engine.update(
-            previous_pressures=prior_drive_state.get("pressures"),
-            previous_activations=prior_drive_state.get("activations"),
-            tensions=all_spark_tensions,
-            now=now,
-            previous_ts=previous_ts,
-        )
-        self.store.save_drive_state(subject, pressures=pressures, activations=activations, updated_at=now)
+        pressures, activations, _folded = self._update_drive_pressures(subject, all_spark_tensions, now)
         self._log_drive_pressure_probe(subject, pressures)
 
         pressure_tensions = derive_pressure_competition_tensions(

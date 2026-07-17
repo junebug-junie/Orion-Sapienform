@@ -64,6 +64,10 @@ from .tensions import (
     extract_tensions_from_self_state,
 )
 from .rdf_materialization import build_concept_profile_rdf_request
+from .falkor_materialization import (
+    build_falkor_substrate_store,
+    materialize_concept_profile_to_falkor,
+)
 from .wp_stream_consumer import WorldPulseStreamConsumer, utcnow
 
 logger = logging.getLogger("orion.spark.concept.worker")
@@ -112,9 +116,11 @@ class ConceptWorker:
         cfg: ConceptSettings,
         *,
         fetch_backend: Callable[..., Awaitable[dict]] | None = None,
+        substrate_store: object | None = None,
     ) -> None:
         self.cfg = cfg
         self._fetch_backend = fetch_backend or resolve_fetch_backend()
+        self._substrate_store = substrate_store
         self.bus = OrionBusAsync(
             cfg.orion_bus_url,
             enabled=cfg.orion_bus_enabled,
@@ -481,28 +487,84 @@ class ConceptWorker:
             )
             await self.bus.publish(self.cfg.forward_vector_channel, env)
 
+    def _graph_materialization_destination(self) -> str:
+        backend = str(self.cfg.concept_profile_graph_backend or "disabled").strip().lower()
+        if backend == "falkor":
+            return f"falkor:{self.cfg.falkordb_substrate_graph}"
+        if backend == "rdf":
+            return self.cfg.forward_rdf_channel
+        return backend
+
+    def _get_substrate_store(self):
+        if self._substrate_store is not None:
+            return self._substrate_store
+        self._substrate_store = build_falkor_substrate_store(
+            uri=self.cfg.falkordb_uri,
+            graph_name=self.cfg.falkordb_substrate_graph,
+            hydrate=False,
+        )
+        return self._substrate_store
+
     async def _materialize_profile_graph(self, profile: ConceptProfile, corr_id) -> bool:
         concept_count = len(profile.concepts)
         cluster_count = len(profile.clusters)
         graph_write_attempted = False
         graph_write_succeeded = False
         error_kind: str | None = None
+        backend = str(self.cfg.concept_profile_graph_backend or "disabled").strip().lower()
+        destination = backend
+        schema_kind = "spark.concept_profile.graph.v1"
+
+        if backend == "disabled":
+            logger.info(
+                "concept_profile_graph_materialization_skipped backend=disabled subject=%s "
+                "revision=%s concept_count=%d cluster_count=%d",
+                profile.subject,
+                profile.revision,
+                concept_count,
+                cluster_count,
+            )
+            return True
+
         try:
-            graph_request = build_concept_profile_rdf_request(
-                profile=profile,
-                correlation_id=str(corr_id) if corr_id else None,
-                writer_service=self.cfg.service_name,
-                writer_version=self.cfg.service_version,
-            )
-            graph_write_attempted = True
-            env = BaseEnvelope(
-                kind="rdf.write.request",
-                source=_service_ref(self.cfg),
-                correlation_id=corr_id,
-                payload=graph_request.model_dump(mode="json"),
-            )
-            await self.bus.publish(self.cfg.forward_rdf_channel, env)
-            graph_write_succeeded = True
+            if backend == "falkor":
+                destination = f"falkor:{self.cfg.falkordb_substrate_graph}"
+                schema_kind = "substrate.concept_atlas.falkor.v1"
+                graph_write_attempted = True
+                # Falkor client is a sync redis client; keep GRAPH.QUERY off the
+                # event loop so induction ticks don't stall bus intake.
+                store = self._get_substrate_store()
+                await asyncio.to_thread(
+                    materialize_concept_profile_to_falkor,
+                    profile=profile,
+                    store=store,
+                )
+                graph_write_succeeded = True
+            elif backend == "rdf":
+                destination = self.cfg.forward_rdf_channel
+                graph_request = build_concept_profile_rdf_request(
+                    profile=profile,
+                    correlation_id=str(corr_id) if corr_id else None,
+                    writer_service=self.cfg.service_name,
+                    writer_version=self.cfg.service_version,
+                )
+                graph_write_attempted = True
+                env = BaseEnvelope(
+                    kind="rdf.write.request",
+                    source=_service_ref(self.cfg),
+                    correlation_id=corr_id,
+                    payload=graph_request.model_dump(mode="json"),
+                )
+                await self.bus.publish(self.cfg.forward_rdf_channel, env)
+                graph_write_succeeded = True
+            else:
+                # Validator should prevent this; fail closed.
+                logger.warning(
+                    "concept_profile_graph_materialization_unknown_backend backend=%s subject=%s",
+                    backend,
+                    profile.subject,
+                )
+                return False
         except Exception as exc:  # noqa: BLE001
             error_kind = type(exc).__name__
             logger.warning(
@@ -511,7 +573,7 @@ class ConceptWorker:
                 profile.subject,
                 profile.revision,
                 corr_id,
-                self.cfg.forward_rdf_channel,
+                destination,
                 error_kind,
             )
             logger.warning(
@@ -524,8 +586,8 @@ class ConceptWorker:
                 cluster_count,
                 graph_write_attempted,
                 graph_write_succeeded,
-                self.cfg.forward_rdf_channel,
-                "spark.concept_profile.graph.v1",
+                destination,
+                schema_kind,
                 error_kind,
             )
             return False
@@ -540,8 +602,8 @@ class ConceptWorker:
             cluster_count,
             graph_write_attempted,
             graph_write_succeeded,
-            self.cfg.forward_rdf_channel,
-            "spark.concept_profile.graph.v1",
+            destination,
+            schema_kind,
             error_kind,
         )
         return True
@@ -1346,22 +1408,32 @@ class ConceptWorker:
             result.profile.revision,
             corr_id,
         )
-        logger.info(
-            "concept_profile_postsave stage=graph_materialization_attempted subject=%s revision=%s correlation_id=%s destination=%s",
-            result.profile.subject,
-            result.profile.revision,
-            corr_id,
-            self.cfg.forward_rdf_channel,
-        )
-        materialized = await self._materialize_profile_graph(result.profile, corr_id)
-        if materialized:
+        graph_backend = str(self.cfg.concept_profile_graph_backend or "disabled").strip().lower()
+        if graph_backend == "disabled":
             logger.info(
-                "concept_profile_postsave stage=graph_materialization_published subject=%s revision=%s correlation_id=%s destination=%s",
+                "concept_profile_postsave stage=graph_materialization_skipped subject=%s revision=%s correlation_id=%s destination=disabled",
                 result.profile.subject,
                 result.profile.revision,
                 corr_id,
-                self.cfg.forward_rdf_channel,
             )
+            await self._materialize_profile_graph(result.profile, corr_id)
+        else:
+            logger.info(
+                "concept_profile_postsave stage=graph_materialization_attempted subject=%s revision=%s correlation_id=%s destination=%s",
+                result.profile.subject,
+                result.profile.revision,
+                corr_id,
+                self._graph_materialization_destination(),
+            )
+            materialized = await self._materialize_profile_graph(result.profile, corr_id)
+            if materialized:
+                logger.info(
+                    "concept_profile_postsave stage=graph_materialization_published subject=%s revision=%s correlation_id=%s destination=%s",
+                    result.profile.subject,
+                    result.profile.revision,
+                    corr_id,
+                    self._graph_materialization_destination(),
+                )
         if result.delta:
             await self._publish_delta(result.delta, corr_id)
             logger.info(

@@ -360,7 +360,26 @@ class ConceptInductionTests(unittest.TestCase):
 
     def test_run_for_subject_invokes_graph_materialization(self):
         with tempfile.TemporaryDirectory() as td:
-            worker = ConceptWorker(ConceptSettings(orion_bus_enabled=False, store_path=str(Path(td) / "state.json")))
+            from orion.substrate.falkor_store import (
+                FalkorSubstrateStore,
+                FalkorSubstrateStoreConfig,
+                RecordingFalkorClient,
+            )
+
+            client = RecordingFalkorClient()
+            substrate = FalkorSubstrateStore(
+                FalkorSubstrateStoreConfig(uri="redis://127.0.0.1:6380", graph_name="orion_substrate"),
+                client=client,
+                hydrate=False,
+            )
+            worker = ConceptWorker(
+                ConceptSettings(
+                    orion_bus_enabled=False,
+                    store_path=str(Path(td) / "state.json"),
+                    concept_profile_graph_backend="falkor",
+                ),
+                substrate_store=substrate,
+            )
             profile = asyncio.run(
                 ConceptInducer(ConceptSettings()).run(
                     subject="orion",
@@ -387,13 +406,20 @@ class ConceptInductionTests(unittest.TestCase):
             asyncio.run(worker.run_for_subject("orion"))
 
             published = worker.bus.published
-            assert any(channel == worker.cfg.forward_rdf_channel and env.kind == "rdf.write.request" for channel, env in published)
+            assert not any(env.kind == "rdf.write.request" for _, env in published)
             assert any(env.kind == "memory.concepts.profile.v1" for _, env in published)
+            assert any("MERGE (n:SubstrateNode" in cypher for cypher, _ in client.calls)
 
     def test_graph_materialization_failure_isolated_from_local_write(self):
         with tempfile.TemporaryDirectory() as td:
             store_path = Path(td) / "state.json"
-            worker = ConceptWorker(ConceptSettings(orion_bus_enabled=False, store_path=str(store_path)))
+            worker = ConceptWorker(
+                ConceptSettings(
+                    orion_bus_enabled=False,
+                    store_path=str(store_path),
+                    concept_profile_graph_backend="rdf",
+                )
+            )
             profile = asyncio.run(
                 ConceptInducer(ConceptSettings()).run(
                     subject="orion",
@@ -589,9 +615,28 @@ class ConceptInductionTests(unittest.TestCase):
             decisions = [d["decision"] for d in worker.trigger_decisions]
             self.assertIn("skipped_due_to_cooldown", decisions)
 
-    def test_chat_turn_trigger_local_save_and_rdf_materialization(self):
+    def test_chat_turn_trigger_local_save_and_falkor_materialization(self):
         with tempfile.TemporaryDirectory() as td:
-            worker = ConceptWorker(ConceptSettings(orion_bus_enabled=False, store_path=str(Path(td) / "state.json")))
+            from orion.substrate.falkor_store import (
+                FalkorSubstrateStore,
+                FalkorSubstrateStoreConfig,
+                RecordingFalkorClient,
+            )
+
+            client = RecordingFalkorClient()
+            substrate = FalkorSubstrateStore(
+                FalkorSubstrateStoreConfig(uri="redis://127.0.0.1:6380", graph_name="orion_substrate"),
+                client=client,
+                hydrate=False,
+            )
+            worker = ConceptWorker(
+                ConceptSettings(
+                    orion_bus_enabled=False,
+                    store_path=str(Path(td) / "state.json"),
+                    concept_profile_graph_backend="falkor",
+                ),
+                substrate_store=substrate,
+            )
             profile = asyncio.run(
                 ConceptInducer(ConceptSettings()).run(
                     subject="orion",
@@ -621,11 +666,31 @@ class ConceptInductionTests(unittest.TestCase):
             reloaded = worker.store.load("orion")
             self.assertIsNotNone(reloaded)
             published = worker.bus.published
-            self.assertTrue(any(channel == worker.cfg.forward_rdf_channel and out.kind == "rdf.write.request" for channel, out in published))
+            self.assertFalse(any(out.kind == "rdf.write.request" for _, out in published))
+            self.assertTrue(any("MERGE (n:SubstrateNode" in cypher for cypher, _ in client.calls))
 
     def test_run_for_subject_postsave_fanout_order(self):
         with tempfile.TemporaryDirectory() as td:
-            worker = ConceptWorker(ConceptSettings(orion_bus_enabled=False, store_path=str(Path(td) / "state.json")))
+            from orion.substrate.falkor_store import (
+                FalkorSubstrateStore,
+                FalkorSubstrateStoreConfig,
+                RecordingFalkorClient,
+            )
+
+            client = RecordingFalkorClient()
+            substrate = FalkorSubstrateStore(
+                FalkorSubstrateStoreConfig(uri="redis://127.0.0.1:6380", graph_name="orion_substrate"),
+                client=client,
+                hydrate=False,
+            )
+            worker = ConceptWorker(
+                ConceptSettings(
+                    orion_bus_enabled=False,
+                    store_path=str(Path(td) / "state.json"),
+                    concept_profile_graph_backend="falkor",
+                ),
+                substrate_store=substrate,
+            )
             profile = asyncio.run(
                 ConceptInducer(ConceptSettings()).run(
                     subject="orion",
@@ -651,14 +716,21 @@ class ConceptInductionTests(unittest.TestCase):
             ]
             asyncio.run(worker.run_for_subject("orion"))
             published_kinds = [env.kind for _, env in worker.bus.published]
-            self.assertGreaterEqual(len(published_kinds), 3)
+            self.assertGreaterEqual(len(published_kinds), 2)
             self.assertEqual(published_kinds[0], "memory.concepts.profile.v1")
-            self.assertEqual(published_kinds[1], "rdf.write.request")
-            self.assertTrue(all(kind == "vector.write" for kind in published_kinds[2:]))
+            self.assertNotIn("rdf.write.request", published_kinds)
+            self.assertTrue(all(kind == "vector.write" for kind in published_kinds[1:]))
+            self.assertTrue(any("MERGE (n:SubstrateNode" in cypher for cypher, _ in client.calls))
 
     def test_graph_materialization_failure_logs_postsave_stage(self):
         with tempfile.TemporaryDirectory() as td:
-            worker = ConceptWorker(ConceptSettings(orion_bus_enabled=False, store_path=str(Path(td) / "state.json")))
+            worker = ConceptWorker(
+                ConceptSettings(
+                    orion_bus_enabled=False,
+                    store_path=str(Path(td) / "state.json"),
+                    concept_profile_graph_backend="rdf",
+                )
+            )
             profile = asyncio.run(
                 ConceptInducer(ConceptSettings()).run(
                     subject="orion",

@@ -1,7 +1,7 @@
 # FalkorDB property-graph doctrine + persistence router — design spec
 
 **Date:** 2026-07-16
-**Status:** WEDGE LIVE — guts implemented on `feat/falkordb-property-graph-routing` (intent, routes, property guard, Falkor/routed stores, `services/orion-falkordb/`), merged via #1099. **2026-07-16:** graphiti `--profile falkordb` removed; live Falkor cutover to shared stack documented in `services/orion-falkordb/README.md`. **2026-07-17:** Concept Atlas / Hub wiring done and live-verified (`SUBSTRATE_STORE_BACKEND=falkor`, PR #1105) — no longer deferred; see the acceptance-checks update below. `substrate-runtime`'s own cutover remains open (freshly re-checked 2026-07-17, not just carried over from the ground-truth table above: `services/orion-substrate-runtime/.env` still reads `SUBSTRATE_STORE_BACKEND=sparql`) and the `orion:kg:edge:ingest.v1` → rdf-writer deprecation remain open, tracked separately.
+**Status:** WEDGE LIVE — guts implemented on `feat/falkordb-property-graph-routing` (intent, routes, property guard, Falkor/routed stores, `services/orion-falkordb/`), merged via #1099. **2026-07-16:** graphiti `--profile falkordb` removed; live Falkor cutover to shared stack documented in `services/orion-falkordb/README.md`. **2026-07-17:** Concept Atlas / Hub wiring done and live-verified (`SUBSTRATE_STORE_BACKEND=falkor`, PR #1105) — no longer deferred; see the acceptance-checks update below. **2026-07-17:** Spark concept-induction post-save materialization cuts over to Cypher-native `FalkorSubstrateStore` (`CONCEPT_PROFILE_GRAPH_BACKEND=falkor`; concept-only writes) — no longer emits `rdf.write.request` for profiles when Falkor path is live. `substrate-runtime`'s own cutover remains open (freshly re-checked 2026-07-17, not just carried over from the ground-truth table above: `services/orion-substrate-runtime/.env` still reads `SUBSTRATE_STORE_BACKEND=sparql`) and the `orion:kg:edge:ingest.v1` → rdf-writer deprecation remain open, tracked separately.
 **Mode:** Proposal (touches memory / cognitive-graph persistence; AGENTS.md §0A proposal mode)
 **Related:**
 - `docs/superpowers/specs/2026-07-15-concept-atlas-graph-pipeline-design.md` (first consumer seam)
@@ -46,6 +46,7 @@ How does Orion use FalkorDB as a first-class property-graph rail — with explic
 | RDF writer abstraction is too late for Falkor | `RdfStoreClient.write_graph(content: str, …)` — N-Triples only |
 | Substrate protocol already speaks nodes/edges | `orion/substrate/store.py::SubstrateGraphStore` |
 | Topic-foundry still has a competing RDF ingest channel | `orion:kg:edge:ingest.v1` → rdf-writer / graphdb (Concept Atlas path is the keep) |
+| Concept-induction profile materialization is Falkor (not RDF) when live | `CONCEPT_PROFILE_GRAPH_BACKEND=falkor` → `FalkorSubstrateStore` concept-only writes into `orion_substrate`; RDF path retained as `rdf` compat only |
 
 ---
 
@@ -290,7 +291,8 @@ This section is the **narrow wedge**. It does not shrink the doctrine above; it 
 
 | Producer | Workload key | Today | Target |
 |---|---|---|---|
-| Hub Concept Atlas ingest (topic-foundry) | `substrate.concept` | in-memory store in hub process | Falkor via router (durable) |
+| Hub Concept Atlas ingest (topic-foundry) | `substrate.concept` | Falkor (`SUBSTRATE_STORE_BACKEND=falkor`) | keep |
+| Spark concept-induction profile post-save | `substrate.concept` | Cypher-native Falkor (`CONCEPT_PROFILE_GRAPH_BACKEND=falkor`; concept-only) | keep; RDF compat via `=rdf` |
 | Substrate-runtime drive_state materialization | `substrate.drive_state` | SPARQL upserts | Falkor primary, sparql shadow then off |
 | Substrate-runtime brain-frame / dynamics | `substrate.brain_frame` (and siblings) | SPARQL | same ladder |
 
@@ -377,6 +379,10 @@ Two Falkor *usages* may share one FalkorDB instance with **separate graph names*
       time with no config change; FalkorDB's node count stayed at 3 (not 6, same `node_id`s) —
       confirms idempotent upsert against a real persistent backend, not a store recreated fresh
       on every boot.
+- [x] Concept-induction post-save no longer RDF-materializes when `CONCEPT_PROFILE_GRAPH_BACKEND=falkor`
+      (concept-only Cypher-native writes into shared `orion_substrate`; unit-tested). Live outcome is
+      concept **nodes** only — the profile mapper emits no concept↔concept edges yet, and induction
+      writes bypass Hub's identity materializer (parallel identity islands; merge is a named follow-up).
 
 ---
 

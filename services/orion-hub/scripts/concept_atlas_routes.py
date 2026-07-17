@@ -79,6 +79,38 @@ def _unavailable(reason: str, error: Optional[str] = None, **extra: Any) -> dict
     return payload
 
 
+class _CountingSubstrateStore:
+    """Thin store wrapper that counts successful concept/evidence/edge upserts.
+
+    ``SubstrateGraphMaterializer.apply_record`` writes incrementally and raises
+    without returning a partial ``MaterializationResultV1``. Delegating through
+    this wrapper lets the ingest route report precise successful counts on
+    mid-record failure, while preserving all other store operations (including
+    identity-resolver reads) via ``__getattr__``.
+    """
+
+    def __init__(self, inner: Any) -> None:
+        self._inner = inner
+        self.concepts_written = 0
+        self.evidence_nodes_written = 0
+        self.edges_written = 0
+
+    def __getattr__(self, name: str) -> Any:
+        return getattr(self._inner, name)
+
+    def upsert_node(self, *, identity_key: str | None, node: Any) -> None:
+        self._inner.upsert_node(identity_key=identity_key, node=node)
+        kind = getattr(node, "node_kind", None)
+        if kind == "concept":
+            self.concepts_written += 1
+        elif kind == "evidence":
+            self.evidence_nodes_written += 1
+
+    def upsert_edge(self, *, identity_key: str, edge: Any) -> None:
+        self._inner.upsert_edge(identity_key=identity_key, edge=edge)
+        self.edges_written += 1
+
+
 def _concept_nodes(store: Any) -> list[Any]:
     """All concept-kind nodes from the store's snapshot, or [] on any failure."""
     try:
@@ -390,30 +422,35 @@ def concept_atlas_ingest_topic_foundry() -> dict[str, Any]:
             edges_written=0,
         )
 
-    concept_count = 0
-    evidence_count = 0
-    edge_count = 0
+    counting_store = _CountingSubstrateStore(store)
     try:
-        for node in record.nodes:
-            store.upsert_node(identity_key=node.node_id, node=node)
-            if node.node_kind == "concept":
-                concept_count += 1
-            elif node.node_kind == "evidence":
-                evidence_count += 1
-        for edge in record.edges:
-            identity_key = f"{edge.source.node_id}|{edge.predicate}|{edge.target.node_id}"
-            store.upsert_edge(identity_key=identity_key, edge=edge)
-            edge_count += 1
+        from orion.substrate.materializer import SubstrateGraphMaterializer
+        from orion.substrate.reconcile import SubstrateIdentityResolver
+
+        # Exact-label identity works through the resolver's legacy key path;
+        # explicitly wiring the store also activates embedding matches whenever
+        # a caller supplies metadata['concept_embedding'].
+        materializer = SubstrateGraphMaterializer(
+            store=counting_store,
+            identity_resolver=SubstrateIdentityResolver(store=counting_store),
+        )
+        result = materializer.apply_record(record)
     except Exception as exc:
         logger.warning("concept_atlas_ingest_topic_foundry_store_write_failed run_id=%s error=%s", run_id, exc)
         return _unavailable(
             "substrate_store_write_failed",
             str(exc),
             run_id=run_id,
-            concepts_written=concept_count,
-            evidence_nodes_written=evidence_count,
-            edges_written=edge_count,
+            concepts_written=counting_store.concepts_written,
+            evidence_nodes_written=counting_store.evidence_nodes_written,
+            edges_written=counting_store.edges_written,
         )
+
+    # Response fields remain total record items processed/written (not unique
+    # durable nodes after merge). Materializer edges_seen matches that meaning.
+    concept_count = sum(1 for n in record.nodes if n.node_kind == "concept")
+    evidence_count = sum(1 for n in record.nodes if n.node_kind == "evidence")
+    edge_count = result.edges_seen
 
     return {
         "available": True,

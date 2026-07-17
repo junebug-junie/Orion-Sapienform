@@ -252,6 +252,157 @@ def test_ingest_is_idempotent_on_repeated_calls(client: TestClient, monkeypatch:
     assert len(concept_nodes) == 2  # not 4 -- deterministic node_ids upsert in place
 
 
+def test_ingest_cross_run_same_label_merges_to_one_durable_concept(
+    client: TestClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Two completed runs with different run/topic IDs but the same semantic label
+    must reconcile to one durable concept node (not two run-scoped orphans).
+
+    Uses identical normalized labels (same keyword-derived label from the real
+    adapter) because the HTTP client does not expose topic centroids; exact-label
+    identity is the resolver contract that works without embeddings today.
+    """
+    from orion.substrate.store import InMemorySubstrateGraphStore
+
+    store = InMemorySubstrateGraphStore()
+    _patch_base_url(monkeypatch, FAKE_BASE_URL)
+    _patch_store(monkeypatch, store)
+
+    run_a = "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa"
+    run_b = "bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb"
+    # Same keyword set → same adapter-derived label ("coherence / identity / merge").
+    shared_keywords = ["coherence", "identity", "merge"]
+    topic_a = 0
+    topic_b = 7
+
+    def _single_topic_payload(topic_id: int) -> dict[str, Any]:
+        return {
+            "items": [
+                {"topic_id": -1, "count": 10, "outlier_pct": 1.0, "label": None},
+                {"topic_id": topic_id, "count": 50, "outlier_pct": 0.0, "label": None},
+            ],
+            "limit": 200,
+            "offset": 0,
+            "total": 2,
+        }
+
+    def _ingest_run(*, run_id: str, topic_id: int) -> dict[str, Any]:
+        def fake_get(url: str, params: Optional[dict[str, Any]] = None, timeout: Optional[float] = None):
+            if url.endswith("/runs"):
+                return _FakeResponse(200, _runs_payload(run_id))
+            if url.endswith("/topics"):
+                return _FakeResponse(200, _single_topic_payload(topic_id))
+            if "/topics/" in url and url.endswith("/keywords"):
+                fetched_topic_id = int(url.rsplit("/", 2)[1])
+                assert fetched_topic_id == topic_id
+                return _FakeResponse(200, {"topic_id": topic_id, "keywords": shared_keywords})
+            raise AssertionError(f"unexpected URL in fake_get: {url}")
+
+        _patch_topic_foundry_client(monkeypatch, fake_get)
+        r = client.post("/api/substrate/concepts/ingest-topic-foundry")
+        assert r.status_code == 200
+        body = r.json()
+        assert body["available"] is True
+        assert body["run_id"] == run_id
+        assert body["concepts_written"] == 1
+        return body
+
+    _ingest_run(run_id=run_a, topic_id=topic_a)
+    canonical_concept_id = f"sub-concept-topicfoundry-{run_a}-{topic_a}"
+    run_b_concept_id = f"sub-concept-topicfoundry-{run_b}-{topic_b}"
+
+    _ingest_run(run_id=run_b, topic_id=topic_b)
+
+    snapshot = store.snapshot()
+    concept_nodes = [n for n in snapshot.nodes.values() if n.node_kind == "concept"]
+    assert len(concept_nodes) == 1, (
+        f"expected one durable concept after cross-run ingest, got {len(concept_nodes)}: "
+        f"{[n.node_id for n in concept_nodes]}"
+    )
+    durable = concept_nodes[0]
+    assert durable.node_id == canonical_concept_id
+    assert durable.node_id != run_b_concept_id
+    assert run_b_concept_id not in snapshot.nodes
+
+    supports_edges = [e for e in snapshot.edges.values() if e.predicate == "supports"]
+    assert len(supports_edges) == 2  # one evidence support per run
+    for edge in supports_edges:
+        assert edge.target.node_id == canonical_concept_id, (
+            f"supports edge must target durable concept {canonical_concept_id}, "
+            f"got {edge.target.node_id}"
+        )
+        assert edge.target.node_id != run_b_concept_id
+
+
+# --- partial write honesty: counters must match durable upserts ---
+
+
+class _FailAfterNUpsertsStore:
+    """Delegating store that succeeds for the first N upserts, then raises.
+
+    Used to prove the ingest route reports precise partial progress when
+    ``SubstrateGraphMaterializer.apply_record`` writes incrementally and then
+    raises mid-record (it does not roll back earlier upserts).
+    """
+
+    def __init__(self, inner: Any, *, fail_after: int) -> None:
+        self._inner = inner
+        self._fail_after = fail_after
+        self._upserts = 0
+
+    def __getattr__(self, name: str) -> Any:
+        return getattr(self._inner, name)
+
+    def upsert_node(self, *, identity_key: str | None, node: Any) -> None:
+        if self._upserts >= self._fail_after:
+            raise RuntimeError("simulated upsert_node failure after partial write")
+        self._inner.upsert_node(identity_key=identity_key, node=node)
+        self._upserts += 1
+
+    def upsert_edge(self, *, identity_key: str, edge: Any) -> None:
+        if self._upserts >= self._fail_after:
+            raise RuntimeError("simulated upsert_edge failure after partial write")
+        self._inner.upsert_edge(identity_key=identity_key, edge=edge)
+        self._upserts += 1
+
+
+def test_ingest_partial_store_write_reports_precise_successful_counts(
+    client: TestClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """If materialization fails mid-record after some upserts succeeded, the
+    response must report those successful counts — not lie with all zeros.
+    """
+    from orion.substrate.store import InMemorySubstrateGraphStore
+
+    # Adapter order for the normal fixture: concept0, evidence0, concept1, ...
+    # Fail after the first upsert so one concept node is durable in the store.
+    inner = InMemorySubstrateGraphStore()
+    store = _FailAfterNUpsertsStore(inner, fail_after=1)
+    fake_get, _calls = _make_fake_get(topics_payload=_topics_payload_normal())
+    _patch_topic_foundry_client(monkeypatch, fake_get)
+    _patch_base_url(monkeypatch, FAKE_BASE_URL)
+    _patch_store(monkeypatch, store)
+
+    r = client.post("/api/substrate/concepts/ingest-topic-foundry")
+    assert r.status_code == 200
+    body = r.json()
+
+    snapshot = store.snapshot()
+    concept_nodes = [n for n in snapshot.nodes.values() if n.node_kind == "concept"]
+    evidence_nodes = [n for n in snapshot.nodes.values() if n.node_kind == "evidence"]
+    assert len(concept_nodes) == 1
+    assert len(evidence_nodes) == 0
+    assert snapshot.edges == {}
+
+    assert body["available"] is False
+    assert body["reason"] == "substrate_store_write_failed"
+    assert body["run_id"] == FAKE_RUN_ID
+    # Precise partial progress — not the pre-fix lie of all zeros.
+    assert body["concepts_written"] == 1
+    assert body["evidence_nodes_written"] == 0
+    assert body["edges_written"] == 0
+
+
 # --- degraded paths: never a 500, never a fabricated success ---
 
 

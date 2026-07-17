@@ -1,3 +1,6 @@
+"""Tightly coupled to app/digestion/decay.py -- read that module's docstring and this
+directory's CLAUDE.md before changing how node_vector_updated_at gets written here."""
+
 from __future__ import annotations
 
 from datetime import datetime, timedelta, timezone

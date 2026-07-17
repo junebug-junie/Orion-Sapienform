@@ -1,3 +1,8 @@
+"""Read this service's README ("Decay vs. injection-interval mismatch") and this
+directory's CLAUDE.md before changing apply_decay() -- the unconditional-per-tick-decay
+sawtooth bug this module used to have was found and re-derived independently more than
+once because that write-up wasn't checked first."""
+
 from __future__ import annotations
 
 from datetime import datetime, timezone

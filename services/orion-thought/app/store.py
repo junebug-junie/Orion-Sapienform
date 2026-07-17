@@ -11,9 +11,11 @@ Discipline: persistence is best-effort. A DB failure degrades to a logged miss
 
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
 import os
+import threading
 from datetime import datetime, timezone
 from typing import TYPE_CHECKING, Any
 
@@ -23,6 +25,14 @@ if TYPE_CHECKING:
     from orion.schemas.reverie import SpontaneousThoughtV1
 
 _engine = None
+# Guards the check-then-create-then-assign below. Without it, two threads
+# racing through _get_engine() at nearly the same moment (e.g. a real chat
+# turn's drive-state fetch landing right as startup's warm_pool() runs) can
+# both observe `_engine is None` and each construct a separate Engine/pool;
+# whichever assignment lands last silently discards the other's pool without
+# disposing it. Found live 2026-07-17 while adding warm_pool() below, which
+# is the first caller that makes this race reachable in practice.
+_engine_lock = threading.Lock()
 
 
 def _database_url() -> str:
@@ -38,10 +48,51 @@ def _database_url() -> str:
 def _get_engine():
     global _engine
     if _engine is None:
-        from sqlalchemy import create_engine
+        with _engine_lock:
+            if _engine is None:  # re-check: another thread may have won the race
+                from sqlalchemy import create_engine
 
-        _engine = create_engine(_database_url(), pool_pre_ping=True)
+                _engine = create_engine(_database_url(), pool_pre_ping=True)
     return _engine
+
+
+def _warm_pool_sync() -> None:
+    """Open one throwaway connection so the shared pool isn't cold on first real use.
+
+    Live-verified 2026-07-17: the first query against a freshly-created engine
+    pays a full TCP+auth handshake to Postgres (~400ms). That's cheap for
+    reverie/salience/etc.'s best-effort writes, but tripped a caller with a
+    tight 400ms budget (orion-thought's drive_state_compact facet fetch) on
+    turn one of every fresh container start. Warming here benefits every
+    caller of `_get_engine()`, not just that one, so it's unconditional at
+    startup rather than gated behind any one feature flag. Never raises — a
+    DB that isn't reachable yet at boot just means the first real caller pays
+    the cold cost as before (today's status quo for every other consumer of
+    this module), not a startup failure.
+    """
+    try:
+        from sqlalchemy import text
+
+        with _get_engine().connect() as conn:
+            conn.execute(text("SELECT 1"))
+    except Exception as exc:  # noqa: BLE001 — best-effort warm-up, never fail boot
+        logger.warning("pool_warmup_failed err=%s", exc)
+
+
+async def warm_pool() -> None:
+    """Bounded async wrapper for `_warm_pool_sync`, called once at startup.
+
+    Catches both the timeout and any exception the sync side didn't already
+    swallow -- the boot sequence must never fail because a best-effort pool
+    warm-up couldn't connect, so this is defense-in-depth on top of
+    `_warm_pool_sync`'s own internal try/except, not a substitute for it.
+    """
+    try:
+        await asyncio.wait_for(asyncio.to_thread(_warm_pool_sync), timeout=5.0)
+    except asyncio.TimeoutError:
+        logger.warning("pool_warmup_timeout")
+    except Exception as exc:  # noqa: BLE001 — best-effort warm-up, never fail boot
+        logger.warning("pool_warmup_wrapper_failed err=%s", exc)
 
 
 def persist_reverie_thought(thought: "SpontaneousThoughtV1") -> bool:

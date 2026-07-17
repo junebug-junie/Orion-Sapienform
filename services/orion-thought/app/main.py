@@ -15,6 +15,7 @@ from .reasoning_activity import run_reasoning_worker
 from .reasoning_activity import store as reasoning_store
 from .reverie import run_reverie_worker
 from .settings import settings
+from .store import warm_pool
 
 logging.basicConfig(
     level=logging.INFO,
@@ -47,6 +48,14 @@ async def lifespan(app: FastAPI):
     app.state.reasoning_task = asyncio.create_task(
         run_reasoning_worker(app.state.reasoning_stop_event)
     )
+    # Warm store.py's shared Postgres pool so the first real caller of any
+    # kind (drive_state_compact facet fetch, reverie/salience/etc. writes)
+    # doesn't pay a cold TCP+auth handshake cost -- unconditional since every
+    # store.py consumer shares the one engine, not gated behind any single
+    # feature flag. Reference kept on app.state -- an unreferenced asyncio
+    # task can be garbage-collected mid-execution (see asyncio docs on
+    # create_task).
+    app.state.pool_warmup_task = asyncio.create_task(warm_pool())
     yield
     app.state.bus_stop_event.set()
     app.state.reverie_stop_event.set()
@@ -58,7 +67,12 @@ async def lifespan(app: FastAPI):
         app.state.bus_task.cancel()
         with suppress(asyncio.CancelledError):
             await app.state.bus_task
-    for task in (app.state.reverie_task, app.state.reverie_chain_task, app.state.reasoning_task):
+    for task in (
+        app.state.reverie_task,
+        app.state.reverie_chain_task,
+        app.state.reasoning_task,
+        app.state.pool_warmup_task,
+    ):
         task.cancel()
         with suppress(asyncio.CancelledError):
             await task

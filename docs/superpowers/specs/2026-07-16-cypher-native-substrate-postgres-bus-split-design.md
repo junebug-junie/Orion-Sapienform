@@ -1,7 +1,7 @@
 # Cypher-native substrate + Postgres-via-bus split — design spec
 
 **Date:** 2026-07-16
-**Status:** IN PROGRESS — Cypher-native Falkor adapter shipped in this branch; drive Postgres SoR + runtime cutover remain follow-ons
+**Status:** IN PROGRESS — Cypher-native Falkor adapter shipped (PR #1120); runtime graph-writer path (item 3) proven via routed-store integration tests, env cutover not yet flipped; drive Postgres SoR (item 2) remains a follow-on
 **Mode:** Proposal (touches cognitive-graph persistence + drive measurement SoR; AGENTS.md §0A)
 **Related:**
 - `docs/superpowers/specs/2026-07-16-falkordb-property-graph-routing-design.md` (router / Falkor wedge; this doc **supersedes** its “migrate drive_state into Falkor” implication)
@@ -238,8 +238,31 @@ compatibility through a hydrated Falkor store test double.
 - [ ] Concept Atlas Hub summary/network survives restart against real Falkor after redesign
 - [x] Chat stance drive projection reads Postgres measurement rail (bus-fed); graph drive snapshot materialization off or deleted
 - [x] No new producer path calls sql-writer over HTTP for drive measurement
-- [ ] Runtime SPARQL cutover (if included in same plan series) uses Cypher-native adapter, not blob port
+- [x] Runtime graph-shaped writers (`_write_prediction_error_node`, `_dynamics_tick`) proven to work against the Cypher-native Falkor adapter via `RoutedSubstrateGraphStore`, not a blob port — env still off by default, live cutover not yet flipped
 - [ ] Fuseki update-rate attribution after runtime graph cutover (graph-shaped writers only)
+
+**Runtime graph-writer evidence (2026-07-17):** Proving this surfaced a real gap:
+`SubstrateDynamicsEngine.tick()` and `attention_broadcast._node_salience()` — both
+already-shipped consumers — read/write `dynamic_pressure`, `dynamic_pressure_reason`,
+`dormant`, `dormancy_updated_at`, and `prediction_error` inside `BaseSubstrateNodeV1
+.metadata`, but the Cypher-native codec dropped `metadata` entirely on durable writes
+(`decode_concept_node()` always produced `metadata={}`). Masked in-process by the
+Falkor store's read cache, this would have silently reset all dynamics/dormancy/
+prediction-error state on every restart once runtime cut over to Falkor. Fixed by
+promoting exactly these 5 keys to native Cypher scalar properties on concept nodes
+(`orion/substrate/falkor_codec.py`), per this spec's own "promote to first-class
+Cypher properties only with a second consumer" rule. A second bug — repeat
+`_write_prediction_error_node` calls under the same fixed `node_id` (the intended
+"re-writes collapse" path) durably clobbering the dynamics engine's already-computed
+state back to defaults — was found and fixed the same way (carry forward
+dynamics-engine-owned keys before overwriting). Proof: `orion/substrate/tests/
+test_dynamics_falkor_routed.py` (library-level, includes a simulated-restart round
+trip through native properties) and `services/orion-substrate-runtime/tests/
+test_worker_falkor_routed_store.py` (worker-level, against a Falkor-primary
+`RoutedSubstrateGraphStore`). `SUBSTRATE_STORE_BACKEND`/`SUBSTRATE_WRITE_PREDICTION
+_ERROR_NODES`/`SUBSTRATE_DYNAMICS_TICK_ENABLED` remain off by default — actually
+flipping runtime to `routed`/`falkor` live is a separate, later decision requiring a
+live Redis smoke (Concept Atlas restart check above), not made in this patch.
 
 ---
 

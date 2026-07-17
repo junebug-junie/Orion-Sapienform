@@ -26,6 +26,47 @@ PRESSURE_CHANNELS = frozenset({
     "field_coherence_warning",
 })
 
+# Merge-polarity fix (2026-07-16). Channels where a HIGHER value is
+# objectively BETTER (capacity/quality-of-service semantics), as opposed to
+# every channel in PRESSURE_CHANNELS above where higher is worse. For these,
+# the merge in collect_field_channel_pressures() below must take min() (the
+# worst/lowest contributor across all node/capability sources dominates),
+# not max() -- max() would let any single healthy-but-irrelevant source mask
+# a genuinely degraded source reporting the same channel name.
+#
+# Confirmed live: capability:orchestration derives confidence/
+# available_capacity from its own real, varying pressure (mean 0.55,
+# std 0.20 over a 69h corpus) via app/digestion/diffusion.py's fallback
+# formula (available_capacity = 1 - pressure, confidence = 1 - 0.5*pressure).
+# capability:transport has a *direct* diffusion edge into both
+# (delivery_confidence -> confidence, bus_health -> available_capacity, per
+# config/field/orion_field_topology.v1.yaml) and those source channels ran
+# near-constant ~1.0 in the same corpus. Under the old max()-merge,
+# transport's near-1.0 always won, and the merged confidence/
+# available_capacity channels read exactly 1.0 (std<1e-6) for the entire
+# 69h window -- orchestration's real signal was completely masked.
+#
+# Deliberately NOT included: expected_offline_suppression. It lives in
+# self_state_policy.v1.yaml's `stabilizing_channels` block alongside these,
+# but that block groups channels by their role in the *coherence dimension
+# formula* (coherence_score() adds it positively), not by raw polarity.
+# Semantically, expected_offline_suppression == 1.0 means "an active
+# suppression event is happening" -- a pressure-like fact, not a
+# capacity/confidence-like one -- so it must still merge via max() (worst
+# contributor -- i.e. the source actually reporting the suppression event --
+# wins), same as every other pressure-type channel. See
+# config/self_state/self_state_policy.v1.yaml's dimension_worse_direction and
+# this file's coherence_score() for how it's actually used downstream; how
+# multiple channels of mixed polarity combine into one dimension score is a
+# separate design question, out of scope here.
+HIGHER_IS_BETTER_CHANNELS = frozenset({
+    "availability",
+    "confidence",
+    "available_capacity",
+    "delivery_confidence",
+    "bus_health",
+})
+
 
 def clamp01(x: float) -> float:
     return max(0.0, min(1.0, float(x)))
@@ -55,29 +96,62 @@ def collect_field_channel_pressures(
     field: FieldStateV1,
 ) -> tuple[dict[str, float], dict[str, str]]:
     """Merge node_vectors + capability_vectors into one channel-name-keyed
-    pressure dict (unchanged behavior), plus a parallel provenance dict
-    (Phase 3, 2026-07-12) recording which source_id "won" the max() for each
-    channel this tick -- a node_id directly for node_vectors, or the
-    diffusion-tracked edge source (see field.capability_provenance) for
-    capability_vectors, falling back to the capability_id itself when no
-    provenance was recorded for that specific channel.
+    pressure dict, plus a parallel provenance dict (Phase 3, 2026-07-12)
+    recording which source_id "won" the merge for each channel this tick --
+    a node_id directly for node_vectors, or the diffusion-tracked edge source
+    (see field.capability_provenance) for capability_vectors, falling back to
+    the capability_id itself when no provenance was recorded for that
+    specific channel.
+
+    Merge polarity (2026-07-16 fix): most channels are pressure-type (higher
+    = worse), where the worst/highest contributor across all sources should
+    dominate -- max(), unchanged from before. HIGHER_IS_BETTER_CHANNELS
+    (confidence, available_capacity, etc. -- see its docstring above) are the
+    opposite: higher = better, so the worst/LOWEST contributor should
+    dominate instead -- min(). Merging every channel via max() previously
+    made a healthy-but-irrelevant source's near-1.0 goodness reading
+    permanently mask a genuinely degraded source's real signal for the same
+    channel name (confirmed live: merged confidence/available_capacity were
+    pinned at exactly 1.0 for 69h straight).
     """
     out: dict[str, float] = {}
     provenance: dict[str, str] = {}
     for source_id, vector in field.node_vectors.items():
         for channel, value in vector.items():
             v = clamp01(float(value))
-            if (channel in PRESSURE_CHANNELS or v > 0) and v >= out.get(channel, 0.0):
+            if channel in HIGHER_IS_BETTER_CHANNELS:
+                if v <= out.get(channel, 1.0):
+                    out[channel] = v
+                    provenance[channel] = source_id
+            elif (channel in PRESSURE_CHANNELS or v > 0) and v >= out.get(channel, 0.0):
                 out[channel] = v
                 provenance[channel] = source_id
     for capability_id, vector in field.capability_vectors.items():
         for channel, value in vector.items():
             v = clamp01(float(value))
-            if (channel in PRESSURE_CHANNELS or v > 0) and v >= out.get(channel, 0.0):
+            resolved_provenance = field.capability_provenance.get(capability_id, {}).get(
+                channel, capability_id
+            )
+            if channel in HIGHER_IS_BETTER_CHANNELS:
+                if v <= out.get(channel, 1.0):
+                    out[channel] = v
+                    provenance[channel] = resolved_provenance
+            elif (channel in PRESSURE_CHANNELS or v > 0) and v >= out.get(channel, 0.0):
                 out[channel] = v
-                provenance[channel] = field.capability_provenance.get(capability_id, {}).get(
-                    channel, capability_id
-                )
+                provenance[channel] = resolved_provenance
+    # recent_perturbation_count (context_channel, not scored into any
+    # dimension): the denominator/formula here is unchanged, but what it now
+    # counts changed underneath it (2026-07-16 saturating-counter fix). Old
+    # behavior: field.recent_perturbations was capped to the last 20 distinct
+    # labels EVER seen, which saturated this to 1.0 within the first few
+    # ticks of any real corpus and then pinned it there permanently (nothing
+    # ever expired). Now: orion-field-digester's apply_perturbations
+    # (services/orion-field-digester/app/digestion/perturbation.py) prunes
+    # field.recent_perturbations to a rolling 60s wall-clock window instead,
+    # so this count reflects genuinely recent activity and decays back down
+    # once a burst passes, rather than a permanent high-water mark. See
+    # perturbation.py's module docstring for the live delta-rate evidence
+    # (quiet baseline ~6-10/min, bursts up to ~900/min) that sized the window.
     n = len(field.recent_perturbations)
     if n > 0:
         out["recent_perturbation_count"] = clamp01(min(1.0, n / 20.0))

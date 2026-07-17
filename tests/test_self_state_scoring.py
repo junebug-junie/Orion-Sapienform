@@ -185,6 +185,73 @@ def test_weighted_overall_intensity_skips_missing_dimension_not_zero() -> None:
     assert both_present_mixed == 0.5
 
 
+def test_confidence_merge_takes_worst_contributor_not_best() -> None:
+    # Merge-polarity fix (2026-07-16): confidence is a HIGHER_IS_BETTER
+    # channel, so the merge must take min() (worst contributor wins) across
+    # capabilities, not max(). Regression guard for the live bug where
+    # capability:transport's near-1.0 confidence permanently masked
+    # capability:orchestration's real, varying confidence.
+    field = FieldStateV1(
+        generated_at=NOW,
+        tick_id="tick_confidence_polarity",
+        capability_vectors={
+            "capability:transport": {"confidence": 0.95},
+            "capability:orchestration": {"confidence": 0.3},
+        },
+    )
+    channels, provenance = collect_field_channel_pressures(field)
+    assert channels["confidence"] == 0.3
+    assert provenance["confidence"] == "capability:orchestration"
+
+
+def test_available_capacity_merge_takes_worst_contributor_not_best() -> None:
+    field = FieldStateV1(
+        generated_at=NOW,
+        tick_id="tick_capacity_polarity",
+        capability_vectors={
+            "capability:transport": {"available_capacity": 0.95},
+            "capability:orchestration": {"available_capacity": 0.3},
+        },
+    )
+    channels, _ = collect_field_channel_pressures(field)
+    assert channels["available_capacity"] == 0.3
+
+
+def test_pressure_channel_merge_still_takes_worst_i_e_highest_contributor() -> None:
+    # Regression guard: a genuine pressure-type channel (higher = worse) must
+    # still merge via max() across sources -- unchanged behavior, so the
+    # polarity branch above didn't accidentally flip the wrong set.
+    field = FieldStateV1(
+        generated_at=NOW,
+        tick_id="tick_pressure_polarity",
+        node_vectors={
+            "node:athena": {"cpu_pressure": 0.2},
+            "node:atlas": {"cpu_pressure": 0.9},
+        },
+    )
+    channels, provenance = collect_field_channel_pressures(field)
+    assert channels["cpu_pressure"] == 0.9
+    assert provenance["cpu_pressure"] == "node:atlas"
+
+
+def test_expected_offline_suppression_still_merges_via_max_not_min() -> None:
+    # expected_offline_suppression is deliberately NOT in
+    # HIGHER_IS_BETTER_CHANNELS despite living in self_state_policy.v1.yaml's
+    # stabilizing_channels block -- see HIGHER_IS_BETTER_CHANNELS docstring.
+    # Whichever source reports an active suppression event (1.0) must win,
+    # not be masked by another source's 0.0.
+    field = FieldStateV1(
+        generated_at=NOW,
+        tick_id="tick_suppression_polarity",
+        node_vectors={
+            "node:athena": {"expected_offline_suppression": 0.0},
+            "node:circe": {"expected_offline_suppression": 1.0},
+        },
+    )
+    channels, _ = collect_field_channel_pressures(field)
+    assert channels["expected_offline_suppression"] == 1.0
+
+
 def test_condition_thresholds() -> None:
     t = POLICY.condition_thresholds
     assert condition_from_intensity(0.10, t) == "quiet"

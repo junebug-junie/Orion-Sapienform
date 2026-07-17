@@ -40,6 +40,22 @@ class FieldStateV1(BaseModel):
     capability_provenance: dict[str, dict[str, str]] = Field(default_factory=dict)
     edges: list[FieldEdgeV1] = Field(default_factory=list)
     recent_perturbations: list[str] = Field(default_factory=list)
+    # Wall-clock timestamps parallel to recent_perturbations (same length,
+    # same index alignment -- recent_perturbation_at[i] is when
+    # recent_perturbations[i] was first seen). Added 2026-07-16 alongside the
+    # saturating-counter fix: services/orion-field-digester/app/digestion/
+    # perturbation.py now prunes recent_perturbations by wall-clock recency
+    # instead of a fixed last-20-labels-ever cap (the old cap saturated
+    # self_state's recent_perturbation_count to 1.0 within the first few
+    # ticks of any real corpus and then pinned it there permanently -- see
+    # perturbation.py's module docstring for the live evidence). Both lists
+    # are always written/pruned together; a FieldStateV1 persisted before
+    # this fix will load with an empty recent_perturbation_at, so the length
+    # mismatch resets recent_perturbations to empty on the very first tick
+    # after upgrade (zip() in perturbation.py's pruning stops at the shorter
+    # list) -- an immediate, one-tick reset, not gated by window expiry --
+    # and it repopulates normally from there.
+    recent_perturbation_at: list[datetime] = Field(default_factory=list)
     topology_id: str | None = None
     topology_version: str | None = None
     topology_loaded_from: str | None = None

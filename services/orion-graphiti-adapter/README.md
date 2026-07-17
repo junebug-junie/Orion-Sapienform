@@ -50,12 +50,25 @@ Rollback: `GRAPHITI_BACKEND=orion_postgres` and restart adapter (`/v1/search` â†
 | `scripts/smoke_graphiti_links_e2e.sh` | Phase B link ingest + neighborhood BFS (backend-agnostic) |
 | `scripts/smoke_graphiti_search_e2e.sh` | `/v1/search` against real FalkorDB â€” passing as of 2026-07-13 (`crystallization_ids` contains the seed, `trace.embed_used=true`) |
 
-## FalkorDB profile (optional)
+## FalkorDB
+
+**Preferred:** run the shared FalkorDB operator stack from [`services/orion-falkordb`](../orion-falkordb/) (one container, graph names `orion_graphiti` / `orion_substrate`). Point this adapter at `FALKORDB_URI=redis://orion-${NODE_NAME}-falkordb:6379`.
+
+```bash
+docker compose \
+  --env-file .env \
+  --env-file services/orion-falkordb/.env \
+  -f services/orion-falkordb/docker-compose.yml up -d
+```
+
+Set `FALKORDB_ENABLED=true` in `services/orion-graphiti-adapter/.env`.
+
+### FalkorDB profile (backward compat)
+
+This compose file still includes a `--profile falkordb` service for single-node dev and legacy runbooks. Prefer `services/orion-falkordb/` when multiple consumers share the same engine.
 
 ```bash
 docker compose --profile falkordb \
   --env-file .env \
   -f services/orion-graphiti-adapter/docker-compose.yml up -d
 ```
-
-Set `FALKORDB_ENABLED=true` in `services/orion-graphiti-adapter/.env`.

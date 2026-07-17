@@ -303,6 +303,34 @@ def test_classify_relation_calls_classifier_only_when_worth_it() -> None:
     assert calls == [("concept-a", "concept-b", above_edge.edge_id)]
 
 
+def test_classify_relation_produces_deterministic_edge_id_for_same_pair() -> None:
+    """Regression: classify_relation() must return the same edge_id for the
+    same (source, predicate, target) triple across separate calls -- a caller
+    that re-classifies the same pair on a later pass (co-occurrence count
+    only grows) must land on an identity-stable edge_id so store.upsert_edge()
+    overwrites the prior judgment in place instead of accumulating an
+    unbounded duplicate edge per repeat call. Before this fix, edge_id used
+    the model's uuid4 default_factory, which produced a fresh id every call."""
+    node_a = _concept(node_id="concept-a", label="a")
+    node_b = _concept(node_id="concept-b", label="b")
+
+    def fake_classifier(a, b, e):
+        return "supports"
+
+    edge = _edge(co_occurrence_count=DEFAULT_COUNT_THRESHOLD)
+    first = classify_relation(node_a, node_b, edge, classifier=fake_classifier)
+    second = classify_relation(node_a, node_b, edge, classifier=fake_classifier)
+
+    assert first is not None and second is not None
+    assert first.edge_id == second.edge_id
+
+    def fake_classifier_contradicts(a, b, e):
+        return "contradicts"
+
+    different_predicate = classify_relation(node_a, node_b, edge, classifier=fake_classifier_contradicts)
+    assert different_predicate.edge_id != first.edge_id
+
+
 def test_classify_relation_none_result_produces_no_edge() -> None:
     node_a = _concept(node_id="concept-a", label="a")
     node_b = _concept(node_id="concept-b", label="b")

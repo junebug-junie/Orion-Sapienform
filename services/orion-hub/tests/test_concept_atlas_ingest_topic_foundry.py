@@ -639,3 +639,228 @@ def test_client_no_completed_run_raises_client_error(monkeypatch: pytest.MonkeyP
     monkeypatch.setattr(tfc.requests, "get", fake_get)
     with pytest.raises(tfc.TopicFoundryClientError):
         tfc.fetch_run_topics_and_keywords(FAKE_BASE_URL)
+
+
+# --- post-ingestion typed-relation classification step -----------------------
+#
+# Covers the additive post-ingestion step added to
+# concept_atlas_ingest_topic_foundry(): for co_occurs_with edges among current
+# concept nodes that clear the "count" worth-classifying threshold
+# (orion.substrate.relation_classification.is_worth_classifying), call the
+# injected classifier and write any resulting typed edge. The real LLM
+# classifier (scripts/concept_relation_classifier.py) is never invoked here --
+# build_llm_relation_classifier is monkeypatched to a fake so these tests stay
+# fast, deterministic, and network-free.
+
+
+def _seed_relation_pair_nodes_and_edges(store: Any) -> dict[str, str]:
+    """Pre-seed the store with three concept nodes and two co_occurs_with
+    edges: one crossing the default count threshold (5), one below it.
+    Returns the seeded node ids so tests can assert against them.
+    """
+    from orion.core.schemas.cognitive_substrate import ConceptNodeV1, NodeRefV1, SubstrateEdgeV1
+    from orion.substrate.adapters._common import make_provenance, make_temporal
+
+    def _node(node_id: str, label: str) -> ConceptNodeV1:
+        return ConceptNodeV1(
+            node_id=node_id,
+            anchor_scope="world",
+            label=label,
+            temporal=make_temporal(observed_at=None),
+            provenance=make_provenance(source_kind="test", source_channel="test", producer="test"),
+        )
+
+    def _co_occurs_edge(source_id: str, target_id: str, *, count: int) -> SubstrateEdgeV1:
+        return SubstrateEdgeV1(
+            source=NodeRefV1(node_id=source_id, node_kind="concept"),
+            target=NodeRefV1(node_id=target_id, node_kind="concept"),
+            predicate="co_occurs_with",
+            temporal=make_temporal(observed_at=None),
+            provenance=make_provenance(source_kind="test", source_channel="test", producer="test"),
+            metadata={"co_occurrence_count": count},
+        )
+
+    node_a = _node("sub-node-seed-a", "seed concept a")
+    node_b = _node("sub-node-seed-b", "seed concept b")
+    node_c = _node("sub-node-seed-c", "seed concept c")
+    store.upsert_node(identity_key=None, node=node_a)
+    store.upsert_node(identity_key=None, node=node_b)
+    store.upsert_node(identity_key=None, node=node_c)
+
+    # Default DEFAULT_COUNT_THRESHOLD is 5 (relation_classification.py) -- 10
+    # clears it, 2 does not.
+    edge_ab = _co_occurs_edge(node_a.node_id, node_b.node_id, count=10)
+    edge_bc = _co_occurs_edge(node_b.node_id, node_c.node_id, count=2)
+    store.upsert_edge(identity_key="seed-ab", edge=edge_ab)
+    store.upsert_edge(identity_key="seed-bc", edge=edge_bc)
+
+    return {
+        "node_a": node_a.node_id,
+        "node_b": node_b.node_id,
+        "node_c": node_c.node_id,
+        "edge_ab": edge_ab.edge_id,
+        "edge_bc": edge_bc.edge_id,
+    }
+
+
+def _patch_fake_relation_classifier(monkeypatch: pytest.MonkeyPatch, *, predicate: Optional[str]):
+    """Monkeypatch build_llm_relation_classifier so no real LLM/bus call ever
+    happens. Returns the list of (source_id, target_id, edge_id) tuples the
+    fake classifier was actually invoked with, for call-count assertions.
+    """
+    from scripts import concept_relation_classifier as crc
+
+    calls: list[tuple[str, str, str]] = []
+
+    def fake_build_llm_relation_classifier(pairs, *, settings, timeout_sec=None, route=None):
+        def _classifier(node_a, node_b, edge):
+            calls.append((node_a.node_id, node_b.node_id, edge.edge_id))
+            return predicate
+
+        return _classifier
+
+    monkeypatch.setattr(crc, "build_llm_relation_classifier", fake_build_llm_relation_classifier)
+    return calls
+
+
+def test_ingest_classifies_only_pairs_crossing_count_threshold(
+    client: TestClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from orion.substrate.store import InMemorySubstrateGraphStore
+
+    store = InMemorySubstrateGraphStore()
+    seeded = _seed_relation_pair_nodes_and_edges(store)
+    calls = _patch_fake_relation_classifier(monkeypatch, predicate="supports")
+
+    fake_get, _calls = _make_fake_get(topics_payload=_topics_payload_normal())
+    _patch_topic_foundry_client(monkeypatch, fake_get)
+    _patch_base_url(monkeypatch, FAKE_BASE_URL)
+    _patch_store(monkeypatch, store)
+
+    r = client.post("/api/substrate/concepts/ingest-topic-foundry")
+    assert r.status_code == 200
+    body = r.json()
+    assert body["available"] is True
+
+    # Only the A-B pair (count=10) clears the default threshold of 5; B-C
+    # (count=2) must never reach the classifier.
+    assert len(calls) == 1
+    assert calls[0][0] == seeded["node_a"]
+    assert calls[0][1] == seeded["node_b"]
+    assert calls[0][2] == seeded["edge_ab"]
+
+    assert body["typed_edges_written"] == 1
+
+    # classify_relation() stamps metadata["source_edge_id"] with the
+    # co_occurs_with edge it classified (relation_classification.py) -- use
+    # that as the unique marker for "the typed edge our new step wrote",
+    # since the normal ingest fixture also produces unrelated evidence-
+    # >concept "supports" edges from the materializer itself.
+    snapshot = store.snapshot()
+    typed_edges = [
+        e
+        for e in snapshot.edges.values()
+        if e.predicate == "supports" and e.metadata.get("source_edge_id") == seeded["edge_ab"]
+    ]
+    assert len(typed_edges) == 1
+    assert typed_edges[0].source.node_id == seeded["node_a"]
+    assert typed_edges[0].target.node_id == seeded["node_b"]
+
+
+def test_ingest_classifier_none_result_writes_no_typed_edge(
+    client: TestClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A classifier that returns None (no confident relation) must not
+    produce a typed edge, but must still be honestly reported as 0, not an
+    error."""
+    from orion.substrate.store import InMemorySubstrateGraphStore
+
+    store = InMemorySubstrateGraphStore()
+    seeded = _seed_relation_pair_nodes_and_edges(store)
+    calls = _patch_fake_relation_classifier(monkeypatch, predicate=None)
+
+    fake_get, _calls = _make_fake_get(topics_payload=_topics_payload_normal())
+    _patch_topic_foundry_client(monkeypatch, fake_get)
+    _patch_base_url(monkeypatch, FAKE_BASE_URL)
+    _patch_store(monkeypatch, store)
+
+    r = client.post("/api/substrate/concepts/ingest-topic-foundry")
+    assert r.status_code == 200
+    body = r.json()
+    assert body["available"] is True
+
+    assert len(calls) == 1  # still invoked for the qualifying pair
+    assert body["typed_edges_written"] == 0
+
+    snapshot = store.snapshot()
+    typed_edges = [
+        e for e in snapshot.edges.values() if e.metadata.get("source_edge_id") == seeded["edge_ab"]
+    ]
+    assert typed_edges == []
+
+
+def test_ingest_no_co_occurs_edges_reports_zero_typed_edges_without_classifier_call(
+    client: TestClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The normal ingest fixture never produces co_occurs_with edges
+    (segment_topic_map is empty by design) -- the classifier must never be
+    invoked, and typed_edges_written must be an honest 0, not omitted."""
+    from orion.substrate.store import InMemorySubstrateGraphStore
+
+    store = InMemorySubstrateGraphStore()
+    calls = _patch_fake_relation_classifier(monkeypatch, predicate="supports")
+
+    fake_get, _calls = _make_fake_get(topics_payload=_topics_payload_normal())
+    _patch_topic_foundry_client(monkeypatch, fake_get)
+    _patch_base_url(monkeypatch, FAKE_BASE_URL)
+    _patch_store(monkeypatch, store)
+
+    r = client.post("/api/substrate/concepts/ingest-topic-foundry")
+    assert r.status_code == 200
+    body = r.json()
+    assert body["available"] is True
+    assert body["typed_edges_written"] == 0
+    assert calls == []
+
+
+def test_ingest_second_call_does_not_duplicate_or_reclassify_already_typed_pair(
+    client: TestClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Regression: calling the ingest route twice against the same store must
+    not (a) write a second, duplicate typed edge for a pair already classified,
+    or (b) spend another classifier call on it. Before the deterministic
+    edge_id fix (relation_classification.py) and the already-classified
+    filter (_typed_relation_classification_candidates), every call re-built a
+    fresh-uuid edge_id for the same pair (accumulating unbounded duplicates in
+    the store) and re-spent the LLM budget reclassifying pairs it already had
+    an answer for."""
+    from orion.substrate.store import InMemorySubstrateGraphStore
+
+    store = InMemorySubstrateGraphStore()
+    seeded = _seed_relation_pair_nodes_and_edges(store)
+    calls = _patch_fake_relation_classifier(monkeypatch, predicate="supports")
+
+    fake_get, _calls = _make_fake_get(topics_payload=_topics_payload_normal())
+    _patch_topic_foundry_client(monkeypatch, fake_get)
+    _patch_base_url(monkeypatch, FAKE_BASE_URL)
+    _patch_store(monkeypatch, store)
+
+    r1 = client.post("/api/substrate/concepts/ingest-topic-foundry")
+    assert r1.status_code == 200
+    assert r1.json()["typed_edges_written"] == 1
+    assert len(calls) == 1
+
+    r2 = client.post("/api/substrate/concepts/ingest-topic-foundry")
+    assert r2.status_code == 200
+    # Second call must not reclassify the already-typed A-B pair.
+    assert r2.json()["typed_edges_written"] == 0
+    assert len(calls) == 1  # classifier not invoked again
+
+    snapshot = store.snapshot()
+    typed_edges = [
+        e
+        for e in snapshot.edges.values()
+        if e.predicate == "supports" and e.metadata.get("source_edge_id") == seeded["edge_ab"]
+    ]
+    # Exactly one typed edge for this pair -- not two.
+    assert len(typed_edges) == 1

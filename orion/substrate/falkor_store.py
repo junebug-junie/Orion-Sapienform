@@ -1,24 +1,28 @@
-"""FalkorDB-backed SubstrateGraphStore (write-through cache + payload_json).
+"""FalkorDB-backed SubstrateGraphStore (write-through cache + Cypher-native properties).
 
 Queries and reads are served from the in-process cache (same shape as a warm
 GraphDBSubstrateStore). Durable writes go through an injectable sync client so
 unit tests never need a live FalkorDB. Cold-start hydration is best-effort via
-MATCH … RETURN payload_json when the client can answer.
+MATCH … RETURN native scalar properties when the client can answer.
 """
 
 from __future__ import annotations
 
-import json
 import logging
 import os
 from dataclasses import dataclass, replace
 from typing import Any, Protocol
 from urllib.parse import urlparse
 
-from pydantic import TypeAdapter
-
-from orion.core.schemas.cognitive_substrate import BaseSubstrateNodeV1, SubstrateEdgeV1, SubstrateNodeV1
+from orion.core.schemas.cognitive_substrate import BaseSubstrateNodeV1, SubstrateEdgeV1
 from orion.graph.property_guard import sanitize_metadata
+from orion.substrate.falkor_codec import (
+    decode_concept_node,
+    decode_edge,
+    encode_edge_properties,
+    encode_node_properties,
+    node_label_for_kind,
+)
 from orion.substrate.store import (
     InMemorySubstrateGraphStore,
     MaterializedSubstrateGraphState,
@@ -27,8 +31,6 @@ from orion.substrate.store import (
 )
 
 logger = logging.getLogger("orion.substrate.falkor_store")
-
-NODE_ADAPTER = TypeAdapter(SubstrateNodeV1)
 
 
 class FalkorGraphClient(Protocol):
@@ -41,6 +43,69 @@ class FalkorSubstrateStoreConfig:
     graph_name: str = "orion_substrate"
 
 
+NATIVE_NODE_RETURN_FIELDS: tuple[str, ...] = (
+    "node_id",
+    "node_kind",
+    "identity_key",
+    "label",
+    "definition",
+    "anchor_scope",
+    "subject_ref",
+    "promotion_state",
+    "risk_tier",
+    "confidence",
+    "salience",
+    "activation",
+    "recency_score",
+    "decay_half_life_seconds",
+    "decay_floor",
+    "observed_at",
+    "valid_from",
+    "valid_to",
+    "provenance_authority",
+    "provenance_source_kind",
+    "provenance_source_channel",
+    "provenance_producer",
+    "provenance_model_name",
+    "provenance_correlation_id",
+    "provenance_trace_id",
+    "provenance_tier_rank",
+)
+
+NATIVE_EDGE_RETURN_FIELDS: tuple[str, ...] = (
+    "edge_id",
+    "identity_key",
+    "source_id",
+    "source_kind",
+    "target_id",
+    "target_kind",
+    "predicate",
+    "substrate_edge",
+    "confidence",
+    "salience",
+    "observed_at",
+    "valid_from",
+    "valid_to",
+    "provenance_authority",
+    "provenance_source_kind",
+    "provenance_source_channel",
+    "provenance_producer",
+    "provenance_model_name",
+    "provenance_correlation_id",
+    "provenance_trace_id",
+    "provenance_tier_rank",
+)
+
+
+def _return_clause(alias: str, fields: tuple[str, ...]) -> str:
+    return ", ".join(f"{alias}.{field} AS {field}" for field in fields)
+
+
+def _set_assignments(alias: str, params: dict[str, Any], *, skip: set[str]) -> str:
+    keys = sorted(k for k in params if k not in skip)
+    return ", ".join(f"{alias}.{key} = ${key}" for key in keys)
+
+
 class RecordingFalkorClient:
     """Test double that records Cypher and optionally returns scripted rows."""
 
@@ -50,7 +115,7 @@ class RecordingFalkorClient:
 
     def graph_query(self, cypher: str, params: dict[str, Any] | None = None) -> Any:
         self.calls.append((cypher, params))
-        if "RETURN n.payload_json" in cypher or "RETURN e.payload_json" in cypher:
+        if "RETURN n.node_id AS node_id" in cypher or "RETURN e.edge_id AS edge_id" in cypher:
             return self._hydrate_rows
         return []
 
@@ -105,34 +170,33 @@ class FalkorSubstrateStore:
     def _hydrate_from_durable(self) -> None:
         try:
             node_rows = self._client.graph_query(
-                "MATCH (n:SubstrateNode) RETURN n.payload_json AS payload_json, n.identity_key AS identity_key"
+                "MATCH (n:SubstrateNode) RETURN " + _return_clause("n", NATIVE_NODE_RETURN_FIELDS)
             )
             edge_rows = self._client.graph_query(
-                "MATCH ()-[e]->() WHERE e.substrate_edge = true "
-                "RETURN e.payload_json AS payload_json, e.identity_key AS identity_key"
+                "MATCH (source:SubstrateNode)-[e]->(target:SubstrateNode) "
+                "WHERE e.substrate_edge = true "
+                "RETURN " + _return_clause("e", NATIVE_EDGE_RETURN_FIELDS)
             )
         except Exception as exc:
             logger.warning("falkor_substrate_hydrate_failed error=%s", exc)
             return
         for row in _normalize_rows(node_rows):
-            payload = row.get("payload_json")
-            if not payload:
-                continue
             try:
-                node = NODE_ADAPTER.validate_json(payload)
+                node = decode_concept_node(row)
             except Exception:
                 logger.warning("falkor_substrate_hydrate_node_invalid")
+                continue
+            if node is None:
                 continue
             identity = row.get("identity_key")
             self._cache.upsert_node(identity_key=str(identity) if identity else None, node=node)
         for row in _normalize_rows(edge_rows):
-            payload = row.get("payload_json")
-            if not payload:
-                continue
             try:
-                edge = SubstrateEdgeV1.model_validate_json(payload)
+                edge = decode_edge(row)
             except Exception:
                 logger.warning("falkor_substrate_hydrate_edge_invalid")
+                continue
+            if edge is None:
                 continue
             identity = row.get("identity_key") or self._edge_identity(edge)
             self._cache.upsert_edge(identity_key=str(identity), edge=edge)
@@ -155,19 +219,10 @@ class FalkorSubstrateStore:
 
     def upsert_node(self, *, identity_key: str | None, node: BaseSubstrateNodeV1) -> None:
         node = _with_sanitized_metadata(node)
-        payload_json = json.dumps(node.model_dump(mode="json"), ensure_ascii=False, sort_keys=True)
-        params = {
-            "node_id": node.node_id,
-            "node_kind": node.node_kind,
-            "payload_json": payload_json,
-            "identity_key": identity_key or "",
-            "salience": float(node.signals.salience),
-        }
-        cypher = (
-            "MERGE (n:SubstrateNode {node_id: $node_id}) "
-            "SET n.node_kind = $node_kind, n.payload_json = $payload_json, "
-            "n.identity_key = $identity_key, n.salience = $salience"
-        )
+        params = encode_node_properties(node, identity_key)
+        label = node_label_for_kind(str(node.node_kind))
+        assignments = _set_assignments("n", params, skip={"node_id"})
+        cypher = f"MERGE (n:SubstrateNode:{label} {{node_id: $node_id}}) SET {assignments}"
         try:
             self._client.graph_query(cypher, params)
         except Exception as exc:
@@ -177,27 +232,15 @@ class FalkorSubstrateStore:
 
     def upsert_edge(self, *, identity_key: str, edge: SubstrateEdgeV1) -> None:
         edge = _with_sanitized_metadata(edge)
-        payload_json = json.dumps(edge.model_dump(mode="json"), ensure_ascii=False, sort_keys=True)
-        params = {
-            "edge_id": edge.edge_id,
-            "payload_json": payload_json,
-            "identity_key": identity_key,
-            "source_id": edge.source.node_id,
-            "target_id": edge.target.node_id,
-            "salience": float(edge.salience),
-        }
-        # SubstrateEdgeV1 validates predicate against a closed Literal, so it
-        # is safe to use as the relationship type (Cypher cannot parameterize
-        # relationship types).
+        params = encode_edge_properties(edge, identity_key)
         relationship_type = edge.predicate
+        assignments = _set_assignments("e", params, skip={"edge_id", "source_id", "target_id"})
         cypher = (
             "MERGE (source:SubstrateNode {node_id: $source_id}) "
             "MERGE (target:SubstrateNode {node_id: $target_id}) "
             f"MERGE (source)-[e:`{relationship_type}` {{edge_id: $edge_id}}]->(target) "
-            "SET e.payload_json = $payload_json, e.identity_key = $identity_key, "
-            "e.substrate_edge = true, e.predicate = $predicate, e.salience = $salience"
+            f"SET {assignments}"
         )
-        params["predicate"] = relationship_type
         try:
             self._client.graph_query(cypher, params)
         except Exception as exc:
@@ -214,19 +257,25 @@ class FalkorSubstrateStore:
             self._result_source_kind,
         )
 
-    def query_hotspot_region(self, *, min_salience: float = 0.6, limit_nodes: int = 32, limit_edges: int = 64) -> SubstrateQueryResultV1:
+    def query_hotspot_region(
+        self, *, min_salience: float = 0.6, limit_nodes: int = 32, limit_edges: int = 64
+    ) -> SubstrateQueryResultV1:
         result = self._cache.query_hotspot_region(
             min_salience=min_salience, limit_nodes=limit_nodes, limit_edges=limit_edges
         )
         return _retag_source(result, self._result_source_kind)
 
-    def query_contradiction_region(self, *, limit_nodes: int = 32, limit_edges: int = 64) -> SubstrateQueryResultV1:
+    def query_contradiction_region(
+        self, *, limit_nodes: int = 32, limit_edges: int = 64
+    ) -> SubstrateQueryResultV1:
         return _retag_source(
             self._cache.query_contradiction_region(limit_nodes=limit_nodes, limit_edges=limit_edges),
             self._result_source_kind,
         )
 
-    def query_concept_region(self, *, limit_nodes: int = 32, limit_edges: int = 64) -> SubstrateQueryResultV1:
+    def query_concept_region(
+        self, *, limit_nodes: int = 32, limit_edges: int = 64
+    ) -> SubstrateQueryResultV1:
         return _retag_source(
             self._cache.query_concept_region(limit_nodes=limit_nodes, limit_edges=limit_edges),
             self._result_source_kind,
@@ -299,11 +348,10 @@ def _normalize_rows(raw: Any) -> list[dict[str, Any]]:
             if isinstance(item, dict):
                 out.append(item)
             elif isinstance(item, (list, tuple)) and len(item) >= 1:
-                # hydrate script may return [[payload, identity], ...]
                 if len(item) >= 2:
-                    out.append({"payload_json": item[0], "identity_key": item[1]})
+                    out.append({"node_id": item[0], "identity_key": item[1]})
                 else:
-                    out.append({"payload_json": item[0], "identity_key": ""})
+                    out.append({"node_id": item[0], "identity_key": ""})
         return out
     return []
 

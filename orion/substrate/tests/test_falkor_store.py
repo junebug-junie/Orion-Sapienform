@@ -178,7 +178,8 @@ def test_falkor_edge_is_persisted_as_typed_relationship():
 
     cypher, params = client.calls[-1]
     assert "MERGE (source)-[e:`supports`" in cypher
-    assert "e.substrate_edge = true" in cypher
+    assert "payload_json" not in cypher
+    assert "e.substrate_edge = $substrate_edge" in cypher
     assert params is not None
     assert params["source_id"] == "sub-node-a"
     assert params["target_id"] == "sub-node-b"
@@ -234,11 +235,56 @@ def test_redis_graph_client_uses_redis_py_parameter_header():
 
 def test_normalize_rows_parses_raw_graph_query_header_and_stats():
     raw = [
-        [["n.payload_json", 1], ["n.identity_key", 1]],
-        [["{\"node_id\":\"sub-node-a\"}", "id-a"]],
+        [["n.node_id", 1], ["n.identity_key", 1]],
+        [["concept-alpha", "concept:alpha"]],
         ["Cached execution: 0", "Query internal execution time: 0.1 milliseconds"],
     ]
 
     assert _normalize_rows(raw) == [
-        {"payload_json": "{\"node_id\":\"sub-node-a\"}", "identity_key": "id-a"}
+        {"node_id": "concept-alpha", "identity_key": "concept:alpha"}
     ]
+
+
+def test_falkor_hydrated_concepts_support_concept_region_query():
+    client = RecordingFalkorClient(
+        hydrate_rows=[
+            {
+                "node_id": "concept-alpha",
+                "node_kind": "concept",
+                "identity_key": "concept:alpha",
+                "label": "Alpha",
+                "definition": None,
+                "anchor_scope": "orion",
+                "subject_ref": None,
+                "promotion_state": "canonical",
+                "risk_tier": "low",
+                "confidence": 0.8,
+                "salience": 0.7,
+                "activation": 0.5,
+                "recency_score": 0.4,
+                "decay_floor": 0.0,
+                "decay_half_life_seconds": None,
+                "observed_at": "2026-07-16T00:00:00+00:00",
+                "valid_from": None,
+                "valid_to": None,
+                "provenance_authority": "local_inferred",
+                "provenance_source_kind": "test",
+                "provenance_source_channel": "test:falkor",
+                "provenance_producer": "test_falkor_store",
+                "provenance_model_name": None,
+                "provenance_correlation_id": None,
+                "provenance_trace_id": None,
+                "provenance_tier_rank": None,
+            }
+        ]
+    )
+    store = FalkorSubstrateStore(
+        FalkorSubstrateStoreConfig(uri="redis://localhost:6379", graph_name="orion_substrate"),
+        client=client,
+        hydrate=True,
+    )
+
+    result = store.query_concept_region(limit_nodes=10, limit_edges=10)
+
+    assert result.source_kind == "falkor"
+    assert [node.node_id for node in result.slice.nodes] == ["concept-alpha"]

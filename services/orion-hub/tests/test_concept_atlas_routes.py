@@ -367,3 +367,60 @@ def test_app_js_pings_activate_and_deactivate_for_concept_atlas() -> None:
     assert "conceptAtlasPanelFrame" in app_js_text
     assert "OrionConceptAtlas.activate" in app_js_text
     assert "OrionConceptAtlas.deactivate" in app_js_text
+
+
+def test_summary_reads_hydrated_falkor_store(client: TestClient, monkeypatch: pytest.MonkeyPatch) -> None:
+    from scripts import concept_atlas_routes
+    from orion.substrate.falkor_store import (
+        FalkorSubstrateStore,
+        FalkorSubstrateStoreConfig,
+        RecordingFalkorClient,
+    )
+
+    falkor_client = RecordingFalkorClient(
+        hydrate_rows=[
+            {
+                "node_id": "concept-native-atlas",
+                "node_kind": "concept",
+                "identity_key": "concept:native-atlas",
+                "label": "Native Atlas",
+                "definition": None,
+                "anchor_scope": "orion",
+                "subject_ref": None,
+                "promotion_state": "canonical",
+                "risk_tier": "low",
+                "confidence": 0.8,
+                "salience": 0.7,
+                "activation": 0.5,
+                "recency_score": 0.4,
+                "decay_floor": 0.0,
+                "decay_half_life_seconds": None,
+                "observed_at": "2026-07-16T00:00:00+00:00",
+                "valid_from": None,
+                "valid_to": None,
+                "provenance_authority": "local_inferred",
+                "provenance_source_kind": "test",
+                "provenance_source_channel": "test:concept_atlas",
+                "provenance_producer": "test_concept_atlas_routes",
+                "provenance_model_name": None,
+                "provenance_correlation_id": None,
+                "provenance_trace_id": None,
+                "provenance_tier_rank": None,
+            }
+        ]
+    )
+    store = FalkorSubstrateStore(
+        FalkorSubstrateStoreConfig(uri="redis://localhost:6379", graph_name="orion_substrate"),
+        client=falkor_client,
+        hydrate=True,
+    )
+    monkeypatch.setattr(concept_atlas_routes, "_get_substrate_store", lambda: store)
+
+    r = client.get("/api/substrate/concepts/summary")
+
+    assert r.status_code == 200
+    body = r.json()
+    assert body["available"] is True
+    assert body["total_concepts"] == 1
+    assert body["by_promotion_state"]["canonical"] == 1
+    assert body["by_anchor_scope"]["orion"] == 1

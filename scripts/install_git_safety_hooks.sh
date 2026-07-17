@@ -135,10 +135,20 @@ install_post_commit_hook() {
     # already uses (`graphify hook install` ships a post-commit hook that
     # rebuilds the knowledge graph after every commit). Running install_one_hook
     # here would silently disable that on first install -- confirmed live
-    # against this repo's own primary checkout, not a hypothetical. Appending
-    # our marked block to the end of whatever is already there means both
-    # hooks keep running: git executes one hook script top-to-bottom, so any
-    # foreign hook's own logic runs first, then ours.
+    # against this repo's own primary checkout, not a hypothetical.
+    #
+    # Appending our block after the foreign one is not enough by itself,
+    # confirmed by a second live bug: graphify's hook does its own
+    # `exit 0` for any commit made from a linked worktree (its rebuild only
+    # runs from the primary checkout) -- and a bare `exit` in a concatenated
+    # shell script terminates the WHOLE file, not just the fragment it's in.
+    # With the two fragments pasted back to back, that exit silently killed
+    # our block on every worktree commit, i.e. the actual common case this
+    # repo's own convention requires (AGENTS.md section 2: worktrees only).
+    # Each fragment is therefore wrapped in its own `( ... ) || true`
+    # subshell: `exit` inside `( ... )` only ends that subshell, so one
+    # fragment's early-out can never prevent the other from running,
+    # regardless of install order.
     local SOURCE_HOOK="$SCRIPT_DIR/git_hooks/post-commit"
     local DEST_HOOK="$HOOKS_DIR/post-commit"
     local MARKER="# orion-git-safety-guard"
@@ -151,17 +161,25 @@ install_post_commit_hook() {
     fi
 
     if [ ! -f "$DEST_HOOK" ]; then
-        cp "$SOURCE_HOOK" "$DEST_HOOK"
+        {
+            echo "#!/bin/sh"
+            echo ""
+            echo "$MARKER (post-commit)"
+            echo "("
+            tail -n +3 "$SOURCE_HOOK"
+            echo ") || true"
+        } > "$DEST_HOOK"
         chmod +x "$DEST_HOOK"
         echo "[install-git-safety-hooks] installed orion git-safety post-commit hook at $DEST_HOOK"
         return 0
     fi
 
     if grep -qF "$MARKER" "$DEST_HOOK" 2>/dev/null; then
-        # Our block is already present and, by construction (see the append
-        # branch below), always runs from the marker line to EOF -- refresh
-        # just that trailing block, leaving anything before it (our own
-        # earlier install, or a foreign hook's real content) untouched.
+        # Our block is already present and, by construction (see below),
+        # always runs from the marker line to EOF -- refresh just that
+        # trailing block, leaving anything before it (a subshell-wrapped
+        # foreign hook from an earlier append, or our own prior install)
+        # untouched.
         local MARKER_LINE
         MARKER_LINE=$(grep -nF "$MARKER" "$DEST_HOOK" | head -1 | cut -d: -f1)
         local TMP_FILE
@@ -174,7 +192,10 @@ install_post_commit_hook() {
         {
             cat "$TMP_FILE"
             echo ""
-            tail -n +2 "$SOURCE_HOOK"
+            echo "$MARKER (post-commit)"
+            echo "("
+            tail -n +3 "$SOURCE_HOOK"
+            echo ") || true"
         } > "$DEST_HOOK.tmp"
         rm -f "$TMP_FILE"
         mv "$DEST_HOOK.tmp" "$DEST_HOOK"
@@ -183,12 +204,24 @@ install_post_commit_hook() {
         return 0
     fi
 
-    # Foreign hook with no orion block yet -- append ours rather than
-    # overwriting/backing-up.
+    # Foreign hook with no orion block yet -- wrap its existing body in a
+    # subshell (isolating any `exit` it calls) and append ours, also
+    # subshell-wrapped, rather than overwriting/backing up.
     {
+        echo "("
+        tail -n +2 "$DEST_HOOK"
+        echo ") || true"
         echo ""
-        tail -n +2 "$SOURCE_HOOK"
-    } >> "$DEST_HOOK"
+        echo "$MARKER (post-commit)"
+        echo "("
+        tail -n +3 "$SOURCE_HOOK"
+        echo ") || true"
+    } > "$DEST_HOOK.tmp"
+    {
+        echo "#!/bin/sh"
+        cat "$DEST_HOOK.tmp"
+    } > "$DEST_HOOK"
+    rm -f "$DEST_HOOK.tmp"
     chmod +x "$DEST_HOOK"
     echo "[install-git-safety-hooks] appended orion git-safety post-commit hook block to existing $DEST_HOOK (existing hook content preserved, not backed up or replaced)"
 }

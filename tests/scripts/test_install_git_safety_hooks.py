@@ -110,6 +110,82 @@ def test_post_commit_appends_to_existing_foreign_hook_without_backup(tmp_path: P
     assert not backup.exists()
 
 
+def test_post_commit_heartbeat_survives_foreign_hook_early_exit(tmp_path: Path) -> None:
+    """Regression test for a real bug caught live: graphify's own post-commit
+    hook calls `exit 0` for any commit made from a linked worktree (its
+    knowledge-graph rebuild only runs from the primary checkout). A bare
+    `exit` in a concatenated shell script terminates the WHOLE file, not just
+    the fragment that called it -- so simply appending our block after the
+    foreign one silently killed our heartbeat on every worktree commit, which
+    is this repo's common case (AGENTS.md section 2: worktrees only). Each
+    fragment must be isolated in its own `( ... )` subshell so one's exit
+    can't block the other, regardless of which fragment runs first."""
+    primary = tmp_path / "primary"
+    _init_repo(primary)
+    subprocess.run(["git", "config", "user.email", "test@example.com"], cwd=primary, check=True)
+    subprocess.run(["git", "config", "user.name", "Test"], cwd=primary, check=True)
+
+    board_scripts_dir = primary / "scripts"
+    board_scripts_dir.mkdir()
+    for name in ("agent_board.py", "agent_board_lib.py", "worktree_lib.py"):
+        (board_scripts_dir / name).write_text(
+            (ROOT / "scripts" / name).read_text(encoding="utf-8"), encoding="utf-8"
+        )
+
+    subprocess.run(["git", "add", "-A"], cwd=primary, check=True)
+    subprocess.run(["git", "commit", "-q", "-m", "init"], cwd=primary, check=True)
+
+    # Write the foreign hook AFTER the init commit, not before -- otherwise
+    # that fixture-setup commit would trigger it too, polluting the sentinel
+    # this test uses to prove the foreign hook only ran once.
+    hooks_dir = primary / ".git" / "hooks"
+    sentinel = tmp_path / "foreign-hook-ran.txt"
+    (hooks_dir / "post-commit").write_text(
+        f"#!/bin/sh\necho ran >> {sentinel}\nexit 0\necho unreachable >> {sentinel}\n",
+        encoding="utf-8",
+    )
+    (hooks_dir / "post-commit").chmod(0o755)
+
+    proc = _run_installer(primary)
+    assert proc.returncode == 0, proc.stderr
+
+    worktree = tmp_path / "worktree"
+    subprocess.run(
+        ["git", "worktree", "add", "-q", str(worktree), "-b", "chore/test-early-exit"],
+        cwd=primary,
+        check=True,
+    )
+
+    board = tmp_path / "agent-board.jsonl"
+    env = {**os.environ, "ORION_AGENT_BOARD_PATH": str(board)}
+
+    (worktree / "f.txt").write_text("x", encoding="utf-8")
+    subprocess.run(["git", "add", "f.txt"], cwd=worktree, check=True, env=env)
+    subprocess.run(
+        ["git", "commit", "-q", "-m", "test: verify heartbeat survives foreign early exit"],
+        cwd=worktree,
+        check=True,
+        env=env,
+    )
+
+    # Foreign hook ran and stopped at its own `exit 0` -- confirms the test
+    # fixture actually exercises the early-exit condition it claims to.
+    sentinel_text = sentinel.read_text(encoding="utf-8")
+    assert sentinel_text.count("ran") == 1
+    assert "unreachable" not in sentinel_text
+
+    listed = subprocess.run(
+        [sys.executable, str(ROOT / "scripts" / "agent_board.py"), "list", "--all"],
+        cwd=worktree,
+        env=env,
+        capture_output=True,
+        text=True,
+        timeout=30,
+    )
+    assert listed.returncode == 0, listed.stderr
+    assert "test: verify heartbeat survives foreign early exit" in listed.stdout
+
+
 def test_installed_post_commit_hook_heartbeats_the_agent_board(tmp_path: Path) -> None:
     """End-to-end: a real `git commit` in a repo with the installed hook must
     write a presence heartbeat to the agent board carrying the commit's own

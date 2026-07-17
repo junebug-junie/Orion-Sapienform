@@ -227,6 +227,20 @@ class ConceptSettings(BaseSettings):
     journal_user_id: str = Field("juniper", alias="JOURNAL_USER_ID")
     journal_author: str = Field("orion", alias="JOURNAL_AUTHOR")
 
+    # Post-save concept graph materialization (additive; LocalProfileStore remains SoR)
+    # falkor = Cypher-native FalkorSubstrateStore into shared Hub graph (orion_substrate)
+    # rdf = legacy rdf.write.request → Fuseki (compat)
+    # disabled = skip graph materialization
+    concept_profile_graph_backend: str = Field(
+        "falkor",
+        alias="CONCEPT_PROFILE_GRAPH_BACKEND",
+    )
+    falkordb_uri: str = Field("redis://orion-athena-falkordb:6379", alias="FALKORDB_URI")
+    falkordb_substrate_graph: str = Field(
+        "orion_substrate",
+        alias="FALKORDB_SUBSTRATE_GRAPH",
+    )
+
     # Repository backend / Graph read model (Phase 2)
     concept_profile_repository_backend: str = Field(
         "local",
@@ -322,6 +336,14 @@ class ConceptSettings(BaseSettings):
                     pass
             return [item.strip() for item in raw.split(",") if item.strip()]
         return v
+
+    @field_validator("concept_profile_graph_backend", mode="before")
+    @classmethod
+    def _parse_graph_backend(cls, v):
+        raw = str(v or "falkor").strip().lower()
+        if raw not in {"falkor", "rdf", "disabled"}:
+            return "disabled"
+        return raw
 
     @field_validator("concept_profile_repository_backend", mode="before")
     @classmethod

@@ -1023,14 +1023,12 @@ class BiometricsSubstrateWorker:
         self._latest_drive_audit_at = datetime.now(timezone.utc)
 
     def _materialize_drive_state_to_substrate(self) -> None:
-        """Fold the latest cached DriveStateV1 (+ DriveAuditV1 if available) into
-        the substrate graph as a snapshot_source="drive_state" node, so
-        chat_stance.py's drive-state projection (and Mind's facet fetch) receive
-        real DriveEngine data instead of an always-empty snapshot list.
+        """Optional rollback ladder: fold cached DriveStateV1 (+ DriveAuditV1)
+        into the substrate graph as snapshot_source="drive_state".
 
-        Runs synchronously off the drive-state listener's cache step (fast,
-        pure Python + one store write, no extra bus round-trip); fail-open on
-        missing store or write errors -- never blocks drive-state caching.
+        Chat stance measurement SoR is Postgres drive_audits (bus → sql-writer).
+        This writer is gated by DRIVE_STATE_SUBSTRATE_MATERIALIZATION_ENABLED
+        (default off). Fail-open on missing store or write errors.
         """
         drive_state = self._latest_drive_state
         if drive_state is None:

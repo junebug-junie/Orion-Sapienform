@@ -136,7 +136,7 @@ REGISTRY: tuple[InnerStateSignal, ...] = (
         composition_status=CompositionStatus.DUPLICATE,
         duplicate_of="autonomy_state_v2",
         cognition_consumers=(
-            "services.orion-cortex-exec.app.chat_stance:build_chat_stance_inputs (ctx['chat_drive_state'])",
+            "services.orion-cortex-exec.app.chat_stance:build_chat_stance_inputs (ctx['chat_drive_state'] via drive_state_postgres)",
             "services.orion-cortex-exec.app.autonomy_slice:build_autonomy_slice",
             "services.orion-cortex-orch.app.mind_runtime:fetch_drive_state_facet_for_mind",
         ),
@@ -151,13 +151,12 @@ REGISTRY: tuple[InnerStateSignal, ...] = (
             "novelty}, itself only published by orion-spark-introspector on a "
             "turn_effect_alert, not continuously). Live: 363 samples/24h "
             "confirmed 2026-07-12, real variance "
-            "(coherence~0.20, continuity~0.35, capability~0.47). Resolved "
-            "2026-07-16: the sole live drive-pressure signal (autonomy_state_v2 "
-            "retired, see that entry below) -- materialized into the substrate "
-            "graph by services/orion-substrate-runtime/app/worker.py's "
-            "_materialize_drive_state_to_substrate (drive-state/drive-audit bus "
-            "listeners, snapshot_source='drive_state'), read by chat_stance.py's "
-            "drive-state projection and by Mind's bounded Postgres facet fetch. "
+            "(coherence~0.20, continuity~0.35, capability~0.47). Measurement "
+            "SoR is Postgres drive_audits (bus → sql-writer). Chat stance "
+            "reads via drive_state_postgres.fetch_drive_state_for_chat_stance; "
+            "Mind via fetch_drive_state_facet_for_mind. Substrate graph "
+            "snapshot_source='drive_state' materialization defaults off "
+            "(DRIVE_STATE_SUBSTRATE_MATERIALIZATION_ENABLED). "
             "DUPLICATE/duplicate_of still marked pending an explicit registry "
             "status for 'formerly duplicate, now sole' -- see CompositionStatus."
         ),

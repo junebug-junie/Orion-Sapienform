@@ -1,8 +1,6 @@
-"""Unit tests for materializing DriveEngine's drive_state/drive_audit into the
-substrate graph (snapshot_source="drive_state"), so chat_stance.py's
-drive-state projection actually receives real data instead of reading an
-always-empty snapshot list -- see
-orion/autonomy/drives_and_autonomy_retrospective.md §9.
+"""Unit tests for optional DriveEngine → substrate graph materialization
+(snapshot_source="drive_state"). Chat stance measurement SoR is now Postgres
+drive_audits; this writer defaults off and remains only as a rollback ladder.
 
 Mirrors test_embodiment_c_hook.py's worker-construction pattern.
 """
@@ -73,6 +71,16 @@ def _audit(**overrides) -> DriveAuditV1:
     )
     base.update(overrides)
     return DriveAuditV1(**base)
+
+
+def test_settings_default_materialization_off(monkeypatch):
+    monkeypatch.delenv("DRIVE_STATE_SUBSTRATE_MATERIALIZATION_ENABLED", raising=False)
+    monkeypatch.setenv("POSTGRES_URI", "postgresql://unused/unused")
+    import app.settings as settings_mod
+
+    settings_mod._settings = None
+    assert settings_mod.get_settings().drive_state_substrate_materialization_enabled is False
+    settings_mod._settings = None
 
 
 def test_materialization_disabled_writes_nothing(monkeypatch):

@@ -5257,6 +5257,77 @@ async def api_causal_geometry_snapshot() -> Dict[str, Any]:
     return await _causal_geometry_snapshot_payload()
 
 
+@router.get("/api/drives-analytics/subjects")
+async def api_drives_analytics_subjects() -> Dict[str, Any]:
+    """Allowlist ∪ discovered drive_audits subjects with coverage badges."""
+    from . import drives_analytics_queries as da
+    from .main import app
+
+    pool = getattr(app.state, "memory_pg_pool", None)
+    return await da.fetch_subjects(pool)
+
+
+@router.get("/api/drives-analytics/snapshot")
+async def api_drives_analytics_snapshot(
+    subject: str = Query(default="orion"),
+) -> Dict[str, Any]:
+    """Latest drive audit for subject. Degrades never 500."""
+    from . import drives_analytics_queries as da
+    from .main import app
+
+    pool = getattr(app.state, "memory_pg_pool", None)
+    return await da.fetch_snapshot(pool, subject=subject)
+
+
+@router.get("/api/drives-analytics/window")
+async def api_drives_analytics_window(
+    subject: str = Query(default="orion"),
+    hours: int = Query(default=24),
+) -> Dict[str, Any]:
+    """Window KPIs + attribution aggregate. Degrades never 500."""
+    from . import drives_analytics_queries as da
+    from .main import app
+
+    pool = getattr(app.state, "memory_pg_pool", None)
+    return await da.fetch_window(pool, subject=subject, hours=hours)
+
+
+@router.get("/api/drives-analytics/series")
+async def api_drives_analytics_series(
+    subject: str = Query(default="orion"),
+    hours: int = Query(default=24),
+) -> Dict[str, Any]:
+    """Tick-rate + pressure series. Degrades never 500."""
+    from . import drives_analytics_queries as da
+    from .main import app
+
+    pool = getattr(app.state, "memory_pg_pool", None)
+    return await da.fetch_series(pool, subject=subject, hours=hours)
+
+
+@router.get("/api/drives-analytics/goal-alignment")
+async def api_drives_analytics_goal_alignment(
+    subject: str = Query(default="orion"),
+) -> Dict[str, Any]:
+    """Per-drive goal match for align coloring. Fail-open / degrade never 500."""
+    from . import drives_analytics_queries as da
+    from .main import app
+
+    pool = getattr(app.state, "memory_pg_pool", None)
+    return await da.fetch_goal_alignment(pool, subject=subject)
+
+
+@router.get("/api/drives-analytics/divergence")
+async def api_drives_analytics_divergence(
+    subject: str = Query(default="orion"),
+) -> Dict[str, Any]:
+    """drive_state.v1 vs latest audit pressures. Fail-open / degrade never 500."""
+    from . import drives_analytics_queries as da
+    from .main import app
+
+    pool = getattr(app.state, "memory_pg_pool", None)
+    return await da.fetch_divergence(pool, subject=subject)
+
 @router.get("/api/causal-geometry/history")
 async def api_causal_geometry_history(limit: int = Query(default=20, ge=1, le=200)) -> Dict[str, Any]:
     """Bounded snapshot history. Degrades gracefully (never 500) if no live store exists."""

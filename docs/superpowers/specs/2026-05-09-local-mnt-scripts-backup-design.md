@@ -21,7 +21,7 @@ Deliver a local-first backup strategy that:
 1. Creates nightly snapshots of the full `/mnt/scripts` filesystem tree.
 2. Stores those snapshots under `/mnt/storage-warm`.
 3. Keeps the last 14 successful daily snapshots once at least 14 exist.
-4. Supports simple file and directory restore from timestamped snapshot directories.
+4. Supports simple file and directory restore from run-ID snapshot directories.
 5. Writes local machine-readable evidence for every run.
 6. Attempts an Orion critical notification on failure when notification settings are configured.
 7. Avoids hardcoded disk UUIDs or copied `fstab` assumptions in the backup logic.
@@ -43,7 +43,7 @@ Deliver a local-first backup strategy that:
 
 Adopt **Approach B: local snapshot runner with status and alert sidecar**.
 
-The runner uses `rsync --link-dest` to create complete-looking timestamped snapshot directories while hard-linking unchanged files to the previous successful snapshot. It writes local status, logs, and manifests for every run. On failure, it also attempts to notify Orion through the existing notification/attention surface.
+The runner uses `rsync --link-dest` to create complete-looking run-ID snapshot directories while hard-linking unchanged files to the previous successful snapshot. It writes local status, logs, and manifests for every run. On failure, it also attempts to notify Orion through the existing notification/attention surface.
 
 Why this approach:
 
@@ -86,20 +86,22 @@ The backup root is:
 Directory layout:
 
 ```text
-snapshots/<timestamp>/
+snapshots/<run-id>/
 snapshots/.incomplete-<run-id>/
-latest -> snapshots/<timestamp>
+latest -> snapshots/<run-id>
 status/latest.json
 status/runs/<run-id>.json
 logs/<run-id>.log
 manifests/<run-id>.json
 ```
 
-Snapshot timestamps use a sortable UTC format, for example:
+A `<run-id>` is a sortable UTC timestamp suffixed with the runner's process ID, for example:
 
 ```text
-2026-05-09T22-00-00Z
+2026-05-09T22-00-00Z-12345
 ```
+
+The PID suffix exists so two runs that start in the same UTC second on the same node cannot collide on the same snapshot directory name. Without the suffix, a tight retry loop or a manual rerun started in the same second as the timer would either fail with a name conflict or stomp the prior snapshot.
 
 `latest` points only to the newest successful snapshot. Failed or interrupted runs never update `latest`.
 
@@ -118,7 +120,7 @@ Each run:
 7. Finds the previous successful snapshot through `latest` or the newest valid snapshot directory.
 8. Creates `snapshots/.incomplete-<run-id>/`.
 9. Runs `rsync` into the incomplete directory.
-10. If `rsync` succeeds, renames the incomplete directory to `snapshots/<timestamp>/`.
+10. If `rsync` succeeds, renames the incomplete directory to `snapshots/<run-id>/`.
 11. Updates `latest` to point at the new snapshot.
 12. Prunes successful snapshots when more than 14 exist.
 13. Writes status, manifest, and log evidence.
@@ -132,17 +134,17 @@ rsync -aHAX --numeric-ids --delete --link-dest "$previous_snapshot" /mnt/scripts
 
 On the first successful run, omit `--link-dest` because there is no previous snapshot.
 
-If a target filesystem or environment does not support `-A` or `-X`, implementation should detect and document the fallback rather than silently claiming full metadata preservation.
+`-A` and `-X` preserve POSIX ACLs and extended attributes on Linux filesystems that support them (ext4, xfs, btrfs with `user_xattr`, zfs with the right properties). On filesystems that do not, those flags will fail or silently drop metadata. If a target filesystem or environment does not support `-A` or `-X`, implementation should detect and document the fallback rather than silently claiming full metadata preservation. Operators restoring to a filesystem that does not support ACLs/xattrs should test the restore command first, and either accept the metadata gap or remove the `-A`/`-X` flags from the restore invocation.
 
 ---
 
 ## Retention Policy
 
-Retention keeps up to the last 14 successful snapshot directories, sorted by timestamp. After the fifteenth successful run, every successful run prunes older snapshots so only the latest 14 remain.
+Retention keeps up to the last 14 successful snapshot directories, sorted by run ID. After the fifteenth successful run, every successful run prunes older snapshots so only the latest 14 remain.
 
 Rules:
 
-- Only finalized `snapshots/<timestamp>/` directories count.
+- Only finalized `snapshots/<run-id>/` directories count.
 - `.incomplete-*` directories do not count as successful snapshots.
 - Retention runs only after a successful new snapshot.
 - Pruned snapshots are recorded in the run manifest.
@@ -228,13 +230,15 @@ Restore is manual in v1.
 
 Basic flow:
 
-1. Choose a snapshot under `snapshots/<timestamp>/`.
+1. Choose a snapshot under `snapshots/<run-id>/`.
 2. Inspect the file or directory to restore.
 3. Restore with `rsync`, preserving metadata when appropriate:
 
 ```bash
-rsync -aHAX --numeric-ids /mnt/storage-warm/backups/<node-name>/mnt-scripts/snapshots/<timestamp>/<relative-path> /mnt/scripts/<restore-target>
+rsync -aHAX --numeric-ids /mnt/storage-warm/backups/<node-name>/mnt-scripts/snapshots/<run-id>/<relative-path> /mnt/scripts/<restore-target>
 ```
+
+`-A` and `-X` preserve ACLs and xattrs. They only succeed on Linux filesystems that support those metadata classes. If you are restoring to a filesystem that does not (or you are not sure), test the restore command on a scratch path first, and either drop `-A`/`-X` or accept the metadata loss before restoring over real data.
 
 Operators should not restore over actively used service directories without deciding whether services need to be stopped first.
 

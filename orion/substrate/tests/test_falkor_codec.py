@@ -169,6 +169,14 @@ def test_encode_edge_properties_are_native_scalars_without_payload_json():
     assert props["evidence_refs_json"] == '["edge-ev:1"]'
 
 
+def test_decode_rejects_corrupt_evidence_refs_json():
+    row = encode_node_properties(_concept(), identity_key="concept:alpha")
+    row["evidence_refs_json"] = "{not-json"
+
+    with pytest.raises(ValueError, match="evidence_refs_json"):
+        decode_concept_node(row)
+
+
 def test_decode_edge_reconstructs_typed_edge():
     edge = SubstrateEdgeV1(
         edge_id="edge-alpha-beta",

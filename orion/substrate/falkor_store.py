@@ -173,7 +173,48 @@ class RedisGraphQueryClient:
 
     def graph_query(self, cypher: str, params: dict[str, Any] | None = None) -> Any:
         result = self._graph.query(cypher, params=params)
-        return result.result_set
+        # redis-py exposes list-shaped result_set rows and keeps column names on
+        # QueryResult.header as [type, name] pairs. Zip to dicts so hydrate can
+        # address fields by name (native multi-column and legacy 2-column alike).
+        return _rows_from_query_result(getattr(result, "header", None), result.result_set)
+
+
+def _header_field_names(header: Any) -> list[str]:
+    names: list[str] = []
+    if not header:
+        return names
+    for column in header:
+        if isinstance(column, (list, tuple)) and len(column) >= 2:
+            left, right = column[0], column[1]
+            # redis-py QueryResult: [column_type:int, column_name:str]
+            # some raw wire fixtures: [column_name:str, column_type:int]
+            if isinstance(left, int) or (isinstance(left, str) and str(left).isdigit()):
+                names.append(str(right).split(".")[-1])
+            elif isinstance(right, int) or (isinstance(right, str) and str(right).isdigit()):
+                names.append(str(left).split(".")[-1])
+            else:
+                names.append(str(right).split(".")[-1])
+        elif isinstance(column, (list, tuple)) and column:
+            names.append(str(column[0]).split(".")[-1])
+        else:
+            names.append(str(column).split(".")[-1])
+    return names
+
+
+def _rows_from_query_result(header: Any, result_set: Any) -> list[dict[str, Any]]:
+    if result_set is None:
+        return []
+    names = _header_field_names(header)
+    out: list[dict[str, Any]] = []
+    for record in result_set:
+        if isinstance(record, dict):
+            out.append(record)
+        elif isinstance(record, (list, tuple)):
+            if names and len(names) == len(record):
+                out.append(dict(zip(names, record)))
+            else:
+                out.append({"_positional": list(record)})
+    return out
 
 
 def _with_sanitized_metadata(model: Any) -> Any:
@@ -228,7 +269,7 @@ class FalkorSubstrateStore:
             logger.warning("falkor_substrate_hydrate_failed error=%s", exc)
             return
 
-        for row in _normalize_rows(node_rows):
+        for row in _normalize_rows(node_rows, fields=NATIVE_NODE_RETURN_FIELDS):
             try:
                 node = decode_concept_node(row)
             except Exception:
@@ -239,7 +280,7 @@ class FalkorSubstrateStore:
             identity = row.get("identity_key")
             self._cache.upsert_node(identity_key=str(identity) if identity else None, node=node)
 
-        for row in _normalize_rows(edge_rows):
+        for row in _normalize_rows(edge_rows, fields=NATIVE_EDGE_RETURN_FIELDS):
             try:
                 edge = decode_edge(row)
             except Exception:
@@ -250,8 +291,12 @@ class FalkorSubstrateStore:
             identity = row.get("identity_key") or self._edge_identity(edge)
             self._cache.upsert_edge(identity_key=str(identity), edge=edge)
 
-        self._migrate_legacy_payload_nodes(_normalize_rows(legacy_node_rows))
-        self._migrate_legacy_payload_edges(_normalize_rows(legacy_edge_rows))
+        self._migrate_legacy_payload_nodes(
+            _normalize_rows(legacy_node_rows, fields=("payload_json", "identity_key"))
+        )
+        self._migrate_legacy_payload_edges(
+            _normalize_rows(legacy_edge_rows, fields=("payload_json", "identity_key"))
+        )
 
     def _migrate_legacy_payload_nodes(self, rows: list[dict[str, Any]]) -> None:
         for row in rows:
@@ -272,6 +317,8 @@ class FalkorSubstrateStore:
                 continue
             identity = row.get("identity_key")
             identity_key = str(identity) if identity else None
+            # Seed cache first so a transient rewrite failure cannot empty Atlas.
+            self._cache.upsert_node(identity_key=identity_key, node=node)
             try:
                 # Rewrite to native properties and REMOVE payload_json.
                 self.upsert_node(identity_key=identity_key, node=node)
@@ -298,6 +345,7 @@ class FalkorSubstrateStore:
                 logger.warning("falkor_substrate_legacy_edge_invalid")
                 continue
             identity = row.get("identity_key") or self._edge_identity(edge)
+            self._cache.upsert_edge(identity_key=str(identity), edge=edge)
             try:
                 self.upsert_edge(identity_key=str(identity), edge=edge)
                 logger.info(
@@ -444,7 +492,9 @@ def _retag_source(result: SubstrateQueryResultV1, source_kind: str) -> Substrate
     return replace(result, source_kind=source_kind)
 
 
-def _normalize_rows(raw: Any) -> list[dict[str, Any]]:
+def _normalize_rows(
+    raw: Any, *, fields: tuple[str, ...] | list[str] | None = None
+) -> list[dict[str, Any]]:
     if raw is None:
         return []
     if isinstance(raw, list):
@@ -458,20 +508,35 @@ def _normalize_rows(raw: Any) -> list[dict[str, Any]]:
             and raw[0]
             and all(isinstance(column, (list, tuple)) for column in raw[0])
         ):
-            names = [str(column[0]).split(".")[-1] for column in raw[0]]
+            names = _header_field_names(raw[0])
             return [
                 dict(zip(names, record))
                 for record in raw[1]
-                if isinstance(record, (list, tuple))
+                if isinstance(record, (list, tuple)) and len(record) == len(names)
             ]
+        field_names = list(fields) if fields else []
         out: list[dict[str, Any]] = []
         for item in raw:
             if isinstance(item, dict):
+                if "_positional" in item and field_names:
+                    values = item.get("_positional")
+                    if isinstance(values, list) and len(values) == len(field_names):
+                        out.append(dict(zip(field_names, values)))
+                        continue
                 out.append(item)
-            elif isinstance(item, (list, tuple)) and len(item) >= 1:
-                if len(item) >= 2:
+            elif isinstance(item, (list, tuple)):
+                if field_names and len(item) == len(field_names):
+                    out.append(dict(zip(field_names, item)))
+                elif field_names:
+                    logger.warning(
+                        "falkor_substrate_normalize_row_width_mismatch expected=%s got=%s",
+                        len(field_names),
+                        len(item),
+                    )
+                elif len(item) >= 2:
+                    # Legacy two-column fallback only when caller omitted fields.
                     out.append({"node_id": item[0], "identity_key": item[1]})
-                else:
+                elif item:
                     out.append({"node_id": item[0], "identity_key": ""})
         return out
     return []

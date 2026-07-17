@@ -1,13 +1,13 @@
 # Cypher-native substrate + Postgres-via-bus split — design spec
 
 **Date:** 2026-07-16
-**Status:** PROPOSAL — agreed direction after Falkor wedge (#1099 / #1105); not yet implemented
+**Status:** IN PROGRESS — Cypher-native Falkor adapter shipped in this branch; drive Postgres SoR + runtime cutover remain follow-ons
 **Mode:** Proposal (touches cognitive-graph persistence + drive measurement SoR; AGENTS.md §0A)
 **Related:**
 - `docs/superpowers/specs/2026-07-16-falkordb-property-graph-routing-design.md` (router / Falkor wedge; this doc **supersedes** its “migrate drive_state into Falkor” implication)
 - `docs/superpowers/pr-reports/2026-07-15-drive-audit-graph-path-kill-pr.md` (Postgres SoR precedent for drives)
 - `docs/superpowers/specs/2026-07-15-concept-atlas-graph-pipeline-design.md` (Concept Atlas consumer)
-- `orion/substrate/falkor_store.py` (current Falkor adapter — still `payload_json` SoR)
+- `orion/substrate/falkor_store.py` (Cypher-native Concept/edge adapter; legacy `payload_json` migrate-on-hydrate)
 
 ---
 
@@ -36,7 +36,7 @@ How does Orion finish the Falkor cutover without recreating SPARQL-shaped blobs 
 | Claim | Evidence |
 |---|---|
 | Hub Concept Atlas is on Falkor | `services/orion-hub/.env_example`: `SUBSTRATE_STORE_BACKEND=falkor`; live-verified in Falkor routing spec |
-| Falkor adapter SoR is still `payload_json` | `orion/substrate/falkor_store.py` MERGE/SET `n.payload_json` |
+| Falkor adapter Concept/edge SoR is Cypher-native (legacy blob migrate-on-hydrate) | `orion/substrate/falkor_store.py` MERGE/SET native props + `REMOVE n.payload_json`; tests in `test_falkor_store.py` |
 | SPARQL store uses the same blob pattern | `orion/substrate/graphdb_store.py` `orion:payloadJson` |
 | Substrate-runtime still SPARQL | `services/orion-substrate-runtime/.env`: `SUBSTRATE_STORE_BACKEND=sparql` |
 | Drive audits are Postgres-only via bus | kill PR; `orion:memory:drives:audit` → sql-writer → `drive_audits` |
@@ -176,7 +176,7 @@ Short dual (graph snapshot + Postgres) is allowed only as a **migration ladder w
 
 ## Substrate-runtime cutover (after Cypher-native adapter)
 
-Do **not** flip `SUBSTRATE_STORE_BACKEND=falkor` on runtime while SoR is still `payload_json`.
+Do **not** flip `SUBSTRATE_STORE_BACKEND=falkor` on runtime until runtime writers also use the Cypher-native concept contract (Hub Concept Atlas path is already native).
 
 Order:
 

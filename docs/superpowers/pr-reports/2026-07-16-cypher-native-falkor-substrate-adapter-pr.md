@@ -57,11 +57,7 @@ Before this patch, `FalkorSubstrateStore` persisted `n.payload_json` and `e.payl
 PYTHONPATH=. venv/bin/pytest orion/substrate/tests/test_falkor_codec.py \
   orion/substrate/tests/test_falkor_store.py \
   services/orion-hub/tests/test_concept_atlas_routes.py::test_summary_reads_hydrated_falkor_store -q
-→ 21 passed
-
-TDD RED evidence (Task 1):
-  test_falkor_upsert_concept_uses_native_cypher_properties FAILED (payload_json still present)
-  test_falkor_hydrates_concept_from_native_properties FAILED (node None under payload_json hydrate)
+→ 25 passed
 ```
 
 ## Evals run
@@ -95,13 +91,21 @@ scripts/safe_graphify_update.sh REFUSED (~92% node-loss guard); graphify-out lef
  - Fix: Split `hydrate_node_rows` / `hydrate_edge_rows` / legacy lists; keep `hydrate_rows=` alias for nodes.
  - Evidence: `test_recording_client_splits_node_and_edge_hydrate_rows`.
 
+- Finding (Critical): redis-py `result_set` list rows discarded headers → empty hydrate on live Hub restart.
+ - Fix: `RedisGraphQueryClient` zips `QueryResult.header` to named dicts; `_normalize_rows(..., fields=)` zips positional rows to RETURN allowlists.
+ - Evidence: `test_falkor_hydrates_from_redis_py_result_set_lists`, `test_redis_graph_client_returns_named_dicts_from_header`.
+
+- Finding: Legacy migrate only cached after successful write.
+ - Fix: Seed in-process cache before best-effort native rewrite.
+ - Evidence: `test_falkor_legacy_migrate_keeps_cache_when_rewrite_fails`.
+
+- Finding: Corrupt `*_json` list props decoded to `[]` silently.
+ - Fix: `_parse_json_list` raises; hydrate skips the row.
+ - Evidence: `test_decode_rejects_corrupt_evidence_refs_json`.
+
 - Finding: Plan sample used `result.nodes` on `SubstrateQueryResultV1`.
  - Fix: Assert against `result.slice.nodes`.
  - Evidence: `test_falkor_hydrated_concepts_support_concept_region_query` passes.
-
-- Finding: Subagent Task tool unavailable (usage limit); orchestrator executed plan inline.
- - Fix: Same TDD order and commits; noted here.
- - Evidence: commits `865af66a`, `b077eab9`.
 
 ## Restart required
 
@@ -112,9 +116,9 @@ No restart required for merged code until the affected services are redeployed. 
 ## Risks / concerns
 
 - Severity: Medium
-- Concern: Hydration reconstructs the native Concept Atlas subset first; non-concept substrate node kinds remain outside the first cutover (now fail-closed on write).
+- Concern: Hydration reconstructs the native Concept Atlas subset first; non-concept substrate node kinds remain outside the first cutover (now fail-closed on write). Live Falkor restart smoke still required.
 - Mitigation: Runtime cutover is deferred until graph-shaped runtime writers have their own tests and codec coverage.
 
 ## PR link
 
-UNVERIFIED — branch not pushed in this session.
+See GitHub PR created from this branch.

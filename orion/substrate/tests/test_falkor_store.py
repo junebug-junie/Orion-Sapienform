@@ -326,9 +326,10 @@ def test_build_substrate_store_falkor_missing_uri(monkeypatch):
     assert isinstance(store, InMemorySubstrateGraphStore)
 
 
-def test_redis_graph_client_uses_redis_py_parameter_header():
+def test_redis_graph_client_returns_named_dicts_from_header():
     class _Result:
-        result_set = [["payload", "identity"]]
+        header = [[1, "node_id"], [1, "identity_key"]]
+        result_set = [["concept-alpha", "concept:alpha"]]
 
     class _Graph:
         def __init__(self):
@@ -344,7 +345,7 @@ def test_redis_graph_client_uses_redis_py_parameter_header():
 
     result = client.graph_query("RETURN $node_id", {"node_id": "sub-node-a"})
 
-    assert result == [["payload", "identity"]]
+    assert result == [{"node_id": "concept-alpha", "identity_key": "concept:alpha"}]
     assert graph.calls == [("RETURN $node_id", {"node_id": "sub-node-a"})]
 
 
@@ -358,6 +359,171 @@ def test_normalize_rows_parses_raw_graph_query_header_and_stats():
     assert _normalize_rows(raw) == [
         {"node_id": "concept-alpha", "identity_key": "concept:alpha"}
     ]
+
+
+def test_normalize_rows_zips_redis_py_list_rows_to_native_fields():
+    from orion.substrate.falkor_store import NATIVE_NODE_RETURN_FIELDS
+
+    values = []
+    for field in NATIVE_NODE_RETURN_FIELDS:
+        if field == "node_id":
+            values.append("concept-list")
+        elif field == "node_kind":
+            values.append("concept")
+        elif field == "identity_key":
+            values.append("concept:list")
+        elif field == "label":
+            values.append("List Row")
+        elif field == "definition":
+            values.append("From redis-py lists")
+        elif field == "taxonomy_path_json":
+            values.append('["list"]')
+        elif field == "anchor_scope":
+            values.append("orion")
+        elif field == "promotion_state":
+            values.append("canonical")
+        elif field == "risk_tier":
+            values.append("low")
+        elif field in {"confidence", "salience", "activation", "recency_score", "decay_floor"}:
+            values.append(0.5)
+        elif field == "observed_at":
+            values.append("2026-07-16T00:00:00+00:00")
+        elif field == "provenance_authority":
+            values.append("local_inferred")
+        elif field == "provenance_source_kind":
+            values.append("test")
+        elif field == "provenance_source_channel":
+            values.append("test:list")
+        elif field == "provenance_producer":
+            values.append("test_falkor_store")
+        elif field == "evidence_refs_json":
+            values.append('["ev:list"]')
+        else:
+            values.append(None)
+
+    rows = _normalize_rows([values], fields=NATIVE_NODE_RETURN_FIELDS)
+    assert rows[0]["node_id"] == "concept-list"
+    assert rows[0]["label"] == "List Row"
+    assert rows[0]["evidence_refs_json"] == '["ev:list"]'
+
+
+def test_falkor_hydrates_from_redis_py_result_set_lists():
+    from orion.substrate.falkor_store import NATIVE_NODE_RETURN_FIELDS
+
+    values = []
+    for field in NATIVE_NODE_RETURN_FIELDS:
+        defaults = {
+            "node_id": "concept-redis-py",
+            "node_kind": "concept",
+            "identity_key": "concept:redis-py",
+            "label": "Redis Py",
+            "definition": "list hydrate",
+            "taxonomy_path_json": '["r"]',
+            "anchor_scope": "orion",
+            "promotion_state": "canonical",
+            "risk_tier": "low",
+            "confidence": 0.8,
+            "salience": 0.7,
+            "activation": 0.5,
+            "recency_score": 0.4,
+            "decay_floor": 0.0,
+            "observed_at": "2026-07-16T00:00:00+00:00",
+            "provenance_authority": "local_inferred",
+            "provenance_source_kind": "test",
+            "provenance_source_channel": "test:redis-py",
+            "provenance_producer": "test_falkor_store",
+            "evidence_refs_json": '["ev:r"]',
+        }
+        values.append(defaults.get(field))
+
+    legacy = ConceptNodeV1(
+        node_id="concept-legacy-list",
+        label="Legacy list",
+        taxonomy_path=["legacy"],
+        anchor_scope="orion",
+        promotion_state="canonical",
+        temporal=SubstrateTemporalWindowV1(
+            observed_at=datetime(2026, 7, 16, tzinfo=timezone.utc)
+        ),
+        provenance=SubstrateProvenanceV1(
+            authority="local_inferred",
+            source_kind="test",
+            source_channel="test:legacy-list",
+            producer="test_falkor_store",
+            evidence_refs=["ev:legacy-list"],
+        ),
+    )
+
+    class ListRowClient:
+        def __init__(self) -> None:
+            self.calls: list[tuple[str, dict | None]] = []
+
+        def graph_query(self, cypher: str, params: dict | None = None):
+            self.calls.append((cypher, params))
+            if "WHERE n.payload_json IS NOT NULL" in cypher:
+                return [[legacy.model_dump_json(), "concept:legacy-list"]]
+            if "WHERE e.payload_json IS NOT NULL" in cypher:
+                return []
+            if "RETURN n.node_id AS node_id" in cypher:
+                return [values]
+            if "RETURN e.edge_id AS edge_id" in cypher:
+                return []
+            return []
+
+    client = ListRowClient()
+    store = FalkorSubstrateStore(
+        FalkorSubstrateStoreConfig(uri="redis://localhost:6379", graph_name="orion_substrate"),
+        client=client,
+        hydrate=True,
+    )
+
+    native = store.get_node_by_id("concept-redis-py")
+    assert native is not None
+    assert native.label == "Redis Py"
+    assert native.provenance.evidence_refs == ["ev:r"]
+
+    migrated = store.get_node_by_id("concept-legacy-list")
+    assert migrated is not None
+    assert migrated.label == "Legacy list"
+    assert any("MERGE (n:SubstrateNode" in c for c, _ in client.calls)
+
+
+def test_falkor_legacy_migrate_keeps_cache_when_rewrite_fails():
+    legacy = ConceptNodeV1(
+        node_id="concept-cache-seed",
+        label="Cache seed",
+        anchor_scope="orion",
+        temporal=SubstrateTemporalWindowV1(
+            observed_at=datetime(2026, 7, 16, tzinfo=timezone.utc)
+        ),
+        provenance=SubstrateProvenanceV1(
+            authority="local_inferred",
+            source_kind="test",
+            source_channel="test:cache-seed",
+            producer="test_falkor_store",
+        ),
+    )
+
+    class FailRewriteClient(RecordingFalkorClient):
+        def graph_query(self, cypher: str, params: dict | None = None):
+            if "MERGE (n:SubstrateNode" in cypher:
+                raise RuntimeError("falkor unavailable")
+            return super().graph_query(cypher, params)
+
+    client = FailRewriteClient(
+        hydrate_legacy_node_rows=[
+            {"payload_json": legacy.model_dump_json(), "identity_key": "concept:cache-seed"}
+        ]
+    )
+    store = FalkorSubstrateStore(
+        FalkorSubstrateStoreConfig(uri="redis://localhost:6379", graph_name="orion_substrate"),
+        client=client,
+        hydrate=True,
+    )
+
+    node = store.get_node_by_id("concept-cache-seed")
+    assert node is not None
+    assert node.label == "Cache seed"
 
 
 def test_falkor_hydrated_concepts_support_concept_region_query():

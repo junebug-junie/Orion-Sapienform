@@ -52,16 +52,18 @@ def _json_list(values: list[Any] | None) -> str:
     return json.dumps(list(values or []), ensure_ascii=False, sort_keys=True)
 
 
-def _parse_json_list(raw: Any) -> list[Any]:
+def _parse_json_list(raw: Any, *, field: str = "json_list") -> list[Any]:
     if raw is None or raw == "":
         return []
     if isinstance(raw, list):
         return list(raw)
     try:
         parsed = json.loads(str(raw))
-    except (TypeError, ValueError, json.JSONDecodeError):
-        return []
-    return list(parsed) if isinstance(parsed, list) else []
+    except (TypeError, ValueError, json.JSONDecodeError) as exc:
+        raise ValueError(f"invalid {field}: {exc}") from exc
+    if not isinstance(parsed, list):
+        raise ValueError(f"invalid {field}: expected JSON list")
+    return list(parsed)
 
 
 def _common_node_properties(node: BaseSubstrateNodeV1, identity_key: str | None) -> dict[str, Any]:
@@ -155,7 +157,7 @@ def _provenance_from_row(row: Mapping[str, Any]) -> SubstrateProvenanceV1:
         model_name=row.get("provenance_model_name"),
         correlation_id=row.get("provenance_correlation_id"),
         trace_id=row.get("provenance_trace_id"),
-        evidence_refs=[str(item) for item in _parse_json_list(row.get("evidence_refs_json"))],
+        evidence_refs=[str(item) for item in _parse_json_list(row.get("evidence_refs_json"), field="evidence_refs_json")],
         tier_rank=row.get("provenance_tier_rank"),
     )
 
@@ -180,7 +182,7 @@ def decode_concept_node(row: Mapping[str, Any]) -> ConceptNodeV1 | None:
         node_id=str(row["node_id"]),
         label=str(row["label"]),
         definition=row.get("definition"),
-        taxonomy_path=[str(item) for item in _parse_json_list(row.get("taxonomy_path_json"))],
+        taxonomy_path=[str(item) for item in _parse_json_list(row.get("taxonomy_path_json"), field="taxonomy_path_json")],
         anchor_scope=row["anchor_scope"],
         subject_ref=row.get("subject_ref"),
         promotion_state=row.get("promotion_state") or "proposed",

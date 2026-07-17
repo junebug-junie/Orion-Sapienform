@@ -6,6 +6,7 @@ import logging
 import os
 import subprocess
 import asyncio
+import time
 from pathlib import Path
 from datetime import datetime, timedelta, timezone
 from typing import Optional
@@ -267,6 +268,7 @@ embodiment_outcome_cache: Optional[EmbodimentOutcomeCache] = None
 presence_state: Optional["PresenceState"] = None
 presence_context_store: Optional["PresenceContextStore"] = None
 substrate_autonomy_task: Optional[asyncio.Task] = None
+substrate_decay_task: Optional[asyncio.Task] = None
 
 
 class PresenceState:
@@ -339,7 +341,7 @@ async def startup_event():
     Initializes all shared services at application startup.
     OrionBus + Clients + UI template.
     """
-    global bus, rpc_bus, cortex_client, tts_client, html_content, biometrics_cache, notification_cache, agent_step_relay, harness_step_relay, signals_inspect_cache, cognition_trace_cache, embodiment_outcome_cache, presence_state, presence_context_store, substrate_autonomy_task
+    global bus, rpc_bus, cortex_client, tts_client, html_content, biometrics_cache, notification_cache, agent_step_relay, harness_step_relay, signals_inspect_cache, cognition_trace_cache, embodiment_outcome_cache, presence_state, presence_context_store, substrate_autonomy_task, substrate_decay_task
 
     # ------------------------------------------------------------
     # Orion Bus Initialization
@@ -505,6 +507,46 @@ async def startup_event():
     else:
         logger.info("substrate_autonomy_scheduler_disabled reason=env_disabled")
 
+    if settings.SUBSTRATE_DECAY_SCHEDULER_ENABLED:
+        decay_interval_sec = max(1.0, float(settings.SUBSTRATE_DECAY_SCHEDULER_INTERVAL_SEC))
+
+        async def _run_substrate_decay_scheduler() -> None:
+            # Tracks true wall-clock time between ticks (not just decay_interval_sec)
+            # so a slow to_thread call or scheduling jitter doesn't desync the decay
+            # window from what actually elapsed -- see decay_concept_activations()'s
+            # docstring for why passing an explicit, per-tick elapsed_seconds (rather
+            # than falling back to its node.temporal.observed_at-based one-shot mode)
+            # is required for a function called repeatedly on a loop.
+            last_tick_monotonic = time.monotonic()
+            while True:
+                await asyncio.sleep(decay_interval_sec)
+                now_monotonic = time.monotonic()
+                tick_elapsed_sec = now_monotonic - last_tick_monotonic
+                last_tick_monotonic = now_monotonic
+                try:
+                    summary = await asyncio.to_thread(
+                        api_routes_runtime.decay_concept_activations,
+                        elapsed_seconds=tick_elapsed_sec,
+                    )
+                    logger.info(
+                        "substrate_decay_scheduler_tick decayed=%s skipped=%s errors=%s total_concepts=%s elapsed_sec=%.1f",
+                        summary.get("decayed"),
+                        summary.get("skipped"),
+                        summary.get("errors"),
+                        summary.get("total_concepts"),
+                        tick_elapsed_sec,
+                    )
+                except Exception as exc:  # advisory runtime loop; never crash service startup
+                    logger.warning("substrate_decay_scheduler_error error=%s", exc)
+
+        substrate_decay_task = asyncio.create_task(
+            _run_substrate_decay_scheduler(),
+            name="hub-substrate-decay-scheduler",
+        )
+        logger.info("substrate_decay_scheduler_enabled interval_sec=%s", decay_interval_sec)
+    else:
+        logger.info("substrate_decay_scheduler_disabled reason=env_disabled")
+
 
     # ------------------------------------------------------------
     # Validate UI HTML Template (served fresh from disk on each GET /)
@@ -564,7 +606,7 @@ async def startup_event():
 
 @app.on_event("shutdown")
 async def shutdown_event() -> None:
-    global bus, rpc_bus, biometrics_cache, notification_cache, agent_step_relay, harness_step_relay, signals_inspect_cache, cognition_trace_cache, embodiment_outcome_cache, substrate_autonomy_task
+    global bus, rpc_bus, biometrics_cache, notification_cache, agent_step_relay, harness_step_relay, signals_inspect_cache, cognition_trace_cache, embodiment_outcome_cache, substrate_autonomy_task, substrate_decay_task
     pool = getattr(app.state, "memory_pg_pool", None)
     if pool is not None:
         try:
@@ -580,6 +622,13 @@ async def shutdown_event() -> None:
         except asyncio.CancelledError:
             pass
         substrate_autonomy_task = None
+    if substrate_decay_task is not None:
+        substrate_decay_task.cancel()
+        try:
+            await substrate_decay_task
+        except asyncio.CancelledError:
+            pass
+        substrate_decay_task = None
     if biometrics_cache is not None:
         await biometrics_cache.stop()
     if notification_cache is not None:

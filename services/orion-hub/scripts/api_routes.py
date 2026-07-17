@@ -119,6 +119,7 @@ from orion.core.schemas.substrate_mutation import (
     RecallShadowEvalRunV1,
     RecallStrategyProfileV1,
 )
+from orion.core.activation_decay import decay_activation
 from orion.substrate import build_substrate_policy_store_from_env, build_substrate_store_from_env
 from orion.substrate.consolidation import GraphConsolidationEvaluator
 from orion.substrate.policy_comparison import SubstratePolicyComparisonService
@@ -249,6 +250,124 @@ def seed_golden_concepts_at_startup() -> int:
     except Exception as exc:  # pragma: no cover - defensive, mirrors other startup steps
         logger.warning("substrate_concept_seed_failed error=%s", exc)
         return 0
+
+
+def decay_concept_activations(elapsed_seconds: Optional[float] = None) -> dict[str, Any]:
+    """Apply half-life activation decay to every concept-kind node in
+    SUBSTRATE_SEMANTIC_STORE, in place (re-upserted with only
+    signals.activation.activation changed).
+
+    This is the live writer that ``SubstrateActivationV1.activation`` has
+    lacked -- see the honesty note in ``concept_atlas_routes.py``'s
+    ``_at_risk_concepts``. Reuses the same validated decay helper
+    (``orion.core.activation_decay.decay_activation``).
+
+    ``elapsed_seconds``, when given, is applied uniformly to every node as
+    the decay window (the caller -- the periodic scheduler in ``main.py`` --
+    passes the actual wall-clock time since its previous tick). This is the
+    correct mode for a function called repeatedly on a fixed cadence:
+    exponential decay is memoryless, so decaying an already-decayed
+    ``current`` value by the true inter-tick interval on every call is
+    equivalent to decaying once by the total elapsed time.
+
+    When ``elapsed_seconds`` is omitted (``None``), falls back to computing
+    elapsed time from ``node.temporal.observed_at`` per node -- a one-shot
+    decay against the node's full age, useful for an ad-hoc/manual
+    invocation. This mode must NOT be used by a loop that calls this
+    function repeatedly without also advancing ``observed_at`` between
+    calls: since ``observed_at`` carries real "last touched" semantics read
+    by other consumers (recency scoring in ``orion/substrate/dynamics.py``,
+    sustained-surprise pressure in ``orion/substrate/pressure.py``, reconcile
+    merge-max in ``orion/substrate/reconcile.py``), this function
+    deliberately never mutates it -- so reusing this fallback mode on every
+    scheduler tick would keep re-decaying from the same, ever-growing
+    elapsed-since-creation window on top of an already-shrunk ``current``,
+    collapsing activation to ``decay_floor`` within roughly one configured
+    half-life regardless of the half-life value. That failure mode is why
+    the scheduler always passes ``elapsed_seconds`` explicitly.
+
+    Real identity key, not node_id, mirroring the sibling in-memory tick loop
+    (``orion/substrate/dynamics.py::SubstrateDynamicsEngine.tick``) --
+    ``upsert_node``'s ``identity_key`` is the store's domain-dedup key (e.g.
+    ``concept|<scope>|<subject>|seed`` from ``orion/substrate/seed.py``), not
+    the same string as ``node_id``. Passing ``node_id`` as the identity key
+    would silently overwrite each node's real identity record on backends
+    where that property is a single-valued overwrite (e.g. FalkorDB),
+    breaking later identity-based lookups/dedup after the next cache
+    rehydrate. Reverse-mapped here from ``snapshot.node_identity_index``
+    (identity -> node_id) exactly as ``dynamics.py``'s ``identity_by_node_id``
+    does; unknown identity degrades to ``None`` (the safe "no identity index
+    entry" convention already used elsewhere, e.g. ``graphdb_store.py``).
+
+    Never raises -- a single malformed/missing-timestamp node is skipped
+    (counted in ``skipped``), not fatal to the rest of the pass or to the
+    caller.
+
+    Returns a summary dict: ``{"decayed": int, "skipped": int, "errors": int,
+    "total_concepts": int}``. ``decayed`` counts nodes successfully
+    re-upserted with a recomputed activation value.
+    """
+    summary: dict[str, Any] = {
+        "decayed": 0,
+        "skipped": 0,
+        "errors": 0,
+        "total_concepts": 0,
+    }
+    try:
+        snapshot = SUBSTRATE_SEMANTIC_STORE.snapshot()
+    except Exception as exc:
+        logger.warning("substrate_concept_decay_snapshot_failed error=%s", exc)
+        summary["errors"] += 1
+        return summary
+
+    concept_nodes = [n for n in snapshot.nodes.values() if getattr(n, "node_kind", None) == "concept"]
+    summary["total_concepts"] = len(concept_nodes)
+    if not concept_nodes:
+        return summary
+
+    identity_by_node_id = {node_id: identity for identity, node_id in snapshot.node_identity_index.items()}
+
+    now = datetime.now(timezone.utc)
+    for node in concept_nodes:
+        try:
+            activation_signal = node.signals.activation
+            observed_at = node.temporal.observed_at
+        except AttributeError:
+            summary["skipped"] += 1
+            continue
+        if activation_signal is None or observed_at is None:
+            summary["skipped"] += 1
+            continue
+
+        try:
+            if elapsed_seconds is not None:
+                node_elapsed_seconds = max(0.0, float(elapsed_seconds))
+            else:
+                if observed_at.tzinfo is None:
+                    observed_at = observed_at.replace(tzinfo=timezone.utc)
+                node_elapsed_seconds = max(0.0, (now - observed_at).total_seconds())
+
+            prev_activation = activation_signal.activation
+            new_activation = decay_activation(
+                current=prev_activation,
+                elapsed_seconds=node_elapsed_seconds,
+                half_life_seconds=activation_signal.decay_half_life_seconds,
+                floor=activation_signal.decay_floor,
+            )
+
+            updated_signal = activation_signal.model_copy(update={"activation": new_activation})
+            updated_signals = node.signals.model_copy(update={"activation": updated_signal})
+            updated_node = node.model_copy(update={"signals": updated_signals})
+
+            SUBSTRATE_SEMANTIC_STORE.upsert_node(
+                identity_key=identity_by_node_id.get(node.node_id), node=updated_node
+            )
+            summary["decayed"] += 1
+        except Exception as exc:
+            logger.warning("substrate_concept_decay_node_failed node_id=%s error=%s", getattr(node, "node_id", "?"), exc)
+            summary["errors"] += 1
+
+    return summary
 
 
 SUBSTRATE_POLICY_STORE = build_substrate_policy_store_from_env()

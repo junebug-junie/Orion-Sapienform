@@ -32,4 +32,16 @@ command -v python3 >/dev/null 2>&1 || exit 0
 SUBJECT=$(git log -1 --pretty=%s 2>/dev/null) || exit 0
 [ -n "$SUBJECT" ] || exit 0
 
-python3 "$REPO_ROOT/scripts/agent_board.py" heartbeat --summary "$SUBJECT" >/dev/null 2>&1 || true
+# Tag the heartbeat with the Claude Code session id when this commit ran
+# inside a Claude Code Bash tool call (the env var is inherited down to
+# this hook's subprocess same as any other). This lets the SessionStart/Stop
+# hooks -- which run with a process cwd fixed to the session's original
+# project directory, not wherever an agent `cd`d into mid-session -- look up
+# "the worktree this session most recently heartbeated" instead of
+# resolving cwd themselves, which resolves to the wrong path (confirmed
+# live: see resolve_current_identity()'s docstring in agent_board_lib.py).
+if [ -n "${CLAUDE_CODE_SESSION_ID:-}" ]; then
+    python3 "$REPO_ROOT/scripts/agent_board.py" heartbeat --summary "$SUBJECT" --session-id "$CLAUDE_CODE_SESSION_ID" >/dev/null 2>&1 || true
+else
+    python3 "$REPO_ROOT/scripts/agent_board.py" heartbeat --summary "$SUBJECT" >/dev/null 2>&1 || true
+fi

@@ -98,9 +98,15 @@ fi
 # agent_board.py lives as a sibling file.
 _SCRIPT_DIR_FOR_BOARD=$(cd "$(dirname "$0")" && pwd)
 if [ -f "$_SCRIPT_DIR_FOR_BOARD/agent_board.py" ] && command -v python3 >/dev/null 2>&1; then
-    python3 "$_SCRIPT_DIR_FOR_BOARD/agent_board.py" heartbeat \
-        --summary "docker compose $* for services/$SERVICE" \
-        --task "deploy:$SERVICE" >/dev/null 2>&1 || true
+    if [ -n "${CLAUDE_CODE_SESSION_ID:-}" ]; then
+        python3 "$_SCRIPT_DIR_FOR_BOARD/agent_board.py" heartbeat \
+            --summary "docker compose $* for services/$SERVICE" \
+            --task "deploy:$SERVICE" --session-id "$CLAUDE_CODE_SESSION_ID" >/dev/null 2>&1 || true
+    else
+        python3 "$_SCRIPT_DIR_FOR_BOARD/agent_board.py" heartbeat \
+            --summary "docker compose $* for services/$SERVICE" \
+            --task "deploy:$SERVICE" >/dev/null 2>&1 || true
+    fi
 fi
 
 # --- 3. Run docker compose with this repo's mandatory dual --env-file  -----

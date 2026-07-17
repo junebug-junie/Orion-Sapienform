@@ -282,3 +282,49 @@ def test_installed_post_commit_hook_heartbeats_the_agent_board(tmp_path: Path) -
     )
     assert listed.returncode == 0, listed.stderr
     assert "test: verify post-commit board heartbeat" in listed.stdout
+
+
+def test_post_commit_hook_tags_heartbeat_with_claude_session_id_when_set(tmp_path: Path) -> None:
+    """The Stop/SessionStart hooks need a session_id-tagged presence row to
+    resolve the real worktree despite their own fixed process cwd (see
+    resolve_current_identity() in agent_board_lib.py) -- this only works if
+    the post-commit hook actually passes $CLAUDE_CODE_SESSION_ID through
+    when Claude Code set it for the commit's own subprocess."""
+    primary = tmp_path / "primary"
+    _init_repo(primary)
+    subprocess.run(["git", "config", "user.email", "test@example.com"], cwd=primary, check=True)
+    subprocess.run(["git", "config", "user.name", "Test"], cwd=primary, check=True)
+
+    board_scripts_dir = primary / "scripts"
+    board_scripts_dir.mkdir()
+    for name in ("agent_board.py", "agent_board_lib.py", "worktree_lib.py"):
+        (board_scripts_dir / name).write_text(
+            (ROOT / "scripts" / name).read_text(encoding="utf-8"), encoding="utf-8"
+        )
+    subprocess.run(["git", "add", "-A"], cwd=primary, check=True)
+    subprocess.run(["git", "commit", "-q", "-m", "init"], cwd=primary, check=True)
+
+    proc = _run_installer(primary)
+    assert proc.returncode == 0, proc.stderr
+
+    worktree = tmp_path / "worktree"
+    subprocess.run(
+        ["git", "worktree", "add", "-q", str(worktree), "-b", "chore/test-session-id"],
+        cwd=primary,
+        check=True,
+    )
+
+    board = tmp_path / "agent-board.jsonl"
+    env = {**os.environ, "ORION_AGENT_BOARD_PATH": str(board), "CLAUDE_CODE_SESSION_ID": "sess-xyz-789"}
+
+    (worktree / "f.txt").write_text("x", encoding="utf-8")
+    subprocess.run(["git", "add", "f.txt"], cwd=worktree, check=True, env=env)
+    subprocess.run(
+        ["git", "commit", "-q", "-m", "test: verify session id passthrough"],
+        cwd=worktree,
+        check=True,
+        env=env,
+    )
+
+    raw_events = board.read_text(encoding="utf-8")
+    assert '"session_id": "sess-xyz-789"' in raw_events

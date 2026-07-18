@@ -81,6 +81,7 @@ def test_falkor_upsert_round_trip_via_cache():
     store.upsert_node(identity_key="id-a", node=node)
     assert store.get_node_by_id(node.node_id) is not None
     assert store.get_node_id_by_identity("id-a") == node.node_id
+    assert store.get_identity_key_by_node_id(node.node_id) == "id-a"
     # Inspect the cache directly rather than via the public snapshot() --
     # snapshot() now (correctly) forces a live re-hydration on its first
     # call (see test_falkor_snapshot_* below for that behavior's own

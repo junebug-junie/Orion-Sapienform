@@ -5,13 +5,19 @@ from typing import Any
 
 import pytest
 
-from app.collectors.concept_region import fetch_concept_region_fragment
+from app.collectors.concept_region import (
+    fetch_concept_region_fragment,
+    fetch_concept_region_fragment_and_reinforce,
+    reinforce_matched_concepts,
+)
 
 from orion.core.schemas.cognitive_substrate import (
     ConceptNodeV1,
+    EvidenceNodeV1,
     NodeRefV1,
     SubstrateEdgeV1,
     SubstrateProvenanceV1,
+    SubstrateSignalBundleV1,
     SubstrateTemporalWindowV1,
 )
 from orion.substrate.store import InMemorySubstrateGraphStore
@@ -206,5 +212,160 @@ def test_malformed_query_object_without_fragment_attr_degrades_to_empty():
         pass
 
     fragments = fetch_concept_region_fragment(_NotAQuery(), store=store)
+
+    assert fragments == []
+
+
+# --- reinforce_matched_concepts ---------------------------------------------
+
+
+def test_reinforcement_bumps_activation_using_recall_boost_math():
+    store = _seeded_store()
+    before = store.snapshot().nodes["sub-concept-seed-juniper"]
+    current = before.signals.activation.activation
+
+    reinforced = reinforce_matched_concepts(["sub-concept-seed-juniper"], store=store)
+
+    assert reinforced == 1
+    after = store.snapshot().nodes["sub-concept-seed-juniper"]
+    expected = min(1.0, current + (1.0 - current) * 0.08)
+    assert after.signals.activation.activation == pytest.approx(expected, rel=1e-6)
+    assert after.signals.activation.activation > current
+
+
+def test_reinforcement_never_overshoots_ceiling():
+    store = InMemorySubstrateGraphStore()
+    node = ConceptNodeV1(
+        node_id="sub-concept-hot",
+        anchor_scope="orion",
+        subject_ref="sub-concept-hot",
+        promotion_state="canonical",
+        temporal=_temporal(),
+        provenance=_provenance(key="sub-concept-hot"),
+        label="Hot Topic",
+        definition="Definition of Hot Topic",
+        signals=SubstrateSignalBundleV1(confidence=0.9, salience=1.0),
+    )
+    store.upsert_node(identity_key="concept|hot", node=node)
+    assert store.snapshot().nodes["sub-concept-hot"].signals.activation.activation == 1.0
+
+    reinforced = reinforce_matched_concepts(["sub-concept-hot"], store=store)
+
+    assert reinforced == 1
+    assert store.snapshot().nodes["sub-concept-hot"].signals.activation.activation == 1.0
+
+
+def test_reinforcement_leaves_confidence_and_salience_untouched():
+    store = _seeded_store()
+    before = store.snapshot().nodes["sub-concept-seed-orion"]
+
+    reinforce_matched_concepts(["sub-concept-seed-orion"], store=store)
+
+    after = store.snapshot().nodes["sub-concept-seed-orion"]
+    assert after.signals.confidence == before.signals.confidence
+    assert after.signals.salience == before.signals.salience
+
+
+def test_reinforcement_skips_non_concept_nodes():
+    store = InMemorySubstrateGraphStore()
+    evidence = EvidenceNodeV1(
+        node_id="sub-evidence-1",
+        anchor_scope="orion",
+        temporal=_temporal(),
+        provenance=_provenance(key="ev1"),
+        evidence_type="test",
+        content_ref="ref:1",
+    )
+    store.upsert_node(identity_key="evidence|1", node=evidence)
+
+    reinforced = reinforce_matched_concepts(["sub-evidence-1"], store=store)
+
+    assert reinforced == 0
+
+
+def test_reinforcement_skips_unknown_node_ids():
+    store = _seeded_store()
+
+    reinforced = reinforce_matched_concepts(["sub-concept-does-not-exist"], store=store)
+
+    assert reinforced == 0
+
+
+def test_reinforcement_empty_ids_is_a_noop():
+    store = _seeded_store()
+
+    assert reinforce_matched_concepts([], store=store) == 0
+
+
+def test_reinforcement_missing_store_degrades_to_zero_without_raising():
+    assert reinforce_matched_concepts(["sub-concept-seed-orion"], store=None) == 0
+
+
+def test_reinforcement_raising_store_degrades_to_zero_without_raising():
+    class _RaisingStore:
+        def get_node_by_id(self, node_id):
+            raise RuntimeError("boom: store unavailable")
+
+    assert reinforce_matched_concepts(["sub-concept-seed-orion"], store=_RaisingStore()) == 0
+
+
+def test_reinforcement_missing_identity_key_skips_rather_than_clobbers():
+    # Regression: FalkorSubstrateStore's codec writes `identity_key or ""`
+    # unconditionally on every upsert. A node present in the cache but
+    # missing from the identity index must never be reinforced with a
+    # falsy identity_key -- that would durably wipe its real identity on a
+    # real Falkor backend. get_identity_key_by_node_id() returning None
+    # (e.g. this node was upserted with identity_key=None) must skip, not
+    # write.
+    store = InMemorySubstrateGraphStore()
+    node = _concept_node(node_id="sub-concept-no-identity", label="No Identity")
+    store.upsert_node(identity_key=None, node=node)
+
+    reinforced = reinforce_matched_concepts(["sub-concept-no-identity"], store=store)
+
+    assert reinforced == 0
+    assert store.get_identity_key_by_node_id("sub-concept-no-identity") is None
+
+
+# --- fetch_concept_region_fragment_and_reinforce ----------------------------
+
+
+def test_fetch_and_reinforce_bumps_only_matched_concepts():
+    store = _seeded_store()
+    before_juniper = store.snapshot().nodes["sub-concept-seed-juniper"].signals.activation.activation
+    before_orion = store.snapshot().nodes["sub-concept-seed-orion"].signals.activation.activation
+
+    fragments = fetch_concept_region_fragment_and_reinforce(_Query("tell me about Juniper today"), store=store)
+
+    assert fragments
+    after_juniper = store.snapshot().nodes["sub-concept-seed-juniper"].signals.activation.activation
+    after_orion = store.snapshot().nodes["sub-concept-seed-orion"].signals.activation.activation
+    assert after_juniper > before_juniper
+    assert after_orion == before_orion  # Orion wasn't mentioned, wasn't matched, untouched
+
+
+def test_fetch_and_reinforce_returns_same_fragments_as_plain_fetch():
+    store_a = _seeded_store()
+    store_b = _seeded_store()
+
+    plain = fetch_concept_region_fragment(_Query("tell me about Juniper today"), store=store_a)
+    combined = fetch_concept_region_fragment_and_reinforce(_Query("tell me about Juniper today"), store=store_b)
+
+    assert [f["id"] for f in plain] == [f["id"] for f in combined]
+
+
+def test_fetch_and_reinforce_no_match_does_not_write():
+    store = _seeded_store()
+    before = store.snapshot().nodes["sub-concept-seed-juniper"].signals.activation.activation
+
+    fragments = fetch_concept_region_fragment_and_reinforce(_Query("what's the weather like"), store=store)
+
+    assert fragments == []
+    after = store.snapshot().nodes["sub-concept-seed-juniper"].signals.activation.activation
+    assert after == before
+
+
+def test_fetch_and_reinforce_missing_store_degrades_to_empty_without_raising():
+    fragments = fetch_concept_region_fragment_and_reinforce(_Query("mentions Juniper"), store=None)
 
     assert fragments == []

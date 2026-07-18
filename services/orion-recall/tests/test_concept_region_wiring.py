@@ -85,7 +85,7 @@ def test_worker_invokes_concept_region_when_enabled(monkeypatch: pytest.MonkeyPa
         concept_region_called.append((query, store))
         return [{"id": "cr-1", "source": "concept_region", "snippet": "Orion: continuity", "score": 0.7}]
 
-    monkeypatch.setattr(worker, "fetch_concept_region_fragment", _mock_concept_region)
+    monkeypatch.setattr(worker, "fetch_concept_region_fragment_and_reinforce", _mock_concept_region)
     monkeypatch.setattr(worker, "get_substrate_store", lambda: "fake-store-handle")
 
     bundle, decision = asyncio.run(worker.process_recall(_purposeful_query(), corr_id="corr-cr-1", diagnostic=True))
@@ -113,7 +113,7 @@ def test_worker_skips_concept_region_when_disabled(monkeypatch: pytest.MonkeyPat
         concept_region_called.append((query, store))
         return [{"id": "cr-1", "source": "concept_region", "snippet": "should not appear", "score": 0.7}]
 
-    monkeypatch.setattr(worker, "fetch_concept_region_fragment", _mock_concept_region)
+    monkeypatch.setattr(worker, "fetch_concept_region_fragment_and_reinforce", _mock_concept_region)
 
     asyncio.run(worker.process_recall(_purposeful_query(), corr_id="corr-cr-2", diagnostic=True))
 
@@ -132,7 +132,7 @@ def test_worker_concept_region_failure_degrades_gracefully(monkeypatch: pytest.M
     def _raising_concept_region(query, *, store):
         raise RuntimeError("store unreachable")
 
-    monkeypatch.setattr(worker, "fetch_concept_region_fragment", _raising_concept_region)
+    monkeypatch.setattr(worker, "fetch_concept_region_fragment_and_reinforce", _raising_concept_region)
     monkeypatch.setattr(worker, "get_substrate_store", lambda: None)
 
     bundle, decision = asyncio.run(worker.process_recall(_purposeful_query(), corr_id="corr-cr-3", diagnostic=True))

@@ -41,6 +41,9 @@ class RoutedSubstrateGraphStore:
     def get_node_id_by_identity(self, identity_key: str) -> str | None:
         return self._primary.get_node_id_by_identity(identity_key)
 
+    def get_identity_key_by_node_id(self, node_id: str) -> str | None:
+        return self._primary.get_identity_key_by_node_id(node_id)
+
     def get_edge_id_by_identity(self, identity_key: str) -> str | None:
         return self._primary.get_edge_id_by_identity(identity_key)
 

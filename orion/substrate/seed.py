@@ -27,6 +27,7 @@ from orion.core.schemas.cognitive_substrate import (
     NodeRefV1,
     SubstrateEdgeV1,
     SubstrateProvenanceV1,
+    SubstrateSignalBundleV1,
     SubstrateTemporalWindowV1,
 )
 from orion.substrate.store import SubstrateGraphStore
@@ -34,6 +35,15 @@ from orion.substrate.store import SubstrateGraphStore
 logger = logging.getLogger(__name__)
 
 DEFAULT_SEED_CONCEPTS_PATH = Path(__file__).with_name("seed_concepts.yaml")
+
+# Golden concepts are canonical/human_verified by construction -- there is no
+# clustering confidence or document-count salience to derive from, and no
+# principled reason to hedge them lower than the organically-grown concepts
+# they anchor. Without this, ConceptNodeV1's activation auto-seed (see
+# cognitive_substrate.py::ConceptNodeV1._seed_activation_if_unset) would seed
+# from the schema's own salience default (0.0), leaving Orion/Juniper/the
+# relationship at activation=0.0 forever despite having a real half-life.
+_SEED_CONCEPT_SIGNALS = SubstrateSignalBundleV1(confidence=1.0, salience=1.0)
 
 
 def _seed_provenance(*, key: str) -> SubstrateProvenanceV1:
@@ -106,6 +116,7 @@ def load_seed_concept_nodes(
                 provenance=_seed_provenance(key=key),
                 label=label,
                 definition=entry.get("definition"),
+                signals=_SEED_CONCEPT_SIGNALS.model_copy(),
             )
         except Exception as exc:  # noqa: BLE001 - malformed fixture row must not crash callers
             logger.warning("seed_concepts: skipping invalid entry %r: %s", entry, exc)

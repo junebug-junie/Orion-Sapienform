@@ -43,6 +43,7 @@ class SubstrateGraphStore(Protocol):
     def get_edge_by_id(self, edge_id: str) -> SubstrateEdgeV1 | None: ...
     def get_node_id_by_identity(self, identity_key: str) -> str | None: ...
     def get_edge_id_by_identity(self, identity_key: str) -> str | None: ...
+    def get_identity_key_by_node_id(self, node_id: str) -> str | None: ...
     def upsert_node(self, *, identity_key: str | None, node: BaseSubstrateNodeV1) -> None: ...
     def upsert_edge(self, *, identity_key: str, edge: SubstrateEdgeV1) -> None: ...
     def snapshot(self) -> MaterializedSubstrateGraphState: ...
@@ -68,6 +69,13 @@ class InMemorySubstrateGraphStore:
         self._edges: dict[str, SubstrateEdgeV1] = {}
         self._node_identity_index: dict[str, str] = {}
         self._edge_identity_index: dict[str, str] = {}
+        # Reverse of _node_identity_index, maintained alongside it. Exists so
+        # a caller that already has a node_id (e.g. from a prior read) can
+        # recover its identity_key for a subsequent upsert_node() call
+        # without a full snapshot() -- FalkorSubstrateStore's codec writes
+        # `identity_key or ""` unconditionally on every upsert, so passing a
+        # missing/None identity_key durably clobbers the node's real one.
+        self._identity_key_by_node_id: dict[str, str] = {}
 
     def get_node_by_id(self, node_id: str) -> BaseSubstrateNodeV1 | None:
         return self._nodes.get(node_id)
@@ -81,10 +89,14 @@ class InMemorySubstrateGraphStore:
     def get_edge_id_by_identity(self, identity_key: str) -> str | None:
         return self._edge_identity_index.get(identity_key)
 
+    def get_identity_key_by_node_id(self, node_id: str) -> str | None:
+        return self._identity_key_by_node_id.get(node_id)
+
     def upsert_node(self, *, identity_key: str | None, node: BaseSubstrateNodeV1) -> None:
         self._nodes[node.node_id] = node
         if identity_key:
             self._node_identity_index[identity_key] = node.node_id
+            self._identity_key_by_node_id[node.node_id] = identity_key
 
     def upsert_edge(self, *, identity_key: str, edge: SubstrateEdgeV1) -> None:
         self._edges[edge.edge_id] = edge

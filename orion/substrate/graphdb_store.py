@@ -185,6 +185,12 @@ LIMIT 1
             return cached
         return self._get_canonical_id(identity_key=identity_key, identity_kind="node")
 
+    def get_identity_key_by_node_id(self, node_id: str) -> str | None:
+        # Cache-only, unlike get_node_id_by_identity's SPARQL fallback above --
+        # no current caller needs a canonical-store-backed reverse lookup, and
+        # inventing that query shape speculatively isn't warranted yet.
+        return self._cache.get_identity_key_by_node_id(node_id)
+
     def get_edge_id_by_identity(self, identity_key: str) -> str | None:
         cached = self._cache.get_edge_id_by_identity(identity_key)
         if cached:

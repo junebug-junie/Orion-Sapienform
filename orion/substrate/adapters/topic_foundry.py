@@ -31,7 +31,7 @@ from orion.core.schemas.cognitive_substrate import (
     SubstrateSignalBundleV1,
 )
 
-from ._common import make_provenance, make_temporal
+from ._common import make_activation, make_provenance, make_temporal
 
 # --- Caps (this repo requires capped collections everywhere; see
 # docs/superpowers/pr-reports/... incident where an uncapped evidence-id list
@@ -259,7 +259,11 @@ def _build(
                 label=info["label"],
                 definition=None,
                 taxonomy_path=[],
-                signals=SubstrateSignalBundleV1(confidence=confidence, salience=salience),
+                signals=SubstrateSignalBundleV1(
+                    confidence=confidence,
+                    salience=salience,
+                    activation=make_activation(initial_activation=salience),
+                ),
                 metadata=metadata,
             )
         )

@@ -342,7 +342,12 @@ channels:
     kind: "event"
     schema_id: "KgEdgeIngestV1"
     producer_services: ["orion-topic-foundry"]
-    consumer_services: ["orion-rdf-writer", "orion-graphdb"]
+    # orion-rdf-writer removed 2026-07-17: Fuseki is being decommissioned, and
+    # this channel was never actually consumed by it (not in settings.py's
+    # get_all_subscribe_channels()). orion-graphdb was never a real service
+    # either -- no directory under services/. No live consumer as of this
+    # change; orion-topic-foundry still publishes (kg_edges.py).
+    consumer_services: []
     stability: "experimental"
     since: "2026-01-08"
 

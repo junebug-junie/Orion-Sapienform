@@ -19,6 +19,7 @@ from orion.substrate.falkor_store import (
     RecordingFalkorClient,
     RedisGraphQueryClient,
     _normalize_rows,
+    _resolve_falkor_snapshot_force_refresh_ceiling_sec,
 )
 from orion.substrate.graphdb_store import build_substrate_store_from_env
 from orion.substrate.store import InMemorySubstrateGraphStore
@@ -80,8 +81,18 @@ def test_falkor_upsert_round_trip_via_cache():
     store.upsert_node(identity_key="id-a", node=node)
     assert store.get_node_by_id(node.node_id) is not None
     assert store.get_node_id_by_identity("id-a") == node.node_id
-    snap = store.snapshot()
-    assert node.node_id in snap.nodes
+    # Inspect the cache directly rather than via the public snapshot() --
+    # snapshot() now (correctly) forces a live re-hydration on its first
+    # call (see test_falkor_snapshot_* below for that behavior's own
+    # coverage), which for this bare RecordingFalkorClient (no scripted
+    # hydrate_node_rows) would re-fetch an empty durable state and discard
+    # the node this test just upserted -- a test-double artifact, not a
+    # production bug: real Falkor's MATCH query issued by that refresh
+    # would correctly see the just-written node, since upsert_node's own
+    # Cypher write already landed durably by this point. This assertion's
+    # actual intent -- proving upsert_node's immediate cache write-through
+    # -- doesn't depend on snapshot()'s refresh behavior at all.
+    assert node.node_id in store._cache.snapshot().nodes
     assert any("MERGE (n:SubstrateNode" in cypher for cypher, _ in client.calls)
 
 
@@ -792,3 +803,271 @@ def test_falkor_hydrated_concepts_support_concept_region_query():
 
     assert result.source_kind == "falkor"
     assert [node.node_id for node in result.slice.nodes] == ["concept-alpha"]
+
+
+# --- snapshot() refresh/ceiling behavior --------------------------------------
+#
+# Mirrors GraphDBSubstrateStore's already-proven write-generation + ceiling
+# mechanism (test_graphdb_store.py's own test_snapshot_* suite) -- this is the
+# fix for a real, live-confirmed bug: FalkorSubstrateStore.snapshot() used to
+# always return self._cache.snapshot() with no refresh at all, so (a) a node
+# deleted directly from Falkor (bypassing this process, e.g. an operator
+# running Cypher DELETE by hand) stayed resurrected in the cache forever, and
+# (b) the decay scheduler (services/orion-hub/scripts/api_routes.py::
+# decay_concept_activations) durably re-upserts every node in every snapshot()
+# it reads on every tick -- so a stale cache didn't just show old data, it
+# actively wrote deleted data back into Falkor on the next tick, undoing the
+# deletion. Confirmed live in production before this fix.
+#
+# RecordingFalkorClient returns the SAME scripted rows on every graph_query()
+# call (no dynamic state tracking) -- these tests script hydrate_node_rows
+# once, then mutate client._hydrate_node_rows directly between snapshot()
+# calls to simulate durable state changing out from under this process
+# (exactly what a direct external Cypher DELETE looks like from Falkor's
+# side).
+
+
+def _hydrated_node_row(node_id: str, identity_key: str) -> dict:
+    return {
+        "node_id": node_id,
+        "node_kind": "concept",
+        "identity_key": identity_key,
+        "label": "Hydrated",
+        "definition": None,
+        "taxonomy_path_json": "[]",
+        "anchor_scope": "orion",
+        "subject_ref": None,
+        "promotion_state": "canonical",
+        "risk_tier": "low",
+        "confidence": 0.7,
+        "salience": 0.5,
+        "activation": 0.5,
+        "recency_score": 0.4,
+        "decay_floor": 0.0,
+        "decay_half_life_seconds": None,
+        "observed_at": "2026-07-16T00:00:00+00:00",
+        "valid_from": None,
+        "valid_to": None,
+        "provenance_authority": "local_inferred",
+        "provenance_source_kind": "test",
+        "provenance_source_channel": "test:falkor",
+        "provenance_producer": "test_falkor_store",
+        "provenance_model_name": None,
+        "provenance_correlation_id": None,
+        "provenance_trace_id": None,
+        "provenance_tier_rank": None,
+        "evidence_refs_json": "[]",
+    }
+
+
+def test_falkor_snapshot_same_generation_reuses_cache_no_new_query():
+    """Baseline: nothing written since the first fetch -- the second call is
+    served from cache with zero new live queries."""
+    client = RecordingFalkorClient(hydrate_node_rows=[_hydrated_node_row("concept-a", "concept:a")])
+    store = FalkorSubstrateStore(
+        FalkorSubstrateStoreConfig(
+            uri="redis://localhost:6379", graph_name="orion_substrate", snapshot_force_refresh_ceiling_sec=60.0
+        ),
+        client=client,
+        hydrate=False,
+    )
+    client.calls.clear()
+
+    first = store.snapshot()
+    calls_after_first = len(client.calls)
+    assert calls_after_first == 4  # node query, edge query, 2 legacy queries
+    assert "concept-a" in first.nodes
+
+    second = store.snapshot()
+    assert len(client.calls) == calls_after_first  # no new live query
+    assert second.nodes.keys() == first.nodes.keys()
+
+
+def test_falkor_snapshot_write_between_calls_forces_new_query():
+    """A write bumps the generation counter, so the very next snapshot() call
+    issues a live query even though it's well within the ceiling."""
+    client = RecordingFalkorClient(hydrate_node_rows=[_hydrated_node_row("concept-a", "concept:a")])
+    store = FalkorSubstrateStore(
+        FalkorSubstrateStoreConfig(
+            uri="redis://localhost:6379", graph_name="orion_substrate", snapshot_force_refresh_ceiling_sec=60.0
+        ),
+        client=client,
+        hydrate=False,
+    )
+    client.calls.clear()
+
+    store.snapshot()
+    calls_after_first = len(client.calls)
+
+    store.upsert_node(identity_key="concept:b", node=_concept(node_id="concept-b"))
+    calls_after_upsert = len(client.calls)
+    # RecordingFalkorClient returns the SAME static scripted rows on every
+    # graph_query() call -- it doesn't track the upsert_node() write that
+    # just happened the way real Falkor durably would. Update the script to
+    # match what a real MATCH query would now return, so the refresh this
+    # test is actually checking for reflects reality rather than the fake's
+    # limitation.
+    client._hydrate_node_rows = [
+        _hydrated_node_row("concept-a", "concept:a"),
+        _hydrated_node_row("concept-b", "concept:b"),
+    ]
+
+    result = store.snapshot()
+    assert len(client.calls) > calls_after_upsert  # forced a live re-hydration
+    assert "concept-a" in result.nodes  # still present, from the scripted rows
+    assert "concept-b" in result.nodes  # the just-upserted node, durably reflected
+
+
+def test_falkor_snapshot_ceiling_forces_refresh_despite_same_generation():
+    """The safety net: even with no writes at all (same_generation stays true
+    indefinitely), the ceiling forces a periodic live re-check to catch
+    changes made by a different process, or a direct external mutation, that
+    this instance's own write counter can't see."""
+    import time
+
+    client = RecordingFalkorClient(hydrate_node_rows=[_hydrated_node_row("concept-a", "concept:a")])
+    store = FalkorSubstrateStore(
+        FalkorSubstrateStoreConfig(
+            uri="redis://localhost:6379", graph_name="orion_substrate", snapshot_force_refresh_ceiling_sec=0.01
+        ),
+        client=client,
+        hydrate=False,
+    )
+    client.calls.clear()
+
+    store.snapshot()
+    calls_after_first = len(client.calls)
+
+    time.sleep(0.02)
+    store.snapshot()
+    assert len(client.calls) > calls_after_first  # ceiling forced a live query
+
+
+def test_falkor_snapshot_ceiling_zero_trusts_generation_forever():
+    """ceiling <= 0 disables the periodic safety-net refresh entirely -- the
+    cache is trusted for as long as the write generation hasn't moved."""
+    import time
+
+    client = RecordingFalkorClient(hydrate_node_rows=[_hydrated_node_row("concept-a", "concept:a")])
+    store = FalkorSubstrateStore(
+        FalkorSubstrateStoreConfig(
+            uri="redis://localhost:6379", graph_name="orion_substrate", snapshot_force_refresh_ceiling_sec=0.0
+        ),
+        client=client,
+        hydrate=False,
+    )
+    client.calls.clear()
+
+    store.snapshot()
+    calls_after_first = len(client.calls)
+
+    time.sleep(0.02)
+    store.snapshot()
+    assert len(client.calls) == calls_after_first  # still cached, no ceiling to force a refresh
+
+
+def test_falkor_snapshot_refresh_removes_externally_deleted_node():
+    """The actual regression this fix closes: a node deleted directly from
+    Falkor (bypassing this process entirely -- simulated here by mutating the
+    scripted hydrate rows out from under an already-hydrated store) must
+    disappear from the cache on the next forced refresh, not stay
+    resurrected forever."""
+    client = RecordingFalkorClient(
+        hydrate_node_rows=[
+            _hydrated_node_row("concept-a", "concept:a"),
+            _hydrated_node_row("concept-junk", "concept:junk"),
+        ]
+    )
+    store = FalkorSubstrateStore(
+        FalkorSubstrateStoreConfig(
+            uri="redis://localhost:6379", graph_name="orion_substrate", snapshot_force_refresh_ceiling_sec=0.01
+        ),
+        client=client,
+        hydrate=True,
+    )
+
+    first = store.snapshot()
+    assert "concept-a" in first.nodes
+    assert "concept-junk" in first.nodes
+
+    # Simulate an external `MATCH (n) WHERE ... DETACH DELETE n` against
+    # Falkor directly -- "concept-junk" is gone from what the durable graph
+    # now returns, but this process's cache still has it until a refresh.
+    client._hydrate_node_rows = [_hydrated_node_row("concept-a", "concept:a")]
+
+    import time
+
+    time.sleep(0.02)  # clear the ceiling
+    second = store.snapshot()
+    assert "concept-a" in second.nodes
+    assert "concept-junk" not in second.nodes  # the fix: no longer resurrected
+
+
+def test_falkor_snapshot_failure_fallback_still_returns_cache():
+    """A failed refresh (e.g. Falkor unreachable) must degrade to the
+    existing cache, not an empty result or a raised exception."""
+
+    class _FailingClient:
+        def __init__(self) -> None:
+            self.calls = 0
+
+        def graph_query(self, cypher, params=None):
+            self.calls += 1
+            raise RuntimeError("falkor unreachable")
+
+    failing_client = _FailingClient()
+    store = FalkorSubstrateStore(
+        FalkorSubstrateStoreConfig(uri="redis://localhost:6379", graph_name="orion_substrate"),
+        client=failing_client,
+        hydrate=False,
+    )
+    # Seed the cache directly (bypassing the failing client) to prove a
+    # subsequent failed refresh preserves it rather than clearing it.
+    store._cache.upsert_node(identity_key="concept:seed", node=_concept(node_id="concept-seeded"))
+
+    result = store.snapshot()
+    assert "concept-seeded" in result.nodes
+    assert failing_client.calls > 0  # the refresh really was attempted
+
+
+def test_falkor_write_generation_bumps_on_upsert_node_and_edge():
+    client = RecordingFalkorClient()
+    store = FalkorSubstrateStore(
+        FalkorSubstrateStoreConfig(uri="redis://localhost:6379", graph_name="orion_substrate"),
+        client=client,
+        hydrate=False,
+    )
+    assert store._write_generation == 0
+
+    store.upsert_node(identity_key="concept:a", node=_concept(node_id="concept-a"))
+    assert store._write_generation == 1
+
+    edge = SubstrateEdgeV1(
+        source=NodeRefV1(node_id="concept-a", node_kind="concept"),
+        target=NodeRefV1(node_id="concept-b", node_kind="concept"),
+        predicate="associated_with",
+        temporal=SubstrateTemporalWindowV1(observed_at=datetime.now(timezone.utc)),
+        provenance=SubstrateProvenanceV1(
+            authority="local_inferred", source_kind="test", source_channel="test", producer="test_falkor_store"
+        ),
+    )
+    store.upsert_edge(identity_key="a|associated_with|b", edge=edge)
+    assert store._write_generation == 2
+
+
+def test_resolve_falkor_snapshot_ceiling_uses_falkor_specific_override(monkeypatch):
+    monkeypatch.setenv("FALKOR_SNAPSHOT_FORCE_REFRESH_CEILING_SEC", "12.5")
+    monkeypatch.delenv("SUBSTRATE_SNAPSHOT_FORCE_REFRESH_CEILING_SEC", raising=False)
+    assert _resolve_falkor_snapshot_force_refresh_ceiling_sec() == 12.5
+
+
+def test_resolve_falkor_snapshot_ceiling_falls_back_to_shared_setting(monkeypatch):
+    monkeypatch.delenv("FALKOR_SNAPSHOT_FORCE_REFRESH_CEILING_SEC", raising=False)
+    monkeypatch.setenv("SUBSTRATE_SNAPSHOT_FORCE_REFRESH_CEILING_SEC", "45.0")
+    assert _resolve_falkor_snapshot_force_refresh_ceiling_sec() == 45.0
+
+
+def test_resolve_falkor_snapshot_ceiling_invalid_value_falls_back_to_shared_setting(monkeypatch):
+    monkeypatch.setenv("FALKOR_SNAPSHOT_FORCE_REFRESH_CEILING_SEC", "not-a-number")
+    monkeypatch.delenv("SUBSTRATE_SNAPSHOT_FORCE_REFRESH_CEILING_SEC", raising=False)
+    assert _resolve_falkor_snapshot_force_refresh_ceiling_sec() == 30.0  # shared default

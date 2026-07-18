@@ -58,8 +58,13 @@ class Settings(BaseSettings):
     # catalog string, not a bus.publish call). Zero live traffic possible.
     # Do not re-add without a real producer.
     CHANNEL_COGNITION_TRACE_PUB: str = Field(default="orion:cognition:trace", env="CHANNEL_COGNITION_TRACE_PUB")
-    CHANNEL_CHAT_HISTORY_TURN: str = Field(default="orion:chat:history:turn", env="CHANNEL_CHAT_HISTORY_TURN")
-    CHANNEL_CHAT_HISTORY_LOG: str = Field(default="orion:chat:history:log", env="CHANNEL_CHAT_HISTORY_LOG")
+    # orion:memory:drives:audit deliberately not subscribed: drive audits are
+    # Postgres-only (`drive_audits` via orion-sql-writer) as of 2026-07-15.
+    # orion:chat:history:turn / orion:chat:history:log deliberately not
+    # subscribed (2026-07-17): both are Postgres-only via orion-sql-writer
+    # (`chat_message`, `chat_history_log`) -- the RDF copy covered only
+    # ~11-18% of real chat volume, live-checked. See split-design spec's open
+    # questions for the still-unexplained coverage gap.
     # orion:memory:identity:snapshot / orion:memory:goals:proposed (identity
     # snapshots / goal proposals) deliberately not subscribed as of
     # 2026-07-18: live Fuseki query found zero graphs matching
@@ -67,12 +72,9 @@ class Settings(BaseSettings):
     # existing. identity_snapshots already has a real, actively-pruned
     # Postgres store (orion-self-state-runtime's SelfStateRuntimeStore), and
     # goal proposals are already consumed live by orion-substrate-runtime's
-    # goal_context_listener.py. Same shape as the 2026-07-15 drive-audit kill
-    # and the cognition/metacog kill — a real consumer already exists
-    # elsewhere. Do not re-add.
-    #
-    # orion:memory:drives:audit deliberately not subscribed: drive audits are
-    # Postgres-only (`drive_audits` via orion-sql-writer) as of 2026-07-15.
+    # goal_context_listener.py. Same shape as the drive-audit kill and the
+    # cognition/metacog kill — a real consumer already exists elsewhere.
+    # Do not re-add any of the above without a real producer/consumer.
 
     # === PUBLISH CHANNELS ===
     CHANNEL_RDF_CONFIRM: str = Field(default="orion:rdf:confirm", env="CHANNEL_RDF_CONFIRM")
@@ -119,8 +121,6 @@ class Settings(BaseSettings):
             "orion:chat:social:stored",
             self.CHANNEL_CORE_EVENTS,
             self.CHANNEL_COGNITION_TRACE_PUB,
-            self.CHANNEL_CHAT_HISTORY_TURN,
-            self.CHANNEL_CHAT_HISTORY_LOG,
             "orion:metacog:trace",
         ]
         seen = set()

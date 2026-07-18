@@ -84,6 +84,13 @@ class SubstrateActivationV1(BaseModel):
     decay_floor: float = Field(default=0.0, ge=0.0, le=1.0)
 
 
+# Default half-life for concept-node activation decay, used by ConceptNodeV1's
+# auto-seed validator below when a producer doesn't set one explicitly. Mirrors
+# orion.memory.crystallization's own precedent for the separate crystallization
+# system (orion/memory/crystallization/schemas.py: decay_half_life_days = 30.0).
+DEFAULT_CONCEPT_ACTIVATION_HALF_LIFE_SECONDS = 30 * 24 * 60 * 60
+
+
 class SubstrateTemporalWindowV1(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
@@ -154,6 +161,39 @@ class ConceptNodeV1(BaseSubstrateNodeV1):
     label: str = Field(min_length=1)
     definition: Optional[str] = None
     taxonomy_path: List[str] = Field(default_factory=list)
+
+    @model_validator(mode="after")
+    def _seed_activation_if_unset(self) -> "ConceptNodeV1":
+        """Auto-seed activation/half-life when a producer left `signals.activation`
+        at the pure schema default (activation=0.0, decay_half_life_seconds=None).
+
+        Every real ConceptNodeV1 producer historically left this sub-object
+        untouched, which made Hub's live decay scheduler
+        (services/orion-hub/scripts/api_routes.py::decay_concept_activations())
+        a permanent no-op: decay_activation() treats a falsy half-life as "clamp
+        to floor, don't decay." Enforcing the seed here, at the schema boundary,
+        means every current and future producer gets working decay for free
+        instead of each adapter needing to remember to call a helper by hand
+        (16+ live construction sites were found still missing it when this was
+        first patched at the adapter level alone -- see
+        orion/substrate/adapters/_common.py::make_activation() for the
+        opt-in helper adapters can still use to seed a non-default value
+        explicitly, e.g. from a real confidence/salience prior).
+
+        Only fires when BOTH fields are still at their literal schema
+        defaults, so a producer that explicitly sets activation (even to
+        0.0 with a real half-life, or vice versa) is never overridden.
+        """
+        activation = self.signals.activation
+        if activation.activation == 0.0 and activation.decay_half_life_seconds is None:
+            seeded = activation.model_copy(
+                update={
+                    "activation": self.signals.salience,
+                    "decay_half_life_seconds": DEFAULT_CONCEPT_ACTIVATION_HALF_LIFE_SECONDS,
+                }
+            )
+            self.signals = self.signals.model_copy(update={"activation": seeded})
+        return self
 
 
 class EventNodeV1(BaseSubstrateNodeV1):

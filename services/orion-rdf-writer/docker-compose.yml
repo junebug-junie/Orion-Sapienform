@@ -42,12 +42,13 @@ services:
       # CHANNEL_WORKER_RDF / CORTEX_LOG_CHANNEL removed 2026-07-18: zero real
       # producers for either channel anywhere in the repo.
       - CHANNEL_COGNITION_TRACE_PUB=${CHANNEL_COGNITION_TRACE_PUB}
-      - CHANNEL_CHAT_HISTORY_TURN=${CHANNEL_CHAT_HISTORY_TURN}
-      - CHANNEL_CHAT_HISTORY_LOG=${CHANNEL_CHAT_HISTORY_LOG}
+      # CHANNEL_MEMORY_DRIVES_AUDIT removed 2026-07-15: drive audits are Postgres-only (orion-sql-writer).
+      # CHANNEL_CHAT_HISTORY_TURN / CHANNEL_CHAT_HISTORY_LOG removed 2026-07-17:
+      # both are Postgres-only (orion-sql-writer); RDF copy covered ~11-18% of
+      # real chat volume.
       # CHANNEL_MEMORY_IDENTITY_SNAPSHOT / CHANNEL_MEMORY_GOALS_PROPOSED
       # removed 2026-07-18: zero live Fuseki triples ever recorded; already
       # durably owned elsewhere (Postgres / orion-substrate-runtime).
-      # CHANNEL_MEMORY_DRIVES_AUDIT removed 2026-07-15: drive audits are Postgres-only (orion-sql-writer).
       # CHANNEL_WORLD_PULSE_GRAPH removed 2026-07-18: WORLD_PULSE_GRAPH_ENABLED
       # was false live, fully inert.
 

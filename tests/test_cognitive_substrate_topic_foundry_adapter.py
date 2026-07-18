@@ -2,6 +2,9 @@ from __future__ import annotations
 
 from datetime import datetime, timezone
 
+import pytest
+
+from orion.core.activation_decay import decay_activation
 from orion.core.schemas.cognitive_substrate import SubstrateGraphRecordV1
 from orion.substrate.adapters.topic_foundry import map_topic_foundry_run_to_substrate
 
@@ -189,6 +192,40 @@ def test_malformed_segment_topic_map_degrades_gracefully() -> None:
     assert isinstance(out, SubstrateGraphRecordV1)
     # The single concept node still forms; the malformed window is simply skipped.
     assert len([n for n in out.nodes if n.node_kind == "concept"]) == 1
+
+
+def test_concept_node_seeds_activation_and_half_life_from_salience() -> None:
+    # Regression: ConceptNodeV1's signals.activation used to be left at the
+    # schema default (activation=0.0, decay_half_life_seconds=None), which
+    # made Hub's decay scheduler a permanent no-op for every concept node
+    # (decay_activation() treats a falsy half_life as "don't decay").
+    topics = [{"topic_id": 0, "count": 200, "outlier_pct": 0.0, "label": "hot topic"}]
+    out = map_topic_foundry_run_to_substrate(run_id="run-1", topics=topics, keywords_by_topic={})
+    concept_nodes = [n for n in out.nodes if n.node_kind == "concept"]
+    assert concept_nodes
+    node = concept_nodes[0]
+    assert node.signals.activation.activation == node.signals.salience
+    assert node.signals.activation.activation > 0.0
+    assert node.signals.activation.decay_half_life_seconds is not None
+    assert node.signals.activation.decay_half_life_seconds > 0
+
+
+def test_seeded_activation_actually_decays_past_half_life() -> None:
+    # End-to-end acceptance check: a seeded concept node's activation, fed
+    # through the same decay_activation() Hub's scheduler calls, measurably
+    # drops after real elapsed time -- not just "the fields are non-None."
+    topics = [{"topic_id": 0, "count": 200, "outlier_pct": 0.0, "label": "hot topic"}]
+    out = map_topic_foundry_run_to_substrate(run_id="run-1", topics=topics, keywords_by_topic={})
+    activation_signal = [n for n in out.nodes if n.node_kind == "concept"][0].signals.activation
+
+    decayed = decay_activation(
+        current=activation_signal.activation,
+        elapsed_seconds=activation_signal.decay_half_life_seconds,  # exactly one half-life
+        half_life_seconds=activation_signal.decay_half_life_seconds,
+        floor=activation_signal.decay_floor,
+    )
+    assert decayed == pytest.approx(activation_signal.activation / 2, rel=1e-6)
+    assert decayed < activation_signal.activation
 
 
 def test_observed_at_and_subject_ref_propagate() -> None:

@@ -58,6 +58,21 @@ def test_concept_adapter_maps_profile_and_preserves_scope_subject_and_provenance
     assert concept_nodes[0].provenance.source_kind == "concept_induction.profile"
 
 
+def test_concept_adapter_seeds_activation_and_half_life_from_salience() -> None:
+    # Regression: signals.activation used to be left at the schema default
+    # (activation=0.0, decay_half_life_seconds=None), making Hub's decay
+    # scheduler a permanent no-op for every concept node it touched.
+    profile = _concept_profile()
+    out = map_concept_profile_to_substrate(profile=profile, anchor_scope="orion")
+    concept_nodes = [n for n in out.nodes if n.node_kind == "concept"]
+    assert concept_nodes
+    node = concept_nodes[0]
+    assert node.signals.activation.activation == node.signals.salience
+    assert node.signals.activation.activation > 0.0
+    assert node.signals.activation.decay_half_life_seconds is not None
+    assert node.signals.activation.decay_half_life_seconds > 0
+
+
 def test_concept_delta_adapter_only_emits_contradiction_when_semantics_support_it() -> None:
     now = datetime.now(timezone.utc)
     delta = ConceptProfileDelta(profile_id="p1", from_rev=1, to_rev=2, added=["c2"], removed=["c1"], rationale="concept conflict")

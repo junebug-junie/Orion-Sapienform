@@ -177,15 +177,17 @@ def build_triples_from_envelope(env_kind: str, payload: Any) -> Tuple[Optional[s
         # claim/event/entity emit channels already reach Postgres via
         # orion-sql-writer. Do not re-add without a real reason.
 
-        # 9. Chat History (Turn-level)
-        elif env_kind == "chat.history":
-            data = payload if isinstance(payload, dict) else payload.model_dump()
-            return _handle_chat_turn(g, data)
-
-        # 10. Chat History (Message-level)
-        elif env_kind == "chat.history.message.v1":
-            data = payload if isinstance(payload, dict) else payload.model_dump()
-            return _handle_chat_message(g, data)
+        # 9/10. Chat History (turn- and message-level) deliberately absent
+        # (2026-07-17): orion:chat graph was found to cover only ~11-18% of
+        # actual chat volume (299 RDF ChatTurn nodes vs 2579 Postgres
+        # chat_message rows / 1699 chat_history_log rows, live-checked), with
+        # almost none of the richer fields (model/intent/topic/tokens) the
+        # builder supported ever actually populated. Both kinds are already
+        # fully durable via orion-sql-writer (chat_message, chat_history_log).
+        # See docs/superpowers/specs/2026-07-16-cypher-native-substrate-postgres-bus-split-design.md
+        # open-questions section for the still-unexplained coverage gap
+        # (why the RDF write path only ever captured a sliver of real chat
+        # traffic) -- worth root-causing independent of this removal.
 
         elif env_kind == "social.turn.stored.v1":
             data = payload if isinstance(payload, dict) else payload.model_dump()
@@ -318,139 +320,11 @@ def _handle_metacognitive_trace(g: Graph, trace: MetacognitiveTraceV1) -> Tuple[
 
 
 # === Chat History ===
-
-def _handle_chat_turn(g: Graph, data: dict) -> Tuple[str, str]:
-    session_id = data.get("session_id") or "unknown"
-    turn_id = data.get("id") or data.get("turn_id") or data.get("correlation_id") or data.get("message_id")
-    turn_id = turn_id or str(uuid.uuid4())
-
-    session_uri = URIRef(f"http://conjourney.net/orion/chatSession/{_sanitize_fragment(session_id)}")
-    turn_uri = URIRef(f"http://conjourney.net/orion/chatTurn/{_sanitize_fragment(turn_id)}")
-
-    g.add((session_uri, RDF.type, ORION.ChatSession))
-    g.add((turn_uri, RDF.type, ORION.ChatTurn))
-    g.add((session_uri, ORION.hasTurn, turn_uri))
-
-    g.add((turn_uri, ORION.sessionId, Literal(session_id, datatype=XSD.string)))
-
-    # prompt/response text omitted: full text lives in Postgres; IRI is the join key
-
-    timestamp = data.get("timestamp")
-    if timestamp:
-        g.add((turn_uri, ORION.timestamp, Literal(timestamp, datatype=XSD.string)))
-
-    correlation_id = data.get("correlation_id")
-    if correlation_id:
-        g.add((turn_uri, ORION.correlationId, Literal(str(correlation_id), datatype=XSD.string)))
-
-    trace_id = data.get("trace_id") or correlation_id
-    if trace_id:
-        g.add((turn_uri, ORION.traceId, Literal(str(trace_id), datatype=XSD.string)))
-
-    spark_meta = data.get("spark_meta") if isinstance(data.get("spark_meta"), dict) else {}
-    verb = spark_meta.get("trace_verb") or data.get("verb")
-    if verb:
-        g.add((turn_uri, ORION.verb, Literal(str(verb), datatype=XSD.string)))
-
-    model = spark_meta.get("model") or data.get("model")
-    if model:
-        g.add((turn_uri, ORION.model, Literal(str(model), datatype=XSD.string)))
-
-    node = spark_meta.get("source_node") or data.get("node")
-    if node:
-        g.add((turn_uri, ORION.node, Literal(str(node), datatype=XSD.string)))
-
-    prompt_tokens = data.get("prompt_tokens")
-    if prompt_tokens is not None:
-        g.add((turn_uri, ORION.promptTokens, Literal(prompt_tokens, datatype=XSD.integer)))
-
-    completion_tokens = data.get("completion_tokens")
-    if completion_tokens is not None:
-        g.add((turn_uri, ORION.completionTokens, Literal(completion_tokens, datatype=XSD.integer)))
-
-    total_tokens = data.get("total_tokens")
-    if total_tokens is not None:
-        g.add((turn_uri, ORION.totalTokens, Literal(total_tokens, datatype=XSD.integer)))
-
-    intent = data.get("intent")
-    if intent:
-        g.add((turn_uri, ORION.intent, Literal(str(intent), datatype=XSD.string)))
-
-    topic = data.get("topic")
-    if topic:
-        g.add((turn_uri, ORION.topic, Literal(str(topic), datatype=XSD.string)))
-
-    artifact_path = data.get("artifact_path")
-    if artifact_path:
-        g.add((turn_uri, ORION.artifactPath, Literal(str(artifact_path), datatype=XSD.string)))
-
-    return g.serialize(format="nt"), "orion:chat"
-
-
-def _handle_chat_message(g: Graph, data: dict) -> Tuple[str, str]:
-    session_id = data.get("session_id") or "unknown"
-    message_id = data.get("message_id") or data.get("id") or str(uuid.uuid4())
-
-    session_uri = URIRef(f"http://conjourney.net/orion/chatSession/{_sanitize_fragment(session_id)}")
-    message_uri = URIRef(f"http://conjourney.net/orion/chatMessage/{_sanitize_fragment(message_id)}")
-
-    g.add((session_uri, RDF.type, ORION.ChatSession))
-    g.add((message_uri, RDF.type, ORION.ChatMessage))
-    g.add((session_uri, ORION.hasMessage, message_uri))
-
-    g.add((message_uri, ORION.sessionId, Literal(session_id, datatype=XSD.string)))
-
-    # content text omitted: full text lives in Postgres; IRI is the join key
-
-    role = data.get("role")
-    if role:
-        g.add((message_uri, ORION.role, Literal(str(role), datatype=XSD.string)))
-
-    speaker = data.get("speaker")
-    if speaker:
-        g.add((message_uri, ORION.speaker, Literal(str(speaker), datatype=XSD.string)))
-
-    timestamp = data.get("timestamp")
-    if timestamp:
-        g.add((message_uri, ORION.timestamp, Literal(timestamp, datatype=XSD.string)))
-
-    model = data.get("model")
-    if model:
-        g.add((message_uri, ORION.model, Literal(str(model), datatype=XSD.string)))
-
-    node = data.get("node")
-    if node:
-        g.add((message_uri, ORION.node, Literal(str(node), datatype=XSD.string)))
-
-    prompt_tokens = data.get("prompt_tokens")
-    if prompt_tokens is not None:
-        g.add((message_uri, ORION.promptTokens, Literal(prompt_tokens, datatype=XSD.integer)))
-
-    completion_tokens = data.get("completion_tokens")
-    if completion_tokens is not None:
-        g.add((message_uri, ORION.completionTokens, Literal(completion_tokens, datatype=XSD.integer)))
-
-    total_tokens = data.get("total_tokens")
-    if total_tokens is not None:
-        g.add((message_uri, ORION.totalTokens, Literal(total_tokens, datatype=XSD.integer)))
-
-    intent = data.get("intent")
-    if intent:
-        g.add((message_uri, ORION.intent, Literal(str(intent), datatype=XSD.string)))
-
-    topic = data.get("topic")
-    if topic:
-        g.add((message_uri, ORION.topic, Literal(str(topic), datatype=XSD.string)))
-
-    artifact_path = data.get("artifact_path")
-    if artifact_path:
-        g.add((message_uri, ORION.artifactPath, Literal(str(artifact_path), datatype=XSD.string)))
-
-    provider = data.get("provider")
-    if provider:
-        g.add((message_uri, ORION.provider, Literal(str(provider), datatype=XSD.string)))
-
-    return g.serialize(format="nt"), "orion:chat"
+#
+# _handle_chat_turn / _handle_chat_message deliberately removed (2026-07-17):
+# see the dispatch-site comment above (kinds "chat.history" /
+# "chat.history.message.v1") for why. Both durably live in Postgres via
+# orion-sql-writer; the RDF copy covered only ~11-18% of real chat volume.
 
 
 # ================================================================

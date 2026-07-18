@@ -443,6 +443,38 @@ an ever-growing elapsed-since-creation window, collapsing activation to `decay_f
 roughly one configured half-life regardless of the half-life value (a real bug caught in
 review during PR #1131 — see that PR's description for the numeric trace).
 
+**Activation was seeded at 0.0 with no half-life until 2026-07-17 (fixed):** decay math
+being correct is meaningless if there's nothing to decay. No `ConceptNodeV1` producer ever
+set `signals.activation` when constructing a node — every concept was born at the schema
+default (`activation=0.0`, `decay_half_life_seconds=None`), and `decay_activation()` treats
+a falsy half-life as "clamp to floor, don't decay." So the live scheduler above was decaying
+an input that was permanently `(0.0, None)` — 120s ticks that correctly computed nothing,
+forever. This was not limited to the two organic-growth adapters (`topic_foundry.py`,
+`concept_induction.py`) — a code-review pass on the first version of this fix found 16+ live
+`ConceptNodeV1` construction sites still missing it, including the three golden/seed
+concepts (`orion/substrate/seed.py`) and every `orion/substrate/relational/adapters/*.py`
+producer. Rather than patch each call site by hand (and risk missing the next one), the fix
+lives at the schema boundary: `ConceptNodeV1` now has a `model_validator(mode="after")`
+(`orion/core/schemas/cognitive_substrate.py::_seed_activation_if_unset`) that auto-seeds
+`activation = salience` and a 30-day default half-life whenever a producer leaves
+`signals.activation` at its pure schema default — covering every current and future
+producer, not just the ones that remember to opt in. `orion/substrate/adapters/_common.py::make_activation()`
+remains available for a producer that wants an explicit, non-default initial value.
+Reinforcement-on-recall (bumping activation when a concept is actually retrieved in a live
+turn, mirroring `orion/memory/crystallization/dynamics.py::recall_boost()`'s existing
+precedent for the separate crystallization system) is not wired yet — deferred, see the
+concept_region collector at §15 of `services/orion-recall/README.md` for the natural call
+site.
+
+**Side effect caught in review:** `GET /api/substrate/concepts/summary`'s `_at_risk_concepts()`
+used to treat "every concept node's activation is identical" as a proxy for "no live decay
+signal exists yet" and returned an empty, explained `at_risk` list in that case. Once
+activation is seeded at construction, a brand-new low-salience concept would otherwise show
+up as "at risk of decaying toward its floor" on its very first tick — it hasn't decayed at
+all, it just started low. Fixed by replacing the variance proxy with an explicit age gate
+(`_AT_RISK_MIN_AGE_SECONDS`, one hour): a concept must have existed long enough for real
+decay ticks to plausibly have run before it's eligible for `at_risk` at all.
+
 **Autonomous scheduler window math, if debugging why a training run didn't fire:**
 `trigger_topic_foundry_training_run()` floors its rolling window's `end_at` to a UTC day
 boundary before computing `start_at` from it — NOT `datetime.now()` verbatim. This is load-

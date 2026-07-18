@@ -13,7 +13,7 @@ from orion.core.schemas.cognitive_substrate import (
     SubstrateGraphRecordV1,
 )
 
-from ._common import make_provenance, make_temporal
+from ._common import make_activation, make_provenance, make_temporal
 
 
 def map_concept_profile_to_substrate(
@@ -29,6 +29,7 @@ def map_concept_profile_to_substrate(
     evidence_to_concepts: dict[str, list[str]] = defaultdict(list)
     for concept in profile.concepts:
         concept_node_id = f"sub-concept-{concept.concept_id}"
+        concept_salience = min(1.0, max(0.0, concept.salience))
         nodes.append(
             ConceptNodeV1(
                 node_id=concept_node_id,
@@ -46,7 +47,8 @@ def map_concept_profile_to_substrate(
                 taxonomy_path=[str(concept.type)] if concept.type else [],
                 signals={
                     "confidence": concept.confidence,
-                    "salience": min(1.0, max(0.0, concept.salience)),
+                    "salience": concept_salience,
+                    "activation": make_activation(initial_activation=concept_salience),
                 },
                 metadata={"concept_id": concept.concept_id, "aliases": list(concept.aliases), "embedding_ref": concept.embedding_ref},
             )

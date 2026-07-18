@@ -80,6 +80,23 @@ def test_fetch_related_entities_failure_degrades_to_empty(monkeypatch) -> None:
     assert out == []
 
 
+def test_fetch_related_entities_skips_unparseable_row_not_whole_request(monkeypatch) -> None:
+    """Regression: numeric coercion used to happen outside the try/except
+    wrapping the Falkor round-trip, so a malformed shared/jaccard value would
+    raise uncaught through the /debug/entity-graph/related endpoint as an
+    unhandled 500. Now a bad row is skipped, not the whole request."""
+    rows = [
+        {"name": "tesla", "shared": "not-a-number", "degree1": 23, "degree2": 7, "jaccard": 0.15},
+        {"name": "atlas", "shared": 3, "degree1": 23, "degree2": 17, "jaccard": 0.08},
+    ]
+    fake_client = _FakeFalkorClient(rows=rows)
+    monkeypatch.setattr(falkor_entity_relatedness, "get_recall_falkor_client", lambda: fake_client)
+
+    out = _run(falkor_entity_relatedness.fetch_related_entities(name="nvidia"))
+
+    assert [r["name"] for r in out] == ["atlas"]
+
+
 def test_fetch_bridging_turns_prefers_direct_comention(monkeypatch) -> None:
     direct_rows = [{"turn_id": "t1", "ts": "2026-07-19T00:00:00"}]
     # Second call (the 2-hop fallback) should never actually run once direct
@@ -91,6 +108,8 @@ def test_fetch_bridging_turns_prefers_direct_comention(monkeypatch) -> None:
     out = _run(falkor_entity_relatedness.fetch_bridging_turns(entity_a="nvidia", entity_b="atlas"))
 
     assert out["mode"] == "direct"
+    assert out["entity_a"] == "nvidia"
+    assert out["entity_b"] == "atlas"
     assert out["results"] == [{"turn_id": "t1", "ts": "2026-07-19T00:00:00"}]
     assert len(fake_client.calls) == 1
 
@@ -113,13 +132,20 @@ def test_fetch_bridging_turns_no_connection_returns_none_mode(monkeypatch) -> No
 
     out = _run(falkor_entity_relatedness.fetch_bridging_turns(entity_a="nvidia", entity_b="unrelated"))
 
-    assert out == {"mode": "none", "results": []}
+    assert out == {"mode": "none", "entity_a": "nvidia", "entity_b": "unrelated", "results": []}
+
+    # The 2-hop Cypher must exclude t1==t2 -- otherwise a single ChatTurn
+    # that happens to mention a, mid, and b together would be mislabeled as
+    # a 2-hop bridge instead of what it actually is (a direct triple
+    # co-mention, which the direct-check above would already have caught).
+    second_cypher, _ = fake_client.calls[1]
+    assert "t1 <> t2" in second_cypher
 
 
 def test_fetch_bridging_turns_none_client_returns_none_mode(monkeypatch) -> None:
     monkeypatch.setattr(falkor_entity_relatedness, "get_recall_falkor_client", lambda: None)
     out = _run(falkor_entity_relatedness.fetch_bridging_turns(entity_a="a", entity_b="b"))
-    assert out == {"mode": "none", "results": []}
+    assert out == {"mode": "none", "entity_a": "a", "entity_b": "b", "results": []}
 
 
 def test_fetch_entity_mention_timeline_full_shape(monkeypatch) -> None:

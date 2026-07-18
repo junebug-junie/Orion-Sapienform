@@ -130,33 +130,66 @@ it. Proposed replacement: split into condition-gated types instead of one uncond
   anomaly detector shipped today (`detect-anomalies`, PR #1185) is exactly a real, deterministic
   "something notable happened" detector for field-channel data. A flagged anomalous window is a
   legitimate trigger condition as-is.
-- **`relational`** (new, hard to quantify — see below) — something notable in the
-  conversation/relationship itself, orthogonal to execution mechanics.
+- **`relational`** (new) — **also already exists and just needs wiring.** `orion/memory/
+  turn_change_classify.py`'s live `SHIFT: NONE|TOPIC|STANCE|REPAIR` appraisal (see below) is the
+  trigger condition — something notable in the conversation/relationship itself, orthogonal to
+  execution mechanics, already computed today for recall-routing purposes.
 
 ## The relational axis (Juniper: "really hard to quantify," asked to keep riffing)
 
 Component success/fail codes, taken alone, are still pure telemetry — just symbolic instead of
 numeric. The ritual quality was never about "did step 4 fail," it was about something notable
-happening *between* Juniper and Orion. None of the ideas below are precise; they share one
-property that matters: none share a causal root with CPU/GPU/network load (so they don't
-reinherit the circularity problem), and none ask an LLM to self-report a feeling (so they don't
-reinherit the confabulation problem either).
+happening *between* Juniper and Orion.
 
-- **Explicit correction/redirection detection.** Lexically detectable phrasing — this very
-  conversation had several ("no i meant," "stretch. do better," "call me out on my bullshit").
-  Not an LLM vibe-check, a real textual pattern.
-- **Crude lexical sentiment markers, deliberately dumb.** Word-list presence — profanity/emphasis
-  as one axis, explicit positive ("perfect," "love this") vs negative ("sucks," "ugh") markers as
-  another. Not asking anything to *feel* — checking what's literally in the text.
-- **Silence/re-engagement gaps.** A long pause then a return isn't caused by GPU load, it's
-  caused by Juniper having a life outside this terminal. Same idea as the earlier
-  usage-pattern-as-criterion discussion, but at turn-granularity instead of clock-granularity —
-  and without that discussion's "too coarse, just detects on/off" problem, since it's about
-  *this specific gap*, not a recurring schedule.
-- **Topic-shift/arc detection.** This exact conversation jumped from a live production bug fix, to
-  a training run, to a folder refactor, to a from-scratch architecture redesign. A hard pivot
-  like that is a real, detectable event (embedding-distance jump between consecutive turns, or
-  explicit "back to X" phrasing) about the shape of the interaction, not the substrate.
+**First pass at this (retracted).** Word-list sentiment markers and embedding-distance topic-shift
+detection were proposed and correctly rejected by Juniper as keyword cathedrals — pattern-matching
+dressed up as detection, with no theory behind either category, exactly what CLAUDE.md section 0A
+bans. Recorded here so the mistake isn't repeated, not as a live proposal.
+
+**Real theory instead of a heuristic: rupture-and-repair.** From relational psychology (Safran &
+Muran) — an established framework for relationship micro-events, not invented for this purpose. A
+*rupture* is a moment of misalignment/friction in a relationship; a *repair* is the move that
+addresses it. This conversation's own corrections ("no i meant," "stretch. do better," "call me
+out on my bullshit") are textbook rupture-confrontation instances — real exemplars, not
+hypotheticals.
+
+**Then found: this is already built, running, and better-designed than what was proposed.**
+`orion/memory/turn_change_classify.py` is a live classifier, currently feeding
+`orion/memory/retrieval_intent.py`'s recall-routing decisions (`derive_retrieval_intent()`), that
+compares the current turn against a session-window baseline and outputs exactly four categories:
+
+```
+SHIFT: NONE | TOPIC (subject) | STANCE (identity/beliefs/relationship framing) | REPAIR (correction/recovery)
+```
+
+Scored via `enum_scores_from_top_logprobs` — real per-token logprob confidence, not an argmax
+guess — producing `novelty_score`, per-category `shift_scores`, and an overall `confidence`
+(`build_turn_change_appraisal()`). `REPAIR (correction/recovery)` *is* the rupture-repair
+construct, already implemented under a different name. `TOPIC` directly answers Juniper's question
+("did we also build a classifier... that figures out topic shift") — yes, already live. This is
+zero-shot with tight category definitions rather than literally few-shot (no embedded examples in
+the prompt today), but it's already theory-anchored and already scored, which is what actually
+mattered.
+
+**Revised design: reuse this classifier directly, build nothing new for topic-shift or
+rupture-repair.** `appraisal.shift_kind == "REPAIR"` or `"TOPIC"` (novelty-floor-gated, matching
+`retrieval_intent.py`'s own `shift_novelty_mismatch()`/`reconcile_novelty_with_shift()` pattern for
+handling low-confidence shifts) becomes the `relational` trigger type's actual condition. No new
+classifier, no new prompt, no new theory to invent — wire the existing signal into collapse-mirror
+the same way `telemetry_anomaly` wires in the existing anomaly detector.
+
+**This also answers the `causal_density`/severity question Juniper flagged as unresolved.**
+`novelty_score` and `confidence` from this same appraisal are exactly the severity/impact
+magnitude that was missing — `causal_density.score` should be sourced from these, not invented as
+a new metric. `shift_scores` (per-category confidence, not just the winning label) could inform
+`field_resonance`'s "which axes this event touched" if a turn scores nontrivially on more than one
+shift kind at once.
+
+**Still open, not resolved by this discovery:** `STANCE` is a third category (identity/beliefs/
+relationship framing) neither Juniper nor this doc had considered before finding the code — worth
+deciding whether it belongs in collapse-mirror's trigger set alongside REPAIR/TOPIC, ignored, or
+handled differently. Silence/re-engagement is separately covered by `discussion_window`'s
+90-minute gap (see above) and doesn't need this classifier at all.
 
 ## Explicitly rejected / ruled out
 
@@ -171,6 +204,9 @@ reinherit the confabulation problem either).
   being circular, but for being the wrong *kind* of signal: substrate health, not felt/relational
   quality. Kept in this doc as a reference point for what "actually independent" looks like when
   evaluating other candidates.
+- **Word-list lexical sentiment markers and embedding-distance topic-shift detection.** Keyword
+  cathedrals — no theory behind either category. Superseded by reusing
+  `turn_change_classify.py`'s already-theory-anchored `SHIFT` appraisal instead.
 
 ## Open questions (need a real proposal pass, not decided here)
 
@@ -178,7 +214,14 @@ reinherit the confabulation problem either).
   minimum. Scope of `numeric_sisters` — deprecated, repurposed, or removed — undecided.)
 - What data is touched? (`collapse_mirror` Postgres table, `orion/schemas/collapse_mirror.py`,
   `orion/collapse/service.py`, the metacog-prompt-building code in
-  `services/orion-cortex-exec/app/executor.py`.)
+  `services/orion-cortex-exec/app/executor.py`, and read access to `orion/memory/
+  turn_change_classify.py`'s appraisal output — currently only consumed by
+  `orion/memory/retrieval_intent.py` for recall routing. Adding a second consumer needs checking
+  whether that appraisal is already reliably available at the point in the turn where collapse-
+  mirror would need it, or only computed later/conditionally.)
+- Does `STANCE` (identity/beliefs/relationship framing) belong in collapse-mirror's trigger
+  set alongside `REPAIR`/`TOPIC`, get ignored, or handled as a fourth, distinct trigger condition?
+  Not decided — found late, not yet discussed.
 - Privacy boundary? Not assessed yet.
 - What trace would prove any of this actually worked? Not designed yet — likely something like
   "entries now correlate with real friction/uncertainty events, verified against a known

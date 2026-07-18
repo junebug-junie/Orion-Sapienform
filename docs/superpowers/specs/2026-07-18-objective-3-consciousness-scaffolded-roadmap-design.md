@@ -57,6 +57,14 @@ something real to be informed by instead of being invented from scratch and then
 3. Is a single AST/HOT reducer sufficient, or does genuine legibility require the core-affect
    layer (blue-sky idea 7) too, as a stable, non-churning summary underneath a
    possibly-reorganizing deeper structure? Worth deciding before Phase 4, not assumed now.
+4. **Added 2026-07-18 (Juniper).** Is `SelfStateV1` itself trustworthy enough to keep building
+   on, or does it need a v2? Real signal-quality problems have already been found in it this
+   session, not hypothetical: the `confidence`/`available_capacity` merge-polarity masking bug,
+   several dead/folded-away `channel_dimension_map` entries, and the pre-fix coherence/
+   uncertainty sawtooth (fixed at the field-digester level — not yet independently confirmed
+   that fix fully propagated through to `SelfStateV1`'s own dimension values, only that the
+   field-level mechanism causing it is closed). This is a **hard gate**, not a someday item —
+   see the callout in Phase 1 below.
 
 ## Proposed roadmap
 
@@ -108,6 +116,23 @@ downstream consumes it, matching this program's own §7 process rule.
 `voluntary_override` event (already confirmed to exist in live data), the reducer's output
 correctly narrates *that* event as the reason for the attention shift, not just a generic
 salience reading — proving the two inputs are actually unified, not just both present.
+
+**Hard gate (added 2026-07-18, Juniper): `SelfStateV1` signal-quality assessment, before
+this phase is considered done — not before it starts.** This reducer takes `SelfStateV1` as
+one of its two real inputs. Real signal-quality problems in `SelfStateV1` are already known
+from this session, not hypothetical: the `confidence`/`available_capacity` merge-polarity
+masking bug, several dead/folded-away `channel_dimension_map` entries, and a pre-fix
+coherence/uncertainty sawtooth whose upstream field-level cause is closed but whose full
+propagation through to `SelfStateV1`'s own values was never independently re-checked. Before
+Phase 1's acceptance check above is signed off as met, run a real, live-data jitter/signal-
+quality pass over `SelfStateV1`'s actual dimensions — noise floor, drift, oscillation period,
+the same kind of measurement discipline used everywhere else in this program (e.g. the
+"quiet decay tail" vs. "genuinely dead" distinction already used for `prediction_error`,
+extended systematically across every dimension `SelfStateV1` exposes). If that assessment
+finds `SelfStateV1` itself — not just the field beneath it — needs replacing, a `SelfStateV1`
+v2 becomes a blocking prerequisite for Phase 1's reducer output to be trusted for anything
+downstream, not an optional follow-up. Do not let Phase 2 onward build on a self-state layer
+whose own signal quality was assumed rather than measured.
 
 ### Phase 2 — reframe tension-minting as prediction error, not hand-classified kinds
 

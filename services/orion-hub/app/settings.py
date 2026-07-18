@@ -131,6 +131,18 @@ class Settings(BaseSettings):
             "mirrored here so operators see the effective value."
         ),
     )
+    HUB_AGENT_CLAUDE_SETTING_SOURCES: str = Field(
+        default="user,local",
+        alias="HUB_AGENT_CLAUDE_SETTING_SOURCES",
+        description=(
+            "--setting-sources for the FCC claude subprocess, read directly from "
+            "the environment by orion.fcc.claude_spawn.setting_sources_argv; "
+            "mirrored here so operators see the effective value. Default skips "
+            "the repo's own project-level CLAUDE.md/hooks (not needed for a "
+            "headless cognition turn, not a safety regression since the repo "
+            "mount here is read-only)."
+        ),
+    )
     HUB_AGENT_CLAUDE_TIMEOUT_SEC: float = Field(
         default=900.0,
         alias="HUB_AGENT_CLAUDE_TIMEOUT_SEC",

@@ -67,3 +67,31 @@ def auto_approve_from_env(env_key: str | None = None) -> bool:
     if os.geteuid() == 0:
         return True
     return True
+
+
+def setting_sources_argv(env_key: str) -> List[str]:
+    """--setting-sources for FCC's claude subprocess: skip the repo's
+    project-level CLAUDE.md/settings.json/hooks by default.
+
+    Orion's FCC turns don't need the repo's own AGENTS.md development
+    contract (written for a coding agent editing this repo, not a headless
+    cognition turn) or the project-level hooks that come with it -- and
+    dropping them isn't a safety regression: both orion-hub and
+    orion-harness-governor bind-mount the repo read-only, so the
+    destructive_git_guard hook this also drops has nothing left to protect
+    that the read-only mount doesn't already block. MCP tool access is
+    unaffected either way -- it's pre-approved via explicit
+    --mcp-config/--allowedTools argv (extend_mcp_argv), never through
+    settings.json, so --setting-sources has no bearing on it.
+
+    Confirmed live: a `claude -p` call from a directory with a marker
+    CLAUDE.md echoed the marker with default sources, returned nothing
+    with `--setting-sources user,local`.
+
+    Set the env key to empty to fall back to Claude Code's normal default
+    (all three scopes: user, project, local).
+    """
+    raw = (os.environ[env_key] if env_key in os.environ else "user,local").strip()
+    if not raw:
+        return []
+    return ["--setting-sources", raw]

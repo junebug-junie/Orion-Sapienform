@@ -124,3 +124,33 @@ def test_claude_permission_argv_non_root_uses_skip(monkeypatch: pytest.MonkeyPat
     assert claude_spawn.claude_permission_argv(auto_approve=True) == [
         "--dangerously-skip-permissions",
     ]
+
+
+def test_setting_sources_argv_defaults_to_user_local_when_env_unset(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.delenv("HARNESS_FCC_SETTING_SOURCES", raising=False)
+    assert claude_spawn.setting_sources_argv("HARNESS_FCC_SETTING_SOURCES") == [
+        "--setting-sources",
+        "user,local",
+    ]
+
+
+def test_setting_sources_argv_respects_explicit_override(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("HARNESS_FCC_SETTING_SOURCES", "user,project,local")
+    assert claude_spawn.setting_sources_argv("HARNESS_FCC_SETTING_SOURCES") == [
+        "--setting-sources",
+        "user,project,local",
+    ]
+
+
+def test_setting_sources_argv_explicit_empty_means_no_flag(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Present-but-empty is a deliberate opt-out, distinct from unset --
+    falls back to Claude Code's own default (all three scopes) instead of
+    forcing --setting-sources at all."""
+    monkeypatch.setenv("HARNESS_FCC_SETTING_SOURCES", "")
+    assert claude_spawn.setting_sources_argv("HARNESS_FCC_SETTING_SOURCES") == []

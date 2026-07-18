@@ -13,7 +13,12 @@ from typing import Any, AsyncIterator, Dict, List, Optional, Tuple
 
 from scripts.fcc_env_catalog import load_fcc_env, resolve_auth_token
 from scripts.fcc_model_mapping import DEFAULT_FCC_MODEL_LABEL, label_to_claude_model_id
-from orion.fcc.claude_spawn import auto_approve_from_env, claude_permission_argv, extend_mcp_argv
+from orion.fcc.claude_spawn import (
+    auto_approve_from_env,
+    claude_permission_argv,
+    extend_mcp_argv,
+    setting_sources_argv,
+)
 from orion.fcc.context_budget import (
     annotate_harness_step,
     apply_context_overflow_hint,
@@ -332,6 +337,7 @@ async def run_turn(
         "--model",
         model_id,
     ]
+    argv.extend(setting_sources_argv("HUB_AGENT_CLAUDE_SETTING_SOURCES"))
     if mcp_config_path is not None:
         extend_mcp_argv(argv, mcp_config_path)
     perm = claude_permission_argv(

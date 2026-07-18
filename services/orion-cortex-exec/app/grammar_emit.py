@@ -334,8 +334,17 @@ class CortexExecGrammarCollector:
         final_text_present: bool,
         reasoning_present: bool,
         thinking_source: str,
+        llm_serving_node: str | None = None,
     ) -> None:
         ref = f"cortex.exec.result:{self.correlation_id}"
+        summary = (
+            f"Final result assembled: status={status}, "
+            f"final_text_present={final_text_present}, "
+            f"reasoning_present={reasoning_present}, "
+            f"thinking_source={thinking_source}"
+        )
+        if llm_serving_node:
+            summary += f", llm_serving_node={llm_serving_node}"
         self._put_atom(
             "exec_result_assembled",
             GrammarAtomV1(
@@ -345,12 +354,7 @@ class CortexExecGrammarCollector:
                 semantic_role="exec_result_assembled",
                 layer="result",
                 dimensions=["execution", "speech", "reasoning"],
-                summary=(
-                    f"Final result assembled: status={status}, "
-                    f"final_text_present={final_text_present}, "
-                    f"reasoning_present={reasoning_present}, "
-                    f"thinking_source={thinking_source}"
-                ),
+                summary=summary,
                 confidence=0.95,
                 salience=0.95,
                 source_event_id=self.correlation_id,
@@ -494,6 +498,7 @@ def record_assembled_grammar(
     final_text_present: bool,
     reasoning_present: bool,
     thinking_source: str,
+    llm_serving_node: str | None = None,
 ) -> None:
     collector = ctx.get("_cortex_exec_grammar_collector")
     if collector is None:
@@ -503,6 +508,7 @@ def record_assembled_grammar(
         final_text_present=final_text_present,
         reasoning_present=reasoning_present,
         thinking_source=thinking_source,
+        llm_serving_node=llm_serving_node,
     )
 
 

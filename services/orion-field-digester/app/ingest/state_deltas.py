@@ -203,16 +203,32 @@ def delta_to_perturbations(delta: StateDeltaV1) -> list[Perturbation]:
     if delta.target_kind == "execution_run":
         hints = dict(after.get("pressure_hints") or {})
         node_key = _node_key(str(after.get("node_id") or delta.target_id))
-        for channel, key in (
-            ("execution_load", "execution_load"),
-            ("execution_friction", "execution_friction"),
-            ("reasoning_load", "reasoning_load"),
-            ("failure_pressure", "failure_pressure"),
+        # reasoning_load is attributed to whichever node actually served the
+        # LLM call (after["llm_serving_node"], a first-class ExecutionRunStateV1
+        # field threaded from llm-gateway's response meta.served_by -- see
+        # orion/substrate/execution_loop/grammar_extract.py) rather than
+        # node_key, the orchestrating service's own static identity. Read
+        # from `after`, not `hints`/pressure_hints -- the latter must stay
+        # float-only (orion/substrate/relational/adapters/execution_ctx.py
+        # does max(hints.values()) over it). node_key is always athena today
+        # (cortex-exec's NODE_NAME), which permanently zeroed
+        # node:atlas.reasoning_load -- see this service's README.md,
+        # reasoning_pressure glossary entry, for the live-confirmed root
+        # cause. Falls back to node_key when a run made no LLM call.
+        llm_serving_node = after.get("llm_serving_node")
+        reasoning_node_key = (
+            _node_key(str(llm_serving_node)) if llm_serving_node else node_key
+        )
+        for channel, key, target_node in (
+            ("execution_load", "execution_load", node_key),
+            ("execution_friction", "execution_friction", node_key),
+            ("reasoning_load", "reasoning_load", reasoning_node_key),
+            ("failure_pressure", "failure_pressure", node_key),
         ):
             if key in hints:
                 out.append(
                     Perturbation(
-                        node_id=node_key,
+                        node_id=target_node,
                         channel=channel,
                         intensity=float(hints[key]),
                         label=delta.delta_id,

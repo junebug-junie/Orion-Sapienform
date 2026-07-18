@@ -42,6 +42,14 @@ def compute_pressure_hints(
     status_fail = run.status.lower() in {"fail", "partial", "failed", "error"}
     failure_pressure = 1.0 if status_fail or failed > 0 else 0.0
     egress_confidence = 1.0 if egress_emitted else 0.25
+    # llm_serving_node is NOT injected here: pressure_hints must stay
+    # float-only -- orion/substrate/relational/adapters/execution_ctx.py's
+    # map_execution_ctx_to_substrate() does max(hints.values()) over this
+    # exact dict, and a str value would raise TypeError there (caught, but
+    # silently degrades that producer on every run). run.llm_serving_node is
+    # already a first-class field on ExecutionRunStateV1 -- consumers that
+    # need it (services/orion-field-digester/app/ingest/state_deltas.py)
+    # should read it from there directly, not from pressure_hints.
     return {
         "execution_load": execution_load,
         "execution_friction": execution_friction,
@@ -127,6 +135,7 @@ def extract_execution_state_from_events(
             run.final_text_present = _boolish(kv.get("final_text_present"))
             run.reasoning_present = _boolish(kv.get("reasoning_present"))
             run.thinking_source = kv.get("thinking_source", run.thinking_source)
+            run.llm_serving_node = kv.get("llm_serving_node") or run.llm_serving_node
         elif role == "exec_result_emitted":
             egress_emitted = True
 

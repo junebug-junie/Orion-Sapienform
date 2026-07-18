@@ -149,6 +149,16 @@ Each objective is a real sign-off gate, not a commitment to build. Sequenced but
 - **Reuse the live pipeline, don't parallel it.** Any new mechanism must justify why it
   isn't already covered by Layer 5 attention, the FCC-dispatch GWT lane, or the transport
   lattice pattern before being built — the mistake this whole program exists to correct.
+- **Field-native only — no `SelfStateV1`-anchored substrate for new instrumentation.**
+  `SelfStateV1` is a downstream, lossy summary (~19 abstracted dimensions), not raw signal.
+  It was already tried as the substrate for φ/IIT specifically and found dead-endish — that
+  history is *why* the mood-arc encoder reads raw `field_channel_corpus.v1` instead. This
+  section's own first draft violated this rule twice (§9b's original IIT and Predictive
+  Processing entries) before being caught and corrected same-day. Before treating any
+  candidate signal as real substrate anywhere in this program: check for a `self_state_id`
+  field or a `SelfStateV1` import. If present, it is the wrong layer — go to
+  `FieldStateV1`/`substrate_field_state`, a reducer projection, or the raw channel corpus
+  instead.
 - **Multi-theory, not single-theory.** §9's instruments run in parallel as measurements, not
   as competing final answers. Integration is decided from data, later, not from a Design
   Mode debate now.
@@ -234,34 +244,62 @@ named smallest probe.
 
 ### 9b. Consciousness-theory instrumentation (real substrate already found for each)
 
-1. **IIT-flavored** — the live φ MLP autoencoder (`services/orion-spark-introspector/app/
-   phi_encoder.py`) already produces `recon_error`, a genuine surprise quantity, currently
-   only feeding φ's single number. The mood-arc windowed sequence autoencoder
-   (`scripts/fit_mood_arc_encoder.py`, raw `field_channel_corpus.v1`) is the live third
-   attempt at this after two prior dead ends (hand-built lattice, `SelfStateV1` abstraction)
-   — continuing independently of this program, not blocked by it.
+**Correction (2026-07-18): this section originally recommended `SelfStateV1`-anchored
+substrate for two of the five threads below (IIT, Predictive Processing) — the exact
+metrics Juniper had already ruled out.** `SelfStateV1` is a downstream, lossy *summary* of
+the field (~19 abstracted dimensions), not the raw signal. It was already tried once as the
+substrate for φ/IIT specifically and found dead-endish — that is *why* the mood-arc
+windowed-autoencoder effort exists, reading `field_channel_corpus.v1`'s raw ~29 channels
+directly instead. Any new instrumentation in this section must build on the raw field
+(`FieldStateV1`/`substrate_field_state`, reducer projections, or the raw channel corpus) —
+never on `SelfStateV1`'s abstracted dimensions, `InnerStateFeaturesV1`, or anything else
+carrying a `self_state_id`. This is now a standing rule for this section, not a one-time
+fix — see §7.
+
+1. **IIT-flavored** — **not** the live φ MLP autoencoder
+   (`services/orion-spark-introspector/app/phi_encoder.py`): its current input schema,
+   `InnerStateFeaturesV1` (`orion/schemas/telemetry/inner_state.py`), carries a
+   `self_state_id` field — it is `SelfStateV1`-anchored, the already-tried, already
+   dead-ended path, not real substrate to build further on. The actual live candidate is the
+   mood-arc windowed sequence autoencoder (`scripts/fit_mood_arc_encoder.py`, raw
+   `field_channel_corpus.v1`) — the field-native replacement for exactly this reason,
+   continuing independently of this program under Juniper's own direction, not blocked by
+   it and not to be duplicated here.
 2. **Attention Schema Theory** — Layer 5 computes real attention state; nothing builds a
    model *of* that attention as an inspectable object. Missing piece: one small reducer
-   between Layer 5 and Layer 6 producing an explicit "what I'm attending to, why, how
-   confident, what I predict shifts next" artifact.
-3. **Predictive Processing/Active Inference** — `orion/self_state/prediction.py` already
-   computes real per-dimension prediction error (`self_state_predictions` table, Postgres,
-   live), currently collapsed to a single max value (`overall_surprise`) before it reaches
-   anything. Missing piece: surface the full per-dimension error vector instead of
-   discarding it below the max.
+   reading `FieldAttentionFrameV1`/`FieldStateV1` directly, producing an explicit "what I'm
+   attending to, why, how confident, what I predict shifts next" artifact — must not be
+   built as a `SelfStateV1` consumer/producer.
+3. **Predictive Processing/Active Inference** — **not** `orion/self_state/prediction.py`
+   (`SelfStateV1`-anchored, same violation as IIT above). The real field-native substrate,
+   confirmed live 2026-07-18: `services/orion-substrate-runtime/app/worker.py`'s
+   `execution_prediction_error()`/`transport_prediction_error()` compute real deltas between
+   successive reducer projections (execution-trajectory, transport-bus — not `SelfStateV1`)
+   and write directly onto `FieldStateV1` nodes (`node:substrate.execution`,
+   `node:substrate.transport`), which field-digester ingests into its own native
+   `prediction_error` channel. Gated live behind `SUBSTRATE_WRITE_PREDICTION_ERROR_NODES`
+   (confirmed `true`). Verified against real Postgres data: `node:substrate.execution`'s
+   channel carries real values, sparse/event-driven (currently in a quiet decay tail,
+   consistent with the field-digester README's own "quiet-so-far-but-correctly-wired,
+   reaches real values like 0.92 periodically" characterization of this exact channel). Open
+   question, not yet checked: whether the other three reducers (biometrics, chat, route)
+   have equivalent instrumentation, or whether coverage is genuinely incomplete.
 4. **Higher-Order Theories** — architecturally close to AST's missing piece; a
-   higher-order representation of self-state as an object may be nearly the same reducer
-   AST needs, built once and read two ways.
+   higher-order representation built once, reading the same field/reducer-projection data,
+   may serve both theories. Same constraint as #2: no `SelfStateV1` dependency.
 5. **Recurrent Processing Theory (Lamme)** — confirmed real, tight, per-tick recurrence
    inside Layer 5 itself (`novelty_for_target()` reads the *previous*
-   `FieldAttentionFrameV1`). Not yet confirmed: true top-down feedback (higher layer biasing
-   lower-layer processing, the stronger Lamme claim). `TopDownBiasCombiner`/
-   `VoluntaryOverrideV1` is a real, named, untraced candidate for exactly this — the next
-   concrete check, not a guess.
+   `FieldAttentionFrameV1`) — already field-native, no correction needed here. Top-down
+   feedback (`TopDownBiasCombiner`/`VoluntaryOverrideV1`, `ORION_ATTENTION_TOPDOWN_ENABLED`)
+   confirmed live 2026-07-18 (PRs #1170, #1174) after finding the feature's docker-compose
+   wiring had never been added, independent of its flag value.
 
 **Process for 9b, per §7**: each instrument gets built as a read-only measurement first,
 replayed against real historical data the same way `measure_origination_gate.py` was,
-before any of them gate anything live or get compared against each other.
+before any of them gate anything live or get compared against each other. **Every instrument
+must be built on raw field/reducer-projection data, never on `SelfStateV1`-derived
+abstractions** — check for a `self_state_id` field or a `SelfStateV1` import before treating
+any candidate signal as real substrate for this section.
 
 ---
 

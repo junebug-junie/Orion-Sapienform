@@ -35,6 +35,11 @@ def test_compression_backend_called_when_enabled():
         mock_settings.RECALL_COMPRESSION_RDF_PASS = "orion"
         mock_settings.RECALL_COMPRESSION_TIMEOUT_SEC = 3.0
         mock_settings.RECALL_RDF_ENDPOINT_URL = None
+        # mock_settings is a bare MagicMock -- any attribute not explicitly
+        # set here (like this one) auto-returns a truthy MagicMock, which
+        # would silently flip falkor_chat_enabled=True and change which
+        # backend this test actually exercises. Real default is False.
+        mock_settings.RECALL_FALKOR_IN_CHAT = False
 
         from app.worker import _query_backends
 
@@ -59,6 +64,7 @@ def test_compression_backend_returns_empty_when_disabled():
         mock_settings.RECALL_COMPRESSION_ENABLED = False
         mock_settings.RECALL_COMPRESSION_PG_DSN = None
         mock_settings.RECALL_RDF_ENDPOINT_URL = None
+        mock_settings.RECALL_FALKOR_IN_CHAT = False
 
         profile = dict(_compression_profile())
         profile["enable_graph_compression"] = True  # profile enables, but settings disable globally
@@ -89,7 +95,7 @@ def test_compression_backend_does_not_suppress_rdf_backend():
          patch("app.worker.settings") as mock_settings, \
          patch("app.worker.fetch_rdf_chatturn_fragments", return_value=[
              {"source": "rdf", "text": "an rdf fragment"}
-         ]):
+         ]) as mock_rdf_chat:
         mock_settings.RECALL_COMPRESSION_ENABLED = True
         mock_settings.RECALL_COMPRESSION_PG_DSN = "postgresql://x:y@localhost/test"
         mock_settings.RECALL_COMPRESSION_RDF_QUERY_URL = None
@@ -97,6 +103,7 @@ def test_compression_backend_does_not_suppress_rdf_backend():
         mock_settings.RECALL_COMPRESSION_RDF_PASS = "orion"
         mock_settings.RECALL_COMPRESSION_TIMEOUT_SEC = 3.0
         mock_settings.RECALL_RDF_ENDPOINT_URL = "http://fuseki/query"
+        mock_settings.RECALL_FALKOR_IN_CHAT = False
 
         mixed_profile = {
             "enable_rdf": True,
@@ -121,4 +128,4 @@ def test_compression_backend_does_not_suppress_rdf_backend():
         )
 
         assert counts.get("graph_compression", 0) >= 1
-        # RDF backend ran (may have returned from mock or failed gracefully — either way no suppression)
+        mock_rdf_chat.assert_called_once()

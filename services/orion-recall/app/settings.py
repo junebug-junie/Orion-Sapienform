@@ -248,6 +248,23 @@ class Settings(BaseSettings):
     RECALL_GRAPHITI_TIMEOUT_SEC: float = Field(
         default=10.0, validation_alias=AliasChoices("RECALL_GRAPHITI_TIMEOUT_SEC")
     )
+    # Phase 4 of the recall RDF->Falkor cutover (docs/superpowers/specs/
+    # 2026-07-17-recall-rdf-writer-falkor-cutover-phase2-spec.md). When true,
+    # storage/falkor_chat_adapter.py::fetch_falkor_chatturn_fragments SWAPS IN
+    # for storage/rdf_adapter.py::fetch_rdf_chatturn_fragments in worker.py's
+    # _query_backends -- not additive like RECALL_GRAPHITI_IN_CHAT (that flag
+    # merges an extra rail; this one replaces a rail, since the whole point of
+    # this migration arc is retiring RDF/Fuseki). Independent of
+    # RECALL_ENABLE_RDF/_rdf_enabled() -- Falkor chatturn fetch does not
+    # require "RDF" to be enabled as a concept. Only covers chatturn fragments
+    # (prompt/response text, joined from Postgres since the Falkor ChatTurn
+    # node is deliberately thin); fetch_rdf_graphtri_fragments (Claim-based)
+    # stays on Fuseki -- that function's entire shape assumes Claim nodes,
+    # which the Falkor writer replaced with HAS_TAG/MENTIONS_ENTITY edges, so
+    # it needs its own redesign, not a rewrite. Ships dark (default False).
+    RECALL_FALKOR_IN_CHAT: bool = Field(
+        default=False, validation_alias=AliasChoices("RECALL_FALKOR_IN_CHAT")
+    )
     RECALL_CRYSTALLIZATION_VECTOR_COLLECTION: str = Field(
         default="orion_memory_crystallizations",
         validation_alias=AliasChoices("RECALL_CRYSTALLIZATION_VECTOR_COLLECTION"),

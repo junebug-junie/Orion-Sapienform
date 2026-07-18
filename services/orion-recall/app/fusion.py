@@ -27,6 +27,11 @@ DEFAULT_BACKEND_WEIGHTS = {
     # once) -- same weight, not the generic 0.5 fallback this dict's
     # absence would otherwise produce.
     "falkor_chat": 0.4,
+    # falkor_graphtri is the same content as rdf (graphtri-mode) on a
+    # different backend (RECALL_FALKOR_GRAPHTRI_IN_CHAT swaps one in for
+    # the other) -- same weight as "rdf" below, not the generic 0.5
+    # fallback this dict's absence would otherwise produce.
+    "falkor_graphtri": 0.3,
     "rdf": 0.3,
     "memory_graph_sparql": 0.35,
     "cards": 0.0,
@@ -693,6 +698,12 @@ _BELIEF_SOURCE_ORDER = {
     "concept_region": 1,
     "cards": 2,
     "rdf": 3,
+    # falkor_graphtri: same rank as "rdf" (its sibling/swap target). Unlike
+    # "falkor_chat" below, "falkor_graphtri" doesn't need this comment's
+    # exception explained twice -- it's here for the same reason: does NOT
+    # start with "rdf", so needs its own explicit entry rather than relying
+    # on the startswith("rdf") shadow two lines below.
+    "falkor_graphtri": 3,
     "rdf_chat": 4,
     # falkor_chat: same rank rdf_chat would occupy if "rdf".startswith
     # didn't shadow it below -- see that comment. Since "falkor_chat" does

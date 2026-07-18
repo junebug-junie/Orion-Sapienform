@@ -127,8 +127,10 @@ branch's own docstring/tests anticipate it.
 ## Proposed schema / API changes
 
 - `orion/substrate/falkor_codec.py`:
-  - `DYNAMICS_METADATA_KEYS` gains `"contributing_turn_ids"` (7th entry, was 5 — module
-    docstring's "closed 5-key allowlist" comment updated accordingly).
+  - `DYNAMICS_METADATA_KEYS` gains `"contributing_turn_ids"` (6th entry, was 5) — the
+    comment above the tuple was rewritten to drop the hardcoded "closed 5-key allowlist"
+    count entirely (now refers to the tuple itself, so it can't go stale again on the next
+    addition) rather than being bumped to a new fixed number.
   - `DYNAMICS_ENGINE_OWNED_METADATA_KEYS` unchanged (4 entries) — `contributing_turn_ids` is
     owned by `_write_prediction_error_node()`'s own carry-forward logic, a distinct
     mechanism from `SubstrateDynamicsEngine.tick()`'s pressure/dormancy computation.

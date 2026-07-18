@@ -781,6 +781,18 @@ neighborhood fragment scoped to that turn. Matching is deliberately dumb — cas
 label substring match, no embedding/LLM call — and it never does a store read at all if the
 turn text matches nothing.
 
+**Reinforcement-on-recall, live since PR #1173:** the actual live call site in `app/worker.py`
+uses `fetch_concept_region_fragment_and_reinforce()`, not the plain read-only function above
+directly. It composes the same read (unchanged, same "never persists" contract) with a new
+write: whatever concept nodes matched get a small activation bump
+(`reinforce_matched_concepts()`, same math and boost constant as
+`orion/memory/crystallization/dynamics.py::recall_boost()` — `activation = current +
+(1-current)*0.08`, asymptotic toward 1.0). This is the counterpart to
+`services/orion-hub/README.md` §5.5's decay scheduler: being surfaced in a live turn is a
+real "this concept is still relevant" signal, not just monotonic decay. Full design
+conversation (why sync-write over async-via-bus, which fields move and which deliberately
+don't) is in `app/collectors/CONCEPT_REINFORCEMENT_DESIGN.md`.
+
 **Env vars:**
 
 | Var | Default | Meaning |
@@ -797,9 +809,23 @@ substrate store failed to construct (bad `FALKORDB_URI`, FalkorDB unreachable), 
 degrades to `[]` silently — check Hub's own Concept Atlas tab or `orion-hub` logs for
 `recall_substrate_store_init_failed` first.
 
-**Known limitation:** `FalkorSubstrateStore` hydrates its snapshot once at process start and
-never refreshes — concepts added by `orion-hub`'s topic-foundry scheduler after this service's
-first `concept_region` call are invisible here until `orion-recall` restarts. Not specific to
-this collector (shared `orion/substrate/falkor_store.py` behavior), but this is the first
-continuously-changing-data consumer of the store in this service, so it's the first place the
-limitation is actually load-bearing. See PR #1133.
+**Formerly a known limitation, fixed by PR #1159:** `FalkorSubstrateStore` used to hydrate its
+snapshot once at process start and never refresh — concepts added by `orion-hub`'s
+topic-foundry scheduler after this service's first `concept_region` call were invisible here
+until `orion-recall` restarted (originally flagged in PR #1133, when this was the first
+continuously-changing-data consumer of the store in this service to make it load-bearing).
+PR #1159 added write-generation + time-ceiling refresh logic (mirroring
+`GraphDBSubstrateStore`'s existing pattern), so `snapshot()`/`read_concept_region()` now pick
+up durable changes made by other processes without a restart, bounded by
+`SUBSTRATE_SNAPSHOT_FORCE_REFRESH_CEILING_SEC` (`FALKOR_SNAPSHOT_FORCE_REFRESH_CEILING_SEC`
+for a Falkor-specific override, default 30s). Root cause of PR #1159 itself: the same stale
+cache also meant directly-deleted-in-Falkor nodes got silently resurrected by `orion-hub`'s
+decay scheduler, which blindly re-upserts everything it reads on every tick — see that PR's
+description for the full incident.
+
+Two more `FalkorSubstrateStore`-level bugs (shared code, not specific to this collector, but
+this service constructs the same store) were found and fixed the same day: PR #1175 (a
+legacy-payload migration path that orphaned duplicate node rows forever, silently reverting
+any concept-node write on the next hydrate) and PR #1179 (edge hydration losing every edge's
+real source/target node_id). See `services/orion-hub/README.md` §5.5 for the full incident
+writeups.

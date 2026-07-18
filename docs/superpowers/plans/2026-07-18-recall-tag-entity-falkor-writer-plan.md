@@ -45,6 +45,8 @@ Graph name: `orion_recall` (new — separate from `orion_substrate` and `graphit
 
 `ChatTurn.sentiment` — split out of the `"sentiment:*"` string-tag pattern at write time (source: same heuristic already computed in `main.py`, just captured as a field instead of smuggled through `tags`).
 
+**Corrected during code review, after implementation:** the `chat.history` branch in `main.py` builds `tags = list(entities)` then appends one sentiment marker — `tags` and `entities` are the same spaCy NER extraction by construction, not two independently meaningful lists. The call site only passes the sentiment marker as `tags` (consumed entirely by `extract_sentiment()`), so `:Tag`/`HAS_TAG` carries no real data for this producer today — the schema stays general (kept for a future producer with genuinely distinct tag content), but only `:Entity`/`MENTIONS_ENTITY` is populated in practice. Same root cause as the historical Fuseki `hasTag`/`hasEntity` predicates never actually diverging.
+
 **Noise filter** applied to `tags`/`entities` values before writing (per the Phase 0 spec's live-data findings — bare numbers, stopwords, relative-time expressions are not real tags/entities): reject digit-only values, a small stopword list, and a relative-time regex (`"today"`, `"yesterday"`, `"N years/months/weeks ago"`, etc.). Rejected values are logged (`property_cathedral_rejected`-style, matching `orion/graph/property_guard.py`'s convention) not silently dropped.
 
 **No `confidence`/`salience`/`extractor_service` fields** — Phase 0's live audit found these are dead constants (`0.0`/`0.0`/`"meta-tags"` across all 1,449 historical records). Not carried forward as if meaningful.

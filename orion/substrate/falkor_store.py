@@ -34,6 +34,7 @@ from orion.graph.falkor_client import (
     RedisGraphQueryClient,
     _header_field_names,
     _rows_from_query_result,
+    set_assignments as _set_assignments,
 )
 from orion.graph.property_guard import sanitize_metadata
 from orion.substrate.falkor_codec import (
@@ -188,9 +189,8 @@ def _return_clause(alias: str, fields: tuple[str, ...]) -> str:
     return ", ".join(f"{alias}.{field} AS {field}" for field in fields)
 
 
-def _set_assignments(alias: str, params: dict[str, Any], *, skip: set[str]) -> str:
-    keys = sorted(k for k in params if k not in skip)
-    return ", ".join(f"{alias}.{key} = ${key}" for key in keys)
+# _set_assignments moved to orion.graph.falkor_client.set_assignments
+# (2026-07-18, zero substrate coupling), imported above under its old name.
 
 
 ### RecordingFalkorClient / RedisGraphQueryClient / _header_field_names /

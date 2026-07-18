@@ -107,10 +107,18 @@ def test_write_chat_turn_tags_to_falkor_no_tags_or_entities_still_writes_anchor(
         tags=[],
         entities=[],
     )
+    # ts is a required (non-optional) parameter, so the SET clause always
+    # has at least "t.ts = $ts" -- there is no bare-anchor-with-no-SET path.
     assert len(client.calls) == 1
-    assert "MERGE (t:ChatTurn {turn_id: $turn_id})" in client.calls[0][0]
+    assert client.calls[0][0] == "MERGE (t:ChatTurn {turn_id: $turn_id}) SET t.ts = $ts"
     assert result["tags_written"] == 0
     assert result["entities_written"] == 0
+
+
+def test_relative_time_regex_catches_bare_and_trailing_on_variants() -> None:
+    kept, rejected = filter_noise(["that day", "that day on", "last week"])
+    assert kept == []
+    assert set(rejected) == {"that day", "that day on", "last week"}
 
 
 def test_write_chat_turn_tags_to_falkor_entity_dedup_across_call() -> None:

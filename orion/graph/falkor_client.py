@@ -77,6 +77,16 @@ class RedisGraphQueryClient:
         return _rows_from_query_result(getattr(result, "header", None), result.result_set)
 
 
+def set_assignments(alias: str, params: dict[str, Any], *, skip: set[str]) -> str:
+    """Build a Cypher `SET alias.key = $key, ...` clause from a params dict,
+    skipping keys (e.g. the MERGE identity key) that shouldn't be reassigned.
+    Shared by orion.substrate.falkor_store and any other Cypher-native writer
+    that needs a SET clause built from a partial params dict.
+    """
+    keys = sorted(k for k in params if k not in skip)
+    return ", ".join(f"{alias}.{key} = ${key}" for key in keys)
+
+
 def _header_field_names(header: Any) -> list[str]:
     names: list[str] = []
     if not header:

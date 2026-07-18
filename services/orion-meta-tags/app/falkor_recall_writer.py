@@ -15,7 +15,7 @@ import logging
 import re
 from typing import Any
 
-from orion.graph.falkor_client import FalkorGraphClient
+from orion.graph.falkor_client import FalkorGraphClient, set_assignments
 
 logger = logging.getLogger("orion-meta-tags.falkor_recall_writer")
 
@@ -33,7 +33,7 @@ _STOPWORDS = {
 
 _RELATIVE_TIME_RE = re.compile(
     r"^(about\s+)?(a|an|\d+)\s+(year|month|week|day|hour|minute)s?\s+ago$"
-    r"|^(that\s+day\s+on|last\s+(week|month|year|night))$",
+    r"|^(that\s+day(\s+on)?|last\s+(week|month|year|night))$",
     re.IGNORECASE,
 )
 
@@ -90,11 +90,6 @@ def filter_noise(values: list[str]) -> tuple[list[str], list[str]]:
     return kept, rejected
 
 
-def _set_clause(alias: str, params: dict[str, Any], *, skip: set[str]) -> str:
-    keys = sorted(k for k in params if k not in skip)
-    return ", ".join(f"{alias}.{key} = ${key}" for key in keys)
-
-
 def write_chat_turn_tags_to_falkor(
     client: FalkorGraphClient,
     *,
@@ -121,19 +116,19 @@ def write_chat_turn_tags_to_falkor(
             rejected_entities,
         )
 
+    # turn_params always has at least "ts" beyond "turn_id" (a required,
+    # non-optional parameter), so set_clause is never empty -- no bare-anchor
+    # branch needed.
     turn_params: dict[str, Any] = {"turn_id": turn_id, "ts": ts}
     if correlation_id:
         turn_params["correlation_id"] = correlation_id
     if sentiment:
         turn_params["sentiment"] = sentiment
-    set_clause = _set_clause("t", turn_params, skip={"turn_id"})
-    if set_clause:
-        client.graph_query(
-            f"MERGE (t:ChatTurn {{turn_id: $turn_id}}) SET {set_clause}",
-            turn_params,
-        )
-    else:
-        client.graph_query("MERGE (t:ChatTurn {turn_id: $turn_id})", {"turn_id": turn_id})
+    set_clause = set_assignments("t", turn_params, skip={"turn_id"})
+    client.graph_query(
+        f"MERGE (t:ChatTurn {{turn_id: $turn_id}}) SET {set_clause}",
+        turn_params,
+    )
 
     if session_id:
         client.graph_query(

@@ -104,7 +104,7 @@ class HarnessGovernorSettings(BaseSettings):
     # environment by orion.fcc.context_budget.orion_fcc_claude_config_dir;
     # mirrored here so operators see the effective value.
     harness_fcc_claude_config_dir: str = Field(
-        "~/.fcc/claude-config", alias="HARNESS_FCC_CLAUDE_CONFIG_DIR"
+        "~/.claude-fcc", alias="HARNESS_FCC_CLAUDE_CONFIG_DIR"
     )
 
     # (D) embodiment: publish a deliberate approach intent on the turn correlation_id

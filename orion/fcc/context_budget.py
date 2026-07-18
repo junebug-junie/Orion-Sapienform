@@ -13,7 +13,7 @@ DEFAULT_MAX_CONTEXT_TOKENS = 65536
 DEFAULT_CHARS_PER_TOKEN = 4
 DEFAULT_PRESSURE_THRESHOLD_PCT = 70.0
 DEFAULT_MCP_TOOL_RESULT_MAX_CHARS = 12_000
-DEFAULT_CLAUDE_CONFIG_DIR = "~/.fcc/claude-config"
+DEFAULT_CLAUDE_CONFIG_DIR = "~/.claude-fcc"
 
 CONTEXT_PRESSURE_NUDGE = (
     "Context nearly full — answer from what you have; no more tools."
@@ -87,6 +87,12 @@ def orion_fcc_claude_config_dir() -> str:
     subprocess. Pointing CLAUDE_CONFIG_DIR at a dedicated Orion-owned
     directory gives FCC its own (currently empty) CLAUDE.md/settings.json
     instead, fully isolated from the operator's global config.
+
+    Do NOT default this under ~/.fcc: both orion-hub and
+    orion-harness-governor bind-mount ${HOME}/.fcc:/root/.fcc:ro
+    (operator secrets, read-only by design), so `claude` couldn't write
+    its own session state there from inside either container -- confirmed
+    live (mkdir/touch both fail with "Read-only file system").
     """
     for key in ("HARNESS_FCC_CLAUDE_CONFIG_DIR", "HUB_AGENT_CLAUDE_CONFIG_DIR"):
         raw = str(os.environ.get(key) or "").strip()

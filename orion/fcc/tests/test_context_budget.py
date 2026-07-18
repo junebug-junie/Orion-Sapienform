@@ -98,7 +98,18 @@ def test_orion_fcc_claude_config_dir_defaults_under_dot_fcc(monkeypatch) -> None
     monkeypatch.delenv("HARNESS_FCC_CLAUDE_CONFIG_DIR", raising=False)
     monkeypatch.delenv("HUB_AGENT_CLAUDE_CONFIG_DIR", raising=False)
     monkeypatch.setenv("HOME", "/home/test-user")
-    assert orion_fcc_claude_config_dir() == "/home/test-user/.fcc/claude-config"
+    assert orion_fcc_claude_config_dir() == "/home/test-user/.claude-fcc"
+
+
+def test_orion_fcc_claude_config_dir_default_is_not_nested_under_dot_fcc(monkeypatch) -> None:
+    """Regression guard: both orion-hub and orion-harness-governor bind-mount
+    ${HOME}/.fcc:/root/.fcc:ro (operator secrets). A default nested under
+    ~/.fcc would be unwritable by `claude` from inside either container --
+    confirmed live (mkdir/touch both fail with "Read-only file system")."""
+    monkeypatch.delenv("HARNESS_FCC_CLAUDE_CONFIG_DIR", raising=False)
+    monkeypatch.delenv("HUB_AGENT_CLAUDE_CONFIG_DIR", raising=False)
+    monkeypatch.setenv("HOME", "/home/test-user")
+    assert "/.fcc/" not in orion_fcc_claude_config_dir()
 
 
 def test_orion_fcc_claude_config_dir_prefers_harness_env(monkeypatch) -> None:

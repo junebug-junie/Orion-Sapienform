@@ -682,6 +682,12 @@ class BiometricsSubstrateWorker:
             logger.exception("turn_referent_sql_engine_init_failed")
             return None
 
+    # Cap on how many per-turn attribution ids a shared prediction-error node
+    # accumulates in metadata['contributing_turn_ids']. This is attribution
+    # (who last touched this node), not functional evidence like
+    # pressure_reducer.py's evidence_event_ids -- so a smaller cap is enough.
+    _CONTRIBUTING_ID_CAP = 20
+
     def _write_prediction_error_node(
         self,
         *,
@@ -689,6 +695,7 @@ class BiometricsSubstrateWorker:
         error: float,
         now: datetime,
         reducer_key: str = "",
+        contributing_id: str | None = None,
     ) -> None:
         """Upsert a durable substrate node carrying the surprise (Rung 1 bridge).
 
@@ -707,6 +714,15 @@ class BiometricsSubstrateWorker:
         path -- would durably clobber SubstrateDynamicsEngine.tick()'s computed
         state back to 0.0/False on every re-write, since encode_node_properties()
         now always includes those keys in the upsert's SET clause.
+
+        ``contributing_id`` (optional) is a per-call identifier -- e.g. a
+        harness turn's ``correlation_id`` -- appended to
+        ``metadata['contributing_turn_ids']`` so repeat writes to a shared
+        node_id keep bounded per-incident attribution instead of only the
+        latest error magnitude. Appended in order (oldest first), deduped,
+        and capped to the most recent ``_CONTRIBUTING_ID_CAP`` entries. This
+        method must stay fail-open, so any malformed carried-forward value is
+        tolerated rather than raised.
         """
         if not _prediction_error_nodes_enabled():
             return
@@ -745,10 +761,25 @@ class BiometricsSubstrateWorker:
                 existing = store.get_node_by_id(node_id)
             except Exception:
                 existing = None
+            contributing_ids: list[str] = []
             if existing is not None:
                 for key in DYNAMICS_ENGINE_OWNED_METADATA_KEYS:
                     if key in existing.metadata:
                         metadata[key] = existing.metadata[key]
+                # Carry forward prior per-turn attribution. Tolerate a
+                # missing/malformed stored value (not a list, or a list of
+                # non-strings) rather than raising -- this write must stay
+                # fail-open.
+                try:
+                    stored = existing.metadata.get("contributing_turn_ids")
+                    if isinstance(stored, list):
+                        contributing_ids = [str(item) for item in stored]
+                except Exception:
+                    contributing_ids = []
+            if contributing_id is not None and contributing_id not in contributing_ids:
+                contributing_ids.append(contributing_id)
+            if contributing_ids:
+                metadata["contributing_turn_ids"] = contributing_ids[-self._CONTRIBUTING_ID_CAP :]
             node = ConceptNodeV1(
                 node_id=node_id,
                 anchor_scope="orion",
@@ -790,14 +821,15 @@ class BiometricsSubstrateWorker:
             logger.info(
                 "post_turn_closure_prediction_error_write corr=%s node_id=%s error=%.2f",
                 closure.correlation_id,
-                f"harness_closure:{closure.correlation_id}",
+                "node:substrate.harness_closure",
                 _HARNESS_CLOSURE_UNRESOLVED_ERROR,
             )
             self._write_prediction_error_node(
-                node_id=f"harness_closure:{closure.correlation_id}",
+                node_id="node:substrate.harness_closure",
                 error=_HARNESS_CLOSURE_UNRESOLVED_ERROR,
                 now=datetime.now(timezone.utc),
                 reducer_key="post_turn_closure",
+                contributing_id=closure.correlation_id,
             )
         else:
             logger.info(
@@ -1719,6 +1751,7 @@ class BiometricsSubstrateWorker:
                     error=error,
                     now=now,
                     reducer_key="execution_trajectory",
+                    contributing_id=last_id,
                 )
 
         return last_id
@@ -1837,6 +1870,7 @@ class BiometricsSubstrateWorker:
                     error=error,
                     now=now,
                     reducer_key="transport_bus",
+                    contributing_id=last_id,
                 )
 
         return last_id

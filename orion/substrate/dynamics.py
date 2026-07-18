@@ -10,7 +10,6 @@ from .activation import ActivationConfig, decay_activation, seed_activation
 from .pressure import (
     PressureConfig,
     contradiction_amplification,
-    drive_seed_pressure,
     prediction_error_pressure,
     pressure_edge_multiplier,
 )
@@ -207,37 +206,6 @@ class SubstrateDynamicsEngine:
     ) -> tuple[dict[str, float], dict[str, str]]:
         pressure: dict[str, float] = defaultdict(float)
         reasons: dict[str, str] = {}
-
-        for node in nodes.values():
-            seed = drive_seed_pressure(node, self._pressure_config)
-            if seed <= 0:
-                continue
-            if seed > pressure[node.node_id]:
-                pressure[node.node_id] = seed
-                reasons[node.node_id] = "drive_seed"
-            frontier: list[tuple[str, float, int]] = [(node.node_id, seed, 0)]
-            visited: set[tuple[str, int]] = set()
-            while frontier:
-                current_id, current_pressure, depth = frontier.pop(0)
-                if depth >= self._pressure_config.max_hops:
-                    continue
-                for edge in outgoing.get(current_id, []):
-                    target_id = edge.target.node_id
-                    target = nodes.get(target_id)
-                    if not target:
-                        continue
-                    attenuated = current_pressure * self._pressure_config.drive_propagation_attenuation
-                    attenuated *= pressure_edge_multiplier(edge, target)
-                    attenuated = max(0.0, min(self._pressure_config.max_pressure, attenuated))
-                    if attenuated <= pressure[target_id] + 1e-6:
-                        continue
-                    pressure[target_id] = attenuated
-                    reasons[target_id] = f"drive_propagation:{edge.predicate}"
-                    key = (target_id, depth + 1)
-                    if key in visited:
-                        continue
-                    visited.add(key)
-                    frontier.append((target_id, attenuated, depth + 1))
 
         for node in nodes.values():
             seed = prediction_error_pressure(node, self._pressure_config, now=now)

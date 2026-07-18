@@ -143,6 +143,24 @@ first place. Full reasoning and phased detail:
    `SelfStateV1`, produces an explicit "what's salient, why, how confident" artifact. Must
    exist and pass its own acceptance check *before* item 3 below, on purpose — writing
    routing logic without this first is how the six-drive taxonomy happened.
+   **Phase 1 status (2026-07-18): built.** `reduce_attention_self_model()`
+   (`orion/substrate/attention_self_model.py`, output schema
+   `orion/schemas/attention_self_model.py::AttentionSelfModelV1`, registered in
+   `orion/schemas/registry.py`) unifies all three real inputs the roadmap doc's Phase 1
+   correction named — `AttentionBroadcastProjectionV1` (GWT-dispatch/Lamme lane),
+   `FieldAttentionFrameV1`, and `SelfStateV1` — read-only, not wired to any bus consumer.
+   Acceptance check **NOT MET via Postgres replay**: a real, load-bearing finding surfaced
+   while building the replay script (`scripts/analysis/measure_ast_hot_reducer.py`) —
+   `substrate_attention_broadcast_projection` is a singleton upsert table (one row, ever),
+   not a history table, so no historical `voluntary_override` event is recoverable to
+   replay against, even though the reducer's why-branching on it is proven correct via
+   unit tests (`orion/substrate/tests/test_attention_self_model.py`). Hard-gate signal-
+   quality pass (`scripts/analysis/measure_self_state_signal_quality.py`) run against real
+   48h `substrate_self_state` history: confirms the coherence/uncertainty sawtooth named in
+   §4's Missing Question 4 is **still live in `SelfStateV1`'s own values** (median 5-tick
+   oscillation period, 3500+ zero-crossings each over 84k samples) — the upstream field-
+   level fix has not fully propagated. Full detail, headline numbers, and the resulting
+   Juniper sign-off decision: PR report for this patch.
 3. **Route existing tension producers directly onto `FieldStateV1` channels**, retiring the
    bucket-vote layer — collapses the redundant reimplementation named in §7's finding.
    Reframed as prediction-error-native (extending the already-live
@@ -293,8 +311,17 @@ fix — see §7.
 2. **Attention Schema Theory** — Layer 5 computes real attention state; nothing builds a
    model *of* that attention as an inspectable object. Missing piece: one small reducer
    reading `FieldAttentionFrameV1`/`FieldStateV1` directly, producing an explicit "what I'm
-   attending to, why, how confident, what I predict shifts next" artifact — must not be
-   built as a `SelfStateV1` consumer/producer.
+   attending to, why, how confident, what I predict shifts next" artifact.
+   **Correction (2026-07-18, superseding "must not be built as a `SelfStateV1`
+   consumer/producer" below): the roadmap doc's Phase 1 scoping pass found a second real,
+   disconnected attention lane (`AttentionBroadcastProjectionV1`, GWT-dispatch/Lamme) that
+   this instrument must also unify, and `SelfStateV1` is the only real source today for two
+   of the artifact's real fields (predicted-shift trajectory, a confidence fallback) — an
+   explicit, narrow exception to §7's standing rule, not a repeal of it, gated behind a
+   hard signal-quality check on exactly those `SelfStateV1` fields before Phase 1 is called
+   done. See `docs/superpowers/specs/2026-07-18-objective-3-consciousness-scaffolded-
+   roadmap-design.md` Phase 1 and §6 item 2's status note above.** Built 2026-07-18:
+   `orion/substrate/attention_self_model.py`.
 3. **Predictive Processing/Active Inference** — **not** `orion/self_state/prediction.py`
    (`SelfStateV1`-anchored, same violation as IIT above). The real field-native substrate,
    confirmed live 2026-07-18: `services/orion-substrate-runtime/app/worker.py`'s
@@ -311,7 +338,9 @@ fix — see §7.
    have equivalent instrumentation, or whether coverage is genuinely incomplete.
 4. **Higher-Order Theories** — architecturally close to AST's missing piece; a
    higher-order representation built once, reading the same field/reducer-projection data,
-   may serve both theories. Same constraint as #2: no `SelfStateV1` dependency.
+   may serve both theories. Served by the same Phase 1 reducer as #2 above, including its
+   narrow, hard-gated `SelfStateV1` exception (see #2's 2026-07-18 correction) — not a
+   separate instrument.
 5. **Recurrent Processing Theory (Lamme)** — confirmed real, tight, per-tick recurrence
    inside Layer 5 itself (`novelty_for_target()` reads the *previous*
    `FieldAttentionFrameV1`) — already field-native, no correction needed here. Top-down

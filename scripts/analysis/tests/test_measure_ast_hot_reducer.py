@@ -1,0 +1,153 @@
+"""Deterministic unit tests for measure_ast_hot_reducer.py.
+
+No DB. The replay layer calls the REAL `reduce_attention_self_model`
+(pure, no I/O -- see orion/substrate/attention_self_model.py), so it is
+exercised directly with synthetic field/self-state/broadcast payload dicts,
+same fixture-loading pattern as
+scripts/analysis/tests/test_measure_origination_gate.py.
+"""
+
+from __future__ import annotations
+
+import importlib.util
+import sys
+from datetime import datetime, timedelta, timezone
+from pathlib import Path
+
+_MODULE_PATH = Path(__file__).resolve().parents[1] / "measure_ast_hot_reducer.py"
+_spec = importlib.util.spec_from_file_location("measure_ast_hot_reducer", _MODULE_PATH)
+mod = importlib.util.module_from_spec(_spec)
+assert _spec and _spec.loader
+sys.modules["measure_ast_hot_reducer"] = mod
+_spec.loader.exec_module(mod)
+
+from orion.schemas.attention_frame import (  # noqa: E402
+    AttentionBroadcastProjectionV1,
+    AttentionFrameV1,
+    VoluntaryOverrideV1,
+)
+from orion.schemas.field_attention_frame import FieldAttentionFrameV1, FieldAttentionTargetV1  # noqa: E402
+from orion.schemas.self_state import SelfStateV1  # noqa: E402
+
+UTC = timezone.utc
+BASE = datetime(2026, 7, 1, 0, 0, 0, tzinfo=UTC)
+
+
+def _field_payload(ts: datetime) -> dict:
+    frame = FieldAttentionFrameV1(
+        frame_id=f"frame-{ts.isoformat()}",
+        generated_at=ts,
+        source_field_tick_id="tick",
+        source_field_generated_at=ts,
+        overall_salience=0.6,
+        dominant_targets=[
+            FieldAttentionTargetV1(
+                target_id="node-1", target_kind="node", salience_score=0.6,
+                pressure_score=0.4, novelty_score=0.2, urgency_score=0.3, confidence_score=0.5,
+            )
+        ],
+    )
+    return frame.model_dump(mode="json")
+
+
+def _self_state_payload(ts: datetime) -> dict:
+    state = SelfStateV1(
+        self_state_id=f"ss-{ts.isoformat()}", generated_at=ts,
+        source_field_tick_id="tick", source_field_generated_at=ts,
+        source_attention_frame_id="frame", source_attention_generated_at=ts,
+        overall_intensity=0.5, overall_confidence=0.5,
+    )
+    return state.model_dump(mode="json")
+
+
+def _broadcast_payload(ts: datetime, *, override: VoluntaryOverrideV1 | None = None) -> dict:
+    frame = AttentionFrameV1(generated_at=ts, voluntary_override=override)
+    projection = AttentionBroadcastProjectionV1(
+        generated_at=ts, frame=frame, selected_action_type="watch",
+        selected_open_loop_id="loop-1", coalition_stability_score=0.7,
+    )
+    return projection.model_dump(mode="json")
+
+
+def test_replay_reducer_joins_self_state_by_nearest_preceding_timestamp() -> None:
+    field_rows = [
+        (BASE, _field_payload(BASE)),
+        (BASE + timedelta(seconds=10), _field_payload(BASE + timedelta(seconds=10))),
+    ]
+    self_state_rows = [(BASE - timedelta(seconds=1), _self_state_payload(BASE - timedelta(seconds=1)))]
+
+    ticks, field_skipped, ss_skipped = mod.replay_reducer(field_rows, self_state_rows, None)
+
+    assert field_skipped == 0
+    assert ss_skipped == 0
+    assert len(ticks) == 2
+    assert all(t.self_state_present for t in ticks)
+
+
+def test_replay_reducer_skips_unparseable_rows_without_raising() -> None:
+    field_rows = [(BASE, {"not": "a valid frame"})]
+    ticks, field_skipped, ss_skipped = mod.replay_reducer(field_rows, [], None)
+
+    assert ticks == []
+    assert field_skipped == 1
+    assert ss_skipped == 0
+
+
+def test_replay_reducer_surfaces_real_voluntary_override() -> None:
+    override = VoluntaryOverrideV1(
+        goal_artifact_id="goal-1", goal_drive_origin="curiosity",
+        chosen_loop_id="loop-1", beat_loop_id="loop-2",
+        chosen_bottom_up=0.3, beat_bottom_up=0.5, applied_bias=0.4, effort_spent=0.1,
+    )
+    broadcast_row = (BASE, _broadcast_payload(BASE, override=override))
+    field_rows = [(BASE + timedelta(seconds=1), _field_payload(BASE + timedelta(seconds=1)))]
+
+    ticks, _, _ = mod.replay_reducer(field_rows, [], broadcast_row)
+
+    assert len(ticks) == 1
+    assert ticks[0].has_voluntary_override is True
+    assert ticks[0].attention_reason == "top_down_override"
+    assert "loop-1" in ticks[0].reason_narrative
+
+
+def test_replay_reducer_honestly_absent_when_broadcast_predates_nothing_reference() -> None:
+    """A broadcast snapshot dated AFTER the field tick must not be joined to
+    it -- mirrors the real singleton-table finding this script's own
+    docstring documents."""
+    broadcast_row = (BASE + timedelta(hours=1), _broadcast_payload(BASE + timedelta(hours=1)))
+    field_rows = [(BASE, _field_payload(BASE))]
+
+    ticks, _, _ = mod.replay_reducer(field_rows, [], broadcast_row)
+
+    assert len(ticks) == 1
+    assert ticks[0].broadcast_lane_present is False
+
+
+def test_reason_histogram_counts_each_category() -> None:
+    ticks = [
+        mod.ReplayTick(BASE, "top_down_override", 0.5, True, False, 1.0, True, True, True, ""),
+        mod.ReplayTick(BASE, "bottom_up_salience", 0.5, True, False, 1.0, True, True, False, ""),
+        mod.ReplayTick(BASE, "bottom_up_salience", 0.5, True, False, 1.0, True, True, False, ""),
+    ]
+    hist = mod.reason_histogram(ticks)
+    assert hist["top_down_override"] == 1
+    assert hist["bottom_up_salience"] == 2
+
+
+def test_find_override_examples_returns_context_window() -> None:
+    ticks = [
+        mod.ReplayTick(BASE, "field_salience_only", None, False, True, None, True, True, False, "a"),
+        mod.ReplayTick(BASE, "top_down_override", 0.9, True, False, 1.0, True, True, True, "override!"),
+        mod.ReplayTick(BASE, "bottom_up_salience", 0.7, True, False, 1.0, True, True, False, "c"),
+    ]
+    examples = mod.find_override_examples(ticks, context=1)
+    assert len(examples) == 1
+    assert len(examples[0]) == 3
+    assert examples[0][1].has_voluntary_override is True
+
+
+def test_find_override_examples_empty_when_no_override_present() -> None:
+    ticks = [
+        mod.ReplayTick(BASE, "field_salience_only", None, False, True, None, True, True, False, "a"),
+    ]
+    assert mod.find_override_examples(ticks) == []

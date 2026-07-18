@@ -1,3 +1,14 @@
+## Program status (2026-07-18): drives-system development halted
+
+This module's drive/origination system (`orion.spark.concept_induction.drives.DriveEngine`,
+`orion.autonomy.endogenous_origination`) is superseded by
+[`orion/sentience_striving_program/README.md`](../sentience_striving_program/README.md),
+which governs Orion's motivational/attention/capability-gating substrate going forward.
+Read that charter's §8 before further work here — `endogenous_origination.py`'s composite
+D/W/A signal was measured (PR #1156) to have never fired across its deployed lifetime;
+`capability_policy.py`'s static per-cycle budget is slated for replacement by live,
+already-existing field-attention salience (Objective 2), not further drive-taxonomy tuning.
+
 ## Origin and current gap
 
 Why any of this exists, the founding theory, and the biggest unresolved gap (self-initiation

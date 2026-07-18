@@ -4,10 +4,11 @@
 Phase 1 of `docs/superpowers/specs/2026-07-18-objective-3-consciousness-
 scaffolded-roadmap-design.md`. Replays the REAL, pure production reducer
 (`reduce_attention_self_model`, `orion/substrate/attention_self_model.py`)
-over real historical Postgres data for two of its three inputs
+over real historical Postgres data for all three of its inputs
 (`substrate_attention_frames` -> `FieldAttentionFrameV1`, `substrate_
-self_state` -> `SelfStateV1`), joined by nearest-preceding timestamp with the
-field lane's own tick cadence driving the replay (it is the highest-
+self_state` -> `SelfStateV1`, `substrate_attention_broadcast_log` ->
+`AttentionBroadcastProjectionV1`), joined by nearest-preceding timestamp with
+the field lane's own tick cadence driving the replay (it is the highest-
 frequency real signal, per the Phase 1 design).
 
 **Load-bearing finding, discovered while building this script (2026-07-18):
@@ -15,37 +16,47 @@ frequency real signal, per the Phase 1 design).
 `AttentionBroadcastProjectionV1`, the GWT-dispatch/Lamme lane -- is a
 SINGLETON UPSERT table.** Confirmed live via `\\d
 substrate_attention_broadcast_projection` (PRIMARY KEY on `projection_id`)
-and a row-count query (exactly 1 row, always). There is no per-tick history
-for this lane in Postgres -- only the single most-recent snapshot is ever
-observable. This script does NOT fabricate history for it: the same single
-broadcast row is passed to the reducer for every replayed field-lane tick,
-and the reducer itself (see its own docstring/logic) honestly reports the
-broadcast lane as *absent* for any tick that predates the snapshot's own
-`generated_at` (rather than silently reusing a future snapshot as if it
-applied retroactively), and as *stale* for ticks more than
-`DEFAULT_BROADCAST_STALE_THRESHOLD_SEC` after it. In practice this means only
-a small tail of the most-recent replayed ticks (near the moment this script
-was run) can ever show broadcast data at all -- the rest of the window
-honestly shows `broadcast_lane_present=False`. See the report's own
+and a row-count query (exactly 1 row, always). There was no per-tick history
+for this lane in Postgres -- only the single most-recent snapshot was ever
+observable, so any historical `voluntary_override` event was overwritten in
+place before it could be replayed.
+
+**Fixed 2026-07-18 (this patch):** `substrate_attention_broadcast_log`
+(`manual_migration_attention_broadcast_log_v1.sql`) is a new append-only
+companion table -- one row per broadcast tick, written alongside the
+singleton by `save_attention_broadcast_history()`
+(`services/orion-substrate-runtime/app/store.py`) from
+`_attention_broadcast_tick()` (`services/orion-substrate-runtime/app/
+worker.py`). This script now joins broadcast rows by nearest-preceding
+timestamp the same two-pointer way it already joins `self_state_rows`,
+instead of passing one static row to every call. The old singleton table,
+its writer (`save_attention_broadcast`), and `AttentionBroadcastProjectionV1`
+itself are untouched.
+
+**Deployment caveat, honestly stated:** the log only accumulates forward
+from the moment this patch deploys -- the old snapshot rows were overwritten
+in place and are not recoverable, so there is no way to backfill history.
+Immediately after deploy the log will be empty or thin, and a run against a
+short window will likely still show zero `voluntary_override` events -- not
+because the table structurally cannot support it (the old finding), but
+because too little real history has accumulated yet. See the report's own
 "Broadcast lane coverage" and "Acceptance check" sections for the concrete
-numbers this produces on a real run, and root CLAUDE.md's "runtime truth
-beats config truth" mandate for why this is reported plainly rather than
-smoothed over.
+numbers on any given run, and root CLAUDE.md's "runtime truth beats config
+truth" mandate for why this is reported plainly rather than smoothed over.
 
 This performs NO writes, emits NO events, flips NO flags. It reports:
 
   1. The distribution of `attention_reason` over the replay window.
-  2. Broadcast-lane coverage: how many ticks could honestly be joined to the
-     single available broadcast snapshot at all, and how many of those were
-     stale vs. fresh.
+  2. Broadcast-lane coverage: how many ticks in the window could be joined to
+     *some* real historical broadcast-log row (not just the current
+     snapshot), and how many of those were stale vs. fresh.
   3. The acceptance check: does the replay window contain at least one real
      `voluntary_override` event, and if so, a concrete before/after
      narrative example proving the reducer's "why" branches on it (not just
-     a generic salience reading). If the window contains none (the honest,
-     confirmed-live state of `substrate_attention_broadcast_projection` as
-     of this script's own design pass), that is reported as NOT MET via
-     Postgres replay, with the reasoning above, rather than asserted as
-     passing.
+     a generic salience reading). If the window contains none -- expected
+     immediately post-deploy while the log is still young -- that is
+     reported as NOT MET via Postgres replay, with the reasoning above,
+     rather than asserted as passing.
 
 Run:
     python scripts/analysis/measure_ast_hot_reducer.py --window-hours 48
@@ -102,27 +113,21 @@ class ReplayTick:
 def replay_reducer(
     field_rows: list[tuple[datetime, dict]],
     self_state_rows: list[tuple[datetime, dict]],
-    broadcast_row: Optional[tuple[datetime, dict]],
-) -> tuple[list[ReplayTick], int, int]:
+    broadcast_rows: list[tuple[datetime, dict]],
+) -> tuple[list[ReplayTick], int, int, int]:
     """Replay the real `reduce_attention_self_model` over ordered field-lane
     ticks (the highest-frequency real signal -- drives replay cadence),
-    joining `self_state_rows` by nearest-preceding timestamp and passing the
-    single `broadcast_row` (or None) to every call -- see module docstring
-    for why a per-tick broadcast join is not possible with the current
-    schema. Returns (ticks, field_rows_skipped, self_state_rows_skipped).
+    joining both `self_state_rows` and `broadcast_rows` by nearest-preceding
+    timestamp -- same two-pointer pattern for both, now that
+    `substrate_attention_broadcast_log` gives the broadcast lane real
+    per-tick history instead of a single static snapshot (see module
+    docstring). Returns (ticks, field_rows_skipped, self_state_rows_skipped,
+    broadcast_rows_skipped).
     """
     from orion.schemas.attention_frame import AttentionBroadcastProjectionV1
     from orion.schemas.field_attention_frame import FieldAttentionFrameV1
     from orion.schemas.self_state import SelfStateV1
     from orion.substrate.attention_self_model import reduce_attention_self_model
-
-    broadcast_model: Optional[AttentionBroadcastProjectionV1] = None
-    if broadcast_row is not None:
-        try:
-            broadcast_model = AttentionBroadcastProjectionV1.model_validate(broadcast_row[1])
-        except Exception:
-            logger.warning("broadcast_row_parse_failed", exc_info=True)
-            broadcast_model = None
 
     self_states: list[tuple[datetime, SelfStateV1]] = []
     self_state_skipped = 0
@@ -132,10 +137,20 @@ def replay_reducer(
         except Exception:
             self_state_skipped += 1
 
+    broadcasts: list[tuple[datetime, AttentionBroadcastProjectionV1]] = []
+    broadcast_skipped = 0
+    for ts, payload in broadcast_rows:
+        try:
+            broadcasts.append((ts, AttentionBroadcastProjectionV1.model_validate(payload)))
+        except Exception:
+            broadcast_skipped += 1
+
     ticks: list[ReplayTick] = []
     field_skipped = 0
-    ss_idx = 0  # two-pointer: both field_rows and self_states are ASC-sorted
+    ss_idx = 0  # two-pointer: field_rows, self_states, broadcasts are all ASC-sorted
+    bc_idx = 0
     current_self_state: Optional[SelfStateV1] = None
+    current_broadcast: Optional[AttentionBroadcastProjectionV1] = None
 
     for ts, payload in field_rows:
         try:
@@ -148,8 +163,12 @@ def replay_reducer(
             current_self_state = self_states[ss_idx][1]
             ss_idx += 1
 
+        while bc_idx < len(broadcasts) and broadcasts[bc_idx][0] <= ts:
+            current_broadcast = broadcasts[bc_idx][1]
+            bc_idx += 1
+
         model = reduce_attention_self_model(
-            broadcast_model, field_model, current_self_state, now=ts
+            current_broadcast, field_model, current_self_state, now=ts
         )
         ticks.append(
             ReplayTick(
@@ -165,7 +184,7 @@ def replay_reducer(
                 reason_narrative=model.reason_narrative,
             )
         )
-    return ticks, field_skipped, self_state_skipped
+    return ticks, field_skipped, self_state_skipped, broadcast_skipped
 
 
 def reason_histogram(ticks: list[ReplayTick]) -> Counter:
@@ -286,6 +305,35 @@ def fetch_self_state_rows(conn, since: datetime) -> tuple[list[tuple[datetime, d
     return _rows_to_payload_list(rows)
 
 
+def fetch_broadcast_history_rows(conn, since: datetime) -> tuple[list[tuple[datetime, dict]], bool]:
+    """Real per-tick broadcast history from the append-only companion log
+    (`substrate_attention_broadcast_log`, `manual_migration_attention_
+    broadcast_log_v1.sql`) -- mirrors `fetch_self_state_rows` exactly. This
+    is what makes a genuine historical `voluntary_override` search possible;
+    see module docstring for why the old singleton-projection table alone
+    could not support it.
+    """
+    if conn is None:
+        return [], False
+    try:
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                SELECT projection_json, generated_at
+                FROM substrate_attention_broadcast_log
+                WHERE generated_at >= %s
+                ORDER BY generated_at ASC
+                LIMIT %s
+                """,
+                (since, MAX_ROWS),
+            )
+            rows = cur.fetchall()
+    except Exception:
+        logger.error("failed to fetch substrate_attention_broadcast_log", exc_info=True)
+        return [], False
+    return _rows_to_payload_list(rows)
+
+
 def fetch_broadcast_row_count(conn) -> Optional[int]:
     """Cross-check the singleton-table finding live, every run -- not just
     asserted once in a docstring. None on failure (degrades quietly).
@@ -401,6 +449,8 @@ def render_report(
     field_rows_truncated: bool,
     field_rows_skipped: int,
     self_state_rows_skipped: int,
+    broadcast_rows_replayed: int,
+    broadcast_rows_skipped: int,
     broadcast_row_count: Optional[int],
     broadcast_row: Optional[tuple[datetime, dict]],
     override_examples: list[list[ReplayTick]],
@@ -423,7 +473,8 @@ def render_report(
 
     broadcast_singleton_line = (
         "n/a (query failed)" if broadcast_row_count is None
-        else f"{broadcast_row_count} row(s) (confirmed singleton if this is 1, every run)"
+        else f"{broadcast_row_count} row(s) (still a singleton, by design -- "
+             "history now lives in substrate_attention_broadcast_log instead)"
     )
     broadcast_current_line = (
         "none (table empty)" if broadcast_row is None
@@ -436,34 +487,44 @@ def render_report(
         "",
         "Read-only. No writes, no events, no flag/config changes. Replays the real "
         "`reduce_attention_self_model` production function over historical "
-        "`substrate_attention_frames` (field lane, drives cadence) and "
-        "`substrate_self_state` rows, joined by nearest-preceding timestamp.",
+        "`substrate_attention_frames` (field lane, drives cadence), "
+        "`substrate_self_state`, and `substrate_attention_broadcast_log` rows, all "
+        "joined by nearest-preceding timestamp.",
         "",
         f"- Window: last {window_label} ({window_start.isoformat()} -> {window_end.isoformat()})",
         f"- Field-lane (FieldAttentionFrameV1) ticks replayed: {n}",
         f"- Field-lane rows truncated at MAX_ROWS={MAX_ROWS}: {field_rows_truncated}",
         f"- Field-lane rows skipped (failed to parse): {field_rows_skipped}",
         f"- Self-state rows skipped (failed to parse): {self_state_rows_skipped}",
+        f"- Broadcast-log rows in window: {broadcast_rows_replayed} "
+        f"(skipped/failed to parse: {broadcast_rows_skipped})",
         "",
-        "## Broadcast lane: singleton-table finding (load-bearing)",
+        "## Broadcast lane: real per-tick history (fixed 2026-07-18)",
         "",
-        "`substrate_attention_broadcast_projection` is a singleton upsert table "
-        "(PRIMARY KEY on `projection_id`) -- confirmed live by this run's own "
-        "row-count query, not just asserted from an earlier session:",
+        "`substrate_attention_broadcast_projection` is still a singleton upsert table "
+        "(PRIMARY KEY on `projection_id`, overwritten every tick) -- that has not "
+        "changed and is not being touched. What changed: "
+        "`substrate_attention_broadcast_log` is a new append-only companion (one row "
+        "per tick, written by `save_attention_broadcast_history()` alongside the "
+        "singleton), so this replay now joins broadcast rows by nearest-preceding "
+        "timestamp the same way it already joins self-state rows, instead of pinning "
+        "one static snapshot to every tick.",
         "",
-        f"- Live row count: {broadcast_singleton_line}",
-        f"- Current (only) snapshot: {broadcast_current_line}",
-        f"- Field-lane ticks in this window that could be honestly joined to the "
-        f"single broadcast snapshot at all (i.e. tick.generated_at >= broadcast."
-        f"generated_at): **{n_broadcast_present}** / {n} ({pct(n_broadcast_present)})",
+        f"- Live singleton row count (unchanged, for reference): {broadcast_singleton_line}",
+        f"- Current singleton snapshot: {broadcast_current_line}",
+        f"- Field-lane ticks in this window joined to *some* real historical broadcast-"
+        f"log row (i.e. at least one broadcast-log row at or before tick.generated_at "
+        f"existed): **{n_broadcast_present}** / {n} ({pct(n_broadcast_present)})",
         f"  - of those, fresh (within staleness threshold): {n_broadcast_fresh}",
         f"  - of those, stale (\"no new GWT-dispatch-lane activity since last frame\"): "
         f"{n_broadcast_stale}",
         "",
-        "This is why the acceptance check below is scoped the way it is: there is no "
-        "per-tick broadcast history in Postgres to replay against older ticks, only the "
-        "single most-recent snapshot, honestly joined only to the small tail of ticks "
-        "at or after its own timestamp.",
+        "This is a real per-tick join now, not the old single-snapshot pin -- coverage "
+        "grows as `substrate_attention_broadcast_log` accumulates real ticks from the "
+        "deploy of this patch onward. It cannot be backfilled: the pre-patch singleton "
+        "rows were overwritten in place and are not recoverable, so history only exists "
+        "from deploy time forward. A run shortly after deploy will show low or zero "
+        "broadcast-log coverage for that reason, not because the join is broken.",
         "",
         "## attention_reason distribution",
         "",
@@ -479,8 +540,9 @@ def render_report(
     if override_examples:
         lines.append(
             f"**MET.** Found {len(override_examples)} tick(s) with a real, non-null "
-            f"`voluntary_override` in the replay window. Concrete before/after example "
-            f"(first occurrence):"
+            f"`voluntary_override` in the replay window, sourced from real historical "
+            f"rows in `substrate_attention_broadcast_log` (not the old single-snapshot "
+            f"pin). Concrete before/after example (first occurrence):"
         )
         lines.append("")
         for t in override_examples[0]:
@@ -502,17 +564,16 @@ def render_report(
         lines.extend(
             [
                 "**NOT MET via Postgres replay.** Zero ticks in this window carry a "
-                "non-null `voluntary_override`. This is a direct consequence of the "
-                "singleton-table finding above, not a reducer bug: "
-                f"`substrate_attention_broadcast_projection`'s single current snapshot "
-                f"({broadcast_current_line}) does not currently carry a "
-                "voluntary_override, and no earlier snapshot is recoverable from "
-                "Postgres to search further back -- the row is overwritten in place on "
-                "every broadcast tick (every "
-                "`ORION_ATTENTION_BROADCAST_INTERVAL_SEC` seconds, confirmed live=30s), "
-                "so any historical override event (including the one an earlier session "
-                "reported observing live in this same table) has already been "
-                "overwritten by the time this script runs.",
+                "non-null `voluntary_override`. This is no longer a structural gap in the "
+                "table (that was fixed 2026-07-18 -- `substrate_attention_broadcast_log` "
+                "now supports a real historical join, see above); it is insufficient "
+                "accumulated history: the log only started accumulating at deploy time "
+                f"and this window ({broadcast_rows_replayed} broadcast-log row(s) found) "
+                "has not yet caught a real `voluntary_override` tick. Re-running this "
+                "script after more live ticks accumulate (each `ORION_ATTENTION_"
+                "BROADCAST_INTERVAL_SEC` seconds, confirmed live=30s) is expected to "
+                "close this gap over the following days, not require further schema "
+                "changes.",
                 "",
                 "Compensating evidence that the reducer's why-branching logic is real and "
                 "correct (see `orion/substrate/tests/test_attention_self_model.py`, run "
@@ -524,19 +585,18 @@ def render_report(
                 "\"top_down_override\"` plus a narrative naming the specific "
                 "chosen/beaten loop IDs and applied_bias -- the same branch this replay "
                 "would exercise if a live override were present in the window.",
-                "- `TestCadenceMismatch` exercises the exact singleton-table scenario "
-                "found here: a broadcast snapshot dated after the reference tick is "
-                "honestly treated as absent, not reused retroactively.",
+                "- `TestCadenceMismatch` exercises the exact broadcast-absent/stale "
+                "scenario this replay depends on: a broadcast snapshot dated after the "
+                "reference tick is honestly treated as absent, not reused retroactively.",
                 "",
-                "**Recommendation for Juniper's sign-off**: if a genuine historical replay "
-                "of the GWT-dispatch lane's `voluntary_override` events is needed for "
-                "Phase 2+ (e.g. Phase 3's shadow comparison), "
-                "`substrate_attention_broadcast_projection` needs an append-only "
-                "companion (or `AttentionBroadcastProjectionV1` needs to also be "
-                "published to a bus channel with retained history) -- the current "
-                "singleton-upsert design cannot support it. Not built here: out of "
-                "Phase 1 scope, and a schema/bus contract change per CLAUDE.md sec 6, "
-                "not a reducer change.",
+                "**Recommendation for Juniper's sign-off**: the structural gap (no "
+                "append-only broadcast history) is closed as of 2026-07-18 -- "
+                "`substrate_attention_broadcast_log` now exists and this script joins it "
+                "per-tick. What remains is purely accumulation time: re-run this script "
+                "with `--window-hours` covering the period since deploy once a few days "
+                "of live ticks have landed, and expect this section to flip to MET once a "
+                "real `voluntary_override` event occurs within that accumulated window. "
+                "No further schema/bus contract change is anticipated for Phase 1.",
             ]
         )
 
@@ -548,10 +608,11 @@ def render_report(
             "nonzero `bottom_up_salience`/`field_salience_only` count alone is not "
             "sufficient (that would just prove the two inputs are both present, not "
             "unified).",
-            "- A high `field_salience_only` fraction is expected and correct given the "
-            "singleton-table finding above -- it is not a sign the reducer is failing to "
-            "read the broadcast lane, it is the honest consequence of that lane having "
-            "no queryable history.",
+            "- A high `field_salience_only` fraction can still be expected shortly after "
+            "deploy while `substrate_attention_broadcast_log` is young -- it is not "
+            "necessarily a sign the reducer is failing to read the broadcast lane, it can "
+            "be the honest consequence of that lane not having accumulated much history "
+            "yet. Check the broadcast-log row count above before concluding either way.",
             "",
         ]
     )
@@ -591,9 +652,17 @@ def run(window: timedelta, window_label: str) -> int:
         caveats.append(f"self-state rows truncated at MAX_ROWS={MAX_ROWS}")
     progress.emit("self_state loaded", percent=45.0, processed=len(self_state_rows), total=len(self_state_rows))
 
+    broadcast_rows, broadcast_truncated = fetch_broadcast_history_rows(conn, window_start)
+    if broadcast_truncated:
+        caveats.append(f"broadcast-log rows truncated at MAX_ROWS={MAX_ROWS}")
+    progress.emit("broadcast_log loaded", percent=52.0, processed=len(broadcast_rows), total=len(broadcast_rows))
+
+    # Secondary diagnostic only, kept for corroboration: the singleton table's
+    # own row count and current snapshot, unrelated to the real per-tick join
+    # above (which now runs entirely off substrate_attention_broadcast_log).
     broadcast_row_count = fetch_broadcast_row_count(conn)
     broadcast_row = fetch_latest_broadcast_row(conn)
-    progress.emit("broadcast loaded", percent=55.0, processed=1 if broadcast_row else 0, total=1)
+    progress.emit("broadcast singleton loaded", percent=55.0, processed=1 if broadcast_row else 0, total=1)
 
     try:
         conn.close()
@@ -606,7 +675,8 @@ def run(window: timedelta, window_label: str) -> int:
         report = render_report(
             window_label=window_label, window_start=window_start, window_end=now,
             ticks=[], field_rows_truncated=field_truncated, field_rows_skipped=0,
-            self_state_rows_skipped=0, broadcast_row_count=broadcast_row_count,
+            self_state_rows_skipped=0, broadcast_rows_replayed=len(broadcast_rows),
+            broadcast_rows_skipped=0, broadcast_row_count=broadcast_row_count,
             broadcast_row=broadcast_row, override_examples=[], caveats=caveats,
         )
         REPORT_PATH.write_text(report, encoding="utf-8")
@@ -614,7 +684,9 @@ def run(window: timedelta, window_label: str) -> int:
         return 2
 
     progress.emit("replaying", percent=60.0, processed=0, total=len(field_rows))
-    ticks, field_skipped, self_state_skipped = replay_reducer(field_rows, self_state_rows, broadcast_row)
+    ticks, field_skipped, self_state_skipped, broadcast_skipped = replay_reducer(
+        field_rows, self_state_rows, broadcast_rows
+    )
     progress.emit("replay done", percent=95.0, processed=len(ticks), total=len(field_rows))
 
     override_examples = find_override_examples(ticks)
@@ -628,6 +700,8 @@ def run(window: timedelta, window_label: str) -> int:
         field_rows_truncated=field_truncated,
         field_rows_skipped=field_skipped,
         self_state_rows_skipped=self_state_skipped,
+        broadcast_rows_replayed=len(broadcast_rows),
+        broadcast_rows_skipped=broadcast_skipped,
         broadcast_row_count=broadcast_row_count,
         broadcast_row=broadcast_row,
         override_examples=override_examples,

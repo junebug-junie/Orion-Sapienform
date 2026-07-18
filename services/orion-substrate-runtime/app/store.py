@@ -561,6 +561,58 @@ class BiometricsSubstrateStore:
     def save_attention_broadcast(self, projection: AttentionBroadcastProjectionV1) -> None:
         self._save_projection("substrate_attention_broadcast_projection", projection)
 
+    def save_attention_broadcast_history(
+        self, projection: AttentionBroadcastProjectionV1, *, retention_hours: float
+    ) -> None:
+        """Append one broadcast-history row per tick; prunes rows beyond retention.
+
+        Companion to the singleton `substrate_attention_broadcast_projection`
+        table (see `save_attention_broadcast` above), which is overwritten in
+        place every tick and therefore carries no queryable history. This
+        table exists so historical replay (e.g.
+        `scripts/analysis/measure_ast_hot_reducer.py`) can search real
+        `voluntary_override` events across ticks instead of only the current
+        snapshot.
+        """
+        generated_at = projection.generated_at
+        # projection_id is a constant default ("substrate.attention.broadcast.v1")
+        # across ticks, so this digest is effectively keyed on generated_at alone
+        # -- kept in the hash input for forward-compat if that ever changes, not
+        # because it adds independence today. Real ticks are always >=
+        # attention_broadcast_interval_sec apart (default 30s), so generated_at
+        # alone is sufficient to make redelivery of the same tick idempotent.
+        digest = hashlib.sha256(
+            f"{generated_at.isoformat()}|{projection.projection_id}".encode("utf-8")
+        ).hexdigest()[:24]
+        now = datetime.now(timezone.utc)
+        with self._engine.begin() as conn:
+            conn.execute(
+                text(
+                    """
+                    INSERT INTO substrate_attention_broadcast_log (
+                        log_id, generated_at, projection_json, created_at
+                    ) VALUES (
+                        :log_id, :generated_at, :projection_json, :created_at
+                    )
+                    ON CONFLICT (log_id) DO NOTHING
+                    """
+                ),
+                {
+                    "log_id": f"broadcast-{digest}",
+                    "generated_at": generated_at,
+                    "projection_json": Json(projection.model_dump(mode="json")),
+                    "created_at": now,
+                },
+            )
+            conn.execute(
+                text(
+                    f"""
+                    DELETE FROM substrate_attention_broadcast_log
+                    WHERE generated_at < now() - interval '{float(retention_hours)} hours'
+                    """
+                ),
+            )
+
     def save_endogenous_curiosity_candidates(self, signals: list[Any]) -> None:
         """Persist one bounded candidate set for the felt-state curiosity lane.
 

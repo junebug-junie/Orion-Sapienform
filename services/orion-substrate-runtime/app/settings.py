@@ -63,6 +63,13 @@ class Settings(BaseSettings):
     attention_broadcast_min_salience: float = Field(
         0.2, alias="ORION_ATTENTION_BROADCAST_MIN_SALIENCE"
     )
+    # Append-only companion log to the singleton substrate_attention_broadcast_
+    # projection table (see manual_migration_attention_broadcast_log_v1.sql).
+    # 168h (7 days) covers the Phase 1/2/3 replay scripts' default 48h analysis
+    # window with margin.
+    attention_broadcast_log_retention_hours: float = Field(
+        168.0, alias="ORION_ATTENTION_BROADCAST_LOG_RETENTION_HOURS"
+    )
     enable_endogenous_curiosity: bool = Field(
         False, alias="ORION_ENDOGENOUS_CURIOSITY_ENABLED"
     )

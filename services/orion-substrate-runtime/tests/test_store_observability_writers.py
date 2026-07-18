@@ -98,3 +98,35 @@ def test_save_coalition_dwell_inactive_when_zero_ticks():
     store.save_coalition_dwell(projection)
     params = conn.execute.call_args_list[0].args[1]
     assert params["active"] is False
+
+
+def test_save_attention_broadcast_history_row_shape_and_prune():
+    store, conn = _store_with_conn()
+    store.save_attention_broadcast_history(_projection(), retention_hours=168.0)
+
+    assert conn.execute.call_count == 2  # insert + prune
+    insert_sql = str(conn.execute.call_args_list[0].args[0])
+    assert "INSERT INTO substrate_attention_broadcast_log" in insert_sql
+    assert "ON CONFLICT (log_id) DO NOTHING" in insert_sql
+    params = conn.execute.call_args_list[0].args[1]
+    assert params["log_id"].startswith("broadcast-")
+    assert params["generated_at"] == _projection().generated_at
+    assert params["projection_json"].adapted["projection_id"] == _projection().projection_id
+    prune_sql = str(conn.execute.call_args_list[1].args[0])
+    assert "DELETE FROM substrate_attention_broadcast_log" in prune_sql
+    assert "168.0 hours" in prune_sql
+
+
+def test_save_attention_broadcast_history_idempotent_digest():
+    """Same generated_at + projection_id always produces the same log_id, so a
+    re-delivered event is a no-op via ON CONFLICT DO NOTHING rather than a
+    duplicate row."""
+    store, conn = _store_with_conn()
+    store.save_attention_broadcast_history(_projection(), retention_hours=168.0)
+    first_id = conn.execute.call_args_list[0].args[1]["log_id"]
+
+    store2, conn2 = _store_with_conn()
+    store2.save_attention_broadcast_history(_projection(), retention_hours=168.0)
+    second_id = conn2.execute.call_args_list[0].args[1]["log_id"]
+
+    assert first_id == second_id

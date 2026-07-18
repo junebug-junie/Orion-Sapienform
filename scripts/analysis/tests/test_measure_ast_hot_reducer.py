@@ -76,21 +76,23 @@ def test_replay_reducer_joins_self_state_by_nearest_preceding_timestamp() -> Non
     ]
     self_state_rows = [(BASE - timedelta(seconds=1), _self_state_payload(BASE - timedelta(seconds=1)))]
 
-    ticks, field_skipped, ss_skipped = mod.replay_reducer(field_rows, self_state_rows, None)
+    ticks, field_skipped, ss_skipped, bc_skipped = mod.replay_reducer(field_rows, self_state_rows, [])
 
     assert field_skipped == 0
     assert ss_skipped == 0
+    assert bc_skipped == 0
     assert len(ticks) == 2
     assert all(t.self_state_present for t in ticks)
 
 
 def test_replay_reducer_skips_unparseable_rows_without_raising() -> None:
     field_rows = [(BASE, {"not": "a valid frame"})]
-    ticks, field_skipped, ss_skipped = mod.replay_reducer(field_rows, [], None)
+    ticks, field_skipped, ss_skipped, bc_skipped = mod.replay_reducer(field_rows, [], [])
 
     assert ticks == []
     assert field_skipped == 1
     assert ss_skipped == 0
+    assert bc_skipped == 0
 
 
 def test_replay_reducer_surfaces_real_voluntary_override() -> None:
@@ -99,11 +101,12 @@ def test_replay_reducer_surfaces_real_voluntary_override() -> None:
         chosen_loop_id="loop-1", beat_loop_id="loop-2",
         chosen_bottom_up=0.3, beat_bottom_up=0.5, applied_bias=0.4, effort_spent=0.1,
     )
-    broadcast_row = (BASE, _broadcast_payload(BASE, override=override))
+    broadcast_rows = [(BASE, _broadcast_payload(BASE, override=override))]
     field_rows = [(BASE + timedelta(seconds=1), _field_payload(BASE + timedelta(seconds=1)))]
 
-    ticks, _, _ = mod.replay_reducer(field_rows, [], broadcast_row)
+    ticks, _, _, bc_skipped = mod.replay_reducer(field_rows, [], broadcast_rows)
 
+    assert bc_skipped == 0
     assert len(ticks) == 1
     assert ticks[0].has_voluntary_override is True
     assert ticks[0].attention_reason == "top_down_override"
@@ -111,16 +114,51 @@ def test_replay_reducer_surfaces_real_voluntary_override() -> None:
 
 
 def test_replay_reducer_honestly_absent_when_broadcast_predates_nothing_reference() -> None:
-    """A broadcast snapshot dated AFTER the field tick must not be joined to
-    it -- mirrors the real singleton-table finding this script's own
-    docstring documents."""
-    broadcast_row = (BASE + timedelta(hours=1), _broadcast_payload(BASE + timedelta(hours=1)))
+    """A broadcast row dated AFTER the field tick must not be joined to it --
+    the reducer's own absent/stale logic (see TestCadenceMismatch in
+    orion/substrate/tests/test_attention_self_model.py) must not treat a
+    future snapshot as if it applied retroactively."""
+    broadcast_rows = [(BASE + timedelta(hours=1), _broadcast_payload(BASE + timedelta(hours=1)))]
     field_rows = [(BASE, _field_payload(BASE))]
 
-    ticks, _, _ = mod.replay_reducer(field_rows, [], broadcast_row)
+    ticks, _, _, _ = mod.replay_reducer(field_rows, [], broadcast_rows)
 
     assert len(ticks) == 1
     assert ticks[0].broadcast_lane_present is False
+
+
+def test_replay_reducer_joins_broadcast_by_nearest_preceding_timestamp_per_tick() -> None:
+    """Real per-tick history join (the fix this test module covers): each
+    field tick should see the most-recent broadcast row at or before its own
+    timestamp, not a single static row pinned to every call. Two broadcast
+    rows straddle two field ticks; each tick must join to its own nearest-
+    preceding broadcast, proving the two-pointer join advances independently
+    per tick rather than reusing the first (or only) row."""
+    override_early = VoluntaryOverrideV1(
+        goal_artifact_id="goal-early", goal_drive_origin="curiosity",
+        chosen_loop_id="loop-early", beat_loop_id="loop-x",
+        chosen_bottom_up=0.3, beat_bottom_up=0.5, applied_bias=0.4, effort_spent=0.1,
+    )
+    override_late = VoluntaryOverrideV1(
+        goal_artifact_id="goal-late", goal_drive_origin="curiosity",
+        chosen_loop_id="loop-late", beat_loop_id="loop-y",
+        chosen_bottom_up=0.3, beat_bottom_up=0.5, applied_bias=0.4, effort_spent=0.1,
+    )
+    broadcast_rows = [
+        (BASE, _broadcast_payload(BASE, override=override_early)),
+        (BASE + timedelta(seconds=20), _broadcast_payload(BASE + timedelta(seconds=20), override=override_late)),
+    ]
+    field_rows = [
+        (BASE + timedelta(seconds=5), _field_payload(BASE + timedelta(seconds=5))),
+        (BASE + timedelta(seconds=25), _field_payload(BASE + timedelta(seconds=25))),
+    ]
+
+    ticks, _, _, bc_skipped = mod.replay_reducer(field_rows, [], broadcast_rows)
+
+    assert bc_skipped == 0
+    assert len(ticks) == 2
+    assert "loop-early" in ticks[0].reason_narrative
+    assert "loop-late" in ticks[1].reason_narrative
 
 
 def test_reason_histogram_counts_each_category() -> None:

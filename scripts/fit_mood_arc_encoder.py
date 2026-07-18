@@ -66,8 +66,8 @@ confidence interval on the floor ratio. None of this is in the original
 written spec doc -- see MoodArcEncoderManifestV1's docstring for the
 field-level rationale.
 
-Only `train` is implemented here. `promote`/`infer` are later roadmap items
-(3+), not built by this patch.
+`train` and `detect-anomalies` (roadmap item 3) are implemented here.
+`promote` is a later roadmap item, not built by this patch.
 """
 from __future__ import annotations
 
@@ -155,6 +155,13 @@ DEFAULT_BOOTSTRAP_N = 200
 DEFAULT_MIN_HOURS = 6.0
 DEFAULT_MIN_ROWS = 500
 DEFAULT_BATCH_SIZE = 32
+# detect-anomalies: a window's recon_loss above
+# manifest.training.recon_error_p95 * this multiplier is flagged. 3.0 is a
+# deliberately conservative "well outside normal training-time variation"
+# bar (p95 already means only 5% of held-out windows in the encoder's own
+# training run exceeded it) -- not statistically calibrated against a known
+# false-positive rate, just chosen to avoid flagging routine tail variance.
+DEFAULT_ANOMALY_THRESHOLD_MULTIPLIER = 3.0
 
 # Hard gate threshold, unchanged from the original spec: real held-out recon
 # loss must beat the shuffle baseline by at least 2x.
@@ -889,6 +896,62 @@ def write_artifacts(
     (out_dir / "probes.json").write_text(json.dumps(probes, indent=2), encoding="utf-8")
 
 
+def load_artifacts(encoder_dir: Path) -> tuple[MoodArcEncoderManifestV1, dict[str, np.ndarray]]:
+    """Inverse of write_artifacts()'s manifest/weights pair (probes.json is
+    train-time-only diagnostic output, not needed to score new windows)."""
+    manifest = MoodArcEncoderManifestV1.model_validate_json(
+        (encoder_dir / "manifest.json").read_text(encoding="utf-8")
+    )
+    with np.load(encoder_dir / "weights.npz") as npz:
+        weights = {key: npz[key] for key in npz.files}
+    return manifest, weights
+
+
+def score_windows(
+    rows: list[FieldChannelCorpusRowV1],
+    *,
+    fields: tuple[str, ...],
+    window_size: int,
+    stride: int,
+    max_gap_sec: float,
+    weights: dict[str, np.ndarray],
+) -> list[tuple[float, datetime, datetime]]:
+    """Reconstruction loss per window, in timestamp order. `fields` must be
+    the trained encoder's own `channel_names` (manifest-recorded column
+    order) -- scoring against any other field set/order silently produces a
+    meaningless loss number, since forward() has no way to detect a
+    column-alignment mismatch on its own."""
+    triples = _build_windows_with_span(
+        rows, fields=fields, window_size=window_size, stride=stride, max_gap_sec=max_gap_sec
+    )
+    return [(recon_loss(w, weights), start, end) for w, start, end in triples]
+
+
+def detect_anomalies(
+    scored: list[tuple[float, datetime, datetime]],
+    *,
+    threshold: float,
+) -> list[dict[str, object]]:
+    """Flags windows whose reconstruction loss exceeds `threshold` --
+    typically manifest.training.recon_error_p95 times a caller-chosen
+    multiplier (see cmd_detect_anomalies's --threshold-multiplier), not a
+    fixed absolute number, since "normal" loss magnitude is corpus/channel-
+    set-dependent. Threshold computation is deliberately the caller's job,
+    not this function's, so it stays a plain, testable filter+sort."""
+    anomalies = [
+        {
+            "recon_loss": loss,
+            "window_start": start.isoformat(),
+            "window_end": end.isoformat(),
+            "threshold": threshold,
+        }
+        for loss, start, end in scored
+        if loss > threshold
+    ]
+    anomalies.sort(key=lambda a: a["recon_loss"], reverse=True)
+    return anomalies
+
+
 def _parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Offline mood-arc windowed autoencoder fit")
     sub = parser.add_subparsers(dest="command", required=True)
@@ -949,6 +1012,50 @@ def _parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     train_p.add_argument("--seed", type=int, default=42)
     train_p.add_argument(
         "--encoder-version", type=str, default=None, help="manifest encoder_version (default: out dir name)"
+    )
+
+    detect_p = sub.add_parser(
+        "detect-anomalies",
+        help="Score a corpus slice against a trained encoder and flag high-reconstruction-error windows",
+    )
+    detect_p.add_argument(
+        "--corpus",
+        type=Path,
+        required=True,
+        help="FieldChannelCorpusRowV1 JSONL corpus to score (same format as `train --corpus`)",
+    )
+    detect_p.add_argument(
+        "--encoder-dir",
+        type=Path,
+        required=True,
+        help="Directory written by a prior `train` run (manifest.json + weights.npz)",
+    )
+    detect_p.add_argument(
+        "--min-generated-at",
+        type=_parse_min_generated_at,
+        default=None,
+        help="ISO 8601 datetime; rows before this are dropped before scoring. Boundary-inclusive (>=).",
+    )
+    detect_p.add_argument(
+        "--max-generated-at",
+        type=_parse_min_generated_at,
+        default=None,
+        help=(
+            "ISO 8601 datetime; rows on or after this are dropped before scoring. "
+            "Boundary-exclusive (<). Together with --min-generated-at, scopes "
+            "scoring to a specific historical window (e.g. a known-bad period "
+            "predating a fix) independently of the encoder's own training window."
+        ),
+    )
+    detect_p.add_argument(
+        "--threshold-multiplier",
+        type=float,
+        default=DEFAULT_ANOMALY_THRESHOLD_MULTIPLIER,
+        help=(
+            "Anomaly threshold = encoder_dir's manifest.training.recon_error_p95 "
+            "* this multiplier (default: %(default)s). Windows scoring above it "
+            "are flagged."
+        ),
     )
     return parser.parse_args(argv)
 
@@ -1098,10 +1205,61 @@ def cmd_train(args: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_detect_anomalies(args: argparse.Namespace) -> int:
+    try:
+        manifest, weights = load_artifacts(args.encoder_dir)
+    except FileNotFoundError as exc:
+        raise SystemExit(
+            f"detect-anomalies: could not load encoder artifacts from {args.encoder_dir} "
+            f"(expected manifest.json + weights.npz, written by a prior `train` run): {exc}"
+        ) from exc
+    fields = tuple(manifest.channel_names)
+
+    rows = _load_jsonl(args.corpus)
+    rows = filter_rows_by_min_generated_at(rows, args.min_generated_at)
+    if args.max_generated_at is not None:
+        rows = [r for r in rows if r.generated_at < args.max_generated_at]
+    if not rows:
+        raise SystemExit("detect-anomalies: no rows in corpus after --min/--max-generated-at filtering")
+
+    scored = score_windows(
+        rows,
+        fields=fields,
+        window_size=manifest.window_size,
+        stride=manifest.stride,
+        max_gap_sec=manifest.max_gap_sec,
+        weights=weights,
+    )
+    if not scored:
+        raise SystemExit(
+            "detect-anomalies: no windows built (check corpus row count/gaps against "
+            "the encoder's window_size/stride/max_gap_sec)"
+        )
+
+    threshold = manifest.training.recon_error_p95 * args.threshold_multiplier
+    anomalies = detect_anomalies(scored, threshold=threshold)
+
+    result = {
+        "encoder_id": manifest.encoder_id,
+        "corpus": str(args.corpus),
+        "channel_names": list(fields),
+        "windows_scored": len(scored),
+        "threshold": threshold,
+        "threshold_multiplier": args.threshold_multiplier,
+        "recon_error_p95_at_train_time": manifest.training.recon_error_p95,
+        "anomalies_found": len(anomalies),
+        "anomalies": anomalies,
+    }
+    print(json.dumps(result, indent=2))
+    return 0
+
+
 def main(argv: list[str] | None = None) -> int:
     args = _parse_args(argv)
     if args.command == "train":
         return cmd_train(args)
+    if args.command == "detect-anomalies":
+        return cmd_detect_anomalies(args)
     raise SystemExit(f"unknown command: {args.command}")
 
 

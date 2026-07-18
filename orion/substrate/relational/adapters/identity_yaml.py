@@ -1,21 +1,33 @@
 """Identity YAML adapter — operator_static tier.
 
-Converts operator-authored identity facts from ctx into ``ConceptNodeV1`` +
-``StateSnapshotNodeV1`` nodes anchored to ``orion``.  Hub must populate
+Converts operator-authored identity facts from ctx into a single
+``StateSnapshotNodeV1`` anchored to ``orion``.  Hub must populate
 ``orion_identity_summary``, ``juniper_relationship_summary``, and
 ``response_policy_summary`` in ctx before the first ``beliefs_for_stance`` call;
 there is no disk-reading path in this adapter.  Results are written to the
 durable substrate store and protected from overwrite by lower tiers.
+
+Does NOT emit ``ConceptNodeV1`` nodes. ``orion_identity_summary`` is a flat
+merge of ``orion_identity.yaml``'s ``nature``, ``core_drives``,
+``self_permissions``, and ``anti_patterns`` blocks (see
+``orion/cognition/personality/identity_context.py``) — operator-authored
+identity facts and response-style directives ("speak as a real ongoing
+presence rather than customer-support software") with no distinction between
+them. Concept graph nodes are supposed to represent things Orion actually
+induced, not operator config reified verbatim; a prior version of this
+adapter turned every line into a ``concept``-kind graph node and polluted the
+substrate concept graph with policy prose. The snapshot's metadata still
+carries the full lists for stance-brief prompt assembly
+(``chat_stance.py:_project_identity_from_beliefs`` reads it by
+``snapshot_source``), which is unaffected by this change.
 """
 
 from __future__ import annotations
 
-import hashlib
 from datetime import datetime, timezone
 from typing import Any
 
 from orion.core.schemas.cognitive_substrate import (
-    ConceptNodeV1,
     StateSnapshotNodeV1,
     SubstrateGraphRecordV1,
     SubstrateProvenanceV1,
@@ -55,28 +67,12 @@ def map_identity_yaml_to_substrate(ctx: dict[str, Any]) -> SubstrateGraphRecordV
 
     now = datetime.now(timezone.utc)
     temporal = make_temporal(observed_at=now)
-    prov = _make_op_static_provenance(source_kind="identity_yaml")
     high_signals = SubstrateSignalBundleV1(confidence=0.95, salience=0.8)
 
-    nodes: list[Any] = []
-
-    for i, label in enumerate(orion_summary[:12]):
-        digest = hashlib.sha256(label.encode("utf-8", errors="ignore")).hexdigest()[:12]
-        nodes.append(
-            ConceptNodeV1(
-                node_id=f"sub-identity-orion-{digest}",
-                anchor_scope="orion",
-                label=label[:120],
-                temporal=temporal,
-                provenance=prov,
-                signals=high_signals,
-                metadata={"identity_facet": "orion_summary", "facet_index": i},
-                promotion_state="canonical",
-            )
-        )
-
     # Single StateSnapshotNodeV1 carrying all three summary lists in metadata —
-    # the projection helper reads these back by snapshot_source.
+    # the projection helper (chat_stance.py:_project_identity_from_beliefs) reads
+    # these back by snapshot_source for stance-brief prompt assembly. No
+    # ConceptNodeV1 nodes are emitted — see module docstring.
     snapshot = StateSnapshotNodeV1(
         node_id="sub-identity-snapshot-orion",
         anchor_scope="orion",
@@ -92,6 +88,5 @@ def map_identity_yaml_to_substrate(ctx: dict[str, Any]) -> SubstrateGraphRecordV
         },
         promotion_state="canonical",
     )
-    nodes.append(snapshot)
 
-    return SubstrateGraphRecordV1(anchor_scope="orion", nodes=nodes)
+    return SubstrateGraphRecordV1(anchor_scope="orion", nodes=[snapshot])

@@ -21,14 +21,20 @@ class TestIdentityYamlAdapter:
     def test_returns_none_for_none_ctx(self):
         assert map_identity_yaml_to_substrate(None) is None  # type: ignore[arg-type]
 
-    def test_produces_concept_nodes_for_orion_summary(self):
+    def test_does_not_produce_concept_nodes_for_orion_summary(self):
+        # orion_identity_summary is a flat merge of nature + core_drives +
+        # self_permissions + anti_patterns (identity_context.py) -- operator
+        # config, not induced concepts. Reifying every line as a graph Concept
+        # node polluted the substrate concept graph with response-style
+        # directives (e.g. "speak as a real ongoing presence rather than
+        # customer-support software"); this adapter must never emit them.
         ctx = {"orion_identity_summary": ["Orion is a cognitive presence.", "Not a generic assistant."]}
         record = map_identity_yaml_to_substrate(ctx)
         assert record is not None
         concept_nodes = [n for n in record.nodes if n.node_kind == "concept"]
-        assert len(concept_nodes) == 2
+        assert concept_nodes == []
 
-    def test_concept_nodes_have_operator_static_tier_rank(self):
+    def test_snapshot_node_has_operator_static_tier_rank(self):
         ctx = {"orion_identity_summary": ["Orion is a cognitive presence."]}
         record = map_identity_yaml_to_substrate(ctx)
         assert record is not None
@@ -59,12 +65,12 @@ class TestIdentityYamlAdapter:
         assert snap.metadata["response_policy_summary"] == ["answer directly"]
         assert snap.snapshot_source == "identity_yaml"
 
-    def test_empty_string_items_are_skipped(self):
+    def test_empty_string_items_are_skipped_from_snapshot_metadata(self):
         ctx = {"orion_identity_summary": ["", "  ", "real fact"]}
         record = map_identity_yaml_to_substrate(ctx)
         assert record is not None
-        concept_nodes = [n for n in record.nodes if n.node_kind == "concept"]
-        assert len(concept_nodes) == 1
+        snapshots = [n for n in record.nodes if n.node_kind == "state_snapshot"]
+        assert snapshots[0].metadata["orion_identity_summary"] == ["real fact"]
 
 
 # ---------------------------------------------------------------------------

@@ -71,11 +71,19 @@ class Settings(BaseSettings):
         False,
         alias="EQUILIBRIUM_METACOG_RECALL_ENABLED",
     )
+    # Relational metacog trigger. Same concept as before (a real, live signal about
+    # something notable in the conversation/relationship, distinct from execution
+    # mechanics) but a different source: repair_pressure_v2 (orion:repair_pressure:appraisal,
+    # published by orion-hub whenever the repair_pressure paradigm actually runs) replaced
+    # the retired orion/memory/turn_change_classify.py SHIFT gate. Names kept on purpose.
     metacog_relational_trigger_enable: bool = Field(
         True, alias="EQUILIBRIUM_METACOG_RELATIONAL_TRIGGER_ENABLE"
     )
     metacog_relational_confidence_threshold: float = Field(
         0.7, alias="EQUILIBRIUM_METACOG_RELATIONAL_CONFIDENCE_THRESHOLD"
+    )
+    metacog_relational_level_threshold: float = Field(
+        0.5, alias="EQUILIBRIUM_METACOG_RELATIONAL_LEVEL_THRESHOLD"
     )
 
     metacog_publish_verb_request: bool = Field(
@@ -86,8 +94,8 @@ class Settings(BaseSettings):
     channel_metacog_trigger: str = Field("orion:equilibrium:metacog:trigger", alias="CHANNEL_EQUILIBRIUM_METACOG_TRIGGER")
     channel_collapse_mirror_user_event: str = Field("orion:collapse:intake", alias="CHANNEL_COLLAPSE_MIRROR_USER_EVENT")
     channel_pad_signal: str = Field("orion:pad:signal", alias="CHANNEL_PAD_SIGNAL")
-    channel_chat_history_spark_meta_patch: str = Field(
-        "orion:chat:history:spark_meta:patch", alias="CHANNEL_CHAT_HISTORY_SPARK_META_PATCH"
+    channel_repair_pressure_appraisal: str = Field(
+        "orion:repair_pressure:appraisal", alias="CHANNEL_REPAIR_PRESSURE_APPRAISAL"
     )
 
     @model_validator(mode="after")

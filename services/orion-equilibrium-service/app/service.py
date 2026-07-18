@@ -12,7 +12,7 @@ from orion.core.bus.bus_schemas import BaseEnvelope
 from orion.schemas.telemetry.metacognition import MetacognitionTickV1
 from orion.schemas.telemetry.metacog_trigger import MetacogTriggerV1
 from .substrate_metacog_gate import build_substrate_metacog_trigger
-from .relational_metacog_gate import build_relational_metacog_trigger
+from .repair_pressure_metacog_gate import build_repair_pressure_metacog_trigger
 from orion.schemas.telemetry.cognition_trace import CognitionTracePayload
 from orion.schemas.telemetry.system_health import EquilibriumServiceState, EquilibriumSnapshotV1, SystemHealthV1
 from orion.schemas.telemetry.spark_signal import SparkSignalV1
@@ -494,7 +494,7 @@ class EquilibriumService(BaseChassis):
             channels.append(settings.channel_collapse_mirror_user_event)
             channels.append(settings.channel_pad_signal)
             if settings.metacog_relational_trigger_enable:
-                channels.append(settings.channel_chat_history_spark_meta_patch)
+                channels.append(settings.channel_repair_pressure_appraisal)
 
         async with self.bus.subscribe(*channels) as pubsub:
             async for msg in self.bus.iter_messages(pubsub):
@@ -563,24 +563,21 @@ class EquilibriumService(BaseChassis):
                             await self._publish_metacog_trigger(trigger)
 
                         elif (
-                            channel == settings.channel_chat_history_spark_meta_patch
+                            channel == settings.channel_repair_pressure_appraisal
                             and settings.metacog_relational_trigger_enable
                         ):
-                            # Real turn_change_classify SHIFT appraisal, already
-                            # scored by orion-memory-consolidation -- not a new
-                            # detector, just a new consumer of an existing signal.
-                            spark_meta = payload_dict.get("spark_meta")
-                            appraisal = (
-                                spark_meta.get("turn_change_appraisal")
-                                if isinstance(spark_meta, dict)
-                                else None
-                            )
-                            trigger = build_relational_metacog_trigger(
+                            # Real repair_pressure_v2 appraisal, published by
+                            # orion-hub's pre_turn_appraisal_wiring.py whenever the
+                            # repair_pressure paradigm actually ran -- replaces the
+                            # retired turn_change_classify SHIFT gate as the
+                            # relational trigger's evidence source.
+                            trigger = build_repair_pressure_metacog_trigger(
                                 correlation_id=str(payload_dict.get("correlation_id") or ""),
-                                turn_change_appraisal=appraisal,
+                                appraisal=payload_dict,
                                 zen_state="zen" if zen > 0.5 else "not_zen",
                                 pressure=distress,
                                 recall_enabled=settings.metacog_recall_enabled,
+                                level_floor=settings.metacog_relational_level_threshold,
                                 confidence_floor=settings.metacog_relational_confidence_threshold,
                             )
                             if trigger is not None:

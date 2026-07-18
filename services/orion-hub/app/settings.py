@@ -513,6 +513,15 @@ class Settings(BaseSettings):
         default="orion:cortex:pre_turn_appraisal:result",
         alias="CHANNEL_PRE_TURN_APPRAISAL_RESULT_PREFIX",
     )
+    CHANNEL_REPAIR_PRESSURE_APPRAISAL: str = Field(
+        default="orion:repair_pressure:appraisal",
+        alias="CHANNEL_REPAIR_PRESSURE_APPRAISAL",
+        description=(
+            "Fired by run_pre_turn_appraisal_wiring() whenever the repair_pressure "
+            "paradigm actually ran, carrying the typed level/confidence/evidence breakdown "
+            "for orion-equilibrium-service's repair_pressure_metacog_gate to consume."
+        ),
+    )
     HUB_AUTONOMY_SUBJECT_DISPLAY: str = Field(default="two", alias="HUB_AUTONOMY_SUBJECT_DISPLAY")
     # Seeds the 3 golden concepts (Orion, Juniper, Orion-Juniper relationship) into
     # SUBSTRATE_SEMANTIC_STORE at startup -- see orion/substrate/seed.py. Idempotent

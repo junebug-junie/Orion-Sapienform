@@ -2,11 +2,13 @@ from __future__ import annotations
 
 import importlib.util
 from pathlib import Path
+from unittest.mock import AsyncMock
 
 import pytest
 
 from orion.schemas.cortex.contracts import CortexChatRequest
 from orion.schemas.pre_turn_appraisal import TurnAppraisalBundleV1, TurnAppraisalParadigmSliceV1
+from orion.schemas.repair_evidence import RepairEvidenceV1
 from orion.substrate.appraisal import REPAIR_PRESSURE_CONTRACT_METADATA_KEY
 
 _wiring_path = Path(__file__).resolve().parents[1] / "scripts" / "pre_turn_appraisal_wiring.py"
@@ -68,6 +70,38 @@ def test_substrate_effect_summary_attached_to_request_metadata() -> None:
     assert req.metadata[REPAIR_PRESSURE_CONTRACT_METADATA_KEY]["mode"] == "concrete_bias"
 
 
+def test_apply_bundle_includes_typed_evidence_breakdown() -> None:
+    """evidence_count alone was forwarded before; now the full typed
+    evidence_kind/score/confidence breakdown is forwarded too (Task 4)."""
+    req = CortexChatRequest(prompt="hi", mode="brain")
+    bundle = TurnAppraisalBundleV1(
+        correlation_id="c1",
+        paradigms={
+            "repair_pressure": TurnAppraisalParadigmSliceV1(
+                appraisal_kind="repair_pressure",
+                level=0.8,
+                confidence=0.85,
+                evidence=[
+                    RepairEvidenceV1(
+                        evidence_id="e1",
+                        source_molecule_id="m1",
+                        evidence_kind="trust_rupture",
+                        detector="d1",
+                        score=0.7,
+                        confidence=0.9,
+                    )
+                ],
+            )
+        },
+    )
+    summary = apply_pre_turn_appraisal_bundle(req, bundle, enabled=True)
+    assert summary is not None
+    assert summary["evidence_count"] == 1
+    assert summary["evidence"] == [
+        {"evidence_kind": "trust_rupture", "score": 0.7, "confidence": 0.9}
+    ]
+
+
 def test_apply_bundle_skips_when_disabled() -> None:
     req = CortexChatRequest(prompt="hi", mode="brain")
     bundle = TurnAppraisalBundleV1(correlation_id="c1")
@@ -97,3 +131,66 @@ async def test_run_pre_turn_wiring_skips_when_bus_missing() -> None:
     )
     assert summary is None
     assert bundle is None
+
+
+_REQUIRED_HUB_ENV = {
+    "CHANNEL_VOICE_TRANSCRIPT": "orion:voice:transcript",
+    "CHANNEL_VOICE_LLM": "orion:voice:llm",
+    "CHANNEL_VOICE_TTS": "orion:voice:tts",
+    "CHANNEL_COLLAPSE_INTAKE": "orion:collapse:intake",
+    "CHANNEL_COLLAPSE_TRIAGE": "orion:collapse:triage",
+}
+
+
+@pytest.mark.asyncio
+async def test_publish_repair_pressure_appraisal_publishes_to_new_channel(monkeypatch) -> None:
+    """Option A (new channel), per the redesign doc: repair_pressure evidence is
+    published as its own envelope on orion:repair_pressure:appraisal so
+    orion-equilibrium-service's repair_pressure_metacog_gate can consume it."""
+    import sys
+
+    for key, value in _REQUIRED_HUB_ENV.items():
+        monkeypatch.setenv(key, value)
+    for mod_name in ("app.settings", "scripts.settings"):
+        sys.modules.pop(mod_name, None)
+
+    _wiring_path = Path(__file__).resolve().parents[1] / "scripts" / "pre_turn_appraisal_wiring.py"
+    _spec = importlib.util.spec_from_file_location("hub_pre_turn_appraisal_wiring_publish", _wiring_path)
+    assert _spec and _spec.loader
+    _mod = importlib.util.module_from_spec(_spec)
+    _spec.loader.exec_module(_mod)
+
+    mock_bus = AsyncMock()
+    summary = {
+        "level": 0.8,
+        "level_label": "HIGH",
+        "confidence": 0.85,
+        "evidence": [{"evidence_kind": "trust_rupture", "score": 0.7, "confidence": 0.9}],
+        "behavior_applied": "repair_concrete",
+    }
+
+    await _mod._publish_repair_pressure_appraisal(
+        mock_bus,
+        correlation_id="00000000-0000-4000-8000-000000000009",
+        summary=summary,
+    )
+
+    mock_bus.publish.assert_called_once()
+    channel_arg, env = mock_bus.publish.call_args[0]
+    assert channel_arg == "orion:repair_pressure:appraisal"
+    assert env.kind == "repair_pressure.appraisal.v1"
+    assert env.payload["level"] == 0.8
+    assert env.payload["evidence"] == summary["evidence"]
+    assert env.payload["behavior_applied"] == "repair_concrete"
+
+
+@pytest.mark.asyncio
+async def test_publish_repair_pressure_appraisal_noop_when_bus_none() -> None:
+    _wiring_path = Path(__file__).resolve().parents[1] / "scripts" / "pre_turn_appraisal_wiring.py"
+    _spec = importlib.util.spec_from_file_location("hub_pre_turn_appraisal_wiring_publish_noop", _wiring_path)
+    assert _spec and _spec.loader
+    _mod = importlib.util.module_from_spec(_spec)
+    _spec.loader.exec_module(_mod)
+
+    # Should not raise even though bus is None.
+    await _mod._publish_repair_pressure_appraisal(None, correlation_id="00000000-0000-4000-8000-000000000009", summary={"level": 0.5})

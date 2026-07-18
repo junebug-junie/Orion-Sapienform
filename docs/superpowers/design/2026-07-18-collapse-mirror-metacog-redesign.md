@@ -231,6 +231,75 @@ handled differently. Silence/re-engagement is separately covered by `discussion_
 - Is `heartbeat` actually safe to remove, or does something else depend on its unconditional
   firing today? Not checked.
 
+## Metric quality gate, applied (CLAUDE.md section 0A)
+
+Per the new repo-wide metric quality gate (`CLAUDE.md`, added same day, PR #1193), every metric
+proposed above gets run through the same 6-step checklist before being trusted further. Doing that
+here, retroactively, as the first real application of the gate.
+
+**`collapse_mirror.numeric_sisters` (the thing being replaced) — fails the gate, which is exactly
+why it's being replaced.**
+1. Provenance: traced to `services/orion-cortex-exec/app/executor.py:3841-3864` —
+   `spark_phi_hint()`. ✅ traced.
+2. Independence: fails. Directly fed the same `SparkStateSnapshotV1` bands the old, already-
+   invalidated `mood_arc_corpus.v1` used. Not independent of the thing it needs to validate.
+3. Theory anchor: none stated at the point of construction — an LLM asked to rate its own
+   valence/arousal with no named framework.
+4. Live-data check: done — 8,481 real Postgres rows, 6,579 non-null, real variance. Passes on its
+   own, but irrelevant once #2 fails.
+5. Existing-mechanism check: n/a, this is the thing already built (the problem, not a candidate).
+6. Reversibility: cheap — nothing downstream depends on `numeric_sisters` yet, it was never wired
+   into anything beyond its own storage.
+
+**`orion/memory/turn_change_classify.py`'s `SHIFT` appraisal (for the `relational` trigger) —
+passes.**
+1. Provenance: traced to `build_turn_change_prompt()`/`build_turn_change_appraisal()`. ✅
+2. Independence: no causal link to field-channel/execution telemetry — it's a comparison between
+   the current turn's text and a session-window baseline, a completely different computational
+   path. ✅
+3. Theory anchor: `REPAIR (correction/recovery)` maps directly to rupture-and-repair (Safran &
+   Muran); `TOPIC`/`STANCE` are named, defined categories in the prompt itself, not vibes. ✅
+4. Live-data check: **not yet done in this doc.** Confidence/novelty distributions for real,
+   recent `shift_kind` values haven't been pulled. Open item before treating this as settled.
+5. Existing-mechanism check: this *is* the existing-mechanism check succeeding — found before
+   building a duplicate. ✅
+6. Reversibility: cheap — read-only consumption of an existing signal, no schema change to the
+   producer.
+
+**`detect-anomalies` (PR #1185, for the `telemetry_anomaly` trigger) — passes, already
+live-verified.**
+1. Provenance: traced and built this session — `score_windows()`/`recon_loss()`. ✅
+2. Independence: n/a in the same sense — this isn't being used to validate the mood-arc encoder,
+   it's a consumer of the encoder's own output as a QA tool. Different role, independence
+   question doesn't apply the same way.
+3. Theory anchor: reconstruction-error-as-anomaly-score is a standard, named technique, not
+   invented for this purpose. ✅
+4. Live-data check: done in the same session — 1,166/9,103 real pre-fix windows flagged. ✅
+5. Existing-mechanism check: n/a, newly built, but check ran first (nothing else in the repo did
+   this).
+6. Reversibility: cheap — pure CLI tool, no schema commitment.
+
+**`discussion_window`'s 90-minute gap (for silence/re-engagement) — passes.**
+1. Provenance: traced to `orion/discussion_window/sql_fetch.py:18`,
+   `_DEFAULT_CONTIGUITY_MAX_GAP_SEC = 5400`. ✅
+2. Independence: a wall-clock gap between turns, no relationship to substrate/execution
+   telemetry at all. ✅
+3. Theory anchor: session-boundary/contiguity is a standard, named concept in dialogue systems,
+   not invented here. ✅
+4. Live-data check: not re-verified in this doc (Juniper recalled the value correctly from memory,
+   confirmed against the actual constant, but hasn't been checked against current live gap
+   distributions).
+5. Existing-mechanism check: this is the same "found before reinventing" story as the SHIFT
+   classifier. ✅
+6. Reversibility: cheap — reusing an existing constant, not touching its producer.
+
+**Net result of running the gate for real**: 3 of 4 candidate mechanisms pass; the one that fails
+(`numeric_sisters`) is exactly the one this whole redesign exists to replace, which is a decent
+sign the gate works rather than rubber-stamping everything. Two open items before calling the
+passing ones fully cleared: pull real, current `shift_kind` distributions (item 4 for the SHIFT
+classifier), and re-check the 90-minute gap against current live conversation gap patterns (item 4
+for `discussion_window`).
+
 ## Next step
 
 Whenever this moves from ideation to a real patch: full Design-mode writeup per CLAUDE.md

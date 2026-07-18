@@ -48,6 +48,21 @@ A new concept is allowed only when it has at least one of these attached in the 
 
 If it only names the world but does not change what Orion can perceive, remember, decide, explain, or do, it is probably junk.
 
+### Metric quality gate
+
+Every time a new metric, signal, or telemetry channel gets wired into a pipeline, model, or cognition loop, it must clear this gate before further work builds on top of it. This is not a one-time judgment call — re-run it every time, even for a metric that "seems obviously fine." Sunk cost in a build is not a reason to skip it.
+
+Required, in order, before wiring a metric in:
+
+1. **Trace provenance to real code.** Where does this value actually come from? Point to the producing function/line, not a schema comment or an assumption. If you cannot trace it, you do not understand it yet.
+2. **Independence check.** Name the causal chain connecting this metric to every metric already in the same model. If the chain is short and direct (same sensor, same upstream computation, a monotonic transform of something already included), it is not independent — flag it as redundant, not as new signal.
+3. **Theory anchor, not vibes.** State the specific, named justification for why this metric measures what it claims to measure. "Seems related" is not an anchor. If there is no real theory, do not build a detector for it yet — say so and stop.
+4. **Live-data sanity check.** Pull real data and look at it. Confirm it is not degenerate (flat, always-null, always-saturated) before treating it as usable signal. Config existing or code compiling is not evidence.
+5. **Existing-mechanism check.** Search the repo for whether this already exists before building it new.
+6. **Reversibility.** If this metric turns out wrong after more is built on it, is it cheap to remove, or does it get baked into a schema/manifest/training default that is expensive to unwind?
+
+A metric that fails 1-4 does not get wired in. Record the findings from this gate in the same design doc or PR description as the metric itself — do not pass it verbally and move on.
+
 ### Event substrate first
 
 Do not start with giant ontologies. Start with events, traces, contracts, reducers, and materialized views.

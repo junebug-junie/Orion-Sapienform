@@ -177,6 +177,43 @@ A future rework of `scripts/fit_mood_arc_encoder.py` to train against this
 dict-shaped corpus instead of `mood_arc_corpus.v1` is separate, not-yet-
 built work.
 
+## `field_channel_corpus.v1` training-data quality cutoff (2026-07-17)
+
+`field_channel_corpus.v1` rows generated **before `2026-07-17T04:32:14Z`**
+reflect known-broken channel behavior from before a 7-PR fix sprint
+(PRs #1108-#1113, #1115 — #1115 was the last to merge, at the timestamp
+above per `gh pr view 1115 --json mergedAt`) that addressed several of the
+verdict categories described in the glossary below: one-way ratchets,
+saturating counters, merge-polarity masking, and folded-away channels.
+Confirmed at full-corpus scale by `scripts/fit_mood_arc_encoder.py train`
+against the complete `/mnt/telemetry/field_channels/corpus/
+field_channels.jsonl` corpus (161,795 rows spanning back to
+`2026-07-13T23:46Z`, ~76% pre-cutoff): the run's own
+`prune_correlated_fields()` log showed `availability`/`bus_health`/
+`delivery_confidence` collapsing pairwise at `r=1.0000` — not real
+redundancy, but the "several ratcheted/saturated channels move in lockstep
+because they're all frozen or capped the same way" contamination artifact
+from the pre-fix period. That run's two-tier gate failed
+(`floor_ratio=0.624`, gate requires `<0.5`), worse than validated
+pre-full-corpus spike slices scoped entirely to post-fix data
+(`floor_ratio` 0.35-0.39).
+
+**Any training run against this corpus should exclude pre-cutoff rows**:
+
+```bash
+python scripts/fit_mood_arc_encoder.py train \
+  --corpus /mnt/telemetry/field_channels/corpus/field_channels.jsonl \
+  --min-generated-at 2026-07-17T04:32:14Z \
+  --out <out-dir>
+```
+
+This is the git **merge** timestamp for PR #1115, not a precisely-confirmed
+container-restart/deploy timestamp — actual `orion-field-digester` restart
+may have lagged briefly behind the merge. Treat this cutoff as
+conservative-but-not-perfectly-precise, not a scientifically exact boundary;
+a training run right at the edge of it may still carry a small amount of
+pre-fix contamination.
+
 ## Field channel glossary
 
 This is the consolidated reference for all 29 channels in

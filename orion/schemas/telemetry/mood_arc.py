@@ -72,6 +72,19 @@ class MoodArcEncoderManifestV1(BaseModel):
     None of this is in the original written spec doc -- it is stricter than
     what item 2 originally asked for, added after empirical spike work found
     the original single-gate design passed for the wrong reason.
+
+    2026-07-17 corpus-swap rework (scripts/fit_mood_arc_encoder.py, same
+    session): this script now trains against field_channel_corpus.v1
+    (orion.schemas.telemetry.field_channel_corpus.FieldChannelCorpusRowV1)
+    instead of mood_arc_corpus.v1 -- a variable-width channel_name -> value
+    dict rather than a fixed 4-field schema, so the field set a given run
+    actually trained over is no longer implied by a module-level constant.
+    channel_names (below) makes each manifest self-describing about its own
+    feature set (the output of that run's select_fields()/
+    prune_correlated_fields() calls), since two runs against the same
+    corpus can legitimately end up with different channel sets depending on
+    --variance-eps/--corr-threshold or which channels were active that
+    training window.
     """
 
     model_config = ConfigDict(extra="forbid")
@@ -86,6 +99,15 @@ class MoodArcEncoderManifestV1(BaseModel):
     max_gap_sec: float
     hidden_dim: int
     latent_dim: int
+    # Channel names (post select_fields()/prune_correlated_fields()) that
+    # this run's windows/AR(1) fit/training actually used, in the fixed
+    # order their values are flattened into each window vector. Required,
+    # not Optional -- every manifest scripts/fit_mood_arc_encoder.py writes
+    # from 2026-07-17 onward populates this; there is no prior real
+    # (non-scratch) manifest artifact from before this field existed to
+    # stay backward-compatible with (this is a dark, disk-only artifact,
+    # never committed to the repo).
+    channel_names: list[str]
     corpus: CorpusStatsV1        # reused as-is from orion.schemas.telemetry.phi_encoder
     training: TrainingStatsV1    # reused as-is
     shuffle_baseline_loss: float # held_out_loss with rows shuffled within-window (see gate)

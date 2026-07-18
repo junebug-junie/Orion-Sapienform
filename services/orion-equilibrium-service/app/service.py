@@ -12,6 +12,7 @@ from orion.core.bus.bus_schemas import BaseEnvelope
 from orion.schemas.telemetry.metacognition import MetacognitionTickV1
 from orion.schemas.telemetry.metacog_trigger import MetacogTriggerV1
 from .substrate_metacog_gate import build_substrate_metacog_trigger
+from .relational_metacog_gate import build_relational_metacog_trigger
 from orion.schemas.telemetry.cognition_trace import CognitionTracePayload
 from orion.schemas.telemetry.system_health import EquilibriumServiceState, EquilibriumSnapshotV1, SystemHealthV1
 from orion.schemas.telemetry.spark_signal import SparkSignalV1
@@ -492,6 +493,8 @@ class EquilibriumService(BaseChassis):
         if settings.metacog_enable:
             channels.append(settings.channel_collapse_mirror_user_event)
             channels.append(settings.channel_pad_signal)
+            if settings.metacog_relational_trigger_enable:
+                channels.append(settings.channel_chat_history_spark_meta_patch)
 
         async with self.bus.subscribe(*channels) as pubsub:
             async for msg in self.bus.iter_messages(pubsub):
@@ -558,6 +561,30 @@ class EquilibriumService(BaseChassis):
                                 recall_enabled=settings.metacog_recall_enabled,
                             )
                             await self._publish_metacog_trigger(trigger)
+
+                        elif (
+                            channel == settings.channel_chat_history_spark_meta_patch
+                            and settings.metacog_relational_trigger_enable
+                        ):
+                            # Real turn_change_classify SHIFT appraisal, already
+                            # scored by orion-memory-consolidation -- not a new
+                            # detector, just a new consumer of an existing signal.
+                            spark_meta = payload_dict.get("spark_meta")
+                            appraisal = (
+                                spark_meta.get("turn_change_appraisal")
+                                if isinstance(spark_meta, dict)
+                                else None
+                            )
+                            trigger = build_relational_metacog_trigger(
+                                correlation_id=str(payload_dict.get("correlation_id") or ""),
+                                turn_change_appraisal=appraisal,
+                                zen_state="zen" if zen > 0.5 else "not_zen",
+                                pressure=distress,
+                                recall_enabled=settings.metacog_recall_enabled,
+                                confidence_floor=settings.metacog_relational_confidence_threshold,
+                            )
+                            if trigger is not None:
+                                await self._publish_metacog_trigger(trigger)
 
                 except Exception as e:
                     logger.warning("Failed to process message on %s: %s", channel, e)

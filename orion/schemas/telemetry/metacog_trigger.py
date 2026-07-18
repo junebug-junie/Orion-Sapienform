@@ -14,8 +14,9 @@ class MetacogTriggerV1(BaseModel):
     trigger_kind: str = Field(
         ...,
         description=(
-            "baseline | dense | manual | pulse | llm_surface_instability "
-            "(advisory: language-surface instability from logprob summary, not factual confidence)"
+            "baseline | dense | manual | pulse | relational | llm_surface_instability "
+            "(advisory: language-surface instability from logprob summary, not factual confidence). "
+            "relational = a live turn_change_classify SHIFT appraisal (REPAIR/TOPIC), not a new detector."
         ),
     )
     reason: str

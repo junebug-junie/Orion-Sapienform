@@ -259,8 +259,12 @@ passes.**
    path. ✅
 3. Theory anchor: `REPAIR (correction/recovery)` maps directly to rupture-and-repair (Safran &
    Muran); `TOPIC`/`STANCE` are named, defined categories in the prompt itself, not vibes. ✅
-4. Live-data check: **not yet done in this doc.** Confidence/novelty distributions for real,
-   recent `shift_kind` values haven't been pulled. Open item before treating this as settled.
+4. Live-data check: **done** (2026-07-18, implementation pass). `chat_history_log.spark_meta`,
+   7-day window: 74 real appraisals -- TOPIC 33 (avg confidence 0.87, avg novelty 0.98), NONE 24,
+   STANCE 17, REPAIR 0. Non-degenerate distribution. **Zero REPAIR events in this window** --
+   either genuinely rare (corrections are infrequent) or worth re-checking over a longer window
+   once the relational trigger has run live for a while. Not blocking: TOPIC alone already
+   validates the wiring.
 5. Existing-mechanism check: this *is* the existing-mechanism check succeeding — found before
    building a duplicate. ✅
 6. Reversibility: cheap — read-only consumption of an existing signal, no schema change to the
@@ -306,3 +310,42 @@ Whenever this moves from ideation to a real patch: full Design-mode writeup per 
 (current architecture, missing questions, proposed schema/API changes, files touched, non-goals,
 acceptance checks), then explicit proposal-mode sign-off before any code, since this is a
 cognition-loop change.
+
+## Implementation, first slice (2026-07-18, branch `feat/collapse-mirror-metacog-trigger-redesign`)
+
+Per Juniper's direct go-ahead to implement, built the narrowest slice of this doc that didn't
+depend on any of the still-open questions above: the **relational trigger**, wired end to end.
+
+- `services/orion-equilibrium-service/app/relational_metacog_gate.py` (new): reads a
+  `turn_change_appraisal` and fires `trigger_kind=relational` for REPAIR/TOPIC above a confidence
+  floor. STANCE intentionally excluded (still undecided, see above).
+- `services/orion-equilibrium-service/app/service.py`: subscribes to the existing
+  `orion:chat:history:spark_meta:patch` channel (already published by `orion-memory-consolidation`
+  for every classified turn) as an additional consumer -- confirmed it's a real fan-out channel,
+  not single-consumer, via `orion-sql-writer` and `orion-spark-introspector` already reading it.
+- `orion/collapse/service.py`: `_relational_evidence_score()` reads the relational trigger's
+  `novelty_score`/`confidence` back off the entry's own telemetry (stamped there by
+  `_apply_metacog_system_fields` during the draft step, `services/orion-cortex-exec/app/executor.py`)
+  and blends it into `causal_density` alongside phi-evidence -- exactly the "source causal_density
+  from the appraisal itself" idea above, not a new invented metric.
+- `orion/bus/channels.yaml`: registered `orion-equilibrium-service` as a consumer of
+  `orion:chat:history:spark_meta:patch` -- also fixed a pre-existing gap where
+  `orion-spark-introspector` was already consuming that channel live but was missing from the
+  registry.
+- Live-data check for the metric quality gate done against real Postgres data (see above);
+  README and `.env_example` updated; 9 new tests (`test_relational_metacog_gate.py`, 3 new cases
+  in `test_apply_causal_density_to_entry.py`), 40 tests green across both touched packages.
+
+**Deliberately not built in this slice** (still genuinely open, per this doc's own "Still open"/
+"Open questions" sections above -- building them now would mean inventing answers to questions
+this doc explicitly left for Juniper):
+- `telemetry_anomaly` trigger: this doc's framing of it as "already exists and just needs wiring"
+  turned out to be optimistic on inspection. `detect-anomalies` (PR #1185) is a CLI tool only --
+  no live service runs it on a schedule or publishes its output. Wiring it as a real trigger means
+  building a new live anomaly-scoring loop, not just subscribing to something that already emits
+  events. Correction recorded here so the next pass doesn't re-assume it's a thin wire-up.
+- `numeric_sisters`/phi_hint contamination fix (root problem 1): diagnosis only in this doc, no
+  proposed fix -- needs its own design pass on the prompt-construction side of
+  `services/orion-cortex-exec/app/executor.py`.
+- Schema field remapping, `substrate_grammar` trigger, provenance schema, heartbeat removal,
+  STANCE handling: all still open per this doc's own "Open questions" section, untouched.

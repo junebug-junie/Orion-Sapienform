@@ -35,6 +35,18 @@ When `EQUILIBRIUM_METACOG_ENABLE=true`, the baseline loop can emit **substrate-a
 
 Docker compose wires all six keys from `.env`. Without `ENABLE_SUBSTRATE_FELT_STATE_CTX=true`, substrate triggers silently fall through to baseline.
 
+### Relational metacog trigger
+
+When `EQUILIBRIUM_METACOG_RELATIONAL_TRIGGER_ENABLE=true`, equilibrium also subscribes to `orion:chat:history:spark_meta:patch` (published by `orion-memory-consolidation`) and reads its `turn_change_appraisal` — the live `orion/memory/turn_change_classify.py` SHIFT appraisal (NONE/TOPIC/STANCE/REPAIR), already theory-anchored (REPAIR maps to rupture-and-repair; Safran & Muran) and already scored via real per-token logprob confidence. `REPAIR` or `TOPIC` above the confidence floor fires `trigger_kind=relational`; `STANCE` is intentionally excluded for now (see `docs/superpowers/design/2026-07-18-collapse-mirror-metacog-redesign.md`'s "Still open" section — undecided, not forgotten). The resulting entry's `causal_density` also blends in this trigger's `novelty_score`/`confidence` as evidence (see `orion/collapse/service.py::_relational_evidence_score`), reusing the appraisal's own severity signal instead of a new metric.
+
+| Env | Default | Purpose |
+|-----|---------|---------|
+| `EQUILIBRIUM_METACOG_RELATIONAL_TRIGGER_ENABLE` | `true` | Master gate for the relational trigger |
+| `EQUILIBRIUM_METACOG_RELATIONAL_CONFIDENCE_THRESHOLD` | `0.7` | Minimum appraisal confidence to fire |
+| `CHANNEL_CHAT_HISTORY_SPARK_META_PATCH` | `orion:chat:history:spark_meta:patch` | Source channel (fan-out; also consumed by `orion-sql-writer`, `orion-spark-introspector`) |
+
+Live-data check (2026-07-18, 7-day window, `chat_history_log.spark_meta`): 74 real appraisals — TOPIC 33 (avg confidence 0.87), NONE 24, STANCE 17, REPAIR 0. Zero REPAIR events in this window; TOPIC alone is enough to validate the wiring, but REPAIR's real firing rate is still unverified live.
+
 ---
 
 ## Quick start (copy/paste)

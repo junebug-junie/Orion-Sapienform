@@ -149,12 +149,28 @@ first place. Full reasoning and phased detail:
    `orion/schemas/registry.py`) unifies all three real inputs the roadmap doc's Phase 1
    correction named — `AttentionBroadcastProjectionV1` (GWT-dispatch/Lamme lane),
    `FieldAttentionFrameV1`, and `SelfStateV1` — read-only, not wired to any bus consumer.
-   Acceptance check **NOT MET via Postgres replay**: a real, load-bearing finding surfaced
-   while building the replay script (`scripts/analysis/measure_ast_hot_reducer.py`) —
-   `substrate_attention_broadcast_projection` is a singleton upsert table (one row, ever),
-   not a history table, so no historical `voluntary_override` event is recoverable to
-   replay against, even though the reducer's why-branching on it is proven correct via
-   unit tests (`orion/substrate/tests/test_attention_self_model.py`). Hard-gate signal-
+   Acceptance check **NOT MET via Postgres replay** at first build: a real, load-bearing
+   finding surfaced while building the replay script
+   (`scripts/analysis/measure_ast_hot_reducer.py`) — `substrate_attention_broadcast_
+   projection` is a singleton upsert table (one row, ever), not a history table, so no
+   historical `voluntary_override` event was recoverable to replay against, even though
+   the reducer's why-branching on it was proven correct via unit tests
+   (`orion/substrate/tests/test_attention_self_model.py`).
+   **Structural gap closed 2026-07-18** (same-day follow-up patch): the singleton table,
+   its writer, and `AttentionBroadcastProjectionV1` are untouched, but a new append-only
+   companion table, `substrate_attention_broadcast_log`
+   (`services/orion-sql-db/manual_migration_attention_broadcast_log_v1.sql`), now
+   captures one row per broadcast tick via `save_attention_broadcast_history()`
+   (`services/orion-substrate-runtime/app/store.py`), and the replay script joins it
+   per-tick by nearest-preceding timestamp the same way it already joins `SelfStateV1`
+   rows. **This does not itself flip the acceptance check to MET** — the log is
+   append-only forward from deploy time (the pre-patch singleton snapshots were
+   overwritten in place and are not recoverable, so no backfill is possible), so it
+   starts empty and needs real days of live ticks to accumulate a `voluntary_override`
+   event to replay. A live re-run of `measure_ast_hot_reducer.py` shortly after deploy
+   is expected to still report NOT MET, now for the honest reason of insufficient
+   accumulated history rather than a structurally absent table — re-run again after a
+   few days of live 30s-cadence ticks to check for MET. Hard-gate signal-
    quality pass (`scripts/analysis/measure_self_state_signal_quality.py`) run against real
    48h `substrate_self_state` history: confirms the coherence/uncertainty sawtooth named in
    §4's Missing Question 4 is **still live in `SelfStateV1`'s own values** (median 5-tick

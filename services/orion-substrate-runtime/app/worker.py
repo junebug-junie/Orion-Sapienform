@@ -1263,6 +1263,12 @@ class BiometricsSubstrateWorker:
                 self._store.save_coalition_dwell(projection)
             except Exception:
                 logger.exception("substrate_coalition_dwell_persist_failed")
+            try:
+                self._store.save_attention_broadcast_history(
+                    projection, retention_hours=s.attention_broadcast_log_retention_hours
+                )
+            except Exception:
+                logger.exception("substrate_attention_broadcast_history_persist_failed")
             logger.info(
                 "substrate_attention_broadcast_completed selected=%s loop=%s "
                 "open_loops=%d",

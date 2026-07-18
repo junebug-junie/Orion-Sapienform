@@ -131,3 +131,43 @@ def test_broadcast_tick_dwell_failure_does_not_break_tick(monkeypatch):
         worker._attention_broadcast_tick()  # must not raise
 
     worker._store.save_attention_broadcast.assert_called_once()
+
+
+def test_broadcast_tick_writes_history_log_row(monkeypatch):
+    """Each broadcast tick appends a history-log row alongside the projection
+    and dwell log, so replay can search real historical ticks (not just the
+    singleton current snapshot)."""
+    worker = _make_worker(monkeypatch, broadcast_enabled=True)
+    fake_store = MagicMock()
+    fake_store.snapshot.return_value = SimpleNamespace(
+        nodes={"node:hot": _graph_node("node:hot", "unresolved contradiction", 0.9)}
+    )
+    with patch(
+        "orion.substrate.graphdb_store.build_substrate_store_from_env",
+        return_value=fake_store,
+    ):
+        worker._attention_broadcast_tick()
+
+    worker._store.save_attention_broadcast.assert_called_once()
+    worker._store.save_attention_broadcast_history.assert_called_once()
+    call = worker._store.save_attention_broadcast_history.call_args
+    projection = call.args[0]
+    assert projection is worker._store.save_attention_broadcast.call_args.args[0]
+    assert call.kwargs["retention_hours"] == worker._settings.attention_broadcast_log_retention_hours
+
+
+def test_broadcast_tick_history_failure_does_not_break_tick(monkeypatch):
+    worker = _make_worker(monkeypatch, broadcast_enabled=True)
+    fake_store = MagicMock()
+    fake_store.snapshot.return_value = SimpleNamespace(
+        nodes={"node:hot": _graph_node("node:hot", "unresolved contradiction", 0.9)}
+    )
+    worker._store.save_attention_broadcast_history.side_effect = RuntimeError("db down")
+    with patch(
+        "orion.substrate.graphdb_store.build_substrate_store_from_env",
+        return_value=fake_store,
+    ):
+        worker._attention_broadcast_tick()  # must not raise
+
+    worker._store.save_attention_broadcast.assert_called_once()
+    worker._store.save_coalition_dwell.assert_called_once()

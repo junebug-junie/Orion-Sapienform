@@ -52,6 +52,8 @@ def merge_execution_run_state(
     merged.final_text_present = existing.final_text_present or incoming.final_text_present
     merged.reasoning_present = existing.reasoning_present or incoming.reasoning_present
     merged.thinking_source = _pick_thinking_source(existing.thinking_source, incoming.thinking_source)
+    if incoming.llm_serving_node:
+        merged.llm_serving_node = incoming.llm_serving_node
     merged.status = _pick_status(existing.status, incoming.status)
     if incoming.verb != "unknown":
         merged.verb = incoming.verb

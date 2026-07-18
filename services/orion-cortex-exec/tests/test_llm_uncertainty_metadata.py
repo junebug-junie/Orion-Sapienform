@@ -49,6 +49,37 @@ def test_forward_llm_uncertainty_metadata_from_gateway_payload() -> None:
     assert ctx["metadata"]["llm_uncertainty"]["available"] is True
 
 
+def test_forward_llm_uncertainty_metadata_normalizes_served_by_to_node() -> None:
+    ctx: dict = {}
+    payload = {"content": "hello", "meta": {"served_by": "atlas-worker-1"}}
+    _forward_llm_uncertainty_metadata(payload, ctx)
+    assert ctx["llm_serving_node"] == "atlas"
+
+
+def test_forward_llm_uncertainty_metadata_no_served_by_leaves_ctx_unset() -> None:
+    ctx: dict = {}
+    payload = {"content": "hello", "meta": {"served_by": None}}
+    _forward_llm_uncertainty_metadata(payload, ctx)
+    assert "llm_serving_node" not in ctx
+
+
+def test_forward_llm_uncertainty_metadata_served_by_is_case_insensitive() -> None:
+    ctx: dict = {}
+    payload = {"content": "hello", "meta": {"served_by": "Atlas-Worker-1"}}
+    _forward_llm_uncertainty_metadata(payload, ctx)
+    assert ctx["llm_serving_node"] == "atlas"
+
+
+def test_forward_llm_uncertainty_metadata_unknown_served_by_degrades_to_unset() -> None:
+    """A served_by value that doesn't resolve to a known field-topology node
+    (typo, off-convention label, a future node not yet in the topology) must
+    never paint a phantom node -- see _KNOWN_FIELD_NODES in app/executor.py."""
+    ctx: dict = {}
+    payload = {"content": "hello", "meta": {"served_by": "some-other-label"}}
+    _forward_llm_uncertainty_metadata(payload, ctx)
+    assert "llm_serving_node" not in ctx
+
+
 def test_autonomy_payload_exports_llm_uncertainty_from_ctx_metadata() -> None:
     md = _autonomy_payload_from_ctx(
         {

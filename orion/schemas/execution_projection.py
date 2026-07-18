@@ -25,6 +25,7 @@ class ExecutionRunStateV1(BaseModel):
     final_text_present: bool = False
     reasoning_present: bool = False
     thinking_source: str = "none"
+    llm_serving_node: str | None = None
     pressure_hints: dict[str, float] = Field(default_factory=dict)
     evidence_event_ids: list[str] = Field(default_factory=list)
     last_updated_at: datetime

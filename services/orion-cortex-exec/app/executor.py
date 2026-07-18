@@ -2548,6 +2548,35 @@ def _local_skill_payload_failure_reason(skill_payload: Dict[str, Any]) -> str | 
     return None
 
 
+# config/field/orion_field_topology.v1.yaml's closed node set. Validated
+# against explicitly rather than trusting llm-gateway's free-text
+# meta.served_by label -- a misconfigured or off-convention served_by value
+# (wrong case, missing "-worker" suffix, a future node not yet in the
+# topology) must degrade to None, not create a phantom node_vectors entry in
+# field-digester (services/orion-field-digester/app/digestion/perturbation.py
+# creates whatever node_id it's handed, with no whitelist of its own).
+_KNOWN_FIELD_NODES = frozenset({"atlas", "athena", "circe", "prometheus"})
+
+
+def _normalize_served_by_to_node(served_by: Any) -> str | None:
+    """Reduce llm-gateway's meta.served_by worker label (e.g. "atlas-worker-1",
+    "atlas-worker-fast-1") to the canonical field-topology node id ("atlas").
+
+    llm-gateway's LLM_GATEWAY_ROUTE_TABLE_JSON labels workers as
+    "{node}-worker[-lane][-N]" (config/field/orion_field_topology.v1.yaml's
+    node ids are the prefix before the first "-worker"). Not every served_by
+    value is guaranteed to follow this convention (misconfigured or future
+    route entries), so an unrecognized shape degrades to None rather than
+    guessing -- the field-digester side falls back to attributing
+    reasoning_load to the orchestrating node when this is None, so a bad
+    served_by value can't ever paint a wrong node, only lose attribution.
+    """
+    if not isinstance(served_by, str) or not served_by.strip():
+        return None
+    node = served_by.strip().lower().split("-worker")[0]
+    return node if node in _KNOWN_FIELD_NODES else None
+
+
 def _forward_llm_uncertainty_metadata(payload: Any, ctx: Dict[str, Any]) -> None:
     """Copy gateway meta.llm_uncertainty into execution ctx metadata for Hub spark_meta merge."""
     gw_meta = payload.get("meta") if isinstance(payload, dict) else None
@@ -2557,6 +2586,9 @@ def _forward_llm_uncertainty_metadata(payload: Any, ctx: Dict[str, Any]) -> None
             md = ctx.setdefault("metadata", {})
             if isinstance(md, dict):
                 md["llm_uncertainty"] = unc
+        node = _normalize_served_by_to_node(gw_meta.get("served_by"))
+        if node:
+            ctx["llm_serving_node"] = node
 
 
 def _attempt_mind_handoff_chat_stance_shortcut(

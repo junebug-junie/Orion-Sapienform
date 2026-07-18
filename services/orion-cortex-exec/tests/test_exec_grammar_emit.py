@@ -165,6 +165,49 @@ def test_step_failure_emits_exec_step_failed() -> None:
     assert "exec_step_completed" not in roles
 
 
+def test_result_assembled_summary_includes_llm_serving_node_when_present() -> None:
+    collector = CortexExecGrammarCollector(
+        node_name=NODE,
+        correlation_id=CORR,
+        code_version="0.2.0",
+        observed_at=FIXED_OBS,
+    )
+    collector.record_result_assembled(
+        status="success",
+        final_text_present=True,
+        reasoning_present=True,
+        thinking_source="provider_reasoning",
+        llm_serving_node="atlas",
+    )
+    events = build_cortex_exec_grammar_events(collector)
+    assembled = [
+        e for e in events if e.atom and e.atom.semantic_role == "exec_result_assembled"
+    ]
+    assert len(assembled) == 1
+    assert "llm_serving_node=atlas" in (assembled[0].atom.summary or "")
+
+
+def test_result_assembled_summary_omits_llm_serving_node_when_absent() -> None:
+    collector = CortexExecGrammarCollector(
+        node_name=NODE,
+        correlation_id=CORR,
+        code_version="0.2.0",
+        observed_at=FIXED_OBS,
+    )
+    collector.record_result_assembled(
+        status="success",
+        final_text_present=True,
+        reasoning_present=False,
+        thinking_source="none",
+    )
+    events = build_cortex_exec_grammar_events(collector)
+    assembled = [
+        e for e in events if e.atom and e.atom.semantic_role == "exec_result_assembled"
+    ]
+    assert len(assembled) == 1
+    assert "llm_serving_node" not in (assembled[0].atom.summary or "")
+
+
 def test_no_raw_prompt_or_llm_blobs_in_atoms() -> None:
     collector = CortexExecGrammarCollector(
         node_name=NODE,

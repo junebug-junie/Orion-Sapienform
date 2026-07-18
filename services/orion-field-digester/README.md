@@ -510,6 +510,18 @@ subset for the mood-arc windowed-autoencoder spike (see
   (evidence-only).
 - **Live-data verdict**: real signal — the cleanest channel in the corpus,
   continuously varying, small amplitude. Confirmed live 2026-07-16.
+  **Update 2026-07-18**: this verdict was `node:athena`-only. `node:atlas`'s
+  `reasoning_load` was permanently `0.0` (48h live-confirmed) because
+  `execution_run` deltas always carried `node_id=athena` (cortex-exec's own
+  static `NODE_NAME`), regardless of which physical node actually served the
+  LLM call. Fixed: `execution_run`'s `pressure_hints` gained a companion
+  `llm_serving_node` field (sourced from llm-gateway's response
+  `meta.served_by`, already live in `LLM_GATEWAY_ROUTE_TABLE_JSON`) that
+  routes this specific channel's perturbation to the real serving node —
+  see `app/ingest/state_deltas.py`'s `execution_run` branch and
+  `orion/substrate/execution_loop/`. `node:athena`'s reading is unaffected
+  (still the orchestrating-node value); `node:atlas` should now show real
+  variation once live LLM traffic accumulates post-deploy.
 
 #### `failure_pressure`
 - **Meaning**: recent execution failure rate/severity on a node.
@@ -829,6 +841,22 @@ subset for the mood-arc windowed-autoencoder spike (see
   any future "is reasoning_pressure real" question as answered for
   `orchestration`; `llm_inference`'s side needs a `node:atlas` instrumentation
   fix, not a merge-logic fix, before it contributes anything.
+
+  **Update 2026-07-18**: the `node:atlas` instrumentation fix above shipped.
+  Root cause was narrower than "never instrumented" implied: `node:atlas`
+  never received *any* `execution_run`-derived channels (not just
+  `reasoning_load`) because `execution_run`'s `node_id` always came from
+  cortex-exec's own static `NODE_NAME` (`athena`), never from which physical
+  node actually served the LLM call. Fixed by threading llm-gateway's
+  `meta.served_by` (already live) through as a new `llm_serving_node` field
+  on the run, and routing `reasoning_load`'s perturbation to that node
+  specifically instead of the orchestrating node — see `reasoning_load`'s
+  entry above and `app/ingest/state_deltas.py`. Deliberately scoped to
+  `reasoning_load` only; `execution_load`/`execution_friction`/
+  `failure_pressure` are legitimately orchestrator-node concerns and stay on
+  `node:athena`. Re-verify `capability:llm_inference.reasoning_pressure`'s
+  liveness against `substrate_field_state` once post-deploy LLM traffic has
+  accumulated — not yet re-measured as of this fix landing.
 
 #### `reliability_pressure`
 - **Meaning**: capability-level pressure representing risk to reliability

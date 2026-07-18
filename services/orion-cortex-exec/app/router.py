@@ -1578,6 +1578,7 @@ class PlanRunner:
             final_text_present=bool((final_text or "").strip()),
             reasoning_present=bool(reasoning_content or reasoning_trace or metacog_traces),
             thinking_source=str(thinking_source or "none"),
+            llm_serving_node=ctx.get("llm_serving_node"),
         )
 
         if settings.publish_reasoning_telemetry:

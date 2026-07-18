@@ -117,6 +117,44 @@ def test_pressure_hints_failure_pressure() -> None:
     assert hints["failure_pressure"] == 1.0
 
 
+def test_extract_parses_llm_serving_node_from_summary() -> None:
+    run = extract_execution_state_from_events(
+        [
+            _exec_atom(
+                "exec_result_assembled",
+                "Final result assembled: status=success, final_text_present=True, "
+                "reasoning_present=True, thinking_source=provider_reasoning, "
+                "llm_serving_node=atlas",
+            )
+        ],
+        now=FIXED_TS,
+    )
+    assert run.llm_serving_node == "atlas"
+
+
+def test_pressure_hints_never_contain_llm_serving_node() -> None:
+    """pressure_hints must stay float-only regardless of llm_serving_node --
+    orion/substrate/relational/adapters/execution_ctx.py does
+    max(hints.values()) over this exact dict, so a str value would raise
+    TypeError there. llm_serving_node is a first-class ExecutionRunStateV1
+    field; consumers read run.llm_serving_node directly, not pressure_hints."""
+    run = extract_execution_state_from_events(
+        [
+            _exec_atom(
+                "exec_result_assembled",
+                "Final result assembled: status=success, final_text_present=True, "
+                "reasoning_present=True, thinking_source=provider_reasoning, "
+                "llm_serving_node=atlas",
+            )
+        ],
+        now=FIXED_TS,
+    )
+    assert run.llm_serving_node == "atlas"
+    hints = compute_pressure_hints(run, egress_emitted=False)
+    assert "llm_serving_node" not in hints
+    assert all(isinstance(v, float) for v in hints.values())
+
+
 def test_reducer_emits_execution_run_delta() -> None:
     events = [
         _exec_atom(
@@ -235,6 +273,16 @@ def test_merge_does_not_downgrade_status_or_flags() -> None:
     assert merged.status == "success"
     assert merged.final_text_present is True
     assert merged.reasoning_present is True
+
+
+def test_merge_preserves_llm_serving_node_when_incoming_lacks_it() -> None:
+    full = _run_with_full_egress()
+    full.llm_serving_node = "atlas"
+    partial = extract_execution_state_from_events(_partial_batch_no_egress(), now=FIXED_TS)
+    assert partial.llm_serving_node is None
+    merged = merge_execution_run_state(full, partial)
+    assert merged.llm_serving_node == "atlas"
+    assert "llm_serving_node" not in merged.pressure_hints
 
 
 def test_merge_unions_evidence_event_ids() -> None:

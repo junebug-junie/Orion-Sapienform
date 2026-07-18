@@ -1282,8 +1282,12 @@ channels:
   - name: "orion:tags:chat:enriched"
     kind: "event"
     schema_id: "MetaTagsPayload"
-    producer_services: ["orion-meta-tags"]
-    consumer_services: ["orion-rdf-writer"]
+    # Both sides removed 2026-07-18: chat/social-turn tag+entity enrichment
+    # is FalkorDB-only now (orion-meta-tags writes it directly in-process,
+    # no bus publish). orion-rdf-writer's Fuseki `chat_tagging` copy was a
+    # redundant second materialization of the same data. Do not re-add.
+    producer_services: []
+    consumer_services: []
     stability: "experimental"
     since: "2026-01-18"
 

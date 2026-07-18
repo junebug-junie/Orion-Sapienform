@@ -40,9 +40,9 @@ Copy from `services/orion-rdf-writer/.env_example` (including the **RDF Store V1
 - Payload kind: **`rdf.write.request`** (`RdfWriteRequest` and related build kinds).
 - The writer also subscribes to other catalog channels; see `Settings.get_all_subscribe_channels()` in `app/settings.py`.
 
-## Falkor migration in progress (does not touch this service)
+## Falkor migration: chat/social tag enrichment fully cut over (this service no longer touches it)
 
-As of 2026-07-18, `tags.enriched` (the `orion:tags:chat:enriched` channel specifically) also gets a **separate, additive** Cypher-native write into FalkorDB by `orion-meta-tags` itself, alongside this service's unchanged Fuseki write of the same event. This service is not modified by that work and continues writing exactly as documented above. See `docs/superpowers/plans/2026-07-18-recall-tag-entity-falkor-writer-plan.md` and `services/orion-meta-tags/README.md`. `orion-rdf-writer`'s own role stays "legacy RDF materialize" per the FalkorDB doctrine's service-ownership table — new Falkor writes belong in the originating producer service, not here.
+`orion:tags:chat:enriched` (`CHANNEL_EVENTS_TAGGED_CHAT`) is **removed as of 2026-07-18**: this service no longer subscribes to it, and `orion-meta-tags` no longer publishes to it. Chat/social-turn tag+entity enrichment (`enrichment_type == "chat_tagging"`) now lands exclusively in FalkorDB, written directly by `orion-meta-tags` (`app/falkor_recall_writer.py`) — no RDF, no bus publish for this data at all. This was briefly a dual-write (both Fuseki and Falkor, ~1 day) before the redundant Fuseki side was killed; see `docs/superpowers/plans/2026-07-18-recall-tag-entity-falkor-writer-plan.md`'s amendment note and `services/orion-meta-tags/README.md`'s "Historical note" section for the full before/after. `orion-rdf-writer`'s own role stays "legacy RDF materialize" per the FalkorDB doctrine's service-ownership table — new Falkor writes belong in the originating producer service, not here. The generic collapse-mirror `tags.enriched` path (`orion:tags:enriched`, `enrichment_type == "tagging"`) is unaffected and still writes here as documented above.
 
 ## Legacy writer (quarantined)
 

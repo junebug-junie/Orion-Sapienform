@@ -27,17 +27,27 @@ class Settings(BaseSettings):
     CHANNEL_EVENTS_TRIAGE: str = Field(default="orion:collapse:triage", env="CHANNEL_EVENTS_TRIAGE")
     CHANNEL_EVENTS_TAGGED: str = Field(default="orion:tags:enriched", env="CHANNEL_EVENTS_TAGGED")
     CHANNEL_EVENTS_CHAT_TURN: str = Field(default="orion:chat:history:turn", env="CHANNEL_EVENTS_CHAT_TURN")
-    CHANNEL_EVENTS_TAGGED_CHAT: str = Field(default="orion:tags:chat:enriched", env="CHANNEL_EVENTS_TAGGED_CHAT")
+    # CHANNEL_EVENTS_TAGGED_CHAT (orion:tags:chat:enriched) removed
+    # 2026-07-18: chat/social-turn tag+entity enrichment is no longer
+    # bus-published at all -- FalkorDB (below) is the sole persistence
+    # target now, written directly in-process. orion-rdf-writer's Fuseki
+    # copy of this same publish was a redundant second materialization.
 
     # === NLP Model ===
     SPA_MODEL: str = Field(default="en_core_web_trf", env="SPA_MODEL")
 
-    # === Recall Falkor writer (Phase 2, dark by default) ===
+    # === Recall Falkor writer (Phase 2) ===
     # docs/superpowers/plans/2026-07-18-recall-tag-entity-falkor-writer-plan.md
-    # Cypher-native, additive write of chat-turn tag/entity enrichment into
-    # FalkorDB, alongside (not replacing) orion-rdf-writer's existing Fuseki
-    # write of the same tags.enriched event. Off by default.
-    RECALL_FALKOR_TAG_ENTITY_ENABLED: bool = Field(default=False, env="RECALL_FALKOR_TAG_ENTITY_ENABLED")
+    # Cypher-native write of chat-turn tag/entity enrichment into FalkorDB.
+    # As of 2026-07-18 this is the ONLY persistence target for this data --
+    # the Fuseki dual-write (via orion:tags:chat:enriched) was killed the
+    # same day, and the Falkor write is no longer chat.history-gated (also
+    # covers social.turn.stored.v1 now). Default flipped True to match: when
+    # this was a shadow-write alongside a real Fuseki copy, False safely
+    # meant "skip the extra write." Now False means "no persistence at all"
+    # for this data, so the safe default has to be True. See
+    # services/orion-meta-tags/README.md.
+    RECALL_FALKOR_TAG_ENTITY_ENABLED: bool = Field(default=True, env="RECALL_FALKOR_TAG_ENTITY_ENABLED")
     FALKORDB_URI: str = Field(default="redis://orion-athena-falkordb:6379", env="FALKORDB_URI")
     FALKORDB_RECALL_GRAPH: str = Field(default="orion_recall", env="FALKORDB_RECALL_GRAPH")
 

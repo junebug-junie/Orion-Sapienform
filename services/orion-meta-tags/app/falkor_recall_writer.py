@@ -1,9 +1,13 @@
-"""Cypher-native Falkor write of chat turn tag/entity enrichment.
+"""Cypher-native Falkor write of chat/social-turn tag/entity enrichment.
 
 Phase 2 of the recall/Falkor cutover
 (docs/superpowers/plans/2026-07-18-recall-tag-entity-falkor-writer-plan.md).
-Dark-shipped, additive: this runs alongside orion-rdf-writer's existing
-Fuseki write of the same `tags.enriched` event, does not replace it.
+Originally shipped dark/additive alongside orion-rdf-writer's Fuseki write
+of the same `tags.enriched` event. As of 2026-07-18 (same-day follow-up,
+fix/meta-tags-kill-rdf-chat-dual-write) that Fuseki write was killed as
+redundant -- this is now the SOLE persistence path for this data, covering
+both `chat.history` and `social.turn.stored.v1` (previously chat.history
+only). See services/orion-meta-tags/README.md's "Historical note" section.
 
 No RDF/SPARQL anywhere in this module -- pure Cypher MERGE against
 FalkorDB via orion.graph.falkor_client.RedisGraphQueryClient.
@@ -94,6 +98,7 @@ def write_chat_turn_tags_to_falkor(
     client: FalkorGraphClient,
     *,
     turn_id: str,
+    source_kind: str,
     session_id: str | None,
     ts: str,
     correlation_id: str | None,
@@ -102,6 +107,14 @@ def write_chat_turn_tags_to_falkor(
 ) -> dict[str, Any]:
     """Synchronous Cypher write. Caller must keep this off the event loop
     (e.g. `asyncio.to_thread`) -- the underlying redis client is sync.
+
+    `source_kind` (the producing envelope's kind, e.g. "chat.history" or
+    "social.turn.stored.v1") is stored on the `:ChatTurn` node. Both kinds
+    share this same node label/shape -- without a discriminator property, a
+    `turn_id` collision between a Hub chat turn and a social-room turn (both
+    producer-supplied strings, not namespaced against each other) would
+    silently fuse two unrelated conversations into one node with no way to
+    tell them apart afterward.
     """
     sentiment, clean_tags = extract_sentiment(tags or [])
     kept_tags, rejected_tags = filter_noise(clean_tags)
@@ -116,10 +129,10 @@ def write_chat_turn_tags_to_falkor(
             rejected_entities,
         )
 
-    # turn_params always has at least "ts" beyond "turn_id" (a required,
-    # non-optional parameter), so set_clause is never empty -- no bare-anchor
-    # branch needed.
-    turn_params: dict[str, Any] = {"turn_id": turn_id, "ts": ts}
+    # turn_params always has at least "ts" and "source_kind" beyond "turn_id"
+    # (both required, non-optional parameters), so set_clause is never empty
+    # -- no bare-anchor branch needed.
+    turn_params: dict[str, Any] = {"turn_id": turn_id, "ts": ts, "source_kind": source_kind}
     if correlation_id:
         turn_params["correlation_id"] = correlation_id
     if sentiment:

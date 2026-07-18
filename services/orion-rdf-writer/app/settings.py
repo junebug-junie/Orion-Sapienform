@@ -49,7 +49,15 @@ class Settings(BaseSettings):
     CHANNEL_RDF_ENQUEUE: str = Field(default="orion:rdf:enqueue", env="CHANNEL_RDF_ENQUEUE")
     CHANNEL_EVENTS_COLLAPSE: str = Field(default="orion:collapse:intake", env="CHANNEL_EVENTS_COLLAPSE")
     CHANNEL_EVENTS_TAGGED: str = Field(default="orion:tags:enriched", env="CHANNEL_EVENTS_TAGGED")
-    CHANNEL_EVENTS_TAGGED_CHAT: str = Field(default="orion:tags:chat:enriched", env="CHANNEL_EVENTS_TAGGED_CHAT")
+    # orion:tags:chat:enriched (CHANNEL_EVENTS_TAGGED_CHAT) deliberately not
+    # subscribed as of 2026-07-18: chat-turn tag/entity data now lands in
+    # FalkorDB only (orion-meta-tags' own Phase 2 writer,
+    # services/orion-meta-tags/README.md "Dual persistence pathway" ->
+    # single pathway after this change). Fuseki's `chat_tagging` enrichment
+    # copy of this same data was a second, redundant materialization of the
+    # same entities/sentiment already durably written to Falkor -- not an
+    # independent signal. orion-meta-tags no longer publishes to this
+    # channel either (see its main.py). Do not re-add.
     CHANNEL_CORE_EVENTS: str = Field(default="orion:core:events", env="CHANNEL_CORE_EVENTS")
     # orion:rdf:worker (CHANNEL_WORKER_RDF) deliberately not subscribed as of
     # 2026-07-18: channels.yaml claims orion-cortex-exec as producer, but no
@@ -117,7 +125,6 @@ class Settings(BaseSettings):
             "orion:rdf-collapse:enqueue",
             self.CHANNEL_EVENTS_COLLAPSE,
             self.CHANNEL_EVENTS_TAGGED,
-            self.CHANNEL_EVENTS_TAGGED_CHAT,
             "orion:chat:social:stored",
             self.CHANNEL_CORE_EVENTS,
             self.CHANNEL_COGNITION_TRACE_PUB,

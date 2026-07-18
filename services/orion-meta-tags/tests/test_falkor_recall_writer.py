@@ -53,6 +53,7 @@ def test_write_chat_turn_tags_to_falkor_full_shape() -> None:
     result = write_chat_turn_tags_to_falkor(
         client,
         turn_id="turn-1",
+        source_kind="chat.history",
         session_id="sess-1",
         ts="2026-07-18T00:00:00+00:00",
         correlation_id="corr-1",
@@ -79,6 +80,7 @@ def test_write_chat_turn_tags_to_falkor_full_shape() -> None:
     assert turn_params["correlation_id"] == "corr-1"
     assert turn_params["sentiment"] == "positive"
     assert "sentiment" in turn_call  # SET clause references it
+    assert turn_params["source_kind"] == "chat.history"
 
 
 def test_write_chat_turn_tags_to_falkor_no_session_id_skips_session_merge() -> None:
@@ -86,6 +88,7 @@ def test_write_chat_turn_tags_to_falkor_no_session_id_skips_session_merge() -> N
     write_chat_turn_tags_to_falkor(
         client,
         turn_id="turn-2",
+        source_kind="chat.history",
         session_id=None,
         ts="2026-07-18T00:00:00+00:00",
         correlation_id=None,
@@ -101,16 +104,19 @@ def test_write_chat_turn_tags_to_falkor_no_tags_or_entities_still_writes_anchor(
     result = write_chat_turn_tags_to_falkor(
         client,
         turn_id="turn-3",
+        source_kind="social.turn.stored.v1",
         session_id=None,
         ts="2026-07-18T00:00:00+00:00",
         correlation_id=None,
         tags=[],
         entities=[],
     )
-    # ts is a required (non-optional) parameter, so the SET clause always
-    # has at least "t.ts = $ts" -- there is no bare-anchor-with-no-SET path.
+    # ts and source_kind are both required (non-optional) parameters, so the
+    # SET clause always has at least these two -- there is no
+    # bare-anchor-with-no-SET path.
     assert len(client.calls) == 1
-    assert client.calls[0][0] == "MERGE (t:ChatTurn {turn_id: $turn_id}) SET t.ts = $ts"
+    assert client.calls[0][0] == "MERGE (t:ChatTurn {turn_id: $turn_id}) SET t.source_kind = $source_kind, t.ts = $ts"
+    assert client.calls[0][1]["source_kind"] == "social.turn.stored.v1"
     assert result["tags_written"] == 0
     assert result["entities_written"] == 0
 
@@ -126,6 +132,7 @@ def test_write_chat_turn_tags_to_falkor_entity_dedup_across_call() -> None:
     write_chat_turn_tags_to_falkor(
         client,
         turn_id="turn-4",
+        source_kind="chat.history",
         session_id=None,
         ts="2026-07-18T00:00:00+00:00",
         correlation_id=None,

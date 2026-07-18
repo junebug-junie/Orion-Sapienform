@@ -36,7 +36,8 @@ services:
       - CHANNEL_EVENTS_COLLAPSE=${CHANNEL_EVENTS_COLLAPSE}
       # Tagged/Enriched
       - CHANNEL_EVENTS_TAGGED=${CHANNEL_EVENTS_TAGGED}
-      - CHANNEL_EVENTS_TAGGED_CHAT=${CHANNEL_EVENTS_TAGGED_CHAT}
+      # CHANNEL_EVENTS_TAGGED_CHAT removed 2026-07-18: chat-turn tags now
+      # land in FalkorDB only; the Fuseki copy was redundant.
       # Core Events (Filtering targets="rdf")
       - CHANNEL_CORE_EVENTS=${CHANNEL_CORE_EVENTS}
       # CHANNEL_WORKER_RDF / CORTEX_LOG_CHANNEL removed 2026-07-18: zero real

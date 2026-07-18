@@ -124,7 +124,21 @@ Chatturn-only read path standing in for RDF's chat-turn fetch. **Live as of 2026
 
 `app/storage/falkor_entity_relatedness.py`: three read-only Cypher primitives over the same `MENTIONS_ENTITY` graph -- `fetch_related_entities` (co-occurrence relatedness ranked by Jaccard similarity, not raw shared-turn count, so a high-degree entity that co-occurs with almost everything doesn't outrank a genuinely specific one), `fetch_bridging_turns` (direct co-mention, falling back to a 2-hop bridge via a shared intermediate entity), and `fetch_entity_mention_timeline` (raw mention timestamps). Exposed via `GET /debug/entity-graph/{related,bridge,timeline}` (see HTTP Endpoints above).
 
-**Stated plainly, not oversold:** these three functions are reachable *only* via the debug routes above and the test suite -- unlike `RECALL_FALKOR_IN_CHAT`/`RECALL_FALKOR_GRAPHTRI_IN_CHAT`, there is no dark-flagged call site inside `worker.py`'s `_query_backends`/`process_recall` fusion pipeline. Nothing Orion actually retrieves is influenced by this yet. That wiring is Phase 2, a real committed next step, not an indefinite "someday" -- flagging the gap explicitly here so it doesn't get mistaken for done. A re-runnable live-data check backing the Jaccard-ranking claim above lives at `scripts/live_verify_entity_relatedness.py`.
+**Stated plainly:** as of Phase 2 below, `fetch_related_entities` is also called from `worker.py`'s default (non-PCR) fusion path, dark-flagged. `fetch_bridging_turns`/`fetch_entity_mention_timeline` remain debug-only.
+
+### Entity-relatedness fusion-weight boost (Phase 2, ships dark -- do not flip live without reading the caveat below)
+
+`worker.py::_compute_entity_relatedness_boost_map` extracts entities from the query, expands them via Phase 1's `fetch_related_entities` (Jaccard-ranked), and additively boosts a `falkor_chat` candidate's composite score in `fusion.py::fuse_candidates` when its source turn mentions any of those (or directly-matched) entities -- the same additive-boost shape as the existing `tag_boost`/`turn_effect_boost`.
+
+| Variable | Default | Notes |
+| :--- | :--- | :--- |
+| `RECALL_ENTITY_RELATEDNESS_BOOST_ENABLED` | `false` (dark) | See `settings.py`'s comment for the full design + a real, pre-existing limitation this needs fixed first (below). |
+| `entity_relatedness_boost_weight` (per-profile, `relevance` cfg) | `0.2` | Same additive-scale convention as `prefer_tags_boost` (0.15)/`turn_effect_boost_weight` (0.35). |
+
+**Do not flip this live yet -- two real gaps, found in code review, both need closing first:**
+
+1. **`_extract_entities` (the query-side entity extractor this boost depends on) has a pre-existing regex bug** -- a literal double-backslash inside an r-string (`\\s`/`\\.` match a literal backslash, not whitespace/a dot). Confirmed live: it never merges multi-word entity spans ("New York" -> "New"/"York" separately) and drops all-caps acronyms entirely ("NVIDIA" -> nothing, only "Nvidia" matches). Since Falkor's real `Entity.name` vocabulary is spaCy-NER-derived and includes exactly these shapes, this boost currently fails to match the majority of real entity mentions. This is a repo-wide function (also used for query-expansion fan-out elsewhere in `worker.py`), so fixing it is its own changeset, not something to sneak into this one.
+2. **No recall-quality evidence yet, only one hand-verified ranking example.** Live-verified end to end that a `falkor_chat` candidate whose turn directly mentions an extracted query entity correctly reranks above a same-source candidate with a higher base score -- proving the wiring works, not that it improves real recall quality across real queries. `app/recall_eval.py`/`recall_eval_corpus.json` (this service's existing eval harness) was not run against this feature. Both gaps should close before flipping this flag, not just before merging the PR that ships it dark.
 
 ### Vector / Chroma
 

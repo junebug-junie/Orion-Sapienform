@@ -590,59 +590,76 @@ async def _compute_entity_relatedness_boost_map(
        used elsewhere in this file), lowercased to match Falkor's always-
        lowercase Entity.name convention (filter_noise() normalizes at write
        time -- see services/orion-meta-tags/app/falkor_recall_writer.py).
-    2. For up to the first 3 query entities, fetch Jaccard-related entities
-       (fetch_related_entities) -- capped so a query with many capitalized
-       words doesn't fan out into a dozen Falkor round trips.
+       Deduped via dict.fromkeys (not set()) to preserve first-appearance
+       order before capping -- _extract_entities itself builds its result
+       from a set(), so slicing that directly is non-deterministic across
+       process restarts (confirmed live in code review); this re-orders it
+       deterministically before the [:N] cap below is applied.
+    2. For up to the first 3 query entities (by appearance order), fetch
+       Jaccard-related entities (fetch_related_entities) IN PARALLEL --
+       these are independent lookups keyed on different names, no reason to
+       serialize 3 Falkor round trips in a hot path.
     3. Build a target->score map: the query entities THEMSELVES score 1.0
        (a candidate turn directly mentioning what the query is about is
        stronger evidence than "related to" it), related entities score
        their own Jaccard value.
     4. Batch-lookup (one query) which falkor_chat candidate turns mention
        any target entity, and return the max target score per matched turn.
+
+    The whole body below the cheap guard checks is wrapped in try/except:
+    this function's entire contract is "never a hard dependency for recall
+    to return results" -- the two Falkor calls were already individually
+    guarded, but code review correctly found the surrounding logic (turn_id
+    collection, dict comprehensions) was not, so a future edit there could
+    still crash process_recall's default (non-PCR) path with no fallback.
     """
     if not settings.RECALL_ENTITY_RELATEDNESS_BOOST_ENABLED or not query_text:
         return {}
 
-    query_entities = [e.lower() for e in _extract_entities(query_text)]
-    if not query_entities:
-        return {}
-
-    target_scores: Dict[str, float] = {e: 1.0 for e in query_entities}
-    for entity in query_entities[:_ENTITY_RELATEDNESS_MAX_QUERY_ENTITIES]:
-        try:
-            related = await fetch_related_entities(
-                name=entity, max_results=_ENTITY_RELATEDNESS_MAX_RELATED_PER_ENTITY
-            )
-        except Exception as exc:
-            logger.debug(f"entity relatedness boost: fetch_related_entities skipped for {entity!r}: {exc}")
-            continue
-        for r in related:
-            name = str(r.get("name") or "")
-            score = float(r.get("jaccard") or 0.0)
-            if name and score > target_scores.get(name, 0.0):
-                target_scores[name] = score
-
-    turn_ids = sorted(
-        {
-            str(c.get("uri") or c.get("id") or "").strip()
-            for c in candidates
-            if str(c.get("source") or "") == "falkor_chat" and (c.get("uri") or c.get("id"))
-        }
-    )
-    if not turn_ids:
-        return {}
-
     try:
-        matches = await fetch_entity_matches_for_turns(turn_ids=turn_ids, target_names=list(target_scores.keys()))
-    except Exception as exc:
-        logger.debug(f"entity relatedness boost: fetch_entity_matches_for_turns skipped: {exc}")
-        return {}
+        query_entities = list(dict.fromkeys(e.lower() for e in _extract_entities(query_text)))
+        if not query_entities:
+            return {}
 
-    return {
-        turn_id: max(target_scores.get(name, 0.0) for name in matched_names)
-        for turn_id, matched_names in matches.items()
-        if matched_names
-    }
+        target_scores: Dict[str, float] = {e: 1.0 for e in query_entities}
+        capped_entities = query_entities[:_ENTITY_RELATEDNESS_MAX_QUERY_ENTITIES]
+        related_results = await asyncio.gather(
+            *(
+                fetch_related_entities(name=entity, max_results=_ENTITY_RELATEDNESS_MAX_RELATED_PER_ENTITY)
+                for entity in capped_entities
+            ),
+            return_exceptions=True,
+        )
+        for entity, related in zip(capped_entities, related_results):
+            if isinstance(related, BaseException):
+                logger.debug(f"entity relatedness boost: fetch_related_entities skipped for {entity!r}: {related}")
+                continue
+            for r in related:
+                name = str(r.get("name") or "")
+                score = float(r.get("jaccard") or 0.0)
+                if name and score > target_scores.get(name, 0.0):
+                    target_scores[name] = score
+
+        turn_ids = sorted(
+            {
+                str(c.get("uri") or c.get("id") or "").strip()
+                for c in candidates
+                if str(c.get("source") or "") == "falkor_chat" and (c.get("uri") or c.get("id"))
+            }
+            - {""}
+        )
+        if not turn_ids:
+            return {}
+
+        matches = await fetch_entity_matches_for_turns(turn_ids=turn_ids, target_names=list(target_scores.keys()))
+        return {
+            turn_id: max(target_scores.get(name, 0.0) for name in matched_names)
+            for turn_id, matched_names in matches.items()
+            if matched_names
+        }
+    except Exception as exc:
+        logger.debug(f"entity relatedness boost: skipped: {exc}")
+        return {}
 
 
 def _rdf_enabled(profile: Dict[str, Any]) -> bool:
@@ -1872,9 +1889,18 @@ async def process_recall(
             latency_ms=latency_ms,
         )
     else:
+        entity_boost_started = time.time()
         entity_boost_map = await _compute_entity_relatedness_boost_map(
             query_text=query_fragment, candidates=candidates
         )
+        # Kept separate from timing_breakdown_ms["fusion"] below: this is
+        # Falkor I/O (up to 4 round trips when the flag is on), not
+        # fuse_candidates' own in-process ranking work -- folding it into
+        # "fusion" would mislabel new network latency as ranking-logic cost,
+        # making a future latency regression here invisible in the existing
+        # telemetry surface (found in code review).
+        timing_breakdown_ms["entity_relatedness_boost"] = int((time.time() - entity_boost_started) * 1000)
+        fuse_started = time.time()
         bundle, ranking_debug = fuse_candidates(
             candidates=candidates,
             profile=profile,

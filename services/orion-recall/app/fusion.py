@@ -364,8 +364,16 @@ def _entity_relatedness_boost(
     raw = entity_boost_map.get(turn_id)
     if not raw:
         return 0.0
-    weight = float(profile.get("entity_relatedness_boost_weight", 0.2))
-    return weight * min(1.0, float(raw))
+    try:
+        # Unguarded profile-config coercion is the same bug class Phase 1's
+        # review found and fixed for Falkor row data (see
+        # falkor_entity_relatedness.py's _safe_graph_query) -- a malformed
+        # profile value must not crash composite-score computation for
+        # EVERY candidate in the call, not just this feature's own.
+        weight = float(profile.get("entity_relatedness_boost_weight", 0.2))
+    except (TypeError, ValueError):
+        return 0.0
+    return weight * min(1.0, max(0.0, float(raw)))
 
 
 def _denial_patterns() -> List[re.Pattern[str]]:
@@ -624,6 +632,7 @@ def fuse_candidates(
                     "exact_boost": cand["_relevance"]["exact_boost"],
                     "text_similarity": cand["_relevance"]["text_similarity"],
                     "recency": cand["_relevance"]["recency"],
+                    "entity_relatedness_boost": cand["_relevance"].get("entity_relatedness_boost"),
                     "drop_reason": drop_reason or None,
                     "key_type": cand["_relevance"].get("key_type"),
                 }

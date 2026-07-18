@@ -427,7 +427,7 @@ keeps running here, unaffected — it is simply no longer the forward path.
 
 #### Mood-arc windowed encoder (2026-07-13, roadmap item 2)
 
-`scripts/fit_mood_arc_encoder.py` (repo root, `train` subcommand) trains
+`orion/mood_arc/fit_encoder.py` (run from repo root, `train` subcommand) trains
 item 2 of the roadmap spec: an MLP-shallow autoencoder over *windows* of
 the mood-arc corpus above, not single ticks — the latent space is a
 compressed representation of a felt-state **trajectory**, not a felt-state
@@ -438,7 +438,7 @@ process, no bus wiring, no container. Producer service is credited as
 sink, not because it runs inside that service.
 
 ```bash
-python scripts/fit_mood_arc_encoder.py train \
+python orion/mood_arc/fit_encoder.py train \
   --corpus /mnt/telemetry/mood_arc/corpus/mood_arc.jsonl \
   --window-size 30 --stride 15 --max-gap-sec 6.0 \
   --hidden-dim 32 --latent-dim 16 \

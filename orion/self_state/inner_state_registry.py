@@ -386,7 +386,7 @@ REGISTRY: tuple[InnerStateSignal, ...] = (
         notes=(
             "Item 2 of docs/superpowers/specs/2026-07-13-felt-state-arc-"
             "roadmap-spec.md -- the windowed felt-state-trajectory "
-            "autoencoder trained by scripts/fit_mood_arc_encoder.py. A dark, "
+            "autoencoder trained by orion/mood_arc/fit_encoder.py. A dark, "
             "disk-only training artifact (manifest.json/weights.npz/"
             "probes.json under --out): no bus publish, no service wiring, "
             "no cognition consumer by design -- same REHEARSAL precedent as "

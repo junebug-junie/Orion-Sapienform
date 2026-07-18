@@ -93,7 +93,7 @@ of four composition statuses:
   `mood_arc_corpus.v1` itself is untouched and keeps collecting; this is
   additive, not a disable; `mood_arc_encoder.v1`
   (2026-07-13, same day, roadmap item 2 now built) —
-  `scripts/fit_mood_arc_encoder.py` trains a windowed autoencoder over
+  `orion/mood_arc/fit_encoder.py` trains a windowed autoencoder over
   `mood_arc_corpus.v1` rows and writes a dark, disk-only
   `MoodArcEncoderManifestV1` artifact triad (`manifest.json`/`weights.npz`/
   `probes.json`); no bus publish, no cognition consumer, same REHEARSAL

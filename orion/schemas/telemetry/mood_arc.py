@@ -56,7 +56,7 @@ class MoodArcEncoderManifestV1(BaseModel):
     artifact, disk-only, no cognition consumer yet (see roadmap item 2,
     docs/superpowers/specs/2026-07-13-felt-state-arc-roadmap-spec.md).
 
-    2026-07-13 methodology addition (scripts/fit_mood_arc_encoder.py, same
+    2026-07-13 methodology addition (orion/mood_arc/fit_encoder.py, same
     session as this manifest's initial fields): the spec's original single
     shuffle-gate design was found to be too weak on its own -- the corpus's
     real autocorrelation is largely explained by a known, deliberate
@@ -73,7 +73,7 @@ class MoodArcEncoderManifestV1(BaseModel):
     what item 2 originally asked for, added after empirical spike work found
     the original single-gate design passed for the wrong reason.
 
-    2026-07-17 corpus-swap rework (scripts/fit_mood_arc_encoder.py, same
+    2026-07-17 corpus-swap rework (orion/mood_arc/fit_encoder.py, same
     session): this script now trains against field_channel_corpus.v1
     (orion.schemas.telemetry.field_channel_corpus.FieldChannelCorpusRowV1)
     instead of mood_arc_corpus.v1 -- a variable-width channel_name -> value
@@ -102,7 +102,7 @@ class MoodArcEncoderManifestV1(BaseModel):
     # Channel names (post select_fields()/prune_correlated_fields()) that
     # this run's windows/AR(1) fit/training actually used, in the fixed
     # order their values are flattened into each window vector. Required,
-    # not Optional -- every manifest scripts/fit_mood_arc_encoder.py writes
+    # not Optional -- every manifest orion/mood_arc/fit_encoder.py writes
     # from 2026-07-17 onward populates this; there is no prior real
     # (non-scratch) manifest artifact from before this field existed to
     # stay backward-compatible with (this is a dark, disk-only artifact,
@@ -117,7 +117,7 @@ class MoodArcEncoderManifestV1(BaseModel):
     # adjacent to a training window is still autocorrelation-leaked even
     # with zero literal tick overlap (measured ACF stays nonzero out to lag
     # ~10-15 ticks, ~20-30s). Optional/None only for manifests written before
-    # this methodology addition -- scripts/fit_mood_arc_encoder.py always
+    # this methodology addition -- orion/mood_arc/fit_encoder.py always
     # populates a real value; None is never fabricated as 0 (0 would falsely
     # claim "no purge zone was used", a real and different config choice).
     purge_gap_windows: Optional[int] = None

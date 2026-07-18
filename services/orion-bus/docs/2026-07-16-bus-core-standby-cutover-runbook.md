@@ -371,8 +371,13 @@ Choose one of two paths depending on why you cut over in the first place:
   the cutover window — they are lost when you cut back**, full stop. This is
   acceptable for most of this bus's traffic (ephemeral pub/sub, short-TTL
   state keys), a real loss for anything durable that was only appended to
-  the standby's stream. Check `orion:evt:gateway`/`orion:bus:out` stream
-  length on the standby against what's expected before discarding it — if
+  the standby's stream. Check `orion:stream:world_pulse:run:result`/
+  `orion:stream:world_pulse:run:result:dlq` stream length on the standby
+  against what's expected before discarding it (2026-07-18: corrected from
+  `orion:evt:gateway`/`orion:bus:out`, which were never real Redis keys —
+  see `services/orion-bus/README.md`'s `BUS_OBSERVER_STREAMS` entry for the
+  full trace; checking them here would have silently shown "no loss"
+  regardless of real durable-stream state) — if
   the loss looks significant, a manual per-key `redis-cli --rdb`/`DUMP`+
   `RESTORE` copy of specific known keys from standby to the restored primary
   is possible in principle, but has not been built, tested, or written up

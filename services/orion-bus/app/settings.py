@@ -21,41 +21,39 @@ class Settings(BaseSettings):
 
     bus_observer_enabled: bool = Field(True, alias="BUS_OBSERVER_ENABLED")
     bus_observer_poll_interval_sec: float = Field(10.0, alias="BUS_OBSERVER_POLL_INTERVAL_SEC")
-    # orion:evt:gateway/orion:bus:out are depth/backpressure-monitoring
-    # targets only. Verified live against bus-core Redis (TYPE + XLEN):
-    # both come back TYPE=none -- neither is an existing key of any kind,
-    # let alone a Stream. They are also not cataloged in
-    # orion/bus/channels.yaml, so they never contribute a schema_id either
-    # way; schema-mismatch sampling (contract_pressure) never fires for
-    # them, and (separately, pre-existing, not touched here) their
-    # depth/backpressure numbers have presumably always read 0 too.
+    # 2026-07-18 fix: this field's default is the fallback used whenever
+    # `env_file=".env"` (a path relative to process cwd, not to this file)
+    # fails to resolve -- e.g. pytest/any invocation from the repo root
+    # instead of services/orion-bus/. Confirmed this is a live, not
+    # theoretical, path: an orchestrator verification run from repo root hit
+    # exactly this fallback and got the OLD default because only
+    # .env/.env_example had been updated, not this field -- silently
+    # reintroducing the bug this whole fix exists to close. Do not let this
+    # default drift from .env_example's BUS_OBSERVER_STREAMS value again.
     #
-    # orion:grammar:event IS cataloged (schema_id=GrammarEventV1) but is
-    # NOT a fix for schema-mismatch sampling being dead: verified live
-    # (TYPE orion:grammar:event -> "none") that it is delivered purely via
-    # Redis PUBLISH (OrionBusAsync.publish() -> redis.publish(), see
-    # orion/grammar/publish.py / orion/core/bus/async_service.py) and never
-    # XADD'd anywhere in this codebase -- Pub/Sub messages are never stored,
-    # so XLEN/XREVRANGE against this key structurally can never see
-    # anything, no matter how much real traffic passes through it. Kept in
-    # the default anyway (harmless, correctly cataloged, and would start
-    # working for free if a future change ever dual-writes it to a Stream)
-    # but it is NOT what makes schema-mismatch sampling live.
-    #
-    # orion:stream:world_pulse:run:result is the channel that actually
-    # fixes it: cataloged (schema_id=WorldPulseRunResultV1), kind="stream"
-    # in channels.yaml, written via RedisStreamWorkQueue.enqueue() (real
-    # XADD) by orion-world-pulse, gated by WP_RUN_RESULT_STREAM_ENABLED
-    # which defaults to true in services/orion-world-pulse/.env_example.
-    # Verified live against bus-core Redis: TYPE=stream, XLEN=82 real
-    # entries at verification time, and a sampled XREVRANGE entry decodes
-    # via the "envelope" field exactly as count_schema_mismatches() expects.
-    # Low/bursty volume ("once per run" per the comment in channels.yaml
-    # above this entry) -- sampled_count can legitimately be 0 between runs,
-    # that's expected, not a bug.
+    # orion:evt:gateway/orion:bus:out were placeholder names from the
+    # original bus-observer commit (ee810551, 2026-05-25), never once
+    # cataloged in orion/bus/channels.yaml at any point in git history, and
+    # verified live TYPE=none (no key exists at all) -- structurally
+    # incapable of ever producing a depth sample, confirmed by 180
+    # substrate_reduction_receipts over 15 days reading transport_pressure/
+    # stream_depth_pressure/backpressure at a flat 0.0 the entire time.
+    # orion:grammar:event is cataloged but Pub/Sub-only (verified live
+    # TYPE=none, delivered via OrionBusAsync.publish() -> redis.publish(),
+    # never XADD'd) -- XLEN/XREVRANGE can never see it regardless of real
+    # traffic. orion-bus today routes almost everything through pub/sub,
+    # which has no persistent backlog to observe; depth/backpressure is only
+    # meaningful for genuinely XADD'd channels. orion/bus/channels.yaml
+    # catalogs exactly two kind="stream" channels, and both are now the
+    # default: orion:stream:world_pulse:run:result (real XADD by
+    # orion-world-pulse, verified live TYPE=stream XLEN=82) and its
+    # dead-letter sibling orion:stream:world_pulse:run:result:dlq (verified
+    # live TYPE=none/XLEN=0 right now -- expected-healthy for a DLQ, not
+    # broken; a nonzero DLQ depth is itself a real failure signal worth
+    # having wired).
     bus_observer_streams: str = Field(
-        "orion:evt:gateway,orion:bus:out,orion:grammar:event,"
-        "orion:stream:world_pulse:run:result",
+        "orion:stream:world_pulse:run:result,"
+        "orion:stream:world_pulse:run:result:dlq",
         alias="BUS_OBSERVER_STREAMS",
     )
     bus_stream_depth_warning: int = Field(25000, alias="BUS_STREAM_DEPTH_WARNING")

@@ -261,7 +261,13 @@ class Settings(BaseSettings):
     # node is deliberately thin); fetch_rdf_graphtri_fragments (Claim-based)
     # stays on Fuseki -- that function's entire shape assumes Claim nodes,
     # which the Falkor writer replaced with HAS_TAG/MENTIONS_ENTITY edges, so
-    # it needs its own redesign, not a rewrite. Ships dark (default False).
+    # it needs its own redesign, not a rewrite. Code-level default stays
+    # False (a safe fallback for any environment that hasn't set this key
+    # at all -- False just means "keep using RDF for chatturn," not a
+    # data-loss state, unlike RECALL_FALKOR_TAG_ENTITY_ENABLED's write-side
+    # flag). The real operator default is True as of 2026-07-18 --
+    # .env_example ships true; see its comment and README.md's "Known gap"
+    # note for the historical-backfill caveat.
     RECALL_FALKOR_IN_CHAT: bool = Field(
         default=False, validation_alias=AliasChoices("RECALL_FALKOR_IN_CHAT")
     )

@@ -17,6 +17,7 @@ from __future__ import annotations
 
 import logging
 import re
+import unicodedata
 from typing import Any
 
 from orion.graph.falkor_client import FalkorGraphClient, set_assignments
@@ -43,7 +44,12 @@ _RELATIVE_TIME_RE = re.compile(
 
 
 def _normalize_identity_key(value: str) -> str:
-    return str(value or "").strip().lower()
+    """Strip diacritics before lowercasing, same idiom as
+    app.main._normalize_observer -- without this, an accent variant like
+    "oríon" normalizes to a distinct key from "orion" and never merges with
+    it (confirmed live: both existed as separate Entity nodes)."""
+    stripped = unicodedata.normalize("NFKD", str(value or "")).encode("ascii", "ignore").decode("ascii")
+    return stripped.strip().lower()
 
 
 def _is_noise(value: str) -> bool:

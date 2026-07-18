@@ -127,6 +127,28 @@ def test_relative_time_regex_catches_bare_and_trailing_on_variants() -> None:
     assert set(rejected) == {"that day", "that day on", "last week"}
 
 
+def test_filter_noise_merges_diacritic_variants() -> None:
+    kept, rejected = filter_noise(["Orion", "Oríon", "orión"])
+    assert kept == ["orion"]
+    assert rejected == []
+
+
+def test_write_chat_turn_tags_to_falkor_diacritic_dedup_across_call() -> None:
+    client = RecordingFalkorClient()
+    write_chat_turn_tags_to_falkor(
+        client,
+        turn_id="turn-5",
+        source_kind="chat.history",
+        session_id=None,
+        ts="2026-07-18T00:00:00+00:00",
+        correlation_id=None,
+        tags=[],
+        entities=["Orion", "Oríon"],
+    )
+    entity_call_params = next(p for c, p in client.calls if "MENTIONS_ENTITY" in c)
+    assert entity_call_params["names"] == ["orion"]
+
+
 def test_write_chat_turn_tags_to_falkor_entity_dedup_across_call() -> None:
     client = RecordingFalkorClient()
     write_chat_turn_tags_to_falkor(

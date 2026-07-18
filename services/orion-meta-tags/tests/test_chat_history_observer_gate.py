@@ -49,10 +49,11 @@ from orion.graph.falkor_client import RecordingFalkorClient  # noqa: E402
 def main_module(monkeypatch: pytest.MonkeyPatch):
     monkeypatch.setenv("ORION_BUS_URL", "redis://example.test/0")
 
-    # A fake entity with real `.text` content (not just an empty ents=[])
-    # so the extraction line (`entities = [ent.text for ent in doc.ents]`)
-    # is actually exercised, not just left permanently dead under the mock.
-    fake_doc = SimpleNamespace(ents=[SimpleNamespace(text="Circe")])
+    # A fake entity with real `.text`/`.label_` content (not just an empty
+    # ents=[]) so the extraction line (app.main._named_entities, which
+    # filters by ent.label_) is actually exercised, not just left permanently
+    # dead under the mock. label_="PERSON" is one of _KEEP_ENTITY_LABELS.
+    fake_doc = SimpleNamespace(ents=[SimpleNamespace(text="Circe", label_="PERSON")])
     fake_nlp = MagicMock(return_value=fake_doc)
     fake_spacy = MagicMock()
     fake_spacy.load.return_value = fake_nlp
@@ -105,6 +106,36 @@ async def test_chat_history_turn_with_no_observer_writes_to_falkor_not_bus(main_
     assert turn_calls and turn_calls[0]["source_kind"] == "chat.history"
     entity_calls = [params for cypher, params in calls if "MENTIONS_ENTITY" in cypher]
     assert entity_calls and "circe" in entity_calls[0]["names"]
+
+
+@pytest.mark.asyncio
+async def test_chat_history_drops_numeric_and_temporal_ner_labels(main_module) -> None:
+    """Live-verified against the real en_core_web_trf model (2026-07-19):
+    'first'->ORDINAL, 'the day'->DATE, 'a moment ago'->TIME, '8GB'->QUANTITY,
+    '7680.0'->CARDINAL all leaked into the FalkorDB Entity graph as noise
+    because entity extraction never checked ent.label_. 'P4'->PRODUCT is a
+    real entity and must survive the same filter."""
+    main_module.nlp = MagicMock(
+        return_value=SimpleNamespace(
+            ents=[
+                SimpleNamespace(text="P4", label_="PRODUCT"),
+                SimpleNamespace(text="first", label_="ORDINAL"),
+                SimpleNamespace(text="the day", label_="DATE"),
+                SimpleNamespace(text="a moment ago", label_="TIME"),
+                SimpleNamespace(text="8GB", label_="QUANTITY"),
+                SimpleNamespace(text="7680.0", label_="CARDINAL"),
+            ]
+        )
+    )
+    envelope = _envelope(
+        main_module,
+        kind="chat.history",
+        payload={"session_id": "sess-2", "prompt": "the P4 ran fine", "response": "ok"},
+    )
+    await main_module.handle_triage_event(envelope)
+
+    entity_calls = [params for cypher, params in main_module._falkor_client.calls if "MENTIONS_ENTITY" in cypher]
+    assert entity_calls and entity_calls[0]["names"] == ["p4"]
 
 
 @pytest.mark.asyncio

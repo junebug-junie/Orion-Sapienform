@@ -131,6 +131,7 @@ def test_encode_concept_node_properties_are_native_scalars_without_payload_json(
         "dormant": False,
         "dormancy_updated_at": None,
         "prediction_error": None,
+        "contributing_turn_ids_json": "[]",
     }
 
 
@@ -289,6 +290,7 @@ def _concept_with_dynamics_metadata() -> ConceptNodeV1:
                 "dormant": True,
                 "dormancy_updated_at": "2026-07-17T00:00:00+00:00",
                 "prediction_error": 0.8,
+                "contributing_turn_ids": ["turn-1", "turn-2"],
             }
         }
     )
@@ -304,6 +306,7 @@ def test_encode_promotes_dynamics_metadata_keys_to_native_scalars():
     assert props["dormant"] is True
     assert props["dormancy_updated_at"] == "2026-07-17T00:00:00+00:00"
     assert props["prediction_error"] == 0.8
+    assert props["contributing_turn_ids_json"] == '["turn-1", "turn-2"]'
 
 
 def test_decode_reconstructs_dynamics_metadata_from_row():
@@ -317,6 +320,7 @@ def test_decode_reconstructs_dynamics_metadata_from_row():
     assert node.metadata.get("dormant") is True
     assert node.metadata.get("dormancy_updated_at") == "2026-07-17T00:00:00+00:00"
     assert node.metadata.get("prediction_error") == 0.8
+    assert node.metadata.get("contributing_turn_ids") == ["turn-1", "turn-2"]
 
 
 def test_dynamics_metadata_round_trips_through_encode_decode():
@@ -331,8 +335,65 @@ def test_dynamics_metadata_round_trips_through_encode_decode():
         "dormant",
         "dormancy_updated_at",
         "prediction_error",
+        "contributing_turn_ids",
     ):
         assert decoded.metadata.get(key) == original.metadata.get(key)
+
+
+def test_contributing_turn_ids_empty_list_is_omitted_on_decode():
+    """metadata['contributing_turn_ids'] absent entirely (the common case --
+    most concept nodes are never touched by _write_prediction_error_node)
+    must encode to an empty JSON list and decode back to the key being
+    absent from metadata, not an empty list sitting in the dict -- mirrors
+    the existing omit-when-absent convention for prediction_error/
+    dynamic_pressure_reason/dormancy_updated_at.
+    """
+    row = encode_node_properties(_concept(), identity_key="concept:alpha")
+    assert row["contributing_turn_ids_json"] == "[]"
+
+    node = decode_concept_node(row)
+    assert node is not None
+    assert "contributing_turn_ids" not in node.metadata
+
+
+def test_contributing_turn_ids_missing_json_key_decodes_without_raising():
+    """A row missing contributing_turn_ids_json entirely (e.g. a node written
+    before this patch shipped) must decode fail-open, not raise -- same
+    tolerance every other decode field in this module gives a missing key.
+    """
+    row = encode_node_properties(_concept(), identity_key="concept:alpha")
+    del row["contributing_turn_ids_json"]
+
+    node = decode_concept_node(row)
+    assert node is not None
+    assert "contributing_turn_ids" not in node.metadata
+
+
+def test_contributing_turn_ids_malformed_json_decodes_fail_open_not_raise():
+    """Unlike evidence_refs_json (load-bearing identity data, intentionally
+    raises on corruption -- see test_decode_rejects_corrupt_evidence_refs_json),
+    contributing_turn_ids is best-effort attribution metadata: a corrupted
+    value must not abort decoding the whole node.
+    """
+    row = encode_node_properties(_concept(), identity_key="concept:alpha")
+    row["contributing_turn_ids_json"] = "{not-json"
+
+    node = decode_concept_node(row)
+    assert node is not None
+    assert "contributing_turn_ids" not in node.metadata
+
+
+def test_contributing_turn_ids_wrong_json_shape_decodes_fail_open_not_raise():
+    """A JSON value that parses but isn't a list (e.g. an object) must also
+    be tolerated, not raised -- same fail-open contract as the malformed-JSON
+    case above.
+    """
+    row = encode_node_properties(_concept(), identity_key="concept:alpha")
+    row["contributing_turn_ids_json"] = '{"not": "a list"}'
+
+    node = decode_concept_node(row)
+    assert node is not None
+    assert "contributing_turn_ids" not in node.metadata
 
 
 def test_concept_with_no_dynamics_metadata_encodes_and_decodes_with_sane_defaults():

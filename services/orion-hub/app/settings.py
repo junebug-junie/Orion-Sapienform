@@ -122,6 +122,15 @@ class Settings(BaseSettings):
         default="/mnt/scripts/Orion-Sapienform",
         alias="HUB_AGENT_CLAUDE_WORKSPACE",
     )
+    HUB_AGENT_CLAUDE_CONFIG_DIR: str = Field(
+        default="~/.fcc/claude-config",
+        alias="HUB_AGENT_CLAUDE_CONFIG_DIR",
+        description=(
+            "CLAUDE_CONFIG_DIR for the FCC claude subprocess, read directly from "
+            "the environment by orion.fcc.context_budget.orion_fcc_claude_config_dir; "
+            "mirrored here so operators see the effective value."
+        ),
+    )
     HUB_AGENT_CLAUDE_TIMEOUT_SEC: float = Field(
         default=900.0,
         alias="HUB_AGENT_CLAUDE_TIMEOUT_SEC",

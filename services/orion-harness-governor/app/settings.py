@@ -100,6 +100,12 @@ class HarnessGovernorSettings(BaseSettings):
     harness_fcc_context_mode_hooks_enabled: bool = Field(
         False, alias="HARNESS_FCC_CONTEXT_MODE_HOOKS_ENABLED"
     )
+    # CLAUDE_CONFIG_DIR for the FCC claude subprocess, read directly from the
+    # environment by orion.fcc.context_budget.orion_fcc_claude_config_dir;
+    # mirrored here so operators see the effective value.
+    harness_fcc_claude_config_dir: str = Field(
+        "~/.fcc/claude-config", alias="HARNESS_FCC_CLAUDE_CONFIG_DIR"
+    )
 
     # (D) embodiment: publish a deliberate approach intent on the turn correlation_id
     # after a finalized relational turn. Default-off, fail-open (never breaks a turn).

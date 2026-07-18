@@ -791,8 +791,9 @@ subset for the mood-arc windowed-autoencoder spike (see
   `execution_load`. Confirmed live 2026-07-16.
 
 #### `reasoning_pressure`
-- **Meaning**: capability-level reasoning-load pressure
-  (`llm_inference`/`orchestration`'s reasoning burden).
+- **Meaning**: capability-level reasoning-load pressure. Nominally
+  `llm_inference`/`orchestration`'s reasoning burden, but see live-data
+  verdict below — in practice this is `orchestration`-only right now.
 - **Producer**: capability-level, diffused from `node:atlas →
   capability:llm_inference` (`reasoning_load` → `reasoning_pressure`,
   weight `0.85`) and `node:athena → capability:orchestration`
@@ -800,8 +801,34 @@ subset for the mood-arc windowed-autoencoder spike (see
   `CAPABILITY_DECAY_CHANNELS`, same dead-weight caveat as `pressure`.
 - **SelfState dimension fed**: `channel_dimension_map`: `reasoning_pressure`
   → `reasoning_pressure` (direct, 1:1).
-- **Live-data verdict**: real signal — cleanest channel in the corpus per
-  this investigation, continuously varying, small amplitude.
+- **Live-data verdict**: real signal, but single-source, not dual-source as
+  the topology implies. Confirmed live 2026-07-18 against
+  `substrate_field_state.field_json` (48h, 85,347 rows):
+  `capability:llm_inference`'s `reasoning_pressure` is exactly `0.0` for the
+  entire window (std=0, min=max=0), because its diffusion source,
+  `node:atlas`'s own `reasoning_load`, is itself permanently `0.0` over the
+  same window — never instrumented/populated, not decayed. `capability:
+  orchestration`'s `reasoning_pressure` is the only real contributor (mean
+  `0.018`, std `0.022`, range `0.0`–`0.315`).
+
+  The merged corpus channel is genuinely real and continuously varying (this
+  investigation's "cleanest channel" verdict from 2026-07-17 still holds as
+  a description of the *merged output*) — but that's because
+  `collect_field_channel_pressures()`'s max()-merge correctly picks the one
+  live source over a dead zero, not because both capabilities are
+  contributing. This is a different mechanism from the `confidence`/
+  `available_capacity` masking bug above: there, max()-merge had the wrong
+  *polarity* and let a broken value beat a real one; here the polarity is
+  correct (pressure-type, worst-contributor-wins) and the merge is doing
+  exactly what it should — no code fix needed. `reasoning_pressure` is one
+  of `capability:llm_inference`'s 5/8 dead channels found independently by
+  `scripts/analysis/measure_capability_channel_health.py` (PR #1171,
+  `feat/capability-salience-channel-audit`), consistent with that
+  investigation's broader finding that most of `llm_inference`'s and
+  `transport`'s channels are structurally never populated upstream. Treat
+  any future "is reasoning_pressure real" question as answered for
+  `orchestration`; `llm_inference`'s side needs a `node:atlas` instrumentation
+  fix, not a merge-logic fix, before it contributes anything.
 
 #### `reliability_pressure`
 - **Meaning**: capability-level pressure representing risk to reliability

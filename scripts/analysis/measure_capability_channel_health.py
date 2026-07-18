@@ -433,6 +433,72 @@ def render_report(
     )
     lines.append("")
 
+    # Correction (2026-07-18): this measurement's first-pass framing called
+    # the findings above a "broader orion-field-digester producer gap." That
+    # overclaimed. services/orion-field-digester/README.md's own "Field
+    # channel glossary" section -- written 2026-07-16, a day before this
+    # script existed -- already documents, per-channel and per-target, why
+    # almost every "dead" cell above is dead: not a bug, but by-design
+    # wiring (a channel simply has no diffusion edge into that particular
+    # capability), a documented one-way-ratchet mechanism that's "currently
+    # benign," or a genuinely-rare event that's "correctly wired, simply
+    # has not received a real nonzero perturbation yet." Cross-checking each
+    # dead cell above against that glossary before treating it as a gap is
+    # the right next step, not further measurement here.
+    lines.extend(["## Cross-check against services/orion-field-digester/README.md", ""])
+    lines.append(
+        "The Field channel glossary in that README (section \"Field channel "
+        "glossary\", written 2026-07-16) already explains nearly every dead "
+        "cell found above, per (target, channel):"
+    )
+    lines.extend(
+        [
+            "",
+            "- `capability:transport`'s dead `pressure`/`execution_pressure`/"
+            "`reasoning_pressure`: expected, not a bug -- those channels have no "
+            "diffusion edge into `capability:transport` at all (they only ever "
+            "populate `orchestration`/`llm_inference`), or (for `pressure`) their "
+            "only source, the node-level `transport_pressure` channel, is "
+            "documented as fully unproduced (\"confirmed absent... from all "
+            "123,245+ live rows checked\").",
+            "- `capability:transport`'s dead `reliability_pressure`: matches the "
+            "glossary's own verdict on its source, `observer_failure_pressure` -- "
+            "\"genuinely quiet, correctly wired, no bug... max observed value "
+            "3e-323... simply has never received a real nonzero perturbation.\"",
+            "- `capability:transport`'s pinned-constant `confidence`/"
+            "`available_capacity`: both fed by documented one-way-ratchet "
+            "channels (`delivery_confidence`, `bus_health`) the glossary calls "
+            "\"currently benign since the bus is genuinely stable, but "
+            "structurally could never show a real dip.\"",
+            "- `capability:llm_inference`'s live `pressure`/`confidence`/"
+            "`available_capacity` and dead `execution_pressure`/"
+            "`transport_pressure`/`contract_pressure`: fully consistent with the "
+            "glossary's documented diffusion edges (only `pressure`, from real "
+            "`gpu_pressure`, and its two fallback-formula derivatives actually "
+            "target `llm_inference`; the other three were never wired to it at "
+            "all, by design).",
+            "",
+            "**One cell does not reconcile cleanly and is worth flagging rather "
+            "than either dismissing or chasing further here**: the glossary "
+            "calls `reasoning_pressure` \"the cleanest channel in the corpus... "
+            "real signal,\" but that verdict is read from the merged JSONL "
+            "corpus file (`collect_field_channel_pressures()`'s max()-merge "
+            "across every entity sharing that channel name), not the raw "
+            "per-capability `substrate_field_state` data this script reads. "
+            "`reasoning_pressure` is fed by both `capability:llm_inference` "
+            "(weight 0.85) and `capability:orchestration` (weight 0.90); this "
+            "script found it dead specifically for `llm_inference`. The "
+            "glossary already documents this exact max()-merge mechanism "
+            "masking real per-capability variation for `confidence`/"
+            "`available_capacity` -- this could be a third instance of the same "
+            "masking bug, with `orchestration`'s variation hiding "
+            "`llm_inference`'s own dead value in the merged corpus view. Being "
+            "actively investigated elsewhere as of 2026-07-18 -- not pursued "
+            "further by this script.",
+            "",
+        ]
+    )
+
     lines.extend(["## Coverage caveats", ""])
     if caveats:
         lines.extend(f"- {c}" for c in caveats)

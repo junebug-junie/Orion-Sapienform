@@ -460,11 +460,21 @@ lives at the schema boundary: `ConceptNodeV1` now has a `model_validator(mode="a
 `signals.activation` at its pure schema default — covering every current and future
 producer, not just the ones that remember to opt in. `orion/substrate/adapters/_common.py::make_activation()`
 remains available for a producer that wants an explicit, non-default initial value.
+
+**Golden concepts still needed a second fix, same day:** the schema-boundary validator above
+seeds `activation = salience`, but `orion/substrate/seed.py`'s three golden concepts
+(Orion, Juniper, the relationship) never had a `salience` in `seed_concepts.yaml` at all —
+so even after the validator fix, they seeded to `activation = 0.0` (a real number now, but
+still flat zero). Fixed in the same PR (#1173): `seed.py` now constructs them with
+`signals=SubstrateSignalBundleV1(confidence=1.0, salience=1.0)` — defensible for
+`promotion_state="canonical"`/`authority="human_verified"` concepts, not a magic number.
+
 Reinforcement-on-recall (bumping activation when a concept is actually retrieved in a live
 turn, mirroring `orion/memory/crystallization/dynamics.py::recall_boost()`'s existing
-precedent for the separate crystallization system) is not wired yet — deferred, see the
-concept_region collector at §15 of `services/orion-recall/README.md` for the natural call
-site.
+precedent for the separate crystallization system) shipped in the same follow-up, PR #1173
+— see the concept_region collector at §15 of `services/orion-recall/README.md` for how it's
+wired, and `services/orion-recall/app/collectors/CONCEPT_REINFORCEMENT_DESIGN.md` for the
+full design conversation (sync-write-vs-bus, which fields move and why).
 
 **Side effect caught in review:** `GET /api/substrate/concepts/summary`'s `_at_risk_concepts()`
 used to treat "every concept node's activation is identical" as a proxy for "no live decay
@@ -474,6 +484,38 @@ up as "at risk of decaying toward its floor" on its very first tick — it hasn'
 all, it just started low. Fixed by replacing the variance proxy with an explicit age gate
 (`_AT_RISK_MIN_AGE_SECONDS`, one hour): a concept must have existed long enough for real
 decay ticks to plausibly have run before it's eligible for `at_risk` at all.
+
+**A shipped fix that silently reverted itself within one restart, if you're ever debugging
+"why did my Falkor write not stick" (PR #1175, fixed):** live-verifying the golden-concept
+salience fix above turned up a separate, previously-undiscovered bug in
+`FalkorSubstrateStore._migrate_legacy_payload_nodes()` (`orion/substrate/falkor_store.py`) —
+the legacy-payload rewrite path that runs on every hydrate. It read a node still carrying an
+old `payload_json` blob, parsed it, and rewrote it via the normal `upsert_node()` path — but
+that write's `MERGE (n:SubstrateNode:<type-label> {node_id})` can never match the legacy row
+itself (labeled `SubstrateNode` only, no type label yet), so the write always landed on a
+*different* node and the legacy row's `payload_json` was never removed. It persisted forever,
+got re-parsed on every future hydrate, and re-clobbered the canonical node's real data —
+this is exactly what reverted the golden-concept salience fix within one Hub restart cycle,
+live, the same day it shipped. It also cascaded into duplicate relationships (one edge existed
+as 4 near-identical copies) via the same bare-label MERGE ambiguity on edge source/target
+matching. Fixed with an explicit cleanup delete after a successful migration write
+(`_delete_orphaned_legacy_node_duplicate()`), using `DETACH DELETE` so the cascaded duplicate
+edges get cleaned up as a side effect with no separate edge-dedup logic needed. Self-healing —
+no manual data migration was required, the fix took effect for every affected node the next
+time that node's hydrate ran.
+
+**Edges silently lost their real source/target linkage on every hydrate, if
+`edge_counts_by_predicate` on the summary route ever reads empty despite real edges existing
+(PR #1179, fixed):** found immediately after live-verifying the #1175 fix above — the edge
+hydration query read `source_id`/`target_id` as edge *properties*
+(`e.source_id`/`e.target_id`), but `upsert_edge()` deliberately never writes those two fields
+onto the edge (the real linkage already lives in the graph topology, the
+`(source)-[e]->(target)` pattern itself). So they always read back `NULL`, and
+`decode_edge()` `str()`-coerced that into the literal string `"None"` for every edge's
+source/target node_id, forever, since before this session. Fixed by deriving `source_id`/
+`target_id` from the already-MATCH-bound `source`/`target` node variables instead
+(`orion/substrate/falkor_store.py::_edge_hydrate_return_clause()`). Same self-healing
+property — no stored data was wrong, this was purely a read-path bug.
 
 **Autonomous scheduler window math, if debugging why a training run didn't fire:**
 `trigger_topic_foundry_training_run()` floors its rolling window's `end_at` to a UTC day
@@ -494,8 +536,11 @@ scripts/safe_docker_build.sh orion-hub up -d --build
 ```
 
 See also: PRs #1128 (stance repoint), #1131 (decay scheduler), #1132 (relation classifier),
-#1133 (recall wiring), #1136 (autonomous scheduler) for the full review history including
-every bug caught and fixed before each shipped, and
+#1133 (recall wiring), #1136 (autonomous scheduler), #1166 (decay was structurally inert --
+schema-boundary activation seed), #1173 (golden-concept salience + reinforcement-on-recall),
+#1175 (legacy-migration duplicate-node bug that silently reverted #1173), #1179 (edge
+hydration losing every edge's real source/target node_id) for the full review history
+including every bug caught and fixed before each shipped, and
 [docs/superpowers/specs/2026-07-15-concept-atlas-graph-pipeline-design.md](../../docs/superpowers/specs/2026-07-15-concept-atlas-graph-pipeline-design.md)
 for the original design.
 

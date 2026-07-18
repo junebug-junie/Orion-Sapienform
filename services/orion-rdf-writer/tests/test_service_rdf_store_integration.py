@@ -70,7 +70,6 @@ def svc_sync(monkeypatch: pytest.MonkeyPatch, tmp_path: Path):
         "tags.enriched",
         "collapse.mirror.entry",
         "rdf.write.request",
-        "world.pulse.graph.upsert.v1",
     ],
 )
 async def test_handle_envelope_writes_for_kind(kind: str, svc_sync, monkeypatch: pytest.MonkeyPatch) -> None:

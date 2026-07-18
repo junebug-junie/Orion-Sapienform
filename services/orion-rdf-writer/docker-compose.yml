@@ -39,17 +39,18 @@ services:
       - CHANNEL_EVENTS_TAGGED_CHAT=${CHANNEL_EVENTS_TAGGED_CHAT}
       # Core Events (Filtering targets="rdf")
       - CHANNEL_CORE_EVENTS=${CHANNEL_CORE_EVENTS}
-      # Worker intake for Cortex (RPC)
-      - CHANNEL_WORKER_RDF=${CHANNEL_WORKER_RDF}
-      - CORTEX_LOG_CHANNEL=${CORTEX_LOG_CHANNEL}
+      # CHANNEL_WORKER_RDF / CORTEX_LOG_CHANNEL removed 2026-07-18: zero real
+      # producers for either channel anywhere in the repo.
       - CHANNEL_COGNITION_TRACE_PUB=${CHANNEL_COGNITION_TRACE_PUB}
-      - CHANNEL_MEMORY_IDENTITY_SNAPSHOT=${CHANNEL_MEMORY_IDENTITY_SNAPSHOT}
       # CHANNEL_MEMORY_DRIVES_AUDIT removed 2026-07-15: drive audits are Postgres-only (orion-sql-writer).
       # CHANNEL_CHAT_HISTORY_TURN / CHANNEL_CHAT_HISTORY_LOG removed 2026-07-17:
       # both are Postgres-only (orion-sql-writer); RDF copy covered ~11-18% of
       # real chat volume.
-      - CHANNEL_MEMORY_GOALS_PROPOSED=${CHANNEL_MEMORY_GOALS_PROPOSED}
-      - CHANNEL_WORLD_PULSE_GRAPH=${CHANNEL_WORLD_PULSE_GRAPH}
+      # CHANNEL_MEMORY_IDENTITY_SNAPSHOT / CHANNEL_MEMORY_GOALS_PROPOSED
+      # removed 2026-07-18: zero live Fuseki triples ever recorded; already
+      # durably owned elsewhere (Postgres / orion-substrate-runtime).
+      # CHANNEL_WORLD_PULSE_GRAPH removed 2026-07-18: WORLD_PULSE_GRAPH_ENABLED
+      # was false live, fully inert.
 
       # --- Bus Publish Channels ---
       - CHANNEL_RDF_CONFIRM=${CHANNEL_RDF_CONFIRM}
@@ -96,9 +97,9 @@ services:
       - RDF_RETENTION_INTERVAL_HOURS=${RDF_RETENTION_INTERVAL_HOURS:-168}
       - RDF_RETENTION_TIMEOUT_SEC=${RDF_RETENTION_TIMEOUT_SEC:-300}
       - RDF_RETENTION_POLICIES=${RDF_RETENTION_POLICIES:-}
-      - WORLD_PULSE_GRAPH_ENABLED=${WORLD_PULSE_GRAPH_ENABLED}
-      - WORLD_PULSE_GRAPH_DRY_RUN=${WORLD_PULSE_GRAPH_DRY_RUN}
-      - WORLD_PULSE_GRAPH_REQUIRE_POLICY_STAMP=${WORLD_PULSE_GRAPH_REQUIRE_POLICY_STAMP}
+      # WORLD_PULSE_GRAPH_ENABLED / WORLD_PULSE_GRAPH_DRY_RUN /
+      # WORLD_PULSE_GRAPH_REQUIRE_POLICY_STAMP removed 2026-07-18: settings
+      # fields deleted, nothing reads them anymore.
       - RETRY_LIMIT=${RETRY_LIMIT}
       - RETRY_INTERVAL=${RETRY_INTERVAL}
 

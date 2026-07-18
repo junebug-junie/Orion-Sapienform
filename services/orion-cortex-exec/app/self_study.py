@@ -108,7 +108,11 @@ _ENV_TARGETS: tuple[tuple[str, str, tuple[str, ...]], ...] = (
     (
         "services/orion-rdf-writer/app/settings.py",
         "rdf_writer",
-        ("GRAPHDB_URL", "GRAPHDB_REPO", "CHANNEL_RDF_ENQUEUE", "CHANNEL_WORKER_RDF"),
+        # CHANNEL_WORKER_RDF removed 2026-07-18: the settings field itself
+        # was deleted (dead channel, both sides). Tracking it here would
+        # fall back to the literal string as a fake "declared" name once
+        # _extract_declared_env_names() can no longer find it in the file.
+        ("GRAPHDB_URL", "GRAPHDB_REPO", "CHANNEL_RDF_ENQUEUE"),
     ),
 )
 
@@ -579,7 +583,11 @@ def induce_self_concepts(snapshot: SelfSnapshotV1) -> list[SelfInducedConceptV1]
     for key in ("orion-rdf-writer",):
         if key in service_by_name:
             graph_evidence.append(service_by_name[key])
-    for key in ("orion:rdf:enqueue", "orion:rdf:worker"):
+    # orion:rdf:worker removed from this evidence list 2026-07-18: confirmed
+    # dead on both sides (zero producers, zero consumers -- see
+    # orion/bus/channels.yaml). Citing it as graph-write-surface evidence
+    # would be a self-knowledge claim with no runtime backing.
+    for key in ("orion:rdf:enqueue",):
         if key in channel_by_name:
             graph_evidence.append(channel_by_name[key])
     graph_evidence.extend(touchpoints_by_surface.get("graph", []))

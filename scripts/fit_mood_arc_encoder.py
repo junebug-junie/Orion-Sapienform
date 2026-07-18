@@ -137,7 +137,16 @@ DEFAULT_MAX_GAP_SEC = 6.0
 # returns beyond that at the current training budget).
 DEFAULT_HIDDEN_DIM = 128
 DEFAULT_LATENT_DIM = 64
-DEFAULT_EPOCHS = 500
+# 500 epochs was the default until 2026-07-18: a post-cutoff run at 500
+# epochs on ~28k rows (a narrow, single-day, non-time-diverse slice) failed
+# the two-tier gate badly (floor_ratio=0.704, ceiling_ratio=1.251 -- worse
+# than a naive AR(1) baseline), while a smoke test at 30 epochs passed
+# cleanly. Root-caused as overfitting: train/held-out loss gap was ~5.4x at
+# 500 epochs vs ~1.1x at 30. A sweep across 64/32 through 1024/512 at 250
+# epochs on a wider, more time-diverse pull passed the gate consistently
+# (128/64 best: floor_ratio=0.347). 250 epochs is the new default; pass
+# --epochs explicitly to override.
+DEFAULT_EPOCHS = 250
 DEFAULT_LR = 0.003
 DEFAULT_HELD_OUT_FRAC = 0.15
 DEFAULT_PURGE_GAP_WINDOWS = 6

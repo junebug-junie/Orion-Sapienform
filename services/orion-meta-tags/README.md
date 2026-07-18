@@ -56,6 +56,22 @@ Runs off the event loop via `asyncio.to_thread` — the underlying `redis.comman
 
 Not yet wired: `social.turn.stored.v1` (Phase 6), historical backfill (Phase 3), any read-side change in `orion-recall` (Phase 4).
 
+## Dual persistence pathway: chat-turn tags go to two graph stores
+
+Every `chat.history` turn's tag/entity data currently materializes into **two independent graph stores**, both fed from the same `tags.enriched` publish on `orion:tags:chat:enriched` (`CHANNEL_EVENTS_TAGGED_CHAT`):
+
+1. **Fuseki (RDF, legacy).** `orion-rdf-writer` consumes this channel and builds a `ChatTurn` subject with `hasTag`/`hasEntity` predicates under the `orion:enrichment` graph (`rdf_builder.py`, `enrichment_type == "chat_tagging"`). This is a *separate* path from the raw `chat.history`/`chat.history.message.v1` → `ChatTurn`/`ChatMessage` RDF materialization that was deliberately killed on 2026-07-17 for covering only ~11-18% of real chat volume — that removal did not touch this enrichment path, which stays live.
+2. **FalkorDB (Cypher, Phase 2).** This service's own `falkor_recall_writer.py` writes the same turn's entities/sentiment directly into `orion_recall`, gated by `RECALL_FALKOR_TAG_ENTITY_ENABLED` (see above).
+
+Falkor is **additive, not a cutover** — it does not replace the Fuseki write, and nothing currently reads from Falkor for recall. This is intentionally a shadow-write phase (Phase 4 is the read-side migration, not yet started).
+
+**Why this needs a named callout:** both pathways were effectively dark for ~6 months. A gate-ordering bug (`services/orion-meta-tags/app/main.py`'s `handle_triage_event` — see the fix in `fix/meta-tags-chat-history-observer-gate`) unconditionally skipped every real `chat.history` turn before it ever reached tagging, so neither the Fuseki `chat_tagging` enrichment path nor the Falkor writer had ever run against real production volume. Fixing that gate means **both stores see real chat traffic for the first time simultaneously**, on the same deploy. Neither side has been load-tested:
+
+- `orion-rdf-writer`'s write queue for this channel (`RDF_WRITE_QUEUE_MAXSIZE=5000`, 8 workers) drops to a dead-letter file on overflow rather than crashing, but dead-letter growth isn't currently alerted on.
+- The Falkor writer does up to 4 sequential Cypher round-trips per turn inside one `asyncio.to_thread` call, and the spaCy NER call in `handle_triage_event` (`SPA_MODEL=en_core_web_trf`, a transformer model) runs synchronously inline with no rate-limiting — both stack under this service's serial (non-`concurrent_handlers`) Hunter dispatch, so a slow turn delays the next one.
+
+If real chat volume turns out to be high enough for either of these to matter, watch consumer lag on `orion:chat:history:turn`/`orion:chat:social:stored` and `orion-rdf-writer`'s dead-letter file size after deploy before assuming this is fine at scale. This is also the natural point to revisit whether `orion-rdf-writer` should keep consuming `orion:tags:chat:enriched` at all, given RDF's broader deprioritization elsewhere in the codebase — not decided here, just flagged as the next real question once live volume is observed.
+
 ## Running & Testing
 
 ### Run via Docker

@@ -178,15 +178,30 @@ async def handle_triage_event(envelope: BaseEnvelope) -> None:
 
     try:
         raw_payload = envelope.payload if isinstance(envelope.payload, dict) else {}
-        if not should_route_to_triage(raw_payload):
-            logger.info(
-                "skip meta-tags: non_strict kind=%s id=%s observer=%s source_service=%s",
-                envelope.kind,
-                raw_payload.get("id") or raw_payload.get("event_id"),
-                raw_payload.get("observer"),
-                raw_payload.get("source_service"),
-            )
-            return
+        # should_route_to_triage (Juniper-observer gate) intentionally does
+        # NOT run here for chat.history/social.turn.stored.v1 -- it's scoped
+        # to the generic collapse-mirror branch below, restoring the
+        # structure from commit ebd3b9d9 ("Gate collapse meta-tags by
+        # observer"). Commit aaf66d58 ("Enforce metacog draft/enrich patch
+        # contracts", 2026-01-30, unrelated to chat tagging in its own
+        # message/intent) moved this check in front of the chat.history
+        # branch as an apparent accidental side effect. Evidence this was
+        # live-broken, not just theoretical: `git show ebd3b9d9` vs
+        # `aaf66d58` diffs the gate's position directly, and
+        # ChatHistoryTurnV1 (orion/schemas/chat_history.py) has no `observer`
+        # field at all -- should_route_to_triage's own logic (
+        # orion/schemas/collapse_mirror.py) treats a missing observer as
+        # non-Juniper and returns False, so every real chat turn was
+        # unconditionally skipped for ~6 months. should_route_to_triage
+        # itself is not chat-kind-aware on purpose: it's a shared function
+        # also called directly by orion-collapse-mirror's own bus_runtime.py
+        # and orion/collapse/service.py, so making it skip chat kinds would
+        # leak a meta-tags-specific concept into an unrelated service's
+        # routing decision -- scoping the check to this file's generic branch
+        # instead keeps that a meta-tags-only concern. The generic branch
+        # already has its own independent Juniper/Orion gate
+        # (_is_juniper/_is_orion below) -- moving this check does not remove
+        # any gating there.
         if envelope.kind in {"chat.history", "social.turn.stored.v1"}:
             turn_id = raw_payload.get("turn_id") or raw_payload.get("correlation_id")
             if not turn_id and envelope.correlation_id:
@@ -255,6 +270,16 @@ async def handle_triage_event(envelope: BaseEnvelope) -> None:
 
             await meta_tagger.bus.publish(settings.CHANNEL_EVENTS_TAGGED_CHAT, out_env)
             logger.info("✅ Published chat tags for %s -> %s", turn_id, settings.CHANNEL_EVENTS_TAGGED_CHAT)
+            return
+
+        if not should_route_to_triage(raw_payload):
+            logger.info(
+                "skip meta-tags: non_strict kind=%s id=%s observer=%s source_service=%s",
+                envelope.kind,
+                raw_payload.get("id") or raw_payload.get("event_id"),
+                raw_payload.get("observer"),
+                raw_payload.get("source_service"),
+            )
             return
 
         # VALIDATION & TEXT EXTRACTION

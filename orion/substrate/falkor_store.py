@@ -13,7 +13,10 @@ successful concept/edge decode.
 from __future__ import annotations
 
 import logging
+import math
 import os
+import threading
+import time
 from dataclasses import dataclass, replace
 from typing import Any, Protocol
 from urllib.parse import urlparse
@@ -39,6 +42,7 @@ from orion.substrate.store import (
     SubstrateNeighborhoodSliceV1,
     SubstrateQueryResultV1,
 )
+from orion.substrate.graphdb_store import _resolve_snapshot_force_refresh_ceiling_sec
 
 logger = logging.getLogger("orion.substrate.falkor_store")
 
@@ -53,6 +57,50 @@ class FalkorGraphClient(Protocol):
 class FalkorSubstrateStoreConfig:
     uri: str
     graph_name: str = "orion_substrate"
+    # Same knob name and same generation+ceiling GATING logic as
+    # GraphDBSubstrateStoreConfig's field of this name (see that class's
+    # docstring) -- real change detection via a same-process write-
+    # generation counter, with this as the periodic safety-net ceiling
+    # bounding staleness from writes this process can't see (a different
+    # process's write, or a direct external mutation like an operator
+    # running Cypher DELETE by hand). Without any periodic refresh, a direct
+    # external deletion is invisible to this cache forever, AND the decay
+    # scheduler (services/orion-hub/scripts/api_routes.py::
+    # decay_concept_activations) durably re-upserts every node in every
+    # snapshot() it reads on every tick -- so a stale cache doesn't just
+    # show old data, it actively resurrects deleted durable data on the next
+    # tick. Confirmed live: this exact resurrection loop was observed and
+    # root-caused in production.
+    #
+    # NOT the same as GraphDB in two respects, both worth knowing:
+    # (1) GraphDBSubstrateStore's own generation+ceiling refresh is upsert-
+    #     only (never removes cache entries for durably-deleted nodes) and
+    #     it never does an eager hydration at construction -- so GraphDB
+    #     likely still has an equivalent resurrection exposure of its own;
+    #     porting this fix here does not imply GraphDB is already immune.
+    #     The fresh-cache-swap idea (see _hydrate_from_durable) is what
+    #     actually fixes deletion-visibility and is new to this store, not
+    #     ported from GraphDB.
+    # (2) This store's hydrate queries have no LIMIT (GraphDB's are capped
+    #     at 500 nodes / 1000 edges), and same_generation is invalidated by
+    #     ANY write anywhere -- so a caller that both reads and writes every
+    #     tick (the decay scheduler above is exactly this shape: one
+    #     snapshot() read, then N upsert_node() writes) will see a
+    #     generation mismatch on its OWN next tick's read, forcing a full
+    #     unbounded re-hydration on very close to every tick regardless of
+    #     this ceiling. This is an accepted, understood tradeoff at current
+    #     graph sizes (tens of nodes) -- correctness over cache efficiency
+    #     for this caller shape -- not a bug, but worth revisiting (a LIMIT,
+    #     or excluding a caller's own immediately-prior writes from
+    #     generation invalidation) if it ever shows up as real cost.
+    #
+    # See also FALKOR_SNAPSHOT_FORCE_REFRESH_CEILING_SEC (falls back to this
+    # shared SUBSTRATE_SNAPSHOT_FORCE_REFRESH_CEILING_SEC when unset) for an
+    # independent override -- RoutedSubstrateGraphStore can run both a
+    # GraphDB-backed and a Falkor-backed store concurrently in one process
+    # (primary + shadow), and given point (2) above, the two backends' real
+    # refresh costs are not symmetric.
+    snapshot_force_refresh_ceiling_sec: float = 30.0
 
 
 NATIVE_NODE_RETURN_FIELDS: tuple[str, ...] = (
@@ -252,10 +300,45 @@ class FalkorSubstrateStore:
         )
         self._cache = InMemorySubstrateGraphStore()
         self._result_source_kind = "falkor"
+        # See FalkorSubstrateStoreConfig.snapshot_force_refresh_ceiling_sec's
+        # docstring for the full reasoning -- mirrors GraphDBSubstrateStore's
+        # already-proven write-generation + ceiling mechanism exactly.
+        self._write_generation = 0
+        self._last_snapshot_at: float | None = None
+        # -1 sentinel: guarantees the first snapshot() call always sees
+        # same_generation=False (0 == -1 is never true), so no separate
+        # "first call" branch is needed in snapshot() itself.
+        self._last_snapshot_generation = -1
+        self._snapshot_lock = threading.Lock()
         if hydrate:
             self._hydrate_from_durable()
+            # Record that construction already did a full hydration, so the
+            # first real snapshot() call doesn't immediately redo it. Without
+            # this, the -1 sentinel above would force a second, wasted
+            # refresh on literally the next call (GraphDBSubstrateStore
+            # doesn't have this wrinkle because it never hydrates eagerly at
+            # construction -- its first snapshot() call is genuinely the
+            # first fetch, not a redundant second one).
+            self._last_snapshot_at = time.monotonic()
+            self._last_snapshot_generation = self._write_generation
 
     def _hydrate_from_durable(self) -> None:
+        """(Re)populate the in-process cache from durable Falkor state.
+
+        Called once at construction, and again periodically by snapshot()'s
+        refresh path (see FalkorSubstrateStoreConfig.snapshot_force_refresh_ceiling_sec).
+        Builds a FRESH InMemorySubstrateGraphStore and swaps it in wholesale
+        rather than upserting into the existing self._cache in place -- this
+        is the actual fix for the resurrection bug: an in-place upsert can
+        only ever add/update nodes that still exist durably, it can never
+        remove a node that was deleted directly in Falkor (bypassing this
+        process). A fresh cache, containing only what's durably present
+        right now, correctly reflects deletions on every refresh.
+
+        On query failure, returns without touching self._cache at all --
+        the stale-but-still-valid existing cache is a strictly better
+        fallback than an empty one.
+        """
         try:
             node_rows = self._client.graph_query(
                 "MATCH (n:SubstrateNode) RETURN " + _return_clause("n", NATIVE_NODE_RETURN_FIELDS)
@@ -277,6 +360,7 @@ class FalkorSubstrateStore:
             logger.warning("falkor_substrate_hydrate_failed error=%s", exc)
             return
 
+        fresh_cache = InMemorySubstrateGraphStore()
         for row in _normalize_rows(node_rows, fields=NATIVE_NODE_RETURN_FIELDS):
             try:
                 node = decode_node(row)
@@ -286,7 +370,7 @@ class FalkorSubstrateStore:
             if node is None:
                 continue
             identity = row.get("identity_key")
-            self._cache.upsert_node(identity_key=str(identity) if identity else None, node=node)
+            fresh_cache.upsert_node(identity_key=str(identity) if identity else None, node=node)
 
         for row in _normalize_rows(edge_rows, fields=NATIVE_EDGE_RETURN_FIELDS):
             try:
@@ -297,7 +381,27 @@ class FalkorSubstrateStore:
             if edge is None:
                 continue
             identity = row.get("identity_key") or self._edge_identity(edge)
-            self._cache.upsert_edge(identity_key=str(identity), edge=edge)
+            fresh_cache.upsert_edge(identity_key=str(identity), edge=edge)
+
+        # Swap now, before legacy migration -- _migrate_legacy_payload_*
+        # below call self.upsert_node()/self.upsert_edge() (the full public
+        # write path, which also bumps self._write_generation), and must
+        # operate against the current cache, not a soon-to-be-discarded one.
+        #
+        # Known, bounded race: upsert_node()/upsert_edge() are deliberately
+        # not protected by _snapshot_lock (matching GraphDBSubstrateStore's
+        # own precedent), so a concurrent upsert_node() call whose
+        # `self._cache.upsert_node(...)` step interleaves with this swap
+        # could land its write on the old (about to be discarded) cache
+        # object instead of `fresh_cache` -- that write would be briefly
+        # invisible to snapshot(). It self-heals: the write still bumped
+        # self._write_generation, so the very next snapshot() call detects
+        # the mismatch and re-fetches, which then sees the write durably
+        # reflected in Falkor. Not permanent loss, just a narrow visibility
+        # delay -- and this window scales with fresh_cache's build time,
+        # which is currently unbounded (see the LIMIT tradeoff noted on
+        # FalkorSubstrateStoreConfig.snapshot_force_refresh_ceiling_sec).
+        self._cache = fresh_cache
 
         self._migrate_legacy_payload_nodes(
             _normalize_rows(legacy_node_rows, fields=("payload_json", "identity_key"))
@@ -405,6 +509,7 @@ class FalkorSubstrateStore:
             logger.error("falkor_substrate_upsert_node_failed node_id=%s error=%s", node.node_id, exc)
             raise
         self._cache.upsert_node(identity_key=identity_key, node=node)
+        self._write_generation += 1
 
     def upsert_edge(self, *, identity_key: str, edge: SubstrateEdgeV1) -> None:
         edge = _with_sanitized_metadata(edge)
@@ -424,9 +529,43 @@ class FalkorSubstrateStore:
             logger.error("falkor_substrate_upsert_edge_failed edge_id=%s error=%s", edge.edge_id, exc)
             raise
         self._cache.upsert_edge(identity_key=identity_key, edge=edge)
+        self._write_generation += 1
 
     def snapshot(self) -> MaterializedSubstrateGraphState:
-        return self._cache.snapshot()
+        with self._snapshot_lock:
+            now_mono = time.monotonic()
+            elapsed = (now_mono - self._last_snapshot_at) if self._last_snapshot_at is not None else None
+            ceiling = float(self._cfg.snapshot_force_refresh_ceiling_sec)
+
+            # A write since our last refresh is a KNOWN, certain change -- the
+            # cache is never reused in that case, regardless of ceiling.
+            same_generation = self._last_snapshot_generation == self._write_generation
+            # ceiling <= 0 means "trust same_generation forever" (no periodic
+            # forced refresh); otherwise the ceiling forces a real refresh once
+            # elapsed even though same_generation is still true -- the safety
+            # net that bounds staleness from writes THIS process can't see:
+            # another process's write, or a direct external mutation (e.g. an
+            # operator running Cypher DELETE by hand against Falkor directly).
+            within_ceiling = ceiling <= 0.0 or elapsed is None or elapsed < ceiling
+
+            if same_generation and within_ceiling:
+                return self._cache.snapshot()
+
+            # Capture the generation BEFORE refreshing (which does network
+            # I/O), not after -- if a write races in while the refresh is in
+            # flight, capturing after would credit that write to data fetched
+            # before it happened, silently masking it until the next
+            # unrelated write or the ceiling fires again. Capturing before
+            # means such a race just costs one possibly-redundant extra
+            # refresh on the next call, never a falsely-trusted stale cache.
+            # Same reasoning as GraphDBSubstrateStore.snapshot() (already
+            # proven in production for the SPARQL backend); this mirrors it
+            # for Falkor to fix the equivalent gap here.
+            generation_at_fetch_start = self._write_generation
+            self._hydrate_from_durable()
+            self._last_snapshot_at = now_mono
+            self._last_snapshot_generation = generation_at_fetch_start
+            return self._cache.snapshot()
 
     def query_focal_slice(self, *, node_ids: list[str], max_edges: int = 64) -> SubstrateQueryResultV1:
         return _retag_source(
@@ -550,6 +689,38 @@ def _normalize_rows(
     return []
 
 
+def _resolve_falkor_snapshot_force_refresh_ceiling_sec() -> float:
+    """FALKOR_SNAPSHOT_FORCE_REFRESH_CEILING_SEC, falling back to the shared
+    SUBSTRATE_SNAPSHOT_FORCE_REFRESH_CEILING_SEC (same knob GraphDB reads)
+    when unset. A Falkor-specific override exists because
+    RoutedSubstrateGraphStore can run a GraphDB-backed store and a
+    Falkor-backed store concurrently in the same process (primary + shadow),
+    and the two backends' refresh costs are not symmetric -- Falkor's own
+    hydrate queries are currently unbounded (no LIMIT, unlike GraphDB's
+    capped _query_nodes/_query_edges_for_node_ids), so an operator running
+    both may want a longer Falkor ceiling without also having to change
+    GraphDB's. Without this override, both backends would be forced to share
+    one ceiling value with no way to tune them independently.
+    """
+    raw = str(os.getenv("FALKOR_SNAPSHOT_FORCE_REFRESH_CEILING_SEC", "")).strip()
+    if not raw:
+        return _resolve_snapshot_force_refresh_ceiling_sec()
+    try:
+        value = float(raw)
+    except ValueError:
+        logger.warning(
+            "falkor_snapshot_force_refresh_ceiling_invalid value=%r; falling back to shared setting", raw
+        )
+        return _resolve_snapshot_force_refresh_ceiling_sec()
+    if not math.isfinite(value):
+        logger.warning(
+            "falkor_snapshot_force_refresh_ceiling_invalid value=%r (non-finite); falling back to shared setting",
+            raw,
+        )
+        return _resolve_snapshot_force_refresh_ceiling_sec()
+    return value
+
+
 def build_falkor_substrate_store_from_env() -> FalkorSubstrateStore | InMemorySubstrateGraphStore:
     uri = str(os.getenv("FALKORDB_URI", "")).strip()
     if not uri:
@@ -561,4 +732,10 @@ def build_falkor_substrate_store_from_env() -> FalkorSubstrateStore | InMemorySu
         urlparse(uri).hostname or "",
         graph_name,
     )
-    return FalkorSubstrateStore(FalkorSubstrateStoreConfig(uri=uri, graph_name=graph_name))
+    return FalkorSubstrateStore(
+        FalkorSubstrateStoreConfig(
+            uri=uri,
+            graph_name=graph_name,
+            snapshot_force_refresh_ceiling_sec=_resolve_falkor_snapshot_force_refresh_ceiling_sec(),
+        )
+    )

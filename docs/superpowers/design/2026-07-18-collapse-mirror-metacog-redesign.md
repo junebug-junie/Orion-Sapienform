@@ -349,3 +349,78 @@ this doc explicitly left for Juniper):
   `services/orion-cortex-exec/app/executor.py`.
 - Schema field remapping, `substrate_grammar` trigger, provenance schema, heartbeat removal,
   STANCE handling: all still open per this doc's own "Open questions" section, untouched.
+
+## Implementation, second slice (2026-07-18, branch `feat/metacog-real-artifact-model`)
+
+Per Juniper's direct go-ahead to implement the real-artifact model, built the full split: a new,
+independent metacog schema/table sourced from live turn artifacts, with `collapse_mirror` now
+strict-lane-only for good.
+
+- **`collapse_mirror` is strict-lane-only.** `services/orion-dream/app/aggregators_sql.py::
+  fetch_recent_sql_fragments()` now filters `WHERE ... AND lower(trim(observer)) = 'juniper'`
+  (a SQL-level approximation of `orion/schemas/collapse_mirror.py::_observer_is_juniper()`,
+  minus diacritics-stripping -- a known, accepted simplification). No history migrated; the
+  8,481 existing rows stay exactly where they are.
+- **New schema: `orion/schemas/metacog_entry.py::MetacogEntryV1`.** Independent of
+  `CollapseMirrorEntryV2` -- no shared base class, no reused field names carrying old baggage.
+  Drops `numeric_sisters` entirely, no replacement. `state` (`MetacogRealState`) holds only real,
+  live-computed artifacts: `biometrics`, `turn_effect`/`turn_effect_evidence`,
+  `substrate_eventfulness_score`/`_reasons`, `llm_uncertainty`, `reasoning_excerpt`, and
+  `repair_pressure` (level/confidence/evidence/behavior_applied). `snapshot_kind` is a real
+  `Literal["baseline", "confirmed_dense"]` -- learned from `collapse_mirror.snapshot_kind`'s 38
+  distinct garbage free-text values in production after years as an unconstrained string.
+  `causal_density` (`orion/metacog/service.py::compute_causal_density`) blends only real
+  artifacts (repair_pressure, substrate_eventfulness, a severity read off turn_effect) -- there is
+  no self-report leg in this model, so nothing to blend it against.
+- **New table: `orion_metacog`** (`services/orion-sql-writer/app/models/metacog_entry.py`), a
+  genuinely different table from `collapse_mirror`, not a `_v2`. New channel
+  `orion:metacog:sql-write`, registered in `orion/bus/channels.yaml` and wired into
+  `orion-sql-writer`'s `MODEL_MAP`/`DEFAULT_ROUTE_MAP`/subscribe list (settings default AND
+  `.env_example`, since the env alias replaces the JSON route map wholesale in live deployments).
+- **`numeric_sisters` contamination fix (root problem 1, finally addressed).** The enrich prompt
+  (`orion/cognition/prompts/log_orion_metacognition_enrich.j2`) no longer instructs the LLM to
+  derive `numeric_sisters` from phi bands -- that section, the "NUMERIC SISTERS" mapping table,
+  and the "RISK SCORE" section are deleted from the template; the allowed-keys/forbidden-keys
+  lists and example JSON were updated to match. `phi_hint`/`spark_phi_narrative` computation in
+  `MetacogContextService` is left in place (still used by the fallback draft's narrative text and
+  the draft/enrich prompts' scene-setting "SPARK φ INTERPRETATION" guidance) -- just no longer fed
+  into anything that becomes a numeric self-rating.
+- **relational trigger re-sourced to repair_pressure_v2, replacing `turn_change_classify`.**
+  `services/orion-hub/scripts/pre_turn_appraisal_wiring.py` now forwards the full typed evidence
+  breakdown (`evidence_kind`/`score`/`confidence` per detector, not just a count) and publishes a
+  new `orion:repair_pressure:appraisal` envelope (Option A: new channel, chosen over inlining this
+  into cortex-exec) whenever the repair_pressure paradigm actually ran.
+  `services/orion-equilibrium-service/app/relational_metacog_gate.py` (subscribed to
+  `orion:chat:history:spark_meta:patch`, keyed on `turn_change_classify`'s SHIFT appraisal) is
+  deleted; `repair_pressure_metacog_gate.py` replaces it, keyed on `level`/`confidence` floors
+  over the new channel. `trigger_kind="relational"` is unchanged -- same conceptual category,
+  different evidence source.
+- **cortex-exec retarget.** `MetacogDraftService`/`MetacogEnrichService` keep using a
+  `CollapseMirrorEntryV2`-shaped scratch object internally -- that machinery (LLM patch schemas,
+  prompt-budget enforcement, the uncertainty probe) stays as-is, since it's just plumbing for the
+  authored summary/mantra/what_changed narrative loop (the "ritual half," explicitly meant to stay
+  non-deterministic). Only `MetacogPublishService` changed: it now builds a real `MetacogEntryV1`
+  from `ctx`'s live artifacts plus the scratch object's authored text, computes `causal_density`
+  inline via `orion.metacog.service.compute_causal_density`, and publishes to
+  `orion:metacog:sql-write` instead of `orion:collapse:sql-write`. The old self_state-blended
+  `apply_causal_density_to_entry` call is gone from this path (still used, unchanged, by the
+  strict-lane Hub form via `collapse_verbs.py`).
+- Tests: new schema tests (`orion/schemas/tests/test_metacog_entry.py`), new causal-density
+  scoring tests (`orion/metacog/tests/test_service.py`), new equilibrium gate tests
+  (`services/orion-equilibrium-service/tests/test_repair_pressure_metacog_gate.py`, replacing the
+  deleted `test_relational_metacog_gate.py`), new sql-writer wiring-shape tests
+  (`services/orion-sql-writer/tests/test_metacog_entry_sql_shape.py`), new hub wiring tests
+  (`services/orion-hub/tests/test_pre_turn_appraisal_wiring.py` additions), a dream-scope
+  regression test (`services/orion-dream/tests/test_aggregators_sql_collapse_scope.py`), and a
+  rewritten cortex-exec publish-lane test
+  (`services/orion-cortex-exec/tests/test_metacog_publish_lane.py::
+  test_publish_builds_metacog_entry_from_real_artifacts_no_self_report`, replacing the old
+  self_state-blend assertion this patch obsoletes).
+
+**Open question, not answered in this slice:** should `orion/memory/turn_change_classify.py` be
+retired? It is no longer used by metacog -- repair_pressure_v2 replaced it there in this same
+patch -- but it still feeds `orion/memory/retrieval_intent.py`'s recall-routing
+(`derive_retrieval_intent()`), which this patch does not touch. A later pass should look at
+whether that one remaining use case still justifies its own LLM-probe classifier, or whether it
+could be consolidated/simplified now that its other consumer is gone. Deliberately not answered
+here.

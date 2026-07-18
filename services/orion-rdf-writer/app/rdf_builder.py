@@ -131,11 +131,16 @@ def build_triples_from_envelope(env_kind: str, payload: Any) -> Tuple[Optional[s
             else:
                 meta = payload
 
-            if meta.enrichment_type == "chat_tagging":
-                key = meta.collapse_id or meta.id
-                subject_uri = URIRef(f"http://conjourney.net/orion/chatTurn/{_sanitize_fragment(key)}")
-            else:
-                subject_uri = URIRef(f"http://conjourney.net/event/{meta.collapse_id or meta.id}")
+            # enrichment_type == "chat_tagging" (chat/social-turn tag+entity
+            # enrichment, published on the now-unsubscribed
+            # orion:tags:chat:enriched channel) deliberately no longer
+            # reaches this branch as of 2026-07-18: that data now lands in
+            # FalkorDB only (orion-meta-tags' Phase 2 writer,
+            # services/orion-meta-tags/README.md). The Fuseki chatTurn copy
+            # was a second, redundant materialization of the same
+            # entities/sentiment. Only generic collapse-mirror tagging
+            # (enrichment_type == "tagging") can reach here now.
+            subject_uri = URIRef(f"http://conjourney.net/event/{meta.collapse_id or meta.id}")
             _build_enrichment_graph(g, meta, subject_uri, emit_claims=(env_kind == "tags.enriched"))
             attach_provenance(g, subject_uri, meta.service_name)
             return g.serialize(format="nt"), "orion:enrichment"

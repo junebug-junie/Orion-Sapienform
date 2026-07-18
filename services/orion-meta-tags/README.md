@@ -9,13 +9,14 @@ The **Meta Tags** service provides automated enrichment for collapse events, cha
 | :--- | :--- | :--- | :--- |
 | `orion:collapse:triage` | `CHANNEL_EVENTS_TRIAGE` | `collapse.mirror` | Raw entries needing enrichment (Juniper-observed only; Orion's own outputs are skipped). |
 | `orion:chat:history:turn` | `CHANNEL_EVENTS_CHAT_TURN` | `chat.history` | Chat turns — the source of the Falkor recall write below. |
-| `orion:chat:social:stored` (hardcoded, no env var) | — | `social.turn.stored.v1` | Social-room turns. Shares the same tagging code path as chat turns; **not yet** wired to the Falkor writer (Phase 6, see the plan doc below). |
+| `orion:chat:social:stored` (hardcoded, no env var) | — | `social.turn.stored.v1` | Social-room turns. Shares the same tagging code path and, as of 2026-07-18, the same Falkor write as chat turns. |
 
 ### Published Channels
 | Channel | Env Var | Kind | Description |
 | :--- | :--- | :--- | :--- |
 | `orion:tags:enriched` | `CHANNEL_EVENTS_TAGGED` | `tags.enriched` | Enriched metadata for collapse-mirror events. |
-| `orion:tags:chat:enriched` | `CHANNEL_EVENTS_TAGGED_CHAT` | `tags.enriched` | Enriched metadata for chat/social turns (same `kind`, different channel). Consumed by `orion-rdf-writer` (Fuseki write) and, as of Phase 2 below, written to Falkor directly by this service too. |
+
+Chat/social-turn tag+entity enrichment is **not published to the bus at all** — it goes straight into FalkorDB (below). See "Historical note" at the end of this section for what used to be here.
 
 ### Environment Variables
 Provenance: `.env_example` → `docker-compose.yml` → `settings.py`
@@ -25,8 +26,7 @@ Provenance: `.env_example` → `docker-compose.yml` → `settings.py`
 | `CHANNEL_EVENTS_TRIAGE` | `orion:collapse:triage` | Intake channel. |
 | `CHANNEL_EVENTS_CHAT_TURN` | `orion:chat:history:turn` | Chat-turn intake channel. |
 | `CHANNEL_EVENTS_TAGGED` | `orion:tags:enriched` | Collapse-mirror output channel. |
-| `CHANNEL_EVENTS_TAGGED_CHAT` | `orion:tags:chat:enriched` | Chat/social output channel. |
-| `RECALL_FALKOR_TAG_ENTITY_ENABLED` | `false` | See Falkor writer section. |
+| `RECALL_FALKOR_TAG_ENTITY_ENABLED` | `true` | See Falkor writer section. Default is `true` because Falkor is the *only* persistence path for chat/social tags now — `false` means no persistence at all for this data, not "skip a shadow write." |
 | `FALKORDB_URI` | `redis://orion-athena-falkordb:6379` | Shared FalkorDB instance (same one substrate-runtime and graphiti-adapter use, different graph name). |
 | `FALKORDB_RECALL_GRAPH` | `orion_recall` | Graph name — separate from `orion_substrate` and `graphiti_temporal`. |
 
@@ -34,43 +34,36 @@ Provenance: `.env_example` → `docker-compose.yml` → `settings.py`
 
 **Design/implementation:** `docs/superpowers/plans/2026-07-18-recall-tag-entity-falkor-writer-plan.md`. **Doctrine:** `docs/superpowers/specs/2026-07-16-falkordb-property-graph-routing-design.md`.
 
-When `RECALL_FALKOR_TAG_ENTITY_ENABLED=true`, every `chat.history` turn also gets a **Cypher-native** write into FalkorDB (`app/falkor_recall_writer.py`), additive alongside — not replacing — `orion-rdf-writer`'s existing Fuseki write of the same `tags.enriched` event. No RDF/SPARQL anywhere in this path.
+When `RECALL_FALKOR_TAG_ENTITY_ENABLED=true` (default), every `chat.history` **and** `social.turn.stored.v1` turn gets a **Cypher-native** write into FalkorDB (`app/falkor_recall_writer.py`). As of 2026-07-18 this is the sole persistence path for chat/social-turn tag+entity enrichment — no RDF/SPARQL, no bus publish. See "Historical note" below for the Fuseki dual-write this replaced.
 
 This lives here, not in `orion-rdf-writer`, deliberately: that service's own doctrine role is "legacy RDF materialize" only. Every real Falkor producer in the codebase (`orion-substrate-runtime`, `orion-graphiti-adapter`, `orion-spark-concept-induction`'s concept-profile cutover) writes from its own originating service, not bolted onto the RDF sink. This service is the actual producer of tag/entity extraction, so it's the actual producer of the Falkor write too.
 
-**Tradeoff worth naming, not just settling:** this does add a graph-persistence client (`redis.commands.graph`) into a service whose entire prior purpose and dependency footprint (`fastapi`, `spacy`, `sentence-transformers`) was NLP extraction. The "not in orion-rdf-writer" reasoning above only rules out one alternative (bolting a second branch onto the RDF sink); it doesn't by itself prove a small dedicated recall-graph-writer service (subscribing to `tags.enriched` independently, same shape as `orion-rdf-writer` itself) wouldn't have kept this service's dependency/failure surface untouched. Went with "producer writes its own Falkor data" because that's the actual precedent every other Falkor producer in the repo follows, not because the alternative was evaluated and rejected on its own merits.
+**Tradeoff worth naming, not just settling:** this does add a graph-persistence client (`redis.commands.graph`) into a service whose entire prior purpose and dependency footprint (`fastapi`, `spacy`, `sentence-transformers`) was NLP extraction. The "not in orion-rdf-writer" reasoning above only rules out one alternative (bolting a second branch onto the RDF sink); it doesn't by itself prove a small dedicated recall-graph-writer service (subscribing independently, same shape as `orion-rdf-writer` itself) wouldn't have kept this service's dependency/failure surface untouched. Went with "producer writes its own Falkor data" because that's the actual precedent every other Falkor producer in the repo follows, not because the alternative was evaluated and rejected on its own merits.
 
 Shape written (graph `orion_recall`) -- and an honest caveat about what actually lands today, not what the schema supports in general:
 ```text
-(:ChatTurn {turn_id, session_id?, ts, correlation_id?})   # thin -- no prompt/response text, Postgres owns that
+(:ChatTurn {turn_id, source_kind, session_id?, ts, correlation_id?})   # thin -- no prompt/response text, Postgres owns that
 (:ChatSession {session_id})-[:HAS_TURN]->(:ChatTurn)
 (:Entity {name})  (:Tag {name})                            # canonical, deduplicated by normalized name
 (:ChatTurn)-[:MENTIONS_ENTITY {ts}]->(:Entity)
 (:ChatTurn)-[:HAS_TAG {ts}]->(:Tag)
 ```
+`source_kind` (`"chat.history"` or `"social.turn.stored.v1"`) exists because both kinds share this same `:ChatTurn`/`:ChatSession` label -- without it, a `turn_id` collision between a Hub chat turn and a social-room turn (both producer-supplied strings, not namespaced against each other) would silently fuse two unrelated conversations into one node with no way to tell them apart afterward. `:ChatSession` itself still has no discriminator (only `session_id`) -- a real, not-yet-closed gap if chat and social sessions ever share an ID space.
 `sentiment` lands as a real `ChatTurn` property, split out of the `sentiment:*` string-tag convention. Bare numbers, stopwords, and relative-time expressions (`"today"`, `"18 years ago"`, etc.) are rejected at write time, not graphed — see `filter_noise()`. `confidence`/`salience`/`extractor_service` are not carried — confirmed dead constants across all live historical data (Phase 0 spec's live audit), not something to fake as meaningful.
 
-**`:Tag`/`HAS_TAG` are essentially unused today, and that's not a bug to silently paper over:** in the `chat.history` code path above, `tags = list(entities)` plus one sentiment marker — meaning `tags` and `entities` are the same spaCy NER extraction by construction, not two independently meaningful signals. Passing both to the writer unchanged would have double-materialized every entity as both a `:Tag` and an `:Entity` node/edge for zero informational gain, so the call site only passes the sentiment marker as `tags` (which `extract_sentiment()` then consumes entirely, leaving `kept_tags` empty in practice). The `:Tag`/`HAS_TAG` schema stays real and general (a future producer with genuinely distinct tag content could use it), but for this producer specifically, only `:Entity`/`MENTIONS_ENTITY` carries real data right now. Same root cause as the historical Fuseki `hasTag`/`hasEntity` predicates: this pipeline has never actually differentiated them.
+**`:Tag`/`HAS_TAG` are essentially unused today, and that's not a bug to silently paper over:** `tags`/`entities` are the same spaCy NER extraction by construction, not two independently meaningful signals — see `handle_triage_event`'s chat-kind branch. Passing both to the writer unchanged would have double-materialized every entity as both a `:Tag` and an `:Entity` node/edge for zero informational gain, so the call site only passes the sentiment marker as `tags` (which `extract_sentiment()` then consumes entirely, leaving `kept_tags` empty in practice). The `:Tag`/`HAS_TAG` schema stays real and general (a future producer with genuinely distinct tag content could use it), but for this producer specifically, only `:Entity`/`MENTIONS_ENTITY` carries real data right now. Same root cause as the historical Fuseki `hasTag`/`hasEntity` predicates: this pipeline never actually differentiated them.
 
-Runs off the event loop via `asyncio.to_thread` — the underlying `redis.commands.graph` client is sync (same pattern as `orion/spark/concept_induction/bus_worker.py`'s Falkor write). A write failure is logged and swallowed, never breaks the `tags.enriched` publish it rides alongside — this is a dark, additive path, not a dependency the existing pipeline can fail on. Falkor client construction is lock-guarded against a future `concurrent_handlers=True` flip on this service's Hunter (currently serial dispatch, so not a live race, but four other services in the repo already use that flag).
+Runs off the event loop via `asyncio.to_thread` — the underlying `redis.commands.graph` client is sync (same pattern as `orion/spark/concept_induction/bus_worker.py`'s Falkor write). **A write failure is logged at ERROR and swallowed** (`falkor_recall_write_failed_data_lost`, not a WARNING — bumped 2026-07-18 alongside the Fuseki kill, to reflect that it's no longer a dark/additive path riding alongside a real copy elsewhere): a swallowed failure here means that turn's tag/entity data is not persisted anywhere, full stop. There is no retry and no dead-letter queue on this path (unlike `orion-rdf-writer`'s `RDF_WRITE_QUEUE_MAXSIZE` dead-letter behavior) — a sustained FalkorDB outage silently loses every turn's tags/entities for its duration, one ERROR log line each, with nothing currently alerting on that log pattern. Watch `falkor_recall_write_failed_data_lost` frequency and consumer lag on `orion:chat:history:turn`/`orion:chat:social:stored` if real volume turns out to be high enough for either to matter — this is the natural next thing to instrument if this path proves it needs it, not something built preemptively here. Falkor client construction is lock-guarded against a future `concurrent_handlers=True` flip on this service's Hunter (currently serial dispatch, so not a live race, but four other services in the repo already use that flag).
 
-Not yet wired: `social.turn.stored.v1` (Phase 6), historical backfill (Phase 3), any read-side change in `orion-recall` (Phase 4).
+Not yet wired: historical backfill (Phase 3), any read-side change in `orion-recall` (Phase 4).
 
-## Dual persistence pathway: chat-turn tags go to two graph stores
+### Historical note: the Fuseki dual-write (killed 2026-07-18)
 
-Every `chat.history` turn's tag/entity data currently materializes into **two independent graph stores**, both fed from the same `tags.enriched` publish on `orion:tags:chat:enriched` (`CHANNEL_EVENTS_TAGGED_CHAT`):
+From when this writer first shipped (PR #1180) until 2026-07-18, chat/social-turn tag+entity data was **also** published to the bus (`orion:tags:chat:enriched` / `CHANNEL_EVENTS_TAGGED_CHAT`) for `orion-rdf-writer` to materialize into Fuseki as a `ChatTurn` subject with `hasTag`/`hasEntity` predicates (`rdf_builder.py`, `enrichment_type == "chat_tagging"`) — a *different* path from the raw `chat.history` → `ChatTurn`/`ChatMessage` RDF materialization killed on 2026-07-17.
 
-1. **Fuseki (RDF, legacy).** `orion-rdf-writer` consumes this channel and builds a `ChatTurn` subject with `hasTag`/`hasEntity` predicates under the `orion:enrichment` graph (`rdf_builder.py`, `enrichment_type == "chat_tagging"`). This is a *separate* path from the raw `chat.history`/`chat.history.message.v1` → `ChatTurn`/`ChatMessage` RDF materialization that was deliberately killed on 2026-07-17 for covering only ~11-18% of real chat volume — that removal did not touch this enrichment path, which stays live.
-2. **FalkorDB (Cypher, Phase 2).** This service's own `falkor_recall_writer.py` writes the same turn's entities/sentiment directly into `orion_recall`, gated by `RECALL_FALKOR_TAG_ENTITY_ENABLED` (see above).
+Both the Fuseki copy and this Falkor writer were effectively dark for ~6 months due to an unrelated observer-gate bug (`fix/meta-tags-chat-history-observer-gate`) that unconditionally skipped every real chat turn before it reached tagging. Fixing that gate brought both stores live simultaneously for the first time; the very next change (this one) killed the now-redundant Fuseki side and extended the Falkor write to cover `social.turn.stored.v1` too (previously chat.history-only — that gap would otherwise have meant social-room turns lost persistence entirely once Fuseki was cut). Verified live before the cut: a real chat turn's `ChatTurn` node queryable directly via `GRAPH.QUERY` against `orion_recall`, matching the same `orion-rdf-writer` Fuseki enqueue log line for the identical `correlation_id`.
 
-Falkor is **additive, not a cutover** — it does not replace the Fuseki write, and nothing currently reads from Falkor for recall. This is intentionally a shadow-write phase (Phase 4 is the read-side migration, not yet started).
-
-**Why this needs a named callout:** both pathways were effectively dark for ~6 months. A gate-ordering bug (`services/orion-meta-tags/app/main.py`'s `handle_triage_event` — see the fix in `fix/meta-tags-chat-history-observer-gate`) unconditionally skipped every real `chat.history` turn before it ever reached tagging, so neither the Fuseki `chat_tagging` enrichment path nor the Falkor writer had ever run against real production volume. Fixing that gate means **both stores see real chat traffic for the first time simultaneously**, on the same deploy. Neither side has been load-tested:
-
-- `orion-rdf-writer`'s write queue for this channel (`RDF_WRITE_QUEUE_MAXSIZE=5000`, 8 workers) drops to a dead-letter file on overflow rather than crashing, but dead-letter growth isn't currently alerted on.
-- The Falkor writer does up to 4 sequential Cypher round-trips per turn inside one `asyncio.to_thread` call, and the spaCy NER call in `handle_triage_event` (`SPA_MODEL=en_core_web_trf`, a transformer model) runs synchronously inline with no rate-limiting — both stack under this service's serial (non-`concurrent_handlers`) Hunter dispatch, so a slow turn delays the next one.
-
-If real chat volume turns out to be high enough for either of these to matter, watch consumer lag on `orion:chat:history:turn`/`orion:chat:social:stored` and `orion-rdf-writer`'s dead-letter file size after deploy before assuming this is fine at scale. This is also the natural point to revisit whether `orion-rdf-writer` should keep consuming `orion:tags:chat:enriched` at all, given RDF's broader deprioritization elsewhere in the codebase — not decided here, just flagged as the next real question once live volume is observed.
+Do not re-add the Fuseki side without a real reason — it was a redundant second materialization of the exact same entities/sentiment, not an independent signal.
 
 ## Running & Testing
 

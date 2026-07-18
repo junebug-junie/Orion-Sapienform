@@ -69,6 +69,18 @@ def test_world_pulse_graph_channel_not_subscribed():
     assert "orion:world_pulse:graph:upsert" not in _channels()
 
 
+def test_tags_chat_enriched_channel_not_subscribed():
+    """orion:tags:chat:enriched (2026-07-18, same day, later patch): chat/
+    social-turn tag+entity enrichment is FalkorDB-only now (orion-meta-tags'
+    Phase 2 writer). The Fuseki `chat_tagging` copy this channel fed was a
+    redundant second materialization of the same data -- unlike the other 4
+    channels above, this one HAD real live traffic (confirmed via a live
+    GRAPH.QUERY + matching rdf-writer enqueue log for the same
+    correlation_id right before this kill), it just became redundant once
+    Falkor covered the same data. Do not re-add."""
+    assert "orion:tags:chat:enriched" not in _channels()
+
+
 def test_cortex_worker_rdf_build_kind_is_quiet_noop():
     """cortex.worker.rdf_build (would-be CognitiveStepExecution) must not
     resurrect a dispatch branch -- unknown kind falls through to (None, None)."""
@@ -87,6 +99,35 @@ def test_goals_proposed_kind_is_quiet_noop():
     nt, graph_name = build_triples_from_envelope("memory.goals.proposed.v1", {"artifact_id": "goal-1"})
     assert nt is None
     assert graph_name is None
+
+
+def test_chat_tagging_enrichment_falls_through_to_generic_event_uri():
+    """2026-07-18 (same day, later patch): the dedicated
+    enrichment_type=="chat_tagging" subject_uri branch (chatTurn/{id}) was
+    removed since orion:tags:chat:enriched is no longer subscribed (see
+    test_tags_chat_enriched_channel_not_subscribed above), so this shape can
+    no longer reach build_triples_from_envelope via the live bus. This test
+    locks in what happens if it ever does anyway (dead-letter replay, a
+    stale queued message from before the cutover, a reintroduced producer):
+    it now falls through to the generic event/{id} URI scheme rather than
+    being rejected -- not a no-op like the other kinds in this file, a real
+    behavior change worth having a test name for."""
+    nt, graph_name = build_triples_from_envelope(
+        "tags.enriched",
+        {
+            "service_name": "orion-meta-tags",
+            "service_version": "0.2.0",
+            "id": "turn-1",
+            "collapse_id": "turn-1",
+            "enrichment_type": "chat_tagging",
+            "tags": ["sentiment:neutral"],
+            "entities": ["Circe"],
+        },
+    )
+    assert nt is not None
+    assert graph_name == "orion:enrichment"
+    assert "http://conjourney.net/orion/chatTurn/" not in nt
+    assert "http://conjourney.net/event/turn-1" in nt
 
 
 def test_world_pulse_graph_upsert_kind_is_quiet_noop():

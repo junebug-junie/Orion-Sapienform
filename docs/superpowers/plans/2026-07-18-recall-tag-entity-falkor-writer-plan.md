@@ -5,6 +5,8 @@
 **Implements:** Phase 2 of `docs/superpowers/specs/2026-07-17-recall-rdf-writer-falkor-cutover-phase2-spec.md`, applying the routing/property doctrine in `docs/superpowers/specs/2026-07-16-falkordb-property-graph-routing-design.md`.
 **Mode:** Implementation (this doc records the design that was reviewed and approved before building; not a fresh proposal)
 
+**Amendment (2026-07-18, same day, later patch):** the "alongside (not replacing) the existing Fuseki write" framing below is now historical. Once `fix/meta-tags-chat-history-observer-gate` fixed a dark ~6-month gate bug that had kept both this writer and the Fuseki copy from ever running against real traffic, the very next patch (`fix/meta-tags-kill-rdf-chat-dual-write`) killed the Fuseki side as redundant and extended this writer to also cover `social.turn.stored.v1` (removing the `chat.history`-only gate mentioned in "Corrected scope" item 1 below and in the deferred-scope note near the end of this doc) — Fuseki was social.turn.stored.v1's *only* persistence path, so leaving that gate in place would have deleted that data outright. See `services/orion-meta-tags/README.md`'s "Historical note" section for the live-verified before/after.
+
 ---
 
 ## What this is
@@ -17,6 +19,8 @@ A live, dark-shipped Cypher-native write of chat tag/entity data into FalkorDB, 
 2. **This does not live in `orion-rdf-writer`.** That service's own doctrine role is explicitly scoped to "Legacy RDF materialize" (`docs/superpowers/specs/2026-07-16-falkordb-property-graph-routing-design.md`'s service-ownership table) and its canonical-writer doc (`docs/architecture/rdf_store_v1_cutover.md`) says its job is RDF materialization from the bus, specifically. Every real Falkor producer in the codebase lives in the originating service instead: `orion-substrate-runtime` for substrate, `orion-graphiti-adapter` for crystallizations, `orion-spark-concept-induction` for concept profiles (that one is the closest precedent — the producer writes directly to Falkor and stops routing through `orion-rdf-writer` for that data). This writer belongs in **`orion-meta-tags`**, the actual producer of tag/entity extraction, not bolted onto the RDF service as a second branch.
 
 ## Current architecture (verified this session, not assumed)
+
+**This section is a snapshot from when this doc was written -- see the amendment at the top. The `publishes kind="tags.enriched" to CHANNEL_EVENTS_TAGGED_CHAT` claim below is no longer true as of the same-day follow-up patch; there is no bus publish for this data anymore.**
 
 - **Producer**: `services/orion-meta-tags/app/main.py::handle_triage_event`. Subscribed to `orion:collapse:triage`, `orion:chat:history:turn`, `orion:chat:social:stored`. For `envelope.kind in {"chat.history", "social.turn.stored.v1"}`, runs spaCy NER (`entities = [ent.text for ent in doc.ents]`, `tags = list(entities)`), a crude keyword-heuristic sentiment tag (`"sentiment:positive"|"sentiment:negative"|"sentiment:neutral"`, appended into `tags`), builds a `MetaTagsPayload` (aliased `Enrichment`), and publishes `kind="tags.enriched"` to `CHANNEL_EVENTS_TAGGED_CHAT` (`orion:tags:chat:enriched`).
 - **`MetaTagsPayload`** (`orion/schemas/telemetry/meta_tags.py`) fields: `service_name, service_version, node, timestamp, source_message_id, correlation_id, tags, entities, processing_meta, id, collapse_id, enrichment_type`. **No `session_id` field.**

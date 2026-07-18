@@ -67,8 +67,16 @@ async def _write_chat_turn_tags_to_falkor_async(
     sentiment_tag: str, entities: list[str],
 ) -> None:
     """All field extraction happens inside the try block, including
-    envelope.created_at.isoformat() -- this is a dark/additive path and must
-    never raise into the caller, even on an unexpected envelope shape."""
+    envelope.created_at.isoformat().
+
+    As of 2026-07-18 this is the SOLE persistence path for chat/social-turn
+    tag+entity enrichment -- the Fuseki dual-write it used to ride alongside
+    was killed the same day. A swallowed exception here is no longer a
+    harmless missed shadow-copy; it means that turn's tags/entities are not
+    persisted anywhere. Still caught rather than raised (a bad write must not
+    crash triage intake for every subsequent event), but logged at ERROR, not
+    WARNING, to reflect that.
+    """
     if not settings.RECALL_FALKOR_TAG_ENTITY_ENABLED:
         return
     try:
@@ -80,6 +88,7 @@ async def _write_chat_turn_tags_to_falkor_async(
             write_chat_turn_tags_to_falkor,
             client,
             turn_id=turn_id,
+            source_kind=envelope.kind,
             session_id=raw_payload.get("session_id"),
             ts=envelope.created_at.isoformat(),
             correlation_id=str(envelope.correlation_id) if envelope.correlation_id else None,
@@ -96,9 +105,11 @@ async def _write_chat_turn_tags_to_falkor_async(
         )
         logger.info("falkor_recall_write_committed turn_id=%s result=%s", turn_id, result)
     except Exception as exc:
-        # Additive/dark path: never let a Falkor write failure break the
-        # existing tags.enriched publish it rides alongside.
-        logger.warning("falkor_recall_write_failed turn_id=%s error=%s", turn_id, exc)
+        # This is the sole persistence path now (see docstring) -- a caught
+        # exception here means real, permanent data loss for this turn, not
+        # a missed shadow-copy. Still swallowed (one bad write must not take
+        # down triage intake for every subsequent event) but at ERROR.
+        logger.error("falkor_recall_write_failed_data_lost turn_id=%s error=%s", turn_id, exc)
 
 
 def _svc_ref() -> ServiceRef:
@@ -171,8 +182,10 @@ async def handle_meta_tags_rpc(env: BaseEnvelope) -> BaseEnvelope:
 
 async def handle_triage_event(envelope: BaseEnvelope) -> None:
     """
-    Handler for 'orion:collapse:triage' streaming path.
-    Keeps your existing behavior: emits Enrichment -> tags.enriched.
+    Handler for 'orion:collapse:triage' streaming path (generic collapse-
+    mirror events -- emits Enrichment -> tags.enriched), plus chat.history
+    and social.turn.stored.v1 (their tag/entity enrichment is Falkor-only,
+    no bus publish -- see the comment inside the chat-kind branch below).
     """
     global meta_tagger
 
@@ -217,7 +230,6 @@ async def handle_triage_event(envelope: BaseEnvelope) -> None:
 
             doc = nlp(in_payload.text or "")
             entities = [ent.text for ent in doc.ents]
-            tags = list(entities)
 
             sentiment_tag = "sentiment:neutral"
             positive_keywords = {"triumphant", "relief", "capable", "good", "success"}
@@ -229,47 +241,26 @@ async def handle_triage_event(envelope: BaseEnvelope) -> None:
             elif tokens & negative_keywords:
                 sentiment_tag = "sentiment:negative"
 
-            tags.append(sentiment_tag)
-
-            # Phase 2 recall Falkor write (dark by default): gated to
-            # chat.history only, not social.turn.stored.v1 -- that's Phase 6,
-            # deliberately not touched here even though it shares this code
-            # path. All field extraction (session_id, ts, correlation_id)
-            # happens inside the async helper's own try block, not here --
-            # this call must never raise into the existing tags.enriched
-            # publish path below.
-            if envelope.kind == "chat.history":
-                await _write_chat_turn_tags_to_falkor_async(
-                    envelope=envelope,
-                    raw_payload=raw_payload,
-                    turn_id=str(turn_id),
-                    sentiment_tag=sentiment_tag,
-                    entities=entities,
-                )
-
-            enrichment = Enrichment(
-                id=turn_id,
-                collapse_id=turn_id,
-                service_name=settings.SERVICE_NAME,
-                service_version=settings.SERVICE_VERSION,
-                enrichment_type="chat_tagging",
-                tags=tags,
+            # FalkorDB is the sole persistence target for chat/social-turn
+            # tag+entity enrichment as of 2026-07-18 -- there is no longer a
+            # bus publish here at all. Previously this also published
+            # tags.enriched to orion:tags:chat:enriched for orion-rdf-writer
+            # to materialize into Fuseki (chat.history only had this AND the
+            # Falkor write below; social.turn.stored.v1 had ONLY the Fuseki
+            # copy, since the Falkor write was chat.history-gated). Killed
+            # both: the Fuseki copy was a redundant second materialization
+            # of the exact same entities/sentiment already durably written
+            # here, and extending the Falkor write to social.turn.stored.v1
+            # (removing the old chat.history-only gate) means neither kind
+            # loses persistence. See services/orion-meta-tags/README.md.
+            await _write_chat_turn_tags_to_falkor_async(
+                envelope=envelope,
+                raw_payload=raw_payload,
+                turn_id=str(turn_id),
+                sentiment_tag=sentiment_tag,
                 entities=entities,
-                salience=0.0,
-                ts=datetime.now(timezone.utc).isoformat(),
-                node=settings.NODE_NAME,
-                correlation_id=str(envelope.correlation_id) if envelope.correlation_id else str(turn_id),
-                source_message_id=str(envelope.id) if envelope.id else None,
             )
-
-            out_env = envelope.derive_child(
-                kind="tags.enriched",
-                source=_svc_ref(),
-                payload=enrichment,
-            )
-
-            await meta_tagger.bus.publish(settings.CHANNEL_EVENTS_TAGGED_CHAT, out_env)
-            logger.info("✅ Published chat tags for %s -> %s", turn_id, settings.CHANNEL_EVENTS_TAGGED_CHAT)
+            logger.info("✅ Falkor-wrote chat tags for %s (kind=%s)", turn_id, envelope.kind)
             return
 
         if not should_route_to_triage(raw_payload):

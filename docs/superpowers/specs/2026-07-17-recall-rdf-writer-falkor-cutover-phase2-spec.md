@@ -41,6 +41,12 @@ orion:rdf:enqueue              # RdfWriteRequest from orion-cortex-exec, orion-v
 orion:rdf-collapse:enqueue
 orion:collapse:*  (CHANNEL_EVENTS_COLLAPSE)
 orion:tags:*      (CHANNEL_EVENTS_TAGGED, CHANNEL_EVENTS_TAGGED_CHAT)  -> Claim nodes (tags.enriched, emit_claims=True)
+                  # STALE as of 2026-07-18 (this snapshot predates it): CHANNEL_EVENTS_TAGGED_CHAT
+                  # (orion:tags:chat:enriched) removed -- FalkorDB-only now, see
+                  # services/orion-meta-tags/README.md "Historical note". This whole block is a
+                  # frozen point-in-time snapshot already out of date for other kills too
+                  # (orion:worker:rdf / CORTEX_LOG_CHANNEL below were removed by PR #1167) --
+                  # trust settings.py::get_all_subscribe_channels() over this list.
 orion:chat:social:stored        -> SocialRoomTurn / SocialConceptEvidence
 orion:core:events (CHANNEL_CORE_EVENTS)
 orion:worker:rdf  (CHANNEL_WORKER_RDF)

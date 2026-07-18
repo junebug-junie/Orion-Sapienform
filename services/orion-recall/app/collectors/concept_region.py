@@ -19,17 +19,35 @@ Wiring this collector into the live turn-assembly pipeline (deciding
 when/how it gets invoked during a real chat turn, and whether its output
 feeds `chat_stance.py` or something else) is out of scope here. This file
 only builds and tests the collector function in isolation.
+
+`fetch_concept_region_fragment()` above never persists anything -- that
+promise is unchanged. `reinforce_matched_concepts()` and
+`fetch_concept_region_fragment_and_reinforce()` below are a separate,
+explicitly-named write path added later (see CONCEPT_REINFORCEMENT_DESIGN.md
+in this same folder for the full design conversation): being surfaced in a
+live turn is treated as a real "this concept is still relevant" signal that
+nudges `signals.activation` back up, the mirror image of the decay this
+concept-atlas system already applies. Only activation moves -- never
+confidence, salience, recency_score, or temporal.observed_at; see the design
+doc for why each of those is deliberately left alone.
 """
 
 from __future__ import annotations
 
 import logging
-from typing import Any
+from typing import Any, Iterable
 
 from orion.core.schemas.cognitive_substrate import BaseSubstrateNodeV1, SubstrateEdgeV1
 from orion.substrate.store import SubstrateGraphStore
 
 logger = logging.getLogger(__name__)
+
+# Mirrors orion.memory.crystallization.dynamics.recall_boost()'s boost
+# constant and math exactly -- a structurally identical "this was retrieved"
+# signal, reusing an already-validated value instead of inventing a new one.
+_RECALL_REINFORCEMENT_BOOST = 0.08
+
+_NODE_FRAGMENT_ID_PREFIX = "concept_region:node:"
 
 # Search breadth for the label-match pass. `read_concept_region` ranks and
 # truncates by salience/confidence, so a low-salience concept could be cut
@@ -83,7 +101,7 @@ def _node_to_fragment(node: BaseSubstrateNodeV1) -> dict[str, Any]:
     except Exception:
         salience = 0.0
     return {
-        "id": f"concept_region:node:{getattr(node, 'node_id', '')}",
+        "id": f"{_NODE_FRAGMENT_ID_PREFIX}{getattr(node, 'node_id', '')}",
         "source": "concept_region",
         "snippet": snippet,
         "text": snippet,
@@ -161,4 +179,113 @@ def fetch_concept_region_fragment(
     return fragments
 
 
-__all__ = ["fetch_concept_region_fragment"]
+def reinforce_matched_concepts(
+    matched_node_ids: Iterable[str],
+    *,
+    store: SubstrateGraphStore | None,
+    boost: float = _RECALL_REINFORCEMENT_BOOST,
+) -> int:
+    """Bump activation for concept nodes that were actually surfaced in a live turn.
+
+    Being recalled is a real but weaker reinforcement signal than recurrence
+    (see CONCEPT_REINFORCEMENT_DESIGN.md in this folder) -- mirrors
+    `orion.memory.crystallization.dynamics.recall_boost()`'s exact math:
+    `activation = current + (1 - current) * boost`, asymptotic toward 1.0,
+    never overshoots. Only `signals.activation.activation` moves; confidence,
+    salience, recency_score, and temporal.observed_at are never touched here
+    (see the design doc for why each is deliberately left alone).
+
+    Never raises: a missing store, a missing/non-concept node, or a failed
+    write for one node degrades to skipping that node, matching this
+    module's read-side conventions. Returns the count of nodes actually
+    reinforced.
+
+    Deliberately does not call `store.snapshot()`. On `FalkorSubstrateStore`,
+    `snapshot()` can trigger a full, currently-unbounded re-hydrate query
+    whenever the write generation has moved since the last call (see
+    `orion/substrate/falkor_store.py`) -- fine for Hub's 120s decay-scheduler
+    cadence, but this function runs on a live per-turn hot path where that
+    cost compounds with every reinforcing turn. `get_node_by_id()` and
+    `get_identity_key_by_node_id()` both read straight from the store's
+    in-process cache with no such refresh cost (confirmed by reading
+    `FalkorSubstrateStore`'s own implementation of both).
+    """
+    node_ids = {str(node_id) for node_id in matched_node_ids if node_id}
+    if not node_ids or store is None:
+        return 0
+
+    clamped_boost = min(1.0, max(0.0, boost))
+
+    reinforced = 0
+    for node_id in node_ids:
+        try:
+            node = store.get_node_by_id(node_id)
+        except Exception as exc:  # noqa: BLE001 - must degrade, never raise
+            logger.debug("concept_region reinforcement: get_node_by_id(%s) failed: %s", node_id, exc)
+            continue
+        if node is None or getattr(node, "node_kind", None) != "concept":
+            continue
+        try:
+            identity_key = store.get_identity_key_by_node_id(node_id)
+        except Exception as exc:  # noqa: BLE001 - must degrade, never raise
+            logger.debug("concept_region reinforcement: get_identity_key_by_node_id(%s) failed: %s", node_id, exc)
+            continue
+        if not identity_key:
+            # Falkor's codec writes `identity_key or ""` unconditionally on
+            # every upsert -- a missing identity here would durably clobber
+            # this node's real identity_key rather than leaving it alone.
+            # Every current producer registers a real identity_key at
+            # creation, so this should be rare; skip rather than risk it.
+            logger.debug("concept_region reinforcement: node %s has no known identity_key, skipping", node_id)
+            continue
+        try:
+            activation_signal = node.signals.activation
+            current = min(1.0, max(0.0, activation_signal.activation))
+            boosted = min(1.0, current + (1.0 - current) * clamped_boost)
+            updated_signal = activation_signal.model_copy(update={"activation": boosted})
+            updated_signals = node.signals.model_copy(update={"activation": updated_signal})
+            updated_node = node.model_copy(update={"signals": updated_signals})
+            store.upsert_node(identity_key=identity_key, node=updated_node)
+            reinforced += 1
+        except Exception as exc:  # noqa: BLE001 - one node's failure must not block the rest
+            logger.debug("concept_region reinforcement: node %s failed: %s", node_id, exc)
+
+    return reinforced
+
+
+def fetch_concept_region_fragment_and_reinforce(
+    query: Any,
+    *,
+    store: SubstrateGraphStore | None,
+    limit_nodes: int = _DEFAULT_SEARCH_LIMIT_NODES,
+    limit_edges: int = _DEFAULT_SEARCH_LIMIT_EDGES,
+) -> list[dict[str, Any]]:
+    """`fetch_concept_region_fragment()` plus reinforcement for whatever it matched.
+
+    Composes the two functions above rather than modifying
+    `fetch_concept_region_fragment()` itself, which keeps its own
+    never-persists contract intact for any other caller. This is the
+    function the live turn-assembly pipeline should call.
+    """
+    fragments = fetch_concept_region_fragment(
+        query, store=store, limit_nodes=limit_nodes, limit_edges=limit_edges
+    )
+    if not fragments or store is None:
+        return fragments
+
+    matched_node_ids = [
+        fragment["id"][len(_NODE_FRAGMENT_ID_PREFIX):]
+        for fragment in fragments
+        if str(fragment.get("id", "")).startswith(_NODE_FRAGMENT_ID_PREFIX)
+    ]
+    if matched_node_ids:
+        reinforce_matched_concepts(matched_node_ids, store=store)
+
+    return fragments
+
+
+__all__ = [
+    "fetch_concept_region_fragment",
+    "fetch_concept_region_fragment_and_reinforce",
+    "reinforce_matched_concepts",
+]

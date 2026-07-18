@@ -26,7 +26,7 @@ try:
     from .fusion import fuse_candidates, pcr_fuse_belief_candidates, render_continuity_bundle
     from .pcr_collectors import apply_collector_plan, collectors_for_intent
     from .collectors.active_packet import fetch_active_packet_fragments
-    from .collectors.concept_region import fetch_concept_region_fragment
+    from .collectors.concept_region import fetch_concept_region_fragment_and_reinforce
     from .substrate_store import get_substrate_store
     from .profiles import get_profile
     from .settings import settings
@@ -56,7 +56,7 @@ except ImportError as _e:  # pragma: no cover - fallback for runtime pathing
         from app.fusion import fuse_candidates, pcr_fuse_belief_candidates, render_continuity_bundle  # type: ignore
         from app.pcr_collectors import apply_collector_plan, collectors_for_intent  # type: ignore
         from app.collectors.active_packet import fetch_active_packet_fragments  # type: ignore
-        from app.collectors.concept_region import fetch_concept_region_fragment  # type: ignore
+        from app.collectors.concept_region import fetch_concept_region_fragment_and_reinforce  # type: ignore
         from app.substrate_store import get_substrate_store  # type: ignore
         from app.profiles import get_profile  # type: ignore
         from app.settings import settings  # type: ignore
@@ -1608,16 +1608,22 @@ async def process_recall(
                 # Both get_substrate_store() (first-call hydration: FalkorDB
                 # issues several synchronous GRAPH.QUERY network calls with
                 # no client-side timeout, see FalkorSubstrateStore.__init__)
-                # and fetch_concept_region_fragment's store read are blocking
-                # -- both must run inside the offloaded thread, not just the
-                # fragment fetch. asyncio.to_thread only defers execution of
-                # the callable it's given; any argument expression (like a
-                # bare get_substrate_store() call) is still evaluated
-                # up front on the calling coroutine, i.e. still on this
-                # shared event loop. The lambda below defers both calls into
-                # the thread.
+                # and fetch_concept_region_fragment_and_reinforce's store
+                # reads/write are blocking -- both must run inside the
+                # offloaded thread, not just the fragment fetch.
+                # asyncio.to_thread only defers execution of the callable
+                # it's given; any argument expression (like a bare
+                # get_substrate_store() call) is still evaluated up front on
+                # the calling coroutine, i.e. still on this shared event
+                # loop. The lambda below defers both calls into the thread.
+                # fetch_concept_region_fragment_and_reinforce also writes a
+                # small activation bump for whatever it matched (see
+                # collectors/CONCEPT_REINFORCEMENT_DESIGN.md) -- a real
+                # Falkor write measured sub-millisecond live, on the same
+                # already-offloaded thread, so no new latency risk on the
+                # event loop.
                 cr_frags = await asyncio.to_thread(
-                    lambda: fetch_concept_region_fragment(q, store=get_substrate_store())
+                    lambda: fetch_concept_region_fragment_and_reinforce(q, store=get_substrate_store())
                 )
                 candidates.extend(cr_frags)
                 backend_counts_total["concept_region"] = len(cr_frags)

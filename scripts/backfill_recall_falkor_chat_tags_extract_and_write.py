@@ -3,8 +3,11 @@
 
 Reads /app/_backfill_snapshot.json (copied in from
 scripts/backfill_recall_falkor_chat_tags_snapshot.py's output), runs the
-SAME extraction pipeline the live orion-meta-tags writer uses (spaCy NER +
-keyword sentiment heuristic), and writes via the SAME
+SAME extraction pipeline the live orion-meta-tags writer uses (spaCy NER,
+filtered through app.main._named_entities' label allow-list since
+2026-07-19 -- calling that function directly, not reimplementing it, so this
+script can't drift from the live filter if it's ever re-run -- + keyword
+sentiment heuristic), and writes via the SAME
 write_chat_turn_tags_to_falkor Cypher writer -- not a reimplementation, and
 not a raw copy of any pre-existing Fuseki data (per the Phase 0 spec's own
 instruction; see the design note this script's PR report links to for why:
@@ -127,7 +130,7 @@ def main() -> int:
         else:
             try:
                 doc = nlp(job["text"] or "")
-                entities = [ent.text for ent in doc.ents]
+                entities = app_main._named_entities(doc)
                 sentiment_tag = _sentiment_tag(job["text"])
                 write_chat_turn_tags_to_falkor(
                     client,

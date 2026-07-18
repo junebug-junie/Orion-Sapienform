@@ -133,6 +133,22 @@ def test_filter_noise_merges_diacritic_variants() -> None:
     assert rejected == []
 
 
+def test_filter_noise_preserves_non_latin_script() -> None:
+    """Regression: an earlier version of _normalize_identity_key used
+    NFKD + encode('ascii','ignore'), which drops ANY non-Latin-script string
+    to '' (verified: unicodedata.normalize('NFKD','北京').encode('ascii',
+    'ignore') == b''), causing filter_noise to reject it as noise. Stripping
+    only combining marks (category Mn) instead of ascii-encoding fixes this.
+    Chinese/Cyrillic pass through case-folded and otherwise unchanged (no
+    combining-mark decomposition applies); Greek's tonos accent DOES
+    decompose under NFKD the same way a Latin diacritic does, so "Ελλάδα"
+    losing its accent to "ελλαδα" is consistent stripping, not a bug --
+    what matters is that the string survives as real content, not ''."""
+    kept, rejected = filter_noise(["北京", "Москва", "Ελλάδα"])
+    assert kept == ["北京", "москва", "ελλαδα"]
+    assert rejected == []
+
+
 def test_write_chat_turn_tags_to_falkor_diacritic_dedup_across_call() -> None:
     client = RecordingFalkorClient()
     write_chat_turn_tags_to_falkor(

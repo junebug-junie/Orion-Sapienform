@@ -29,7 +29,7 @@ from pathlib import Path
 
 sys.path.insert(0, "/app")
 
-from app.falkor_recall_writer import filter_noise  # noqa: E402
+from app.falkor_recall_writer import _normalize_identity_key, filter_noise, write_entity_edges  # noqa: E402
 from app.settings import settings  # noqa: E402
 from orion.graph.falkor_client import RedisGraphQueryClient  # noqa: E402
 
@@ -53,17 +53,6 @@ def _delete_stale_edges(client: RedisGraphQueryClient, turn_id: str, stale: list
     )
 
 
-def _add_missing_edges(client: RedisGraphQueryClient, turn_id: str, ts: str, missing: list[str]) -> None:
-    client.graph_query(
-        "MATCH (t:ChatTurn {turn_id: $turn_id}) "
-        "UNWIND $names AS name "
-        "MERGE (g:Entity {name: name}) "
-        "MERGE (t)-[r:MENTIONS_ENTITY]->(g) "
-        "SET r.ts = $ts",
-        {"turn_id": turn_id, "names": missing, "ts": ts},
-    )
-
-
 def _delete_orphan_entities(client: RedisGraphQueryClient) -> int:
     rows = client.graph_query(
         "MATCH (e:Entity) WHERE NOT (e)<-[:MENTIONS_ENTITY]-() "
@@ -77,18 +66,25 @@ def _merge_diacritic_duplicates(client: RedisGraphQueryClient) -> dict:
     names = [str(r.get("name")) for r in rows if r.get("name")]
     groups: dict[str, list[str]] = {}
     for name in names:
-        kept, _ = filter_noise([name])
-        key = kept[0] if kept else name
-        groups.setdefault(key, []).append(name)
+        # Every stored Entity name already passed filter_noise() at write
+        # time, so it can never be noise now -- call _normalize_identity_key
+        # directly rather than routing through filter_noise's batch/reject
+        # machinery for a single already-clean value (which also had a
+        # silent-fallback-to-raw-name edge case if it were ever rejected).
+        groups.setdefault(_normalize_identity_key(name), []).append(name)
 
     merges = []
     for canonical_key, variants in groups.items():
         distinct = sorted(set(variants))
         if len(distinct) <= 1:
             continue
-        # Prefer the variant that's already the canonical normalized form if
-        # present (avoids a pointless rename when e.g. "orion" and "Orion"
-        # both exist -- "orion" already matches canonical_key exactly).
+        # Every :Entity name reaching Falkor already passed filter_noise()
+        # (lowercase, diacritic-stripped) at write time, so case/diacritic
+        # variance among `distinct` here is always a pre-fix leftover (e.g.
+        # "oríon" from before this patch), never a live possibility going
+        # forward. Prefer the variant that's already the canonical normalized
+        # form if present, falling back to a deterministic lexicographic pick
+        # otherwise.
         canonical = canonical_key if canonical_key in distinct else sorted(distinct)[0]
         losers = [d for d in distinct if d != canonical]
         for loser in losers:
@@ -138,6 +134,7 @@ def main() -> int:
     edges_deleted = 0
     edges_added = 0
     errors: list[dict] = []
+    anomalies: list[dict] = []
     t0 = time.time()
 
     for idx, job in enumerate(jobs, start=1):
@@ -150,7 +147,7 @@ def main() -> int:
                 reconciled += 1
             else:
                 doc = nlp(job["text"] or "")
-                raw_entities = [ent.text for ent in doc.ents if ent.label_ in app_main._KEEP_ENTITY_LABELS]
+                raw_entities = app_main._named_entities(doc)
                 correct, _rejected = filter_noise(raw_entities)
                 correct_set = set(correct)
 
@@ -161,10 +158,19 @@ def main() -> int:
                     _delete_stale_edges(client, turn_id, stale)
                     edges_deleted += len(stale)
                 if missing:
-                    _add_missing_edges(client, turn_id, job["ts"], missing)
+                    write_entity_edges(client, turn_id=turn_id, ts=job["ts"], names=missing)
                     edges_added += len(missing)
                 if stale or missing:
                     turns_changed += 1
+                # A single turn losing/gaining an unusually large number of
+                # entity edges in one reconcile is worth a human glance --
+                # not an error (the diff logic is still correct), but a
+                # signal this turn's original extraction was unusually far
+                # from what the fixed pipeline now produces.
+                if len(stale) + len(missing) > 15:
+                    anomalies.append(
+                        {"turn_id": turn_id, "stale_count": len(stale), "missing_count": len(missing)}
+                    )
                 reconciled += 1
         except Exception as exc:  # noqa: BLE001 - one bad row must not kill the run
             errors.append({"turn_id": turn_id, "error": str(exc)})
@@ -185,6 +191,7 @@ def main() -> int:
                         "edges_deleted": edges_deleted,
                         "edges_added": edges_added,
                         "error_count": len(errors),
+                        "anomalies": len(anomalies),
                         "rate_rows_per_sec": round(rate, 2),
                         "eta_sec": round(eta_sec, 1),
                     }
@@ -192,9 +199,26 @@ def main() -> int:
                 flush=True,
             )
 
+    # One sweep, run before the dedup merge: the per-turn loop above deletes
+    # stale EDGES but never nodes, so this is what actually catches
+    # freshly-orphaned noise nodes. A second sweep after
+    # _merge_diacritic_duplicates would be a guaranteed no-op -- that
+    # function's own per-loser delete (unconditional edge reassignment then
+    # delete-if-orphan) already removes every node it orphans inline, so
+    # nothing survives to a later sweep to find. Confirmed live: re-running
+    # this exact sequence found 0 residual orphans after dedup.
     orphans_deleted = _delete_orphan_entities(client)
     dedup_summary = _merge_diacritic_duplicates(client)
-    orphans_deleted_after_dedup = _delete_orphan_entities(client)
+
+    # Coverage check: this job only reconciles turn_ids present in the
+    # Postgres snapshot. Any :ChatTurn node written to Falkor after the
+    # snapshot was taken (live traffic continuing to flow through the
+    # not-yet-restarted service) is invisible to this job and needs a
+    # follow-up pass with a fresher snapshot -- surfaced explicitly here
+    # rather than left for someone to discover via a later live query.
+    falkor_turn_count = client.graph_query("MATCH (t:ChatTurn) RETURN count(t) AS n")[0].get("n", 0)
+    coverage_gap = int(falkor_turn_count) - total
+    needs_another_pass = coverage_gap > 0 or len(errors) > 0
 
     summary = {
         "event": "reconcile_complete",
@@ -205,9 +229,12 @@ def main() -> int:
         "edges_added": edges_added,
         "error_count": len(errors),
         "errors": errors[:50],
-        "orphans_deleted_first_pass": orphans_deleted,
+        "anomalies": anomalies,
+        "orphans_deleted": orphans_deleted,
         "diacritic_dedup": dedup_summary,
-        "orphans_deleted_after_dedup": orphans_deleted_after_dedup,
+        "falkor_chatturn_count": int(falkor_turn_count),
+        "coverage_gap_turns_not_in_snapshot": coverage_gap,
+        "needs_another_pass": needs_another_pass,
         "duration_sec": round(time.time() - t0, 1),
     }
     print(json.dumps(summary, indent=2), flush=True)

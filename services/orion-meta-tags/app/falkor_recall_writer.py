@@ -44,11 +44,28 @@ _RELATIVE_TIME_RE = re.compile(
 
 
 def _normalize_identity_key(value: str) -> str:
-    """Strip diacritics before lowercasing, same idiom as
-    app.main._normalize_observer -- without this, an accent variant like
-    "oríon" normalizes to a distinct key from "orion" and never merges with
-    it (confirmed live: both existed as separate Entity nodes)."""
-    stripped = unicodedata.normalize("NFKD", str(value or "")).encode("ascii", "ignore").decode("ascii")
+    """Strip diacritics before lowercasing -- without this, an accent variant
+    like "oríon" normalizes to a distinct key from "orion" and never merges
+    with it (confirmed live: both existed as separate Entity nodes).
+
+    Deliberately NOT app.main._normalize_observer's NFKD+encode('ascii',
+    'ignore') idiom, despite the visual similarity -- that idiom drops any
+    character outside ASCII, which is fine for _normalize_observer's closed,
+    always-Latin-script value set (Juniper/Orion) but is wrong here: an
+    entity name written entirely in a non-Latin script (Cyrillic/CJK/Arabic/
+    Hebrew/Greek) doesn't decompose into base+combining-mark form under NFKD,
+    so ascii-encoding it drops the whole string to "" and filter_noise()
+    rejects it as noise -- confirmed live:
+    unicodedata.normalize("NFKD","北京").encode("ascii","ignore") == b"".
+    Stripping only Unicode category Mn (combining marks) instead folds
+    accented Latin text ("oríon" -> "orion") while leaving non-Latin scripts
+    untouched. This still merges genuinely distinct entities that differ only
+    by accent (e.g. "Peña" and "Pena" both normalize to "pena") -- a real,
+    known, accepted limitation of accent-insensitive matching, not something
+    this fix attempts to solve; true entity disambiguation is out of scope
+    here."""
+    decomposed = unicodedata.normalize("NFKD", str(value or ""))
+    stripped = "".join(ch for ch in decomposed if unicodedata.category(ch) != "Mn")
     return stripped.strip().lower()
 
 
@@ -81,6 +98,24 @@ def extract_sentiment(tags: list[str]) -> tuple[str | None, list[str]]:
         else:
             remaining.append(tag)
     return sentiment, remaining
+
+
+def write_entity_edges(client: FalkorGraphClient, *, turn_id: str, ts: str, names: list[str]) -> None:
+    """The single source of truth for MERGE(:Entity)+MERGE(:MENTIONS_ENTITY)
+    -- also called directly by scripts/backfill_recall_entity_graph_cleanup_
+    reconcile.py so a future change to this write shape (e.g. adding an edge
+    property) can't silently diverge between the live writer and any
+    backfill/reconcile job that adds missing edges."""
+    if not names:
+        return
+    client.graph_query(
+        "MATCH (t:ChatTurn {turn_id: $turn_id}) "
+        "UNWIND $names AS name "
+        "MERGE (g:Entity {name: name}) "
+        "MERGE (t)-[r:MENTIONS_ENTITY]->(g) "
+        "SET r.ts = $ts",
+        {"turn_id": turn_id, "names": names, "ts": ts},
+    )
 
 
 def filter_noise(values: list[str]) -> tuple[list[str], list[str]]:
@@ -168,14 +203,7 @@ def write_chat_turn_tags_to_falkor(
         )
 
     if kept_entities:
-        client.graph_query(
-            "MATCH (t:ChatTurn {turn_id: $turn_id}) "
-            "UNWIND $names AS name "
-            "MERGE (g:Entity {name: name}) "
-            "MERGE (t)-[r:MENTIONS_ENTITY]->(g) "
-            "SET r.ts = $ts",
-            {"turn_id": turn_id, "names": kept_entities, "ts": ts},
-        )
+        write_entity_edges(client, turn_id=turn_id, ts=ts, names=kept_entities)
 
     return {
         "tags_written": len(kept_tags),

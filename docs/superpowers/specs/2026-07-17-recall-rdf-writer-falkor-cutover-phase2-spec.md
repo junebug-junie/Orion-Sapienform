@@ -201,12 +201,27 @@ Phase 1: DONE (2026-07-17, this session) — per-channel live-consumer audits
   shrinks total scope — most of what's left in Fuseki outside chat/tag/entity
   turns out to already be dead weight, not migration debt.
 
-Phase 2: FalkorRdfStoreClient (or equivalently-named Cypher writer) added to
-  orion-rdf-writer for recall.chat_turn + recall.tag_entity, behind the
-  doctrine's route table, ladder stage A (primary=fuseki, shadow=falkor) —
-  dark, no behavior change yet. Includes removing the emit_claims double-write
-  (Corrected design point 7 above) since the new writer emits real HAS_TAG/
-  MENTIONS_ENTITY edges directly, no reified Claim to duplicate.
+Phase 2: DONE (2026-07-18) — see
+  docs/superpowers/plans/2026-07-18-recall-tag-entity-falkor-writer-plan.md
+  for the full design. **Corrected mid-review: this does NOT live in
+  orion-rdf-writer** as originally written above — that service's own
+  doctrine role is "legacy RDF materialize" only. The Cypher writer lives in
+  `orion-meta-tags` (`app/falkor_recall_writer.py`), the actual producer of
+  tag/entity extraction, matching how every other real Falkor producer in
+  the codebase works (substrate-runtime, graphiti-adapter, concept-induction
+  all write from their own originating service, never bolted onto
+  rdf-writer). Also corrected: `recall.chat_turn` turned out to not need a
+  live writer at all — `chat.history` RDF was killed by a concurrent PR
+  before this phase started, so `ChatTurn` is now a thin anchor node
+  (turn_id/session_id/ts/correlation_id, no text) created on demand by the
+  tag_entity write, not a separate dual-run workload. No `GraphPersistenceRouter`
+  route table used — a plain `RECALL_FALKOR_TAG_ENTITY_ENABLED` flag instead,
+  since orion-rdf-writer and orion-meta-tags are two independent services
+  each reacting to the same event, not one service picking a primary/shadow
+  backend for its own write (the router's actual shape). `emit_claims`
+  double-write in orion-rdf-writer is untouched by this phase — that
+  service's own Fuseki write continues exactly as before; only
+  `orion-meta-tags` gained a new, additive, dark-by-default write.
 
 Phase 3: historical backfill script for recall.chat_turn + recall.tag_entity,
   run against the shadow graph written in Phase 2, verified per the plan

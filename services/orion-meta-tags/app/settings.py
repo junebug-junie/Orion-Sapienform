@@ -32,6 +32,15 @@ class Settings(BaseSettings):
     # === NLP Model ===
     SPA_MODEL: str = Field(default="en_core_web_trf", env="SPA_MODEL")
 
+    # === Recall Falkor writer (Phase 2, dark by default) ===
+    # docs/superpowers/plans/2026-07-18-recall-tag-entity-falkor-writer-plan.md
+    # Cypher-native, additive write of chat-turn tag/entity enrichment into
+    # FalkorDB, alongside (not replacing) orion-rdf-writer's existing Fuseki
+    # write of the same tags.enriched event. Off by default.
+    RECALL_FALKOR_TAG_ENTITY_ENABLED: bool = Field(default=False, env="RECALL_FALKOR_TAG_ENTITY_ENABLED")
+    FALKORDB_URI: str = Field(default="redis://orion-athena-falkordb:6379", env="FALKORDB_URI")
+    FALKORDB_RECALL_GRAPH: str = Field(default="orion_recall", env="FALKORDB_RECALL_GRAPH")
+
     # === Runtime ===
     STARTUP_DELAY: int = Field(default=5, env="STARTUP_DELAY")
     LOG_LEVEL: str = Field(default="INFO", env="LOG_LEVEL")

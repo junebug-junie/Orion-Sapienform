@@ -123,6 +123,52 @@ def test_temporal_and_activation_support_fields_validate() -> None:
     assert node.signals.activation.decay_half_life_seconds == 60
 
 
+def test_concept_node_auto_seeds_activation_when_producer_leaves_it_unset() -> None:
+    # Regression: every real ConceptNodeV1 producer historically left
+    # signals.activation at the pure schema default (activation=0.0,
+    # decay_half_life_seconds=None), which made Hub's live decay scheduler
+    # a permanent no-op (decay_activation() treats a falsy half-life as
+    # "clamp to floor, don't decay"). ConceptNodeV1 now auto-seeds both
+    # fields from salience whenever a producer passes no `signals=` at all
+    # -- exactly the construction pattern orion/substrate/seed.py's golden
+    # concepts (Orion, Juniper, the relationship) use.
+    node = ConceptNodeV1(anchor_scope="orion", temporal=_temporal(), provenance=_provenance(), label="unseeded")
+    assert node.signals.activation.decay_half_life_seconds is not None
+    assert node.signals.activation.decay_half_life_seconds > 0
+    assert node.signals.activation.activation == node.signals.salience
+
+
+def test_concept_node_auto_seed_respects_nonzero_salience() -> None:
+    node = ConceptNodeV1(
+        anchor_scope="orion",
+        temporal=_temporal(),
+        provenance=_provenance(),
+        label="salient",
+        signals={"confidence": 0.9, "salience": 0.73},
+    )
+    assert node.signals.activation.activation == 0.73
+    assert node.signals.activation.decay_half_life_seconds is not None
+
+
+def test_concept_node_auto_seed_never_overrides_explicit_activation() -> None:
+    # An explicitly-set activation (even a nonzero one paired with an
+    # explicit half-life) must be respected verbatim, not clobbered by the
+    # auto-seed -- covered generally by
+    # test_temporal_and_activation_support_fields_validate above; this adds
+    # the edge case of an explicit *zero* activation paired with a real
+    # half-life, which the auto-seed's guard condition must still leave alone
+    # since decay_half_life_seconds is not None.
+    node = ConceptNodeV1(
+        anchor_scope="orion",
+        temporal=_temporal(),
+        provenance=_provenance(),
+        label="deliberately-cold",
+        signals={"confidence": 0.9, "salience": 0.6, "activation": {"activation": 0.0, "decay_half_life_seconds": 3600}},
+    )
+    assert node.signals.activation.activation == 0.0
+    assert node.signals.activation.decay_half_life_seconds == 3600
+
+
 def test_registry_and_exports_include_substrate_contracts() -> None:
     assert "SubstrateEdgeV1" in _REGISTRY
     assert "EntityNodeV1" in _REGISTRY

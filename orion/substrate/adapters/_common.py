@@ -3,7 +3,46 @@ from __future__ import annotations
 from datetime import datetime, timezone
 from typing import Optional
 
-from orion.core.schemas.cognitive_substrate import SubstrateProvenanceV1, SubstrateTemporalWindowV1
+from orion.core.schemas.cognitive_substrate import (
+    DEFAULT_CONCEPT_ACTIVATION_HALF_LIFE_SECONDS,
+    SubstrateActivationV1,
+    SubstrateProvenanceV1,
+    SubstrateTemporalWindowV1,
+)
+
+__all__ = [
+    "DEFAULT_CONCEPT_ACTIVATION_HALF_LIFE_SECONDS",
+    "make_activation",
+    "make_provenance",
+    "make_temporal",
+]
+
+
+def make_activation(
+    *,
+    initial_activation: float,
+    decay_half_life_seconds: int = DEFAULT_CONCEPT_ACTIVATION_HALF_LIFE_SECONDS,
+) -> SubstrateActivationV1:
+    """Explicitly seed a concept node's activation signal.
+
+    Optional for callers: `ConceptNodeV1` itself now auto-seeds `activation`
+    from `salience` and applies `DEFAULT_CONCEPT_ACTIVATION_HALF_LIFE_SECONDS`
+    whenever a producer leaves `signals.activation` at its pure schema default
+    (see `ConceptNodeV1._seed_activation_if_unset` in
+    `orion/core/schemas/cognitive_substrate.py`) -- that fix applies to every
+    producer, not just the ones that call this helper. Use this directly when
+    a producer wants a specific initial value other than raw `salience`, or
+    wants to be explicit about it at the call site.
+
+    `recency_score` is deliberately left at its schema default (0.0) here --
+    it is meant to be derived from `temporal.observed_at` at read/tick time
+    (see `orion/substrate/dynamics.py::_compute_activations`), not fabricated
+    at construction time from an unrelated salience/confidence value.
+    """
+    return SubstrateActivationV1(
+        activation=min(1.0, max(0.0, initial_activation)),
+        decay_half_life_seconds=decay_half_life_seconds,
+    )
 
 
 def _ensure_tz(value: datetime | None) -> datetime:

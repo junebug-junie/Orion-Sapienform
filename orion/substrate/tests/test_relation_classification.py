@@ -233,8 +233,15 @@ def test_activation_stale_decayed_does_not_cross_threshold() -> None:
 def test_activation_unset_degrades_gracefully() -> None:
     # Default SubstrateActivationV1() has activation=0.0 -- schema default,
     # indistinguishable from "never seeded"; must degrade, not raise/guess.
-    node_a = _concept(node_id="concept-a", label="a")
-    node_b = _concept(node_id="concept-b", label="b")
+    # salience=0.0 explicitly here (unlike _concept()'s own default of 0.1):
+    # ConceptNodeV1 now auto-seeds activation from salience whenever a
+    # producer leaves signals.activation untouched (see
+    # cognitive_substrate.py::ConceptNodeV1._seed_activation_if_unset), so a
+    # nonzero salience would no longer read as "unset" -- this test's actual
+    # intent is an activation signal that reads as a real zero, which is
+    # still exactly what a zero-salience, never-reinforced concept produces.
+    node_a = _concept(node_id="concept-a", label="a", salience=0.0)
+    node_b = _concept(node_id="concept-b", label="b", salience=0.0)
 
     assert decayed_activation_score(node_a) is None
     assert worth_classifying_activation(node_a, node_b) is False

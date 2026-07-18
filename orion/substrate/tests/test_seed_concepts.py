@@ -30,6 +30,14 @@ def test_load_seed_concepts_into_store_writes_three_canonical_concepts() -> None
         assert node.promotion_state == "canonical"
         assert node.node_kind == "concept"
         assert node.definition
+        # Regression: seed_concepts.py passes no `signals=` at all, so before
+        # ConceptNodeV1's auto-seed validator existed, the three golden
+        # concepts (the highest-authority, longest-lived nodes in the store)
+        # were permanently stuck at activation=0.0/decay_half_life=None --
+        # immune to Hub's live decay scheduler forever, same bug as the
+        # organic-growth adapters.
+        assert node.signals.activation.decay_half_life_seconds is not None
+        assert node.signals.activation.decay_half_life_seconds > 0
 
 
 def test_load_seed_concepts_into_store_wires_relationship_edges() -> None:

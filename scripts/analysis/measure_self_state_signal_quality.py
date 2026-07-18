@@ -432,6 +432,17 @@ def render_report(
         f"{HIGH_DRIFT_PER_HOUR_THRESHOLD}; fast-oscillation/sawtooth-suspect if median "
         f"oscillation period < {FAST_OSCILLATION_TICK_THRESHOLD} ticks.",
         "",
+        "**Reading `pinned_or_flat` + `fast_oscillation_sawtooth_suspect` together (not a "
+        "contradiction):** `noise_floor_std` is a *local* rolling-window statistic (median "
+        "of trailing 20-sample std), while the oscillation period is a *global* "
+        "zero-crossing measurement over the whole series. A dimension that jumps between a "
+        "small number of discrete plateau values (e.g. a coherence/uncertainty sawtooth "
+        "step-function) can show near-zero local variance within each plateau -- so "
+        "`noise_floor_std` reads as flat -- while still crossing its own mean rapidly and "
+        "repeatedly across the full window -- so the oscillation period reads as fast. Both "
+        "measurements are correct simultaneously; seeing them together is itself evidence of "
+        "a step/sawtooth pattern rather than smooth noise.",
+        "",
         "## Findings for Juniper's sign-off",
         "",
     ]

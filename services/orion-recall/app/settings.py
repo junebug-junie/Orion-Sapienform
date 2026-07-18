@@ -320,22 +320,19 @@ class Settings(BaseSettings):
     # turn_id (confirmed by reading falkor_chat_adapter.py) -- sql_chat's id
     # is a correlation_id/synthetic fallback that doesn't always match.
     #
-    # KNOWN LIMITATION, found in code review, NOT fixed here (pre-existing,
-    # repo-wide blast radius -- app/worker.py::_extract_entities is used
-    # elsewhere too, e.g. query-expansion fan-out): its regex has a literal
-    # double-backslash bug (`\\s`/`\\.` inside an r-string match a literal
-    # backslash, not whitespace/dot), confirmed live to (a) never capture
-    # multi-word entity spans ("New York" -> "New", "York" separately, never
-    # merged) and (b) drop all-caps acronyms entirely ("NVIDIA" -> nothing;
-    # only mixed-case "Nvidia" matches). Since Falkor's real Entity.name
-    # vocabulary is spaCy-NER-derived and includes exactly these shapes,
-    # this boost will silently fail to match the majority of real entity
-    # mentions until that regex is fixed in its own dedicated changeset
-    # (touching this shared function requires re-verifying every existing
-    # caller, not just this one). Do not flip this flag live and treat
-    # "no measurable effect" as proof the feature doesn't help -- it may
-    # just mean queries aren't hitting the multi-word/acronym case this bug
-    # breaks. Fix the regex and re-measure before drawing that conclusion.
+    # FIXED (was a known limitation): app/worker.py::_extract_entities had a
+    # literal double-backslash regex bug (`\\s`/`\\.` inside an r-string
+    # match a literal backslash, not whitespace/dot) that silently broke
+    # multi-word entity spans ("New York" -> "New","York" separately) and
+    # dropped all-caps acronyms ("NVIDIA" -> nothing). Fixed in its own
+    # changeset (worker.py::_extract_entities' docstring, and
+    # tests/test_extract_entities.py) after confirming, by reading every
+    # caller, that the fix only improves the other two call sites too (more
+    # precise SQL ILIKE patterns, better query-expansion signals) -- not
+    # something this boost feature should have carried a caveat about
+    # forever. Still no stopword filtering (sentence-initial capitalized
+    # words like "Tell" still extract as false-positive "entities") -- a
+    # separate, smaller, still-open precision gap, not a correctness bug.
     RECALL_ENTITY_RELATEDNESS_BOOST_ENABLED: bool = Field(
         default=False, validation_alias=AliasChoices("RECALL_ENTITY_RELATEDNESS_BOOST_ENABLED")
     )

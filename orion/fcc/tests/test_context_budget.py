@@ -13,6 +13,7 @@ from orion.fcc.context_budget import (
     extend_fcc_subprocess_env,
     is_context_overflow_text,
     measure_step_payload_chars,
+    orion_fcc_claude_config_dir,
 )
 from orion.fcc.mcp_stdio_proxy import _maybe_truncate_line
 
@@ -91,3 +92,42 @@ def test_extend_fcc_subprocess_env_preserves_auto_tool_search_override() -> None
     env = {"ENABLE_TOOL_SEARCH": "auto:5"}
     extend_fcc_subprocess_env(env)
     assert env["ENABLE_TOOL_SEARCH"] == "auto:5"
+
+
+def test_orion_fcc_claude_config_dir_defaults_under_dot_fcc(monkeypatch) -> None:
+    monkeypatch.delenv("HARNESS_FCC_CLAUDE_CONFIG_DIR", raising=False)
+    monkeypatch.delenv("HUB_AGENT_CLAUDE_CONFIG_DIR", raising=False)
+    monkeypatch.setenv("HOME", "/home/test-user")
+    assert orion_fcc_claude_config_dir() == "/home/test-user/.fcc/claude-config"
+
+
+def test_orion_fcc_claude_config_dir_prefers_harness_env(monkeypatch) -> None:
+    monkeypatch.setenv("HARNESS_FCC_CLAUDE_CONFIG_DIR", "/tmp/harness-claude-config")
+    monkeypatch.setenv("HUB_AGENT_CLAUDE_CONFIG_DIR", "/tmp/hub-claude-config")
+    assert orion_fcc_claude_config_dir() == "/tmp/harness-claude-config"
+
+
+def test_orion_fcc_claude_config_dir_falls_back_to_hub_env(monkeypatch) -> None:
+    monkeypatch.delenv("HARNESS_FCC_CLAUDE_CONFIG_DIR", raising=False)
+    monkeypatch.setenv("HUB_AGENT_CLAUDE_CONFIG_DIR", "/tmp/hub-claude-config")
+    assert orion_fcc_claude_config_dir() == "/tmp/hub-claude-config"
+
+
+def test_extend_fcc_subprocess_env_sets_and_creates_claude_config_dir(monkeypatch, tmp_path) -> None:
+    config_dir = tmp_path / "claude-config"
+    monkeypatch.setenv("HARNESS_FCC_CLAUDE_CONFIG_DIR", str(config_dir))
+    assert not config_dir.exists()
+    env: dict[str, str] = {}
+    extend_fcc_subprocess_env(env)
+    assert env["CLAUDE_CONFIG_DIR"] == str(config_dir)
+    assert config_dir.is_dir()
+
+
+def test_extend_fcc_subprocess_env_preserves_explicit_claude_config_dir_override(
+    monkeypatch, tmp_path
+) -> None:
+    monkeypatch.setenv("HARNESS_FCC_CLAUDE_CONFIG_DIR", str(tmp_path / "unused"))
+    operator_dir = str(tmp_path / "operator-chosen")
+    env = {"CLAUDE_CONFIG_DIR": operator_dir}
+    extend_fcc_subprocess_env(env)
+    assert env["CLAUDE_CONFIG_DIR"] == operator_dir

@@ -81,6 +81,48 @@ async def fetch_chat_turn_timestamps(
     return out
 
 
+async def fetch_chat_turns_by_id(turn_ids: List[str]) -> Dict[str, tuple[str, str]]:
+    """Resolve (prompt, response) text for chat turns by id.
+
+    Used by storage/falkor_chat_adapter.py -- the Falkor ChatTurn node is
+    deliberately thin (turn_id/source_kind/session_id/ts/correlation_id, no
+    prompt/response text; Postgres owns that, see
+    services/orion-meta-tags/README.md's Falkor writer section) so a
+    Falkor-backed chatturn fragment needs this join for the actual quoted
+    text. Ids not present in the chat table are simply absent from the
+    returned map so callers can drop them, same contract as
+    fetch_chat_turn_timestamps above.
+    """
+    if asyncpg is None:
+        return {}
+    ids = [str(t).strip() for t in (turn_ids or []) if str(t).strip()]
+    if not ids:
+        return {}
+    id_col = settings.RECALL_SQL_CHAT_ID_COL
+    query = f"""
+        SELECT {id_col} AS id,
+               {settings.RECALL_SQL_CHAT_TEXT_COL} AS prompt,
+               {settings.RECALL_SQL_CHAT_RESPONSE_COL} AS response
+        FROM {settings.RECALL_SQL_CHAT_TABLE}
+        WHERE {id_col} = ANY($1::text[])
+    """
+    try:
+        conn = await asyncpg.connect(settings.RECALL_PG_DSN)
+        try:
+            rows = await conn.fetch(query, ids)
+        finally:
+            await conn.close()
+    except Exception:
+        return {}
+
+    out: Dict[str, tuple[str, str]] = {}
+    for row in rows:
+        rid = str(row.get("id") or "").strip()
+        if rid:
+            out[rid] = (str(row.get("prompt") or ""), str(row.get("response") or ""))
+    return out
+
+
 def _normalize_text(value: Any) -> str:
     text = str(value or "").strip().lower()
     return " ".join(text.split())

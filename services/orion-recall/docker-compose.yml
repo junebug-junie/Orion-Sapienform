@@ -59,6 +59,12 @@ services:
       - SUBSTRATE_STORE_BACKEND=${SUBSTRATE_STORE_BACKEND:-falkor}
       - FALKORDB_URI=${FALKORDB_URI}
       - FALKORDB_SUBSTRATE_GRAPH=${FALKORDB_SUBSTRATE_GRAPH:-orion_substrate}
+      # Phase 4 of the recall RDF->Falkor cutover -- app/recall_falkor_store.py
+      # also reads FALKORDB_URI directly from the environment (same var,
+      # different graph name), same "no env_file:, must be listed here"
+      # constraint as the substrate entries just above.
+      - FALKORDB_RECALL_GRAPH=${FALKORDB_RECALL_GRAPH:-orion_recall}
+      - RECALL_FALKOR_IN_CHAT=${RECALL_FALKOR_IN_CHAT:-false}
       - RECALL_BELIEF_RENDER_BUDGET=${RECALL_BELIEF_RENDER_BUDGET:-128}
       # No compose-level default on these two: they are NEVER_SYNC_KEYS-protected in
       # scripts/sync_local_env_from_example.py (must be set by hand in .env) and their

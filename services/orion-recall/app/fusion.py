@@ -22,6 +22,11 @@ DEFAULT_BACKEND_WEIGHTS = {
     "sql_timeline": 0.9,
     "sql_chat": 0.6,
     "rdf_chat": 0.4,
+    # falkor_chat is the same content as rdf_chat on a different backend
+    # (RECALL_FALKOR_IN_CHAT swaps one in for the other, never both at
+    # once) -- same weight, not the generic 0.5 fallback this dict's
+    # absence would otherwise produce.
+    "falkor_chat": 0.4,
     "rdf": 0.3,
     "memory_graph_sparql": 0.35,
     "cards": 0.0,
@@ -689,6 +694,12 @@ _BELIEF_SOURCE_ORDER = {
     "cards": 2,
     "rdf": 3,
     "rdf_chat": 4,
+    # falkor_chat: same rank rdf_chat would occupy if "rdf".startswith
+    # didn't shadow it below -- see that comment. Since "falkor_chat" does
+    # NOT start with "rdf", this entry is actually reachable (unlike
+    # rdf_chat's, which is pre-existing dead code below, not introduced
+    # here).
+    "falkor_chat": 4,
     "memory_graph_sparql": 5,
     "graphiti": 6,
 }
@@ -696,6 +707,11 @@ _BELIEF_SOURCE_ORDER = {
 
 def _belief_source_rank(source: str) -> int:
     src = str(source or "unknown")
+    # Pre-existing quirk, not introduced here: this catches "rdf_chat" too
+    # (it starts with "rdf"), so _BELIEF_SOURCE_ORDER["rdf_chat"]'s own
+    # entry is actually unreachable -- rdf_chat gets rdf's rank (3), not 4.
+    # "falkor_chat" does NOT start with "rdf", so it correctly falls through
+    # to its own dict entry above instead of inheriting this shadow.
     if src.startswith("rdf"):
         return _BELIEF_SOURCE_ORDER.get("rdf", 99)
     return _BELIEF_SOURCE_ORDER.get(src, 99)

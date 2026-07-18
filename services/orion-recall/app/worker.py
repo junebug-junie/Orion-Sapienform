@@ -41,6 +41,7 @@ try:
         fetch_rdf_chatturn_fragments,
         fetch_rdf_chatturn_exact_matches,
     )
+    from .storage.falkor_chat_adapter import fetch_falkor_chatturn_fragments
     from .sql_timeline import fetch_recent_fragments, fetch_related_by_entities, fetch_exact_fragments
     from .sql_chat import fetch_chat_history_pairs, fetch_chat_messages, fetch_chat_turn_timestamps
     from .cards_adapter import fetch_card_fragments_guarded
@@ -71,6 +72,7 @@ except ImportError as _e:  # pragma: no cover - fallback for runtime pathing
             fetch_rdf_chatturn_fragments,
             fetch_rdf_chatturn_exact_matches,
         )
+        from app.storage.falkor_chat_adapter import fetch_falkor_chatturn_fragments  # type: ignore
         from app.sql_timeline import fetch_recent_fragments, fetch_related_by_entities, fetch_exact_fragments  # type: ignore
         from app.sql_chat import fetch_chat_history_pairs, fetch_chat_messages, fetch_chat_turn_timestamps  # type: ignore
         from app.cards_adapter import fetch_card_fragments_guarded  # type: ignore
@@ -560,6 +562,17 @@ _UUID_RE = re.compile(r"^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F
 
 
 def _is_rdf_chatturn(frag: Dict[str, Any]) -> bool:
+    # falkor_chat fragments also carry a "chatturn" tag (same recall-lane
+    # semantics, different backend) but are windowed by
+    # _window_sql_chat_candidates/_LOCAL_TS_ONLY_SOURCES instead, which
+    # already has their accurate ts and doesn't need
+    # _window_rdf_chatturn_candidates's Postgres round-trip. Excluded
+    # explicitly rather than relying on _chatturn_id_from_fragment's
+    # "/chatTurn/" uri-shape check to coincidentally not match falkor_chat's
+    # plain-turn_id uri -- that was correct today but not guaranteed to stay
+    # that way if either fragment shape changes independently later.
+    if str(frag.get("source") or "") == "falkor_chat":
+        return False
     if "chatturn" in {str(t).lower() for t in (frag.get("tags") or [])}:
         return True
     ref = str(frag.get("uri") or frag.get("id") or "")
@@ -635,7 +648,12 @@ async def _window_rdf_chatturn_candidates(
     return kept, dropped
 
 
-_SQL_CHAT_SOURCES = frozenset({"sql_timeline", "sql_chat"})
+_SQL_CHAT_SOURCES = frozenset({"sql_timeline", "sql_chat", "falkor_chat"})
+# Sources within _SQL_CHAT_SOURCES that skip the Postgres row-id resolution
+# below and go straight to the local-ts-cutoff fallback -- their ts is
+# already accurate, so re-resolving it via fetch_chat_turn_timestamps would
+# just be a second, redundant chat_history_log round-trip for the same ids.
+_LOCAL_TS_ONLY_SOURCES = frozenset({"falkor_chat"})
 
 
 def _sql_chat_row_id(candidate: Dict[str, Any]) -> Optional[str]:
@@ -657,12 +675,25 @@ async def _window_sql_chat_candidates(
     *,
     since_minutes: int,
 ) -> Tuple[List[Dict[str, Any]], int]:
-    """Drop SQL chat/timeline candidates outside ``since_minutes``.
+    """Drop SQL chat/timeline (and Falkor chatturn) candidates outside ``since_minutes``.
 
     Mirrors ``_window_rdf_chatturn_candidates``: anchor-exact SQL rails used
     ``fetch_exact_fragments`` without a temporal filter, so old turns could surface
     into journal/metacog recall when expansion tokens matched generic words.
-    Memory cards and non-SQL sources are untouched.
+    Memory cards and non-SQL/non-falkor_chat sources are untouched.
+
+    ``falkor_chat`` fragments (fetch_falkor_chatturn_fragments) carry a real
+    ``ts`` already -- unlike RDF chatturn fragments, which need
+    ``_window_rdf_chatturn_candidates``'s Postgres round-trip because the RDF
+    graph has no usable timestamp, and unlike ``sql_chat``/``sql_timeline``
+    fragments (deliberately excluded from the row-id resolution below via
+    ``_LOCAL_TS_ONLY_SOURCES``): fetch_falkor_chatturn_fragments already did
+    its own Postgres join for text and stamped an accurate ts from Falkor's
+    ``ChatTurn.ts`` -- re-resolving it here via ``fetch_chat_turn_timestamps``
+    would be a second, redundant chat_history_log round-trip for the same
+    turn_ids on every windowed recall call. Falls straight to the
+    local-``ts``-cutoff branch below instead, which is correct on its own
+    since that ``ts`` is already trustworthy.
     """
     if since_minutes <= 0:
         return candidates, 0
@@ -670,7 +701,8 @@ async def _window_sql_chat_candidates(
     cutoff = time.time() - (int(since_minutes) * 60)
     sql_indices: Dict[int, str] = {}
     for idx, frag in enumerate(candidates):
-        if str(frag.get("source") or "") not in _SQL_CHAT_SOURCES:
+        source = str(frag.get("source") or "")
+        if source not in _SQL_CHAT_SOURCES or source in _LOCAL_TS_ONLY_SOURCES:
             continue
         row_id = _sql_chat_row_id(frag)
         if row_id is not None:
@@ -826,6 +858,20 @@ async def _query_backends(
 
     rdf_enabled = _rdf_enabled(profile) and bool(settings.RECALL_RDF_ENDPOINT_URL)
     rdf_top_k = int(profile.get("rdf_top_k", 0))
+    # Phase 4 chatturn swap: independent of rdf_enabled/_rdf_enabled(profile)
+    # (see settings.py's RECALL_FALKOR_IN_CHAT comment) -- Falkor chatturn
+    # fetch doesn't need "RDF" enabled as a concept, and rdf_top_k still
+    # bounds max_items since it's standing in for the same fetch. It DOES
+    # still respect profile.get("enable_falkor_chat") though:
+    # pcr_collectors.py::apply_collector_plan sets this False for PCR
+    # intents (e.g. "procedural", "contradiction") that deliberately
+    # suppress chat-turn content via plan.get("rdf_chat") -- without this
+    # check, those intents would get chat-turn content back the moment
+    # RECALL_FALKOR_IN_CHAT is on, defeating the suppression they were
+    # designed to enforce regardless of which backend serves it.
+    falkor_chat_enabled = bool(settings.RECALL_FALKOR_IN_CHAT) and bool(
+        profile.get("enable_falkor_chat", True)
+    )
     expansion_terms: List[str] = []
     anchor_plan: Dict[str, Any] = {
         "entities_terms": [],
@@ -833,6 +879,24 @@ async def _query_backends(
         "claim_objs": [],
         "related_terms": [],
     }
+    if falkor_chat_enabled:
+        # Swap, not additive: this replaces the RDF chatturn fetch below,
+        # not a merge -- running both would double up the same turns in
+        # fusion's candidate list (see settings.py's RECALL_FALKOR_IN_CHAT
+        # comment for why this differs from RECALL_GRAPHITI_IN_CHAT's
+        # additive pattern).
+        try:
+            falkor_chat = await fetch_falkor_chatturn_fragments(
+                query_text=fragment,
+                session_id=session_id,
+                max_items=max(rdf_top_k, 6),
+            )
+        except Exception as exc:
+            logger.debug(f"falkor chat fetch skipped: {exc}")
+            falkor_chat = []
+        backend_counts["falkor_chat"] = len(falkor_chat)
+        candidates.extend(falkor_chat)
+
     if rdf_enabled:
         try:
             if _rdf_expansion_enabled(profile):
@@ -851,15 +915,18 @@ async def _query_backends(
             else:
                 backend_counts["rdf_anchor_terms"] = 0
 
-            # 0) Pull raw ChatTurns (prompt/response) from GRAPH <orion:chat>.
-            rdf_chat: List[Dict[str, Any]] = []
-            rdf_chat = fetch_rdf_chatturn_fragments(
-                query_text=fragment,
-                session_id=session_id,
-                max_items=max(rdf_top_k, 6),
-            )
-            backend_counts["rdf_chat"] = len(rdf_chat)
-            candidates.extend(rdf_chat)
+            if not falkor_chat_enabled:
+                # 0) Pull raw ChatTurns (prompt/response) from GRAPH <orion:chat>.
+                # Skipped when Falkor already covered this above (swap, not
+                # additive -- see the falkor_chat_enabled block).
+                rdf_chat: List[Dict[str, Any]] = []
+                rdf_chat = fetch_rdf_chatturn_fragments(
+                    query_text=fragment,
+                    session_id=session_id,
+                    max_items=max(rdf_top_k, 6),
+                )
+                backend_counts["rdf_chat"] = len(rdf_chat)
+                candidates.extend(rdf_chat)
 
             if expansion_terms:
                 try:
@@ -1263,6 +1330,11 @@ async def process_recall(
     source_gating["sql_timeline"] = "enabled" if _sql_timeline_enabled_for_profile(profile) else "disabled_by_profile_or_global"
     source_gating["sql_chat"] = "enabled" if _sql_chat_enabled_for_profile(profile) else "disabled_by_profile_or_global"
     source_gating["rdf"] = "enabled" if _rdf_enabled(profile) else "disabled_by_profile_or_global"
+    source_gating["falkor_chat"] = (
+        "enabled"
+        if bool(settings.RECALL_FALKOR_IN_CHAT) and bool(profile.get("enable_falkor_chat", True))
+        else "disabled_by_profile_or_global"
+    )
 
     t0 = time.time()
     timing_breakdown_ms: Dict[str, int] = {}

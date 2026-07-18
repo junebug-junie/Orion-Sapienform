@@ -33,6 +33,7 @@ from app.models import (
     ChatResponseFeedbackSQL,
     CollapseEnrichment,
     CollapseMirror,
+    MetacogEntry,
     Dream,
     SparkIntrospectionLogSQL,
     SparkTelemetrySQL,
@@ -96,6 +97,7 @@ from orion.schemas.chat_stance import ChatStanceBrief
 
 # Shared schemas
 from orion.schemas.collapse_mirror import CollapseMirrorEntry, CollapseMirrorStoredV1
+from orion.schemas.metacog_entry import MetacogEntryV1
 from orion.schemas.telemetry.meta_tags import MetaTagsPayload
 from orion.schemas.telemetry.biometrics import BiometricsPayload, BiometricsSummaryV1, BiometricsInductionV1
 from orion.schemas.causal_geometry import CausalGeometrySnapshotV1
@@ -381,6 +383,7 @@ def _legacy_action(kind: str, mode: str, legacy_kinds: set[str]) -> str:
 # Map: route_key -> (SQLAlchemy model, Pydantic schema model)
 MODEL_MAP: Dict[str, Tuple[Type[Any], Optional[Type[BaseModel]]]] = {
     "CollapseMirror": (CollapseMirror, CollapseMirrorEntry),
+    "MetacogEntry": (MetacogEntry, MetacogEntryV1),
     "CollapseEnrichment": (CollapseEnrichment, MetaTagsPayload),
     "ChatHistoryLogSQL": (ChatHistoryLogSQL, None),
     "ChatGptLogSQL": (ChatGptLogSQL, ChatGptLogTurnV1),
@@ -2124,6 +2127,18 @@ async def _handle_envelope_body(env: BaseEnvelope, *, bus: Any | None = None) ->
                 )
                 if not base_id: base_id = str(uuid.uuid4())
                 if not data_to_process.get("id"): extra_sql_fields["id"] = base_id
+                if not data_to_process.get("correlation_id") and not extra_sql_fields.get("correlation_id"):
+                    extra_sql_fields["correlation_id"] = base_id
+
+            if sql_model is MetacogEntry and isinstance(data_to_process, dict):
+                base_id = (
+                    data_to_process.get("event_id")
+                    or extra_sql_fields.get("correlation_id")
+                    or (str(env.id) if getattr(env, "id", None) else None)
+                )
+                if not base_id:
+                    base_id = str(uuid.uuid4())
+                extra_sql_fields["id"] = base_id
                 if not data_to_process.get("correlation_id") and not extra_sql_fields.get("correlation_id"):
                     extra_sql_fields["correlation_id"] = base_id
 

@@ -12,6 +12,7 @@ logger = logging.getLogger("sql-writer.settings")
 DEFAULT_ROUTE_MAP: dict[str, str] = {
     "collapse.mirror": "CollapseMirror",
     "collapse.mirror.entry.v2": "CollapseMirror",
+    "metacog.entry.v1": "MetacogEntry",
     "collapse.enrichment": "CollapseEnrichment",
     "tags.enriched": "CollapseEnrichment",
     "chat.history": "ChatHistoryLogSQL",
@@ -103,6 +104,7 @@ class Settings(BaseSettings):
         default=[
             "orion:tags:enriched",
             "orion:collapse:sql-write",
+            "orion:metacog:sql-write",
             "orion:vision:events:sql-write",
             "orion:chat:history:log",
             "orion:chat:history:turn",

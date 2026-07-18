@@ -1,5 +1,6 @@
 from .collapse_enrichment import CollapseEnrichment
 from .collapse_mirror import CollapseMirror
+from .metacog_entry import MetacogEntry
 from .chat_history_log import ChatHistoryLogSQL
 from .chat_gpt_log import ChatGptLogSQL
 from .chat_gpt_message import ChatGptMessageSQL
@@ -73,6 +74,7 @@ from .grammar_trace import (
 __all__ = [
     "CollapseEnrichment",
     "CollapseMirror",
+    "MetacogEntry",
     "ChatHistoryLogSQL",
     "ChatGptLogSQL",
     "ChatGptMessageSQL",

@@ -454,6 +454,7 @@ from orion.schemas.telemetry.metacognition import MetacognitionTickV1
 from orion.schemas.telemetry.metacog_trigger import MetacogTriggerV1
 from orion.schemas.telemetry.meta_tags import MetaTagsPayload, MetaTagsRequestV1, MetaTagsResultV1
 from orion.schemas.metacog_patches import MetacogDraftTextPatchV1, MetacogEnrichScorePatchV1
+from orion.schemas.metacog_entry import MetacogEntryV1, MetacogRepairPressure
 from orion.schemas.state.contracts import StateGetLatestRequest, StateLatestReply
 from orion.schemas.vision import (
     VisionArtifactPayload,
@@ -724,6 +725,8 @@ _REGISTRY: Dict[str, Type[BaseModel]] = {
     "MetacogTriggerV1": MetacogTriggerV1,
     "MetacogDraftTextPatchV1": MetacogDraftTextPatchV1,
     "MetacogEnrichScorePatchV1": MetacogEnrichScorePatchV1,
+    "MetacogEntryV1": MetacogEntryV1,
+    "MetacogRepairPressure": MetacogRepairPressure,
     "InnerStateFeaturesV1": InnerStateFeaturesV1,
     "InnerFeatureV1": InnerFeatureV1,
     "MoodArcCorpusRowV1": MoodArcCorpusRowV1,

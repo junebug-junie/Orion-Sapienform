@@ -187,6 +187,17 @@ channels:
     stability: "experimental"
     since: "2026-07-03"
 
+  - name: "orion:repair_pressure:appraisal"
+    kind: "event"
+    # Ad-hoc compact payload (correlation_id, level, level_label, confidence, evidence,
+    # behavior_applied), not a full TurnAppraisalParadigmSliceV1 dump. Shape closely
+    # mirrors MetacogRepairPressure (orion/schemas/metacog_entry.py) minus correlation_id.
+    schema_id: "MetacogRepairPressure"
+    producer_services: ["orion-hub"]
+    consumer_services: ["orion-equilibrium-service"]
+    stability: "experimental"
+    since: "2026-07-18"
+
   - name: "orion:exec:request:LLMGatewayService"
     kind: "request"
     schema_id: "ChatRequestPayload"
@@ -481,6 +492,14 @@ channels:
     consumer_services: ["orion-sql-writer"]
     stability: "experimental"
     since: "2026-01-08"
+
+  - name: "orion:metacog:sql-write"
+    kind: "event"
+    schema_id: "MetacogEntryV1"
+    producer_services: ["orion-cortex-exec"]
+    consumer_services: ["orion-sql-writer"]
+    stability: "experimental"
+    since: "2026-07-18"
 
   - name: "orion:collapse:stored"
     kind: "event"
@@ -1429,7 +1448,7 @@ channels:
     schema_id: "ChatHistorySparkMetaPatchV1"
     message_kind: "chat.history.spark_meta.patch.v1"
     producer_services: ["orion-memory-consolidation"]
-    consumer_services: ["orion-sql-writer", "orion-spark-introspector", "orion-equilibrium-service"]
+    consumer_services: ["orion-sql-writer", "orion-spark-introspector"]
     stability: "experimental"
     since: "2026-06-16"
 

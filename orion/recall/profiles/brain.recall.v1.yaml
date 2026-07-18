@@ -33,7 +33,11 @@ relevance:
     sql_chat: 0.75
     sql_timeline: 0.85
     rdf_chat: 0.8
+    # falkor_chat/falkor_graphtri mirror rdf_chat/rdf -- see graphtri.v1.yaml's
+    # comment for why these are needed alongside the rdf/rdf_chat overrides.
+    falkor_chat: 0.8
     rdf: 0.65
+    falkor_graphtri: 0.65
     cards: 0.5
   score_weight: 0.7
   text_similarity_weight: 0.15

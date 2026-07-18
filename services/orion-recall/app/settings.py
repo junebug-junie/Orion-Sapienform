@@ -271,6 +271,40 @@ class Settings(BaseSettings):
     RECALL_FALKOR_IN_CHAT: bool = Field(
         default=False, validation_alias=AliasChoices("RECALL_FALKOR_IN_CHAT")
     )
+    # Second Falkor swap flag, deliberately separate from RECALL_FALKOR_IN_CHAT
+    # -- graphtri (Claim-based) recall is a distinct code path serving
+    # different profiles (graphtri.v1, deep.graph.v1, and brain.recall.v1's
+    # expansion chain) with a genuinely different, newer, less-proven redesign
+    # than the chatturn swap, so it gets its own independent dark-by-default
+    # rollout rather than riding on RECALL_FALKOR_IN_CHAT's already-live state.
+    # When true, storage/falkor_graphtri_adapter.py's
+    # fetch_falkor_graphtri_fragments/fetch_falkor_graphtri_anchors SWAP IN for
+    # storage/rdf_adapter.py's fetch_rdf_graphtri_fragments/fetch_graphtri_anchors
+    # at both call sites in worker.py (_query_backends's graphtri branch, and
+    # process_recall's graphtri-profile branch via _build_anchor_set) --
+    # swap, not additive, same reasoning as RECALL_FALKOR_IN_CHAT.
+    #
+    # Filtering divergence from the RDF version, named not silent: the old
+    # SPARQL filtered at the TURN level (keyword CONTAINS on raw prompt/
+    # response text), which Falkor's thin ChatTurn node can't do without a
+    # Postgres join. This filters at the ENTITY level instead (keyword match
+    # against Entity.name directly in Cypher) -- no Postgres join needed, and
+    # arguably more semantically correct for a graph meant to represent
+    # entity relevance in the first place, not a proxy for turn-text search.
+    #
+    # This is a lower-risk redesign than it looks: a live audit (Phase 0
+    # spec's "Ground truth" section) found Claim.predicate only ever took 2
+    # fixed values in production (hasTag, mentionsEntity -- never open-
+    # vocabulary), confidence/salience were always 0.0/0.0 (dead constants,
+    # confirmed never real signal), and no downstream code (fusion.py,
+    # render.py) ever parsed the predicate/object structure -- the whole
+    # "Claim: ..." string was always carried as opaque text. Since
+    # :Tag/HAS_TAG is also empty by design (see RECALL_FALKOR_IN_CHAT's
+    # sibling write-side comment), MENTIONS_ENTITY already covers the only
+    # part of the old Claim shape that was ever real.
+    RECALL_FALKOR_GRAPHTRI_IN_CHAT: bool = Field(
+        default=False, validation_alias=AliasChoices("RECALL_FALKOR_GRAPHTRI_IN_CHAT")
+    )
     RECALL_CRYSTALLIZATION_VECTOR_COLLECTION: str = Field(
         default="orion_memory_crystallizations",
         validation_alias=AliasChoices("RECALL_CRYSTALLIZATION_VECTOR_COLLECTION"),

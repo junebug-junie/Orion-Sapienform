@@ -253,6 +253,80 @@ def test_contributing_turn_ids_tolerates_malformed_existing_value(monkeypatch) -
     assert node.metadata["contributing_turn_ids"] == ["corr-2"]
 
 
+def test_contributing_turn_ids_coerces_non_string_stored_items(monkeypatch) -> None:
+    """A stored list with non-string items (e.g. from a legacy/foreign writer)
+    must be coerced via str(), not raise or get silently dropped."""
+    monkeypatch.setenv(_PREDICTION_ERROR_NODE_FLAG, "true")
+    store = _RecordingStore()
+    worker = _make_worker(store)
+    now = datetime(2026, 7, 1, 12, 0, 0, tzinfo=timezone.utc)
+
+    worker._write_prediction_error_node(
+        node_id="node:substrate.harness_closure",
+        error=0.4,
+        now=now,
+        reducer_key="post_turn_closure",
+        contributing_id="corr-1",
+    )
+    # Simulate a stored list with mixed non-string items.
+    mixed_metadata = dict(store.nodes["node:substrate.harness_closure"].metadata)
+    mixed_metadata["contributing_turn_ids"] = [1, 2, "corr-3"]
+    store.nodes["node:substrate.harness_closure"] = store.nodes[
+        "node:substrate.harness_closure"
+    ].model_copy(update={"metadata": mixed_metadata})
+
+    worker._write_prediction_error_node(
+        node_id="node:substrate.harness_closure",
+        error=0.4,
+        now=now,
+        reducer_key="post_turn_closure",
+        contributing_id="corr-4",
+    )
+
+    node = store.nodes["node:substrate.harness_closure"]
+    assert node.metadata["contributing_turn_ids"] == ["1", "2", "corr-3", "corr-4"]
+
+
+def test_contributing_turn_ids_tolerates_item_that_raises_on_str(monkeypatch) -> None:
+    """Fail-open: an item whose __str__ raises must not propagate out of
+    _write_prediction_error_node -- the whole carried-forward list is
+    discarded (not partially coerced) and the write still succeeds."""
+    monkeypatch.setenv(_PREDICTION_ERROR_NODE_FLAG, "true")
+
+    class _Explodes:
+        def __str__(self) -> str:
+            raise RuntimeError("boom")
+
+    store = _RecordingStore()
+    worker = _make_worker(store)
+    now = datetime(2026, 7, 1, 12, 0, 0, tzinfo=timezone.utc)
+
+    worker._write_prediction_error_node(
+        node_id="node:substrate.harness_closure",
+        error=0.4,
+        now=now,
+        reducer_key="post_turn_closure",
+        contributing_id="corr-1",
+    )
+    bad_metadata = dict(store.nodes["node:substrate.harness_closure"].metadata)
+    bad_metadata["contributing_turn_ids"] = [_Explodes()]
+    store.nodes["node:substrate.harness_closure"] = store.nodes[
+        "node:substrate.harness_closure"
+    ].model_copy(update={"metadata": bad_metadata})
+
+    # Must not raise.
+    worker._write_prediction_error_node(
+        node_id="node:substrate.harness_closure",
+        error=0.4,
+        now=now,
+        reducer_key="post_turn_closure",
+        contributing_id="corr-2",
+    )
+
+    node = store.nodes["node:substrate.harness_closure"]
+    assert node.metadata["contributing_turn_ids"] == ["corr-2"]
+
+
 def test_no_contributing_turn_ids_key_when_contributing_id_never_provided(monkeypatch) -> None:
     monkeypatch.setenv(_PREDICTION_ERROR_NODE_FLAG, "true")
     store = _RecordingStore()

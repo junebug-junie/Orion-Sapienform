@@ -193,7 +193,10 @@ def substrate_pressure_signals(
                     signal_kind=f"substrate_{kind}",
                     salience=salience,
                     confidence=confidence,
-                    evidence_refs=[node_id] if node_id else [],
+                    evidence_refs=(
+                        ([node_id] if node_id else [])
+                        + [str(t) for t in metadata.get("contributing_turn_ids") or []]
+                    ),
                     provenance={"detector": "substrate_pressure", "signal_driver": kind},
                 )
             )

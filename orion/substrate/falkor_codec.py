@@ -119,18 +119,23 @@ def encode_node_properties(node: BaseSubstrateNodeV1, identity_key: str | None) 
 
 
 # Closed allowlist of dynamics-engine metadata keys promoted to native Cypher
-# scalar properties (concept nodes only). These are the only metadata keys two
-# already-shipped consumers (SubstrateDynamicsEngine.tick() and
-# attention_broadcast._node_salience()) actually read/write; see
-# docs/superpowers/specs/2026-07-16-cypher-native-substrate-postgres-bus-split-design.md
+# scalar properties (concept nodes only). These are the only metadata keys
+# already-shipped consumers (SubstrateDynamicsEngine.tick(),
+# attention_broadcast._node_salience(), substrate_pressure_signals()'s
+# evidence_refs, and the AST/HOT reducer's optional harness_closure_signal
+# narrative -- orion/substrate/attention_self_model.py) actually read/write;
+# see docs/superpowers/specs/2026-07-16-cypher-native-substrate-postgres-bus-split-design.md
 # item 3's "promote to first-class Cypher properties only with a second
-# consumer" escape hatch. Do NOT add a generic metadata-dump path here.
+# consumer" escape hatch. `contributing_turn_ids` was added under this same
+# rule once a second real consumer existed (see the two consumers named
+# above). Do NOT add a generic metadata-dump path here.
 DYNAMICS_METADATA_KEYS: tuple[str, ...] = (
     "dynamic_pressure",
     "dynamic_pressure_reason",
     "dormant",
     "dormancy_updated_at",
     "prediction_error",
+    "contributing_turn_ids",
 )
 
 # Subset of DYNAMICS_METADATA_KEYS owned by SubstrateDynamicsEngine.tick()
@@ -171,6 +176,7 @@ def _dynamics_properties_from_metadata(metadata: Mapping[str, Any] | None) -> di
         "dormant": bool(meta.get("dormant", False)),
         "dormancy_updated_at": meta.get("dormancy_updated_at"),
         "prediction_error": _safe_float(meta.get("prediction_error"), default=None),
+        "contributing_turn_ids_json": _json_list(meta.get("contributing_turn_ids")),
     }
 
 
@@ -250,7 +256,8 @@ def _dynamics_metadata_from_row(row: Mapping[str, Any]) -> dict[str, Any]:
     # attention_broadcast.py) still read it via `.get(key) or 0.0` and so do
     # not yet observe the difference themselves. This preserves headroom for
     # a future consumer that does need the distinction, per the closed
-    # 5-key allowlist this codec owns.
+    # DYNAMICS_METADATA_KEYS allowlist this codec owns. contributing_turn_ids
+    # follows the same "omit when absent/empty" convention, decoded below.
     metadata: dict[str, Any] = {
         "dynamic_pressure": _safe_float(row.get("dynamic_pressure"), default=0.0),
         "dormant": bool(row.get("dormant") or False),
@@ -264,6 +271,25 @@ def _dynamics_metadata_from_row(row: Mapping[str, Any]) -> dict[str, Any]:
     prediction_error = _safe_float(row.get("prediction_error"), default=None)
     if prediction_error is not None:
         metadata["prediction_error"] = prediction_error
+    # Fail-open, matching every other decode field in this function: a
+    # malformed contributing_turn_ids_json value (corrupt JSON, wrong shape)
+    # must not abort decoding the whole node -- treat it as absent rather
+    # than raising, same tolerance _parse_json_list already gives callers
+    # that choose to swallow the error (contrast with _provenance_from_row's
+    # evidence_refs_json, which intentionally does raise -- that field is
+    # load-bearing identity data; contributing_turn_ids is best-effort
+    # attribution, so silent omission on corruption is the safer default).
+    try:
+        contributing_turn_ids = [
+            str(item)
+            for item in _parse_json_list(
+                row.get("contributing_turn_ids_json"), field="contributing_turn_ids_json"
+            )
+        ]
+    except ValueError:
+        contributing_turn_ids = []
+    if contributing_turn_ids:
+        metadata["contributing_turn_ids"] = contributing_turn_ids
     return metadata
 
 

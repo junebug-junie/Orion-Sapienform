@@ -187,6 +187,22 @@ Post-turn closure logs `post_turn_closure received …` on ingest. When
 `SUBSTRATE_WRITE_PREDICTION_ERROR_NODES=true` (logs `post_turn_closure_prediction_error_write`
 or `…_skipped` otherwise). Full Task 21 strain reducers are not implemented here.
 
+`_write_prediction_error_node()` (`app/worker.py`) writes to a single, fixed `node_id` per
+lane (`node:substrate.execution`, `node:substrate.transport`, `node:substrate.harness_closure`
+for post-turn closure), so repeat writes collapse instead of spawning a new node per event.
+Repeat writes to the same node accumulate bounded per-event attribution in
+`metadata['contributing_turn_ids']` (capped at 20, deduped, oldest dropped) — this is
+attribution, not the pressure/dormancy state itself, which `DYNAMICS_ENGINE_OWNED_METADATA_
+KEYS` (`orion/substrate/falkor_codec.py`) separately carries forward on every rewrite so
+`SubstrateDynamicsEngine.tick()`'s computed state doesn't get clobbered. `contributing_turn_
+ids` is durable against the live Falkor backend via `orion/substrate/falkor_codec.py`'s
+`DYNAMICS_METADATA_KEYS` allowlist (JSON-string-encoded as `contributing_turn_ids_json`,
+same pattern as `taxonomy_path_json`) and is consumed by `orion/substrate/attention_
+broadcast.py::substrate_pressure_signals()` (`evidence_refs`) and `orion/substrate/
+attention_self_model.py::reduce_attention_self_model()`'s optional `harness_closure_signal`
+narrative enrichment — see `docs/superpowers/specs/2026-07-18-prediction-error-attribution-
+wiring-design.md`.
+
 **Reverie semantic lift:** unresolved closures also upsert human referent rows into
 `substrate_turn_referent` via `turn_referent_store.persist_turn_referent`. Apply
 `services/orion-sql-db/manual_migration_substrate_turn_referent_v1.sql` before enabling

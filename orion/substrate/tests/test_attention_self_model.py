@@ -223,3 +223,86 @@ def test_reference_tick_falls_back_to_self_state_when_no_field_frame() -> None:
     model = reduce_attention_self_model(None, None, state)
 
     assert model.generated_at == NOW
+
+
+class TestHarnessClosureSignal:
+    """harness_closure_signal only enriches the field_salience_only branch's
+    reason_narrative -- see reduce_attention_self_model's own docstring. Not
+    touched: top_down_override/bottom_up_salience branches, attention_reason
+    itself, or any other field."""
+
+    def test_harness_closure_signal_appends_narrative_clause(self) -> None:
+        model = reduce_attention_self_model(
+            None,
+            _field_frame(),
+            None,
+            now=NOW,
+            harness_closure_signal={
+                "prediction_error": 0.42,
+                "contributing_turn_ids": ["turn-1", "turn-2", "turn-3"],
+            },
+        )
+
+        assert model.attention_reason == "field_salience_only"
+        assert "sustained prediction-error surprise across 3 recent turn(s)" in model.reason_narrative
+        assert "current magnitude=0.42" in model.reason_narrative
+        # attention_reason itself must not change -- enrichment is narrative-only.
+        assert model.attention_reason == "field_salience_only"
+
+    def test_harness_closure_signal_absent_is_byte_identical_to_default(self) -> None:
+        """Regression guard: omitting harness_closure_signal (the default,
+        every existing caller) must reproduce today's narrative exactly."""
+        baseline = reduce_attention_self_model(None, _field_frame(), None, now=NOW)
+        with_none = reduce_attention_self_model(
+            None, _field_frame(), None, now=NOW, harness_closure_signal=None
+        )
+
+        assert baseline.reason_narrative == with_none.reason_narrative
+        assert "sustained prediction-error surprise" not in baseline.reason_narrative
+
+    def test_harness_closure_signal_zero_prediction_error_does_not_enrich(self) -> None:
+        model = reduce_attention_self_model(
+            None,
+            _field_frame(),
+            None,
+            now=NOW,
+            harness_closure_signal={
+                "prediction_error": 0.0,
+                "contributing_turn_ids": ["turn-1"],
+            },
+        )
+
+        assert "sustained prediction-error surprise" not in model.reason_narrative
+
+    def test_harness_closure_signal_empty_contributing_turn_ids_does_not_enrich(self) -> None:
+        model = reduce_attention_self_model(
+            None,
+            _field_frame(),
+            None,
+            now=NOW,
+            harness_closure_signal={
+                "prediction_error": 0.75,
+                "contributing_turn_ids": [],
+            },
+        )
+
+        assert "sustained prediction-error surprise" not in model.reason_narrative
+
+    def test_harness_closure_signal_ignored_outside_field_salience_only_branch(self) -> None:
+        """A fresh, non-stale broadcast with no override takes the
+        bottom_up_salience branch -- harness_closure_signal must not leak
+        its narrative clause in there even if it's provided."""
+        broadcast = _broadcast(override=None)
+        model = reduce_attention_self_model(
+            broadcast,
+            _field_frame(),
+            _self_state(),
+            now=NOW,
+            harness_closure_signal={
+                "prediction_error": 0.9,
+                "contributing_turn_ids": ["turn-1"],
+            },
+        )
+
+        assert model.attention_reason == "bottom_up_salience"
+        assert "sustained prediction-error surprise" not in model.reason_narrative

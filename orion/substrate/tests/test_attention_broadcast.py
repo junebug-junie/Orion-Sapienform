@@ -184,6 +184,40 @@ def test_malformed_nodes_are_skipped_not_fatal() -> None:
     assert [s.target_text for s in signals] == ["well formed node"]
 
 
+def test_evidence_refs_include_contributing_turn_ids() -> None:
+    """A node whose metadata carries contributing_turn_ids (populated by
+    _write_prediction_error_node's carry-forward logic, PR #1205, now durable
+    via falkor_codec.py's contributing_turn_ids_json) must surface those turn
+    ids in the resulting AttentionSignalV1.evidence_refs alongside the node
+    id itself -- making the harness turns that contributed to this pressure
+    node inspectable from the attention signal, not just the node id."""
+    nodes = [
+        _node(
+            "node:substrate.harness_closure",
+            "sustained prediction-error surprise",
+            dynamic_pressure=0.6,
+            contributing_turn_ids=["turn-1", "turn-2"],
+        ),
+    ]
+    signals = substrate_pressure_signals(nodes, min_salience=0.0)
+    assert signals
+    assert signals[0].evidence_refs == [
+        "node:substrate.harness_closure",
+        "turn-1",
+        "turn-2",
+    ]
+
+
+def test_evidence_refs_omit_contributing_turn_ids_when_absent() -> None:
+    """Regression guard: a node with no contributing_turn_ids in metadata
+    (the common case) must keep today's behavior -- evidence_refs is just
+    the node id, nothing appended."""
+    nodes = [_node("node:plain", "plain concept", dynamic_pressure=0.6)]
+    signals = substrate_pressure_signals(nodes, min_salience=0.0)
+    assert signals
+    assert signals[0].evidence_refs == ["node:plain"]
+
+
 def test_projection_carries_selected_coalition() -> None:
     nodes = [_node("node:hot", "hot node", dynamic_pressure=0.9)]
     frame = build_substrate_attention_frame(nodes=nodes, now=_NOW)

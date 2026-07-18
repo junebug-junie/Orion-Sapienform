@@ -177,6 +177,19 @@ first place. Full reasoning and phased detail:
    oscillation period, 3500+ zero-crossings each over 84k samples) — the upstream field-
    level fix has not fully propagated. Full detail, headline numbers, and the resulting
    Juniper sign-off decision: PR report for this patch.
+   **Durability + consumer wiring (2026-07-18, follow-up patch):** PR #1205 gave the
+   harness-closure prediction-error lane a shared node (`node:substrate.harness_closure`)
+   with per-turn attribution in `metadata['contributing_turn_ids']`, but disclosed that
+   `orion/substrate/falkor_codec.py`'s closed allowlist silently dropped that list on every
+   durable Falkor round trip. Closed in this follow-up: `contributing_turn_ids` promoted to
+   a durable native Cypher property (`contributing_turn_ids_json`), and wired into two real
+   consumers — `substrate_pressure_signals()`'s `evidence_refs` and this reducer's
+   `field_salience_only` narrative (new optional `harness_closure_signal` kwarg, narrative-
+   only, no `attention_reason`/schema change). See
+   `docs/superpowers/specs/2026-07-18-prediction-error-attribution-wiring-design.md` and
+   this PR's report for the decision record and a live-data caveat (no
+   `node:substrate.harness_closure` write has occurred yet post-deploy to prove the
+   end-to-end durability live, confirmed via manual FalkorDB query).
 3. **Route existing tension producers directly onto `FieldStateV1` channels**, retiring the
    bucket-vote layer — collapses the redundant reimplementation named in §7's finding.
    Reframed as prediction-error-native (extending the already-live
@@ -337,7 +350,10 @@ fix — see §7.
    hard signal-quality check on exactly those `SelfStateV1` fields before Phase 1 is called
    done. See `docs/superpowers/specs/2026-07-18-objective-3-consciousness-scaffolded-
    roadmap-design.md` Phase 1 and §6 item 2's status note above.** Built 2026-07-18:
-   `orion/substrate/attention_self_model.py`.
+   `orion/substrate/attention_self_model.py`. **Durability + consumer wiring (2026-07-18
+   follow-up):** see item 3's note below — same patch, same
+   `node:substrate.harness_closure` data, now consumed by this reducer's
+   `field_salience_only` narrative too.
 3. **Predictive Processing/Active Inference** — **not** `orion/self_state/prediction.py`
    (`SelfStateV1`-anchored, same violation as IIT above). The real field-native substrate,
    confirmed live 2026-07-18: `services/orion-substrate-runtime/app/worker.py`'s
@@ -352,6 +368,22 @@ fix — see §7.
    reaches real values like 0.92 periodically" characterization of this exact channel). Open
    question, not yet checked: whether the other three reducers (biometrics, chat, route)
    have equivalent instrumentation, or whether coverage is genuinely incomplete.
+   **Attribution durability + consumers (2026-07-18):** the harness-closure variant of this
+   same mechanism (`node:substrate.harness_closure`, PR #1205) accumulates per-turn
+   attribution in `metadata['contributing_turn_ids']`, but that list was silently dropped on
+   every durable Falkor round trip — `orion/substrate/falkor_codec.py`'s allowlist didn't
+   carry it. Fixed in a same-day follow-up: promoted to a durable Cypher property
+   (`contributing_turn_ids_json`, same JSON-string pattern as `taxonomy_path_json`), and
+   wired into two consumers — `substrate_pressure_signals()`'s `evidence_refs` (turn ids now
+   ride alongside the node id) and item 2's AST/HOT reducer (`field_salience_only`
+   narrative names the contributing-turn count + current magnitude). Design record:
+   `docs/superpowers/specs/2026-07-18-prediction-error-attribution-wiring-design.md`. Zero
+   `goal.drive_origin`/`GoalProposalEngine` coupling — confirmed against this charter in
+   full, not just a grep. Live caveat: as of this patch, no `node:substrate.harness_closure`
+   write has occurred against the redeployed container yet (checked manually via
+   `redis-cli GRAPH.QUERY`), so the end-to-end live-durability claim is `UNVERIFIED` pending
+   a real unresolved harness-closure event post-deploy — the codec/consumer wiring itself is
+   fully unit-tested against the real production schemas.
 4. **Higher-Order Theories** — architecturally close to AST's missing piece; a
    higher-order representation built once, reading the same field/reducer-projection data,
    may serve both theories. Served by the same Phase 1 reducer as #2 above, including its

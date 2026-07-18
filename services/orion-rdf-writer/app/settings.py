@@ -51,19 +51,36 @@ class Settings(BaseSettings):
     CHANNEL_EVENTS_TAGGED: str = Field(default="orion:tags:enriched", env="CHANNEL_EVENTS_TAGGED")
     CHANNEL_EVENTS_TAGGED_CHAT: str = Field(default="orion:tags:chat:enriched", env="CHANNEL_EVENTS_TAGGED_CHAT")
     CHANNEL_CORE_EVENTS: str = Field(default="orion:core:events", env="CHANNEL_CORE_EVENTS")
-    CHANNEL_WORKER_RDF: str = Field(default="orion:rdf:worker", env="CHANNEL_WORKER_RDF")
+    # orion:rdf:worker (CHANNEL_WORKER_RDF) deliberately not subscribed as of
+    # 2026-07-18: channels.yaml claims orion-cortex-exec as producer, but no
+    # code anywhere actually publishes to it (the one hit outside this file
+    # was self_study.py referencing the channel *name* in a self-knowledge
+    # catalog string, not a bus.publish call). Zero live traffic possible.
+    # Do not re-add without a real producer.
     CHANNEL_COGNITION_TRACE_PUB: str = Field(default="orion:cognition:trace", env="CHANNEL_COGNITION_TRACE_PUB")
     CHANNEL_CHAT_HISTORY_TURN: str = Field(default="orion:chat:history:turn", env="CHANNEL_CHAT_HISTORY_TURN")
     CHANNEL_CHAT_HISTORY_LOG: str = Field(default="orion:chat:history:log", env="CHANNEL_CHAT_HISTORY_LOG")
-    CHANNEL_MEMORY_IDENTITY_SNAPSHOT: str = Field(default="orion:memory:identity:snapshot", env="CHANNEL_MEMORY_IDENTITY_SNAPSHOT")
+    # orion:memory:identity:snapshot / orion:memory:goals:proposed (identity
+    # snapshots / goal proposals) deliberately not subscribed as of
+    # 2026-07-18: live Fuseki query found zero graphs matching
+    # autonomy/identity/goals ever recorded, despite a real producer
+    # existing. identity_snapshots already has a real, actively-pruned
+    # Postgres store (orion-self-state-runtime's SelfStateRuntimeStore), and
+    # goal proposals are already consumed live by orion-substrate-runtime's
+    # goal_context_listener.py. Same shape as the 2026-07-15 drive-audit kill
+    # and the cognition/metacog kill — a real consumer already exists
+    # elsewhere. Do not re-add.
+    #
     # orion:memory:drives:audit deliberately not subscribed: drive audits are
     # Postgres-only (`drive_audits` via orion-sql-writer) as of 2026-07-15.
-    CHANNEL_MEMORY_GOALS_PROPOSED: str = Field(default="orion:memory:goals:proposed", env="CHANNEL_MEMORY_GOALS_PROPOSED")
 
     # === PUBLISH CHANNELS ===
     CHANNEL_RDF_CONFIRM: str = Field(default="orion:rdf:confirm", env="CHANNEL_RDF_CONFIRM")
     CHANNEL_RDF_ERROR: str = Field(default="orion:rdf:error", env="CHANNEL_RDF_ERROR")
-    CORTEX_LOG_CHANNEL: str = Field(default="orion:cortex:telemetry", env="CORTEX_LOG_CHANNEL")
+    # orion:cortex:telemetry (CORTEX_LOG_CHANNEL) deliberately not subscribed
+    # as of 2026-07-18: zero producers anywhere in the repo, not even
+    # registered in channels.yaml. Dead subscription. Do not re-add without
+    # a real producer.
 
     SERVICE_NAME: str = Field(default="orion-rdf-writer", env="SERVICE_NAME")
     SERVICE_VERSION: str = Field(default="0.2.0", env="SERVICE_VERSION")
@@ -79,10 +96,16 @@ class Settings(BaseSettings):
     RDF_RETENTION_TIMEOUT_SEC: float = Field(default=3600.0, env="RDF_RETENTION_TIMEOUT_SEC")
     RDF_RETENTION_POLICIES: str | None = Field(default=None, env="RDF_RETENTION_POLICIES")
 
-    WORLD_PULSE_GRAPH_ENABLED: bool = Field(default=False, env="WORLD_PULSE_GRAPH_ENABLED")
-    WORLD_PULSE_GRAPH_DRY_RUN: bool = Field(default=True, env="WORLD_PULSE_GRAPH_DRY_RUN")
-    WORLD_PULSE_GRAPH_REQUIRE_POLICY_STAMP: bool = Field(default=True, env="WORLD_PULSE_GRAPH_REQUIRE_POLICY_STAMP")
-    CHANNEL_WORLD_PULSE_GRAPH: str = Field(default="orion:world_pulse:graph:upsert", env="CHANNEL_WORLD_PULSE_GRAPH")
+    # orion:world_pulse:graph:upsert (CHANNEL_WORLD_PULSE_GRAPH) deliberately
+    # not subscribed as of 2026-07-18: WORLD_PULSE_GRAPH_ENABLED was false in
+    # the live .env (fully inert), and even enabled it defaulted to dry-run.
+    # Graph shape was 3 flat literal properties per digest item
+    # (category/title/runId) with no edges to anything else -- no real graph
+    # structure lost, and world-pulse's richer claim/event/entity emit
+    # channels already reach Postgres via orion-sql-writer. Do not re-add;
+    # if world-pulse ever needs graph storage, design it fresh against
+    # Falkor instead of reviving this dormant SPARQL path. The WORLD_PULSE_*
+    # settings fields themselves are removed too -- nothing else reads them.
 
     model_config = SettingsConfigDict(env_file=".env", env_file_encoding="utf-8", extra="ignore")
 
@@ -95,15 +118,10 @@ class Settings(BaseSettings):
             self.CHANNEL_EVENTS_TAGGED_CHAT,
             "orion:chat:social:stored",
             self.CHANNEL_CORE_EVENTS,
-            self.CHANNEL_WORKER_RDF,
-            self.CORTEX_LOG_CHANNEL,
             self.CHANNEL_COGNITION_TRACE_PUB,
             self.CHANNEL_CHAT_HISTORY_TURN,
             self.CHANNEL_CHAT_HISTORY_LOG,
-            self.CHANNEL_MEMORY_IDENTITY_SNAPSHOT,
-            self.CHANNEL_MEMORY_GOALS_PROPOSED,
             "orion:metacog:trace",
-            self.CHANNEL_WORLD_PULSE_GRAPH,
         ]
         seen = set()
         ordered: List[str] = []

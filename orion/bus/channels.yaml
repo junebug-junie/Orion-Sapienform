@@ -680,9 +680,13 @@ channels:
   - name: "orion:rdf:worker"
     kind: "request"
     schema_id: "RdfBuildRequest"
-    producer_services: ["orion-cortex-exec"]
-    consumer_services: ["orion-rdf-writer"]
-    single_consumer: true
+    # orion-rdf-writer removed 2026-07-18: zero real producers found anywhere
+    # in the repo despite this entry claiming orion-cortex-exec -- the one
+    # other hit was self_study.py referencing the channel name in a
+    # self-knowledge catalog string, not an actual bus.publish call. Fully
+    # dead channel, both sides. Do not re-add without a real producer.
+    producer_services: []
+    consumer_services: []
     stability: "experimental"
     since: "2026-01-08"
 
@@ -1718,7 +1722,16 @@ channels:
     schema_id: "IdentitySnapshotV1"
     message_kind: "memory.identity.snapshot.v1"
     producer_services: ["orion-spark-concept-induction"]
-    consumer_services: ["orion-rdf-writer", "orion-sql-writer", "*"]
+    # orion-rdf-writer removed 2026-07-18: live Fuseki query found zero
+    # graphs matching autonomy/identity ever recorded, despite this real
+    # producer existing. Postgres (orion-self-state-runtime's
+    # SelfStateRuntimeStore, actively pruned) already durably owns identity
+    # snapshots. Do not re-add. orion-sql-writer's listed consumption of
+    # this channel was NOT independently verified in this pass -- grepped
+    # zero code references in services/orion-sql-writer for this channel
+    # name or message_kind; left as-is since removing it is a separate,
+    # unverified claim from the rdf-writer kill this entry documents.
+    consumer_services: ["orion-sql-writer", "*"]
     stability: "experimental"
     since: "2026-03-19"
 
@@ -1727,7 +1740,13 @@ channels:
     schema_id: "GoalProposalV1"
     message_kind: "memory.goals.proposed.v1"
     producer_services: ["orion-spark-concept-induction"]
-    consumer_services: ["orion-rdf-writer", "orion-sql-writer", "orion-substrate-runtime", "*"]
+    # orion-rdf-writer removed 2026-07-18: live Fuseki query found zero
+    # graphs matching autonomy/goals ever recorded, despite this real
+    # producer existing. orion-substrate-runtime's goal_context_listener.py
+    # already consumes this live for active-goal state. Do not re-add.
+    # orion-sql-writer's listed consumption was NOT independently verified
+    # in this pass (same caveat as orion:memory:identity:snapshot above).
+    consumer_services: ["orion-sql-writer", "orion-substrate-runtime", "*"]
     stability: "experimental"
     since: "2026-03-19"
 
@@ -1949,7 +1968,15 @@ channels:
     schema_id: "GraphDeltaPlanV1"
     message_kind: "world.pulse.graph.upsert.v1"
     producer_services: ["orion-world-pulse"]
-    consumer_services: ["orion-rdf-writer", "*"]
+    # orion-rdf-writer removed 2026-07-18: WORLD_PULSE_GRAPH_ENABLED was
+    # false in the live .env (fully inert), and the graph shape (3 flat
+    # literals per digest item, no edges) duplicated data already reaching
+    # Postgres via world-pulse's richer claim/event/entity emit channels.
+    # orion-world-pulse still publishes this event (pipeline.py) into a
+    # channel with no real consumer left -- flagged as a follow-up, not
+    # fixed in this patch (out of scope: touches a second service's
+    # pipeline, not just the dead-consumer side).
+    consumer_services: ["*"]
     stability: "experimental"
     since: "2026-04-26"
 

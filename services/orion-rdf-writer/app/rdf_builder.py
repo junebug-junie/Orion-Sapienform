@@ -16,11 +16,8 @@ from orion.schemas.rdf import RdfWriteRequest, RdfBuildRequest
 from orion.schemas.social_chat import SocialRoomTurnStoredV1
 from orion.schemas.telemetry.cognition_trace import CognitionTracePayload
 from orion.schemas.metacognitive_trace import MetacognitiveTraceV1
-from orion.schemas.world_pulse import GraphDeltaPlanV1
 
-from app.autonomy import build_autonomy_triples
 from app.provenance import attach_provenance
-from app.settings import settings
 
 ORION = Namespace("http://conjourney.net/orion#")
 CM = Namespace("http://orion.ai/collapse#")
@@ -79,18 +76,13 @@ def build_triples_from_envelope(env_kind: str, payload: Any) -> Tuple[Optional[s
                 req = payload
             return _handle_write_request(g, req)
 
-        # 2. RdfBuildRequest (Cortex Exec)
-        elif env_kind == "cortex.worker.rdf_build":
-             # Payload might be the standard Exec 'PlanExecutionRequest' or 'args'
-             # but here we assume the worker receives the specific instruction.
-             # Actually, Exec sends `PlanExecutionRequest` wrapper usually.
-             # We will handle the inner args.
-             if isinstance(payload, dict):
-                 # Try to extract args if wrapped, or treat as direct args
-                 args = payload.get("args", payload)
-                 return _handle_cortex_build(g, args)
-             else:
-                 return _handle_cortex_build(g, payload.args)
+        # 2. cortex.worker.rdf_build (orion:rdf:worker) deliberately not
+        # handled as of 2026-07-18: zero real producers found anywhere in
+        # the repo despite channels.yaml claiming orion-cortex-exec as
+        # producer -- the one other hit was self_study.py referencing the
+        # channel name in a self-knowledge catalog string, not a publish
+        # call. _handle_cortex_build (CognitiveStepExecution) removed with
+        # it. Do not re-add without a real producer.
 
         # 3. Collapse Mirror (Raw)
         elif env_kind == "collapse.mirror.entry":
@@ -148,11 +140,17 @@ def build_triples_from_envelope(env_kind: str, payload: Any) -> Tuple[Optional[s
             attach_provenance(g, subject_uri, meta.service_name)
             return g.serialize(format="nt"), "orion:enrichment"
 
-        # 5. Phase 3 autonomy artifact materialization
+        # 5. Phase 3 autonomy artifact materialization -- deliberately
+        # removed as of 2026-07-18: live Fuseki query found zero graphs
+        # matching autonomy/identity/goals ever recorded, despite a real
+        # producer existing. identity_snapshots already has a real,
+        # actively-pruned Postgres store (orion-self-state-runtime's
+        # SelfStateRuntimeStore) and goal proposals are already consumed
+        # live by orion-substrate-runtime's goal_context_listener.py. Same
+        # shape as the memory.drives.audit.v1 kill (2026-07-15) below --
+        # do not re-add either without a real Falkor/Postgres-gap reason.
         # (memory.drives.audit.v1 deliberately absent: drive audits are
         # Postgres-only via orion-sql-writer as of 2026-07-15 — do not re-add.)
-        elif env_kind in ("memory.identity.snapshot.v1", "memory.goals.proposed.v1"):
-            return build_autonomy_triples(env_kind, payload)
 
         # 6. Cognition Trace
         elif env_kind == "cognition.trace":
@@ -172,24 +170,12 @@ def build_triples_from_envelope(env_kind: str, payload: Any) -> Tuple[Optional[s
              if isinstance(payload, dict) and "rdf" in payload.get("targets", []):
                  return _legacy_dict_build(g, payload)
 
-        # 8. World pulse graph delta
-        elif env_kind == "world.pulse.graph.upsert.v1":
-            if isinstance(payload, dict):
-                delta = GraphDeltaPlanV1.model_validate(payload)
-            else:
-                delta = payload
-            if not settings.WORLD_PULSE_GRAPH_ENABLED:
-                return None, None
-            if settings.WORLD_PULSE_GRAPH_REQUIRE_POLICY_STAMP and not delta.policy_stamp:
-                logger.warning("world_pulse_graph_emit_result run_id=%s status=policy_stamp_missing", delta.run_id)
-                return None, None
-            if settings.WORLD_PULSE_GRAPH_DRY_RUN:
-                logger.info(
-                    "world_pulse_graph_emit_result run_id=%s status=dry_run triple_count=%s",
-                    delta.run_id,
-                    delta.triple_count,
-                )
-            return delta.triples, delta.graph_name
+        # 8. world.pulse.graph.upsert.v1 deliberately not handled as of
+        # 2026-07-18: WORLD_PULSE_GRAPH_ENABLED was false in the live .env
+        # (fully inert), graph shape was 3 flat literals per digest item
+        # with no edges to anything else, and world-pulse's richer
+        # claim/event/entity emit channels already reach Postgres via
+        # orion-sql-writer. Do not re-add without a real reason.
 
         # 9. Chat History (Turn-level)
         elif env_kind == "chat.history":
@@ -222,31 +208,6 @@ def _handle_write_request(g: Graph, req: RdfWriteRequest) -> Tuple[str, str]:
     # If explicit payload provided (e.g. wrapped content)
     # This is a stub for future "convert this generic dict to RDF" logic
     return None, None
-
-def _handle_cortex_build(g: Graph, args: Any) -> Tuple[str, str]:
-    # Adapting logic from old _build_cortex_step_graph
-    # We expect `args` to be a dict or object with relevant fields
-
-    data = args if isinstance(args, dict) else args.model_dump()
-
-    # Check if this is a Cortex Step Summary (telemetry) or a specific RDF task
-    # If the verb is `rdf_build`, we assume it's a specific task to write data.
-
-    # For now, let's assume we are logging the step execution itself as RDF (Cognitive Memory)
-    # AND handling specific write instructions if present.
-
-    cid = data.get("correlation_id") or data.get("trace_id") or str(uuid.uuid4())
-    subject = ORION[f"cortexStep_{_sanitize_fragment(cid)}"]
-
-    g.add((subject, RDF.type, ORION.CognitiveStepExecution))
-    g.add((subject, ORION.correlationId, Literal(cid, datatype=XSD.string)))
-
-    if "verb" in data:
-        g.add((subject, ORION.verbName, Literal(data["verb"], datatype=XSD.string)))
-
-    # Serialize whatever we have
-    return g.serialize(format="nt"), "orion:cognition"
-
 
 def _handle_cognition_trace(g: Graph, trace: CognitionTracePayload) -> Tuple[str, str]:
     """

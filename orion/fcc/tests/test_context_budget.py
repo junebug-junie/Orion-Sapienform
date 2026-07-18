@@ -94,11 +94,22 @@ def test_extend_fcc_subprocess_env_preserves_auto_tool_search_override() -> None
     assert env["ENABLE_TOOL_SEARCH"] == "auto:5"
 
 
-def test_orion_fcc_claude_config_dir_defaults_under_dot_fcc(monkeypatch) -> None:
+def test_orion_fcc_claude_config_dir_returns_none_when_unconfigured(monkeypatch) -> None:
+    """Neither key set -> inherit whatever the deployment already provides
+    (e.g. orion-harness-governor's harness-claude-config volume at
+    /root/.claude) rather than forcing an override."""
     monkeypatch.delenv("HARNESS_FCC_CLAUDE_CONFIG_DIR", raising=False)
     monkeypatch.delenv("HUB_AGENT_CLAUDE_CONFIG_DIR", raising=False)
-    monkeypatch.setenv("HOME", "/home/test-user")
-    assert orion_fcc_claude_config_dir() == "/home/test-user/.fcc/claude-config"
+    assert orion_fcc_claude_config_dir() is None
+
+
+def test_orion_fcc_claude_config_dir_harness_set_but_empty_means_inherit(monkeypatch) -> None:
+    """orion-harness-governor's .env_example ships this key present but
+    empty by default -- an explicit "don't override" signal, distinct from
+    the key being absent entirely."""
+    monkeypatch.setenv("HARNESS_FCC_CLAUDE_CONFIG_DIR", "")
+    monkeypatch.setenv("HUB_AGENT_CLAUDE_CONFIG_DIR", "/tmp/hub-claude-config")
+    assert orion_fcc_claude_config_dir() is None
 
 
 def test_orion_fcc_claude_config_dir_prefers_harness_env(monkeypatch) -> None:
@@ -111,6 +122,32 @@ def test_orion_fcc_claude_config_dir_falls_back_to_hub_env(monkeypatch) -> None:
     monkeypatch.delenv("HARNESS_FCC_CLAUDE_CONFIG_DIR", raising=False)
     monkeypatch.setenv("HUB_AGENT_CLAUDE_CONFIG_DIR", "/tmp/hub-claude-config")
     assert orion_fcc_claude_config_dir() == "/tmp/hub-claude-config"
+
+
+def test_orion_fcc_claude_config_dir_hub_default_is_not_nested_under_dot_fcc(monkeypatch) -> None:
+    """Regression guard for orion-hub's real .env_example default value:
+    both orion-hub and orion-harness-governor bind-mount
+    ${HOME}/.fcc:/root/.fcc:ro (operator secrets). A value nested under
+    ~/.fcc would be unwritable by `claude` from inside either container --
+    confirmed live (mkdir/touch both fail with "Read-only file system")."""
+    monkeypatch.delenv("HARNESS_FCC_CLAUDE_CONFIG_DIR", raising=False)
+    monkeypatch.setenv("HUB_AGENT_CLAUDE_CONFIG_DIR", "~/.claude-fcc")
+    resolved = orion_fcc_claude_config_dir()
+    assert resolved is not None
+    assert "/.fcc/" not in resolved
+
+
+def test_extend_fcc_subprocess_env_leaves_claude_config_dir_untouched_when_unconfigured(
+    monkeypatch,
+) -> None:
+    """orion-harness-governor's real deployment: neither key configured ->
+    don't set CLAUDE_CONFIG_DIR at all, so claude falls through to its own
+    default (the harness-claude-config volume at /root/.claude)."""
+    monkeypatch.delenv("HARNESS_FCC_CLAUDE_CONFIG_DIR", raising=False)
+    monkeypatch.delenv("HUB_AGENT_CLAUDE_CONFIG_DIR", raising=False)
+    env: dict[str, str] = {}
+    extend_fcc_subprocess_env(env)
+    assert "CLAUDE_CONFIG_DIR" not in env
 
 
 def test_extend_fcc_subprocess_env_sets_and_creates_claude_config_dir(monkeypatch, tmp_path) -> None:

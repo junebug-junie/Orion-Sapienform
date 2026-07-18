@@ -123,7 +123,7 @@ class Settings(BaseSettings):
         alias="HUB_AGENT_CLAUDE_WORKSPACE",
     )
     HUB_AGENT_CLAUDE_CONFIG_DIR: str = Field(
-        default="~/.fcc/claude-config",
+        default="~/.claude-fcc",
         alias="HUB_AGENT_CLAUDE_CONFIG_DIR",
         description=(
             "CLAUDE_CONFIG_DIR for the FCC claude subprocess, read directly from "

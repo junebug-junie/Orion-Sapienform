@@ -622,6 +622,83 @@ def test_falkor_legacy_migration_still_skips_unsupported_node_kinds():
     assert write_calls == []
 
 
+def test_falkor_edge_hydrate_query_derives_source_target_from_matched_nodes():
+    # Regression (2026-07-18 incident): the edge hydration RETURN clause
+    # used to read e.source_id/e.target_id as edge *properties* -- but
+    # upsert_edge() deliberately never writes those two fields onto the
+    # edge (skip={"edge_id", "source_id", "target_id"}), since the real
+    # linkage lives in the graph topology the MATCH pattern itself already
+    # encodes. Reading them as properties always returned NULL, which
+    # decode_edge() then str()-coerced into the literal string "None" for
+    # every hydrated edge -- confirmed live: every edge in the running
+    # graph silently lost its real source/target node_id on every hydrate.
+    # This test asserts the query text itself, since RecordingFalkorClient
+    # is a scripted test double that can't execute real Cypher to prove
+    # the derivation actually happens end-to-end (see the round-trip test
+    # below for what a fixed query's *output* should decode to).
+    client = RecordingFalkorClient()
+    FalkorSubstrateStore(
+        FalkorSubstrateStoreConfig(uri="redis://localhost:6379", graph_name="orion_substrate"),
+        client=client,
+        hydrate=True,
+    )
+
+    edge_hydrate_calls = [
+        cypher for cypher, _ in client.calls if "MATCH (source:SubstrateNode)-[e]->(target:SubstrateNode)" in cypher
+    ]
+    assert edge_hydrate_calls, "expected the edge hydration query to run"
+    cypher = edge_hydrate_calls[0]
+    assert "source.node_id AS source_id" in cypher
+    assert "target.node_id AS target_id" in cypher
+    assert "e.source_id AS source_id" not in cypher
+    assert "e.target_id AS target_id" not in cypher
+
+
+def test_falkor_hydrates_edge_source_target_node_ids_correctly():
+    # Complements the query-text test above: given a hydrate row shaped the
+    # way the *fixed* query actually returns results (source_id/target_id
+    # populated with real node_id strings, since they're now derived from
+    # the matched source/target nodes rather than absent edge properties),
+    # decode_edge() must produce real NodeRefV1.node_id values -- not the
+    # literal string "None" that a missing/NULL source_id previously
+    # produced via decode_edge()'s str(row["source_id"]) coercion.
+    client = RecordingFalkorClient(
+        hydrate_edge_rows=[
+            {
+                "edge_id": "sub-edge-a-b",
+                "identity_key": "a|supports|b",
+                "source_id": "sub-concept-a",
+                "source_kind": "concept",
+                "target_id": "sub-concept-b",
+                "target_kind": "concept",
+                "predicate": "supports",
+                "substrate_edge": True,
+                "confidence": 0.8,
+                "salience": 0.6,
+                "observed_at": "2026-07-16T00:00:00+00:00",
+                "provenance_authority": "local_inferred",
+                "provenance_source_kind": "test",
+                "provenance_source_channel": "test:edge",
+                "provenance_producer": "test_falkor_store",
+                "evidence_refs_json": "[]",
+            }
+        ]
+    )
+
+    store = FalkorSubstrateStore(
+        FalkorSubstrateStoreConfig(uri="redis://localhost:6379", graph_name="orion_substrate"),
+        client=client,
+        hydrate=True,
+    )
+
+    edge = store.get_edge_by_id("sub-edge-a-b")
+    assert edge is not None
+    assert edge.source.node_id == "sub-concept-a"
+    assert edge.target.node_id == "sub-concept-b"
+    assert edge.source.node_id != "None"
+    assert edge.target.node_id != "None"
+
+
 def test_recording_client_splits_node_and_edge_hydrate_rows():
     client = RecordingFalkorClient(
         hydrate_node_rows=[{"node_id": "n1", "node_kind": "concept"}],
@@ -874,6 +951,60 @@ def test_falkor_hydrates_from_redis_py_result_set_lists():
     assert migrated is not None
     assert migrated.label == "Legacy list"
     assert any("MERGE (n:SubstrateNode" in c for c, _ in client.calls)
+
+
+def test_falkor_hydrates_edge_from_redis_py_result_set_lists():
+    # Edge-path analog of test_falkor_hydrates_from_redis_py_result_set_lists
+    # above. That existing test forces _normalize_rows()'s real positional
+    # (list/tuple) zip path to run for *node* hydration -- a dict-shaped
+    # scripted row (as used by test_falkor_hydrates_edge_source_target_node_ids_correctly)
+    # bypasses that zip entirely (dict items pass through _normalize_rows
+    # near-verbatim), so it can't catch a column-order mismatch between
+    # NATIVE_EDGE_RETURN_FIELDS and _edge_hydrate_return_clause()'s emitted
+    # column order. This test closes that gap for edges specifically: a
+    # raw positional list, in NATIVE_EDGE_RETURN_FIELDS order, forces the
+    # real zip and proves source_id/target_id land in the right positions.
+    from orion.substrate.falkor_store import NATIVE_EDGE_RETURN_FIELDS
+
+    values = []
+    for field in NATIVE_EDGE_RETURN_FIELDS:
+        defaults = {
+            "edge_id": "sub-edge-redis-py",
+            "identity_key": "a|supports|b",
+            "source_id": "sub-concept-redis-py-a",
+            "source_kind": "concept",
+            "target_id": "sub-concept-redis-py-b",
+            "target_kind": "concept",
+            "predicate": "supports",
+            "substrate_edge": True,
+            "confidence": 0.8,
+            "salience": 0.6,
+            "observed_at": "2026-07-16T00:00:00+00:00",
+            "provenance_authority": "local_inferred",
+            "provenance_source_kind": "test",
+            "provenance_source_channel": "test:edge-redis-py",
+            "provenance_producer": "test_falkor_store",
+            "evidence_refs_json": "[]",
+        }
+        values.append(defaults.get(field))
+
+    class EdgeListRowClient:
+        def graph_query(self, cypher: str, params: dict | None = None):
+            if "MATCH (source:SubstrateNode)-[e]->(target:SubstrateNode)" in cypher:
+                return [values]
+            return []
+
+    store = FalkorSubstrateStore(
+        FalkorSubstrateStoreConfig(uri="redis://localhost:6379", graph_name="orion_substrate"),
+        client=EdgeListRowClient(),
+        hydrate=True,
+    )
+
+    edge = store.get_edge_by_id("sub-edge-redis-py")
+    assert edge is not None
+    assert edge.source.node_id == "sub-concept-redis-py-a"
+    assert edge.target.node_id == "sub-concept-redis-py-b"
+    assert edge.predicate == "supports"
 
 
 def test_falkor_legacy_migrate_keeps_cache_when_rewrite_fails():

@@ -193,6 +193,47 @@ def _return_clause(alias: str, fields: tuple[str, ...]) -> str:
 # (2026-07-18, zero substrate coupling), imported above under its old name.
 
 
+def _edge_hydrate_return_clause(fields: tuple[str, ...]) -> str:
+    """Like `_return_clause("e", fields)`, except `source_id`/`target_id`
+    are derived from the matched `source`/`target` node variables
+    (`source.node_id`, `target.node_id`) instead of read as properties on
+    the edge itself.
+
+    `upsert_edge()` deliberately never writes `source_id`/`target_id` onto
+    the edge (`skip={"edge_id", "source_id", "target_id"}` in its
+    `_set_assignments()` call) -- the real linkage lives in the graph
+    topology the MATCH pattern itself encodes, not a redundant edge
+    property. Reading `e.source_id`/`e.target_id` therefore always returned
+    NULL, which `decode_edge()` then `str()`-coerced into the literal
+    string `"None"` for every hydrated edge's source/target node_id --
+    confirmed live (2026-07-18): every edge in the running graph lost its
+    real source/target linkage on every hydrate, silently, since nothing
+    downstream raised on a `"None"`-string node_id.
+
+    Column order and field names must stay identical to `_return_clause`'s
+    output for the same `fields` tuple -- `_normalize_rows()` zips
+    positional (list/tuple) query results against that same tuple by
+    index, and `decode_edge()` looks fields up by name from the result.
+
+    Tied to this file's one edge-hydration call site specifically: `source`
+    and `target` are hardcoded literal Cypher variable names matching that
+    query's own `MATCH (source:SubstrateNode)-[e]->(target:SubstrateNode)`
+    pattern, not a general parameter. Reusing this for a query that binds
+    those variables under different names would produce Cypher referencing
+    undefined identifiers -- a loud parse/execution error, not a silent
+    wrong-value bug, but not a drop-in generic helper either.
+    """
+    parts = []
+    for field in fields:
+        if field == "source_id":
+            parts.append("source.node_id AS source_id")
+        elif field == "target_id":
+            parts.append("target.node_id AS target_id")
+        else:
+            parts.append(f"e.{field} AS {field}")
+    return ", ".join(parts)
+
+
 ### RecordingFalkorClient / RedisGraphQueryClient / _header_field_names /
 ### _rows_from_query_result moved to orion.graph.falkor_client (2026-07-18),
 ### imported at the top of this file and re-exported via __all__.
@@ -272,7 +313,7 @@ class FalkorSubstrateStore:
             edge_rows = self._client.graph_query(
                 "MATCH (source:SubstrateNode)-[e]->(target:SubstrateNode) "
                 "WHERE e.substrate_edge = true "
-                "RETURN " + _return_clause("e", NATIVE_EDGE_RETURN_FIELDS)
+                "RETURN " + _edge_hydrate_return_clause(NATIVE_EDGE_RETURN_FIELDS)
             )
             legacy_node_rows = self._client.graph_query(
                 "MATCH (n:SubstrateNode) WHERE n.payload_json IS NOT NULL "

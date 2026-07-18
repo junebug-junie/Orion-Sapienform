@@ -43,7 +43,12 @@ nodes:
       - circe
       - circe.tail348bbe.ts.net
     role: burst_gpu
-    expected_online: false
+    # Was false: circe was intermittent/burst-only. A real llamacpp chat worker
+    # (orion-atlas-llamacpp-chat, port 8011) has been running on circe continuously
+    # for days (2026-07-18) -- expected_online=false was making pressure_organ.py
+    # suppress circe's real strain pressure as "expected staleness" instead of
+    # surfacing it (see orion/substrate/biometrics_loop/pressure_organ.py:125).
+    expected_online: true
     capabilities:
       local_llm_heavy: true
       local_llm_quick: true

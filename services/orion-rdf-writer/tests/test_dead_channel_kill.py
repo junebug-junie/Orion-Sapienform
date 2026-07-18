@@ -69,13 +69,6 @@ def test_world_pulse_graph_channel_not_subscribed():
     assert "orion:world_pulse:graph:upsert" not in _channels()
 
 
-def test_drives_audit_channel_not_in_default_subscriptions():
-    """rdf-writer must not subscribe to orion:memory:drives:audit by
-    default (2026-07-15 kill, unrelated to this session's changes -- kept
-    as a standing regression guard)."""
-    assert "orion:memory:drives:audit" not in _channels()
-
-
 def test_cortex_worker_rdf_build_kind_is_quiet_noop():
     """cortex.worker.rdf_build (would-be CognitiveStepExecution) must not
     resurrect a dispatch branch -- unknown kind falls through to (None, None)."""

@@ -5,7 +5,7 @@ import logging
 import math
 import re
 import time
-from typing import Any, Dict, Iterable, List, Tuple
+from typing import Any, Dict, Iterable, List, Optional, Tuple
 
 from orion.core.contracts.recall import MemoryBundleStatsV1, MemoryBundleV1, MemoryItemV1
 from orion.memory.low_info_social import is_low_info_social as _shared_is_low_info_social
@@ -340,6 +340,34 @@ def _turn_effect_boost(cand: Dict[str, Any], profile: Dict[str, Any]) -> float:
     return weight * min(1.0, abs(delta))
 
 
+def _entity_relatedness_boost(
+    cand: Dict[str, Any],
+    profile: Dict[str, Any],
+    entity_boost_map: Optional[Dict[str, float]],
+) -> float:
+    """Phase 2 of entity-graph-reasoning (docs/superpowers/specs/
+    2026-07-19-recall-entity-graph-reasoning-arc.md). entity_boost_map is
+    precomputed once per recall call (worker.py), keyed by turn_id, value
+    already clamped to [0,1] Jaccard-derived relevance -- this function is
+    just the same additive-boost shape as _tag_prefix_boost/
+    _turn_effect_boost, scaled by a profile-configurable weight."""
+    if not entity_boost_map:
+        return 0.0
+    # Scoped to falkor_chat in this first cut: that's the only source whose
+    # uri/id is confirmed to reliably BE the real Falkor turn_id (see
+    # settings.py's RECALL_ENTITY_RELATEDNESS_BOOST_ENABLED comment).
+    if str(cand.get("source") or "") != "falkor_chat":
+        return 0.0
+    turn_id = str(cand.get("uri") or cand.get("id") or "").strip()
+    if not turn_id:
+        return 0.0
+    raw = entity_boost_map.get(turn_id)
+    if not raw:
+        return 0.0
+    weight = float(profile.get("entity_relatedness_boost_weight", 0.2))
+    return weight * min(1.0, float(raw))
+
+
 def _denial_patterns() -> List[re.Pattern[str]]:
     return [
         re.compile(r"i\\s+don['’]t\\s+have\\s+(a|any)\\s+(specific\\s+)?memory", re.I),
@@ -372,6 +400,7 @@ def fuse_candidates(
     diagnostic: bool = False,
     browse_mode: bool = False,
     substantive_query: bool = False,
+    entity_boost_map: Optional[Dict[str, float]] = None,
 ) -> Tuple[MemoryBundleV1, List[Dict[str, Any]]]:
     max_per_source = int(profile.get("max_per_source", 3))
     max_total = int(profile.get("max_total_items", 12))
@@ -447,6 +476,7 @@ def fuse_candidates(
         tags = [str(t) for t in (cand.get("tags") or []) if t]
         tag_boost = _tag_prefix_boost(tags, profile)
         turn_effect_boost = _turn_effect_boost(cand, profile)
+        entity_relatedness_boost = _entity_relatedness_boost(cand, profile, entity_boost_map)
         backend_weight = float(weights.get(source, 0.5))
         if browse_mode:
             composite = base_score
@@ -456,7 +486,7 @@ def fuse_candidates(
                 (rel_cfg["score_weight"] * base_score)
                 + (rel_cfg["text_similarity_weight"] * text_similarity)
                 + (rel_cfg["recency_weight"] * recency_component)
-            ) + tag_boost + turn_effect_boost
+            ) + tag_boost + turn_effect_boost + entity_relatedness_boost
 
         ranked = dict(cand)
         ranked["_relevance"] = {
@@ -471,6 +501,7 @@ def fuse_candidates(
             "backend_weight": backend_weight,
             "tag_boost": tag_boost,
             "turn_effect_boost": turn_effect_boost,
+            "entity_relatedness_boost": entity_relatedness_boost,
             "composite_score": composite,
         }
 

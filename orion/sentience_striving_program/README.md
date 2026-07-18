@@ -128,17 +128,42 @@ process/signal-health measurement is not outcome measurement:
 
 Each objective is a real sign-off gate, not a commitment to build. Sequenced but not dated.
 
+**Re-sequenced 2026-07-18.** The original ordering put "wire `capability_policy.py` to
+salience" (now item 6, was item 2) ahead of the field-routing work. Found to be cart before
+horse: `capability_policy.v1.yaml`'s `required_drive_origins` still gates three of five
+capability rules on `goal.drive_origin`, produced by the halted `GoalProposalEngine` —
+wiring a field-native ceiling on top of a still-drives-gated check would repeat the exact
+failure mode (formalize structure before validating it) that led to halting drives in the
+first place. Full reasoning and phased detail:
+`docs/superpowers/specs/2026-07-18-objective-3-consciousness-scaffolded-roadmap-design.md`.
+
 1. **Halt drives-system development** (§8) — stop the cycle this program exists to end.
-2. **Wire `capability_policy.py` to already-live `select_capability_targets()` salience**,
-   with an explicit, tested ceiling — the cheapest possible step toward O1, because the
-   signal already exists.
+2. **Build the AST/HOT consciousness-theory reducer** — the one piece of scaffolding still
+   missing before any field-routing math gets written. Reads `FieldAttentionFrameV1` +
+   `SelfStateV1`, produces an explicit "what's salient, why, how confident" artifact. Must
+   exist and pass its own acceptance check *before* item 3 below, on purpose — writing
+   routing logic without this first is how the six-drive taxonomy happened.
 3. **Route existing tension producers directly onto `FieldStateV1` channels**, retiring the
    bucket-vote layer — collapses the redundant reimplementation named in §7's finding.
-4. **Stand up read-only measurement for 2-3 consciousness-theory instruments** (§9) —
-   comparable, side-by-side, same real ticks — toward O3.
+   Reframed as prediction-error-native (extending the already-live
+   `execution_prediction_error`/`transport_prediction_error` pattern), not a port of
+   `tensions.py`'s hand-classified kind vocabulary onto field channels. Phased: shadow-measure
+   one producer domain before migrating any live; migrate one domain at a time; retire the
+   bucket-vote layer only once every producer has moved and the item-2 reducer is proven a
+   real legibility replacement for `dominant_drive`. Includes replacing `goal.drive_origin`
+   with a field-native goal-provenance concept — this is what actually unblocks item 6.
+4. **Stand up read-only measurement for the remaining consciousness-theory instruments** (§9)
+   — RPT/Lamme and predictive processing are already live (items 2-3 build on them directly,
+   not duplicate them); IIT continues independently via the mood-arc encoder, not gated by
+   this program.
 5. **Run the emergent-clustering probe** on real coalition-winning history (not built yet,
    named in the baseline design) — toward O4.
-6. **Re-evaluate integration** only after 4 and 5 produce real, comparable data — not before.
+6. **Revisit `capability_policy.py`'s coupling to live salience** — only after item 3 closes
+   the `drive_origin` dependency and item 2's field-native attention is proven, not assumed.
+   At this point the actual mechanism is a real open choice, not a given: a salience-to-
+   ceiling formula, or something closer to the selectionist-internal-ecology blue-sky
+   extension (§9a item 6) — decide with items 2-5's real data in hand.
+7. **Re-evaluate integration** only after 4 and 5 produce real, comparable data — not before.
 
 ## 7. Processes — how this program actually operates
 

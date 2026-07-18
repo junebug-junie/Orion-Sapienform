@@ -71,13 +71,15 @@ def _provenance():
     )
 
 
-def _temporal():
+def _temporal(observed_at=None):
     from orion.core.schemas.cognitive_substrate import SubstrateTemporalWindowV1
 
-    return SubstrateTemporalWindowV1(observed_at=datetime.now(timezone.utc))
+    return SubstrateTemporalWindowV1(observed_at=observed_at or datetime.now(timezone.utc))
 
 
-def _concept_node(node_id, label, *, anchor_scope="orion", promotion_state="proposed", activation=0.0, decay_floor=0.0):
+def _concept_node(
+    node_id, label, *, anchor_scope="orion", promotion_state="proposed", activation=0.0, decay_floor=0.0, observed_at=None
+):
     from orion.core.schemas.cognitive_substrate import ConceptNodeV1, SubstrateActivationV1, SubstrateSignalBundleV1
 
     return ConceptNodeV1(
@@ -85,7 +87,7 @@ def _concept_node(node_id, label, *, anchor_scope="orion", promotion_state="prop
         label=label,
         anchor_scope=anchor_scope,
         promotion_state=promotion_state,
-        temporal=_temporal(),
+        temporal=_temporal(observed_at),
         provenance=_provenance(),
         signals=SubstrateSignalBundleV1(
             confidence=0.7,
@@ -164,20 +166,24 @@ def test_summary_counts_with_seeded_nodes(client: TestClient, monkeypatch: pytes
     assert body["by_anchor_scope"]["world"] == 1
     assert body["edge_counts_by_predicate"]["co_occurs_with"] == 1
     assert body["edge_counts_by_predicate"]["contradicts"] == 1
-    # All three seeded nodes share activation=0.0 -> no fabricated at_risk signal.
+    # All three seeded nodes were just created (observed_at ~= now) -> too
+    # young for _AT_RISK_MIN_AGE_SECONDS, regardless of their activation.
     assert body["at_risk"] == []
     assert body["at_risk_note"]
 
 
-def test_summary_at_risk_reported_when_activation_has_real_variance(
+def test_summary_at_risk_reported_for_old_low_activation_nodes(
     client: TestClient, monkeypatch: pytest.MonkeyPatch
 ) -> None:
+    from datetime import timedelta
+
     from scripts import concept_atlas_routes
     from orion.substrate.store import InMemorySubstrateGraphStore
 
     store = InMemorySubstrateGraphStore()
-    healthy = _concept_node("concept-healthy", "Healthy", activation=0.9, decay_floor=0.1)
-    decaying = _concept_node("concept-decaying", "Decaying", activation=0.05, decay_floor=0.02)
+    old_enough = datetime.now(timezone.utc) - timedelta(hours=2)
+    healthy = _concept_node("concept-healthy", "Healthy", activation=0.9, decay_floor=0.1, observed_at=old_enough)
+    decaying = _concept_node("concept-decaying", "Decaying", activation=0.05, decay_floor=0.02, observed_at=old_enough)
     store.upsert_node(identity_key="concept:healthy", node=healthy)
     store.upsert_node(identity_key="concept:decaying", node=decaying)
     monkeypatch.setattr(concept_atlas_routes, "_get_substrate_store", lambda: store)
@@ -188,6 +194,37 @@ def test_summary_at_risk_reported_when_activation_has_real_variance(
     at_risk_ids = {row["node_id"] for row in body["at_risk"]}
     assert "concept-decaying" in at_risk_ids
     assert "concept-healthy" not in at_risk_ids
+
+
+def test_summary_at_risk_excludes_freshly_born_low_salience_node(
+    client: TestClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # Regression: ConceptNodeV1 now auto-seeds activation=salience at
+    # construction time, so a brand-new, low-salience concept could
+    # otherwise show up as "at risk of decaying" on its very first tick --
+    # it hasn't decayed at all, it just started low. The age gate must
+    # exclude it even though its activation already sits at/under the
+    # decay_floor + margin threshold.
+    from scripts import concept_atlas_routes
+    from orion.core.schemas.cognitive_substrate import ConceptNodeV1, SubstrateSignalBundleV1
+    from orion.substrate.store import InMemorySubstrateGraphStore
+
+    store = InMemorySubstrateGraphStore()
+    fresh_low_salience = ConceptNodeV1(
+        node_id="concept-fresh-low",
+        label="Fresh Low Salience",
+        anchor_scope="world",
+        temporal=_temporal(),
+        provenance=_provenance(),
+        signals=SubstrateSignalBundleV1(confidence=0.5, salience=0.01),
+    )
+    store.upsert_node(identity_key="concept:fresh-low", node=fresh_low_salience)
+    monkeypatch.setattr(concept_atlas_routes, "_get_substrate_store", lambda: store)
+
+    r = client.get("/api/substrate/concepts/summary")
+    assert r.status_code == 200
+    body = r.json()
+    assert body["at_risk"] == []
 
 
 # --- network -----------------------------------------------------------------

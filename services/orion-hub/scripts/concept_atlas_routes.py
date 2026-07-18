@@ -55,10 +55,14 @@ _VALID_ANCHOR_SCOPES = {"orion", "juniper", "relationship", "world", "session"}
 # endpoint's response instead of round-tripping it server-side.
 
 # Concept nodes sitting within this margin of their own decay_floor are
-# treated as "at risk" in the summary response. This is only meaningful once
-# a node's activation has moved off its schema default of 0.0 — see the
-# comment in ``_at_risk_concepts`` below.
+# treated as "at risk" in the summary response.
 _AT_RISK_MARGIN = 0.05
+
+# A concept must be at least this old before it's eligible for "at risk" --
+# see ``_at_risk_concepts`` for why (a node born with low salience hasn't
+# decayed, it just started low). One hour comfortably exceeds one 120s decay
+# tick interval.
+_AT_RISK_MIN_AGE_SECONDS = 3600.0
 
 # Max co_occurs_with pairs classified for a typed relationship (supports/
 # contradicts/refines) per ingestion call. Each classified pair costs one
@@ -418,31 +422,48 @@ def _classify_typed_concept_relations(store: Any) -> int:
         return 0
 
 
-def _at_risk_concepts(concept_nodes: list[Any]) -> tuple[list[dict[str, Any]], Optional[str]]:
+def _at_risk_concepts(
+    concept_nodes: list[Any], *, now: Optional[datetime] = None
+) -> tuple[list[dict[str, Any]], Optional[str]]:
     """Concepts whose activation is decaying toward their decay_floor.
 
-    Honesty note: ``SubstrateActivationV1.activation`` defaults to 0.0 and no
-    live writer currently drives concept-node decay in the default
-    ``InMemorySubstrateGraphStore`` path (per the design spec's Current
-    architecture section: "present in schema, no confirmed live writer").
-    Returning every node at the default as "at risk" would be a fabricated
-    signal, not a real one. So: if every concept node's activation is exactly
-    the same value (almost always 0.0 today), this returns an empty list and
-    an explanatory note instead of pretending the field carries real
-    information yet.
+    Honesty note: this used to gate on "does activation show any variance
+    across nodes" as a proxy for "is a live decay writer actually wired" --
+    back when every ConceptNodeV1 was born with the exact same schema
+    default (activation=0.0, decay_half_life_seconds=None), same-value
+    across the board really did mean no real signal existed yet. Two fixes
+    landed since (services/orion-hub/scripts/api_routes.py::decay_concept_activations,
+    a live 120s scheduler; and ConceptNodeV1's own activation=salience
+    auto-seed at construction time) mean activation is now a real signal
+    from the moment a node is created, so the variance proxy is retired --
+    it would otherwise misfire the other way, hiding genuinely-at-risk nodes
+    the instant any two concepts happened to share a salience value.
+
+    What replaces it: a concept born with low salience is not yet
+    meaningfully "at risk of decaying" -- it just started low, it hasn't
+    lost anything. So nodes younger than ``_AT_RISK_MIN_AGE_SECONDS`` (one
+    hour -- comfortably more than one 120s decay tick, giving real decay a
+    chance to actually run) are excluded regardless of how low their
+    activation already is. This is still a real, non-fabricated filter, not
+    a returned-empty placeholder.
     """
     if not concept_nodes:
         return [], None
-    activations = {float(n.signals.activation.activation) for n in concept_nodes}
-    if len(activations) <= 1:
-        return [], (
-            "activation shows no variance across concept nodes yet (no live decay "
-            "writer wired to this store today) -- at_risk is intentionally empty "
-            "rather than fabricated"
-        )
+
+    reference = now or datetime.now(timezone.utc)
     at_risk: list[dict[str, Any]] = []
+    eligible_count = 0
     for n in concept_nodes:
         act = n.signals.activation
+        observed_at = getattr(getattr(n, "temporal", None), "observed_at", None)
+        if observed_at is None:
+            continue
+        if observed_at.tzinfo is None:
+            observed_at = observed_at.replace(tzinfo=timezone.utc)
+        age_seconds = (reference - observed_at).total_seconds()
+        if age_seconds < _AT_RISK_MIN_AGE_SECONDS:
+            continue
+        eligible_count += 1
         if float(act.activation) <= float(act.decay_floor) + _AT_RISK_MARGIN:
             at_risk.append(
                 {
@@ -454,7 +475,15 @@ def _at_risk_concepts(concept_nodes: list[Any]) -> tuple[list[dict[str, Any]], O
                 }
             )
     at_risk.sort(key=lambda row: row["activation"])
-    return at_risk[:20], None
+
+    note = None
+    if not at_risk and eligible_count == 0:
+        note = (
+            f"no concept node is older than {int(_AT_RISK_MIN_AGE_SECONDS)}s yet -- "
+            "at_risk is intentionally empty rather than judging a node's real decay "
+            "before it has had a chance to run"
+        )
+    return at_risk[:20], note
 
 
 @router.get("/api/substrate/concepts/summary")

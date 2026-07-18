@@ -467,6 +467,161 @@ def test_falkor_hydrates_legacy_payload_json_and_rewrites_native():
     assert params["evidence_refs_json"] == '["ev:legacy"]'
 
 
+def test_falkor_legacy_migration_deletes_orphaned_duplicate_row():
+    # Regression (2026-07-18 incident): upsert_node()'s MERGE keys on
+    # (SubstrateNode:<type-label> {node_id}), a pattern the un-migrated
+    # legacy row (SubstrateNode only, no type label) can never itself
+    # satisfy -- so the rewrite always lands on a *different* node, leaving
+    # this legacy row (and its stale payload_json) permanently orphaned.
+    # Confirmed live: the orphaned row got re-parsed and re-clobbered the
+    # real node's data on every subsequent hydrate, silently reverting
+    # PR #1173's golden-concept salience fix within one restart cycle, and
+    # cascaded into duplicate edges via the same `:SubstrateNode`-only
+    # ambiguity on edge MERGE's source/target match. The fix issues an
+    # explicit cleanup DELETE for the orphaned row after a successful
+    # migration; this test asserts that cleanup query is actually issued.
+    #
+    # Coverage limit, stated explicitly: RecordingFalkorClient is a scripted
+    # test double that dispatches on cypher substrings -- it never parses or
+    # executes Cypher, so this only proves the *right query text* is issued,
+    # not that DETACH DELETE actually cascades relationship removal the way
+    # this fix's design depends on. That MERGE-label-matching and
+    # DETACH-DELETE-cascade behavior was verified directly against
+    # FalkorDB's own docs (docs.falkordb.com/cypher/delete.html: "DETACH
+    # DELETE automatically removes all relationships before deleting the
+    # node") and against the live orion-athena-falkordb container during
+    # this incident's investigation, not by this test suite. A future
+    # FalkorDB dialect change to either behavior would not fail here.
+    legacy_node = ConceptNodeV1(
+        node_id="concept-legacy",
+        label="Legacy concept",
+        anchor_scope="orion",
+        temporal=SubstrateTemporalWindowV1(observed_at=datetime(2026, 7, 16, tzinfo=timezone.utc)),
+        provenance=SubstrateProvenanceV1(
+            authority="local_inferred",
+            source_kind="test",
+            source_channel="test:legacy",
+            producer="test_falkor_store",
+        ),
+    )
+    client = RecordingFalkorClient(
+        hydrate_legacy_node_rows=[
+            {"payload_json": legacy_node.model_dump_json(), "identity_key": "concept:legacy"}
+        ]
+    )
+
+    FalkorSubstrateStore(
+        FalkorSubstrateStoreConfig(uri="redis://localhost:6379", graph_name="orion_substrate"),
+        client=client,
+        hydrate=True,
+    )
+
+    cleanup_calls = [
+        (cypher, params)
+        for cypher, params in client.calls
+        if "DETACH DELETE" in cypher and "payload_json IS NOT NULL" in cypher
+    ]
+    assert cleanup_calls, "expected an orphaned-duplicate cleanup query after migration"
+    cypher, params = cleanup_calls[-1]
+    assert params == {"node_id": "concept-legacy"}
+
+
+def test_falkor_legacy_migration_does_not_delete_a_row_without_a_duplicate():
+    # The cleanup query only matches rows that STILL carry payload_json.
+    # upsert_node()'s own SET clause already removes payload_json from
+    # whatever node the migration write landed on, so in the common case
+    # (no lingering duplicate) the cleanup query naturally matches nothing --
+    # this is exercised implicitly by every other passing hydrate test, this
+    # test just names that expectation explicitly via the recorded query
+    # shape (a targeted match-by-payload_json, never a bare node_id match).
+    #
+    # Same coverage limit as the test above: this only proves the query's
+    # literal text targets payload_json specifically (not a blanket
+    # node_id match that could delete a real node) -- it does not execute
+    # against a real graph engine to observe zero rows actually being
+    # matched/deleted. See the comment above for what was independently
+    # verified and where.
+    legacy_node = ConceptNodeV1(
+        node_id="concept-solo",
+        label="Solo concept",
+        anchor_scope="orion",
+        temporal=SubstrateTemporalWindowV1(observed_at=datetime(2026, 7, 16, tzinfo=timezone.utc)),
+        provenance=SubstrateProvenanceV1(
+            authority="local_inferred",
+            source_kind="test",
+            source_channel="test:legacy",
+            producer="test_falkor_store",
+        ),
+    )
+    client = RecordingFalkorClient(
+        hydrate_legacy_node_rows=[
+            {"payload_json": legacy_node.model_dump_json(), "identity_key": "concept:solo"}
+        ]
+    )
+
+    FalkorSubstrateStore(
+        FalkorSubstrateStoreConfig(uri="redis://localhost:6379", graph_name="orion_substrate"),
+        client=client,
+        hydrate=True,
+    )
+
+    cleanup_calls = [
+        (cypher, params) for cypher, params in client.calls if "DETACH DELETE" in cypher
+    ]
+    assert len(cleanup_calls) == 1
+    cypher, _ = cleanup_calls[0]
+    assert "WHERE n.payload_json IS NOT NULL" in cypher
+
+
+def test_falkor_legacy_migration_now_includes_evidence_nodes():
+    # Regression: this migration path used to skip node_kind="evidence"
+    # entirely (logged as falkor_substrate_legacy_node_skipped, forever, on
+    # every hydrate) even though upsert_node() itself has always supported
+    # both "concept" and "evidence". Confirmed live: 2 of the 7 orphaned
+    # legacy rows found in the 2026-07-18 incident were evidence nodes,
+    # permanently un-migrated by this now-fixed gap.
+    legacy_evidence = _evidence(node_id="evidence-legacy")
+    client = RecordingFalkorClient(
+        hydrate_legacy_node_rows=[
+            {"payload_json": legacy_evidence.model_dump_json(), "identity_key": "evidence:legacy"}
+        ]
+    )
+
+    store = FalkorSubstrateStore(
+        FalkorSubstrateStoreConfig(uri="redis://localhost:6379", graph_name="orion_substrate"),
+        client=client,
+        hydrate=True,
+    )
+
+    node = store.get_node_by_id("evidence-legacy")
+    assert node is not None
+    assert node.node_kind == "evidence"
+    write_calls = [(c, p) for c, p in client.calls if "MERGE (n:SubstrateNode" in c]
+    assert write_calls, "expected native rewrite for the legacy evidence node"
+
+
+def test_falkor_legacy_migration_still_skips_unsupported_node_kinds():
+    contradiction_json = (
+        '{"node_id": "contra-legacy", "node_kind": "contradiction", "anchor_scope": "orion", '
+        '"temporal": {"observed_at": "2026-07-16T00:00:00+00:00"}, '
+        '"provenance": {"authority": "local_inferred", "source_kind": "test", '
+        '"source_channel": "test:legacy", "producer": "test_falkor_store"}, '
+        '"summary": "conflict", "involved_node_ids": ["a", "b"]}'
+    )
+    client = RecordingFalkorClient(
+        hydrate_legacy_node_rows=[{"payload_json": contradiction_json, "identity_key": "contra:legacy"}]
+    )
+
+    FalkorSubstrateStore(
+        FalkorSubstrateStoreConfig(uri="redis://localhost:6379", graph_name="orion_substrate"),
+        client=client,
+        hydrate=True,
+    )
+
+    write_calls = [(c, p) for c, p in client.calls if "MERGE (n:SubstrateNode" in c]
+    assert write_calls == []
+
+
 def test_recording_client_splits_node_and_edge_hydrate_rows():
     client = RecordingFalkorClient(
         hydrate_node_rows=[{"node_id": "n1", "node_kind": "concept"}],
@@ -757,6 +912,55 @@ def test_falkor_legacy_migrate_keeps_cache_when_rewrite_fails():
     node = store.get_node_by_id("concept-cache-seed")
     assert node is not None
     assert node.label == "Cache seed"
+
+
+def test_falkor_legacy_migration_cleanup_failure_logs_as_migrate_failed_not_migrated(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    # Regression: _delete_orphaned_legacy_node_duplicate() used to swallow
+    # its own exceptions and log a distinct "..._cleanup_failed" line, but
+    # _migrate_legacy_payload_nodes() would still unconditionally log
+    # "..._migrated" (success) right after, since the cleanup call never
+    # raised. A failed cleanup reproduces exactly the bug this whole patch
+    # exists to fix (the orphaned row survives to re-clobber the canonical
+    # node on the next hydrate) -- it must not be indistinguishable from a
+    # real success in the logs. Fixed by letting the cleanup exception
+    # propagate into the existing outer except block instead.
+    legacy = ConceptNodeV1(
+        node_id="concept-cleanup-fail",
+        label="Cleanup fail",
+        anchor_scope="orion",
+        temporal=SubstrateTemporalWindowV1(observed_at=datetime(2026, 7, 16, tzinfo=timezone.utc)),
+        provenance=SubstrateProvenanceV1(
+            authority="local_inferred",
+            source_kind="test",
+            source_channel="test:cleanup-fail",
+            producer="test_falkor_store",
+        ),
+    )
+
+    class FailCleanupClient(RecordingFalkorClient):
+        def graph_query(self, cypher: str, params: dict | None = None):
+            if "DETACH DELETE" in cypher:
+                raise RuntimeError("falkor unavailable during cleanup")
+            return super().graph_query(cypher, params)
+
+    client = FailCleanupClient(
+        hydrate_legacy_node_rows=[
+            {"payload_json": legacy.model_dump_json(), "identity_key": "concept:cleanup-fail"}
+        ]
+    )
+
+    with caplog.at_level("INFO", logger="orion.substrate.falkor_store"):
+        FalkorSubstrateStore(
+            FalkorSubstrateStoreConfig(uri="redis://localhost:6379", graph_name="orion_substrate"),
+            client=client,
+            hydrate=True,
+        )
+
+    messages = [record.getMessage() for record in caplog.records]
+    assert any("falkor_substrate_legacy_node_migrate_failed" in m for m in messages)
+    assert not any("falkor_substrate_legacy_node_migrated" in m for m in messages)
 
 
 def test_falkor_hydrated_concepts_support_concept_region_query():

@@ -8,8 +8,6 @@ from orion.core.schemas.cognitive_substrate import BaseSubstrateNodeV1, Substrat
 
 @dataclass(frozen=True)
 class PressureConfig:
-    drive_base: float = 0.5
-    drive_propagation_attenuation: float = 0.7
     contradiction_neighbor_attenuation: float = 0.5
     max_hops: int = 2
     max_pressure: float = 1.0
@@ -33,16 +31,6 @@ def _goal_modifier(goal: BaseSubstrateNodeV1) -> float:
     if status == "satisfied":
         return 0.5
     return 1.0
-
-
-def drive_seed_pressure(node: BaseSubstrateNodeV1, config: PressureConfig) -> float:
-    if node.node_kind != "drive":
-        return 0.0
-    drive_state = str(node.metadata.get("drive_status") or "active").lower()
-    if drive_state != "active":
-        return 0.0
-    declared = float(node.metadata.get("pressure") or 0.0)
-    return _clamp(max(config.drive_base * node.signals.salience, declared))
 
 
 def prediction_error_pressure(node: BaseSubstrateNodeV1, config: PressureConfig, *, now: datetime) -> float:

@@ -51,7 +51,7 @@ def test_field_channel_corpus_registered_in_inner_state_registry() -> None:
     # dynamic-dispatch registry; this is file-only training-corpus data,
     # same as its mood_arc_corpus.v1 sibling (which is also absent from a
     # dedicated registry-resolution test of that kind -- this mirrors
-    # tests/test_mood_arc_encoder_schema.py's *pattern* of asserting a
+    # orion/mood_arc/tests/test_mood_arc_encoder_schema.py's *pattern* of asserting a
     # resolvable registry entry, applied to orion/self_state/
     # inner_state_registry.py instead, which is the actual registry this
     # schema belongs to).

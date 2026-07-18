@@ -261,7 +261,7 @@ fix — see §7.
    `InnerStateFeaturesV1` (`orion/schemas/telemetry/inner_state.py`), carries a
    `self_state_id` field — it is `SelfStateV1`-anchored, the already-tried, already
    dead-ended path, not real substrate to build further on. The actual live candidate is the
-   mood-arc windowed sequence autoencoder (`scripts/fit_mood_arc_encoder.py`, raw
+   mood-arc windowed sequence autoencoder (`orion/mood_arc/fit_encoder.py`, raw
    `field_channel_corpus.v1`) — the field-native replacement for exactly this reason,
    continuing independently of this program under Juniper's own direction, not blocked by
    it and not to be duplicated here.

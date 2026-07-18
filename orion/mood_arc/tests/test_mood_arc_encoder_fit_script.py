@@ -12,8 +12,8 @@ import pytest
 from orion.schemas.telemetry.field_channel_corpus import FieldChannelCorpusRowV1
 from orion.schemas.telemetry.mood_arc import MoodArcEncoderManifestV1
 
-REPO = Path(__file__).resolve().parents[1]
-FIT_SCRIPT = REPO / "scripts" / "fit_mood_arc_encoder.py"
+REPO = Path(__file__).resolve().parents[3]
+FIT_SCRIPT = REPO / "orion" / "mood_arc" / "fit_encoder.py"
 
 
 def _run_fit(*args: str) -> subprocess.CompletedProcess[str]:
@@ -80,7 +80,7 @@ def test_fit_refuses_small_corpus(tmp_path: Path) -> None:
 
 
 def test_filter_rows_by_min_generated_at_is_boundary_inclusive() -> None:
-    from scripts.fit_mood_arc_encoder import filter_rows_by_min_generated_at
+    from orion.mood_arc.fit_encoder import filter_rows_by_min_generated_at
 
     start = datetime(2026, 7, 17, 0, 0, 0, tzinfo=timezone.utc)
     rows = [
@@ -96,7 +96,7 @@ def test_filter_rows_by_min_generated_at_is_boundary_inclusive() -> None:
 
 
 def test_filter_rows_by_min_generated_at_none_is_a_no_op() -> None:
-    from scripts.fit_mood_arc_encoder import filter_rows_by_min_generated_at
+    from orion.mood_arc.fit_encoder import filter_rows_by_min_generated_at
 
     start = datetime(2026, 7, 17, 0, 0, 0, tzinfo=timezone.utc)
     rows = [
@@ -232,7 +232,7 @@ def test_negative_control_untrained_weights_fail_floor_gate() -> None:
     that the gate distinguishes an untrained encoder from a real one on
     data that does have structure to learn (found by code review,
     2026-07-13)."""
-    from scripts.fit_mood_arc_encoder import (
+    from orion.mood_arc.fit_encoder import (
         build_windows,
         init_weights,
         _per_window_losses,
@@ -263,7 +263,7 @@ def test_negative_control_untrained_weights_fail_floor_gate() -> None:
 
 
 def test_purged_temporal_split_boundary_and_exclusion_count() -> None:
-    from scripts.fit_mood_arc_encoder import purged_temporal_split
+    from orion.mood_arc.fit_encoder import purged_temporal_split
 
     n = 100
     # Distinct windows so we can identify exactly which ones survive.
@@ -287,7 +287,7 @@ def test_purged_temporal_split_boundary_and_exclusion_count() -> None:
 
 
 def test_purged_temporal_split_raises_clear_error_when_too_few_windows() -> None:
-    from scripts.fit_mood_arc_encoder import purged_temporal_split
+    from orion.mood_arc.fit_encoder import purged_temporal_split
 
     windows = [np.full(4, float(i)) for i in range(5)]  # far too few for held_out_frac + purge
     with pytest.raises(ValueError, match="purged_temporal_split"):
@@ -295,7 +295,7 @@ def test_purged_temporal_split_raises_clear_error_when_too_few_windows() -> None
 
 
 def test_purged_temporal_split_raises_on_empty_windows() -> None:
-    from scripts.fit_mood_arc_encoder import purged_temporal_split
+    from orion.mood_arc.fit_encoder import purged_temporal_split
 
     with pytest.raises(ValueError, match="no windows to split"):
         purged_temporal_split([], held_out_frac=0.15, purge_gap_windows=6)
@@ -304,7 +304,7 @@ def test_purged_temporal_split_raises_on_empty_windows() -> None:
 def test_build_windows_breaks_on_real_recorded_gap() -> None:
     """Uses this session's own recorded max gap (8.09s) against the default
     max_gap_sec=6.0 to confirm a run correctly breaks there."""
-    from scripts.fit_mood_arc_encoder import build_windows
+    from orion.mood_arc.fit_encoder import build_windows
 
     fields = ("coherence", "energy", "novelty", "valence")
     start = datetime(2026, 7, 13, 6, 0, 0, tzinfo=timezone.utc)
@@ -348,7 +348,7 @@ def test_build_windows_breaks_on_real_recorded_gap() -> None:
 def test_build_windows_variable_field_count_and_missing_channel_fill() -> None:
     """Row width is not fixed in field_channel_corpus.v1 -- a row missing a
     requested field must contribute 0.0 for it, not raise."""
-    from scripts.fit_mood_arc_encoder import build_windows
+    from orion.mood_arc.fit_encoder import build_windows
 
     fields = ("a", "b", "c")
     start = datetime(2026, 7, 1, tzinfo=timezone.utc)
@@ -366,7 +366,7 @@ def test_build_windows_variable_field_count_and_missing_channel_fill() -> None:
 
 
 def test_select_fields_filters_low_variance_and_excludes_by_name() -> None:
-    from scripts.fit_mood_arc_encoder import select_fields
+    from orion.mood_arc.fit_encoder import select_fields
 
     rng = np.random.default_rng(1)
     start = datetime(2026, 7, 1, tzinfo=timezone.utc)
@@ -389,7 +389,7 @@ def test_select_fields_filters_low_variance_and_excludes_by_name() -> None:
 
 
 def test_select_fields_respects_custom_exclude() -> None:
-    from scripts.fit_mood_arc_encoder import select_fields
+    from orion.mood_arc.fit_encoder import select_fields
 
     rng = np.random.default_rng(1)
     start = datetime(2026, 7, 1, tzinfo=timezone.utc)
@@ -407,7 +407,7 @@ def test_select_fields_respects_custom_exclude() -> None:
 
 
 def test_prune_correlated_fields_drops_lower_variance_member() -> None:
-    from scripts.fit_mood_arc_encoder import prune_correlated_fields
+    from orion.mood_arc.fit_encoder import prune_correlated_fields
 
     rng = np.random.default_rng(1)
     start = datetime(2026, 7, 1, tzinfo=timezone.utc)
@@ -441,7 +441,7 @@ def test_prune_correlated_fields_collapses_a_three_way_correlated_chain() -> Non
     variance than either other member. This exercises the "already-dropped
     members are skipped, survivors are re-compared" interaction the plain
     2-member-pair tests don't reach."""
-    from scripts.fit_mood_arc_encoder import prune_correlated_fields
+    from orion.mood_arc.fit_encoder import prune_correlated_fields
 
     rng = np.random.default_rng(4)
     start = datetime(2026, 7, 1, tzinfo=timezone.utc)
@@ -468,7 +468,7 @@ def test_prune_correlated_fields_collapses_a_three_way_correlated_chain() -> Non
 
 
 def test_prune_correlated_fields_leaves_uncorrelated_channels_alone() -> None:
-    from scripts.fit_mood_arc_encoder import prune_correlated_fields
+    from orion.mood_arc.fit_encoder import prune_correlated_fields
 
     rng = np.random.default_rng(2)
     start = datetime(2026, 7, 1, tzinfo=timezone.utc)
@@ -486,7 +486,7 @@ def test_prune_correlated_fields_leaves_uncorrelated_channels_alone() -> None:
 
 
 def test_fit_ar1_per_channel_dict_shaped() -> None:
-    from scripts.fit_mood_arc_encoder import fit_ar1_per_channel
+    from orion.mood_arc.fit_encoder import fit_ar1_per_channel
 
     fields = ("coherence", "energy", "novelty", "valence")
     rng = np.random.default_rng(3)
@@ -512,7 +512,7 @@ def test_fit_ar1_per_channel_dict_shaped() -> None:
 
 
 def test_generate_ar1_surrogate_windows_matches_variance_but_not_identical() -> None:
-    from scripts.fit_mood_arc_encoder import (
+    from orion.mood_arc.fit_encoder import (
         fit_ar1_per_channel,
         generate_ar1_surrogate_windows,
     )
@@ -566,7 +566,7 @@ def test_compute_window_probes_raises_not_implemented() -> None:
     """This is a deliberate, documented gap (open valence-replacement
     question, not this task's scope) -- not a bug. Must raise, not
     fabricate a substitute probe."""
-    from scripts.fit_mood_arc_encoder import compute_window_probes
+    from orion.mood_arc.fit_encoder import compute_window_probes
 
     with pytest.raises(NotImplementedError, match="field_channel_corpus.v1"):
         compute_window_probes(np.zeros((1, 12)), {"W2": np.zeros((4, 2))}, ("a", "b", "c"))

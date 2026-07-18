@@ -12,8 +12,8 @@ import pytest
 from orion.schemas.telemetry.field_channel_corpus import FieldChannelCorpusRowV1
 from orion.schemas.telemetry.mood_arc import MoodArcEncoderManifestV1
 
-REPO = Path(__file__).resolve().parents[1]
-FIT_SCRIPT = REPO / "scripts" / "fit_mood_arc_encoder.py"
+REPO = Path(__file__).resolve().parents[3]
+FIT_SCRIPT = REPO / "orion" / "mood_arc" / "fit_encoder.py"
 
 
 def _run_fit(*args: str) -> subprocess.CompletedProcess[str]:
@@ -98,7 +98,7 @@ def _train_small_encoder(tmp_path: Path) -> Path:
 
 
 def test_load_artifacts_round_trips_write_artifacts(tmp_path: Path) -> None:
-    from scripts.fit_mood_arc_encoder import load_artifacts
+    from orion.mood_arc.fit_encoder import load_artifacts
 
     encoder_dir = _train_small_encoder(tmp_path)
     manifest, weights = load_artifacts(encoder_dir)
@@ -110,7 +110,7 @@ def test_load_artifacts_round_trips_write_artifacts(tmp_path: Path) -> None:
 
 
 def test_score_windows_returns_one_score_per_window(tmp_path: Path) -> None:
-    from scripts.fit_mood_arc_encoder import load_artifacts, score_windows, _load_jsonl
+    from orion.mood_arc.fit_encoder import load_artifacts, score_windows, _load_jsonl
 
     encoder_dir = _train_small_encoder(tmp_path)
     manifest, weights = load_artifacts(encoder_dir)
@@ -138,7 +138,7 @@ def test_score_windows_returns_one_score_per_window(tmp_path: Path) -> None:
 
 
 def test_detect_anomalies_filters_and_sorts_descending() -> None:
-    from scripts.fit_mood_arc_encoder import detect_anomalies
+    from orion.mood_arc.fit_encoder import detect_anomalies
 
     t0 = datetime(2026, 7, 1, tzinfo=timezone.utc)
     scored = [
@@ -153,7 +153,7 @@ def test_detect_anomalies_filters_and_sorts_descending() -> None:
 
 
 def test_detect_anomalies_empty_when_nothing_exceeds_threshold() -> None:
-    from scripts.fit_mood_arc_encoder import detect_anomalies
+    from orion.mood_arc.fit_encoder import detect_anomalies
 
     t0 = datetime(2026, 7, 1, tzinfo=timezone.utc)
     scored = [(0.001, t0, t0), (0.002, t0, t0)]
@@ -166,7 +166,7 @@ def test_acceptance_check_flags_a_known_bad_frozen_ratchet_window(tmp_path: Path
     from a known-bad period (here: a frozen-ratchet stretch mimicking the
     real bus_health/availability incident this session traced and fixed,
     PRs #1108-#1115) as anomalous."""
-    from scripts.fit_mood_arc_encoder import (
+    from orion.mood_arc.fit_encoder import (
         detect_anomalies,
         load_artifacts,
         score_windows,

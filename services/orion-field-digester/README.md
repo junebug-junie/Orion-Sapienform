@@ -173,7 +173,7 @@ file independently.
 
 **Dark by design (`REHEARSAL`)**: no bus publish, no cognition consumer —
 see `field_channel_corpus.v1` in `orion/self_state/inner_state_registry.py`.
-A future rework of `scripts/fit_mood_arc_encoder.py` to train against this
+A future rework of `orion/mood_arc/fit_encoder.py` to train against this
 dict-shaped corpus instead of `mood_arc_corpus.v1` is separate, not-yet-
 built work.
 
@@ -185,7 +185,7 @@ reflect known-broken channel behavior from before a 7-PR fix sprint
 above per `gh pr view 1115 --json mergedAt`) that addressed several of the
 verdict categories described in the glossary below: one-way ratchets,
 saturating counters, merge-polarity masking, and folded-away channels.
-Confirmed at full-corpus scale by `scripts/fit_mood_arc_encoder.py train`
+Confirmed at full-corpus scale by `orion/mood_arc/fit_encoder.py train`
 against the complete `/mnt/telemetry/field_channels/corpus/
 field_channels.jsonl` corpus (161,795 rows spanning back to
 `2026-07-13T23:46Z`, ~76% pre-cutoff): the run's own
@@ -201,7 +201,7 @@ pre-full-corpus spike slices scoped entirely to post-fix data
 **Any training run against this corpus should exclude pre-cutoff rows**:
 
 ```bash
-python scripts/fit_mood_arc_encoder.py train \
+python orion/mood_arc/fit_encoder.py train \
   --corpus /mnt/telemetry/field_channels/corpus/field_channels.jsonl \
   --min-generated-at 2026-07-17T04:32:14Z \
   --out <out-dir>
@@ -377,7 +377,7 @@ subset for the mood-arc windowed-autoencoder spike (see
    signal already exists in this corpus. Worth deliberately checking
    whether a trained encoder's latent dimensions correlate more with
    category 7 than with the others (mirrors
-   `scripts/fit_mood_arc_encoder.py::compute_window_probes()`'s existing
+   `orion/mood_arc/fit_encoder.py::compute_window_probes()`'s existing
    valence-correlation-probe pattern, generalized to this channel set).
 
 ### Node channels (`NODE_CHANNELS`, 23)

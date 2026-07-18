@@ -1,6 +1,13 @@
 #!/usr/bin/env python3
 """Offline mood-arc windowed felt-state-trajectory autoencoder: train subcommand.
 
+**Moved (2026-07-18) from `scripts/fit_mood_arc_encoder.py` to
+`orion/mood_arc/fit_encoder.py`** -- pure relocation, no behavior change.
+See `orion/mood_arc/README.md` for how to run this and
+`orion/mood_arc/docs/` for the full technical history/design rationale
+below. Git history for this file's content prior to the move lives under
+its old path.
+
 Item 2 of docs/superpowers/specs/2026-07-13-felt-state-arc-roadmap-spec.md.
 Trains a shallow MLP autoencoder over flattened windows of a felt-state
 channel corpus. Artifacts: manifest.json, weights.npz, probes.json under
@@ -79,13 +86,19 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 _SCRIPT_DIR = str(Path(__file__).resolve().parent)
-# Running as `python scripts/fit_mood_arc_encoder.py` puts scripts/ on
-# sys.path[0], which shadows stdlib `platform` via scripts/platform/ and
-# breaks pydantic (same issue documented in scripts/fit_phi_encoder.py).
+# Defensive carry-over from this file's original location at
+# scripts/fit_mood_arc_encoder.py, where running `python
+# scripts/fit_mood_arc_encoder.py` put scripts/ on sys.path[0], which
+# shadows stdlib `platform` via scripts/platform/ and breaks pydantic (same
+# issue documented in scripts/fit_phi_encoder.py). Now that this file lives
+# at orion/mood_arc/fit_encoder.py, `python orion/mood_arc/fit_encoder.py`
+# would put orion/mood_arc/ on sys.path[0] instead -- harmless (no shadowing
+# package there), but this pop is still correct/no-op-safe either way, so
+# it is kept rather than removed.
 if sys.path and sys.path[0] == _SCRIPT_DIR:
     sys.path.pop(0)
 
-REPO_ROOT = Path(__file__).resolve().parents[1]
+REPO_ROOT = Path(__file__).resolve().parents[2]
 if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
@@ -879,7 +892,7 @@ def compute_window_probes(
         "field_channel_corpus.v1 (the old valence-based probe target was "
         "removed by the 2026-07-17 corpus-swap rework; its replacement is "
         "an open question still under discussion with Juniper -- see "
-        "scripts/fit_mood_arc_encoder.py's module docstring)"
+        "orion/mood_arc/fit_encoder.py's module docstring)"
     )
 
 

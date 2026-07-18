@@ -805,34 +805,11 @@ def test_manual_dense_fallback_still_publishes():
     mock_bus.publish.assert_called()
 
 
-def _unstable_self_state_payload() -> dict:
-    from datetime import datetime, timezone
-
-    from orion.schemas.self_state import SelfStateDimensionV1, SelfStateV1
-
-    now = datetime.now(timezone.utc)
-    return SelfStateV1(
-        self_state_id="ss-publish",
-        generated_at=now,
-        source_field_tick_id="tick-1",
-        source_field_generated_at=now,
-        source_attention_frame_id="frame-1",
-        source_attention_generated_at=now,
-        overall_condition="unstable",
-        overall_intensity=0.9,
-        overall_confidence=0.7,
-        dimensions={
-            "execution_pressure": SelfStateDimensionV1(
-                dimension_id="execution_pressure", score=0.85, confidence=0.7
-            )
-        },
-        prediction_error_scores={"execution_pressure": 0.62},
-        trajectory_condition="degrading",
-        overall_surprise=0.7,
-    ).model_dump(mode="json")
-
-
-def test_publish_applies_substrate_causal_density_and_trigger_lineage():
+def test_publish_builds_metacog_entry_from_real_artifacts_no_self_report():
+    """Real-artifact model: causal_density is scored purely from
+    substrate_eventfulness/repair_pressure/turn_effect -- no numeric_sisters
+    self-report, no self_state blend. Publishes MetacogEntryV1 to
+    channel_metacog_sql_write, not CollapseMirrorEntryV2 to channel_collapse_sql_write."""
     executor_module = _load_executor_module()
     mock_bus = MagicMock()
     mock_bus.publish = AsyncMock()
@@ -859,8 +836,8 @@ def test_publish_applies_substrate_causal_density_and_trigger_lineage():
     ctx = {
         "trigger": {"trigger_kind": "dense", "reason": "substrate_eventfulness:0.60"},
         "trigger_kind": "dense",
-        "self_state": _unstable_self_state_payload(),
         "substrate_eventfulness_score": 0.6,
+        "substrate_eventfulness_reasons": ["execution_pressure_spike"],
         "final_entry": valid_entry,
     }
 
@@ -885,15 +862,22 @@ def test_publish_applies_substrate_causal_density_and_trigger_lineage():
     assert result.status == "success"
     publish = result.result["MetacogPublishService"]
     assert publish.get("published") is True
+    assert publish["channel"] == executor_module.settings.channel_metacog_sql_write
     mock_bus.publish.assert_called_once()
+    channel_arg = mock_bus.publish.call_args[0][0]
+    assert channel_arg == executor_module.settings.channel_metacog_sql_write
     envelope = mock_bus.publish.call_args[0][1]
+    assert envelope.kind == "metacog.entry.v1"
     payload = envelope.payload
-    assert payload["causal_density"]["score"] > 0.2
+    assert "numeric_sisters" not in payload
+    assert "state_snapshot" not in payload
+    assert payload["trigger_kind"] == "dense"
+    assert payload["trigger_reason"] == "substrate_eventfulness:0.60"
+    assert payload["state"]["substrate_eventfulness_score"] == 0.6
+    assert payload["state"]["substrate_eventfulness_reasons"] == ["execution_pressure_spike"]
+    assert payload["causal_density"]["score"] == pytest.approx(0.6)
     assert payload["is_causally_dense"] is True
-    telemetry = payload["state_snapshot"]["telemetry"]
-    assert telemetry["trigger_kind"] == "dense"
-    assert telemetry["metacog_causal_density_source"] == "substrate_self_state_blend"
-    assert telemetry["substrate_eventfulness_score"] == 0.6
+    assert payload["snapshot_kind"] == "confirmed_dense"
 
 
 def test_log_orion_metacognition_recall_disabled_by_verb_default():

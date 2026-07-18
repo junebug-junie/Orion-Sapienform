@@ -54,6 +54,16 @@ from orion.schemas.state.contracts import StateGetLatestRequest, StateLatestRepl
 from orion.schemas.chat_stance import ChatStanceBrief
 from orion.substrate.appraisal import REPAIR_PRESSURE_CONTRACT_METADATA_KEY
 from orion.schemas.metacog_patches import MetacogDraftTextPatchV1, MetacogEnrichScorePatchV1
+from orion.schemas.metacog_entry import (
+    MetacogCausalDensity,
+    MetacogEntryV1,
+    MetacogProvenance,
+    MetacogRealState,
+    MetacogRepairEvidence,
+    MetacogRepairPressure,
+    MetacogWhatChanged,
+)
+from orion.metacog.service import IS_CAUSALLY_DENSE_THRESHOLD, compute_causal_density
 from orion.schemas.platform import CoreEventV1
 
 from orion.cognition.personality.identity_context import build_identity_context, load_identity_file
@@ -289,6 +299,23 @@ def _truncate_text(value: Any, max_chars: int) -> Optional[str]:
     if len(text) <= max_chars:
         return text
     return text[:max_chars]
+
+
+_METACOG_REASONING_EXCERPT_LIMIT = 500
+
+
+def _metacog_reasoning_excerpt(text: Any, *, limit: int = _METACOG_REASONING_EXCERPT_LIMIT) -> Optional[str]:
+    """Truncate raw reasoning_content into MetacogRealState.reasoning_excerpt.
+
+    Same clip pattern as orion/memory/turn_change_classify.py::_clip_pair
+    (strip, then hard-truncate with a trailing ellipsis if it overflows).
+    """
+    s = str(text or "").strip()
+    if not s:
+        return None
+    if len(s) <= limit:
+        return s
+    return s[: limit - 3] + "..."
 
 
 def _prior_step_result_count(value: Any) -> int:
@@ -913,7 +940,7 @@ def _metacog_messages(
     if phase == "draft":
         subkeys = "summary, evidence, new_state, previous_state"
     else:
-        subkeys = "tag_scores, change_type_scores, numeric_sisters, causal_density"
+        subkeys = "tag_scores, change_type_scores, causal_density"
     instruction = (
         "Return ONE JSON object only. "
         f"It must contain ONLY these top-level keys: {allowed_list}. "
@@ -3568,43 +3595,6 @@ async def call_step_services(
                         thought_candidate = inline_think_content.strip()
                         thought_source = f"inline_think_content.{thinking_source}"
 
-                    from app.substrate_felt_state_reader import hydrate_felt_state_ctx
-                    from orion.collapse.service import apply_causal_density_to_entry
-
-                    self_state_for_density = ctx.get("self_state")
-                    if not self_state_for_density:
-                        felt_ctx: Dict[str, Any] = {}
-                        hydrate_felt_state_ctx(felt_ctx)
-                        self_state_for_density = felt_ctx.get("self_state")
-
-                    entry = normalize_collapse_entry(final_data)
-                    entry = apply_causal_density_to_entry(
-                        entry, self_state=self_state_for_density
-                    )
-                    entry_payload = entry.model_dump(mode="json")
-                    entry_payload = _apply_metacog_system_fields(entry_payload, ctx)
-                    state_snapshot = entry_payload.get("state_snapshot")
-                    if not isinstance(state_snapshot, dict):
-                        state_snapshot = {}
-                    telemetry = state_snapshot.get("telemetry")
-                    if not isinstance(telemetry, dict):
-                        telemetry = {}
-                    telemetry["reasoning_content"] = reasoning_content if isinstance(reasoning_content, str) else None
-                    telemetry["inline_think_content"] = inline_think_content if isinstance(inline_think_content, str) else None
-                    telemetry["thinking_source"] = thinking_source
-                    telemetry["thought_process"] = thought_candidate
-                    telemetry["thought_process_source"] = thought_source
-                    telemetry["metacog_causal_density_source"] = (
-                        "substrate_self_state_blend"
-                        if self_state_for_density
-                        else "self_report_only"
-                    )
-                    if ctx.get("substrate_eventfulness_score") is not None:
-                        telemetry["substrate_eventfulness_score"] = ctx.get(
-                            "substrate_eventfulness_score"
-                        )
-                    state_snapshot["telemetry"] = telemetry
-                    entry_payload["state_snapshot"] = state_snapshot
                     logger.info(
                         "metacog_publish_reasoning_payload corr_id=%s reasoning_content_len=%s inline_think_content_len=%s thinking_source=%s selected_thought_len=%s selected_thought_source=%s",
                         correlation_id,
@@ -3614,6 +3604,94 @@ async def call_step_services(
                         len(thought_candidate) if isinstance(thought_candidate, str) else 0,
                         thought_source,
                     )
+
+                    # `entry` here is the CollapseMirrorEntryV2-shaped scratch object built by
+                    # Draft/Enrich -- kept only as internal plumbing for the authored
+                    # summary/mantra/what_changed narrative loop (the "ritual half"). It is
+                    # never published; MetacogEntryV1 below is the real, published artifact.
+                    entry = normalize_collapse_entry(final_data)
+                    metacog_entry_id = _ensure_metacog_entry_id(ctx)
+                    trig = ctx.get("trigger") if isinstance(ctx.get("trigger"), dict) else {}
+
+                    what_changed_dict = entry.what_changed.model_dump(mode="json") if entry.what_changed else {}
+
+                    repair_pressure_summary = (
+                        ctx.get("metadata", {}).get("substrate_effect_summary")
+                        if isinstance(ctx.get("metadata"), dict)
+                        else None
+                    )
+                    repair_pressure = None
+                    if isinstance(repair_pressure_summary, dict) and repair_pressure_summary.get("level") is not None:
+                        repair_pressure = MetacogRepairPressure(
+                            level=float(repair_pressure_summary.get("level") or 0.0),
+                            level_label=str(repair_pressure_summary.get("level_label") or "unknown"),
+                            confidence=float(repair_pressure_summary.get("confidence") or 0.0),
+                            evidence=[
+                                MetacogRepairEvidence(
+                                    evidence_kind=str(e.get("evidence_kind")),
+                                    score=float(e.get("score") or 0.0),
+                                    confidence=float(e.get("confidence") or 0.0),
+                                )
+                                for e in (repair_pressure_summary.get("evidence") or [])
+                                if isinstance(e, dict) and e.get("evidence_kind") is not None
+                            ],
+                            behavior_applied=repair_pressure_summary.get("behavior_applied"),
+                        )
+
+                    llm_uncertainty = ctx.get("llm_uncertainty")
+                    if not isinstance(llm_uncertainty, dict):
+                        md = ctx.get("metadata") if isinstance(ctx.get("metadata"), dict) else {}
+                        llm_uncertainty = md.get("llm_uncertainty") if isinstance(md.get("llm_uncertainty"), dict) else None
+                    if not isinstance(llm_uncertainty, dict):
+                        scratch_telemetry = entry.state_snapshot.telemetry if entry.state_snapshot else {}
+                        candidate = scratch_telemetry.get("llm_uncertainty") if isinstance(scratch_telemetry, dict) else None
+                        llm_uncertainty = candidate if isinstance(candidate, dict) else None
+
+                    state = MetacogRealState(
+                        biometrics=ctx.get("biometrics") if isinstance(ctx.get("biometrics"), dict) else None,
+                        turn_effect=ctx.get("turn_effect") if isinstance(ctx.get("turn_effect"), dict) else None,
+                        turn_effect_evidence=(
+                            ctx.get("turn_effect_evidence") if isinstance(ctx.get("turn_effect_evidence"), dict) else None
+                        ),
+                        substrate_eventfulness_score=ctx.get("substrate_eventfulness_score"),
+                        substrate_eventfulness_reasons=(
+                            list(ctx["substrate_eventfulness_reasons"])
+                            if isinstance(ctx.get("substrate_eventfulness_reasons"), list)
+                            else None
+                        ),
+                        llm_uncertainty=llm_uncertainty,
+                        reasoning_excerpt=_metacog_reasoning_excerpt(reasoning_content),
+                        repair_pressure=repair_pressure,
+                    )
+
+                    causal_density = compute_causal_density(state)
+                    is_causally_dense = causal_density.score >= IS_CAUSALLY_DENSE_THRESHOLD
+
+                    metacog_entry = MetacogEntryV1(
+                        event_id=f"metacog_{metacog_entry_id}",
+                        environment=entry.environment,
+                        trigger_kind=_metacog_trigger_kind(ctx),
+                        trigger_reason=str(trig.get("reason") or "unknown"),
+                        summary=entry.summary,
+                        mantra=entry.mantra,
+                        what_changed=MetacogWhatChanged(
+                            summary=what_changed_dict.get("summary"),
+                            evidence=what_changed_dict.get("evidence") or [],
+                        ),
+                        state=state,
+                        causal_density=causal_density,
+                        is_causally_dense=is_causally_dense,
+                        snapshot_kind="confirmed_dense" if is_causally_dense else "baseline",
+                        provenance=MetacogProvenance(
+                            source="cortex_exec.metacog_pipeline",
+                            produces="metacog_entry",
+                            impacts=[],
+                        ),
+                        tags=list(entry.tags or []),
+                        source_service=entry.source_service or "metacog",
+                        source_node=entry.source_node,
+                    )
+
                     event_id = str(uuid4())
                     trace_meta = _trace_meta_from_ctx(
                         ctx,
@@ -3623,23 +3701,23 @@ async def call_step_services(
                     )
 
                     env = BaseEnvelope(
-                        kind="collapse.mirror.entry.v2",
+                        kind="metacog.entry.v1",
                         source=source,
                         correlation_id=correlation_id,
                         trace=trace_meta,
-                        payload=entry_payload,
+                        payload=metacog_entry.model_dump(mode="json"),
                     )
 
-                    await bus.publish(settings.channel_collapse_sql_write, env)
+                    await bus.publish(settings.channel_metacog_sql_write, env)
                     logger.info(
-                        f"MetacogPublishService published channel={settings.channel_collapse_sql_write} "
+                        f"MetacogPublishService published channel={settings.channel_metacog_sql_write} "
                         f"trace_id={trace_meta.get('trace_id')} event_id={event_id}"
                     )
                     merged_result[service] = {
                         "ok": True,
                         "published": True,
-                        "channel": settings.channel_collapse_sql_write,
-                        "event_id": entry.event_id,
+                        "channel": settings.channel_metacog_sql_write,
+                        "event_id": metacog_entry.event_id,
                     }
                     logs.append("ok <- MetacogPublishService (SQL)")
 

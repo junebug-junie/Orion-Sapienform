@@ -78,6 +78,7 @@ class Settings(BaseSettings):
     channel_metacog_trace_pub: str = Field("orion:metacog:trace", alias="CHANNEL_METACOG_TRACE_PUB")
     channel_dream_log: str = Field("orion:dream:log", alias="CHANNEL_DREAM_LOG")
     channel_collapse_sql_write: str = Field("orion:collapse:sql-write", alias="CHANNEL_COLLAPSE_SQL_WRITE")
+    channel_metacog_sql_write: str = Field("orion:metacog:sql-write", alias="CHANNEL_METACOG_SQL_WRITE")
     channel_collapse_intake: str = Field("orion:collapse:intake", alias="CHANNEL_COLLAPSE_INTAKE")
     channel_pad_rpc_request: str = Field("orion:pad:rpc:request", alias="CHANNEL_PAD_RPC_REQUEST")
     channel_state_request: str = Field("orion:state:request", alias="CHANNEL_STATE_REQUEST")

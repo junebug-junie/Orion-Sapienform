@@ -46,28 +46,15 @@ SUBSTRATE FELT STATE (compact cue; evidence only; do NOT paste into output):
 {{ metacog_substrate_cue }}
 
 ORION METADEFS
-- numeric_sisters: valence/arousal/clarity/overload/risk_score all MUST be non-null in [0,1]
 - causal_density.score: non-null in [0,1]
 - is_causally_dense: true iff causal_density.score >= 0.70
 
-φ BANDS (SOURCE OF TRUTH)
-- If draft.state_snapshot.telemetry.phi_hint is present, treat it as truth.
-- Else if phi_hint is available in context, treat it as truth.
-- Else infer bands from spark_phi_narrative (best effort).
-
-NUMERIC SISTERS (SIMPLE, JUSTIFIABLE)
-- Use clamp01(x)=min(1,max(0,x)).
-- If you can infer raw phi values, map directly:
-  valence = clamp01(valence_intensity), arousal = clamp01(energy), clarity = clamp01(coherence), overload = clamp01(novelty)
-- Otherwise, map from bands (deterministic):
-  valence_band neutral→0.0 gently_tilted→0.5 strongly_tilted→1.0 unknown→0.5
-  energy_band low→0.2 moderate→0.5 high→0.8 unknown→0.5
-  coherence_band low→0.2 medium→0.5 high→0.8 unknown→0.5
-  novelty_band low→0.2 medium→0.5 high→0.8 unknown→0.5
-
-RISK SCORE
-risk = clamp01(0.50*overload + 0.35*(1-clarity) + 0.15*pressure)
-+0.10 bonus if context indicates error/retry/timeout/validation failure.
+NOTE: this enricher no longer produces a numeric_sisters self-report. That field was
+found to be contaminated (phi's own live bands, primed into this same prompt, were
+substantially echoed back as a "self-rating" rather than independently assessed). The
+published metacog entry now sources causal_density purely from real, live-computed
+artifacts (repair_pressure, substrate_eventfulness, turn_effect severity) instead. Do
+NOT output a numeric_sisters key.
 
 CAUSAL DENSITY (MECHANICAL)
 Compute score = clamp01(A + B + C). Cite which bullets contributed, briefly.
@@ -118,7 +105,6 @@ Return ONLY a JSON object containing the allowed keys below.
 Allowed keys ONLY:
   - tag_scores (dict[str,float])
   - change_type_scores (dict[str,float])
-  - numeric_sisters {arousal, clarity, valence, overload, risk_score, constraints{notes,severity_score}}
   - causal_density {label, score, rationale}
   - epistemic_status
   - is_causally_dense
@@ -127,7 +113,7 @@ Allowed keys ONLY:
 FORBIDDEN (do NOT output these keys):
   summary, mantra, what_changed, field_resonance, emergent_entity, resonance_signature,
   event_id, id, observer, timestamp, environment, observer_state,
-  trigger, tags, state_snapshot, source_service, source_node,
+  trigger, tags, state_snapshot, source_service, source_node, numeric_sisters,
   any telemetry or lineage keys.
 
 You are scoring/classification only. Do NOT rewrite narrative fields.
@@ -141,17 +127,6 @@ You are scoring/classification only. Do NOT rewrite narrative fields.
   "change_type_scores": {
     "stabilizing": 0.8,
     "reorientation": 0.2
-  },
-  "numeric_sisters": {
-    "arousal": 0.4,
-    "clarity": 0.7,
-    "valence": 0.6,
-    "overload": 0.2,
-    "risk_score": 0.3,
-    "constraints": {
-      "notes": "Derived from phi bands.",
-      "severity_score": 0.1
-    }
   },
   "causal_density": {
     "label": "state_transition",

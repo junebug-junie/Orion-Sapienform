@@ -168,3 +168,42 @@ def test_fetch_entity_mention_timeline_none_client_returns_empty(monkeypatch) ->
     monkeypatch.setattr(falkor_entity_relatedness, "get_recall_falkor_client", lambda: None)
     out = _run(falkor_entity_relatedness.fetch_entity_mention_timeline(name="nvidia"))
     assert out == []
+
+
+def test_fetch_entity_matches_for_turns_full_shape(monkeypatch) -> None:
+    rows = [
+        {"tid": "turn-1", "matched": ["nvidia", "tesla"]},
+        {"tid": "turn-2", "matched": []},  # no matches -- must be dropped, not kept as empty
+    ]
+    fake_client = _FakeFalkorClient(rows=rows)
+    monkeypatch.setattr(falkor_entity_relatedness, "get_recall_falkor_client", lambda: fake_client)
+
+    out = _run(
+        falkor_entity_relatedness.fetch_entity_matches_for_turns(
+            turn_ids=["turn-1", "turn-2"], target_names=["nvidia", "tesla"]
+        )
+    )
+
+    assert out == {"turn-1": ["nvidia", "tesla"]}
+    assert "turn-2" not in out
+
+    _, params = fake_client.calls[0]
+    assert params["turn_ids"] == ["turn-1", "turn-2"]
+    assert params["target_names"] == ["nvidia", "tesla"]
+
+
+def test_fetch_entity_matches_for_turns_empty_inputs_returns_empty(monkeypatch) -> None:
+    fake_client = _FakeFalkorClient(rows=[])
+    monkeypatch.setattr(falkor_entity_relatedness, "get_recall_falkor_client", lambda: fake_client)
+
+    assert _run(falkor_entity_relatedness.fetch_entity_matches_for_turns(turn_ids=[], target_names=["nvidia"])) == {}
+    assert _run(falkor_entity_relatedness.fetch_entity_matches_for_turns(turn_ids=["t1"], target_names=[])) == {}
+    assert fake_client.calls == []
+
+
+def test_fetch_entity_matches_for_turns_none_client_returns_empty(monkeypatch) -> None:
+    monkeypatch.setattr(falkor_entity_relatedness, "get_recall_falkor_client", lambda: None)
+    out = _run(
+        falkor_entity_relatedness.fetch_entity_matches_for_turns(turn_ids=["t1"], target_names=["nvidia"])
+    )
+    assert out == {}

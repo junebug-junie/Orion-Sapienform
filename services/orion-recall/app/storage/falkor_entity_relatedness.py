@@ -225,4 +225,48 @@ async def fetch_entity_mention_timeline(
     ]
 
 
-__all__ = ["fetch_related_entities", "fetch_bridging_turns", "fetch_entity_mention_timeline"]
+async def fetch_entity_matches_for_turns(
+    *,
+    turn_ids: List[str],
+    target_names: List[str],
+) -> Dict[str, List[str]]:
+    """Phase 2 (fusion-weight boost): for each of turn_ids, which of
+    target_names does that turn's MENTIONS_ENTITY set include? One batched
+    UNWIND query, not one round trip per turn -- this is called from the
+    recall hot path (fuse_candidates), unlike the Phase 1 debug-only
+    primitives above, so round-trip count actually matters here.
+
+    Returns only turn_ids with at least one match (empty/no-match turns are
+    simply absent from the returned dict, not present with an empty list) --
+    callers should treat a missing key as "no boost," not distinguish it
+    from an explicit empty match set.
+    """
+    client = get_recall_falkor_client()
+    if client is None or not turn_ids or not target_names:
+        return {}
+
+    rows = await _safe_graph_query(
+        client,
+        "UNWIND $turn_ids AS tid "
+        "MATCH (t:ChatTurn {turn_id: tid})-[:MENTIONS_ENTITY]->(e:Entity) "
+        "WHERE e.name IN $target_names "
+        "RETURN tid, collect(DISTINCT e.name) AS matched",
+        {"turn_ids": list(turn_ids), "target_names": list(target_names)},
+        log_ctx="fetch_entity_matches_for_turns",
+    )
+
+    out: Dict[str, List[str]] = {}
+    for row in rows:
+        tid = str(row.get("tid") or "").strip()
+        matched = [str(m) for m in (row.get("matched") or []) if m]
+        if tid and matched:
+            out[tid] = matched
+    return out
+
+
+__all__ = [
+    "fetch_related_entities",
+    "fetch_bridging_turns",
+    "fetch_entity_mention_timeline",
+    "fetch_entity_matches_for_turns",
+]

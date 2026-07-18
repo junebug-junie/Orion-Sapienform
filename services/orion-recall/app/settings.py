@@ -305,6 +305,40 @@ class Settings(BaseSettings):
     RECALL_FALKOR_GRAPHTRI_IN_CHAT: bool = Field(
         default=False, validation_alias=AliasChoices("RECALL_FALKOR_GRAPHTRI_IN_CHAT")
     )
+    # Phase 2 of the entity-graph-reasoning arc (docs/superpowers/specs/
+    # 2026-07-19-recall-entity-graph-reasoning-arc.md): fuse_candidates
+    # (fusion.py) additively boosts a candidate's composite score when its
+    # source turn's MENTIONS_ENTITY set overlaps with entities Jaccard-
+    # related to the query's own extracted entities (app/storage/
+    # falkor_entity_relatedness.py::fetch_related_entities). Ships dark --
+    # the chosen integration shape (fusion-weight boost, over query-
+    # expansion or a new backend) directly couples relatedness scoring into
+    # an already-complex ranking function, so it needs live before/after
+    # evidence before flipping on, same bar as every other Falkor swap-in
+    # in this service. Scoped to falkor_chat candidates only in this first
+    # cut: that's the only source whose id/uri reliably IS the real Falkor
+    # turn_id (confirmed by reading falkor_chat_adapter.py) -- sql_chat's id
+    # is a correlation_id/synthetic fallback that doesn't always match.
+    #
+    # KNOWN LIMITATION, found in code review, NOT fixed here (pre-existing,
+    # repo-wide blast radius -- app/worker.py::_extract_entities is used
+    # elsewhere too, e.g. query-expansion fan-out): its regex has a literal
+    # double-backslash bug (`\\s`/`\\.` inside an r-string match a literal
+    # backslash, not whitespace/dot), confirmed live to (a) never capture
+    # multi-word entity spans ("New York" -> "New", "York" separately, never
+    # merged) and (b) drop all-caps acronyms entirely ("NVIDIA" -> nothing;
+    # only mixed-case "Nvidia" matches). Since Falkor's real Entity.name
+    # vocabulary is spaCy-NER-derived and includes exactly these shapes,
+    # this boost will silently fail to match the majority of real entity
+    # mentions until that regex is fixed in its own dedicated changeset
+    # (touching this shared function requires re-verifying every existing
+    # caller, not just this one). Do not flip this flag live and treat
+    # "no measurable effect" as proof the feature doesn't help -- it may
+    # just mean queries aren't hitting the multi-word/acronym case this bug
+    # breaks. Fix the regex and re-measure before drawing that conclusion.
+    RECALL_ENTITY_RELATEDNESS_BOOST_ENABLED: bool = Field(
+        default=False, validation_alias=AliasChoices("RECALL_ENTITY_RELATEDNESS_BOOST_ENABLED")
+    )
     RECALL_CRYSTALLIZATION_VECTOR_COLLECTION: str = Field(
         default="orion_memory_crystallizations",
         validation_alias=AliasChoices("RECALL_CRYSTALLIZATION_VECTOR_COLLECTION"),

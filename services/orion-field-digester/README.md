@@ -521,7 +521,19 @@ subset for the mood-arc windowed-autoencoder spike (see
   see `app/ingest/state_deltas.py`'s `execution_run` branch and
   `orion/substrate/execution_loop/`. `node:athena`'s reading is unaffected
   (still the orchestrating-node value); `node:atlas` should now show real
-  variation once live LLM traffic accumulates post-deploy.
+  variation once live LLM traffic accumulates post-deploy. Live-verified
+  post-deploy (PR #1177, merged 2026-07-18T04:10:01Z): `node:atlas`'s
+  `reasoning_load` mean/std/max went from exactly `0`/`0`/`0` (767 rows,
+  pre-merge) to `0.003`/`0.012`/`0.05` (115 rows immediately post-merge),
+  climbing to `0.032`/`0.024`/`0.05` a few minutes later as more traffic
+  accumulated. `node:circe`'s `reasoning_load` is **still** permanently
+  `0.0` -- this is a separate, operational (not code) gap: circe is never
+  `served_by` in the live `LLM_GATEWAY_ROUTE_TABLE_JSON` today, so it never
+  produces an `execution_run` at all. See
+  `services/orion-llm-gateway/README.md`'s route-table section for the
+  known-gap note and what's needed to bring it online -- this fix is
+  already ready for circe (`circe` is in cortex-exec's
+  `_KNOWN_FIELD_NODES`), it just has no live traffic to attribute yet.
 
 #### `failure_pressure`
 - **Meaning**: recent execution failure rate/severity on a node.

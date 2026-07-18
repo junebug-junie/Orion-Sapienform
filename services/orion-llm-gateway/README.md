@@ -170,6 +170,27 @@ LLM_GATEWAY_ROUTE_TABLE_JSON='{
 
 `quick` is the FAST lane route used by user-facing quick chat and chat_general pass-1.
 
+> **Known gap (2026-07-18): circe is not wired into `LLM_GATEWAY_ROUTE_TABLE_JSON`.**
+> Every route above (`chat`/`agent`/`metacog`/`quick`) is `served_by` an
+> `atlas-worker-*` label. `config/llm_profiles.yaml` has real circe-hosted
+> profiles defined (2xV100, PIX-linked, benched 2026-07-09), but nothing in
+> the live route table points at them -- this was never deliberate, just
+> deprioritized while getting circe fully online. Consequence: `node:circe`
+> never appears as an `execution_run` producer, so `orion-field-digester`'s
+> `reasoning_load`/`execution_load`/etc. channels for `node:circe` read
+> permanently `0.0` -- not a code bug (see
+> `services/orion-field-digester/README.md`'s `reasoning_load` glossary
+> entry), just zero real traffic ever routing there. When circe comes
+> online: (1) add a route entry above with `"served_by": "circe-worker-N"`
+> (the live worker process's current name needs renaming to match this
+> `{node}-worker[-lane][-N]` convention -- `services/orion-cortex-exec/app/executor.py`'s
+> `_normalize_served_by_to_node()` only recognizes labels split on the
+> literal `"-worker"` substring, and only resolves to a node in
+> `_KNOWN_FIELD_NODES` if the prefix is exactly `atlas`/`athena`/`circe`/
+> `prometheus`); (2) no code changes needed beyond that -- `circe` is already
+> in `_KNOWN_FIELD_NODES` and the field topology
+> (`config/field/orion_field_topology.v1.yaml`).
+
 ### Route table example (optional split agent mode)
 ```bash
 LLM_GATEWAY_ROUTE_TABLE_JSON='{

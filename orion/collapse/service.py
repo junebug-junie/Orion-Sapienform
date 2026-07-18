@@ -135,6 +135,11 @@ def _label_for_score(score: float) -> str:
 # Expect these to get retuned once we have real metacog-lane outcomes to check against.
 METACOG_SELF_REPORT_WEIGHT = 0.35
 METACOG_PHI_EVIDENCE_WEIGHT = 0.65
+# Deliberately equal to METACOG_PHI_EVIDENCE_WEIGHT: relational evidence (a real
+# turn_change_classify SHIFT appraisal) is treated as a co-primary evidence
+# source, not a minor bump. Only one of phi/relational is normally present per
+# entry (a given trigger fires one or the other), so this rarely triples up.
+METACOG_RELATIONAL_EVIDENCE_WEIGHT = 0.65
 
 _SEVERITY_ORDER = ("quiet", "steady", "loaded", "strained", "unstable")
 
@@ -207,6 +212,34 @@ def _self_report_signals(entry: CollapseMirrorEntryV2) -> list[float]:
     return signals
 
 
+def _relational_evidence_score(entry: CollapseMirrorEntryV2) -> float | None:
+    """Read the relational-trigger upstream (turn_change_classify SHIFT appraisal)
+    that _apply_metacog_system_fields already stamped onto this entry's telemetry,
+    if it was fired by a "relational" trigger. Reuses turn_change_classify's
+    already-scored novelty/confidence instead of inventing a new metric -- see
+    docs/superpowers/design/2026-07-18-collapse-mirror-metacog-redesign.md.
+    """
+    telemetry = entry.state_snapshot.telemetry if entry.state_snapshot else None
+    if not isinstance(telemetry, dict):
+        return None
+    trigger_payload = telemetry.get("trigger_payload")
+    if not isinstance(trigger_payload, dict):
+        return None
+    if trigger_payload.get("trigger_kind") != "relational":
+        return None
+    upstream = trigger_payload.get("upstream")
+    if not isinstance(upstream, dict):
+        return None
+    values = [
+        float(v)
+        for v in (upstream.get("novelty_score"), upstream.get("confidence"))
+        if isinstance(v, (int, float))
+    ]
+    if not values:
+        return None
+    return max(0.0, min(1.0, sum(values) / len(values)))
+
+
 def apply_causal_density_to_entry(
     entry: CollapseMirrorEntryV2,
     *,
@@ -219,17 +252,19 @@ def apply_causal_density_to_entry(
     lane = mirror_kind(entry)
     if lane == "metacog":
         phi_score = _phi_evidence_score(_coerce_self_state(self_state))
-        if phi_score is None:
+        relational_score = _relational_evidence_score(entry)
+
+        components: list[tuple[float, float]] = [(METACOG_SELF_REPORT_WEIGHT, self_report_score)]
+        if phi_score is not None:
+            components.append((METACOG_PHI_EVIDENCE_WEIGHT, phi_score))
+        if relational_score is not None:
+            components.append((METACOG_RELATIONAL_EVIDENCE_WEIGHT, relational_score))
+
+        if len(components) == 1:
             score = self_report_score
         else:
-            score = max(
-                0.0,
-                min(
-                    1.0,
-                    METACOG_SELF_REPORT_WEIGHT * self_report_score
-                    + METACOG_PHI_EVIDENCE_WEIGHT * phi_score,
-                ),
-            )
+            total_weight = sum(w for w, _ in components)
+            score = max(0.0, min(1.0, sum(w * v for w, v in components) / total_weight))
     else:
         score = self_report_score
 

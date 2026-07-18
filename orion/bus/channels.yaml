@@ -1429,7 +1429,7 @@ channels:
     schema_id: "ChatHistorySparkMetaPatchV1"
     message_kind: "chat.history.spark_meta.patch.v1"
     producer_services: ["orion-memory-consolidation"]
-    consumer_services: ["orion-sql-writer"]
+    consumer_services: ["orion-sql-writer", "orion-spark-introspector", "orion-equilibrium-service"]
     stability: "experimental"
     since: "2026-06-16"
 

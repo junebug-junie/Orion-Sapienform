@@ -13,7 +13,6 @@ DEFAULT_MAX_CONTEXT_TOKENS = 65536
 DEFAULT_CHARS_PER_TOKEN = 4
 DEFAULT_PRESSURE_THRESHOLD_PCT = 70.0
 DEFAULT_MCP_TOOL_RESULT_MAX_CHARS = 12_000
-DEFAULT_CLAUDE_CONFIG_DIR = "~/.claude-fcc"
 
 CONTEXT_PRESSURE_NUDGE = (
     "Context nearly full — answer from what you have; no more tools."
@@ -78,27 +77,40 @@ def mcp_tool_result_max_chars() -> int:
     )
 
 
-def orion_fcc_claude_config_dir() -> str:
-    """Isolated CLAUDE_CONFIG_DIR for FCC's claude subprocess.
+def orion_fcc_claude_config_dir() -> str | None:
+    """Isolated CLAUDE_CONFIG_DIR for FCC's claude subprocess, or None to
+    leave CLAUDE_CONFIG_DIR untouched entirely.
 
     Orion's FCC turns must never inherit the operator's personal
     ~/.claude/CLAUDE.md (or hooks/settings) -- that file is Juniper's own
     coding-session preferences, not instructions for Orion's cognition
-    subprocess. Pointing CLAUDE_CONFIG_DIR at a dedicated Orion-owned
-    directory gives FCC its own (currently empty) CLAUDE.md/settings.json
-    instead, fully isolated from the operator's global config.
+    subprocess.
 
-    Do NOT default this under ~/.fcc: both orion-hub and
-    orion-harness-governor bind-mount ${HOME}/.fcc:/root/.fcc:ro
-    (operator secrets, read-only by design), so `claude` couldn't write
-    its own session state there from inside either container -- confirmed
-    live (mkdir/touch both fail with "Read-only file system").
+    orion-harness-governor's docker-compose.yml already isolates this for
+    free: a named volume (harness-claude-config:/root/.claude) is mounted at
+    Claude Code's own default lookup path, so leaving CLAUDE_CONFIG_DIR unset
+    there is *correct*, not an oversight -- it also keeps the operator's
+    documented plugin-install workflow (see that service's README) pointed
+    at the same volume the actual claude subprocess reads. So
+    HARNESS_FCC_CLAUDE_CONFIG_DIR is opt-in: set but empty (the operator
+    default) means "inherit, don't override" -> None. Set to a real path
+    means override.
+
+    orion-hub has no equivalent volume, so HUB_AGENT_CLAUDE_CONFIG_DIR
+    always carries a real default in its own .env_example/settings.py --
+    there is no "inherit" case for hub.
+
+    Do NOT point either override at ~/.fcc: both orion-hub and
+    orion-harness-governor bind-mount ${HOME}/.fcc:/root/.fcc:ro (operator
+    secrets, read-only by design), so `claude` couldn't write its own
+    session state there from inside either container -- confirmed live
+    (mkdir/touch both fail with "Read-only file system").
     """
-    for key in ("HARNESS_FCC_CLAUDE_CONFIG_DIR", "HUB_AGENT_CLAUDE_CONFIG_DIR"):
-        raw = str(os.environ.get(key) or "").strip()
-        if raw:
-            return str(Path(raw).expanduser())
-    return str(Path(DEFAULT_CLAUDE_CONFIG_DIR).expanduser())
+    if "HARNESS_FCC_CLAUDE_CONFIG_DIR" in os.environ:
+        raw = os.environ["HARNESS_FCC_CLAUDE_CONFIG_DIR"].strip()
+        return str(Path(raw).expanduser()) if raw else None
+    raw = str(os.environ.get("HUB_AGENT_CLAUDE_CONFIG_DIR") or "").strip()
+    return str(Path(raw).expanduser()) if raw else None
 
 
 def extend_fcc_subprocess_env(env: dict[str, str], *, workspace: str | None = None) -> None:
@@ -126,8 +138,9 @@ def extend_fcc_subprocess_env(env: dict[str, str], *, workspace: str | None = No
     env.setdefault("ENABLE_TOOL_SEARCH", "true")
     if not env.get("CLAUDE_CONFIG_DIR"):
         config_dir = orion_fcc_claude_config_dir()
-        Path(config_dir).mkdir(parents=True, exist_ok=True)
-        env["CLAUDE_CONFIG_DIR"] = config_dir
+        if config_dir:
+            Path(config_dir).mkdir(parents=True, exist_ok=True)
+            env["CLAUDE_CONFIG_DIR"] = config_dir
 
 
 def context_pressure_threshold_chars() -> int:

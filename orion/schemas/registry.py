@@ -542,7 +542,14 @@ from orion.schemas.thought import (
     StanceReactRequestV1,
     ThoughtEventV1,
 )
-from orion.schemas.attention_frame import AttentionFrameV1, AttentionSignalV1, SalienceFeaturesV1
+from orion.schemas.attention_frame import (
+    AttentionBroadcastProjectionV1,
+    AttentionFrameV1,
+    AttentionSignalV1,
+    SalienceFeaturesV1,
+    VoluntaryOverrideV1,
+)
+from orion.schemas.attention_self_model import AttentionSelfModelV1
 from orion.schemas.attention_salience import (
     AttentionLoopOutcomeV1,
     AttentionSalienceTraceV1,
@@ -798,6 +805,9 @@ _REGISTRY: Dict[str, Type[BaseModel]] = {
     "AttentionFrameV1": AttentionFrameV1,
     "AttentionSignalV1": AttentionSignalV1,
     "SalienceFeaturesV1": SalienceFeaturesV1,
+    "AttentionBroadcastProjectionV1": AttentionBroadcastProjectionV1,
+    "VoluntaryOverrideV1": VoluntaryOverrideV1,
+    "AttentionSelfModelV1": AttentionSelfModelV1,
     "AttentionSalienceTraceV1": AttentionSalienceTraceV1,
     "AttentionLoopOutcomeV1": AttentionLoopOutcomeV1,
     "PendingAttentionCardV1": PendingAttentionCardV1,
@@ -1420,6 +1430,21 @@ SCHEMA_REGISTRY: Dict[str, SchemaRegistration] = {
     "GraphWriteIntentV1": SchemaRegistration(
         model=GraphWriteIntentV1,
         kind="graph.write_intent.v1",
+    ),
+    "AttentionBroadcastProjectionV1": SchemaRegistration(
+        model=AttentionBroadcastProjectionV1,
+        kind="attention.broadcast.projection.v1",
+    ),
+    # AST/HOT reducer output (Phase 1, docs/superpowers/specs/
+    # 2026-07-18-objective-3-consciousness-scaffolded-roadmap-design.md).
+    # Registered per CLAUDE.md sec 6 even though this artifact is not yet
+    # published to any bus channel -- read-only measurement instrument only,
+    # not wired into a live consumer/producer path. See
+    # orion/substrate/attention_self_model.py and
+    # scripts/analysis/measure_ast_hot_reducer.py.
+    "AttentionSelfModelV1": SchemaRegistration(
+        model=AttentionSelfModelV1,
+        kind="attention.self_model.v1",
     ),
 }
 

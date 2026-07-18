@@ -66,20 +66,48 @@ RPT/Lamme (live) and predictive processing (live, field-native) are the two cons
 threads already real enough to build on. Nothing to do here except treat them as load-bearing
 inputs to Phase 1, not independent side threads.
 
-### Phase 1 — build the AST/HOT reducer, before any field-routing math
+### Phase 1 — build the AST/HOT reducer, coordinated with Lamme, not parallel to it
 
-One small reducer, reading `FieldAttentionFrameV1` (Layer 5) + `SelfStateV1` (Layer 6),
-producing an explicit, inspectable artifact: what's currently salient, why, how confident,
-what's predicted to shift next. This is scaffolding, not the final legibility layer — its
-job in this roadmap is to give Phase 2 onward something real to observe competition *through*,
-instead of guessing at channel-to-tension mappings blind. Read-only, measured against real
-historical data before anything downstream consumes it, matching this program's own §7
-process rule.
+**Correction (2026-07-18), found while scoping the coordination Juniper asked for.**
+Lamme's `TopDownBiasCombiner` does not operate on `FieldAttentionFrameV1` (Layer 5, general
+field attention) — it operates on a *different* attention frame entirely:
+`AttentionFrameV1`/`OpenLoopV1` (the FCC-Cortex GWT-dispatch lane,
+`orion/schemas/attention_frame.py`), whose `voluntary_override: VoluntaryOverrideV1 | None`
+field is set exactly when top-down bias flips the winner. These are two of the
+three-plus disconnected attention mechanisms already found in this program's field-native
+correction (PR #1163) — building AST's reducer against only one of them, blind to the other,
+would recreate that same disconnection at the self-modeling layer instead of resolving it.
 
-**Acceptance check**: on a real historical window with known field activity (e.g. a
-biometrics spike, a real execution failure), the reducer's output is independently
-recognizable by inspection as "yes, that's what was salient then" — the same bar used for
-the baseline field-native design's own recommended first patch.
+The good news, found in the same pass: the coordination surface already exists, mostly built.
+`AttentionBroadcastProjectionV1` (same schema file) wraps `AttentionFrameV1` (hence Lamme's
+`voluntary_override`) together with `attended_node_ids`, `dwell_ticks`,
+`coalition_stability_score`, and a bounded `coalition_history` — explicitly documented as
+"rung 3: the selected coalition of the latest workspace competition, re-broadcast as a
+single queryable projection." Confirmed live: real producer
+(`orion/substrate/attention_broadcast.py`), persisted to
+`substrate_attention_broadcast_projection`, and confirmed to have carried a genuine non-null
+`voluntary_override` at least once in the last 24h — Lamme's mechanism has already fired
+live and reached this projection, not just the eval suite. Cadence caveat: this projection
+updates on agent-dispatch-lane activity, not a continuous ~2s tick the way
+`FieldAttentionFrameV1`/`orion-attention-runtime` does — the two inputs Phase 1 unifies are
+real but not equally frequent, and the reducer needs to handle "no new GWT-lane activity
+since last frame" as an honest, distinct state from "nothing salient," not silently treat
+them the same.
+
+Revised scope: one reducer, two real inputs, explicitly unified rather than picking one —
+`AttentionBroadcastProjectionV1` (GWT-dispatch-lane self-model, already carries the Lamme
+override/coalition-stability story) *and* `FieldAttentionFrameV1` + `SelfStateV1` (general
+field self-model, Layer 5/6). Output: one explicit, inspectable artifact answering what's
+currently salient, why (including *whether* a goal's top-down bias was the reason, when
+`voluntary_override` is present), how confident, what's predicted to shift next — genuinely
+coordinated with what Lamme already produces, not a second, disconnected attention-schema
+built next to it. Read-only, measured against real historical data before anything
+downstream consumes it, matching this program's own §7 process rule.
+
+**Acceptance check**: on a real historical window that includes at least one real
+`voluntary_override` event (already confirmed to exist in live data), the reducer's output
+correctly narrates *that* event as the reason for the attention shift, not just a generic
+salience reading — proving the two inputs are actually unified, not just both present.
 
 ### Phase 2 — reframe tension-minting as prediction error, not hand-classified kinds
 

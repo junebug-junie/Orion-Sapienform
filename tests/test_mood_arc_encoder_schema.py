@@ -29,6 +29,7 @@ def _manifest_kwargs() -> dict:
         max_gap_sec=30.0,
         hidden_dim=8,
         latent_dim=2,
+        channel_names=["coherence", "energy", "novelty"],
         corpus=CorpusStatsV1(
             corpus_path="/tmp/mood_arc.jsonl",
             row_count=100,
@@ -61,3 +62,22 @@ def test_mood_arc_encoder_manifest_forbids_unexpected_kwarg() -> None:
     kwargs["not_a_real_field"] = "nope"
     with pytest.raises(ValidationError):
         MoodArcEncoderManifestV1(**kwargs)
+
+
+def test_mood_arc_encoder_manifest_requires_channel_names() -> None:
+    """2026-07-17 corpus-swap rework: field selection is now dynamic per
+    training run (field_channel_corpus.v1's variable-width channels dict),
+    so the manifest must record which channels a given run actually used --
+    channel_names is required, not optional/defaulted."""
+    kwargs = _manifest_kwargs()
+    del kwargs["channel_names"]
+    with pytest.raises(ValidationError):
+        MoodArcEncoderManifestV1(**kwargs)
+
+
+def test_mood_arc_encoder_manifest_channel_names_round_trips_order() -> None:
+    kwargs = _manifest_kwargs()
+    kwargs["channel_names"] = ["gpu_pressure", "cpu_pressure", "reliability_pressure"]
+    manifest = MoodArcEncoderManifestV1(**kwargs)
+    restored = MoodArcEncoderManifestV1.model_validate_json(manifest.model_dump_json())
+    assert restored.channel_names == ["gpu_pressure", "cpu_pressure", "reliability_pressure"]

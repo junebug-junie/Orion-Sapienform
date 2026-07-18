@@ -2,10 +2,45 @@
 """Offline mood-arc windowed felt-state-trajectory autoencoder: train subcommand.
 
 Item 2 of docs/superpowers/specs/2026-07-13-felt-state-arc-roadmap-spec.md.
-Trains a shallow MLP autoencoder over flattened windows of item 1's
-mood_arc_corpus.v1 JSONL corpus (coherence/energy/novelty/valence per tick).
-Artifacts: manifest.json, weights.npz, probes.json under --out. Dark
-deployment -- disk-only, no bus publish, no cognition consumer.
+Trains a shallow MLP autoencoder over flattened windows of a felt-state
+channel corpus. Artifacts: manifest.json, weights.npz, probes.json under
+--out. Dark deployment -- disk-only, no bus publish, no cognition consumer.
+
+**Corpus-swap rework (2026-07-17).** This script originally trained against
+`mood_arc_corpus.v1` (`orion.schemas.telemetry.mood_arc.MoodArcCorpusRowV1`,
+a fixed 4-field `coherence`/`energy`/`novelty`/`valence` schema). That corpus
+was found to be scientifically invalid for this purpose: it captured
+`_phi_from_self_state()`'s hand-composited, already-decayed OUTPUT, not raw
+substrate, so any "trajectory structure" the encoder detected was almost
+entirely explained by `orion-field-digester`'s own
+`apply_decay(0.92)` leaky-integrator mechanism. This script now trains
+against the corrected replacement, `field_channel_corpus.v1`
+(`orion.schemas.telemetry.field_channel_corpus.FieldChannelCorpusRowV1`),
+which captures RAW per-node/per-capability channel pressures via
+`collect_field_channel_pressures()` -- a variable-width `channels: dict[str,
+float]` (channel set can vary tick to tick), not a fixed 4-scalar schema.
+See `orion/schemas/telemetry/field_channel_corpus.py`'s module docstring for
+the full empirical trace of why the original corpus was rejected.
+
+Because the field set is now corpus-dependent rather than a fixed schema,
+this rework replaces the module-level `FIELDS` constant with two dynamic
+selection steps run once per training call: `select_fields()` (union of
+observed channel names, minus known context/meta-channels, filtered to
+those with real variance) and `prune_correlated_fields()` (greedy
+correlation pruning, keeps the higher-variance member of any near-duplicate
+pair). A same-session scratch spike validated both steps plus a capacity fix
+(`hidden_dim`/`latent_dim` defaults raised from 32/16, sized for the old
+4-channel corpus, to 128/64 for the new ~16-26-channel corpus) transfer
+cleanly to the new corpus shape.
+
+`compute_window_probes()`'s original implementation hardcoded a `valence`
+probe target -- exactly the hand-composited scalar this corpus swap was
+designed to leave behind. `field_channel_corpus.v1` has no `valence`
+channel and what should replace it as a probe target is an open question
+still under discussion with Juniper (not decided by this patch). That
+function now raises `NotImplementedError` rather than guessing; `cmd_train`
+catches it and writes an empty `probes.json` with a clear skip message
+instead of blocking training.
 
 This file mirrors scripts/fit_phi_encoder.py's harness shape (corpus gates,
 Adam-free-but-analogous training loop, write_artifacts triad,
@@ -56,7 +91,8 @@ if str(REPO_ROOT) not in sys.path:
 
 import numpy as np
 
-from orion.schemas.telemetry.mood_arc import MoodArcCorpusRowV1, MoodArcEncoderManifestV1
+from orion.schemas.telemetry.field_channel_corpus import FieldChannelCorpusRowV1
+from orion.schemas.telemetry.mood_arc import MoodArcEncoderManifestV1
 from orion.schemas.telemetry.phi_encoder import CorpusStatsV1, TrainingStatsV1
 from orion.telemetry.corpus_rotation import resolve_rotated_corpus_files
 
@@ -69,7 +105,23 @@ from orion.telemetry.corpus_rotation import resolve_rotated_corpus_files
 from scripts.fit_phi_encoder import _pearson, _percentile  # noqa: E402
 
 ARCHITECTURE = "mlp_shallow_v1"  # same architecture family as the phi encoder
-FIELDS: tuple[str, ...] = ("coherence", "energy", "novelty", "valence")
+
+# Channels excluded from select_fields() by name regardless of variance --
+# context/activity-rate meta-channels, not state channels the encoder
+# should be learning trajectory structure over. recent_perturbation_count
+# is one of two entries in config/self_state/self_state_policy.v1.yaml's
+# context_channels list; the other (overall_salience) is deliberately NOT
+# included here -- it is produced by collect_attention_channel_pressures(),
+# a different function from collect_field_channel_pressures() (the one
+# actually feeding FieldChannelCorpusRowV1.channels, per
+# services/orion-field-digester/app/worker.py), so it never appears as a
+# channels key in this corpus today. If collect_field_channel_pressures()
+# is ever extended to merge in attention channels, revisit this set --
+# it is not a blind 1:1 copy of context_channels, it is scoped to what
+# this specific corpus can actually contain (found by review, 2026-07-17).
+DEFAULT_EXCLUDE_CHANNELS: frozenset[str] = frozenset({"recent_perturbation_count"})
+DEFAULT_VARIANCE_EPS = 1e-6
+DEFAULT_CORR_THRESHOLD = 0.9
 
 # Evidence-based defaults from this session's spike (NOT the original spec's
 # hidden_dim=8/latent_dim=4, which failed to beat even a mean-repeat
@@ -77,8 +129,14 @@ FIELDS: tuple[str, ...] = ("coherence", "energy", "novelty", "valence")
 DEFAULT_WINDOW_SIZE = 30
 DEFAULT_STRIDE = 15
 DEFAULT_MAX_GAP_SEC = 6.0
-DEFAULT_HIDDEN_DIM = 32
-DEFAULT_LATENT_DIM = 16
+# hidden_dim=32/latent_dim=16 were sized for the old 4-channel corpus.
+# 2026-07-17 corpus-swap rework: a scratch spike found these capacity-
+# starved against the new ~16-26-channel field_channel_corpus.v1 (doubling
+# to 64/32 already clears the two-tier gate; 128/64 clears it more robustly
+# and consistently across multiple data pulls, with diminishing/confounded
+# returns beyond that at the current training budget).
+DEFAULT_HIDDEN_DIM = 128
+DEFAULT_LATENT_DIM = 64
 DEFAULT_EPOCHS = 500
 DEFAULT_LR = 0.003
 DEFAULT_HELD_OUT_FRAC = 0.15
@@ -110,26 +168,27 @@ def _git_sha() -> str:
     return "unknown"
 
 
-def _load_jsonl(path: Path) -> list[MoodArcCorpusRowV1]:
+def _load_jsonl(path: Path) -> list[FieldChannelCorpusRowV1]:
     """Rotation-aware corpus load, mirroring fit_phi_encoder.py's own
-    pattern -- InnerStateCorpusSink (the class backing this corpus too)
-    rotates at CORPUS_SINK_MAX_BYTES, so reading only `path` would silently
-    see just the post-rotation slice once the active file first rotates."""
-    rows: list[MoodArcCorpusRowV1] = []
+    pattern -- InnerStateCorpusSink (the class backing field_channel_corpus.v1
+    too) rotates at CORPUS_SINK_MAX_BYTES, so reading only `path` would
+    silently see just the post-rotation slice once the active file first
+    rotates."""
+    rows: list[FieldChannelCorpusRowV1] = []
     for file in resolve_rotated_corpus_files(path):
         for line_no, line in enumerate(file.read_text(encoding="utf-8").splitlines(), start=1):
             text = line.strip()
             if not text:
                 continue
             try:
-                rows.append(MoodArcCorpusRowV1.model_validate_json(text))
+                rows.append(FieldChannelCorpusRowV1.model_validate_json(text))
             except Exception as exc:  # noqa: BLE001 -- corpus loader should skip bad lines with context
                 raise ValueError(f"invalid JSONL at {file}:{line_no}: {exc}") from exc
     rows.sort(key=lambda r: r.generated_at)
     return rows
 
 
-def _hours_span(rows: list[MoodArcCorpusRowV1]) -> float:
+def _hours_span(rows: list[FieldChannelCorpusRowV1]) -> float:
     if not rows:
         return 0.0
     start = min(r.generated_at for r in rows)
@@ -137,15 +196,56 @@ def _hours_span(rows: list[MoodArcCorpusRowV1]) -> float:
     return (end - start).total_seconds() / 3600.0
 
 
-def check_corpus_gates(rows: list[MoodArcCorpusRowV1], *, min_rows: int, min_hours: float) -> None:
+def _parse_min_generated_at(value: str) -> datetime:
+    """argparse `type=` for --min-generated-at: ISO 8601 datetime string,
+    e.g. `2026-07-17T04:32:14Z`. Naive strings (no tzinfo) are assumed UTC
+    -- FieldChannelCorpusRowV1.generated_at is always tz-aware (UTC), so a
+    naive cutoff would otherwise raise a "can't compare naive and aware
+    datetimes" TypeError deep inside filter_rows_by_min_generated_at rather
+    than failing clearly at argument-parse time."""
+    try:
+        parsed = datetime.fromisoformat(value)
+    except ValueError as exc:
+        raise argparse.ArgumentTypeError(
+            f"--min-generated-at: invalid ISO 8601 datetime {value!r}: {exc}"
+        ) from exc
+    if parsed.tzinfo is None:
+        parsed = parsed.replace(tzinfo=timezone.utc)
+    return parsed
+
+
+def filter_rows_by_min_generated_at(
+    rows: list[FieldChannelCorpusRowV1], min_generated_at: datetime | None
+) -> list[FieldChannelCorpusRowV1]:
+    """Boundary-inclusive (`>=`) filter on `row.generated_at`. `None` means
+    no filtering (returns `rows` unchanged) -- the default, general-purpose
+    behavior for any corpus without a known quality cutoff.
+
+    This is a general-purpose capability, not a one-off hack for any single
+    cutoff: the first real use is field_channel_corpus.v1's 2026-07-17
+    known-broken-channel-behavior boundary (a 7-PR fix sprint, PRs #1108-
+    #1113/#1115, fixed one-way ratchets/saturating counters/merge-polarity
+    masking/folded-away channels -- see services/orion-field-digester/
+    README.md's "field_channel_corpus.v1 training-data quality cutoff"
+    section), confirmed at full-corpus scale: training against the full,
+    unfiltered corpus produced select_fields()/prune_correlated_fields()
+    output visibly contaminated by pre-fix lockstep-frozen channels
+    (`availability`/`bus_health`/`delivery_confidence` collapsing pairwise
+    at r=1.0000, not real redundancy) and failed the floor gate
+    (floor_ratio=0.624 against the <0.5 threshold)."""
+    if min_generated_at is None:
+        return rows
+    return [r for r in rows if r.generated_at >= min_generated_at]
+
+
+def check_corpus_gates(rows: list[FieldChannelCorpusRowV1], *, min_rows: int, min_hours: float) -> None:
     """min_rows/min_hours are HARD gates (raise SystemExit), matching
     fit_phi_encoder.py's check_corpus_gates. Per-channel variance is
     reported separately (see report_channel_variance) but NOT hard-gated --
-    unlike phi's SEEDV4_* variance constants (empirically tuned over time),
-    there is no calibrated "too flat" threshold yet for this 4-channel
-    signal. coherence/energy are known (this session) to have real but low
-    variance in the current corpus; inventing a threshold here would be
-    exactly the kind of ungrounded number CLAUDE.md's rules warn against."""
+    there is no calibrated "too flat" threshold yet for this signal.
+    Low-variance channels are instead dropped by select_fields()'s own
+    variance_eps filter, which is a real (if conservative) threshold, not an
+    invented one."""
     if len(rows) < min_rows:
         raise SystemExit(f"corpus gate failed: min_rows={min_rows} got={len(rows)}")
     hours = _hours_span(rows)
@@ -153,20 +253,147 @@ def check_corpus_gates(rows: list[MoodArcCorpusRowV1], *, min_rows: int, min_hou
         raise SystemExit(f"corpus gate failed: min_hours={min_hours} got={hours:.3f}")
 
 
-def report_channel_variance(rows: list[MoodArcCorpusRowV1]) -> dict[str, float]:
-    """Reported, not gated -- see check_corpus_gates docstring."""
-    if not rows:
-        return {f: 0.0 for f in FIELDS}
-    matrix = np.asarray([[getattr(r, f) for f in FIELDS] for r in rows], dtype=np.float64)
-    variances = {f: float(np.var(matrix[:, i])) for i, f in enumerate(FIELDS)}
+def _channel_stat_matrix(rows: list[FieldChannelCorpusRowV1], fields: tuple[str, ...]) -> np.ndarray:
+    """Shared row/field extraction used by select_fields, report_channel_
+    variance, and prune_correlated_fields -- a single place that fills
+    per-row channel absence with 0.0 (field_channel_corpus.v1's own
+    documented convention for its variable-width `channels` dict), so there
+    is exactly one variance/correlation-input computation path, not several
+    that could silently drift apart."""
+    if not rows or not fields:
+        return np.zeros((0, len(fields)), dtype=np.float64)
+    return np.asarray(
+        [[r.channels.get(f, 0.0) for f in fields] for r in rows],
+        dtype=np.float64,
+    )
+
+
+def select_fields(
+    rows: list[FieldChannelCorpusRowV1],
+    *,
+    exclude: frozenset[str] = DEFAULT_EXCLUDE_CHANNELS,
+    variance_eps: float = DEFAULT_VARIANCE_EPS,
+) -> tuple[str, ...]:
+    """Union of every channel name observed across `rows`, minus `exclude`,
+    filtered to channels with std > variance_eps once per-row absence is
+    filled with 0.0 (field_channel_corpus.v1's row width is not fixed --
+    a channel simply absent that tick is not the same as a channel present
+    at 0.0, but the schema's own docstring directs treating absence as 0.0
+    for downstream consumers, so that convention is followed here too).
+    Prints which channels were kept/dropped/excluded and why -- genuinely
+    useful operator output for a corpus whose channel set is discovered at
+    load time, not compiled in.
+
+    LEAKAGE NOTE (flagged by review, 2026-07-17, not yet resolved): unlike
+    fit_ar1_per_channel(), which is deliberately restricted to the
+    training-only row slice to avoid fitting a statistic on held-out data,
+    `rows` here is cmd_train's FULL loaded corpus, computed before the
+    purged temporal train/held-out split exists (the split happens at the
+    window level, downstream of field selection, since window vectors need
+    a field set to be flattened into in the first place). This is treated
+    as a feature-selection/hyperparameter-style decision (analogous to
+    choosing window_size/stride, which are also fixed before the split, not
+    tuned per-fold) rather than a fitted statistic like the AR(1)
+    coefficients -- defensible if the corpus's channel variance structure
+    is roughly stationary across the held-out window, but that stationarity
+    is assumed, not verified. If this ever needs to be tightened, restrict
+    `rows` to a train-only prefix the same way cmd_train derives
+    train_rows_for_ar1."""
+    all_names: set[str] = set()
+    for r in rows:
+        all_names.update(r.channels.keys())
+
+    excluded_present = sorted(set(exclude) & all_names)
+    for name in excluded_present:
+        print(f"select_fields: excluded '{name}' (context/meta-channel, not a state channel)")
+
+    candidates = tuple(sorted(all_names - set(exclude)))
+    if not candidates:
+        return ()
+
+    matrix = _channel_stat_matrix(rows, candidates)
+    kept: list[str] = []
+    for i, name in enumerate(candidates):
+        std = float(np.std(matrix[:, i]))
+        if std > variance_eps:
+            kept.append(name)
+            print(f"select_fields: kept '{name}' (std={std:.6g})")
+        else:
+            print(f"select_fields: dropped '{name}' (std={std:.6g} <= variance_eps={variance_eps})")
+    return tuple(kept)
+
+
+def prune_correlated_fields(
+    rows: list[FieldChannelCorpusRowV1],
+    fields: tuple[str, ...],
+    *,
+    corr_threshold: float = DEFAULT_CORR_THRESHOLD,
+) -> tuple[str, ...]:
+    """For each pair of `fields` with |pearson r| > corr_threshold (computed
+    fresh on `rows`, processed descending by |r|), greedily drop whichever
+    member has lower individual variance and keep the other -- a member
+    already dropped by an earlier (higher |r|) pair is skipped, so a chain
+    of 3+ mutually-correlated channels collapses to whichever single member
+    survives every pairwise comparison it's involved in, not re-evaluated
+    against the shrinking set. Tie-break on exactly equal variance
+    (`variances[a] <= variances[b]`) drops `a`, the pair member that sorted
+    first in `fields` -- since `fields` normally arrives pre-sorted
+    alphabetically from select_fields(), an exact tie deterministically
+    drops the alphabetically-earlier channel. Prints every pruning decision
+    (dropped/kept/r/variances) -- this is genuinely useful operator output,
+    not swallowed."""
+    if len(fields) < 2:
+        return fields
+
+    matrix = _channel_stat_matrix(rows, fields)
+    variances = {f: float(np.var(matrix[:, i])) for i, f in enumerate(fields)}
+
+    pairs: list[tuple[float, float, str, str]] = []
+    n = len(fields)
+    for i in range(n):
+        for j in range(i + 1, n):
+            r = _pearson(matrix[:, i], matrix[:, j])
+            if abs(r) > corr_threshold:
+                pairs.append((abs(r), r, fields[i], fields[j]))
+    pairs.sort(key=lambda p: -p[0])
+
+    dropped: set[str] = set()
+    for _abs_r, r, a, b in pairs:
+        if a in dropped or b in dropped:
+            continue
+        if variances[a] <= variances[b]:
+            drop, keep = a, b
+        else:
+            drop, keep = b, a
+        dropped.add(drop)
+        print(
+            f"prune_correlated_fields: dropping '{drop}' (kept '{keep}', r={r:.4f}, "
+            f"var[{drop}]={variances[drop]:.6g} <= var[{keep}]={variances[keep]:.6g})"
+        )
+
+    return tuple(f for f in fields if f not in dropped)
+
+
+def report_channel_variance(rows: list[FieldChannelCorpusRowV1], fields: tuple[str, ...]) -> dict[str, float]:
+    """Reported, not gated -- see check_corpus_gates docstring. Reuses
+    _channel_stat_matrix (the same helper select_fields/prune_correlated_
+    fields use) rather than a second, duplicate variance-computation pass
+    over rows -- found by review, 2026-07-17, that the pre-rework version
+    of this function independently re-derived the same per-channel
+    variance select_fields already computes."""
+    if not rows or not fields:
+        return {f: 0.0 for f in fields}
+    matrix = _channel_stat_matrix(rows, fields)
+    variances = {f: float(np.var(matrix[:, i])) for i, f in enumerate(fields)}
     for f, v in variances.items():
         print(f"channel variance: {f}={v:.6f}")
     return variances
 
 
 def _build_windows_with_span(
-    rows: list[MoodArcCorpusRowV1],
+    rows: list[FieldChannelCorpusRowV1],
     *,
+    fields: tuple[str, ...],
     window_size: int,
     stride: int,
     max_gap_sec: float,
@@ -182,8 +409,8 @@ def _build_windows_with_span(
     if not rows:
         return triples
 
-    runs: list[list[MoodArcCorpusRowV1]] = []
-    current_run: list[MoodArcCorpusRowV1] = [rows[0]]
+    runs: list[list[FieldChannelCorpusRowV1]] = []
+    current_run: list[FieldChannelCorpusRowV1] = [rows[0]]
     for prev, row in zip(rows, rows[1:]):
         gap = (row.generated_at - prev.generated_at).total_seconds()
         if gap > max_gap_sec:
@@ -193,7 +420,7 @@ def _build_windows_with_span(
             current_run.append(row)
     runs.append(current_run)
 
-    n_fields = len(FIELDS)
+    n_fields = len(fields)
     for run in runs:
         if len(run) < window_size:
             continue
@@ -202,31 +429,32 @@ def _build_windows_with_span(
             vec = np.empty(window_size * n_fields, dtype=np.float64)
             for i, r in enumerate(chunk):
                 base = i * n_fields
-                vec[base + 0] = r.coherence
-                vec[base + 1] = r.energy
-                vec[base + 2] = r.novelty
-                vec[base + 3] = r.valence
+                for j, f in enumerate(fields):
+                    vec[base + j] = r.channels.get(f, 0.0)
             triples.append((vec, chunk[0].generated_at, chunk[-1].generated_at))
     return triples
 
 
 def build_windows(
-    rows: list[MoodArcCorpusRowV1],
+    rows: list[FieldChannelCorpusRowV1],
     *,
+    fields: tuple[str, ...],
     window_size: int,
     stride: int,
     max_gap_sec: float,
 ) -> list[np.ndarray]:
     """Flatten contiguous runs of `rows` (strict timestamp order) into
-    `(window_size*4,)` float vectors:
-    `[c_0,e_0,n_0,v_0, c_1,e_1,n_1,v_1, ..., c_{W-1},e_{W-1},n_{W-1},v_{W-1}]`.
-    A gap between consecutive rows' timestamps exceeding `max_gap_sec` breaks
-    the run -- no window is built across it. Returns windows in timestamp
+    `(window_size*len(fields),)` float vectors:
+    `[f0_0,f1_0,...,fK_0, f0_1,f1_1,...,fK_1, ..., f0_{W-1},...,fK_{W-1}]`
+    where K=len(fields)-1. A row missing a given field contributes 0.0 for
+    it (field_channel_corpus.v1's variable-width channels dict). A gap
+    between consecutive rows' timestamps exceeding `max_gap_sec` breaks the
+    run -- no window is built across it. Returns windows in timestamp
     order."""
     return [
         w
         for w, _, _ in _build_windows_with_span(
-            rows, window_size=window_size, stride=stride, max_gap_sec=max_gap_sec
+            rows, fields=fields, window_size=window_size, stride=stride, max_gap_sec=max_gap_sec
         )
     ]
 
@@ -459,7 +687,7 @@ def train_autoencoder(
 
 def shuffle_within_windows(X: np.ndarray, window_size: int, n_fields: int, rng: np.random.Generator) -> np.ndarray:
     """Shuffle tick order within each window independently, destroying
-    temporal order but preserving the window's own marginal 4-dim
+    temporal order but preserving the window's own marginal n_fields-dim
     distribution."""
     shuffled = X.copy()
     for i in range(shuffled.shape[0]):
@@ -470,33 +698,36 @@ def shuffle_within_windows(X: np.ndarray, window_size: int, n_fields: int, rng: 
 
 
 def fit_ar1_per_channel(
-    train_rows: list[MoodArcCorpusRowV1],
+    train_rows: list[FieldChannelCorpusRowV1],
     *,
+    fields: tuple[str, ...],
     max_gap_sec: float | None = None,
 ) -> dict[str, tuple[float, float, float]]:
     """Per raw field, fit x_t = a*x_{t-1} + b + noise via least squares on
     the TRAINING portion of the corpus only (not held-out -- this is a
     null-model fit, must not see held-out data any more than the real model
-    does). Returns {field: (a, b, innovation_std)}.
+    does). Missing channels on a given row are treated as 0.0 (same
+    absence convention as build_windows/select_fields). Returns
+    {field: (a, b, innovation_std)}.
 
     If max_gap_sec is given, lag-1 pairs whose timestamp gap exceeds it are
     dropped -- the same run-boundary discipline build_windows() uses, so an
     outage/restart boundary doesn't get treated as a real one-tick
     transition."""
     result: dict[str, tuple[float, float, float]] = {}
-    for field in FIELDS:
+    for field in fields:
         values: list[float] = []
-        prev_row: MoodArcCorpusRowV1 | None = None
+        prev_row: FieldChannelCorpusRowV1 | None = None
         pairs_prev: list[float] = []
         pairs_next: list[float] = []
         for row in train_rows:
             if prev_row is not None:
                 gap = (row.generated_at - prev_row.generated_at).total_seconds()
                 if max_gap_sec is None or gap <= max_gap_sec:
-                    pairs_prev.append(getattr(prev_row, field))
-                    pairs_next.append(getattr(row, field))
+                    pairs_prev.append(prev_row.channels.get(field, 0.0))
+                    pairs_next.append(row.channels.get(field, 0.0))
             prev_row = row
-            values.append(getattr(row, field))
+            values.append(row.channels.get(field, 0.0))
 
         if len(pairs_prev) < 3:
             mean_val = float(np.mean(values)) if values else 0.0
@@ -519,7 +750,7 @@ def generate_ar1_surrogate_windows(
     ar1_params: dict[str, tuple[float, float, float]],
     *,
     window_size: int,
-    fields: tuple[str, ...] = FIELDS,
+    fields: tuple[str, ...],
     seed: int,
 ) -> np.ndarray:
     """For each held-out window, simulate a synthetic replacement of the
@@ -609,46 +840,31 @@ def block_bootstrap_ratio_ci(
     return lo, hi
 
 
-def compute_window_probes(windows: np.ndarray, weights: dict[str, np.ndarray]) -> dict[str, dict[str, float]]:
-    """Per latent dim z_i, Pearson r against window summary stats:
-    mean_valence, valence_range (max-min within window), sign_change_count
-    (how many times valence crosses 0 within the window)."""
-    if windows.shape[0] == 0:
-        return {}
-    latent_dim = int(weights["W2"].shape[1])
-    n_fields = len(FIELDS)
-    window_size = windows.shape[1] // n_fields
-    valence_idx = FIELDS.index("valence")
+def compute_window_probes(
+    windows: np.ndarray, weights: dict[str, np.ndarray], fields: tuple[str, ...]
+) -> dict[str, dict[str, float]]:
+    """Per-latent-dim Pearson-r probes against window summary stats.
 
-    z_cols: list[list[float]] = [[] for _ in range(latent_dim)]
-    mean_valence: list[float] = []
-    valence_range: list[float] = []
-    sign_change_count: list[float] = []
-
-    for i in range(windows.shape[0]):
-        x = windows[i]
-        _, _, z, _ = forward(x, weights)
-        for d in range(latent_dim):
-            z_cols[d].append(float(z[d]))
-        w = x.reshape(window_size, n_fields)
-        series = w[:, valence_idx]
-        mean_valence.append(float(np.mean(series)))
-        valence_range.append(float(np.max(series) - np.min(series)))
-        signs = np.sign(series)
-        sign_change_count.append(float(np.sum(signs[1:] != signs[:-1])))
-
-    summary_cols = {
-        "mean_valence": np.asarray(mean_valence, dtype=np.float64),
-        "valence_range": np.asarray(valence_range, dtype=np.float64),
-        "sign_change_count": np.asarray(sign_change_count, dtype=np.float64),
-    }
-    probes: dict[str, dict[str, float]] = {}
-    for d in range(latent_dim):
-        z_arr = np.asarray(z_cols[d], dtype=np.float64)
-        probes[f"z{d}"] = {
-            name: round(_pearson(z_arr, vals), 4) for name, vals in summary_cols.items()
-        }
-    return probes
+    NOT IMPLEMENTED for field_channel_corpus.v1. The pre-rework
+    implementation probed each latent dim against mean_valence/
+    valence_range/sign_change_count -- summary stats over MoodArcCorpusRowV1's
+    hand-composited `valence` scalar. That scalar is exactly the layer the
+    2026-07-17 corpus-swap rework (see module docstring and
+    orion/schemas/telemetry/field_channel_corpus.py) was designed to leave
+    behind: field_channel_corpus.v1 has no `valence` channel, and what (if
+    anything) should replace it as a probe target is an open question still
+    under discussion with Juniper, out of scope for this task. Do not guess
+    or invent a substitute -- raise instead of silently emitting empty or
+    fabricated probes. cmd_train catches this NotImplementedError and writes
+    an empty probes.json with a clear skip message rather than blocking the
+    rest of training."""
+    raise NotImplementedError(
+        "compute_window_probes: no probe target is defined yet for "
+        "field_channel_corpus.v1 (the old valence-based probe target was "
+        "removed by the 2026-07-17 corpus-swap rework; its replacement is "
+        "an open question still under discussion with Juniper -- see "
+        "scripts/fit_mood_arc_encoder.py's module docstring)"
+    )
 
 
 def write_artifacts(
@@ -669,7 +885,17 @@ def _parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     sub = parser.add_subparsers(dest="command", required=True)
 
     train_p = sub.add_parser("train", help="Train a candidate mood-arc encoder")
-    train_p.add_argument("--corpus", type=Path, required=True, help="MoodArcCorpusRowV1 JSONL corpus")
+    train_p.add_argument(
+        "--corpus",
+        type=Path,
+        required=True,
+        help=(
+            "FieldChannelCorpusRowV1 JSONL corpus (field_channel_corpus.v1, "
+            "e.g. /mnt/telemetry/field_channels/corpus/field_channels.jsonl). "
+            "Rotation-aware: rotated siblings alongside this path are also "
+            "read (see orion.telemetry.corpus_rotation)."
+        ),
+    )
     train_p.add_argument("--out", type=Path, required=True, help="Output directory for trained artifacts")
     train_p.add_argument("--window-size", type=int, default=DEFAULT_WINDOW_SIZE)
     train_p.add_argument("--stride", type=int, default=DEFAULT_STRIDE)
@@ -684,6 +910,33 @@ def _parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     train_p.add_argument("--bootstrap-n", type=int, default=DEFAULT_BOOTSTRAP_N)
     train_p.add_argument("--min-hours", type=float, default=DEFAULT_MIN_HOURS)
     train_p.add_argument("--min-rows", type=int, default=DEFAULT_MIN_ROWS)
+    train_p.add_argument(
+        "--min-generated-at",
+        type=_parse_min_generated_at,
+        default=None,
+        help=(
+            "ISO 8601 datetime (e.g. 2026-07-17T04:32:14Z); rows with "
+            "generated_at strictly before this are dropped before any other "
+            "processing (select_fields, prune_correlated_fields, windowing). "
+            "Boundary-inclusive (>=). Default: no filtering, load everything. "
+            "General-purpose corpus-quality cutoff -- see "
+            "services/orion-field-digester/README.md's "
+            "'field_channel_corpus.v1 training-data quality cutoff' section "
+            "for the specific 2026-07-17T04:32:14Z cutoff and why it exists."
+        ),
+    )
+    train_p.add_argument(
+        "--variance-eps",
+        type=float,
+        default=DEFAULT_VARIANCE_EPS,
+        help="select_fields(): minimum per-channel std to keep a channel (default: %(default)s)",
+    )
+    train_p.add_argument(
+        "--corr-threshold",
+        type=float,
+        default=DEFAULT_CORR_THRESHOLD,
+        help="prune_correlated_fields(): |pearson r| above which a pair is pruned (default: %(default)s)",
+    )
     train_p.add_argument("--seed", type=int, default=42)
     train_p.add_argument(
         "--encoder-version", type=str, default=None, help="manifest encoder_version (default: out dir name)"
@@ -693,11 +946,28 @@ def _parse_args(argv: list[str] | None = None) -> argparse.Namespace:
 
 def cmd_train(args: argparse.Namespace) -> int:
     rows = _load_jsonl(args.corpus)
+    rows = filter_rows_by_min_generated_at(rows, args.min_generated_at)
+    if args.min_generated_at is not None:
+        print(f"train: filtered to rows with generated_at >= {args.min_generated_at.isoformat()} ({len(rows)} rows)")
     check_corpus_gates(rows, min_rows=args.min_rows, min_hours=args.min_hours)
-    variances = report_channel_variance(rows)
+
+    # Computed over the full corpus, before the purged train/held-out split
+    # exists -- see select_fields()'s "LEAKAGE NOTE" docstring section for
+    # why this is treated as a hyperparameter-style decision rather than a
+    # fitted statistic, unlike fit_ar1_per_channel() below (train-only by
+    # design).
+    fields = select_fields(rows, exclude=DEFAULT_EXCLUDE_CHANNELS, variance_eps=args.variance_eps)
+    if not fields:
+        raise SystemExit("train: select_fields produced an empty field set (check corpus / --variance-eps)")
+    fields = prune_correlated_fields(rows, fields, corr_threshold=args.corr_threshold)
+    if not fields:
+        raise SystemExit("train: prune_correlated_fields produced an empty field set (check --corr-threshold)")
+    print(f"train: final field set ({len(fields)} channels): {', '.join(fields)}")
+
+    variances = report_channel_variance(rows, fields)
 
     triples = _build_windows_with_span(
-        rows, window_size=args.window_size, stride=args.stride, max_gap_sec=args.max_gap_sec
+        rows, fields=fields, window_size=args.window_size, stride=args.stride, max_gap_sec=args.max_gap_sec
     )
     if not triples:
         raise SystemExit(
@@ -741,13 +1011,13 @@ def cmd_train(args: argparse.Namespace) -> int:
     real_held_loss = float(np.mean(real_held_losses))
 
     shuffle_rng = np.random.default_rng(args.seed + 1)
-    shuffled_held = shuffle_within_windows(held_matrix, args.window_size, len(FIELDS), shuffle_rng)
+    shuffled_held = shuffle_within_windows(held_matrix, args.window_size, len(fields), shuffle_rng)
     shuffle_losses = _per_window_losses(shuffled_held, best_weights)
     shuffle_baseline_loss = float(np.mean(shuffle_losses))
 
-    ar1_params = fit_ar1_per_channel(train_rows_for_ar1, max_gap_sec=args.max_gap_sec)
+    ar1_params = fit_ar1_per_channel(train_rows_for_ar1, fields=fields, max_gap_sec=args.max_gap_sec)
     surrogate_held = generate_ar1_surrogate_windows(
-        held_matrix, ar1_params, window_size=args.window_size, fields=FIELDS, seed=args.seed + 2
+        held_matrix, ar1_params, window_size=args.window_size, fields=fields, seed=args.seed + 2
     )
     ar1_losses = _per_window_losses(surrogate_held, best_weights)
     ar1_surrogate_loss = float(np.mean(ar1_losses))
@@ -761,7 +1031,11 @@ def cmd_train(args: argparse.Namespace) -> int:
         seed=args.seed + 3,
     )
 
-    probes = compute_window_probes(held_matrix, best_weights)
+    try:
+        probes = compute_window_probes(held_matrix, best_weights, fields)
+    except NotImplementedError as exc:
+        print(f"probes: skipped -- {exc}")
+        probes = {}
 
     times = [r.generated_at for r in rows]
     encoder_version = args.encoder_version or args.out.name
@@ -775,6 +1049,7 @@ def cmd_train(args: argparse.Namespace) -> int:
         max_gap_sec=args.max_gap_sec,
         hidden_dim=args.hidden_dim,
         latent_dim=args.latent_dim,
+        channel_names=list(fields),
         corpus=CorpusStatsV1(
             corpus_path=str(args.corpus),
             row_count=len(rows),
@@ -797,6 +1072,7 @@ def cmd_train(args: argparse.Namespace) -> int:
     result = {
         "trained": str(args.out),
         "rows": len(rows),
+        "channel_names": list(fields),
         "windows_total": n_windows,
         "windows_train": int(train_matrix.shape[0]),
         "windows_held_out": int(held_matrix.shape[0]),

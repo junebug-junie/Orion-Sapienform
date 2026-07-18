@@ -115,10 +115,16 @@ def fetch_recent_sql_fragments(hours: int = 24, chat_sample_n: int = 200) -> Lis
     since_dt = datetime.utcnow() - timedelta(hours=hours)
 
     # --- Collapse Mirror (string timestamp → cast) ---
+    # Strict-lane only (Juniper's manually-authored entries). Orion's machine-generated
+    # metacog self-observation entries now live in orion_metacog, not collapse_mirror.
+    # NOTE: this SQL-level check mirrors the common case of
+    # orion/schemas/collapse_mirror.py::_observer_is_juniper() (lower/trim/compare) but does
+    # not replicate its diacritics-stripping — known simplification, not chased here.
     cur.execute("""
         SELECT id, summary, trigger, observer, field_resonance, type, mantra
         FROM collapse_mirror
         WHERE NULLIF(timestamp,'')::timestamptz >= %s
+          AND lower(trim(observer)) = 'juniper'
         ORDER BY NULLIF(timestamp,'')::timestamptz DESC
     """, (since_dt,))
     collapse_rows = cur.fetchall()

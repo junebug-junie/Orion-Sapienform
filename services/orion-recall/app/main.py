@@ -18,6 +18,11 @@ from .recall_eval import run_recall_eval_case, run_recall_eval_suite
 from .recall_v2 import run_recall_v2_shadow
 from .service import chassis_cfg
 from .settings import settings
+from .storage.falkor_entity_relatedness import (
+    fetch_bridging_turns,
+    fetch_entity_mention_timeline,
+    fetch_related_entities,
+)
 from .worker import handle_recall, process_recall, _persist_decision, set_recall_pg_pool
 
 from orion.core.contracts.recall import RecallQueryV1
@@ -220,6 +225,23 @@ async def recall_compare_endpoint(body: RecallCompareRequestBody):
         },
         "compare": compare,
     }
+
+
+@app.get("/debug/entity-graph/related")
+async def entity_graph_related_endpoint(name: str, max_results: int = 10):
+    results = await fetch_related_entities(name=name, max_results=max_results)
+    return {"name": name, "related": results}
+
+
+@app.get("/debug/entity-graph/bridge")
+async def entity_graph_bridge_endpoint(a: str, b: str, max_results: int = 5):
+    return await fetch_bridging_turns(entity_a=a, entity_b=b, max_results=max_results)
+
+
+@app.get("/debug/entity-graph/timeline")
+async def entity_graph_timeline_endpoint(name: str, max_results: int = 100):
+    results = await fetch_entity_mention_timeline(name=name, max_results=max_results)
+    return {"name": name, "mentions": results}
 
 
 @app.post("/debug/recall/eval-case")

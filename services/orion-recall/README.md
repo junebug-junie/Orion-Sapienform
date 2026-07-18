@@ -35,6 +35,9 @@ It then **fuses** candidates into a prompt-ready `MemoryBundleV1` with per-sourc
 - `POST /debug/recall/compare` — Recall V1 vs shadow Recall V2 comparison (read-only)
 - `GET /debug/recall/eval-suite` — run built-in Recall V1/V2 evaluation corpus
 - `POST /debug/recall/eval-case` — run a single ad-hoc evaluation case
+- `GET /debug/entity-graph/related?name=<entity>&max_results=<n>` — Jaccard-ranked co-occurrence relatedness over `orion_recall`'s `MENTIONS_ENTITY` graph (Phase 1 of entity-graph-reasoning)
+- `GET /debug/entity-graph/bridge?a=<entity>&b=<entity>&max_results=<n>` — direct co-mention or 2-hop bridge between two entities
+- `GET /debug/entity-graph/timeline?name=<entity>&max_results=<n>` — raw mention timestamps for an entity, most recent first
 
 If you have debug enabled (recommended while wiring), you may also have:
 
@@ -116,6 +119,12 @@ Chatturn-only read path standing in for RDF's chat-turn fetch. **Live as of 2026
 **Filtering divergence, named not silent:** the old SPARQL filtered at the *turn* level (keyword `CONTAINS` on raw prompt/response text). Falkor's thin `ChatTurn` node has no text, so this filters at the *entity* level instead (`Entity.name` keyword match, bidirectional `CONTAINS`) -- no Postgres join needed, and arguably more semantically correct for a graph meant to represent entity relevance in the first place.
 
 **Not yet covered by this flag:** `fetch_rdf_connected_chatturns` (the 1-hop graph-neighborhood function `brain.recall.v1`'s expansion terms feed into) still queries Fuseki regardless of this flag -- a real, remaining Fuseki dependency for graphtri-mode profiles even with the flag on. Deferred, not forgotten.
+
+### Entity-graph reasoning primitives (Phase 1, debug-only -- not yet wired into recall)
+
+`app/storage/falkor_entity_relatedness.py`: three read-only Cypher primitives over the same `MENTIONS_ENTITY` graph -- `fetch_related_entities` (co-occurrence relatedness ranked by Jaccard similarity, not raw shared-turn count, so a high-degree entity that co-occurs with almost everything doesn't outrank a genuinely specific one), `fetch_bridging_turns` (direct co-mention, falling back to a 2-hop bridge via a shared intermediate entity), and `fetch_entity_mention_timeline` (raw mention timestamps). Exposed via `GET /debug/entity-graph/{related,bridge,timeline}` (see HTTP Endpoints above).
+
+**Stated plainly, not oversold:** these three functions are reachable *only* via the debug routes above and the test suite -- unlike `RECALL_FALKOR_IN_CHAT`/`RECALL_FALKOR_GRAPHTRI_IN_CHAT`, there is no dark-flagged call site inside `worker.py`'s `_query_backends`/`process_recall` fusion pipeline. Nothing Orion actually retrieves is influenced by this yet. That wiring is Phase 2, a real committed next step, not an indefinite "someday" -- flagging the gap explicitly here so it doesn't get mistaken for done. A re-runnable live-data check backing the Jaccard-ranking claim above lives at `scripts/live_verify_entity_relatedness.py`.
 
 ### Vector / Chroma
 

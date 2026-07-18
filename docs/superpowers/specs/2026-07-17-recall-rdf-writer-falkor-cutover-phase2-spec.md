@@ -73,8 +73,9 @@ Node types confirmed by reading `rdf_builder.py` this session: `ChatSession`/`Ch
 
 | Claim | Evidence |
 |---|---|
-| `Claim` nodes are 100% redundant with direct `hasTag`/`hasEntity` edges | `SELECT DISTINCT ?pred WHERE { ?claim a Claim ; predicate ?pred }` → exactly 2 values across all 1,451 Claims: `hasTag` (844), `mentionsEntity` (607). No open-vocabulary claim predicates exist in the live store. |
-| The same fact is sometimes double-written | Direct `orion.ai/collapse#hasTag` edges: 704. Reified `Claim{predicate=hasTag}`: 844. Same pattern for `hasEntity` (540) vs `mentionsEntity` (607). Counts don't match — `_build_enrichment_graph`'s `emit_claims` flag was evidently added after some enrichment events already existed, so older events only have the direct edge, newer ones have both. Confirmed inconsistency, not a design choice. |
+| `Claim` nodes are structurally redundant (predicate/object could be an edge) but are the *complete* source, not a duplicate of one | `SELECT DISTINCT ?pred WHERE { ?claim a Claim ; predicate ?pred }` → exactly 2 values across all 1,451 Claims: `hasTag` (844), `mentionsEntity` (607). No open-vocabulary claim predicates exist in the live store. |
+| Direct `hasTag`/`hasEntity` edges are a **proper subset** of `Claim`, not an independent copy — pair-level set comparison, not just counts | `hasTag`: 704 direct-edge `(turn, value)` pairs, all 704 also exist as a `Claim`; **138 additional pairs exist only as a `Claim`** (16% of the 842 real hasTag facts would be silently dropped by a backfill that reads direct edges only). `mentionsEntity`: 540 direct-edge pairs, all 540 also in `Claim`; **67 pairs exist only as a `Claim`** (11% of 607). Zero direct-only pairs found for either predicate. **Backfill must read from `Claim`, not the direct edges — `Claim` is not disposable data, it is the more complete source.** |
+| `confidence`/`salience`/`extractor_service` on `Claim` are dead constants, not real per-fact signal | Checked the full distinct-value set across all 842 hasTag Claims and all 607 mentionsEntity Claims: `confidence` = `{0.0}`, `salience` = `{0.0}`, `extractor_service` = `{"meta-tags"}` — one value each, no variation, ever. `orion-meta-tags` writes these fields but never actually computes them; they are wiring, not evidence. Carrying `0.0` forward as if it were a real "the extractor was 0% confident" score would be a live confabulation risk — it looks like epistemic data and isn't. `timestamp` **is** real and varies per record and is only available via `Claim` (direct edges carry no per-fact timestamp) — worth preserving; the other three are not worth carrying as if meaningful. |
 | Tag values are heterogeneous, mostly non-graph-shaped | Sample of 11 distinct `hasTag` values: `"Bruce"`, `"LinkedIn"`, `"dozen"`, `"18 years ago"`, `"about 13 years ago"`, `"about a month ago"`, `"last week"`, `"that day on"`, `"yesterday"`, `"sentiment:negative"`, `"sentiment:positive"`. At least 3 categories tangled into one predicate: real short labels, relative-time expressions, and a `sentiment:` string-prefix convention that is actually a scalar field pretending to be a tag. |
 | Entity values include real recurring canonicalizable entities *and* noise | Top `hasEntity` values by frequency: `Juniper` (53), `Orion` (44), `today` (37 — not an entity), `one` (11 — not an entity), `Athena` (10), `2` (8 — not an entity), `Atlas` (8), `Circe` (8), `1` (7), `SMX2` (7), `3`/`4` (6 each), `a DL380 G10` (6), `v100` (6), `32GB`/`350 GB`/`384 GB` (5 each). The mesh's own node names (Juniper/Orion/Athena/Atlas/Circe) recur constantly — exactly the traversal-worthy case a property graph is for. Bare numbers and generic words are NER noise, not entities. |
 | Scale is small | 922 distinct `ChatTurn`s total. `orion:enrichment` graph: 1,451 Claims, 704 `hasTag` + 540 `hasEntity` direct edges, 235 separate `Enrichment` provenance records (`collapseId`/`enrichmentType`/`processedBy`/`enriches` — describes the enrichment *process*, not memory content). Well under AGENTS.md §14's 100k-row backfill threshold even combined with chat/social. |
@@ -83,11 +84,13 @@ Node types confirmed by reading `rdf_builder.py` this session: `ChatSession`/`Ch
 
 ### Corrected design
 
-1. **Kill the generic `Claim` node entirely.** It has no content that isn't already a direct edge. Two real typed edges replace it:
-   - `(:ChatTurn)-[:HAS_TAG {confidence?, salience?, extractor_service?, extractor_version?, ts}]->(:Tag)`
-   - `(:ChatTurn)-[:MENTIONS_ENTITY {confidence?, salience?, extractor_service?, extractor_version?, ts}]->(:Entity)`
+1. **Stop *writing* the generic `Claim` node going forward; for backfill, `Claim` is the source to read, not the thing to discard.** These are two different decisions and the first draft conflated them. Going forward, two real typed edges replace it in the live writer:
+   - `(:ChatTurn)-[:HAS_TAG {ts}]->(:Tag)`
+   - `(:ChatTurn)-[:MENTIONS_ENTITY {ts}]->(:Entity)`
 
-   Confidence/salience move from node properties on a reified `Claim` to **edge properties** — they're a measurement of *this particular tag/entity assignment*, which is exactly what doctrine rule 1 means by "edges carry meaning; properties carry measurements." No information is lost versus the RDF shape; the reification layer that existed only to let a triple carry a confidence score is gone because Cypher edges can carry properties natively.
+   `confidence`/`salience`/`extractor_service` are **dropped from the schema entirely**, not carried forward as edge properties — the ground-truth table above shows they've never held a real value (constant `0.0`/`"meta-tags"` across all 1,449 live Claims). Doctrine rule 3 ("no property without a consumer") cuts the same way here as for tag noise: a field that has never once varied is not evidence, and keeping it invites a future reader to mistake "wiring never finished" for "the extractor said zero confidence." If `orion-meta-tags` is later fixed to actually compute these, add the field back then, with a producer that populates it — matching PR #1155's own precedent of not carrying forward unused capability just because it's already there.
+
+   For the **backfill**, source facts from `Claim` (not the direct `hasTag`/`hasEntity` edges) — the direct edges are a strict subset of `Claim`'s `(turn, value)` pairs (verified: 704/704 and 540/540 direct pairs also exist as a `Claim`), and `Claim` alone additionally covers 138 hasTag and 67 mentionsEntity facts that have **no** direct edge at all. Reading direct edges only would silently drop ~16%/11% of real historical facts. `ts` from `Claim` carries forward (real, varying); `confidence`/`salience`/`extractor_service` do not (per above — nothing to carry, they were never populated).
 
 2. **`sentiment:*` values are not tags.** Split at ingest (write-time and backfill-time, same transform) into a `sentiment: "positive" | "negative"` property directly on `(:ChatTurn)`. This is real information (an LLM classification of the turn) that was being smuggled through a string-tag mechanism because RDF triples don't have a cheap "just add a field" option — Cypher property graphs do, so use it instead of carrying the workaround forward.
 
@@ -104,7 +107,9 @@ prompt_tokens?, completion_tokens?, total_tokens?, intent?, topic?, sentiment?
 ```
 Edge: `(:ChatSession)-[:HAS_TURN]->(:ChatTurn)`.
 
-7. **The double-write bug (direct edge + redundant Claim) is a producer fix, not something to carry forward.** Once `Claim` is killed per point 1, `orion-rdf-writer`'s `_build_enrichment_graph(..., emit_claims=True)` path should stop emitting the second copy — this is in scope for the Phase 2 writer patch (roadmap below), not deferred.
+7. **The direct-edge write is the one to drop going forward, not `Claim`'s content.** Once the live writer emits `HAS_TAG`/`MENTIONS_ENTITY` edges directly (point 1), `orion-rdf-writer` should stop writing *both* the plain `hasTag`/`hasEntity` triple and the `Claim` reification — one edge write replaces both. This is in scope for the Phase 2 writer patch (roadmap below), not deferred.
+
+8. **A separate, real finding surfaced by this investigation, out of scope for this migration but worth its own ticket:** `orion-meta-tags` has apparently never actually computed confidence/salience for tag/entity extraction — every one of 1,449 live records has the exact same placeholder. That's a live instance of AGENTS.md §0A's "no empty-shell cognition" (schema-valid payload, meaningless content) in the current production pipeline, discovered as a side effect of grounding this schema, not something this migration should silently fix or silently carry forward as if it were real.
 
 ### New graph name: `orion_recall`
 
@@ -135,11 +140,11 @@ Proposed shape, once a workload's schema is frozen and reviewed:
 1. **Freeze the schema for that workload** (e.g. `recall.chat_turn`) via the allowlist review above — no backfill against a schema that's still moving.
 2. **Batch ETL script** (`scripts/`, deterministic, not agent judgment — matches AGENTS.md §4): SPARQL `SELECT` per **logical** named graph — `UNION`ing all IRI variants of that graph (see the "graph-name fragmentation" ground-truth row above; querying only `orion:chat` and missing `http://conjourney.net/graph/orion/chat` would silently drop ~25% of the turns), paginated, mapped through the same allowlist model the new writer uses (shared Pydantic model — one schema, two producers: live writer and backfill script).
 3. **Transform, not just copy**: this is where the corrected schema actually gets applied, not just a syntax port —
-   - Collapse duplicate `Claim`-vs-direct-edge pairs into one `HAS_TAG`/`MENTIONS_ENTITY` edge (dedup key: `(turn_id, tag_or_entity_value)`).
+   - **Source from `Claim` nodes, not the direct `hasTag`/`hasEntity` edges** — verified live that direct edges are a strict subset (704/704 and 540/540 also present as a `Claim`); reading direct edges only would silently drop the 138 hasTag + 67 mentionsEntity facts that exist *only* as a `Claim`. One `HAS_TAG`/`MENTIONS_ENTITY` edge per `Claim`, carrying `ts` forward; `confidence`/`salience`/`extractor_service` are dropped, not carried (verified dead constants — see ground truth).
    - Split `sentiment:*` tag values into the `ChatTurn.sentiment` property; they never become `Tag` nodes.
    - Reject digit-only / stopword / relative-time-regex tag and entity values (logged `property_cathedral_rejected`, per doctrine's observability contract, not silently dropped — auditable and reversible).
    - Normalize remaining `Entity`/`Tag` values to a canonical identity key (case-fold + trim) so `MERGE` actually deduplicates `"Juniper"` across all 53 mentions into one node, rather than creating near-duplicate nodes per casing variant.
-4. `MERGE`d into Falkor keyed on the doctrine's mandated stable identity field (`turn_id` for ChatTurn, `(name)` normalized for Entity/Tag — not a synthetic `claim_id`, since `Claim` no longer exists), so a partial/re-run backfill is idempotent.
+4. `MERGE`d into Falkor keyed on the doctrine's mandated stable identity field (`turn_id` for ChatTurn, `(name)` normalized for Entity/Tag — not a synthetic `claim_id`, since `Claim` no longer exists as a graph node after backfill, only as the historical source it was read from), so a partial/re-run backfill is idempotent.
 5. **Snapshot before writing**, per AGENTS.md §14 (background jobs/backfills) — row counts and a sample to `/tmp/<job-name>/` before any Falkor write, `/tmp/<job-name>/progress.log` during, before/after counts plus the reject-log summary (how many tag/entity values were filtered, and which) in `/tmp/<job-name>/report.md` after.
 6. **Verification**: row-count parity per graph (accounting for the intentional dedup/filter — the after-count for `recall.tag_entity` should be *lower* than raw triple count, and that's correct, not a bug), spot-check N real turns/entities resolvable in Falkor that only existed in Fuseki pre-backfill, confirm a real Falkor entity node (e.g. `Circe`) has all 8 expected incoming edges, confirm `orion-recall`'s adapter (once cut over) returns them.
 7. **Cutover the live writer** (`orion-rdf-writer` → Falkor for that workload, with the `emit_claims` double-write removed per the Corrected design section above) using the doctrine's dual-run ladder A→D — do this *after* backfill, not before, so there's no gap between "backfill snapshot taken" and "live writer switched," which would silently drop turns written in between.
@@ -155,11 +160,46 @@ This plan is intentionally generic across `recall.chat_turn`/`recall.tag_entity`
 ```text
 Phase 0 (this document): schema + inventory spec. Needs Juniper review before Phase 1 starts.
 
-Phase 1: per-channel live-consumer audits for the not-yet-read node kinds
-  (identity_snapshot, goals_proposed, world_pulse_graph, CognitiveStepExecution,
-  Hub orionmem/memory-graph-approval), using PR #1155's methodology: check for
-  a real Postgres/other consumer before assuming Falkor-migrate is the answer.
-  Can run as independent, parallel PRs — no shared code touched.
+Phase 1: DONE (2026-07-17, this session) — per-channel live-consumer audits
+  for the not-yet-read node kinds, using PR #1155's methodology. Findings:
+
+  - `orion:cortex:telemetry` (CognitiveStepExecution, CORTEX_LOG_CHANNEL) —
+    KILL. Zero producers anywhere in the repo, not even registered in
+    channels.yaml. Dead subscription with zero possible live traffic —
+    trivial: unsubscribe `orion-rdf-writer`, delete the handler. No Falkor
+    work, no backfill (there is nothing to backfill).
+  - `orion:world_pulse:graph:upsert` (GraphDeltaPlanV1) — KILL /
+    deprioritize. Real producer (`orion-world-pulse`) and real dispatch code
+    exist, but `WORLD_PULSE_GRAPH_ENABLED=false` in the live `.env` — fully
+    inert today, and even enabled it defaults to dry-run. Not worth reviving
+    a dormant SPARQL path; if world-pulse ever needs graph storage, design
+    it fresh against Falkor rather than migrate dead code.
+  - `orion:memory:identity:snapshot` / `orion:memory:goals:proposed`
+    (IdentitySnapshotV1/GoalProposalV1) — KILL. Live Fuseki query found
+    **zero** graphs matching autonomy/identity/goals — this path has never
+    recorded a single triple in the running store, despite a real producer
+    (`orion/spark/concept_induction`) existing. Meanwhile `identity_snapshots`
+    already has a real, actively-pruned Postgres store
+    (`services/orion-self-state-runtime/app/store.py::SelfStateRuntimeStore`,
+    real SQLAlchemy engine + batched prune job) and `goal_context_listener.py`
+    in `orion-substrate-runtime` already consumes goal proposals for live
+    active-goal state. Same shape as the cognition/metacog kill (PR #1155):
+    a real consumer already exists elsewhere; RDF was never actually load-bearing.
+  - Hub `orionmem`/memory-graph-approval — MIGRATE, not kill (confirms the
+    original Phase-2-spec framing). `memory_graph_routes.py::approve_memory_graph_draft`
+    genuinely writes both Postgres (draft/workflow state — `asyncpg.PostgresError`
+    handled explicitly) and Fuseki (the graph content itself — separate
+    `requests.RequestException`/Fuseki-lock-exhaustion handling) — Postgres
+    does not duplicate the graph content, only the approval workflow around
+    it. Real downstream consumers exist (`orion-recall`'s `memory_graph_sparql.py`,
+    `orion-cortex-exec`'s `chat_stance.py`). Stays its own phase (8) with its
+    own schema design, not started here.
+
+  **Net effect: 3 of 5 audited kinds are trivial kills with no Falkor work
+  and nothing to backfill (never had live data, or already durably owned by
+  Postgres). Only Hub's `orionmem` is real migration work.** This meaningfully
+  shrinks total scope — most of what's left in Fuseki outside chat/tag/entity
+  turns out to already be dead weight, not migration debt.
 
 Phase 2: FalkorRdfStoreClient (or equivalently-named Cypher writer) added to
   orion-rdf-writer for recall.chat_turn + recall.tag_entity, behind the

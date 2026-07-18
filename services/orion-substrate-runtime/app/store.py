@@ -575,6 +575,12 @@ class BiometricsSubstrateStore:
         snapshot.
         """
         generated_at = projection.generated_at
+        # projection_id is a constant default ("substrate.attention.broadcast.v1")
+        # across ticks, so this digest is effectively keyed on generated_at alone
+        # -- kept in the hash input for forward-compat if that ever changes, not
+        # because it adds independence today. Real ticks are always >=
+        # attention_broadcast_interval_sec apart (default 30s), so generated_at
+        # alone is sufficient to make redelivery of the same tick idempotent.
         digest = hashlib.sha256(
             f"{generated_at.isoformat()}|{projection.projection_id}".encode("utf-8")
         ).hexdigest()[:24]

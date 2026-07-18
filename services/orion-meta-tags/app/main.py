@@ -38,6 +38,24 @@ except OSError:
 meta_tagger: Hunter | None = None
 meta_tagger_rpc: Rabbit | None = None
 
+# spaCy/OntoNotes entity labels that denote genuinely nameable things (people,
+# orgs, places, products, works). Excludes numeric/temporal categories (DATE,
+# TIME, ORDINAL, CARDINAL, QUANTITY, PERCENT, MONEY) -- live-verified against
+# the real en_core_web_trf model that those are exactly what leaked into the
+# FalkorDB Entity graph as noise ("first"->ORDINAL, "the day"->DATE, "a moment
+# ago"->TIME, "8GB"->QUANTITY, "7680.0"->CARDINAL), while a legitimate entity
+# like "P4"->PRODUCT survives. This is a type-level filter, not a growing word
+# blacklist -- new noise strings of the same numeric/temporal kind are caught
+# for free without another patch.
+_KEEP_ENTITY_LABELS = {
+    "PERSON", "ORG", "GPE", "LOC", "PRODUCT", "EVENT",
+    "WORK_OF_ART", "FAC", "NORP", "LAW", "LANGUAGE",
+}
+
+
+def _named_entities(doc) -> list[str]:
+    return [ent.text for ent in doc.ents if ent.label_ in _KEEP_ENTITY_LABELS]
+
 # Lazily constructed: only ever built if RECALL_FALKOR_TAG_ENTITY_ENABLED is
 # true, so a disabled flag never attempts a FalkorDB connection. Hunter's
 # current dispatch is serial (concurrent_handlers defaults to False), so this
@@ -229,7 +247,7 @@ async def handle_triage_event(envelope: BaseEnvelope) -> None:
             logger.info("📨 Processing chat turn %s (Text len: %d)", in_payload.id, len(in_payload.text or ""))
 
             doc = nlp(in_payload.text or "")
-            entities = [ent.text for ent in doc.ents]
+            entities = _named_entities(doc)
 
             sentiment_tag = "sentiment:neutral"
             positive_keywords = {"triumphant", "relief", "capable", "good", "success"}

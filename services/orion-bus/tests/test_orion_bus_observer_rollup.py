@@ -311,12 +311,29 @@ async def test_fetch_snapshot_skips_sampling_when_sample_count_zero() -> None:
 # not a Pub/Sub-only channel that happens to be cataloged too. Kept in the
 # default anyway (harmless) but it's not the fix.
 #
-# The real fix is orion:stream:world_pulse:run:result: cataloged
-# (schema_id=WorldPulseRunResultV1, kind=stream in channels.yaml) AND
+# 2026-07-18 follow-up: traced whether orion:evt:gateway/orion:bus:out ever
+# mapped to something real under a different name. They don't -- `git log -S`
+# against both exact strings finds zero hits anywhere in
+# orion/bus/channels.yaml's history; they were placeholder names introduced
+# in the very first bus-observer commit (ee810551, 2026-05-25) and never
+# touched since. Confirmed via 180 substrate_reduction_receipts spanning 15
+# days: transport_pressure/stream_depth_pressure/backpressure sat at a flat
+# 0.0 the entire time, consistent with "structurally empty," not "quiet."
+# orion-bus today routes almost everything through pub/sub, which has no
+# persistent backlog to observe -- depth/backpressure is only a meaningful
+# concept for the two kind: "stream" channels in channels.yaml. Both are now
+# the default: orion:stream:world_pulse:run:result (cataloged,
+# schema_id=WorldPulseRunResultV1, kind=stream in channels.yaml) AND
 # genuinely XADD'd by orion-world-pulse via RedisStreamWorkQueue.enqueue()
 # (WP_RUN_RESULT_STREAM_ENABLED=true by default). Verified live: TYPE=stream,
 # XLEN=82 real entries, and a live-sampled XREVRANGE entry decodes via the
-# "envelope" field exactly as count_schema_mismatches() expects.
+# "envelope" field exactly as count_schema_mismatches() expects. Its
+# dead-letter sibling orion:stream:world_pulse:run:result:dlq (same
+# schema_id) is also now watched -- verified live TYPE=none/XLEN=0, which is
+# expected-healthy for a DLQ (no poison messages), not evidence it's dead the
+# way the dropped keys were; a DLQ going nonzero is itself a real signal.
+# orion:evt:gateway/orion:bus:out/orion:grammar:event are dropped from the
+# default entirely -- none of the three can ever produce a real sample.
 #
 # These tests use the real Settings() default and the real channels.yaml on
 # disk -- no synthetic overrides of either -- so a regression back to "no
@@ -325,20 +342,22 @@ async def test_fetch_snapshot_skips_sampling_when_sample_count_zero() -> None:
 
 def test_shipped_default_streams_includes_a_real_cataloged_schema_stream() -> None:
     settings = Settings()
-    # The genuinely-fixing stream: cataloged AND (verified live, not
-    # asserted here since that needs a Redis connection) a real XADD Stream.
+    # The genuinely-fixing streams: cataloged AND (verified live, not
+    # asserted here since that needs a Redis connection) real XADD Streams.
     assert "orion:stream:world_pulse:run:result" in settings.observer_stream_list
-    # Kept for the reasons above, but neither one is what makes sampling
-    # fire -- see the module comment above this test.
-    assert "orion:grammar:event" in settings.observer_stream_list
-    assert "orion:evt:gateway" in settings.observer_stream_list
-    assert "orion:bus:out" in settings.observer_stream_list
+    assert "orion:stream:world_pulse:run:result:dlq" in settings.observer_stream_list
 
     schema_ids = load_channel_catalog_schema_ids(settings.channels_catalog_path)
     assert schema_ids.get("orion:stream:world_pulse:run:result") == "WorldPulseRunResultV1"
-    assert schema_ids.get("orion:grammar:event") == "GrammarEventV1"
-    # Confirm the finding itself, so this test stays honest if channels.yaml
-    # is ever edited to catalog these two.
+    assert schema_ids.get("orion:stream:world_pulse:run:result:dlq") == "WorldPulseRunResultV1"
+
+    # Regression guard: the three structurally-dead keys (never a real
+    # Stream, confirmed live TYPE=none; orion:evt:gateway/orion:bus:out are
+    # also never cataloged at all -- see module comment above) must not
+    # creep back into the shipped default.
+    assert "orion:evt:gateway" not in settings.observer_stream_list
+    assert "orion:bus:out" not in settings.observer_stream_list
+    assert "orion:grammar:event" not in settings.observer_stream_list
     assert "orion:evt:gateway" not in schema_ids
     assert "orion:bus:out" not in schema_ids
 

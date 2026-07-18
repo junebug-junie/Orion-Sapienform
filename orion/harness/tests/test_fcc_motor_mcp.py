@@ -335,6 +335,8 @@ async def test_run_fcc_turn_adds_mcp_config_when_enabled(monkeypatch: pytest.Mon
     assert captured_argv[idx + 2] == "mcp__firecrawl"
     dis_idx = captured_argv.index("--disallowedTools")
     assert captured_argv[dis_idx + 1] == "Bash(gh *)"
+    ss_idx = captured_argv.index("--setting-sources")
+    assert captured_argv[ss_idx + 1] == "user,local"
 
 
 @pytest.mark.asyncio

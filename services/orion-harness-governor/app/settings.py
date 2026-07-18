@@ -109,6 +109,14 @@ class HarnessGovernorSettings(BaseSettings):
     harness_fcc_claude_config_dir: str = Field(
         "", alias="HARNESS_FCC_CLAUDE_CONFIG_DIR"
     )
+    # --setting-sources for the FCC claude subprocess, read directly from the
+    # environment by orion.fcc.claude_spawn.setting_sources_argv; mirrored
+    # here so operators see the effective value. Default skips the repo's
+    # own project-level CLAUDE.md/hooks (not needed for a headless cognition
+    # turn, not a safety regression since the repo mount here is read-only).
+    harness_fcc_setting_sources: str = Field(
+        "user,local", alias="HARNESS_FCC_SETTING_SOURCES"
+    )
 
     # (D) embodiment: publish a deliberate approach intent on the turn correlation_id
     # after a finalized relational turn. Default-off, fail-open (never breaks a turn).

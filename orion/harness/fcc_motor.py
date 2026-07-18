@@ -12,7 +12,7 @@ import urllib.request
 from pathlib import Path
 from typing import Any, AsyncIterator, Dict, List, Optional, Tuple
 
-from orion.fcc.claude_spawn import claude_permission_argv, extend_mcp_argv
+from orion.fcc.claude_spawn import claude_permission_argv, extend_mcp_argv, setting_sources_argv
 from orion.fcc.context_budget import (
     annotate_harness_step,
     apply_context_overflow_hint,
@@ -498,6 +498,7 @@ async def run_fcc_turn(
         "--model",
         model_id,
     ]
+    argv.extend(setting_sources_argv("HARNESS_FCC_SETTING_SOURCES"))
     if mcp_config_path is not None:
         extra_allowed_tools: Optional[List[str]] = None
         if _env_truthy("HARNESS_FCC_CONTEXT_MODE_HOOKS_ENABLED"):

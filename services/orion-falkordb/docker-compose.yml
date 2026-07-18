@@ -2,7 +2,12 @@
 # Orion FalkorDB — shared property-graph operator stack
 # ───────────────────────────────────────────────────────────────
 # Preferred compose home for the mesh-wide FalkorDB instance.
-# Consumers: orion-graphiti-adapter (today), orion-substrate-runtime (future).
+# Consumers (as of 2026-07-18): orion-graphiti-adapter (graphiti_temporal graph),
+# orion-substrate-runtime (orion_substrate graph, live via PR #1153 -- was
+# "future" in this comment, now live), orion-spark-concept-induction
+# (orion_substrate graph, concept profiles only), orion-meta-tags
+# (orion_recall graph, dark by default -- see
+# docs/superpowers/plans/2026-07-18-recall-tag-entity-falkor-writer-plan.md).
 
 networks:
   app-net:

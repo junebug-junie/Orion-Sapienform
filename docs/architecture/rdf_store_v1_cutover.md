@@ -40,6 +40,10 @@ Copy from `services/orion-rdf-writer/.env_example` (including the **RDF Store V1
 - Payload kind: **`rdf.write.request`** (`RdfWriteRequest` and related build kinds).
 - The writer also subscribes to other catalog channels; see `Settings.get_all_subscribe_channels()` in `app/settings.py`.
 
+## Falkor migration in progress (does not touch this service)
+
+As of 2026-07-18, `tags.enriched` (the `orion:tags:chat:enriched` channel specifically) also gets a **separate, additive** Cypher-native write into FalkorDB by `orion-meta-tags` itself, alongside this service's unchanged Fuseki write of the same event. This service is not modified by that work and continues writing exactly as documented above. See `docs/superpowers/plans/2026-07-18-recall-tag-entity-falkor-writer-plan.md` and `services/orion-meta-tags/README.md`. `orion-rdf-writer`'s own role stays "legacy RDF materialize" per the FalkorDB doctrine's service-ownership table — new Falkor writes belong in the originating producer service, not here.
+
 ## Legacy writer (quarantined)
 
 - **Service:** `services/orion-gdb-client`

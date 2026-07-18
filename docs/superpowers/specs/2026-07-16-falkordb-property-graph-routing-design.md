@@ -232,6 +232,8 @@ Shadow modes: `none` | same set for dual-write / compare.
 | Concept Atlas read/ingest | `orion-hub` (`concept_atlas_routes.py`) |
 | Topic → concept nodes | `orion/substrate/adapters/topic_foundry.py` (already) |
 | Crystallization → Falkor | `orion-graphiti-adapter` (already; remains separate rail initially) |
+| Recall tag/entity → Falkor | `orion-meta-tags` (2026-07-18, `app/falkor_recall_writer.py`; the producer of tag/entity extraction writes Falkor directly, same shape as concept-induction below -- explicitly **not** `orion-rdf-writer`, matching the "legacy RDF materialize only" row below) |
+| Concept profile → Falkor | `orion-spark-concept-induction` (`CONCEPT_PROFILE_GRAPH_BACKEND=falkor`; producer writes directly, bypasses rdf-writer) |
 | Legacy RDF materialize | `orion-rdf-writer` |
 | Fuseki ops | `orion-rdf-store` (shrinking role) |
 | SQL SoR | `orion-sql-db` / `orion-sql-writer` |

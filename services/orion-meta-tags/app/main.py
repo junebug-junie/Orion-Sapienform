@@ -1,4 +1,5 @@
 # services/orion-meta-tags/app/main.py
+import asyncio
 import logging
 import traceback
 import uuid
@@ -12,10 +13,12 @@ from fastapi import FastAPI
 
 from orion.core.bus.bus_service_chassis import ChassisConfig, Hunter, Rabbit
 from orion.core.bus.bus_schemas import BaseEnvelope, ServiceRef
+from orion.graph.falkor_client import RedisGraphQueryClient
 from orion.schemas.collapse_mirror import should_route_to_triage
 
 from .settings import settings
 from .models import EventIn, Enrichment
+from .falkor_recall_writer import write_chat_turn_tags_to_falkor
 
 # Setup Logging
 logging.basicConfig(level=logging.getLevelName(settings.LOG_LEVEL))
@@ -34,6 +37,68 @@ except OSError:
 # Global chassis references
 meta_tagger: Hunter | None = None
 meta_tagger_rpc: Rabbit | None = None
+
+# Lazily constructed: only ever built if RECALL_FALKOR_TAG_ENTITY_ENABLED is
+# true, so a disabled flag never attempts a FalkorDB connection. Hunter's
+# current dispatch is serial (concurrent_handlers defaults to False), so this
+# check-then-act is not a live race today -- guarded with a lock anyway since
+# concurrent_handlers=True is an established pattern elsewhere in the repo
+# (orion-cortex-orch, orion-spark-introspector, orion-signal-gateway,
+# orion-cortex-exec) and flipping it here later would otherwise silently
+# leak a second RedisGraphQueryClient/connection pool with no error or log.
+_falkor_client: RedisGraphQueryClient | None = None
+_falkor_client_lock = asyncio.Lock()
+
+
+async def _get_falkor_client() -> RedisGraphQueryClient:
+    global _falkor_client
+    if _falkor_client is not None:
+        return _falkor_client
+    async with _falkor_client_lock:
+        if _falkor_client is None:
+            _falkor_client = RedisGraphQueryClient(
+                uri=settings.FALKORDB_URI, graph_name=settings.FALKORDB_RECALL_GRAPH
+            )
+        return _falkor_client
+
+
+async def _write_chat_turn_tags_to_falkor_async(
+    *, envelope: BaseEnvelope, raw_payload: dict, turn_id: str,
+    sentiment_tag: str, entities: list[str],
+) -> None:
+    """All field extraction happens inside the try block, including
+    envelope.created_at.isoformat() -- this is a dark/additive path and must
+    never raise into the caller, even on an unexpected envelope shape."""
+    if not settings.RECALL_FALKOR_TAG_ENTITY_ENABLED:
+        return
+    try:
+        client = await _get_falkor_client()
+        # Falkor client is a sync redis client; keep GRAPH.QUERY off the
+        # event loop so triage intake doesn't stall (same pattern as
+        # orion/spark/concept_induction/bus_worker.py's Falkor write).
+        result = await asyncio.to_thread(
+            write_chat_turn_tags_to_falkor,
+            client,
+            turn_id=turn_id,
+            session_id=raw_payload.get("session_id"),
+            ts=envelope.created_at.isoformat(),
+            correlation_id=str(envelope.correlation_id) if envelope.correlation_id else None,
+            # tags/entities are the SAME spaCy NER extraction in this
+            # pipeline today (tags = list(entities) + one sentiment marker,
+            # see the chat.history branch above) -- passing the full tags
+            # list here would double-write every entity as both a :Tag and
+            # an :Entity node/edge for zero informational gain. Only the
+            # sentiment marker is genuinely tag-specific content; it gets
+            # pulled back out by write_chat_turn_tags_to_falkor's own
+            # extract_sentiment(). entities is the real NER extraction.
+            tags=[sentiment_tag],
+            entities=entities,
+        )
+        logger.info("falkor_recall_write_committed turn_id=%s result=%s", turn_id, result)
+    except Exception as exc:
+        # Additive/dark path: never let a Falkor write failure break the
+        # existing tags.enriched publish it rides alongside.
+        logger.warning("falkor_recall_write_failed turn_id=%s error=%s", turn_id, exc)
 
 
 def _svc_ref() -> ServiceRef:
@@ -150,6 +215,22 @@ async def handle_triage_event(envelope: BaseEnvelope) -> None:
                 sentiment_tag = "sentiment:negative"
 
             tags.append(sentiment_tag)
+
+            # Phase 2 recall Falkor write (dark by default): gated to
+            # chat.history only, not social.turn.stored.v1 -- that's Phase 6,
+            # deliberately not touched here even though it shares this code
+            # path. All field extraction (session_id, ts, correlation_id)
+            # happens inside the async helper's own try block, not here --
+            # this call must never raise into the existing tags.enriched
+            # publish path below.
+            if envelope.kind == "chat.history":
+                await _write_chat_turn_tags_to_falkor_async(
+                    envelope=envelope,
+                    raw_payload=raw_payload,
+                    turn_id=str(turn_id),
+                    sentiment_tag=sentiment_tag,
+                    entities=entities,
+                )
 
             enrichment = Enrichment(
                 id=turn_id,

@@ -420,7 +420,7 @@ class FalkorSubstrateStore:
             except Exception:
                 logger.warning("falkor_substrate_legacy_node_invalid")
                 continue
-            if getattr(node, "node_kind", None) != "concept":
+            if getattr(node, "node_kind", None) not in ("concept", "evidence"):
                 logger.warning(
                     "falkor_substrate_legacy_node_skipped node_kind=%s node_id=%s",
                     getattr(node, "node_kind", None),
@@ -432,8 +432,26 @@ class FalkorSubstrateStore:
             # Seed cache first so a transient rewrite failure cannot empty Atlas.
             self._cache.upsert_node(identity_key=identity_key, node=node)
             try:
-                # Rewrite to native properties and REMOVE payload_json.
+                # Rewrite to native properties. upsert_node()'s MERGE keys on
+                # (SubstrateNode:<type-label> {node_id}) -- a label pattern
+                # this legacy row (labeled SubstrateNode only, no type label
+                # yet) can never itself satisfy. So the write always lands on
+                # a *different*, already-migrated node (or creates a fresh
+                # one) instead of converting this row in place. Confirmed
+                # live (2026-07-18): this left a permanent orphaned duplicate
+                # for every node this path ever touched -- the orphaned row's
+                # payload_json got re-parsed and re-clobbered the canonical
+                # node's real data on every subsequent hydrate, forever
+                # (this is what silently reverted PR #1173's golden-concept
+                # salience fix within one restart cycle). It also cascaded
+                # into duplicate edges: an edge's own MERGE binds its
+                # source/target via the bare `:SubstrateNode` label, which is
+                # ambiguous between the legacy and canonical node rows until
+                # the legacy one is gone -- confirmed live, one relationship
+                # existed as 4 near-identical copies (one per source/target
+                # duplicate-row combination).
                 self.upsert_node(identity_key=identity_key, node=node)
+                self._delete_orphaned_legacy_node_duplicate(node.node_id)
                 logger.info(
                     "falkor_substrate_legacy_node_migrated node_id=%s identity_key=%s",
                     node.node_id,
@@ -445,6 +463,38 @@ class FalkorSubstrateStore:
                     getattr(node, "node_id", None),
                     exc,
                 )
+
+    def _delete_orphaned_legacy_node_duplicate(self, node_id: str) -> None:
+        """Remove any *other* SubstrateNode sharing `node_id` that still
+        carries a legacy payload_json, after the canonical node has just
+        been migrated (see the comment in `_migrate_legacy_payload_nodes`).
+
+        `upsert_node()`'s type-labeled MERGE can never match the un-migrated
+        legacy row itself, so that row would otherwise never be touched by
+        the migration write and would persist forever. The canonical node
+        this method runs after has already had `payload_json` removed by
+        `upsert_node()`'s own SET clause, so this can never match/delete it
+        -- only a genuinely orphaned duplicate matches
+        `payload_json IS NOT NULL` at this point. `DETACH DELETE` also
+        removes any relationships still attached to the orphaned row, which
+        is what cleans up the cascaded duplicate-edge side effect described
+        above without needing separate edge-dedup logic.
+
+        Deliberately does not catch its own exceptions: a failed cleanup
+        reproduces exactly the bug this method exists to fix (an orphaned
+        row that keeps re-clobbering the canonical node on every future
+        hydrate), so it must be indistinguishable from any other migration
+        failure to the caller -- letting it propagate into
+        `_migrate_legacy_payload_nodes`'s existing `except` block means it's
+        logged as `falkor_substrate_legacy_node_migrate_failed`, not
+        silently swallowed under a `..._migrated` success log line.
+        """
+        self._client.graph_query(
+            "MATCH (n:SubstrateNode {node_id: $node_id}) "
+            "WHERE n.payload_json IS NOT NULL "
+            "DETACH DELETE n",
+            {"node_id": node_id},
+        )
 
     def _migrate_legacy_payload_edges(self, rows: list[dict[str, Any]]) -> None:
         for row in rows:

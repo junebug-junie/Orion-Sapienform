@@ -55,15 +55,19 @@ from orion.schemas.chat_stance import ChatStanceBrief
 from orion.substrate.appraisal import REPAIR_PRESSURE_CONTRACT_METADATA_KEY
 from orion.schemas.metacog_patches import MetacogDraftTextPatchV1, MetacogEnrichScorePatchV1
 from orion.schemas.metacog_entry import (
-    MetacogCausalDensity,
     MetacogEntryV1,
-    MetacogProvenance,
     MetacogRealState,
     MetacogRepairEvidence,
     MetacogRepairPressure,
     MetacogWhatChanged,
 )
-from orion.metacog.service import IS_CAUSALLY_DENSE_THRESHOLD, compute_causal_density
+from orion.metacog.service import (
+    IS_CAUSALLY_DENSE_THRESHOLD,
+    compute_causal_density,
+    compute_provenance,
+    compute_severity,
+    compute_touches,
+)
 from orion.schemas.platform import CoreEventV1
 
 from orion.cognition.personality.identity_context import build_identity_context, load_identity_file
@@ -3667,26 +3671,54 @@ async def call_step_services(
                     causal_density = compute_causal_density(state)
                     is_causally_dense = causal_density.score >= IS_CAUSALLY_DENSE_THRESHOLD
 
+                    # Real per-step evidence for this turn -- `logs` is the
+                    # same ordered list every service block in this dispatch
+                    # loop appends "ok <- X" / "error <- X" / "skip <- X (...)"
+                    # to. A turn is a sequence of phases, not one atomic
+                    # event: this is that sequence, not a re-derived signal.
+                    # Capped, not filtered to failures only -- the design
+                    # intent was the full ordered sequence as supporting
+                    # evidence for whatever trigger_kind/trigger_reason names
+                    # as the single specific thing that fired the entry.
+                    turn_step_log = [str(line)[:200] for line in logs[-20:]]
+                    # Only count unambiguous failure markers. `logs` also
+                    # carries routine "exec ->" start markers, "skip <-"
+                    # (often a budget/config choice, not a reliability
+                    # problem -- e.g. prompt_context_overflow), "rpc"/"info"/
+                    # "publish" bookkeeping, and "warn" (soft, not fatal).
+                    # Counting those as failures would make severity noisy on
+                    # every ordinary turn instead of reflecting real trouble.
+                    _FAILURE_PREFIXES = ("fail", "error", "exception")
+                    non_ok_step_count = sum(
+                        1 for line in logs if str(line).lstrip().startswith(_FAILURE_PREFIXES)
+                    )
+
+                    touches = compute_touches(state)
+                    trigger_kind_value = _metacog_trigger_kind(ctx)
+                    severity = compute_severity(
+                        llm_uncertainty=llm_uncertainty,
+                        non_ok_step_count=non_ok_step_count,
+                    )
+                    provenance = compute_provenance(trigger_kind=trigger_kind_value, touches=touches)
+
                     metacog_entry = MetacogEntryV1(
                         event_id=f"metacog_{metacog_entry_id}",
                         environment=entry.environment,
-                        trigger_kind=_metacog_trigger_kind(ctx),
+                        trigger_kind=trigger_kind_value,
                         trigger_reason=str(trig.get("reason") or "unknown"),
                         summary=entry.summary,
                         mantra=entry.mantra,
                         what_changed=MetacogWhatChanged(
                             summary=what_changed_dict.get("summary"),
-                            evidence=what_changed_dict.get("evidence") or [],
+                            evidence=(what_changed_dict.get("evidence") or []) + turn_step_log,
                         ),
                         state=state,
+                        severity=severity,
+                        touches=touches,
                         causal_density=causal_density,
                         is_causally_dense=is_causally_dense,
                         snapshot_kind="confirmed_dense" if is_causally_dense else "baseline",
-                        provenance=MetacogProvenance(
-                            source="cortex_exec.metacog_pipeline",
-                            produces="metacog_entry",
-                            impacts=[],
-                        ),
+                        provenance=provenance,
                         tags=list(entry.tags or []),
                         source_service=entry.source_service or "metacog",
                         source_node=entry.source_node,

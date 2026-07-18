@@ -123,6 +123,19 @@ class MetacogEntryV1(BaseModel):
     what_changed: MetacogWhatChanged = Field(default_factory=MetacogWhatChanged)
     state: MetacogRealState = Field(default_factory=MetacogRealState)
 
+    # Repurposes the old collapse_mirror `observer_state` concept: a discrete
+    # severity read off real numbers already on this entry (llm_uncertainty,
+    # count of non-ok steps this turn), not a repeat of causal_density's
+    # continuous score. See orion.metacog.service.compute_severity.
+    severity: Literal["nominal", "degraded", "critical"] = "nominal"
+
+    # Repurposes the old collapse_mirror `field_resonance` concept as
+    # topology, not severity: which other real-artifact evidence this entry
+    # actually carries (e.g. "relational", "substrate", "affect",
+    # "execution"), mechanically derived from which `state` fields are
+    # populated -- not a new signal. See orion.metacog.service.compute_touches.
+    touches: list[str] = Field(default_factory=list)
+
     causal_density: MetacogCausalDensity = Field(default_factory=MetacogCausalDensity)
     is_causally_dense: bool = False
 

@@ -878,6 +878,84 @@ def test_publish_builds_metacog_entry_from_real_artifacts_no_self_report():
     assert payload["causal_density"]["score"] == pytest.approx(0.6)
     assert payload["is_causally_dense"] is True
     assert payload["snapshot_kind"] == "confirmed_dense"
+    # Topology (repurposed field_resonance): mechanically names which real
+    # artifacts are present, not a hardcoded/omitted field.
+    assert payload["touches"] == ["substrate"]
+    # Severity (repurposed observer_state): no failed steps, no llm_uncertainty
+    # signal in this ctx -> nominal, not a silent default masking real signal.
+    assert payload["severity"] == "nominal"
+    # Provenance: dynamic per trigger_kind and per touches, not a hardcoded
+    # constant with impacts always [].
+    assert payload["provenance"]["source"] == "cortex_exec.metacog_pipeline.dense"
+    assert payload["provenance"]["impacts"] == ["execution_trajectory"]
+    assert isinstance(payload["what_changed"]["evidence"], list)
+
+
+def test_publish_severity_and_touches_reflect_failures_and_repair_pressure():
+    """Same lane, adversarial ctx: a prior failed step plus real repair_pressure
+    evidence should show up as non-nominal severity and multi-item touches --
+    not silently dropped the way the first pass's hardcoded provenance was."""
+    executor_module = _load_executor_module()
+    mock_bus = MagicMock()
+    mock_bus.publish = AsyncMock()
+
+    valid_entry = CollapseMirrorEntryV2(
+        event_id="evt-relational",
+        id="evt-relational",
+        trigger="relational",
+        observer="Orion",
+        observer_state=["strained"],
+        type="flow",
+        emergent_entity="Relational Pulse",
+        summary="Test summary",
+        mantra="Test mantra",
+        field_resonance="Test resonance",
+        resonance_signature="Test sig",
+        source_service="metacog",
+    ).model_dump(mode="json")
+    valid_entry["state_snapshot"] = {"telemetry": {"metacog_draft_mode": "llm"}}
+
+    ctx = {
+        "trigger": {"trigger_kind": "relational", "reason": "relational_shift:repair:confidence=0.90"},
+        "trigger_kind": "relational",
+        "metadata": {
+            "substrate_effect_summary": {
+                "level": 0.9,
+                "level_label": "HIGH",
+                "confidence": 0.9,
+                "evidence": [{"evidence_kind": "trust_rupture", "score": 0.8, "confidence": 0.9}],
+                "behavior_applied": "acknowledge_and_repair",
+            }
+        },
+        "final_entry": valid_entry,
+    }
+
+    step = ExecutionStep(
+        step_name="publish",
+        verb_name="log_orion_metacognition",
+        services=["MetacogPublishService"],
+        order=1,
+    )
+    source = ServiceRef(name="test", node="test", version="1.0")
+
+    result = asyncio.run(
+        executor_module.call_step_services(
+            bus=mock_bus,
+            source=source,
+            step=step,
+            ctx=ctx,
+            correlation_id=str(uuid4()),
+        )
+    )
+
+    assert result.status == "success"
+    envelope = mock_bus.publish.call_args[0][1]
+    payload = envelope.payload
+    assert payload["touches"] == ["relational"]
+    assert payload["provenance"]["source"] == "cortex_exec.metacog_pipeline.relational"
+    assert payload["provenance"]["impacts"] == ["relationship_thread"]
+    assert payload["state"]["repair_pressure"]["level"] == pytest.approx(0.9)
+    assert payload["state"]["repair_pressure"]["evidence"][0]["evidence_kind"] == "trust_rupture"
 
 
 def test_log_orion_metacognition_recall_disabled_by_verb_default():

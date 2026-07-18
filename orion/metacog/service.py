@@ -20,10 +20,27 @@ a thinner seam than replicating CollapseMirrorStore for a single caller.
 """
 
 import logging
+from typing import Literal
 
-from orion.schemas.metacog_entry import MetacogCausalDensity, MetacogRealState
+from orion.schemas.metacog_entry import (
+    MetacogCausalDensity,
+    MetacogProvenance,
+    MetacogRealState,
+)
 
 logger = logging.getLogger("orion.metacog.service")
+
+# Thresholds against real orion-llm-gateway output
+# (services/orion-llm-gateway/app/llm_uncertainty.py: mean_top1_margin is the
+# top1-vs-top2 logprob gap, low_margin_token_count counts tokens below that
+# gateway's own low_margin threshold). Starting defaults, same calibration
+# caveat as the weights above -- not fit against real outcome data yet.
+LOW_MARGIN_TOKEN_COUNT_DEGRADED = 1
+LOW_MARGIN_TOKEN_COUNT_CRITICAL = 5
+MEAN_TOP1_MARGIN_CRITICAL = 0.2
+
+NON_OK_STEP_COUNT_DEGRADED = 1
+NON_OK_STEP_COUNT_CRITICAL = 2
 
 # Starting-default blend weights, not derived from any calibration data yet.
 # Expect these to get retuned once we have real metacog-lane outcomes to check
@@ -107,4 +124,77 @@ def compute_causal_density(state: MetacogRealState) -> MetacogCausalDensity:
         label=_label_for_score(score),
         score=score,
         rationale="computed_from_real_artifacts: " + ", ".join(rationale_bits),
+    )
+
+
+def compute_severity(
+    *,
+    llm_uncertainty: dict | None,
+    non_ok_step_count: int,
+) -> Literal["nominal", "degraded", "critical"]:
+    """Discrete severity off real numbers already on the entry -- not a
+    repeat of causal_density's continuous score. Two independent real
+    signals: how many steps this turn didn't come back "ok" (from
+    executor.py's own logs/merged_result), and how uncertain the LLM's own
+    token generation was (orion-llm-gateway's real logprob-margin telemetry,
+    not a self-rating)."""
+    low_margin_count = 0
+    mean_margin: float | None = None
+    if isinstance(llm_uncertainty, dict) and llm_uncertainty.get("available"):
+        low_margin_count = int(llm_uncertainty.get("low_margin_token_count") or 0)
+        raw_margin = llm_uncertainty.get("mean_top1_margin")
+        if isinstance(raw_margin, (int, float)):
+            mean_margin = float(raw_margin)
+
+    if (
+        non_ok_step_count >= NON_OK_STEP_COUNT_CRITICAL
+        or low_margin_count >= LOW_MARGIN_TOKEN_COUNT_CRITICAL
+        or (mean_margin is not None and mean_margin < MEAN_TOP1_MARGIN_CRITICAL)
+    ):
+        return "critical"
+
+    if (
+        non_ok_step_count >= NON_OK_STEP_COUNT_DEGRADED
+        or low_margin_count >= LOW_MARGIN_TOKEN_COUNT_DEGRADED
+    ):
+        return "degraded"
+
+    return "nominal"
+
+
+def compute_touches(state: MetacogRealState) -> list[str]:
+    """Topology, not severity: which other real-artifact evidence this entry
+    actually carries. Mechanically derived from which `state` fields are
+    populated -- no new signal, just naming what's already there."""
+    touches: list[str] = []
+    if state.repair_pressure is not None:
+        touches.append("relational")
+    if state.substrate_eventfulness_score is not None:
+        touches.append("substrate")
+    if state.turn_effect is not None or state.turn_effect_evidence is not None:
+        touches.append("affect")
+    if state.biometrics is not None:
+        touches.append("biometrics")
+    if state.llm_uncertainty is not None and state.llm_uncertainty.get("available"):
+        touches.append("generation")
+    return touches
+
+
+def compute_provenance(*, trigger_kind: str, touches: list[str]) -> MetacogProvenance:
+    """Dynamic per-entry provenance, not a hardcoded constant. `source` names
+    what actually fired this entry (the real trigger_kind, already on the
+    entry); `impacts` reuses `touches` instead of a second, separate mapping
+    -- the evidence that's present *is* what this entry is about."""
+    impacts_map = {
+        "relational": "relationship_thread",
+        "substrate": "execution_trajectory",
+        "affect": "field_channel:turn_effect",
+        "biometrics": "field_channel:biometrics",
+        "generation": "llm_generation_quality",
+    }
+    impacts = [impacts_map[t] for t in touches if t in impacts_map]
+    return MetacogProvenance(
+        source=f"cortex_exec.metacog_pipeline.{trigger_kind}",
+        produces="metacog_entry",
+        impacts=impacts,
     )

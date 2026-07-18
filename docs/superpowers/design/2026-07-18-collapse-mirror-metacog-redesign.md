@@ -424,3 +424,55 @@ patch -- but it still feeds `orion/memory/retrieval_intent.py`'s recall-routing
 whether that one remaining use case still justifies its own LLM-probe classifier, or whether it
 could be consolidated/simplified now that its other consumer is gone. Deliberately not answered
 here.
+
+## Correction pass (2026-07-18, same branch): the first slice dropped real design content
+
+The first pass of this slice (above) kept the "no self-report" and "repair_pressure_v2" wins but
+flattened or dropped several structural pieces this doc's own "Proposed schema field remapping"
+and "New lineage/provenance shape" sections had already worked out. Root cause: the dispatch spec
+for that pass cited this doc by line number but then paraphrased its content from memory instead
+of transcribing it -- the gap was between what this doc says and what got *told* to the
+implementing pass, not something lost during execution. Caught via direct review pushback, not
+by any gate in this process, which is itself worth noting.
+
+What was missing and what got fixed, each backed by data already sitting in `ctx` with no new
+producer needed:
+
+- **`trigger` as a sequence, not one code.** This doc's proposal: `trigger` names the one specific
+  thing that fired the entry, with a fuller ordered list of every component's code for the turn
+  living in the snapshot as supporting evidence. `executor.py`'s own `logs`/`merged_result`
+  (accumulated across every step of the turn, "ok <- X" / "error <- X" / "skip <- X (...)") already
+  *is* that ordered sequence. Now wired into `MetacogWhatChanged.evidence`, capped to the last 20
+  entries, 200 chars each. `trigger_kind`/`trigger_reason` (from the upstream `MetacogTriggerV1`)
+  were already a reasonable fit for "the one specific thing" and were left as-is.
+- **Severity, repurposing `observer_state`.** This doc: nominal/degraded/critical, thresholded off
+  real numbers already available (uncertainty, retry/failure count). Added
+  `MetacogEntryV1.severity`, computed by `orion.metacog.service.compute_severity()` off two real,
+  independent signals: a count of unambiguous failure-prefixed lines in `logs` this turn (`fail`/
+  `error`/`exception` only -- an earlier draft of this fix wrongly counted routine `exec ->` start
+  markers as failures, caught by a test regression before it shipped, see
+  `test_severity_degraded_on_single_failed_step` and friends) and `orion-llm-gateway`'s own real
+  logprob-margin telemetry (`mean_top1_margin`, `low_margin_token_count` --
+  `services/orion-llm-gateway/app/llm_uncertainty.py`, not a self-rating). Thresholds are starting
+  defaults, same calibration caveat as `causal_density`'s weights.
+- **Topology, repurposing `field_resonance`.** This doc: which other parts of the system this event
+  echoes across ("touched: reasoning, grounding, autonomy"), not a repeat of severity. Added
+  `MetacogEntryV1.touches`, computed by `compute_touches()` -- mechanically names which `state`
+  sub-fields are actually populated (`repair_pressure` present -> `"relational"`, etc.). No new
+  signal, just naming what's already on the entry.
+- **`provenance.source`/`impacts`, dynamic not hardcoded.** This doc gave varied, specific examples
+  (`"cortex_exec.step_friction"`, `"chat.correction_detected"`). The first pass shipped a constant
+  (`source="cortex_exec.metacog_pipeline"`, `impacts=[]`) on every single entry -- a schema-valid
+  field carrying zero information, exactly the pattern CLAUDE.md's no-empty-shell-cognition rule
+  bans. `compute_provenance()` now derives `source` from the real `trigger_kind` and `impacts` from
+  the same `touches` list above (a channel-name/relationship-thread/execution-trajectory mapping per
+  touch), so two different entries actually produce two different provenance records.
+- **`emergent_entity`-as-phase-of-run:** left genuinely open. This doc's own framing of this one was
+  a caution ("notice you're doing it on purpose, not by accident"), not a decision -- not filling it
+  in guessed.
+
+New tests: `orion/metacog/tests/test_service.py` (severity/touches/provenance, 13 new cases) and
+`services/orion-cortex-exec/tests/test_metacog_publish_lane.py::
+test_publish_severity_and_touches_reflect_failures_and_repair_pressure` (adversarial-ctx
+integration case: real repair_pressure evidence plus the existing real-artifact case now assert on
+`touches`/`severity`/`provenance` instead of only checking the response didn't crash).

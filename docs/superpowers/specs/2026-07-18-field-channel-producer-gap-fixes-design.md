@@ -40,11 +40,14 @@ by its exact hint key — the topology YAML's diffusion edges describe how a val
    reasoning-load telemetry, or is `reasoning_load` simply the wrong signal to expect from
    that node at all? Needs tracing at the `GrammarEventV1`/execution-trajectory producer
    level, not assumed.
-3. What's the real live source for transport-layer backpressure telemetry (item 2)? The
-   hint keys (`transport_pressure`, `stream_depth_pressure`, `backpressure`) are declared
-   valid in `state_deltas.py`, but nothing currently populates any of them — is there an
-   existing bus-health metric elsewhere in the mesh that should be wired here, or does one
-   need to be built from scratch?
+3. **Resolved 2026-07-18, differently than originally framed.** The hint keys are already
+   populated correctly by a real, live pipeline — the gap is that `BUS_OBSERVER_STREAMS`
+   watches two nonexistent Redis keys (`orion:evt:gateway`, `orion:bus:out`), confirmed via
+   direct `XLEN`/`SCAN`. New open question: which of the mesh's real active streams
+   (`orion:stream:world_pulse:run:result`, `orion:pad:events`/`orion:pad:frames`,
+   `orion:queue:spark:introspection` are live candidates, none yet vetted) actually
+   represent genuine bus congestion, as opposed to normal persistent-queue size? See Fix 2
+   for full detail — needs domain input, not a guess from this investigation.
 
 ## Proposed fixes, prioritized
 
@@ -68,21 +71,57 @@ role in the topology).
 (grammar emission), `orion/substrate/execution_loop/reducer.py` (if the reducer itself is
 dropping the field rather than the producer never sending it).
 
-### Fix 2: `capability:transport`'s `pressure` channel structurally dead (`transport_pressure` node channel fully unproduced)
+### Fix 2: `capability:transport`'s `pressure` channel dead — root cause corrected (2026-07-18)
 
-**Confirmed** (README's own live-data verdict): the node-level `transport_pressure` channel
-is absent from all live rows checked — not decayed, never perturbed at all. `capability:
-transport`'s diffusion edge for `pressure` sources from this exact channel, so it's
-permanently dead too.
+**Correction to the original framing above.** This was not a producer gap in the sense of
+"nothing computes this channel." Traced end-to-end: `orion/substrate/transport_loop/
+reducer.py`'s `reduce_transport_trace_events()` runs continuously (`ENABLE_TRANSPORT_BUS_REDUCER=true`,
+180 real receipts confirmed over 15 days), and `extract.py`'s `compute_transport_pressures()`
+does correctly compute `transport_pressure = max(stream_depth_pressure, backpressure)` from
+real, live `bus_stream_depth_observed`/`bus_backpressure_observed` grammar events (488,268+
+of the former exist). The pipeline is not broken.
 
-**Fix approach**: `state_deltas.py` already declares three valid hint keys for this channel
-(`hints["transport_pressure"]`, `hints["stream_depth_pressure"]`, `hints["backpressure"]`),
-all under the `transport_bus` `target_kind` — none currently populated by whatever emits
-`transport_bus` deltas today. Find the real bus-health/backpressure signal (see Missing
-question 3) and wire it to one of these three existing hint keys — this is a producer-side
-fix, not a field-digester change; the ingestion path already exists.
+**The real root cause**: `services/orion-bus/.env`'s `BUS_OBSERVER_STREAMS=orion:evt:gateway,
+orion:bus:out` names two Redis stream keys that do not exist. Confirmed directly —
+`redis-cli XLEN orion:bus:out` and `redis-cli XLEN orion:evt:gateway` both return `0`, and
+neither key appears in a live `redis-cli --scan --pattern "orion:*"` at all. Every
+`bus_stream_depth_observed` event sampled from these keys honestly reports
+`stream_length=0` because the keys are empty/nonexistent, not because the bus is healthy —
+confirmed by checking the full 15-day receipt history: `transport_pressure`/
+`stream_depth_pressure`/`backpressure` have never once been nonzero, zero variance across
+180 receipts from 2026-07-03 to 2026-07-18. This matches a pre-existing finding already on
+the agent board from earlier this session ("`orion:evt:gateway`/`orion:bus:out`
+(`BUS_OBSERVER_STREAMS` original defaults) point at non-existent Redis keys, depth/
+backpressure monitoring likely dead since it shipped") — this is that finding, confirmed
+and root-caused, not a new discovery.
 
-**Files likely to touch**: whichever service currently emits `transport_bus`-kind
+**A second, separate issue found in the same config**: `services/orion-bus/.env_example`
+declares `BUS_OBSERVER_STREAMS=orion:evt:gateway,orion:bus:out,orion:grammar:event,
+orion:stream:world_pulse:run:result` (4 keys) — live `.env` only has the first two (2 keys).
+Real drift, independent of the dead-key issue. Restoring parity alone is not sufficient
+though: `orion:grammar:event` was also checked live (`XLEN=0`) — also currently empty.
+
+**Real, active, nonzero streams confirmed live** (candidates, not a decision):
+`orion:stream:world_pulse:run:result` (XLEN 83), `orion:pad:events`/`orion:pad:frames`
+(500 each — possibly `MAXLEN`-capped, worth checking before treating 500 as a real depth
+signal), `orion:queue:spark:introspection` (XLEN 22,077 — large; could be a genuine
+backlog/congestion signal worth monitoring, or could be an expected-size persistent queue
+that would misrepresent normal operation as backpressure if watched naively).
+
+**Fix approach — two parts, not guessed together as one patch**:
+1. Restore env parity (`.env` → the 4 keys already declared in `.env_example`) — cheap,
+   safe, uncontroversial, but not sufficient alone since two of those four are also
+   currently empty.
+2. Determine which Redis streams actually represent genuine bus congestion/backpressure
+   semantics — this needs domain input on `orion-bus`'s real architecture, not a guess from
+   this investigation. Picking an active-but-semantically-wrong stream (e.g. treating
+   `orion:queue:spark:introspection`'s size as bus congestion when it might just be a normal
+   persistent queue) would relocate the same class of bug rather than fix it.
+
+**Files likely to touch**: `services/orion-bus/.env` (parity fix, immediate),
+`services/orion-bus/.env_example` (if the real correct stream set differs from what's
+already declared there — needs part 2's answer first), whichever service/doc defines what
+`orion-bus`'s actual message-passing streams are (not yet traced in this investigation).
 `StateDeltaV1`s (likely `orion-substrate-runtime` or a bus-observer-adjacent service — not
 yet traced).
 
@@ -141,8 +180,11 @@ confirm `state_deltas.py`'s `node_biometrics` block reads them.
 - Fix 1: `node:atlas`'s `reasoning_load` shows real, nonzero, varying values in
   `substrate_field_state` over a live window; `capability:llm_inference`'s
   `reasoning_pressure` correspondingly moves off `0.0`.
-- Fix 2: node-level `transport_pressure` appears in live rows at all (currently absent
-  entirely, not just zero); `capability:transport`'s `pressure` channel shows real variance.
+- Fix 2: with `BUS_OBSERVER_STREAMS` pointed at real, vetted-as-congestion-relevant stream
+  keys, `bus_stream_depth_observed`/`bus_backpressure_observed` events report nonzero
+  `stream_length` at least some of the time over a live window (not permanently `0`);
+  `transport_pressure`/`capability:transport`'s `pressure` channel show real variance,
+  breaking the 15-day zero-variance streak confirmed 2026-07-18.
 - Fix 3: `availability`/`staleness` are no longer permanently floored/zeroed;
   `expected_offline_suppression`/`delivery_confidence`/`bus_health` show real movement in
   both directions over a live window that includes a real degrade-then-recover event.

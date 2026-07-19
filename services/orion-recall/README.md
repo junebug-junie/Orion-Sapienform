@@ -132,13 +132,14 @@ Chatturn-only read path standing in for RDF's chat-turn fetch. **Live as of 2026
 
 | Variable | Default | Notes |
 | :--- | :--- | :--- |
-| `RECALL_ENTITY_RELATEDNESS_BOOST_ENABLED` | `false` (dark) | See `settings.py`'s comment for the full design + a real, pre-existing limitation this needs fixed first (below). |
+| `RECALL_ENTITY_RELATEDNESS_BOOST_ENABLED` | `false` (dark) | See `settings.py`'s comment for the full design. |
 | `entity_relatedness_boost_weight` (per-profile, `relevance` cfg) | `0.2` | Same additive-scale convention as `prefer_tags_boost` (0.15)/`turn_effect_boost_weight` (0.35). |
 
-**Do not flip this live yet -- two real gaps, found in code review, both need closing first:**
+**Do not flip this live yet -- one real gap remains, found in code review:**
 
-1. **`_extract_entities` (the query-side entity extractor this boost depends on) has a pre-existing regex bug** -- a literal double-backslash inside an r-string (`\\s`/`\\.` match a literal backslash, not whitespace/a dot). Confirmed live: it never merges multi-word entity spans ("New York" -> "New"/"York" separately) and drops all-caps acronyms entirely ("NVIDIA" -> nothing, only "Nvidia" matches). Since Falkor's real `Entity.name` vocabulary is spaCy-NER-derived and includes exactly these shapes, this boost currently fails to match the majority of real entity mentions. This is a repo-wide function (also used for query-expansion fan-out elsewhere in `worker.py`), so fixing it is its own changeset, not something to sneak into this one.
-2. **No recall-quality evidence yet, only one hand-verified ranking example.** Live-verified end to end that a `falkor_chat` candidate whose turn directly mentions an extracted query entity correctly reranks above a same-source candidate with a higher base score -- proving the wiring works, not that it improves real recall quality across real queries. `app/recall_eval.py`/`recall_eval_corpus.json` (this service's existing eval harness) was not run against this feature. Both gaps should close before flipping this flag, not just before merging the PR that ships it dark.
+~~`_extract_entities` had a pre-existing regex bug~~ -- **fixed**: a literal double-backslash inside an r-string (`\\s`/`\\.` matched a literal backslash, not whitespace/a dot) meant it never merged multi-word entity spans ("New York" -> "New"/"York" separately) and dropped all-caps acronyms entirely ("NVIDIA" -> nothing). Fixed at the source (`worker.py::_extract_entities`, `tests/test_extract_entities.py`) after confirming the fix only improves its other two callers too. Still no stopword filtering (sentence-initial capitalized words like "Tell" still extract as false-positive query "entities") -- a smaller, separate precision gap, not a correctness bug.
+
+**No recall-quality evidence yet, only one hand-verified ranking example.** Live-verified end to end that a `falkor_chat` candidate whose turn directly mentions an extracted query entity correctly reranks above a same-source candidate with a higher base score -- proving the wiring works, not that it improves real recall quality across real queries. `app/recall_eval.py`/`recall_eval_corpus.json` (this service's existing eval harness) was not run against this feature. This should close before flipping this flag, not just before merging the PR that ships it dark.
 
 ### Vector / Chroma
 

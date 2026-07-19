@@ -207,10 +207,37 @@ def _source() -> ServiceRef:
 
 
 def _extract_entities(text: str) -> List[str]:
+    """Regression, found in code review (2026-07-19): the two patterns below
+    used to be r"...(?:\\s+...)*" and r"...\\.[..\\.]+" -- a literal
+    double-backslash inside an r-string matches a literal backslash
+    character, not whitespace/a dot. That silently broke this function's
+    entire multi-word-span and dotted-identifier purpose: "New York" could
+    only ever come back as "New"/"York" separately, and "settings.py"/
+    "example.com" never matched at all (confirmed live).
+
+    Two things caught in the SAME review pass and fixed before this shipped
+    (not separately, since both change the same line):
+    - [a-z]+ (one-or-more) widened to [a-zA-Z]+ (still one-or-more, not
+      zero-or-more) so all-caps acronyms match ("NVIDIA", not just
+      "Nvidia") -- but keeping the "at least 2 chars" floor. An earlier
+      version of this fix used [a-zA-Z]* (zero-or-more), which also matched
+      bare single capital letters like "I" -- a real regression on the
+      already-live (non-dark) sql_timeline.py::fetch_related_by_entities
+      call site, which builds an unbounded ILIKE '%I%' from it.
+    - The multi-word merge group capped at exactly one extra word (trailing
+      `?`, not `*`), matching the sibling extractor's own convention
+      already in this codebase (app/recall_v2.py::_extract_entities). `*`
+      would let a long Title-Case sentence collapse into one giant string
+      that then matches nothing real in Falkor or Postgres.
+
+    Still doesn't filter stopword-like capitalized sentence-starters
+    ("Tell" in "Tell me about...") -- a separate, disclosed, deliberately
+    deferred concern (services/orion-recall/README.md's entity-relatedness-
+    boost section), not something this fix attempts to solve."""
     ents = set()
-    ents.update(re.findall(r"[A-Z][a-z]+(?:\\s+[A-Z][a-z]+)*", text))
+    ents.update(re.findall(r"[A-Z][a-zA-Z]+(?:\s+[A-Z][a-zA-Z]+)?", text))
     ents.update(re.findall(r"[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}", text, flags=re.I))
-    ents.update(re.findall(r"[A-Za-z0-9_]+\\.[A-Za-z0-9_\\.]+", text))
+    ents.update(re.findall(r"[A-Za-z0-9_]+\.[A-Za-z0-9_.]+", text))
     return [e.strip() for e in ents if e.strip()]
 
 

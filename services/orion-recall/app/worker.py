@@ -47,6 +47,7 @@ try:
         fetch_related_entities,
         fetch_entity_matches_for_turns,
         fetch_turns_mentioning_entities,
+        fetch_entity_degrees,
     )
     from .sql_timeline import fetch_recent_fragments, fetch_related_by_entities, fetch_exact_fragments
     from .sql_chat import fetch_chat_history_pairs, fetch_chat_messages, fetch_chat_turn_timestamps, fetch_chat_turns_by_id, _to_epoch
@@ -84,6 +85,7 @@ except ImportError as _e:  # pragma: no cover - fallback for runtime pathing
             fetch_related_entities,
             fetch_entity_matches_for_turns,
             fetch_turns_mentioning_entities,
+            fetch_entity_degrees,
         )
         from app.sql_timeline import fetch_recent_fragments, fetch_related_by_entities, fetch_exact_fragments  # type: ignore
         from app.sql_chat import fetch_chat_history_pairs, fetch_chat_messages, fetch_chat_turn_timestamps, fetch_chat_turns_by_id, _to_epoch  # type: ignore
@@ -609,6 +611,32 @@ async def _fetch_graphtri_fragments(
 _ENTITY_RELATEDNESS_MAX_QUERY_ENTITIES = 3
 _ENTITY_RELATEDNESS_MAX_RELATED_PER_ENTITY = 15
 _ENTITY_RELATEDNESS_MAX_INJECTED_TURNS = 6
+# IDF-style discount constant: an entity at exactly this degree keeps full
+# (1.0x) weight; above it, weight falls off as K/degree. Calibrated against
+# live data: nvidia(23)->0.65x, atlas(17)->0.88x, tesla(7)/p4(13)->1.0x
+# (capped) stay near full weight (genuinely specific entities); orion(282)
+# ->0.05x, juniper(260)->0.06x are correctly suppressed (near-universal,
+# near-zero discriminative value).
+_ENTITY_RELATEDNESS_DEGREE_DISCOUNT_K = 15
+# An entity whose discounted score falls below this floor can still
+# contribute to BOOSTING an already-present candidate (weakly), but can no
+# longer single-handedly drive a new turn INTO the pool -- see the
+# injection_target_names comment below for why the score discount alone
+# wasn't sufficient. For a DIRECT query-entity match (base score 1.0), K=15
+# excludes anything with degree greater than ~100 (orion/juniper at
+# 260-282 land at 0.05-0.06, well below); genuinely specific entities
+# (nvidia=23 -> 0.65, atlas=17 -> 0.88) clear it easily. For a Jaccard-
+# RELATED entity (base score already <1.0 before this discount), the
+# effective degree cutoff is proportionally lower -- e.g. jaccard=0.3 hits
+# the floor around degree=30, not degree=100 -- this is intentional
+# (double-discounting a low-jaccard, moderate-frequency related entity is
+# correct), not a bug, but the "~100" figure above only describes the
+# direct-match case.
+_ENTITY_RELATEDNESS_MIN_INJECTION_SCORE = 0.15
+# Fallback discount for an entity fetch_entity_degrees has no data for --
+# see the discount loop's own comment for why this must stay conservative
+# (below the injection floor), not "no discount" (score * 1.0).
+_ENTITY_RELATEDNESS_UNKNOWN_DEGREE_DISCOUNT = 0.1
 
 
 async def _compute_entity_relatedness_boost_map(
@@ -638,7 +666,11 @@ async def _compute_entity_relatedness_boost_map(
     3. Build a target->score map: the query entities THEMSELVES score 1.0
        (a candidate turn directly mentioning what the query is about is
        stronger evidence than "related to" it), related entities score
-       their own Jaccard value.
+       their own Jaccard value. Then apply a document-frequency discount
+       (fetch_entity_degrees) to EVERY target entity, direct or related --
+       see the constant's own comment for why this is load-bearing, not
+       cosmetic (a near-universal entity like "orion" must not score a
+       flat 1.0 just because it was directly mentioned).
     4. Batch-lookup (one query) which EXISTING falkor_chat candidate turns
        mention any target entity, for boosting.
     5. ALSO fetch actual ChatTurn ids that mention any target entity,
@@ -688,14 +720,70 @@ async def _compute_entity_relatedness_boost_map(
                 if name and score > target_scores.get(name, 0.0):
                     target_scores[name] = score
 
+        # Document-frequency discount, applied uniformly to every target
+        # entity (both direct query matches and Jaccard-related ones).
+        # Live-confirmed bug this closes: a mundane message that simply
+        # addresses the assistant by name ("Orion, what do you think...")
+        # extracted "orion" as a query entity and scored it a flat 1.0 --
+        # "orion" is one of the two most frequent nodes in the whole graph
+        # (282 mentions, confirmed live), so this injected generic filler
+        # turns ("thanks, appreciated.") at full boost strength purely
+        # because they happened to mention Orion by name. Jaccard-related
+        # scores already have partial frequency awareness (their own
+        # degree2 sits in the denominator), but the direct-match path had
+        # none at all. K/degree is a real IDF instance, not a stoplist --
+        # self-correcting as the graph grows, no hardcoded entity names.
+        degrees = await fetch_entity_degrees(names=list(target_scores.keys()))
+        for name in list(target_scores.keys()):
+            degree = degrees.get(name)
+            if degree and degree > 0:
+                discount = min(1.0, _ENTITY_RELATEDNESS_DEGREE_DISCOUNT_K / degree)
+            else:
+                # A name absent from `degrees` is indistinguishable, from
+                # here, between "genuinely brand-new entity, no live
+                # mentions yet" and "the degree lookup call itself failed"
+                # -- _safe_graph_query swallows Falkor errors into an empty
+                # result, never a raised exception (found in code review).
+                # Treating "unknown" as "no discount" would reopen this
+                # patch's own bug on any transient Falkor hiccup on this one
+                # call, indistinguishable in the logs from "working as
+                # designed". Biasing conservative here is deliberate: a
+                # missed injection opportunity for a genuinely rare entity
+                # is a far smaller cost than silently reintroducing generic-
+                # filler injection. Set below the injection floor so an
+                # unverified entity can still weakly boost an existing
+                # candidate but can never single-handedly drive injection.
+                discount = _ENTITY_RELATEDNESS_UNKNOWN_DEGREE_DISCOUNT
+            target_scores[name] *= discount
+
         existing_turn_ids = {
             str(c.get("uri") or c.get("id") or "").strip()
             for c in candidates
             if str(c.get("source") or "") == "falkor_chat" and (c.get("uri") or c.get("id"))
         } - {""}
 
-        mentioning = await fetch_turns_mentioning_entities(
-            target_names=list(target_scores.keys()), max_results=_ENTITY_RELATEDNESS_MAX_INJECTED_TURNS
+        # Discounting the SCORE alone isn't enough to stop low-value
+        # injection: an injected fragment still carries the same fixed
+        # base_score (0.50) as any genuinely recency-fetched falkor_chat
+        # candidate, so even a heavily-discounted entity boost doesn't stop
+        # it from competing on base_score+recency alone once it's already
+        # in the pool (live-confirmed: a "thanks, appreciated." turn still
+        # placed top-4 with only a ~0.01 discounted boost). The real fix is
+        # upstream of injection: entities whose discounted score falls
+        # below this floor never drive a fetch_turns_mentioning_entities
+        # call at all, so a near-universal entity like "orion" can't inject
+        # ANY turn on its own -- it can still contribute to boosting a
+        # turn that ALSO independently earned its way into the pool via a
+        # real entity, since that pathway isn't gated here.
+        injection_target_names = [
+            name for name, score in target_scores.items() if score >= _ENTITY_RELATEDNESS_MIN_INJECTION_SCORE
+        ]
+        mentioning = (
+            await fetch_turns_mentioning_entities(
+                target_names=injection_target_names, max_results=_ENTITY_RELATEDNESS_MAX_INJECTED_TURNS
+            )
+            if injection_target_names
+            else []
         )
         new_turn_ids = [
             t

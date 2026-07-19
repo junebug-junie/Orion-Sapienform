@@ -149,6 +149,13 @@ Injection is the load-bearing half, found necessary only after live testing: `fa
 
 **Known, disclosed, unproven-live gap**: injected candidates don't pass through `_suppress_self_hits` (which runs earlier in `process_recall`, before injection). Low risk in practice -- entity extraction from a turn is async/post-persist, so the current turn's own entities aren't normally in Falkor yet when recall runs for that same turn -- but not proven impossible. Worth a follow-up test, not treated as blocking the live flip.
 
+**Third fix, same day, found from real live usage**: a mundane message that simply addresses the assistant by name ("Orion, what do you think about the deploy?") extracted "orion" as a query entity and scored it a flat `1.0` -- "orion"/"juniper" are the two most frequent nodes in the whole graph (282/260 mentions, confirmed live), so this injected generic filler turns ("thanks, appreciated.", "word, good advice") at full boost strength purely because they happened to mention Orion/Juniper by name. Fixed with a two-part change:
+
+1. `fetch_entity_degrees` applies an IDF-style discount (`K/degree`) to every target entity's score, direct-matched or Jaccard-related alike.
+2. Discounting the score alone was live-confirmed insufficient -- an injected candidate still carries the same fixed `base_score` as a genuinely recency-fetched one. Entities whose discounted score falls below a minimum floor can still weakly boost an already-present candidate, but can no longer single-handedly pull a new turn into the pool.
+
+Re-verified live: "Orion, what do you think..." now correctly falls back to plain recency (no entity signal strong enough to act on) instead of injecting 6 generic turns; "Tesla gpu setup"/"Atlas" (genuinely specific entities) are unaffected.
+
 ### Vector / Chroma
 
 | Variable | Default | Notes |

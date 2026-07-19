@@ -360,6 +360,31 @@ class Settings(BaseSettings):
     # post-persist, so the current turn's own entities are not normally in
     # Falkor yet when recall runs for that same turn, but not proven
     # impossible. Worth a follow-up test, not treated as blocking.
+    #
+    # THIRD FIX, same day, found from real live usage (not synthetic test
+    # queries): a mundane message that simply addresses the assistant by
+    # name ("Orion, what do you think about the deploy?") extracted "orion"
+    # as a query entity and scored it a flat 1.0 -- "orion"/"juniper" are
+    # the two most frequent nodes in the WHOLE graph (282/260 mentions,
+    # confirmed live), so this injected generic filler turns ("thanks,
+    # appreciated.", "word, good advice") at full boost strength purely
+    # because they happened to mention Orion/Juniper by name. Two-part fix:
+    # (a) fetch_entity_degrees applies an IDF-style discount (K/degree) to
+    # EVERY target entity's score, direct-matched or Jaccard-related alike
+    # -- Jaccard-related scores already had partial frequency awareness via
+    # their own degree2 denominator, the direct-match path had none.
+    # (b) Discounting the SCORE alone was live-confirmed insufficient: an
+    # injected candidate still carries the same fixed base_score as a
+    # genuinely recency-fetched one, so a heavily-discounted-but-nonzero
+    # boost still let a "thanks, appreciated." turn place top-4. Entities
+    # whose discounted score falls below _ENTITY_RELATEDNESS_MIN_INJECTION_
+    # SCORE can still weakly BOOST an already-present candidate, but can no
+    # longer single-handedly pull a new turn INTO the pool. Re-verified
+    # live: "Orion, what do you think..." now correctly falls back to plain
+    # recency (no entity signal strong enough to act on -- the honest
+    # pre-Phase-2 baseline) instead of injecting 6 generic turns; "Tesla gpu
+    # setup"/"Atlas" (genuinely specific entities) are unaffected and still
+    # surface real, relevant content.
     RECALL_ENTITY_RELATEDNESS_BOOST_ENABLED: bool = Field(
         default=False, validation_alias=AliasChoices("RECALL_ENTITY_RELATEDNESS_BOOST_ENABLED")
     )

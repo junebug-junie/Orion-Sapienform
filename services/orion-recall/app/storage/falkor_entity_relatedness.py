@@ -311,10 +311,46 @@ async def fetch_turns_mentioning_entities(
     ]
 
 
+async def fetch_entity_degrees(*, names: List[str]) -> Dict[str, int]:
+    """Phase 2 fix: live-confirmed the entity-relatedness boost's direct-
+    query-entity-match path scored EVERY extracted query entity at a flat
+    1.0, with no document-frequency awareness -- unlike the Jaccard-ranked
+    "related entities" expansion, which was specifically designed to avoid
+    exactly this failure mode (see fetch_related_entities' own docstring).
+    A mundane message that simply addresses the assistant by name ("Orion,
+    what do you think...") extracted "Orion" as a query entity and, because
+    "orion" is one of the two most frequent nodes in the whole graph (282
+    mentions, confirmed live -- nearly every turn), injected 6 generic
+    filler turns ("thanks, appreciated.", "I'm all good.") at full boost
+    strength, purely because they happened to mention Orion by name.
+
+    This returns each name's live mention-count (same shape as
+    fetch_related_entities' internal degree1/degree2, just not currently
+    exposed there), letting the caller apply the identical document-
+    frequency principle to DIRECT matches that Jaccard already applies to
+    RELATED ones -- one query, not one round trip per entity.
+    """
+    client = get_recall_falkor_client()
+    if client is None or not names:
+        return {}
+
+    rows = await _safe_graph_query(
+        client,
+        "UNWIND $names AS name "
+        "MATCH (e:Entity {name: name})<-[r:MENTIONS_ENTITY]-() "
+        "RETURN name, count(r) AS degree",
+        {"names": list(names)},
+        log_ctx="fetch_entity_degrees",
+    )
+
+    return {str(r.get("name")): int(r.get("degree") or 0) for r in rows if r.get("name")}
+
+
 __all__ = [
     "fetch_related_entities",
     "fetch_bridging_turns",
     "fetch_entity_mention_timeline",
     "fetch_entity_matches_for_turns",
     "fetch_turns_mentioning_entities",
+    "fetch_entity_degrees",
 ]

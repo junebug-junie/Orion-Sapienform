@@ -244,3 +244,30 @@ def test_fetch_turns_mentioning_entities_none_client_returns_empty(monkeypatch) 
     monkeypatch.setattr(falkor_entity_relatedness, "get_recall_falkor_client", lambda: None)
     out = _run(falkor_entity_relatedness.fetch_turns_mentioning_entities(target_names=["nvidia"]))
     assert out == []
+
+
+def test_fetch_entity_degrees_full_shape(monkeypatch) -> None:
+    rows = [{"name": "orion", "degree": 282}, {"name": "nvidia", "degree": 23}]
+    fake_client = _FakeFalkorClient(rows=rows)
+    monkeypatch.setattr(falkor_entity_relatedness, "get_recall_falkor_client", lambda: fake_client)
+
+    out = _run(falkor_entity_relatedness.fetch_entity_degrees(names=["orion", "nvidia"]))
+
+    assert out == {"orion": 282, "nvidia": 23}
+    cypher, params = fake_client.calls[0]
+    assert "MENTIONS_ENTITY" in cypher
+    assert params["names"] == ["orion", "nvidia"]
+
+
+def test_fetch_entity_degrees_empty_names_returns_empty(monkeypatch) -> None:
+    fake_client = _FakeFalkorClient(rows=[])
+    monkeypatch.setattr(falkor_entity_relatedness, "get_recall_falkor_client", lambda: fake_client)
+    out = _run(falkor_entity_relatedness.fetch_entity_degrees(names=[]))
+    assert out == {}
+    assert fake_client.calls == []
+
+
+def test_fetch_entity_degrees_none_client_returns_empty(monkeypatch) -> None:
+    monkeypatch.setattr(falkor_entity_relatedness, "get_recall_falkor_client", lambda: None)
+    out = _run(falkor_entity_relatedness.fetch_entity_degrees(names=["orion"]))
+    assert out == {}

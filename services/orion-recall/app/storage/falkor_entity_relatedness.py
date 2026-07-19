@@ -264,9 +264,57 @@ async def fetch_entity_matches_for_turns(
     return out
 
 
+async def fetch_turns_mentioning_entities(
+    *,
+    target_names: List[str],
+    max_results: int = 8,
+) -> List[Dict[str, Any]]:
+    """Phase 2 (fusion-weight boost), added after live evidence showed the
+    boost alone never fires: fetch_entity_matches_for_turns can only re-rank
+    turn_ids ALREADY in the candidate pool, and falkor_chat's own fetch
+    (falkor_chat_adapter.py::fetch_falkor_chatturn_fragments) is
+    deliberately unfiltered by query -- it returns the most-recent-N turns
+    regardless of content (that's Phase 4's own documented design: chatturn
+    recall is recency-based, not relevance-filtered). Live-verified across
+    3 profiles and 6 real queries: an entity from months-old turns never
+    appears in a recency-windowed pool of 4-12 items, so the boost had
+    nothing to act on and never changed a single ranking.
+
+    This closes that gap the other direction: given the target entity set
+    already computed for the query, fetch actual ChatTurn ids that mention
+    them directly (independent of recency), for injection as NEW candidates
+    -- not just re-ranking of whatever recency already happened to fetch.
+    Text hydration (Postgres join) and fragment-shape construction stay in
+    worker.py, matching where falkor_chat_adapter.py already does the same
+    join for the recency-fetched candidates -- this function only resolves
+    which turn_ids are relevant, same division of labor as the rest of this
+    module.
+    """
+    client = get_recall_falkor_client()
+    if client is None or not target_names:
+        return []
+
+    rows = await _safe_graph_query(
+        client,
+        "MATCH (t:ChatTurn {source_kind: 'chat.history'})-[r:MENTIONS_ENTITY]->(e:Entity) "
+        "WHERE e.name IN $target_names "
+        "RETURN DISTINCT t.turn_id AS turn_id, t.ts AS ts "
+        "ORDER BY t.ts DESC LIMIT $max_results",
+        {"target_names": list(target_names), "max_results": int(max(1, min(max_results, 50)))},
+        log_ctx="fetch_turns_mentioning_entities",
+    )
+
+    return [
+        {"turn_id": str(r.get("turn_id")), "ts": r.get("ts")}
+        for r in rows
+        if r.get("turn_id")
+    ]
+
+
 __all__ = [
     "fetch_related_entities",
     "fetch_bridging_turns",
     "fetch_entity_mention_timeline",
     "fetch_entity_matches_for_turns",
+    "fetch_turns_mentioning_entities",
 ]

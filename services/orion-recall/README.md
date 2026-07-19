@@ -126,20 +126,28 @@ Chatturn-only read path standing in for RDF's chat-turn fetch. **Live as of 2026
 
 **Stated plainly:** as of Phase 2 below, `fetch_related_entities` is also called from `worker.py`'s default (non-PCR) fusion path, dark-flagged. `fetch_bridging_turns`/`fetch_entity_mention_timeline` remain debug-only.
 
-### Entity-relatedness fusion-weight boost (Phase 2, ships dark -- do not flip live without reading the caveat below)
+### Entity-relatedness fusion-weight boost + injection (Phase 2, live)
 
-`worker.py::_compute_entity_relatedness_boost_map` extracts entities from the query, expands them via Phase 1's `fetch_related_entities` (Jaccard-ranked), and additively boosts a `falkor_chat` candidate's composite score in `fusion.py::fuse_candidates` when its source turn mentions any of those (or directly-matched) entities -- the same additive-boost shape as the existing `tag_boost`/`turn_effect_boost`.
+`worker.py::_compute_entity_relatedness_boost_map` extracts entities from the query, expands them via Phase 1's `fetch_related_entities` (Jaccard-ranked), and does two things with the resulting target-entity set:
+
+1. **Boost**: additively boosts a `falkor_chat` candidate's composite score in `fusion.py::fuse_candidates` when its source turn mentions any target entity -- the same additive-boost shape as the existing `tag_boost`/`turn_effect_boost`.
+2. **Injection**: fetches real ChatTurn ids that mention any target entity directly (`fetch_turns_mentioning_entities`, independent of recency), hydrates their text via the same Postgres join `falkor_chat_adapter.py` already uses, and adds them to the candidate pool as new `falkor_chat` candidates.
+
+Injection is the load-bearing half, found necessary only after live testing: `falkor_chat`'s own fetch (the recency-windowed one above) has no query filter by design (Phase 4), so an entity from an older turn never enters the pool for the boost alone to act on. A boost with nothing to boost is a no-op -- confirmed live across 6 real queries before this fix, 0/6 changed a single ranking.
 
 | Variable | Default | Notes |
 | :--- | :--- | :--- |
-| `RECALL_ENTITY_RELATEDNESS_BOOST_ENABLED` | `false` (dark) | See `settings.py`'s comment for the full design. |
+| `RECALL_ENTITY_RELATEDNESS_BOOST_ENABLED` | `true` (live as of 2026-07-19) | See `settings.py`'s comment for the full design + evidence. Code-level pydantic default stays `false` (safe fallback for any environment that hasn't set this key), matching `RECALL_FALKOR_IN_CHAT`'s convention. |
 | `entity_relatedness_boost_weight` (per-profile, `relevance` cfg) | `0.2` | Same additive-scale convention as `prefer_tags_boost` (0.15)/`turn_effect_boost_weight` (0.35). |
 
-**Do not flip this live yet -- one real gap remains, found in code review:**
+**Fixed before flipping live, both found in code review:**
 
-~~`_extract_entities` had a pre-existing regex bug~~ -- **fixed**: a literal double-backslash inside an r-string (`\\s`/`\\.` matched a literal backslash, not whitespace/a dot) meant it never merged multi-word entity spans ("New York" -> "New"/"York" separately) and dropped all-caps acronyms entirely ("NVIDIA" -> nothing). Fixed at the source (`worker.py::_extract_entities`, `tests/test_extract_entities.py`) after confirming the fix only improves its other two callers too. Still no stopword filtering (sentence-initial capitalized words like "Tell" still extract as false-positive query "entities") -- a smaller, separate precision gap, not a correctness bug.
+- `_extract_entities` had a pre-existing regex bug (literal double-backslash inside an r-string matched a literal backslash, not whitespace/a dot) that broke multi-word spans and all-caps acronyms. Fixed at the source (`worker.py::_extract_entities`, `tests/test_extract_entities.py`).
+- The boost-only design never fired in practice (see above). Fixed by adding the injection half.
 
-**No recall-quality evidence yet, only one hand-verified ranking example.** Live-verified end to end that a `falkor_chat` candidate whose turn directly mentions an extracted query entity correctly reranks above a same-source candidate with a higher base score -- proving the wiring works, not that it improves real recall quality across real queries. `app/recall_eval.py`/`recall_eval_corpus.json` (this service's existing eval harness) was not run against this feature. This should close before flipping this flag, not just before merging the PR that ships it dark.
+**Real evidence, not one hand-picked example**: `scripts/live_verify_entity_relatedness_boost.py` (re-runnable) ran 6 real queries against the live `chat.general.v1` profile, flag off vs on. 4/6 changed, and every changed result was visibly, substantively more relevant to the query's actual topic (e.g. "Tesla gpu setup" surfaced a real GPU-status turn instead of an unrelated recent one; "Atlas" surfaced a GPU-node turn). The 2 no-entity control queries ("how's it going today", "what's the weather like") stayed unchanged in both runs -- no false-positive regression on generic conversational queries.
+
+**Known, disclosed, unproven-live gap**: injected candidates don't pass through `_suppress_self_hits` (which runs earlier in `process_recall`, before injection). Low risk in practice -- entity extraction from a turn is async/post-persist, so the current turn's own entities aren't normally in Falkor yet when recall runs for that same turn -- but not proven impossible. Worth a follow-up test, not treated as blocking the live flip.
 
 ### Vector / Chroma
 

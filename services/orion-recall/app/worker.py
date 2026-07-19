@@ -43,9 +43,13 @@ try:
     )
     from .storage.falkor_chat_adapter import fetch_falkor_chatturn_fragments
     from .storage.falkor_graphtri_adapter import fetch_falkor_graphtri_fragments, fetch_falkor_graphtri_anchors
-    from .storage.falkor_entity_relatedness import fetch_related_entities, fetch_entity_matches_for_turns
+    from .storage.falkor_entity_relatedness import (
+        fetch_related_entities,
+        fetch_entity_matches_for_turns,
+        fetch_turns_mentioning_entities,
+    )
     from .sql_timeline import fetch_recent_fragments, fetch_related_by_entities, fetch_exact_fragments
-    from .sql_chat import fetch_chat_history_pairs, fetch_chat_messages, fetch_chat_turn_timestamps
+    from .sql_chat import fetch_chat_history_pairs, fetch_chat_messages, fetch_chat_turn_timestamps, fetch_chat_turns_by_id, _to_epoch
     from .cards_adapter import fetch_card_fragments_guarded
     try:
         from .storage.graph_compression_adapter import fetch_graph_compression_fragments
@@ -76,9 +80,13 @@ except ImportError as _e:  # pragma: no cover - fallback for runtime pathing
         )
         from app.storage.falkor_chat_adapter import fetch_falkor_chatturn_fragments  # type: ignore
         from app.storage.falkor_graphtri_adapter import fetch_falkor_graphtri_fragments, fetch_falkor_graphtri_anchors  # type: ignore
-        from app.storage.falkor_entity_relatedness import fetch_related_entities, fetch_entity_matches_for_turns  # type: ignore
+        from app.storage.falkor_entity_relatedness import (  # type: ignore
+            fetch_related_entities,
+            fetch_entity_matches_for_turns,
+            fetch_turns_mentioning_entities,
+        )
         from app.sql_timeline import fetch_recent_fragments, fetch_related_by_entities, fetch_exact_fragments  # type: ignore
-        from app.sql_chat import fetch_chat_history_pairs, fetch_chat_messages, fetch_chat_turn_timestamps  # type: ignore
+        from app.sql_chat import fetch_chat_history_pairs, fetch_chat_messages, fetch_chat_turn_timestamps, fetch_chat_turns_by_id, _to_epoch  # type: ignore
         from app.cards_adapter import fetch_card_fragments_guarded  # type: ignore
         try:
             from app.storage.graph_compression_adapter import fetch_graph_compression_fragments  # type: ignore
@@ -600,18 +608,19 @@ async def _fetch_graphtri_fragments(
 
 _ENTITY_RELATEDNESS_MAX_QUERY_ENTITIES = 3
 _ENTITY_RELATEDNESS_MAX_RELATED_PER_ENTITY = 15
+_ENTITY_RELATEDNESS_MAX_INJECTED_TURNS = 6
 
 
 async def _compute_entity_relatedness_boost_map(
     *,
     query_text: str,
     candidates: List[Dict[str, Any]],
-) -> Dict[str, float]:
+) -> Tuple[Dict[str, float], List[Dict[str, Any]]]:
     """Phase 2 of entity-graph-reasoning (docs/superpowers/specs/
     2026-07-19-recall-entity-graph-reasoning-arc.md). Best-effort: any
-    failure (no client, no query entities, Falkor error) returns {}, which
-    fusion.py's _entity_relatedness_boost treats as "no boost" -- this must
-    never be a hard dependency for recall to return results.
+    failure (no client, no query entities, Falkor error) returns ({}, []),
+    which is a true no-op for both the boost and the injection paths -- this
+    must never be a hard dependency for recall to return results.
 
     1. Extract entities from the query (same _extract_entities heuristic
        used elsewhere in this file), lowercased to match Falkor's always-
@@ -630,8 +639,20 @@ async def _compute_entity_relatedness_boost_map(
        (a candidate turn directly mentioning what the query is about is
        stronger evidence than "related to" it), related entities score
        their own Jaccard value.
-    4. Batch-lookup (one query) which falkor_chat candidate turns mention
-       any target entity, and return the max target score per matched turn.
+    4. Batch-lookup (one query) which EXISTING falkor_chat candidate turns
+       mention any target entity, for boosting.
+    5. ALSO fetch actual ChatTurn ids that mention any target entity,
+       independent of what's already in the pool (fetch_turns_mentioning_
+       entities), hydrate their text via Postgres, and return them as NEW
+       candidates to inject -- excluding any turn_id already present.
+
+    Step 5 exists because live evidence (6 real queries across 3 profiles)
+    showed step 4 alone never changes a single ranking: falkor_chat's own
+    fetch (falkor_chat_adapter.py) is deliberately recency-windowed with no
+    query filter (Phase 4's own design), so an entity from a turn older
+    than that window never enters the pool for step 4 to boost in the first
+    place. A fusion-weight boost can only re-rank what's already fetched;
+    step 5 is what actually gets query-relevant turns into the pool at all.
 
     The whole body below the cheap guard checks is wrapped in try/except:
     this function's entire contract is "never a hard dependency for recall
@@ -641,12 +662,12 @@ async def _compute_entity_relatedness_boost_map(
     still crash process_recall's default (non-PCR) path with no fallback.
     """
     if not settings.RECALL_ENTITY_RELATEDNESS_BOOST_ENABLED or not query_text:
-        return {}
+        return {}, []
 
     try:
         query_entities = list(dict.fromkeys(e.lower() for e in _extract_entities(query_text)))
         if not query_entities:
-            return {}
+            return {}, []
 
         target_scores: Dict[str, float] = {e: 1.0 for e in query_entities}
         capped_entities = query_entities[:_ENTITY_RELATEDNESS_MAX_QUERY_ENTITIES]
@@ -667,26 +688,63 @@ async def _compute_entity_relatedness_boost_map(
                 if name and score > target_scores.get(name, 0.0):
                     target_scores[name] = score
 
-        turn_ids = sorted(
-            {
-                str(c.get("uri") or c.get("id") or "").strip()
-                for c in candidates
-                if str(c.get("source") or "") == "falkor_chat" and (c.get("uri") or c.get("id"))
-            }
-            - {""}
-        )
-        if not turn_ids:
-            return {}
+        existing_turn_ids = {
+            str(c.get("uri") or c.get("id") or "").strip()
+            for c in candidates
+            if str(c.get("source") or "") == "falkor_chat" and (c.get("uri") or c.get("id"))
+        } - {""}
 
-        matches = await fetch_entity_matches_for_turns(turn_ids=turn_ids, target_names=list(target_scores.keys()))
-        return {
-            turn_id: max(target_scores.get(name, 0.0) for name in matched_names)
-            for turn_id, matched_names in matches.items()
-            if matched_names
-        }
+        mentioning = await fetch_turns_mentioning_entities(
+            target_names=list(target_scores.keys()), max_results=_ENTITY_RELATEDNESS_MAX_INJECTED_TURNS
+        )
+        new_turn_ids = [
+            t
+            for t in dict.fromkeys(str(m.get("turn_id") or "").strip() for m in mentioning)
+            if t and t not in existing_turn_ids
+        ]
+
+        injected: List[Dict[str, Any]] = []
+        if new_turn_ids:
+            text_map = await fetch_chat_turns_by_id(new_turn_ids)
+            ts_by_turn = {str(m.get("turn_id")): m.get("ts") for m in mentioning}
+            for turn_id in new_turn_ids:
+                if turn_id not in text_map:
+                    continue
+                prompt, response = text_map[turn_id]
+                text = f'ExactUserText: "{prompt}"\nOrionResponse: "{response}"'.strip()
+                injected.append(
+                    {
+                        "id": turn_id,
+                        "source": "falkor_chat",
+                        "source_ref": "falkordb",
+                        "uri": turn_id,
+                        "text": text[:1800],
+                        "ts": _to_epoch(ts_by_turn.get(turn_id)),
+                        "tags": ["falkor", "chat", "chatturn", "entity_relatedness_injected"],
+                        "score": 0.50,
+                        "meta": {},
+                    }
+                )
+
+        # One batched call covering BOTH the recency-fetched candidates and
+        # the newly-injected ones -- same precise per-turn scoring for both,
+        # no hardcoded score for injected turns.
+        all_turn_ids = sorted(existing_turn_ids | {f["uri"] for f in injected})
+        boost_map: Dict[str, float] = {}
+        if all_turn_ids:
+            matches = await fetch_entity_matches_for_turns(
+                turn_ids=all_turn_ids, target_names=list(target_scores.keys())
+            )
+            boost_map = {
+                turn_id: max(target_scores.get(name, 0.0) for name in matched_names)
+                for turn_id, matched_names in matches.items()
+                if matched_names
+            }
+
+        return boost_map, injected
     except Exception as exc:
         logger.debug(f"entity relatedness boost: skipped: {exc}")
-        return {}
+        return {}, []
 
 
 def _rdf_enabled(profile: Dict[str, Any]) -> bool:
@@ -1917,9 +1975,19 @@ async def process_recall(
         )
     else:
         entity_boost_started = time.time()
-        entity_boost_map = await _compute_entity_relatedness_boost_map(
+        entity_boost_map, entity_injected_candidates = await _compute_entity_relatedness_boost_map(
             query_text=query_fragment, candidates=candidates
         )
+        if entity_injected_candidates:
+            # Live evidence (6 real queries, 3 profiles) showed the boost
+            # alone never fires: falkor_chat's own fetch is recency-windowed
+            # with no query filter, so an entity from an older turn never
+            # enters the pool for the boost to act on. These are turns
+            # fetched specifically because they mention the query's own
+            # entities (or Jaccard-related ones) -- added to the same pool
+            # fuse_candidates already dedupes/ranks, not a separate path.
+            candidates = candidates + entity_injected_candidates
+            backend_counts_total["falkor_chat_entity_injected"] = len(entity_injected_candidates)
         # Kept separate from timing_breakdown_ms["fusion"] below: this is
         # Falkor I/O (up to 4 round trips when the flag is on), not
         # fuse_candidates' own in-process ranking work -- folding it into

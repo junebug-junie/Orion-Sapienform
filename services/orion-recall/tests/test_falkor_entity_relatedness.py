@@ -207,3 +207,40 @@ def test_fetch_entity_matches_for_turns_none_client_returns_empty(monkeypatch) -
         falkor_entity_relatedness.fetch_entity_matches_for_turns(turn_ids=["t1"], target_names=["nvidia"])
     )
     assert out == {}
+
+
+def test_fetch_turns_mentioning_entities_full_shape(monkeypatch) -> None:
+    rows = [
+        {"turn_id": "turn-2", "ts": "2026-01-01T00:00:00"},
+        {"turn_id": "turn-1", "ts": "2025-10-21T00:00:00"},
+    ]
+    fake_client = _FakeFalkorClient(rows=rows)
+    monkeypatch.setattr(falkor_entity_relatedness, "get_recall_falkor_client", lambda: fake_client)
+
+    out = _run(
+        falkor_entity_relatedness.fetch_turns_mentioning_entities(target_names=["nvidia"], max_results=8)
+    )
+
+    assert out == [
+        {"turn_id": "turn-2", "ts": "2026-01-01T00:00:00"},
+        {"turn_id": "turn-1", "ts": "2025-10-21T00:00:00"},
+    ]
+    cypher, params = fake_client.calls[0]
+    assert "MENTIONS_ENTITY" in cypher
+    assert "source_kind: 'chat.history'" in cypher
+    assert params["target_names"] == ["nvidia"]
+    assert params["max_results"] == 8
+
+
+def test_fetch_turns_mentioning_entities_empty_target_names_returns_empty(monkeypatch) -> None:
+    fake_client = _FakeFalkorClient(rows=[])
+    monkeypatch.setattr(falkor_entity_relatedness, "get_recall_falkor_client", lambda: fake_client)
+    out = _run(falkor_entity_relatedness.fetch_turns_mentioning_entities(target_names=[]))
+    assert out == []
+    assert fake_client.calls == []
+
+
+def test_fetch_turns_mentioning_entities_none_client_returns_empty(monkeypatch) -> None:
+    monkeypatch.setattr(falkor_entity_relatedness, "get_recall_falkor_client", lambda: None)
+    out = _run(falkor_entity_relatedness.fetch_turns_mentioning_entities(target_names=["nvidia"]))
+    assert out == []

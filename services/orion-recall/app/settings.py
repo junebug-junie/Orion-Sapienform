@@ -333,6 +333,33 @@ class Settings(BaseSettings):
     # forever. Still no stopword filtering (sentence-initial capitalized
     # words like "Tell" still extract as false-positive "entities") -- a
     # separate, smaller, still-open precision gap, not a correctness bug.
+    #
+    # SECOND FIX, load-bearing: live testing across 6 real queries / 3
+    # profiles showed the boost-only design above NEVER changed a single
+    # ranking, because falkor_chat's own fetch (falkor_chat_adapter.py) is
+    # deliberately recency-windowed with no query filter (Phase 4's own
+    # design) -- an entity from an older turn never entered the candidate
+    # pool for the boost to act on in the first place. _compute_entity_
+    # relatedness_boost_map now ALSO fetches real ChatTurn ids that mention
+    # the query's target entities directly (fetch_turns_mentioning_entities,
+    # independent of recency), hydrates them via the same Postgres join
+    # falkor_chat_adapter.py already uses, and injects them as new
+    # candidates -- not just re-ranking whatever the recency fetch happened
+    # to grab. This is what actually made the feature work: re-verified
+    # live afterward, 4 of 6 real queries changed, and in every changed case
+    # the new top result was visibly more relevant to the query's topic
+    # (e.g. "Tesla gpu setup" surfaced a real GPU-status turn instead of an
+    # unrelated recent one); both no-entity control queries stayed
+    # unchanged, confirming no false-positive regression. Re-runnable via
+    # scripts/live_verify_entity_relatedness_boost.py.
+    #
+    # Flipped live 2026-07-19 on the strength of that evidence. Known,
+    # disclosed, unproven-live gap: injected candidates don't pass through
+    # _suppress_self_hits (which runs before injection in process_recall)
+    # -- low risk in practice since entity extraction from a turn is async/
+    # post-persist, so the current turn's own entities are not normally in
+    # Falkor yet when recall runs for that same turn, but not proven
+    # impossible. Worth a follow-up test, not treated as blocking.
     RECALL_ENTITY_RELATEDNESS_BOOST_ENABLED: bool = Field(
         default=False, validation_alias=AliasChoices("RECALL_ENTITY_RELATEDNESS_BOOST_ENABLED")
     )

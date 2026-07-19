@@ -805,34 +805,11 @@ def test_manual_dense_fallback_still_publishes():
     mock_bus.publish.assert_called()
 
 
-def _unstable_self_state_payload() -> dict:
-    from datetime import datetime, timezone
-
-    from orion.schemas.self_state import SelfStateDimensionV1, SelfStateV1
-
-    now = datetime.now(timezone.utc)
-    return SelfStateV1(
-        self_state_id="ss-publish",
-        generated_at=now,
-        source_field_tick_id="tick-1",
-        source_field_generated_at=now,
-        source_attention_frame_id="frame-1",
-        source_attention_generated_at=now,
-        overall_condition="unstable",
-        overall_intensity=0.9,
-        overall_confidence=0.7,
-        dimensions={
-            "execution_pressure": SelfStateDimensionV1(
-                dimension_id="execution_pressure", score=0.85, confidence=0.7
-            )
-        },
-        prediction_error_scores={"execution_pressure": 0.62},
-        trajectory_condition="degrading",
-        overall_surprise=0.7,
-    ).model_dump(mode="json")
-
-
-def test_publish_applies_substrate_causal_density_and_trigger_lineage():
+def test_publish_builds_metacog_entry_from_real_artifacts_no_self_report():
+    """Real-artifact model: causal_density is scored purely from
+    substrate_eventfulness/repair_pressure/turn_effect -- no numeric_sisters
+    self-report, no self_state blend. Publishes MetacogEntryV1 to
+    channel_metacog_sql_write, not CollapseMirrorEntryV2 to channel_collapse_sql_write."""
     executor_module = _load_executor_module()
     mock_bus = MagicMock()
     mock_bus.publish = AsyncMock()
@@ -859,8 +836,8 @@ def test_publish_applies_substrate_causal_density_and_trigger_lineage():
     ctx = {
         "trigger": {"trigger_kind": "dense", "reason": "substrate_eventfulness:0.60"},
         "trigger_kind": "dense",
-        "self_state": _unstable_self_state_payload(),
         "substrate_eventfulness_score": 0.6,
+        "substrate_eventfulness_reasons": ["execution_pressure_spike"],
         "final_entry": valid_entry,
     }
 
@@ -885,15 +862,100 @@ def test_publish_applies_substrate_causal_density_and_trigger_lineage():
     assert result.status == "success"
     publish = result.result["MetacogPublishService"]
     assert publish.get("published") is True
+    assert publish["channel"] == executor_module.settings.channel_metacog_sql_write
     mock_bus.publish.assert_called_once()
+    channel_arg = mock_bus.publish.call_args[0][0]
+    assert channel_arg == executor_module.settings.channel_metacog_sql_write
+    envelope = mock_bus.publish.call_args[0][1]
+    assert envelope.kind == "metacog.entry.v1"
+    payload = envelope.payload
+    assert "numeric_sisters" not in payload
+    assert "state_snapshot" not in payload
+    assert payload["trigger_kind"] == "dense"
+    assert payload["trigger_reason"] == "substrate_eventfulness:0.60"
+    assert payload["state"]["substrate_eventfulness_score"] == 0.6
+    assert payload["state"]["substrate_eventfulness_reasons"] == ["execution_pressure_spike"]
+    assert payload["causal_density"]["score"] == pytest.approx(0.6)
+    assert payload["is_causally_dense"] is True
+    assert payload["snapshot_kind"] == "confirmed_dense"
+    # Topology (repurposed field_resonance): mechanically names which real
+    # artifacts are present, not a hardcoded/omitted field.
+    assert payload["touches"] == ["substrate"]
+    # Severity (repurposed observer_state): no failed steps, no llm_uncertainty
+    # signal in this ctx -> nominal, not a silent default masking real signal.
+    assert payload["severity"] == "nominal"
+    # Provenance: dynamic per trigger_kind and per touches, not a hardcoded
+    # constant with impacts always [].
+    assert payload["provenance"]["source"] == "cortex_exec.metacog_pipeline.dense"
+    assert payload["provenance"]["impacts"] == ["execution_trajectory"]
+    assert isinstance(payload["what_changed"]["evidence"], list)
+
+
+def test_publish_severity_and_touches_reflect_failures_and_repair_pressure():
+    """Same lane, adversarial ctx: a prior failed step plus real repair_pressure
+    evidence should show up as non-nominal severity and multi-item touches --
+    not silently dropped the way the first pass's hardcoded provenance was."""
+    executor_module = _load_executor_module()
+    mock_bus = MagicMock()
+    mock_bus.publish = AsyncMock()
+
+    valid_entry = CollapseMirrorEntryV2(
+        event_id="evt-relational",
+        id="evt-relational",
+        trigger="relational",
+        observer="Orion",
+        observer_state=["strained"],
+        type="flow",
+        emergent_entity="Relational Pulse",
+        summary="Test summary",
+        mantra="Test mantra",
+        field_resonance="Test resonance",
+        resonance_signature="Test sig",
+        source_service="metacog",
+    ).model_dump(mode="json")
+    valid_entry["state_snapshot"] = {"telemetry": {"metacog_draft_mode": "llm"}}
+
+    ctx = {
+        "trigger": {"trigger_kind": "relational", "reason": "relational_shift:repair:confidence=0.90"},
+        "trigger_kind": "relational",
+        "metadata": {
+            "substrate_effect_summary": {
+                "level": 0.9,
+                "level_label": "HIGH",
+                "confidence": 0.9,
+                "evidence": [{"evidence_kind": "trust_rupture", "score": 0.8, "confidence": 0.9}],
+                "behavior_applied": "acknowledge_and_repair",
+            }
+        },
+        "final_entry": valid_entry,
+    }
+
+    step = ExecutionStep(
+        step_name="publish",
+        verb_name="log_orion_metacognition",
+        services=["MetacogPublishService"],
+        order=1,
+    )
+    source = ServiceRef(name="test", node="test", version="1.0")
+
+    result = asyncio.run(
+        executor_module.call_step_services(
+            bus=mock_bus,
+            source=source,
+            step=step,
+            ctx=ctx,
+            correlation_id=str(uuid4()),
+        )
+    )
+
+    assert result.status == "success"
     envelope = mock_bus.publish.call_args[0][1]
     payload = envelope.payload
-    assert payload["causal_density"]["score"] > 0.2
-    assert payload["is_causally_dense"] is True
-    telemetry = payload["state_snapshot"]["telemetry"]
-    assert telemetry["trigger_kind"] == "dense"
-    assert telemetry["metacog_causal_density_source"] == "substrate_self_state_blend"
-    assert telemetry["substrate_eventfulness_score"] == 0.6
+    assert payload["touches"] == ["relational"]
+    assert payload["provenance"]["source"] == "cortex_exec.metacog_pipeline.relational"
+    assert payload["provenance"]["impacts"] == ["relationship_thread"]
+    assert payload["state"]["repair_pressure"]["level"] == pytest.approx(0.9)
+    assert payload["state"]["repair_pressure"]["evidence"][0]["evidence_kind"] == "trust_rupture"
 
 
 def test_log_orion_metacognition_recall_disabled_by_verb_default():

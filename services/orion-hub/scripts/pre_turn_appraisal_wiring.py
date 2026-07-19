@@ -46,6 +46,10 @@ def apply_pre_turn_appraisal_bundle(
         "confidence": confidence,
         "behavior_applied": behavior,
         "evidence_count": len(rp.evidence),
+        "evidence": [
+            {"evidence_kind": e.evidence_kind, "score": e.score, "confidence": e.confidence}
+            for e in rp.evidence
+        ],
         "changed_behavior": behavior,
         "chip_label": f"{behavior or 'no behavior change'} · {pressure_label(level)} repair pressure · {len(rp.evidence)} evidence drivers",
     }
@@ -87,7 +91,56 @@ async def run_pre_turn_appraisal_wiring(
         meta = dict(req.metadata or {})
         meta["substrate_effect_summary"] = summary
         req.metadata = meta
+        await _publish_repair_pressure_appraisal(
+            bus,
+            correlation_id=correlation_id,
+            summary=summary,
+        )
     return summary, bundle
+
+
+async def _publish_repair_pressure_appraisal(
+    bus: OrionBusAsync | None,
+    *,
+    correlation_id: str,
+    summary: dict[str, Any],
+) -> None:
+    """Publish the repair_pressure_v2 evidence as its own envelope so
+    orion-equilibrium-service's repair_pressure_metacog_gate can fire the
+    relational metacog trigger from a live appraisal instead of the retired
+    turn_change_classify SHIFT gate. Option A (new channel), chosen explicitly
+    over inline-in-cortex-exec -- see
+    docs/superpowers/design/2026-07-18-collapse-mirror-metacog-redesign.md.
+    """
+    if bus is None:
+        return
+    try:
+        from orion.core.bus.bus_schemas import BaseEnvelope, ServiceRef
+        from scripts.settings import settings
+
+        env = BaseEnvelope(
+            kind="repair_pressure.appraisal.v1",
+            source=ServiceRef(
+                name=settings.SERVICE_NAME,
+                version=settings.SERVICE_VERSION,
+                node=settings.NODE_NAME,
+            ),
+            correlation_id=correlation_id,
+            payload={
+                "correlation_id": correlation_id,
+                "level": summary.get("level"),
+                "level_label": summary.get("level_label"),
+                "confidence": summary.get("confidence"),
+                "evidence": summary.get("evidence") or [],
+                "behavior_applied": summary.get("behavior_applied"),
+            },
+        )
+        await bus.publish(settings.CHANNEL_REPAIR_PRESSURE_APPRAISAL, env)
+    except Exception:
+        logger.exception(
+            "repair_pressure_appraisal_publish_failed corr=%s",
+            correlation_id,
+        )
 
 
 def repair_pressure_grammar_scalars(

@@ -349,3 +349,195 @@ this doc explicitly left for Juniper):
   `services/orion-cortex-exec/app/executor.py`.
 - Schema field remapping, `substrate_grammar` trigger, provenance schema, heartbeat removal,
   STANCE handling: all still open per this doc's own "Open questions" section, untouched.
+
+## Implementation, second slice (2026-07-18, branch `feat/metacog-real-artifact-model`)
+
+Per Juniper's direct go-ahead to implement the real-artifact model, built the full split: a new,
+independent metacog schema/table sourced from live turn artifacts, with `collapse_mirror` now
+strict-lane-only for good.
+
+- **`collapse_mirror` is strict-lane-only.** `services/orion-dream/app/aggregators_sql.py::
+  fetch_recent_sql_fragments()` now filters `WHERE ... AND lower(trim(observer)) = 'juniper'`
+  (a SQL-level approximation of `orion/schemas/collapse_mirror.py::_observer_is_juniper()`,
+  minus diacritics-stripping -- a known, accepted simplification). No history migrated; the
+  8,481 existing rows stay exactly where they are.
+- **New schema: `orion/schemas/metacog_entry.py::MetacogEntryV1`.** Independent of
+  `CollapseMirrorEntryV2` -- no shared base class, no reused field names carrying old baggage.
+  Drops `numeric_sisters` entirely, no replacement. `state` (`MetacogRealState`) holds only real,
+  live-computed artifacts: `biometrics`, `turn_effect`/`turn_effect_evidence`,
+  `substrate_eventfulness_score`/`_reasons`, `llm_uncertainty`, `reasoning_excerpt`, and
+  `repair_pressure` (level/confidence/evidence/behavior_applied). `snapshot_kind` is a real
+  `Literal["baseline", "confirmed_dense"]` -- learned from `collapse_mirror.snapshot_kind`'s 38
+  distinct garbage free-text values in production after years as an unconstrained string.
+  `causal_density` (`orion/metacog/service.py::compute_causal_density`) blends only real
+  artifacts (repair_pressure, substrate_eventfulness, a severity read off turn_effect) -- there is
+  no self-report leg in this model, so nothing to blend it against.
+- **New table: `orion_metacog`** (`services/orion-sql-writer/app/models/metacog_entry.py`), a
+  genuinely different table from `collapse_mirror`, not a `_v2`. New channel
+  `orion:metacog:sql-write`, registered in `orion/bus/channels.yaml` and wired into
+  `orion-sql-writer`'s `MODEL_MAP`/`DEFAULT_ROUTE_MAP`/subscribe list (settings default AND
+  `.env_example`, since the env alias replaces the JSON route map wholesale in live deployments).
+- **`numeric_sisters` contamination fix (root problem 1, finally addressed).** The enrich prompt
+  (`orion/cognition/prompts/log_orion_metacognition_enrich.j2`) no longer instructs the LLM to
+  derive `numeric_sisters` from phi bands -- that section, the "NUMERIC SISTERS" mapping table,
+  and the "RISK SCORE" section are deleted from the template; the allowed-keys/forbidden-keys
+  lists and example JSON were updated to match. `phi_hint`/`spark_phi_narrative` computation in
+  `MetacogContextService` is left in place (still used by the fallback draft's narrative text and
+  the draft/enrich prompts' scene-setting "SPARK φ INTERPRETATION" guidance) -- just no longer fed
+  into anything that becomes a numeric self-rating.
+- **relational trigger re-sourced to repair_pressure_v2, replacing `turn_change_classify`.**
+  `services/orion-hub/scripts/pre_turn_appraisal_wiring.py` now forwards the full typed evidence
+  breakdown (`evidence_kind`/`score`/`confidence` per detector, not just a count) and publishes a
+  new `orion:repair_pressure:appraisal` envelope (Option A: new channel, chosen over inlining this
+  into cortex-exec) whenever the repair_pressure paradigm actually ran.
+  `services/orion-equilibrium-service/app/relational_metacog_gate.py` (subscribed to
+  `orion:chat:history:spark_meta:patch`, keyed on `turn_change_classify`'s SHIFT appraisal) is
+  deleted; `repair_pressure_metacog_gate.py` replaces it, keyed on `level`/`confidence` floors
+  over the new channel. `trigger_kind="relational"` is unchanged -- same conceptual category,
+  different evidence source.
+- **cortex-exec retarget.** `MetacogDraftService`/`MetacogEnrichService` keep using a
+  `CollapseMirrorEntryV2`-shaped scratch object internally -- that machinery (LLM patch schemas,
+  prompt-budget enforcement, the uncertainty probe) stays as-is, since it's just plumbing for the
+  authored summary/mantra/what_changed narrative loop (the "ritual half," explicitly meant to stay
+  non-deterministic). Only `MetacogPublishService` changed: it now builds a real `MetacogEntryV1`
+  from `ctx`'s live artifacts plus the scratch object's authored text, computes `causal_density`
+  inline via `orion.metacog.service.compute_causal_density`, and publishes to
+  `orion:metacog:sql-write` instead of `orion:collapse:sql-write`. The old self_state-blended
+  `apply_causal_density_to_entry` call is gone from this path (still used, unchanged, by the
+  strict-lane Hub form via `collapse_verbs.py`).
+- Tests: new schema tests (`orion/schemas/tests/test_metacog_entry.py`), new causal-density
+  scoring tests (`orion/metacog/tests/test_service.py`), new equilibrium gate tests
+  (`services/orion-equilibrium-service/tests/test_repair_pressure_metacog_gate.py`, replacing the
+  deleted `test_relational_metacog_gate.py`), new sql-writer wiring-shape tests
+  (`services/orion-sql-writer/tests/test_metacog_entry_sql_shape.py`), new hub wiring tests
+  (`services/orion-hub/tests/test_pre_turn_appraisal_wiring.py` additions), a dream-scope
+  regression test (`services/orion-dream/tests/test_aggregators_sql_collapse_scope.py`), and a
+  rewritten cortex-exec publish-lane test
+  (`services/orion-cortex-exec/tests/test_metacog_publish_lane.py::
+  test_publish_builds_metacog_entry_from_real_artifacts_no_self_report`, replacing the old
+  self_state-blend assertion this patch obsoletes).
+
+**Open question, not answered in this slice:** should `orion/memory/turn_change_classify.py` be
+retired? It is no longer used by metacog -- repair_pressure_v2 replaced it there in this same
+patch -- but it still feeds `orion/memory/retrieval_intent.py`'s recall-routing
+(`derive_retrieval_intent()`), which this patch does not touch. A later pass should look at
+whether that one remaining use case still justifies its own LLM-probe classifier, or whether it
+could be consolidated/simplified now that its other consumer is gone. Deliberately not answered
+here.
+
+## Correction pass (2026-07-18, same branch): the first slice dropped real design content
+
+The first pass of this slice (above) kept the "no self-report" and "repair_pressure_v2" wins but
+flattened or dropped several structural pieces this doc's own "Proposed schema field remapping"
+and "New lineage/provenance shape" sections had already worked out. Root cause: the dispatch spec
+for that pass cited this doc by line number but then paraphrased its content from memory instead
+of transcribing it -- the gap was between what this doc says and what got *told* to the
+implementing pass, not something lost during execution. Caught via direct review pushback, not
+by any gate in this process, which is itself worth noting.
+
+What was missing and what got fixed, each backed by data already sitting in `ctx` with no new
+producer needed:
+
+- **`trigger` as a sequence, not one code.** This doc's proposal: `trigger` names the one specific
+  thing that fired the entry, with a fuller ordered list of every component's code for the turn
+  living in the snapshot as supporting evidence. `executor.py`'s own `logs`/`merged_result`
+  (accumulated across every step of the turn, "ok <- X" / "error <- X" / "skip <- X (...)") already
+  *is* that ordered sequence. Now wired into `MetacogWhatChanged.evidence`, capped to the last 20
+  entries, 200 chars each. `trigger_kind`/`trigger_reason` (from the upstream `MetacogTriggerV1`)
+  were already a reasonable fit for "the one specific thing" and were left as-is.
+- **Severity, repurposing `observer_state`.** This doc: nominal/degraded/critical, thresholded off
+  real numbers already available (uncertainty, retry/failure count). Added
+  `MetacogEntryV1.severity`, computed by `orion.metacog.service.compute_severity()` off two real,
+  independent signals: a count of unambiguous failure-prefixed lines in `logs` this turn (`fail`/
+  `error`/`exception` only -- an earlier draft of this fix wrongly counted routine `exec ->` start
+  markers as failures, caught by a test regression before it shipped, see
+  `test_severity_degraded_on_single_failed_step` and friends) and `orion-llm-gateway`'s own real
+  logprob-margin telemetry (`mean_top1_margin`, `low_margin_token_count` --
+  `services/orion-llm-gateway/app/llm_uncertainty.py`, not a self-rating). Thresholds are starting
+  defaults, same calibration caveat as `causal_density`'s weights.
+- **Topology, repurposing `field_resonance`.** This doc: which other parts of the system this event
+  echoes across ("touched: reasoning, grounding, autonomy"), not a repeat of severity. Added
+  `MetacogEntryV1.touches`, computed by `compute_touches()` -- mechanically names which `state`
+  sub-fields are actually populated (`repair_pressure` present -> `"relational"`, etc.). No new
+  signal, just naming what's already on the entry.
+- **`provenance.source`/`impacts`, dynamic not hardcoded.** This doc gave varied, specific examples
+  (`"cortex_exec.step_friction"`, `"chat.correction_detected"`). The first pass shipped a constant
+  (`source="cortex_exec.metacog_pipeline"`, `impacts=[]`) on every single entry -- a schema-valid
+  field carrying zero information, exactly the pattern CLAUDE.md's no-empty-shell-cognition rule
+  bans. `compute_provenance()` now derives `source` from the real `trigger_kind` and `impacts` from
+  the same `touches` list above (a channel-name/relationship-thread/execution-trajectory mapping per
+  touch), so two different entries actually produce two different provenance records.
+- **`emergent_entity`-as-phase-of-run:** left genuinely open. This doc's own framing of this one was
+  a caution ("notice you're doing it on purpose, not by accident"), not a decision -- not filling it
+  in guessed.
+
+New tests: `orion/metacog/tests/test_service.py` (severity/touches/provenance, 13 new cases) and
+`services/orion-cortex-exec/tests/test_metacog_publish_lane.py::
+test_publish_severity_and_touches_reflect_failures_and_repair_pressure` (adversarial-ctx
+integration case: real repair_pressure evidence plus the existing real-artifact case now assert on
+`touches`/`severity`/`provenance` instead of only checking the response didn't crash).
+
+## Metric quality gate, actually run this time (2026-07-19, same branch)
+
+CLAUDE.md section 0A requires 6 steps per new signal, findings recorded. The prior passes on this
+branch did steps 1 (provenance) and 5 (existing-mechanism) for some of `MetacogRealState`'s fields,
+ad hoc, and never step 2 (independence) or step 4 (live-data sanity) for any of them, and never
+wrote it down. Run properly this time, against real containers/Postgres, not code-tracing alone.
+
+**Finding, serious: `repair_pressure`'s confidence structurally floors at exactly 0.0 on ordinary
+turns.** `orion/substrate/appraisal/paradigms/repair_pressure_v2.py:91-97`: confidence is
+`min()` over only the evidence kinds that scored `> 0.5`; if none do, confidence is set to exactly
+`0.0`, by construction, not a low-but-nonzero read. The only real appraisal found anywhere (docker
+logs, `orion-athena-cortex-exec`, corr `9899932f-...`): `level=0.087 confidence=0.000`. The
+relational trigger's gate (`repair_pressure_metacog_gate.py`) fires on `level >= threshold and
+confidence >= confidence_floor` (0.7 default) -- with confidence structurally zero unless some
+evidence kind scores strongly, this gate may rarely or never open on ordinary conversation. n=1,
+so "never" isn't proven, but this is a real, structural reason to doubt the thing shipped as
+"already live and working" two commits ago, not a calibration nit.
+
+**Correction to an earlier claim in this same doc:** "repair_pressure_v2 ... already runs live on
+every real chat turn today" was asserted from `ENABLE_PRE_TURN_APPRAISAL=true` being set in the
+running hub container. Real log evidence: **1 firing in 88 real chat turns over 7 days** (~1%), not
+every turn. Config-on is not proof of frequency -- exactly the "runtime truth beats config truth"
+rule this doc otherwise applies to `telemetry_anomaly`.
+
+**Zero durable observability, found while trying to get a longer look-back window.** Docker's
+logging driver on every cortex-exec container is `json-file` -- ephemeral, wiped by today's fleet
+restart (22:41:41). No centralized log store exists (a "vector" container stack turned out to be
+ChromaDB for recall embeddings, unrelated, a false lead). `repair_pressure`'s appraisal was never
+persisted to Postgres either (`chat_history_log.client_meta`/`spark_meta` checked across 30 days:
+zero `substrate_effect_summary` keys found). One real sample, ever, no way to look further back --
+not a search-window problem, an actual absence-of-retention problem.
+
+**Fix shipped:** `repair_pressure_appraisal_log`, a new standalone Postgres table
+(`services/orion-sql-writer/app/models/repair_pressure_appraisal.py`), fed by a new consumer on the
+already-existing `orion:repair_pressure:appraisal` channel (`orion-sql-writer` added as a second
+consumer alongside `orion-equilibrium-service`; `orion/bus/channels.yaml`'s `schema_id` also
+corrected from `MetacogRepairPressure`, which doesn't carry `correlation_id`, to the real dedicated
+schema `RepairPressureAppraisalV1`, `orion/schemas/repair_pressure_appraisal.py`). Logs **every**
+appraisal, gated or not -- the point is visibility into the real distribution, not just the ones
+that happened to cross a threshold nobody has validated yet. Deliberately a standalone insert-only
+table, not a patch onto `chat_history_log` the way `turn_change_appraisal` works: `repair_pressure`
+computes pre-turn, before that row necessarily exists, and `orion-sql-writer`'s existing
+`_apply_spark_meta_patch` errors and drops the patch if the target row is missing
+(`services/orion-sql-writer/app/worker.py:732-745`) -- a patch-shaped fix would have silently lost
+data on exactly the turns this table needs to capture.
+
+**Bug caught while adding this table, unrelated to `repair_pressure` itself:** `severity`/`touches`
+were added to `MetacogEntryV1` in the prior correction pass, but the matching SQLAlchemy columns on
+`orion-sql-writer`'s `MetacogEntry` table were never added. `_row_dict`'s generic column-name filter
+silently drops any payload key without a matching column -- both fields were being dropped on every
+real insert into `orion_metacog`. Fixed (two new columns) and regression-tested
+(`test_severity_and_touches_columns_exist_and_do_not_get_silently_dropped`).
+
+**Still open, not resolved by this pass:** whether `confidence_floor=0.7` is the right threshold
+given confidence's structural floor at 0.0 needs a real window of `repair_pressure_appraisal_log`
+data to answer, not more code-tracing -- that's exactly what this table now makes possible. Revisit
+once there's been enough live chat volume (at ~1 turn/hour of `repair_pressure` paradigm firings
+observed so far, this needs days, not hours). `substrate_eventfulness_score`, `turn_effect`,
+`biometrics`, `llm_uncertainty`, and `reasoning_excerpt` did not get the same full 6-step treatment
+in this pass -- provenance was traced for all of them earlier in this conversation, but independence
+(especially `turn_effect` vs `substrate_eventfulness_score`, both partly derived from `self_state`)
+and live-data sanity checks were not completed for any of them due to the same short
+container-uptime limitation. Worth a follow-up pass once `repair_pressure_appraisal_log` has
+accumulated enough history to make a "did adding persistence actually help" comparison meaningful.

@@ -124,3 +124,32 @@ def test_numeric_sisters_column_does_not_exist() -> None:
     """The whole point of the real-artifact model: no self-report column."""
     mapper = inspect(MetacogEntry)
     assert "numeric_sisters" not in {attr.key for attr in mapper.attrs}
+
+
+def test_severity_and_touches_columns_exist_and_do_not_get_silently_dropped() -> None:
+    """Regression test: severity/touches were added to MetacogEntryV1 in a
+    correction pass but the matching SQL columns were missed -- _row_dict's
+    generic column-name filter silently dropped both on every real insert
+    until this was caught."""
+    mapper = inspect(MetacogEntry)
+    valid_keys = {attr.key for attr in mapper.attrs}
+    assert "severity" in valid_keys
+    assert "touches" in valid_keys
+
+    engine = create_engine("sqlite://")
+    MetacogEntry.__table__.create(bind=engine)
+    Session = sessionmaker(bind=engine)
+
+    entry = _entry(severity="critical", touches=["relational", "substrate"])
+    row = MetacogEntry(**_row_dict(entry))
+
+    sess = Session()
+    try:
+        sess.add(row)
+        sess.commit()
+        fetched = sess.get(MetacogEntry, entry.event_id)
+        assert fetched is not None
+        assert fetched.severity == "critical"
+        assert fetched.touches == ["relational", "substrate"]
+    finally:
+        sess.close()

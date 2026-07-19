@@ -34,6 +34,7 @@ from app.models import (
     CollapseEnrichment,
     CollapseMirror,
     MetacogEntry,
+    RepairPressureAppraisalLog,
     Dream,
     SparkIntrospectionLogSQL,
     SparkTelemetrySQL,
@@ -98,6 +99,7 @@ from orion.schemas.chat_stance import ChatStanceBrief
 # Shared schemas
 from orion.schemas.collapse_mirror import CollapseMirrorEntry, CollapseMirrorStoredV1
 from orion.schemas.metacog_entry import MetacogEntryV1
+from orion.schemas.repair_pressure_appraisal import RepairPressureAppraisalV1
 from orion.schemas.telemetry.meta_tags import MetaTagsPayload
 from orion.schemas.telemetry.biometrics import BiometricsPayload, BiometricsSummaryV1, BiometricsInductionV1
 from orion.schemas.causal_geometry import CausalGeometrySnapshotV1
@@ -384,6 +386,7 @@ def _legacy_action(kind: str, mode: str, legacy_kinds: set[str]) -> str:
 MODEL_MAP: Dict[str, Tuple[Type[Any], Optional[Type[BaseModel]]]] = {
     "CollapseMirror": (CollapseMirror, CollapseMirrorEntry),
     "MetacogEntry": (MetacogEntry, MetacogEntryV1),
+    "RepairPressureAppraisalLog": (RepairPressureAppraisalLog, RepairPressureAppraisalV1),
     "CollapseEnrichment": (CollapseEnrichment, MetaTagsPayload),
     "ChatHistoryLogSQL": (ChatHistoryLogSQL, None),
     "ChatGptLogSQL": (ChatGptLogSQL, ChatGptLogTurnV1),

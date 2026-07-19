@@ -1,6 +1,7 @@
 from .collapse_enrichment import CollapseEnrichment
 from .collapse_mirror import CollapseMirror
 from .metacog_entry import MetacogEntry
+from .repair_pressure_appraisal import RepairPressureAppraisalLog
 from .chat_history_log import ChatHistoryLogSQL
 from .chat_gpt_log import ChatGptLogSQL
 from .chat_gpt_message import ChatGptMessageSQL
@@ -75,6 +76,7 @@ __all__ = [
     "CollapseEnrichment",
     "CollapseMirror",
     "MetacogEntry",
+    "RepairPressureAppraisalLog",
     "ChatHistoryLogSQL",
     "ChatGptLogSQL",
     "ChatGptMessageSQL",

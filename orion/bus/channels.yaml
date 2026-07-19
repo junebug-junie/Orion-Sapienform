@@ -189,12 +189,17 @@ channels:
 
   - name: "orion:repair_pressure:appraisal"
     kind: "event"
-    # Ad-hoc compact payload (correlation_id, level, level_label, confidence, evidence,
-    # behavior_applied), not a full TurnAppraisalParadigmSliceV1 dump. Shape closely
-    # mirrors MetacogRepairPressure (orion/schemas/metacog_entry.py) minus correlation_id.
-    schema_id: "MetacogRepairPressure"
+    # Compact payload (correlation_id, level, level_label, confidence, evidence,
+    # behavior_applied). Was documented as schema_id MetacogRepairPressure (a
+    # shape mismatch, since that schema doesn't have correlation_id) until
+    # RepairPressureAppraisalV1 was added as this channel's real dedicated
+    # schema -- also the schema behind orion-sql-writer's new durable
+    # repair_pressure_appraisal_log table (added after a live-data check found
+    # this signal had zero persistence anywhere and only ephemeral docker-log
+    # visibility).
+    schema_id: "RepairPressureAppraisalV1"
     producer_services: ["orion-hub"]
-    consumer_services: ["orion-equilibrium-service"]
+    consumer_services: ["orion-equilibrium-service", "orion-sql-writer"]
     stability: "experimental"
     since: "2026-07-18"
 

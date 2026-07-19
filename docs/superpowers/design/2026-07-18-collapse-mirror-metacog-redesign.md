@@ -476,3 +476,68 @@ New tests: `orion/metacog/tests/test_service.py` (severity/touches/provenance, 1
 test_publish_severity_and_touches_reflect_failures_and_repair_pressure` (adversarial-ctx
 integration case: real repair_pressure evidence plus the existing real-artifact case now assert on
 `touches`/`severity`/`provenance` instead of only checking the response didn't crash).
+
+## Metric quality gate, actually run this time (2026-07-19, same branch)
+
+CLAUDE.md section 0A requires 6 steps per new signal, findings recorded. The prior passes on this
+branch did steps 1 (provenance) and 5 (existing-mechanism) for some of `MetacogRealState`'s fields,
+ad hoc, and never step 2 (independence) or step 4 (live-data sanity) for any of them, and never
+wrote it down. Run properly this time, against real containers/Postgres, not code-tracing alone.
+
+**Finding, serious: `repair_pressure`'s confidence structurally floors at exactly 0.0 on ordinary
+turns.** `orion/substrate/appraisal/paradigms/repair_pressure_v2.py:91-97`: confidence is
+`min()` over only the evidence kinds that scored `> 0.5`; if none do, confidence is set to exactly
+`0.0`, by construction, not a low-but-nonzero read. The only real appraisal found anywhere (docker
+logs, `orion-athena-cortex-exec`, corr `9899932f-...`): `level=0.087 confidence=0.000`. The
+relational trigger's gate (`repair_pressure_metacog_gate.py`) fires on `level >= threshold and
+confidence >= confidence_floor` (0.7 default) -- with confidence structurally zero unless some
+evidence kind scores strongly, this gate may rarely or never open on ordinary conversation. n=1,
+so "never" isn't proven, but this is a real, structural reason to doubt the thing shipped as
+"already live and working" two commits ago, not a calibration nit.
+
+**Correction to an earlier claim in this same doc:** "repair_pressure_v2 ... already runs live on
+every real chat turn today" was asserted from `ENABLE_PRE_TURN_APPRAISAL=true` being set in the
+running hub container. Real log evidence: **1 firing in 88 real chat turns over 7 days** (~1%), not
+every turn. Config-on is not proof of frequency -- exactly the "runtime truth beats config truth"
+rule this doc otherwise applies to `telemetry_anomaly`.
+
+**Zero durable observability, found while trying to get a longer look-back window.** Docker's
+logging driver on every cortex-exec container is `json-file` -- ephemeral, wiped by today's fleet
+restart (22:41:41). No centralized log store exists (a "vector" container stack turned out to be
+ChromaDB for recall embeddings, unrelated, a false lead). `repair_pressure`'s appraisal was never
+persisted to Postgres either (`chat_history_log.client_meta`/`spark_meta` checked across 30 days:
+zero `substrate_effect_summary` keys found). One real sample, ever, no way to look further back --
+not a search-window problem, an actual absence-of-retention problem.
+
+**Fix shipped:** `repair_pressure_appraisal_log`, a new standalone Postgres table
+(`services/orion-sql-writer/app/models/repair_pressure_appraisal.py`), fed by a new consumer on the
+already-existing `orion:repair_pressure:appraisal` channel (`orion-sql-writer` added as a second
+consumer alongside `orion-equilibrium-service`; `orion/bus/channels.yaml`'s `schema_id` also
+corrected from `MetacogRepairPressure`, which doesn't carry `correlation_id`, to the real dedicated
+schema `RepairPressureAppraisalV1`, `orion/schemas/repair_pressure_appraisal.py`). Logs **every**
+appraisal, gated or not -- the point is visibility into the real distribution, not just the ones
+that happened to cross a threshold nobody has validated yet. Deliberately a standalone insert-only
+table, not a patch onto `chat_history_log` the way `turn_change_appraisal` works: `repair_pressure`
+computes pre-turn, before that row necessarily exists, and `orion-sql-writer`'s existing
+`_apply_spark_meta_patch` errors and drops the patch if the target row is missing
+(`services/orion-sql-writer/app/worker.py:732-745`) -- a patch-shaped fix would have silently lost
+data on exactly the turns this table needs to capture.
+
+**Bug caught while adding this table, unrelated to `repair_pressure` itself:** `severity`/`touches`
+were added to `MetacogEntryV1` in the prior correction pass, but the matching SQLAlchemy columns on
+`orion-sql-writer`'s `MetacogEntry` table were never added. `_row_dict`'s generic column-name filter
+silently drops any payload key without a matching column -- both fields were being dropped on every
+real insert into `orion_metacog`. Fixed (two new columns) and regression-tested
+(`test_severity_and_touches_columns_exist_and_do_not_get_silently_dropped`).
+
+**Still open, not resolved by this pass:** whether `confidence_floor=0.7` is the right threshold
+given confidence's structural floor at 0.0 needs a real window of `repair_pressure_appraisal_log`
+data to answer, not more code-tracing -- that's exactly what this table now makes possible. Revisit
+once there's been enough live chat volume (at ~1 turn/hour of `repair_pressure` paradigm firings
+observed so far, this needs days, not hours). `substrate_eventfulness_score`, `turn_effect`,
+`biometrics`, `llm_uncertainty`, and `reasoning_excerpt` did not get the same full 6-step treatment
+in this pass -- provenance was traced for all of them earlier in this conversation, but independence
+(especially `turn_effect` vs `substrate_eventfulness_score`, both partly derived from `self_state`)
+and live-data sanity checks were not completed for any of them due to the same short
+container-uptime limitation. Worth a follow-up pass once `repair_pressure_appraisal_log` has
+accumulated enough history to make a "did adding persistence actually help" comparison meaningful.

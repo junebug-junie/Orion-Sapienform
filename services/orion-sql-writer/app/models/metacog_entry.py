@@ -32,6 +32,13 @@ class MetacogEntry(Base):
     summary = Column(Text)
     mantra = Column(Text)
 
+    # Added in the correction pass to orion/schemas/metacog_entry.py --
+    # without matching columns here, _row_dict's generic column-name filter
+    # silently drops these two on every real insert. Caught while adding the
+    # repair_pressure_appraisal_log table below, not by the original tests.
+    severity = Column(String, nullable=True)
+    touches = Column(_JSONB, default=list)
+
     snapshot_kind = Column(String, default="baseline")
     is_causally_dense = Column(Boolean, default=False)
     epistemic_status = Column(String, default="observed")

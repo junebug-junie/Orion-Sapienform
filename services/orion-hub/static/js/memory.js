@@ -116,11 +116,31 @@
     }
   }
 
+  // 2026-07-21: memory-cards substrate spec Item 3 flipped ORION_AUTO_EXTRACTOR_ENABLED
+  // live -- Orion now writes its own pending_review cards via a real LLM annotation
+  // call (services/orion-cortex-orch/app/memory_extractor.py). Distinguishing
+  // provenance at a glance in the compact row (not just the detail panel) is the
+  // whole point of an observability surface for this -- without it, self-authored
+  // cards are indistinguishable from operator-curated ones until you open each one.
+  function provenanceBadge(provenance) {
+    const p = String(provenance || "").trim();
+    if (p === "auto_extractor") {
+      return `<span class="text-[9px] px-1.5 py-0.5 rounded-full border border-sky-700 bg-sky-950/60 text-sky-300" title="Written by Orion's auto-extractor, awaiting review">🤖 auto</span>`;
+    }
+    if (p === "chat_compactor" || p === "repo_compactor") {
+      return `<span class="text-[9px] px-1.5 py-0.5 rounded-full border border-gray-700 bg-gray-950/60 text-gray-400" title="${escapeHtml(p)}">⚙ ${escapeHtml(p)}</span>`;
+    }
+    if (p === "operator_distiller" || p === "operator_highlight") {
+      return `<span class="text-[9px] px-1.5 py-0.5 rounded-full border border-gray-700 bg-gray-950/60 text-gray-400" title="${escapeHtml(p)}">👤 operator</span>`;
+    }
+    return p ? `<span class="text-[9px] px-1.5 py-0.5 rounded-full border border-gray-700 bg-gray-950/60 text-gray-500">${escapeHtml(p)}</span>` : "";
+  }
+
   function renderCardRow(card, onOpen) {
     const row = document.createElement("div");
     row.className = "flex justify-between gap-2 border border-gray-800 rounded px-2 py-1 bg-gray-900/60";
-    row.innerHTML = `<div><div class="font-medium text-gray-100">${escapeHtml(card.title || "")}</div>
-      <div class="text-[10px] text-gray-500">${escapeHtml(card.slug || "")} · ${escapeHtml(card.status || "")} · ${escapeHtml(card.priority || "episodic_detail")}</div></div>`;
+    row.innerHTML = `<div><div class="font-medium text-gray-100 flex items-center gap-1.5">${escapeHtml(card.title || "")} ${provenanceBadge(card.provenance)}</div>
+      <div class="text-[10px] text-gray-500">${escapeHtml(card.slug || "")} · ${escapeHtml(card.status || "")} · ${escapeHtml(card.priority || "episodic_detail")} · ${escapeHtml(card.confidence || "likely")}</div></div>`;
     const btn = document.createElement("button");
     btn.type = "button";
     btn.className = "text-[10px] text-indigo-300 hover:text-indigo-200";

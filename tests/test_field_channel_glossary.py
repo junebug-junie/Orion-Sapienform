@@ -1,9 +1,12 @@
 from __future__ import annotations
 
+from pathlib import Path
+
 from orion.self_state.field_channel_glossary import (
     CLEAN_VERDICTS,
     LIVE_VARIANCE_THRESHOLD,
     SUBNORMAL_CUTOFF,
+    _glossary_path_candidates,
     classify_channel_series,
     load_glossary,
 )
@@ -19,6 +22,25 @@ def test_load_glossary_has_29_channels_matching_field_digester_channels_py():
     # transport_pressure/contract_pressure are the two node+capability overlaps.
     overlap = [e for e in entries if set(e.level) == {"node", "capability"}]
     assert {e.channel for e in overlap} == {"transport_pressure", "contract_pressure"}
+
+
+def test_glossary_path_candidates_prefers_orion_repo_root_env_var(monkeypatch):
+    # Regression: Hub's Dockerfile only `COPY orion /app/orion` -- config/
+    # (a sibling of orion/ on disk) never lands under /app, so a naive
+    # Path(__file__).resolve().parents[2] resolves to /app inside the Hub
+    # container and 404s on the real file. ORION_REPO_ROOT (compose default
+    # /repo) must be checked, and checked first, not just the bare-checkout
+    # parents[2] fallback.
+    monkeypatch.setenv("ORION_REPO_ROOT", "/some/mounted/repo")
+    candidates = _glossary_path_candidates()
+    assert candidates[0] == Path("/some/mounted/repo/config/field/field_channel_glossary.v1.yaml")
+
+
+def test_glossary_path_candidates_includes_repo_and_mnt_fallbacks(monkeypatch):
+    monkeypatch.delenv("ORION_REPO_ROOT", raising=False)
+    candidates = [str(c) for c in _glossary_path_candidates()]
+    assert any(c.startswith("/repo/") for c in candidates)
+    assert any(c.startswith("/mnt/scripts/Orion-Sapienform/") for c in candidates)
 
 
 def test_load_glossary_categories_cover_all_seven_semantic_groups():

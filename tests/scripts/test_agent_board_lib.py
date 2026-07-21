@@ -16,6 +16,7 @@ from agent_board_lib import (  # noqa: E402
     BoardConfig,
     append_event,
     detect_collisions,
+    fetch_live_repair_pressure,
     load_state,
     reconcile_closed_worktrees,
     render_checkin_context,
@@ -495,3 +496,142 @@ def test_resolve_current_identity_falls_back_when_session_id_is_none(
     identity = resolve_current_identity(cfg, session_id=None)
 
     assert identity["worktree_path"] == "/repo/fallback"
+
+
+class _FakeCursor:
+    def __init__(self, row: object) -> None:
+        self._row = row
+
+    def __enter__(self) -> "_FakeCursor":
+        return self
+
+    def __exit__(self, *exc: object) -> bool:
+        return False
+
+    def execute(self, *args: object, **kwargs: object) -> None:
+        pass
+
+    def fetchone(self) -> object:
+        return self._row
+
+
+class _FakeConn:
+    def __init__(self, row: object) -> None:
+        self._row = row
+        self.closed = False
+
+    def cursor(self) -> _FakeCursor:
+        return _FakeCursor(self._row)
+
+    def close(self) -> None:
+        self.closed = True
+
+
+class _FakePsycopg2Module:
+    """Stand-in for the real `psycopg2` module, injected via
+    `sys.modules` so `fetch_live_repair_pressure`'s lazy `import psycopg2`
+    picks it up without requiring a real Postgres or a real driver."""
+
+    def __init__(self, row: object = None, raise_on_connect: bool = False) -> None:
+        self._row = row
+        self._raise_on_connect = raise_on_connect
+
+    def connect(self, dsn: str, **kwargs: object) -> _FakeConn:
+        if self._raise_on_connect:
+            raise RuntimeError("simulated connection failure")
+        return _FakeConn(self._row)
+
+
+def test_fetch_live_repair_pressure_picks_latest_turn_by_last_updated_at(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    payload = {
+        "turns": {
+            "t1": {"repair_pressure_level": 0.1, "last_updated_at": "2026-07-20T10:00:00Z"},
+            "t2": {"repair_pressure_level": 0.75, "last_updated_at": "2026-07-21T05:37:39.612910Z"},
+            "t3": {"repair_pressure_level": 0.3, "last_updated_at": "2026-07-20T22:00:00Z"},
+        }
+    }
+    monkeypatch.setitem(sys.modules, "psycopg2", _FakePsycopg2Module(row=(payload,)))
+    monkeypatch.setenv("POSTGRES_URI", "postgresql://fake/db")
+
+    result = fetch_live_repair_pressure()
+
+    assert result == (0.75, "2026-07-21T05:37:39.612910Z")
+
+
+def test_fetch_live_repair_pressure_missing_row_returns_none(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setitem(sys.modules, "psycopg2", _FakePsycopg2Module(row=None))
+    monkeypatch.setenv("POSTGRES_URI", "postgresql://fake/db")
+
+    assert fetch_live_repair_pressure() is None
+
+
+def test_fetch_live_repair_pressure_empty_turns_returns_none(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setitem(sys.modules, "psycopg2", _FakePsycopg2Module(row=({"turns": {}},)))
+    monkeypatch.setenv("POSTGRES_URI", "postgresql://fake/db")
+
+    assert fetch_live_repair_pressure() is None
+
+
+def test_fetch_live_repair_pressure_connection_failure_returns_none_without_raising(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setitem(
+        sys.modules, "psycopg2", _FakePsycopg2Module(row=None, raise_on_connect=True)
+    )
+    monkeypatch.setenv("POSTGRES_URI", "postgresql://fake/db")
+
+    assert fetch_live_repair_pressure() is None
+
+
+def test_fetch_live_repair_pressure_no_dsn_configured_returns_none(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # Inject a fake psycopg2 (even though it's never reached) so this test
+    # actually exercises the DSN-check branch regardless of whether the real
+    # psycopg2 driver happens to be installed in the environment running it.
+    monkeypatch.setitem(sys.modules, "psycopg2", _FakePsycopg2Module(row=None))
+    monkeypatch.delenv("POSTGRES_URI", raising=False)
+    monkeypatch.delenv("DATABASE_URL", raising=False)
+
+    assert fetch_live_repair_pressure() is None
+
+
+def test_render_checkin_appends_live_repair_pressure_line_when_available(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    cfg = _config(tmp_path)
+    monkeypatch.setattr(
+        "agent_board_lib.current_worktree_identity",
+        lambda: {"worktree_path": "/repo/current", "branch": "feat/current"},
+    )
+    monkeypatch.setattr("agent_board_lib.live_worktree_paths", lambda: {"/repo/current"})
+    monkeypatch.setattr(
+        "agent_board_lib.fetch_live_repair_pressure",
+        lambda: (0.42, "2026-07-21T00:00:00Z"),
+    )
+
+    output = render_checkin_context(cfg)
+
+    assert "Live repair pressure (chat_loop, latest turn as of 2026-07-21T00:00:00Z): 0.420" in output
+
+
+def test_render_checkin_omits_live_repair_pressure_line_when_unavailable(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    cfg = _config(tmp_path)
+    monkeypatch.setattr(
+        "agent_board_lib.current_worktree_identity",
+        lambda: {"worktree_path": "/repo/current", "branch": "feat/current"},
+    )
+    monkeypatch.setattr("agent_board_lib.live_worktree_paths", lambda: {"/repo/current"})
+    monkeypatch.setattr("agent_board_lib.fetch_live_repair_pressure", lambda: None)
+
+    output = render_checkin_context(cfg)
+
+    assert "Live repair pressure" not in output

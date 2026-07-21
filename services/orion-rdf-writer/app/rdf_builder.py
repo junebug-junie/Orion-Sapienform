@@ -432,8 +432,6 @@ def _build_enrichment_graph(
         g.add((enrich_id, ORION.timestamp, Literal(str(timestamp_val), datatype=XSD.string)))
 
 
-
-
 def _legacy_dict_build(g: Graph, event: dict) -> Tuple[str, str]:
     # Keep the old logic for fallback
     event_id = event.get("id")

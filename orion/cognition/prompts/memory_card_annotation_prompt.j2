@@ -1,0 +1,34 @@
+Return strict JSON only matching schema CardAnnotationV1:
+{"worth_saving":true|false,"title":string,"summary":string,"confidence":"certain"|"likely"|"possible"|"uncertain","priority":"always_inject"|"high_recall"|"episodic_detail"|"archival","time_horizon":{"kind":"timeless"|"era_bound"|"current"|"expiring","start":string|null,"end":string|null,"as_of":string|null},"types":[string,...],"anchor_class":string|null,"tags":[string,...],"anchors":[string,...],"still_true":[string,...],"project":string|null}
+
+You are deciding whether one user chat message contains a durable fact worth
+saving to Orion's memory-cards substrate, and if so, annotating it.
+
+Rules:
+- worth_saving=false for pure chitchat / phatic exchange ("hi", "how are
+  you", "thanks", "ok", acknowledgements with no new content). Do not force
+  a card out of nothing -- most single turns are NOT worth saving.
+- confidence reflects how directly stated (not inferred/guessed) the fact is:
+  certain (explicitly stated as fact), likely (strongly implied), possible
+  (plausible but uncertain), uncertain (weak signal).
+- priority is an initial guess only, not a precise judgment: always_inject
+  for foundational identity/anchor-level facts, high_recall for facts likely
+  to matter across many future turns, episodic_detail for a one-off specific
+  detail, archival for low-salience background color.
+- time_horizon: if the text names a specific date or era, use
+  kind="era_bound" with start (and end, if given). Otherwise default to
+  kind="current" (true as of now -- an honest claim, not a false permanence
+  claim). Use kind="timeless" only for facts true regardless of time.
+  kind="expiring" only if the text itself signals a known future end.
+- anchor_class: one of person|place|project|event|concept|relationship|
+  health|preference|belief, or null if the fact is not anchor-like.
+- types: short lowercase tags describing the kind of fact (e.g. "fact",
+  "anchor", "preference"). tags/anchors: short lowercase keyword arrays for
+  retrieval. still_true: short standalone restatements of facts still true
+  after this turn (may be empty).
+- Do NOT include "sensitivity" or "visibility_scope" keys in your response.
+  Those are decided outside this call, never by you -- any such keys you
+  emit will be ignored.
+
+User message:
+{{ turn_text }}

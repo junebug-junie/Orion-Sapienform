@@ -123,6 +123,84 @@ def test_resolve_keyword_stop_words_custom_list_replaces_english():
     assert result == ["foo", "bar"]
 
 
+def test_llm_label_topics_disabled_returns_empty(monkeypatch):
+    from app.services import training
+
+    monkeypatch.setattr(training.settings, "topic_foundry_llm_enable", False)
+    result = training._llm_label_topics({"0": ["meow", "cat"]}, {"0": ["hi cat"]})
+    assert result == {}
+
+
+def test_llm_label_topics_parses_real_response(monkeypatch):
+    from app.services import training
+
+    monkeypatch.setattr(training.settings, "topic_foundry_llm_enable", True)
+
+    class _FakeClient:
+        def request_json(self, **kwargs):
+            assert "meow" in kwargs["user_prompt"]
+            return {"labels": {"0": "Cat Persona", "1": "Hardware Setup"}}
+
+    monkeypatch.setattr(training, "get_llm_client", lambda: _FakeClient())
+    result = training._llm_label_topics(
+        {"0": ["meow", "cat", "purrrr"], "1": ["gpu", "server"]},
+        {"0": ["meow meow"], "1": ["setting up the gpu"]},
+    )
+    assert result == {"0": "Cat Persona", "1": "Hardware Setup"}
+
+
+def test_llm_label_topics_fails_open_on_bad_response(monkeypatch):
+    from app.services import training
+
+    monkeypatch.setattr(training.settings, "topic_foundry_llm_enable", True)
+
+    class _FakeClient:
+        def request_json(self, **kwargs):
+            return {"not_labels": "oops"}
+
+    monkeypatch.setattr(training, "get_llm_client", lambda: _FakeClient())
+    result = training._llm_label_topics({"0": ["meow"]}, {"0": ["hi"]})
+    assert result == {}
+
+
+def test_llm_label_topics_fails_open_on_exception(monkeypatch):
+    from app.services import training
+
+    monkeypatch.setattr(training.settings, "topic_foundry_llm_enable", True)
+
+    class _FakeClient:
+        def request_json(self, **kwargs):
+            raise RuntimeError("bus down")
+
+    monkeypatch.setattr(training, "get_llm_client", lambda: _FakeClient())
+    result = training._llm_label_topics({"0": ["meow"]}, {"0": ["hi"]})
+    assert result == {}
+
+
+def test_compute_topic_artifacts_applies_llm_labels_when_enabled(monkeypatch):
+    from app.services.training import _compute_topic_artifacts
+    from app.services import training
+    from app.services.types import RowBlock
+
+    monkeypatch.setattr(training.settings, "topic_foundry_llm_enable", True)
+
+    class _FakeClient:
+        def request_json(self, **kwargs):
+            return {"labels": {"0": "Cat Persona"}}
+
+    monkeypatch.setattr(training, "get_llm_client", lambda: _FakeClient())
+
+    segments = [
+        RowBlock(doc_id="a", text="meow meow purr cat", row_ids=["r1"], timestamps=["t1"]),
+        RowBlock(doc_id="b", text="meow cat playful whiskers", row_ids=["r2"], timestamps=["t2"]),
+    ]
+    labels = np.array([0, 0])
+    summary, keywords = _compute_topic_artifacts(segments, labels)
+    assert summary[0]["topic_id"] == 0
+    assert summary[0]["label"] == "Cat Persona"
+    assert "meow" in keywords["0"] or "cat" in keywords["0"]
+
+
 def test_reduce_then_cluster_with_umap_param_overrides_does_not_crash():
     """End-to-end proof that the documented umap_* override mechanism
     (exercised by test_build_reducer_respects_model_spec_params_override)

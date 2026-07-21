@@ -26,6 +26,7 @@ from app.services.conversation_overrides import OverrideRecord, apply_overrides,
 from app.services.embedding_client import VectorHostEmbeddingProvider
 from app.services.bus_events import get_bus_publisher
 from app.services.enrichment import run_enrichment_sync
+from app.services.llm_client import get_llm_client
 from app.services.types import BoundaryContext, RowBlock
 from app.services.windowing import build_segments_with_stats
 from app.settings import settings
@@ -151,6 +152,51 @@ def _resolve_keyword_stop_words(model_params: Dict[str, Any]) -> Any:
     return sorted(set(ENGLISH_STOP_WORDS).union(extras))
 
 
+def _llm_label_topics(
+    keywords: Dict[str, List[str]], samples: Dict[str, List[str]]
+) -> Dict[str, str]:
+    """Reuses this service's existing per-segment LLM enrichment client
+    (app/services/llm_client.py::get_llm_client, already live for
+    _llm_enrich above -- same bus RPC, same JSON-extraction, same
+    fail-open-to-None contract) to generate real topic labels instead of
+    leaving topics_summary.json's `label` field permanently null. One
+    batched call for the whole run rather than one call per topic -- with
+    ~30 topics in a real run, per-topic calls would mean ~30 bus RPC round
+    trips for no real benefit over a single prompt listing all of them."""
+    if not settings.topic_foundry_llm_enable or not keywords:
+        return {}
+    topics_block = []
+    for topic_id, kws in keywords.items():
+        sample_texts = [s[:200] for s in samples.get(topic_id, [])[:2]]
+        topics_block.append(
+            f"Topic {topic_id}:\n  Keywords: {', '.join(kws)}\n"
+            + "\n".join(f"  Sample: {s}" for s in sample_texts)
+        )
+    prompt = (
+        "You are labeling topic clusters from a conversation corpus. For each topic below "
+        "(given by its top keywords and 1-2 sample excerpts), give a short (2-6 word) human-"
+        "readable label capturing what the topic is actually about. Return STRICT JSON: "
+        '{"labels": {"<topic_id>": "<label>", ...}} with one entry per topic listed below, '
+        "no extra keys, no commentary.\n\n" + "\n\n".join(topics_block)
+    )
+    try:
+        result = get_llm_client().request_json(
+            system_prompt="You are an analyst. Return STRICT JSON only.",
+            user_prompt=prompt,
+            temperature=0.2,
+            max_tokens=None,
+        )
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("LLM topic labeling failed; leaving labels null error=%s", exc)
+        return {}
+    if not isinstance(result, dict):
+        return {}
+    labels = result.get("labels")
+    if not isinstance(labels, dict):
+        return {}
+    return {str(k): str(v) for k, v in labels.items() if isinstance(v, str) and v.strip()}
+
+
 def _compute_topic_artifacts(
     segments: List[RowBlock],
     labels: np.ndarray,
@@ -187,6 +233,14 @@ def _compute_topic_artifacts(
             scores = np.asarray(topic_matrix.mean(axis=0)).ravel()
             top_idx = scores.argsort()[::-1][:max_keywords]
             keywords[str(topic_id)] = [vocab[i] for i in top_idx if scores[i] > 0]
+
+        samples = {str(tid): texts[:2] for tid, texts in topic_texts}
+        labels_by_topic = _llm_label_topics(keywords, samples)
+        if labels_by_topic:
+            for entry in summary:
+                label = labels_by_topic.get(str(entry["topic_id"]))
+                if label:
+                    entry["label"] = label
 
     return summary, keywords
 

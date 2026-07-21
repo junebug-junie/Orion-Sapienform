@@ -23,15 +23,65 @@ reimplementing merge/polarity logic here.
 from __future__ import annotations
 
 import functools
+import os
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
 import yaml
 
-_GLOSSARY_PATH = (
-    Path(__file__).resolve().parents[2] / "config" / "field" / "field_channel_glossary.v1.yaml"
-)
+
+def _glossary_path_candidates() -> list[Path]:
+    """Resolve config/field/field_channel_glossary.v1.yaml from a monorepo
+    checkout *or* Hub's Docker image.
+
+    Hub's Dockerfile only `COPY orion /app/orion` -- `config/` (a sibling of
+    `orion/` on disk, not a subdirectory of it) never lands under `/app`, so
+    `Path(__file__).resolve().parents[2]` (repo root in a normal checkout)
+    resolves to `/app` inside the Hub container and the file is genuinely
+    missing there. Compose mounts the full repo read-only at `/repo` (and
+    `/mnt/scripts/Orion-Sapienform`) specifically for cases like this -- same
+    problem, same fix already established in
+    services/orion-hub/scripts/drives_analytics.py's
+    `_repo_root_candidates()`, mirrored here rather than re-derived.
+    """
+    seen: set[str] = set()
+    roots: list[Path] = []
+
+    def _add(root: Path | None) -> None:
+        if root is None:
+            return
+        try:
+            resolved = root.expanduser().resolve()
+        except OSError:
+            resolved = root
+        key = str(resolved)
+        if key in seen:
+            return
+        seen.add(key)
+        roots.append(resolved)
+
+    raw = os.getenv("ORION_REPO_ROOT", "").strip()
+    if raw:
+        _add(Path(raw))
+    here = Path(__file__).resolve()
+    if len(here.parents) >= 3:
+        _add(here.parents[2])  # repo root in a normal monorepo checkout
+    _add(Path("/repo"))
+    _add(Path("/mnt/scripts/Orion-Sapienform"))
+    return [root / "config" / "field" / "field_channel_glossary.v1.yaml" for root in roots]
+
+
+def _resolve_glossary_path() -> Path:
+    for candidate in _glossary_path_candidates():
+        if candidate.is_file():
+            return candidate
+    # Fall back to the monorepo-checkout candidate so the resulting
+    # FileNotFoundError names the expected path, not an arbitrary one.
+    return _glossary_path_candidates()[0]
+
+
+_GLOSSARY_PATH = _resolve_glossary_path()
 
 # Same threshold scripts/analysis/measure_capability_channel_health.py uses:
 # strictly finer-grained than the smallest downstream decision boundary

@@ -4,6 +4,7 @@ import os
 import sys
 from datetime import datetime, timezone
 from pathlib import Path
+from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
@@ -110,6 +111,89 @@ def _hub_client_patches(*, thought: ThoughtEventV1, harness_run: HarnessRunV1 | 
             harness_run if isinstance(harness_run, AsyncMock) else AsyncMock(return_value=harness_run),
         ),
     )
+
+
+@pytest.mark.asyncio
+async def test_run_pre_turn_appraisal_publishes_repair_pressure_appraisal() -> None:
+    """Regression for a live-confirmed gap (2026-07-21): turn_orchestrator's
+    _run_pre_turn_appraisal is a second, independent caller of
+    PreTurnAppraisalClient alongside pre_turn_appraisal_wiring's
+    websocket/HTTP 'brain'-mode path. Only the latter published to
+    orion:repair_pressure:appraisal, so every real mode="orion" turn
+    (which is what the autonomous journal loop, and very plausibly real
+    interactive chat, actually uses) computed a repair_pressure result that
+    never reached orion-equilibrium-service's relational metacog gate."""
+    _ensure_hub_import_paths()
+    from orion.hub.turn_orchestrator import _run_pre_turn_appraisal
+    from orion.schemas.pre_turn_appraisal import TurnAppraisalBundleV1, TurnAppraisalParadigmSliceV1
+    import scripts.pre_turn_appraisal_client as pta_client_mod
+
+    bundle = TurnAppraisalBundleV1(
+        correlation_id=_CORR_ID,
+        paradigms={
+            "repair_pressure": TurnAppraisalParadigmSliceV1(
+                appraisal_kind="repair_pressure",
+                level=0.42,
+                confidence=0.65,
+            )
+        },
+    )
+    settings = SimpleNamespace(
+        ENABLE_PRE_TURN_APPRAISAL=True,
+        PRE_TURN_APPRAISAL_PARADIGMS="repair_pressure",
+        PRE_TURN_APPRAISAL_TIMEOUT_MS=800,
+    )
+    publish_mock = AsyncMock()
+    with patch.object(
+        pta_client_mod.PreTurnAppraisalClient, "appraise", AsyncMock(return_value=bundle)
+    ), patch(
+        "scripts.pre_turn_appraisal_wiring._publish_repair_pressure_appraisal", publish_mock
+    ):
+        result = await _run_pre_turn_appraisal(
+            bus=MagicMock(),
+            correlation_id=_CORR_ID,
+            session_id="sess-1",
+            user_message="hello",
+            continuity_messages=None,
+            settings=settings,
+        )
+
+    assert result is bundle
+    publish_mock.assert_awaited_once()
+    _, kwargs = publish_mock.await_args
+    assert kwargs["correlation_id"] == _CORR_ID
+    assert kwargs["summary"]["level"] == 0.42
+
+
+@pytest.mark.asyncio
+async def test_run_pre_turn_appraisal_skips_publish_when_no_repair_pressure_paradigm() -> None:
+    _ensure_hub_import_paths()
+    from orion.hub.turn_orchestrator import _run_pre_turn_appraisal
+    from orion.schemas.pre_turn_appraisal import TurnAppraisalBundleV1
+    import scripts.pre_turn_appraisal_client as pta_client_mod
+
+    bundle = TurnAppraisalBundleV1(correlation_id=_CORR_ID, paradigms={})
+    settings = SimpleNamespace(
+        ENABLE_PRE_TURN_APPRAISAL=True,
+        PRE_TURN_APPRAISAL_PARADIGMS="repair_pressure",
+        PRE_TURN_APPRAISAL_TIMEOUT_MS=800,
+    )
+    publish_mock = AsyncMock()
+    with patch.object(
+        pta_client_mod.PreTurnAppraisalClient, "appraise", AsyncMock(return_value=bundle)
+    ), patch(
+        "scripts.pre_turn_appraisal_wiring._publish_repair_pressure_appraisal", publish_mock
+    ):
+        await _run_pre_turn_appraisal(
+            bus=MagicMock(),
+            correlation_id=_CORR_ID,
+            session_id="sess-1",
+            user_message="hello",
+            continuity_messages=None,
+            settings=settings,
+        )
+
+    publish_mock.assert_not_awaited()
 
 
 @pytest.mark.asyncio

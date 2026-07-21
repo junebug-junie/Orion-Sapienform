@@ -16,18 +16,16 @@ from orion.substrate.appraisal.view_model import pressure_label
 logger = logging.getLogger("hub.pre_turn_appraisal_wiring")
 
 
-def apply_pre_turn_appraisal_bundle(
-    req: CortexChatRequest,
+def build_repair_pressure_summary(
     bundle: TurnAppraisalBundleV1 | None,
-    *,
-    enabled: bool,
 ) -> dict[str, Any] | None:
-    if not enabled or bundle is None:
+    """Pure extraction of the repair_pressure summary dict from an appraisal
+    bundle -- shared by every caller of PreTurnAppraisalClient.appraise() so
+    the orion:repair_pressure:appraisal publish (see
+    _publish_repair_pressure_appraisal) can never be wired to only one of
+    them again."""
+    if bundle is None:
         return None
-    if bundle.metadata_attachments:
-        meta = dict(req.metadata or {})
-        meta.update(bundle.metadata_attachments)
-        req.metadata = meta
     rp = bundle.paradigms.get("repair_pressure")
     if rp is None:
         return None
@@ -53,6 +51,21 @@ def apply_pre_turn_appraisal_bundle(
         "changed_behavior": behavior,
         "chip_label": f"{behavior or 'no behavior change'} · {pressure_label(level)} repair pressure · {len(rp.evidence)} evidence drivers",
     }
+
+
+def apply_pre_turn_appraisal_bundle(
+    req: CortexChatRequest,
+    bundle: TurnAppraisalBundleV1 | None,
+    *,
+    enabled: bool,
+) -> dict[str, Any] | None:
+    if not enabled or bundle is None:
+        return None
+    if bundle.metadata_attachments:
+        meta = dict(req.metadata or {})
+        meta.update(bundle.metadata_attachments)
+        req.metadata = meta
+    return build_repair_pressure_summary(bundle)
 
 
 async def run_pre_turn_appraisal_wiring(

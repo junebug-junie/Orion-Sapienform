@@ -643,6 +643,9 @@ document.addEventListener("DOMContentLoaded", () => {
   const substrateLatticeTabButton = document.getElementById("substrateLatticeTabButton");
   const substrateLatticePanelEl = document.getElementById("substrate-lattice");
   const substrateLatticeFrame = document.getElementById("substrateLatticeFrame");
+  const fieldChannelGlossaryTabButton = document.getElementById("fieldChannelGlossaryTabButton");
+  const fieldChannelGlossaryPanelEl = document.getElementById("field-channel-glossary");
+  const fieldChannelGlossaryFrame = document.getElementById("fieldChannelGlossaryFrame");
   const topicFoundryBaseLabel = document.getElementById("topicFoundryBaseLabel");
   const tsDatasetSelect = document.getElementById("tsDatasetSelect");
   const tsDatasetName = document.getElementById("tsDatasetName");
@@ -924,6 +927,9 @@ document.addEventListener("DOMContentLoaded", () => {
     if (tabKey === "substrate-lattice" && !substrateLatticePanelEl) {
       effectiveTab = "hub";
     }
+    if (tabKey === "field-channel-glossary" && !fieldChannelGlossaryPanelEl) {
+      effectiveTab = "hub";
+    }
     if (tabKey === "collapse-mirror" && !collapseMirrorPanel) {
       effectiveTab = "hub";
     }
@@ -941,6 +947,7 @@ document.addEventListener("DOMContentLoaded", () => {
     const isMemory = effectiveTab === "memory";
     const isPressure = effectiveTab === "pressure";
     const isSubstrateLattice = effectiveTab === "substrate-lattice";
+    const isFieldChannelGlossary = effectiveTab === "field-channel-glossary";
     const isMind = effectiveTab === "mind";
     const isSignals = effectiveTab === "signals";
     const isCollapseMirror = effectiveTab === "collapse-mirror";
@@ -1031,6 +1038,13 @@ document.addEventListener("DOMContentLoaded", () => {
       const currentSrc = substrateLatticeFrame.getAttribute("src");
       substrateLatticeFrame.setAttribute("src", currentSrc);
     }
+    if (fieldChannelGlossaryPanelEl) {
+      fieldChannelGlossaryPanelEl.classList.toggle("hidden", !isFieldChannelGlossary);
+    }
+    if (fieldChannelGlossaryFrame && isFieldChannelGlossary) {
+      const currentSrc = fieldChannelGlossaryFrame.getAttribute("src");
+      fieldChannelGlossaryFrame.setAttribute("src", currentSrc);
+    }
     if (collapseMirrorPanel) {
       collapseMirrorPanel.classList.toggle("hidden", !isCollapseMirror);
     }
@@ -1074,6 +1088,9 @@ document.addEventListener("DOMContentLoaded", () => {
     }
     if (substrateLatticeTabButton) {
       styleTabButton(substrateLatticeTabButton, isSubstrateLattice);
+    }
+    if (fieldChannelGlossaryTabButton) {
+      styleTabButton(fieldChannelGlossaryTabButton, isFieldChannelGlossary);
     }
     if (collapseMirrorTabButton) {
       styleTabButton(collapseMirrorTabButton, isCollapseMirror);
@@ -1653,6 +1670,8 @@ document.addEventListener("DOMContentLoaded", () => {
       setActiveTab("pressure");
     } else if (h === "#substrate-lattice" && substrateLatticePanelEl && substrateLatticeTabButton) {
       setActiveTab("substrate-lattice");
+    } else if (h === "#field-channel-glossary" && fieldChannelGlossaryPanelEl && fieldChannelGlossaryTabButton) {
+      setActiveTab("field-channel-glossary");
     } else if (h === "#memory" && memoryPanel && memoryTabButton) {
       setActiveTab("memory");
     } else if (h === "#mind" && mindPanel && mindTabButton) {
@@ -1667,6 +1686,7 @@ document.addEventListener("DOMContentLoaded", () => {
       if (
         h === "#pressure"
         || h === "#substrate-lattice"
+        || h === "#field-channel-glossary"
         || h === "#memory"
         || h === "#mind"
         || h === "#signals"
@@ -11299,6 +11319,13 @@ document.addEventListener("DOMContentLoaded", () => {
         event.preventDefault();
         setActiveTab("substrate-lattice");
         history.replaceState(null, "", "#substrate-lattice");
+      });
+    }
+    if (fieldChannelGlossaryTabButton && fieldChannelGlossaryPanelEl) {
+      fieldChannelGlossaryTabButton.addEventListener("click", (event) => {
+        event.preventDefault();
+        setActiveTab("field-channel-glossary");
+        history.replaceState(null, "", "#field-channel-glossary");
       });
     }
     if (collapseMirrorTabButton && collapseMirrorPanel) {

@@ -228,6 +228,21 @@ not yet trained) — but several of these same channels also feed
 centralized doc previously existed for what each channel means, how it's
 calculated, or which self-state dimension (if any) it feeds.
 
+**Live observability (2026-07-21)**: the per-channel category/meaning/
+self-state-dimension metadata below is now also structured, machine-readable
+data at `config/field/field_channel_glossary.v1.yaml`
+(`orion.self_state.field_channel_glossary`), read by Hub's "Field Channels"
+tab (`services/orion-hub/static/field-channel-glossary.html`,
+`GET /api/field-channel-glossary/{channels,health}`). That panel does
+**not** read the verdicts below -- it computes a live clean/dead verdict
+per channel from real `substrate_field_state` data over a rolling window
+using the same subnormal-cutoff + variance heuristic
+`scripts/analysis/measure_capability_channel_health.py` validated, because
+the verdicts in this section are a point-in-time write-up and can (and,
+per the "Update" notes throughout this section, already have) go stale as
+fixes land. Treat this section as the prose mechanism reference and the
+Hub panel as the current-truth check.
+
 **Pipeline order** (`app/tensor/update_rules.py::run_digestion_tick`, called
 once per tick from `app/worker.py::_tick`): reconcile (seed any
 lattice-declared node/capability not yet present with

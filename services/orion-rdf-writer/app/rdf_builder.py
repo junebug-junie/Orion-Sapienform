@@ -141,7 +141,7 @@ def build_triples_from_envelope(env_kind: str, payload: Any) -> Tuple[Optional[s
             # entities/sentiment. Only generic collapse-mirror tagging
             # (enrichment_type == "tagging") can reach here now.
             subject_uri = URIRef(f"http://conjourney.net/event/{meta.collapse_id or meta.id}")
-            _build_enrichment_graph(g, meta, subject_uri, emit_claims=(env_kind == "tags.enriched"))
+            _build_enrichment_graph(g, meta, subject_uri)
             attach_provenance(g, subject_uri, meta.service_name)
             return g.serialize(format="nt"), "orion:enrichment"
 
@@ -354,8 +354,6 @@ def _build_enrichment_graph(
     g: Graph,
     meta: MetaTagsPayload,
     subject: URIRef,
-    *,
-    emit_claims: bool = False,
 ) -> None:
     # Link back to original event if known, else assume subject IS the event
     # Ideally, subject is the event URI.
@@ -365,14 +363,6 @@ def _build_enrichment_graph(
         tags = [tags]
     for tag in tags:
         g.add((subject, CM.hasTag, Literal(tag)))
-        if emit_claims:
-            _emit_claim(
-                g,
-                subject=subject,
-                predicate=ORION.hasTag,
-                obj=Literal(tag),
-                meta=meta,
-            )
 
     entities = meta.entities or []
     if isinstance(entities, str):
@@ -397,14 +387,6 @@ def _build_enrichment_graph(
             continue
 
         g.add((subject, CM.hasEntity, Literal(entity_label or entity_text)))
-        if emit_claims:
-            _emit_claim(
-                g,
-                subject=subject,
-                predicate=ORION.mentionsEntity,
-                obj=Literal(entity_label or entity_text),
-                meta=meta,
-            )
 
         entity_uri = _entity_uri(entity_text)
         g.add((entity_uri, RDF.type, ORION.Entity))
@@ -450,45 +432,6 @@ def _build_enrichment_graph(
         g.add((enrich_id, ORION.timestamp, Literal(str(timestamp_val), datatype=XSD.string)))
 
 
-def _emit_claim(
-    g: Graph,
-    *,
-    subject: URIRef,
-    predicate: URIRef,
-    obj: Literal,
-    meta: MetaTagsPayload,
-) -> None:
-    subject_id = _sanitize_fragment(meta.collapse_id or meta.id or meta.source_message_id or "unknown")
-    timestamp_val = str(meta.timestamp or meta.ts or "")
-    claim_seed = f"{predicate}|{obj}|{timestamp_val}"
-    claim_hash = hashlib.sha256(claim_seed.encode("utf-8")).hexdigest()[:16]
-    claim_uri = URIRef(f"http://conjourney.net/orion/claim/{subject_id}/{claim_hash}")
-
-    g.add((claim_uri, RDF.type, ORION.Claim))
-    g.add((claim_uri, ORION.subject, subject))
-    g.add((claim_uri, ORION.predicate, predicate))
-    g.add((claim_uri, ORION.obj, obj))
-
-    salience = meta.salience
-    confidence = salience if salience is not None else 0.6
-    g.add((claim_uri, ORION.confidence, Literal(confidence, datatype=XSD.float)))
-    if salience is not None:
-        g.add((claim_uri, ORION.salience, Literal(salience, datatype=XSD.float)))
-
-    g.add((claim_uri, ORION.extractorService, Literal(meta.service_name)))
-    if meta.service_version:
-        g.add((claim_uri, ORION.extractorVersion, Literal(meta.service_version)))
-    if meta.node:
-        g.add((claim_uri, ORION.node, Literal(meta.node)))
-
-    timestamp_val = meta.timestamp or meta.ts
-    if timestamp_val:
-        g.add((claim_uri, ORION.timestamp, Literal(str(timestamp_val), datatype=XSD.string)))
-
-    if meta.correlation_id:
-        g.add((claim_uri, ORION.correlationId, Literal(meta.correlation_id)))
-    if meta.source_message_id:
-        g.add((claim_uri, ORION.sourceMessageId, Literal(meta.source_message_id)))
 
 
 def _legacy_dict_build(g: Graph, event: dict) -> Tuple[str, str]:

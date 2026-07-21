@@ -98,13 +98,13 @@ def test_chat_quick_clamps_inherited_profile_to_low_latency_default() -> None:
 
 def test_chat_quick_keeps_explicit_client_profile() -> None:
     decision = delivery_safe_recall_decision(
-        {"enabled": True, "profile": "deep.graph.v1", "profile_explicit": True},
+        {"enabled": True, "profile": "brain.recall.v1", "profile_explicit": True},
         [_memory_step()],
         verb_profile="chat.general.v1",
         plan_verb_name="chat_quick",
         chat_quick_recall_profile="assist.light.v1",
     )
-    assert decision["profile"] == "deep.graph.v1"
+    assert decision["profile"] == "brain.recall.v1"
     assert decision["profile_source"] == "explicit"
 
 
@@ -125,14 +125,14 @@ def test_chat_kids_story_clamps_inherited_profile_to_story_default() -> None:
 
 def test_chat_kids_story_keeps_explicit_client_profile() -> None:
     decision = delivery_safe_recall_decision(
-        {"enabled": True, "profile": "deep.graph.v1", "profile_explicit": True},
+        {"enabled": True, "profile": "brain.recall.v1", "profile_explicit": True},
         [_memory_step()],
         verb_profile="chat.general.v1",
         plan_verb_name="chat_kids_story",
         chat_quick_recall_profile="assist.light.v1",
         chat_kids_story_recall_profile="chat.story.kids.v1",
     )
-    assert decision["profile"] == "deep.graph.v1"
+    assert decision["profile"] == "brain.recall.v1"
     assert decision["profile_source"] == "explicit"
 
 

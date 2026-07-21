@@ -88,7 +88,7 @@ make check-env-compose-parity SERVICE=orion-recall
 
 | Variable | Default | Notes |
 | :--- | :--- | :--- |
-| `RECALL_ENABLE_RDF` | `false` (repo default) | must be `true` to run RDF unless using a `deep.graph.*` / `graphtri.*` profile name |
+| `RECALL_ENABLE_RDF` | `false` (repo default) | must be `true` to run RDF unless the profile itself sets `enable_rdf: true` (e.g. `brain.recall.v1`) |
 | `GRAPHDB_URL` | `http://orion-athena-graphdb:7200` | base URL |
 | `GRAPHDB_REPO` | `collapse` | repo name |
 | `RECALL_RDF_ENDPOINT_URL` | derived | defaults to `${GRAPHDB_URL}/repositories/${GRAPHDB_REPO}` |
@@ -100,25 +100,28 @@ Chatturn-only read path standing in for RDF's chat-turn fetch. **Live as of 2026
 
 | Variable | Default | Notes |
 | :--- | :--- | :--- |
-| `RECALL_FALKOR_IN_CHAT` | `true` (code-level pydantic default stays `False` -- a safe fallback for any environment that hasn't set this key at all) | When `true`, `app/storage/falkor_chat_adapter.py::fetch_falkor_chatturn_fragments` **swaps in** for the RDF chatturn fetch in `_query_backends` -- not additive like `RECALL_GRAPHITI_IN_CHAT` (that merges an extra rail; this replaces one, since the point of this migration is retiring RDF). Independent of `RECALL_ENABLE_RDF`. Only covers chatturn fragments (prompt/response text); graphtri/Claim-based fragments are a separate flag, see below. |
+| `RECALL_FALKOR_IN_CHAT` | `true` (code-level pydantic default stays `False` -- a safe fallback for any environment that hasn't set this key at all) | When `true`, `app/storage/falkor_chat_adapter.py::fetch_falkor_chatturn_fragments` **swaps in** for the RDF chatturn fetch in `_query_backends` -- not additive like `RECALL_GRAPHITI_IN_CHAT` (that merges an extra rail; this replaces one, since the point of this migration is retiring RDF). Independent of `RECALL_ENABLE_RDF`. Only covers chatturn fragments (prompt/response text). |
 | `FALKORDB_URI` | `redis://orion-athena-falkordb:6379` | Same shared instance as the substrate collector above -- not a new dependency. |
 | `FALKORDB_RECALL_GRAPH` | `orion_recall` | Read directly from the environment by `app/recall_falkor_store.py` (same "no pydantic field, must be listed in docker-compose's `environment:`" constraint as `FALKORDB_SUBSTRATE_GRAPH` above -- this service has no `env_file:` directive). |
 
 **Historical backfill (Phase 3): done, 2026-07-18** (PR #1194). `orion_recall`'s `:ChatTurn` graph now has 1,712 turns spanning 2025-10-19 → today (not just turns tagged since the observer-gate fix) -- 1,708 backfilled + a handful already live-written, 0 errors, real historical timestamps preserved. Full coverage of `chat_history_log`; `social_room_turns` coverage is real but partial by design (31 of 33 rows are dual-logged into `chat_history_log` under the same `turn_id` and correctly landed as `source_kind="chat.history"` instead -- see PR #1194's report for why that's the better outcome given this read path only recalls `chat.history` today). The Falkor `:ChatTurn` node is also deliberately thin (no prompt/response text -- Postgres owns that), so this is a Falkor-turn-discovery + Postgres-text-join read, not a pure single-store Cypher query; a turn with no matching `chat_history_log` row is silently dropped (nothing to quote).
 
-### Graphtri (Claim-based fragments): Falkor redesign, ships dark
+### Graphtri (Claim-based fragments): retired 2026-07-21
 
-`fetch_rdf_graphtri_fragments` (the "graphtri" lane -- `graphtri.v1`/`deep.graph.v1` profiles, and `brain.recall.v1`'s expansion chain) is Claim-based: the old RDF shape supported arbitrary `(subject, predicate, object)` statements. Falkor's writer never wrote anything equivalent -- only `MENTIONS_ENTITY` edges (`:Tag`/`HAS_TAG` is empty by design, see above) -- so this needed a real redesign, not a rewrite.
-
-| Variable | Default | Notes |
-| :--- | :--- | :--- |
-| `RECALL_FALKOR_GRAPHTRI_IN_CHAT` | `false` (dark -- newer, less-proven redesign than the chatturn swap) | When `true`, `app/storage/falkor_graphtri_adapter.py`'s `fetch_falkor_graphtri_fragments`/`fetch_falkor_graphtri_anchors` **swap in** for `fetch_rdf_graphtri_fragments`/`fetch_graphtri_anchors` at both call sites (`_query_backends`'s graphtri branch, and `process_recall`'s `graphtri.v1`-profile branch via `_build_anchor_set`). Unlike `RECALL_FALKOR_IN_CHAT`, this flag stays **nested inside `rdf_enabled`/`rdf_top_k`** rather than running independent of it -- graphtri's availability is already correctly governed by the same conditions (including `pcr_collectors.py`'s `plan.get("rdf")` suppression), so this flag only chooses which backend serves it. |
-
-**Why entity-mention fragments are not a real functional regression from Claim fragments** (a live audit, not an assumption -- see the Phase 0 spec's "Ground truth" section): `Claim.predicate` only ever took 2 fixed values in production (`hasTag`, `mentionsEntity` -- never open-vocabulary), and `confidence`/`salience` were always `0.0`/`0.0` (dead constants). No downstream code (`fusion.py`, `render.py`) ever parsed the predicate/object structure -- the whole `"Claim: ..."` string was always carried as opaque text, bucketed only by a literal `"claim"` tag (preserved in the new fragment shape for exactly this reason -- dropping it would silently break the "High-salience claims" render group). `MENTIONS_ENTITY` already covers the only part of the old shape that was ever real.
-
-**Filtering divergence, named not silent:** the old SPARQL filtered at the *turn* level (keyword `CONTAINS` on raw prompt/response text). Falkor's thin `ChatTurn` node has no text, so this filters at the *entity* level instead (`Entity.name` keyword match, bidirectional `CONTAINS`) -- no Postgres join needed, and arguably more semantically correct for a graph meant to represent entity relevance in the first place.
-
-**Not yet covered by this flag:** `fetch_rdf_connected_chatturns` (the 1-hop graph-neighborhood function `brain.recall.v1`'s expansion terms feed into) still queries Fuseki regardless of this flag -- a real, remaining Fuseki dependency for graphtri-mode profiles even with the flag on. Deferred, not forgotten.
+The Claim-based "graphtri" recall path (`graphtri.v1`/`deep.graph.v1` profiles,
+RDF/Fuseki-backed, plus a dark-flagged FalkorDB-backed equivalent behind
+`RECALL_FALKOR_GRAPHTRI_IN_CHAT`) has been retired repo-wide
+(`chore/retire-graphtri-deep-graph`). A live audit found it never carried
+real typed-claim data: `Claim.confidence`/`Claim.salience` were dead `0.0`
+constants across all 1,451 live Claims, `Claim.predicate` only ever took 2
+fixed values (`hasTag`, `mentionsEntity`), and no downstream code ever
+parsed predicate/object structure. It is fully superseded by the
+entity-relatedness fusion-weight boost documented below (Phase 2, live),
+which is built on the same `MENTIONS_ENTITY` data the old Claim shape's only
+real part already reduced to. See
+`docs/superpowers/specs/2026-07-17-recall-rdf-writer-falkor-cutover-phase2-spec.md`
+and `docs/superpowers/specs/2026-07-19-recall-entity-graph-reasoning-arc.md`
+for the full history.
 
 ### Entity-graph reasoning primitives (Phase 1, debug-only -- not yet wired into recall)
 
@@ -215,8 +218,7 @@ They control:
 | `assist.light.v1` | low-latency, minimal context | off | off | off |
 | `chat.general.v1` | normal conversational recall | on | off | on |
 | `reflect.v1` | reflection / sensemaking w/ some history | on | on | on |
-| `deep.graph.v1` | “catch me up” / architecture / deep state | on (more) | on (more) | on |
-| `graphtri.v1` | graph-anchored retrieval (tags/entities/claims) | on (more) | on | on |
+| `brain.recall.v1` (aka `recall.v1`) | structured memory for Hub's "Brain" chat lane | on | on | off |
 
 ---
 
@@ -227,7 +229,7 @@ Your RDF store contains **multiple semantic layers**. Recall uses them different
 ### RDF graphs you should expect
 
 - `GRAPH <orion:chat>` — **ChatTurn** objects, including `prompt`, `response`, and optional `sessionId`
-- `GRAPH <orion:enrichment>` — **tags/entities/claims** linked to turns (GraphTRI / enrichment layer)
+- `GRAPH <orion:enrichment>` — **tags/entities** linked to turns (enrichment layer)
 
 ### RDF retrieval types (what recall returns)
 
@@ -235,7 +237,6 @@ Your RDF store contains **multiple semantic layers**. Recall uses them different
 | :--- | :--- | :--- | :--- |
 | `rdf_chat` | ChatTurns (prompt/response) | `GRAPH <orion:chat>` | **Exact quotes** (“find the exact text I used”), conversational grounding |
 | `rdf` | Graph neighborhood / claim-like triples | generic RDF scan | entity/topic adjacency, “what’s related to X”, light graph recall |
-| `rdf` (graphtri claims) | Claims linked to turns | `GRAPH <orion:enrichment>` | “what did we claim/decide”, tags/entities evidence trails |
 
 > Design principle: **candidate generation is structure-driven** (graph + type). Ranking should be semantic/vector scoring (and later learned rankers), not ad-hoc keyword lists.
 
@@ -288,9 +289,9 @@ Verbs can specify a recall profile in their YAML definition.
 Example shape:
 
 ```yaml
-name: chat_deep_graph
+name: chat_general
 ...
-recall_profile: deep.graph.v1
+recall_profile: chat.general.v1
 services:
   - LLMGatewayService
   - RecallService
@@ -353,7 +354,8 @@ This is the canonical path for **“quote me exactly”** requests.
 
 ### Example 2 — Deep context chat (heavy profile)
 
-Use a verb that binds `deep.graph.v1` recall for larger pull + longer timeline.
+Use a verb that binds `brain.recall.v1` recall (Hub's "Brain" chat lane) for structured
+memory over RDF + SQL timeline, without vector.
 
 ```bash
 # (example harness; use your local runner)
@@ -362,19 +364,9 @@ python scripts/bus_harness.py brain "catch me up on Athena failures and CPU card
 
 Expected behavior:
 
-- higher RDF top-k
+- RDF chatturn + generic neighborhood fragments
 - SQL timeline enabled with a larger window
 - larger render budget
-
-### Example 3 — GraphTRI (tags/entities/claims anchored to keywords)
-
-Use `graphtri.v1` when you want enrichment anchors (tags/entities/claims) to guide retrieval.
-
-Good use cases:
-
-- “What did we decide about X?”
-- “Show the evidence trail / claims around Y”
-- “Which entities/tags have been attached to recent turns?”
 
 Expected behavior:
 
@@ -827,7 +819,7 @@ PY
 
 ### RDF fragment recency (fixed 2026-07-13)
 
-`fetch_rdf_chatturn_fragments` and `fetch_rdf_graphtri_fragments` in `app/storage/rdf_adapter.py` used to order candidates with `ORDER BY DESC(STR(?turn))` (a lexical sort on the ChatTurn URI/correlation-id) and hardcode every fragment's `"ts"` to `0.0`. That made the same fixed set of historical turns win every query forever, and `scoring._compute_recency_factor` always fell back to its neutral 0.5 weight since `ts` was never real. Both functions now select and order on the `ORION.timestamp` literal that `services/orion-rdf-writer/app/rdf_builder.py` already writes on every `ChatTurn`/`Claim` (`ORDER BY DESC(?ts)`), and parse it into a real epoch float via `rdf_adapter._parse_rdf_timestamp` so recency decay actually applies to RDF-backed fragments.
+`fetch_rdf_chatturn_fragments` in `app/storage/rdf_adapter.py` used to order candidates with `ORDER BY DESC(STR(?turn))` (a lexical sort on the ChatTurn URI/correlation-id) and hardcode every fragment's `"ts"` to `0.0`. That made the same fixed set of historical turns win every query forever, and `scoring._compute_recency_factor` always fell back to its neutral 0.5 weight since `ts` was never real. It now selects and orders on the `ORION.timestamp` literal that `services/orion-rdf-writer/app/rdf_builder.py` already writes on every `ChatTurn` (`ORDER BY DESC(?ts)`), and parses it into a real epoch float via `rdf_adapter._parse_rdf_timestamp` so recency decay actually applies to RDF-backed fragments.
 
 Note this only affects *scoring* (a continuous, soft decay) — it does not give RDF-backed candidates a hard time-window cutoff. `app/worker.py`'s `_window_rdf_chatturn_candidates` still does a separate Postgres lookup (`fetch_chat_turn_timestamps` against `chat_history_log`) to hard-drop chat-turn candidates outside a profile's `since_minutes` window; that function's docstring used to justify itself with "the graph stores no usable ChatTurn timestamp," which is no longer true post-fix — its docstring (and `tests/test_rdf_chatturn_windowing.py`'s) were corrected 2026-07-14 to state the real, current reason it still exists (hard exclusion vs. soft scoring are different jobs), without changing its behavior.
 

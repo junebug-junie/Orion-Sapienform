@@ -258,10 +258,10 @@ class Settings(BaseSettings):
     # RECALL_ENABLE_RDF/_rdf_enabled() -- Falkor chatturn fetch does not
     # require "RDF" to be enabled as a concept. Only covers chatturn fragments
     # (prompt/response text, joined from Postgres since the Falkor ChatTurn
-    # node is deliberately thin); fetch_rdf_graphtri_fragments (Claim-based)
-    # stays on Fuseki -- that function's entire shape assumes Claim nodes,
-    # which the Falkor writer replaced with HAS_TAG/MENTIONS_ENTITY edges, so
-    # it needs its own redesign, not a rewrite. Code-level default stays
+    # node is deliberately thin). The Claim-based "graphtri" recall path
+    # (formerly on Fuseki) was retired entirely -- a live audit found it
+    # never carried real typed-claim data; superseded by the entity-
+    # relatedness fusion-weight boost below. Code-level default stays
     # False (a safe fallback for any environment that hasn't set this key
     # at all -- False just means "keep using RDF for chatturn," not a
     # data-loss state, unlike RECALL_FALKOR_TAG_ENTITY_ENABLED's write-side
@@ -270,40 +270,6 @@ class Settings(BaseSettings):
     # note for the historical-backfill caveat.
     RECALL_FALKOR_IN_CHAT: bool = Field(
         default=False, validation_alias=AliasChoices("RECALL_FALKOR_IN_CHAT")
-    )
-    # Second Falkor swap flag, deliberately separate from RECALL_FALKOR_IN_CHAT
-    # -- graphtri (Claim-based) recall is a distinct code path serving
-    # different profiles (graphtri.v1, deep.graph.v1, and brain.recall.v1's
-    # expansion chain) with a genuinely different, newer, less-proven redesign
-    # than the chatturn swap, so it gets its own independent dark-by-default
-    # rollout rather than riding on RECALL_FALKOR_IN_CHAT's already-live state.
-    # When true, storage/falkor_graphtri_adapter.py's
-    # fetch_falkor_graphtri_fragments/fetch_falkor_graphtri_anchors SWAP IN for
-    # storage/rdf_adapter.py's fetch_rdf_graphtri_fragments/fetch_graphtri_anchors
-    # at both call sites in worker.py (_query_backends's graphtri branch, and
-    # process_recall's graphtri-profile branch via _build_anchor_set) --
-    # swap, not additive, same reasoning as RECALL_FALKOR_IN_CHAT.
-    #
-    # Filtering divergence from the RDF version, named not silent: the old
-    # SPARQL filtered at the TURN level (keyword CONTAINS on raw prompt/
-    # response text), which Falkor's thin ChatTurn node can't do without a
-    # Postgres join. This filters at the ENTITY level instead (keyword match
-    # against Entity.name directly in Cypher) -- no Postgres join needed, and
-    # arguably more semantically correct for a graph meant to represent
-    # entity relevance in the first place, not a proxy for turn-text search.
-    #
-    # This is a lower-risk redesign than it looks: a live audit (Phase 0
-    # spec's "Ground truth" section) found Claim.predicate only ever took 2
-    # fixed values in production (hasTag, mentionsEntity -- never open-
-    # vocabulary), confidence/salience were always 0.0/0.0 (dead constants,
-    # confirmed never real signal), and no downstream code (fusion.py,
-    # render.py) ever parsed the predicate/object structure -- the whole
-    # "Claim: ..." string was always carried as opaque text. Since
-    # :Tag/HAS_TAG is also empty by design (see RECALL_FALKOR_IN_CHAT's
-    # sibling write-side comment), MENTIONS_ENTITY already covers the only
-    # part of the old Claim shape that was ever real.
-    RECALL_FALKOR_GRAPHTRI_IN_CHAT: bool = Field(
-        default=False, validation_alias=AliasChoices("RECALL_FALKOR_GRAPHTRI_IN_CHAT")
     )
     # Phase 2 of the entity-graph-reasoning arc (docs/superpowers/specs/
     # 2026-07-19-recall-entity-graph-reasoning-arc.md): fuse_candidates

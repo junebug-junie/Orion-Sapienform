@@ -98,7 +98,6 @@ Controls post-fusion compression.
 
 ### 9. Profile-Local Features
 Examples:
-- graphtri.v1 → entity triangulation
 - reflect.anchor.v1 → recursive anchor locking
 - hybrid → fan-in + heuristic switch
 
@@ -177,31 +176,6 @@ Behavior:
 
 ---
 
-## deep.graph.v1 — Entity Reasoning + Semantic Reconstruction
-Use for:
-- names
-- locations
-- entities
-- roles
-- autobiographical scaffolds
-
-Signature:
-> who + where + roles + scaffolds
-
----
-
-## graphtri.v1 — Inference + Multi-Hop
-Use for:
-- triangulation
-- cross-entity inference
-- latent connections
-- knowledge extension
-
-Signature:
-> A ↔ B ↔ C
-
----
-
 # 🪙 Tuning Advice (Practical)
 
 ### Better at names/locations (entity):
@@ -250,8 +224,6 @@ Profiles map to cognitive organs:
 | Profile | Organ |
 |---|---|
 | reflect | autobiographical cortex |
-| deep.graph | semantic hippocampus |
-| graphtri | association cortex |
 | assist.light | sensorimotor layer |
 | chat.general | social interface |
 | future: planner | prefrontal cortex |

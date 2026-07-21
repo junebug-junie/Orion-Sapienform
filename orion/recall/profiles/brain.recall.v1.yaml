@@ -4,12 +4,16 @@ profile: brain.recall.v1
 enable_vector: false
 vector_top_k: 0
 
-# Brain recall should use structured memory.
+# Brain recall should use structured memory. Formerly also set
+# enable_rdf_expansion/rdf_graphtri_mode -- the graphtri (Claim-based)
+# reasoning path was retired repo-wide (chore/retire-graphtri-deep-graph):
+# a live audit found Claim.confidence/salience were dead 0.0 constants and
+# Claim.predicate only ever took 2 fixed values, so it never carried real
+# typed-claim data beyond what MENTIONS_ENTITY already gives the core RDF
+# path below. This profile keeps live for Hub's "Brain" chat lane
+# (HUB_CHAT_LANE_RECALL_PROFILES["brain"]), just without the graphtri-mode
+# expansion on top.
 enable_rdf: true
-enable_rdf_expansion: true
-rdf_expansion_top_k: 8
-rdf_connected_chat_top_k: 8
-rdf_graphtri_mode: true
 rdf_top_k: 8
 
 # Literal / durable memory lanes.
@@ -33,11 +37,8 @@ relevance:
     sql_chat: 0.75
     sql_timeline: 0.85
     rdf_chat: 0.8
-    # falkor_chat/falkor_graphtri mirror rdf_chat/rdf -- see graphtri.v1.yaml's
-    # comment for why these are needed alongside the rdf/rdf_chat overrides.
     falkor_chat: 0.8
     rdf: 0.65
-    falkor_graphtri: 0.65
     cards: 0.5
   score_weight: 0.7
   text_similarity_weight: 0.15

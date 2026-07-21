@@ -25,21 +25,7 @@ def test_recall_v1_alias_resolves_to_brain_recall_v1() -> None:
     assert prof.get("enable_vector") is False
     assert int(prof.get("vector_top_k", -1)) == 0
     assert prof.get("enable_rdf") is True
-    assert prof.get("enable_rdf_expansion") is True
-    assert prof.get("rdf_graphtri_mode") is True
     assert int(prof.get("rdf_top_k", 0)) > 0
-    assert int(prof.get("rdf_expansion_top_k", 0)) > 0
-    assert int(prof.get("rdf_connected_chat_top_k", 0)) > 0
-
-
-def test_brain_profile_rdf_expansion_and_graphtri_flags() -> None:
-    load_profiles.cache_clear()
-    prof = get_profile("brain.recall.v1")
-    assert prof.get("enable_rdf") is True
-    assert prof.get("enable_rdf_expansion") is True
-    assert prof.get("rdf_graphtri_mode") is True
-    assert worker._rdf_expansion_enabled(prof) is True
-    assert worker._rdf_graphtri_mode(prof) is True
 
 
 def test_rdf_enabled_for_brain_profile_when_global_rdf_off(monkeypatch) -> None:
@@ -86,62 +72,36 @@ def test_vector_amputation_grep_regression() -> None:
     assert "storage.vector_adapter" not in text
 
 
-def test_brain_recall_query_backends_rdf_expansion(monkeypatch) -> None:
+def test_brain_recall_query_backends_uses_core_rdf_fragments(monkeypatch) -> None:
+    """The graphtri (Claim-based) expansion/anchor lane was retired repo-wide
+    (chore/retire-graphtri-deep-graph). brain.recall.v1 now goes straight
+    through the same core fetch_rdf_fragments path as any other RDF-enabled
+    profile (e.g. chat.general.v1) -- no anchor-term expansion, no connected
+    chatturn hop, no Claim-shaped fragments.
+    """
     load_profiles.cache_clear()
     monkeypatch.setattr(worker.settings, "RECALL_RDF_ENDPOINT_URL", "http://fake-rdf/sparql")
     monkeypatch.setattr(worker.settings, "RECALL_ENABLE_SQL_CHAT", False)
     monkeypatch.setattr(worker.settings, "RECALL_ENABLE_SQL_TIMELINE", False)
 
-    anchors_calls: list[dict] = []
-    connected_calls: list[dict] = []
-    graphtri_calls: list[dict] = []
+    rdf_calls: list[dict] = []
 
-    def _fake_anchors(**kwargs):
-        anchors_calls.append(kwargs)
-        return {
-            "entities_terms": [],
-            "tags_terms": [],
-            "claim_objs": [],
-            "related_terms": ["orion", "substrate"],
-        }
-
-    def _fake_connected(**kwargs):
-        connected_calls.append(kwargs)
+    def _fake_rdf_fragments(**kwargs):
+        rdf_calls.append(kwargs)
         return [
             {
-                "id": "rdf-chat-hop-1",
-                "source": "rdf_chat",
-                "source_ref": "urn:chat:1",
-                "text": "connected turn",
-                "ts": None,
-                "tags": ["graph_hop:1"],
-                "score": 0.7,
-            }
-        ]
-
-    def _fake_graphtri(**kwargs):
-        graphtri_calls.append(kwargs)
-        return [
-            {
-                "id": "rdf-claim-1",
+                "id": "rdf-frag-1",
                 "source": "rdf",
-                "source_ref": "urn:claim:1",
-                "text": "claim fragment",
+                "source_ref": "urn:frag:1",
+                "text": "neighborhood fragment",
                 "ts": None,
-                "tags": ["claim"],
+                "tags": ["rdf"],
                 "score": 0.6,
             }
         ]
 
     monkeypatch.setattr(worker, "fetch_rdf_chatturn_fragments", lambda **kw: [])
-    monkeypatch.setattr(worker, "fetch_graphtri_anchors", _fake_anchors)
-    monkeypatch.setattr(worker, "fetch_rdf_connected_chatturns", _fake_connected)
-    monkeypatch.setattr(worker, "fetch_rdf_graphtri_fragments", _fake_graphtri)
-    monkeypatch.setattr(
-        worker,
-        "fetch_rdf_fragments",
-        lambda **kw: (_ for _ in ()).throw(AssertionError("generic rdf should not run when graphtri returns rows")),
-    )
+    monkeypatch.setattr(worker, "fetch_rdf_fragments", _fake_rdf_fragments)
 
     profile = get_profile("brain.recall.v1")
     candidates, counts = asyncio.run(
@@ -156,17 +116,7 @@ def test_brain_recall_query_backends_rdf_expansion(monkeypatch) -> None:
         )
     )
 
-    assert len(anchors_calls) == 1
-    assert anchors_calls[0]["session_id"] is None
-    assert len(connected_calls) == 1
-    assert connected_calls[0]["terms"] == ["orion", "substrate"]
-    assert len(graphtri_calls) == 1
-
-    assert counts.get("rdf_anchor_terms") == 2
-    assert counts.get("rdf_connected_chat") == 1
+    assert len(rdf_calls) == 1
     assert counts.get("rdf") == 1
     assert counts.get("vector", 0) == 0
-
-    assert any("graph_hop:1" in (c.get("tags") or []) for c in candidates)
-    assert any("claim" in (c.get("tags") or []) for c in candidates)
     assert not any(c.get("source") == "vector" for c in candidates)

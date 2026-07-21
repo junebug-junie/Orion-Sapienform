@@ -109,14 +109,6 @@ from orion.schemas.telemetry.mood_arc import MoodArcEncoderManifestV1
 from orion.schemas.telemetry.phi_encoder import CorpusStatsV1, TrainingStatsV1
 from orion.telemetry.corpus_rotation import resolve_rotated_corpus_files
 
-# Reused as-is from fit_phi_encoder.py -- these operate on plain np.ndarrays
-# and are genuinely shape-agnostic (percentile-of-a-list, Pearson-of-two-
-# vectors). Everything else in that file (_init_weights/_forward/_losses/
-# _apply_grads) carries phi-specific baggage (a vestigial phi-prediction
-# head, plain-SGD/zero-init) and is deliberately NOT reused -- see module
-# docstring.
-from scripts.fit_phi_encoder import _pearson, _percentile  # noqa: E402
-
 ARCHITECTURE = "mlp_shallow_v1"  # same architecture family as the phi encoder
 
 # Channels excluded from select_fields() by name regardless of variance --
@@ -373,6 +365,17 @@ def prune_correlated_fields(
     not swallowed."""
     if len(fields) < 2:
         return fields
+
+    # Deferred import (2026-07-21, live outage fix): scripts.fit_phi_encoder
+    # is repo-root operator/CLI tooling, not shipped in every service's
+    # Docker image. Module-level import here broke orion-field-digester
+    # (which now imports load_artifacts/score_windows for live anomaly
+    # scoring but has no scripts/ in its container) even though this
+    # training-only function is never called from that path. _pearson/
+    # _percentile operate on plain np.ndarrays and are genuinely shape-
+    # agnostic (see module docstring) -- reused as-is, just imported lazily
+    # so only actual CLI/training use requires scripts/ to be present.
+    from scripts.fit_phi_encoder import _pearson
 
     matrix = _channel_stat_matrix(rows, fields)
     variances = {f: float(np.var(matrix[:, i])) for i, f in enumerate(fields)}
@@ -661,6 +664,9 @@ def train_autoencoder(
 ) -> tuple[dict[str, np.ndarray], TrainingStatsV1]:
     if train_matrix.shape[0] == 0:
         raise SystemExit("train: no training windows after purged temporal split")
+
+    # Deferred import -- see prune_correlated_fields()'s comment above.
+    from scripts.fit_phi_encoder import _percentile
 
     d_in = train_matrix.shape[1]
     data_mean = np.mean(train_matrix, axis=0)

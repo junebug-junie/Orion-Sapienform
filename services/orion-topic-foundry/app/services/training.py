@@ -10,7 +10,7 @@ from uuid import UUID, uuid4
 
 import numpy as np
 from joblib import dump
-from sklearn.feature_extraction.text import TfidfVectorizer
+from sklearn.feature_extraction.text import ENGLISH_STOP_WORDS, TfidfVectorizer
 try:
     from hdbscan import HDBSCAN
 except ImportError:  # pragma: no cover - exercised in minimal test envs
@@ -123,11 +123,40 @@ def _json_safe(value: Any) -> Any:
     return value
 
 
+def _resolve_keyword_stop_words(model_params: Dict[str, Any]) -> Any:
+    """Live incident 2026-07-21: this function's caller previously hardcoded
+    TfidfVectorizer(stop_words="english", ...) with no override mechanism at
+    all -- a real, separate BERTopic-style vectorizer in app/topic_engine.py
+    DOES support model_spec.params-driven stopword overrides
+    (vectorizer_stop_words/stop_words_extra), but that code path is never
+    invoked by this service's actual /runs/train training flow, so it gave a
+    false impression the feature existed. Confirmed live: sklearn's "english"
+    list does not cover casual chat filler at all (checked "hi", "like",
+    "just", "let", "know", "need" -- none are in ENGLISH_STOP_WORDS), so the
+    real active model's top keywords were dominated by exactly those words.
+    Mirrors topic_engine.py::_build_vectorizer's stop_words_extra convention
+    (comma-separated, lowercased) so a model_spec.params dict written for one
+    code path works for the other too.
+    """
+    stop_words_raw = str(model_params.get("vectorizer_stop_words", "english") or "").strip().lower()
+    if stop_words_raw in {"", "none", "null", "off", "false", "0"}:
+        return None
+    if stop_words_raw != "english":
+        custom = [x.strip().lower() for x in stop_words_raw.split(",") if x.strip()]
+        return custom or None
+    extras_raw = str(model_params.get("stop_words_extra", "") or "")
+    extras = [x.strip().lower() for x in extras_raw.split(",") if x.strip()]
+    if not extras:
+        return "english"
+    return sorted(set(ENGLISH_STOP_WORDS).union(extras))
+
+
 def _compute_topic_artifacts(
     segments: List[RowBlock],
     labels: np.ndarray,
     *,
     max_keywords: int = 12,
+    model_params: Optional[Dict[str, Any]] = None,
 ) -> tuple[List[Dict[str, Any]], Dict[str, List[str]]]:
     summary_counts: Dict[int, int] = {}
     texts_by_topic: Dict[int, List[str]] = {}
@@ -146,7 +175,8 @@ def _compute_topic_artifacts(
     topic_texts = [(tid, texts) for tid, texts in texts_by_topic.items() if tid != -1 and texts]
     if topic_texts:
         all_texts = [text for _, texts in topic_texts for text in texts]
-        vectorizer = TfidfVectorizer(stop_words="english", max_features=5000)
+        stop_words = _resolve_keyword_stop_words(model_params or {})
+        vectorizer = TfidfVectorizer(stop_words=stop_words, max_features=5000)
         tfidf = vectorizer.fit_transform(all_texts)
         vocab = np.array(vectorizer.get_feature_names_out())
         offset = 0
@@ -387,11 +417,24 @@ _UMAP_RESERVED_PARAM_KEYS = frozenset(
     {"umap_n_neighbors", "umap_n_components", "umap_min_dist", "umap_metric", "random_state"}
 )
 
+# Live incident 2026-07-21: model_spec.params is a shared namespace across
+# three different consumers (UMAP reducer, HDBSCAN clusterer, keyword
+# vectorizer via _resolve_keyword_stop_words above) but only
+# _UMAP_RESERVED_PARAM_KEYS existed to keep UMAP-only keys out of the
+# HDBSCAN(**params) call -- vectorizer keys had no equivalent exclusion, so
+# setting stop_words_extra/vectorizer_stop_words in model_spec.params (the
+# only documented way to reach _resolve_keyword_stop_words) always crashed
+# clusterer construction with TypeError before training could even reach the
+# keyword-computation step. Confirmed live: a real training run with
+# stop_words_extra set failed at HDBSCAN(**params) every time.
+_VECTORIZER_RESERVED_PARAM_KEYS = frozenset({"vectorizer_stop_words", "stop_words_extra"})
+
 
 def _build_clusterer(spec: ModelSpec) -> HDBSCAN:
     _require_hdbscan()
     params = {"min_cluster_size": spec.min_cluster_size, "metric": spec.metric}
-    params.update({k: v for k, v in spec.params.items() if k not in _UMAP_RESERVED_PARAM_KEYS})
+    reserved = _UMAP_RESERVED_PARAM_KEYS | _VECTORIZER_RESERVED_PARAM_KEYS
+    params.update({k: v for k, v in spec.params.items() if k not in reserved})
     params.setdefault("prediction_data", True)
     return HDBSCAN(**params)
 
@@ -562,7 +605,9 @@ def _write_artifacts(
     (run_dir / "stats.json").write_text(json.dumps(stats, indent=2))
     (run_dir / "run_record.json").write_text(json.dumps(run.model_dump(mode="json"), indent=2))
 
-    topics_summary, topics_keywords = _compute_topic_artifacts(segments, labels)
+    topics_summary, topics_keywords = _compute_topic_artifacts(
+        segments, labels, model_params=run.specs.model.params
+    )
     topics_summary_path = run_dir / "topics_summary.json"
     topics_keywords_path = run_dir / "topics_keywords.json"
     topics_summary_path.write_text(json.dumps(topics_summary, indent=2))

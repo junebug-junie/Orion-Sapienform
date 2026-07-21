@@ -4,7 +4,7 @@ import numpy as np
 import pytest
 
 from app.models import ModelSpec
-from app.services.training import _build_clusterer, _build_reducer
+from app.services.training import _build_clusterer, _build_reducer, _resolve_keyword_stop_words
 
 
 def _model_spec(**overrides) -> ModelSpec:
@@ -75,6 +75,52 @@ def test_build_clusterer_excludes_umap_reserved_keys_from_hdbscan_kwargs():
     embeddings = np.random.default_rng(0).normal(size=(30, 8)).astype(np.float32)
     labels = clusterer.fit_predict(embeddings)
     assert len(labels) == 30
+
+
+def test_build_clusterer_excludes_vectorizer_reserved_keys_from_hdbscan_kwargs():
+    """Live incident 2026-07-21: setting stop_words_extra/vectorizer_stop_words
+    in model_spec.params (the only documented way to reach
+    _resolve_keyword_stop_words) crashed HDBSCAN's constructor directly --
+    TypeError: __init__() got an unexpected keyword argument
+    'vectorizer_stop_words' -- unlike the umap_* keys above, which HDBSCAN's
+    constructor silently accepts and only fails on later at fit time. Both
+    failure shapes are covered: this one at construction, the umap one above
+    at fit."""
+    spec = _model_spec(
+        params={
+            "vectorizer_stop_words": "english",
+            "stop_words_extra": "hi,hey,juniper,orion",
+        }
+    )
+    clusterer = _build_clusterer(spec)  # must not raise
+    embeddings = np.random.default_rng(0).normal(size=(30, 8)).astype(np.float32)
+    labels = clusterer.fit_predict(embeddings)
+    assert len(labels) == 30
+
+
+def test_resolve_keyword_stop_words_defaults_to_english():
+    assert _resolve_keyword_stop_words({}) == "english"
+
+
+def test_resolve_keyword_stop_words_none_disables_filtering():
+    for off in ("none", "off", "false", "0", ""):
+        assert _resolve_keyword_stop_words({"vectorizer_stop_words": off}) is None
+
+
+def test_resolve_keyword_stop_words_extends_english_list():
+    """The actual live defect this fixes: sklearn's 'english' list does not
+    cover conversational filler at all -- confirmed live, none of
+    hi/like/just/let/know/need are in ENGLISH_STOP_WORDS."""
+    result = _resolve_keyword_stop_words({"stop_words_extra": "hi, Juniper, orion"})
+    assert isinstance(result, list)
+    assert "hi" in result
+    assert "juniper" in result  # lowercased
+    assert "the" in result  # base english list still present
+
+
+def test_resolve_keyword_stop_words_custom_list_replaces_english():
+    result = _resolve_keyword_stop_words({"vectorizer_stop_words": "foo,bar"})
+    assert result == ["foo", "bar"]
 
 
 def test_reduce_then_cluster_with_umap_param_overrides_does_not_crash():

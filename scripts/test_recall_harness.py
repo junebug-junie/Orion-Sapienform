@@ -4,13 +4,13 @@ Recall Service Test Harness
 ---------------------------
 Sends a RecallQueryV1 via the Orion Bus and prints the returned MemoryBundle.
 Usage:
-    python scripts/test_recall_harness.py "What did I work on yesterday?" --profile deep.graph.v1
+    python scripts/test_recall_harness.py "What did I work on yesterday?" --profile brain.recall.v1
 
 # Basic query using default profile
 python scripts/test_recall_harness.py "project timeline"
 
 # Query with specific profile and verb
-python scripts/test_recall_harness.py "failed db connection" --profile deep.graph.v1 --verb investigate
+python scripts/test_recall_harness.py "failed db connection" --profile brain.recall.v1 --verb investigate
 
 # Point to specific redis
 python scripts/test_recall_harness.py "hello" --redis redis://192.168.1.50:6379/0

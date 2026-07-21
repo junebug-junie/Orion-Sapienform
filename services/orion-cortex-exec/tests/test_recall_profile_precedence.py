@@ -20,7 +20,7 @@ def test_precedence_explicit_override_wins_when_flagged() -> None:
     profile, source = resolve_profile(
         {"profile": "reflect.v1", "profile_explicit": True},
         verb_profile="chat.general.v1",
-        step=_step("deep.graph.v1"),
+        step=_step("brain.recall.v1"),
         is_recall_step=True,
     )
     assert profile == "reflect.v1"
@@ -31,10 +31,10 @@ def test_precedence_step_used_when_no_explicit_override() -> None:
     profile, source = resolve_profile(
         {"profile": "reflect.v1"},
         verb_profile="chat.general.v1",
-        step=_step("deep.graph.v1"),
+        step=_step("brain.recall.v1"),
         is_recall_step=True,
     )
-    assert profile == "deep.graph.v1"
+    assert profile == "brain.recall.v1"
     assert source == "step"
 
 
@@ -49,12 +49,15 @@ def test_precedence_verb_wins_over_inherited_profile() -> None:
 
 
 def test_precedence_mode_used_when_no_verb_or_profile() -> None:
+    """"graph" used to route to the now-retired graphtri.v1 profile; it now
+    degrades to resolve_mode_profile's own fallback, same as any unrecognized
+    mode value (see recall_utils.resolve_mode_profile)."""
     profile, source = resolve_profile(
         {"mode": "graph"},
         verb_profile=None,
         is_recall_step=False,
     )
-    assert profile == "graphtri.v1"
+    assert profile == "reflect.v1"
     assert source == "mode"
 
 

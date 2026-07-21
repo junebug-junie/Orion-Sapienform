@@ -27,11 +27,6 @@ DEFAULT_BACKEND_WEIGHTS = {
     # once) -- same weight, not the generic 0.5 fallback this dict's
     # absence would otherwise produce.
     "falkor_chat": 0.4,
-    # falkor_graphtri is the same content as rdf (graphtri-mode) on a
-    # different backend (RECALL_FALKOR_GRAPHTRI_IN_CHAT swaps one in for
-    # the other) -- same weight as "rdf" below, not the generic 0.5
-    # fallback this dict's absence would otherwise produce.
-    "falkor_graphtri": 0.3,
     "rdf": 0.3,
     "memory_graph_sparql": 0.35,
     "cards": 0.0,
@@ -659,27 +654,6 @@ def fuse_candidates(
         render_char_budget=render_char_budget if strict_prompt_budget else None,
         max_snippet_chars=snippet_cap if strict_prompt_budget else None,
     )
-    is_graphtri = bool(profile_name) and (
-        str(profile_name) == "graphtri.v1" or str(profile_name).startswith("graphtri")
-    )
-    if is_graphtri:
-        job_offer_terms = ("job offer", "AI/ML", "Architect")
-        bundle_has_terms = any(
-            any(term in (item.snippet or "") for term in job_offer_terms) for item in items
-        )
-        top_vector = next(
-            (item for item in items if str(item.source or "") == "vector" and item.snippet), None
-        )
-        top_vector_head = (top_vector.snippet or "")[:80] if top_vector else ""
-        digest_has_terms = any(term in rendered for term in job_offer_terms)
-        logger = logging.getLogger("orion-recall.render")
-        logger.info(
-            "graphtri_render_summary top_vector_snippet_head=%r bundle_has_job_offer_terms=%s digest_has_job_offer_terms=%s rendered_len_chars=%s",
-            top_vector_head,
-            bundle_has_terms,
-            digest_has_terms,
-            len(rendered),
-        )
     diag_payload: Dict[str, Any] | None = None
     if diagnostic:
         diag_payload = {
@@ -738,12 +712,6 @@ _BELIEF_SOURCE_ORDER = {
     "concept_region": 1,
     "cards": 2,
     "rdf": 3,
-    # falkor_graphtri: same rank as "rdf" (its sibling/swap target). Unlike
-    # "falkor_chat" below, "falkor_graphtri" doesn't need this comment's
-    # exception explained twice -- it's here for the same reason: does NOT
-    # start with "rdf", so needs its own explicit entry rather than relying
-    # on the startswith("rdf") shadow two lines below.
-    "falkor_graphtri": 3,
     "rdf_chat": 4,
     # falkor_chat: same rank rdf_chat would occupy if "rdf".startswith
     # didn't shadow it below -- see that comment. Since "falkor_chat" does

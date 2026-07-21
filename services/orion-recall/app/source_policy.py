@@ -41,7 +41,6 @@ def build_vector_policy(
     paths: tuple[str, ...] = (
         "main",
         "anchor",
-        "graphtri",
         "collectors",
         "v2_shadow_exact",
         "v2_shadow_semantic",

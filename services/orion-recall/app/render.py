@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import logging
 from typing import Dict, Iterable, List, Optional, Set, Tuple
 
 from orion.core.contracts.recall import MemoryItemV1
@@ -70,9 +69,6 @@ def render_items(
     claims = [item for item in items_list if "claim" in (item.tags or [])]
     others = [item for item in items_list if item not in claims]
     orion_deduper = OrionDigestDeduper()
-    is_graphtri = bool(profile_name) and (
-        str(profile_name) == "graphtri.v1" or str(profile_name).startswith("graphtri")
-    )
     emitted_ids: Set[str] = set()
 
     def _append_line(line: str) -> bool:
@@ -124,101 +120,8 @@ def render_items(
                 return
             emitted_ids.add(item.id)
 
-    if is_graphtri:
-        def _score(it: MemoryItemV1) -> float:
-            try:
-                return float(it.score or 0.0)
-            except Exception:
-                return 0.0
-
-        non_claims = list(others)
-        non_claims.sort(
-            key=lambda it: (
-                1 if str(it.source or "") == "vector" else 0,
-                _score(it),
-            ),
-            reverse=True,
-        )
-
-        def _is_refusal_snippet(text: str) -> bool:
-            t = (text or "").lower()
-            return any(
-                p in t
-                for p in [
-                    "i don't have a specific memory",
-                    "i don't have a memory",
-                    "i don't remember",
-                    "i cant recall",
-                    "i can't recall",
-                    "i do not recall",
-                    "not in my recent context",
-                    "if you could provide more details",
-                    "if you could share more details",
-                ]
-            )
-
-        skipped_refusal = 0
-        top_vector = [
-            it
-            for it in non_claims
-            if str(it.source or "") == "vector" and not _is_refusal_snippet(it.snippet or "")
-        ][:5]
-        top_other = [
-            it
-            for it in non_claims
-            if str(it.source or "") != "vector" and not _is_refusal_snippet(it.snippet or "")
-        ][:3]
-        top_items = top_vector + top_other
-        if top_items:
-            _append_line("=== TOP RELEVANT SNIPPETS ===")
-            for item in top_items:
-                if item.id in emitted_ids:
-                    continue
-                snippet = _prepare_snippet(item.snippet or "")
-                if render_transcript_user_only:
-                    lean = transcript_snippet_user_lean(snippet)
-                    if lean:
-                        snippet = _prepare_snippet(lean)
-                if _is_refusal_snippet(snippet):
-                    skipped_refusal += 1
-                    continue
-                if not snippet:
-                    continue
-                if not orion_deduper.should_emit_snippet(snippet):
-                    continue
-                prefix = f"[{item.source}"
-                if item.source_ref:
-                    prefix += f":{item.source_ref}"
-                prefix += "]"
-                line = f"- {prefix} {snippet}"
-                if not _append_line(line):
-                    budget_dropped.append(
-                        {"id": item.id, "source": str(item.source or ""), "snippet": snippet[:160]}
-                    )
-                    break
-                emitted_ids.add(item.id)
-        logger = logging.getLogger("orion-recall.render")
-        logger.info(
-            "graphtri_top_snippets_summary top_selected_count=%s top_skipped_refusal_count=%s",
-            len(emitted_ids),
-            skipped_refusal,
-        )
-
-        _render_group("High-salience claims", claims)
-        remaining = [item for item in others if item.id not in emitted_ids]
-        _render_group("Recent context", remaining)
-
-        first_line = next((line for line in lines if line.startswith("- ")), "")
-        digest_has_ai_ml_architect = ("AI/ML" in "\n".join(lines)) or ("Architect" in "\n".join(lines))
-        logger.info(
-            "graphtri_render_guardrails top_snippets_first_line=%r digest_has_ai_ml_architect=%s digest_has_refusal_phrase=%s",
-            first_line,
-            digest_has_ai_ml_architect,
-            _is_refusal_snippet("\n".join(lines)),
-        )
-    else:
-        _render_group("High-salience claims", claims)
-        _render_group("Recent context", others)
+    _render_group("High-salience claims", claims)
+    _render_group("Recent context", others)
 
     rendered = "\n".join(lines)
     n_drop = len(budget_dropped)

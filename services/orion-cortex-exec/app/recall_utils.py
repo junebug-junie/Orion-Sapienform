@@ -85,11 +85,9 @@ def _is_concrete_ops_query(text: str | None) -> bool:
 
 
 def resolve_mode_profile(mode: str | None) -> Tuple[str, str]:
-    normalized = str(mode or "").lower()
-    if normalized == "deep":
-        return "deep.graph.v1", "mode"
-    if normalized == "graph":
-        return "graphtri.v1", "mode"
+    # "deep"/"graph" modes used to route to the now-retired deep.graph.v1/
+    # graphtri.v1 profiles; any mode value (recognized or not) now degrades
+    # to this function's own pre-existing fallback.
     return "reflect.v1", "mode"
 
 

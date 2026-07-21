@@ -135,7 +135,6 @@ class RecallVectorPolicyV1(BaseModel):
 
     main: Optional[RecallVectorPolicyPathV1] = None
     anchor: Optional[RecallVectorPolicyPathV1] = None
-    graphtri: Optional[RecallVectorPolicyPathV1] = None
     collectors: Optional[RecallVectorPolicyPathV1] = None
     v2_shadow_exact: Optional[RecallVectorPolicyPathV1] = None
     v2_shadow_semantic: Optional[RecallVectorPolicyPathV1] = None

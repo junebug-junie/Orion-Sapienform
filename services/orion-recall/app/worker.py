@@ -33,16 +33,10 @@ try:
     from .source_policy import build_vector_policy
     from .storage.rdf_adapter import (
         fetch_rdf_fragments,
-        fetch_rdf_expansion_terms,
-        fetch_rdf_connected_chatturns,
-        fetch_graphtri_anchors,
-        fetch_rdf_graphtri_anchor_terms,
-        fetch_rdf_graphtri_fragments,
         fetch_rdf_chatturn_fragments,
         fetch_rdf_chatturn_exact_matches,
     )
     from .storage.falkor_chat_adapter import fetch_falkor_chatturn_fragments
-    from .storage.falkor_graphtri_adapter import fetch_falkor_graphtri_fragments, fetch_falkor_graphtri_anchors
     from .storage.falkor_entity_relatedness import (
         fetch_related_entities,
         fetch_entity_matches_for_turns,
@@ -71,16 +65,10 @@ except ImportError as _e:  # pragma: no cover - fallback for runtime pathing
         from app.source_policy import build_vector_policy  # type: ignore
         from app.storage.rdf_adapter import (  # type: ignore
             fetch_rdf_fragments,
-            fetch_rdf_expansion_terms,
-            fetch_rdf_connected_chatturns,
-            fetch_graphtri_anchors,
-            fetch_rdf_graphtri_anchor_terms,
-            fetch_rdf_graphtri_fragments,
             fetch_rdf_chatturn_fragments,
             fetch_rdf_chatturn_exact_matches,
         )
         from app.storage.falkor_chat_adapter import fetch_falkor_chatturn_fragments  # type: ignore
-        from app.storage.falkor_graphtri_adapter import fetch_falkor_graphtri_fragments, fetch_falkor_graphtri_anchors  # type: ignore
         from app.storage.falkor_entity_relatedness import (  # type: ignore
             fetch_related_entities,
             fetch_entity_matches_for_turns,
@@ -533,81 +521,6 @@ def _expand_query(fragment: str, *, verb: str | None, intent: str | None, enable
     return [s for s in signals if s]
 
 
-async def _build_anchor_set(
-    *,
-    query_text: str,
-    session_id: str | None,
-    profile: Dict[str, Any],
-) -> Dict[str, Any]:
-    anchors = {
-        "entities_terms": [],
-        "tags_terms": [],
-        "claim_objs": [],
-        "related_terms": [],
-    }
-    if not _rdf_enabled(profile):
-        return anchors
-    falkor_graphtri_enabled = bool(settings.RECALL_FALKOR_GRAPHTRI_IN_CHAT)
-    if not falkor_graphtri_enabled and not settings.RECALL_RDF_ENDPOINT_URL:
-        return anchors
-    query_terms = _extract_keywords(query_text) if query_text else []
-    try:
-        if falkor_graphtri_enabled:
-            anchors = await fetch_falkor_graphtri_anchors(
-                session_id=session_id,
-                query_terms=query_terms,
-                max_terms=12,
-            )
-        else:
-            anchors = fetch_graphtri_anchors(
-                session_id=session_id,
-                query_terms=query_terms,
-                max_terms=12,
-            )
-    except Exception as exc:
-        logger.debug(f"graphtri anchor fetch skipped: {exc}")
-    return anchors
-
-
-async def _fetch_graphtri_fragments(
-    *,
-    query_text: str,
-    session_id: str | None,
-    max_items: int,
-    falkor_graphtri_enabled: bool,
-) -> Tuple[List[Dict[str, Any]], int]:
-    """Shared by both graphtri call sites (_query_backends and
-    process_recall's graphtri-profile branch) -- extracted in code review
-    after the two call sites' near-identical swap+fallback logic drifted out
-    of sync once already (one site got a bug fix the other didn't). Returns
-    (fragments, falkor_yield) where falkor_yield is the Falkor path's own
-    result count before any fallback (-1 when the RDF-only path was taken,
-    so callers can tell "Falkor wasn't attempted" apart from "Falkor
-    returned zero fragments").
-    """
-    if falkor_graphtri_enabled:
-        try:
-            keywords = _extract_keywords(query_text) if query_text else []
-            rdf = await fetch_falkor_graphtri_fragments(
-                query_text=query_text,
-                session_id=session_id,
-                keywords=keywords,
-                max_items=max_items,
-            )
-        except Exception as exc:
-            logger.debug(f"falkor graphtri fetch skipped: {exc}")
-            rdf = []
-        falkor_yield = len(rdf)
-        if not rdf:
-            rdf = fetch_rdf_fragments(query_text=query_text, max_items=max_items)
-        return rdf, falkor_yield
-
-    rdf = fetch_rdf_graphtri_fragments(query_text=query_text, session_id=session_id, max_items=max_items)
-    if not rdf:
-        rdf = fetch_rdf_fragments(query_text=query_text, max_items=max_items)
-    return rdf, -1
-
-
 _ENTITY_RELATEDNESS_MAX_QUERY_ENTITIES = 3
 _ENTITY_RELATEDNESS_MAX_RELATED_PER_ENTITY = 15
 _ENTITY_RELATEDNESS_MAX_INJECTED_TURNS = 6
@@ -836,29 +749,10 @@ async def _compute_entity_relatedness_boost_map(
 
 
 def _rdf_enabled(profile: Dict[str, Any]) -> bool:
-    profile_name = str(profile.get("profile") or "")
     profile_enable_rdf = bool(profile.get("enable_rdf", False))
     return (
-        profile_enable_rdf
-        or profile_name.startswith("deep.graph")
-        or profile_name.startswith("graphtri")
-        or settings.RECALL_ENABLE_RDF
+        profile_enable_rdf or settings.RECALL_ENABLE_RDF
     ) and int(profile.get("rdf_top_k", 0)) > 0
-
-
-def _rdf_expansion_enabled(profile: Dict[str, Any]) -> bool:
-    if not _rdf_enabled(profile):
-        return False
-    return bool(profile.get("enable_rdf_expansion", False))
-
-
-def _rdf_graphtri_mode(profile: Dict[str, Any]) -> bool:
-    profile_name = str(profile.get("profile") or "")
-    return (
-        bool(profile.get("rdf_graphtri_mode", False))
-        or profile_name.startswith("graphtri")
-        or profile_name.startswith("deep.graph")
-    )
 
 
 def _sql_timeline_enabled_for_profile(profile: Dict[str, Any]) -> bool:
@@ -1173,19 +1067,7 @@ async def _query_backends(
     backend_counts: Dict[str, int] = {}
     exclusion = exclusion or {}
 
-    # Computed before rdf_enabled -- rdf_enabled's own OR-clause needs it
-    # (see settings.py's RECALL_FALKOR_GRAPHTRI_IN_CHAT comment). Bug fixed
-    # in code review: this OR-clause was originally only added to the
-    # sibling gate in process_recall's graphtri branch, not here -- meaning
-    # once RECALL_RDF_ENDPOINT_URL is ever unset (this migration's own
-    # target end-state), this whole rdf_enabled block -- including the
-    # falkor_graphtri fetch itself -- would have silently gone dark for any
-    # profile routed through _query_backends (deep.graph.v1,
-    # brain.recall.v1), even with the Falkor flag on. Falkor doesn't need
-    # RECALL_RDF_ENDPOINT_URL at all, so it must be part of this OR, not
-    # gated behind it.
-    falkor_graphtri_enabled = bool(settings.RECALL_FALKOR_GRAPHTRI_IN_CHAT)
-    rdf_enabled = _rdf_enabled(profile) and (falkor_graphtri_enabled or bool(settings.RECALL_RDF_ENDPOINT_URL))
+    rdf_enabled = _rdf_enabled(profile) and bool(settings.RECALL_RDF_ENDPOINT_URL)
     rdf_top_k = int(profile.get("rdf_top_k", 0))
     # Phase 4 chatturn swap: independent of rdf_enabled/_rdf_enabled(profile)
     # (see settings.py's RECALL_FALKOR_IN_CHAT comment) -- Falkor chatturn
@@ -1201,13 +1083,6 @@ async def _query_backends(
     falkor_chat_enabled = bool(settings.RECALL_FALKOR_IN_CHAT) and bool(
         profile.get("enable_falkor_chat", True)
     )
-    expansion_terms: List[str] = []
-    anchor_plan: Dict[str, Any] = {
-        "entities_terms": [],
-        "tags_terms": [],
-        "claim_objs": [],
-        "related_terms": [],
-    }
     if falkor_chat_enabled:
         # Swap, not additive: this replaces the RDF chatturn fetch below,
         # not a merge -- running both would double up the same turns in
@@ -1228,30 +1103,6 @@ async def _query_backends(
 
     if rdf_enabled:
         try:
-            if _rdf_expansion_enabled(profile):
-                try:
-                    query_terms = _extract_keywords(fragment) if fragment else []
-                    max_terms = int(profile.get("rdf_expansion_top_k", 8))
-                    if falkor_graphtri_enabled:
-                        anchor_plan = await fetch_falkor_graphtri_anchors(
-                            session_id=session_id,
-                            query_terms=query_terms,
-                            max_terms=max_terms,
-                        )
-                    else:
-                        anchor_plan = fetch_graphtri_anchors(
-                            session_id=session_id,
-                            query_terms=query_terms,
-                            max_terms=max_terms,
-                        )
-                    expansion_terms = list(anchor_plan.get("related_terms") or [])
-                    backend_counts["rdf_anchor_terms"] = len(expansion_terms)
-                except Exception as exc:
-                    logger.debug(f"rdf expansion anchor fetch skipped: {exc}")
-                    backend_counts["rdf_anchor_terms"] = 0
-            else:
-                backend_counts["rdf_anchor_terms"] = 0
-
             if not falkor_chat_enabled:
                 # 0) Pull raw ChatTurns (prompt/response) from GRAPH <orion:chat>.
                 # Skipped when Falkor already covered this above (swap, not
@@ -1265,38 +1116,10 @@ async def _query_backends(
                 backend_counts["rdf_chat"] = len(rdf_chat)
                 candidates.extend(rdf_chat)
 
-            if expansion_terms:
-                try:
-                    connected = fetch_rdf_connected_chatturns(
-                        terms=expansion_terms,
-                        max_items=int(
-                            profile.get("rdf_connected_chat_top_k", rdf_top_k)
-                        ),
-                    )
-                    backend_counts["rdf_connected_chat"] = len(connected)
-                    candidates.extend(connected)
-                except Exception as exc:
-                    logger.debug(f"rdf connected chat fetch skipped: {exc}")
-                    backend_counts["rdf_connected_chat"] = 0
-            else:
-                backend_counts["rdf_connected_chat"] = 0
-
-            # Claims / neighborhood fragments (graphtri lane for brain.recall.v1).
-            rdf: List[Dict[str, Any]] = []
-            if _rdf_graphtri_mode(profile):
-                rdf, falkor_yield = await _fetch_graphtri_fragments(
-                    query_text=fragment,
-                    session_id=session_id,
-                    max_items=rdf_top_k,
-                    falkor_graphtri_enabled=falkor_graphtri_enabled,
-                )
-                if falkor_yield >= 0:
-                    backend_counts["falkor_graphtri"] = falkor_yield
-            else:
-                rdf = fetch_rdf_fragments(
-                    query_text=fragment,
-                    max_items=rdf_top_k,
-                )
+            rdf = fetch_rdf_fragments(
+                query_text=fragment,
+                max_items=rdf_top_k,
+            )
 
             backend_counts["rdf"] = len(rdf)
             candidates.extend(rdf)
@@ -1308,22 +1131,11 @@ async def _query_backends(
 
     if diagnostic:
         logger.info(
-            "recall rdf_enabled=%s rdf_top_k=%s rdf_candidates=%s expansion_terms=%s",
+            "recall rdf_enabled=%s rdf_top_k=%s rdf_candidates=%s",
             rdf_enabled,
             rdf_top_k,
             backend_counts.get("rdf", 0),
-            expansion_terms,
         )
-        if rdf_enabled:
-            logger.info(
-                "recall rdf_expansion profile=%s enabled=%s graphtri_mode=%s anchor_terms=%s anchor_plan=%s connected_chat=%s",
-                profile.get("profile"),
-                _rdf_expansion_enabled(profile),
-                _rdf_graphtri_mode(profile),
-                expansion_terms,
-                anchor_plan,
-                backend_counts.get("rdf_connected_chat", 0),
-            )
 
     if _sql_chat_enabled_for_profile(profile):
         try:
@@ -1806,142 +1618,23 @@ async def process_recall(
         for key, value in anchor_counts.items():
             backend_counts_total[key] = value
 
-    if profile_name.startswith("graphtri"):
-        anchor_set = await _build_anchor_set(
-            query_text=q.fragment,
+    backend_start = time.time()
+    for sig_i, sig in enumerate(signals):
+        cand, counts = await _query_backends(
+            sig,
+            profile,
             session_id=effective_session_id,
-            profile=profile,
+            node_id=q.node_id,
+            entities=_extract_entities(query_fragment),
+            diagnostic=diagnostic,
+            exclusion=exclusion,
+            lane=getattr(q, "lane", None),
+            include_cards=(sig_i == 0),
         )
-        anchor_terms = anchor_set.get("related_terms") or []
-        vector_queries = [query_fragment]
-        vector_queries.extend([f"{query_fragment} {term}" for term in anchor_terms[:8]])
-        sql_filters = anchor_terms[:6]
-        query_plan = {
-            "vector_queries": vector_queries,
-            "sql_filters": sql_filters,
-            "sql_session_id": effective_session_id,
-        }
-
-        rdf_top_k = int(profile.get("rdf_top_k", 0))
-        falkor_graphtri_enabled = bool(settings.RECALL_FALKOR_GRAPHTRI_IN_CHAT)
-        rdf_enabled = _rdf_enabled(profile) and (falkor_graphtri_enabled or bool(settings.RECALL_RDF_ENDPOINT_URL))
-        rdf_items: List[Dict[str, Any]] = []
-        rdf_connected: List[Dict[str, Any]] = []
-        if rdf_enabled:
-            try:
-                rdf_items, falkor_yield = await _fetch_graphtri_fragments(
-                    query_text=query_fragment,
-                    session_id=effective_session_id,
-                    max_items=rdf_top_k,
-                    falkor_graphtri_enabled=falkor_graphtri_enabled,
-                )
-                if falkor_yield >= 0:
-                    backend_counts_total["falkor_graphtri"] = falkor_yield
-                backend_counts_total["rdf"] = len(rdf_items)
-                candidates.extend(rdf_items)
-
-                if anchor_terms:
-                    rdf_connected = fetch_rdf_connected_chatturns(
-                        terms=anchor_terms[:10],
-                        max_items=max(6, min(12, rdf_top_k or 12)),
-                    )
-                    backend_counts_total["rdf_chat_connected"] = len(rdf_connected)
-                    candidates.extend(rdf_connected)
-            except Exception as exc:
-                logger.debug(f"rdf backend skipped: {exc}")
-        source_gating["vector"] = "removed_from_orion_recall"
-        backend_counts_total["vector"] = 0
-
-        sql_attempted = False
-        sql_session_id = effective_session_id
-        sql_filters_used: List[str] = []
-        if _sql_timeline_enabled_for_profile(profile):
-            source_gating["sql_timeline"] = "enabled"
-            try:
-                sql_attempted = True
-                sql_filters_used = sql_filters
-
-                since_minutes_effective = int(profile.get("sql_since_minutes", settings.RECALL_SQL_SINCE_MINUTES))
-                since_hours_effective = int(profile.get("sql_since_hours", max(1, since_minutes_effective // 60)))
-                sql_top_k = int(profile.get("sql_top_k", settings.RECALL_SQL_TOP_K))
-
-                recent_items = await fetch_recent_fragments(
-                    effective_session_id,
-                    q.node_id,
-                    since_minutes_effective,
-                    sql_top_k,
-                    exclude_ids=exclusion.get("active_turn_ids"),
-                    exclude_text=exclusion.get("active_turn_text"),
-                )
-                related_items = await fetch_related_by_entities(
-                    sql_filters_used or [],
-                    since_hours_effective,
-                    sql_top_k,
-                    session_id=effective_session_id,
-                    exclude_ids=exclusion.get("active_turn_ids"),
-                    exclude_text=exclusion.get("active_turn_text"),
-                )
-
-                recent_items = list(recent_items) + list(related_items)
-                backend_counts_total["sql_timeline"] = len(recent_items)
-                for item in recent_items:
-                    candidates.append(
-                        {
-                            "id": item.id,
-                            "source": "sql_timeline",
-                            "source_ref": item.source_ref,
-                            "text": item.text,
-                            "ts": item.ts,
-                            "session_id": item.session_id,
-                            "tags": item.tags,
-                            "score": 0.7,
-                        }
-                    )
-            except Exception as exc:
-                logger.debug(f"sql timeline backend skipped: {exc}")
-        elif diagnostic:
-            source_gating["sql_timeline"] = "disabled_by_profile_or_global"
-            logger.info(
-                "graphtri sql_timeline skipped profile=%s enable_sql_timeline=%s global_sql_timeline_enabled=%s",
-                profile.get("profile"),
-                profile.get("enable_sql_timeline"),
-                settings.RECALL_ENABLE_SQL_TIMELINE,
-            )
-
-        if diagnostic:
-            logger.info(
-                "graphtri anchors=%s plan=%s rdf_count=%s vector_count=%s sql_count=%s",
-                anchor_set,
-                query_plan,
-                backend_counts_total.get("rdf", 0),
-                backend_counts_total.get("vector", 0),
-                backend_counts_total.get("sql_timeline", 0),
-            )
-            logger.info(
-                "graphtri sql attempted=%s session_id=%s filters=%s count=%s",
-                sql_attempted,
-                sql_session_id,
-                sql_filters_used,
-                backend_counts_total.get("sql_timeline", 0),
-            )
-    else:
-        backend_start = time.time()
-        for sig_i, sig in enumerate(signals):
-            cand, counts = await _query_backends(
-                sig,
-                profile,
-                session_id=effective_session_id,
-                node_id=q.node_id,
-                entities=_extract_entities(query_fragment),
-                diagnostic=diagnostic,
-                exclusion=exclusion,
-                lane=getattr(q, "lane", None),
-                include_cards=(sig_i == 0),
-            )
-            candidates.extend(cand)
-            for k, v in counts.items():
-                backend_counts_total[k] = backend_counts_total.get(k, 0) + v
-        timing_breakdown_ms["backend_fetch"] = int((time.time() - backend_start) * 1000)
+        candidates.extend(cand)
+        for k, v in counts.items():
+            backend_counts_total[k] = backend_counts_total.get(k, 0) + v
+    timing_breakdown_ms["backend_fetch"] = int((time.time() - backend_start) * 1000)
 
     if getattr(settings, "RECALL_MEMORY_GRAPH_SPARQL_ENABLED", False):
         try:

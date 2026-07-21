@@ -43,13 +43,16 @@ async def fetch_card_fragments(
     if not query_text:
         return []
 
+    try:
+        from app.settings import settings
+    except ImportError:  # pragma: no cover
+        from settings import settings  # type: ignore
+
     min_sim = float(profile.get("cards_min_similarity", 0) or 0)
     if min_sim <= 0.0:
-        try:
-            from app.settings import settings
-        except ImportError:  # pragma: no cover
-            from settings import settings  # type: ignore
         min_sim = float(getattr(settings, "RECALL_CARDS_MIN_SIMILARITY", 0.32) or 0.32)
+
+    candidate_limit = int(getattr(settings, "RECALL_CARDS_CANDIDATE_LIMIT", 150) or 150)
 
     async with pool.acquire() as conn:
         rows = await conn.fetch(
@@ -58,7 +61,10 @@ async def fetch_card_fragments(
                    visibility_scope, evidence, subschema, updated_at
             FROM memory_cards
             WHERE status = 'active'
+            ORDER BY updated_at DESC
+            LIMIT $1
             """,
+            candidate_limit,
         )
 
     visible = [

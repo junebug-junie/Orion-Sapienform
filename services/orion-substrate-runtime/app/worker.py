@@ -40,7 +40,9 @@ from orion.substrate.transport_loop.constants import (
 )
 from orion.substrate.prediction_error import (
     biometrics_prediction_error,
+    chat_prediction_error,
     execution_prediction_error,
+    route_prediction_error,
     transport_prediction_error,
 )
 from orion.substrate.transport_loop.pipeline import (
@@ -1801,6 +1803,8 @@ class BiometricsSubstrateWorker:
         def _save_chat_projection(p: ChatSessionProjectionV1) -> None:
             self._store.save_chat_session_projection(p)
 
+        prev_projection = _load_chat_projection()
+
         def process_batch(batch: list[GrammarEventV1]) -> None:
             process_chat_grammar_events(
                 events=batch,
@@ -1810,11 +1814,33 @@ class BiometricsSubstrateWorker:
                 now=now,
             )
 
-        return self._process_events_with_poison_isolation(
+        last_id = self._process_events_with_poison_isolation(
             spec=spec,
             events=events,
             process_batch=process_batch,
         )
+
+        if last_id is not None:
+            curr_projection = _load_chat_projection()
+            error = chat_prediction_error(prev_projection, curr_projection)
+            if error > 0.0:
+                self._store.save_receipt(
+                    _prediction_error_receipt(
+                        reducer_key="chat_session",
+                        node_id="node:substrate.chat",
+                        prediction_error=error,
+                        now=now,
+                    )
+                )
+                self._write_prediction_error_node(
+                    node_id="node:substrate.chat",
+                    error=error,
+                    now=now,
+                    reducer_key="chat_session",
+                    contributing_id=last_id,
+                )
+
+        return last_id
 
     def _route_tick(self) -> str | None:
         spec = REDUCER_SPECS[4]
@@ -1830,6 +1856,8 @@ class BiometricsSubstrateWorker:
             loaded = self._store.load_route_arbitration(ROUTE_ARBITRATION_PROJECTION_ID)
             return loaded or empty_route_projection(now=now)
 
+        prev_projection = load_projection()
+
         def process_batch(batch: list[GrammarEventV1]) -> None:
             process_route_grammar_events(
                 events=batch,
@@ -1839,11 +1867,33 @@ class BiometricsSubstrateWorker:
                 now=now,
             )
 
-        return self._process_events_with_poison_isolation(
+        last_id = self._process_events_with_poison_isolation(
             spec=spec,
             events=events,
             process_batch=process_batch,
         )
+
+        if last_id is not None:
+            curr_projection = load_projection()
+            error = route_prediction_error(prev_projection, curr_projection)
+            if error > 0.0:
+                self._store.save_receipt(
+                    _prediction_error_receipt(
+                        reducer_key="route_arbitration",
+                        node_id="node:substrate.route",
+                        prediction_error=error,
+                        now=now,
+                    )
+                )
+                self._write_prediction_error_node(
+                    node_id="node:substrate.route",
+                    error=error,
+                    now=now,
+                    reducer_key="route_arbitration",
+                    contributing_id=last_id,
+                )
+
+        return last_id
 
     def _transport_tick(self) -> str | None:
         spec = REDUCER_SPECS[2]

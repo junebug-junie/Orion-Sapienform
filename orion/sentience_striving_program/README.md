@@ -210,6 +210,29 @@ first place. Full reasoning and phased detail:
    biometrics-prediction-error-shadow-design.md`. Shadow-only: no consumer changed, no live
    migration of the bucket-vote layer, `capability_policy.py`/`top_down.py`/`goal_context.py`
    untouched. Chat and route reducers remain unmeasured.
+   **Status (2026-07-21, same-day follow-up): producer-instrumentation sweep closed for all
+   five named domains.** `chat_prediction_error()` and `route_prediction_error()`
+   (`orion/substrate/prediction_error.py`, wired into `_chat_tick()`/`_route_tick()`, writing
+   `node:substrate.chat`/`node:substrate.route` via the same shared writer and flag) close the
+   two remaining domains named in §9b item 3's open question. `chat_prediction_error()`
+   mirrors execution/transport/biometrics' fixed-key continuous-magnitude shape (diffing
+   `compute_chat_pressure_hints()`'s three keys). `route_prediction_error()` is deliberately
+   shaped differently: `RouteArbitrationRunStateV1`'s decision fields (`lane`, `lane_reason`,
+   `output_mode`, `mind_requested`) are categorical, not continuous, so it scores a per-field
+   mismatch rate instead of an absolute-value delta, and does not apply the module's
+   `_THRESHOLD = 0.30` scaling — documented explicitly in the function's own docstring so a
+   future reader doesn't "fix" it into false consistency with the other four. Design record +
+   metric-quality-gate findings for both: `docs/superpowers/specs/2026-07-21-chat-route-
+   prediction-error-shadow-design.md`. **This closes only the producer-instrumentation half
+   of this item** — all five domains (execution, transport, biometrics, chat, route) now have
+   equivalent shadow-measurement instrumentation, answering §9b item 3's open question in
+   full. It does **not** mean item 3 itself is done: retiring the bucket-vote layer still
+   requires migrating each domain's producer live (not just shadow-measuring it) and proving
+   item 2's reducer as a real `dominant_drive` replacement, per this item's own phased
+   language above ("shadow-measure one producer domain before migrating any live; migrate one
+   domain at a time; retire the bucket-vote layer only once every producer has moved and the
+   item-2 reducer is proven"). Shadow-only, same as the biometrics patch: no consumer changed,
+   no live migration, `capability_policy.py`/`top_down.py`/`goal_context.py` untouched.
 4. **Stand up read-only measurement for the remaining consciousness-theory instruments** (§9)
    — RPT/Lamme and predictive processing are already live (items 2-3 build on them directly,
    not duplicate them); IIT continues independently via the mood-arc encoder, not gated by
@@ -381,8 +404,16 @@ fix — see §7.
    route), `biometrics` now has equivalent instrumentation —
    `biometrics_prediction_error()`, writing `node:substrate.biometrics`, same shared
    `_write_prediction_error_node()` writer, same flag. See §6 item 3's status note above and
-   `docs/superpowers/specs/2026-07-21-biometrics-prediction-error-shadow-design.md`. Chat and
-   route remain open — not yet checked, coverage still genuinely incomplete for those two.
+   `docs/superpowers/specs/2026-07-21-biometrics-prediction-error-shadow-design.md`.
+   **Updated 2026-07-21 (same-day follow-up): chat and route now also have equivalent
+   instrumentation.** `chat_prediction_error()` (writing `node:substrate.chat`) and
+   `route_prediction_error()` (writing `node:substrate.route`, categorical mismatch-rate
+   shape rather than a continuous-magnitude diff — see design doc for why) close this
+   question in full: **all five named producer domains (execution, transport, biometrics,
+   chat, route) now have equivalent shadow-measurement instrumentation.** See
+   `docs/superpowers/specs/2026-07-21-chat-route-prediction-error-shadow-design.md`. This
+   answers the coverage question this section originally left open; it does not itself
+   retire the bucket-vote layer (§6 item 3 remains open for that).
    **Attribution durability + consumers (2026-07-18):** the harness-closure variant of this
    same mechanism (`node:substrate.harness_closure`, PR #1205) accumulates per-turn
    attribution in `metadata['contributing_turn_ids']`, but that list was silently dropped on

@@ -179,53 +179,37 @@ class Settings(BaseSettings):
     )
 
     # ── Memory cards (Postgres) ───────────────────────────────────────
+    # 2026-07-21 memory-cards substrate spec, Item 1c: fetch_card_fragments
+    # (cards_adapter.py) now scores via structured Postgres full-text search
+    # (weighted tsvector + confidence multiplier + temporal-validity gate)
+    # instead of live-embedding cosine similarity -- cards_embedding.py and
+    # its per-call embedding caps (RECALL_CARDS_CANDIDATE_LIMIT,
+    # RECALL_CARDS_MAX_NEW_EMBEDS_PER_CALL, RECALL_CARDS_EMBED_TIMEOUT_SEC,
+    # RECALL_CARDS_EMBED_CONCURRENCY -- all added or tuned by PR #1225 to
+    # bound that call) are deleted/removed entirely. RECALL_CARDS_TIMEOUT_SEC
+    # and RECALL_CARDS_MAX_NEIGHBORS are kept: the former is still a
+    # reasonable outer request guard, the latter still bounds the (unchanged)
+    # neighbor-expansion loop.
     RECALL_ENABLE_CARDS: bool = Field(default=True, validation_alias=AliasChoices("RECALL_ENABLE_CARDS"))
     RECALL_CARDS_TIMEOUT_SEC: float = Field(default=8.0, validation_alias=AliasChoices("RECALL_CARDS_TIMEOUT_SEC"))
     RECALL_CARDS_MAX_NEIGHBORS: int = Field(default=6, validation_alias=AliasChoices("RECALL_CARDS_MAX_NEIGHBORS"))
+    # NOT removed despite the name: still consumed by
+    # collectors/active_packet.py as the generic Chroma-embedding host URL
+    # for the (unrelated) memory-crystallization active-packet retrieval rail
+    # (orion/memory/crystallization/retriever.py::retrieve_active_packet's
+    # embed_host_url param) -- confirmed via a repo-wide grep before removal,
+    # not assumed dead just because cards_adapter.py no longer reads it.
     RECALL_CARDS_EMBEDDING_URL: Optional[str] = Field(
         default=None,
         validation_alias=AliasChoices("RECALL_CARDS_EMBEDDING_URL"),
     )
-    RECALL_CARDS_EMBED_TIMEOUT_SEC: float = Field(
-        default=5.0,
-        validation_alias=AliasChoices("RECALL_CARDS_EMBED_TIMEOUT_SEC"),
-    )
+    # Orphaned by this change: cards_adapter.py no longer does similarity
+    # scoring, so this value is now read nowhere. Left in place (not on the
+    # explicit removal list this PR was scoped to) -- safe to delete in a
+    # follow-up.
     RECALL_CARDS_MIN_SIMILARITY: float = Field(
         default=0.32,
         validation_alias=AliasChoices("RECALL_CARDS_MIN_SIMILARITY"),
-    )
-    RECALL_CARDS_EMBED_CONCURRENCY: int = Field(
-        default=4,
-        validation_alias=AliasChoices("RECALL_CARDS_EMBED_CONCURRENCY"),
-    )
-    # Live incident 2026-07-21: fetch_card_fragments' candidate SELECT had no
-    # LIMIT, so every call scored the entire memory_cards table (574 active
-    # rows at the time, 426 without a cached embedding). asyncio.wait_for
-    # cancels the whole task at RECALL_CARDS_TIMEOUT_SEC, which is BEFORE
-    # persist_card_embeddings (the very last step of score_cards_by_embedding)
-    # ever runs, so newly-computed embeddings were never cached and every
-    # single call repeated the same wasted work forever. These two caps
-    # bound worst-case per-call embedding work so the cache can actually
-    # converge: the candidate SELECT now takes the RECALL_CARDS_CANDIDATE_LIMIT
-    # most-recently-updated active cards, and RECALL_CARDS_MAX_NEW_EMBEDS_PER_CALL
-    # caps how many of those (whatever subset lacks a cache hit) get embedded
-    # in one call -- excess pending cards are simply skipped for that call and
-    # picked up on a later one once earlier misses are cached. Default of 15
-    # is measured, not guessed: live-timed embed_texts() against the real
-    # BAAI/bge-large-en-v1.5 vector-host at RECALL_CARDS_EMBED_CONCURRENCY=4
-    # showed ~5.9s for 40 cards (~0.15s/card at real throughput, well above
-    # the ~0.35s/card a single cold call suggested -- concurrency does not
-    # scale linearly, the embedding model appears compute-bound) -- 15 cards
-    # leaves real margin under RECALL_CARDS_TIMEOUT_SEC alongside the SQL
-    # select, the query's own embed call, per-result neighbor lookups, and
-    # persist.
-    RECALL_CARDS_CANDIDATE_LIMIT: int = Field(
-        default=150,
-        validation_alias=AliasChoices("RECALL_CARDS_CANDIDATE_LIMIT"),
-    )
-    RECALL_CARDS_MAX_NEW_EMBEDS_PER_CALL: int = Field(
-        default=15,
-        validation_alias=AliasChoices("RECALL_CARDS_MAX_NEW_EMBEDS_PER_CALL"),
     )
     RECALL_INTENT_ROUTING_ENABLED: bool = Field(default=True, validation_alias=AliasChoices("RECALL_INTENT_ROUTING_ENABLED"))
     RECALL_VECTOR_EXCLUDE_COLLECTIONS: str = Field(

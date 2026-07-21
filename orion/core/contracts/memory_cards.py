@@ -244,3 +244,63 @@ def visibility_allows_card(*, lane: Optional[str], visibility_scope: List[str]) 
     if lane is None:
         return True
     return lane in visibility_scope
+
+
+class CardAnnotationV1(BaseModel):
+    """Write-time auto-annotation output (2026-07-21 memory-cards substrate
+    spec, Item 1a). One extended LLM call, mirroring the existing
+    decision_router.py llm_router() RPC-to-llm-gateway pattern, replaces
+    today's single-regex extract_candidates() judgment step.
+
+    Hard boundary, load-bearing: this model deliberately has NO sensitivity
+    or visibility_scope field. The LLM never decides those -- privacy is
+    asymmetric-risk (a wrong "public" guess leaks something; a wrong
+    "private" guess only over-protects), so both are derived deterministically
+    outside this model (see derive_visibility_scope() below) rather than
+    trusted to model judgment "just this once." Do not add either field here.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    worth_saving: bool
+    title: str
+    summary: str
+    confidence: MemoryConfidence
+    priority: MemoryPriority
+    time_horizon: TimeHorizonV1
+    types: List[str] = Field(default_factory=list)
+    anchor_class: Optional[str] = None
+    tags: List[str] = Field(default_factory=list)
+    anchors: List[str] = Field(default_factory=list)
+    still_true: List[str] = Field(default_factory=list)
+    project: Optional[str] = None
+
+    @model_validator(mode="after")
+    def _anchor_class_when_anchor_type(self) -> "CardAnnotationV1":
+        # Mirrors MemoryCardCreateV1's own validator. Deliberately placed here
+        # (not left to fail later when _card_from_annotation() builds
+        # MemoryCardCreateV1) so a bad LLM response -- types=["anchor"] with
+        # no anchor_class -- fails inside _rpc_annotation_llm's
+        # model_validate(data) call, which _annotate_via_llm's try/except
+        # already catches as a ValidationError and correctly routes to the
+        # regex fallback. Without this, that same bad response would pass
+        # CardAnnotationV1 validation, then raise an UNCAUGHT ValidationError
+        # building MemoryCardCreateV1 later, silently dropping the card with
+        # no fallback -- the exact failure mode this PR is supposed to avoid.
+        if "anchor" in self.types and not (self.anchor_class or "").strip():
+            raise ValueError("anchor_class required when 'anchor' in types")
+        return self
+
+
+def derive_visibility_scope(sensitivity: str) -> List[str]:
+    """Deterministic derivation of visibility_scope FROM sensitivity -- never
+    an independently-annotated field, never LLM-derived. private -> the
+    narrow "chat" lane; public -> the wide "all" lane. The public branch is
+    currently unreachable in practice (auto-annotation hardcodes
+    sensitivity="private" for every card), but this stays a real two-branch
+    seam rather than a single-case stub, since a future item will need the
+    public path once sensitivity classification is ever revisited.
+    """
+    if sensitivity == "public":
+        return ["all"]
+    return ["chat"]

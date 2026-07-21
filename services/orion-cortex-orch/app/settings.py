@@ -125,6 +125,15 @@ class Settings(BaseSettings):
     orion_auto_extractor_enabled: bool = Field(False, alias="ORION_AUTO_EXTRACTOR_ENABLED")
     orion_auto_extractor_stage2_enabled: bool = Field(False, alias="ORION_AUTO_EXTRACTOR_STAGE2_ENABLED")
     orion_auto_extractor_auto_promote_threshold: int = Field(2, alias="ORION_AUTO_EXTRACTOR_AUTO_PROMOTE_THRESHOLD")
+    # Write-time auto-annotation (2026-07-21 memory-cards substrate spec, Item
+    # 1a). One extended LLM call over the same auto_router_llm_* RPC-to-
+    # llm-gateway channel already used by decision_router.py's llm_router() --
+    # produces CardAnnotationV1 (worth_saving/confidence/priority/time_horizon/
+    # etc). On timeout, bus failure, or bad JSON, memory_extractor.py falls
+    # back to today's extract_candidates() regex path unchanged -- this never
+    # blocks card creation entirely on an LLM/bus outage. Gated overall by
+    # orion_auto_extractor_enabled above, which stays False by default.
+    orion_auto_extractor_llm_timeout_sec: float = Field(6.0, alias="ORION_AUTO_EXTRACTOR_LLM_TIMEOUT_SEC")
 
     api_host: str = Field("0.0.0.0", alias="API_HOST")
     api_port: int = Field(8072, alias="API_PORT")

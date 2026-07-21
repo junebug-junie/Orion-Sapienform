@@ -57,3 +57,34 @@ CREATE INDEX IF NOT EXISTS idx_mc_priority ON memory_cards (priority);
 CREATE INDEX IF NOT EXISTS idx_mc_prov     ON memory_cards (provenance);
 CREATE INDEX IF NOT EXISTS idx_mce_from    ON memory_card_edges (from_card_id, edge_type);
 CREATE INDEX IF NOT EXISTS idx_mce_to      ON memory_card_edges (to_card_id, edge_type);
+
+-- Item 1c (2026-07-21 memory-cards substrate spec): structured, weighted
+-- full-text scoring replacing the live-embedding cosine path
+-- (cards_embedding.py, deleted). Weights map the original 2026-05-01
+-- design's per-field ratios (anchor +2.0, title +1.0, summary +0.5,
+-- tag +0.3) onto ts_rank_cd's four weight labels A/B/C/D -- see
+-- services/orion-recall/app/cards_adapter.py's _TS_RANK_WEIGHTS comment for
+-- the exact D,C,B,A ordering ts_rank_cd expects.
+--
+-- array_to_string() is catalogued STABLE (not IMMUTABLE) in this Postgres
+-- build (confirmed live: `SELECT provolatile FROM pg_proc WHERE proname =
+-- 'array_to_string'` returns 's'), so Postgres refuses it directly inside a
+-- GENERATED column expression ("generation expression is not immutable").
+-- It IS deterministic for a fixed text[] input and delimiter -- this local
+-- wrapper simply asserts that via an explicit IMMUTABLE declaration, the
+-- standard workaround for this exact class of over-conservative catalog
+-- volatility marking.
+CREATE OR REPLACE FUNCTION memory_cards_array_to_text(arr text[]) RETURNS text
+    LANGUAGE sql IMMUTABLE PARALLEL SAFE AS $$
+        SELECT array_to_string(coalesce(arr, '{}'::text[]), ' ')
+    $$;
+
+ALTER TABLE memory_cards ADD COLUMN IF NOT EXISTS search_vector tsvector
+    GENERATED ALWAYS AS (
+        setweight(to_tsvector('english'::regconfig, coalesce(anchor_class, '') || ' ' || memory_cards_array_to_text(anchors)), 'A') ||
+        setweight(to_tsvector('english'::regconfig, coalesce(title, '')), 'B') ||
+        setweight(to_tsvector('english'::regconfig, coalesce(summary, '')), 'C') ||
+        setweight(to_tsvector('english'::regconfig, memory_cards_array_to_text(tags)), 'D')
+    ) STORED;
+
+CREATE INDEX IF NOT EXISTS idx_mc_search_vector ON memory_cards USING GIN (search_vector);

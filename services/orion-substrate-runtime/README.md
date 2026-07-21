@@ -136,8 +136,9 @@ Accepted-pressure reducer output publishes to `orion:grammar:accepted-pressure` 
 
 ## Dynamics tick (rung-1 pacemaker)
 
-`SUBSTRATE_WRITE_PREDICTION_ERROR_NODES=true` writes execution/transport prediction-error
-values onto durable substrate graph nodes (`metadata['prediction_error']`), but by itself
+`SUBSTRATE_WRITE_PREDICTION_ERROR_NODES=true` writes execution/transport/biometrics
+prediction-error values onto durable substrate graph nodes (`metadata['prediction_error']`),
+but by itself
 nothing ever reads them back — the seeded surprise just sits inert on the node. Set
 `SUBSTRATE_DYNAMICS_TICK_ENABLED=true` to run a periodic, bounded, fail-open
 `SubstrateDynamicsEngine.tick()` against the same shared substrate graph store, which
@@ -188,8 +189,20 @@ Post-turn closure logs `post_turn_closure received …` on ingest. When
 or `…_skipped` otherwise). Full Task 21 strain reducers are not implemented here.
 
 `_write_prediction_error_node()` (`app/worker.py`) writes to a single, fixed `node_id` per
-lane (`node:substrate.execution`, `node:substrate.transport`, `node:substrate.harness_closure`
-for post-turn closure), so repeat writes collapse instead of spawning a new node per event.
+lane (`node:substrate.execution`, `node:substrate.transport`, `node:substrate.biometrics`,
+`node:substrate.harness_closure` for post-turn closure), so repeat writes collapse instead of
+spawning a new node per event.
+
+`node:substrate.biometrics` (`biometrics_prediction_error()`, `orion/substrate/
+prediction_error.py`, wired into `_tick()`) is the third instrument in this family, shadow-
+built 2026-07-21 per the Sentience Striving Program charter §6 item 3. Unlike execution's
+fixed four-key `pressure_hints` diff, biometrics `pressure_hints` keys vary per node role
+(GPU nodes carry `gpu`/`strain`; orchestration nodes carry `disk_pressure`/
+`memory_pressure`/`thermal_pressure` — confirmed live against real
+`substrate_node_biometrics_projection` data), so this instrument diffs the union of keys
+present on either side of a given node rather than a fixed list. See `docs/superpowers/
+specs/2026-07-21-biometrics-prediction-error-shadow-design.md` for the full metric-quality-
+gate writeup.
 Repeat writes to the same node accumulate bounded per-event attribution in
 `metadata['contributing_turn_ids']` (capped at 20, deduped, oldest dropped) — this is
 attribution, not the pressure/dormancy state itself, which `DYNAMICS_ENGINE_OWNED_METADATA_

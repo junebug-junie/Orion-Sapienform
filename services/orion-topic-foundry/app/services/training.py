@@ -152,19 +152,12 @@ def _resolve_keyword_stop_words(model_params: Dict[str, Any]) -> Any:
     return sorted(set(ENGLISH_STOP_WORDS).union(extras))
 
 
-def _llm_label_topics(
+_LLM_LABEL_BATCH_SIZE = 1
+
+
+def _llm_label_topic_batch(
     keywords: Dict[str, List[str]], samples: Dict[str, List[str]]
 ) -> Dict[str, str]:
-    """Reuses this service's existing per-segment LLM enrichment client
-    (app/services/llm_client.py::get_llm_client, already live for
-    _llm_enrich above -- same bus RPC, same JSON-extraction, same
-    fail-open-to-None contract) to generate real topic labels instead of
-    leaving topics_summary.json's `label` field permanently null. One
-    batched call for the whole run rather than one call per topic -- with
-    ~30 topics in a real run, per-topic calls would mean ~30 bus RPC round
-    trips for no real benefit over a single prompt listing all of them."""
-    if not settings.topic_foundry_llm_enable or not keywords:
-        return {}
     topics_block = []
     for topic_id, kws in keywords.items():
         sample_texts = [s[:200] for s in samples.get(topic_id, [])[:2]]
@@ -187,14 +180,63 @@ def _llm_label_topics(
             max_tokens=None,
         )
     except Exception as exc:  # noqa: BLE001
-        logger.warning("LLM topic labeling failed; leaving labels null error=%s", exc)
+        logger.warning("LLM topic labeling batch failed; leaving labels null error=%s", exc)
         return {}
     if not isinstance(result, dict):
+        logger.warning(
+            "LLM topic labeling batch returned no parseable JSON (likely truncated) -- "
+            "leaving labels null for this batch, topic_count=%d",
+            len(keywords),
+        )
         return {}
     labels = result.get("labels")
     if not isinstance(labels, dict):
         return {}
     return {str(k): str(v) for k, v in labels.items() if isinstance(v, str) and v.strip()}
+
+
+def _llm_label_topics(
+    keywords: Dict[str, List[str]], samples: Dict[str, List[str]]
+) -> Dict[str, str]:
+    """Reuses this service's existing per-segment LLM enrichment client
+    (app/services/llm_client.py::get_llm_client, already live for
+    _llm_enrich above -- same bus RPC, same JSON-extraction, same
+    fail-open-to-None contract) to generate real topic labels instead of
+    leaving topics_summary.json's `label` field permanently null.
+
+    Live incident 2026-07-21: a single batched call for all ~29 topics in a
+    real run always came back truncated -- confirmed via orion-llm-gateway's
+    own logs (`finish_reason=length`, `completion_tokens=146`) that the
+    "quick" bus route this client uses hard-caps completion length at ~146
+    tokens REGARDLESS of the max_tokens value in the request payload (tried
+    None, then 1740 -- same ~146-token cutoff both times). That's a route-
+    level constraint this client can't raise from the caller side, so the
+    real fix is batching small enough that each call's output comfortably
+    fits the route's actual budget, not requesting a bigger one that gets
+    ignored.
+
+    _LLM_LABEL_BATCH_SIZE=5 and =3 were both tried live and both still
+    truncated some batches -- response length varies per-topic (verbosity
+    is stochastic at temperature=0.2, not just a function of how many
+    topics are in the prompt), so a batch of "cheap" topics might fit at
+    size 5 while a batch of "verbose" topics doesn't even at size 3.
+    Landed on 1 (one topic per call): confirmed live, 29/29 topics labeled
+    with zero truncation, at the cost of more calls -- each is fast (~1-4s
+    observed), so ~29 sequential calls is still well under a minute total
+    and trades a small amount of latency for actually reliable output
+    instead of tuning a batch size against non-deterministic model
+    verbosity. Per-batch fail-open either way: one bad/truncated batch
+    doesn't blank out labels for topics in other batches."""
+    if not settings.topic_foundry_llm_enable or not keywords:
+        return {}
+    topic_ids = list(keywords.keys())
+    labels: Dict[str, str] = {}
+    for i in range(0, len(topic_ids), _LLM_LABEL_BATCH_SIZE):
+        batch_ids = topic_ids[i : i + _LLM_LABEL_BATCH_SIZE]
+        batch_keywords = {tid: keywords[tid] for tid in batch_ids}
+        batch_samples = {tid: samples.get(tid, []) for tid in batch_ids}
+        labels.update(_llm_label_topic_batch(batch_keywords, batch_samples))
+    return labels
 
 
 def _compute_topic_artifacts(

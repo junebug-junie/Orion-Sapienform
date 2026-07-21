@@ -135,11 +135,18 @@ def test_llm_label_topics_parses_real_response(monkeypatch):
     from app.services import training
 
     monkeypatch.setattr(training.settings, "topic_foundry_llm_enable", True)
+    monkeypatch.setattr(training, "_LLM_LABEL_BATCH_SIZE", 1)
+
+    per_topic_label = {"0": "Cat Persona", "1": "Hardware Setup"}
 
     class _FakeClient:
         def request_json(self, **kwargs):
-            assert "meow" in kwargs["user_prompt"]
-            return {"labels": {"0": "Cat Persona", "1": "Hardware Setup"}}
+            # One call per topic at batch size 1 -- each call's prompt names
+            # exactly the one topic it's labeling.
+            for tid, label in per_topic_label.items():
+                if f"Topic {tid}:" in kwargs["user_prompt"]:
+                    return {"labels": {tid: label}}
+            raise AssertionError(f"unexpected prompt: {kwargs['user_prompt']!r}")
 
     monkeypatch.setattr(training, "get_llm_client", lambda: _FakeClient())
     result = training._llm_label_topics(
@@ -147,6 +154,54 @@ def test_llm_label_topics_parses_real_response(monkeypatch):
         {"0": ["meow meow"], "1": ["setting up the gpu"]},
     )
     assert result == {"0": "Cat Persona", "1": "Hardware Setup"}
+
+
+def test_llm_label_topics_batches_to_respect_llm_route_token_cap(monkeypatch):
+    """Live incident 2026-07-21: a single call listing all ~29 topics at once
+    always came back truncated -- confirmed via orion-llm-gateway's own logs
+    that the "quick" bus route hard-caps completion at ~146 tokens
+    regardless of the requested max_tokens (tried None, then 1740 -- same
+    cutoff both times). This is a route-level constraint, not something the
+    caller's max_tokens can raise. The real fix is batching small enough
+    that each call's response comfortably fits -- this locks in that
+    _llm_label_topics makes multiple small calls rather than one big one,
+    and that a partial per-batch failure doesn't blank out labels for
+    topics in other, successful batches."""
+    from app.services import training
+
+    monkeypatch.setattr(training.settings, "topic_foundry_llm_enable", True)
+    monkeypatch.setattr(training, "_LLM_LABEL_BATCH_SIZE", 2)
+
+    call_prompts = []
+
+    class _FlakyClient:
+        def request_json(self, **kwargs):
+            call_prompts.append(kwargs["user_prompt"])
+            # Simulate the real truncation failure mode for one specific
+            # batch (topics 2/3) while others succeed -- proves partial
+            # failure doesn't wipe out the rest.
+            if "Topic 2:" in kwargs["user_prompt"]:
+                return None  # truncated response -> unparseable JSON upstream
+            labels = {}
+            for tid in ("0", "1", "3", "4"):
+                if f"Topic {tid}:" in kwargs["user_prompt"]:
+                    labels[tid] = f"Label {tid}"
+            return {"labels": labels} if labels else None
+
+    monkeypatch.setattr(training, "get_llm_client", lambda: _FlakyClient())
+    keywords = {str(i): [f"kw{i}"] for i in range(5)}
+    samples = {str(i): [f"sample {i}"] for i in range(5)}
+    result = training._llm_label_topics(keywords, samples)
+
+    # 5 topics at batch size 2 -> 3 calls, not 1.
+    assert len(call_prompts) == 3
+    # Topic 2's batch failed -- topic 2 (and its batch-mate 3, if bundled
+    # together) may be missing, but topics from the OTHER, successful
+    # batches must still be present.
+    assert "0" in result and result["0"] == "Label 0"
+    assert "1" in result and result["1"] == "Label 1"
+    assert "4" in result and result["4"] == "Label 4"
+    assert "2" not in result
 
 
 def test_llm_label_topics_fails_open_on_bad_response(monkeypatch):

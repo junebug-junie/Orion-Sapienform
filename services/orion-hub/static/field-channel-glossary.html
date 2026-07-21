@@ -1,0 +1,222 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Field Channel Glossary</title>
+  <script src="https://cdn.tailwindcss.com"></script>
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet" />
+  <style>
+    body { font-family: Inter, system-ui, sans-serif; }
+  </style>
+</head>
+<body class="bg-gray-950 text-gray-200 min-h-screen">
+  <div id="fieldChannelGlossaryRoot" class="p-3 md:p-4 max-w-[100vw]">
+    <div class="rounded-lg border border-amber-500/40 bg-amber-500/10 px-3 py-2 text-xs text-amber-100/90 mb-3">
+      Read-only observability. Verdicts below are computed live from <code>substrate_field_state</code> over the
+      selected window -- they are not the field-digester README's static prose verdicts, which are a point-in-time
+      write-up and can go stale as fixes land.
+    </div>
+
+    <div class="flex flex-wrap items-center gap-2 mb-3 text-xs text-gray-400">
+      <span>Last loaded: <span id="fcgLastLoaded" class="text-gray-200">&mdash;</span></span>
+      <button type="button" id="fcgRefresh" class="rounded border border-gray-600 bg-gray-800 px-2 py-1 text-gray-200 hover:bg-gray-700">Refresh</button>
+      <label class="inline-flex items-center gap-1.5 cursor-pointer">
+        <input type="checkbox" id="fcgAutoRefresh" class="rounded border-gray-600" />
+        <span>Auto-refresh (60s)</span>
+      </label>
+      <label class="inline-flex items-center gap-1 ml-2">
+        <span>Window</span>
+        <select id="fcgWindowHours" class="rounded border border-gray-700 bg-gray-900 px-2 py-1 text-gray-200">
+          <option value="1">1h</option>
+          <option value="6">6h</option>
+          <option value="24">24h</option>
+        </select>
+      </label>
+      <label class="inline-flex items-center gap-1.5 cursor-pointer ml-2">
+        <input type="checkbox" id="fcgShowAll" class="rounded border-gray-600" />
+        <span>Show dead / never-produced / ratchet-suspect too</span>
+      </label>
+      <span id="fcgWindowMeta" class="text-gray-500 ml-auto"></span>
+    </div>
+
+    <div id="fcgCategoryStrip" class="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-7 gap-2 mb-3"></div>
+
+    <div id="fcgError" class="hidden rounded-lg border border-rose-500/40 bg-rose-500/10 px-3 py-2 text-xs text-rose-100/90 mb-3"></div>
+
+    <div class="rounded-xl border border-gray-800 bg-gray-900/40 overflow-x-auto">
+      <table class="min-w-full text-xs" id="fcgTable">
+        <thead class="bg-gray-900/80 text-gray-400 uppercase tracking-wide text-[10px]">
+          <tr>
+            <th class="px-3 py-2 text-left">Channel</th>
+            <th class="px-3 py-2 text-left">Level</th>
+            <th class="px-3 py-2 text-left">Category</th>
+            <th class="px-3 py-2 text-left">Verdict</th>
+            <th class="px-3 py-2 text-right">Samples</th>
+            <th class="px-3 py-2 text-right">Min</th>
+            <th class="px-3 py-2 text-right">Max</th>
+            <th class="px-3 py-2 text-right">Last</th>
+            <th class="px-3 py-2 text-left">Self-state dimension</th>
+            <th class="px-3 py-2 text-left">Meaning</th>
+          </tr>
+        </thead>
+        <tbody id="fcgTableBody" class="divide-y divide-gray-800"></tbody>
+      </table>
+    </div>
+    <div id="fcgEmpty" class="hidden text-center text-gray-500 text-xs py-6">No channels match the current filter.</div>
+  </div>
+
+  <script>
+    const VERDICT_STYLE = {
+      live: { label: "live", cls: "bg-emerald-500/15 text-emerald-300 border-emerald-500/40" },
+      quiet: { label: "quiet (wired, low variance)", cls: "bg-sky-500/15 text-sky-300 border-sky-500/40" },
+      dead: { label: "dead", cls: "bg-rose-500/15 text-rose-300 border-rose-500/40" },
+      ratchet_suspect: { label: "ratchet-suspect", cls: "bg-amber-500/15 text-amber-300 border-amber-500/40" },
+      never_produced: { label: "never produced", cls: "bg-gray-700/40 text-gray-400 border-gray-600" },
+    };
+
+    const state = {
+      channels: [],
+      categories: {},
+      health: {},
+      windowHours: 1,
+      showAll: false,
+      windowMeta: null,
+    };
+
+    let autoRefreshTimer = null;
+
+    function fmtNum(v) {
+      if (v === null || v === undefined) return "—";
+      const n = Number(v);
+      if (!Number.isFinite(n)) return "—";
+      if (Math.abs(n) < 1e-6 && n !== 0) return n.toExponential(1);
+      return n.toFixed(3);
+    }
+
+    async function loadAll() {
+      const errEl = document.getElementById("fcgError");
+      errEl.classList.add("hidden");
+      try {
+        const hours = state.windowHours;
+        const [channelsResp, healthResp] = await Promise.all([
+          fetch("/api/field-channel-glossary/channels"),
+          fetch(`/api/field-channel-glossary/health?hours=${hours}`),
+        ]);
+        if (!channelsResp.ok) throw new Error(`channels ${channelsResp.status}`);
+        if (!healthResp.ok) throw new Error(`health ${healthResp.status}`);
+        const channelsJson = await channelsResp.json();
+        const healthJson = await healthResp.json();
+        state.channels = channelsJson.channels || [];
+        state.categories = channelsJson.categories || {};
+        state.health = {};
+        for (const row of healthJson.channels || []) {
+          state.health[row.channel] = row;
+        }
+        state.windowMeta = healthJson;
+        document.getElementById("fcgLastLoaded").textContent = new Date().toLocaleTimeString();
+        const metaEl = document.getElementById("fcgWindowMeta");
+        const truncNote = healthJson.truncated ? " (row cap hit -- kept newest ticks)" : "";
+        const unparsable = healthJson.unparsable_count || 0;
+        const unparsableNote = unparsable > 0 ? ` -- ${unparsable} row(s) failed to parse` : "";
+        metaEl.textContent = `${healthJson.row_count} ticks over ${healthJson.window_hours}h${truncNote}${unparsableNote}`;
+        render();
+      } catch (err) {
+        errEl.textContent = `Failed to load: ${err.message || err}`;
+        errEl.classList.remove("hidden");
+      }
+    }
+
+    function render() {
+      renderCategoryStrip();
+      renderTable();
+    }
+
+    function renderCategoryStrip() {
+      const strip = document.getElementById("fcgCategoryStrip");
+      strip.innerHTML = "";
+      const byCategory = {};
+      for (const ch of state.channels) {
+        const h = state.health[ch.channel];
+        const cat = ch.category || "uncategorized";
+        byCategory[cat] = byCategory[cat] || { clean: 0, total: 0 };
+        byCategory[cat].total += 1;
+        if (h && h.clean) byCategory[cat].clean += 1;
+      }
+      const order = Object.keys(state.categories).length
+        ? Object.keys(state.categories)
+        : Object.keys(byCategory);
+      for (const cat of order) {
+        const counts = byCategory[cat] || { clean: 0, total: 0 };
+        const card = document.createElement("div");
+        card.className = "rounded-lg border border-gray-800 bg-gray-900/60 px-3 py-2";
+        const allClean = counts.total > 0 && counts.clean === counts.total;
+        card.innerHTML = `
+          <div class="text-[10px] uppercase tracking-wide text-gray-500">${cat.replace(/_/g, " ")}</div>
+          <div class="text-sm font-semibold ${allClean ? "text-emerald-300" : "text-gray-100"}">${counts.clean} / ${counts.total} clean</div>
+        `;
+        strip.appendChild(card);
+      }
+    }
+
+    function renderTable() {
+      const tbody = document.getElementById("fcgTableBody");
+      tbody.innerHTML = "";
+      const rows = state.channels
+        .map((ch) => ({ ch, h: state.health[ch.channel] || null }))
+        .filter(({ h }) => state.showAll || (h && h.clean))
+        .sort((a, b) => a.ch.category.localeCompare(b.ch.category) || a.ch.channel.localeCompare(b.ch.channel));
+
+      document.getElementById("fcgEmpty").classList.toggle("hidden", rows.length > 0);
+
+      for (const { ch, h } of rows) {
+        const verdictKey = h ? h.verdict : "never_produced";
+        const vs = VERDICT_STYLE[verdictKey] || VERDICT_STYLE.never_produced;
+        const dim = ch.self_state_dimension
+          ? ch.self_state_dimension
+          : ch.evidence_dimension
+            ? `${ch.evidence_dimension} (evidence only)`
+            : "—";
+        const tr = document.createElement("tr");
+        tr.className = "hover:bg-gray-900/60";
+        tr.innerHTML = `
+          <td class="px-3 py-2 font-mono text-gray-100">${ch.channel}</td>
+          <td class="px-3 py-2 text-gray-400">${(ch.level || []).join(", ")}</td>
+          <td class="px-3 py-2 text-gray-400">${ch.category.replace(/_/g, " ")}</td>
+          <td class="px-3 py-2"><span class="inline-block rounded border px-2 py-0.5 text-[10px] ${vs.cls}">${vs.label}</span></td>
+          <td class="px-3 py-2 text-right text-gray-300">${h ? h.sample_count : 0}</td>
+          <td class="px-3 py-2 text-right text-gray-300">${fmtNum(h ? h.min : null)}</td>
+          <td class="px-3 py-2 text-right text-gray-300">${fmtNum(h ? h.max : null)}</td>
+          <td class="px-3 py-2 text-right text-gray-300">${fmtNum(h ? h.last : null)}</td>
+          <td class="px-3 py-2 text-gray-400">${dim}</td>
+          <td class="px-3 py-2 text-gray-400">${ch.meaning}</td>
+        `;
+        tbody.appendChild(tr);
+      }
+    }
+
+    function setAutoRefresh(enabled) {
+      if (autoRefreshTimer) {
+        clearInterval(autoRefreshTimer);
+        autoRefreshTimer = null;
+      }
+      if (enabled) {
+        autoRefreshTimer = setInterval(loadAll, 60000);
+      }
+    }
+
+    document.getElementById("fcgRefresh").addEventListener("click", loadAll);
+    document.getElementById("fcgAutoRefresh").addEventListener("change", (e) => setAutoRefresh(e.target.checked));
+    document.getElementById("fcgWindowHours").addEventListener("change", (e) => {
+      state.windowHours = Number(e.target.value) || 1;
+      loadAll();
+    });
+    document.getElementById("fcgShowAll").addEventListener("change", (e) => {
+      state.showAll = e.target.checked;
+      render();
+    });
+
+    loadAll();
+  </script>
+</body>
+</html>

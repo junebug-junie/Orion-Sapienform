@@ -1,0 +1,201 @@
+# Structured index of FieldStateV1's 29 raw digester channels (23 NODE_CHANNELS
+# + 8 CAPABILITY_CHANNELS in services/orion-field-digester/app/tensor/channels.py,
+# overlapping on transport_pressure/contract_pressure).
+#
+# This is the machine-readable companion to
+# services/orion-field-digester/README.md's "Field channel glossary" section,
+# which stays the prose reference (full mechanism detail, live-data
+# investigation history). This file is the single structured source both
+# that doc and Hub's Field Channel Glossary panel
+# (services/orion-hub/scripts/field_channel_glossary_routes.py) read from, so
+# the two can't independently drift the way the README's own frozen verdicts
+# already have.
+#
+# Deliberately does NOT include a "verdict" field: liveness verdicts are
+# computed LIVE from substrate_field_state by
+# orion.self_state.field_channel_glossary.classify_channel_series(), not
+# hand-maintained here -- a static verdict column is exactly what already
+# went stale once (see the README's "Decay vs. injection-interval mismatch"
+# section).
+version: 1
+
+categories:
+  physical_substrate: "Physical substrate / embodiment -- pure hardware sensor readings, nothing cognitive."
+  task_execution: "Task-execution domain -- what Orion is actively doing computationally right now and how well it's going."
+  social_conversational: "Social / conversational domain -- the texture of the current chat interaction."
+  infra_transport: "Infrastructure / transport workload -- the bus's own workload/health as infrastructure, not a compute resource."
+  sensor_trust_liveness: "Sensor trust / liveness -- whether a source's other readings can be trusted right now, not what it's doing."
+  synthesized_rollup: "Synthesized / aggregate rollups -- capability-level composites blending multiple node-level signals."
+  self_monitoring: "Self-monitoring / introspection -- whether Orion's own internal model is consistent or accurate."
+
+channels:
+  - channel: availability
+    level: [node]
+    category: sensor_trust_liveness
+    meaning: "How available/reachable a compute node currently is."
+    self_state_dimension: coherence
+
+  - channel: staleness
+    level: [node]
+    category: sensor_trust_liveness
+    meaning: "Whether a node's most recent biometrics sample is too old to trust."
+    self_state_dimension: continuity_pressure
+
+  - channel: cpu_pressure
+    level: [node]
+    category: physical_substrate
+    meaning: "How loaded a node's CPU currently is."
+    evidence_dimension: resource_pressure
+
+  - channel: memory_pressure
+    level: [node]
+    category: physical_substrate
+    meaning: "Node RAM pressure."
+    evidence_dimension: resource_pressure
+
+  - channel: gpu_pressure
+    level: [node]
+    category: physical_substrate
+    meaning: "How loaded a node's GPU currently is."
+    evidence_dimension: resource_pressure
+
+  - channel: thermal_pressure
+    level: [node]
+    category: physical_substrate
+    meaning: "Node thermal/temperature pressure."
+    self_state_dimension: resource_pressure
+
+  - channel: disk_pressure
+    level: [node]
+    category: physical_substrate
+    meaning: "Node disk I/O pressure."
+    evidence_dimension: resource_pressure
+
+  - channel: expected_offline_suppression
+    level: [node]
+    category: sensor_trust_liveness
+    meaning: "Signals a node is expected to be offline, so its absence shouldn't be read as a failure."
+    self_state_dimension: coherence
+
+  - channel: execution_load
+    level: [node]
+    category: task_execution
+    meaning: "How much active execution work (agent runs, tool calls) is in flight on a node."
+    evidence_dimension: execution_pressure
+
+  - channel: execution_friction
+    level: [node]
+    category: task_execution
+    meaning: "How much resistance (retries/backoff) execution is encountering on a node."
+    evidence_dimension: reliability_pressure
+
+  - channel: reasoning_load
+    level: [node]
+    category: task_execution
+    meaning: "How much active LLM-reasoning work a node is doing."
+    evidence_dimension: reasoning_pressure
+
+  - channel: failure_pressure
+    level: [node]
+    category: task_execution
+    meaning: "Recent execution failure rate/severity on a node."
+    evidence_dimension: reliability_pressure
+
+  - channel: egress_confidence_deficit
+    level: [node]
+    category: task_execution
+    meaning: "1 - confidence that an execution's output actually reached its destination."
+    self_state_dimension: introspection_pressure
+
+  - channel: repair_pressure
+    level: [node]
+    category: social_conversational
+    meaning: "How much conversational \"repair\" (corrections, re-explaining) is happening in chat."
+    self_state_dimension: social_pressure
+
+  - channel: conversation_load
+    level: [node]
+    category: social_conversational
+    meaning: "How much active conversational load (turn volume/complexity) is occurring."
+    self_state_dimension: social_pressure
+
+  - channel: transport_pressure
+    level: [node, capability]
+    category: infra_transport
+    meaning: "Bus/transport-layer backpressure/congestion."
+    evidence_dimension: resource_pressure
+
+  - channel: contract_pressure
+    level: [node, capability]
+    category: infra_transport
+    meaning: "Pressure from bus/schema \"contract\" mismatches (precise real-world condition not otherwise documented in code)."
+
+  - channel: catalog_drift_pressure
+    level: [node]
+    category: infra_transport
+    meaning: "Drift/staleness in the bus event \"catalog\" (schema registry) relative to what's actually flowing."
+
+  - channel: delivery_confidence
+    level: [node]
+    category: sensor_trust_liveness
+    meaning: "Confidence that bus messages are actually being delivered end-to-end."
+    evidence_dimension: coherence
+
+  - channel: bus_health
+    level: [node]
+    category: sensor_trust_liveness
+    meaning: "Overall bus/transport subsystem health signal."
+    evidence_dimension: coherence
+
+  - channel: observer_failure_pressure
+    level: [node]
+    category: infra_transport
+    meaning: "Pressure from failures of the bus \"observer\" role (monitoring/subscriber-side failures)."
+
+  - channel: field_coherence_warning
+    level: [node]
+    category: self_monitoring
+    meaning: "Per-node incoherence score -- fires when two reducers that should agree about a node's state disagree."
+    self_state_dimension: coherence
+
+  - channel: prediction_error
+    level: [node]
+    category: self_monitoring
+    meaning: "How much a recent prediction (from the prediction/surprise subsystem) missed reality."
+    self_state_dimension: uncertainty
+
+  - channel: pressure
+    level: [capability]
+    category: synthesized_rollup
+    meaning: "Overall load/pressure for a given capability (llm_inference, orchestration, storage, graph, memory, transport)."
+    self_state_dimension: resource_pressure
+
+  - channel: confidence
+    level: [capability]
+    category: synthesized_rollup
+    meaning: "How confident the system is that a given capability is currently reliable/available."
+    self_state_dimension: coherence
+
+  - channel: available_capacity
+    level: [capability]
+    category: synthesized_rollup
+    meaning: "How much spare operating capacity a capability has right now."
+    self_state_dimension: coherence
+
+  - channel: execution_pressure
+    level: [capability]
+    category: task_execution
+    meaning: "Capability-level execution-load pressure."
+    self_state_dimension: execution_pressure
+
+  - channel: reasoning_pressure
+    level: [capability]
+    category: task_execution
+    meaning: "Capability-level reasoning-load pressure."
+    self_state_dimension: reasoning_pressure
+
+  - channel: reliability_pressure
+    level: [capability]
+    category: synthesized_rollup
+    meaning: "Capability-level pressure representing risk to reliability (from execution friction, failures, or observer failures)."
+    self_state_dimension: reliability_pressure

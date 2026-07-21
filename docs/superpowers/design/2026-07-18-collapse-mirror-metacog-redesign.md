@@ -541,3 +541,64 @@ in this pass -- provenance was traced for all of them earlier in this conversati
 and live-data sanity checks were not completed for any of them due to the same short
 container-uptime limitation. Worth a follow-up pass once `repair_pressure_appraisal_log` has
 accumulated enough history to make a "did adding persistence actually help" comparison meaningful.
+
+## `telemetry_anomaly` trigger: shipped, then arsonist-audited (2026-07-21)
+
+PR #1224 wired the third trigger from this doc's taxonomy: `telemetry_anomaly`, sourced from a
+trained autoencoder (`orion/mood_arc/fit_encoder.py`) scoring `field_channel_corpus.v1` (the
+per-channel field-digester corpus, 17 selected channels, itself "Item 1 v2" per
+`docs/superpowers/specs/2026-07-13-felt-state-arc-roadmap-spec.md`). Two live deploy bugs were found
+and fixed same-session (PR #1228: a module-level `scripts.fit_phi_encoder` import crash-looped
+`orion-field-digester`; PR #1231: the new env keys were never added to either service's
+`docker-compose.yml` `environment:` list, so `.env` changes silently never reached the containers).
+The pipeline is now proven live end-to-end, twice: once organically, once via a forced synthetic
+publish, confirmed all the way into a real `orion_metacog` row (then deleted, since it was
+synthetic-input-driven).
+
+**Arsonist summary.** Real math, wired through a real, now-proven pipeline, trained on a corpus
+whose own documentation was stale in ways that already changed the trusted feature set, scoring
+against a threshold nobody validated, still carrying the exact decay-filter contamination risk that
+killed the *prior* mood-arc encoder attempt (see "Correction, 2026-07-13 post-Item-2-spike" in the
+roadmap spec), with no per-channel attribution to interpret a firing and zero consumers reading what
+it produces. It works, in the narrow sense that data moves end to end. Whether it means anything was
+unverified in four independent ways at once while it sat live in production.
+
+| Component | Status | Verdict |
+|---|---|---|
+| Bus plumbing (digester -> equilibrium -> orch -> sql-writer -> table) | Proven live twice | **KEEP** |
+| Corpus (`field_channel_corpus.v1`) | Real, growing -- but 3/17 trained channels (`memory_pressure`, `thermal_pressure`, `disk_pressure`) documented "folded-away, never produced" in `services/orion-field-digester/README.md`'s 2026-07-16 glossary are demonstrably alive and varying as of 2026-07-21 live data pulls | **RE-AUDIT** the glossary against current data before trusting it further |
+| Decay-contamination check (`ceiling_ratio`, the AR(1)-surrogate comparison) | Computed for the trained artifact (0.240, directionally good -- real loss ~1/4 of a decay-only baseline) but `MoodArcEncoderManifestV1`'s own docstring says this field has **no calibrated pass/fail threshold across multiple runs yet** | **UNRESOLVED** -- this is the specific check built to catch the v1 failure mode |
+| Alert threshold (`recon_error_p95 * 3.0`) | Carried over from the CLI's own default, never independently validated. The one real (non-forced) firing traced to a container-restart cold-start artifact; a 44-minute, 23-window sustained episode found in the historical `detect-anomalies` run traced to a genuine low-activity lull (cpu/thermal/execution/reasoning all *lower* than baseline, corroborated by only 9 real chat turns in that window) rather than a crisis | **UNCALIBRATED** -- real signal confirmed (regime shifts, not noise), but "anomalous" currently conflates "unusually busy" and "unusually quiet" into one undifferentiated flag |
+| Per-channel attribution | Does not exist for this signal. `orion/self_state/builder.py::evidence_for_dimension()` already ships the identical pattern (rank contributing channels, top-N, human-readable strings) for `SelfStateV1` dimensions -- overlooked, not designed around, when this trigger was built | **BUILD** -- cheap: `xhat - x` is already computed per-window in `forward()`, just averaged away across channels; reshaping to `(window_size, n_fields)` and averaging over time only (not channels) gives per-channel error with no retrain |
+| Upstream field-digester bugs (`contract_pressure`/`catalog_drift_pressure` exact-duplicate pair, several one-way-ratcheted channels, at least one merge-polarity masking bug) | Documented in the same stale 2026-07-16 glossary, never re-checked against the current 17 selected channels specifically | **UNVERIFIED** whether any of it still contaminates this model's inputs |
+| Consumers of `orion_metacog` (any trigger_kind, not just this one) | Zero. Checked directly: no query against the table anywhere in the codebase. `orion-dream`'s own code has a comment claiming entries "now live in `orion_metacog`" with no actual read backing it | Every trigger this doc's taxonomy has shipped (`relational`, `baseline`, now `telemetry_anomaly`) writes into a table nothing reads. **Do not treat "wired a new trigger type" as progress toward the mission until at least one real consumer exists** |
+
+**Self-audit of the session that shipped this** (kept here because the pattern is likely to
+recur): status was reported as "done"/"verified" at least three times before it actually was --
+after a deploy where the feature was silently still off (env keys never reached the container via
+docker-compose), after finding one live firing that turned out to be a restart artifact, and before
+per-channel attribution was checked against prior art already in the repo. A synthetic test row was
+left sitting in the live `orion_metacog` table until asked directly whether it was fake, despite
+already having flagged the risk before creating it. None of these were caught by re-running tests or
+re-reading code -- all were caught by direct, repeated pushback demanding live evidence over
+plumbing-works-therefore-it's-fine reasoning. Read as a standing instruction for this class of work,
+not a one-off.
+
+**Path to bulletproof, in dependency order (not yet started, see brainstorm output in the
+2026-07-21 conversation for full detail):**
+1. Re-audit the 17 trained channels against *current* live data (ratchet/duplicate/quantization
+   checks), correcting the stale README glossary -- fast, zero-risk, and determines whether steps
+   below are worth doing on the current channel set or should wait for a pruned one.
+2. Build per-channel attribution (cheap, no retrain, reuses `evidence_for_dimension`'s shape).
+3. Retrain excluding whatever step 1 finds contaminated; re-run the two-tier gate.
+4. Establish a real `ceiling_ratio` threshold via multiple training seeds/slices instead of one
+   uncalibrated number.
+5. Add direction-awareness (elevated vs. depressed relative to learned normal) so "busy" and
+   "quiet" stop looking identical.
+6. Only then: wire one real consumer (`orion-dream` is the cheapest, already-half-intended seam)
+   -- wiring a consumer to an unverified signal launders the verification gap one hop downstream
+   instead of closing it.
+
+Explicitly undecided: whether `FIELD_CHANNEL_ANOMALY_ENABLED` should revert to `false` in the live
+`.env` while 1-4 above are outstanding, rather than staying live-and-unverified by default. Flagged,
+not resolved, as of this section.

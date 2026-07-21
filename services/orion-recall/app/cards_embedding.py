@@ -211,6 +211,7 @@ async def score_cards_by_embedding(
 
     timeout = float(getattr(settings, "RECALL_CARDS_EMBED_TIMEOUT_SEC", 5.0) or 5.0)
     concurrency = int(getattr(settings, "RECALL_CARDS_EMBED_CONCURRENCY", 4) or 4)
+    max_new_embeds = int(getattr(settings, "RECALL_CARDS_MAX_NEW_EMBEDS_PER_CALL", 40) or 40)
     card_texts: Dict[str, str] = {}
     cached: Dict[str, List[float]] = {}
     pending_texts: List[str] = []
@@ -224,7 +225,13 @@ async def score_cards_by_embedding(
         hit = read_cached_embedding(sub, text_fp=fp)
         if hit:
             cached[cid] = hit
-        else:
+        elif len(pending_texts) < max_new_embeds:
+            # Cap uncached cards embedded per call (see settings.py's
+            # RECALL_CARDS_MAX_NEW_EMBEDS_PER_CALL comment for the incident
+            # this fixes) -- rows beyond the cap are simply excluded from
+            # this call's scored candidates, not embedded-but-dropped; the
+            # embedding cache backfills across successive calls instead of
+            # trying (and always timing out) in one shot.
             pending_texts.append(text)
 
     try:

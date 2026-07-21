@@ -200,25 +200,31 @@ class Settings(BaseSettings):
     )
     # Live incident 2026-07-21: fetch_card_fragments' candidate SELECT had no
     # LIMIT, so every call scored the entire memory_cards table (574 active
-    # rows at the time, 426 without a cached embedding). Embedding 426 cards
-    # at ~0.35s/call throttled to RECALL_CARDS_EMBED_CONCURRENCY=4 takes
-    # 35s+, always exceeding RECALL_CARDS_TIMEOUT_SEC -- asyncio.wait_for
-    # cancels the task before persist_card_embeddings (the very last step of
-    # score_cards_by_embedding) ever runs, so newly-computed embeddings were
-    # never cached and every single call repeated the same wasted work
-    # forever. These two caps bound worst-case per-call embedding work so
-    # the cache can actually converge: the candidate SELECT now takes the
-    # RECALL_CARDS_CANDIDATE_LIMIT most-recently-updated active cards, and
-    # RECALL_CARDS_MAX_NEW_EMBEDS_PER_CALL caps how many of those (whatever
-    # subset lacks a cache hit) get embedded in one call -- excess pending
-    # cards are simply skipped for that call and picked up on a later one
-    # once earlier misses are cached.
+    # rows at the time, 426 without a cached embedding). asyncio.wait_for
+    # cancels the whole task at RECALL_CARDS_TIMEOUT_SEC, which is BEFORE
+    # persist_card_embeddings (the very last step of score_cards_by_embedding)
+    # ever runs, so newly-computed embeddings were never cached and every
+    # single call repeated the same wasted work forever. These two caps
+    # bound worst-case per-call embedding work so the cache can actually
+    # converge: the candidate SELECT now takes the RECALL_CARDS_CANDIDATE_LIMIT
+    # most-recently-updated active cards, and RECALL_CARDS_MAX_NEW_EMBEDS_PER_CALL
+    # caps how many of those (whatever subset lacks a cache hit) get embedded
+    # in one call -- excess pending cards are simply skipped for that call and
+    # picked up on a later one once earlier misses are cached. Default of 15
+    # is measured, not guessed: live-timed embed_texts() against the real
+    # BAAI/bge-large-en-v1.5 vector-host at RECALL_CARDS_EMBED_CONCURRENCY=4
+    # showed ~5.9s for 40 cards (~0.15s/card at real throughput, well above
+    # the ~0.35s/card a single cold call suggested -- concurrency does not
+    # scale linearly, the embedding model appears compute-bound) -- 15 cards
+    # leaves real margin under RECALL_CARDS_TIMEOUT_SEC alongside the SQL
+    # select, the query's own embed call, per-result neighbor lookups, and
+    # persist.
     RECALL_CARDS_CANDIDATE_LIMIT: int = Field(
         default=150,
         validation_alias=AliasChoices("RECALL_CARDS_CANDIDATE_LIMIT"),
     )
     RECALL_CARDS_MAX_NEW_EMBEDS_PER_CALL: int = Field(
-        default=40,
+        default=15,
         validation_alias=AliasChoices("RECALL_CARDS_MAX_NEW_EMBEDS_PER_CALL"),
     )
     RECALL_INTENT_ROUTING_ENABLED: bool = Field(default=True, validation_alias=AliasChoices("RECALL_INTENT_ROUTING_ENABLED"))

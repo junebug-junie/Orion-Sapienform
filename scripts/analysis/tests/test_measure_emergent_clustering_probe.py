@@ -112,6 +112,23 @@ def test_pearson_correlation_degenerate_flat_series_returns_none() -> None:
     assert mod.pearson_correlation(x, y) is None
 
 
+def test_pearson_correlation_nan_in_either_series_returns_none() -> None:
+    """A NaN-poisoned series must NOT silently clamp to a false "perfect
+    correlation" -- Python's min/max do not reliably reject NaN
+    (min(1.0, float("nan")) == 1.0), so this is checked explicitly up front
+    in pearson_correlation, not left to the variance guard alone."""
+    x = [float("nan"), 0.2, 0.3, 0.4]
+    y = [0.1, 0.2, 0.3, 0.4]
+    assert mod.pearson_correlation(x, y) is None
+    assert mod.pearson_correlation(y, x) is None
+
+
+def test_pearson_correlation_inf_in_either_series_returns_none() -> None:
+    x = [float("inf"), 0.2, 0.3, 0.4]
+    y = [0.1, 0.2, 0.3, 0.4]
+    assert mod.pearson_correlation(x, y) is None
+
+
 def test_pearson_correlation_too_short_returns_none() -> None:
     assert mod.pearson_correlation([0.1], [0.2]) is None
     assert mod.pearson_correlation([], []) is None
@@ -347,3 +364,93 @@ def test_choose_windows_none_timestamps_returns_none() -> None:
 
 def test_choose_windows_inverted_range_returns_none() -> None:
     assert mod.choose_windows(BASE, BASE - timedelta(hours=1)) is None
+
+
+# ===========================================================================
+# partition_by_window -- the fix for a real found bug: choose_windows'
+# degraded back-to-back path can produce win_a.end == win_b.start exactly,
+# and a naive inclusive-inclusive partition on both windows would double-
+# count a row landing on that shared boundary instant into BOTH windows,
+# contradicting the module's own "real non-overlapping windows" claim.
+# ===========================================================================
+
+
+def test_partition_by_window_row_exactly_on_shared_boundary_goes_to_b_only() -> None:
+    win_a = mod.WindowSpec(BASE, BASE + timedelta(hours=5), "a")
+    win_b = mod.WindowSpec(BASE + timedelta(hours=5), BASE + timedelta(hours=10), "b")
+    boundary_ts = BASE + timedelta(hours=5)  # == win_a.end == win_b.start exactly
+    timestamps = [BASE + timedelta(hours=1), boundary_ts, BASE + timedelta(hours=9)]
+    raw_maps = [{"marker": 1.0}, {"marker": 2.0}, {"marker": 3.0}]
+
+    maps_a, maps_b = mod.partition_by_window(timestamps, raw_maps, win_a, win_b)
+
+    assert maps_a == [{"marker": 1.0}]
+    assert maps_b == [{"marker": 2.0}, {"marker": 3.0}]
+    # No row counted twice, and no row silently dropped.
+    assert len(maps_a) + len(maps_b) == len(raw_maps)
+
+
+def test_partition_by_window_last_row_at_max_ts_included_in_window_b() -> None:
+    """win_b.end is inclusive -- the very last real row (exactly at
+    max_ts, which win_b is anchored to) must not be dropped."""
+    win_a = mod.WindowSpec(BASE, BASE + timedelta(hours=2), "a")
+    win_b = mod.WindowSpec(BASE + timedelta(hours=8), BASE + timedelta(hours=10), "b")
+    timestamps = [BASE + timedelta(hours=10)]  # exactly win_b.end
+    raw_maps = [{"marker": 1.0}]
+
+    maps_a, maps_b = mod.partition_by_window(timestamps, raw_maps, win_a, win_b)
+
+    assert maps_a == []
+    assert maps_b == [{"marker": 1.0}]
+
+
+def test_partition_by_window_rows_in_the_gap_are_dropped_from_both() -> None:
+    win_a = mod.WindowSpec(BASE, BASE + timedelta(hours=2), "a")
+    win_b = mod.WindowSpec(BASE + timedelta(hours=8), BASE + timedelta(hours=10), "b")
+    gap_ts = BASE + timedelta(hours=5)  # inside the untouched gap between windows
+    timestamps = [gap_ts]
+    raw_maps = [{"marker": 1.0}]
+
+    maps_a, maps_b = mod.partition_by_window(timestamps, raw_maps, win_a, win_b)
+
+    assert maps_a == []
+    assert maps_b == []
+
+
+# ===========================================================================
+# render_report -- the "Item 5" full-history membership table must use the
+# FULL-history target universe, not the window-scoped one used by the
+# correlation matrices, since the table's own text claims full-history
+# scope. Real found bug: a target seen in full history but never inside
+# either probe window was silently dropped from this table.
+# ===========================================================================
+
+
+def test_render_report_membership_table_uses_full_target_ids_not_window_scoped() -> None:
+    from collections import Counter
+
+    report = mod.render_report(
+        global_window_label="test span",
+        total_rows=100,
+        windows=None,
+        window_a_n=0,
+        window_b_n=0,
+        target_ids=["node:athena"],  # window-scoped: deliberately missing "node:ghost"
+        full_target_ids=["node:athena", "node:ghost"],  # full-history: has both
+        corr_a={},
+        corr_b={},
+        clusters_a=[],
+        clusters_b=[],
+        edges_a=set(),
+        edges_b=set(),
+        jaccard=None,
+        corr_of_corr=None,
+        n_common_pairs=0,
+        classification="INCONCLUSIVE_INSUFFICIENT_PAIRS",
+        full_history_top1=Counter({"node:athena": 100}),
+        full_history_n=100,
+        full_history_membership={"node:athena": 1.0, "node:ghost": 0.02},
+        caveats=[],
+    )
+    assert "node:ghost" in report
+    assert "node:athena" in report

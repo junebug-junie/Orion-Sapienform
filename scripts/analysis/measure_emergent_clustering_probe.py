@@ -205,10 +205,22 @@ def align_series(raw_maps: list[dict[str, float]], target_ids: list[str]) -> dic
 def pearson_correlation(x: list[float], y: list[float]) -> Optional[float]:
     """Plain-Python Pearson correlation, no numpy/scipy dependency (matches
     this patch's constraint against pulling in a clustering/ML library for
-    day one). Returns None if the series lengths mismatch, are too short, or
-    either series is degenerate (near-zero variance -- flat/constant, not
-    real signal; see the metric-quality-gate "not degenerate" check)."""
+    day one). Returns None if the series lengths mismatch, are too short,
+    contain a non-finite value (NaN/inf -- a malformed upstream salience
+    value, not real signal), or either series is degenerate (near-zero
+    variance -- flat/constant, not real signal; see the metric-quality-gate
+    "not degenerate" check).
+
+    Deliberate NaN handling: Python's `min`/`max` do NOT reliably reject NaN
+    (`min(1.0, float("nan"))` returns `1.0`, since NaN comparisons are always
+    False), so a NaN-poisoned series would otherwise silently clamp to a
+    false "perfect correlation" instead of being caught by the variance
+    check above (variance involving NaN is itself NaN, which also fails to
+    trip the `<=` comparison). Checked explicitly, up front, before any
+    arithmetic that could propagate it."""
     if len(x) != len(y) or len(x) < 2:
+        return None
+    if any(not math.isfinite(v) for v in x) or any(not math.isfinite(v) for v in y):
         return None
     n = len(x)
     mean_x = sum(x) / n
@@ -428,6 +440,33 @@ def choose_windows(
     return None
 
 
+def partition_by_window(
+    timestamps: list[datetime],
+    raw_maps: list[dict[str, float]],
+    win_a: WindowSpec,
+    win_b: WindowSpec,
+) -> tuple[list[dict[str, float]], list[dict[str, float]]]:
+    """Split `raw_maps` into (window A, window B) by their aligned
+    `timestamps`, guaranteeing a real, non-overlapping partition even when
+    `win_a.end == win_b.start` exactly -- `choose_windows`' degraded
+    back-to-back path produces exactly that shared boundary instant when the
+    real data span is too short for a real gap. Half-open on window A's
+    upper bound (`win_a.start <= ts < win_a.end`), inclusive on window B's
+    both ends (`win_b.start <= ts <= win_b.end`, so the very last real row,
+    exactly at `max_ts`, is still counted) -- a row landing exactly on the
+    shared boundary goes to B only, never both. Makes no difference in the
+    ample-span case, where `win_a.end < win_b.start` with real daylight
+    between them."""
+    maps_a: list[dict[str, float]] = []
+    maps_b: list[dict[str, float]] = []
+    for ts, m in zip(timestamps, raw_maps):
+        if win_a.start <= ts < win_a.end:
+            maps_a.append(m)
+        elif win_b.start <= ts <= win_b.end:
+            maps_b.append(m)
+    return maps_a, maps_b
+
+
 # ===========================================================================
 # I/O layer -- psycopg2 read-only. Connection contract mirrors
 # measure_ast_hot_reducer.py / measure_capability_salience_coupling.py
@@ -586,13 +625,12 @@ def _corr_matrix_table(target_ids: list[str], corr_matrix: CorrMatrix) -> list[s
 def render_report(
     *,
     global_window_label: str,
-    global_start: Optional[datetime],
-    global_end: Optional[datetime],
     total_rows: int,
     windows: Optional[tuple[WindowSpec, WindowSpec]],
     window_a_n: int,
     window_b_n: int,
     target_ids: list[str],
+    full_target_ids: list[str],
     corr_a: CorrMatrix,
     corr_b: CorrMatrix,
     clusters_a: list[list[str]],
@@ -750,7 +788,11 @@ def render_report(
             "| --- | --- |",
         ]
     )
-    for target_id in target_ids:
+    # Deliberately `full_target_ids`, NOT the window-scoped `target_ids` used
+    # by the correlation matrices above -- this table's own text (just above)
+    # claims full-history scope, so a target seen in full history but never
+    # inside either probe window must still appear here.
+    for target_id in full_target_ids:
         pct = full_history_membership.get(target_id, 0.0) * 100
         lines.append(f"| `{target_id}` | {pct:.2f}% |")
 
@@ -839,8 +881,9 @@ def run(
             pass
         progress.close()
         report = render_report(
-            global_window_label="n/a (insufficient data)", global_start=min_ts, global_end=max_ts,
+            global_window_label="n/a (insufficient data)",
             total_rows=total_rows, windows=None, window_a_n=0, window_b_n=0, target_ids=[],
+            full_target_ids=[],
             corr_a={}, corr_b={}, clusters_a=[], clusters_b=[], edges_a=set(), edges_b=set(),
             jaccard=None, corr_of_corr=None, n_common_pairs=0,
             classification="INCONCLUSIVE_INSUFFICIENT_PAIRS", full_history_top1=Counter(),
@@ -854,7 +897,14 @@ def run(
 
     all_rows, truncated = fetch_target_rows(conn, min_ts, max_ts, MAX_ROWS)
     if truncated:
-        caveats.append(f"full-history rows truncated at MAX_ROWS={MAX_ROWS}")
+        caveats.append(
+            f"full-history rows truncated at MAX_ROWS={MAX_ROWS} -- the fetch is ORDER BY "
+            "generated_at ASC, so truncation keeps the OLDEST rows and drops the newest, "
+            "which would disproportionately starve window B (the end-anchored/'newest' "
+            "window) rather than shrinking both windows evenly. Not triggered at current "
+            "real data volume (well under MAX_ROWS as of this run), but treat window B's "
+            "numbers as suspect if this caveat is ever present."
+        )
     progress.emit("full history fetched", percent=25.0, processed=len(all_rows), total=len(all_rows))
 
     try:
@@ -878,9 +928,10 @@ def run(
         )
         write_ticks_csv(CSV_PATH, all_raw_maps, all_timestamps, full_target_ids)
         report = render_report(
-            global_window_label=global_label, global_start=min_ts, global_end=max_ts,
+            global_window_label=global_label,
             total_rows=total_rows, windows=None, window_a_n=0, window_b_n=0,
-            target_ids=full_target_ids, corr_a={}, corr_b={}, clusters_a=[], clusters_b=[],
+            target_ids=full_target_ids, full_target_ids=full_target_ids,
+            corr_a={}, corr_b={}, clusters_a=[], clusters_b=[],
             edges_a=set(), edges_b=set(), jaccard=None, corr_of_corr=None, n_common_pairs=0,
             classification="INCONCLUSIVE_INSUFFICIENT_PAIRS", full_history_top1=full_history_top1,
             full_history_n=len(all_raw_maps), full_history_membership=full_history_membership,
@@ -892,10 +943,7 @@ def run(
         return 2
 
     win_a, win_b = windows
-    rows_a = [(ts, m) for ts, m in zip(all_timestamps, all_raw_maps) if win_a.start <= ts <= win_a.end]
-    rows_b = [(ts, m) for ts, m in zip(all_timestamps, all_raw_maps) if win_b.start <= ts <= win_b.end]
-    maps_a = [m for _, m in rows_a]
-    maps_b = [m for _, m in rows_b]
+    maps_a, maps_b = partition_by_window(all_timestamps, all_raw_maps, win_a, win_b)
     progress.emit("windows partitioned", percent=55.0, processed=len(maps_a) + len(maps_b), total=len(all_raw_maps))
 
     if len(maps_a) < MIN_WINDOW_ROWS:
@@ -922,9 +970,10 @@ def run(
 
     write_ticks_csv(CSV_PATH, all_raw_maps, all_timestamps, full_target_ids)
     report = render_report(
-        global_window_label=global_label, global_start=min_ts, global_end=max_ts,
+        global_window_label=global_label,
         total_rows=total_rows, windows=windows, window_a_n=len(maps_a), window_b_n=len(maps_b),
-        target_ids=shared_target_ids, corr_a=corr_a, corr_b=corr_b, clusters_a=clusters_a,
+        target_ids=shared_target_ids, full_target_ids=full_target_ids,
+        corr_a=corr_a, corr_b=corr_b, clusters_a=clusters_a,
         clusters_b=clusters_b, edges_a=edges_a, edges_b=edges_b, jaccard=jaccard,
         corr_of_corr=corr_of_corr, n_common_pairs=n_common_pairs, classification=classification,
         full_history_top1=full_history_top1, full_history_n=len(all_raw_maps),

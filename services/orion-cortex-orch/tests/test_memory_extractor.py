@@ -416,3 +416,38 @@ def test_fallback_to_regex_when_llm_response_fails_anchor_class_validation(monke
     insert_mock.assert_awaited_once()
     card_arg = insert_mock.await_args.args[1]
     assert "Ogden" in (card_arg.summary or "")
+
+
+def test_annotation_prompt_path_resolution_survives_shallow_docker_layout(monkeypatch) -> None:
+    """Live incident 2026-07-21: a bare `Path(__file__).resolve().parents[3]`
+    assumed the local monorepo checkout's depth. Docker's real layout
+    (Dockerfile: `COPY orion /app/orion`, `COPY services/orion-cortex-orch /app`)
+    only has 2 parent levels above this file inside the container
+    (/app/app/memory_extractor.py), so parents[3] raised IndexError at
+    IMPORT time -- main.py imports this module at startup, so the whole
+    service crash-looped, not just this feature. This asserts the fix's
+    candidate-generation never raises regardless of how shallow __file__'s
+    parent chain is, and that the container-shaped root actually gets
+    tried."""
+    import app.memory_extractor as mod
+
+    # Simulate the container's real, shallow file location.
+    shallow = Path("/app/app/memory_extractor.py")
+    monkeypatch.setattr(mod, "__file__", str(shallow))
+
+    candidates = mod._annotation_prompt_path_candidates()
+    assert candidates, "must produce at least one candidate, never raise"
+    assert all(c.name == "memory_card_annotation_prompt.j2" for c in candidates)
+    # The container-shaped root (one parent above __file__) must be among
+    # the candidates -- this is the exact root the live incident needed.
+    assert any(str(c).startswith("/app/orion/") for c in candidates)
+
+    # Never raises even with an absurdly shallow path (no parents at all).
+    monkeypatch.setattr(mod, "__file__", "memory_extractor.py")
+    candidates_shallow = mod._annotation_prompt_path_candidates()
+    assert isinstance(candidates_shallow, list)
+
+    # resolve_annotation_prompt_path itself never raises either, even when
+    # no candidate exists on disk in the test sandbox.
+    resolved = mod._resolve_annotation_prompt_path()
+    assert isinstance(resolved, Path)

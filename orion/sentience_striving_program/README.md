@@ -239,6 +239,56 @@ first place. Full reasoning and phased detail:
    this program.
 5. **Run the emergent-clustering probe** on real coalition-winning history (not built yet,
    named in the baseline design) — toward O4.
+   **Status (2026-07-21): built and run against real data; the baseline design's acceptance
+   check reads AMBIGUOUS, and the separate monoculture comparison reads NOT MET.**
+   `scripts/analysis/measure_emergent_clustering_probe.py` pulls real, historical
+   `FieldAttentionFrameV1` rows from Postgres `substrate_attention_frames` (verified live
+   table, written by `services/orion-attention-runtime/app/store.py::save_attention_frame()`;
+   127,936 rows spanning ~72h as of the run), splits them into two non-overlapping 24h
+   windows separated by a 12h gap, and runs correlation-based grouping over
+   `dominant_targets`/`capability_targets` salience-score time series — per the baseline
+   design's own non-goal against a from-scratch ML clustering pipeline. Read-only; imports
+   nothing from `orion.spark.concept_induction`.
+   **Real numbers found:** the target universe is small by construction (9 distinct
+   `target_id`s total — `dominant_targets` is a capped union of node/capability/system
+   targets, not an independently-sampled top-N), capping the correlation matrix at 36
+   possible pairs, of which 21 had a real (non-degenerate) value in both windows. Exactly one
+   pair cleared the clustering threshold (`corr >= 0.5`) in either window —
+   `capability:llm_inference` <-> `node:atlas` — and it did so in **both** windows with
+   near-identical magnitude (r=0.9228 window A, r=0.9210 window B; correlation-of-correlations
+   over the 21 common pairs = 0.9940; edge-set Jaccard = 1.0). This is real, stable, recurring,
+   non-random structure — the opposite of noise — but because it is the *only* surviving edge
+   in both windows, the design's literal "not identical" bar can't be cleanly separated from
+   "recognizably similar": the script's own classifier (`classify_similarity`, explicit
+   documented bands) reports **AMBIGUOUS**, not a forced MET or NOT MET, and that is the
+   honest read: a real, non-trivial, cross-window-stable coalition pair was found, but the
+   currently-instrumented target universe is too sparse (1 of 36 possible pairs) to
+   demonstrate the richer, multi-cluster "not identical" case the design anticipated.
+   **Separately, item 5's monoculture-differentiation check reads NOT MET, and is the more
+   load-bearing finding of this patch.** The closest real analog to the drives system's
+   `dominant_drive` — the single highest-salience target per tick — is `field:recent_
+   perturbations` in **99.98%** of all 127,936 real ticks measured (`node:athena` and
+   `capability:transport` split the remaining 0.02%). That is at or above the drives system's
+   own documented *pre-fix* 96% `dominant_drive=relational` monoculture
+   (`orion/autonomy/drives_and_autonomy_retrospective.md` ~line 177), and far above its
+   *post-fix* ~31.65% (~line 267). This is exactly the pathology the baseline design's own
+   Missing Question 1 named as the risk to check for before trusting emergent clustering here
+   ("can we tell a real, meaningful coalition of channels apart from 'resource_pressure always
+   wins because it's noisiest,' the exact 96%-dominant-drive monoculture pathology already
+   found once?") — the answer, measured, is: not yet, with the naive top-1-winner framing.
+   `field:recent_perturbations`' salience formula (`min(1.0, recent_perturbation_count / 10.0)`,
+   `orion/attention/field_attention/selectors.py::select_system_targets`) saturates to ~1.0
+   under the field's real, near-constant perturbation rate, structurally out-competing every
+   other target for top rank almost always — the same "noisiest wins" shape as the pre-fix
+   drives pathology, just on a different signal. Full report, correlation matrices, and
+   per-target membership frequencies: run the script (`--window-hours 24 --gap-hours 12`
+   reproduces this measurement) or see its `/tmp/emergent-clustering-probe/report.md` output.
+   Recommended next step, not taken in this patch: either exclude system-kind targets (whose
+   salience formula is structurally different from node/capability pressure) from the
+   top-1-winner comparison and re-measure, or treat this finding as real evidence that
+   `select_system_targets`' formula itself needs the same delta-gating/normalization
+   discipline the O1-O3 drives fixes applied to `DriveEngine` before this probe's numbers can
+   be trusted as representative of the *node/capability* coalition structure specifically.
 6. **Revisit `capability_policy.py`'s coupling to live salience** — only after item 3 closes
    the `drive_origin` dependency and item 2's field-native attention is proven, not assumed.
    At this point the actual mechanism is a real open choice, not a given: a salience-to-

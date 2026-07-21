@@ -1,1 +1,918 @@
-062d462b33c64cc5bbb9fb5c63672a0f02ecb046
+# Orion Recall Service
+
+The **Recall Service** is Orion’s memory retrieval engine. It pulls candidate “memory fragments” from:
+
+- **RDF (GraphDB / Fuseki)** — structured facts + chat turns + enrichment claims
+- **SQL (Postgres)** — timeline + mirror tables (structured / time-bounded)
+
+Vector/Chroma semantic retrieval was **removed from orion-recall** (May 2026). Vector services (`orion-vector-host`, `orion-vector-writer`, `orion-vector-db`) remain in the mesh for ingestion and other callers; recall exposes `vector_policy` diagnostics with `reason: removed_from_orion_recall` only.
+
+It then **fuses** candidates into a prompt-ready `MemoryBundleV1` with per-source caps, a total cap, and a render token budget.
+
+---
+
+## 1) Contracts
+
+### Consumed Channels (RPC)
+
+| Channel | Env Var | Kind(s) | Description |
+| :--- | :--- | :--- | :--- |
+| `orion:exec:request:RecallService` | `RECALL_BUS_INTAKE` | `recall.query.v1` (also accepts legacy `recall.query.request`) | Recall query requests from cortex-exec / other callers. |
+
+### Published Channels (RPC result + telemetry)
+
+| Channel | Env Var | Kind | Description |
+| :--- | :--- | :--- | :--- |
+| `orion:exec:result:RecallService:*` | `RECALL_BUS_REPLY_DEFAULT` | `recall.reply.v1` | Replies containing `MemoryBundleV1` (actual channel uses the caller’s `reply_to` when provided). |
+| `orion:recall:telemetry` | `RECALL_BUS_TELEMETRY` | `recall.decision.v1` | Decision telemetry: backend counts, selected IDs, latency, etc. |
+
+### HTTP Endpoints (dev convenience)
+
+> Used for local testing / debugging; production orchestration is bus/RPC.
+
+- `POST /recall` — runs recall for a query and returns `MemoryBundleV1`
+- `GET /health` / `GET /ready` — liveness/readiness
+- `POST /debug/recall/compare` — Recall V1 vs shadow Recall V2 comparison (read-only)
+- `GET /debug/recall/eval-suite` — run built-in Recall V1/V2 evaluation corpus
+- `POST /debug/recall/eval-case` — run a single ad-hoc evaluation case
+- `GET /debug/entity-graph/related?name=<entity>&max_results=<n>` — Jaccard-ranked co-occurrence relatedness over `orion_recall`'s `MENTIONS_ENTITY` graph (Phase 1 of entity-graph-reasoning)
+- `GET /debug/entity-graph/bridge?a=<entity>&b=<entity>&max_results=<n>` — direct co-mention or 2-hop bridge between two entities
+- `GET /debug/entity-graph/timeline?name=<entity>&max_results=<n>` — raw mention timestamps for an entity, most recent first
+
+If you have debug enabled (recommended while wiring), you may also have:
+
+- `GET /debug/settings` — prints resolved config (GraphDB endpoint, DSN, vector collections, etc.)
+
+> **Note:** `session_id` is accepted in recall requests for backwards compatibility, but recall ignores it for retrieval and ranking.
+
+Recall V2 debug rails are shadow-only in this phase: they expose deterministic anchor/filter/lineage diagnostics and do not wire into autonomous mutation apply.
+
+### Debugging RPC timeouts (cortex-exec ↔ recall)
+
+When cortex-exec logs `RPC timeout waiting on orion:exec:result:RecallService:...`, align timelines using the **same `correlation_id`** as the bus envelope:
+
+- **Recall logs**: `recall_bus_request_begin` and `recall_bus_request_complete` include `corr_id`, `verb`, `profile`, `wall_ms`, and `process_latency_ms`. If `wall_ms` exceeds 30s, `recall_bus_request_slow` logs `latency_breakdown_ms` from `process_recall`.
+- **Telemetry** (`RECALL_BUS_TELEMETRY`): each `recall.decision.v1` payload includes `corr_id`, `latency_ms`, `backend_counts`, and `recall_debug.latency_breakdown_ms` (always populated).
+
+**Head-of-line blocking:** the Rabbit consumer runs **one** handler at a time unless `RECALL_RABBIT_CONCURRENT_HANDLERS=true` (see `.env_example`).
+
+---
+
+## 2) Environment Variables (high-signal)
+
+Provenance: `.env_example` → `docker-compose.yml` → `services/orion-recall/app/settings.py`
+
+**Gotcha: `docker exec ... env` does not prove what this service actually reads.** This service's `Dockerfile` does `COPY services/orion-recall /app` at build time, baking `.env` directly into the image; `settings.py`'s pydantic-settings `Config` also declares `env_file=".env"`, so it reads that baked-in file directly, not just docker-compose's `environment:` list. `docker exec orion-<node>-recall env` only shows the OS-level environment docker-compose actually injected -- if a key exists in `.env`/`.env_example` but is missing from `docker-compose.yml`'s `environment:` block, `docker exec ... env` will show nothing for it even though the app is reading a real value from the baked-in file. This bit real verification once (`RECALL_GRAPHITI_IN_CHAT`, 2026-07-13) -- the correct way to check what this service actually sees is to ask its own `Settings` object directly:
+
+```bash
+docker exec orion-<node>-recall python -c "from app.settings import settings; print(settings.<KEY>)"
+```
+
+**`docker-compose.yml`'s `environment:` block must still list every `.env_example` key**, even though the baked-`.env` fallback covers today's gap -- if this service's Dockerfile ever moves away from baking `.env` into the image, any key missing from `environment:` would silently stop being read with no baked-in fallback left. Gate this with:
+
+```bash
+make check-env-compose-parity SERVICE=orion-recall
+```
+
+### Bus + runtime
+
+| Variable | Default | Notes |
+| :--- | :--- | :--- |
+| `ORION_BUS_URL` | `redis://127.0.0.1:6379/0` | Orion bus |
+| `RECALL_BUS_INTAKE` | `orion:exec:request:RecallService` | RPC intake |
+| `RECALL_BUS_REPLY_DEFAULT` | `orion:exec:result:RecallService` | RPC reply prefix |
+| `RECALL_BUS_TELEMETRY` | `orion:recall:telemetry` | recall.decision.v1 |
+| `RECALL_RABBIT_CONCURRENT_HANDLERS` | `false` | When `true`, run multiple RPC handlers concurrently (less head-of-line blocking). |
+
+### RDF / GraphDB
+
+| Variable | Default | Notes |
+| :--- | :--- | :--- |
+| `RECALL_ENABLE_RDF` | `false` (repo default) | must be `true` to run RDF unless using a `deep.graph.*` / `graphtri.*` profile name |
+| `GRAPHDB_URL` | `http://orion-athena-graphdb:7200` | base URL |
+| `GRAPHDB_REPO` | `collapse` | repo name |
+| `RECALL_RDF_ENDPOINT_URL` | derived | defaults to `${GRAPHDB_URL}/repositories/${GRAPHDB_REPO}` |
+| `GRAPHDB_USER/PASS` | `admin/admin` | creds |
+
+### FalkorDB (Phase 4 of the recall RDF->Falkor cutover)
+
+Chatturn-only read path standing in for RDF's chat-turn fetch. **Live as of 2026-07-18** (flipped on after landing dark in the same PR). See `docs/superpowers/specs/2026-07-17-recall-rdf-writer-falkor-cutover-phase2-spec.md` (Phase 4) and `services/orion-meta-tags/README.md` (the write side this reads).
+
+| Variable | Default | Notes |
+| :--- | :--- | :--- |
+| `RECALL_FALKOR_IN_CHAT` | `true` (code-level pydantic default stays `False` -- a safe fallback for any environment that hasn't set this key at all) | When `true`, `app/storage/falkor_chat_adapter.py::fetch_falkor_chatturn_fragments` **swaps in** for the RDF chatturn fetch in `_query_backends` -- not additive like `RECALL_GRAPHITI_IN_CHAT` (that merges an extra rail; this replaces one, since the point of this migration is retiring RDF). Independent of `RECALL_ENABLE_RDF`. Only covers chatturn fragments (prompt/response text); graphtri/Claim-based fragments are a separate flag, see below. |
+| `FALKORDB_URI` | `redis://orion-athena-falkordb:6379` | Same shared instance as the substrate collector above -- not a new dependency. |
+| `FALKORDB_RECALL_GRAPH` | `orion_recall` | Read directly from the environment by `app/recall_falkor_store.py` (same "no pydantic field, must be listed in docker-compose's `environment:`" constraint as `FALKORDB_SUBSTRATE_GRAPH` above -- this service has no `env_file:` directive). |
+
+**Historical backfill (Phase 3): done, 2026-07-18** (PR #1194). `orion_recall`'s `:ChatTurn` graph now has 1,712 turns spanning 2025-10-19 → today (not just turns tagged since the observer-gate fix) -- 1,708 backfilled + a handful already live-written, 0 errors, real historical timestamps preserved. Full coverage of `chat_history_log`; `social_room_turns` coverage is real but partial by design (31 of 33 rows are dual-logged into `chat_history_log` under the same `turn_id` and correctly landed as `source_kind="chat.history"` instead -- see PR #1194's report for why that's the better outcome given this read path only recalls `chat.history` today). The Falkor `:ChatTurn` node is also deliberately thin (no prompt/response text -- Postgres owns that), so this is a Falkor-turn-discovery + Postgres-text-join read, not a pure single-store Cypher query; a turn with no matching `chat_history_log` row is silently dropped (nothing to quote).
+
+### Graphtri (Claim-based fragments): Falkor redesign, ships dark
+
+`fetch_rdf_graphtri_fragments` (the "graphtri" lane -- `graphtri.v1`/`deep.graph.v1` profiles, and `brain.recall.v1`'s expansion chain) is Claim-based: the old RDF shape supported arbitrary `(subject, predicate, object)` statements. Falkor's writer never wrote anything equivalent -- only `MENTIONS_ENTITY` edges (`:Tag`/`HAS_TAG` is empty by design, see above) -- so this needed a real redesign, not a rewrite.
+
+| Variable | Default | Notes |
+| :--- | :--- | :--- |
+| `RECALL_FALKOR_GRAPHTRI_IN_CHAT` | `false` (dark -- newer, less-proven redesign than the chatturn swap) | When `true`, `app/storage/falkor_graphtri_adapter.py`'s `fetch_falkor_graphtri_fragments`/`fetch_falkor_graphtri_anchors` **swap in** for `fetch_rdf_graphtri_fragments`/`fetch_graphtri_anchors` at both call sites (`_query_backends`'s graphtri branch, and `process_recall`'s `graphtri.v1`-profile branch via `_build_anchor_set`). Unlike `RECALL_FALKOR_IN_CHAT`, this flag stays **nested inside `rdf_enabled`/`rdf_top_k`** rather than running independent of it -- graphtri's availability is already correctly governed by the same conditions (including `pcr_collectors.py`'s `plan.get("rdf")` suppression), so this flag only chooses which backend serves it. |
+
+**Why entity-mention fragments are not a real functional regression from Claim fragments** (a live audit, not an assumption -- see the Phase 0 spec's "Ground truth" section): `Claim.predicate` only ever took 2 fixed values in production (`hasTag`, `mentionsEntity` -- never open-vocabulary), and `confidence`/`salience` were always `0.0`/`0.0` (dead constants). No downstream code (`fusion.py`, `render.py`) ever parsed the predicate/object structure -- the whole `"Claim: ..."` string was always carried as opaque text, bucketed only by a literal `"claim"` tag (preserved in the new fragment shape for exactly this reason -- dropping it would silently break the "High-salience claims" render group). `MENTIONS_ENTITY` already covers the only part of the old shape that was ever real.
+
+**Filtering divergence, named not silent:** the old SPARQL filtered at the *turn* level (keyword `CONTAINS` on raw prompt/response text). Falkor's thin `ChatTurn` node has no text, so this filters at the *entity* level instead (`Entity.name` keyword match, bidirectional `CONTAINS`) -- no Postgres join needed, and arguably more semantically correct for a graph meant to represent entity relevance in the first place.
+
+**Not yet covered by this flag:** `fetch_rdf_connected_chatturns` (the 1-hop graph-neighborhood function `brain.recall.v1`'s expansion terms feed into) still queries Fuseki regardless of this flag -- a real, remaining Fuseki dependency for graphtri-mode profiles even with the flag on. Deferred, not forgotten.
+
+### Entity-graph reasoning primitives (Phase 1, debug-only -- not yet wired into recall)
+
+`app/storage/falkor_entity_relatedness.py`: three read-only Cypher primitives over the same `MENTIONS_ENTITY` graph -- `fetch_related_entities` (co-occurrence relatedness ranked by Jaccard similarity, not raw shared-turn count, so a high-degree entity that co-occurs with almost everything doesn't outrank a genuinely specific one), `fetch_bridging_turns` (direct co-mention, falling back to a 2-hop bridge via a shared intermediate entity), and `fetch_entity_mention_timeline` (raw mention timestamps). Exposed via `GET /debug/entity-graph/{related,bridge,timeline}` (see HTTP Endpoints above).
+
+**Stated plainly:** as of Phase 2 below, `fetch_related_entities` is also called from `worker.py`'s default (non-PCR) fusion path, dark-flagged. `fetch_bridging_turns`/`fetch_entity_mention_timeline` remain debug-only.
+
+### Entity-relatedness fusion-weight boost + injection (Phase 2, live)
+
+`worker.py::_compute_entity_relatedness_boost_map` extracts entities from the query, expands them via Phase 1's `fetch_related_entities` (Jaccard-ranked), and does two things with the resulting target-entity set:
+
+1. **Boost**: additively boosts a `falkor_chat` candidate's composite score in `fusion.py::fuse_candidates` when its source turn mentions any target entity -- the same additive-boost shape as the existing `tag_boost`/`turn_effect_boost`.
+2. **Injection**: fetches real ChatTurn ids that mention any target entity directly (`fetch_turns_mentioning_entities`, independent of recency), hydrates their text via the same Postgres join `falkor_chat_adapter.py` already uses, and adds them to the candidate pool as new `falkor_chat` candidates.
+
+Injection is the load-bearing half, found necessary only after live testing: `falkor_chat`'s own fetch (the recency-windowed one above) has no query filter by design (Phase 4), so an entity from an older turn never enters the pool for the boost alone to act on. A boost with nothing to boost is a no-op -- confirmed live across 6 real queries before this fix, 0/6 changed a single ranking.
+
+| Variable | Default | Notes |
+| :--- | :--- | :--- |
+| `RECALL_ENTITY_RELATEDNESS_BOOST_ENABLED` | `true` (live as of 2026-07-19) | See `settings.py`'s comment for the full design + evidence. Code-level pydantic default stays `false` (safe fallback for any environment that hasn't set this key), matching `RECALL_FALKOR_IN_CHAT`'s convention. |
+| `entity_relatedness_boost_weight` (per-profile, `relevance` cfg) | `0.2` | Same additive-scale convention as `prefer_tags_boost` (0.15)/`turn_effect_boost_weight` (0.35). |
+
+**Fixed before flipping live, both found in code review:**
+
+- `_extract_entities` had a pre-existing regex bug (literal double-backslash inside an r-string matched a literal backslash, not whitespace/a dot) that broke multi-word spans and all-caps acronyms. Fixed at the source (`worker.py::_extract_entities`, `tests/test_extract_entities.py`).
+- The boost-only design never fired in practice (see above). Fixed by adding the injection half.
+
+**Real evidence, not one hand-picked example**: `scripts/live_verify_entity_relatedness_boost.py` (re-runnable) ran 6 real queries against the live `chat.general.v1` profile, flag off vs on. 4/6 changed, and every changed result was visibly, substantively more relevant to the query's actual topic (e.g. "Tesla gpu setup" surfaced a real GPU-status turn instead of an unrelated recent one; "Atlas" surfaced a GPU-node turn). The 2 no-entity control queries ("how's it going today", "what's the weather like") stayed unchanged in both runs -- no false-positive regression on generic conversational queries.
+
+**Known, disclosed, unproven-live gap**: injected candidates don't pass through `_suppress_self_hits` (which runs earlier in `process_recall`, before injection). Low risk in practice -- entity extraction from a turn is async/post-persist, so the current turn's own entities aren't normally in Falkor yet when recall runs for that same turn -- but not proven impossible. Worth a follow-up test, not treated as blocking the live flip.
+
+**Third fix, same day, found from real live usage**: a mundane message that simply addresses the assistant by name ("Orion, what do you think about the deploy?") extracted "orion" as a query entity and scored it a flat `1.0` -- "orion"/"juniper" are the two most frequent nodes in the whole graph (282/260 mentions, confirmed live), so this injected generic filler turns ("thanks, appreciated.", "word, good advice") at full boost strength purely because they happened to mention Orion/Juniper by name. Fixed with a two-part change:
+
+1. `fetch_entity_degrees` applies an IDF-style discount (`K/degree`) to every target entity's score, direct-matched or Jaccard-related alike.
+2. Discounting the score alone was live-confirmed insufficient -- an injected candidate still carries the same fixed `base_score` as a genuinely recency-fetched one. Entities whose discounted score falls below a minimum floor can still weakly boost an already-present candidate, but can no longer single-handedly pull a new turn into the pool.
+
+Re-verified live: "Orion, what do you think..." now correctly falls back to plain recency (no entity signal strong enough to act on) instead of injecting 6 generic turns; "Tesla gpu setup"/"Atlas" (genuinely specific entities) are unaffected.
+
+### Vector / Chroma
+
+| Variable | Default | Notes |
+| :--- | :--- | :--- |
+| `RECALL_ENABLE_VECTOR` | `true` | enables vector backend |
+| `VECTOR_DB_HOST/PORT` | `orion-athena-vector-db:8000` | base host |
+| `RECALL_VECTOR_BASE_URL` | derived | defaults to `http://{VECTOR_DB_HOST}:{VECTOR_DB_PORT}` |
+| `RECALL_VECTOR_COLLECTIONS` | (unset) | if set, overrides which collections recall queries |
+| `VECTOR_DB_COLLECTION` | `orion_main_store` | default collection name (global knob) |
+
+### SQL / Postgres
+
+| Variable | Default | Notes |
+| :--- | :--- | :--- |
+| `RECALL_PG_DSN` | `postgresql://...@orion-athena-sql-db:5432/conjourney` | used for SQL timeline + (optional) telemetry persistence |
+| `RECALL_ENABLE_SQL_TIMELINE` | `true` | profile can enable/disable |
+| `RECALL_SQL_TIMELINE_TABLE` | `collapse_mirror` | timeline source |
+
+### Memory cards (Postgres, operator-curated)
+
+| Variable | Default | Notes |
+| :--- | :--- | :--- |
+| `RECALL_ENABLE_CARDS` | `true` | When `true` and `RECALL_PG_DSN` is set, recall scores `memory_cards` rows as `source=cards`. |
+| `RECALL_CARDS_TIMEOUT_SEC` | `2.5` | Per-query cards rail budget (embedding + Postgres). |
+| `RECALL_CARDS_MAX_NEIGHBORS` | `6` | 1-hop graph neighbor fan-out cap. |
+| `RECALL_CARDS_EMBEDDING_URL` | derived | Defaults to `RECALL_VECTOR_EMBEDDING_URL` or `http://orion-athena-vector-host:8320/embedding`. |
+| `RECALL_CARDS_EMBED_TIMEOUT_SEC` | `5.0` | HTTP timeout per embed call to vector-host. |
+| `RECALL_CARDS_MIN_SIMILARITY` | `0.32` | Minimum cosine similarity vs query embedding. |
+| `RECALL_CARDS_EMBED_CONCURRENCY` | `4` | Parallel embed requests when warming card caches. |
+
+Profile knobs: `cards_top_k` (fetch cap), `backend_weights.cards` (fusion weight), and optional `cards_min_similarity` (cosine threshold, default from `RECALL_CARDS_MIN_SIMILARITY`). Scoring uses **vector-host embeddings + cosine similarity** (cached in `subschema.recall_embedding`), not lexical regex overlap. Only **`status=active`** cards are admitted.
+
+To preserve pre-2026-06 behavior on an existing install, set `RECALL_ENABLE_CARDS=false` in orion-recall `.env`.
+
+Cards-primary profiles: `biographical.v1`, `self.factual.v1`. All shipped YAML profiles now declare `cards_top_k` + `cards` weight for supplemental curated facts.
+
+---
+
+## 3) Recall Profiles (what changes when you switch profile)
+
+Profiles live here:
+
+- `orion/recall/profiles/*.yaml`
+
+They control:
+
+- how many items to request per backend (`vector_top_k`, `rdf_top_k`, `sql_top_k`, `cards_top_k`)
+- caps (`max_per_source`, `max_total_items`)
+- render budget (`render_budget_tokens`)
+- SQL timeline time windows (`sql_since_minutes`)
+- whether SQL timeline is used (`enable_sql_timeline`)
+
+### Common profiles
+
+| Profile | What it’s for | RDF | SQL timeline | Vector |
+| :--- | :--- | :---: | :---: | :---: |
+| `assist.light.v1` | low-latency, minimal context | off | off | off |
+| `chat.general.v1` | normal conversational recall | on | off | on |
+| `reflect.v1` | reflection / sensemaking w/ some history | on | on | on |
+| `deep.graph.v1` | “catch me up” / architecture / deep state | on (more) | on (more) | on |
+| `graphtri.v1` | graph-anchored retrieval (tags/entities/claims) | on (more) | on | on |
+
+---
+
+## 4) RDF usage types (by profile)
+
+Your RDF store contains **multiple semantic layers**. Recall uses them differently depending on profile and verb.
+
+### RDF graphs you should expect
+
+- `GRAPH <orion:chat>` — **ChatTurn** objects, including `prompt`, `response`, and optional `sessionId`
+- `GRAPH <orion:enrichment>` — **tags/entities/claims** linked to turns (GraphTRI / enrichment layer)
+
+### RDF retrieval types (what recall returns)
+
+| Source label (in bundle) | What it is | Where it comes from | Best for |
+| :--- | :--- | :--- | :--- |
+| `rdf_chat` | ChatTurns (prompt/response) | `GRAPH <orion:chat>` | **Exact quotes** (“find the exact text I used”), conversational grounding |
+| `rdf` | Graph neighborhood / claim-like triples | generic RDF scan | entity/topic adjacency, “what’s related to X”, light graph recall |
+| `rdf` (graphtri claims) | Claims linked to turns | `GRAPH <orion:enrichment>` | “what did we claim/decide”, tags/entities evidence trails |
+
+> Design principle: **candidate generation is structure-driven** (graph + type). Ranking should be semantic/vector scoring (and later learned rankers), not ad-hoc keyword lists.
+
+### Verify RDF chat turns exist (GraphDB)
+
+```sparql
+SELECT ?turn ?prompt ?response
+WHERE {
+  GRAPH <orion:chat> {
+    ?turn a <http://conjourney.net/orion#ChatTurn> ;
+          <http://conjourney.net/orion#prompt> ?prompt ;
+          <http://conjourney.net/orion#response> ?response .
+  }
+  FILTER(CONTAINS(LCASE(STR(?prompt)), "cpu") || CONTAINS(LCASE(STR(?response)), "cpu"))
+}
+LIMIT 20
+```
+
+### Verify enrichment claims exist (GraphDB)
+
+```sparql
+SELECT ?turn ?claim ?pred ?obj
+WHERE {
+  GRAPH <orion:chat> {
+    ?turn a <http://conjourney.net/orion#ChatTurn> ;
+          <http://conjourney.net/orion#prompt> ?prompt ;
+          <http://conjourney.net/orion#response> ?response .
+  }
+  GRAPH <orion:enrichment> {
+    ?claim a <http://conjourney.net/orion#Claim> ;
+           <http://conjourney.net/orion#subject> ?turn ;
+           <http://conjourney.net/orion#predicate> ?pred ;
+           <http://conjourney.net/orion#obj> ?obj .
+  }
+  FILTER(CONTAINS(LCASE(STR(?prompt)), "cpu") || CONTAINS(LCASE(STR(?response)), "cpu"))
+}
+LIMIT 50
+```
+
+---
+
+## 5) How verbs and plans select recall profiles
+
+Recall profile selection is typically bound by the **verb** (and sometimes by a specific **plan step**).
+
+### A) Verb-level binding
+
+Verbs can specify a recall profile in their YAML definition.
+
+Example shape:
+
+```yaml
+name: chat_deep_graph
+...
+recall_profile: deep.graph.v1
+services:
+  - LLMGatewayService
+  - RecallService
+```
+
+cortex-exec typically loads this via something like:
+
+- `services/orion-cortex-exec/...` (verb adapters)
+
+If the request didn’t already set `recall.profile`, cortex-exec injects the verb’s `recall_profile`.
+
+### B) Step-level binding (overrides)
+
+Some verbs bind recall profile at the step level:
+
+```yaml
+plan:
+  - name: gather_related_memory
+    services: [RecallService]
+    recall_profile: reflect.v1
+```
+
+This is useful when only one step needs heavier recall than the rest.
+
+### C) Caller override
+
+Callers can override by passing `recall.profile` in the request context/options.
+
+---
+
+## 6) Examples: RDF recall in practice
+
+### Example 1 — Exact quote from RDF chat turns (CPU context)
+
+Goal: return the **exact wording** you used when bringing up CPUs, grounded in `GRAPH <orion:chat>`.
+
+```bash
+curl -s http://localhost:8260/recall \
+  -H 'content-type: application/json' \
+  -d '{
+    "query_text": "why did I bring up CPUs",
+    "diagnostic": true,
+    "profile": "reflect.v1"
+  }' | jq '{item_count:(.bundle.items|length), backend_counts:.debug.backend_counts, first:(.bundle.items[0].snippet // null)}'
+```
+
+Typical output pattern:
+
+- `backend_counts.rdf_chat` > 0
+- `bundle.items[0].snippet` starts with `ExactUserText: "..."`
+
+Example snippet shape:
+
+```
+ExactUserText: "just holding my breath that the CPU replacement is actual solution..."
+OrionResponse: "I can imagine the relief and tension..."
+```
+
+This is the canonical path for **“quote me exactly”** requests.
+
+### Example 2 — Deep context chat (heavy profile)
+
+Use a verb that binds `deep.graph.v1` recall for larger pull + longer timeline.
+
+```bash
+# (example harness; use your local runner)
+python scripts/bus_harness.py brain "catch me up on Athena failures and CPU card replacement context"
+```
+
+Expected behavior:
+
+- higher RDF top-k
+- SQL timeline enabled with a larger window
+- larger render budget
+
+### Example 3 — GraphTRI (tags/entities/claims anchored to keywords)
+
+Use `graphtri.v1` when you want enrichment anchors (tags/entities/claims) to guide retrieval.
+
+Good use cases:
+
+- “What did we decide about X?”
+- “Show the evidence trail / claims around Y”
+- “Which entities/tags have been attached to recent turns?”
+
+Expected behavior:
+
+- pulls claim objects from `GRAPH <orion:enrichment>`
+- returns claim-style fragments tied to a specific turn URI
+
+---
+
+## 7) Fusion behavior (why you sometimes miss the right item)
+
+Recall gathers candidates from backends and then fuses them with caps:
+
+- `max_per_source` (e.g., 4 items from `rdf_chat`, 4 from `vector`, etc.)
+- `max_total_items` (overall bundle size)
+- `render_budget_tokens` (how much makes it into `.bundle.rendered`)
+- relevance ranking (composite score from backend weights, vector score, optional recency, and text overlap)
+
+These are controlled by the active recall profile.
+
+Relevance knobs (per profile under `relevance:`):
+
+- `backend_weights` (vector > sql_timeline > rdf_chat > rdf by default)
+- `score_weight`, `text_similarity_weight`, `recency_weight`
+- `enable_recency`, `recency_half_life_hours`
+
+If you see `rdf_chat` counts high but your desired quote didn’t appear in the top items:
+
+- raise `max_per_source` for `rdf_chat`
+- raise `max_total_items`
+- raise `render_budget_tokens`
+- improve ranking (vector embeddings for chat turns)
+
+---
+
+## 8) Troubleshooting (RDF-focused)
+
+### A) RDF enabled but `rdf_chat` count is 0
+
+- confirm `RECALL_ENABLE_RDF=true`
+- confirm GraphDB endpoint is reachable from recall container network
+- confirm `GRAPH <orion:chat>` contains ChatTurns for the relevant keywords
+
+### B) `rdf_chat` non-zero but Orion still hallucinates
+
+- confirm downstream prompt actually uses `bundle.items[].snippet`
+- enforce “quote-only when asked for exact text” in the verb prompt template
+
+### C) Vector is 0 even though Chroma has docs
+
+- ensure `RECALL_VECTOR_COLLECTIONS` points at non-empty collections (e.g., `orion_main_store`)
+- ensure recall can reach `orion-athena-vector-db:8000` from its runtime namespace
+- ensure stored vectors represent *chat turn docs*, not only embedding request artifacts
+
+### D) Verify what real chat turns actually recalled (crystallizations)
+
+`app/collectors/active_packet.py::fetch_active_packet_fragments()` (real `chat_general` PCR calls, not the Hub API route) logs every non-empty retrieval to `memory_crystallization_retrieval_events` — same table Hub's `/api/memory/active-packet` route writes to. Query by `session_id` to see exactly which `crystallization_ids` a given turn actually pulled in, and the fusion `trace` (rails, hit counts) that produced them. Empty-result retrievals are not logged (no empty-shell rows).
+
+---
+
+## 9) Running & Testing
+
+### Run via Docker
+
+```bash
+docker-compose up -d orion-recall
+```
+
+### Smoke Test (HTTP)
+
+```bash
+curl -s http://localhost:8260/recall \
+  -H 'content-type: application/json' \
+  -d '{"query_text":"what did I say about CPU cards?","profile":"reflect.v1"}' | jq
+```
+
+### General chat test
+```curl -s http://localhost:8260/recall   -H 'content-type: application/json'   -d '{
+    "query_text": "why did I bring up CPUs",
+    "diagnostic": true,
+    "profile": "reflect.v1"
+  }' | jq '{item_count:(.bundle.items|length), debug_counts:.debug.backend_counts, first:(.bundle.items[0].snippet // null)}'```
+
+out:
+```{
+  "item_count": 7,
+  "debug_counts": {
+    "rdf_chat": 18,
+    "rdf": 12,
+    "vector": 0
+  },
+  "first": "ExactUserText: \"just holding my breath that the CPU replacement is actual solution and your core programming doesn't come crashing down at any moment! So stressful!\"\nOrionResponse: \"I can imagine the relief and tension you must be feeling, waiting for the new CPU cards to arrive and seeing if they resolve the issue. It's natural to be on edge, especially with how critical Athena is to our operations. Let's keep an eye on any unusual behaviors or patterns that could give us early insights once the new components are in place. Is there anything specific you're particularly watching out for, or any other systems that might be affected by this change?\""
+}```
+
+
+# Recall troubleshooting playbook (commands + what to look for)
+
+This is a **copy/paste** runbook of the inspection steps that proved useful while debugging Recall + RDF + Chroma vectors on Athena.
+
+---
+
+## 0) Quick mental model
+
+**Chat memory path (ideal):**
+1) `orion-hub` publishes `chat.history.message.v1` on `orion:chat:history:log` (has `session_id`, `role`, `content`, `tags`)
+2) `orion-vector-host` consumes it and publishes `vector.upsert.v1` on `orion:vector:semantic:upsert` (meta includes `session_id`, `role`, `original_channel`)
+3) `orion-vector-writer` stores into Chroma (collection often `orion_chat_turns` for turn docs; `orion_chat` for message docs; `orion_main_store` for general)
+4) `orion-recall` queries Chroma globally (metadata/node filters only)
+
+---
+
+## 1) Verify hub is publishing chat history (bus probe)
+
+Run inside a container that has Orion bus libs (e.g., `orion-athena-vector-host`). This works with `redis.asyncio` PubSub.
+
+```bash
+docker exec -i orion-athena-vector-host python - <<'PY'
+import asyncio, json
+from orion.core.bus.async_service import OrionBusAsync
+
+REDIS_URL = "redis://100.92.216.81:6379/0"
+CHANNEL = "orion:chat:history:log"
+
+async def main():
+    bus = OrionBusAsync(REDIS_URL)
+    await bus.connect()
+    print("subscribing...", CHANNEL)
+
+    async with bus.subscribe(CHANNEL) as ps:
+        async for raw in ps.listen():
+            if not isinstance(raw, dict) or raw.get("type") != "message":
+                continue
+            data = raw.get("data")
+            if isinstance(data, (bytes, bytearray)):
+                env = json.loads(data.decode("utf-8"))
+            else:
+                env = data
+            print("GOT", env.get("kind"), env.get("correlation_id"))
+            print(json.dumps(env, indent=2)[:2500])
+            return
+
+asyncio.run(main())
+PY
+```
+
+**Expected:** you see `GOT chat.history.message.v1 <corr_id>` and payload contains `session_id`, `role`, `content`, `timestamp`, `tags`.
+
+---
+
+## 2) Verify vector-host is subscribed correctly
+
+```bash
+docker exec -i orion-athena-vector-host env | egrep 'VECTOR_HOST_CHAT_HISTORY_CHANNEL|VECTOR_HOST_EMBEDDING_REQUEST_CHANNEL|ORION_BUS_URL'
+```
+
+**Expected:**
+- `VECTOR_HOST_CHAT_HISTORY_CHANNEL=orion:chat:history:log`
+- `VECTOR_HOST_EMBEDDING_REQUEST_CHANNEL=orion:embedding:generate`
+- `ORION_BUS_URL=redis://...`
+
+---
+
+## 3) Verify vector-host publishes semantic upserts for chat history
+
+Subscribe to `orion:vector:semantic:upsert` and print `meta.session_id`.
+
+```bash
+docker exec -i orion-athena-vector-host python - <<'PY'
+import asyncio, json
+from orion.core.bus.async_service import OrionBusAsync
+
+REDIS_URL = "redis://100.92.216.81:6379/0"
+CHANNEL = "orion:vector:semantic:upsert"
+
+async def main():
+    bus = OrionBusAsync(REDIS_URL)
+    await bus.connect()
+    print("subscribing...", CHANNEL)
+
+    async with bus.subscribe(CHANNEL) as ps:
+        async for raw in ps.listen():
+            if not isinstance(raw, dict) or raw.get("type") != "message":
+                continue
+            data = raw.get("data")
+            env = json.loads(data.decode("utf-8"))
+            meta = ((env.get("payload") or {}).get("meta") or {})
+            print("GOT", env.get("kind"), "corr=", env.get("correlation_id"), "src=", (env.get("source") or {}).get("name"))
+            print("meta keys:", sorted(list(meta.keys()))[:25])
+            print("session_id:", meta.get("session_id"))
+            print("original_channel:", meta.get("original_channel"))
+            print("role:", meta.get("role"))
+            return
+
+asyncio.run(main())
+PY
+```
+
+**Expected:**
+- `kind=vector.upsert.v1`
+- `meta.session_id` present
+- `meta.original_channel=orion:chat:history:log`
+- `meta.role=user` or `assistant`
+
+---
+
+## 4) Verify vector-writer is receiving + storing upserts (logs)
+
+```bash
+docker logs --tail=200 -f orion-athena-vector-writer | egrep -i 'Stored|vector\.upsert|semantic|orion:vector:semantic:upsert|chroma|collection|error'
+```
+
+**If you see:**
+- `✨ Stored kind=semantic collection=...`
+  → writer is storing.
+
+**If you see errors like:**
+- `Expected metadata value to be a str,int,float,bool got <list>`
+  → Chroma metadata sanitizer is needed (lists/dicts must be stringified).
+
+---
+
+## 5) Inspect Chroma collections + counts
+
+Run inside `orion-athena-vector-writer` (or any container that can reach `orion-athena-vector-db`).
+
+```bash
+docker exec -i orion-athena-vector-writer python - <<'PY'
+import chromadb
+from chromadb.config import Settings
+
+client = chromadb.HttpClient(host="orion-athena-vector-db", port=8000, settings=Settings(anonymized_telemetry=False))
+cols = client.list_collections()
+names = [(c.name if hasattr(c, "name") else c) for c in cols]
+print("collections:", names)
+for name in names:
+    col = client.get_collection(name)
+    print(f"- {name}: {col.count()}")
+PY
+```
+
+> Note: you may see a telemetry warning like `capture() takes 1 positional argument...`. It’s noisy but not a blocker.
+
+---
+
+## 6) Inspect stored chat docs in `orion_chat_turns`
+
+```bash
+docker exec -i orion-athena-vector-writer python - <<'PY'
+import chromadb
+from chromadb.config import Settings
+import pprint
+
+client = chromadb.HttpClient(host="orion-athena-vector-db", port=8000, settings=Settings(anonymized_telemetry=False))
+col = client.get_collection("orion_chat_turns")
+
+sample = col.peek(limit=3)
+print("metadatas:")
+pprint.pprint(sample.get("metadatas"))
+print("\ndocuments head:")
+for d in (sample.get("documents") or [])[:3]:
+    print("---")
+    print((d or "")[:200].replace("\n","\\n"))
+PY
+```
+
+**Expected:** metadata contains at least `correlation_id` (if available), `created_at`, `kind` (and may include `session_id`).
+
+---
+
+## 7) Query Chroma safely (avoid include errors + handle None metadatas)
+
+Some Chroma clients reject `include=["ids"]`. IDs are returned separately in `q["ids"]`.
+
+```bash
+docker exec -i orion-athena-vector-writer python - <<'PY'
+import chromadb
+from chromadb.config import Settings
+
+client = chromadb.HttpClient(host="orion-athena-vector-db", port=8000, settings=Settings(anonymized_telemetry=False))
+col = client.get_collection("orion_main_store")
+
+q = col.query(
+    query_texts=["cpu card ilo uncorrectable machine check"],
+    n_results=5,
+    include=["documents","metadatas","distances"],
+)
+
+print("ids:", q["ids"][0])
+for i in range(len(q["ids"][0])):
+    md = (q["metadatas"][0][i] or {})
+    doc = (q["documents"][0][i] or "")
+    dist = q["distances"][0][i]
+    print("\n--- hit", i, "dist", dist)
+    print("role:", md.get("role"), "channel:", md.get("original_channel"), "corr:", md.get("correlation_id"))
+    print("doc_head:", doc[:240].replace("\n","\\n"))
+PY
+```
+
+**Filter out junk:**
+
+```python
+where={"role":"embedding_request"}
+```
+
+---
+
+## 8) Sample chat query (inspect recent chat vectors)
+
+```bash
+docker exec -i orion-athena-vector-writer python - <<'PY'
+import chromadb
+from chromadb.config import Settings
+
+client = chromadb.HttpClient(host="orion-athena-vector-db", port=8000, settings=Settings(anonymized_telemetry=False))
+col = client.get_collection("orion_chat_turns")
+
+q = col.query(
+    query_texts=["cpu card"],
+    n_results=5,
+    include=["documents","metadatas","distances"],
+)
+
+for i in range(len(q["ids"][0])):
+    md = (q["metadatas"][0][i] or {})
+    doc = (q["documents"][0][i] or "")
+    print("---", i, q["distances"][0][i], md.get("created_at"), md.get("kind"))
+    print(doc[:220].replace("\n","\\n"))
+PY
+```
+
+---
+
+## 9) Recall service diagnostics (vector/RDF/SQL)
+
+### A) Inspect recall runtime settings
+
+```bash
+curl -s http://localhost:8260/debug/settings | jq
+```
+
+### B) Run recall with diagnostic output
+
+```bash
+curl -s http://localhost:8260/recall \
+  -H 'content-type: application/json' \
+  -d '{
+    "query_text": "why did I bring up CPUs",
+    "diagnostic": true,
+    "profile": "reflect.v1"
+  }' | jq '{item_count:(.bundle.items|length), debug_counts:.debug.backend_counts, first:(.bundle.items[0].snippet // null)}'
+```
+
+If `vector: 0` but you know Chroma has data, check:
+- `RECALL_VECTOR_COLLECTIONS` points at the correct collection (often `orion_chat_turns,orion_chat`)
+- recall uses global metadata/node filters only
+
+---
+
+## 10) Chroma metadata crash: list/dict values (fix target)
+
+If you see errors like:
+
+```
+Expected metadata value to be a str, int, float or bool, got ['brain','chat_general']
+```
+
+You must sanitize metadata before `col.upsert()`:
+- lists → comma-joined strings
+- dicts → JSON strings
+- drop None
+
+(Implement in vector-writer, right before any Chroma upsert.)
+
+---
+
+## 11) “MiniLM model downloaded instead of BGE” (why + how to avoid)
+
+If a query triggers download of `all-MiniLM-L6-v2`, that means **the client query path is embedding query_texts using a default embedding function**.
+
+To avoid surprise embedder selection:
+- prefer `query_embeddings=[...]` using **your own embedder** (vector-host / BGE)
+- or ensure your query pipeline uses the same embedding model as write-time
+
+Operational check:
+- confirm stored metadata includes `embedding_model=BAAI/bge-small-en-v1.5` and `embedding_dim=384`
+
+---
+
+## 12) Local dev env gotchas
+
+### A) If scripts fail with `ModuleNotFoundError: orion`
+
+Run with repo root on PYTHONPATH:
+
+```bash
+cd /mnt/scripts/Orion-Sapienform
+PYTHONPATH=. python scripts/bus_probe.py --pattern orion:chat:history:*
+```
+
+### B) If pydantic is broken in venv
+
+Sanity check:
+
+```bash
+python - <<'PY'
+import pydantic
+print(getattr(pydantic, '__version__', 'unknown'), pydantic.__file__)
+print('has BaseModel:', hasattr(pydantic, 'BaseModel'))
+PY
+```
+
+If BaseModel missing, reinstall inside the venv:
+
+```bash
+pip uninstall -y pydantic pydantic-core
+pip install "pydantic>=2,<3"
+```
+
+---
+
+## 13) Handy collection breakdown query (where did my docs land?)
+
+```bash
+docker exec -i orion-athena-vector-writer python - <<'PY'
+import chromadb
+from chromadb.config import Settings
+
+client = chromadb.HttpClient(host="orion-athena-vector-db", port=8000, settings=Settings(anonymized_telemetry=False))
+
+def count_where(colname, where):
+    col = client.get_collection(colname)
+    got = col.get(where=where, include=["metadatas"], limit=200)
+    return len(got.get("metadatas") or [])
+
+for colname in ["orion_chat_turns", "orion_chat", "orion_main_store", "orion_general", "orion_collapse"]:
+    try:
+        col = client.get_collection(colname)
+        total = col.count()
+        print(colname, "total", total)
+    except Exception as e:
+        print(colname, "ERROR", e)
+PY
+```
+
+---
+
+## 14) Notes / expectations
+
+- If you can see `chat.history.message.v1` on the bus **and** see `vector.upsert.v1` with `meta.session_id` (optional), then embedding is working.
+- If vectors aren’t showing up in Chroma, the writer is either not subscribing, writing to a different collection, or failing on metadata validation.
+
+### RDF fragment recency (fixed 2026-07-13)
+
+`fetch_rdf_chatturn_fragments` and `fetch_rdf_graphtri_fragments` in `app/storage/rdf_adapter.py` used to order candidates with `ORDER BY DESC(STR(?turn))` (a lexical sort on the ChatTurn URI/correlation-id) and hardcode every fragment's `"ts"` to `0.0`. That made the same fixed set of historical turns win every query forever, and `scoring._compute_recency_factor` always fell back to its neutral 0.5 weight since `ts` was never real. Both functions now select and order on the `ORION.timestamp` literal that `services/orion-rdf-writer/app/rdf_builder.py` already writes on every `ChatTurn`/`Claim` (`ORDER BY DESC(?ts)`), and parse it into a real epoch float via `rdf_adapter._parse_rdf_timestamp` so recency decay actually applies to RDF-backed fragments.
+
+Note this only affects *scoring* (a continuous, soft decay) — it does not give RDF-backed candidates a hard time-window cutoff. `app/worker.py`'s `_window_rdf_chatturn_candidates` still does a separate Postgres lookup (`fetch_chat_turn_timestamps` against `chat_history_log`) to hard-drop chat-turn candidates outside a profile's `since_minutes` window; that function's docstring used to justify itself with "the graph stores no usable ChatTurn timestamp," which is no longer true post-fix — its docstring (and `tests/test_rdf_chatturn_windowing.py`'s) were corrected 2026-07-14 to state the real, current reason it still exists (hard exclusion vs. soft scoring are different jobs), without changing its behavior.
+
+### Compose env-var defaults hardened (fixed 2026-07-14)
+
+`docker-compose.yml`'s `environment:` list (added by the compose-parity PR, #1021) crash-looped this service in production: `RECALL_SKIP_MAX_NOVELTY`, `RECALL_SKIP_SHIFT_NOVELTY_FLOOR`, `RECALL_CONTINUITY_SQL_MINUTES`, `RECALL_CONTINUITY_RENDER_BUDGET`, `RECALL_BELIEF_RENDER_BUDGET`, and `RECALL_CRYSTALLIZATION_VECTOR_COLLECTION` were missing from live `.env` and had no `${VAR:-default}` fallback, so compose substituted empty strings and pydantic Settings validation failed on every boot (`float_parsing`/`int_parsing` errors). Fixed live by syncing the missing keys into `.env` (`python scripts/sync_local_env_from_example.py --all-keys orion-recall`) and, in this changeset, adding compose-level `:-default` fallbacks matching `.env_example` so a missing `.env` key can't crash the service again — see `services/orion-recall/tests/test_docker_compose_numeric_defaults.py`. `RECALL_GRAPHITI_IN_CHAT`/`RECALL_GRAPHITI_ADAPTER_URL` remain deliberately unguarded (see the comment above them in `docker-compose.yml`) — they're `NEVER_SYNC_KEYS`-protected and a duplicated default here would drift from `.env_example` over time.
+
+## 15) Concept-region collector (substrate concept graph in belief-lane recall)
+
+`app/collectors/concept_region.py::fetch_concept_region_fragment()` is a PCR collector
+alongside `active_packet`, wired into `process_recall`'s purposeful phase in `app/worker.py`.
+It matches the current turn's text against concept labels already materialized in the
+shared substrate graph (golden Orion/Juniper/relationship concepts seeded by `orion-hub`,
+plus organically-grown topic-foundry concepts) and, on a match, returns a bounded
+neighborhood fragment scoped to that turn. Matching is deliberately dumb — case-insensitive
+label substring match, no embedding/LLM call — and it never does a store read at all if the
+turn text matches nothing.
+
+**Reinforcement-on-recall, live since PR #1173:** the actual live call site in `app/worker.py`
+uses `fetch_concept_region_fragment_and_reinforce()`, not the plain read-only function above
+directly. It composes the same read (unchanged, same "never persists" contract) with a new
+write: whatever concept nodes matched get a small activation bump
+(`reinforce_matched_concepts()`, same math and boost constant as
+`orion/memory/crystallization/dynamics.py::recall_boost()` — `activation = current +
+(1-current)*0.08`, asymptotic toward 1.0). This is the counterpart to
+`services/orion-hub/README.md` §5.5's decay scheduler: being surfaced in a live turn is a
+real "this concept is still relevant" signal, not just monotonic decay. Full design
+conversation (why sync-write over async-via-bus, which fields move and which deliberately
+don't) is in `app/collectors/CONCEPT_REINFORCEMENT_DESIGN.md`.
+
+**Env vars:**
+
+| Var | Default | Meaning |
+|---|---|---|
+| `RECALL_CONCEPT_REGION_ENABLED` | `true` | Master on/off switch for this collector. |
+| `SUBSTRATE_STORE_BACKEND` | `falkor` | Which substrate store backend `app/substrate_store.py::get_substrate_store()` builds (shared with `orion-cortex-exec`/`orion-hub`, same `FalkorDB` instance/graph). |
+| `FALKORDB_URI` | `redis://orion-athena-falkordb:6379` | Bridge-network Docker DNS — this service runs in bridge mode, **not** Hub's host-mode `127.0.0.1:6380` convention. |
+| `FALKORDB_SUBSTRATE_GRAPH` | `orion_substrate` | Graph name inside FalkorDB. |
+
+**Verify it's live:** trigger a purposeful-phase turn whose text mentions a known concept
+label (e.g. a golden concept's name), then check `decision.recall_debug["pcr"]["backend_plan"]`
+includes `concept_region`, and look for a `source: "concept_region"` candidate/item. If the
+substrate store failed to construct (bad `FALKORDB_URI`, FalkorDB unreachable), the collector
+degrades to `[]` silently — check Hub's own Concept Atlas tab or `orion-hub` logs for
+`recall_substrate_store_init_failed` first.
+
+**Formerly a known limitation, fixed by PR #1159:** `FalkorSubstrateStore` used to hydrate its
+snapshot once at process start and never refresh — concepts added by `orion-hub`'s
+topic-foundry scheduler after this service's first `concept_region` call were invisible here
+until `orion-recall` restarted (originally flagged in PR #1133, when this was the first
+continuously-changing-data consumer of the store in this service to make it load-bearing).
+PR #1159 added write-generation + time-ceiling refresh logic (mirroring
+`GraphDBSubstrateStore`'s existing pattern), so `snapshot()`/`read_concept_region()` now pick
+up durable changes made by other processes without a restart, bounded by
+`SUBSTRATE_SNAPSHOT_FORCE_REFRESH_CEILING_SEC` (`FALKOR_SNAPSHOT_FORCE_REFRESH_CEILING_SEC`
+for a Falkor-specific override, default 30s). Root cause of PR #1159 itself: the same stale
+cache also meant directly-deleted-in-Falkor nodes got silently resurrected by `orion-hub`'s
+decay scheduler, which blindly re-upserts everything it reads on every tick — see that PR's
+description for the full incident.
+
+Two more `FalkorSubstrateStore`-level bugs (shared code, not specific to this collector, but
+this service constructs the same store) were found and fixed the same day: PR #1175 (a
+legacy-payload migration path that orphaned duplicate node rows forever, silently reverting
+any concept-node write on the next hydrate) and PR #1179 (edge hydration losing every edge's
+real source/target node_id). See `services/orion-hub/README.md` §5.5 for the full incident
+writeups.
+
+## 6) `RECALL_CONTINUITY_RENDER_BUDGET` (96 -> 1200) + a same-day corruption incident
+
+PR #1216 ("fix budget") raised `RECALL_CONTINUITY_RENDER_BUDGET` from 96 to 1200 tokens. Root
+cause it fixed: continuity recall was finding real conversation turns but then dropping them
+during rendering with "dropped due to budget" errors, because 96 tokens is far too small to
+render an actual conversation snippet -- effectively a silent, near-total continuity outage.
+
+**Same-day corruption, separate incident:** the diffs PR #1216 actually merged did not match
+its description. All 7 touched files (`app/settings.py`, this README, `.env_example`,
+`docker-compose.yml`, and 3 test files) were replaced with a single line containing a bare
+hash string (`062d462b33c64cc5bbb9fb5c63672a0f02ecb046`) instead of real content --
+`settings.py` in that state is not even valid Python, so any fresh build/deploy from `main`
+after that merge would fail outright. Root cause of the corruption itself is unconfirmed --
+not reproduced, not explained by anything in the PR's own diff or description. Recovered via
+`fix/recall-budget-corruption-recovery`: all 7 files restored from the last known-good commit
+(the merge immediately prior), with the real `96 -> 1200` change re-applied on top of the
+restored content this time. If you see a file in this service reduced to one line matching
+that hash pattern again, that's this same failure mode recurring, not a new bug -- check
+`git log` for the responsible commit before assuming the running container is also affected
+(a running container built from an earlier good image is not automatically broken by a bad
+commit landing on `main` afterward, but the next rebuild would be).

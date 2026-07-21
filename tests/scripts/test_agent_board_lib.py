@@ -14,6 +14,7 @@ sys.path.insert(0, str(ROOT / "scripts"))
 
 from agent_board_lib import (  # noqa: E402
     BoardConfig,
+    add_item,
     append_event,
     detect_collisions,
     fetch_live_repair_pressure,
@@ -66,6 +67,50 @@ def test_load_state_materializes_last_presence_event(tmp_path: Path) -> None:
 
     assert state.presence["/repo/wt-a"]["thread_summary"] == "Working on the board."
     assert state.presence["/repo/wt-a"]["current_task"] == "Writing tests."
+
+
+def test_add_item_tags_session_id_from_env_var(
+    primary_repo: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """add_item should tag CLAUDE_CODE_SESSION_ID automatically when no
+    explicit session_id kwarg is given -- callers that go through the CLI's
+    `add` command without --session-id (the common case for an interactive
+    agent's own Bash tool calls) still get their items attributed to the
+    real session, since the Bash tool's subprocess inherits this env var."""
+    cfg = _config(tmp_path)
+    monkeypatch.chdir(primary_repo)
+    monkeypatch.setenv("CLAUDE_CODE_SESSION_ID", "sess-from-env")
+
+    item_id = add_item(cfg, kind="finding", severity="note", summary="test")
+
+    state = load_state(cfg)
+    assert state.items[item_id]["session_id"] == "sess-from-env"
+
+
+def test_add_item_explicit_session_id_overrides_env_var(
+    primary_repo: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    cfg = _config(tmp_path)
+    monkeypatch.chdir(primary_repo)
+    monkeypatch.setenv("CLAUDE_CODE_SESSION_ID", "sess-from-env")
+
+    item_id = add_item(cfg, kind="finding", severity="note", summary="test", session_id="sess-explicit")
+
+    state = load_state(cfg)
+    assert state.items[item_id]["session_id"] == "sess-explicit"
+
+
+def test_add_item_has_no_session_id_when_unset(
+    primary_repo: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    cfg = _config(tmp_path)
+    monkeypatch.chdir(primary_repo)
+    monkeypatch.delenv("CLAUDE_CODE_SESSION_ID", raising=False)
+
+    item_id = add_item(cfg, kind="finding", severity="note", summary="test")
+
+    state = load_state(cfg)
+    assert "session_id" not in state.items[item_id]
 
 
 def test_owner_scope_requires_scope_note_when_not_this_worktree() -> None:

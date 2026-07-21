@@ -53,6 +53,7 @@ def main(argv: list[str] | None = None) -> int:
     add.add_argument("--scope-note", default="")
     add.add_argument("--parent")
     add.add_argument("--files", nargs="*", default=[])
+    add.add_argument("--session-id")
 
     heartbeat = sub.add_parser("heartbeat")
     heartbeat.add_argument("--summary")
@@ -86,6 +87,7 @@ def main(argv: list[str] | None = None) -> int:
                 scope_note=args.scope_note,
                 related_files=args.files,
                 parent_id=args.parent,
+                session_id=args.session_id,
             )
             print(f"item: {item_id}")
             return 0
@@ -101,6 +103,12 @@ def main(argv: list[str] | None = None) -> int:
             _print_state(load_state(cfg), worktree=args.worktree)
             return 0
         if args.command == "checkout":
+            # Deliberately unfiltered by session_id, unlike the Stop hook's
+            # nag (see scripts/hooks/session_stop_agent_board.py) -- this is
+            # an explicit, deliberate "give me the full picture before I
+            # leave" query, not a per-turn repeat reminder, so it should
+            # surface every open item in the worktree regardless of who
+            # created it.
             current_worktree = current_worktree_identity()["worktree_path"]
             close_presence(cfg)
             state = load_state(cfg)

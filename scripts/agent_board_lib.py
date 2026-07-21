@@ -372,9 +372,11 @@ def add_item(
     scope_note: str = "",
     related_files: list[str] | None = None,
     parent_id: str | None = None,
+    session_id: str | None = None,
 ) -> str:
     identity = current_worktree_identity()
     item_id = _new_item_id()
+    resolved_session_id = session_id if session_id is not None else os.environ.get("CLAUDE_CODE_SESSION_ID")
     payload: dict[str, object] = {
         "id": item_id,
         "kind": kind,
@@ -389,6 +391,8 @@ def add_item(
     }
     if parent_id:
         payload["parent_id"] = parent_id
+    if resolved_session_id:
+        payload["session_id"] = resolved_session_id
     validate_item_payload(payload)
     append_event(config, "item_upserted", payload)
     return item_id

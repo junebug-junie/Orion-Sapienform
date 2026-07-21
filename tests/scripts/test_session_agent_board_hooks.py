@@ -14,7 +14,11 @@ STOP_HOOK = ROOT / "scripts" / "hooks" / "session_stop_agent_board.py"
 def _run_hook(
     hook: Path, cwd: Path, board_path: Path, *, stdin_payload: dict | None = None
 ) -> subprocess.CompletedProcess:
+    # Strip the real session id this test process may itself be running
+    # under (e.g. a live Claude Code session) so tests only see the
+    # session_id explicitly passed via stdin_payload, not ambient env.
     env = {**os.environ, "ORION_AGENT_BOARD_PATH": str(board_path)}
+    env.pop("CLAUDE_CODE_SESSION_ID", None)
     # Explicit input= regardless of whether a real payload is given -- these
     # hooks now read stdin (for session_id), and relying on however pytest
     # happens to have stdin configured is fragile; an empty string mimics
@@ -73,7 +77,12 @@ def test_hooks_noop_for_fcc_subprocess(primary_repo: Path, tmp_path: Path) -> No
     and add noise to the FCC harness step count. fcc_motor.py tags its
     subprocess env with ORION_FCC_SUBPROCESS=1 for exactly this check."""
     board = tmp_path / "agent-board.jsonl"
+    # Strip the real session id this test process may itself be running
+    # under -- harmless today since the ORION_FCC_SUBPROCESS gate returns
+    # before either hook reads session_id, but kept consistent with the
+    # other helpers in this file so it stays harmless if that changes.
     env = {**os.environ, "ORION_AGENT_BOARD_PATH": str(board), "ORION_FCC_SUBPROCESS": "1"}
+    env.pop("CLAUDE_CODE_SESSION_ID", None)
 
     start = subprocess.run(
         [sys.executable, str(START_HOOK)],
@@ -116,6 +125,7 @@ def test_hooks_fail_open_outside_git_repo(tmp_path: Path) -> None:
 
 def _run_board_cli(cwd: Path, board_path: Path, *args: str) -> subprocess.CompletedProcess:
     env = {**os.environ, "ORION_AGENT_BOARD_PATH": str(board_path)}
+    env.pop("CLAUDE_CODE_SESSION_ID", None)
     return subprocess.run(
         [sys.executable, str(ROOT / "scripts" / "agent_board.py"), *args],
         cwd=cwd,
@@ -210,6 +220,118 @@ def test_session_start_hook_resolves_via_session_id_not_fixed_cwd(
     payload = json.loads(proc.stdout)
     context = payload["hookSpecificOutput"]["additionalContext"]
     assert "remember to check X" in context
+
+
+def test_stop_hook_does_not_nag_about_a_different_sessions_items(
+    primary_repo: Path, tmp_path: Path
+) -> None:
+    """Regression test: items are worktree-scoped, not session-scoped, so a
+    shared checkout accumulates open items across every past session that
+    ever worked there. A fresh session that added zero items of its own
+    should not be nagged every Stop about items a *different* session
+    opened -- only about its own open items (or legacy items with no
+    session_id at all, which have no session to attribute them to)."""
+    board = tmp_path / "agent-board.jsonl"
+    other_session = "sess-other-111"
+    add = _run_board_cli(
+        primary_repo,
+        board,
+        "add",
+        "--kind",
+        "finding",
+        "--severity",
+        "note",
+        "--summary",
+        "found by a different session",
+        "--session-id",
+        other_session,
+    )
+    assert add.returncode == 0, add.stderr
+
+    proc = _run_hook(STOP_HOOK, primary_repo, board, stdin_payload={"session_id": "sess-me-222"})
+    assert proc.returncode == 0, proc.stderr
+    assert proc.stdout == ""
+
+
+def test_stop_hook_still_nags_about_this_sessions_own_items(
+    primary_repo: Path, tmp_path: Path
+) -> None:
+    """Items this session itself opened must still surface in the nag --
+    the fix scopes out *other* sessions' items, not all items."""
+    board = tmp_path / "agent-board.jsonl"
+    session_id = "sess-me-333"
+    add = _run_board_cli(
+        primary_repo,
+        board,
+        "add",
+        "--kind",
+        "finding",
+        "--severity",
+        "note",
+        "--summary",
+        "found by me",
+        "--session-id",
+        session_id,
+    )
+    assert add.returncode == 0, add.stderr
+
+    proc = _run_hook(STOP_HOOK, primary_repo, board, stdin_payload={"session_id": session_id})
+    assert proc.returncode == 0, proc.stderr
+    payload = json.loads(proc.stdout)
+    assert "1 open item" in payload["hookSpecificOutput"]["additionalContext"]
+
+
+def test_stop_hook_still_nags_when_its_own_session_id_is_unresolved(
+    primary_repo: Path, tmp_path: Path
+) -> None:
+    """Regression test for a review-caught bug: if the hook can't resolve
+    its OWN session_id (missing/malformed stdin payload, or a non-Claude-Code
+    harness whose Stop payload doesn't carry one), it can't tell "this
+    session's item" from "some other session's item" either. The fix must
+    fail open (fall back to plain worktree scoping) in that case, not
+    silently treat every session_id-tagged item as belonging to someone
+    else. A naive `item_session_id == session_id` check with session_id=None
+    would incorrectly exclude this item."""
+    board = tmp_path / "agent-board.jsonl"
+    add = _run_board_cli(
+        primary_repo,
+        board,
+        "add",
+        "--kind",
+        "finding",
+        "--severity",
+        "note",
+        "--summary",
+        "tagged item",
+        "--session-id",
+        "sess-real-555",
+    )
+    assert add.returncode == 0, add.stderr
+
+    # No stdin_payload at all -- session_id resolves to None, same as a
+    # malformed/absent Stop payload.
+    proc = _run_hook(STOP_HOOK, primary_repo, board)
+    assert proc.returncode == 0, proc.stderr
+    payload = json.loads(proc.stdout)
+    assert "1 open item" in payload["hookSpecificOutput"]["additionalContext"]
+
+
+def test_stop_hook_still_nags_about_legacy_items_with_no_session_id(
+    primary_repo: Path, tmp_path: Path
+) -> None:
+    """Items added before this field existed (or via a plain shell call
+    outside Claude Code) have no session_id to attribute them to -- they
+    must keep nagging rather than silently going unowned forever."""
+    board = tmp_path / "agent-board.jsonl"
+    add = _run_board_cli(
+        primary_repo, board, "add", "--kind", "finding", "--severity", "note", "--summary", "legacy item"
+    )
+    assert add.returncode == 0, add.stderr
+
+    proc = _run_hook(STOP_HOOK, primary_repo, board, stdin_payload={"session_id": "sess-me-444"})
+    assert proc.returncode == 0, proc.stderr
+    payload = json.loads(proc.stdout)
+    assert "1 open item" in payload["hookSpecificOutput"]["additionalContext"]
 
 
 def test_cursor_hooks_file_calls_agent_board_scripts() -> None:

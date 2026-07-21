@@ -10,7 +10,11 @@ CLI = ROOT / "scripts" / "agent_board.py"
 
 
 def _run(cwd: Path, board_path: Path, *args: str) -> subprocess.CompletedProcess:
+    # Strip the real session id this test process may itself be running
+    # under (e.g. a live Claude Code session) so `add_item`'s automatic
+    # CLAUDE_CODE_SESSION_ID tagging stays deterministic across test runs.
     env = {**os.environ, "ORION_AGENT_BOARD_PATH": str(board_path)}
+    env.pop("CLAUDE_CODE_SESSION_ID", None)
     return subprocess.run(
         [sys.executable, str(CLI), *args],
         cwd=cwd,

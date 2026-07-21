@@ -251,13 +251,17 @@ async def _run_pre_turn_appraisal(
     if bus is None or not getattr(settings, "ENABLE_PRE_TURN_APPRAISAL", False):
         return None
     from scripts.pre_turn_appraisal_client import PreTurnAppraisalClient
+    from scripts.pre_turn_appraisal_wiring import (
+        _publish_repair_pressure_appraisal,
+        build_repair_pressure_summary,
+    )
 
     turn_window = build_turn_window(
         continuity_messages or [{"role": "user", "content": user_message}]
     )
     paradigms = str(getattr(settings, "PRE_TURN_APPRAISAL_PARADIGMS", "repair_pressure"))
     timeout_ms = int(getattr(settings, "PRE_TURN_APPRAISAL_TIMEOUT_MS", 60000))
-    return await PreTurnAppraisalClient(bus).appraise(
+    bundle = await PreTurnAppraisalClient(bus).appraise(
         PreTurnAppraisalRequestV1(
             correlation_id=correlation_id,
             session_id=str(session_id or "anonymous"),
@@ -268,6 +272,22 @@ async def _run_pre_turn_appraisal(
         ),
         correlation_id=correlation_id,
     )
+    # Unified-turn (mode="orion"/harness-governor) is a second, independent
+    # caller of PreTurnAppraisalClient alongside pre_turn_appraisal_wiring's
+    # websocket/HTTP "brain" path. Both must publish, or
+    # orion-equilibrium-service's relational metacog gate silently never
+    # sees appraisals from whichever caller skips it -- confirmed live
+    # 2026-07-21: this path was the one skipping it, so every real
+    # orion-mode/journal turn since deploy had a computed repair_pressure
+    # result that never reached the bus.
+    summary = build_repair_pressure_summary(bundle)
+    if summary is not None:
+        await _publish_repair_pressure_appraisal(
+            bus,
+            correlation_id=correlation_id,
+            summary=summary,
+        )
+    return bundle
 
 
 async def execute_unified_turn(

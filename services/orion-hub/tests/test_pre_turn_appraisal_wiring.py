@@ -17,6 +17,37 @@ assert _spec and _spec.loader
 _wiring = importlib.util.module_from_spec(_spec)
 _spec.loader.exec_module(_wiring)
 apply_pre_turn_appraisal_bundle = _wiring.apply_pre_turn_appraisal_bundle
+build_repair_pressure_summary = _wiring.build_repair_pressure_summary
+
+
+def test_build_repair_pressure_summary_matches_apply_bundle_output() -> None:
+    """build_repair_pressure_summary is the pure extraction apply_pre_turn_appraisal_bundle
+    now delegates to -- also the piece orion/hub/turn_orchestrator.py's
+    _run_pre_turn_appraisal calls directly, since that caller has no
+    CortexChatRequest to attach metadata onto."""
+    bundle = TurnAppraisalBundleV1(
+        correlation_id="c1",
+        paradigms={
+            "repair_pressure": TurnAppraisalParadigmSliceV1(
+                appraisal_kind="repair_pressure",
+                level=0.42,
+                confidence=0.65,
+            )
+        },
+    )
+    summary = build_repair_pressure_summary(bundle)
+    assert summary is not None
+    assert summary["level"] == 0.42
+    assert summary["confidence"] == 0.65
+
+
+def test_build_repair_pressure_summary_none_when_bundle_none() -> None:
+    assert build_repair_pressure_summary(None) is None
+
+
+def test_build_repair_pressure_summary_none_when_paradigm_missing() -> None:
+    bundle = TurnAppraisalBundleV1(correlation_id="c1", paradigms={})
+    assert build_repair_pressure_summary(bundle) is None
 
 
 def test_apply_bundle_attaches_metadata_when_mode_changes() -> None:

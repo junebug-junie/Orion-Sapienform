@@ -39,6 +39,7 @@ from orion.substrate.transport_loop.constants import (
     TRANSPORT_GRAMMAR_CURSOR_NAME,
 )
 from orion.substrate.prediction_error import (
+    biometrics_prediction_error,
     execution_prediction_error,
     transport_prediction_error,
 )
@@ -614,6 +615,8 @@ class BiometricsSubstrateWorker:
             loaded = self._store.load_active_pressure(ACTIVE_NODE_PRESSURE_PROJECTION_ID)
             return loaded or _empty_pressure(now)
 
+        prev_projection = load_node_bio()
+
         def publish_hook(accepted: list[GrammarEventV1]) -> None:
             published.extend(accepted)
 
@@ -641,6 +644,27 @@ class BiometricsSubstrateWorker:
             events=events,
             process_batch=process_batch,
         )
+
+        if last_id is not None:
+            curr_projection = load_node_bio()
+            error = biometrics_prediction_error(prev_projection, curr_projection)
+            if error > 0.0:
+                self._store.save_receipt(
+                    _prediction_error_receipt(
+                        reducer_key="node_biometrics",
+                        node_id="node:substrate.biometrics",
+                        prediction_error=error,
+                        now=now,
+                    )
+                )
+                self._write_prediction_error_node(
+                    node_id="node:substrate.biometrics",
+                    error=error,
+                    now=now,
+                    reducer_key="node_biometrics",
+                    contributing_id=last_id,
+                )
+
         return last_id, published
 
     def _get_substrate_graph_store(self, *, log_label: str):

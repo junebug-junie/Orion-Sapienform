@@ -199,6 +199,17 @@ first place. Full reasoning and phased detail:
    bucket-vote layer only once every producer has moved and the item-2 reducer is proven a
    real legibility replacement for `dominant_drive`. Includes replacing `goal.drive_origin`
    with a field-native goal-provenance concept — this is what actually unblocks item 6.
+   **Status (2026-07-21): first shadow-measure slice built.**
+   `biometrics_prediction_error()` (`orion/substrate/prediction_error.py`, wired into
+   `services/orion-substrate-runtime/app/worker.py`'s `_tick()`, writes
+   `node:substrate.biometrics` via the same `_write_prediction_error_node()` shared writer
+   execution/transport already use, gated behind the existing
+   `SUBSTRATE_WRITE_PREDICTION_ERROR_NODES` flag — no new flag) is the first producer domain
+   shadow-measured under this item, answering half of §9b item 3's open question below.
+   Design record + metric-quality-gate findings: `docs/superpowers/specs/2026-07-21-
+   biometrics-prediction-error-shadow-design.md`. Shadow-only: no consumer changed, no live
+   migration of the bucket-vote layer, `capability_policy.py`/`top_down.py`/`goal_context.py`
+   untouched. Chat and route reducers remain unmeasured.
 4. **Stand up read-only measurement for the remaining consciousness-theory instruments** (§9)
    — RPT/Lamme and predictive processing are already live (items 2-3 build on them directly,
    not duplicate them); IIT continues independently via the mood-arc encoder, not gated by
@@ -365,9 +376,13 @@ fix — see §7.
    (confirmed `true`). Verified against real Postgres data: `node:substrate.execution`'s
    channel carries real values, sparse/event-driven (currently in a quiet decay tail,
    consistent with the field-digester README's own "quiet-so-far-but-correctly-wired,
-   reaches real values like 0.92 periodically" characterization of this exact channel). Open
-   question, not yet checked: whether the other three reducers (biometrics, chat, route)
-   have equivalent instrumentation, or whether coverage is genuinely incomplete.
+   reaches real values like 0.92 periodically" characterization of this exact channel).
+   **Updated 2026-07-21:** of the three other reducers named below (biometrics, chat,
+   route), `biometrics` now has equivalent instrumentation —
+   `biometrics_prediction_error()`, writing `node:substrate.biometrics`, same shared
+   `_write_prediction_error_node()` writer, same flag. See §6 item 3's status note above and
+   `docs/superpowers/specs/2026-07-21-biometrics-prediction-error-shadow-design.md`. Chat and
+   route remain open — not yet checked, coverage still genuinely incomplete for those two.
    **Attribution durability + consumers (2026-07-18):** the harness-closure variant of this
    same mechanism (`node:substrate.harness_closure`, PR #1205) accumulates per-turn
    attribution in `metadata['contributing_turn_ids']`, but that list was silently dropped on

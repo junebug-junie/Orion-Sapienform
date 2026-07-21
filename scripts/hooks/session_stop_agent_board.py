@@ -31,9 +31,24 @@ def main() -> None:
         cfg = board_config_from_env()
         current = resolve_current_identity(cfg, session_id=session_id)["worktree_path"]
         state = load_state(cfg)
+        # Items are worktree-scoped, not session-scoped, so a shared checkout
+        # can accumulate open items across many past sessions -- without the
+        # session_id check below, a fresh read-only session that added zero
+        # items still gets nagged every Stop about work it never touched.
+        # Items with no session_id (added before this field existed, or by a
+        # plain shell call outside Claude Code) have no session to attribute
+        # them to, so they keep nagging rather than going silently unowned.
+        # If *our own* session_id couldn't be resolved (missing/malformed
+        # stdin payload, or a non-Claude-Code harness whose Stop payload
+        # doesn't carry one), we can't tell "mine" from "someone else's"
+        # either -- fail open (fall back to plain worktree scoping) rather
+        # than silently excluding every item that happens to carry a real
+        # session_id.
         open_items = [
             item for item in state.items.values()
-            if item.get("worktree_path") == current and item.get("status") in {"open", "parked"}
+            if item.get("worktree_path") == current
+            and item.get("status") in {"open", "parked"}
+            and (session_id is None or not item.get("session_id") or item.get("session_id") == session_id)
         ]
     except Exception:
         return

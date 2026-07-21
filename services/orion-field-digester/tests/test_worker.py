@@ -19,6 +19,7 @@ def _make_worker(monkeypatch, *, idle_tick_enabled: bool = True) -> FieldDigeste
     worker._settings = settings_mod.get_settings()
     worker._store = MagicMock()
     worker._lattice = MagicMock(nodes=["n1"], capabilities=["c1"], edges=[])
+    worker._anomaly_scorer = None
     return worker
 
 

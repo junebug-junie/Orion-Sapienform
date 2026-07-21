@@ -86,6 +86,20 @@ class Settings(BaseSettings):
         0.5, alias="EQUILIBRIUM_METACOG_RELATIONAL_LEVEL_THRESHOLD"
     )
 
+    # Telemetry-anomaly metacog trigger (2026-07-21). Mirrors the relational
+    # trigger's shape: orion-field-digester publishes the raw measurement
+    # (recon_loss vs. its own train-time recon_error_p95), this service owns
+    # the trigger-sensitivity knob via its own threshold multiplier rather
+    # than trusting the producer's embedded "anomalous" flag.
+    metacog_telemetry_anomaly_trigger_enable: bool = Field(
+        True, alias="EQUILIBRIUM_METACOG_TELEMETRY_ANOMALY_TRIGGER_ENABLE"
+    )
+    # Matches fit_encoder.py detect-anomalies's own --threshold-multiplier
+    # default (3.0x the encoder's held-out recon_error_p95).
+    metacog_telemetry_anomaly_threshold_multiplier: float = Field(
+        3.0, alias="EQUILIBRIUM_METACOG_TELEMETRY_ANOMALY_THRESHOLD_MULTIPLIER"
+    )
+
     metacog_publish_verb_request: bool = Field(
         False,
         alias="EQUILIBRIUM_METACOG_PUBLISH_VERB_REQUEST",
@@ -96,6 +110,9 @@ class Settings(BaseSettings):
     channel_pad_signal: str = Field("orion:pad:signal", alias="CHANNEL_PAD_SIGNAL")
     channel_repair_pressure_appraisal: str = Field(
         "orion:repair_pressure:appraisal", alias="CHANNEL_REPAIR_PRESSURE_APPRAISAL"
+    )
+    channel_field_channel_anomaly_score: str = Field(
+        "orion:field_channel:anomaly_score", alias="CHANNEL_FIELD_CHANNEL_ANOMALY_SCORE"
     )
 
     @model_validator(mode="after")

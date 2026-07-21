@@ -177,6 +177,29 @@ A future rework of `orion/mood_arc/fit_encoder.py` to train against this
 dict-shaped corpus instead of `mood_arc_corpus.v1` is separate, not-yet-
 built work.
 
+## Telemetry-anomaly metacog trigger (2026-07-21)
+
+`FIELD_CHANNEL_ANOMALY_ENABLED` (default `false`) turns on a periodic in-process rescoring loop (`app/anomaly_scorer.py`, `_anomaly_loop()` in `app/worker.py`) against a trained `orion/mood_arc/fit_encoder.py` encoder. Independent of `FIELD_CHANNEL_CORPUS_PATH` above: the scorer maintains its own small in-memory rolling buffer of the same per-tick `FieldChannelCorpusRowV1` rows (not the JSONL sink), so live rescoring works even with the JSONL corpus collector off.
+
+Requires a real trained artifact (`manifest.json` + `weights.npz`, written by `orion/mood_arc/fit_encoder.py train`) at `FIELD_CHANNEL_ANOMALY_ENCODER_DIR` -- this service never trains one itself, and a missing/malformed directory fails open (scoring silently disabled, logged once) rather than crashing the tick loop. Training example (using the corpus-quality cutoff below):
+
+```bash
+python orion/mood_arc/fit_encoder.py train \
+  --corpus /mnt/telemetry/field_channels/corpus/field_channels.jsonl \
+  --min-generated-at 2026-07-17T04:32:14Z \
+  --out /mnt/telemetry/models/field_channel_anomaly/v1
+```
+
+Every `FIELD_CHANNEL_ANOMALY_CHECK_INTERVAL_SEC` (default 60s -- the encoder's own `window_size` is ~30 rows / ~60s at the default 2s tick cadence, so this scores a genuinely new window each check), the most recent complete window's reconstruction loss is published on `CHANNEL_FIELD_CHANNEL_ANOMALY_SCORE` (`orion:field_channel:anomaly_score`) alongside the encoder's own train-time `recon_error_p95` reference. `orion-equilibrium-service`'s `telemetry_anomaly_metacog_gate.py` is the consumer -- it applies its own threshold multiplier rather than trusting this service's `FIELD_CHANNEL_ANOMALY_THRESHOLD_MULTIPLIER` (informational only here), so trigger sensitivity is tunable on the equilibrium side without redeploying this service. See `services/orion-equilibrium-service/README.md`'s matching section.
+
+| Env | Default | Purpose |
+|-----|---------|---------|
+| `FIELD_CHANNEL_ANOMALY_ENABLED` | `false` | Master gate |
+| `FIELD_CHANNEL_ANOMALY_ENCODER_DIR` | (empty) | Directory with `manifest.json` + `weights.npz` from a prior `train` run |
+| `FIELD_CHANNEL_ANOMALY_CHECK_INTERVAL_SEC` | `60` | Rescoring cadence |
+| `FIELD_CHANNEL_ANOMALY_THRESHOLD_MULTIPLIER` | `3.0` | Informational only -- see above |
+| `CHANNEL_FIELD_CHANNEL_ANOMALY_SCORE` | `orion:field_channel:anomaly_score` | Publish channel |
+
 ## `field_channel_corpus.v1` training-data quality cutoff (2026-07-17)
 
 `field_channel_corpus.v1` rows generated **before `2026-07-17T04:32:14Z`**

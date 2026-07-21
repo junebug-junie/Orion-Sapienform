@@ -10,6 +10,8 @@ from orion.schemas.telemetry.field_channel_corpus import FieldChannelCorpusRowV1
 from orion.self_state.scoring import collect_field_channel_pressures
 from orion.telemetry.corpus_sink import InnerStateCorpusSink
 
+from app.anomaly_bus_publish import publish_anomaly_score
+from app.anomaly_scorer import FieldChannelAnomalyScorer
 from app.digestion.diffusion import get_learned_store
 from app.graph.lattice import load_lattice
 from app.health_monitor import HealthMonitor
@@ -42,6 +44,12 @@ class FieldDigesterWorker:
         self._store = FieldDigesterStore(self._settings.postgres_uri)
         self._lattice = load_lattice(Path(self._settings.lattice_path))
         self._health_monitor = HealthMonitor(self._store, self._settings)
+        self._anomaly_scorer: FieldChannelAnomalyScorer | None = None
+        if self._settings.field_channel_anomaly_enabled:
+            self._anomaly_scorer = FieldChannelAnomalyScorer(
+                encoder_dir=self._settings.field_channel_anomaly_encoder_dir,
+                threshold_multiplier=self._settings.field_channel_anomaly_threshold_multiplier,
+            )
         self._stop = asyncio.Event()
 
     async def start(self) -> None:
@@ -51,6 +59,8 @@ class FieldDigesterWorker:
         asyncio.create_task(
             self._causal_geometry_producer_loop(), name="field-digester-causal-geometry-producer"
         )
+        if self._anomaly_scorer is not None:
+            asyncio.create_task(self._anomaly_loop(), name="field-digester-anomaly")
 
     async def stop(self) -> None:
         self._stop.set()
@@ -155,6 +165,47 @@ class FieldDigesterWorker:
             except asyncio.CancelledError:
                 break
 
+    async def _anomaly_tick(self) -> None:
+        assert self._anomaly_scorer is not None
+        score = await asyncio.to_thread(self._anomaly_scorer.score_latest)
+        if score is None:
+            return
+        await publish_anomaly_score(
+            bus_url=self._settings.orion_bus_url,
+            bus_enabled=self._settings.orion_bus_enabled,
+            channel=self._settings.channel_field_channel_anomaly_score,
+            score=score,
+            service_name=self._settings.service_name,
+            service_version=self._settings.service_version,
+            node_name=self._settings.node_name,
+        )
+        if score.anomalous:
+            logger.info(
+                "field_channel_anomaly_flagged corr=%s recon_loss=%.6f threshold=%.6f "
+                "window_start=%s window_end=%s",
+                score.correlation_id,
+                score.recon_loss,
+                score.threshold,
+                score.window_start,
+                score.window_end,
+            )
+
+    async def _anomaly_loop(self) -> None:
+        while not self._stop.is_set():
+            try:
+                await self._anomaly_tick()
+            except Exception:
+                logger.exception("field_digester_anomaly_tick_failed")
+            try:
+                await asyncio.wait_for(
+                    self._stop.wait(),
+                    timeout=float(self._settings.field_channel_anomaly_check_interval_sec),
+                )
+            except asyncio.TimeoutError:
+                continue
+            except asyncio.CancelledError:
+                break
+
     async def _health_loop(self) -> None:
         while not self._stop.is_set():
             try:
@@ -236,16 +287,22 @@ class FieldDigesterWorker:
                 max_bytes=self._settings.corpus_sink_max_bytes,
                 max_rotated_files=self._settings.corpus_sink_rotated_keep,
             )
-        if _FIELD_CHANNEL_SINK.enabled:
+        if _FIELD_CHANNEL_SINK.enabled or self._anomaly_scorer is not None:
             try:
                 channel_pressures, _provenance = collect_field_channel_pressures(state)
-                _FIELD_CHANNEL_SINK.append(
-                    FieldChannelCorpusRowV1(
-                        generated_at=state.generated_at,
-                        tick_id=state.tick_id,
-                        channels=channel_pressures,
-                    )
+                row = FieldChannelCorpusRowV1(
+                    generated_at=state.generated_at,
+                    tick_id=state.tick_id,
+                    channels=channel_pressures,
                 )
+                if _FIELD_CHANNEL_SINK.enabled:
+                    _FIELD_CHANNEL_SINK.append(row)
+                if self._anomaly_scorer is not None:
+                    # In-memory rolling buffer for live rescoring -- a
+                    # separate concern from the JSONL sink above (training-
+                    # data collection), so it runs even when that sink is
+                    # off. See app/anomaly_scorer.py.
+                    self._anomaly_scorer.append_row(row)
             except Exception:
                 logger.warning("field_channel_corpus_append_failed", exc_info=True)
 

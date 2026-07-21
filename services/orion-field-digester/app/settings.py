@@ -94,6 +94,34 @@ class Settings(BaseSettings):
         168.0, alias="FIELD_PLASTICITY_PRODUCER_WINDOW_HOURS"
     )
 
+    # field_channel_corpus.v1 telemetry-anomaly trigger (2026-07-21): periodic
+    # rescoring of the live rolling window against a trained
+    # orion/mood_arc/fit_encoder.py encoder, publishing
+    # orion:field_channel:anomaly_score for orion-equilibrium-service's
+    # telemetry_anomaly_metacog_gate. Off by default -- requires a real
+    # trained encoder artifact (manifest.json + weights.npz) at
+    # FIELD_CHANNEL_ANOMALY_ENCODER_DIR; this service does not train one
+    # itself. See services/orion-field-digester/README.md.
+    field_channel_anomaly_enabled: bool = Field(False, alias="FIELD_CHANNEL_ANOMALY_ENABLED")
+    field_channel_anomaly_encoder_dir: str = Field("", alias="FIELD_CHANNEL_ANOMALY_ENCODER_DIR")
+    # Encoder's own window_size is 30 rows (~60s at the default 2s tick
+    # cadence); checking every 60s means each check scores a genuinely new
+    # window rather than re-scoring one still mostly overlapping the last.
+    field_channel_anomaly_check_interval_sec: float = Field(
+        60.0, alias="FIELD_CHANNEL_ANOMALY_CHECK_INTERVAL_SEC"
+    )
+    # Informational only on this side -- the producer's own default view of
+    # "anomalous", carried in the published payload alongside the raw
+    # recon_loss/recon_error_p95 so orion-equilibrium-service can apply its
+    # own multiplier instead of trusting this one. Matches
+    # fit_encoder.py detect-anomalies's own --threshold-multiplier default.
+    field_channel_anomaly_threshold_multiplier: float = Field(
+        3.0, alias="FIELD_CHANNEL_ANOMALY_THRESHOLD_MULTIPLIER"
+    )
+    channel_field_channel_anomaly_score: str = Field(
+        "orion:field_channel:anomaly_score", alias="CHANNEL_FIELD_CHANNEL_ANOMALY_SCORE"
+    )
+
 
 _settings: Settings | None = None
 

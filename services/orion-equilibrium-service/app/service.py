@@ -13,6 +13,7 @@ from orion.schemas.telemetry.metacognition import MetacognitionTickV1
 from orion.schemas.telemetry.metacog_trigger import MetacogTriggerV1
 from .substrate_metacog_gate import build_substrate_metacog_trigger
 from .repair_pressure_metacog_gate import build_repair_pressure_metacog_trigger
+from .telemetry_anomaly_metacog_gate import build_telemetry_anomaly_metacog_trigger
 from orion.schemas.telemetry.cognition_trace import CognitionTracePayload
 from orion.schemas.telemetry.system_health import EquilibriumServiceState, EquilibriumSnapshotV1, SystemHealthV1
 from orion.schemas.telemetry.spark_signal import SparkSignalV1
@@ -495,6 +496,8 @@ class EquilibriumService(BaseChassis):
             channels.append(settings.channel_pad_signal)
             if settings.metacog_relational_trigger_enable:
                 channels.append(settings.channel_repair_pressure_appraisal)
+            if settings.metacog_telemetry_anomaly_trigger_enable:
+                channels.append(settings.channel_field_channel_anomaly_score)
 
         async with self.bus.subscribe(*channels) as pubsub:
             async for msg in self.bus.iter_messages(pubsub):
@@ -579,6 +582,25 @@ class EquilibriumService(BaseChassis):
                                 recall_enabled=settings.metacog_recall_enabled,
                                 level_floor=settings.metacog_relational_level_threshold,
                                 confidence_floor=settings.metacog_relational_confidence_threshold,
+                            )
+                            if trigger is not None:
+                                await self._publish_metacog_trigger(trigger)
+
+                        elif (
+                            channel == settings.channel_field_channel_anomaly_score
+                            and settings.metacog_telemetry_anomaly_trigger_enable
+                        ):
+                            # Real field_channel_corpus.v1 anomaly score,
+                            # published by orion-field-digester's periodic
+                            # anomaly-scoring loop against a trained
+                            # orion/mood_arc/fit_encoder.py encoder.
+                            trigger = build_telemetry_anomaly_metacog_trigger(
+                                correlation_id=str(payload_dict.get("correlation_id") or ""),
+                                score=payload_dict,
+                                zen_state="zen" if zen > 0.5 else "not_zen",
+                                pressure=distress,
+                                recall_enabled=settings.metacog_recall_enabled,
+                                threshold_multiplier=settings.metacog_telemetry_anomaly_threshold_multiplier,
                             )
                             if trigger is not None:
                                 await self._publish_metacog_trigger(trigger)

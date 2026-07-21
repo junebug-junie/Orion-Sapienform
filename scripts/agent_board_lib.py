@@ -2,6 +2,18 @@
 
 The board is intentionally vendor-neutral: a locked JSONL event log plus
 plain functions that CLI scripts and hook adapters can call.
+
+DELIBERATE, NARROW EXCEPTION -- this board is pure dev-coordination
+(presence, findings, blockers) with zero live-runtime-data dependency,
+by design, EXCEPT for one field: `fetch_live_repair_pressure()` reads the
+live `repair_pressure_level` chat-loop signal from Postgres for display in
+`render_checkin_context()`'s `checkin` output. Juniper asked for this one
+field explicitly after being shown the tradeoff (this board is an "unusual
+fit" for a runtime cognitive signal). Do not treat this as license to bolt
+on more live-runtime metrics here -- a purpose-built dashboard is the right
+home for that, not this board. See `fetch_live_repair_pressure()` for the
+fail-open contract that keeps this exception from ever degrading the
+board's core presence/findings function.
 """
 from __future__ import annotations
 
@@ -502,6 +514,103 @@ def _global_items(state: BoardState) -> list[dict[str, object]]:
     ]
 
 
+def fetch_live_repair_pressure() -> tuple[float, str] | None:
+    """Read-only, best-effort read of the live `repair_pressure_level` chat-loop
+    signal for the `checkin` banner (see `render_checkin_context` below).
+
+    This is the board's one deliberate exception to being purely dev-local --
+    see the module docstring for why it exists and why it must stay narrow.
+
+    Source of truth: `ChatTurnStateV1.repair_pressure_level`
+    (`orion/schemas/chat_projection.py`), produced by
+    `services/orion-hub/scripts/repair_pressure_wiring.py` and persisted as a
+    singleton-upsert row (current state only, no history -- same shape as the
+    broadcast-projection singleton) in the Postgres
+    `substrate_chat_session_projection` table by
+    `services/orion-substrate-runtime/app/store.py`'s
+    `save_chat_session_projection`. This reads that table directly rather than
+    importing `orion.substrate.*` or `services.orion-substrate-runtime`, both
+    to keep this a genuinely thin, dependency-free read and because importing
+    `orion.substrate.*` from a thin script has previously dragged in heavy
+    transitive dependencies (see orion-thought's own documented avoidance of
+    the same import).
+
+    Returns `(repair_pressure_level, last_updated_at_iso)` for the turn with
+    the max `last_updated_at` across all turns in the current projection, or
+    `None` on ANY failure -- missing `psycopg2`, no configured DSN, connection
+    refused, missing table/row, empty `turns`, or malformed JSON. Never
+    raises. `checkin` must behave identically whether or not Postgres is
+    reachable -- most dev machines running this board will not have live
+    Postgres reachable, and that is an expected, silent no-op, not an error
+    state.
+
+    DSN convention mirrors the rest of `scripts/*.py` (e.g.
+    `scripts/dream_spine_smoke.py`): `$POSTGRES_URI`, falling back to
+    `$DATABASE_URL`.
+
+    Mirrors the lazy-import + fail-open pattern in
+    `scripts/drive_history_reflection_synthesis.py::fetch_drive_history_events`.
+    """
+    try:
+        import psycopg2  # lazy import: agent_board_lib has zero hard DB dependency
+    except Exception:
+        return None
+
+    postgres_uri = os.environ.get("POSTGRES_URI") or os.environ.get("DATABASE_URL")
+    if not postgres_uri:
+        return None
+
+    try:
+        conn = psycopg2.connect(postgres_uri, connect_timeout=2)
+    except Exception:
+        return None
+
+    row = None
+    try:
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                SELECT projection_json FROM substrate_chat_session_projection
+                ORDER BY generated_at DESC
+                LIMIT 1
+                """
+            )
+            row = cur.fetchone()
+    except Exception:
+        row = None
+    finally:
+        try:
+            conn.close()
+        except Exception:
+            pass
+
+    if not row:
+        return None
+
+    try:
+        payload = row[0]
+        if isinstance(payload, str):
+            payload = json.loads(payload)
+        turns = (payload or {}).get("turns") or {}
+        if not turns:
+            return None
+        # Parse to a real datetime (not raw string comparison) so this sorts
+        # correctly even when ISO-8601 serialization omits trailing zero
+        # microseconds -- see _parse_timestamp above, already used the same
+        # way by resolve_current_identity() for the same reason.
+        latest_turn = max(
+            turns.values(),
+            key=lambda t: _parse_timestamp(t.get("last_updated_at") or ""),
+        )
+        level = latest_turn.get("repair_pressure_level")
+        last_updated_at = latest_turn.get("last_updated_at")
+        if level is None or not last_updated_at:
+            return None
+        return (float(level), str(last_updated_at))
+    except Exception:
+        return None
+
+
 def render_checkin_context(config: BoardConfig, *, session_id: str | None = None) -> str:
     identity = resolve_current_identity(config, session_id=session_id)
     live = live_worktree_paths()
@@ -552,4 +661,12 @@ def render_checkin_context(config: BoardConfig, *, session_id: str | None = None
         lines.append("Collision warnings:")
         for warning in collisions:
             lines.append(f"- {warning}")
+
+    live_repair_pressure = fetch_live_repair_pressure()
+    if live_repair_pressure is not None:
+        level, last_updated_at = live_repair_pressure
+        lines.append(
+            f"Live repair pressure (chat_loop, latest turn as of {last_updated_at}): {level:.3f}"
+        )
+
     return "\n".join(lines)

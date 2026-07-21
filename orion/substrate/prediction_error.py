@@ -1,8 +1,11 @@
 from __future__ import annotations
 
 from orion.schemas.biometrics_projection import NodeBiometricsProjectionV1
+from orion.schemas.chat_projection import ChatSessionProjectionV1
 from orion.schemas.execution_projection import ExecutionTrajectoryProjectionV1
+from orion.schemas.route_projection import RouteArbitrationProjectionV1
 from orion.schemas.transport_projection import TransportBusProjectionV1
+from orion.substrate.chat_loop.grammar_extract import compute_chat_pressure_hints
 
 _THRESHOLD = 0.30
 
@@ -83,3 +86,120 @@ def biometrics_prediction_error(
                 continue
             deltas.append(abs(cv - pv))
     return min(1.0, _mean(deltas) / _THRESHOLD) if deltas else 0.0
+
+
+def chat_prediction_error(
+    prev: ChatSessionProjectionV1,
+    curr: ChatSessionProjectionV1,
+) -> float:
+    """0-1 surprise score: how much did a chat turn's pressure hints change this batch?
+
+    Mirrors ``execution_prediction_error``'s fixed-key-set shape: ``ChatTurnStateV1``
+    is revised in place per ``turn_id`` (``reduce_chat_trace_events`` at
+    ``orion/substrate/chat_loop/reducer.py`` line ~146 -- ``updated.turns[turn_id] =
+    turn``, a create/update, not append-only), so the same key comparison across two
+    successive projection snapshots is meaningful the same way execution's per-
+    ``trace_id`` comparison is.
+
+    Unlike the other three instruments, the pressure hints themselves are not stored
+    on the projection -- ``compute_chat_pressure_hints()``
+    (``orion/substrate/chat_loop/grammar_extract.py:114``) is a pure function of a
+    ``ChatTurnStateV1`` that only gets called transiently, at reduction time, to build
+    a receipt's ``after`` payload. This function calls it directly on both the
+    previous and current turn state for each shared ``turn_id`` rather than reading a
+    persisted ``pressure_hints`` dict, since none exists on ``ChatTurnStateV1``.
+
+    Known intra-instrument redundancy (CLAUDE.md metric-quality-gate step 2, re-checked
+    against this instrument specifically, not skipped): ``compute_chat_pressure_hints()``
+    defines ``topic_coherence = max(0.0, 1.0 - repair_pressure_level)``, an affine
+    (monotonic) transform of the same ``repair_pressure_level`` that also drives
+    ``repair_pressure`` directly. A change in ``repair_pressure_level`` therefore moves
+    both ``repair_pressure`` and ``topic_coherence`` by the same magnitude, giving that
+    one underlying signal roughly 2x the weight of ``conversation_load`` in the 3-key
+    mean rather than an even 1x/1x/1x split. This is intentional, not an oversight: the
+    three keys diffed here are exactly ``compute_chat_pressure_hints()``'s full, already-
+    tested output contract (not a new subset invented for this instrument), and
+    ``topic_coherence`` is kept rather than dropped so this function stays a literal diff
+    of "the hints this reducer already reports," not a hand-curated reweighting of them --
+    reintroducing the "hand-classified vocabulary" problem charter §6 item 3 was written
+    to avoid, just one layer down. If this weighting becomes a real problem in practice
+    (verified against live data, not asserted), the fix is upstream in
+    ``compute_chat_pressure_hints()`` itself, not a silent key-drop here.
+    """
+    deltas: list[float] = []
+    for turn_id, curr_turn in curr.turns.items():
+        prev_turn = prev.turns.get(turn_id)
+        if prev_turn is None:
+            continue
+        prev_hints = compute_chat_pressure_hints(prev_turn)
+        curr_hints = compute_chat_pressure_hints(curr_turn)
+        for key in ("conversation_load", "repair_pressure", "topic_coherence"):
+            pv = prev_hints.get(key, 0.0)
+            cv = curr_hints.get(key, 0.0)
+            deltas.append(abs(cv - pv))
+    return min(1.0, _mean(deltas) / _THRESHOLD) if deltas else 0.0
+
+
+def route_prediction_error(
+    prev: RouteArbitrationProjectionV1,
+    curr: RouteArbitrationProjectionV1,
+) -> float:
+    """0-1 surprise score: how much did a route arbitration run's *decision* change
+    this batch?
+
+    **Deliberately not a continuous-magnitude diff like the other three instruments
+    in this module.** ``RouteArbitrationRunStateV1``'s fields
+    (``orion/schemas/route_projection.py``) are categorical/discrete -- ``lane``,
+    ``lane_reason``, ``output_mode`` are strings, ``mind_requested`` is a bool -- there
+    is no numeric magnitude to subtract. Applying ``execution_prediction_error``'s
+    ``abs(cv - pv)`` shape here would be meaningless (strings don't subtract) or
+    would require an arbitrary numeric encoding of categories, which is exactly the
+    kind of hand-authored taxonomy-on-top-of-taxonomy this charter's item 3 was
+    written to avoid (see charter §6 item 3: "not a port of ``tensions.py``'s
+    hand-classified kind vocabulary onto field channels").
+
+    Instead this computes a categorical mismatch rate: for each field compared, score
+    ``1.0`` if the value differs between ``prev``/``curr``, else ``0.0``, then average
+    across the compared fields and across matched runs (by ``trace_id``, mirroring
+    ``reduce_route_trace_events``'s create/update-by-``trace_id`` semantics --
+    ``orion/substrate/route_loop/reducer.py`` line ~146-147). The fields compared
+    (``lane``, ``lane_reason``, ``output_mode``, ``mind_requested``) were chosen
+    because together they represent the arbitration *decision* itself -- which lane a
+    turn was routed to, why, what output mode it produced, and whether mind
+    escalation was requested -- as opposed to bookkeeping fields
+    (``correlation_id``, ``session_id``, ``turn_id``, ``evidence_event_ids``,
+    ``last_updated_at``) that change on every revision by construction and would
+    saturate the score at 1.0 for every batch, making it useless as a surprise
+    signal. ``mind_skip_reason`` was left out: it is a free-text explanation that is
+    non-null only when ``mind_requested`` is already false, so including it would
+    double-count the same underlying decision already captured by ``mind_requested``.
+
+    A mismatch rate averaged over four boolean-valued comparisons is already bounded
+    to ``[0, 1]`` by construction (each per-field score is 0.0 or 1.0, so the mean of
+    N such scores is bounded [0, 1] for any N > 0) -- unlike the other three
+    instruments' unbounded absolute deltas, which need ``min(1.0, mean / _THRESHOLD)``
+    to saturate into a [0, 1] surprise score.
+
+    **Do not apply the module's ``_THRESHOLD = 0.30`` scaling here.** That scaling
+    exists to convert an unbounded continuous magnitude into a saturating [0, 1]
+    score; a categorical mismatch rate has no such unboundedness to correct for, and
+    dividing an already-[0, 1] value by 0.30 would push most non-zero mismatches
+    straight to the 1.0 ceiling, destroying the very distinction (one field flipped
+    vs. all four flipped) that makes this signal informative. If a future patch is
+    tempted to "fix" this into consistency with the other three functions by adding
+    the ``_THRESHOLD`` scale here too, that is a regression, not a cleanup -- leave
+    this deviation as-is unless the field types themselves change from categorical to
+    continuous.
+    """
+    fields = ("lane", "lane_reason", "output_mode", "mind_requested")
+    run_scores: list[float] = []
+    for trace_id, curr_run in curr.runs.items():
+        prev_run = prev.runs.get(trace_id)
+        if prev_run is None:
+            continue
+        field_scores = [
+            1.0 if getattr(prev_run, field) != getattr(curr_run, field) else 0.0
+            for field in fields
+        ]
+        run_scores.append(_mean(field_scores))
+    return _mean(run_scores) if run_scores else 0.0

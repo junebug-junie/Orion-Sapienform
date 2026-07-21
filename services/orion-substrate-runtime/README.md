@@ -190,8 +190,8 @@ or `…_skipped` otherwise). Full Task 21 strain reducers are not implemented he
 
 `_write_prediction_error_node()` (`app/worker.py`) writes to a single, fixed `node_id` per
 lane (`node:substrate.execution`, `node:substrate.transport`, `node:substrate.biometrics`,
-`node:substrate.harness_closure` for post-turn closure), so repeat writes collapse instead of
-spawning a new node per event.
+`node:substrate.chat`, `node:substrate.route`, `node:substrate.harness_closure` for post-turn
+closure), so repeat writes collapse instead of spawning a new node per event.
 
 `node:substrate.biometrics` (`biometrics_prediction_error()`, `orion/substrate/
 prediction_error.py`, wired into `_tick()`) is the third instrument in this family, shadow-
@@ -203,6 +203,23 @@ fixed four-key `pressure_hints` diff, biometrics `pressure_hints` keys vary per 
 present on either side of a given node rather than a fixed list. See `docs/superpowers/
 specs/2026-07-21-biometrics-prediction-error-shadow-design.md` for the full metric-quality-
 gate writeup.
+
+`node:substrate.chat` (`chat_prediction_error()`, wired into `_chat_tick()`) and
+`node:substrate.route` (`route_prediction_error()`, wired into `_route_tick()`) are the
+fourth and fifth instruments in this family, shadow-built 2026-07-21, closing charter §6
+item 3's producer-instrumentation sweep across all five named domains. `chat_prediction_
+error()` diffs `compute_chat_pressure_hints()` (`orion/substrate/chat_loop/
+grammar_extract.py:114` — `conversation_load`/`repair_pressure`/`topic_coherence`, computed
+transiently, not persisted on `ChatTurnStateV1`) across successive turn states, same
+fixed-key/`_THRESHOLD`-scaled shape as execution/transport. `route_prediction_error()` is
+**deliberately different in shape**: `RouteArbitrationRunStateV1`'s decision fields
+(`lane`, `lane_reason`, `output_mode`, `mind_requested`) are categorical, not continuous, so
+it scores a per-field mismatch rate (1.0 if a field differs, else 0.0, averaged across
+compared fields and matched runs) instead of an absolute-value delta, and does **not** apply
+the module's `_THRESHOLD = 0.30` scaling — that scaling exists to saturate an unbounded
+continuous delta, and a mismatch rate is already bounded to `[0, 1]` by construction. See
+`docs/superpowers/specs/2026-07-21-chat-route-prediction-error-shadow-design.md` for the
+full metric-quality-gate writeup and the reasoning for route's different scoring shape.
 Repeat writes to the same node accumulate bounded per-event attribution in
 `metadata['contributing_turn_ids']` (capped at 20, deduped, oldest dropped) — this is
 attribution, not the pressure/dormancy state itself, which `DYNAMICS_ENGINE_OWNED_METADATA_

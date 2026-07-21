@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import os
 from pathlib import Path
 from typing import Any, Optional
 from uuid import uuid4
@@ -36,9 +37,52 @@ _memory_pool_failed: bool = False
 # receives `env`, not a bus reference.
 _annotation_bus: Optional[OrionBusAsync] = None
 
-_ANNOTATION_PROMPT_PATH = (
-    Path(__file__).resolve().parents[3] / "orion" / "cognition" / "prompts" / "memory_card_annotation_prompt.j2"
-)
+def _annotation_prompt_path_candidates() -> list[Path]:
+    """Live incident 2026-07-21: a bare `parents[3]` assumed the local monorepo
+    checkout's directory depth (services/orion-cortex-orch/app/memory_extractor.py
+    -> repo root). Docker's actual layout (Dockerfile: `COPY orion /app/orion`,
+    `COPY services/orion-cortex-orch /app`) only has 2 parent levels above this
+    file, so `parents[3]` raised IndexError at import time -- a hard crash loop,
+    not a degraded fallback, since main.py imports this module at startup.
+    Mirrors the multi-candidate/env-override pattern already proven in
+    orion/self_state/field_channel_glossary.py's _glossary_path_candidates()."""
+    roots: list[Path] = []
+    seen: set[str] = set()
+
+    def _add(root: Path) -> None:
+        try:
+            resolved = root.expanduser().resolve()
+        except OSError:
+            return
+        key = str(resolved)
+        if key in seen:
+            return
+        seen.add(key)
+        roots.append(resolved)
+
+    raw = os.getenv("ORION_REPO_ROOT", "").strip()
+    if raw:
+        _add(Path(raw))
+    here = Path(__file__).resolve()
+    if len(here.parents) >= 2:
+        _add(here.parents[1])  # Docker layout: /app/app/memory_extractor.py -> /app
+    if len(here.parents) >= 3:
+        _add(here.parents[2])  # local monorepo checkout: services/orion-cortex-orch/app/... -> repo root
+    _add(Path("/app"))
+    _add(Path("/repo"))
+    _add(Path("/mnt/scripts/Orion-Sapienform"))
+    return [root / "orion" / "cognition" / "prompts" / "memory_card_annotation_prompt.j2" for root in roots]
+
+
+def _resolve_annotation_prompt_path() -> Path:
+    for candidate in _annotation_prompt_path_candidates():
+        if candidate.is_file():
+            return candidate
+    # No candidate exists on disk -- fall back to the monorepo-checkout shape
+    # so the resulting FileNotFoundError (raised lazily, on read, from
+    # _build_annotation_prompt -- never at import time) at least names a
+    # sensible path instead of an empty one.
+    return Path("/mnt/scripts/Orion-Sapienform") / "orion" / "cognition" / "prompts" / "memory_card_annotation_prompt.j2"
 
 
 async def _get_memory_pool() -> Optional[Any]:
@@ -92,7 +136,7 @@ def _coerce_turn(env: BaseEnvelope) -> Optional[ChatHistoryTurnV1]:
 
 
 def _build_annotation_prompt(turn_text: str) -> str:
-    template = Template(_ANNOTATION_PROMPT_PATH.read_text(encoding="utf-8"))
+    template = Template(_resolve_annotation_prompt_path().read_text(encoding="utf-8"))
     return template.render(turn_text=turn_text)
 
 

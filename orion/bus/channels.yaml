@@ -203,6 +203,23 @@ channels:
     stability: "experimental"
     since: "2026-07-18"
 
+  - name: "orion:field_channel:anomaly_score"
+    kind: "event"
+    # Published by orion-field-digester's periodic anomaly-scoring loop
+    # (app/anomaly_scorer.py) -- reconstruction loss from the trained
+    # field_channel_anomaly.v1 encoder (orion/mood_arc/fit_encoder.py) against
+    # the most recent rolling window of live field-channel pressures. Raw
+    # recon_loss + the encoder's own train-time recon_error_p95 are both
+    # carried so orion-equilibrium-service's telemetry_anomaly_metacog_gate
+    # can apply its own configurable threshold multiplier, same pattern as
+    # orion:repair_pressure:appraisal above (producer publishes the
+    # measurement, consumer owns the trigger-sensitivity knob).
+    schema_id: "FieldChannelAnomalyScoreV1"
+    producer_services: ["orion-field-digester"]
+    consumer_services: ["orion-equilibrium-service"]
+    stability: "experimental"
+    since: "2026-07-21"
+
   - name: "orion:exec:request:LLMGatewayService"
     kind: "request"
     schema_id: "ChatRequestPayload"

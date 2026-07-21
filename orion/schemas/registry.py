@@ -456,6 +456,7 @@ from orion.schemas.telemetry.meta_tags import MetaTagsPayload, MetaTagsRequestV1
 from orion.schemas.metacog_patches import MetacogDraftTextPatchV1, MetacogEnrichScorePatchV1
 from orion.schemas.metacog_entry import MetacogEntryV1, MetacogRepairPressure
 from orion.schemas.repair_pressure_appraisal import RepairPressureAppraisalV1
+from orion.schemas.telemetry.field_channel_anomaly_score import FieldChannelAnomalyScoreV1
 from orion.schemas.state.contracts import StateGetLatestRequest, StateLatestReply
 from orion.schemas.vision import (
     VisionArtifactPayload,
@@ -728,6 +729,7 @@ _REGISTRY: Dict[str, Type[BaseModel]] = {
     "MetacogEnrichScorePatchV1": MetacogEnrichScorePatchV1,
     "MetacogEntryV1": MetacogEntryV1,
     "RepairPressureAppraisalV1": RepairPressureAppraisalV1,
+    "FieldChannelAnomalyScoreV1": FieldChannelAnomalyScoreV1,
     "MetacogRepairPressure": MetacogRepairPressure,
     "InnerStateFeaturesV1": InnerStateFeaturesV1,
     "InnerFeatureV1": InnerFeatureV1,

@@ -49,6 +49,26 @@ def test_field_channel_corpus_appends_with_real_channel_pressures(monkeypatch, t
     assert row["channels"] == expected_channels
 
 
+def test_anomaly_scorer_receives_row_even_when_corpus_sink_disabled(monkeypatch, tmp_path) -> None:
+    """append_row() to the anomaly scorer's in-memory buffer is a separate
+    concern from the JSONL corpus sink -- it must fire even when the sink
+    itself is off (FIELD_CHANNEL_CORPUS_PATH empty), since live rescoring
+    doesn't need training-data persistence to be enabled."""
+    monkeypatch.setattr(worker, "_FIELD_CHANNEL_SINK", worker.InnerStateCorpusSink(""), raising=False)
+
+    field_worker = _make_worker(monkeypatch, idle_tick_enabled=True)
+    field_worker._store.fetch_new_receipts.return_value = []
+    existing = empty_field_state(
+        lattice=field_worker._lattice, now=datetime.now(timezone.utc), tick_id="tick_old"
+    )
+    field_worker._store.load_latest_field.return_value = existing
+    field_worker._anomaly_scorer = MagicMock()
+
+    field_worker._tick()
+
+    field_worker._anomaly_scorer.append_row.assert_called_once()
+
+
 def test_field_channel_corpus_disabled_when_path_empty(monkeypatch, tmp_path) -> None:
     corpus_path = tmp_path / "field_channel.jsonl"
     # Default construction: empty path -> disabled, no-op.

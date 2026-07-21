@@ -14,9 +14,11 @@ class MetacogTriggerV1(BaseModel):
     trigger_kind: str = Field(
         ...,
         description=(
-            "baseline | dense | manual | pulse | relational | llm_surface_instability "
+            "baseline | dense | manual | pulse | relational | llm_surface_instability | telemetry_anomaly "
             "(advisory: language-surface instability from logprob summary, not factual confidence). "
-            "relational = a live turn_change_classify SHIFT appraisal (REPAIR/TOPIC), not a new detector."
+            "relational = a live repair_pressure_v2 appraisal (see repair_pressure_metacog_gate.py). "
+            "telemetry_anomaly = a field_channel_corpus.v1 reconstruction-loss anomaly from a trained "
+            "orion/mood_arc/fit_encoder.py encoder (see telemetry_anomaly_metacog_gate.py)."
         ),
     )
     reason: str

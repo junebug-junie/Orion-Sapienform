@@ -181,7 +181,14 @@ def compute_cadence_stats(ticks: list[BusTick], *, stall_multiplier: float = 5.0
     """Item 3: real gaps between consecutive receipts. A "stall" is a gap more
     than `stall_multiplier` times the observed median -- relative to this
     reducer's own real cadence, not an assumed absolute number, since that
-    cadence has never been measured before this script."""
+    cadence has never been measured before this script.
+
+    Known limitation at small `n`, not fixed here: the median itself is
+    computed from very few gaps when `n_gaps` is small (e.g. 2 gaps
+    `[10, 1000]` -> median 505 -> a 100x jump to 1000 sits *under* a
+    5x-median threshold of 2525 and goes unflagged). Reported honestly via
+    `n_gaps` in the output rather than silently trusted -- treat stall
+    counts as low-confidence whenever `n_gaps` is small (single digits)."""
     if len(ticks) < 2:
         return CadenceStats(
             n_gaps=0, median_gap_sec=None, p95_gap_sec=None, max_gap_sec=None,
@@ -255,7 +262,15 @@ def open_readonly_connection(dsn: str):
 
 def fetch_transport_receipts(conn, since: datetime, max_rows: int = MAX_ROWS) -> tuple[list[BusTick], bool]:
     """Real `transport_bus_reducer` receipts since `since`, parsed into BusTicks.
-    Returns (ticks, truncated). Read-only; never raises past this boundary."""
+    Returns (ticks, truncated). Read-only; never raises past this boundary.
+
+    Single-bus assumption, not enforced here: this reducer emits one receipt
+    per distinct bus per tick, and this deployment currently has exactly one
+    (`BUS_OBSERVER_NODE_ID`, `services/orion-bus/app/settings.py`, defaults to
+    a single node). If more than one bus were ever observed, this function
+    would blend their depth/cadence series into one, undetected -- not
+    currently a real risk (single-bus deployment, confirmed live), but worth
+    an explicit per-`target_id` split if that ever changes."""
     if conn is None:
         return [], False
     try:

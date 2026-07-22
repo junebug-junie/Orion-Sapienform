@@ -97,11 +97,17 @@ def _prediction_error_nodes_enabled() -> bool:
 # that spec's "Current architecture" section) -- with the practical effect that
 # a real incident could occur and pass unnoticed, since nothing currently logs
 # it. `stream_depth_pressure` (the sixth) is deliberately excluded from this
-# trigger set: it is structurally nonzero on almost every real tick (any
-# nonzero queue depth divides through DEFAULT_STREAM_DEPTH_CRITICAL to a small
-# positive number), so an ">0" check on it would fire constantly rather than
-# flagging a genuine incident. `max_stream_depth` (its raw input) is still
-# surfaced as context below whenever one of the other five signals fires.
+# trigger set for two compounding reasons, not just one: (a) it is structurally
+# nonzero on almost every real tick (any nonzero queue depth divides through
+# DEFAULT_STREAM_DEPTH_CRITICAL=100_000 to a small positive number), so an
+# ">0" check on it would fire constantly rather than flagging a genuine
+# incident; and (b) any depth spike large enough to be worth flagging already
+# trips `backpressure_count > 0` first -- services/orion-bus's own observer
+# (bus_observer.py) marks a stream "backpressure" once its length crosses
+# BUS_STREAM_DEPTH_WARNING (default 25,000 -- 25% of the critical threshold
+# above), and `backpressure` IS in this trigger set. `max_stream_depth` (its
+# raw input) is still surfaced as context below whenever one of the other
+# five signals fires.
 _TRANSPORT_INCIDENT_FIELDS = (
     "backpressure",
     "catalog_drift_pressure",

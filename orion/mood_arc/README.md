@@ -69,20 +69,28 @@ python orion/mood_arc/fit_encoder.py train \
   `services/orion-field-digester/README.md`'s "`field_channel_corpus.v1`
   training-data quality cutoff" section; keep the two in sync if it's ever
   revised.
-- **Second cutoff, 2026-07-22 (PR #1248, pending deploy):** `transport_pressure`/
-  `catalog_drift_pressure`/`observer_failure_pressure`/`reliability_pressure`/
-  `contract_pressure` could get permanently stuck at a stale value (an
-  `add`-mode perturbation bug in `services/orion-field-digester/app/ingest/
-  state_deltas.py`, fixed in PR #1248) — confirmed live as the cause of
+- **Second cutoff, `--min-generated-at 2026-07-22T04:35:01Z` (PR #1248,
+  merged + deployed):** `transport_pressure`/`catalog_drift_pressure`/
+  `observer_failure_pressure`/`reliability_pressure`/`contract_pressure`
+  could get permanently stuck at a stale value (an `add`-mode perturbation
+  bug in `services/orion-field-digester/app/ingest/state_deltas.py`, fixed
+  in PR #1248, merged 2026-07-22T04:32:27Z, `orion-field-digester` restarted
+  2026-07-22T04:35:01Z) — confirmed live as the cause of
   `catalog_drift_pressure` alone driving ~66% of average reconstruction
   error against `field_channel_anomaly.v2`. Unlike the first cutoff, this
-  contamination window has no known start (a channel only breaks once it
-  picks up a nonzero value and then fails to correct/decay), so **do not
-  train against any corpus data until PR #1248 is merged and deployed, and
-  a second `--min-generated-at` cutoff is set to that deploy timestamp** —
-  see `services/orion-field-digester/README.md`'s "second training-data
-  quality cutoff" section for the exact mechanism to determine it once
-  known. If both cutoffs apply, use whichever is later.
+  contamination window has no known start — `catalog_drift_pressure` was in
+  fact stuck for the *entire* span of `v2`'s training corpus
+  (2026-07-17T04:32:14Z-2026-07-22T01:30:24Z), confirmed by the fact that
+  post-fix, with the real value correctly reading `0.0`, `v2` (trained on
+  the stuck ~`0.135` reading) flipped to flagging the *correct* value as
+  anomalous instead: `telemetry_anomaly` still fired 20 times in the 41
+  minutes after the restart, same channel, opposite direction. **`v2` is not
+  a valid baseline and needs a `v3` retrain against
+  `--min-generated-at 2026-07-22T04:35:01Z`** — but as of this writing
+  there's only ~40 minutes of clean data, nowhere near `v2`'s 207K-row/
+  5-day corpus. Do not retrain until meaningfully more clean data has
+  accumulated; see the agent board for the tracked follow-up. If both
+  cutoffs apply, use whichever is later.
 - `--hidden-dim 128 --latent-dim 64` are the defaults as of this patch
   (`DEFAULT_HIDDEN_DIM`/`DEFAULT_LATENT_DIM` in `fit_encoder.py`) — sized for
   `field_channel_corpus.v1`'s ~16-26-channel width, not the old 4-channel

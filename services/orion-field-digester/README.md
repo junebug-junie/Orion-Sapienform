@@ -259,29 +259,37 @@ of it (this one channel accounted for ~66% of the average reconstruction
 error against the trained `field_channel_anomaly.v2` encoder).
 
 Fixed by PR #1248 (`mode="replace"` for all five channels, matching
-`bus_health`/`delivery_confidence`'s existing correct handling). **Rows
-generated before this fix is deployed may carry a stuck value for any of
-the five channels above** — not necessarily contaminated at every timestamp
-(a channel only gets stuck once it has picked up a nonzero value from a real
-event and then failed to decay/correct), but unlike the 2026-07-17 cutoff
-above, this window has no known start — a channel could have been stuck for
-an arbitrarily long time before anyone noticed. Get the exact cutoff once
-PR #1248 is merged and `orion-field-digester` has been restarted with it via
-`gh pr view 1248 --json mergedAt`, cross-checked against the actual
-container restart time (`docker inspect orion-athena-field-digester
---format '{{.State.StartedAt}}'`) the same way the 2026-07-17 cutoff above
-notes merge-time and restart-time can drift apart. As of this writing PR
-#1248 is open, not yet merged or deployed — **do not train against corpus
-data until it has been, and until the new cutoff below is filled in**:
+`bus_health`/`delivery_confidence`'s existing correct handling), merged
+2026-07-22T04:32:27Z, `orion-field-digester` restarted 2026-07-22T04:35:01Z
+(`docker inspect orion-athena-field-digester --format
+'{{.State.StartedAt}}'`). **Rows generated before `2026-07-22T04:35:01Z`
+may carry a stuck value for any of the five channels above** — not
+necessarily contaminated at every timestamp (a channel only gets stuck once
+it has picked up a nonzero value from a real event and then failed to
+decay/correct), but unlike the 2026-07-17 cutoff above, this window has no
+known start — a channel could have been stuck for an arbitrarily long time
+before anyone noticed, and `catalog_drift_pressure` was in fact stuck for
+the entire span of `field_channel_anomaly.v2`'s training corpus
+(2026-07-17T04:32:14Z-2026-07-22T01:30:24Z per that manifest), confirmed
+live post-fix: with the pipeline bug fixed and the real value now correctly
+reading `0.0`, `v2` (trained almost entirely on the stuck ~`0.135` reading)
+started flagging the *correct* value as anomalous instead —
+`telemetry_anomaly` still fired 20 times in the 41 minutes after the
+restart, same channel, opposite direction. The pipeline bug is fixed; the
+deployed model is not yet retrained on clean data and will keep
+misfiring on this channel until it is.
 
 ```bash
 python orion/mood_arc/fit_encoder.py train \
   --corpus /mnt/telemetry/field_channels/corpus/field_channels.jsonl \
-  --min-generated-at <PR #1248 deploy timestamp, TBD> \
+  --min-generated-at 2026-07-22T04:35:01Z \
   --out <out-dir>
 ```
 
-If both cutoffs apply, use whichever is later.
+If both cutoffs apply, use whichever is later. **Do not retrain yet** —
+as of this writing there are only ~40 minutes of clean post-cutoff data,
+nowhere near `v2`'s 207K-row/5-day corpus. Let clean data accumulate
+first; see the agent board for the tracked follow-up.
 
 ## Field channel glossary
 

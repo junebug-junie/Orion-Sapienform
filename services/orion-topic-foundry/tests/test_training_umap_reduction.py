@@ -77,6 +77,36 @@ def test_build_clusterer_excludes_umap_reserved_keys_from_hdbscan_kwargs():
     assert len(labels) == 30
 
 
+def test_build_clusterer_uses_settings_fallback_for_min_samples_and_selection_method(monkeypatch):
+    """Live incident 2026-07-21: TOPIC_FOUNDRY_HDBSCAN_MIN_SAMPLES/
+    _CLUSTER_SELECTION_METHOD had no fallback at all in _build_clusterer --
+    only app/topic_engine.py (dead code for the real training path) ever
+    read them. Mirrors _build_reducer's existing settings-fallback pattern
+    for UMAP params, applied here for the first time."""
+    from app.services.training import settings as training_settings
+
+    monkeypatch.setattr(training_settings, "topic_foundry_hdbscan_min_samples", 3)
+    monkeypatch.setattr(training_settings, "topic_foundry_hdbscan_cluster_selection_method", "leaf")
+    spec = _model_spec(params={})
+    clusterer = _build_clusterer(spec)
+    assert clusterer.min_samples == 3
+    assert clusterer.cluster_selection_method == "leaf"
+
+
+def test_build_clusterer_per_model_params_override_settings_fallback(monkeypatch):
+    """A model explicitly setting min_samples/cluster_selection_method in
+    its own spec.params must win over the service-wide settings fallback --
+    matches the existing override precedent for UMAP params."""
+    from app.services.training import settings as training_settings
+
+    monkeypatch.setattr(training_settings, "topic_foundry_hdbscan_min_samples", 5)
+    monkeypatch.setattr(training_settings, "topic_foundry_hdbscan_cluster_selection_method", "eom")
+    spec = _model_spec(params={"min_samples": 2, "cluster_selection_method": "leaf"})
+    clusterer = _build_clusterer(spec)
+    assert clusterer.min_samples == 2
+    assert clusterer.cluster_selection_method == "leaf"
+
+
 def test_build_clusterer_excludes_vectorizer_reserved_keys_from_hdbscan_kwargs():
     """Live incident 2026-07-21: setting stop_words_extra/vectorizer_stop_words
     in model_spec.params (the only documented way to reach

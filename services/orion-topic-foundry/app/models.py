@@ -41,7 +41,14 @@ class WindowingSpec(BaseModel):
 class ModelSpec(BaseModel):
     algorithm: Literal["hdbscan"] = "hdbscan"
     embedding_source_url: str
-    min_cluster_size: int = 15
+    # Live incident 2026-07-21: 15 (HDBSCAN's own library default) combined
+    # with cluster_selection_method="eom" (also a default -- see
+    # TOPIC_FOUNDRY_HDBSCAN_CLUSTER_SELECTION_METHOD) produced 2 clusters
+    # for a 676-document real corpus, one holding 77% of all documents.
+    # Confirmed live: min_cluster_size=8 + cluster_selection_method="leaf"
+    # produced 29 genuinely distinct clusters on the same data. 8 is the
+    # new real default, not just a one-off model registration's value.
+    min_cluster_size: int = 8
     metric: str = "cosine"
     params: Dict[str, Any] = Field(default_factory=dict)
 

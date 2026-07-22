@@ -528,7 +528,21 @@ _VECTORIZER_RESERVED_PARAM_KEYS = frozenset({"vectorizer_stop_words", "stop_word
 
 def _build_clusterer(spec: ModelSpec) -> HDBSCAN:
     _require_hdbscan()
-    params = {"min_cluster_size": spec.min_cluster_size, "metric": spec.metric}
+    # Live incident 2026-07-21: TOPIC_FOUNDRY_HDBSCAN_MIN_SAMPLES/
+    # _CLUSTER_SELECTION_METHOD settings existed but were only ever read by
+    # app/topic_engine.py -- dead code as far as this real /runs/train path
+    # is concerned (confirmed this session, same class of bug as the
+    # hardcoded keyword vectorizer and the hardcoded label=None response).
+    # Neither setting had ANY fallback here, unlike _build_reducer's UMAP
+    # params just below, which already do fall back to their
+    # TOPIC_FOUNDRY_UMAP_* settings. Mirrors that same pattern so these
+    # settings finally do something for the path that's actually live.
+    params = {
+        "min_cluster_size": spec.min_cluster_size,
+        "metric": spec.metric,
+        "min_samples": settings.topic_foundry_hdbscan_min_samples,
+        "cluster_selection_method": settings.topic_foundry_hdbscan_cluster_selection_method,
+    }
     reserved = _UMAP_RESERVED_PARAM_KEYS | _VECTORIZER_RESERVED_PARAM_KEYS
     params.update({k: v for k, v in spec.params.items() if k not in reserved})
     params.setdefault("prediction_data", True)

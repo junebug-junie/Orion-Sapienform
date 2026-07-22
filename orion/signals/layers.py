@@ -23,7 +23,6 @@ ORGAN_LAYER: Dict[str, str] = {
     "hub": "runtime",
     # Cognition / stance
     "graph_cognition": "cognition",
-    "chat_stance": "cognition",
     "recall": "cognition",
     "mind": "cognition",
     "spark_introspector": "cognition",

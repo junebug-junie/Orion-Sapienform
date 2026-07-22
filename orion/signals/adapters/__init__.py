@@ -22,7 +22,6 @@ from .state_journaler import StateJournalerAdapter
 from .topic_foundry import TopicFoundryAdapter
 from .concept_induction import ConceptInductionAdapter
 from .graph_cognition import GraphCognitionAdapter
-from .chat_stance import ChatStanceAdapter
 from .journaler import JournalerAdapter
 from .power_guard import PowerGuardAdapter
 from .security_watcher import SecurityWatcherAdapter
@@ -50,7 +49,6 @@ ADAPTERS: List[OrionSignalAdapter] = [
     TopicFoundryAdapter(),
     ConceptInductionAdapter(),
     GraphCognitionAdapter(),
-    ChatStanceAdapter(),
     JournalerAdapter(),
     PowerGuardAdapter(),
     SecurityWatcherAdapter(),
@@ -82,7 +80,6 @@ __all__ = [
     "TopicFoundryAdapter",
     "ConceptInductionAdapter",
     "GraphCognitionAdapter",
-    "ChatStanceAdapter",
     "JournalerAdapter",
     "PowerGuardAdapter",
     "SecurityWatcherAdapter",

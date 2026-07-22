@@ -55,12 +55,22 @@ def test_memory_graph_validate_fixture_roundtrip() -> None:
     assert "ok" in body and "violations" in body and "preview" in body
 
 
-def test_memory_graph_approve_requires_graph_or_named_graph(monkeypatch) -> None:
+def test_memory_graph_approve_requires_named_graph(monkeypatch) -> None:
+    """memory-graph approve no longer gates on an RDF backend (removed
+    2026-07-22, see orion/memory_graph/approve.py) -- named_graph_iri is now
+    the only remaining precondition before touching Postgres.
+
+    Bare TestClient(hub_main.app) doesn't mock the DB pool, so whether this
+    test can even reach the named_graph_iri_required check depends on
+    whether a real Postgres pool attached during this run's lifespan
+    (environment-dependent, not something this test controls) -- if it
+    didn't, _pool() raises its own 503 "memory_store_unavailable" first.
+    That's why the original version of this test (pre-2026-07-22, when it
+    was gated on the now-removed RDF backend instead) already tolerated
+    both outcomes rather than asserting a single status code.
+    """
     _ensure_hub_scripts_import_path()
-    monkeypatch.setenv("MEMORY_GRAPH_APPROVAL_BACKEND", "graphdb")
-    monkeypatch.setenv("GRAPHDB_URL", "")
-    monkeypatch.setenv("RDF_STORE_GRAPH_STORE_URL", "")
-    monkeypatch.setenv("RDF_STORE_UPDATE_URL", "")
+    monkeypatch.setenv("MEMORY_GRAPH_DEFAULT_NAMED_GRAPH", "")
     import importlib
 
     import app.settings as hub_app_settings
@@ -80,3 +90,7 @@ def test_memory_graph_approve_requires_graph_or_named_graph(monkeypatch) -> None
             headers={"X-Orion-Session-Id": "test-session"},
         )
     assert resp.status_code in (400, 503)
+    if resp.status_code == 400:
+        assert resp.json()["detail"] == "named_graph_iri_required"
+    else:
+        assert resp.json()["detail"] == "memory_store_unavailable"

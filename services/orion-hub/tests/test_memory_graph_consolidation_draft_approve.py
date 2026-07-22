@@ -25,7 +25,6 @@ for key, value in {
     "CHANNEL_COLLAPSE_INTAKE": "orion:collapse:intake",
     "CHANNEL_COLLAPSE_TRIAGE": "orion:collapse:triage",
     "MEMORY_GRAPH_DEFAULT_NAMED_GRAPH": "http://example.org/graph/test",
-    "GRAPHDB_URL": "http://graphdb.example",
 }.items():
     os.environ.setdefault(key, value)
 
@@ -62,10 +61,6 @@ def approve_client(monkeypatch):
     monkeypatch.setattr(
         "scripts.memory_graph_routes.ensure_draft_utterance_text",
         lambda draft, supplemental=None: draft,
-    )
-    monkeypatch.setattr(
-        "orion.memory_graph.rdf_target.resolve_memory_graph_rdf_target",
-        lambda: SimpleNamespace(kind="fuseki"),
     )
 
     update_mock = AsyncMock(return_value={"draft_id": "draft-abc", "status": "approved"})

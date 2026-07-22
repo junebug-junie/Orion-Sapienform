@@ -168,15 +168,10 @@ class Settings(BaseSettings):
     # Emit REC_TAPE RECALL debug dumps for top-N selected items.
     RECALL_DEBUG_DUMP_TOP_N: int = Field(default=0, validation_alias=AliasChoices("RECALL_DEBUG_DUMP_TOP_N"))
 
-    RECALL_MEMORY_GRAPH_SPARQL_ENABLED: bool = Field(
-        default=False, validation_alias=AliasChoices("RECALL_MEMORY_GRAPH_SPARQL_ENABLED")
-    )
-    RECALL_MEMORY_GRAPH_NAMED_GRAPHS: str = Field(
-        default="", validation_alias=AliasChoices("RECALL_MEMORY_GRAPH_NAMED_GRAPHS")
-    )
-    RECALL_MEMORY_GRAPH_SPARQL_TIMEOUT_SEC: float = Field(
-        default=2.0, validation_alias=AliasChoices("RECALL_MEMORY_GRAPH_SPARQL_TIMEOUT_SEC")
-    )
+    # RECALL_MEMORY_GRAPH_SPARQL_ENABLED/NAMED_GRAPHS/TIMEOUT_SEC removed
+    # 2026-07-22: already false live (dead code path), and the Fuseki
+    # content it would have read turned out to be test-fixture pollution,
+    # not real memory -- see orion/memory_graph/approve.py's docstring.
 
     # ── Memory cards (Postgres) ───────────────────────────────────────
     # 2026-07-21 memory-cards substrate spec, Item 1c: fetch_card_fragments

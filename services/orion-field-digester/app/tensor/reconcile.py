@@ -10,6 +10,7 @@ from app.tensor.channels import (
     DEFAULT_CAPABILITY_VECTOR,
     DEFAULT_NODE_VECTOR,
     NODE_CHANNELS,
+    SINGLE_OBSERVER_NODE_CHANNELS,
 )
 
 
@@ -26,6 +27,17 @@ def _ensure_node_vector(
     for key, val in existing.items():
         if key not in NODE_CHANNELS:
             merged[key] = val
+    # SINGLE_OBSERVER_NODE_CHANNELS (channels.py): some channels can only
+    # ever be legitimately reported by one specific node (bus_health/
+    # delivery_confidence -> node:athena, the only bus-observer). Every
+    # other node gets the key pruned here, every tick -- not just skipped
+    # at seed time -- so a stale value already persisted on a non-owner
+    # node from before this channel was added to this set (or from before
+    # its owner was assigned) self-heals on the next reconcile instead of
+    # living forever via the "preserve any existing key" loop above.
+    for channel, owner_node_id in SINGLE_OBSERVER_NODE_CHANNELS.items():
+        if node_id != owner_node_id:
+            merged.pop(channel, None)
     node_vectors[node_id] = merged
     return merged
 

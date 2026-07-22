@@ -2,10 +2,25 @@ from __future__ import annotations
 
 import logging
 from typing import Any, List, Optional, Tuple
+from urllib.parse import quote
 
 logger = logging.getLogger("orion.graph-compression.federator.substrate_falkor")
 
 Triple = Tuple[str, str, str]
+
+# Downstream (region_builder.py -> writer.py::_build_sparql_update) writes
+# node identity strings straight into SPARQL IRIREF position with zero
+# escaping -- every SPARQL federator satisfies this for free (bindings are
+# already well-formed IRIs). Live substrate node_ids are alnum/dash/
+# underscore slugs today (verified against the real orion_substrate graph),
+# but wrapping unconditionally costs nothing and keeps the contract
+# identical to episodic_falkor.py -- a future node_id shape change can't
+# silently reintroduce an invalid-SPARQL-IRIREF failure mode here.
+_NODE_NS = "http://conjourney.net/orion/substrate/falkor/"
+
+
+def _to_iri(value: str) -> str:
+    return _NODE_NS + quote(str(value), safe="")
 
 # SubstrateNode/edge shape per orion/substrate/falkor_store.py::upsert_node/
 # upsert_edge: nodes are (:SubstrateNode:<label> {node_id: ...}), edges are
@@ -52,5 +67,5 @@ class FalkorSubstrateFederator:
             p = row.get("p")
             o = row.get("o")
             if s and p and o:
-                triples.append((str(s), str(p), str(o)))
+                triples.append((_to_iri(s), str(p), _to_iri(o)))
         return triples

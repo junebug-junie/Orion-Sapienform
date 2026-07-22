@@ -1,4 +1,4 @@
-from app.federators.episodic_falkor import FalkorEpisodicFederator
+from app.federators.episodic_falkor import FalkorEpisodicFederator, _to_iri
 
 
 class _FakeClient:
@@ -23,10 +23,26 @@ def test_fetch_returns_triples_across_node_labels():
         ]
     )
     triples = FalkorEpisodicFederator(client=client).fetch()
-    assert ("session-1", "HAS_TURN", "turn-1") in triples
-    assert ("turn-1", "MENTIONS_ENTITY", "Juniper") in triples
-    assert ("turn-1", "HAS_TAG", "gpu") in triples
+    assert (_to_iri("session-1"), "HAS_TURN", _to_iri("turn-1")) in triples
+    assert (_to_iri("turn-1"), "MENTIONS_ENTITY", _to_iri("Juniper")) in triples
+    assert (_to_iri("turn-1"), "HAS_TAG", _to_iri("gpu")) in triples
     assert len(triples) == 3
+
+
+def test_fetch_wraps_free_text_entity_names_as_well_formed_iris():
+    """Real orion_recall Entity/Tag .name values are raw free chat text (live
+    examples: "solar system", "the 'sentience striving program'") -- spaces
+    and apostrophes are illegal inside a SPARQL IRIREF, and writer.py's
+    _build_sparql_update interpolates node identity strings straight into
+    one with zero escaping. Every returned node must be a well-formed IRI
+    regardless of how messy the underlying Falkor property value is."""
+    client = _FakeClient(
+        rows=[{"s": "turn-1", "p": "MENTIONS_ENTITY", "o": "the 'sentience striving program'"}]
+    )
+    triples = FalkorEpisodicFederator(client=client).fetch()
+    s, p, o = triples[0]
+    assert o.startswith("http://conjourney.net/orion/recall/falkor/")
+    assert " " not in o and "'" not in o and "<" not in o and ">" not in o
 
 
 def test_fetch_query_covers_all_three_relationship_types():
@@ -59,4 +75,4 @@ def test_fetch_skips_rows_with_missing_fields():
         ]
     )
     triples = FalkorEpisodicFederator(client=client).fetch()
-    assert triples == [("turn-2", "HAS_TAG", "circe")]
+    assert triples == [(_to_iri("turn-2"), "HAS_TAG", _to_iri("circe"))]

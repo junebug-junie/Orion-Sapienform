@@ -1,4 +1,4 @@
-from app.federators.substrate_falkor import FalkorSubstrateFederator
+from app.federators.substrate_falkor import FalkorSubstrateFederator, _to_iri
 
 
 class _FakeClient:
@@ -23,9 +23,21 @@ def test_fetch_returns_triples_from_rows():
     )
     f = FalkorSubstrateFederator(client=client)
     triples = f.fetch()
-    assert ("concept-1", "CONTRADICTS", "concept-2") in triples
-    assert ("concept-2", "SUPPORTS", "concept-3") in triples
+    assert (_to_iri("concept-1"), "CONTRADICTS", _to_iri("concept-2")) in triples
+    assert (_to_iri("concept-2"), "SUPPORTS", _to_iri("concept-3")) in triples
     assert len(triples) == 2
+
+
+def test_fetch_wraps_node_ids_as_well_formed_iris():
+    """Downstream SPARQL serialization (writer.py) puts node identity strings
+    straight into an IRIREF with zero escaping -- every node must come back
+    as a syntactically valid IRI, not a bare id, regardless of node_id shape."""
+    client = _FakeClient(rows=[{"s": "concept 1/weird", "p": "REFINES", "o": "concept'2"}])
+    triples = FalkorSubstrateFederator(client=client).fetch()
+    s, p, o = triples[0]
+    assert s.startswith("http://conjourney.net/orion/substrate/falkor/")
+    assert " " not in s and "'" not in s
+    assert " " not in o and "'" not in o
 
 
 def test_fetch_query_matches_substrate_node_label_generically():
@@ -58,4 +70,4 @@ def test_fetch_skips_rows_with_missing_fields():
         ]
     )
     triples = FalkorSubstrateFederator(client=client).fetch()
-    assert triples == [("concept-3", "REFINES", "concept-4")]
+    assert triples == [(_to_iri("concept-3"), "REFINES", _to_iri("concept-4"))]

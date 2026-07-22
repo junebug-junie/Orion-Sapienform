@@ -169,10 +169,19 @@ def test_falkor_federators_unioned_with_sparql_when_flags_on():
         ("turn-1", "HAS_TAG", "gpu"),
         ("turn-2", "HAS_TAG", "gpu"),
     ]
+    from app.clustering.leiden import build_graph_from_triples as _real_build_graph
+
+    captured: dict = {}
+
+    def _capture_and_build(triples):
+        captured["triples"] = set(triples)
+        return _real_build_graph(triples)
+
     with patch("app.worker.EpisodicFederator") as mock_ep, \
          patch("app.worker.SubstrateFederator") as mock_sub, \
          patch("app.worker.SelfStudyFederator") as mock_ss, \
          patch("app.worker.FalkorEpisodicFederator") as mock_falkor_ep, \
+         patch("app.worker.build_graph_from_triples", side_effect=_capture_and_build), \
          patch("app.worker._app_settings.get_settings", return_value=_settings_mock(episodic_falkor=True)):
         mock_ep.return_value.fetch.return_value = sparql_triples
         mock_sub.return_value.fetch.return_value = []
@@ -182,4 +191,9 @@ def test_falkor_federators_unioned_with_sparql_when_flags_on():
         worker._tick()
 
         mock_falkor_ep.return_value.fetch.assert_called_once()
+        # Union, not replace: a bug that swapped triples instead of unioning
+        # them would only ever show one side's edges in what actually got
+        # clustered. Assert both sources' triples survived into the graph.
+        assert captured["triples"] >= set(sparql_triples)
+        assert captured["triples"] >= set(falkor_triples)
         store.upsert_artifact.assert_called()

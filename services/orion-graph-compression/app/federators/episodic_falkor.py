@@ -2,10 +2,29 @@ from __future__ import annotations
 
 import logging
 from typing import Any, List, Optional, Tuple
+from urllib.parse import quote
 
 logger = logging.getLogger("orion.graph-compression.federator.episodic_falkor")
 
 Triple = Tuple[str, str, str]
+
+# Downstream (region_builder.py -> writer.py::_build_sparql_update) writes
+# node identity strings straight into SPARQL IRIREF position (`<{value}>`)
+# with zero escaping -- an invariant every SPARQL federator satisfies for
+# free (bindings are already well-formed IRIs). ChatTurn/ChatSession
+# node_id-shaped values are safe as-is, but Entity/Tag `.name` values are
+# raw free chat text -- confirmed live against orion_recall that real values
+# include spaces and apostrophes (e.g. "solar system",
+# "the 'sentience striving program'"), which are illegal inside a SPARQL
+# IRIREF and would make CompressionWriter's SPARQL UPDATE invalid, silently
+# dropping exactly the regions this federator was added to surface. Wrap
+# every node in a synthetic namespace + percent-encoding so the identity
+# string is always IRIREF-safe regardless of which label it came from.
+_NODE_NS = "http://conjourney.net/orion/recall/falkor/"
+
+
+def _to_iri(value: str) -> str:
+    return _NODE_NS + quote(str(value), safe="")
 
 # orion_recall shape per services/orion-meta-tags/app/falkor_recall_writer.py
 # (the real, live producer): (:ChatSession {session_id})-[:HAS_TURN]->
@@ -58,5 +77,5 @@ class FalkorEpisodicFederator:
             p = row.get("p")
             o = row.get("o")
             if s and p and o:
-                triples.append((str(s), str(p), str(o)))
+                triples.append((_to_iri(s), str(p), _to_iri(o)))
         return triples

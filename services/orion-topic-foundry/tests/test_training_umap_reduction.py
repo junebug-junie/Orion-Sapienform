@@ -77,6 +77,36 @@ def test_build_clusterer_excludes_umap_reserved_keys_from_hdbscan_kwargs():
     assert len(labels) == 30
 
 
+def test_build_clusterer_uses_settings_fallback_for_min_samples_and_selection_method(monkeypatch):
+    """Live incident 2026-07-21: TOPIC_FOUNDRY_HDBSCAN_MIN_SAMPLES/
+    _CLUSTER_SELECTION_METHOD had no fallback at all in _build_clusterer --
+    only app/topic_engine.py (dead code for the real training path) ever
+    read them. Mirrors _build_reducer's existing settings-fallback pattern
+    for UMAP params, applied here for the first time."""
+    from app.services.training import settings as training_settings
+
+    monkeypatch.setattr(training_settings, "topic_foundry_hdbscan_min_samples", 3)
+    monkeypatch.setattr(training_settings, "topic_foundry_hdbscan_cluster_selection_method", "leaf")
+    spec = _model_spec(params={})
+    clusterer = _build_clusterer(spec)
+    assert clusterer.min_samples == 3
+    assert clusterer.cluster_selection_method == "leaf"
+
+
+def test_build_clusterer_per_model_params_override_settings_fallback(monkeypatch):
+    """A model explicitly setting min_samples/cluster_selection_method in
+    its own spec.params must win over the service-wide settings fallback --
+    matches the existing override precedent for UMAP params."""
+    from app.services.training import settings as training_settings
+
+    monkeypatch.setattr(training_settings, "topic_foundry_hdbscan_min_samples", 5)
+    monkeypatch.setattr(training_settings, "topic_foundry_hdbscan_cluster_selection_method", "eom")
+    spec = _model_spec(params={"min_samples": 2, "cluster_selection_method": "leaf"})
+    clusterer = _build_clusterer(spec)
+    assert clusterer.min_samples == 2
+    assert clusterer.cluster_selection_method == "leaf"
+
+
 def test_build_clusterer_excludes_vectorizer_reserved_keys_from_hdbscan_kwargs():
     """Live incident 2026-07-21: setting stop_words_extra/vectorizer_stop_words
     in model_spec.params (the only documented way to reach
@@ -121,6 +151,139 @@ def test_resolve_keyword_stop_words_extends_english_list():
 def test_resolve_keyword_stop_words_custom_list_replaces_english():
     result = _resolve_keyword_stop_words({"vectorizer_stop_words": "foo,bar"})
     assert result == ["foo", "bar"]
+
+
+def test_llm_label_topics_disabled_returns_empty(monkeypatch):
+    from app.services import training
+
+    monkeypatch.setattr(training.settings, "topic_foundry_llm_enable", False)
+    result = training._llm_label_topics({"0": ["meow", "cat"]}, {"0": ["hi cat"]})
+    assert result == {}
+
+
+def test_llm_label_topics_parses_real_response(monkeypatch):
+    from app.services import training
+
+    monkeypatch.setattr(training.settings, "topic_foundry_llm_enable", True)
+    monkeypatch.setattr(training, "_LLM_LABEL_BATCH_SIZE", 1)
+
+    per_topic_label = {"0": "Cat Persona", "1": "Hardware Setup"}
+
+    class _FakeClient:
+        def request_json(self, **kwargs):
+            # One call per topic at batch size 1 -- each call's prompt names
+            # exactly the one topic it's labeling.
+            for tid, label in per_topic_label.items():
+                if f"Topic {tid}:" in kwargs["user_prompt"]:
+                    return {"labels": {tid: label}}
+            raise AssertionError(f"unexpected prompt: {kwargs['user_prompt']!r}")
+
+    monkeypatch.setattr(training, "get_llm_client", lambda: _FakeClient())
+    result = training._llm_label_topics(
+        {"0": ["meow", "cat", "purrrr"], "1": ["gpu", "server"]},
+        {"0": ["meow meow"], "1": ["setting up the gpu"]},
+    )
+    assert result == {"0": "Cat Persona", "1": "Hardware Setup"}
+
+
+def test_llm_label_topics_batches_to_respect_llm_route_token_cap(monkeypatch):
+    """Live incident 2026-07-21: a single call listing all ~29 topics at once
+    always came back truncated -- confirmed via orion-llm-gateway's own logs
+    that the "quick" bus route hard-caps completion at ~146 tokens
+    regardless of the requested max_tokens (tried None, then 1740 -- same
+    cutoff both times). This is a route-level constraint, not something the
+    caller's max_tokens can raise. The real fix is batching small enough
+    that each call's response comfortably fits -- this locks in that
+    _llm_label_topics makes multiple small calls rather than one big one,
+    and that a partial per-batch failure doesn't blank out labels for
+    topics in other, successful batches."""
+    from app.services import training
+
+    monkeypatch.setattr(training.settings, "topic_foundry_llm_enable", True)
+    monkeypatch.setattr(training, "_LLM_LABEL_BATCH_SIZE", 2)
+
+    call_prompts = []
+
+    class _FlakyClient:
+        def request_json(self, **kwargs):
+            call_prompts.append(kwargs["user_prompt"])
+            # Simulate the real truncation failure mode for one specific
+            # batch (topics 2/3) while others succeed -- proves partial
+            # failure doesn't wipe out the rest.
+            if "Topic 2:" in kwargs["user_prompt"]:
+                return None  # truncated response -> unparseable JSON upstream
+            labels = {}
+            for tid in ("0", "1", "3", "4"):
+                if f"Topic {tid}:" in kwargs["user_prompt"]:
+                    labels[tid] = f"Label {tid}"
+            return {"labels": labels} if labels else None
+
+    monkeypatch.setattr(training, "get_llm_client", lambda: _FlakyClient())
+    keywords = {str(i): [f"kw{i}"] for i in range(5)}
+    samples = {str(i): [f"sample {i}"] for i in range(5)}
+    result = training._llm_label_topics(keywords, samples)
+
+    # 5 topics at batch size 2 -> 3 calls, not 1.
+    assert len(call_prompts) == 3
+    # Topic 2's batch failed -- topic 2 (and its batch-mate 3, if bundled
+    # together) may be missing, but topics from the OTHER, successful
+    # batches must still be present.
+    assert "0" in result and result["0"] == "Label 0"
+    assert "1" in result and result["1"] == "Label 1"
+    assert "4" in result and result["4"] == "Label 4"
+    assert "2" not in result
+
+
+def test_llm_label_topics_fails_open_on_bad_response(monkeypatch):
+    from app.services import training
+
+    monkeypatch.setattr(training.settings, "topic_foundry_llm_enable", True)
+
+    class _FakeClient:
+        def request_json(self, **kwargs):
+            return {"not_labels": "oops"}
+
+    monkeypatch.setattr(training, "get_llm_client", lambda: _FakeClient())
+    result = training._llm_label_topics({"0": ["meow"]}, {"0": ["hi"]})
+    assert result == {}
+
+
+def test_llm_label_topics_fails_open_on_exception(monkeypatch):
+    from app.services import training
+
+    monkeypatch.setattr(training.settings, "topic_foundry_llm_enable", True)
+
+    class _FakeClient:
+        def request_json(self, **kwargs):
+            raise RuntimeError("bus down")
+
+    monkeypatch.setattr(training, "get_llm_client", lambda: _FakeClient())
+    result = training._llm_label_topics({"0": ["meow"]}, {"0": ["hi"]})
+    assert result == {}
+
+
+def test_compute_topic_artifacts_applies_llm_labels_when_enabled(monkeypatch):
+    from app.services.training import _compute_topic_artifacts
+    from app.services import training
+    from app.services.types import RowBlock
+
+    monkeypatch.setattr(training.settings, "topic_foundry_llm_enable", True)
+
+    class _FakeClient:
+        def request_json(self, **kwargs):
+            return {"labels": {"0": "Cat Persona"}}
+
+    monkeypatch.setattr(training, "get_llm_client", lambda: _FakeClient())
+
+    segments = [
+        RowBlock(doc_id="a", text="meow meow purr cat", row_ids=["r1"], timestamps=["t1"]),
+        RowBlock(doc_id="b", text="meow cat playful whiskers", row_ids=["r2"], timestamps=["t2"]),
+    ]
+    labels = np.array([0, 0])
+    summary, keywords = _compute_topic_artifacts(segments, labels)
+    assert summary[0]["topic_id"] == 0
+    assert summary[0]["label"] == "Cat Persona"
+    assert "meow" in keywords["0"] or "cat" in keywords["0"]
 
 
 def test_reduce_then_cluster_with_umap_param_overrides_does_not_crash():

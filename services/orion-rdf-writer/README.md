@@ -26,9 +26,10 @@ Tune `RDF_WRITE_*` and `RDF_STORE_TIMEOUT_SEC` before scaling bus traffic; for t
 | :--- | :--- | :--- | :--- |
 | `orion:rdf:enqueue` | `CHANNEL_RDF_ENQUEUE` | `rdf.write.request` | Direct write requests. |
 | `orion:collapse:intake` | `CHANNEL_EVENTS_COLLAPSE` | `collapse.mirror.entry` | Collapse entries (raw). |
-| `orion:tags:enriched` | `CHANNEL_EVENTS_TAGGED` | `tags.enriched`, `telemetry.meta_tags` | Enriched metadata tags. |
 | `orion:core:events` | `CHANNEL_CORE_EVENTS` | `orion.event` | Legacy events targeted for RDF. |
 | `orion:rdf:worker` | `CHANNEL_WORKER_RDF` | `cortex.worker.rdf_build` | Worker tasks from Cortex. |
+
+`orion:tags:enriched` (`CHANNEL_EVENTS_TAGGED`) removed 2026-07-22: this service's Fuseki materialization of collapse-triage tag/entity enrichment was redundant with `orion-meta-tags`' Falkor write (PR #1271/#1273). `orion-meta-tags` still **publishes** to this channel -- `orion-sql-writer` is also subscribed and needs it for Postgres `collapse_enrichment` (read by `orion-recall`/`orion-dream`). Only this service's subscription and RDF materialization were removed. See `docs/superpowers/specs/2026-07-22-tags-enriched-fuseki-kill-spec.md`.
 
 ### Published Channels
 | Channel | Env Var | Kind | Description |
@@ -43,7 +44,6 @@ Provenance: `.env_example` → `docker-compose.yml` → `settings.py`
 | :--- | :--- | :--- |
 | `CHANNEL_RDF_ENQUEUE` | `orion:rdf:enqueue` | Direct enqueue channel. |
 | `CHANNEL_EVENTS_COLLAPSE` | `orion:collapse:intake` | Collapse event source. |
-| `CHANNEL_EVENTS_TAGGED` | `orion:tags:enriched` | Tagged event source. |
 | `GRAPHDB_URL` | Optional when backend ≠ `graphdb` | GraphDB base URL. |
 | `RDF_STORE_*`, `RDF_WRITE_*` | See `.env_example` | Backend selection, HTTP pool sizing, async queue, retries, dead-letter. |
 

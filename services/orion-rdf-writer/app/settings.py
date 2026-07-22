@@ -48,7 +48,6 @@ class Settings(BaseSettings):
     # === LISTENER CHANNELS ===
     CHANNEL_RDF_ENQUEUE: str = Field(default="orion:rdf:enqueue", env="CHANNEL_RDF_ENQUEUE")
     CHANNEL_EVENTS_COLLAPSE: str = Field(default="orion:collapse:intake", env="CHANNEL_EVENTS_COLLAPSE")
-    CHANNEL_EVENTS_TAGGED: str = Field(default="orion:tags:enriched", env="CHANNEL_EVENTS_TAGGED")
     # orion:tags:chat:enriched (CHANNEL_EVENTS_TAGGED_CHAT) deliberately not
     # subscribed as of 2026-07-18: chat-turn tag/entity data now lands in
     # FalkorDB only (orion-meta-tags' own Phase 2 writer,
@@ -58,6 +57,21 @@ class Settings(BaseSettings):
     # same entities/sentiment already durably written to Falkor -- not an
     # independent signal. orion-meta-tags no longer publishes to this
     # channel either (see its main.py). Do not re-add.
+    # orion:tags:enriched (CHANNEL_EVENTS_TAGGED) deliberately not subscribed
+    # HERE as of 2026-07-22 -- but the publish itself is NOT dead and must
+    # NOT be killed at the source: orion-sql-writer is also subscribed to
+    # this channel and materializes it into Postgres `collapse_enrichment`
+    # (76 live rows, latest timestamp same-day as this comment), which
+    # orion-recall (storage/sql_adapter.py) and orion-dream
+    # (aggregators_sql.py) both genuinely query. Only THIS service's Fuseki
+    # copy of the same data was redundant (Falkor write shipped additively
+    # PR #1271, 68/68 historical rows backfilled PR #1273, one real live
+    # event verified landing in Postgres/Fuseki/Falkor simultaneously) -- the
+    # bus publish itself stays alive for sql-writer's sake. See
+    # docs/superpowers/specs/2026-07-22-tags-enriched-fuseki-kill-spec.md
+    # (including its "Correction found during implementation" section) for
+    # the full reasoning. Do not re-add this service's subscription without
+    # a real Falkor-gap reason, and do not remove orion-meta-tags' publish.
     CHANNEL_CORE_EVENTS: str = Field(default="orion:core:events", env="CHANNEL_CORE_EVENTS")
     # orion:rdf:worker (CHANNEL_WORKER_RDF) deliberately not subscribed as of
     # 2026-07-18: channels.yaml claims orion-cortex-exec as producer, but no
@@ -138,7 +152,6 @@ class Settings(BaseSettings):
             self.CHANNEL_RDF_ENQUEUE,
             "orion:rdf-collapse:enqueue",
             self.CHANNEL_EVENTS_COLLAPSE,
-            self.CHANNEL_EVENTS_TAGGED,
             "orion:chat:social:stored",
             self.CHANNEL_CORE_EVENTS,
         ]

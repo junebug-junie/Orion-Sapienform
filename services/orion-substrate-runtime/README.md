@@ -251,7 +251,10 @@ match design (same live one-shot-per-turn shape, sparser sample). **`transport_p
 did not have this bug** — `transport_bus_reducer` genuinely revises the same `bus_id` (`bus:athena`)
 in place every tick, so its trace_id-equivalent match works; its low variance is a real quiet bus
 (confirmed live: `bus_health`/`delivery_confidence` each took exactly 1 distinct value across the
-last 500 live receipts checked), not an instrument bug.
+last 500 live receipts checked), not an instrument bug. **Correction, 2026-07-22 (see the "transport
+domain scope" note below): "quiet bus" is true for `bus_health`/`delivery_confidence` specifically,
+but `transport_pressure`'s own quietness is not about the bus being calm — it's about what this
+instrument is structurally capable of observing at all.**
 
 Fix: when no exact `trace_id` match exists, both functions now fall back to diffing against
 `prev`'s most-recently-updated run (by `last_updated_at`) instead of contributing nothing — the
@@ -290,6 +293,47 @@ pressure.py::prediction_error_pressure()` does **not** explain it (that function
 from `node.metadata['prediction_error']` on every call rather than persisting a decayed value), so
 the actual mechanism is still open — see the audit doc's Missing Questions. Not fixed in this
 patch.
+
+**The "transport domain" is one queue, not the bus (found 2026-07-22, while re-verifying the "quiet
+bus" claim above against real numbers).** `bus_health`/`delivery_confidence`/`transport_pressure`
+(`orion/substrate/transport_loop/extract.py::compute_transport_pressures()`) are computed entirely
+from whatever streams `orion-bus`'s bus-observer role is configured to watch
+(`BUS_OBSERVER_STREAMS`, `services/orion-bus/app/settings.py`/`.env_example`). That config, and its
+own inline comment, are blunt about the scope: *"`orion:evt:gateway`/`orion:bus:out` were
+placeholder names from the original bus-observer commit (`ee810551`, 2026-05-25), never once
+wired [to real streams]... These are the only two real Streams in the current architecture, so
+they are now the entire default"* — `BUS_OBSERVER_STREAMS=orion:stream:world_pulse:run:result,
+orion:stream:world_pulse:run:result:dlq`. Almost all of Orion's actual inter-service traffic runs
+over Redis pub/sub channels, which have no XLEN-style depth/backlog concept the way a Stream does
+— `world_pulse`'s result queue is the *only* thing on the entire bus built as a Stream, so it is
+structurally the only thing this instrument can ever measure. "Transport domain" and "bus health"
+are the wrong names for what this actually is: **whether one specific service's result queue is
+backing up.**
+
+Confirmed live (2026-07-22): `redis-cli -h <bus host> XLEN orion:stream:world_pulse:run:result` →
+`91`; `:dlq` → `0`. `services/orion-bus/.env_example`'s own `BUS_STREAM_DEPTH_CRITICAL=100000`
+divides this 91 down to `0.00091` (`orion/substrate/transport_loop/extract.py:86`,
+`stream_depth_pressure = min(max_stream_depth / critical, 1.0)`) — a ~1,099x ratio between the real
+number and the "critical" threshold, which reads as "quiet" no matter what the real queue is doing,
+short of it growing to tens of thousands of messages. Checked against the training corpus
+(`/mnt/telemetry/field_channels/corpus/field_channels.jsonl`): before the second cutoff
+(2026-07-22T04:35:01Z, PR #1248's `mode="add"` fix), this same value was pinned at ~100,000 for 80%
+of the corpus's history — that saturation was the already-documented accumulation bug, not evidence
+this queue is normally busy. After the fix, it has been *exactly* 90 or 91, with zero movement, for
+the entire ~18h observed post-fix window — consistent with `orion:stream:world_pulse:run:result`
+having 91 messages sitting permanently unconsumed the whole time, not a healthy, actively-drained
+queue. Whether that backlog itself is expected (nobody reads this queue by design) or a dead
+consumer is a separate, not-yet-investigated question.
+
+**Implication for the charter and for `mood-arc`:** Sentience Striving Program charter §9b item 3
+(Predictive Processing/Active Inference) names "transport" as one of five domains with "equivalent
+shadow-measurement instrumentation" to execution/biometrics/chat/route — true in the sense that
+code exists and runs, misleading in the sense that this domain's real coverage is one queue, not
+general bus stress across services. `prediction_error` (the `max()`-merge across all five domains'
+instruments, `orion/field/pressure.py::collect_field_channel_pressures()`) is also one of
+`field_channel_corpus.v1`'s trained mood-arc channels — this domain's contribution to that merge
+has the same narrow-scope caveat. See `orion/mood_arc/README.md` and this document's "fourth
+training-data quality cutoff" section for the corpus-facing side of this.
 
 **Reverie semantic lift:** unresolved closures also upsert human referent rows into
 `substrate_turn_referent` via `turn_referent_store.persist_turn_referent`. Apply

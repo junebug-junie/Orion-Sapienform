@@ -420,7 +420,23 @@ were broken until today, upstream of this service, not a field-digester bug:
    written despite 241 real accumulated chat turns. Fixed (PR #1267).
 3. `transport_prediction_error()` was **not** broken — its low reading is a
    real quiet bus, not an instrument defect (see the earlier fix note in
-   this same file).
+   this same file). **Correction (2026-07-22, later same day): "quiet bus"
+   undersold this.** `transport_prediction_error()` is fed entirely by
+   `orion-bus`'s bus-observer role, which structurally can only ever watch
+   `orion:stream:world_pulse:run:result` and its DLQ — the only two real
+   Redis Streams anywhere in the architecture (everything else is pub/sub,
+   with no depth/backlog concept). So this instrument doesn't sample "the
+   bus" and find it quiet; it can only ever see one service's result queue,
+   full stop. Confirmed live: `XLEN orion:stream:world_pulse:run:result` =
+   `91` against `BUS_STREAM_DEPTH_CRITICAL=100000` (ratio ~0.00091), flat
+   with zero movement for the entire ~18h window since the fix above — the
+   contributing `transport` node to this merged channel is not "currently
+   calm," it is structurally incapable of reflecting broader bus/transport
+   stress at all. Full trace: `services/orion-bus/README.md`'s "Naming
+   caveat for downstream consumers," `services/orion-substrate-runtime/
+   README.md`'s "transport domain scope" note, `orion/mood_arc/README.md`'s
+   matching caveat, and `orion/sentience_striving_program/README.md` §9b
+   item 3's matching correction.
 
 Net effect: for as long as those two instruments were broken, the merged
 `prediction_error` channel could only ever reflect `biometrics_prediction_

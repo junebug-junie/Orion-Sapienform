@@ -157,6 +157,22 @@ python orion/mood_arc/fit_encoder.py train \
   (`floor_ratio`/`ceiling_ratio` don't single out `prediction_error`), just
   carrying one contaminated-but-not-dominant input feature the same way
   `v2` carried `catalog_drift_pressure` before the second cutoff.
+- **Scope caveat on `prediction_error`'s "transport" contributor (found 2026-07-22, not a new
+  cutoff — no code changed, just what the channel actually means):** `prediction_error` is a
+  `max()`-merge across five nodes; one of them, `node:substrate.transport`, is fed entirely by
+  whatever streams `orion-bus`'s bus-observer role watches (`BUS_OBSERVER_STREAMS`,
+  `services/orion-bus/.env_example`) — currently `orion:stream:world_pulse:run:result` and its
+  DLQ, **the only two real Redis Streams anywhere in the architecture** (everything else is
+  pub/sub, which has no depth/backlog concept to measure). This is not general bus/transport
+  health across services, despite the name — it's whether one specific service's result queue
+  backs up. Confirmed live: that queue has sat at a constant 91 unconsumed messages for the
+  entire post-second-cutoff corpus window (zero variance), so this contributor to the merge is
+  essentially always the smallest/least-surprising of the five, structurally, not because
+  transport is calm. See `services/orion-substrate-runtime/README.md`'s "transport domain scope"
+  note for the full trace. Doesn't change any cutoff or training recommendation above — flagged
+  so a future retrain's field-selection results for `prediction_error` aren't misread as "the
+  whole bus is healthy" when they're really "one queue is quiet, structurally the only thing
+  that can ever show up here."
 - `--hidden-dim 128 --latent-dim 64` are the defaults as of this patch
   (`DEFAULT_HIDDEN_DIM`/`DEFAULT_LATENT_DIM` in `fit_encoder.py`) — sized for
   `field_channel_corpus.v1`'s ~16-26-channel width, not the old 4-channel

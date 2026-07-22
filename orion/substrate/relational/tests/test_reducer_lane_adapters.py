@@ -231,8 +231,9 @@ def test_registry_registers_three_reducer_lanes() -> None:
 
     reg = build_projection_unification_registry()
     ids = [p.producer_id for p in reg.producers]
-    # 15 -> 14 (2026-07-22): "orionmem" producer removed, dead code reading
-    # test-fixture-polluted Fuseki content -- see approve.py's docstring.
-    assert len(reg.producers) == 14
+    # 15 -> 14 (2026-07-22, self_state_ctx burn, landed independently on main)
+    # -> 13 (2026-07-22, this patch): "orionmem" producer removed, dead code
+    # reading test-fixture-polluted Fuseki content -- see approve.py's docstring.
+    assert len(reg.producers) == 13
     assert "orionmem" not in ids
     assert {"biometrics", "execution", "transport", "attention", "episodes", "curiosity"} <= set(ids)

@@ -1,15 +1,18 @@
 # Chat/route prediction-error audit — design doc
 
-Status: **implemented** (chat fix only — see below). This audit was triggered by a direct
-question — whether Orion's substrate prediction-error receipts lean on biometrics because it's
-the easy domain while chat/route (the ones requiring real substrate-grammar work) quietly don't
-produce real signal. The answer is yes, but not for the reason first suspected.
+Status: **closed**. Chat was a real bug and is fixed. Route was investigated and is **not** a
+bug — verified as the intended decay behavior operating correctly on a signal that hasn't fired
+recently. This audit was triggered by a direct question — whether Orion's substrate
+prediction-error receipts lean on biometrics because it's the easy domain while chat/route (the
+ones requiring real substrate-grammar work) quietly don't produce real signal. Chat: yes, and now
+fixed. Route: no — real signal, real decay, nothing to fix.
 
-`chat_prediction_error()`'s `_latest_run()` fallback (the fix proposed below) has landed in
-`orion/substrate/prediction_error.py`, with regression tests and a `services/
-orion-substrate-runtime/README.md` update in the same patch. `route_prediction_error()`'s
-subnormal-value problem remains open — Missing Question 1 (the field-digester diffusion path)
-was not investigated in this pass; do not treat route as fixed.
+`chat_prediction_error()`'s `_latest_run()` fallback has landed in `orion/substrate/
+prediction_error.py`, with regression tests and a `services/orion-substrate-runtime/README.md`
+update in the same patch. `route_prediction_error()`'s subnormal value was traced to
+`services/orion-field-digester/app/digestion/decay.py`'s `apply_decay()` — not the diffusion pass
+this doc originally (wrongly) pointed at — and confirmed as correct, designed behavior: see
+Missing Questions 1-2, now answered, below.
 
 ## Arsonist summary
 
@@ -31,16 +34,44 @@ retention TTL and is not a reliable historical record):
 
 `node:substrate.chat` has never been written. This is direct, load-bearing evidence that
 `chat_prediction_error()` has never returned `error > 0.0` in production — the write in
-`_chat_tick()` (`worker.py` ~line 1826) is gated on exactly that condition. `node:substrate.route`
-exists but reads a value that carries no real information — see Missing Questions below for what
-is and isn't understood about how it got there.
+`_chat_tick()` (`worker.py` ~line 1826) is gated on exactly that condition — a real instrument
+defect, fixed in this patch (see below).
+
+`node:substrate.route`'s subnormal value is **not** an instrument defect. Traced historical
+`substrate_field_state` rows (only ~15h13m of history was actually retained at query time —
+`min(generated_at)`/`max(generated_at)` confirmed directly, not assumed to span the full
+`FIELD_STATE_RETENTION_HOURS=72.0` window):
+
+| `generated_at` (2026-07-22) | `node:substrate.route` prediction_error |
+|---|---|
+| 04:08 (oldest retained) | 0.0035 |
+| 19:20 (current) | ~3e-323 (the display floor, one multiply from exact 0.0) |
+
+This is `apply_decay()` (`services/orion-field-digester/app/digestion/decay.py`) correctly
+eroding a real value toward zero because no new route-arbitration surprise has landed in the
+~15h13m retained window (and likely longer — 0.0035 decaying continuously at `0.92`/2s-tick
+reaches the subnormal floor in under 5 hours, so the *last real write* predates even this
+window's oldest row) — `"prediction_error"` is a genuine member of `NODE_DECAY_CHANNELS` (line 35), decayed by
+`BIOMETRICS_FIELD_DECAY_RATE=0.92` every 2s tick once stale (per the 2026-07-17 decay-hold fix
+documented in this service's own README). The perturbation write path
+(`services/orion-field-digester/app/ingest/state_deltas.py` lines 391-403, triggered from a
+`delta.target_kind == "prediction_signal"` state delta) builds a proper `mode="replace"`
+`Perturbation`, which goes through the normal `apply_perturbations()` stamping of
+`node_vector_updated_at` — this is *not* the "written outside the normal path, stamp missed" bug
+that service's own `CLAUDE.md` warns about (that already happened once for `field_coherence_
+warning`/`staleness`; it did not happen here). `route_prediction_error()` only writes when
+`error > 0.0` (worker.py's `if error > 0.0:` gate, same as chat/biometrics/execution), and route
+arbitration decisions are evidently very stable (441 total runs, apparently no `lane`/`mind_
+requested` mismatches for at least the last several hours, likely longer) — so the signal
+genuinely has had nothing new to report, and decay is doing exactly what it was built to do in
+the 2026-07-17 fix.
 
 This is not "biometrics is real, chat/route are fake" — `substrate_chat_session_projection`
 holds 241 real turns across 8 sessions (accumulating since 2026-06-19), and
 `substrate_route_arbitration_projection` holds 441 real arbitration runs (since 2026-07-13). The
-underlying grammar-event reduction genuinely works for both domains. The prediction-error
-*shadow instrument* layered on top of that real data is what's broken for chat and produces a
-meaningless value for route.
+underlying grammar-event reduction genuinely works for both domains, and so does route's shadow
+instrument (it produced a real 0.0035 value earlier the same day this was checked) — chat's
+shadow instrument was the one actually broken.
 
 ## Current architecture
 
@@ -77,30 +108,38 @@ meaningless value for route.
 - `ChatTurnStateV1.last_updated_at: datetime` exists (`orion/schemas/chat_projection.py` line 22)
   — the exact field `_latest_run()` needs. Nothing structural blocks reusing the same helper here.
 - `route_prediction_error()` already has the `a98854a2` fallback and is not structurally dead the
-  way chat is — its live value being a subnormal float is a **different, not-yet-traced**
-  problem (see Missing Questions).
+  way chat is — its live value being a subnormal float is **traced and confirmed as correct
+  decay behavior, not a bug** (see Missing Questions 1-2, now answered).
 - `orion/substrate/pressure.py::prediction_error_pressure()` (read directly, lines 36-60): a pure
   function of `node.metadata['prediction_error']` and `node.temporal.observed_at`, linearly
   decaying to zero over `prediction_error_decay_horizon_seconds=1800` (30 min). **It does not
-  persist a decayed value back into storage** — it recomputes fresh from `raw` on every call.
-  This means the subnormal float observed in `substrate_field_state.node_vectors` for
-  `node:substrate.route` is **not** explained by this function; that value lives in a different
-  storage layer (`FieldStateV1.node_vectors`, populated by `orion-field-digester`'s diffusion
-  pass reading substrate graph node metadata) that this audit has not yet traced. An earlier draft
-  of this doc incorrectly asserted `prediction_error_pressure()`'s decay as the explanation —
-  corrected here after re-reading the function body; do not carry that claim forward.
+  persist a decayed value back into storage** — it recomputes fresh from `raw` on every call. An
+  earlier draft of this doc incorrectly asserted this function's decay explains the subnormal
+  `node:substrate.route` value in `substrate_field_state.node_vectors` — wrong storage layer.
+  The real mechanism is `services/orion-field-digester/app/digestion/decay.py::apply_decay()`,
+  a completely different decay applied to `FieldStateV1.node_vectors` directly (see below).
 
-## Missing questions (answer before implementing a route fix)
+## Missing questions (both now answered — kept for record)
 
-1. What actual mechanism turns a real `node.metadata['prediction_error']` value into the
-   subnormal float seen in `substrate_field_state.node_vectors['node:substrate.route']`? Trace
-   `orion-field-digester`'s diffusion pass (the process that populates `FieldStateV1.node_vectors`
-   from substrate graph nodes) — is there exponential decay/repeated multiplication happening
-   there, separate from `prediction_error_pressure()`? `UNVERIFIED`.
-2. When was `node:substrate.route`'s last *real* (non-decayed) write? If route arbitration
-   volume is genuinely low (441 runs total, sparser than chat's 241-turns-since-June-19 rate
-   suggests), the near-zero value might just mean "no real arbitration variance recently" rather
-   than a bug — need a timestamp on the last meaningfully-nonzero write to tell the difference.
+1. **Answered.** What actual mechanism turns a real `node.metadata['prediction_error']` value
+   into the subnormal float seen in `substrate_field_state.node_vectors['node:substrate.route']`?
+   `services/orion-field-digester/app/digestion/decay.py::apply_decay()`. `"prediction_error"` is
+   a member of `NODE_DECAY_CHANNELS` (line 35), decayed by `BIOMETRICS_FIELD_DECAY_RATE=0.92`
+   every `RECEIPT_POLL_INTERVAL_SEC=2.0s` tick once stale (no fresh perturbation within
+   `FIELD_DECAY_STALENESS_THRESHOLD_SEC=90s`, per the 2026-07-17 decay-hold fix). The write path
+   (`app/ingest/state_deltas.py` lines 391-403) builds a proper `mode="replace"` `Perturbation`
+   that goes through `apply_perturbations()`'s normal `node_vector_updated_at` stamping — not the
+   "written outside the normal path" bug class this service's `CLAUDE.md` warns about.
+2. **Answered.** When was `node:substrate.route`'s last real (non-decayed) write? Traced via
+   `substrate_field_state` history: `0.0035` at the oldest retained row (2026-07-22 04:08, only
+   ~15h13m of history was actually retained at query time, not the full 72h
+   `FIELD_STATE_RETENTION_HOURS` window), decayed to the subnormal floor (~3e-323) by 19:20 the
+   same day. `0.0035` decaying continuously at `0.92`/2s-tick reaches the subnormal floor in
+   under 5 hours, so the actual last real write predates even this window's oldest retained row —
+   route arbitration genuinely hasn't produced a `lane`/`lane_reason`/`output_mode`/`mind_
+   requested` mismatch in a long time. Verdict: **not a bug** — correct decay of a real signal
+   during a real quiet period, exactly what the 2026-07-17 fix was built to do. No further action
+   needed for route.
 3. For chat: is there a principled way to score "surprise" for a brand-new turn with no
    predecessor to diff against, analogous to what `_latest_run` gives execution/route? The
    proposed fix below (diff a new turn against the most-recently-updated *other* turn) is the
@@ -124,9 +163,8 @@ No schema changes. `orion/substrate/prediction_error.py::chat_prediction_error()
   against the most-recently-updated prior turn's hints (not "the same turn revised in place",
   which does not happen in practice for chat).
 
-No change proposed yet for `route_prediction_error()` or the field-digester diffusion path —
-Missing Question 1 needs to be answered first; this doc explicitly declines to hand-wave the
-decay-to-subnormal mechanism just to file a same-day fix.
+No change for `route_prediction_error()` or `orion-field-digester`'s `apply_decay()` — both
+traced and confirmed working as designed (Missing Questions 1-2, above). Nothing to fix.
 
 ## Files likely to touch
 
@@ -144,10 +182,9 @@ decay-to-subnormal mechanism just to file a same-day fix.
 
 ## Non-goals
 
-- Not fixing `route_prediction_error()`'s subnormal-value problem in this patch — root cause is
-  unverified (Missing Question 1), and CLAUDE.md's metric-quality-gate step 1 (trace provenance
-  to real code) is not yet satisfied for that specific symptom.
-- Not touching `orion-field-digester`'s diffusion pass in this patch.
+- Not changing `route_prediction_error()`, `apply_decay()`, or any other part of
+  `orion-field-digester` — traced and confirmed both are already working correctly; there is
+  nothing to fix.
 - Not adding a new theory anchor — reuses charter §9b item 3 (Predictive Processing / Active
   Inference), the same anchor every other instrument in this module already uses.
 - Not changing `_THRESHOLD` scaling, `SUBSTRATE_WRITE_PREDICTION_ERROR_NODES` gating, or any
@@ -156,17 +193,20 @@ decay-to-subnormal mechanism just to file a same-day fix.
 ## Acceptance checks
 
 - `pytest orion/substrate/tests/test_prediction_error.py -q` passes, including the three new
-  cases named above.
+  cases named above. **Done — 32 passed.**
 - Live check (post-deploy, mirrors the biometrics-shadow-design doc's own honesty standard):
   query `substrate_field_state.node_vectors` for `node:substrate.chat` and confirm it now exists
   with a non-zero value after a real chat turn follows a prior one. `UNVERIFIED` until observed
-  live — do not claim this fixed until that specific row is seen.
-- Grep the diff for any change to `route_prediction_error`, `prediction_error_pressure`, or
-  `orion-field-digester`: zero hits (confirms this patch stayed scoped to chat only).
+  live — do not claim this fixed until that specific row is seen (this patch has not been
+  deployed as of writing).
+- Grep the diff for any change to `route_prediction_error`, `prediction_error_pressure`,
+  `apply_decay`, or `orion-field-digester`: zero hits (confirms this patch stayed scoped to chat
+  only). **Done.**
 
 ## Recommended next patch
 
-1. Implement the `chat_prediction_error()` fix above (small, low-risk, direct precedent).
-2. Separately: trace `orion-field-digester`'s diffusion pass to answer Missing Question 1-2
-   before proposing any route fix — this is a live-data investigation, not a code patch, and
-   should not be bundled with the chat fix above.
+1. ~~Implement the `chat_prediction_error()` fix above.~~ **Done.**
+2. ~~Trace `orion-field-digester`'s decay path to answer Missing Questions 1-2.~~ **Done — not a
+   bug, no fix needed.**
+3. After deploy: confirm the live `node:substrate.chat` write per the Acceptance Checks above.
+   This is the only remaining open item from this audit.

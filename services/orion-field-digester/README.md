@@ -237,6 +237,52 @@ conservative-but-not-perfectly-precise, not a scientifically exact boundary;
 a training run right at the edge of it may still carry a small amount of
 pre-fix contamination.
 
+## `field_channel_corpus.v1` second training-data quality cutoff (2026-07-22, PR #1248)
+
+A second, independent contamination window: `transport_pressure`/
+`catalog_drift_pressure`/`observer_failure_pressure`/`reliability_pressure`/
+`contract_pressure` were injected into the field via the default
+`Perturbation` `mode="add"` (`app/ingest/state_deltas.py`'s `transport_bus`
+branch) instead of `mode="replace"`, even though `transport_loop_reducer`
+recomputes all five fresh every reduction (a "current reading," not an
+incremental delta). Combined with `apply_perturbations()` unconditionally
+stamping `node_vector_updated_at` regardless of mode, and `apply_decay()`
+holding a channel flat while "fresh," any of these five channels that ever
+picked up a nonzero value from a real event could get permanently stuck —
+immune to both correction (an `add`-mode `0.0` "no drift" report is a no-op)
+and decay (perpetually re-marked "fresh"). Confirmed live: `catalog_drift_pressure`
+was frozen at exactly `0.13517857261119032` for 10+ minutes across a service
+restart while the real value (read directly from `transport_bus_reducer`'s
+live Postgres receipts) was `0.0` the entire time — traced end to end via
+the `telemetry_anomaly` metacog trigger firing on nearly every tick because
+of it (this one channel accounted for ~66% of the average reconstruction
+error against the trained `field_channel_anomaly.v2` encoder).
+
+Fixed by PR #1248 (`mode="replace"` for all five channels, matching
+`bus_health`/`delivery_confidence`'s existing correct handling). **Rows
+generated before this fix is deployed may carry a stuck value for any of
+the five channels above** — not necessarily contaminated at every timestamp
+(a channel only gets stuck once it has picked up a nonzero value from a real
+event and then failed to decay/correct), but unlike the 2026-07-17 cutoff
+above, this window has no known start — a channel could have been stuck for
+an arbitrarily long time before anyone noticed. Get the exact cutoff once
+PR #1248 is merged and `orion-field-digester` has been restarted with it via
+`gh pr view 1248 --json mergedAt`, cross-checked against the actual
+container restart time (`docker inspect orion-athena-field-digester
+--format '{{.State.StartedAt}}'`) the same way the 2026-07-17 cutoff above
+notes merge-time and restart-time can drift apart. As of this writing PR
+#1248 is open, not yet merged or deployed — **do not train against corpus
+data until it has been, and until the new cutoff below is filled in**:
+
+```bash
+python orion/mood_arc/fit_encoder.py train \
+  --corpus /mnt/telemetry/field_channels/corpus/field_channels.jsonl \
+  --min-generated-at <PR #1248 deploy timestamp, TBD> \
+  --out <out-dir>
+```
+
+If both cutoffs apply, use whichever is later.
+
 ## Field channel glossary
 
 This is the consolidated reference for all 29 channels in

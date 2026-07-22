@@ -43,6 +43,9 @@ def test_intent_producers_and_consumer() -> None:
 
 
 def test_perception_consumers() -> None:
+    # 2026-07-22 (SelfStateV1 burn): orion-self-state-runtime deleted, dropped
+    # from the expected consumer set here to match orion/bus/channels.yaml.
     entry = _channel_index()["orion:embodiment:perception"]
-    for consumer in ("orion-substrate-runtime", "orion-self-state-runtime", "orion-cortex-exec"):
+    for consumer in ("orion-substrate-runtime", "orion-cortex-exec"):
         assert consumer in entry["consumer_services"]
+    assert "orion-self-state-runtime" not in entry["consumer_services"]

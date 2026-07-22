@@ -134,7 +134,7 @@ class Settings(BaseSettings):
     # (~104MB/36.8k rows over 5 days at spec time), not independently
     # verified against MOOD_ARC_CORPUS_PATH's (roadmap item 1 estimates
     # ~8-9MB/day, a real but different rate -- see
-    # orion/self_state/inner_state_registry.py's mood_arc_corpus.v1 entry).
+    # orion/inner_state_registry.py's mood_arc_corpus.v1 entry).
     # ge=1_000_000 (1MB), not just ge=1: a typo'd tiny value (e.g. losing
     # three zeros off the intended 200_000_000) would rotate on nearly
     # every tick instead of failing validation (found by code review,

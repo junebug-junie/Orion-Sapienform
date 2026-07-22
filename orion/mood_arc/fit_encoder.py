@@ -114,8 +114,10 @@ ARCHITECTURE = "mlp_shallow_v1"  # same architecture family as the phi encoder
 # Channels excluded from select_fields() by name regardless of variance --
 # context/activity-rate meta-channels, not state channels the encoder
 # should be learning trajectory structure over. recent_perturbation_count
-# is one of two entries in config/self_state/self_state_policy.v1.yaml's
-# context_channels list; the other (overall_salience) is deliberately NOT
+# was one of two entries in config/self_state/self_state_policy.v1.yaml's
+# context_channels list (that file deleted 2026-07-22, SelfStateV1 burn --
+# the exclusion below is unaffected, it's a property of the channel itself,
+# not of the policy file); the other (overall_salience) is deliberately NOT
 # included here -- it is produced by collect_attention_channel_pressures(),
 # a different function from collect_field_channel_pressures() (the one
 # actually feeding FieldChannelCorpusRowV1.channels, per
@@ -992,9 +994,10 @@ def top_channel_attribution(
 ) -> list[str]:
     """Top-N contributing channels for one window's reconstruction error,
     ranked highest-error-first, as human-readable f"{channel}={mse:.5f}"
-    strings. Same output shape as
-    orion.self_state.builder.evidence_for_dimension() -- that function ranks
-    SelfStateV1 dimension contributors by raw channel value; this ranks by
+    strings. Same output shape as the now-deleted
+    orion.self_state.builder.evidence_for_dimension() (module removed
+    2026-07-22, SelfStateV1 burn) -- that function ranked SelfStateV1
+    dimension contributors by raw channel value; this ranks by
     reconstruction error instead, since an autoencoder's composite score
     isn't a weighted sum the same way a self-state dimension is. Added
     2026-07-21 to close the gap flagged in docs/superpowers/design/

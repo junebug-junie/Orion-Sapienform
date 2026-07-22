@@ -19,6 +19,14 @@ a general-purpose name->class lookup with hundreds of unrelated entries (bus
 envelope resolution, dynamic dispatch). This registry is narrow and
 purpose-built -- it imports classes from where they already live, it does
 not redefine or duplicate them.
+
+Relocated from orion/self_state/inner_state_registry.py (2026-07-22,
+SelfStateV1 burn) -- this registry tracks every inner-state signal repo-wide
+(DriveStateV1, AutonomyStateV2, phi, biometrics, mood-arc, the L7-L11 ladder,
+SelfStateV1 itself), not just SelfStateV1's own module, and its CI gate
+(scripts/check_inner_state_registry.py) has real, independent value
+unrelated to whether SelfStateV1 specifically survives -- moved to a neutral
+location rather than deleted alongside orion/self_state/.
 """
 from __future__ import annotations
 

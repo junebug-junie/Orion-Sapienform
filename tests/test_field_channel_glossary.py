@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from orion.self_state.field_channel_glossary import (
+from orion.field.channel_glossary import (
     CLEAN_VERDICTS,
     LIVE_VARIANCE_THRESHOLD,
     SUBNORMAL_CUTOFF,
@@ -92,7 +92,7 @@ def test_classify_two_point_up_step_is_not_ratchet_suspect():
 
 
 def test_classify_ratchet_suspect_requires_minimum_sample_count():
-    from orion.self_state.field_channel_glossary import RATCHET_MIN_SAMPLES
+    from orion.field.channel_glossary import RATCHET_MIN_SAMPLES
 
     short_climb = [round(i * 0.5 / (RATCHET_MIN_SAMPLES - 2), 4) for i in range(RATCHET_MIN_SAMPLES - 1)]
     assert len(short_climb) < RATCHET_MIN_SAMPLES

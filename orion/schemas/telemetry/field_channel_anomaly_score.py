@@ -32,9 +32,10 @@ class FieldChannelAnomalyScoreV1(BaseModel):
     window_end: datetime
     window_size: int
     # Top-N channels by per-window reconstruction error, highest first, as
-    # "channel=mse" strings -- same shape as
+    # "channel=mse" strings -- same shape as the now-deleted
     # orion.self_state.builder.evidence_for_dimension()'s dominant_evidence
-    # output. Added 2026-07-21 so a firing says *which* channels moved, not
+    # output (module removed 2026-07-22, SelfStateV1 burn). Added 2026-07-21
+    # so a firing says *which* channels moved, not
     # just that something did. Empty list is a valid, honest state (e.g. the
     # producer failed to compute attribution) -- never fabricated.
     top_channels: list[str] = Field(default_factory=list)

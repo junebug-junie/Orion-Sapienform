@@ -45,7 +45,7 @@ def _annotation_prompt_path_candidates() -> list[Path]:
     file, so `parents[3]` raised IndexError at import time -- a hard crash loop,
     not a degraded fallback, since main.py imports this module at startup.
     Mirrors the multi-candidate/env-override pattern already proven in
-    orion/self_state/field_channel_glossary.py's _glossary_path_candidates()."""
+    orion/field/channel_glossary.py's _glossary_path_candidates()."""
     roots: list[Path] = []
     seen: set[str] = set()
 

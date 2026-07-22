@@ -118,6 +118,22 @@ def collect_field_channel_pressures(
             elif (channel in PRESSURE_CHANNELS or v > 0) and v >= out.get(channel, 0.0):
                 out[channel] = v
                 provenance[channel] = resolved_provenance
+    # recent_perturbation_count (context_channel, not scored into any
+    # dimension): 2026-07-22 correction -- this block was accidentally
+    # dropped from the "moved verbatim" copy of this function (confirmed via
+    # a direct diff against orion/self_state/scoring.py's original), a real
+    # regression since orion-field-digester's field_channel_corpus.v1 rows
+    # and orion/mood_arc/fit_encoder.py's explicit by-name exclusion both
+    # depend on this key being present. Restored verbatim, including the
+    # original 2026-07-16 saturating-counter fix history: field.recent_
+    # perturbations used to be capped to the last 20 distinct labels EVER
+    # seen (saturating this to 1.0 within a few ticks and pinning it there
+    # forever); orion-field-digester's apply_perturbations now prunes it to a
+    # rolling 60s wall-clock window instead, so this count reflects genuinely
+    # recent activity and decays back down once a burst passes.
+    n = len(field.recent_perturbations)
+    if n > 0:
+        out["recent_perturbation_count"] = clamp01(min(1.0, n / 20.0))
     return out, provenance
 
 

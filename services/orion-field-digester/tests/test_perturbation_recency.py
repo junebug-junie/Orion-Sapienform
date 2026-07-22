@@ -3,7 +3,7 @@ from __future__ import annotations
 from datetime import datetime, timedelta, timezone
 
 from orion.schemas.field_state import FieldStateV1
-from orion.self_state.scoring import collect_field_channel_pressures
+from orion.field.pressure import collect_field_channel_pressures
 
 from app.digestion.perturbation import (
     RECENT_PERTURBATION_WINDOW_SECONDS,

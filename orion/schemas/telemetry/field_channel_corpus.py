@@ -18,7 +18,7 @@ because the corpus was capturing an already-composited, already-smoothed
 
 This schema is the corrected replacement target: it captures the RAW per-
 node/per-capability channel pressures from `FieldStateV1`, via
-`orion.self_state.scoring.collect_field_channel_pressures(field) ->
+`orion.field.pressure.collect_field_channel_pressures(field) ->
 tuple[dict[str, float], dict[str, str]]` -- the function that merges
 `node_vectors` + `capability_vectors` into one flat channel-name-keyed dict
 (e.g. `cpu_pressure`, `gpu_pressure`, `memory_pressure`,
@@ -40,7 +40,7 @@ channels.
 `mood_arc_corpus.v1` (the old sink) is NOT superseded operationally -- it
 keeps running, untouched, real data for what it is. This is a new,
 separate, off-by-default, additive corpus sink; see
-`orion/self_state/inner_state_registry.py`'s `field_channel_corpus.v1` and
+`orion/inner_state_registry.py`'s `field_channel_corpus.v1` and
 `mood_arc_corpus.v1` entries for the composition-status bookkeeping.
 
 **Row width is NOT fixed.** `channels` is a flat channel_name -> value

@@ -88,9 +88,12 @@ class Settings(BaseSettings):
     # snapshots / goal proposals) deliberately not subscribed as of
     # 2026-07-18: live Fuseki query found zero graphs matching
     # autonomy/identity/goals ever recorded, despite a real producer
-    # existing. identity_snapshots already has a real, actively-pruned
-    # Postgres store (orion-self-state-runtime's SelfStateRuntimeStore), and
-    # goal proposals are already consumed live by orion-substrate-runtime's
+    # existing. identity_snapshots had a real, actively-pruned Postgres store
+    # (orion-self-state-runtime's SelfStateRuntimeStore) at the time; that
+    # service was deleted 2026-07-22 (SelfStateV1 burn), leaving the table
+    # with zero producer -- flagged as a follow-up, not a reason to
+    # reconsider this channel. Goal proposals are already consumed live by
+    # orion-substrate-runtime's
     # goal_context_listener.py. Same shape as the drive-audit kill and the
     # cognition/metacog kill — a real consumer already exists elsewhere.
     # Do not re-add any of the above without a real producer/consumer.

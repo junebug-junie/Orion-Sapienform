@@ -13,7 +13,7 @@
 #
 # Deliberately does NOT include a "verdict" field: liveness verdicts are
 # computed LIVE from substrate_field_state by
-# orion.self_state.field_channel_glossary.classify_channel_series(), not
+# orion.field.channel_glossary.classify_channel_series(), not
 # hand-maintained here -- a static verdict column is exactly what already
 # went stale once (see the README's "Decay vs. injection-interval mismatch"
 # section).

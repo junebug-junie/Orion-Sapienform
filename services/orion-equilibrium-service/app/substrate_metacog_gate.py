@@ -36,6 +36,10 @@ def build_substrate_metacog_trigger(
     if ev.reasons:
         reason = f"{reason}:{','.join(ev.reasons[:4])}"
 
+    # 2026-07-22 (SelfStateV1 burn): dropped the upstream.self_state_id lookup.
+    # hydrate_felt_state_ctx() no longer populates ctx["self_state"] (its
+    # producer, orion-self-state-runtime, is deleted), so this always
+    # resolved to None -- a dead field rather than real provenance.
     return MetacogTriggerV1(
         trigger_kind=ev.trigger_kind,
         reason=reason[:500],
@@ -45,8 +49,5 @@ def build_substrate_metacog_trigger(
         upstream={
             "substrate_score": ev.score,
             "reasons": list(ev.reasons),
-            "self_state_id": (ctx.get("self_state") or {}).get("self_state_id")
-            if isinstance(ctx.get("self_state"), dict)
-            else None,
         },
     )

@@ -146,10 +146,12 @@ def build_triples_from_envelope(env_kind: str, payload: Any) -> Tuple[Optional[s
         # 5. Phase 3 autonomy artifact materialization -- deliberately
         # removed as of 2026-07-18: live Fuseki query found zero graphs
         # matching autonomy/identity/goals ever recorded, despite a real
-        # producer existing. identity_snapshots already has a real,
-        # actively-pruned Postgres store (orion-self-state-runtime's
-        # SelfStateRuntimeStore) and goal proposals are already consumed
-        # live by orion-substrate-runtime's goal_context_listener.py. Same
+        # producer existing. identity_snapshots had a real, actively-pruned
+        # Postgres store (orion-self-state-runtime's SelfStateRuntimeStore)
+        # at the time; that service is deleted as of 2026-07-22 (SelfStateV1
+        # burn), leaving the table with zero producer (flagged as a
+        # follow-up). Goal proposals are already consumed live by
+        # orion-substrate-runtime's goal_context_listener.py. Same
         # shape as the memory.drives.audit.v1 kill (2026-07-15) below --
         # do not re-add either without a real Falkor/Postgres-gap reason.
         # (memory.drives.audit.v1 deliberately absent: drive audits are

@@ -13,7 +13,6 @@ from orion.schemas.collapse_mirror import (
     mirror_kind,
     normalize_collapse_entry,
 )
-from orion.schemas.self_state import SelfStateV1
 
 logger = logging.getLogger("orion.collapse.service")
 
@@ -134,57 +133,12 @@ def _label_for_score(score: float) -> str:
 # Starting-default blend weights, not derived from any calibration data yet.
 # Expect these to get retuned once we have real metacog-lane outcomes to check against.
 METACOG_SELF_REPORT_WEIGHT = 0.35
-METACOG_PHI_EVIDENCE_WEIGHT = 0.65
-# Deliberately equal to METACOG_PHI_EVIDENCE_WEIGHT: relational evidence (a real
-# turn_change_classify SHIFT appraisal) is treated as a co-primary evidence
-# source, not a minor bump. Only one of phi/relational is normally present per
-# entry (a given trigger fires one or the other), so this rarely triples up.
+# Relational evidence (a real turn_change_classify SHIFT appraisal) is
+# treated as a co-primary evidence source, not a minor bump.
+# 2026-07-22 (SelfStateV1 burn): METACOG_PHI_EVIDENCE_WEIGHT (formerly 0.65,
+# equal to this constant by design) removed along with the phi-evidence
+# component -- it was structurally always None (see apply_causal_density_to_entry).
 METACOG_RELATIONAL_EVIDENCE_WEIGHT = 0.65
-
-_SEVERITY_ORDER = ("quiet", "steady", "loaded", "strained", "unstable")
-
-
-def _condition_severity_rank(condition: str | None) -> int:
-    try:
-        return _SEVERITY_ORDER.index(condition or "")
-    except ValueError:
-        return -1  # unknown/missing: not a signal either way
-
-
-def _coerce_self_state(raw: Any) -> SelfStateV1 | None:
-    if raw is None:
-        return None
-    try:
-        if isinstance(raw, SelfStateV1):
-            return raw
-        if isinstance(raw, dict):
-            return SelfStateV1.model_validate(raw)
-        if isinstance(raw, str) and raw.strip():
-            return SelfStateV1.model_validate_json(raw)
-    except Exception as exc:
-        logger.debug("collapse_density_self_state_parse_failed error=%s", exc)
-    return None
-
-
-def _phi_evidence_score(self_state: SelfStateV1 | None) -> float | None:
-    """Computed phi evidence score in [0, 1], or None if no self_state available.
-
-    Blends: (a) magnitude of prediction_error_scores (max), (b) overall_condition
-    severity rank normalized to [0, 1], (c) a fixed bump if trajectory_condition
-    is "degrading" (a transition matters independent of absolute severity).
-    """
-    if self_state is None:
-        return None
-    prediction_error = max(
-        (float(v or 0.0) for v in (self_state.prediction_error_scores or {}).values()),
-        default=0.0,
-    )
-    severity_rank = _condition_severity_rank(self_state.overall_condition)
-    severity_norm = max(0.0, severity_rank / (len(_SEVERITY_ORDER) - 1)) if severity_rank >= 0 else 0.0
-    degrading_bump = 0.15 if self_state.trajectory_condition == "degrading" else 0.0
-    evidence = max(0.0, min(1.0, 0.5 * prediction_error + 0.5 * severity_norm + degrading_bump))
-    return evidence
-
 
 def _self_report_signals(entry: CollapseMirrorEntryV2) -> list[float]:
     numeric = entry.numeric_sisters
@@ -240,23 +194,23 @@ def _relational_evidence_score(entry: CollapseMirrorEntryV2) -> float | None:
     return max(0.0, min(1.0, sum(values) / len(values)))
 
 
-def apply_causal_density_to_entry(
-    entry: CollapseMirrorEntryV2,
-    *,
-    self_state: SelfStateV1 | dict | str | None = None,
-) -> CollapseMirrorEntryV2:
-    """Apply causal density scoring in-memory (no collapse store required)."""
+def apply_causal_density_to_entry(entry: CollapseMirrorEntryV2) -> CollapseMirrorEntryV2:
+    """Apply causal density scoring in-memory (no collapse store required).
+
+    2026-07-22 (SelfStateV1 burn): dropped the self_state parameter and its
+    phi-evidence component. felt_state_reader.py's self_state lane was
+    already removed the same day, so the only real caller
+    (collapse_verbs.py) was already passing None on every invocation --
+    phi_score was structurally always None here regardless of this change.
+    """
     self_report_signals = _self_report_signals(entry)
     self_report_score = _score_from_values(self_report_signals)
 
     lane = mirror_kind(entry)
     if lane == "metacog":
-        phi_score = _phi_evidence_score(_coerce_self_state(self_state))
         relational_score = _relational_evidence_score(entry)
 
         components: list[tuple[float, float]] = [(METACOG_SELF_REPORT_WEIGHT, self_report_score)]
-        if phi_score is not None:
-            components.append((METACOG_PHI_EVIDENCE_WEIGHT, phi_score))
         if relational_score is not None:
             components.append((METACOG_RELATIONAL_EVIDENCE_WEIGHT, relational_score))
 
@@ -284,19 +238,8 @@ def apply_causal_density_to_entry(
 
 
 def score_causal_density(event_id: str) -> CollapseMirrorEntryV2:
-    """Unchanged public entry point: no self_state, no behavior change for any
-    existing caller. Strict-lane and unknown-lane entries always go through this
-    path with self_state=None, which is byte-for-byte identical to the
-    pre-this-change behavior."""
-    return score_causal_density_with_self_state(event_id, self_state=None)
-
-
-def score_causal_density_with_self_state(
-    event_id: str,
-    self_state: SelfStateV1 | dict | str | None,
-) -> CollapseMirrorEntryV2:
     store = _get_store()
     entry = store.get(event_id)
-    entry = apply_causal_density_to_entry(entry, self_state=self_state)
+    entry = apply_causal_density_to_entry(entry)
     store.save(entry)
     return entry

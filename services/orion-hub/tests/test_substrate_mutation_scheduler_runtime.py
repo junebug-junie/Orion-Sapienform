@@ -38,32 +38,38 @@ if (
 
 from datetime import datetime, timezone
 
-from orion.schemas.self_state import SelfStateDimensionV1, SelfStateV1
+from orion.core.schemas.substrate_mutation import MutationSignalV1
 from orion.substrate.mutation_queue import SubstrateMutationStore
-from orion.substrate.mutation_self_revision import prediction_error_mutation_signals
 from orion.substrate import mutation_control_surface
 from scripts import api_routes
 
 
-def _self_revision_self_state(prediction_error_scores: dict[str, float]) -> SelfStateV1:
-    now = datetime.now(timezone.utc)
-    dims = {
-        dim: SelfStateDimensionV1(dimension_id=dim, score=0.5, confidence=0.7)
-        for dim in prediction_error_scores
-    }
-    return SelfStateV1(
-        self_state_id="ss-revision-scheduler",
-        generated_at=now,
-        source_field_tick_id="ft",
-        source_field_generated_at=now,
-        source_attention_frame_id="af",
-        source_attention_generated_at=now,
-        overall_condition="strained",
-        overall_intensity=0.6,
-        overall_confidence=0.6,
-        dimensions=dims,
-        prediction_error_scores=prediction_error_scores,
-    )
+def _continuity_pressure_signals(strength: float) -> list[MutationSignalV1]:
+    """A literal stand-in for what orion.substrate.mutation_self_revision's
+    prediction_error_mutation_signals() used to produce for a continuity_pressure
+    self-model dimension (module deleted 2026-07-22, SelfStateV1 burn --
+    api_routes._self_revision_signals_from_latest_self_state now always returns
+    [] since self_state has no producer). These tests exist to cover the
+    scheduler's double-gating/kill-lever behavior around whatever this signal
+    source returns, independent of what used to produce it."""
+    return [
+        MutationSignalV1(
+            event_kind="self_model_drift:continuity_pressure",
+            anchor_scope="orion",
+            subject_ref="entity:orion",
+            target_surface="cognitive_identity_continuity_adjustment",
+            target_zone="concept_graph",
+            strength=strength,
+            evidence_refs=["self_state:ss-revision-scheduler", "self_dimension:continuity_pressure"],
+            source_ref="self_state:ss-revision-scheduler",
+            metadata={
+                "source_kind": "self_model_prediction_error",
+                "self_dimension_id": "continuity_pressure",
+                "prediction_error": round(strength, 6),
+                "trajectory": 0.0,
+            },
+        )
+    ]
 
 
 @pytest.fixture
@@ -449,9 +455,7 @@ def test_scheduler_self_revision_disabled_by_default_signal_never_enters_cycle(m
     monkeypatch.setattr(
         api_routes,
         "_self_revision_signals_from_latest_self_state",
-        lambda **kwargs: prediction_error_mutation_signals(
-            _self_revision_self_state({"continuity_pressure": 0.9}), min_error=0.3
-        ),
+        lambda **kwargs: _continuity_pressure_signals(0.9),
     )
     payload = api_routes.execute_substrate_mutation_scheduled_cycle(
         telemetry_override=[],
@@ -471,9 +475,7 @@ def test_scheduler_self_revision_signals_flow_into_cognitive_proposal_when_doubl
     monkeypatch.setattr(
         api_routes,
         "_self_revision_signals_from_latest_self_state",
-        lambda **kwargs: prediction_error_mutation_signals(
-            _self_revision_self_state({"continuity_pressure": 0.7}), min_error=0.3
-        ),
+        lambda **kwargs: _continuity_pressure_signals(0.7),
     )
     api_routes.execute_substrate_mutation_scheduled_cycle(
         telemetry_override=[],
@@ -500,9 +502,7 @@ def test_scheduler_self_revision_requires_cognitive_lane_double_gate(monkeypatch
     monkeypatch.setattr(
         api_routes,
         "_self_revision_signals_from_latest_self_state",
-        lambda **kwargs: prediction_error_mutation_signals(
-            _self_revision_self_state({"continuity_pressure": 0.9}), min_error=0.3
-        ),
+        lambda **kwargs: _continuity_pressure_signals(0.9),
     )
     payload = api_routes.execute_substrate_mutation_scheduled_cycle(
         telemetry_override=[],
@@ -521,9 +521,7 @@ def test_scheduler_self_revision_respects_routing_proposals_kill_lever(monkeypat
     monkeypatch.setattr(
         api_routes,
         "_self_revision_signals_from_latest_self_state",
-        lambda **kwargs: prediction_error_mutation_signals(
-            _self_revision_self_state({"continuity_pressure": 0.9}), min_error=0.3
-        ),
+        lambda **kwargs: _continuity_pressure_signals(0.9),
     )
     payload = api_routes.execute_substrate_mutation_scheduled_cycle(
         telemetry_override=[],

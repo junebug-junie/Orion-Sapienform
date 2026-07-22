@@ -18,6 +18,8 @@ The **Meta Tags** service provides automated enrichment for collapse events, cha
 
 Chat/social-turn tag+entity enrichment is **not published to the bus at all** — it goes straight into FalkorDB (below). See "Historical note" at the end of this section for what used to be here.
 
+Collapse-triage (Juniper-observer-gated, generic `handle_triage_event` branch) still publishes `tags.enriched` to the bus **and**, when `RECALL_FALKOR_COLLAPSE_TRIAGE_ENABLED=true`, also writes to FalkorDB now — see "Collapse-triage Falkor writer" below. Unlike chat/social turns this is additive, not a swap: Fuseki (via `orion-rdf-writer`) remains this workload's persistence until the Falkor side is verified live and explicitly cut over.
+
 ### Environment Variables
 Provenance: `.env_example` → `docker-compose.yml` → `settings.py`
 
@@ -27,6 +29,7 @@ Provenance: `.env_example` → `docker-compose.yml` → `settings.py`
 | `CHANNEL_EVENTS_CHAT_TURN` | `orion:chat:history:turn` | Chat-turn intake channel. |
 | `CHANNEL_EVENTS_TAGGED` | `orion:tags:enriched` | Collapse-mirror output channel. |
 | `RECALL_FALKOR_TAG_ENTITY_ENABLED` | `true` | See Falkor writer section. Default is `true` because Falkor is the *only* persistence path for chat/social tags now — `false` means no persistence at all for this data, not "skip a shadow write." |
+| `RECALL_FALKOR_COLLAPSE_TRIAGE_ENABLED` | `false` | See "Collapse-triage Falkor writer" section. Dark by default — this workload has no Falkor equivalent yet, Fuseki (via `orion-rdf-writer`) is still its only persistence, so this is additive, not a swap. |
 | `FALKORDB_URI` | `redis://orion-athena-falkordb:6379` | Shared FalkorDB instance (same one substrate-runtime and graphiti-adapter use, different graph name). |
 | `FALKORDB_RECALL_GRAPH` | `orion_recall` | Graph name — separate from `orion_substrate` and `graphiti_temporal`. |
 
@@ -62,6 +65,29 @@ A one-time reconcile job (`scripts/backfill_recall_entity_graph_cleanup_reconcil
 Runs off the event loop via `asyncio.to_thread` — the underlying `redis.commands.graph` client is sync (same pattern as `orion/spark/concept_induction/bus_worker.py`'s Falkor write). **A write failure is logged at ERROR and swallowed** (`falkor_recall_write_failed_data_lost`, not a WARNING — bumped 2026-07-18 alongside the Fuseki kill, to reflect that it's no longer a dark/additive path riding alongside a real copy elsewhere): a swallowed failure here means that turn's tag/entity data is not persisted anywhere, full stop. There is no retry and no dead-letter queue on this path (unlike `orion-rdf-writer`'s `RDF_WRITE_QUEUE_MAXSIZE` dead-letter behavior) — a sustained FalkorDB outage silently loses every turn's tags/entities for its duration, one ERROR log line each, with nothing currently alerting on that log pattern. Watch `falkor_recall_write_failed_data_lost` frequency and consumer lag on `orion:chat:history:turn`/`orion:chat:social:stored` if real volume turns out to be high enough for either to matter — this is the natural next thing to instrument if this path proves it needs it, not something built preemptively here. Falkor client construction is lock-guarded against a future `concurrent_handlers=True` flip on this service's Hunter (currently serial dispatch, so not a live race, but four other services in the repo already use that flag).
 
 **Historical backfill (Phase 3): done, 2026-07-18.** `scripts/backfill_recall_falkor_chat_tags_snapshot.py` + `scripts/backfill_recall_falkor_chat_tags_extract_and_write.py` populated `orion_recall` with every historical `chat_history_log`/`social_room_turns` row that predates the live writer -- 1,708 turns written, 0 errors, real historical timestamps preserved (not backdated to "now"). Not a copy of old Fuseki data (there was almost nothing there to copy -- the same observer-gate bug blocked the Fuseki `chat_tagging` extraction too); re-ran the real extraction pipeline (spaCy NER + sentiment heuristic) against raw Postgres text and wrote via this same `write_chat_turn_tags_to_falkor` function. `orion-recall` read-side change (Phase 4): built, PR #1192 (chatturn only; graphtri/Claim-based fragments still need their own redesign, unaffected by this backfill).
+
+## Collapse-triage Falkor writer
+
+**Context:** `docs/superpowers/specs/2026-07-17-recall-rdf-writer-falkor-cutover-phase2-spec.md`'s Phase 8 investigation (2026-07-22) traced what's still actually publishing to `orion-rdf-writer`'s `tags.enriched` subscription and found it's *only* this branch — the chat/social-turn path above stopped publishing to the bus entirely back on 2026-07-18. Live Fuseki check at the time: 3 total `Enrichment` records across three weeks (2026-07-01, 2026-07-08, plus one pre-cutover chat record from 2026-07-18) — low volume, but genuinely unique content with no Postgres duplicate the way `chat.history`'s old RDF copy had, so this is a real migration target, not a redundant-copy kill.
+
+`handle_triage_event`'s generic branch (Juniper-observer-gated `orion:collapse:triage` events, `should_route_to_triage`/`_is_juniper`) now also calls `write_collapse_triage_tags_to_falkor` (`app/falkor_recall_writer.py`) when `RECALL_FALKOR_COLLAPSE_TRIAGE_ENABLED=true` (default `false`). Same shape as the chat-turn writer, on the **same** `orion_recall` graph and the **same** `:Entity`/`:Tag` node universe (an entity mentioned in both a real conversation and a collapse-mirror moment resolves to one node, not two):
+
+```text
+(:CollapseEvent {collapse_id, ts, correlation_id?, sentiment?})   # thin -- no summary/text, only derived tags/entities
+(:Entity {name})  (:Tag {name})                                  # SAME nodes chat/social turns write to
+(:CollapseEvent)-[:MENTIONS_ENTITY {ts}]->(:Entity)
+(:CollapseEvent)-[:HAS_TAG {ts}]->(:Tag)
+```
+
+No `:ChatSession`-equivalent grouping — collapse events aren't part of a session the way chat turns are. `tags`/`entities` are the same NER extraction here too (`doc.ents` used directly for both, unfiltered by the `_named_entities`/`_KEEP_ENTITY_LABELS` type-filter that only wires into the chat-kind branch — a pre-existing asymmetry this patch did not introduce or fix), so only the sentiment marker is passed as `tags`, matching the chat-turn call site's own reasoning.
+
+**Additive, not a swap, on purpose:** unlike the chat/social writer (sole persistence path since 2026-07-18), this ships alongside the existing `tags.enriched` bus publish. A write failure here is logged at **WARNING** (`falkor_collapse_triage_write_failed`), not ERROR — Fuseki still has the data, so a failure here is not data loss. Flip the flag only after live verification (same ladder as the chat/social cutover: confirm real writes land, confirm entity cross-referencing with chat-turn mentions works as expected), then decide separately whether to retire the Fuseki side — not done in this patch.
+
+**Known, disclosed gap found in review, not fixed here (out of scope -- lives in a different service):** sharing the `:Entity`/`:Tag` namespace with `:ChatTurn` does **not** mean every `orion-recall` entity-graph consumer sees `:CollapseEvent` mentions once this flag is on. Checked `services/orion-recall/app/storage/falkor_entity_relatedness.py` directly:
+- `fetch_related_entities`/`fetch_bridging_turns`/`fetch_entity_mention_timeline`/`fetch_turns_mentioning_entities` all hard-match `(t:ChatTurn)` (the last also filters `source_kind: 'chat.history'`) — these silently **exclude** `:CollapseEvent`-sourced mentions entirely.
+- `fetch_entity_degrees` (live in `worker.py`'s recall-ranking IDF-style discount, not just a debug primitive) uses an **unlabeled** `MATCH ()<-[:MENTIONS_ENTITY]-()` — this one **does** pick up `:CollapseEvent` mentions once the flag is on.
+
+Net effect if/when `RECALL_FALKOR_COLLAPSE_TRIAGE_ENABLED=true`: collapse-triage mentions silently shift document-frequency-based ranking discount (`fetch_entity_degrees`) while staying invisible to relatedness/bridging/timeline queries in the same file. Not fixed here — deciding whether those functions should become source-agnostic (and what that means for a `:CollapseEvent`, which has no equivalent to a "turn") is a real design question for `orion-recall`, not something to bolt on as a side effect of this patch. Read this section again before flipping the flag.
 
 ### Historical note: the Fuseki dual-write (killed 2026-07-18)
 

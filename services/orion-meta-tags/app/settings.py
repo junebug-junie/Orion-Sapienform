@@ -48,6 +48,10 @@ class Settings(BaseSettings):
     # for this data, so the safe default has to be True. See
     # services/orion-meta-tags/README.md.
     RECALL_FALKOR_TAG_ENTITY_ENABLED: bool = Field(default=True, env="RECALL_FALKOR_TAG_ENTITY_ENABLED")
+    # Dark by default: collapse-triage has no Falkor equivalent yet (unlike
+    # chat/social turns) and Fuseki remains its only persistence until this
+    # is verified live -- see falkor_recall_writer.py's module docstring.
+    RECALL_FALKOR_COLLAPSE_TRIAGE_ENABLED: bool = Field(default=False, env="RECALL_FALKOR_COLLAPSE_TRIAGE_ENABLED")
     FALKORDB_URI: str = Field(default="redis://orion-athena-falkordb:6379", env="FALKORDB_URI")
     FALKORDB_RECALL_GRAPH: str = Field(default="orion_recall", env="FALKORDB_RECALL_GRAPH")
 

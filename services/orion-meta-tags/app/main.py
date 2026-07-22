@@ -18,7 +18,7 @@ from orion.schemas.collapse_mirror import should_route_to_triage
 
 from .settings import settings
 from .models import EventIn, Enrichment
-from .falkor_recall_writer import write_chat_turn_tags_to_falkor
+from .falkor_recall_writer import write_chat_turn_tags_to_falkor, write_collapse_triage_tags_to_falkor
 
 # Setup Logging
 logging.basicConfig(level=logging.getLevelName(settings.LOG_LEVEL))
@@ -128,6 +128,33 @@ async def _write_chat_turn_tags_to_falkor_async(
         # a missed shadow-copy. Still swallowed (one bad write must not take
         # down triage intake for every subsequent event) but at ERROR.
         logger.error("falkor_recall_write_failed_data_lost turn_id=%s error=%s", turn_id, exc)
+
+
+async def _write_collapse_triage_tags_to_falkor_async(
+    *, envelope: BaseEnvelope, collapse_id: str, tags: list[str], entities: list[str],
+) -> None:
+    """Dark/additive: Fuseki (via orion-rdf-writer) remains the persistence
+    path for collapse-triage enrichment until this is verified live and
+    explicitly cut over -- see falkor_recall_writer.py's module docstring.
+    A caught exception here is therefore not data loss (unlike the
+    chat/social-turn writer above), so it's logged at WARNING, not ERROR.
+    """
+    if not settings.RECALL_FALKOR_COLLAPSE_TRIAGE_ENABLED:
+        return
+    try:
+        client = await _get_falkor_client()
+        result = await asyncio.to_thread(
+            write_collapse_triage_tags_to_falkor,
+            client,
+            collapse_id=collapse_id,
+            correlation_id=str(envelope.correlation_id) if envelope.correlation_id else None,
+            ts=envelope.created_at.isoformat(),
+            tags=tags,
+            entities=entities,
+        )
+        logger.info("falkor_collapse_triage_write_committed collapse_id=%s result=%s", collapse_id, result)
+    except Exception as exc:
+        logger.warning("falkor_collapse_triage_write_failed collapse_id=%s error=%s", collapse_id, exc)
 
 
 def _svc_ref() -> ServiceRef:
@@ -357,6 +384,16 @@ async def handle_triage_event(envelope: BaseEnvelope) -> None:
             kind="tags.enriched",
             source=_svc_ref(),
             payload=enrichment,
+        )
+
+        # tags/entities are the same spaCy NER extraction here (see the
+        # chat-turn writer's identical comment above) -- only the sentiment
+        # marker is genuinely tag-specific content.
+        await _write_collapse_triage_tags_to_falkor_async(
+            envelope=envelope,
+            collapse_id=target_collapse_id,
+            tags=[sentiment_tag],
+            entities=entities,
         )
 
         await meta_tagger.bus.publish(settings.CHANNEL_EVENTS_TAGGED, out_env)

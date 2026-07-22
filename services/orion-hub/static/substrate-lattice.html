@@ -70,14 +70,9 @@
         <div id="m5Body" class="text-xs text-gray-400">—</div>
       </div>
 
-      <!-- L6: Self-State -->
-      <div id="l6SelfStateCard" class="bg-gray-900 border border-gray-800 rounded-lg p-3 flex flex-col gap-1">
-        <div class="flex items-center justify-between">
-          <span class="text-[10px] font-semibold text-violet-400 uppercase">L6 Self-State · transport_integrity</span>
-          <span id="l6Status" class="text-[10px] text-gray-500">—</span>
-        </div>
-        <div id="l6Body" class="text-xs text-gray-400">—</div>
-      </div>
+      <!-- L6 (SelfStateV1 "transport_integrity") removed 2026-07-22, SelfStateV1 burn:
+           orion-self-state-runtime (its producer) is deleted, so this layer had no path
+           to ever be fresh again. See substrate_lattice_routes.py's matching dated note. -->
 
       <!-- L7: Proposals -->
       <div id="l7ProposalCard" class="bg-gray-900 border border-gray-800 rounded-lg p-3 flex flex-col gap-1">

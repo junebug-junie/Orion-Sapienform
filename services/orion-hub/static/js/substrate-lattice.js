@@ -213,15 +213,8 @@ function _renderProofChain(chain) {
     `<div class="mb-1">${capTransportHtml}</div>${m5TargetsHtml || '<span class="text-gray-500">no targets</span>'}`
   );
 
-  // L6
-  const l6 = chain.transport?.l6 || {};
-  const ss = l6.values || {};
-  const ti = ss.transport_integrity || {};
-  _setText("l6Status", `${_statusBadge(l6.status)} ${_ts(l6.timestamp)}`);
-  _setText(
-    "l6Body",
-    `condition: <b>${_esc(ss.overall_condition)}</b> &nbsp;|&nbsp; transport_integrity score: <b>${_fmt(ti.score)}</b> confidence: <b>${_fmt(ti.confidence)}</b>`
-  );
+  // L6 (SelfStateV1 "transport_integrity") removed 2026-07-22, SelfStateV1 burn --
+  // its card and chain.transport.l6 no longer exist, see substrate_lattice_routes.py.
 
   // L7
   const l7 = chain.transport?.l7 || {};

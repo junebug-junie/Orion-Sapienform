@@ -7,6 +7,28 @@ removed the Hub lattice console's dead L6 self-state layer for the transport lan
 covers measurement only; the question of what (if anything) replaces L6 is deliberately left
 for a follow-up turn once this measurement work has real numbers to answer it with.
 
+**Cross-reference (added after PR #1276 opened, same day):** PR #1276
+(`docs/superpowers/specs/2026-07-22-l6-self-model-ast-hot-active-inference-design.md`) answers a
+related but higher-altitude question — what should replace `SelfStateV1` as the *system-wide*
+canonical Layer 6 (self-model), via AST/HOT + Active Inference — where this spec asks the
+narrower, lane-specific "is transport's real data even trustworthy" question. They are the same
+underlying layer, approached from opposite ends (top-down theory-fit vs. bottom-up
+data-quality), and they share one already-confirmed collision:
+- Both threads independently found `orion-athena-self-state-runtime` still running in production
+  after its source was deleted in PR #1266. **Resolved same day**: the container has been
+  stopped and removed directly (`docker stop`/`docker rm` — its compose file no longer exists to
+  bring it down cleanly via `docker compose down`); confirmed via `docker ps` and a growing
+  `substrate_self_state` write-lag post-stop. PR #1276's "Missing Question 1" and "Recommended
+  next patch" step 1 are both satisfied by this.
+- PR #1276's item 3 (a confidence signal aggregating `dynamic_pressure` volatility across all
+  five `prediction_error` domains) must not skip this spec's own findings when its required
+  metric-quality-gate pass runs: transport's channel is real but calibrated ~1,000x off the
+  system's actual operating range (see "Current architecture" below), and route's channel is a
+  still-unexplained subnormal float per the chat/route audit doc. An aggregate that blends these
+  two known-compromised domains in with the three healthy ones (biometrics, execution, and
+  soon-fixed chat) risks inheriting their brokenness at a higher level of abstraction unless
+  explicitly accounted for.
+
 ---
 
 ## Arsonist summary

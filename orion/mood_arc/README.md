@@ -91,25 +91,27 @@ python orion/mood_arc/fit_encoder.py train \
   5-day corpus. Do not retrain until meaningfully more clean data has
   accumulated; see the agent board for the tracked follow-up. If both
   cutoffs apply, use whichever is later.
-- **Third cutoff, PR #1262 (pending deploy):** two bugs in
-  `orion/substrate/biometrics_loop`'s active-node-pressure reducer,
-  upstream of this service. (1) `availability` one-way ratchet — a
-  transient staleness blip could permanently flag a node unavailable, with
-  no rule able to clear it; not one of `v2`'s 16 trained channels, but its
-  exclusion from training was itself likely an artifact of this bug
-  (permanently-stuck looks like no-signal). (2) merge-window dedup was a
-  no-op across ticks — `node:atlas` accepted 767 "reinforce" deltas in 2
-  hours instead of the ~24 a working 5-minute window should allow, inflating
-  `pressure_score` and therefore `cpu_pressure` (`mode="add"`, one of `v2`'s
-  16 trained channels) via `active_node_pressure` deltas' `"strain"`
-  pressure kind. See `services/orion-field-digester/README.md`'s "third
-  training-data quality cutoff" section for the full detail and the exact
-  mechanism to determine the real cutoff once PR #1262 is merged and both
-  `orion-field-digester` and `orion-substrate-runtime` (which runs the
-  biometrics_loop reducer) have been restarted. **Do not retrain until this
-  cutoff is known** — same reasoning as the second cutoff, just for
-  `cpu_pressure` instead of `catalog_drift_pressure`. If multiple cutoffs
-  apply, use whichever is latest.
+- **Third cutoff, `--min-generated-at 2026-07-22T08:29:48Z` (PR #1262,
+  merged + deployed):** two bugs in `orion/substrate/biometrics_loop`'s
+  active-node-pressure reducer, upstream of this service. (1) `availability`
+  one-way ratchet — a transient staleness blip could permanently flag a node
+  unavailable, with no rule able to clear it; not one of `v2`'s 16 trained
+  channels, but its exclusion from training was itself likely an artifact of
+  this bug (permanently-stuck looks like no-signal). (2) merge-window dedup
+  was a no-op across ticks — `node:atlas` accepted 767 "reinforce" deltas in
+  2 hours instead of the ~24 a working 5-minute window should allow,
+  inflating `pressure_score` and therefore `cpu_pressure` (`mode="add"`, one
+  of `v2`'s 16 trained channels) via `active_node_pressure` deltas'
+  `"strain"` pressure kind. See `services/orion-field-digester/README.md`'s
+  "third training-data quality cutoff" section for the full detail.
+  `2026-07-22T08:29:48Z` is `orion-substrate-runtime`'s restart time (the
+  later of the two services this fix spans, and the binding one).
+  Confirmed live: `node:atlas`'s `availability` recovered to `1.0`
+  immediately post-restart, and its reinforce-delta rate dropped from
+  ~1/9s to quiet within the first minute. **`v3` should train against this
+  cutoff (or the second cutoff, whichever is later — currently this one)**;
+  same reasoning as the second cutoff, just for `cpu_pressure` instead of
+  `catalog_drift_pressure`.
 - `--hidden-dim 128 --latent-dim 64` are the defaults as of this patch
   (`DEFAULT_HIDDEN_DIM`/`DEFAULT_LATENT_DIM` in `fit_encoder.py`) — sized for
   `field_channel_corpus.v1`'s ~16-26-channel width, not the old 4-channel

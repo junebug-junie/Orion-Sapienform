@@ -4,6 +4,13 @@ No DB, no network. Everything here is pure: parsing, rolling-window replay (via 
 real `precision_weighted_salience()` import, not a reimplementation), summarization,
 and window selection all operate on plain synthetic data. Same sibling-module-by-
 file-path loading pattern as test_measure_emergent_clustering_probe.py.
+
+Lives in top-level `tests/`, not `scripts/analysis/tests/` (where this file originally
+shipped in PR #1241) -- `scripts` is in `pyproject.toml`'s `norecursedirs`, so a bare
+`pytest` run from repo root never discovered it there. Confirmed the same defect exists
+for every sibling test under `scripts/analysis/tests/` (e.g.
+`test_measure_emergent_clustering_probe.py`) -- out of scope to fix here, flagged
+separately.
 """
 
 from __future__ import annotations
@@ -14,7 +21,10 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 _MODULE_PATH = (
-    Path(__file__).resolve().parents[1] / "measure_precision_weighted_salience_probe.py"
+    Path(__file__).resolve().parents[1]
+    / "scripts"
+    / "analysis"
+    / "measure_precision_weighted_salience_probe.py"
 )
 _spec = importlib.util.spec_from_file_location(
     "measure_precision_weighted_salience_probe", _MODULE_PATH

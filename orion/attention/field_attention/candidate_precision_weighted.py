@@ -27,6 +27,20 @@ error occurs against a historically noisy one.
     salience(target) = precision(target) x |prediction_error(target)|
     precision(target) = 1 / variance(target's own real historical prediction-error series)
 
+## Cross-target comparability (added in review, 2026-07-22)
+
+`precision_weighted_salience()`'s raw `salience` is **not directly comparable across
+targets** and is **not a valid drop-in for `FieldAttentionTargetV1.salience_score`**
+(schema-bound to `[0, 1]`) -- it is unbounded (precision saturates at
+`1 / PRECISION_VARIANCE_FLOOR = 1e6`; the real biometrics replay produced raw salience
+ranging 0.00-57,100.00). This was missed in the original build and caught only in a
+later compliance review, not by the original live-data check, which only confirmed
+non-degenerate variance *within one target's own time series* and never checked whether
+the resulting scale was usable for the cross-target *competition* this candidate exists
+to run. Any real comparison across targets/domains must go through
+`normalize_across_targets()` (below) first -- comparing two raw `.salience` values from
+different targets directly is exactly the mistake that function exists to prevent.
+
 ## Real data source and scoping (2026-07-21, live-verified at build time)
 
 `prediction_error(target)`'s *current* value comes from the five already-shipped
@@ -177,3 +191,55 @@ def precision_weighted_salience(
         n_samples=n,
         variance_floored=variance_floored,
     )
+
+
+def normalize_across_targets(raw_scores: dict[str, float]) -> dict[str, float]:
+    """Min-max normalize raw ``precision_weighted_salience().salience`` values across a
+    set of *competing* targets into ``[0, 1]``.
+
+    **Why this exists (found in review, 2026-07-22, not part of the original build):**
+    ``precision_weighted_salience()``'s raw output is unbounded (precision saturates at
+    ``1 / PRECISION_VARIANCE_FLOOR = 1e6``, so raw salience can reach the tens of
+    thousands -- confirmed live: the real biometrics replay produced a range of
+    0.00-57,100.00). The existing system this candidate is meant to replace,
+    `FieldAttentionTargetV1.salience_score`, is schema-constrained to ``[0, 1]``
+    (`orion/schemas/field_attention_frame.py`) -- the raw, unnormalized output is not a
+    valid drop-in for that field. Worse than a schema mismatch: without normalization,
+    cross-target comparison (the entire point of a *competition* score) is dominated by
+    each target's own historical variance scale, not by how surprising its current error
+    actually is -- a target that has always been quiet will structurally out-rank a
+    noisier-but-currently-alarming one purely from scale, independent of real relative
+    importance.
+
+    **Min-max, not softmax, and why**: a softmax-style normalization would need a
+    temperature/scale hyperparameter to decide how sharply it compresses the
+    distribution -- exactly the kind of hand-guessed, uncalibrated weight this whole
+    program exists to eliminate (see charter §7 / the tentative-plan doc's "Finding: the
+    disease is systemic, not one bug"). Min-max has no free parameter: it maps the
+    lowest-scoring real competitor to 0.0 and the highest to 1.0, preserving relative
+    rank exactly, with nothing to calibrate.
+
+    **This is a per-tick, per-competing-set operation, not part of
+    `precision_weighted_salience()` itself** -- that function has no knowledge of what
+    else is competing this tick (it only sees one target's own history), so it cannot
+    self-normalize. Callers must compute raw scores for every real target competing in
+    the same tick, then pass the whole set here before comparing across targets.
+    Comparing two *raw* `precision_weighted_salience().salience` values from different
+    targets without this step is the exact mistake this function exists to prevent.
+
+    Edge cases:
+    - Empty input -> ``{}``.
+    - All-equal raw scores (including a single-target input) -> every target gets
+      ``1.0``, not an arbitrary ``0.0`` floor. There is no real basis to differentiate
+      "tied for most salient" from "least salient" when every real competitor scored
+      identically -- flooring to 0.0 would misrepresent a tie as "nothing here matters,"
+      which is not what the data says.
+    """
+    if not raw_scores:
+        return {}
+    values = list(raw_scores.values())
+    lo, hi = min(values), max(values)
+    if (hi - lo) < 1e-12:
+        return {target_id: 1.0 for target_id in raw_scores}
+    span = hi - lo
+    return {target_id: (v - lo) / span for target_id, v in raw_scores.items()}

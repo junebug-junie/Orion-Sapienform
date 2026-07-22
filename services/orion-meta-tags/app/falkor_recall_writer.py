@@ -1,13 +1,27 @@
-"""Cypher-native Falkor write of chat/social-turn tag/entity enrichment.
+"""Cypher-native Falkor write of chat/social-turn and collapse-triage
+tag/entity enrichment.
 
 Phase 2 of the recall/Falkor cutover
 (docs/superpowers/plans/2026-07-18-recall-tag-entity-falkor-writer-plan.md).
 Originally shipped dark/additive alongside orion-rdf-writer's Fuseki write
 of the same `tags.enriched` event. As of 2026-07-18 (same-day follow-up,
 fix/meta-tags-kill-rdf-chat-dual-write) that Fuseki write was killed as
-redundant -- this is now the SOLE persistence path for this data, covering
-both `chat.history` and `social.turn.stored.v1` (previously chat.history
-only). See services/orion-meta-tags/README.md's "Historical note" section.
+redundant -- this is now the SOLE persistence path for chat/social-turn
+enrichment, covering both `chat.history` and `social.turn.stored.v1`
+(previously chat.history only). See services/orion-meta-tags/README.md's
+"Historical note" section.
+
+2026-07-22: added write_collapse_triage_tags_to_falkor for the remaining
+`tags.enriched` producer -- app/main.py's generic handle_triage_event
+branch, fed by `orion:collapse:triage` (Juniper-observer-gated collapse-
+mirror events, CollapseMirrorEntryV2, `should_route_to_triage`/`_is_juniper`
+strict gate). Unlike chat/social turns, this content has no Falkor
+equivalent yet -- Fuseki (via orion-rdf-writer) is still its only
+persistence, and live volume is low (2 real Enrichment records over three
+weeks as of this writing, confirmed via direct Fuseki query) but genuinely
+unique: it is not redundant with any Postgres store the way chat.history's
+RDF copy was. Ships dark/additive, same ladder as the chat/social writer --
+Fuseki keeps writing until this is verified live and explicitly cut over.
 
 No RDF/SPARQL anywhere in this module -- pure Cypher MERGE against
 FalkorDB via orion.graph.falkor_client.RedisGraphQueryClient.
@@ -212,4 +226,80 @@ def write_chat_turn_tags_to_falkor(
         "entities_rejected": rejected_entities,
         "sentiment": sentiment,
         "session_linked": bool(session_id),
+    }
+
+
+def write_collapse_triage_tags_to_falkor(
+    client: FalkorGraphClient,
+    *,
+    collapse_id: str,
+    correlation_id: str | None,
+    ts: str,
+    tags: list[str],
+    entities: list[str],
+) -> dict[str, Any]:
+    """Synchronous Cypher write for Juniper-observed collapse-triage events.
+
+    Same shape as write_chat_turn_tags_to_falkor (:X {id})-[:HAS_TAG]->(:Tag),
+    -[:MENTIONS_ENTITY]->(:Entity), deliberately reusing the *same* Tag/Entity
+    node universe as chat turns (not a separate namespace) -- an entity
+    mentioned in both a real conversation and a collapse-mirror moment should
+    resolve to one node, not two, so entity-relatedness queries see both.
+    No ChatSession-equivalent grouping exists for collapse events (they are
+    not part of a session the way chat turns are), so there is no analogue
+    to write_chat_turn_tags_to_falkor's session-linking step.
+
+    Caller must keep this off the event loop (e.g. `asyncio.to_thread`) --
+    the underlying redis client is sync.
+    """
+    sentiment, clean_tags = extract_sentiment(tags or [])
+    kept_tags, rejected_tags = filter_noise(clean_tags)
+    kept_entities, rejected_entities = filter_noise(entities or [])
+
+    if rejected_tags or rejected_entities:
+        logger.info(
+            "property_cathedral_rejected workload=recall.collapse_triage collapse_id=%s "
+            "rejected_tags=%s rejected_entities=%s",
+            collapse_id,
+            rejected_tags,
+            rejected_entities,
+        )
+
+    event_params: dict[str, Any] = {"collapse_id": collapse_id, "ts": ts}
+    if correlation_id:
+        event_params["correlation_id"] = correlation_id
+    if sentiment:
+        event_params["sentiment"] = sentiment
+    set_clause = set_assignments("c", event_params, skip={"collapse_id"})
+    client.graph_query(
+        f"MERGE (c:CollapseEvent {{collapse_id: $collapse_id}}) SET {set_clause}",
+        event_params,
+    )
+
+    if kept_tags:
+        client.graph_query(
+            "MATCH (c:CollapseEvent {collapse_id: $collapse_id}) "
+            "UNWIND $names AS name "
+            "MERGE (g:Tag {name: name}) "
+            "MERGE (c)-[r:HAS_TAG]->(g) "
+            "SET r.ts = $ts",
+            {"collapse_id": collapse_id, "names": kept_tags, "ts": ts},
+        )
+
+    if kept_entities:
+        client.graph_query(
+            "MATCH (c:CollapseEvent {collapse_id: $collapse_id}) "
+            "UNWIND $names AS name "
+            "MERGE (g:Entity {name: name}) "
+            "MERGE (c)-[r:MENTIONS_ENTITY]->(g) "
+            "SET r.ts = $ts",
+            {"collapse_id": collapse_id, "names": kept_entities, "ts": ts},
+        )
+
+    return {
+        "tags_written": len(kept_tags),
+        "tags_rejected": rejected_tags,
+        "entities_written": len(kept_entities),
+        "entities_rejected": rejected_entities,
+        "sentiment": sentiment,
     }

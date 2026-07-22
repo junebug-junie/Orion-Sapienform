@@ -225,3 +225,60 @@ async def test_generic_collapse_event_with_juniper_observer_still_publishes(main
     main_module.meta_tagger.bus.publish.assert_awaited_once()
     call_args = main_module.meta_tagger.bus.publish.call_args
     assert call_args[0][0] == main_module.settings.CHANNEL_EVENTS_TAGGED
+
+
+@pytest.mark.asyncio
+async def test_collapse_triage_falkor_write_skipped_when_flag_disabled_by_default(main_module) -> None:
+    """RECALL_FALKOR_COLLAPSE_TRIAGE_ENABLED defaults False (dark/additive,
+    unlike the chat/social flag) -- the bus publish (Fuseki's only path in)
+    must still fire even though Falkor doesn't."""
+    envelope = _envelope(
+        main_module,
+        kind="collapse.mirror.entry",
+        payload={"id": "c3", "collapse_id": "collapse_c3", "text": "some collapse text", "observer": "Juniper"},
+    )
+    await main_module.handle_triage_event(envelope)
+    main_module.meta_tagger.bus.publish.assert_awaited_once()
+    assert not main_module._falkor_client.calls
+
+
+@pytest.mark.asyncio
+async def test_collapse_triage_writes_to_falkor_and_still_publishes_when_flag_enabled(main_module) -> None:
+    """Additive, not a swap: with the flag on, both the Falkor write AND the
+    bus publish (Fuseki via orion-rdf-writer) must happen -- this workload
+    has no Falkor-side historical backfill yet, so Fuseki can't be dropped
+    just because the flag is on."""
+    main_module.settings.RECALL_FALKOR_COLLAPSE_TRIAGE_ENABLED = True
+    envelope = _envelope(
+        main_module,
+        kind="collapse.mirror.entry",
+        payload={"id": "c4", "collapse_id": "collapse_c4", "text": "some collapse text", "observer": "Juniper"},
+    )
+    await main_module.handle_triage_event(envelope)
+
+    main_module.meta_tagger.bus.publish.assert_awaited_once()
+    calls = main_module._falkor_client.calls
+    event_calls = [params for cypher, params in calls if "MERGE (c:CollapseEvent" in cypher]
+    assert event_calls and event_calls[0]["collapse_id"] == "collapse_c4"
+    entity_calls = [params for cypher, params in calls if "MENTIONS_ENTITY" in cypher]
+    assert entity_calls and "circe" in entity_calls[0]["names"]
+
+
+@pytest.mark.asyncio
+async def test_collapse_triage_falkor_write_failure_is_swallowed_at_warning_not_error(main_module, caplog) -> None:
+    """Unlike the chat/social writer, a caught exception here is not data
+    loss (Fuseki is still the real persistence path) -- logged at WARNING."""
+    main_module.settings.RECALL_FALKOR_COLLAPSE_TRIAGE_ENABLED = True
+    main_module._falkor_client = MagicMock()
+    main_module._falkor_client.graph_query.side_effect = RuntimeError("falkor down")
+
+    envelope = _envelope(
+        main_module,
+        kind="collapse.mirror.entry",
+        payload={"id": "c5", "collapse_id": "collapse_c5", "text": "some collapse text", "observer": "Juniper"},
+    )
+    with caplog.at_level("WARNING"):
+        await main_module.handle_triage_event(envelope)  # must not raise
+
+    main_module.meta_tagger.bus.publish.assert_awaited_once()
+    assert any("falkor_collapse_triage_write_failed" in r.message for r in caplog.records)

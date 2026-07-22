@@ -13,6 +13,7 @@ from app.falkor_recall_writer import (  # noqa: E402
     extract_sentiment,
     filter_noise,
     write_chat_turn_tags_to_falkor,
+    write_collapse_triage_tags_to_falkor,
 )
 
 
@@ -179,3 +180,66 @@ def test_write_chat_turn_tags_to_falkor_entity_dedup_across_call() -> None:
     )
     entity_call_params = next(p for c, p in client.calls if "MENTIONS_ENTITY" in c)
     assert entity_call_params["names"] == ["circe"]
+
+
+def test_write_collapse_triage_tags_to_falkor_full_shape() -> None:
+    client = RecordingFalkorClient()
+    result = write_collapse_triage_tags_to_falkor(
+        client,
+        collapse_id="collapse_abc123",
+        correlation_id="corr-1",
+        ts="2026-07-22T00:00:00+00:00",
+        tags=["gnostic", "sentiment:positive", "today"],
+        entities=["gnostic", "transcendent"],
+    )
+
+    assert result["tags_written"] == 1
+    assert result["tags_rejected"] == ["today"]
+    assert result["entities_written"] == 2
+    assert result["sentiment"] == "positive"
+
+    cyphers = [c for c, _ in client.calls]
+    assert any("MERGE (c:CollapseEvent" in c for c in cyphers)
+    assert any("HAS_TAG" in c for c in cyphers)
+    assert any("MENTIONS_ENTITY" in c for c in cyphers)
+    assert not any("ChatSession" in c or "ChatTurn" in c for c in cyphers)
+
+    event_call = next(c for c, p in client.calls if "MERGE (c:CollapseEvent" in c)
+    event_params = next(p for c, p in client.calls if "MERGE (c:CollapseEvent" in c)
+    assert event_params["collapse_id"] == "collapse_abc123"
+    assert event_params["ts"] == "2026-07-22T00:00:00+00:00"
+    assert event_params["correlation_id"] == "corr-1"
+    assert event_params["sentiment"] == "positive"
+    assert "sentiment" in event_call
+
+
+def test_write_collapse_triage_tags_to_falkor_shares_entity_namespace_with_chat_turns() -> None:
+    """A collapse-mirror mention of an entity must resolve to the SAME
+    :Entity node a chat turn would create -- not a separate namespace."""
+    client = RecordingFalkorClient()
+    write_collapse_triage_tags_to_falkor(
+        client,
+        collapse_id="collapse_xyz",
+        correlation_id=None,
+        ts="2026-07-22T00:00:00+00:00",
+        tags=[],
+        entities=["Juniper"],
+    )
+    entity_call_params = next(p for c, p in client.calls if "MENTIONS_ENTITY" in c)
+    assert entity_call_params["names"] == ["juniper"]
+
+
+def test_write_collapse_triage_tags_to_falkor_no_tags_or_entities_still_writes_anchor() -> None:
+    client = RecordingFalkorClient()
+    result = write_collapse_triage_tags_to_falkor(
+        client,
+        collapse_id="collapse_bare",
+        correlation_id=None,
+        ts="2026-07-22T00:00:00+00:00",
+        tags=[],
+        entities=[],
+    )
+    assert len(client.calls) == 1
+    assert client.calls[0][0] == "MERGE (c:CollapseEvent {collapse_id: $collapse_id}) SET c.ts = $ts"
+    assert result["tags_written"] == 0
+    assert result["entities_written"] == 0

@@ -32,7 +32,6 @@ _LANES: list[dict[str, Any]] = [
         "trace_prefix": "bus.transport:",
         "field_capability_id": "capability:transport",
         "attention_target_id": "capability:transport",
-        "self_state_dimension_id": "transport_integrity",
         "status": "live",
     },
     {
@@ -259,19 +258,6 @@ def _load_transport_proof_chain(freshness_threshold_sec: int = 60) -> dict[str, 
         }
     m5 = _layer_meta(m5_values, "substrate_attention_frames", attn_ts, freshness_threshold_sec)
 
-    # L6 self-state: transport_integrity dimension
-    ss_raw, ss_ts = _first_json_with_ts(engine, "substrate_self_state", "self_state_json", "generated_at")
-    l6_values = None
-    if ss_raw:
-        dims = ss_raw.get("dimensions", {})
-        l6_values = {
-            "self_state_id": ss_raw.get("self_state_id"),
-            "overall_condition": ss_raw.get("overall_condition"),
-            "overall_intensity": ss_raw.get("overall_intensity"),
-            "transport_integrity": dims.get("transport_integrity"),
-        }
-    l6 = _layer_meta(l6_values, "substrate_self_state", ss_ts, freshness_threshold_sec)
-
     # L7 proposals
     prop_raw, prop_ts = _first_json_with_ts(engine, "substrate_proposal_frames", "proposal_frame_json", "generated_at")
     l7_values = None
@@ -346,12 +332,18 @@ def _load_transport_proof_chain(freshness_threshold_sec: int = 60) -> dict[str, 
         }
     l11 = _layer_meta(l11_values, "substrate_consolidation_frames", consol_ts, freshness_threshold_sec)
 
+    # L6 (SelfStateV1 "transport_integrity" dimension) removed 2026-07-22, SelfStateV1
+    # burn: orion-self-state-runtime (the substrate_self_state producer) is deleted, so
+    # this layer had no path to ever be fresh again -- _layer_meta() would have honestly
+    # flagged it "stale" forever rather than fabricating data, but a permanently-dead
+    # layer sitting in an otherwise-live lane's proof chain is exactly the kind of panel
+    # CLAUDE.md's burn spec called out to remove, not leave stale-forever. M5 (attention)
+    # now feeds directly into L7 (proposals) in the chain below.
     transport = {
         "m3": m3,
         "m3_receipts": m3_receipts,
         "m4": m4,
         "m5": m5,
-        "l6": l6,
         "l7": l7,
         "l8": l8,
         "l9": l9,
@@ -384,10 +376,10 @@ def _compute_verdict(chain: dict[str, Any]) -> str:
         return f"Transport lane stale: latest M3 projection is {age_str} old."
 
     # Collect layer statuses
-    layer_order = ["m3", "m3_receipts", "m4", "m5", "l6", "l7", "l8", "l9", "l10", "l11"]
+    layer_order = ["m3", "m3_receipts", "m4", "m5", "l7", "l8", "l9", "l10", "l11"]
     layer_labels = {
         "m3": "M3", "m3_receipts": "M3 receipts", "m4": "M4", "m5": "M5",
-        "l6": "L6", "l7": "L7", "l8": "L8", "l9": "L9", "l10": "L10", "l11": "L11",
+        "l7": "L7", "l8": "L8", "l9": "L9", "l10": "L10", "l11": "L11",
     }
 
     stale_layers = []

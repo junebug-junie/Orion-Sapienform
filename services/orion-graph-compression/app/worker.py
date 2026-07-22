@@ -13,8 +13,10 @@ import app.settings as _app_settings
 from app.clustering.leiden import build_graph_from_triples, leiden_cluster
 from app.clustering.region_builder import build_region
 from app.federators.episodic import EpisodicFederator
+from app.federators.episodic_falkor import FalkorEpisodicFederator
 from app.federators.self_study import SelfStudyFederator
 from app.federators.substrate import SubstrateFederator
+from app.federators.substrate_falkor import FalkorSubstrateFederator
 
 if TYPE_CHECKING:
     from orion.core.bus.async_service import OrionBusAsync
@@ -115,9 +117,23 @@ class CompressionWorker:
 
         if scope == "episodic":
             triples = EpisodicFederator(**federator_kwargs).fetch()
+            if s.graph_compression_episodic_falkor_enabled:
+                # Additive, not a swap: FalkorEpisodicFederator only covers
+                # the orion_recall (ChatTurn/Tag/Entity) slice of what the
+                # SPARQL federator reads (collapse/cognition/metacog/social
+                # have no Falkor equivalent yet) -- union so verifying this
+                # live can never regress existing clustering signal.
+                triples = list(set(triples) | set(FalkorEpisodicFederator().fetch()))
             kind = "community"
         elif scope == "substrate":
             triples = SubstrateFederator(**federator_kwargs).fetch()
+            if s.graph_compression_substrate_falkor_enabled:
+                # Additive during verification: substrate-runtime moved to
+                # Falkor-primary in PR #1153, so the SPARQL side is expected
+                # to be stale/empty going forward, not a live duplicate --
+                # union is safe (adds real signal) and never regresses
+                # today's (likely already-stale) SPARQL-sourced clusters.
+                triples = list(set(triples) | set(FalkorSubstrateFederator().fetch()))
             # Default substrate clusters to "hotspot". We do not (yet) detect
             # genuine contradictions, so we must not blanket-label every cluster
             # "contradiction" — that would spuriously flood substrate mutation

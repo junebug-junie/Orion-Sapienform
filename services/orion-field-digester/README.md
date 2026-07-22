@@ -291,6 +291,60 @@ as of this writing there are only ~40 minutes of clean post-cutoff data,
 nowhere near `v2`'s 207K-row/5-day corpus. Let clean data accumulate
 first; see the agent board for the tracked follow-up.
 
+## `field_channel_corpus.v1` third training-data quality cutoff (PR #1262, pending deploy)
+
+A third, independent contamination window, found in `orion/substrate/
+biometrics_loop` (upstream of this service, not a field-digester bug
+itself) while re-auditing channels for the work above:
+
+1. **`availability` one-way ratchet.** A transient biometrics staleness
+   blip permanently flagged a node's `availability` pressure — the only
+   removal rule was hardcoded to clear a different pressure kind
+   (`"strain"`), so `availability` could never recover. Confirmed live:
+   `node:atlas` reported `availability=0.0` for hours after its biometrics
+   resumed reporting fresh. `availability` itself is **not** one of `v2`'s
+   16 trained channels (excluded already by field selection, presumably as
+   a near-constant/degenerate signal) — but that exclusion was itself an
+   artifact of this bug: a channel that's permanently stuck at one value
+   looks exactly like a channel with no real signal. Once nodes can
+   actually recover, `availability` may show real variance in future
+   corpus data and could be selected into a future retrain where it
+   previously wasn't.
+2. **Biometrics-pressure merge-window dedup was a no-op across ticks**
+   (a separate bug in the same reducer, unrelated to the ratchet above) —
+   `node:atlas` alone accepted 767 "reinforce" deltas in 2 hours instead of
+   the ~24 a working 5-minute window should have allowed. This inflated
+   `pressure_score`, which feeds `cpu_pressure`/`gpu_pressure` (via
+   `active_node_pressure` deltas' `"strain"` pressure kind, `mode="add"`,
+   `state_deltas.py:36`) — `cpu_pressure` **is** one of `v2`'s 16 trained
+   channels. Corpus rows recorded before this fix reflect artificially
+   inflated reinforcement-flood contamination on `cpu_pressure` (and, for
+   `atlas`/`circe`, `gpu_pressure`); rows after it reflect the
+   `merge_window_sec=300` dedup actually working as designed.
+
+Both fixed by PR #1262 (`orion/substrate/biometrics_loop/pressure_organ.py`
+Rule B' + `pressure_reducer.py`'s `last_accepted_at`-based dedup, plus a
+companion fix in this service's `state_deltas.py` restoring `availability`
+to `1.0` on the recovery transition). As of this writing PR #1262 is open,
+not yet merged or deployed. Once it is, get the exact cutoff the same way
+as the second cutoff above (`gh pr view 1262 --json mergedAt`, cross-checked
+against **both** `orion-field-digester`'s and `orion-substrate-runtime`'s
+container restart times — this fix spans both services, and the earlier
+container to restart is not necessarily the binding cutoff since corpus
+contamination could come from either side):
+
+```bash
+python orion/mood_arc/fit_encoder.py train \
+  --corpus /mnt/telemetry/field_channels/corpus/field_channels.jsonl \
+  --min-generated-at <PR #1262 deploy timestamp, TBD> \
+  --out <out-dir>
+```
+
+If multiple cutoffs apply, use whichever is latest. **Do not retrain until
+this cutoff is known and filled in** — same reasoning as the second cutoff:
+retraining against contaminated `cpu_pressure` data would just produce
+another `v2`-shaped problem for a different channel.
+
 ## Field channel glossary
 
 This is the consolidated reference for all 29 channels in

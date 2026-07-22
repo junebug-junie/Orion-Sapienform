@@ -36,7 +36,6 @@ class ConceptSettings(BaseSettings):
             "orion:spark:telemetry",
             "orion:metacognition:tick",
             "orion:cognition:trace",
-            "orion:substrate:self_state",
             "orion:feedback:frame",
             "orion:world_pulse:run:result",
             "orion:autonomy:action:outcome",
@@ -164,18 +163,13 @@ class ConceptSettings(BaseSettings):
         validation_alias=AliasChoices("HOMEOSTATIC_FAILURE_CHANNELS"),
     )
     homeostatic_failure_severity: float = Field(0.8, alias="HOMEOSTATIC_FAILURE_SEVERITY")
-    # Endogenous drive origination (spec 2026-07-07, Step 1). DEFAULT-OFF: this
-    # changes what causes Orion to *want* things (cognition-loop change) and is
-    # gated on measurement 0(a). Proposal mode — enable only after sign-off.
-    endogenous_origination_enabled: bool = Field(False, alias="ORION_ENDOGENOUS_ORIGINATION_ENABLED")
-    origination_window: int = Field(8, alias="ORIGINATION_WINDOW")
-    origination_threshold: float = Field(0.55, alias="ORIGINATION_THRESHOLD")
-    origination_cooldown_sec: float = Field(900.0, alias="ORIGINATION_COOLDOWN_SEC")
-    endogenous_mag_cap: float = Field(0.5, alias="ENDOGENOUS_MAG_CAP")
-    origination_w_drift: float = Field(0.4, alias="ORIGINATION_W_DRIFT")
-    origination_w_dwell: float = Field(0.35, alias="ORIGINATION_W_DWELL")
-    origination_w_agency: float = Field(0.25, alias="ORIGINATION_W_AGENCY")
-    origination_exogenous_floor: int = Field(0, alias="ORIGINATION_EXOGENOUS_FLOOR")
+    # Endogenous drive origination (spec 2026-07-07, Step 1) and its 8
+    # ORIGINATION_*/ENDOGENOUS_MAG_CAP settings removed 2026-07-22, SelfStateV1
+    # burn (docs/superpowers/specs/2026-07-22-self-state-phi-endo-origination-
+    # burn-spec.md, decision 2): orion/autonomy/endogenous_origination.py's
+    # only input was a SelfStateV1 stream, which no longer exists. If these
+    # env keys are still set in a live .env, they're now inert -- no code
+    # reads them.
     goal_proposal_cooldown_minutes: int = Field(180, alias="GOAL_PROPOSAL_COOLDOWN_MINUTES")
     goal_generation_mode: str = Field("evidence_rules", alias="GOAL_GENERATION_MODE")
     goal_drive_origin_source: str = Field("tick_attribution", alias="GOAL_DRIVE_ORIGIN_SOURCE")

@@ -172,7 +172,7 @@ proposal_templates:
     kind: inspect
     target_kind: capability   # placeholder default kind; overridden per-candidate when binding resolves to a different kind
     target_id: capability:orchestration   # fallback literal, used only if the binding fails to resolve
-    target_binding: "self_state.dominant_attention_targets[0]"
+    target_binding: "attention.dominant_targets[0]"
     proposed_effect: increase_observability
     required_policy_gate: read_only
     base_priority: 0.34   # shipped live per explicit user go-ahead ("turn on whatever you need"), not dark-shipped at 0.0 -- read-only inspect proposal under the existing policy gate, same risk class as every other already-live inspect template

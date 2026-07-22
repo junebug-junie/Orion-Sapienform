@@ -30,6 +30,7 @@ from orion.schemas.execution_dispatch_frame import (  # noqa: E402
     ExecutionDispatchFrameV1,
 )
 from orion.schemas.feedback_frame import FeedbackFrameV1  # noqa: E402
+from orion.schemas.field_state import FieldStateV1  # noqa: E402
 
 NOW = datetime(2026, 5, 25, 12, 0, tzinfo=timezone.utc)
 
@@ -116,7 +117,7 @@ def _incompatible_dispatch_frame_payload() -> dict:
         "generated_at": NOW.isoformat(),
         "source_policy_frame_id": "policy.frame:legacy:substrate_policy.v1",
         "source_proposal_frame_id": "proposal.frame:legacy:proposal_policy.v1",
-        "source_self_state_id": "self.state:legacy",
+        "source_field_tick_id": "field.tick:legacy",
         "dispatch_mode": "dispatch_read_only",
         "dispatched_candidates": [
             {
@@ -165,6 +166,50 @@ def test_load_latest_dispatch_frame_degrades_to_none_on_legacy_row(monkeypatch) 
     assert store.load_latest_dispatch_frame() is None
 
 
+def test_load_field_for_tick_returns_field(monkeypatch) -> None:
+    store = FeedbackRuntimeStore("postgresql://test:test@localhost/test")
+    fake_engine = MagicMock()
+    conn = MagicMock()
+    fake_engine.connect.return_value.__enter__ = MagicMock(return_value=conn)
+    fake_engine.connect.return_value.__exit__ = MagicMock(return_value=False)
+    payload = FieldStateV1(generated_at=NOW, tick_id="field.tick:pf1").model_dump(mode="json")
+    conn.execute.return_value.mappings.return_value.first.return_value = {"field_json": payload}
+    monkeypatch.setattr(store, "_engine", fake_engine)
+
+    field = store.load_field_for_tick("field.tick:pf1")
+
+    assert field is not None
+    assert field.tick_id == "field.tick:pf1"
+
+
+def test_load_field_for_tick_none_when_no_row(monkeypatch) -> None:
+    store = FeedbackRuntimeStore("postgresql://test:test@localhost/test")
+    fake_engine = MagicMock()
+    conn = MagicMock()
+    fake_engine.connect.return_value.__enter__ = MagicMock(return_value=conn)
+    fake_engine.connect.return_value.__exit__ = MagicMock(return_value=False)
+    conn.execute.return_value.mappings.return_value.first.return_value = None
+    monkeypatch.setattr(store, "_engine", fake_engine)
+
+    assert store.load_field_for_tick("field.tick:missing") is None
+
+
+def test_load_latest_field_after_returns_field(monkeypatch) -> None:
+    store = FeedbackRuntimeStore("postgresql://test:test@localhost/test")
+    fake_engine = MagicMock()
+    conn = MagicMock()
+    fake_engine.connect.return_value.__enter__ = MagicMock(return_value=conn)
+    fake_engine.connect.return_value.__exit__ = MagicMock(return_value=False)
+    payload = FieldStateV1(generated_at=NOW, tick_id="field.tick:after").model_dump(mode="json")
+    conn.execute.return_value.mappings.return_value.first.return_value = {"field_json": payload}
+    monkeypatch.setattr(store, "_engine", fake_engine)
+
+    field = store.load_latest_field_after(NOW, window_sec=30)
+
+    assert field is not None
+    assert field.tick_id == "field.tick:after"
+
+
 def _candidate(dispatch_id: str, status: str = "prepared_for_dispatch") -> ExecutionDispatchCandidateV1:
     return ExecutionDispatchCandidateV1(
         dispatch_id=dispatch_id,
@@ -186,7 +231,7 @@ def _dispatch_frame(candidates: list[ExecutionDispatchCandidateV1]) -> Execution
         generated_at=NOW,
         source_policy_frame_id="policy.frame:pf1:substrate_policy.v1",
         source_proposal_frame_id="proposal.frame:pf1:proposal_policy.v1",
-        source_self_state_id="self.state:pf1",
+        source_field_tick_id="field.tick:pf1",
         candidates=candidates,
     )
 

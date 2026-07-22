@@ -8,14 +8,15 @@ from orion.schemas.feedback_frame import FeedbackFrameV1
 from orion.schemas.field_attention_frame import FieldAttentionFrameV1
 from orion.schemas.policy_decision_frame import PolicyDecisionFrameV1
 from orion.schemas.proposal_frame import ProposalFrameV1
-from orion.schemas.self_state import SelfStateV1
 
 
 @dataclass(frozen=True)
 class ConsolidationWindowData:
+    # self_states field removed 2026-07-22, SelfStateV1 burn
+    # (docs/superpowers/specs/2026-07-22-self-state-phi-endo-origination-burn-
+    # spec.md): SelfStateV1 no longer has a producer.
     window_start: datetime
     window_end: datetime
-    self_states: list[SelfStateV1]
     attention_frames: list[FieldAttentionFrameV1]
     proposal_frames: list[ProposalFrameV1]
     policy_frames: list[PolicyDecisionFrameV1]

@@ -1,6 +1,6 @@
 # orion-execution-dispatch-runtime
 
-Layer 9 of the Orion cognition substrate: converts `PolicyDecisionFrameV1` + `ProposalFrameV1` + `SelfStateV1` into `ExecutionDispatchFrameV1` envelopes.
+Layer 9 of the Orion cognition substrate: converts `PolicyDecisionFrameV1` + `ProposalFrameV1` into `ExecutionDispatchFrameV1` envelopes. `field_tick_id` is carried straight off `PolicyDecisionFrameV1.source_field_tick_id` -- 2026-07-22 (SelfStateV1 burn), no separate `SelfStateV1` dependency.
 
 ## Safety (v1: build, no send)
 
@@ -80,12 +80,14 @@ never the underlying record.
 ## Prerequisites
 
 1. `substrate_policy_decision_frames` populated (`orion-policy-runtime`, port 8120)
-2. `substrate_proposal_frames` and `substrate_self_state` from Layers 7–6
+2. `substrate_proposal_frames` from Layer 7
 3. Apply migrations:
 
 ```bash
 docker exec -i orion-athena-sql-db psql -U postgres -d conjourney \
   < services/orion-sql-db/manual_migration_execution_dispatch_frame_v1.sql
+docker exec -i orion-athena-sql-db psql -U postgres -d conjourney \
+  < services/orion-sql-db/manual_migration_execution_dispatch_frame_v2_drop_self_state.sql
 docker exec -i orion-athena-sql-db psql -U postgres -d conjourney \
   < services/orion-sql-db/manual_migration_substrate_dispatch_results_v1.sql
 ```

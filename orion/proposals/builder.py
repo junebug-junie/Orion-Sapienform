@@ -2,10 +2,10 @@ from __future__ import annotations
 
 from datetime import datetime, timezone
 
+from orion.field.pressure import field_pressures as compute_field_pressures
 from orion.proposals.policy import ProposalPolicyV1, ProposalTemplateV1
 from orion.proposals.scoring import (
     clamp01,
-    dimension_score,
     proposal_confidence,
     proposal_priority,
     proposal_risk,
@@ -19,17 +19,21 @@ from orion.proposals.templates import (
     cast_target_kind,
     template_title_description,
 )
-from orion.schemas.field_attention_frame import FieldAttentionFrameV1
+from orion.schemas.field_attention_frame import FieldAttentionFrameV1, FieldAttentionTargetV1
 from orion.schemas.field_state import FieldStateV1
 from orion.schemas.proposal_frame import ProposalCandidateV1, ProposalFrameV1
-from orion.schemas.self_state import SelfStateV1
 
 
 # The only recognized attention-binding literal in v1 -- no general
 # binding-expression DSL, matched exactly against ProposalTemplateV1.target_binding.
-ATTENTION_FIRST_TARGET_BINDING = "self_state.dominant_attention_targets[0]"
+# Renamed 2026-07-22 (SelfStateV1 burn) from "self_state.dominant_attention_targets[0]"
+# -- attention targets were always FieldAttentionFrameV1.dominant_targets underneath;
+# self_state was a pass-through hop, not the real source. config/proposals/
+# proposal_policy.v1.yaml's target_binding literal was updated to match in the
+# same changeset.
+ATTENTION_FIRST_TARGET_BINDING = "attention.dominant_targets[0]"
 
-# Intersection of AttentionTargetSummaryV1.target_kind's Literal
+# Intersection of FieldAttentionTargetV1.target_kind's Literal
 # ("node", "capability", "channel", "edge", "field", "system") and
 # ProposalCandidateV1.target_kind's Literal
 # ("node", "capability", "field", "self_state", "service", "system").
@@ -38,18 +42,18 @@ ATTENTION_FIRST_TARGET_BINDING = "self_state.dominant_attention_targets[0]"
 _ATTENTION_BOUND_TARGET_KINDS = frozenset({"node", "capability", "field", "system"})
 
 
-def stable_proposal_frame_id(*, self_state_id: str, policy_id: str) -> str:
-    return f"proposal.frame:{self_state_id}:{policy_id}"
+def stable_proposal_frame_id(*, field_tick_id: str, attention_frame_id: str, policy_id: str) -> str:
+    return f"proposal.frame:{field_tick_id}:{attention_frame_id}:{policy_id}"
 
 
-def stable_proposal_id(*, template_key: str, self_state_id: str) -> str:
-    return f"proposal:{template_key}:{self_state_id}"
+def stable_proposal_id(*, template_key: str, field_tick_id: str, attention_frame_id: str) -> str:
+    return f"proposal:{template_key}:{field_tick_id}:{attention_frame_id}"
 
 
 def _resolve_binding_target(
     *,
     template: ProposalTemplateV1,
-    self_state: SelfStateV1,
+    attention: FieldAttentionFrameV1 | None,
 ) -> tuple[str, str, str | None]:
     """Resolve a template's target_id/target_kind from live attention if the
     template declares a recognized binding and resolution succeeds; otherwise
@@ -59,10 +63,9 @@ def _resolve_binding_target(
     """
     if template.target_binding != ATTENTION_FIRST_TARGET_BINDING:
         return template.target_id, template.target_kind, None
-    details = self_state.dominant_attention_target_details
-    if not details:
+    if attention is None or not attention.dominant_targets:
         return template.target_id, template.target_kind, None
-    resolved = details[0]
+    resolved: FieldAttentionTargetV1 = attention.dominant_targets[0]
     if resolved.target_kind not in _ATTENTION_BOUND_TARGET_KINDS:
         return template.target_id, template.target_kind, None
     return resolved.target_id, resolved.target_kind, template.target_binding
@@ -72,17 +75,18 @@ def _build_candidate(
     *,
     template_key: str,
     template: ProposalTemplateV1,
-    self_state: SelfStateV1,
+    field_tick_id: str,
     attention: FieldAttentionFrameV1 | None,
+    pressures: dict[str, float],
     policy: ProposalPolicyV1,
 ) -> ProposalCandidateV1:
     match_score, motivating_dimensions = template_match_score(
-        self_state=self_state,
+        field_pressures=pressures,
         template=template,
         policy=policy,
     )
-    urgency = proposal_urgency(self_state=self_state, template=template)
-    confidence = proposal_confidence(self_state=self_state, template=template)
+    urgency = proposal_urgency(field_pressures=pressures, template=template)
+    confidence = proposal_confidence(field_pressures=pressures, template=template)
     priority = proposal_priority(
         base_priority=template.base_priority,
         match_score=match_score,
@@ -91,25 +95,25 @@ def _build_candidate(
     )
     risk = proposal_risk(
         base_risk=template.base_risk,
-        self_state=self_state,
+        field_pressures=pressures,
         template=template,
     )
     resolved_target_id, resolved_target_kind, binding_resolved_from = _resolve_binding_target(
         template=template,
-        self_state=self_state,
+        attention=attention,
     )
     title, description, reasons = template_title_description(
         template_key,
         target_id=resolved_target_id,
     )
+    attention_frame_id = attention.frame_id if attention is not None else "none"
     evidence_refs = [
-        f"self_state:{self_state.self_state_id}",
-        f"attention:{self_state.source_attention_frame_id}",
-        f"field:{self_state.source_field_tick_id}",
+        f"field:{field_tick_id}",
+        f"attention:{attention_frame_id}",
     ]
-    if attention is not None:
-        evidence_refs.append(f"attention_frame:{attention.frame_id}")
-    motivating_targets = list(self_state.dominant_attention_targets[:5])
+    motivating_targets = (
+        [t.target_id for t in attention.dominant_targets[:5]] if attention is not None else []
+    )
     execution_intent: dict[str, str] = {
         "mode": "descriptive_only",
         "template": template_key,
@@ -120,7 +124,8 @@ def _build_candidate(
     return ProposalCandidateV1(
         proposal_id=stable_proposal_id(
             template_key=template_key,
-            self_state_id=self_state.self_state_id,
+            field_tick_id=field_tick_id,
+            attention_frame_id=attention_frame_id,
         ),
         proposal_kind=cast_proposal_kind(template.kind),
         title=title,
@@ -177,21 +182,31 @@ def _dominant_motivations(candidates: list[ProposalCandidateV1]) -> list[str]:
 
 def build_proposal_frame(
     *,
-    self_state: SelfStateV1,
+    field: FieldStateV1,
     attention: FieldAttentionFrameV1 | None,
-    field: FieldStateV1 | None,
     policy: ProposalPolicyV1,
     previous_frame: ProposalFrameV1 | None = None,
     now: datetime | None = None,
     reverie_candidates: list[ProposalCandidateV1] | None = None,
 ) -> ProposalFrameV1:
-    del previous_frame, field  # reserved for continuity in later revisions
+    """Build a ProposalFrameV1 directly from FieldStateV1 + FieldAttentionFrameV1.
+
+    2026-07-22 (SelfStateV1 burn): previously took a SelfStateV1 as its
+    primary input and `field` was received but discarded ("reserved for
+    continuity in later revisions") -- self_state was always a lossy,
+    hand-tuned-weight pass-through of field/attention data for this
+    consumer's purposes. `field` is load-bearing now, not reserved.
+    """
+    del previous_frame  # reserved for continuity in later revisions
     generated_at = now or datetime.now(timezone.utc)
     warnings: list[str] = []
-    if attention is not None and attention.frame_id != self_state.source_attention_frame_id:
+    if attention is not None and attention.source_field_tick_id != field.tick_id:
         warnings.append(
-            f"attention_frame_mismatch:{attention.frame_id}!={self_state.source_attention_frame_id}"
+            f"attention_source_tick_mismatch:{attention.source_field_tick_id}!={field.tick_id}"
         )
+
+    pressures = compute_field_pressures(field)
+    attention_frame_id = attention.frame_id if attention is not None else "none"
 
     built: list[ProposalCandidateV1] = []
     for template_key, template in policy.proposal_templates.items():
@@ -199,8 +214,9 @@ def build_proposal_frame(
             _build_candidate(
                 template_key=template_key,
                 template=template,
-                self_state=self_state,
+                field_tick_id=field.tick_id,
                 attention=attention,
+                pressures=pressures,
                 policy=policy,
             )
         )
@@ -228,14 +244,14 @@ def build_proposal_frame(
     overall_risk = _overall_risk(active)
     return ProposalFrameV1(
         frame_id=stable_proposal_frame_id(
-            self_state_id=self_state.self_state_id,
+            field_tick_id=field.tick_id,
+            attention_frame_id=attention_frame_id,
             policy_id=policy.policy_id,
         ),
         generated_at=generated_at,
-        source_self_state_id=self_state.self_state_id,
-        source_self_state_generated_at=self_state.generated_at,
-        source_attention_frame_id=self_state.source_attention_frame_id,
-        source_field_tick_id=self_state.source_field_tick_id,
+        source_field_tick_id=field.tick_id,
+        source_field_generated_at=field.generated_at,
+        source_attention_frame_id=attention_frame_id,
         proposal_policy_id=policy.policy_id,
         overall_action_pressure=_overall_action_pressure(active),
         overall_risk=overall_risk,

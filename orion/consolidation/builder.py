@@ -56,7 +56,8 @@ def build_consolidation_frame(
         tensor_slices=tensor_slices,
         schema_candidates=schema_candidates,
         source_counts={
-            "self_state": len(window.self_states),
+            # "self_state" key removed 2026-07-22, SelfStateV1 burn -- window
+            # no longer carries self_states.
             "attention": len(window.attention_frames),
             "proposal": len(window.proposal_frames),
             "policy": len(window.policy_frames),

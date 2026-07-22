@@ -8,7 +8,6 @@ from orion.execution_dispatch.builder import (
 from orion.execution_dispatch.policy import load_execution_dispatch_policy
 from orion.schemas.policy_decision_frame import PolicyDecisionFrameV1, PolicyDecisionV1
 from orion.schemas.proposal_frame import ProposalCandidateV1, ProposalFrameV1
-from orion.schemas.self_state import SelfStateDimensionV1, SelfStateV1
 
 REPO = Path(__file__).resolve().parents[1]
 POLICY = load_execution_dispatch_policy(
@@ -16,24 +15,7 @@ POLICY = load_execution_dispatch_policy(
 )
 NOW = datetime(2026, 5, 24, 12, 0, tzinfo=timezone.utc)
 
-
-def _loaded_self_state() -> SelfStateV1:
-    def dim(dimension_id: str, score: float) -> SelfStateDimensionV1:
-        return SelfStateDimensionV1(dimension_id=dimension_id, score=score, confidence=0.9)
-
-    return SelfStateV1(
-        self_state_id="self.state:tick_live:frame_live:self_state_policy.v1",
-        generated_at=NOW,
-        source_field_tick_id="tick_live",
-        source_field_generated_at=NOW,
-        source_attention_frame_id="attention.frame:tick_live:field_attention_policy.v1",
-        source_attention_generated_at=NOW,
-        overall_condition="loaded",
-        overall_intensity=0.655,
-        overall_confidence=0.9,
-        dimensions={"execution_pressure": dim("execution_pressure", 1.0)},
-        summary_labels=["execution_loaded"],
-    )
+FIELD_TICK_ID = "field.tick:tick_live"
 
 
 def _candidate(proposal_id: str, proposal_kind: str, **kwargs) -> ProposalCandidateV1:
@@ -58,14 +40,12 @@ def _candidate(proposal_id: str, proposal_kind: str, **kwargs) -> ProposalCandid
 
 
 def _proposal_frame() -> ProposalFrameV1:
-    state = _loaded_self_state()
     return ProposalFrameV1(
         frame_id="proposal.frame:test:proposal_policy.v1",
         generated_at=NOW,
-        source_self_state_id=state.self_state_id,
-        source_self_state_generated_at=state.generated_at,
-        source_attention_frame_id=state.source_attention_frame_id,
-        source_field_tick_id=state.source_field_tick_id,
+        source_field_tick_id=FIELD_TICK_ID,
+        source_field_generated_at=NOW,
+        source_attention_frame_id="attention.frame:tick_live:field_attention_policy.v1",
         overall_action_pressure=0.6,
         overall_risk=0.3,
         candidates=[
@@ -115,7 +95,7 @@ def _policy_frame(proposal: ProposalFrameV1) -> PolicyDecisionFrameV1:
         frame_id="policy.frame:proposal.frame:test:substrate_policy.v1",
         generated_at=NOW,
         source_proposal_frame_id=proposal.frame_id,
-        source_self_state_id=proposal.source_self_state_id,
+        source_field_tick_id=proposal.source_field_tick_id,
         decisions=decisions,
         approved_decisions=approved,
         review_required_decisions=review,
@@ -129,18 +109,17 @@ def _policy_frame(proposal: ProposalFrameV1) -> PolicyDecisionFrameV1:
 def test_builds_execution_dispatch_frame() -> None:
     proposal = _proposal_frame()
     policy_frame = _policy_frame(proposal)
-    state = _loaded_self_state()
     frame = build_execution_dispatch_frame(
         policy_frame=policy_frame,
         proposal_frame=proposal,
-        self_state=state,
+        field_tick_id=FIELD_TICK_ID,
         policy=POLICY,
         now=NOW,
     )
     assert frame.schema_version == "execution.dispatch.frame.v1"
     assert frame.source_policy_frame_id == policy_frame.frame_id
     assert frame.source_proposal_frame_id == proposal.frame_id
-    assert frame.source_self_state_id == state.self_state_id
+    assert frame.source_field_tick_id == FIELD_TICK_ID
 
 
 def test_approved_read_only_become_dry_run_candidates() -> None:
@@ -149,7 +128,7 @@ def test_approved_read_only_become_dry_run_candidates() -> None:
     frame = build_execution_dispatch_frame(
         policy_frame=policy_frame,
         proposal_frame=proposal,
-        self_state=_loaded_self_state(),
+        field_tick_id=FIELD_TICK_ID,
         policy=POLICY,
         now=NOW,
     )
@@ -166,7 +145,7 @@ def test_review_and_rejected_blocked() -> None:
     frame = build_execution_dispatch_frame(
         policy_frame=policy_frame,
         proposal_frame=proposal,
-        self_state=_loaded_self_state(),
+        field_tick_id=FIELD_TICK_ID,
         policy=POLICY,
         now=NOW,
     )
@@ -182,7 +161,7 @@ def test_default_dispatch_mode_and_no_attempt() -> None:
     frame = build_execution_dispatch_frame(
         policy_frame=policy_frame,
         proposal_frame=proposal,
-        self_state=_loaded_self_state(),
+        field_tick_id=FIELD_TICK_ID,
         policy=POLICY,
         now=NOW,
     )
@@ -197,7 +176,7 @@ def test_no_mutating_scope_in_envelopes() -> None:
     frame = build_execution_dispatch_frame(
         policy_frame=policy_frame,
         proposal_frame=proposal,
-        self_state=_loaded_self_state(),
+        field_tick_id=FIELD_TICK_ID,
         policy=POLICY,
         now=NOW,
     )
@@ -215,7 +194,7 @@ def test_dispatch_read_only_produces_prepared_for_dispatch_not_dispatched() -> N
     frame = build_execution_dispatch_frame(
         policy_frame=policy_frame,
         proposal_frame=proposal,
-        self_state=_loaded_self_state(),
+        field_tick_id=FIELD_TICK_ID,
         policy=policy,
         now=NOW,
         override_dispatch_mode="dispatch_read_only",
@@ -245,7 +224,7 @@ def test_stable_frame_id() -> None:
     frame = build_execution_dispatch_frame(
         policy_frame=policy_frame,
         proposal_frame=proposal,
-        self_state=_loaded_self_state(),
+        field_tick_id=FIELD_TICK_ID,
         policy=POLICY,
         now=NOW,
     )

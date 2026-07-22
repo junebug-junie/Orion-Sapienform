@@ -10,35 +10,12 @@ from orion.schemas.execution_dispatch_frame import ExecutionDispatchCandidateV1,
 from orion.schemas.feedback_frame import FeedbackFrameV1, OutcomeObservationV1
 from orion.schemas.field_attention_frame import FieldAttentionFrameV1, FieldAttentionTargetV1
 from orion.schemas.policy_decision_frame import PolicyDecisionFrameV1, PolicyDecisionV1
-from orion.schemas.self_state import SelfStateDimensionV1, SelfStateV1
 
 REPO = Path(__file__).resolve().parents[1]
 POLICY = load_consolidation_policy(REPO / "config" / "consolidation" / "consolidation_policy.v1.yaml")
 NOW = datetime(2026, 5, 25, 15, 0, tzinfo=timezone.utc)
 START = datetime(2026, 5, 25, 14, 0, tzinfo=timezone.utc)
 POLICY_ID = POLICY.policy_id
-
-
-def _dim(dimension_id: str, score: float) -> SelfStateDimensionV1:
-    return SelfStateDimensionV1(dimension_id=dimension_id, score=score, confidence=0.9)
-
-
-def _self_state(self_state_id: str) -> SelfStateV1:
-    return SelfStateV1(
-        self_state_id=self_state_id,
-        generated_at=NOW,
-        source_field_tick_id="tick",
-        source_field_generated_at=NOW,
-        source_attention_frame_id="att",
-        source_attention_generated_at=NOW,
-        overall_condition="loaded",
-        overall_intensity=0.7,
-        overall_confidence=0.9,
-        dimensions={
-            "execution_pressure": _dim("execution_pressure", 0.8),
-            "reliability_pressure": _dim("reliability_pressure", 0.2),
-        },
-    )
 
 
 def _attention_frame(frame_id: str) -> FieldAttentionFrameV1:
@@ -77,7 +54,7 @@ def _policy_frame(frame_id: str) -> PolicyDecisionFrameV1:
         frame_id=frame_id,
         generated_at=NOW,
         source_proposal_frame_id="proposal.frame:test",
-        source_self_state_id="self.state:test",
+        source_field_tick_id="field.tick:test",
         decisions=[decision],
         approved_decisions=[decision],
         overall_risk=0.05,
@@ -100,7 +77,7 @@ def _review_policy_frame(frame_id: str) -> PolicyDecisionFrameV1:
         frame_id=frame_id,
         generated_at=NOW,
         source_proposal_frame_id="proposal.frame:review",
-        source_self_state_id="self.state:review",
+        source_field_tick_id="field.tick:review",
         decisions=[decision],
         review_required_decisions=[decision],
         overall_risk=0.6,
@@ -126,7 +103,7 @@ def _dispatch_blocked(frame_id: str) -> ExecutionDispatchFrameV1:
         generated_at=NOW,
         source_policy_frame_id="policy.frame:blocked",
         source_proposal_frame_id="proposal.frame:blocked",
-        source_self_state_id="self.state:blocked",
+        source_field_tick_id="field.tick:blocked",
         blocked_candidates=[
             ExecutionDispatchCandidateV1(
                 dispatch_id=f"dispatch:blocked:{frame_id}",
@@ -150,7 +127,6 @@ def _empty_window(**overrides: object) -> ConsolidationWindowData:
     defaults: dict[str, object] = {
         "window_start": START,
         "window_end": NOW,
-        "self_states": [],
         "attention_frames": [],
         "proposal_frames": [],
         "policy_frames": [],
@@ -180,16 +156,6 @@ def _expectations_for_window(window: ConsolidationWindowData):
         feedback_frames=window.feedback_frames,
         policy=POLICY,
     )
-
-
-def test_loaded_but_reliable_creates_reliability_clear_expectation() -> None:
-    window = _empty_window(
-        self_states=[_self_state("self.state:1"), _self_state("self.state:2"), _self_state("self.state:3")]
-    )
-    expectations = _expectations_for_window(window)
-    match = [e for e in expectations if e.expected_outcome_kind == "reliability_clear"]
-    assert len(match) == 1
-    assert match[0].trigger_motif_id == f"motif:loaded_but_reliable:{POLICY_ID}"
 
 
 def test_read_only_policy_loop_creates_read_only_approved_expectation() -> None:

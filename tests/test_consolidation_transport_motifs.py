@@ -42,7 +42,6 @@ def test_transport_contract_drift_motif() -> None:
     window = ConsolidationWindowData(
         window_start=NOW,
         window_end=NOW,
-        self_states=[],
         attention_frames=[_attention_frame(contract=1.0) for _ in range(3)],
         proposal_frames=[],
         policy_frames=[],

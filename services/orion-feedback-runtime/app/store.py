@@ -11,9 +11,9 @@ from sqlalchemy.engine import Engine
 
 from orion.schemas.execution_dispatch_frame import ExecutionDispatchFrameV1
 from orion.schemas.feedback_frame import FeedbackFrameV1
+from orion.schemas.field_state import FieldStateV1
 from orion.schemas.policy_decision_frame import PolicyDecisionFrameV1
 from orion.schemas.proposal_frame import ProposalFrameV1
-from orion.schemas.self_state import SelfStateV1
 
 logger = logging.getLogger("orion.feedback_runtime.store")
 
@@ -54,15 +54,15 @@ class FeedbackRuntimeStore:
         try:
             return ExecutionDispatchFrameV1.model_validate(payload)
         except ValidationError:
-            # Mirrors load_self_state's guard below: this is the FIFO lookup
-            # (oldest dispatch frame without feedback yet) -- a naive raise
-            # would re-select and fail on this exact row every tick forever,
-            # blocking every dispatch frame queued behind it. Degrading to
-            # None here means this tick does no work for a bad row instead of
-            # crash-looping on it; the row itself isn't retired (no feedback
-            # frame is written for it), which is the same acknowledged
-            # limitation self_state's None-degrade already accepts elsewhere
-            # in this file.
+            # Mirrors load_field_for_tick's guard below: this is the FIFO
+            # lookup (oldest dispatch frame without feedback yet) -- a naive
+            # raise would re-select and fail on this exact row every tick
+            # forever, blocking every dispatch frame queued behind it.
+            # Degrading to None here means this tick does no work for a bad
+            # row instead of crash-looping on it; the row itself isn't
+            # retired (no feedback frame is written for it), which is the
+            # same acknowledged limitation this file's other None-degrades
+            # already accept.
             logger.warning("dispatch_frame_incompatible_schema fifo_lookup", exc_info=True)
             return None
 
@@ -141,51 +141,55 @@ class FeedbackRuntimeStore:
             payload = json.loads(payload)
         return ProposalFrameV1.model_validate(payload)
 
-    def load_self_state(self, self_state_id: str) -> SelfStateV1 | None:
+    def load_field_for_tick(self, tick_id: str) -> FieldStateV1 | None:
+        """2026-07-22 (SelfStateV1 burn): replaces load_self_state. Looks up
+        the exact field tick a dispatch frame was built against
+        (source_field_tick_id), mirroring
+        orion-self-state-runtime/app/store.py's load_field_for_tick before
+        that service is retired."""
         with self._engine.connect() as conn:
             row = (
                 conn.execute(
                     text(
                         """
-                        SELECT self_state_json FROM substrate_self_state
-                        WHERE self_state_id = :self_state_id
+                        SELECT field_json FROM substrate_field_state
+                        WHERE tick_id = :tick_id
+                        ORDER BY generated_at DESC
                         LIMIT 1
                         """
                     ),
-                    {"self_state_id": self_state_id},
+                    {"tick_id": tick_id},
                 )
                 .mappings()
                 .first()
             )
         if not row:
             return None
-        payload = row["self_state_json"]
+        payload = row["field_json"]
         if isinstance(payload, str):
             payload = json.loads(payload)
         try:
-            return SelfStateV1.model_validate(payload)
+            return FieldStateV1.model_validate(payload)
         except ValidationError:
-            # build_feedback_frame already accepts self_state_before=None
-            # (an intentionally optional input), so degrading here doesn't
-            # stall this service's own FIFO queue the way policy/execution-
+            # build_feedback_frame already accepts field_before=None (an
+            # intentionally optional input), so degrading here doesn't stall
+            # this service's own FIFO queue the way policy/execution-
             # dispatch-runtime's fixed-id lookups could.
-            logger.warning(
-                "self_state_incompatible_schema self_state_id=%s", self_state_id, exc_info=True
-            )
+            logger.warning("field_state_incompatible_schema tick_id=%s", tick_id, exc_info=True)
             return None
 
-    def load_latest_self_state_after(
+    def load_latest_field_after(
         self,
         generated_at: datetime,
         *,
         window_sec: int = 30,
-    ) -> SelfStateV1 | None:
+    ) -> FieldStateV1 | None:
         with self._engine.connect() as conn:
             row = (
                 conn.execute(
                     text(
                         """
-                        SELECT self_state_json FROM substrate_self_state
+                        SELECT field_json FROM substrate_field_state
                         WHERE generated_at > :generated_at
                           AND generated_at <= :generated_at + make_interval(secs => :window_sec)
                         ORDER BY generated_at ASC
@@ -199,13 +203,13 @@ class FeedbackRuntimeStore:
             )
         if not row:
             return None
-        payload = row["self_state_json"]
+        payload = row["field_json"]
         if isinstance(payload, str):
             payload = json.loads(payload)
         try:
-            return SelfStateV1.model_validate(payload)
+            return FieldStateV1.model_validate(payload)
         except ValidationError:
-            logger.warning("self_state_after_incompatible_schema", exc_info=True)
+            logger.warning("field_state_after_incompatible_schema", exc_info=True)
             return None
 
     def load_latest_feedback_frame(self) -> FeedbackFrameV1 | None:
@@ -327,7 +331,7 @@ class FeedbackRuntimeStore:
                         source_execution_dispatch_frame_id,
                         source_policy_frame_id,
                         source_proposal_frame_id,
-                        source_self_state_id,
+                        source_field_tick_id,
                         generated_at,
                         policy_id,
                         feedback_frame_json,
@@ -337,7 +341,7 @@ class FeedbackRuntimeStore:
                         :source_execution_dispatch_frame_id,
                         :source_policy_frame_id,
                         :source_proposal_frame_id,
-                        :source_self_state_id,
+                        :source_field_tick_id,
                         :generated_at,
                         :policy_id,
                         :feedback_frame_json,
@@ -347,7 +351,7 @@ class FeedbackRuntimeStore:
                         source_execution_dispatch_frame_id = EXCLUDED.source_execution_dispatch_frame_id,
                         source_policy_frame_id = EXCLUDED.source_policy_frame_id,
                         source_proposal_frame_id = EXCLUDED.source_proposal_frame_id,
-                        source_self_state_id = EXCLUDED.source_self_state_id,
+                        source_field_tick_id = EXCLUDED.source_field_tick_id,
                         generated_at = EXCLUDED.generated_at,
                         policy_id = EXCLUDED.policy_id,
                         feedback_frame_json = EXCLUDED.feedback_frame_json
@@ -358,7 +362,7 @@ class FeedbackRuntimeStore:
                     "source_execution_dispatch_frame_id": frame.source_execution_dispatch_frame_id,
                     "source_policy_frame_id": frame.source_policy_frame_id,
                     "source_proposal_frame_id": frame.source_proposal_frame_id,
-                    "source_self_state_id": frame.source_self_state_id,
+                    "source_field_tick_id": frame.source_field_tick_id,
                     "generated_at": frame.generated_at,
                     "policy_id": frame.feedback_policy_id,
                     "feedback_frame_json": Json(frame.model_dump(mode="json")),

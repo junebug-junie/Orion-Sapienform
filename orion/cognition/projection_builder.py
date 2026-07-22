@@ -40,7 +40,6 @@ from orion.substrate.relational import (
 from orion.cognition.projection_context import summarize_projection_inputs
 from orion.substrate.relational.layer import _lightweight_belief_set, _skip_unified_beliefs_ctx
 from orion.substrate.relational.adapters.spark_ctx import map_spark_ctx_to_substrate
-from orion.substrate.relational.adapters.self_state_ctx import map_self_state_ctx_to_substrate
 from orion.substrate.relational.adapters.execution_ctx import map_execution_ctx_to_substrate
 from orion.substrate.relational.adapters.transport_ctx import map_transport_ctx_to_substrate
 from orion.substrate.relational.adapters.biometrics_ctx import map_biometrics_ctx_to_substrate
@@ -111,17 +110,11 @@ def build_projection_unification_registry() -> ProducerRegistryV1:
                 pull_on_cold=True,
                 adapter_fn=map_spark_ctx_to_substrate,
             ),
-            # Self-model lane (higher-order): Orion's beliefs about its own
-            # condition, carrying per-dimension prediction error that seeds
-            # dynamics pressure. ctx-sourced; no cold fan-out (read from ctx).
-            ProducerEntryV1(
-                producer_id="self_state",
-                trust_tier=GRAPHDB_DURABLE,
-                anchor_scopes=("orion",),
-                freshness_ttl_sec=120,
-                pull_on_cold=False,
-                adapter_fn=map_self_state_ctx_to_substrate,
-            ),
+            # Self-model lane removed 2026-07-22, SelfStateV1 burn
+            # (docs/superpowers/specs/2026-07-22-self-state-phi-endo-origination-
+            # burn-spec.md): SelfStateV1 no longer exists, so ctx['self_state']
+            # is never populated. orion.substrate.relational.adapters.self_state_ctx
+            # deleted with it.
             # Substrate "felt state" reducer lanes (rung 2): Orion's beliefs about
             # its own body — biometric pressure, in-flight execution, transport bus.
             # ctx-sourced; no cold fan-out (read from ctx).

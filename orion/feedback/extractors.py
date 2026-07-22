@@ -1,23 +1,30 @@
 from __future__ import annotations
 
-from orion.schemas.self_state import SelfStateV1
+from orion.field.pressure import field_pressures
+from orion.schemas.field_state import FieldStateV1
 
 
 def clamp01(x: float) -> float:
     return max(0.0, min(1.0, float(x)))
 
 
-def extract_self_state_pressure_snapshot(
-    state: SelfStateV1 | None,
+def extract_field_pressure_snapshot(
+    field: FieldStateV1 | None,
     channels: list[str],
 ) -> dict[str, float]:
-    if state is None:
+    """2026-07-22 (SelfStateV1 burn): was extract_self_state_pressure_snapshot,
+    reading SelfStateV1.dimensions. FieldStateV1 was always the real upstream
+    tick -- field_pressures() (orion/field/pressure.py) is the same real,
+    non-hand-tuned channel-merge logic Layer 7 (orion/proposals/) already
+    uses. Only the 4 real (non-composite) categories are ever populated;
+    a channel this policy asks for that isn't one of those 4
+    (execution/resource/reasoning/reliability_pressure) reads 0.0 -- same
+    graceful-degradation contract the old self-state version had for an
+    unmapped dimension."""
+    if field is None:
         return {ch: 0.0 for ch in channels}
-    out: dict[str, float] = {}
-    for ch in channels:
-        dim = state.dimensions.get(ch)
-        out[ch] = clamp01(dim.score) if dim is not None else 0.0
-    return out
+    pressures = field_pressures(field)
+    return {ch: clamp01(pressures.get(ch, 0.0)) for ch in channels}
 
 
 def pressure_delta(

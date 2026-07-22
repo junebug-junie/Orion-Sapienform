@@ -6,52 +6,38 @@ from pathlib import Path
 from orion.proposals.builder import build_proposal_frame
 from orion.proposals.policy import load_proposal_policy
 from orion.proposals.templates import FORBIDDEN_TRANSPORT_PROPOSAL_KEYS, TRANSPORT_PROPOSAL_TEMPLATE_KEYS
-from orion.schemas.self_state import SelfStateDimensionV1, SelfStateV1
+from orion.schemas.field_state import FieldStateV1
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 NOW = datetime(2026, 5, 25, 23, 30, 10, tzinfo=timezone.utc)
 
 
-def _self_state() -> SelfStateV1:
-    dims = {
-        dim: SelfStateDimensionV1(dimension_id=dim, score=0.8, confidence=0.7)
-        for dim in (
-            "field_intensity",
-            "coherence",
-            "uncertainty",
-            "agency_readiness",
-            "resource_pressure",
-            "execution_pressure",
-            "reasoning_pressure",
-            "reliability_pressure",
-            "continuity_pressure",
-            "introspection_pressure",
-            "social_pressure",
-        )
-    }
-    dims["reliability_pressure"] = SelfStateDimensionV1(
-        dimension_id="reliability_pressure", score=0.9, confidence=0.8
-    )
-    return SelfStateV1(
-        self_state_id="self.state:transport:test",
+def _field() -> FieldStateV1:
+    """2026-07-22 (SelfStateV1 burn): broadly-high pressure across every
+    real (non-composite) category, mirroring the old fixture's "all dims 0.8"
+    intent -- transport template scoring never depended on contract_pressure
+    itself (it was already always 0.0 under self_state, unmapped then and
+    unmapped now), only on base_priority/policy weights clearing thresholds."""
+    return FieldStateV1(
         generated_at=NOW,
-        source_field_tick_id="tick",
-        source_field_generated_at=NOW,
-        source_attention_frame_id="attention.frame:test",
-        source_attention_generated_at=NOW,
-        overall_condition="loaded",
-        overall_intensity=0.6,
-        overall_confidence=0.7,
-        dimensions=dims,
-        dominant_attention_targets=["capability:transport"],
-        dominant_field_channels={"contract_pressure": 1.0},
-        summary_labels=["transport_contract_drift"],
+        tick_id="tick",
+        node_vectors={
+            "node:transport-test": {
+                "execution_pressure": 0.8,
+                "reasoning_pressure": 0.8,
+                "reliability_pressure": 0.9,
+                "pressure": 0.8,
+                "staleness": 0.8,
+                "repair_pressure": 0.8,
+                "egress_confidence_deficit": 0.8,
+            },
+        },
     )
 
 
 def test_transport_readonly_templates_present() -> None:
     policy = load_proposal_policy(REPO_ROOT / "config" / "proposals" / "proposal_policy.v1.yaml")
-    frame = build_proposal_frame(self_state=_self_state(), attention=None, field=None, policy=policy, now=NOW)
+    frame = build_proposal_frame(field=_field(), attention=None, policy=policy, now=NOW)
     keys = {c.proposal_id.split(":")[1] for c in frame.candidates}
     assert TRANSPORT_PROPOSAL_TEMPLATE_KEYS & keys
     assert not (FORBIDDEN_TRANSPORT_PROPOSAL_KEYS & keys)

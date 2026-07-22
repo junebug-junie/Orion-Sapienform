@@ -8,12 +8,6 @@ from orion.schemas.consolidation_frame import MotifObservationV1
 from orion.schemas.feedback_frame import FeedbackFrameV1
 from orion.schemas.field_attention_frame import FieldAttentionFrameV1
 from orion.schemas.policy_decision_frame import PolicyDecisionFrameV1
-from orion.schemas.self_state import SelfStateV1
-
-
-def _dim_score(state: SelfStateV1, dimension_id: str) -> float:
-    dim = state.dimensions.get(dimension_id)
-    return float(dim.score) if dim is not None else 0.0
 
 
 def _motif_id(label: str, policy_id: str) -> str:
@@ -47,43 +41,6 @@ def detect_motifs(
             continue
         motifs.append(motif)
     return motifs
-
-
-def _detect_loaded_but_reliable(
-    *,
-    window: ConsolidationWindowData,
-    rule: MotifRuleV1,
-    policy: ConsolidationPolicyV1,
-) -> MotifObservationV1 | None:
-    cond = rule.conditions
-    matches = [
-        s
-        for s in window.self_states
-        if s.overall_condition == cond.get("overall_condition", "loaded")
-        and _dim_score(s, "execution_pressure") >= float(cond.get("execution_pressure_min", 0.7))
-        and _dim_score(s, "reliability_pressure") <= float(cond.get("reliability_pressure_max", 0.3))
-    ]
-    if len(matches) < policy.window.min_support_count:
-        return None
-    support, confidence = _score_motif(
-        match_count=len(matches), total=len(window.self_states) or len(matches), policy=policy
-    )
-    return MotifObservationV1(
-        motif_id=_motif_id(rule.label, policy.policy_id),
-        motif_kind=rule.kind,
-        label=rule.label,
-        recurrence_count=len(matches),
-        support_score=support,
-        confidence_score=confidence,
-        evidence_frame_ids=[m.self_state_id for m in matches],
-        dominant_dimensions={
-            "execution_pressure": sum(_dim_score(m, "execution_pressure") for m in matches) / len(matches),
-            "reliability_pressure": sum(_dim_score(m, "reliability_pressure") for m in matches) / len(matches),
-        },
-        first_seen_at=min(m.generated_at for m in matches),
-        last_seen_at=max(m.generated_at for m in matches),
-        reasons=["loaded_with_high_execution_low_reliability_pressure"],
-    )
 
 
 def _target_ids(frame: FieldAttentionFrameV1) -> set[str]:
@@ -232,7 +189,13 @@ def _detect_stable_after_dry_run(
     rule: MotifRuleV1,
     policy: ConsolidationPolicyV1,
 ) -> MotifObservationV1 | None:
-    allowed = set(rule.conditions.get("self_state_delta", {}).get("allowed", ["unchanged"]))
+    # 2026-07-22 (SelfStateV1 burn): condition key and observation
+    # source_kind were "self_state_delta"; feedback observations are
+    # field-native now (orion/feedback/builder.py), so this looks for
+    # "field_delta" instead. Same semantics -- "did the world move" -- just
+    # keyed off FieldStateV1's reliability_pressure delta instead of
+    # SelfStateV1's agency_readiness delta.
+    allowed = set(rule.conditions.get("field_delta", {}).get("allowed", ["unchanged"]))
     matches = []
     for f in window.feedback_frames:
         if f.outcome_status != rule.conditions.get("outcome_status", "dry_run_only"):
@@ -240,7 +203,7 @@ def _detect_stable_after_dry_run(
         if f.absence_evidence or f.negative_evidence:
             continue
         has_unchanged = any(
-            o.source_kind == "self_state_delta" and o.outcome_kind in allowed for o in f.observations
+            o.source_kind == "field_delta" and o.outcome_kind in allowed for o in f.observations
         )
         if has_unchanged:
             matches.append(f)
@@ -366,7 +329,9 @@ def _detect_transport_healthy_idle(
 
 
 _DETECTORS = {
-    "loaded_but_reliable": _detect_loaded_but_reliable,
+    # "loaded_but_reliable" removed 2026-07-22, SelfStateV1 burn
+    # (docs/superpowers/specs/2026-07-22-self-state-phi-endo-origination-burn-
+    # spec.md): its only input was window.self_states, which no longer exists.
     "attention_saturated_execution": _detect_attention_saturated_execution,
     "read_only_policy_loop": _detect_read_only_policy_loop,
     "dry_run_feedback_loop": _detect_dry_run_feedback_loop,

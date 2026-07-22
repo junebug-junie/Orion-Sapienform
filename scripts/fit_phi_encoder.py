@@ -51,7 +51,27 @@ assert _SPEC and _SPEC.loader
 _inner_state = importlib.util.module_from_spec(_SPEC)
 _SPEC.loader.exec_module(_inner_state)
 
-FELT_DIMENSIONS: tuple[str, ...] = _inner_state.FELT_DIMENSIONS
+# FELT_DIMENSIONS is now a LOCAL, frozen historical constant (2026-07-22,
+# SelfStateV1 burn, docs/superpowers/specs/2026-07-22-self-state-phi-endo-
+# origination-burn-spec.md) -- no longer imported from inner_state.py, which
+# correctly no longer carries it: the live service never produces
+# self-state-derived features again, but this offline tool still needs to
+# read/retrain against already-collected pre-burn seed-v1..v4 corpus rows,
+# which genuinely have these fields. This is a fixed historical fact about
+# past corpus shape, not something that should live-track the current
+# service's feature set.
+FELT_DIMENSIONS: tuple[str, ...] = (
+    "coherence",
+    "field_intensity",
+    "agency_readiness",
+    "execution_pressure",
+    "reasoning_pressure",
+    "resource_pressure",
+    "reliability_pressure",
+    "continuity_pressure",
+    "social_pressure",
+    "introspection_pressure",
+)
 COGNITIVE_FEATURE_NAMES: tuple[str, ...] = _inner_state.COGNITIVE_FEATURE_NAMES
 
 DEFAULT_FEATURES_VERSION = "seed-v3"
@@ -112,10 +132,44 @@ class TrainConfig:
     seed: int = 42
 
 
+# Historical seed-v3/seed-v4 trainable-feature logic, moved here 2026-07-22
+# (SelfStateV1 burn) from inner_state.py's now-removed encoder_trainable_
+# feature_names() branches -- preserved for retraining against already-
+# collected pre-burn corpus data, not maintained as live service behavior.
+_ENCODER_EXCLUDED_FELT: frozenset[str] = frozenset({
+    "field_intensity", "resource_pressure", "introspection_pressure",
+})
+_INFRA_ONLY_FELT: frozenset[str] = frozenset({"reliability_pressure"})
+_SEEDV4_THEATER_FELT: frozenset[str] = frozenset(
+    {"coherence", "continuity_pressure", "social_pressure"}
+)
+_SEEDV4_COGNITIVE_FEATURE_NAMES: tuple[str, ...] = (
+    "recall_gate_fired", "reasoning_present", "execution_load", "reasoning_load",
+)
+
+
+def _legacy_trainable_feature_names(features_version: str) -> list[str]:
+    if features_version == "seed-v4":
+        felt = [
+            k for k in FELT_DIMENSIONS
+            if k not in _ENCODER_EXCLUDED_FELT
+            and k not in _INFRA_ONLY_FELT
+            and k not in _SEEDV4_THEATER_FELT
+        ]
+        return felt + ["overall_intensity"] + list(_SEEDV4_COGNITIVE_FEATURE_NAMES)
+    if features_version == "seed-v3":
+        felt = [k for k in FELT_DIMENSIONS if k not in _ENCODER_EXCLUDED_FELT and k not in _INFRA_ONLY_FELT]
+        return felt + ["overall_intensity"] + list(COGNITIVE_FEATURE_NAMES)
+    felt = [k for k in FELT_DIMENSIONS if k not in ("policy_pressure", "uncertainty")]
+    return felt + ["overall_intensity"] + list(COGNITIVE_FEATURE_NAMES)
+
+
 def input_features_for_version(features_version: str, *, legacy_corpus: bool = False) -> list[str]:
     if legacy_corpus:
         return list(FELT_DIMENSIONS) + ["overall_intensity"]
-    return _inner_state.encoder_trainable_feature_names(features_version)
+    if features_version == "seed-v5":
+        return _inner_state.encoder_trainable_feature_names(features_version)
+    return _legacy_trainable_feature_names(features_version)
 
 
 def resolve_features_version(row: InnerStateFeaturesV1, *, legacy_flag: bool) -> str:

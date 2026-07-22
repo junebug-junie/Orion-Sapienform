@@ -19,7 +19,6 @@ from orion.schemas.feedback_frame import FeedbackFrameV1
 from orion.schemas.field_attention_frame import FieldAttentionFrameV1
 from orion.schemas.policy_decision_frame import PolicyDecisionFrameV1
 from orion.schemas.proposal_frame import ProposalFrameV1
-from orion.schemas.self_state import SelfStateV1
 
 T = TypeVar("T")
 
@@ -85,21 +84,9 @@ class ConsolidationRuntimeStore:
         return ConsolidationWindowData(
             window_start=window_start,
             window_end=window_end,
-            self_states=self._load_rows(
-                """
-                SELECT self_state_json
-                FROM substrate_self_state
-                WHERE generated_at >= :window_start
-                  AND generated_at < :window_end
-                ORDER BY generated_at DESC
-                LIMIT :max_per_source
-                """,
-                window_start,
-                window_end,
-                max_per_source,
-                SelfStateV1,
-                "self_state_json",
-            ),
+            # self_states lane removed 2026-07-22, SelfStateV1 burn
+            # (docs/superpowers/specs/2026-07-22-self-state-phi-endo-origination-
+            # burn-spec.md): substrate_self_state no longer has a producer.
             attention_frames=self._load_rows(
                 """
                 SELECT frame_json

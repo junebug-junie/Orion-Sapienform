@@ -11,15 +11,9 @@ motif_thresholds:
   min_confidence_score: 0.30
   dominant_motif_min_support: 0.50
 
-tracked_self_dimensions:
-  - field_intensity
-  - execution_pressure
-  - reasoning_pressure
-  - resource_pressure
-  - reliability_pressure
-  - agency_readiness
-  - uncertainty
-  - coherence
+# tracked_self_dimensions removed 2026-07-22, SelfStateV1 burn
+# (docs/superpowers/specs/2026-07-22-self-state-phi-endo-origination-burn-
+# spec.md): its only consumer (_build_field_attention_self_slice) is gone.
 
 tracked_attention_targets:
   - node:athena
@@ -38,13 +32,8 @@ tracked_feedback_outcomes:
   - mixed
 
 motif_rules:
-  loaded_but_reliable:
-    kind: self_state_pattern
-    label: loaded_but_reliable
-    conditions:
-      overall_condition: loaded
-      reliability_pressure_max: 0.30
-      execution_pressure_min: 0.70
+  # loaded_but_reliable removed 2026-07-22, SelfStateV1 burn: its only input
+  # (window.self_states) no longer exists.
 
   attention_saturated_execution:
     kind: attention_pattern
@@ -78,7 +67,9 @@ motif_rules:
     label: stable_after_dry_run
     conditions:
       outcome_status: dry_run_only
-      self_state_delta:
+      # self_state_delta -> field_delta 2026-07-22, SelfStateV1 burn --
+      # feedback observations are field-native now.
+      field_delta:
         allowed:
           - unchanged
 
@@ -102,11 +93,8 @@ tensor:
   max_coordinates: 200
 
 tensor_axes:
-  field_attention_self:
-    - time_bucket
-    - self_condition
-    - attention_target
-    - dimension
+  # field_attention_self removed 2026-07-22, SelfStateV1 burn: its only input
+  # (window.self_states) no longer exists.
   policy_dispatch_feedback:
     - proposal_kind
     - policy_decision

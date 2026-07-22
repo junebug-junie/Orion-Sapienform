@@ -50,10 +50,13 @@ class Settings(BaseSettings):
     # Spark signals (normalized distress/equilibrium)
     channel_spark_signal: str = Field("orion:spark:signal", alias="CHANNEL_SPARK_SIGNAL")
 
-    # Substrate self-state (replace tissue phi when available)
-    channel_substrate_self_state: str = Field(
-        "orion:substrate:self_state",
-        alias="CHANNEL_SUBSTRATE_SELF_STATE",
+    # channel_substrate_self_state removed 2026-07-22, SelfStateV1 burn
+    # (docs/superpowers/specs/2026-07-22-self-state-phi-endo-origination-burn-
+    # spec.md): substrate.self_state.v1 no longer has a producer.
+    # run_inner_state_tick() (app/worker.py) now runs on a plain poll timer
+    # instead of this bus subscription.
+    inner_state_tick_interval_sec: float = Field(
+        10.0, alias="INNER_STATE_TICK_INTERVAL_SEC"
     )
 
     channel_chat_history_spark_meta_patch: str = Field(
@@ -112,7 +115,9 @@ class Settings(BaseSettings):
 
     # --- Honest inner-state features (phi Plan 1) ---
     inner_features_enabled: bool = Field(True, alias="INNER_FEATURES_ENABLED")
-    inner_features_version: str = Field("seed-v3", alias="INNER_FEATURES_VERSION")
+    # seed-v5 (2026-07-22, SelfStateV1 burn): seed-v3/v4 depended on
+    # SelfStateV1's FELT_DIMENSIONS, which no longer exist.
+    inner_features_version: str = Field("seed-v5", alias="INNER_FEATURES_VERSION")
     inner_features_scaler_window_sec: int = Field(900, alias="INNER_FEATURES_SCALER_WINDOW_SEC")
     inner_features_scaler_maxlen: int = Field(256, alias="INNER_FEATURES_SCALER_MAXLEN")
     channel_inner_features: str = Field("orion:self:inner_features", alias="CHANNEL_INNER_FEATURES")

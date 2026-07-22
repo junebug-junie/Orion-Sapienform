@@ -55,7 +55,7 @@ class ConsolidationPolicyV1(BaseModel):
     window: ConsolidationWindowConfigV1 = Field(default_factory=ConsolidationWindowConfigV1)
     motif_thresholds: MotifThresholdsV1 = Field(default_factory=MotifThresholdsV1)
 
-    tracked_self_dimensions: list[str] = Field(default_factory=list)
+    # tracked_self_dimensions removed 2026-07-22, SelfStateV1 burn.
     tracked_attention_targets: list[str] = Field(default_factory=list)
     tracked_feedback_outcomes: list[str] = Field(default_factory=list)
 

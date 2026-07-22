@@ -6,11 +6,14 @@ Layer 8 substrate service: evaluates `ProposalFrameV1` candidates against `Subst
 
 ```text
 substrate_proposal_frames
-+ substrate_self_state
   → orion-policy-runtime
   → PolicyDecisionFrameV1
   → substrate_policy_decision_frames
 ```
+
+2026-07-22 (SelfStateV1 burn): decisions are evaluated directly off
+`ProposalFrameV1` (which already carries `source_field_tick_id`) -- no
+separate self-state dependency or load.
 
 ## Non-goals
 

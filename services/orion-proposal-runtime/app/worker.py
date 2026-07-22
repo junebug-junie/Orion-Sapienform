@@ -44,25 +44,20 @@ class ProposalRuntimeWorker:
                 break
 
     def _tick(self) -> None:
+        # 2026-07-22 (SelfStateV1 burn): polls FieldStateV1 directly instead of
+        # SelfStateV1 -- field was always the real upstream tick, self_state was
+        # a lossy pass-through hop for this consumer's purposes.
         if not self._settings.enable_proposal_runtime:
             return
 
-        self_state = self._store.load_latest_self_state()
-        if self_state is None:
-            return
-
-        if self._store.load_proposal_frame_for_self_state(self_state.self_state_id) is not None:
-            return
-
-        attention = self._store.load_attention_frame(self_state.source_attention_frame_id)
-        field = self._store.load_field_for_tick(self_state.source_field_tick_id)
+        field = self._store.load_latest_field()
         if field is None:
-            logger.warning(
-                "proposal_skip_missing_field tick_id=%s self_state_id=%s",
-                self_state.source_field_tick_id,
-                self_state.self_state_id,
-            )
             return
+
+        if self._store.load_proposal_frame_for_field_tick(field.tick_id) is not None:
+            return
+
+        attention = self._store.load_attention_frame_for_field_tick(field.tick_id)
 
         previous = self._store.load_latest_proposal_frame()
 
@@ -77,7 +72,7 @@ class ProposalRuntimeWorker:
 
                 candidate = spontaneous_thought_to_candidate(
                     thought,
-                    self_state_id=self_state.self_state_id,
+                    fallback_target_id=field.tick_id,
                     autoaction_enabled=getattr(
                         self._settings, "reverie_autoaction_enabled", False
                     ),
@@ -86,9 +81,8 @@ class ProposalRuntimeWorker:
                     reverie_candidates = [candidate]
 
         frame = build_proposal_frame(
-            self_state=self_state,
-            attention=attention,
             field=field,
+            attention=attention,
             policy=self._policy,
             previous_frame=previous,
             reverie_candidates=reverie_candidates,
@@ -109,8 +103,8 @@ class ProposalRuntimeWorker:
             frame = frame.model_copy(update={"candidates": filtered})
         self._store.save_proposal_frame(frame)
         logger.info(
-            "proposal_frame_saved frame_id=%s self_state_id=%s candidates=%d",
+            "proposal_frame_saved frame_id=%s field_tick_id=%s candidates=%d",
             frame.frame_id,
-            self_state.self_state_id,
+            field.tick_id,
             len(frame.candidates),
         )

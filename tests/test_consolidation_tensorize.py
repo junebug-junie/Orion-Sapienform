@@ -11,34 +11,11 @@ from orion.schemas.feedback_frame import FeedbackFrameV1
 from orion.schemas.field_attention_frame import FieldAttentionFrameV1, FieldAttentionTargetV1
 from orion.schemas.policy_decision_frame import PolicyDecisionFrameV1, PolicyDecisionV1
 from orion.schemas.proposal_frame import ProposalCandidateV1, ProposalFrameV1
-from orion.schemas.self_state import SelfStateDimensionV1, SelfStateV1
 
 REPO = Path(__file__).resolve().parents[1]
 POLICY = load_consolidation_policy(REPO / "config" / "consolidation" / "consolidation_policy.v1.yaml")
 NOW = datetime(2026, 5, 25, 15, 0, tzinfo=timezone.utc)
 START = datetime(2026, 5, 25, 14, 0, tzinfo=timezone.utc)
-
-
-def _dim(dimension_id: str, score: float) -> SelfStateDimensionV1:
-    return SelfStateDimensionV1(dimension_id=dimension_id, score=score, confidence=0.9)
-
-
-def _self_state(self_state_id: str, *, attention_frame_id: str = "attention.frame:1") -> SelfStateV1:
-    return SelfStateV1(
-        self_state_id=self_state_id,
-        generated_at=NOW,
-        source_field_tick_id="tick",
-        source_field_generated_at=NOW,
-        source_attention_frame_id=attention_frame_id,
-        source_attention_generated_at=NOW,
-        overall_condition="loaded",
-        overall_intensity=0.7,
-        overall_confidence=0.9,
-        dimensions={
-            "execution_pressure": _dim("execution_pressure", 0.8),
-            "reliability_pressure": _dim("reliability_pressure", 0.2),
-        },
-    )
 
 
 def _attention_frame(frame_id: str) -> FieldAttentionFrameV1:
@@ -66,10 +43,9 @@ def _proposal_frame(frame_id: str) -> ProposalFrameV1:
     return ProposalFrameV1(
         frame_id=frame_id,
         generated_at=NOW,
-        source_self_state_id="self.state:1",
-        source_self_state_generated_at=NOW,
-        source_attention_frame_id="attention.frame:1",
         source_field_tick_id="tick",
+        source_field_generated_at=NOW,
+        source_attention_frame_id="attention.frame:1",
         overall_action_pressure=0.5,
         overall_risk=0.1,
         candidates=[
@@ -106,7 +82,7 @@ def _policy_frame(frame_id: str) -> PolicyDecisionFrameV1:
         frame_id=frame_id,
         generated_at=NOW,
         source_proposal_frame_id="proposal.frame:1",
-        source_self_state_id="self.state:1",
+        source_field_tick_id="field.tick:1",
         decisions=[decision],
         approved_decisions=[decision],
         overall_risk=0.05,
@@ -120,7 +96,7 @@ def _dispatch_frame(frame_id: str) -> ExecutionDispatchFrameV1:
         generated_at=NOW,
         source_policy_frame_id="policy.frame:1",
         source_proposal_frame_id="proposal.frame:1",
-        source_self_state_id="self.state:1",
+        source_field_tick_id="field.tick:1",
         candidates=[
             ExecutionDispatchCandidateV1(
                 dispatch_id="dispatch:1",
@@ -165,7 +141,6 @@ def _window(**overrides: object) -> ConsolidationWindowData:
     defaults: dict[str, object] = {
         "window_start": START,
         "window_end": NOW,
-        "self_states": [_self_state("self.state:1")],
         "attention_frames": [_attention_frame("attention.frame:1")],
         "proposal_frames": [_proposal_frame("proposal.frame:1")],
         "policy_frames": [_policy_frame("policy.frame:1")],
@@ -193,11 +168,6 @@ def _slice_by_kind(slices, kind: str):
     return matches[0]
 
 
-def test_field_attention_self_tensor_has_expected_axes() -> None:
-    tensor = _slice_by_kind(_slices(), "field_attention_self")
-    assert tensor.axes == ["time_bucket", "self_condition", "attention_target", "dimension"]
-
-
 def test_policy_dispatch_feedback_tensor_has_expected_axes() -> None:
     tensor = _slice_by_kind(_slices(), "policy_dispatch_feedback")
     assert tensor.axes == ["proposal_kind", "policy_decision", "dispatch_status", "feedback_outcome"]
@@ -209,7 +179,7 @@ def test_motif_condition_outcome_tensor_has_expected_axes() -> None:
 
 
 def test_coordinates_are_sparse_dicts() -> None:
-    tensor = _slice_by_kind(_slices(), "field_attention_self")
+    tensor = _slice_by_kind(_slices(), "policy_dispatch_feedback")
     assert tensor.coordinates
     assert all(isinstance(coord, dict) for coord in tensor.coordinates)
     assert all(isinstance(key, str) and isinstance(value, str) for coord in tensor.coordinates for key, value in coord.items())
@@ -223,15 +193,10 @@ def test_values_length_equals_coordinates_length() -> None:
 def test_coordinate_count_is_capped() -> None:
     capped_policy = POLICY.model_copy(update={"tensor": POLICY.tensor.model_copy(update={"max_coordinates": 2})})
     window = _window(
-        self_states=[
-            _self_state("self.state:1"),
-            _self_state("self.state:2", attention_frame_id="attention.frame:2"),
-            _self_state("self.state:3", attention_frame_id="attention.frame:3"),
-        ],
-        attention_frames=[
-            _attention_frame("attention.frame:1"),
-            _attention_frame("attention.frame:2"),
-            _attention_frame("attention.frame:3"),
+        dispatch_frames=[
+            _dispatch_frame("execution.dispatch.frame:1"),
+            _dispatch_frame("execution.dispatch.frame:2"),
+            _dispatch_frame("execution.dispatch.frame:3"),
         ],
     )
     tensor = build_sparse_tensor_slices(

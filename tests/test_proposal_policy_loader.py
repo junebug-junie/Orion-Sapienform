@@ -56,7 +56,7 @@ def test_inspect_attended_target_template_has_attention_binding() -> None:
     assert tmpl.kind == "inspect"
     assert tmpl.target_kind == "capability"
     assert tmpl.target_id == "capability:orchestration"
-    assert tmpl.target_binding == "self_state.dominant_attention_targets[0]"
+    assert tmpl.target_binding == "attention.dominant_targets[0]"
     assert tmpl.required_policy_gate == "read_only"
     assert "field_intensity" in tmpl.dimensions
 

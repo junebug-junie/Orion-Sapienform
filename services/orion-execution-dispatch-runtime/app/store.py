@@ -12,7 +12,6 @@ from sqlalchemy.engine import Engine
 from orion.schemas.execution_dispatch_frame import ExecutionDispatchFrameV1
 from orion.schemas.policy_decision_frame import PolicyDecisionFrameV1
 from orion.schemas.proposal_frame import ProposalFrameV1
-from orion.schemas.self_state import SelfStateV1
 
 logger = logging.getLogger("orion.execution_dispatch.runtime.store")
 
@@ -75,38 +74,6 @@ class ExecutionDispatchRuntimeStore:
             payload = json.loads(payload)
         return ProposalFrameV1.model_validate(payload)
 
-    def load_self_state(self, self_state_id: str) -> SelfStateV1 | None:
-        with self._engine.connect() as conn:
-            row = (
-                conn.execute(
-                    text(
-                        """
-                        SELECT self_state_json FROM substrate_self_state
-                        WHERE self_state_id = :self_state_id
-                        LIMIT 1
-                        """
-                    ),
-                    {"self_state_id": self_state_id},
-                )
-                .mappings()
-                .first()
-            )
-        if not row:
-            return None
-        payload = row["self_state_json"]
-        if isinstance(payload, str):
-            payload = json.loads(payload)
-        try:
-            return SelfStateV1.model_validate(payload)
-        except ValidationError:
-            # See services/orion-policy-runtime/app/store.py's identical fix
-            # for why: looked up by a fixed self_state_id, so a naive raise
-            # would permanently block this (and every queued) frame.
-            logger.warning(
-                "self_state_incompatible_schema self_state_id=%s", self_state_id, exc_info=True
-            )
-            return None
-
     def load_dispatch_frame_for_policy_frame(
         self, policy_frame_id: str
     ) -> ExecutionDispatchFrameV1 | None:
@@ -135,9 +102,9 @@ class ExecutionDispatchRuntimeStore:
         try:
             return ExecutionDispatchFrameV1.model_validate(payload)
         except ValidationError:
-            # Same reasoning as load_self_state's guard above: looked up by a
-            # fixed policy_frame_id, so a naive raise would permanently block
-            # this caller on a schema-incompatible historical row.
+            # Looked up by a fixed policy_frame_id, so a naive raise would
+            # permanently block this caller on a schema-incompatible
+            # historical row.
             logger.warning(
                 "dispatch_frame_incompatible_schema policy_frame_id=%s", policy_frame_id, exc_info=True
             )
@@ -180,7 +147,7 @@ class ExecutionDispatchRuntimeStore:
                         frame_id,
                         source_policy_frame_id,
                         source_proposal_frame_id,
-                        source_self_state_id,
+                        source_field_tick_id,
                         generated_at,
                         policy_id,
                         dispatch_frame_json,
@@ -189,7 +156,7 @@ class ExecutionDispatchRuntimeStore:
                         :frame_id,
                         :source_policy_frame_id,
                         :source_proposal_frame_id,
-                        :source_self_state_id,
+                        :source_field_tick_id,
                         :generated_at,
                         :policy_id,
                         :dispatch_frame_json,
@@ -198,7 +165,7 @@ class ExecutionDispatchRuntimeStore:
                     ON CONFLICT (frame_id) DO UPDATE SET
                         source_policy_frame_id = EXCLUDED.source_policy_frame_id,
                         source_proposal_frame_id = EXCLUDED.source_proposal_frame_id,
-                        source_self_state_id = EXCLUDED.source_self_state_id,
+                        source_field_tick_id = EXCLUDED.source_field_tick_id,
                         generated_at = EXCLUDED.generated_at,
                         policy_id = EXCLUDED.policy_id,
                         dispatch_frame_json = EXCLUDED.dispatch_frame_json
@@ -208,7 +175,7 @@ class ExecutionDispatchRuntimeStore:
                     "frame_id": frame.frame_id,
                     "source_policy_frame_id": frame.source_policy_frame_id,
                     "source_proposal_frame_id": frame.source_proposal_frame_id,
-                    "source_self_state_id": frame.source_self_state_id,
+                    "source_field_tick_id": frame.source_field_tick_id,
                     "generated_at": frame.generated_at,
                     "policy_id": frame.execution_dispatch_policy_id,
                     "dispatch_frame_json": Json(frame.model_dump(mode="json")),

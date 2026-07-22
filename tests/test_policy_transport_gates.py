@@ -32,34 +32,13 @@ def _candidate(*, proposal_id: str, kind: str, execution_note: str = "") -> Prop
     )
 
 
-def _self_state_minimal() -> "SelfStateV1":
-    from orion.schemas.self_state import SelfStateDimensionV1, SelfStateV1
-
-    return SelfStateV1(
-        self_state_id="self.state:test",
+def _frame() -> ProposalFrameV1:
+    return ProposalFrameV1(
+        frame_id="proposal.frame:test",
         generated_at=NOW,
         source_field_tick_id="tick",
         source_field_generated_at=NOW,
         source_attention_frame_id="attention.frame:test",
-        source_attention_generated_at=NOW,
-        overall_condition="loaded",
-        overall_intensity=0.5,
-        overall_confidence=0.7,
-        dimensions={
-            "coherence": SelfStateDimensionV1(dimension_id="coherence", score=0.8, confidence=0.7)
-        },
-    )
-
-
-def _frame() -> ProposalFrameV1:
-    state = _self_state_minimal()
-    return ProposalFrameV1(
-        frame_id="proposal.frame:test",
-        generated_at=NOW,
-        source_self_state_id=state.self_state_id,
-        source_self_state_generated_at=state.generated_at,
-        source_attention_frame_id=state.source_attention_frame_id,
-        source_field_tick_id=state.source_field_tick_id,
         overall_action_pressure=0.5,
         overall_risk=0.1,
         candidates=[],
@@ -67,18 +46,15 @@ def _frame() -> ProposalFrameV1:
 
 
 def test_read_only_transport_inspect_approved() -> None:
-    self_state = _self_state_minimal()
     decision = evaluate_proposal_candidate(
         candidate=_candidate(proposal_id="proposal:inspect_transport_status:s", kind="inspect"),
         proposal_frame=_frame(),
-        self_state=self_state,
         policy=POLICY,
     )
     assert decision.decision == "approved_read_only"
 
 
 def test_restart_bus_rejected() -> None:
-    self_state = _self_state_minimal()
     decision = evaluate_proposal_candidate(
         candidate=_candidate(
             proposal_id="proposal:restart_bus:s",
@@ -86,7 +62,6 @@ def test_restart_bus_rejected() -> None:
             execution_note="restart_bus",
         ),
         proposal_frame=_frame(),
-        self_state=self_state,
         policy=POLICY,
     )
     assert decision.decision == "rejected"

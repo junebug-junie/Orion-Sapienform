@@ -18,7 +18,6 @@ class OutcomeObservationV1(BaseModel):
         "cortex_result",
         "field_delta",
         "attention_delta",
-        "self_state_delta",
         "absence",
         "operator_feedback",
     ]
@@ -63,7 +62,9 @@ class FeedbackFrameV1(BaseModel):
     source_execution_dispatch_frame_id: str
     source_policy_frame_id: str | None = None
     source_proposal_frame_id: str | None = None
-    source_self_state_id: str | None = None
+    # source_self_state_id -> source_field_tick_id 2026-07-22, SelfStateV1
+    # burn -- field was always the real upstream tick.
+    source_field_tick_id: str | None = None
 
     feedback_policy_id: str = "feedback_policy.v1"
 

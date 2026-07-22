@@ -1,8 +1,20 @@
 """Honest inner-state feature assembly for spark-introspector.
 
-Replaces the geometric-mean φ (which a single saturated infra signal could
-floor) with a decontaminated, robust-scaled feature vector plus an arithmetic
-cold-start headline and a degeneracy freeze (the GIGO guard).
+2026-07-22 (SelfStateV1 burn, docs/superpowers/specs/2026-07-22-self-state-
+phi-endo-origination-burn-spec.md, decision 3): SelfStateV1 and its 10
+FELT_DIMENSIONS are gone -- they were self-state's own hand-tuned, empirically
+pinned/flat dimension scores (12/12 pinned in a live 2026-07-22 replay). What
+survives is the 4 real cognitive features (recall_gate_fired,
+reasoning_present, execution_load, reasoning_load), sourced from
+execution_trajectory/reasoning_activity projections -- independently real,
+never self-state-derived, unaffected by the burn.
+
+honest_headline() (the old FELT_DIMENSIONS-derived vitality/load aggregate)
+is REMOVED, not replaced. No principled non-self-state formula for it exists;
+inventing one wasn't asked for and isn't attempted here (same "not designing
+a replacement" discipline as the burn spec). headline defaults to an honest
+0.0 / "not_computed" now, overridden by the encoder's real phi output when
+available (see app/worker.py) -- same override precedent as before.
 """
 from __future__ import annotations
 
@@ -69,46 +81,6 @@ class RollingRobustScaler:
         return self.scale(name, value)
 
 
-# Felt + cognitive dimensions φ reads. (execution_pressure / reasoning_pressure
-# are the cortex-exec-lane-fed cognitive signal; reliability_pressure is now
-# decontaminated at source.) policy_pressure + uncertainty are proven dead and
-# are NOT listed here.
-FELT_DIMENSIONS: Tuple[str, ...] = (
-    "coherence",
-    "field_intensity",
-    "agency_readiness",
-    "execution_pressure",
-    "reasoning_pressure",
-    "resource_pressure",
-    "reliability_pressure",
-    "continuity_pressure",
-    "social_pressure",
-    "introspection_pressure",
-)
-
-DROPPED_DIMENSIONS: frozenset[str] = frozenset({"policy_pressure", "uncertainty"})
-
-ENCODER_EXCLUDED_FELT: frozenset[str] = frozenset({
-    "field_intensity",
-    "resource_pressure",
-    "introspection_pressure",
-})
-INFRA_ONLY_FELT: frozenset[str] = frozenset({"reliability_pressure"})
-
-# Proven-frozen SelfStateV1 dims — excised from seed-v4's trainable set. Still
-# recorded in `infra` for provenance (same treatment as INFRA_ONLY_FELT), just
-# never scaled/trained on. See docs/superpowers/specs/2026-07-09-phi-seedv4-feature-set-design.md.
-SEEDV4_THEATER_FELT: frozenset[str] = frozenset({"coherence", "continuity_pressure", "social_pressure"})
-
-# Retained for provenance only; φ never reads these.
-INFRA_CHANNELS: Tuple[str, ...] = (
-    "bus_health",
-    "delivery_confidence",
-    "transport_integrity",
-    "contract_pressure",
-    "catalog_drift_pressure",
-)
-
 COGNITIVE_FEATURE_NAMES: Tuple[str, ...] = (
     "recall_gate_fired",
     "reasoning_present",
@@ -126,33 +98,22 @@ SEEDV4_COGNITIVE_FEATURE_NAMES: Tuple[str, ...] = (
     "reasoning_load",
 )
 
+# 2026-07-22 (SelfStateV1 burn): the only trainable feature set the live
+# service produces going forward. Kept as its own named tuple (identical
+# contents to SEEDV4_COGNITIVE_FEATURE_NAMES today) so a future encoder
+# feature-set change doesn't have to disturb the seed-v4 historical name.
+SEEDV5_TRAINABLE_FEATURE_NAMES: Tuple[str, ...] = SEEDV4_COGNITIVE_FEATURE_NAMES
+
 
 def encoder_trainable_feature_names(features_version: str) -> list[str]:
-    if features_version == "seed-v4":
-        felt = [
-            k for k in FELT_DIMENSIONS
-            if k not in ENCODER_EXCLUDED_FELT
-            and k not in INFRA_ONLY_FELT
-            and k not in SEEDV4_THEATER_FELT
-        ]
-        return felt + ["overall_intensity"] + list(SEEDV4_COGNITIVE_FEATURE_NAMES)
-    if features_version == "seed-v3":
-        felt = [
-            k for k in FELT_DIMENSIONS
-            if k not in ENCODER_EXCLUDED_FELT and k not in INFRA_ONLY_FELT
-        ]
-        return felt + ["overall_intensity"] + list(COGNITIVE_FEATURE_NAMES)
-    felt = [k for k in FELT_DIMENSIONS if k not in DROPPED_DIMENSIONS]
-    return felt + ["overall_intensity"] + list(COGNITIVE_FEATURE_NAMES)
-
-
-def _dim_score(ss, key: str, default: float = 0.0) -> float:
-    dim = getattr(ss, "dimensions", {}).get(key)
-    return float(dim.score) if dim is not None else default
-
-
-def _felt_tuple(ss) -> Tuple[float, ...]:
-    return tuple(round(_dim_score(ss, k), 4) for k in FELT_DIMENSIONS)
+    """2026-07-22 (SelfStateV1 burn): seed-v1/v2/v3/v4's FELT_DIMENSIONS-based
+    branches removed -- they depended on SelfStateV1, which no longer exists.
+    Offline tooling that needs to interpret historical seed-v2/v3/v4 corpus
+    rows (written before this burn) should read those branches from git
+    history rather than expect them here; the live service only ever
+    produces seed-v5 going forward, and this function reflects that."""
+    del features_version
+    return list(SEEDV5_TRAINABLE_FEATURE_NAMES)
 
 
 def _mean(vals: List[float]) -> float:
@@ -235,11 +196,12 @@ def cognitive_features_seed_v4(
     now: datetime,
     exec_trajectory_max_age_sec: int,
 ) -> List[InnerFeatureV1]:
-    """Seed-v4 cognitive slots: recall_gate_fired (execution_trajectory),
-    reasoning_present + reasoning_load (reasoning_activity), execution_load
-    (reasoning_activity token throughput, execution_trajectory step-count
-    fallback when the reasoning_activity projection is dark). Raw only —
-    scaling happens uniformly in build_inner_state_features, same contract as
+    """Seed-v4 (and seed-v5) cognitive slots: recall_gate_fired
+    (execution_trajectory), reasoning_present + reasoning_load
+    (reasoning_activity), execution_load (reasoning_activity token
+    throughput, execution_trajectory step-count fallback when the
+    reasoning_activity projection is dark). Raw only -- scaling happens
+    uniformly in build_inner_state_features, same contract as
     cognitive_features_from_trajectory. Never raises: absent/malformed inputs
     degrade to a truthful 0.0 with a `.none`-suffixed source, per-feature."""
     active = _active_trajectory_runs(
@@ -296,7 +258,7 @@ def cognitive_features_seed_v4(
 
     # reasoning_load: log1p(thinking_tokens_sum) only when a real positive int
     # is present. thinking_tokens_sum is None whenever no call in the window had
-    # thinking_enabled — today, always. Truthful 0.0, never a fake floor.
+    # thinking_enabled -- today, always. Truthful 0.0, never a fake floor.
     thinking_tokens_sum = None
     if ra_live:
         thinking_tokens_sum = ra.get("thinking_tokens_sum")
@@ -329,30 +291,7 @@ def cognitive_features_seed_v4(
     ]
 
 
-def honest_headline(raw: Dict[str, float]) -> float:
-    """Arithmetic vitality/load aggregate. No geometric collapse: a single
-    saturated pressure lowers but cannot floor the headline."""
-    def g(k: str, default: float = 0.0) -> float:
-        return float(raw.get(k, default))
-
-    vitality = _mean([
-        g("coherence"),
-        g("field_intensity"),
-        g("agency_readiness"),
-        1.0 - g("resource_pressure"),
-        1.0 - g("execution_pressure"),
-    ])
-    load = _mean([
-        g("reliability_pressure"),
-        g("reasoning_pressure"),
-        g("social_pressure"),
-        g("continuity_pressure"),
-    ])
-    return _clamp01(0.6 * vitality + 0.4 * (1.0 - load))
-
-
 def build_inner_state_features(
-    ss,
     scaler: RollingRobustScaler,
     *,
     features_version: str,
@@ -361,136 +300,88 @@ def build_inner_state_features(
     trajectory_projection: Optional[dict] = None,
     reasoning_activity_projection: Optional[dict] = None,
     exec_trajectory_max_age_sec: int = 120,
+    now: Optional[datetime] = None,
     prev_felt: Optional[Tuple[float, ...]] = None,
-    prev_headline: Optional[float] = None,
     degenerate_streak: int = 0,
     degenerate_limit: int = 20,
 ) -> Tuple[InnerStateFeaturesV1, Tuple[float, ...], int]:
-    """Assemble one InnerStateFeaturesV1 from a SelfStateV1.
+    """Assemble one InnerStateFeaturesV1 from execution_trajectory/
+    reasoning_activity projections directly.
 
-    Returns (payload, current_felt_tuple, new_degenerate_streak).
+    2026-07-22 (SelfStateV1 burn): no longer takes a SelfStateV1 -- the 10
+    FELT_DIMENSIONS derived from it are gone, and `now` replaces
+    `ss.generated_at` as the tick's own generation time (see app/worker.py's
+    poll-loop trigger, which replaced the old substrate.self_state.v1 bus
+    subscription).
+
+    Returns (payload, current_feature_tuple, new_degenerate_streak). The
+    degeneracy freeze (GIGO guard) is now keyed on the 4 cognitive features'
+    raw values instead of self-state's old 10-dimension felt_tuple -- same
+    purpose (detect a feature vector that's stopped moving), real surviving
+    input.
     """
-    felt_tuple = _felt_tuple(ss)
+    gen = now or datetime.now(timezone.utc)
 
-    features: List[InnerFeatureV1] = []
-    raw_map: Dict[str, float] = {}
-    infra_only_felt: List[InnerFeatureV1] = []
-    for key in FELT_DIMENSIONS:
-        raw = _dim_score(ss, key)
-        raw_map[key] = raw
-        if (features_version == "seed-v3" and key in INFRA_ONLY_FELT) or (
-            features_version == "seed-v4" and key in (INFRA_ONLY_FELT | SEEDV4_THEATER_FELT)
-        ):
-            infra_only_felt.append(
-                InnerFeatureV1(
-                    name=key,
-                    raw_value=round(raw, 4),
-                    scaled_value=0.0,
-                    source=f"self_state.dimensions.{key}",
-                )
-            )
-            continue
-        features.append(
-            InnerFeatureV1(
-                name=key,
-                raw_value=round(raw, 4),
-                scaled_value=round(scaler.observe_and_scale(key, raw), 4),
-                source=f"self_state.dimensions.{key}",
-            )
+    if features_version == "seed-v4" or features_version == "seed-v5":
+        cognitive_feats = cognitive_features_seed_v4(
+            trajectory_projection,
+            reasoning_activity_projection,
+            now=gen,
+            exec_trajectory_max_age_sec=exec_trajectory_max_age_sec,
+        )
+    else:
+        cognitive_feats = cognitive_features_from_trajectory(
+            trajectory_projection,
+            now=gen,
+            max_age_sec=exec_trajectory_max_age_sec,
         )
 
-    # overall_intensity as an extra felt feature
-    intensity = float(getattr(ss, "overall_intensity", 0.0) or 0.0)
-    raw_map["overall_intensity"] = intensity
-    features.append(
+    features: List[InnerFeatureV1] = [
         InnerFeatureV1(
-            name="overall_intensity",
-            raw_value=round(intensity, 4),
-            scaled_value=round(scaler.observe_and_scale("overall_intensity", intensity), 4),
-            source="self_state.overall_intensity",
+            name=feat.name,
+            raw_value=feat.raw_value,
+            scaled_value=round(scaler.observe_and_scale(feat.name, feat.raw_value), 4),
+            source=feat.source,
         )
-    )
-
-    # seed-v2/v3 always emit the four cognitive slots so encoder/corpus dims stay
-    # stable even when trajectory HTTP fails (zeros + execution_trajectory.none).
-    # seed-v1 and other versions only append when a projection was provided.
-    include_cognitive = (
-        features_version.startswith("seed-v2")
-        or features_version == "seed-v3"
-        or features_version == "seed-v4"
-        or trajectory_projection is not None
-    )
-    if include_cognitive:
-        gen_for_traj = getattr(ss, "generated_at", None) or datetime.now(timezone.utc)
-        if features_version == "seed-v4":
-            cognitive_feats = cognitive_features_seed_v4(
-                trajectory_projection,
-                reasoning_activity_projection,
-                now=gen_for_traj,
-                exec_trajectory_max_age_sec=exec_trajectory_max_age_sec,
-            )
-        else:
-            cognitive_feats = cognitive_features_from_trajectory(
-                trajectory_projection,
-                now=gen_for_traj,
-                max_age_sec=exec_trajectory_max_age_sec,
-            )
-        for feat in cognitive_feats:
-            features.append(
-                InnerFeatureV1(
-                    name=feat.name,
-                    raw_value=feat.raw_value,
-                    scaled_value=round(scaler.observe_and_scale(feat.name, feat.raw_value), 4),
-                    source=feat.source,
-                )
-            )
-
-    infra: List[InnerFeatureV1] = list(infra_only_felt)
-    dom = getattr(ss, "dominant_field_channels", {}) or {}
-    for ch in INFRA_CHANNELS:
-        if ch in dom:
-            infra.append(
-                InnerFeatureV1(
-                    name=ch,
-                    raw_value=round(float(dom[ch]), 4),
-                    scaled_value=0.0,  # infra never scaled/read by φ
-                    source=f"self_state.dominant_field_channels.{ch}",
-                )
-            )
+        for feat in cognitive_feats
+    ]
+    feature_tuple = tuple(feat.raw_value for feat in cognitive_feats)
 
     # --- degeneracy freeze (GIGO guard) ---
-    if prev_felt is not None and felt_tuple == prev_felt:
+    if prev_felt is not None and feature_tuple == prev_felt:
         new_streak = degenerate_streak + 1
     else:
         new_streak = 0
 
     degenerate = new_streak >= degenerate_limit
-    headline = honest_headline(raw_map)
     phi_health = "ok"
     if grammar_degraded or degenerate:
         phi_health = "frozen"
-        if prev_headline is not None:
-            headline = prev_headline
 
-    gen = getattr(ss, "generated_at", None) or datetime.now(timezone.utc)
-    metadata: Dict[str, object] = {
-        "overall_condition": getattr(ss, "overall_condition", None),
-        "trajectory_condition": getattr(ss, "trajectory_condition", None),
-    }
+    metadata: Dict[str, object] = {}
     if degraded_reasons:
         metadata["degraded_reasons"] = degraded_reasons
     payload = InnerStateFeaturesV1(
         features_version=features_version,
         generated_at=gen,
-        self_state_id=getattr(ss, "self_state_id", None),
+        # self_state_id intentionally left None -- no self-state tick exists
+        # to identify this row against anymore.
         features=features,
-        infra=infra,
-        headline=round(_clamp01(headline), 4),
-        headline_source="cold_start_aggregate",
+        infra=[],
+        # No principled non-self-state headline formula exists (see module
+        # docstring) -- honest "not computed" rather than a fabricated
+        # aggregate. app/worker.py overrides this with the trained encoder's
+        # real phi output when the encoder tick succeeds, same as before.
+        headline=0.0,
+        headline_source="not_computed",
         phi_health=phi_health,
         phi_degenerate_streak=new_streak,
         grammar_truth_degraded=bool(grammar_degraded),
-        liveness={"self_state": True, "grammar_truth": not grammar_degraded},
+        # self_state liveness is honestly False now -- no self-state feed
+        # exists. No live consumer reads this key (checked before removing
+        # it); kept present rather than dropped so a strict consumer doesn't
+        # KeyError.
+        liveness={"self_state": False, "grammar_truth": not grammar_degraded},
         metadata=metadata,
     )
-    return payload, felt_tuple, new_streak
+    return payload, feature_tuple, new_streak

@@ -6,10 +6,8 @@ from orion.consolidation.policy import ConsolidationPolicyV1
 from orion.consolidation.windows import ConsolidationWindowData
 from orion.schemas.consolidation_frame import ExpectationV1, MotifObservationV1, SparseTensorSliceV1
 from orion.schemas.execution_dispatch_frame import ExecutionDispatchCandidateV1, ExecutionDispatchFrameV1
-from orion.schemas.field_attention_frame import FieldAttentionFrameV1, FieldAttentionTargetV1
 from orion.schemas.policy_decision_frame import PolicyDecisionFrameV1
 from orion.schemas.proposal_frame import ProposalFrameV1
-from orion.schemas.self_state import SelfStateV1
 
 
 def _time_bucket(dt: datetime) -> str:
@@ -23,23 +21,6 @@ def _stable_tensor_id(*, tensor_kind: str, window: ConsolidationWindowData) -> s
     return f"tensor:{tensor_kind}:{ws}:{we}"
 
 
-def _attention_target_ids(frame: FieldAttentionFrameV1) -> list[str]:
-    ids: list[str] = []
-    seen: set[str] = set()
-    for bucket in (
-        frame.dominant_targets,
-        frame.node_targets,
-        frame.capability_targets,
-        frame.system_targets,
-    ):
-        for target in bucket:
-            target_id = f"{target.target_kind}:{target.target_id}"
-            if target_id not in seen:
-                seen.add(target_id)
-                ids.append(target_id)
-    return ids
-
-
 def _cap_slice(
     *,
     coordinates: list[dict[str, str]],
@@ -50,64 +31,6 @@ def _cap_slice(
     if len(coordinates) <= max_coordinates:
         return coordinates, values, evidence_refs
     return coordinates[:max_coordinates], values[:max_coordinates], evidence_refs[:max_coordinates]
-
-
-def _build_field_attention_self_slice(
-    *,
-    window: ConsolidationWindowData,
-    policy: ConsolidationPolicyV1,
-) -> SparseTensorSliceV1:
-    axes = list(policy.tensor_axes.get("field_attention_self", []))
-    attention_by_id = {frame.frame_id: frame for frame in window.attention_frames}
-    attention_by_bucket: dict[str, list[FieldAttentionFrameV1]] = {}
-    for frame in window.attention_frames:
-        attention_by_bucket.setdefault(_time_bucket(frame.generated_at), []).append(frame)
-
-    coordinates: list[dict[str, str]] = []
-    values: list[float] = []
-    evidence_refs: list[str] = []
-
-    for state in window.self_states:
-        linked = attention_by_id.get(state.source_attention_frame_id)
-        bucket_frames = attention_by_bucket.get(_time_bucket(state.generated_at), [])
-        frames = [linked] if linked is not None else bucket_frames
-        targets: list[str] = []
-        for frame in frames:
-            if frame is None:
-                continue
-            targets.extend(_attention_target_ids(frame))
-        if not targets:
-            targets = ["unknown:unknown"]
-        for dimension_id in policy.tracked_self_dimensions:
-            dim = state.dimensions.get(dimension_id)
-            if dim is None:
-                continue
-            for target_id in targets:
-                coordinates.append(
-                    {
-                        "time_bucket": _time_bucket(state.generated_at),
-                        "self_condition": state.overall_condition,
-                        "attention_target": target_id,
-                        "dimension": dimension_id,
-                    }
-                )
-                values.append(float(dim.score))
-                evidence_refs.append(state.self_state_id)
-
-    coordinates, values, evidence_refs = _cap_slice(
-        coordinates=coordinates,
-        values=values,
-        evidence_refs=evidence_refs,
-        max_coordinates=policy.tensor.max_coordinates,
-    )
-    return SparseTensorSliceV1(
-        tensor_id=_stable_tensor_id(tensor_kind="field_attention_self", window=window),
-        tensor_kind="field_attention_self",
-        axes=axes,
-        coordinates=coordinates,
-        values=values,
-        evidence_refs=sorted(set(evidence_refs)),
-    )
 
 
 def _proposal_kind(proposal_frames: list[ProposalFrameV1], proposal_frame_id: str) -> str:
@@ -211,19 +134,6 @@ def _build_policy_dispatch_feedback_slice(
     )
 
 
-def _self_condition_for_motif(
-    *,
-    motif: MotifObservationV1,
-    self_states: list[SelfStateV1],
-) -> str:
-    for state in self_states:
-        if state.self_state_id in motif.evidence_frame_ids:
-            return state.overall_condition
-    if self_states:
-        return self_states[0].overall_condition
-    return "unknown"
-
-
 def _outcome_status_for_motif(
     *,
     motif: MotifObservationV1,
@@ -253,7 +163,14 @@ def _build_motif_condition_outcome_slice(
         coordinates.append(
             {
                 "motif": motif.label,
-                "self_condition": _self_condition_for_motif(motif=motif, self_states=window.self_states),
+                # "unknown" always, 2026-07-22 SelfStateV1 burn: self_condition
+                # had no other source than window.self_states, which no longer
+                # exists (docs/superpowers/specs/2026-07-22-self-state-phi-
+                # endo-origination-burn-spec.md). Coordinate kept (not removed)
+                # so this tensor's axis shape stays stable for existing
+                # consumers/analysis code; disclosed as always-unknown rather
+                # than silently dropped.
+                "self_condition": "unknown",
                 "outcome_status": _outcome_status_for_motif(motif=motif, feedback_by_id=feedback_by_id),
             }
         )
@@ -286,8 +203,10 @@ def build_sparse_tensor_slices(
     del expectations
     if not policy.tensor.enabled:
         return []
+    # "field_attention_self" slice removed 2026-07-22, SelfStateV1 burn
+    # (docs/superpowers/specs/2026-07-22-self-state-phi-endo-origination-burn-
+    # spec.md): its only input was window.self_states, which no longer exists.
     return [
-        _build_field_attention_self_slice(window=window, policy=policy),
         _build_policy_dispatch_feedback_slice(window=window, policy=policy),
         _build_motif_condition_outcome_slice(window=window, motifs=motifs, policy=policy),
     ]

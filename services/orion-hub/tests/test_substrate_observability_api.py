@@ -33,15 +33,9 @@ from scripts import hub_presence, substrate_observability_routes  # noqa: E402
 
 _NOW = datetime(2026, 7, 3, 12, 0, 0, tzinfo=timezone.utc)
 
-_SELF_STATE = {
-    "attention_schema_type": "focused_single",
-    "attention_dwell_ticks": 4,
-    "attention_node_count": 1,
-    "hub_presence": {"connection_health": "active"},
-    "overall_condition": "steady",
-    "summary_labels": ["field_active"],
-    "generated_at": "2026-07-03T11:59:00+00:00",
-}
+# _SELF_STATE removed 2026-07-22, SelfStateV1 burn (docs/superpowers/specs/
+# 2026-07-22-self-state-phi-endo-origination-burn-spec.md): the observability
+# route's "self_state" section is gone, substrate_self_state has no producer.
 
 _BROADCAST = {
     "selected_description": "unresolved contradiction in transport lane",
@@ -102,7 +96,6 @@ def _all_rows(presence_generated_at: datetime | None = None) -> dict[str, dict |
     # Presence rows are freshness-gated against wall-clock time, so default to now.
     presence_at = presence_generated_at or datetime.now(timezone.utc)
     return {
-        "substrate_self_state": {"self_state_json": _SELF_STATE, "generated_at": _NOW},
         "substrate_attention_broadcast_projection": {"projection_json": _BROADCAST, "generated_at": _NOW},
         "substrate_endogenous_curiosity_candidates": {"candidates_json": _CANDIDATES, "generated_at": _NOW},
         "substrate_hub_presence": {"presence_json": _PRESENCE_ROW, "generated_at": presence_at},
@@ -117,9 +110,16 @@ def test_summary_full_contract_shape(client):
 
     assert r.status_code == 200
     body = r.json()
-    assert set(body) == {"generated_at", "self_state", "attention_broadcast", "curiosity", "hub_presence"}
-    assert body["self_state"]["attention_schema_type"] == "focused_single"
-    assert body["self_state"]["overall_condition"] == "steady"
+    assert set(body) == {
+        "generated_at",
+        "attention_broadcast",
+        "curiosity",
+        "reverie",
+        "compaction_queue",
+        "compaction_delta",
+        "resonance_alert",
+        "hub_presence",
+    }
     assert body["attention_broadcast"]["dwell_ticks"] == 4
     assert body["attention_broadcast"]["coalition_stability_score"] == 0.9
     assert body["curiosity"]["gap_count"] == 2
@@ -152,7 +152,6 @@ def test_summary_each_section_degrades_to_null(client):
 
     assert r.status_code == 200
     body = r.json()
-    assert body["self_state"] is None
     assert body["attention_broadcast"] is None
     assert body["curiosity"] is None
     assert body["hub_presence"] is None
@@ -167,7 +166,6 @@ def test_summary_section_failure_isolated(client):
     assert r.status_code == 200
     body = r.json()
     assert body["curiosity"] is None
-    assert body["self_state"] is not None
     assert body["attention_broadcast"] is not None
 
 
@@ -180,7 +178,6 @@ def test_summary_without_postgres_uses_live_presence(client, monkeypatch):
 
     assert r.status_code == 200
     body = r.json()
-    assert body["self_state"] is None
     assert body["hub_presence"]["connection_health"] == "active"
     assert body["hub_presence"]["last_turn_age_sec"] == 30.0
 

@@ -13,7 +13,10 @@ Layer 10 of the Orion cognition substrate: observes `ExecutionDispatchFrameV1` o
   never produced from a live dispatch)
 - `substrate_policy_decision_frames` (optional linkage)
 - `substrate_proposal_frames` (optional linkage)
-- `substrate_self_state` (before + first state after dispatch timestamp)
+- `substrate_field_state` (before + first field tick after dispatch timestamp --
+  2026-07-22, SelfStateV1 burn: replaces the old `substrate_self_state` read;
+  `field_pressures()` (`orion/field/pressure.py`) provides the same real,
+  non-hand-tuned channel comparison self-state used to pass through)
 
 ## Outputs
 
@@ -42,6 +45,8 @@ docker compose --env-file ../../.env --env-file .env -f docker-compose.yml up -d
 ```bash
 docker exec -i orion-athena-sql-db psql -U postgres -d conjourney \
   < services/orion-sql-db/manual_migration_feedback_frame_v1.sql
+docker exec -i orion-athena-sql-db psql -U postgres -d conjourney \
+  < services/orion-sql-db/manual_migration_feedback_frame_v2_drop_self_state.sql
 ```
 
 ## Run

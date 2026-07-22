@@ -5,7 +5,7 @@ from typing import Literal
 
 from orion.feedback.extractors import (
     classify_pressure_deltas,
-    extract_self_state_pressure_snapshot,
+    extract_field_pressure_snapshot,
     normalize_cortex_result_evidence,
     pressure_delta,
 )
@@ -13,9 +13,15 @@ from orion.feedback.policy import FeedbackPolicyV1
 from orion.feedback.scoring import aggregate_confidence, score_for_outcome_status
 from orion.schemas.execution_dispatch_frame import ExecutionDispatchCandidateV1, ExecutionDispatchFrameV1
 from orion.schemas.feedback_frame import FeedbackFrameV1, OutcomeObservationV1
+from orion.schemas.field_state import FieldStateV1
 from orion.schemas.policy_decision_frame import PolicyDecisionFrameV1, PolicyDecisionV1
 from orion.schemas.proposal_frame import ProposalFrameV1
-from orion.schemas.self_state import SelfStateV1
+
+# No principled field-native confidence signal exists for a pressure-delta
+# observation (2026-07-22, SelfStateV1 burn -- self_state_after.overall_confidence
+# had no real field-native analog). Neutral placeholder, disclosed rather than
+# fabricated as a computed value.
+_FIELD_DELTA_OBSERVATION_CONFIDENCE = 0.7
 
 SourceKind = Literal[
     "dispatch_candidate",
@@ -24,7 +30,6 @@ SourceKind = Literal[
     "cortex_result",
     "field_delta",
     "attention_delta",
-    "self_state_delta",
     "absence",
     "operator_feedback",
 ]
@@ -158,8 +163,8 @@ def build_feedback_frame(
     dispatch_frame: ExecutionDispatchFrameV1,
     policy_frame: PolicyDecisionFrameV1 | None,
     proposal_frame: ProposalFrameV1 | None,
-    self_state_before: SelfStateV1 | None,
-    self_state_after: SelfStateV1 | None,
+    field_before: FieldStateV1 | None,
+    field_after: FieldStateV1 | None,
     cortex_results: list[dict[str, object]] | None,
     policy: FeedbackPolicyV1,
     now: datetime | None = None,
@@ -174,11 +179,9 @@ def build_feedback_frame(
     warnings: list[str] = list(dispatch_frame.warnings)
 
     channels = list(policy.pressure_channels)
-    if "coherence" not in channels:
-        channels.append("coherence")
 
-    pressure_before = extract_self_state_pressure_snapshot(self_state_before, channels)
-    pressure_after = extract_self_state_pressure_snapshot(self_state_after, channels)
+    pressure_before = extract_field_pressure_snapshot(field_before, channels)
+    pressure_after = extract_field_pressure_snapshot(field_after, channels)
     delta = pressure_delta(pressure_before, pressure_after)
     pos_delta, neg_delta = classify_pressure_deltas(delta, policy.positive_delta_channels)
     positive_evidence.extend(pos_delta)
@@ -266,45 +269,52 @@ def build_feedback_frame(
                 )
             )
 
-    if self_state_before is not None and self_state_after is not None:
-        readiness_delta = pressure_after.get("agency_readiness", 0.0) - pressure_before.get(
-            "agency_readiness", 0.0
+    if field_before is not None and field_after is not None:
+        # 2026-07-22 (SelfStateV1 burn): was agency_readiness_delta --
+        # agency_readiness was a composite, hand-tuned SelfStateV1 dimension
+        # with no principled field-native replacement (see
+        # orion/field/pressure.py's module docstring). reliability_pressure
+        # is the closest real, direct signal for "is the system in a worse
+        # state" -- a DECREASE is improvement, matching this policy's own
+        # positive_delta_channels convention (reliability_pressure: decrease).
+        reliability_delta = pressure_after.get("reliability_pressure", 0.0) - pressure_before.get(
+            "reliability_pressure", 0.0
         )
-        if readiness_delta > 0.05:
+        if reliability_delta < -0.05:
             observations.append(
                 _observation(
-                    observation_id=f"obs:self_state:{self_state_after.self_state_id}:improved",
-                    source_kind="self_state_delta",
-                    source_id=self_state_after.self_state_id,
+                    observation_id=f"obs:field:{field_after.tick_id}:improved",
+                    source_kind="field_delta",
+                    source_id=field_after.tick_id,
                     outcome_kind="improved",
                     score=scoring.completed_score,
-                    confidence=self_state_after.overall_confidence,
+                    confidence=_FIELD_DELTA_OBSERVATION_CONFIDENCE,
                     observed_at=generated_at,
-                    reasons=["agency_readiness_increased"],
+                    reasons=["reliability_pressure_decreased"],
                 )
             )
-        elif readiness_delta < -0.05:
+        elif reliability_delta > 0.05:
             observations.append(
                 _observation(
-                    observation_id=f"obs:self_state:{self_state_after.self_state_id}:worsened",
-                    source_kind="self_state_delta",
-                    source_id=self_state_after.self_state_id,
+                    observation_id=f"obs:field:{field_after.tick_id}:worsened",
+                    source_kind="field_delta",
+                    source_id=field_after.tick_id,
                     outcome_kind="worsened",
                     score=scoring.failed_score,
-                    confidence=self_state_after.overall_confidence,
+                    confidence=_FIELD_DELTA_OBSERVATION_CONFIDENCE,
                     observed_at=generated_at,
-                    reasons=["agency_readiness_decreased"],
+                    reasons=["reliability_pressure_increased"],
                 )
             )
         else:
             observations.append(
                 _observation(
-                    observation_id=f"obs:self_state:{self_state_after.self_state_id}:unchanged",
-                    source_kind="self_state_delta",
-                    source_id=self_state_after.self_state_id,
+                    observation_id=f"obs:field:{field_after.tick_id}:unchanged",
+                    source_kind="field_delta",
+                    source_id=field_after.tick_id,
                     outcome_kind="unchanged",
                     score=scoring.unknown_score,
-                    confidence=self_state_after.overall_confidence,
+                    confidence=_FIELD_DELTA_OBSERVATION_CONFIDENCE,
                     observed_at=generated_at,
                 )
             )
@@ -327,7 +337,7 @@ def build_feedback_frame(
         source_execution_dispatch_frame_id=dispatch_frame.frame_id,
         source_policy_frame_id=dispatch_frame.source_policy_frame_id,
         source_proposal_frame_id=dispatch_frame.source_proposal_frame_id,
-        source_self_state_id=dispatch_frame.source_self_state_id,
+        source_field_tick_id=dispatch_frame.source_field_tick_id,
         feedback_policy_id=policy.policy_id,
         outcome_status=outcome_status,
         outcome_score=outcome_score,

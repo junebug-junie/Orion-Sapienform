@@ -662,7 +662,7 @@ def test_load_chain_fresh_status_when_age_below_threshold(monkeypatch) -> None:
     proj = {"buses": {"bus:athena": {"source_trace_id": "trace:1", "bus_health": 1.0, "contract_pressure": 1.0}}}
     fake = _make_engine_sequence(
         {"projection_json": _json.dumps(proj), "updated_at": fresh_ts},
-        None, None, None, None, None, None, None, None, None,
+        None, None, None, None, None, None, None, None,
     )
     with patch.object(substrate_lattice_routes, "_engine", return_value=fake):
         result = substrate_lattice_routes._load_transport_proof_chain(freshness_threshold_sec=60)
@@ -681,7 +681,7 @@ def test_load_chain_stale_status_when_age_above_threshold(monkeypatch) -> None:
     proj = {"buses": {}}
     fake = _make_engine_sequence(
         {"projection_json": _json.dumps(proj), "updated_at": old_ts},
-        None, None, None, None, None, None, None, None, None,
+        None, None, None, None, None, None, None, None,
     )
     with patch.object(substrate_lattice_routes, "_engine", return_value=fake):
         result = substrate_lattice_routes._load_transport_proof_chain(freshness_threshold_sec=60)
@@ -700,7 +700,7 @@ def test_load_chain_missing_layer_when_no_row(monkeypatch) -> None:
     proj = {"buses": {}}
     fake = _make_engine_sequence(
         {"projection_json": _json.dumps(proj), "updated_at": fresh_ts},
-        None, None, None, None, None, None, None, None,
+        None, None, None, None, None, None, None,
         None,  # L11 returns None
     )
     with patch.object(substrate_lattice_routes, "_engine", return_value=fake):
@@ -762,7 +762,7 @@ def test_m5_capability_transport_detected_in_capability_targets(monkeypatch) -> 
         None,
         None,
         {"frame_json": _json.dumps(attn_frame), "generated_at": ts},
-        None, None, None, None, None, None,
+        None, None, None, None, None,
     )
     with patch.object(substrate_lattice_routes, "_engine", return_value=fake):
         result = substrate_lattice_routes._load_transport_proof_chain()
@@ -790,7 +790,7 @@ def test_m5_capability_transport_detected_in_suppressed_targets(monkeypatch) -> 
         None,
         None,
         {"frame_json": _json.dumps(attn_frame), "generated_at": ts},
-        None, None, None, None, None, None,
+        None, None, None, None, None,
     )
     with patch.object(substrate_lattice_routes, "_engine", return_value=fake):
         result = substrate_lattice_routes._load_transport_proof_chain()
@@ -820,7 +820,7 @@ def test_m5_capability_transport_not_found(monkeypatch) -> None:
         None,
         None,
         {"frame_json": _json.dumps(attn_frame), "generated_at": ts},
-        None, None, None, None, None, None,
+        None, None, None, None, None,
     )
     with patch.object(substrate_lattice_routes, "_engine", return_value=fake):
         result = substrate_lattice_routes._load_transport_proof_chain()

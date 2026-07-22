@@ -8,7 +8,6 @@ producers:
       - "bus.transport:"
     field_capability_id: "capability:transport"
     attention_target_id: "capability:transport"
-    self_state_dimension_id: transport_integrity
     trusted_channels:
       - bus_health
       - transport_pressure

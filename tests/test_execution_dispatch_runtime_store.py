@@ -71,6 +71,60 @@ def test_save_and_load_latest(monkeypatch) -> None:
     assert loaded.frame_id == _frame().frame_id
 
 
+def _legacy_self_state_policy_payload() -> dict:
+    # Shaped like a pre-2026-07-22 (SelfStateV1 burn) policy decision frame
+    # row -- source_self_state_id no longer exists on PolicyDecisionFrameV1.
+    return {
+        "schema_version": "policy.decision.frame.v1",
+        "frame_id": "policy.frame:legacy:substrate_policy.v1",
+        "generated_at": NOW.isoformat(),
+        "source_proposal_frame_id": "proposal.frame:legacy:proposal_policy.v1",
+        "source_self_state_id": "self.state:legacy",
+        "decisions": [],
+        "overall_risk": 0.0,
+    }
+
+
+def test_load_latest_policy_frame_without_dispatch_retires_incompatible_row(monkeypatch) -> None:
+    # Live incident (2026-07-22): the SelfStateV1 burn removed
+    # source_self_state_id from PolicyDecisionFrameV1. This is the FIFO
+    # "oldest undispatched policy frame" lookup -- a naive raise here
+    # crash-loops the whole worker forever (confirmed live). It must
+    # degrade to None AND write a stub, unattempted dispatch frame so the
+    # FIFO advances past the bad row.
+    store = ExecutionDispatchRuntimeStore("postgresql://test:test@localhost/test")
+    fake_engine = MagicMock()
+    conn = MagicMock()
+    fake_engine.connect.return_value.__enter__ = MagicMock(return_value=conn)
+    fake_engine.connect.return_value.__exit__ = MagicMock(return_value=False)
+    fake_engine.begin.return_value.__enter__ = MagicMock(return_value=conn)
+    fake_engine.begin.return_value.__exit__ = MagicMock(return_value=False)
+
+    insert_calls: list[dict] = []
+
+    def execute_side_effect(stmt, params=None):
+        sql = str(stmt)
+        result = MagicMock()
+        if "INSERT INTO substrate_execution_dispatch_frames" in sql:
+            insert_calls.append(params or {})
+            result.rowcount = 1
+        else:
+            result.mappings.return_value.first.return_value = {
+                "policy_decision_frame_json": _legacy_self_state_policy_payload(),
+            }
+        return result
+
+    conn.execute.side_effect = execute_side_effect
+    monkeypatch.setattr(store, "_engine", fake_engine)
+
+    result = store.load_latest_policy_frame_without_dispatch()
+
+    assert result is None
+    assert len(insert_calls) == 1
+    assert insert_calls[0]["source_policy_frame_id"] == "policy.frame:legacy:substrate_policy.v1"
+    assert insert_calls[0]["source_proposal_frame_id"] == "proposal.frame:legacy:proposal_policy.v1"
+
+
 def test_load_by_policy_frame_id(monkeypatch) -> None:
     payload = _frame().model_dump(mode="json")
     store = ExecutionDispatchRuntimeStore("postgresql://test:test@localhost/test")

@@ -171,7 +171,17 @@ class ProposalRuntimeStore:
         payload = row["proposal_frame_json"]
         if isinstance(payload, str):
             payload = json.loads(payload)
-        return ProposalFrameV1.model_validate(payload)
+        try:
+            return ProposalFrameV1.model_validate(payload)
+        except ValidationError:
+            # Looked up as "latest", not a fixed id -- can't stall a FIFO
+            # queue the way a fixed-id lookup could, but a schema migration
+            # (e.g. 2026-07-22's SelfStateV1 burn, which removed
+            # source_self_state_id/added a required source_field_generated_at)
+            # can still leave the single latest row incompatible with the
+            # currently-running code. Degrade instead of crash-looping.
+            logger.warning("proposal_frame_incompatible_schema latest_lookup", exc_info=True)
+            return None
 
     def load_proposal_frame_for_field_tick(self, field_tick_id: str) -> ProposalFrameV1 | None:
         """2026-07-22 (SelfStateV1 burn): replaces load_proposal_frame_for_self_state.
@@ -198,7 +208,17 @@ class ProposalRuntimeStore:
         payload = row["proposal_frame_json"]
         if isinstance(payload, str):
             payload = json.loads(payload)
-        return ProposalFrameV1.model_validate(payload)
+        try:
+            return ProposalFrameV1.model_validate(payload)
+        except ValidationError:
+            # Dedup lookup keyed by field_tick_id, which pre-migration rows
+            # can also carry (source_field_tick_id predates the SelfStateV1
+            # burn) -- a schema-incompatible match here must not crash-loop
+            # the tick; treat as "no existing frame for this tick" instead.
+            logger.warning(
+                "proposal_frame_incompatible_schema field_tick_id=%s", field_tick_id, exc_info=True
+            )
+            return None
 
     def save_proposal_frame(self, frame: ProposalFrameV1) -> None:
         now = datetime.now(timezone.utc)

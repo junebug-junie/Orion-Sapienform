@@ -115,7 +115,13 @@ class FeedbackRuntimeStore:
         payload = row["policy_decision_frame_json"]
         if isinstance(payload, str):
             payload = json.loads(payload)
-        return PolicyDecisionFrameV1.model_validate(payload)
+        try:
+            return PolicyDecisionFrameV1.model_validate(payload)
+        except ValidationError:
+            logger.warning(
+                "policy_decision_frame_incompatible_schema frame_id=%s", frame_id, exc_info=True
+            )
+            return None
 
     def load_proposal_frame(self, frame_id: str) -> ProposalFrameV1 | None:
         with self._engine.connect() as conn:
@@ -139,7 +145,11 @@ class FeedbackRuntimeStore:
         payload = row["proposal_frame_json"]
         if isinstance(payload, str):
             payload = json.loads(payload)
-        return ProposalFrameV1.model_validate(payload)
+        try:
+            return ProposalFrameV1.model_validate(payload)
+        except ValidationError:
+            logger.warning("proposal_frame_incompatible_schema frame_id=%s", frame_id, exc_info=True)
+            return None
 
     def load_field_for_tick(self, tick_id: str) -> FieldStateV1 | None:
         """2026-07-22 (SelfStateV1 burn): replaces load_self_state. Looks up
@@ -233,7 +243,11 @@ class FeedbackRuntimeStore:
         payload = row["feedback_frame_json"]
         if isinstance(payload, str):
             payload = json.loads(payload)
-        return FeedbackFrameV1.model_validate(payload)
+        try:
+            return FeedbackFrameV1.model_validate(payload)
+        except ValidationError:
+            logger.warning("feedback_frame_incompatible_schema latest_lookup", exc_info=True)
+            return None
 
     def load_feedback_frame_for_dispatch(self, dispatch_frame_id: str) -> FeedbackFrameV1 | None:
         with self._engine.connect() as conn:
@@ -258,7 +272,15 @@ class FeedbackRuntimeStore:
         payload = row["feedback_frame_json"]
         if isinstance(payload, str):
             payload = json.loads(payload)
-        return FeedbackFrameV1.model_validate(payload)
+        try:
+            return FeedbackFrameV1.model_validate(payload)
+        except ValidationError:
+            logger.warning(
+                "feedback_frame_incompatible_schema dispatch_frame_id=%s",
+                dispatch_frame_id,
+                exc_info=True,
+            )
+            return None
 
     def load_cortex_result_evidence(
         self, dispatch_frame: ExecutionDispatchFrameV1

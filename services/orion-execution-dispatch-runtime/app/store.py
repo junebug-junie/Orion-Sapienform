@@ -49,7 +49,46 @@ class ExecutionDispatchRuntimeStore:
         payload = row["policy_decision_frame_json"]
         if isinstance(payload, str):
             payload = json.loads(payload)
-        return PolicyDecisionFrameV1.model_validate(payload)
+        try:
+            return PolicyDecisionFrameV1.model_validate(payload)
+        except ValidationError:
+            # This is the FIFO "oldest undispatched policy frame" lookup --
+            # a naive None-degrade would re-select this exact row forever
+            # (it can never validate), permanently blocking every policy
+            # frame queued behind it. A schema migration (e.g. 2026-07-22's
+            # SelfStateV1 burn) can leave historical rows like this
+            # incompatible with the currently-running PolicyDecisionFrameV1.
+            # Retire it with a stub, unattempted dispatch frame so the FIFO
+            # advances past it.
+            raw_frame_id = payload.get("frame_id") if isinstance(payload, dict) else None
+            raw_proposal_frame_id = (
+                payload.get("source_proposal_frame_id") if isinstance(payload, dict) else None
+            )
+            logger.warning(
+                "policy_decision_frame_incompatible_schema fifo_lookup frame_id=%s",
+                raw_frame_id,
+                exc_info=True,
+            )
+            if raw_frame_id:
+                self._retire_incompatible_policy_frame(raw_frame_id, raw_proposal_frame_id)
+            return None
+
+    def _retire_incompatible_policy_frame(
+        self, raw_frame_id: str, raw_proposal_frame_id: str | None
+    ) -> None:
+        """Insert a stub, unattempted execution_dispatch_frame for a policy
+        frame that failed schema validation, so
+        load_latest_policy_frame_without_dispatch's FIFO lookup doesn't
+        re-select this exact row forever."""
+        stub = ExecutionDispatchFrameV1(
+            frame_id=f"execution.dispatch.frame:{raw_frame_id}:schema_incompatible",
+            generated_at=datetime.now(timezone.utc),
+            source_policy_frame_id=raw_frame_id,
+            source_proposal_frame_id=raw_proposal_frame_id or "unknown",
+            dispatch_attempted=False,
+            warnings=["source_policy_frame_schema_incompatible"],
+        )
+        self.save_dispatch_frame(stub)
 
     def load_proposal_frame(self, frame_id: str) -> ProposalFrameV1 | None:
         with self._engine.connect() as conn:
@@ -72,7 +111,13 @@ class ExecutionDispatchRuntimeStore:
         payload = row["proposal_frame_json"]
         if isinstance(payload, str):
             payload = json.loads(payload)
-        return ProposalFrameV1.model_validate(payload)
+        try:
+            return ProposalFrameV1.model_validate(payload)
+        except ValidationError:
+            logger.warning(
+                "proposal_frame_incompatible_schema frame_id=%s", frame_id, exc_info=True
+            )
+            return None
 
     def load_dispatch_frame_for_policy_frame(
         self, policy_frame_id: str

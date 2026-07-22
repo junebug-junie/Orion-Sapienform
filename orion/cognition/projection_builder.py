@@ -32,7 +32,6 @@ from orion.substrate.relational import (
     map_autonomy_ctx_to_substrate,
     map_concept_induction_ctx_to_substrate,
     map_identity_yaml_to_substrate,
-    map_orionmem_to_substrate,
     map_recall_bundle_to_substrate,
     map_self_study_to_substrate,
     map_social_ctx_to_substrate,
@@ -174,14 +173,6 @@ def build_projection_unification_registry() -> ProducerRegistryV1:
                 freshness_ttl_sec=60,
                 pull_on_cold=False,
                 adapter_fn=map_curiosity_ctx_to_substrate,
-            ),
-            ProducerEntryV1(
-                producer_id="orionmem",
-                trust_tier=SNAPSHOT_EPHEMERAL,
-                anchor_scopes=("orion", "relationship"),
-                freshness_ttl_sec=120,
-                pull_on_cold=True,
-                adapter_fn=map_orionmem_to_substrate,
             ),
             ProducerEntryV1(
                 producer_id="recall",

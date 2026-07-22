@@ -41,7 +41,6 @@ from orion.substrate.relational import (
     ProducerRegistryV1,
     UnifiedRelationalBeliefSetV1,
     map_identity_yaml_to_substrate,
-    map_orionmem_to_substrate,
     map_recall_bundle_to_substrate,
     map_self_study_to_substrate,
     map_social_ctx_to_substrate,
@@ -174,14 +173,6 @@ def _build_unification_registry() -> ProducerRegistryV1:
                 adapter_fn=map_spark_ctx_to_substrate,
             ),
             ProducerEntryV1(
-                producer_id="orionmem",
-                trust_tier=SNAPSHOT_EPHEMERAL,
-                anchor_scopes=("orion", "relationship"),
-                freshness_ttl_sec=120,
-                pull_on_cold=True,
-                adapter_fn=map_orionmem_to_substrate,
-            ),
-            ProducerEntryV1(
                 producer_id="recall",
                 trust_tier=SNAPSHOT_EPHEMERAL,
                 anchor_scopes=("orion", "relationship", "juniper"),
@@ -305,66 +296,6 @@ def resolve_autonomy_chat_stance_subquery_max_workers() -> int:
     if explicit is not None and str(explicit).strip():
         return max(1, min(3, _env_int("AUTONOMY_CHAT_STANCE_SUBQUERY_MAX_WORKERS", 3)))
     return max(1, min(3, _env_int("AUTONOMY_SUBQUERY_MAX_WORKERS", 3)))
-
-
-def fetch_chat_stance_memory_graph_hints() -> List[str]:
-    """Optional AffectiveDisposition labels from operator memory named graphs (env CHAT_STANCE_MEMORY_GRAPH_GRAPHS)."""
-    raw = (os.getenv("CHAT_STANCE_MEMORY_GRAPH_GRAPHS") or "").strip()
-    graphs = [x.strip() for x in raw.split(",") if x.strip()]
-    if not graphs:
-        return []
-    cfg = resolve_autonomy_graphdb_config()
-    endpoint = cfg.get("endpoint")
-    if not endpoint:
-        return []
-    vals = " ".join(f"<{g}>" for g in graphs)
-    sparql = f"""
-PREFIX rdfs: <http://www.w3.org/2000/01/rdf-schema#>
-PREFIX orionmem: <https://orion.local/ns/mem/v2026-05#>
-SELECT DISTINCT ?lab ?tp WHERE {{
-  VALUES ?g {{ {vals} }}
-  GRAPH ?g {{
-    ?s a orionmem:AffectiveDisposition .
-    OPTIONAL {{ ?s rdfs:label ?lab . }}
-    OPTIONAL {{ ?s orionmem:trustPolarity ?tp . }}
-  }}
-}}
-LIMIT 12
-""".strip()
-    try:
-        import json as _json
-        import urllib.error
-        import urllib.parse
-        import urllib.request
-
-        data = urllib.parse.urlencode({"query": sparql}).encode("utf-8")
-        req = urllib.request.Request(
-            str(endpoint),
-            data=data,
-            headers={"Accept": "application/sparql-results+json", "Content-Type": "application/x-www-form-urlencoded"},
-            method="POST",
-        )
-        user = cfg.get("user") or ""
-        password = cfg.get("password") or ""
-        if user or password:
-            import base64
-
-            tok = base64.b64encode(f"{user}:{password}".encode("utf-8")).decode("ascii")
-            req.add_header("Authorization", f"Basic {tok}")
-        with urllib.request.urlopen(req, timeout=_env_float("CHAT_STANCE_MEMORY_GRAPH_TIMEOUT_SEC", 2.0)) as resp:
-            payload = _json.loads(resp.read().decode("utf-8", errors="replace"))
-    except Exception as exc:
-        logger.debug("chat_stance_memory_graph_hints_failed error=%s", exc)
-        return []
-    bindings = (payload.get("results") or {}).get("bindings") or []
-    hints: List[str] = []
-    for b in bindings:
-        lab = (b.get("lab") or {}).get("value") or ""
-        tp = (b.get("tp") or {}).get("value") or ""
-        line = " ".join(x for x in [lab, tp] if x).strip()
-        if line:
-            hints.append(line)
-    return hints
 
 
 def resolve_autonomy_graphdb_config() -> dict[str, Any]:
@@ -678,27 +609,6 @@ def _project_identity_from_beliefs(
                             "response_policy_summary": _unique(policy_s, limit=10) or list(FALLBACK_RESPONSE_POLICY_SUMMARY),
                         }
     return identity_kernel_with_fallbacks(ctx)
-
-
-def _project_memory_graph_hints_from_beliefs(beliefs: UnifiedRelationalBeliefSetV1 | None) -> List[str]:
-    """Projection helper: read orionmem hints from unified beliefs, replacing network SPARQL call."""
-    if beliefs is None:
-        return []
-    hints: List[str] = []
-    for anchor_key in ("orion", "relationship"):
-        anchor_slice = beliefs.anchors.get(anchor_key)
-        if not anchor_slice:
-            continue
-        for snap in anchor_slice.snapshots:
-            if getattr(snap, "snapshot_source", "") != "orionmem":
-                continue
-            meta = snap.metadata or {}
-            label = str(meta.get("label") or "").strip()
-            tp = str(meta.get("trustPolarity") or "").strip()
-            line = " ".join(x for x in [label, tp] if x).strip()
-            if line and line not in hints:
-                hints.append(line)
-    return hints[:12]
 
 
 def _project_recall_from_beliefs(
@@ -2448,9 +2358,13 @@ async def build_chat_stance_inputs(ctx: Dict[str, Any]) -> Dict[str, Any]:
         "situation": situation,
         "mutation_adaptation": mutation_cognition,
     }
-    mg_hints = _project_memory_graph_hints_from_beliefs(beliefs) or fetch_chat_stance_memory_graph_hints()
-    if mg_hints:
-        inputs["memory_graph"] = {"disposition_hints": mg_hints}
+    # memory_graph disposition hints (inputs["memory_graph"]) removed
+    # 2026-07-22: both producers (fetch_chat_stance_memory_graph_hints's
+    # inline SPARQL fallback and the orionmem substrate adapter it was meant
+    # to replace) were already dead (CHAT_STANCE_MEMORY_GRAPH_GRAPHS empty
+    # live), and the Fuseki content they would have read turned out to be
+    # test-fixture pollution, not real approved memory -- see
+    # orion/memory_graph/approve.py's docstring for the full trace.
 
     # drive_state.v1 measurement: Postgres drive_audits (same rail as Mind),
     # fail-open. Graph snapshot_source="drive_state" is no longer SoR.

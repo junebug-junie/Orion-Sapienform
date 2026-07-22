@@ -28,7 +28,6 @@ DEFAULT_BACKEND_WEIGHTS = {
     # absence would otherwise produce.
     "falkor_chat": 0.4,
     "rdf": 0.3,
-    "memory_graph_sparql": 0.35,
     "cards": 0.0,
 }
 OVERLAP_WEIGHT = 0.15
@@ -719,7 +718,6 @@ _BELIEF_SOURCE_ORDER = {
     # rdf_chat's, which is pre-existing dead code below, not introduced
     # here).
     "falkor_chat": 4,
-    "memory_graph_sparql": 5,
     "graphiti": 6,
 }
 

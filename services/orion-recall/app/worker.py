@@ -1636,15 +1636,12 @@ async def process_recall(
             backend_counts_total[k] = backend_counts_total.get(k, 0) + v
     timing_breakdown_ms["backend_fetch"] = int((time.time() - backend_start) * 1000)
 
-    if getattr(settings, "RECALL_MEMORY_GRAPH_SPARQL_ENABLED", False):
-        try:
-            from .memory_graph_sparql import fetch_memory_graph_sparql_candidates
-
-            mg_extra = await asyncio.to_thread(fetch_memory_graph_sparql_candidates, query_fragment, settings)
-            candidates.extend(mg_extra)
-            backend_counts_total["memory_graph_sparql"] = len(mg_extra)
-        except Exception as exc:
-            logger.debug("memory_graph_sparql augment skipped: %s", exc)
+    # memory_graph_sparql augment removed 2026-07-22: RECALL_MEMORY_GRAPH_SPARQL_ENABLED
+    # was already false live (dead in production), and the Fuseki content it
+    # would have read (orionmem AffectiveDisposition records) turned out to be
+    # test-fixture pollution, not real approved memory -- see
+    # orion/memory_graph/approve.py's docstring for the full trace. Purged
+    # from Fuseki 2026-07-22.
 
     if settings.RECALL_RDF_CHAT_WINDOW_ENABLED:
         rdf_chat_window_min = int(

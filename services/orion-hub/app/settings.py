@@ -653,19 +653,12 @@ class Settings(BaseSettings):
         description="Age in seconds before a substrate layer reading is marked stale (default 60s).",
     )
 
-    MEMORY_GRAPH_APPROVAL_BACKEND: str = Field(default="auto", alias="MEMORY_GRAPH_APPROVAL_BACKEND")
-    RDF_STORE_GRAPH_STORE_URL: str = Field(default="", alias="RDF_STORE_GRAPH_STORE_URL")
-    RDF_STORE_UPDATE_URL: str = Field(default="", alias="RDF_STORE_UPDATE_URL")
-    RDF_STORE_USER: str = Field(default="", alias="RDF_STORE_USER")
-    RDF_STORE_PASS: str = Field(default="", alias="RDF_STORE_PASS")
-    FUSEKI_USER: str = Field(default="", alias="FUSEKI_USER")
-    FUSEKI_PASS: str = Field(default="", alias="FUSEKI_PASS")
-
-    # --- Memory graph annotator (GraphDB + dual-write) ---
-    GRAPHDB_URL: str = Field(default="", alias="GRAPHDB_URL")
-    GRAPHDB_REPO: str = Field(default="collapse", alias="GRAPHDB_REPO")
-    GRAPHDB_USER: str = Field(default="", alias="GRAPHDB_USER")
-    GRAPHDB_PASS: str = Field(default="", alias="GRAPHDB_PASS")
+    # RDF/GraphDB graph-store write for memory-graph-approval removed 2026-07-22
+    # (see orion/memory_graph/approve.py docstring): MEMORY_GRAPH_APPROVAL_BACKEND,
+    # RDF_STORE_GRAPH_STORE_URL/UPDATE_URL/USER/PASS, FUSEKI_USER/PASS,
+    # GRAPHDB_URL/REPO/USER/PASS all removed, no longer referenced anywhere.
+    # MEMORY_GRAPH_DEFAULT_NAMED_GRAPH stays -- still used for card evidence/id
+    # namespacing in project_graph_to_cards, even with no external RDF write.
     MEMORY_GRAPH_DEFAULT_NAMED_GRAPH: str = Field(default="", alias="MEMORY_GRAPH_DEFAULT_NAMED_GRAPH")
 
     # POST /api/memory/graph/suggest — grounded Quick primary, Brain escalation on hard failures

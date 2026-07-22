@@ -4,7 +4,6 @@ import logging
 from typing import Any, Dict, Optional
 
 import asyncpg
-import requests
 from fastapi import APIRouter, Header, HTTPException, Request
 from pydantic import ValidationError
 
@@ -170,11 +169,6 @@ async def memory_graph_approve(
     from scripts.settings import settings
 
     await ensure_session(x_orion_session_id, bus)
-    from orion.memory_graph.rdf_target import resolve_memory_graph_rdf_target
-
-    target = resolve_memory_graph_rdf_target()
-    if target is None:
-        raise HTTPException(status_code=503, detail="graph_backend_unconfigured")
     pool = _pool(request)
     consolidation_draft_id = str(body.get("consolidation_draft_id") or "").strip() or None
     try:
@@ -198,16 +192,10 @@ async def memory_graph_approve(
         result = await approve_memory_graph_draft(
             draft,
             pool,
-            graphdb_url=str(settings.GRAPHDB_URL),
-            graphdb_repo=str(settings.GRAPHDB_REPO or "collapse"),
-            graphdb_user=str(settings.GRAPHDB_USER or ""),
-            graphdb_pass=str(settings.GRAPHDB_PASS or ""),
             named_graph_iri=named,
             card_defaults=card_defaults,
         )
     except ValueError as exc:
-        if str(exc) == "graph_backend_unconfigured":
-            raise HTTPException(status_code=503, detail="graph_backend_unconfigured") from exc
         if str(exc) == "hierarchy_cycle":
             raise HTTPException(status_code=400, detail="hierarchy_cycle") from exc
         logger.warning("memory_graph_approve_failed error=%s", exc)
@@ -215,19 +203,6 @@ async def memory_graph_approve(
     except asyncpg.PostgresError as exc:
         logger.warning("memory_graph_approve_failed postgres error=%s", exc)
         raise HTTPException(status_code=503, detail="memory_store_error") from exc
-    except requests.RequestException as exc:
-        from orion.graph.fuseki_http import fuseki_http_error_body, is_fuseki_lock_exhaustion
-
-        resp = getattr(exc, "response", None)
-        body = fuseki_http_error_body(resp) if resp is not None else str(exc)
-        if resp is not None and is_fuseki_lock_exhaustion(resp.status_code, body):
-            logger.warning("memory_graph_approve_failed fuseki_lock_exhaustion error=%s", exc)
-            raise HTTPException(
-                status_code=503,
-                detail="fuseki_lock_exhaustion",
-            ) from exc
-        logger.warning("memory_graph_approve_failed rdf_http error=%s", exc)
-        raise HTTPException(status_code=503, detail="rdf_graph_unavailable") from exc
 
     if not result.ok:
         return {"ok": False, "violations": result.violations, "card_ids": []}

@@ -223,36 +223,6 @@ class TestSelfStudyAdapter:
             pytest.fail(f"self_study adapter raised on empty ctx: {exc}")
 
 
-# ---------------------------------------------------------------------------
-# orionmem adapter — anchor routing and None-on-missing-config
-# ---------------------------------------------------------------------------
-
-class TestOrionmemAdapter:
-    def test_returns_none_when_no_endpoint(self, monkeypatch):
-        monkeypatch.delenv("GRAPHDB_QUERY_ENDPOINT", raising=False)
-        monkeypatch.delenv("GRAPHDB_URL", raising=False)
-        from orion.substrate.relational.adapters.orionmem import map_orionmem_to_substrate
-        result = map_orionmem_to_substrate({})
-        assert result is None
-
-    def test_empty_ctx_does_not_raise(self, monkeypatch):
-        monkeypatch.delenv("GRAPHDB_QUERY_ENDPOINT", raising=False)
-        from orion.substrate.relational.adapters.orionmem import map_orionmem_to_substrate
-        try:
-            map_orionmem_to_substrate({})
-        except Exception as exc:
-            pytest.fail(f"orionmem adapter raised on empty ctx: {exc}")
-
-    def test_anchor_routing_relationship(self):
-        from orion.substrate.relational.adapters.orionmem import _anchor_for_graph
-        assert _anchor_for_graph("https://orion.local/mem/relationship_context") == "relationship"
-        assert _anchor_for_graph("https://orion.local/mem/juniper_memory") == "relationship"
-
-    def test_anchor_routing_orion_default(self):
-        from orion.substrate.relational.adapters.orionmem import _anchor_for_graph
-        assert _anchor_for_graph("https://orion.local/mem/orion_self") == "orion"
-        assert _anchor_for_graph("") == "orion"
-
 
 # ---------------------------------------------------------------------------
 # recall adapter — anchor routing (juniper branch now reachable)

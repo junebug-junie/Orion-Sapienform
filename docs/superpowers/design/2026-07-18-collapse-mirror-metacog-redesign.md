@@ -602,3 +602,272 @@ not a one-off.
 Explicitly undecided: whether `FIELD_CHANNEL_ANOMALY_ENABLED` should revert to `false` in the live
 `.env` while 1-4 above are outstanding, rather than staying live-and-unverified by default. Flagged,
 not resolved, as of this section.
+
+## `chat_turn` trigger: implementation spec (2026-07-22, design mode, not yet approved)
+
+Status: **spec, not proposal-mode sign-off.** Per this doc's own "Next step" section and CLAUDE.md's
+cognition-loop rule, this needs explicit go-ahead before code. Written now because the design
+conversation that produced it (2026-07-22, arsonist-audited twice) is long enough that it needs to
+live somewhere durable before it evaporates, same reason this whole doc exists.
+
+### Arsonist summary
+
+Two arsonist passes already ran against pieces of this design during the conversation that produced
+it (not yet against the whole thing end to end — that's the ask this section exists to satisfy).
+Findings already folded in below, not re-litigated:
+
+- The original claim that `MetacogDraftService`/`EnrichService`/`PublishService` run inline,
+  unconditionally, on every chat turn was **wrong** — verified they're referenced in exactly one
+  place repo-wide, `orion/cognition/verbs/log_orion_metacognition.yaml`. `chat_turn` as a trigger
+  kind is genuinely unbuilt, not "gate something already firing." Nothing to remove.
+- Two of five originally-proposed gate conditions (`grounding_capsule` conflict, `autonomy_mode`
+  changed) have **zero producing code** anywhere. Carried forward from this doc's own earlier
+  brainstorm prose without checking. Dropped from the gate; the raw fields they'd read
+  (`grounding_capsule`, `autonomy_slice`) still get captured as context, just don't drive fire/no-fire.
+  Reader ownership for the eventual real derived signal, if built, is out of scope for this pass.
+  Note per the "Trigger-type taxonomy" section above: this whole doc's *original* 2026-07-18 framing
+  of `chat_turn` as "existing, keep — gated on the turn-artifact conditions above instead of firing
+  unconditionally" was itself describing pre-redesign `collapse_mirror` behavior, not anything in the
+  current `orion_metacog`/`MetacogEntryV1` system — there was never a working `chat_turn` trigger in
+  the redesigned system to gate. See "Files likely to touch" below for the trace this is grounded in.
+- A field-by-field schema plan (typed `Optional` sub-models on `MetacogRealState`, mirroring the
+  existing `MetacogRepairPressure` pattern, populated from `ctx["trigger"]["upstream"]`) was proposed
+  and then found to be **premature**: `orion_metacog` has zero real consumers anywhere in the
+  codebase (independently re-verified twice), and `ctx["trigger"]["upstream"]` is genuinely
+  discarded by the `log_orion_metacognition` entry-building path specifically — but a **second,
+  previously-untraced consumer** (`services/orion-actions/app/main.py::_handle_journal_metacog`,
+  subscribed to the same `orion:equilibrium:metacog:trigger` channel) already reads the full
+  `upstream` dict into a live journal-composition LLM prompt. The "evidence is discarded" framing
+  was true for the metacog-entry pipeline specifically, false as a blanket statement. This spec does
+  **not** propose the `MetacogRealState` schema extension — see "Non-goals."
+- A real, independent bug was found in passing: `orion/bus/channels.yaml`'s
+  `orion:equilibrium:metacog:trigger` registry entry is missing `orion-actions` from
+  `consumer_services`, even though it's a live subscriber. Contract drift, CLAUDE.md section 6.
+  Cheap, real, unrelated to whether the rest of this spec ships — worth its own small fix regardless.
+
+### Current architecture
+
+**The pipeline this trigger targets** — the real, verified `orion-unified` Hub chat lifecycle
+(`docs/superpowers/specs/orion-semantic-self-indexing-design-spec.md` §5.2), not the older
+direct-cortex-request path. Twelve steps, traced against real code (file:line citations in "Files
+likely to touch" below), not the spec doc's prose:
+
+1. `execute_unified_turn()` emits surface observation, optionally runs pre-turn appraisal.
+2. Hub builds `HubAssociationBundleV1` (substrate broadcast + trajectory slice + repair bundle).
+   **Local-only** — never published.
+3. Hub sends `StanceReactRequestV1` to the Thought service over bus RPC.
+4. Thought service returns `ThoughtEventV1` — **published in full** on `orion:thought:artifact`.
+   Contains `disposition` (`proceed`/`defer`/`refuse`), `disposition_reasons`, `boundary_register`,
+   `grounding_capsule` (`GroundingCapsuleV1`), `autonomy_slice` (`AutonomySliceV1 | None`).
+   Currently zero real subscribers to this channel besides a diagnostic tracer.
+5. Hub honors defer/refuse or builds `HarnessRunRequestV1`. **Local-only.**
+6. `HarnessGovernorClient` sends the request over bus RPC. Per-step FCC tool-call events publish to
+   `orion:harness:run:step` — real, structured, but pure ephemeral pub/sub (WS relay + liveness
+   only, nothing persists the sequence).
+7. Governor maps the repair overlay (`HarnessRepairOverlayV1`). **Local-only** — distinct from the
+   already-published `orion:repair_pressure:appraisal` summary from step 1/2 (same underlying
+   repair_pressure paradigm data, two different downstream fates).
+8. `compile_harness_prefix()` builds the FCC motor prompt string. **Local-only.**
+9. `run_fcc_turn()` runs the real Claude/FCC tool loop. Per-step grammar receipts publish to
+   `orion:grammar:event` (same `GrammarEventV1` mechanism already feeding
+   `execution_friction`/`failure_pressure` elsewhere in the system). `HarnessDraftMoleculeV1` itself
+   is **local-only** beyond one RPC hop.
+10. `run_harness_finalize_chain()` — substrate appraisal (5a, RPC-only at origin, rides along whole
+    inside step 11's `HarnessRunV1`), integrative reflection / verdict (5b, **published in full** as
+    `HarnessVerdictMoleculeV1` on `orion:harness:verdict:artifact` — `FinalizeReflectionV1`'s
+    `alignment_verdict`, `alignment_notes`, `strain_unresolved`), turn-outcome (6b, **published in
+    full** as `HarnessTurnOutcomeMoleculeV1` on `orion:substrate:turn_outcome` —
+    `alignment_verdict`, `surprise_level_at_draft`, `surprise_resolved`, `finalize_failed`).
+11. Governor returns `HarnessRunV1` — **published in full** on `orion:harness:run:artifact`
+    (`compliance_verdict`, `grounding_status`, `exit_code`, `recall_debug`, `memory_digest`,
+    `substrate_appraisal`, `reflection`). `HarnessPostTurnClosureV1` — a deliberately slim closure
+    summary (`surprise_unresolved`, `verdict_molecule_id`, `outcome_molecule_id`,
+    `grammar_event_ids`, `thought_event_id`) — **published** on `orion:substrate:post_turn_closure`.
+12. Hub persists chat-history/chat-turn envelopes to Postgres (`chat_history_log`, via
+    orion-sql-writer) and a Spark introspection candidate. **The only durable step in the whole
+    pipeline** — everything from step 4 through 11 is Redis pub/sub with no persistence; gone the
+    instant nothing is subscribed.
+
+**The existing metacog-entry mechanism** (already live, already correct, reused as-is):
+`orion-equilibrium-service`'s trigger-kind gate files (`telemetry_anomaly_metacog_gate.py`,
+`repair_pressure_metacog_gate.py`) publish `MetacogTriggerV1` to `orion:equilibrium:metacog:trigger`.
+`orion-cortex-orch`'s `dispatch_metacog_trigger()` (`orchestrator.py:813`) consumes it and dispatches
+a fresh, independent plan run of `log_orion_metacognition.yaml`
+(`MetacogContextService` → `MetacogDraftService` → `MetacogEnrichService` → `MetacogPublishService`),
+which builds and writes a real `MetacogEntryV1` row to `orion_metacog` via orion-sql-writer. This
+mechanism is unconditionally reused, not modified, by this spec.
+
+**The plumbing gap this spec does NOT fix (see Non-goals)**: `MetacogPublishService`'s `state`
+construction (`executor.py:3649-3664`) reads generic, current-snapshot `ctx` values
+(`ctx["metadata"]["substrate_effect_summary"]` for `repair_pressure`, plus `biometrics`/
+`turn_effect`/`substrate_eventfulness_score`/`llm_uncertainty`) — never `ctx["trigger"]["upstream"]`,
+the specific evidence that caused the firing trigger. Confirmed this is true for `telemetry_anomaly`
+today: its rich per-channel attribution (`top_channels`, `deviation_direction`, `attribution_ok`)
+never reaches the `orion_metacog` row or the draft/enrich narrative LLM call (draft template only
+renders `trigger.trigger_kind`/`reason`/`pressure`/`zen_state`). It *does* reach a real consumer via
+a separate path — `orion-actions`' journal-compose prompt — just not this one.
+
+### Missing questions (open, need Juniper's call before implementation)
+
+1. **Correlator placement and lifetime.** Proposed: a new module in
+   `services/orion-equilibrium-service/app/chat_turn_metacog_gate.py` (matching the file-per-
+   trigger-kind convention) subscribes to the real channels below, accumulates by `correlation_id`
+   in a short-TTL Redis hash, and evaluates/fires on `orion:substrate:post_turn_closure` (the
+   deliberately-designed "this turn is finalized" signal). TTL value not yet chosen — needs to be
+   long enough to span a slow FCC tool loop, short enough not to leak. Not yet measured against real
+   turn-duration data.
+2. **Threshold values** for the numeric gate conditions (`surprise_level_at_draft >= X`) — no
+   existing config to inherit from; would need to be a new equilibrium-service setting, tuned
+   against real data the same way `telemetry_anomaly`'s `threshold_multiplier` was.
+3. **Whether the redundant surprise signal gets deduplicated correctly** — `turn_outcome.
+   surprise_resolved` and `post_turn_closure.surprise_unresolved` are the same underlying fact from
+   two pipeline stages; the gate must pick one (proposed: `post_turn_closure`'s, since it's later/
+   closure-stage) and not double-fire on both.
+4. **Whether `orion_metacog` should keep growing at all**, given zero real consumers and a sibling
+   table (`orion_metacognitive_trace`, fed by a different producer path,
+   `kind == "metacognitive.trace.v1"` per `orion-vector-writer`) that already has a real reader. Not
+   answered here — flagged for Juniper, matches this doc's own "path to bulletproof" pattern of
+   naming undecided things instead of quietly picking one.
+5. **Whether the cheap prompt-template fix (below) ships in the same patch or a separate one.**
+
+### Proposed schema / API changes
+
+**No new Pydantic schema.** The correlator holds the real, already-registered types as-is —
+deliberately not inventing a new bus contract for the accumulator, since it's ephemeral internal
+state, not a durable artifact:
+
+```python
+# services/orion-equilibrium-service/app/chat_turn_metacog_gate.py (new)
+class ChatTurnEvidenceAccumulator:
+    correlation_id: str
+    thought_event: ThoughtEventV1 | None = None
+    verdict_molecule: HarnessVerdictMoleculeV1 | None = None   # .reflection: FinalizeReflectionV1
+    turn_outcome: HarnessTurnOutcomeMoleculeV1 | None = None
+    run_artifact: HarnessRunV1 | None = None
+    post_turn_closure: HarnessPostTurnClosureV1 | None = None
+    grammar_receipts: list[GrammarReceiptV1] = []
+```
+
+**Gate conditions, each pinned to one real field, no invented booleans:**
+
+| Condition | Field | Type |
+|---|---|---|
+| Deferred or refused | `thought_event.disposition != "proceed"` | `Literal["proceed","defer","refuse"]` |
+| Boundary hit | `thought_event.boundary_register is True` | `bool` |
+| Misaligned/uncertain | `verdict_molecule.reflection.alignment_verdict != "aligned"` | `Literal["aligned","misaligned","uncertain"]` |
+| Strain unresolved | `verdict_molecule.reflection.strain_unresolved is True` | `bool` |
+| Surprise crossed threshold | `turn_outcome.surprise_level_at_draft >= X` (threshold TBD, question 2) | `float [0,1]` |
+| Finalize failed | `turn_outcome.finalize_failed is True` | `bool` |
+| Compliance short of complete | `run_artifact.compliance_verdict != "completed"` | `Literal["completed","partial","failed","refused"]` |
+| Non-zero exit | `run_artifact.exit_code not in (0, None)` | `int \| None` |
+| Surprise unresolved at closure (dedup source of truth, see question 3) | `post_turn_closure.surprise_unresolved is True` | `bool` |
+| Failed/retried tool steps | count of `grammar_receipts` with a fail-shaped `summary`, same pattern `compute_severity`'s `non_ok_step_count` already uses | `int` (accumulated, not a field read) |
+
+**`MetacogTriggerV1.upstream` shape when fired** — carries the fired condition list (same
+multi-value shape as `telemetry_anomaly`'s `top_channels`) plus the full accumulated evidence, so a
+downstream reader never has to re-derive what happened:
+
+```python
+upstream={
+    "fired_conditions": [...],          # e.g. ["disposition=defer", "alignment_verdict=misaligned"]
+    "disposition": thought_event.disposition,
+    "alignment_verdict": verdict_molecule.reflection.alignment_verdict,
+    "strain_unresolved": verdict_molecule.reflection.strain_unresolved,
+    "surprise_level_at_draft": turn_outcome.surprise_level_at_draft,
+    "surprise_unresolved": post_turn_closure.surprise_unresolved,
+    "compliance_verdict": run_artifact.compliance_verdict,
+    "exit_code": run_artifact.exit_code,
+    "failed_step_count": <accumulated count>,
+    "grounding_capsule": thought_event.grounding_capsule,   # raw context, not a fire condition
+    "autonomy_slice": thought_event.autonomy_slice,          # raw context, not a fire condition
+}
+```
+
+**`ROLE_TO_PRESSURE_KIND`-equivalent registration**: `MetacogTriggerV1.trigger_kind`'s docstring
+enum (`orion/schemas/telemetry/metacog_trigger.py`) needs `"chat_turn"` added to its documented
+list — it's currently absent even as a name (the only `"chat_turn"`-producing code today is the
+orphaned `_metacog_trigger_lineage()` helper, whose output never reaches a persisted column).
+
+**Channel registry fix (independent, ships regardless)**: `orion/bus/channels.yaml`'s
+`orion:equilibrium:metacog:trigger` entry gets `orion-actions` added to `consumer_services`.
+
+### Files likely to touch
+
+- `services/orion-equilibrium-service/app/chat_turn_metacog_gate.py` (new) — correlator + gate.
+- `services/orion-equilibrium-service/app/settings.py` — new threshold config (question 2).
+- `services/orion-equilibrium-service/app/service.py` — wire the new subscriptions (mirrors how
+  `telemetry_anomaly_metacog_gate.py` gets invoked from `service.py` today).
+- `orion/schemas/telemetry/metacog_trigger.py` — docstring enum update only, no field changes.
+- `orion/bus/channels.yaml` — register the 6 new subscriptions this gate needs (`orion:thought:
+  artifact`, `orion:harness:run:step`, `orion:grammar:event`, `orion:harness:verdict:artifact`,
+  `orion:substrate:turn_outcome`, `orion:substrate:post_turn_closure`, `orion:harness:run:artifact`)
+  under `orion-equilibrium-service`'s `consumer_services`, plus the independent `orion-actions` fix.
+- `orion/cognition/prompts/log_orion_metacognition_draft.j2` /
+  `log_orion_metacognition_enrich.j2` — optional, if the prompt-evidence-cue fix ships in this
+  patch (question 5): render `trigger.upstream`'s `fired_conditions`/key fields as an evidence-cue
+  block, same style as the existing `spark_state_json`/`turn_effect_json` blocks ("evidence cues
+  only, do not paste verbatim").
+- Tests: new `services/orion-equilibrium-service/tests/test_chat_turn_metacog_gate.py`, matching
+  `test_telemetry_anomaly_metacog_gate.py`'s shape (per-condition unit tests, dedup test, TTL/
+  correlation test).
+
+Sources for every file:line citation above, verified against real code during this conversation:
+`orion/hub/turn_orchestrator.py`, `orion/hub/association.py`,
+`services/orion-hub/scripts/thought_client.py`, `services/orion-thought/app/bus_listener.py`,
+`orion/schemas/thought.py`, `services/orion-harness-governor/app/bus_listener.py`,
+`orion/harness/runner.py`, `orion/harness/finalize.py`, `orion/schemas/harness_finalize.py`,
+`services/orion-substrate-runtime/app/finalize_appraisal_listener.py`,
+`services/orion-cortex-orch/app/orchestrator.py`, `services/orion-cortex-exec/app/executor.py`,
+`orion/cognition/verbs/log_orion_metacognition.yaml`, `orion/schemas/metacog_entry.py`,
+`orion/metacog/service.py`, `services/orion-actions/app/main.py`,
+`orion/journaler/worker.py`, `orion/bus/channels.yaml`.
+
+### Non-goals
+
+- **No `MetacogRealState` schema extension.** Explicitly deferred pending either a real consumer of
+  `orion_metacog` existing, or a decision that `orion_metacog` should be retired in favor of
+  `orion_metacognitive_trace`. Building typed sub-models for a table nothing reads is the CLAUDE.md
+  0A "schema without consumer" pattern this doc's own metric-quality-gate section exists to block.
+- **No "grounding_capsule conflict" or "autonomy_mode changed" derived signal.** Zero producing code
+  exists for either. Not designed here; a future pass, with its own metric-quality-gate run, if
+  ever wanted.
+- **No change to the existing `telemetry_anomaly`/`relational` gates or the `log_orion_metacognition`
+  plan's draft/enrich/publish logic** beyond the optional prompt-template evidence-cue addition
+  (question 5) — this spec reuses that machinery, doesn't modify it.
+- **No removal of anything** — there is no existing inline chat-turn metacog path to remove (see
+  arsonist summary). This is pure addition.
+- **Not building a synchronous request/response mechanism.** An earlier pass in this design
+  conversation proposed one, based on an incorrect assumption that draft/enrich needed to run
+  inside the same live turn. Verified false — `log_orion_metacognition` is already a fully
+  independent, freshly-dispatched plan for every trigger kind that uses it today. Fire-and-forget,
+  same as `telemetry_anomaly`/`relational`.
+
+### Acceptance checks
+
+- A chat turn where `thought_event.disposition == "defer"` produces exactly one `MetacogTriggerV1`
+  with `trigger_kind="chat_turn"`, `fired_conditions` containing `"disposition=defer"`, published
+  once (not duplicated by the surprise-signal redundancy in question 3).
+- A chat turn where none of the 8 real conditions fire produces zero trigger events — no entry
+  written, matching the whole point of gating instead of firing unconditionally.
+- The correlator does not leak: a turn whose `post_turn_closure` never arrives (crashed/cancelled
+  run) does not hold its Redis-hash entry past the TTL.
+- Live-data check, same standard as `telemetry_anomaly`'s bulletproofing pass: pull real
+  `orion_metacog` rows with `trigger_kind="chat_turn"` post-deploy and confirm `upstream` actually
+  reflects the real turn (not degenerate/always-the-same-value) before calling this verified.
+- `orion/bus/channels.yaml` validation (`scripts/check_bus_channels.py`) passes with the new
+  subscriptions and the `orion-actions` registry fix.
+
+### Recommended next patch
+
+Smallest slice that's independently shippable and doesn't require the open questions above to be
+resolved first: **the channel registry fix alone** (`orion-actions` added to
+`orion:equilibrium:metacog:trigger`'s `consumer_services`). Real, free, zero design risk.
+
+Second-smallest, if there's appetite for it before the full gate: the prompt-template
+evidence-cue change (question 5) for `telemetry_anomaly`/`relational`'s already-live triggers —
+delivers real narrative-quality improvement today, on already-shipped triggers, without waiting on
+any of `chat_turn`'s open questions.
+
+The `chat_turn` gate itself needs questions 1-4 answered (TTL, thresholds, dedup source, and the
+`orion_metacog`-vs-`orion_metacognitive_trace` fate question) before implementation starts — this
+section is the spec to react to, not yet a green light.

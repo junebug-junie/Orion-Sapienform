@@ -82,7 +82,7 @@ def _policy_frame(frame_id: str) -> PolicyDecisionFrameV1:
         frame_id=frame_id,
         generated_at=NOW,
         source_proposal_frame_id="proposal.frame:1",
-        source_self_state_id="self.state:1",
+        source_field_tick_id="field.tick:1",
         decisions=[decision],
         approved_decisions=[decision],
         overall_risk=0.05,
@@ -96,7 +96,7 @@ def _dispatch_frame(frame_id: str) -> ExecutionDispatchFrameV1:
         generated_at=NOW,
         source_policy_frame_id="policy.frame:1",
         source_proposal_frame_id="proposal.frame:1",
-        source_self_state_id="self.state:1",
+        source_field_tick_id="field.tick:1",
         candidates=[
             ExecutionDispatchCandidateV1(
                 dispatch_id="dispatch:1",

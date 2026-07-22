@@ -78,7 +78,9 @@ class ExecutionDispatchFrameV1(BaseModel):
 
     source_policy_frame_id: str
     source_proposal_frame_id: str
-    source_self_state_id: str
+    # source_self_state_id -> source_field_tick_id 2026-07-22, SelfStateV1
+    # burn -- field was always the real upstream tick.
+    source_field_tick_id: str | None = None
 
     execution_dispatch_policy_id: str = "execution_dispatch_policy.v1"
 

@@ -86,8 +86,12 @@ class FeedbackRuntimeWorker:
 
         policy_frame = self._store.load_policy_frame(dispatch.source_policy_frame_id)
         proposal_frame = self._store.load_proposal_frame(dispatch.source_proposal_frame_id)
-        self_state_before = self._store.load_self_state(dispatch.source_self_state_id)
-        self_state_after = self._store.load_latest_self_state_after(
+        # 2026-07-22 (SelfStateV1 burn): field_before is the exact field
+        # tick dispatch was built against; field_after is the next real
+        # field tick observed within the policy's window, same "did the
+        # world move" comparison self-state used to provide a lossy hop for.
+        field_before = self._store.load_field_for_tick(dispatch.source_field_tick_id)
+        field_after = self._store.load_latest_field_after(
             dispatch.generated_at,
             window_sec=self._policy.windows.field_after_window_sec,
         )
@@ -97,8 +101,8 @@ class FeedbackRuntimeWorker:
             dispatch_frame=dispatch,
             policy_frame=policy_frame,
             proposal_frame=proposal_frame,
-            self_state_before=self_state_before,
-            self_state_after=self_state_after,
+            field_before=field_before,
+            field_after=field_after,
             cortex_results=cortex_results or None,
             policy=self._policy,
         )

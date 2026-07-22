@@ -189,7 +189,13 @@ def _detect_stable_after_dry_run(
     rule: MotifRuleV1,
     policy: ConsolidationPolicyV1,
 ) -> MotifObservationV1 | None:
-    allowed = set(rule.conditions.get("self_state_delta", {}).get("allowed", ["unchanged"]))
+    # 2026-07-22 (SelfStateV1 burn): condition key and observation
+    # source_kind were "self_state_delta"; feedback observations are
+    # field-native now (orion/feedback/builder.py), so this looks for
+    # "field_delta" instead. Same semantics -- "did the world move" -- just
+    # keyed off FieldStateV1's reliability_pressure delta instead of
+    # SelfStateV1's agency_readiness delta.
+    allowed = set(rule.conditions.get("field_delta", {}).get("allowed", ["unchanged"]))
     matches = []
     for f in window.feedback_frames:
         if f.outcome_status != rule.conditions.get("outcome_status", "dry_run_only"):
@@ -197,7 +203,7 @@ def _detect_stable_after_dry_run(
         if f.absence_evidence or f.negative_evidence:
             continue
         has_unchanged = any(
-            o.source_kind == "self_state_delta" and o.outcome_kind in allowed for o in f.observations
+            o.source_kind == "field_delta" and o.outcome_kind in allowed for o in f.observations
         )
         if has_unchanged:
             matches.append(f)

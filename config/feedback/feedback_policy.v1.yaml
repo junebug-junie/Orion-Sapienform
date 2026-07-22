@@ -16,19 +16,19 @@ scoring:
   absent_score: 0.15
   unknown_score: 0.25
 
+# field_intensity/uncertainty/agency_readiness/coherence removed 2026-07-22,
+# SelfStateV1 burn (docs/superpowers/specs/2026-07-22-self-state-phi-endo-
+# origination-burn-spec.md): these were composite, hand-tuned SelfStateV1
+# dimensions with no principled non-hand-tuned replacement (see
+# orion/field/pressure.py's module docstring) -- unlike the 4 remaining
+# channels below, which are real, direct FieldStateV1 channel-merge reads.
 pressure_channels:
   - execution_pressure
   - resource_pressure
   - reasoning_pressure
   - reliability_pressure
-  - field_intensity
-  - uncertainty
-  - agency_readiness
 
 positive_delta_channels:
-  agency_readiness: increase
-  coherence: increase
-  uncertainty: decrease
   reliability_pressure: decrease
   execution_pressure: decrease
   resource_pressure: decrease

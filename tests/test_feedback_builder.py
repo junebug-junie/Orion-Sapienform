@@ -6,9 +6,9 @@ from orion.execution_dispatch.policy import load_execution_dispatch_policy
 from orion.feedback.builder import build_feedback_frame, stable_feedback_frame_id
 from orion.feedback.policy import load_feedback_policy
 from orion.schemas.execution_dispatch_frame import ExecutionDispatchCandidateV1, ExecutionDispatchFrameV1
+from orion.schemas.field_state import FieldStateV1
 from orion.schemas.policy_decision_frame import PolicyDecisionFrameV1, PolicyDecisionV1
 from orion.schemas.proposal_frame import ProposalCandidateV1, ProposalFrameV1
-from orion.schemas.self_state import SelfStateDimensionV1, SelfStateV1
 
 REPO = Path(__file__).resolve().parents[1]
 DISPATCH_POLICY = load_execution_dispatch_policy(
@@ -17,22 +17,14 @@ DISPATCH_POLICY = load_execution_dispatch_policy(
 FEEDBACK_POLICY = load_feedback_policy(REPO / "config" / "feedback" / "feedback_policy.v1.yaml")
 NOW = datetime(2026, 5, 25, 12, 0, tzinfo=timezone.utc)
 
-
-def _dim(dimension_id: str, score: float) -> SelfStateDimensionV1:
-    return SelfStateDimensionV1(dimension_id=dimension_id, score=score, confidence=0.9)
+FIELD_TICK_ID = "field.tick:test"
 
 
-def _self_state(self_state_id: str, scores: dict[str, float]) -> SelfStateV1:
-    return SelfStateV1(
-        self_state_id=self_state_id,
+def _field(tick_id: str, node_vectors: dict[str, dict[str, float]] | None = None) -> FieldStateV1:
+    return FieldStateV1(
         generated_at=NOW,
-        source_field_tick_id="tick",
-        source_field_generated_at=NOW,
-        source_attention_frame_id="att",
-        source_attention_generated_at=NOW,
-        overall_intensity=0.5,
-        overall_confidence=0.9,
-        dimensions={k: _dim(k, v) for k, v in scores.items()},
+        tick_id=tick_id,
+        node_vectors=node_vectors or {},
     )
 
 
@@ -55,14 +47,12 @@ def _proposal() -> ProposalFrameV1:
             execution_intent={"mode": "descriptive_only"},
         )
 
-    state = _self_state("self.state:before", {"execution_pressure": 1.0})
     return ProposalFrameV1(
         frame_id="proposal.frame:test:proposal_policy.v1",
         generated_at=NOW,
-        source_self_state_id=state.self_state_id,
-        source_self_state_generated_at=state.generated_at,
-        source_attention_frame_id=state.source_attention_frame_id,
-        source_field_tick_id=state.source_field_tick_id,
+        source_field_tick_id=FIELD_TICK_ID,
+        source_field_generated_at=NOW,
+        source_attention_frame_id="att",
         overall_action_pressure=0.6,
         overall_risk=0.3,
         candidates=[cand("proposal:inspect:state", "inspect")],
@@ -84,7 +74,7 @@ def _policy_frame(proposal: ProposalFrameV1) -> PolicyDecisionFrameV1:
         frame_id="policy.frame:proposal.frame:test:substrate_policy.v1",
         generated_at=NOW,
         source_proposal_frame_id=proposal.frame_id,
-        source_self_state_id=proposal.source_self_state_id,
+        source_field_tick_id=proposal.source_field_tick_id,
         decisions=[decision],
         approved_decisions=[decision],
         overall_risk=0.05,
@@ -94,11 +84,10 @@ def _policy_frame(proposal: ProposalFrameV1) -> PolicyDecisionFrameV1:
 def _dispatch_dry_run() -> ExecutionDispatchFrameV1:
     proposal = _proposal()
     policy_frame = _policy_frame(proposal)
-    before = _self_state("self.state:before", {"execution_pressure": 1.0})
     return build_execution_dispatch_frame(
         policy_frame=policy_frame,
         proposal_frame=proposal,
-        self_state=before,
+        field_tick_id=FIELD_TICK_ID,
         policy=DISPATCH_POLICY,
         now=NOW,
     )
@@ -110,8 +99,8 @@ def test_dry_run_produces_dry_run_only() -> None:
         dispatch_frame=dispatch,
         policy_frame=_policy_frame(_proposal()),
         proposal_frame=_proposal(),
-        self_state_before=_self_state("self.state:before", {"execution_pressure": 1.0}),
-        self_state_after=None,
+        field_before=_field(FIELD_TICK_ID, {"node:test": {"execution_pressure": 1.0}}),
+        field_after=None,
         cortex_results=None,
         policy=FEEDBACK_POLICY,
         now=NOW,
@@ -126,7 +115,7 @@ def test_prepared_only_dispatch() -> None:
         generated_at=NOW,
         source_policy_frame_id="policy.frame:prep",
         source_proposal_frame_id="proposal.frame:prep",
-        source_self_state_id="self.state:prep",
+        source_field_tick_id="field.tick:prep",
         dispatch_mode="prepare_only",
         candidates=[
             ExecutionDispatchCandidateV1(
@@ -148,8 +137,8 @@ def test_prepared_only_dispatch() -> None:
         dispatch_frame=dispatch,
         policy_frame=None,
         proposal_frame=None,
-        self_state_before=None,
-        self_state_after=None,
+        field_before=None,
+        field_after=None,
         cortex_results=None,
         policy=FEEDBACK_POLICY,
         now=NOW,
@@ -163,7 +152,7 @@ def test_prepared_for_dispatch_candidate_observation() -> None:
         generated_at=NOW,
         source_policy_frame_id="policy.frame:pfd",
         source_proposal_frame_id="proposal.frame:pfd",
-        source_self_state_id="self.state:pfd",
+        source_field_tick_id="field.tick:pfd",
         dispatch_mode="dispatch_read_only",
         candidates=[
             ExecutionDispatchCandidateV1(
@@ -184,8 +173,8 @@ def test_prepared_for_dispatch_candidate_observation() -> None:
         dispatch_frame=dispatch,
         policy_frame=None,
         proposal_frame=None,
-        self_state_before=None,
-        self_state_after=None,
+        field_before=None,
+        field_after=None,
         cortex_results=None,
         policy=FEEDBACK_POLICY,
         now=NOW,
@@ -219,8 +208,8 @@ def test_blocked_candidate_observation() -> None:
         dispatch_frame=dispatch,
         policy_frame=None,
         proposal_frame=None,
-        self_state_before=None,
-        self_state_after=None,
+        field_before=None,
+        field_after=None,
         cortex_results=None,
         policy=FEEDBACK_POLICY,
         now=NOW,
@@ -234,7 +223,7 @@ def test_missing_cortex_result_absence() -> None:
         generated_at=NOW,
         source_policy_frame_id="policy.frame:ro",
         source_proposal_frame_id="proposal.frame:ro",
-        source_self_state_id="self.state:ro",
+        source_field_tick_id="field.tick:ro",
         dispatch_mode="dispatch_read_only",
         dispatch_attempted=True,
         dispatch_count=1,
@@ -259,8 +248,8 @@ def test_missing_cortex_result_absence() -> None:
         dispatch_frame=dispatch,
         policy_frame=None,
         proposal_frame=None,
-        self_state_before=None,
-        self_state_after=None,
+        field_before=None,
+        field_after=None,
         cortex_results=[],
         policy=FEEDBACK_POLICY,
         now=NOW,
@@ -275,7 +264,7 @@ def test_successful_cortex_result_completed() -> None:
         generated_at=NOW,
         source_policy_frame_id="policy.frame:ok",
         source_proposal_frame_id="proposal.frame:ok",
-        source_self_state_id="self.state:ok",
+        source_field_tick_id="field.tick:ok",
         dispatch_mode="dispatch_read_only",
         dispatch_attempted=True,
         dispatch_count=1,
@@ -300,8 +289,8 @@ def test_successful_cortex_result_completed() -> None:
         dispatch_frame=dispatch,
         policy_frame=None,
         proposal_frame=None,
-        self_state_before=None,
-        self_state_after=None,
+        field_before=None,
+        field_after=None,
         cortex_results=[
             {"dispatch_id": "dispatch:proposal:inspect:execution_dispatch_policy.v1", "status": "success"}
         ],
@@ -318,7 +307,7 @@ def test_failed_cortex_result() -> None:
         generated_at=NOW,
         source_policy_frame_id="policy.frame:fail",
         source_proposal_frame_id="proposal.frame:fail",
-        source_self_state_id="self.state:fail",
+        source_field_tick_id="field.tick:fail",
         dispatch_mode="dispatch_read_only",
         dispatch_attempted=True,
         dispatch_count=1,
@@ -343,8 +332,8 @@ def test_failed_cortex_result() -> None:
         dispatch_frame=dispatch,
         policy_frame=None,
         proposal_frame=None,
-        self_state_before=None,
-        self_state_after=None,
+        field_before=None,
+        field_after=None,
         cortex_results=[
             {"dispatch_id": "dispatch:proposal:inspect:execution_dispatch_policy.v1", "status": "failed"}
         ],
@@ -364,7 +353,7 @@ def test_empty_cortex_result_scores_as_failed_not_unknown() -> None:
         generated_at=NOW,
         source_policy_frame_id="policy.frame:empty",
         source_proposal_frame_id="proposal.frame:empty",
-        source_self_state_id="self.state:empty",
+        source_field_tick_id="field.tick:empty",
         dispatch_mode="dispatch_read_only",
         dispatch_attempted=True,
         dispatch_count=1,
@@ -389,8 +378,8 @@ def test_empty_cortex_result_scores_as_failed_not_unknown() -> None:
         dispatch_frame=dispatch,
         policy_frame=None,
         proposal_frame=None,
-        self_state_before=None,
-        self_state_after=None,
+        field_before=None,
+        field_after=None,
         cortex_results=[
             {"dispatch_id": "dispatch:proposal:inspect:execution_dispatch_policy.v1", "status": "empty"}
         ],
@@ -403,16 +392,16 @@ def test_empty_cortex_result_scores_as_failed_not_unknown() -> None:
     assert empty_obs.score == FEEDBACK_POLICY.scoring.failed_score
 
 
-def test_self_state_improvement_positive_evidence() -> None:
+def test_field_improvement_positive_evidence() -> None:
     dispatch = _dispatch_dry_run()
-    before = _self_state("self.state:before", {"execution_pressure": 1.0, "agency_readiness": 0.2})
-    after = _self_state("self.state:after", {"execution_pressure": 0.5, "agency_readiness": 0.6})
+    before = _field("field.tick:before", {"node:test": {"execution_pressure": 1.0, "reliability_pressure": 0.6}})
+    after = _field("field.tick:after", {"node:test": {"execution_pressure": 0.5, "reliability_pressure": 0.2}})
     frame = build_feedback_frame(
         dispatch_frame=dispatch,
         policy_frame=None,
         proposal_frame=None,
-        self_state_before=before,
-        self_state_after=after,
+        field_before=before,
+        field_after=after,
         cortex_results=None,
         policy=FEEDBACK_POLICY,
         now=NOW,
@@ -421,16 +410,16 @@ def test_self_state_improvement_positive_evidence() -> None:
     assert any(o.outcome_kind == "improved" for o in frame.observations)
 
 
-def test_self_state_worsening_negative_evidence() -> None:
+def test_field_worsening_negative_evidence() -> None:
     dispatch = _dispatch_dry_run()
-    before = _self_state("self.state:before", {"agency_readiness": 0.8})
-    after = _self_state("self.state:after", {"agency_readiness": 0.2})
+    before = _field("field.tick:before", {"node:test": {"reliability_pressure": 0.2}})
+    after = _field("field.tick:after", {"node:test": {"reliability_pressure": 0.8}})
     frame = build_feedback_frame(
         dispatch_frame=dispatch,
         policy_frame=None,
         proposal_frame=None,
-        self_state_before=before,
-        self_state_after=after,
+        field_before=before,
+        field_after=after,
         cortex_results=None,
         policy=FEEDBACK_POLICY,
         now=NOW,
@@ -449,8 +438,8 @@ def test_stable_frame_id() -> None:
         dispatch_frame=dispatch,
         policy_frame=None,
         proposal_frame=None,
-        self_state_before=None,
-        self_state_after=None,
+        field_before=None,
+        field_after=None,
         cortex_results=None,
         policy=FEEDBACK_POLICY,
         now=NOW,
@@ -464,7 +453,7 @@ def test_partial_dispatch_completed_and_absent_is_mixed() -> None:
         generated_at=NOW,
         source_policy_frame_id="policy.frame:partial",
         source_proposal_frame_id="proposal.frame:partial",
-        source_self_state_id="self.state:partial",
+        source_field_tick_id="field.tick:partial",
         dispatch_mode="dispatch_read_only",
         dispatch_attempted=True,
         dispatch_count=2,
@@ -503,8 +492,8 @@ def test_partial_dispatch_completed_and_absent_is_mixed() -> None:
         dispatch_frame=dispatch,
         policy_frame=None,
         proposal_frame=None,
-        self_state_before=None,
-        self_state_after=None,
+        field_before=None,
+        field_after=None,
         cortex_results=[
             {"dispatch_id": "dispatch:proposal:inspect:execution_dispatch_policy.v1", "status": "success"}
         ],
@@ -521,7 +510,7 @@ def test_completed_and_failed_is_mixed() -> None:
         generated_at=NOW,
         source_policy_frame_id="policy.frame:mix",
         source_proposal_frame_id="proposal.frame:mix",
-        source_self_state_id="self.state:mix",
+        source_field_tick_id="field.tick:mix",
         dispatch_mode="dispatch_read_only",
         dispatch_attempted=True,
         dispatch_count=2,
@@ -546,8 +535,8 @@ def test_completed_and_failed_is_mixed() -> None:
         dispatch_frame=dispatch,
         policy_frame=None,
         proposal_frame=None,
-        self_state_before=None,
-        self_state_after=None,
+        field_before=None,
+        field_after=None,
         cortex_results=[
             {"dispatch_id": "dispatch:proposal:inspect:execution_dispatch_policy.v1", "status": "success"},
             {"dispatch_id": "dispatch:proposal:inspect:execution_dispatch_policy.v1", "status": "failed"},
@@ -569,8 +558,8 @@ def test_no_mutation_side_effects() -> None:
         dispatch_frame=dispatch,
         policy_frame=policy_frame,
         proposal_frame=proposal,
-        self_state_before=None,
-        self_state_after=None,
+        field_before=None,
+        field_after=None,
         cortex_results=None,
         policy=FEEDBACK_POLICY,
         now=NOW,

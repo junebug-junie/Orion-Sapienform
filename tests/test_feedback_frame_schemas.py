@@ -37,7 +37,7 @@ def test_feedback_frame_validates() -> None:
         source_execution_dispatch_frame_id="execution.dispatch.frame:pf1:execution_dispatch_policy.v1",
         source_policy_frame_id="policy.frame:pf1:substrate_policy.v1",
         source_proposal_frame_id="proposal.frame:pf1:proposal_policy.v1",
-        source_self_state_id="self.state:pf1",
+        source_field_tick_id="field.tick:pf1",
         outcome_status="dry_run_only",
         outcome_score=0.5,
         confidence_score=0.9,

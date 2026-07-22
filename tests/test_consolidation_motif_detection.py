@@ -51,7 +51,7 @@ def _policy_frame(frame_id: str, *, execution_allowed: bool = False, read_only: 
         frame_id=frame_id,
         generated_at=NOW,
         source_proposal_frame_id="proposal.frame:test",
-        source_self_state_id="self.state:test",
+        source_field_tick_id="field.tick:test",
         decisions=[decision],
         approved_decisions=[decision] if read_only else [],
         overall_risk=0.05,
@@ -74,7 +74,7 @@ def _review_policy_frame(frame_id: str) -> PolicyDecisionFrameV1:
         frame_id=frame_id,
         generated_at=NOW,
         source_proposal_frame_id="proposal.frame:review",
-        source_self_state_id="self.state:review",
+        source_field_tick_id="field.tick:review",
         decisions=[decision],
         review_required_decisions=[decision],
         overall_risk=0.6,
@@ -94,8 +94,8 @@ def _feedback_frame(
         observations.append(
             OutcomeObservationV1(
                 observation_id=f"obs:{frame_id}:delta",
-                source_kind="self_state_delta",
-                source_id="self.state:before",
+                source_kind="field_delta",
+                source_id="field.tick:before",
                 outcome_kind="unchanged",
                 score=0.5,
                 confidence=0.9,
@@ -119,7 +119,7 @@ def _dispatch_blocked(frame_id: str) -> ExecutionDispatchFrameV1:
         generated_at=NOW,
         source_policy_frame_id="policy.frame:blocked",
         source_proposal_frame_id="proposal.frame:blocked",
-        source_self_state_id="self.state:blocked",
+        source_field_tick_id="field.tick:blocked",
         blocked_candidates=[
             ExecutionDispatchCandidateV1(
                 dispatch_id=f"dispatch:blocked:{frame_id}",

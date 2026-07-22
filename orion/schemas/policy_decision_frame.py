@@ -66,7 +66,9 @@ class PolicyDecisionFrameV1(BaseModel):
     generated_at: datetime
 
     source_proposal_frame_id: str
-    source_self_state_id: str
+    # source_self_state_id removed 2026-07-22, SelfStateV1 burn -- redundant
+    # with source_field_tick_id, which already independently identified the
+    # same tick.
     source_attention_frame_id: str | None = None
     source_field_tick_id: str | None = None
 

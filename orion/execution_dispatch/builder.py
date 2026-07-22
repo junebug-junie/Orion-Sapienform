@@ -7,7 +7,6 @@ from orion.execution_dispatch.policy import CortexRouteTemplateV1, ExecutionDisp
 from orion.schemas.execution_dispatch_frame import ExecutionDispatchCandidateV1, ExecutionDispatchFrameV1
 from orion.schemas.policy_decision_frame import PolicyDecisionFrameV1, PolicyDecisionV1
 from orion.schemas.proposal_frame import ProposalCandidateV1, ProposalFrameV1
-from orion.schemas.self_state import SelfStateV1
 
 
 def stable_execution_dispatch_frame_id(*, policy_frame_id: str, policy_id: str) -> str:
@@ -64,7 +63,7 @@ def build_execution_dispatch_frame(
     *,
     policy_frame: PolicyDecisionFrameV1,
     proposal_frame: ProposalFrameV1,
-    self_state: SelfStateV1,
+    field_tick_id: str,
     policy: ExecutionDispatchPolicyV1,
     now: datetime | None = None,
     override_dispatch_mode: str | None = None,
@@ -192,7 +191,7 @@ def build_execution_dispatch_frame(
             candidate=candidate,
             decision=decision,
             route=route,
-            self_state=self_state,
+            field_tick_id=field_tick_id,
             dry_run=dry_run,
         )
         dispatch_status = dispatch_status_default
@@ -248,7 +247,7 @@ def build_execution_dispatch_frame(
         generated_at=generated_at,
         source_policy_frame_id=policy_frame.frame_id,
         source_proposal_frame_id=proposal_frame.frame_id,
-        source_self_state_id=self_state.self_state_id,
+        source_field_tick_id=field_tick_id,
         execution_dispatch_policy_id=policy.policy_id,
         dispatch_mode=dispatch_mode,
         candidates=candidates,
@@ -268,16 +267,19 @@ def build_unevaluable_execution_dispatch_frame(
     reason: str,
     now: datetime | None = None,
 ) -> ExecutionDispatchFrameV1:
-    """A policy frame whose proposal or self-state could not be loaded still
-    needs an execution_dispatch_frame -- otherwise it's the oldest
-    undispatched policy frame forever, permanently blocking every policy
-    frame queued behind it in the FIFO
-    `load_latest_policy_frame_without_dispatch` query. Mirrors
-    orion.policy.builder.build_unevaluable_policy_decision_frame's reasoning
-    exactly: record honestly (dispatch_attempted=False, zero candidates,
-    a warning), don't silently drop or silently dispatch. Uses the same
+    """A policy frame whose proposal could not be loaded still needs an
+    execution_dispatch_frame -- otherwise it's the oldest undispatched policy
+    frame forever, permanently blocking every policy frame queued behind it
+    in the FIFO `load_latest_policy_frame_without_dispatch` query. Record
+    honestly (dispatch_attempted=False, zero candidates, a warning), don't
+    silently drop or silently dispatch. Uses the same
     stable_execution_dispatch_frame_id as a real build would, so this is
     naturally superseded (not duplicated) if the dependency later loads.
+
+    2026-07-22 (SelfStateV1 burn): this used to also cover a missing
+    self-state load; that branch is gone from the worker now that
+    build_execution_dispatch_frame takes field_tick_id directly off the
+    already-loaded policy_frame (no separate load to fail).
     """
     return ExecutionDispatchFrameV1(
         frame_id=stable_execution_dispatch_frame_id(
@@ -287,7 +289,7 @@ def build_unevaluable_execution_dispatch_frame(
         generated_at=now or datetime.now(timezone.utc),
         source_policy_frame_id=policy_frame.frame_id,
         source_proposal_frame_id=policy_frame.source_proposal_frame_id,
-        source_self_state_id=policy_frame.source_self_state_id,
+        source_field_tick_id=policy_frame.source_field_tick_id,
         execution_dispatch_policy_id=policy_id,
         dispatch_attempted=False,
         dispatch_count=0,

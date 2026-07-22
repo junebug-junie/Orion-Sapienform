@@ -33,7 +33,7 @@ def _policy_frame(frame_id: str) -> PolicyDecisionFrameV1:
         frame_id=frame_id,
         generated_at=NOW,
         source_proposal_frame_id="proposal.frame:test",
-        source_self_state_id="self.state:test",
+        source_field_tick_id="field.tick:test",
         decisions=[decision],
         approved_decisions=[decision],
         overall_risk=0.05,
@@ -58,7 +58,7 @@ def _dispatch_blocked(frame_id: str) -> ExecutionDispatchFrameV1:
         generated_at=NOW,
         source_policy_frame_id="policy.frame:blocked",
         source_proposal_frame_id="proposal.frame:blocked",
-        source_self_state_id="self.state:blocked",
+        source_field_tick_id="field.tick:blocked",
         blocked_candidates=[
             ExecutionDispatchCandidateV1(
                 dispatch_id=f"dispatch:blocked:{frame_id}",

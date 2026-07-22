@@ -4,40 +4,12 @@ from pathlib import Path
 from orion.policy.builder import build_policy_decision_frame, stable_policy_frame_id
 from orion.policy.policy import load_substrate_policy
 from orion.schemas.proposal_frame import ProposalCandidateV1, ProposalFrameV1
-from orion.schemas.self_state import SelfStateDimensionV1, SelfStateV1
 
 REPO = Path(__file__).resolve().parents[1]
 POLICY = load_substrate_policy(REPO / "config" / "policy" / "substrate_policy.v1.yaml")
 NOW = datetime(2026, 5, 24, 12, 0, tzinfo=timezone.utc)
 
-
-def _loaded_self_state() -> SelfStateV1:
-    def dim(dimension_id: str, score: float) -> SelfStateDimensionV1:
-        return SelfStateDimensionV1(
-            dimension_id=dimension_id,
-            score=score,
-            confidence=0.9,
-        )
-
-    return SelfStateV1(
-        self_state_id="self.state:tick_live:frame_live:self_state_policy.v1",
-        generated_at=NOW,
-        source_field_tick_id="tick_live",
-        source_field_generated_at=NOW,
-        source_attention_frame_id="attention.frame:tick_live:field_attention_policy.v1",
-        source_attention_generated_at=NOW,
-        overall_condition="loaded",
-        overall_intensity=0.655,
-        overall_confidence=0.9,
-        dimensions={
-            "execution_pressure": dim("execution_pressure", 1.0),
-            "reasoning_pressure": dim("reasoning_pressure", 0.9),
-            "resource_pressure": dim("resource_pressure", 1.0),
-            "agency_readiness": dim("agency_readiness", 0.6),
-            "reliability_pressure": dim("reliability_pressure", 0.0),
-        },
-        summary_labels=["execution_loaded", "resource_pressurized"],
-    )
+FIELD_TICK_ID = "field.tick:tick_live"
 
 
 def _candidate(
@@ -68,14 +40,12 @@ def _candidate(
 
 
 def _proposal_frame(candidates: list[ProposalCandidateV1]) -> ProposalFrameV1:
-    state = _loaded_self_state()
     return ProposalFrameV1(
         frame_id="proposal.frame:test:proposal_policy.v1",
         generated_at=NOW,
-        source_self_state_id=state.self_state_id,
-        source_self_state_generated_at=state.generated_at,
-        source_attention_frame_id=state.source_attention_frame_id,
-        source_field_tick_id=state.source_field_tick_id,
+        source_field_tick_id=FIELD_TICK_ID,
+        source_field_generated_at=NOW,
+        source_attention_frame_id="attention.frame:tick_live:field_attention_policy.v1",
         overall_action_pressure=0.6,
         overall_risk=0.3,
         candidates=candidates,
@@ -83,7 +53,6 @@ def _proposal_frame(candidates: list[ProposalCandidateV1]) -> ProposalFrameV1:
 
 
 def test_builds_policy_decision_frame() -> None:
-    state = _loaded_self_state()
     proposal = _proposal_frame(
         [
             _candidate("proposal:inspect:state", "inspect"),
@@ -106,17 +75,15 @@ def test_builds_policy_decision_frame() -> None:
     )
     frame = build_policy_decision_frame(
         proposal_frame=proposal,
-        self_state=state,
         policy=POLICY,
         now=NOW,
     )
     assert frame.schema_version == "policy.decision.frame.v1"
     assert frame.source_proposal_frame_id == proposal.frame_id
-    assert frame.source_self_state_id == state.self_state_id
+    assert frame.source_field_tick_id == FIELD_TICK_ID
 
 
 def test_partitions_decisions() -> None:
-    state = _loaded_self_state()
     proposal = _proposal_frame(
         [
             _candidate("proposal:inspect:state", "inspect"),
@@ -136,7 +103,6 @@ def test_partitions_decisions() -> None:
     )
     frame = build_policy_decision_frame(
         proposal_frame=proposal,
-        self_state=state,
         policy=POLICY,
         now=NOW,
     )
@@ -146,7 +112,6 @@ def test_partitions_decisions() -> None:
 
 
 def test_operator_review_required() -> None:
-    state = _loaded_self_state()
     proposal = _proposal_frame(
         [
             _candidate(
@@ -160,7 +125,6 @@ def test_operator_review_required() -> None:
     )
     frame = build_policy_decision_frame(
         proposal_frame=proposal,
-        self_state=state,
         policy=POLICY,
         now=NOW,
     )
@@ -168,11 +132,9 @@ def test_operator_review_required() -> None:
 
 
 def test_execution_allowed_false_in_v1() -> None:
-    state = _loaded_self_state()
     proposal = _proposal_frame([_candidate("proposal:inspect:state", "inspect")])
     frame = build_policy_decision_frame(
         proposal_frame=proposal,
-        self_state=state,
         policy=POLICY,
         now=NOW,
     )
@@ -180,7 +142,6 @@ def test_execution_allowed_false_in_v1() -> None:
 
 
 def test_stable_frame_id() -> None:
-    state = _loaded_self_state()
     proposal = _proposal_frame([_candidate("proposal:inspect:state", "inspect")])
     expected = stable_policy_frame_id(
         proposal_frame_id=proposal.frame_id,
@@ -188,7 +149,6 @@ def test_stable_frame_id() -> None:
     )
     frame = build_policy_decision_frame(
         proposal_frame=proposal,
-        self_state=state,
         policy=POLICY,
         now=NOW,
     )

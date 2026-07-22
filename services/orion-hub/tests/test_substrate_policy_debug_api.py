@@ -36,7 +36,7 @@ def _sample_policy_frame() -> dict:
         "frame_id": "policy.frame:proposal.frame:test:substrate_policy.v1",
         "generated_at": "2026-05-24T12:00:00+00:00",
         "source_proposal_frame_id": "proposal.frame:test:proposal_policy.v1",
-        "source_self_state_id": "self.state:test",
+        "source_field_tick_id": "field.tick:test",
         "policy_id": "substrate_policy.v1",
         "decisions": [],
         "approved_decisions": [],

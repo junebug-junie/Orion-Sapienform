@@ -6,7 +6,6 @@ from orion.policy.evaluator import evaluate_proposal_candidate
 from orion.policy.policy import SubstratePolicyV1
 from orion.schemas.policy_decision_frame import PolicyDecisionFrameV1, PolicyDecisionV1
 from orion.schemas.proposal_frame import ProposalFrameV1
-from orion.schemas.self_state import SelfStateV1
 
 
 def stable_policy_frame_id(*, proposal_frame_id: str, policy_id: str) -> str:
@@ -16,7 +15,6 @@ def stable_policy_frame_id(*, proposal_frame_id: str, policy_id: str) -> str:
 def build_policy_decision_frame(
     *,
     proposal_frame: ProposalFrameV1,
-    self_state: SelfStateV1,
     policy: SubstratePolicyV1,
     now: datetime | None = None,
 ) -> PolicyDecisionFrameV1:
@@ -25,7 +23,6 @@ def build_policy_decision_frame(
         evaluate_proposal_candidate(
             candidate=candidate,
             proposal_frame=proposal_frame,
-            self_state=self_state,
             policy=policy,
         )
         for candidate in proposal_frame.candidates
@@ -43,7 +40,6 @@ def build_policy_decision_frame(
         ),
         generated_at=generated_at,
         source_proposal_frame_id=proposal_frame.frame_id,
-        source_self_state_id=proposal_frame.source_self_state_id,
         source_attention_frame_id=proposal_frame.source_attention_frame_id,
         source_field_tick_id=proposal_frame.source_field_tick_id,
         policy_id=policy.policy_id,
@@ -56,42 +52,4 @@ def build_policy_decision_frame(
         operator_review_required=any(d.decision == "requires_operator_review" for d in decisions),
         execution_allowed=any(d.decision == "approved_for_execution" for d in decisions),
         warnings=list(proposal_frame.warnings),
-    )
-
-
-def build_unevaluable_policy_decision_frame(
-    *,
-    proposal_frame: ProposalFrameV1,
-    policy_id: str,
-    reason: str,
-    now: datetime | None = None,
-) -> PolicyDecisionFrameV1:
-    """A proposal whose source self-state could not be loaded (missing, or a
-    row saved before a schema change that's now incompatible) still needs a
-    policy_decision_frame -- otherwise it's the oldest unresolved proposal
-    forever, permanently blocking every proposal queued behind it in the
-    FIFO `load_next_proposal_without_policy_frame` query. No candidates are
-    evaluated (there's no self-state to evaluate them against); this is
-    recorded honestly as zero decisions plus an operator-review flag and a
-    warning, not silently approved or silently dropped. Uses the same
-    stable_policy_frame_id as a real evaluation would, so if the self-state
-    later becomes loadable this is naturally superseded, not duplicated
-    (save_policy_decision_frame is idempotent by frame_id).
-    """
-    return PolicyDecisionFrameV1(
-        frame_id=stable_policy_frame_id(
-            proposal_frame_id=proposal_frame.frame_id,
-            policy_id=policy_id,
-        ),
-        generated_at=now or datetime.now(timezone.utc),
-        source_proposal_frame_id=proposal_frame.frame_id,
-        source_self_state_id=proposal_frame.source_self_state_id,
-        source_attention_frame_id=proposal_frame.source_attention_frame_id,
-        source_field_tick_id=proposal_frame.source_field_tick_id,
-        policy_id=policy_id,
-        decisions=[],
-        overall_risk=0.0,
-        operator_review_required=True,
-        execution_allowed=False,
-        warnings=[*proposal_frame.warnings, reason],
     )

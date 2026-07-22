@@ -4,7 +4,6 @@ from orion.execution_dispatch.envelopes import build_cortex_request_envelope
 from orion.execution_dispatch.policy import CortexRouteTemplateV1
 from orion.schemas.policy_decision_frame import PolicyDecisionV1
 from orion.schemas.proposal_frame import ProposalCandidateV1
-from orion.schemas.self_state import SelfStateV1
 
 NOW = datetime(2026, 5, 24, 12, 0, tzinfo=timezone.utc)
 
@@ -14,6 +13,8 @@ ROUTE = CortexRouteTemplateV1(
     cortex_mode="brain",
     allowed_scope="inspect_only",
 )
+
+FIELD_TICK_ID = "field.tick:pf1"
 
 
 def _candidate() -> ProposalCandidateV1:
@@ -48,26 +49,12 @@ def _decision() -> PolicyDecisionV1:
     )
 
 
-def _self_state() -> SelfStateV1:
-    return SelfStateV1(
-        self_state_id="self.state:pf1",
-        generated_at=NOW,
-        source_field_tick_id="tick_live",
-        source_field_generated_at=NOW,
-        source_attention_frame_id="attention.frame:tick_live",
-        source_attention_generated_at=NOW,
-        overall_condition="loaded",
-        overall_intensity=0.6,
-        overall_confidence=0.9,
-    )
-
-
 def test_envelope_includes_verb_mode_source_dry_run() -> None:
     env = build_cortex_request_envelope(
         candidate=_candidate(),
         decision=_decision(),
         route=ROUTE,
-        self_state=_self_state(),
+        field_tick_id=FIELD_TICK_ID,
         dry_run=True,
     )
     assert env["verb"] == "substrate.inspect"
@@ -81,13 +68,13 @@ def test_envelope_includes_refs() -> None:
         candidate=_candidate(),
         decision=_decision(),
         route=ROUTE,
-        self_state=_self_state(),
+        field_tick_id=FIELD_TICK_ID,
         dry_run=True,
     )
     ctx = env["context"]
     assert ctx["proposal_id"] == "proposal:inspect:state"
     assert ctx["decision_id"] == "policy.decision:proposal:inspect:substrate_policy.v1"
-    assert ctx["self_state_id"] == "self.state:pf1"
+    assert ctx["field_tick_id"] == FIELD_TICK_ID
     assert ctx["allowed_scope"] == "inspect_only"
 
 
@@ -96,7 +83,7 @@ def test_envelope_read_only_constraints() -> None:
         candidate=_candidate(),
         decision=_decision(),
         route=ROUTE,
-        self_state=_self_state(),
+        field_tick_id=FIELD_TICK_ID,
         dry_run=True,
     )
     c = env["constraints"]
@@ -110,7 +97,7 @@ def test_envelope_no_field_state_or_prompts() -> None:
         candidate=_candidate(),
         decision=_decision(),
         route=ROUTE,
-        self_state=_self_state(),
+        field_tick_id=FIELD_TICK_ID,
         dry_run=True,
     )
     blob = str(env).lower()

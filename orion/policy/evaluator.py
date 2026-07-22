@@ -12,7 +12,6 @@ from orion.policy.rules import (
 from orion.proposals.scoring import clamp01
 from orion.schemas.policy_decision_frame import PolicyDecisionV1
 from orion.schemas.proposal_frame import ProposalCandidateV1, ProposalFrameV1
-from orion.schemas.self_state import SelfStateV1
 
 DecisionLiteral = Literal[
     "approved_for_execution",
@@ -84,10 +83,8 @@ def evaluate_proposal_candidate(
     *,
     candidate: ProposalCandidateV1,
     proposal_frame: ProposalFrameV1,
-    self_state: SelfStateV1,
     policy: SubstratePolicyV1,
 ) -> PolicyDecisionV1:
-    del self_state  # reserved for future context-aware rules
     rule = kind_rule(policy, candidate.proposal_kind)
     allowed_scope = rule.allowed_scope if rule else "none"
     autonomy_tier = rule.max_autonomy_tier if rule else policy.autonomy.default_tier
@@ -96,7 +93,7 @@ def evaluate_proposal_candidate(
     evidence_refs.extend(
         [
             f"proposal_frame:{proposal_frame.frame_id}",
-            f"self_state:{proposal_frame.source_self_state_id}",
+            f"field:{proposal_frame.source_field_tick_id}",
         ]
     )
 

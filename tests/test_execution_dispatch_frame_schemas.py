@@ -47,7 +47,7 @@ def test_execution_dispatch_frame_validates() -> None:
         generated_at=NOW,
         source_policy_frame_id="policy.frame:pf1:substrate_policy.v1",
         source_proposal_frame_id="proposal.frame:pf1:proposal_policy.v1",
-        source_self_state_id="self.state:pf1",
+        source_field_tick_id="field.tick:pf1",
         candidates=[candidate],
         dispatch_mode="dry_run",
         dispatch_attempted=False,
@@ -96,7 +96,7 @@ def test_roundtrip_json() -> None:
         generated_at=NOW,
         source_policy_frame_id="policy.frame:pf1:substrate_policy.v1",
         source_proposal_frame_id="proposal.frame:pf1:proposal_policy.v1",
-        source_self_state_id="self.state:pf1",
+        source_field_tick_id="field.tick:pf1",
         dispatch_mode="dry_run",
     )
     restored = ExecutionDispatchFrameV1.model_validate(frame.model_dump(mode="json"))

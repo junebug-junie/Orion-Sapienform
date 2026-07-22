@@ -37,7 +37,7 @@ def _sample_dispatch_frame() -> dict:
         "generated_at": "2026-05-24T12:00:00+00:00",
         "source_policy_frame_id": "policy.frame:pf1:substrate_policy.v1",
         "source_proposal_frame_id": "proposal.frame:pf1:proposal_policy.v1",
-        "source_self_state_id": "self.state:pf1",
+        "source_field_tick_id": "field.tick:pf1",
         "execution_dispatch_policy_id": "execution_dispatch_policy.v1",
         "dispatch_mode": "dry_run",
         "candidates": [],

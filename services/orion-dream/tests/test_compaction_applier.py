@@ -78,7 +78,7 @@ def _approval(delta_id="d-1", *, execution_allowed=True, decision="approved_for_
         frame_id="pf-1",
         generated_at=NOW,
         source_proposal_frame_id="prop-frame-1",
-        source_self_state_id="ss-1",
+        source_field_tick_id="field.tick:1",
         overall_risk=0.2,
         execution_allowed=execution_allowed,
         approved_decisions=[
@@ -190,7 +190,7 @@ def test_approval_does_not_leak_across_deltas_sharing_a_request():
     # Frame approves ONLY delta A (proposal_id + evidence ref name A / r1).
     frame = PolicyDecisionFrameV1(
         frame_id="pf", generated_at=NOW, source_proposal_frame_id="pfr",
-        source_self_state_id="ss", overall_risk=0.2, execution_allowed=True,
+        source_field_tick_id="field.tick:ss", overall_risk=0.2, execution_allowed=True,
         approved_decisions=[
             PolicyDecisionV1(
                 decision_id="d", proposal_id="dA", decision="approved_for_execution",

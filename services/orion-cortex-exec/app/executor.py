@@ -88,8 +88,6 @@ from .trace_cache import get_trace_cache
 from .spark_narrative import (
     spark_embodiment_hint,
     spark_embodiment_narrative,
-    spark_phi_hint,
-    spark_phi_narrative,
 )
 from .chat_stance import (
     build_chat_stance_debug_payload,
@@ -183,7 +181,6 @@ _SYSTEM_TELEMETRY_KEYS = {
 _METACOG_DRAFT_CTX_LEN_KEYS: tuple[str, ...] = (
     "context_summary",
     "spark_state_json",
-    "spark_phi_narrative",
     "spark_embodiment_narrative",
     "turn_effect_json",
     "recent_turn_effect_alerts_json",
@@ -1538,8 +1535,6 @@ def _render_prompt(template_str: str, ctx: Dict[str, Any]) -> str:
         "trigger": {"trigger_kind": "unknown", "reason": "unknown", "pressure": 0.0, "zen_state": "unknown"},
         "context_summary": "Context missing.",
         "spark_state_json": "{}",
-        "spark_phi_narrative": "",
-        "phi_hint": None,
         "spark_embodiment_narrative": "",
         "embodiment_hint": None,
     }
@@ -3948,9 +3943,6 @@ async def call_step_services(
 
                             if spark_snap:
                                 # Provide prompt-ready vars
-                                phi_hint = spark_phi_hint(spark_snap)
-                                ctx["phi_hint"] = phi_hint
-                                ctx["spark_phi_narrative"] = spark_phi_narrative(spark_snap)
                                 ctx["embodiment_hint"] = spark_embodiment_hint(spark_snap)
                                 ctx["spark_embodiment_narrative"] = spark_embodiment_narrative(spark_snap)
                                 ctx["spark_state_json"] = spark_snap.model_dump_json()
@@ -3967,13 +3959,7 @@ async def call_step_services(
                                     else "null"
                                 )
 
-                                spark_line = (
-                                    f"φ={phi_hint.get('valence_band','?')}-{phi_hint.get('valence_dir','?')}, "
-                                    f"energy={phi_hint.get('energy_band','?')}, "
-                                    f"clarity={phi_hint.get('coherence_band','?')}, "
-                                    f"overload={phi_hint.get('novelty_band','?')} "
-                                    f"(seq={spark_snap.seq}, ts={spark_snap.snapshot_ts})"
-                                )
+                                spark_line = f"snapshot available (seq={spark_snap.seq}, ts={spark_snap.snapshot_ts})"
                         else:
                             spark_line = f"stale/missing (status={state_res.status})"
                 except Exception as e:

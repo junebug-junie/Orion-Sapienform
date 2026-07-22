@@ -12,7 +12,6 @@ from sqlalchemy.engine import Engine
 from orion.schemas.field_attention_frame import FieldAttentionFrameV1
 from orion.schemas.field_state import FieldStateV1
 from orion.schemas.proposal_frame import ProposalFrameV1
-from orion.schemas.self_state import SelfStateV1
 
 logger = logging.getLogger("orion.proposal_runtime.store")
 
@@ -26,13 +25,16 @@ class ProposalRuntimeStore:
             json_deserializer=json.loads,
         )
 
-    def load_latest_self_state(self) -> SelfStateV1 | None:
+    def load_latest_field(self) -> FieldStateV1 | None:
+        """2026-07-22 (SelfStateV1 burn): replaces load_latest_self_state() as
+        the poll-loop's trigger source. FieldStateV1 was always the real
+        upstream tick; self_state was a lossy pass-through hop."""
         with self._engine.connect() as conn:
             row = (
                 conn.execute(
                     text(
                         """
-                        SELECT self_state_json FROM substrate_self_state
+                        SELECT field_json FROM substrate_field_state
                         ORDER BY generated_at DESC
                         LIMIT 1
                         """
@@ -43,18 +45,45 @@ class ProposalRuntimeStore:
             )
         if not row:
             return None
-        payload = row["self_state_json"]
+        payload = row["field_json"]
         if isinstance(payload, str):
             payload = json.loads(payload)
         try:
-            return SelfStateV1.model_validate(payload)
+            return FieldStateV1.model_validate(payload)
         except ValidationError:
             # Looked up as "latest", not a fixed id, so this can't stall a
             # FIFO queue the way policy/execution-dispatch-runtime's fixed-id
             # lookups could -- but still degrade instead of crash-looping if
             # the very latest row is somehow schema-incompatible.
-            logger.warning("self_state_incompatible_schema", exc_info=True)
+            logger.warning("field_state_incompatible_schema", exc_info=True)
             return None
+
+    def load_attention_frame_for_field_tick(self, field_tick_id: str) -> FieldAttentionFrameV1 | None:
+        """2026-07-22 (SelfStateV1 burn): looks up by source_field_tick_id
+        directly rather than by a self-state-provided frame_id -- attention
+        frames were always keyed to a field tick underneath."""
+        with self._engine.connect() as conn:
+            row = (
+                conn.execute(
+                    text(
+                        """
+                        SELECT frame_json FROM substrate_attention_frames
+                        WHERE (frame_json ->> 'source_field_tick_id') = :field_tick_id
+                        ORDER BY generated_at DESC
+                        LIMIT 1
+                        """
+                    ),
+                    {"field_tick_id": field_tick_id},
+                )
+                .mappings()
+                .first()
+            )
+        if not row:
+            return None
+        payload = row["frame_json"]
+        if isinstance(payload, str):
+            payload = json.loads(payload)
+        return FieldAttentionFrameV1.model_validate(payload)
 
     def load_recent_reverie_thought(self, *, max_age_sec: float = 300.0):
         """Latest fresh non-hollow spontaneous thought, or None (Phase B).
@@ -122,30 +151,6 @@ class ProposalRuntimeStore:
             payload = json.loads(payload)
         return FieldAttentionFrameV1.model_validate(payload)
 
-    def load_field_for_tick(self, tick_id: str) -> FieldStateV1 | None:
-        with self._engine.connect() as conn:
-            row = (
-                conn.execute(
-                    text(
-                        """
-                        SELECT field_json FROM substrate_field_state
-                        WHERE tick_id = :tick_id
-                        ORDER BY generated_at DESC
-                        LIMIT 1
-                        """
-                    ),
-                    {"tick_id": tick_id},
-                )
-                .mappings()
-                .first()
-            )
-        if not row:
-            return None
-        payload = row["field_json"]
-        if isinstance(payload, str):
-            payload = json.loads(payload)
-        return FieldStateV1.model_validate(payload)
-
     def load_latest_proposal_frame(self) -> ProposalFrameV1 | None:
         with self._engine.connect() as conn:
             row = (
@@ -168,19 +173,22 @@ class ProposalRuntimeStore:
             payload = json.loads(payload)
         return ProposalFrameV1.model_validate(payload)
 
-    def load_proposal_frame_for_self_state(self, self_state_id: str) -> ProposalFrameV1 | None:
+    def load_proposal_frame_for_field_tick(self, field_tick_id: str) -> ProposalFrameV1 | None:
+        """2026-07-22 (SelfStateV1 burn): replaces load_proposal_frame_for_self_state.
+        Dedup key is now the field tick directly, via the already-existing
+        source_field_tick_id column -- no self-state hop needed."""
         with self._engine.connect() as conn:
             row = (
                 conn.execute(
                     text(
                         """
                         SELECT proposal_frame_json FROM substrate_proposal_frames
-                        WHERE source_self_state_id = :self_state_id
+                        WHERE source_field_tick_id = :field_tick_id
                         ORDER BY generated_at DESC
                         LIMIT 1
                         """
                     ),
-                    {"self_state_id": self_state_id},
+                    {"field_tick_id": field_tick_id},
                 )
                 .mappings()
                 .first()
@@ -200,27 +208,27 @@ class ProposalRuntimeStore:
                     """
                     INSERT INTO substrate_proposal_frames (
                         frame_id,
-                        source_self_state_id,
                         source_attention_frame_id,
                         source_field_tick_id,
+                        source_field_generated_at,
                         generated_at,
                         policy_id,
                         proposal_frame_json,
                         created_at
                     ) VALUES (
                         :frame_id,
-                        :source_self_state_id,
                         :source_attention_frame_id,
                         :source_field_tick_id,
+                        :source_field_generated_at,
                         :generated_at,
                         :policy_id,
                         :proposal_frame_json,
                         :created_at
                     )
                     ON CONFLICT (frame_id) DO UPDATE SET
-                        source_self_state_id = EXCLUDED.source_self_state_id,
                         source_attention_frame_id = EXCLUDED.source_attention_frame_id,
                         source_field_tick_id = EXCLUDED.source_field_tick_id,
+                        source_field_generated_at = EXCLUDED.source_field_generated_at,
                         generated_at = EXCLUDED.generated_at,
                         policy_id = EXCLUDED.policy_id,
                         proposal_frame_json = EXCLUDED.proposal_frame_json
@@ -228,9 +236,9 @@ class ProposalRuntimeStore:
                 ),
                 {
                     "frame_id": frame.frame_id,
-                    "source_self_state_id": frame.source_self_state_id,
                     "source_attention_frame_id": frame.source_attention_frame_id,
                     "source_field_tick_id": frame.source_field_tick_id,
+                    "source_field_generated_at": frame.source_field_generated_at,
                     "generated_at": frame.generated_at,
                     "policy_id": frame.proposal_policy_id,
                     "proposal_frame_json": Json(frame.model_dump(mode="json")),

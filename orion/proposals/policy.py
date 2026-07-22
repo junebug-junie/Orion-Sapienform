@@ -31,7 +31,10 @@ class ProposalTemplateV1(BaseModel):
     reversibility: float = 1.0
     dimensions: dict[str, float] = Field(default_factory=dict)
     # Optional attention-binding path. Only one recognized literal in v1:
-    # "self_state.dominant_attention_targets[0]" (see orion/proposals/builder.py).
+    # "attention.dominant_targets[0]" (see orion/proposals/builder.py's
+    # ATTENTION_FIRST_TARGET_BINDING; renamed 2026-07-22 from
+    # "self_state.dominant_attention_targets[0]" -- attention targets were
+    # always FieldAttentionFrameV1 underneath, self_state was a pass-through).
     # No general binding-expression DSL -- matched exactly, nothing fancier.
     target_binding: str | None = None
 

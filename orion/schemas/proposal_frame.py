@@ -85,11 +85,14 @@ class ProposalFrameV1(BaseModel):
     frame_id: str
     generated_at: datetime
 
-    source_self_state_id: str
-    source_self_state_generated_at: datetime
+    # source_self_state_id/source_self_state_generated_at removed 2026-07-22
+    # (SelfStateV1 burn) -- redundant with source_field_tick_id/
+    # source_attention_frame_id below, which already independently identified
+    # the same tick without the self-state hop.
+    source_field_tick_id: str
+    source_field_generated_at: datetime
 
     source_attention_frame_id: str
-    source_field_tick_id: str
 
     proposal_policy_id: str = "proposal_policy.v1"
 

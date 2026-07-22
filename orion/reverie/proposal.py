@@ -33,7 +33,7 @@ def _clamp01(value: float) -> float:
 def spontaneous_thought_to_candidate(
     thought: "SpontaneousThoughtV1",
     *,
-    self_state_id: str,
+    fallback_target_id: str,
     min_salience: float = DEFAULT_MIN_PROPOSE_SALIENCE,
     autoaction_enabled: bool = False,
 ) -> ProposalCandidateV1 | None:
@@ -58,7 +58,7 @@ def spontaneous_thought_to_candidate(
         return None
 
     target_id = (
-        (thought.coalition.selected_open_loop_id if thought.coalition else None) or self_state_id
+        (thought.coalition.selected_open_loop_id if thought.coalition else None) or fallback_target_id
     )
     evidence_refs = list(thought.evidence_refs)[:_MAX_EVIDENCE_REFS]
 

@@ -1,15 +1,17 @@
 from __future__ import annotations
 
 from orion.proposals.policy import ProposalPolicyV1, ProposalTemplateV1
-from orion.schemas.self_state import SelfStateV1
 
+# 2026-07-22, SelfStateV1 burn: field_intensity and uncertainty removed. Both
+# were composite, hand-tuned SelfStateV1 dimensions with no principled
+# non-hand-tuned replacement (see orion/field/pressure.py's module docstring).
+# The 4 remaining categories are real, direct channel-merge reads, unaffected
+# by the burn.
 PRESSURE_DIMENSIONS = frozenset({
     "execution_pressure",
     "resource_pressure",
     "reasoning_pressure",
     "reliability_pressure",
-    "field_intensity",
-    "uncertainty",
 })
 
 
@@ -17,23 +19,25 @@ def clamp01(x: float) -> float:
     return max(0.0, min(1.0, float(x)))
 
 
-def dimension_score(self_state: SelfStateV1, dimension_id: str) -> float:
-    dim = self_state.dimensions.get(dimension_id)
-    if dim is None:
-        return 0.0
-    return clamp01(dim.score)
+def dimension_score(field_pressures: dict[str, float], dimension_id: str) -> float:
+    return clamp01(field_pressures.get(dimension_id, 0.0))
 
 
-def dimension_confidence(self_state: SelfStateV1, dimension_id: str) -> float:
-    dim = self_state.dimensions.get(dimension_id)
-    if dim is None:
-        return self_state.overall_confidence
-    return clamp01(dim.confidence)
+def dimension_confidence(field_pressures: dict[str, float], dimension_id: str) -> float:
+    """1.0 if this tick produced a real reading for this category, 0.0 if not.
+
+    No principled per-dimension confidence formula survives the SelfStateV1
+    burn (2026-07-22) -- self_state's old channel_dimension_confidence()
+    (count + agreement, itself touched by the reverted equal-weighting
+    reform) was not moved forward. This is an honest simplification: a
+    binary presence flag, not a fabricated continuous score.
+    """
+    return 1.0 if dimension_id in field_pressures else 0.0
 
 
 def template_match_score(
     *,
-    self_state: SelfStateV1,
+    field_pressures: dict[str, float],
     template: ProposalTemplateV1,
     policy: ProposalPolicyV1 | None = None,
 ) -> tuple[float, dict[str, float]]:
@@ -43,7 +47,7 @@ def template_match_score(
         if policy is not None:
             policy_weight = float(policy.dimension_weights.get(dim_id, 1.0))
         contributions[dim_id] = clamp01(
-            dimension_score(self_state, dim_id) * float(weight) * abs(policy_weight)
+            dimension_score(field_pressures, dim_id) * float(weight) * abs(policy_weight)
         )
     match = max(contributions.values()) if contributions else 0.0
     return clamp01(match), contributions
@@ -51,30 +55,32 @@ def template_match_score(
 
 def proposal_urgency(
     *,
-    self_state: SelfStateV1,
+    field_pressures: dict[str, float],
     template: ProposalTemplateV1,
 ) -> float:
     scores = [
-        dimension_score(self_state, dim_id)
+        dimension_score(field_pressures, dim_id)
         for dim_id in template.dimensions
         if dim_id in PRESSURE_DIMENSIONS or dim_id.endswith("_pressure")
     ]
     if not scores:
-        scores = [dimension_score(self_state, d) for d in PRESSURE_DIMENSIONS]
-    return clamp01(max(scores) if scores else self_state.overall_intensity)
+        scores = [dimension_score(field_pressures, d) for d in PRESSURE_DIMENSIONS]
+    # No SelfStateV1.overall_intensity fallback survives the burn -- honest
+    # 0.0 ("no pressure data this tick") rather than a fabricated rollup.
+    return clamp01(max(scores) if scores else 0.0)
 
 
 def proposal_confidence(
     *,
-    self_state: SelfStateV1,
+    field_pressures: dict[str, float],
     template: ProposalTemplateV1,
 ) -> float:
     confs = [
-        dimension_confidence(self_state, dim_id)
+        dimension_confidence(field_pressures, dim_id)
         for dim_id in template.dimensions
     ]
     if not confs:
-        return clamp01(self_state.overall_confidence)
+        return 0.0
     return clamp01(sum(confs) / len(confs))
 
 
@@ -93,7 +99,7 @@ def proposal_priority(
 def proposal_risk(
     *,
     base_risk: float,
-    self_state: SelfStateV1,
+    field_pressures: dict[str, float],
     template: ProposalTemplateV1,
 ) -> float:
     risk = float(base_risk)
@@ -101,10 +107,10 @@ def proposal_risk(
         risk += 0.10
     if template.required_policy_gate not in ("none", "read_only"):
         risk += 0.05
-    if dimension_score(self_state, "reliability_pressure") >= 0.5:
+    if dimension_score(field_pressures, "reliability_pressure") >= 0.5:
         risk += 0.10
-    if dimension_score(self_state, "uncertainty") >= 0.5:
-        risk += 0.08
+    # The old "uncertainty" dimension risk bump is gone, not silently reading
+    # 0.0 forever (2026-07-22 burn -- see PRESSURE_DIMENSIONS note above).
     if template.kind in ("observe", "inspect", "summarize") and template.required_policy_gate == "read_only":
         risk = min(risk, 0.15)
     return clamp01(risk)

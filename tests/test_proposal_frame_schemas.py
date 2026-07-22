@@ -31,10 +31,9 @@ def test_proposal_frame_validates() -> None:
     frame = ProposalFrameV1(
         frame_id="proposal.frame:state1:proposal_policy.v1",
         generated_at=NOW,
-        source_self_state_id="self.state:1",
-        source_self_state_generated_at=NOW,
-        source_attention_frame_id="frame:1",
         source_field_tick_id="tick:1",
+        source_field_generated_at=NOW,
+        source_attention_frame_id="frame:1",
         overall_action_pressure=0.4,
         overall_risk=0.1,
     )
@@ -82,10 +81,9 @@ def test_roundtrip_json() -> None:
     frame = ProposalFrameV1(
         frame_id="proposal.frame:state1:proposal_policy.v1",
         generated_at=NOW,
-        source_self_state_id="self.state:1",
-        source_self_state_generated_at=NOW,
-        source_attention_frame_id="frame:1",
         source_field_tick_id="tick:1",
+        source_field_generated_at=NOW,
+        source_attention_frame_id="frame:1",
         overall_action_pressure=0.4,
         overall_risk=0.1,
         candidates=[

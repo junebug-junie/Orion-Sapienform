@@ -108,7 +108,6 @@ def _draft_ctx() -> dict:
         "turn_effect_explanations_json": "{}",
         "biometrics_json": "{}",
         "metacog_biometrics_cue": '{"status":"fresh","constraint":"NONE"}',
-        "spark_phi_narrative": "",
     }
 
 

@@ -60,7 +60,6 @@ def _draft_ctx(*, spark_blob: str = "{}") -> dict:
         "turn_effect_explanations_json": "{}",
         "biometrics_json": "{}",
         "metacog_biometrics_cue": '{"status":"fresh","constraint":"NONE"}',
-        "spark_phi_narrative": "",
     }
 
 
@@ -322,7 +321,6 @@ def test_metacog_draft_prompt_live_anatomy_fits_worker_budget():
     ctx = _draft_ctx()
     ctx["context_summary"] = "T" * 1183
     ctx["spark_state_json"] = "S" * 634
-    ctx["spark_phi_narrative"] = "P" * 550
     ctx["turn_effect_json"] = "E" * 60
     ctx["recent_turn_effect_alerts_json"] = "[]"
     ctx["turn_effect_policy_json"] = "{}"
@@ -353,7 +351,7 @@ def test_metacog_draft_section_keys_cover_template_fields():
     keys = executor_module._METACOG_DRAFT_CTX_LEN_KEYS
     assert "biometrics_json" not in keys
     assert "metacog_biometrics_cue" in keys
-    assert "spark_phi_narrative" in keys
+    assert "spark_phi_narrative" not in keys
 
     template = _load_template("log_orion_metacognition_draft.j2")
     for key in keys:
@@ -365,7 +363,7 @@ def test_metacog_enrich_section_keys_cover_template_fields():
     keys = executor_module._METACOG_ENRICH_CTX_LEN_KEYS
     assert "biometrics_json" not in keys
     assert "metacog_biometrics_cue" in keys
-    assert "spark_phi_narrative" in keys
+    assert "spark_phi_narrative" not in keys
 
     template = _load_template("log_orion_metacognition_enrich.j2")
     for key in keys:

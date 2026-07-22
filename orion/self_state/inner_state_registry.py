@@ -192,12 +192,16 @@ REGISTRY: tuple[InnerStateSignal, ...] = (
         producer_service="orion-spark-introspector",
         cadence=Cadence.PER_TICK,
         composition_status=CompositionStatus.COMPOSED,
-        cognition_consumers=(
-            "services.orion-cortex-exec.app.spark_narrative:spark_phi_narrative",
-            "services.orion-cortex-exec.app.spark_narrative:spark_phi_hint",
-        ),
+        cognition_consumers=(),
         notes=(
-            "Not a schema -- a formula. Tracked here because it reaches cognition. "
+            "2026-07-22: spark_phi_hint/spark_phi_narrative deleted outright "
+            "(Juniper: 'its bullshit and must die') -- the log_orion_metacognition "
+            "draft/enrich prompts no longer render a phi-band interpretation section "
+            "at all. This formula's output (_get_phi_stats()) still exists and still "
+            "feeds the Hub EKG websocket panel (a live debug visualization, not "
+            "killed), so this signal is NOT dead -- it just lost its only cognition "
+            "(prompt-facing) consumer. No cognition_consumers remain. "
+            "Not a schema -- a formula. Historical trace below, kept for context. "
             "Was SHADOW until 2026-07-13 on the claim that 'no trained phi-encoder "
             "latent dimension correlates with any hedonic-adjacent felt dimension "
             "per the active encoder's probes.json'. That claim was checked against "
@@ -239,10 +243,12 @@ REGISTRY: tuple[InnerStateSignal, ...] = (
         cadence=Cadence.OFFLINE_TRAINED,
         composition_status=CompositionStatus.COMPOSED,
         cognition_consumers=(
-            "services.orion-cortex-exec.app.spark_narrative:spark_phi_narrative",
             "services.orion-cortex-exec.app.spark_narrative:spark_embodiment_narrative",
         ),
         notes=(
+            "2026-07-22: spark_phi_narrative deleted (see phi_heuristic.valence's "
+            "note above) -- spark_embodiment_narrative is the only surviving "
+            "cognition consumer of this signal's Phase 3 threading. "
             "Golden phi. Trained MLP autoencoder over InnerStateFeaturesV1. "
             "Fixed + deployed 2026-07-12 (654a9803, 79a6d966) -- was dark "
             "(SQL sink + debug WebSocket EKG panel only) for weeks before that. "

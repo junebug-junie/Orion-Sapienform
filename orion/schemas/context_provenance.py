@@ -99,8 +99,6 @@ CONTEXT_PROVENANCE_REGISTRY: dict[str, ContextKeyProvenance] = {
         _entry("pad_stats_json", "live_runtime_projection", "JSON-rendered PAD statistics."),
         _entry("biometrics", "live_runtime_projection", "Live biometrics substrate reading."),
         _entry("biometrics_json", "live_runtime_projection", "JSON-rendered biometrics reading."),
-        _entry("phi_hint", "live_runtime_projection", "Live phi/tissue-viz hint."),
-        _entry("spark_phi_narrative", "live_runtime_projection", "Narrative rendering of live spark/phi state."),
         _entry("embodiment_hint", "live_runtime_projection", "Live embodiment hint."),
         _entry("spark_embodiment_narrative", "live_runtime_projection", "Narrative rendering of live embodiment state."),
         _entry("spark_state_json", "live_runtime_projection", "JSON-rendered spark engine state."),

@@ -249,11 +249,18 @@ async def _annotate_via_llm(
         return None
 
 
-def _card_from_annotation(annotation: CardAnnotationV1) -> tuple[MemoryCardCreateV1, str]:
+def _card_from_annotation(
+    annotation: CardAnnotationV1, *, session_id: Optional[str] = None
+) -> tuple[MemoryCardCreateV1, str]:
     """Build the create payload from an LLM annotation. `sensitivity` is
     hardcoded here -- never read from `annotation`, which has no such field
     at all -- and `visibility_scope` is derived from it deterministically.
-    See CardAnnotationV1's and derive_visibility_scope()'s docstrings."""
+    See CardAnnotationV1's and derive_visibility_scope()'s docstrings.
+
+    `session_id` is stashed in subschema (Stage 2 phase 1, 2026-07-22) so a
+    future promotion check can count this card's original session as one
+    of the distinct sessions confirming it -- see
+    orion/core/storage/memory_cards.py::count_distinct_reconfirmation_sessions."""
     sensitivity = "private"
     types = list(annotation.types) or ["fact"]
     fp_candidate = CandidateCard(
@@ -262,7 +269,11 @@ def _card_from_annotation(annotation: CardAnnotationV1) -> tuple[MemoryCardCreat
         anchor_class=annotation.anchor_class,
     )
     fp = fingerprint_from_candidate(fp_candidate)
-    subschema = {"auto_extractor_fingerprint": fp, "auto_extractor_mode": "llm_annotation"}
+    subschema = {
+        "auto_extractor_fingerprint": fp,
+        "auto_extractor_mode": "llm_annotation",
+        "auto_extractor_session_id": session_id,
+    }
     create = MemoryCardCreateV1(
         types=types,
         anchor_class=annotation.anchor_class,
@@ -282,6 +293,20 @@ def _card_from_annotation(annotation: CardAnnotationV1) -> tuple[MemoryCardCreat
         subschema=subschema,
     )
     return create, fp
+
+
+async def _record_reconfirmation_safe(
+    pool: Any, *, card_id: Any, session_id: Optional[str], fp: str
+) -> None:
+    """Wraps mc_dal.record_reconfirmation in the same fail-open pattern as
+    every other write in this module -- a DB error recording the
+    reconfirmation must never propagate and block the turn from finishing
+    processing."""
+    try:
+        await mc_dal.record_reconfirmation(pool, card_id=card_id, session_id=session_id, actor="auto_extractor")
+        logger.debug("memory_extractor_reconfirmation_recorded fp=%s card_id=%s", fp[:16], card_id)
+    except Exception as exc:
+        logger.warning("memory_extractor_reconfirmation_record_failed fp=%s err=%s", fp[:16], exc)
 
 
 async def handle_memory_history_turn(env: BaseEnvelope) -> None:
@@ -311,9 +336,12 @@ async def handle_memory_history_turn(env: BaseEnvelope) -> None:
         if not annotation.worth_saving:
             logger.debug("memory_extractor_llm_gate_worth_saving_false corr=%s", correlation_id)
             return
-        create, fp = _card_from_annotation(annotation)
-        if await mc_dal.card_exists_by_fingerprint(pool, fp):
-            logger.debug("memory_extractor_skip_duplicate fp=%s", fp[:16])
+        create, fp = _card_from_annotation(annotation, session_id=turn.session_id)
+        existing_card_id = await mc_dal.fetch_card_id_by_fingerprint(pool, fp)
+        if existing_card_id is not None:
+            await _record_reconfirmation_safe(
+                pool, card_id=existing_card_id, session_id=turn.session_id, fp=fp
+            )
             return
         try:
             await mc_dal.insert_card(pool, create, actor="auto_extractor", op="create")
@@ -332,10 +360,13 @@ async def handle_memory_history_turn(env: BaseEnvelope) -> None:
     candidates = extract_candidates(turn.prompt, speaker="user")
     for cand in candidates:
         fp = fingerprint_from_candidate(cand)
-        if await mc_dal.card_exists_by_fingerprint(pool, fp):
-            logger.debug("memory_extractor_skip_duplicate fp=%s", fp[:16])
+        existing_card_id = await mc_dal.fetch_card_id_by_fingerprint(pool, fp)
+        if existing_card_id is not None:
+            await _record_reconfirmation_safe(
+                pool, card_id=existing_card_id, session_id=turn.session_id, fp=fp
+            )
             continue
-        subschema = {"auto_extractor_fingerprint": fp}
+        subschema = {"auto_extractor_fingerprint": fp, "auto_extractor_session_id": turn.session_id}
         create = MemoryCardCreateV1(
             types=list(cand.types),
             anchor_class=cand.anchor_class,

@@ -131,9 +131,11 @@ def test_stage1_extracts_and_inserts(monkeypatch) -> None:
 
     insert_mock = AsyncMock()
     exists_mock = AsyncMock(return_value=False)
+    fetch_id_mock = AsyncMock(return_value=None)
     monkeypatch.setattr(mod, "_get_memory_pool", fake_pool)
     monkeypatch.setattr(mod.mc_dal, "insert_card", insert_mock)
     monkeypatch.setattr(mod.mc_dal, "card_exists_by_fingerprint", exists_mock)
+    monkeypatch.setattr(mod.mc_dal, "fetch_card_id_by_fingerprint", fetch_id_mock)
 
     asyncio.run(mod.handle_memory_history_turn(_turn_env(prompt="I live in Ogden, UT")))
 
@@ -165,13 +167,18 @@ def test_stage1_dedupes_via_fingerprint(monkeypatch) -> None:
 
     insert_mock = AsyncMock()
     exists_mock = AsyncMock(return_value=True)
+    fetch_id_mock = AsyncMock(return_value="44444444-4444-4444-4444-444444444444")
+    reconfirm_mock = AsyncMock()
     monkeypatch.setattr(mod, "_get_memory_pool", fake_pool)
     monkeypatch.setattr(mod.mc_dal, "insert_card", insert_mock)
     monkeypatch.setattr(mod.mc_dal, "card_exists_by_fingerprint", exists_mock)
+    monkeypatch.setattr(mod.mc_dal, "fetch_card_id_by_fingerprint", fetch_id_mock)
+    monkeypatch.setattr(mod.mc_dal, "record_reconfirmation", reconfirm_mock)
 
     asyncio.run(mod.handle_memory_history_turn(_turn_env(prompt="I live in Ogden, UT")))
 
     insert_mock.assert_not_called()
+    reconfirm_mock.assert_awaited_once()
 
 
 def test_stage1_noop_when_pool_unavailable(monkeypatch) -> None:
@@ -210,7 +217,16 @@ class _AnnotationSettings:
     orion_auto_extractor_llm_timeout_sec = 2.0
 
 
-def _wire_common(monkeypatch, mod, *, insert_mock=None, exists_mock=None, known_categories=None):
+def _wire_common(
+    monkeypatch,
+    mod,
+    *,
+    insert_mock=None,
+    exists_mock=None,
+    fetch_id_mock=None,
+    reconfirm_mock=None,
+    known_categories=None,
+):
     monkeypatch.setattr(mod, "_memory_pool", None)
     monkeypatch.setattr(mod, "_memory_pool_failed", False)
     monkeypatch.setattr(mod, "_annotation_bus", None)
@@ -224,6 +240,13 @@ def _wire_common(monkeypatch, mod, *, insert_mock=None, exists_mock=None, known_
     exists_mock = exists_mock or AsyncMock(return_value=False)
     monkeypatch.setattr(mod.mc_dal, "insert_card", insert_mock)
     monkeypatch.setattr(mod.mc_dal, "card_exists_by_fingerprint", exists_mock)
+    # Default: no existing card for this fingerprint (None), matching
+    # exists_mock's default False -- tests that care about the dedup/
+    # reconfirmation path override this explicitly.
+    fetch_id_mock = fetch_id_mock or AsyncMock(return_value=None)
+    reconfirm_mock = reconfirm_mock or AsyncMock()
+    monkeypatch.setattr(mod.mc_dal, "fetch_card_id_by_fingerprint", fetch_id_mock)
+    monkeypatch.setattr(mod.mc_dal, "record_reconfirmation", reconfirm_mock)
     # _annotate_via_llm does a local `from .topic_taxonomy_client import
     # fetch_active_topic_labels` inside its own body (not a module-level
     # import on `mod`), so patching app.topic_taxonomy_client's own
@@ -493,6 +516,98 @@ def test_annotation_prompt_path_resolution_finds_real_local_checkout_root(monkey
         "likely fell through to a different checkout's fallback path"
     )
     assert isinstance(resolved, Path)
+
+
+def test_dedup_hit_records_reconfirmation_instead_of_silent_skip(monkeypatch) -> None:
+    """Stage 2 phase 1 (2026-07-22): a fingerprint dedup-hit on the LLM
+    annotation path must record a reconfirmation (with the turn's real
+    session_id) instead of the old silent skip that discarded this
+    information entirely -- and must NOT create a duplicate card."""
+    import app.memory_extractor as mod
+
+    insert_mock, _ = _wire_common(monkeypatch, mod)
+    existing_card_id = "11111111-1111-1111-1111-111111111111"
+    fetch_id_mock = AsyncMock(return_value=existing_card_id)
+    reconfirm_mock = AsyncMock()
+    monkeypatch.setattr(mod.mc_dal, "fetch_card_id_by_fingerprint", fetch_id_mock)
+    monkeypatch.setattr(mod.mc_dal, "record_reconfirmation", reconfirm_mock)
+
+    fake_bus = _FakeBus(json.dumps(_VALID_ANNOTATION))
+    monkeypatch.setattr(mod, "_get_annotation_bus", lambda: fake_bus)
+
+    env = _turn_env(prompt="I live in Ogden, UT")
+    env.payload["session_id"] = "session-xyz"
+    asyncio.run(mod.handle_memory_history_turn(env))
+
+    insert_mock.assert_not_called()  # no duplicate card
+    reconfirm_mock.assert_awaited_once()
+    assert reconfirm_mock.await_args.kwargs["card_id"] == existing_card_id
+    assert reconfirm_mock.await_args.kwargs["session_id"] == "session-xyz"
+    assert reconfirm_mock.await_args.kwargs["actor"] == "auto_extractor"
+
+
+def test_dedup_hit_on_regex_fallback_path_also_records_reconfirmation(monkeypatch) -> None:
+    """Same guarantee on the regex-fallback path (LLM unavailable), not
+    just the LLM-annotation path -- both dedup sites must be covered."""
+    import app.memory_extractor as mod
+
+    insert_mock, _ = _wire_common(monkeypatch, mod)
+    existing_card_id = "22222222-2222-2222-2222-222222222222"
+    fetch_id_mock = AsyncMock(return_value=existing_card_id)
+    reconfirm_mock = AsyncMock()
+    monkeypatch.setattr(mod.mc_dal, "fetch_card_id_by_fingerprint", fetch_id_mock)
+    monkeypatch.setattr(mod.mc_dal, "record_reconfirmation", reconfirm_mock)
+
+    fake_bus = _FakeBus("", raise_on_rpc=RuntimeError("bus unavailable"))
+    monkeypatch.setattr(mod, "_get_annotation_bus", lambda: fake_bus)
+
+    env = _turn_env(prompt="I live in Ogden, UT")
+    env.payload["session_id"] = "session-regex"
+    asyncio.run(mod.handle_memory_history_turn(env))
+
+    insert_mock.assert_not_called()
+    reconfirm_mock.assert_awaited_once()
+    assert reconfirm_mock.await_args.kwargs["session_id"] == "session-regex"
+
+
+def test_reconfirmation_record_failure_does_not_crash_turn_handling(monkeypatch) -> None:
+    """Matches every other write in this module's fail-open contract -- a
+    DB error recording the reconfirmation must not propagate and abort
+    turn processing."""
+    import app.memory_extractor as mod
+
+    insert_mock, _ = _wire_common(monkeypatch, mod)
+    monkeypatch.setattr(
+        mod.mc_dal, "fetch_card_id_by_fingerprint", AsyncMock(return_value="33333333-3333-3333-3333-333333333333")
+    )
+    monkeypatch.setattr(mod.mc_dal, "record_reconfirmation", AsyncMock(side_effect=RuntimeError("db down")))
+
+    fake_bus = _FakeBus(json.dumps(_VALID_ANNOTATION))
+    monkeypatch.setattr(mod, "_get_annotation_bus", lambda: fake_bus)
+
+    # Must not raise.
+    asyncio.run(mod.handle_memory_history_turn(_turn_env(prompt="I live in Ogden, UT")))
+    insert_mock.assert_not_called()
+
+
+def test_new_card_creation_stashes_session_id_in_subschema(monkeypatch) -> None:
+    """The card's own creation session must be recorded too (subschema.
+    auto_extractor_session_id), not just later reconfirmations -- otherwise
+    count_distinct_reconfirmation_sessions can never count a card's
+    original session as one of the distinct sessions confirming it."""
+    import app.memory_extractor as mod
+
+    insert_mock, _ = _wire_common(monkeypatch, mod)
+    fake_bus = _FakeBus(json.dumps(_VALID_ANNOTATION))
+    monkeypatch.setattr(mod, "_get_annotation_bus", lambda: fake_bus)
+
+    env = _turn_env(prompt="I live in Ogden, UT")
+    env.payload["session_id"] = "session-creation"
+    asyncio.run(mod.handle_memory_history_turn(env))
+
+    insert_mock.assert_awaited_once()
+    card_arg = insert_mock.await_args.args[1]
+    assert (card_arg.subschema or {}).get("auto_extractor_session_id") == "session-creation"
 
 
 def test_build_annotation_prompt_includes_known_categories_when_present() -> None:

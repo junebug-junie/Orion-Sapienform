@@ -57,6 +57,15 @@ HISTORY_OPS = Literal[
     "edge_add",
     "edge_remove",
     "reverse_auto_promotion",
+    # Stage 2 auto-promotion, phase 1 (2026-07-22 brainstorm): a fingerprint
+    # dedup-hit used to be silently skipped -- the fact that the same thing
+    # was said again was discarded information, not recorded anywhere, so
+    # there was zero data to ever tune a repetition-based promotion
+    # threshold against. This op records that reconfirmation instead.
+    # Promotion logic itself is deliberately NOT built yet -- get real
+    # reconfirmation data flowing first (see
+    # orion/core/storage/memory_cards.py::record_reconfirmation).
+    "reconfirmed",
 ]
 
 

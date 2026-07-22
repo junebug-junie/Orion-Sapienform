@@ -267,6 +267,86 @@ async def card_exists_by_fingerprint(pool: asyncpg.Pool, fingerprint: str) -> bo
         return row is not None
 
 
+async def fetch_card_id_by_fingerprint(pool: asyncpg.Pool, fingerprint: str) -> Optional[UUID]:
+    """Like card_exists_by_fingerprint, but returns the matching card_id
+    instead of a bool -- needed to attach a reconfirmation history row to
+    the specific card that was reconfirmed. Deliberately a separate
+    function rather than changing card_exists_by_fingerprint's return
+    type/behavior for its existing callers."""
+    fp = (fingerprint or "").strip()
+    if not fp:
+        return None
+    async with pool.acquire() as conn:
+        row = await conn.fetchrow(
+            """
+            SELECT card_id FROM memory_cards
+            WHERE subschema ->> 'auto_extractor_fingerprint' = $1
+            ORDER BY created_at DESC
+            LIMIT 1
+            """,
+            fp,
+        )
+        return row["card_id"] if row else None
+
+
+async def record_reconfirmation(
+    pool: asyncpg.Pool, *, card_id: UUID, session_id: Optional[str], actor: str
+) -> UUID:
+    """Stage 2 auto-promotion, phase 1 (2026-07-22 brainstorm): records that
+    a card's fact was independently extracted again, instead of the prior
+    silent skip-on-dedup-hit that discarded this information entirely.
+    Stores session_id in `after` (no dedicated column -- matches this
+    table's existing flexible before/after JSONB convention) specifically
+    so a future promotion-threshold check can require reconfirmation from
+    >=2 DISTINCT sessions, not just >=N raw occurrences -- guards against
+    counting an echo-loop (Orion repeating its own recent phrasing within
+    the same session) as independent confirmation. Deliberately does not
+    implement that threshold check itself yet -- this is the data-recording
+    primitive, not the promotion decision."""
+    async with pool.acquire() as conn:
+        history_id = await conn.fetchval(
+            """
+            INSERT INTO memory_card_history (card_id, edge_id, op, actor, "before", "after")
+            VALUES ($1, NULL, 'reconfirmed', $2, NULL, $3::jsonb)
+            RETURNING history_id
+            """,
+            card_id,
+            actor,
+            json.dumps({"session_id": session_id}),
+        )
+        return history_id
+
+
+async def count_distinct_reconfirmation_sessions(pool: asyncpg.Pool, card_id: UUID) -> int:
+    """Read-side primitive for a future promotion-threshold check (not
+    wired to any decision logic yet) -- counts distinct sessions across
+    this card's original creation (memory_cards.subschema.
+    auto_extractor_session_id, set at insert time -- see
+    memory_extractor.py's card creation) AND its 'reconfirmed' history rows
+    (memory_card_history.after.session_id), so a fact created in one real
+    session and reconfirmed in a different one counts as 2 distinct
+    sessions, not 1. A card created and reconfirmed only within the same
+    session correctly counts as 1 -- guards against counting an echo loop
+    (Orion repeating its own recent phrasing) as independent confirmation."""
+    async with pool.acquire() as conn:
+        row = await conn.fetchrow(
+            """
+            SELECT COUNT(DISTINCT session_id) AS n FROM (
+                SELECT subschema ->> 'auto_extractor_session_id' AS session_id
+                FROM memory_cards
+                WHERE card_id = $1
+                UNION
+                SELECT "after" ->> 'session_id' AS session_id
+                FROM memory_card_history
+                WHERE card_id = $1 AND op = 'reconfirmed'
+            ) sessions
+            WHERE session_id IS NOT NULL
+            """,
+            card_id,
+        )
+        return int(row["n"]) if row and row["n"] is not None else 0
+
+
 async def find_active_card_by_compactor_slot(pool: asyncpg.Pool, slot: str) -> Optional[MemoryCardV1]:
     key = (slot or "").strip()
     if not key:

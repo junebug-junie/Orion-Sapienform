@@ -46,11 +46,13 @@ class _FakeBus:
         self.codec = _FakeCodec(response_text)
         self._raise_on_rpc = raise_on_rpc
         self.connected = False
+        self.last_env = None
 
     async def connect(self) -> None:
         self.connected = True
 
-    async def rpc_request(self, *args, **kwargs):
+    async def rpc_request(self, channel, env, *args, **kwargs):
+        self.last_env = env
         if self._raise_on_rpc is not None:
             raise self._raise_on_rpc
         return {"data": b"fake"}
@@ -215,7 +217,16 @@ class _AnnotationSettings:
     orion_auto_extractor_llm_timeout_sec = 2.0
 
 
-def _wire_common(monkeypatch, mod, *, insert_mock=None, exists_mock=None, fetch_id_mock=None, reconfirm_mock=None):
+def _wire_common(
+    monkeypatch,
+    mod,
+    *,
+    insert_mock=None,
+    exists_mock=None,
+    fetch_id_mock=None,
+    reconfirm_mock=None,
+    known_categories=None,
+):
     monkeypatch.setattr(mod, "_memory_pool", None)
     monkeypatch.setattr(mod, "_memory_pool_failed", False)
     monkeypatch.setattr(mod, "_annotation_bus", None)
@@ -236,6 +247,17 @@ def _wire_common(monkeypatch, mod, *, insert_mock=None, exists_mock=None, fetch_
     reconfirm_mock = reconfirm_mock or AsyncMock()
     monkeypatch.setattr(mod.mc_dal, "fetch_card_id_by_fingerprint", fetch_id_mock)
     monkeypatch.setattr(mod.mc_dal, "record_reconfirmation", reconfirm_mock)
+    # _annotate_via_llm does a local `from .topic_taxonomy_client import
+    # fetch_active_topic_labels` inside its own body (not a module-level
+    # import on `mod`), so patching app.topic_taxonomy_client's own
+    # attribute is what the local import actually picks up -- this keeps
+    # every existing test isolated from real network/env behavior
+    # regardless of what TOPIC_FOUNDRY_BASE_URL happens to resolve to in
+    # the test process.
+    monkeypatch.setattr(
+        "app.topic_taxonomy_client.fetch_active_topic_labels",
+        AsyncMock(return_value=known_categories or []),
+    )
     return insert_mock, exists_mock
 
 
@@ -464,6 +486,35 @@ def test_annotation_prompt_path_resolution_survives_shallow_docker_layout(monkey
     # resolve_annotation_prompt_path itself never raises either, even when
     # no candidate exists on disk in the test sandbox.
     resolved = mod._resolve_annotation_prompt_path()
+
+
+def test_annotation_prompt_path_resolution_finds_real_local_checkout_root(monkeypatch) -> None:
+    """Live incident 2026-07-22: the 2026-07-21 fix's local-checkout
+    candidate used here.parents[2], which for the real local layout
+    (services/orion-cortex-orch/app/memory_extractor.py) resolves to
+    `services/`, not the repo root -- an off-by-one that never got caught
+    because every container run matches the Docker-shaped candidate first
+    (parents[1]) and never exercises this branch, and every prior test only
+    simulated the shallow Docker path, never the real local one. This
+    reproduces the actual local file location (not a simulated one) and
+    asserts the resolver finds the REAL prompt template on disk from it --
+    the strongest possible check, since a wrong-but-existing fallback path
+    (this bug's actual failure mode: silently resolving to a DIFFERENT
+    checkout's file) would make a mere "returns some path" assertion pass
+    while still being wrong."""
+    import app.memory_extractor as mod
+
+    real_file = Path(mod.__file__).resolve()
+    monkeypatch.setattr(mod, "__file__", str(real_file))
+    resolved = mod._resolve_annotation_prompt_path()
+    assert resolved.is_file()
+    # Must resolve under THIS checkout (the one real_file lives in), not
+    # fall through to a different one via the hardcoded absolute fallbacks.
+    repo_root = real_file.parents[3]
+    assert str(resolved).startswith(str(repo_root)), (
+        f"resolved {resolved} outside this checkout's repo root {repo_root} -- "
+        "likely fell through to a different checkout's fallback path"
+    )
     assert isinstance(resolved, Path)
 
 
@@ -557,3 +608,56 @@ def test_new_card_creation_stashes_session_id_in_subschema(monkeypatch) -> None:
     insert_mock.assert_awaited_once()
     card_arg = insert_mock.await_args.args[1]
     assert (card_arg.subschema or {}).get("auto_extractor_session_id") == "session-creation"
+
+
+def test_build_annotation_prompt_includes_known_categories_when_present() -> None:
+    import app.memory_extractor as mod
+
+    prompt = mod._build_annotation_prompt("some turn text", known_categories=["Family Storytime", "Cat Persona"])
+    assert "Family Storytime" in prompt
+    assert "Cat Persona" in prompt
+    assert "Known categories" in prompt
+
+
+def test_build_annotation_prompt_omits_known_categories_section_when_empty() -> None:
+    import app.memory_extractor as mod
+
+    prompt = mod._build_annotation_prompt("some turn text", known_categories=[])
+    assert "Known categories" not in prompt
+
+
+def test_annotate_via_llm_fetches_and_forwards_topic_labels(monkeypatch) -> None:
+    """End-to-end: handle_memory_history_turn's real LLM call must actually
+    include topic-foundry's labels in the prompt it sends, not just accept
+    the parameter in isolation."""
+    import app.memory_extractor as mod
+
+    insert_mock, _ = _wire_common(
+        monkeypatch, mod, known_categories=["Human-AI Conversations", "Family Storytime"]
+    )
+    fake_bus = _FakeBus(json.dumps(_VALID_ANNOTATION))
+    monkeypatch.setattr(mod, "_get_annotation_bus", lambda: fake_bus)
+
+    asyncio.run(mod.handle_memory_history_turn(_turn_env(prompt="I live in Ogden, UT")))
+
+    insert_mock.assert_awaited_once()
+    sent_prompt = fake_bus.last_env.payload["messages"][0]["content"]
+    assert "Human-AI Conversations" in sent_prompt
+    assert "Family Storytime" in sent_prompt
+
+
+def test_annotate_via_llm_proceeds_with_no_hint_when_topic_foundry_unavailable(monkeypatch) -> None:
+    """fetch_active_topic_labels failing/returning [] (topic-foundry down,
+    unconfigured, etc.) must not block card creation -- annotation proceeds
+    exactly as it did before this feature existed."""
+    import app.memory_extractor as mod
+
+    insert_mock, _ = _wire_common(monkeypatch, mod, known_categories=[])
+    fake_bus = _FakeBus(json.dumps(_VALID_ANNOTATION))
+    monkeypatch.setattr(mod, "_get_annotation_bus", lambda: fake_bus)
+
+    asyncio.run(mod.handle_memory_history_turn(_turn_env(prompt="I live in Ogden, UT")))
+
+    insert_mock.assert_awaited_once()
+    sent_prompt = fake_bus.last_env.payload["messages"][0]["content"]
+    assert "Known categories" not in sent_prompt

@@ -26,6 +26,7 @@ from app.services.conversation_overrides import OverrideRecord, apply_overrides,
 from app.services.embedding_client import VectorHostEmbeddingProvider
 from app.services.bus_events import get_bus_publisher
 from app.services.enrichment import run_enrichment_sync
+from app.services.llm_client import get_llm_client
 from app.services.types import BoundaryContext, RowBlock
 from app.services.windowing import build_segments_with_stats
 from app.settings import settings
@@ -151,6 +152,93 @@ def _resolve_keyword_stop_words(model_params: Dict[str, Any]) -> Any:
     return sorted(set(ENGLISH_STOP_WORDS).union(extras))
 
 
+_LLM_LABEL_BATCH_SIZE = 1
+
+
+def _llm_label_topic_batch(
+    keywords: Dict[str, List[str]], samples: Dict[str, List[str]]
+) -> Dict[str, str]:
+    topics_block = []
+    for topic_id, kws in keywords.items():
+        sample_texts = [s[:200] for s in samples.get(topic_id, [])[:2]]
+        topics_block.append(
+            f"Topic {topic_id}:\n  Keywords: {', '.join(kws)}\n"
+            + "\n".join(f"  Sample: {s}" for s in sample_texts)
+        )
+    prompt = (
+        "You are labeling topic clusters from a conversation corpus. For each topic below "
+        "(given by its top keywords and 1-2 sample excerpts), give a short (2-6 word) human-"
+        "readable label capturing what the topic is actually about. Return STRICT JSON: "
+        '{"labels": {"<topic_id>": "<label>", ...}} with one entry per topic listed below, '
+        "no extra keys, no commentary.\n\n" + "\n\n".join(topics_block)
+    )
+    try:
+        result = get_llm_client().request_json(
+            system_prompt="You are an analyst. Return STRICT JSON only.",
+            user_prompt=prompt,
+            temperature=0.2,
+            max_tokens=None,
+        )
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("LLM topic labeling batch failed; leaving labels null error=%s", exc)
+        return {}
+    if not isinstance(result, dict):
+        logger.warning(
+            "LLM topic labeling batch returned no parseable JSON (likely truncated) -- "
+            "leaving labels null for this batch, topic_count=%d",
+            len(keywords),
+        )
+        return {}
+    labels = result.get("labels")
+    if not isinstance(labels, dict):
+        return {}
+    return {str(k): str(v) for k, v in labels.items() if isinstance(v, str) and v.strip()}
+
+
+def _llm_label_topics(
+    keywords: Dict[str, List[str]], samples: Dict[str, List[str]]
+) -> Dict[str, str]:
+    """Reuses this service's existing per-segment LLM enrichment client
+    (app/services/llm_client.py::get_llm_client, already live for
+    _llm_enrich above -- same bus RPC, same JSON-extraction, same
+    fail-open-to-None contract) to generate real topic labels instead of
+    leaving topics_summary.json's `label` field permanently null.
+
+    Live incident 2026-07-21: a single batched call for all ~29 topics in a
+    real run always came back truncated -- confirmed via orion-llm-gateway's
+    own logs (`finish_reason=length`, `completion_tokens=146`) that the
+    "quick" bus route this client uses hard-caps completion length at ~146
+    tokens REGARDLESS of the max_tokens value in the request payload (tried
+    None, then 1740 -- same ~146-token cutoff both times). That's a route-
+    level constraint this client can't raise from the caller side, so the
+    real fix is batching small enough that each call's output comfortably
+    fits the route's actual budget, not requesting a bigger one that gets
+    ignored.
+
+    _LLM_LABEL_BATCH_SIZE=5 and =3 were both tried live and both still
+    truncated some batches -- response length varies per-topic (verbosity
+    is stochastic at temperature=0.2, not just a function of how many
+    topics are in the prompt), so a batch of "cheap" topics might fit at
+    size 5 while a batch of "verbose" topics doesn't even at size 3.
+    Landed on 1 (one topic per call): confirmed live, 29/29 topics labeled
+    with zero truncation, at the cost of more calls -- each is fast (~1-4s
+    observed), so ~29 sequential calls is still well under a minute total
+    and trades a small amount of latency for actually reliable output
+    instead of tuning a batch size against non-deterministic model
+    verbosity. Per-batch fail-open either way: one bad/truncated batch
+    doesn't blank out labels for topics in other batches."""
+    if not settings.topic_foundry_llm_enable or not keywords:
+        return {}
+    topic_ids = list(keywords.keys())
+    labels: Dict[str, str] = {}
+    for i in range(0, len(topic_ids), _LLM_LABEL_BATCH_SIZE):
+        batch_ids = topic_ids[i : i + _LLM_LABEL_BATCH_SIZE]
+        batch_keywords = {tid: keywords[tid] for tid in batch_ids}
+        batch_samples = {tid: samples.get(tid, []) for tid in batch_ids}
+        labels.update(_llm_label_topic_batch(batch_keywords, batch_samples))
+    return labels
+
+
 def _compute_topic_artifacts(
     segments: List[RowBlock],
     labels: np.ndarray,
@@ -187,6 +275,14 @@ def _compute_topic_artifacts(
             scores = np.asarray(topic_matrix.mean(axis=0)).ravel()
             top_idx = scores.argsort()[::-1][:max_keywords]
             keywords[str(topic_id)] = [vocab[i] for i in top_idx if scores[i] > 0]
+
+        samples = {str(tid): texts[:2] for tid, texts in topic_texts}
+        labels_by_topic = _llm_label_topics(keywords, samples)
+        if labels_by_topic:
+            for entry in summary:
+                label = labels_by_topic.get(str(entry["topic_id"]))
+                if label:
+                    entry["label"] = label
 
     return summary, keywords
 
@@ -432,7 +528,21 @@ _VECTORIZER_RESERVED_PARAM_KEYS = frozenset({"vectorizer_stop_words", "stop_word
 
 def _build_clusterer(spec: ModelSpec) -> HDBSCAN:
     _require_hdbscan()
-    params = {"min_cluster_size": spec.min_cluster_size, "metric": spec.metric}
+    # Live incident 2026-07-21: TOPIC_FOUNDRY_HDBSCAN_MIN_SAMPLES/
+    # _CLUSTER_SELECTION_METHOD settings existed but were only ever read by
+    # app/topic_engine.py -- dead code as far as this real /runs/train path
+    # is concerned (confirmed this session, same class of bug as the
+    # hardcoded keyword vectorizer and the hardcoded label=None response).
+    # Neither setting had ANY fallback here, unlike _build_reducer's UMAP
+    # params just below, which already do fall back to their
+    # TOPIC_FOUNDRY_UMAP_* settings. Mirrors that same pattern so these
+    # settings finally do something for the path that's actually live.
+    params = {
+        "min_cluster_size": spec.min_cluster_size,
+        "metric": spec.metric,
+        "min_samples": settings.topic_foundry_hdbscan_min_samples,
+        "cluster_selection_method": settings.topic_foundry_hdbscan_cluster_selection_method,
+    }
     reserved = _UMAP_RESERVED_PARAM_KEYS | _VECTORIZER_RESERVED_PARAM_KEYS
     params.update({k: v for k, v in spec.params.items() if k not in reserved})
     params.setdefault("prediction_data", True)

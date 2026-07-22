@@ -233,6 +233,41 @@ attention_self_model.py::reduce_attention_self_model()`'s optional `harness_clos
 narrative enrichment — see `docs/superpowers/specs/2026-07-18-prediction-error-attribution-
 wiring-design.md`.
 
+**Fixed: execution/route prediction-error was structurally always 0.0, not "quiet" (2026-07-22).**
+`execution_prediction_error()` and `route_prediction_error()` (`orion/substrate/prediction_error.py`)
+both diffed a `curr` run against the `prev` run sharing its exact `trace_id`, skipping any run with
+no match. Traced live 2026-07-21/22 while investigating why `node:substrate.execution`/
+`node:substrate.transport` looked "3.6-3.7d stale" for a since-in-flight attention-salience
+replacement design (branch `docs/attention-salience-tentative-plan`, not yet merged as of this
+fix — see that branch's `docs/superpowers/specs/2026-07-21-attention-salience-cathedral-
+replacement-tentative-plan.md` if it has landed by the time you're reading this) work:
+`substrate_reduction_receipts` itself was healthy and flowing continuously for every
+domain, but 26/26 sampled live `execution_trajectory_reducer` receipts were `operation: "create"`
+with a unique `target_id` each — real cortex-exec runs are single-shot (created once, never
+revised), so an exact `trace_id` match structurally never occurs. `execution_prediction_error()`
+therefore returned `0.0` in perpetuity regardless of real execution volume — an instrument defect,
+not a data-scarcity or dormancy signal. `route_prediction_error()` shares the identical trace_id-
+match design (same live one-shot-per-turn shape, sparser sample). **`transport_prediction_error()`
+did not have this bug** — `transport_bus_reducer` genuinely revises the same `bus_id` (`bus:athena`)
+in place every tick, so its trace_id-equivalent match works; its low variance is a real quiet bus
+(confirmed live: `bus_health`/`delivery_confidence` each took exactly 1 distinct value across the
+last 500 live receipts checked), not an instrument bug.
+
+Fix: when no exact `trace_id` match exists, both functions now fall back to diffing against
+`prev`'s most-recently-updated run (by `last_updated_at`) instead of contributing nothing — the
+best available "what did we expect" reference, equivalent to comparing this tick's freshest
+observation against last tick's freshest one. A run that genuinely does get revised in place still
+prefers its own exact match (regression-tested — see `_prefers_exact_trace_id_match_over_fallback`
+in `orion/substrate/tests/test_prediction_error.py`). This does not change `biometrics_prediction_
+error()` or `chat_prediction_error()`, which key off persistent node/turn identities that already
+recur across polls in real traffic.
+
+Implication for any future replay/precision work reading these instruments' history (e.g. the
+attention-salience-cathedral candidates above): execution/route history *before* this fix landed
+is contaminated with false zeros from the unmatched-trace_id bug, not real "no surprise" ticks —
+exclude pre-fix rows the same way `field_channel_corpus.v1`'s own training-quality cutoff excludes
+its pre-fix window (see `orion-field-digester`'s README).
+
 **Reverie semantic lift:** unresolved closures also upsert human referent rows into
 `substrate_turn_referent` via `turn_referent_store.persist_turn_referent`. Apply
 `services/orion-sql-db/manual_migration_substrate_turn_referent_v1.sql` before enabling

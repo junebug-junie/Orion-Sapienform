@@ -66,8 +66,19 @@ def _annotation_prompt_path_candidates() -> list[Path]:
     here = Path(__file__).resolve()
     if len(here.parents) >= 2:
         _add(here.parents[1])  # Docker layout: /app/app/memory_extractor.py -> /app
-    if len(here.parents) >= 3:
-        _add(here.parents[2])  # local monorepo checkout: services/orion-cortex-orch/app/... -> repo root
+    # Live incident 2026-07-22: this was `here.parents[2]`, which for the
+    # real local layout (services/orion-cortex-orch/app/memory_extractor.py)
+    # resolves to `services/`, not the repo root -- an off-by-one introduced
+    # in the same commit as the Docker-layout fix above. Masked in every
+    # container run because parents[1] (Docker's shape) matches first, so
+    # this branch never got exercised there; only surfaced running tests
+    # from a local worktree checkout, where it silently fell through to the
+    # hardcoded /mnt/scripts/Orion-Sapienform fallback below -- a real path
+    # on this machine, but the PRIMARY checkout, not the worktree actually
+    # being tested, so edits to this file's sibling prompt template in a
+    # worktree were silently invisible instead of loudly missing.
+    if len(here.parents) >= 4:
+        _add(here.parents[3])  # local monorepo checkout: services/orion-cortex-orch/app/... -> repo root
     _add(Path("/app"))
     _add(Path("/repo"))
     _add(Path("/mnt/scripts/Orion-Sapienform"))
@@ -135,9 +146,9 @@ def _coerce_turn(env: BaseEnvelope) -> Optional[ChatHistoryTurnV1]:
         return None
 
 
-def _build_annotation_prompt(turn_text: str) -> str:
+def _build_annotation_prompt(turn_text: str, *, known_categories: Optional[list] = None) -> str:
     template = Template(_resolve_annotation_prompt_path().read_text(encoding="utf-8"))
-    return template.render(turn_text=turn_text)
+    return template.render(turn_text=turn_text, known_categories=known_categories or [])
 
 
 async def _rpc_annotation_llm(
@@ -215,7 +226,10 @@ async def _annotate_via_llm(
     if bus is None:
         return None
     try:
-        prompt = _build_annotation_prompt(turn_text)
+        from .topic_taxonomy_client import fetch_active_topic_labels
+
+        known_categories = await fetch_active_topic_labels()
+        prompt = _build_annotation_prompt(turn_text, known_categories=known_categories)
         return await asyncio.wait_for(
             _rpc_annotation_llm(
                 bus,

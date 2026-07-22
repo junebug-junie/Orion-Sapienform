@@ -17,6 +17,35 @@ logger = logging.getLogger("topic-foundry.topics")
 router = APIRouter()
 
 
+def _load_topic_labels(run_id: UUID) -> dict[str, str]:
+    """Live incident 2026-07-21: list_topics_endpoint hardcoded label=None
+    unconditionally, regardless of what training actually computed --
+    topic_foundry_segments (what list_topics() queries) has no topic-level
+    label column at all, so there was never a DB value to read in the first
+    place. Real labels only ever land in the topics_summary.json artifact
+    file (training.py::_write_artifacts). Mirrors
+    topic_keywords_endpoint's existing artifact_paths-based file-read
+    pattern just below, rather than inventing a different mechanism for
+    the same run's sibling artifact."""
+    run_row = fetch_run(run_id)
+    if not run_row:
+        return {}
+    artifact_paths = run_row.get("artifact_paths") or {}
+    summary_path = artifact_paths.get("topics_summary")
+    if not summary_path or not Path(summary_path).exists():
+        return {}
+    try:
+        data = json.loads(Path(summary_path).read_text())
+    except (json.JSONDecodeError, OSError) as exc:
+        logger.warning("topic_labels_read_failed run_id=%s error=%s", run_id, exc)
+        return {}
+    return {
+        str(entry.get("topic_id")): entry["label"]
+        for entry in data
+        if isinstance(entry, dict) and entry.get("label")
+    }
+
+
 @router.get("/topics", response_model=TopicSummaryPage)
 def list_topics_endpoint(
     run_id: UUID,
@@ -24,6 +53,7 @@ def list_topics_endpoint(
     offset: int = Query(default=0, ge=0),
 ):
     rows, total = list_topics(run_id, limit=limit, offset=offset)
+    labels_by_topic = _load_topic_labels(run_id)
     items = []
     for row in rows:
         count = int(row.get("count") or 0)
@@ -35,7 +65,7 @@ def list_topics_endpoint(
                 topic_id=int(topic_id) if topic_id is not None else -1,
                 count=count,
                 outlier_pct=outlier_pct,
-                label=None,
+                label=labels_by_topic.get(str(topic_id)),
             )
         )
     return TopicSummaryPage(items=items, limit=limit, offset=offset, total=total)

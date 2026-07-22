@@ -7,8 +7,8 @@ import pytest
 
 import app.worker as worker
 from orion.schemas.telemetry.mood_arc import MoodArcCorpusRowV1
-from test_inner_state_emit import _mock_healthy_substrate_reads, _self_state_payload
-from test_phi_reward_emit import _envelope, _reset_inner_state, _write_tiny_encoder
+from test_inner_state_emit import _mock_healthy_substrate_reads
+from test_phi_reward_emit import _reset_inner_state, _write_tiny_encoder
 
 
 class _Bus:
@@ -53,7 +53,7 @@ async def test_mood_arc_corpus_appends_on_proxy_source(monkeypatch, tmp_path) ->
     _reset_inner_state(monkeypatch, tmp_path)
     _mock_healthy_substrate_reads(monkeypatch)
 
-    await worker.handle_self_state(_envelope())
+    await worker.run_inner_state_tick()
 
     rows = _read_jsonl(corpus_path)
     assert len(rows) == 1
@@ -93,7 +93,7 @@ async def test_mood_arc_corpus_appends_on_heuristic_source(monkeypatch, tmp_path
     _reset_inner_state(monkeypatch, tmp_path)
     _mock_healthy_substrate_reads(monkeypatch)
 
-    await worker.handle_self_state(_envelope())
+    await worker.run_inner_state_tick()
 
     rows = _read_jsonl(corpus_path)
     assert len(rows) == 1, "fallback (heuristic) ticks must still be appended -- not excluded"
@@ -130,7 +130,7 @@ async def test_mood_arc_corpus_appends_even_when_pub_bus_disabled(monkeypatch, t
     _reset_inner_state(monkeypatch, tmp_path)
     _mock_healthy_substrate_reads(monkeypatch)
 
-    await worker.handle_self_state(_envelope())
+    await worker.run_inner_state_tick()
 
     rows = _read_jsonl(corpus_path)
     assert len(rows) == 1, "mood-arc collection must not depend on _pub_bus.enabled"
@@ -142,7 +142,7 @@ async def test_mood_arc_corpus_construction_failure_does_not_abort_tick(monkeypa
     # 2026-07-13, found by code review: the original `except OSError` only
     # wrapped the file write, not MoodArcCorpusRowV1(...) construction --
     # a pydantic ValidationError (or any other non-OSError exception) would
-    # propagate past it and abort the rest of handle_self_state, including
+    # propagate past it and abort the rest of run_inner_state_tick, including
     # the real, consumed spark_state_snapshot publish further down. Fixed
     # via `except Exception`; this test forces a construction-time failure
     # and confirms the snapshot still publishes.
@@ -163,7 +163,7 @@ async def test_mood_arc_corpus_construction_failure_does_not_abort_tick(monkeypa
     _reset_inner_state(monkeypatch, tmp_path)
     _mock_healthy_substrate_reads(monkeypatch)
 
-    await worker.handle_self_state(_envelope())
+    await worker.run_inner_state_tick()
 
     assert not corpus_path.exists(), "the simulated failure should have prevented any write"
     assert worker.settings.channel_spark_state_snapshot in bus.published, (
@@ -187,14 +187,16 @@ async def test_mood_arc_corpus_disabled_when_path_empty(monkeypatch, tmp_path) -
     _reset_inner_state(monkeypatch, tmp_path)
     _mock_healthy_substrate_reads(monkeypatch)
 
-    await worker.handle_self_state(_envelope())
+    await worker.run_inner_state_tick()
 
     assert not corpus_path.exists()
 
 
 def test_mood_arc_corpus_row_schema_matches_phi_now_keys() -> None:
-    ss = worker.SelfStateV1.model_validate(_self_state_payload())
-    phi_now = worker._phi_from_self_state(ss)
+    """2026-07-22 (SelfStateV1 burn): phi_now's source is now TISSUE.phi()
+    via _get_phi_stats(), not a SelfStateV1-derived heuristic -- same
+    schema-shape invariant, different real source."""
+    phi_now = worker._get_phi_stats()
 
     assert set(phi_now.keys()) >= {"coherence", "energy", "novelty", "valence"}
 

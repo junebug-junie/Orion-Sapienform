@@ -58,24 +58,13 @@ def test_execution_trajectory_stale_runs_excluded() -> None:
 
 def test_seed_v2_emits_cognitive_slots_when_trajectory_absent() -> None:
     """seed-v2 keeps encoder input dims stable when HTTP traj is dark."""
-    from types import SimpleNamespace
-
-    ss = SimpleNamespace(
-        generated_at=datetime(2026, 7, 8, 12, 0, tzinfo=timezone.utc),
-        overall_intensity=0.4,
-        overall_condition="steady",
-        trajectory_condition="stable",
-        self_state_id="s1",
-        dimensions={},
-        dominant_field_channels={},
-    )
     scaler = inner_state.RollingRobustScaler(maxlen=32)
     payload, _, _ = inner_state.build_inner_state_features(
-        ss,
         scaler,
         features_version="seed-v2",
         grammar_degraded=False,
         trajectory_projection=None,
+        now=datetime(2026, 7, 8, 12, 0, tzinfo=timezone.utc),
     )
     names = {f.name for f in payload.features}
     for name in inner_state.COGNITIVE_FEATURE_NAMES:
@@ -85,26 +74,23 @@ def test_seed_v2_emits_cognitive_slots_when_trajectory_absent() -> None:
     assert all(f.raw_value == 0.0 for f in cogn)
 
 
-def test_seed_v1_omits_cognitive_slots_without_trajectory() -> None:
-    from types import SimpleNamespace
-
-    ss = SimpleNamespace(
-        generated_at=datetime(2026, 7, 8, 12, 0, tzinfo=timezone.utc),
-        overall_intensity=0.4,
-        overall_condition="steady",
-        trajectory_condition="stable",
-        self_state_id="s1",
-        dimensions={},
-        dominant_field_channels={},
-    )
+def test_seed_v1_still_emits_cognitive_slots_without_trajectory() -> None:
+    """2026-07-22 (SelfStateV1 burn): was
+    test_seed_v1_omits_cognitive_slots_without_trajectory. That omission made
+    sense when FELT_DIMENSIONS gave seed-v1 rows real content even without a
+    trajectory; now that FELT_DIMENSIONS is gone, cognitive features are the
+    ONLY possible content -- omitting them for seed-v1 would produce a fully
+    empty features list, an empty-shell row. build_inner_state_features()
+    now always computes cognitive features (zeroed/`.none`-sourced when
+    dark) regardless of features_version."""
     scaler = inner_state.RollingRobustScaler(maxlen=32)
     payload, _, _ = inner_state.build_inner_state_features(
-        ss,
         scaler,
         features_version="seed-v1",
         grammar_degraded=False,
         trajectory_projection=None,
+        now=datetime(2026, 7, 8, 12, 0, tzinfo=timezone.utc),
     )
     names = {f.name for f in payload.features}
     for name in inner_state.COGNITIVE_FEATURE_NAMES:
-        assert name not in names
+        assert name in names

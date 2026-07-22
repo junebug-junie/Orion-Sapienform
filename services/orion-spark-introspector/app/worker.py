@@ -20,7 +20,6 @@ from orion.core.bus.bus_schemas import BaseEnvelope, Envelope, ServiceRef
 from orion.core.bus.codec import OrionCodec
 from orion.core.bus.work_queue import RedisStreamWorkQueue
 from orion.schemas.platform import CoreEventV1
-from orion.schemas.self_state import AttentionTargetSummaryV1, SelfStateDimensionV1, SelfStateV1
 from orion.schemas.telemetry.cognition_trace import CognitionTracePayload
 from orion.schemas.telemetry.inner_state import InnerStateFeaturesV1
 from orion.schemas.telemetry.mood_arc import MoodArcCorpusRowV1
@@ -101,7 +100,6 @@ _VALENCE_NEG: Optional[np.ndarray] = None
 _VALENCE_INIT_TASK: Optional[asyncio.Task] = None
 _VALENCE_ANCHORS_EXPIRES_AT: float = 0.0
 
-_LATEST_SELF_STATE: Optional[SelfStateV1] = None
 _PREV_PHI: Optional[Dict[str, float]] = None
 
 
@@ -132,201 +130,39 @@ _MOOD_ARC_SINK = InnerStateCorpusSink(
 # Last chat-triggered novelty actually shown for a semantic upsert
 # (handle_semantic_upsert's `tissue_novelty` -- prefers cached appraisal
 # novelty via _display_novelty_for_corr, falls back to raw embedding cosine
-# distance), held and reused by the self-state tick's tissue.update broadcast
-# instead of the SelfStateV1 `uncertainty` dimension. `uncertainty` is
-# structurally pinned at 0 whenever coherence is healthy (see
-# orion/self_state/scoring.py::uncertainty_score = salience * (1 - coherence);
-# coherence only drops on active failure/friction), so it can never register
-# the continuous, ambient variation the tissue-viz display wants. None until
-# the first real chat message this process lifetime; read-only fallback to
-# 0.0 (honest "no signal yet"), never a fabricated value.
+# distance), held and reused by run_inner_state_tick's tissue.update
+# broadcast. None until the first real chat message this process lifetime;
+# read-only fallback to 0.0 (honest "no signal yet"), never a fabricated
+# value.
 _LAST_EMBEDDING_NOVELTY: Optional[float] = None
 
 _PHI_ENCODER: PhiEncoderRuntime | None = None
 _PHI_PREV_PHI: float | None = None
 _PHI_PREV_RECON: float | None = None
 # 2026-07-13: which formula produced the last published valence -- "proxy"
-# (_agency_valence_proxy, trained-encoder-derived) or "heuristic"
-# (_phi_from_self_state's formula, encoder disabled/degraded/no-probes ticks).
-# Tracked so a tick-to-tick formula swap can be told apart from a real state
-# change (see turn_effect construction in handle_self_state): the two
-# formulas are independently computed and not calibrated to agree, so a
-# swap alone can produce a large valence "delta" that is not evidence of
-# anything. Confirmed reachable via SparkStateSnapshotV1.metadata.turn_effect
-# -> spark_phi_hint/spark_phi_narrative (services/orion-cortex-exec/app/
+# (_agency_valence_proxy, trained-encoder-derived) or "heuristic" (the
+# TISSUE.phi()-based baseline in run_inner_state_tick, encoder disabled/
+# degraded/no-probes ticks; was _phi_from_self_state's formula before the
+# 2026-07-22 SelfStateV1 burn removed it). Tracked so a tick-to-tick formula
+# swap can be told apart from a real state change: the two formulas are
+# independently computed and not calibrated to agree, so a swap alone can
+# produce a large valence "delta" that is not evidence of anything.
+# Confirmed reachable via SparkStateSnapshotV1.metadata.turn_effect ->
+# spark_phi_hint/spark_phi_narrative (services/orion-cortex-exec/app/
 # spark_narrative.py), which put an unearned "valence tilt" swing straight
-# into live metacognition prompts. (An initial review pass also flagged
-# orion.spark.concept_induction.tensions.py's tension.distress.v1 ->
-# DriveEngine as reachable; traced and ruled out -- that pipeline's
-# substrate.self_state.v1 path uses extract_tensions_from_self_state, which
-# reads raw SelfStateV1.dimensions directly and never touches phi_now/
-# valence, and channel_spark_state_snapshot is not in concept-induction's
-# intake_channels at all, so this signal never reaches it.)
+# into live metacognition prompts.
 _PHI_PREV_VALENCE_SOURCE: str | None = None
 
-# resource_pressure.score is a max() over 7 heterogeneous channels (see
-# config/self_state/self_state_policy.v1.yaml channel_dimension_map): real
-# hardware load (cpu/gpu/memory/disk/thermal_pressure) alongside a generic
-# capability-graph `pressure` channel and `transport_pressure`. Live incident
-# 2026-07-10: the generic `pressure` channel sticks saturated at 1.00 from an
-# untraced orion-field-digester capability (see
-# project_tissue_viz_novelty_arousal_theater memory), permanently pinning
-# resource_pressure.score at 1.0 regardless of actual hardware load and
-# hard-zeroing tissue-viz arousal (`energy = intensity * (resource_cap *
-# execution_cap)**0.5` with resource_cap = 1 - resource_pressure = 0).
-# builder.py already puts the raw per-channel breakdown on the wire via
-# SelfStateDimensionV1.dominant_evidence ("channel=value" strings, top 3 by
-# value) -- filtering that to only the real hardware channels bypasses the
-# stuck generic channel without touching orion/self_state/scoring.py, which
-# also feeds agency_readiness_score and stays out of scope for this
-# display-layer fix.
-_HARDWARE_RESOURCE_CHANNELS = frozenset({
-    "cpu_pressure",
-    "gpu_pressure",
-    "memory_pressure",
-    "disk_pressure",
-    "thermal_pressure",
-})
-
-# execution_pressure dimension max-aggregates `execution_load` (real load) with
-# a same-named generic `execution_pressure` channel that can stick saturated
-# at 1.00 (live 2026-07-10: evidence ["execution_pressure=1.00",
-# "execution_load=0.19"] while dim.score=1.0). Prefer the real load channel
-# for tissue-viz energy, same display-layer pattern as hardware resource
-# filtering above.
-_EXECUTION_LOAD_CHANNELS = frozenset({
-    "execution_load",
-})
-
-
-def _parse_dominant_evidence_channels(
-    dim: Optional[SelfStateDimensionV1],
-    allowed: frozenset[str],
-) -> Optional[float]:
-    """Max of allowed channel values from dominant_evidence. None if none match."""
-    if dim is None:
-        return None
-    values: List[float] = []
-    for entry in dim.dominant_evidence:
-        name, _, raw = entry.partition("=")
-        if name not in allowed:
-            continue
-        try:
-            v = float(raw)
-        except ValueError:
-            continue
-        # dominant_evidence is an unvalidated list[str] crossing a service
-        # boundary (unlike dim.score, which the schema bounds to [0, 1]) --
-        # NaN/out-of-range would otherwise poison resource_cap ** 0.5 into a
-        # complex number downstream. Upstream clamp01() calls in scoring.py
-        # already keep this in range today, but this boundary shouldn't rely
-        # on that holding forever.
-        if not math.isfinite(v):
-            continue
-        values.append(max(0.0, min(1.0, v)))
-    return max(values) if values else None
-
-
-def _hardware_resource_pressure(dim: Optional[SelfStateDimensionV1]) -> Optional[float]:
-    """Real resource load from resource_pressure's dominant_evidence, ignoring
-    the generic capability-graph `pressure` and `transport_pressure` channels
-    that can stick saturated. Returns None (honest no-signal) when no hardware
-    channel appears in the evidence -- never fabricates a value."""
-    return _parse_dominant_evidence_channels(dim, _HARDWARE_RESOURCE_CHANNELS)
-
-
-def _execution_load_pressure(dim: Optional[SelfStateDimensionV1]) -> Optional[float]:
-    """Real execution load from execution_pressure's dominant_evidence, ignoring
-    the saturated generic `execution_pressure` channel. Returns None when
-    `execution_load` is absent -- never fabricates a value."""
-    return _parse_dominant_evidence_channels(dim, _EXECUTION_LOAD_CHANNELS)
-
-
-def set_latest_self_state(ss: SelfStateV1) -> None:
-    global _LATEST_SELF_STATE
-    _LATEST_SELF_STATE = ss
-
-
-def _phi_from_self_state(ss: SelfStateV1) -> Dict[str, float]:
-    d = ss.dimensions
-    traj = ss.dimension_trajectory  # per-dimension change vectors from self-state-runtime
-
-    def _s(key: str, default: float = 0.5) -> float:
-        dim = d.get(key)
-        return float(dim.score) if dim is not None else default
-
-    def _t(key: str) -> float:
-        return max(-1.0, min(1.0, float(traj.get(key, 0.0))))
-
-    # Coherence: geometric mean across integration dimensions.
-    # Every factor must be healthy — a single broken link collapses the whole.
-    # This mirrors IIT: consciousness requires global integration, not local patches.
-    field_coh   = _s("coherence", 0.5)
-    continuity  = 1.0 - _s("continuity_pressure", 0.0)
-    reliability = 1.0 - _s("reliability_pressure", 0.0)
-    transport   = _s("transport_integrity", 1.0)
-    coherence   = max(0.01, (field_coh * continuity * reliability * transport) ** 0.25)
-
-    # Energy: activation × available capacity (multiplicative, not additive).
-    # Being highly active with no room left isn't energy — it's grinding.
-    intensity = _s("field_intensity", 0.5)
-    hardware_pressure = _hardware_resource_pressure(d.get("resource_pressure"))
-    resource_pressure_for_energy = (
-        hardware_pressure if hardware_pressure is not None else _s("resource_pressure", 0.5)
-    )
-    resource_cap  = 1.0 - resource_pressure_for_energy
-    execution_load = _execution_load_pressure(d.get("execution_pressure"))
-    execution_pressure_for_energy = (
-        execution_load if execution_load is not None else _s("execution_pressure", 0.3)
-    )
-    execution_cap = 1.0 - execution_pressure_for_energy
-    energy = intensity * (resource_cap * execution_cap) ** 0.5
-    # Trajectory: rising intensity or recovering capacity builds energy momentum.
-    # dimension_trajectory["resource_pressure"] tracks the delta of the raw,
-    # possibly-still-saturated aggregate score -- the same untraced channel
-    # resource_pressure_for_energy was built to bypass above. Only apply that
-    # delta when the base term is also using the raw score (no hardware
-    # evidence available); mixing a hardware-filtered base with a
-    # raw-aggregate momentum term would reintroduce the same stuck-channel
-    # theater into the trajectory component alone.
-    energy += 0.1 * max(0.0, _t("field_intensity"))
-    if hardware_pressure is None:
-        energy -= 0.1 * max(0.0, _t("resource_pressure"))
-    energy = max(0.0, min(1.0, energy))
-
-    # Novelty: genuine surprise requires a stable ground to notice it against.
-    # Uncertainty on a fragmented system is noise. Uncertainty when coherent = signal.
-    uncertainty   = _s("uncertainty", 0.5)
-    introspection = _s("introspection_pressure", 0.3)
-    novelty = min(1.0, (0.6 * uncertainty + 0.4 * introspection) * (0.3 + 0.7 * coherence))
-
-    # Valence: hedonic tone from agency and social ease.
-    # A third term, policy_ease, previously contributed a hardcoded 1.0
-    # constant here (policy_pressure was removed from SelfStateV1 entirely in
-    # the 2026-07-12 self-state redesign, leaving no live signal behind it).
-    # Deleted outright 2026-07-13 rather than kept as a disguised constant --
-    # a fixed number added to every tick's valence regardless of state is
-    # exactly the math-theater pattern this formula should not contain.
-    # Weights renormalized to sum to 1 over the two remaining live terms.
-    agency      = _s("agency_readiness", 0.5)
-    social_ease = 1.0 - _s("social_pressure", 0.0)
-    raw_valence = 0.625 * agency + 0.375 * social_ease  # [0, 1]
-    # Coherence modulates: fragmentation mutes affect in both directions —
-    # can't feel fully alive, or fully distressed, when scattered.
-    valence = (raw_valence * 2.0 - 1.0) * (0.4 + 0.6 * coherence)
-    # Trajectory: the direction of change matters for how this moment is experienced.
-    if ss.trajectory_condition == "improving":
-        valence += 0.12
-    elif ss.trajectory_condition == "degrading":
-        valence -= 0.12
-    valence = max(-1.0, min(1.0, valence))
-
-    return {
-        "coherence": round(coherence, 4),
-        "energy":    round(energy, 4),
-        "novelty":   round(novelty, 4),
-        "valence":   round(valence, 4),
-    }
+# _HARDWARE_RESOURCE_CHANNELS/_EXECUTION_LOAD_CHANNELS/
+# _parse_dominant_evidence_channels/_hardware_resource_pressure/
+# _execution_load_pressure/set_latest_self_state/_phi_from_self_state all
+# removed 2026-07-22, SelfStateV1 burn (docs/superpowers/specs/2026-07-22-
+# self-state-phi-endo-origination-burn-spec.md, decision 3): these existed
+# entirely to bypass stuck-saturated SelfStateV1 channels inside a
+# self-state-derived heuristic phi formula. SelfStateV1 no longer exists;
+# _get_phi_stats() below now falls back unconditionally to TISSUE.phi() (an
+# already-real, self-state-independent mechanism this function already used
+# for the encoder-unavailable case), not a resurrected heuristic.
 
 
 def _agency_valence_proxy(
@@ -343,10 +179,10 @@ def _agency_valence_proxy(
     the original false claim.
 
     Known, real limitation (not fixed here -- see registry notes): this is
-    a lossy readout of a value already available unencoded one line away
-    (agency_readiness, the direct self-state dimension _phi_from_self_state
-    reads). agency_readiness is itself one of the encoder's input features,
-    so this proxy is closer to "how does the trained bottleneck reconstruct
+    a lossy readout of a value already available unencoded elsewhere
+    (agency_readiness was, pre-2026-07-22 SelfStateV1 burn, a direct
+    self-state dimension). agency_readiness is itself one of the encoder's
+    input features, so this proxy is closer to "how does the trained bottleneck reconstruct
     a value we already have" than a discovered relationship between phi and
     hedonic tone. It is real (probe-weighted, verified-nonzero correlations,
     not a fabricated constant), but weaker than the docstring language for
@@ -400,35 +236,24 @@ def _golden_phi_overrides(
     latent: Optional[Dict[str, float]] = None,
     probes: Optional[Dict[str, Dict[str, float]]] = None,
 ) -> Dict[str, float]:
-    """Trained-encoder-derived replacements for _phi_from_self_state's axes,
-    used whenever the encoder is enabled and healthy this tick (2026-07-12,
-    valence added 2026-07-13).
+    """Trained-encoder-derived replacements for the TISSUE.phi()-based
+    heuristic baseline's axes, used whenever the encoder is enabled and
+    healthy this tick (2026-07-12, valence added 2026-07-13; heuristic
+    baseline changed from a self-state-derived formula to TISSUE.phi() on
+    2026-07-22, SelfStateV1 burn -- this function's own contract is
+    unaffected, it still overrides whatever baseline the caller computed).
 
-    _phi_from_self_state is a hand-tuned, untrained heuristic -- real
-    engineering, but not the trained autoencoder. It was the only thing ever
-    reaching orion-cortex-exec's metacognition prompts
-    (log_orion_metacognition_draft.j2 / _enrich.j2, via
-    spark_narrative.spark_phi_hint/spark_phi_narrative); the trained encoder's
-    actual output (PhiIntrinsicRewardV1) had zero consumers beyond a SQL sink
-    and a debug WebSocket EKG panel. This closes that gap:
-
-    - coherence <- phi (the encoder's own sigmoid output; this IS phi, the
-      thing the heuristic's coherence axis was already trying to approximate
-      via an untrained geometric-mean IIT-flavored formula).
+    - coherence <- phi (the encoder's own sigmoid output; this IS phi).
     - energy <- |delta_phi| (tick-to-tick rate of change in the trained phi;
       arousal/activation is fundamentally about magnitude of change, not a
       static level).
     - novelty <- recon_error scaled by the active encoder's own training-time
       recon_error_p95 (how anomalous this tick's reconstruction is relative to
-      what the encoder considers "normal" from its own training distribution
-      -- a real surprise signal, unlike the heuristic's novelty axis, which
-      leans on `uncertainty`, a dimension structurally near-zero whenever
-      coherence is healthy).
+      what the encoder considers "normal" from its own training distribution).
     - valence <- _agency_valence_proxy(latent, probes), when computable (see
-      that function's docstring). Falls back to _phi_from_self_state's
-      formula-based valence (agency_readiness + social_ease only, as of
-      2026-07-13 -- the dead policy_ease constant term was deleted) when
-      latent/probes aren't available, e.g. an older manifest.
+      that function's docstring). Falls back to the caller's own heuristic
+      valence (no "valence" key in the returned dict) when latent/probes
+      aren't available, e.g. an older manifest.
     """
     scale = max(float(recon_error_p95_reference), 1e-6)
     overrides: Dict[str, float] = {
@@ -442,56 +267,24 @@ def _golden_phi_overrides(
     return overrides
 
 
-# 2026-07-12, inner-state unification Phase 2: node-attributed phi. These are
-# thin, synthetic subsystem aggregates in FieldStateV1.node_vectors (1 derived
-# channel each, e.g. prediction_error) -- not physical hardware, and never a
-# meaningful answer to "which body part is stressed." Confirmed live: a
-# target_kind="system" entry (field:recent_perturbations) also frequently wins
-# the #1 salience slot in dominant_attention_target_details (attention's
-# dominant_targets is salience-sorted across node/capability/system kinds
-# together, orion/attention/field_attention/builder.py) -- excluding only the
-# two pseudo-nodes is not enough; target_kind must be filtered to "node" too,
-# or dominant_node would frequently report a perturbation-count aggregate
-# instead of a hardware node.
-_SYNTHETIC_PSEUDO_NODES: frozenset[str] = frozenset(
-    {"node:substrate.execution", "node:substrate.transport"}
-)
-# Known limitation (code review, 2026-07-12): this is a maintained blacklist
-# of the two pseudo-nodes known to exist in config/field/orion_field_topology
-# .v1.yaml today, not a whitelist against config/biometrics/node_catalog.yaml
-# (the authoritative real-hardware-node list: atlas/athena/circe/prometheus).
-# A future pseudo-node added to the topology would silently evade this filter
-# until added here too. (One candidate was investigated and ruled out: orion-
-# substrate-runtime's harness_closure:<uuid> prediction-error nodes write to
-# the cognitive-substrate graph store (ConceptNodeV1/ upsert_node) -- a
-# separate subsystem orion-field-digester never reads from, so they can never
-# reach FieldStateV1.node_vectors or this filter in the first place.)
-# Switching to a NodeCatalog whitelist would need a new config mount + setting
-# on this service (it has neither today) -- a real fix, deliberately not done
-# here to keep this phase scoped.
-
-
-def _dominant_hardware_node(
-    details: list[AttentionTargetSummaryV1],
-) -> tuple[Optional[str], Optional[str]]:
-    """First real-hardware-node entry in SelfStateV1.dominant_attention_target_details
-    (already salience-ordered) -- (target_id, reason), or (None, None) if no
-    qualifying node is present this tick.
-    """
-    for detail in details:
-        if detail.target_kind != "node":
-            continue
-        if detail.target_id in _SYNTHETIC_PSEUDO_NODES:
-            continue
-        return detail.target_id, detail.reason
-    return None, None
+# _SYNTHETIC_PSEUDO_NODES/_dominant_hardware_node removed 2026-07-22,
+# SelfStateV1 burn: their only input was
+# SelfStateV1.dominant_attention_target_details, which no longer exists.
+# dominant_node/dominant_node_reason are a disclosed regression from this
+# burn, not silently dropped -- PhiIntrinsicRewardV1.dominant_node and
+# SparkStateSnapshotV1.dominant_node both pass None now (see
+# run_inner_state_tick below) until a FieldAttentionFrameV1-native
+# replacement is designed; this service has no attention-frame fetch
+# mechanism today (out of scope for this pass, per the burn spec's own
+# "not designing a replacement" discipline for gaps like this).
 
 
 def _get_phi_stats() -> Dict[str, float]:
-    """Return phi dimensions from substrate self-state when available, tissue otherwise."""
-    ss = _LATEST_SELF_STATE
-    if ss is not None:
-        return _phi_from_self_state(ss)
+    """Return phi dimensions from tissue. 2026-07-22 (SelfStateV1 burn): was
+    self-state-first with a tissue fallback; self-state's producer is gone,
+    so this always falls through to TISSUE.phi() now -- an already-real,
+    self-state-independent mechanism this function already used for the
+    encoder-unavailable case, not a new fallback."""
     return {k: float(v) for k, v in (TISSUE.phi() or {}).items()}
 
 
@@ -505,10 +298,8 @@ def _headline_stat(phi_stats: Dict[str, float]) -> float:
 def _novelty_stat() -> float:
     """Last real chat-triggered novelty for WS EKG (see _LAST_EMBEDDING_NOVELTY).
 
-    Never reads phi_stats["novelty"] (SelfStateV1 `uncertainty` dimension,
-    structurally pinned at 0 whenever coherence is healthy -- see
-    orion/self_state/scoring.py::uncertainty_score). Falls back to 0.0
-    (honest "no chat yet this process lifetime") rather than a fabricated value.
+    Never reads phi_stats["novelty"]. Falls back to 0.0 (honest "no chat yet
+    this process lifetime") rather than a fabricated value.
     """
     return float(_LAST_EMBEDDING_NOVELTY) if _LAST_EMBEDDING_NOVELTY is not None else 0.0
 
@@ -1995,7 +1786,7 @@ async def handle_semantic_upsert(env: BaseEnvelope) -> None:
     phi_stats = _apply_signal_deltas(phi_stats)
     tissue_valence = float(phi_stats.get("valence", 0.0))
     # Canonical arousal is phi_stats["energy"] -- same source every other
-    # tissue.update broadcast site uses (handle_self_state, handle_trace).
+    # tissue.update broadcast site uses (run_inner_state_tick, handle_trace).
     # This site used to compute its own novelty-derived proxy here instead
     # (0.15 + 1.2*novelty), predating the resource_pressure hardware-evidence
     # fix that made phi_stats["energy"] a live, non-saturated signal -- that
@@ -2695,19 +2486,31 @@ async def handle_signal(env: BaseEnvelope) -> None:
     _register_signal(sig)
 
 
-async def handle_self_state(env: BaseEnvelope) -> None:
-    global _PREV_PHI, _PHI_PREV_PHI, _PHI_PREV_RECON, _PHI_PREV_VALENCE_SOURCE
-    payload = env.payload if isinstance(env.payload, dict) else {}
-    try:
-        ss = SelfStateV1.model_validate(payload)
-    except ValidationError:
-        logger.warning("Ignoring malformed substrate.self_state payload")
-        return
+async def run_inner_state_tick() -> None:
+    """2026-07-22 (SelfStateV1 burn): replaces handle_self_state(env) as the
+    driver of phi's entire live pipeline (encoder tick, PhiIntrinsicRewardV1,
+    InnerStateFeaturesV1, SparkStateSnapshotV1, the Hub WS EKG broadcast,
+    mood-arc corpus). The old trigger was a bus subscription to
+    substrate.self_state.v1 -- an event that no longer exists once
+    orion-self-state-runtime is gone. Left un-migrated, this whole pipeline
+    would go silently dark forever, not just lose an input (see
+    docs/superpowers/specs/2026-07-22-self-state-phi-endo-origination-burn-
+    spec.md's "Option A vs B" call -- A was chosen: keep it ticking).
 
-    phi_now = _phi_from_self_state(ss)
+    Called on a plain timer from app/main.py's poll loop
+    (settings.inner_state_tick_interval_sec) instead of an event -- self-state's
+    own tick cadence was ~2s, but nothing in this function's real inputs
+    (execution_trajectory/reasoning_activity, both HTTP-fetched, both already
+    independent of self_state) needs that specific cadence; a slower poll
+    avoids adding N HTTP fetches/sec for no behavioral gain.
+    """
+    global _PREV_PHI, _PHI_PREV_PHI, _PHI_PREV_RECON, _PHI_PREV_VALENCE_SOURCE
+    tick_now = datetime.now(timezone.utc)
+    tick_id = f"inner.tick:{tick_now.isoformat()}"
+
+    phi_now = _get_phi_stats()
     phi_prev = _PREV_PHI  # snapshot before update
     _PREV_PHI = phi_now
-    set_latest_self_state(ss)
 
     # Whether the trained encoder actually completed this tick. Checked at
     # the end of this function (after every possible skip/failure path --
@@ -2753,7 +2556,6 @@ async def handle_self_state(env: BaseEnvelope) -> None:
         reasoning_activity_projection = reasoning_activity.projection if reasoning_activity.ok else None
 
         inner, _INNER_PREV_FELT, _INNER_DEGENERATE_STREAK = build_inner_state_features(
-            ss,
             _INNER_SCALER,
             features_version=settings.inner_features_version,
             grammar_degraded=grammar_degraded,
@@ -2761,8 +2563,8 @@ async def handle_self_state(env: BaseEnvelope) -> None:
             trajectory_projection=projection,
             reasoning_activity_projection=reasoning_activity_projection,
             exec_trajectory_max_age_sec=int(settings.exec_trajectory_max_age_sec),
+            now=tick_now,
             prev_felt=_INNER_PREV_FELT,
-            prev_headline=_INNER_PREV_HEADLINE,
             degenerate_streak=_INNER_DEGENERATE_STREAK,
             degenerate_limit=int(settings.phi_degenerate_streak),
         )
@@ -2796,9 +2598,8 @@ async def handle_self_state(env: BaseEnvelope) -> None:
                     valence_source = "proxy" if "valence" in golden_overrides else "heuristic"
                     phi_now = {**phi_now, **golden_overrides}
                     _PREV_PHI = phi_now
-                    dominant_node, dominant_node_reason = _dominant_hardware_node(
-                        ss.dominant_attention_target_details
-                    )
+                    # dominant_node/dominant_node_reason stay None -- see the
+                    # disclosed-gap comment above _get_phi_stats().
                     reward = PhiIntrinsicRewardV1(
                         generated_at=inner.generated_at,
                         self_state_id=inner.self_state_id,
@@ -2873,7 +2674,7 @@ async def handle_self_state(env: BaseEnvelope) -> None:
     if phi_prev is not None:
         turn_effect = {k: round(phi_now[k] - phi_prev.get(k, phi_now[k]), 4) for k in phi_now}
         # 2026-07-13: valence can be produced by two independently-computed,
-        # uncalibrated formulas (_phi_from_self_state's heuristic vs
+        # uncalibrated formulas (the TISSUE.phi()-based heuristic vs
         # _agency_valence_proxy) depending on encoder-tick success. A tick
         # where the formula swaps produces a raw diff that reflects the
         # swap, not real state change. Confirmed reachable via this
@@ -2892,10 +2693,8 @@ async def handle_self_state(env: BaseEnvelope) -> None:
     _PHI_PREV_VALENCE_SOURCE = valence_source
 
     logger.debug(
-        "self_state_updated self_state_id=%s condition=%s intensity=%.3f phi=%s delta=%s",
-        ss.self_state_id,
-        ss.overall_condition,
-        ss.overall_intensity,
+        "inner_state_tick_updated tick_id=%s phi=%s delta=%s",
+        tick_id,
         phi_now,
         turn_effect,
     )
@@ -2918,8 +2717,8 @@ async def handle_self_state(env: BaseEnvelope) -> None:
         try:
             _MOOD_ARC_SINK.append(
                 MoodArcCorpusRowV1(
-                    generated_at=ss.generated_at,
-                    self_state_id=ss.self_state_id,
+                    generated_at=tick_now,
+                    self_state_id=tick_id,
                     coherence=phi_now["coherence"],
                     energy=phi_now["energy"],
                     novelty=phi_now["novelty"],
@@ -2936,10 +2735,8 @@ async def handle_self_state(env: BaseEnvelope) -> None:
 
     seq = _next_seq()
     meta: Dict[str, Any] = {
-        "trigger": "substrate_tick",
-        "self_state_id": ss.self_state_id,
-        "condition": ss.overall_condition,
-        "trajectory": ss.trajectory_condition,
+        "trigger": "inner_state_poll_tick",
+        "tick_id": tick_id,
         "phi_before": phi_prev,
         "phi_after": phi_now,
         # Observability for which formula produced phi_after["valence"] this
@@ -2959,11 +2756,11 @@ async def handle_self_state(env: BaseEnvelope) -> None:
         source_node=settings.node_name,
         producer_boot_id=_PRODUCER_BOOT_ID,
         seq=seq,
-        snapshot_ts=ss.generated_at,
+        snapshot_ts=tick_now,
         valid_for_ms=int(settings.spark_state_valid_for_ms),
-        correlation_id=ss.self_state_id,
+        correlation_id=tick_id,
         trace_mode="substrate",
-        trace_verb="self_state_tick",
+        trace_verb="inner_state_tick",
         phi=phi_now,
         valence=float(phi_now.get("valence", 0.0)),
         arousal=float(phi_now.get("energy", 0.5)),
@@ -2973,11 +2770,10 @@ async def handle_self_state(env: BaseEnvelope) -> None:
         vector_present=False,
         metadata=meta,
     )
-    snap_corr = uuid5(NAMESPACE_URL, f"orion:spark:self_state:{ss.self_state_id}")
+    snap_corr = uuid5(NAMESPACE_URL, f"orion:spark:inner_tick:{tick_id}")
     snap_env = SparkStateSnapshotEnvelope(
         source=_svc_ref(),
         correlation_id=snap_corr,
-        causality_chain=env.causality_chain,
         payload=snap,
     )
     await _pub_bus.publish(settings.channel_spark_state_snapshot, snap_env)
@@ -2986,8 +2782,8 @@ async def handle_self_state(env: BaseEnvelope) -> None:
         ws_payload = {
             "type": "tissue.update",
             "telemetry_id": str(uuid4()),
-            "correlation_id": ss.self_state_id,
-            "timestamp": ss.generated_at.isoformat(),
+            "correlation_id": tick_id,
+            "timestamp": tick_now.isoformat(),
             "stats": {
                 "phi": float(_INNER_LAST_HEADLINE if _INNER_LAST_HEADLINE is not None else phi_now.get("coherence", 0.5)),
                 "novelty": _novelty_stat(),

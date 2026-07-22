@@ -28,11 +28,11 @@ from .worker import (
     _PRODUCER_BOOT_ID,
     close_spark_stream_wq,
     handle_candidate,
-    handle_self_state,
     handle_semantic_upsert,
     handle_signal,
     handle_spark_meta_patch,
     handle_trace,
+    run_inner_state_tick,
     set_publisher_bus,
 )
 
@@ -74,8 +74,6 @@ async def lifespan(app: FastAPI):
             await handle_semantic_upsert(env)
         elif env.kind == "spark.signal.v1":
             await handle_signal(env)
-        elif env.kind == "substrate.self_state.v1":
-            await handle_self_state(env)
         elif env.kind == "chat.history.spark_meta.patch.v1":
             await handle_spark_meta_patch(env)
         else:
@@ -86,7 +84,6 @@ async def lifespan(app: FastAPI):
         settings.channel_cognition_trace_pub,
         settings.channel_spark_signal,
         settings.channel_vector_semantic_upsert,
-        settings.channel_substrate_self_state,
         settings.channel_chat_history_spark_meta_patch,
     ]
 
@@ -99,6 +96,27 @@ async def lifespan(app: FastAPI):
 
     # Run Hunter in background
     hunter_task = asyncio.create_task(svc.start())
+
+    # 2026-07-22 (SelfStateV1 burn): run_inner_state_tick() used to be driven
+    # by a substrate.self_state.v1 bus subscription -- that event no longer
+    # exists once orion-self-state-runtime is gone. Poll timer replaces it;
+    # see run_inner_state_tick()'s own docstring for why cadence doesn't need
+    # to match self-state's old ~2s tick.
+    inner_state_tick_stop = asyncio.Event()
+
+    async def _inner_state_tick_loop() -> None:
+        interval = max(1.0, float(settings.inner_state_tick_interval_sec))
+        while not inner_state_tick_stop.is_set():
+            try:
+                await run_inner_state_tick()
+            except Exception:
+                logger.exception("inner_state_tick_failed")
+            try:
+                await asyncio.wait_for(inner_state_tick_stop.wait(), timeout=interval)
+            except asyncio.TimeoutError:
+                continue
+
+    inner_state_tick_task = asyncio.create_task(_inner_state_tick_loop())
 
     queue_task: asyncio.Task | None = None
     qr: QueueRabbit | None = None
@@ -145,6 +163,12 @@ async def lifespan(app: FastAPI):
         await hunter_task
     except asyncio.CancelledError:
         pass
+
+    inner_state_tick_stop.set()
+    try:
+        await asyncio.wait_for(inner_state_tick_task, timeout=5.0)
+    except (asyncio.TimeoutError, asyncio.CancelledError):
+        inner_state_tick_task.cancel()
 
     if qr is not None:
         await qr.stop()

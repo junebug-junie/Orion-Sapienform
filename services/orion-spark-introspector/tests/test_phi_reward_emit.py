@@ -9,27 +9,28 @@ import numpy as np
 import pytest
 
 import app.worker as worker
-from app.inner_state import COGNITIVE_FEATURE_NAMES, FELT_DIMENSIONS
+from app.inner_state import COGNITIVE_FEATURE_NAMES
 from app.substrate_reads import ExecutionTrajectorySnapshot, GrammarTruthSnapshot
-from orion.core.bus.bus_schemas import BaseEnvelope, ServiceRef
-from orion.schemas.self_state import AttentionTargetSummaryV1, SelfStateDimensionV1, SelfStateV1
 from orion.schemas.telemetry.phi_encoder import (
     CorpusStatsV1,
     PhiEncoderManifestV1,
     PhiIntrinsicRewardV1,
     TrainingStatsV1,
 )
-from test_inner_state_emit import (
-    _NOW,
-    _mock_healthy_substrate_reads,
-    _self_state,
-    _self_state_payload,
-)
+from test_inner_state_emit import _mock_healthy_substrate_reads
+
+_NOW = datetime(2026, 7, 7, 12, 0, tzinfo=timezone.utc)
 
 
 def _felt_input_features() -> list[str]:
-    # seed-v2 always emits cognitive slots (zeroed when trajectory dark).
-    return list(FELT_DIMENSIONS) + ["overall_intensity"] + list(COGNITIVE_FEATURE_NAMES)
+    """2026-07-22 (SelfStateV1 burn): was FELT_DIMENSIONS + overall_intensity
+    + COGNITIVE_FEATURE_NAMES -- SelfStateV1's FELT_DIMENSIONS no longer
+    exist. These tests use features_version="seed-v2", which hits
+    build_inner_state_features()'s non-seed-v4/v5 branch
+    (cognitive_features_from_trajectory), whose only real output is the 4
+    COGNITIVE_FEATURE_NAMES -- so that's the synthetic encoder's whole input
+    space now."""
+    return list(COGNITIVE_FEATURE_NAMES)
 
 
 def _write_tiny_encoder(
@@ -92,14 +93,6 @@ def _reset_inner_state(monkeypatch, tmp_path) -> None:
     monkeypatch.setattr(worker, "_SUBSTRATE_CACHE", None, raising=False)
 
 
-def _envelope() -> BaseEnvelope:
-    return BaseEnvelope(
-        kind="substrate.self_state.v1",
-        source=ServiceRef(name="substrate-runtime", node="athena"),
-        payload=_self_state_payload(),
-    )
-
-
 @pytest.mark.asyncio
 async def test_phi_reward_emitted_when_encoder_ok(monkeypatch, tmp_path) -> None:
     published = []
@@ -112,12 +105,6 @@ async def test_phi_reward_emitted_when_encoder_ok(monkeypatch, tmp_path) -> None
 
     monkeypatch.setattr(worker.settings, "orion_phi_encoder_enabled", True, raising=False)
     monkeypatch.setattr(worker.settings, "orion_phi_encoder_weights", str(tmp_path), raising=False)
-    # Regression (pre-existing, found 2026-07-12 alongside the golden-phi
-    # change below): settings.inner_features_version defaults to "seed-v3",
-    # but _write_tiny_encoder's manifest declares features_version="seed-v2".
-    # PhiEncoderRuntime.load() silently returns None on that mismatch, so the
-    # encoder block never ran and this test always failed before this fix,
-    # independent of anything else in this file.
     monkeypatch.setattr(worker.settings, "inner_features_version", "seed-v2", raising=False)
     _write_tiny_encoder(tmp_path)
     monkeypatch.setattr(worker, "_pub_bus", _Bus(), raising=False)
@@ -125,7 +112,7 @@ async def test_phi_reward_emitted_when_encoder_ok(monkeypatch, tmp_path) -> None
     _reset_inner_state(monkeypatch, tmp_path)
     _mock_healthy_substrate_reads(monkeypatch)
 
-    await worker.handle_self_state(_envelope())
+    await worker.run_inner_state_tick()
 
     reward_channels = [c for c, _ in published if c == worker.settings.channel_phi_reward]
     assert reward_channels, "expected phi_reward publish"
@@ -175,7 +162,7 @@ async def test_phi_reward_suppressed_when_frozen(monkeypatch, tmp_path) -> None:
         AsyncMock(return_value=ExecutionTrajectorySnapshot(ok=False, projection=None)),
     )
 
-    await worker.handle_self_state(_envelope())
+    await worker.run_inner_state_tick()
 
     assert worker.settings.channel_phi_reward not in published
 
@@ -184,10 +171,10 @@ async def test_phi_reward_suppressed_when_frozen(monkeypatch, tmp_path) -> None:
 async def test_golden_phi_overrides_coherence_energy_novelty_valence_falls_back_without_probes(
     monkeypatch, tmp_path
 ) -> None:
-    # 2026-07-12: the trained encoder's output must replace
-    # _phi_from_self_state's untrained heuristic for coherence/energy/novelty
-    # wherever it reaches orion-cortex-exec's metacognition prompts (via
-    # SparkStateSnapshotV1.phi -> spark_narrative.py).
+    # 2026-07-12: the trained encoder's output must replace the heuristic
+    # baseline (TISSUE.phi()-based since the 2026-07-22 SelfStateV1 burn) for
+    # coherence/energy/novelty wherever it reaches orion-cortex-exec's
+    # metacognition prompts (via SparkStateSnapshotV1.phi -> spark_narrative.py).
     # 2026-07-13: valence now also has a trained-probe override
     # (_agency_valence_proxy), but only when the loaded manifest actually
     # carries a probes map. _write_tiny_encoder's manifest below has no
@@ -205,9 +192,6 @@ async def test_golden_phi_overrides_coherence_energy_novelty_valence_falls_back_
 
     monkeypatch.setattr(worker.settings, "orion_phi_encoder_enabled", True, raising=False)
     monkeypatch.setattr(worker.settings, "orion_phi_encoder_weights", str(tmp_path), raising=False)
-    # _write_tiny_encoder's manifest uses features_version="seed-v2"; settings'
-    # default ("seed-v3") would make PhiEncoderRuntime.load() silently return
-    # None on a version mismatch, skipping the encoder block entirely.
     monkeypatch.setattr(worker.settings, "inner_features_version", "seed-v2", raising=False)
     _write_tiny_encoder(tmp_path)
     monkeypatch.setattr(worker, "_pub_bus", _Bus(), raising=False)
@@ -221,7 +205,9 @@ async def test_golden_phi_overrides_coherence_energy_novelty_valence_falls_back_
     monkeypatch.setattr(worker, "_PHI_PREV_PHI", 0.2, raising=False)
     _mock_healthy_substrate_reads(monkeypatch)
 
-    await worker.handle_self_state(_envelope())
+    heuristic_valence = worker._get_phi_stats()["valence"]
+
+    await worker.run_inner_state_tick()
 
     reward_env = published[worker.settings.channel_phi_reward]
     reward = PhiIntrinsicRewardV1.model_validate(reward_env.payload)
@@ -237,58 +223,7 @@ async def test_golden_phi_overrides_coherence_energy_novelty_valence_falls_back_
     assert phi_dict["novelty"] == expected_novelty
     # No probes on this manifest -> _agency_valence_proxy returns None ->
     # valence falls back to the heuristic's value, not overridden or zeroed.
-    heuristic_valence = worker._phi_from_self_state(
-        worker.SelfStateV1.model_validate(_self_state_payload())
-    )["valence"]
     assert phi_dict["valence"] == heuristic_valence
-
-
-def _isolated_self_state(*, agency_readiness: float, social_pressure: float) -> SelfStateV1:
-    # Full coherence (1.0) and trajectory_condition="stable" so
-    # _phi_from_self_state's coherence-modulation and trajectory-bump terms
-    # are both no-ops, isolating raw_valence's own formula for a precise
-    # assertion.
-    scores = {
-        "coherence": 1.0, "field_intensity": 1.0,
-        "agency_readiness": agency_readiness,
-        "execution_pressure": 0.0, "reasoning_pressure": 0.0,
-        "resource_pressure": 0.0, "reliability_pressure": 0.0,
-        "continuity_pressure": 0.0, "introspection_pressure": 0.0,
-        "social_pressure": social_pressure, "uncertainty": 0.0,
-        "transport_integrity": 1.0,
-    }
-    return SelfStateV1(
-        self_state_id="self.state:tick_valence:policy.v1",
-        generated_at=_NOW,
-        source_field_tick_id="tick_valence",
-        source_field_generated_at=_NOW,
-        source_attention_frame_id="frame_valence",
-        source_attention_generated_at=_NOW,
-        overall_intensity=0.4,
-        overall_confidence=0.6,
-        overall_condition="steady",
-        trajectory_condition="stable",
-        dimensions={
-            k: SelfStateDimensionV1(dimension_id=k, score=v, confidence=0.6)
-            for k, v in scores.items()
-        },
-        dominant_field_channels={},
-        dimension_trajectory={},
-    )
-
-
-def test_phi_from_self_state_valence_has_no_policy_ease_theater_term() -> None:
-    # 2026-07-13: policy_ease was a hardcoded 1.0 constant (policy_pressure
-    # was removed from SelfStateV1 entirely) contributing a fixed +0.2 to
-    # raw_valence on every tick regardless of state. Deleted outright;
-    # weights renormalized to 0.625 (agency) / 0.375 (social_ease) over the
-    # two remaining live terms. With full coherence and a stable trajectory,
-    # valence == (raw_valence * 2 - 1) exactly.
-    ss = _isolated_self_state(agency_readiness=0.41, social_pressure=0.0)
-    valence = worker._phi_from_self_state(ss)["valence"]
-    raw_valence = 0.625 * 0.41 + 0.375 * 1.0  # social_ease = 1 - social_pressure(0)
-    expected = round(raw_valence * 2.0 - 1.0, 4)
-    assert valence == expected
 
 
 def test_agency_valence_proxy_none_without_probes() -> None:
@@ -321,8 +256,7 @@ def test_agency_valence_proxy_ignores_nonfinite_latent_or_weight() -> None:
     # 2026-07-13, found by code review: a corrupted weights.npz or an
     # unbounded linear layer producing NaN/Inf in a latent activation (or,
     # defensively, a probe weight) must not propagate into a published bus
-    # value -- same convention as _hardware_resource_pressure's isfinite
-    # guard elsewhere in this file.
+    # value.
     probes = {
         "z0": {"agency_readiness": 0.68},
         "z1": {"agency_readiness": 0.65},
@@ -400,7 +334,9 @@ async def test_golden_phi_overrides_valence_uses_agency_probe(monkeypatch, tmp_p
     _reset_inner_state(monkeypatch, tmp_path)
     _mock_healthy_substrate_reads(monkeypatch)
 
-    await worker.handle_self_state(_envelope())
+    heuristic_valence = worker._get_phi_stats()["valence"]
+
+    await worker.run_inner_state_tick()
 
     reward_env = published[worker.settings.channel_phi_reward]
     reward = PhiIntrinsicRewardV1.model_validate(reward_env.payload)
@@ -411,9 +347,6 @@ async def test_golden_phi_overrides_valence_uses_agency_probe(monkeypatch, tmp_p
 
     expected = worker._agency_valence_proxy(reward.latent, probes)
     assert expected is not None
-    heuristic_valence = worker._phi_from_self_state(
-        worker.SelfStateV1.model_validate(_self_state_payload())
-    )["valence"]
     assert phi_dict["valence"] == expected
     assert phi_dict["valence"] != heuristic_valence, (
         "probe manifest present -- valence must not silently stay on the heuristic"
@@ -446,7 +379,7 @@ async def test_phi_prev_resets_across_a_skipped_tick(monkeypatch, tmp_path) -> N
 
     # Tick 1: healthy.
     _mock_healthy_substrate_reads(monkeypatch)
-    await worker.handle_self_state(_envelope())
+    await worker.run_inner_state_tick()
     assert worker._PHI_PREV_PHI is not None, "tick 1 should have set a baseline"
 
     # Tick 2: skipped (grammar-truth degraded) -- must reset the baseline.
@@ -474,12 +407,12 @@ async def test_phi_prev_resets_across_a_skipped_tick(monkeypatch, tmp_path) -> N
         "fetch_execution_trajectory",
         AsyncMock(return_value=ExecutionTrajectorySnapshot(ok=False, projection=None)),
     )
-    await worker.handle_self_state(_envelope())
+    await worker.run_inner_state_tick()
     assert worker._PHI_PREV_PHI is None, "skipped tick must reset the baseline"
 
     # Tick 3: healthy again -- delta_phi must be a fresh 0.0, not spanning tick 2.
     _mock_healthy_substrate_reads(monkeypatch)
-    await worker.handle_self_state(_envelope())
+    await worker.run_inner_state_tick()
 
     reward_env = published[worker.settings.channel_phi_reward]
     reward = PhiIntrinsicRewardV1.model_validate(reward_env.payload)
@@ -489,14 +422,14 @@ async def test_phi_prev_resets_across_a_skipped_tick(monkeypatch, tmp_path) -> N
 @pytest.mark.asyncio
 async def test_turn_effect_valence_delta_suppressed_across_a_source_swap(monkeypatch, tmp_path) -> None:
     # 2026-07-13, found by code review (cross-file trace): valence can be
-    # produced by two independently-computed, uncalibrated formulas
-    # (_phi_from_self_state's heuristic vs _agency_valence_proxy) depending
-    # on whether the loaded encoder manifest carries probes. A raw diff
-    # across a tick where the formula swaps is not evidence of real state
-    # change -- confirmed reachable via this snapshot's metadata.turn_effect,
-    # which spark_phi_hint/spark_phi_narrative (orion-cortex-exec) read
-    # straight into live metacognition prompts. This must be suppressed to
-    # exactly 0.0, not just "small".
+    # produced by two independently-computed, uncalibrated formulas (the
+    # TISSUE.phi()-based heuristic vs _agency_valence_proxy) depending on
+    # whether the loaded encoder manifest carries probes. A raw diff across a
+    # tick where the formula swaps is not evidence of real state change --
+    # confirmed reachable via this snapshot's metadata.turn_effect, which
+    # spark_phi_hint/spark_phi_narrative (orion-cortex-exec) read straight
+    # into live metacognition prompts. This must be suppressed to exactly
+    # 0.0, not just "small".
     published: dict[str, object] = {}
 
     class _Bus:
@@ -515,7 +448,7 @@ async def test_turn_effect_valence_delta_suppressed_across_a_source_swap(monkeyp
 
     # Tick 1: no probes on the manifest -> valence_source == "heuristic".
     _write_tiny_encoder(tmp_path)
-    await worker.handle_self_state(_envelope())
+    await worker.run_inner_state_tick()
     assert worker._PHI_PREV_VALENCE_SOURCE == "heuristic"
 
     # Tick 2: same weights, but reload with a manifest carrying a strong,
@@ -530,7 +463,7 @@ async def test_turn_effect_valence_delta_suppressed_across_a_source_swap(monkeyp
         encoder_id="test-probes-2",
         encoder_version="v0-probes-2",
     )
-    await worker.handle_self_state(_envelope())
+    await worker.run_inner_state_tick()
     assert worker._PHI_PREV_VALENCE_SOURCE == "proxy"
 
     snap_env = published[worker.settings.channel_spark_state_snapshot]
@@ -542,55 +475,15 @@ async def test_turn_effect_valence_delta_suppressed_across_a_source_swap(monkeyp
     assert snap_payload.metadata["valence_source"] == "proxy"
 
 
-def _target(target_id: str, target_kind: str, reason: str | None = "elevated") -> AttentionTargetSummaryV1:
-    return AttentionTargetSummaryV1(
-        target_id=target_id,
-        target_kind=target_kind,
-        pressure_score=0.5,
-        dominant_channel="gpu_pressure",
-        reason=reason,
-    )
-
-
-def test_dominant_hardware_node_skips_system_and_pseudo_nodes() -> None:
-    # 2026-07-12, Phase 2: confirmed live that attention's dominant_targets is
-    # salience-sorted across node/capability/system kinds together -- a
-    # target_kind="system" entry (e.g. field:recent_perturbations) frequently
-    # wins the #1 slot. Excluding only the two synthetic pseudo-nodes is not
-    # enough; non-"node" kinds must be skipped too.
-    details = [
-        _target("field:recent_perturbations", "system"),
-        _target("capability:llm_inference", "capability"),
-        _target("node:substrate.transport", "node"),  # synthetic pseudo-node
-        _target("node:atlas", "node", reason="node gpu_pressure is elevated"),
-        _target("node:circe", "node"),
-    ]
-
-    node, reason = worker._dominant_hardware_node(details)
-
-    assert node == "node:atlas"
-    assert reason == "node gpu_pressure is elevated"
-
-
-def test_dominant_hardware_node_none_when_no_qualifying_node() -> None:
-    details = [
-        _target("field:recent_perturbations", "system"),
-        _target("node:substrate.execution", "node"),  # synthetic pseudo-node only
-        _target("capability:orchestration", "capability"),
-    ]
-
-    node, reason = worker._dominant_hardware_node(details)
-
-    assert node is None
-    assert reason is None
-
-
-def test_dominant_hardware_node_empty_list() -> None:
-    assert worker._dominant_hardware_node([]) == (None, None)
-
-
 @pytest.mark.asyncio
-async def test_phi_reward_carries_dominant_node(monkeypatch, tmp_path) -> None:
+async def test_spark_snapshot_dominant_node_always_none(monkeypatch, tmp_path) -> None:
+    """2026-07-22 (SelfStateV1 burn): dominant_node/dominant_node_reason are a
+    disclosed regression from this burn (see the comment above
+    _get_phi_stats() in app/worker.py) -- their only input,
+    SelfStateV1.dominant_attention_target_details, no longer exists. Was
+    test_spark_snapshot_dominant_node_none_when_encoder_skipped (true only
+    when the encoder was off); now true unconditionally, so this test covers
+    the encoder-on case too rather than just the skipped one."""
     published: dict[str, object] = {}
 
     class _Bus:
@@ -608,71 +501,14 @@ async def test_phi_reward_carries_dominant_node(monkeypatch, tmp_path) -> None:
     _reset_inner_state(monkeypatch, tmp_path)
     _mock_healthy_substrate_reads(monkeypatch)
 
-    state = _self_state().model_copy(
-        update={
-            "dominant_attention_target_details": [
-                _target("field:recent_perturbations", "system"),
-                _target("node:substrate.execution", "node"),
-                _target("node:atlas", "node", reason="node gpu_pressure is elevated"),
-            ]
-        }
-    )
-    env = BaseEnvelope(
-        kind="substrate.self_state.v1",
-        source=ServiceRef(name="substrate-runtime", node="athena"),
-        payload=state.model_dump(mode="json"),
-    )
+    await worker.run_inner_state_tick()
 
-    await worker.handle_self_state(env)
+    reward_env = published.get(worker.settings.channel_phi_reward)
+    if reward_env is not None:
+        reward = PhiIntrinsicRewardV1.model_validate(reward_env.payload)
+        assert reward.dominant_node is None
+        assert reward.dominant_node_reason is None
 
-    reward_env = published[worker.settings.channel_phi_reward]
-    reward = PhiIntrinsicRewardV1.model_validate(reward_env.payload)
-    assert reward.dominant_node == "node:atlas"
-    assert reward.dominant_node_reason == "node gpu_pressure is elevated"
-
-    # 2026-07-12, Phase 3: the same dominant_node/reason must also reach
-    # SparkStateSnapshotV1 -- this is the schema orion-cortex-exec's
-    # spark_embodiment_narrative actually reads, a different object from
-    # PhiIntrinsicRewardV1.
-    snap_env = published[worker.settings.channel_spark_state_snapshot]
-    snap_payload = snap_env.payload
-    snap_dominant_node = (
-        snap_payload.dominant_node if hasattr(snap_payload, "dominant_node") else snap_payload["dominant_node"]
-    )
-    snap_dominant_node_reason = (
-        snap_payload.dominant_node_reason
-        if hasattr(snap_payload, "dominant_node_reason")
-        else snap_payload["dominant_node_reason"]
-    )
-    assert snap_dominant_node == "node:atlas"
-    assert snap_dominant_node_reason == "node gpu_pressure is elevated"
-
-
-@pytest.mark.asyncio
-async def test_spark_snapshot_dominant_node_none_when_encoder_skipped(monkeypatch, tmp_path) -> None:
-    # Regression: dominant_node/dominant_node_reason are assigned only inside
-    # the encoder-success branch, but SparkStateSnapshotV1 is built later,
-    # unconditionally -- referencing them there without a default assigned
-    # earlier in the function would raise UnboundLocalError on any tick where
-    # the encoder is skipped (disabled here). Confirms the fix: the tick
-    # completes and the snapshot carries None, not a crash.
-    published: dict[str, object] = {}
-
-    class _Bus:
-        enabled = True
-
-        async def publish(self, channel, env):
-            published[channel] = env
-
-    monkeypatch.setattr(worker.settings, "orion_phi_encoder_enabled", False, raising=False)
-    monkeypatch.setattr(worker, "_pub_bus", _Bus(), raising=False)
-    monkeypatch.setattr(worker.manager, "broadcast", AsyncMock(), raising=False)
-    _reset_inner_state(monkeypatch, tmp_path)
-    _mock_healthy_substrate_reads(monkeypatch)
-
-    await worker.handle_self_state(_envelope())
-
-    assert worker.settings.channel_phi_reward not in published
     snap_env = published[worker.settings.channel_spark_state_snapshot]
     snap_payload = snap_env.payload
     snap_dominant_node = (

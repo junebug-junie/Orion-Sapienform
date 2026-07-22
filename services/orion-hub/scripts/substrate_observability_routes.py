@@ -60,28 +60,11 @@ def _iso(value: Any) -> str | None:
     return str(value) if value else None
 
 
-def _self_state_section(engine) -> dict[str, Any] | None:
-    row = _latest_row(
-        engine,
-        """
-        SELECT self_state_json, generated_at FROM substrate_self_state
-        ORDER BY generated_at DESC LIMIT 1
-        """,
-    )
-    if not row:
-        return None
-    state = _parse_json(row["self_state_json"])
-    if not isinstance(state, dict):
-        return None
-    return {
-        "attention_schema_type": state.get("attention_schema_type"),
-        "attention_dwell_ticks": state.get("attention_dwell_ticks", 0),
-        "attention_node_count": state.get("attention_node_count", 0),
-        "hub_presence": state.get("hub_presence"),
-        "overall_condition": state.get("overall_condition", "unknown"),
-        "summary_labels": state.get("summary_labels", []),
-        "generated_at": state.get("generated_at") or _iso(row.get("generated_at")),
-    }
+# _self_state_section removed 2026-07-22, SelfStateV1 burn
+# (docs/superpowers/specs/2026-07-22-self-state-phi-endo-origination-burn-
+# spec.md): substrate_self_state has no producer -- left in place this panel
+# would show permanently stale data (not authorized to drop the table itself
+# per CLAUDE.md sec 13, so old rows persist unpruned rather than going empty).
 
 
 def _attention_broadcast_section(engine) -> dict[str, Any] | None:
@@ -319,7 +302,6 @@ async def observability_summary() -> dict[str, Any]:
         logger.debug("observability_engine_init_failed", exc_info=True)
 
     sections: dict[str, Any] = {
-        "self_state": None,
         "attention_broadcast": None,
         "curiosity": None,
         "reverie": None,
@@ -329,7 +311,6 @@ async def observability_summary() -> dict[str, Any]:
     }
     if engine is not None:
         for name, loader in (
-            ("self_state", _self_state_section),
             ("attention_broadcast", _attention_broadcast_section),
             ("curiosity", _curiosity_section),
             ("reverie", _reverie_section),

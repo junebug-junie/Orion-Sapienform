@@ -155,7 +155,6 @@ from .substrate_biometrics_routes import router as substrate_biometrics_router
 from .substrate_field_routes import router as substrate_field_router
 from .substrate_attention_routes import router as substrate_attention_router
 from .attention_loops_routes import router as attention_loops_router
-from .substrate_self_state_routes import router as substrate_self_state_router
 from .substrate_observability_routes import router as substrate_observability_router
 from .substrate_proposal_routes import router as substrate_proposal_router
 from .substrate_policy_routes import router as substrate_policy_router
@@ -170,7 +169,6 @@ router.include_router(substrate_biometrics_router)
 router.include_router(substrate_field_router)
 router.include_router(substrate_attention_router)
 router.include_router(attention_loops_router)
-router.include_router(substrate_self_state_router)
 router.include_router(substrate_observability_router)
 router.include_router(substrate_proposal_router)
 router.include_router(substrate_policy_router)
@@ -3938,28 +3936,14 @@ def _emit_substrate_autonomy_scheduler_log(*, payload: Dict[str, Any]) -> None:
 def _self_revision_signals_from_latest_self_state(
     *, min_error: float, max_age_sec: float, now: datetime | None = None
 ) -> list["MutationSignalV1"]:
-    """Fail-open: any error or stale/missing self_state returns []."""
-    from scripts.substrate_self_state_routes import _load_latest_self_state
-    from orion.substrate.mutation_self_revision import prediction_error_mutation_signals
-
-    try:
-        state = _load_latest_self_state()
-    except Exception:
-        logger.exception("substrate_self_revision_self_state_load_failed")
-        return []
-    if state is None:
-        return []
-    t = now or datetime.now(timezone.utc)
-    generated_at = state.generated_at
-    if generated_at.tzinfo is None:
-        generated_at = generated_at.replace(tzinfo=timezone.utc)
-    if (t - generated_at).total_seconds() > max_age_sec:
-        return []
-    try:
-        return prediction_error_mutation_signals(state, min_error=min_error)
-    except Exception:
-        logger.exception("substrate_self_revision_signal_build_failed")
-        return []
+    """Always [] now. 2026-07-22 (SelfStateV1 burn,
+    docs/superpowers/specs/2026-07-22-self-state-phi-endo-origination-burn-
+    spec.md): this signal source was orion.substrate.mutation_self_revision's
+    only self_state-derived input, and self_state has no producer anymore.
+    Kept as a function (not inlined at the call site) so the fail-open
+    contract stays visible and the call site doesn't need to change."""
+    del min_error, max_age_sec, now
+    return []
 
 
 def substrate_autonomy_runtime_supported() -> tuple[bool, str]:

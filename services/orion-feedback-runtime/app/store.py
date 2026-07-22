@@ -54,17 +54,42 @@ class FeedbackRuntimeStore:
         try:
             return ExecutionDispatchFrameV1.model_validate(payload)
         except ValidationError:
-            # Mirrors load_field_for_tick's guard below: this is the FIFO
-            # lookup (oldest dispatch frame without feedback yet) -- a naive
-            # raise would re-select and fail on this exact row every tick
-            # forever, blocking every dispatch frame queued behind it.
-            # Degrading to None here means this tick does no work for a bad
-            # row instead of crash-looping on it; the row itself isn't
-            # retired (no feedback frame is written for it), which is the
-            # same acknowledged limitation this file's other None-degrades
-            # already accept.
-            logger.warning("dispatch_frame_incompatible_schema fifo_lookup", exc_info=True)
+            # Live incident (2026-07-22, immediately after the SelfStateV1
+            # burn deploy): this is the FIFO lookup (oldest dispatch frame
+            # without feedback yet) -- a bare None-degrade re-selects this
+            # exact row every tick forever (confirmed live: feedback-runtime
+            # sat silently stuck on one legacy dispatch frame for 15+
+            # minutes, producing nothing, while proposal/policy/execution-
+            # dispatch-runtime all correctly drained their own backlogs via
+            # the sibling retirement fix in
+            # orion-policy-runtime/orion-execution-dispatch-runtime's
+            # store.py). Retire the bad row with a stub "unevaluable"
+            # feedback frame so the FIFO actually advances.
+            raw_frame_id = payload.get("frame_id") if isinstance(payload, dict) else None
+            logger.warning(
+                "dispatch_frame_incompatible_schema fifo_lookup frame_id=%s",
+                raw_frame_id,
+                exc_info=True,
+            )
+            if raw_frame_id:
+                self._retire_incompatible_dispatch_frame(raw_frame_id)
             return None
+
+    def _retire_incompatible_dispatch_frame(self, raw_frame_id: str) -> None:
+        """Insert a stub 'unevaluable' feedback_frame for a dispatch frame
+        that failed schema validation, so
+        load_latest_dispatch_frame_without_feedback's FIFO lookup doesn't
+        re-select this exact row forever."""
+        stub = FeedbackFrameV1(
+            frame_id=f"feedback.frame:{raw_frame_id}:schema_incompatible",
+            generated_at=datetime.now(timezone.utc),
+            source_execution_dispatch_frame_id=raw_frame_id,
+            outcome_status="unknown",
+            outcome_score=0.0,
+            confidence_score=0.0,
+            warnings=["source_dispatch_frame_schema_incompatible"],
+        )
+        self.save_feedback_frame(stub)
 
     def load_latest_dispatch_frame(self) -> ExecutionDispatchFrameV1 | None:
         with self._engine.connect() as conn:

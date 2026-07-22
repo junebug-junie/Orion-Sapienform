@@ -8,7 +8,7 @@ compatibility.
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Dict, Optional
+from typing import Any, Dict, Optional
 
 __all__ = [
     "clamp01",
@@ -118,6 +118,17 @@ class NormalizationContext:
     def __init__(self) -> None:
         self._bands: Dict[str, Dict[str, EwmaBand]] = {}
         self._trackers: Dict[str, Dict[str, InductionTracker]] = {}
+        self._values: Dict[str, Dict[str, Any]] = {}
+
+    def get_value(self, organ_id: str, key: str) -> Optional[Any]:
+        """Arbitrary per-organ scratch state (e.g. a previous-turn embedding vector)."""
+        return self._values.get(organ_id, {}).get(key)
+
+    def set_value(self, organ_id: str, key: str, value: Any) -> None:
+        self._values.setdefault(organ_id, {})[key] = value
+
+    def delete_value(self, organ_id: str, key: str) -> None:
+        self._values.get(organ_id, {}).pop(key, None)
 
     def get_band(self, organ_id: str, metric_key: str) -> EwmaBand:
         organ_bands = self._bands.setdefault(organ_id, {})

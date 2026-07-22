@@ -24,6 +24,8 @@ services:
       - ORION_BUS_URL=${ORION_BUS_URL:-redis://orion-redis:6379/0}
       - ORION_BUS_ENABLED=${ORION_BUS_ENABLED:-true}
       - LOG_LEVEL=${LOG_LEVEL:-INFO}
+      # chat_stance adapter's embedding backend (orion/signals/vector_host_client.py)
+      - ORION_VECTOR_HOST_URL=${ORION_VECTOR_HOST_URL:-http://orion-athena-vector-host:8320}
       # OTLP to sidecar collector (Phase 0 wiring — matches .env_example / README)
       - OTEL_EXPORTER_OTLP_ENDPOINT=${OTEL_EXPORTER_OTLP_ENDPOINT:-http://otel-collector:4317}
       - OTEL_CONSOLE_EXPORT=${OTEL_CONSOLE_EXPORT:-false}

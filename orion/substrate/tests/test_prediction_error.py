@@ -249,6 +249,7 @@ def _chat_turn(
     *,
     word_count: int = 0,
     repair_pressure_level: float = 0.0,
+    last_updated_at: datetime | None = None,
 ) -> ChatTurnStateV1:
     return ChatTurnStateV1(
         trace_id=f"hub.chat:athena:{turn_id}",
@@ -258,7 +259,7 @@ def _chat_turn(
         observed_at=_NOW,
         word_count=word_count,
         repair_pressure_level=repair_pressure_level,
-        last_updated_at=_NOW,
+        last_updated_at=last_updated_at or _NOW,
     )
 
 
@@ -276,12 +277,45 @@ def test_chat_prediction_error_zero_when_no_change() -> None:
     assert chat_prediction_error(prev, curr) == 0.0
 
 
-def test_chat_prediction_error_zero_when_turn_not_in_prev() -> None:
-    """A brand-new turn_id in curr with no prev counterpart contributes no delta --
-    mirrors execution_prediction_error's ``prev_run is None: continue`` skip."""
+def test_chat_prediction_error_zero_when_turn_not_in_prev_and_no_fallback_exists() -> None:
+    """A brand-new turn_id with an entirely empty prev (no fallback candidate either)
+    still contributes no delta -- there is nothing to compare against."""
     prev = _chat_projection({})
     curr = _chat_projection({"t1": _chat_turn("t1", word_count=50)})
     assert chat_prediction_error(prev, curr) == 0.0
+
+
+def test_chat_prediction_error_uses_latest_prev_turn_as_fallback_for_new_turn() -> None:
+    """2026-07-22 fix: a brand-new turn_id (the common case -- chat turns are single-shot
+    bursts, never revised in place, so an exact turn_id match structurally never occurs)
+    falls back to prev's most-recently-updated turn instead of being skipped. Without this
+    fallback, chat_prediction_error was permanently 0.0 in production (confirmed live:
+    node:substrate.chat was never written despite 241 real accumulated turns)."""
+    prev = _chat_projection({"t1": _chat_turn("t1", repair_pressure_level=0.0)})
+    curr = _chat_projection({"t2": _chat_turn("t2", repair_pressure_level=0.30)})
+    # Same math as test_chat_prediction_error_scales_with_repair_pressure_delta:
+    # repair_pressure delta 0.30, topic_coherence delta 0.30, conversation_load delta 0.0.
+    assert chat_prediction_error(prev, curr) == pytest.approx(0.20 / 0.30)
+
+
+def test_chat_prediction_error_exact_match_still_takes_priority_over_fallback() -> None:
+    """When an exact turn_id match exists, it must be used even if a different, more-
+    recently-updated turn also exists in prev -- the fallback only fires when no exact
+    match is available."""
+    prev = _chat_projection(
+        {
+            "t1": _chat_turn("t1", repair_pressure_level=0.0, last_updated_at=_NOW),
+            "t_other": _chat_turn(
+                "t_other",
+                repair_pressure_level=0.9,
+                last_updated_at=_NOW + timedelta(minutes=5),
+            ),
+        }
+    )
+    curr = _chat_projection({"t1": _chat_turn("t1", repair_pressure_level=0.30)})
+    # If the fallback (t_other, repair_pressure_level=0.9) were used instead of the exact
+    # match (t1, repair_pressure_level=0.0), this would compute a different value.
+    assert chat_prediction_error(prev, curr) == pytest.approx(0.20 / 0.30)
 
 
 def test_chat_prediction_error_zero_when_projections_empty() -> None:

@@ -259,14 +259,37 @@ best available "what did we expect" reference, equivalent to comparing this tick
 observation against last tick's freshest one. A run that genuinely does get revised in place still
 prefers its own exact match (regression-tested — see `_prefers_exact_trace_id_match_over_fallback`
 in `orion/substrate/tests/test_prediction_error.py`). This does not change `biometrics_prediction_
-error()` or `chat_prediction_error()`, which key off persistent node/turn identities that already
-recur across polls in real traffic.
+error()`, which keys off persistent node identities that already recur across polls in real
+traffic.
 
 Implication for any future replay/precision work reading these instruments' history (e.g. the
 attention-salience-cathedral candidates above): execution/route history *before* this fix landed
 is contaminated with false zeros from the unmatched-trace_id bug, not real "no surprise" ticks —
 exclude pre-fix rows the same way `field_channel_corpus.v1`'s own training-quality cutoff excludes
 its pre-fix window (see `orion-field-digester`'s README).
+
+**Fixed: `chat_prediction_error()` was structurally always 0.0 too, same symptom as execution/route
+but a different root cause (2026-07-22).** Chat turns are single-shot bursts the same shape as
+execution/route's runs (`build_chat_turn_grammar_events` in `services/orion-hub/scripts/
+grammar_emit.py` shares one `trace_id` across every layer of a turn — trace_started, chat root,
+context, raw_input, repair_signal, stance_disposition, trace_ended — emitted together), so a
+`turn_id` is created once and never revisited. The bug here wasn't an unmatched-key comparison —
+it was that a brand-new `turn_id` (the only kind that ever appears in a fresh tick, since
+`updated.turns` is a persistent, cumulative dict of 241+ turns and everything else is unchanged
+between `prev`/`curr`) hit `prev_turn is None: continue` and was silently skipped, never
+contributing to the surprise score. Confirmed live: `node:substrate.chat` had never been written
+in `substrate_field_state.node_vectors` despite `substrate_chat_session_projection` holding 241
+real turns accumulated since 2026-06-19 — a genuine instrument defect, not a sign chat's
+substrate-grammar reduction itself was broken (it wasn't; the 241 turns are real). Fix: reuse the
+identical `_latest_run()` fallback pattern from execution/route, applied to `prev.turns` instead
+of `prev.runs` — see `docs/superpowers/specs/2026-07-22-chat-route-prediction-error-audit.md`.
+
+`route_prediction_error()`'s live value is currently a subnormal float (~3e-322) in
+`substrate_field_state.node_vectors` — traced as far as confirming `orion/substrate/
+pressure.py::prediction_error_pressure()` does **not** explain it (that function recomputes fresh
+from `node.metadata['prediction_error']` on every call rather than persisting a decayed value), so
+the actual mechanism is still open — see the audit doc's Missing Questions. Not fixed in this
+patch.
 
 **Reverie semantic lift:** unresolved closures also upsert human referent rows into
 `substrate_turn_referent` via `turn_referent_store.persist_turn_referent`. Apply

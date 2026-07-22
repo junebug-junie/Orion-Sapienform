@@ -28,13 +28,9 @@ class LaneSpec:
 
 
 _LANES: tuple[LaneSpec, ...] = (
-    LaneSpec(
-        ctx_key="self_state",
-        table="substrate_self_state",
-        payload_col="self_state_json",
-        ts_col="generated_at",
-        projection_id=None,
-    ),
+    # self_state lane removed 2026-07-22, SelfStateV1 burn
+    # (docs/superpowers/specs/2026-07-22-self-state-phi-endo-origination-burn-
+    # spec.md): substrate_self_state no longer has a producer.
     LaneSpec(
         ctx_key="execution_trajectory_projection",
         table="substrate_execution_trajectory_projection",

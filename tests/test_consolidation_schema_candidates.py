@@ -10,35 +10,12 @@ from orion.schemas.consolidation_frame import ExpectationV1, MotifObservationV1
 from orion.schemas.execution_dispatch_frame import ExecutionDispatchCandidateV1, ExecutionDispatchFrameV1
 from orion.schemas.feedback_frame import FeedbackFrameV1
 from orion.schemas.policy_decision_frame import PolicyDecisionFrameV1, PolicyDecisionV1
-from orion.schemas.self_state import SelfStateDimensionV1, SelfStateV1
 
 REPO = Path(__file__).resolve().parents[1]
 POLICY = load_consolidation_policy(REPO / "config" / "consolidation" / "consolidation_policy.v1.yaml")
 NOW = datetime(2026, 5, 25, 15, 0, tzinfo=timezone.utc)
 START = datetime(2026, 5, 25, 14, 0, tzinfo=timezone.utc)
 POLICY_ID = POLICY.policy_id
-
-
-def _dim(dimension_id: str, score: float) -> SelfStateDimensionV1:
-    return SelfStateDimensionV1(dimension_id=dimension_id, score=score, confidence=0.9)
-
-
-def _self_state(self_state_id: str) -> SelfStateV1:
-    return SelfStateV1(
-        self_state_id=self_state_id,
-        generated_at=NOW,
-        source_field_tick_id="tick",
-        source_field_generated_at=NOW,
-        source_attention_frame_id="att",
-        source_attention_generated_at=NOW,
-        overall_condition="loaded",
-        overall_intensity=0.7,
-        overall_confidence=0.9,
-        dimensions={
-            "execution_pressure": _dim("execution_pressure", 0.8),
-            "reliability_pressure": _dim("reliability_pressure", 0.2),
-        },
-    )
 
 
 def _policy_frame(frame_id: str) -> PolicyDecisionFrameV1:
@@ -182,7 +159,6 @@ def test_builder_emits_schema_candidates_without_policy_mutation() -> None:
     window = ConsolidationWindowData(
         window_start=START,
         window_end=NOW,
-        self_states=[_self_state("self.state:1"), _self_state("self.state:2"), _self_state("self.state:3")],
         attention_frames=[],
         proposal_frames=[],
         policy_frames=[_policy_frame("policy.frame:1"), _policy_frame("policy.frame:2"), _policy_frame("policy.frame:3")],

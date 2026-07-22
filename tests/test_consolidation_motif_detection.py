@@ -1,8 +1,6 @@
 from datetime import datetime, timezone
 from pathlib import Path
 
-import pytest
-
 from orion.consolidation.motif import detect_motifs
 from orion.consolidation.policy import load_consolidation_policy
 from orion.consolidation.windows import ConsolidationWindowData
@@ -10,40 +8,11 @@ from orion.schemas.execution_dispatch_frame import ExecutionDispatchCandidateV1,
 from orion.schemas.feedback_frame import FeedbackFrameV1, OutcomeObservationV1
 from orion.schemas.field_attention_frame import FieldAttentionFrameV1, FieldAttentionTargetV1
 from orion.schemas.policy_decision_frame import PolicyDecisionFrameV1, PolicyDecisionV1
-from orion.schemas.self_state import SelfStateDimensionV1, SelfStateV1
 
 REPO = Path(__file__).resolve().parents[1]
 POLICY = load_consolidation_policy(REPO / "config" / "consolidation" / "consolidation_policy.v1.yaml")
 NOW = datetime(2026, 5, 25, 15, 0, tzinfo=timezone.utc)
 START = datetime(2026, 5, 25, 14, 0, tzinfo=timezone.utc)
-
-
-def _dim(dimension_id: str, score: float) -> SelfStateDimensionV1:
-    return SelfStateDimensionV1(dimension_id=dimension_id, score=score, confidence=0.9)
-
-
-def _self_state(
-    self_state_id: str,
-    *,
-    overall_condition: str = "loaded",
-    execution_pressure: float = 0.8,
-    reliability_pressure: float = 0.2,
-) -> SelfStateV1:
-    return SelfStateV1(
-        self_state_id=self_state_id,
-        generated_at=NOW,
-        source_field_tick_id="tick",
-        source_field_generated_at=NOW,
-        source_attention_frame_id="att",
-        source_attention_generated_at=NOW,
-        overall_condition=overall_condition,
-        overall_intensity=0.7,
-        overall_confidence=0.9,
-        dimensions={
-            "execution_pressure": _dim("execution_pressure", execution_pressure),
-            "reliability_pressure": _dim("reliability_pressure", reliability_pressure),
-        },
-    )
 
 
 def _attention_frame(frame_id: str, *, salience: float = 0.8) -> FieldAttentionFrameV1:
@@ -174,7 +143,6 @@ def _empty_window(**overrides: object) -> ConsolidationWindowData:
     defaults: dict[str, object] = {
         "window_start": START,
         "window_end": NOW,
-        "self_states": [],
         "attention_frames": [],
         "proposal_frames": [],
         "policy_frames": [],
@@ -189,20 +157,6 @@ def _motif_by_label(motifs: list, label: str):
     matches = [m for m in motifs if m.label == label]
     assert len(matches) == 1, f"expected one motif {label}, got {matches}"
     return matches[0]
-
-
-def test_loaded_but_reliable_detected() -> None:
-    window = _empty_window(
-        self_states=[
-            _self_state("self.state:1"),
-            _self_state("self.state:2"),
-            _self_state("self.state:3"),
-        ]
-    )
-    motifs = detect_motifs(window=window, policy=POLICY)
-    motif = _motif_by_label(motifs, "loaded_but_reliable")
-    assert motif.recurrence_count == 3
-    assert motif.motif_kind == "self_state_pattern"
 
 
 def test_attention_saturated_execution_detected() -> None:
@@ -276,22 +230,24 @@ def test_stable_after_dry_run_detected() -> None:
 
 
 def test_motif_scores_and_evidence() -> None:
+    """2026-07-22 (SelfStateV1 burn): was test_motif_scores_and_evidence for
+    the now-removed loaded_but_reliable detector -- rewritten against
+    attention_saturated_execution, the next real detector, to keep coverage
+    of the generic score/evidence-id/first_seen_at/last_seen_at contract."""
     window = _empty_window(
-        self_states=[
-            _self_state("self.state:1"),
-            _self_state("self.state:2"),
-            _self_state("self.state:3"),
-            _self_state("self.state:4", overall_condition="steady"),
+        attention_frames=[
+            _attention_frame("attention.frame:1"),
+            _attention_frame("attention.frame:2"),
+            _attention_frame("attention.frame:3"),
+            _attention_frame("attention.frame:4", salience=0.2),
         ]
     )
     motifs = detect_motifs(window=window, policy=POLICY)
-    motif = _motif_by_label(motifs, "loaded_but_reliable")
+    motif = _motif_by_label(motifs, "attention_saturated_execution")
     assert motif.recurrence_count == 3
     assert motif.support_score == 0.75
     assert motif.confidence_score == 1.0
     assert len(motif.evidence_frame_ids) == 3
-    assert "self.state:1" in motif.evidence_frame_ids
+    assert "attention.frame:1" in motif.evidence_frame_ids
     assert motif.first_seen_at == NOW
     assert motif.last_seen_at == NOW
-    assert motif.dominant_dimensions["execution_pressure"] == pytest.approx(0.8)
-    assert motif.dominant_dimensions["reliability_pressure"] == pytest.approx(0.2)

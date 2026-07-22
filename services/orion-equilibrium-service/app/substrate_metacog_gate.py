@@ -21,11 +21,10 @@ def build_substrate_metacog_trigger(
     """Read substrate projections and return a dense/pulse trigger, or None."""
     ctx: dict[str, Any] = {}
     hydrate_felt_state_ctx(ctx)
-    if not ctx.get("self_state") and not ctx.get("execution_trajectory_projection"):
+    if not ctx.get("execution_trajectory_projection"):
         return None
 
     ev = compute_substrate_eventfulness(
-        self_state=ctx.get("self_state"),
         execution_trajectory=ctx.get("execution_trajectory_projection"),
         dense_threshold=dense_threshold,
         pulse_threshold=pulse_threshold,

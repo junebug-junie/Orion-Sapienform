@@ -4080,7 +4080,6 @@ async def call_step_services(
 
                 hydrate_felt_state_ctx(ctx)
                 ev = compute_substrate_eventfulness(
-                    self_state=ctx.get("self_state"),
                     execution_trajectory=ctx.get("execution_trajectory_projection"),
                 )
                 ctx["metacog_substrate_cue"] = build_metacog_substrate_cue(ctx, eventfulness=ev)

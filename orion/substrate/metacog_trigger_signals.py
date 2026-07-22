@@ -7,7 +7,6 @@ from typing import Any, Mapping
 
 from orion.schemas.context_provenance import classify
 from orion.schemas.execution_projection import ExecutionTrajectoryProjectionV1
-from orion.schemas.self_state import SelfStateV1
 
 
 @dataclass(frozen=True)
@@ -15,19 +14,6 @@ class SubstrateEventfulness:
     score: float
     trigger_kind: str | None
     reasons: tuple[str, ...]
-
-
-def _coerce_self_state(raw: Any) -> SelfStateV1 | None:
-    if raw is None:
-        return None
-    try:
-        if isinstance(raw, SelfStateV1):
-            return raw
-        if isinstance(raw, dict):
-            return SelfStateV1.model_validate(raw)
-    except Exception:
-        return None
-    return None
 
 
 def _coerce_execution_projection(raw: Any) -> ExecutionTrajectoryProjectionV1 | None:
@@ -54,33 +40,26 @@ def _execution_has_failures(projection: ExecutionTrajectoryProjectionV1 | None) 
 
 def compute_substrate_eventfulness(
     *,
-    self_state: Any = None,
     execution_trajectory: Any = None,
     dense_threshold: float = 0.55,
     pulse_threshold: float = 0.30,
 ) -> SubstrateEventfulness:
-    """Score substrate signals in [0,1] and suggest a metacog trigger kind."""
+    """Score substrate signals in [0,1] and suggest a metacog trigger kind.
+
+    2026-07-22 (SelfStateV1 burn): the self_state-derived scoring terms
+    (overall_surprise/overall_condition/trajectory_condition/
+    prediction_error_scores) are removed -- SelfStateV1 no longer exists, and
+    ctx['self_state'] was never populated by anything else. Only the
+    execution_trajectory-derived term (0.25 max) survives.
+
+    Disclosed, not silently degraded: with only that one term left, the max
+    achievable score is 0.25 -- below the default dense_threshold=0.55, so
+    "dense" can never fire with default thresholds anymore. Callers that
+    still want a "dense" tier need to either lower dense_threshold or this
+    needs a real replacement scoring term designed later; not attempted here.
+    """
     score = 0.0
     reasons: list[str] = []
-
-    ss = _coerce_self_state(self_state)
-    if ss is not None:
-        surprise = float(ss.overall_surprise or 0.0)
-        if surprise >= 0.55:
-            score += 0.35
-            reasons.append(f"overall_surprise={surprise:.2f}")
-        if ss.overall_condition in ("strained", "unstable"):
-            score += 0.25
-            reasons.append(f"overall_condition={ss.overall_condition}")
-        if ss.trajectory_condition == "degrading":
-            score += 0.20
-            reasons.append("trajectory_degrading")
-        pe = 0.0
-        if ss.prediction_error_scores:
-            pe = max(float(v or 0.0) for v in ss.prediction_error_scores.values())
-        if pe >= 0.5:
-            score += 0.20
-            reasons.append(f"prediction_error_max={pe:.2f}")
 
     ex = _coerce_execution_projection(execution_trajectory)
     if _execution_has_failures(ex):
@@ -106,21 +85,14 @@ def build_metacog_substrate_cue(
 ) -> str:
     """Compact substrate cue for metacog prompts (not raw JSON).
 
-    Tags itself with its registry source kind (``classify("self_state")``,
-    always "live_runtime_projection") so a claim built from this cue can be
-    told apart from one built by reading source off a repo/tool -- see
-    project_orion_substrate_bridge_confabulation for why that distinction
-    has to be legible in the cue itself, not just in a registry nobody reads.
+    2026-07-22 (SelfStateV1 burn): the self_state clause removed --
+    ctx['self_state'] is never populated. execution_trajectory_projection is
+    the only remaining source for this cue, still registered
+    "live_runtime_projection" (orion/schemas/context_provenance.py) -- tag
+    switched from classify("self_state") to classify("execution_trajectory_projection")
+    since that's the real surviving source, not a cosmetic no-op.
     """
     parts: list[str] = []
-    ss = ctx.get("self_state")
-    if isinstance(ss, dict):
-        parts.append(
-            "self_state:"
-            f" condition={ss.get('overall_condition', '?')}"
-            f" surprise={ss.get('overall_surprise', '?')}"
-            f" trajectory={ss.get('trajectory_condition', '?')}"
-        )
     ex = ctx.get("execution_trajectory_projection")
     if isinstance(ex, dict):
         runs = ex.get("runs") if isinstance(ex.get("runs"), dict) else {}
@@ -128,21 +100,18 @@ def build_metacog_substrate_cue(
         if failed:
             parts.append(f"execution: failed_runs={failed}")
     ev = eventfulness or compute_substrate_eventfulness(
-        self_state=ctx.get("self_state"),
         execution_trajectory=ctx.get("execution_trajectory_projection"),
     )
     if ev.reasons:
         parts.append(f"eventfulness={ev.score:.2f} ({'; '.join(ev.reasons[:3])})")
     if not parts:
         return ""
-    # self_state, execution_trajectory_projection, and the eventfulness score
-    # derived from them are all registered live_runtime_projection -- one
-    # suffix for the whole cue. Budget is reserved for it and it's appended
-    # after truncation, not before: on an eventful turn the joined clauses can
-    # already approach max_chars, and a tag appended before truncation is the
-    # first thing a tail-truncate cuts, silently dropping the provenance
-    # signal on exactly the turns most likely to need it.
-    tag = f" (source={classify('self_state')})"
+    # Budget is reserved for the tag and it's appended after truncation, not
+    # before: on an eventful turn the joined clauses can already approach
+    # max_chars, and a tag appended before truncation is the first thing a
+    # tail-truncate cuts, silently dropping the provenance signal on exactly
+    # the turns most likely to need it.
+    tag = f" (source={classify('execution_trajectory_projection')})"
     body = " | ".join(parts)
     budget = max_chars - len(tag)
     if len(body) > budget:

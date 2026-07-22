@@ -41,7 +41,17 @@ def build_telemetry_anomaly_metacog_trigger(
     if float(recon_loss) <= threshold:
         return None
 
-    reason = f"telemetry_anomaly:recon_loss={float(recon_loss):.5f}:threshold={threshold:.5f}"
+    top_channels = score.get("top_channels")
+    top_channels = top_channels if isinstance(top_channels, list) else []
+    direction = score.get("deviation_direction")
+    direction = direction if isinstance(direction, str) else "mixed"
+    reason = f"telemetry_anomaly:{direction}:recon_loss={float(recon_loss):.5f}:threshold={threshold:.5f}"
+    if top_channels:
+        # top_channels entries are already "channel=mse" strings (see
+        # orion.mood_arc.fit_encoder.top_channel_attribution) -- folding the
+        # top one into reason means the *summary* says which channel moved,
+        # not just the upstream dict a consumer has to know to dig into.
+        reason = f"{reason}:top={top_channels[0]}"
 
     return MetacogTriggerV1(
         trigger_kind="telemetry_anomaly",
@@ -59,5 +69,8 @@ def build_telemetry_anomaly_metacog_trigger(
             "window_end": score.get("window_end"),
             "encoder_id": score.get("encoder_id"),
             "encoder_version": score.get("encoder_version"),
+            "top_channels": top_channels,
+            "mean_signed_deviation": score.get("mean_signed_deviation"),
+            "deviation_direction": direction,
         },
     )

@@ -3,9 +3,17 @@ from __future__ import annotations
 import logging
 import uuid
 from collections import deque
+from datetime import datetime, timezone
 from pathlib import Path
 
-from orion.mood_arc.fit_encoder import load_artifacts, score_windows
+from orion.mood_arc.fit_encoder import (
+    build_windows,
+    deviation_direction,
+    load_artifacts,
+    mean_signed_deviation,
+    score_windows,
+    top_channel_attribution,
+)
 from orion.schemas.telemetry.field_channel_anomaly_score import FieldChannelAnomalyScoreV1
 from orion.schemas.telemetry.field_channel_corpus import FieldChannelCorpusRowV1
 
@@ -26,9 +34,13 @@ class FieldChannelAnomalyScorer:
     every ~2s.
     """
 
-    def __init__(self, *, encoder_dir: str, threshold_multiplier: float) -> None:
+    def __init__(
+        self, *, encoder_dir: str, threshold_multiplier: float, startup_grace_sec: float = 0.0
+    ) -> None:
         self._encoder_dir = encoder_dir
         self._threshold_multiplier = float(threshold_multiplier)
+        self._startup_grace_sec = float(startup_grace_sec)
+        self._created_at = datetime.now(timezone.utc)
         self._manifest = None
         self._weights: dict | None = None
         self._load_failed = False
@@ -72,11 +84,17 @@ class FieldChannelAnomalyScorer:
 
     def score_latest(self) -> FieldChannelAnomalyScoreV1 | None:
         """Scores the most recent complete window in the buffer, if any.
-        Returns None when the encoder failed to load or fewer than
-        window_size rows have accumulated yet -- both are normal, expected
-        states (a freshly-started process, or scoring disabled), not
-        errors."""
+        Returns None when the encoder failed to load, fewer than
+        window_size rows have accumulated yet, or the process is still
+        within its startup grace period (2026-07-21: the first organic
+        firing traced to a cold-start artifact -- reconcile-seeded defaults
+        still in the buffer right after a restart) -- all normal, expected
+        states, not errors. append_row() keeps buffering during the grace
+        period regardless, so a real window is ready the moment it ends."""
         if not self._ensure_loaded():
+            return None
+        elapsed = (datetime.now(timezone.utc) - self._created_at).total_seconds()
+        if elapsed < self._startup_grace_sec:
             return None
         rows = list(self._buffer)
         if len(rows) < self._manifest.window_size:
@@ -96,6 +114,45 @@ class FieldChannelAnomalyScorer:
         recon_loss, window_start, window_end = scored[-1]
         recon_error_p95 = float(self._manifest.training.recon_error_p95)
         threshold = recon_error_p95 * self._threshold_multiplier
+
+        top_channels: list[str] = []
+        signed_deviation = 0.0
+        direction = "mixed"
+        attribution_ok = False
+        try:
+            # Rebuilds windows from the same rows/params score_windows just
+            # used -- score_windows() discards the raw vectors after
+            # computing loss, and build_windows() is a cheap, public,
+            # already-tested way to get them back without touching that
+            # function's contract (other callers depend on it). The buffer
+            # is ~window_size rows, so this is negligible extra work.
+            vectors = build_windows(
+                rows,
+                fields=tuple(self._manifest.channel_names),
+                window_size=self._manifest.window_size,
+                stride=self._manifest.stride,
+                max_gap_sec=self._manifest.max_gap_sec,
+            )
+            if vectors:
+                last_window = vectors[-1]
+                top_channels = top_channel_attribution(
+                    last_window,
+                    self._weights,
+                    fields=tuple(self._manifest.channel_names),
+                    window_size=self._manifest.window_size,
+                    limit=3,
+                )
+                signed_deviation = mean_signed_deviation(
+                    last_window,
+                    self._weights,
+                    window_size=self._manifest.window_size,
+                    n_fields=len(self._manifest.channel_names),
+                )
+                direction = deviation_direction(signed_deviation)
+                attribution_ok = True
+        except Exception:
+            logger.warning("field_channel_anomaly_attribution_failed", exc_info=True)
+
         return FieldChannelAnomalyScoreV1(
             correlation_id=str(uuid.uuid4()),
             encoder_id=self._manifest.encoder_id,
@@ -105,7 +162,11 @@ class FieldChannelAnomalyScorer:
             threshold_multiplier=self._threshold_multiplier,
             threshold=threshold,
             anomalous=float(recon_loss) > threshold,
+            mean_signed_deviation=signed_deviation,
+            deviation_direction=direction,
             window_start=window_start,
             window_end=window_end,
             window_size=self._manifest.window_size,
+            top_channels=top_channels,
+            attribution_ok=attribution_ok,
         )

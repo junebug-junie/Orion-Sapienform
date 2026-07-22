@@ -124,7 +124,20 @@ ARCHITECTURE = "mlp_shallow_v1"  # same architecture family as the phi encoder
 # is ever extended to merge in attention channels, revisit this set --
 # it is not a blind 1:1 copy of context_channels, it is scoped to what
 # this specific corpus can actually contain (found by review, 2026-07-17).
-DEFAULT_EXCLUDE_CHANNELS: frozenset[str] = frozenset({"recent_perturbation_count"})
+DEFAULT_EXCLUDE_CHANNELS: frozenset[str] = frozenset({
+    "recent_perturbation_count",
+    # expected_offline_suppression (2026-07-21, live channel re-audit): confirmed
+    # against the full corpus (both rotated siblings, post-cutoff) that this
+    # channel is always exactly 1.0 when present and absent (~65% of rows)
+    # otherwise -- never any other value. select_fields() previously kept it
+    # (std=0.494, one of the largest in the set) because _build_windows_with_span
+    # fills absence with 0.0, so "present=1.0 / absent-filled=0.0" reads as a
+    # real bimodal ~Bernoulli(0.35) signal to a naive variance check. It is not:
+    # it is a presence/absence artifact of this corpus's variable-width channel
+    # dict, not graduated information about anything. Excluding until/unless a
+    # real analog reading is ever observed.
+    "expected_offline_suppression",
+})
 DEFAULT_VARIANCE_EPS = 1e-6
 DEFAULT_CORR_THRESHOLD = 0.9
 
@@ -924,6 +937,73 @@ def load_artifacts(encoder_dir: Path) -> tuple[MoodArcEncoderManifestV1, dict[st
     with np.load(encoder_dir / "weights.npz") as npz:
         weights = {key: npz[key] for key in npz.files}
     return manifest, weights
+
+
+def per_channel_reconstruction_error(
+    x: np.ndarray, weights: dict[str, np.ndarray], *, fields: tuple[str, ...], window_size: int
+) -> dict[str, float]:
+    """Per-channel mean squared reconstruction error for one window vector,
+    averaged over the window's timesteps only -- same forward() pass
+    recon_loss() runs, just not additionally collapsed across the channel
+    axis. `fields` must be the trained encoder's own channel_names
+    (manifest-recorded column order), same requirement as score_windows()."""
+    _, _, _, xhat = forward(x, weights)
+    recon = (xhat - x).reshape(window_size, len(fields))
+    per_channel_mse = np.mean(recon**2, axis=0)
+    return {f: float(per_channel_mse[i]) for i, f in enumerate(fields)}
+
+
+def mean_signed_deviation(
+    x: np.ndarray, weights: dict[str, np.ndarray], *, window_size: int, n_fields: int
+) -> float:
+    """Signed mean of (x - xhat) over the whole window -- unlike recon_loss
+    (squared, always >= 0), this says which DIRECTION the window deviated:
+    positive means the real values ran higher than the model expected on
+    average ("elevated" -- consistent with a load spike), negative means
+    lower ("depressed" -- consistent with a quiet lull). Added 2026-07-21:
+    a live-data audit found one real sustained anomalous episode was a
+    quiet period (multiple load channels *below* baseline), which reads
+    identically to a crisis spike under recon_loss alone. Not a replacement
+    for per-channel attribution -- this is the aggregate polarity, that is
+    the per-channel breakdown."""
+    _, _, _, xhat = forward(x, weights)
+    recon = (xhat - x).reshape(window_size, n_fields)
+    return float(np.mean(-recon))
+
+
+def deviation_direction(mean_signed: float, *, eps: float = 1e-6) -> str:
+    """Coarse three-way label for mean_signed_deviation(). eps guards
+    against floating-point noise around exactly 0.0 reading as a spurious
+    direction on an essentially-symmetric window."""
+    if mean_signed > eps:
+        return "elevated"
+    if mean_signed < -eps:
+        return "depressed"
+    return "mixed"
+
+
+def top_channel_attribution(
+    x: np.ndarray,
+    weights: dict[str, np.ndarray],
+    *,
+    fields: tuple[str, ...],
+    window_size: int,
+    limit: int = 3,
+) -> list[str]:
+    """Top-N contributing channels for one window's reconstruction error,
+    ranked highest-error-first, as human-readable f"{channel}={mse:.5f}"
+    strings. Same output shape as
+    orion.self_state.builder.evidence_for_dimension() -- that function ranks
+    SelfStateV1 dimension contributors by raw channel value; this ranks by
+    reconstruction error instead, since an autoencoder's composite score
+    isn't a weighted sum the same way a self-state dimension is. Added
+    2026-07-21 to close the gap flagged in docs/superpowers/design/
+    2026-07-18-collapse-mirror-metacog-redesign.md's telemetry_anomaly
+    audit: the evidence_for_dimension pattern already existed elsewhere in
+    this repo and was never reused for this signal."""
+    errors = per_channel_reconstruction_error(x, weights, fields=fields, window_size=window_size)
+    ranked = sorted(errors.items(), key=lambda kv: kv[1], reverse=True)
+    return [f"{ch}={err:.5f}" for ch, err in ranked[:limit]]
 
 
 def score_windows(

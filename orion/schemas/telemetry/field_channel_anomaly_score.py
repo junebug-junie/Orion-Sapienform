@@ -14,7 +14,7 @@ from __future__ import annotations
 
 from datetime import datetime
 
-from pydantic import BaseModel, ConfigDict
+from pydantic import BaseModel, ConfigDict, Field
 
 
 class FieldChannelAnomalyScoreV1(BaseModel):
@@ -31,3 +31,23 @@ class FieldChannelAnomalyScoreV1(BaseModel):
     window_start: datetime
     window_end: datetime
     window_size: int
+    # Top-N channels by per-window reconstruction error, highest first, as
+    # "channel=mse" strings -- same shape as
+    # orion.self_state.builder.evidence_for_dimension()'s dominant_evidence
+    # output. Added 2026-07-21 so a firing says *which* channels moved, not
+    # just that something did. Empty list is a valid, honest state (e.g. the
+    # producer failed to compute attribution) -- never fabricated.
+    top_channels: list[str] = Field(default_factory=list)
+    # Signed mean of (x - xhat) over the window, plus its coarse label --
+    # see orion.mood_arc.fit_encoder.mean_signed_deviation()/
+    # deviation_direction(). recon_loss alone can't distinguish an elevated
+    # (load spike) window from a depressed (quiet lull) one; both read as
+    # equally "anomalous" under squared error. Added 2026-07-21. 0.0/"mixed"
+    # is the honest default when not computed, not a fabricated reading.
+    mean_signed_deviation: float = 0.0
+    deviation_direction: str = "mixed"
+    # False means top_channels/mean_signed_deviation/deviation_direction are
+    # all fallback defaults because the attribution computation itself
+    # raised, NOT that the window was genuinely near-zero/mixed -- the two
+    # were indistinguishable before this field (review finding, 2026-07-21).
+    attribution_ok: bool = True

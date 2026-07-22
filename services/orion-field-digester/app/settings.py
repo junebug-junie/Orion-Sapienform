@@ -118,6 +118,18 @@ class Settings(BaseSettings):
     field_channel_anomaly_threshold_multiplier: float = Field(
         3.0, alias="FIELD_CHANNEL_ANOMALY_THRESHOLD_MULTIPLIER"
     )
+    # Live-data finding, 2026-07-21: the first organic (non-forced) firing
+    # traced to a container cold-start artifact -- several channels still
+    # sitting at reconcile-seeded defaults (1.0/0.0) in the minute after a
+    # restart, which reads as "anomalous" to a model trained on steady-state
+    # operation. Suppresses scoring (not just publishing -- append_row still
+    # buffers rows so a real window is ready the moment the grace period
+    # ends) until this many seconds after process start. Default matches the
+    # encoder's own ~60s window_size cadence plus margin for the buffer to
+    # fill with genuinely post-restart data, not zero.
+    field_channel_anomaly_startup_grace_sec: float = Field(
+        180.0, alias="FIELD_CHANNEL_ANOMALY_STARTUP_GRACE_SEC"
+    )
     channel_field_channel_anomaly_score: str = Field(
         "orion:field_channel:anomaly_score", alias="CHANNEL_FIELD_CHANNEL_ANOMALY_SCORE"
     )

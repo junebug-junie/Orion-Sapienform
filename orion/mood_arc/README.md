@@ -17,7 +17,9 @@ it" reference; the docs directory is the "why does it look like this" one.
 
 **Status: dark deployment.** Everything here is an offline, manually-invoked
 CLI. No bus publish, no service process, no container, no cognition consumer.
-Registered `REHEARSAL` in `orion/self_state/inner_state_registry.py`
+Registered `REHEARSAL` in `orion/inner_state_registry.py` (moved from
+`orion/self_state/inner_state_registry.py` during the 2026-07-22 SelfStateV1
+module deletion — path corrected here, no behavior change)
 (`mood_arc_encoder.v1`, `mood_arc_corpus.v1`, `field_channel_corpus.v1`) —
 that status is correct and intentional, not a gap to close as part of this
 patch.
@@ -117,6 +119,44 @@ python orion/mood_arc/fit_encoder.py train \
   not a real absence of signal. See `services/orion-field-digester/
   README.md`'s "Deployed model history" table for the full `v1`/`v2`/`v3`
   comparison.
+- **Fourth cutoff, `--min-generated-at 2026-07-22T19:18:31Z` (commit
+  `a98854a2` + PR #1267, both merged + deployed):** found while auditing
+  chat/route prediction-error instruments — **`v3`, the currently deployed
+  encoder, is also contaminated by this cutoff**, since `v3` trained on the
+  third cutoff's window (2026-07-22T08:29:48Z onward), which predates this
+  fix. `prediction_error` is confirmed as one of `v2`'s (and, by field
+  selection carrying over, presumably `v3`'s) trained channels via
+  `docs/DESIGN.md`'s "15 channels survived selection + pruning" list — a
+  `max()`-merge across five nodes' shadow prediction-error instruments
+  (`orion/substrate/prediction_error.py`, wired in `services/
+  orion-substrate-runtime`). Two of those five were broken until today:
+  `execution_prediction_error()`/`route_prediction_error()` matched on an
+  exact `trace_id` that structurally never recurs (permanently `0.0`, fixed
+  in `a98854a2`), and `chat_prediction_error()` skipped every brand-new turn
+  (also permanently `0.0` in production despite 241 real accumulated chat
+  turns, fixed in PR #1267). Confirmed directly against the training corpus
+  file: its earliest available rows (2026-07-18T20:41Z) already read
+  `prediction_error = 3e-323` — the `apply_decay()` floor a stale
+  `NODE_DECAY_CHANNELS` entry settles to — consistent with this channel
+  sitting at or near that floor for its entire history in this corpus,
+  including throughout `v3`'s own training window, not carrying real
+  learnable variance the way field selection presumably assumed.
+  `2026-07-22T19:18:31Z` is `orion-substrate-runtime`'s restart time (the
+  later of the two fixes' merges, both landing in that one service — the
+  binding cutoff). Confirmed live post-restart, directly against the corpus
+  file: rows minutes after read `prediction_error = 0.0671`-`0.1171`,
+  varying across ticks rather than stuck at the old floor. See `services/
+  orion-field-digester/README.md`'s "fourth training-data quality cutoff"
+  section for the full detail, including the honest caveat that exact
+  per-node attribution of the new reading hasn't been traced further.
+  **A `v4` retrain against this cutoff would give `prediction_error` its
+  first-ever real signal** (or whichever prior cutoff is later — currently
+  this one); do not retrain yet, only minutes of clean data exist as of
+  this writing. `v3` remains the right model to keep serving until then —
+  it is not invalidated on the channels it actually gates on
+  (`floor_ratio`/`ceiling_ratio` don't single out `prediction_error`), just
+  carrying one contaminated-but-not-dominant input feature the same way
+  `v2` carried `catalog_drift_pressure` before the second cutoff.
 - `--hidden-dim 128 --latent-dim 64` are the defaults as of this patch
   (`DEFAULT_HIDDEN_DIM`/`DEFAULT_LATENT_DIM` in `fit_encoder.py`) — sized for
   `field_channel_corpus.v1`'s ~16-26-channel width, not the old 4-channel

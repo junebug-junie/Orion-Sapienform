@@ -34,10 +34,12 @@ services:
       - CHANNEL_RDF_ENQUEUE=${CHANNEL_RDF_ENQUEUE}
       # Collapse (Raw)
       - CHANNEL_EVENTS_COLLAPSE=${CHANNEL_EVENTS_COLLAPSE}
-      # Tagged/Enriched
-      - CHANNEL_EVENTS_TAGGED=${CHANNEL_EVENTS_TAGGED}
       # CHANNEL_EVENTS_TAGGED_CHAT removed 2026-07-18: chat-turn tags now
       # land in FalkorDB only; the Fuseki copy was redundant.
+      # CHANNEL_EVENTS_TAGGED removed 2026-07-22: this service's Fuseki copy
+      # of collapse-triage tag/entity enrichment was redundant with Falkor.
+      # orion-meta-tags still publishes it (orion-sql-writer still needs it
+      # for Postgres collapse_enrichment).
       # Core Events (Filtering targets="rdf")
       - CHANNEL_CORE_EVENTS=${CHANNEL_CORE_EVENTS}
       # CHANNEL_WORKER_RDF / CORTEX_LOG_CHANNEL removed 2026-07-18: zero real

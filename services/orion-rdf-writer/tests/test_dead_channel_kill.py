@@ -84,6 +84,20 @@ def test_tags_chat_enriched_channel_not_subscribed():
     assert "orion:tags:chat:enriched" not in _channels()
 
 
+def test_tags_enriched_channel_not_subscribed():
+    """orion:tags:enriched (2026-07-22): this service's Fuseki materialization
+    of generic collapse-triage tag/entity enrichment was redundant with
+    orion-meta-tags' Falkor write (PR #1271/#1273, backfilled + one real live
+    event verified landing in Postgres/Fuseki/Falkor simultaneously). Unlike
+    the 5 channels above, the publish itself is NOT dead -- orion-sql-writer
+    is also subscribed to this channel and needs it for Postgres
+    `collapse_enrichment` (genuinely queried by orion-recall and
+    orion-dream). Only THIS service's subscription/materialization was
+    removed. Do not re-add without a real Falkor-gap reason, and do not
+    remove orion-meta-tags' publish."""
+    assert "orion:tags:enriched" not in _channels()
+
+
 def test_cortex_worker_rdf_build_kind_is_quiet_noop():
     """cortex.worker.rdf_build (would-be CognitiveStepExecution) must not
     resurrect a dispatch branch -- unknown kind falls through to (None, None)."""
@@ -104,17 +118,16 @@ def test_goals_proposed_kind_is_quiet_noop():
     assert graph_name is None
 
 
-def test_chat_tagging_enrichment_falls_through_to_generic_event_uri():
-    """2026-07-18 (same day, later patch): the dedicated
-    enrichment_type=="chat_tagging" subject_uri branch (chatTurn/{id}) was
-    removed since orion:tags:chat:enriched is no longer subscribed (see
-    test_tags_chat_enriched_channel_not_subscribed above), so this shape can
-    no longer reach build_triples_from_envelope via the live bus. This test
-    locks in what happens if it ever does anyway (dead-letter replay, a
-    stale queued message from before the cutover, a reintroduced producer):
-    it now falls through to the generic event/{id} URI scheme rather than
-    being rejected -- not a no-op like the other kinds in this file, a real
-    behavior change worth having a test name for."""
+def test_tags_enriched_kind_is_quiet_noop():
+    """2026-07-22: the entire "tags.enriched"/"telemetry.meta_tags" dispatch
+    branch (both chat_tagging and generic collapse-triage enrichment_type)
+    was removed -- see test_tags_enriched_channel_not_subscribed above. This
+    test locks in what happens if a stale queued message reaches
+    build_triples_from_envelope anyway (dead-letter replay, a message queued
+    before the cutover): a quiet no-op, same as the other removed kinds in
+    this file -- not the "falls through to a different URI scheme" behavior
+    this replaces, since there is no more enrichment-specific handling at
+    all to fall through from."""
     nt, graph_name = build_triples_from_envelope(
         "tags.enriched",
         {
@@ -122,15 +135,13 @@ def test_chat_tagging_enrichment_falls_through_to_generic_event_uri():
             "service_version": "0.2.0",
             "id": "turn-1",
             "collapse_id": "turn-1",
-            "enrichment_type": "chat_tagging",
+            "enrichment_type": "tagging",
             "tags": ["sentiment:neutral"],
             "entities": ["Circe"],
         },
     )
-    assert nt is not None
-    assert graph_name == "orion:enrichment"
-    assert "http://conjourney.net/orion/chatTurn/" not in nt
-    assert "http://conjourney.net/event/turn-1" in nt
+    assert nt is None
+    assert graph_name is None
 
 
 def test_world_pulse_graph_upsert_kind_is_quiet_noop():

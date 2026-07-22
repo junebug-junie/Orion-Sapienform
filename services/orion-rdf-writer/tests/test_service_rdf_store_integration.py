@@ -65,7 +65,7 @@ def svc_sync(monkeypatch: pytest.MonkeyPatch, tmp_path: Path):
 @pytest.mark.parametrize(
     "kind",
     [
-        "tags.enriched",
+        "social.turn.stored.v1",
         "collapse.mirror.entry",
         "rdf.write.request",
     ],

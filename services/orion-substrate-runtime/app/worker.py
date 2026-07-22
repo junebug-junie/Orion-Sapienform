@@ -91,6 +91,55 @@ def _prediction_error_nodes_enabled() -> bool:
     return os.getenv(_PREDICTION_ERROR_NODE_FLAG, "false").strip().lower() in _TRUTHY
 
 
+# docs/superpowers/specs/2026-07-22-transport-bus-signal-quality-measurement-design.md
+# item 1: five of the six real transport-bus pressure signals have read as
+# exactly zero in every window checked so far -- honestly, not from a bug (see
+# that spec's "Current architecture" section) -- with the practical effect that
+# a real incident could occur and pass unnoticed, since nothing currently logs
+# it. `stream_depth_pressure` (the sixth) is deliberately excluded from this
+# trigger set for two compounding reasons, not just one: (a) it is structurally
+# nonzero on almost every real tick (any nonzero queue depth divides through
+# DEFAULT_STREAM_DEPTH_CRITICAL=100_000 to a small positive number), so an
+# ">0" check on it would fire constantly rather than flagging a genuine
+# incident; and (b) any depth spike large enough to be worth flagging already
+# trips `backpressure_count > 0` first -- services/orion-bus's own observer
+# (bus_observer.py) marks a stream "backpressure" once its length crosses
+# BUS_STREAM_DEPTH_WARNING (default 25,000 -- 25% of the critical threshold
+# above), and `backpressure` IS in this trigger set. `max_stream_depth` (its
+# raw input) is still surfaced as context below whenever one of the other
+# five signals fires.
+_TRANSPORT_INCIDENT_FIELDS = (
+    "backpressure",
+    "catalog_drift_pressure",
+    "contract_pressure",
+    "observer_failure_pressure",
+    "reliability_pressure",
+)
+
+
+def _log_transport_incident_signals(projection: Any) -> None:
+    """Log (INFO) any bus whose pressure/count signals are non-trivially nonzero
+    this tick -- see docs/superpowers/specs/2026-07-22-transport-bus-signal-
+    quality-measurement-design.md item 1. Read-only w.r.t. the projection;
+    never raises, so a malformed row can't take down the transport tick."""
+    try:
+        for bus_id, bus in (projection.buses or {}).items():
+            nonzero = {
+                field: value
+                for field in _TRANSPORT_INCIDENT_FIELDS
+                if (value := getattr(bus, field, 0.0)) > 0.0
+            }
+            if nonzero:
+                logger.info(
+                    "transport_incident_signal bus=%s nonzero=%s max_stream_depth=%s",
+                    bus_id,
+                    nonzero,
+                    getattr(bus, "max_stream_depth", None),
+                )
+    except Exception:
+        logger.warning("failed to check transport incident signals", exc_info=True)
+
+
 def _prediction_error_receipt(
     *,
     reducer_key: str,
@@ -1929,6 +1978,7 @@ class BiometricsSubstrateWorker:
 
         if last_id is not None:
             curr_projection = load_projection()
+            _log_transport_incident_signals(curr_projection)
             error = transport_prediction_error(prev_projection, curr_projection)
             if error > 0.0:
                 self._store.save_receipt(

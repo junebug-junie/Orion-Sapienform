@@ -231,6 +231,21 @@ Observes transport health (`PING`), stream depth (`XLEN`), backpressure threshol
 | `BUS_OBSERVER_POLL_INTERVAL_SEC` | `10` | Rollup interval |
 | `BUS_OBSERVER_SCHEMA_SAMPLE_COUNT` | `5` | Per-cataloged-stream `XREVRANGE` sample size for the schema-mismatch check |
 
+**Naming caveat for downstream consumers (found 2026-07-22):** the 2026-07-18 fix above correctly
+made `BUS_OBSERVER_STREAMS` only watch real Streams — but since `orion:stream:world_pulse:run:result`
+and its DLQ are the *only* two `kind: "stream"` channels that exist, this sidecar's `transport_pressure`/
+`stream_depth_pressure`/`backpressure` outputs (consumed downstream as
+`orion/substrate/transport_loop/extract.py::compute_transport_pressures()`, then folded into
+`node:substrate.transport` and the `prediction_error` field-digester channel — see
+`services/orion-substrate-runtime/README.md`'s "transport domain scope" note and
+`orion/mood_arc/README.md`'s matching caveat) do not mean general bus/transport health across
+services. They mean, specifically and only, whether `world_pulse`'s result queue is backing up.
+Confirmed live 2026-07-22: `XLEN orion:stream:world_pulse:run:result` = `91`, against
+`BUS_STREAM_DEPTH_CRITICAL=100000` — a value that has sat exactly flat (90-91, zero movement) for
+the entire ~18h post-accumulation-bug-fix window, consistent with those 91 messages being
+permanently unconsumed rather than a healthy, actively-drained queue. Not yet determined whether
+that backlog is expected (no consumer by design) or a dead consumer — flagged, not investigated.
+
 Smoke: `../../scripts/smoke_orion_bus_substrate_trace.sh`
 
 Layer 3 `bus_transport_reducer` is deferred — see `LAYER_PIPELINE_PLAN.md`.

@@ -464,6 +464,25 @@ fix — see §7.
    `docs/superpowers/specs/2026-07-21-chat-route-prediction-error-shadow-design.md`. This
    answers the coverage question this section originally left open; it does not itself
    retire the bucket-vote layer (§6 item 3 remains open for that).
+   **Correction (2026-07-22): "equivalent shadow-measurement instrumentation" is true in the
+   sense that code runs for all five domains, but `transport`'s real coverage is far narrower
+   than the other four.** `transport_prediction_error()` is fed entirely by `orion-bus`'s
+   bus-observer role (`BUS_OBSERVER_STREAMS`), which can only ever watch
+   `orion:stream:world_pulse:run:result` and its DLQ — **the only two real Redis Streams that
+   exist anywhere in this architecture** (everything else is pub/sub, with no depth/backlog
+   concept to measure). So "transport," despite the name, does not mean general bus/transport
+   stress across services the way execution/biometrics/chat/route each cover their own real
+   domain — it means, specifically, whether one service's (`orion-world-pulse`) result queue
+   is backing up. Confirmed live 2026-07-22: `XLEN orion:stream:world_pulse:run:result` = `91`
+   against `BUS_STREAM_DEPTH_CRITICAL=100000`, a ratio (~0.00091) that has sat exactly flat for
+   the entire ~18h window since the second training-data cutoff (PR #1248) — consistent with
+   those 91 messages sitting permanently unconsumed, not a healthy actively-drained queue.
+   Full trace: `services/orion-bus/README.md`'s "Naming caveat for downstream consumers,"
+   `services/orion-substrate-runtime/README.md`'s "transport domain scope" note, and
+   `orion/mood_arc/README.md`'s matching caveat (since `transport` is also one of the five
+   inputs `max()`-merged into the `prediction_error` field-digester channel). Whether the
+   backlog itself is expected or a dead consumer is a separate, not-yet-investigated
+   question.
    **Attribution durability + consumers (2026-07-18):** the harness-closure variant of this
    same mechanism (`node:substrate.harness_closure`, PR #1205) accumulates per-turn
    attribution in `metadata['contributing_turn_ids']`, but that list was silently dropped on

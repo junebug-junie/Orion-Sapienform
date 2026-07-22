@@ -240,7 +240,7 @@ ORGAN_REGISTRY: Dict[str, OrionOrganRegistryEntry] = {
         organ_class=OrganClass.endogenous,
         service="orion-cortex-exec",
         signal_kinds=["chat_stance", "turn_effect", "metacog_residue"],
-        canonical_dimensions=["coherence", "valence", "confidence"],
+        canonical_dimensions=["coherence", "confidence"],
         causal_parent_organs=["recall", "autonomy", "equilibrium", "social_memory", "spark_introspector"],
         bus_channels=[
             "orion:cortex:exec:request",

@@ -61,7 +61,7 @@ python orion/mood_arc/fit_encoder.py train \
   --out /tmp/mood-arc-encoders/v1-candidate
 ```
 
-- `--min-generated-at 2026-07-17T04:32:14Z` is the current data-quality
+- `--min-generated-at 2026-07-17T04:32:14Z` is the first data-quality
   cutoff: rows before this timestamp reflect known-broken channel behavior
   from before a 7-PR fix sprint (PRs #1108-#1113, #1115). Training on the
   full unfiltered corpus produces contaminated field selection and fails the
@@ -69,6 +69,20 @@ python orion/mood_arc/fit_encoder.py train \
   `services/orion-field-digester/README.md`'s "`field_channel_corpus.v1`
   training-data quality cutoff" section; keep the two in sync if it's ever
   revised.
+- **Second cutoff, 2026-07-22 (PR #1248, pending deploy):** `transport_pressure`/
+  `catalog_drift_pressure`/`observer_failure_pressure`/`reliability_pressure`/
+  `contract_pressure` could get permanently stuck at a stale value (an
+  `add`-mode perturbation bug in `services/orion-field-digester/app/ingest/
+  state_deltas.py`, fixed in PR #1248) — confirmed live as the cause of
+  `catalog_drift_pressure` alone driving ~66% of average reconstruction
+  error against `field_channel_anomaly.v2`. Unlike the first cutoff, this
+  contamination window has no known start (a channel only breaks once it
+  picks up a nonzero value and then fails to correct/decay), so **do not
+  train against any corpus data until PR #1248 is merged and deployed, and
+  a second `--min-generated-at` cutoff is set to that deploy timestamp** —
+  see `services/orion-field-digester/README.md`'s "second training-data
+  quality cutoff" section for the exact mechanism to determine it once
+  known. If both cutoffs apply, use whichever is later.
 - `--hidden-dim 128 --latent-dim 64` are the defaults as of this patch
   (`DEFAULT_HIDDEN_DIM`/`DEFAULT_LATENT_DIM` in `fit_encoder.py`) — sized for
   `field_channel_corpus.v1`'s ~16-26-channel width, not the old 4-channel

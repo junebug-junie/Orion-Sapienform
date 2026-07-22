@@ -13,7 +13,6 @@ from orion.autonomy.deviation_gate import DeviationGate
 from orion.autonomy.signal_drive_map import load_signal_drive_map
 from orion.autonomy.signal_tension import SignalTensionSource
 from orion.autonomy.tension_ratelimit import TensionRateLimiter
-from orion.autonomy.endogenous_origination import OriginationConfig, OriginationEngine
 from orion.signals.models import OrionSignalV1
 from orion.core.bus.async_service import OrionBusAsync
 from orion.core.bus.bus_schemas import BaseEnvelope, ServiceRef
@@ -21,7 +20,6 @@ from orion.core.bus.work_queue import RedisStreamWorkQueue
 from orion.core.schemas.concept_induction import ConceptProfile, ConceptProfileDelta
 from orion.core.schemas.drives import ArtifactProvenance, GraphReadyArtifact, TensionEventV1, TurnDossierV1
 from orion.schemas.feedback_frame import FeedbackFrameV1
-from orion.schemas.self_state import SelfStateV1
 from orion.schemas.vector.schemas import VectorWriteRequest
 
 from .audit import build_drive_audit
@@ -61,7 +59,6 @@ from .tensions import (
     extract_tensions,
     extract_tensions_from_action_outcome,
     extract_tensions_from_feedback,
-    extract_tensions_from_self_state,
 )
 from .rdf_materialization import build_concept_profile_rdf_request
 from .falkor_materialization import (
@@ -161,21 +158,15 @@ class ConceptWorker:
         # Homeostatic tension source: deviation-gated OrionSignal/failure/health
         # -> TensionEventV1. Gated on cfg.homeostatic_drives_enabled at the call
         # site; constructed always so state persists across ticks.
-        # Endogenous origination (default-off): a bounded ring of SelfStateV1
-        # from which a spontaneous want can arise in exogenous silence. State
-        # persists across ticks, so it is constructed once here.
-        self.origination_engine = OriginationEngine(
-            OriginationConfig(
-                window=cfg.origination_window,
-                threshold=cfg.origination_threshold,
-                cooldown_sec=cfg.origination_cooldown_sec,
-                mag_cap=cfg.endogenous_mag_cap,
-                w_drift=cfg.origination_w_drift,
-                w_dwell=cfg.origination_w_dwell,
-                w_agency=cfg.origination_w_agency,
-                exogenous_floor=cfg.origination_exogenous_floor,
-            )
-        )
+        #
+        # Endogenous origination (orion/autonomy/endogenous_origination.py) and
+        # its self_state.v1 consumption both removed 2026-07-22, SelfStateV1
+        # burn (docs/superpowers/specs/2026-07-22-self-state-phi-endo-
+        # origination-burn-spec.md, decision 2 + decision 5): the origination
+        # engine's only input was a SelfStateV1 stream, which no longer exists.
+        # DriveEngine/bucket-voting below is untouched -- that halt
+        # (orion/spark/concept_induction/CLAUDE.md) predates and is independent
+        # of this burn.
         self.signal_tension_source = SignalTensionSource(
             gate=DeviationGate(
                 alpha=cfg.deviation_ewma_alpha,
@@ -218,7 +209,6 @@ class ConceptWorker:
         self.inflight_subjects: Set[str] = set()
         self.recent_event_seen: Dict[str, datetime] = {}
         self.trigger_decisions: List[dict] = []
-        self._previous_self_state: Optional[SelfStateV1] = None
         self._stopped = False
         self._liveness = WorkerLivenessState(
             worker_initialized=True,
@@ -339,7 +329,6 @@ class ConceptWorker:
             ],
             "cognition_trace": ["channel contains cognition:trace"],
             "collapse_event": ["channel contains collapse"],
-            "self_state_update": ["kind=substrate.self_state.v1"],
             "feedback_outcome": ["kind=feedback.frame.v1"],
             "generic_activity": ["fallback"],
         }
@@ -404,8 +393,6 @@ class ConceptWorker:
             return "cognition_trace"
         if "collapse" in lowered_channel:
             return "collapse_event"
-        if lowered_kind == "substrate.self_state.v1":
-            return "self_state_update"
         if lowered_kind == "feedback.frame.v1":
             return "feedback_outcome"
         return "generic_activity"
@@ -711,46 +698,6 @@ class ConceptWorker:
             payload = payload.model_dump()
         return payload if isinstance(payload, dict) else {}
 
-    def _tensions_from_self_state(self, env: BaseEnvelope, intake_channel: str) -> List[TensionEventV1]:
-        try:
-            self_state = SelfStateV1.model_validate(self._payload_dict(env))
-        except Exception:
-            logger.warning("substrate_self_state_parse_failed kind=%s", env.kind)
-            return []
-        tensions = extract_tensions_from_self_state(
-            envelope=env,
-            intake_channel=intake_channel,
-            self_state=self_state,
-            previous_self_state=self._previous_self_state,
-        )
-        self._previous_self_state = self_state
-
-        # Endogenous origination (default-off, proposal mode): observe every
-        # self-state into the ring, and — only in exogenous silence — let a want
-        # arise from Orion's own internal dynamics. The endogenous tension is an
-        # ordinary TensionEventV1 (origin=endogenous) merged here, so it flows
-        # through the unchanged publish -> DriveEngine -> goals path. The exogenous
-        # tension count for this tick is the count already produced above, so a
-        # tick that carried real turn-effect deltas suppresses endogeny.
-        if self.cfg.endogenous_origination_enabled:
-            try:
-                self.origination_engine.observe(self_state)
-                endogenous = self.origination_engine.maybe_originate(
-                    exogenous_tension_count=len(tensions),
-                    now=datetime.now(timezone.utc),
-                )
-                if endogenous is not None:
-                    logger.info(
-                        "endogenous_origination_fired drive_impacts=%s signal=%s",
-                        endogenous.drive_impacts,
-                        self.origination_engine.last_signal,
-                    )
-                    tensions = list(tensions) + [endogenous]
-            except Exception:
-                logger.warning("endogenous_origination_failed", exc_info=True)
-
-        return tensions
-
     def _tensions_from_feedback(self, env: BaseEnvelope, intake_channel: str) -> List[TensionEventV1]:
         try:
             frame = FeedbackFrameV1.model_validate(self._payload_dict(env))
@@ -985,12 +932,7 @@ class ConceptWorker:
 
         text = self._extract_text(env)
 
-        if env.kind == "substrate.self_state.v1":
-            subject = "orion"
-            model_layer = model_layer_for_subject(subject)
-            entity_id = entity_id_for_subject(subject, model_layer)
-            spark_tensions = self._tensions_from_self_state(env, intake_channel)
-        elif env.kind == "feedback.frame.v1":
+        if env.kind == "feedback.frame.v1":
             subject = "orion"
             model_layer = model_layer_for_subject(subject)
             entity_id = entity_id_for_subject(subject, model_layer)
@@ -1300,7 +1242,7 @@ class ConceptWorker:
         await self._publish_dossier(dossier, env.correlation_id)
 
         # Structured substrate/feedback signals carry no text: skip concept induction.
-        if env.kind in {"substrate.self_state.v1", "feedback.frame.v1", "action.outcome.emit.v1"}:
+        if env.kind in {"feedback.frame.v1", "action.outcome.emit.v1"}:
             return
 
         source_kind = self._source_kind(env, intake_channel)

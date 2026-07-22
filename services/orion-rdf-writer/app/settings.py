@@ -65,7 +65,18 @@ class Settings(BaseSettings):
     # was self_study.py referencing the channel *name* in a self-knowledge
     # catalog string, not a bus.publish call). Zero live traffic possible.
     # Do not re-add without a real producer.
-    CHANNEL_COGNITION_TRACE_PUB: str = Field(default="orion:cognition:trace", env="CHANNEL_COGNITION_TRACE_PUB")
+    # orion:cognition:trace / orion:metacog:trace deliberately not subscribed
+    # as of 2026-07-22: live Fuseki traffic was ~750 writes/6h for these two
+    # kinds, pure redundancy -- both already durably owned by Postgres via
+    # orion-sql-writer (`cognition_traces`, 61k+ rows;
+    # `orion_metacognitive_trace`). The one other Fuseki reader
+    # (orion-graph-compression's episodic federator) is fail-open per-graph
+    # and degrades correctly when a federated graph goes quiet. Same shape as
+    # the chat.history kill below -- a real consumer already exists
+    # elsewhere. (A prior attempt at this kill, PR #1155, was reviewed and
+    # correct but the PR itself was closed without merging -- this
+    # re-implements the same change.) Do not re-add without a real
+    # Falkor/Postgres-gap reason.
     # orion:memory:drives:audit deliberately not subscribed: drive audits are
     # Postgres-only (`drive_audits` via orion-sql-writer) as of 2026-07-15.
     # orion:chat:history:turn / orion:chat:history:log deliberately not
@@ -127,8 +138,6 @@ class Settings(BaseSettings):
             self.CHANNEL_EVENTS_TAGGED,
             "orion:chat:social:stored",
             self.CHANNEL_CORE_EVENTS,
-            self.CHANNEL_COGNITION_TRACE_PUB,
-            "orion:metacog:trace",
         ]
         seen = set()
         ordered: List[str] = []

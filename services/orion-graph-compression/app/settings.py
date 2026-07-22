@@ -52,6 +52,18 @@ class Settings(BaseSettings):
     rdf_store_pass: str = Field("orion", alias="RDF_STORE_PASS")
     rdf_store_timeout_sec: float = Field(10.0, alias="RDF_STORE_TIMEOUT_SEC")
 
+    # FalkorDB federators (dark by default -- see app/falkor_store.py;
+    # FALKORDB_URI/FALKORDB_SUBSTRATE_GRAPH/FALKORDB_RECALL_GRAPH are read
+    # directly from the environment there, not via this Settings class,
+    # matching orion-recall/substrate-runtime's existing convention for the
+    # same shared FalkorDB instance).
+    graph_compression_substrate_falkor_enabled: bool = Field(
+        False, alias="GRAPH_COMPRESSION_SUBSTRATE_FALKOR_ENABLED"
+    )
+    graph_compression_episodic_falkor_enabled: bool = Field(
+        False, alias="GRAPH_COMPRESSION_EPISODIC_FALKOR_ENABLED"
+    )
+
     # Worker tuning
     compression_poll_interval_sec: float = Field(300.0, alias="COMPRESSION_POLL_INTERVAL_SEC")
     compression_batch_size: int = Field(10, alias="COMPRESSION_BATCH_SIZE")

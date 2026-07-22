@@ -45,8 +45,9 @@ DEFAULT_NODE_VECTOR["delivery_confidence"] = 1.0
 
 # Design correction (2026-07-22): bus_health/delivery_confidence were
 # modeled as ordinary per-node NODE_CHANNELS, merged across every lattice
-# node via min() (orion/self_state/scoring.py's HIGHER_IS_BETTER_CHANNELS
-# handling -- worst node wins). But there is exactly one bus, it runs on
+# node via min() (the now-deleted orion/self_state/scoring.py's
+# HIGHER_IS_BETTER_CHANNELS handling -- worst node wins). But there is
+# exactly one bus, it runs on
 # athena, and only athena's bus-observer service (BUS_OBSERVER_NODE_ID)
 # ever produces a real reading -- atlas/circe run llamacpp-host + biometrics
 # only, prometheus likewise, none of them have any code path that could
@@ -65,23 +66,26 @@ DEFAULT_NODE_VECTOR["delivery_confidence"] = 1.0
 # perturbed), and the min()-merge let that meaningless stale reading
 # permanently mask athena's real, healthy one -- feeding a false
 # "unhealthy"/coherence-degrading signal into every SelfStateV1 coherence
-# score (config/self_state/self_state_policy.v1.yaml maps both channels to
-# `coherence`) for as long as field-digester has been running this schema.
+# score (the now-deleted config/self_state/self_state_policy.v1.yaml mapped
+# both channels to `coherence`) for as long as field-digester has been
+# running this schema and SelfStateV1 existed (module removed 2026-07-22).
 #
 # The real fix: stop treating this as a 4-way merge at all.
 # SINGLE_OBSERVER_NODE_CHANNELS below is consulted by reconcile.py's
 # _ensure_node_vector() to (a) never seed these two channels onto any node
 # but their owner, and (b) actively prune them from any other node's
 # vector every reconcile tick -- self-healing, no manual data migration
-# needed. orion/self_state/transport.py's transport_channel_hints() already
-# reads bus_health/delivery_confidence from node:athena directly (never
-# merged across nodes) and was unaffected by this bug; this fix brings
-# collect_field_channel_pressures()'s merge in line with that same
-# single-observer assumption instead of leaving two different mental
-# models of the same two channels live in the codebase at once.
+# needed. The now-deleted orion/self_state/transport.py's
+# transport_channel_hints() already read bus_health/delivery_confidence
+# from node:athena directly (never merged across nodes) and was unaffected
+# by this bug; this fix brings collect_field_channel_pressures()'s merge in
+# line with that same single-observer assumption instead of leaving two
+# different mental models of the same two channels live in the codebase at
+# once.
 #
-# "node:athena" is hardcoded, same as orion/self_state/transport.py's
-# existing precedent -- not derived from BUS_OBSERVER_NODE_ID (services/
+# "node:athena" is hardcoded, same precedent the deleted
+# orion/self_state/transport.py used -- not derived from BUS_OBSERVER_NODE_ID
+# (services/
 # orion-bus/app/settings.py, default "athena"). If that env var is ever
 # changed on a real deployment, a genuinely different node would start
 # producing real transport_bus deltas and this map would silently prune

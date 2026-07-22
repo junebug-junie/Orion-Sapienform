@@ -50,8 +50,11 @@ def test_cortex_telemetry_channel_not_subscribed():
 
 def test_memory_identity_snapshot_channel_not_subscribed():
     """orion:memory:identity:snapshot: zero live Fuseki triples ever
-    recorded; Postgres (orion-self-state-runtime's SelfStateRuntimeStore)
-    already durably owns identity snapshots."""
+    recorded. 2026-07-22 (SelfStateV1 burn): the Postgres owner
+    (orion-self-state-runtime's SelfStateRuntimeStore) is deleted too, so
+    identity_snapshots now has zero producer of any kind -- flagged as a
+    follow-up (table cleanup needs separate go-ahead), not this channel's
+    concern either way."""
     assert "orion:memory:identity:snapshot" not in _channels()
 
 

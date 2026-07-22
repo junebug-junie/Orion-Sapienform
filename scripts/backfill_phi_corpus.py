@@ -1,5 +1,11 @@
 #!/usr/bin/env python3
-"""Backfill InnerStateFeaturesV1 JSONL corpus from substrate_self_state (Plan 2 training)."""
+"""Backfill InnerStateFeaturesV1 JSONL corpus from substrate_self_state (Plan 2 training).
+
+2026-07-22 (SelfStateV1 burn): substrate_self_state is now a frozen table --
+orion-self-state-runtime (its only producer) is deleted. This still works as
+a one-time backfill over the historical rows already collected; it will not
+see anything newer.
+"""
 from __future__ import annotations
 
 import argparse

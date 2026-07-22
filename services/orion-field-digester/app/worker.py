@@ -7,7 +7,7 @@ from pathlib import Path
 
 from orion.field_coherence import check_field_coherence
 from orion.schemas.telemetry.field_channel_corpus import FieldChannelCorpusRowV1
-from orion.self_state.scoring import collect_field_channel_pressures
+from orion.field.pressure import collect_field_channel_pressures
 from orion.telemetry.corpus_sink import InnerStateCorpusSink
 
 from app.anomaly_bus_publish import publish_anomaly_score

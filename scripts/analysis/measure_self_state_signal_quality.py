@@ -31,6 +31,14 @@ see the report's own "Findings for Juniper's sign-off" section.
 
 Run:
     python scripts/analysis/measure_self_state_signal_quality.py --window-hours 48
+
+2026-07-22 (SelfStateV1 burn): `orion/self_state/` (the computation module) and
+`services/orion-self-state-runtime` (its producer) are deleted -- the signal
+this script measures was the confirmed-dead finding this burn acted on.
+`substrate_self_state` is now a frozen table (no new rows), so this only
+replays history; `orion/schemas/self_state.py` survives solely because
+`orion/substrate/attention_self_model.py` (the AST/HOT reducer this script
+gates, left explicitly out of scope for this burn) still imports it.
 """
 
 from __future__ import annotations

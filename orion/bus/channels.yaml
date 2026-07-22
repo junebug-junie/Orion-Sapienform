@@ -1777,10 +1777,15 @@ channels:
     # despite this real producer existing. Repo-wide grep of
     # services/orion-sql-writer found zero code references to this channel
     # name or message_kind either -- the sql-writer entry was a stale
-    # registry claim, not a real consumer. Postgres (orion-self-state-runtime's
-    # SelfStateRuntimeStore, actively pruned) already durably owns identity
-    # snapshots via a different path. Do not re-add either without a real
-    # consumer.
+    # registry claim, not a real consumer. 2026-07-22 correction (SelfStateV1
+    # burn): this comment previously named a second, Postgres-direct
+    # identity_snapshots writer (orion-self-state-runtime's SelfStateRuntimeStore)
+    # as the durable owner via a different path -- that service is deleted;
+    # identity_snapshots now has no producer at all (flagged as a DB-table
+    # follow-up in the burn spec, not dropped here). This bus channel's own
+    # producer (orion-spark-concept-induction, a separate build_identity_snapshot()
+    # unrelated to SelfStateV1) is unaffected and still real. Do not re-add
+    # either writer without a real consumer.
     consumer_services: ["*"]
     stability: "experimental"
     since: "2026-03-19"
@@ -2165,14 +2170,15 @@ channels:
     stability: "experimental"
     since: "2026-06-06"
 
-  - name: "orion:substrate:self_state"
-    kind: "event"
-    schema_id: "SelfStateV1"
-    message_kind: "substrate.self_state.v1"
-    producer_services: ["orion-self-state-runtime"]
-    consumer_services: ["orion-spark-introspector", "orion-spark-concept-induction"]
-    stability: "experimental"
-    since: "2026-06-23"
+  # orion:substrate:self_state (SelfStateV1, producer orion-self-state-runtime,
+  # consumers orion-spark-introspector/orion-spark-concept-induction) removed
+  # 2026-07-22, SelfStateV1 burn: the coefficients were traced to an
+  # uncalibrated, undocumented commit and the signal was confirmed empirically
+  # dead (12/12 dimensions pinned/flat in a live replay). Both consumers
+  # already migrated off this channel (orion-spark-introspector to a plain
+  # poll loop; concept_induction's tension extraction dropped); the producer
+  # service was deleted in the same change. See
+  # docs/superpowers/specs/2026-07-22-self-state-phi-endo-origination-burn-spec.md.
 
   - name: "orion:substrate:brain_frame"
     kind: "event"
@@ -2427,6 +2433,6 @@ channels:
     schema_id: "WorldPerceptionV1"
     message_kind: "embodiment.perception.v1"
     producer_services: ["orion-embodiment"]
-    consumer_services: ["orion-substrate-runtime", "orion-self-state-runtime", "orion-cortex-exec"]
+    consumer_services: ["orion-substrate-runtime", "orion-cortex-exec"]
     stability: "experimental"
     since: "2026-07-07"

@@ -13,7 +13,7 @@ drive-pressure signals that share the 6-key `DRIVE_KEYS` taxonomy
    `DEFAULT_CONCEPT_STORE_PATH` in orion/spark/concept_induction/settings.py).
 2. `autonomy_state_v2` -- historically computed by `orion.autonomy.reducer`,
    which was retired 2026-07-16 and deleted 2026-07-17 (see
-   orion/self_state/inner_state_registry.py); this script now reads a
+   orion/inner_state_registry.py); this script now reads a
    frozen/historical persisted row rather than a live-updating signal. Only
    the *current* value is persisted: a single-row-per-subject UPSERT in
    Postgres via `load_autonomy_state_v2("orion")`
@@ -21,7 +21,7 @@ drive-pressure signals that share the 6-key `DRIVE_KEYS` taxonomy
    That loader fails open -- it never raises, and returns None on any error,
    missing DSN, or missing row.
 
-`orion/self_state/inner_state_registry.py` marks both signals `DUPLICATE` of
+`orion/inner_state_registry.py` marks both signals `DUPLICATE` of
 each other and explicitly defers the merge-or-keep-separate decision to a
 later phase -- that decision is NOT made here. This script only measures and
 reports how far apart the two CURRENT values are; it never merges, blends,

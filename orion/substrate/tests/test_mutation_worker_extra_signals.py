@@ -3,7 +3,7 @@ from __future__ import annotations
 import os
 from datetime import datetime, timezone
 
-from orion.schemas.self_state import SelfStateDimensionV1, SelfStateV1
+from orion.core.schemas.substrate_mutation import MutationSignalV1
 from orion.substrate.mutation_apply import PatchApplier
 from orion.substrate.mutation_decision import DecisionEngine
 from orion.substrate.mutation_detectors import MutationDetectors
@@ -11,30 +11,33 @@ from orion.substrate.mutation_monitor import PostAdoptionMonitor
 from orion.substrate.mutation_pressure import PressureAccumulator, PressurePolicy
 from orion.substrate.mutation_proposals import ProposalFactory
 from orion.substrate.mutation_queue import SubstrateMutationStore
-from orion.substrate.mutation_self_revision import prediction_error_mutation_signals
 from orion.substrate.mutation_trials import ReplayCorpusRegistry, SubstrateTrialRunner
 from orion.substrate.mutation_scoring import ClassSpecificScorer
 from orion.substrate.mutation_worker import AdaptationCycleBudget, SubstrateAdaptationWorker
 
 
-def _self_state(prediction_error_scores: dict[str, float]) -> SelfStateV1:
-    now = datetime.now(timezone.utc)
-    dims = {
-        dim: SelfStateDimensionV1(dimension_id=dim, score=0.5, confidence=0.7)
-        for dim in prediction_error_scores
-    }
-    return SelfStateV1(
-        self_state_id="ss-revision-worker",
-        generated_at=now,
-        source_field_tick_id="ft",
-        source_field_generated_at=now,
-        source_attention_frame_id="af",
-        source_attention_generated_at=now,
-        overall_condition="strained",
-        overall_intensity=0.6,
-        overall_confidence=0.6,
-        dimensions=dims,
-        prediction_error_scores=prediction_error_scores,
+def _continuity_pressure_signal(strength: float = 0.3) -> MutationSignalV1:
+    """A literal stand-in for what orion/substrate/mutation_self_revision.py's
+    prediction_error_mutation_signals() used to produce for a continuity_pressure
+    self-model dimension (deleted 2026-07-22, SelfStateV1 burn -- that module had
+    zero real production callers, only these tests). These tests exist to cover
+    SubstrateAdaptationWorker.run_cycle()'s generic extra_signals folding/budget
+    behavior, which is independent of whatever produced the signal."""
+    return MutationSignalV1(
+        event_kind="self_model_drift:continuity_pressure",
+        anchor_scope="orion",
+        subject_ref="entity:orion",
+        target_surface="cognitive_identity_continuity_adjustment",
+        target_zone="concept_graph",
+        strength=strength,
+        evidence_refs=["self_state:ss-revision-worker", "self_dimension:continuity_pressure"],
+        source_ref="self_state:ss-revision-worker",
+        metadata={
+            "source_kind": "self_model_prediction_error",
+            "self_dimension_id": "continuity_pressure",
+            "prediction_error": round(strength, 6),
+            "trajectory": 0.0,
+        },
     )
 
 
@@ -61,9 +64,7 @@ def test_run_cycle_folds_in_extra_signals_and_sustains_to_a_proposal() -> None:
     worker = _build_worker(store)
     now = datetime.now(timezone.utc)
 
-    signal = prediction_error_mutation_signals(
-        _self_state({"continuity_pressure": 0.3}), min_error=0.3
-    )[0]
+    signal = _continuity_pressure_signal(0.3)
 
     result = worker.run_cycle(
         telemetry=[],
@@ -116,9 +117,7 @@ def test_run_cycle_extra_signals_respect_max_signals_kill_lever() -> None:
         budget=AdaptationCycleBudget(max_signals=0, max_proposals=8, max_trials=8, max_adoptions=2),
     )
     now = datetime.now(timezone.utc)
-    signal = prediction_error_mutation_signals(
-        _self_state({"continuity_pressure": 0.3}), min_error=0.3
-    )[0]
+    signal = _continuity_pressure_signal(0.3)
 
     result = worker.run_cycle(
         telemetry=[],
@@ -149,9 +148,7 @@ def test_run_cycle_extra_signals_share_budget_with_telemetry_signals() -> None:
         budget=AdaptationCycleBudget(max_signals=1, max_proposals=8, max_trials=8, max_adoptions=2),
     )
     now = datetime.now(timezone.utc)
-    signal = prediction_error_mutation_signals(
-        _self_state({"continuity_pressure": 0.3}), min_error=0.3
-    )[0]
+    signal = _continuity_pressure_signal(0.3)
 
     result = worker.run_cycle(
         telemetry=[],

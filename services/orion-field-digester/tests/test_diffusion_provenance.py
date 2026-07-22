@@ -3,9 +3,10 @@
 state.capability_provenance records which edge source contributed the
 largest weighted amount to each diffused channel THIS TICK, and the
 diffused value itself is now recomputed fresh from current node/capability
-state every tick rather than accumulating across ticks -- see
-orion/self_state/deviation.py sibling module and app/digestion/diffusion.py's
-module docstring for the full incident writeup (resource_pressure was
+state every tick rather than accumulating across ticks -- see the (since
+deleted, 2026-07-22 SelfStateV1 burn) orion/self_state/deviation.py sibling
+module and app/digestion/diffusion.py's module docstring for the full
+incident writeup (resource_pressure was
 dead-flat 1.0 for the entire observed history due to additive cross-tick
 accumulation overwhelming an 8%/tick decay).
 """

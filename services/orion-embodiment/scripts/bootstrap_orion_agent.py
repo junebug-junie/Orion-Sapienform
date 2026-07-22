@@ -5,21 +5,23 @@ Dry-run by default. ``--write`` persists only ``AITOWN_ORION_PLAYER_ID`` and
 byte-for-byte untouched).
 
 Persona precedence: the authored town card (``persona_source=card``, from
-``services/orion-ai-town/cards/town_cards.yaml``) → a privacy-filtered projection
-of Orion's live self-model (``projection``) → a minimal safe blurb
+``services/orion-ai-town/cards/town_cards.yaml``) → a minimal safe blurb
 (``fallback``). The guard never treats a hollow persona as success.
+
+2026-07-22 (SelfStateV1 burn): dropped the ``projection`` tier, which fetched
+Orion's self-model from orion-self-state-runtime's ``GET /latest``. That
+service is gone and had no replacement in scope for this burn -- the fetch
+would now always return empties, so this collapsed to card-or-fallback rather
+than leaving a dead network call in place.
 """
 from __future__ import annotations
 
 import argparse
 import hashlib
-import json
 import os
 import re
 import sys
 import time
-import urllib.error
-import urllib.request
 from pathlib import Path
 from typing import Dict, Optional
 
@@ -75,36 +77,6 @@ def _load_fcc(fcc_env_path: str) -> None:
         os.environ.setdefault(k, v)
 
 
-def _fetch_self_model(base_url: str) -> Dict[str, Optional[str]]:
-    """Best-effort self-model fetch; on any failure return empties so the guard falls back."""
-    empties: Dict[str, Optional[str]] = {
-        "identity_summary": None,
-        "anchor_strategy": None,
-        "dominant_drive": None,
-        "snapshot_id": None,
-        "generated_at": None,
-    }
-    if not base_url:
-        return empties
-    # orion-self-state-runtime exposes GET /latest (telemetry self-state).
-    url = f"{base_url.rstrip('/')}/latest"
-    try:
-        req = urllib.request.Request(url, method="GET")
-        with urllib.request.urlopen(req, timeout=10) as resp:
-            data = json.loads(resp.read().decode("utf-8"))
-    except (urllib.error.URLError, ValueError, OSError):
-        return empties
-    if not isinstance(data, dict):
-        return empties
-    return {
-        "identity_summary": data.get("identity_summary") or data.get("overall_condition"),
-        "anchor_strategy": data.get("anchor_strategy") or data.get("trajectory_condition"),
-        "dominant_drive": data.get("dominant_drive"),
-        "snapshot_id": data.get("snapshot_id"),
-        "generated_at": data.get("generated_at"),
-    }
-
-
 def _player_resolves(player_id: str) -> bool:
     if not player_id:
         return False
@@ -144,7 +116,7 @@ def _load_town_card_blurb() -> Optional[str]:
     return text or None
 
 
-def _build_persona(self_state_url: str, spritesheet: str):
+def _build_persona(spritesheet: str):
     # 1. Prefer the authored card (rich, human-authored, deterministic).
     card = _load_town_card_blurb()
     if card:
@@ -163,14 +135,15 @@ def _build_persona(self_state_url: str, spritesheet: str):
         )
         print(f"persona_source={persona.persona_source} chars={len(card)} sha={content_sha}")
         return persona
-    # 2. Fall back to the live self-model projection (or minimal fallback blurb).
-    sm = _fetch_self_model(self_state_url)
+    # 2. No card on disk -> minimal fallback blurb (never empty-shell). The old
+    # tier 2 (self-model projection from orion-self-state-runtime) is gone; see
+    # module docstring, 2026-07-22 SelfStateV1 burn.
     persona = build_orion_town_persona(
-        identity_summary=sm["identity_summary"],
-        anchor_strategy=sm["anchor_strategy"],
-        dominant_drive=sm["dominant_drive"],
-        snapshot_id=sm["snapshot_id"],
-        generated_at=sm["generated_at"],
+        identity_summary=None,
+        anchor_strategy=None,
+        dominant_drive=None,
+        snapshot_id=None,
+        generated_at=None,
         spritesheet=spritesheet,
     )
     print(f"persona_source={persona.persona_source} snapshot_id={persona.provenance.get('snapshot_id')}")
@@ -187,7 +160,6 @@ def main(argv: Optional[list[str]] = None) -> int:
     fcc_env_path = os.environ.get("EMBODIMENT_FCC_ENV_PATH", "/root/.fcc/.env")
     _load_fcc(fcc_env_path)
 
-    self_state_url = os.environ.get("EMBODIMENT_SELF_STATE_URL", "")
     spritesheet = os.environ.get("EMBODIMENT_ORION_SPRITE", "f1")
 
     player_id = str(os.environ.get("AITOWN_ORION_PLAYER_ID") or "").strip()
@@ -198,7 +170,7 @@ def main(argv: Optional[list[str]] = None) -> int:
             # This deployment (monolithic world:* layout) has no input to update an
             # existing player's description; identity is set at join time. Rebuild the
             # persona for inspection but do not mutate the live body (avoids duplicates).
-            _build_persona(self_state_url, spritesheet)
+            _build_persona(spritesheet)
             print(
                 f"resync unsupported on this town: player={player_id} already embodied; "
                 "recreate with --force to apply a new persona"
@@ -207,7 +179,7 @@ def main(argv: Optional[list[str]] = None) -> int:
         print(f"already embodied: player={player_id} agent={agent_id or '?'}")
         return 0
 
-    persona = _build_persona(self_state_url, spritesheet)
+    persona = _build_persona(spritesheet)
     try:
         aitown_client.heartbeat_world()  # wake an inactive world before queuing the join
         # `join` spawns a named player driven externally by Orion's mind (no town-AI

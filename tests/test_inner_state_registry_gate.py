@@ -13,7 +13,7 @@ if str(SCRIPTS) not in sys.path:
 import pytest
 
 import check_inner_state_registry as gate
-from orion.self_state.inner_state_registry import (
+from orion.inner_state_registry import (
     Cadence,
     CompositionStatus,
     InnerStateSignal,

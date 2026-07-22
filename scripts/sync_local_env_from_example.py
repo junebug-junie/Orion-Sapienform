@@ -239,7 +239,7 @@ DEFAULT_SERVICES = (
     "orion-substrate-runtime",
     "orion-field-digester",
     "orion-attention-runtime",
-    "orion-self-state-runtime",
+    # orion-self-state-runtime deleted 2026-07-22 (SelfStateV1 burn).
     "orion-proposal-runtime",
     "orion-thought",
     "orion-harness-governor",

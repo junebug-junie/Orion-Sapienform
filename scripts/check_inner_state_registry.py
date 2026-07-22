@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Deterministic gate for orion/self_state/inner_state_registry.py.
+"""Deterministic gate for orion/inner_state_registry.py.
 
 Two distinct, independent checks:
 
@@ -48,7 +48,7 @@ REPO_ROOT = Path(__file__).resolve().parents[1]
 if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
-from orion.self_state.inner_state_registry import REGISTRY  # noqa: E402
+from orion.inner_state_registry import REGISTRY  # noqa: E402
 
 # Deliberately small, explicit, hand-maintained -- grown by editing this list,
 # not by a fuzzy classifier. Mirrors the same closed-list discipline already
@@ -157,14 +157,14 @@ def new_duplicate_heuristic_check(*, channels_file: Path) -> list[str]:
         if _matches_keyword(schema_id) and schema_id not in covered:
             failures.append(
                 f"orion/bus/channels.yaml declares schema_id={schema_id!r}, which matches an "
-                f"inner-state keyword and has no orion/self_state/inner_state_registry.py entry"
+                f"inner-state keyword and has no orion/inner_state_registry.py entry"
             )
 
     for name in _registry_py_schema_names():
         if _matches_keyword(name) and name not in covered:
             failures.append(
                 f"orion/schemas/registry.py declares {name!r}, which matches an inner-state "
-                f"keyword and has no orion/self_state/inner_state_registry.py entry"
+                f"keyword and has no orion/inner_state_registry.py entry"
             )
 
     return failures

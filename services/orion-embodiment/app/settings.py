@@ -32,7 +32,6 @@ class Settings(BaseSettings):
     # alive also runs the other town agents' LLM loops).
     world_heartbeat_enabled: bool = Field(False, alias="EMBODIMENT_WORLD_HEARTBEAT_ENABLED")
     orion_sprite: str = Field("f1", alias="EMBODIMENT_ORION_SPRITE")
-    self_state_url: str = Field("http://orion-self-state-runtime:8123", alias="EMBODIMENT_SELF_STATE_URL")
     perception_interval_sec: float = Field(0.0, alias="EMBODIMENT_PERCEPTION_INTERVAL_SEC")
     social_cooldown_sec: float = Field(120.0, alias="EMBODIMENT_SOCIAL_COOLDOWN_SEC")
     # Debounce competing move actuations (approach/wander/go_to) when multiple

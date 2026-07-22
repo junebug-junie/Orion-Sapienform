@@ -1,7 +1,7 @@
 """Read-only Hub API for the Field Channel Glossary observability panel.
 
 Serves two views over FieldStateV1's 29 raw digester channels
-(orion.self_state.field_channel_glossary + services/orion-field-digester's
+(orion.field.channel_glossary + services/orion-field-digester's
 NODE_CHANNELS/CAPABILITY_CHANNELS):
 
 - GET /channels: static glossary metadata (meaning, category, self-state
@@ -9,10 +9,10 @@ NODE_CHANNELS/CAPABILITY_CHANNELS):
 - GET /health: LIVE per-channel liveness verdict computed from
   substrate_field_state over a rolling window, using the same
   collect_field_channel_pressures() merge every cognition consumer reads
-  and the classifier orion.self_state.field_channel_glossary already
-  validates against scripts/analysis/measure_capability_channel_health.py's
-  thresholds. Deliberately NOT the README's frozen prose verdicts -- see
-  that module's docstring for why.
+  and the classifier orion.field.channel_glossary already validates against
+  scripts/analysis/measure_capability_channel_health.py's thresholds.
+  Deliberately NOT the README's frozen prose verdicts -- see that module's
+  docstring for why.
 """
 
 from __future__ import annotations
@@ -24,13 +24,13 @@ from typing import Any
 from fastapi import APIRouter, HTTPException, Query
 from sqlalchemy import create_engine, text
 
-from orion.schemas.field_state import FieldStateV1
-from orion.self_state.field_channel_glossary import (
+from orion.field.channel_glossary import (
     CLEAN_VERDICTS,
     classify_channel_series,
     load_glossary,
 )
-from orion.self_state.scoring import collect_field_channel_pressures
+from orion.field.pressure import collect_field_channel_pressures
+from orion.schemas.field_state import FieldStateV1
 
 router = APIRouter(prefix="/api/field-channel-glossary", tags=["field-channel-glossary"])
 
@@ -63,12 +63,12 @@ def build_channel_series(
     """Merged per-tick channel series from raw substrate_field_state rows.
 
     Pure w.r.t. FieldStateV1 payloads (already-decoded dicts); reuses the
-    same collect_field_channel_pressures() merge SelfStateV1 scoring reads,
-    rather than re-deriving polarity/merge logic here.
+    same collect_field_channel_pressures() merge every field-pressure
+    consumer reads, rather than re-deriving polarity/merge logic here.
 
     collect_field_channel_pressures() only writes a channel into its merged
     output when `channel in PRESSURE_CHANNELS or value > 0`
-    (orion.self_state.scoring) -- for the 5 channels in neither
+    (orion.field.pressure) -- for the 5 channels in neither
     PRESSURE_CHANNELS nor HIGHER_IS_BETTER_CHANNELS (expected_offline_
     suppression, transport_pressure, contract_pressure,
     catalog_drift_pressure, observer_failure_pressure), a tick where every

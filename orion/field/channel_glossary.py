@@ -16,8 +16,14 @@ scripts/analysis/measure_capability_channel_health.py already validated
 script's 8 capability channels / 2 targets to all 29 channels across every
 node and capability, operating on the same merged, correctly-polarized
 per-tick channel dict every cognition consumer reads
-(orion.self_state.scoring.collect_field_channel_pressures) rather than
-reimplementing merge/polarity logic here.
+(orion.field.pressure.collect_field_channel_pressures, formerly
+orion.self_state.scoring.collect_field_channel_pressures before the
+2026-07-22 SelfStateV1 burn) rather than reimplementing merge/polarity logic
+here.
+
+Relocated from orion/self_state/field_channel_glossary.py (2026-07-22,
+SelfStateV1 burn) -- this module never actually depended on SelfStateV1
+itself, it just lived inside that package structurally.
 """
 
 from __future__ import annotations

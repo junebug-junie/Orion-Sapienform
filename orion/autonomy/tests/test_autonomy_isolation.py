@@ -7,33 +7,23 @@ from pathlib import Path
 REPO = Path(__file__).resolve().parents[3]  # orion/autonomy/tests → repo root
 
 # Modules that must not import AutonomyStateV2 / reduce_autonomy_state.
+#
+# 2026-07-22 (SelfStateV1 burn): dropped orion/self_state and
+# services/orion-self-state-runtime from this list -- both deleted outright,
+# so there is nothing left under those roots to isolate. inner_state_registry.py
+# (the one file that used to need a carve-out here, since it referenced a
+# retired AutonomyStateV2 entry only as a documentation string) moved with the
+# rest of the burn to orion/inner_state_registry.py, outside every root below,
+# so the carve-out itself is gone too.
 _BANNED_ROOTS = [
-    REPO / "orion" / "self_state",
     REPO / "services" / "orion-spark-introspector",
-    REPO / "services" / "orion-self-state-runtime",
 ]
-
-
-# inner_state_registry.py lives under the banned orion/self_state root but is
-# not a cognition consumer -- it's the cross-cutting signal registry itself,
-# and its one AutonomyStateV2 reference (the retired autonomy_state_v2 entry's
-# `schema=` field) documents a dead signal's historical pydantic type for
-# audit purposes, never instantiates or feeds it into cognition. This guard
-# exists to catch AutonomyStateV2 being wired back into a live cognition path
-# (see orion/autonomy/drives_and_autonomy_retrospective.md §9/§10); a
-# registry entry naming a retired type is the opposite of that, so it is
-# excluded by name rather than weakening the AST check itself.
-_ALLOWED_REGISTRY_DOC_REFERENCE = "inner_state_registry.py"
 
 
 def _python_files(root: Path) -> list[Path]:
     if not root.exists():
         return []
-    return [
-        p
-        for p in root.rglob("*.py")
-        if p.is_file() and p.name != _ALLOWED_REGISTRY_DOC_REFERENCE
-    ]
+    return [p for p in root.rglob("*.py") if p.is_file()]
 
 
 def _imports_autonomy_v2(path: Path) -> list[str]:

@@ -4,7 +4,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 from orion.schemas.field_state import FieldEdgeV1, FieldStateV1
-from orion.self_state.scoring import collect_field_channel_pressures
+from orion.field.pressure import collect_field_channel_pressures
 
 from app.graph.lattice import load_lattice
 from app.tensor.reconcile import reconcile_field_state_with_lattice

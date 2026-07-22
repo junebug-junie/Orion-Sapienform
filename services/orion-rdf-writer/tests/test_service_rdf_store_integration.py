@@ -65,8 +65,6 @@ def svc_sync(monkeypatch: pytest.MonkeyPatch, tmp_path: Path):
 @pytest.mark.parametrize(
     "kind",
     [
-        "cognition.trace",
-        "metacognitive.trace.v1",
         "tags.enriched",
         "collapse.mirror.entry",
         "rdf.write.request",

@@ -42,7 +42,8 @@ services:
       - CHANNEL_CORE_EVENTS=${CHANNEL_CORE_EVENTS}
       # CHANNEL_WORKER_RDF / CORTEX_LOG_CHANNEL removed 2026-07-18: zero real
       # producers for either channel anywhere in the repo.
-      - CHANNEL_COGNITION_TRACE_PUB=${CHANNEL_COGNITION_TRACE_PUB}
+      # CHANNEL_COGNITION_TRACE_PUB removed 2026-07-22: pure Postgres
+      # redundancy (orion-sql-writer), ~750 writes/6h.
       # CHANNEL_MEMORY_DRIVES_AUDIT removed 2026-07-15: drive audits are Postgres-only (orion-sql-writer).
       # CHANNEL_CHAT_HISTORY_TURN / CHANNEL_CHAT_HISTORY_LOG removed 2026-07-17:
       # both are Postgres-only (orion-sql-writer); RDF copy covered ~11-18% of

@@ -26,6 +26,14 @@ Rules:
   "anchor", "preference"). tags/anchors: short lowercase keyword arrays for
   retrieval. still_true: short standalone restatements of facts still true
   after this turn (may be empty).
+{%- if known_categories %}
+- Known categories from Orion's real conversation history (data-driven topic
+  clusters, not invented): {{ known_categories | join(", ") }}. If this fact
+  clearly fits one, prefer reusing it as one of the tags -- keeps related
+  memory grouped together instead of every card inventing its own wording
+  for the same topic. This is a hint, not a constraint: if nothing fits,
+  use your own judgment.
+{%- endif %}
 - Do NOT include "sensitivity" or "visibility_scope" keys in your response.
   Those are decided outside this call, never by you -- any such keys you
   emit will be ignored.

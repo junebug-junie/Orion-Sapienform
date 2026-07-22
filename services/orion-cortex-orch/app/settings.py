@@ -135,6 +135,19 @@ class Settings(BaseSettings):
     # orion_auto_extractor_enabled above, which stays False by default.
     orion_auto_extractor_llm_timeout_sec: float = Field(6.0, alias="ORION_AUTO_EXTRACTOR_LLM_TIMEOUT_SEC")
 
+    # Taxonomy grounding for write-time auto-annotation (2026-07-22): the
+    # annotation call's types/tags were previously invented fresh by the
+    # LLM every time, ungrounded in anything real. orion-topic-foundry now
+    # produces real, data-driven, LLM-labeled topic clusters from actual
+    # conversation history (fixed same session -- stopword/granularity/
+    # labeling bugs, see services/orion-topic-foundry). This fetches its
+    # current active-model labels as a taxonomy hint. Empty base_url or any
+    # fetch failure degrades to no hint (annotation proceeds exactly as
+    # before this feature existed) -- never blocks card creation.
+    topic_foundry_base_url: str = Field("", alias="TOPIC_FOUNDRY_BASE_URL")
+    topic_foundry_timeout_sec: float = Field(3.0, alias="TOPIC_FOUNDRY_TIMEOUT_SEC")
+    topic_foundry_labels_cache_ttl_sec: float = Field(3600.0, alias="TOPIC_FOUNDRY_LABELS_CACHE_TTL_SEC")
+
     api_host: str = Field("0.0.0.0", alias="API_HOST")
     api_port: int = Field(8072, alias="API_PORT")
 

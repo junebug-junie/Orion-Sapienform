@@ -72,6 +72,57 @@ def test_save_and_load_latest(monkeypatch) -> None:
     assert loaded.frame_id == _frame().frame_id
 
 
+def _legacy_self_state_proposal_payload() -> dict:
+    # Shaped like a pre-2026-07-22 (SelfStateV1 burn) proposal frame row --
+    # source_self_state_id/source_self_state_generated_at no longer exist on
+    # ProposalFrameV1, and source_field_generated_at is now required.
+    return {
+        "schema_version": "proposal.frame.v1",
+        "frame_id": "proposal.frame:legacy:proposal_policy.v1",
+        "generated_at": NOW.isoformat(),
+        "source_self_state_id": "self.state:legacy",
+        "source_self_state_generated_at": NOW.isoformat(),
+        "source_attention_frame_id": "attention.frame:legacy",
+        "source_field_tick_id": "tick:legacy",
+        "overall_action_pressure": 0.5,
+        "overall_risk": 0.1,
+        "candidates": [],
+    }
+
+
+def test_load_latest_proposal_frame_degrades_to_none_on_legacy_row(monkeypatch) -> None:
+    # Live incident (2026-07-22): the SelfStateV1 burn removed
+    # source_self_state_id from ProposalFrameV1 and added a required
+    # source_field_generated_at. A pre-migration row is the single latest
+    # row until the poll loop successfully writes a new one -- a naive
+    # raise here crash-loops the whole worker forever (confirmed live).
+    store = ProposalRuntimeStore("postgresql://test:test@localhost/test")
+    fake_engine = MagicMock()
+    conn = MagicMock()
+    fake_engine.connect.return_value.__enter__ = MagicMock(return_value=conn)
+    fake_engine.connect.return_value.__exit__ = MagicMock(return_value=False)
+    conn.execute.return_value.mappings.return_value.first.return_value = {
+        "proposal_frame_json": _legacy_self_state_proposal_payload(),
+    }
+    monkeypatch.setattr(store, "_engine", fake_engine)
+
+    assert store.load_latest_proposal_frame() is None
+
+
+def test_load_by_field_tick_id_degrades_to_none_on_legacy_row(monkeypatch) -> None:
+    store = ProposalRuntimeStore("postgresql://test:test@localhost/test")
+    fake_engine = MagicMock()
+    conn = MagicMock()
+    fake_engine.connect.return_value.__enter__ = MagicMock(return_value=conn)
+    fake_engine.connect.return_value.__exit__ = MagicMock(return_value=False)
+    conn.execute.return_value.mappings.return_value.first.return_value = {
+        "proposal_frame_json": _legacy_self_state_proposal_payload(),
+    }
+    monkeypatch.setattr(store, "_engine", fake_engine)
+
+    assert store.load_proposal_frame_for_field_tick("tick:legacy") is None
+
+
 def test_load_by_field_tick_id(monkeypatch) -> None:
     payload = _frame().model_dump(mode="json")
     store = ProposalRuntimeStore("postgresql://test:test@localhost/test")

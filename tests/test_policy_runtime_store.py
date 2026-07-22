@@ -109,6 +109,64 @@ def test_load_by_proposal_frame_id(monkeypatch) -> None:
     assert loaded.source_proposal_frame_id == "proposal.frame:test:proposal_policy.v1"
 
 
+def _legacy_self_state_proposal_payload() -> dict:
+    # Shaped like a pre-2026-07-22 (SelfStateV1 burn) proposal frame row --
+    # source_self_state_id/source_self_state_generated_at no longer exist on
+    # ProposalFrameV1, and source_field_generated_at is now required.
+    return {
+        "schema_version": "proposal.frame.v1",
+        "frame_id": "proposal.frame:legacy:proposal_policy.v1",
+        "generated_at": NOW.isoformat(),
+        "source_self_state_id": "self.state:legacy",
+        "source_self_state_generated_at": NOW.isoformat(),
+        "source_attention_frame_id": "attention.frame:legacy",
+        "source_field_tick_id": "tick:legacy",
+        "overall_action_pressure": 0.5,
+        "overall_risk": 0.1,
+        "candidates": [],
+    }
+
+
+def test_load_next_proposal_without_policy_frame_retires_incompatible_row(monkeypatch) -> None:
+    # Live incident (2026-07-22): the SelfStateV1 burn removed
+    # source_self_state_id from ProposalFrameV1. This is the FIFO "oldest
+    # proposal without a policy frame" lookup -- a naive raise here
+    # crash-loops the whole worker forever (confirmed live), since this
+    # exact row is always "the oldest unresolved" until a policy frame
+    # exists for it. It must degrade to None AND write a stub decision
+    # frame so the FIFO advances past the bad row.
+    store = PolicyRuntimeStore("postgresql://test:test@localhost/test")
+    fake_engine = MagicMock()
+    conn = MagicMock()
+    fake_engine.connect.return_value.__enter__ = MagicMock(return_value=conn)
+    fake_engine.connect.return_value.__exit__ = MagicMock(return_value=False)
+    fake_engine.begin.return_value.__enter__ = MagicMock(return_value=conn)
+    fake_engine.begin.return_value.__exit__ = MagicMock(return_value=False)
+
+    insert_calls: list[dict] = []
+
+    def execute_side_effect(stmt, params=None):
+        sql = str(stmt)
+        result = MagicMock()
+        if "INSERT INTO substrate_policy_decision_frames" in sql:
+            insert_calls.append(params or {})
+            result.rowcount = 1
+        else:
+            result.mappings.return_value.first.return_value = {
+                "proposal_frame_json": _legacy_self_state_proposal_payload(),
+            }
+        return result
+
+    conn.execute.side_effect = execute_side_effect
+    monkeypatch.setattr(store, "_engine", fake_engine)
+
+    result = store.load_next_proposal_without_policy_frame()
+
+    assert result is None
+    assert len(insert_calls) == 1
+    assert insert_calls[0]["source_proposal_frame_id"] == "proposal.frame:legacy:proposal_policy.v1"
+
+
 def test_save_idempotent_by_frame_id(monkeypatch) -> None:
     store = PolicyRuntimeStore("postgresql://test:test@localhost/test")
     fake_engine = MagicMock()

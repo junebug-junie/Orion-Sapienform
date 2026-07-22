@@ -7,6 +7,7 @@ import os
 from typing import Any
 
 from fastapi import APIRouter, HTTPException
+from pydantic import ValidationError
 from sqlalchemy import create_engine, text
 
 from orion.schemas.feedback_frame import FeedbackFrameV1
@@ -38,7 +39,13 @@ def _load_latest_feedback_frame() -> FeedbackFrameV1 | None:
     payload = row["feedback_frame_json"]
     if isinstance(payload, str):
         payload = json.loads(payload)
-    return FeedbackFrameV1.model_validate(payload)
+    try:
+        return FeedbackFrameV1.model_validate(payload)
+    except ValidationError:
+        # A pre-migration row (e.g. 2026-07-22's SelfStateV1 burn) can be
+        # incompatible with the currently-running FeedbackFrameV1 -- degrade
+        # to "not found" instead of 500ing this debug endpoint.
+        return None
 
 
 @router.get("/latest")

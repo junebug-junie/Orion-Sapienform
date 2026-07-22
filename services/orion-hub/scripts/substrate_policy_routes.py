@@ -7,6 +7,7 @@ import os
 from typing import Any
 
 from fastapi import APIRouter, HTTPException
+from pydantic import ValidationError
 from sqlalchemy import create_engine, text
 
 from orion.schemas.policy_decision_frame import PolicyDecisionFrameV1
@@ -38,7 +39,13 @@ def _load_latest_policy_frame() -> PolicyDecisionFrameV1 | None:
     payload = row["policy_decision_frame_json"]
     if isinstance(payload, str):
         payload = json.loads(payload)
-    return PolicyDecisionFrameV1.model_validate(payload)
+    try:
+        return PolicyDecisionFrameV1.model_validate(payload)
+    except ValidationError:
+        # A pre-migration row (e.g. 2026-07-22's SelfStateV1 burn) can be
+        # incompatible with the currently-running PolicyDecisionFrameV1 --
+        # degrade to "not found" instead of 500ing this debug endpoint.
+        return None
 
 
 @router.get("/latest")

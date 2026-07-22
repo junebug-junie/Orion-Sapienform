@@ -5,6 +5,7 @@ import logging
 from datetime import datetime, timezone
 
 from psycopg2.extras import Json
+from pydantic import ValidationError
 from sqlalchemy import create_engine, text
 from sqlalchemy.engine import Engine
 
@@ -47,7 +48,44 @@ class PolicyRuntimeStore:
         payload = row["proposal_frame_json"]
         if isinstance(payload, str):
             payload = json.loads(payload)
-        return ProposalFrameV1.model_validate(payload)
+        try:
+            return ProposalFrameV1.model_validate(payload)
+        except ValidationError:
+            # This is the FIFO "oldest proposal without a policy frame"
+            # lookup -- a naive None-degrade would re-select this exact row
+            # forever (it can never validate), permanently blocking every
+            # proposal queued behind it. A schema migration (e.g. 2026-07-22's
+            # SelfStateV1 burn) can leave historical rows like this
+            # incompatible with the currently-running ProposalFrameV1.
+            # Retire it with a stub "unevaluable" decision frame so the FIFO
+            # advances past it, mirroring the pre-burn
+            # build_unevaluable_policy_decision_frame pattern.
+            raw_frame_id = payload.get("frame_id") if isinstance(payload, dict) else None
+            logger.warning(
+                "proposal_frame_incompatible_schema fifo_lookup frame_id=%s",
+                raw_frame_id,
+                exc_info=True,
+            )
+            if raw_frame_id:
+                self._retire_incompatible_proposal_frame(raw_frame_id)
+            return None
+
+    def _retire_incompatible_proposal_frame(self, raw_frame_id: str) -> None:
+        """Insert a stub 'unevaluable' policy_decision_frame for a proposal
+        frame that failed schema validation, so
+        load_next_proposal_without_policy_frame's FIFO lookup doesn't
+        re-select this exact row forever."""
+        stub = PolicyDecisionFrameV1(
+            frame_id=f"policy.frame:{raw_frame_id}:schema_incompatible",
+            generated_at=datetime.now(timezone.utc),
+            source_proposal_frame_id=raw_frame_id,
+            decisions=[],
+            overall_risk=0.0,
+            operator_review_required=True,
+            execution_allowed=False,
+            warnings=["source_proposal_frame_schema_incompatible"],
+        )
+        self.save_policy_decision_frame(stub)
 
     def load_latest_proposal_frame(self) -> ProposalFrameV1 | None:
         with self._engine.connect() as conn:
@@ -69,7 +107,11 @@ class PolicyRuntimeStore:
         payload = row["proposal_frame_json"]
         if isinstance(payload, str):
             payload = json.loads(payload)
-        return ProposalFrameV1.model_validate(payload)
+        try:
+            return ProposalFrameV1.model_validate(payload)
+        except ValidationError:
+            logger.warning("proposal_frame_incompatible_schema latest_lookup", exc_info=True)
+            return None
 
     def load_policy_frame_for_proposal(self, proposal_frame_id: str) -> PolicyDecisionFrameV1 | None:
         with self._engine.connect() as conn:
@@ -94,7 +136,15 @@ class PolicyRuntimeStore:
         payload = row["policy_decision_frame_json"]
         if isinstance(payload, str):
             payload = json.loads(payload)
-        return PolicyDecisionFrameV1.model_validate(payload)
+        try:
+            return PolicyDecisionFrameV1.model_validate(payload)
+        except ValidationError:
+            logger.warning(
+                "policy_decision_frame_incompatible_schema proposal_frame_id=%s",
+                proposal_frame_id,
+                exc_info=True,
+            )
+            return None
 
     def load_latest_policy_decision_frame(self) -> PolicyDecisionFrameV1 | None:
         with self._engine.connect() as conn:
@@ -117,7 +167,11 @@ class PolicyRuntimeStore:
         payload = row["policy_decision_frame_json"]
         if isinstance(payload, str):
             payload = json.loads(payload)
-        return PolicyDecisionFrameV1.model_validate(payload)
+        try:
+            return PolicyDecisionFrameV1.model_validate(payload)
+        except ValidationError:
+            logger.warning("policy_decision_frame_incompatible_schema latest_lookup", exc_info=True)
+            return None
 
     def save_policy_decision_frame(self, frame: PolicyDecisionFrameV1) -> None:
         now = datetime.now(timezone.utc)

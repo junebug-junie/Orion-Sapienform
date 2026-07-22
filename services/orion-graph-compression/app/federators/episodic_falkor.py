@@ -29,14 +29,19 @@ def _to_iri(value: str) -> str:
 # orion_recall shape per services/orion-meta-tags/app/falkor_recall_writer.py
 # (the real, live producer): (:ChatSession {session_id})-[:HAS_TURN]->
 # (:ChatTurn {turn_id})-[:HAS_TAG]->(:Tag {name}),
-# (:ChatTurn)-[:MENTIONS_ENTITY]->(:Entity {name}). Node identity property
-# differs per label (turn_id/session_id/name) -- coalesce recovers a single
-# stable node id per row without needing a label-specific query per pair.
+# (:ChatTurn)-[:MENTIONS_ENTITY]->(:Entity {name}). As of 2026-07-22,
+# (:CollapseEvent {collapse_id}) writes the same HAS_TAG/MENTIONS_ENTITY
+# shape too (dark by default, RECALL_FALKOR_COLLAPSE_TRIAGE_ENABLED) --
+# included in the coalesce below so a CollapseEvent-sourced edge doesn't
+# silently resolve to a NULL node id and get dropped once that flag flips on.
+# Node identity property differs per label (turn_id/session_id/collapse_id/
+# name) -- coalesce recovers a single stable node id per row without needing
+# a label-specific query per pair.
 _QUERY = """
 MATCH (s)-[r:HAS_TURN|HAS_TAG|MENTIONS_ENTITY]->(o)
-RETURN coalesce(s.turn_id, s.session_id, s.name) AS s,
+RETURN coalesce(s.turn_id, s.session_id, s.collapse_id, s.name) AS s,
        type(r) AS p,
-       coalesce(o.turn_id, o.session_id, o.name) AS o
+       coalesce(o.turn_id, o.session_id, o.collapse_id, o.name) AS o
 LIMIT $max_edges
 """
 
@@ -45,14 +50,14 @@ class FalkorEpisodicFederator:
     """Cypher-native replacement for the ``orion:enrichment``/``orion:chat``
     slice of the SPARQL-based ``EpisodicFederator``.
 
-    Covers only what has a live Falkor writer today (orion-meta-tags' Entity/
-    Tag/ChatTurn graph, ``orion_recall``). ``orion:collapse``,
-    ``orion:cognition``/``orion:metacog`` (Postgres-owned, no clustering
-    value -- see the rdf-writer kill this ships alongside), and
-    ``orion:chat:social`` have no Falkor equivalent yet and are not covered
-    here -- the SPARQL ``EpisodicFederator`` remains the source for those
-    scopes until they get their own Falkor writer. Degrades to an empty list
-    on any error, matching every other federator's fail-open contract.
+    Covers what has a live Falkor writer today (orion-meta-tags' Entity/
+    Tag/ChatTurn/CollapseEvent graph, ``orion_recall``). ``orion:cognition``/
+    ``orion:metacog`` (Postgres-owned, no clustering value -- see the
+    rdf-writer kill this ships alongside) and ``orion:chat:social`` have no
+    Falkor equivalent yet and are not covered here -- the SPARQL
+    ``EpisodicFederator`` remains the source for those scopes until they get
+    their own Falkor writer. Degrades to an empty list on any error, matching
+    every other federator's fail-open contract.
     """
 
     def __init__(self, *, client: Optional[Any] = None) -> None:

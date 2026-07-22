@@ -17,8 +17,11 @@ branch, fed by `orion:collapse:triage` (Juniper-observer-gated collapse-
 mirror events, CollapseMirrorEntryV2, `should_route_to_triage`/`_is_juniper`
 strict gate). Unlike chat/social turns, this content has no Falkor
 equivalent yet -- Fuseki (via orion-rdf-writer) is still its only
-persistence, and live volume is low (2 real Enrichment records over three
-weeks as of this writing, confirmed via direct Fuseki query) but genuinely
+persistence, and live volume is low (2 real collapse-triage Enrichment
+records over three weeks as of this writing -- 3 total Enrichment records
+in Fuseki, 1 of which predates the chat/social Falkor cutover and is
+unrelated -- confirmed via direct Fuseki query, see README.md's "Collapse-
+triage Falkor writer" section) but genuinely
 unique: it is not redundant with any Postgres store the way chat.history's
 RDF copy was. Ships dark/additive, same ladder as the chat/social writer --
 Fuseki keeps writing until this is verified live and explicitly cut over.
@@ -115,11 +118,16 @@ def extract_sentiment(tags: list[str]) -> tuple[str | None, list[str]]:
 
 
 def write_entity_edges(client: FalkorGraphClient, *, turn_id: str, ts: str, names: list[str]) -> None:
-    """The single source of truth for MERGE(:Entity)+MERGE(:MENTIONS_ENTITY)
-    -- also called directly by scripts/backfill_recall_entity_graph_cleanup_
-    reconcile.py so a future change to this write shape (e.g. adding an edge
-    property) can't silently diverge between the live writer and any
-    backfill/reconcile job that adds missing edges."""
+    """The single source of truth for :ChatTurn's MERGE(:Entity)+
+    MERGE(:MENTIONS_ENTITY) -- also called directly by scripts/
+    backfill_recall_entity_graph_cleanup_reconcile.py so a future change to
+    this write shape (e.g. adding an edge property) can't silently diverge
+    between the live writer and any backfill/reconcile job that adds missing
+    edges. Hardcoded to :ChatTurn, so write_collapse_triage_tags_to_falkor
+    below inlines its own near-identical MENTIONS_ENTITY Cypher against
+    :CollapseEvent instead of reusing this -- a real, accepted gap: an edge-
+    shape change here needs a second manual edit there, with nothing
+    enforcing they stay in sync."""
     if not names:
         return
     client.graph_query(

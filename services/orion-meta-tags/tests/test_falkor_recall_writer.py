@@ -213,9 +213,12 @@ def test_write_collapse_triage_tags_to_falkor_full_shape() -> None:
     assert "sentiment" in event_call
 
 
-def test_write_collapse_triage_tags_to_falkor_shares_entity_namespace_with_chat_turns() -> None:
-    """A collapse-mirror mention of an entity must resolve to the SAME
-    :Entity node a chat turn would create -- not a separate namespace."""
+def test_write_collapse_triage_tags_to_falkor_normalizes_same_as_chat_turns() -> None:
+    """Confirms normalization only (same MERGE (g:Entity {name}) key
+    write_entity_edges uses for chat turns) -- proves the write would MERGE
+    onto the same node given the same real client, not that it did here
+    (this test uses RecordingFalkorClient, no real graph state to check
+    node identity against)."""
     client = RecordingFalkorClient()
     write_collapse_triage_tags_to_falkor(
         client,

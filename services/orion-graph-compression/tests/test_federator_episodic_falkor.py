@@ -55,6 +55,26 @@ def test_fetch_query_covers_all_three_relationship_types():
     assert "coalesce" in cypher
 
 
+def test_fetch_query_coalesce_includes_collapse_id():
+    """CollapseEvent (services/orion-meta-tags's collapse-triage writer,
+    2026-07-22) has no turn_id/session_id/name property -- only collapse_id.
+    Without it in the coalesce, a CollapseEvent-sourced edge resolves to a
+    NULL node id and gets silently dropped by the `if s and p and o` check
+    below, once RECALL_FALKOR_COLLAPSE_TRIAGE_ENABLED flips on."""
+    client = _FakeClient(rows=[])
+    FalkorEpisodicFederator(client=client).fetch()
+    cypher = client.calls[0][0]
+    assert "collapse_id" in cypher
+
+
+def test_fetch_does_not_drop_collapse_event_sourced_rows():
+    client = _FakeClient(
+        rows=[{"s": "collapse_abc123", "p": "MENTIONS_ENTITY", "o": "gnostic"}]
+    )
+    triples = FalkorEpisodicFederator(client=client).fetch()
+    assert triples == [(_to_iri("collapse_abc123"), "MENTIONS_ENTITY", _to_iri("gnostic"))]
+
+
 def test_fetch_degrades_to_empty_list_on_client_error():
     client = _FakeClient(raises=True)
     triples = FalkorEpisodicFederator(client=client).fetch()

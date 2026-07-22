@@ -199,7 +199,11 @@ async def _rpc_annotation_llm(
     if not text:
         raw = response_payload.get("raw") or {}
         text = str(raw.get("content") or raw.get("text") or "").strip()
-    data = json.loads(text)
+    try:
+        data = json.loads(text)
+    except json.JSONDecodeError:
+        logger.warning("memory_extractor_annotation_unparseable_text snippet=%r", text[:200])
+        raise
     if not isinstance(data, dict):
         raise ValueError("annotation_response_not_object")
     # Hard boundary: CardAnnotationV1 has no sensitivity/visibility_scope

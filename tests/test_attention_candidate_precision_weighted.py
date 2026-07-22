@@ -10,6 +10,7 @@ import pytest
 
 from orion.attention.field_attention.candidate_precision_weighted import (
     PRECISION_VARIANCE_FLOOR,
+    normalize_across_targets,
     precision_weighted_salience,
 )
 
@@ -101,3 +102,69 @@ def test_result_is_a_frozen_dataclass_not_mutable() -> None:
     result = precision_weighted_salience([0.1, 0.2])
     with pytest.raises(Exception):
         result.salience = 999.0  # type: ignore[misc]
+
+
+# -- normalize_across_targets --------------------------------------------------
+# Added in review (2026-07-22): precision_weighted_salience()'s raw output is
+# unbounded and dominated by each target's own historical variance scale, which
+# is not a valid drop-in for FieldAttentionTargetV1.salience_score (schema-bound
+# to [0,1]) and is not meaningfully comparable across targets without this step.
+
+
+def test_normalize_across_targets_empty_input() -> None:
+    assert normalize_across_targets({}) == {}
+
+
+def test_normalize_across_targets_maps_min_to_zero_and_max_to_one() -> None:
+    result = normalize_across_targets({"a": 10.0, "b": 400.0, "c": 57100.0})
+    assert result["c"] == pytest.approx(1.0)
+    assert result["a"] == pytest.approx(0.0)
+    assert result["b"] == pytest.approx((400.0 - 10.0) / (57100.0 - 10.0))
+
+
+def test_normalize_across_targets_preserves_relative_rank() -> None:
+    raw = {"low": 5.0, "mid": 500.0, "high": 50000.0}
+    result = normalize_across_targets(raw)
+    assert result["low"] < result["mid"] < result["high"]
+
+
+def test_normalize_across_targets_output_always_in_unit_interval() -> None:
+    raw = {"a": 0.0, "b": 3.3, "c": 1e6, "d": 42.0}
+    result = normalize_across_targets(raw)
+    assert all(0.0 <= v <= 1.0 for v in result.values())
+
+
+def test_normalize_across_targets_all_equal_scores_get_one_not_zero() -> None:
+    """A real tie must not be misrepresented as 'nothing here matters' -- there is
+    no basis to floor a genuine tie to 0.0."""
+    result = normalize_across_targets({"a": 42.0, "b": 42.0, "c": 42.0})
+    assert result == {"a": 1.0, "b": 1.0, "c": 1.0}
+
+
+def test_normalize_across_targets_single_target_gets_one() -> None:
+    """Degenerate case of the tie rule: the only real competitor this tick gets
+    maximal (not zero, not arbitrary) attention -- it's the only real candidate."""
+    assert normalize_across_targets({"only": 12345.6}) == {"only": 1.0}
+
+
+def test_normalize_across_targets_near_equal_scores_within_epsilon_treated_as_tie() -> None:
+    result = normalize_across_targets({"a": 1.0, "b": 1.0 + 1e-13})
+    assert result == {"a": 1.0, "b": 1.0}
+
+
+def test_normalize_across_targets_does_not_mutate_input() -> None:
+    raw = {"a": 1.0, "b": 2.0}
+    normalize_across_targets(raw)
+    assert raw == {"a": 1.0, "b": 2.0}
+
+
+def test_normalize_across_targets_end_to_end_with_real_precision_weighted_salience() -> None:
+    """Integration-shaped: run two targets through the real
+    precision_weighted_salience() pure function, then normalize the raw results --
+    exercises both functions together the way a real caller would, not in isolation."""
+    quiet_target = precision_weighted_salience([0.03, 0.03, 0.03, 0.03, 0.031])
+    noisy_target = precision_weighted_salience([0.01, 0.08, 0.02, 0.12, 0.15])
+    raw = {"quiet": quiet_target.salience, "noisy": noisy_target.salience}
+    normalized = normalize_across_targets(raw)
+    assert set(normalized) == {"quiet", "noisy"}
+    assert all(0.0 <= v <= 1.0 for v in normalized.values())

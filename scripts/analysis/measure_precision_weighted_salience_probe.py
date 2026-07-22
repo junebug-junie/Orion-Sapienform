@@ -87,6 +87,7 @@ if str(_REPO_ROOT) not in sys.path:
 from orion.attention.field_attention.candidate_precision_weighted import (
     PRECISION_VARIANCE_FLOOR,
     PrecisionWeightedSalienceResult,
+    normalize_across_targets,
     precision_weighted_salience,
 )
 
@@ -417,6 +418,7 @@ def render_report(
     rolling_window: int,
     reducer_reports: dict[str, dict[str, Any]],
     caveats: list[str],
+    cross_target_normalization: dict[str, Any] | None = None,
 ) -> str:
     lines = [
         "# Precision-Weighted Salience Probe (Candidate A) -- Real Prediction-Error Receipt History",
@@ -483,6 +485,38 @@ def render_report(
             lines.extend(_summary_block("Window A", rep.get("window_a_summary")))
             lines.extend(_summary_block("Window B", rep.get("window_b_summary")))
 
+    lines.extend(["## Cross-target normalization", ""])
+    lines.append(
+        "Raw `precision_weighted_salience().salience` is unbounded and dominated by each "
+        "target's own historical variance scale -- not comparable across reducers, and not "
+        "a valid `FieldAttentionTargetV1.salience_score` ([0,1]) drop-in, without "
+        "`normalize_across_targets()`. This section compares each qualified reducer's most "
+        "recent real tick as the current competing set."
+    )
+    lines.append("")
+    ctn = cross_target_normalization or {}
+    qualified_count = ctn.get("qualified_count", 0)
+    if qualified_count >= 2:
+        raw = ctn.get("raw", {})
+        normalized = ctn.get("normalized", {})
+        lines.append(f"| Reducer | Raw salience (latest tick) | Normalized [0,1] |")
+        lines.append(f"|---|---|---|")
+        for reducer_name in sorted(raw, key=lambda r: -normalized.get(r, 0.0)):
+            lines.append(
+                f"| `{reducer_name}` | {raw[reducer_name]:.2f} | {normalized[reducer_name]:.4f} |"
+            )
+        lines.append("")
+    else:
+        lines.append(
+            f"**Not demonstrated this run** -- only {qualified_count} reducer(s) qualified. "
+            "`normalize_across_targets()` needs at least 2 real competing targets to show a "
+            "meaningful comparison; reported honestly rather than faked against a single-"
+            "target competing set. Re-run once more real receipt history has accumulated "
+            "across multiple domains (e.g. after PR #1239's execution/route fix has been "
+            "live long enough to accumulate real history)."
+        )
+        lines.append("")
+
     lines.extend(["## Coverage caveats", ""])
     if caveats:
         lines.extend(f"- {c}" for c in caveats)
@@ -539,6 +573,10 @@ def run(
             "n_rows": n_rows,
             "real_span_label": real_span_label,
             "full_summary": full_summary,
+            # Most recent real tick's raw (unnormalized) salience -- oldest-first
+            # contract of compute_rolling_results means the last element is the
+            # latest real observation. Used below for cross-target normalization.
+            "latest_raw_salience": full_results[-1].salience,
         }
 
         windows = choose_windows(min_ts, max_ts, window_hours, gap_hours, MIN_WINDOW_HOURS)
@@ -580,7 +618,36 @@ def run(
             "time -- see per-reducer status above"
         )
 
-    report_md = render_report(rolling_window=rolling_window, reducer_reports=reducer_reports, caveats=caveats)
+    # Cross-target normalization (added in review, 2026-07-22): raw
+    # precision_weighted_salience() output is unbounded and dominated by each
+    # target's own historical variance scale -- not directly comparable across
+    # reducers, and not a valid FieldAttentionTargetV1.salience_score ([0,1])
+    # drop-in. Reports each qualified reducer's own most-recent real tick as the
+    # "current competing set" and normalizes across it, honestly, rather than
+    # silently comparing raw magnitudes or fabricating a competition when fewer
+    # than 2 real reducers qualify this run.
+    latest_raw: dict[str, float] = {
+        reducer_name: reducer_reports[reducer_name]["latest_raw_salience"] for reducer_name in qualified
+    }
+    cross_target_normalization: dict[str, Any] = {"qualified_count": len(qualified)}
+    if len(qualified) >= 2:
+        cross_target_normalization["raw"] = latest_raw
+        cross_target_normalization["normalized"] = normalize_across_targets(latest_raw)
+    else:
+        caveats.append(
+            f"cross-target normalization not demonstrated this run: only "
+            f"{len(qualified)} reducer(s) qualified, and normalize_across_targets() "
+            "needs at least 2 real competing targets to show a meaningful "
+            "comparison -- reported honestly rather than faked with a single-target "
+            "competing set."
+        )
+
+    report_md = render_report(
+        rolling_window=rolling_window,
+        reducer_reports=reducer_reports,
+        caveats=caveats,
+        cross_target_normalization=cross_target_normalization,
+    )
     REPORT_PATH.write_text(report_md, encoding="utf-8")
     print(report_md)
     print(f"\nartifacts: {REPORT_PATH}, {CSV_DIR}/, {PROGRESS_PATH}")

@@ -320,27 +320,38 @@ unfixed bug restated as a finding.
 Neither phase touches the SelfStateV1 hard gate or any live consumer — both stay
 shadow/diagnostic-only, consistent with the rest of this document's non-goals.
 
-## Hard gate — blocks any live-wiring phase for both candidates
+## Hard gate — RESOLVED (2026-07-22), via kill not fix
 
-**`SelfStateV1` data-quality/theory/logic audit, full upstream trace, is a hard gate, not
-a parallel nice-to-have.** Neither Candidate A nor Candidate B may be wired into any live
-consumer (`self_state/builder.py`, `orion/proposals/`, `capability_policy.py`, or
-anything downstream of them) until this is done. Read-only replay/measurement of either
-candidate is NOT blocked — only the transition from "measured" to "consumed live" is.
+**Original gate (2026-07-21, preserved below for the record):** `SelfStateV1` data-quality/
+theory/logic audit, full upstream trace, is a hard gate, not a parallel nice-to-have.
+Neither Candidate A nor Candidate B may be wired into any live consumer
+(`self_state/builder.py`, `orion/proposals/`, `capability_policy.py`, or anything
+downstream of them) until this is done. Scope: not just the
+`dominant_attention_targets[:5]` discard point already found, but `SelfStateV1`'s full
+construction — its dimensions, their scoring, what else besides attention gets
+lossy-compressed on the way in.
 
-Scope: not just the `dominant_attention_targets[:5]` discard point already found, but
-`SelfStateV1`'s full construction — its ~19 dimensions, their scoring, what else besides
-attention gets lossy-compressed on the way in. Not yet started. Charter §7 already rules
-`SelfStateV1` out as *new instrumentation substrate* (lossy, tried and dead-ended for
-φ/IIT) — this is a different, narrower question: whether the *existing* compression is
-itself introducing real data-quality/logic problems worth fixing regardless of what feeds
-it. Rationale for the gate: wiring either candidate's real, carefully-validated signal
-into a self-state layer that may itself be silently corrupting/discarding data would
-mean the improvement never reaches anywhere real — the exact "delivery is unverified"
-risk named above, made concrete and specific to this component.
+**Resolution:** the audit ran (2026-07-22, see
+`docs/superpowers/specs/2026-07-22-self-state-phi-endo-origination-burn-spec.md` for the
+full trace). It found the gate's suspicion confirmed and worse: `SelfStateV1`'s dimension
+weights/thresholds are hand-picked with zero calibration (traced to the introducing
+commit, no design doc, no justification anywhere), and the signal itself is empirically
+dead independent of the weights — a live replay found 12/12 dimensions pinned/flat
+(`scripts/analysis/measure_self_state_signal_quality.py`, up from 8/12 four days prior).
+Decision: kill `SelfStateV1` outright rather than fix the compression — full burn list,
+rollout order, and per-consumer disposition in the linked spec.
 
-**This gate is not satisfied by either candidate's own acceptance checks** — it requires
-its own separate investigation, tracked here, not assumed clear by omission.
+**Implication for this document's live-wiring phase**: the gate's original framing
+("wired into `self_state/builder.py`...") is now moot — that file is being deleted, not
+fixed. The live-wiring target for whichever candidate gets chosen is no longer
+`SelfStateV1` at all; it moves to a `FieldStateV1`-native consumer, consistent with the
+already-established field-native-over-self-state direction. `orion/proposals/` (Layer 7)
+is being repointed at `FieldStateV1` directly in the same burn, for the same reason. Any
+future live-wiring decision for Candidate A/B should target that field-native path, not a
+`SelfStateV1` dimension that will no longer exist.
+
+**This gate was not satisfied by either candidate's own acceptance checks** — it required
+its own separate investigation, and got one, not assumed clear by omission.
 
 ## Open threads, tracked, not gating
 

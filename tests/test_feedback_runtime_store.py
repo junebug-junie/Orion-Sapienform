@@ -152,6 +152,61 @@ def test_load_latest_dispatch_frame_without_feedback_degrades_to_none_on_legacy_
     assert store.load_latest_dispatch_frame_without_feedback() is None
 
 
+def test_load_latest_dispatch_frame_without_feedback_retires_incompatible_row(monkeypatch) -> None:
+    # Live incident (2026-07-22, immediately after the SelfStateV1 burn
+    # deploy): a bare None-degrade here re-selects the exact same broken
+    # dispatch frame every tick forever -- confirmed live, feedback-runtime
+    # sat silently stuck for 15+ minutes producing nothing while its sibling
+    # services correctly drained their own backlogs via a retirement fix.
+    # This must ALSO write a stub feedback frame so the FIFO advances.
+    store = FeedbackRuntimeStore("postgresql://test:test@localhost/test")
+    fake_engine = MagicMock()
+    conn = MagicMock()
+    fake_engine.connect.return_value.__enter__ = MagicMock(return_value=conn)
+    fake_engine.connect.return_value.__exit__ = MagicMock(return_value=False)
+    fake_engine.begin.return_value.__enter__ = MagicMock(return_value=conn)
+    fake_engine.begin.return_value.__exit__ = MagicMock(return_value=False)
+
+    insert_calls: list[dict] = []
+
+    def execute_side_effect(stmt, params=None):
+        sql = str(stmt)
+        result = MagicMock()
+        if "INSERT INTO substrate_feedback_frames" in sql:
+            insert_calls.append(params or {})
+            result.rowcount = 1
+        else:
+            result.mappings.return_value.first.return_value = {
+                "dispatch_frame_json": _incompatible_self_state_dispatch_frame_payload(),
+            }
+        return result
+
+    conn.execute.side_effect = execute_side_effect
+    monkeypatch.setattr(store, "_engine", fake_engine)
+
+    result = store.load_latest_dispatch_frame_without_feedback()
+
+    assert result is None
+    assert len(insert_calls) == 1
+    assert insert_calls[0]["source_execution_dispatch_frame_id"] == (
+        "execution.dispatch.frame:legacy:execution_dispatch_policy.v1"
+    )
+
+
+def _incompatible_self_state_dispatch_frame_payload() -> dict:
+    # Shaped like a pre-2026-07-22 (SelfStateV1 burn) dispatch frame row --
+    # source_self_state_id no longer exists on ExecutionDispatchFrameV1.
+    return {
+        "schema_version": "execution.dispatch.frame.v1",
+        "frame_id": "execution.dispatch.frame:legacy:execution_dispatch_policy.v1",
+        "generated_at": NOW.isoformat(),
+        "source_policy_frame_id": "policy.frame:legacy:substrate_policy.v1",
+        "source_proposal_frame_id": "proposal.frame:legacy:proposal_policy.v1",
+        "source_self_state_id": "self.state:legacy",
+        "dispatch_mode": "dispatch_read_only",
+    }
+
+
 def test_load_latest_dispatch_frame_degrades_to_none_on_legacy_row(monkeypatch) -> None:
     store = FeedbackRuntimeStore("postgresql://test:test@localhost/test")
     fake_engine = MagicMock()

@@ -138,13 +138,13 @@ channels:
   - channel: delivery_confidence
     level: [node]
     category: sensor_trust_liveness
-    meaning: "Confidence that bus messages are actually being delivered end-to-end."
+    meaning: "Confidence that bus messages are actually being delivered end-to-end. Single-observer channel (2026-07-22): only node:athena's bus-observer ever reports this -- atlas/circe/prometheus have no code path that could produce a real reading and are excluded from the merge entirely (SINGLE_OBSERVER_NODE_CHANNELS, services/orion-field-digester/app/tensor/channels.py), not defaulted to a placeholder value."
     evidence_dimension: coherence
 
   - channel: bus_health
     level: [node]
     category: sensor_trust_liveness
-    meaning: "Overall bus/transport subsystem health signal."
+    meaning: "Overall bus/transport subsystem health signal. Single-observer channel (2026-07-22): only node:athena's bus-observer ever reports this -- atlas/circe/prometheus have no code path that could produce a real reading and are excluded from the merge entirely (SINGLE_OBSERVER_NODE_CHANNELS, services/orion-field-digester/app/tensor/channels.py), not defaulted to a placeholder value."
     evidence_dimension: coherence
 
   - channel: observer_failure_pressure

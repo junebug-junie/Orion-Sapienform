@@ -778,34 +778,54 @@ subset for the mood-arc windowed-autoencoder spike (see
 - **Meaning**: confidence that bus messages are actually being delivered
   end-to-end.
 - **Producer**: `transport_bus` delta, `hints["delivery_confidence"]`,
-  mode=`add` (default). **Not** in `NODE_DECAY_CHANNELS` — one-way ratchet
-  mechanism. Diffuses into `capability:transport`'s `"confidence"` field
-  (weight `0.85`, from `node:athena`) — the only capability with a direct
-  diffusion edge into `confidence`.
+  mode=`replace` (fixed prior to this session — the mode=`add` one-way
+  ratchet described below in the 2026-07-16 verdict no longer applies; see
+  `bus_health`/`delivery_confidence`'s existing correct handling" in the
+  cutoff section above). **Not** in `NODE_DECAY_CHANNELS` — a "current
+  reading" score with no decay story, same as `availability`. Diffuses into
+  `capability:transport`'s `"confidence"` field (weight `0.85`, from
+  `node:athena`) — the only capability with a direct diffusion edge into
+  `confidence`.
+- **Single-observer node channel (2026-07-22)**: only `node:athena`'s
+  bus-observer can ever produce a real reading for this channel —
+  atlas/circe/prometheus run llamacpp-host + biometrics only, with no code
+  path that could ever legitimately report bus/delivery state.
+  `collect_field_channel_pressures()` merges `delivery_confidence` across
+  all 4 lattice nodes via `min()` (it's a `HIGHER_IS_BETTER_CHANNELS`
+  entry), and a stale pre-2026-07-17 `0.0` already persisted on a
+  non-reporting node could never self-correct (reconcile only fills in
+  *missing* channels, it doesn't overwrite an already-present stale value).
+  Confirmed live: `node:athena` reported a real, fresh `1.0` continuously
+  while the merged corpus/`SelfStateV1` `coherence` dimension read `0.0`,
+  masked by `node:atlas`'s stale, never-updated entry.
+  `SINGLE_OBSERVER_NODE_CHANNELS` (`app/tensor/channels.py`) now makes this
+  explicit: `reconcile.py`'s `_ensure_node_vector()` prunes this channel
+  from every node except its owner on every tick — self-healing, no manual
+  data migration needed. `orion/self_state/transport.py`'s
+  `transport_channel_hints()` already read this channel from `node:athena`
+  directly (never merged) and was unaffected by the bug.
 - **SelfState dimension fed**: not in `channel_dimension_map` directly (the
   capability-level `confidence` field it feeds is the one mapped — see
   `confidence` below). `evidence_channel_map`: `delivery_confidence` →
-  `coherence` (evidence-only).
-- **Live-data verdict**: one-way ratchet — same mechanism as
-  `expected_offline_suppression` (mode=`add`, missing from
-  `NODE_DECAY_CHANNELS`); currently benign since the bus is genuinely
-  stable, but structurally could never show a real dip. Confirmed live
-  2026-07-16.
+  `coherence` (evidence-only) — this is the dimension the stale-mask bug
+  above was corrupting.
 
 #### `bus_health`
 - **Meaning**: overall bus/transport subsystem health signal.
-- **Producer**: `transport_bus` delta, `hints["bus_health"]`, mode=`add`.
-  **Not** in `NODE_DECAY_CHANNELS` — same one-way-ratchet mechanism.
+- **Producer**: `transport_bus` delta, `hints["bus_health"]`, mode=`replace`
+  (fixed prior to this session — see `delivery_confidence` above). **Not**
+  in `NODE_DECAY_CHANNELS` — same "current reading, no decay" reasoning.
   Diffuses into `capability:transport`'s `"available_capacity"` field
   (weight `0.85`, from `node:athena`) — the only capability with a direct
   diffusion edge into `available_capacity`.
+- **Single-observer node channel (2026-07-22)**: identical fix and
+  rationale as `delivery_confidence` above — see that entry.
+  `SINGLE_OBSERVER_NODE_CHANNELS` covers both channels together.
 - **SelfState dimension fed**: not in `channel_dimension_map` directly (the
   capability-level `available_capacity` field it feeds is the one mapped —
   see `available_capacity` below). `evidence_channel_map`: `bus_health` →
-  `coherence` (evidence-only).
-- **Live-data verdict**: one-way ratchet, same mechanism as
-  `delivery_confidence`/`expected_offline_suppression` — currently benign,
-  structurally could never dip. Confirmed live 2026-07-16.
+  `coherence` (evidence-only) — this is the dimension the stale-mask bug
+  above was corrupting.
 
 #### `observer_failure_pressure`
 - **Meaning**: pressure from failures of the bus "observer" role

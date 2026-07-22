@@ -95,34 +95,46 @@ def test_reconciled_state_validates() -> None:
     assert roundtrip.tick_id == "tick_stale"
 
 
-def test_reconcile_seeds_bus_health_and_delivery_confidence_to_one_not_zero() -> None:
-    # Regression guard, live post-deploy finding (2026-07-17): bus_health/
-    # delivery_confidence are HIGHER_IS_BETTER_CHANNELS (min()-wins merge,
-    # orion/self_state/scoring.py) but were missing from DEFAULT_NODE_VECTOR's
-    # per-channel override table -- every node got the generic 0.0 default
-    # from `{ch: 0.0 for ch in NODE_CHANNELS}`. Only node:athena (the
-    # transport-bus observer) ever reports a real value for these two
-    # channels; every other lattice node's untouched 0.0 always won the
-    # min()-merge, permanently masking athena's real reading regardless of
-    # actual bus health. Confirmed live: substrate_transport_bus_projection
-    # showed bus_health=1.0 for node:athena while the merged
-    # field_channel_corpus.v1 row read 0.0, 100% of rows, for the entire
-    # post-deploy window -- this test reproduces that exact shape.
+def test_reconcile_scopes_bus_health_and_delivery_confidence_to_node_athena_only() -> None:
+    # Design correction (2026-07-22), superseding the 2026-07-17 fix this
+    # test used to guard. That fix (default 0.0 -> 1.0 for non-reporting
+    # nodes) treated the symptom as a data problem, but it only helped
+    # *newly* reconciled nodes -- reconcile's "preserve any existing value"
+    # behavior meant a node with an already-persisted stale 0.0 from before
+    # that patch deployed could never self-correct. Confirmed live: athena's
+    # real, fresh report was bus_health=1.0, but atlas's persisted 0.0 (never
+    # once perturbed, from before the fix) still won the min()-merge and
+    # permanently masked it in field_channel_corpus.v1 and every SelfStateV1
+    # coherence score (self_state_policy.v1.yaml maps both channels to
+    # `coherence`).
+    #
+    # The real fix: there is exactly one bus, it runs on athena, and only
+    # athena's bus-observer ever produces a real reading -- atlas/circe/
+    # prometheus have no standing to have an opinion on bus health at all.
+    # SINGLE_OBSERVER_NODE_CHANNELS (app/tensor/channels.py) makes this
+    # explicit: only node:athena ever gets these two channels seeded, and
+    # they're actively pruned from every other node on every reconcile tick
+    # -- self-healing for exactly the stale-persisted-value case above,
+    # without needing a manual data migration.
     lattice = load_lattice(LATTICE_PATH)
     state = FieldStateV1(
         generated_at=FIXED_TS,
         tick_id="tick_bus_health_default",
-        node_vectors={"node:athena": {"bus_health": 1.0, "delivery_confidence": 1.0}},
+        node_vectors={
+            "node:athena": {"bus_health": 1.0, "delivery_confidence": 1.0},
+            # Simulates the live bug: a stale pre-fix 0.0 already persisted
+            # on a non-owner node.
+            "node:atlas": {"bus_health": 0.0, "delivery_confidence": 0.0},
+        },
     )
     reconciled = reconcile_field_state_with_lattice(state, lattice=lattice)
-    # Every other lattice node must be seeded to 1.0 (presumed healthy until
-    # reported otherwise), matching `availability`'s existing precedent --
-    # not the generic 0.0 every other untouched channel gets.
+    # Every other lattice node must have no opinion at all -- not a default
+    # value, an absent key -- so it can never win (or lose) the min()-merge.
     for node_id, vec in reconciled.node_vectors.items():
         if node_id == "node:athena":
             continue
-        assert vec.get("bus_health") == 1.0, f"{node_id} bus_health should default to 1.0, not mask a real report"
-        assert vec.get("delivery_confidence") == 1.0, f"{node_id} delivery_confidence should default to 1.0"
+        assert "bus_health" not in vec, f"{node_id} should have no bus_health entry at all"
+        assert "delivery_confidence" not in vec, f"{node_id} should have no delivery_confidence entry at all"
 
     channels, _ = collect_field_channel_pressures(reconciled)
     assert channels["bus_health"] == 1.0

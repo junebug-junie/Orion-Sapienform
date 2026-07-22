@@ -36,23 +36,63 @@ CAPABILITY_CHANNELS = [
 
 DEFAULT_NODE_VECTOR = {ch: 0.0 for ch in NODE_CHANNELS}
 DEFAULT_NODE_VECTOR["availability"] = 1.0
-# Merge-polarity fix follow-up (2026-07-17, live post-deploy verification).
-# bus_health/delivery_confidence are HIGHER_IS_BETTER_CHANNELS
-# (orion/self_state/scoring.py) -- collect_field_channel_pressures() merges
-# them via min() (worst node wins), same as availability above. Only
-# node:athena (the transport-bus observer node) ever actually reports these;
-# every other lattice node inherited the blanket 0.0 default every other
-# channel in NODE_CHANNELS gets. Under the OLD max()-merge this was inert (a
-# real report always beat 0.0). Under min()-merge it's actively wrong: any
-# untouched node's meaningless 0.0 always wins over athena's real 1.0,
-# permanently masking real bus-health data with a false "unhealthy" reading
-# -- confirmed live: substrate_transport_bus_projection showed
-# bus_health=1.0/delivery_confidence=1.0 for node:athena while the merged
-# field_channel_corpus.v1 row read 0.0 for both, 100% of rows, for the
-# entire post-deploy window. Match availability's existing precedent: a node
-# that has never reported is "presumed healthy," not "worst possible."
+# Kept at 1.0 (see SINGLE_OBSERVER_NODE_CHANNELS below): this is the
+# "presumed healthy until first real report" default for node:athena itself
+# the very first time it reconciles, before its own bus-observer has ever
+# reported. It's no longer reached by any other node -- see below.
 DEFAULT_NODE_VECTOR["bus_health"] = 1.0
 DEFAULT_NODE_VECTOR["delivery_confidence"] = 1.0
+
+# Design correction (2026-07-22): bus_health/delivery_confidence were
+# modeled as ordinary per-node NODE_CHANNELS, merged across every lattice
+# node via min() (orion/self_state/scoring.py's HIGHER_IS_BETTER_CHANNELS
+# handling -- worst node wins). But there is exactly one bus, it runs on
+# athena, and only athena's bus-observer service (BUS_OBSERVER_NODE_ID)
+# ever produces a real reading -- atlas/circe run llamacpp-host + biometrics
+# only, prometheus likewise, none of them have any code path that could
+# ever legitimately report bus health. They aren't "nodes with an
+# unreported bus health," they have no standing to have an opinion on it at
+# all. The 2026-07-17 fix (default 0.0 -> 1.0, see git history) treated
+# this as a data problem -- pick a less-wrong default for the non-reporting
+# nodes -- and it was live-verified to work for *newly* reconciled nodes.
+# But reconcile's _ensure_node_vector() preserves any already-persisted
+# value over the template default, so pre-fix-era stale 0.0 entries already
+# sitting in atlas/circe/prometheus's node_vectors from before that patch
+# deployed could never self-correct -- confirmed live 2026-07-22: athena's
+# real, fresh transport_bus_reducer report was bus_health=1.0/
+# delivery_confidence=1.0, but atlas's persisted entry was a still-0.0
+# value from before the fix with node_vector_updated_at=None (never once
+# perturbed), and the min()-merge let that meaningless stale reading
+# permanently mask athena's real, healthy one -- feeding a false
+# "unhealthy"/coherence-degrading signal into every SelfStateV1 coherence
+# score (config/self_state/self_state_policy.v1.yaml maps both channels to
+# `coherence`) for as long as field-digester has been running this schema.
+#
+# The real fix: stop treating this as a 4-way merge at all.
+# SINGLE_OBSERVER_NODE_CHANNELS below is consulted by reconcile.py's
+# _ensure_node_vector() to (a) never seed these two channels onto any node
+# but their owner, and (b) actively prune them from any other node's
+# vector every reconcile tick -- self-healing, no manual data migration
+# needed. orion/self_state/transport.py's transport_channel_hints() already
+# reads bus_health/delivery_confidence from node:athena directly (never
+# merged across nodes) and was unaffected by this bug; this fix brings
+# collect_field_channel_pressures()'s merge in line with that same
+# single-observer assumption instead of leaving two different mental
+# models of the same two channels live in the codebase at once.
+#
+# "node:athena" is hardcoded, same as orion/self_state/transport.py's
+# existing precedent -- not derived from BUS_OBSERVER_NODE_ID (services/
+# orion-bus/app/settings.py, default "athena"). If that env var is ever
+# changed on a real deployment, a genuinely different node would start
+# producing real transport_bus deltas and this map would silently prune
+# them every reconcile tick instead of masking a stale value -- a
+# resurrection of this same bug class in a new shape. Pre-existing risk
+# (not introduced by this fix), flagged here since this is now the second
+# place carrying the assumption.
+SINGLE_OBSERVER_NODE_CHANNELS: dict[str, str] = {
+    "bus_health": "node:athena",
+    "delivery_confidence": "node:athena",
+}
 
 DEFAULT_CAPABILITY_VECTOR = {ch: 0.0 for ch in CAPABILITY_CHANNELS}
 DEFAULT_CAPABILITY_VECTOR["confidence"] = 1.0

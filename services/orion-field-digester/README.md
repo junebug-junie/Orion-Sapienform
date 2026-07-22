@@ -90,6 +90,17 @@ flat).
 `resource_pressure` — attention scoring and any other capability-vector consumer reads the same
 channels and would show the same artifact.
 
+**Audited 2026-07-22: `"prediction_error"` (one of `NODE_DECAY_CHANNELS`) confirmed working
+correctly, not another instance of this bug class.** `node:substrate.route`'s prediction_error
+was observed as a subnormal float (~3e-323) and initially suspected as a decay-mechanism defect.
+Traced instead to a real quiet period — route arbitration hadn't produced a `lane`/`mind_
+requested` mismatch recently, and the write path (`app/ingest/state_deltas.py`'s
+`prediction_signal` branch, `mode="replace"`) correctly stamps `node_vector_updated_at` through
+the normal `apply_perturbations()` path, so the hold-then-decay logic above applies to it exactly
+as designed. See the "fourth training-data quality cutoff" section below for the related (and
+real) finding: three of the five nodes contributing to this channel's `max()`-merge were
+themselves broken upstream (in `orion-substrate-runtime`, not here) until today.
+
 **Fixed 2026-07-17** (`docs/superpowers/specs/2026-07-17-field-digester-decay-hold-fix-design.md`).
 `FieldStateV1.node_vector_updated_at` (new field) tracks the wall-clock timestamp of each
 `(node_id, channel)`'s last real write from `apply_perturbations()`. `apply_decay()` now holds a
@@ -349,6 +360,72 @@ that's this third cutoff, `2026-07-22T08:29:48Z`). Same reasoning as the
 second cutoff still applies to any retrain: skip pre-cutoff rows, or the
 run will reproduce a `cpu_pressure`-shaped version of the same
 contaminated-baseline problem `v2` already hit for `catalog_drift_pressure`.
+
+## `field_channel_corpus.v1` fourth training-data quality cutoff (2026-07-22)
+
+A fourth contamination window, this one on `prediction_error` — one of the
+15 channels `v2` actually trained on (`orion/mood_arc/docs/DESIGN.md`).
+`prediction_error` is a `max()`-merge across five nodes (`orion/field/
+pressure.py::collect_field_channel_pressures()`, `PRESSURE_CHANNELS`) —
+`node:substrate.{biometrics,execution,transport,chat,route}`, each written
+by `services/orion-substrate-runtime`'s five shadow prediction-error
+instruments (`orion/substrate/prediction_error.py`). Three of those five
+were broken until today, upstream of this service, not a field-digester bug:
+
+1. `execution_prediction_error()`/`route_prediction_error()` diffed a
+   `curr` run against `prev`'s exact `trace_id` match, which structurally
+   never occurred (real runs are single-shot creates) — permanently `0.0`
+   regardless of activity. Fixed (commit `a98854a2`).
+2. `chat_prediction_error()` skipped every brand-new `turn_id` (the only
+   kind that ever appears in a fresh tick), also permanently `0.0` in
+   production — confirmed live, `node:substrate.chat` had never been
+   written despite 241 real accumulated chat turns. Fixed (PR #1267).
+3. `transport_prediction_error()` was **not** broken — its low reading is a
+   real quiet bus, not an instrument defect (see the earlier fix note in
+   this same file).
+
+Net effect: for as long as those two instruments were broken, the merged
+`prediction_error` channel could only ever reflect `biometrics_prediction_
+error()` (introduced 2026-07-21) or `transport_prediction_error()` (always
+near-zero) — confirmed directly against the training corpus file itself
+(`/mnt/telemetry/field_channels/corpus/field_channels.jsonl`): its earliest
+available rows (2026-07-18T20:41Z, predating even the biometrics/chat/
+route instruments' 2026-07-21 introduction) already read `prediction_error
+= 3e-323` — the decay floor `apply_decay()` (`NODE_DECAY_CHANNELS` includes
+`"prediction_error"`) settles a stale channel to. This is consistent with
+`prediction_error` having been at or near that floor for its entire history
+in this corpus, not a channel with real learnable variance — the opposite
+of what `v2`'s field-selection pass presumably assumed when it kept this
+channel.
+
+Fixed by `a98854a2` (merged earlier 2026-07-22) and PR #1267 (merged
+2026-07-22T19:16:01Z); `orion-substrate-runtime` restarted
+2026-07-22T19:18:31Z (`docker inspect orion-athena-substrate-runtime
+--format '{{.State.StartedAt}}'`) — the later of the two, and the binding
+cutoff since both fixes live in that one service. Confirmed live
+post-restart directly against the corpus file: rows minutes after the
+restart read `prediction_error = 0.0671`-`0.1171` (varying across
+consecutive ticks, not stuck) — a qualitatively different, real signal
+compared to the pre-cutoff decay-floor constant. Exact per-node
+attribution of this specific post-restart value has not been traced
+further in this pass (worth a follow-up if a `v4` retrain's field-selection
+behaves unexpectedly for this channel) — the corpus-level before/after
+contrast is the confirmed finding here, not a claim about which of the
+three now-real instruments produced it.
+
+```bash
+python orion/mood_arc/fit_encoder.py train \
+  --corpus /mnt/telemetry/field_channels/corpus/field_channels.jsonl \
+  --min-generated-at 2026-07-22T19:18:31Z \
+  --out <out-dir>
+```
+
+If multiple cutoffs apply, use whichever is latest (as of this writing,
+that's this fourth cutoff, `2026-07-22T19:18:31Z`). Same reasoning as the
+second/third cutoffs: **do not retrain yet** — there are only minutes of
+clean post-cutoff data as of this writing, nowhere near `v2`'s 207K-row/
+5-day corpus. Let clean data accumulate first; see the agent board for the
+tracked follow-up.
 
 ## Field channel glossary
 

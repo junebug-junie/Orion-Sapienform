@@ -291,7 +291,7 @@ as of this writing there are only ~40 minutes of clean post-cutoff data,
 nowhere near `v2`'s 207K-row/5-day corpus. Let clean data accumulate
 first; see the agent board for the tracked follow-up.
 
-## `field_channel_corpus.v1` third training-data quality cutoff (PR #1262, pending deploy)
+## `field_channel_corpus.v1` third training-data quality cutoff (2026-07-22, PR #1262)
 
 A third, independent contamination window, found in `orion/substrate/
 biometrics_loop` (upstream of this service, not a field-digester bug
@@ -325,25 +325,30 @@ itself) while re-auditing channels for the work above:
 Both fixed by PR #1262 (`orion/substrate/biometrics_loop/pressure_organ.py`
 Rule B' + `pressure_reducer.py`'s `last_accepted_at`-based dedup, plus a
 companion fix in this service's `state_deltas.py` restoring `availability`
-to `1.0` on the recovery transition). As of this writing PR #1262 is open,
-not yet merged or deployed. Once it is, get the exact cutoff the same way
-as the second cutoff above (`gh pr view 1262 --json mergedAt`, cross-checked
-against **both** `orion-field-digester`'s and `orion-substrate-runtime`'s
-container restart times — this fix spans both services, and the earlier
-container to restart is not necessarily the binding cutoff since corpus
-contamination could come from either side):
+to `1.0` on the recovery transition), merged 2026-07-22T08:06:41Z.
+`orion-field-digester` restarted 2026-07-22T08:29:00Z,
+`orion-substrate-runtime` (which runs the biometrics_loop reducer)
+restarted 2026-07-22T08:29:48Z — the later of the two,
+**`2026-07-22T08:29:48Z`, is the binding cutoff** (corpus contamination
+could come from either service, so the cutoff is only safe once both have
+picked up the fix). Confirmed live immediately post-restart:
+`node:atlas`'s `availability` read `1.0` (was permanently `0.0`), and its
+`node_pressure_reducer` receipts dropped to 2 in the first 40 seconds then
+went quiet, consistent with the 5-minute merge window actually holding
+instead of firing every ~9 seconds:
 
 ```bash
 python orion/mood_arc/fit_encoder.py train \
   --corpus /mnt/telemetry/field_channels/corpus/field_channels.jsonl \
-  --min-generated-at <PR #1262 deploy timestamp, TBD> \
+  --min-generated-at 2026-07-22T08:29:48Z \
   --out <out-dir>
 ```
 
-If multiple cutoffs apply, use whichever is latest. **Do not retrain until
-this cutoff is known and filled in** — same reasoning as the second cutoff:
-retraining against contaminated `cpu_pressure` data would just produce
-another `v2`-shaped problem for a different channel.
+If multiple cutoffs apply, use whichever is latest (as of this writing,
+that's this third cutoff, `2026-07-22T08:29:48Z`). Same reasoning as the
+second cutoff still applies to any retrain: skip pre-cutoff rows, or the
+run will reproduce a `cpu_pressure`-shaped version of the same
+contaminated-baseline problem `v2` already hit for `catalog_drift_pressure`.
 
 ## Field channel glossary
 

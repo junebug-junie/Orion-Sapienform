@@ -150,10 +150,52 @@ not "ready" as earlier assumed from the charter's status note rather than checke
 directly. Any first real replay of Candidate A has to be honest about this, not silently
 scoped to all five domains.
 
+**Correction (2026-07-21, later same day): the above table measured the wrong thing.**
+Re-traced end to end, not re-asserted. `substrate_reduction_receipts` itself is healthy
+for every domain — confirmed live: `transport_bus_reducer` was firing every ~10-12s and
+`execution_trajectory_reducer` every ~1-2min at the moment this correction was written,
+both with real, distinct payload content. **"Only biometrics is real" is false as a
+claim about the receipts.** The staleness numbers above are real, but they measure
+`node:substrate.*`'s `observed_at`, which is a *derived* FalkorDB write, not receipt
+health — and that write is gated by `app/worker.py::_write_prediction_error_node()`,
+called only when that tick's computed error is `> 0.0` (line 653/846 and the
+execution/transport call sites). Two different, unrelated mechanisms were hiding behind
+one misleading proxy:
+
+- **Transport is genuinely idle, not broken.** Sampled the last 500 live
+  `transport_bus_reducer` receipts (~80 continuous minutes): `bus_health` and
+  `delivery_confidence` each took exactly **1** distinct value across all 500 rows;
+  `transport_pressure` took 2 (`0` / `0.0009`). `transport_prediction_error()`
+  (`orion/substrate/prediction_error.py:34`) is diffing a bus that has had nothing
+  happen — `error = 0.0` is the *correct* score here, not a failure. Matches this
+  program's own `orion-field-digester` README verdict on the same underlying
+  channels ("one-way ratchet... currently benign since the bus is genuinely stable").
+- **Execution's instrument has a structural bug, unrelated to volume.** Sampled all 26
+  live `execution_trajectory_reducer` receipts: 100% `operation: "create"`, and every
+  `target_id` (trace_id) is unique — zero repeats. `execution_prediction_error()`
+  (`prediction_error.py:17`) only scores a delta when `prev.runs.get(trace_id)` finds
+  the *same* trace_id in both the previous and current projection snapshot. Real
+  cortex-exec runs observed here (`reverie_narrate` calls) are single-shot: created
+  once, never revised. There is structurally never a "prev" of the same run to diff
+  against — `error` returns exactly `0.0` in perpetuity, independent of how much real
+  execution activity exists. `route_prediction_error()` shares the identical
+  trace_id-diff design and likely has the same defect (only 9-10 real receipts ever,
+  consistent with one-shot arbitration runs, not yet independently confirmed).
+
+Net effect: the receipts pipeline needs no fix. The FalkorDB `observed_at` snapshot used
+above is not a valid proxy for "does real history exist" and should not be used as one
+again. Transport's apparent dormancy is real signal (a quiet bus, correctly scored);
+execution's is an instrument defect that will not resolve with more data or more uptime
+— it needs `execution_prediction_error()`'s diff key redesigned (e.g. compare against
+the most recent prior run regardless of trace_id, not require the same trace_id to
+recur) before it can ever register a nonzero value. See board finding `92c15e6c` for the
+full trace.
+
 **Missing questions**:
-- Does real receipt history actually exist in enough volume, right now, for more than
-  just biometrics, at the moment a build actually runs (this document's numbers are a
-  snapshot, not a guarantee)?
+- ~~Does real receipt history actually exist in enough volume, right now, for more than
+  just biometrics~~ — answered above: yes for transport (idle, not absent) and no for
+  execution, but for a code-defect reason, not a volume reason. Chat/route not yet
+  independently re-checked against live data past this correction.
 - Is variance-based precision numerically stable at the magnitude these real signals
   actually operate at (0.0-0.12 range confirmed for biometrics), or does it need a
   floor/epsilon to avoid blowing up on a near-zero-variance stretch?
@@ -241,6 +283,42 @@ replay; do the three scorers ever disagree, and is that disagreement itself info
 - A real, named, in-the-same-changeset consumer past `self_state/builder.py`'s current
   5-ID truncation — this candidate does not ship as a scoring change alone if the score
   still dies at the same discard point.
+
+## Build sequencing (added 2026-07-21, post-correction)
+
+Two separate things were being conflated as one build. Splitting them into phases, per
+Juniper's direction:
+
+**Phase 1 — build first. Fix the live "bus version" — the existing, already-deployed,
+event-driven reducers in `services/orion-substrate-runtime/app/worker.py` /
+`orion/substrate/prediction_error.py`.** These already run continuously inside the real,
+bus-consuming substrate-runtime service (biometrics/execution/transport/chat/route poll
+loops, `worker.py:213-218`); they are not new instruments, they are the existing
+prediction-error producers with a confirmed defect. Concretely: redesign
+`execution_prediction_error()`'s (and check `route_prediction_error()`'s) diff key so it
+does not require the exact same `trace_id` to recur across two consecutive polls —
+compare against the most recent prior run instead. This is a bug fix to code that
+already runs in production, touches no live consumer of the score (nothing downstream of
+`node:substrate.execution` exists yet), and is **not** blocked by the SelfStateV1 hard
+gate below — that gate is about wiring a *candidate salience formula* into
+`self_state/builder.py`/`orion/proposals/`/`capability_policy.py`, not about correcting
+an already-shipped diagnostic instrument that nothing live consumes. Also correct this
+document's own now-superseded "only biometrics is real" framing (done above) so Candidate
+A's real-data assumptions start from the corrected picture, not the stale one.
+
+**Phase 2 — subsequent phase. Build the standalone "non-bus" versions — Candidate A's
+and Candidate B's new modules** (`candidate_precision_weighted.py`,
+`candidate_society_of_mind.py`) **and their replay scripts under `scripts/analysis/`.**
+These are pure, offline analysis code with no dependency on the live bus-driven worker
+loops — they read `substrate_reduction_receipts` directly and can be run, tested, and
+iterated on without touching the running services at all. Deliberately sequenced after
+Phase 1: replaying Candidate A's precision math against execution history before the
+diff-key fix would replay against data that structurally can never show variance,
+producing a misleading "execution never varies" result that is actually just the
+unfixed bug restated as a finding.
+
+Neither phase touches the SelfStateV1 hard gate or any live consumer — both stay
+shadow/diagnostic-only, consistent with the rest of this document's non-goals.
 
 ## Hard gate — blocks any live-wiring phase for both candidates
 

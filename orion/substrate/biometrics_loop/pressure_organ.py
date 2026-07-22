@@ -21,6 +21,7 @@ ALLOWED_PRESSURE_ROLES = frozenset(
         "node_pressure_reinforced",
         "node_pressure_decayed",
         "node_availability_concern",
+        "node_availability_recovered",
         "node_pressure_suppressed",
         "node_capability_impact",
     }
@@ -139,6 +140,28 @@ def invoke_biometrics_pressure(
             build_pressure_candidate_events(
                 node_id=node_id,
                 semantic_role="node_availability_concern",
+                evidence_event_ids=evidence,
+                confidence=max(min_confidence, 0.8),
+                observed_at=clock,
+            )
+        )
+
+    # Rule B': expected online + fresh + a prior availability concern is
+    # still flagged -> recovered. The symmetric counterpart Rule B needed
+    # and never had: "availability" in active_pressures was a one-way
+    # ratchet -- the only removal path (Rule D / node_pressure_decayed) is
+    # hardcoded in pressure_reducer.py's ROLE_TO_PRESSURE_KIND to clear
+    # "strain" only, never "availability". Confirmed live 2026-07-22:
+    # node:atlas had a transient staleness blip set "availability" once,
+    # then stayed permanently flagged (field-digester's availability
+    # channel pinned at 0.0) for hours after biometrics resumed reporting
+    # fresh (last_seen_at continuously current) -- a real node, fully
+    # reachable, misrepresented as unavailable.
+    elif expected_online is True and not stale and "availability" in active_pressures:
+        candidates.append(
+            build_pressure_candidate_events(
+                node_id=node_id,
+                semantic_role="node_availability_recovered",
                 evidence_event_ids=evidence,
                 confidence=max(min_confidence, 0.8),
                 observed_at=clock,

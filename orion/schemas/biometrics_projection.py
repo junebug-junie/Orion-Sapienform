@@ -53,6 +53,18 @@ class ActiveNodePressureStateV1(BaseModel):
     pressure_score: float = 0.0
     evidence_event_ids: list[str] = Field(default_factory=list)
     last_updated_at: datetime
+    # Per-pressure-kind merge-window bookkeeping (2026-07-22): keyed by
+    # pressure_kind ("strain"/"availability"/etc.), not a single timestamp,
+    # since different pressure kinds on the same node can legitimately be
+    # accepted at different cadences -- a single shared timestamp would
+    # falsely suppress one kind's fresh candidate just because a different
+    # kind was reinforced moments earlier. Lives on the durable projection
+    # (not a reducer-local dict) specifically so DEFAULT_MERGE_WINDOW_SEC
+    # actually holds across separate reduce_node_pressure_candidates() calls
+    # -- confirmed live this was previously a no-op: this reducer runs once
+    # per trigger event (orion/substrate/biometrics_loop/pipeline.py), so a
+    # call-scoped dict could never accumulate dedup history across events.
+    last_accepted_at: dict[str, datetime] = Field(default_factory=dict)
 
 
 class ActiveNodePressureProjectionV1(BaseModel):

@@ -125,12 +125,30 @@ def chat_prediction_error(
 ) -> float:
     """0-1 surprise score: how much did a chat turn's pressure hints change this batch?
 
-    Mirrors ``execution_prediction_error``'s fixed-key-set shape: ``ChatTurnStateV1``
-    is revised in place per ``turn_id`` (``reduce_chat_trace_events`` at
-    ``orion/substrate/chat_loop/reducer.py`` line ~146 -- ``updated.turns[turn_id] =
-    turn``, a create/update, not append-only), so the same key comparison across two
-    successive projection snapshots is meaningful the same way execution's per-
-    ``trace_id`` comparison is.
+    **Fallback added 2026-07-22, same defect and same fix as
+    ``execution_prediction_error``/``route_prediction_error``.** The original docstring
+    claimed ``ChatTurnStateV1`` is "revised in place per ``turn_id``," implying an exact
+    ``turn_id`` match across successive projection snapshots would be meaningful the same
+    way execution's per-``trace_id`` comparison is. That's true at the schema level
+    (``reduce_chat_trace_events`` does overwrite ``updated.turns[turn_id]``), but it misses
+    the actual live behavior: hub emits a turn's entire event burst in one shot
+    (``build_chat_turn_grammar_events`` in ``services/orion-hub/scripts/grammar_emit.py``
+    shares one ``trace_id`` across every layer -- trace_started, chat root, context,
+    raw_input, repair_signal, stance_disposition, trace_ended), so a turn is created once
+    and never revisited. Since ``prev``/``curr`` are loaded moments apart around one tick,
+    a turn processed *this* tick is by definition new -- it cannot have a ``prev_turn``
+    (an exact match structurally never occurs), and every already-existing turn is
+    identical between ``prev``/``curr`` (delta 0 by construction). Live-confirmed
+    2026-07-22: ``node:substrate.chat`` had never been written despite
+    ``substrate_chat_session_projection`` holding 241 real turns accumulated since
+    2026-06-19 -- not a data-scarcity gap, a structurally-skipped-new-content gap.
+
+    Fix: when no exact ``turn_id`` match exists, diff against ``prev``'s most-recently-
+    updated turn instead (by ``last_updated_at``, via the shared ``_latest_run`` helper) --
+    "how does this turn compare to the last one we saw," not "how did this turn's own
+    content evolve" (which cannot be answered for a turn that never gets revised). Exact
+    matches still take priority, so a turn that genuinely were revised in place (schema-legal,
+    just unobserved in practice) is unaffected.
 
     Unlike the other three instruments, the pressure hints themselves are not stored
     on the projection -- ``compute_chat_pressure_hints()``
@@ -158,8 +176,11 @@ def chat_prediction_error(
     ``compute_chat_pressure_hints()`` itself, not a silent key-drop here.
     """
     deltas: list[float] = []
+    prev_fallback = _latest_run(prev.turns)
     for turn_id, curr_turn in curr.turns.items():
         prev_turn = prev.turns.get(turn_id)
+        if prev_turn is None:
+            prev_turn = prev_fallback
         if prev_turn is None:
             continue
         prev_hints = compute_chat_pressure_hints(prev_turn)

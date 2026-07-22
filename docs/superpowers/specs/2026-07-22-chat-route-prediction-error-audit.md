@@ -1,9 +1,15 @@
 # Chat/route prediction-error audit — design doc
 
-Status: design mode, not yet implemented. This audit was triggered by a direct question —
-whether Orion's substrate prediction-error receipts lean on biometrics because it's the easy
-domain while chat/route (the ones requiring real substrate-grammar work) quietly don't produce
-real signal. The answer is yes, but not for the reason first suspected.
+Status: **implemented** (chat fix only — see below). This audit was triggered by a direct
+question — whether Orion's substrate prediction-error receipts lean on biometrics because it's
+the easy domain while chat/route (the ones requiring real substrate-grammar work) quietly don't
+produce real signal. The answer is yes, but not for the reason first suspected.
+
+`chat_prediction_error()`'s `_latest_run()` fallback (the fix proposed below) has landed in
+`orion/substrate/prediction_error.py`, with regression tests and a `services/
+orion-substrate-runtime/README.md` update in the same patch. `route_prediction_error()`'s
+subnormal-value problem remains open — Missing Question 1 (the field-digester diffusion path)
+was not investigated in this pass; do not treat route as fixed.
 
 ## Arsonist summary
 

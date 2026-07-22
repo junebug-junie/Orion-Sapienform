@@ -270,28 +270,46 @@ def delta_to_perturbations(delta: StateDeltaV1) -> list[Perturbation]:
     if delta.target_kind == "transport_bus":
         hints = dict((delta.after or {}).get("pressure_hints") or {})
         node_key = _node_key(str((delta.after or {}).get("node_id") or delta.target_id.replace("bus:", "")))
-        # bus_health / delivery_confidence are fresh-value-per-report readings
-        # (orion/substrate/transport_loop/reducer.py::reduce_transport_trace_events
-        # recomputes them from scratch via extract_transport_bus_state_from_events
-        # every time it reduces new bus-trace events -- not an incremental delta),
-        # the same "here's the current reading" shape already used for
+        # All seven pressure_hints channels below (bus_health,
+        # delivery_confidence, and the five in the loop further down) are
+        # fresh-value-per-report readings (orion/substrate/transport_loop/
+        # reducer.py::reduce_transport_trace_events recomputes them from
+        # scratch via extract_transport_bus_state_from_events every time it
+        # reduces new bus-trace events -- not an incremental delta), the same
+        # "here's the current reading" shape already used for
         # execution_load/execution_friction/reasoning_load/failure_pressure/
-        # egress_confidence_deficit/prediction_error elsewhere in this file, all
-        # of which use mode="replace". Left as default mode="add" here, these two
-        # channels ratchet to 1.0 and stay there (add-mode ceiling, never cleared)
-        # since nothing else in this file wrote a downward value for them.
-        # mode="replace" alone is the fix: worker.py::_transport_tick() only
-        # reduces when fetch_transport_grammar_events() actually returns events
-        # (`if not events: return None`), i.e. bus_health/delivery_confidence
-        # deltas arrive only when there is genuine transport bus trace activity,
-        # not unconditionally every field-digester tick. Deliberately NOT added
-        # to NODE_DECAY_CHANNELS: both are "current health/confidence reading"
-        # scores (0.0-1.0, default 0.5 -- see orion/schemas/transport_projection.py
-        # and extract.py), not pressure accumulators. A health score fading
-        # toward 0.0 between reports, just because the bus went quiet, would
-        # misrepresent a quiet bus as a degrading one; mode="replace" already
-        # guarantees the value reflects the most recent genuine report, and decay
-        # would only distort that between reports rather than bound anything.
+        # egress_confidence_deficit/prediction_error elsewhere in this file,
+        # all of which use mode="replace".
+        #
+        # bus_health/delivery_confidence use mode="replace" and are
+        # deliberately NOT in NODE_DECAY_CHANNELS: both are "current
+        # health/confidence reading" scores (0.0-1.0, default 0.5 -- see
+        # orion/schemas/transport_projection.py and extract.py), not pressure
+        # accumulators, and have no decay story.
+        #
+        # transport_pressure/catalog_drift_pressure/observer_failure_pressure/
+        # reliability_pressure/contract_pressure (the loop below) ARE in
+        # NODE_DECAY_CHANNELS -- decaying toward baseline if the bus-observer
+        # genuinely goes dark is correct for these. But until 2026-07-22 this
+        # loop left mode at its default "add", which combined with
+        # apply_perturbations() unconditionally stamping
+        # node_vector_updated_at on every perturbation regardless of mode
+        # (perturbation.py) to produce a stuck-value bug: a real "no drift"
+        # report (intensity=0.0) is a no-op in add-mode, so it can never
+        # correct a previously-injected nonzero value back down, while
+        # simultaneously re-marking the channel "fresh" every ~10s -- which
+        # makes apply_decay()'s hold-if-fresh logic skip decay too. Net
+        # effect: whatever nonzero value one of these channels last picked up
+        # from a genuine event got permanently frozen, immune to both
+        # correction (add-mode 0.0 no-ops) and decay (perpetually "fresh").
+        # Confirmed live 2026-07-22: catalog_drift_pressure stuck at
+        # 0.13517857261119032 for 10+ minutes across a service restart while
+        # transport_bus_reducer was continuously emitting the real current
+        # value (0.0) every ~10s the whole time -- traced end to end via
+        # docs/superpowers/design/2026-07-18-collapse-mirror-metacog-redesign.md's
+        # telemetry_anomaly investigation, which was firing on nearly every
+        # tick because of this exact stale channel. mode="replace" is the
+        # same fix already applied to bus_health/delivery_confidence above.
         if "bus_health" in hints:
             out.append(
                 Perturbation(
@@ -326,26 +344,24 @@ def delta_to_perturbations(delta: StateDeltaV1) -> list[Perturbation]:
                         channel=channel,
                         intensity=float(hints[key]),
                         label=delta.delta_id,
+                        mode="replace",
                     )
                 )
-        if "stream_depth_pressure" in hints:
-            out.append(
-                Perturbation(
-                    node_id=node_key,
-                    channel="transport_pressure",
-                    intensity=float(hints["stream_depth_pressure"]),
-                    label=delta.delta_id,
-                )
-            )
-        if "backpressure" in hints:
-            out.append(
-                Perturbation(
-                    node_id=node_key,
-                    channel="transport_pressure",
-                    intensity=float(hints["backpressure"]),
-                    label=delta.delta_id,
-                )
-            )
+        # stream_depth_pressure/backpressure are NOT separately injected here:
+        # extract.py's transport_pressure = max(stream_depth_pressure,
+        # backpressure) already folds both into the "transport_pressure" hint
+        # handled by the loop above. Re-injecting them as their own
+        # mode="add" perturbations against the same channel (as this code did
+        # until 2026-07-22) would fight the replace above -- whichever
+        # Perturbation for "transport_pressure" apply_perturbations() sees
+        # last in this list wins outright (replace) or silently inflates it
+        # past the intended max() (add), depending on ordering. hints always
+        # carries all of bus_health/delivery_confidence/stream_depth_pressure/
+        # backpressure/catalog_drift_pressure/observer_failure_pressure/
+        # transport_pressure/contract_pressure/reliability_pressure together
+        # (single dict returned by compute_transport_pressures()), so
+        # "transport_pressure" is always present whenever
+        # "stream_depth_pressure"/"backpressure" would have been.
 
     if delta.target_kind == "prediction_signal":
         hints = dict((delta.after or {}).get("pressure_hints") or {})

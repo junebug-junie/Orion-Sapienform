@@ -12,6 +12,8 @@ from __future__ import annotations
 
 from datetime import datetime, timezone
 
+import pytest
+
 from app.digestion.perturbation import apply_perturbations
 from app.digestion.suppression import apply_suppression
 from app.ingest.state_deltas import Perturbation, delta_to_perturbations
@@ -387,10 +389,14 @@ def test_delivery_confidence_drop_reflected_not_ceiling_clamped() -> None:
     assert state.node_vectors["node:athena"]["delivery_confidence"] == 0.3
 
 
-def test_other_transport_bus_channels_still_default_add_mode() -> None:
-    """Scope check: only bus_health/delivery_confidence changed mode. The other
-    transport_bus channels (out of scope for this fix -- reliability_pressure,
-    transport_pressure, etc.) must remain untouched (default mode="add")."""
+def test_remaining_transport_bus_channels_also_use_replace_mode() -> None:
+    """2026-07-22: closes the gap this test used to document as "out of
+    scope". transport_pressure/catalog_drift_pressure/observer_failure_pressure/
+    reliability_pressure/contract_pressure are fresh-value-per-report readings
+    from the same reducer as bus_health/delivery_confidence -- mode="add"
+    left them stuck (confirmed live: catalog_drift_pressure frozen at
+    0.13517857261119032 for 10+ minutes across a restart while the real
+    value was 0.0 the whole time)."""
     delta = _transport_bus_delta(
         hints={
             "transport_pressure": 0.4,
@@ -402,7 +408,64 @@ def test_other_transport_bus_channels_still_default_add_mode() -> None:
     )
     perturbations = delta_to_perturbations(delta)
     for p in perturbations:
-        assert p.mode == "add", f"{p.channel} unexpectedly changed mode to {p.mode}"
+        assert p.mode == "replace", f"{p.channel} unexpectedly still mode={p.mode}"
+
+
+def test_catalog_drift_pressure_drop_reflected_not_stuck() -> None:
+    """The live regression this fix closes: a real event pushes
+    catalog_drift_pressure up, then the next report says the real current
+    value is back to 0.0. Under the old mode="add" default the 0.0 report
+    was a no-op and the channel stayed stuck at the old value forever."""
+    state = _state()
+
+    up = delta_to_perturbations(_transport_bus_delta(hints={"catalog_drift_pressure": 0.4}))
+    apply_perturbations(state, up)
+    assert state.node_vectors["node:athena"]["catalog_drift_pressure"] == 0.4
+
+    down = delta_to_perturbations(_transport_bus_delta(hints={"catalog_drift_pressure": 0.0}))
+    apply_perturbations(state, down)
+    assert state.node_vectors["node:athena"]["catalog_drift_pressure"] == 0.0
+
+
+@pytest.mark.parametrize(
+    "channel",
+    ["transport_pressure", "observer_failure_pressure", "reliability_pressure", "contract_pressure"],
+)
+def test_remaining_channels_drop_reflected_not_stuck(channel: str) -> None:
+    """Same regression as test_catalog_drift_pressure_drop_reflected_not_stuck,
+    covering the other three channels the review flagged as sharing the
+    identical loop body but lacking their own explicit up-then-down test."""
+    state = _state()
+
+    up = delta_to_perturbations(_transport_bus_delta(hints={channel: 0.4}))
+    apply_perturbations(state, up)
+    assert state.node_vectors["node:athena"][channel] == 0.4
+
+    down = delta_to_perturbations(_transport_bus_delta(hints={channel: 0.0}))
+    apply_perturbations(state, down)
+    assert state.node_vectors["node:athena"][channel] == 0.0
+
+
+def test_stream_depth_pressure_and_backpressure_no_longer_double_inject_transport_pressure() -> None:
+    """transport_pressure = max(stream_depth_pressure, backpressure) is
+    already folded into the "transport_pressure" hint by extract.py. Before
+    this fix, stream_depth_pressure/backpressure were also separately
+    injected as their own mode="add" perturbations against the same
+    "transport_pressure" channel -- redundant with, and conflicting with, the
+    now mode="replace" entry above. Exactly one Perturbation should target
+    transport_pressure per transport_bus delta."""
+    delta = _transport_bus_delta(
+        hints={
+            "transport_pressure": 0.6,
+            "stream_depth_pressure": 0.6,
+            "backpressure": 0.2,
+        }
+    )
+    perturbations = delta_to_perturbations(delta)
+    transport_pressure_perturbations = [p for p in perturbations if p.channel == "transport_pressure"]
+    assert len(transport_pressure_perturbations) == 1
+    assert transport_pressure_perturbations[0].mode == "replace"
+    assert transport_pressure_perturbations[0].intensity == 0.6
 
 
 # ---------------------------------------------------------------------------

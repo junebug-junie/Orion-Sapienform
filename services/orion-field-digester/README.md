@@ -200,6 +200,24 @@ Every `FIELD_CHANNEL_ANOMALY_CHECK_INTERVAL_SEC` (default 60s -- the encoder's o
 | `FIELD_CHANNEL_ANOMALY_THRESHOLD_MULTIPLIER` | `3.0` | Informational only -- see above |
 | `CHANNEL_FIELD_CHANNEL_ANOMALY_SCORE` | `orion:field_channel:anomaly_score` | Publish channel |
 
+**Deployed model history** (live `FIELD_CHANNEL_ANOMALY_ENCODER_DIR`, disk artifacts kept, not
+deleted, on supersession):
+
+| Version | Trained against | Rows | `floor_ratio` | `ceiling_ratio` | Why superseded |
+|---|---|---|---|---|---|
+| `v1` | full corpus, no cutoff | — | — | 0.240 | Contaminated by the 2026-07-17 channel-behavior fix sprint (PRs #1108-#1113/#1115) |
+| `v2` | `--min-generated-at 2026-07-17T04:32:14Z` | 207,415 / 5 days | 0.282 (CI 0.266-0.304) | 0.189 | `catalog_drift_pressure` stuck the *entire* corpus span (PR #1248's mode=`add`→`replace` fix, second cutoff below) |
+| `v3` (current) | `--min-generated-at 2026-07-22T08:29:48Z` | 18,377 / 10.3h | 0.210 (CI 0.174-0.231) | 0.190 | n/a — current live model, deployed after PR #1262's availability-ratchet + merge-window-dedup fix (third cutoff below) |
+
+`v3` trained on a much smaller corpus than `v2` (10.3h of clean data vs. 5 days) — it's a
+calibration-quality run on what was available at the time, not a full-corpus retrain. Notably its
+`ceiling_ratio` (0.190) landed within 0.001 of `v2`'s (0.189) despite the different corpus size and
+composition — an early (n=2) signal this number may be more stable than the "one uncalibrated run"
+framing this doc used to carry, though the roadmap's full multi-seed calibration (5+ seeds against
+one fixed corpus) hasn't been run yet. Field selection also picked up `availability` for the first
+time (`std=0.0398`) — excluded from `v1`/`v2` as degenerate, which in hindsight was itself a symptom
+of the ratchet bug PR #1262 fixed, not a real absence of signal.
+
 ## `field_channel_corpus.v1` training-data quality cutoff (2026-07-17)
 
 `field_channel_corpus.v1` rows generated **before `2026-07-17T04:32:14Z`**
@@ -275,9 +293,9 @@ live post-fix: with the pipeline bug fixed and the real value now correctly
 reading `0.0`, `v2` (trained almost entirely on the stuck ~`0.135` reading)
 started flagging the *correct* value as anomalous instead —
 `telemetry_anomaly` still fired 20 times in the 41 minutes after the
-restart, same channel, opposite direction. The pipeline bug is fixed; the
-deployed model is not yet retrained on clean data and will keep
-misfiring on this channel until it is.
+restart, same channel, opposite direction. **Resolved by `v3`** (see
+"Deployed model history" above and the third cutoff below) — `v2` is no
+longer deployed.
 
 ```bash
 python orion/mood_arc/fit_encoder.py train \
@@ -286,10 +304,14 @@ python orion/mood_arc/fit_encoder.py train \
   --out <out-dir>
 ```
 
-If both cutoffs apply, use whichever is later. **Do not retrain yet** —
-as of this writing there are only ~40 minutes of clean post-cutoff data,
-nowhere near `v2`'s 207K-row/5-day corpus. Let clean data accumulate
-first; see the agent board for the tracked follow-up.
+If both cutoffs apply, use whichever is later. **Superseded by the third
+cutoff below as of `v3`** — the retrain against this cutoff alone was
+skipped; by the time enough clean data existed to retrain at all, PR #1262
+had also merged, so `v3` trained directly against the third (later)
+cutoff instead. Kept here for the historical record and in case a future
+retrain ever needs to reason about this cutoff specifically (e.g. scoring
+a slice that only needs to exclude the second contamination window, not
+the third).
 
 ## `field_channel_corpus.v1` third training-data quality cutoff (2026-07-22, PR #1262)
 
@@ -346,9 +368,18 @@ python orion/mood_arc/fit_encoder.py train \
 
 If multiple cutoffs apply, use whichever is latest (as of this writing,
 that's this third cutoff, `2026-07-22T08:29:48Z`). Same reasoning as the
-second cutoff still applies to any retrain: skip pre-cutoff rows, or the
-run will reproduce a `cpu_pressure`-shaped version of the same
+second cutoff still applies to any future retrain: skip pre-cutoff rows,
+or the run will reproduce a `cpu_pressure`-shaped version of the same
 contaminated-baseline problem `v2` already hit for `catalog_drift_pressure`.
+
+**`v3` trained against exactly this cutoff** (18,377 rows / 10.3h clean
+data — much smaller than `v2`'s 207K-row/5-day corpus, since this cutoff
+had only just landed) and is the currently deployed
+`FIELD_CHANNEL_ANOMALY_ENCODER_DIR`. See "Deployed model history" above
+for the real gate results. A future retrain against a fuller corpus once
+more clean data accumulates past this cutoff would still be worthwhile
+(more data, tighter confidence intervals) but is not blocking — `v3` is a
+real, gate-passing, currently-serving model, not a placeholder.
 
 ## Field channel glossary
 

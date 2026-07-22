@@ -174,7 +174,7 @@ def _agency_valence_proxy(
     2026-07-13: the previous claim that no trained analog exists for valence
     was checked against the active encoder's real manifest.json/probes.json
     and was false for agency_readiness specifically -- see
-    orion/self_state/inner_state_registry.py's phi_heuristic.valence entry
+    orion/inner_state_registry.py's phi_heuristic.valence entry
     for the full numbers and the zero-variance-guard misread that produced
     the original false claim.
 

@@ -172,7 +172,7 @@ patch since a second service now needs it) and the same default values as
 file independently.
 
 **Dark by design (`REHEARSAL`)**: no bus publish, no cognition consumer —
-see `field_channel_corpus.v1` in `orion/self_state/inner_state_registry.py`.
+see `field_channel_corpus.v1` in `orion/inner_state_registry.py`.
 A future rework of `orion/mood_arc/fit_encoder.py` to train against this
 dict-shaped corpus instead of `mood_arc_corpus.v1` is separate, not-yet-
 built work.
@@ -417,7 +417,8 @@ channels actually *mean* as a set. Grouping by real-world meaning instead
 (not by producer mechanism, decay membership, or any other code-structural
 property) surfaces 7 categories — written up here because no such taxonomy
 existed anywhere in the repo before this section (checked: neither this
-glossary, `orion/self_state/README.md`, nor any `docs/superpowers/specs/`
+glossary, `orion/inner_state_registry.md` (relocated 2026-07-22 from
+`orion/self_state/README.md`, SelfStateV1 burn), nor any `docs/superpowers/specs/`
 felt-state-arc doc groups channels by meaning rather than by mechanism or
 producer). This grouping was originally derived while selecting a feature
 subset for the mood-arc windowed-autoencoder spike (see

@@ -8,7 +8,6 @@ def test_organ_layer_runtime_organs() -> None:
 
 
 def test_organ_layer_cognition_organs() -> None:
-    assert organ_layer("chat_stance") == "cognition"
     assert organ_layer("recall") == "cognition"
     assert organ_layer("spark_introspector") == "cognition"
 

@@ -158,7 +158,7 @@ ORGAN_REGISTRY: Dict[str, OrionOrganRegistryEntry] = {
         service="orion-spark-concept-induction",
         signal_kinds=["concept_salience", "topic_formation", "concept_drift"],
         canonical_dimensions=["salience", "novelty", "confidence"],
-        causal_parent_organs=["chat_stance", "recall", "vision"],
+        causal_parent_organs=["recall", "vision"],
         bus_channels=[
             "orion:chat:history:log",
             "orion:chat:history:turn",
@@ -235,21 +235,6 @@ ORGAN_REGISTRY: Dict[str, OrionOrganRegistryEntry] = {
         ],
         notes=[]
     ),
-    "chat_stance": OrionOrganRegistryEntry(
-        organ_id="chat_stance",
-        organ_class=OrganClass.endogenous,
-        service="orion-cortex-exec",
-        signal_kinds=["chat_stance", "turn_effect", "metacog_residue"],
-        canonical_dimensions=["coherence", "confidence"],
-        causal_parent_organs=["recall", "autonomy", "equilibrium", "social_memory", "spark_introspector"],
-        bus_channels=[
-            "orion:cortex:exec:request",
-            "orion:chat:history:turn",
-            "orion:chat:history:log",
-            "orion:cognition:trace",
-        ],
-        notes=[]
-    ),
     "memory_consolidation": OrionOrganRegistryEntry(
         organ_id="memory_consolidation",
         organ_class=OrganClass.endogenous,
@@ -269,7 +254,7 @@ ORGAN_REGISTRY: Dict[str, OrionOrganRegistryEntry] = {
         service="orion library (orion/journaler/)",
         signal_kinds=["journal_entry", "recall_event"],
         canonical_dimensions=["level", "novelty", "valence"],
-        causal_parent_organs=["collapse_mirror", "chat_stance"],
+        causal_parent_organs=["collapse_mirror"],
         bus_channels=[
             "orion:chat:history:log",
             "orion:chat:history:turn",
@@ -308,7 +293,7 @@ ORGAN_REGISTRY: Dict[str, OrionOrganRegistryEntry] = {
         service="orion-topic-foundry",
         signal_kinds=["topic_state", "topic_drift"],
         canonical_dimensions=["salience", "novelty", "coherence"],
-        causal_parent_organs=["concept_induction", "chat_stance"],
+        causal_parent_organs=["concept_induction"],
         bus_channels=[
             "orion:exec:request:LLMGatewayService",
             "orion:chat:history:turn",
@@ -332,7 +317,7 @@ ORGAN_REGISTRY: Dict[str, OrionOrganRegistryEntry] = {
         service="orion-llm-gateway",
         signal_kinds=["cognition_step", "completion"],
         canonical_dimensions=["success", "latency_level", "confidence"],
-        causal_parent_organs=["chat_stance", "cortex_exec"],
+        causal_parent_organs=["cortex_exec"],
         bus_channels=["orion:exec:result:LLMGatewayService"],
         notes=[],
     ),
@@ -342,7 +327,7 @@ ORGAN_REGISTRY: Dict[str, OrionOrganRegistryEntry] = {
         service="orion-mind",
         signal_kinds=["mind_handoff", "cognition_step"],
         canonical_dimensions=["success", "confidence"],
-        causal_parent_organs=["chat_stance", "recall"],
+        causal_parent_organs=["recall"],
         bus_channels=["orion:mind:run:complete"],
         notes=["Milestone B: mind_handoff adapter."],
     ),
@@ -420,6 +405,5 @@ ORGAN_REGISTRY: Dict[str, OrionOrganRegistryEntry] = {
 #     → collapse_mirror [endogenous]
 #       → journaler [endogenous]
 #         → recall [endogenous]    ← also receives: autonomy, social_memory
-#           → chat_stance [endogenous]   ← also receives: autonomy, equilibrium, social_memory, spark_introspector
-#             → (chat turn output)
-#               → recall [next turn]   ← temporal feedback loop
+#           → (chat turn output)
+#             → recall [next turn]   ← temporal feedback loop

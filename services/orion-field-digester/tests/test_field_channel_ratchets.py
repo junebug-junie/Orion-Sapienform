@@ -68,15 +68,30 @@ def _transport_bus_delta(*, node_id: str = "athena", hints: dict) -> StateDeltaV
 
 
 def _active_node_pressure_delta(
-    *, node_id: str = "atlas", score: float, delta_id: str = "delta_pressure_1"
+    *,
+    node_id: str = "atlas",
+    score: float,
+    delta_id: str = "delta_pressure_1",
+    active_pressures: list[str] | None = None,
+    before_active_pressures: list[str] | None = None,
 ) -> StateDeltaV1:
-    after = {"node_id": node_id, "pressure_score": score, "active_pressures": ["availability"]}
+    after = {
+        "node_id": node_id,
+        "pressure_score": score,
+        "active_pressures": ["availability"] if active_pressures is None else active_pressures,
+    }
+    before = (
+        {"node_id": node_id, "active_pressures": before_active_pressures}
+        if before_active_pressures is not None
+        else None
+    )
     return StateDeltaV1(
         delta_id=delta_id,
         target_projection="active_node_pressure",
         target_kind="active_node_pressure",
         target_id=f"node:{node_id}",
         operation="update",
+        before=before,
         after=after,
         caused_by_event_ids=["gev_pressure_1"],
         reducer_id="active_node_pressure_reducer",
@@ -514,3 +529,51 @@ def test_availability_can_still_drop_on_a_later_worse_reading() -> None:
     worse_delta = _active_node_pressure_delta(score=0.9, delta_id="delta_worse")
     apply_perturbations(state, delta_to_perturbations(worse_delta), now=NOW)
     assert state.node_vectors["node:atlas"]["availability"] == 0.0
+
+
+def test_availability_recovered_transition_restores_full_availability() -> None:
+    """2026-07-22, code review finding on the biometrics_loop
+    node_availability_recovered fix: once pressure_reducer.py can remove
+    "availability" from active_pressures again (previously a permanent
+    ratchet), the delta that does so has an empty after.active_pressures
+    for "availability" -- the existing `if "availability" in pressures`
+    branch above never fires for it. Without the before/after transition
+    check, the channel would freeze at its last value (still pinned low
+    from a prior high-pressure reading) instead of being explicitly
+    restored -- the same channel, a frozen-not-ratcheted flavor of the
+    same bug. Must land at exactly 1.0 (fully available), not whatever the
+    stale pressure_score happens to be."""
+    state = _state(node_vectors={"node:atlas": {"availability": 1.0}})
+
+    bad_delta = _active_node_pressure_delta(score=0.9, delta_id="delta_bad")
+    apply_perturbations(state, delta_to_perturbations(bad_delta), now=NOW)
+    assert state.node_vectors["node:atlas"]["availability"] == 0.0, "sanity: pinned low first"
+
+    recovered_delta = _active_node_pressure_delta(
+        score=0.9,  # deliberately still-high and stale -- must be ignored;
+        # only the active_pressures transition should drive this delta's
+        # perturbation, not whatever pressure_score happens to be attached.
+        delta_id="delta_recovered",
+        active_pressures=["strain"],  # "availability" no longer present
+        before_active_pressures=["strain", "availability"],
+    )
+    perturbations = delta_to_perturbations(recovered_delta)
+    availability = next(p for p in perturbations if p.channel == "availability")
+    assert availability.intensity == 1.0
+    assert availability.mode == "replace"
+
+    apply_perturbations(state, perturbations, now=NOW)
+    assert state.node_vectors["node:atlas"]["availability"] == 1.0
+
+
+def test_no_availability_perturbation_when_never_flagged_and_still_absent() -> None:
+    """Sanity check: the recovery branch must not fire spuriously for a
+    node that was never in an availability concern to begin with (no
+    "availability" in before or after)."""
+    delta = _active_node_pressure_delta(
+        score=0.9,
+        active_pressures=["strain"],
+        before_active_pressures=["strain"],
+    )
+    perturbations = delta_to_perturbations(delta)
+    assert not any(p.channel == "availability" for p in perturbations)

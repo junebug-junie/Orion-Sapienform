@@ -22,6 +22,7 @@ ROLE_TO_PRESSURE_KIND = {
     "node_pressure_reinforced": "strain",
     "node_pressure_decayed": "strain",
     "node_availability_concern": "availability",
+    "node_availability_recovered": "availability",
     "node_pressure_suppressed": "strain",
     "node_capability_impact": "capability",
 }
@@ -31,6 +32,10 @@ ROLE_TO_OPERATION = {
     "node_pressure_reinforced": "reinforce",
     "node_pressure_decayed": "decay",
     "node_availability_concern": "update",
+    # Reuses "decay" (StateDeltaV1.operation is a closed Literal with no
+    # "recover" value) -- semantically this delta is removing a pressure
+    # kind from active_pressures, the same shape as node_pressure_decayed.
+    "node_availability_recovered": "decay",
     "node_pressure_suppressed": "suppress",
     "node_capability_impact": "update",
 }
@@ -124,7 +129,6 @@ def reduce_node_pressure_candidates(
     projection_updates: list[ProjectionUpdateV1] = []
 
     traces = _extract_candidate_traces(candidates)
-    recent_acceptance: dict[tuple[str, str], datetime] = {}
 
     for trace in traces:
         atom_event_id = _atom_event_id(trace)
@@ -159,14 +163,25 @@ def reduce_node_pressure_candidates(
             continue
 
         pressure_kind = ROLE_TO_PRESSURE_KIND.get(role, "strain")
-        merge_key = (canonical_node_id, pressure_kind)
-        if merge_key in recent_acceptance:
-            prior = recent_acceptance[merge_key]
-            if (clock - prior).total_seconds() <= merge_window_sec:
-                merged.append(atom_event_id)
-                continue
-
         existing = updated.nodes.get(canonical_node_id)
+
+        # Merge-window dedup against the projection's own persisted
+        # last_accepted_at (per node+pressure_kind) -- not a function-local
+        # dict. This function is called once per trigger event (see
+        # orion/substrate/biometrics_loop/pipeline.py's per-event loop), so
+        # a call-scoped dict could never accumulate dedup history across
+        # events -- confirmed live 2026-07-22: merge_window_sec=300 was a
+        # complete no-op in production, node:atlas alone accepted 767
+        # "reinforce" deltas in 2 hours (~6.4/min) instead of the ~24 a
+        # working 5-minute window would allow.
+        if existing is not None:
+            prior = existing.last_accepted_at.get(pressure_kind)
+            if prior is not None:
+                prior_aware = prior if prior.tzinfo else prior.replace(tzinfo=timezone.utc)
+                if (clock - prior_aware).total_seconds() <= merge_window_sec:
+                    merged.append(atom_event_id)
+                    continue
+
         before = existing.model_dump(mode="json") if existing else None
         if existing is None:
             node_state = ActiveNodePressureStateV1(
@@ -180,6 +195,7 @@ def reduce_node_pressure_candidates(
             projection_operation = "update"
 
         node_state.last_updated_at = clock
+        node_state.last_accepted_at[pressure_kind] = clock
         # Cap to 200 most-recent IDs — this list is append-only and grows to 400K+ events
         # without a bound, causing deepcopy/serialize to become O(N) per tick.
         all_ids = sorted(set(node_state.evidence_event_ids + evidence))
@@ -200,6 +216,9 @@ def reduce_node_pressure_candidates(
             if "availability" not in node_state.active_pressures:
                 node_state.active_pressures.append("availability")
             node_state.availability_status = "stale"
+        elif role == "node_availability_recovered":
+            node_state.active_pressures = [p for p in node_state.active_pressures if p != pressure_kind]
+            node_state.availability_status = "online"
         elif role == "node_pressure_suppressed":
             for pressure in list(node_state.active_pressures):
                 if pressure == pressure_kind:
@@ -213,7 +232,6 @@ def reduce_node_pressure_candidates(
 
         updated.nodes[canonical_node_id] = node_state
         accepted.append(atom_event_id)
-        recent_acceptance[merge_key] = clock
 
         state_deltas.append(
             StateDeltaV1(

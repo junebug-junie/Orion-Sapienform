@@ -32,6 +32,7 @@ def delta_to_perturbations(delta: StateDeltaV1) -> list[Perturbation]:
     if delta.target_kind == "active_node_pressure":
         score = float(after.get("pressure_score", 0.0))
         pressures = list(after.get("active_pressures") or [])
+        before_pressures = set((delta.before or {}).get("active_pressures") or [])
         if "strain" in pressures:
             channel = "gpu_pressure" if node_id.replace("node:", "") in GPU_NODES else "cpu_pressure"
             out.append(Perturbation(node_id=node_id, channel=channel, intensity=score, label=delta.delta_id))
@@ -59,6 +60,30 @@ def delta_to_perturbations(delta: StateDeltaV1) -> list[Perturbation]:
                     # with the same shape as expected_offline_suppression's
                     # original bug (PR #1109), just via min()-floor instead of
                     # add-no-decay.
+                    mode="replace",
+                )
+            )
+        elif "availability" in before_pressures:
+            # Recovery transition (2026-07-22, code review finding on the
+            # biometrics_loop "node_availability_recovered" fix): once
+            # pressure_reducer.py can actually clear "availability" from
+            # active_pressures again (previously a one-way ratchet -- see
+            # the comment above), this delta's own after.active_pressures no
+            # longer contains "availability" at all, so the branch above
+            # never fires for it, or for anything after it. Without this,
+            # the "availability" channel would freeze at whatever value it
+            # last held at the moment of recovery instead of being restored
+            # -- the exact same channel, a different (frozen, not
+            # ratcheted) flavor of the same underlying bug. Explicitly
+            # restore to fully-available on the True->False transition,
+            # same "clear wins" pattern already used for
+            # expected_offline_suppression below.
+            out.append(
+                Perturbation(
+                    node_id=node_id,
+                    channel="availability",
+                    intensity=1.0,
+                    label=delta.delta_id,
                     mode="replace",
                 )
             )

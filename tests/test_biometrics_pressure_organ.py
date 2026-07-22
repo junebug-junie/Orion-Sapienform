@@ -27,6 +27,7 @@ ALLOWED_ROLES = {
     "node_pressure_reinforced",
     "node_pressure_decayed",
     "node_availability_concern",
+    "node_availability_recovered",
     "node_pressure_suppressed",
     "node_capability_impact",
 }
@@ -152,6 +153,56 @@ def test_missing_expected_atlas_emits_availability_concern(catalog: NodeCatalog)
         if ev.atom
     }
     assert "node_availability_concern" in roles
+
+
+def test_availability_recovers_when_expected_online_and_fresh(catalog: NodeCatalog) -> None:
+    """Rule B' -- the live regression this fix closes. A prior availability
+    concern is still flagged in active_pressures, but biometrics have
+    resumed reporting fresh (last_seen_at within stale_after_sec) and the
+    node is still expected online. Without this rule, "availability" was a
+    permanent, one-way ratchet: the only removal path (node_pressure_decayed)
+    only ever clears "strain" (pressure_reducer.py's ROLE_TO_PRESSURE_KIND),
+    never "availability"."""
+    emission = invoke_biometrics_pressure(
+        trigger_event=_trigger_event("atlas"),
+        node_bio=_node_bio(
+            node_id="atlas",
+            last_seen_at=FIXED_TS,  # fresh, not stale
+            expected_online=True,
+        ),
+        active_pressure=_active_pressure(node_id="atlas", active_pressures=["availability"]),
+        catalog=catalog,
+        stale_after_sec=180,
+        now=FIXED_TS,
+    )
+    roles = {
+        ev.atom.semantic_role
+        for trace in _group_traces(emission.candidate_events)
+        for ev in trace
+        if ev.atom
+    }
+    assert "node_availability_recovered" in roles
+
+
+def test_no_recovery_candidate_when_availability_not_flagged(catalog: NodeCatalog) -> None:
+    """Rule B' must not fire spuriously -- only when "availability" is
+    actually in active_pressures. A node that was never flagged shouldn't
+    emit a recovery event just because it's online and fresh."""
+    emission = invoke_biometrics_pressure(
+        trigger_event=_trigger_event("atlas"),
+        node_bio=_node_bio(node_id="atlas", last_seen_at=FIXED_TS, expected_online=True),
+        active_pressure=_active_pressure(node_id="atlas", active_pressures=[]),
+        catalog=catalog,
+        stale_after_sec=180,
+        now=FIXED_TS,
+    )
+    roles = {
+        ev.atom.semantic_role
+        for trace in _group_traces(emission.candidate_events)
+        for ev in trace
+        if ev.atom
+    }
+    assert "node_availability_recovered" not in roles
 
 
 def test_organ_emits_only_allowlisted_roles(catalog: NodeCatalog) -> None:

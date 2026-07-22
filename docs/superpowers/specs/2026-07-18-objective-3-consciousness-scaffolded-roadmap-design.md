@@ -37,6 +37,16 @@ something real to be informed by instead of being invented from scratch and then
   deltas between successive reducer projections and write directly onto `FieldStateV1`
   nodes, flowing into field-digester's own `prediction_error` channel. Confirmed live
   against real Postgres data this session.
+  **Correction (2026-07-22): `execution_prediction_error()`'s "confirmed live" status above
+  was wrong for that one function.** It diffed by exact `trace_id` match, but real
+  cortex-exec runs are single-shot creates (a fresh trace_id every time) — the match
+  structurally never occurred, so this instrument returned `0.0` in perpetuity regardless
+  of real execution volume, not "live and validated." Fixed in
+  `orion/substrate/prediction_error.py` (fallback to the most-recently-updated prev run
+  when no exact trace_id match exists) — see `services/orion-substrate-runtime/README.md`'s
+  matching section for the full trace. `transport_prediction_error()`'s live/validated
+  status is unaffected — its key (`bus_id`) genuinely does recur across polls, this was a
+  defect specific to execution's (and, same design, route's) trace_id-keyed instruments.
 - **AST/HOT — not built.** The identified gap: Layer 5 computes real attention state
   (`FieldAttentionFrameV1`); nothing builds a model *of* that attention as an inspectable
   object. This is the one piece of scaffolding actually missing before Objective 3 should

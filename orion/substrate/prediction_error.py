@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from typing import Any
+
 from orion.schemas.biometrics_projection import NodeBiometricsProjectionV1
 from orion.schemas.chat_projection import ChatSessionProjectionV1
 from orion.schemas.execution_projection import ExecutionTrajectoryProjectionV1
@@ -14,14 +16,43 @@ def _mean(values: list[float]) -> float:
     return sum(values) / len(values) if values else 0.0
 
 
+def _latest_run(runs) -> Any:
+    """Return the run with the most recent ``last_updated_at`` in a mapping of runs,
+    or ``None`` if the mapping is empty."""
+    best = None
+    for run in runs.values():
+        if best is None or run.last_updated_at > best.last_updated_at:
+            best = run
+    return best
+
+
 def execution_prediction_error(
     prev: ExecutionTrajectoryProjectionV1,
     curr: ExecutionTrajectoryProjectionV1,
 ) -> float:
-    """0-1 surprise score: how much did execution pressure hints change this batch?"""
+    """0-1 surprise score: how much did execution pressure hints change this batch?
+
+    Diffs a ``curr`` run against the ``prev`` run sharing its ``trace_id`` where that
+    identity persists across polls (a run genuinely revised in place). Confirmed live
+    2026-07-21 against 26 real ``execution_trajectory_reducer`` receipts: every one was
+    ``operation: "create"`` with a unique ``target_id`` -- real cortex-exec runs observed
+    here are single-shot (created once, never revised), so an exact ``trace_id`` match
+    structurally never occurs for this workload shape. Falling back to "no matching prev
+    run -> contributes nothing" (the original behavior) made this instrument permanently
+    return ``0.0`` regardless of real execution volume -- not a data-scarcity gap, a wrong
+    comparison key. When no trace_id match exists, diff against ``prev``'s most-recently-
+    updated run instead (by ``last_updated_at``) -- the best available "what did we expect"
+    reference, equivalent to comparing this tick's freshest execution snapshot against last
+    tick's freshest one. A run that genuinely does get revised in place still prefers its
+    own exact match, so this is additive, not a behavior change for that (currently
+    unobserved, but schema-legal) case.
+    """
     deltas: list[float] = []
+    prev_fallback = _latest_run(prev.runs)
     for trace_id, curr_run in curr.runs.items():
         prev_run = prev.runs.get(trace_id)
+        if prev_run is None:
+            prev_run = prev_fallback
         if prev_run is None:
             continue
         for key in ("execution_load", "execution_friction", "failure_pressure", "reasoning_load"):
@@ -190,11 +221,24 @@ def route_prediction_error(
     the ``_THRESHOLD`` scale here too, that is a regression, not a cleanup -- leave
     this deviation as-is unless the field types themselves change from categorical to
     continuous.
+
+    **Trace_id-match fallback (added 2026-07-22):** same defect and same fix as
+    ``execution_prediction_error`` -- real route-arbitration runs observed live are
+    single-shot creates (confirmed for the one live sample checked; sparse total volume,
+    9-10 receipts ever, limits sample size, but the reducer code path
+    (``orion/substrate/route_loop/reducer.py``) is structurally identical to execution's
+    create-once-per-turn shape). Without a fallback, a trace_id match would essentially
+    never occur and this instrument would read ``0.0`` forever regardless of real
+    arbitration volume. When no trace_id match exists, compare against ``prev``'s
+    most-recently-updated run instead (by ``last_updated_at``).
     """
     fields = ("lane", "lane_reason", "output_mode", "mind_requested")
     run_scores: list[float] = []
+    prev_fallback = _latest_run(prev.runs)
     for trace_id, curr_run in curr.runs.items():
         prev_run = prev.runs.get(trace_id)
+        if prev_run is None:
+            prev_run = prev_fallback
         if prev_run is None:
             continue
         field_scores = [

@@ -49,6 +49,7 @@ class FieldDigesterWorker:
             self._anomaly_scorer = FieldChannelAnomalyScorer(
                 encoder_dir=self._settings.field_channel_anomaly_encoder_dir,
                 threshold_multiplier=self._settings.field_channel_anomaly_threshold_multiplier,
+                startup_grace_sec=self._settings.field_channel_anomaly_startup_grace_sec,
             )
         self._stop = asyncio.Event()
 

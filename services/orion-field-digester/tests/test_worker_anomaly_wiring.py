@@ -24,6 +24,7 @@ def _make_worker(monkeypatch, *, anomaly_enabled: str = "false") -> FieldDigeste
         worker._anomaly_scorer = FieldChannelAnomalyScorer(
             encoder_dir=worker._settings.field_channel_anomaly_encoder_dir,
             threshold_multiplier=worker._settings.field_channel_anomaly_threshold_multiplier,
+            startup_grace_sec=worker._settings.field_channel_anomaly_startup_grace_sec,
         )
     worker._stop = MagicMock()
     return worker
@@ -37,6 +38,12 @@ def test_anomaly_scorer_is_none_when_disabled(monkeypatch) -> None:
 def test_anomaly_scorer_is_constructed_when_enabled(monkeypatch) -> None:
     worker = _make_worker(monkeypatch, anomaly_enabled="true")
     assert isinstance(worker._anomaly_scorer, FieldChannelAnomalyScorer)
+
+
+def test_anomaly_scorer_gets_startup_grace_from_settings(monkeypatch) -> None:
+    monkeypatch.setenv("FIELD_CHANNEL_ANOMALY_STARTUP_GRACE_SEC", "42")
+    worker = _make_worker(monkeypatch, anomaly_enabled="true")
+    assert worker._anomaly_scorer._startup_grace_sec == 42.0
 
 
 @pytest.mark.asyncio

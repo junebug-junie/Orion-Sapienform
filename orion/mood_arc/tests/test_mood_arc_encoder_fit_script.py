@@ -388,6 +388,34 @@ def test_select_fields_filters_low_variance_and_excludes_by_name() -> None:
     assert fields == ("real_signal",)
 
 
+def test_default_exclude_channels_drops_expected_offline_suppression_presence_artifact() -> None:
+    """Regression for a live-data finding (2026-07-21): expected_offline_suppression
+    is always exactly 1.0 when present and implicitly 0.0 when the row omits it
+    (field_channel_corpus.v1's variable-width channels dict, filled with 0.0 on
+    absence by _build_windows_with_span). A ~35%-present / ~65%-absent split reads
+    as a real ~Bernoulli(0.35) signal to a naive variance check (std~0.49, one of
+    the largest in the whole channel set) even though it carries zero graduated
+    information -- confirmed against the full live corpus, never any value other
+    than exactly 1.0 or absent. Must be excluded by DEFAULT_EXCLUDE_CHANNELS
+    without a caller having to know to pass a custom exclude set."""
+    from orion.mood_arc.fit_encoder import DEFAULT_EXCLUDE_CHANNELS, select_fields
+
+    rng = np.random.default_rng(2)
+    start = datetime(2026, 7, 1, tzinfo=timezone.utc)
+    rows = []
+    for i in range(200):
+        channels = {"real_signal": float(rng.normal(0, 1))}
+        # ~35% present-as-1.0, rest simply absent from the dict -- mirrors the
+        # real corpus's presence/absence pattern, not a hand-picked easy case.
+        if rng.random() < 0.35:
+            channels["expected_offline_suppression"] = 1.0
+        rows.append(_make_row(t=start + timedelta(seconds=i), channels=channels, idx=i))
+
+    fields = select_fields(rows, exclude=DEFAULT_EXCLUDE_CHANNELS, variance_eps=1e-6)
+    assert "expected_offline_suppression" not in fields
+    assert fields == ("real_signal",)
+
+
 def test_select_fields_respects_custom_exclude() -> None:
     from orion.mood_arc.fit_encoder import select_fields
 

@@ -805,6 +805,17 @@ subset for the mood-arc windowed-autoencoder spike (see
   (removed 2026-07-12). `evidence_channel_map`: `execution_load` →
   `execution_pressure` (evidence-only).
 - **Live-data verdict**: real signal, continuous. Confirmed live 2026-07-16.
+  **Correction 2026-07-23:** "continuous" was true of the values seen, not the
+  *shape* of the formula behind them — it was `min(1.0, started_step_count / 8.0)`,
+  a hard cap that reads an 8-step run identically to a 40-step run, over a counter
+  blending cortex-exec and harness-governor steps together (double-counting the
+  latter once `harness_step_load` shipped in Patch A). Fixed:
+  `orion/substrate/execution_loop/grammar_extract.py`'s `compute_pressure_hints()`
+  now derives a cortex-exec-only count (`started_step_count -
+  harness_started_step_count`, no new counter needed) and applies the same
+  log-ratio shape `harness_step_load` already uses, instead of a hard cap. See
+  `docs/superpowers/specs/2026-07-23-fcc-motor-field-digester-signals-design.md`
+  Appendix item 1.
 
 #### `execution_friction`
 - **Meaning**: how much resistance (retries/backoff) execution is
@@ -858,6 +869,18 @@ subset for the mood-arc windowed-autoencoder spike (see
   known-gap note and what's needed to bring it online -- this fix is
   already ready for circe (`circe` is in cortex-exec's
   `_KNOWN_FIELD_NODES`), it just has no live traffic to attribute yet.
+  **Correction 2026-07-23:** "the cleanest channel in the corpus" described real,
+  continuously-varying *values*, but the formula behind them was a boolean wearing
+  a magnitude's name — `0.35 if reasoning_present else 0.05`, a two-valued flag
+  derived from whether `reasoning_content`/`reasoning_trace`/`metacog_traces` were
+  present at all, not how much reasoning occurred. Every turn that used any
+  reasoning at all read identically regardless of volume. Fixed: a new
+  `reasoning_char_count` field (char length of `reasoning_content` +
+  `reasoning_trace`, computed once at `orion-cortex-exec/app/router.py`'s
+  `record_assembled_grammar()` call site and threaded through as a grammar-stream
+  kv) now drives a real log-ratio magnitude, falling back to the old boolean split
+  only when `reasoning_present` is true but the char count is still `0` (covers
+  in-flight runs mid-rollout). See the same Appendix, item 2.
 
 #### `failure_pressure`
 - **Meaning**: recent execution failure rate/severity on a node.

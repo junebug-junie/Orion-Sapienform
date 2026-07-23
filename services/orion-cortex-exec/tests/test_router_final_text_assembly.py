@@ -229,6 +229,38 @@ def test_extract_reasoning_payload_preserves_inline_think_when_no_provider_reaso
     assert thinking_source == "inline_think_close_tag_only"
 
 
+def test_extract_reasoning_payload_reasoning_content_is_plain_string_not_trace_dict() -> None:
+    """Regression guard for router.py's reasoning_char_count computation
+    (len(reasoning_content or "")): reasoning_content must stay a plain string even
+    when reasoning_trace is a real dict payload, so the char count reflects only the
+    actual reasoning text -- not reasoning_trace's structural fields (trace_id,
+    correlation_id, model, etc.) stringified on top. An earlier version of this fix
+    computed len(str(reasoning_content or "")) + len(str(reasoning_trace or "")),
+    which double-counted this same text plus ~340 chars of dict-repr noise (found
+    live in code review)."""
+    real_text = "Because the cache was stale, I re-fetched before answering."
+    reasoning_content, _, _, reasoning_trace = _extract_reasoning_payload(
+        [
+            _step(
+                {
+                    "content": "Visible answer.",
+                    "reasoning_content": real_text,
+                    "reasoning_trace": {
+                        "trace_id": "11111111-1111-1111-1111-111111111111",
+                        "correlation_id": "corr-abc",
+                        "model": "some-model",
+                        "content": real_text,
+                    },
+                    "thinking_source": "provider_reasoning",
+                }
+            )
+        ],
+    )
+    assert reasoning_content == real_text
+    assert isinstance(reasoning_trace, dict)
+    assert len(reasoning_content or "") == len(real_text)
+
+
 def test_extract_reasoning_payload_falls_back_to_prior_step_results() -> None:
     reasoning_content, inline_think_content, thinking_source, _ = _extract_reasoning_payload(
         [],

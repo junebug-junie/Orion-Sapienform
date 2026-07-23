@@ -72,6 +72,9 @@ def merge_execution_run_state(
     merged.harness_started_step_count = max(
         existing.harness_started_step_count, incoming.harness_started_step_count
     )
+    merged.cortex_exec_started_step_count = max(
+        existing.cortex_exec_started_step_count, incoming.cortex_exec_started_step_count
+    )
     merged.step_char_sum = max(existing.step_char_sum, incoming.step_char_sum)
     merged.step_char_max = max(existing.step_char_max, incoming.step_char_max)
     merged.tool_failure_streak_max = max(
@@ -84,6 +87,7 @@ def merge_execution_run_state(
     merged.recall_observed = existing.recall_observed or incoming.recall_observed
     merged.final_text_present = existing.final_text_present or incoming.final_text_present
     merged.reasoning_present = existing.reasoning_present or incoming.reasoning_present
+    merged.reasoning_char_count = max(existing.reasoning_char_count, incoming.reasoning_char_count)
     merged.thinking_source = _pick_thinking_source(existing.thinking_source, incoming.thinking_source)
     if incoming.llm_serving_node:
         merged.llm_serving_node = incoming.llm_serving_node

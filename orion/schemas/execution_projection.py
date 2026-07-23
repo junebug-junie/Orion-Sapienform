@@ -25,6 +25,19 @@ class ExecutionRunStateV1(BaseModel):
     # cortex-exec + harness-governor) so the FCC motor's own step load can be measured
     # without cortex-exec sub-steps diluting it. See NODE_CHANNELS "harness_step_load".
     harness_started_step_count: int = 0
+    # cortex-exec-only step count, the mirror-image counterpart to
+    # harness_started_step_count above -- tracked as its own independently
+    # max()-merged counter, NOT derived as (started_step_count -
+    # harness_started_step_count) at read time. A derived subtraction breaks under
+    # merge.py's independent per-field max()-merge: cortex-exec and harness-governor
+    # flush their grammar events separately, so a poll-bounded batch commonly contains
+    # only one service's steps -- if a harness-heavy batch's started_step_count "wins"
+    # the max() against an earlier cortex-exec-only batch's smaller total, the derived
+    # subtraction silently reads 0 despite real cortex-exec steps having occurred (live
+    # in code review). Tracking it directly avoids this entirely, mirroring
+    # harness_started_step_count's own correct pattern. See NODE_CHANNELS
+    # "execution_load".
+    cortex_exec_started_step_count: int = 0
     # HarnessRunV1.compliance_verdict threaded through as a grammar-stream kv; "unknown"
     # until a real exec_result_assembled event sets it.
     compliance_verdict: str = "unknown"
@@ -48,6 +61,12 @@ class ExecutionRunStateV1(BaseModel):
     recall_observed: bool = False
     final_text_present: bool = False
     reasoning_present: bool = False
+    # Real magnitude backing reasoning_present: char length of reasoning_content +
+    # reasoning_trace at the point orion-cortex-exec's router.py already has both in
+    # hand (record_assembled_grammar's call site). reasoning_present alone was a
+    # boolean wearing a magnitude's name -- every turn that used any reasoning at all
+    # read identically regardless of how much. See NODE_CHANNELS "reasoning_load".
+    reasoning_char_count: int = 0
     thinking_source: str = "none"
     llm_serving_node: str | None = None
     pressure_hints: dict[str, float] = Field(default_factory=dict)

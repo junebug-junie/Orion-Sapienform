@@ -145,9 +145,11 @@ def reduce_attention_self_model(
 
     `prediction_error_trend_by_domain` is an optional, caller-supplied dict
     of each domain's recent prediction-error *trend* (already computed
-    upstream -- e.g. mean(recent ticks) - mean(prior ticks); this function
-    does no time-series math of its own, matching its "no I/O, format what's
-    given" design). Drives `predicted_shift`: whichever domain has the
+    upstream -- see `scripts/analysis/measure_ast_hot_reducer.py::
+    compute_prediction_error_trend()` for the real formula and the live-data
+    validation behind its sign convention; this function does no
+    time-series math of its own, matching its "no I/O, format what's given"
+    design). Drives `predicted_shift`: whichever domain has the
     largest-magnitude trend is named as the honest candidate for "what
     surprises me next" -- mirroring the argmax-over-a-delta-dict shape the
     old `self_state.dimension_trajectory` branch used, just over real

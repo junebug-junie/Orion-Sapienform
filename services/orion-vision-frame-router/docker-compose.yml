@@ -9,6 +9,7 @@ services:
     environment:
       - ORION_BUS_URL=${ORION_BUS_URL}
       - ORION_BUS_ENFORCE_CATALOG=${ORION_BUS_ENFORCE_CATALOG:-false}
+      - ORION_BUS_VELOCITY_TRACKING_ENABLED=${ORION_BUS_VELOCITY_TRACKING_ENABLED:-false}
       - ROUTER_POLICY_PATH=/app/config/vision_frame_router.yaml
       - DRY_RUN=${DRY_RUN:-false}
     volumes:

@@ -113,7 +113,7 @@ class Settings(BaseSettings):
     # schemas. See chat_turn_metacog_gate.py and docs/superpowers/design/
     # 2026-07-18-collapse-mirror-metacog-redesign.md.
     metacog_chat_turn_trigger_enable: bool = Field(
-        False, alias="EQUILIBRIUM_METACOG_CHAT_TURN_TRIGGER_ENABLE"
+        True, alias="EQUILIBRIUM_METACOG_CHAT_TURN_TRIGGER_ENABLE"
     )
     metacog_chat_turn_correlator_ttl_sec: int = Field(
         600, alias="EQUILIBRIUM_METACOG_CHAT_TURN_CORRELATOR_TTL_SEC"

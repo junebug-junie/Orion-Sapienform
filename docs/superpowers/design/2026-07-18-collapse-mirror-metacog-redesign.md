@@ -854,10 +854,22 @@ a separate path — `orion-actions`' journal-compose prompt — just not this on
    unused by any current gate condition), accumulates by `correlation_id` in a short-TTL Redis hash,
    and evaluates/fires as soon as `run:artifact` arrives for a known `correlation_id` — no waiting on
    a second signal, since `run:artifact` is now confirmed to be the actual "turn is over" event on
-   every real path. TTL still needs a real value (long enough to span `thought:artifact` arriving
-   well before a slow FCC tool loop finishes; short enough not to leak entries for turns whose
-   `thought:artifact` arrives but `run:artifact` genuinely never does — e.g. a mid-flight
-   `HarnessRunCancelV1`). Not yet measured against real turn-duration data.
+   every real path *inside* `handle_harness_run_request`. TTL still needs a real value (long enough
+   to span `thought:artifact` arriving well before a slow FCC tool loop finishes; short enough not to
+   leak entries for turns whose `thought:artifact` arrives but `run:artifact` genuinely never does —
+   e.g. a mid-flight `HarnessRunCancelV1`). Not yet measured against real turn-duration data.
+   **Real gap this TTL currently just accepts, not fixed by this spec**: confirmed via
+   `docs/superpowers/specs/2026-07-23-fcc-motor-field-digester-signals-design.md` (PR #1283, Patch B)
+   that if the governor RPC never returns at all — a network partition, a hung/dead process, the
+   request never reaching `handle_harness_run_request` in the first place — `run:artifact` never
+   publishes either, since the governor process is the one that would emit it. That's arguably the
+   single worst turn outcome this trigger should catch, and today it just silently expires via TTL
+   with no `chat_turn` entry at all. Patch B proposes exactly the fix: Hub already knows when it
+   gives up waiting (`orion/hub/turn_orchestrator.py`, the `if run is None:` branch) and would
+   publish a real timeout grammar event there. Once Patch B ships, the correlator should treat that
+   event as a third input — fire on it directly (or extend the TTL-expiry path to check for it)
+   instead of silently dropping the entry. Not blocking this spec (Patch B is design-only, unbuilt),
+   but a real follow-up once it lands, not a hypothetical.
 2. **Threshold value** for the one remaining numeric gate condition
    (`substrate_appraisal.surprise_level >= X`) — no existing config to inherit from; would need to be
    a new equilibrium-service setting, tuned against real data the same way `telemetry_anomaly`'s
@@ -901,7 +913,7 @@ objects:**
 | Compliance short of complete | `run_artifact.compliance_verdict != "completed"` | `Literal["completed","partial","failed","refused"]` |
 | Non-zero exit | `run_artifact.exit_code not in (0, None)` | `int \| None` |
 | Degraded (infra unavailable, not a content failure — see correction above, path 4) | `run_artifact.finalize_degraded_reason is not None` | `str \| None` |
-| Failed/retried tool steps — **not built, no existing basis.** Originally described as reusing `compute_severity`'s `non_ok_step_count` pattern; verified false — that function takes a pre-computed int, and `GrammarReceiptV1.summary` (the only field this could read) is free text with no structured success/fail marker (`summarize_harness_step`, `orion/harness/fcc_motor.py`). Dropped until a real classifier is designed. | n/a — not a real condition today |
+| Failed/retried tool steps — **still dropped, but the reason changed.** Originally described as reusing `compute_severity`'s `non_ok_step_count` pattern; verified false — that function takes a pre-computed int, and `GrammarReceiptV1.summary` (the field this design looked at) is free text with no structured success/fail marker. **Correction**: `docs/superpowers/specs/2026-07-23-fcc-motor-field-digester-signals-design.md` (PR #1283) found a real, different substrate — `tool_result` content blocks' `is_error` flag, already computed per-block in `orion/harness/fcc_motor.py` (`_summarize_content_blocks`) — so a real basis for this condition does exist, contrary to what this row originally claimed. It's still dropped here because that data isn't threaded to anywhere this gate reads: PR #1283's own Patch A wires `tool_failure_streak_max` into `ExecutionRunStateV1`/field-digester's `NODE_CHANNELS`, not into `HarnessRunV1` (what this gate subscribes to via `run:artifact`). Real follow-up once Patch A ships: either thread `tool_failure_streak_max` into `HarnessRunV1` directly, or have this gate additionally read the field-digester channel — not "invent a classifier from scratch," which was the wrong framing. | n/a today — real substrate exists, not yet reachable from `run:artifact` |
 
 **`MetacogTriggerV1.upstream` shape when fired** — carries the fired condition list (same
 multi-value shape as `telemetry_anomaly`'s `top_channels`) plus the full accumulated evidence, so a
@@ -995,7 +1007,9 @@ Sources for every file:line citation above, verified against real code during th
 - A chat turn where none of the real conditions fire produces zero trigger events — no entry
   written, matching the whole point of gating instead of firing unconditionally.
 - The correlator does not leak: a turn whose `thought_event` arrives but whose `run_artifact` never
-  does (e.g. a mid-flight `HarnessRunCancelV1`) does not hold its Redis-hash entry past the TTL.
+  does (e.g. a mid-flight `HarnessRunCancelV1`, or a governor RPC that never returns at all — see
+  question 1's Patch B note for the real, currently-unclosed version of this gap) does not hold its
+  Redis-hash entry past the TTL.
 - **The actual regression test that matters most**: a chat turn that hits a refused/failed/crashed
   exit path (paths 1/2/4/5/6 in the correction above) still produces a `run_artifact` event, and the
   gate still correctly fires on `compliance_verdict`/`exit_code`/`finalize_degraded_reason` for it —

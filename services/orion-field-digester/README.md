@@ -922,16 +922,40 @@ subset for the mood-arc windowed-autoencoder spike (see
 - **SelfState dimension fed**: not in `channel_dimension_map` directly
   (removed 2026-07-12). `evidence_channel_map`: `transport_pressure` →
   `resource_pressure` (evidence-only).
-- **Live-data verdict**: fully unproduced — confirmed absent (key entirely
-  missing, not just `0.0`) from all 123,245+ live rows checked 2026-07-16
-  (`jq -r '.channels.transport_pressure // "MISSING"' ... | sort -u` returns
-  only `MISSING`). More extreme than "folded-away":
-  `collect_field_channel_pressures()` only includes a channel when `channel
-  in PRESSURE_CHANNELS or value > 0` (`scoring.py:70,76`), and
-  `transport_pressure` is not in `PRESSURE_CHANNELS`, so even its
-  reconcile-seeded `0.0` never reaches the corpus — it needs at least one
-  real nonzero perturbation to ever appear at all, and none has occurred in
-  this corpus.
+- **Live-data verdict, corrected 2026-07-23 (the 2026-07-16 "fully
+  unproduced" verdict below is stale — do not carry it forward):**
+  `transport_pressure` is not in `PRESSURE_CHANNELS`, so
+  `collect_field_channel_pressures()` (`scoring.py:70,76`) only includes it
+  when a real nonzero perturbation lands — same gate the 2026-07-16 check
+  found nothing passing. Since then its live history has moved through three
+  distinct phases, all traced to the same producer
+  (`compute_transport_pressures()`'s `transport_pressure = max(stream_depth_
+  pressure, backpressure)`, `orion/substrate/transport_loop/extract.py:105`):
+  (1) **before 2026-07-18** (`BUS_OBSERVER_STREAMS` still pointed at
+  placeholder/never-wired stream names — see `services/orion-bus/README.md`)
+  — genuinely `MISSING`, matching the 2026-07-16 check exactly; (2)
+  **2026-07-18 through the second training-data cutoff (2026-07-22T04:35Z,
+  PR #1248)** — pinned at `1.0` (ceiling-saturated; confirmed directly
+  against the corpus at rows dated 2026-07-18T20:41Z and
+  2026-07-20T17:42Z), the same `mode="add"` accumulation bug documented
+  above for `catalog_drift_pressure`/`observer_failure_pressure`/
+  `reliability_pressure`; (3) **since the fix** — flat and constant at
+  `0.00091` across every row checked (20,000-row window, 2026-07-22T12:50Z
+  through 2026-07-23T00:04Z, zero variance) — the same value, and the same
+  root cause, as `prediction_error`'s transport contribution: `XLEN
+  orion:stream:world_pulse:run:result` (`91`) divided by
+  `BUS_STREAM_DEPTH_CRITICAL` (`100000`). See
+  `services/orion-substrate-runtime/README.md`'s "transport domain is one
+  queue, not the bus" note — this raw channel and `prediction_error`'s
+  transport contribution are two different computations (current level vs.
+  tick-over-tick delta) over the exact same narrowly-scoped input, so both
+  inherit the identical structural ceiling on what they can ever measure.
+  **`stream_depth_pressure` and `backpressure` are not independent corpus
+  channels** — per the Producer note above, all three hint keys
+  (`transport_pressure`, `stream_depth_pressure`, `backpressure`) target the
+  same single node channel, `transport_pressure`; `stream_depth_pressure`
+  never appears under its own name in the corpus (confirmed `MISSING` in
+  every row checked), it is folded into `transport_pressure` at the source.
 
 #### `contract_pressure`
 - **Meaning**: intended to represent pressure from bus/schema "contract"
@@ -975,7 +999,30 @@ subset for the mood-arc windowed-autoencoder spike (see
 - **SelfState dimension fed**: **none** — same verification as
   `contract_pressure` above; absent from all four policy maps.
 - **Live-data verdict**: exact duplicate of `contract_pressure` (see above);
-  open root-cause question, not fixed by this patch.
+  open root-cause question, not fixed by this patch. **Correction
+  (2026-07-23): this channel is one of `v2`'s (and, by field-selection
+  carryover, presumably `v3`'s) 15 trained mood-arc channels
+  (`orion/mood_arc/docs/DESIGN.md`) — worth flagging beyond the byte-
+  identical-duplicate finding above.** Producer:
+  `catalog_drift_pressure = min(state.uncataloged_stream_count / denom,
+  1.0)` (`orion/substrate/transport_loop/extract.py:88`) —
+  `uncataloged_stream_count` counts streams the bus-observer watches
+  (`BUS_OBSERVER_STREAMS`) that are *not* in `orion/bus/channels.yaml`'s
+  catalog. Since the 2026-07-18 fix (`services/orion-bus/README.md`),
+  `BUS_OBSERVER_STREAMS` only ever names the two streams that *are*
+  cataloged (`orion:stream:world_pulse:run:result` + its DLQ) — so
+  `uncataloged_stream_count` is now structurally always `0`, and
+  `catalog_drift_pressure` is now structurally always `0.0` too, going
+  forward, by construction, not by observation. Confirmed against the
+  live corpus: `MISSING` in every one of the last 5,000 rows checked
+  (2026-07-23) — same `PRESSURE_CHANNELS`/`value > 0` gate as
+  `transport_pressure` above, and this channel never clears it anymore.
+  Practically: a channel `v2`/`v3` were trained to expect some real signal
+  from is now permanently silent under the current bus-observer config —
+  worth accounting for if a future retrain's field-selection drops it or
+  treats it as dead. Not a bug to fix (the 2026-07-18 change was correct
+  for its own stated purpose); a downstream side effect worth having on
+  record.
 
 #### `delivery_confidence`
 - **Meaning**: confidence that bus messages are actually being delivered

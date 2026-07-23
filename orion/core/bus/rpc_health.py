@@ -29,9 +29,12 @@ retrofitted after a live incident.
 
 from __future__ import annotations
 
+import logging
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from typing import Optional
+
+logger = logging.getLogger("orion.bus.rpc_health")
 
 # Same cap precedent as evidence_event_ids/execution-merge-evidence elsewhere in this
 # codebase (see feedback_execution_merge_cap.md-class fixes) -- if nothing ever calls
@@ -47,7 +50,17 @@ class RpcHealthSnapshot:
     timeout elapsed-time are kept as separate fields, never blended -- a timeout's
     elapsed_ms is the caller's own configured timeout_sec ceiling, not real
     round-trip latency (the exact conflation bug found and fixed in
-    measure_rpc_health_baseline.py during step 1)."""
+    measure_rpc_health_baseline.py during step 1).
+
+    `truncated=True` means the window's real call *counts* (`success_count`/
+    `timeout_count`) are still accurate, but the sample lists behind
+    `success_latency_ms_*`/`timeout_elapsed_ms_max` are first-N-wins, not a rolling
+    window: once `MAX_SAMPLES_PER_BUCKET` is hit mid-window, every later sample is
+    dropped from the percentile/max computation, not the earliest ones. A future
+    consumer draining a long-lived, high-volume window should not assume
+    `success_latency_ms_max` is the true max of the whole window when `truncated` is
+    set -- a later latency spike could be invisible. Not a concern yet (no periodic
+    drain is wired), but a real caveat for whoever wires the first one."""
 
     window_start: datetime
     window_end: datetime
@@ -92,20 +105,33 @@ class RpcHealthAggregator:
     _truncated: bool = False
 
     def record_success(self, *, request_channel: str, latency_ms: float) -> None:
-        self._success_count += 1
-        self._bump_channel(request_channel)
-        if len(self._success_latencies_ms) < MAX_SAMPLES_PER_BUCKET:
-            self._success_latencies_ms.append(latency_ms)
-        else:
-            self._truncated = True
+        """Never raises past this boundary: this call sits directly in
+        `rpc_request()`'s success path, after the real result is already in hand --
+        a bug in here must never mask or replace that real outcome."""
+        try:
+            self._success_count += 1
+            self._bump_channel(request_channel)
+            if len(self._success_latencies_ms) < MAX_SAMPLES_PER_BUCKET:
+                self._success_latencies_ms.append(latency_ms)
+            else:
+                self._truncated = True
+        except Exception:
+            logger.warning("failed to record RPC success in health aggregator", exc_info=True)
 
     def record_timeout(self, *, request_channel: str, elapsed_ms: float) -> None:
-        self._timeout_count += 1
-        self._bump_channel(request_channel)
-        if len(self._timeout_elapsed_ms) < MAX_SAMPLES_PER_BUCKET:
-            self._timeout_elapsed_ms.append(elapsed_ms)
-        else:
-            self._truncated = True
+        """Never raises past this boundary: this call sits directly in
+        `rpc_request()`'s `except asyncio.TimeoutError` branch, immediately before
+        `raise TimeoutError(...)` -- a bug in here must never substitute a different
+        exception type for the real timeout the caller is about to see."""
+        try:
+            self._timeout_count += 1
+            self._bump_channel(request_channel)
+            if len(self._timeout_elapsed_ms) < MAX_SAMPLES_PER_BUCKET:
+                self._timeout_elapsed_ms.append(elapsed_ms)
+            else:
+                self._truncated = True
+        except Exception:
+            logger.warning("failed to record RPC timeout in health aggregator", exc_info=True)
 
     def _bump_channel(self, request_channel: str) -> None:
         if not request_channel:

@@ -125,3 +125,27 @@ def test_empty_request_channel_ignored_without_crashing() -> None:
     snap = agg.snapshot_and_reset()
     assert snap.success_count == 1
     assert snap.channel_counts == {}
+
+
+def test_record_success_never_raises_past_its_boundary() -> None:
+    """record_success() sits directly in rpc_request()'s success path, after the
+    real result is already in hand -- a bug in here must never propagate and mask
+    that real outcome. An unhashable request_channel (violates the str type hint,
+    but this must degrade gracefully rather than raise) exercises the internal
+    try/except directly."""
+    agg = RpcHealthAggregator()
+    agg.record_success(request_channel=["not", "a", "string"], latency_ms=1.0)  # type: ignore[arg-type]
+    snap = agg.snapshot_and_reset()
+    # success_count still increments -- only the channel bookkeeping (which is what
+    # actually raises on an unhashable key) is swallowed.
+    assert snap.success_count == 1
+
+
+def test_record_timeout_never_raises_past_its_boundary() -> None:
+    """Same guarantee as above, for the timeout path -- a raise here must never
+    substitute a different exception type for the real TimeoutError the caller is
+    about to see."""
+    agg = RpcHealthAggregator()
+    agg.record_timeout(request_channel=["not", "a", "string"], elapsed_ms=1.0)  # type: ignore[arg-type]
+    snap = agg.snapshot_and_reset()
+    assert snap.timeout_count == 1

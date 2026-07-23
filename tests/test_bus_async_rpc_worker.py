@@ -509,3 +509,26 @@ async def test_rpc_request_inline_path_records_success_in_health_aggregator() ->
         assert snap.success_count == 1
         assert snap.timeout_count == 0
         assert snap.channel_counts == {"orion:real:request:channel": 1}
+
+
+@pytest.mark.asyncio
+async def test_fork_gets_an_independent_rpc_health_aggregator() -> None:
+    """fork() must not share the parent's RpcHealthAggregator -- same non-sharing
+    guarantee already relied on for _pending_rpc/_rpc_subscribed elsewhere in this
+    class. Recording on the parent must not show up in the child's snapshot, and
+    vice versa."""
+    parent = OrionBusAsync("redis://127.0.0.1:6379/0", enabled=True)
+    child = await parent.fork()
+    try:
+        assert child._rpc_health is not parent._rpc_health
+
+        parent._rpc_health.record_success(request_channel="parent:channel", latency_ms=1.0)
+        child_snap = child.get_rpc_health_snapshot()
+        assert child_snap.success_count == 0
+
+        child._rpc_health.record_success(request_channel="child:channel", latency_ms=1.0)
+        parent_snap = parent.get_rpc_health_snapshot()
+        assert parent_snap.success_count == 1  # only the parent's own earlier call
+        assert parent_snap.channel_counts == {"parent:channel": 1}
+    finally:
+        await child.close()

@@ -187,6 +187,49 @@ def test_result_assembled_summary_includes_llm_serving_node_when_present() -> No
     assert "llm_serving_node=atlas" in (assembled[0].atom.summary or "")
 
 
+def test_result_assembled_summary_includes_reasoning_char_count() -> None:
+    collector = CortexExecGrammarCollector(
+        node_name=NODE,
+        correlation_id=CORR,
+        code_version="0.2.0",
+        observed_at=FIXED_OBS,
+    )
+    collector.record_result_assembled(
+        status="success",
+        final_text_present=True,
+        reasoning_present=True,
+        thinking_source="provider_reasoning",
+        reasoning_char_count=1234,
+    )
+    events = build_cortex_exec_grammar_events(collector)
+    assembled = [
+        e for e in events if e.atom and e.atom.semantic_role == "exec_result_assembled"
+    ]
+    assert len(assembled) == 1
+    assert "reasoning_char_count=1234" in (assembled[0].atom.summary or "")
+
+
+def test_result_assembled_summary_defaults_reasoning_char_count_to_zero() -> None:
+    collector = CortexExecGrammarCollector(
+        node_name=NODE,
+        correlation_id=CORR,
+        code_version="0.2.0",
+        observed_at=FIXED_OBS,
+    )
+    collector.record_result_assembled(
+        status="success",
+        final_text_present=True,
+        reasoning_present=False,
+        thinking_source="none",
+    )
+    events = build_cortex_exec_grammar_events(collector)
+    assembled = [
+        e for e in events if e.atom and e.atom.semantic_role == "exec_result_assembled"
+    ]
+    assert len(assembled) == 1
+    assert "reasoning_char_count=0" in (assembled[0].atom.summary or "")
+
+
 def test_result_assembled_summary_omits_llm_serving_node_when_absent() -> None:
     collector = CortexExecGrammarCollector(
         node_name=NODE,

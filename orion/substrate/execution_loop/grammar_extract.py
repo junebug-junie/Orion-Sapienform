@@ -25,11 +25,25 @@ _COMPLIANCE_DEFICIT_RANK = {
 }
 
 # Reference denominator for harness_step_load's log-ratio, not a hard cap. Chosen well
-# above execution_load's own hard cap (8) so an 8-step run reads meaningfully below
-# saturation (~0.53) instead of identical to a 40-step run (~0.90) -- unlike
+# above execution_load's *former* hard cap (8) so an 8-step run reads meaningfully below
+# saturation (~0.53) instead of identical to a 40-step run (~0.90) -- unlike the old
 # execution_load's min(1.0, n/8.0). A starting anchor, not yet calibrated against live
 # step-count distributions -- see spec doc's Missing Questions.
 _HARNESS_STEP_LOAD_SATURATION_STEPS = 60
+
+# execution_load now uses the same log-ratio shape as harness_step_load, once it stopped
+# being a hard-capped min(1.0, n/8.0) (see 2026-07-23-fcc-motor-field-digester-signals-
+# design.md Appendix item 1). Reuses the same saturation anchor as harness_step_load --
+# the two channels are now structurally symmetric (cortex-exec-only magnitude vs
+# harness-governor-only magnitude), and inventing a second, differently-calibrated
+# constant with no live data to justify it would just be a second unvalidated guess.
+_EXECUTION_LOAD_SATURATION_STEPS = _HARNESS_STEP_LOAD_SATURATION_STEPS
+
+# reasoning_load's saturation anchor for its new log-ratio-of-chars shape (see Appendix
+# item 2). Matches avg_step_chars_pressure's existing 4000-char/step anchor -- both are
+# "how much text was involved" proxies computed the same way at the same order of
+# magnitude, and neither has been sampled against live data yet.
+_REASONING_LOAD_SATURATION_CHARS = 4000
 
 
 def _utc_now(now: datetime | None) -> datetime:
@@ -56,14 +70,50 @@ def compute_pressure_hints(
 ) -> dict[str, float]:
     started = max(0, run.started_step_count)
     failed = max(0, run.failed_step_count)
-    execution_load = min(1.0, started / 8.0)
+    # Was min(1.0, started_step_count / 8.0) over the *blended* total (cortex-exec +
+    # harness-governor together): hard-capped (an 8-step and a 40-step run read
+    # identically) and double-counted harness steps that harness_step_load below now
+    # also measures separately. Fixed 2026-07-23 by reading
+    # cortex_exec_started_step_count directly -- its own independently-tracked,
+    # independently max()-merged counter (see ExecutionRunStateV1), NOT a derived
+    # (started - harness_started) subtraction. A derived subtraction looked
+    # equivalent in a single-batch read but breaks under merge.py's per-field
+    # max()-merge across separately-flushed cortex-exec/harness-governor batches
+    # (found in code review, live-reproduced): whichever batch's started_step_count is
+    # larger "wins" both fields independently, and the subtraction can silently read 0
+    # despite real cortex-exec steps having occurred. See
+    # docs/superpowers/specs/2026-07-23-fcc-motor-field-digester-signals-design.md
+    # Appendix item 1.
+    execution_load = min(
+        1.0,
+        math.log1p(max(0, run.cortex_exec_started_step_count))
+        / math.log1p(_EXECUTION_LOAD_SATURATION_STEPS),
+    )
     execution_friction = min(1.0, failed / max(1, started))
-    reasoning_load = 0.35 if run.reasoning_present else 0.05
+    # Was a boolean wearing a magnitude's name (0.35 if reasoning_present else 0.05) --
+    # every turn that used any reasoning at all read identically. reasoning_char_count
+    # is char length of reasoning_content ONLY (not reasoning_trace -- that's either
+    # None or a dict at the router.py call site, and str()'ing a MetacognitiveTraceV1
+    # dict adds ~340 chars of structural repr noise on top of double-counting the same
+    # text reasoning_content already carries, found live in code review), computed
+    # once at orion-cortex-exec's router.py call site and threaded through as a
+    # grammar-stream kv (same shape as avg_step_chars_pressure's precedent). Falls
+    # back to the old boolean-derived anchor only when reasoning_present is true but
+    # the char count is still 0 -- covers in-flight runs mid-rollout whose earlier
+    # events predate this kv existing. Fixed 2026-07-23, see the same Appendix, item 2.
+    if run.reasoning_char_count > 0:
+        reasoning_load = min(
+            1.0,
+            math.log1p(run.reasoning_char_count) / math.log1p(_REASONING_LOAD_SATURATION_CHARS),
+        )
+    else:
+        reasoning_load = 0.35 if run.reasoning_present else 0.05
     status_fail = run.status.lower() in {"fail", "partial", "failed", "error"}
     failure_pressure = 1.0 if status_fail or failed > 0 else 0.0
     egress_confidence = 1.0 if egress_emitted else 0.25
-    # FCC-motor-only step load, split from the blended `execution_load` above (which
-    # counts cortex-exec + harness-governor steps together and hard-caps at 8).
+    # FCC-motor-only step load, split from `execution_load` above (both now log-ratio
+    # shaped over their own source-scoped step count, cortex-exec-only vs
+    # harness-governor-only, instead of one blended hard-capped counter).
     # log1p-then-ratio, NOT bare log1p: every NODE_CHANNELS value gets hard-clamped to
     # [0,1] at write time by apply_perturbations() (mode="replace" ->
     # max(0.0, min(1.0, intensity)), services/orion-field-digester/app/digestion/
@@ -183,6 +233,8 @@ def extract_execution_state_from_events(
             run.started_step_count += 1
             if event.provenance.source_service == "orion-harness-governor":
                 run.harness_started_step_count += 1
+            elif event.provenance.source_service == "orion-cortex-exec":
+                run.cortex_exec_started_step_count += 1
         elif role == "exec_step_completed":
             run.completed_step_count += 1
         elif role == "exec_step_failed":
@@ -204,6 +256,10 @@ def extract_execution_state_from_events(
                 run.tool_failure_streak_max = int(
                     kv.get("tool_failure_streak_max", run.tool_failure_streak_max)
                     or run.tool_failure_streak_max
+                )
+                run.reasoning_char_count = int(
+                    kv.get("reasoning_char_count", run.reasoning_char_count)
+                    or run.reasoning_char_count
                 )
             except ValueError:
                 pass

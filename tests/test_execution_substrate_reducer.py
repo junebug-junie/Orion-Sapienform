@@ -87,6 +87,8 @@ def test_extract_builds_run_state_from_exec_atoms() -> None:
     assert run.node_id == "athena"
     assert run.status == "success"
     assert run.started_step_count == 1
+    assert run.cortex_exec_started_step_count == 1
+    assert run.harness_started_step_count == 0
     assert run.completed_step_count == 1
     assert run.final_text_present is True
     assert run.reasoning_present is True
@@ -192,6 +194,136 @@ def test_pressure_hints_harness_step_load_stays_bounded_and_log_compressed() -> 
     huge_hints = compute_pressure_hints(huge, egress_emitted=False)
     assert 0.0 < short_hints["harness_step_load"] < long_hints["harness_step_load"] <= 1.0
     assert huge_hints["harness_step_load"] <= 1.0
+
+
+def test_pressure_hints_execution_load_excludes_harness_steps() -> None:
+    """execution_load must read from cortex_exec_started_step_count directly, not a
+    derived (started - harness_started) subtraction -- a run whose steps are entirely
+    harness-governor-sourced (cortex_exec_started_step_count stays at its default 0,
+    even though started_step_count/harness_started_step_count both reflect real
+    activity) must read execution_load == 0.0, even though harness_step_load is high
+    for the exact same run."""
+    run = ExecutionRunStateV1(
+        trace_id=TRACE, correlation_id="corr-abc", node_id="athena",
+        started_step_count=10, harness_started_step_count=10, completed_step_count=1,
+        last_updated_at=FIXED_TS,
+    )
+    hints = compute_pressure_hints(run, egress_emitted=False)
+    assert hints["execution_load"] == 0.0
+    assert hints["harness_step_load"] > 0.0
+
+
+def test_pressure_hints_execution_load_survives_cross_batch_merge() -> None:
+    """Regression guard for the cross-batch desync a derived (started -
+    harness_started) subtraction would silently reintroduce: a real 8-step
+    cortex-exec-only batch, merged with a separate, later 20-step
+    harness-governor-only batch (as they'd arrive in production -- the two services
+    flush their grammar events independently, so a poll-bounded batch commonly
+    contains only one service's steps), must still show real execution_load after the
+    merge, not 0.0. Found live in code review: a derived subtraction reads
+    max(started) - max(harness_started), and whichever batch's started_step_count is
+    larger "wins" both fields under merge.py's independent per-field max()-merge --
+    silently zeroing execution_load despite genuine cortex-exec steps having
+    occurred. cortex_exec_started_step_count's own independent max()-merge avoids
+    this entirely."""
+    cortex_exec_batch = ExecutionRunStateV1(
+        trace_id=TRACE, correlation_id="corr-abc", node_id="athena",
+        started_step_count=8, cortex_exec_started_step_count=8, completed_step_count=1,
+        last_updated_at=FIXED_TS,
+    )
+    harness_batch = ExecutionRunStateV1(
+        trace_id=TRACE, correlation_id="corr-abc", node_id="athena",
+        started_step_count=20, harness_started_step_count=20, completed_step_count=1,
+        last_updated_at=FIXED_TS,
+    )
+    merged = merge_execution_run_state(cortex_exec_batch, harness_batch)
+    assert merged.started_step_count == 20
+    assert merged.harness_started_step_count == 20
+    assert merged.cortex_exec_started_step_count == 8
+    hints = compute_pressure_hints(merged, egress_emitted=False)
+    assert hints["execution_load"] > 0.0
+    assert hints["harness_step_load"] > 0.0
+
+
+def test_pressure_hints_execution_load_stays_bounded_and_log_compressed() -> None:
+    """Same regression shape as harness_step_load's own test: execution_load must
+    differentiate an 8-step and a 40-step cortex-exec-only run (unlike the old
+    min(1.0, started/8.0) hard cap, which read both identically), while staying
+    <=1.0 even for very large step counts."""
+    short = ExecutionRunStateV1(
+        trace_id=TRACE, correlation_id="corr-abc", node_id="athena",
+        cortex_exec_started_step_count=8, completed_step_count=1, last_updated_at=FIXED_TS,
+    )
+    long_run = ExecutionRunStateV1(
+        trace_id=TRACE, correlation_id="corr-abc", node_id="athena",
+        cortex_exec_started_step_count=40, completed_step_count=1, last_updated_at=FIXED_TS,
+    )
+    huge = ExecutionRunStateV1(
+        trace_id=TRACE, correlation_id="corr-abc", node_id="athena",
+        cortex_exec_started_step_count=10_000, completed_step_count=1, last_updated_at=FIXED_TS,
+    )
+    short_hints = compute_pressure_hints(short, egress_emitted=False)
+    long_hints = compute_pressure_hints(long_run, egress_emitted=False)
+    huge_hints = compute_pressure_hints(huge, egress_emitted=False)
+    assert 0.0 < short_hints["execution_load"] < long_hints["execution_load"] <= 1.0
+    assert huge_hints["execution_load"] <= 1.0
+    assert short_hints["execution_load"] == pytest.approx(math.log1p(8) / math.log1p(60))
+
+
+def test_pressure_hints_reasoning_load_uses_char_count_when_present() -> None:
+    """reasoning_load must be a real, differentiating magnitude once
+    reasoning_char_count is present -- not the old fixed 0.35/0.05 split -- and
+    a longer reasoning payload must read strictly higher than a shorter one."""
+    short_run = extract_execution_state_from_events(
+        [
+            _exec_atom(
+                "exec_result_assembled",
+                "Final result assembled: status=success, final_text_present=True, "
+                "reasoning_present=True, reasoning_char_count=40, "
+                "thinking_source=provider_reasoning",
+            )
+        ],
+        now=FIXED_TS,
+    )
+    long_run = extract_execution_state_from_events(
+        [
+            _exec_atom(
+                "exec_result_assembled",
+                "Final result assembled: status=success, final_text_present=True, "
+                "reasoning_present=True, reasoning_char_count=4000, "
+                "thinking_source=provider_reasoning",
+            )
+        ],
+        now=FIXED_TS,
+    )
+    short_hints = compute_pressure_hints(short_run, egress_emitted=False)
+    long_hints = compute_pressure_hints(long_run, egress_emitted=False)
+    assert short_run.reasoning_char_count == 40
+    assert long_run.reasoning_char_count == 4000
+    assert 0.0 < short_hints["reasoning_load"] < long_hints["reasoning_load"] <= 1.0
+    assert short_hints["reasoning_load"] != 0.35
+
+
+def test_pressure_hints_reasoning_load_falls_back_when_char_count_absent() -> None:
+    """An event carrying reasoning_present=True but no reasoning_char_count kv
+    (e.g. an in-flight run mid-rollout, before this fix's producer change is
+    live everywhere) must fall back to the old boolean-derived anchor rather
+    than silently reading 0.0 -- covered by the pre-existing
+    test_pressure_hints_reasoning_and_egress, asserted again here by name for
+    clarity that this is an intentional fallback, not an oversight."""
+    run = extract_execution_state_from_events(
+        [
+            _exec_atom(
+                "exec_result_assembled",
+                "Final result assembled: status=success, final_text_present=True, "
+                "reasoning_present=True, thinking_source=provider_reasoning",
+            )
+        ],
+        now=FIXED_TS,
+    )
+    assert run.reasoning_char_count == 0
+    hints = compute_pressure_hints(run, egress_emitted=False)
+    assert hints["reasoning_load"] == 0.35
 
 
 def test_pressure_hints_tool_failure_streak_and_verbosity_and_compliance() -> None:
@@ -422,21 +554,30 @@ def test_merge_never_downgrades_compliance_verdict() -> None:
 def test_merge_takes_max_of_new_scalar_fields() -> None:
     full = _run_with_full_egress()
     full.harness_started_step_count = 2
+    full.cortex_exec_started_step_count = 1
     full.step_char_sum = 500
     full.step_char_max = 200
     full.tool_failure_streak_max = 1
+    full.reasoning_char_count = 100
     incoming = extract_execution_state_from_events(_partial_batch_no_egress(), now=FIXED_TS)
     incoming.harness_started_step_count = 5
+    incoming.cortex_exec_started_step_count = 3
     incoming.step_char_sum = 300
     incoming.step_char_max = 250
     incoming.tool_failure_streak_max = 3
+    incoming.reasoning_char_count = 400
     merged = merge_execution_run_state(full, incoming)
     assert merged.harness_started_step_count == 5
+    assert merged.cortex_exec_started_step_count == 3
     assert merged.step_char_sum == 500
     assert merged.step_char_max == 250
     assert merged.tool_failure_streak_max == 3
+    assert merged.reasoning_char_count == 400
     assert merged.pressure_hints["harness_step_load"] == pytest.approx(
         math.log1p(5) / math.log1p(60)
+    )
+    assert merged.pressure_hints["execution_load"] == pytest.approx(
+        math.log1p(3) / math.log1p(60)
     )
 
 

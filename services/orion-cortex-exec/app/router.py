@@ -1579,6 +1579,19 @@ class PlanRunner:
             reasoning_present=bool(reasoning_content or reasoning_trace or metacog_traces),
             thinking_source=str(thinking_source or "none"),
             llm_serving_node=ctx.get("llm_serving_node"),
+            # reasoning_content only, NOT reasoning_trace: reasoning_trace here is
+            # always None or a dict (raw provider payload, or first_trace.model_dump()
+            # a few lines above -- never a plain string), and by the time this call
+            # site runs, reasoning_content has already been backfilled from that same
+            # trace's own .content field when metacog_traces supplied it (see the
+            # `if not reasoning_content` block above). str()'ing the dict on top of
+            # that would double-count the same text plus add ~340 chars of unrelated
+            # structural repr (trace_id/correlation_id/model/etc.) as pure noise --
+            # found live in code review, an early version of this line did exactly
+            # that. A real magnitude for reasoning_load, replacing the old
+            # reasoning_present boolean split. See
+            # ExecutionRunStateV1.reasoning_char_count.
+            reasoning_char_count=len(reasoning_content or ""),
         )
 
         if settings.publish_reasoning_telemetry:

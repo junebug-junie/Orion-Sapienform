@@ -335,12 +335,14 @@ class CortexExecGrammarCollector:
         reasoning_present: bool,
         thinking_source: str,
         llm_serving_node: str | None = None,
+        reasoning_char_count: int = 0,
     ) -> None:
         ref = f"cortex.exec.result:{self.correlation_id}"
         summary = (
             f"Final result assembled: status={status}, "
             f"final_text_present={final_text_present}, "
             f"reasoning_present={reasoning_present}, "
+            f"reasoning_char_count={reasoning_char_count}, "
             f"thinking_source={thinking_source}"
         )
         if llm_serving_node:
@@ -499,6 +501,7 @@ def record_assembled_grammar(
     reasoning_present: bool,
     thinking_source: str,
     llm_serving_node: str | None = None,
+    reasoning_char_count: int = 0,
 ) -> None:
     collector = ctx.get("_cortex_exec_grammar_collector")
     if collector is None:
@@ -509,6 +512,7 @@ def record_assembled_grammar(
         reasoning_present=reasoning_present,
         thinking_source=thinking_source,
         llm_serving_node=llm_serving_node,
+        reasoning_char_count=reasoning_char_count,
     )
 
 

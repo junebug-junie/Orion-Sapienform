@@ -52,7 +52,7 @@ stale_listener.py   ──► stale_queue (Postgres)
 
 | Scope | Source | Region Kind |
 |-------|--------------|-------------|
-| `episodic` | SPARQL: 8 episodic named graphs (chat, enrichment, collapse, autonomy/*). `orion:cognition`/`orion:metacog` are no longer written (2026-07-22: pure Postgres redundancy via orion-sql-writer, see rdf-writer's kill) -- still queried, will just read empty. `orion:chat:social` removed entirely 2026-07-23 (live-verified pure redundancy with Postgres `social_room_turns`, no other reader -- see federator section below). Additively unioned with Falkor (see below). | `community` |
+| `episodic` | SPARQL: 7 episodic named graphs (chat, enrichment, autonomy/*). `orion:cognition`/`orion:metacog` are no longer written (2026-07-22: pure Postgres redundancy via orion-sql-writer, see rdf-writer's kill) -- still queried, will just read empty (frozen historical content only). `orion:chat:social` and `orion:collapse` both removed entirely 2026-07-23 -- see federator section below. Additively unioned with Falkor (see below). | `community` |
 | `substrate` | FalkorDB only (`orion_substrate` graph). SPARQL `SubstrateFederator` retired 2026-07-23 -- see below. | `hotspot` |
 
 `self_study` was retired 2026-07-23 (previously read `orion:self`,
@@ -80,16 +80,21 @@ no clusters.
 **`GRAPH_COMPRESSION_EPISODIC_FALKOR_ENABLED`** (dark by default, still
 additive): results are **unioned** with the SPARQL `EpisodicFederator`'s
 output in `worker.py::_process_scope`, not swapped -- `episodic_falkor.py`
-covers only the `orion_recall` slice (ChatTurn/Tag/Entity); collapse has no
-Falkor writer yet and still depends on the SPARQL federator. Not retired --
-this scope's SPARQL side is genuinely still load-bearing for collapse
-content Falkor doesn't cover, unlike `substrate`/`self_study` above.
+covers the `orion_recall` slice (ChatTurn/Tag/Entity, plus CollapseEvent via
+the collapse-triage Falkor writer, `RECALL_FALKOR_COLLAPSE_TRIAGE_ENABLED`
+in orion-meta-tags). Cognition/metacog have no Falkor equivalent at all
+(dead writers, frozen history) and remain genuinely SPARQL-only -- not
+retired, that scope's SPARQL side is still load-bearing for that content,
+unlike `substrate`/`self_study`/`chat:social`/`collapse` above.
 
-`orion:chat:social` (social-turn content) was removed from the SPARQL
+`orion:chat:social` (social-turn content) and `orion:collapse` (raw
+collapse-mirror-entry content) were both removed from the SPARQL
 federator's graph list entirely, 2026-07-23 -- not "covered by Falkor
-instead" so much as retired outright (live-verified pure redundancy with
-Postgres `social_room_turns`: richer schema including actual prompt/response
-text the Fuseki copy never had, no other reader anywhere). orion-meta-tags
+instead" so much as retired outright.
+
+`orion:chat:social`: live-verified pure redundancy with Postgres
+`social_room_turns` (richer schema including actual prompt/response text
+the Fuseki copy never had, no other reader anywhere). orion-meta-tags
 does write social-turn tags/entities into the same `orion_recall` graph
 `episodic_falkor.py` reads (unconditional for both `chat.history` and
 `social.turn.stored.v1` since 2026-07-18), but live-verified thin as of this
@@ -99,6 +104,30 @@ equivalent coverage. Social-chat volume itself looks near-dormant (Postgres
 `social_room_turns`' most recent row predates this cutover by ~20 days), so
 this was judged low-risk to retire now rather than worth a dedicated
 migration effort.
+
+`orion:collapse`: live SPARQL `COUNT` confirmed exactly **0** triples, ever
+-- not low, zero, and structurally guaranteed to stay that way. `orion-rdf-
+writer`'s `collapse.mirror.entry` handler (`_build_raw_collapse_graph`) has
+its own `observer==Juniper`/dense gate, but that gate is unreachable: rdf-
+writer only subscribes to `orion:collapse:intake`, which carries
+`kind="collapse.mirror.intake"` from `orion-cortex-exec`. The only real
+producer of `kind="collapse.mirror.entry"` is `orion-collapse-mirror`,
+which publishes it to a *different* channel, `orion:collapse:triage` --
+registered in `channels.yaml` with `orion-rdf-writer` absent from its
+consumer list. So this dispatch branch never receives a matching envelope
+at all, independent of the observer/dense gate -- a real channel/kind
+mismatch bug in `orion-rdf-writer`, not fixed here (out of scope for a
+series about retiring Fuseki *reads*, not reviving Fuseki *writes*), but
+worth its own follow-up if anyone ever wants this path alive. Graph-name
+resolution confirmed correct separately (`rdf_store.py::normalize_graph_name`
+maps `"orion:collapse"` to the exact URI queried) -- not a naming-mismatch
+bug either. Since it's provably always been empty, removing it from
+`EpisodicFederator` changes nothing about any cluster ever formed. Collapse
+tag/entity content (a separate concern from this raw-entry graph) has
+*potential* Falkor coverage via the collapse-triage writer noted above, but
+that flag (`RECALL_FALKOR_COLLAPSE_TRIAGE_ENABLED`) ships dark by default
+in `orion-meta-tags` -- not claimed as active coverage here, just noted as
+the mechanism that exists if/when it's flipped on.
 
 ## Bus Events
 

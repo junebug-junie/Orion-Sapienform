@@ -1,8 +1,12 @@
 from __future__ import annotations
 
+from datetime import datetime, timezone
+
 from orion.schemas.state_delta import StateDeltaV1
 
 from app.ingest.state_deltas import delta_to_perturbations
+
+FIXED_TS = datetime(2026, 7, 23, 12, 0, tzinfo=timezone.utc)
 
 
 def _make_execution_run_delta(
@@ -70,6 +74,48 @@ def test_execution_run_with_llm_serving_node_routes_reasoning_load_only() -> Non
     assert by_channel["execution_load"].node_id == "node:athena"
     assert by_channel["execution_friction"].node_id == "node:athena"
     assert by_channel["failure_pressure"].node_id == "node:athena"
+
+
+def test_execution_run_new_fcc_channels_attributed_to_orchestrating_node() -> None:
+    """harness_step_load/tool_failure_streak_pressure/avg_step_chars_pressure/
+    compliance_deficit are FCC-motor-process signals, not LLM-serving-node signals --
+    they must stay on node_key even when llm_serving_node is set, unlike reasoning_load."""
+    delta = _make_execution_run_delta(
+        pressure_hints={
+            "harness_step_load": 0.62,
+            "tool_failure_streak_pressure": 0.67,
+            "avg_step_chars_pressure": 0.3,
+            "compliance_deficit": 0.333,
+        },
+        llm_serving_node="atlas",
+    )
+    perturbations = delta_to_perturbations(delta)
+    by_channel = {p.channel: p for p in perturbations}
+    for channel in (
+        "harness_step_load",
+        "tool_failure_streak_pressure",
+        "avg_step_chars_pressure",
+        "compliance_deficit",
+    ):
+        assert by_channel[channel].node_id == "node:athena"
+    assert by_channel["harness_step_load"].intensity == 0.62
+
+
+def test_execution_run_harness_step_load_stays_bounded_through_apply_perturbations() -> None:
+    """Regression test for a code-review finding: apply_perturbations() hard-clamps
+    every mode="replace" channel to [0,1] (app/digestion/perturbation.py), which an
+    earlier (fixed) version of harness_step_load's formula could exceed at a
+    harness_started_step_count as low as 2 -- silently saturating the channel for
+    virtually every real run. compute_pressure_hints() now keeps the value <=1.0 on
+    its own, so this asserts the value survives the real write path unchanged, not
+    just that the write path happens to clamp a bad input."""
+    from app.digestion.perturbation import apply_perturbations
+    from orion.schemas.field_state import FieldStateV1
+
+    delta = _make_execution_run_delta(pressure_hints={"harness_step_load": 0.92})
+    state = FieldStateV1(generated_at=FIXED_TS, tick_id="tick_x", node_vectors={}, edges=[])
+    state = apply_perturbations(state, delta_to_perturbations(delta), now=FIXED_TS)
+    assert state.node_vectors["node:athena"]["harness_step_load"] == 0.92
 
 
 def test_execution_run_noop_delta_skipped() -> None:

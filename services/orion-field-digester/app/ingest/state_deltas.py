@@ -249,6 +249,15 @@ def delta_to_perturbations(delta: StateDeltaV1) -> list[Perturbation]:
             ("execution_friction", "execution_friction", node_key),
             ("reasoning_load", "reasoning_load", reasoning_node_key),
             ("failure_pressure", "failure_pressure", node_key),
+            # FCC-motor-process signals (step load, tool-failure streak, verbosity,
+            # compliance) -- attributed to node_key (the orchestrating/governor node),
+            # not reasoning_node_key, since these describe the motor process itself,
+            # not which node served the LLM call. See
+            # docs/superpowers/specs/2026-07-23-fcc-motor-field-digester-signals-design.md.
+            ("harness_step_load", "harness_step_load", node_key),
+            ("tool_failure_streak_pressure", "tool_failure_streak_pressure", node_key),
+            ("avg_step_chars_pressure", "avg_step_chars_pressure", node_key),
+            ("compliance_deficit", "compliance_deficit", node_key),
         ):
             if key in hints:
                 out.append(

@@ -7,9 +7,14 @@ from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from typing import Any, AsyncIterator, Awaitable, Callable
 
-from orion.fcc.context_budget import apply_context_overflow_hint, is_context_overflow_text
+from orion.fcc.context_budget import (
+    apply_context_overflow_hint,
+    is_context_overflow_text,
+    measure_step_payload_chars,
+)
 from orion.harness.fcc_motor import (
     _extract_tool_name,
+    _extract_tool_result_errors,
     expand_env_path,
     load_fcc_env,
     resolve_auth_token,
@@ -52,6 +57,16 @@ class HarnessMotorResult:
     grounding_status: str = "grounded"
     draft_molecule: HarnessDraftMoleculeV1 | None = None
     grammar_collector: HarnessGrammarCollector | None = None
+    # Verbosity/stuck-loop signals (see runner.py's step loop for how these accumulate).
+    # Carried on the result object -- not just recorded into grammar_collector -- because
+    # services/orion-harness-governor/app/bus_listener.py's _emit_finalize_lifecycle_grammar
+    # re-calls record_result_assembled() on this SAME collector after the motor's own
+    # lifecycle publish; that second call must re-pass these or it silently overwrites them
+    # back to 0/"unknown" in the event grammar_extract.py actually sees (record_result_assembled
+    # is idempotent-per-atom_id, so the second call replaces the first's atom in the collector).
+    step_char_sum: int = 0
+    step_char_max: int = 0
+    tool_failure_streak_max: int = 0
     # Distinct from grounding_status: that field is an overloaded error/
     # overflow code already surfaced as a user-visible error by downstream
     # consumers (orion/hub/turn_orchestrator.py, orion-harness-governor).
@@ -242,6 +257,22 @@ class HarnessRunner:
         compliance_verdict = "completed"
         grounding_status = "grounded"
         motor_failed = False
+        # Per-step verbosity (chars) and repeated-tool-failure streak (idea 2/3 of
+        # docs/superpowers/specs/2026-07-23-fcc-motor-field-digester-signals-design.md).
+        # Only the max streak is kept, not a growing list of every failure -- this
+        # pipeline only ever sees a single end-of-run grammar flush per turn, so
+        # "current streak" and "max streak" are the same observation in practice.
+        step_char_sum = 0
+        step_char_max = 0
+        tool_failure_streak = 0
+        tool_failure_streak_max = 0
+        # Only updated inside the is_error loop below -- a step with zero tool_result
+        # errors doesn't touch this state at all, so a streak persists across an
+        # intervening clean step (e.g. fail/success/fail on the same error kind still
+        # counts as a streak of 2, not reset by the successful step in between). This
+        # matches "is Orion stuck repeating the same failure" better than a strict
+        # consecutive-step definition would.
+        _last_tool_failure_kind: str | None = None
         # Distinct from `motor_failed`: that's only True on a *fully* failed
         # turn (no partial text). This tracks the "error" event branch
         # regardless of whether a partial draft was salvaged, so a
@@ -260,6 +291,17 @@ class HarnessRunner:
                 step = event.get("step")
                 if not isinstance(step, dict):
                     continue
+                step_chars = measure_step_payload_chars(step)
+                step_char_sum += step_chars
+                step_char_max = max(step_char_max, step_chars)
+                for error_text in _extract_tool_result_errors(step):
+                    kind = short_error_kind(error_text)
+                    if kind == _last_tool_failure_kind:
+                        tool_failure_streak += 1
+                    else:
+                        tool_failure_streak = 1
+                        _last_tool_failure_kind = kind
+                    tool_failure_streak_max = max(tool_failure_streak_max, tool_failure_streak)
                 summary = summarize_harness_step(step, index=step_count)
                 collector.record_step_started(order=step_count + 1, summary=summary)
                 tool_name = _extract_tool_name(step)
@@ -340,7 +382,9 @@ class HarnessRunner:
                 tool_provenance_audit,
             )
 
-        async def _publish_motor_lifecycle(*, status: str, final_text_present: bool) -> None:
+        async def _publish_motor_lifecycle(
+            *, status: str, final_text_present: bool, compliance_verdict: str
+        ) -> None:
             collector.record_result_assembled(
                 status=status,
                 final_text_present=final_text_present,
@@ -348,6 +392,10 @@ class HarnessRunner:
                 grammar_receipt_count=len(receipts),
                 reflection_ran=False,
                 quick_lane_skipped_5b=True,
+                compliance_verdict=compliance_verdict,
+                step_char_sum=step_char_sum,
+                step_char_max=step_char_max,
+                tool_failure_streak_max=tool_failure_streak_max,
             )
             events = build_harness_grammar_events(collector)
             logger.info(
@@ -370,7 +418,16 @@ class HarnessRunner:
                 )
 
         if not draft_text:
-            await _publish_motor_lifecycle(status="failed", final_text_present=False)
+            await _publish_motor_lifecycle(
+                status="failed",
+                final_text_present=False,
+                # Same normalization as the return value below: an empty draft is
+                # always a real failure even if the loop never took the "error"
+                # branch (e.g. the fcc subprocess just produced nothing).
+                compliance_verdict=(
+                    compliance_verdict if compliance_verdict != "completed" else "failed"
+                ),
+            )
             logger.info(
                 "harness_motor_complete corr=%s steps=%s grammar_receipts=%s verdict=%s grounding=%s draft_len=0",
                 request.correlation_id,
@@ -388,9 +445,14 @@ class HarnessRunner:
                 grounding_status=grounding_status if grounding_status != "grounded" else "empty_draft",
                 grammar_collector=collector,
                 tool_provenance_audit=tool_provenance_audit,
+                step_char_sum=step_char_sum,
+                step_char_max=step_char_max,
+                tool_failure_streak_max=tool_failure_streak_max,
             )
 
-        await _publish_motor_lifecycle(status="success", final_text_present=False)
+        await _publish_motor_lifecycle(
+            status="success", final_text_present=False, compliance_verdict=compliance_verdict
+        )
 
         # Cross-turn continuity within this same session: only on a turn that
         # completed cleanly via the "final" event, not one that crashed/timed
@@ -437,4 +499,7 @@ class HarnessRunner:
             draft_molecule=molecule,
             grammar_collector=collector,
             tool_provenance_audit=tool_provenance_audit,
+            step_char_sum=step_char_sum,
+            step_char_max=step_char_max,
+            tool_failure_streak_max=tool_failure_streak_max,
         )

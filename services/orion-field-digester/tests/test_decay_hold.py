@@ -18,7 +18,7 @@ from __future__ import annotations
 
 from datetime import datetime, timedelta, timezone
 
-from app.digestion.decay import apply_decay
+from app.digestion.decay import NODE_DECAY_CHANNELS, apply_decay
 from app.digestion.perturbation import apply_perturbations
 from app.digestion.suppression import apply_suppression
 from app.ingest.state_deltas import Perturbation
@@ -37,6 +37,22 @@ def _state(node_vectors: dict[str, dict[str, float]] | None = None) -> FieldStat
         node_vectors=node_vectors or {},
         edges=[],
     )
+
+
+def test_new_fcc_motor_channels_are_registered_for_decay() -> None:
+    """A channel only decays if listed in NODE_DECAY_CHANNELS (separate from being in
+    NODE_CHANNELS) -- otherwise it holds forever. Written through the normal
+    state_deltas.py -> apply_perturbations() path (same as execution_load), these get
+    node_vector_updated_at stamped automatically, so no manual-stamping test is needed
+    here -- this just confirms the registration itself, the miss this service's own
+    CLAUDE.md warns has already happened once for a different channel."""
+    for channel in (
+        "harness_step_load",
+        "tool_failure_streak_pressure",
+        "avg_step_chars_pressure",
+        "compliance_deficit",
+    ):
+        assert channel in NODE_DECAY_CHANNELS
 
 
 def test_held_flat_within_staleness_window_then_decays_once_stale() -> None:

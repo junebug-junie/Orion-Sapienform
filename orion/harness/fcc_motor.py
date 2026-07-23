@@ -236,6 +236,33 @@ def _extract_tool_name(step: Dict[str, Any]) -> str | None:
     return None
 
 
+def _extract_tool_result_errors(step: Dict[str, Any]) -> List[str]:
+    """Error text for each tool_result content block where is_error is true.
+
+    This -- not the once-per-turn fcc-subprocess `error` event branch in runner.py --
+    is the real substrate for repeated-tool-failure detection: is_error is set per
+    tool_result block on every step, so an in-turn tool_use -> tool_result round-trip
+    (e.g. a denied permission) surfaces here even when the overall turn otherwise
+    succeeds. Mirrors _extract_tool_name's shape/traversal.
+    """
+    raw = step.get("raw") if isinstance(step.get("raw"), dict) else step
+    if not isinstance(raw, dict):
+        return []
+    message = raw.get("message")
+    if not isinstance(message, dict):
+        return []
+    content = message.get("content")
+    if not isinstance(content, list):
+        return []
+    errors: List[str] = []
+    for block in content:
+        if not isinstance(block, dict):
+            continue
+        if block.get("type") == "tool_result" and block.get("is_error"):
+            errors.append(_tool_result_body_text(block.get("content")))
+    return errors
+
+
 def expand_env_path(raw: str) -> Path:
     return Path(os.path.expanduser(str(raw or "").strip() or "~/.fcc/.env"))
 

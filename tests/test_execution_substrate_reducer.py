@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import math
 from datetime import datetime, timedelta, timezone
 
 import pytest
@@ -153,6 +154,62 @@ def test_pressure_hints_never_contain_llm_serving_node() -> None:
     hints = compute_pressure_hints(run, egress_emitted=False)
     assert "llm_serving_node" not in hints
     assert all(isinstance(v, float) for v in hints.values())
+
+
+def test_pressure_hints_new_fcc_signals_default_to_inert() -> None:
+    run = extract_execution_state_from_events(
+        [_exec_atom("exec_result_emitted", "Cortex exec result emitted to reply_to=True, status=success")],
+        now=FIXED_TS,
+    )
+    hints = compute_pressure_hints(run, egress_emitted=True)
+    assert hints["harness_step_load"] == 0.0
+    assert hints["tool_failure_streak_pressure"] == 0.0
+    assert hints["avg_step_chars_pressure"] == 0.0
+    assert hints["compliance_deficit"] == 0.0
+
+
+def test_pressure_hints_harness_step_load_stays_bounded_and_log_compressed() -> None:
+    """Regression test: a bare log1p(n) (the original design) exceeds 1.0 at n=2 and
+    apply_perturbations() hard-clamps every mode="replace" channel to [0,1] at write
+    time -- so an unbounded value would saturate this channel for virtually every real
+    run. The log-ratio form must stay <=1.0 even for very large step counts, while still
+    differentiating an 8-step run from a 40-step run (unlike execution_load's hard cap
+    at 8)."""
+    short = ExecutionRunStateV1(
+        trace_id=TRACE, correlation_id="corr-abc", node_id="athena",
+        harness_started_step_count=8, completed_step_count=1, last_updated_at=FIXED_TS,
+    )
+    long_run = ExecutionRunStateV1(
+        trace_id=TRACE, correlation_id="corr-abc", node_id="athena",
+        harness_started_step_count=40, completed_step_count=1, last_updated_at=FIXED_TS,
+    )
+    huge = ExecutionRunStateV1(
+        trace_id=TRACE, correlation_id="corr-abc", node_id="athena",
+        harness_started_step_count=10_000, completed_step_count=1, last_updated_at=FIXED_TS,
+    )
+    short_hints = compute_pressure_hints(short, egress_emitted=False)
+    long_hints = compute_pressure_hints(long_run, egress_emitted=False)
+    huge_hints = compute_pressure_hints(huge, egress_emitted=False)
+    assert 0.0 < short_hints["harness_step_load"] < long_hints["harness_step_load"] <= 1.0
+    assert huge_hints["harness_step_load"] <= 1.0
+
+
+def test_pressure_hints_tool_failure_streak_and_verbosity_and_compliance() -> None:
+    run = ExecutionRunStateV1(
+        trace_id=TRACE,
+        correlation_id="corr-abc",
+        node_id="athena",
+        completed_step_count=4,
+        step_char_sum=8000,
+        step_char_max=3000,
+        tool_failure_streak_max=3,
+        compliance_verdict="partial",
+        last_updated_at=FIXED_TS,
+    )
+    hints = compute_pressure_hints(run, egress_emitted=False)
+    assert hints["tool_failure_streak_pressure"] == 1.0  # 3/3.0, saturates
+    assert hints["avg_step_chars_pressure"] == pytest.approx(2000 / 4000.0)
+    assert hints["compliance_deficit"] == pytest.approx(1 / 3.0)  # partial rank=1
 
 
 def test_reducer_emits_execution_run_delta() -> None:
@@ -347,6 +404,42 @@ def test_merge_failed_step_raises_failure_pressure() -> None:
     assert merged.pressure_hints["failure_pressure"] == 1.0
 
 
+def test_merge_never_downgrades_compliance_verdict() -> None:
+    full = _run_with_full_egress()
+    full.compliance_verdict = "failed"
+    incoming = extract_execution_state_from_events(_partial_batch_no_egress(), now=FIXED_TS)
+    assert incoming.compliance_verdict == "unknown"
+    merged = merge_execution_run_state(full, incoming)
+    assert merged.compliance_verdict == "failed"
+
+    # and the reverse: a later incoming batch CAN raise the rank
+    worse = extract_execution_state_from_events(_partial_batch_no_egress(), now=FIXED_TS)
+    worse.compliance_verdict = "refused"
+    merged2 = merge_execution_run_state(full, worse)
+    assert merged2.compliance_verdict == "refused"
+
+
+def test_merge_takes_max_of_new_scalar_fields() -> None:
+    full = _run_with_full_egress()
+    full.harness_started_step_count = 2
+    full.step_char_sum = 500
+    full.step_char_max = 200
+    full.tool_failure_streak_max = 1
+    incoming = extract_execution_state_from_events(_partial_batch_no_egress(), now=FIXED_TS)
+    incoming.harness_started_step_count = 5
+    incoming.step_char_sum = 300
+    incoming.step_char_max = 250
+    incoming.tool_failure_streak_max = 3
+    merged = merge_execution_run_state(full, incoming)
+    assert merged.harness_started_step_count == 5
+    assert merged.step_char_sum == 500
+    assert merged.step_char_max == 250
+    assert merged.tool_failure_streak_max == 3
+    assert merged.pressure_hints["harness_step_load"] == pytest.approx(
+        math.log1p(5) / math.log1p(60)
+    )
+
+
 def _harness_atom(role: str, summary: str, *, event_id: str = "gev_h") -> GrammarEventV1:
     atom = GrammarAtomV1(
         atom_id=f"{TRACE}:{role}",
@@ -396,6 +489,50 @@ def test_extract_accepts_harness_governor_lifecycle() -> None:
     assert run.started_step_count == 1
     assert run.reasoning_present is True
     assert run.thinking_source == "harness_fcc"
+
+
+def test_extract_harness_started_step_count_only_counts_harness_governor() -> None:
+    """execution_load blends cortex-exec + harness-governor step counts together
+    (started_step_count); harness_started_step_count is the FCC-motor-only split that
+    harness_step_load is built from -- must not double-count cortex-exec sub-steps."""
+    events = [
+        _exec_atom(
+            "exec_step_started",
+            "Step started: order=1, step=cx1, verb=chat_general, services=LLMGatewayService",
+            event_id="cx_1",
+        ),
+        _exec_atom(
+            "exec_step_started",
+            "Step started: order=2, step=cx2, verb=chat_general, services=LLMGatewayService",
+            event_id="cx_2",
+        ),
+        _harness_atom(
+            "exec_step_started", "Step started: order=1, step=fcc1, verb=orion_unified, services=none", event_id="hg_1"
+        ),
+    ]
+    run = extract_execution_state_from_events(events, now=FIXED_TS)
+    assert run.started_step_count == 3
+    assert run.harness_started_step_count == 1
+
+
+def test_extract_parses_compliance_verdict_and_verbosity_from_summary() -> None:
+    run = extract_execution_state_from_events(
+        [
+            _harness_atom(
+                "exec_result_assembled",
+                "Final result assembled: status=success, final_text_present=True, "
+                "reasoning_present=True, thinking_source=harness_fcc, "
+                "compliance_verdict=partial, step_char_sum=1200, step_char_max=400, "
+                "tool_failure_streak_max=2",
+                event_id="h_final",
+            )
+        ],
+        now=FIXED_TS,
+    )
+    assert run.compliance_verdict == "partial"
+    assert run.step_char_sum == 1200
+    assert run.step_char_max == 400
+    assert run.tool_failure_streak_max == 2
 
 
 def test_reducer_noops_harness_fcc_step_role() -> None:

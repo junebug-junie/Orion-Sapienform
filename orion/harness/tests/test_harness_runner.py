@@ -79,6 +79,139 @@ async def test_harness_runner_collects_grammar_receipts_and_draft() -> None:
     assert result.compliance_verdict == "completed"
 
 
+def _step_with_tool_result(*, is_error: bool, text: str) -> dict[str, Any]:
+    return _step_with_tool_results([(is_error, text)])
+
+
+def _step_with_tool_results(blocks: list[tuple[bool, str]]) -> dict[str, Any]:
+    return {
+        "type": "user",
+        "raw": {
+            "type": "user",
+            "message": {
+                "content": [
+                    {"type": "tool_result", "is_error": is_error, "content": text}
+                    for is_error, text in blocks
+                ]
+            },
+        },
+    }
+
+
+@pytest.mark.asyncio
+async def test_harness_runner_tool_failure_streak_counts_repeated_error_kind() -> None:
+    """The real substrate for a stuck-loop signal: repeated is_error tool_result blocks
+    inside otherwise-normal steps (NOT the once-per-turn fcc-subprocess `error` event)."""
+
+    async def _repeated_denial_runner(**_: Any) -> AsyncIterator[dict[str, Any]]:
+        for _ in range(3):
+            yield {
+                "type": "step",
+                "step": _step_with_tool_result(
+                    is_error=True, text="Permission to use Bash has been denied"
+                ),
+            }
+        yield {"type": "final", "llm_response": "gave up", "metadata": {"exit_code": 0}}
+
+    request = HarnessRunRequestV1(
+        correlation_id="c-streak",
+        thought_event=make_thought(),
+        user_message="hello",
+        permissions=ContextExecPermissionV1(),
+        answer_contract=AnswerContract(),
+    )
+    result = await HarnessRunner(AsyncMock(), fcc_runner=_repeated_denial_runner).run(request)
+    assert result.tool_failure_streak_max == 3
+
+
+@pytest.mark.asyncio
+async def test_harness_runner_tool_failure_streak_counts_multiple_errors_within_one_step() -> None:
+    """Parallel tool calls in a single assistant turn can produce multiple is_error
+    tool_result blocks in ONE step's content array -- the streak must count each,
+    not just the once-per-step case the other tests exercise."""
+
+    async def _parallel_denial_runner(**_: Any) -> AsyncIterator[dict[str, Any]]:
+        yield {
+            "type": "step",
+            "step": _step_with_tool_results(
+                [
+                    (True, "Permission to use Bash has been denied"),
+                    (True, "Permission to use Write has been denied"),
+                ]
+            ),
+        }
+        yield {"type": "final", "llm_response": "gave up", "metadata": {"exit_code": 0}}
+
+    request = HarnessRunRequestV1(
+        correlation_id="c-streak-parallel",
+        thought_event=make_thought(),
+        user_message="hello",
+        permissions=ContextExecPermissionV1(),
+        answer_contract=AnswerContract(),
+    )
+    result = await HarnessRunner(AsyncMock(), fcc_runner=_parallel_denial_runner).run(request)
+    assert result.tool_failure_streak_max == 2
+
+
+@pytest.mark.asyncio
+async def test_harness_runner_tool_failure_streak_resets_on_different_error_kind() -> None:
+    async def _alternating_runner(**_: Any) -> AsyncIterator[dict[str, Any]]:
+        yield {"type": "step", "step": _step_with_tool_result(is_error=True, text="Permission denied")}
+        yield {"type": "step", "step": _step_with_tool_result(is_error=True, text="Timeout waiting for response")}
+        yield {"type": "step", "step": _step_with_tool_result(is_error=True, text="Permission denied")}
+        yield {"type": "final", "llm_response": "gave up", "metadata": {"exit_code": 0}}
+
+    request = HarnessRunRequestV1(
+        correlation_id="c-streak-reset",
+        thought_event=make_thought(),
+        user_message="hello",
+        permissions=ContextExecPermissionV1(),
+        answer_contract=AnswerContract(),
+    )
+    result = await HarnessRunner(AsyncMock(), fcc_runner=_alternating_runner).run(request)
+    assert result.tool_failure_streak_max == 1
+
+
+@pytest.mark.asyncio
+async def test_harness_runner_accumulates_step_char_stats() -> None:
+    async def _verbose_runner(**_: Any) -> AsyncIterator[dict[str, Any]]:
+        yield {"type": "step", "step": _step_with_tool_result(is_error=False, text="x" * 100)}
+        yield {"type": "step", "step": _step_with_tool_result(is_error=False, text="y" * 300)}
+        yield {"type": "final", "llm_response": "done", "metadata": {"exit_code": 0}}
+
+    request = HarnessRunRequestV1(
+        correlation_id="c-verbose",
+        thought_event=make_thought(),
+        user_message="hello",
+        permissions=ContextExecPermissionV1(),
+        answer_contract=AnswerContract(),
+    )
+    result = await HarnessRunner(AsyncMock(), fcc_runner=_verbose_runner).run(request)
+    assert result.step_char_sum == 400
+    assert result.step_char_max == 300
+
+
+@pytest.mark.asyncio
+async def test_harness_runner_error_path_does_not_use_tool_result_streak() -> None:
+    """The once-per-turn fcc-subprocess `error` branch is structurally separate from
+    the per-step tool_result is_error streak -- confirms they don't get conflated."""
+
+    async def _subprocess_error_runner(**_: Any) -> AsyncIterator[dict[str, Any]]:
+        yield {"type": "step", "step": _step_with_tool_result(is_error=False, text="ok")}
+        yield {"type": "error", "error": "fcc crashed", "error_code": "fcc_crash"}
+
+    request = HarnessRunRequestV1(
+        correlation_id="c-subprocess-error",
+        thought_event=make_thought(),
+        user_message="hello",
+        permissions=ContextExecPermissionV1(),
+        answer_contract=AnswerContract(),
+    )
+    result = await HarnessRunner(AsyncMock(), fcc_runner=_subprocess_error_runner).run(request)
+    assert result.tool_failure_streak_max == 0
+    assert result.compliance_verdict == "failed"
+
+
 async def _mock_fcc_runner_fetch_then_confabulate(**_: Any) -> AsyncIterator[dict[str, Any]]:
     yield {
         "type": "step",

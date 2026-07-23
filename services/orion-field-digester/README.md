@@ -872,6 +872,76 @@ subset for the mood-arc windowed-autoencoder spike (see
   sparse-event trio as `execution_friction`, same `2026-07-16T02:15:08Z`
   spike, genuine rare-event signal.
 
+#### `harness_step_load`
+- **Meaning**: FCC-motor-only step-load proxy for one unified Hub turn, split out of
+  `execution_load` (which blends cortex-exec + harness-governor step counts and hard-caps
+  at 8). A compute/thermal/power cost proxy for how much processing one turn actually cost
+  on the expensive GPU node running the motor.
+- **Producer**: `execution_run` delta, `min(1.0, log1p(harness_started_step_count) /
+  log1p(60))`, mode=`replace`. In `NODE_DECAY_CHANNELS`.
+  **Correction (found in code review, before this patch ever shipped)**: the first version
+  of this channel used bare `log1p(harness_started_step_count)`, reasoned to be safely
+  unbounded because the one consumer checked at design time
+  (`orion/substrate/relational/adapters/execution_ctx.py`'s `max(hints.values())` →
+  `_clamp()`) already clamps at read time. That reasoning missed the actual primary
+  consumer: `apply_perturbations()` (`app/digestion/perturbation.py`) hard-clamps every
+  `mode="replace"` channel to `[0,1]` at write time, and bare `log1p(n)` exceeds `1.0` at
+  `n=2` — saturating this channel for virtually every real harness-governor run and
+  defeating its own purpose (an 8-step and a 40-step run both landing on the materialized
+  value `1.0`). The log-ratio form above keeps the channel genuinely continuous instead.
+  `60` is a starting reference denominator, not yet calibrated against live step-count
+  distributions. Not yet wired into `CAPABILITY_CHANNELS`/diffusion — an explicit follow-up
+  decision, not an oversight.
+- **SelfState dimension fed**: none yet — new channel, no downstream mapping wired in this
+  patch.
+- **Live-data verdict**: not yet live-verified, pending deploy. See
+  `docs/superpowers/specs/2026-07-23-fcc-motor-field-digester-signals-design.md` for the
+  full design and the `execution_load` split rationale (also flagged there as needing its
+  own follow-up: `execution_load` itself was left unnarrowed in this patch, so it still
+  double-counts harness-governor steps that this channel now also measures separately).
+
+#### `tool_failure_streak_pressure`
+- **Meaning**: is the FCC motor stuck repeating the same tool failure (e.g. a denied
+  permission) instead of adapting? `min(1.0, longest_consecutive_same_error_kind_streak / 3.0)`
+  for one turn.
+- **Producer**: `execution_run` delta, mode=`replace`. In `NODE_DECAY_CHANNELS`. Sourced
+  from `is_error` flags on `tool_result` content blocks inside each FCC step (NOT the
+  once-per-turn fcc-subprocess `error` event, which is structurally separate and doesn't
+  fire on individual tool-call failures) — see `orion/harness/fcc_motor.py`'s
+  `_extract_tool_result_errors()`.
+- **SelfState dimension fed**: none yet.
+- **Live-data verdict**: not yet live-verified, pending deploy. The `3`-repeat saturation
+  threshold and `short_error_kind()`'s bucketing granularity against realistic tool-result
+  text are both starting anchors, not yet sampled against live data — see the spec doc's
+  Missing Questions.
+
+#### `avg_step_chars_pressure`
+- **Meaning**: per-step verbosity of the FCC motor's tool output for one turn —
+  `min(1.0, (total_step_chars / completed_step_count) / 4000.0)`.
+- **Producer**: `execution_run` delta, mode=`replace`. In `NODE_DECAY_CHANNELS`. Sourced
+  from `measure_step_payload_chars()` (`orion/fcc/context_budget.py`, already computed
+  per-step for context-overflow budgeting, now also summed/max-tracked across a turn).
+- **SelfState dimension fed**: none yet.
+- **Live-data verdict**: not yet live-verified, pending deploy. The `4000`-char saturation
+  anchor is a starting guess, not yet sampled against live data — see the spec doc's
+  Missing Questions.
+
+#### `compliance_deficit`
+- **Meaning**: did the FCC motor actually produce a compliant, delivered turn?
+  `HarnessRunV1.compliance_verdict` rank (`completed`=0, `partial`=1, `failed`=2,
+  `refused`=3) `/ 3.0`. Deliberately separate from `failure_pressure` — a turn can resolve
+  `partial` (context overflow, empty draft) with zero individual tool-step failures, so the
+  two measure genuinely different things.
+- **Producer**: `execution_run` delta, mode=`replace`. In `NODE_DECAY_CHANNELS`. Sourced
+  from `HarnessRunV1.compliance_verdict`, threaded through as a new
+  `exec_result_assembled` grammar kv (previously absent from the grammar stream entirely).
+  `"refused"` is set on the pre-motor refusal path
+  (`services/orion-harness-governor/app/bus_listener.py`'s `_emit_refused_lifecycle_grammar`)
+  and now reaches this channel too — previously a documented coverage gap, closed in this
+  same patch.
+- **SelfState dimension fed**: none yet.
+- **Live-data verdict**: not yet live-verified, pending deploy.
+
 #### `egress_confidence_deficit`
 - **Meaning**: `1 - confidence` that an execution's output actually reached
   its destination.

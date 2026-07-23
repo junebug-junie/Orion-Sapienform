@@ -118,6 +118,7 @@ async def _emit_refused_lifecycle_grammar(
         grammar_receipt_count=0,
         reflection_ran=False,
         quick_lane_skipped_5b=True,
+        compliance_verdict="refused",
     )
     collector.record_result_emitted(reply_present=True, status="refused")
     await _publish_harness_lifecycle(bus, collector=collector)
@@ -133,8 +134,18 @@ async def _emit_finalize_lifecycle_grammar(
     quick_lane_skipped_5b: bool,
     final_text_present: bool,
     status: str,
+    compliance_verdict: str = "unknown",
+    step_char_sum: int = 0,
+    step_char_max: int = 0,
+    tool_failure_streak_max: int = 0,
     emit_result: bool = True,
 ) -> None:
+    # record_result_assembled() is idempotent per atom_id (same collector -> same
+    # deterministic atom_id), so this call REPLACES the motor's own earlier lifecycle
+    # publish for this correlation_id -- callers must re-pass the real
+    # compliance_verdict/verbosity/streak values (from HarnessMotorResult) here, not
+    # rely on the motor-side publish having already recorded them. See
+    # HarnessMotorResult's field comments in orion/harness/runner.py.
     collector.record_result_assembled(
         status=status,
         final_text_present=final_text_present,
@@ -142,6 +153,10 @@ async def _emit_finalize_lifecycle_grammar(
         grammar_receipt_count=grammar_receipt_count,
         reflection_ran=reflection_ran,
         quick_lane_skipped_5b=quick_lane_skipped_5b,
+        compliance_verdict=compliance_verdict,
+        step_char_sum=step_char_sum,
+        step_char_max=step_char_max,
+        tool_failure_streak_max=tool_failure_streak_max,
     )
     if emit_result:
         collector.record_result_emitted(reply_present=True, status=status)
@@ -342,6 +357,9 @@ async def handle_harness_run_request(
         # placeholder ones to force the emission would be exactly the empty-shell-cognition
         # anti-pattern this repo prohibits. The grammar lifecycle event below is the honest,
         # no-fabrication-required trace for this path.
+        _degraded_compliance_verdict = (
+            "partial" if motor.compliance_verdict == "completed" else motor.compliance_verdict
+        )
         if motor.grammar_collector is not None:
             await _emit_finalize_lifecycle_grammar(
                 bus,
@@ -352,6 +370,10 @@ async def handle_harness_run_request(
                 quick_lane_skipped_5b=False,
                 final_text_present=True,
                 status="degraded_passthrough",
+                compliance_verdict=_degraded_compliance_verdict,
+                step_char_sum=motor.step_char_sum,
+                step_char_max=motor.step_char_max,
+                tool_failure_streak_max=motor.tool_failure_streak_max,
             )
         run = HarnessRunV1(
             correlation_id=corr,
@@ -365,9 +387,7 @@ async def handle_harness_run_request(
             # motor stage did -- downgrade a "completed" motor verdict to "partial" so
             # compliance_verdict=="completed" never coexists with finalize_ran=False here,
             # matching every other branch in this function forcing a non-full-success verdict.
-            compliance_verdict=(
-                "partial" if motor.compliance_verdict == "completed" else motor.compliance_verdict
-            ),
+            compliance_verdict=_degraded_compliance_verdict,
             grounding_status=motor.grounding_status,
             grammar_event_ids=_grammar_event_ids(motor.grammar_receipts),
             recall_debug=recall_debug,
@@ -421,6 +441,10 @@ async def handle_harness_run_request(
             quick_lane_skipped_5b=chain.quick_lane_skipped_5b,
             final_text_present=True,
             status="success",
+            compliance_verdict=motor.compliance_verdict,
+            step_char_sum=motor.step_char_sum,
+            step_char_max=motor.step_char_max,
+            tool_failure_streak_max=motor.tool_failure_streak_max,
         )
     await _reply_and_artifact(bus, run, reply_to=reply_to, corr=corr, causality=causality)
 

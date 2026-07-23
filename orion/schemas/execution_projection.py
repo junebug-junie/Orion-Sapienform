@@ -21,6 +21,25 @@ class ExecutionRunStateV1(BaseModel):
     started_step_count: int = 0
     completed_step_count: int = 0
     failed_step_count: int = 0
+    # harness-governor-only step count, split from started_step_count (which blends
+    # cortex-exec + harness-governor) so the FCC motor's own step load can be measured
+    # without cortex-exec sub-steps diluting it. See NODE_CHANNELS "harness_step_load".
+    harness_started_step_count: int = 0
+    # HarnessRunV1.compliance_verdict threaded through as a grammar-stream kv; "unknown"
+    # until a real exec_result_assembled event sets it.
+    compliance_verdict: str = "unknown"
+    # Per-turn FCC step verbosity: total/max chars across measure_step_payload_chars()
+    # calls in the step loop. Average is computed at read time (step_char_sum /
+    # completed_step_count) rather than stored, to avoid a second counter desyncing
+    # from completed_step_count under independent max()-merge.
+    step_char_sum: int = 0
+    step_char_max: int = 0
+    # Longest run of consecutive identical short_error_kind() buckets seen across
+    # tool_result is_error blocks in one turn -- a stuck-loop proxy. Only the max is
+    # kept (not a growing list of every failure) since this pipeline only ever sees a
+    # single end-of-run flush per turn (see HarnessGrammarCollector), so "current
+    # streak" and "max streak" are the same observation in practice.
+    tool_failure_streak_max: int = 0
     recall_observed: bool = False
     final_text_present: bool = False
     reasoning_present: bool = False

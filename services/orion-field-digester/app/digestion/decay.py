@@ -25,6 +25,10 @@ NODE_DECAY_CHANNELS = {
     "egress_confidence_deficit",
     "repair_pressure",
     "conversation_load",
+    "harness_step_load",
+    "tool_failure_streak_pressure",
+    "avg_step_chars_pressure",
+    "compliance_deficit",
     # transport
     "transport_pressure",
     "contract_pressure",

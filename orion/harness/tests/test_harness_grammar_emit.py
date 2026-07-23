@@ -118,6 +118,66 @@ def test_build_events_include_lifecycle_roles() -> None:
     assert "thinking_source=harness_fcc" in assembled.atom.summary
 
 
+def test_record_result_assembled_summary_carries_new_fcc_signal_kv() -> None:
+    c = HarnessGrammarCollector(node_name=NODE, correlation_id=CORR, observed_at=FIXED)
+    c.record_result_assembled(
+        status="success",
+        final_text_present=True,
+        step_count=1,
+        grammar_receipt_count=1,
+        reflection_ran=False,
+        quick_lane_skipped_5b=True,
+        compliance_verdict="partial",
+        step_char_sum=1200,
+        step_char_max=400,
+        tool_failure_streak_max=2,
+    )
+    events = build_harness_grammar_events(c)
+    assembled = next(e for e in events if e.atom and e.atom.semantic_role == "exec_result_assembled")
+    assert "compliance_verdict=partial" in assembled.atom.summary
+    assert "step_char_sum=1200" in assembled.atom.summary
+    assert "step_char_max=400" in assembled.atom.summary
+    assert "tool_failure_streak_max=2" in assembled.atom.summary
+
+
+def test_record_result_assembled_new_kv_default_when_omitted() -> None:
+    """Callers that don't pass the new kwargs (e.g. orion-harness-governor's refused-path
+    collector before it was updated) still get well-formed defaults, not a crash."""
+    c = HarnessGrammarCollector(node_name=NODE, correlation_id=CORR, observed_at=FIXED)
+    c.record_result_assembled(
+        status="success", final_text_present=True, step_count=1,
+        grammar_receipt_count=1, reflection_ran=False, quick_lane_skipped_5b=True,
+    )
+    events = build_harness_grammar_events(c)
+    assembled = next(e for e in events if e.atom and e.atom.semantic_role == "exec_result_assembled")
+    assert "compliance_verdict=unknown" in assembled.atom.summary
+    assert "step_char_sum=0" in assembled.atom.summary
+
+
+def test_record_result_assembled_reinvoked_must_repass_new_fields_or_they_reset() -> None:
+    """Regression test for the double-emission bug found while wiring
+    services/orion-harness-governor/app/bus_listener.py's _emit_finalize_lifecycle_grammar:
+    record_result_assembled is idempotent per atom_id (same collector -> same atom_id), so a
+    second call on the same collector REPLACES the first atom. Callers that re-invoke it (the
+    finalize-lifecycle path does, after the motor's own lifecycle publish) must re-pass the
+    real values or they silently reset to defaults in the event grammar_extract.py sees."""
+    c = HarnessGrammarCollector(node_name=NODE, correlation_id=CORR, observed_at=FIXED)
+    c.record_result_assembled(
+        status="success", final_text_present=True, step_count=1,
+        grammar_receipt_count=1, reflection_ran=False, quick_lane_skipped_5b=True,
+        compliance_verdict="completed", step_char_sum=500, tool_failure_streak_max=1,
+    )
+    # Second call omits the new kwargs -- simulates a caller that forgot to re-thread them.
+    c.record_result_assembled(
+        status="success", final_text_present=True, step_count=1,
+        grammar_receipt_count=1, reflection_ran=False, quick_lane_skipped_5b=True,
+    )
+    events = build_harness_grammar_events(c)
+    assembled = next(e for e in events if e.atom and e.atom.semantic_role == "exec_result_assembled")
+    assert "compliance_verdict=unknown" in assembled.atom.summary  # demonstrates the reset
+    assert "step_char_sum=0" in assembled.atom.summary
+
+
 def test_record_tool_provenance_mismatch_emits_uncertainty_marker_atom() -> None:
     c = HarnessGrammarCollector(node_name=NODE, correlation_id=CORR, observed_at=FIXED)
     c.record_request_received()

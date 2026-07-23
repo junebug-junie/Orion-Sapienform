@@ -15,6 +15,17 @@ _STATUS_RANK = {
     "error": 4,
 }
 
+# HarnessRunV1.compliance_verdict ordinal rank -- never downgrade on merge, mirrors
+# _status_rank/_pick_status below. "refused" ranks worst even though it's not currently
+# expected to reach this pipeline (see grammar_extract.py module docstring).
+_COMPLIANCE_RANK = {
+    "unknown": 0,
+    "completed": 0,
+    "partial": 1,
+    "failed": 2,
+    "refused": 3,
+}
+
 
 def _status_rank(status: str) -> int:
     return _STATUS_RANK.get((status or "unknown").strip().lower(), 0)
@@ -22,6 +33,16 @@ def _status_rank(status: str) -> int:
 
 def _pick_status(existing: str, incoming: str) -> str:
     if _status_rank(incoming) > _status_rank(existing):
+        return incoming
+    return existing
+
+
+def _compliance_rank(verdict: str) -> int:
+    return _COMPLIANCE_RANK.get((verdict or "unknown").strip().lower(), 0)
+
+
+def _pick_compliance_verdict(existing: str, incoming: str) -> str:
+    if _compliance_rank(incoming) > _compliance_rank(existing):
         return incoming
     return existing
 
@@ -48,6 +69,17 @@ def merge_execution_run_state(
     merged.completed_step_count = max(existing.completed_step_count, incoming.completed_step_count)
     merged.failed_step_count = max(existing.failed_step_count, incoming.failed_step_count)
     merged.step_count = max(existing.step_count, incoming.step_count)
+    merged.harness_started_step_count = max(
+        existing.harness_started_step_count, incoming.harness_started_step_count
+    )
+    merged.step_char_sum = max(existing.step_char_sum, incoming.step_char_sum)
+    merged.step_char_max = max(existing.step_char_max, incoming.step_char_max)
+    merged.tool_failure_streak_max = max(
+        existing.tool_failure_streak_max, incoming.tool_failure_streak_max
+    )
+    merged.compliance_verdict = _pick_compliance_verdict(
+        existing.compliance_verdict, incoming.compliance_verdict
+    )
     merged.recall_observed = existing.recall_observed or incoming.recall_observed
     merged.final_text_present = existing.final_text_present or incoming.final_text_present
     merged.reasoning_present = existing.reasoning_present or incoming.reasoning_present

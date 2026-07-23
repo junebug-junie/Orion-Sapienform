@@ -258,6 +258,13 @@ def delta_to_perturbations(delta: StateDeltaV1) -> list[Perturbation]:
             ("tool_failure_streak_pressure", "tool_failure_streak_pressure", node_key),
             ("avg_step_chars_pressure", "avg_step_chars_pressure", node_key),
             ("compliance_deficit", "compliance_deficit", node_key),
+            # Distinct severity from compliance_deficit's worst rank: the governor
+            # never responded at all (orion-hub-sourced exec_turn_timeout event, no
+            # governor-side data ever existed for this run). node_key here resolves to
+            # Hub's own node (parsed from the hub_turn_timeout-laned trace_id), not the
+            # governor's -- this measures "Hub's view of governor unresponsiveness,"
+            # not the governor's own node health, since they may differ.
+            ("turn_incompletion", "turn_incompletion", node_key),
         ):
             if key in hints:
                 out.append(

@@ -58,6 +58,46 @@ def test_stable_event_ids_same_inputs_same_ids():
     assert ids_a == ids_b
 
 
+def test_turn_timeout_grammar_event_has_own_trace_lane_and_role():
+    from scripts.grammar_emit import build_turn_timeout_grammar_events
+
+    events = build_turn_timeout_grammar_events(correlation_id="corr-1", node_id="athena")
+    assert len(events) == 1
+    event = events[0]
+    assert isinstance(event, GrammarEventV1)
+    assert event.correlation_id == "corr-1"
+    assert event.provenance.source_service == "orion-hub"
+    # Own lane, NOT harness-governor's harness_motor lane -- Hub can't know the
+    # governor's own NODE_NAME when its RPC never returned.
+    assert event.trace_id == "cortex.exec:athena:corr-1:hub_turn_timeout"
+    assert event.atom is not None
+    assert event.atom.semantic_role == "exec_turn_timeout"
+
+
+def test_turn_timeout_grammar_event_correlation_id_survives_trace_id_lane_suffix():
+    """Regression guard for the lane-suffix pollution bug already fixed once for the
+    harness/cortex-exec producers: parsing this event's own (laned) trace_id back into
+    a correlation_id via parse_execution_trace_id() would yield "corr-1:hub_turn_timeout",
+    not "corr-1" -- the event must carry its own clean correlation_id so downstream
+    consumers never need that fallback."""
+    from orion.substrate.execution_loop.ids import parse_execution_trace_id
+    from scripts.grammar_emit import build_turn_timeout_grammar_events
+
+    event = build_turn_timeout_grammar_events(correlation_id="corr-1", node_id="athena")[0]
+    parsed = parse_execution_trace_id(event.trace_id)
+    assert parsed is not None
+    assert parsed[1] != "corr-1"  # confirms the fallback WOULD be wrong
+    assert event.correlation_id == "corr-1"  # confirms the real field is right
+
+
+def test_turn_timeout_grammar_event_stable_id_same_inputs() -> None:
+    from scripts.grammar_emit import build_turn_timeout_grammar_events
+
+    a = build_turn_timeout_grammar_events(correlation_id="corr-x", node_id="athena")
+    b = build_turn_timeout_grammar_events(correlation_id="corr-x", node_id="athena")
+    assert a[0].event_id == b[0].event_id
+
+
 def test_repair_signal_absent_when_flag_false():
     events = _build(has_repair_signal=False)
     roles = [

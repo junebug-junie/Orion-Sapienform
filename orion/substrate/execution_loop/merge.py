@@ -80,6 +80,7 @@ def merge_execution_run_state(
     merged.compliance_verdict = _pick_compliance_verdict(
         existing.compliance_verdict, incoming.compliance_verdict
     )
+    merged.turn_timed_out = existing.turn_timed_out or incoming.turn_timed_out
     merged.recall_observed = existing.recall_observed or incoming.recall_observed
     merged.final_text_present = existing.final_text_present or incoming.final_text_present
     merged.reasoning_present = existing.reasoning_present or incoming.reasoning_present

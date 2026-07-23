@@ -111,6 +111,8 @@ pytest tests/test_pre_turn_appraisal_wiring.py tests/test_handle_chat_request_su
 
 Gated by the existing `PUBLISH_HUB_CHAT_GRAMMAR` flag (default `true`) -- no new env key. Fires once per turn, right after the stance decision resolves, whether or not the turn goes on to the harness governor. Fail-open: a publish failure is logged and swallowed, never raised into the chat response.
 
+**Note:** as of the turn-incompletion liveness marker below, `PUBLISH_HUB_CHAT_GRAMMAR` also gates that unrelated operational signal (no user content, just `correlation_id` + timeout status) -- flipping this flag off for chat-privacy reasons also silences turn-incompletion telemetry, and there is currently no way to control them independently. Flagged in code review as a real (non-blocking) coupling, not yet split into a separate flag.
+
 The stance fields land in `active_chat_session` and go no further today -- `compute_chat_pressure_hints` doesn't read them, so they never reach `SelfStateV1` or phi. Registered `REHEARSAL` in `orion/self_state/inner_state_registry.py` (`chat_stance_disposition`) rather than left implicit; see `docs/superpowers/specs/2026-07-13-stance-disposition-inner-state-path.md` for why the obvious composition route (into `SelfStateV1.social_pressure`) was rejected and what the real paths forward look like.
 
 **Code**
@@ -118,6 +120,35 @@ The stance fields land in `active_chat_session` and go no further today -- `comp
 - `orion/hub/turn_orchestrator.py::_publish_unified_turn_chat_grammar` — call site, builds the stance-aware event set
 - `scripts/grammar_emit.py::build_chat_turn_grammar_events` — pure builder, `stance_disposition`/`stance_disposition_reasons`/`stance_boundary_register` params
 - `orion/substrate/chat_loop/grammar_extract.py::extract_chat_turn_state` — reducer-side parsing into `ChatTurnStateV1.stance_disposition` etc.
+
+#### Turn-incompletion liveness marker
+
+`orion/hub/turn_orchestrator.py::execute_unified_turn`'s `run is None` branch fires when
+`HarnessGovernorClient.run()` doesn't return a decoded `HarnessRunV1` -- most commonly a true
+harness-governor RPC timeout, but this branch also covers a codec decode failure on an
+otherwise-received reply (rare; in that sub-case the governor's own reply did arrive and may
+already have flushed real lifecycle grammar on its own trace lane, so treat the marker as "Hub
+gave up / couldn't use the reply," not strictly "nothing happened on the governor side"). This
+is otherwise the one unified-turn failure mode where no governor-side grammar event exists at
+all -- `HarnessGrammarCollector` only flushes its buffered lifecycle atoms once, at the end of a
+run, and a true timeout never reaches that point.
+
+Publishes a single `GrammarEventV1` (`semantic_role="exec_turn_timeout"`) under its own trace
+lane (`cortex_exec_trace_id(NODE_NAME, correlation_id, lane="hub_turn_timeout")`) rather than the
+governor's `harness_motor` lane -- Hub can't reliably know which physical node the governor's own
+`HarnessGrammarCollector` would have used when its RPC never returned. `correlation_id` is set
+explicitly on the event rather than left to trace-id parsing, avoiding the lane-suffix-pollution
+bug class already fixed once for the harness/cortex-exec producers. Required widening
+`EXECUTION_SOURCE_SERVICES` (`orion/substrate/execution_loop/constants.py`) to include
+`orion-hub`. Consumed by `orion-field-digester`'s `turn_incompletion` channel -- see that
+service's README glossary. Same `PUBLISH_HUB_CHAT_GRAMMAR` gating and fail-open shape as the
+chat-narrative trace above (see the Note in that section).
+
+**Code**
+
+- `orion/hub/turn_orchestrator.py::_publish_turn_timeout_grammar` — call site
+- `scripts/grammar_emit.py::build_turn_timeout_grammar_events` — pure builder
+- `orion/substrate/execution_loop/grammar_extract.py` — reducer-side `exec_turn_timeout` role parsing into `ExecutionRunStateV1.turn_timed_out`
 
 ### 2. Text-to-Speech (TTS)
 

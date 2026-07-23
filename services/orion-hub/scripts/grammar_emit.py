@@ -16,6 +16,7 @@ from orion.schemas.grammar import (
     GrammarEventV1,
     GrammarProvenanceV1,
 )
+from orion.substrate.execution_loop.ids import cortex_exec_trace_id
 
 
 def _dt(value: Any) -> datetime:
@@ -333,3 +334,79 @@ def build_chat_turn_grammar_events(
     )
 
     return events
+
+
+def build_turn_timeout_grammar_events(
+    *,
+    correlation_id: str,
+    node_id: str = "athena",
+    observed_at: datetime | None = None,
+    code_version: str | None = None,
+) -> list[GrammarEventV1]:
+    """Orion capability: liveness marker for a unified Hub turn whose
+    HarnessGovernorClient.run() call did not yield a usable result.
+
+    Fires only from orion/hub/turn_orchestrator.py's `run is None` branch. Most
+    commonly a true harness-governor RPC timeout -- the one case in the unified-turn
+    saga where NO governor-side grammar event is ever published at all
+    (HarnessGrammarCollector buffers every lifecycle atom in-memory and flushes them
+    only once, at the end of a run via orion/harness/runner.py's
+    _publish_motor_lifecycle, a point a true timeout never reaches). But `run is None`
+    also covers a rarer sub-case (services/orion-hub/scripts/harness_governor_client.py):
+    a reply DID arrive but failed to decode -- in that sub-case the governor may already
+    have flushed real lifecycle grammar on its own trace lane, so this marker means "Hub
+    couldn't use the reply," not unconditionally "nothing happened governor-side." See
+    docs/superpowers/specs/2026-07-23-fcc-motor-field-digester-signals-design.md.
+
+    Uses its own trace lane (lane="hub_turn_timeout") under Hub's own node identity,
+    NOT the governor's harness_motor lane -- Hub cannot reliably know which physical
+    node the governor's HarnessGrammarCollector would have used (services/orion-harness-
+    governor/app/settings.py's NODE_NAME) when the RPC it was waiting on never
+    returned, so this can't share that trace_id.
+
+    correlation_id is set explicitly on the returned GrammarEventV1 (not left to
+    orion/substrate/execution_loop/ids.py's parse_execution_trace_id() fallback), which
+    is the fix already applied for the harness/cortex-exec producers after a prior
+    lane-suffix pollution bug -- parsing a lane-suffixed trace_id back into a
+    correlation_id yields "{correlation_id}:{lane}", not the clean value.
+    """
+    observed_at_ = _dt(observed_at)
+    emitted_at = datetime.now(timezone.utc)
+    trace_id = cortex_exec_trace_id(node_id, correlation_id, lane="hub_turn_timeout")
+
+    provenance = GrammarProvenanceV1(
+        source_service="orion-hub",
+        source_component="hub_turn_timeout_grammar_emit",
+        source_event_id=correlation_id,
+        source_trace_id=trace_id,
+        code_version=code_version,
+    )
+    atom = GrammarAtomV1(
+        atom_id=f"{trace_id}:exec_turn_timeout",
+        trace_id=trace_id,
+        atom_type="uncertainty_marker",
+        semantic_role="exec_turn_timeout",
+        layer="execution",
+        dimensions=["execution", "harness", "liveness"],
+        summary=(
+            f"Harness governor RPC did not yield a usable result for corr={correlation_id} "
+            "(most commonly a timeout; occasionally a reply that failed to decode)"
+        ),
+        confidence=1.0,
+        salience=0.9,
+        source_event_id=correlation_id,
+    )
+    return [
+        GrammarEventV1(
+            event_id=_hash_id(trace_id, "exec_turn_timeout", prefix="gev"),
+            event_kind="atom_emitted",
+            trace_id=trace_id,
+            correlation_id=correlation_id,
+            emitted_at=emitted_at,
+            observed_at=observed_at_,
+            layer="execution",
+            dimensions=["execution", "harness", "liveness"],
+            atom=atom,
+            provenance=provenance,
+        )
+    ]

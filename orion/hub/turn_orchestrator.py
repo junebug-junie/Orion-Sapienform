@@ -108,6 +108,43 @@ async def _publish_unified_turn_chat_grammar(
         logger.warning("unified_turn_chat_grammar_publish_failed corr=%s", correlation_id, exc_info=True)
 
 
+async def _publish_turn_timeout_grammar(
+    *, bus: Any, correlation_id: str, settings: Any
+) -> None:
+    """Orion capability: liveness marker for a turn whose HarnessGovernorClient.run()
+    call did not yield a usable result (the `run is None` case below).
+
+    Most commonly a true harness-governor RPC timeout -- the ONE case in the
+    unified-turn saga where no governor-side grammar event is ever published at all
+    (HarnessGrammarCollector only flushes at the end of a run, a point a true timeout
+    never reaches). `run is None` also covers a rarer reply-failed-to-decode sub-case
+    where the governor's reply did arrive -- see build_turn_timeout_grammar_events'
+    own docstring for the full caveat. Reuses PUBLISH_HUB_CHAT_GRAMMAR (no new env
+    key, see services/orion-hub/README.md's note on this coupling) since this is still
+    Hub-side grammar publishing onto the same channel. Fail-open, same shape as
+    _publish_unified_turn_chat_grammar above.
+    """
+    if bus is None or not getattr(settings, "PUBLISH_HUB_CHAT_GRAMMAR", False):
+        return
+    try:
+        from scripts.grammar_emit import build_turn_timeout_grammar_events
+        from scripts.grammar_publish import publish_hub_chat_grammar_trace
+
+        events = build_turn_timeout_grammar_events(
+            correlation_id=correlation_id,
+            node_id=settings.NODE_NAME,
+        )
+        await publish_hub_chat_grammar_trace(
+            bus,
+            events,
+            correlation_id=correlation_id,
+            channel=settings.GRAMMAR_EVENT_CHANNEL,
+            enabled=True,
+        )
+    except Exception:
+        logger.warning("turn_timeout_grammar_publish_failed corr=%s", correlation_id, exc_info=True)
+
+
 def _thought_deferred_frame(thought: ThoughtEventV1, *, correlation_id: str) -> dict[str, Any]:
     frame: dict[str, Any] = {
         "type": "turn_deferred",
@@ -460,6 +497,7 @@ async def execute_unified_turn(
         if harness_step_relay is not None:
             harness_step_relay.forget(correlation_id)
     if run is None:
+        await _publish_turn_timeout_grammar(bus=bus, correlation_id=correlation_id, settings=cfg)
         return [
             {
                 "type": "turn_error",

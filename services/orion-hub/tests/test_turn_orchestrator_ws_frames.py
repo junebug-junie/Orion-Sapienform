@@ -709,3 +709,98 @@ async def test_publish_unified_turn_chat_grammar_fails_open() -> None:
             settings=_settings_stub(publish_chat_grammar=True),
         )
     # No assertion beyond "did not raise" -- that is the whole point of this test.
+
+
+@pytest.mark.asyncio
+async def test_publish_turn_timeout_grammar_noop_when_disabled() -> None:
+    from orion.hub.turn_orchestrator import _publish_turn_timeout_grammar
+
+    _ensure_hub_import_paths()
+    publish_trace = AsyncMock()
+    with patch("scripts.grammar_publish.publish_hub_chat_grammar_trace", publish_trace):
+        await _publish_turn_timeout_grammar(
+            bus=MagicMock(),
+            correlation_id=_CORR_ID,
+            settings=_settings_stub(publish_chat_grammar=False),
+        )
+    publish_trace.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_publish_turn_timeout_grammar_fires_with_exec_turn_timeout_role() -> None:
+    from orion.hub.turn_orchestrator import _publish_turn_timeout_grammar
+
+    _ensure_hub_import_paths()
+    publish_trace = AsyncMock()
+    with patch("scripts.grammar_publish.publish_hub_chat_grammar_trace", publish_trace):
+        await _publish_turn_timeout_grammar(
+            bus=MagicMock(),
+            correlation_id=_CORR_ID,
+            settings=_settings_stub(publish_chat_grammar=True),
+        )
+    publish_trace.assert_awaited_once()
+    _, kwargs = publish_trace.await_args
+    events = publish_trace.await_args.args[1]
+    assert kwargs["correlation_id"] == _CORR_ID
+    assert len(events) == 1
+    assert events[0].atom.semantic_role == "exec_turn_timeout"
+    assert events[0].provenance.source_service == "orion-hub"
+
+
+@pytest.mark.asyncio
+async def test_publish_turn_timeout_grammar_fails_open() -> None:
+    """A publish failure must not raise -- the client-facing turn_error frame must
+    still be returned even if grammar publishing breaks."""
+    from orion.hub.turn_orchestrator import _publish_turn_timeout_grammar
+
+    _ensure_hub_import_paths()
+    with patch(
+        "scripts.grammar_publish.publish_hub_chat_grammar_trace",
+        AsyncMock(side_effect=RuntimeError("bus down")),
+    ):
+        await _publish_turn_timeout_grammar(
+            bus=MagicMock(),
+            correlation_id=_CORR_ID,
+            settings=_settings_stub(publish_chat_grammar=True),
+        )
+    # No assertion beyond "did not raise".
+
+
+@pytest.mark.asyncio
+async def test_turn_orchestrator_publishes_timeout_grammar_when_governor_rpc_never_returns() -> None:
+    """End-to-end: when HarnessGovernorClient.run() returns None (the harness_rpc_timeout
+    case), execute_unified_turn must publish the liveness marker before returning the
+    client-facing turn_error frame -- this is the ONE unified-turn failure mode where no
+    governor-side grammar event is ever published at all."""
+    bus = MagicMock()
+    patches = _hub_client_patches(thought=_thought(), harness_run=AsyncMock(return_value=None))
+    publish_trace = AsyncMock()
+    settings_stub = _settings_stub(publish_chat_grammar=True)
+    # A MagicMock's getattr(..., default) never falls back to the default -- it always
+    # returns a truthy child Mock -- so _run_pre_turn_appraisal's
+    # getattr(settings, "ENABLE_PRE_TURN_APPRAISAL", False) check would otherwise read
+    # as enabled and drive this test into an unmocked RPC path unrelated to what's
+    # actually under test here.
+    settings_stub.ENABLE_PRE_TURN_APPRAISAL = False
+    with patches[0], patches[1], patches[2], patch(
+        "scripts.grammar_publish.publish_hub_chat_grammar_trace", publish_trace
+    ):
+        frames = await execute_unified_turn(
+            bus=bus,
+            correlation_id=_CORR_ID,
+            session_id="sess-1",
+            user_message="hello",
+            emit_observation_fn=lambda **_kwargs: None,
+            settings=settings_stub,
+        )
+
+    assert frames[-1]["type"] == "turn_error"
+    assert frames[-1]["error"] == "harness_rpc_timeout"
+    assert publish_trace.await_count >= 1
+    timeout_calls = [
+        call
+        for call in publish_trace.await_args_list
+        if call.args[1] and call.args[1][0].atom is not None
+        and call.args[1][0].atom.semantic_role == "exec_turn_timeout"
+    ]
+    assert len(timeout_calls) == 1

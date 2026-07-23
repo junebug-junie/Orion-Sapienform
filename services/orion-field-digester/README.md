@@ -942,6 +942,35 @@ subset for the mood-arc windowed-autoencoder spike (see
 - **SelfState dimension fed**: none yet.
 - **Live-data verdict**: not yet live-verified, pending deploy.
 
+#### `turn_incompletion`
+- **Meaning**: did Hub fail to get a usable result back from the harness-governor RPC
+  for this turn? Most commonly a true timeout; occasionally a reply that arrived but
+  failed to decode (see Producer note). A distinct, worse severity than
+  `compliance_deficit`'s worst rank (`refused`/`failed`) — those still require the
+  governor to have replied with *something* Hub could use. `1.0` if the turn hit Hub's
+  `run is None` path, `0.0` otherwise.
+- **Producer**: `execution_run` delta, mode=`replace`. In `NODE_DECAY_CHANNELS`. Sourced
+  from a NEW `orion-hub`-published grammar event (`semantic_role="exec_turn_timeout"`,
+  `services/orion-hub/scripts/grammar_emit.py`'s `build_turn_timeout_grammar_events()`),
+  fired from `orion/hub/turn_orchestrator.py`'s `run is None` branch. For a true timeout
+  this is the ONE unified-turn failure mode where no governor-side grammar event exists
+  at all — `HarnessGrammarCollector` only flushes its buffered lifecycle atoms once, at
+  the end of a run, and a true timeout never reaches that point. For the rarer
+  decode-failure sub-case, the governor's own reply did arrive and may already have
+  flushed real lifecycle grammar on its own trace lane — this channel doesn't
+  distinguish the two sub-cases (both read `run is None` to Hub). Required widening
+  `EXECUTION_SOURCE_SERVICES` (`orion/substrate/execution_loop/constants.py`) to
+  include `orion-hub` — the one real contract-surface touch in this signal's design,
+  since without it the reducer silently no-ops the event.
+- **Node attribution**: Hub's own node (parsed from this event's `hub_turn_timeout`
+  trace lane, under Hub's `NODE_NAME` — Hub cannot reliably know which physical node
+  the governor's own `HarnessGrammarCollector` would have used, since the RPC it was
+  waiting on never returned). This measures **Hub's view of governor
+  unresponsiveness**, not the governor's own node health — the two may run on
+  different physical nodes.
+- **SelfState dimension fed**: none yet.
+- **Live-data verdict**: not yet live-verified, pending deploy.
+
 #### `egress_confidence_deficit`
 - **Meaning**: `1 - confidence` that an execution's output actually reached
   its destination.

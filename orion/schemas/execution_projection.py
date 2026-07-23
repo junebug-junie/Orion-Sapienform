@@ -40,6 +40,11 @@ class ExecutionRunStateV1(BaseModel):
     # single end-of-run flush per turn (see HarnessGrammarCollector), so "current
     # streak" and "max streak" are the same observation in practice.
     tool_failure_streak_max: int = 0
+    # Set only by an exec_turn_timeout event (orion-hub-sourced, published from
+    # orion/hub/turn_orchestrator.py when a harness-governor RPC never returns). This
+    # run's other fields will otherwise be entirely at their defaults -- there is no
+    # governor-side data for a turn that never reached the motor's own lifecycle flush.
+    turn_timed_out: bool = False
     recall_observed: bool = False
     final_text_present: bool = False
     reasoning_present: bool = False

@@ -101,6 +101,21 @@ def test_execution_run_new_fcc_channels_attributed_to_orchestrating_node() -> No
     assert by_channel["harness_step_load"].intensity == 0.62
 
 
+def test_execution_run_turn_incompletion_attributed_to_hub_node() -> None:
+    """turn_incompletion comes from an orion-hub-sourced exec_turn_timeout event whose
+    trace_id lane is under Hub's own node identity, not the governor's -- node_key here
+    is Hub's node, distinct from what harness-governor would report for the same
+    correlation_id (there is none, in this failure mode)."""
+    delta = _make_execution_run_delta(
+        node_id="athena",
+        pressure_hints={"turn_incompletion": 1.0},
+    )
+    perturbations = delta_to_perturbations(delta)
+    by_channel = {p.channel: p for p in perturbations}
+    assert by_channel["turn_incompletion"].node_id == "node:athena"
+    assert by_channel["turn_incompletion"].intensity == 1.0
+
+
 def test_execution_run_harness_step_load_stays_bounded_through_apply_perturbations() -> None:
     """Regression test for a code-review finding: apply_perturbations() hard-clamps
     every mode="replace" channel to [0,1] (app/digestion/perturbation.py), which an

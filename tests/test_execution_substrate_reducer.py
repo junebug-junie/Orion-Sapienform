@@ -464,6 +464,64 @@ def _harness_atom(role: str, summary: str, *, event_id: str = "gev_h") -> Gramma
     )
 
 
+def _hub_atom(role: str, summary: str, *, event_id: str = "gev_hub") -> GrammarEventV1:
+    atom = GrammarAtomV1(
+        atom_id=f"{TRACE}:{role}",
+        trace_id=TRACE,
+        atom_type="uncertainty_marker",
+        semantic_role=role,
+        layer="execution",
+        summary=summary,
+    )
+    return GrammarEventV1(
+        event_id=event_id,
+        event_kind="atom_emitted",
+        trace_id=TRACE,
+        emitted_at=FIXED_TS,
+        observed_at=FIXED_TS,
+        atom=atom,
+        provenance=GrammarProvenanceV1(
+            source_service="orion-hub",
+            source_component="hub_turn_timeout_grammar_emit",
+        ),
+        correlation_id="corr-abc",
+    )
+
+
+def test_extract_accepts_orion_hub_turn_timeout_event() -> None:
+    """orion-hub was widened into EXECUTION_SOURCE_SERVICES specifically for
+    exec_turn_timeout -- the one unified-turn failure mode (harness-governor RPC never
+    returns) where no governor-side grammar event exists at all."""
+    run = extract_execution_state_from_events(
+        [_hub_atom("exec_turn_timeout", "Harness governor RPC timed out for corr=corr-abc")],
+        now=FIXED_TS,
+    )
+    assert run.turn_timed_out is True
+    hints = compute_pressure_hints(run, egress_emitted=False)
+    assert hints["turn_incompletion"] == 1.0
+
+
+def test_pressure_hints_turn_incompletion_default_false() -> None:
+    run = extract_execution_state_from_events(
+        [_exec_atom("exec_result_emitted", "Cortex exec result emitted to reply_to=True, status=success")],
+        now=FIXED_TS,
+    )
+    hints = compute_pressure_hints(run, egress_emitted=True)
+    assert hints["turn_incompletion"] == 0.0
+
+
+def test_merge_turn_timed_out_never_downgrades() -> None:
+    full = _run_with_full_egress()
+    assert full.turn_timed_out is False
+    timed_out = extract_execution_state_from_events(
+        [_hub_atom("exec_turn_timeout", "Harness governor RPC timed out for corr=corr-abc")],
+        now=FIXED_TS,
+    )
+    merged = merge_execution_run_state(full, timed_out)
+    assert merged.turn_timed_out is True
+    assert merged.pressure_hints["turn_incompletion"] == 1.0
+
+
 def test_extract_accepts_harness_governor_lifecycle() -> None:
     events = [
         _harness_atom(

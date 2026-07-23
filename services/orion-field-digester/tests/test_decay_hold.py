@@ -51,6 +51,7 @@ def test_new_fcc_motor_channels_are_registered_for_decay() -> None:
         "tool_failure_streak_pressure",
         "avg_step_chars_pressure",
         "compliance_deficit",
+        "turn_incompletion",
     ):
         assert channel in NODE_DECAY_CHANNELS
 

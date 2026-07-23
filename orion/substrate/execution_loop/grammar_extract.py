@@ -88,6 +88,10 @@ def compute_pressure_hints(
     compliance_deficit = (
         _COMPLIANCE_DEFICIT_RANK.get(run.compliance_verdict.strip().lower(), 0) / 3.0
     )
+    # The one case where the governor never responded at all -- distinct severity from
+    # compliance_deficit's worst rank (refused/failed), which still requires the
+    # governor to have replied with *something*.
+    turn_incompletion = 1.0 if run.turn_timed_out else 0.0
     # llm_serving_node is NOT injected here: pressure_hints must stay
     # float-only -- orion/substrate/relational/adapters/execution_ctx.py's
     # map_execution_ctx_to_substrate() does max(hints.values()) over this
@@ -106,6 +110,7 @@ def compute_pressure_hints(
         "tool_failure_streak_pressure": tool_failure_streak_pressure,
         "avg_step_chars_pressure": avg_step_chars_pressure,
         "compliance_deficit": compliance_deficit,
+        "turn_incompletion": turn_incompletion,
     }
 
 
@@ -204,6 +209,8 @@ def extract_execution_state_from_events(
                 pass
         elif role == "exec_result_emitted":
             egress_emitted = True
+        elif role == "exec_turn_timeout":
+            run.turn_timed_out = True
 
     run.pressure_hints = compute_pressure_hints(run, egress_emitted=egress_emitted)
     return run

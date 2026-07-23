@@ -702,17 +702,27 @@ channels:
   - name: "orion:rdf:enqueue"
     kind: "request"
     schema_id: "RdfWriteRequest"
-    producer_services: ["orion-cortex-exec", "orion-vision-scribe", "orion-spark-concept-induction"]
+    producer_services: ["orion-cortex-exec", "orion-spark-concept-induction"]
     consumer_services: ["orion-rdf-writer", "orion-graph-compression"]
     stability: "experimental"
     since: "2026-01-08"
+    # orion-vision-scribe removed as a producer 2026-07-23: its Fuseki
+    # `orion:vision` write was killed outright (live-verified pure
+    # redundancy with Postgres vision_events -- no migration, nothing to
+    # preserve). See services/orion-vision-scribe/README.md.
 
   - name: "orion:rdf:confirm"
     kind: "result"
     schema_id: "RdfWriteResult"
     producer_services: ["orion-rdf-writer"]
-    consumer_services: ["orion-cortex-exec", "orion-vision-scribe"]
+    consumer_services: ["orion-cortex-exec"]
     stability: "experimental"
+    # orion-vision-scribe removed as a consumer 2026-07-23: it never
+    # actually subscribed to this channel (no CHANNEL_RDF_CONFIRM setting
+    # ever existed in its settings.py, per git history) -- stale/aspirational
+    # entry predating this PR, cleaned up alongside the real orion:rdf:enqueue
+    # producer removal since both concern vision-scribe's now-fully-removed
+    # RDF write.
     since: "2026-01-08"
 
   - name: "orion:rdf:error"

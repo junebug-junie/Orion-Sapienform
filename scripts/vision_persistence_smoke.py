@@ -3,8 +3,12 @@
 Helpers for scripts/smoke_vision_persistence_live.sh.
 
 Live mode exercises the real bus + Postgres mesh. Contract mode validates payload
-shape, SQL coercion, RDF N-Triples, and channel/kind constants without claiming
-live persistence.
+shape, SQL coercion, and channel/kind constants without claiming live persistence.
+
+RDF verification was removed 2026-07-23 along with orion-vision-scribe's Fuseki
+write itself (live-verified pure redundancy with Postgres `vision_events` --
+see services/orion-vision-scribe/README.md). SQL is now the sole sink and the
+sole success criterion.
 """
 from __future__ import annotations
 
@@ -24,7 +28,6 @@ if REPO_ROOT not in sys.path:
 
 from orion.core.bus.async_service import OrionBusAsync  # noqa: E402
 from orion.core.bus.bus_schemas import BaseEnvelope, ServiceRef  # noqa: E402
-from orion.schemas.rdf import RdfWriteRequest  # noqa: E402
 from orion.schemas.vision import (  # noqa: E402
     VisionEventBundleItem,
     VisionEventPayload,
@@ -34,13 +37,10 @@ from orion.schemas.vision import (  # noqa: E402
 CHANNEL_VISION_EVENTS = "orion:vision:events"
 CHANNEL_SCRIBE_PUB = "orion:vision:scribe:pub"
 CHANNEL_SQL_WRITE = "orion:vision:events:sql-write"
-CHANNEL_RDF_ENQUEUE = "orion:rdf:enqueue"
-CHANNEL_RDF_CONFIRM = "orion:rdf:confirm"
 
 KIND_VISION_EVENT_BUNDLE = "vision.event.bundle"
 KIND_VISION_SCRIBE_ACK = "vision.scribe.ack"
 KIND_VISION_EVENT_V1 = "vision.event.v1"
-KIND_RDF_WRITE_REQUEST = "rdf.write.request"
 
 SMOKE_SERVICE = ServiceRef(name="vision-persistence-smoke", version="0.1.0")
 
@@ -104,27 +104,6 @@ def expected_sql_row_fields(
     }
 
 
-def rdf_ntriple_markers(
-    event_id: str,
-    narrative: str,
-    event_type: str,
-    entities: list[str],
-) -> list[str]:
-    uri = f"http://conjourney.net/event/{event_id}"
-    markers = [uri, narrative, event_type]
-    markers.extend(entities)
-    return markers
-
-
-def build_rdf_write_request(event_id: str, nt_content: str) -> RdfWriteRequest:
-    return RdfWriteRequest(
-        id=event_id,
-        source="vision-scribe",
-        graph="orion:vision",
-        triples=nt_content,
-    )
-
-
 def _purge_app_modules() -> None:
     for mod_name in list(sys.modules):
         if mod_name == "app" or mod_name.startswith("app."):
@@ -175,20 +154,10 @@ def _pass(
     event_id: str,
     scribe_ack: bool,
     sql_row: bool,
-    rdf_confirm: bool,
-    rdf_enqueue_observed: bool,
 ) -> int:
     print("VISION PERSISTENCE SMOKE PASS")
     print(f"scribe_ack={str(scribe_ack).lower()}")
     print(f"sql_row={str(sql_row).lower()}")
-    if rdf_confirm:
-        print("rdf_confirm=true")
-    elif rdf_enqueue_observed:
-        print("rdf_enqueue_observed=true")
-        print("rdf_confirm=not_available")
-    else:
-        print("rdf_confirm=false")
-        print("rdf_enqueue_observed=false")
     print(f"event_id={event_id}")
     return 0
 
@@ -204,27 +173,6 @@ def run_contract_mode() -> int:
 
     expected = expected_sql_row_fields(item, correlation_id)
 
-    saved_path = sys.path[:]
-    scribe_root = os.path.join(REPO_ROOT, "services", "orion-vision-scribe")
-    try:
-        if scribe_root not in sys.path:
-            sys.path.insert(0, scribe_root)
-        from app.main import _build_event_triples  # noqa: E402
-
-        nt = _build_event_triples(item)
-    finally:
-        sys.path[:] = saved_path
-        _purge_app_modules()
-
-    for marker in rdf_ntriple_markers(
-        item.event_id, item.narrative, item.event_type, item.entities
-    ):
-        assert marker in nt, f"RDF N-Triples missing marker: {marker!r}"
-
-    rdf_req = build_rdf_write_request(item.event_id, nt)
-    assert rdf_req.id == item.event_id
-    assert isinstance(rdf_req.triples, str)
-
     row = coerce_sql_row(item, correlation_id)
     for key, want in expected.items():
         got = getattr(row, key)
@@ -238,8 +186,6 @@ def run_contract_mode() -> int:
     print(f"intake_kind={KIND_VISION_EVENT_BUNDLE}")
     print(f"sql_write_channel={CHANNEL_SQL_WRITE}")
     print(f"sql_write_kind={KIND_VISION_EVENT_V1}")
-    print(f"rdf_enqueue_channel={CHANNEL_RDF_ENQUEUE}")
-    print(f"rdf_enqueue_kind={KIND_RDF_WRITE_REQUEST}")
     print(f"scribe_ack_channel={CHANNEL_SCRIBE_PUB}")
     print(f"scribe_ack_kind={KIND_VISION_SCRIBE_ACK}")
     return 0
@@ -291,41 +237,6 @@ async def _wait_for_scribe_ack(
             return False, ack.error or ack.message or "ack.ok=false"
         return True, ""
     return False, "timeout waiting for vision.scribe.ack"
-
-
-async def _wait_for_rdf_signals(
-    enqueue_q: asyncio.Queue,
-    confirm_q: asyncio.Queue,
-    *,
-    event_id: str,
-    correlation_id: UUID,
-    timeout_sec: float,
-) -> tuple[bool, bool, str]:
-    deadline = time.monotonic() + timeout_sec
-    enqueue_seen = False
-    confirm_seen = False
-    while time.monotonic() < deadline and not (enqueue_seen and confirm_seen):
-        remaining = deadline - time.monotonic()
-        try:
-            env = await asyncio.wait_for(enqueue_q.get(), timeout=min(remaining, 0.25))
-            if _matches_correlation(env, correlation_id) and env.kind == KIND_RDF_WRITE_REQUEST:
-                payload = _payload_dict(env)
-                if str(payload.get("id")) == event_id:
-                    enqueue_seen = True
-        except asyncio.TimeoutError:
-            pass
-        try:
-            env = await asyncio.wait_for(confirm_q.get(), timeout=min(remaining, 0.25))
-            if env.kind in ("rdf.write.confirm", "rdf.write.result"):
-                payload = _payload_dict(env)
-                if str(payload.get("id")) == event_id and payload.get("ok") is True:
-                    confirm_seen = True
-        except asyncio.TimeoutError:
-            pass
-    err = ""
-    if not enqueue_seen and not confirm_seen:
-        err = "timeout waiting for rdf enqueue or confirm"
-    return enqueue_seen, confirm_seen, err
 
 
 def _query_vision_event_row(
@@ -391,12 +302,8 @@ async def run_live_mode(
     await bus.connect()
 
     scribe_q: asyncio.Queue = asyncio.Queue()
-    rdf_enqueue_q: asyncio.Queue = asyncio.Queue()
-    rdf_confirm_q: asyncio.Queue = asyncio.Queue()
     collectors = [
         asyncio.create_task(_collect_envelopes(bus, CHANNEL_SCRIBE_PUB, scribe_q)),
-        asyncio.create_task(_collect_envelopes(bus, CHANNEL_RDF_ENQUEUE, rdf_enqueue_q)),
-        asyncio.create_task(_collect_envelopes(bus, CHANNEL_RDF_CONFIRM, rdf_confirm_q)),
     ]
     await asyncio.sleep(0.5)
 
@@ -413,22 +320,6 @@ async def run_live_mode(
                 correlation_id=str(correlation_id),
                 channel=CHANNEL_SCRIBE_PUB,
                 last_error=scribe_err,
-            )
-
-        rdf_enqueue, rdf_confirm, rdf_err = await _wait_for_rdf_signals(
-            rdf_enqueue_q,
-            rdf_confirm_q,
-            event_id=event_id,
-            correlation_id=correlation_id,
-            timeout_sec=timeout_sec,
-        )
-        if not rdf_confirm and not rdf_enqueue:
-            return _fail(
-                "rdf_enqueue",
-                event_id=event_id,
-                correlation_id=str(correlation_id),
-                channel=CHANNEL_RDF_ENQUEUE,
-                last_error=rdf_err,
             )
 
         sql_ok, sql_err = await asyncio.to_thread(
@@ -451,8 +342,6 @@ async def run_live_mode(
             event_id=event_id,
             scribe_ack=True,
             sql_row=True,
-            rdf_confirm=rdf_confirm,
-            rdf_enqueue_observed=rdf_enqueue,
         )
     finally:
         for task in collectors:

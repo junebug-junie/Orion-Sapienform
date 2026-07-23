@@ -353,7 +353,28 @@ class OrionBusAsync:
                     reply_channel,
                     timeout_sec,
                 )
-                return await asyncio.wait_for(fut, timeout=timeout_sec)
+                result = await asyncio.wait_for(fut, timeout=timeout_sec)
+                # docs/superpowers/specs/2026-07-23-transport-domain-rpc-health-redesign.md:
+                # the worker path previously had no completion log at all on success --
+                # only the inline path (below) logged "reply received". Confirmed live
+                # (2026-07-23): of 33 real worker/inline RPC calls sampled from
+                # orion-cortex-orch's logs, only 6 used the inline path; the other 27
+                # completed with zero observable latency, since success here just returned
+                # `fut`'s result silently. This line closes that gap -- same log shape as
+                # the inline path's own "reply received" line, so a parser doesn't need to
+                # special-case the two RPC paths. Same log-call shape (str/str/float args,
+                # %s/%.1f format) as the 4 other logger.info() calls already on this exact
+                # path, so no new overhead profile is introduced -- a formal before/after
+                # benchmark is scoped to the design spec's next patch step (the in-memory
+                # aggregator), not this one, since that step is where a second per-call
+                # code path actually gets added.
+                logger.info(
+                    "[rpc] reply received corr_id=%s reply_channel=%s path=worker elapsed_ms=%.1f",
+                    corr,
+                    reply_channel,
+                    (perf_counter() - started) * 1000.0,
+                )
+                return result
             except asyncio.TimeoutError:
                 logger.error(
                     "[rpc] timeout waiting for reply corr_id=%s request_channel=%s reply_channel=%s timeout_sec=%.2f elapsed_ms=%.1f",

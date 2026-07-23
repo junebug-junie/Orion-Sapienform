@@ -259,3 +259,71 @@ async def test_run_rpc_only_survives_bad_payload_in_handle_rpc_result() -> None:
             assert msg is not None
         finally:
             await bus.close()
+
+
+@pytest.mark.asyncio
+async def test_rpc_request_worker_path_logs_reply_received(caplog) -> None:
+    """docs/superpowers/specs/2026-07-23-transport-domain-rpc-health-redesign.md:
+    the worker path previously logged "publish begin"/"publish success"/"waiting for
+    reply" but nothing at all on a successful completion -- only a timeout was ever
+    logged. Confirmed live (2026-07-23) this made real RPC latency invisible for the
+    majority of real calls (the worker path, not the inline path). This test drives a
+    full real rpc_request() call through the worker path end-to-end and asserts the
+    new "reply received ... path=worker" log line fires with a real elapsed_ms.
+    """
+    bus, fake_redis = _make_bus()
+    bus.publish = AsyncMock()
+    with patch.object(bus, "_create_pubsub_redis", return_value=fake_redis):
+        bus.start_rpc_worker()
+        await asyncio.sleep(0.1)  # let the worker task start and hit the pre-subscribe guard
+
+        corr_id = "00000000-0000-4000-8000-000000000099"
+        reply_channel = f"orion:test:result:{corr_id}"
+        envelope = BaseEnvelope(
+            kind="test.request.v1",
+            source=ServiceRef(name="test", version="0"),
+            correlation_id=corr_id,
+            payload={},
+        )
+
+        async def _push_reply_shortly() -> None:
+            # Wait for rpc_request() to have subscribed the reply channel (it does so
+            # under bus._rpc_lock before awaiting the future) before pushing the reply.
+            for _ in range(50):
+                if reply_channel in bus._rpc_subscribed:
+                    break
+                await asyncio.sleep(0.02)
+            codec = OrionCodec()
+            reply_envelope = BaseEnvelope(
+                kind="test.reply.v1",
+                source=ServiceRef(name="test", version="0"),
+                correlation_id=corr_id,
+                payload={"ok": True},
+            )
+            fake_redis.current.push(
+                {
+                    "type": "message",
+                    "channel": reply_channel.encode("utf-8"),
+                    "data": codec.encode(reply_envelope),
+                }
+            )
+
+        try:
+            with caplog.at_level("INFO", logger="orion.bus.async"):
+                _, msg = await asyncio.gather(
+                    _push_reply_shortly(),
+                    bus.rpc_request(
+                        "orion:test:request", envelope, reply_channel=reply_channel, timeout_sec=2.0
+                    ),
+                )
+            assert msg is not None
+            reply_lines = [
+                r.getMessage()
+                for r in caplog.records
+                if "[rpc] reply received" in r.getMessage() and f"corr_id={corr_id}" in r.getMessage()
+            ]
+            assert len(reply_lines) == 1, f"expected exactly one reply-received log line, got {reply_lines}"
+            assert "path=worker" in reply_lines[0]
+            assert "elapsed_ms=" in reply_lines[0]
+        finally:
+            await bus.close()

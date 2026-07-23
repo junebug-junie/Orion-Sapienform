@@ -17,6 +17,7 @@ from .telemetry_anomaly_metacog_gate import build_telemetry_anomaly_metacog_trig
 from .chat_turn_metacog_gate import (
     ChatTurnCorrelator,
     build_chat_turn_metacog_trigger,
+    evaluate_chat_turn_gate_conditions,
     is_chat_turn_evidence_terminal,
 )
 from orion.schemas.telemetry.cognition_trace import CognitionTracePayload
@@ -394,6 +395,42 @@ class EquilibriumService(BaseChassis):
             thought_event=merged_thought, run_artifact=merged_run, timed_out=merged_timed_out
         ):
             return
+
+        # Real, always-on evidence of what the gate actually saw and decided --
+        # previously the only info-level output on this path was "Published
+        # metacog trigger" on an actual fire, so a no-fire terminal evaluation
+        # (the common case) was invisible: confirming "the gate correctly saw
+        # this turn and found nothing" vs. "the gate silently never evaluated
+        # it" required reverse-engineering grammar_atoms/harness-governor logs
+        # by hand, live-verified as a real gap post-deploy.
+        fired_conditions = evaluate_chat_turn_gate_conditions(
+            thought_event=merged_thought,
+            run_artifact=merged_run,
+            timed_out=merged_timed_out,
+            timeout_reason=merged_timeout_reason,
+            surprise_threshold=settings.metacog_chat_turn_surprise_threshold,
+        )
+        reflection = (merged_run or {}).get("reflection") or {}
+        substrate_appraisal = (merged_run or {}).get("substrate_appraisal") or {}
+        logger.info(
+            "chat_turn_gate_evaluated corr_id=%s fired=%s fired_conditions=%s "
+            "disposition=%s boundary_register=%s alignment_verdict=%s strain_unresolved=%s "
+            "surprise_level=%s compliance_verdict=%s exit_code=%s finalize_degraded_reason=%s "
+            "timed_out=%s timeout_reason=%s",
+            correlation_id,
+            bool(fired_conditions),
+            fired_conditions,
+            (merged_thought or {}).get("disposition"),
+            (merged_thought or {}).get("boundary_register"),
+            reflection.get("alignment_verdict"),
+            reflection.get("strain_unresolved"),
+            substrate_appraisal.get("surprise_level"),
+            (merged_run or {}).get("compliance_verdict"),
+            (merged_run or {}).get("exit_code"),
+            (merged_run or {}).get("finalize_degraded_reason"),
+            merged_timed_out,
+            merged_timeout_reason,
+        )
 
         trigger = build_chat_turn_metacog_trigger(
             correlation_id=correlation_id,

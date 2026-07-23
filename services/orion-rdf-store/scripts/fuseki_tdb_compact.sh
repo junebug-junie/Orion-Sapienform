@@ -22,7 +22,17 @@ cd "${ROOT}"
 
 SOURCE="${SOURCE:-/mnt/graphdb/rdf-store/fuseki/databases/orion}"
 JENA_VERSION="${JENA_VERSION:-5.1.0}"
-JENA_CACHE="${JENA_CACHE:-/tmp/apache-jena-${JENA_VERSION}}"
+# Deliberately NOT /tmp/apache-jena-${JENA_VERSION}: that is the exact
+# directory name the downloaded tarball extracts to (its own top-level
+# entry is "apache-jena-${JENA_VERSION}/"). Reusing that same path as the
+# cache default made _ensure_jena's `mv` below try to move that directory
+# onto itself every time the cache was empty (e.g. after a host reboot
+# cleared /tmp) -- confirmed live, 2026-07-22: "mv: cannot move
+# '/tmp/apache-jena-5.1.0' to a subdirectory of itself,
+# '/tmp/apache-jena-5.1.0/apache-jena-5.1.0'". Nested under a distinct
+# parent so the mv destination can never collide with the tar extraction
+# target.
+JENA_CACHE="${JENA_CACHE:-/tmp/orion-jena-cache/apache-jena-${JENA_VERSION}}"
 JENA_IMAGE="${JENA_IMAGE:-eclipse-temurin:21-jre-jammy}"
 SERVICE="${FUSEKI_SERVICE_NAME:-orion-athena-fuseki}"
 WRITER_SERVICE="${RDF_WRITER_SERVICE_NAME:-orion-athena-rdf-writer}"
@@ -134,6 +144,16 @@ _ensure_jena() {
       "https://archive.apache.org/dist/jena/binaries/apache-jena-${JENA_VERSION}.tar.gz"
   fi
   rm -rf "${JENA_CACHE}"
+  # Also clear the tar extraction scratch directory itself (review finding,
+  # 2026-07-23): before the JENA_CACHE-path fix above, this was the exact
+  # same path as JENA_CACHE, so the rm -rf on the previous line happened to
+  # clean it too, by accident. Now that they differ, stale content here
+  # (e.g. the actual 2026-07-22 incident's leftover self-nested directory,
+  # /tmp/apache-jena-${JENA_VERSION}/apache-jena-${JENA_VERSION}/...) would
+  # otherwise survive a fresh tar -xzf (tar does not remove pre-existing
+  # entries absent from the archive) and get silently carried into the new
+  # cache by the mv below.
+  rm -rf "/tmp/apache-jena-${JENA_VERSION}"
   tar -xzf "${tarball}" -C /tmp
   mv "/tmp/apache-jena-${JENA_VERSION}" "${JENA_CACHE}"
 }

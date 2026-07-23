@@ -5,6 +5,7 @@ import asyncio
 import logging
 import os
 from contextlib import asynccontextmanager, suppress
+from datetime import datetime, timezone
 from time import perf_counter
 from typing import Any, AsyncIterator, Dict, Optional
 
@@ -15,6 +16,7 @@ from orion.schemas.registry import resolve as resolve_schema_id
 from .bus_schemas import BaseEnvelope
 from .codec import OrionCodec
 from .enforce import enforcer
+from .velocity_keys import DEFAULT_BUCKET_TTL_SEC, velocity_key
 
 logger = logging.getLogger("orion.bus.async")
 
@@ -31,6 +33,7 @@ class OrionBusAsync:
         enabled: bool = True,
         codec: Optional[OrionCodec] = None,
         enforce_catalog: bool | None = None,
+        track_velocity: bool | None = None,
     ):
         self.url = url
         self.enabled = enabled
@@ -46,6 +49,11 @@ class OrionBusAsync:
             enforce_catalog = os.getenv("ORION_BUS_ENFORCE_CATALOG", "false").lower() == "true"
         self.enforce_catalog = bool(enforce_catalog)
         enforcer.enforce = enforce_catalog
+        if track_velocity is None:
+            track_velocity = (
+                os.getenv("ORION_BUS_VELOCITY_TRACKING_ENABLED", "false").lower() == "true"
+            )
+        self.track_velocity = bool(track_velocity)
 
     def _pubsub_redis_kwargs(self) -> dict[str, Any]:
         """Pub/sub listen() blocks indefinitely; socket_timeout must be disabled."""
@@ -246,6 +254,31 @@ class OrionBusAsync:
         self._validate_payload(channel, msg)
         data = self.codec.encode(msg)  # bytes
         await self.redis.publish(channel, data)
+        if self.track_velocity:
+            await self._record_velocity(channel)
+
+    async def _record_velocity(self, channel: str) -> None:
+        """Best-effort per-channel publish counter (see orion.bus.velocity).
+
+        Runs after the real publish already succeeded above -- a broken
+        counter must never fail or slow down an otherwise-successful
+        publish, so any error here is logged and swallowed, not raised.
+        """
+        try:
+            key = velocity_key(channel, datetime.now(timezone.utc))
+            pipe = self.redis.pipeline(transaction=False)
+            pipe.incr(key)
+            pipe.expire(key, DEFAULT_BUCKET_TTL_SEC)
+            await pipe.execute()
+        except Exception:
+            # WARNING, not debug: this is the only signal that Phase 1's
+            # live-data gate (docs/superpowers/specs/2026-07-23-bus-channel-
+            # velocity-census-design.md) would otherwise miss a persistently
+            # broken counter (e.g. Redis ACL denial, eviction under memory
+            # pressure) silently reading as "traffic is just quiet."
+            logger.warning(
+                "bus velocity tracking failed for channel=%s", channel, exc_info=True
+            )
 
     def _validate_payload(self, channel: str, msg: BaseEnvelope | Dict[str, Any]) -> None:
         entry = enforcer.entry_for(channel)

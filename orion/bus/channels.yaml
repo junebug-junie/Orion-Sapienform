@@ -776,7 +776,13 @@ channels:
     kind: "event"
     schema_id: "MetacogTriggerV1"
     producer_services: ["orion-equilibrium-service"]
-    consumer_services: ["orion-cortex-orch", "orion-sql-writer"]
+    # orion-actions was already a live subscriber (_handle_journal_metacog,
+    # services/orion-actions/app/main.py) before this registry entry was
+    # corrected -- found during the chat_turn metacog trigger design
+    # investigation (docs/superpowers/design/2026-07-18-collapse-mirror-
+    # metacog-redesign.md). Real contract drift, unrelated to whether that
+    # trigger ships.
+    consumer_services: ["orion-cortex-orch", "orion-sql-writer", "orion-actions"]
     stability: "experimental"
     since: "2026-01-10"
 
@@ -2138,7 +2144,11 @@ channels:
       - orion-bus
       - orion-harness-governor
       - orion-cortex-orch
-    consumer_services: ["orion-sql-writer"]
+    # orion-equilibrium-service added for the chat_turn metacog trigger's
+    # correlator, which filters this stream to semantic_role=="exec_turn_timeout"
+    # only (services/orion-hub/scripts/grammar_emit.py::build_turn_timeout_grammar_events,
+    # PR #1287) as its "governor never responded" signal.
+    consumer_services: ["orion-sql-writer", "orion-equilibrium-service"]
     stability: "experimental"
     since: "2026-05-23"
 

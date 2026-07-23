@@ -157,6 +157,36 @@ python orion/mood_arc/fit_encoder.py train \
   (`floor_ratio`/`ceiling_ratio` don't single out `prediction_error`), just
   carrying one contaminated-but-not-dominant input feature the same way
   `v2` carried `catalog_drift_pressure` before the second cutoff.
+- **Fifth cutoff, `--min-generated-at 2026-07-23T06:10:08Z` (commit `5b1cc0fa`, merged +
+  deployed):** found while checking whether the FCC-motor signal bundle
+  (`docs/superpowers/specs/2026-07-23-fcc-motor-field-digester-signals-design.md`) endangered
+  `v3` — its 5 brand-new channels don't (confirmed: `app/anomaly_scorer.py`'s `score_latest()`
+  selects strictly by `self._manifest.channel_names`, and `build_windows()` defaults any field
+  not present in a row to `0.0` by design — a genuinely new channel name is silently ignored,
+  not a contamination risk). But two of `v3`'s own 15 *trained* channels were live-changed by
+  that same investigation's fix: `execution_load` (`min(1.0, started_step_count/8.0)` over a
+  blended cortex-exec+harness-governor counter, hard-capped) and `reasoning_load` (a boolean
+  `0.35`/`0.05` wearing a magnitude's name) both replaced with real, continuously-varying
+  formulas — see `services/orion-field-digester/README.md`'s entries for the full mechanism.
+  `v3` was trained on the *old* distributions for both. Every score computed since
+  `orion-field-digester`'s `2026-07-23T06:10:08Z` restart compares new-distribution live data
+  against a stale-distribution-trained model — the same contamination class as cutoffs two
+  through four. **Not yet confirmed whether this has produced spurious
+  `field_channel_anomaly.v3` flags** — checked `orion-athena-field-digester`'s logs shortly
+  after the restart, no `field_channel_anomaly_flagged` line yet, but this is inconclusive:
+  `v3`'s `window_size=30` rows may not have filled yet at check time, not evidence of absence.
+  Whoever picks this up next should re-check the logs with more elapsed time before treating it
+  as resolved either way. **Do not retrain yet** — matching every prior cutoff's own caveat,
+  only minutes of clean post-fix data exist as of this writing. `v3` remains the model to keep
+  serving until a `v4` retrain against this cutoff (or whichever is later) is warranted.
+  **Heads-up for whoever eventually renames `transport_pressure`** (flagged as a live
+  scope-honesty issue below, and in that same FCC-motor design doc's appendix, but not yet
+  fixed): `transport_pressure` is also one of `v3`'s 15 trained channels. A rename is a
+  *different* failure mode than this cutoff's distribution shift — the encoder would find the
+  field genuinely absent by name and silently default it to `0.0` (per `build_windows()`'s
+  missing-field convention) rather than see a shifted distribution — but it is still a
+  cutoff-class event for `v3`, not the "safe, no-training-impact" rename it might look like at
+  a glance. Treat it as a sixth cutoff when it ships.
 - **Scope caveat on `prediction_error`'s "transport" contributor (found 2026-07-22, not a new
   cutoff — no code changed, just what the channel actually means):** `prediction_error` is a
   `max()`-merge across five nodes; one of them, `node:substrate.transport`, is fed entirely by

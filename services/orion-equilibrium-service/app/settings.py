@@ -105,6 +105,23 @@ class Settings(BaseSettings):
         alias="EQUILIBRIUM_METACOG_PUBLISH_VERB_REQUEST",
     )
 
+    # chat_turn metacog trigger (2026-07-22). Correlates ThoughtEventV1
+    # (orion:thought:artifact) + HarnessRunV1 (orion:harness:run:artifact) +
+    # an optional governor-timeout GrammarEventV1 (orion:grammar:event,
+    # semantic_role == "exec_turn_timeout", Patch B / PR #1287) by
+    # correlation_id and fires on real gate conditions read off those two
+    # schemas. See chat_turn_metacog_gate.py and docs/superpowers/design/
+    # 2026-07-18-collapse-mirror-metacog-redesign.md.
+    metacog_chat_turn_trigger_enable: bool = Field(
+        False, alias="EQUILIBRIUM_METACOG_CHAT_TURN_TRIGGER_ENABLE"
+    )
+    metacog_chat_turn_correlator_ttl_sec: int = Field(
+        600, alias="EQUILIBRIUM_METACOG_CHAT_TURN_CORRELATOR_TTL_SEC"
+    )
+    metacog_chat_turn_surprise_threshold: float = Field(
+        0.7, alias="EQUILIBRIUM_METACOG_CHAT_TURN_SURPRISE_THRESHOLD"
+    )
+
     channel_metacog_trigger: str = Field("orion:equilibrium:metacog:trigger", alias="CHANNEL_EQUILIBRIUM_METACOG_TRIGGER")
     channel_collapse_mirror_user_event: str = Field("orion:collapse:intake", alias="CHANNEL_COLLAPSE_MIRROR_USER_EVENT")
     channel_pad_signal: str = Field("orion:pad:signal", alias="CHANNEL_PAD_SIGNAL")
@@ -114,6 +131,11 @@ class Settings(BaseSettings):
     channel_field_channel_anomaly_score: str = Field(
         "orion:field_channel:anomaly_score", alias="CHANNEL_FIELD_CHANNEL_ANOMALY_SCORE"
     )
+    channel_thought_artifact: str = Field("orion:thought:artifact", alias="CHANNEL_THOUGHT_ARTIFACT")
+    channel_harness_run_artifact: str = Field(
+        "orion:harness:run:artifact", alias="CHANNEL_HARNESS_RUN_ARTIFACT"
+    )
+    channel_grammar_event: str = Field("orion:grammar:event", alias="CHANNEL_GRAMMAR_EVENT")
 
     @model_validator(mode="after")
     def _coerce_windows(self) -> "Settings":

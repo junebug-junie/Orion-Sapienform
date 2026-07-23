@@ -1,14 +1,18 @@
 # Orion Vision Scribe
 Records events.
 
-## RDF write path
+## RDF write path: removed 2026-07-23
 
-The RDF write side of `_write_to_sinks` builds real triples via `rdflib`
-(`Graph` + `.serialize(format="nt")`) instead of hand-rolling a list of
-tuples. The resulting N-Triples string is sent as `triples` on
-`orion.schemas.rdf.RdfWriteRequest` (along with required `id`/`source`
-fields), matching the shape the RDF writer's `_handle_write_request`
-consumer expects.
+`_write_to_sinks` used to dual-write every event to Postgres (`vision_events`)
+and Fuseki (`orion:vision` graph, via `orion.schemas.rdf.RdfWriteRequest`).
+Live-verified pure redundancy before removal: Postgres `vision_events` gets
+the same event at the same timestamp with a strictly richer schema
+(`confidence`/`salience`/`evidence_refs`/`tags` as real structured columns,
+not flat RDF literals), and nothing in the codebase ever reads the Fuseki
+`orion:vision` graph back. Same pattern as every other Fuseki write this
+migration killed outright rather than migrated (see
+`docs/superpowers/specs/2026-07-17-recall-rdf-writer-falkor-cutover-phase2-spec.md`'s
+PR #1155 precedent). SQL is now the sole sink.
 
 ## SQL write path
 

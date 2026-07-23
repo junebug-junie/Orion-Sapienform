@@ -4,8 +4,6 @@ from contextlib import asynccontextmanager
 
 from fastapi import FastAPI
 from loguru import logger
-from rdflib import Graph, Namespace, URIRef, Literal
-from rdflib.namespace import RDF
 
 from orion.core.bus.async_service import OrionBusAsync
 from orion.core.bus.bus_schemas import BaseEnvelope, ServiceRef
@@ -17,34 +15,9 @@ from orion.schemas.vision import (
     VisionScribeResultPayload
 )
 
-try:
-    from orion.schemas.rdf import RdfWriteRequest
-except ImportError:
-    from pydantic import BaseModel, ConfigDict
-    class RdfWriteRequest(BaseModel):
-        model_config = ConfigDict(extra="ignore")
-        id: str
-        source: str
-        graph: Optional[str] = None
-        triples: Optional[str] = None
-    logger.warning("Could not import RdfWriteRequest, using fallback")
-
 from .settings import Settings
 
 settings = Settings()
-
-ORION = Namespace("http://conjourney.net/orion#")
-
-
-def _build_event_triples(evt: VisionEventBundleItem) -> str:
-    g = Graph()
-    subject = URIRef(f"http://conjourney.net/event/{evt.event_id}")
-    g.add((subject, RDF.type, ORION.VisionEvent))
-    g.add((subject, ORION.hasNarrative, Literal(evt.narrative)))
-    g.add((subject, ORION.hasType, Literal(evt.event_type)))
-    for ent in evt.entities:
-        g.add((subject, ORION.mentionsEntity, Literal(ent)))
-    return g.serialize(format="nt")
 
 
 class ScribeService:
@@ -165,8 +138,13 @@ class ScribeService:
         try:
             for evt in payload.events:
                 sql_ok = False
-                rdf_ok = False
-                # 1. SQL Write
+                # SQL Write (sole sink -- the Fuseki RDF write was removed
+                # 2026-07-23: live-verified pure redundancy. Postgres
+                # `vision_events` already receives the same event at the
+                # same timestamp with a richer schema (confidence/salience/
+                # evidence_refs/tags as real structured columns, not flat
+                # RDF literals), and nothing in the codebase ever read the
+                # Fuseki `orion:vision` graph back.)
                 try:
                     await self._send_write(settings.CHANNEL_SQL_WRITE, "vision.event.v1", evt, source_env)
                     sql_ok = True
@@ -179,32 +157,11 @@ class ScribeService:
                     )
                     errors.append(f"SQL:{e}")
 
-                # 2. RDF Write
-                try:
-                    nt_content = _build_event_triples(evt)
-                    rdf_req = RdfWriteRequest(
-                        id=evt.event_id,
-                        source=settings.SERVICE_NAME,
-                        graph="orion:vision",
-                        triples=nt_content,
-                    )
-                    await self._send_write(settings.CHANNEL_RDF_ENQUEUE, "rdf.write.request", rdf_req, source_env)
-                    rdf_ok = True
-                except Exception as e:
-                    logger.error(
-                        "[SCRIBE] RDF Write failed event_id={} channel={}: {}",
-                        evt.event_id,
-                        settings.CHANNEL_RDF_ENQUEUE,
-                        e,
-                    )
-                    errors.append(f"RDF:{e}")
-
                 logger.info(
-                    "[SCRIBE] vision_persist event_id={} sql={} rdf={} ack_ok={}",
+                    "[SCRIBE] vision_persist event_id={} sql={} ack_ok={}",
                     evt.event_id,
                     sql_ok,
-                    rdf_ok,
-                    sql_ok and rdf_ok,
+                    sql_ok,
                 )
 
             if errors:

@@ -895,6 +895,25 @@ subset for the mood-arc windowed-autoencoder spike (see
   sparse-event trio as `execution_friction`, same `2026-07-16T02:15:08Z`
   spike, genuine rare-event signal.
 
+**Cross-lane overwrite fix (live-confirmed 2026-07-23, same day as initial deploy):**
+`harness_step_load`, `tool_failure_streak_pressure`, `avg_step_chars_pressure`,
+`compliance_deficit`, and `turn_incompletion` (the 5 entries below) are now gated in
+`app/ingest/state_deltas.py` to only ever produce a perturbation from their own
+specific trace lane (`:harness_motor` for the first 4, `:hub_turn_timeout` for the
+last). Before this fix, `compute_pressure_hints()` unconditionally included these
+keys in every `execution_run`'s `pressure_hints` dict regardless of source (defaulting
+to `0.0`/`"unknown"` for cortex-exec-only runs), so `key in hints` was always true and
+every execution_run delta targeting the same node -- including the very same turn's
+own `:harness_finalize_reflect`/`:orion_voice_finalize` cortex-exec sub-lanes, and
+every later unrelated cortex-exec-only turn -- emitted a `mode="replace"` perturbation
+that reset the real value. Live-reproduced within hours of the initial deploy: a real
+`harness_step_load=0.6892` was overwritten back to `0.0` within 15 seconds by the same
+turn's own `:harness_finalize_reflect` delta. See
+`docs/superpowers/specs/2026-07-23-fcc-motor-field-digester-signals-design.md`'s
+follow-up note, and `test_execution_run_fcc_channels_ignored_off_lane` /
+`test_execution_run_off_lane_delta_does_not_reset_prior_harness_value`
+(`tests/test_field_execution_run_perturbations.py`) for the regression coverage.
+
 #### `harness_step_load`
 - **Meaning**: FCC-motor-only step-load proxy for one unified Hub turn, split out of
   `execution_load` (which blends cortex-exec + harness-governor step counts and hard-caps

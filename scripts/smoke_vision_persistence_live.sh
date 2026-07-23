@@ -2,12 +2,17 @@
 # smoke_vision_persistence_live.sh
 #
 # Verifies the Orion Vision event persistence path:
-#   orion:vision:events -> orion-vision-scribe -> sql-write + rdf enqueue
+#   orion:vision:events -> orion-vision-scribe -> sql-write
+#
+# The RDF/Fuseki write (and this smoke's RDF enqueue/confirm check) was
+# removed 2026-07-23 -- live-verified pure redundancy with Postgres
+# vision_events (see services/orion-vision-scribe/README.md). SQL is the
+# sole sink now.
 #
 # MODES (explicit selection required when deps are missing):
 #   VISION_PERSISTENCE_SMOKE_MODE=live
 #       Requires ORION_BUS_URL and DATABASE_URL (or POSTGRES_URI).
-#       Asserts scribe ack, vision_events row, and RDF enqueue or confirm.
+#       Asserts scribe ack and a matching vision_events row.
 #
 #   VISION_PERSISTENCE_SMOKE_MODE=contract
 #       In-process contract validation (no Redis/Postgres). Does NOT claim live persistence.

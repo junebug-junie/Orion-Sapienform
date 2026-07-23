@@ -249,22 +249,6 @@ def delta_to_perturbations(delta: StateDeltaV1) -> list[Perturbation]:
             ("execution_friction", "execution_friction", node_key),
             ("reasoning_load", "reasoning_load", reasoning_node_key),
             ("failure_pressure", "failure_pressure", node_key),
-            # FCC-motor-process signals (step load, tool-failure streak, verbosity,
-            # compliance) -- attributed to node_key (the orchestrating/governor node),
-            # not reasoning_node_key, since these describe the motor process itself,
-            # not which node served the LLM call. See
-            # docs/superpowers/specs/2026-07-23-fcc-motor-field-digester-signals-design.md.
-            ("harness_step_load", "harness_step_load", node_key),
-            ("tool_failure_streak_pressure", "tool_failure_streak_pressure", node_key),
-            ("avg_step_chars_pressure", "avg_step_chars_pressure", node_key),
-            ("compliance_deficit", "compliance_deficit", node_key),
-            # Distinct severity from compliance_deficit's worst rank: the governor
-            # never responded at all (orion-hub-sourced exec_turn_timeout event, no
-            # governor-side data ever existed for this run). node_key here resolves to
-            # Hub's own node (parsed from the hub_turn_timeout-laned trace_id), not the
-            # governor's -- this measures "Hub's view of governor unresponsiveness,"
-            # not the governor's own node health, since they may differ.
-            ("turn_incompletion", "turn_incompletion", node_key),
         ):
             if key in hints:
                 out.append(
@@ -286,6 +270,66 @@ def delta_to_perturbations(delta: StateDeltaV1) -> list[Perturbation]:
                     node_id=node_key,
                     channel="egress_confidence_deficit",
                     intensity=max(0.0, min(1.0, 1.0 - egress_raw)),
+                    label=delta.delta_id,
+                    mode="replace",
+                )
+            )
+
+        # FCC-motor-process signals (step load, tool-failure streak, verbosity,
+        # compliance) -- attributed to node_key (the orchestrating/governor node), not
+        # reasoning_node_key, since these describe the motor process itself, not which
+        # node served the LLM call. Gated to ONLY the harness-governor's own trace
+        # lane (":harness_motor", HarnessGrammarCollector's lane -- see
+        # orion/harness/grammar_emit.py).
+        #
+        # LIVE-CONFIRMED BUG (2026-07-23), fixed here: compute_pressure_hints()
+        # unconditionally includes these 4 keys in EVERY execution_run's
+        # pressure_hints dict, including cortex-exec-only runs (defaulting to
+        # 0.0/"unknown" there, since cortex-exec never sets harness_started_step_count/
+        # compliance_verdict/etc.). Before this gate, `key in hints` was always true
+        # regardless of source, so every execution_run delta -- including the SAME
+        # turn's own cortex-exec sub-lanes (":harness_finalize_reflect",
+        # ":orion_voice_finalize") and every later unrelated cortex-exec-only turn's
+        # bare trace -- emitted a mode="replace" perturbation for these channels
+        # targeting the same node_key (always "node:athena" for both producers),
+        # stomping the real value. Confirmed live: a real harness_step_load=0.6892 was
+        # reset to 0.0 within 15 seconds by the same turn's own
+        # :harness_finalize_reflect delta. Un-gated, these channels could never hold a
+        # real value longer than the shortest interval between any two execution_run
+        # deltas system-wide -- effectively always read near-zero. See
+        # docs/superpowers/specs/2026-07-23-fcc-motor-field-digester-signals-design.md.
+        if delta.target_id.endswith(":harness_motor"):
+            for channel, key in (
+                ("harness_step_load", "harness_step_load"),
+                ("tool_failure_streak_pressure", "tool_failure_streak_pressure"),
+                ("avg_step_chars_pressure", "avg_step_chars_pressure"),
+                ("compliance_deficit", "compliance_deficit"),
+            ):
+                if key in hints:
+                    out.append(
+                        Perturbation(
+                            node_id=node_key,
+                            channel=channel,
+                            intensity=float(hints[key]),
+                            label=delta.delta_id,
+                            mode="replace",
+                        )
+                    )
+
+        # Distinct severity from compliance_deficit's worst rank: the governor never
+        # responded at all (orion-hub-sourced exec_turn_timeout event, no
+        # governor-side data ever existed for this run). Gated to Hub's own
+        # ":hub_turn_timeout" trace lane for the same cross-lane-stomp reason as
+        # above. node_key here resolves to Hub's own node (parsed from that lane's
+        # trace_id), not the governor's -- this measures "Hub's view of governor
+        # unresponsiveness," not the governor's own node health, since they may
+        # differ.
+        if delta.target_id.endswith(":hub_turn_timeout") and "turn_incompletion" in hints:
+            out.append(
+                Perturbation(
+                    node_id=node_key,
+                    channel="turn_incompletion",
+                    intensity=float(hints["turn_incompletion"]),
                     label=delta.delta_id,
                     mode="replace",
                 )

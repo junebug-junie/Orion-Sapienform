@@ -16,7 +16,7 @@ The vision pipeline is a distributed system using the Titanium Contract Stack ov
 4.  **Vision Retina (`orion-vision-retina`)**: Capture service that publishes frame pointers (legacy/alternate capture path).
 5.  **Vision Window (`orion-vision-window`)**: Aggregates artifacts into time-based windows with evidence tiers.
 6.  **Vision Council (`orion-vision-council`)**: Performs high-level cognitive analysis on windows using LLMs. Council V2 parses `VisionSceneInterpretationV1` internally (strict validation, then salvage/coercion for common malformed nested fields, then legacy fallback), then projects `event_candidates` to the legacy `VisionEventPayload` published on `orion:vision:events` (Scribe contract unchanged).
-7.  **Vision Scribe (`orion-vision-scribe`)**: Persists events to SQL, RDF, and Vector stores.
+7.  **Vision Scribe (`orion-vision-scribe`)**: Persists events to SQL (Postgres `vision_events`). The RDF write was removed 2026-07-23 (live-verified pure redundancy -- see `services/orion-vision-scribe/README.md`).
 
 ## Channels and Kinds
 

@@ -4,12 +4,26 @@
 Phase 1 of `docs/superpowers/specs/2026-07-18-objective-3-consciousness-
 scaffolded-roadmap-design.md`. Replays the REAL, pure production reducer
 (`reduce_attention_self_model`, `orion/substrate/attention_self_model.py`)
-over real historical Postgres data for all three of its inputs
-(`substrate_attention_frames` -> `FieldAttentionFrameV1`, `substrate_
-self_state` -> `SelfStateV1`, `substrate_attention_broadcast_log` ->
-`AttentionBroadcastProjectionV1`), joined by nearest-preceding timestamp with
-the field lane's own tick cadence driving the replay (it is the highest-
-frequency real signal, per the Phase 1 design).
+over real historical Postgres data for its inputs (`substrate_attention_
+frames` -> `FieldAttentionFrameV1`, `substrate_attention_broadcast_log` ->
+`AttentionBroadcastProjectionV1`, `substrate_field_state` -> the five
+Active-Inference domains' raw `prediction_error`), joined by nearest-
+preceding timestamp with the field lane's own tick cadence driving the
+replay (it is the highest-frequency real signal, per the Phase 1 design).
+
+**2026-07-23: `substrate_self_state` input removed, replaced with
+`substrate_field_state`.** Mirrors `attention_self_model.py`'s own
+`SelfStateV1` -> Active-Inference substrate swap (see that module's docstring
+for the full account -- the producer this used to read no longer exists).
+`prediction_error_by_domain` (current-tick snapshot) and
+`prediction_error_trend_by_domain` (this script's own computation --
+mean(recent half) - mean(prior half) over `PREDICTION_ERROR_TREND_WINDOW_
+TICKS` field_state ticks, a starting anchor sized to the live ~2s field_state
+cadence confirmed 2026-07-23 via `substrate_field_state` timestamp diffs, not
+yet independently calibrated -- see Missing Question 3 in the L6 design doc)
+are both derived here, in the pure replay layer, from real
+`substrate_field_state` rows -- the reducer itself does no time-series math
+of its own (see its module docstring).
 
 **Load-bearing finding, discovered while building this script (2026-07-18):
 `substrate_attention_broadcast_projection` -- the third input,
@@ -28,7 +42,7 @@ singleton by `save_attention_broadcast_history()`
 (`services/orion-substrate-runtime/app/store.py`) from
 `_attention_broadcast_tick()` (`services/orion-substrate-runtime/app/
 worker.py`). This script now joins broadcast rows by nearest-preceding
-timestamp the same two-pointer way it already joins `self_state_rows`,
+timestamp the same two-pointer way it joins `field_state_rows` (see below),
 instead of passing one static row to every call. The old singleton table,
 its writer (`save_attention_broadcast`), and `AttentionBroadcastProjectionV1`
 itself are untouched.
@@ -57,6 +71,11 @@ This performs NO writes, emits NO events, flips NO flags. It reports:
      immediately post-deploy while the log is still young -- that is
      reported as NOT MET via Postgres replay, with the reasoning above,
      rather than asserted as passing.
+  4. Live-data sanity check (CLAUDE.md's metric-quality-gate) for the
+     Active-Inference confidence/predicted_shift signals: per-domain
+     prediction_error coverage in the window, and whether `confidence`/
+     `predicted_shift` show real, non-degenerate variance -- not flat/
+     always-null/always-saturated.
 
 Run:
     python scripts/analysis/measure_ast_hot_reducer.py --window-hours 48
@@ -69,7 +88,7 @@ import json
 import logging
 import os
 import time
-from collections import Counter
+from collections import Counter, deque
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -79,6 +98,31 @@ logger = logging.getLogger("orion.analysis.ast_hot_reducer")
 
 DEFAULT_WINDOW_HOURS: float = 48.0
 MAX_ROWS: int = 200_000
+
+# The five real, live Predictive-Processing domains
+# (`orion/substrate/prediction_error.py`), keyed by their FieldStateV1 node
+# id. `node:substrate.transport` is included despite its documented
+# structurally-narrow scope (`services/orion-substrate-runtime/README.md`'s
+# "transport domain is one queue" note) -- excluding it would be an
+# undisclosed thumb on the scale, not a fix; its near-permanent 0.0 is
+# reported honestly in `_aggregate_prediction_error_confidence`'s own basis
+# string instead.
+PREDICTION_ERROR_DOMAIN_NODES: dict[str, str] = {
+    "execution": "node:substrate.execution",
+    "transport": "node:substrate.transport",
+    "biometrics": "node:substrate.biometrics",
+    "chat": "node:substrate.chat",
+    "route": "node:substrate.route",
+}
+
+# Trend window, in field_state ticks, split into two equal halves (recent vs
+# prior) for the mean-delta trend computation. Sized to the live ~2s
+# field_state cadence confirmed 2026-07-23 (30 ticks =~ 60s) -- a starting
+# anchor, not yet independently calibrated against how fast a genuine rising
+# trend distinguishes itself from tick noise (L6 design doc's Missing
+# Question 3). Deliberately small enough to stay a real "what's happening
+# right now" window, not a long-run average.
+PREDICTION_ERROR_TREND_WINDOW_TICKS: int = 30
 
 OUTPUT_DIR = Path("/tmp/ast-hot-reducer")
 REPORT_PATH = OUTPUT_DIR / "report.md"
@@ -105,37 +149,82 @@ class ReplayTick:
     broadcast_lane_stale: bool
     broadcast_lane_age_sec: Optional[float]
     field_lane_present: bool
-    self_state_present: bool
+    predicted_shift: Optional[str]
     has_voluntary_override: bool
     reason_narrative: str
 
 
+def extract_prediction_error_by_domain(field_state_payload: dict) -> dict[str, float]:
+    """Pull the current raw `prediction_error` value for each of the five
+    real domains out of one `FieldStateV1.node_vectors` payload. Only
+    includes a domain if its node and channel are actually present in this
+    payload -- missing, not defaulted to 0.0, so a genuinely absent domain
+    doesn't silently masquerade as "confirmed calm" in the aggregate.
+    """
+    node_vectors = field_state_payload.get("node_vectors") or {}
+    out: dict[str, float] = {}
+    for domain, node_id in PREDICTION_ERROR_DOMAIN_NODES.items():
+        vector = node_vectors.get(node_id)
+        if not isinstance(vector, dict) or "prediction_error" not in vector:
+            continue
+        try:
+            out[domain] = float(vector["prediction_error"])
+        except (TypeError, ValueError):
+            continue
+    return out
+
+
+def compute_prediction_error_trend(
+    window: list[dict[str, float]],
+) -> dict[str, float]:
+    """mean(recent half) - mean(prior half) per domain, over an ordered
+    (oldest-to-newest) window of `extract_prediction_error_by_domain()`
+    outputs. A domain only gets a trend value if it has at least one reading
+    in BOTH halves -- comparing a half with zero real observations would
+    fabricate a trend from nothing, not measure one. Fewer than 2 ticks in
+    the window yields an empty dict (nothing to compare yet).
+    """
+    if len(window) < 2:
+        return {}
+    mid = len(window) // 2
+    prior_half, recent_half = window[:mid], window[mid:]
+
+    def _domain_means(half: list[dict[str, float]]) -> dict[str, float]:
+        sums: dict[str, float] = {}
+        counts: dict[str, int] = {}
+        for snapshot in half:
+            for domain, value in snapshot.items():
+                sums[domain] = sums.get(domain, 0.0) + value
+                counts[domain] = counts.get(domain, 0) + 1
+        return {d: sums[d] / counts[d] for d in sums}
+
+    prior_means = _domain_means(prior_half)
+    recent_means = _domain_means(recent_half)
+    return {
+        domain: recent_means[domain] - prior_means[domain]
+        for domain in recent_means
+        if domain in prior_means
+    }
+
+
 def replay_reducer(
     field_rows: list[tuple[datetime, dict]],
-    self_state_rows: list[tuple[datetime, dict]],
     broadcast_rows: list[tuple[datetime, dict]],
+    field_state_rows: list[tuple[datetime, dict]],
 ) -> tuple[list[ReplayTick], int, int, int]:
     """Replay the real `reduce_attention_self_model` over ordered field-lane
     ticks (the highest-frequency real signal -- drives replay cadence),
-    joining both `self_state_rows` and `broadcast_rows` by nearest-preceding
-    timestamp -- same two-pointer pattern for both, now that
-    `substrate_attention_broadcast_log` gives the broadcast lane real
-    per-tick history instead of a single static snapshot (see module
-    docstring). Returns (ticks, field_rows_skipped, self_state_rows_skipped,
-    broadcast_rows_skipped).
+    joining `broadcast_rows` by nearest-preceding timestamp (same two-pointer
+    pattern `substrate_attention_broadcast_log` already used -- see module
+    docstring) and `field_state_rows` the same way, additionally maintaining
+    a rolling `PREDICTION_ERROR_TREND_WINDOW_TICKS`-sized window of
+    per-domain `prediction_error` snapshots to feed
+    `compute_prediction_error_trend`. Returns (ticks, field_rows_skipped,
+    field_state_rows_skipped, broadcast_rows_skipped).
     """
     from orion.schemas.attention_frame import AttentionBroadcastProjectionV1
     from orion.schemas.field_attention_frame import FieldAttentionFrameV1
-    from orion.schemas.self_state import SelfStateV1
     from orion.substrate.attention_self_model import reduce_attention_self_model
-
-    self_states: list[tuple[datetime, SelfStateV1]] = []
-    self_state_skipped = 0
-    for ts, payload in self_state_rows:
-        try:
-            self_states.append((ts, SelfStateV1.model_validate(payload)))
-        except Exception:
-            self_state_skipped += 1
 
     broadcasts: list[tuple[datetime, AttentionBroadcastProjectionV1]] = []
     broadcast_skipped = 0
@@ -145,12 +234,21 @@ def replay_reducer(
         except Exception:
             broadcast_skipped += 1
 
+    field_states: list[tuple[datetime, dict[str, float]]] = []
+    field_state_skipped = 0
+    for ts, payload in field_state_rows:
+        try:
+            field_states.append((ts, extract_prediction_error_by_domain(payload)))
+        except Exception:
+            field_state_skipped += 1
+
     ticks: list[ReplayTick] = []
     field_skipped = 0
-    ss_idx = 0  # two-pointer: field_rows, self_states, broadcasts are all ASC-sorted
+    fs_idx = 0  # two-pointer: field_rows, broadcasts, field_states are all ASC-sorted
     bc_idx = 0
-    current_self_state: Optional[SelfStateV1] = None
     current_broadcast: Optional[AttentionBroadcastProjectionV1] = None
+    current_prediction_error_by_domain: dict[str, float] = {}
+    trend_window: deque[dict[str, float]] = deque(maxlen=PREDICTION_ERROR_TREND_WINDOW_TICKS)
 
     for ts, payload in field_rows:
         try:
@@ -159,16 +257,22 @@ def replay_reducer(
             field_skipped += 1
             continue
 
-        while ss_idx < len(self_states) and self_states[ss_idx][0] <= ts:
-            current_self_state = self_states[ss_idx][1]
-            ss_idx += 1
-
         while bc_idx < len(broadcasts) and broadcasts[bc_idx][0] <= ts:
             current_broadcast = broadcasts[bc_idx][1]
             bc_idx += 1
 
+        while fs_idx < len(field_states) and field_states[fs_idx][0] <= ts:
+            current_prediction_error_by_domain = field_states[fs_idx][1]
+            if current_prediction_error_by_domain:
+                trend_window.append(current_prediction_error_by_domain)
+            fs_idx += 1
+
         model = reduce_attention_self_model(
-            current_broadcast, field_model, current_self_state, now=ts
+            current_broadcast,
+            field_model,
+            now=ts,
+            prediction_error_by_domain=current_prediction_error_by_domain or None,
+            prediction_error_trend_by_domain=compute_prediction_error_trend(list(trend_window)) or None,
         )
         ticks.append(
             ReplayTick(
@@ -179,12 +283,12 @@ def replay_reducer(
                 broadcast_lane_stale=model.broadcast_lane_stale,
                 broadcast_lane_age_sec=model.broadcast_lane_age_sec,
                 field_lane_present=model.field_lane_present,
-                self_state_present=model.self_state_present,
+                predicted_shift=model.predicted_shift,
                 has_voluntary_override=model.voluntary_override is not None,
                 reason_narrative=model.reason_narrative,
             )
         )
-    return ticks, field_skipped, self_state_skipped, broadcast_skipped
+    return ticks, field_skipped, field_state_skipped, broadcast_skipped
 
 
 def reason_histogram(ticks: list[ReplayTick]) -> Counter:
@@ -283,15 +387,20 @@ def fetch_field_attention_rows(conn, since: datetime) -> tuple[list[tuple[dateti
     return _rows_to_payload_list(rows)
 
 
-def fetch_self_state_rows(conn, since: datetime) -> tuple[list[tuple[datetime, dict]], bool]:
+def fetch_field_state_rows(conn, since: datetime) -> tuple[list[tuple[datetime, dict]], bool]:
+    """Raw `FieldStateV1` snapshots -- the source of the five Active-
+    Inference domains' `prediction_error` (see `PREDICTION_ERROR_DOMAIN_
+    NODES`/`extract_prediction_error_by_domain`). Replaces
+    `fetch_self_state_rows` (removed 2026-07-23, same producer-killed reason
+    as `attention_self_model.py`'s own swap)."""
     if conn is None:
         return [], False
     try:
         with conn.cursor() as cur:
             cur.execute(
                 """
-                SELECT self_state_json, generated_at
-                FROM substrate_self_state
+                SELECT field_json, generated_at
+                FROM substrate_field_state
                 WHERE generated_at >= %s
                 ORDER BY generated_at ASC
                 LIMIT %s
@@ -300,7 +409,7 @@ def fetch_self_state_rows(conn, since: datetime) -> tuple[list[tuple[datetime, d
             )
             rows = cur.fetchall()
     except Exception:
-        logger.error("failed to fetch substrate_self_state", exc_info=True)
+        logger.error("failed to fetch substrate_field_state", exc_info=True)
         return [], False
     return _rows_to_payload_list(rows)
 
@@ -421,7 +530,7 @@ def write_ticks_csv(path: Path, ticks: list[ReplayTick]) -> None:
             [
                 "generated_at", "attention_reason", "confidence",
                 "broadcast_lane_present", "broadcast_lane_stale", "broadcast_lane_age_sec",
-                "field_lane_present", "self_state_present", "has_voluntary_override",
+                "field_lane_present", "predicted_shift", "has_voluntary_override",
             ]
         )
         for t in ticks:
@@ -431,7 +540,7 @@ def write_ticks_csv(path: Path, ticks: list[ReplayTick]) -> None:
                     "" if t.confidence is None else f"{t.confidence:.4f}",
                     t.broadcast_lane_present, t.broadcast_lane_stale,
                     "" if t.broadcast_lane_age_sec is None else f"{t.broadcast_lane_age_sec:.3f}",
-                    t.field_lane_present, t.self_state_present, t.has_voluntary_override,
+                    t.field_lane_present, t.predicted_shift or "", t.has_voluntary_override,
                 ]
             )
 
@@ -448,7 +557,8 @@ def render_report(
     ticks: list[ReplayTick],
     field_rows_truncated: bool,
     field_rows_skipped: int,
-    self_state_rows_skipped: int,
+    field_state_rows_skipped: int,
+    field_state_rows_replayed: int,
     broadcast_rows_replayed: int,
     broadcast_rows_skipped: int,
     broadcast_row_count: Optional[int],
@@ -471,6 +581,34 @@ def render_report(
     n_broadcast_fresh = sum(1 for t in ticks if t.broadcast_lane_present and not t.broadcast_lane_stale)
     n_broadcast_stale = sum(1 for t in ticks if t.broadcast_lane_present and t.broadcast_lane_stale)
 
+    confidences = [t.confidence for t in ticks if t.confidence is not None]
+    n_confidence = len(confidences)
+    confidence_min = min(confidences) if confidences else None
+    confidence_max = max(confidences) if confidences else None
+    confidence_mean = (sum(confidences) / n_confidence) if confidences else None
+    confidence_degenerate = (
+        n_confidence > 0 and confidence_min is not None and confidence_max is not None
+        and (confidence_max - confidence_min) < 1e-6
+    )
+    # confidence is populated on every attention_reason branch, but the new
+    # prediction_error-based formula (_aggregate_prediction_error_confidence)
+    # only ever fires in field_salience_only -- top_down_override/
+    # bottom_up_salience use broadcast.coalition_stability_score instead, and
+    # dominate whenever the broadcast lane is fresh. Reporting the aggregate
+    # confidence stats above alone would misleadingly imply broad coverage of
+    # the *new* formula specifically -- break it out on its own.
+    aid_confidences = [
+        t.confidence for t in ticks
+        if t.confidence is not None and t.attention_reason == "field_salience_only"
+    ]
+    n_aid_confidence = len(aid_confidences)
+    aid_confidence_min = min(aid_confidences) if aid_confidences else None
+    aid_confidence_max = max(aid_confidences) if aid_confidences else None
+
+    predicted_shifts = [t.predicted_shift for t in ticks if t.predicted_shift]
+    n_predicted_shift = len(predicted_shifts)
+    predicted_shift_domains = Counter(s.split(" prediction-error", 1)[0] for s in predicted_shifts)
+
     broadcast_singleton_line = (
         "n/a (query failed)" if broadcast_row_count is None
         else f"{broadcast_row_count} row(s) (still a singleton, by design -- "
@@ -488,14 +626,16 @@ def render_report(
         "Read-only. No writes, no events, no flag/config changes. Replays the real "
         "`reduce_attention_self_model` production function over historical "
         "`substrate_attention_frames` (field lane, drives cadence), "
-        "`substrate_self_state`, and `substrate_attention_broadcast_log` rows, all "
-        "joined by nearest-preceding timestamp.",
+        "`substrate_field_state` (five Active-Inference domains' `prediction_error`), "
+        "and `substrate_attention_broadcast_log` rows, all joined by nearest-preceding "
+        "timestamp.",
         "",
         f"- Window: last {window_label} ({window_start.isoformat()} -> {window_end.isoformat()})",
         f"- Field-lane (FieldAttentionFrameV1) ticks replayed: {n}",
         f"- Field-lane rows truncated at MAX_ROWS={MAX_ROWS}: {field_rows_truncated}",
         f"- Field-lane rows skipped (failed to parse): {field_rows_skipped}",
-        f"- Self-state rows skipped (failed to parse): {self_state_rows_skipped}",
+        f"- Field-state rows in window: {field_state_rows_replayed} "
+        f"(skipped/failed to parse: {field_state_rows_skipped})",
         f"- Broadcast-log rows in window: {broadcast_rows_replayed} "
         f"(skipped/failed to parse: {broadcast_rows_skipped})",
         "",
@@ -525,6 +665,28 @@ def render_report(
         "rows were overwritten in place and are not recoverable, so history only exists "
         "from deploy time forward. A run shortly after deploy will show low or zero "
         "broadcast-log coverage for that reason, not because the join is broken.",
+        "",
+        "## Active-Inference confidence / predicted_shift live-data sanity check",
+        "",
+        "CLAUDE.md's metric-quality-gate requirement: confirm these two signals are not "
+        "degenerate (flat, always-null, always-saturated) before treating them as usable.",
+        "",
+        f"- Ticks with a non-null `confidence` (any branch): {n_confidence} / {n} ({pct(n_confidence)})",
+        f"  - min={_fmt(confidence_min)} max={_fmt(confidence_max)} mean={_fmt(confidence_mean)}",
+        f"  - **DEGENERATE (flat within 1e-6)**" if confidence_degenerate else "  - real variance observed, not flat",
+        f"  - **caveat**: this mixes two different formulas -- `broadcast.coalition_"
+        f"stability_score` (top_down_override/bottom_up_salience branches) and the "
+        f"new prediction_error-based formula (field_salience_only only). Broken out "
+        f"below.",
+        f"- Ticks using the NEW prediction_error-based confidence specifically "
+        f"(field_salience_only branch): {n_aid_confidence} / {n} ({pct(n_aid_confidence)})",
+        f"  - min={_fmt(aid_confidence_min)} max={_fmt(aid_confidence_max)}",
+        f"- Ticks with a non-null `predicted_shift`: {n_predicted_shift} / {n} ({pct(n_predicted_shift)})",
+        "  - domain breakdown: "
+        + (
+            ", ".join(f"{d}={c}" for d, c in predicted_shift_domains.most_common())
+            if predicted_shift_domains else "none"
+        ),
         "",
         "## attention_reason distribution",
         "",
@@ -647,10 +809,10 @@ def run(window: timedelta, window_label: str) -> int:
         caveats.append(f"field-attention rows truncated at MAX_ROWS={MAX_ROWS}")
     progress.emit("field_attention loaded", percent=25.0, processed=len(field_rows), total=len(field_rows))
 
-    self_state_rows, self_state_truncated = fetch_self_state_rows(conn, window_start)
-    if self_state_truncated:
-        caveats.append(f"self-state rows truncated at MAX_ROWS={MAX_ROWS}")
-    progress.emit("self_state loaded", percent=45.0, processed=len(self_state_rows), total=len(self_state_rows))
+    field_state_rows, field_state_truncated = fetch_field_state_rows(conn, window_start)
+    if field_state_truncated:
+        caveats.append(f"field-state rows truncated at MAX_ROWS={MAX_ROWS}")
+    progress.emit("field_state loaded", percent=45.0, processed=len(field_state_rows), total=len(field_state_rows))
 
     broadcast_rows, broadcast_truncated = fetch_broadcast_history_rows(conn, window_start)
     if broadcast_truncated:
@@ -675,7 +837,8 @@ def run(window: timedelta, window_label: str) -> int:
         report = render_report(
             window_label=window_label, window_start=window_start, window_end=now,
             ticks=[], field_rows_truncated=field_truncated, field_rows_skipped=0,
-            self_state_rows_skipped=0, broadcast_rows_replayed=len(broadcast_rows),
+            field_state_rows_skipped=0, field_state_rows_replayed=len(field_state_rows),
+            broadcast_rows_replayed=len(broadcast_rows),
             broadcast_rows_skipped=0, broadcast_row_count=broadcast_row_count,
             broadcast_row=broadcast_row, override_examples=[], caveats=caveats,
         )
@@ -684,8 +847,8 @@ def run(window: timedelta, window_label: str) -> int:
         return 2
 
     progress.emit("replaying", percent=60.0, processed=0, total=len(field_rows))
-    ticks, field_skipped, self_state_skipped, broadcast_skipped = replay_reducer(
-        field_rows, self_state_rows, broadcast_rows
+    ticks, field_skipped, field_state_skipped, broadcast_skipped = replay_reducer(
+        field_rows, broadcast_rows, field_state_rows
     )
     progress.emit("replay done", percent=95.0, processed=len(ticks), total=len(field_rows))
 
@@ -699,7 +862,8 @@ def run(window: timedelta, window_label: str) -> int:
         ticks=ticks,
         field_rows_truncated=field_truncated,
         field_rows_skipped=field_skipped,
-        self_state_rows_skipped=self_state_skipped,
+        field_state_rows_skipped=field_state_skipped,
+        field_state_rows_replayed=len(field_state_rows),
         broadcast_rows_replayed=len(broadcast_rows),
         broadcast_rows_skipped=broadcast_skipped,
         broadcast_row_count=broadcast_row_count,

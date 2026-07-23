@@ -1,9 +1,9 @@
 """AST/HOT attention self-model reducer — rung 4 (read-only, Phase 1).
 
-Pure function, no I/O. Takes the three already-parsed real inputs and
-returns one `AttentionSelfModelV1` answering: what's currently salient, what
-was last dispatched, *why* (top-down goal bias vs. pure bottom-up salience —
-the "aboutness" claim AST/HOT instrumentation needs to make honestly), how
+Pure function, no I/O. Takes the already-parsed real inputs and returns one
+`AttentionSelfModelV1` answering: what's currently salient, what was last
+dispatched, *why* (top-down goal bias vs. pure bottom-up salience — the
+"aboutness" claim AST/HOT instrumentation needs to make honestly), how
 confident, and what's predicted to shift next.
 
 Mirrors `scripts/analysis/measure_origination_gate.py`'s separation of a pure
@@ -18,6 +18,25 @@ Phase 1: the reducer must be measured against real historical data
 (`scripts/analysis/measure_ast_hot_reducer.py`) before anything downstream
 consumes it, matching the program charter's own "measure before minting"
 process rule (sec 7).
+
+**2026-07-23: `SelfStateV1` input removed, replaced with Active-Inference
+substrate.** `predicted_shift`/`confidence`'s `self_state` fallback read a
+producer that no longer exists (`orion/self_state/` was deleted, PR #1266;
+`orion-athena-self-state-runtime` was confirmed stopped same-day per
+`docs/superpowers/specs/2026-07-22-l6-self-model-ast-hot-active-inference-
+design.md`'s Missing Question 1). Per that design doc's items 3/4: confidence
+is now the inverse of aggregate prediction-error volatility across the five
+real, live Predictive-Processing domains (execution/transport/biometrics/
+chat/route -- `orion/substrate/prediction_error.py`), and predicted_shift now
+names whichever domain's prediction-error is trending fastest, instead of a
+hand-tuned `SelfStateV1` dimension. Both are supplied by the caller as
+already-computed dicts (`prediction_error_by_domain`,
+`prediction_error_trend_by_domain`) -- this function stays a pure formatter/
+aggregator over them, matching its own "no I/O, no store coupling" design for
+every other input here. `self_state_present`/`self_state` are gone from both
+this signature and `AttentionSelfModelV1` -- not deprecated in place, removed
+(this repo's own "kill means kill" convention: no fallback to the thing being
+killed).
 """
 
 from __future__ import annotations
@@ -27,7 +46,6 @@ from datetime import datetime, timezone
 from orion.schemas.attention_frame import AttentionBroadcastProjectionV1
 from orion.schemas.attention_self_model import AttentionSelfModelV1
 from orion.schemas.field_attention_frame import FieldAttentionFrameV1
-from orion.schemas.self_state import SelfStateV1
 
 # 2x the live ORION_ATTENTION_BROADCAST_INTERVAL_SEC default (30s, confirmed
 # live 2026-07-18 via `docker exec orion-athena-substrate-runtime env`) —
@@ -40,25 +58,65 @@ def _round_or_none(value: float | None, digits: int = 4) -> float | None:
     return None if value is None else round(float(value), digits)
 
 
+def _aggregate_prediction_error_confidence(
+    prediction_error_by_domain: dict[str, float],
+) -> tuple[float, str]:
+    """mean(), not max(): item 1/2 above already surface the single loudest
+    domain via dynamic_pressure-driven attention selection (see
+    `orion/substrate/attention_broadcast.py`), so a max()-based confidence
+    here would be a redundant, same-sensor restatement of what attention
+    selection already answers -- CLAUDE.md's metric-quality-gate
+    independence check. mean() answers a genuinely different question
+    (overall systemic stability across every domain right now, not just the
+    worst one) at the cost of being diluted by domains with little real
+    signal. Confirmed against live data (2026-07-23, 6h window,
+    `substrate_field_state`): biometrics carries almost all the real
+    variance (mean=0.037, max=0.62); execution/chat/route are real but tiny
+    (means ~1e-5); transport reads exactly 0.0 for the entire window (its
+    documented single-queue narrow scope -- see
+    `services/orion-substrate-runtime/README.md`'s "transport domain is one
+    queue" note). This mean() is real and non-degenerate (it visibly moves
+    with biometrics activity) but heavily damped by the other four domains'
+    near-silence -- an honest, disclosed limitation, not a hidden one.
+    """
+    values = list(prediction_error_by_domain.values())
+    mean_error = sum(values) / len(values)
+    # Symmetric clamp: every real producer in prediction_error.py only ever emits
+    # min(1.0, ...) (non-negative), but this is a general-purpose function over an
+    # arbitrary caller-supplied dict -- an out-of-range (e.g. negative) input must
+    # not silently produce confidence > 1.0. Found in code review (live-reproduced:
+    # a single -0.5 domain value produced confidence=1.5, outside
+    # AttentionSelfModelV1.confidence's own declared [0,1] range, which Pydantic v2
+    # does not re-check on plain attribute assignment).
+    mean_error = max(0.0, min(1.0, mean_error))
+    confidence = 1.0 - mean_error
+    domains = ", ".join(sorted(prediction_error_by_domain))
+    basis = (
+        f"1 - mean(prediction_error) across {len(values)} domains ({domains}) "
+        "(broadcast lane stale/absent)"
+    )
+    return confidence, basis
+
+
 def reduce_attention_self_model(
     broadcast: AttentionBroadcastProjectionV1 | None,
     field_frame: FieldAttentionFrameV1 | None,
-    self_state: SelfStateV1 | None,
     *,
     now: datetime | None = None,
     broadcast_stale_threshold_sec: float = DEFAULT_BROADCAST_STALE_THRESHOLD_SEC,
     harness_closure_signal: dict | None = None,
+    prediction_error_by_domain: dict[str, float] | None = None,
+    prediction_error_trend_by_domain: dict[str, float] | None = None,
 ) -> AttentionSelfModelV1:
     """Unify the GWT-dispatch lane and the general field lane into one
-    inspectable AST/HOT self-model. Never raises: any of the three inputs may
-    be `None` (partial data honestly represented, not a crash).
+    inspectable AST/HOT self-model. Never raises: any input may be `None`
+    (partial data honestly represented, not a crash).
 
     `now` is the reference tick this self-model is being generated *for* —
     normally the field-lane tick's own `generated_at` (the highest-frequency
     real signal, so it drives the replay/live cadence per the Phase 1 design).
-    Falls back to `self_state.generated_at`, then `broadcast.generated_at`,
-    then wall-clock `datetime.now(timezone.utc)` if none of the three inputs
-    are present.
+    Falls back to `broadcast.generated_at`, then wall-clock
+    `datetime.now(timezone.utc)` if neither input is present.
 
     `harness_closure_signal` is an optional, intentionally-minimal plain dict
     -- `{"prediction_error": float, "contributing_turn_ids": list[str]}` --
@@ -74,12 +132,31 @@ def reduce_attention_self_model(
     `attention_reason` itself, and every other branch (`top_down_override`,
     `bottom_up_salience`) ignores it entirely. Omitting this argument (the
     default) reproduces today's narrative byte-for-byte.
+
+    `prediction_error_by_domain` is an optional, caller-supplied snapshot of
+    the current raw `prediction_error` value for each of the five real
+    Predictive-Processing domains (`{"execution": 0.0001, "transport": 0.0,
+    "biometrics": 0.0459, "chat": ..., "route": ...}` -- keys are whatever
+    the caller has data for; missing domains are simply absent, not
+    defaulted to 0.0). Drives `confidence` in the `field_salience_only`
+    branch (see `_aggregate_prediction_error_confidence`). Omitting this
+    argument falls back to the pre-existing
+    `field_attention_frame.dominant_targets[].confidence_score` mean.
+
+    `prediction_error_trend_by_domain` is an optional, caller-supplied dict
+    of each domain's recent prediction-error *trend* (already computed
+    upstream -- e.g. mean(recent ticks) - mean(prior ticks); this function
+    does no time-series math of its own, matching its "no I/O, format what's
+    given" design). Drives `predicted_shift`: whichever domain has the
+    largest-magnitude trend is named as the honest candidate for "what
+    surprises me next" -- mirroring the argmax-over-a-delta-dict shape the
+    old `self_state.dimension_trajectory` branch used, just over real
+    Active-Inference domains instead of a dead `SelfStateV1` dimension.
     """
 
     reference_ts = (
         now
         or (field_frame.generated_at if field_frame is not None else None)
-        or (self_state.generated_at if self_state is not None else None)
         or (broadcast.generated_at if broadcast is not None else None)
         or datetime.now(timezone.utc)
     )
@@ -94,26 +171,26 @@ def reduce_attention_self_model(
         model.field_overall_salience = _round_or_none(field_frame.overall_salience)
         model.field_salient_target_ids = [t.target_id for t in field_frame.dominant_targets]
 
-    # --- Self-state: predicted shift + a confidence fallback ---------------
-    if self_state is not None:
-        model.self_state_present = True
-        top_drift_dim: str | None = None
-        top_drift_val = 0.0
-        for dim_id, delta in (self_state.dimension_trajectory or {}).items():
-            if abs(delta) > abs(top_drift_val):
-                top_drift_dim, top_drift_val = dim_id, delta
-        if self_state.trajectory_condition != "unknown":
-            if top_drift_dim is not None:
-                model.predicted_shift = (
-                    f"trajectory={self_state.trajectory_condition}; "
-                    f"largest-moving dimension={top_drift_dim} (delta={top_drift_val:+.3f})"
-                )
-                model.predicted_shift_basis = (
-                    "self_state.trajectory_condition + self_state.dimension_trajectory"
-                )
-            else:
-                model.predicted_shift = f"trajectory={self_state.trajectory_condition}"
-                model.predicted_shift_basis = "self_state.trajectory_condition"
+    # --- Predicted shift: whichever domain's prediction-error is trending --
+    # fastest right now (Active Inference), replacing the dead
+    # self_state.dimension_trajectory fallback. Computed unconditionally
+    # (not gated on which attention_reason branch fires below), matching the
+    # old self_state block's own positioning.
+    if prediction_error_trend_by_domain:
+        top_domain: str | None = None
+        top_trend_val = 0.0
+        for domain, trend in prediction_error_trend_by_domain.items():
+            if abs(trend) > abs(top_trend_val):
+                top_domain, top_trend_val = domain, trend
+        if top_domain is not None and top_trend_val != 0.0:
+            direction = "rising" if top_trend_val > 0 else "falling"
+            model.predicted_shift = (
+                f"{top_domain} prediction-error {direction} "
+                f"(trend={top_trend_val:+.4f} over recent window)"
+            )
+            model.predicted_shift_basis = (
+                "prediction_error_trend_by_domain (Active Inference, argmax by |trend|)"
+            )
 
     # --- Broadcast lane: what was last dispatched + cadence-mismatch state -
     broadcast_age_sec: float | None = None
@@ -181,11 +258,12 @@ def reduce_attention_self_model(
             f"Pure bottom-up dispatch: '{model.broadcast_selected_open_loop_id}' "
             f"selected by salience alone; no active goal override at this tick."
         )
-    elif model.field_lane_present or model.self_state_present:
+    elif model.field_lane_present or prediction_error_by_domain or prediction_error_trend_by_domain:
         model.attention_reason = "field_salience_only"
-        if self_state is not None:
-            model.confidence = _round_or_none(self_state.overall_confidence)
-            model.confidence_basis = "self_state.overall_confidence (broadcast lane stale/absent)"
+        if prediction_error_by_domain:
+            confidence, basis = _aggregate_prediction_error_confidence(prediction_error_by_domain)
+            model.confidence = _round_or_none(confidence)
+            model.confidence_basis = basis
         elif field_frame is not None and field_frame.dominant_targets:
             scores = [t.confidence_score for t in field_frame.dominant_targets]
             model.confidence = _round_or_none(sum(scores) / len(scores))

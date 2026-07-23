@@ -38,10 +38,14 @@ class AttentionSelfModelV1(BaseModel):
       `substrate_attention_broadcast_projection` (confirmed live 2026-07-18:
       PK on `projection_id`, exactly one row at any time) — there is no
       per-tick history for this lane, only the most recent snapshot.
-    - The general field lane (Layer 5/6): `FieldAttentionFrameV1` +
-      `SelfStateV1`, updated on a continuous ~2s tick by
-      `orion-attention-runtime`, with real per-tick history in
-      `substrate_attention_frames` / `substrate_self_state`.
+    - The general field lane (Layer 5/6): `FieldAttentionFrameV1`, updated on
+      a continuous ~2s tick by `orion-attention-runtime`, with real per-tick
+      history in `substrate_attention_frames`. **2026-07-23: this lane's
+      `SelfStateV1` co-input was removed** (that producer no longer exists,
+      PR #1266) and replaced with the five real Active-Inference domains'
+      `prediction_error` signal (`orion/substrate/prediction_error.py`) —
+      see `orion/substrate/attention_self_model.py`'s module docstring for
+      the full account.
 
     This is a read-only measurement artifact (Phase 1 scope). It is not
     published to any bus channel and not consumed by any live decision path —
@@ -86,5 +90,3 @@ class AttentionSelfModelV1(BaseModel):
     # salient" — never silently collapsed into the same output.
     broadcast_lane_stale: bool = True
     broadcast_lane_age_sec: float | None = None
-
-    self_state_present: bool = False

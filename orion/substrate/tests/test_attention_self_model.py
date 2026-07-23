@@ -10,7 +10,6 @@ from orion.schemas.attention_frame import (
     VoluntaryOverrideV1,
 )
 from orion.schemas.field_attention_frame import FieldAttentionFrameV1, FieldAttentionTargetV1
-from orion.schemas.self_state import SelfStateV1
 from orion.substrate.attention_self_model import (
     DEFAULT_BROADCAST_STALE_THRESHOLD_SEC,
     reduce_attention_self_model,
@@ -73,27 +72,23 @@ def _field_frame(*, generated_at: datetime = NOW, overall_salience: float = 0.7)
     )
 
 
-def _self_state(*, generated_at: datetime = NOW, overall_confidence: float = 0.55) -> SelfStateV1:
-    return SelfStateV1(
-        self_state_id="self-state-1",
-        generated_at=generated_at,
-        source_field_tick_id="tick-1",
-        source_field_generated_at=generated_at,
-        source_attention_frame_id="field-frame-1",
-        source_attention_generated_at=generated_at,
-        overall_condition="steady",
-        overall_intensity=0.5,
-        overall_confidence=overall_confidence,
-        trajectory_condition="improving",
-        dimension_trajectory={"coherence": 0.12, "uncertainty": -0.04},
-    )
+def _prediction_error_by_domain(**overrides: float) -> dict[str, float]:
+    base = {
+        "execution": 0.0001,
+        "transport": 0.0,
+        "biometrics": 0.0459,
+        "chat": 0.0,
+        "route": 0.0,
+    }
+    base.update(overrides)
+    return base
 
 
 class TestVoluntaryOverridePresent:
     def test_override_present_narrates_top_down_reason(self) -> None:
         override = _override()
         broadcast = _broadcast(override=override)
-        model = reduce_attention_self_model(broadcast, _field_frame(), _self_state(), now=NOW)
+        model = reduce_attention_self_model(broadcast, _field_frame(), now=NOW)
 
         assert model.attention_reason == "top_down_override"
         assert model.voluntary_override is not None
@@ -106,7 +101,7 @@ class TestVoluntaryOverridePresent:
 
     def test_override_absent_narrates_bottom_up_reason(self) -> None:
         broadcast = _broadcast(override=None)
-        model = reduce_attention_self_model(broadcast, _field_frame(), _self_state(), now=NOW)
+        model = reduce_attention_self_model(broadcast, _field_frame(), now=NOW)
 
         assert model.attention_reason == "bottom_up_salience"
         assert model.voluntary_override is None
@@ -117,7 +112,7 @@ class TestVoluntaryOverridePresent:
 class TestCadenceMismatch:
     def test_fresh_broadcast_is_not_stale(self) -> None:
         broadcast = _broadcast(generated_at=NOW - timedelta(seconds=5))
-        model = reduce_attention_self_model(broadcast, _field_frame(), None, now=NOW)
+        model = reduce_attention_self_model(broadcast, _field_frame(), now=NOW)
 
         assert model.broadcast_lane_stale is False
         assert model.broadcast_lane_age_sec == pytest.approx(5.0, abs=0.01)
@@ -126,7 +121,10 @@ class TestCadenceMismatch:
     def test_stale_broadcast_is_distinct_from_nothing_salient(self) -> None:
         stale_age = DEFAULT_BROADCAST_STALE_THRESHOLD_SEC + 30.0
         broadcast = _broadcast(generated_at=NOW - timedelta(seconds=stale_age))
-        model = reduce_attention_self_model(broadcast, _field_frame(), _self_state(), now=NOW)
+        model = reduce_attention_self_model(
+            broadcast, _field_frame(), now=NOW,
+            prediction_error_by_domain=_prediction_error_by_domain(),
+        )
 
         assert model.broadcast_lane_stale is True
         assert model.broadcast_lane_age_sec == pytest.approx(stale_age, abs=0.01)
@@ -144,7 +142,7 @@ class TestCadenceMismatch:
         # data for that moment -- must not silently reuse a snapshot from
         # later in time as if it applied retroactively.
         broadcast = _broadcast(generated_at=NOW + timedelta(seconds=10))
-        model = reduce_attention_self_model(broadcast, _field_frame(), None, now=NOW)
+        model = reduce_attention_self_model(broadcast, _field_frame(), now=NOW)
 
         assert model.broadcast_lane_present is False
         assert model.broadcast_lane_age_sec is None
@@ -154,26 +152,24 @@ class TestCadenceMismatch:
 
 class TestPartialData:
     def test_all_none_is_no_data_not_a_crash(self) -> None:
-        model = reduce_attention_self_model(None, None, None)
+        model = reduce_attention_self_model(None, None)
 
         assert model.attention_reason == "no_data"
         assert model.field_lane_present is False
         assert model.broadcast_lane_present is False
-        assert model.self_state_present is False
         assert model.voluntary_override is None
         assert model.reason_narrative == "No attention data available from either lane."
 
     def test_only_broadcast_present(self) -> None:
         broadcast = _broadcast(override=_override())
-        model = reduce_attention_self_model(broadcast, None, None, now=NOW)
+        model = reduce_attention_self_model(broadcast, None, now=NOW)
 
         assert model.field_lane_present is False
-        assert model.self_state_present is False
         assert model.attention_reason == "top_down_override"
-        assert model.predicted_shift is None  # no self_state -> honestly absent, not invented
+        assert model.predicted_shift is None  # no trend data -> honestly absent, not invented
 
     def test_only_field_frame_present(self) -> None:
-        model = reduce_attention_self_model(None, _field_frame(), None, now=NOW)
+        model = reduce_attention_self_model(None, _field_frame(), now=NOW)
 
         assert model.broadcast_lane_present is False
         assert model.field_lane_present is True
@@ -182,45 +178,154 @@ class TestPartialData:
             "mean(field_attention_frame.dominant_targets"
         )
 
-    def test_only_self_state_present(self) -> None:
-        model = reduce_attention_self_model(None, None, _self_state(), now=NOW)
+    def test_only_prediction_error_by_domain_present(self) -> None:
+        model = reduce_attention_self_model(
+            None, None, now=NOW,
+            prediction_error_by_domain=_prediction_error_by_domain(),
+        )
 
-        assert model.self_state_present is True
+        assert model.field_lane_present is False
         assert model.attention_reason == "field_salience_only"
-        assert model.confidence_basis == "self_state.overall_confidence (broadcast lane stale/absent)"
+        assert model.confidence_basis.startswith("1 - mean(prediction_error)")
+
+    def test_only_prediction_error_trend_present_is_not_no_data(self) -> None:
+        """Regression guard (found in code review): trend-only input used to
+        leave attention_reason == "no_data" (reason_narrative claiming "No
+        attention data available from either lane") while predicted_shift
+        was simultaneously populated with a real, substantive prediction --
+        a self-contradictory output CLAUDE.md's "no empty-shell cognition"
+        rule bans. Must now honestly reflect that real data is present."""
+        model = reduce_attention_self_model(
+            None, None, now=NOW,
+            prediction_error_trend_by_domain={"biometrics": 0.3},
+        )
+
+        assert model.attention_reason != "no_data"
         assert model.predicted_shift is not None
-        assert "coherence" in model.predicted_shift
+        assert "No attention data available" not in model.reason_narrative
+
+
+class TestPredictionErrorConfidence:
+    def test_low_stable_prediction_error_yields_high_confidence(self) -> None:
+        model = reduce_attention_self_model(
+            None, _field_frame(), now=NOW,
+            prediction_error_by_domain=_prediction_error_by_domain(),
+        )
+        # mean of {0.0001, 0.0, 0.0459, 0.0, 0.0} = 0.0092
+        assert model.confidence == pytest.approx(1.0 - 0.0092, abs=1e-4)
+        assert "5 domains" in model.confidence_basis
+        assert "biometrics" in model.confidence_basis
+
+    def test_several_domains_surprising_at_once_lowers_confidence(self) -> None:
+        calm = reduce_attention_self_model(
+            None, _field_frame(), now=NOW,
+            prediction_error_by_domain=_prediction_error_by_domain(),
+        )
+        surprised = reduce_attention_self_model(
+            None, _field_frame(), now=NOW,
+            prediction_error_by_domain=_prediction_error_by_domain(
+                execution=0.6, chat=0.5, route=0.4,
+            ),
+        )
+        assert surprised.confidence < calm.confidence
+
+    def test_confidence_never_goes_negative_at_extreme_error(self) -> None:
+        model = reduce_attention_self_model(
+            None, _field_frame(), now=NOW,
+            prediction_error_by_domain=_prediction_error_by_domain(
+                execution=5.0, transport=5.0, biometrics=5.0, chat=5.0, route=5.0,
+            ),
+        )
+        assert model.confidence == pytest.approx(0.0)
+
+    def test_empty_prediction_error_dict_falls_back_to_field_frame_confidence(self) -> None:
+        """An empty dict (falsy) must behave exactly like omitting the
+        argument -- no ZeroDivisionError from dividing by len({})."""
+        model = reduce_attention_self_model(
+            None, _field_frame(), now=NOW,
+            prediction_error_by_domain={},
+        )
+        assert model.confidence_basis.startswith("mean(field_attention_frame.dominant_targets")
+
+    def test_negative_input_does_not_push_confidence_above_one(self) -> None:
+        """Regression guard (found in code review): every real producer in
+        prediction_error.py only ever emits non-negative values, but this
+        function takes an arbitrary caller-supplied dict with no input-range
+        assertion -- a negative value must not silently produce
+        confidence > 1.0 (AttentionSelfModelV1.confidence's own declared
+        range, which Pydantic v2 does not re-check on plain attribute
+        assignment)."""
+        model = reduce_attention_self_model(
+            None, _field_frame(), now=NOW,
+            prediction_error_by_domain=_prediction_error_by_domain(biometrics=-0.5),
+        )
+        assert model.confidence <= 1.0
 
 
 class TestPredictedShift:
-    def test_uses_real_self_state_trajectory_fields_not_invented(self) -> None:
-        state = _self_state()
-        model = reduce_attention_self_model(None, None, state, now=NOW)
+    def test_uses_real_prediction_error_trend_not_invented(self) -> None:
+        model = reduce_attention_self_model(
+            None, None, now=NOW,
+            prediction_error_trend_by_domain={
+                "execution": 0.001, "biometrics": 0.18, "chat": -0.02,
+            },
+        )
 
         assert model.predicted_shift_basis == (
-            "self_state.trajectory_condition + self_state.dimension_trajectory"
+            "prediction_error_trend_by_domain (Active Inference, argmax by |trend|)"
         )
-        assert "trajectory=improving" in model.predicted_shift
+        assert "biometrics" in model.predicted_shift
+        assert "rising" in model.predicted_shift
 
-    def test_unknown_trajectory_yields_no_prediction(self) -> None:
-        state = _self_state()
-        state = state.model_copy(update={"trajectory_condition": "unknown", "dimension_trajectory": {}})
-        model = reduce_attention_self_model(None, None, state, now=NOW)
+    def test_falling_trend_is_named_as_falling(self) -> None:
+        model = reduce_attention_self_model(
+            None, None, now=NOW,
+            prediction_error_trend_by_domain={"route": -0.3, "execution": 0.01},
+        )
+
+        assert "route" in model.predicted_shift
+        assert "falling" in model.predicted_shift
+
+    def test_no_trend_data_yields_no_prediction(self) -> None:
+        model = reduce_attention_self_model(None, None, now=NOW)
 
         assert model.predicted_shift is None
         assert model.predicted_shift_basis == ""
 
+    def test_all_zero_trend_yields_no_prediction(self) -> None:
+        model = reduce_attention_self_model(
+            None, None, now=NOW,
+            prediction_error_trend_by_domain={"execution": 0.0, "chat": 0.0},
+        )
+
+        assert model.predicted_shift is None
+
+    def test_predicted_shift_computed_independent_of_attention_reason_branch(self) -> None:
+        """The old self_state-driven predicted_shift was computed
+        unconditionally, before the attention_reason branching -- the new
+        trend-based version must preserve that positioning: it should be set
+        even when a top_down_override wins the reason branch."""
+        broadcast = _broadcast(override=_override())
+        model = reduce_attention_self_model(
+            broadcast, _field_frame(), now=NOW,
+            prediction_error_trend_by_domain={"biometrics": 0.2},
+        )
+
+        assert model.attention_reason == "top_down_override"
+        assert model.predicted_shift is not None
+        assert "biometrics" in model.predicted_shift
+
 
 def test_reference_tick_defaults_to_field_frame_generated_at() -> None:
     field_frame = _field_frame(generated_at=NOW)
-    model = reduce_attention_self_model(None, field_frame, None)
+    model = reduce_attention_self_model(None, field_frame)
 
     assert model.generated_at == NOW
 
 
-def test_reference_tick_falls_back_to_self_state_when_no_field_frame() -> None:
-    state = _self_state(generated_at=NOW)
-    model = reduce_attention_self_model(None, None, state)
+def test_reference_tick_falls_back_to_broadcast_when_no_field_frame() -> None:
+    broadcast = _broadcast(generated_at=NOW)
+    model = reduce_attention_self_model(broadcast, None)
 
     assert model.generated_at == NOW
 
@@ -235,7 +340,6 @@ class TestHarnessClosureSignal:
         model = reduce_attention_self_model(
             None,
             _field_frame(),
-            None,
             now=NOW,
             harness_closure_signal={
                 "prediction_error": 0.42,
@@ -252,9 +356,9 @@ class TestHarnessClosureSignal:
     def test_harness_closure_signal_absent_is_byte_identical_to_default(self) -> None:
         """Regression guard: omitting harness_closure_signal (the default,
         every existing caller) must reproduce today's narrative exactly."""
-        baseline = reduce_attention_self_model(None, _field_frame(), None, now=NOW)
+        baseline = reduce_attention_self_model(None, _field_frame(), now=NOW)
         with_none = reduce_attention_self_model(
-            None, _field_frame(), None, now=NOW, harness_closure_signal=None
+            None, _field_frame(), now=NOW, harness_closure_signal=None
         )
 
         assert baseline.reason_narrative == with_none.reason_narrative
@@ -264,7 +368,6 @@ class TestHarnessClosureSignal:
         model = reduce_attention_self_model(
             None,
             _field_frame(),
-            None,
             now=NOW,
             harness_closure_signal={
                 "prediction_error": 0.0,
@@ -278,7 +381,6 @@ class TestHarnessClosureSignal:
         model = reduce_attention_self_model(
             None,
             _field_frame(),
-            None,
             now=NOW,
             harness_closure_signal={
                 "prediction_error": 0.75,
@@ -296,7 +398,6 @@ class TestHarnessClosureSignal:
         model = reduce_attention_self_model(
             broadcast,
             _field_frame(),
-            _self_state(),
             now=NOW,
             harness_closure_signal={
                 "prediction_error": 0.9,

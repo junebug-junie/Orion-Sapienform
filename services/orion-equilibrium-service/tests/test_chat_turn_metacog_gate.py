@@ -12,6 +12,7 @@ if str(ROOT) not in sys.path:
 from orion.schemas.telemetry.metacog_trigger import MetacogTriggerV1
 from app.chat_turn_metacog_gate import (
     ChatTurnCorrelator,
+    _capped_grounding_capsule_for_upstream,
     build_chat_turn_metacog_trigger,
     evaluate_chat_turn_gate_conditions,
     is_chat_turn_evidence_terminal,
@@ -345,6 +346,57 @@ def test_build_trigger_upstream_carries_full_evidence():
     assert trigger.upstream["surprise_level"] == 0.9
     assert trigger.upstream["timed_out"] is False
     assert trigger.recall_enabled is True
+
+
+# --- grounding_capsule digest-field truncation (code review, PR follow-up) --
+
+
+def test_capped_grounding_capsule_truncates_long_digest_fields():
+    long_digest = "x" * 1000
+    capsule = {
+        "identity_summary": ["a", "b"],
+        "continuity_digest": long_digest,
+        "belief_digest": long_digest,
+        "memory_digest": long_digest,
+    }
+    capped = _capped_grounding_capsule_for_upstream(capsule)
+    assert len(capped["continuity_digest"]) == 300 + len("...(truncated)")
+    assert capped["continuity_digest"].endswith("...(truncated)")
+    assert len(capped["belief_digest"]) == 300 + len("...(truncated)")
+    assert len(capped["memory_digest"]) == 300 + len("...(truncated)")
+    assert capped["identity_summary"] == ["a", "b"]
+
+
+def test_capped_grounding_capsule_leaves_short_digests_untouched():
+    capsule = {"continuity_digest": "short", "belief_digest": None, "memory_digest": "also short"}
+    capped = _capped_grounding_capsule_for_upstream(capsule)
+    assert capped["continuity_digest"] == "short"
+    assert capped["belief_digest"] is None
+    assert capped["memory_digest"] == "also short"
+
+
+def test_capped_grounding_capsule_handles_none_and_non_dict():
+    assert _capped_grounding_capsule_for_upstream(None) is None
+    assert _capped_grounding_capsule_for_upstream("not a dict") == "not a dict"
+
+
+def test_build_trigger_caps_grounding_capsule_digest_fields():
+    long_digest = "y" * 1000
+    trigger = build_chat_turn_metacog_trigger(
+        correlation_id="corr-1",
+        thought_event={
+            **_thought_event(disposition="defer"),
+            "grounding_capsule": {"memory_digest": long_digest},
+        },
+        run_artifact=None,
+        timed_out=False,
+        zen_state="zen",
+        pressure=0.1,
+        recall_enabled=False,
+        surprise_threshold=0.7,
+    )
+    assert trigger is not None
+    assert len(trigger.upstream["grounding_capsule"]["memory_digest"]) == 300 + len("...(truncated)")
 
 
 def test_build_trigger_on_timeout_has_null_run_artifact_fields():

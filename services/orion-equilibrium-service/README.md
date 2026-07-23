@@ -93,13 +93,13 @@ Unlike the other triggers, this one reuses two already-registered schemas instea
 - `stance_react_timeout` -- the *earlier* `ThoughtClient.react()` RPC itself never returned to Hub (`orion/hub/turn_orchestrator.py`'s `if thought is None:` branch); Hub never calls the harness governor on this path either.
 - `thought_event.disposition in ("defer", "refuse")` -- Hub short-circuits before calling the harness governor.
 
-Added 2026-07-22, ships **disabled by default** -- new trigger, not yet live-verified against real `orion_metacog` rows. See acceptance checks in `docs/superpowers/design/2026-07-18-collapse-mirror-metacog-redesign.md`.
+Added 2026-07-22 (PR #1291), shipped disabled by default; **enabled 2026-07-23**. Live-data verification (real `orion_metacog` rows, non-degenerate `upstream`) is the acceptance check named in `docs/superpowers/design/2026-07-18-collapse-mirror-metacog-redesign.md` and still needs to happen post-deploy -- watch for it, don't assume it's done just because the flag is on.
 
 **Operational note**: unlike the other trigger kinds here (rare/periodic), `chat_turn` is designed to fire on essentially every remarkable chat turn. `_publish_metacog_trigger`'s cooldown (`EQUILIBRIUM_METACOG_COOLDOWN_SEC`, default 30s) is a single global window shared across *all* trigger kinds and silently drops (logs only, does not queue) anything that fires during it -- two remarkable turns close together will now hit that far more often than any other trigger here has. Worth watching once this flag is live; not addressed by this trigger's own code.
 
 | Env | Default | Purpose |
 |-----|---------|---------|
-| `EQUILIBRIUM_METACOG_CHAT_TURN_TRIGGER_ENABLE` | `false` | Master gate for the chat_turn trigger |
+| `EQUILIBRIUM_METACOG_CHAT_TURN_TRIGGER_ENABLE` | `true` | Master gate for the chat_turn trigger |
 | `EQUILIBRIUM_METACOG_CHAT_TURN_CORRELATOR_TTL_SEC` | `600` | Correlator entry TTL (leak backstop for non-terminal evidence) |
 | `EQUILIBRIUM_METACOG_CHAT_TURN_SURPRISE_THRESHOLD` | `0.7` | Minimum `substrate_appraisal.surprise_level` to fire |
 | `CHANNEL_THOUGHT_ARTIFACT` | `orion:thought:artifact` | Source channel (wildcard consumers) |

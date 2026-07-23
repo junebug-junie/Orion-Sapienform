@@ -188,6 +188,7 @@ _METACOG_DRAFT_CTX_LEN_KEYS: tuple[str, ...] = (
     "turn_effect_explanations_json",
     "metacog_biometrics_cue",
     "metacog_substrate_cue",
+    "trigger_upstream_json",
 )
 
 _METACOG_ENRICH_CTX_LEN_KEYS: tuple[str, ...] = _METACOG_DRAFT_CTX_LEN_KEYS + ("collapse_json",)
@@ -1354,6 +1355,22 @@ def _maybe_trim_metacog_prompt_for_worker_ctx(
         if len(prompt) <= budget:
             return prompt, None, trim_applied
 
+    trigger_upstream = str(ctx.get("trigger_upstream_json") or "")
+    if trigger_upstream.strip() and trigger_upstream.strip() != "{}":
+        logger.warning(
+            "metacog_%s_ctx_trim_trigger_upstream corr_id=%s prompt_chars=%s budget=%s trigger_upstream_chars=%s",
+            phase,
+            correlation_id,
+            len(prompt),
+            budget,
+            len(trigger_upstream),
+        )
+        ctx["trigger_upstream_json"] = "{}"
+        trim_applied.append("trigger_upstream_json")
+        prompt = _render_prompt(template_str, ctx)
+        if len(prompt) <= budget:
+            return prompt, None, trim_applied
+
     spark = str(ctx.get("spark_state_json") or "")
     if spark.strip() and spark.strip() != "{}":
         logger.warning(
@@ -1533,6 +1550,7 @@ def _render_prompt(template_str: str, ctx: Dict[str, Any]) -> str:
         "collapse_entry": {"event_id": "unknown_missing_draft"},
         "collapse_json": "{}",
         "trigger": {"trigger_kind": "unknown", "reason": "unknown", "pressure": 0.0, "zen_state": "unknown"},
+        "trigger_upstream_json": "{}",
         "context_summary": "Context missing.",
         "spark_state_json": "{}",
         "spark_embodiment_narrative": "",
@@ -4055,6 +4073,15 @@ async def call_step_services(
 
                 ctx["trigger"] = trigger.model_dump(mode="json")
                 ctx["trigger_kind"] = trigger.trigger_kind
+                # trigger.upstream carries the real per-trigger-kind evidence (e.g.
+                # chat_turn's fired_conditions/alignment_notes/surprise_level,
+                # telemetry_anomaly's recon_loss/top_channels, relational's
+                # evidence/behavior_applied) -- previously built into every gate but
+                # never rendered into either prompt, only trigger.reason's compact
+                # string reached the LLM. See docs/superpowers/design/
+                # 2026-07-18-collapse-mirror-metacog-redesign.md's chat_turn spec,
+                # question 5.
+                ctx["trigger_upstream_json"] = json.dumps(trigger.upstream or {}, indent=2, default=str)
                 ctx["context_summary"] = summary_text
                 ctx["metacog_biometrics_cue"] = _metacog_biometrics_cue(ctx, phase="draft")
                 ctx["metacog_biometrics_cue_enrich"] = _metacog_biometrics_cue(ctx, phase="enrich")

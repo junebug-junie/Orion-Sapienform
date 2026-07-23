@@ -18,6 +18,9 @@ DRAFT ENTRY (JSON) (authoritative baseline):
 CONTEXT (evidence cues only):
 {{ context_summary }}
 
+TRIGGER EVIDENCE (JSON; the specific fields that made this trigger fire; evidence cues only; do NOT paste into output):
+{{ trigger_upstream_json }}
+
 SPARK STATE SNAPSHOT (JSON; evidence cues only; do NOT paste into output):
 {{ spark_state_json }}
 
@@ -90,7 +93,7 @@ TAGS
 - Do not exceed 6 tags.
 
 ANTI-LOG CONSTRAINTS
-- Do NOT paste spark_state_json.
+- Do NOT paste spark_state_json or trigger_upstream_json.
 - Keep what_changed.evidence 2–5 short cues (<=120 chars).
 - Keep state_snapshot.telemetry hint-level only.
 

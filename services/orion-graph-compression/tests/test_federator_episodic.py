@@ -3,7 +3,7 @@ import pytest
 
 
 def test_episodic_federator_builds_sparql_for_all_graphs():
-    """SPARQL query must reference all 9 episodic named graphs."""
+    """SPARQL query must reference every episodic named graph currently in scope."""
     with patch("httpx.Client") as mock_client_cls:
         from app.federators.episodic import EpisodicFederator, EPISODIC_GRAPHS
 
@@ -31,6 +31,15 @@ def test_episodic_federator_uses_non_orion_autonomy_graphs():
 
     assert "http://conjourney.net/graph/autonomy/identity" in EPISODIC_GRAPHS
     assert "http://conjourney.net/graph/orion/autonomy/identity" not in EPISODIC_GRAPHS
+
+
+def test_episodic_federator_no_longer_queries_chat_social():
+    """Regression for the 2026-07-23 retirement: orion:chat:social was
+    removed (live-verified pure redundancy with Postgres social_room_turns,
+    zero other readers) -- must not silently reappear in the graph list."""
+    from app.federators.episodic import EPISODIC_GRAPHS
+
+    assert "http://conjourney.net/graph/orion/chat/social" not in EPISODIC_GRAPHS
 
 
 def test_episodic_federator_drops_literal_objects():

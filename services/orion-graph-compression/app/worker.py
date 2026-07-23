@@ -118,9 +118,14 @@ class CompressionWorker:
             if s.graph_compression_episodic_falkor_enabled:
                 # Additive, not a swap: FalkorEpisodicFederator only covers
                 # the orion_recall (ChatTurn/Tag/Entity) slice of what the
-                # SPARQL federator reads (collapse/cognition/metacog/social
-                # have no Falkor equivalent yet) -- union so verifying this
-                # live can never regress existing clustering signal.
+                # SPARQL federator reads (collapse/cognition/metacog have no
+                # Falkor equivalent at all). orion:chat:social was retired
+                # from the SPARQL side entirely 2026-07-23 -- not "pending
+                # Falkor coverage," just gone (live-verified pure redundancy
+                # with Postgres social_room_turns); see
+                # episodic_falkor.py's docstring for the live coverage
+                # numbers. Union so verifying the rest of this live can
+                # never regress existing clustering signal.
                 triples = list(set(triples) | set(FalkorEpisodicFederator().fetch()))
             kind = "community"
         elif scope == "substrate":

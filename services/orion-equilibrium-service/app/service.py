@@ -332,8 +332,8 @@ class EquilibriumService(BaseChassis):
         # EQUILIBRIUM_METACOG_COOLDOWN_SEC) -- sharing a single cooldown
         # timestamp would let a burst of chat_turn fires silently starve
         # those other trigger kinds' own fires, not just drop chat_turn's own
-        # excess. See docs/superpowers/design/2026-07-18-collapse-mirror-
-        # metacog-redesign.md's chat_turn spec "Operational note".
+        # excess. See this service's README.md, "chat_turn metacog trigger"
+        # section, "Operational note".
         if trigger.trigger_kind == "chat_turn":
             cooldown_sec = settings.metacog_chat_turn_cooldown_sec
             last_ts = self._last_chat_turn_trigger_ts

@@ -1,6 +1,9 @@
-# Structured index of FieldStateV1's 29 raw digester channels (23 NODE_CHANNELS
+# Structured index of FieldStateV1's 34 raw digester channels (28 NODE_CHANNELS
 # + 8 CAPABILITY_CHANNELS in services/orion-field-digester/app/tensor/channels.py,
-# overlapping on transport_pressure/contract_pressure).
+# overlapping on transport_pressure/contract_pressure). 28 = 23 original + 5
+# FCC-motor channels added 2026-07-23 (harness_step_load,
+# tool_failure_streak_pressure, avg_step_chars_pressure, compliance_deficit,
+# turn_incompletion).
 #
 # This is the machine-readable companion to
 # services/orion-field-digester/README.md's "Field channel glossary" section,
@@ -106,6 +109,31 @@ channels:
     category: task_execution
     meaning: "1 - confidence that an execution's output actually reached its destination."
     self_state_dimension: introspection_pressure
+
+  - channel: harness_step_load
+    level: [node]
+    category: task_execution
+    meaning: "FCC-motor-only step-load proxy for one unified Hub turn, split out of execution_load (which blends cortex-exec + harness-governor step counts and hard-caps at 8) -- a compute/thermal/power cost proxy for how much processing one turn actually cost on the expensive GPU node running the motor."
+
+  - channel: tool_failure_streak_pressure
+    level: [node]
+    category: task_execution
+    meaning: "Is the FCC motor stuck repeating the same tool failure (e.g. a denied permission) instead of adapting, for one turn."
+
+  - channel: avg_step_chars_pressure
+    level: [node]
+    category: task_execution
+    meaning: "Per-step verbosity of the FCC motor's tool output for one turn."
+
+  - channel: compliance_deficit
+    level: [node]
+    category: task_execution
+    meaning: "Did the FCC motor actually produce a compliant, delivered turn -- HarnessRunV1.compliance_verdict rank (completed/partial/failed/refused), distinct from failure_pressure since a turn can resolve partial with zero individual tool-step failures."
+
+  - channel: turn_incompletion
+    level: [node]
+    category: task_execution
+    meaning: "Did Hub fail to get a usable result back from the harness-governor RPC for this turn at all -- the one unified-turn failure mode where no governor-side grammar event exists. A distinct, worse severity than compliance_deficit's worst rank."
 
   - channel: repair_pressure
     level: [node]

@@ -16,6 +16,7 @@ from orion.schemas.registry import resolve as resolve_schema_id
 from .bus_schemas import BaseEnvelope
 from .codec import OrionCodec
 from .enforce import enforcer
+from .rpc_health import RpcHealthAggregator, RpcHealthSnapshot
 from .velocity_keys import DEFAULT_BUCKET_TTL_SEC, velocity_key
 
 logger = logging.getLogger("orion.bus.async")
@@ -45,6 +46,12 @@ class OrionBusAsync:
         self._rpc_lock = asyncio.Lock()
         self._rpc_subscribed: set[str] = set()
         self._pending_rpc: dict[tuple[str, str], asyncio.Future] = {}
+        # docs/superpowers/specs/2026-07-23-transport-domain-rpc-health-redesign.md
+        # step 2: in-process only, not shared across fork() children, same as every
+        # other per-instance RPC state above. No periodic self-publish wired yet --
+        # see rpc_health.py's own module docstring for why that's a separate,
+        # deliberately deferred decision.
+        self._rpc_health = RpcHealthAggregator()
         if enforce_catalog is None:
             enforce_catalog = os.getenv("ORION_BUS_ENFORCE_CATALOG", "false").lower() == "true"
         self.enforce_catalog = bool(enforce_catalog)
@@ -101,6 +108,13 @@ class OrionBusAsync:
             await child.connect()
             child.start_rpc_worker()
         return child
+
+    def get_rpc_health_snapshot(self) -> RpcHealthSnapshot:
+        """Drain this instance's accumulated real rpc_request() outcomes since the
+        last call (or since construction). Read-only w.r.t. the bus itself -- no I/O,
+        no publish. No automatic periodic caller exists yet; see rpc_health.py's
+        module docstring for why that's a separate, deliberately deferred decision."""
+        return self._rpc_health.snapshot_and_reset()
 
     def start_rpc_worker(self) -> None:
         if not self.enabled:
@@ -401,22 +415,26 @@ class OrionBusAsync:
                 # benchmark is scoped to the design spec's next patch step (the in-memory
                 # aggregator), not this one, since that step is where a second per-call
                 # code path actually gets added.
+                success_elapsed_ms = (perf_counter() - started) * 1000.0
                 logger.info(
                     "[rpc] reply received corr_id=%s reply_channel=%s path=worker elapsed_ms=%.1f",
                     corr,
                     reply_channel,
-                    (perf_counter() - started) * 1000.0,
+                    success_elapsed_ms,
                 )
+                self._rpc_health.record_success(request_channel=request_channel, latency_ms=success_elapsed_ms)
                 return result
             except asyncio.TimeoutError:
+                timeout_elapsed_ms = (perf_counter() - started) * 1000.0
                 logger.error(
                     "[rpc] timeout waiting for reply corr_id=%s request_channel=%s reply_channel=%s timeout_sec=%.2f elapsed_ms=%.1f",
                     corr,
                     request_channel,
                     reply_channel,
                     timeout_sec,
-                    (perf_counter() - started) * 1000.0,
+                    timeout_elapsed_ms,
                 )
+                self._rpc_health.record_timeout(request_channel=request_channel, elapsed_ms=timeout_elapsed_ms)
                 raise TimeoutError(f"RPC timeout waiting on {reply_channel}")
             finally:
                 self._pending_rpc.pop(key, None)
@@ -441,11 +459,15 @@ class OrionBusAsync:
 
                 async def _wait_one():
                     async for msg in self.iter_messages(pubsub):
+                        success_elapsed_ms = (perf_counter() - started) * 1000.0
                         logger.info(
                             "[rpc] reply received corr_id=%s reply_channel=%s path=inline elapsed_ms=%.1f",
                             corr,
                             reply_channel,
-                            (perf_counter() - started) * 1000.0,
+                            success_elapsed_ms,
+                        )
+                        self._rpc_health.record_success(
+                            request_channel=request_channel, latency_ms=success_elapsed_ms
                         )
                         return msg
 
@@ -458,14 +480,16 @@ class OrionBusAsync:
                 msg = await asyncio.wait_for(_wait_one(), timeout=timeout_sec)
                 return msg
             except asyncio.TimeoutError:
+                timeout_elapsed_ms = (perf_counter() - started) * 1000.0
                 logger.error(
                     "[rpc] timeout waiting for reply corr_id=%s request_channel=%s reply_channel=%s timeout_sec=%.2f elapsed_ms=%.1f",
                     corr,
                     request_channel,
                     reply_channel,
                     timeout_sec,
-                    (perf_counter() - started) * 1000.0,
+                    timeout_elapsed_ms,
                 )
+                self._rpc_health.record_timeout(request_channel=request_channel, elapsed_ms=timeout_elapsed_ms)
                 raise TimeoutError(f"RPC timeout waiting on {reply_channel}")
 
     async def rpc_legacy_dict(

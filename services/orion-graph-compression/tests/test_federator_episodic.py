@@ -42,6 +42,16 @@ def test_episodic_federator_no_longer_queries_chat_social():
     assert "http://conjourney.net/graph/orion/chat/social" not in EPISODIC_GRAPHS
 
 
+def test_episodic_federator_no_longer_queries_collapse():
+    """Regression for the 2026-07-23 retirement: orion:collapse was removed
+    (live-verified exactly 0 triples ever -- a real producer's write path
+    that simply never fired) -- must not silently reappear in the graph
+    list."""
+    from app.federators.episodic import EPISODIC_GRAPHS
+
+    assert "http://conjourney.net/graph/orion/collapse" not in EPISODIC_GRAPHS
+
+
 def test_episodic_federator_drops_literal_objects():
     """Literal objects are not graph nodes and must be filtered out."""
     sparql_response = {

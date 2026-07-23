@@ -54,6 +54,25 @@ def test_render_report_labels_true_noise_case_distinctly() -> None:
     assert "real, measured" not in conclusion_section
 
 
+def test_render_report_does_not_double_sign_negative_overhead() -> None:
+    """The marginal-overhead bullet used to hardcode a literal '+' prefix, which
+    rendered a negative delta as '+-10.0ns/call' -- must show a single, correct sign."""
+    baseline = _result("baseline", iterations=200_000, total_sec=200_000 * 200e-9)
+    info_enabled = _result("info", iterations=200_000, total_sec=200_000 * 190e-9)
+    info_disabled = _result("warn", iterations=200_000, total_sec=200_000 * 195e-9)
+    report = mod.render_report(baseline, info_enabled, info_disabled)
+    assert "+-" not in report
+    assert "-10.0ns/call" in report
+
+
+def test_render_report_exact_zero_overhead_treated_as_noise_floor() -> None:
+    baseline = _result("baseline", iterations=200_000, total_sec=200_000 * 200e-9)
+    info_enabled = _result("info", iterations=200_000, total_sec=200_000 * 200e-9)  # identical -> exactly 0
+    info_disabled = _result("warn", iterations=200_000, total_sec=200_000 * 195e-9)
+    report = mod.render_report(baseline, info_enabled, info_disabled)
+    assert "noise floor" in report
+
+
 def test_render_report_includes_both_real_reference_latencies() -> None:
     baseline = _result("baseline", iterations=1000, total_sec=1000 * 85e-9)
     info_enabled = _result("info", iterations=1000, total_sec=1000 * 6000e-9)

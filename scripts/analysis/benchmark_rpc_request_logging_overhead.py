@@ -47,8 +47,13 @@ from typing import Optional
 # Real numbers from this session's live measure_rpc_health_baseline.py runs
 # (docs/superpowers/specs/2026-07-23-transport-domain-rpc-health-redesign.md), not
 # assumed defaults.
+# 72.9ms confirmed still on disk in /tmp/rpc-health-baseline/report.md at the time this
+# was written. 1500.0 is a round number close to (not literally equal to) the lower of
+# two observed p50s across two separate live runs (1492.1ms and 3344.5ms) -- picked for
+# readability, not claimed as an exact minimum; either real p50 changes the reported
+# percentage by <0.4x, immaterial to the negligibility conclusion either way.
 REAL_FASTEST_OBSERVED_CALL_MS = 72.9
-REAL_P50_SUCCESS_LATENCY_MS = 1500.0  # conservative low end of the two observed p50s (1492.1/3344.5)
+REAL_P50_SUCCESS_LATENCY_MS = 1500.0
 
 DEFAULT_ITERATIONS = 200_000
 
@@ -64,22 +69,40 @@ class BenchmarkResult:
         return (self.total_sec / self.iterations) * 1e9
 
 
-def _null_logger(level: int) -> logging.Logger:
-    """A real logging.Logger, real formatting machinery, writing to a NullHandler --
-    exercises the actual cost path (level check, %-style lazy formatting, handler
-    dispatch) without any real I/O skewing the measurement with disk/terminal cost."""
+def _real_logger(level: int) -> logging.Logger:
+    """A real logging.Logger with a real StreamHandler+Formatter writing to an
+    in-memory buffer. Deliberately NOT a logging.NullHandler: confirmed empirically
+    that NullHandler.handle() is a no-op stub that never calls format()/emit(), so it
+    skips the real %-interpolation and formatting cost a production handler (writing
+    to stdout, captured by Docker's log driver) actually pays -- using it here would
+    underestimate real overhead by ~2.4x (measured: ~5810ns/call via NullHandler vs.
+    ~13800ns/call via a real StreamHandler+Formatter, same iteration count). The
+    in-memory buffer still avoids real disk/terminal I/O skewing the measurement, but
+    the formatting/dispatch path itself is real."""
+    import io
+
     logger = logging.getLogger(f"benchmark.rpc.overhead.{uuid.uuid4().hex[:8]}")
     logger.setLevel(level)
-    logger.addHandler(logging.NullHandler())
+    handler = logging.StreamHandler(io.StringIO())
+    handler.setFormatter(logging.Formatter("%(levelname)s:%(name)s:%(message)s"))
+    logger.addHandler(handler)
     logger.propagate = False
     return logger
 
 
 def run_baseline(iterations: int) -> BenchmarkResult:
-    """No logging call at all -- the pre-PR#1290 shape of this code path's success case."""
+    """No logging call at all. Note this is a *conservative* baseline, not an exact
+    replica of the pre-PR#1290 code: per `orion/core/bus/async_service.py:356-376`'s own
+    comment, the old worker-path success branch made zero perf_counter() calls at this
+    point (it just returned `fut`'s result silently) -- this baseline still spends one
+    perf_counter() call/iteration for loop-shape parity with run_with_log_call(), which
+    means the reported overhead below is a slight *underestimate* of PR #1290's true
+    total marginal cost (by one perf_counter() call, ~1-2% of the reported delta) --
+    doesn't change the negligibility conclusion, but stated plainly rather than implying
+    an exact pre/post match."""
     started = time.monotonic()
     for _ in range(iterations):
-        _ = time.perf_counter()  # the real code still calls this once per branch either way
+        _ = time.perf_counter()
     elapsed = time.monotonic() - started
     return BenchmarkResult(label="baseline (no log call)", iterations=iterations, total_sec=elapsed)
 
@@ -127,8 +150,8 @@ def render_report(baseline: BenchmarkResult, info_enabled: BenchmarkResult, info
         "",
         "## Marginal overhead of the new log line",
         "",
-        f"- Logger at INFO (real path): +{overhead_enabled_ns:.1f}ns/call (+{overhead_enabled_ms:.6f}ms/call)",
-        f"- Logger at WARNING (early-exit): +{overhead_disabled_ns:.1f}ns/call (+{overhead_disabled_ms:.6f}ms/call)",
+        f"- Logger at INFO (real path): {overhead_enabled_ns:+.1f}ns/call ({overhead_enabled_ms:+.6f}ms/call)",
+        f"- Logger at WARNING (early-exit): {overhead_disabled_ns:+.1f}ns/call ({overhead_disabled_ms:+.6f}ms/call)",
         "",
         "## Overhead as a fraction of real, measured RPC call latency",
         "",
@@ -144,12 +167,15 @@ def render_report(baseline: BenchmarkResult, info_enabled: BenchmarkResult, info
         "",
     ]
 
-    # `overhead_enabled_ns < 0` is a distinct case from "small but real and positive" --
+    # `overhead_enabled_ns <= 0` is a distinct case from "small but real and positive" --
     # a negative reading means the microbenchmark's own run-to-run noise exceeded the
-    # true cost (plausible for a call this cheap), not that the real overhead is exactly
-    # zero. Report each honestly rather than collapsing "measurement noise" and "real but
-    # tiny" into the same "negligible" label.
-    is_noise_level = overhead_enabled_ns < 0
+    # true cost (plausible for a call this cheap); an exact 0.0 is indistinguishable
+    # from noise by this method too (wall-clock float deltas essentially never land on
+    # literal zero by real measurement, so a 0.0 reading is itself a noise-floor signal,
+    # not a meaningful "exactly zero cost" finding). Neither is "real, measured, just
+    # tiny" -- report each honestly rather than collapsing "at or below noise floor" and
+    # "real but tiny" into the same "negligible" label.
+    is_noise_level = overhead_enabled_ns <= 0
     if is_noise_level:
         lines.append(
             "Note: measured overhead at INFO came out negative (within run-to-run "
@@ -182,9 +208,9 @@ def render_report(baseline: BenchmarkResult, info_enabled: BenchmarkResult, info
 
 def run(iterations: int) -> int:
     baseline = run_baseline(iterations)
-    info_logger = _null_logger(logging.INFO)
+    info_logger = _real_logger(logging.INFO)
     info_enabled = run_with_log_call(iterations, info_logger, "INFO")
-    warn_logger = _null_logger(logging.WARNING)
+    warn_logger = _real_logger(logging.WARNING)
     info_disabled = run_with_log_call(iterations, warn_logger, "WARNING")
 
     report = render_report(baseline, info_enabled, info_disabled)

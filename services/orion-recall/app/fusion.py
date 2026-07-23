@@ -28,6 +28,12 @@ DEFAULT_BACKEND_WEIGHTS = {
     # absence would otherwise produce.
     "falkor_chat": 0.4,
     "rdf": 0.3,
+    # Same content as "rdf" on a different backend (RECALL_FALKOR_NEIGHBORHOOD_IN_CHAT
+    # swaps one in for the other, never both at once) -- same weight, not the
+    # generic 0.5 fallback this dict's absence would otherwise produce (that
+    # gap was live-caught in review: a "falkor_neighborhood" candidate would
+    # have scored 67% higher than an equivalent "rdf" one for no real reason).
+    "falkor_neighborhood": 0.3,
     "cards": 0.0,
 }
 OVERLAP_WEIGHT = 0.15
@@ -718,6 +724,14 @@ _BELIEF_SOURCE_ORDER = {
     # rdf_chat's, which is pre-existing dead code below, not introduced
     # here).
     "falkor_chat": 4,
+    # falkor_neighborhood is "rdf"'s (rank 3) direct swap-target, not
+    # rdf_chat's -- same rank as "rdf", not "falkor_chat"'s 4. Needs its own
+    # entry for the same reason falkor_chat does: "falkor_neighborhood" does
+    # not start with "rdf", so without this it would fall through to the
+    # dict's own 99 default instead of inheriting rdf's rank (live-caught in
+    # review: confirmed _belief_source_rank('falkor_neighborhood') returned
+    # 99, sorting dead last in PCR belief digests once flipped on).
+    "falkor_neighborhood": 3,
     "graphiti": 6,
 }
 

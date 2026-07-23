@@ -37,6 +37,7 @@ try:
         fetch_rdf_chatturn_exact_matches,
     )
     from .storage.falkor_chat_adapter import fetch_falkor_chatturn_fragments
+    from .storage.falkor_neighborhood_adapter import fetch_falkor_neighborhood_fragments
     from .storage.falkor_entity_relatedness import (
         fetch_related_entities,
         fetch_entity_matches_for_turns,
@@ -69,6 +70,7 @@ except ImportError as _e:  # pragma: no cover - fallback for runtime pathing
             fetch_rdf_chatturn_exact_matches,
         )
         from app.storage.falkor_chat_adapter import fetch_falkor_chatturn_fragments  # type: ignore
+        from app.storage.falkor_neighborhood_adapter import fetch_falkor_neighborhood_fragments  # type: ignore
         from app.storage.falkor_entity_relatedness import (  # type: ignore
             fetch_related_entities,
             fetch_entity_matches_for_turns,
@@ -1083,6 +1085,35 @@ async def _query_backends(
     falkor_chat_enabled = bool(settings.RECALL_FALKOR_IN_CHAT) and bool(
         profile.get("enable_falkor_chat", True)
     )
+    # Last live Fuseki read path in this service (verified live, 2026-07-22
+    # -- see storage/falkor_neighborhood_adapter.py's docstring). Same
+    # swap-not-additive convention as falkor_chat_enabled above -- and for
+    # the same reason, deliberately NOT gated on rdf_enabled/RECALL_RDF_
+    # ENDPOINT_URL: the whole point of this flag is to let Fuseki's endpoint
+    # be removed from config entirely without silently killing this backend
+    # too (review-caught: nesting it inside `if rdf_enabled:` made the swap
+    # permanently inert the moment RECALL_RDF_ENDPOINT_URL was unset, which
+    # is exactly the end-state this migration is working toward). Still
+    # respects rdf_top_k>0 as the per-profile "wants graph-neighborhood
+    # candidates at all" signal -- unlike falkor_chat, this isn't a
+    # standalone concept from "rdf", it's a direct swap for that exact knob.
+    falkor_neighborhood_enabled = (
+        bool(settings.RECALL_FALKOR_NEIGHBORHOOD_IN_CHAT)
+        and bool(profile.get("enable_falkor_neighborhood", True))
+        and rdf_top_k > 0
+    )
+    if falkor_neighborhood_enabled:
+        try:
+            falkor_neighborhood = await fetch_falkor_neighborhood_fragments(
+                query_text=fragment,
+                max_items=rdf_top_k,
+            )
+        except Exception as exc:
+            logger.debug(f"falkor neighborhood fetch skipped: {exc}")
+            falkor_neighborhood = []
+        backend_counts["falkor_neighborhood"] = len(falkor_neighborhood)
+        candidates.extend(falkor_neighborhood)
+
     if falkor_chat_enabled:
         # Swap, not additive: this replaces the RDF chatturn fetch below,
         # not a merge -- running both would double up the same turns in
@@ -1116,13 +1147,15 @@ async def _query_backends(
                 backend_counts["rdf_chat"] = len(rdf_chat)
                 candidates.extend(rdf_chat)
 
-            rdf = fetch_rdf_fragments(
-                query_text=fragment,
-                max_items=rdf_top_k,
-            )
-
-            backend_counts["rdf"] = len(rdf)
-            candidates.extend(rdf)
+            if not falkor_neighborhood_enabled:
+                # Skipped when Falkor already covered this above (swap, not
+                # additive -- see the falkor_neighborhood_enabled block).
+                rdf = fetch_rdf_fragments(
+                    query_text=fragment,
+                    max_items=rdf_top_k,
+                )
+                backend_counts["rdf"] = len(rdf)
+                candidates.extend(rdf)
         except Exception as exc:
             logger.debug(f"rdf backend skipped: {exc}")
 

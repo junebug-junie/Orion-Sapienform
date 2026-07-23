@@ -27,6 +27,11 @@ def test_falkor_chat_used_instead_of_rdf_chat_when_flag_enabled():
          patch("app.worker.settings") as mock_settings:
         mock_settings.RECALL_RDF_ENDPOINT_URL = "http://fuseki/query"
         mock_settings.RECALL_FALKOR_IN_CHAT = True
+        # bare MagicMock: unset attrs are truthy, which would silently
+        # enable the neighborhood swap too and route through the real
+        # (unmocked) Falkor adapter instead of the mocked rdf/falkor_chat
+        # fetches this test is actually exercising.
+        mock_settings.RECALL_FALKOR_NEIGHBORHOOD_IN_CHAT = False
 
         from app.worker import _query_backends
 
@@ -57,6 +62,7 @@ def test_rdf_chat_used_when_falkor_flag_disabled():
          patch("app.worker.settings") as mock_settings:
         mock_settings.RECALL_RDF_ENDPOINT_URL = "http://fuseki/query"
         mock_settings.RECALL_FALKOR_IN_CHAT = False
+        mock_settings.RECALL_FALKOR_NEIGHBORHOOD_IN_CHAT = False
 
         from app.worker import _query_backends
 
@@ -86,6 +92,11 @@ def test_falkor_chat_runs_independent_of_rdf_enabled():
          patch("app.worker.settings") as mock_settings:
         mock_settings.RECALL_RDF_ENDPOINT_URL = None  # RDF fully off
         mock_settings.RECALL_FALKOR_IN_CHAT = True
+        # bare MagicMock: unset attrs are truthy, which would silently
+        # enable the neighborhood swap too and route through the real
+        # (unmocked) Falkor adapter instead of the mocked rdf/falkor_chat
+        # fetches this test is actually exercising.
+        mock_settings.RECALL_FALKOR_NEIGHBORHOOD_IN_CHAT = False
 
         from app.worker import _query_backends
 
@@ -116,6 +127,11 @@ def test_falkor_chat_respects_pcr_intent_suppression():
          patch("app.worker.settings") as mock_settings:
         mock_settings.RECALL_RDF_ENDPOINT_URL = None
         mock_settings.RECALL_FALKOR_IN_CHAT = True
+        # bare MagicMock: unset attrs are truthy, which would silently
+        # enable the neighborhood swap too and route through the real
+        # (unmocked) Falkor adapter instead of the mocked rdf/falkor_chat
+        # fetches this test is actually exercising.
+        mock_settings.RECALL_FALKOR_NEIGHBORHOOD_IN_CHAT = False
 
         from app.pcr_collectors import apply_collector_plan, collectors_for_intent
         from app.worker import _query_backends
@@ -146,6 +162,11 @@ def test_falkor_chat_failure_degrades_to_empty_not_raise():
          patch("app.worker.settings") as mock_settings:
         mock_settings.RECALL_RDF_ENDPOINT_URL = None
         mock_settings.RECALL_FALKOR_IN_CHAT = True
+        # bare MagicMock: unset attrs are truthy, which would silently
+        # enable the neighborhood swap too and route through the real
+        # (unmocked) Falkor adapter instead of the mocked rdf/falkor_chat
+        # fetches this test is actually exercising.
+        mock_settings.RECALL_FALKOR_NEIGHBORHOOD_IN_CHAT = False
 
         from app.worker import _query_backends
 

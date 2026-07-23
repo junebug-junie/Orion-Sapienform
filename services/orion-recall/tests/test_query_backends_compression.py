@@ -40,6 +40,7 @@ def test_compression_backend_called_when_enabled():
         # would silently flip falkor_chat_enabled=True and change which
         # backend this test actually exercises. Real default is False.
         mock_settings.RECALL_FALKOR_IN_CHAT = False
+        mock_settings.RECALL_FALKOR_NEIGHBORHOOD_IN_CHAT = False
 
         from app.worker import _query_backends
 
@@ -65,6 +66,7 @@ def test_compression_backend_returns_empty_when_disabled():
         mock_settings.RECALL_COMPRESSION_PG_DSN = None
         mock_settings.RECALL_RDF_ENDPOINT_URL = None
         mock_settings.RECALL_FALKOR_IN_CHAT = False
+        mock_settings.RECALL_FALKOR_NEIGHBORHOOD_IN_CHAT = False
 
         profile = dict(_compression_profile())
         profile["enable_graph_compression"] = True  # profile enables, but settings disable globally
@@ -104,6 +106,7 @@ def test_compression_backend_does_not_suppress_rdf_backend():
         mock_settings.RECALL_COMPRESSION_TIMEOUT_SEC = 3.0
         mock_settings.RECALL_RDF_ENDPOINT_URL = "http://fuseki/query"
         mock_settings.RECALL_FALKOR_IN_CHAT = False
+        mock_settings.RECALL_FALKOR_NEIGHBORHOOD_IN_CHAT = False
 
         mixed_profile = {
             "enable_rdf": True,

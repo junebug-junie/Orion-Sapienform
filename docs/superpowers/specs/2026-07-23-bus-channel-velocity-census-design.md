@@ -1,9 +1,16 @@
 # Bus channel velocity & census — design spec
 
-Status: **proposed, design-only**. No code in this patch. Sequencing: build Phase 1, verify
-against real live data, gate before Phase 2; build Phase 2, verify, gate before anything in the
-Later/Parked section is even scoped as a next patch. Do not skip a gate because a prior phase
-"seems obviously fine" — CLAUDE.md's metric quality gate applies per phase, every time.
+Status: **Phase 1 and Phase 2 both shipped and live-gated.** Phase 1 (PR #1292, compose
+passthrough fix PR #1305) merged and live-verified mesh-wide across all 45 services — real Redis
+velocity counters (`orion:bus:velocity:{channel}:{minute_bucket}`) are live for ~106 of 264
+cataloged channels at any given time. Phase 2 (`orion.bus.census.compute_census()` +
+`orion.bus.velocity.scan_active_channels()`) is built, tested, reviewed, and live-gated against
+the real running mesh: 264 cataloged, 106 active in a trailing 5-minute window, 192
+`declared_silent` (sensible mix of cron-triggered and genuinely low-traffic channels), 0
+`undeclared_active` (confirms wildcard-prefix matching correctly absorbs every dynamic
+per-request reply channel). Nothing in the Later/Parked section below is scoped as a next patch
+yet — CLAUDE.md's metric quality gate applies per phase, every time, and gating those ideas has
+not been done.
 
 **Cross-reference:** `docs/superpowers/specs/2026-07-22-transport-bus-signal-quality-measurement-design.md`
 covers a related but distinct question — the *calibration and trustworthiness* of the six
@@ -256,8 +263,13 @@ patch:
 
 ## Recommended next patch
 
-Start Phase 1 only. Branch/worktree per CLAUDE.md section 2, thin patch: instrument
-`OrionBusAsync.publish()`, add the settings flag (default off), add the read-side summation
-helper, add tests. Do not touch `bus_observer.py`, grammar emission, or Phase 2's census function
-in the same patch — Phase 2 depends on Phase 1's gate passing with real data first, per the
-phased plan above.
+Phase 1 and Phase 2 are both done (see Status above). Neither Phase 2's `compute_census()` nor
+`scan_active_channels()` is wired into anything that runs periodically yet — they exist as
+tested, live-gated functions with no scheduled caller. The next patch, if picked up, should stay
+just as thin: give `scan_active_channels()` + `compute_census()` a periodic caller (a lightweight
+loop or a `bus_observer.py` tick, decision deferred — see the review's note that a coverage
+census belongs on a slow cadence like once-a-minute, not `bus_observer`'s 10s tick) and a
+UI/debug/log surface to actually look at `declared_silent`/`undeclared_active` over time, per
+CLAUDE.md's "no keyword cathedral" rule (a pure function nobody calls is not yet a real seam).
+Nothing in the Later/Parked section above should be scoped until that wiring lands and gets its
+own live-data look.

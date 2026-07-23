@@ -48,13 +48,10 @@ def test_worker_empty_federators_no_crash():
         {"id": 1, "region_id": None, "scope": "episodic", "reason": "test", "priority": 0}
     ]
 
-    with patch("app.worker.EpisodicFederator") as mock_ep, \
-         patch("app.worker.SubstrateFederator") as mock_sub, \
-         patch("app.worker.SelfStudyFederator") as mock_ss:
-        for mock_cls in [mock_ep, mock_sub, mock_ss]:
-            instance = MagicMock()
-            instance.fetch.return_value = []
-            mock_cls.return_value = instance
+    with patch("app.worker.EpisodicFederator") as mock_ep:
+        instance = MagicMock()
+        instance.fetch.return_value = []
+        mock_ep.return_value = instance
 
         # Should complete without raising
         worker._tick()
@@ -73,12 +70,8 @@ def test_worker_budget_gate_halts_mid_batch():
     # Federator returns some triples
     fake_triples = [("http://A", "http://rel", "http://B"), ("http://B", "http://rel", "http://C")]
 
-    with patch("app.worker.EpisodicFederator") as mock_ep, \
-         patch("app.worker.SubstrateFederator") as mock_sub, \
-         patch("app.worker.SelfStudyFederator") as mock_ss:
+    with patch("app.worker.EpisodicFederator") as mock_ep:
         mock_ep.return_value.fetch.return_value = fake_triples
-        mock_sub.return_value.fetch.return_value = []
-        mock_ss.return_value.fetch.return_value = []
 
         worker._tick()
         # Should have processed without calling LLM (structural fallback used)
@@ -87,7 +80,12 @@ def test_worker_budget_gate_halts_mid_batch():
 
 def test_substrate_scope_labels_clusters_hotspot_not_contradiction():
     """Substrate clusters must default to 'hotspot' so we don't spuriously flood
-    substrate mutation pressure (which only fires for 'contradiction')."""
+    substrate mutation pressure (which only fires for 'contradiction').
+
+    SPARQL SubstrateFederator was retired 2026-07-23 (live-verified dead --
+    frozen at 126 stale triples, zero active writers since PR #1153's Falkor
+    cutover); FalkorSubstrateFederator is now the sole source, so this test
+    exercises that path with the flag enabled instead."""
     worker, store, bus = _make_worker(enable=True)
     store.drain_stale_queue.return_value = [
         {"id": 1, "region_id": None, "scope": "substrate", "reason": "test", "priority": 0}
@@ -98,12 +96,11 @@ def test_substrate_scope_labels_clusters_hotspot_not_contradiction():
         ("http://C", "http://rel", "http://A"),
     ]
     with patch("app.worker.EpisodicFederator") as mock_ep, \
-         patch("app.worker.SubstrateFederator") as mock_sub, \
-         patch("app.worker.SelfStudyFederator") as mock_ss, \
+         patch("app.worker.FalkorSubstrateFederator") as mock_falkor_sub, \
+         patch("app.worker._app_settings.get_settings", return_value=_settings_mock(substrate_falkor=True)), \
          patch("app.writer.CompressionWriter") as mock_writer:
         mock_ep.return_value.fetch.return_value = []
-        mock_sub.return_value.fetch.return_value = triangle
-        mock_ss.return_value.fetch.return_value = []
+        mock_falkor_sub.return_value.fetch.return_value = triangle
         mock_writer.return_value.write.return_value = True
 
         worker._tick()
@@ -111,6 +108,25 @@ def test_substrate_scope_labels_clusters_hotspot_not_contradiction():
         store.upsert_artifact.assert_called()
         kinds = {c.kwargs["kind"] for c in store.upsert_artifact.call_args_list}
         assert kinds == {"hotspot"}
+
+
+def test_substrate_scope_produces_no_clusters_when_falkor_flag_off():
+    """Regression for the SPARQL-federator retirement: with no SPARQL fallback
+    left, a substrate stale item with the Falkor flag off must produce zero
+    artifacts (not silently read already-confirmed-dead SPARQL data)."""
+    worker, store, bus = _make_worker(enable=True)
+    store.drain_stale_queue.return_value = [
+        {"id": 1, "region_id": None, "scope": "substrate", "reason": "test", "priority": 0}
+    ]
+    with patch("app.worker.EpisodicFederator") as mock_ep, \
+         patch("app.worker.FalkorSubstrateFederator") as mock_falkor_sub, \
+         patch("app.worker._app_settings.get_settings", return_value=_settings_mock(substrate_falkor=False)):
+        mock_ep.return_value.fetch.return_value = []
+
+        worker._tick()
+
+        mock_falkor_sub.assert_not_called()
+        store.upsert_artifact.assert_not_called()
 
 
 def _settings_mock(*, episodic_falkor=False, substrate_falkor=False):
@@ -138,14 +154,10 @@ def test_falkor_federators_not_called_when_flags_off():
         {"id": 2, "region_id": None, "scope": "substrate", "reason": "test", "priority": 0},
     ]
     with patch("app.worker.EpisodicFederator") as mock_ep, \
-         patch("app.worker.SubstrateFederator") as mock_sub, \
-         patch("app.worker.SelfStudyFederator") as mock_ss, \
          patch("app.worker.FalkorEpisodicFederator") as mock_falkor_ep, \
          patch("app.worker.FalkorSubstrateFederator") as mock_falkor_sub, \
          patch("app.worker._app_settings.get_settings", return_value=_settings_mock()):
         mock_ep.return_value.fetch.return_value = []
-        mock_sub.return_value.fetch.return_value = []
-        mock_ss.return_value.fetch.return_value = []
 
         worker._tick()
 
@@ -178,14 +190,10 @@ def test_falkor_federators_unioned_with_sparql_when_flags_on():
         return _real_build_graph(triples)
 
     with patch("app.worker.EpisodicFederator") as mock_ep, \
-         patch("app.worker.SubstrateFederator") as mock_sub, \
-         patch("app.worker.SelfStudyFederator") as mock_ss, \
          patch("app.worker.FalkorEpisodicFederator") as mock_falkor_ep, \
          patch("app.worker.build_graph_from_triples", side_effect=_capture_and_build), \
          patch("app.worker._app_settings.get_settings", return_value=_settings_mock(episodic_falkor=True)):
         mock_ep.return_value.fetch.return_value = sparql_triples
-        mock_sub.return_value.fetch.return_value = []
-        mock_ss.return_value.fetch.return_value = []
         mock_falkor_ep.return_value.fetch.return_value = falkor_triples
 
         worker._tick()

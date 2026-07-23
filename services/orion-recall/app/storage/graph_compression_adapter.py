@@ -104,7 +104,9 @@ def fetch_graph_compression_fragments(
     """
     try:
         engine = _get_engine(pg_dsn)
-        scope_list = list(scopes) or ["episodic", "substrate", "self_study"]
+        # self_study dropped 2026-07-23: graph-compression retired the scope
+        # entirely (live-verified zero communities/artifacts, ever).
+        scope_list = list(scopes) or ["episodic", "substrate"]
         limit = max(max_global, max_local) * 2  # over-fetch then rank
 
         stmt = text(

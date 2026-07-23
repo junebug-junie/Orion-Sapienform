@@ -20,11 +20,12 @@ _GRAPH_TO_SCOPE = {
     "orion:autonomy:identity": "episodic",
     "orion:autonomy:drives": "episodic",
     "orion:autonomy:goals": "episodic",
-    "orion:self": "self_study",
-    "orion:self:induced": "self_study",
-    "orion:self:reflective": "self_study",
     "orion:substrate": "substrate",
 }
+# self_study scope retired 2026-07-23: its three source Fuseki graphs
+# (orion:self, orion:self:induced, orion:self:reflective) were live-verified
+# to have zero triples, ever -- no producer anywhere in the repo ever wrote
+# to them. No Falkor equivalent needed since there was nothing to migrate.
 
 
 async def run_stale_listener(
@@ -55,7 +56,7 @@ async def run_stale_listener(
                 logger.debug("stale_marked scope=%s graph=%s", scope, graph_name)
             else:
                 # Mark all scopes stale on unknown graph writes
-                for s in ("episodic", "substrate", "self_study"):
+                for s in ("episodic", "substrate"):
                     store.enqueue_stale(scope=s, reason="rdf_enqueue:unknown_graph")
         except Exception as exc:
             logger.warning("stale_listener_handle_error reason=%s", exc)

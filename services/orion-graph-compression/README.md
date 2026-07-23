@@ -13,12 +13,12 @@ stale_listener.py   ──► stale_queue (Postgres)
                                 ▼
                     worker.py (_tick poll loop)
                          │
-                 ┌───────┼───────┐
-                 ▼       ▼       ▼
-           Episodic  Substrate  SelfStudy
-           Federator Federator  Federator
-                 │       │       │
-                 └───────┴───────┘
+                 ┌───────┐
+                 ▼       ▼
+           Episodic  FalkorSubstrate
+           Federator  Federator
+                 │       │
+                 └───────┘
                          │
                  clustering/leiden.py
                          │
@@ -50,40 +50,40 @@ stale_listener.py   ──► stale_queue (Postgres)
 
 ## Compression Scopes
 
-| Scope | Source Graphs | Region Kind |
+| Scope | Source | Region Kind |
 |-------|--------------|-------------|
-| `episodic` | 9 episodic named graphs (chat, enrichment, collapse, chat/social, autonomy/*). `orion:cognition`/`orion:metacog` are no longer written (2026-07-22: pure Postgres redundancy via orion-sql-writer, see rdf-writer's kill) -- still queried, will just read empty. | `community` |
-| `substrate` | `orion:substrate` | `contradiction` |
-| `self_study` | `orion:self`, `orion:self/induced`, `orion:self/reflective` | `self_study_cluster` |
+| `episodic` | SPARQL: 9 episodic named graphs (chat, enrichment, collapse, chat/social, autonomy/*). `orion:cognition`/`orion:metacog` are no longer written (2026-07-22: pure Postgres redundancy via orion-sql-writer, see rdf-writer's kill) -- still queried, will just read empty. Additively unioned with Falkor (see below). | `community` |
+| `substrate` | FalkorDB only (`orion_substrate` graph). SPARQL `SubstrateFederator` retired 2026-07-23 -- see below. | `hotspot` |
 
-### FalkorDB federators (additive, dark by default)
+`self_study` was retired 2026-07-23 (previously read `orion:self`,
+`orion:self/induced`, `orion:self/reflective`; region kind
+`self_study_cluster`) -- live-verified zero triples in all three source
+graphs, ever, no producer anywhere in the repo. Trivial kill, no Falkor
+migration needed since there was nothing to migrate.
+
+### FalkorDB federators
 
 `app/federators/substrate_falkor.py` / `episodic_falkor.py` are Cypher-native
-alternatives to the SPARQL federators above, reading the same shared
+alternatives to the retired SPARQL federators, reading the same shared
 FalkorDB instance substrate-runtime/orion-recall/orion-meta-tags already
-write to (`orion_substrate`, `orion_recall`). Gated behind
-`GRAPH_COMPRESSION_SUBSTRATE_FALKOR_ENABLED`/`GRAPH_COMPRESSION_EPISODIC_FALKOR_ENABLED`
-(both `false` by default). When on, results are **unioned** with the SPARQL
-federator's output in `worker.py::_process_scope`, not swapped -- this can
-only add clustering signal, never regress what's already there, while the
-Falkor side is verified live.
+write to (`orion_substrate`, `orion_recall`).
 
-Why this exists: substrate-runtime has been Falkor-primary
-(`SUBSTRATE_STORE_BACKEND=falkor`) since PR #1153, so `SubstrateFederator`'s
-SPARQL query has likely been reading stale/emptying data since that cutover
--- nothing currently re-populates `orion:substrate` in Fuseki. Separately,
-`orion-rdf-writer`'s enrichment write (Entity/Mention/hasTag/hasEntity into
-`orion:enrichment`) is the thing the `episodic` scope's live signal
-increasingly depends on for chat-turn clustering, and orion-meta-tags'
-Falkor writer (`orion_recall`) is the newer, live equivalent of that same
-data. `episodic_falkor.py` covers only the `orion_recall` slice
-(ChatTurn/Tag/Entity) -- collapse/chat-social have no Falkor writer yet and
-still depend on the SPARQL federator.
+**`GRAPH_COMPRESSION_SUBSTRATE_FALKOR_ENABLED`** (`true` live as of
+2026-07-23): the **sole source** for the `substrate` scope now -- there is no
+SPARQL fallback left. Substrate-runtime has been Falkor-primary
+(`SUBSTRATE_STORE_BACKEND=falkor`) since PR #1153; live-verified the SPARQL
+`SubstrateFederator` was reading a frozen 126 stale triples with zero active
+writers anywhere in the repo, so it was removed outright rather than kept as
+a dead fallback. If this flag is off, the `substrate` scope simply produces
+no clusters.
 
-Once verified live (community/cluster sanity check against real data,
-matching the recall backfill's verification approach), the next step is
-flipping these from additive-union to primary, then retiring the
-now-redundant SPARQL side for the covered scopes -- not done in this patch.
+**`GRAPH_COMPRESSION_EPISODIC_FALKOR_ENABLED`** (dark by default, still
+additive): results are **unioned** with the SPARQL `EpisodicFederator`'s
+output in `worker.py::_process_scope`, not swapped -- `episodic_falkor.py`
+covers only the `orion_recall` slice (ChatTurn/Tag/Entity); collapse/social
+have no Falkor writer yet and still depend on the SPARQL federator. Not
+retired -- this scope's SPARQL side is genuinely still load-bearing for
+content Falkor doesn't cover, unlike `substrate`/`self_study` above.
 
 ## Bus Events
 

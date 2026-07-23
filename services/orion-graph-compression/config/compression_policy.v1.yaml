@@ -10,10 +10,6 @@ scopes:
     enabled: true
     max_nodes_per_federation: 500
     kinds: [hotspot, contradiction]
-  - name: self_study
-    enabled: true
-    max_nodes_per_federation: 500
-    kinds: [self_study_cluster]
 
 clustering:
   resolution: 1.0

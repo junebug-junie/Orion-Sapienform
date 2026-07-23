@@ -14,8 +14,6 @@ from app.clustering.leiden import build_graph_from_triples, leiden_cluster
 from app.clustering.region_builder import build_region
 from app.federators.episodic import EpisodicFederator
 from app.federators.episodic_falkor import FalkorEpisodicFederator
-from app.federators.self_study import SelfStudyFederator
-from app.federators.substrate import SubstrateFederator
 from app.federators.substrate_falkor import FalkorSubstrateFederator
 
 if TYPE_CHECKING:
@@ -87,7 +85,7 @@ class CompressionWorker:
 
         scopes_to_process = list({item.get("scope") for item in items if item.get("scope")})
         if not scopes_to_process:
-            scopes_to_process = ["episodic", "substrate", "self_study"]
+            scopes_to_process = ["episodic", "substrate"]
 
         for scope in scopes_to_process:
             try:
@@ -126,22 +124,18 @@ class CompressionWorker:
                 triples = list(set(triples) | set(FalkorEpisodicFederator().fetch()))
             kind = "community"
         elif scope == "substrate":
-            triples = SubstrateFederator(**federator_kwargs).fetch()
-            if s.graph_compression_substrate_falkor_enabled:
-                # Additive during verification: substrate-runtime moved to
-                # Falkor-primary in PR #1153, so the SPARQL side is expected
-                # to be stale/empty going forward, not a live duplicate --
-                # union is safe (adds real signal) and never regresses
-                # today's (likely already-stale) SPARQL-sourced clusters.
-                triples = list(set(triples) | set(FalkorSubstrateFederator().fetch()))
+            # SPARQL SubstrateFederator retired 2026-07-23: live-verified dead
+            # (orion:substrate frozen at 126 stale triples, zero active writers
+            # anywhere in the repo since substrate-runtime moved Falkor-primary
+            # in PR #1153). FalkorSubstrateFederator is now the sole source --
+            # if the flag is off, this scope simply produces no clusters,
+            # rather than falling back to SPARQL data already confirmed dead.
+            triples = FalkorSubstrateFederator().fetch() if s.graph_compression_substrate_falkor_enabled else []
             # Default substrate clusters to "hotspot". We do not (yet) detect
             # genuine contradictions, so we must not blanket-label every cluster
             # "contradiction" — that would spuriously flood substrate mutation
             # pressure. Contradiction detection is a future enhancement.
             kind = "hotspot"
-        elif scope == "self_study":
-            triples = SelfStudyFederator(**federator_kwargs).fetch()
-            kind = "self_study_cluster"
         else:
             return
 

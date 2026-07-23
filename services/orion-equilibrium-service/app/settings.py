@@ -121,6 +121,16 @@ class Settings(BaseSettings):
     metacog_chat_turn_surprise_threshold: float = Field(
         0.7, alias="EQUILIBRIUM_METACOG_CHAT_TURN_SURPRISE_THRESHOLD"
     )
+    # Separate cooldown lane from EQUILIBRIUM_METACOG_COOLDOWN_SEC (2026-07-23).
+    # chat_turn is the only trigger kind designed to fire on essentially every
+    # remarkable chat turn rather than a rare/periodic cadence -- sharing the
+    # global cooldown timestamp would let a burst of chat_turn fires silently
+    # starve baseline/manual/pulse/relational/telemetry_anomaly's own fires,
+    # not just drop chat_turn's own excess. Same default value as the shared
+    # cooldown to start; independently tunable from here on.
+    metacog_chat_turn_cooldown_sec: float = Field(
+        30.0, alias="EQUILIBRIUM_METACOG_CHAT_TURN_COOLDOWN_SEC"
+    )
 
     channel_metacog_trigger: str = Field("orion:equilibrium:metacog:trigger", alias="CHANNEL_EQUILIBRIUM_METACOG_TRIGGER")
     channel_collapse_mirror_user_event: str = Field("orion:collapse:intake", alias="CHANNEL_COLLAPSE_MIRROR_USER_EVENT")

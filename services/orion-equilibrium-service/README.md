@@ -95,13 +95,14 @@ Unlike the other triggers, this one reuses two already-registered schemas instea
 
 Added 2026-07-22 (PR #1291), shipped disabled by default; **enabled 2026-07-23**. Live-data verification (real `orion_metacog` rows, non-degenerate `upstream`) is the acceptance check named in `docs/superpowers/design/2026-07-18-collapse-mirror-metacog-redesign.md` and still needs to happen post-deploy -- watch for it, don't assume it's done just because the flag is on.
 
-**Operational note**: unlike the other trigger kinds here (rare/periodic), `chat_turn` is designed to fire on essentially every remarkable chat turn. `_publish_metacog_trigger`'s cooldown (`EQUILIBRIUM_METACOG_COOLDOWN_SEC`, default 30s) is a single global window shared across *all* trigger kinds and silently drops (logs only, does not queue) anything that fires during it -- two remarkable turns close together will now hit that far more often than any other trigger here has. Worth watching once this flag is live; not addressed by this trigger's own code.
+**Operational note (resolved 2026-07-23)**: unlike the other trigger kinds here (rare/periodic), `chat_turn` is designed to fire on essentially every remarkable chat turn. Sharing `EQUILIBRIUM_METACOG_COOLDOWN_SEC`'s single global cooldown timestamp with baseline/manual/pulse/relational/telemetry_anomaly would have let a burst of `chat_turn` fires silently starve those other trigger kinds too, not just drop `chat_turn`'s own excess -- so `chat_turn` now has its own separate cooldown lane (`EQUILIBRIUM_METACOG_CHAT_TURN_COOLDOWN_SEC`, own timestamp, own setting). `_publish_metacog_trigger` still silently drops (logs only, does not queue) anything that fires within *its own kind's* cooldown window -- that part of the behavior is unchanged and intentional.
 
 | Env | Default | Purpose |
 |-----|---------|---------|
 | `EQUILIBRIUM_METACOG_CHAT_TURN_TRIGGER_ENABLE` | `true` | Master gate for the chat_turn trigger |
 | `EQUILIBRIUM_METACOG_CHAT_TURN_CORRELATOR_TTL_SEC` | `600` | Correlator entry TTL (leak backstop for non-terminal evidence) |
 | `EQUILIBRIUM_METACOG_CHAT_TURN_SURPRISE_THRESHOLD` | `0.7` | Minimum `substrate_appraisal.surprise_level` to fire |
+| `EQUILIBRIUM_METACOG_CHAT_TURN_COOLDOWN_SEC` | `30` | chat_turn's own cooldown window, separate from `EQUILIBRIUM_METACOG_COOLDOWN_SEC` |
 | `CHANNEL_THOUGHT_ARTIFACT` | `orion:thought:artifact` | Source channel (wildcard consumers) |
 | `CHANNEL_HARNESS_RUN_ARTIFACT` | `orion:harness:run:artifact` | Source channel (wildcard consumers) |
 | `CHANNEL_GRAMMAR_EVENT` | `orion:grammar:event` | Source channel, filtered to `semantic_role in ("exec_turn_timeout", "stance_disposition")` |

@@ -173,6 +173,16 @@ python orion/mood_arc/fit_encoder.py train \
   so a future retrain's field-selection results for `prediction_error` aren't misread as "the
   whole bus is healthy" when they're really "one queue is quiet, structurally the only thing
   that can ever show up here."
+- **`catalog_drift_pressure` is now a structurally dead channel going forward (found
+  2026-07-23):** unlike `prediction_error`, this one is an actual member of `v2`'s (and
+  presumably `v3`'s) 15 selected channels. It counts streams the bus-observer watches that
+  aren't in `orion/bus/channels.yaml`'s catalog — since the same 2026-07-18 fix above made the
+  observer only ever watch cataloged streams, that count, and this channel, is now permanently
+  `0.0` by construction, not by observation (confirmed `MISSING` from every recent corpus row —
+  the `PRESSURE_CHANNELS`/`value > 0` inclusion gate no longer lets it through at all). A future
+  retrain's field-selection pass will likely drop it outright; worth noting in the retrain
+  writeup as an expected, not anomalous, absence. Full detail:
+  `services/orion-field-digester/README.md`'s `catalog_drift_pressure` channel-catalog entry.
 - `--hidden-dim 128 --latent-dim 64` are the defaults as of this patch
   (`DEFAULT_HIDDEN_DIM`/`DEFAULT_LATENT_DIM` in `fit_encoder.py`) — sized for
   `field_channel_corpus.v1`'s ~16-26-channel width, not the old 4-channel

@@ -325,6 +325,17 @@ having 91 messages sitting permanently unconsumed the whole time, not a healthy,
 queue. Whether that backlog itself is expected (nobody reads this queue by design) or a dead
 consumer is a separate, not-yet-investigated question.
 
+**Update, 2026-07-23: the same root cause also governs the raw pressure channels, not just
+`prediction_error`.** `transport_pressure` (the raw current-level channel, distinct from
+`prediction_error`'s tick-over-tick delta) now sits flat at the same `0.00091` in the field-digester
+corpus, and `catalog_drift_pressure` — one of mood-arc `v2`/`v3`'s actual 15 trained channels — is
+now structurally pinned to `0.0` (permanently, by construction: it counts uncataloged streams the
+observer watches, and the observer now only ever watches cataloged ones). Full detail, live numbers,
+and history (including a since-fixed ceiling-saturation phase for `transport_pressure` from the same
+`mode="add"` bug already documented for `catalog_drift_pressure`/`observer_failure_pressure`/
+`reliability_pressure`) in `services/orion-field-digester/README.md`'s `transport_pressure` and
+`catalog_drift_pressure` channel-catalog entries.
+
 **Implication for the charter and for `mood-arc`:** Sentience Striving Program charter §9b item 3
 (Predictive Processing/Active Inference) names "transport" as one of five domains with "equivalent
 shadow-measurement instrumentation" to execution/biometrics/chat/route — true in the sense that

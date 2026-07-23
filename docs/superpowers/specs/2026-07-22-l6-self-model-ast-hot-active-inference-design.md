@@ -180,3 +180,50 @@ philosophical pressure point to stress-test before treating this as settled.
    gate, not bundled as one unreviewed patch.
 3. Shadow-measure item 5 as a pure, unconsumed replay artifact (matching every other new signal
    built this session), before any decision about wiring it into a real consumer.
+
+## Revision, 2026-07-23 (informed by `docs/superpowers/specs/2026-07-23-fcc-motor-field-digester-signals-design.md`, PR #1283)
+
+Does not change the core recommendation (AST/HOT form, Active Inference fuel) or the theory-fit
+argument in the Arsonist summary. Sharpens three of the open items below it.
+
+**Item 3 (confidence) now has a third documented substrate-quality caveat, not two.** This design's
+own merge-time review already flagged two of the five `prediction_error` domains as compromised:
+transport (real signal, calibrated ~1,000x off the system's actual operating range — see
+`docs/superpowers/specs/2026-07-22-transport-bus-signal-quality-measurement-design.md`, PR #1275)
+and route (unexplained subnormal float, still open). The FCC-motor spec's appendix adds a third,
+independent finding in the same family: `execution_load` is hard-capped at 8 started steps (an
+8-step and a 40-step run read identically), and `reasoning_load` is a boolean wearing a magnitude's
+name (`0.35`/`0.05`, not a real count). This is the raw field substrate adjacent to the
+`execution_prediction_error()` domain, not that instrument itself — but it is the same "looks like
+real signal, isn't" problem, one domain closer to a majority. Item 3's metric-quality-gate pass
+(Missing Question 2, Acceptance checks) now needs to independently clear three of five domains'
+underlying substrate, not audit two and assume the rest are fine by default.
+
+**Item 3 also has a real blind spot: silent timeouts.** The same spec's Patch B
+(`harness_rpc_timeout`) exists because today, if the FCC-motor's governor RPC never returns, *zero*
+bus-observable trace is emitted before that point — no grammar event, no prediction-error signal,
+nothing (`orion/hub/turn_orchestrator.py`'s `run is None` branch currently only returns a WS error
+frame to the client). A confidence formula built on "aggregate volatility is low and stable = high
+confidence" cannot distinguish a genuinely calm system from a system that just silently hung — the
+worst failure mode currently contributes silence, not surprise, to the aggregate, which is exactly
+backwards. Item 3 should not be treated as gate-passable until Patch B (or an equivalent
+turn-incompletion signal) is live and feeding the same aggregate.
+
+**Item 5 (the higher-order piece) has a real starting point now, not a blank page.** This design
+originally named item 5 as the hardest part precisely because nothing like it existed anywhere in
+the codebase to build from. The FCC-motor spec's Patch A signal 2, `tool_failure_streak_pressure`
+(`min(1.0, tool_failure_streak_max / 3.0)`, bucketed via the existing `short_error_kind()`), is a
+direct behavioral measurement of "the agent's own actions keep failing the same way" — not
+literally item 5's "my model of my own predictive competence is wrong," but close enough in shape
+that item 5's shadow-measurement pass (Recommended next patch, step 3) should start by checking
+whether `tool_failure_streak_pressure` already correlates with (or could seed) a genuine
+second-order signal, before inventing a new mechanism from nothing.
+
+**Not affected:** items 1, 2, and 4 (their `attention_self_model.py`/`dynamic_pressure`-trend
+grounding is unchanged by this spec — Patch A's new channels land as separate `NODE_CHANNELS`
+scalars for field-digester's own corpus, not wired into `orion/substrate/prediction_error.py`'s
+five instruments or into `dynamic_pressure` itself). The zombie
+`orion-athena-self-state-runtime` blocker (Missing Question 1 / Recommended next patch step 1) was
+independently confirmed and resolved same-day by the other thread that produced #1275/#1283
+(stopped and removed via `docker stop`/`docker rm`, confirmed via growing write-lag post-stop) —
+Recommended next patch step 1 is therefore already done, not still pending.

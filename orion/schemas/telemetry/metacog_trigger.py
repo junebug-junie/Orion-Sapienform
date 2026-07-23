@@ -14,11 +14,15 @@ class MetacogTriggerV1(BaseModel):
     trigger_kind: str = Field(
         ...,
         description=(
-            "baseline | dense | manual | pulse | relational | llm_surface_instability | telemetry_anomaly "
+            "baseline | dense | manual | pulse | relational | llm_surface_instability | telemetry_anomaly | "
+            "chat_turn "
             "(advisory: language-surface instability from logprob summary, not factual confidence). "
             "relational = a live repair_pressure_v2 appraisal (see repair_pressure_metacog_gate.py). "
             "telemetry_anomaly = a field_channel_corpus.v1 reconstruction-loss anomaly from a trained "
-            "orion/mood_arc/fit_encoder.py encoder (see telemetry_anomaly_metacog_gate.py)."
+            "orion/mood_arc/fit_encoder.py encoder (see telemetry_anomaly_metacog_gate.py). "
+            "chat_turn = a completed (or governor-timed-out) chat turn whose correlated "
+            "ThoughtEventV1 + HarnessRunV1 (or exec_turn_timeout GrammarEventV1) evidence "
+            "trips a gate condition (see chat_turn_metacog_gate.py)."
         ),
     )
     reason: str

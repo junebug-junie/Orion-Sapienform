@@ -14,6 +14,11 @@ from orion.schemas.telemetry.metacog_trigger import MetacogTriggerV1
 from .substrate_metacog_gate import build_substrate_metacog_trigger
 from .repair_pressure_metacog_gate import build_repair_pressure_metacog_trigger
 from .telemetry_anomaly_metacog_gate import build_telemetry_anomaly_metacog_trigger
+from .chat_turn_metacog_gate import (
+    ChatTurnCorrelator,
+    build_chat_turn_metacog_trigger,
+    is_chat_turn_evidence_terminal,
+)
 from orion.schemas.telemetry.cognition_trace import CognitionTracePayload
 from orion.schemas.telemetry.system_health import EquilibriumServiceState, EquilibriumSnapshotV1, SystemHealthV1
 from orion.schemas.telemetry.spark_signal import SparkSignalV1
@@ -48,6 +53,7 @@ class EquilibriumService(BaseChassis):
         self._last_metacog_trigger_ts: float = 0.0
         self._last_baseline_scores: Tuple[float, float] = (-1.0, -1.0)
         self._baseline_skip_count: int = 0
+        self._chat_turn_correlator: ChatTurnCorrelator | None = None
 
     def _trace_meta(
         self,
@@ -360,6 +366,44 @@ class EquilibriumService(BaseChassis):
                 f"orion:equilibrium:metacog:trigger routing. trace_id={trace_meta['trace_id']}"
             )
 
+    async def _handle_chat_turn_evidence(
+        self,
+        *,
+        distress: float,
+        zen: float,
+        correlation_id: str,
+        thought_event: Dict[str, Any] | None = None,
+        run_artifact: Dict[str, Any] | None = None,
+        timed_out: bool = False,
+    ) -> None:
+        if not correlation_id or self._chat_turn_correlator is None:
+            return
+
+        merged_thought, merged_run, merged_timed_out = await self._chat_turn_correlator.accumulate(
+            correlation_id=correlation_id,
+            thought_event=thought_event,
+            run_artifact=run_artifact,
+            timed_out=timed_out,
+        )
+
+        if not is_chat_turn_evidence_terminal(
+            thought_event=merged_thought, run_artifact=merged_run, timed_out=merged_timed_out
+        ):
+            return
+
+        trigger = build_chat_turn_metacog_trigger(
+            correlation_id=correlation_id,
+            thought_event=merged_thought,
+            run_artifact=merged_run,
+            timed_out=merged_timed_out,
+            zen_state="zen" if zen > 0.5 else "not_zen",
+            pressure=distress,
+            recall_enabled=settings.metacog_recall_enabled,
+            surprise_threshold=settings.metacog_chat_turn_surprise_threshold,
+        )
+        if trigger is not None:
+            await self._publish_metacog_trigger(trigger)
+
     async def _publish_loop(self) -> None:
         while not self._stop.is_set():
             try:
@@ -498,6 +542,13 @@ class EquilibriumService(BaseChassis):
                 channels.append(settings.channel_repair_pressure_appraisal)
             if settings.metacog_telemetry_anomaly_trigger_enable:
                 channels.append(settings.channel_field_channel_anomaly_score)
+            if settings.metacog_chat_turn_trigger_enable:
+                self._chat_turn_correlator = ChatTurnCorrelator(
+                    self.bus.redis, ttl_seconds=settings.metacog_chat_turn_correlator_ttl_sec
+                )
+                channels.append(settings.channel_thought_artifact)
+                channels.append(settings.channel_harness_run_artifact)
+                channels.append(settings.channel_grammar_event)
 
         async with self.bus.subscribe(*channels) as pubsub:
             async for msg in self.bus.iter_messages(pubsub):
@@ -604,6 +655,57 @@ class EquilibriumService(BaseChassis):
                             )
                             if trigger is not None:
                                 await self._publish_metacog_trigger(trigger)
+
+                        elif (
+                            channel == settings.channel_thought_artifact
+                            and settings.metacog_chat_turn_trigger_enable
+                        ):
+                            # Real ThoughtEventV1, published by orion-thought
+                            # (services/orion-thought/app/bus_listener.py) for
+                            # every chat turn.
+                            correlation_id = str(payload_dict.get("correlation_id") or "")
+                            await self._handle_chat_turn_evidence(
+                                distress=distress,
+                                zen=zen,
+                                correlation_id=correlation_id,
+                                thought_event=payload_dict,
+                            )
+
+                        elif (
+                            channel == settings.channel_harness_run_artifact
+                            and settings.metacog_chat_turn_trigger_enable
+                        ):
+                            # Real HarnessRunV1, published by orion-harness-governor
+                            # (services/orion-harness-governor/app/bus_listener.py)
+                            # on every real handle_harness_run_request exit path.
+                            correlation_id = str(payload_dict.get("correlation_id") or "")
+                            await self._handle_chat_turn_evidence(
+                                distress=distress,
+                                zen=zen,
+                                correlation_id=correlation_id,
+                                run_artifact=payload_dict,
+                            )
+
+                        elif (
+                            channel == settings.channel_grammar_event
+                            and settings.metacog_chat_turn_trigger_enable
+                        ):
+                            # orion:grammar:event is the canonical sql-writer
+                            # ingress channel and carries many unrelated event
+                            # kinds -- only act on the governor-timeout signal
+                            # (services/orion-hub/scripts/grammar_emit.py::
+                            # build_turn_timeout_grammar_events, Patch B / PR
+                            # #1287), everything else is ignored here.
+                            atom = payload_dict.get("atom") if isinstance(payload_dict, dict) else None
+                            semantic_role = atom.get("semantic_role") if isinstance(atom, dict) else None
+                            if semantic_role == "exec_turn_timeout":
+                                correlation_id = str(payload_dict.get("correlation_id") or "")
+                                await self._handle_chat_turn_evidence(
+                                    distress=distress,
+                                    zen=zen,
+                                    correlation_id=correlation_id,
+                                    timed_out=True,
+                                )
 
                 except Exception as e:
                     logger.warning("Failed to process message on %s: %s", channel, e)

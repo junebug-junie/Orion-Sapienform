@@ -279,6 +279,24 @@ class Settings(BaseSettings):
     RECALL_FALKOR_IN_CHAT: bool = Field(
         default=False, validation_alias=AliasChoices("RECALL_FALKOR_IN_CHAT")
     )
+    # Last live Fuseki read path in this service: storage/rdf_adapter.py's
+    # fetch_rdf_fragments (_fetch_rdf_neighborhood_fragments), a generic
+    # keyword-vs-any-triple SPARQL scan. Confirmed live (2026-07-22, direct
+    # Fuseki container log read) that it still fires on real recall calls --
+    # not dead code the way graphtri turned out to be. When true,
+    # storage/falkor_neighborhood_adapter.py::fetch_falkor_neighborhood_fragments
+    # SWAPS IN for it -- matches real, canonical :Entity nodes and walks
+    # MENTIONS_ENTITY to ChatTurns, rather than scanning arbitrary triples.
+    # Scope is deliberately narrower in two ways, both disclosed in the new
+    # module's docstring: (1) only real entity-name matches, not any keyword
+    # substring anywhere in the store; (2) chat.history ChatTurns only, not
+    # social-room or enrichment content (those never had a Falkor writer
+    # this specific fetch could join against). Ships dark (False) until
+    # live-verified against real orion_recall data and flipped, same rollout
+    # shape as RECALL_FALKOR_IN_CHAT.
+    RECALL_FALKOR_NEIGHBORHOOD_IN_CHAT: bool = Field(
+        default=False, validation_alias=AliasChoices("RECALL_FALKOR_NEIGHBORHOOD_IN_CHAT")
+    )
     # Phase 2 of the entity-graph-reasoning arc (docs/superpowers/specs/
     # 2026-07-19-recall-entity-graph-reasoning-arc.md): fuse_candidates
     # (fusion.py) additively boosts a candidate's composite score when its

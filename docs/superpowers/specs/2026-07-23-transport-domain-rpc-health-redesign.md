@@ -195,3 +195,29 @@ implementation time, same as every other signal built this session:
   scoped, signal.
 - PR #1278 (merged) -- documents the narrow-scope finding itself across five READMEs; this
   spec does not re-derive that finding, only responds to it.
+- `docs/superpowers/specs/2026-07-23-fcc-motor-field-digester-signals-design.md` (branch
+  `docs/fcc-motor-field-digester-signals-design`, open) -- a same-day, independently-scoped
+  spec whose Appendix item 3 reaches the identical two-option framing for the
+  `transport_pressure` family (invent a real proxy vs. rename honestly) and explicitly defers
+  fixing it to "a separate follow-up effort" -- this spec is that follow-up. Zero file/scope
+  overlap otherwise (that spec's Patch A/B touch `orion/harness/`, `execution_loop/`, and
+  field-digester's execution-domain wiring; nothing here does).
+
+  **Checked for a hidden data-source collision, found none, but surfaced a real scope
+  disclosure worth stating plainly:** that spec's Patch B (`harness_rpc_timeout`) detects Hub's
+  RPC to `orion-harness-governor` never returning -- the same *category* of blind spot
+  (RPC-adjacent failure with zero bus-observable trace) this spec's Missing Question 6 and
+  Acceptance Checks are built to close generically. Verified directly:
+  `HarnessGovernorClient.run()` (`services/orion-hub/scripts/harness_governor_client.py`) does
+  **not** call `OrionBusAsync.rpc_request()` -- it has its own bespoke long-poll RPC
+  implementation with mid-run liveness checks (FCC motor runs can take a long time and need
+  streaming step-relay support, which a plain single-shot `rpc_request()` can't provide). So
+  Patch B's signal and this spec's proposed `bus_rpc_health` rollup would be structurally
+  disjoint, not double-counting the same event -- confirmed, not assumed.
+
+  This does mean the "37+ callers of `rpc_request()`" scope claimed in this spec's Arsonist
+  Summary is not full RPC-traffic coverage: `orion-harness-governor` traffic -- and any other
+  service using a similarly bespoke long-poll pattern, not yet audited -- stays invisible to
+  the signal this spec proposes, even after implementation. Not a reason to change approach
+  (instrumenting the one shared client is still the correct thin seam for everything that
+  actually uses it), but stated here plainly rather than implied as complete coverage.

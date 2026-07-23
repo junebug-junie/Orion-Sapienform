@@ -1041,3 +1041,26 @@ The `chat_turn` gate itself is now real, scoped, and only blocked on the cost/fa
 (`orion-actions`' journal path) having a real answer, on top of the pre-existing open questions 1-4
 (TTL, threshold, and the `orion_metacog`-vs-`orion_metacognitive_trace` fate question — question 3
 is now moot). This section is the spec to react to, not yet a green light.
+
+### Implemented (2026-07-23) — PR #1291
+
+Built per this spec, `services/orion-equilibrium-service/app/chat_turn_metacog_gate.py` +
+`service.py` wiring. Ships **disabled** (`EQUILIBRIUM_METACOG_CHAT_TURN_TRIGGER_ENABLE=false`).
+
+One real correction found during implementation that this spec's question 1 didn't fully cover:
+`run_artifact` never arrives on **two** short-circuit paths in `orion/hub/turn_orchestrator.py`, not
+one. The already-discussed one is `thought.disposition in ("defer", "refuse")`. Code review
+(orion-repo-agent) caught a second, earlier one this spec missed entirely: the `if thought is None:`
+branch, when `ThoughtClient.react()` itself never returns to Hub. That path also short-circuits
+before the harness governor is ever called, and it already publishes a real signal this design
+didn't know to read — `orion:grammar:event`, `semantic_role="stance_disposition"`,
+`text_value="stance_timeout"` (same `_publish_unified_turn_chat_grammar` call site as every other
+stance_disposition atom). The shipped gate treats both this and Patch B's `exec_turn_timeout` as
+terminal timeout evidence (`timeout_reason` distinguishes which). Without this fix, a turn where
+Orion's own reasoning step failed to respond in time would have silently expired via the correlator
+TTL with zero `chat_turn` trigger — the single most severe turn outcome this trigger exists to catch.
+
+Acceptance checks from this spec are implemented as unit tests
+(`services/orion-equilibrium-service/tests/test_chat_turn_metacog_gate.py`, 39 tests) except the
+live-data check (`orion_metacog` rows with real, non-degenerate `upstream`), which can't run until
+the flag is enabled. See PR #1291 for the full review trail.

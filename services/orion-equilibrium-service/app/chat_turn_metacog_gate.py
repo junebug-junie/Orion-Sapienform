@@ -127,6 +127,34 @@ def evaluate_chat_turn_gate_conditions(
     return fired
 
 
+_GROUNDING_DIGEST_FIELD_CHAR_CAP = 300
+_GROUNDING_DIGEST_FIELDS = ("continuity_digest", "belief_digest", "memory_digest")
+
+
+def _capped_grounding_capsule_for_upstream(
+    grounding_capsule: dict[str, Any] | None,
+) -> dict[str, Any] | None:
+    """GroundingCapsuleV1's continuity_digest/belief_digest/memory_digest are
+    unbounded free-text (recalled memory/identity/relationship digests, see
+    orion/schemas/thought.py) -- unlike every other field this gate puts into
+    `upstream` (numeric/enum/short-string), nothing upstream of this caps their
+    length. Truncated here, same pattern as executor.py's existing
+    `pad_short` cap, since this evidence flows into an LLM prompt
+    (log_orion_metacognition_draft.j2/_enrich.j2's "TRIGGER EVIDENCE" block)
+    whose output becomes a persisted Collapse Mirror journal entry -- a
+    different, more durable exposure profile than the same digest content
+    already sitting in the main chat turn's own prompt.
+    """
+    if not isinstance(grounding_capsule, dict):
+        return grounding_capsule
+    capped = dict(grounding_capsule)
+    for field in _GROUNDING_DIGEST_FIELDS:
+        value = capped.get(field)
+        if isinstance(value, str) and len(value) > _GROUNDING_DIGEST_FIELD_CHAR_CAP:
+            capped[field] = value[:_GROUNDING_DIGEST_FIELD_CHAR_CAP] + "...(truncated)"
+    return capped
+
+
 def build_chat_turn_metacog_trigger(
     *,
     correlation_id: str,
@@ -182,7 +210,9 @@ def build_chat_turn_metacog_trigger(
             "surprise_level": (
                 substrate_appraisal.get("surprise_level") if isinstance(substrate_appraisal, dict) else None
             ),
-            "grounding_capsule": (thought_event or {}).get("grounding_capsule"),
+            "grounding_capsule": _capped_grounding_capsule_for_upstream(
+                (thought_event or {}).get("grounding_capsule")
+            ),
             "autonomy_slice": (thought_event or {}).get("autonomy_slice"),
         },
     )

@@ -616,17 +616,17 @@ class Settings(BaseSettings):
     RDF_STORE_DATASET: str = Field(default="orion", alias="RDF_STORE_DATASET")
     RDF_STORE_QUERY_URL: str = Field(default="", alias="RDF_STORE_QUERY_URL")
     SUBSTRATE_STORE_BACKEND: str = Field(default="sparql", alias="SUBSTRATE_STORE_BACKEND")
-    SUBSTRATE_GRAPH_QUERY_URL: str = Field(default="", alias="SUBSTRATE_GRAPH_QUERY_URL")
-    SUBSTRATE_GRAPH_UPDATE_URL: str = Field(default="", alias="SUBSTRATE_GRAPH_UPDATE_URL")
-    SUBSTRATE_GRAPH_URI: str = Field(default="", alias="SUBSTRATE_GRAPH_URI")
-    SUBSTRATE_GRAPH_TIMEOUT_SEC: float = Field(default=5.0, alias="SUBSTRATE_GRAPH_TIMEOUT_SEC")
-    SUBSTRATE_GRAPH_USER: str = Field(default="", alias="SUBSTRATE_GRAPH_USER")
-    SUBSTRATE_GRAPH_PASS: str = Field(default="", alias="SUBSTRATE_GRAPH_PASS")
-    SUBSTRATE_GRAPHDB_ENDPOINT: str = Field(default="", alias="SUBSTRATE_GRAPHDB_ENDPOINT")
-    SUBSTRATE_GRAPHDB_GRAPH_URI: str = Field(default="", alias="SUBSTRATE_GRAPHDB_GRAPH_URI")
-    SUBSTRATE_GRAPHDB_TIMEOUT_SEC: float = Field(default=5.0, alias="SUBSTRATE_GRAPHDB_TIMEOUT_SEC")
-    SUBSTRATE_GRAPHDB_USER: str = Field(default="", alias="SUBSTRATE_GRAPHDB_USER")
-    SUBSTRATE_GRAPHDB_PASS: str = Field(default="", alias="SUBSTRATE_GRAPHDB_PASS")
+    # SUBSTRATE_GRAPH_*/SUBSTRATE_GRAPHDB_* (SPARQL/GraphDB substrate backend
+    # config) removed 2026-07-23: confirmed zero real consumers in Hub's own
+    # code, and Hub's live SUBSTRATE_STORE_BACKEND=falkor means
+    # orion/substrate/graphdb_store.py's sparql/graphdb backend construction
+    # paths are provably unreachable for Hub's real running config -- the
+    # same shared module's Falkor path is what's actually live. The
+    # one-shot demo script that required these (seed_substrate_graphdb.py,
+    # itself requiring SUBSTRATE_STORE_BACKEND=graphdb) is deleted alongside
+    # this. Not touching orion/substrate/graphdb_store.py itself (shared
+    # module, other services/backends may still use it) or
+    # SUBSTRATE_STORE_BACKEND (the real, live Falkor selector).
 
     # --- Chat Grammar Substrate Lane ---
     PUBLISH_HUB_CHAT_GRAMMAR: bool = Field(default=True, alias="PUBLISH_HUB_CHAT_GRAMMAR")

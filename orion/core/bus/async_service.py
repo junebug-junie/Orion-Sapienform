@@ -362,7 +362,12 @@ class OrionBusAsync:
                 # completed with zero observable latency, since success here just returned
                 # `fut`'s result silently. This line closes that gap -- same log shape as
                 # the inline path's own "reply received" line, so a parser doesn't need to
-                # special-case the two RPC paths.
+                # special-case the two RPC paths. Same log-call shape (str/str/float args,
+                # %s/%.1f format) as the 4 other logger.info() calls already on this exact
+                # path, so no new overhead profile is introduced -- a formal before/after
+                # benchmark is scoped to the design spec's next patch step (the in-memory
+                # aggregator), not this one, since that step is where a second per-call
+                # code path actually gets added.
                 logger.info(
                     "[rpc] reply received corr_id=%s reply_channel=%s path=worker elapsed_ms=%.1f",
                     corr,

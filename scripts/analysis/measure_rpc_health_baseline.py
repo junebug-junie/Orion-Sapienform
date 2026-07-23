@@ -85,12 +85,21 @@ class RpcCallRecord:
 
 @dataclass
 class RpcHealthBaseline:
+    """Success latency and timeout elapsed-time are kept as two separate series,
+    never blended: a timeout's elapsed_ms is how long that specific caller was
+    configured to wait (its own timeout_sec, confirmed live to vary wildly across
+    call sites -- 20s/60s/420s/1280s all observed) before giving up, not real
+    round-trip latency. Reporting them together would let a handful of long-timeout
+    call sites dominate a "latency" percentile with numbers that are really just
+    their configured ceiling, not measured service speed."""
+
     n_calls: int
     n_success: int
     n_timeout: int
     n_unresolved: int
-    latency_ms_all: list[float] = field(default_factory=list)
-    latency_by_path: dict[str, list[float]] = field(default_factory=dict)
+    success_latency_ms_all: list[float] = field(default_factory=list)
+    success_latency_by_path: dict[str, list[float]] = field(default_factory=dict)
+    timeout_elapsed_ms_all: list[float] = field(default_factory=list)
     channel_prefix_counts: dict[str, int] = field(default_factory=dict)
 
     @property
@@ -157,12 +166,18 @@ def compute_baseline(records: dict[str, RpcCallRecord]) -> RpcHealthBaseline:
     n_timeout = sum(1 for r in records.values() if r.outcome == "timeout")
     n_unresolved = sum(1 for r in records.values() if r.outcome is None)
 
-    latency_ms_all: list[float] = [r.latency_ms for r in records.values() if r.latency_ms is not None]
-    latency_by_path: dict[str, list[float]] = {}
+    success_latency_ms_all: list[float] = [
+        r.latency_ms for r in records.values() if r.outcome == "success" and r.latency_ms is not None
+    ]
+    success_latency_by_path: dict[str, list[float]] = {}
     for r in records.values():
-        if r.latency_ms is None or r.path is None:
+        if r.outcome != "success" or r.latency_ms is None or r.path is None:
             continue
-        latency_by_path.setdefault(r.path, []).append(r.latency_ms)
+        success_latency_by_path.setdefault(r.path, []).append(r.latency_ms)
+
+    timeout_elapsed_ms_all: list[float] = [
+        r.latency_ms for r in records.values() if r.outcome == "timeout" and r.latency_ms is not None
+    ]
 
     channel_prefix_counts: dict[str, int] = {}
     for r in records.values():
@@ -174,8 +189,9 @@ def compute_baseline(records: dict[str, RpcCallRecord]) -> RpcHealthBaseline:
         n_success=n_success,
         n_timeout=n_timeout,
         n_unresolved=n_unresolved,
-        latency_ms_all=latency_ms_all,
-        latency_by_path=latency_by_path,
+        success_latency_ms_all=success_latency_ms_all,
+        success_latency_by_path=success_latency_by_path,
+        timeout_elapsed_ms_all=timeout_elapsed_ms_all,
         channel_prefix_counts=channel_prefix_counts,
     )
 
@@ -274,11 +290,17 @@ def render_report(*, since: str, containers: tuple[str, ...], baseline: RpcHealt
         lines.append(f"- Timeout rate (of resolved calls): {baseline.timeout_rate * 100:.2f}%")
     lines.append("")
 
-    if baseline.latency_ms_all:
-        sorted_all = sorted(baseline.latency_ms_all)
+    # Success latency and timeout elapsed-time are reported as two separate
+    # sections, never blended -- a timeout's elapsed_ms is that caller's own
+    # configured timeout_sec ceiling (confirmed live to range 20s-1280s across
+    # real call sites), not measured round-trip speed. Blending them lets a
+    # handful of long-timeout call sites masquerade as "slow replies" in a
+    # latency percentile.
+    if baseline.success_latency_ms_all:
+        sorted_all = sorted(baseline.success_latency_ms_all)
         lines.extend(
             [
-                "## Latency distribution (all resolved calls with a real elapsed_ms)",
+                "## Success latency distribution (real round-trip time, successful calls only)",
                 "",
                 f"- n: {len(sorted_all)}",
                 f"- min: {_fmt(sorted_all[0])}ms",
@@ -290,22 +312,37 @@ def render_report(*, since: str, containers: tuple[str, ...], baseline: RpcHealt
             ]
         )
     else:
-        lines.extend(["## Latency distribution", "", "No resolved calls with latency data in this window.", ""])
+        lines.extend(["## Success latency distribution", "", "No successful calls with latency data in this window.", ""])
 
-    lines.extend(["## Latency by RPC path", ""])
-    if not baseline.latency_by_path:
+    lines.extend(["## Success latency by RPC path", ""])
+    if not baseline.success_latency_by_path:
         lines.append(
-            "No per-path latency data available. If this window predates the "
+            "No per-path success-latency data available. If this window predates the "
             "2026-07-23 worker-path logging fix, this is expected for path=worker "
             "specifically -- see this script's module docstring."
         )
-    for path_name, values in sorted(baseline.latency_by_path.items()):
+    for path_name, values in sorted(baseline.success_latency_by_path.items()):
         sv = sorted(values)
         lines.append(
             f"- `path={path_name}`: n={len(sv)}, p50={_fmt(_percentile(sv, 0.5))}ms, "
             f"p95={_fmt(_percentile(sv, 0.95))}ms, max={_fmt(sv[-1])}ms"
         )
     lines.append("")
+
+    if baseline.timeout_elapsed_ms_all:
+        sorted_to = sorted(baseline.timeout_elapsed_ms_all)
+        lines.extend(
+            [
+                "## Timeout elapsed-time (NOT latency -- this is each caller's own configured "
+                "`timeout_sec` ceiling, i.e. how long it waited before giving up, not how fast "
+                "the bus is)",
+                "",
+                f"- n: {len(sorted_to)}",
+                f"- min: {_fmt(sorted_to[0])}ms",
+                f"- max: {_fmt(sorted_to[-1])}ms",
+                "",
+            ]
+        )
 
     lines.extend(["## Real request-channel breakdown (top 20 by call count)", "", "| channel | calls |", "| --- | --- |"])
     for channel, count in sorted(baseline.channel_prefix_counts.items(), key=lambda kv: -kv[1])[:20]:

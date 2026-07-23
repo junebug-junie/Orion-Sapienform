@@ -95,11 +95,23 @@ def test_compute_baseline_counts_success_and_timeout() -> None:
     assert baseline.timeout_rate == 1 / 3
 
 
-def test_compute_baseline_latency_by_path() -> None:
+def test_compute_baseline_success_latency_by_path() -> None:
     lines = _worker_success_lines("a", 100.0)
     records = mod.parse_log_lines(lines)
     baseline = mod.compute_baseline(records)
-    assert baseline.latency_by_path == {"worker": [100.0]}
+    assert baseline.success_latency_by_path == {"worker": [100.0]}
+
+
+def test_compute_baseline_keeps_timeout_elapsed_separate_from_success_latency() -> None:
+    """A timeout's elapsed_ms is that caller's own timeout_sec ceiling, not real
+    latency -- must never appear in success_latency_ms_all/success_latency_by_path."""
+    lines = _worker_success_lines("a", 100.0) + _timeout_lines("b", 420000.0)
+    records = mod.parse_log_lines(lines)
+    baseline = mod.compute_baseline(records)
+    assert baseline.success_latency_ms_all == [100.0]
+    assert baseline.timeout_elapsed_ms_all == [420000.0]
+    assert 420000.0 not in baseline.success_latency_ms_all
+    assert baseline.success_latency_by_path == {"worker": [100.0]}
 
 
 def test_compute_baseline_channel_prefix_counts() -> None:
@@ -124,7 +136,16 @@ def test_percentile_empty_returns_none() -> None:
 def test_render_report_flags_no_latency_data() -> None:
     baseline = mod.compute_baseline({})
     report = mod.render_report(since="24h", containers=("c1",), baseline=baseline)
-    assert "No resolved calls with latency data" in report
+    assert "No successful calls with latency data" in report
+
+
+def test_render_report_labels_timeout_elapsed_distinctly_from_latency() -> None:
+    lines = _timeout_lines("a", 420000.0)
+    records = mod.parse_log_lines(lines)
+    baseline = mod.compute_baseline(records)
+    report = mod.render_report(since="24h", containers=("c1",), baseline=baseline)
+    assert "Timeout elapsed-time (NOT latency" in report
+    assert "420000.0" not in report.split("## Success latency distribution")[1].split("## Timeout")[0]
 
 
 def test_render_report_notes_cross_service_coverage_with_multiple_channels() -> None:

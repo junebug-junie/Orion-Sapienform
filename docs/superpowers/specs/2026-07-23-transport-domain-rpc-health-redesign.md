@@ -180,8 +180,17 @@ implementation time, same as every other signal built this session:
 2. Once real variance is confirmed non-degenerate and volume/cadence questions (Missing
    Questions 3-4) are answered with real numbers, build the in-memory aggregator inside
    `rpc_request()`, benchmarked for zero added hot-path overhead.
-3. Wire the periodic flush into `orion-substrate-runtime`'s existing tick infrastructure,
-   shadow-only -- no live consumer.
+3. **Superseded 2026-07-23** -- wire the periodic flush into `orion-signal-gateway`'s
+   existing organ-adapter machinery, not `orion-substrate-runtime`'s tick loop as originally
+   written here. Reasoning: `orion-signal-gateway` already ingests 24 organs via
+   eavesdropping on bus channels they publish for their own operation, and reuses that
+   registry/normalization path rather than adding a second, parallel ingestion mechanism
+   through substrate-runtime. See
+   `docs/superpowers/specs/2026-07-23-rpc-health-signal-gateway-wiring-design.md` for the
+   full design, including a real gotcha found while writing it: 9 services (including both
+   `cortex-exec` and `cortex-orch`) route real RPC traffic through a `fork_rpc_client()`
+   child `OrionBusAsync` instance, not the chassis's own `svc.bus` -- naively draining
+   `svc.bus.get_rpc_health_snapshot()` would silently report an always-empty aggregator.
 4. Only after real, live-verified data exists, decide the old `transport_pressure` family's
    fate (Missing Question 5) and whether/how to correct the charter's §9b item 3 claim.
 
@@ -202,6 +211,9 @@ implementation time, same as every other signal built this session:
   fixing it to "a separate follow-up effort" -- this spec is that follow-up. Zero file/scope
   overlap otherwise (that spec's Patch A/B touch `orion/harness/`, `execution_loop/`, and
   field-digester's execution-domain wiring; nothing here does).
+- `docs/superpowers/specs/2026-07-23-rpc-health-signal-gateway-wiring-design.md` (Step 3,
+  design-only) -- the forward continuation of this spec's Recommended-next-patch item 3,
+  now scoped to `orion-signal-gateway` instead of `orion-substrate-runtime`.
 
   **Checked for a hidden data-source collision, found none, but surfaced a real scope
   disclosure worth stating plainly:** that spec's Patch B (`harness_rpc_timeout`) detects Hub's

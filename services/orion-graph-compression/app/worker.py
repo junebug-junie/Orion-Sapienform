@@ -117,14 +117,17 @@ class CompressionWorker:
             triples = EpisodicFederator(**federator_kwargs).fetch()
             if s.graph_compression_episodic_falkor_enabled:
                 # Additive, not a swap: FalkorEpisodicFederator only covers
-                # the orion_recall (ChatTurn/Tag/Entity) slice of what the
-                # SPARQL federator reads (collapse/cognition/metacog have no
-                # Falkor equivalent at all). orion:chat:social was retired
-                # from the SPARQL side entirely 2026-07-23 -- not "pending
-                # Falkor coverage," just gone (live-verified pure redundancy
-                # with Postgres social_room_turns); see
-                # episodic_falkor.py's docstring for the live coverage
-                # numbers. Union so verifying the rest of this live can
+                # the orion_recall (ChatTurn/Tag/Entity/CollapseEvent) slice
+                # of what the SPARQL federator reads. cognition/metacog have
+                # no Falkor equivalent at all (dead writers, frozen history).
+                # orion:chat:social and orion:collapse were both retired from
+                # the SPARQL side entirely, 2026-07-23 -- not "pending Falkor
+                # coverage," just gone (social: live-verified pure redundancy
+                # with Postgres social_room_turns; collapse: live-verified
+                # exactly 0 triples ever, a real producer's write path that
+                # simply never fired -- see episodic.py's own comment for the
+                # gate it traced). See episodic_falkor.py's docstring for the
+                # live coverage numbers. Union so verifying the rest of this live can
                 # never regress existing clustering signal.
                 triples = list(set(triples) | set(FalkorEpisodicFederator().fetch()))
             kind = "community"

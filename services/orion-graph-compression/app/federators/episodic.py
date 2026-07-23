@@ -10,9 +10,32 @@ logger = logging.getLogger("orion.graph-compression.federator.episodic")
 EPISODIC_GRAPHS = [
     "http://conjourney.net/graph/orion/chat",
     "http://conjourney.net/graph/orion/enrichment",
-    "http://conjourney.net/graph/orion/collapse",
     "http://conjourney.net/graph/orion/cognition",
     "http://conjourney.net/graph/orion/metacog",
+    # orion/collapse removed 2026-07-23: live SPARQL COUNT confirmed exactly
+    # 0 triples, ever -- not "low," zero, and structurally guaranteed to
+    # stay that way, not just rare. orion-rdf-writer's collapse.mirror.entry
+    # handler (_build_raw_collapse_graph) exists and has its own
+    # observer==Juniper/dense gate, but that gate is unreachable: rdf-writer
+    # only subscribes to orion:collapse:intake (CHANNEL_EVENTS_COLLAPSE),
+    # which carries kind="collapse.mirror.intake" from orion-cortex-exec.
+    # The only real producer of kind="collapse.mirror.entry" is
+    # orion-collapse-mirror/app/bus_runtime.py, which publishes it to a
+    # DIFFERENT channel, orion:collapse:triage -- registered in
+    # channels.yaml with consumer_services orion-meta-tags/orion-vector-
+    # writer/orion-sql-writer/orion-actions, NOT orion-rdf-writer. So the
+    # dispatch branch that would write this graph never actually receives
+    # a matching envelope at all, independent of the observer/dense gate.
+    # Graph-name resolution confirmed correct separately
+    # (rdf_store.py::normalize_graph_name maps "orion:collapse" to this
+    # exact URI) -- not a naming-mismatch bug either. Since it's provably
+    # always been empty, EpisodicFederator's read of it has never
+    # contributed any clustering signal; removing it changes nothing about
+    # today's real clusters. (The channel/kind mismatch itself is a
+    # separate, real bug in orion-rdf-writer worth its own follow-up if
+    # anyone ever wants this write path alive -- not fixed here, since the
+    # whole point of this series is retiring Fuseki reads, not reviving
+    # Fuseki writes.)
     # orion/chat/social removed 2026-07-23: live-verified pure redundancy.
     # Postgres social_room_turns already owns richer content (33 rows,
     # actual prompt/response/text -- the Fuseki triples were metadata-only,

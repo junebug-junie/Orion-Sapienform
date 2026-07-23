@@ -13,6 +13,12 @@ logger = logging.getLogger("orion.graph-compression.stale_listener")
 _GRAPH_TO_SCOPE = {
     "orion:chat": "episodic",
     "orion:enrichment": "episodic",
+    # orion:collapse: EpisodicFederator no longer reads this graph (retired
+    # 2026-07-23, see episodic.py) -- this mapping is fully inert, not just
+    # wastefully conservative like orion:chat:social's, since no rdf:enqueue
+    # event naming this graph is even reachable (confirmed: orion-rdf-writer
+    # isn't subscribed to the channel that ever carries collapse.mirror.entry).
+    # Left in place rather than removed since it's harmless either way.
     "orion:collapse": "episodic",
     "orion:cognition": "episodic",
     "orion:metacog": "episodic",

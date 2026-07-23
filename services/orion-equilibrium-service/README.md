@@ -81,6 +81,31 @@ Added 2026-07-21 -- see `docs/superpowers/design/2026-07-18-collapse-mirror-meta
 | `EQUILIBRIUM_METACOG_TELEMETRY_ANOMALY_THRESHOLD_MULTIPLIER` | `3.0` | Multiplier applied to the encoder's own `recon_error_p95` |
 | `CHANNEL_FIELD_CHANNEL_ANOMALY_SCORE` | `orion:field_channel:anomaly_score` | Source channel (single consumer: this service) |
 
+### chat_turn metacog trigger
+
+When `EQUILIBRIUM_METACOG_CHAT_TURN_TRIGGER_ENABLE=true`, equilibrium subscribes to `orion:thought:artifact` (`ThoughtEventV1`, published by `orion-thought` for every chat turn), `orion:harness:run:artifact` (`HarnessRunV1`, published by `orion-harness-governor` on every real `handle_harness_run_request` exit path), and `orion:grammar:event` filtered to two timeout atoms. A Redis-backed correlator (`app/chat_turn_metacog_gate.py::ChatTurnCorrelator`, key `orion:equilibrium:chat_turn_corr:<correlation_id>`, TTL `EQUILIBRIUM_METACOG_CHAT_TURN_CORRELATOR_TTL_SEC`) accumulates evidence per turn and fires once it's terminal.
+
+Unlike the other triggers, this one reuses two already-registered schemas instead of a purpose-built payload -- no new bus contract, since the accumulator is ephemeral internal state, not a durable artifact. Fires `trigger_kind=chat_turn` when any of these real conditions hold (see the gate-condition table in `docs/superpowers/design/2026-07-18-collapse-mirror-metacog-redesign.md`'s chat_turn spec section): `thought_event.disposition != "proceed"`, `thought_event.boundary_register is True`, `run_artifact.reflection.alignment_verdict != "aligned"`, `run_artifact.reflection.strain_unresolved is True`, `run_artifact.substrate_appraisal.surprise_level >= EQUILIBRIUM_METACOG_CHAT_TURN_SURPRISE_THRESHOLD`, `run_artifact.compliance_verdict != "completed"`, `run_artifact.exit_code not in (0, None)`, `run_artifact.finalize_degraded_reason is not None`, or a timeout (see below).
+
+**Terminal evidence, four cases** (no more evidence will ever arrive for that `correlation_id`, so the correlator evaluates and clears immediately instead of waiting out the TTL):
+- `run_artifact` arrived -- the turn ran to completion.
+- `exec_turn_timeout` -- the harness-governor RPC never returned (`orion/hub/turn_orchestrator.py`'s `if run is None:` branch, Patch B / PR #1287).
+- `stance_react_timeout` -- the *earlier* `ThoughtClient.react()` RPC itself never returned to Hub (`orion/hub/turn_orchestrator.py`'s `if thought is None:` branch); Hub never calls the harness governor on this path either.
+- `thought_event.disposition in ("defer", "refuse")` -- Hub short-circuits before calling the harness governor.
+
+Added 2026-07-22, ships **disabled by default** -- new trigger, not yet live-verified against real `orion_metacog` rows. See acceptance checks in `docs/superpowers/design/2026-07-18-collapse-mirror-metacog-redesign.md`.
+
+**Operational note**: unlike the other trigger kinds here (rare/periodic), `chat_turn` is designed to fire on essentially every remarkable chat turn. `_publish_metacog_trigger`'s cooldown (`EQUILIBRIUM_METACOG_COOLDOWN_SEC`, default 30s) is a single global window shared across *all* trigger kinds and silently drops (logs only, does not queue) anything that fires during it -- two remarkable turns close together will now hit that far more often than any other trigger here has. Worth watching once this flag is live; not addressed by this trigger's own code.
+
+| Env | Default | Purpose |
+|-----|---------|---------|
+| `EQUILIBRIUM_METACOG_CHAT_TURN_TRIGGER_ENABLE` | `false` | Master gate for the chat_turn trigger |
+| `EQUILIBRIUM_METACOG_CHAT_TURN_CORRELATOR_TTL_SEC` | `600` | Correlator entry TTL (leak backstop for non-terminal evidence) |
+| `EQUILIBRIUM_METACOG_CHAT_TURN_SURPRISE_THRESHOLD` | `0.7` | Minimum `substrate_appraisal.surprise_level` to fire |
+| `CHANNEL_THOUGHT_ARTIFACT` | `orion:thought:artifact` | Source channel (wildcard consumers) |
+| `CHANNEL_HARNESS_RUN_ARTIFACT` | `orion:harness:run:artifact` | Source channel (wildcard consumers) |
+| `CHANNEL_GRAMMAR_EVENT` | `orion:grammar:event` | Source channel, filtered to `semantic_role in ("exec_turn_timeout", "stance_disposition")` |
+
 ---
 
 ## Quick start (copy/paste)

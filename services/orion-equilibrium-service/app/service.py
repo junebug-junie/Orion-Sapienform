@@ -375,15 +375,19 @@ class EquilibriumService(BaseChassis):
         thought_event: Dict[str, Any] | None = None,
         run_artifact: Dict[str, Any] | None = None,
         timed_out: bool = False,
+        timeout_reason: str | None = None,
     ) -> None:
         if not correlation_id or self._chat_turn_correlator is None:
             return
 
-        merged_thought, merged_run, merged_timed_out = await self._chat_turn_correlator.accumulate(
-            correlation_id=correlation_id,
-            thought_event=thought_event,
-            run_artifact=run_artifact,
-            timed_out=timed_out,
+        merged_thought, merged_run, merged_timed_out, merged_timeout_reason = (
+            await self._chat_turn_correlator.accumulate(
+                correlation_id=correlation_id,
+                thought_event=thought_event,
+                run_artifact=run_artifact,
+                timed_out=timed_out,
+                timeout_reason=timeout_reason,
+            )
         )
 
         if not is_chat_turn_evidence_terminal(
@@ -396,6 +400,7 @@ class EquilibriumService(BaseChassis):
             thought_event=merged_thought,
             run_artifact=merged_run,
             timed_out=merged_timed_out,
+            timeout_reason=merged_timeout_reason,
             zen_state="zen" if zen > 0.5 else "not_zen",
             pressure=distress,
             recall_enabled=settings.metacog_recall_enabled,
@@ -692,19 +697,37 @@ class EquilibriumService(BaseChassis):
                         ):
                             # orion:grammar:event is the canonical sql-writer
                             # ingress channel and carries many unrelated event
-                            # kinds -- only act on the governor-timeout signal
-                            # (services/orion-hub/scripts/grammar_emit.py::
-                            # build_turn_timeout_grammar_events, Patch B / PR
-                            # #1287), everything else is ignored here.
+                            # kinds -- only act on the two real timeout signals,
+                            # everything else is ignored here:
+                            #   exec_turn_timeout: the harness-governor RPC never
+                            #     returned (services/orion-hub/scripts/grammar_emit.py::
+                            #     build_turn_timeout_grammar_events, Patch B / PR #1287).
+                            #   stance_disposition + text_value=="stance_timeout":
+                            #     the *earlier* ThoughtClient.react() RPC never
+                            #     returned (orion/hub/turn_orchestrator.py's
+                            #     `if thought is None:` branch, same
+                            #     _publish_unified_turn_chat_grammar() call as every
+                            #     other stance_disposition atom). Both mean Hub gave
+                            #     up before ever reaching the harness governor, so
+                            #     run_artifact will never arrive for either.
                             atom = payload_dict.get("atom") if isinstance(payload_dict, dict) else None
                             semantic_role = atom.get("semantic_role") if isinstance(atom, dict) else None
+                            timeout_reason: str | None = None
                             if semantic_role == "exec_turn_timeout":
+                                timeout_reason = "exec_turn_timeout"
+                            elif semantic_role == "stance_disposition" and isinstance(atom, dict) and atom.get(
+                                "text_value"
+                            ) == "stance_timeout":
+                                timeout_reason = "stance_react_timeout"
+
+                            if timeout_reason is not None:
                                 correlation_id = str(payload_dict.get("correlation_id") or "")
                                 await self._handle_chat_turn_evidence(
                                     distress=distress,
                                     zen=zen,
                                     correlation_id=correlation_id,
                                     timed_out=True,
+                                    timeout_reason=timeout_reason,
                                 )
 
                 except Exception as e:

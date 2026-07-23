@@ -68,14 +68,64 @@ def test_unremarkable_turn_fires_nothing():
     assert fired == []
 
 
-def test_timeout_fires_and_short_circuits():
+def test_timeout_fires_with_reason():
     fired = evaluate_chat_turn_gate_conditions(
-        thought_event=_thought_event(),
+        thought_event=None,
+        run_artifact=None,
+        timed_out=True,
+        timeout_reason="exec_turn_timeout",
+        surprise_threshold=0.7,
+    )
+    assert fired == ["timeout=exec_turn_timeout"]
+
+
+def test_stance_react_timeout_fires_with_reason():
+    fired = evaluate_chat_turn_gate_conditions(
+        thought_event=None,
+        run_artifact=None,
+        timed_out=True,
+        timeout_reason="stance_react_timeout",
+        surprise_threshold=0.7,
+    )
+    assert fired == ["timeout=stance_react_timeout"]
+
+
+def test_timeout_without_reason_falls_back():
+    fired = evaluate_chat_turn_gate_conditions(
+        thought_event=None,
         run_artifact=None,
         timed_out=True,
         surprise_threshold=0.7,
     )
-    assert fired == ["governor_timeout"]
+    assert fired == ["timeout=unknown"]
+
+
+def test_timeout_preserves_already_accumulated_boundary_register():
+    """A thought_event already accumulated (e.g. exec_turn_timeout arriving
+    after a normal ThoughtEventV1) must not lose its own conditions just
+    because run_artifact will never arrive."""
+    fired = evaluate_chat_turn_gate_conditions(
+        thought_event=_thought_event(boundary_register=True),
+        run_artifact=None,
+        timed_out=True,
+        timeout_reason="exec_turn_timeout",
+        surprise_threshold=0.7,
+    )
+    assert fired == ["timeout=exec_turn_timeout", "boundary_register=true"]
+
+
+def test_timeout_short_circuits_run_artifact_fields_even_if_present():
+    """run_artifact should never actually be non-None alongside timed_out=True
+    in real usage (they're mutually exclusive terminal paths), but the
+    function must not evaluate run_artifact-only conditions in that case."""
+    fired = evaluate_chat_turn_gate_conditions(
+        thought_event=_thought_event(),
+        run_artifact=_run_artifact(exit_code=1),
+        timed_out=True,
+        timeout_reason="exec_turn_timeout",
+        surprise_threshold=0.7,
+    )
+    assert fired == ["timeout=exec_turn_timeout"]
 
 
 def test_deferred_disposition_fires():
@@ -303,15 +353,51 @@ def test_build_trigger_on_timeout_has_null_run_artifact_fields():
         thought_event=None,
         run_artifact=None,
         timed_out=True,
+        timeout_reason="exec_turn_timeout",
         zen_state="not_zen",
         pressure=0.5,
         recall_enabled=False,
         surprise_threshold=0.7,
     )
     assert trigger is not None
-    assert trigger.upstream["fired_conditions"] == ["governor_timeout"]
+    assert trigger.upstream["fired_conditions"] == ["timeout=exec_turn_timeout"]
+    assert trigger.upstream["timeout_reason"] == "exec_turn_timeout"
     assert trigger.upstream["compliance_verdict"] is None
     assert trigger.upstream["disposition"] is None
+
+
+def test_build_trigger_on_stance_react_timeout():
+    trigger = build_chat_turn_metacog_trigger(
+        correlation_id="corr-1",
+        thought_event=None,
+        run_artifact=None,
+        timed_out=True,
+        timeout_reason="stance_react_timeout",
+        zen_state="not_zen",
+        pressure=0.5,
+        recall_enabled=False,
+        surprise_threshold=0.7,
+    )
+    assert trigger is not None
+    assert trigger.upstream["fired_conditions"] == ["timeout=stance_react_timeout"]
+    assert trigger.upstream["timeout_reason"] == "stance_react_timeout"
+
+
+def test_build_trigger_on_timeout_preserves_boundary_register_in_upstream():
+    trigger = build_chat_turn_metacog_trigger(
+        correlation_id="corr-1",
+        thought_event=_thought_event(boundary_register=True),
+        run_artifact=None,
+        timed_out=True,
+        timeout_reason="exec_turn_timeout",
+        zen_state="not_zen",
+        pressure=0.5,
+        recall_enabled=False,
+        surprise_threshold=0.7,
+    )
+    assert trigger is not None
+    assert "boundary_register=true" in trigger.upstream["fired_conditions"]
+    assert trigger.upstream["boundary_register"] is True
 
 
 def test_build_trigger_empty_correlation_id_yields_empty_signal_refs():
@@ -351,20 +437,22 @@ async def test_correlator_accumulates_across_two_calls_then_terminal():
     redis = _FakeRedis()
     correlator = ChatTurnCorrelator(redis, ttl_seconds=600)
 
-    thought, run, timed_out = await correlator.accumulate(
+    thought, run, timed_out, timeout_reason = await correlator.accumulate(
         correlation_id="corr-1", thought_event=_thought_event()
     )
     assert thought is not None
     assert run is None
+    assert timeout_reason is None
     assert not is_chat_turn_evidence_terminal(thought_event=thought, run_artifact=run, timed_out=timed_out)
     # Mid-flight state persisted (not cleared) since not yet terminal.
     assert redis.store
 
-    thought2, run2, timed_out2 = await correlator.accumulate(
+    thought2, run2, timed_out2, timeout_reason2 = await correlator.accumulate(
         correlation_id="corr-1", run_artifact=_run_artifact(exit_code=1)
     )
     assert thought2 is not None  # carried over from the first call
     assert run2 is not None
+    assert timeout_reason2 is None
     assert is_chat_turn_evidence_terminal(thought_event=thought2, run_artifact=run2, timed_out=timed_out2)
     # Terminal evidence is consumed -- no leaked key.
     assert not redis.store
@@ -375,7 +463,7 @@ async def test_correlator_clears_immediately_on_defer_without_waiting_for_run():
     redis = _FakeRedis()
     correlator = ChatTurnCorrelator(redis, ttl_seconds=600)
 
-    thought, run, timed_out = await correlator.accumulate(
+    thought, run, timed_out, _timeout_reason = await correlator.accumulate(
         correlation_id="corr-1", thought_event=_thought_event(disposition="defer")
     )
     assert is_chat_turn_evidence_terminal(thought_event=thought, run_artifact=run, timed_out=timed_out)
@@ -387,10 +475,61 @@ async def test_correlator_clears_on_timeout_even_with_no_prior_thought_event():
     redis = _FakeRedis()
     correlator = ChatTurnCorrelator(redis, ttl_seconds=600)
 
-    thought, run, timed_out = await correlator.accumulate(correlation_id="corr-1", timed_out=True)
+    thought, run, timed_out, timeout_reason = await correlator.accumulate(
+        correlation_id="corr-1", timed_out=True, timeout_reason="exec_turn_timeout"
+    )
     assert timed_out is True
+    assert timeout_reason == "exec_turn_timeout"
     assert is_chat_turn_evidence_terminal(thought_event=thought, run_artifact=run, timed_out=timed_out)
     assert not redis.store
+
+
+@pytest.mark.asyncio
+async def test_correlator_clears_on_stance_react_timeout():
+    """The earlier-in-the-pipeline gap (Finding 1): ThoughtClient.react() itself
+    never returns to Hub, so Hub gives up before ever calling the harness
+    governor -- run_artifact will never arrive. Must fire on this too, not
+    just the later exec_turn_timeout case."""
+    redis = _FakeRedis()
+    correlator = ChatTurnCorrelator(redis, ttl_seconds=600)
+
+    thought, run, timed_out, timeout_reason = await correlator.accumulate(
+        correlation_id="corr-1", timed_out=True, timeout_reason="stance_react_timeout"
+    )
+    assert timeout_reason == "stance_react_timeout"
+    assert is_chat_turn_evidence_terminal(thought_event=thought, run_artifact=run, timed_out=timed_out)
+    assert not redis.store
+
+
+@pytest.mark.asyncio
+async def test_correlator_preserves_boundary_register_across_exec_turn_timeout():
+    """Regression for Finding 4: a thought_event accumulated before a later
+    exec_turn_timeout must not lose its boundary_register/disposition signal."""
+    redis = _FakeRedis()
+    correlator = ChatTurnCorrelator(redis, ttl_seconds=600)
+
+    await correlator.accumulate(
+        correlation_id="corr-1", thought_event=_thought_event(boundary_register=True)
+    )
+    thought, run, timed_out, timeout_reason = await correlator.accumulate(
+        correlation_id="corr-1", timed_out=True, timeout_reason="exec_turn_timeout"
+    )
+    assert thought is not None
+    assert thought["boundary_register"] is True
+    trigger = build_chat_turn_metacog_trigger(
+        correlation_id="corr-1",
+        thought_event=thought,
+        run_artifact=run,
+        timed_out=timed_out,
+        timeout_reason=timeout_reason,
+        zen_state="zen",
+        pressure=0.1,
+        recall_enabled=False,
+        surprise_threshold=0.7,
+    )
+    assert trigger is not None
+    assert "boundary_register=true" in trigger.upstream["fired_conditions"]
+    assert "timeout=exec_turn_timeout" in trigger.upstream["fired_conditions"]
 
 
 @pytest.mark.asyncio
@@ -398,6 +537,8 @@ async def test_correlator_noop_on_empty_correlation_id():
     redis = _FakeRedis()
     correlator = ChatTurnCorrelator(redis, ttl_seconds=600)
 
-    thought, run, timed_out = await correlator.accumulate(correlation_id="", thought_event=_thought_event())
+    thought, run, timed_out, timeout_reason = await correlator.accumulate(
+        correlation_id="", thought_event=_thought_event()
+    )
     assert thought is not None
     assert not redis.store

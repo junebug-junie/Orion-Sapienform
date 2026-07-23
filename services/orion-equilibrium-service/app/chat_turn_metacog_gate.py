@@ -6,21 +6,34 @@ gate-condition table.
 
 Accumulates real evidence per correlation_id -- a ThoughtEventV1
 (orion:thought:artifact), a HarnessRunV1 (orion:harness:run:artifact), and/or
-a governor-timeout GrammarEventV1 (orion:grammar:event, semantic_role ==
-"exec_turn_timeout", Patch B / PR #1287) -- in a short-TTL Redis key, and
-fires a "chat_turn" MetacogTriggerV1 once the evidence is terminal (no more
-evidence will ever arrive for that correlation_id) AND at least one real gate
-condition is true. No new Pydantic schema: the accumulator holds plain dicts
-of the already-registered ThoughtEventV1/HarnessRunV1 shapes, since it is
-ephemeral internal state, not a durable artifact.
+a timeout GrammarEventV1 (orion:grammar:event) -- in a short-TTL Redis key,
+and fires a "chat_turn" MetacogTriggerV1 once the evidence is terminal (no
+more evidence will ever arrive for that correlation_id) AND at least one real
+gate condition is true. No new Pydantic schema: the accumulator holds plain
+dicts of the already-registered ThoughtEventV1/HarnessRunV1 shapes, since it
+is ephemeral internal state, not a durable artifact.
 
-Terminal evidence, three cases:
+Terminal evidence, four cases:
 - run_artifact arrived -- the turn ran to completion on one of HarnessRunV1's
   real exit paths (see orion/harness/finalize.py); every gate condition is
   evaluable.
-- timed_out -- the governor RPC never returned at all
-  (orion/hub/turn_orchestrator.py's `if run is None:` branch); run_artifact
-  will never be published for this correlation_id.
+- exec_turn_timeout -- the harness-governor RPC never returned at all
+  (orion/hub/turn_orchestrator.py's `if run is None:` branch, Patch B / PR
+  #1287, semantic_role == "exec_turn_timeout"); run_artifact will never be
+  published for this correlation_id.
+- stance_react_timeout -- the *earlier* ThoughtClient.react() RPC itself
+  never returned to Hub (orion/hub/turn_orchestrator.py's `if thought is
+  None:` branch, ~line 416, semantic_role == "stance_disposition" with
+  text_value == "stance_timeout"). Hub gives up and returns without ever
+  calling the harness governor, so run_artifact will never arrive either --
+  same shape of gap as exec_turn_timeout, one step earlier in the pipeline.
+  Note orion-thought's handle_stance_react_request still runs to completion
+  and eventually publishes a real ThoughtEventV1 on orion:thought:artifact
+  regardless of whether Hub already gave up waiting on it
+  (services/orion-thought/app/bus_listener.py) -- if that arrives before this
+  correlator has already fired on the timeout, its disposition/boundary_register
+  are folded in too; if it arrives after, it's lost (the entry was already
+  cleared). Not otherwise recoverable without holding entries open indefinitely.
 - thought_event.disposition in ("defer", "refuse") -- orion/hub/
   turn_orchestrator.py short-circuits BEFORE calling the harness governor on
   this path (line ~438), so run_artifact will never arrive either. Confirmed
@@ -63,6 +76,7 @@ def evaluate_chat_turn_gate_conditions(
     run_artifact: dict[str, Any] | None,
     timed_out: bool,
     surprise_threshold: float,
+    timeout_reason: str | None = None,
 ) -> list[str]:
     """Read fired condition names directly off real ThoughtEventV1/HarnessRunV1
     fields -- no invented booleans. Returns [] when nothing fired, which is the
@@ -71,9 +85,7 @@ def evaluate_chat_turn_gate_conditions(
     fired: list[str] = []
 
     if timed_out:
-        # run_artifact will never arrive on this path -- nothing else to evaluate.
-        fired.append("governor_timeout")
-        return fired
+        fired.append(f"timeout={timeout_reason}" if timeout_reason else "timeout=unknown")
 
     if thought_event is not None:
         disposition = thought_event.get("disposition")
@@ -82,7 +94,8 @@ def evaluate_chat_turn_gate_conditions(
         if thought_event.get("boundary_register") is True:
             fired.append("boundary_register=true")
 
-    if run_artifact is None:
+    if timed_out or run_artifact is None:
+        # run_artifact will never arrive once timed_out -- nothing else to evaluate.
         return fired
 
     reflection = run_artifact.get("reflection")
@@ -120,6 +133,7 @@ def build_chat_turn_metacog_trigger(
     thought_event: dict[str, Any] | None,
     run_artifact: dict[str, Any] | None,
     timed_out: bool,
+    timeout_reason: str | None = None,
     zen_state: str,
     pressure: float,
     recall_enabled: bool,
@@ -134,6 +148,7 @@ def build_chat_turn_metacog_trigger(
         thought_event=thought_event,
         run_artifact=run_artifact,
         timed_out=timed_out,
+        timeout_reason=timeout_reason,
         surprise_threshold=surprise_threshold,
     )
     if not fired_conditions:
@@ -153,8 +168,10 @@ def build_chat_turn_metacog_trigger(
         upstream={
             "fired_conditions": fired_conditions,
             "timed_out": timed_out,
+            "timeout_reason": timeout_reason,
             "disposition": (thought_event or {}).get("disposition"),
             "disposition_reasons": (thought_event or {}).get("disposition_reasons"),
+            "boundary_register": (thought_event or {}).get("boundary_register"),
             "compliance_verdict": (run_artifact or {}).get("compliance_verdict"),
             "grounding_status": (run_artifact or {}).get("grounding_status"),
             "exit_code": (run_artifact or {}).get("exit_code"),
@@ -222,22 +239,24 @@ class ChatTurnCorrelator:
         thought_event: dict[str, Any] | None = None,
         run_artifact: dict[str, Any] | None = None,
         timed_out: bool = False,
-    ) -> tuple[dict[str, Any] | None, dict[str, Any] | None, bool]:
+        timeout_reason: str | None = None,
+    ) -> tuple[dict[str, Any] | None, dict[str, Any] | None, bool, str | None]:
         """Merge new evidence into this correlation_id's accumulated state.
 
-        Returns the merged (thought_event, run_artifact, timed_out) tuple. The
-        caller decides whether to evaluate/fire based on
-        is_chat_turn_evidence_terminal against that same tuple, and is
-        responsible for calling clear() once it does (whether or not a
+        Returns the merged (thought_event, run_artifact, timed_out,
+        timeout_reason) tuple. The caller decides whether to evaluate/fire
+        based on is_chat_turn_evidence_terminal against that same tuple, and
+        is responsible for calling clear() once it does (whether or not a
         trigger actually fired -- terminal evidence is consumed either way).
         """
         if not correlation_id:
-            return thought_event, run_artifact, timed_out
+            return thought_event, run_artifact, timed_out, timeout_reason
 
         state = await self._load(correlation_id)
         merged_thought = thought_event if thought_event is not None else state.get("thought_event")
         merged_run = run_artifact if run_artifact is not None else state.get("run_artifact")
         merged_timed_out = bool(timed_out or state.get("timed_out", False))
+        merged_timeout_reason = timeout_reason or state.get("timeout_reason")
 
         if is_chat_turn_evidence_terminal(
             thought_event=merged_thought, run_artifact=merged_run, timed_out=merged_timed_out
@@ -250,7 +269,8 @@ class ChatTurnCorrelator:
                     "thought_event": merged_thought,
                     "run_artifact": merged_run,
                     "timed_out": merged_timed_out,
+                    "timeout_reason": merged_timeout_reason,
                 },
             )
 
-        return merged_thought, merged_run, merged_timed_out
+        return merged_thought, merged_run, merged_timed_out, merged_timeout_reason

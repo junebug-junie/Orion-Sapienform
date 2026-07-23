@@ -1074,6 +1074,13 @@ follow-up note, and `test_execution_run_fcc_channels_ignored_off_lane` /
   same single node channel, `transport_pressure`; `stream_depth_pressure`
   never appears under its own name in the corpus (confirmed `MISSING` in
   every row checked), it is folded into `transport_pressure` at the source.
+  **This is not a documented-and-abandoned problem** — a real replacement is
+  in progress, not a rename: see `services/orion-substrate-runtime/README.md`'s
+  "transport domain is one queue, not the bus" note for the correction to an
+  earlier (wrong) "dead consumer" theory, and
+  `docs/superpowers/specs/2026-07-23-transport-domain-rpc-health-redesign.md`
+  (PR #1290 shipped the first measurement step) for the redesign itself. Not
+  yet wired to replace this channel or feed the field-digester corpus.
 
 #### `contract_pressure`
 - **Meaning**: intended to represent pressure from bus/schema "contract"

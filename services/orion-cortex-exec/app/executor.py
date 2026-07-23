@@ -4055,6 +4055,15 @@ async def call_step_services(
 
                 ctx["trigger"] = trigger.model_dump(mode="json")
                 ctx["trigger_kind"] = trigger.trigger_kind
+                # trigger.upstream carries the real per-trigger-kind evidence (e.g.
+                # chat_turn's fired_conditions/alignment_notes/surprise_level,
+                # telemetry_anomaly's recon_loss/top_channels, relational's
+                # evidence/behavior_applied) -- previously built into every gate but
+                # never rendered into either prompt, only trigger.reason's compact
+                # string reached the LLM. See docs/superpowers/design/
+                # 2026-07-18-collapse-mirror-metacog-redesign.md's chat_turn spec,
+                # question 5.
+                ctx["trigger_upstream_json"] = json.dumps(trigger.upstream or {}, indent=2, default=str)
                 ctx["context_summary"] = summary_text
                 ctx["metacog_biometrics_cue"] = _metacog_biometrics_cue(ctx, phase="draft")
                 ctx["metacog_biometrics_cue_enrich"] = _metacog_biometrics_cue(ctx, phase="enrich")

@@ -24,6 +24,9 @@ Reason: {{ trigger.reason }}
 Pressure: {{ trigger.pressure|round(2) }}
 Zen state: {{ trigger.zen_state }}
 
+TRIGGER EVIDENCE (JSON; the specific fields that made this trigger fire; evidence cues only; do NOT paste into output):
+{{ trigger_upstream_json }}
+
 OBSERVATION CONTEXT (do NOT copy verbatim; use only as evidence cues):
 {{ context_summary }}
 

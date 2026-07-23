@@ -165,14 +165,19 @@ python orion/mood_arc/fit_encoder.py train \
   DLQ, **the only two real Redis Streams anywhere in the architecture** (everything else is
   pub/sub, which has no depth/backlog concept to measure). This is not general bus/transport
   health across services, despite the name — it's whether one specific service's result queue
-  backs up. Confirmed live: that queue has sat at a constant 91 unconsumed messages for the
-  entire post-second-cutoff corpus window (zero variance), so this contributor to the merge is
-  essentially always the smallest/least-surprising of the five, structurally, not because
-  transport is calm. See `services/orion-substrate-runtime/README.md`'s "transport domain scope"
-  note for the full trace. Doesn't change any cutoff or training recommendation above — flagged
-  so a future retrain's field-selection results for `prediction_error` aren't misread as "the
-  whole bus is healthy" when they're really "one queue is quiet, structurally the only thing
-  that can ever show up here."
+  backs up. Confirmed live: that queue has sat at a constant 91 messages for the entire
+  post-second-cutoff corpus window (zero variance) — **not** an unconsumed backlog (corrected
+  2026-07-23: `XINFO GROUPS` shows the real consumer group at `pending=0, lag=0`, fully caught
+  up; the Stream is simply never trimmed, so `XLEN` reflects lifetime message count since
+  2026-07-07, not a depth). Either way, this contributor to the merge is essentially always the
+  smallest/least-surprising of the five, structurally, not because transport is calm. See
+  `services/orion-substrate-runtime/README.md`'s "transport domain is one queue" note for the
+  full trace, including this correction and the redesign now in progress
+  (`docs/superpowers/specs/2026-07-23-transport-domain-rpc-health-redesign.md`, PR #1290) —
+  not yet wired to feed `prediction_error` or any mood-arc training channel; flagged here so a
+  future retrain's field-selection results for `prediction_error` aren't misread as "the whole
+  bus is healthy" when they're really "one queue is quiet, structurally the only thing that can
+  ever show up here."
 - **`catalog_drift_pressure` is now a structurally dead channel going forward (found
   2026-07-23):** unlike `prediction_error`, this one is an actual member of `v2`'s (and
   presumably `v3`'s) 15 selected channels. It counts streams the bus-observer watches that

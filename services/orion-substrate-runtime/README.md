@@ -320,10 +320,20 @@ short of it growing to tens of thousands of messages. Checked against the traini
 (2026-07-22T04:35:01Z, PR #1248's `mode="add"` fix), this same value was pinned at ~100,000 for 80%
 of the corpus's history — that saturation was the already-documented accumulation bug, not evidence
 this queue is normally busy. After the fix, it has been *exactly* 90 or 91, with zero movement, for
-the entire ~18h observed post-fix window — consistent with `orion:stream:world_pulse:run:result`
-having 91 messages sitting permanently unconsumed the whole time, not a healthy, actively-drained
-queue. Whether that backlog itself is expected (nobody reads this queue by design) or a dead
-consumer is a separate, not-yet-investigated question.
+the entire ~18h observed post-fix window.
+
+**Correction, 2026-07-23 — the "permanently unconsumed backlog" read above was wrong; do not carry
+it forward.** An earlier draft of this note speculated the constant 91 meant messages sitting
+unconsumed, with a dead consumer as an open question. Checked directly against the real consumer
+group and it's the opposite: `redis-cli -h <bus host> XINFO GROUPS
+orion:stream:world_pulse:run:result` → `cg:concept-induction`, `pending=0`, `lag=0` — every entry
+ever written has been read and acknowledged; the consumer is fully caught up, not stuck. The real
+explanation is simpler and more structural: this Stream has no `MAXLEN`/`XTRIM` policy, so `XLEN`
+returns the *cumulative message count since the stream's creation* (its oldest entry dates to
+2026-07-07), not a backlog depth. A perfectly healthy, zero-lag consumer and a genuinely dead one
+would produce an *identical* `XLEN` reading either way — this instrument cannot distinguish "backed
+up" from "healthy but never trimmed," independent of and in addition to the narrow single-queue
+scope problem above. Two compounding, separate defects, not one.
 
 **Update, 2026-07-23: the same root cause also governs the raw pressure channels, not just
 `prediction_error`.** `transport_pressure` (the raw current-level channel, distinct from
@@ -345,6 +355,21 @@ instruments, `orion/field/pressure.py::collect_field_channel_pressures()`) is al
 `field_channel_corpus.v1`'s trained mood-arc channels — this domain's contribution to that merge
 has the same narrow-scope caveat. See `orion/mood_arc/README.md` and this document's "fourth
 training-data quality cutoff" section for the corpus-facing side of this.
+
+**Redesign in progress, 2026-07-23 — this is not a documented-and-abandoned problem.**
+`docs/superpowers/specs/2026-07-23-transport-domain-rpc-health-redesign.md` proposes a real
+replacement rather than a rename: `OrionBusAsync.rpc_request()` (`orion/core/bus/async_service.py`)
+already times every RPC round-trip via `perf_counter()` and is called from 37+ files across nearly
+every real service — genuinely cross-service, unlike `BUS_OBSERVER_STREAMS`. First measurement step
+shipped (PR #1290): closed a logging gap where the common "worker" RPC path logged nothing on
+success (only timeouts were ever logged), then built `scripts/analysis/measure_rpc_health_baseline.py`
+to parse real `[rpc]` log lines into a latency/timeout baseline. Live-confirmed real, non-degenerate,
+genuinely cross-service variance (a real 8% timeout rate observed in one run; success-latency p50
+~1.5s, p95 in the tens of seconds, across 4-5 distinct real request channels) — the opposite of
+`transport_pressure`'s permanent flat zero. No schema, aggregator, or live-consumer wiring yet;
+that's explicitly sequenced for a later patch once more baseline data accumulates. The old
+`transport_pressure`/`bus_health`/etc. family's fate (rename vs. deprecate) remains undecided until
+then — do not assume this redesign has already replaced it.
 
 **Reverie semantic lift:** unresolved closures also upsert human referent rows into
 `substrate_turn_referent` via `turn_referent_store.persist_turn_referent`. Apply

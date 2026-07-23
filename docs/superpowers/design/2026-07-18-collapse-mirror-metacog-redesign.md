@@ -607,8 +607,14 @@ not resolved, as of this section.
 
 Status: **spec, not proposal-mode sign-off.** Per this doc's own "Next step" section and CLAUDE.md's
 cognition-loop rule, this needs explicit go-ahead before code. Written now because the design
-conversation that produced it (2026-07-22, arsonist-audited twice) is long enough that it needs to
-live somewhere durable before it evaporates, same reason this whole doc exists.
+conversation that produced it (2026-07-22, arsonist-audited three times) is long enough that it needs
+to live somewhere durable before it evaporates, same reason this whole doc exists.
+
+**Read the "Correction" subsection below "Roadmap: Gate 1 and beyond" first** if skimming — an
+earlier pass in this same section concluded a real orion-unified bug needed fixing before this could
+be built ("Gate 1"); that conclusion was checked further and found wrong. There is no orion-unified
+bug and no Gate 1. The correlator/gate design is simpler than originally specced (2 channels, not 7)
+and is ready to react to as-is.
 
 ### Arsonist summary
 
@@ -645,7 +651,96 @@ Findings already folded in below, not re-litigated:
   `consumer_services`, even though it's a live subscriber. Contract drift, CLAUDE.md section 6.
   Cheap, real, unrelated to whether the rest of this spec ships — worth its own small fix regardless.
 
-### Roadmap: Gate 1 and beyond
+### Correction (2026-07-22, same conversation): `post_turn_closure` is not a bug, and there is no "Gate 1"
+
+The full arsonist pass below (kept for its still-valid findings) concluded `orion:substrate:
+post_turn_closure`'s failure to publish on 5 of 6 real exit paths in `handle_harness_run_request`
+was an integrity gap in `orion-unified` needing its own upstream fix ("Gate 1") before the `chat_turn`
+trigger could be built. **That conclusion was wrong, and there is no orion-unified bug to fix.**
+
+Checked the actual code and PR history for all 5 non-emitting paths, not just asserted the pattern
+from one:
+
+- **Path 4** (`SubstrateAppraisalUnavailableError`): confirmed in writing —
+  `docs/superpowers/pr-reports/2026-07-16-substrate-finalize-degrade-passthrough-pr.md`: *"Deliberately
+  did not attempt turn_outcome_molecule/post_turn_closure: emit_turn_outcome_molecule's
+  substrate_appraisal/reflection params are non-optional... fabricating placeholder ones to force the
+  emission would be exactly the empty-shell-cognition anti-pattern this repo prohibits... Scope was
+  confirmed with Juniper before implementation."* In-code comment at `bus_listener.py:339-344` matches
+  verbatim.
+- **Paths 1 and 2** (refused, no draft): both short-circuit *before* the finalize chain runs at all —
+  5a/5b never executed, structurally identical "nothing real to report" situation as path 4.
+- **Path 3** (`HarnessFinalizeFailedError`, only 5c failed): the *only* path with real data available
+  — `exc.partial.substrate_appraisal`/`.reflection` genuinely exist, because 5a and 5b succeeded
+  before 5c broke — and it is, correspondingly, the *only* one of the 6 paths that does emit closure.
+- **Path 5** (generic `except Exception` from the finalize chain, `bus_listener.py:378-394`): read the
+  actual branch — no partial-data recovery at all, nothing analogous to path 3's `exc.partial`.
+  Genuinely nothing real to report, same as 1/2/4.
+- **Path 6** (outer `_handle_bus_message` handler): even further removed from the finalize chain,
+  same story.
+
+Five for five, one consistent rule, correctly applied every time: emit closure only when real
+`substrate_appraisal`/`reflection` data exists to compute `surprise_resolved` from honestly; never
+fabricate it. There is no asymmetry to fix, no oversight, no "Gate 1." This was already someone
+else's correct application of the exact "no empty-shell cognition" rule this whole design conversation
+has been leaning on — I mischaracterized it as a bug because I only checked one of the five paths in
+detail before generalizing.
+
+**The actual fix is entirely on the `chat_turn` design's side, and it simplifies the correlator
+significantly**: stop treating `post_turn_closure` as the "turn is over, evaluate now" trigger. It
+was never meant to mean that — it means "turn is over *and* real reflection happened," a narrower and
+deliberately rarer thing. `orion:harness:run:artifact` (`HarnessRunV1`) is the actual "turn is over"
+signal — confirmed to publish on all 6 real exit paths, always carrying honest data
+(`compliance_verdict`, `exit_code`, `grounding_status`, `finalize_degraded_reason`) even when the
+finalize chain never got far enough to produce anything richer.
+
+Better still: `HarnessRunV1` already embeds `substrate_appraisal: SubstrateFinalizeAppraisalV1 | None`
+and `reflection: FinalizeReflectionV1 | None` directly as fields, populated whenever they exist (paths
+3 and the full-success path). That makes `orion:harness:verdict:artifact` (`HarnessVerdictMoleculeV1`,
+which just wraps the same `FinalizeReflectionV1`) and `orion:substrate:turn_outcome`
+(`HarnessTurnOutcomeMoleculeV1`, whose `alignment_verdict`/`surprise_level_at_draft` are re-derived
+from the same appraisal+reflection) **redundant re-publications of data `run:artifact` already
+carries** — not additional signal, just the same facts under a second name. `orion:substrate:
+post_turn_closure` itself only ever references those same objects by ID (`verdict_molecule_id`,
+`outcome_molecule_id`), never carries new data of its own.
+
+**Net effect: the correlator collapses from 7 subscribed channels down to 2** — `orion:thought:
+artifact` (for `disposition`/`boundary_register`/`grounding_capsule`/`autonomy_slice`, which
+`HarnessRunV1` doesn't carry) and `orion:harness:run:artifact` (for everything else, always present,
+richer when the finalize chain got further). No waiting on a signal that might never arrive, no TTL-
+leak risk from an absent closure, no redundant subscriptions to three channels re-publishing the same
+underlying facts. This is simpler *and* more correct than the original 7-channel design — see the
+revised "Proposed schema / API changes" below for the corrected gate conditions and `upstream` shape.
+
+The three findings below the original "Gate 1" framing (cost/fan-out risk, evidence thinness, gate
+condition #10 having no real basis) are still real and still apply — kept as-is, just no longer gated
+behind a nonexistent upstream fix.
+
+- **Cost/fan-out risk, not previously priced in**: `orion-actions`' `_handle_journal_metacog` is a
+  live, already-subscribed consumer of every `MetacogTriggerV1`, firing its own LLM call per trigger
+  with a dedupe key that doesn't meaningfully rate-limit (hashes on `timestamp`+`reason`, both
+  different per firing). Shipping `chat_turn` means every fired turn costs a second LLM call
+  somewhere else in the system, silently. Needs a real answer before this ships.
+- **Evidence thinness**: already corrected directly in "Proposed schema / API changes" below —
+  `disposition_reasons`/`alignment_notes`/`grounding_status` added to the `upstream` payload.
+- **Gate condition (failed tool-step count) has no real basis**: `GrammarReceiptV1.summary` is free
+  text with no structured success/fail marker — dropped from the condition list below pending real
+  design, not carried forward as if it exists.
+
+**Forest, not just trees**: the broader shape of this paradigm is unchanged by any of this — reuse the
+existing `telemetry_anomaly`/`relational` dispatch mechanism, ground every gate condition in one real
+schema field, keep `MetacogRealState` untouched until a real consumer exists, capture
+`grounding_capsule`/`autonomy_slice` as context without inventing derived judgments for them. What
+changed is narrower and better: fewer channels, no phantom upstream blocker, a correlator that fires
+reliably instead of one keyed to a signal that structurally can't arrive on the turns that matter most.
+
+See also `docs/superpowers/specs/orion-semantic-self-indexing-design-spec.md` §5.2 for the
+independently-authored source of the 12-step `orion-unified` pipeline trace this whole section is
+built on.
+
+<details>
+<summary>Original "Roadmap: Gate 1 and beyond" section (2026-07-22, superseded by the correction
+above — kept for the record, not as current guidance)</summary>
 
 A full end-to-end arsonist pass (2026-07-22, against this entire section, not a narrow claim within
 it — see "Arsonist summary" above for the earlier, narrower passes) found one **disqualifying**
@@ -677,36 +772,9 @@ So the path forward is staged, not abandoned:
   itself; flagged here as the actual next concrete step.
 - **Gate 2 and beyond: everything else already specced below** — the correlator, the 8 gate
   conditions, the `upstream` payload, the `chat_turn` trigger_kind registration — unchanged in shape,
-  but blocked on Gate 1 landing first. The full arsonist pass also surfaced three more real gaps
-  that apply once Gate 1 is resolved, kept here rather than lost:
-  - **Cost/fan-out risk, not previously priced in**: `orion-actions`' `_handle_journal_metacog` is a
-    live, already-subscribed consumer of every `MetacogTriggerV1`, firing its own LLM call per
-    trigger with a dedupe key that doesn't meaningfully rate-limit (hashes on `timestamp`+`reason`,
-    both different per firing). Shipping `chat_turn` means every fired turn costs a second LLM call
-    somewhere else in the system, silently, once Gate 1 makes the gate actually fire on the turns
-    it's supposed to.
-  - **Evidence thinness**: the proposed `upstream` payload (see "Proposed schema / API changes"
-    below) carries only machine verdicts (`alignment_verdict`, booleans, a float) — not the
-    human-readable fields that exist right next to them on the real schemas
-    (`disposition_reasons`, `alignment_notes`, `grounding_status`). Combined with the draft prompt
-    template only ever rendering `trigger.reason`/`trigger_kind`/`pressure`/`zen_state` today, a
-    correctly-firing entry would still be close to content-free without both fixed together.
-  - **Gate condition #10 (failed tool-step count) has no real basis**: `GrammarReceiptV1.summary`
-    is free text with no structured success/fail marker (traced `summarize_harness_step`,
-    `orion/harness/fcc_motor.py`) — the spec's claim that this reuses an existing classifier pattern
-    is wrong; it would need one built from scratch or should be dropped.
+  but blocked on Gate 1 landing first.
 
-**Forest, not just trees**: the broader shape of this paradigm — reuse the existing `telemetry_
-anomaly`/`relational` dispatch mechanism, ground every gate condition in one real schema field (no
-invented booleans), keep `MetacogRealState` untouched until a real consumer exists, capture
-`grounding_capsule`/`autonomy_slice` as context without inventing derived judgments for them — none
-of that is in question. Everything from "Current architecture" through "Acceptance checks" below is
-still the design; Gate 1 is what has to land first for it to actually work as specced, not a
-replacement for it.
-
-See also `docs/superpowers/specs/orion-semantic-self-indexing-design-spec.md` §5.2 for the
-independently-authored source of the 12-step `orion-unified` pipeline trace this whole section is
-built on.
+</details>
 
 ### Current architecture
 
@@ -726,7 +794,8 @@ likely to touch" below), not the spec doc's prose:
 5. Hub honors defer/refuse or builds `HarnessRunRequestV1`. **Local-only.**
 6. `HarnessGovernorClient` sends the request over bus RPC. Per-step FCC tool-call events publish to
    `orion:harness:run:step` — real, structured, but pure ephemeral pub/sub (WS relay + liveness
-   only, nothing persists the sequence).
+   only, nothing persists the sequence). **Not subscribed by this design** — no gate condition
+   depends on it (see correction above and "Proposed schema / API changes" below).
 7. Governor maps the repair overlay (`HarnessRepairOverlayV1`). **Local-only** — distinct from the
    already-published `orion:repair_pressure:appraisal` summary from step 1/2 (same underlying
    repair_pressure paradigm data, two different downstream fates).
@@ -734,18 +803,24 @@ likely to touch" below), not the spec doc's prose:
 9. `run_fcc_turn()` runs the real Claude/FCC tool loop. Per-step grammar receipts publish to
    `orion:grammar:event` (same `GrammarEventV1` mechanism already feeding
    `execution_friction`/`failure_pressure` elsewhere in the system). `HarnessDraftMoleculeV1` itself
-   is **local-only** beyond one RPC hop.
-10. `run_harness_finalize_chain()` — substrate appraisal (5a, RPC-only at origin, rides along whole
-    inside step 11's `HarnessRunV1`), integrative reflection / verdict (5b, **published in full** as
-    `HarnessVerdictMoleculeV1` on `orion:harness:verdict:artifact` — `FinalizeReflectionV1`'s
-    `alignment_verdict`, `alignment_notes`, `strain_unresolved`), turn-outcome (6b, **published in
-    full** as `HarnessTurnOutcomeMoleculeV1` on `orion:substrate:turn_outcome` —
-    `alignment_verdict`, `surprise_level_at_draft`, `surprise_resolved`, `finalize_failed`).
+   is **local-only** beyond one RPC hop. **Not subscribed by this design**, same reason as step 6.
+10. `run_harness_finalize_chain()` — substrate appraisal (5a) and integrative reflection (5b) run
+    only when the finalize chain gets this far (paths 1/2/4/5/6 in the correction above never reach
+    here at all, or exit before 5b completes); when they do, both objects ride whole inside step
+    11's `HarnessRunV1.substrate_appraisal`/`.reflection` fields — that's this design's actual source
+    for them. `HarnessVerdictMoleculeV1` (`orion:harness:verdict:artifact`) and
+    `HarnessTurnOutcomeMoleculeV1` (`orion:substrate:turn_outcome`) are separately published here too,
+    but confirmed to be **redundant re-publications of the same `FinalizeReflectionV1`/
+    `SubstrateFinalizeAppraisalV1` objects already embedded in `run:artifact`** — not subscribed by
+    this design (see correction above).
 11. Governor returns `HarnessRunV1` — **published in full** on `orion:harness:run:artifact`
-    (`compliance_verdict`, `grounding_status`, `exit_code`, `recall_debug`, `memory_digest`,
-    `substrate_appraisal`, `reflection`). `HarnessPostTurnClosureV1` — a deliberately slim closure
-    summary (`surprise_unresolved`, `verdict_molecule_id`, `outcome_molecule_id`,
-    `grammar_event_ids`, `thought_event_id`) — **published** on `orion:substrate:post_turn_closure`.
+    (`compliance_verdict`, `grounding_status`, `exit_code`, `finalize_degraded_reason`, `recall_debug`,
+    `memory_digest`, `substrate_appraisal`, `reflection`) — **on every one of the 6 real exit paths,
+    always with honest data even when the finalize chain barely ran**. This is the design's actual
+    "turn is over, evaluate now" signal. `HarnessPostTurnClosureV1`
+    (`orion:substrate:post_turn_closure`) only fires on 1 of those 6 paths (deliberately — see
+    correction above) and only ever references the verdict/outcome objects by ID, carrying no data of
+    its own — **not subscribed by this design**.
 12. Hub persists chat-history/chat-turn envelopes to Postgres (`chat_history_log`, via
     orion-sql-writer) and a Spark introspection candidate. **The only durable step in the whole
     pipeline** — everything from step 4 through 11 is Redis pub/sub with no persistence; gone the
@@ -774,18 +849,23 @@ a separate path — `orion-actions`' journal-compose prompt — just not this on
 
 1. **Correlator placement and lifetime.** Proposed: a new module in
    `services/orion-equilibrium-service/app/chat_turn_metacog_gate.py` (matching the file-per-
-   trigger-kind convention) subscribes to the real channels below, accumulates by `correlation_id`
-   in a short-TTL Redis hash, and evaluates/fires on `orion:substrate:post_turn_closure` (the
-   deliberately-designed "this turn is finalized" signal). TTL value not yet chosen — needs to be
-   long enough to span a slow FCC tool loop, short enough not to leak. Not yet measured against real
-   turn-duration data.
-2. **Threshold values** for the numeric gate conditions (`surprise_level_at_draft >= X`) — no
-   existing config to inherit from; would need to be a new equilibrium-service setting, tuned
-   against real data the same way `telemetry_anomaly`'s `threshold_multiplier` was.
-3. **Whether the redundant surprise signal gets deduplicated correctly** — `turn_outcome.
-   surprise_resolved` and `post_turn_closure.surprise_unresolved` are the same underlying fact from
-   two pipeline stages; the gate must pick one (proposed: `post_turn_closure`'s, since it's later/
-   closure-stage) and not double-fire on both.
+   trigger-kind convention) subscribes to `orion:thought:artifact` and `orion:harness:run:artifact`
+   only (see correction above — the other 5 originally-planned channels are either redundant or
+   unused by any current gate condition), accumulates by `correlation_id` in a short-TTL Redis hash,
+   and evaluates/fires as soon as `run:artifact` arrives for a known `correlation_id` — no waiting on
+   a second signal, since `run:artifact` is now confirmed to be the actual "turn is over" event on
+   every real path. TTL still needs a real value (long enough to span `thought:artifact` arriving
+   well before a slow FCC tool loop finishes; short enough not to leak entries for turns whose
+   `thought:artifact` arrives but `run:artifact` genuinely never does — e.g. a mid-flight
+   `HarnessRunCancelV1`). Not yet measured against real turn-duration data.
+2. **Threshold value** for the one remaining numeric gate condition
+   (`substrate_appraisal.surprise_level >= X`) — no existing config to inherit from; would need to be
+   a new equilibrium-service setting, tuned against real data the same way `telemetry_anomaly`'s
+   `threshold_multiplier` was.
+3. ~~Whether the redundant surprise signal gets deduplicated correctly~~ — **moot as of the
+   correction above.** `turn_outcome`/`post_turn_closure` are no longer subscribed at all; there is
+   only one surprise field now (`run_artifact.substrate_appraisal.surprise_level`), nothing to
+   deduplicate.
 4. **Whether `orion_metacog` should keep growing at all**, given zero real consumers and a sibling
    table (`orion_metacognitive_trace`, fed by a different producer path,
    `kind == "metacognitive.trace.v1"` per `orion-vector-writer`) that already has a real reader. Not
@@ -797,34 +877,31 @@ a separate path — `orion-actions`' journal-compose prompt — just not this on
 
 **No new Pydantic schema.** The correlator holds the real, already-registered types as-is —
 deliberately not inventing a new bus contract for the accumulator, since it's ephemeral internal
-state, not a durable artifact:
+state, not a durable artifact. Simplified as of the correction above — down to the 2 channels that
+are actually needed, not 7:
 
 ```python
 # services/orion-equilibrium-service/app/chat_turn_metacog_gate.py (new)
 class ChatTurnEvidenceAccumulator:
     correlation_id: str
     thought_event: ThoughtEventV1 | None = None
-    verdict_molecule: HarnessVerdictMoleculeV1 | None = None   # .reflection: FinalizeReflectionV1
-    turn_outcome: HarnessTurnOutcomeMoleculeV1 | None = None
-    run_artifact: HarnessRunV1 | None = None
-    post_turn_closure: HarnessPostTurnClosureV1 | None = None
-    grammar_receipts: list[GrammarReceiptV1] = []
+    run_artifact: HarnessRunV1 | None = None   # .substrate_appraisal, .reflection nested when present
 ```
 
-**Gate conditions, each pinned to one real field, no invented booleans:**
+**Gate conditions, each pinned to one real field, no invented booleans — all read off just these two
+objects:**
 
 | Condition | Field | Type |
 |---|---|---|
 | Deferred or refused | `thought_event.disposition != "proceed"` | `Literal["proceed","defer","refuse"]` |
 | Boundary hit | `thought_event.boundary_register is True` | `bool` |
-| Misaligned/uncertain | `verdict_molecule.reflection.alignment_verdict != "aligned"` | `Literal["aligned","misaligned","uncertain"]` |
-| Strain unresolved | `verdict_molecule.reflection.strain_unresolved is True` | `bool` |
-| Surprise crossed threshold | `turn_outcome.surprise_level_at_draft >= X` (threshold TBD, question 2) | `float [0,1]` |
-| Finalize failed | `turn_outcome.finalize_failed is True` | `bool` |
+| Misaligned/uncertain (only evaluable when reflection ran) | `run_artifact.reflection is not None and run_artifact.reflection.alignment_verdict != "aligned"` | `Literal["aligned","misaligned","uncertain"] \| None` |
+| Strain unresolved (only evaluable when reflection ran) | `run_artifact.reflection is not None and run_artifact.reflection.strain_unresolved is True` | `bool \| None` |
+| Surprise crossed threshold (only evaluable when 5a ran) | `run_artifact.substrate_appraisal is not None and run_artifact.substrate_appraisal.surprise_level >= X` (threshold TBD, question 2) | `float [0,1] \| None` |
 | Compliance short of complete | `run_artifact.compliance_verdict != "completed"` | `Literal["completed","partial","failed","refused"]` |
 | Non-zero exit | `run_artifact.exit_code not in (0, None)` | `int \| None` |
-| Surprise unresolved at closure (dedup source of truth, see question 3) | `post_turn_closure.surprise_unresolved is True` | `bool` |
-| Failed/retried tool steps — **correction (2026-07-22 arsonist pass): not built yet, no existing basis.** Originally described as reusing `compute_severity`'s `non_ok_step_count` pattern; verified false — that function takes a pre-computed int, and `GrammarReceiptV1.summary` (the only field this could read) is free text with no structured success/fail marker (`summarize_harness_step`, `orion/harness/fcc_motor.py`). Dropped from the condition list until a real classifier is designed, or built from scratch as its own small piece of work with its own justification — not "reuse of an existing pattern." | n/a — not a real condition today |
+| Degraded (infra unavailable, not a content failure — see correction above, path 4) | `run_artifact.finalize_degraded_reason is not None` | `str \| None` |
+| Failed/retried tool steps — **not built, no existing basis.** Originally described as reusing `compute_severity`'s `non_ok_step_count` pattern; verified false — that function takes a pre-computed int, and `GrammarReceiptV1.summary` (the only field this could read) is free text with no structured success/fail marker (`summarize_harness_step`, `orion/harness/fcc_motor.py`). Dropped until a real classifier is designed. | n/a — not a real condition today |
 
 **`MetacogTriggerV1.upstream` shape when fired** — carries the fired condition list (same
 multi-value shape as `telemetry_anomaly`'s `top_channels`) plus the full accumulated evidence, so a
@@ -834,17 +911,18 @@ downstream reader never has to re-derive what happened:
 upstream={
     "fired_conditions": [...],          # e.g. ["disposition=defer", "alignment_verdict=misaligned"]
     "disposition": thought_event.disposition,
-    "disposition_reasons": thought_event.disposition_reasons,   # added (2026-07-22 arsonist pass):
-                                                                  # the machine verdict alone is
+    "disposition_reasons": thought_event.disposition_reasons,   # the machine verdict alone is
                                                                   # near-unreadable without this
-    "alignment_verdict": verdict_molecule.reflection.alignment_verdict,
-    "alignment_notes": verdict_molecule.reflection.alignment_notes,  # added, same reason
-    "strain_unresolved": verdict_molecule.reflection.strain_unresolved,
-    "surprise_level_at_draft": turn_outcome.surprise_level_at_draft,
-    "surprise_unresolved": post_turn_closure.surprise_unresolved,
     "compliance_verdict": run_artifact.compliance_verdict,
-    "grounding_status": run_artifact.grounding_status,   # added, same reason
+    "grounding_status": run_artifact.grounding_status,
     "exit_code": run_artifact.exit_code,
+    "finalize_degraded_reason": run_artifact.finalize_degraded_reason,
+    # Present only when the finalize chain got this far (paths 3 / full-success in the correction
+    # above) -- None on paths 1/2/4/5/6, and the upstream reader must handle that, not assume presence.
+    "alignment_verdict": run_artifact.reflection.alignment_verdict if run_artifact.reflection else None,
+    "alignment_notes": run_artifact.reflection.alignment_notes if run_artifact.reflection else None,
+    "strain_unresolved": run_artifact.reflection.strain_unresolved if run_artifact.reflection else None,
+    "surprise_level": run_artifact.substrate_appraisal.surprise_level if run_artifact.substrate_appraisal else None,
     "grounding_capsule": thought_event.grounding_capsule,   # raw context, not a fire condition
     "autonomy_slice": thought_event.autonomy_slice,          # raw context, not a fire condition
 }
@@ -865,10 +943,10 @@ orphaned `_metacog_trigger_lineage()` helper, whose output never reaches a persi
 - `services/orion-equilibrium-service/app/service.py` — wire the new subscriptions (mirrors how
   `telemetry_anomaly_metacog_gate.py` gets invoked from `service.py` today).
 - `orion/schemas/telemetry/metacog_trigger.py` — docstring enum update only, no field changes.
-- `orion/bus/channels.yaml` — register the 6 new subscriptions this gate needs (`orion:thought:
-  artifact`, `orion:harness:run:step`, `orion:grammar:event`, `orion:harness:verdict:artifact`,
-  `orion:substrate:turn_outcome`, `orion:substrate:post_turn_closure`, `orion:harness:run:artifact`)
-  under `orion-equilibrium-service`'s `consumer_services`, plus the independent `orion-actions` fix.
+- `orion/bus/channels.yaml` — register `orion-equilibrium-service` as a consumer of
+  `orion:thought:artifact` and `orion:harness:run:artifact` (both already carry a wildcard `["*"]`
+  consumer list today, so this may already be satisfied — verify before assuming an edit is needed),
+  plus the independent `orion-actions` fix on `orion:equilibrium:metacog:trigger`.
 - `orion/cognition/prompts/log_orion_metacognition_draft.j2` /
   `log_orion_metacognition_enrich.j2` — optional, if the prompt-evidence-cue fix ships in this
   patch (question 5): render `trigger.upstream`'s `fired_conditions`/key fields as an evidence-cue
@@ -913,15 +991,19 @@ Sources for every file:line citation above, verified against real code during th
 
 - A chat turn where `thought_event.disposition == "defer"` produces exactly one `MetacogTriggerV1`
   with `trigger_kind="chat_turn"`, `fired_conditions` containing `"disposition=defer"`, published
-  once (not duplicated by the surprise-signal redundancy in question 3).
-- A chat turn where none of the 8 real conditions fire produces zero trigger events — no entry
+  once.
+- A chat turn where none of the real conditions fire produces zero trigger events — no entry
   written, matching the whole point of gating instead of firing unconditionally.
-- The correlator does not leak: a turn that never produces a "turn is over" signal (crashed/
-  cancelled run — see Gate 1 above for which signal that ends up being) does not hold its Redis-hash
-  entry past the TTL.
-- A chat turn that hits a refused/failed/crashed exit path (the paths Gate 1 exists to fix) still
-  produces a `chat_turn` trigger where warranted — the actual regression test for Gate 1 itself, not
-  just a nice-to-have.
+- The correlator does not leak: a turn whose `thought_event` arrives but whose `run_artifact` never
+  does (e.g. a mid-flight `HarnessRunCancelV1`) does not hold its Redis-hash entry past the TTL.
+- **The actual regression test that matters most**: a chat turn that hits a refused/failed/crashed
+  exit path (paths 1/2/4/5/6 in the correction above) still produces a `run_artifact` event, and the
+  gate still correctly fires on `compliance_verdict`/`exit_code`/`finalize_degraded_reason` for it —
+  confirming the corrected design actually catches the turns the original, `post_turn_closure`-keyed
+  design would have silently missed.
+- A chat turn where the finalize chain fully ran also correctly evaluates the
+  `alignment_verdict`/`strain_unresolved`/`surprise_level` conditions, sourced from
+  `run_artifact.reflection`/`.substrate_appraisal` directly (not from a separate subscription).
 - Live-data check, same standard as `telemetry_anomaly`'s bulletproofing pass: pull real
   `orion_metacog` rows with `trigger_kind="chat_turn"` post-deploy and confirm `upstream` actually
   reflects the real turn (not degenerate/always-the-same-value) before calling this verified.
@@ -934,19 +1016,14 @@ Sources for every file:line citation above, verified against real code during th
 
 ### Recommended next patch
 
-**Gate 1 first, on its own**: investigate why `orion:substrate:post_turn_closure` is asymmetric
-across `handle_harness_run_request`'s exit paths (deliberate fail-open design on some, per the
-in-code comment, vs. a plain gap on others) and fix it — either make closure symmetric, or formally
-adopt `orion:harness:run:artifact` as the real "turn is over" signal. This is real, scoped,
-independent of the metacog trigger, and everything below is blocked on it.
+No upstream fix needed (see correction above — there is no "Gate 1"). Two small, independently-
+shippable pieces that don't wait on any open question: the channel registry fix (`orion-actions`
+added to `orion:equilibrium:metacog:trigger`'s `consumer_services` — real, free, zero design risk),
+and the prompt-template evidence-cue change (question 5) for `telemetry_anomaly`/`relational`'s
+already-live triggers, which delivers real narrative-quality improvement today on already-shipped
+triggers.
 
-Two small, independently-shippable pieces that don't wait on Gate 1 or any of the open questions:
-the channel registry fix (`orion-actions` added to `orion:equilibrium:metacog:trigger`'s
-`consumer_services` — real, free, zero design risk), and the prompt-template evidence-cue change
-(question 5) for `telemetry_anomaly`/`relational`'s already-live triggers, which delivers real
-narrative-quality improvement today on already-shipped triggers.
-
-The `chat_turn` gate itself (Gate 2+) stays blocked until Gate 1 lands and the cost/fan-out question
-(`orion-actions`' journal path) has a real answer, on top of the pre-existing open questions 1-4
-(TTL, thresholds, dedup source, and the `orion_metacog`-vs-`orion_metacognitive_trace` fate
-question). This section is the spec to react to, not yet a green light.
+The `chat_turn` gate itself is now real, scoped, and only blocked on the cost/fan-out question
+(`orion-actions`' journal path) having a real answer, on top of the pre-existing open questions 1-4
+(TTL, threshold, and the `orion_metacog`-vs-`orion_metacognitive_trace` fate question — question 3
+is now moot). This section is the spec to react to, not yet a green light.

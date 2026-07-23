@@ -485,12 +485,62 @@ meantime** — it is not invalidated on the metrics it actually gates on
 carrying one contaminated-but-not-dominant input channel, the same way
 `v2` carried `catalog_drift_pressure` before the second cutoff.
 
+## `field_channel_corpus.v1` fifth training-data quality cutoff (2026-07-23)
+
+A fifth contamination window, this one on two more of `v3`'s 15 trained channels:
+`execution_load` and `reasoning_load` (commit `5b1cc0fa`, merged + deployed). Found while
+checking whether the FCC-motor signal bundle
+(`docs/superpowers/specs/2026-07-23-fcc-motor-field-digester-signals-design.md`) endangered
+`v3` — its 5 brand-new channels don't (`app/anomaly_scorer.py`'s `score_latest()` selects
+strictly by the trained `channel_names`; an unknown field is silently defaulted to `0.0` by
+`build_windows()`, not scored). But `execution_load` and `reasoning_load` are two of `v3`'s
+own *trained* channels, and their live formulas changed underneath the already-trained model:
+
+- `execution_load` was `min(1.0, started_step_count / 8.0)` over a counter blending
+  cortex-exec + harness-governor steps together (hard-capped, an 8-step and a 40-step run read
+  identically) — see this doc's `execution_load` glossary entry above for the full fix.
+- `reasoning_load` was a boolean wearing a magnitude's name (`0.35`/`0.05`, from whether any
+  reasoning was present at all, not how much) — see the `reasoning_load` glossary entry above.
+
+Both fixed to real, continuously-varying magnitudes. `v3` was trained on the *old*
+distributions for both, so every score since `orion-field-digester`'s
+`2026-07-23T06:10:08Z` restart (`docker inspect orion-athena-field-digester --format
+'{{.State.StartedAt}}'`) compares new-distribution live data against a
+stale-distribution-trained model — same contamination class as the second/third/fourth
+cutoffs. **Not yet confirmed whether this has produced spurious `field_channel_anomaly.v3`
+flags** — checked logs shortly after the restart, no `field_channel_anomaly_flagged` line yet,
+but `v3`'s `window_size=30` rows may simply not have filled at check time; this is
+inconclusive, not a clean bill of health. Whoever picks this up next should re-check with more
+elapsed time.
+
+```bash
+python orion/mood_arc/fit_encoder.py train \
+  --corpus /mnt/telemetry/field_channels/corpus/field_channels.jsonl \
+  --min-generated-at 2026-07-23T06:10:08Z \
+  --out <out-dir>
+```
+
+If multiple cutoffs apply, use whichever is latest (as of this writing, that's this fifth
+cutoff). **Do not retrain yet** — same reasoning as every prior cutoff, only minutes of clean
+post-cutoff data exist as of this writing. `v3` remains the right model to keep serving until a
+`v4` retrain against this cutoff (or whichever is later) is warranted.
+
+**Heads-up for whoever renames `transport_pressure`** (a live scope-honesty issue flagged
+above and in the FCC-motor design doc's appendix, not yet fixed): it is also one of `v3`'s 15
+trained channels. A rename is a *different* failure mode than this cutoff's distribution shift
+— the encoder would find the field genuinely absent by name and silently default it to `0.0`
+rather than see a shifted distribution — but it is still cutoff-class for `v3`, not the "safe,
+no-training-impact" change it might look like. Treat it as a sixth cutoff when it ships. See
+`orion/mood_arc/README.md`'s matching fifth-cutoff entry — keep the two in sync if either is
+ever revised, same convention as the first four.
+
 ## Field channel glossary
 
-This is the consolidated reference for all 29 channels in
+This is the consolidated reference for all 34 channels in
 `field_channel_corpus.v1` (`orion.schemas.telemetry.field_channel_corpus.FieldChannelCorpusRowV1`),
-sourced from `app/tensor/channels.py`'s `NODE_CHANNELS` (23) + `CAPABILITY_CHANNELS`
-(8), overlapping on `transport_pressure`/`contract_pressure` (23+8-2=29). This
+sourced from `app/tensor/channels.py`'s `NODE_CHANNELS` (28) + `CAPABILITY_CHANNELS`
+(8), overlapping on `transport_pressure`/`contract_pressure` (28+8-2=34). 28 = 23 original
++ 5 FCC-motor channels added 2026-07-23 (see the design doc referenced above). This
 corpus is the raw input for a future windowed autoencoder (roadmap item 2,
 not yet trained) — but several of these same channels also feed
 `SelfStateV1`'s live, cognition-facing dimensions today, via

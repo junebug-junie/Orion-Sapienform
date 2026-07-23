@@ -1307,7 +1307,10 @@ async def _query_backends(
                 mode=str(profile.get("compression_mode") or "unified"),
                 max_global=int(profile.get("compression_global_top_k") or 5),
                 max_local=int(profile.get("compression_local_top_k") or 5),
-                scopes=list(profile.get("compression_scopes") or ["episodic", "substrate", "self_study"]),
+                # self_study dropped from the default 2026-07-23: orion-graph-compression
+                # retired the scope entirely (live-verified zero communities/artifacts,
+                # ever -- its three source Fuseki graphs have always been empty).
+                scopes=list(profile.get("compression_scopes") or ["episodic", "substrate"]),
                 pg_dsn=settings.RECALL_COMPRESSION_PG_DSN,
                 rdf_query_url=getattr(settings, "RECALL_COMPRESSION_RDF_QUERY_URL", None),
                 rdf_user=getattr(settings, "RECALL_COMPRESSION_RDF_USER", "admin"),

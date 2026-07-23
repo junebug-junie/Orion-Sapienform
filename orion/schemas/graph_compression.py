@@ -10,8 +10,8 @@ class CompressionRegionV1(BaseModel):
     """A cached semantic compression of a graph region, written to orion:compressions."""
 
     region_id: str
-    scope: Literal["episodic", "substrate", "self_study"]
-    kind: Literal["community", "hotspot", "contradiction", "self_study_cluster"]
+    scope: Literal["episodic", "substrate"]
+    kind: Literal["community", "hotspot", "contradiction"]
     summary: str
     summary_kind: Literal["llm", "structural"]
     salience: float

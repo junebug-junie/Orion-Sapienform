@@ -327,3 +327,185 @@ async def test_rpc_request_worker_path_logs_reply_received(caplog) -> None:
             assert "elapsed_ms=" in reply_lines[0]
         finally:
             await bus.close()
+
+
+@pytest.mark.asyncio
+async def test_rpc_request_worker_path_records_success_in_health_aggregator() -> None:
+    """Step 2 of docs/superpowers/specs/2026-07-23-transport-domain-rpc-health-
+    redesign.md: a real, successful rpc_request() call through the worker path must
+    show up in get_rpc_health_snapshot(), not just in the log line."""
+    bus, fake_redis = _make_bus()
+    bus.publish = AsyncMock()
+    with patch.object(bus, "_create_pubsub_redis", return_value=fake_redis):
+        bus.start_rpc_worker()
+        await asyncio.sleep(0.1)
+
+        corr_id = "00000000-0000-4000-8000-000000000100"
+        reply_channel = f"orion:test:result:{corr_id}"
+        envelope = BaseEnvelope(
+            kind="test.request.v1",
+            source=ServiceRef(name="test", version="0"),
+            correlation_id=corr_id,
+            payload={},
+        )
+
+        async def _push_reply_shortly() -> None:
+            for _ in range(50):
+                if reply_channel in bus._rpc_subscribed:
+                    break
+                await asyncio.sleep(0.02)
+            codec = OrionCodec()
+            reply_envelope = BaseEnvelope(
+                kind="test.reply.v1",
+                source=ServiceRef(name="test", version="0"),
+                correlation_id=corr_id,
+                payload={"ok": True},
+            )
+            fake_redis.current.push(
+                {
+                    "type": "message",
+                    "channel": reply_channel.encode("utf-8"),
+                    "data": codec.encode(reply_envelope),
+                }
+            )
+
+        try:
+            await asyncio.gather(
+                _push_reply_shortly(),
+                bus.rpc_request(
+                    "orion:real:request:channel", envelope, reply_channel=reply_channel, timeout_sec=2.0
+                ),
+            )
+            snap = bus.get_rpc_health_snapshot()
+            assert snap.success_count == 1
+            assert snap.timeout_count == 0
+            assert snap.success_latency_ms_max is not None
+            assert snap.success_latency_ms_max >= 0.0
+            assert snap.channel_counts == {"orion:real:request:channel": 1}
+
+            # snapshot_and_reset() must actually reset -- a second drain with no new
+            # calls should come back empty, not double-count the same call.
+            second = bus.get_rpc_health_snapshot()
+            assert second.success_count == 0
+        finally:
+            await bus.close()
+
+
+@pytest.mark.asyncio
+async def test_rpc_request_worker_path_records_timeout_in_health_aggregator() -> None:
+    """A real timeout on the worker path must land in timeout_count/
+    timeout_elapsed_ms_max, never mixed into success_latency stats."""
+    bus, fake_redis = _make_bus()
+    bus.publish = AsyncMock()
+    with patch.object(bus, "_create_pubsub_redis", return_value=fake_redis):
+        bus.start_rpc_worker()
+        await asyncio.sleep(0.1)
+
+        corr_id = "00000000-0000-4000-8000-000000000101"
+        reply_channel = f"orion:test:result:{corr_id}"
+        envelope = BaseEnvelope(
+            kind="test.request.v1",
+            source=ServiceRef(name="test", version="0"),
+            correlation_id=corr_id,
+            payload={},
+        )
+
+        try:
+            with pytest.raises(TimeoutError):
+                await bus.rpc_request(
+                    "orion:real:request:channel", envelope, reply_channel=reply_channel, timeout_sec=0.1
+                )
+            snap = bus.get_rpc_health_snapshot()
+            assert snap.success_count == 0
+            assert snap.timeout_count == 1
+            assert snap.timeout_elapsed_ms_max is not None
+            assert snap.success_latency_ms_max is None
+        finally:
+            await bus.close()
+
+
+class _InlinePubSub:
+    """Minimal, self-contained fake for the inline RPC path only -- deliberately
+    separate from _FakePubSub above (which supports get_message(), used by the worker
+    path) since the inline path's iter_messages() calls listen(), an async generator
+    _FakePubSub doesn't implement. Kept isolated so extending it can't affect any
+    existing worker-path test's behavior."""
+
+    def __init__(self) -> None:
+        self._queue: asyncio.Queue = asyncio.Queue()
+
+    async def subscribe(self, *channels: str) -> None:
+        return None
+
+    async def unsubscribe(self, *channels: str) -> None:
+        return None
+
+    async def listen(self):
+        while True:
+            msg = await self._queue.get()
+            yield msg
+
+    async def close(self) -> None:
+        return None
+
+    def push(self, msg: dict) -> None:
+        self._queue.put_nowait(msg)
+
+
+class _InlineRedis:
+    def __init__(self, pubsub_instance: _InlinePubSub) -> None:
+        self._pubsub_instance = pubsub_instance
+
+    def pubsub(self) -> _InlinePubSub:
+        return self._pubsub_instance
+
+    async def close(self) -> None:
+        return None
+
+
+@pytest.mark.asyncio
+async def test_rpc_request_inline_path_records_success_in_health_aggregator() -> None:
+    """Same check as the worker-path test above, for the inline path -- no
+    start_rpc_worker() call here, so rpc_request() falls through to the inline
+    subscribe-per-call branch."""
+    bus = OrionBusAsync("redis://127.0.0.1:6379/0", enabled=True)
+    bus.publish = AsyncMock()
+    inline_pubsub = _InlinePubSub()
+    fake_redis = _InlineRedis(inline_pubsub)
+
+    corr_id = "00000000-0000-4000-8000-000000000102"
+    reply_channel = f"orion:test:result:{corr_id}"
+    envelope = BaseEnvelope(
+        kind="test.request.v1",
+        source=ServiceRef(name="test", version="0"),
+        correlation_id=corr_id,
+        payload={},
+    )
+
+    async def _push_reply_shortly() -> None:
+        await asyncio.sleep(0.05)
+        codec = OrionCodec()
+        reply_envelope = BaseEnvelope(
+            kind="test.reply.v1",
+            source=ServiceRef(name="test", version="0"),
+            correlation_id=corr_id,
+            payload={"ok": True},
+        )
+        inline_pubsub.push(
+            {
+                "type": "message",
+                "channel": reply_channel.encode("utf-8"),
+                "data": codec.encode(reply_envelope),
+            }
+        )
+
+    with patch.object(bus, "_create_pubsub_redis", return_value=fake_redis):
+        _, msg = await asyncio.gather(
+            _push_reply_shortly(),
+            bus.rpc_request("orion:real:request:channel", envelope, reply_channel=reply_channel, timeout_sec=2.0),
+        )
+        assert msg is not None
+        snap = bus.get_rpc_health_snapshot()
+        assert snap.success_count == 1
+        assert snap.timeout_count == 0
+        assert snap.channel_counts == {"orion:real:request:channel": 1}

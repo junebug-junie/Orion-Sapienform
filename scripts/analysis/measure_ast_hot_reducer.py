@@ -17,13 +17,17 @@ replay (it is the highest-frequency real signal, per the Phase 1 design).
 for the full account -- the producer this used to read no longer exists).
 `prediction_error_by_domain` (current-tick snapshot) and
 `prediction_error_trend_by_domain` (this script's own computation --
-mean(recent half) - mean(prior half) over `PREDICTION_ERROR_TREND_WINDOW_
-TICKS` field_state ticks, a starting anchor sized to the live ~2s field_state
-cadence confirmed 2026-07-23 via `substrate_field_state` timestamp diffs, not
-yet independently calibrated -- see Missing Question 3 in the L6 design doc)
-are both derived here, in the pure replay layer, from real
-`substrate_field_state` rows -- the reducer itself does no time-series math
-of its own (see its module docstring).
+mean(prior half) - mean(recent half), a reversion prediction, over
+`PREDICTION_ERROR_TREND_WINDOW_TICKS` field_state ticks -- see
+`compute_prediction_error_trend()`'s own docstring for why this is the
+opposite sign of the naive "continue the recent direction" formula it
+replaced, and `docs/superpowers/specs/2026-07-23-predicted-shift-reversion-
+finding.md` for the validation. Window size is a starting anchor sized to
+the live ~2s field_state cadence confirmed 2026-07-23 via
+`substrate_field_state` timestamp diffs, not yet independently calibrated --
+see Missing Question 3 in the L6 design doc) are both derived here, in the
+pure replay layer, from real `substrate_field_state` rows -- the reducer
+itself does no time-series math of its own (see its module docstring).
 
 **Load-bearing finding, discovered while building this script (2026-07-18):
 `substrate_attention_broadcast_projection` -- the third input,
@@ -177,12 +181,55 @@ def extract_prediction_error_by_domain(field_state_payload: dict) -> dict[str, f
 def compute_prediction_error_trend(
     window: list[dict[str, float]],
 ) -> dict[str, float]:
-    """mean(recent half) - mean(prior half) per domain, over an ordered
-    (oldest-to-newest) window of `extract_prediction_error_by_domain()`
-    outputs. A domain only gets a trend value if it has at least one reading
-    in BOTH halves -- comparing a half with zero real observations would
-    fabricate a trend from nothing, not measure one. Fewer than 2 ticks in
-    the window yields an empty dict (nothing to compare yet).
+    """Reversion-based trend per domain, over an ordered (oldest-to-newest)
+    window of `extract_prediction_error_by_domain()` outputs. Positive =
+    predicted to rise next; negative = predicted to fall next (same
+    contract `reduce_attention_self_model()` already consumes -- only the
+    computation changed here, 2026-07-23).
+
+    **This is deliberately mean(prior half) - mean(recent half) -- the
+    OPPOSITE sign of the naive "continue the recent direction" formula this
+    replaced.** That naive continuation formula (mean(recent) - mean(prior),
+    predicting the recent direction keeps going) was empirically WORSE than
+    a coin flip: back-tested against real `substrate_field_state` biometrics
+    history (the only domain with enough real variance to test against --
+    execution/chat/route are real but tiny, transport reads exactly 0.0 for
+    entire multi-hour windows, per the already-documented transport
+    narrow-scope finding) on two independent, non-overlapping 3-4h windows,
+    checking whether the named domain's value actually moved in the
+    predicted direction ~60s later: 37.7% accuracy (n=332, z=-4.50) and
+    41.0% accuracy (n=454, z=-3.85), both far below chance. A
+    decay-projection formula (compare the current value to what pure
+    exponential continuation of the prior half's own trajectory would
+    predict, before this fix) only marginally improved on that (43-45% on a
+    separate earlier back-test), still well below chance -- the problem
+    isn't the extrapolation method, it's the extrapolation *direction*: this
+    signal is spike-and-settle (a burst of activity is more often followed
+    by quiet than by more activity), not momentum-carrying. Predicting the
+    OPPOSITE of the naive continuation direction scored 62.3% and 59.0% on
+    the same two windows (sums to exactly 100% with continuation by
+    construction -- same backtest pass, same sample set, strictly opposite
+    predictions) -- real, reproducible, above-chance signal. Full validation
+    methodology and numbers:
+    `docs/superpowers/specs/2026-07-23-predicted-shift-reversion-finding.md`.
+
+    **Validated on biometrics only, applied to all five domains.** No
+    independent data exists yet for execution/transport/chat/route --
+    applying the same reversion sign to them is a reasoned extrapolation
+    (all five domains are computed the same way, as deltas between
+    successive states from discrete events -- turns, exec steps, tool
+    calls -- so the same spike-and-settle dynamic is plausible), not an
+    independently confirmed one. In practice this mostly matters for
+    biometrics anyway (it wins the cross-domain argmax the overwhelming
+    majority of the time in live replay -- see the reducer script's own
+    report), but a future pass should back-test the other four domains
+    separately once enough real variance accumulates, rather than assuming
+    this generalizes.
+
+    A domain only gets a trend value if it has at least one reading in BOTH
+    halves -- comparing a half with zero real observations would fabricate
+    a trend from nothing, not measure one. Fewer than 2 ticks in the window
+    yields an empty dict (nothing to compare yet).
     """
     if len(window) < 2:
         return {}
@@ -201,7 +248,7 @@ def compute_prediction_error_trend(
     prior_means = _domain_means(prior_half)
     recent_means = _domain_means(recent_half)
     return {
-        domain: recent_means[domain] - prior_means[domain]
+        domain: prior_means[domain] - recent_means[domain]
         for domain in recent_means
         if domain in prior_means
     }

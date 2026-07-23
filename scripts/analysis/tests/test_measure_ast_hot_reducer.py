@@ -92,10 +92,23 @@ class TestExtractPredictionErrorByDomain:
 
 
 class TestComputePredictionErrorTrend:
-    def test_rising_trend_detected(self) -> None:
+    def test_reversion_predicted_after_recent_climb(self) -> None:
+        """This is deliberately the OPPOSITE sign of a naive "continue the
+        recent direction" formula -- validated against real historical data
+        to be the empirically correct one (see the function's own
+        docstring). A domain whose recent half climbed above its prior half
+        is predicted to FALL next (negative trend), not keep climbing."""
         window = [
             {"biometrics": 0.01}, {"biometrics": 0.02},
             {"biometrics": 0.3}, {"biometrics": 0.4},
+        ]
+        trend = mod.compute_prediction_error_trend(window)
+        assert trend["biometrics"] < 0
+
+    def test_reversion_predicted_after_recent_drop(self) -> None:
+        window = [
+            {"biometrics": 0.4}, {"biometrics": 0.3},
+            {"biometrics": 0.02}, {"biometrics": 0.01},
         ]
         trend = mod.compute_prediction_error_trend(window)
         assert trend["biometrics"] > 0
@@ -211,7 +224,9 @@ def test_replay_reducer_joins_broadcast_by_nearest_preceding_timestamp_per_tick(
 def test_replay_reducer_predicted_shift_tracks_rolling_trend_window() -> None:
     """A domain whose prediction_error climbs steadily across field_state
     ticks should surface as the named predicted_shift once enough ticks
-    have accumulated to compute a trend (>=2)."""
+    have accumulated to compute a trend (>=2) -- predicting reversion
+    (falling), the empirically-validated direction, not naive continuation.
+    """
     field_state_rows = [
         (BASE + timedelta(seconds=i), _field_state_payload(BASE + timedelta(seconds=i), biometrics=0.01 * i))
         for i in range(1, 6)
@@ -224,7 +239,7 @@ def test_replay_reducer_predicted_shift_tracks_rolling_trend_window() -> None:
     assert len(ticks) == 1
     assert ticks[0].predicted_shift is not None
     assert "biometrics" in ticks[0].predicted_shift
-    assert "rising" in ticks[0].predicted_shift
+    assert "falling" in ticks[0].predicted_shift
 
 
 def test_reason_histogram_counts_each_category() -> None:

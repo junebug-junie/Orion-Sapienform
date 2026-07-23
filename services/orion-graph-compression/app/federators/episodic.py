@@ -13,7 +13,14 @@ EPISODIC_GRAPHS = [
     "http://conjourney.net/graph/orion/collapse",
     "http://conjourney.net/graph/orion/cognition",
     "http://conjourney.net/graph/orion/metacog",
-    "http://conjourney.net/graph/orion/chat/social",
+    # orion/chat/social removed 2026-07-23: live-verified pure redundancy.
+    # Postgres social_room_turns already owns richer content (33 rows,
+    # actual prompt/response/text -- the Fuseki triples were metadata-only,
+    # no text at all). Nothing else read this graph back. Social-turn
+    # tag/entity clustering signal is covered going forward by the
+    # already-live (if currently thin) Falkor write in orion-meta-tags
+    # (unconditional for both chat.history and social.turn.stored.v1 since
+    # 2026-07-18) via FalkorEpisodicFederator.
     # Autonomy graphs are written under graph/autonomy/* (NOT graph/orion/autonomy/*)
     # — see orion/autonomy/constants.py.
     "http://conjourney.net/graph/autonomy/identity",

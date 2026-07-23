@@ -53,11 +53,22 @@ class FalkorEpisodicFederator:
     Covers what has a live Falkor writer today (orion-meta-tags' Entity/
     Tag/ChatTurn/CollapseEvent graph, ``orion_recall``). ``orion:cognition``/
     ``orion:metacog`` (Postgres-owned, no clustering value -- see the
-    rdf-writer kill this ships alongside) and ``orion:chat:social`` have no
-    Falkor equivalent yet and are not covered here -- the SPARQL
-    ``EpisodicFederator`` remains the source for those scopes until they get
-    their own Falkor writer. Degrades to an empty list on any error, matching
-    every other federator's fail-open contract.
+    rdf-writer kill this ships alongside) have no Falkor equivalent and
+    never had one; the SPARQL ``EpisodicFederator`` remains the source for
+    that content, such as it is (it's dead going forward, frozen history).
+
+    ``orion:chat:social`` was removed from the SPARQL federator's graph list
+    entirely 2026-07-23 (live-verified pure redundancy with Postgres
+    ``social_room_turns``, no other reader) -- it is not "covered" by this
+    Falkor federator so much as the whole scope's dependency on it was
+    retired. orion-meta-tags does write social-turn tags/entities into this
+    same query's underlying data (unconditional for both ``chat.history``
+    and ``social.turn.stored.v1`` since 2026-07-18), but live-verified thin
+    as of this writing (2 ``social.turn.stored.v1`` ChatTurn nodes, zero
+    HAS_TAG/MENTIONS_ENTITY edges between them, vs 1,772 for chat.history) --
+    disclosed here rather than overclaimed as equivalent coverage. Degrades
+    to an empty list on any error, matching every other federator's
+    fail-open contract.
     """
 
     def __init__(self, *, client: Optional[Any] = None) -> None:

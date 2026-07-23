@@ -52,7 +52,7 @@ stale_listener.py   ──► stale_queue (Postgres)
 
 | Scope | Source | Region Kind |
 |-------|--------------|-------------|
-| `episodic` | SPARQL: 9 episodic named graphs (chat, enrichment, collapse, chat/social, autonomy/*). `orion:cognition`/`orion:metacog` are no longer written (2026-07-22: pure Postgres redundancy via orion-sql-writer, see rdf-writer's kill) -- still queried, will just read empty. Additively unioned with Falkor (see below). | `community` |
+| `episodic` | SPARQL: 8 episodic named graphs (chat, enrichment, collapse, autonomy/*). `orion:cognition`/`orion:metacog` are no longer written (2026-07-22: pure Postgres redundancy via orion-sql-writer, see rdf-writer's kill) -- still queried, will just read empty. `orion:chat:social` removed entirely 2026-07-23 (live-verified pure redundancy with Postgres `social_room_turns`, no other reader -- see federator section below). Additively unioned with Falkor (see below). | `community` |
 | `substrate` | FalkorDB only (`orion_substrate` graph). SPARQL `SubstrateFederator` retired 2026-07-23 -- see below. | `hotspot` |
 
 `self_study` was retired 2026-07-23 (previously read `orion:self`,
@@ -80,10 +80,25 @@ no clusters.
 **`GRAPH_COMPRESSION_EPISODIC_FALKOR_ENABLED`** (dark by default, still
 additive): results are **unioned** with the SPARQL `EpisodicFederator`'s
 output in `worker.py::_process_scope`, not swapped -- `episodic_falkor.py`
-covers only the `orion_recall` slice (ChatTurn/Tag/Entity); collapse/social
-have no Falkor writer yet and still depend on the SPARQL federator. Not
-retired -- this scope's SPARQL side is genuinely still load-bearing for
+covers only the `orion_recall` slice (ChatTurn/Tag/Entity); collapse has no
+Falkor writer yet and still depends on the SPARQL federator. Not retired --
+this scope's SPARQL side is genuinely still load-bearing for collapse
 content Falkor doesn't cover, unlike `substrate`/`self_study` above.
+
+`orion:chat:social` (social-turn content) was removed from the SPARQL
+federator's graph list entirely, 2026-07-23 -- not "covered by Falkor
+instead" so much as retired outright (live-verified pure redundancy with
+Postgres `social_room_turns`: richer schema including actual prompt/response
+text the Fuseki copy never had, no other reader anywhere). orion-meta-tags
+does write social-turn tags/entities into the same `orion_recall` graph
+`episodic_falkor.py` reads (unconditional for both `chat.history` and
+`social.turn.stored.v1` since 2026-07-18), but live-verified thin as of this
+writing (2 `social.turn.stored.v1` `ChatTurn` nodes, zero tag/entity edges,
+vs 1,772 for `chat.history`) -- disclosed here rather than overclaimed as
+equivalent coverage. Social-chat volume itself looks near-dormant (Postgres
+`social_room_turns`' most recent row predates this cutover by ~20 days), so
+this was judged low-risk to retire now rather than worth a dedicated
+migration effort.
 
 ## Bus Events
 

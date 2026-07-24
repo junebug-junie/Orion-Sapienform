@@ -35,8 +35,56 @@ Provenance: `.env_example` → `docker-compose.yml` → `settings.py`
 | `PUBLISH_BIOMETRICS_GRAMMAR` | `true` | Enable grammar trace publish after each biometrics tick. |
 | `GRAMMAR_EVENT_CHANNEL` | `orion:grammar:event` | Grammar event publish channel. |
 | `NODE_CATALOG_PATH` | `/app/config/biometrics/node_catalog.yaml` | Path to node catalog YAML (host: `config/biometrics/node_catalog.yaml`). |
+| `DISK_CAPACITY_MOUNTS` | `{"docker":"/host_mnt/docker","scripts":"/host_mnt/scripts","postgres":"/host_mnt/postgres","graphdb":"/host_mnt/graphdb","telemetry":"/host_mnt/telemetry"}` | Mount name -> in-container path for disk-capacity heartbeat telemetry (see below). |
 
 Node identity for grammar traces is resolved via `config/biometrics/node_catalog.yaml` (aliases canonicalize hostnames, e.g. `prometheous` → `prometheus`).
+
+### Disk capacity telemetry (`details.disk_usage_pct`)
+
+This service is one of the 25 already using `orion.core.bus.bus_service_chassis.BaseChassis`
+(via `Clock`), so it already publishes a bus-native `SystemHealthV1` heartbeat to
+`orion:system:health` every `HEARTBEAT_INTERVAL_SEC` (default 10s). `SystemHealthV1.details`
+is a free-form dict; `app/main.py::_heartbeat_details()` folds real host disk-*capacity*
+(not I/O throughput -- see below) into it via `app/metrics.py::collect_disk_capacity()`.
+
+Key convention:
+
+```json
+{
+  "disk_usage_pct": {"docker": 87.3, "scripts": 14.1, "postgres": 14.4, "graphdb": 0.3, "telemetry": 20.4},
+  "disk_usage_errors": {"<mount_name>": "not_mounted"}
+}
+```
+
+- `disk_usage_pct.<mount_name>` -- percent-used (0-100, 2dp) for that mount, from
+  `shutil.disk_usage()` against the read-only bind mount configured in `docker-compose.yml`
+  (`/mnt/<name>` on the host -> `/host_mnt/<name>:ro` in the container). Mount names/paths are
+  configurable via `DISK_CAPACITY_MOUNTS` (JSON object, mount name -> in-container path).
+- `disk_usage_errors` only appears when at least one configured mount is missing/inaccessible
+  inside the container (e.g. not bind-mounted on this node yet). A missing mount is skipped, not
+  fatal -- it never blocks the heartbeat itself. `collect_disk_capacity()` checks
+  `os.path.ismount()`, not just `os.path.isdir()` -- if a bind-mount source doesn't exist on the
+  host, Docker silently creates an empty directory at the container target instead of failing,
+  and `isdir()` alone can't tell that apart from a real mount (it would then report the
+  *container's own* overlay filesystem usage as if it were the host mount's).
+- The heartbeat loop runs `_heartbeat_details()` in a worker thread (`asyncio.to_thread`) with a
+  bounded wait (`min(3.0, heartbeat_interval_sec / 2)`, floor 0.5s), not inline on the event loop.
+  A wedged/stale mount blocking synchronously inside `shutil.disk_usage()` would otherwise stall
+  every other task sharing this process's event loop, not just the heartbeat. A timeout drops that
+  tick's details (`{}`) rather than hanging.
+- This is capacity (how full a filesystem is), not the same thing as the existing `disk` key in
+  `biometrics.sample.v1`/`BiometricsSampleV1`, which is I/O *throughput* (`_collect_disk()` in
+  `app/metrics.py`, read/write bytes/sec from `/proc/diskstats`) and feeds a separate, already-wired
+  consumer chain (`BiometricsPipeline`'s `disk` pressure -> `grammar_emit.py`'s
+  `disk_pressure_signal` -> field-digester's `disk_pressure` lattice channel). Do not conflate the
+  two -- `collect_disk_capacity()` is intentionally a separate function/key, not an extension of
+  `_collect_disk()`.
+- Cross-node: because this same `services/orion-biometrics` codebase runs independently on
+  athena/atlas/circe (each with its own `NODE_NAME`), redeploying this patch on each node gives
+  real disk-capacity visibility per node with no new SSH/credential surface -- the bus already
+  proven to carry heartbeats cross-node (`SystemHealthV1.node` distinguishes them).
+- No alerting/threshold logic here by design -- this is pure telemetry collection, matching
+  `_collect_disk()`'s existing scope (report numbers, don't act on them).
 
 ### Grammar node `pressure_hints` (consumed by `orion-field-digester`)
 

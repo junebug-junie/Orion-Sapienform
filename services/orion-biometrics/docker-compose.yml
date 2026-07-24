@@ -47,11 +47,21 @@ services:
       - DISK_BW_MBPS=${DISK_BW_MBPS}
       - NET_BW_MBPS=${NET_BW_MBPS}
       - POWER_BAND_ALPHA=${POWER_BAND_ALPHA}
+      - DISK_CAPACITY_MOUNTS=${DISK_CAPACITY_MOUNTS}
 
     volumes:
       - ../../config/biometrics:/app/config/biometrics:ro
       - /mnt/scripts/Orion-Sapienform/orion/sensors:/orion/sensors # access host gpus
       - ${ORION_DATA_ROOT:-/mnt/graphdb}/logs/biometrics/logs:/app/logs
+      # Read-only host disk-capacity telemetry mounts (piggybacked onto the
+      # SystemHealthV1 heartbeat's `details.disk_usage_pct` -- see README.md).
+      # Mounted under a parallel /host_mnt/* prefix, not the host's real absolute
+      # path, so container code never confuses a host path with a container-real one.
+      - /mnt/docker:/host_mnt/docker:ro
+      - /mnt/scripts:/host_mnt/scripts:ro
+      - /mnt/postgres:/host_mnt/postgres:ro
+      - /mnt/graphdb:/host_mnt/graphdb:ro
+      - /mnt/telemetry:/host_mnt/telemetry:ro
 
     deploy:
       resources:

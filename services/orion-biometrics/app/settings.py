@@ -56,6 +56,21 @@ class Settings(BaseSettings):
     ERROR_CHANNEL: str = "orion:system:error"
     SHUTDOWN_GRACE_SEC: float = 10.0
 
+    # Disk-capacity telemetry (piggybacked onto the SystemHealthV1 heartbeat's
+    # `details` dict -- see README.md "Disk capacity telemetry" section). Maps a
+    # short mount name to the read-only in-container bind-mount path configured in
+    # docker-compose.yml. Node-level, not per-service: every node running this
+    # service reports its own 5 mounts independently once redeployed there.
+    DISK_CAPACITY_MOUNTS: Dict[str, str] = Field(
+        default_factory=lambda: {
+            "docker": "/host_mnt/docker",
+            "scripts": "/host_mnt/scripts",
+            "postgres": "/host_mnt/postgres",
+            "graphdb": "/host_mnt/graphdb",
+            "telemetry": "/host_mnt/telemetry",
+        }
+    )
+
     @field_validator("role_weights", mode="before")
     @classmethod
     def _parse_role_weights(cls, value: object) -> Dict[str, float]:
@@ -69,6 +84,29 @@ class Settings(BaseSettings):
             if isinstance(data, dict):
                 return {str(k): float(v) for k, v in data.items()}
         return {"atlas": 0.7, "athena": 0.3, "other": 0.5}
+
+    @field_validator("DISK_CAPACITY_MOUNTS", mode="before")
+    @classmethod
+    def _parse_disk_capacity_mounts(cls, value: object) -> Dict[str, str]:
+        _default = {
+            "docker": "/host_mnt/docker",
+            "scripts": "/host_mnt/scripts",
+            "postgres": "/host_mnt/postgres",
+            "graphdb": "/host_mnt/graphdb",
+            "telemetry": "/host_mnt/telemetry",
+        }
+        if isinstance(value, dict):
+            return {str(k): str(v) for k, v in value.items()}
+        if isinstance(value, str):
+            if not value.strip():
+                return _default
+            try:
+                data = json.loads(value)
+            except json.JSONDecodeError:
+                return _default
+            if isinstance(data, dict):
+                return {str(k): str(v) for k, v in data.items()}
+        return _default
 
 settings = Settings()
 

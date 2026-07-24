@@ -1,0 +1,31 @@
+services:
+  heartbeat:
+    build:
+      context: ../..
+      dockerfile: services/orion-heartbeat/Dockerfile
+    container_name: ${PROJECT}-heartbeat
+    restart: unless-stopped
+    networks:
+      - app-net
+    ports:
+      - "${HEARTBEAT_HTTP_PORT:-7251}:7251"
+    environment:
+      - SERVICE_NAME=${SERVICE_NAME:-orion-heartbeat}
+      - SERVICE_VERSION=${SERVICE_VERSION:-0.1.0}
+      - NODE_NAME=${NODE_NAME}
+      - INSTANCE_ID=${INSTANCE_ID}
+
+      - ORION_BUS_URL=${ORION_BUS_URL}
+      - ORION_BUS_ENABLED=${ORION_BUS_ENABLED:-true}
+      - ORION_HEALTH_CHANNEL=${ORION_HEALTH_CHANNEL:-orion:system:health}
+      - HEARTBEAT_INTERVAL_SEC=${HEARTBEAT_INTERVAL_SEC:-10.0}
+
+      - CHANNEL_GRAMMAR_EVENT=${CHANNEL_GRAMMAR_EVENT:-orion:grammar:event}
+      - HEARTBEAT_H1_INTERVAL_SEC=${HEARTBEAT_H1_INTERVAL_SEC:-30.0}
+      - HEARTBEAT_SUBSTRATE_SEED=${HEARTBEAT_SUBSTRATE_SEED:-42}
+      - HEARTBEAT_HTTP_PORT=${HEARTBEAT_HTTP_PORT:-7251}
+
+networks:
+  app-net:
+    name: ${NET}
+    external: true

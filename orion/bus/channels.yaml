@@ -2161,7 +2161,13 @@ channels:
     # semantic_role=="rpc_transport_timeout" (orion/core/bus/async_service.py::
     # _emit_rpc_timeout_grammar, docs/superpowers/specs/2026-07-24-transport-metacog-
     # trigger-design.md) for the transport metacog trigger.
-    consumer_services: ["orion-sql-writer", "orion-equilibrium-service"]
+    # orion-heartbeat (v0, docs/superpowers/specs/2026-07-24-spark-field-
+    # holographic-lattice-design.md) added as a read-only research consumer:
+    # filters to atom_emitted events from five organs (orion-hub/orion-
+    # biometrics/orion-cortex-exec/orion-bus/orion-cortex-orch) and feeds a
+    # small tensor-network substrate. Publishes nothing back to this or any
+    # other channel.
+    consumer_services: ["orion-sql-writer", "orion-equilibrium-service", "orion-heartbeat"]
     stability: "experimental"
     since: "2026-05-23"
 

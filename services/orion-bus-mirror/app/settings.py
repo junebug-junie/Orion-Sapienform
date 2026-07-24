@@ -14,5 +14,24 @@ class Settings(BaseSettings):
     MIRROR_SQLITE_PATH: str = Field(default="/data/bus_mirror.sqlite")
     MIRROR_PARQUET_DIR: str = Field(default="/data/parquet")
 
+    # Bus synaptic graph (Phase 1 of docs/superpowers/specs/2026-07-24-bus-vitality-field-signal-brainstorm.md's
+    # "Big-swing direction"). Bounded, aggregated FalkorDB edges instead of the
+    # raw-log SQLite path above -- additive, independently gated, off by default.
+    MIRROR_GRAPH_ENABLED: bool = Field(default=False)
+    # Hard-defaulted to the standard FalkorDB hostname (matching every other
+    # FALKORDB_URI consumer in this repo -- orion-recall, orion-meta-tags,
+    # orion-substrate-runtime, etc.) rather than falling back to ORION_BUS_URL
+    # if unset. Falling back to the bus URL would silently point GRAPH.QUERY
+    # calls at the pub/sub Redis instead of FalkorDB -- caught in review.
+    FALKORDB_URI: str = Field(default="redis://orion-athena-falkordb:6379")
+    FALKORDB_BUS_GRAPH: str = Field(default="orion_bus_synapse")
+    # Bounded TTL for the in-memory correlation_id -> (organ, epoch) lookup used
+    # to derive CAUSALLY_FOLLOWED_BY edges. Entries older than this are evicted
+    # so the table can't grow unboundedly under full-tilt "orion:*" traffic --
+    # the same O(N)-growth failure class this repo has hit before (see
+    # feedback_substrate_performance / feedback_execution_merge_cap memories).
+    MIRROR_GRAPH_CHAIN_TTL_SEC: float = Field(default=120.0)
+    MIRROR_GRAPH_EWMA_ALPHA: float = Field(default=0.2, ge=0.0, le=1.0)
+
 
 settings = Settings()

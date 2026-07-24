@@ -16,12 +16,16 @@ class Settings(BaseSettings):
 
     SERVICE_NAME: str = "vision-host"
     SERVICE_VERSION: str = "0.1.0"
+    NODE_NAME: str = "athena"
     LOG_LEVEL: str = "INFO"
 
     # Bus
     ORION_BUS_ENABLED: bool = True
     ORION_BUS_ENFORCE_CATALOG: bool = False
     ORION_BUS_URL: str = "redis://localhost:6379/0"
+    # Bus-native SystemHealthV1 heartbeat cadence (orion:system:health). See
+    # docs/superpowers/specs/2026-07-24-service-heartbeat-node-telemetry-design.md.
+    HEARTBEAT_INTERVAL_SEC: float = 10.0
 
     # Channels
     CHANNEL_VISIONHOST_INTAKE: str = "orion:exec:request:VisionHostService"

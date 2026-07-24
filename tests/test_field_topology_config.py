@@ -15,5 +15,5 @@ def test_canonical_and_alias_lattice_load_same_edges() -> None:
         if e.source_id == "node:athena" and e.target_id == "capability:orchestration"
     ]
     assert len(athena_orch) == 1
-    assert "execution_load" in athena_orch[0].channel_map
-    assert athena_orch[0].channel_map["execution_load"] == "execution_pressure"
+    assert "cortex_exec_step_load" in athena_orch[0].channel_map
+    assert athena_orch[0].channel_map["cortex_exec_step_load"] == "execution_pressure"

@@ -195,6 +195,18 @@ python orion/mood_arc/fit_encoder.py train \
   `--min-generated-at` command and full reasoning. Juniper's explicit call: don't block the
   rename on retrain timing — `v3` keeps serving with 2 of 15 inputs dark until a `v4` retrain,
   same posture as every prior cutoff.
+- **Seventh cutoff, same day (2026-07-24):** `execution_load` renamed to
+  `cortex_exec_step_load` (the cortex-exec-scoped sibling of `harness_step_load`), same
+  genuinely-absent-by-name failure mode as the sixth cutoff. Only 1 of `v3`'s 15 trained
+  channels affected here (vs. 2 for the sixth cutoff). The same patch also fixed a live
+  cross-lane stomp bug on this channel's values (a `harness_motor`-lane delta's
+  structurally-always-`0.0` reading was overwriting the real cortex-exec-lane value via
+  `mode="replace"` on the shared node key) — a behavior change to the channel's values,
+  not just its name, landing in the same restart. See
+  `services/orion-field-digester/README.md`'s matching seventh-cutoff entry and
+  `cortex_exec_step_load` glossary entry for the full mechanism and `--min-generated-at`
+  command. Same posture as every prior cutoff: don't block on retrain timing, `v3` keeps
+  serving with 1 of 15 inputs dark until a `v4` retrain.
 - **Scope caveat on `prediction_error`'s "transport" contributor (found 2026-07-22, not a new
   cutoff — no code changed, just what the channel actually means):** `prediction_error` is a
   `max()`-merge across five nodes; one of them, `node:substrate.transport`, is fed entirely by

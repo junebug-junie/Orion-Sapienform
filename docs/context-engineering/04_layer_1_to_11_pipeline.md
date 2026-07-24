@@ -76,7 +76,7 @@ Field digestion maps pressure hints onto nodes, capabilities, channels, and edge
 Examples:
 
 ```text
-execution_load -> execution_pressure
+cortex_exec_step_load -> execution_pressure
 failure_pressure -> reliability_pressure
 cpu_pressure -> resource pressure
 ```

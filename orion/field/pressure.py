@@ -25,7 +25,7 @@ from __future__ import annotations
 from orion.schemas.field_state import FieldStateV1
 
 PRESSURE_CHANNELS = frozenset({
-    "execution_load",
+    "cortex_exec_step_load",
     "execution_friction",
     "execution_pressure",
     "failure_pressure",

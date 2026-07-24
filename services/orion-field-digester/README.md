@@ -155,7 +155,7 @@ v1 persists projections to Postgres only; bus emit is deferred (`orion/bus/chann
 JSONL sink (`FIELD_CHANNEL_CORPUS_PATH`) — the flat, channel-name-keyed
 output of `orion.self_state.scoring.collect_field_channel_pressures(state)`
 (the merged `node_vectors`/`capability_vectors` pressure dict, e.g.
-`cpu_pressure`/`gpu_pressure`/`memory_pressure`/`execution_load`/etc.,
+`cpu_pressure`/`gpu_pressure`/`memory_pressure`/`cortex_exec_step_load`/etc.,
 typically 10-20 channels, not a fixed set). This is Item 1 v2 of
 `docs/superpowers/specs/2026-07-13-felt-state-arc-roadmap-spec.md` — the
 corrected replacement target for `orion-spark-introspector`'s
@@ -566,6 +566,34 @@ is latest — as of this writing, that's this sixth cutoff, superseding the fift
 `orion/mood_arc/README.md`'s matching sixth-cutoff entry — keep the two in sync if either is ever
 revised, same convention as the first five.
 
+## `field_channel_corpus.v1` seventh training-data quality cutoff (2026-07-24)
+
+Same day, same failure mode as the sixth cutoff, different channel: `execution_load` renamed
+to `cortex_exec_step_load` (see that channel's glossary entry above) — the cortex-exec-scoped
+sibling of `harness_step_load`, split off from a name that implied "all execution work" when
+it was always cortex-exec-only. `execution_load` is one of `v3`'s 15 trained channels (the
+fifth cutoff above), so this is genuinely-absent-by-name for `build_windows()`, same mechanism
+as the sixth cutoff — not a distribution shift, a field going dark. Unlike the sixth cutoff's
+two renamed channels, only one of `v3`'s 15 inputs is affected here.
+
+The same patch also lane-gated `cortex_exec_step_load` against the cross-lane stomp described
+in its glossary entry above — a live behavior change to the channel's *values*, not just its
+name, on top of the rename. Both changes land in the same restart, so one cutoff timestamp
+covers both.
+
+```bash
+python orion/mood_arc/fit_encoder.py train \
+  --corpus /mnt/telemetry/field_channels/corpus/field_channels.jsonl \
+  --min-generated-at <this patch's deploy restart timestamp, `docker inspect orion-athena-field-digester --format '{{.State.StartedAt}}'`> \
+  --out <out-dir>
+```
+
+Same posture as every prior cutoff: don't block on retrain timing, `v3` keeps serving with 1 of
+15 inputs dark until a `v4` retrain. If multiple cutoffs apply, use whichever is latest — as of
+this writing, that's this seventh cutoff, superseding the sixth's. See
+`orion/mood_arc/README.md`'s matching seventh-cutoff entry — keep the two in sync if either is
+ever revised, same convention as the first six.
+
 ## Field channel glossary
 
 This is the consolidated reference for all 35 channels in
@@ -708,7 +736,7 @@ subset for the mood-arc windowed-autoencoder spike (see
 1. **Physical substrate / embodiment** — `cpu_pressure`, `gpu_pressure`,
    `thermal_pressure`, `memory_pressure`, `disk_pressure`. Pure hardware
    sensor readings. Nothing cognitive here at all.
-2. **Task-execution domain** — `execution_load`, `execution_friction`,
+2. **Task-execution domain** — `cortex_exec_step_load`, `execution_friction`,
    `execution_pressure`, `reasoning_load`, `reasoning_pressure`,
    `failure_pressure`, `egress_confidence_deficit`. What Orion is actively
    *doing* computationally right now (all sourced from `execution_run`
@@ -880,14 +908,18 @@ subset for the mood-arc windowed-autoencoder spike (see
 - **Live-data verdict**: one-way ratchet — latched at `1.0` for the entire
   observed corpus span. Confirmed live 2026-07-16.
 
-#### `execution_load`
-- **Meaning**: how much active execution work (agent runs, tool calls) is in
-  flight on a node.
-- **Producer**: `execution_run` delta, mode=`replace`. In
-  `NODE_DECAY_CHANNELS`. Diffuses into `capability:orchestration`
-  (`execution_pressure`, weight `0.90`).
+#### `cortex_exec_step_load`
+- **Renamed from `execution_load` 2026-07-24** for scope honesty -- the
+  cortex-exec-scoped sibling of `harness_step_load` (harness-governor-scoped), not
+  "all execution work" the old name implied. Seventh training-data cutoff, below.
+- **Meaning**: how much active cortex-exec-sourced execution work (agent runs, tool
+  calls) is in flight on a node -- specifically the cortex-exec side; the
+  harness-governor side is `harness_step_load`.
+- **Producer**: `execution_run` delta, mode=`replace`, gated to exclude the
+  `harness_motor` lane (2026-07-24 fix, below). In `NODE_DECAY_CHANNELS`. Diffuses
+  into `capability:orchestration` (`execution_pressure`, weight `0.90`).
 - **SelfState dimension fed**: not in `channel_dimension_map` directly
-  (removed 2026-07-12). `evidence_channel_map`: `execution_load` →
+  (removed 2026-07-12). `evidence_channel_map`: `cortex_exec_step_load` →
   `execution_pressure` (evidence-only).
 - **Live-data verdict**: real signal, continuous. Confirmed live 2026-07-16.
   **Correction 2026-07-23:** "continuous" was true of the values seen, not the
@@ -901,6 +933,40 @@ subset for the mood-arc windowed-autoencoder spike (see
   log-ratio shape `harness_step_load` already uses, instead of a hard cap. See
   `docs/superpowers/specs/2026-07-23-fcc-motor-field-digester-signals-design.md`
   Appendix item 1.
+- **LIVE-CONFIRMED BUG, fixed 2026-07-24 (cross-lane stomp, same class as PR #1289's
+  fix for `harness_step_load`/`tool_failure_streak_pressure`/`avg_step_chars_pressure`/
+  `compliance_deficit`/`context_gathering_ratio`, just never gated for this channel
+  before now):** `run.cortex_exec_started_step_count` only increments for
+  `event.provenance.source_service == "orion-cortex-exec"` events
+  (`grammar_extract.py`'s event loop) -- a `harness_motor`-lane `ExecutionRunStateV1`
+  object (whose events all come from `orion-harness-governor`) structurally can never
+  populate that counter, so this channel's value is always `0.0` on that lane, every
+  time, not just usually. Before this gate, that always-`0.0` harness_motor-lane
+  delta stomped whatever real value cortex-exec's own bare-trace lane had just
+  written, via `mode="replace"` on the shared node key (both lanes always resolve to
+  `node:athena`). Confirmed live against `substrate_field_state.field_json` (3h
+  window, 2026-07-24): `node:athena.execution_load` sat flat at
+  `0.3372261973790022` except two consecutive ~2-second samples (17:29:45-47Z)
+  dipping to `0.2672454385532547` before recovering -- a smaller/gentler symptom
+  than the pre-2026-07-23 blended-counter flapping (`0.25→1.0→0.25...` within one
+  turn) because `apply_decay()`'s hold-if-fresh logic (see "Decay vs.
+  injection-interval mismatch" above) only smooths, not eliminates, an intermittent
+  partial stomp -- the next real cortex-exec-lane delta overwrote the stomped `0.0`
+  again within its own tick, unlike a channel that never recovers. Fixed by
+  excluding this channel entirely from `harness_motor`-lane emission in
+  `state_deltas.py`'s unconditional per-lane loop, with **no re-emission** (unlike
+  `reasoning_load` below) -- `harness_step_load` already covers the
+  harness-governor side of step-load separately, so no data is lost.
+  `execution_friction`/`failure_pressure` were investigated for the same bug class
+  and found NOT to have it: unlike this channel, their source fields
+  (`run.failed_step_count`, `run.status`) are set unconditionally regardless of
+  `event.provenance.source_service`, so a `harness_motor`-lane run object's own
+  `execution_friction`/`failure_pressure` can be a real, independently-meaningful
+  observation (the motor's own step genuinely failed), not a structural always-`0.0`
+  placeholder. Gating them out the same way would silently discard real
+  harness-side failure signal -- flagged as a follow-up needing a compose-not-replace
+  design decision (e.g. `max()` across a turn's sub-lanes), not a mechanical
+  gate-exclusion; not built here.
 
 #### `execution_friction`
 - **Meaning**: how much resistance (retries/backoff) execution is
@@ -1036,8 +1102,9 @@ follow-up note, and `test_execution_run_fcc_channels_ignored_off_lane` /
 
 #### `harness_step_load`
 - **Meaning**: FCC-motor-only step-load proxy for one unified Hub turn, split out of
-  `execution_load` (which blends cortex-exec + harness-governor step counts and hard-caps
-  at 8). A compute/thermal/power cost proxy for how much processing one turn actually cost
+  `cortex_exec_step_load` (renamed from `execution_load` 2026-07-24; blended cortex-exec +
+  harness-governor step counts and hard-capped at 8 before the 2026-07-23 fix). A
+  compute/thermal/power cost proxy for how much processing one turn actually cost
   on the expensive GPU node running the motor.
 - **Producer**: `execution_run` delta, `min(1.0, log1p(harness_started_step_count) /
   log1p(60))`, mode=`replace`. In `NODE_DECAY_CHANNELS`.
@@ -1058,9 +1125,11 @@ follow-up note, and `test_execution_run_fcc_channels_ignored_off_lane` /
   patch.
 - **Live-data verdict**: not yet live-verified, pending deploy. See
   `docs/superpowers/specs/2026-07-23-fcc-motor-field-digester-signals-design.md` for the
-  full design and the `execution_load` split rationale (also flagged there as needing its
-  own follow-up: `execution_load` itself was left unnarrowed in this patch, so it still
-  double-counts harness-governor steps that this channel now also measures separately).
+  full design and the `cortex_exec_step_load` (then still named `execution_load`) split
+  rationale (also flagged there as needing its own follow-up: `execution_load` itself was
+  left unnarrowed in that patch, so it still double-counted harness-governor steps that
+  this channel now also measures separately -- narrowed 2026-07-23, see that channel's own
+  glossary entry above).
 
 #### `tool_failure_streak_pressure`
 - **Meaning**: is the FCC motor stuck repeating the same tool failure (e.g. a denied
@@ -1403,8 +1472,8 @@ follow-up note, and `test_execution_run_fcc_channels_ignored_off_lane` /
 - **Meaning**: per-node incoherence score — fires when one channel is high
   and a paired channel that should track it is simultaneously low,
   suggesting two different reducers disagree about the node's actual
-  state (rules: `execution_load`/`cpu_pressure`,
-  `execution_load`/`gpu_pressure`, `failure_pressure`/`availability`,
+  state (rules: `cortex_exec_step_load`/`cpu_pressure`,
+  `cortex_exec_step_load`/`gpu_pressure`, `failure_pressure`/`availability`,
   `stream_backlog_pressure`/`stream_backlog_health`, `reasoning_load`/`cpu_pressure` —
   `orion/field_coherence.py`).
 - **Producer**: **not** one of `state_deltas.py`'s six `target_kind`
@@ -1501,14 +1570,14 @@ follow-up note, and `test_execution_run_fcc_channels_ignored_off_lane` /
 - **Meaning**: capability-level execution-load pressure (currently only
   populated for `orchestration`).
 - **Producer**: capability-level, diffused from `node:athena →
-  capability:orchestration` (`execution_load` → `execution_pressure`,
+  capability:orchestration` (`cortex_exec_step_load` → `execution_pressure`,
   weight `0.90`). In `CAPABILITY_DECAY_CHANNELS`, same dead-weight caveat as
   `pressure` (overwritten by `apply_diffusion()` immediately after decay,
   every tick).
 - **SelfState dimension fed**: `channel_dimension_map`: `execution_pressure`
   → `execution_pressure` (direct, 1:1 dimension name).
 - **Live-data verdict**: real signal, continuous — same underlying trace as
-  `execution_load`. Confirmed live 2026-07-16.
+  `cortex_exec_step_load`. Confirmed live 2026-07-16.
 
 #### `reasoning_pressure`
 - **Meaning**: capability-level reasoning-load pressure. Nominally
@@ -1560,7 +1629,7 @@ follow-up note, and `test_execution_run_fcc_channels_ignored_off_lane` /
   on the run, and routing `reasoning_load`'s perturbation to that node
   specifically instead of the orchestrating node — see `reasoning_load`'s
   entry above and `app/ingest/state_deltas.py`. Deliberately scoped to
-  `reasoning_load` only; `execution_load`/`execution_friction`/
+  `reasoning_load` only; `cortex_exec_step_load`/`execution_friction`/
   `failure_pressure` are legitimately orchestrator-node concerns and stay on
   `node:athena`. Re-verify `capability:llm_inference.reasoning_pressure`'s
   liveness against `substrate_field_state` once post-deploy LLM traffic has

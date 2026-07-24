@@ -6,8 +6,8 @@ from orion.schemas.field_state import FieldStateV1
 # Suspicion fires when channel_a is HIGH and channel_b is LOW, suggesting
 # the two reducers disagree about the node's actual state.
 _RULES: tuple[tuple[str, str], ...] = (
-    ("execution_load", "cpu_pressure"),
-    ("execution_load", "gpu_pressure"),
+    ("cortex_exec_step_load", "cpu_pressure"),
+    ("cortex_exec_step_load", "gpu_pressure"),
     ("failure_pressure", "availability"),
     ("stream_backlog_pressure", "stream_backlog_health"),
     ("reasoning_load", "cpu_pressure"),

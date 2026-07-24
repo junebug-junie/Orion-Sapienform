@@ -70,7 +70,7 @@ def _fixture_topology() -> Dict:
                 "weight": 0.9,
                 "channel_map": {
                     "reasoning_load": "reasoning_pressure",
-                    "execution_load": "execution_pressure",
+                    "cortex_exec_step_load": "execution_pressure",
                 },
             },
             {

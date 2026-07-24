@@ -47,7 +47,7 @@ def test_decay_covers_execution_and_transport_channels() -> None:
         tick_id="tick_decay_exec",
         node_vectors={
             "node:athena": {
-                "execution_load": 1.0,
+                "cortex_exec_step_load": 1.0,
                 "execution_friction": 1.0,
                 "failure_pressure": 1.0,
                 "reasoning_load": 1.0,
@@ -77,7 +77,7 @@ def test_decay_covers_execution_and_transport_channels() -> None:
     node = state.node_vectors["node:athena"]
     cap = state.capability_vectors["capability:orchestration"]
 
-    for ch in ("execution_load", "execution_friction", "failure_pressure",
+    for ch in ("cortex_exec_step_load", "execution_friction", "failure_pressure",
                "reasoning_load", "stream_backlog_pressure", "contract_pressure", "reliability_pressure"):
         assert node[ch] < 1.0, f"node channel {ch!r} should have decayed"
 

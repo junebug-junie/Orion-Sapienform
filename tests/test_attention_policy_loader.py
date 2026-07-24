@@ -10,5 +10,5 @@ def test_load_attention_policy_v1() -> None:
     policy = load_attention_policy(POLICY)
     assert isinstance(policy, FieldAttentionPolicyV1)
     assert policy.policy_id == "field_attention_policy.v1"
-    assert policy.node_channel_weights["execution_load"] == 0.70
+    assert policy.node_channel_weights["cortex_exec_step_load"] == 0.70
     assert policy.limits.max_node_targets == 5

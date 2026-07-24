@@ -196,12 +196,12 @@ def test_pressure_hints_harness_step_load_stays_bounded_and_log_compressed() -> 
     assert huge_hints["harness_step_load"] <= 1.0
 
 
-def test_pressure_hints_execution_load_excludes_harness_steps() -> None:
-    """execution_load must read from cortex_exec_started_step_count directly, not a
+def test_pressure_hints_cortex_exec_step_load_excludes_harness_steps() -> None:
+    """cortex_exec_step_load must read from cortex_exec_started_step_count directly, not a
     derived (started - harness_started) subtraction -- a run whose steps are entirely
     harness-governor-sourced (cortex_exec_started_step_count stays at its default 0,
     even though started_step_count/harness_started_step_count both reflect real
-    activity) must read execution_load == 0.0, even though harness_step_load is high
+    activity) must read cortex_exec_step_load == 0.0, even though harness_step_load is high
     for the exact same run."""
     run = ExecutionRunStateV1(
         trace_id=TRACE, correlation_id="corr-abc", node_id="athena",
@@ -209,21 +209,21 @@ def test_pressure_hints_execution_load_excludes_harness_steps() -> None:
         last_updated_at=FIXED_TS,
     )
     hints = compute_pressure_hints(run, egress_emitted=False)
-    assert hints["execution_load"] == 0.0
+    assert hints["cortex_exec_step_load"] == 0.0
     assert hints["harness_step_load"] > 0.0
 
 
-def test_pressure_hints_execution_load_survives_cross_batch_merge() -> None:
+def test_pressure_hints_cortex_exec_step_load_survives_cross_batch_merge() -> None:
     """Regression guard for the cross-batch desync a derived (started -
     harness_started) subtraction would silently reintroduce: a real 8-step
     cortex-exec-only batch, merged with a separate, later 20-step
     harness-governor-only batch (as they'd arrive in production -- the two services
     flush their grammar events independently, so a poll-bounded batch commonly
-    contains only one service's steps), must still show real execution_load after the
+    contains only one service's steps), must still show real cortex_exec_step_load after the
     merge, not 0.0. Found live in code review: a derived subtraction reads
     max(started) - max(harness_started), and whichever batch's started_step_count is
     larger "wins" both fields under merge.py's independent per-field max()-merge --
-    silently zeroing execution_load despite genuine cortex-exec steps having
+    silently zeroing cortex_exec_step_load despite genuine cortex-exec steps having
     occurred. cortex_exec_started_step_count's own independent max()-merge avoids
     this entirely."""
     cortex_exec_batch = ExecutionRunStateV1(
@@ -241,12 +241,12 @@ def test_pressure_hints_execution_load_survives_cross_batch_merge() -> None:
     assert merged.harness_started_step_count == 20
     assert merged.cortex_exec_started_step_count == 8
     hints = compute_pressure_hints(merged, egress_emitted=False)
-    assert hints["execution_load"] > 0.0
+    assert hints["cortex_exec_step_load"] > 0.0
     assert hints["harness_step_load"] > 0.0
 
 
-def test_pressure_hints_execution_load_stays_bounded_and_log_compressed() -> None:
-    """Same regression shape as harness_step_load's own test: execution_load must
+def test_pressure_hints_cortex_exec_step_load_stays_bounded_and_log_compressed() -> None:
+    """Same regression shape as harness_step_load's own test: cortex_exec_step_load must
     differentiate an 8-step and a 40-step cortex-exec-only run (unlike the old
     min(1.0, started/8.0) hard cap, which read both identically), while staying
     <=1.0 even for very large step counts."""
@@ -265,9 +265,9 @@ def test_pressure_hints_execution_load_stays_bounded_and_log_compressed() -> Non
     short_hints = compute_pressure_hints(short, egress_emitted=False)
     long_hints = compute_pressure_hints(long_run, egress_emitted=False)
     huge_hints = compute_pressure_hints(huge, egress_emitted=False)
-    assert 0.0 < short_hints["execution_load"] < long_hints["execution_load"] <= 1.0
-    assert huge_hints["execution_load"] <= 1.0
-    assert short_hints["execution_load"] == pytest.approx(math.log1p(8) / math.log1p(60))
+    assert 0.0 < short_hints["cortex_exec_step_load"] < long_hints["cortex_exec_step_load"] <= 1.0
+    assert huge_hints["cortex_exec_step_load"] <= 1.0
+    assert short_hints["cortex_exec_step_load"] == pytest.approx(math.log1p(8) / math.log1p(60))
 
 
 def test_pressure_hints_reasoning_load_uses_char_count_when_present() -> None:
@@ -430,7 +430,7 @@ def test_reducer_emits_execution_run_delta() -> None:
     assert delta.target_kind == "execution_run"
     assert delta.target_id == TRACE
     assert delta.after["node_id"] == "athena"
-    assert "execution_load" in delta.after["pressure_hints"]
+    assert "cortex_exec_step_load" in delta.after["pressure_hints"]
     assert TRACE in proj.runs
 
 
@@ -649,7 +649,7 @@ def test_merge_takes_max_of_new_scalar_fields() -> None:
     assert merged.pressure_hints["harness_step_load"] == pytest.approx(
         math.log1p(5) / math.log1p(60)
     )
-    assert merged.pressure_hints["execution_load"] == pytest.approx(
+    assert merged.pressure_hints["cortex_exec_step_load"] == pytest.approx(
         math.log1p(3) / math.log1p(60)
     )
 

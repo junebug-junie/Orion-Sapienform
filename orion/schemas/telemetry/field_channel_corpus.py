@@ -22,7 +22,7 @@ node/per-capability channel pressures from `FieldStateV1`, via
 tuple[dict[str, float], dict[str, str]]` -- the function that merges
 `node_vectors` + `capability_vectors` into one flat channel-name-keyed dict
 (e.g. `cpu_pressure`, `gpu_pressure`, `memory_pressure`,
-`thermal_pressure`, `execution_load`, `execution_friction`,
+`thermal_pressure`, `cortex_exec_step_load`, `execution_friction`,
 `reliability_pressure`, typically 10-20 channels), already used by
 `coherence_score()`/`uncertainty_score()`. This is BEFORE any of the
 coherence/novelty/valence hand-weighting is applied -- the right layer to

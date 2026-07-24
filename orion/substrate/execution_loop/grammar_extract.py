@@ -25,19 +25,21 @@ _COMPLIANCE_DEFICIT_RANK = {
 }
 
 # Reference denominator for harness_step_load's log-ratio, not a hard cap. Chosen well
-# above execution_load's *former* hard cap (8) so an 8-step run reads meaningfully below
-# saturation (~0.53) instead of identical to a 40-step run (~0.90) -- unlike the old
+# above cortex_exec_step_load's *former* hard cap (8) so an 8-step run reads meaningfully
+# below saturation (~0.53) instead of identical to a 40-step run (~0.90) -- unlike the old
 # execution_load's min(1.0, n/8.0). A starting anchor, not yet calibrated against live
 # step-count distributions -- see spec doc's Missing Questions.
 _HARNESS_STEP_LOAD_SATURATION_STEPS = 60
 
-# execution_load now uses the same log-ratio shape as harness_step_load, once it stopped
-# being a hard-capped min(1.0, n/8.0) (see 2026-07-23-fcc-motor-field-digester-signals-
-# design.md Appendix item 1). Reuses the same saturation anchor as harness_step_load --
-# the two channels are now structurally symmetric (cortex-exec-only magnitude vs
-# harness-governor-only magnitude), and inventing a second, differently-calibrated
-# constant with no live data to justify it would just be a second unvalidated guess.
-_EXECUTION_LOAD_SATURATION_STEPS = _HARNESS_STEP_LOAD_SATURATION_STEPS
+# cortex_exec_step_load (renamed from execution_load 2026-07-24 for scope honesty -- see
+# NODE_CHANNELS glossary entry) now uses the same log-ratio shape as harness_step_load,
+# once it stopped being a hard-capped min(1.0, n/8.0) (see 2026-07-23-fcc-motor-field-
+# digester-signals-design.md Appendix item 1). Reuses the same saturation anchor as
+# harness_step_load -- the two channels are now structurally symmetric (cortex-exec-only
+# magnitude vs harness-governor-only magnitude), and inventing a second, differently-
+# calibrated constant with no live data to justify it would just be a second unvalidated
+# guess.
+_CORTEX_EXEC_STEP_LOAD_SATURATION_STEPS = _HARNESS_STEP_LOAD_SATURATION_STEPS
 
 # reasoning_load's saturation anchor for its new log-ratio-of-chars shape (see Appendix
 # item 2). Matches avg_step_chars_pressure's existing 4000-char/step anchor -- both are
@@ -90,10 +92,10 @@ def compute_pressure_hints(
     # despite real cortex-exec steps having occurred. See
     # docs/superpowers/specs/2026-07-23-fcc-motor-field-digester-signals-design.md
     # Appendix item 1.
-    execution_load = min(
+    cortex_exec_step_load = min(
         1.0,
         math.log1p(max(0, run.cortex_exec_started_step_count))
-        / math.log1p(_EXECUTION_LOAD_SATURATION_STEPS),
+        / math.log1p(_CORTEX_EXEC_STEP_LOAD_SATURATION_STEPS),
     )
     execution_friction = min(1.0, failed / max(1, started))
     # Was a boolean wearing a magnitude's name (0.35 if reasoning_present else 0.05) --
@@ -129,8 +131,8 @@ def compute_pressure_hints(
     status_fail = run.status.lower() in {"fail", "partial", "failed", "error"}
     failure_pressure = 1.0 if status_fail or failed > 0 else 0.0
     egress_confidence = 1.0 if egress_emitted else 0.25
-    # FCC-motor-only step load, split from `execution_load` above (both now log-ratio
-    # shaped over their own source-scoped step count, cortex-exec-only vs
+    # FCC-motor-only step load, split from `cortex_exec_step_load` above (both now
+    # log-ratio shaped over their own source-scoped step count, cortex-exec-only vs
     # harness-governor-only, instead of one blended hard-capped counter).
     # log1p-then-ratio, NOT bare log1p: every NODE_CHANNELS value gets hard-clamped to
     # [0,1] at write time by apply_perturbations() (mode="replace" ->
@@ -179,7 +181,7 @@ def compute_pressure_hints(
     # need it (services/orion-field-digester/app/ingest/state_deltas.py)
     # should read it from there directly, not from pressure_hints.
     return {
-        "execution_load": execution_load,
+        "cortex_exec_step_load": cortex_exec_step_load,
         "execution_friction": execution_friction,
         "reasoning_load": reasoning_load,
         "failure_pressure": failure_pressure,

@@ -19,7 +19,7 @@ def test_execution_projection_roundtrip() -> None:
         started_step_count=2,
         completed_step_count=2,
         failed_step_count=0,
-        pressure_hints={"execution_load": 0.25},
+        pressure_hints={"cortex_exec_step_load": 0.25},
         evidence_event_ids=["gev_1"],
         last_updated_at=now,
     )

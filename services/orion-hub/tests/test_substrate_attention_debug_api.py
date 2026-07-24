@@ -48,8 +48,8 @@ def _sample_attention_frame() -> dict:
                 "novelty_score": 0.0,
                 "urgency_score": 0.0,
                 "confidence_score": 0.1,
-                "dominant_channels": {"execution_load": 0.7},
-                "reasons": ["node execution_load is elevated"],
+                "dominant_channels": {"cortex_exec_step_load": 0.7},
+                "reasons": ["node cortex_exec_step_load is elevated"],
                 "evidence_refs": ["field:tick_exec"],
                 "suggested_observation_mode": "inspect",
             }

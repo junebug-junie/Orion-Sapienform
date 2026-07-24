@@ -44,7 +44,7 @@ def test_execution_run_without_llm_serving_node_targets_run_node() -> None:
     today's behavior."""
     delta = _make_execution_run_delta(
         pressure_hints={
-            "execution_load": 0.5,
+            "cortex_exec_step_load": 0.5,
             "execution_friction": 0.1,
             "reasoning_load": 0.05,
             "failure_pressure": 0.0,
@@ -53,12 +53,12 @@ def test_execution_run_without_llm_serving_node_targets_run_node() -> None:
     perturbations = delta_to_perturbations(delta)
     by_channel = {p.channel: p for p in perturbations}
     assert by_channel["reasoning_load"].node_id == "node:athena"
-    assert by_channel["execution_load"].node_id == "node:athena"
+    assert by_channel["cortex_exec_step_load"].node_id == "node:athena"
 
 
 def test_execution_run_with_llm_serving_node_routes_reasoning_load_only() -> None:
     """A run whose LLM call was served by atlas attributes reasoning_load to
-    node:atlas specifically, while execution_load/execution_friction/
+    node:atlas specifically, while cortex_exec_step_load/execution_friction/
     failure_pressure stay on the orchestrating node (athena) -- see
     services/orion-field-digester/README.md's reasoning_pressure glossary
     entry for why node:atlas.reasoning_load was permanently 0.0 before this.
@@ -68,7 +68,7 @@ def test_execution_run_with_llm_serving_node_routes_reasoning_load_only() -> Non
     over the same dict)."""
     delta = _make_execution_run_delta(
         pressure_hints={
-            "execution_load": 0.5,
+            "cortex_exec_step_load": 0.5,
             "execution_friction": 0.1,
             "reasoning_load": 0.35,
             "failure_pressure": 0.0,
@@ -79,7 +79,7 @@ def test_execution_run_with_llm_serving_node_routes_reasoning_load_only() -> Non
     by_channel = {p.channel: p for p in perturbations}
     assert by_channel["reasoning_load"].node_id == "node:atlas"
     assert by_channel["reasoning_load"].intensity == 0.35
-    assert by_channel["execution_load"].node_id == "node:athena"
+    assert by_channel["cortex_exec_step_load"].node_id == "node:athena"
     assert by_channel["execution_friction"].node_id == "node:athena"
     assert by_channel["failure_pressure"].node_id == "node:athena"
 
@@ -262,3 +262,49 @@ def test_execution_run_noop_delta_skipped() -> None:
     )
     delta = delta.model_copy(update={"operation": "noop"})
     assert delta_to_perturbations(delta) == []
+
+
+def test_execution_run_cortex_exec_step_load_ignored_off_lane() -> None:
+    """cortex_exec_step_load (renamed from execution_load 2026-07-24) must produce NO
+    perturbation from the harness_motor lane -- unlike harness_step_load's sibling gate
+    above, there is no re-emission for this channel: a harness_motor-lane
+    ExecutionRunStateV1 object's cortex_exec_started_step_count is structurally always 0
+    (grammar_extract.py only increments it for orion-cortex-exec-sourced
+    exec_step_started events), so compute_pressure_hints() always returns
+    cortex_exec_step_load == 0.0 for that lane -- never a real value worth re-emitting."""
+    delta = _make_execution_run_delta(
+        lane="harness_motor",
+        pressure_hints={"cortex_exec_step_load": 0.0, "harness_step_load": 0.5},
+    )
+    perturbations = delta_to_perturbations(delta)
+    channels = {p.channel for p in perturbations}
+    assert "cortex_exec_step_load" not in channels
+    assert "harness_step_load" in channels
+
+
+def test_execution_run_off_lane_delta_does_not_reset_prior_cortex_exec_step_load_value() -> None:
+    """LIVE-CONFIRMED BUG regression test (2026-07-24): before this gate, a
+    harness_motor-lane delta's always-0.0 cortex_exec_step_load (see the test above for
+    why it's structurally always 0 on that lane) stomped a real value the bare
+    cortex-exec lane had just written, via mode="replace" on the shared node_key (both
+    lanes always resolve to "node:athena"). Confirmed live against
+    substrate_field_state.field_json: node:athena.execution_load sat flat at
+    0.3372261973790022 except two consecutive ~2s samples dipping to
+    0.2672454385532547 before recovering. End-to-end reproduction via
+    apply_perturbations(), same shape as harness_step_load's own off-lane regression
+    test above."""
+    from app.digestion.perturbation import apply_perturbations
+    from orion.schemas.field_state import FieldStateV1
+
+    state = FieldStateV1(generated_at=FIXED_TS, tick_id="tick_x", node_vectors={}, edges=[])
+    real_delta = _make_execution_run_delta(
+        lane=None, pressure_hints={"cortex_exec_step_load": 0.3372261973790022}
+    )
+    state = apply_perturbations(state, delta_to_perturbations(real_delta), now=FIXED_TS)
+    assert state.node_vectors["node:athena"]["cortex_exec_step_load"] == 0.3372261973790022
+
+    off_lane_delta = _make_execution_run_delta(
+        lane="harness_motor", pressure_hints={"cortex_exec_step_load": 0.0}
+    )
+    state = apply_perturbations(state, delta_to_perturbations(off_lane_delta), now=FIXED_TS)
+    assert state.node_vectors["node:athena"]["cortex_exec_step_load"] == 0.3372261973790022

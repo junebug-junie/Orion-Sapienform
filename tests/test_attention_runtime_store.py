@@ -60,7 +60,7 @@ def test_load_latest_field(monkeypatch) -> None:
     field = FieldStateV1(
         generated_at=NOW,
         tick_id="tick_field",
-        node_vectors={"node:athena": {"execution_load": 0.5}},
+        node_vectors={"node:athena": {"cortex_exec_step_load": 0.5}},
     )
     payload = field.model_dump(mode="json")
     store = AttentionRuntimeStore("postgresql://test:test@localhost/test")

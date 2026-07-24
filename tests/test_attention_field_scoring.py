@@ -12,13 +12,13 @@ REPO = Path(__file__).resolve().parents[1]
 POLICY = load_attention_policy(REPO / "config" / "attention" / "field_attention_policy.v1.yaml")
 
 
-def test_execution_load_raises_node_pressure() -> None:
+def test_cortex_exec_step_load_raises_node_pressure() -> None:
     pressure, dominant = weighted_pressure(
-        {"execution_load": 1.0, "reasoning_load": 0.35},
+        {"cortex_exec_step_load": 1.0, "reasoning_load": 0.35},
         POLICY.node_channel_weights,
     )
     assert pressure > 0.5
-    assert "execution_load" in dominant
+    assert "cortex_exec_step_load" in dominant
 
 
 def test_failure_pressure_high_urgency() -> None:

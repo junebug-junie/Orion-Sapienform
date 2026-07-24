@@ -47,11 +47,11 @@ def _stale_athena_state() -> FieldStateV1:
     )
 
 
-def test_reconcile_adds_execution_load_channel() -> None:
+def test_reconcile_adds_cortex_exec_step_load_channel() -> None:
     lattice = load_lattice(LATTICE_PATH)
     reconciled = reconcile_field_state_with_lattice(_stale_athena_state(), lattice=lattice)
-    assert "execution_load" in reconciled.node_vectors["node:athena"]
-    assert reconciled.node_vectors["node:athena"]["execution_load"] == 0.0
+    assert "cortex_exec_step_load" in reconciled.node_vectors["node:athena"]
+    assert reconciled.node_vectors["node:athena"]["cortex_exec_step_load"] == 0.0
     assert reconciled.node_vectors["node:athena"]["cpu_pressure"] == 0.42
 
 
@@ -63,7 +63,7 @@ def test_reconcile_refreshes_athena_orchestration_edge_mappings() -> None:
         for e in reconciled.edges
         if e.source_id == "node:athena" and e.target_id == "capability:orchestration"
     )
-    assert edge.channel_map.get("execution_load") == "execution_pressure"
+    assert edge.channel_map.get("cortex_exec_step_load") == "execution_pressure"
     assert edge.channel_map.get("execution_friction") == "reliability_pressure"
     assert edge.channel_map.get("failure_pressure") == "reliability_pressure"
     assert edge.channel_map.get("cpu_pressure") == "pressure"

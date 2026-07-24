@@ -245,3 +245,100 @@ def test_node_centrality_only_matches_causally_followed_by_not_publishes(client:
     cypher, _ = fake.calls[-1]
     assert "CAUSALLY_FOLLOWED_BY" in cypher
     assert "PUBLISHES" not in cypher
+
+
+# --- propagate_from_organ (pure BFS, Idea A) ---
+
+
+def test_propagate_traces_a_two_hop_chain() -> None:
+    edges = [
+        {"source_organ": "a", "target_organ": "b", "zscore": 1.0, "count": 100},
+        {"source_organ": "b", "target_organ": "c", "zscore": 9.0, "count": 100},
+    ]
+
+    result = bus_synaptic_graph_routes.propagate_from_organ(
+        edges, seed_organ_id="a", max_hops=2, zscore_threshold=3.0, min_count=5
+    )
+
+    assert result["organs_reached"] == ["b", "c"]
+    assert len(result["edges_traversed"]) == 2
+    assert [e["target_organ"] for e in result["elevated_edges"]] == ["c"]
+    assert result["elevated_edges"][0]["hop"] == 2
+
+
+def test_propagate_stops_at_max_hops() -> None:
+    edges = [
+        {"source_organ": "a", "target_organ": "b", "zscore": 9.0, "count": 100},
+        {"source_organ": "b", "target_organ": "c", "zscore": 9.0, "count": 100},
+    ]
+
+    result = bus_synaptic_graph_routes.propagate_from_organ(
+        edges, seed_organ_id="a", max_hops=1, zscore_threshold=3.0, min_count=5
+    )
+
+    assert result["organs_reached"] == ["b"]
+
+
+def test_propagate_does_not_revisit_organs_in_a_cycle() -> None:
+    edges = [
+        {"source_organ": "a", "target_organ": "b", "zscore": 1.0, "count": 100},
+        {"source_organ": "b", "target_organ": "a", "zscore": 1.0, "count": 100},
+    ]
+
+    result = bus_synaptic_graph_routes.propagate_from_organ(
+        edges, seed_organ_id="a", max_hops=5, zscore_threshold=3.0, min_count=5
+    )
+
+    # Must terminate (no infinite loop). Both real edges are recorded (a->b,
+    # b->a) -- the cycle back is real structure -- but the seed is never
+    # listed in organs_reached, since it's where the stress originated, not
+    # a downstream organ absorbing it.
+    assert result["organs_reached"] == ["b"]
+    assert len(result["edges_traversed"]) == 2
+    assert "a" not in result["organs_reached"]
+
+
+def test_propagate_respects_min_count_floor() -> None:
+    # High zscore but low count -- the same cold-start guard /anomalies uses.
+    edges = [{"source_organ": "a", "target_organ": "b", "zscore": 12.0, "count": 2}]
+
+    result = bus_synaptic_graph_routes.propagate_from_organ(
+        edges, seed_organ_id="a", max_hops=2, zscore_threshold=3.0, min_count=5
+    )
+
+    assert result["elevated_edges"] == []
+
+
+def test_propagate_handles_seed_with_no_outgoing_edges() -> None:
+    edges = [{"source_organ": "x", "target_organ": "y", "zscore": 9.0, "count": 100}]
+
+    result = bus_synaptic_graph_routes.propagate_from_organ(
+        edges, seed_organ_id="a", max_hops=2, zscore_threshold=3.0, min_count=5
+    )
+
+    assert result["organs_reached"] == []
+    assert result["edges_traversed"] == []
+
+
+def test_anomaly_propagation_route_requires_organ_id(client: TestClient) -> None:
+    fake = FakeGraphClient({"latency_zscore": []})
+    with patch.object(bus_synaptic_graph_routes, "_client", return_value=fake):
+        r = client.get("/api/bus-synaptic-graph/anomaly-propagation")
+    assert r.status_code == 422
+
+
+def test_anomaly_propagation_route_returns_traced_edges(client: TestClient) -> None:
+    fake = FakeGraphClient(
+        {
+            "latency_zscore": [
+                {"source_organ": "a", "target_organ": "b", "zscore": 9.0, "count": 100},
+            ]
+        }
+    )
+    with patch.object(bus_synaptic_graph_routes, "_client", return_value=fake):
+        r = client.get("/api/bus-synaptic-graph/anomaly-propagation?organ_id=a")
+
+    assert r.status_code == 200
+    body = r.json()
+    assert body["organs_reached"] == ["b"]
+    assert len(body["elevated_edges"]) == 1

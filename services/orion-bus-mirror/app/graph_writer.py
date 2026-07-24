@@ -91,6 +91,13 @@ class BusEventFact:
     channel: str
     correlation_id: str | None
     observed_at_epoch: float
+    # Physical host the producing service reported itself on (envelope.source.node,
+    # e.g. "athena"/"atlas") -- None for envelopes that don't set it. Idea D of
+    # docs/superpowers/specs/2026-07-24-bus-synaptic-graph-wider-net-brainstorm.md:
+    # live-verified before building this the mesh genuinely spans multiple hosts
+    # today (a 2000-envelope sample found athena/atlas/circe all present), so this
+    # isn't speculative plumbing for a topology that doesn't exist.
+    node: str | None = None
 
 
 @dataclass(frozen=True)
@@ -137,6 +144,7 @@ class _ChainEntry:
     last_epoch: float
     hop_count: int  # total observations, including same-organ repeats
     real_hop_count: int  # cross-organ hops only -- the CAUSALLY_FOLLOWED_BY-producing kind
+    last_node: str | None = None  # host the last-observed hop's organ reported itself on
     # Idea C of docs/superpowers/specs/2026-07-24-bus-synaptic-graph-wider-net-
     # brainstorm.md: distinct organs touched so far, in order -- only real
     # cross-organ hops append (same-organ repeats don't, matching real_hop_count's
@@ -274,11 +282,11 @@ class ChainTracker:
                 break
             del self._entries[oldest_cid]
 
-    def observe(self, fact: BusEventFact) -> tuple[str, float] | None:
-        """Records this fact's (organ_id, observed_at_epoch) under its
+    def observe(self, fact: BusEventFact) -> tuple[str, float, str | None] | None:
+        """Records this fact's (organ_id, observed_at_epoch, node) under its
         correlation_id, evicting stale entries first. Returns the prior
-        (organ_id, epoch) entry for this correlation_id if one existed and
-        came from a *different* organ (a real cross-organ hop) -- None
+        (organ_id, epoch, node) entry for this correlation_id if one existed
+        and came from a *different* organ (a real cross-organ hop) -- None
         otherwise (no correlation_id, first sighting, or same-organ repeat).
         """
         self._evict_stale(fact.observed_at_epoch)
@@ -293,13 +301,15 @@ class ChainTracker:
                 last_epoch=fact.observed_at_epoch,
                 hop_count=1,
                 real_hop_count=0,
+                last_node=fact.node,
                 organ_sequence=(fact.organ_id,),
             )
             return None
 
-        prior_organ_id, prior_epoch = existing.last_organ_id, existing.last_epoch
+        prior_organ_id, prior_epoch, prior_node = existing.last_organ_id, existing.last_epoch, existing.last_node
         existing.last_organ_id = fact.organ_id
         existing.last_epoch = fact.observed_at_epoch
+        existing.last_node = fact.node
         existing.hop_count += 1
         self._entries.move_to_end(fact.correlation_id)
 
@@ -308,7 +318,7 @@ class ChainTracker:
         existing.real_hop_count += 1
         if len(existing.organ_sequence) < _MAX_ORGAN_SEQUENCE_LEN:
             existing.organ_sequence = existing.organ_sequence + (fact.organ_id,)
-        return prior_organ_id, prior_epoch
+        return prior_organ_id, prior_epoch, prior_node
 
     def snapshot_open_chains(self, now_epoch: float) -> list[OpenChainInfo]:
         """Read-only snapshot of every currently-tracked chain -- no bus/graph
@@ -478,13 +488,15 @@ class BusSynapticGraphWriter:
         *,
         prior_organ_id: str,
         prior_epoch: float,
+        prior_node: str | None = None,
         fact: BusEventFact,
     ) -> None:
         latency_sec = max(fact.observed_at_epoch - prior_epoch, 0.0)
         prior_rows = self._client.graph_query(
             """
             MATCH (:Organ {organ_id: $prior_organ_id})-[e:CAUSALLY_FOLLOWED_BY]->(:Organ {organ_id: $organ_id})
-            RETURN e.latency_ewma_sec AS latency_ewma_sec, e.latency_var AS latency_var, e.count AS count
+            RETURN e.latency_ewma_sec AS latency_ewma_sec, e.latency_var AS latency_var, e.count AS count,
+                   e.cross_node_count AS cross_node_count
             """,
             {"prior_organ_id": prior_organ_id, "organ_id": fact.organ_id},
         )
@@ -492,6 +504,7 @@ class BusSynapticGraphWriter:
         prior_ewma = float(row.get("latency_ewma_sec") or 0.0)
         prior_var = float(row.get("latency_var") or 0.0)
         prior_count = int(row.get("count") or 0)
+        prior_cross_node_count = int(row.get("cross_node_count") or 0)
 
         update = compute_ewma_update(
             prev_ewma=prior_ewma,
@@ -499,6 +512,14 @@ class BusSynapticGraphWriter:
             prev_count=prior_count,
             value=latency_sec,
             alpha=self._alpha,
+        )
+        # Idea D of docs/superpowers/specs/2026-07-24-bus-synaptic-graph-wider-net-
+        # brainstorm.md: does this specific hop cross a physical host boundary?
+        # Only counted when both sides report a node -- an unknown node on either
+        # end must not silently count as "same host" (that would understate real
+        # cross-node traffic) or "different host" (that would overstate it).
+        is_cross_node = (
+            prior_node is not None and fact.node is not None and prior_node != fact.node
         )
         self._client.graph_query(
             """
@@ -509,7 +530,10 @@ class BusSynapticGraphWriter:
                 e.last_seen_epoch = $now_epoch,
                 e.latency_ewma_sec = $latency_ewma_sec,
                 e.latency_var = $latency_var,
-                e.latency_zscore = $latency_zscore
+                e.latency_zscore = $latency_zscore,
+                e.last_source_node = $prior_node,
+                e.last_target_node = $target_node,
+                e.cross_node_count = $cross_node_count
             """,
             {
                 "prior_organ_id": prior_organ_id,
@@ -518,6 +542,9 @@ class BusSynapticGraphWriter:
                 "now_epoch": fact.observed_at_epoch,
                 "latency_ewma_sec": update.ewma,
                 "latency_var": update.variance,
+                "prior_node": prior_node,
+                "target_node": fact.node,
+                "cross_node_count": prior_cross_node_count + (1 if is_cross_node else 0),
                 "latency_zscore": update.zscore,
             },
         )
@@ -594,9 +621,11 @@ def extract_bus_event_fact(
         return None
     correlation_id = getattr(envelope, "correlation_id", None)
     graph_channel = normalize_channel_name(channel, catalog_names) if catalog_names else channel
+    node = getattr(source, "node", None) if source is not None else None
     return BusEventFact(
         organ_id=str(organ_id),
         channel=graph_channel,
         correlation_id=str(correlation_id) if correlation_id else None,
         observed_at_epoch=now if now is not None else time.time(),
+        node=str(node) if node else None,
     )

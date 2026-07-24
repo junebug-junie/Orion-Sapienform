@@ -80,12 +80,13 @@ async def _record_graph_event(
         loop = asyncio.get_running_loop()
         await loop.run_in_executor(None, writer.record_publish, fact)
         if prior is not None:
-            prior_organ_id, prior_epoch = prior
+            prior_organ_id, prior_epoch, prior_node = prior
             await loop.run_in_executor(
                 None,
                 lambda: writer.record_causal_hop(
                     prior_organ_id=prior_organ_id,
                     prior_epoch=prior_epoch,
+                    prior_node=prior_node,
                     fact=fact,
                 ),
             )

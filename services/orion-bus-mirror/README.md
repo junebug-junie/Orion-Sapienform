@@ -121,6 +121,24 @@ abandoned both just stop appearing once they go quiet past the TTL. Don't read
 `open_count` as "N operations currently executing"; read it as "N flows have had
 recent activity."
 
+**Fixed post-deploy, found in real traffic (2026-07-24):** `summarize_open_chains`
+only counts chains with `real_hop_count >= 1` (a `min_real_hop_count` parameter,
+configurable, default `1`). Most bus envelopes carry a fresh, never-repeated
+`correlation_id` (`BaseEnvelope`'s `default_factory=uuid4` — only *propagated*
+correlation_ids ever produce a second hop), so an unfiltered count was dominated by
+one-shot messages sitting in the tracker until TTL eviction. Live before the fix:
+~6800 tracked entries, only 51 ever became a real `CAUSALLY_FOLLOWED_BY` edge, yet
+~5000 were being logged as `long_running` — schema-valid, completely misleading.
+Caught in review: the first cut of this fix filtered on `hop_count` (total
+observations), which still credits same-organ repeats that never touch a different
+organ — `real_hop_count` counts only genuine cross-organ hops, the kind that produce
+a real `CAUSALLY_FOLLOWED_BY` edge. `hop_count` is still reported on `OpenChainInfo`
+for visibility, just no longer used as the filter.
+Also fixed in the same pass: `ChainTracker`'s internal store is now an `OrderedDict`
+with `move_to_end()` on every touch, so eviction pops only the genuinely-stale prefix
+instead of scanning the full (thousands-of-entries) table on every single message —
+a real, measured contributor to CPU usage at full mesh traffic volume.
+
 **Per-verb latency** (`EXECUTES_VERB` edges, `(:Organ)-[:EXECUTES_VERB {count,
 last_seen_epoch, last_node, latency_ewma_sec, latency_var, latency_zscore}]->(:Verb
 {verb_name})`): mined from any envelope whose payload has a `steps[]` array with real

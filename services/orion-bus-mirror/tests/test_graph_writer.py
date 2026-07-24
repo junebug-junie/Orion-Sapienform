@@ -121,6 +121,27 @@ class TestChainTracker:
         # Only entries within the last 5s of the final observed_at_epoch survive.
         assert len(tracker) <= 6
 
+    def test_re_touched_entry_is_not_evicted_out_of_insertion_order(self) -> None:
+        # Regression test for the OrderedDict eviction fix: a chain touched
+        # again after other, later-inserted chains must move to the back of
+        # the eviction queue -- if eviction wrongly used insertion order
+        # instead of recency order, this entry could be evicted while still
+        # genuinely active.
+        tracker = ChainTracker(ttl_sec=120.0)
+        tracker.observe(self._fact("organ-a", "old-but-active", 0.0))
+        tracker.observe(self._fact("organ-a", "inserted-later", 1.0))
+        # Touch "old-but-active" again well after "inserted-later" was first
+        # seen -- it should now be the MOST recently active, not the oldest.
+        tracker.observe(self._fact("organ-b", "old-but-active", 50.0))
+
+        # At t=125, "inserted-later" (last touched at t=1) is stale under a
+        # 120s TTL; "old-but-active" (last touched at t=50) is not.
+        result = tracker.observe(self._fact("organ-c", "old-but-active", 125.0))
+        assert result == ("organ-b", 50.0)  # real hop, not evicted-then-reset
+        remaining_ids = {c.correlation_id for c in tracker.snapshot_open_chains(now_epoch=125.0)}
+        assert "inserted-later" not in remaining_ids
+        assert "old-but-active" in remaining_ids
+
 
 class TestBusSynapticGraphWriterPublish:
     def test_first_publish_on_an_edge_has_no_zscore_and_count_one(self, fake_client: FakeGraphClient) -> None:
@@ -233,6 +254,25 @@ class TestChainTrackerInFlight:
         assert chain.last_seen_epoch == 117.0
         assert chain.duration_sec == pytest.approx(30.0)
         assert chain.hop_count == 2
+        assert chain.real_hop_count == 1  # one genuine cross-organ hop
+
+    def test_same_organ_repeats_do_not_inflate_real_hop_count(self) -> None:
+        # Regression test for a review finding: hop_count increments on every
+        # observation including same-organ repeats, so filtering on hop_count
+        # alone (the first version of this fix) still admitted chains that
+        # never produced a real CAUSALLY_FOLLOWED_BY edge. real_hop_count
+        # must only count genuine cross-organ hops.
+        tracker = ChainTracker(ttl_sec=120.0)
+        tracker.observe(self._fact("cortex-exec", "self-loop", 0.0))
+        tracker.observe(self._fact("cortex-exec", "self-loop", 1.0))
+        tracker.observe(self._fact("cortex-exec", "self-loop", 2.0))
+
+        snapshot = tracker.snapshot_open_chains(now_epoch=10.0)
+
+        assert len(snapshot) == 1
+        chain = snapshot[0]
+        assert chain.hop_count == 3
+        assert chain.real_hop_count == 0
 
     def test_snapshot_is_read_only_does_not_evict(self) -> None:
         tracker = ChainTracker(ttl_sec=10.0)
@@ -256,28 +296,62 @@ class TestSummarizeOpenChains:
         assert summary.long_running_count == 0
         assert summary.max_duration_sec == 0.0
 
-    def test_counts_long_running_chains_above_threshold(self) -> None:
+    def test_single_hop_chains_are_excluded_by_default(self) -> None:
+        # Regression test for a live-discovered bug (2026-07-24): most bus
+        # envelopes carry a fresh, never-repeated correlation_id, so an
+        # unfiltered snapshot is dominated by one-shot entries that were
+        # never real "chains" at all -- confirmed live, ~6800 tracked
+        # entries, only 51 ever became a real second hop, yet ~5000 were
+        # being reported as "long_running". min_real_hop_count defaults to 1
+        # to fix exactly this.
         tracker = ChainTracker(ttl_sec=120.0)
-        tracker.observe(BusEventFact(organ_id="a", channel="c", correlation_id="short", observed_at_epoch=0.0))
-        tracker.observe(BusEventFact(organ_id="a", channel="c", correlation_id="long", observed_at_epoch=0.0))
+        tracker.observe(BusEventFact(organ_id="a", channel="c", correlation_id="one-shot", observed_at_epoch=0.0))
         snapshot = tracker.snapshot_open_chains(now_epoch=100.0)
 
-        # "short" started at 0, observed only once -- duration as of now_epoch
-        # is still 100s in this snapshot (both chains are equally "old" here
-        # since neither had a second hop); use distinct now_epochs instead to
-        # get genuinely different durations.
-        info_short = [c for c in snapshot if c.correlation_id == "short"][0]
-        info_long = [c for c in snapshot if c.correlation_id == "long"][0]
-        assert info_short.duration_sec == info_long.duration_sec  # sanity: same start, same snapshot time
+        summary = summarize_open_chains(snapshot, long_running_threshold_sec=30.0)
+        assert summary.open_count == 0
+        assert summary.long_running_count == 0
+
+    def test_same_organ_repeats_are_excluded_despite_high_hop_count(self) -> None:
+        # Regression test for a second review finding: hop_count alone (3,
+        # from repeated same-organ observations) was not sufficient evidence
+        # of a real chain -- only real_hop_count (0 here, no cross-organ hop
+        # ever happened) should gate this.
+        tracker = ChainTracker(ttl_sec=120.0)
+        tracker.observe(BusEventFact(organ_id="a", channel="c", correlation_id="self-loop", observed_at_epoch=0.0))
+        tracker.observe(BusEventFact(organ_id="a", channel="c", correlation_id="self-loop", observed_at_epoch=1.0))
+        tracker.observe(BusEventFact(organ_id="a", channel="c", correlation_id="self-loop", observed_at_epoch=2.0))
+        snapshot = tracker.snapshot_open_chains(now_epoch=100.0)
 
         summary = summarize_open_chains(snapshot, long_running_threshold_sec=30.0)
-        assert summary.open_count == 2
-        assert summary.long_running_count == 2  # both are 100s >= 30s threshold
+        assert summary.open_count == 0
+        assert summary.long_running_count == 0
+
+    def test_multi_hop_chains_are_counted(self) -> None:
+        tracker = ChainTracker(ttl_sec=120.0)
+        tracker.observe(BusEventFact(organ_id="a", channel="c", correlation_id="real-chain", observed_at_epoch=0.0))
+        tracker.observe(BusEventFact(organ_id="b", channel="c", correlation_id="real-chain", observed_at_epoch=1.0))
+        snapshot = tracker.snapshot_open_chains(now_epoch=100.0)
+
+        summary = summarize_open_chains(snapshot, long_running_threshold_sec=30.0)
+        assert summary.open_count == 1
+        assert summary.long_running_count == 1
         assert summary.max_duration_sec == pytest.approx(100.0)
 
-    def test_chains_below_threshold_are_not_counted_as_long_running(self) -> None:
+    def test_min_real_hop_count_is_configurable(self) -> None:
         tracker = ChainTracker(ttl_sec=120.0)
         tracker.observe(BusEventFact(organ_id="a", channel="c", correlation_id="corr-1", observed_at_epoch=0.0))
+        snapshot = tracker.snapshot_open_chains(now_epoch=100.0)
+
+        # Loosen the filter to admit even a never-hopped (real_hop_count=0)
+        # chain, proving the threshold is a real, honored parameter.
+        summary = summarize_open_chains(snapshot, long_running_threshold_sec=30.0, min_real_hop_count=0)
+        assert summary.open_count == 1
+
+    def test_multi_hop_chain_below_duration_threshold_is_not_long_running(self) -> None:
+        tracker = ChainTracker(ttl_sec=120.0)
+        tracker.observe(BusEventFact(organ_id="a", channel="c", correlation_id="corr-1", observed_at_epoch=0.0))
+        tracker.observe(BusEventFact(organ_id="b", channel="c", correlation_id="corr-1", observed_at_epoch=1.0))
         snapshot = tracker.snapshot_open_chains(now_epoch=5.0)
 
         summary = summarize_open_chains(snapshot, long_running_threshold_sec=30.0)

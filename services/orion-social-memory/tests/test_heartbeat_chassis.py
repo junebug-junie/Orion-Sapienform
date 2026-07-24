@@ -34,8 +34,8 @@ def test_build_heartbeat_chassis_uses_service_settings() -> None:
 @pytest.mark.asyncio
 async def test_lifespan_starts_and_stops_heartbeat_chassis() -> None:
     fake_chassis = AsyncMock(spec=HeartbeatOnly)
-    with patch.object(social_memory_main, "service") as mock_service, patch(
-        "app.main.build_heartbeat_chassis", return_value=fake_chassis
+    with patch.object(social_memory_main, "service") as mock_service, patch.object(
+        social_memory_main, "build_heartbeat_chassis", return_value=fake_chassis
     ):
         mock_service.start = AsyncMock()
         mock_service.stop = AsyncMock()
@@ -55,8 +55,8 @@ async def test_lifespan_survives_heartbeat_start_failure() -> None:
     """Heartbeat startup failure must not prevent the real social memory service from starting."""
     fake_chassis = AsyncMock(spec=HeartbeatOnly)
     fake_chassis.start_background.side_effect = RuntimeError("bus unreachable")
-    with patch.object(social_memory_main, "service") as mock_service, patch(
-        "app.main.build_heartbeat_chassis", return_value=fake_chassis
+    with patch.object(social_memory_main, "service") as mock_service, patch.object(
+        social_memory_main, "build_heartbeat_chassis", return_value=fake_chassis
     ):
         mock_service.start = AsyncMock()
         mock_service.stop = AsyncMock()

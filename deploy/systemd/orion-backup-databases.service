@@ -1,0 +1,22 @@
+[Unit]
+Description=Orion nightly database backups (Postgres, FalkorDB, Chroma, Convex)
+Documentation=file:/mnt/scripts/Orion-Sapienform/scripts/backup/README.md
+Wants=network-online.target docker.service
+After=network-online.target docker.service
+
+[Service]
+Type=oneshot
+# Finite, not infinity: each subprocess call inside the script already has
+# its own timeout, but a wedged docker daemon could still hang the overall
+# run without this, holding db/backup.lock and failing every subsequent
+# night until someone notices. 2h is generous for the current data sizes
+# (~1.2GB Postgres dump, ~20GB Convex copy) with headroom to grow.
+TimeoutStartSec=2h
+UMask=0077
+WorkingDirectory=/mnt/scripts/Orion-Sapienform
+Environment=PYTHONPATH=/mnt/scripts/Orion-Sapienform
+EnvironmentFile=-/etc/orion-backup-databases.env
+ExecStart=/mnt/scripts/Orion-Sapienform/venv/bin/python /mnt/scripts/Orion-Sapienform/scripts/backup/orion_backup_databases.py
+Nice=10
+IOSchedulingClass=best-effort
+IOSchedulingPriority=7

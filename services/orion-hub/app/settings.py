@@ -38,6 +38,9 @@ class Settings(BaseSettings):
         default="redis://100.92.216.81:6379/0",
         alias="ORION_BUS_URL",
     )
+    # Bus-native SystemHealthV1 heartbeat cadence (orion:system:health). See
+    # docs/superpowers/specs/2026-07-24-service-heartbeat-node-telemetry-design.md.
+    HEARTBEAT_INTERVAL_SEC: float = Field(default=10.0, alias="HEARTBEAT_INTERVAL_SEC")
 
     # --- Landing Pad ---
     LANDING_PAD_URL: str = Field(

@@ -132,6 +132,22 @@ class Settings(BaseSettings):
         30.0, alias="EQUILIBRIUM_METACOG_CHAT_TURN_COOLDOWN_SEC"
     )
 
+    # transport metacog trigger (docs/superpowers/specs/2026-07-24-transport-metacog-
+    # trigger-design.md). Own cooldown lane from day one -- chat_turn's own cooldown
+    # bug (a shared lane let a burst of one kind starve the others) should not repeat.
+    metacog_transport_trigger_enable: bool = Field(
+        False, alias="EQUILIBRIUM_METACOG_TRANSPORT_TRIGGER_ENABLE"
+    )
+    metacog_transport_cooldown_sec: float = Field(
+        30.0, alias="EQUILIBRIUM_METACOG_TRANSPORT_COOLDOWN_SEC"
+    )
+    # RpcHealthSnapshotV1 p95 latency threshold (Option A gate condition). No existing
+    # config to inherit from -- a starting default, same calibration caveat as
+    # telemetry_anomaly's threshold_multiplier; needs real data to validate.
+    metacog_transport_latency_p95_threshold_ms: float = Field(
+        5000.0, alias="EQUILIBRIUM_METACOG_TRANSPORT_LATENCY_P95_THRESHOLD_MS"
+    )
+
     channel_metacog_trigger: str = Field("orion:equilibrium:metacog:trigger", alias="CHANNEL_EQUILIBRIUM_METACOG_TRIGGER")
     channel_collapse_mirror_user_event: str = Field("orion:collapse:intake", alias="CHANNEL_COLLAPSE_MIRROR_USER_EVENT")
     channel_pad_signal: str = Field("orion:pad:signal", alias="CHANNEL_PAD_SIGNAL")
@@ -146,6 +162,9 @@ class Settings(BaseSettings):
         "orion:harness:run:artifact", alias="CHANNEL_HARNESS_RUN_ARTIFACT"
     )
     channel_grammar_event: str = Field("orion:grammar:event", alias="CHANNEL_GRAMMAR_EVENT")
+    channel_rpc_health_snapshot: str = Field(
+        "orion:rpc_health:snapshot", alias="CHANNEL_RPC_HEALTH_SNAPSHOT"
+    )
 
     @model_validator(mode="after")
     def _coerce_windows(self) -> "Settings":

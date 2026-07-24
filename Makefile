@@ -1,4 +1,4 @@
-.PHONY: test test-hub test-actions bootstrap-test-envs check-inner-state-registry check-single-consumer-channels check-activation-saturation concept-relation-digest check-concept-relation-digest-liveness check-env-compose-parity check-journal-dispatch-registry check-daily-schedule-collisions bus-core-health-watchdog worktree-status worktree-status-summary worktree-status-stale prune-merged-worktrees
+.PHONY: test test-hub test-actions bootstrap-test-envs check-inner-state-registry check-single-consumer-channels check-activation-saturation concept-relation-digest check-concept-relation-digest-liveness check-env-compose-parity check-journal-dispatch-registry check-daily-schedule-collisions check-substrate-projection-schema-drift bus-core-health-watchdog worktree-status worktree-status-summary worktree-status-stale prune-merged-worktrees
 
 SERVICE ?=
 ARGS ?=
@@ -87,6 +87,22 @@ check-journal-dispatch-registry:
 # this isn't a hard gate today.
 check-daily-schedule-collisions:
 	@python scripts/check_daily_schedule_collisions.py $(if $(THRESHOLD_MINUTES),--threshold-minutes $(THRESHOLD_MINUTES),) $(if $(FAIL_ON_COLLISION),--fail-on-collision,)
+
+# Detection gate for the 2026-07-24 orion-substrate-runtime crash-loop incident
+# (PR #1331 renamed TransportBusStateV1 fields; the one stale persisted row still
+# had the old names, and extra="forbid" turned every tick's load into a hard
+# ValidationError crash-loop for ~10 hours undetected). For each of the seven
+# persisted, fixed-projection_id singleton rows in
+# services/orion-substrate-runtime/app/store.py, loads the CURRENT live row
+# against the CURRENT schema and fails if it does not validate -- see
+# scripts/check_substrate_projection_schema_drift.py's docstring for the full
+# incident writeup and scope rationale. Skips cleanly (exit 0) if POSTGRES_URI is
+# unset or Postgres is unreachable -- deliberately different from
+# check-activation-saturation/check-concept-relation-digest-liveness's exit-2
+# convention, see that script's "DB unavailability" note for why. Requires
+# POSTGRES_URI (see services/orion-substrate-runtime/.env).
+check-substrate-projection-schema-drift:
+	@python scripts/check_substrate_projection_schema_drift.py $(if $(JSON),--json,)
 
 # Host-level crash-loop detector for bus-core (Redis, services/orion-bus/docker-
 # compose.yml). Reads container health/restart-count via `docker inspect` ONLY --

@@ -190,6 +190,31 @@ first place. Full reasoning and phased detail:
    this PR's report for the decision record and a live-data caveat (no
    `node:substrate.harness_closure` write has occurred yet post-deploy to prove the
    end-to-end durability live, confirmed via manual FalkorDB query).
+   **Active-Inference confidence/predicted_shift, live-verified 2026-07-23/24:** PR #1301
+   implemented items 3/4 (confidence = `1 - mean(prediction_error)` across the five real
+   domains; `predicted_shift` = argmax-by-trend), fully removing the dead `SelfStateV1`
+   fallback. PR #1304, a metric-quality-gate catch run *before* building item 5 on top of
+   item 4, found `predicted_shift`'s original continuation formula was empirically worse
+   than a coin flip (37.7%/41.0% on two real windows, p<0.001) — fixed by flipping to
+   reversion (62.3%/59.0%, validated on biometrics only, extrapolated to the other four
+   domains). A follow-up "hit it all" improvement pass (train/test split, window tuning,
+   spike segmentation, domain-specific validation, logistic regression) found a strong
+   window=2 lead (77% vs. window=30's ~55%) but never reached TEST-set validation before
+   the 2026-07-23 Postgres disk death wiped the history and scratchpad caches it depended
+   on — **paused, not resolved**, blocked on ~48-96h of fresh history re-accumulating.
+   **New finding, 2026-07-24 (`docs/notes/2026-07-24-attention-reason-branch-starvation-
+   finding.md`, `scripts/analysis/measure_attention_reason_branch_starvation.py`):** a live
+   harness-turn + reducer replay (real post-rebuild data, 9208 ticks) found the new
+   confidence formula only actually drives `AttentionSelfModelV1.confidence` on 0.04% of
+   ticks — structurally starved, not broken, because `attention_reason`'s elif order lets
+   `bottom_up_salience` (the older `broadcast.coalition_stability_score` path) win on every
+   tick where the broadcast/GWT-dispatch lane is fresh (99.96% of real ticks; 30s cadence,
+   essentially always fresh). Confirmed zero elif-ordering contradictions in real data — this
+   is the code behaving exactly as written, not a defect. **This means "item 2 is proven" is
+   only true in the narrow sense of "computed correctly when exercised" — it is not yet true
+   in the sense of "actually the formula driving live behavior."** No behavior changed in
+   this patch; whether to reorder branches, blend both confidence sources, or otherwise
+   address this is an open design question needing its own sign-off, not decided here.
 3. **Route existing tension producers directly onto `FieldStateV1` channels**, retiring the
    bucket-vote layer — collapses the redundant reimplementation named in §7's finding.
    Reframed as prediction-error-native (extending the already-live

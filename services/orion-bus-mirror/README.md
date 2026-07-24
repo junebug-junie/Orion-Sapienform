@@ -58,6 +58,26 @@ shared FalkorDB instance at `FALKORDB_URI`):
   *different* organ arrives within `MIRROR_GRAPH_CHAIN_TTL_SEC` (default 120s). Same
   EWMA/z-score shape, over hop latency instead of publish gap.
 
+**Channel node collapsing (fixed 2026-07-24, found via the Hub hot-path view):** `Channel`
+node identity is normalized against `orion/bus/channels.yaml`'s wildcard catalog entries
+(`orion.bus.census.normalize_channel_name`, the same wildcard-prefix matching
+`compute_census()` already used for Phase 2's census diff) before being written. Without
+this, every dynamic per-request reply channel (e.g.
+`orion:exec:result:LLMGatewayService:<uuid>`) got its own permanent node — live-found:
+~9K `Channel` nodes against a 264-entry declared catalog. Now they collapse to the
+matching catalog wildcard entry (narrowest/most-specific match wins when more than one
+wildcard matches the same channel; an exact literal catalog entry always short-circuits
+wildcard matching, even if a wildcard sibling would also prefix-match it -- otherwise
+already-declared, already-bounded channels like `orion:exec:result:LLMGatewayService`
+would themselves get incorrectly merged into the broader `orion:exec:result:*` bucket,
+exactly backwards -- caught in review). Catalog is loaded once at process startup (static
+for the process lifetime), not re-read per message -- a channel added to `channels.yaml`
+while this service is running won't be normalized (or a channel removed will keep being
+normalized against the stale entry) until the next restart. **Known gap, not fixed here:**
+this only affects *new* writes — the ~9K already-inflated `Channel` nodes from before this
+fix are not retroactively merged or cleaned up. A one-off migration/cleanup pass is a
+real, separate follow-up, not silently assumed unnecessary.
+
 **What this deliberately does NOT build** (honesty over completeness):
 - **No `CONSUMES` edge.** A passive wiretap only ever observes publishes — it cannot
   see who actually received a pub/sub message. A live `CONSUMES` edge would need each

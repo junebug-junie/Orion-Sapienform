@@ -38,7 +38,7 @@ class TestRecordGraphEventFailsOpen:
 
         # Must not raise -- this is the whole point of the fail-open contract:
         # a graph-write failure can never block or crash the mirror's main loop.
-        await _record_graph_event(writer, chain_tracker, decoded, "orion:test", 100.0)
+        await _record_graph_event(writer, chain_tracker, decoded, "orion:test", 100.0, set())
 
         writer.record_publish.assert_called_once()
 
@@ -48,7 +48,7 @@ class TestRecordGraphEventFailsOpen:
         chain_tracker = ChainTracker(ttl_sec=60.0)
         decoded = _FakeDecodeResult(envelope=_FakeEnvelope(source=_FakeSource(name=None)))
 
-        await _record_graph_event(writer, chain_tracker, decoded, "orion:test", 100.0)
+        await _record_graph_event(writer, chain_tracker, decoded, "orion:test", 100.0, set())
 
         writer.record_publish.assert_not_called()
         writer.record_causal_hop.assert_not_called()
@@ -67,7 +67,7 @@ class TestRecordGraphEventFailsOpen:
             envelope=_FakeEnvelope(source=_FakeSource(name="cortex-exec"), correlation_id="corr-1")
         )
 
-        await _record_graph_event(writer, chain_tracker, decoded, "orion:test", 100.0)
+        await _record_graph_event(writer, chain_tracker, decoded, "orion:test", 100.0, set())
 
         assert len(chain_tracker) == 1
 
@@ -82,8 +82,8 @@ class TestRecordGraphEventFailsOpen:
             envelope=_FakeEnvelope(source=_FakeSource(name="llm-gateway"), correlation_id="corr-1")
         )
 
-        await _record_graph_event(writer, chain_tracker, first, "orion:a", 100.0)
-        await _record_graph_event(writer, chain_tracker, second, "orion:b", 117.0)
+        await _record_graph_event(writer, chain_tracker, first, "orion:a", 100.0, set())
+        await _record_graph_event(writer, chain_tracker, second, "orion:b", 117.0, set())
 
         writer.record_causal_hop.assert_called_once()
         _, kwargs = writer.record_causal_hop.call_args
@@ -103,7 +103,7 @@ class TestRecordGraphEventVerbSteps:
             )
         )
 
-        await _record_graph_event(writer, chain_tracker, decoded, "orion:cognition:trace", 100.0)
+        await _record_graph_event(writer, chain_tracker, decoded, "orion:cognition:trace", 100.0, set())
 
         writer.record_verb_step.assert_called_once()
         (fact,), _ = writer.record_verb_step.call_args
@@ -116,7 +116,7 @@ class TestRecordGraphEventVerbSteps:
         chain_tracker = ChainTracker(ttl_sec=60.0)
         decoded = _FakeDecodeResult(envelope=_FakeEnvelope(source=_FakeSource(name="cortex-exec")))
 
-        await _record_graph_event(writer, chain_tracker, decoded, "orion:test", 100.0)
+        await _record_graph_event(writer, chain_tracker, decoded, "orion:test", 100.0, set())
 
         writer.record_verb_step.assert_not_called()
 
@@ -132,4 +132,37 @@ class TestRecordGraphEventVerbSteps:
             )
         )
 
-        await _record_graph_event(writer, chain_tracker, decoded, "orion:test", 100.0)  # must not raise
+        await _record_graph_event(writer, chain_tracker, decoded, "orion:test", 100.0, set())  # must not raise
+
+
+class TestRecordGraphEventChannelNormalization:
+    @pytest.mark.asyncio
+    async def test_dynamic_reply_channel_collapsed_to_catalog_wildcard(self) -> None:
+        writer = MagicMock()
+        chain_tracker = ChainTracker(ttl_sec=60.0)
+        decoded = _FakeDecodeResult(envelope=_FakeEnvelope(source=_FakeSource(name="llm-gateway")))
+
+        await _record_graph_event(
+            writer,
+            chain_tracker,
+            decoded,
+            "orion:exec:result:LLMGatewayService:0cf10589-4bae-4cb7-bc13-40684d7d321e",
+            100.0,
+            {"orion:exec:result:*"},
+        )
+
+        (fact,), _ = writer.record_publish.call_args
+        assert fact.channel == "orion:exec:result:*"
+
+    @pytest.mark.asyncio
+    async def test_empty_catalog_leaves_channel_unchanged(self) -> None:
+        writer = MagicMock()
+        chain_tracker = ChainTracker(ttl_sec=60.0)
+        decoded = _FakeDecodeResult(envelope=_FakeEnvelope(source=_FakeSource(name="llm-gateway")))
+
+        await _record_graph_event(
+            writer, chain_tracker, decoded, "orion:exec:result:LLMGatewayService:abc", 100.0, set()
+        )
+
+        (fact,), _ = writer.record_publish.call_args
+        assert fact.channel == "orion:exec:result:LLMGatewayService:abc"

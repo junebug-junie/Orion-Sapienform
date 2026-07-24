@@ -6,6 +6,7 @@ from typing import Optional
 import aiosqlite
 from loguru import logger
 
+from orion.bus.census import load_channel_catalog_names
 from orion.core.bus.async_service import OrionBusAsync
 from orion.core.bus.codec import DecodeResult, OrionCodec
 from orion.graph.falkor_client import RedisGraphQueryClient
@@ -61,9 +62,12 @@ async def _record_graph_event(
     decoded: DecodeResult,
     channel: str,
     now_epoch: float,
+    catalog_names: set[str],
 ) -> None:
     try:
-        fact = extract_bus_event_fact(decoded.envelope, channel=channel, now=now_epoch)
+        fact = extract_bus_event_fact(
+            decoded.envelope, channel=channel, now=now_epoch, catalog_names=catalog_names
+        )
         if fact is None:
             return
         # Chain-tracker bookkeeping runs before the (possibly-failing) Falkor
@@ -135,11 +139,18 @@ async def mirror_bus() -> None:
 
     graph_writer = _build_graph_writer()
     chain_tracker = ChainTracker(ttl_sec=settings.MIRROR_GRAPH_CHAIN_TTL_SEC) if graph_writer else None
+    # Loaded once at startup, not per-message: channels.yaml is static for the
+    # life of this process. Used to collapse dynamic reply channels (e.g.
+    # "orion:exec:result:LLMGatewayService:<uuid>") to their catalog wildcard
+    # entry before they become graph nodes -- see extract_bus_event_fact's
+    # docstring for why this matters (a real, live-found ~9K-node inflation).
+    catalog_names = load_channel_catalog_names() if graph_writer else set()
     if graph_writer:
         logger.info(
-            "Bus synaptic graph writer enabled: graph={} alpha={}",
+            "Bus synaptic graph writer enabled: graph={} alpha={} catalog_channels={}",
             settings.FALKORDB_BUS_GRAPH,
             settings.MIRROR_GRAPH_EWMA_ALPHA,
+            len(catalog_names),
         )
 
     inflight_task: Optional[asyncio.Task] = None
@@ -173,7 +184,7 @@ async def mirror_bus() -> None:
 
                     if graph_writer is not None and decoded.ok:
                         await _record_graph_event(
-                            graph_writer, chain_tracker, decoded, channel, now.timestamp()
+                            graph_writer, chain_tracker, decoded, channel, now.timestamp(), catalog_names
                         )
     finally:
         if inflight_task is not None:

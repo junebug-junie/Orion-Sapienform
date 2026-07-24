@@ -38,6 +38,12 @@ overwrite the previous producer's entry — found in review of this step's first
 merge. `_organ_id_for_service()` in the adapter resolves the payload's `service` field to the
 right per-service id and degrades to no signal for an unrecognized service.
 
+**Not the same pipeline as `orion-equilibrium-service`'s `transport` metacog trigger.** That
+trigger's Option A subscribes to the same `orion:rpc_health:snapshot` channel as a second,
+independent consumer, feeding `orion_metacog` instead of this service's `SignalWindow`/
+`orion:signals:*`. Same source data, two separate destinations — see that service's README,
+"The metacog trigger family — big picture", if you're trying to trace where this data ends up.
+
 ## Running
 
 ### Docker Compose

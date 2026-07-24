@@ -63,6 +63,7 @@ class FakeGraphClient:
         "/api/bus-synaptic-graph/hot-organs",
         "/api/bus-synaptic-graph/hot-edges",
         "/api/bus-synaptic-graph/anomalies",
+        "/api/bus-synaptic-graph/node-centrality",
     ],
 )
 def test_falkordb_not_configured_returns_503(client: TestClient, path: str) -> None:
@@ -201,3 +202,46 @@ def test_anomalies_thresholds_are_configurable(client: TestClient) -> None:
 
     query_params = [p for _, p in fake.calls]
     assert all(p["threshold"] == 5.0 and p["min_count"] == 10 for p in query_params)
+
+
+def test_node_centrality_returns_ranked_list(client: TestClient) -> None:
+    fake = FakeGraphClient(
+        {
+            "total_degree": [
+                {"organ_id": "landing-pad", "out_degree": 15, "in_degree": 17, "total_degree": 32},
+                {"organ_id": "cortex-exec", "out_degree": 15, "in_degree": 16, "total_degree": 31},
+            ]
+        }
+    )
+    with patch.object(bus_synaptic_graph_routes, "_client", return_value=fake):
+        r = client.get("/api/bus-synaptic-graph/node-centrality")
+
+    assert r.status_code == 200
+    organs = r.json()["organs"]
+    assert organs[0]["organ_id"] == "landing-pad"
+    assert organs[0]["total_degree"] == 32
+    _, params = fake.calls[-1]
+    assert params["limit"] == 15
+
+
+def test_node_centrality_limit_rejects_out_of_range_values(client: TestClient) -> None:
+    fake = FakeGraphClient({"total_degree": []})
+    with patch.object(bus_synaptic_graph_routes, "_client", return_value=fake):
+        too_high = client.get("/api/bus-synaptic-graph/node-centrality?limit=1000")
+        too_low = client.get("/api/bus-synaptic-graph/node-centrality?limit=0")
+    assert too_high.status_code == 422
+    assert too_low.status_code == 422
+
+
+def test_node_centrality_only_matches_causally_followed_by_not_publishes(client: TestClient) -> None:
+    # A regression guard against accidentally widening this query to
+    # PUBLISHES (the Channel-node side, historically polluted with stale
+    # duplicates -- see stale_channel_node_cleanup.py). The query string
+    # itself must reference CAUSALLY_FOLLOWED_BY, not PUBLISHES.
+    fake = FakeGraphClient({"total_degree": []})
+    with patch.object(bus_synaptic_graph_routes, "_client", return_value=fake):
+        client.get("/api/bus-synaptic-graph/node-centrality")
+
+    cypher, _ = fake.calls[-1]
+    assert "CAUSALLY_FOLLOWED_BY" in cypher
+    assert "PUBLISHES" not in cypher

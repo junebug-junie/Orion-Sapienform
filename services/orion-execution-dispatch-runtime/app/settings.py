@@ -10,6 +10,7 @@ class Settings(BaseSettings):
     project: str = Field("orion-athena", alias="PROJECT")
     service_name: str = Field("orion-execution-dispatch-runtime", alias="SERVICE_NAME")
     service_version: str = Field("0.1.0", alias="SERVICE_VERSION")
+    node_name: str = Field("athena", alias="NODE_NAME")
 
     postgres_uri: str = Field(..., alias="POSTGRES_URI")
     execution_dispatch_policy_path: str = Field(
@@ -36,6 +37,9 @@ class Settings(BaseSettings):
     )
     orion_bus_url: str = Field("redis://100.92.216.81:6379/0", alias="ORION_BUS_URL")
     orion_bus_enabled: bool = Field(True, alias="ORION_BUS_ENABLED")
+    # Bus-native SystemHealthV1 heartbeat cadence (orion:system:health). See
+    # docs/superpowers/specs/2026-07-24-service-heartbeat-node-telemetry-design.md.
+    heartbeat_interval_sec: float = Field(10.0, alias="HEARTBEAT_INTERVAL_SEC")
     execution_dispatch_rpc_timeout_sec: float = Field(
         120.0, alias="EXECUTION_DISPATCH_RPC_TIMEOUT_SEC"
     )

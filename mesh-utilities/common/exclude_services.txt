@@ -2,7 +2,6 @@
 # one service per line
 orion-context-exec
 orion-llamacpp-neural-host
-#orion-security-watcher
 orion-vllm-host
 orion-rag
 orion-ollama-host
@@ -10,17 +9,8 @@ orion-voip-endpoint
 voip-endopoint
 orion-llama-cola-host
 orion-gdb-client
-# for testing
 orion-llamacpp-host
-#orion-agent-council
-#orion-power-guard 
-#orion-recall               
-#orion-gpu-cluster-power
-orion-bus-mirror
 orion-bus-tap
-#orion-biometrics
-#orion-dream
-#orion-meta-tags
 # Fuseki decommission campaign (docs/superpowers/pr-reports/2026-07-23-fuseki-
 # decommission-*.md, 8 PRs): every real Fuseki-writing pipeline in the codebase
 # has been killed. orion-rdf-store (the Fuseki container itself) crash-loops on

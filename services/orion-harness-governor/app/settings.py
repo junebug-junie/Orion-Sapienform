@@ -20,8 +20,11 @@ class HarnessGovernorSettings(BaseSettings):
 
     orion_bus_enabled: bool = Field(True, alias="ORION_BUS_ENABLED")
     orion_bus_enforce_catalog: bool = Field(False, alias="ORION_BUS_ENFORCE_CATALOG")
-    orion_bus_url: str = Field("redis://100.x.x.x:6379/0", alias="ORION_BUS_URL")
+    orion_bus_url: str = Field("redis://100.92.216.81:6379/0", alias="ORION_BUS_URL")
     orion_harness_governor_enabled: bool = Field(True, alias="ORION_HARNESS_GOVERNOR_ENABLED")
+    # Bus-native SystemHealthV1 heartbeat cadence (orion:system:health). See
+    # docs/superpowers/specs/2026-07-24-service-heartbeat-node-telemetry-design.md.
+    heartbeat_interval_sec: float = Field(10.0, alias="HEARTBEAT_INTERVAL_SEC")
 
     channel_harness_run_request: str = Field(
         "orion:harness:run:request",

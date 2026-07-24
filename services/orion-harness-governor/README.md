@@ -12,6 +12,9 @@ Bus worker for unified Hub turns. Listens on `orion:harness:run:request`, runs f
 | `CHANNEL_FINALIZE_APPRAISAL_REQUEST` | `orion:substrate:finalize_appraisal:request` | 5a draft molecule RPC |
 | `CHANNEL_POST_TURN_CLOSURE` | `orion:substrate:post_turn_closure` | Step 7 learning closure |
 
+Also publishes a bus-native `SystemHealthV1` heartbeat to `orion:system:health` every
+`HEARTBEAT_INTERVAL_SEC` (default 10s), independent of the request/cancel bus workers above.
+
 ## Flow
 
 ```text

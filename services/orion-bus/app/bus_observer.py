@@ -345,6 +345,9 @@ async def run_bus_observer_loop() -> None:
         settings.publish_orion_bus_grammar,
     )
 
+    # Awaited (not fired concurrently) before the tick loop starts, matching PR #1350's pilot-5
+    # shape -- an unreachable bus can add up to connect_timeout_sec (default 10s) to startup,
+    # bounded and non-fatal (caught below), not unbounded blocking.
     heartbeat_chassis: HeartbeatOnly | None = None
     try:
         heartbeat_chassis = build_heartbeat_chassis(settings)

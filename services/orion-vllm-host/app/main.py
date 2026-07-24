@@ -145,6 +145,9 @@ async def _main_async() -> None:
         settings.port,
     )
 
+    # Awaited (not fired concurrently) before the launch flow starts, matching PR #1350's
+    # pilot-5 shape -- an unreachable bus can add up to connect_timeout_sec (default 10s) to
+    # startup, bounded and non-fatal (caught below), not unbounded blocking.
     heartbeat_chassis: Optional[HeartbeatOnly] = None
     try:
         heartbeat_chassis = build_heartbeat_chassis()
@@ -158,6 +161,12 @@ async def _main_async() -> None:
         logger.warning("system_health_heartbeat_start_failed error=%s", exc)
         heartbeat_chassis = None
 
+    # Known limitation (found in review, not fixed here -- bounded to interactive dev use, same
+    # tradeoff as orion-ollama-host's identical asyncio.to_thread() conversion): a worker thread
+    # running a blocking subprocess.run() cannot be cancelled once started, so an interactive
+    # Ctrl-C (SIGINT) can leave the interpreter hanging until the vLLM subprocess exits on its
+    # own, whereas before this patch the same blocking call ran on the main thread and Ctrl-C
+    # interrupted it immediately. `docker stop` (SIGTERM) is unaffected either way.
     try:
         await asyncio.to_thread(run_vllm_server_blocking)
     finally:

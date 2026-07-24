@@ -154,6 +154,9 @@ async def mirror_bus() -> None:
     bus = OrionBusAsync(settings.ORION_BUS_URL)
     await bus.connect()
 
+    # Awaited (not fired concurrently) before the subscribe loop starts, matching PR #1350's
+    # pilot-5 shape -- an unreachable bus can add up to connect_timeout_sec (default 10s) to
+    # startup, bounded and non-fatal (caught below), not unbounded blocking.
     heartbeat_chassis: Optional[HeartbeatOnly] = None
     try:
         heartbeat_chassis = build_heartbeat_chassis()

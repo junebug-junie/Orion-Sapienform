@@ -100,6 +100,9 @@ def run_ollama_server_blocking() -> None:
 async def _main_async() -> None:
     logger.info("Starting %s v%s", settings.service_name, settings.service_version)
 
+    # Awaited (not fired concurrently) before the launch flow starts, matching PR #1350's
+    # pilot-5 shape -- an unreachable bus can add up to connect_timeout_sec (default 10s) to
+    # startup, bounded and non-fatal (caught below), not unbounded blocking.
     heartbeat_chassis: Optional[HeartbeatOnly] = None
     try:
         heartbeat_chassis = build_heartbeat_chassis()
@@ -113,6 +116,17 @@ async def _main_async() -> None:
         logger.warning("system_health_heartbeat_start_failed error=%s", exc)
         heartbeat_chassis = None
 
+    # Known limitation (found in review, not fixed here -- bounded to interactive dev use):
+    # asyncio.to_thread() runs the blocking launch on a worker thread that cannot be cancelled
+    # once running. `docker stop` (SIGTERM) is unaffected -- Python has no default SIGTERM
+    # handler before or after this patch, so the OS kills the whole process tree instantly
+    # either way. But an interactive Ctrl-C (SIGINT) can now leave the interpreter hanging in
+    # concurrent.futures' atexit cleanup until the ollama subprocess exits on its own, whereas
+    # before this patch the same blocking call ran on the main thread and Ctrl-C interrupted it
+    # immediately. Converting run_ollama_server_blocking() to a real asyncio subprocess flow
+    # would close this, but that's a larger rewrite (wait_for_ollama's polling loop and
+    # pull_model both use blocking requests/subprocess.run calls throughout) than this thin
+    # heartbeat-wiring patch should take on.
     try:
         await asyncio.to_thread(run_ollama_server_blocking)
     finally:

@@ -7,6 +7,7 @@ from .cortex_gateway import CortexGatewayAdapter
 from .cortex_orch import CortexOrchAdapter
 from .hub import HubAdapter
 from .persistence_writers import RdfWriterAdapter, SqlWriterAdapter, VectorWriterAdapter
+from .rpc_health import RpcHealthAdapter
 from .biometrics import BiometricsAdapter
 from .collapse_mirror import CollapseMirrorAdapter
 from .equilibrium import EquilibriumAdapter
@@ -55,6 +56,7 @@ ADAPTERS: List[OrionSignalAdapter] = [
     SqlWriterAdapter(),
     RdfWriterAdapter(),
     VectorWriterAdapter(),
+    RpcHealthAdapter(),
 ]
 
 __all__ = [
@@ -65,6 +67,7 @@ __all__ = [
     "SqlWriterAdapter",
     "RdfWriterAdapter",
     "VectorWriterAdapter",
+    "RpcHealthAdapter",
     "BiometricsAdapter",
     "CollapseMirrorAdapter",
     "EquilibriumAdapter",

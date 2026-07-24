@@ -22,6 +22,12 @@ class Settings(BaseSettings):
     # Chassis
     heartbeat_interval_sec: float = Field(10.0, alias="HEARTBEAT_INTERVAL_SEC")
 
+    # RPC-health snapshot publish (Step 3 of docs/superpowers/specs/2026-07-23-rpc-health-
+    # signal-gateway-wiring-design.md). Off by default until live-verified per that spec's
+    # acceptance checks; draining is free (in-memory) but this gates the new periodic publish.
+    rpc_health_publish_enabled: bool = Field(False, alias="RPC_HEALTH_PUBLISH_ENABLED")
+    rpc_health_publish_interval_sec: float = Field(30.0, alias="RPC_HEALTH_PUBLISH_INTERVAL_SEC")
+
     # RPC intake channel (hub -> cortex-orch)
     channel_cortex_request: str = Field(
         "orion:cortex:request",

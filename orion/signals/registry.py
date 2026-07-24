@@ -391,6 +391,37 @@ ORGAN_REGISTRY: Dict[str, OrionOrganRegistryEntry] = {
         bus_channels=["orion:evidence:index:upsert"],
         notes=["Milestone B: vector index persist presence."],
     ),
+    "rpc_health_cortex_exec": OrionOrganRegistryEntry(
+        organ_id="rpc_health_cortex_exec",
+        organ_class=OrganClass.exogenous,
+        service="orion-cortex-exec",
+        signal_kinds=["rpc_transport_health"],
+        canonical_dimensions=["level", "confidence", "latency_level"],
+        causal_parent_organs=[],
+        bus_channels=["orion:rpc_health:snapshot"],
+        notes=[
+            "Step 3 of docs/superpowers/specs/2026-07-23-rpc-health-signal-gateway-wiring-design.md: "
+            "drains OrionBusAsync.get_rpc_health_snapshot() on a periodic publish loop. Per-service "
+            "organ_id (not one shared 'rpc_health' id) -- review of this step's first cut found a "
+            "shared organ_id makes every producer overwrite the same SignalWindow slot, so only one "
+            "service's snapshot is ever visible in the gateway's current-state view. See sibling "
+            "'rpc_health_cortex_orch' entry.",
+        ],
+    ),
+    "rpc_health_cortex_orch": OrionOrganRegistryEntry(
+        organ_id="rpc_health_cortex_orch",
+        organ_class=OrganClass.exogenous,
+        service="orion-cortex-orch",
+        signal_kinds=["rpc_transport_health"],
+        canonical_dimensions=["level", "confidence", "latency_level"],
+        causal_parent_organs=[],
+        bus_channels=["orion:rpc_health:snapshot"],
+        notes=[
+            "Step 3 of docs/superpowers/specs/2026-07-23-rpc-health-signal-gateway-wiring-design.md: "
+            "drains OrionBusAsync.get_rpc_health_snapshot() on a periodic publish loop. Per-service "
+            "organ_id -- see sibling 'rpc_health_cortex_exec' entry for why.",
+        ],
+    ),
 }
 
 # Registry accuracy note:

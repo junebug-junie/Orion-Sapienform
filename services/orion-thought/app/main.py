@@ -9,6 +9,8 @@ from fastapi.responses import JSONResponse
 
 from datetime import datetime, timezone
 
+from orion.core.bus.bus_service_chassis import ChassisConfig, HeartbeatOnly
+
 from .bus_listener import run_bus_worker
 from .chain import run_reverie_chain_worker
 from .reasoning_activity import run_reasoning_worker
@@ -23,15 +25,46 @@ logging.basicConfig(
 )
 logger = logging.getLogger("orion-thought.main")
 
+heartbeat_chassis: HeartbeatOnly | None = None
+
+
+def build_heartbeat_chassis() -> HeartbeatOnly:
+    """Own, independent bus connection publishing SystemHealthV1 to orion:system:health
+    every heartbeat_interval_sec. Deliberately separate from the bus worker/reverie/
+    reasoning tasks below (see
+    docs/superpowers/specs/2026-07-24-service-heartbeat-node-telemetry-design.md)."""
+    return HeartbeatOnly(
+        ChassisConfig(
+            service_name=settings.service_name,
+            service_version=settings.service_version,
+            node_name=settings.node_name,
+            bus_url=settings.orion_bus_url,
+            bus_enabled=settings.orion_bus_enabled,
+            heartbeat_interval_sec=settings.heartbeat_interval_sec,
+        )
+    )
+
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
+    global heartbeat_chassis
     logger.info(
         "Starting orion-thought service=%s v=%s port=%s",
         settings.service_name,
         settings.service_version,
         settings.port,
     )
+    try:
+        heartbeat_chassis = build_heartbeat_chassis()
+        await heartbeat_chassis.start_background()
+        logger.info(
+            "system_health_heartbeat_started service=%s interval_sec=%s",
+            settings.service_name,
+            settings.heartbeat_interval_sec,
+        )
+    except Exception as exc:
+        logger.warning("system_health_heartbeat_start_failed error=%s", exc)
+        heartbeat_chassis = None
     app.state.bus_stop_event = asyncio.Event()
     app.state.bus_task = asyncio.create_task(run_bus_worker(app.state.bus_stop_event))
     # Spontaneous-thought mode — no-op unless ORION_REVERIE_ENABLED (default off).
@@ -57,6 +90,12 @@ async def lifespan(app: FastAPI):
     # create_task).
     app.state.pool_warmup_task = asyncio.create_task(warm_pool())
     yield
+    if heartbeat_chassis is not None:
+        try:
+            await heartbeat_chassis.stop()
+        except Exception as exc:
+            logger.warning("system_health_heartbeat_stop_error error=%s", exc)
+        heartbeat_chassis = None
     app.state.bus_stop_event.set()
     app.state.reverie_stop_event.set()
     app.state.reverie_chain_stop_event.set()

@@ -10,6 +10,7 @@ import uvicorn
 from fastapi import FastAPI, HTTPException, Query
 from pydantic import BaseModel, Field
 
+from orion.core.bus.bus_service_chassis import ChassisConfig, HeartbeatOnly
 from orion.schemas.self_experiments import (
     SelfExperimentCreateRequestV1,
     SelfExperimentCreateResponseV1,
@@ -43,12 +44,53 @@ class LegacyExperimentCreateRequest(BaseModel):
     args: dict[str, Any] = Field(default_factory=dict)
 
 
+heartbeat_chassis: HeartbeatOnly | None = None
+
+
+def build_heartbeat_chassis() -> HeartbeatOnly:
+    """Own, independent bus connection publishing SystemHealthV1 to orion:system:health
+    every heartbeat_interval_sec. Self-experiments' bus usage (dispatch to context-exec via
+    `SELF_EXPERIMENTS_CONTEXT_EXEC_DISPATCH_TRANSPORT=bus`) is per-request, not a persistent
+    connection this chassis could collide with. See
+    docs/superpowers/specs/2026-07-24-service-heartbeat-node-telemetry-design.md."""
+    return HeartbeatOnly(
+        ChassisConfig(
+            service_name=settings.service_name,
+            service_version=settings.service_version,
+            node_name=settings.node_name,
+            bus_url=settings.orion_bus_url,
+            bus_enabled=settings.orion_bus_enabled,
+            heartbeat_interval_sec=settings.heartbeat_interval_sec,
+        )
+    )
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
+    global heartbeat_chassis
     level_name = (settings.log_level or "INFO").upper()
     logging.basicConfig(level=getattr(logging, level_name, logging.INFO))
     init_db()
-    yield
+    try:
+        heartbeat_chassis = build_heartbeat_chassis()
+        await heartbeat_chassis.start_background()
+        logger.info(
+            "system_health_heartbeat_started service=%s interval_sec=%s",
+            settings.service_name,
+            settings.heartbeat_interval_sec,
+        )
+    except Exception as exc:
+        logger.warning("system_health_heartbeat_start_failed error=%s", exc)
+        heartbeat_chassis = None
+    try:
+        yield
+    finally:
+        if heartbeat_chassis is not None:
+            try:
+                await heartbeat_chassis.stop()
+            except Exception as exc:
+                logger.warning("system_health_heartbeat_stop_error error=%s", exc)
+            heartbeat_chassis = None
 
 
 app = FastAPI(title="orion-self-experiments", version=settings.service_version, lifespan=lifespan)

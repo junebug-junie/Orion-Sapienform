@@ -5,6 +5,7 @@ from pydantic_settings import BaseSettings
 class Settings(BaseSettings):
     service_name: str = Field("orion-self-experiments", alias="SERVICE_NAME")
     service_version: str = Field("0.2.0", alias="SERVICE_VERSION")
+    node_name: str = Field("athena", alias="NODE_NAME")
     log_level: str = Field("INFO", alias="LOG_LEVEL")
     experiments_store_path: str = Field(
         "/tmp/orion-self-experiments/experiments.sqlite3",
@@ -15,6 +16,9 @@ class Settings(BaseSettings):
 
     orion_bus_url: str = Field("redis://127.0.0.1:6379/0", alias="ORION_BUS_URL")
     orion_bus_enabled: bool = Field(False, alias="ORION_BUS_ENABLED")
+    # Bus-native SystemHealthV1 heartbeat cadence (orion:system:health). See
+    # docs/superpowers/specs/2026-07-24-service-heartbeat-node-telemetry-design.md.
+    heartbeat_interval_sec: float = Field(10.0, alias="HEARTBEAT_INTERVAL_SEC")
 
     self_experiments_dispatch_enabled: bool = Field(False, alias="SELF_EXPERIMENTS_DISPATCH_ENABLED")
     self_experiments_context_exec_dispatch_transport: str = Field(

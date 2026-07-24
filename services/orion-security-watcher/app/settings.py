@@ -12,6 +12,9 @@ class Settings(BaseSettings):
     ORION_BUS_ENABLED: bool = Field(True, alias="ORION_BUS_ENABLED")
     ORION_BUS_ENFORCE_CATALOG: bool = Field(False, alias="ORION_BUS_ENFORCE_CATALOG")
     ORION_BUS_URL: str = Field("redis://100.92.216.81:6379/0", alias="ORION_BUS_URL")
+    # Bus-native SystemHealthV1 heartbeat cadence (orion:system:health). See
+    # docs/superpowers/specs/2026-07-24-service-heartbeat-node-telemetry-design.md.
+    HEARTBEAT_INTERVAL_SEC: float = Field(10.0, alias="HEARTBEAT_INTERVAL_SEC")
 
     # Vision events
     VISION_EVENTS_SUBSCRIBE_RAW: str = Field("orion:vision:edge:raw", alias="VISION_EVENTS_SUBSCRIBE_RAW")

@@ -2,6 +2,9 @@
 
 Bus worker service for unified Hub turns. Listens on `orion:thought:request`, runs cortex `stance_react`, applies stance quality and disposition policy, replies with `ThoughtEventV1`, and publishes audit artifacts.
 
+Also publishes a bus-native `SystemHealthV1` heartbeat to `orion:system:health` every
+`HEARTBEAT_INTERVAL_SEC` (default 10s), independent of the bus worker/reverie/reasoning tasks above.
+
 ## Channels
 
 | Env key | Default | Role |

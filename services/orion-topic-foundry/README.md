@@ -2,6 +2,9 @@
 
 Spec-driven service for building topic artifacts (runs, segments, model registry) without implicit training on startup.
 
+Also publishes a bus-native `SystemHealthV1` heartbeat to `orion:system:health` every
+`HEARTBEAT_INTERVAL_SEC` (default 10s), independent of the drift daemon's own bus usage.
+
 ## Endpoints
 - `GET /health` — process liveness.
 - `GET /ready` — dependency checks (Postgres, embedding endpoint, model dir).

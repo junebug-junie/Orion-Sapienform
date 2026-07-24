@@ -9,6 +9,7 @@ from fastapi import FastAPI
 from loguru import logger
 
 from orion.core.bus.async_service import OrionBusAsync
+from orion.core.bus.bus_service_chassis import ChassisConfig, HeartbeatOnly
 from orion.llm.openai_message_content import join_openai_message_content
 from orion.core.bus.bus_schemas import BaseEnvelope, ServiceRef, ChatRequestPayload, LLMMessage
 from orion.schemas.vision import (
@@ -432,11 +433,46 @@ class CouncilService:
 
 
 service = CouncilService()
+heartbeat_chassis: HeartbeatOnly | None = None
+
+
+def build_heartbeat_chassis() -> HeartbeatOnly:
+    """Own, independent bus connection publishing SystemHealthV1 to orion:system:health
+    every heartbeat_interval_sec. Deliberately separate from `service.bus` above (see
+    docs/superpowers/specs/2026-07-24-service-heartbeat-node-telemetry-design.md)."""
+    return HeartbeatOnly(
+        ChassisConfig(
+            service_name=settings.SERVICE_NAME,
+            service_version=settings.SERVICE_VERSION,
+            node_name=settings.NODE_NAME,
+            bus_url=settings.ORION_BUS_URL,
+            bus_enabled=True,
+            heartbeat_interval_sec=settings.HEARTBEAT_INTERVAL_SEC,
+        )
+    )
+
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
+    global heartbeat_chassis
     await service.start()
+    try:
+        heartbeat_chassis = build_heartbeat_chassis()
+        await heartbeat_chassis.start_background()
+        logger.info(
+            f"[COUNCIL] system_health_heartbeat_started service={settings.SERVICE_NAME} "
+            f"interval_sec={settings.HEARTBEAT_INTERVAL_SEC}"
+        )
+    except Exception as exc:
+        logger.warning(f"[COUNCIL] system_health_heartbeat_start_failed error={exc}")
+        heartbeat_chassis = None
     yield
+    if heartbeat_chassis is not None:
+        try:
+            await heartbeat_chassis.stop()
+        except Exception as exc:
+            logger.warning(f"[COUNCIL] system_health_heartbeat_stop_error error={exc}")
+        heartbeat_chassis = None
     await service.stop()
 
 app = FastAPI(title="Orion Vision Council", version="0.1.0", lifespan=lifespan)

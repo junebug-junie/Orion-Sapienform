@@ -10,6 +10,9 @@ docker compose -f services/orion-spark-concept-induction/docker-compose.yml --en
 
 Health check: http://localhost:8510/health
 
+Also publishes a bus-native `SystemHealthV1` heartbeat to `orion:system:health` every
+`HEARTBEAT_INTERVAL_SEC` (default 10s), independent of `ConceptWorker`'s own bus connection.
+
 ## Env lineage
 
 - `.env_example` → `docker-compose.yml` environment → `orion.spark.concept_induction.settings.ConceptSettings`

@@ -1,6 +1,9 @@
 # Orion Vision Scribe
 Records events.
 
+Also publishes a bus-native `SystemHealthV1` heartbeat to `orion:system:health` every
+`HEARTBEAT_INTERVAL_SEC` (default 10s), independent of `service.bus` above.
+
 ## RDF write path: removed 2026-07-23
 
 `_write_to_sinks` used to dual-write every event to Postgres (`vision_events`)

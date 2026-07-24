@@ -263,6 +263,51 @@ def _extract_tool_result_errors(step: Dict[str, Any]) -> List[str]:
     return errors
 
 
+# Fixed allowlist for context_gathering_ratio (2026-07-24) -- a deterministic
+# tool-name match, NOT a taxonomy service. Any tool name not listed here is
+# uncounted (neither bucket), rather than guessed into one. MCP prefixes are
+# limited to servers this codebase has confirmed are read-only-by-construction
+# (gitnexus: graph queries only; firecrawl: search/scrape only) -- an unlisted MCP
+# server defaults to uncounted since there's no way to verify it can't mutate state.
+_CONTEXT_GATHERING_TOOLS = frozenset({"Read", "Grep", "Glob", "WebSearch", "WebFetch", "ToolSearch"})
+_CONTEXT_GATHERING_MCP_PREFIXES = ("mcp__gitnexus__", "mcp__firecrawl__")
+_EXECUTION_TOOLS = frozenset({"Bash", "Edit", "Write", "MultiEdit", "NotebookEdit"})
+
+
+def classify_step_tool_kind(tool_name: str | None) -> str | None:
+    """"context_gathering", "execution", or None (uncounted) for one tool_use call."""
+    name = str(tool_name or "")
+    if not name:
+        return None
+    if name in _CONTEXT_GATHERING_TOOLS:
+        return "context_gathering"
+    if name in _EXECUTION_TOOLS:
+        return "execution"
+    if name.startswith(_CONTEXT_GATHERING_MCP_PREFIXES):
+        return "context_gathering"
+    return None
+
+
+def extract_result_output_tokens(step: Dict[str, Any]) -> Optional[int]:
+    """Real output_tokens from the harness CLI's own end-of-turn result event.
+
+    Confirmed live 2026-07-24: Claude Code's stream-json `result` message carries a
+    top-level `usage` object with real provider-computed token counts (input_tokens,
+    output_tokens, cache_read_input_tokens, ...) -- exactly one per FCC-motor
+    invocation (the CLI's own cumulative-run summary), not one per step.
+    """
+    raw = step.get("raw") if isinstance(step.get("raw"), dict) else step
+    if not isinstance(raw, dict) or str(raw.get("type") or "") != "result":
+        return None
+    usage = raw.get("usage")
+    if not isinstance(usage, dict):
+        return None
+    tokens = usage.get("output_tokens")
+    if isinstance(tokens, bool) or not isinstance(tokens, int):
+        return None
+    return max(0, tokens)
+
+
 def expand_env_path(raw: str) -> Path:
     return Path(os.path.expanduser(str(raw or "").strip() or "~/.fcc/.env"))
 

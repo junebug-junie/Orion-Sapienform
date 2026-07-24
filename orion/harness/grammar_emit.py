@@ -367,6 +367,9 @@ class HarnessGrammarCollector:
         step_char_sum: int = 0,
         step_char_max: int = 0,
         tool_failure_streak_max: int = 0,
+        reasoning_output_tokens: int = 0,
+        context_gathering_step_count: int = 0,
+        execution_step_count: int = 0,
     ) -> None:
         reasoning_present = compute_harness_reasoning_present(
             step_count=step_count,
@@ -397,7 +400,10 @@ class HarnessGrammarCollector:
                     f"compliance_verdict={compliance_verdict}, "
                     f"step_char_sum={step_char_sum}, "
                     f"step_char_max={step_char_max}, "
-                    f"tool_failure_streak_max={tool_failure_streak_max}"
+                    f"tool_failure_streak_max={tool_failure_streak_max}, "
+                    f"reasoning_output_tokens={reasoning_output_tokens}, "
+                    f"context_gathering_step_count={context_gathering_step_count}, "
+                    f"execution_step_count={execution_step_count}"
                 ),
                 confidence=0.95,
                 salience=0.95,

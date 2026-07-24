@@ -45,6 +45,12 @@ _EXECUTION_LOAD_SATURATION_STEPS = _HARNESS_STEP_LOAD_SATURATION_STEPS
 # magnitude, and neither has been sampled against live data yet.
 _REASONING_LOAD_SATURATION_CHARS = 4000
 
+# FCC-motor reasoning_load anchor when a real output_tokens count is available (2026-07-24).
+# Derived from _REASONING_LOAD_SATURATION_CHARS via the same rough ~4 chars/token ratio
+# used elsewhere in this codebase's token-estimation code, not independently calibrated --
+# keeps the two paths reading comparably instead of introducing a second unrelated guess.
+_REASONING_LOAD_SATURATION_TOKENS = 1000
+
 
 def _utc_now(now: datetime | None) -> datetime:
     if now is None:
@@ -101,7 +107,19 @@ def compute_pressure_hints(
     # back to the old boolean-derived anchor only when reasoning_present is true but
     # the char count is still 0 -- covers in-flight runs mid-rollout whose earlier
     # events predate this kv existing. Fixed 2026-07-23, see the same Appendix, item 2.
-    if run.reasoning_char_count > 0:
+    # reasoning_output_tokens (FCC-motor only, 2026-07-24) takes priority when present:
+    # real provider-computed tokens from the harness CLI's own result-event usage
+    # object, a strictly better unit than a char count could ever approximate. Falls
+    # through to reasoning_char_count (cortex-exec's path) then the old boolean, since
+    # a given run only ever populates one of the two magnitude fields depending on
+    # which producer emitted it.
+    if run.reasoning_output_tokens > 0:
+        reasoning_load = min(
+            1.0,
+            math.log1p(run.reasoning_output_tokens)
+            / math.log1p(_REASONING_LOAD_SATURATION_TOKENS),
+        )
+    elif run.reasoning_char_count > 0:
         reasoning_load = min(
             1.0,
             math.log1p(run.reasoning_char_count) / math.log1p(_REASONING_LOAD_SATURATION_CHARS),
@@ -142,6 +160,16 @@ def compute_pressure_hints(
     # compliance_deficit's worst rank (refused/failed), which still requires the
     # governor to have replied with *something*.
     turn_incompletion = 1.0 if run.turn_timed_out else 0.0
+    # Composition, not volume: what fraction of this turn's *classified* tool calls
+    # were read-only research/context tools vs action/mutation tools. Unmatched tool
+    # names increment neither counter (see fcc_motor.py's classify_step_tool_kind()),
+    # so a turn with zero classified calls reports 0.0 here rather than a misleading
+    # extreme -- distinct from harness_step_load, which measures how much work
+    # happened, not what kind.
+    classified_steps = run.context_gathering_step_count + run.execution_step_count
+    context_gathering_ratio = (
+        run.context_gathering_step_count / classified_steps if classified_steps > 0 else 0.0
+    )
     # llm_serving_node is NOT injected here: pressure_hints must stay
     # float-only -- orion/substrate/relational/adapters/execution_ctx.py's
     # map_execution_ctx_to_substrate() does max(hints.values()) over this
@@ -161,6 +189,7 @@ def compute_pressure_hints(
         "avg_step_chars_pressure": avg_step_chars_pressure,
         "compliance_deficit": compliance_deficit,
         "turn_incompletion": turn_incompletion,
+        "context_gathering_ratio": context_gathering_ratio,
     }
 
 
@@ -260,6 +289,18 @@ def extract_execution_state_from_events(
                 run.reasoning_char_count = int(
                     kv.get("reasoning_char_count", run.reasoning_char_count)
                     or run.reasoning_char_count
+                )
+                run.reasoning_output_tokens = int(
+                    kv.get("reasoning_output_tokens", run.reasoning_output_tokens)
+                    or run.reasoning_output_tokens
+                )
+                run.context_gathering_step_count = int(
+                    kv.get("context_gathering_step_count", run.context_gathering_step_count)
+                    or run.context_gathering_step_count
+                )
+                run.execution_step_count = int(
+                    kv.get("execution_step_count", run.execution_step_count)
+                    or run.execution_step_count
                 )
             except ValueError:
                 pass

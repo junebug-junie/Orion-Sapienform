@@ -71,11 +71,11 @@ def _fake_engine_with_rows(field_jsons: list[dict]):
     return fake_engine
 
 
-def test_channels_endpoint_returns_34_entries(client):
+def test_channels_endpoint_returns_35_entries(client):
     r = client.get("/api/field-channel-glossary/channels")
     assert r.status_code == 200
     body = r.json()
-    assert len(body["channels"]) == 34
+    assert len(body["channels"]) == 35
     assert len(body["categories"]) == 7
 
 

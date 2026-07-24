@@ -88,6 +88,13 @@ def merge_execution_run_state(
     merged.final_text_present = existing.final_text_present or incoming.final_text_present
     merged.reasoning_present = existing.reasoning_present or incoming.reasoning_present
     merged.reasoning_char_count = max(existing.reasoning_char_count, incoming.reasoning_char_count)
+    merged.reasoning_output_tokens = max(
+        existing.reasoning_output_tokens, incoming.reasoning_output_tokens
+    )
+    merged.context_gathering_step_count = max(
+        existing.context_gathering_step_count, incoming.context_gathering_step_count
+    )
+    merged.execution_step_count = max(existing.execution_step_count, incoming.execution_step_count)
     merged.thinking_source = _pick_thinking_source(existing.thinking_source, incoming.thinking_source)
     if incoming.llm_serving_node:
         merged.llm_serving_node = incoming.llm_serving_node

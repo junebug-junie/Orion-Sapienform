@@ -250,6 +250,19 @@ def delta_to_perturbations(delta: StateDeltaV1) -> list[Perturbation]:
             ("reasoning_load", "reasoning_load", reasoning_node_key),
             ("failure_pressure", "failure_pressure", node_key),
         ):
+            # reasoning_load is re-emitted below, gated to the harness_motor lane, when
+            # this delta carries a real reasoning_output_tokens-derived value (2026-07-24).
+            # Without this exclusion, the harness_motor lane's real token-based value and
+            # this unconditional per-lane emission (every execution_run delta already
+            # carries a reasoning_load key -- compute_pressure_hints() always returns it,
+            # same "key in hints always true" shape as the bug PR #1289 fixed for the 4
+            # harness-only channels) would race last-write-wins on the same
+            # reasoning_node_key, exactly the cross-lane stomp that fix addressed. Every
+            # OTHER lane's reasoning_load emission is deliberately left untouched here --
+            # not expanding scope to audit lanes this patch doesn't add a new data source
+            # to.
+            if channel == "reasoning_load" and delta.target_id.endswith(":harness_motor"):
+                continue
             if key in hints:
                 out.append(
                     Perturbation(
@@ -304,6 +317,7 @@ def delta_to_perturbations(delta: StateDeltaV1) -> list[Perturbation]:
                 ("tool_failure_streak_pressure", "tool_failure_streak_pressure"),
                 ("avg_step_chars_pressure", "avg_step_chars_pressure"),
                 ("compliance_deficit", "compliance_deficit"),
+                ("context_gathering_ratio", "context_gathering_ratio"),
             ):
                 if key in hints:
                     out.append(
@@ -315,6 +329,22 @@ def delta_to_perturbations(delta: StateDeltaV1) -> list[Perturbation]:
                             mode="replace",
                         )
                     )
+            # reasoning_load, re-emitted here (excluded from the unconditional loop
+            # above) so the harness_motor lane's own real reasoning_output_tokens-driven
+            # value doesn't race that loop's per-lane emission. Targets
+            # reasoning_node_key, same attribution as the top-level emission -- this is
+            # the same channel, just gated to the one lane that can carry a real
+            # motor-side magnitude.
+            if "reasoning_load" in hints:
+                out.append(
+                    Perturbation(
+                        node_id=reasoning_node_key,
+                        channel="reasoning_load",
+                        intensity=float(hints["reasoning_load"]),
+                        label=delta.delta_id,
+                        mode="replace",
+                    )
+                )
 
         # Distinct severity from compliance_deficit's worst rank: the governor never
         # responded at all (orion-hub-sourced exec_turn_timeout event, no

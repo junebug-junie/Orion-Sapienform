@@ -326,6 +326,70 @@ def test_pressure_hints_reasoning_load_falls_back_when_char_count_absent() -> No
     assert hints["reasoning_load"] == 0.35
 
 
+def test_pressure_hints_reasoning_load_prioritizes_output_tokens_over_char_count() -> None:
+    """reasoning_output_tokens (FCC-motor's real provider-computed magnitude) must
+    win over reasoning_char_count when both are somehow present on the same run --
+    real tokens beat a char approximation."""
+    run = extract_execution_state_from_events(
+        [
+            _exec_atom(
+                "exec_result_assembled",
+                "Final result assembled: status=success, final_text_present=True, "
+                "reasoning_present=True, reasoning_char_count=4000, "
+                "reasoning_output_tokens=1, thinking_source=provider_reasoning",
+            )
+        ],
+        now=FIXED_TS,
+    )
+    hints = compute_pressure_hints(run, egress_emitted=False)
+    # 1 output token, log-scaled against a 1000-token anchor, must read far below
+    # 4000 chars scaled against a 4000-char anchor (which alone would be ~1.0).
+    assert hints["reasoning_load"] < 0.2
+
+
+def test_pressure_hints_reasoning_load_uses_output_tokens_when_char_count_absent() -> None:
+    run = extract_execution_state_from_events(
+        [
+            _exec_atom(
+                "exec_result_assembled",
+                "Final result assembled: status=success, final_text_present=True, "
+                "reasoning_present=True, reasoning_output_tokens=500, "
+                "thinking_source=harness_fcc",
+            )
+        ],
+        now=FIXED_TS,
+    )
+    assert run.reasoning_output_tokens == 500
+    assert run.reasoning_char_count == 0
+    hints = compute_pressure_hints(run, egress_emitted=False)
+    assert 0.0 < hints["reasoning_load"] < 1.0
+    assert hints["reasoning_load"] != 0.35
+
+
+def test_pressure_hints_context_gathering_ratio() -> None:
+    run = ExecutionRunStateV1(
+        trace_id=TRACE,
+        correlation_id="corr-abc",
+        node_id="athena",
+        context_gathering_step_count=3,
+        execution_step_count=1,
+        last_updated_at=FIXED_TS,
+    )
+    hints = compute_pressure_hints(run, egress_emitted=False)
+    assert hints["context_gathering_ratio"] == pytest.approx(0.75)
+
+
+def test_pressure_hints_context_gathering_ratio_zero_when_nothing_classified() -> None:
+    run = ExecutionRunStateV1(
+        trace_id=TRACE,
+        correlation_id="corr-abc",
+        node_id="athena",
+        last_updated_at=FIXED_TS,
+    )
+    hints = compute_pressure_hints(run, egress_emitted=False)
+    assert hints["context_gathering_ratio"] == 0.0
+
+
 def test_pressure_hints_tool_failure_streak_and_verbosity_and_compliance() -> None:
     run = ExecutionRunStateV1(
         trace_id=TRACE,
@@ -559,6 +623,9 @@ def test_merge_takes_max_of_new_scalar_fields() -> None:
     full.step_char_max = 200
     full.tool_failure_streak_max = 1
     full.reasoning_char_count = 100
+    full.reasoning_output_tokens = 10
+    full.context_gathering_step_count = 2
+    full.execution_step_count = 5
     incoming = extract_execution_state_from_events(_partial_batch_no_egress(), now=FIXED_TS)
     incoming.harness_started_step_count = 5
     incoming.cortex_exec_started_step_count = 3
@@ -566,6 +633,9 @@ def test_merge_takes_max_of_new_scalar_fields() -> None:
     incoming.step_char_max = 250
     incoming.tool_failure_streak_max = 3
     incoming.reasoning_char_count = 400
+    incoming.reasoning_output_tokens = 60
+    incoming.context_gathering_step_count = 1
+    incoming.execution_step_count = 8
     merged = merge_execution_run_state(full, incoming)
     assert merged.harness_started_step_count == 5
     assert merged.cortex_exec_started_step_count == 3
@@ -573,6 +643,9 @@ def test_merge_takes_max_of_new_scalar_fields() -> None:
     assert merged.step_char_max == 250
     assert merged.tool_failure_streak_max == 3
     assert merged.reasoning_char_count == 400
+    assert merged.reasoning_output_tokens == 60
+    assert merged.context_gathering_step_count == 2
+    assert merged.execution_step_count == 8
     assert merged.pressure_hints["harness_step_load"] == pytest.approx(
         math.log1p(5) / math.log1p(60)
     )

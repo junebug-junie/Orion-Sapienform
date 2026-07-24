@@ -30,6 +30,7 @@ NODE_DECAY_CHANNELS = {
     "avg_step_chars_pressure",
     "compliance_deficit",
     "turn_incompletion",
+    "context_gathering_ratio",
     # transport
     "transport_pressure",
     "contract_pressure",

@@ -9,13 +9,18 @@ RUN apt-get update && apt-get install -y curl && rm -rf /var/lib/apt/lists/*
 
 # (Optional) if you have extra deps:
 COPY services/orion-vllm-host/requirements.txt .
-RUN pip install --no-cache-dir -r requirements.txt
+# --break-system-packages: defensive, matching the fix confirmed live-necessary on
+# orion-ollama-host's Ubuntu 24.04 base image (PEP 668 externally-managed-environment). This
+# service's full image build was not verified in the sandbox that authored this patch (multi-GB
+# base image, pull timed out) -- this flag is a documented no-op if vllm/vllm-openai's base
+# does NOT enforce PEP 668, so it costs nothing either way.
+RUN pip install --break-system-packages --no-cache-dir -r requirements.txt
 
 COPY services/orion-vllm-host/app ./app
 COPY config/llm_profiles.yaml ./config/llm_profiles.yaml
-# COPY orion ./orion  <-- Not needed if it's a dumb host, but maybe used for schemas?
-# The prompt says "Gut it down to just a host...".
-# But wait, vLLM host needs to run vLLM.
+# Needed for the bus-native SystemHealthV1 heartbeat (orion.core.bus.bus_service_chassis) --
+# see docs/superpowers/specs/2026-07-24-service-heartbeat-node-telemetry-design.md.
+COPY orion ./orion
 # The base image vllm/vllm-openai usually has an entrypoint that runs the server.
 # Our main.py wraps it.
 

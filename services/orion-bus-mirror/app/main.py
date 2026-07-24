@@ -8,6 +8,7 @@ from loguru import logger
 
 from orion.bus.census import load_channel_catalog_names
 from orion.core.bus.async_service import OrionBusAsync
+from orion.core.bus.bus_service_chassis import ChassisConfig, HeartbeatOnly
 from orion.core.bus.codec import DecodeResult, OrionCodec
 from orion.graph.falkor_client import RedisGraphQueryClient
 
@@ -132,9 +133,43 @@ async def _run_inflight_chain_summary_loop(chain_tracker: ChainTracker) -> None:
             logger.warning("bus synaptic graph in-flight chain summary failed: {}", exc)
 
 
+def build_heartbeat_chassis() -> HeartbeatOnly:
+    """Own, independent bus connection publishing SystemHealthV1 to orion:system:health
+    every HEARTBEAT_INTERVAL_SEC. Deliberately separate from `bus` above (the mirror's own
+    subscribe connection) so this rollout (see
+    docs/superpowers/specs/2026-07-24-service-heartbeat-node-telemetry-design.md) cannot
+    interfere with the mirror's message loop."""
+    return HeartbeatOnly(
+        ChassisConfig(
+            service_name=settings.SERVICE_NAME,
+            service_version=settings.SERVICE_VERSION,
+            node_name=settings.NODE_NAME,
+            bus_url=settings.ORION_BUS_URL,
+            bus_enabled=True,
+            heartbeat_interval_sec=settings.HEARTBEAT_INTERVAL_SEC,
+        )
+    )
+
+
 async def mirror_bus() -> None:
     bus = OrionBusAsync(settings.ORION_BUS_URL)
     await bus.connect()
+
+    # Awaited (not fired concurrently) before the subscribe loop starts, matching PR #1350's
+    # pilot-5 shape -- an unreachable bus can add up to connect_timeout_sec (default 10s) to
+    # startup, bounded and non-fatal (caught below), not unbounded blocking.
+    heartbeat_chassis: Optional[HeartbeatOnly] = None
+    try:
+        heartbeat_chassis = build_heartbeat_chassis()
+        await heartbeat_chassis.start_background()
+        logger.info(
+            "system_health_heartbeat_started service={} interval_sec={}",
+            settings.SERVICE_NAME,
+            settings.HEARTBEAT_INTERVAL_SEC,
+        )
+    except Exception as exc:
+        logger.warning("system_health_heartbeat_start_failed error={}", exc)
+        heartbeat_chassis = None
 
     Path(settings.MIRROR_PARQUET_DIR).mkdir(parents=True, exist_ok=True)
 
@@ -190,6 +225,11 @@ async def mirror_bus() -> None:
     finally:
         if inflight_task is not None:
             inflight_task.cancel()
+        if heartbeat_chassis is not None:
+            try:
+                await heartbeat_chassis.stop()
+            except Exception as exc:
+                logger.warning("system_health_heartbeat_stop_error error={}", exc)
         await bus.close()
 
 

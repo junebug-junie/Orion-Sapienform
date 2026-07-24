@@ -69,6 +69,8 @@ services:
       - .env
     environment:
       REDIS_URL: redis://bus-core:6379/0
+      NODE_NAME: ${NODE_NAME:-athena}
+      HEARTBEAT_INTERVAL_SEC: ${HEARTBEAT_INTERVAL_SEC:-10}
       PUBLISH_ORION_BUS_GRAMMAR: ${PUBLISH_ORION_BUS_GRAMMAR:-false}
       GRAMMAR_EVENT_CHANNEL: ${GRAMMAR_EVENT_CHANNEL:-orion:grammar:event}
       BUS_OBSERVER_ENABLED: ${BUS_OBSERVER_ENABLED:-true}

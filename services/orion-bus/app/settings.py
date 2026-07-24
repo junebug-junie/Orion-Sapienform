@@ -13,6 +13,11 @@ class Settings(BaseSettings):
 
     SERVICE_NAME: str = Field(default="orion-bus")
     SERVICE_VERSION: str = Field(default="0.1.0")
+    NODE_NAME: str = Field(default="athena", alias="NODE_NAME")
+    # Bus-native SystemHealthV1 heartbeat cadence (orion:system:health), published by
+    # the bus-observer process on its own independent bus connection. See
+    # docs/superpowers/specs/2026-07-24-service-heartbeat-node-telemetry-design.md.
+    HEARTBEAT_INTERVAL_SEC: float = Field(default=10.0, alias="HEARTBEAT_INTERVAL_SEC")
 
     REDIS_URL: str = Field(default="redis://bus-core:6379/0")
 

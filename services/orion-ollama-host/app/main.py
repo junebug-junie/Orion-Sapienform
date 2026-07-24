@@ -1,12 +1,15 @@
 # services/orion-ollama-host/app/main.py
 from __future__ import annotations
 
+import asyncio
 import logging
 import os
 import subprocess
 import time
 import requests
 from typing import List, Dict, Any, Optional
+
+from orion.core.bus.bus_service_chassis import ChassisConfig, HeartbeatOnly
 
 from .settings import settings
 
@@ -48,14 +51,26 @@ def pull_model(model_id: str, port: int = 11434):
         logger.error("Error pulling model %s: %s", model_id, e)
 
 
-def main() -> None:
-    logging.basicConfig(
-        level=logging.INFO,
-        format="[OLLAMA] %(levelname)s - %(name)s - %(message)s",
+def build_heartbeat_chassis() -> HeartbeatOnly:
+    """Own, independent bus connection publishing SystemHealthV1 to orion:system:health
+    every heartbeat_interval_sec. Independent of the `ollama serve` subprocess this service
+    launches -- see docs/superpowers/specs/2026-07-24-service-heartbeat-node-telemetry-design.md."""
+    return HeartbeatOnly(
+        ChassisConfig(
+            service_name=settings.service_name,
+            service_version=settings.service_version,
+            node_name=settings.node_name,
+            bus_url=settings.orion_bus_url,
+            bus_enabled=settings.orion_bus_enabled,
+            heartbeat_interval_sec=settings.heartbeat_interval_sec,
+        )
     )
 
-    logger.info("Starting %s v%s", settings.service_name, settings.service_version)
 
+def run_ollama_server_blocking() -> None:
+    """The service's original (pre-heartbeat) synchronous launch flow, unchanged. Run inside
+    asyncio.to_thread() by _main_async() so the heartbeat chassis's own event loop stays
+    responsive while this blocks on subprocess I/O."""
     # Start Ollama server in background
     # The official image entrypoint often does `ollama serve`.
     # We are overriding entrypoint, so we must run it.
@@ -80,6 +95,40 @@ def main() -> None:
 
     # Wait for server process
     server_process.wait()
+
+
+async def _main_async() -> None:
+    logger.info("Starting %s v%s", settings.service_name, settings.service_version)
+
+    heartbeat_chassis: Optional[HeartbeatOnly] = None
+    try:
+        heartbeat_chassis = build_heartbeat_chassis()
+        await heartbeat_chassis.start_background()
+        logger.info(
+            "system_health_heartbeat_started service=%s interval_sec=%s",
+            settings.service_name,
+            settings.heartbeat_interval_sec,
+        )
+    except Exception as exc:
+        logger.warning("system_health_heartbeat_start_failed error=%s", exc)
+        heartbeat_chassis = None
+
+    try:
+        await asyncio.to_thread(run_ollama_server_blocking)
+    finally:
+        if heartbeat_chassis is not None:
+            try:
+                await heartbeat_chassis.stop()
+            except Exception as exc:
+                logger.warning("system_health_heartbeat_stop_error error=%s", exc)
+
+
+def main() -> None:
+    logging.basicConfig(
+        level=logging.INFO,
+        format="[OLLAMA] %(levelname)s - %(name)s - %(message)s",
+    )
+    asyncio.run(_main_async())
 
 
 if __name__ == "__main__":

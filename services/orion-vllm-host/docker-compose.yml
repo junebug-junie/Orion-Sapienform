@@ -16,6 +16,12 @@ services:
       # Identity
       - SERVICE_NAME=${SERVICE_NAME:-orion-vllm-host}
       - SERVICE_VERSION=${SERVICE_VERSION:-0.1.0}
+      - NODE_NAME=${NODE_NAME:-athena}
+
+      # Bus-native SystemHealthV1 heartbeat (orion:system:health)
+      - ORION_BUS_URL=${ORION_BUS_URL:-redis://100.92.216.81:6379/0}
+      - ORION_BUS_ENABLED=${ORION_BUS_ENABLED:-true}
+      - HEARTBEAT_INTERVAL_SEC=${HEARTBEAT_INTERVAL_SEC:-10}
 
       # HTTP bind
       - VLLM_HOST=0.0.0.0

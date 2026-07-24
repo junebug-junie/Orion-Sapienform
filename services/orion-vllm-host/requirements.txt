@@ -1,3 +1,6 @@
 pydantic>=2.0.0
 pydantic-settings>=2.0.0
 pyyaml>=6.0
+# Needed for orion.core.bus.bus_service_chassis (bus-native SystemHealthV1 heartbeat).
+redis==5.0.1
+loguru>=0.7

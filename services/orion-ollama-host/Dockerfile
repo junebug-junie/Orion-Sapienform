@@ -28,11 +28,17 @@ WORKDIR /app
 
 # Python deps for wrapper
 COPY services/orion-ollama-host/requirements.txt /app/requirements.txt
-RUN pip3 install --no-cache-dir -r /app/requirements.txt
+# --break-system-packages: this base image's Ubuntu 24.04 layer enforces PEP 668
+# (externally-managed-environment) -- confirmed live build failure without this flag.
+# Same fix already applied in services/orion-llamacpp-host/Dockerfile for the same reason.
+RUN pip3 install --break-system-packages --no-cache-dir -r /app/requirements.txt
 
 # Copy wrapper code
 COPY services/orion-ollama-host/app /app/app
 COPY config /app/config
+# Needed for the bus-native SystemHealthV1 heartbeat (orion.core.bus.bus_service_chassis) --
+# see docs/superpowers/specs/2026-07-24-service-heartbeat-node-telemetry-design.md.
+COPY orion /app/orion
 
 ENV HOST=0.0.0.0
 ENV PORT=11434

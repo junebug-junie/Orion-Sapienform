@@ -2,6 +2,11 @@
 
 A “wiretap + relay” for the Orion Titanium bus. Use it to copy a slice of the bus into a debug stream/namespace and/or record it for replay.
 
+Also publishes a bus-native `SystemHealthV1` heartbeat to `orion:system:health` every
+`HEARTBEAT_INTERVAL_SEC` (default 10s), on its own independent bus connection, separate from
+the connection it uses to subscribe/mirror traffic. See
+docs/superpowers/specs/2026-07-24-service-heartbeat-node-telemetry-design.md.
+
 ---
 
 ## Status: disabled, ran into exactly the failure mode this README warns about

@@ -12,6 +12,7 @@ from pydantic import ValidationError
 from redis import asyncio as aioredis
 
 from orion.core.bus.async_service import OrionBusAsync
+from orion.core.bus.bus_service_chassis import ChassisConfig, HeartbeatOnly
 from orion.core.bus.codec import OrionCodec
 from orion.schemas.registry import resolve as resolve_schema_id
 
@@ -316,6 +317,24 @@ async def run_observer_tick(*, bus: Any, settings: Settings) -> None:
         )
 
 
+def build_heartbeat_chassis(settings: Settings) -> HeartbeatOnly:
+    """Own, independent bus connection publishing SystemHealthV1 to orion:system:health
+    every HEARTBEAT_INTERVAL_SEC. Deliberately separate from the `bus` connection above
+    (the observer's own grammar-publish connection) so this rollout (see
+    docs/superpowers/specs/2026-07-24-service-heartbeat-node-telemetry-design.md) cannot
+    interfere with the observer's existing tick loop."""
+    return HeartbeatOnly(
+        ChassisConfig(
+            service_name=settings.SERVICE_NAME,
+            service_version=settings.SERVICE_VERSION,
+            node_name=settings.NODE_NAME,
+            bus_url=settings.REDIS_URL,
+            bus_enabled=True,
+            heartbeat_interval_sec=settings.HEARTBEAT_INTERVAL_SEC,
+        )
+    )
+
+
 async def run_bus_observer_loop() -> None:
     bus = OrionBusAsync(settings.REDIS_URL)
     await bus.connect()
@@ -325,9 +344,28 @@ async def run_bus_observer_loop() -> None:
         settings.bus_observer_poll_interval_sec,
         settings.publish_orion_bus_grammar,
     )
+
+    heartbeat_chassis: HeartbeatOnly | None = None
+    try:
+        heartbeat_chassis = build_heartbeat_chassis(settings)
+        await heartbeat_chassis.start_background()
+        logger.info(
+            "system_health_heartbeat_started service={} interval_sec={}",
+            settings.SERVICE_NAME,
+            settings.HEARTBEAT_INTERVAL_SEC,
+        )
+    except Exception as exc:
+        logger.warning("system_health_heartbeat_start_failed error={}", exc)
+        heartbeat_chassis = None
+
     try:
         while True:
             await run_observer_tick(bus=bus, settings=settings)
             await asyncio.sleep(settings.bus_observer_poll_interval_sec)
     finally:
+        if heartbeat_chassis is not None:
+            try:
+                await heartbeat_chassis.stop()
+            except Exception as exc:
+                logger.warning("system_health_heartbeat_stop_error error={}", exc)
         await bus.close()

@@ -13,9 +13,9 @@ RUN pip install --no-cache-dir -r requirements.txt
 
 COPY services/orion-vllm-host/app ./app
 COPY config/llm_profiles.yaml ./config/llm_profiles.yaml
-# COPY orion ./orion  <-- Not needed if it's a dumb host, but maybe used for schemas?
-# The prompt says "Gut it down to just a host...".
-# But wait, vLLM host needs to run vLLM.
+# Needed for the bus-native SystemHealthV1 heartbeat (orion.core.bus.bus_service_chassis) --
+# see docs/superpowers/specs/2026-07-24-service-heartbeat-node-telemetry-design.md.
+COPY orion ./orion
 # The base image vllm/vllm-openai usually has an entrypoint that runs the server.
 # Our main.py wraps it.
 

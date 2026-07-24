@@ -19,6 +19,11 @@ All services in the mesh communicate through this bus for:
 * Shared state and coordination
 * Real-time introspection and health signals
 
+`bus-observer` (the mesh-transport rollup process, see below) also publishes its own
+bus-native `SystemHealthV1` heartbeat to `orion:system:health` every `HEARTBEAT_INTERVAL_SEC`
+(default 10s), on its own independent bus connection, separate from the connection it uses
+for its observer tick loop.
+
 ---
 
 ## ⚙️ Prerequisites

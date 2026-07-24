@@ -12,6 +12,17 @@ services:
     environment:
       - SERVICE_NAME=${SERVICE_NAME:-orion-ollama-host}
       - SERVICE_VERSION=${SERVICE_VERSION:-0.1.0}
+      - NODE_NAME=${NODE_NAME:-athena}
+
+      # Bus-native SystemHealthV1 heartbeat (orion:system:health)
+      - ORION_BUS_URL=${ORION_BUS_URL:-redis://100.92.216.81:6379/0}
+      - ORION_BUS_ENABLED=${ORION_BUS_ENABLED:-true}
+      - HEARTBEAT_INTERVAL_SEC=${HEARTBEAT_INTERVAL_SEC:-10}
+      # Pre-existing .env_example key that was never wired into this list (found by
+      # scripts/check_service_env_compose_parity.py while touching this block for the
+      # heartbeat rollout) -- not read by this service's own settings.py today, but pass it
+      # through for consistency with every other service's ORION_BUS_ENFORCE_CATALOG handling.
+      - ORION_BUS_ENFORCE_CATALOG=${ORION_BUS_ENFORCE_CATALOG:-true}
 
       # Ollama specific
       - OLLAMA_HOST=0.0.0.0

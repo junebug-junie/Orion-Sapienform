@@ -13,6 +13,13 @@ class Settings(BaseSettings):
     # Service identity
     service_name: str = Field("orion-vllm-host", alias="SERVICE_NAME")
     service_version: str = Field("0.1.0", alias="SERVICE_VERSION")
+    node_name: str = Field("athena", alias="NODE_NAME")
+    # Bus-native SystemHealthV1 heartbeat cadence (orion:system:health), published on its own
+    # independent bus connection, separate from the vLLM server subprocess this service
+    # launches. See docs/superpowers/specs/2026-07-24-service-heartbeat-node-telemetry-design.md.
+    orion_bus_url: str = Field("redis://100.92.216.81:6379/0", alias="ORION_BUS_URL")
+    orion_bus_enabled: bool = Field(True, alias="ORION_BUS_ENABLED")
+    heartbeat_interval_sec: float = Field(10.0, alias="HEARTBEAT_INTERVAL_SEC")
 
     # HTTP bind
     host: str = Field("0.0.0.0", alias="VLLM_HOST")

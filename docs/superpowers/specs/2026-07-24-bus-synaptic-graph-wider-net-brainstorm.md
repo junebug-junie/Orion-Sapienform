@@ -140,3 +140,28 @@ Build G, then F, then B, in that order, this session — G is free and de-risks 
 hygiene, low-risk with dry-run-first; B is the smallest wider-net idea that most directly answers the
 parent design doc's own stated goal (a real alternative to `ORGAN_REGISTRY`'s hand-authored edges).
 A/C/D/E remain named, gated, additive candidates for a later pass — not scheduled here.
+
+## Idea E measurement result (same session, after G/F/B/A/C/D shipped)
+
+Per Idea E's own scoping ("measure first, don't build the mechanism yet"), attempted the smallest
+buildable version: a live correlation check between concurrent open-chain count
+(`orion-bus-mirror`'s existing periodic in-flight-chain-summary log line, PR #1328) and
+currently-elevated edges (`/api/bus-synaptic-graph/anomalies`).
+
+**Available data**: ~30 minutes of real `open_count` history from container logs, ranging 121→135
+(a ~12% swing, gradual drift, no sharp bursts). Paired against a live `/anomalies` snapshot at the
+same rough window: 7 elevated edges (1 publish-gap, 6 causal-latency).
+
+**Finding: inconclusive, not negative.** The available observation window never contained a real
+burst in open-chain-count (the kind of sharp swing the hypothesis — "the mesh is busy because
+Juniper is actively chatting" vs. "busy for no reason" — actually needs to be tested against). A
+single snapshot pair, or a slow 12% drift, cannot distinguish "load-conditioning would matter" from
+"it wouldn't" — there simply wasn't enough dynamic range in this window to test either way. This is
+a real, honest result per Idea E's own escape valve ("if it turns out the load-conditioning question
+can't be cheaply answered right now, that's still a fine deliverable"), not a disguised negative.
+
+**Recommendation**: do not build the bucketed-EWMA mechanism yet. If revisited, the right next step
+is a longer-window, real-burst-inclusive sample (e.g. an active development/chat session, which this
+arc's own traffic patterns suggest produces sharper open-chain-count swings than a quiet period) —
+not more measurement during another quiet window, which would likely reproduce the same
+inconclusive result. No code shipped for Idea E in this session, per its own non-goal.

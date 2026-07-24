@@ -19,9 +19,15 @@ class Settings(BaseSettings):
     enable_feedback_runtime: bool = Field(True, alias="ENABLE_FEEDBACK_RUNTIME")
     log_level: str = Field("INFO", alias="LOG_LEVEL")
 
-    bus_url: str = Field(default="redis://127.0.0.1:6379/0", alias="ORION_BUS_URL")
+    # Repo-wide bus convention (see root CLAUDE.md): always the real tailscale node address,
+    # never bus-core/localhost. This default was stale (127.0.0.1) before this patch -- the
+    # checked-in .env_example was also wrong (redis://bus-core:6379/0), fixed alongside this.
+    bus_url: str = Field(default="redis://100.92.216.81:6379/0", alias="ORION_BUS_URL")
     bus_enabled: bool = Field(True, alias="ORION_BUS_ENABLED")
     feedback_bus_channel: str = Field("orion:feedback:frame", alias="FEEDBACK_BUS_CHANNEL")
+    # Bus-native SystemHealthV1 heartbeat cadence (orion:system:health). See
+    # docs/superpowers/specs/2026-07-24-service-heartbeat-node-telemetry-design.md.
+    heartbeat_interval_sec: float = Field(10.0, alias="HEARTBEAT_INTERVAL_SEC")
 
 
 _settings: Settings | None = None

@@ -6,7 +6,7 @@ import signal
 import traceback
 from dataclasses import dataclass
 from uuid import uuid4
-from typing import Any, Awaitable, Callable, Optional, List, Union
+from typing import Any, Awaitable, Callable, Dict, Optional, List, Union
 from datetime import datetime, timezone
 
 try:
@@ -21,6 +21,14 @@ from orion.schemas.telemetry.system_health import SystemHealthV1
 
 
 Handler = Callable[[BaseEnvelope], Awaitable[BaseEnvelope | None]]
+
+# Optional, synchronous, no-arg callable a chassis owner can supply to fold extra
+# free-form data into every SystemHealthV1.details payload the heartbeat publishes.
+# Kept separate from ChassisConfig (a frozen dataclass meant for stable, serializable
+# settings) since this carries a live callable, not config. Must not raise -- the
+# heartbeat loop catches and logs any exception so a broken/missing data source never
+# blocks the liveness pulse itself.
+HeartbeatDetailsProvider = Callable[[], Dict[str, Any]]
 
 
 @dataclass(frozen=True)
@@ -50,10 +58,11 @@ class BaseChassis:
     - exception wrapping to system.error
     """
 
-    def __init__(self, cfg: ChassisConfig):
+    def __init__(self, cfg: ChassisConfig, *, heartbeat_details: Optional[HeartbeatDetailsProvider] = None):
         self.cfg = cfg
         self.bus = OrionBusAsync(cfg.bus_url, enabled=cfg.bus_enabled)
         self.boot_id = str(uuid4())
+        self._heartbeat_details = heartbeat_details
 
         self._stop = asyncio.Event()
         self._tasks: list[asyncio.Task] = []
@@ -122,6 +131,18 @@ class BaseChassis:
             try:
                 node = self.cfg.node_name or "unknown"
                 now = datetime.now(timezone.utc)
+                details: Dict[str, Any] = {}
+                if self._heartbeat_details is not None:
+                    try:
+                        extra = self._heartbeat_details()
+                        if isinstance(extra, dict):
+                            details.update(extra)
+                        else:
+                            logger.warning(
+                                f"heartbeat_details provider returned non-dict ({type(extra)!r}); ignoring"
+                            )
+                    except Exception as details_exc:
+                        logger.warning(f"heartbeat_details provider failed: {details_exc}")
                 v1_payload = SystemHealthV1(
                     service=self.cfg.service_name,
                     node=node,
@@ -131,7 +152,7 @@ class BaseChassis:
                     status="ok",
                     last_seen_ts=now,
                     heartbeat_interval_sec=float(self.cfg.heartbeat_interval_sec or 10.0),
-                    details={},
+                    details=details,
                 )
                 v1_env = BaseEnvelope(
                     kind="system.health.v1",
@@ -527,8 +548,15 @@ class Clock(BaseChassis):
     Periodic ticker/loop with safe cancellation.
     """
 
-    def __init__(self, cfg: ChassisConfig, *, interval_sec: float, tick: Callable[[], Awaitable[None]]):
-        super().__init__(cfg)
+    def __init__(
+        self,
+        cfg: ChassisConfig,
+        *,
+        interval_sec: float,
+        tick: Callable[[], Awaitable[None]],
+        heartbeat_details: Optional[HeartbeatDetailsProvider] = None,
+    ):
+        super().__init__(cfg, heartbeat_details=heartbeat_details)
         self.interval_sec = float(interval_sec)
         self.tick = tick
 

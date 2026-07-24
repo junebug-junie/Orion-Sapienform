@@ -4,6 +4,7 @@ from __future__ import annotations
 import json
 import logging
 import os
+import shutil
 import subprocess
 import time
 from dataclasses import dataclass
@@ -294,3 +295,45 @@ _COLLECTOR = BiometricsCollector()
 
 def collect_biometrics() -> Dict[str, Any]:
     return _COLLECTOR.collect()
+
+
+def collect_disk_capacity(mounts: Dict[str, str]) -> Dict[str, Any]:
+    """Real host disk-capacity (percent-used) telemetry, keyed by mount name.
+
+    This is deliberately separate from `BiometricsCollector._collect_disk()`, which
+    reads `/proc/diskstats` for I/O *throughput* (read/write bytes-per-sec) and feeds
+    `BiometricsPipeline`'s `disk` pressure -- a different metric with an existing
+    consumer chain (pipeline -> summary.pressures.disk -> grammar_emit's
+    disk_pressure_signal -> field-digester's disk_pressure lattice channel). Disk
+    *capacity* (how full a filesystem is) has no existing collector anywhere in this
+    repo (confirmed by design-doc grep: zero hits for `disk_usage`/
+    `docker system prune` under `scripts/`) and is not part of that pipeline -- it
+    rides the bus-native `SystemHealthV1` heartbeat's free-form `details` dict
+    instead. See `services/orion-biometrics/README.md`'s "Disk capacity telemetry"
+    section for the documented `details.disk_usage_pct.<mount_name>` key convention.
+
+    `mounts` maps a short mount name (e.g. "docker") to the in-container path it is
+    bind-mounted at (e.g. "/host_mnt/docker", read-only -- see docker-compose.yml).
+    A mount that doesn't exist inside this container (not yet bind-mounted on this
+    node, or a host path that genuinely doesn't exist on atlas/circe) is skipped, not
+    fatal -- one missing mount must never take down the whole heartbeat.
+    """
+    percent_used: Dict[str, float] = {}
+    errors: Dict[str, str] = {}
+    for name, path in mounts.items():
+        try:
+            if not path or not os.path.isdir(path):
+                errors[name] = "not_mounted"
+                continue
+            usage = shutil.disk_usage(path)
+            if usage.total <= 0:
+                errors[name] = "zero_total_bytes"
+                continue
+            percent_used[name] = round((usage.used / usage.total) * 100.0, 2)
+        except Exception as exc:
+            errors[name] = str(exc)
+
+    result: Dict[str, Any] = {"disk_usage_pct": percent_used}
+    if errors:
+        result["disk_usage_errors"] = errors
+    return result

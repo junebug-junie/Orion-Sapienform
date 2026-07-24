@@ -18,7 +18,7 @@ from orion.schemas.telemetry.biometrics import (
     BiometricsClusterV1,
 )
 from orion.schemas.telemetry.spark_signal import SparkSignalV1
-from app.metrics import collect_biometrics
+from app.metrics import collect_biometrics, collect_disk_capacity
 from orion.telemetry.biometrics_pipeline import BiometricsPipeline, PipelineConfig
 from app.settings import settings
 
@@ -162,6 +162,20 @@ def _source() -> ServiceRef:
     return ServiceRef(name=settings.SERVICE_NAME, version=settings.SERVICE_VERSION, node=settings.NODE_NAME)
 
 
+def _heartbeat_details() -> Dict[str, Any]:
+    """Extra data folded into every SystemHealthV1 heartbeat's `details` dict.
+
+    Real host disk-capacity telemetry, piggybacked onto the existing bus-native
+    heartbeat rather than a new channel/service (see
+    docs/superpowers/specs/2026-07-24-service-heartbeat-node-telemetry-design.md).
+    Node-level, not per-service -- once this same code is redeployed on atlas/circe
+    (each already an independent orion-biometrics deployment publishing its own
+    per-node heartbeat, confirmed live via `orion:system:health`), each node reports
+    its own mounts with no new SSH/credential surface.
+    """
+    return collect_disk_capacity(settings.DISK_CAPACITY_MOUNTS)
+
+
 _pipeline = BiometricsPipeline(
     PipelineConfig(
         thermal_min_c=settings.THERMAL_MIN_C,
@@ -251,7 +265,7 @@ async def _publish(bus: OrionBusAsync, channel: str, kind: str, payload: object)
 
 class BiometricsWorker(Clock):
     def __init__(self, cfg: ChassisConfig, *, interval_sec: float):
-        super().__init__(cfg, interval_sec=interval_sec, tick=self.do_tick)
+        super().__init__(cfg, interval_sec=interval_sec, tick=self.do_tick, heartbeat_details=_heartbeat_details)
 
     async def do_tick(self) -> None:
         await publish_metrics(self.bus)
@@ -342,7 +356,7 @@ class BiometricsHub:
 
 class BiometricsHubWorker(Clock):
     def __init__(self, cfg: ChassisConfig, hub: BiometricsHub, *, interval_sec: float):
-        super().__init__(cfg, interval_sec=interval_sec, tick=self.do_tick)
+        super().__init__(cfg, interval_sec=interval_sec, tick=self.do_tick, heartbeat_details=_heartbeat_details)
         self.hub = hub
 
     async def do_tick(self) -> None:

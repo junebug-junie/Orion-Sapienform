@@ -215,6 +215,30 @@ first place. Full reasoning and phased detail:
    in the sense of "actually the formula driving live behavior."** No behavior changed in
    this patch; whether to reorder branches, blend both confidence sources, or otherwise
    address this is an open design question needing its own sign-off, not decided here.
+   **Fixed, 2026-07-24 (PR #1329, Option C — decouple, don't reorder or blend yet):** added
+   `prediction_error_confidence`/`prediction_error_confidence_basis`, computed unconditionally
+   (same positioning as `predicted_shift`, before the elif branching) and restricted to
+   `ACTIVE_INFERENCE_DOMAINS = {execution, biometrics, chat, route}` — `transport` excluded,
+   confirmed live via direct Postgres query that same day to read exactly `0.0` for 100% of a
+   real 8h window (10387 ticks), the other four domains showing real non-degenerate variance.
+   Live-verified against real post-rebuild data: this field populates on ~99.9% of ticks vs.
+   the branch-gated `confidence` field's ~0.04% (11899/11901 vs. ~4/11901). Purely additive —
+   `confidence`/`confidence_basis` unchanged, still branch-gated as before. The open design
+   question above (reorder vs. blend) is still **not** resolved by this patch; it sidesteps it
+   by giving the reducer's output a real, populated confidence value most of the time without
+   deciding how (or whether) to reconcile it with the older field.
+   **Re-checked, 2026-07-24 (this note):** `ORION_ATTENTION_TOPDOWN_ENABLED` and
+   `ORION_ATTENTION_SALIENCE_V2_ENABLED` are confirmed `true` live in the actual producing
+   container (`orion-athena-substrate-runtime`) — an earlier same-day check in this session
+   had wrongly concluded this flag was off, from checking the wrong container. The flags are
+   correctly on. What's still real: across 2015 broadcast-lane rows since the Postgres
+   rebuild (~16.7h, `substrate_attention_broadcast_log`), zero carry a real (non-JSON-null)
+   `voluntary_override` — consistent with this being a genuinely rare event (the 2026-07-18
+   design doc itself only claims "at least once in the last 24h" for the pre-rebuild data),
+   not a config regression. Phase 1's full acceptance check (correctly narrating a real live
+   override) still needs a fresh trigger to occur post-rebuild, independent of how much
+   history accumulates — "item 2 is proven" therefore still means "correct when exercised,"
+   not yet "exercised against a fresh real override since the rebuild."
 3. **Route existing tension producers directly onto `FieldStateV1` channels**, retiring the
    bucket-vote layer — collapses the redundant reimplementation named in §7's finding.
    Reframed as prediction-error-native (extending the already-live

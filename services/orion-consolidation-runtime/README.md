@@ -2,7 +2,9 @@
 
 Layer 11 of the Orion cognition substrate: aggregates Layers 5–10 substrate history over a time window and persists `ConsolidationFrameV1` motif snapshots.
 
-**Consolidation is pattern observation, not learning.** This service does not mutate policy, publish to the bus, invoke an LLM, or change runtime behavior.
+**Consolidation is pattern observation, not learning.** This service does not mutate policy, invoke an LLM, or change runtime behavior. The one exception is infra telemetry: it publishes a
+bus-native `SystemHealthV1` heartbeat to `orion:system:health` every `HEARTBEAT_INTERVAL_SEC`
+(default 10s), on its own independent bus connection -- process liveness, not cognition.
 
 ## Inputs
 

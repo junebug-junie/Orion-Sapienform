@@ -114,6 +114,10 @@ RETURN o.organ_id, c.channel, e.gap_zscore, e.count
 ORDER BY abs(e.gap_zscore) DESC
 ```
 
+**Or via Hub's read-only debug API** instead of raw Cypher: `services/orion-hub/scripts/bus_synaptic_graph_routes.py`
+(`GET /api/bus-synaptic-graph/summary|hot-organs|hot-edges|anomalies`) — see that service's README
+"Bus synaptic graph debug routes" section.
+
 ---
 
 ## Bus synaptic graph (Phase 2)

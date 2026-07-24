@@ -7,6 +7,7 @@ from contextlib import asynccontextmanager
 from fastapi import FastAPI
 from loguru import logger
 
+from orion.core.bus.bus_service_chassis import ChassisConfig, HeartbeatOnly
 from orion.spark.concept_induction.bus_worker import ConceptWorker
 from .settings import settings
 
@@ -45,8 +46,30 @@ def _install_stdlib_logging_bridge(level: str = "INFO") -> None:
         std_logger.setLevel(log_level)
 
 
+heartbeat_chassis: HeartbeatOnly | None = None
+
+
+def build_heartbeat_chassis() -> HeartbeatOnly:
+    """Own, independent bus connection publishing SystemHealthV1 to orion:system:health
+    every heartbeat_interval_sec. Deliberately separate from ConceptWorker's own bus
+    connection (see docs/superpowers/specs/2026-07-24-service-heartbeat-node-telemetry-design.md).
+    ConceptSettings already carries a heartbeat_interval_sec field (added ahead of this wiring,
+    never previously consumed by any producer -- this is that producer)."""
+    return HeartbeatOnly(
+        ChassisConfig(
+            service_name=settings.service_name,
+            service_version=settings.service_version,
+            node_name=settings.node_name,
+            bus_url=settings.orion_bus_url,
+            bus_enabled=settings.orion_bus_enabled,
+            heartbeat_interval_sec=settings.heartbeat_interval_sec,
+        )
+    )
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
+    global heartbeat_chassis
     _install_stdlib_logging_bridge(settings.log_level)
     worker = ConceptWorker(settings)
     app.state.worker = worker
@@ -63,7 +86,24 @@ async def lifespan(app: FastAPI):
             logger.exception("concept_induction_worker_startup_failed", exc_info=exc)
             raise exc
     logger.info("concept_induction_worker_started worker_task=%s", task.get_name())
+    try:
+        heartbeat_chassis = build_heartbeat_chassis()
+        await heartbeat_chassis.start_background()
+        logger.info(
+            "system_health_heartbeat_started service={} interval_sec={}",
+            settings.service_name,
+            settings.heartbeat_interval_sec,
+        )
+    except Exception as exc:
+        logger.warning("system_health_heartbeat_start_failed error={}", exc)
+        heartbeat_chassis = None
     yield
+    if heartbeat_chassis is not None:
+        try:
+            await heartbeat_chassis.stop()
+        except Exception as exc:
+            logger.warning("system_health_heartbeat_stop_error error={}", exc)
+        heartbeat_chassis = None
     task.cancel()
     try:
         await task

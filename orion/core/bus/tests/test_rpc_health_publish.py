@@ -57,26 +57,37 @@ def test_build_envelope_on_empty_snapshot_is_not_degenerate_shaped() -> None:
 
 
 @pytest.mark.asyncio
-async def test_publish_loop_reads_the_bus_getter_result_not_a_captured_reference() -> None:
-    """The whole point of bus_getter being a callback (not a bus instance) is that the
-    real RPC-calling bus can be resolved fresh each tick -- this is the single most
-    important behavior per the design doc's own acceptance checks: it must not silently
-    read an idle/wrong instance."""
+async def test_publish_loop_resolves_bus_getter_fresh_each_tick_not_captured_once() -> None:
+    """Mirrors the real shape of _bus_for_rpc() in cortex-exec/cortex-orch: returns the
+    wrong (idle) bus until an external mutation flips which instance is live, then
+    returns the real one. A prior version of this test used bus_getter=lambda: real_bus,
+    which returns the SAME object every call and would have passed identically even if
+    the implementation captured `bus = bus_getter()` once before the loop instead of
+    calling it fresh every tick -- it never actually distinguished the two
+    implementations. This version does: if the loop captured its bus reference once at
+    start (when current_bus['bus'] is still idle_bus), idle_bus would receive every
+    publish and real_bus would receive none."""
+    idle_bus = MagicMock()
+    idle_bus.get_rpc_health_snapshot = MagicMock(
+        return_value=RpcHealthAggregator().snapshot_and_reset()
+    )
+    idle_bus.publish = AsyncMock()
+
     real_bus = MagicMock()
     real_bus.get_rpc_health_snapshot = MagicMock(
         return_value=RpcHealthAggregator().snapshot_and_reset()
     )
     real_bus.publish = AsyncMock()
 
-    idle_bus = MagicMock()
-    idle_bus.get_rpc_health_snapshot = MagicMock(side_effect=AssertionError("must not read idle bus"))
-    idle_bus.publish = AsyncMock()
+    current_bus = {"bus": idle_bus}
+
+    def _bus_getter():
+        return current_bus["bus"]
 
     stop_event = asyncio.Event()
-
-    async def _run_one_tick() -> None:
-        await rpc_health_publish_loop(
-            bus_getter=lambda: real_bus,
+    task = asyncio.create_task(
+        rpc_health_publish_loop(
+            bus_getter=_bus_getter,
             service="orion-cortex-exec",
             node="athena",
             instance=None,
@@ -84,14 +95,15 @@ async def test_publish_loop_reads_the_bus_getter_result_not_a_captured_reference
             interval_sec=0.01,
             stop_event=stop_event,
         )
-
-    task = asyncio.create_task(_run_one_tick())
-    await asyncio.sleep(0.03)
+    )
+    await asyncio.sleep(0.015)  # let at least one tick land against idle_bus
+    current_bus["bus"] = real_bus  # simulate _rpc_bus becoming the live instance mid-run
+    await asyncio.sleep(0.03)  # let at least one tick land against real_bus
     stop_event.set()
     await task
 
+    assert idle_bus.publish.await_count >= 1
     assert real_bus.publish.await_count >= 1
-    idle_bus.get_rpc_health_snapshot.assert_not_called()
     published_channel = real_bus.publish.await_args_list[0].args[0]
     assert published_channel == RPC_HEALTH_SNAPSHOT_CHANNEL
 

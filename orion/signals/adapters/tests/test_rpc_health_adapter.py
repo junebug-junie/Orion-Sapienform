@@ -54,7 +54,7 @@ def test_can_handle_rejects_unrelated_channel(adapter: RpcHealthAdapter) -> None
 def test_adapt_produces_signal(adapter: RpcHealthAdapter, norm_ctx: NormalizationContext) -> None:
     signal = adapter.adapt("orion:rpc_health:snapshot", _payload(), ORGAN_REGISTRY, {}, norm_ctx)
     assert signal is not None
-    assert signal.organ_id == "rpc_health"
+    assert signal.organ_id == "rpc_health_cortex_exec"
     assert signal.organ_class == OrganClass.exogenous
     assert signal.signal_kind == "rpc_transport_health"
     assert 0.0 <= signal.dimensions["level"] <= 1.0
@@ -97,7 +97,34 @@ def test_adapt_falls_back_to_global_registry_when_passed_registry_lacks_entry(
     organ still resolves via the module-level ORGAN_REGISTRY, not a hard failure."""
     signal = adapter.adapt("orion:rpc_health:snapshot", _payload(), {}, {}, norm_ctx)
     assert signal is not None
-    assert signal.organ_id == "rpc_health"
+    assert signal.organ_id == "rpc_health_cortex_exec"
+
+
+def test_adapt_uses_distinct_organ_id_per_service(
+    adapter: RpcHealthAdapter, norm_ctx: NormalizationContext
+) -> None:
+    """The bug found in review: a shared organ_id across producers makes each publish
+    overwrite the previous producer's SignalWindow entry. Two different services must
+    resolve to two different organ_ids."""
+    exec_signal = adapter.adapt(
+        "orion:rpc_health:snapshot", _payload(service="orion-cortex-exec"), ORGAN_REGISTRY, {}, norm_ctx
+    )
+    orch_signal = adapter.adapt(
+        "orion:rpc_health:snapshot", _payload(service="orion-cortex-orch"), ORGAN_REGISTRY, {}, norm_ctx
+    )
+    assert exec_signal is not None and orch_signal is not None
+    assert exec_signal.organ_id == "rpc_health_cortex_exec"
+    assert orch_signal.organ_id == "rpc_health_cortex_orch"
+    assert exec_signal.organ_id != orch_signal.organ_id
+
+
+def test_adapt_unknown_service_degrades_to_none(
+    adapter: RpcHealthAdapter, norm_ctx: NormalizationContext
+) -> None:
+    signal = adapter.adapt(
+        "orion:rpc_health:snapshot", _payload(service="orion-some-future-service"), ORGAN_REGISTRY, {}, norm_ctx
+    )
+    assert signal is None
 
 
 def test_adapt_is_deterministic_for_same_source_event(
@@ -111,7 +138,8 @@ def test_adapt_is_deterministic_for_same_source_event(
 
 
 def test_registry_entry_shape() -> None:
-    entry = ORGAN_REGISTRY["rpc_health"]
-    assert entry.organ_class == OrganClass.exogenous
-    assert "orion:rpc_health:snapshot" in entry.bus_channels
-    assert "rpc_transport_health" in entry.signal_kinds
+    for organ_id in ("rpc_health_cortex_exec", "rpc_health_cortex_orch"):
+        entry = ORGAN_REGISTRY[organ_id]
+        assert entry.organ_class == OrganClass.exogenous
+        assert "orion:rpc_health:snapshot" in entry.bus_channels
+        assert "rpc_transport_health" in entry.signal_kinds

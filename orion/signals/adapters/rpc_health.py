@@ -47,6 +47,20 @@ def _latency_level(payload: dict) -> float:
     return clamp01(1.0 - min(float(p95), 30_000) / 30_000.0)
 
 
+def _organ_id_for_service(service: str) -> Optional[str]:
+    """Per-service organ_id, e.g. 'orion-cortex-exec' -> 'rpc_health_cortex_exec'.
+
+    Deliberately NOT a single shared 'rpc_health' organ_id across every producer:
+    orion-signal-gateway's SignalWindow keys its current-state view by organ_id alone
+    (services/orion-signal-gateway/app/signal_window.py), so a shared id would make
+    every producer's publish silently overwrite the previous producer's entry -- found
+    in review of this step's first cut. Returns None for an unrecognized service so the
+    caller can degrade to no signal rather than guess a wrong identity.
+    """
+    known = {"orion-cortex-exec": "rpc_health_cortex_exec", "orion-cortex-orch": "rpc_health_cortex_orch"}
+    return known.get(service)
+
+
 class RpcHealthAdapter(OrionSignalAdapter):
     organ_id = "rpc_health"
 
@@ -63,18 +77,21 @@ class RpcHealthAdapter(OrionSignalAdapter):
         prior_signals: Dict[str, OrionSignalV1],
         norm_ctx: NormalizationContext,
     ) -> Optional[OrionSignalV1]:
-        entry = registry.get(self.organ_id) or ORGAN_REGISTRY.get(self.organ_id)
+        service = str(payload.get("service") or "")
+        resolved_organ_id = _organ_id_for_service(service)
+        if resolved_organ_id is None:
+            return None
+        entry = registry.get(resolved_organ_id) or ORGAN_REGISTRY.get(resolved_organ_id)
         if entry is None:
             return None
         now = datetime.now(timezone.utc)
-        service = str(payload.get("service") or "unknown")
         window_end = str(payload.get("window_end") or "")
-        src_id = f"rpc_health:{service}:{window_end or int(now.timestamp())}"
+        src_id = f"{resolved_organ_id}:{window_end or int(now.timestamp())}"
         success = int(payload.get("success_count") or 0)
         timeout = int(payload.get("timeout_count") or 0)
         return OrionSignalV1(
-            signal_id=make_signal_id(self.organ_id, src_id),
-            organ_id=self.organ_id,
+            signal_id=make_signal_id(resolved_organ_id, src_id),
+            organ_id=resolved_organ_id,
             organ_class=entry.organ_class,
             signal_kind="rpc_transport_health",
             dimensions={

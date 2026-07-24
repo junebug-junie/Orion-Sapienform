@@ -18,7 +18,7 @@ NODE_DECAY_CHANNELS = {
     "thermal_pressure",
     "disk_pressure",
     # execution
-    "execution_load",
+    "cortex_exec_step_load",
     "execution_friction",
     "reasoning_load",
     "failure_pressure",

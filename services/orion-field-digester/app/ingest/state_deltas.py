@@ -47,7 +47,7 @@ def delta_to_perturbations(delta: StateDeltaV1) -> list[Perturbation]:
                     # this intensity is a full current-availability estimate
                     # recomputed fresh from this tick's pressure_score, not an
                     # incremental delta -- same "current reading" shape as
-                    # stream_backlog_health/delivery_confidence/execution_load elsewhere
+                    # stream_backlog_health/delivery_confidence/cortex_exec_step_load elsewhere
                     # in this file. Without mode="replace",
                     # apply_perturbations() special-cases channel=="availability"
                     # to floor-only (min(current, intensity)): can decrease but
@@ -244,8 +244,26 @@ def delta_to_perturbations(delta: StateDeltaV1) -> list[Perturbation]:
         reasoning_node_key = (
             _node_key(str(llm_serving_node)) if llm_serving_node else node_key
         )
+        # execution_friction/failure_pressure investigated for the same cross-lane stomp
+        # (2026-07-24, alongside the cortex_exec_step_load fix above) and deliberately
+        # left UNGATED here -- not the same bug class, confirmed by code trace (no live
+        # harness_motor-lane execution_run data survived the 2026-07-23 Postgres disk
+        # loss to reproduce against directly). Unlike cortex_exec_step_load,
+        # grammar_extract.py's "exec_step_failed"/"exec_result_assembled" handlers
+        # increment run.failed_step_count / set run.status unconditionally, with no
+        # source_service branch -- so a harness_motor-lane ExecutionRunStateV1 object's
+        # own execution_friction/failure_pressure can be a real, independently-meaningful
+        # observation (the motor's own step genuinely failed), not a structural always-0
+        # placeholder the way cortex_exec_step_load's harness_motor reading always was.
+        # Gating them out the same way would silently discard real harness-side failure
+        # signal, the same tradeoff PR #1318 avoided for reasoning_load by re-emitting
+        # rather than excluding. These two channels don't have reasoning_load's clean
+        # escape hatch (a second node_key to attribute to) since both always target the
+        # same node_key regardless of lane -- a real fix needs a compose-not-replace
+        # policy decision (e.g. max() across a turn's sub-lanes) or per-lane node keys,
+        # not a mechanical gate-exclusion. Flagged as a follow-up, not built here.
         for channel, key, target_node in (
-            ("execution_load", "execution_load", node_key),
+            ("cortex_exec_step_load", "cortex_exec_step_load", node_key),
             ("execution_friction", "execution_friction", node_key),
             ("reasoning_load", "reasoning_load", reasoning_node_key),
             ("failure_pressure", "failure_pressure", node_key),
@@ -262,6 +280,34 @@ def delta_to_perturbations(delta: StateDeltaV1) -> list[Perturbation]:
             # not expanding scope to audit lanes this patch doesn't add a new data source
             # to.
             if channel == "reasoning_load" and delta.target_id.endswith(":harness_motor"):
+                continue
+            # cortex_exec_step_load (renamed from execution_load 2026-07-24) is excluded
+            # entirely from the harness_motor lane, with NO re-emission -- unlike
+            # reasoning_load, this channel has no legitimate harness_motor-lane value.
+            # compute_pressure_hints()'s cortex_exec_step_load is derived solely from
+            # run.cortex_exec_started_step_count, which grammar_extract.py's event loop
+            # only increments for event.provenance.source_service == "orion-cortex-exec"
+            # -- a harness_motor-lane ExecutionRunStateV1 object (whose events all come
+            # from orion-harness-governor) structurally can never populate that counter,
+            # so this key is always 0.0 on that lane, every time, not just usually. Before
+            # this gate, that always-0.0 stomped whatever real value cortex-exec's own
+            # bare-trace lane had written to the same node_key (always "node:athena" for
+            # both producers) -- same cross-lane mode="replace" stomp class PR #1289
+            # fixed for harness_step_load/tool_failure_streak_pressure/
+            # avg_step_chars_pressure/compliance_deficit/context_gathering_ratio, just
+            # never gated for this one. Confirmed live 2026-07-24:
+            # substrate_field_state.field_json's node:athena.execution_load sat flat at
+            # 0.3372261973790022 except two consecutive ~2s samples dipping to
+            # 0.2672454385532547 before recovering -- a smaller/gentler symptom than
+            # execution_load's pre-2026-07-23 blended-counter flapping (0.25->1.0->0.25
+            # within one turn) because apply_decay()'s hold-if-fresh logic (see this
+            # service's README "Decay vs. injection-interval mismatch") only smooths, not
+            # eliminates, an intermittent partial-stomp -- the next real cortex-exec-lane
+            # delta still overwrites the stomped 0.0 within its own tick, unlike a channel
+            # that never recovers. harness_step_load already covers the harness-governor
+            # side of step-load separately -- no data is lost by excluding this channel
+            # from the harness_motor lane outright.
+            if channel == "cortex_exec_step_load" and delta.target_id.endswith(":harness_motor"):
                 continue
             if key in hints:
                 out.append(
@@ -392,7 +438,7 @@ def delta_to_perturbations(delta: StateDeltaV1) -> list[Perturbation]:
         # scratch via extract_transport_bus_state_from_events every time it
         # reduces new bus-trace events -- not an incremental delta), the same
         # "here's the current reading" shape already used for
-        # execution_load/execution_friction/reasoning_load/failure_pressure/
+        # cortex_exec_step_load/execution_friction/reasoning_load/failure_pressure/
         # egress_confidence_deficit/prediction_error elsewhere in this file,
         # all of which use mode="replace".
         #

@@ -16,7 +16,7 @@ def _synthetic_field() -> FieldStateV1:
         tick_id="tick_exec_attention",
         node_vectors={
             "node:athena": {
-                "execution_load": 1.0,
+                "cortex_exec_step_load": 1.0,
                 "reasoning_load": 0.35,
                 "availability": 1.0,
             },
@@ -46,7 +46,7 @@ def test_dominant_channels_present() -> None:
     frame = build_attention_frame(field=_synthetic_field(), policy=POLICY, now=NOW)
     athena = next(t for t in frame.node_targets if t.target_id == "node:athena")
     orch = next(t for t in frame.capability_targets if t.target_id == "capability:orchestration")
-    assert "execution_load" in athena.dominant_channels
+    assert "cortex_exec_step_load" in athena.dominant_channels
     assert "execution_pressure" in orch.dominant_channels
 
 

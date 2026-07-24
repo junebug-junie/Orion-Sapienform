@@ -1,7 +1,7 @@
 """Execution-trajectory adapter — binds the substrate's execution "felt state".
 
 Maps ``ExecutionTrajectoryProjectionV1`` (per-run trace state: verb, status,
-step counts, and the pressure hints the execution lane derives — execution_load,
+step counts, and the pressure hints the execution lane derives — cortex_exec_step_load,
 execution_friction, failure_pressure, reasoning_load) into substrate belief nodes
 anchored to Orion, so the unified belief set contains beliefs about Orion's own
 in-flight execution.

@@ -36,7 +36,7 @@ class ExecutionRunStateV1(BaseModel):
     # subtraction silently reads 0 despite real cortex-exec steps having occurred (live
     # in code review). Tracking it directly avoids this entirely, mirroring
     # harness_started_step_count's own correct pattern. See NODE_CHANNELS
-    # "execution_load".
+    # "cortex_exec_step_load" (renamed from "execution_load" 2026-07-24).
     cortex_exec_started_step_count: int = 0
     # HarnessRunV1.compliance_verdict threaded through as a grammar-stream kv; "unknown"
     # until a real exec_result_assembled event sets it.

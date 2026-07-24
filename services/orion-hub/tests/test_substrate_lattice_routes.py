@@ -906,12 +906,12 @@ def test_normalize_targets_dicts_preserve_fields() -> None:
 
 def test_coerce_str_list_handles_dict_channel_shapes() -> None:
     """Attention frames may store dominant_channels as a dict, not a list."""
-    assert substrate_lattice_routes._coerce_str_list({"execution_load": 0.7}) == ["execution_load"]
+    assert substrate_lattice_routes._coerce_str_list({"cortex_exec_step_load": 0.7}) == ["cortex_exec_step_load"]
     result = substrate_lattice_routes._normalize_targets(
-        [{"target_id": "capability:transport", "dominant_channels": {"execution_load": 0.7}}],
+        [{"target_id": "capability:transport", "dominant_channels": {"cortex_exec_step_load": 0.7}}],
         "dominant_targets",
     )
-    assert result[0]["dominant_channels"] == ["execution_load"]
+    assert result[0]["dominant_channels"] == ["cortex_exec_step_load"]
 
 
 # ── New V1.1 tests: response shape completeness ───────────────────

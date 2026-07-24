@@ -177,7 +177,7 @@ LLM_GATEWAY_ROUTE_TABLE_JSON='{
 > the live route table points at them -- this was never deliberate, just
 > deprioritized while getting circe fully online. Consequence: `node:circe`
 > never appears as an `execution_run` producer, so `orion-field-digester`'s
-> `reasoning_load`/`execution_load`/etc. channels for `node:circe` read
+> `reasoning_load`/`cortex_exec_step_load`/etc. channels for `node:circe` read
 > permanently `0.0` -- not a code bug (see
 > `services/orion-field-digester/README.md`'s `reasoning_load` glossary
 > entry), just zero real traffic ever routing there. When circe comes

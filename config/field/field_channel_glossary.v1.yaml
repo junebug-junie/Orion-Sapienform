@@ -85,10 +85,17 @@ channels:
     meaning: "Signals a node is expected to be offline, so its absence shouldn't be read as a failure."
     self_state_dimension: coherence
 
-  - channel: execution_load
+  - channel: cortex_exec_step_load
     level: [node]
     category: task_execution
-    meaning: "How much active execution work (agent runs, tool calls) is in flight on a node."
+    meaning: "Renamed from execution_load 2026-07-24 for scope honesty (the sibling of
+      harness_step_load, cortex-exec-scoped instead of harness-governor-scoped) and
+      lane-gated to exclude the harness_motor lane (whose cortex_exec_started_step_count
+      is structurally always 0, since that counter only increments for
+      orion-cortex-exec-sourced exec_step_started events) -- previously that always-0
+      harness_motor-lane reading stomped the real cortex-exec-lane value via
+      mode=\"replace\" on the shared node key. cortex-exec-only proxy for how much active
+      execution work (agent runs, tool calls) is in flight on a node."
     evidence_dimension: execution_pressure
 
   - channel: execution_friction
@@ -122,7 +129,7 @@ channels:
   - channel: harness_step_load
     level: [node]
     category: task_execution
-    meaning: "FCC-motor-only step-load proxy for one unified Hub turn, split out of execution_load (which blends cortex-exec + harness-governor step counts and hard-caps at 8) -- a compute/thermal/power cost proxy for how much processing one turn actually cost on the expensive GPU node running the motor."
+    meaning: "FCC-motor-only step-load proxy for one unified Hub turn, split out of cortex_exec_step_load (renamed from execution_load 2026-07-24; blended cortex-exec + harness-governor step counts and hard-capped at 8 before the 2026-07-23 fix) -- a compute/thermal/power cost proxy for how much processing one turn actually cost on the expensive GPU node running the motor."
 
   - channel: tool_failure_streak_pressure
     level: [node]

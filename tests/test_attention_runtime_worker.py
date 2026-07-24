@@ -21,7 +21,7 @@ def _field() -> FieldStateV1:
     return FieldStateV1(
         generated_at=NOW,
         tick_id="tick_existing",
-        node_vectors={"node:athena": {"execution_load": 1.0}},
+        node_vectors={"node:athena": {"cortex_exec_step_load": 1.0}},
     )
 
 

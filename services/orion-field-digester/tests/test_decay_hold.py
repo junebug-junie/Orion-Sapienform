@@ -42,7 +42,7 @@ def _state(node_vectors: dict[str, dict[str, float]] | None = None) -> FieldStat
 def test_new_fcc_motor_channels_are_registered_for_decay() -> None:
     """A channel only decays if listed in NODE_DECAY_CHANNELS (separate from being in
     NODE_CHANNELS) -- otherwise it holds forever. Written through the normal
-    state_deltas.py -> apply_perturbations() path (same as execution_load), these get
+    state_deltas.py -> apply_perturbations() path (same as cortex_exec_step_load), these get
     node_vector_updated_at stamped automatically, so no manual-stamping test is needed
     here -- this just confirms the registration itself, the miss this service's own
     CLAUDE.md warns has already happened once for a different channel."""

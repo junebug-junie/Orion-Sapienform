@@ -7,7 +7,7 @@ NODE_CHANNELS = [
     "thermal_pressure",
     "disk_pressure",
     "expected_offline_suppression",
-    "execution_load",
+    "cortex_exec_step_load",
     "execution_friction",
     "reasoning_load",
     "failure_pressure",

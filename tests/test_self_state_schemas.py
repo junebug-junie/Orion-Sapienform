@@ -13,8 +13,8 @@ def test_self_state_dimension_v1_validates() -> None:
         dimension_id="execution_pressure",
         score=0.8,
         confidence=0.7,
-        dominant_evidence=["node:athena.execution_load"],
-        reasons=["execution_load elevated"],
+        dominant_evidence=["node:athena.cortex_exec_step_load"],
+        reasons=["cortex_exec_step_load elevated"],
     )
     assert d.dimension_id == "execution_pressure"
 

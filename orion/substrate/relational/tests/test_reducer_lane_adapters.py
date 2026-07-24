@@ -43,7 +43,7 @@ def _execution_projection(n: int = 1) -> ExecutionTrajectoryProjectionV1:
             status="running",
             step_count=3 + i,
             pressure_hints={
-                "execution_load": 0.4,
+                "cortex_exec_step_load": 0.4,
                 "execution_friction": 0.9,
                 "failure_pressure": 0.1,
                 "reasoning_load": 0.2,

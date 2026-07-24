@@ -55,7 +55,7 @@ def execution_prediction_error(
             prev_run = prev_fallback
         if prev_run is None:
             continue
-        for key in ("execution_load", "execution_friction", "failure_pressure", "reasoning_load"):
+        for key in ("cortex_exec_step_load", "execution_friction", "failure_pressure", "reasoning_load"):
             pv = prev_run.pressure_hints.get(key, 0.0)
             cv = curr_run.pressure_hints.get(key, 0.0)
             deltas.append(abs(cv - pv))

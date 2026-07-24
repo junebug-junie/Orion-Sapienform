@@ -113,7 +113,7 @@ Example:
 
 ```json
 {
-  "execution_load": 0.375,
+  "cortex_exec_step_load": 0.375,
   "reasoning_load": 0.05,
   "failure_pressure": 0.0,
   "egress_confidence": 1.0,

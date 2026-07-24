@@ -68,7 +68,7 @@ def test_gpu_and_cpu_perturbations_use_replace_mode() -> None:
     # 2026-07-17: live corpus verification (see state_deltas.py comment on
     # this block) confirmed gpu_pressure/cpu_pressure were hitting the
     # post-decay saturation ceiling far more often than a comparable
-    # mode="replace" channel (execution_load) -- the same fan-out mechanism
+    # mode="replace" channel (cortex_exec_step_load) -- the same fan-out mechanism
     # as memory/thermal/disk below, just pre-existing. Fixed to match.
     delta = _make_node_biometrics_delta(pressure_hints={"gpu": 0.75, "strain": 0.4})
     perturbations = delta_to_perturbations(delta)
@@ -156,7 +156,7 @@ def test_old_add_mode_would_have_saturated_gpu_and_cpu_pressure() -> None:
     # 1.0 clamp regardless of the real hint value -- exactly the pattern
     # observed live (cpu_pressure/gpu_pressure pinned at their post-decay
     # ceiling in 16.60%/12.98% of ~134k live corpus rows, vs. 0.01%/0.00%
-    # for the already-mode="replace" execution_load/execution_friction).
+    # for the already-mode="replace" cortex_exec_step_load/execution_friction).
     old_style_perturbations = [
         Perturbation(node_id="node:atlas", channel="gpu_pressure", intensity=0.4, label=f"delta_{i}")
         for i in range(18)

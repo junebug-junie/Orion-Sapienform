@@ -26,7 +26,7 @@ node_channel_weights:
   thermal_pressure: 0.75
   staleness: 0.60
   availability: -0.40
-  execution_load: 0.70
+  cortex_exec_step_load: 0.70
   execution_friction: 0.85
   reasoning_load: 0.45
   failure_pressure: 1.00

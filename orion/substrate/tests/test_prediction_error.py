@@ -158,14 +158,14 @@ def _exec_projection(runs: dict[str, ExecutionRunStateV1]) -> ExecutionTrajector
 
 
 def test_execution_prediction_error_zero_when_no_change() -> None:
-    prev = _exec_projection({"r1": _exec_run("r1", pressure_hints={"execution_load": 0.25})})
-    curr = _exec_projection({"r1": _exec_run("r1", pressure_hints={"execution_load": 0.25})})
+    prev = _exec_projection({"r1": _exec_run("r1", pressure_hints={"cortex_exec_step_load": 0.25})})
+    curr = _exec_projection({"r1": _exec_run("r1", pressure_hints={"cortex_exec_step_load": 0.25})})
     assert execution_prediction_error(prev, curr) == 0.0
 
 
 def test_execution_prediction_error_scales_with_delta_magnitude_on_exact_match() -> None:
-    prev = _exec_projection({"r1": _exec_run("r1", pressure_hints={"execution_load": 0.0})})
-    curr = _exec_projection({"r1": _exec_run("r1", pressure_hints={"execution_load": 0.3})})
+    prev = _exec_projection({"r1": _exec_run("r1", pressure_hints={"cortex_exec_step_load": 0.0})})
+    curr = _exec_projection({"r1": _exec_run("r1", pressure_hints={"cortex_exec_step_load": 0.3})})
     # mean of one key's delta (0.3) across the other three implicit-0.0 keys:
     # (0.3 + 0 + 0 + 0) / 4 = 0.075 -> 0.075 / 0.30 = 0.25
     assert execution_prediction_error(prev, curr) == pytest.approx(0.25)
@@ -175,7 +175,7 @@ def test_execution_prediction_error_zero_when_prev_empty() -> None:
     """No prev runs at all -- no fallback reference exists either, must stay 0.0,
     not raise."""
     prev = _exec_projection({})
-    curr = _exec_projection({"r1": _exec_run("r1", pressure_hints={"execution_load": 0.9})})
+    curr = _exec_projection({"r1": _exec_run("r1", pressure_hints={"cortex_exec_step_load": 0.9})})
     assert execution_prediction_error(prev, curr) == 0.0
 
 
@@ -187,10 +187,10 @@ def test_execution_prediction_error_falls_back_to_latest_prev_run_for_new_trace_
     curr with no prev counterpart must now diff against prev's most-recently-updated
     run instead of contributing nothing."""
     prev = _exec_projection(
-        {"prior-run": _exec_run("prior-run", pressure_hints={"execution_load": 0.0})}
+        {"prior-run": _exec_run("prior-run", pressure_hints={"cortex_exec_step_load": 0.0})}
     )
     curr = _exec_projection(
-        {"new-run": _exec_run("new-run", pressure_hints={"execution_load": 0.3})}
+        {"new-run": _exec_run("new-run", pressure_hints={"cortex_exec_step_load": 0.3})}
     )
     # Same magnitude as the exact-match case above: must not silently stay 0.0.
     assert execution_prediction_error(prev, curr) == pytest.approx(0.25)
@@ -202,18 +202,18 @@ def test_execution_prediction_error_fallback_uses_most_recently_updated_prev_run
         {
             "older": _exec_run(
                 "older",
-                pressure_hints={"execution_load": 0.9},
+                pressure_hints={"cortex_exec_step_load": 0.9},
                 last_updated_at=_NOW - timedelta(minutes=5),
             ),
             "newer": _exec_run(
                 "newer",
-                pressure_hints={"execution_load": 0.0},
+                pressure_hints={"cortex_exec_step_load": 0.0},
                 last_updated_at=_NOW,
             ),
         }
     )
     curr = _exec_projection(
-        {"brand-new": _exec_run("brand-new", pressure_hints={"execution_load": 0.3})}
+        {"brand-new": _exec_run("brand-new", pressure_hints={"cortex_exec_step_load": 0.3})}
     )
     # Must diff against "newer" (delta 0.3), not "older" (delta 0.6).
     assert execution_prediction_error(prev, curr) == pytest.approx(0.25)
@@ -227,17 +227,17 @@ def test_execution_prediction_error_prefers_exact_trace_id_match_over_fallback()
         {
             "r1": _exec_run(
                 "r1",
-                pressure_hints={"execution_load": 0.25},
+                pressure_hints={"cortex_exec_step_load": 0.25},
                 last_updated_at=_NOW - timedelta(minutes=5),
             ),
             "unrelated-newer": _exec_run(
                 "unrelated-newer",
-                pressure_hints={"execution_load": 0.9},
+                pressure_hints={"cortex_exec_step_load": 0.9},
                 last_updated_at=_NOW,
             ),
         }
     )
-    curr = _exec_projection({"r1": _exec_run("r1", pressure_hints={"execution_load": 0.25})})
+    curr = _exec_projection({"r1": _exec_run("r1", pressure_hints={"cortex_exec_step_load": 0.25})})
     assert execution_prediction_error(prev, curr) == 0.0
 
 

@@ -19,7 +19,7 @@ def _empty_state(tick_id: str) -> FieldStateV1:
 
 
 def _perturbation(label: str) -> Perturbation:
-    return Perturbation(node_id="node:athena", channel="execution_load", intensity=0.1, label=label)
+    return Perturbation(node_id="node:athena", channel="cortex_exec_step_load", intensity=0.1, label=label)
 
 
 def test_more_than_old_cap_within_one_instant_does_not_saturate_forever() -> None:

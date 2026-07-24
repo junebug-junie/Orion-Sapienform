@@ -15,8 +15,8 @@ def test_field_attention_target_v1_validates() -> None:
         novelty_score=0.0,
         urgency_score=0.5,
         confidence_score=0.2,
-        dominant_channels={"execution_load": 0.7},
-        reasons=["node execution_load is elevated"],
+        dominant_channels={"cortex_exec_step_load": 0.7},
+        reasons=["node cortex_exec_step_load is elevated"],
         evidence_refs=["field:tick_abc"],
         suggested_observation_mode="inspect",
     )

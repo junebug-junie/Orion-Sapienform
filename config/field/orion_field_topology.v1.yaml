@@ -25,7 +25,7 @@ node_channels:
   - thermal_pressure
   - disk_pressure
   - expected_offline_suppression
-  - execution_load
+  - cortex_exec_step_load
   - execution_friction
   - reasoning_load
   - failure_pressure
@@ -75,7 +75,7 @@ edges:
     weight: 0.90
     channel_map:
       cpu_pressure: pressure
-      execution_load: execution_pressure
+      cortex_exec_step_load: execution_pressure
       execution_friction: reliability_pressure
       failure_pressure: reliability_pressure
       stream_backlog_pressure: pressure

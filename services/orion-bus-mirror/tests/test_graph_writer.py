@@ -78,8 +78,12 @@ class TestComputeEwmaUpdate:
 
 
 class TestChainTracker:
-    def _fact(self, organ_id: str, correlation_id: Optional[str], epoch: float) -> BusEventFact:
-        return BusEventFact(organ_id=organ_id, channel="orion:test", correlation_id=correlation_id, observed_at_epoch=epoch)
+    def _fact(
+        self, organ_id: str, correlation_id: Optional[str], epoch: float, node: Optional[str] = None
+    ) -> BusEventFact:
+        return BusEventFact(
+            organ_id=organ_id, channel="orion:test", correlation_id=correlation_id, observed_at_epoch=epoch, node=node
+        )
 
     def test_first_sighting_of_a_correlation_id_returns_none(self) -> None:
         tracker = ChainTracker(ttl_sec=60.0)
@@ -97,7 +101,16 @@ class TestChainTracker:
         tracker = ChainTracker(ttl_sec=60.0)
         tracker.observe(self._fact("cortex-exec", "corr-1", 100.0))
         result = tracker.observe(self._fact("llm-gateway", "corr-1", 117.0))
-        assert result == ("cortex-exec", 100.0)
+        assert result == ("cortex-exec", 100.0, None)
+
+    def test_prior_hop_includes_the_node_it_was_observed_on(self) -> None:
+        # Idea D (cross-node imbalance): the returned prior tuple must carry
+        # the prior organ's node so record_causal_hop can tell whether this
+        # specific hop crossed a physical host boundary.
+        tracker = ChainTracker(ttl_sec=60.0)
+        tracker.observe(self._fact("cortex-exec", "corr-1", 100.0, node="athena"))
+        result = tracker.observe(self._fact("llm-gateway", "corr-1", 117.0, node="atlas"))
+        assert result == ("cortex-exec", 100.0, "athena")
 
     def test_missing_correlation_id_is_never_tracked(self) -> None:
         tracker = ChainTracker(ttl_sec=60.0)
@@ -137,7 +150,7 @@ class TestChainTracker:
         # At t=125, "inserted-later" (last touched at t=1) is stale under a
         # 120s TTL; "old-but-active" (last touched at t=50) is not.
         result = tracker.observe(self._fact("organ-c", "old-but-active", 125.0))
-        assert result == ("organ-b", 50.0)  # real hop, not evicted-then-reset
+        assert result == ("organ-b", 50.0, None)  # real hop, not evicted-then-reset
         remaining_ids = {c.correlation_id for c in tracker.snapshot_open_chains(now_epoch=125.0)}
         assert "inserted-later" not in remaining_ids
         assert "old-but-active" in remaining_ids
@@ -203,11 +216,65 @@ class TestBusSynapticGraphWriterCausalHop:
         write_call = fake_client.calls[-1]
         assert write_call[1]["latency_ewma_sec"] == 0.0
 
+    def test_cross_node_hop_increments_cross_node_count(self, fake_client: FakeGraphClient) -> None:
+        writer = BusSynapticGraphWriter(fake_client, alpha=0.2)
+        fact = BusEventFact(
+            organ_id="llm-gateway", channel="orion:x", correlation_id="corr-1", observed_at_epoch=1017.0, node="atlas"
+        )
+
+        writer.record_causal_hop(prior_organ_id="cortex-exec", prior_epoch=1000.0, prior_node="athena", fact=fact)
+
+        write_call = fake_client.calls[-1]
+        assert write_call[1]["cross_node_count"] == 1
+        assert write_call[1]["prior_node"] == "athena"
+        assert write_call[1]["target_node"] == "atlas"
+
+    def test_same_node_hop_does_not_increment_cross_node_count(self, fake_client: FakeGraphClient) -> None:
+        writer = BusSynapticGraphWriter(fake_client, alpha=0.2)
+        fact = BusEventFact(
+            organ_id="llm-gateway", channel="orion:x", correlation_id="corr-1", observed_at_epoch=1017.0, node="athena"
+        )
+
+        writer.record_causal_hop(prior_organ_id="cortex-exec", prior_epoch=1000.0, prior_node="athena", fact=fact)
+
+        write_call = fake_client.calls[-1]
+        assert write_call[1]["cross_node_count"] == 0
+
+    def test_unknown_node_on_either_side_does_not_count_as_cross_node(self, fake_client: FakeGraphClient) -> None:
+        # An unknown node on either end must not silently count as "same
+        # host" or "different host" -- both would misrepresent real
+        # cross-node traffic, one understating it, one overstating it.
+        writer = BusSynapticGraphWriter(fake_client, alpha=0.2)
+        fact = BusEventFact(
+            organ_id="llm-gateway", channel="orion:x", correlation_id="corr-1", observed_at_epoch=1017.0, node=None
+        )
+
+        writer.record_causal_hop(prior_organ_id="cortex-exec", prior_epoch=1000.0, prior_node="athena", fact=fact)
+
+        write_call = fake_client.calls[-1]
+        assert write_call[1]["cross_node_count"] == 0
+
+    def test_cross_node_count_accumulates_across_repeated_hops(self, fake_client: FakeGraphClient) -> None:
+        writer = BusSynapticGraphWriter(fake_client, alpha=0.2)
+        first = BusEventFact(
+            organ_id="llm-gateway", channel="orion:x", correlation_id="corr-1", observed_at_epoch=1017.0, node="atlas"
+        )
+        writer.record_causal_hop(prior_organ_id="cortex-exec", prior_epoch=1000.0, prior_node="athena", fact=first)
+        second = BusEventFact(
+            organ_id="llm-gateway", channel="orion:x", correlation_id="corr-2", observed_at_epoch=2017.0, node="atlas"
+        )
+        writer.record_causal_hop(prior_organ_id="cortex-exec", prior_epoch=2000.0, prior_node="athena", fact=second)
+
+        write_call = fake_client.calls[-1]
+        assert write_call[1]["cross_node_count"] == 2
+        assert write_call[1]["count"] == 2
+
 
 class TestExtractBusEventFact:
     @dataclass
     class _FakeSource:
         name: Optional[str]
+        node: Optional[str] = None
 
     @dataclass
     class _FakeEnvelope:
@@ -253,6 +320,18 @@ class TestExtractBusEventFact:
         )
         assert fact is not None
         assert fact.channel == "orion:exec:result:LLMGatewayService:0cf10589"
+
+    def test_extracts_node_when_present(self) -> None:
+        envelope = self._FakeEnvelope(source=self._FakeSource(name="cortex-exec", node="atlas"))
+        fact = extract_bus_event_fact(envelope, channel="orion:x", now=1.0)
+        assert fact is not None
+        assert fact.node == "atlas"
+
+    def test_node_defaults_to_none_when_source_has_no_node(self) -> None:
+        envelope = self._FakeEnvelope(source=self._FakeSource(name="cortex-exec"))
+        fact = extract_bus_event_fact(envelope, channel="orion:x", now=1.0)
+        assert fact is not None
+        assert fact.node is None
 
     def test_exact_catalog_channel_unaffected_by_normalization(self) -> None:
         envelope = self._FakeEnvelope(source=self._FakeSource(name="cortex-exec"))

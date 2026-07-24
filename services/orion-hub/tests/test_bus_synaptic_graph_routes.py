@@ -64,6 +64,7 @@ class FakeGraphClient:
         "/api/bus-synaptic-graph/hot-edges",
         "/api/bus-synaptic-graph/anomalies",
         "/api/bus-synaptic-graph/node-centrality",
+        "/api/bus-synaptic-graph/cross-node-imbalance",
     ],
 )
 def test_falkordb_not_configured_returns_503(client: TestClient, path: str) -> None:
@@ -231,6 +232,39 @@ def test_node_centrality_limit_rejects_out_of_range_values(client: TestClient) -
         too_low = client.get("/api/bus-synaptic-graph/node-centrality?limit=0")
     assert too_high.status_code == 422
     assert too_low.status_code == 422
+
+
+def test_cross_node_imbalance_returns_ranked_edges(client: TestClient) -> None:
+    fake = FakeGraphClient(
+        {
+            "cross_node_count": [
+                {
+                    "source_organ": "landing-pad",
+                    "target_organ": "orion-mind",
+                    "last_source_node": "athena",
+                    "last_target_node": "atlas",
+                    "cross_node_count": 42,
+                    "count": 50,
+                }
+            ]
+        }
+    )
+    with patch.object(bus_synaptic_graph_routes, "_client", return_value=fake):
+        r = client.get("/api/bus-synaptic-graph/cross-node-imbalance")
+
+    assert r.status_code == 200
+    edges = r.json()["edges"]
+    assert edges[0]["source_organ"] == "landing-pad"
+    assert edges[0]["cross_node_count"] == 42
+    _, params = fake.calls[-1]
+    assert params["limit"] == 20
+
+
+def test_cross_node_imbalance_limit_rejects_out_of_range_values(client: TestClient) -> None:
+    fake = FakeGraphClient({"cross_node_count": []})
+    with patch.object(bus_synaptic_graph_routes, "_client", return_value=fake):
+        r = client.get("/api/bus-synaptic-graph/cross-node-imbalance?limit=1000")
+    assert r.status_code == 422
 
 
 def test_node_centrality_only_matches_causally_followed_by_not_publishes(client: TestClient) -> None:

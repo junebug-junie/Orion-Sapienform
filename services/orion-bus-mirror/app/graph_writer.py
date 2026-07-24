@@ -58,6 +58,7 @@ from __future__ import annotations
 
 import math
 import time
+from collections import OrderedDict
 from dataclasses import dataclass
 from typing import Any
 
@@ -129,7 +130,8 @@ class _ChainEntry:
     started_at_epoch: float
     last_organ_id: str
     last_epoch: float
-    hop_count: int
+    hop_count: int  # total observations, including same-organ repeats
+    real_hop_count: int  # cross-organ hops only -- the CAUSALLY_FOLLOWED_BY-producing kind
 
 
 @dataclass(frozen=True)
@@ -139,6 +141,7 @@ class OpenChainInfo:
     last_seen_epoch: float
     duration_sec: float
     hop_count: int
+    real_hop_count: int
 
 
 @dataclass(frozen=True)
@@ -149,18 +152,38 @@ class OpenChainSummary:
 
 
 def summarize_open_chains(
-    open_chains: list[OpenChainInfo], *, long_running_threshold_sec: float
+    open_chains: list[OpenChainInfo], *, long_running_threshold_sec: float, min_real_hop_count: int = 1
 ) -> OpenChainSummary:
     """Pure aggregation over a ChainTracker snapshot -- separated from
     ChainTracker itself so the "what counts as long-running" policy is
     testable without touching TTL-eviction or dict internals.
+
+    Filters to ``real_hop_count >= min_real_hop_count`` (default 1) before
+    counting -- NOT ``hop_count``, which also increments on same-organ
+    repeats (see ``ChainTracker.observe()``) and would still admit chains
+    that never produced a real CAUSALLY_FOLLOWED_BY edge.
+
+    Found live, 2026-07-24: most bus envelopes carry a fresh, never-repeated
+    correlation_id (BaseEnvelope's default_factory=uuid4 -- only explicitly
+    *propagated* correlation_ids ever produce a second hop), so an unfiltered
+    snapshot is dominated by one-shot entries sitting in the tracker until
+    TTL eviction -- not genuinely long-running multi-hop operations. Observed
+    live: ~6800 tracked entries, only 51 ever became a real
+    CAUSALLY_FOLLOWED_BY edge, yet ~5000 were being reported as
+    "long_running" -- a signal that was schema-valid but meaningless, exactly
+    the "no empty-shell cognition" failure mode this repo's own rules exist
+    to catch. A chain needs at least one real cross-organ hop to be a
+    "chain" at all -- caught in review that the first fix (filtering on the
+    combined hop_count) was still one notch too loose, since that count also
+    credits same-organ republishes that never touch a different organ.
     """
-    if not open_chains:
+    chains = [c for c in open_chains if c.real_hop_count >= min_real_hop_count]
+    if not chains:
         return OpenChainSummary(open_count=0, long_running_count=0, max_duration_sec=0.0)
-    durations = [c.duration_sec for c in open_chains]
+    durations = [c.duration_sec for c in chains]
     long_running = sum(1 for d in durations if d >= long_running_threshold_sec)
     return OpenChainSummary(
-        open_count=len(open_chains),
+        open_count=len(chains),
         long_running_count=long_running,
         max_duration_sec=max(durations),
     )
@@ -178,20 +201,40 @@ class ChainTracker:
     envelope schema to distinguish a chain that finished from one that was
     abandoned. A chain simply stops being tracked once it goes quiet for
     longer than ttl_sec. See module docstring and README "Known gaps".
+
+    Precondition (found in review, not enforced/asserted): ``observe()``
+    calls must arrive with non-decreasing ``fact.observed_at_epoch`` for
+    ``_evict_stale()``'s early-stop-on-first-non-stale-entry to correctly
+    match true recency order. Holds today because ``mirror_bus()`` processes
+    one message at a time, strictly sequentially -- the same single-instance
+    assumption ``BusSynapticGraphWriter`` already documents. A wall-clock
+    step backward (e.g. an NTP correction) would delay, not prevent, that one
+    entry's eventual eviction -- self-healing, not unbounded growth.
     """
 
     def __init__(self, *, ttl_sec: float) -> None:
         self._ttl_sec = ttl_sec
-        self._entries: dict[str, _ChainEntry] = {}
+        # OrderedDict, not dict: observe() calls move_to_end() on every touch,
+        # so insertion order always tracks recency order. That lets
+        # _evict_stale() pop only the actually-stale prefix and stop at the
+        # first non-stale entry, instead of scanning every entry on every
+        # message -- found live, 2026-07-24: at real mesh volume this tracker
+        # settles at ~6800 entries, and the previous full-dict-comprehension
+        # eviction scanned all of them on every single observe() call
+        # (O(N) per message, compounding as N grows) -- a real, measured
+        # contributor to this service's CPU usage under full-tilt traffic.
+        self._entries: "OrderedDict[str, _ChainEntry]" = OrderedDict()
 
     def __len__(self) -> int:
         return len(self._entries)
 
     def _evict_stale(self, now_epoch: float) -> None:
         cutoff = now_epoch - self._ttl_sec
-        stale = [cid for cid, entry in self._entries.items() if entry.last_epoch < cutoff]
-        for cid in stale:
-            del self._entries[cid]
+        while self._entries:
+            oldest_cid = next(iter(self._entries))
+            if self._entries[oldest_cid].last_epoch >= cutoff:
+                break
+            del self._entries[oldest_cid]
 
     def observe(self, fact: BusEventFact) -> tuple[str, float] | None:
         """Records this fact's (organ_id, observed_at_epoch) under its
@@ -211,6 +254,7 @@ class ChainTracker:
                 last_organ_id=fact.organ_id,
                 last_epoch=fact.observed_at_epoch,
                 hop_count=1,
+                real_hop_count=0,
             )
             return None
 
@@ -218,9 +262,11 @@ class ChainTracker:
         existing.last_organ_id = fact.organ_id
         existing.last_epoch = fact.observed_at_epoch
         existing.hop_count += 1
+        self._entries.move_to_end(fact.correlation_id)
 
         if prior_organ_id == fact.organ_id:
             return None
+        existing.real_hop_count += 1
         return prior_organ_id, prior_epoch
 
     def snapshot_open_chains(self, now_epoch: float) -> list[OpenChainInfo]:
@@ -238,6 +284,7 @@ class ChainTracker:
                 last_seen_epoch=entry.last_epoch,
                 duration_sec=max(now_epoch - entry.started_at_epoch, 0.0),
                 hop_count=entry.hop_count,
+                real_hop_count=entry.real_hop_count,
             )
             for cid, entry in self._entries.items()
         ]

@@ -2,6 +2,9 @@
 
 Aggregates vision artifacts into rolling time windows and publishes `VisionWindowPayload` summaries for Council.
 
+Also publishes a bus-native `SystemHealthV1` heartbeat to `orion:system:health` every
+`HEARTBEAT_INTERVAL_SEC` (default 10s), independent of `service.bus` above.
+
 ## Role in the pipeline
 
 ```text

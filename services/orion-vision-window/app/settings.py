@@ -6,11 +6,15 @@ class Settings(BaseSettings):
 
     SERVICE_NAME: str = "vision-window"
     SERVICE_VERSION: str = "0.1.0"
+    NODE_NAME: str = "athena"
     LOG_LEVEL: str = "INFO"
 
     # Bus
     ORION_BUS_URL: str = "redis://localhost:6379/0"
     ORION_BUS_ENFORCE_CATALOG: bool = False
+    # Bus-native SystemHealthV1 heartbeat cadence (orion:system:health). See
+    # docs/superpowers/specs/2026-07-24-service-heartbeat-node-telemetry-design.md.
+    HEARTBEAT_INTERVAL_SEC: float = 10.0
 
     # Channels
     CHANNEL_WINDOW_INTAKE: str = "orion:vision:artifacts"

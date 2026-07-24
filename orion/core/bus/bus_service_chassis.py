@@ -134,13 +134,29 @@ class BaseChassis:
                 details: Dict[str, Any] = {}
                 if self._heartbeat_details is not None:
                     try:
-                        extra = self._heartbeat_details()
+                        # Run in a worker thread with a bounded wait: the provider is a
+                        # synchronous callable (e.g. shutil.disk_usage() against a bind
+                        # mount) that could block on a wedged/stale filesystem. A plain
+                        # synchronous call here would stall this shared event loop --
+                        # not just the heartbeat, every other task in the process (other
+                        # Clock ticks, Rabbit/Hunter consumers). to_thread keeps a hang
+                        # off the loop; wait_for gives up (leaving details={} for this
+                        # tick) rather than waiting indefinitely.
+                        details_timeout = min(3.0, max(0.5, float(self.cfg.heartbeat_interval_sec or 10.0) / 2.0))
+                        extra = await asyncio.wait_for(
+                            asyncio.to_thread(self._heartbeat_details),
+                            timeout=details_timeout,
+                        )
                         if isinstance(extra, dict):
                             details.update(extra)
                         else:
                             logger.warning(
                                 f"heartbeat_details provider returned non-dict ({type(extra)!r}); ignoring"
                             )
+                    except asyncio.TimeoutError:
+                        logger.warning(
+                            f"heartbeat_details provider timed out after {details_timeout:.1f}s"
+                        )
                     except Exception as details_exc:
                         logger.warning(f"heartbeat_details provider failed: {details_exc}")
                 v1_payload = SystemHealthV1(

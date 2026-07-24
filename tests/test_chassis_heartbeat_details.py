@@ -14,6 +14,7 @@ exactly.
 
 from __future__ import annotations
 
+import time
 from types import SimpleNamespace
 from unittest.mock import AsyncMock
 
@@ -110,3 +111,23 @@ async def test_clock_threads_heartbeat_details_to_base_chassis() -> None:
     )
     details = await _run_one_heartbeat(clock)
     assert details == {"disk_usage_pct": {"scripts": 14.1}}
+
+
+@pytest.mark.asyncio
+async def test_slow_provider_runs_off_the_event_loop_and_times_out() -> None:
+    """A provider that blocks synchronously (e.g. shutil.disk_usage() against a wedged
+    filesystem) must not stall _heartbeat_loop() indefinitely -- it runs in a worker
+    thread (asyncio.to_thread) with a bounded wait_for, so the heartbeat still
+    publishes (with an empty details fold for that tick) instead of hanging forever."""
+
+    def _slow_provider() -> dict:
+        time.sleep(0.6)  # longer than the 0.5s floor on details_timeout
+        return {"disk_usage_pct": {"docker": 87.3}}
+
+    chassis = HeartbeatOnly(_cfg(heartbeat_interval_sec=0.01), heartbeat_details=_slow_provider)
+    start = time.monotonic()
+    details = await _run_one_heartbeat(chassis)
+    elapsed = time.monotonic() - start
+
+    assert details == {}, "timed-out provider must not block the heartbeat publish"
+    assert elapsed < 1.5, "heartbeat must give up around the bounded timeout, not hang"

@@ -325,6 +325,15 @@ def collect_disk_capacity(mounts: Dict[str, str]) -> Dict[str, Any]:
             if not path or not os.path.isdir(path):
                 errors[name] = "not_mounted"
                 continue
+            if not os.path.ismount(path):
+                # If a bind-mount source doesn't exist on the host, Docker silently
+                # auto-creates an empty directory at the target instead of failing --
+                # os.path.isdir() alone would report that empty dir as present and
+                # shutil.disk_usage() would then report the *container's own* overlay
+                # filesystem capacity, a plausible-looking but meaningless number, not
+                # a "not mounted" error. os.path.ismount() catches that case.
+                errors[name] = "not_mounted"
+                continue
             usage = shutil.disk_usage(path)
             if usage.total <= 0:
                 errors[name] = "zero_total_bytes"

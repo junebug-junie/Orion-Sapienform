@@ -62,7 +62,16 @@ Key convention:
   configurable via `DISK_CAPACITY_MOUNTS` (JSON object, mount name -> in-container path).
 - `disk_usage_errors` only appears when at least one configured mount is missing/inaccessible
   inside the container (e.g. not bind-mounted on this node yet). A missing mount is skipped, not
-  fatal -- it never blocks the heartbeat itself.
+  fatal -- it never blocks the heartbeat itself. `collect_disk_capacity()` checks
+  `os.path.ismount()`, not just `os.path.isdir()` -- if a bind-mount source doesn't exist on the
+  host, Docker silently creates an empty directory at the container target instead of failing,
+  and `isdir()` alone can't tell that apart from a real mount (it would then report the
+  *container's own* overlay filesystem usage as if it were the host mount's).
+- The heartbeat loop runs `_heartbeat_details()` in a worker thread (`asyncio.to_thread`) with a
+  bounded wait (`min(3.0, heartbeat_interval_sec / 2)`, floor 0.5s), not inline on the event loop.
+  A wedged/stale mount blocking synchronously inside `shutil.disk_usage()` would otherwise stall
+  every other task sharing this process's event loop, not just the heartbeat. A timeout drops that
+  tick's details (`{}`) rather than hanging.
 - This is capacity (how full a filesystem is), not the same thing as the existing `disk` key in
   `biometrics.sample.v1`/`BiometricsSampleV1`, which is I/O *throughput* (`_collect_disk()` in
   `app/metrics.py`, read/write bytes/sec from `/proc/diskstats`) and feeds a separate, already-wired

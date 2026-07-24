@@ -9,30 +9,41 @@ docs/superpowers/specs/2026-07-24-service-heartbeat-node-telemetry-design.md.
 
 ---
 
-## Status: disabled, ran into exactly the failure mode this README warns about
+## Status: re-enabled for the bus-synaptic-graph arc; the SQLite failure mode recurred once, now fixed
 
-Live incident, 2026-07-24: this service was left running with
+Live incident, 2026-07-24 (first occurrence): this service was left running with
 `MIRROR_PATTERN=orion:*`, which matches all 265 channels registered in
 `orion/bus/channels.yaml` -- the entire bus, not the narrow debug slice this
 README recommends below. With no retention/rotation cap, the recording grew
 to **98GB** before anyone noticed, on the `/mnt/scripts` disk (shared with
-the codebase and all worktrees).
+the codebase and all worktrees). The 98GB recording was archived (not
+deleted) to `/mnt/postgres/dumps/bus-mirror/bus_mirror.sqlite`, and
+`MIRROR_DATA_DIR` moved to `/mnt/postgres/bus-mirror/data`.
 
-Current state:
-- The container is stopped and excluded from `mesh-utilities/common/
-  exclude_services.txt`'s auto-rebuild list, so it will not restart on its
-  own.
-- The 98GB recording was archived (not deleted) to
-  `/mnt/postgres/dumps/bus-mirror/bus_mirror.sqlite`.
-- `MIRROR_DATA_DIR` now points at `/mnt/postgres/bus-mirror/data` (moved off
-  the `/mnt/scripts` disk entirely) -- if this service is ever re-enabled,
-  it starts fresh and empty there, not resuming the archived recording.
+This service was subsequently re-enabled the same day for the bus-synaptic-graph
+arc below (Phase 1/2 need the full `orion:*` firehose, not a narrow lens --
+that's what the bounded graph state is for). **The SQLite raw-log path recurred
+the exact same failure mode a second time**, found live: 4.4GB and climbing
+(~3.49M rows) while this service ran continuously for the arc, because the raw
+log always writes unconditionally alongside the graph state and *still* had no
+retention cap -- moving the data directory fixed *where* the failure could
+happen, not *whether* it could.
 
-**If you re-enable this service**, use a narrow pattern (see "Recommended
-patterns" below) and set a real retention/rotation limit -- there still
-isn't a `MIRROR_SAMPLE_RATE` or automatic rotation built in (see "Future
-stubs we should add"), so an unbounded pattern will recreate this exact
-failure.
+**Fixed**: `MIRROR_SQLITE_RETENTION_HOURS` (default 24) + `MIRROR_SQLITE_PRUNE_INTERVAL_SEC`
+(default 3600) -- rows older than the retention window are deleted on that cadence
+(`app/main.py::_prune_old_bus_events`/`_run_sqlite_retention_loop`). This bounds
+row *growth* going forward. It does **not** shrink the already-bloated file on
+disk (SQLite `DELETE` marks pages free for reuse, it doesn't return them to the
+OS) -- if you want to reclaim disk space from a file that grew before this fix
+was deployed, run a one-off, operator-initiated (needs ~2x the file's current
+size in free disk space during the operation, can take a while on a multi-GB file):
+```bash
+docker compose -f services/orion-bus-mirror/docker-compose.yml exec orion-bus-mirror \
+  sqlite3 /data/bus_mirror.sqlite "VACUUM;"
+```
+Not run automatically by this service, and not required for the retention fix
+itself to work -- only needed if you specifically want the on-disk file size to
+shrink.
 
 ---
 

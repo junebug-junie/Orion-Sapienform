@@ -2,6 +2,10 @@
 
 A minimal notification host that centralizes email delivery for Orion services.
 
+Also publishes a bus-native `SystemHealthV1` heartbeat to `orion:system:health` every
+`HEARTBEAT_INTERVAL_SEC` (default 10s), independent of `app.state.bus` (Notify's in-app/persistence
+publish connection).
+
 ## Endpoints
 
 - `GET /health` — basic service health

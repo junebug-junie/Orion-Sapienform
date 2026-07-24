@@ -12,6 +12,14 @@ class Settings(BaseSettings):
     SERVICE_VERSION: str = Field("0.1.0", alias="SERVICE_VERSION")
     NODE_NAME: str = Field("unknown", alias="NODE_NAME")
 
+    # Bus-native SystemHealthV1 heartbeat (orion:system:health). Notify-digest had no bus
+    # connection at all before this -- these fields exist solely to carry an independent
+    # heartbeat chassis. See
+    # docs/superpowers/specs/2026-07-24-service-heartbeat-node-telemetry-design.md.
+    ORION_BUS_URL: str = Field("redis://100.92.216.81:6379/0", alias="ORION_BUS_URL")
+    ORION_BUS_ENABLED: bool = Field(True, alias="ORION_BUS_ENABLED")
+    HEARTBEAT_INTERVAL_SEC: float = Field(10.0, alias="HEARTBEAT_INTERVAL_SEC")
+
     POSTGRES_URI: str = Field("sqlite:////data/notify.db", alias="POSTGRES_URI")
 
     NOTIFY_SERVICE_URL: str = Field("http://orion-notify:7140", alias="NOTIFY_SERVICE_URL")

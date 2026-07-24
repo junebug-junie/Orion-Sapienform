@@ -5,6 +5,7 @@ from typing import Optional
 
 from fastapi import FastAPI
 
+from orion.core.bus.bus_service_chassis import ChassisConfig, HeartbeatOnly
 from orion.core.sql_router.db import init_models
 from orion.notify.client import NotifyClient
 from orion.schemas.notify import NotificationRequest
@@ -26,6 +27,24 @@ app = FastAPI(
 )
 
 
+def build_heartbeat_chassis() -> HeartbeatOnly:
+    """Own, independent bus connection publishing SystemHealthV1 to orion:system:health
+    every HEARTBEAT_INTERVAL_SEC. Notify-digest had no bus connection of its own before this
+    patch (it talks to orion-notify over HTTP via NotifyClient) -- this chassis is the first
+    bus-native wiring in this service. See
+    docs/superpowers/specs/2026-07-24-service-heartbeat-node-telemetry-design.md."""
+    return HeartbeatOnly(
+        ChassisConfig(
+            service_name=settings.SERVICE_NAME,
+            service_version=settings.SERVICE_VERSION,
+            node_name=settings.NODE_NAME,
+            bus_url=settings.ORION_BUS_URL,
+            bus_enabled=settings.ORION_BUS_ENABLED,
+            heartbeat_interval_sec=settings.HEARTBEAT_INTERVAL_SEC,
+        )
+    )
+
+
 @app.on_event("startup")
 async def on_startup() -> None:
     init_models([DigestRunDB, NotificationRequestDB, NotificationAttemptDB])
@@ -33,6 +52,17 @@ async def on_startup() -> None:
         app.state.scheduler_task = asyncio.create_task(_scheduler_loop())
     if settings.DRIFT_ALERTS_ENABLED:
         app.state.drift_task = asyncio.create_task(_drift_alert_loop())
+    try:
+        app.state.heartbeat_chassis = build_heartbeat_chassis()
+        await app.state.heartbeat_chassis.start_background()
+        logger.info(
+            "system_health_heartbeat_started service=%s interval_sec=%s",
+            settings.SERVICE_NAME,
+            settings.HEARTBEAT_INTERVAL_SEC,
+        )
+    except Exception as exc:
+        logger.warning("system_health_heartbeat_start_failed error=%s", exc)
+        app.state.heartbeat_chassis = None
 
 
 @app.on_event("shutdown")
@@ -51,6 +81,12 @@ async def on_shutdown() -> None:
             await drift_task
         except asyncio.CancelledError:
             pass
+    heartbeat_chassis = getattr(app.state, "heartbeat_chassis", None)
+    if heartbeat_chassis is not None:
+        try:
+            await heartbeat_chassis.stop()
+        except Exception as exc:
+            logger.warning("system_health_heartbeat_stop_error error=%s", exc)
 
 
 @app.get("/health")

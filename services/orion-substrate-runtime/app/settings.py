@@ -13,6 +13,9 @@ class Settings(BaseSettings):
     postgres_uri: str = Field(..., alias="POSTGRES_URI")
     orion_bus_url: str = Field("redis://100.92.216.81:6379/0", alias="ORION_BUS_URL")
     orion_bus_enabled: bool = Field(True, alias="ORION_BUS_ENABLED")
+    # Bus-native SystemHealthV1 heartbeat cadence (orion:system:health). See
+    # docs/superpowers/specs/2026-07-24-service-heartbeat-node-telemetry-design.md.
+    heartbeat_interval_sec: float = Field(10.0, alias="HEARTBEAT_INTERVAL_SEC")
 
     enable_biometrics_node_reducer: bool = Field(True, alias="ENABLE_BIOMETRICS_NODE_REDUCER")
     enable_biometrics_pressure_organ: bool = Field(True, alias="ENABLE_BIOMETRICS_PRESSURE_ORGAN")

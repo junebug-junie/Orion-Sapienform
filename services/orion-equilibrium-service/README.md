@@ -107,6 +107,25 @@ Added 2026-07-22 (PR #1291), shipped disabled by default; **enabled 2026-07-23**
 | `CHANNEL_HARNESS_RUN_ARTIFACT` | `orion:harness:run:artifact` | Source channel (wildcard consumers) |
 | `CHANNEL_GRAMMAR_EVENT` | `orion:grammar:event` | Source channel, filtered to `semantic_role in ("exec_turn_timeout", "stance_disposition")` |
 
+### transport metacog trigger
+
+Full design: `docs/superpowers/specs/2026-07-24-transport-metacog-trigger-design.md`. Two independent evidence sources, both feeding `trigger_kind=transport` (`app/transport_metacog_gate.py`), no correlator needed -- each source fires on its own real evidence directly:
+
+- **(A) `RpcHealthSnapshotV1` windows** on `orion:rpc_health:snapshot` (published every `RPC_HEALTH_PUBLISH_INTERVAL_SEC` by `orion-cortex-exec`/`orion-cortex-orch`, `orion/core/bus/rpc_health_publish.py`, PR #1313/#1315, live-verified). Fires when `timeout_count > 0` (real evidence, no threshold) or `success_latency_ms_p95 >= EQUILIBRIUM_METACOG_TRANSPORT_LATENCY_P95_THRESHOLD_MS` (a starting default, unvalidated). An empty window (no real calls) fires nothing -- absence of traffic isn't evidence of trouble, same rule `orion-signal-gateway`'s `rpc_health` organ adapter already applies.
+- **(C) `rpc_transport_timeout` grammar atoms** on `orion:grammar:event` (published by `orion/core/bus/async_service.py::_emit_rpc_timeout_grammar`, fired from both of `rpc_request()`'s real timeout branches -- generalizes `chat_turn`'s own `exec_turn_timeout`/`stance_timeout` markers, scoped to one harness/thought RPC each, to every one of the 37+ real `rpc_request()` call sites sharing that one client). Terminal by construction -- a real RPC already timed out by the time this atom exists, no threshold to evaluate.
+
+Own cooldown lane from day one (`EQUILIBRIUM_METACOG_TRANSPORT_COOLDOWN_SEC`) -- not sharing the global lane, avoiding the exact bug `chat_turn` had to fix after the fact (see above).
+
+Ships disabled (`EQUILIBRIUM_METACOG_TRANSPORT_TRIGGER_ENABLE=false`). Needs the same live-verification standard as every other trigger in this family (real `orion_metacog` rows, non-degenerate `upstream`) before flipping on, and Option A's latency threshold needs real data before it can be trusted.
+
+| Env | Default | Purpose |
+|-----|---------|---------|
+| `EQUILIBRIUM_METACOG_TRANSPORT_TRIGGER_ENABLE` | `false` | Master gate for the transport trigger |
+| `EQUILIBRIUM_METACOG_TRANSPORT_COOLDOWN_SEC` | `30` | transport's own cooldown window, separate from `EQUILIBRIUM_METACOG_COOLDOWN_SEC` |
+| `EQUILIBRIUM_METACOG_TRANSPORT_LATENCY_P95_THRESHOLD_MS` | `5000` | Option A's latency-spike threshold; unvalidated starting default |
+| `CHANNEL_RPC_HEALTH_SNAPSHOT` | `orion:rpc_health:snapshot` | Option A's source channel |
+| `CHANNEL_GRAMMAR_EVENT` | `orion:grammar:event` | Option C's source channel, filtered to `semantic_role=="rpc_transport_timeout"` |
+
 ---
 
 ## Quick start (copy/paste)

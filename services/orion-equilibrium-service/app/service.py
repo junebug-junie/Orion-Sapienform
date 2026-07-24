@@ -20,6 +20,10 @@ from .chat_turn_metacog_gate import (
     evaluate_chat_turn_gate_conditions,
     is_chat_turn_evidence_terminal,
 )
+from .transport_metacog_gate import (
+    build_transport_metacog_trigger_from_grammar_atom,
+    build_transport_metacog_trigger_from_snapshot,
+)
 from orion.schemas.telemetry.cognition_trace import CognitionTracePayload
 from orion.schemas.telemetry.system_health import EquilibriumServiceState, EquilibriumSnapshotV1, SystemHealthV1
 from orion.schemas.telemetry.spark_signal import SparkSignalV1
@@ -52,7 +56,13 @@ class EquilibriumService(BaseChassis):
         self._state: Dict[str, Dict[str, Any]] = {}
         self.expected_services = settings.expected_services()
         self._last_metacog_trigger_ts: float = 0.0
-        self._last_chat_turn_trigger_ts: float = 0.0
+        # Per-kind cooldown lanes. Kinds not listed here share the global lane above
+        # (self._last_metacog_trigger_ts / settings.metacog_cooldown_sec) -- see
+        # _cooldown_sec_for_kind(). chat_turn was the first kind to need its own lane
+        # (2026-07-23, a shared-lane bug: a burst of chat_turn fires silently starved
+        # baseline/manual/pulse/relational/telemetry_anomaly's own fires); transport
+        # (2026-07-24) got one from day one instead of repeating that bug.
+        self._last_trigger_ts_by_kind: Dict[str, float] = {}
         self._last_baseline_scores: Tuple[float, float] = (-1.0, -1.0)
         self._baseline_skip_count: int = 0
         self._chat_turn_correlator: ChatTurnCorrelator | None = None
@@ -323,31 +333,43 @@ class EquilibriumService(BaseChassis):
             f"distress={distress_score:.3f} channel={settings.channel_metacognition_tick}"
         )
 
+    # Per-kind cooldown settings, checked in order. A kind not listed here shares the
+    # global lane (settings.metacog_cooldown_sec / self._last_metacog_trigger_ts) --
+    # baseline/manual/pulse/relational/telemetry_anomaly all still do, unchanged.
+    # Each entry here is a kind designed to fire on a cadence fundamentally different
+    # from that shared periodic/rare pattern; sharing the global lane would let a burst
+    # of one kind silently starve the others (chat_turn's own bug, fixed 2026-07-23 --
+    # see this service's README.md "chat_turn metacog trigger" section, "Operational
+    # note"). transport (2026-07-24) got its own lane from day one instead of
+    # repeating that bug.
+    _PER_KIND_COOLDOWN_SETTINGS_ATTR = {
+        "chat_turn": "metacog_chat_turn_cooldown_sec",
+        "transport": "metacog_transport_cooldown_sec",
+    }
+
+    def _cooldown_sec_for_kind(self, trigger_kind: str) -> float:
+        attr = self._PER_KIND_COOLDOWN_SETTINGS_ATTR.get(trigger_kind)
+        if attr is not None:
+            return getattr(settings, attr)
+        return settings.metacog_cooldown_sec
+
     async def _publish_metacog_trigger(self, trigger: MetacogTriggerV1) -> None:
         now_ts = datetime.now().timestamp()
 
-        # chat_turn gets its own cooldown lane, separate from the shared one
-        # below. It's the only trigger kind designed to fire on essentially
-        # every remarkable chat turn rather than a rare/periodic cadence
-        # (baseline/manual/pulse/relational/telemetry_anomaly all share
-        # EQUILIBRIUM_METACOG_COOLDOWN_SEC) -- sharing a single cooldown
-        # timestamp would let a burst of chat_turn fires silently starve
-        # those other trigger kinds' own fires, not just drop chat_turn's own
-        # excess. See this service's README.md, "chat_turn metacog trigger"
-        # section, "Operational note".
-        if trigger.trigger_kind == "chat_turn":
-            cooldown_sec = settings.metacog_chat_turn_cooldown_sec
-            last_ts = self._last_chat_turn_trigger_ts
-        else:
-            cooldown_sec = settings.metacog_cooldown_sec
-            last_ts = self._last_metacog_trigger_ts
+        cooldown_sec = self._cooldown_sec_for_kind(trigger.trigger_kind)
+        has_own_lane = trigger.trigger_kind in self._PER_KIND_COOLDOWN_SETTINGS_ATTR
+        last_ts = (
+            self._last_trigger_ts_by_kind.get(trigger.trigger_kind, 0.0)
+            if has_own_lane
+            else self._last_metacog_trigger_ts
+        )
 
         if (now_ts - last_ts) < cooldown_sec:
             logger.info("Metacog trigger skipped due to cooldown (%s)", trigger.trigger_kind)
             return
 
-        if trigger.trigger_kind == "chat_turn":
-            self._last_chat_turn_trigger_ts = now_ts
+        if has_own_lane:
+            self._last_trigger_ts_by_kind[trigger.trigger_kind] = now_ts
         else:
             self._last_metacog_trigger_ts = now_ts
 
@@ -610,6 +632,13 @@ class EquilibriumService(BaseChassis):
                 channels.append(settings.channel_thought_artifact)
                 channels.append(settings.channel_harness_run_artifact)
                 channels.append(settings.channel_grammar_event)
+            if settings.metacog_transport_trigger_enable:
+                channels.append(settings.channel_rpc_health_snapshot)
+                # channel_grammar_event may already be subscribed above for
+                # chat_turn's own exec_turn_timeout/stance_timeout filtering --
+                # avoid a duplicate pubsub subscription to the same channel.
+                if settings.channel_grammar_event not in channels:
+                    channels.append(settings.channel_grammar_event)
 
         async with self.bus.subscribe(*channels) as pubsub:
             async for msg in self.bus.iter_messages(pubsub):
@@ -747,14 +776,12 @@ class EquilibriumService(BaseChassis):
                                 run_artifact=payload_dict,
                             )
 
-                        elif (
-                            channel == settings.channel_grammar_event
-                            and settings.metacog_chat_turn_trigger_enable
-                        ):
+                        elif channel == settings.channel_grammar_event:
                             # orion:grammar:event is the canonical sql-writer
                             # ingress channel and carries many unrelated event
-                            # kinds -- only act on the two real timeout signals,
-                            # everything else is ignored here:
+                            # kinds -- only act on real timeout signals this
+                            # service's enabled trigger kinds care about, everything
+                            # else is ignored here:
                             #   exec_turn_timeout: the harness-governor RPC never
                             #     returned (services/orion-hub/scripts/grammar_emit.py::
                             #     build_turn_timeout_grammar_events, Patch B / PR #1287).
@@ -766,25 +793,63 @@ class EquilibriumService(BaseChassis):
                             #     other stance_disposition atom). Both mean Hub gave
                             #     up before ever reaching the harness governor, so
                             #     run_artifact will never arrive for either.
+                            #   rpc_transport_timeout: ANY rpc_request() timeout,
+                            #     bus-wide across all 37+ real call sites sharing
+                            #     OrionBusAsync (orion/core/bus/async_service.py::
+                            #     _emit_rpc_timeout_grammar). Generalizes the two
+                            #     above beyond harness/thought specifically -- feeds
+                            #     the transport trigger, not chat_turn.
                             atom = payload_dict.get("atom") if isinstance(payload_dict, dict) else None
                             semantic_role = atom.get("semantic_role") if isinstance(atom, dict) else None
-                            timeout_reason: str | None = None
-                            if semantic_role == "exec_turn_timeout":
-                                timeout_reason = "exec_turn_timeout"
-                            elif semantic_role == "stance_disposition" and isinstance(atom, dict) and atom.get(
-                                "text_value"
-                            ) == "stance_timeout":
-                                timeout_reason = "stance_react_timeout"
 
-                            if timeout_reason is not None:
+                            if settings.metacog_chat_turn_trigger_enable:
+                                timeout_reason: str | None = None
+                                if semantic_role == "exec_turn_timeout":
+                                    timeout_reason = "exec_turn_timeout"
+                                elif semantic_role == "stance_disposition" and isinstance(
+                                    atom, dict
+                                ) and atom.get("text_value") == "stance_timeout":
+                                    timeout_reason = "stance_react_timeout"
+
+                                if timeout_reason is not None:
+                                    correlation_id = str(payload_dict.get("correlation_id") or "")
+                                    await self._handle_chat_turn_evidence(
+                                        distress=distress,
+                                        zen=zen,
+                                        correlation_id=correlation_id,
+                                        timed_out=True,
+                                        timeout_reason=timeout_reason,
+                                    )
+
+                            if settings.metacog_transport_trigger_enable and semantic_role == "rpc_transport_timeout":
                                 correlation_id = str(payload_dict.get("correlation_id") or "")
-                                await self._handle_chat_turn_evidence(
-                                    distress=distress,
-                                    zen=zen,
+                                trigger = build_transport_metacog_trigger_from_grammar_atom(
+                                    atom,
                                     correlation_id=correlation_id,
-                                    timed_out=True,
-                                    timeout_reason=timeout_reason,
+                                    zen_state="zen" if zen > 0.5 else "not_zen",
+                                    pressure=distress,
+                                    recall_enabled=settings.metacog_recall_enabled,
                                 )
+                                if trigger is not None:
+                                    await self._publish_metacog_trigger(trigger)
+
+                        elif (
+                            channel == settings.channel_rpc_health_snapshot
+                            and settings.metacog_transport_trigger_enable
+                        ):
+                            # Real RpcHealthSnapshotV1, published every
+                            # RPC_HEALTH_PUBLISH_INTERVAL_SEC by orion-cortex-exec /
+                            # orion-cortex-orch (orion/core/bus/rpc_health_publish.py,
+                            # PR #1313/#1315, live-verified).
+                            trigger = build_transport_metacog_trigger_from_snapshot(
+                                payload_dict,
+                                zen_state="zen" if zen > 0.5 else "not_zen",
+                                pressure=distress,
+                                recall_enabled=settings.metacog_recall_enabled,
+                                latency_p95_threshold_ms=settings.metacog_transport_latency_p95_threshold_ms,
+                            )
+                            if trigger is not None:
+                                await self._publish_metacog_trigger(trigger)
 
                 except Exception as e:
                     logger.warning("Failed to process message on %s: %s", channel, e)

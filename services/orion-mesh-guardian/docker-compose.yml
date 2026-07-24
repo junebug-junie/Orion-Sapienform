@@ -20,6 +20,7 @@ services:
       PORT: ${PORT:-7161}
       ORION_REPO_ROOT: /repo
       ORION_BUS_URL: ${ORION_BUS_URL}
+      HEARTBEAT_INTERVAL_SEC: ${HEARTBEAT_INTERVAL_SEC:-10}
       NOTIFY_BASE_URL: ${NOTIFY_BASE_URL:-http://${PROJECT}-notify:7140}
       NOTIFY_API_TOKEN: ${NOTIFY_API_TOKEN}
       MESH_GUARDIAN_ROSTER_PATH: ${MESH_GUARDIAN_ROSTER_PATH:-/repo/config/mesh_remediation_roster.yaml}

@@ -8,6 +8,9 @@ Layer 5 substrate service: polls latest `FieldStateV1` from Postgres and builds 
 - Skips if an attention frame already exists for the latest field `tick_id` (idempotent)
 - Persists to `substrate_attention_frames`
 - Does **not** publish bus events or mutate field state
+- Also publishes a bus-native `SystemHealthV1` heartbeat to `orion:system:health` every
+  `HEARTBEAT_INTERVAL_SEC` (default 10s), on its own independent bus connection -- otherwise
+  this service has no other bus traffic (Postgres-poll only worker)
 
 ## Prerequisites
 

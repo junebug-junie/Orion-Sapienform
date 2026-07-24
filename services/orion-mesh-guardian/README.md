@@ -2,6 +2,11 @@
 
 Detects half-dead bus consumers on the chat critical path, publishes Hub Pending Attention cards via notify, and optionally auto-remediates rostered services through docker compose.
 
+Also publishes a bus-native `SystemHealthV1` heartbeat to `orion:system:health` every
+`HEARTBEAT_INTERVAL_SEC` (default 10s), on its own independent bus connection, separate from
+the equilibrium-snapshot watcher above -- process liveness for the guardian itself, not the
+services it watches.
+
 ## Deploy
 
 ```bash

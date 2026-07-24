@@ -16,6 +16,9 @@ class Settings(BaseSettings):
 
     bus_url: str = Field(default="redis://100.92.216.81:6379/0", alias="ORION_BUS_URL")
     bus_enabled: bool = Field(True, alias="ORION_BUS_ENABLED")
+    # Bus-native SystemHealthV1 heartbeat cadence (orion:system:health). See
+    # docs/superpowers/specs/2026-07-24-service-heartbeat-node-telemetry-design.md.
+    heartbeat_interval_sec: float = Field(10.0, alias="HEARTBEAT_INTERVAL_SEC")
 
     enabled: bool = Field(False, alias="ORION_EMBODIMENT_ENABLED")
     fcc_env_path: str = Field("/root/.fcc/.env", alias="EMBODIMENT_FCC_ENV_PATH")

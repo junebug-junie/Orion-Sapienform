@@ -21,6 +21,9 @@ Layer 10 of the Orion cognition substrate: observes `ExecutionDispatchFrameV1` o
 ## Outputs
 
 - `substrate_feedback_frames`
+- Bus-native `SystemHealthV1` heartbeat to `orion:system:health` every
+  `HEARTBEAT_INTERVAL_SEC` (default 10s), on its own independent bus connection, separate
+  from the worker's own `FEEDBACK_BUS_CHANNEL` publish connection
 
 ## Port
 

@@ -61,7 +61,14 @@ class Settings(BaseSettings):
 
     MIND_LLM_USE_BUS: bool = Field(default=True, alias="MIND_LLM_USE_BUS")
     ORION_BUS_ENABLED: bool = Field(default=True, alias="ORION_BUS_ENABLED")
-    ORION_BUS_URL: str = Field(default="redis://redis:6379/0", alias="ORION_BUS_URL")
+    # Repo-wide bus convention (see root CLAUDE.md): always the real tailscale node address,
+    # never bus-core/localhost/the docker-compose service name. This default was stale
+    # (redis://redis:6379/0) before this patch -- the checked-in .env_example already had the
+    # correct value, only this code-level fallback was wrong.
+    ORION_BUS_URL: str = Field(default="redis://100.92.216.81:6379/0", alias="ORION_BUS_URL")
+    # Bus-native SystemHealthV1 heartbeat cadence (orion:system:health). See
+    # docs/superpowers/specs/2026-07-24-service-heartbeat-node-telemetry-design.md.
+    HEARTBEAT_INTERVAL_SEC: float = Field(default=10.0, alias="HEARTBEAT_INTERVAL_SEC")
     MIND_LLM_INTAKE_CHANNEL: str = Field(
         default="orion:exec:request:LLMGatewayService",
         alias="MIND_LLM_INTAKE_CHANNEL",

@@ -10,7 +10,14 @@ class Settings(BaseSettings):
     project: str = Field("orion", alias="PROJECT")
     node_name: str = Field("unknown", alias="NODE_NAME")
     orion_repo_root: str = Field("/repo", alias="ORION_REPO_ROOT")
-    orion_bus_url: str = Field("redis://bus-core:6379/0", alias="ORION_BUS_URL")
+    # Repo-wide bus convention (see root CLAUDE.md): always the real tailscale node address,
+    # never bus-core/localhost. This default was stale (bus-core) before this patch -- the
+    # checked-in .env_example already had the correct value, only this code-level fallback
+    # was wrong.
+    orion_bus_url: str = Field("redis://100.92.216.81:6379/0", alias="ORION_BUS_URL")
+    # Bus-native SystemHealthV1 heartbeat cadence (orion:system:health). See
+    # docs/superpowers/specs/2026-07-24-service-heartbeat-node-telemetry-design.md.
+    heartbeat_interval_sec: float = Field(10.0, alias="HEARTBEAT_INTERVAL_SEC")
     notify_base_url: str = Field("http://orion-notify:7140", alias="NOTIFY_BASE_URL")
     notify_api_token: str | None = Field(None, alias="NOTIFY_API_TOKEN")
     roster_path: str = Field("/repo/config/mesh_remediation_roster.yaml", alias="MESH_GUARDIAN_ROSTER_PATH")

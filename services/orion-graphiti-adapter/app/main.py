@@ -6,6 +6,8 @@ import asyncpg
 from fastapi import FastAPI, HTTPException
 from pydantic import BaseModel, Field
 
+from orion.core.bus.bus_service_chassis import ChassisConfig, HeartbeatOnly
+
 from app.backends import graphiti_core as core_backend
 from app.backends import orion_postgres as pg_backend
 from app.falkordb import sync_to_falkordb
@@ -14,6 +16,24 @@ from app.store import apply_graphiti_schema
 
 logger = logging.getLogger(settings.SERVICE_NAME)
 pg_pool: Optional[asyncpg.Pool] = None
+heartbeat_chassis: Optional[HeartbeatOnly] = None
+
+
+def build_heartbeat_chassis() -> HeartbeatOnly:
+    """Own, independent bus connection publishing SystemHealthV1 to orion:system:health
+    every HEARTBEAT_INTERVAL_SEC. This service has no other bus connection (pure HTTP +
+    Postgres + FalkorDB) -- purely additive. See
+    docs/superpowers/specs/2026-07-24-service-heartbeat-node-telemetry-design.md."""
+    return HeartbeatOnly(
+        ChassisConfig(
+            service_name=settings.SERVICE_NAME,
+            service_version=settings.SERVICE_VERSION,
+            node_name=settings.NODE_NAME,
+            bus_url=settings.ORION_BUS_URL,
+            bus_enabled=settings.ORION_BUS_ENABLED,
+            heartbeat_interval_sec=settings.HEARTBEAT_INTERVAL_SEC,
+        )
+    )
 
 
 class CrystallizationLinkIngestV1(BaseModel):
@@ -52,7 +72,7 @@ def _backend():
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    global pg_pool
+    global pg_pool, heartbeat_chassis
     dsn = (settings.POSTGRES_URI or "").strip()
     if dsn:
         pg_pool = await asyncpg.create_pool(dsn=dsn, min_size=1, max_size=4)
@@ -65,7 +85,24 @@ async def lifespan(app: FastAPI):
     ):
         await core_backend.ensure_graphiti_indices(settings.FALKORDB_URI, settings.FALKORDB_GRAPH)
     app.state.pg_pool = pg_pool
+    try:
+        heartbeat_chassis = build_heartbeat_chassis()
+        await heartbeat_chassis.start_background()
+        logger.info(
+            "system_health_heartbeat_started service=%s interval_sec=%s",
+            settings.SERVICE_NAME,
+            settings.HEARTBEAT_INTERVAL_SEC,
+        )
+    except Exception as exc:
+        logger.warning("system_health_heartbeat_start_failed error=%s", exc)
+        heartbeat_chassis = None
     yield
+    if heartbeat_chassis is not None:
+        try:
+            await heartbeat_chassis.stop()
+        except Exception as exc:
+            logger.warning("system_health_heartbeat_stop_error error=%s", exc)
+        heartbeat_chassis = None
     if pg_pool:
         await pg_pool.close()
 

@@ -8,6 +8,11 @@ Layer 9 of the Orion cognition substrate: converts `PolicyDecisionFrameV1` + `Pr
 - No bus publish and no cortex-exec calls in the default worker path
 - Mutating dispatch is disabled in policy config (`allow_mutating_dispatch: false`)
 
+Separately from dispatch traffic, this service always publishes a bus-native `SystemHealthV1`
+heartbeat to `orion:system:health` every `HEARTBEAT_INTERVAL_SEC` (default 10s), on its own
+independent bus connection -- process liveness telemetry, not dispatch behavior, and unaffected
+by `EXECUTION_DISPATCH_MODE`.
+
 ## Real sends (P1: the motor nerve)
 
 Real sends require **both** gates open:

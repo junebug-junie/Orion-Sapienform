@@ -10,6 +10,14 @@ class Settings(BaseSettings):
     NODE_NAME: str = Field(default="athena", alias="NODE_NAME")
     LOG_LEVEL: str = Field(default="INFO", alias="LOG_LEVEL")
 
+    # Bus-native SystemHealthV1 heartbeat (orion:system:health). This service has no other
+    # bus connection today (pure HTTP + Postgres + FalkorDB) -- these fields exist solely to
+    # feed the HeartbeatOnly chassis. See
+    # docs/superpowers/specs/2026-07-24-service-heartbeat-node-telemetry-design.md.
+    ORION_BUS_URL: str = Field(default="redis://100.92.216.81:6379/0", alias="ORION_BUS_URL")
+    ORION_BUS_ENABLED: bool = Field(default=True, alias="ORION_BUS_ENABLED")
+    HEARTBEAT_INTERVAL_SEC: float = Field(default=10.0, alias="HEARTBEAT_INTERVAL_SEC")
+
     POSTGRES_URI: str = Field(default="", alias="POSTGRES_URI")
     GRAPHITI_AUTO_APPLY_SCHEMA: bool = Field(default=True, alias="GRAPHITI_AUTO_APPLY_SCHEMA")
 

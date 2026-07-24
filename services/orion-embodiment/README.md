@@ -4,6 +4,11 @@ Mind-to-sprite bridge: gives Orion a persistent AI Town body driven by its own s
 
 **All flags default off.** With `ORION_EMBODIMENT_ENABLED=false` the worker connects nothing and actuates nothing.
 
+Independent of `ORION_EMBODIMENT_ENABLED`, this service always publishes a bus-native
+`SystemHealthV1` heartbeat to `orion:system:health` every `HEARTBEAT_INTERVAL_SEC` (default
+10s), on its own connection separate from the worker's intent/outcome/perception bus traffic
+above -- process liveness, not town actuation.
+
 ## Inputs
 
 - `orion:embodiment:intent` — `EmbodimentIntentV1` (from substrate-runtime, harness-governor, cortex-exec)

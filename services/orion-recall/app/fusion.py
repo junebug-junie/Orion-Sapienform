@@ -35,6 +35,17 @@ DEFAULT_BACKEND_WEIGHTS = {
     # have scored 67% higher than an equivalent "rdf" one for no real reason).
     "falkor_neighborhood": 0.3,
     "cards": 0.0,
+    # Unconditional, not query-text-gated (unlike every source above) -- its
+    # relevance to a given turn is not about what the user said, so
+    # text_similarity_weight contributes near-nothing for this source and
+    # backend_weight alone controls its influence. Given an explicit value
+    # (same class of gap the falkor_neighborhood comment above already
+    # describes: found live 2026-07-24 after RECALL_BUS_SYNAPTIC_ANOMALY_IN_CHAT
+    # was flipped on -- this key was absent, so real anomaly fragments were
+    # silently scoring at the generic 0.5 fallback instead of a deliberate
+    # weight). Set equal to rdf/falkor_neighborhood: a real signal, but a
+    # background one that shouldn't outrank query-relevant sql/rdf content.
+    "bus_synaptic_anomaly": 0.3,
 }
 OVERLAP_WEIGHT = 0.15
 EXACT_MATCH_WEIGHT = 0.45

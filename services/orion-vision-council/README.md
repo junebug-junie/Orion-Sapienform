@@ -2,6 +2,9 @@
 
 Consumes visual window summaries from the bus, calls the LLM gateway for scene interpretation, enforces evidence grounding, and publishes structured vision events.
 
+Also publishes a bus-native `SystemHealthV1` heartbeat to `orion:system:health` every
+`HEARTBEAT_INTERVAL_SEC` (default 10s), independent of `CouncilService`'s own bus connection.
+
 ## V2 pipeline
 
 ```

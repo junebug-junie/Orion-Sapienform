@@ -17,7 +17,16 @@ import sys
 
 def test_falkor_client_importable_without_requests() -> None:
     real_import = builtins.__import__
-    graph_related = [m for m in sys.modules if m == "requests" or m.startswith("orion.graph")]
+    # Package-boundary match, not a raw prefix match -- "orion.graph".startswith
+    # would also sweep up the unrelated sibling package orion.graph_cognition
+    # (orion/graph_cognition/), since "orion.graph_cognition".startswith("orion.graph")
+    # is True. No cross-import exists between the two packages today (checked), so
+    # that would currently be a silent no-op, but tightening this now removes the
+    # trap before some future refactor makes it a real source of contamination.
+    def _is_graph_module(name: str) -> bool:
+        return name == "orion.graph" or name.startswith("orion.graph.")
+
+    graph_related = [m for m in sys.modules if m == "requests" or _is_graph_module(m)]
     saved = {m: sys.modules[m] for m in graph_related}
 
     def fake_import(name, *args, **kwargs):
@@ -45,7 +54,7 @@ def test_falkor_client_importable_without_requests() -> None:
         # and restore exactly what was present before this test ran, so later
         # tests in this session never see the degraded module.
         for m in list(sys.modules):
-            if m == "requests" or m.startswith("orion.graph"):
+            if m == "requests" or _is_graph_module(m):
                 del sys.modules[m]
         sys.modules.update(saved)
         # `import orion.graph as g` resolves via attribute access on the parent

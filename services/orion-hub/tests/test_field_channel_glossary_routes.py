@@ -37,7 +37,7 @@ def _field_state_row(overrides: dict) -> dict:
             "availability": 1.0,
             "cpu_pressure": 0.0,
             "expected_offline_suppression": 1.0,
-            "bus_health": 1.0,
+            "stream_backlog_health": 1.0,
             "delivery_confidence": 1.0,
         }
     }
@@ -121,28 +121,28 @@ def test_health_endpoint_defaults_invalid_hours_to_default(client):
 
 
 def test_build_channel_series_quiet_zero_channel_is_dead_not_never_produced():
-    # transport_pressure is never in PRESSURE_CHANNELS/HIGHER_IS_BETTER_CHANNELS,
+    # stream_backlog_pressure is never in PRESSURE_CHANNELS/HIGHER_IS_BETTER_CHANNELS,
     # so a tick where every source reads exactly 0.0 means
     # collect_field_channel_pressures() drops it from the merge -- but the
     # raw node vector still genuinely carries the key at 0.0 (reconcile
     # seeds it). build_channel_series() must record that as a real 0.0
     # sample, not silently treat the channel as absent/never-wired.
-    rows = [_field_state_row({"transport_pressure": 0.0}) for _ in range(3)]
+    rows = [_field_state_row({"stream_backlog_pressure": 0.0}) for _ in range(3)]
     series, unparsable = field_channel_glossary_routes.build_channel_series(
-        rows, known_channels=["transport_pressure"]
+        rows, known_channels=["stream_backlog_pressure"]
     )
     assert unparsable == 0
-    assert series["transport_pressure"] == [0.0, 0.0, 0.0]
-    assert field_channel_glossary_routes.classify_channel_series(series["transport_pressure"]) == "dead"
+    assert series["stream_backlog_pressure"] == [0.0, 0.0, 0.0]
+    assert field_channel_glossary_routes.classify_channel_series(series["stream_backlog_pressure"]) == "dead"
 
 
 def test_build_channel_series_genuinely_never_produced_when_key_absent_everywhere():
     rows = [_field_state_row({}) for _ in range(3)]
     series, _unparsable = field_channel_glossary_routes.build_channel_series(
-        rows, known_channels=["transport_pressure"]
+        rows, known_channels=["stream_backlog_pressure"]
     )
-    assert series["transport_pressure"] == []
-    assert field_channel_glossary_routes.classify_channel_series(series["transport_pressure"]) == "never_produced"
+    assert series["stream_backlog_pressure"] == []
+    assert field_channel_glossary_routes.classify_channel_series(series["stream_backlog_pressure"]) == "never_produced"
 
 
 def test_build_channel_series_counts_unparsable_rows_separately_from_dead():

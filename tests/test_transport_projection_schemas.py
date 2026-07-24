@@ -16,7 +16,7 @@ def test_transport_bus_state_defaults() -> None:
         node_id="athena",
         sample_window_id="20260525T233010Z",
         source_trace_id="bus.transport:athena:20260525T233010Z",
-        bus_health=1.0,
+        stream_backlog_health=1.0,
         delivery_confidence=1.0,
         catalog_drift_pressure=1.0,
         contract_pressure=1.0,
@@ -31,7 +31,7 @@ def test_transport_bus_state_rejects_out_of_range_pressure() -> None:
             node_id="athena",
             sample_window_id="w",
             source_trace_id="t",
-            transport_pressure=1.5,
+            stream_backlog_pressure=1.5,
         )
 
 

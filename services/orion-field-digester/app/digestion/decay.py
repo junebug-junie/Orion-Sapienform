@@ -32,7 +32,7 @@ NODE_DECAY_CHANNELS = {
     "turn_incompletion",
     "context_gathering_ratio",
     # transport
-    "transport_pressure",
+    "stream_backlog_pressure",
     "contract_pressure",
     "catalog_drift_pressure",
     "observer_failure_pressure",
@@ -46,7 +46,7 @@ CAPABILITY_DECAY_CHANNELS = {
     "execution_pressure",
     "reasoning_pressure",
     "reliability_pressure",
-    "transport_pressure",
+    "stream_backlog_pressure",
     "contract_pressure",
 }
 

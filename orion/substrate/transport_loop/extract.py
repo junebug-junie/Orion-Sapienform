@@ -74,11 +74,11 @@ def compute_transport_pressures(
     stream_depth_critical: int = DEFAULT_STREAM_DEPTH_CRITICAL,
 ) -> dict[str, float]:
     if state.redis_ping_ok is True:
-        bus_health = 1.0
+        stream_backlog_health = 1.0
     elif state.redis_ping_ok is False:
-        bus_health = 0.0
+        stream_backlog_health = 0.0
     else:
-        bus_health = 0.5
+        stream_backlog_health = 0.5
 
     observer_failure_pressure = 1.0 if state.observer_failure_count > 0 else 0.0
     denom = max(state.streams_observed, 1)
@@ -95,25 +95,25 @@ def compute_transport_pressures(
 
     if observer_failure_pressure > 0.0:
         delivery_confidence = 0.0
-    elif bus_health >= 1.0:
+    elif stream_backlog_health >= 1.0:
         delivery_confidence = 1.0
-    elif bus_health == 0.5:
+    elif stream_backlog_health == 0.5:
         delivery_confidence = 0.5
     else:
         delivery_confidence = 0.0
 
-    transport_pressure = max(stream_depth_pressure, backpressure)
+    stream_backlog_pressure = max(stream_depth_pressure, backpressure)
     contract_pressure = min(state.schema_mismatch_stream_count / denom, 1.0)
     reliability_pressure = max(observer_failure_pressure, 1.0 - delivery_confidence)
 
     return {
-        "bus_health": bus_health,
+        "stream_backlog_health": stream_backlog_health,
         "delivery_confidence": delivery_confidence,
         "stream_depth_pressure": stream_depth_pressure,
         "backpressure": backpressure,
         "catalog_drift_pressure": catalog_drift_pressure,
         "observer_failure_pressure": observer_failure_pressure,
-        "transport_pressure": transport_pressure,
+        "stream_backlog_pressure": stream_backlog_pressure,
         "contract_pressure": contract_pressure,
         "reliability_pressure": reliability_pressure,
     }

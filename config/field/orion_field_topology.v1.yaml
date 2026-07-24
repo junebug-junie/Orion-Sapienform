@@ -29,11 +29,11 @@ node_channels:
   - execution_friction
   - reasoning_load
   - failure_pressure
-  - transport_pressure
+  - stream_backlog_pressure
   - contract_pressure
   - catalog_drift_pressure
   - delivery_confidence
-  - bus_health
+  - stream_backlog_health
   - observer_failure_pressure
   - conversation_load
   - repair_pressure
@@ -45,7 +45,7 @@ capability_channels:
   - execution_pressure
   - reasoning_pressure
   - reliability_pressure
-  - transport_pressure
+  - stream_backlog_pressure
   - contract_pressure
 
 edges:
@@ -63,11 +63,11 @@ edges:
     edge_type: node_capability
     weight: 0.85
     channel_map:
-      transport_pressure: pressure
+      stream_backlog_pressure: pressure
       catalog_drift_pressure: contract_pressure
       observer_failure_pressure: reliability_pressure
       delivery_confidence: confidence
-      bus_health: available_capacity
+      stream_backlog_health: available_capacity
 
   - source_id: node:athena
     target_id: capability:orchestration
@@ -78,7 +78,7 @@ edges:
       execution_load: execution_pressure
       execution_friction: reliability_pressure
       failure_pressure: reliability_pressure
-      transport_pressure: pressure
+      stream_backlog_pressure: pressure
       reasoning_load: reasoning_pressure
 
   - source_id: node:athena
@@ -116,7 +116,7 @@ edges:
     edge_type: capability_capability
     weight: 0.70
     channel_map:
-      transport_pressure: transport_pressure
+      stream_backlog_pressure: stream_backlog_pressure
 
   # capability→capability: inference unavailability raises orchestration pressure
   - source_id: capability:llm_inference

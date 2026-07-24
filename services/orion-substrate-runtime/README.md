@@ -367,9 +367,15 @@ to parse real `[rpc]` log lines into a latency/timeout baseline. Live-confirmed 
 genuinely cross-service variance (a real 8% timeout rate observed in one run; success-latency p50
 ~1.5s, p95 in the tens of seconds, across 4-5 distinct real request channels) — the opposite of
 `transport_pressure`'s permanent flat zero. No schema, aggregator, or live-consumer wiring yet;
-that's explicitly sequenced for a later patch once more baseline data accumulates. The old
-`transport_pressure`/`bus_health`/etc. family's fate (rename vs. deprecate) remains undecided until
-then — do not assume this redesign has already replaced it.
+that's explicitly sequenced for a later patch once more baseline data accumulates.
+
+**Update 2026-07-24: the naming half of the "rename vs. deprecate" question below resolved,
+independent of this redesign's own timeline.** `transport_pressure`/`bus_health` renamed to
+`stream_backlog_pressure`/`stream_backlog_health` (Juniper's explicit choice, scope-honesty only
+— see `services/orion-field-digester/README.md`'s sixth training-data cutoff entry) — a plain
+rename, not a deprecation, and not a product of this RPC-health redesign reaching the point of
+replacing it. This redesign's own "not yet wired to replace this channel" status is unchanged; do
+not assume this redesign has already replaced it, only that the old channel's name changed.
 
 **Reverie semantic lift:** unresolved closures also upsert human referent rows into
 `substrate_turn_referent` via `turn_referent_store.persist_turn_referent`. Apply

@@ -120,7 +120,7 @@ def apply_diffusion(state: FieldStateV1, *, diffusion_rate: float) -> None:
     Root cause was two compounding issues, both fixed here:
     1. Multiple source channels legitimately feed the same target channel by
        design (e.g. node:athena->capability:orchestration maps BOTH
-       cpu_pressure AND transport_pressure onto "pressure" -- orchestration
+       cpu_pressure AND stream_backlog_pressure onto "pressure" -- orchestration
        capability is meant to reflect either stressor). These were SUMMED
        into the target, even within a single tick, rather than combined via
        max() -- two moderately-stressed channels alone could push a target
@@ -156,7 +156,7 @@ def apply_diffusion(state: FieldStateV1, *, diffusion_rate: float) -> None:
     Precedence between direct diffusion and the pressure-derived formula
     (2026-07-12 follow-up): a capability like capability:transport has BOTH a
     direct diffusion edge into "confidence"/"available_capacity"
-    (delivery_confidence->confidence, bus_health->available_capacity) AND a
+    (delivery_confidence->confidence, stream_backlog_health->available_capacity) AND a
     "pressure" target, whose derived formula below would otherwise
     unconditionally overwrite them. Direct diffusion wins when it actually
     contributed a real (>0) value THIS tick (checked via best_source, not via
@@ -166,7 +166,7 @@ def apply_diffusion(state: FieldStateV1, *, diffusion_rate: float) -> None:
     case the derived formula must still run as a fallback instead of leaving
     the channel hard-floored at 0.0). Every other capability (no direct edge
     into either channel) is unaffected. This was previously masked because
-    transport_pressure has been idle (0.0) in observed traffic, making both
+    stream_backlog_pressure has been idle (0.0) in observed traffic, making both
     formulas agree by coincidence.
     """
     best_contribution: dict[tuple[str, str], float] = {}

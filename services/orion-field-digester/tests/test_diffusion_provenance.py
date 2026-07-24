@@ -174,7 +174,7 @@ def test_sustained_real_contribution_does_not_ratchet_up_across_ticks() -> None:
 
 def test_multiple_channels_feeding_same_target_use_max_not_sum() -> None:
     # node:athena -> capability:orchestration maps BOTH cpu_pressure AND
-    # transport_pressure onto "pressure" (real topology edge,
+    # stream_backlog_pressure onto "pressure" (real topology edge,
     # config/field/orion_field_topology.v1.yaml). Two real, legitimate
     # stressors must combine via max() -- whichever is worse dominates --
     # not sum, which would let two only-moderately-stressed channels alone
@@ -184,11 +184,11 @@ def test_multiple_channels_feeding_same_target_use_max_not_sum() -> None:
         target_id="capability:orchestration",
         edge_type="node_capability",
         weight=0.90,
-        channel_map={"cpu_pressure": "pressure", "transport_pressure": "pressure"},
+        channel_map={"cpu_pressure": "pressure", "stream_backlog_pressure": "pressure"},
     )
     state = _state(
         [edge],
-        {"node:athena": {"cpu_pressure": 0.5, "transport_pressure": 0.5}},
+        {"node:athena": {"cpu_pressure": 0.5, "stream_backlog_pressure": 0.5}},
     )
 
     apply_diffusion(state, diffusion_rate=1.0)
@@ -208,19 +208,19 @@ def test_capability_capability_edge_records_capability_id_as_provenance() -> Non
         target_id="capability:orchestration",
         edge_type="capability_capability",
         weight=0.70,
-        channel_map={"transport_pressure": "transport_pressure"},
+        channel_map={"stream_backlog_pressure": "stream_backlog_pressure"},
     )
     state = FieldStateV1(
         generated_at=NOW,
         tick_id="tick_cap_cap",
-        capability_vectors={"capability:transport": {"transport_pressure": 0.8}},
+        capability_vectors={"capability:transport": {"stream_backlog_pressure": 0.8}},
         edges=[edge],
     )
 
     apply_diffusion(state, diffusion_rate=1.0)
 
     assert (
-        state.capability_provenance["capability:orchestration"]["transport_pressure"]
+        state.capability_provenance["capability:orchestration"]["stream_backlog_pressure"]
         == "capability:transport"
     )
 
@@ -277,7 +277,7 @@ def test_capability_with_no_pressure_target_keeps_reconciled_baseline() -> None:
 def test_direct_confidence_and_capacity_diffusion_beats_pressure_derived_formula() -> None:
     # capability:transport (real topology edge, node:athena -> capability:
     # transport) has direct edges into "confidence" (from delivery_confidence)
-    # and "available_capacity" (from bus_health) AND a "pressure" target in
+    # and "available_capacity" (from stream_backlog_health) AND a "pressure" target in
     # the same edge -- the pressure-derived formula must not clobber the
     # direct diffusion values just because "pressure" is also present.
     edge = FieldEdgeV1(
@@ -286,18 +286,18 @@ def test_direct_confidence_and_capacity_diffusion_beats_pressure_derived_formula
         edge_type="node_capability",
         weight=0.85,
         channel_map={
-            "transport_pressure": "pressure",
+            "stream_backlog_pressure": "pressure",
             "delivery_confidence": "confidence",
-            "bus_health": "available_capacity",
+            "stream_backlog_health": "available_capacity",
         },
     )
     state = _state(
         [edge],
         {
             "node:athena": {
-                "transport_pressure": 0.9,
+                "stream_backlog_pressure": 0.9,
                 "delivery_confidence": 0.95,
-                "bus_health": 0.7,
+                "stream_backlog_health": 0.7,
             }
         },
     )
@@ -317,7 +317,7 @@ def test_derived_formula_still_falls_back_when_direct_edge_contributes_nothing_t
     # must key off "did a real (>0) contribution land THIS tick", not "is
     # this channel ever configured as a diffusion target for this
     # capability" -- otherwise a capability:transport tick where
-    # delivery_confidence/bus_health are temporarily absent from the source
+    # delivery_confidence/stream_backlog_health are temporarily absent from the source
     # (0.0 contribution, no entry in best_source) would hard-floor
     # confidence/available_capacity at 0.0 instead of falling back to the
     # pressure-derived formula.
@@ -327,14 +327,14 @@ def test_derived_formula_still_falls_back_when_direct_edge_contributes_nothing_t
         edge_type="node_capability",
         weight=0.85,
         channel_map={
-            "transport_pressure": "pressure",
+            "stream_backlog_pressure": "pressure",
             "delivery_confidence": "confidence",
-            "bus_health": "available_capacity",
+            "stream_backlog_health": "available_capacity",
         },
     )
     state = _state(
         [edge],
-        {"node:athena": {"transport_pressure": 0.9}},  # no delivery_confidence/bus_health this tick
+        {"node:athena": {"stream_backlog_pressure": 0.9}},  # no delivery_confidence/stream_backlog_health this tick
     )
 
     apply_diffusion(state, diffusion_rate=1.0)

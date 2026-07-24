@@ -294,14 +294,14 @@ def _detect_transport_healthy_idle(
 ) -> MotifObservationV1 | None:
     cond = rule.conditions
     target = str(cond.get("attention_target", "capability:transport"))
-    max_transport = float(cond.get("max_transport_pressure", 0.1))
+    max_transport = float(cond.get("max_stream_backlog_pressure", 0.1))
     matches = []
     for frame in window.attention_frames:
         for t in frame.dominant_targets:
             if t.target_id != target:
                 continue
             transport_p = max(
-                float(t.dominant_channels.get("transport_pressure", 0.0)),
+                float(t.dominant_channels.get("stream_backlog_pressure", 0.0)),
                 float(t.dominant_channels.get("pressure", 0.0)),
             )
             if transport_p <= max_transport:

@@ -177,7 +177,7 @@ def test_load_transport_proof_chain_empty_buses_yields_empty_bus_summary(monkeyp
 def _sample_proof_chain_for_gates(
     bus_age_sec: float = 5.0,
     contract_pressure: float = 1.0,
-    transport_pressure: float = 0.0,
+    stream_backlog_pressure: float = 0.0,
     dispatch_mode: str = "dry_run",
     receipts: list | None = None,
     source_trace_id: str = "bus.transport:abc",
@@ -202,8 +202,8 @@ def _sample_proof_chain_for_gates(
                 "age_sec": bus_age_sec,
                 "values": {
                     "projection_id": "active_transport_bus_projection",
-                    "bus_health": 1.0,
-                    "transport_pressure": transport_pressure,
+                    "stream_backlog_health": 1.0,
+                    "stream_backlog_pressure": stream_backlog_pressure,
                     "contract_pressure": contract_pressure,
                     "catalog_drift_pressure": 0.0,
                     "observer_failure_pressure": 0.0,
@@ -212,7 +212,7 @@ def _sample_proof_chain_for_gates(
                     "buses": {
                         "bus:athena": {
                             "source_trace_id": source_trace_id,
-                            "bus_health": 1.0,
+                            "stream_backlog_health": 1.0,
                         }
                     } if source_trace_id else {},
                 },
@@ -330,7 +330,7 @@ def test_gates_contract_watch_when_high(client) -> None:
 
 
 def test_gates_pressure_quiet_when_zero(client) -> None:
-    chain = _sample_proof_chain_for_gates(transport_pressure=0.0)
+    chain = _sample_proof_chain_for_gates(stream_backlog_pressure=0.0)
     with patch.object(
         substrate_lattice_routes, "_load_transport_proof_chain", return_value=chain
     ):
@@ -389,7 +389,7 @@ def test_gates_contract_pass_when_below_threshold(client) -> None:
 
 
 def test_gates_pressure_watch_when_nonzero(client) -> None:
-    chain = _sample_proof_chain_for_gates(transport_pressure=0.5)
+    chain = _sample_proof_chain_for_gates(stream_backlog_pressure=0.5)
     with patch.object(
         substrate_lattice_routes, "_load_transport_proof_chain", return_value=chain
     ):
@@ -413,8 +413,8 @@ def test_load_transport_proof_chain_with_projection_returns_full_structure(monke
                 "schema_version": "transport_bus.state.v1",
                 "target_id": "bus:athena", "node_id": "node:athena",
                 "sample_window_id": "w", "source_trace_id": "bus.transport:abc",
-                "bus_health": 1.0, "delivery_confidence": 1.0,
-                "transport_pressure": 0.0, "contract_pressure": 1.0,
+                "stream_backlog_health": 1.0, "delivery_confidence": 1.0,
+                "stream_backlog_pressure": 0.0, "contract_pressure": 1.0,
                 "catalog_drift_pressure": 0.5, "observer_failure_pressure": 0.0,
                 "stream_depth_pressure": 0.0, "backpressure": 0.0,
                 "reliability_pressure": 0.0, "streams_observed": 10,
@@ -455,7 +455,7 @@ def test_load_transport_proof_chain_with_projection_returns_full_structure(monke
 
 
 def test_simulate_returns_comparison_when_thresholds_change(client) -> None:
-    chain = _sample_proof_chain_for_gates(contract_pressure=1.0, transport_pressure=0.0)
+    chain = _sample_proof_chain_for_gates(contract_pressure=1.0, stream_backlog_pressure=0.0)
     with patch.object(
         substrate_lattice_routes, "_load_transport_proof_chain", return_value=chain
     ), patch.object(
@@ -486,7 +486,7 @@ def test_simulate_contract_suppressed_when_threshold_above_value(client) -> None
     # contract_pressure=1.0, raise watch_at to 1.1 → no channels promote → suppressed
     chain = _sample_proof_chain_for_gates(
         contract_pressure=1.0,
-        transport_pressure=0.0,
+        stream_backlog_pressure=0.0,
     )
     with patch.object(
         substrate_lattice_routes, "_load_transport_proof_chain", return_value=chain
@@ -499,7 +499,7 @@ def test_simulate_contract_suppressed_when_threshold_above_value(client) -> None
                 "lane_id": "transport",
                 "thresholds": {
                     "contract_pressure_watch_at": 1.1,
-                    "transport_pressure_watch_at": 1.1,
+                    "stream_backlog_pressure_watch_at": 1.1,
                     "catalog_drift_pressure_watch_at": 1.1,
                     "observer_failure_pressure_watch_at": 1.1,
                 },
@@ -516,7 +516,7 @@ def test_simulate_no_change_when_same_thresholds(client) -> None:
     # Use current policy defaults — changed should be False
     chain = _sample_proof_chain_for_gates(
         contract_pressure=0.3,  # below default watch_at=0.50 → no channels promote
-        transport_pressure=0.1,  # below default watch_at=0.25 → no channels promote
+        stream_backlog_pressure=0.1,  # below default watch_at=0.25 → no channels promote
     )
     with patch.object(
         substrate_lattice_routes, "_load_transport_proof_chain", return_value=chain
@@ -659,7 +659,7 @@ def test_load_chain_fresh_status_when_age_below_threshold(monkeypatch) -> None:
 
     now = datetime.now(timezone.utc)
     fresh_ts = (now - timedelta(seconds=5)).isoformat()
-    proj = {"buses": {"bus:athena": {"source_trace_id": "trace:1", "bus_health": 1.0, "contract_pressure": 1.0}}}
+    proj = {"buses": {"bus:athena": {"source_trace_id": "trace:1", "stream_backlog_health": 1.0, "contract_pressure": 1.0}}}
     fake = _make_engine_sequence(
         {"projection_json": _json.dumps(proj), "updated_at": fresh_ts},
         None, None, None, None, None, None, None, None,

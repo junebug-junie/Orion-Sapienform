@@ -21,8 +21,8 @@ def _field_with_transport_drift() -> FieldStateV1:
         node_vectors={
             "node:athena": {
                 "contract_pressure": 1.0,
-                "transport_pressure": 0.0,
-                "bus_health": 1.0,
+                "stream_backlog_pressure": 0.0,
+                "stream_backlog_health": 1.0,
             }
         },
         capability_vectors={

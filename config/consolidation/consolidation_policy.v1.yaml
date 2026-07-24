@@ -85,8 +85,8 @@ motif_rules:
     label: transport_healthy_idle
     conditions:
       attention_target: capability:transport
-      max_transport_pressure: 0.10
-      min_bus_health: 0.90
+      max_stream_backlog_pressure: 0.10
+      min_stream_backlog_health: 0.90
 
 tensor:
   enabled: true

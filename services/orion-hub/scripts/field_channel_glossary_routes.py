@@ -70,7 +70,7 @@ def build_channel_series(
     output when `channel in PRESSURE_CHANNELS or value > 0`
     (orion.field.pressure) -- for the 5 channels in neither
     PRESSURE_CHANNELS nor HIGHER_IS_BETTER_CHANNELS (expected_offline_
-    suppression, transport_pressure, contract_pressure,
+    suppression, stream_backlog_pressure, contract_pressure,
     catalog_drift_pressure, observer_failure_pressure), a tick where every
     source reads exactly 0.0 means the channel is silently absent from the
     merge, even though DEFAULT_NODE_VECTOR/DEFAULT_CAPABILITY_VECTOR

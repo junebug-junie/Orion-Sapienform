@@ -173,8 +173,8 @@ function _renderProofChain(chain) {
   _setText("m3Status", `${_statusBadge(m3.status)} ${_ts(m3.timestamp)}`);
   _setText(
     "m3Body",
-    `bus_health: <b>${_fmt(bus.bus_health)}</b> &nbsp;|&nbsp;
-     transport_pressure: <b>${_fmt(bus.transport_pressure)}</b> &nbsp;|&nbsp;
+    `stream_backlog_health: <b>${_fmt(bus.stream_backlog_health)}</b> &nbsp;|&nbsp;
+     stream_backlog_pressure: <b>${_fmt(bus.stream_backlog_pressure)}</b> &nbsp;|&nbsp;
      contract_pressure: <b>${_fmt(bus.contract_pressure)}</b><br>
      catalog_drift_pressure: <b>${_fmt(bus.catalog_drift_pressure)}</b> &nbsp;|&nbsp;
      observer_failure_pressure: <b>${_fmt(bus.observer_failure_pressure)}</b><br>
@@ -303,7 +303,7 @@ function _renderLatticeValues(chain) {
   }
   const bus = chain.transport.m3.values || {};
   const channels = [
-    { id: "transport_pressure", label: "transport_pressure", weight: 0.35, watchAt: 0.25, ceiling: "read_only" },
+    { id: "stream_backlog_pressure", label: "stream_backlog_pressure", weight: 0.35, watchAt: 0.25, ceiling: "read_only" },
     { id: "contract_pressure", label: "contract_pressure", weight: 0.30, watchAt: 0.50, ceiling: "summarize" },
     { id: "catalog_drift_pressure", label: "catalog_drift_pressure", weight: 0.15, watchAt: 0.50, ceiling: "watch" },
     { id: "observer_failure_pressure", label: "observer_failure_pressure", weight: 0.20, watchAt: 0.25, ceiling: "summarize" },
@@ -389,7 +389,7 @@ async function _runSimulate() {
   );
   _lastSimThresholds = {
     contract_pressure_watch_at: contractWatchAt,
-    transport_pressure_watch_at: transportWatchAt,
+    stream_backlog_pressure_watch_at: transportWatchAt,
     catalog_drift_pressure_watch_at: catalogWatchAt,
     observer_failure_pressure_watch_at: observerWatchAt,
   };

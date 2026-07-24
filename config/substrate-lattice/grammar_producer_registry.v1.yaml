@@ -9,8 +9,8 @@ producers:
     field_capability_id: "capability:transport"
     attention_target_id: "capability:transport"
     trusted_channels:
-      - bus_health
-      - transport_pressure
+      - stream_backlog_health
+      - stream_backlog_pressure
       - contract_pressure
       - catalog_drift_pressure
       - observer_failure_pressure

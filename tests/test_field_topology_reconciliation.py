@@ -95,14 +95,14 @@ def test_reconciled_state_validates() -> None:
     assert roundtrip.tick_id == "tick_stale"
 
 
-def test_reconcile_scopes_bus_health_and_delivery_confidence_to_node_athena_only() -> None:
+def test_reconcile_scopes_stream_backlog_health_and_delivery_confidence_to_node_athena_only() -> None:
     # Design correction (2026-07-22), superseding the 2026-07-17 fix this
     # test used to guard. That fix (default 0.0 -> 1.0 for non-reporting
     # nodes) treated the symptom as a data problem, but it only helped
     # *newly* reconciled nodes -- reconcile's "preserve any existing value"
     # behavior meant a node with an already-persisted stale 0.0 from before
     # that patch deployed could never self-correct. Confirmed live: athena's
-    # real, fresh report was bus_health=1.0, but atlas's persisted 0.0 (never
+    # real, fresh report was stream_backlog_health=1.0, but atlas's persisted 0.0 (never
     # once perturbed, from before the fix) still won the min()-merge and
     # permanently masked it in field_channel_corpus.v1 and every SelfStateV1
     # coherence score (self_state_policy.v1.yaml maps both channels to
@@ -119,12 +119,12 @@ def test_reconcile_scopes_bus_health_and_delivery_confidence_to_node_athena_only
     lattice = load_lattice(LATTICE_PATH)
     state = FieldStateV1(
         generated_at=FIXED_TS,
-        tick_id="tick_bus_health_default",
+        tick_id="tick_stream_backlog_health_default",
         node_vectors={
-            "node:athena": {"bus_health": 1.0, "delivery_confidence": 1.0},
+            "node:athena": {"stream_backlog_health": 1.0, "delivery_confidence": 1.0},
             # Simulates the live bug: a stale pre-fix 0.0 already persisted
             # on a non-owner node.
-            "node:atlas": {"bus_health": 0.0, "delivery_confidence": 0.0},
+            "node:atlas": {"stream_backlog_health": 0.0, "delivery_confidence": 0.0},
         },
     )
     reconciled = reconcile_field_state_with_lattice(state, lattice=lattice)
@@ -133,9 +133,9 @@ def test_reconcile_scopes_bus_health_and_delivery_confidence_to_node_athena_only
     for node_id, vec in reconciled.node_vectors.items():
         if node_id == "node:athena":
             continue
-        assert "bus_health" not in vec, f"{node_id} should have no bus_health entry at all"
+        assert "stream_backlog_health" not in vec, f"{node_id} should have no stream_backlog_health entry at all"
         assert "delivery_confidence" not in vec, f"{node_id} should have no delivery_confidence entry at all"
 
     channels, _ = collect_field_channel_pressures(reconciled)
-    assert channels["bus_health"] == 1.0
+    assert channels["stream_backlog_health"] == 1.0
     assert channels["delivery_confidence"] == 1.0

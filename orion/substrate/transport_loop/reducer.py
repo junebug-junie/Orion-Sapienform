@@ -117,13 +117,13 @@ def reduce_transport_trace_events(
     after_payload["pressure_hints"] = {
         k: after_payload[k]
         for k in (
-            "bus_health",
+            "stream_backlog_health",
             "delivery_confidence",
             "stream_depth_pressure",
             "backpressure",
             "catalog_drift_pressure",
             "observer_failure_pressure",
-            "transport_pressure",
+            "stream_backlog_pressure",
             "contract_pressure",
             "reliability_pressure",
         )

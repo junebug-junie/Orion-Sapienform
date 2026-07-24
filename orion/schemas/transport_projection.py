@@ -35,14 +35,14 @@ class TransportBusStateV1(BaseModel):
     # count_schema_mismatches().
     schema_mismatch_stream_count: int = 0
 
-    bus_health: float = Field(ge=0.0, le=1.0, default=0.5)
+    stream_backlog_health: float = Field(ge=0.0, le=1.0, default=0.5)
     delivery_confidence: float = Field(ge=0.0, le=1.0, default=0.5)
     stream_depth_pressure: float = Field(ge=0.0, le=1.0, default=0.0)
     backpressure: float = Field(ge=0.0, le=1.0, default=0.0)
     catalog_drift_pressure: float = Field(ge=0.0, le=1.0, default=0.0)
     observer_failure_pressure: float = Field(ge=0.0, le=1.0, default=0.0)
 
-    transport_pressure: float = Field(ge=0.0, le=1.0, default=0.0)
+    stream_backlog_pressure: float = Field(ge=0.0, le=1.0, default=0.0)
     contract_pressure: float = Field(ge=0.0, le=1.0, default=0.0)
     reliability_pressure: float = Field(ge=0.0, le=1.0, default=0.0)
 

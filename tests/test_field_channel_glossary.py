@@ -23,9 +23,9 @@ def test_load_glossary_has_35_channels_matching_field_digester_channels_py():
     names = {e.channel for e in entries}
     assert "cpu_pressure" in names
     assert "reliability_pressure" in names
-    # transport_pressure/contract_pressure are the two node+capability overlaps.
+    # stream_backlog_pressure/contract_pressure are the two node+capability overlaps.
     overlap = [e for e in entries if set(e.level) == {"node", "capability"}]
-    assert {e.channel for e in overlap} == {"transport_pressure", "contract_pressure"}
+    assert {e.channel for e in overlap} == {"stream_backlog_pressure", "contract_pressure"}
 
 
 def test_glossary_path_candidates_prefers_orion_repo_root_env_var(monkeypatch):

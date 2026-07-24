@@ -40,8 +40,8 @@ case "$MODE" in
         receipt_json::jsonb #>> '{state_deltas,0,target_id}'   AS target_id,
         receipt_json::jsonb #>> '{state_deltas,0,after,pressure_hints,catalog_drift_pressure}'
           AS catalog_drift,
-        receipt_json::jsonb #>> '{state_deltas,0,after,pressure_hints,transport_pressure}'
-          AS transport_pressure
+        receipt_json::jsonb #>> '{state_deltas,0,after,pressure_hints,stream_backlog_pressure}'
+          AS stream_backlog_pressure
       FROM substrate_reduction_receipts
       WHERE reducer_name = 'transport_bus_reducer'
       ORDER BY created_at DESC

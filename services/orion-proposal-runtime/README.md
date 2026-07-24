@@ -15,8 +15,18 @@ substrate_self_state
 
 ## Non-goals
 
-- No policy approval, cortex-exec, bus publish, operator notifications, or LLM calls.
+- No policy approval, cortex-exec, bus publish, operator notifications, or LLM calls in the
+  proposal-generation data flow above -- `ProposalFrameV1` is Postgres-only, not a bus event.
 - `execution_intent` on candidates is descriptive only.
+
+## Liveness telemetry
+
+Separately from the proposal-generation data flow (still Postgres-only, no change), this service
+publishes a bus-native `SystemHealthV1` heartbeat to `orion:system:health` every
+`HEARTBEAT_INTERVAL_SEC` (default 10s) via its own independent Redis connection -- part of the
+repo-wide service-heartbeat rollout
+(docs/superpowers/specs/2026-07-24-service-heartbeat-node-telemetry-design.md), not a proposal
+bus-publish.
 
 ## Idempotency
 

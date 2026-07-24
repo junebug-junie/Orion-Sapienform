@@ -17,8 +17,18 @@ separate self-state dependency or load.
 
 ## Non-goals
 
-- No cortex-exec, bus publish, operator notifications, settings mutation, or LLM calls.
+- No cortex-exec, bus publish, operator notifications, settings mutation, or LLM calls in the
+  policy-decision data flow above -- `PolicyDecisionFrameV1` is Postgres-only, not a bus event.
 - `execution_constraints` on decisions are instructions for Layer 9 only.
+
+## Liveness telemetry
+
+Separately from the policy-decision data flow (still Postgres-only, no change), this service
+publishes a bus-native `SystemHealthV1` heartbeat to `orion:system:health` every
+`HEARTBEAT_INTERVAL_SEC` (default 10s) via its own independent Redis connection -- part of the
+repo-wide service-heartbeat rollout
+(docs/superpowers/specs/2026-07-24-service-heartbeat-node-telemetry-design.md), not a policy
+bus-publish.
 
 ## Idempotency
 

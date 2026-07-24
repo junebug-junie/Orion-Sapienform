@@ -8,6 +8,15 @@ class Settings(BaseSettings):
     project: str = Field("orion-athena", alias="PROJECT")
     service_name: str = Field("orion-policy-runtime", alias="SERVICE_NAME")
     service_version: str = Field("0.1.0", alias="SERVICE_VERSION")
+    node_name: str = Field("athena", alias="NODE_NAME")
+
+    # Bus-native SystemHealthV1 heartbeat (orion:system:health). Policy-runtime had no bus
+    # connection at all before this -- these fields exist solely to carry an independent
+    # heartbeat chassis. See
+    # docs/superpowers/specs/2026-07-24-service-heartbeat-node-telemetry-design.md.
+    orion_bus_url: str = Field("redis://100.92.216.81:6379/0", alias="ORION_BUS_URL")
+    orion_bus_enabled: bool = Field(True, alias="ORION_BUS_ENABLED")
+    heartbeat_interval_sec: float = Field(10.0, alias="HEARTBEAT_INTERVAL_SEC")
 
     postgres_uri: str = Field(..., alias="POSTGRES_URI")
     substrate_policy_path: str = Field(

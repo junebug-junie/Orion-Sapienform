@@ -38,8 +38,10 @@ An additive, independently-gated capability alongside the SQLite raw-log path ab
 an ever-growing log. This is the architecture that makes running against the full
 `MIRROR_PATTERN=orion:*` firehose actually sustainable — state size is bounded by mesh
 topology (organs × channels), not by message count, so it does not repeat the 98GB
-failure described above. Off by default; the two paths (SQLite, graph) are controlled
-by separate settings and can run independently or together.
+failure described above. `MIRROR_GRAPH_ENABLED` defaults to `true` in `.env_example`;
+the two paths (SQLite, graph) are controlled by separate settings and can run
+independently or together. Note this service itself is currently stopped (see
+"Status" above) — enabling the graph writer here does not restart the container.
 
 Design doc: `docs/superpowers/specs/2026-07-24-bus-vitality-field-signal-brainstorm.md`,
 "Big-swing direction: a live bus synaptic graph (FalkorDB)". This is Phase 1 of that

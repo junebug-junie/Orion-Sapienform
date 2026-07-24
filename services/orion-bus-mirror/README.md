@@ -4,6 +4,33 @@ A “wiretap + relay” for the Orion Titanium bus. Use it to copy a slice of th
 
 ---
 
+## Status: disabled, ran into exactly the failure mode this README warns about
+
+Live incident, 2026-07-24: this service was left running with
+`MIRROR_PATTERN=orion:*`, which matches all 265 channels registered in
+`orion/bus/channels.yaml` -- the entire bus, not the narrow debug slice this
+README recommends below. With no retention/rotation cap, the recording grew
+to **98GB** before anyone noticed, on the `/mnt/scripts` disk (shared with
+the codebase and all worktrees).
+
+Current state:
+- The container is stopped and excluded from `mesh-utilities/common/
+  exclude_services.txt`'s auto-rebuild list, so it will not restart on its
+  own.
+- The 98GB recording was archived (not deleted) to
+  `/mnt/postgres/dumps/bus-mirror/bus_mirror.sqlite`.
+- `MIRROR_DATA_DIR` now points at `/mnt/postgres/bus-mirror/data` (moved off
+  the `/mnt/scripts` disk entirely) -- if this service is ever re-enabled,
+  it starts fresh and empty there, not resuming the archived recording.
+
+**If you re-enable this service**, use a narrow pattern (see "Recommended
+patterns" below) and set a real retention/rotation limit -- there still
+isn't a `MIRROR_SAMPLE_RATE` or automatic rotation built in (see "Future
+stubs we should add"), so an unbounded pattern will recreate this exact
+failure.
+
+---
+
 ## Quick start (copy/paste)
 
 ### Set your bus URL once

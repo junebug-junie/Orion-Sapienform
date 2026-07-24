@@ -19,6 +19,7 @@ class _FakeSource:
 class _FakeEnvelope:
     source: Any
     correlation_id: Any = None
+    payload: Any = None
 
 
 @dataclass
@@ -88,3 +89,47 @@ class TestRecordGraphEventFailsOpen:
         _, kwargs = writer.record_causal_hop.call_args
         assert kwargs["prior_organ_id"] == "cortex-exec"
         assert kwargs["prior_epoch"] == 100.0
+
+
+class TestRecordGraphEventVerbSteps:
+    @pytest.mark.asyncio
+    async def test_verb_steps_in_payload_are_written(self) -> None:
+        writer = MagicMock()
+        chain_tracker = ChainTracker(ttl_sec=60.0)
+        decoded = _FakeDecodeResult(
+            envelope=_FakeEnvelope(
+                source=_FakeSource(name="cortex-exec"),
+                payload={"steps": [{"verb_name": "draft_entry", "latency_ms": 17816, "node": "athena"}]},
+            )
+        )
+
+        await _record_graph_event(writer, chain_tracker, decoded, "orion:cognition:trace", 100.0)
+
+        writer.record_verb_step.assert_called_once()
+        (fact,), _ = writer.record_verb_step.call_args
+        assert fact.verb_name == "draft_entry"
+        assert fact.organ_id == "cortex-exec"
+
+    @pytest.mark.asyncio
+    async def test_envelope_without_steps_payload_writes_no_verb_facts(self) -> None:
+        writer = MagicMock()
+        chain_tracker = ChainTracker(ttl_sec=60.0)
+        decoded = _FakeDecodeResult(envelope=_FakeEnvelope(source=_FakeSource(name="cortex-exec")))
+
+        await _record_graph_event(writer, chain_tracker, decoded, "orion:test", 100.0)
+
+        writer.record_verb_step.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_verb_step_write_failure_is_swallowed_not_propagated(self) -> None:
+        writer = MagicMock()
+        writer.record_verb_step.side_effect = RuntimeError("falkor unreachable")
+        chain_tracker = ChainTracker(ttl_sec=60.0)
+        decoded = _FakeDecodeResult(
+            envelope=_FakeEnvelope(
+                source=_FakeSource(name="cortex-exec"),
+                payload={"steps": [{"verb_name": "draft_entry", "latency_ms": 100}]},
+            )
+        )
+
+        await _record_graph_event(writer, chain_tracker, decoded, "orion:test", 100.0)  # must not raise

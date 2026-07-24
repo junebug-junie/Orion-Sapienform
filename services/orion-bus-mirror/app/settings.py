@@ -33,5 +33,18 @@ class Settings(BaseSettings):
     MIRROR_GRAPH_CHAIN_TTL_SEC: float = Field(default=120.0)
     MIRROR_GRAPH_EWMA_ALPHA: float = Field(default=0.2, ge=0.0, le=1.0)
 
+    # Phase 2: in-flight/long-running chain visibility. Threshold is
+    # deliberately well below MIRROR_GRAPH_CHAIN_TTL_SEC's default (120s) so a
+    # genuinely slow, still-active multi-hop chain gets flagged before it
+    # would ever be evicted as stale.
+    MIRROR_GRAPH_INFLIGHT_LOG_INTERVAL_SEC: float = Field(default=30.0)
+    MIRROR_GRAPH_LONG_RUNNING_THRESHOLD_SEC: float = Field(default=30.0)
+    # Caps payload.steps[] processing per envelope -- a buggy/adversarial
+    # producer sending a huge steps array would otherwise stall the mirror's
+    # message loop for the full duration of writing that many edges
+    # sequentially (found in review). Real cognition traces have a handful
+    # of steps; 200 is generous headroom, not a tuned real-world ceiling.
+    MIRROR_GRAPH_MAX_VERB_STEPS: int = Field(default=200, ge=1)
+
 
 settings = Settings()

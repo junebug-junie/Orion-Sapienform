@@ -65,12 +65,9 @@ shared FalkorDB instance at `FALKORDB_URI`):
   services (PR #1313) — not something this service can infer by eavesdropping. Do not
   fake this edge from `channels.yaml`'s static `consumer_services` metadata; that is
   config truth, not runtime truth.
-- **No in-flight/still-open chain tracking.** `CAUSALLY_FOLLOWED_BY` only records a hop
-  once the *second* envelope of a pair arrives — it says nothing about a chain that's
-  still running right now. That's Phase 2.
-- **No per-verb latency slicing from payload content**, no anomaly propagation across
-  edges, no node centrality, no chain-shape clustering. All named as Phase 2+ in the
-  design doc, not built here.
+- **No anomaly propagation across edges, no node centrality, no chain-shape
+  clustering.** Named as Phase 3+ in the design doc, not built here. (In-flight chain
+  tracking and per-verb latency slicing *are* now built — see "Phase 2" below.)
 
 **A real cold-start caveat**: an edge's first `gap_zscore`/`latency_zscore` is always
 `null` (no baseline exists yet to be anomalous against — see `compute_ewma_update`'s
@@ -95,6 +92,63 @@ MATCH (o:Organ)-[e:PUBLISHES]->(c:Channel)
 WHERE abs(e.gap_zscore) > 3 AND e.count > 5
 RETURN o.organ_id, c.channel, e.gap_zscore, e.count
 ORDER BY abs(e.gap_zscore) DESC
+```
+
+---
+
+## Bus synaptic graph (Phase 2)
+
+Two additions on top of Phase 1's foundation, both gated by the same
+`MIRROR_GRAPH_ENABLED`, no new settings required to enable them.
+
+**In-flight / long-running chain tracking.** `ChainTracker` now remembers when each
+`correlation_id` was *first* seen, not just its most recent hop. Every
+`MIRROR_GRAPH_INFLIGHT_LOG_INTERVAL_SEC` (default 30s), a background task logs a
+summary of every chain still being tracked:
+```text
+bus synaptic graph in-flight chains: open=3 long_running=1 max_duration_sec=47.2
+```
+A chain counts as "long-running" once its duration exceeds
+`MIRROR_GRAPH_LONG_RUNNING_THRESHOLD_SEC` (default 30s). **This is log-only** — not
+wired into `NODE_CHANNELS`, the field-digester, or any other consumer yet; the
+smallest real step that makes the signal observable before deciding how it should be
+consumed further (Phase 3+, not decided).
+
+Real limitation, not solved here: **there is no terminal marker in the envelope
+schema.** "In-flight" means "has had activity within `MIRROR_GRAPH_CHAIN_TTL_SEC`,"
+not "known to still be genuinely running" — a chain that finishes and one that's
+abandoned both just stop appearing once they go quiet past the TTL. Don't read
+`open_count` as "N operations currently executing"; read it as "N flows have had
+recent activity."
+
+**Per-verb latency** (`EXECUTES_VERB` edges, `(:Organ)-[:EXECUTES_VERB {count,
+last_seen_epoch, last_node, latency_ewma_sec, latency_var, latency_zscore}]->(:Verb
+{verb_name})`): mined from any envelope whose payload has a `steps[]` array with real
+measured `latency_ms` per step (the `cognition.trace` shape) — same EWMA/z-score
+mechanism as Phase 1's edges, applied per (organ, verb) pair.
+
+Real limitation, not solved here: **`last_node` is captured but does not partition
+the baseline.** If the same organ runs the same verb on more than one physical host,
+their latencies blend into one EWMA — this does not yet cleanly separate "this verb
+is slow" from "this specific machine is loaded," despite that being the original
+motivation for wanting a per-node slice. Also not built: slicing by preceding verb in
+a chain, by `model_used`, or by concurrent in-flight-chain count at the same moment —
+all named as real ideas in the design doc, none implemented.
+
+**Fixed in review, worth knowing about**: unlike Phase 1's facts (derived only from
+trusted envelope metadata and wall-clock timestamps), `extract_verb_step_facts` reads
+arbitrary nested payload content, so it guards against two things Phase 1 never had
+to: `steps[]` is capped at `MIRROR_GRAPH_MAX_VERB_STEPS` (default 200, truncated not
+errored) so a buggy/adversarial producer sending a huge array can't stall the mirror's
+message loop, and non-finite `latency_ms` (`NaN`/`Infinity`) is rejected rather than
+silently accepted — a single NaN observation would otherwise permanently poison that
+edge's EWMA baseline with no self-healing (verified live in review).
+
+```cypher
+MATCH (o:Organ)-[e:EXECUTES_VERB]->(v:Verb)
+WHERE abs(e.latency_zscore) > 3 AND e.count > 5
+RETURN o.organ_id, v.verb_name, e.latency_ewma_sec, e.latency_zscore, e.last_node
+ORDER BY abs(e.latency_zscore) DESC
 ```
 
 ---

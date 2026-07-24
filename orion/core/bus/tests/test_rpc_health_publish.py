@@ -22,7 +22,7 @@ from orion.core.bus.rpc_health_publish import (
 
 
 def _source() -> ServiceRef:
-    return ServiceRef(name="orion-cortex-exec", node="athena")
+    return ServiceRef(name="cortex-exec", node="athena")
 
 
 def test_build_envelope_carries_all_snapshot_fields() -> None:

@@ -57,9 +57,14 @@ async def test_gateway_processor_produces_rpc_health_signal_end_to_end() -> None
     )
     env = BaseEnvelope(
         kind="rpc_health.snapshot.v1",
-        source=ServiceRef(name="orion-cortex-exec", version="0.1.1", node="athena"),
+        # "cortex-exec", not "orion-cortex-exec" -- the real SERVICE_NAME value
+        # (confirmed live). An earlier version of this test used the wrong value here,
+        # which matched this adapter's then-also-wrong _organ_id_for_service mapping and
+        # so didn't catch that adapt() silently returned None on every real production
+        # call; caught only by live deployment, not by this test or review.
+        source=ServiceRef(name="cortex-exec", version="0.1.1", node="athena"),
         correlation_id=UUID("00000000-0000-4000-8000-0000000000a1"),
-        payload=_rpc_health_payload("orion-cortex-exec"),
+        payload=_rpc_health_payload("cortex-exec"),
     )
     await proc.handle_envelope(env)
 
@@ -89,8 +94,8 @@ async def test_gateway_signal_window_does_not_collide_across_producer_services()
         service_ref=ServiceRef(name="orion-signal-gateway", version="0.1.0", node="n"),
     )
     for service, corr in (
-        ("orion-cortex-exec", "00000000-0000-4000-8000-0000000000b1"),
-        ("orion-cortex-orch", "00000000-0000-4000-8000-0000000000b2"),
+        ("cortex-exec", "00000000-0000-4000-8000-0000000000b1"),
+        ("cortex-orch", "00000000-0000-4000-8000-0000000000b2"),
     ):
         env = BaseEnvelope(
             kind="rpc_health.snapshot.v1",

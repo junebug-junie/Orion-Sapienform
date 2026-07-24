@@ -21,7 +21,7 @@ def norm_ctx() -> NormalizationContext:
 def _payload(**overrides) -> dict:
     now = datetime.now(timezone.utc)
     base = {
-        "service": "orion-cortex-exec",
+        "service": "cortex-exec",
         "node": "athena",
         "instance": None,
         "window_start": now.isoformat(),
@@ -107,10 +107,10 @@ def test_adapt_uses_distinct_organ_id_per_service(
     overwrite the previous producer's SignalWindow entry. Two different services must
     resolve to two different organ_ids."""
     exec_signal = adapter.adapt(
-        "orion:rpc_health:snapshot", _payload(service="orion-cortex-exec"), ORGAN_REGISTRY, {}, norm_ctx
+        "orion:rpc_health:snapshot", _payload(service="cortex-exec"), ORGAN_REGISTRY, {}, norm_ctx
     )
     orch_signal = adapter.adapt(
-        "orion:rpc_health:snapshot", _payload(service="orion-cortex-orch"), ORGAN_REGISTRY, {}, norm_ctx
+        "orion:rpc_health:snapshot", _payload(service="cortex-orch"), ORGAN_REGISTRY, {}, norm_ctx
     )
     assert exec_signal is not None and orch_signal is not None
     assert exec_signal.organ_id == "rpc_health_cortex_exec"
@@ -118,11 +118,42 @@ def test_adapt_uses_distinct_organ_id_per_service(
     assert exec_signal.organ_id != orch_signal.organ_id
 
 
+def test_adapt_matches_real_live_service_name_values(
+    adapter: RpcHealthAdapter, norm_ctx: NormalizationContext
+) -> None:
+    """Regression guard for a real bug caught only by live deployment, not by review or
+    the original version of this test suite: both services' real SERVICE_NAME setting is
+    "cortex-exec"/"cortex-orch" (confirmed live via `docker exec ... env`), NOT
+    "orion-cortex-exec"/"orion-cortex-orch" -- the wrong value this adapter (and this
+    test file's _payload() default) originally assumed. adapt() returned None on every
+    real production call until this was fixed, silently (no exception, no error log --
+    can_handle() matched and adapt() correctly degraded to "no signal" for what it
+    believed was an unrecognized service). Pin the exact real strings here so a future
+    refactor of _organ_id_for_service can't silently reintroduce the mismatch."""
+    signal = adapter.adapt(
+        "orion:rpc_health:snapshot", _payload(service="cortex-exec"), ORGAN_REGISTRY, {}, norm_ctx
+    )
+    assert signal is not None
+    assert signal.organ_id == "rpc_health_cortex_exec"
+
+
+def test_adapt_normalizes_orion_prefixed_service_name(
+    adapter: RpcHealthAdapter, norm_ctx: NormalizationContext
+) -> None:
+    """Defensive: if some future producer's SERVICE_NAME does use an "orion-" prefix
+    (matching the repo/registry naming convention elsewhere), resolution still works."""
+    signal = adapter.adapt(
+        "orion:rpc_health:snapshot", _payload(service="orion-cortex-exec"), ORGAN_REGISTRY, {}, norm_ctx
+    )
+    assert signal is not None
+    assert signal.organ_id == "rpc_health_cortex_exec"
+
+
 def test_adapt_unknown_service_degrades_to_none(
     adapter: RpcHealthAdapter, norm_ctx: NormalizationContext
 ) -> None:
     signal = adapter.adapt(
-        "orion:rpc_health:snapshot", _payload(service="orion-some-future-service"), ORGAN_REGISTRY, {}, norm_ctx
+        "orion:rpc_health:snapshot", _payload(service="some-future-service"), ORGAN_REGISTRY, {}, norm_ctx
     )
     assert signal is None
 

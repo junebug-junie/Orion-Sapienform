@@ -89,6 +89,42 @@ async def hot_edges(limit: int = Query(default=10, ge=1, le=100)) -> dict[str, A
     return {"edges": rows}
 
 
+@router.get("/node-centrality")
+async def node_centrality(limit: int = Query(default=15, ge=1, le=100)) -> dict[str, Any]:
+    """Real in+out degree over the CAUSALLY_FOLLOWED_BY organ-to-organ
+    subgraph -- Idea B of docs/superpowers/specs/2026-07-24-bus-synaptic-graph-
+    wider-net-brainstorm.md's "node centrality" wider-net idea.
+
+    Deliberately scoped to CAUSALLY_FOLLOWED_BY (organ-to-organ), not
+    PUBLISHES (organ-to-channel): the latter's Channel-node side was found
+    live to hold ~9K stale pre-normalization duplicates (fixed via
+    services/orion-bus-mirror/scripts/stale_channel_node_cleanup.py), and
+    even post-cleanup, PUBLISHES out-degree already has its own partial view
+    via /hot-organs. This route answers a genuinely different question: which
+    organs are structurally load-bearing in the *causal* flow of real
+    traffic, based on live observed cross-organ hops -- distinct from
+    ORGAN_REGISTRY's hand-authored, admittedly-approximate causal_parent_organs
+    edges. Degree only (not betweenness) -- FalkorDB has no native
+    betweenness-centrality query, and loading the whole graph into an
+    external library for it is an unmeasured cost, deferred to a later pass.
+    """
+    client = _client()
+    rows = client.graph_query(
+        """
+        MATCH (o:Organ)
+        OPTIONAL MATCH (o)-[out:CAUSALLY_FOLLOWED_BY]->()
+        OPTIONAL MATCH ()-[inc:CAUSALLY_FOLLOWED_BY]->(o)
+        WITH o, count(DISTINCT out) AS out_degree, count(DISTINCT inc) AS in_degree
+        WHERE out_degree > 0 OR in_degree > 0
+        RETURN o.organ_id AS organ_id, out_degree, in_degree, (out_degree + in_degree) AS total_degree
+        ORDER BY total_degree DESC
+        LIMIT $limit
+        """,
+        {"limit": limit},
+    )
+    return {"organs": rows}
+
+
 @router.get("/anomalies")
 async def anomalies(zscore_threshold: float = 3.0, min_count: int = 5) -> dict[str, Any]:
     """Edges whose most recent observation deviated sharply from that edge's

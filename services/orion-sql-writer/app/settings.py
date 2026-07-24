@@ -77,6 +77,7 @@ DEFAULT_ROUTE_MAP: dict[str, str] = {
     "action.outcome.emit.v1": "ActionOutcomeSQL",
     "memory.drives.audit.v1": "DriveAuditSQL",
     "self.phi_reward.v1": "PhiRewardSQL",
+    "equilibrium.service.transition.v1": "EquilibriumServiceTransitionSQL",
 }
 
 
@@ -160,6 +161,7 @@ class Settings(BaseSettings):
             "orion:hub:messages:create",
             "orion:mind:artifact",
             "orion:grammar:event",
+            "orion:equilibrium:transition",
             "orion:chat:history:spark_meta:patch",
             "orion:autonomy:action:outcome",
             "orion:memory:drives:audit",

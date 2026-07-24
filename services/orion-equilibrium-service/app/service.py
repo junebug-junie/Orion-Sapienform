@@ -24,6 +24,7 @@ from .transport_metacog_gate import (
     build_transport_metacog_trigger_from_grammar_atom,
     build_transport_metacog_trigger_from_snapshot,
 )
+from .downtime_transition_tracker import DowntimeTransitionTracker
 from orion.schemas.telemetry.cognition_trace import CognitionTracePayload
 from orion.schemas.telemetry.system_health import EquilibriumServiceState, EquilibriumSnapshotV1, SystemHealthV1
 from orion.schemas.telemetry.spark_signal import SparkSignalV1
@@ -66,6 +67,7 @@ class EquilibriumService(BaseChassis):
         self._last_baseline_scores: Tuple[float, float] = (-1.0, -1.0)
         self._baseline_skip_count: int = 0
         self._chat_turn_correlator: ChatTurnCorrelator | None = None
+        self._downtime_tracker = DowntimeTransitionTracker()
 
     def _trace_meta(
         self,
@@ -231,11 +233,56 @@ class EquilibriumService(BaseChassis):
 
         return distress_score, zen_score, states
 
+    async def _publish_service_transitions(self, states: List[EquilibriumServiceState], now: datetime) -> None:
+        """Detect and publish real status transitions for this tick's states.
+
+        Called exactly once per publish tick (from `_publish_snapshot`, on
+        `EQUILIBRIUM_PUBLISH_INTERVAL_SEC`) -- see `DowntimeTransitionTracker`'s
+        own docstring for why it must not also be driven from the other,
+        higher-frequency `_calculate_metrics()` call sites in this class.
+        """
+        if not settings.equilibrium_transition_publish_enable:
+            return
+
+        try:
+            transitions = self._downtime_tracker.detect(
+                states,
+                now=now,
+                source_service=settings.service_name,
+                source_node=settings.node_name,
+                producer_boot_id=self.boot_id,
+            )
+        except Exception as e:
+            logger.error("Downtime transition detection failed: %s", e)
+            return
+
+        for transition in transitions:
+            env = BaseEnvelope(
+                kind="equilibrium.service.transition.v1",
+                source=self._source(),
+                payload=transition.model_dump(mode="json"),
+            )
+            try:
+                await self.bus.publish(settings.channel_equilibrium_transition, env)
+                logger.info(
+                    "Published equilibrium service transition service=%s node=%s "
+                    "from=%s to=%s down_duration_ms=%s",
+                    transition.service,
+                    transition.node,
+                    transition.from_status,
+                    transition.to_status,
+                    transition.down_duration_ms,
+                )
+            except Exception as e:
+                logger.error("Failed to publish equilibrium service transition: %s", e)
+
     async def _publish_snapshot(self) -> None:
         now = _utcnow()
 
         # Use shared calculation
         distress_score, zen_score, states = self._calculate_metrics()
+
+        await self._publish_service_transitions(states, now)
 
         snapshot = EquilibriumSnapshotV1(
             source_service=settings.service_name,

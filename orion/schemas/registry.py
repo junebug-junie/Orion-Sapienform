@@ -448,7 +448,12 @@ from orion.schemas.telemetry.spark_ack import SparkStateSnapshotAckV1
 from orion.schemas.telemetry.spark_candidate import SparkCandidateV1
 from orion.schemas.telemetry.spark_signal import SparkSignalV1
 from orion.signals.models import OrionSignalV1
-from orion.schemas.telemetry.system_health import EquilibriumSnapshotV1, SystemHealthV1, BusConsumerReadinessV1
+from orion.schemas.telemetry.system_health import (
+    EquilibriumSnapshotV1,
+    EquilibriumServiceTransitionV1,
+    SystemHealthV1,
+    BusConsumerReadinessV1,
+)
 from orion.schemas.telemetry.rpc_health import RpcHealthSnapshotV1
 from orion.schemas.telemetry.cognition_trace import CognitionTracePayload
 from orion.schemas.telemetry.metacognition import MetacognitionTickV1
@@ -749,6 +754,7 @@ _REGISTRY: Dict[str, Type[BaseModel]] = {
     "RpcHealthSnapshotV1": RpcHealthSnapshotV1,
     "BusConsumerReadinessV1": BusConsumerReadinessV1,
     "EquilibriumSnapshotV1": EquilibriumSnapshotV1,
+    "EquilibriumServiceTransitionV1": EquilibriumServiceTransitionV1,
     "RdfWriteRequest": RdfWriteRequest,
     "RdfWriteResult": RdfWriteResult,
     "RdfBuildRequest": RdfBuildRequest,
@@ -1443,6 +1449,10 @@ SCHEMA_REGISTRY: Dict[str, SchemaRegistration] = {
     "AttentionBroadcastProjectionV1": SchemaRegistration(
         model=AttentionBroadcastProjectionV1,
         kind="attention.broadcast.projection.v1",
+    ),
+    "EquilibriumServiceTransitionV1": SchemaRegistration(
+        model=EquilibriumServiceTransitionV1,
+        kind="equilibrium.service.transition.v1",
     ),
     # AST/HOT reducer output (Phase 1, docs/superpowers/specs/
     # 2026-07-18-objective-3-consciousness-scaffolded-roadmap-design.md).

@@ -43,6 +43,19 @@ class Settings(BaseSettings):
     redis_state_key: str = Field("equilibrium:state", alias="EQUILIBRIUM_STATE_KEY")
     channel_equilibrium_snapshot: str = Field("orion:equilibrium:snapshot", alias="CHANNEL_EQUILIBRIUM_SNAPSHOT")
     channel_spark_signal: str = Field("orion:spark:signal", alias="CHANNEL_SPARK_SIGNAL")
+    # Historical downtime persistence (2026-07-24, docs/superpowers/specs/
+    # 2026-07-24-service-heartbeat-node-telemetry-design.md). A separate
+    # channel from CHANNEL_EQUILIBRIUM_SNAPSHOT on purpose -- see that
+    # channel's own registry comment in orion/bus/channels.yaml for why
+    # sql-writer must not subscribe to the periodic snapshot channel
+    # directly. Enabled by default (this is the feature Juniper asked to
+    # build); the flag exists as a cheap kill switch, not a staged rollout.
+    channel_equilibrium_transition: str = Field(
+        "orion:equilibrium:transition", alias="CHANNEL_EQUILIBRIUM_TRANSITION"
+    )
+    equilibrium_transition_publish_enable: bool = Field(
+        True, alias="EQUILIBRIUM_TRANSITION_PUBLISH_ENABLE"
+    )
     state_retention_sec: float = Field(3600.0, alias="EQUILIBRIUM_STATE_RETENTION_SEC")
     channel_metacognition_tick: str = Field("orion:metacognition:tick", alias="CHANNEL_METACOGNITION_TICK")
     channel_cognition_trace_pub: str = Field("orion:cognition:trace", alias="CHANNEL_COGNITION_TRACE_PUB")

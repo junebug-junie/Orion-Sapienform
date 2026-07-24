@@ -78,6 +78,7 @@ from app.models import (
     DriveAuditSQL,
     PhiRewardSQL,
     GrammarEventSQL,
+    EquilibriumServiceTransitionSQL,
 )
 from orion.autonomy.models import ActionOutcomeEmitV1
 from orion.core.schemas.drives import DriveAuditV1
@@ -137,6 +138,7 @@ from orion.schemas.mind.artifact import MindRunArtifactV1
 from orion.schemas.vision import VisionEventBundleItem
 from orion.schemas.grammar import GrammarEventV1
 from orion.schemas.telemetry.phi_encoder import PhiIntrinsicRewardV1
+from orion.schemas.telemetry.system_health import EquilibriumServiceTransitionV1
 from orion.schemas.world_pulse import (
     ClaimRecordV1,
     DailyWorldPulseItemV1,
@@ -182,6 +184,7 @@ INSERT_ONLY_MODELS = {
     MindRunSQL,
     DriveAuditSQL,
     CausalGeometrySnapshotSQL,
+    EquilibriumServiceTransitionSQL,
 }
 
 
@@ -442,6 +445,7 @@ MODEL_MAP: Dict[str, Tuple[Type[Any], Optional[Type[BaseModel]]]] = {
     "ActionOutcomeSQL": (ActionOutcomeSQL, ActionOutcomeEmitV1),
     "DriveAuditSQL": (DriveAuditSQL, DriveAuditV1),
     "PhiRewardSQL": (PhiRewardSQL, PhiIntrinsicRewardV1),
+    "EquilibriumServiceTransitionSQL": (EquilibriumServiceTransitionSQL, EquilibriumServiceTransitionV1),
 }
 
 

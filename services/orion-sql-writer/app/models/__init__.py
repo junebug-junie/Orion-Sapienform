@@ -62,6 +62,7 @@ from .vision_event import VisionEventSQL
 from .action_outcome import ActionOutcomeSQL
 from .drive_audit import DriveAuditSQL
 from .phi_reward import PhiRewardSQL
+from .equilibrium_service_transition import EquilibriumServiceTransitionSQL
 from .grammar_trace import (
     GrammarAtomSQL,
     GrammarCompactionSQL,
@@ -129,6 +130,7 @@ __all__ = [
     "ActionOutcomeSQL",
     "DriveAuditSQL",
     "PhiRewardSQL",
+    "EquilibriumServiceTransitionSQL",
     "GrammarTraceSQL",
     "GrammarEventSQL",
     "GrammarAtomSQL",

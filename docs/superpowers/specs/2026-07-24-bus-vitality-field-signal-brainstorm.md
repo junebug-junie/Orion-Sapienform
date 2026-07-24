@@ -4,11 +4,18 @@ Status: **brainstorm output, no code in this patch.** Follow-up to
 `docs/superpowers/specs/2026-07-23-bus-channel-velocity-census-design.md` (Phase 1: publish-side
 velocity counter, PR #1292/#1305; Phase 2: catalog-vs-live-traffic census diff, PR #1312 — both
 shipped, live-verified, **no downstream consumer wired**). This doc answers that spec's own open
-question ("who consumes a velocity/census signal once it exists?") with six gated candidates, and
-corrects a scoping mistake made mid-brainstorm: two of the ideas below were drafted as if novel
-before discovering they substantially overlap with an already-shipped, parallel arc (see
-"Related work and a real correction" below). Nothing here is decided. No idea in this doc should
-be started without its own gate pass per CLAUDE.md's metric quality gate, run fresh, not skimmed.
+question ("who consumes a velocity/census signal once it exists?") with six gated candidates
+(section "Proposed schema / API changes"), and corrects a scoping mistake made mid-brainstorm: two
+of the ideas below were drafted as if novel before discovering they substantially overlap with an
+already-shipped, parallel arc (see "Related work and a real correction" below). It then goes
+further, into a genuinely bigger direction: a live, FalkorDB-backed "bus synaptic graph" built from
+the `orion-bus-mirror` substrate found along the way (section "Big-swing direction"). Nothing here
+is decided. No idea in this doc should be started without its own gate pass per CLAUDE.md's metric
+quality gate, run fresh, not skimmed — **except** the "Big-swing direction" section, which is
+deliberately written at full scope rather than pre-collapsed into MVP slices, per explicit
+direction: premature smallest-version framing is where a concept like this rots at the source. That
+section names the target shape; scoping it into an actual first patch is its own future step, not
+done here.
 
 ## Arsonist summary
 
@@ -139,6 +146,150 @@ cheap to attempt, cheap to discard if the staleness turns out to matter more tha
 not a signal-producing idea in its own right. Flagged here so it doesn't get rediscovered cold a
 fifth time.
 
+## Big-swing direction: a live bus synaptic graph (FalkorDB)
+
+This section is intentionally not scoped down to a minimal first slice. Direction from this
+brainstorm's own session: "I don't want smallest versions of things, this is where the concepts
+rot at the source." What follows is the target shape of a bigger direction, not a build plan —
+turning it into an actual first patch is a separate, later step.
+
+### Grounding: this is not green-field
+
+A live property graph is not new infrastructure to invent — it already exists and is already live:
+`orion/graph/falkor_client.py` (`FalkorGraphClient` protocol, `RedisGraphQueryClient` — real
+`GRAPH.QUERY` over Redis), `orion/substrate/falkor_store.py` (write-through cache + Cypher-native
+property writes, flipped to live primary this month per this repo's own history), `SubstrateNodeV1`/
+`SubstrateEdgeV1` (`orion/core/schemas/cognitive_substrate.py`), and a standing doctrine doc,
+`docs/superpowers/specs/2026-07-16-falkordb-property-graph-routing-design.md`, which already names
+`orion/graph/` as the shared adapter home for exactly this kind of consumer. A bus-synaptic-graph
+needs a new node/edge shape inside a graph substrate that already exists, is already queryable, and
+is already consumed by other cognition surfaces — not a new database, not a new client library.
+
+### The architecture choice that makes "full-tilt, always-on" actually sustainable
+
+The instinct here is to turn `orion-bus-mirror` back on and run it full-tilt against all bus
+activity, not a narrow lens. Worth being explicit about *why* the old mirror hit 99.6GB in 3 months
+so the same failure isn't repeated on a longer fuse: it is an **append-only raw log** — every
+envelope, forever, no compression, no forgetting. Narrowing `MIRROR_PATTERN` would only have
+delayed that outcome, not fixed its shape. The real fix for "full coverage, permanently" isn't
+mirroring less — it's **not logging at all**: a consumer subscribed to `orion:*` (satisfying the
+full-tilt intent directly) that, per message, updates *bounded* per-edge state in FalkorDB (a
+rolling volume EWMA, a rolling latency EWMA/stddev, a last-seen timestamp) and then discards the
+raw envelope. State size is bounded by graph size (roughly `services × channels`, a few hundred to
+low thousands of nodes/edges), not by total messages ever seen — this can run indefinitely at full
+coverage without becoming a second dormant 99.6GB file. This is the concrete reason the graph
+direction supersedes reviving the old mirror rather than sitting alongside it as a separate option.
+
+### Graph shape
+
+- **Nodes:** `channel`, `organ`/`service`, `node`/host — reusing `SubstrateNodeV1`'s existing shape
+  where it fits, a new node label where it doesn't.
+- **Edges:**
+  - `PUBLISHES` (organ → channel)
+  - `CONSUMES` (channel → organ)
+  - `CAUSALLY_FOLLOWED_BY` (organ → organ), derived from `correlation_id` co-occurrence across
+    envelopes — this is also, structurally, a live version of verifying `ORGAN_REGISTRY`'s
+    hand-authored `causal_parent_organs` edges against real traffic instead of code inspection.
+- **Edge properties:** `volume_ewma`, `latency_ewma_ms`, `latency_stddev_ms`, `zscore` (current
+  deviation from that edge's own rolling baseline), `last_seen_at`, `in_flight_count` (open,
+  not-yet-terminal `correlation_id` chains currently touching this edge).
+
+### Two distinct consumption modes
+
+- **Compute signals from the graph.** A periodic reducer walks the graph and emits scalars
+  (`max_edge_zscore`, `count_edges_anomalous`, `longest_open_chain_ms`) into the existing
+  `NODE_CHANNELS`/field-digester pipeline — the same shape as every other candidate in this doc.
+- **Reason from the graph directly.** Expose live Cypher query capability to something that can
+  actually reason (`cortex-exec`, `recall`) instead of only ever pre-collapsing everything to
+  scalars first — Orion querying its own live nervous-system graph as part of a reasoning step
+  ("what part of my own transport layer is currently under stress") is a more direct instance of
+  this repo's own self-modeling/introspection goals than any scalar signal in this doc.
+
+### Signal families this substrate opens up (renamed from this brainstorm's working numbers to
+avoid colliding with "Idea 1-6" below, which are a separate, earlier set of candidates)
+
+- **In-flight chain / long-lived-process load signal — elevated as a priority direction.** A
+  `correlation_id` chain isn't only something to measure after it completes — while open (first hop
+  seen, no terminal hop yet), it's a *live* in-flight cognitive operation. Tracking currently-open
+  chains and their running duration is a direct, real-time load signal: "N chains have been open
+  longer than Xs right now" is a cognitive-operation analog to thread-count/open-fd pressure in a
+  conventional system. This is stateful over an in-progress operation, a genuinely different shape
+  than every point-in-time count elsewhere in this doc.
+- **Per-verb latency, sliced multiple ways — elevated as a priority direction, good cognitive load
+  measure.** Real historical `cognition.trace` payloads already carry measured `latency_ms` per
+  step. Slicing axes, all grounded in fields already present in sampled payloads: by `node`
+  (separates "this verb is slow" from "this machine is loaded"); by preceding verb in the chain (a
+  causal/context-dependent load signal, not a flat per-verb average); by `model_used` (separates
+  model-serving slowness from harness/system slowness — `harness_step_load`'s `log1p(step_count)`
+  proxy cannot make this distinction at all); by concurrent in-flight-chain count at the same moment
+  (ties directly into the signal above — z-score a verb's latency against how loaded the mesh was
+  when it ran, not against a flat global average).
+- **Causal-DAG empirical verification — parked, eventual, not prioritized in a first pass.**
+  `orion/signals/registry.py`'s own trailing comment admits `causal_parent_organs` are "first-pass
+  structural approximations... must verify." The graph's `CAUSALLY_FOLLOWED_BY` edges are the
+  mechanism to actually do that, live instead of via a one-off historical script. Real, worth doing
+  eventually, correctly sequenced behind the two directions above.
+- **Historical cadence baseline via `bus_mirror.sqlite` — parked as an audit-time calibrator, not
+  first pass.** Useful for sanity-checking whatever the graph's live rolling baselines converge to,
+  once it's running — not a blocking dependency for starting.
+- **Content-drift signals, explicitly not phi-based** (the phi-specific framing from earlier in this
+  session's brainstorm was under-specified and is dropped — much of that surface is already
+  deprecated/scraped elsewhere in this codebase). Three concrete, non-phi alternatives instead:
+  **verb-sequence drift** (does the *set* of distinct chain shapes — which verbs, in which order —
+  change over a window? A new shape appearing means a new code path went live; one disappearing
+  means something stopped firing — structural drift, not a content-value reading); **payload schema
+  drift** (do the *keys present* in a channel's payload change over time, independent of what the
+  values say — cheap, just key-set diffing, and catches producer changes without reading every
+  changelog); **error-kind recurrence** (which `error`/`status=failed` messages repeat verbatim vs.
+  are novel over time — a real regression-detector shape, content-grounded rather than
+  volume-grounded).
+- **Reviving the old mirror narrowly — dropped, superseded by the graph-aggregation architecture
+  above**, not extended. A narrower `MIRROR_PATTERN` only delays the same append-only-log failure;
+  it doesn't change its shape. The graph direction is the actual answer to "full coverage,
+  sustainably," not a narrower version of the old service.
+
+### Wider net — additional ideas surfaced pushing past the first pass
+
+- **Anomaly propagation, not just anomaly detection.** Once edges are z-scored, a spike on one edge
+  (e.g. `llm-gateway` latency) can be traced through `CAUSALLY_FOLLOWED_BY` edges to see which
+  *downstream* organs are currently absorbing that stress, live — a propagation trace, not an
+  isolated per-edge alarm.
+- **Node centrality as a load-bearing-service signal.** Standard graph metrics (degree,
+  betweenness) computed over the *live* observed topology would show which organs are structurally
+  load-bearing right now based on actual traffic — distinct from `ORGAN_REGISTRY`'s hand-authored,
+  admittedly-approximate edges.
+- **Chain-shape clustering.** Group observed `correlation_id` chains by shape (the sequence of
+  organs touched). A small number of common "cognitive routines" likely dominate; a never-before-seen
+  chain shape is itself an anomaly signal, independent of any single edge's latency or volume.
+- **Cross-node imbalance.** If chains routinely hop between physical nodes (athena/atlas), edge
+  properties split by `source.node` would surface real infrastructure load-balance questions, not
+  just software-level pressure.
+- **Time-of-day / session-conditioned baselines.** Rather than one global rolling baseline per edge,
+  condition it on session/turn activity level (reusing the in-flight-chain-count signal above) —
+  separates "the mesh is busy because Juniper is actively chatting" from "the mesh is busy for no
+  reason," which a naive unconditioned z-score would conflate.
+
+### Real tensions in this direction, named without using them to shrink scope
+
+- **Chain termination is not currently well-defined.** "In-flight chain" tracking requires knowing
+  when a chain is *done* versus merely slow — there's no synthetic terminal marker in the envelope
+  schema today. Needs its own design decision (a timeout-based close, an explicit terminal-`kind`
+  convention, or something else), not assumed away.
+- **`correlation_id` co-occurrence conflates "same flow" with "true parent → child."** Two envelopes
+  sharing a `correlation_id` proves relatedness, not which one caused which — `CAUSALLY_FOLLOWED_BY`
+  edges built naively from this would need real ordering/causality logic, not just grouping.
+  `causality_chain` (when populated) is the stronger signal for this; how often it's actually
+  populated in practice is unverified — both sampled envelopes had it empty (see Missing
+  Questions below).
+- **Write volume at full-tilt bus scale into FalkorDB is unmeasured.** Phase 1 proved a single Redis
+  `INCR` per publish is cheap; a Cypher `MERGE`+property-update per publish, mesh-wide, live, is a
+  different cost profile entirely and has not been benchmarked against this repo's real traffic
+  rate.
+- **This is a genuinely bigger surface than any other idea in this doc** — new node/edge types, a
+  new always-on consumer process, a new live-query surface for reasoning consumers. It deserves its
+  own dedicated design doc and its own metric-quality-gate pass before implementation starts, not a
+  green light from brainstorm output alone.
+
 ## Missing questions
 
 Carried from the original brainstorm, still unresolved:
@@ -158,6 +309,12 @@ Carried from the original brainstorm, still unresolved:
 - Given the RPC-health arc's own Q6 (one `organ_id` covering multiple services, or one per service)
   is still unresolved there — if Idea 4 below ever generalizes beyond RPC calls, the same shape
   question applies to census/velocity data.
+- (Big-swing direction) How prevalent is a populated `causality_chain` across real traffic — does
+  `CAUSALLY_FOLLOWED_BY` need to fall back to `correlation_id`-co-occurrence-only, weaker evidence?
+- (Big-swing direction) What's a real Cypher `MERGE`+property-update cost at full mesh publish
+  volume — is per-message FalkorDB writes at that rate actually cheap, or does it need batching?
+- (Big-swing direction) What closes an "in-flight chain" — timeout, explicit terminal-`kind`
+  convention, something else? Undefined today.
 
 ## Proposed schema / API changes
 
@@ -259,3 +416,11 @@ pass against `bus_mirror.sqlite` (see "Found: a fourth 'quantify the bus' attemp
 than guessing at a silence baseline or collecting fresh live data from zero — it's already sitting
 on disk, costs nothing to query, and its staleness can be assessed in the same pass rather than
 assumed disqualifying up front.
+
+**Separately, on a different track:** the "Big-swing direction" section above is not sequenced
+against Ideas 1-6 — it's a bigger, later-stage direction that deserves its own dedicated design doc
+before implementation, not a smaller version squeezed into this doc's existing candidate list. If
+that direction proceeds, its own natural first step (in-flight-chain tracking + per-verb latency
+slicing, both flagged as priorities above) should get a real design pass — schema, write-cost
+measurement, chain-termination decision — before any code, same discipline as everything else in
+this arc, just not artificially shrunk to fit a single small patch.

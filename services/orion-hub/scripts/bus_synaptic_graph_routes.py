@@ -197,6 +197,42 @@ async def node_centrality(limit: int = Query(default=15, ge=1, le=100)) -> dict[
     return {"organs": rows}
 
 
+@router.get("/cross-node-imbalance")
+async def cross_node_imbalance(limit: int = Query(default=20, ge=1, le=100)) -> dict[str, Any]:
+    """Real cross-organ hops that cross a physical host boundary (e.g.
+    athena -> atlas), ranked by how often that's happened -- Idea D of
+    docs/superpowers/specs/2026-07-24-bus-synaptic-graph-wider-net-brainstorm.md.
+
+    Live-verified before building this: a 2000-envelope sample of real
+    traffic found envelope.source.node values of athena/atlas/circe all
+    present today -- the mesh genuinely spans multiple hosts, this isn't
+    speculative plumbing for a topology that doesn't exist.
+
+    ``cross_node_count`` / ``count`` on each edge is the real
+    infrastructure-load-balance signal: an edge that's *always* cross-node
+    is architecturally expected (e.g. a producer pinned to one host calling
+    a service pinned to another); a low but nonzero ratio suggests a
+    genuinely floating/unpinned deployment. Only edges that have observed at
+    least one hop with both sides' node populated are returned -- edges with
+    no node data yet (e.g. not touched since this feature deployed) are
+    correctly absent, not shown as zero.
+    """
+    client = _client()
+    rows = client.graph_query(
+        """
+        MATCH (a:Organ)-[e:CAUSALLY_FOLLOWED_BY]->(b:Organ)
+        WHERE e.cross_node_count IS NOT NULL
+        RETURN a.organ_id AS source_organ, b.organ_id AS target_organ,
+               e.last_source_node AS last_source_node, e.last_target_node AS last_target_node,
+               e.cross_node_count AS cross_node_count, e.count AS count
+        ORDER BY cross_node_count DESC
+        LIMIT $limit
+        """,
+        {"limit": limit},
+    )
+    return {"edges": rows}
+
+
 @router.get("/anomaly-propagation")
 async def anomaly_propagation(
     organ_id: str = Query(...),

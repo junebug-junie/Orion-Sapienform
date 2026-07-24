@@ -13,6 +13,7 @@ from app.main import _record_graph_event
 @dataclass
 class _FakeSource:
     name: Optional[str]
+    node: Optional[str] = None
 
 
 @dataclass
@@ -89,6 +90,28 @@ class TestRecordGraphEventFailsOpen:
         _, kwargs = writer.record_causal_hop.call_args
         assert kwargs["prior_organ_id"] == "cortex-exec"
         assert kwargs["prior_epoch"] == 100.0
+        assert kwargs["prior_node"] is None
+
+    @pytest.mark.asyncio
+    async def test_causal_hop_threads_the_prior_organs_node_through(self) -> None:
+        # Idea D (cross-node imbalance): record_causal_hop must receive the
+        # *prior* organ's node (from when it was first observed), not the
+        # current fact's node -- these can legitimately differ.
+        writer = MagicMock()
+        chain_tracker = ChainTracker(ttl_sec=60.0)
+        first = _FakeDecodeResult(
+            envelope=_FakeEnvelope(source=_FakeSource(name="cortex-exec", node="athena"), correlation_id="corr-1")
+        )
+        second = _FakeDecodeResult(
+            envelope=_FakeEnvelope(source=_FakeSource(name="llm-gateway", node="atlas"), correlation_id="corr-1")
+        )
+
+        await _record_graph_event(writer, chain_tracker, first, "orion:a", 100.0, set())
+        await _record_graph_event(writer, chain_tracker, second, "orion:b", 117.0, set())
+
+        _, kwargs = writer.record_causal_hop.call_args
+        assert kwargs["prior_node"] == "athena"
+        assert kwargs["fact"].node == "atlas"
 
 
 class TestRecordGraphEventVerbSteps:

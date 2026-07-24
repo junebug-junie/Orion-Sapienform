@@ -40,9 +40,10 @@ services:
       MIND_LLM_UNCERTAINTY_METACOG_ENABLED: ${MIND_LLM_UNCERTAINTY_METACOG_ENABLED:-false}
       MIND_LLM_USE_BUS: ${MIND_LLM_USE_BUS:-true}
       ORION_BUS_ENABLED: ${ORION_BUS_ENABLED:-true}
-      ORION_BUS_URL: ${ORION_BUS_URL:-redis://redis:6379/0}
+      ORION_BUS_URL: ${ORION_BUS_URL:-redis://100.92.216.81:6379/0}
       MIND_LLM_INTAKE_CHANNEL: ${MIND_LLM_INTAKE_CHANNEL:-orion:exec:request:LLMGatewayService}
       MIND_LLM_REPLY_PREFIX: ${MIND_LLM_REPLY_PREFIX:-orion:mind:llm:reply}
+      HEARTBEAT_INTERVAL_SEC: ${HEARTBEAT_INTERVAL_SEC:-10}
     networks:
       app-net:
         aliases:

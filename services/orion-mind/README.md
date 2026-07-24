@@ -19,4 +19,12 @@ Never fires if `llm_uncertainty.available` is falsy or `token_count_observed <= 
 |-----|---------|---------|
 | `MIND_LLM_UNCERTAINTY_METACOG_ENABLED` | `false` | Master gate |
 | `MIND_METACOG_TRIGGER_CHANNEL` | `orion:equilibrium:metacog:trigger` | Publish channel -- shared with equilibrium-service's own triggers, not a dedicated inbound channel |
-| `ORION_BUS_URL` | `redis://redis:6379/0` | Bus connection (fresh `OrionBusAsync` per publish, one-shot connect/publish/close) |
+| `ORION_BUS_URL` | `redis://100.92.216.81:6379/0` | Bus connection (fresh `OrionBusAsync` per publish, one-shot connect/publish/close). Was stale (`redis://redis:6379/0`) in this table and in `settings.py`'s code-level default before the service-heartbeat rollout fixed it -- the checked-in `.env_example` already had the correct value. |
+
+## Bus-native heartbeat
+
+Publishes a `SystemHealthV1` heartbeat to `orion:system:health` every
+`HEARTBEAT_INTERVAL_SEC` (default 10s), on its own independent bus connection via
+`app/main.py`'s FastAPI `lifespan` (this service had no `lifespan` at all before this patch).
+Separate from the LLM-gateway RPC bus connections used by `MIND_LLM_USE_BUS`. See
+docs/superpowers/specs/2026-07-24-service-heartbeat-node-telemetry-design.md.

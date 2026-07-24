@@ -1,10 +1,12 @@
 from __future__ import annotations
 
 import logging
+from contextlib import asynccontextmanager
 from pathlib import Path
 
 from fastapi import FastAPI
 
+from orion.core.bus.bus_service_chassis import ChassisConfig, HeartbeatOnly
 from orion.mind.v1 import MindRunRequestV1, MindRunResultV1
 
 from .engine import run_mind
@@ -12,6 +14,49 @@ from .settings import settings
 
 logging.basicConfig(level=getattr(logging, settings.LOG_LEVEL.upper(), logging.INFO))
 logger = logging.getLogger("orion-mind")
+
+heartbeat_chassis: HeartbeatOnly | None = None
+
+
+def build_heartbeat_chassis() -> HeartbeatOnly:
+    """Own, independent bus connection publishing SystemHealthV1 to orion:system:health
+    every HEARTBEAT_INTERVAL_SEC. Deliberately separate from the LLM-gateway RPC bus fork used
+    by MIND_LLM_USE_BUS (app/llm_client.py) -- this service had no FastAPI lifespan at all
+    before this patch. See
+    docs/superpowers/specs/2026-07-24-service-heartbeat-node-telemetry-design.md."""
+    return HeartbeatOnly(
+        ChassisConfig(
+            service_name=settings.SERVICE_NAME,
+            service_version=settings.SERVICE_VERSION,
+            node_name=settings.NODE_NAME,
+            bus_url=settings.ORION_BUS_URL,
+            bus_enabled=settings.ORION_BUS_ENABLED,
+            heartbeat_interval_sec=settings.HEARTBEAT_INTERVAL_SEC,
+        )
+    )
+
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    global heartbeat_chassis
+    try:
+        heartbeat_chassis = build_heartbeat_chassis()
+        await heartbeat_chassis.start_background()
+        logger.info(
+            "system_health_heartbeat_started service=%s interval_sec=%s",
+            settings.SERVICE_NAME,
+            settings.HEARTBEAT_INTERVAL_SEC,
+        )
+    except Exception as exc:
+        logger.warning("system_health_heartbeat_start_failed error=%s", exc)
+        heartbeat_chassis = None
+    yield
+    if heartbeat_chassis is not None:
+        try:
+            await heartbeat_chassis.stop()
+        except Exception as exc:
+            logger.warning("system_health_heartbeat_stop_error error=%s", exc)
+        heartbeat_chassis = None
 
 
 def _log_timeout_hierarchy_warnings() -> None:
@@ -55,7 +100,7 @@ def _log_timeout_hierarchy_warnings() -> None:
 
 _log_timeout_hierarchy_warnings()
 
-app = FastAPI(title="Orion Mind", version=settings.SERVICE_VERSION)
+app = FastAPI(title="Orion Mind", version=settings.SERVICE_VERSION, lifespan=lifespan)
 
 
 @app.get("/health")

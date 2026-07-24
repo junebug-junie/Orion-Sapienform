@@ -15,7 +15,9 @@ from orion.fcc.context_budget import (
 from orion.harness.fcc_motor import (
     _extract_tool_name,
     _extract_tool_result_errors,
+    classify_step_tool_kind,
     expand_env_path,
+    extract_result_output_tokens,
     load_fcc_env,
     resolve_auth_token,
     run_fcc_turn,
@@ -67,6 +69,14 @@ class HarnessMotorResult:
     step_char_sum: int = 0
     step_char_max: int = 0
     tool_failure_streak_max: int = 0
+    # Real output_tokens from the harness CLI's own result-event usage object, and a
+    # deterministic tool-name step-kind split (see fcc_motor.py's
+    # extract_result_output_tokens/classify_step_tool_kind) -- same carry-through
+    # reason as step_char_sum above (bus_listener.py re-invokes record_result_assembled
+    # on this same collector).
+    reasoning_output_tokens: int = 0
+    context_gathering_step_count: int = 0
+    execution_step_count: int = 0
     # Distinct from grounding_status: that field is an overloaded error/
     # overflow code already surfaced as a user-visible error by downstream
     # consumers (orion/hub/turn_orchestrator.py, orion-harness-governor).
@@ -266,6 +276,9 @@ class HarnessRunner:
         step_char_max = 0
         tool_failure_streak = 0
         tool_failure_streak_max = 0
+        reasoning_output_tokens = 0
+        context_gathering_step_count = 0
+        execution_step_count = 0
         # Only updated inside the is_error loop below -- a step with zero tool_result
         # errors doesn't touch this state at all, so a streak persists across an
         # intervening clean step (e.g. fail/success/fail on the same error kind still
@@ -305,6 +318,14 @@ class HarnessRunner:
                 summary = summarize_harness_step(step, index=step_count)
                 collector.record_step_started(order=step_count + 1, summary=summary)
                 tool_name = _extract_tool_name(step)
+                step_kind = classify_step_tool_kind(tool_name)
+                if step_kind == "context_gathering":
+                    context_gathering_step_count += 1
+                elif step_kind == "execution":
+                    execution_step_count += 1
+                result_tokens = extract_result_output_tokens(step)
+                if result_tokens is not None:
+                    reasoning_output_tokens = max(reasoning_output_tokens, result_tokens)
                 receipt = await publish_harness_step_grammar(
                     self.bus,
                     correlation_id=request.correlation_id,
@@ -396,6 +417,9 @@ class HarnessRunner:
                 step_char_sum=step_char_sum,
                 step_char_max=step_char_max,
                 tool_failure_streak_max=tool_failure_streak_max,
+                reasoning_output_tokens=reasoning_output_tokens,
+                context_gathering_step_count=context_gathering_step_count,
+                execution_step_count=execution_step_count,
             )
             events = build_harness_grammar_events(collector)
             logger.info(
@@ -448,6 +472,9 @@ class HarnessRunner:
                 step_char_sum=step_char_sum,
                 step_char_max=step_char_max,
                 tool_failure_streak_max=tool_failure_streak_max,
+                reasoning_output_tokens=reasoning_output_tokens,
+                context_gathering_step_count=context_gathering_step_count,
+                execution_step_count=execution_step_count,
             )
 
         await _publish_motor_lifecycle(
@@ -502,4 +529,7 @@ class HarnessRunner:
             step_char_sum=step_char_sum,
             step_char_max=step_char_max,
             tool_failure_streak_max=tool_failure_streak_max,
+            reasoning_output_tokens=reasoning_output_tokens,
+            context_gathering_step_count=context_gathering_step_count,
+            execution_step_count=execution_step_count,
         )

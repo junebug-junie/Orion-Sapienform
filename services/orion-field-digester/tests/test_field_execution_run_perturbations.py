@@ -97,6 +97,7 @@ def test_execution_run_new_fcc_channels_attributed_to_orchestrating_node() -> No
             "tool_failure_streak_pressure": 0.67,
             "avg_step_chars_pressure": 0.3,
             "compliance_deficit": 0.333,
+            "context_gathering_ratio": 0.8,
         },
         llm_serving_node="atlas",
     )
@@ -107,9 +108,56 @@ def test_execution_run_new_fcc_channels_attributed_to_orchestrating_node() -> No
         "tool_failure_streak_pressure",
         "avg_step_chars_pressure",
         "compliance_deficit",
+        "context_gathering_ratio",
     ):
         assert by_channel[channel].node_id == "node:athena"
     assert by_channel["harness_step_load"].intensity == 0.62
+    assert by_channel["context_gathering_ratio"].intensity == 0.8
+
+
+def test_execution_run_reasoning_load_from_harness_motor_lane_routes_to_reasoning_node() -> None:
+    """reasoning_load driven by the harness_motor lane's real reasoning_output_tokens
+    magnitude must still route via llm_serving_node like the cortex-exec path does,
+    and must fire exactly once -- not once from the unconditional top-level loop AND
+    again from the harness_motor-gated block (2026-07-24 fix, see state_deltas.py's
+    comment on why reasoning_load is excluded from that loop for this one lane)."""
+    delta = _make_execution_run_delta(
+        lane="harness_motor",
+        pressure_hints={"reasoning_load": 0.42, "harness_step_load": 0.1},
+        llm_serving_node="circe",
+    )
+    perturbations = delta_to_perturbations(delta)
+    reasoning_perturbations = [p for p in perturbations if p.channel == "reasoning_load"]
+    assert len(reasoning_perturbations) == 1
+    assert reasoning_perturbations[0].node_id == "node:circe"
+    assert reasoning_perturbations[0].intensity == 0.42
+
+
+def test_execution_run_reasoning_load_bare_trace_still_overwrites_harness_motor_value() -> None:
+    """Documents a deliberately out-of-scope limitation, not a fix: this patch only
+    excludes the harness_motor lane from the unconditional top-level loop (so its own
+    real reasoning_output_tokens value doesn't collide with itself); a bare-trace
+    (cortex-exec) delta's own reasoning_load still fires from that same unconditional
+    loop exactly as it always has, and can still overwrite a harness_motor-set value.
+    Auditing/fixing that pre-existing (unaudited before this patch, per
+    state_deltas.py's comment) cross-lane exposure for every other lane is explicitly
+    not this patch's scope -- see the reasoning_load glossary entry's 2026-07-24
+    update in services/orion-field-digester/README.md."""
+    from app.digestion.perturbation import apply_perturbations
+    from orion.schemas.field_state import FieldStateV1
+
+    state = FieldStateV1(generated_at=FIXED_TS, tick_id="tick_x", node_vectors={}, edges=[])
+    real_delta = _make_execution_run_delta(
+        lane="harness_motor", pressure_hints={"reasoning_load": 0.55}
+    )
+    state = apply_perturbations(state, delta_to_perturbations(real_delta), now=FIXED_TS)
+    assert state.node_vectors["node:athena"]["reasoning_load"] == 0.55
+
+    off_lane_delta = _make_execution_run_delta(
+        lane=None, pressure_hints={"reasoning_load": 0.05}
+    )
+    state = apply_perturbations(state, delta_to_perturbations(off_lane_delta), now=FIXED_TS)
+    assert state.node_vectors["node:athena"]["reasoning_load"] == 0.05
 
 
 def test_execution_run_turn_incompletion_attributed_to_hub_node() -> None:
@@ -143,12 +191,17 @@ def test_execution_run_fcc_channels_ignored_off_lane() -> None:
     turn's own :harness_finalize_reflect delta. These 5 channels must ONLY ever
     produce perturbations from their own specific lane."""
     off_lane_deltas = [
-        _make_execution_run_delta(lane=None, pressure_hints={"harness_step_load": 0.5}),
         _make_execution_run_delta(
-            lane="harness_finalize_reflect", pressure_hints={"harness_step_load": 0.5}
+            lane=None,
+            pressure_hints={"harness_step_load": 0.5, "context_gathering_ratio": 0.9},
         ),
         _make_execution_run_delta(
-            lane="orion_voice_finalize", pressure_hints={"harness_step_load": 0.5}
+            lane="harness_finalize_reflect",
+            pressure_hints={"harness_step_load": 0.5, "context_gathering_ratio": 0.9},
+        ),
+        _make_execution_run_delta(
+            lane="orion_voice_finalize",
+            pressure_hints={"harness_step_load": 0.5, "context_gathering_ratio": 0.9},
         ),
         _make_execution_run_delta(lane=None, pressure_hints={"turn_incompletion": 1.0}),
         _make_execution_run_delta(
@@ -160,6 +213,7 @@ def test_execution_run_fcc_channels_ignored_off_lane() -> None:
         channels = {p.channel for p in perturbations}
         assert "harness_step_load" not in channels
         assert "turn_incompletion" not in channels
+        assert "context_gathering_ratio" not in channels
 
 
 def test_execution_run_harness_step_load_stays_bounded_through_apply_perturbations() -> None:

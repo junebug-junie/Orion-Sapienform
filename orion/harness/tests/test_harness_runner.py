@@ -212,6 +212,92 @@ async def test_harness_runner_error_path_does_not_use_tool_result_streak() -> No
     assert result.compliance_verdict == "failed"
 
 
+def _result_step(*, output_tokens: int) -> dict[str, Any]:
+    return {
+        "type": "result",
+        "raw": {
+            "type": "result",
+            "usage": {"input_tokens": 10, "output_tokens": output_tokens},
+            "result": "done",
+        },
+    }
+
+
+@pytest.mark.asyncio
+async def test_harness_runner_captures_real_output_tokens_from_result_event() -> None:
+    async def _tokened_runner(**_: Any) -> AsyncIterator[dict[str, Any]]:
+        yield {"type": "step", "step": _step_with_tool_result(is_error=False, text="ok")}
+        yield {"type": "step", "step": _result_step(output_tokens=42)}
+        yield {"type": "final", "llm_response": "done", "metadata": {"exit_code": 0}}
+
+    request = HarnessRunRequestV1(
+        correlation_id="c-tokens",
+        thought_event=make_thought(),
+        user_message="hello",
+        permissions=ContextExecPermissionV1(),
+        answer_contract=AnswerContract(),
+    )
+    result = await HarnessRunner(AsyncMock(), fcc_runner=_tokened_runner).run(request)
+    assert result.reasoning_output_tokens == 42
+
+
+@pytest.mark.asyncio
+async def test_harness_runner_ignores_non_result_step_for_output_tokens() -> None:
+    """A "step"-type event (not "result") must never be mistaken for the CLI's own
+    end-of-turn usage summary, even if it happened to carry a similarly-shaped dict."""
+
+    async def _decoy_runner(**_: Any) -> AsyncIterator[dict[str, Any]]:
+        yield {
+            "type": "step",
+            "step": {
+                "type": "assistant",
+                "raw": {"type": "assistant", "usage": {"output_tokens": 999}},
+            },
+        }
+        yield {"type": "final", "llm_response": "done", "metadata": {"exit_code": 0}}
+
+    request = HarnessRunRequestV1(
+        correlation_id="c-decoy",
+        thought_event=make_thought(),
+        user_message="hello",
+        permissions=ContextExecPermissionV1(),
+        answer_contract=AnswerContract(),
+    )
+    result = await HarnessRunner(AsyncMock(), fcc_runner=_decoy_runner).run(request)
+    assert result.reasoning_output_tokens == 0
+
+
+def _tool_use_step(tool_name: str) -> dict[str, Any]:
+    return {
+        "type": "assistant",
+        "raw": {
+            "type": "assistant",
+            "message": {"content": [{"type": "tool_use", "name": tool_name, "input": {}}]},
+        },
+    }
+
+
+@pytest.mark.asyncio
+async def test_harness_runner_classifies_step_tool_kinds() -> None:
+    async def _mixed_runner(**_: Any) -> AsyncIterator[dict[str, Any]]:
+        yield {"type": "step", "step": _tool_use_step("Read")}
+        yield {"type": "step", "step": _tool_use_step("mcp__gitnexus__cypher")}
+        yield {"type": "step", "step": _tool_use_step("Bash")}
+        yield {"type": "step", "step": _tool_use_step("SomeUnlistedMcpTool")}
+        yield {"type": "final", "llm_response": "done", "metadata": {"exit_code": 0}}
+
+    request = HarnessRunRequestV1(
+        correlation_id="c-mixed",
+        thought_event=make_thought(),
+        user_message="hello",
+        permissions=ContextExecPermissionV1(),
+        answer_contract=AnswerContract(),
+    )
+    result = await HarnessRunner(AsyncMock(), fcc_runner=_mixed_runner).run(request)
+    assert result.context_gathering_step_count == 2
+    assert result.execution_step_count == 1
+
+
 async def _mock_fcc_runner_fetch_then_confabulate(**_: Any) -> AsyncIterator[dict[str, Any]]:
     yield {
         "type": "step",

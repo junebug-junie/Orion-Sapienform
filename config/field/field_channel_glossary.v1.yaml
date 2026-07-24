@@ -1,9 +1,11 @@
-# Structured index of FieldStateV1's 34 raw digester channels (28 NODE_CHANNELS
+# Structured index of FieldStateV1's 35 raw digester channels (29 NODE_CHANNELS
 # + 8 CAPABILITY_CHANNELS in services/orion-field-digester/app/tensor/channels.py,
-# overlapping on transport_pressure/contract_pressure). 28 = 23 original + 5
+# overlapping on transport_pressure/contract_pressure). 29 = 23 original + 5
 # FCC-motor channels added 2026-07-23 (harness_step_load,
 # tool_failure_streak_pressure, avg_step_chars_pressure, compliance_deficit,
-# turn_incompletion).
+# turn_incompletion) + 1 FCC-motor channel added 2026-07-24
+# (context_gathering_ratio; reasoning_load also gained a real motor-side
+# magnitude the same day but is not a new channel).
 #
 # This is the machine-readable companion to
 # services/orion-field-digester/README.md's "Field channel glossary" section,
@@ -95,7 +97,11 @@ channels:
   - channel: reasoning_load
     level: [node]
     category: task_execution
-    meaning: "How much active LLM-reasoning work a node is doing."
+    meaning: "How much active LLM-reasoning work a node is doing. Real magnitude
+      since 2026-07-24: cortex-exec-sourced runs use reasoning_char_count (chars);
+      harness-motor-sourced runs use reasoning_output_tokens (real provider-computed
+      tokens from the FCC CLI's own result-event usage object, confirmed live). Falls
+      back to a 0.35/0.05 presence-only flag only when neither magnitude is set."
     evidence_dimension: reasoning_pressure
 
   - channel: failure_pressure
@@ -134,6 +140,17 @@ channels:
     level: [node]
     category: task_execution
     meaning: "Did Hub fail to get a usable result back from the harness-governor RPC for this turn at all -- the one unified-turn failure mode where no governor-side grammar event exists. A distinct, worse severity than compliance_deficit's worst rank."
+
+  - channel: context_gathering_ratio
+    level: [node]
+    category: task_execution
+    meaning: "What fraction of one FCC-motor turn's classified tool calls were
+      read-only research/context tools (Read, Grep, WebSearch, mcp__gitnexus__*,
+      mcp__firecrawl__*, ...) vs action/mutation tools (Bash, Edit, Write, other MCP
+      tools) -- composition, not volume (harness_step_load already covers volume). A
+      fixed, deterministic tool-name allowlist, not a taxonomy: an unmatched tool
+      name increments neither bucket, so 0.0 can mean either all-execution or
+      zero-classified-calls."
 
   - channel: repair_pressure
     level: [node]

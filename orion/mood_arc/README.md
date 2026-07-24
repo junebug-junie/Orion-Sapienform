@@ -171,14 +171,20 @@ python orion/mood_arc/fit_encoder.py train \
   `v3` was trained on the *old* distributions for both. Every score computed since
   `orion-field-digester`'s `2026-07-23T06:10:08Z` restart compares new-distribution live data
   against a stale-distribution-trained model — the same contamination class as cutoffs two
-  through four. **Not yet confirmed whether this has produced spurious
-  `field_channel_anomaly.v3` flags** — checked `orion-athena-field-digester`'s logs shortly
-  after the restart, no `field_channel_anomaly_flagged` line yet, but this is inconclusive:
-  `v3`'s `window_size=30` rows may not have filled yet at check time, not evidence of absence.
-  Whoever picks this up next should re-check the logs with more elapsed time before treating it
-  as resolved either way. **Do not retrain yet** — matching every prior cutoff's own caveat,
-  only minutes of clean post-fix data exist as of this writing. `v3` remains the model to keep
-  serving until a `v4` retrain against this cutoff (or whichever is later) is warranted.
+  through four. **Resolved 2026-07-24**: exactly 2 `field_channel_anomaly_flagged` events
+  fired, both 11-14 minutes post-restart, none since (re-checked at 11+ hours post-restart).
+  Timing matches `app/anomaly_scorer.py`'s own documented cold-start artifact (reconcile-seeded
+  defaults still in the buffer right after a restart), not a sustained distribution-shift
+  problem — a real shift would keep firing as the new formulas kept flowing, not fire twice and
+  go silent. Read as noise. **Second shift on `reasoning_load` the same day (2026-07-24)**:
+  the FCC-motor/harness-governor path gained its own real magnitude too
+  (`reasoning_output_tokens`, real provider token counts from the FCC CLI's own result-event
+  usage object — previously that path had no magnitude at all, always the `0.35`/`0.05` flag).
+  Same cutoff timestamp already covers it (no new cutoff needed), but noted here since it's a
+  second, later change to an already-cutoff channel, not just the one `5b1cc0fa` fix. **Do not
+  retrain yet** — matching every prior cutoff's own caveat, only minutes of clean post-fix data
+  exist as of this writing. `v3` remains the model to keep serving until a `v4` retrain against
+  this cutoff (or whichever is later) is warranted.
   **Heads-up for whoever eventually renames `transport_pressure`** (flagged as a live
   scope-honesty issue below, and in that same FCC-motor design doc's appendix, but not yet
   fixed): `transport_pressure` is also one of `v3`'s 15 trained channels. A rename is a

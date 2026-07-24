@@ -18,6 +18,7 @@ NODE_CHANNELS = [
     "avg_step_chars_pressure",
     "compliance_deficit",
     "turn_incompletion",
+    "context_gathering_ratio",
     "conversation_load",
     "transport_pressure",
     "contract_pressure",

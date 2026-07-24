@@ -32,11 +32,11 @@ def test_build_envelope_carries_all_snapshot_fields() -> None:
     snapshot = agg.snapshot_and_reset()
 
     env = build_rpc_health_snapshot_envelope(
-        snapshot, service="orion-cortex-exec", node="athena", instance=None, source=_source()
+        snapshot, service="cortex-exec", node="athena", instance=None, source=_source()
     )
 
     assert env.kind == RPC_HEALTH_SNAPSHOT_KIND
-    assert env.payload["service"] == "orion-cortex-exec"
+    assert env.payload["service"] == "cortex-exec"
     assert env.payload["success_count"] == 1
     assert env.payload["timeout_count"] == 1
     assert env.payload["channel_counts"] == {"orion:cortex:exec:request": 2}
@@ -48,7 +48,7 @@ def test_build_envelope_on_empty_snapshot_is_not_degenerate_shaped() -> None:
     agg = RpcHealthAggregator()
     snapshot = agg.snapshot_and_reset()
     env = build_rpc_health_snapshot_envelope(
-        snapshot, service="orion-cortex-orch", node="athena", instance=None, source=_source()
+        snapshot, service="cortex-orch", node="athena", instance=None, source=_source()
     )
     assert env.payload["success_count"] == 0
     assert env.payload["timeout_count"] == 0
@@ -88,7 +88,7 @@ async def test_publish_loop_resolves_bus_getter_fresh_each_tick_not_captured_onc
     task = asyncio.create_task(
         rpc_health_publish_loop(
             bus_getter=_bus_getter,
-            service="orion-cortex-exec",
+            service="cortex-exec",
             node="athena",
             instance=None,
             source=_source(),
@@ -120,7 +120,7 @@ async def test_publish_loop_survives_publish_failure_and_keeps_ticking() -> None
     task = asyncio.create_task(
         rpc_health_publish_loop(
             bus_getter=lambda: bus,
-            service="orion-cortex-exec",
+            service="cortex-exec",
             node="athena",
             instance=None,
             source=_source(),
@@ -147,7 +147,7 @@ async def test_publish_loop_stops_promptly_when_stop_event_set_during_sleep() ->
     task = asyncio.create_task(
         rpc_health_publish_loop(
             bus_getter=lambda: bus,
-            service="orion-cortex-exec",
+            service="cortex-exec",
             node="athena",
             instance=None,
             source=_source(),

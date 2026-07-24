@@ -39,7 +39,7 @@ def _ensure_cortex_exec_paths() -> None:
 
 _ensure_cortex_exec_paths()
 
-os.environ.setdefault("SERVICE_NAME", "orion-cortex-exec")
+os.environ.setdefault("SERVICE_NAME", "cortex-exec")
 os.environ.setdefault("SERVICE_VERSION", "0.2.0")
 os.environ.setdefault("NODE_NAME", "athena")
 os.environ.setdefault("ORION_BUS_URL", "redis://localhost:6379/0")

@@ -32,6 +32,7 @@ from .goal_context_listener import (
     start_goal_context_listener,
     stop_goal_context_listener,
 )
+from orion.core.bus.bus_service_chassis import ChassisConfig, HeartbeatOnly
 from orion.substrate.execution_loop.constants import EXECUTION_TRAJECTORY_PROJECTION_ID
 from orion.substrate.chat_loop.constants import CHAT_SESSION_PROJECTION_ID
 from orion.substrate.route_loop.constants import ROUTE_ARBITRATION_PROJECTION_ID
@@ -43,15 +44,37 @@ from .worker import BiometricsSubstrateWorker
 _settings = get_settings()
 logging.basicConfig(level=getattr(logging, _settings.log_level.upper(), logging.INFO))
 
+logger = logging.getLogger("orion.substrate.runtime.main")
+
 worker = BiometricsSubstrateWorker()
 _finalize_listener_task = None
 _closure_listener_task = None
 _goal_context_listener_task = None
+heartbeat_chassis: HeartbeatOnly | None = None
+
+
+def build_heartbeat_chassis() -> HeartbeatOnly:
+    """Own, independent bus connection publishing SystemHealthV1 to orion:system:health
+    every heartbeat_interval_sec. Deliberately separate from `worker.bus` (the worker's
+    own reducer/listener bus connection) so this pilot-5 rollout (see
+    docs/superpowers/specs/2026-07-24-service-heartbeat-node-telemetry-design.md) cannot
+    interfere with the worker's existing task list/lifecycle."""
+    s = get_settings()
+    return HeartbeatOnly(
+        ChassisConfig(
+            service_name=s.service_name,
+            service_version=s.service_version,
+            node_name=s.node_name,
+            bus_url=s.orion_bus_url,
+            bus_enabled=s.orion_bus_enabled,
+            heartbeat_interval_sec=s.heartbeat_interval_sec,
+        )
+    )
 
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    global _finalize_listener_task, _closure_listener_task, _goal_context_listener_task
+    global _finalize_listener_task, _closure_listener_task, _goal_context_listener_task, heartbeat_chassis
     await worker.start()
     if worker.bus is not None:
         _finalize_listener_task = await start_finalize_appraisal_listener(
@@ -68,8 +91,25 @@ async def lifespan(app: FastAPI):
             worker.stop_event,
         )
     try:
+        heartbeat_chassis = build_heartbeat_chassis()
+        await heartbeat_chassis.start_background()
+        logger.info(
+            "system_health_heartbeat_started service=%s interval_sec=%s",
+            _settings.service_name,
+            _settings.heartbeat_interval_sec,
+        )
+    except Exception as exc:
+        logger.warning("system_health_heartbeat_start_failed error=%s", exc)
+        heartbeat_chassis = None
+    try:
         yield
     finally:
+        if heartbeat_chassis is not None:
+            try:
+                await heartbeat_chassis.stop()
+            except Exception as exc:
+                logger.warning("system_health_heartbeat_stop_error error=%s", exc)
+            heartbeat_chassis = None
         await stop_finalize_appraisal_listener(_finalize_listener_task)
         _finalize_listener_task = None
         await stop_post_turn_closure_listener(_closure_listener_task)

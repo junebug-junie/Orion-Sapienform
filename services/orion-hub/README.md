@@ -22,6 +22,9 @@ From Hub’s perspective:
 
 > “I don’t know about LLMs, Agents, or RAG. I just send a `CortexChatRequest` to the Gateway.”
 
+Hub also publishes a bus-native `SystemHealthV1` heartbeat to `orion:system:health` every
+`HEARTBEAT_INTERVAL_SEC` (default 10s), independent of its main chat/cognition bus connection.
+
 ---
 
 ## 🏗️ Architecture

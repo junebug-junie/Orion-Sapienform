@@ -2,6 +2,9 @@
 
 Simple HTTP gateway for interacting with the Cortex Orchestrator via the Orion Bus.
 
+Also publishes a bus-native `SystemHealthV1` heartbeat to `orion:system:health` every
+`HEARTBEAT_INTERVAL_SEC` (default 10s), independent of `bus_client`'s own bus/RPC connections.
+
 ## Run with Docker
 
 ```bash

@@ -60,6 +60,10 @@ docker compose up --build
 
 Health: `GET http://localhost:8115/health`
 
+Also publishes a separate, bus-native `SystemHealthV1` heartbeat to `orion:system:health` every
+`HEARTBEAT_INTERVAL_SEC` (default 10s) -- independent of the HTTP `/health` route above and of
+`worker.bus` (the worker's own reducer/listener bus connection).
+
 ## Idempotent committed deltas
 
 `ReductionReceiptV1.receipt_id` and `StateDeltaV1.delta_id` are derived from reducer inputs via `orion.substrate.ids` so replay/retry does not mint duplicate committed identities. Postgres inserts use `ON CONFLICT (receipt_id) DO NOTHING`.

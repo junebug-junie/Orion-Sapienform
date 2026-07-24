@@ -37,6 +37,7 @@ from scripts.cognition_trace_cache import CognitionTraceCache
 from scripts.embodiment_outcome_cache import EmbodimentOutcomeCache
 
 from orion.core.bus.async_service import OrionBusAsync
+from orion.core.bus.bus_service_chassis import ChassisConfig, HeartbeatOnly
 from scripts.bus_clients.cortex_client import CortexGatewayClient
 from scripts.bus_clients.tts_client import TTSClient
 
@@ -271,6 +272,25 @@ presence_context_store: Optional["PresenceContextStore"] = None
 substrate_autonomy_task: Optional[asyncio.Task] = None
 substrate_decay_task: Optional[asyncio.Task] = None
 substrate_topic_foundry_scheduler_task: Optional[asyncio.Task] = None
+heartbeat_chassis: Optional[HeartbeatOnly] = None
+
+
+def build_heartbeat_chassis() -> HeartbeatOnly:
+    """Own, independent bus connection publishing SystemHealthV1 to orion:system:health
+    every HEARTBEAT_INTERVAL_SEC. Deliberately separate from `bus` above (Hub's main
+    RPC/cache bus) so this pilot-5 rollout (see
+    docs/superpowers/specs/2026-07-24-service-heartbeat-node-telemetry-design.md) cannot
+    interfere with Hub's existing bus lifecycle."""
+    return HeartbeatOnly(
+        ChassisConfig(
+            service_name=settings.SERVICE_NAME,
+            service_version=settings.SERVICE_VERSION,
+            node_name=settings.NODE_NAME,
+            bus_url=settings.ORION_BUS_URL,
+            bus_enabled=settings.ORION_BUS_ENABLED,
+            heartbeat_interval_sec=settings.HEARTBEAT_INTERVAL_SEC,
+        )
+    )
 
 
 class PresenceState:
@@ -343,7 +363,24 @@ async def startup_event():
     Initializes all shared services at application startup.
     OrionBus + Clients + UI template.
     """
-    global bus, rpc_bus, cortex_client, tts_client, html_content, biometrics_cache, notification_cache, agent_step_relay, harness_step_relay, signals_inspect_cache, cognition_trace_cache, embodiment_outcome_cache, presence_state, presence_context_store, substrate_autonomy_task, substrate_decay_task, substrate_topic_foundry_scheduler_task
+    global bus, rpc_bus, cortex_client, tts_client, html_content, biometrics_cache, notification_cache, agent_step_relay, harness_step_relay, signals_inspect_cache, cognition_trace_cache, embodiment_outcome_cache, presence_state, presence_context_store, substrate_autonomy_task, substrate_decay_task, substrate_topic_foundry_scheduler_task, heartbeat_chassis
+
+    # ------------------------------------------------------------
+    # Bus-native SystemHealthV1 heartbeat (pilot-5 rollout, see
+    # docs/superpowers/specs/2026-07-24-service-heartbeat-node-telemetry-design.md).
+    # Own bus connection, independent of Hub's main `bus`/`rpc_bus` below.
+    # ------------------------------------------------------------
+    try:
+        heartbeat_chassis = build_heartbeat_chassis()
+        await heartbeat_chassis.start_background()
+        logger.info(
+            "system_health_heartbeat_started service=%s interval_sec=%s",
+            settings.SERVICE_NAME,
+            settings.HEARTBEAT_INTERVAL_SEC,
+        )
+    except Exception as exc:
+        logger.warning("system_health_heartbeat_start_failed error=%s", exc)
+        heartbeat_chassis = None
 
     # ------------------------------------------------------------
     # Orion Bus Initialization
@@ -666,7 +703,13 @@ async def startup_event():
 
 @app.on_event("shutdown")
 async def shutdown_event() -> None:
-    global bus, rpc_bus, biometrics_cache, notification_cache, agent_step_relay, harness_step_relay, signals_inspect_cache, cognition_trace_cache, embodiment_outcome_cache, substrate_autonomy_task, substrate_decay_task, substrate_topic_foundry_scheduler_task
+    global bus, rpc_bus, biometrics_cache, notification_cache, agent_step_relay, harness_step_relay, signals_inspect_cache, cognition_trace_cache, embodiment_outcome_cache, substrate_autonomy_task, substrate_decay_task, substrate_topic_foundry_scheduler_task, heartbeat_chassis
+    if heartbeat_chassis is not None:
+        try:
+            await heartbeat_chassis.stop()
+        except Exception as exc:
+            logger.warning("system_health_heartbeat_stop_error error=%s", exc)
+        heartbeat_chassis = None
     pool = getattr(app.state, "memory_pg_pool", None)
     if pool is not None:
         try:

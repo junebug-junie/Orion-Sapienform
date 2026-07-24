@@ -7,6 +7,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 
 from orion.bus.consumer_readiness import bus_consumer_readiness_v1, check_bus_consumer_readiness
+from orion.core.bus.bus_service_chassis import ChassisConfig, HeartbeatOnly
 from orion.schemas.telemetry.system_health import BusConsumerReadinessV1
 
 from orion.schemas.cortex.contracts import (
@@ -24,12 +25,52 @@ logging.basicConfig(level=logging.INFO)
 
 settings = get_settings()
 bus_client = BusClient()
+heartbeat_chassis: HeartbeatOnly | None = None
+
+
+def build_heartbeat_chassis() -> HeartbeatOnly:
+    """Own, independent bus connection publishing SystemHealthV1 to orion:system:health
+    every heartbeat_interval_sec. Deliberately separate from `bus_client`'s own bus/RPC
+    forks (see docs/superpowers/specs/2026-07-24-service-heartbeat-node-telemetry-design.md)."""
+    return HeartbeatOnly(
+        ChassisConfig(
+            service_name=settings.service_name,
+            service_version=settings.service_version,
+            node_name=settings.node_name,
+            bus_url=settings.orion_bus_url,
+            bus_enabled=True,
+            heartbeat_interval_sec=settings.heartbeat_interval_sec,
+        )
+    )
+
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
+    global heartbeat_chassis
     await bus_client.connect()
     await bus_client.start_gateway_consumer()
+    try:
+        heartbeat_chassis = build_heartbeat_chassis()
+        await heartbeat_chassis.start_background()
+        logging.getLogger("orion.cortex.gateway").info(
+            "system_health_heartbeat_started service=%s interval_sec=%s",
+            settings.service_name,
+            settings.heartbeat_interval_sec,
+        )
+    except Exception as exc:
+        logging.getLogger("orion.cortex.gateway").warning(
+            "system_health_heartbeat_start_failed error=%s", exc
+        )
+        heartbeat_chassis = None
     yield
+    if heartbeat_chassis is not None:
+        try:
+            await heartbeat_chassis.stop()
+        except Exception as exc:
+            logging.getLogger("orion.cortex.gateway").warning(
+                "system_health_heartbeat_stop_error error=%s", exc
+            )
+        heartbeat_chassis = None
     await bus_client.close()
 
 app = FastAPI(title="Orion Cortex Gateway", lifespan=lifespan)

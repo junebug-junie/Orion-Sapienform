@@ -17,6 +17,9 @@ class Settings(BaseSettings):
     # (orion/substrate/causal_geometry_bus_publish.py) needed one.
     orion_bus_url: str = Field("redis://100.92.216.81:6379/0", alias="ORION_BUS_URL")
     orion_bus_enabled: bool = Field(True, alias="ORION_BUS_ENABLED")
+    # Bus-native SystemHealthV1 heartbeat cadence (orion:system:health). See
+    # docs/superpowers/specs/2026-07-24-service-heartbeat-node-telemetry-design.md.
+    heartbeat_interval_sec: float = Field(10.0, alias="HEARTBEAT_INTERVAL_SEC")
     lattice_path: str = Field(
         "config/field/orion_field_topology.v1.yaml",
         alias="LATTICE_PATH",

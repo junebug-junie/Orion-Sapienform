@@ -22,6 +22,10 @@ docker compose up --build
 
 Health: `GET http://localhost:8116/health`
 
+Also publishes a separate, bus-native `SystemHealthV1` heartbeat to `orion:system:health` every
+`HEARTBEAT_INTERVAL_SEC` (default 10s) -- independent of the HTTP `/health` route above and of
+the worker's own tick loops.
+
 ## Idle tick (pacemaker)
 
 `FIELD_DIGESTER_IDLE_TICK_ENABLED` (**default `true`**) keeps `tick_id` advancing on every poll even when there are no new receipts to consume. On a quiet poll the worker still loads/reconciles field state, runs decay + diffusion + suppression with an empty perturbation set, mints a new `tick_id`, and persists it via `save_field` — but it does not advance the receipt cursor or write pending deltas (that only happens via `commit_digest_tick` when receipts were actually consumed). This lets downstream free-running consumers (`orion-attention-runtime`, `orion-self-state-runtime`) keep advancing off the latest tick during quiet periods.

@@ -14,6 +14,14 @@ class Settings(BaseSettings):
     NODE_NAME: str = Field(default="unknown")
     PORT: int = Field(default=8360)
 
+    # Bus-native SystemHealthV1 heartbeat (orion:system:health). PageIndex had no bus
+    # connection at all before this -- these fields exist solely to carry an independent
+    # heartbeat chassis. See
+    # docs/superpowers/specs/2026-07-24-service-heartbeat-node-telemetry-design.md.
+    ORION_BUS_URL: str = Field(default="redis://100.92.216.81:6379/0")
+    ORION_BUS_ENABLED: bool = Field(default=True)
+    HEARTBEAT_INTERVAL_SEC: float = Field(default=10.0)
+
     PAGEINDEX_IMPL: str = Field(default="actual")
     PAGEINDEX_INSTALLATION_MODE: str = Field(default="cli")
     PAGEINDEX_REPO_PATH: str = Field(default="/opt/PageIndex")

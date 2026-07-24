@@ -16,6 +16,11 @@ RUN git clone --depth 1 --branch ${PAGEINDEX_REF} ${PAGEINDEX_REPO_URL} /opt/Pag
     && pip install --no-cache-dir -r /opt/PageIndex/requirements.txt
 
 COPY services/orion-pageindex /app
+# Real blocker found while wiring the bus-native SystemHealthV1 heartbeat (see
+# docs/superpowers/specs/2026-07-24-service-heartbeat-node-telemetry-design.md): this Dockerfile
+# never copied the shared `orion` package in, so `orion.core.bus.bus_service_chassis` was not
+# importable at runtime despite being importable from a repo-root checkout during dev/tests.
+COPY orion /app/orion
 
 ENV PYTHONPATH=/app
 ENV PYTHONUNBUFFERED=1

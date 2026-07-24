@@ -2,6 +2,11 @@
 
 Standalone journals PageIndex service.
 
+Also publishes a bus-native `SystemHealthV1` heartbeat to `orion:system:health` every
+`HEARTBEAT_INTERVAL_SEC` (default 10s) via its own independent Redis connection -- PageIndex's
+only bus wiring; the rest of the service talks to Postgres directly and shells out to the
+PageIndex CLI.
+
 ## API
 - `POST /corpora/journals/rebuild`
 - `GET /corpora/journals/status`

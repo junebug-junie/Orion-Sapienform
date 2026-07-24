@@ -235,6 +235,36 @@ class TestExtractBusEventFact:
         assert fact is not None
         assert fact.correlation_id is None
 
+    def test_channel_collapsed_to_matching_catalog_wildcard(self) -> None:
+        envelope = self._FakeEnvelope(source=self._FakeSource(name="llm-gateway"))
+        fact = extract_bus_event_fact(
+            envelope,
+            channel="orion:exec:result:LLMGatewayService:0cf10589-4bae-4cb7-bc13-40684d7d321e",
+            now=1.0,
+            catalog_names={"orion:exec:result:*"},
+        )
+        assert fact is not None
+        assert fact.channel == "orion:exec:result:*"
+
+    def test_channel_left_unchanged_without_catalog_names(self) -> None:
+        envelope = self._FakeEnvelope(source=self._FakeSource(name="llm-gateway"))
+        fact = extract_bus_event_fact(
+            envelope, channel="orion:exec:result:LLMGatewayService:0cf10589", now=1.0
+        )
+        assert fact is not None
+        assert fact.channel == "orion:exec:result:LLMGatewayService:0cf10589"
+
+    def test_exact_catalog_channel_unaffected_by_normalization(self) -> None:
+        envelope = self._FakeEnvelope(source=self._FakeSource(name="cortex-exec"))
+        fact = extract_bus_event_fact(
+            envelope,
+            channel="orion:system:health",
+            now=1.0,
+            catalog_names={"orion:system:health", "orion:exec:result:*"},
+        )
+        assert fact is not None
+        assert fact.channel == "orion:system:health"
+
 
 class TestChainTrackerInFlight:
     def _fact(self, organ_id: str, correlation_id: Optional[str], epoch: float) -> BusEventFact:

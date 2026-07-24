@@ -62,6 +62,7 @@ from collections import OrderedDict
 from dataclasses import dataclass
 from typing import Any
 
+from orion.bus.census import normalize_channel_name
 from orion.graph.falkor_client import FalkorGraphClient
 
 __all__ = [
@@ -525,20 +526,36 @@ class BusSynapticGraphWriter:
         )
 
 
-def extract_bus_event_fact(envelope: Any, *, channel: str, now: float | None = None) -> BusEventFact | None:
+def extract_bus_event_fact(
+    envelope: Any,
+    *,
+    channel: str,
+    now: float | None = None,
+    catalog_names: set[str] | None = None,
+) -> BusEventFact | None:
     """``envelope`` is a decoded BaseEnvelope (or envelope-shaped object with
     ``source.name`` and ``correlation_id``). Returns None if it doesn't carry
     enough identity to place on the graph (no source name) -- fails open,
     consistent with the rest of this arc's fail-open-on-malformed-data rule.
+
+    If ``catalog_names`` is given, ``channel`` is normalized via
+    ``orion.bus.census.normalize_channel_name`` before being placed on the
+    graph -- collapses dynamic per-request reply channels (e.g.
+    "orion:exec:result:LLMGatewayService:<uuid>") to their catalog wildcard
+    entry, fixing a real, live-found problem where the graph's Channel node
+    count (~9K) badly overshot the real 264-entry declared catalog. The
+    SQLite raw-log path is unaffected -- it keeps exact literal channel names
+    for debugging/replay, only the graph's node identity is collapsed.
     """
     source = getattr(envelope, "source", None)
     organ_id = getattr(source, "name", None) if source is not None else None
     if not organ_id:
         return None
     correlation_id = getattr(envelope, "correlation_id", None)
+    graph_channel = normalize_channel_name(channel, catalog_names) if catalog_names else channel
     return BusEventFact(
         organ_id=str(organ_id),
-        channel=channel,
+        channel=graph_channel,
         correlation_id=str(correlation_id) if correlation_id else None,
         observed_at_epoch=now if now is not None else time.time(),
     )

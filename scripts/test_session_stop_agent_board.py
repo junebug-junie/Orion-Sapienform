@@ -81,6 +81,20 @@ def test_own_session_item_nags_regardless_of_age() -> None:
     assert out, "expected a nag for the current session's own old item"
 
 
+def test_mixed_stale_and_fresh_ownerless_items_counts_only_fresh() -> None:
+    old_ts = (datetime.now(timezone.utc) - timedelta(days=10)).isoformat()
+    fresh_ts = datetime.now(timezone.utc).isoformat()
+    items = {
+        "stale-1": {"worktree_path": "/repo", "status": "open", "session_id": None, "updated_at": old_ts},
+        "stale-2": {"worktree_path": "/repo", "status": "open", "session_id": None, "updated_at": old_ts},
+        "fresh-1": {"worktree_path": "/repo", "status": "open", "session_id": None, "updated_at": fresh_ts},
+    }
+    out = _run_hook(items)
+    assert out, "expected a nag since one item is fresh"
+    payload = json.loads(out)
+    assert "1 open item" in payload["hookSpecificOutput"]["additionalContext"], payload
+
+
 def test_unresolved_session_id_fails_open_ignoring_staleness() -> None:
     old_ts = (datetime.now(timezone.utc) - timedelta(days=10)).isoformat()
     items = {
@@ -99,5 +113,6 @@ if __name__ == "__main__":
     test_stale_ownerless_item_does_not_nag()
     test_fresh_ownerless_item_still_nags()
     test_own_session_item_nags_regardless_of_age()
+    test_mixed_stale_and_fresh_ownerless_items_counts_only_fresh()
     test_unresolved_session_id_fails_open_ignoring_staleness()
     print("all tests passed")

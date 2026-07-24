@@ -96,6 +96,49 @@ question they raised — attempted-vs-succeeded publish counts, not just success
 into Idea 4 instead, since `RpcHealthAggregator` already proves the pattern works for RPC calls and
 the open question is only whether it's worth generalizing to non-RPC `publish()` calls too.
 
+## Found: a fourth "quantify the bus" attempt, and a dormant real dataset
+
+`services/orion-bus-mirror` — a wiretap/relay service, not currently running — is worth naming
+explicitly because it makes the pattern across this whole area visible: this is at least the
+**fourth** distinct attempt in this codebase to answer "how much is happening on the bus," found
+across three different investigation threads this week alone (`transport_pressure`/`bus_health`'s
+2-Streams-only observer; the RPC-health redesign's per-call aggregator; this arc's census/velocity;
+and now this). None of the four talk to each other. That repetition is itself evidence of a real,
+recurring gap in Orion's self-model, not just an interesting coincidence — worth naming plainly
+rather than quietly adding a fifth.
+
+**What it is:** subscribes to a configured bus pattern, forwards matched envelopes to a debug
+channel, another bus, or file/SQLite recording (`app/main.py`) — built for human debugging and
+session replay, not for feeding a field signal.
+
+**What was found sitting on disk, unused:** `services/orion-bus-mirror/data/bus_mirror.sqlite` —
+**~97.4M rows**, one row per envelope (`timestamp`, `channel`, `envelope_json`), spanning
+**2026-01-09 to 2026-04-07** (~3 months), recorded with `MIRROR_PATTERN=orion:*` — the entire
+catalog, not a narrow lens. Dormant since April 7 (confirmed: not in `docker ps`, file mtime
+matches). Gitignored (`data/` in `.gitignore`), 99.6GB, not a repo-hygiene issue but a real idle
+footprint worth knowing about post-Postgres-disk-death, even though the volume it sits on currently
+has 273GB free.
+
+**A real misconfiguration, likely why it stopped:** the service's own README names "mirror the
+entire bus" under "Common failure modes" ("Pattern too broad → overload") and recommends narrow
+lenses instead (`orion:pad:*`, `orion:cortex:*`, etc.) — but the checked-in `.env` is set to exactly
+the pattern it warns against. Worth fixing if this service is ever revived, independent of anything
+else in this doc.
+
+**Relevance to this brainstorm, stated honestly:** this data is **stale relative to today's mesh**
+— 3+ months old, and this repo's own churn rate (recall: 44 services needed a compose-passthrough
+fix, dozens of channel/schema changes shipped since January per this week's PR history alone) means
+current channel topology and traffic shape may not match what's in this file. It should not be
+treated as a live baseline. But it is real, ground-truth, per-channel timestamped traffic over a
+sustained multi-month window — exactly the kind of data Idea 3/5's biggest open question (a
+defensible per-channel-kind expected-silence baseline) needs and currently has none of. Mining it
+is a **read-only analysis against a dormant file**, not a new build, new service, or new bus load —
+cheap to attempt, cheap to discard if the staleness turns out to matter more than expected.
+
+**Not added as a numbered candidate** — it's a data source that could inform Ideas 3/5's mechanism,
+not a signal-producing idea in its own right. Flagged here so it doesn't get rediscovered cold a
+fifth time.
+
 ## Missing questions
 
 Carried from the original brainstorm, still unresolved:
@@ -103,7 +146,10 @@ Carried from the original brainstorm, still unresolved:
 - Does anything already consume `capability:transport`'s current dynamic range in a way that would
   break if `catalog_drift_pressure`'s *meaning* changed (Idea 1) — self-state policy, an alert
   threshold, a diffusion-edge weight tuned against its current near-zero baseline? Not audited.
-- What's a defensible per-channel-kind expected-silence baseline (Ideas 3/5)? `channels.yaml`'s
+- What's a defensible per-channel-kind expected-silence baseline (Ideas 3/5)? `bus_mirror.sqlite`
+  (see "Found: a fourth 'quantify the bus' attempt" above) may partially answer this from 3 months
+  of real historical traffic — stale, but unexplored. Worth a read-only pass before assuming this
+  needs live data collection from scratch. `channels.yaml`'s
   `kind` field (`request`/`result`/`event`/`stream`) is the obvious first proxy — untested against
   real per-kind cadence data.
 - Is a Redis `SCAN` over the full `orion:bus:velocity:*` namespace, run on a schedule, cheap enough
@@ -207,3 +253,9 @@ signal Orion already trusts, using data already live-verified with zero false po
 no new baseline-calibration problem (unlike 3/5) and no new judgment call about whether Orion should
 "feel" bus silence as pressure (the open question hanging over 3). Ideas 4/5/6 stay parked as
 named, gated candidates for a later pass, not sequenced yet.
+
+If Idea 3 or 5 ever gets picked up instead, the cheapest real first step is a read-only analysis
+pass against `bus_mirror.sqlite` (see "Found: a fourth 'quantify the bus' attempt" above) rather
+than guessing at a silence baseline or collecting fresh live data from zero — it's already sitting
+on disk, costs nothing to query, and its staleness can be assessed in the same pass rather than
+assumed disqualifying up front.

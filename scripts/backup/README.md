@@ -194,10 +194,19 @@ file copy:
 | Convex | Same stop/copy/start treatment, against the resolved Docker volume mountpoint (`docker volume inspect ... --format '{{.Mountpoint}}'`) | Same reason -- confirmed live that a raw copy of Convex's `db.sqlite3` tears mid-write ("file changed as we read it"), and its data directory also mixes in live RocksDB-style segment files that have no safe online-backup API exposed to this tool either |
 
 Chroma and Convex are non-critical services (an internal vector store and an
-AI-town simulation backend, not user-facing production data paths), so a few
-seconds of downtime during the 03:45 backup window is an acceptable trade for
-actual consistency -- unlike Postgres/FalkorDB above, which stay fully up via
-their own online-backup mechanisms.
+AI-town simulation backend, not user-facing production data paths), so the
+downtime during the 03:45 backup window is an acceptable trade for actual
+consistency -- unlike Postgres/FalkorDB above, which stay fully up via their
+own online-backup mechanisms.
+
+Measured live 2026-07-24 against the real ~19.5GB Convex dataset: **about 4
+minutes** of unavailability, not "a few seconds" as an earlier draft of this
+doc assumed -- most of that is Convex's own cold-start cost after any
+restart (bootstrapping 8 tables/21 indexes, then a vector/search index
+backfill), not the copy itself. `docker inspect`'s health status correctly
+reports `unhealthy` for the full duration; that's expected and resolves on
+its own once `SearchIndexBoostrapWorker finished!` appears in the container
+logs. Confirm this before assuming something broke.
 
 Layout mirrors the `/mnt/scripts` backup, one level down per target:
 `/mnt/storage-warm/backups/<node-name>/db/<target>/{snapshots,latest,status,logs,manifests}`,

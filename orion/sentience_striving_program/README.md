@@ -282,6 +282,22 @@ first place. Full reasoning and phased detail:
    domain at a time; retire the bucket-vote layer only once every producer has moved and the
    item-2 reducer is proven"). Shadow-only, same as the biometrics patch: no consumer changed,
    no live migration, `capability_policy.py`/`top_down.py`/`goal_context.py` untouched.
+   **Status (2026-07-24): first Phase 3 comparison run, biometrics vs. drives bucket-vote.**
+   `scripts/analysis/measure_phase3_biometrics_drive_shadow_comparison.py` joins real
+   `substrate_field_state` (`node:substrate.biometrics.prediction_error`) to real
+   `drive_audits` (`capability`/`continuity` pressure -- the only two drives
+   `biometrics_state` feeds, per `signal_drive_map.yaml`) at 41,919 real events (18h
+   post-rebuild window, 100% join coverage, both signals real/non-degenerate). Result:
+   essentially no correlation (Pearson r=0.0198) and a small, wrong-direction split
+   difference. Genuinely ambiguous, not a clean verdict -- either the signals are
+   unrelated, or the old bucket is too polluted by `mesh_health`/`failure_event` (both
+   also route into `capability`) to serve as a fair biometrics-specific baseline, which
+   would itself support Phase 4/5's premise rather than undercut it. Full numbers and the
+   recommended disentangling next step (filter to drive-audit events with no concurrent
+   mesh/failure tension):
+   `docs/notes/2026-07-24-phase3-biometrics-drive-shadow-comparison-finding.md`. Does not
+   authorize live migration or bucket-vote retirement -- comparison only, per this item's
+   own phased scope.
 4. **Stand up read-only measurement for the remaining consciousness-theory instruments** (§9)
    — RPT/Lamme and predictive processing are already live (items 2-3 build on them directly,
    not duplicate them); IIT continues independently via the mood-arc encoder, not gated by

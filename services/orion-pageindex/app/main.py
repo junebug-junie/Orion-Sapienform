@@ -5,6 +5,8 @@ import sys
 
 from fastapi import FastAPI, HTTPException
 
+from orion.core.bus.bus_service_chassis import ChassisConfig, HeartbeatOnly
+
 from .models import (
     BuildResponse,
     ChatEpisodeBuildResponse,
@@ -22,6 +24,52 @@ logger = logging.getLogger(settings.SERVICE_NAME)
 
 app = FastAPI(title="Orion PageIndex", version=settings.SERVICE_VERSION)
 svc = JournalPageIndexService()
+heartbeat_chassis: HeartbeatOnly | None = None
+
+
+def build_heartbeat_chassis() -> HeartbeatOnly:
+    """Own, independent bus connection publishing SystemHealthV1 to orion:system:health
+    every HEARTBEAT_INTERVAL_SEC. PageIndex had no bus connection of its own before this
+    patch (it talks to Postgres directly and shells out to the PageIndex CLI) -- this
+    chassis is the first bus-native wiring in this service. See
+    docs/superpowers/specs/2026-07-24-service-heartbeat-node-telemetry-design.md."""
+    return HeartbeatOnly(
+        ChassisConfig(
+            service_name=settings.SERVICE_NAME,
+            service_version=settings.SERVICE_VERSION,
+            node_name=settings.NODE_NAME,
+            bus_url=settings.ORION_BUS_URL,
+            bus_enabled=settings.ORION_BUS_ENABLED,
+            heartbeat_interval_sec=settings.HEARTBEAT_INTERVAL_SEC,
+        )
+    )
+
+
+@app.on_event("startup")
+async def _start_heartbeat_chassis() -> None:
+    global heartbeat_chassis
+    try:
+        heartbeat_chassis = build_heartbeat_chassis()
+        await heartbeat_chassis.start_background()
+        logger.info(
+            "system_health_heartbeat_started service=%s interval_sec=%s",
+            settings.SERVICE_NAME,
+            settings.HEARTBEAT_INTERVAL_SEC,
+        )
+    except Exception as exc:
+        logger.warning("system_health_heartbeat_start_failed error=%s", exc)
+        heartbeat_chassis = None
+
+
+@app.on_event("shutdown")
+async def _stop_heartbeat_chassis() -> None:
+    global heartbeat_chassis
+    if heartbeat_chassis is not None:
+        try:
+            await heartbeat_chassis.stop()
+        except Exception as exc:
+            logger.warning("system_health_heartbeat_stop_error error=%s", exc)
+        heartbeat_chassis = None
 
 
 @app.on_event("startup")

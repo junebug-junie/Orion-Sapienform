@@ -8,6 +8,7 @@ from typing import Optional
 
 from orion.core.bus.async_service import OrionBusAsync
 from orion.core.bus.bus_schemas import BaseEnvelope, ServiceRef
+from orion.core.bus.bus_service_chassis import ChassisConfig, HeartbeatOnly
 from orion.core.bus.codec import OrionCodec
 
 from .models import PowerEvent
@@ -199,8 +200,48 @@ def _run_shutdown(cmd: str) -> None:
         logger.exception("Unexpected error while running shutdown command.")
 
 
+def build_heartbeat_chassis(settings=None) -> HeartbeatOnly:
+    """Own, independent bus connection publishing SystemHealthV1 to orion:system:health
+    every HEARTBEAT_INTERVAL_SEC. Deliberately separate from the `bus` connection
+    monitor_ups() owns for on_battery/grace_elapsed/restored event publishes (see
+    docs/superpowers/specs/2026-07-24-service-heartbeat-node-telemetry-design.md). Power Guard
+    has no FastAPI app/lifespan -- the chassis is started/stopped around monitor_ups() in
+    _main_async() instead."""
+    s = settings if settings is not None else get_settings()
+    return HeartbeatOnly(
+        ChassisConfig(
+            service_name=s.SERVICE_NAME,
+            service_version=s.SERVICE_VERSION,
+            node_name=s.POWER_GUARD_NODE_NAME,
+            bus_url=s.ORION_BUS_URL,
+            bus_enabled=s.ORION_BUS_ENABLED,
+            heartbeat_interval_sec=s.HEARTBEAT_INTERVAL_SEC,
+        )
+    )
+
+
 async def _main_async() -> None:
-    await monitor_ups()
+    settings = get_settings()
+    heartbeat_chassis: Optional[HeartbeatOnly] = None
+    try:
+        heartbeat_chassis = build_heartbeat_chassis(settings)
+        await heartbeat_chassis.start_background()
+        logger.info(
+            "system_health_heartbeat_started service=%s interval_sec=%s",
+            settings.SERVICE_NAME,
+            settings.HEARTBEAT_INTERVAL_SEC,
+        )
+    except Exception:
+        logger.exception("system_health_heartbeat_start_failed")
+        heartbeat_chassis = None
+    try:
+        await monitor_ups()
+    finally:
+        if heartbeat_chassis is not None:
+            try:
+                await heartbeat_chassis.stop()
+            except Exception:
+                logger.exception("system_health_heartbeat_stop_error")
 
 
 def main() -> None:

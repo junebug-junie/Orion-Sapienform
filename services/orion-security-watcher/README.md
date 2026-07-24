@@ -4,6 +4,10 @@
 
 It implements a rolling window logic to debounce detections and emit high-confidence signals.
 
+Also publishes a bus-native `SystemHealthV1` heartbeat to `orion:system:health` every
+`HEARTBEAT_INTERVAL_SEC` (default 10s), independent of `ctx.bus` (the vision-events/guard-signal
+publish connection).
+
 ---
 
 ## Architecture

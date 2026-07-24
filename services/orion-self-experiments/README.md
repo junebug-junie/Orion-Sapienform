@@ -2,6 +2,10 @@
 
 Typed self-experiment registry and context-exec dispatcher.
 
+Also publishes a bus-native `SystemHealthV1` heartbeat to `orion:system:health` every
+`HEARTBEAT_INTERVAL_SEC` (default 10s) via its own independent Redis connection when
+`ORION_BUS_ENABLED=true`.
+
 ## Responsibilities
 
 - Accept legacy `skill_id` probes and typed `SelfExperimentCreateRequestV1` payloads

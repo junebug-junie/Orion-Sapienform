@@ -13,6 +13,7 @@ from fastapi import FastAPI, Header, HTTPException, Query, Request
 
 from orion.core.bus.async_service import OrionBusAsync
 from orion.core.bus.bus_schemas import BaseEnvelope, ServiceRef
+from orion.core.bus.bus_service_chassis import ChassisConfig, HeartbeatOnly
 from orion.notify.transport import EmailTransport
 from orion.schemas.cortex.contracts import AgentTraceSummaryV1
 from orion.schemas.notify import (
@@ -62,6 +63,24 @@ def _load_policy() -> Policy:
     return Policy.load(str(path))
 
 
+def build_heartbeat_chassis() -> HeartbeatOnly:
+    """Own, independent bus connection publishing SystemHealthV1 to orion:system:health
+    every HEARTBEAT_INTERVAL_SEC. Deliberately separate from `app.state.bus` (Notify's
+    in-app/persistence publish connection) so this rollout (see
+    docs/superpowers/specs/2026-07-24-service-heartbeat-node-telemetry-design.md) cannot
+    interfere with Notify's existing bus lifecycle."""
+    return HeartbeatOnly(
+        ChassisConfig(
+            service_name=settings.SERVICE_NAME,
+            service_version=settings.SERVICE_VERSION,
+            node_name=settings.NODE_NAME,
+            bus_url=settings.ORION_BUS_URL,
+            bus_enabled=settings.ORION_BUS_ENABLED,
+            heartbeat_interval_sec=settings.HEARTBEAT_INTERVAL_SEC,
+        )
+    )
+
+
 @app.on_event("startup")
 async def on_startup() -> None:
     app.state.env_lookup = dict(os.environ)
@@ -72,6 +91,17 @@ async def on_startup() -> None:
     app.state.proxy_post = _proxy_post
     if app.state.email_transport and settings.NOTIFY_ESCALATION_POLL_SECONDS > 0:
         app.state.escalation_task = asyncio.create_task(attention_escalation_loop(app))
+    try:
+        app.state.heartbeat_chassis = build_heartbeat_chassis()
+        await app.state.heartbeat_chassis.start_background()
+        logger.info(
+            "system_health_heartbeat_started service=%s interval_sec=%s",
+            settings.SERVICE_NAME,
+            settings.HEARTBEAT_INTERVAL_SEC,
+        )
+    except Exception as exc:
+        logger.warning("system_health_heartbeat_start_failed error=%s", exc)
+        app.state.heartbeat_chassis = None
 
 
 @app.on_event("shutdown")
@@ -83,6 +113,12 @@ async def on_shutdown() -> None:
             await escalation_task
         except asyncio.CancelledError:
             pass
+    heartbeat_chassis = getattr(app.state, "heartbeat_chassis", None)
+    if heartbeat_chassis is not None:
+        try:
+            await heartbeat_chassis.stop()
+        except Exception as exc:
+            logger.warning("system_health_heartbeat_stop_error error=%s", exc)
     bus = getattr(app.state, "bus", None)
     if bus is not None:
         try:

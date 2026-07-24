@@ -26,6 +26,10 @@ class Settings(BaseSettings):
     ORION_BUS_ENABLED: bool = Field(default=True)
     ORION_BUS_ENFORCE_CATALOG: bool = Field(default=False)
     ORION_BUS_URL: str = Field(default="redis://100.92.216.81:6379/0")
+    # Bus-native SystemHealthV1 heartbeat cadence (orion:system:health), on top of
+    # power-guard's existing on-battery/grace/restored event publishes. See
+    # docs/superpowers/specs/2026-07-24-service-heartbeat-node-telemetry-design.md.
+    HEARTBEAT_INTERVAL_SEC: float = Field(default=10.0)
 
     # ─────────────────────────────────────────────
     # Node / UPS identity

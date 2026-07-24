@@ -3,6 +3,10 @@
 The notify digest service builds a daily summary of notification activity and sends it via `orion-notify`.
 It runs on a schedule and can also be triggered on demand for testing.
 
+The rest of the service talks HTTP-only (Postgres + `NotifyClient`), but it also publishes a
+bus-native `SystemHealthV1` heartbeat to `orion:system:health` every `HEARTBEAT_INTERVAL_SEC`
+(default 10s) via its own independent Redis connection -- the first bus wiring in this service.
+
 ## Environment
 
 See `.env_example` for full configuration. Key variables:

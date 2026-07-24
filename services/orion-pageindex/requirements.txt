@@ -6,3 +6,5 @@ python-dotenv==1.0.1
 psycopg2-binary==2.9.10
 pytest==8.3.4
 SQLAlchemy==2.0.43
+# Required for orion.core.bus.bus_service_chassis (bus-native SystemHealthV1 heartbeat).
+redis[hiredis]==5.0.7

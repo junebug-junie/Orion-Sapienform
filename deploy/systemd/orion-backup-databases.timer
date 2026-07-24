@@ -1,0 +1,10 @@
+[Unit]
+Description=Nightly Orion database backups
+
+[Timer]
+OnCalendar=*-*-* 03:45:00
+Persistent=true
+Unit=orion-backup-databases.service
+
+[Install]
+WantedBy=timers.target

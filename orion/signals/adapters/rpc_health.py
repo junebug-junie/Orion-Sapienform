@@ -47,8 +47,14 @@ def _latency_level(payload: dict) -> float:
     return clamp01(1.0 - min(float(p95), 30_000) / 30_000.0)
 
 
+_KNOWN_SERVICE_ORGAN_IDS = {
+    "cortex-exec": "rpc_health_cortex_exec",
+    "cortex-orch": "rpc_health_cortex_orch",
+}
+
+
 def _organ_id_for_service(service: str) -> Optional[str]:
-    """Per-service organ_id, e.g. 'orion-cortex-exec' -> 'rpc_health_cortex_exec'.
+    """Per-service organ_id, e.g. 'cortex-exec' -> 'rpc_health_cortex_exec'.
 
     Deliberately NOT a single shared 'rpc_health' organ_id across every producer:
     orion-signal-gateway's SignalWindow keys its current-state view by organ_id alone
@@ -56,9 +62,17 @@ def _organ_id_for_service(service: str) -> Optional[str]:
     every producer's publish silently overwrite the previous producer's entry -- found
     in review of this step's first cut. Returns None for an unrecognized service so the
     caller can degrade to no signal rather than guess a wrong identity.
+
+    Keys are the real `SERVICE_NAME` values (confirmed live: both services' settings.py
+    default to "cortex-exec"/"cortex-orch", no "orion-" prefix -- NOT
+    "orion-cortex-exec"/"orion-cortex-orch" as this function originally assumed, which
+    made adapt() silently return None on every real call in production, caught only by
+    live verification after deploy, not by review or the unit tests -- the test payloads
+    used the same wrong assumption as the implementation). Normalizes an "orion-" prefix
+    if present, defensively, in case that convention is ever used instead.
     """
-    known = {"orion-cortex-exec": "rpc_health_cortex_exec", "orion-cortex-orch": "rpc_health_cortex_orch"}
-    return known.get(service)
+    normalized = service.removeprefix("orion-") if service else service
+    return _KNOWN_SERVICE_ORGAN_IDS.get(normalized)
 
 
 class RpcHealthAdapter(OrionSignalAdapter):

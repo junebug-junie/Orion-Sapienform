@@ -540,3 +540,23 @@ class Clock(BaseChassis):
             except Exception as e:
                 await self._publish_error(e, when="clock.tick", env=None)
             await asyncio.sleep(self.interval_sec)
+
+
+class HeartbeatOnly(BaseChassis):
+    """
+    Bare-minimum chassis: connects to the bus and publishes the standard
+    SystemHealthV1 heartbeat (inherited `_heartbeat_loop`) on `cfg.health_channel`
+    every `cfg.heartbeat_interval_sec`, with no subscriber/consumer loop of its own.
+
+    Use this (not bare `BaseChassis`) when a service just needs bus-native liveness
+    telemetry alongside its own existing bus/worker infrastructure -- e.g. a FastAPI
+    service that already owns a separate bus connection for its real work and wants
+    an additive, independent heartbeat. `BaseChassis._run()` is abstract (raises
+    NotImplementedError); instantiating `BaseChassis` directly would make
+    `_supervise_run()` treat that as a crash and busy-loop reconnect/retry forever.
+    This subclass's `_run()` simply waits for stop, so `_supervise_run()` never
+    contends with `_heartbeat_loop()`.
+    """
+
+    async def _run(self) -> None:
+        await self._stop.wait()

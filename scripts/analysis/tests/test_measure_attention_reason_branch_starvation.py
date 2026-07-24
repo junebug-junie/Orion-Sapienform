@@ -94,6 +94,25 @@ def test_malformed_bool_excluded_not_defaulted():
     assert result["broadcast_fresh_ticks"] == 2
 
 
+def test_field_salience_only_pct_gate_checked_independently():
+    # Isolates the `field_salience_only_pct < 10.0` gate from the freshness and
+    # contradiction gates: 85 known-fresh bottom_up_salience ticks (100% fresh
+    # among known) plus 15 field_salience_only ticks with unparseable broadcast
+    # bools (excluded from the known/fresh denominator entirely, so they can't
+    # trip the contradiction check either). Freshness and contradiction gates
+    # both pass; only the field_salience_only_pct gate (15% of the 100 total
+    # ticks) should fail starvation_confirmed.
+    rows = [_row("bottom_up_salience", "True", "False") for _ in range(85)]
+    rows += [_row("field_salience_only", "", "") for _ in range(15)]
+    result = mod.analyze_branch_starvation(rows)
+    assert result["total_ticks"] == 100
+    assert result["broadcast_known_ticks"] == 85
+    assert result["broadcast_fresh_pct"] == 100.0
+    assert result["elif_ordering_contradictions"] == 0
+    assert result["field_salience_only_pct"] == 15.0
+    assert result["starvation_confirmed"] is False
+
+
 def test_empty_rows_no_crash():
     result = mod.analyze_branch_starvation([])
     assert result["total_ticks"] == 0

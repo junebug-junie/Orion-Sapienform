@@ -216,19 +216,51 @@ kill. This must be resolved before wiring any of these 9 services — it is not 
   `svc.bus`. This is the single most important check in this whole step: it is exactly the kind of
   claim that must not be taken on faith per this repo's "runtime truth beats config truth" rule.
 
+## Resolved (2026-07-24) — Q1/Q2 for cortex-exec and cortex-orch
+
+Read each service's real code directly (not re-derived from this spec's own prior claims):
+
+- **`orion-cortex-exec`** (`services/orion-cortex-exec/app/main.py`): `_rpc_bus` is a module-level
+  global (line 897), set in `main()` via `_rpc_bus = await fork_rpc_client(svc.bus)` (line 978). An
+  existing `_bus_for_rpc()` helper (lines 900-901) already returns `_rpc_bus if _rpc_bus is not None
+  else svc.bus`. `verb_runtime.bus = _rpc_bus` (line 979) confirms the real verb/workflow RPC traffic
+  is routed through `_rpc_bus`, not `svc.bus` — `svc.bus` only runs the chassis's `_heartbeat_loop()`.
+- **`orion-cortex-orch`** (`services/orion-cortex-orch/app/main.py`): identical shape — `_rpc_bus`
+  module global (line 581), `fork_rpc_client(svc.bus)` (line 684), an identical `_bus_for_rpc()`
+  helper (lines 584-585). Confirmed live at 4 real call-construction sites (`DecisionRouter(
+  _bus_for_rpc())` line 246; `bus=_bus_for_rpc()` at lines 281, 326, 384), feeding
+  `clients.py`/`decision_router.py`/`workflow_runtime.py`'s `self.bus.rpc_request(...)` calls.
+
+**Q1 answer**: for both services, `_rpc_bus` (accessible via the already-existing `_bus_for_rpc()`
+helper) is the instance carrying real RPC traffic. `svc.bus` is real but effectively idle for RPC —
+snapshotting it would report an always-empty aggregator, the exact degenerate-signal failure mode
+this whole redesign exists to avoid. No third bus instance or mid-run `_rpc_bus` replacement found in
+either file.
+
+**Q2 answer**: no `fork()`/`async_service.py`/`rpc_fork.py` change needed for this patch's scope.
+Both services already expose their real RPC bus instance as an accessible module-level global with an
+existing accessor — the periodic-publish snippet for each service can call
+`_bus_for_rpc().get_rpc_health_snapshot()` directly. This confirms the doc's own leaning (option (a),
+a per-service snippet) over the more invasive option (b) (a `ChassisConfig`-level opt-in touching
+every chassis consumer). The aggregator-sharing question in Q2 remains open for *other* services using
+the `fork_rpc_client()` pattern without an existing `_bus_for_rpc()`-style accessor (`chat-memory`,
+`actions`, `context-exec`, `hub`, `vision-council`) — out of scope here per this spec's own non-goals.
+
+No periodic-publish task exists yet in either service — `BaseChassis._heartbeat_loop()` (used by
+`svc.bus`) publishes `SystemHealthV1` only, and is not touched by this finding. The next patch adds a
+small, independent asyncio task per service (same shape as `orion-cortex-exec`'s existing
+`_embodiment_background_loop` pattern) that drains `_bus_for_rpc().get_rpc_health_snapshot()` and
+publishes it — not a modification to the shared chassis.
+
 ## Recommended next patch
 
 Start with 2 services, chosen for the clearest signal-to-effort ratio rather than raw volume alone:
 
-1. **Resolve Q1/Q2 first, for `orion-cortex-exec` and `orion-cortex-orch` specifically** (highest
-   measured real volume per Step 1's baseline, and the two the user's own framing centered on).
-   This is a short, self-contained investigation: read each service's heartbeat/RPC-runtime wiring,
-   confirm exactly which `OrionBusAsync` instance is live, and decide whether a per-service snippet
-   (referencing `_rpc_bus` directly) is enough or whether `fork()` needs the aggregator-sharing
-   change from Q2. Do this as its own small commit/PR before touching the gateway side at all — if
-   it turns up something unexpected (a third bus instance, a service that reconnects and replaces
-   `_rpc_bus` mid-run, etc.), that changes this spec's Files-to-touch list materially.
-2. Once resolved, build the registry entry + adapter + channel wiring + per-service publish snippet
+1. **DONE (2026-07-24)** — Resolve Q1/Q2 first, for `orion-cortex-exec` and `orion-cortex-orch`
+   specifically. See "Resolved (2026-07-24)" section above: both services' real RPC traffic flows
+   through `_rpc_bus`, already accessible via an existing `_bus_for_rpc()` helper in each file; no
+   `fork()` core change needed for this patch.
+2. **Next**: build the registry entry + adapter + channel wiring + per-service publish snippet
    for those two services only, following the acceptance checks above.
 3. Leave `thought` and `spark-introspector` (present in the baseline's container list, likely
    simpler — no confirmed fork split found yet) as the natural next 1-2 services for a follow-up

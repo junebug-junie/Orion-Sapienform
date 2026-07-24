@@ -16,6 +16,7 @@ from app.graph_writer import (
     ChainTracker,
     extract_bus_event_fact,
     extract_verb_step_facts,
+    summarize_chain_shapes,
     summarize_open_chains,
 )
 from app.settings import settings
@@ -125,6 +126,16 @@ async def _run_inflight_chain_summary_loop(chain_tracker: ChainTracker) -> None:
                     summary.long_running_count,
                     summary.max_duration_sec,
                 )
+                # Idea C: same log-only-first visibility step Phase 2 already
+                # used for the in-flight signal above -- report the top
+                # in-progress chain shapes before deciding how (or whether)
+                # this becomes a real consumer-facing signal.
+                top_shapes = summarize_chain_shapes(open_chains, top_n=5)
+                if top_shapes:
+                    logger.info(
+                        "bus synaptic graph top in-progress chain shapes: {}",
+                        [f"{'->'.join(shape)} x{count}" for shape, count in top_shapes],
+                    )
         except Exception as exc:  # fail-open, matching _record_graph_event's discipline:
             # an unhandled exception here would otherwise die silently (nothing
             # awaits this task directly) instead of just skipping one tick.

@@ -13,6 +13,7 @@ from app.graph_writer import (
     compute_ewma_update,
     extract_bus_event_fact,
     extract_verb_step_facts,
+    summarize_chain_shapes,
     summarize_open_chains,
 )
 
@@ -318,6 +319,35 @@ class TestChainTrackerInFlight:
         tracker = ChainTracker(ttl_sec=60.0)
         assert tracker.snapshot_open_chains(now_epoch=1.0) == []
 
+    def test_organ_sequence_records_distinct_organs_in_order(self) -> None:
+        tracker = ChainTracker(ttl_sec=120.0)
+        tracker.observe(self._fact("a", "corr-1", 0.0))
+        tracker.observe(self._fact("b", "corr-1", 1.0))
+        tracker.observe(self._fact("c", "corr-1", 2.0))
+
+        snapshot = tracker.snapshot_open_chains(now_epoch=10.0)
+
+        assert snapshot[0].organ_sequence == ("a", "b", "c")
+
+    def test_organ_sequence_does_not_grow_on_same_organ_repeat(self) -> None:
+        tracker = ChainTracker(ttl_sec=120.0)
+        tracker.observe(self._fact("a", "corr-1", 0.0))
+        tracker.observe(self._fact("a", "corr-1", 1.0))
+        tracker.observe(self._fact("b", "corr-1", 2.0))
+
+        snapshot = tracker.snapshot_open_chains(now_epoch=10.0)
+
+        assert snapshot[0].organ_sequence == ("a", "b")
+
+    def test_organ_sequence_is_bounded_for_pathologically_long_chains(self) -> None:
+        tracker = ChainTracker(ttl_sec=1000.0)
+        for i in range(50):
+            tracker.observe(self._fact(f"organ-{i}", "corr-1", float(i)))
+
+        snapshot = tracker.snapshot_open_chains(now_epoch=1000.0)
+
+        assert len(snapshot[0].organ_sequence) == 20  # _MAX_ORGAN_SEQUENCE_LEN
+
 
 class TestSummarizeOpenChains:
     def test_empty_input_is_a_zeroed_summary(self) -> None:
@@ -377,6 +407,58 @@ class TestSummarizeOpenChains:
         # chain, proving the threshold is a real, honored parameter.
         summary = summarize_open_chains(snapshot, long_running_threshold_sec=30.0, min_real_hop_count=0)
         assert summary.open_count == 1
+
+
+class TestSummarizeChainShapes:
+    def test_empty_input_returns_empty_list(self) -> None:
+        assert summarize_chain_shapes([]) == []
+
+    def test_groups_identical_shapes_and_counts_them(self) -> None:
+        tracker = ChainTracker(ttl_sec=120.0)
+        tracker.observe(BusEventFact(organ_id="a", channel="c", correlation_id="corr-1", observed_at_epoch=0.0))
+        tracker.observe(BusEventFact(organ_id="b", channel="c", correlation_id="corr-1", observed_at_epoch=1.0))
+        tracker.observe(BusEventFact(organ_id="a", channel="c", correlation_id="corr-2", observed_at_epoch=0.0))
+        tracker.observe(BusEventFact(organ_id="b", channel="c", correlation_id="corr-2", observed_at_epoch=1.0))
+        snapshot = tracker.snapshot_open_chains(now_epoch=100.0)
+
+        shapes = summarize_chain_shapes(snapshot)
+
+        assert shapes == [(("a", "b"), 2)]
+
+    def test_distinct_shapes_are_ranked_by_frequency(self) -> None:
+        tracker = ChainTracker(ttl_sec=120.0)
+        for cid in ("corr-1", "corr-2", "corr-3"):
+            tracker.observe(BusEventFact(organ_id="a", channel="c", correlation_id=cid, observed_at_epoch=0.0))
+            tracker.observe(BusEventFact(organ_id="b", channel="c", correlation_id=cid, observed_at_epoch=1.0))
+        tracker.observe(BusEventFact(organ_id="x", channel="c", correlation_id="corr-4", observed_at_epoch=0.0))
+        tracker.observe(BusEventFact(organ_id="y", channel="c", correlation_id="corr-4", observed_at_epoch=1.0))
+        snapshot = tracker.snapshot_open_chains(now_epoch=100.0)
+
+        shapes = summarize_chain_shapes(snapshot)
+
+        assert shapes[0] == (("a", "b"), 3)
+        assert shapes[1] == (("x", "y"), 1)
+
+    def test_single_hop_chains_have_no_shape_by_default(self) -> None:
+        # Matches summarize_open_chains's own min_real_hop_count=1 default --
+        # a never-hopped chain has no shape beyond a single organ, not worth
+        # bucketing as a "routine."
+        tracker = ChainTracker(ttl_sec=120.0)
+        tracker.observe(BusEventFact(organ_id="a", channel="c", correlation_id="one-shot", observed_at_epoch=0.0))
+        snapshot = tracker.snapshot_open_chains(now_epoch=100.0)
+
+        assert summarize_chain_shapes(snapshot) == []
+
+    def test_top_n_caps_the_number_of_shapes_returned(self) -> None:
+        tracker = ChainTracker(ttl_sec=120.0)
+        for i in range(5):
+            tracker.observe(BusEventFact(organ_id=f"a{i}", channel="c", correlation_id=f"corr-{i}", observed_at_epoch=0.0))
+            tracker.observe(BusEventFact(organ_id=f"b{i}", channel="c", correlation_id=f"corr-{i}", observed_at_epoch=1.0))
+        snapshot = tracker.snapshot_open_chains(now_epoch=100.0)
+
+        shapes = summarize_chain_shapes(snapshot, top_n=2)
+
+        assert len(shapes) == 2
 
     def test_multi_hop_chain_below_duration_threshold_is_not_long_running(self) -> None:
         tracker = ChainTracker(ttl_sec=120.0)

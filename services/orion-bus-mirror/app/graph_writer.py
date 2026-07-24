@@ -73,6 +73,7 @@ __all__ = [
     "OpenChainInfo",
     "OpenChainSummary",
     "summarize_open_chains",
+    "summarize_chain_shapes",
     "VerbStepFact",
     "extract_verb_step_facts",
     "BusSynapticGraphWriter",
@@ -126,6 +127,9 @@ def compute_ewma_update(
     return EwmaUpdate(ewma=new_ewma, variance=new_variance, zscore=zscore)
 
 
+_MAX_ORGAN_SEQUENCE_LEN = 20
+
+
 @dataclass
 class _ChainEntry:
     started_at_epoch: float
@@ -133,6 +137,12 @@ class _ChainEntry:
     last_epoch: float
     hop_count: int  # total observations, including same-organ repeats
     real_hop_count: int  # cross-organ hops only -- the CAUSALLY_FOLLOWED_BY-producing kind
+    # Idea C of docs/superpowers/specs/2026-07-24-bus-synaptic-graph-wider-net-
+    # brainstorm.md: distinct organs touched so far, in order -- only real
+    # cross-organ hops append (same-organ repeats don't, matching real_hop_count's
+    # own filtering), and bounded at _MAX_ORGAN_SEQUENCE_LEN so a pathologically
+    # long-lived chain can't grow this entry's memory footprint without bound.
+    organ_sequence: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -143,6 +153,7 @@ class OpenChainInfo:
     duration_sec: float
     hop_count: int
     real_hop_count: int
+    organ_sequence: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -188,6 +199,32 @@ def summarize_open_chains(
         long_running_count=long_running,
         max_duration_sec=max(durations),
     )
+
+
+def summarize_chain_shapes(
+    open_chains: list[OpenChainInfo], *, top_n: int = 10, min_real_hop_count: int = 1
+) -> list[tuple[tuple[str, ...], int]]:
+    """Idea C of docs/superpowers/specs/2026-07-24-bus-synaptic-graph-wider-net-
+    brainstorm.md: bucket currently-open chains by the sequence of organs
+    touched so far, report frequency -- an "in-progress-shape distribution,"
+    explicitly not a "completed-routine distribution": chain termination has
+    no defined closing event in this codebase today (see ``ChainTracker``'s
+    own docstring), so this sidesteps that unresolved question rather than
+    solving it. A small number of common shapes dominating real traffic would
+    be a real, observed structural signal; a shape appearing only once is
+    itself worth noticing, just not flagged as "novel" here (that needs
+    persistent shape history across restarts -- a bigger, separate slice, not
+    built here).
+
+    Same ``min_real_hop_count`` filtering as ``summarize_open_chains`` -- a
+    chain with no real cross-organ hop has no shape beyond a single organ,
+    which isn't a "shape" worth bucketing.
+    """
+    chains = [c for c in open_chains if c.real_hop_count >= min_real_hop_count]
+    counts: dict[tuple[str, ...], int] = {}
+    for chain in chains:
+        counts[chain.organ_sequence] = counts.get(chain.organ_sequence, 0) + 1
+    return sorted(counts.items(), key=lambda item: item[1], reverse=True)[:top_n]
 
 
 class ChainTracker:
@@ -256,6 +293,7 @@ class ChainTracker:
                 last_epoch=fact.observed_at_epoch,
                 hop_count=1,
                 real_hop_count=0,
+                organ_sequence=(fact.organ_id,),
             )
             return None
 
@@ -268,6 +306,8 @@ class ChainTracker:
         if prior_organ_id == fact.organ_id:
             return None
         existing.real_hop_count += 1
+        if len(existing.organ_sequence) < _MAX_ORGAN_SEQUENCE_LEN:
+            existing.organ_sequence = existing.organ_sequence + (fact.organ_id,)
         return prior_organ_id, prior_epoch
 
     def snapshot_open_chains(self, now_epoch: float) -> list[OpenChainInfo]:
@@ -286,6 +326,7 @@ class ChainTracker:
                 duration_sec=max(now_epoch - entry.started_at_epoch, 0.0),
                 hop_count=entry.hop_count,
                 real_hop_count=entry.real_hop_count,
+                organ_sequence=entry.organ_sequence,
             )
             for cid, entry in self._entries.items()
         ]

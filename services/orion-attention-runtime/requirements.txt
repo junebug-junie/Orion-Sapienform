@@ -6,3 +6,4 @@ sqlalchemy==2.0.36
 psycopg2-binary==2.9.10
 PyYAML==6.0.2
 requests==2.31.0
+redis[hiredis]==5.0.7

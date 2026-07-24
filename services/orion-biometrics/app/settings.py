@@ -1,4 +1,5 @@
 import json
+import os
 from typing import Dict
 
 from pydantic import Field, field_validator
@@ -107,6 +108,15 @@ class Settings(BaseSettings):
             if isinstance(data, dict):
                 return {str(k): str(v) for k, v in data.items()}
         return _default
+
+# pydantic-settings decodes Dict-typed env vars as JSON at its own source layer,
+# before _parse_disk_capacity_mounts (which already handles "" gracefully) ever
+# runs -- an empty string (e.g. docker-compose interpolating an unset host env
+# var) throws SettingsError there instead of reaching our validator's fallback.
+# Confirmed live 2026-07-24: orion-biometrics crash-looped on exactly this after
+# .env_example gained DISK_CAPACITY_MOUNTS but a live .env hadn't been synced yet.
+if not os.environ.get("DISK_CAPACITY_MOUNTS", "").strip():
+    os.environ["DISK_CAPACITY_MOUNTS"] = "{}"
 
 settings = Settings()
 

@@ -60,7 +60,9 @@ channels:
     kind: "telemetry"
     schema_id: "RpcHealthSnapshotV1"
     producer_services: ["orion-cortex-exec", "orion-cortex-orch"]
-    consumer_services: ["orion-signal-gateway"]
+    # orion-equilibrium-service added for the transport metacog trigger
+    # (docs/superpowers/specs/2026-07-24-transport-metacog-trigger-design.md, Option A).
+    consumer_services: ["orion-signal-gateway", "orion-equilibrium-service"]
     stability: "experimental"
     since: "2026-07-24"
 
@@ -2155,7 +2157,10 @@ channels:
     # orion-equilibrium-service added for the chat_turn metacog trigger's
     # correlator, which filters this stream to semantic_role=="exec_turn_timeout"
     # only (services/orion-hub/scripts/grammar_emit.py::build_turn_timeout_grammar_events,
-    # PR #1287) as its "governor never responded" signal.
+    # PR #1287) as its "governor never responded" signal. Also filters
+    # semantic_role=="rpc_transport_timeout" (orion/core/bus/async_service.py::
+    # _emit_rpc_timeout_grammar, docs/superpowers/specs/2026-07-24-transport-metacog-
+    # trigger-design.md) for the transport metacog trigger.
     consumer_services: ["orion-sql-writer", "orion-equilibrium-service"]
     stability: "experimental"
     since: "2026-05-23"

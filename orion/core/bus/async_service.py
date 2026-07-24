@@ -4,6 +4,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import os
+import uuid
 from contextlib import asynccontextmanager, suppress
 from datetime import datetime, timezone
 from time import perf_counter
@@ -359,6 +360,81 @@ class OrionBusAsync:
                 continue
             yield msg
 
+    async def _emit_rpc_timeout_grammar(
+        self,
+        *,
+        request_channel: str,
+        reply_channel: str,
+        corr: str,
+        timeout_sec: float,
+        timeout_elapsed_ms: float,
+    ) -> None:
+        """Real, bus-wide RPC-timeout grammar marker for the transport metacog trigger
+        (docs/superpowers/specs/2026-07-24-transport-metacog-trigger-design.md, Option C).
+
+        Generalizes the existing exec_turn_timeout/stance_timeout markers
+        (services/orion-hub/scripts/grammar_emit.py, scoped to one harness/thought RPC
+        each) to every rpc_request() timeout across all 37+ real call sites sharing this
+        one client. Same trace-lane family as the pre-existing bus.transport: grammar
+        producer (config/substrate-lattice/grammar_producer_registry.v1.yaml) but a
+        distinct semantic_role, so this doesn't collide with or get consumed by the old
+        transport_bus_reducer/bus_health_observed pipeline.
+
+        Fire-and-forget, never raises past this boundary -- same guarantee as
+        RpcHealthAggregator.record_timeout(), which this call always accompanies (see
+        both call sites in rpc_request()). Only reached on the rare/exceptional timeout
+        path, not the hot success path, so a real network publish here (vs. the
+        in-memory-only aggregator) does not carry rpc_request()'s own hot-path overhead
+        concern (PR #1299's benchmark scope).
+        """
+        try:
+            from orion.grammar.publish import publish_grammar_event
+            from orion.schemas.grammar import (
+                GrammarAtomV1,
+                GrammarEventV1,
+                GrammarProvenanceV1,
+            )
+
+            now = datetime.now(timezone.utc)
+            trace_id = f"bus.transport:rpc_timeout:{corr}"
+            event_id = f"{trace_id}:{uuid.uuid4().hex[:12]}"
+            provenance = GrammarProvenanceV1(
+                source_service="orion-bus",
+                source_component="rpc_request_timeout",
+                source_event_id=corr,
+                source_trace_id=trace_id,
+            )
+            atom = GrammarAtomV1(
+                atom_id=event_id,
+                trace_id=trace_id,
+                atom_type="uncertainty_marker",
+                semantic_role="rpc_transport_timeout",
+                layer="transport",
+                dimensions=["transport", "bus", "rpc", "liveness"],
+                summary=(
+                    f"RPC timeout: {request_channel} -> {reply_channel} "
+                    f"after {timeout_sec:.1f}s (elapsed {timeout_elapsed_ms:.1f}ms)"
+                ),
+                text_value=request_channel,
+                confidence=1.0,
+                salience=0.9,
+                source_event_id=corr,
+            )
+            event = GrammarEventV1(
+                event_id=event_id,
+                event_kind="atom_emitted",
+                trace_id=trace_id,
+                correlation_id=corr,
+                emitted_at=now,
+                layer="transport",
+                dimensions=["transport", "bus", "rpc", "liveness"],
+                atom=atom,
+                provenance=provenance,
+            )
+            await publish_grammar_event(self, event, source_name="orion-bus", correlation_id=None)
+        except Exception:
+            logger.warning("rpc_timeout_grammar_publish_failed corr=%s", corr, exc_info=True)
+
     async def rpc_request(
         self,
         request_channel: str,
@@ -435,6 +511,13 @@ class OrionBusAsync:
                     timeout_elapsed_ms,
                 )
                 self._rpc_health.record_timeout(request_channel=request_channel, elapsed_ms=timeout_elapsed_ms)
+                await self._emit_rpc_timeout_grammar(
+                    request_channel=request_channel,
+                    reply_channel=reply_channel,
+                    corr=corr,
+                    timeout_sec=timeout_sec,
+                    timeout_elapsed_ms=timeout_elapsed_ms,
+                )
                 raise TimeoutError(f"RPC timeout waiting on {reply_channel}")
             finally:
                 self._pending_rpc.pop(key, None)
@@ -490,6 +573,13 @@ class OrionBusAsync:
                     timeout_elapsed_ms,
                 )
                 self._rpc_health.record_timeout(request_channel=request_channel, elapsed_ms=timeout_elapsed_ms)
+                await self._emit_rpc_timeout_grammar(
+                    request_channel=request_channel,
+                    reply_channel=reply_channel,
+                    corr=corr,
+                    timeout_sec=timeout_sec,
+                    timeout_elapsed_ms=timeout_elapsed_ms,
+                )
                 raise TimeoutError(f"RPC timeout waiting on {reply_channel}")
 
     async def rpc_legacy_dict(

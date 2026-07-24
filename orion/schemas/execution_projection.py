@@ -67,7 +67,21 @@ class ExecutionRunStateV1(BaseModel):
     # boolean wearing a magnitude's name -- every turn that used any reasoning at all
     # read identically regardless of how much. See NODE_CHANNELS "reasoning_load".
     reasoning_char_count: int = 0
+    # FCC-motor-only reasoning magnitude: output_tokens from the harness CLI's own
+    # result-event usage object (real provider-computed tokens, not a char
+    # approximation). Takes priority over reasoning_char_count in reasoning_load's
+    # formula when present -- see grammar_extract.py. cortex-exec has no equivalent
+    # field today; this is harness-governor-sourced only.
+    reasoning_output_tokens: int = 0
     thinking_source: str = "none"
+    # Deterministic tool-name-classified step composition for one FCC-motor turn:
+    # how many tool_use calls were read-only research/context tools (Read, Grep,
+    # WebSearch, mcp__gitnexus__*, mcp__firecrawl__*, ...) vs action/mutation tools
+    # (Bash, Edit, Write, other MCP tools). A fixed allowlist match, NOT a taxonomy
+    # service -- an unmatched tool name increments neither counter. See NODE_CHANNELS
+    # "context_gathering_ratio".
+    context_gathering_step_count: int = 0
+    execution_step_count: int = 0
     llm_serving_node: str | None = None
     pressure_hints: dict[str, float] = Field(default_factory=dict)
     evidence_event_ids: list[str] = Field(default_factory=list)

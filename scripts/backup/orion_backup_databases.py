@@ -294,21 +294,34 @@ def run_target_backup(
     )
 
 
-def send_failure_notification(
+def send_backup_notification(
     outcome: RunOutcome, *, notify_url: str | None, notify_token: str | None
 ) -> dict[str, Any]:
+    """Notify on every run, not just failures -- a silent success and a
+    silent failure look identical from the outside otherwise. Failures
+    demand an ack (critical); successes are informational only."""
     if not notify_url:
         return {"attempted": False, "ok": False, "reason": "notify_url_not_configured"}
-    failed_summary = "; ".join(
-        f"{t['name']}: {t['error_summary']}" for t in outcome.targets if t["status"] == "failure"
-    )
-    message = f"Database backup failed on {outcome.node_name} (run_id={outcome.run_id}): {failed_summary}"
+    target_names = ", ".join(t["name"] for t in outcome.targets)
+    if outcome.status == "failure":
+        failed_summary = "; ".join(
+            f"{t['name']}: {t['error_summary']}" for t in outcome.targets if t["status"] == "failure"
+        )
+        message = f"Database backup failed on {outcome.node_name} (run_id={outcome.run_id}): {failed_summary}"
+        reason = "db_backup_failed"
+        severity = "critical"
+        require_ack = True
+    else:
+        message = f"Database backup completed on {outcome.node_name} (run_id={outcome.run_id}): {target_names}"
+        reason = "db_backup_succeeded"
+        severity = "info"
+        require_ack = False
     payload = {
         "source_service": "orion-backup",
-        "reason": "db_backup_failed",
-        "severity": "critical",
+        "reason": reason,
+        "severity": severity,
         "message": message,
-        "require_ack": True,
+        "require_ack": require_ack,
         "context": {"run_id": outcome.run_id, "targets": outcome.targets, "manifest_path": outcome.manifest_path},
     }
     data = json.dumps(payload).encode("utf-8")
@@ -365,10 +378,9 @@ def run_backup(
         _write_json_atomic(base_root / "status" / "latest.json", asdict(outcome))
         _write_json_atomic(base_root / "status" / "runs" / f"{run_id}.json", asdict(outcome))
         _write_json_atomic(Path(outcome.manifest_path), asdict(outcome))
-        if outcome.status == "failure":
-            notify_result = send_failure_notification(outcome, notify_url=notify_url, notify_token=notify_token)
-            outcome = RunOutcome(**{**asdict(outcome), "notification_attempt": notify_result})
-            _write_json_atomic(base_root / "status" / "latest.json", asdict(outcome))
+        notify_result = send_backup_notification(outcome, notify_url=notify_url, notify_token=notify_token)
+        outcome = RunOutcome(**{**asdict(outcome), "notification_attempt": notify_result})
+        _write_json_atomic(base_root / "status" / "latest.json", asdict(outcome))
         return outcome
     finally:
         lock_handle.close()

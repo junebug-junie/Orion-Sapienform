@@ -13,6 +13,7 @@ from scripts.backup.orion_backup_databases import (
     capture_stopped_container_tree,
     run_backup,
     run_target_backup,
+    send_backup_notification,
     validate_environment,
 )
 
@@ -178,6 +179,113 @@ def test_capture_stopped_container_tree_restarts_container_even_if_copy_fails(
         )
 
     assert calls[-1] == ["docker", "start", "my-container"]
+
+
+def test_run_backup_notifies_on_success_not_just_failure(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    sent_payloads: list[dict] = []
+
+    def fake_send(outcome, *, notify_url, notify_token):
+        sent_payloads.append({"status": outcome.status, "notify_url": notify_url})
+        return {"attempted": True, "ok": True, "status": 200}
+
+    monkeypatch.setattr("scripts.backup.orion_backup_databases.send_backup_notification", fake_send)
+    outcome = run_backup(
+        storage_warm=tmp_path,
+        node_name="node-a",
+        targets=[Target("good", _ok_capture)],
+        notify_url="http://example/attention/request",
+        require_mount=False,
+    )
+    assert len(sent_payloads) == 1
+    assert sent_payloads[0]["status"] == "success"
+    assert outcome.notification_attempt == {"attempted": True, "ok": True, "status": 200}
+
+
+def test_send_backup_notification_marks_success_informational_no_ack(monkeypatch: pytest.MonkeyPatch) -> None:
+    from scripts.backup.orion_backup_databases import RunOutcome
+
+    captured = {}
+
+    class FakeResponse:
+        status = 200
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *a):
+            return False
+
+    def fake_urlopen(request, timeout):
+        captured["body"] = request.data
+        return FakeResponse()
+
+    monkeypatch.setattr("urllib.request.urlopen", fake_urlopen)
+    outcome = RunOutcome(
+        run_id="run-1",
+        status="success",
+        node_name="node-a",
+        started_at_utc="2026-01-01T00:00:00Z",
+        finished_at_utc="2026-01-01T00:00:01Z",
+        storage_warm_path="/x",
+        targets=[{"name": "good", "status": "success", "snapshot_path": "/x/y", "error_summary": None, "retention_actions": []}],
+        log_path="/x/log",
+        manifest_path="/x/manifest.json",
+        notification_attempt=None,
+    )
+
+    result = send_backup_notification(outcome, notify_url="http://example/attention/request", notify_token=None)
+
+    assert result["ok"] is True
+    import json as _json
+
+    payload = _json.loads(captured["body"])
+    assert payload["reason"] == "db_backup_succeeded"
+    assert payload["severity"] == "info"
+    assert payload["require_ack"] is False
+
+
+def test_send_backup_notification_marks_failure_critical_with_ack(monkeypatch: pytest.MonkeyPatch) -> None:
+    from scripts.backup.orion_backup_databases import RunOutcome
+
+    captured = {}
+
+    class FakeResponse:
+        status = 200
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *a):
+            return False
+
+    def fake_urlopen(request, timeout):
+        captured["body"] = request.data
+        return FakeResponse()
+
+    monkeypatch.setattr("urllib.request.urlopen", fake_urlopen)
+    outcome = RunOutcome(
+        run_id="run-1",
+        status="failure",
+        node_name="node-a",
+        started_at_utc="2026-01-01T00:00:00Z",
+        finished_at_utc="2026-01-01T00:00:01Z",
+        storage_warm_path="/x",
+        targets=[{"name": "bad", "status": "failure", "snapshot_path": None, "error_summary": "boom", "retention_actions": []}],
+        log_path="/x/log",
+        manifest_path="/x/manifest.json",
+        notification_attempt=None,
+    )
+
+    result = send_backup_notification(outcome, notify_url="http://example/attention/request", notify_token=None)
+
+    assert result["ok"] is True
+    import json as _json
+
+    payload = _json.loads(captured["body"])
+    assert payload["reason"] == "db_backup_failed"
+    assert payload["severity"] == "critical"
+    assert payload["require_ack"] is True
+    assert "boom" in payload["message"]
 
 
 def test_capture_stopped_container_tree_raises_if_host_path_missing(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:

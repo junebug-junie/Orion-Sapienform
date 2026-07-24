@@ -138,6 +138,9 @@ async def _emit_finalize_lifecycle_grammar(
     step_char_sum: int = 0,
     step_char_max: int = 0,
     tool_failure_streak_max: int = 0,
+    reasoning_output_tokens: int = 0,
+    context_gathering_step_count: int = 0,
+    execution_step_count: int = 0,
     emit_result: bool = True,
 ) -> None:
     # record_result_assembled() is idempotent per atom_id (same collector -> same
@@ -157,6 +160,9 @@ async def _emit_finalize_lifecycle_grammar(
         step_char_sum=step_char_sum,
         step_char_max=step_char_max,
         tool_failure_streak_max=tool_failure_streak_max,
+        reasoning_output_tokens=reasoning_output_tokens,
+        context_gathering_step_count=context_gathering_step_count,
+        execution_step_count=execution_step_count,
     )
     if emit_result:
         collector.record_result_emitted(reply_present=True, status=status)
@@ -374,6 +380,9 @@ async def handle_harness_run_request(
                 step_char_sum=motor.step_char_sum,
                 step_char_max=motor.step_char_max,
                 tool_failure_streak_max=motor.tool_failure_streak_max,
+                reasoning_output_tokens=motor.reasoning_output_tokens,
+                context_gathering_step_count=motor.context_gathering_step_count,
+                execution_step_count=motor.execution_step_count,
             )
         run = HarnessRunV1(
             correlation_id=corr,
@@ -445,6 +454,9 @@ async def handle_harness_run_request(
             step_char_sum=motor.step_char_sum,
             step_char_max=motor.step_char_max,
             tool_failure_streak_max=motor.tool_failure_streak_max,
+            reasoning_output_tokens=motor.reasoning_output_tokens,
+            context_gathering_step_count=motor.context_gathering_step_count,
+            execution_step_count=motor.execution_step_count,
         )
     await _reply_and_artifact(bus, run, reply_to=reply_to, corr=corr, causality=causality)
 

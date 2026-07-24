@@ -507,11 +507,25 @@ distributions for both, so every score since `orion-field-digester`'s
 `2026-07-23T06:10:08Z` restart (`docker inspect orion-athena-field-digester --format
 '{{.State.StartedAt}}'`) compares new-distribution live data against a
 stale-distribution-trained model — same contamination class as the second/third/fourth
-cutoffs. **Not yet confirmed whether this has produced spurious `field_channel_anomaly.v3`
-flags** — checked logs shortly after the restart, no `field_channel_anomaly_flagged` line yet,
-but `v3`'s `window_size=30` rows may simply not have filled at check time; this is
-inconclusive, not a clean bill of health. Whoever picks this up next should re-check with more
-elapsed time.
+cutoffs.
+
+**Resolved 2026-07-24**: exactly 2 `field_channel_anomaly_flagged` events fired, both
+11-14 minutes post-restart (`06:21`-`06:24Z`), none since (checked again at 11+ hours
+post-restart). That timing matches `app/anomaly_scorer.py`'s own documented cold-start
+artifact ("reconcile-seeded defaults still in the buffer right after a restart"), not a
+sustained distribution-shift problem — a real shift would keep firing as
+`execution_load`/`reasoning_load` kept flowing on their new formulas, not fire twice and
+go silent. Read as noise, not confirmation of the fifth-cutoff risk materializing.
+
+**`reasoning_load`'s distribution shifted again the same day** (2026-07-24, this
+session): the FCC-motor/harness-governor path now sources a real `reasoning_output_tokens`
+magnitude (see the `reasoning_load` glossary entry below) where it previously fell back to
+the `0.35`/`0.05` presence-only flag entirely (harness-governor never emitted
+`reasoning_char_count`). This is a second, later shift on the same already-cutoff channel —
+the `2026-07-23T06:10:08Z` cutoff above still covers it (any retrain against that cutoff or
+later already excludes both the `5b1cc0fa` and this session's contaminated windows), but
+worth naming explicitly rather than leaving the impression only one fix touched this
+channel.
 
 ```bash
 python orion/mood_arc/fit_encoder.py train \
@@ -536,11 +550,14 @@ ever revised, same convention as the first four.
 
 ## Field channel glossary
 
-This is the consolidated reference for all 34 channels in
+This is the consolidated reference for all 35 channels in
 `field_channel_corpus.v1` (`orion.schemas.telemetry.field_channel_corpus.FieldChannelCorpusRowV1`),
-sourced from `app/tensor/channels.py`'s `NODE_CHANNELS` (28) + `CAPABILITY_CHANNELS`
-(8), overlapping on `transport_pressure`/`contract_pressure` (28+8-2=34). 28 = 23 original
-+ 5 FCC-motor channels added 2026-07-23 (see the design doc referenced above). This
+sourced from `app/tensor/channels.py`'s `NODE_CHANNELS` (29) + `CAPABILITY_CHANNELS`
+(8), overlapping on `transport_pressure`/`contract_pressure` (29+8-2=35). 29 = 23 original
++ 5 FCC-motor channels added 2026-07-23 (see the design doc referenced above) + 1
+FCC-motor channel added 2026-07-24 (`context_gathering_ratio`; `reasoning_load` also
+gained a real motor-side token magnitude the same day, see its entry below, but is not
+a new channel). This
 corpus is the raw input for a future windowed autoencoder (roadmap item 2,
 not yet trained) — but several of these same channels also feed
 `SelfStateV1`'s live, cognition-facing dimensions today, via
@@ -925,12 +942,47 @@ subset for the mood-arc windowed-autoencoder spike (see
   derived from whether `reasoning_content`/`reasoning_trace`/`metacog_traces` were
   present at all, not how much reasoning occurred. Every turn that used any
   reasoning at all read identically regardless of volume. Fixed: a new
-  `reasoning_char_count` field (char length of `reasoning_content` +
-  `reasoning_trace`, computed once at `orion-cortex-exec/app/router.py`'s
-  `record_assembled_grammar()` call site and threaded through as a grammar-stream
-  kv) now drives a real log-ratio magnitude, falling back to the old boolean split
-  only when `reasoning_present` is true but the char count is still `0` (covers
-  in-flight runs mid-rollout). See the same Appendix, item 2.
+  `reasoning_char_count` field (char length of `reasoning_content` **only** —
+  `reasoning_trace` is a dict at `router.py`'s call site, and an earlier version
+  of this fix that also counted it added ~340 chars of structural repr noise plus
+  double-counted text `reasoning_content` already carries, found live in code
+  review — fixed to `reasoning_content` only, computed once at
+  `orion-cortex-exec/app/router.py`'s `record_assembled_grammar()` call site and
+  threaded through as a grammar-stream kv) now drives a real log-ratio magnitude,
+  falling back to the old boolean split only when `reasoning_present` is true but
+  the char count is still `0` (covers in-flight runs mid-rollout). See the same
+  Appendix, item 2.
+  **Update 2026-07-24 — real magnitude for the FCC-motor path too:** the fix above
+  only ever applied to cortex-exec-sourced runs; harness-governor/FCC-motor-sourced
+  runs (`orion/harness/grammar_emit.py` never emitted `reasoning_char_count`) still
+  fell back to the `0.35`/`0.05` flag regardless of turn size. Fixed with a new
+  `reasoning_output_tokens` field — real, provider-computed `output_tokens` from the
+  FCC CLI's own end-of-turn `result` stream-json event's `usage` object (confirmed
+  live 2026-07-24 by subscribing to `orion:harness:run:step` during a real turn:
+  `usage: {input_tokens, output_tokens, cache_read_input_tokens, ...}` is already
+  present on every turn, previously read by nothing). Takes priority over
+  `reasoning_char_count` in the formula when present (real tokens beat a char
+  approximation); log-scaled against `_REASONING_LOAD_SATURATION_TOKENS=1000`
+  (derived from the char anchor via this codebase's existing ~4-chars/token estimate,
+  `orion/fcc/context_budget.py`'s `DEFAULT_CHARS_PER_TOKEN`). Deliberately NOT
+  built from assistant text-block chars instead: `ENABLE_MODEL_THINKING=false` is
+  the FCC motor's default (no real extended-thinking content flows through it
+  today), and the harness pipeline has no parser for a `thinking` content-block type
+  even when enabled — assistant text-block chars are already counted by
+  `avg_step_chars_pressure`, so reusing them here would just be a redundant
+  restatement, not new signal. **Also fixed a real cross-lane collision this change
+  would otherwise have introduced**: `reasoning_load`'s perturbation used to fire
+  unconditionally from every `execution_run` delta regardless of lane (the same
+  `key in hints` always-true shape PR #1289 fixed for the 4 harness-only channels,
+  just never audited for this channel specifically) — harmless before, since only
+  cortex-exec's lane ever carried a real value and every other lane just restomped
+  the boring `0.05` fallback. Adding a second real value source on the
+  `:harness_motor` lane would have made that pre-existing race actually matter
+  (last-write-wins between two *real* competing values). Fixed by excluding
+  `reasoning_load` from the unconditional per-lane loop specifically for
+  `:harness_motor`-suffixed deltas and re-emitting it from the same gated block as
+  `harness_step_load` et al. — every other lane's existing (unaudited,
+  out-of-scope-for-this-patch) behavior is untouched.
 
 #### `failure_pressure`
 - **Meaning**: recent execution failure rate/severity on a node.
@@ -1062,6 +1114,34 @@ follow-up note, and `test_execution_run_fcc_channels_ignored_off_lane` /
   different physical nodes.
 - **SelfState dimension fed**: none yet.
 - **Live-data verdict**: not yet live-verified, pending deploy.
+
+#### `context_gathering_ratio`
+- **Meaning**: what fraction of one FCC-motor turn's *classified* tool calls were
+  read-only research/context tools vs action/mutation tools — composition, not
+  volume (`harness_step_load` already covers volume). Added 2026-07-24, prompted by
+  Juniper asking for a "kind of reasoning" category grounded in real motor step data
+  rather than an open-ended taxonomy.
+- **Producer**: `execution_run` delta, mode=`replace`. In `NODE_DECAY_CHANNELS`.
+  Gated to the `:harness_motor` trace lane, same cross-lane-stomp reason as
+  `harness_step_load` et al. Classified deterministically per tool call by
+  `orion/harness/fcc_motor.py`'s `classify_step_tool_kind()`, a fixed allowlist —
+  `Read`/`Grep`/`Glob`/`WebSearch`/`WebFetch`/`ToolSearch` and any
+  `mcp__gitnexus__*`/`mcp__firecrawl__*` tool count as `context_gathering`;
+  `Bash`/`Edit`/`Write`/`MultiEdit`/`NotebookEdit` count as `execution`. A tool name
+  not on the list increments **neither** counter — this is a narrow, auditable
+  allowlist, not a taxonomy service, and an unmatched MCP tool defaults to
+  uncounted rather than guessed, since an arbitrary MCP server can expose action
+  tools this list has no way to verify as read-only. `context_gathering_ratio =
+  context_gathering_step_count / (context_gathering_step_count +
+  execution_step_count)`, `0.0` when no calls were classified — meaning `0.0` can
+  mean either "all-execution" or "nothing classified," a known ambiguity shared
+  with `avg_step_chars_pressure`'s zero-steps case.
+- **SelfState dimension fed**: none yet.
+- **Live-data verdict**: not yet live-verified, pending deploy. Grounded in one
+  real 90-step research turn during development (gitnexus graph queries, file
+  reads, `Bash find`, firecrawl web search) — every classified call in that turn
+  was `context_gathering`, zero `execution`, matching the turn's actual
+  research-only character.
 
 #### `egress_confidence_deficit`
 - **Meaning**: `1 - confidence` that an execution's output actually reached

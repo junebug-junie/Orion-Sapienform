@@ -13,6 +13,11 @@ services:
       MIRROR_PATTERN: ${MIRROR_PATTERN:-orion:*}
       MIRROR_SQLITE_PATH: ${MIRROR_SQLITE_PATH:-/data/bus_mirror.sqlite}
       MIRROR_PARQUET_DIR: ${MIRROR_PARQUET_DIR:-/data/parquet}
+      MIRROR_GRAPH_ENABLED: ${MIRROR_GRAPH_ENABLED:-false}
+      FALKORDB_URI: ${FALKORDB_URI:-}
+      FALKORDB_BUS_GRAPH: ${FALKORDB_BUS_GRAPH:-orion_bus_synapse}
+      MIRROR_GRAPH_CHAIN_TTL_SEC: ${MIRROR_GRAPH_CHAIN_TTL_SEC:-120}
+      MIRROR_GRAPH_EWMA_ALPHA: ${MIRROR_GRAPH_EWMA_ALPHA:-0.2}
     volumes:
       - "${MIRROR_DATA_DIR:-./data}:/data"
     restart: unless-stopped

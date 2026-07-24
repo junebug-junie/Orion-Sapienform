@@ -31,6 +31,72 @@ failure.
 
 ---
 
+## Bus synaptic graph (Phase 1)
+
+An additive, independently-gated capability alongside the SQLite raw-log path above:
+`MIRROR_GRAPH_ENABLED=true` writes bounded, aggregated edges into FalkorDB instead of
+an ever-growing log. This is the architecture that makes running against the full
+`MIRROR_PATTERN=orion:*` firehose actually sustainable — state size is bounded by mesh
+topology (organs × channels), not by message count, so it does not repeat the 98GB
+failure described above. Off by default; the two paths (SQLite, graph) are controlled
+by separate settings and can run independently or together.
+
+Design doc: `docs/superpowers/specs/2026-07-24-bus-vitality-field-signal-brainstorm.md`,
+"Big-swing direction: a live bus synaptic graph (FalkorDB)". This is Phase 1 of that
+direction only — the foundation, not the full scope described there.
+
+**Graph shape** (graph name `FALKORDB_BUS_GRAPH`, default `orion_bus_synapse`, on the
+shared FalkorDB instance at `FALKORDB_URI`):
+- `(:Organ {organ_id})-[:PUBLISHES {count, last_seen_epoch, gap_ewma_sec, gap_var, gap_zscore}]->(:Channel {channel})`
+  — every publish this wiretap observes. `gap_ewma_sec`/`gap_var` are a rolling EWMA
+  baseline of the inter-arrival gap; `gap_zscore` is how surprising the *most recent*
+  gap was against that baseline.
+- `(:Organ)-[:CAUSALLY_FOLLOWED_BY {count, last_seen_epoch, latency_ewma_sec, latency_var, latency_zscore}]->(:Organ)`
+  — derived when a second envelope carrying a `correlation_id` already seen from a
+  *different* organ arrives within `MIRROR_GRAPH_CHAIN_TTL_SEC` (default 120s). Same
+  EWMA/z-score shape, over hop latency instead of publish gap.
+
+**What this deliberately does NOT build** (honesty over completeness):
+- **No `CONSUMES` edge.** A passive wiretap only ever observes publishes — it cannot
+  see who actually received a pub/sub message. A live `CONSUMES` edge would need each
+  consumer to self-report, the same pattern the RPC-health arc already built for 2
+  services (PR #1313) — not something this service can infer by eavesdropping. Do not
+  fake this edge from `channels.yaml`'s static `consumer_services` metadata; that is
+  config truth, not runtime truth.
+- **No in-flight/still-open chain tracking.** `CAUSALLY_FOLLOWED_BY` only records a hop
+  once the *second* envelope of a pair arrives — it says nothing about a chain that's
+  still running right now. That's Phase 2.
+- **No per-verb latency slicing from payload content**, no anomaly propagation across
+  edges, no node centrality, no chain-shape clustering. All named as Phase 2+ in the
+  design doc, not built here.
+
+**A real cold-start caveat**: an edge's first `gap_zscore`/`latency_zscore` is always
+`null` (no baseline exists yet to be anomalous against — see `compute_ewma_update`'s
+docstring in `app/graph_writer.py`), and the *second* observation on a fresh edge can
+read as an extreme z-score (the variance floor is tiny until a few real observations
+have accumulated). Don't trust a z-score on an edge with `count < ~5` yet.
+
+**Known gaps** (found in review, acceptable for a Phase 1 foundation, not fixed here):
+- **Single-instance only.** `BusSynapticGraphWriter`'s read-then-write pattern (read
+  prior EWMA state, compute the update, write it) has no CAS/version check. Running
+  more than one `orion-bus-mirror` container against the same graph concurrently would
+  race and corrupt edge state. Nothing in `docker-compose.yml` enforces this today.
+- **No write-health visibility.** Graph-write failures (e.g. FalkorDB unreachable) are
+  caught and logged at `warning`, never surfaced anywhere else — an operator flipping
+  `MIRROR_GRAPH_ENABLED=true` against a broken config has no signal short of grepping
+  logs or querying the graph directly. A consecutive-failure counter feeding `/stats`
+  (itself still a stub) is the natural follow-up, not built here.
+
+**Query it directly** (once `MIRROR_GRAPH_ENABLED=true` has been running a while):
+```cypher
+MATCH (o:Organ)-[e:PUBLISHES]->(c:Channel)
+WHERE abs(e.gap_zscore) > 3 AND e.count > 5
+RETURN o.organ_id, c.channel, e.gap_zscore, e.count
+ORDER BY abs(e.gap_zscore) DESC
+```
+
+---
+
 ## Quick start (copy/paste)
 
 ### Set your bus URL once
@@ -104,8 +170,10 @@ The mirror should log:
 ---
 
 ## Future stubs we should add
-- `GET /healthz`, `/readyz`, `/stats`
-- `MIRROR_SAMPLE_RATE` for high-volume streams
+- `GET /healthz`, `/readyz`, `/stats` — `/stats` is now partially answerable by querying
+  the bus synaptic graph directly (see above) once `MIRROR_GRAPH_ENABLED=true`; an HTTP
+  surface over that query is still a stub.
+- `MIRROR_SAMPLE_RATE` for high-volume streams (still relevant to the SQLite path)
 - A “replay mode” that reads recorded envelopes and republishes them at controlled speed
 - Standard bus summary logging flags (`ORION_LOG_BUS_IN/OUT`)
 

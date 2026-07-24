@@ -2,6 +2,9 @@
 
 Relational continuity synthesizer for social-room turns (`orion:chat:social:stored`).
 
+Also publishes a bus-native `SystemHealthV1` heartbeat to `orion:system:health` every
+`HEARTBEAT_INTERVAL_SEC` (default 10s), independent of the service's own bus connection.
+
 ## Database migration (required on existing installs)
 
 `Base.metadata.create_all()` does **not** add columns to existing tables. After pulling hub-social-room-ops-v1, run:

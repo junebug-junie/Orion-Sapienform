@@ -7,6 +7,8 @@ from contextlib import asynccontextmanager
 
 from fastapi import FastAPI
 
+from orion.core.bus.bus_service_chassis import ChassisConfig, HeartbeatOnly
+
 from app.routers.capabilities import router as capabilities_router
 from app.routers.datasets import router as datasets_router
 from app.routers.drift import router as drift_router
@@ -25,9 +27,28 @@ from app.storage.repository import ensure_tables
 logging.basicConfig(level=getattr(logging, settings.log_level.upper(), logging.INFO))
 logger = logging.getLogger("orion-topic-foundry")
 
+heartbeat_chassis: HeartbeatOnly | None = None
+
+
+def build_heartbeat_chassis() -> HeartbeatOnly:
+    """Own, independent bus connection publishing SystemHealthV1 to orion:system:health
+    every heartbeat_interval_sec. Deliberately separate from the drift daemon's own bus
+    usage (see docs/superpowers/specs/2026-07-24-service-heartbeat-node-telemetry-design.md)."""
+    return HeartbeatOnly(
+        ChassisConfig(
+            service_name=settings.service_name,
+            service_version=settings.service_version,
+            node_name=settings.node_name,
+            bus_url=settings.orion_bus_url,
+            bus_enabled=settings.orion_bus_enabled,
+            heartbeat_interval_sec=settings.heartbeat_interval_sec,
+        )
+    )
+
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
+    global heartbeat_chassis
     ensure_tables()
     logger.info("Topic Foundry service starting")
     drift_task = None
@@ -35,8 +56,25 @@ async def lifespan(app: FastAPI):
         logger.info("Starting drift daemon")
         drift_task = asyncio.create_task(drift_daemon_loop())
     try:
+        heartbeat_chassis = build_heartbeat_chassis()
+        await heartbeat_chassis.start_background()
+        logger.info(
+            "system_health_heartbeat_started service=%s interval_sec=%s",
+            settings.service_name,
+            settings.heartbeat_interval_sec,
+        )
+    except Exception as exc:
+        logger.warning("system_health_heartbeat_start_failed error=%s", exc)
+        heartbeat_chassis = None
+    try:
         yield
     finally:
+        if heartbeat_chassis is not None:
+            try:
+                await heartbeat_chassis.stop()
+            except Exception as exc:
+                logger.warning("system_health_heartbeat_stop_error error=%s", exc)
+            heartbeat_chassis = None
         if drift_task:
             drift_task.cancel()
             with contextlib.suppress(asyncio.CancelledError):

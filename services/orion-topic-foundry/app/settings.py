@@ -122,6 +122,12 @@ class Settings(BaseSettings):
         "redis://100.92.216.81:6379/0",
         validation_alias=AliasChoices("ORION_BUS_URL"),
     )
+    # Bus-native SystemHealthV1 heartbeat cadence (orion:system:health). See
+    # docs/superpowers/specs/2026-07-24-service-heartbeat-node-telemetry-design.md.
+    heartbeat_interval_sec: float = Field(
+        10.0,
+        validation_alias=AliasChoices("HEARTBEAT_INTERVAL_SEC"),
+    )
 
     topic_foundry_drift_daemon: bool = Field(
         False,

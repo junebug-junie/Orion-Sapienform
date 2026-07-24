@@ -149,6 +149,7 @@ class ReplayTick:
     generated_at: datetime
     attention_reason: str
     confidence: Optional[float]
+    prediction_error_confidence: Optional[float]
     broadcast_lane_present: bool
     broadcast_lane_stale: bool
     broadcast_lane_age_sec: Optional[float]
@@ -326,6 +327,7 @@ def replay_reducer(
                 generated_at=ts,
                 attention_reason=model.attention_reason,
                 confidence=model.confidence,
+                prediction_error_confidence=model.prediction_error_confidence,
                 broadcast_lane_present=model.broadcast_lane_present,
                 broadcast_lane_stale=model.broadcast_lane_stale,
                 broadcast_lane_age_sec=model.broadcast_lane_age_sec,
@@ -576,6 +578,7 @@ def write_ticks_csv(path: Path, ticks: list[ReplayTick]) -> None:
         writer.writerow(
             [
                 "generated_at", "attention_reason", "confidence",
+                "prediction_error_confidence",
                 "broadcast_lane_present", "broadcast_lane_stale", "broadcast_lane_age_sec",
                 "field_lane_present", "predicted_shift", "has_voluntary_override",
             ]
@@ -585,6 +588,7 @@ def write_ticks_csv(path: Path, ticks: list[ReplayTick]) -> None:
                 [
                     t.generated_at.isoformat(), t.attention_reason,
                     "" if t.confidence is None else f"{t.confidence:.4f}",
+                    "" if t.prediction_error_confidence is None else f"{t.prediction_error_confidence:.4f}",
                     t.broadcast_lane_present, t.broadcast_lane_stale,
                     "" if t.broadcast_lane_age_sec is None else f"{t.broadcast_lane_age_sec:.3f}",
                     t.field_lane_present, t.predicted_shift or "", t.has_voluntary_override,
@@ -651,6 +655,19 @@ def render_report(
     n_aid_confidence = len(aid_confidences)
     aid_confidence_min = min(aid_confidences) if aid_confidences else None
     aid_confidence_max = max(aid_confidences) if aid_confidences else None
+
+    # prediction_error_confidence (2026-07-24): unconditional counterpart,
+    # computed regardless of attention_reason branch, restricted to
+    # ACTIVE_INFERENCE_DOMAINS (excludes the confirmed-dead transport
+    # domain). This is the field that closes the branch-starvation gap
+    # named above -- expect its coverage to track prediction_error data
+    # availability (like predicted_shift), not the narrow field_salience_only
+    # branch count.
+    pe_confidences = [t.prediction_error_confidence for t in ticks if t.prediction_error_confidence is not None]
+    n_pe_confidence = len(pe_confidences)
+    pe_confidence_min = min(pe_confidences) if pe_confidences else None
+    pe_confidence_max = max(pe_confidences) if pe_confidences else None
+    pe_confidence_mean = (sum(pe_confidences) / n_pe_confidence) if pe_confidences else None
 
     predicted_shifts = [t.predicted_shift for t in ticks if t.predicted_shift]
     n_predicted_shift = len(predicted_shifts)
@@ -728,6 +745,21 @@ def render_report(
         f"- Ticks using the NEW prediction_error-based confidence specifically "
         f"(field_salience_only branch): {n_aid_confidence} / {n} ({pct(n_aid_confidence)})",
         f"  - min={_fmt(aid_confidence_min)} max={_fmt(aid_confidence_max)}",
+        "",
+        "### `prediction_error_confidence` (2026-07-24, unconditional, ACTIVE_INFERENCE_DOMAINS only)",
+        "",
+        "Closes the branch-starvation gap above: computed regardless of attention_reason, "
+        "restricted to execution/biometrics/chat/route (transport excluded -- confirmed "
+        "live 2026-07-24 that it reads exactly 0.0 for 100% of a real window, see "
+        "docs/notes/2026-07-24-attention-reason-branch-starvation-finding.md).",
+        "",
+        f"- Ticks with a non-null `prediction_error_confidence`: {n_pe_confidence} / {n} "
+        f"({pct(n_pe_confidence)})",
+        f"  - min={_fmt(pe_confidence_min)} max={_fmt(pe_confidence_max)} mean={_fmt(pe_confidence_mean)}",
+        "  - Expected: this should track prediction_error data availability (like "
+        "predicted_shift), not the narrow field_salience_only branch count above -- if "
+        "coverage here is still near 0%, the ACTIVE_INFERENCE_DOMAINS filter or its wiring "
+        "should be re-checked before trusting this signal.",
         f"- Ticks with a non-null `predicted_shift`: {n_predicted_shift} / {n} ({pct(n_predicted_shift)})",
         "  - domain breakdown: "
         + (

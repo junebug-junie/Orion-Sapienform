@@ -316,6 +316,78 @@ class TestPredictedShift:
         assert "biometrics" in model.predicted_shift
 
 
+class TestUnconditionalPredictionErrorConfidence:
+    """`prediction_error_confidence`/`prediction_error_confidence_basis`
+    (2026-07-24): additive, unconditional (mirrors predicted_shift's
+    positioning), restricted to ACTIVE_INFERENCE_DOMAINS (excludes the
+    confirmed-dead `transport` domain -- see
+    docs/notes/2026-07-24-attention-reason-branch-starvation-finding.md)."""
+
+    def test_computed_even_when_top_down_override_wins(self) -> None:
+        # The pre-existing `confidence` field only populates in the
+        # field_salience_only branch. This one must not share that gate.
+        override = _override()
+        broadcast = _broadcast(override=override)
+        model = reduce_attention_self_model(
+            broadcast, _field_frame(), now=NOW,
+            prediction_error_by_domain=_prediction_error_by_domain(),
+        )
+        assert model.attention_reason == "top_down_override"
+        assert model.prediction_error_confidence is not None
+        assert "unconditional" in model.prediction_error_confidence_basis
+
+    def test_computed_even_when_bottom_up_salience_wins(self) -> None:
+        broadcast = _broadcast(override=None)
+        model = reduce_attention_self_model(
+            broadcast, _field_frame(), now=NOW,
+            prediction_error_by_domain=_prediction_error_by_domain(),
+        )
+        assert model.attention_reason == "bottom_up_salience"
+        assert model.prediction_error_confidence is not None
+
+    def test_transport_excluded_from_domain_set(self) -> None:
+        # {execution: 0.0001, biometrics: 0.0459, chat: 0.0, route: 0.0}
+        # mean = 0.0115 -> confidence = 0.9885. If transport's guaranteed
+        # 0.0 were included (5 domains), the mean would instead be 0.0092
+        # (confidence 0.9908) -- this test would fail if transport leaked
+        # back into the filtered set.
+        model = reduce_attention_self_model(
+            None, _field_frame(), now=NOW,
+            prediction_error_by_domain=_prediction_error_by_domain(),
+        )
+        assert model.prediction_error_confidence == pytest.approx(1.0 - 0.0115, abs=1e-4)
+        assert "transport" not in model.prediction_error_confidence_basis
+        assert "4 ACTIVE_INFERENCE_DOMAINS" in model.prediction_error_confidence_basis
+
+    def test_only_transport_data_yields_honestly_absent_not_zero(self) -> None:
+        # If the caller only ever has transport data (degenerate but
+        # possible), filtering must yield None, not a fabricated 0.0/1.0.
+        model = reduce_attention_self_model(
+            None, _field_frame(), now=NOW,
+            prediction_error_by_domain={"transport": 0.0},
+        )
+        assert model.prediction_error_confidence is None
+        assert model.prediction_error_confidence_basis == ""
+
+    def test_none_prediction_error_by_domain_yields_none(self) -> None:
+        model = reduce_attention_self_model(None, _field_frame(), now=NOW)
+        assert model.prediction_error_confidence is None
+        assert model.prediction_error_confidence_basis == ""
+
+    def test_does_not_affect_the_existing_branch_gated_confidence_field(self) -> None:
+        # Regression guard: the old field must keep its original unfiltered
+        # (all-5-domains) formula, unchanged by this patch.
+        model = reduce_attention_self_model(
+            None, _field_frame(), now=NOW,
+            prediction_error_by_domain=_prediction_error_by_domain(),
+        )
+        assert model.confidence == pytest.approx(1.0 - 0.0092, abs=1e-4)
+        assert "5 domains" in model.confidence_basis
+        # The two fields now genuinely differ because of the transport
+        # exclusion -- confirms they are computed independently, not aliased.
+        assert model.confidence != model.prediction_error_confidence
+
+
 def test_reference_tick_defaults_to_field_frame_generated_at() -> None:
     field_frame = _field_frame(generated_at=NOW)
     model = reduce_attention_self_model(None, field_frame)

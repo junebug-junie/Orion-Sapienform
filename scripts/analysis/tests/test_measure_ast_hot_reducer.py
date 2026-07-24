@@ -244,9 +244,9 @@ def test_replay_reducer_predicted_shift_tracks_rolling_trend_window() -> None:
 
 def test_reason_histogram_counts_each_category() -> None:
     ticks = [
-        mod.ReplayTick(BASE, "top_down_override", 0.5, True, False, 1.0, True, None, True, ""),
-        mod.ReplayTick(BASE, "bottom_up_salience", 0.5, True, False, 1.0, True, None, False, ""),
-        mod.ReplayTick(BASE, "bottom_up_salience", 0.5, True, False, 1.0, True, None, False, ""),
+        mod.ReplayTick(BASE, "top_down_override", 0.5, None, True, False, 1.0, True, None, True, ""),
+        mod.ReplayTick(BASE, "bottom_up_salience", 0.5, None, True, False, 1.0, True, None, False, ""),
+        mod.ReplayTick(BASE, "bottom_up_salience", 0.5, None, True, False, 1.0, True, None, False, ""),
     ]
     hist = mod.reason_histogram(ticks)
     assert hist["top_down_override"] == 1
@@ -255,9 +255,9 @@ def test_reason_histogram_counts_each_category() -> None:
 
 def test_find_override_examples_returns_context_window() -> None:
     ticks = [
-        mod.ReplayTick(BASE, "field_salience_only", None, False, True, None, True, None, False, "a"),
-        mod.ReplayTick(BASE, "top_down_override", 0.9, True, False, 1.0, True, None, True, "override!"),
-        mod.ReplayTick(BASE, "bottom_up_salience", 0.7, True, False, 1.0, True, None, False, "c"),
+        mod.ReplayTick(BASE, "field_salience_only", None, None, False, True, None, True, None, False, "a"),
+        mod.ReplayTick(BASE, "top_down_override", 0.9, None, True, False, 1.0, True, None, True, "override!"),
+        mod.ReplayTick(BASE, "bottom_up_salience", 0.7, None, True, False, 1.0, True, None, False, "c"),
     ]
     examples = mod.find_override_examples(ticks, context=1)
     assert len(examples) == 1
@@ -267,6 +267,6 @@ def test_find_override_examples_returns_context_window() -> None:
 
 def test_find_override_examples_empty_when_no_override_present() -> None:
     ticks = [
-        mod.ReplayTick(BASE, "field_salience_only", None, False, True, None, True, None, False, "a"),
+        mod.ReplayTick(BASE, "field_salience_only", None, None, False, True, None, True, None, False, "a"),
     ]
     assert mod.find_override_examples(ticks) == []

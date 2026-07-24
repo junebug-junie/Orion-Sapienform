@@ -78,6 +78,20 @@ class AttentionSelfModelV1(BaseModel):
     confidence: float | None = Field(default=None, ge=0.0, le=1.0)
     confidence_basis: str = ""
 
+    # --- Unconditional Active-Inference confidence, additive to the above --
+    # 2026-07-24: `confidence` above only populates from the real
+    # prediction-error formula inside the `field_salience_only` branch,
+    # which live data showed fires on ~0.04% of ticks (structurally
+    # preempted by the broadcast lane being fresh almost always -- see
+    # `docs/notes/2026-07-24-attention-reason-branch-starvation-finding.md`).
+    # These two fields are computed unconditionally (mirroring
+    # `predicted_shift`'s existing positioning) and restricted to
+    # `orion.substrate.attention_self_model.ACTIVE_INFERENCE_DOMAINS`
+    # (excludes the confirmed-dead `transport` domain). Additive only --
+    # `confidence`/`confidence_basis` above are unchanged.
+    prediction_error_confidence: float | None = Field(default=None, ge=0.0, le=1.0)
+    prediction_error_confidence_basis: str = ""
+
     # --- What's predicted to shift next (modest, honestly scoped) ----------
     predicted_shift: str | None = None
     predicted_shift_basis: str = ""

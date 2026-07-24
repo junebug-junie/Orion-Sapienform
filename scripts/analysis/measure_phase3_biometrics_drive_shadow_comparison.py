@@ -92,6 +92,15 @@ MAX_ROWS: int = 200_000
 # concurrent data" rather than silently joined to a stale, unrelated reading.
 MAX_JOIN_STALENESS_SEC: float = 30.0
 
+# Below this many paired observations, the isolated-subset correlation delta
+# is not given a directional reading in the report -- a small sample can
+# swing a correlation coefficient wildly, and a confident-sounding verdict
+# off a handful of points would be exactly the kind of unearned certainty
+# CLAUDE.md's metric-quality-gate discipline exists to prevent. Not
+# calibrated against a formal power analysis -- a conservative round number,
+# same spirit as this script's other starting-anchor constants.
+MIN_ISOLATED_N_FOR_INTERPRETATION: int = 30
+
 BIOMETRICS_NODE_ID = "node:substrate.biometrics"
 
 # The only two drives `biometrics_state` deviations route into
@@ -104,6 +113,73 @@ CSV_PATH = OUTPUT_DIR / "ticks.csv"
 PROGRESS_PATH = OUTPUT_DIR / "progress.log"
 
 DEFAULT_POSTGRES_URI = "postgresql://postgres:postgres@orion-athena-sql-db:5432/conjourney"
+
+# The exact `tension_kinds` singleton used to PARTIALLY isolate a drive-audit
+# event's capability/continuity impulse -- the disentangling filter named in
+# `docs/notes/2026-07-24-phase3-biometrics-drive-shadow-comparison-finding.md`'s
+# "recommended next step". Traced every real kind that can carry a
+# `capability`/`continuity` drive_impact (`orion/spark/concept_induction/
+# tensions.py`, `orion/autonomy/signal_tension.py`,
+# `config/autonomy/signal_drive_map.yaml`):
+#   - "tension.failure.v1"       (failure_event -> capability 0.5)
+#   - "tension.chat_evidence.v1" (chat_social_hazard -> capability 0.2/0.3)
+#   - "tension.cognitive_load.v1" (turn_effect energy delta -> capability 0.9)
+#   - "tension.distress.v1"      (turn_effect valence delta OR action-outcome
+#     -> continuity 0.55)
+#   - "tension.identity_drift.v1" (turn_effect novelty delta -> continuity 0.8)
+#   - "tension.satisfaction.v1"  (action-outcome, dynamic per-outcome weights
+#     that can include continuity -- conservatively treated as polluting)
+# "tension.drive_competition.v1" carries EMPTY drive_impacts
+# (`derive_pressure_competition_tensions`, a pure competition marker) and
+# "tension.contradiction.v1" only touches coherence/predictive -- neither
+# pollutes capability/continuity, so their co-presence does not disqualify
+# a tick.
+#
+# **KNOWN, UNRESOLVED GAP (found in review 2026-07-24): this filter does NOT
+# fully isolate biometrics.** `mesh_health` deviations do NOT produce
+# `"tension.health.v1"` in practice -- `SignalTensionSource.from_equilibrium`
+# (the only code that would emit that kind) has zero live callers, confirmed
+# dead code. The real live path (`orion/signals/adapters/equilibrium.py` ->
+# `"orion:signals:equilibrium"` channel -> `bus_worker.py`'s generic "signal"
+# rail -> `signal_to_tension()`) emits the SAME generic `"tension.signal.v1"`
+# kind biometrics_state uses (`orion/autonomy/signal_tension.py`) -- so a
+# drive-audit event whose `tension_kinds == {"tension.signal.v1"}` may be
+# biometrics-sourced, mesh_health-sourced, or both, and `drive_audits` (no
+# `signal_kind`/`evidence_text`/`related_nodes` column, only a generic
+# `summary` like "pressure concentrates on capability") cannot disambiguate
+# them after the fact. The `"orion:equilibrium:snapshot"` channel that could
+# independently confirm mesh_health's real firing rate is not durably logged
+# to Postgres (consumer is `orion-cortex-orch` only) -- checked and ruled
+# out 2026-07-24, no way to bound the contamination rate with real data.
+# **Net effect: `BIOMETRICS_ISOLATED_TENSION_KINDS` correctly excludes chat-
+# hazard/turn-effect/action-outcome pollution, but does NOT prove the
+# resulting subset is biometrics-only.** Any correlation computed on this
+# subset should be read as "capability/continuity movement attributable to
+# either biometrics_state or mesh_health, nothing else" -- weaker evidence
+# than a clean biometrics-only isolation, not a false result, but not what
+# an earlier version of this docstring claimed either.
+BIOMETRICS_ISOLATED_TENSION_KINDS: frozenset[str] = frozenset({"tension.signal.v1"})
+
+# Every OTHER real capability/continuity-touching kind -- confirmed via the
+# same trace above. A tick is "isolated" only if its tension_kinds is
+# EXACTLY BIOMETRICS_ISOLATED_TENSION_KINDS (a strict subset match would
+# still let e.g. tension.distress.v1 slip in alongside tension.signal.v1).
+# Deliberately excludes "tension.health.v1" -- confirmed dead code above, so
+# it is not a real co-occurrence risk in live data (unlike the constant name
+# might suggest to a future reader who doesn't also read the caveat above).
+_KNOWN_POLLUTING_TENSION_KINDS: frozenset[str] = frozenset(
+    {
+        "tension.failure.v1", "tension.chat_evidence.v1",
+        "tension.cognitive_load.v1", "tension.distress.v1",
+        "tension.identity_drift.v1", "tension.satisfaction.v1",
+    }
+)
+
+assert not (BIOMETRICS_ISOLATED_TENSION_KINDS & _KNOWN_POLLUTING_TENSION_KINDS), (
+    "BIOMETRICS_ISOLATED_TENSION_KINDS and _KNOWN_POLLUTING_TENSION_KINDS must "
+    "not overlap -- a kind cannot simultaneously define the isolated set and "
+    "disqualify membership in it."
+)
 
 
 # ===========================================================================
@@ -119,6 +195,20 @@ class AlignedTick:
     continuity_pressure: Optional[float]
     dominant_drive: Optional[str]
     field_state_age_sec: Optional[float]
+    is_biometrics_isolated: bool = False
+
+
+def is_biometrics_isolated_event(tension_kinds: object) -> bool:
+    """True iff `tension_kinds` (the raw `drive_audits.tension_kinds` jsonb
+    value for one event) is EXACTLY `BIOMETRICS_ISOLATED_TENSION_KINDS` --
+    i.e. this event's capability/continuity movement, if any, can only have
+    come from biometrics_state, with no other real drive_impacts-bearing
+    kind folded into the same tick. Malformed/non-list input is honestly
+    `False` (not isolated), never assumed.
+    """
+    if not isinstance(tension_kinds, list):
+        return False
+    return set(tension_kinds) == BIOMETRICS_ISOLATED_TENSION_KINDS
 
 
 def extract_biometrics_prediction_error(field_state_payload: dict) -> Optional[float]:
@@ -195,6 +285,7 @@ def align_drive_audits_to_field_state(
                 continuity_pressure=float(cont) if isinstance(cont, (int, float)) else None,
                 dominant_drive=payload.get("dominant_drive"),
                 field_state_age_sec=age_sec if pe_value is not None else None,
+                is_biometrics_isolated=is_biometrics_isolated_event(payload.get("tension_kinds")),
             )
         )
     return ticks
@@ -245,6 +336,20 @@ def compute_correlation(ticks: list[AlignedTick]) -> tuple[Optional[float], int]
         xs.append(t.biometrics_prediction_error)
         ys.append(max(t.capability_pressure, t.continuity_pressure))
     return pearson_correlation(xs, ys), len(xs)
+
+
+def filter_isolated(ticks: list[AlignedTick]) -> list[AlignedTick]:
+    """The disentangling subset named in `docs/notes/2026-07-24-phase3-
+    biometrics-drive-shadow-comparison-finding.md`'s recommended next step:
+    ticks where `is_biometrics_isolated` is True, i.e. this event's
+    capability/continuity movement (if any) cannot have come from
+    `mesh_health`/`failure_event`/turn-effect tensions/etc. -- only
+    `biometrics_state`, or nothing. Re-running `compute_correlation` on
+    this subset answers the open question: does correlation improve once
+    the OTHER real contributors to the same two drives are excluded, or
+    does it stay near zero even isolated.
+    """
+    return [t for t in ticks if t.is_biometrics_isolated]
 
 
 @dataclass
@@ -437,6 +542,7 @@ def write_ticks_csv(path: Path, ticks: list[AlignedTick]) -> None:
             [
                 "observed_at", "biometrics_prediction_error", "capability_pressure",
                 "continuity_pressure", "dominant_drive", "field_state_age_sec",
+                "is_biometrics_isolated",
             ]
         )
         for t in ticks:
@@ -448,6 +554,7 @@ def write_ticks_csv(path: Path, ticks: list[AlignedTick]) -> None:
                     "" if t.continuity_pressure is None else f"{t.continuity_pressure:.4f}",
                     t.dominant_drive or "",
                     "" if t.field_state_age_sec is None else f"{t.field_state_age_sec:.2f}",
+                    t.is_biometrics_isolated,
                 ]
             )
 
@@ -470,6 +577,9 @@ def render_report(
     correlation_n: int,
     fed_group: GroupStats,
     other_group: GroupStats,
+    isolated_correlation: Optional[float],
+    isolated_correlation_n: int,
+    isolated_ticks_count: int,
     caveats: list[str],
 ) -> str:
     n = len(ticks)
@@ -560,6 +670,64 @@ def render_report(
     lines.extend(
         [
             "",
+            "## 3. Isolated comparison: correlation restricted to biometrics-or-mesh_health-"
+            "only events",
+            "",
+            "The disentangling step named in `docs/notes/2026-07-24-phase3-biometrics-"
+            "drive-shadow-comparison-finding.md`'s recommended next step: repeat the "
+            "correlation, restricted to `drive_audits` events whose `tension_kinds` is "
+            "EXACTLY `{\"tension.signal.v1\"}` -- excludes `failure_event`/chat-hazard/"
+            "turn-effect/action-outcome pollution. **Does NOT prove biometrics-only**: "
+            "`mesh_health` deviations also emit this same generic kind (confirmed in "
+            "review 2026-07-24 -- see `BIOMETRICS_ISOLATED_TENSION_KINDS`'s docstring for "
+            "the full trace and why this can't be tightened further with data this script "
+            "has access to). Read this subset as \"capability/continuity movement "
+            "attributable to biometrics_state or mesh_health, nothing else\" -- narrower "
+            "evidence than a clean biometrics-only isolation would give.",
+            "",
+            f"- Isolated ticks in window: {isolated_ticks_count} / {n}",
+            f"- n paired observations (isolated subset): {isolated_correlation_n}",
+            f"- Pearson r (isolated subset): {_fmt(isolated_correlation)}"
+            + ("" if isolated_correlation is not None else " (undefined -- too few points or zero variance)"),
+        ]
+    )
+    if isolated_correlation_n < MIN_ISOLATED_N_FOR_INTERPRETATION:
+        lines.append(
+            f"- Only {isolated_correlation_n} paired observation(s) in the isolated subset "
+            f"(below MIN_ISOLATED_N_FOR_INTERPRETATION={MIN_ISOLATED_N_FOR_INTERPRETATION}) "
+            f"-- no directional reading given. A correlation coefficient computed on this "
+            f"few points can swing wildly and would be a false confidence, not a real "
+            f"comparison."
+        )
+    elif correlation is not None and isolated_correlation is not None:
+        delta = isolated_correlation - correlation
+        lines.append(
+            f"- Change vs. full-dataset correlation ({_fmt(correlation)}): {delta:+.4f} -- "
+            + (
+                "correlation improved once other real contributors were excluded -- "
+                "weakly supports the old bucket-dilution explanation over \"genuinely "
+                "unrelated\" (weakly, since this subset still can't rule out mesh_health "
+                "specifically -- see the caveat above)."
+                if delta > 0.05 else
+                "correlation did NOT meaningfully improve when isolated -- does not support "
+                "the bucket-dilution explanation as strongly as a clean isolation would; "
+                "still worth a second look at biometrics_prediction_error's own formula "
+                "before trusting it as this domain's field-native replacement, though "
+                "residual mesh_health contamination in this subset means that conclusion "
+                "isn't airtight either."
+                if abs(delta) <= 0.05 else
+                "correlation got WORSE when isolated -- unexpected, worth independent "
+                "re-checking before drawing a conclusion either way."
+            )
+        )
+    else:
+        lines.append(
+            "- Cannot compare: one or both correlations are undefined (insufficient data)."
+        )
+
+    lines.extend(
+        [
+            "",
             "## Reading this",
             "",
             "- This measures whether the two signals are RELATED on real data -- it does "
@@ -571,11 +739,12 @@ def render_report(
             "be present even when a different drive technically dominates that tick. A "
             "weak or absent split difference does not by itself rule out a real "
             "relationship; the correlation number above is the more sensitive of the two.",
-            "- `tension_kinds` was deliberately NOT used as a comparison axis: biometrics-"
-            "derived tensions all carry the generic `\"tension.signal.v1\"` kind "
-            "(`orion/autonomy/signal_tension.py`), not a biometrics-specific label, "
-            "confirmed live 2026-07-24 -- `dominant_drive`/`drive_pressures` is the only "
-            "axis the old system actually exposes for this domain.",
+            "- `tension_kinds` is used ONLY for the isolated-subset filter above (section "
+            "3), not as the primary split-comparison axis (section 2) -- biometrics-"
+            "derived tensions share the generic `\"tension.signal.v1\"` kind with no "
+            "other real signal_kind that touches capability/continuity, confirmed live "
+            "2026-07-24, which is exactly what makes it usable as an isolation filter "
+            "even though it can't distinguish biometrics from itself as a raw label.",
             "- **Real confound, not a bug**: `capability` is not a clean biometrics proxy "
             "on the old side either -- `signal_drive_map.yaml` also routes `mesh_health` "
             "(weight 0.5) and `failure_event` (weight 0.5) into the same drive. A weak or "
@@ -640,6 +809,7 @@ def run(window: timedelta, window_label: str) -> int:
             drive_audit_rows_count=0, field_state_truncated=field_state_truncated,
             drive_audit_truncated=drive_audit_truncated, correlation=None,
             correlation_n=0, fed_group=GroupStats(0, None), other_group=GroupStats(0, None),
+            isolated_correlation=None, isolated_correlation_n=0, isolated_ticks_count=0,
             caveats=caveats,
         )
         REPORT_PATH.write_text(report, encoding="utf-8")
@@ -652,6 +822,8 @@ def run(window: timedelta, window_label: str) -> int:
 
     correlation, correlation_n = compute_correlation(ticks)
     fed_group, other_group = split_comparison(ticks)
+    isolated_ticks = filter_isolated(ticks)
+    isolated_correlation, isolated_correlation_n = compute_correlation(isolated_ticks)
 
     write_ticks_csv(CSV_PATH, ticks)
     report = render_report(
@@ -667,6 +839,9 @@ def run(window: timedelta, window_label: str) -> int:
         correlation_n=correlation_n,
         fed_group=fed_group,
         other_group=other_group,
+        isolated_correlation=isolated_correlation,
+        isolated_correlation_n=isolated_correlation_n,
+        isolated_ticks_count=len(isolated_ticks),
         caveats=caveats,
     )
     REPORT_PATH.write_text(report, encoding="utf-8")

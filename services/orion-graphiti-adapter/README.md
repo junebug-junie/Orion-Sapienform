@@ -16,6 +16,10 @@ Additive temporal graph projection service for `MemoryCrystallizationV1`.
 
 Hub `GraphitiAdapter` calls this service when `GRAPHITI_URL` is set.
 
+Also publishes a bus-native `SystemHealthV1` heartbeat to `orion:system:health` every
+`HEARTBEAT_INTERVAL_SEC` (default 10s), on its own independent bus connection -- this service
+otherwise has no bus traffic of its own (HTTP + Postgres + FalkorDB only).
+
 ## graphiti_core backend
 
 `GRAPHITI_BACKEND=graphiti_core` is the shipped code-level default (`settings.py`,

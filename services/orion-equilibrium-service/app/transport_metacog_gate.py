@@ -1,11 +1,8 @@
 from __future__ import annotations
 
-import logging
 from typing import Any
 
 from orion.schemas.telemetry.metacog_trigger import MetacogTriggerV1
-
-logger = logging.getLogger("orion.equilibrium.transport_metacog_gate")
 
 
 def build_transport_metacog_trigger_from_snapshot(

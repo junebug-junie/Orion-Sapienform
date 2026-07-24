@@ -1,5 +1,21 @@
 # Objective 3 roadmap — consciousness-theory scaffolding before math/logic lock-in
 
+**Correction (2026-07-24, docs-only, no phase started yet).** Phase 2 below names "self-state
+deltas" as the first producer domain to reframe — "the richest and best-understood." That
+producer no longer exists: `SelfStateV1` was fully removed 2026-07-23 (PR #1266), one day
+before this correction, and replaced by `orion/substrate/prediction_error.py`'s five
+Active-Inference domains (`execution`, `transport`, `biometrics`, `chat`, `route`;
+`orion/schemas/attention_self_model.py`'s module docstring has the full account). Phase 1's
+"hard gate" below (a `SelfStateV1` signal-quality pass, blocking before Phase 1 is trusted) is
+now **moot by obsolescence, not resolved** — the gated input doesn't exist anymore, so there is
+nothing left to sign off on there; do not read the gate's absence as "passed." When Phase 2
+actually starts, re-anchor its first domain choice on the *live* prediction-error domains
+above (`biometrics` already has a real shadow-measure slice as of 2026-07-21, per the charter
+§6 item 3 status note — the natural real starting point now, not self-state deltas) and
+exclude `transport` (confirmed dead, 2026-07-24, reads exactly `0.0` for 100% of a real 8h
+window — see charter §6 item 2's 2026-07-24 note). This correction does not start Phase 2; it
+only prevents a future Phase 2 kickoff from building against a producer that's already gone.
+
 Status: design mode. No code changes proposed here. Reorders the charter's own Objective
 2/3 sequencing based on a real, named risk: building Objective 3's field-routing mechanics
 before any consciousness-theory scaffolding exists would repeat the exact failure mode that

@@ -20,6 +20,38 @@ Equilibrium is doing **two** intentional jobs in your current implementation:
 This is controlled by:
 - `EQUILIBRIUM_COLLAPSE_MIRROR_INTERVAL_SEC` (default ~15s)
 
+### The metacog trigger family — big picture
+
+This section exists because design decisions for this system have historically only lived in one-off docs under `docs/superpowers/specs/`/`docs/superpowers/design/` that nobody goes back and reads once the branch merges. This README is meant to be the thing that stays current — the design docs below are the deep-dive/forensic record of *how* each decision got made, not the place to look first.
+
+**The pipeline, same for every trigger kind:** a gate module in this service (`app/<kind>_metacog_gate.py`) evaluates real evidence and, if a real condition holds, builds a `MetacogTriggerV1` (`orion/schemas/telemetry/metacog_trigger.py`). `_publish_metacog_trigger()` (`app/service.py`) checks that kind's cooldown lane, then publishes to `CHANNEL_EQUILIBRIUM_METACOG_TRIGGER` (`orion:equilibrium:metacog:trigger`). `orion-cortex-orch`'s `dispatch_metacog_trigger()` picks it up and runs a fresh, independent `log_orion_metacognition` plan (`MetacogContextService` → `MetacogDraftService` → `MetacogEnrichService` → `MetacogPublishService`, all in `orion-cortex-exec`), which writes a real `MetacogEntryV1` row into the `orion_metacog` Postgres table via `orion-sql-writer`. Every trigger kind below reuses this exact mechanism unmodified — a new kind only ever adds a gate module + a dispatch branch here, never touches the draft/enrich/publish machinery.
+
+**The design rule every trigger kind here follows, learned the hard way across several rounds:**
+- **Ground every gate condition in a real, already-computed field.** Never invent a derived signal or guess a boolean from vibes — if the field doesn't exist yet, the condition doesn't ship yet (see `chat_turn`'s own history below, where two originally-proposed conditions got dropped for exactly this reason).
+- **One gate module per trigger kind** (`app/chat_turn_metacog_gate.py`, `app/telemetry_anomaly_metacog_gate.py`, `app/transport_metacog_gate.py`, etc.) — never one shared mega-function.
+- **Give a new kind its own cooldown lane if it fires on a fundamentally different cadence than the shared periodic/rare pattern.** `chat_turn` (fires on essentially every remarkable turn) originally shared the global `EQUILIBRIUM_METACOG_COOLDOWN_SEC` lane with `baseline`/`manual`/`pulse`/`relational`/`telemetry_anomaly` — a real bug, since a burst of `chat_turn` fires could silently starve the others. Fixed 2026-07-23 (`_publish_metacog_trigger`'s `_PER_KIND_COOLDOWN_SETTINGS_ATTR` dict, generalized from a hardcoded if/else the same day `transport` needed its own lane too). Any future kind that fires often should get its own `EQUILIBRIUM_METACOG_<KIND>_COOLDOWN_SEC` from day one, not retrofit it after shipping.
+- **Ships disabled by default.** Every kind flips on only after a real, non-degenerate `orion_metacog` row has been observed post-deploy — "the flag is on" is not the same claim as "it's verified," and this repo's own history (`telemetry_anomaly`'s 2026-07-21 arsonist audit, in the design doc below) is a documented case of that distinction being missed for a while.
+- **`orion_metacog` currently has no confirmed real consumer.** This is a standing open question, not resolved by adding more trigger kinds — see `docs/superpowers/design/2026-07-18-collapse-mirror-metacog-redesign.md`'s "Missing questions" for the full framing (`orion_metacog` vs. the separately-fed `orion_metacognitive_trace` table). Shipping a new trigger kind is real, verifiable progress on *evidence quality* regardless — but it is not, by itself, progress toward that open question, and shouldn't be reported as if it were.
+
+**Current trigger kinds:**
+
+| `trigger_kind` | Evidence source | Cooldown lane | Status |
+|---|---|---|---|
+| `baseline` | Scheduled tick, `EQUILIBRIUM_METACOG_BASELINE_INTERVAL_SEC` | shared | live |
+| `manual` | User-triggered Collapse Mirror event | shared | live |
+| `dense` / `pulse` | Substrate self-state eventfulness score | shared | live |
+| `relational` | Real `repair_pressure_v2` appraisal | shared | live |
+| `telemetry_anomaly` | Trained autoencoder reconstruction-loss anomaly | shared | live (2026-07-21) |
+| `chat_turn` | Correlated `ThoughtEventV1` + `HarnessRunV1` (or a governor/stance-react timeout) | own (`EQUILIBRIUM_METACOG_CHAT_TURN_COOLDOWN_SEC`) | live (2026-07-23) |
+| `transport` | `RpcHealthSnapshotV1` windows (Option A) + real per-call RPC timeout grammar events (Option C) | own (`EQUILIBRIUM_METACOG_TRANSPORT_COOLDOWN_SEC`) | **ships disabled**, not yet live-verified |
+
+**A separate, parallel system this table's `transport` row borrows from, not the same pipeline:** `rpc_health` (`orion/core/bus/rpc_health.py` → `orion/core/bus/rpc_health_publish.py` → `orion:rpc_health:snapshot` → `orion-signal-gateway`'s `RpcHealthAdapter` → `OrionSignalV1`) is the `orion-signal-gateway` **organ-signal** pipeline (see that service's own README), completely independent of `orion_metacog`/`MetacogTriggerV1`. `transport`'s Option A subscribes to the same `orion:rpc_health:snapshot` channel as a *second* consumer, reading the same real data into a different destination table. Don't confuse the two pipelines when reading logs — a `rpc_health` organ signal in `orion-signal-gateway` and a `transport` metacog trigger in `orion_metacog` can both exist (or not) independently of each other.
+
+**Deep-dive / forensic history**, if you need the "how did we get here" story behind any of the above (each is long — read the README first, these are for when you need the receipts):
+- `docs/superpowers/design/2026-07-18-collapse-mirror-metacog-redesign.md` — the original redesign (why `collapse_mirror`/`numeric_sisters` got replaced, the `relational`/`telemetry_anomaly`/`chat_turn` build history, the open `orion_metacog` consumer question).
+- `docs/superpowers/specs/2026-07-23-transport-domain-rpc-health-redesign.md` + `docs/superpowers/specs/2026-07-23-rpc-health-signal-gateway-wiring-design.md` — why the old `transport_pressure`/`bus_health` family was found narrowly-scoped/misleading, and the real `rpc_health` signal built to replace it.
+- `docs/superpowers/specs/2026-07-24-transport-metacog-trigger-design.md` — the `transport` trigger kind's own design (why it doesn't build on the old `bus.transport` grammar lane, Options A/B/C).
+
 ### Baseline metacog trigger
 
 `_metacog_baseline_loop()` runs on `EQUILIBRIUM_METACOG_BASELINE_INTERVAL_SEC` (default `1000`s) whenever `EQUILIBRIUM_METACOG_ENABLE=true`, and is the fallback trigger every other trigger type in this file effectively bypasses when it fires first: on each tick it first tries the substrate dense/pulse trigger (below); only if that doesn't fire does it fall through to a real `trigger_kind=baseline` (`reason="scheduled_check"`). `EQUILIBRIUM_METACOG_BASELINE_MAX_SKIPS` (default `3`) forces a baseline trigger anyway after that many consecutive ticks where the distress/zen scores haven't changed, so a genuinely quiet system still gets a periodic real trigger rather than skipping forever.

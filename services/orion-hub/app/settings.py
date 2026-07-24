@@ -370,6 +370,10 @@ class Settings(BaseSettings):
     GRAPHITI_ENABLED: bool = Field(default=False, alias="GRAPHITI_ENABLED")
     GRAPHITI_URL: str = Field(default="", alias="GRAPHITI_URL")
     FALKORDB_URI: str = Field(default="", alias="FALKORDB_URI")
+    # Graph name for the bus synaptic graph debug routes (bus_synaptic_graph_routes.py).
+    # Same shared FalkorDB instance as FALKORDB_URI above; matches
+    # services/orion-bus-mirror's own FALKORDB_BUS_GRAPH setting name/default.
+    FALKORDB_BUS_GRAPH: str = Field(default="orion_bus_synapse", alias="FALKORDB_BUS_GRAPH")
 
     # --- Memory crystallization projections (Chroma via vector bus) ---
     CRYSTALLIZER_VECTOR_COLLECTION: str = Field(

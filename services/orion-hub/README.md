@@ -1377,6 +1377,32 @@ previously had zero doc surface here at all.
 those new names and you were expecting the old ones, that's this rename, not a bug. See the
 field-digester README's sixth training-data cutoff entry for the full mechanism.
 
+## Bus synaptic graph debug routes
+
+Read-only view into `services/orion-bus-mirror`'s live FalkorDB graph (`orion_bus_synapse`) —
+`scripts/bus_synaptic_graph_routes.py`. No UI panel yet, API only. "Idea 5" from
+`docs/superpowers/specs/2026-07-24-bus-vitality-field-signal-brainstorm.md`'s Phase 3+
+brainstorm: before building any new signal on top of this graph, surface what's already
+structurally visible in it. Never writes to the graph.
+
+- **`GET /api/bus-synaptic-graph/summary`**: node/edge counts (`Organ`, `Channel`, `Verb`,
+  `PUBLISHES`, `CAUSALLY_FOLLOWED_BY`, `EXECUTES_VERB`) — a quick "is this graph alive, roughly
+  what shape" check.
+- **`GET /api/bus-synaptic-graph/hot-organs?limit=N`**: organs ranked by `PUBLISHES` out-degree
+  (how many distinct channels they fan out to) — a real centrality signal already sitting in the
+  data (`vision-host` dominates at ~6300, next is `llm-gateway` at ~650).
+- **`GET /api/bus-synaptic-graph/hot-edges?limit=N`**: real cross-organ hop pairs ranked by
+  observed count — the structurally dominant flows in the mesh right now.
+- **`GET /api/bus-synaptic-graph/anomalies?zscore_threshold=3.0&min_count=5`**: edges whose most
+  recent observation deviated sharply from that edge's own rolling baseline.
+  `min_count` guards against the cold-start z-score instability documented in
+  `services/orion-bus-mirror/README.md` — an edge's second-ever observation can read as an
+  extreme z-score before a real baseline exists, so low-`count` edges are excluded here.
+
+Requires `FALKORDB_URI` set (shared with the Graphiti/substrate-concept FalkorDB instance) and
+`FALKORDB_BUS_GRAPH` (default `orion_bus_synapse`, matching orion-bus-mirror's own setting name).
+Returns `503 falkordb_uri_not_configured` if unset, not a silent empty response.
+
 ## Pending Attention — cognitive loops
 
 Flag: `ORION_ATTENTION_PENDING_CARDS_ENABLED` (default-off). API:

@@ -297,6 +297,20 @@ class Settings(BaseSettings):
     RECALL_FALKOR_NEIGHBORHOOD_IN_CHAT: bool = Field(
         default=False, validation_alias=AliasChoices("RECALL_FALKOR_NEIGHBORHOOD_IN_CHAT")
     )
+    # Idea 4 of docs/superpowers/specs/2026-07-24-bus-vitality-field-signal-brainstorm.md's
+    # Phase 3+ arc (design doc: docs/superpowers/specs/2026-07-24-bus-synaptic-graph-
+    # reasoning-consumer-design.md). When true, storage/falkor_bus_synaptic_adapter.py
+    # ::fetch_bus_synaptic_anomaly_fragments() runs on every recall call (recall
+    # runs on effectively every chat turn), reusing the exact anomaly Cypher
+    # already live-verified in services/orion-hub/scripts/bus_synaptic_graph_routes.py.
+    # Fixed, parameterized queries only -- never free-form Cypher. Unconditional,
+    # not query_text-gated (unlike RECALL_FALKOR_NEIGHBORHOOD_IN_CHAT above):
+    # self-awareness of transport-layer stress isn't naturally "about" what the
+    # user said. Returns [] (not a "nothing found" fragment) on the common case
+    # where nothing is anomalous -- ships dark until live-verified.
+    RECALL_BUS_SYNAPTIC_ANOMALY_IN_CHAT: bool = Field(
+        default=False, validation_alias=AliasChoices("RECALL_BUS_SYNAPTIC_ANOMALY_IN_CHAT")
+    )
     # Phase 2 of the entity-graph-reasoning arc (docs/superpowers/specs/
     # 2026-07-19-recall-entity-graph-reasoning-arc.md): fuse_candidates
     # (fusion.py) additively boosts a candidate's composite score when its

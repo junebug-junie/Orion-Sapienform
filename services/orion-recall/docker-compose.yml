@@ -67,6 +67,14 @@ services:
       - FALKORDB_RECALL_GRAPH=${FALKORDB_RECALL_GRAPH:-orion_recall}
       - RECALL_FALKOR_IN_CHAT=${RECALL_FALKOR_IN_CHAT:-false}
       - RECALL_FALKOR_NEIGHBORHOOD_IN_CHAT=${RECALL_FALKOR_NEIGHBORHOOD_IN_CHAT:-false}
+      # falkor_bus_synaptic_adapter.py reads FALKORDB_BUS_GRAPH directly from
+      # os.environ (same "no env_file:, must be listed here" constraint as
+      # every entry above) -- missed in PR #1342, found live 2026-07-24 when
+      # flipping RECALL_BUS_SYNAPTIC_ANOMALY_IN_CHAT on in .env/.env_example
+      # had zero effect on the running container (both keys absent from
+      # `docker exec ... printenv`, not just false).
+      - FALKORDB_BUS_GRAPH=${FALKORDB_BUS_GRAPH:-orion_bus_synapse}
+      - RECALL_BUS_SYNAPTIC_ANOMALY_IN_CHAT=${RECALL_BUS_SYNAPTIC_ANOMALY_IN_CHAT:-false}
       - RECALL_BELIEF_RENDER_BUDGET=${RECALL_BELIEF_RENDER_BUDGET:-128}
       # No compose-level default on these two: they are NEVER_SYNC_KEYS-protected in
       # scripts/sync_local_env_from_example.py (must be set by hand in .env) and their

@@ -232,6 +232,24 @@ systemctl list-timers orion-backup-databases.timer
 Runs at 03:45 local time, offset 30 minutes after the `/mnt/scripts` backup's
 03:15 slot to avoid the two jobs contending for disk I/O at the same moment.
 
+### Notifications
+
+Unlike the `/mnt/scripts` backup above (failure-only), this tool notifies on
+**every run** via `--notify-url`/`ORION_BACKUP_NOTIFY_URL` (same env var
+names, so it can share `/etc/orion-backup-databases.env`) -- a silent
+success and a silent failure otherwise look identical from the outside.
+Failures are `severity: critical` with `require_ack: true`; successes are
+`severity: info` with `require_ack: false`, so a healthy run doesn't demand
+attention, but a real record still lands in Orion Notify's `/attention`
+history either way. Point it at Orion Notify's `/attention/request` endpoint
+(confirmed live on port 7140):
+
+```bash
+sudo tee /etc/orion-backup-databases.env <<'EOF'
+ORION_BACKUP_NOTIFY_URL=http://localhost:7140/attention/request
+EOF
+```
+
 ### Tests
 
 ```bash

@@ -298,6 +298,22 @@ first place. Full reasoning and phased detail:
    `docs/notes/2026-07-24-phase3-biometrics-drive-shadow-comparison-finding.md`. Does not
    authorize live migration or bucket-vote retirement -- comparison only, per this item's
    own phased scope.
+   **Resolved same-day (2026-07-24): disentangling comparison built and run, then corrected
+   in same-day review.** Isolated `drive_audits` events to `tension_kinds ==
+   {"tension.signal.v1"}` exactly, excluding `failure_event`/chat-evidence/turn-effect/
+   action-outcome pollution. **Correction**: this does NOT isolate biometrics-only --
+   `mesh_health` deviations emit the same generic `"tension.signal.v1"` kind in practice
+   (the assumed dedicated `"tension.health.v1"` kind is dead code, zero live callers), and
+   `drive_audits` has no field to disambiguate the two after the fact; the channel that
+   could independently check mesh_health's real firing rate isn't durably logged to
+   Postgres. Result: correlation did NOT meaningfully improve (r≈0.016-0.020 full dataset
+   vs. r≈0.035-0.046 isolated, n≈1,607-1,612) -- weakly favors "the signals are genuinely
+   unrelated" over "the old bucket dilutes biometrics signal," weakly because the isolated
+   subset can still include mesh_health. Does not validate the old drives system; means the
+   specific claim "the new signal is the same thing, measured more cleanly" isn't well
+   supported here, without full confidence. Real next step, not started: re-examine
+   `biometrics_prediction_error`'s own formula before trusting it as this domain's
+   field-native replacement.
 4. **Stand up read-only measurement for the remaining consciousness-theory instruments** (§9)
    — RPT/Lamme and predictive processing are already live (items 2-3 build on them directly,
    not duplicate them); IIT continues independently via the mood-arc encoder, not gated by

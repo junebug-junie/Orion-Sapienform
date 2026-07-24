@@ -76,8 +76,56 @@ substantially on that filtered subset, explanation 2 (bucket dilution) is suppor
 independent confirmation the bucket-vote layer loses domain attribution, strengthening the
 case for Phase 4 migration. If it stays near zero even isolated, explanation 1 is
 supported -- worth a second look at `biometrics_prediction_error`'s own formula before
-trusting it as this domain's field-native replacement. Not built in this patch --
-next real step, not assumed.
+trusting it as this domain's field-native replacement.
+
+## Resolved same-day (2026-07-24): the disentangling step was built and run
+
+`scripts/analysis/measure_phase3_biometrics_drive_shadow_comparison.py` gained
+`BIOMETRICS_ISOLATED_TENSION_KINDS`/`is_biometrics_isolated_event()`/`filter_isolated()`.
+Traced every real tension kind that can carry a `capability`/`continuity` drive_impact --
+not just `mesh_health`/`failure_event` as originally scoped, but also
+`tension.chat_evidence.v1` (chat_social_hazard), `tension.cognitive_load.v1`/`tension.
+distress.v1`/`tension.identity_drift.v1` (turn-effect deltas), and `tension.satisfaction.v1`
+(action outcomes) -- `orion/spark/concept_induction/tensions.py`, confirmed live 2026-07-24.
+`tension.drive_competition.v1` (empty `drive_impacts`, a pure competition marker) and
+`tension.contradiction.v1` (coherence/predictive only) don't pollute and don't disqualify a
+tick.
+
+**Correction (same-day review, 2026-07-24): the isolation is weaker than first claimed.**
+The filter (`tension_kinds == {"tension.signal.v1"}`) does NOT isolate biometrics-only
+events. `mesh_health` deviations also emit this same generic `"tension.signal.v1"` kind in
+practice (`orion/signals/adapters/equilibrium.py` -> `"orion:signals:equilibrium"` channel
+-> `bus_worker.py`'s generic "signal" rail -> `signal_to_tension()`,
+`orion/autonomy/signal_tension.py`) -- the originally-assumed `"tension.health.v1"` kind for
+mesh_health is dead code (`SignalTensionSource.from_equilibrium` has zero live callers).
+`drive_audits` has no `signal_kind`/`evidence_text`/`related_nodes` column to disambiguate
+after the fact (only a generic `summary` like "pressure concentrates on capability"), and
+the one channel that could independently confirm mesh_health's real firing rate
+(`"orion:equilibrium:snapshot"`) is not durably logged to Postgres (consumer is
+`orion-cortex-orch` only) -- checked and ruled out, no way to bound the contamination rate
+with real data. The isolated subset (n=1,607-1,612 depending on run) is therefore
+"capability/continuity movement attributable to biometrics_state OR mesh_health, nothing
+else" -- narrower evidence than a clean biometrics-only isolation, not a false result.
+
+**Result: correlation did NOT meaningfully improve when isolated.** Full dataset: r≈0.016-
+0.020 (n≈41,900). Isolated subset: r≈0.035-0.046 (n≈1,607-1,612). Both remain close to
+zero; the change (~+0.02-0.03) is small, well under this script's own
+`MIN_ISOLATED_N_FOR_INTERPRETATION`-gated "substantial improvement" bar.
+
+**This weakly favors explanation 1 over explanation 2 -- weakly, given the mesh_health
+caveat above.** Removing chat-hazard/turn-effect/action-outcome pollution (though not
+mesh_health specifically) and still finding near-zero correlation is real, if imperfect,
+evidence the old bucket's dilution isn't the whole story -- `biometrics_prediction_error`'s
+own formula not capturing whatever the old system's capability/continuity pressure responds
+to remains the better-supported explanation, just not an airtight one. This does NOT mean
+the old drives system is validated or should stay -- it means the specific claim "the new
+signal is secretly the same thing, just measured more cleanly" isn't well supported by this
+data, with the caveat that a truly clean biometrics-only test was not achievable with data
+this script has access to. Worth a second look at `biometrics_prediction_error`'s formula
+(`orion/substrate/prediction_error.py`) before treating it as this domain's field-native
+replacement -- not built in this patch, a real next step. A cleaner disambiguation (e.g. a
+durable log of `"orion:equilibrium:snapshot"`, if that's ever added) would strengthen this
+further but isn't required to act on the current, weaker-but-real signal.
 
 ## Source material
 

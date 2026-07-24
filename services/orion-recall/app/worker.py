@@ -38,6 +38,7 @@ try:
     )
     from .storage.falkor_chat_adapter import fetch_falkor_chatturn_fragments
     from .storage.falkor_neighborhood_adapter import fetch_falkor_neighborhood_fragments
+    from .storage.falkor_bus_synaptic_adapter import fetch_bus_synaptic_anomaly_fragments
     from .storage.falkor_entity_relatedness import (
         fetch_related_entities,
         fetch_entity_matches_for_turns,
@@ -1113,6 +1114,25 @@ async def _query_backends(
             falkor_neighborhood = []
         backend_counts["falkor_neighborhood"] = len(falkor_neighborhood)
         candidates.extend(falkor_neighborhood)
+
+    # Idea 4 of the bus synaptic graph arc (docs/superpowers/specs/2026-07-24-
+    # bus-synaptic-graph-reasoning-consumer-design.md). Deliberately NOT gated
+    # on query_text/fragment relevance like falkor_neighborhood above -- this
+    # checks Orion's own live transport-layer state, not something "about"
+    # what the user said, so it runs unconditionally whenever the flag and
+    # profile allow it (recall runs on effectively every chat turn per this
+    # arc's own confirmed live behavior).
+    bus_synaptic_anomaly_enabled = bool(settings.RECALL_BUS_SYNAPTIC_ANOMALY_IN_CHAT) and bool(
+        profile.get("enable_bus_synaptic_anomaly", True)
+    )
+    if bus_synaptic_anomaly_enabled:
+        try:
+            bus_synaptic_anomalies = await fetch_bus_synaptic_anomaly_fragments()
+        except Exception as exc:
+            logger.debug(f"bus synaptic anomaly fetch skipped: {exc}")
+            bus_synaptic_anomalies = []
+        backend_counts["bus_synaptic_anomaly"] = len(bus_synaptic_anomalies)
+        candidates.extend(bus_synaptic_anomalies)
 
     if falkor_chat_enabled:
         # Swap, not additive: this replaces the RDF chatturn fetch below,

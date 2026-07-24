@@ -633,6 +633,26 @@ channels:
     stability: "experimental"
     since: "2026-01-08"
 
+  - name: "orion:equilibrium:transition"
+    kind: "event"
+    schema_id: "EquilibriumServiceTransitionV1"
+    # Deliberately a separate channel from orion:equilibrium:snapshot: that
+    # channel carries a periodic (EQUILIBRIUM_PUBLISH_INTERVAL_SEC, 15s)
+    # equilibrium.snapshot.v1 broadcast per publish tick regardless of
+    # whether anything changed. Subscribing orion-sql-writer to it directly
+    # would route every equilibrium.snapshot.v1 message through sql-writer's
+    # "Unknown kind" fallback-log path (worker.py's route_map has no entry
+    # for that kind), silently reproducing the ~115k-rows/day near-duplicate
+    # problem this patch exists to avoid -- see
+    # docs/superpowers/specs/2026-07-24-service-heartbeat-node-telemetry-design.md.
+    # This channel instead carries only real equilibrium.service.transition.v1
+    # events, emitted the instant orion-equilibrium-service detects a
+    # tracked service's status actually changed.
+    producer_services: ["orion-equilibrium-service"]
+    consumer_services: ["orion-sql-writer"]
+    stability: "experimental"
+    since: "2026-07-24"
+
   - name: "orion:spark:introspect:candidate"
     kind: "event"
     schema_id: "SparkCandidateV1"

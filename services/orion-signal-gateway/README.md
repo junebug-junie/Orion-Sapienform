@@ -22,6 +22,19 @@ Orion Bus (Redis)
 Causal parents are resolved from the `SignalWindow` — the most recent non-stale signal per organ
 is available for endogenous/hybrid organs to reference.
 
+### `rpc_health` organ (Step 3 of the transport-domain RPC-health redesign)
+
+`docs/superpowers/specs/2026-07-23-rpc-health-signal-gateway-wiring-design.md`. Subscribes
+`orion:rpc_health:*` (added to `ORGAN_CHANNELS`); `RpcHealthAdapter`
+(`orion/signals/adapters/rpc_health.py`) maps `RpcHealthSnapshotV1` envelopes (published by
+`orion-cortex-exec`/`orion-cortex-orch` when `RPC_HEALTH_PUBLISH_ENABLED=true` there) into an
+`exogenous` `rpc_transport_health` signal: `level` = success fraction for the window,
+`confidence` = scales with real call volume observed (an empty window is healthy-by-absence,
+not a failure, so `level` stays 1.0 but `confidence` drops instead), `latency_level` = inverse
+of `success_latency_ms_p95`. One shared `organ_id="rpc_health"` across every producer service
+(see that spec's Q6) — the real service name lives in each signal's `summary`, not the
+`organ_id`.
+
 ## Running
 
 ### Docker Compose

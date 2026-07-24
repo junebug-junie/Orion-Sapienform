@@ -19,6 +19,7 @@ from pydantic import Field, ValidationError
 # IMPORTS UPDATED: Added Envelope for generic typing
 from orion.core.bus.bus_schemas import BaseEnvelope, Envelope, ServiceRef, CausalityLink
 from orion.core.bus.bus_service_chassis import ChassisConfig, Rabbit, Hunter
+from orion.core.bus.rpc_health_publish import rpc_health_publish_loop
 from orion.core.verbs import VerbRequestV1, VerbResultV1, VerbEffectV1, VerbRuntime
 
 from orion.schemas.cortex.exec import CortexExecResultPayload
@@ -895,6 +896,8 @@ pre_turn_appraisal_svc = Rabbit(
     handler=handle_pre_turn_appraisal_request,
 )
 _rpc_bus = None
+_rpc_health_stop = asyncio.Event()
+_rpc_health_task: "asyncio.Task | None" = None
 
 
 def _bus_for_rpc():
@@ -909,6 +912,15 @@ async def _close_rpc_bus() -> None:
         with suppress(Exception):
             await _rpc_bus.close()
         _rpc_bus = None
+
+
+async def _stop_rpc_health_publish() -> None:
+    _rpc_health_stop.set()
+    if _rpc_health_task is not None:
+        from contextlib import suppress
+
+        with suppress(Exception):
+            await _rpc_health_task
 
 
 verb_runtime = VerbRuntime(
@@ -1000,11 +1012,30 @@ async def main() -> None:
                 settings.embodiment_background_interval_sec,
                 settings.embodiment_channel_intent,
             )
+        if settings.rpc_health_publish_enabled:
+            global _rpc_health_task
+            _rpc_health_task = asyncio.create_task(
+                rpc_health_publish_loop(
+                    bus_getter=_bus_for_rpc,
+                    service=settings.service_name,
+                    node=settings.node_name,
+                    instance=None,
+                    source=_source(),
+                    interval_sec=settings.rpc_health_publish_interval_sec,
+                    stop_event=_rpc_health_stop,
+                ),
+                name="rpc-health-publish",
+            )
+            logger.info(
+                "rpc_health_publish_started interval=%ss channel=orion:rpc_health:snapshot",
+                settings.rpc_health_publish_interval_sec,
+            )
         starters: list[Any] = [svc.start(), health_task]
         if settings.enable_pre_turn_appraisal_handler:
             starters.insert(1, pre_turn_appraisal_svc.start())
         await asyncio.gather(*starters)
     finally:
+        await _stop_rpc_health_publish()
         await _close_rpc_bus()
 
 

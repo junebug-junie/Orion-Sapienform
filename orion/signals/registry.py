@@ -391,6 +391,21 @@ ORGAN_REGISTRY: Dict[str, OrionOrganRegistryEntry] = {
         bus_channels=["orion:evidence:index:upsert"],
         notes=["Milestone B: vector index persist presence."],
     ),
+    "rpc_health": OrionOrganRegistryEntry(
+        organ_id="rpc_health",
+        organ_class=OrganClass.exogenous,
+        service="orion-cortex-exec,orion-cortex-orch",
+        signal_kinds=["rpc_transport_health"],
+        canonical_dimensions=["level", "confidence", "latency_level"],
+        causal_parent_organs=[],
+        bus_channels=["orion:rpc_health:snapshot"],
+        notes=[
+            "Step 3 of docs/superpowers/specs/2026-07-23-rpc-health-signal-gateway-wiring-design.md: "
+            "drains OrionBusAsync.get_rpc_health_snapshot() on a periodic publish loop. One organ_id "
+            "shared across every producer service (see that spec's Q6); the real service is carried "
+            "in each signal's own payload/dimensions, not split into per-service organ_ids.",
+        ],
+    ),
 }
 
 # Registry accuracy note:

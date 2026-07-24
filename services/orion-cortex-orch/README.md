@@ -23,6 +23,16 @@ The **Cortex Orchestrator** (Orch) is the entry point for the Cognitive Runtime.
 1. Always attached to the returned `VerbResultV1.output["_route_metadata"]` (no flag — always on, zero schema/bus cost) and merged into `main.py`'s `final_meta["route_metadata"]` on the client-facing response.
 2. Published as a `GrammarEventV1` trace (`trace_id` prefix `orch.route:{node}:{correlation_id}`, `source_service=orion-cortex-orch`) when `PUBLISH_CORTEX_ORCH_GRAMMAR=true` (default), for the substrate-runtime `route_grammar` reducer to materialize into `active_route_arbitration`. Requires `manual_migration_route_substrate_loop.sql` applied on substrate-runtime's DB and `ENABLE_ROUTE_GRAMMAR_REDUCER=true` there. See `docs/superpowers/specs/2026-07-12-orch-route-grammar-lane-design.md`.
 
+### RPC-health snapshot publish (default off)
+
+Step 3 of `docs/superpowers/specs/2026-07-23-rpc-health-signal-gateway-wiring-design.md`.
+Same mechanism as `orion-cortex-exec`'s (see that service's README for the full write-up):
+`RPC_HEALTH_PUBLISH_ENABLED=true` starts a periodic task draining this process's real
+`OrionBusAsync.rpc_request()` outcome tally onto `orion:rpc_health:snapshot`, read via the
+existing `_bus_for_rpc()` helper so it drains the real `_rpc_bus` fork (used by
+`DecisionRouter`/`workflow_runtime`), not the idle `svc.bus`. Off by default until
+live-verified.
+
 ### Environment Variables
 Provenance: `.env_example` → `docker-compose.yml` → `settings.py`
 
@@ -33,6 +43,8 @@ Provenance: `.env_example` → `docker-compose.yml` → `settings.py`
 | `REDIS_URL` | ... | Redis connection. |
 | `PUBLISH_CORTEX_ORCH_GRAMMAR` | `true` | Publish route arbitration as a `GrammarEventV1` trace. Fire-and-forget; a publish failure never affects the chat response. |
 | `GRAMMAR_EVENT_CHANNEL` | `orion:grammar:event` | Channel used for the route-arbitration grammar trace above. |
+| `RPC_HEALTH_PUBLISH_ENABLED` | `false` | Periodically publish this process's real RPC-health snapshot. See "RPC-health snapshot publish" above. |
+| `RPC_HEALTH_PUBLISH_INTERVAL_SEC` | `30` | Publish cadence for the above. |
 
 ## Compactor workflows
 

@@ -182,6 +182,27 @@ When the executor computes `turn_effect` / `turn_effect_evidence`, they are incl
 
 **Stack verification (after deploy):** subscribe to the Hub chat turn channel (see Hub `chat_history_turn_channel`) and confirm envelope payloads include `spark_meta.turn_effect` on turns where phi telemetry ran. Confirm `orion-spark-concept-induction` logs `handle_envelope` for that channel and `orion-rdf-writer` logs RDF for `memory.drives.audit.v1`. In GraphDB, query the latest `DriveAudit` for your subject and check `orion:derivedFromTension` / `orion:tensionKind` bindings.
 
+### RPC-health snapshot publish (default off)
+
+Step 3 of `docs/superpowers/specs/2026-07-23-rpc-health-signal-gateway-wiring-design.md`.
+`OrionBusAsync.rpc_request()` already keeps a bounded in-memory tally of this process's
+own RPC success/timeout outcomes (`orion/core/bus/rpc_health.py`). When
+`RPC_HEALTH_PUBLISH_ENABLED=true`, a periodic task (`orion/core/bus/rpc_health_publish.py`)
+drains that tally every `RPC_HEALTH_PUBLISH_INTERVAL_SEC` seconds and publishes an
+`RpcHealthSnapshotV1` envelope on `orion:rpc_health:snapshot`, consumed by
+`orion-signal-gateway`'s `rpc_health` organ.
+
+**Not `svc.bus`.** This service's real RPC traffic flows through `_rpc_bus` (a
+`fork_rpc_client(svc.bus)` child, see `verb_runtime.bus = _rpc_bus`), not the chassis's own
+`svc.bus` that runs `_heartbeat_loop()`. The publish task reads via the existing
+`_bus_for_rpc()` helper so it always drains the instance actually carrying real traffic —
+snapshotting `svc.bus` directly would silently report an always-empty aggregator. See that
+spec's "Resolved (2026-07-24)" section for the full trace.
+
+Off by default until live-verified per the spec's acceptance checks (real nonzero
+`success_count`/`timeout_count` after real traffic, observable on
+`orion-signal-gateway`'s `orion:rpc_health:*` subscription).
+
 ### Collapse mirror verbs and φ-gated causal density
 
 Cortex Exec registers collapse verbs in `app/collapse_verbs.py` (`orion.collapse.log`, `orion.collapse.enrich`, `orion.collapse.score`). Scoring logic lives in `orion/collapse/service.py` and is invoked by `orion.collapse.score`.

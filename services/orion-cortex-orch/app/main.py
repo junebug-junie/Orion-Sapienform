@@ -12,6 +12,7 @@ from pydantic import Field, ValidationError
 
 from orion.core.bus.bus_schemas import BaseEnvelope, ServiceRef
 from orion.core.bus.bus_service_chassis import ChassisConfig, Rabbit, Hunter
+from orion.core.bus.rpc_health_publish import rpc_health_publish_loop
 from orion.normalizers.agent_trace import build_agent_trace_summary
 
 # REMOVED: dispatch_metacognition_tick
@@ -579,6 +580,8 @@ svc = Rabbit(
     concurrent_handlers=True,
 )
 _rpc_bus = None
+_rpc_health_stop = asyncio.Event()
+_rpc_health_task: "asyncio.Task | None" = None
 
 
 def _bus_for_rpc():
@@ -593,6 +596,15 @@ async def _close_rpc_bus() -> None:
         with suppress(Exception):
             await _rpc_bus.close()
         _rpc_bus = None
+
+
+async def _stop_rpc_health_publish() -> None:
+    _rpc_health_stop.set()
+    if _rpc_health_task is not None:
+        from contextlib import suppress
+
+        with suppress(Exception):
+            await _rpc_health_task
 
 
 equilibrium_hunter: Hunter
@@ -683,6 +695,24 @@ async def main() -> None:
 
     _rpc_bus = await fork_rpc_client(svc.bus)
     logger.info("orch_rpc_bus_fork_ready")
+    if s.rpc_health_publish_enabled:
+        global _rpc_health_task
+        _rpc_health_task = asyncio.create_task(
+            rpc_health_publish_loop(
+                bus_getter=_bus_for_rpc,
+                service=s.service_name,
+                node=s.node_name,
+                instance=None,
+                source=_source(),
+                interval_sec=s.rpc_health_publish_interval_sec,
+                stop_event=_rpc_health_stop,
+            ),
+            name="rpc-health-publish",
+        )
+        logger.info(
+            "rpc_health_publish_started interval=%ss channel=orion:rpc_health:snapshot",
+            s.rpc_health_publish_interval_sec,
+        )
     try:
         await asyncio.gather(
             svc.start(),
@@ -692,6 +722,7 @@ async def main() -> None:
             health_task,
         )
     finally:
+        await _stop_rpc_health_publish()
         await _close_rpc_bus()
 
 

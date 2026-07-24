@@ -92,6 +92,7 @@ class Settings(BaseSettings):
         "orion:power:*",
         "orion:security:*",
         "orion:world:*",
+        "orion:rpc_health:*",
     ]
 
     @field_validator("ORGAN_CHANNELS", mode="before")

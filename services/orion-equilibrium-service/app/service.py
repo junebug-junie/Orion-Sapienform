@@ -52,6 +52,7 @@ class EquilibriumService(BaseChassis):
         self._state: Dict[str, Dict[str, Any]] = {}
         self.expected_services = settings.expected_services()
         self._last_metacog_trigger_ts: float = 0.0
+        self._last_chat_turn_trigger_ts: float = 0.0
         self._last_baseline_scores: Tuple[float, float] = (-1.0, -1.0)
         self._baseline_skip_count: int = 0
         self._chat_turn_correlator: ChatTurnCorrelator | None = None
@@ -325,12 +326,30 @@ class EquilibriumService(BaseChassis):
     async def _publish_metacog_trigger(self, trigger: MetacogTriggerV1) -> None:
         now_ts = datetime.now().timestamp()
 
-        # Simple cooldown check
-        if (now_ts - self._last_metacog_trigger_ts) < settings.metacog_cooldown_sec:
+        # chat_turn gets its own cooldown lane, separate from the shared one
+        # below. It's the only trigger kind designed to fire on essentially
+        # every remarkable chat turn rather than a rare/periodic cadence
+        # (baseline/manual/pulse/relational/telemetry_anomaly all share
+        # EQUILIBRIUM_METACOG_COOLDOWN_SEC) -- sharing a single cooldown
+        # timestamp would let a burst of chat_turn fires silently starve
+        # those other trigger kinds' own fires, not just drop chat_turn's own
+        # excess. See this service's README.md, "chat_turn metacog trigger"
+        # section, "Operational note".
+        if trigger.trigger_kind == "chat_turn":
+            cooldown_sec = settings.metacog_chat_turn_cooldown_sec
+            last_ts = self._last_chat_turn_trigger_ts
+        else:
+            cooldown_sec = settings.metacog_cooldown_sec
+            last_ts = self._last_metacog_trigger_ts
+
+        if (now_ts - last_ts) < cooldown_sec:
             logger.info("Metacog trigger skipped due to cooldown (%s)", trigger.trigger_kind)
             return
 
-        self._last_metacog_trigger_ts = now_ts
+        if trigger.trigger_kind == "chat_turn":
+            self._last_chat_turn_trigger_ts = now_ts
+        else:
+            self._last_metacog_trigger_ts = now_ts
 
         # 1. Publish Trigger Event (for observability)
         trace_id = uuid4()

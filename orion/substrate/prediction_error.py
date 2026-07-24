@@ -72,7 +72,7 @@ def transport_prediction_error(
         prev_bus = prev.buses.get(bus_id)
         if prev_bus is None:
             continue
-        for field in ("bus_health", "delivery_confidence", "transport_pressure"):
+        for field in ("stream_backlog_health", "delivery_confidence", "stream_backlog_pressure"):
             pv = getattr(prev_bus, field, 0.0)
             cv = getattr(curr_bus, field, 0.0)
             deltas.append(abs(cv - pv))

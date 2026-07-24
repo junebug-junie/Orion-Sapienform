@@ -78,7 +78,7 @@ def _fixture_topology() -> Dict:
                 "target_id": "capability:orchestration",
                 "edge_type": "capability_capability",
                 "weight": 0.7,
-                "channel_map": {"transport_pressure": "transport_pressure"},
+                "channel_map": {"stream_backlog_pressure": "stream_backlog_pressure"},
             },
         ],
     }
@@ -230,11 +230,11 @@ def test_divergence_status_categories_are_all_present_and_correct():
     assert both_entry.observed_strength is not None
     assert both_entry.delta == pytest.approx(both_entry.observed_strength - both_entry.designed_weight)
 
-    # "designed_only": execution_pressure and transport_pressure channel_map
+    # "designed_only": execution_pressure and stream_backlog_pressure channel_map
     # entries have no observed channel aliasing to them in the fixture.
     designed_only_targets = {e.target_id for e in by_status["designed_only"]}
     assert any(t.endswith("#execution_pressure") for t in designed_only_targets)
-    assert any(t.endswith("#transport_pressure") for t in designed_only_targets)
+    assert any(t.endswith("#stream_backlog_pressure") for t in designed_only_targets)
     for entry in by_status["designed_only"]:
         assert entry.observed_strength is None
         assert entry.delta is None
@@ -270,7 +270,7 @@ def test_capability_channel_index_disambiguates_same_edge_different_channels():
     index = cgr.build_capability_channel_index(topology)
     assert "reasoning_pressure" in index
     assert "execution_pressure" in index
-    assert "transport_pressure" in index
+    assert "stream_backlog_pressure" in index
     # Both reasoning_pressure and execution_pressure point at the *same* YAML edge.
     assert index["reasoning_pressure"][0]["source_id"] == index["execution_pressure"][0]["source_id"]
     assert index["reasoning_pressure"][0]["target_id"] == index["execution_pressure"][0]["target_id"]

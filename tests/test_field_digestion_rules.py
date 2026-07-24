@@ -51,7 +51,7 @@ def test_decay_covers_execution_and_transport_channels() -> None:
                 "execution_friction": 1.0,
                 "failure_pressure": 1.0,
                 "reasoning_load": 1.0,
-                "transport_pressure": 1.0,
+                "stream_backlog_pressure": 1.0,
                 "contract_pressure": 1.0,
                 "reliability_pressure": 1.0,
                 "availability": 1.0,          # must NOT decay
@@ -78,7 +78,7 @@ def test_decay_covers_execution_and_transport_channels() -> None:
     cap = state.capability_vectors["capability:orchestration"]
 
     for ch in ("execution_load", "execution_friction", "failure_pressure",
-               "reasoning_load", "transport_pressure", "contract_pressure", "reliability_pressure"):
+               "reasoning_load", "stream_backlog_pressure", "contract_pressure", "reliability_pressure"):
         assert node[ch] < 1.0, f"node channel {ch!r} should have decayed"
 
     assert node["availability"] == 1.0, "availability must not decay"
@@ -126,20 +126,20 @@ def test_capability_to_capability_diffusion() -> None:
         target_id="capability:orchestration",
         edge_type="capability_capability",
         weight=0.70,
-        channel_map={"transport_pressure": "transport_pressure"},
+        channel_map={"stream_backlog_pressure": "stream_backlog_pressure"},
     )
     state = FieldStateV1(
         generated_at=datetime(2026, 5, 24, tzinfo=timezone.utc),
         tick_id="tick_cap_cap",
         node_vectors={},
         capability_vectors={
-            "capability:transport": {"transport_pressure": 1.0},
-            "capability:orchestration": {"transport_pressure": 0.0},
+            "capability:transport": {"stream_backlog_pressure": 1.0},
+            "capability:orchestration": {"stream_backlog_pressure": 0.0},
         },
         edges=[edge],
     )
     apply_diffusion(state, diffusion_rate=1.0)
-    assert state.capability_vectors["capability:orchestration"]["transport_pressure"] == 0.70
+    assert state.capability_vectors["capability:orchestration"]["stream_backlog_pressure"] == 0.70
 
 
 def test_reasoning_load_diffuses_to_orchestration() -> None:

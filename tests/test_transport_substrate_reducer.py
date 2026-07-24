@@ -90,9 +90,9 @@ def test_parse_bus_transport_trace_id() -> None:
 def test_extract_live_athena_rollup_pressures() -> None:
     state = extract_transport_bus_state_from_events(_live_events(), now=NOW)
     pressures = compute_transport_pressures(state, stream_depth_critical=100_000)
-    assert pressures["bus_health"] == 1.0
+    assert pressures["stream_backlog_health"] == 1.0
     assert pressures["catalog_drift_pressure"] == 1.0
-    assert pressures["transport_pressure"] == 0.0
+    assert pressures["stream_backlog_pressure"] == 0.0
     # contract_pressure is now genuinely independent of catalog_drift_pressure
     # (see test_contract_pressure_diverges_from_catalog_drift_pressure below):
     # _live_events() has no bus_schema_validation_failed atoms, so
@@ -183,4 +183,4 @@ def test_reducer_emits_transport_bus_delta_with_pressure_hints() -> None:
     assert delta.target_id == "bus:athena"
     hints = (delta.after or {}).get("pressure_hints") or {}
     assert hints["catalog_drift_pressure"] == 1.0
-    assert hints["transport_pressure"] == 0.0
+    assert hints["stream_backlog_pressure"] == 0.0

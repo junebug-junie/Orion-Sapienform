@@ -1,11 +1,14 @@
 # Structured index of FieldStateV1's 35 raw digester channels (29 NODE_CHANNELS
 # + 8 CAPABILITY_CHANNELS in services/orion-field-digester/app/tensor/channels.py,
-# overlapping on transport_pressure/contract_pressure). 29 = 23 original + 5
+# overlapping on stream_backlog_pressure/contract_pressure). 29 = 23 original + 5
 # FCC-motor channels added 2026-07-23 (harness_step_load,
 # tool_failure_streak_pressure, avg_step_chars_pressure, compliance_deficit,
 # turn_incompletion) + 1 FCC-motor channel added 2026-07-24
 # (context_gathering_ratio; reasoning_load also gained a real motor-side
-# magnitude the same day but is not a new channel).
+# magnitude the same day but is not a new channel). transport_pressure/bus_health
+# renamed to stream_backlog_pressure/stream_backlog_health 2026-07-24 for scope
+# honesty (see each channel's own entry below) -- total channel count unchanged,
+# same two channels under new names.
 #
 # This is the machine-readable companion to
 # services/orion-field-digester/README.md's "Field channel glossary" section,
@@ -164,10 +167,18 @@ channels:
     meaning: "How much active conversational load (turn volume/complexity) is occurring."
     self_state_dimension: social_pressure
 
-  - channel: transport_pressure
+  - channel: stream_backlog_pressure
     level: [node, capability]
     category: infra_transport
-    meaning: "Bus/transport-layer backpressure/congestion."
+    meaning: "Renamed from transport_pressure 2026-07-24 for scope honesty: this only
+      ever measures world_pulse's one real Redis Stream (orion:stream:world_pulse:run:result)
+      and its dead-letter queue -- the only thing in the architecture with a real
+      backlog/XLEN concept. Everything else on the bus is Pub/Sub, which has no
+      backlog to measure. Not a general bus/transport-layer pressure signal, and not
+      intended to become one without a genuinely different mechanism -- see
+      docs/superpowers/specs/2026-07-22-transport-bus-signal-quality-measurement-design.md
+      and docs/superpowers/specs/2026-07-23-transport-domain-rpc-health-redesign.md
+      for the real cross-service RPC-health signal being built separately."
     evidence_dimension: resource_pressure
 
   - channel: contract_pressure
@@ -186,10 +197,17 @@ channels:
     meaning: "Confidence that bus messages are actually being delivered end-to-end. Single-observer channel (2026-07-22): only node:athena's bus-observer ever reports this -- atlas/circe/prometheus have no code path that could produce a real reading and are excluded from the merge entirely (SINGLE_OBSERVER_NODE_CHANNELS, services/orion-field-digester/app/tensor/channels.py), not defaulted to a placeholder value."
     evidence_dimension: coherence
 
-  - channel: bus_health
+  - channel: stream_backlog_health
     level: [node]
     category: sensor_trust_liveness
-    meaning: "Overall bus/transport subsystem health signal. Single-observer channel (2026-07-22): only node:athena's bus-observer ever reports this -- atlas/circe/prometheus have no code path that could produce a real reading and are excluded from the merge entirely (SINGLE_OBSERVER_NODE_CHANNELS, services/orion-field-digester/app/tensor/channels.py), not defaulted to a placeholder value."
+    meaning: "Renamed from bus_health 2026-07-24, same scope-honesty reasoning as
+      stream_backlog_pressure above -- reflects world_pulse's one Redis Stream, not
+      overall bus/transport subsystem health. Single-observer channel (2026-07-22):
+      only node:athena's bus-observer ever reports this -- atlas/circe/prometheus
+      have no code path that could produce a real reading and are excluded from the
+      merge entirely (SINGLE_OBSERVER_NODE_CHANNELS,
+      services/orion-field-digester/app/tensor/channels.py), not defaulted to a
+      placeholder value."
     evidence_dimension: coherence
 
   - channel: observer_failure_pressure

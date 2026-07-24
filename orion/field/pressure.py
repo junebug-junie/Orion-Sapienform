@@ -57,7 +57,7 @@ HIGHER_IS_BETTER_CHANNELS = frozenset({
     "confidence",
     "available_capacity",
     "delivery_confidence",
-    "bus_health",
+    "stream_backlog_health",
 })
 
 # Only the 7 categories self_state's builder.py ever actually read from the

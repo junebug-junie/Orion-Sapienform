@@ -1,7 +1,7 @@
 """Transport-bus adapter — binds the substrate's transport "felt state".
 
 Maps ``TransportBusProjectionV1`` (per-bus health, delivery confidence, and the
-family of transport pressures — transport_pressure, backpressure, contract,
+family of transport pressures — stream_backlog_pressure, backpressure, contract,
 reliability, stream-depth) into substrate belief nodes anchored to Orion, so the
 unified belief set contains beliefs about how Orion's own message bus is faring.
 
@@ -74,7 +74,7 @@ def map_transport_ctx_to_substrate(ctx: dict[str, Any]) -> SubstrateGraphRecordV
 
     buses = sorted(
         projection.buses.values(),
-        key=lambda b: b.transport_pressure,
+        key=lambda b: b.stream_backlog_pressure,
         reverse=True,
     )[:_MAX_NODES]
 
@@ -82,7 +82,7 @@ def map_transport_ctx_to_substrate(ctx: dict[str, Any]) -> SubstrateGraphRecordV
     for bus in buses:
         salience = _clamp(
             max(
-                bus.transport_pressure,
+                bus.stream_backlog_pressure,
                 bus.backpressure,
                 bus.reliability_pressure,
                 bus.contract_pressure,
@@ -102,9 +102,9 @@ def map_transport_ctx_to_substrate(ctx: dict[str, Any]) -> SubstrateGraphRecordV
                     "source_kind": "transport_bus",
                     "target_id": bus.target_id,
                     "node_id": bus.node_id,
-                    "bus_health": round(bus.bus_health, 6),
+                    "stream_backlog_health": round(bus.stream_backlog_health, 6),
                     "delivery_confidence": round(bus.delivery_confidence, 6),
-                    "transport_pressure": round(bus.transport_pressure, 6),
+                    "stream_backlog_pressure": round(bus.stream_backlog_pressure, 6),
                 },
             )
         )

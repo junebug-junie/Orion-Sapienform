@@ -1347,6 +1347,36 @@ Proxy target is controlled by `TOPIC_FOUNDRY_BASE_URL` in Hub settings/env.
 - Template includes an explicit cache-busting query string on app bundle, e.g. `/static/js/app.js?v=1.0.56`.
 - If UI behavior does not match source, hard-refresh or bump the `v=` string in `templates/index.html` when deploying.
 
+## Field Channels tab
+
+`#field-channel-glossary` panel (`templates/index.html`), backed by `/static/field-channel-glossary.html`
+in an iframe. Shows every raw field-digester channel grouped into category cards (physical
+substrate, task execution, infra transport, etc.) with a live `clean/total` count per card,
+computed entirely client-side from the panel's own API calls — no hardcoded counts in the
+template.
+
+- **`GET /api/field-channel-glossary/channels`** (`scripts/field_channel_glossary_routes.py`):
+  the static glossary — every channel's name/level/category/meaning, sourced from
+  `config/field/field_channel_glossary.v1.yaml` (the single structured source this route, the
+  field-digester README's prose glossary, and this section all read from — see that yaml's own
+  header comment).
+- **`GET /api/field-channel-glossary/health?hours=N`**: live classification per channel
+  (`live`/`quiet`/`dead`/`never_produced`/`ratchet_suspect`) computed from real
+  `substrate_field_state` rows in that window via `orion.field.channel_glossary.classify_channel_series()`
+  — deliberately not a hand-maintained verdict column, since a static one already went stale once
+  (see the field-digester README's "Decay vs. injection-interval mismatch" section).
+
+This tab has no separate documentation of its own beyond this pointer — the glossary yaml and
+`services/orion-field-digester/README.md`'s "Field channel glossary" section are the real content;
+this section just orients where the Hub-facing panel actually gets its data from, since this repo
+previously had zero doc surface here at all.
+
+**Channel rename note (2026-07-24):** `transport_pressure`/`bus_health` renamed to
+`stream_backlog_pressure`/`stream_backlog_health` for scope honesty (both only ever measured
+`world_pulse`'s one Redis Stream, never general bus/transport health) — if this tab is showing
+those new names and you were expecting the old ones, that's this rename, not a bug. See the
+field-digester README's sixth training-data cutoff entry for the full mechanism.
+
 ## Pending Attention — cognitive loops
 
 Flag: `ORION_ATTENTION_PENDING_CARDS_ENABLED` (default-off). API:

@@ -28,7 +28,7 @@ def _ensure_node_vector(
         if key not in NODE_CHANNELS:
             merged[key] = val
     # SINGLE_OBSERVER_NODE_CHANNELS (channels.py): some channels can only
-    # ever be legitimately reported by one specific node (bus_health/
+    # ever be legitimately reported by one specific node (stream_backlog_health/
     # delivery_confidence -> node:athena, the only bus-observer). Every
     # other node gets the key pruned here, every tick -- not just skipped
     # at seed time -- so a stale value already persisted on a non-owner

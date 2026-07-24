@@ -73,7 +73,7 @@ def _cap_cap_edge(weight: float = 0.70) -> FieldEdgeV1:
         target_id="capability:orchestration",
         edge_type="capability_capability",
         weight=weight,
-        channel_map={"transport_pressure": "transport_pressure"},
+        channel_map={"stream_backlog_pressure": "stream_backlog_pressure"},
     )
 
 
@@ -92,15 +92,15 @@ def test_flag_unset_never_loads_overlay_and_matches_golden_output(monkeypatch) -
     monkeypatch.setattr(diffusion_module, "_load_learned_overlay", _refuse_to_load_overlay)
 
     edge = _cap_cap_edge(weight=0.70)
-    state = _state([edge], capability_vectors={"capability:transport": {"transport_pressure": 0.8}})
+    state = _state([edge], capability_vectors={"capability:transport": {"stream_backlog_pressure": 0.8}})
 
     apply_diffusion(state, diffusion_rate=1.0)
 
     # Golden output computed from the pre-plasticity formula:
     # contribution = clamp01(0.8 * 0.70 * 1.0) = 0.56.
-    assert state.capability_vectors["capability:orchestration"]["transport_pressure"] == pytest.approx(0.56)
+    assert state.capability_vectors["capability:orchestration"]["stream_backlog_pressure"] == pytest.approx(0.56)
     assert (
-        state.capability_provenance["capability:orchestration"]["transport_pressure"]
+        state.capability_provenance["capability:orchestration"]["stream_backlog_pressure"]
         == "capability:transport"
     )
     assert edge.weight == 0.70
@@ -113,11 +113,11 @@ def test_flag_explicitly_false_also_never_loads_overlay(monkeypatch) -> None:
     monkeypatch.setattr(diffusion_module, "_load_learned_overlay", _refuse_to_load_overlay)
 
     edge = _cap_cap_edge(weight=0.70)
-    state = _state([edge], capability_vectors={"capability:transport": {"transport_pressure": 0.8}})
+    state = _state([edge], capability_vectors={"capability:transport": {"stream_backlog_pressure": 0.8}})
 
     apply_diffusion(state, diffusion_rate=1.0)
 
-    assert state.capability_vectors["capability:orchestration"]["transport_pressure"] == pytest.approx(0.56)
+    assert state.capability_vectors["capability:orchestration"]["stream_backlog_pressure"] == pytest.approx(0.56)
 
 
 def test_flag_off_existing_provenance_suite_scenario_is_unaffected(monkeypatch) -> None:
@@ -154,13 +154,13 @@ def test_flag_on_applies_overlay_delta_to_cap_cap_edge(monkeypatch) -> None:
     )
 
     edge = _cap_cap_edge(weight=0.70)
-    state = _state([edge], capability_vectors={"capability:transport": {"transport_pressure": 0.8}})
+    state = _state([edge], capability_vectors={"capability:transport": {"stream_backlog_pressure": 0.8}})
 
     apply_diffusion(state, diffusion_rate=1.0)
 
     # effective_weight = clamp01(0.70 + 0.20) = 0.90;
     # contribution = clamp01(0.8 * 0.90 * 1.0) = 0.72 -- not the raw-weight 0.56.
-    assert state.capability_vectors["capability:orchestration"]["transport_pressure"] == pytest.approx(0.72)
+    assert state.capability_vectors["capability:orchestration"]["stream_backlog_pressure"] == pytest.approx(0.72)
     assert edge.weight == 0.70  # never mutated in place
     assert edge.weight_source == "learned"
     assert edge.learned_at is not None
@@ -173,12 +173,12 @@ def test_flag_on_clamps_effective_weight_to_valid_range(monkeypatch) -> None:
     )
 
     edge = _cap_cap_edge(weight=0.90)
-    state = _state([edge], capability_vectors={"capability:transport": {"transport_pressure": 1.0}})
+    state = _state([edge], capability_vectors={"capability:transport": {"stream_backlog_pressure": 1.0}})
 
     apply_diffusion(state, diffusion_rate=1.0)
 
     # 0.90 + 0.50 = 1.40 -> clamped to 1.0 before use in the contribution formula.
-    assert state.capability_vectors["capability:orchestration"]["transport_pressure"] == 1.0
+    assert state.capability_vectors["capability:orchestration"]["stream_backlog_pressure"] == 1.0
 
 
 def test_flag_on_does_not_affect_non_cap_cap_edge_with_matching_overlay_entry(monkeypatch) -> None:
@@ -218,11 +218,11 @@ def test_flag_on_no_adopted_delta_for_this_edge_falls_back_to_raw_weight(monkeyp
     )
 
     edge = _cap_cap_edge(weight=0.70)
-    state = _state([edge], capability_vectors={"capability:transport": {"transport_pressure": 0.8}})
+    state = _state([edge], capability_vectors={"capability:transport": {"stream_backlog_pressure": 0.8}})
 
     apply_diffusion(state, diffusion_rate=1.0)
 
-    assert state.capability_vectors["capability:orchestration"]["transport_pressure"] == pytest.approx(0.56)
+    assert state.capability_vectors["capability:orchestration"]["stream_backlog_pressure"] == pytest.approx(0.56)
     assert edge.weight_source == "designed"
 
 
@@ -243,12 +243,12 @@ def test_flag_on_store_construction_failure_degrades_to_raw_weight_without_raisi
     )
 
     edge = _cap_cap_edge(weight=0.70)
-    state = _state([edge], capability_vectors={"capability:transport": {"transport_pressure": 0.8}})
+    state = _state([edge], capability_vectors={"capability:transport": {"stream_backlog_pressure": 0.8}})
 
     # Must not raise -- degrades to raw edge.weight for this tick.
     apply_diffusion(state, diffusion_rate=1.0)
 
-    assert state.capability_vectors["capability:orchestration"]["transport_pressure"] == pytest.approx(0.56)
+    assert state.capability_vectors["capability:orchestration"]["stream_backlog_pressure"] == pytest.approx(0.56)
     assert edge.weight_source == "designed"
 
 
@@ -269,11 +269,11 @@ def test_flag_on_current_overlay_call_failure_degrades_to_raw_weight_without_rai
     )
 
     edge = _cap_cap_edge(weight=0.70)
-    state = _state([edge], capability_vectors={"capability:transport": {"transport_pressure": 0.8}})
+    state = _state([edge], capability_vectors={"capability:transport": {"stream_backlog_pressure": 0.8}})
 
     apply_diffusion(state, diffusion_rate=1.0)
 
-    assert state.capability_vectors["capability:orchestration"]["transport_pressure"] == pytest.approx(0.56)
+    assert state.capability_vectors["capability:orchestration"]["stream_backlog_pressure"] == pytest.approx(0.56)
     assert edge.weight_source == "designed"
 
 
@@ -299,7 +299,7 @@ def test_learned_store_is_constructed_once_and_reused_across_ticks(monkeypatch) 
     )
 
     edge = _cap_cap_edge(weight=0.70)
-    state = _state([edge], capability_vectors={"capability:transport": {"transport_pressure": 0.8}})
+    state = _state([edge], capability_vectors={"capability:transport": {"stream_backlog_pressure": 0.8}})
 
     apply_diffusion(state, diffusion_rate=1.0)
     apply_diffusion(state, diffusion_rate=1.0)

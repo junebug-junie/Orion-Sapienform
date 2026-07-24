@@ -1,5 +1,5 @@
 """Regression tests for the ratchet-channel bugs found via the 69h/122k-row
-live corpus scan (2026-07-16): expected_offline_suppression, bus_health, and
+live corpus scan (2026-07-16): expected_offline_suppression, stream_backlog_health, and
 delivery_confidence were structurally unable to move back down once
 perturbed to 1.0 (mode="add", the Perturbation dataclass default, plus
 absence from decay.py's NODE_DECAY_CHANNELS -- nothing ever multiplied them
@@ -359,15 +359,15 @@ def test_full_tick_no_longer_permanently_floors_once_cleared() -> None:
 
 
 # ---------------------------------------------------------------------------
-# bus_health / delivery_confidence mode="replace" fix (item 2)
+# stream_backlog_health / delivery_confidence mode="replace" fix (item 2)
 # ---------------------------------------------------------------------------
 
 
-def test_bus_health_delta_uses_replace_mode() -> None:
-    delta = _transport_bus_delta(hints={"bus_health": 1.0})
+def test_stream_backlog_health_delta_uses_replace_mode() -> None:
+    delta = _transport_bus_delta(hints={"stream_backlog_health": 1.0})
     perturbations = delta_to_perturbations(delta)
     channels = {p.channel: p for p in perturbations}
-    assert channels["bus_health"].mode == "replace"
+    assert channels["stream_backlog_health"].mode == "replace"
 
 
 def test_delivery_confidence_delta_uses_replace_mode() -> None:
@@ -377,19 +377,19 @@ def test_delivery_confidence_delta_uses_replace_mode() -> None:
     assert channels["delivery_confidence"].mode == "replace"
 
 
-def test_bus_health_drop_reflected_not_ceiling_clamped() -> None:
+def test_stream_backlog_health_drop_reflected_not_ceiling_clamped() -> None:
     """The regression: perturb up to 1.0, then perturb down to 0.3. Under the old
     mode="add" default this would stay clamped at 1.0 forever (add-mode ceiling).
     With mode="replace" the drop must be reflected exactly."""
     state = _state()
 
-    up = delta_to_perturbations(_transport_bus_delta(hints={"bus_health": 1.0}))
+    up = delta_to_perturbations(_transport_bus_delta(hints={"stream_backlog_health": 1.0}))
     apply_perturbations(state, up)
-    assert state.node_vectors["node:athena"]["bus_health"] == 1.0
+    assert state.node_vectors["node:athena"]["stream_backlog_health"] == 1.0
 
-    down = delta_to_perturbations(_transport_bus_delta(hints={"bus_health": 0.3}))
+    down = delta_to_perturbations(_transport_bus_delta(hints={"stream_backlog_health": 0.3}))
     apply_perturbations(state, down)
-    assert state.node_vectors["node:athena"]["bus_health"] == 0.3
+    assert state.node_vectors["node:athena"]["stream_backlog_health"] == 0.3
 
 
 def test_delivery_confidence_drop_reflected_not_ceiling_clamped() -> None:
@@ -406,15 +406,15 @@ def test_delivery_confidence_drop_reflected_not_ceiling_clamped() -> None:
 
 def test_remaining_transport_bus_channels_also_use_replace_mode() -> None:
     """2026-07-22: closes the gap this test used to document as "out of
-    scope". transport_pressure/catalog_drift_pressure/observer_failure_pressure/
+    scope". stream_backlog_pressure/catalog_drift_pressure/observer_failure_pressure/
     reliability_pressure/contract_pressure are fresh-value-per-report readings
-    from the same reducer as bus_health/delivery_confidence -- mode="add"
+    from the same reducer as stream_backlog_health/delivery_confidence -- mode="add"
     left them stuck (confirmed live: catalog_drift_pressure frozen at
     0.13517857261119032 for 10+ minutes across a restart while the real
     value was 0.0 the whole time)."""
     delta = _transport_bus_delta(
         hints={
-            "transport_pressure": 0.4,
+            "stream_backlog_pressure": 0.4,
             "catalog_drift_pressure": 0.4,
             "observer_failure_pressure": 0.4,
             "reliability_pressure": 0.4,
@@ -444,7 +444,7 @@ def test_catalog_drift_pressure_drop_reflected_not_stuck() -> None:
 
 @pytest.mark.parametrize(
     "channel",
-    ["transport_pressure", "observer_failure_pressure", "reliability_pressure", "contract_pressure"],
+    ["stream_backlog_pressure", "observer_failure_pressure", "reliability_pressure", "contract_pressure"],
 )
 def test_remaining_channels_drop_reflected_not_stuck(channel: str) -> None:
     """Same regression as test_catalog_drift_pressure_drop_reflected_not_stuck,
@@ -461,26 +461,26 @@ def test_remaining_channels_drop_reflected_not_stuck(channel: str) -> None:
     assert state.node_vectors["node:athena"][channel] == 0.0
 
 
-def test_stream_depth_pressure_and_backpressure_no_longer_double_inject_transport_pressure() -> None:
-    """transport_pressure = max(stream_depth_pressure, backpressure) is
-    already folded into the "transport_pressure" hint by extract.py. Before
+def test_stream_depth_pressure_and_backpressure_no_longer_double_inject_stream_backlog_pressure() -> None:
+    """stream_backlog_pressure = max(stream_depth_pressure, backpressure) is
+    already folded into the "stream_backlog_pressure" hint by extract.py. Before
     this fix, stream_depth_pressure/backpressure were also separately
     injected as their own mode="add" perturbations against the same
-    "transport_pressure" channel -- redundant with, and conflicting with, the
+    "stream_backlog_pressure" channel -- redundant with, and conflicting with, the
     now mode="replace" entry above. Exactly one Perturbation should target
-    transport_pressure per transport_bus delta."""
+    stream_backlog_pressure per transport_bus delta."""
     delta = _transport_bus_delta(
         hints={
-            "transport_pressure": 0.6,
+            "stream_backlog_pressure": 0.6,
             "stream_depth_pressure": 0.6,
             "backpressure": 0.2,
         }
     )
     perturbations = delta_to_perturbations(delta)
-    transport_pressure_perturbations = [p for p in perturbations if p.channel == "transport_pressure"]
-    assert len(transport_pressure_perturbations) == 1
-    assert transport_pressure_perturbations[0].mode == "replace"
-    assert transport_pressure_perturbations[0].intensity == 0.6
+    stream_backlog_pressure_perturbations = [p for p in perturbations if p.channel == "stream_backlog_pressure"]
+    assert len(stream_backlog_pressure_perturbations) == 1
+    assert stream_backlog_pressure_perturbations[0].mode == "replace"
+    assert stream_backlog_pressure_perturbations[0].intensity == 0.6
 
 
 # ---------------------------------------------------------------------------

@@ -25,11 +25,11 @@ def test_transport_bus_delta_maps_to_node_channels() -> None:
         after={
             "node_id": "athena",
             "pressure_hints": {
-                "bus_health": 1.0,
+                "stream_backlog_health": 1.0,
                 "delivery_confidence": 1.0,
                 "catalog_drift_pressure": 1.0,
                 "contract_pressure": 1.0,
-                "transport_pressure": 0.0,
+                "stream_backlog_pressure": 0.0,
             },
         },
         caused_by_event_ids=["gev_1"],
@@ -38,7 +38,7 @@ def test_transport_bus_delta_maps_to_node_channels() -> None:
     perturbations = delta_to_perturbations(delta)
     channels = {p.channel: p.intensity for p in perturbations}
     assert channels["contract_pressure"] == 1.0
-    assert channels["bus_health"] == 1.0
+    assert channels["stream_backlog_health"] == 1.0
     assert perturbations[0].node_id == "node:athena"
 
 

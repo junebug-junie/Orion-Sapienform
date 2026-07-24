@@ -72,7 +72,7 @@ python orion/mood_arc/fit_encoder.py train \
   training-data quality cutoff" section; keep the two in sync if it's ever
   revised.
 - **Second cutoff, `--min-generated-at 2026-07-22T04:35:01Z` (PR #1248,
-  merged + deployed):** `transport_pressure`/`catalog_drift_pressure`/
+  merged + deployed):** `stream_backlog_pressure`/`catalog_drift_pressure`/
   `observer_failure_pressure`/`reliability_pressure`/`contract_pressure`
   could get permanently stuck at a stale value (an `add`-mode perturbation
   bug in `services/orion-field-digester/app/ingest/state_deltas.py`, fixed
@@ -185,14 +185,16 @@ python orion/mood_arc/fit_encoder.py train \
   retrain yet** — matching every prior cutoff's own caveat, only minutes of clean post-fix data
   exist as of this writing. `v3` remains the model to keep serving until a `v4` retrain against
   this cutoff (or whichever is later) is warranted.
-  **Heads-up for whoever eventually renames `transport_pressure`** (flagged as a live
-  scope-honesty issue below, and in that same FCC-motor design doc's appendix, but not yet
-  fixed): `transport_pressure` is also one of `v3`'s 15 trained channels. A rename is a
-  *different* failure mode than this cutoff's distribution shift — the encoder would find the
-  field genuinely absent by name and silently default it to `0.0` (per `build_windows()`'s
-  missing-field convention) rather than see a shifted distribution — but it is still a
-  cutoff-class event for `v3`, not the "safe, no-training-impact" rename it might look like at
-  a glance. Treat it as a sixth cutoff when it ships.
+  **Materialized same day as a sixth cutoff:** `transport_pressure`/`bus_health` renamed to
+  `stream_backlog_pressure`/`stream_backlog_health` 2026-07-24 (Juniper's explicit naming
+  choice). Both are 2 of `v3`'s 15 trained channels; `build_windows()` now finds them genuinely
+  absent by name and silently defaults both to `0.0` (per its missing-field convention) on every
+  post-rename row — a different failure mode than a distribution shift, but still cutoff-class,
+  not the "safe, no-training-impact" rename it might look like. See
+  `services/orion-field-digester/README.md`'s matching sixth-cutoff entry for the
+  `--min-generated-at` command and full reasoning. Juniper's explicit call: don't block the
+  rename on retrain timing — `v3` keeps serving with 2 of 15 inputs dark until a `v4` retrain,
+  same posture as every prior cutoff.
 - **Scope caveat on `prediction_error`'s "transport" contributor (found 2026-07-22, not a new
   cutoff — no code changed, just what the channel actually means):** `prediction_error` is a
   `max()`-merge across five nodes; one of them, `node:substrate.transport`, is fed entirely by

@@ -19,7 +19,7 @@ Salience for a capability target is computed by
     execution_pressure:    0.80
     reasoning_pressure:    0.60
     reliability_pressure:  1.00   <- highest weight
-    transport_pressure:    0.75
+    stream_backlog_pressure:    0.75
     contract_pressure:     0.90
     confidence:           -0.35
     available_capacity:   -0.45
@@ -99,7 +99,7 @@ CAPABILITY_CHANNELS: tuple[str, ...] = (
     "execution_pressure",
     "reasoning_pressure",
     "reliability_pressure",
-    "transport_pressure",
+    "stream_backlog_pressure",
     "contract_pressure",
     "confidence",
     "available_capacity",
@@ -426,7 +426,7 @@ def render_report(
         "the sum) is dead for a target, that alone caps how high that target's "
         "salience can ever go. But it is rarely the whole story if other "
         "high-weight channels (`contract_pressure` 0.90, `execution_pressure` "
-        "0.80, `transport_pressure` 0.75, `pressure` 0.70) are also dead for "
+        "0.80, `stream_backlog_pressure` 0.75, `pressure` 0.70) are also dead for "
         "the same target -- the practical answer to 'why is salience low' is "
         "whichever combination of high-weight, dead channels is actually found "
         "above, not assumed in advance."
@@ -458,7 +458,7 @@ def render_report(
             "`reasoning_pressure`: expected, not a bug -- those channels have no "
             "diffusion edge into `capability:transport` at all (they only ever "
             "populate `orchestration`/`llm_inference`), or (for `pressure`) their "
-            "only source, the node-level `transport_pressure` channel, is "
+            "only source, the node-level `stream_backlog_pressure` channel, is "
             "documented as fully unproduced (\"confirmed absent... from all "
             "123,245+ live rows checked\").",
             "- `capability:transport`'s dead `reliability_pressure`: matches the "
@@ -467,12 +467,12 @@ def render_report(
             "3e-323... simply has never received a real nonzero perturbation.\"",
             "- `capability:transport`'s pinned-constant `confidence`/"
             "`available_capacity`: both fed by documented one-way-ratchet "
-            "channels (`delivery_confidence`, `bus_health`) the glossary calls "
+            "channels (`delivery_confidence`, `stream_backlog_health`) the glossary calls "
             "\"currently benign since the bus is genuinely stable, but "
             "structurally could never show a real dip.\"",
             "- `capability:llm_inference`'s live `pressure`/`confidence`/"
             "`available_capacity` and dead `execution_pressure`/"
-            "`transport_pressure`/`contract_pressure`: fully consistent with the "
+            "`stream_backlog_pressure`/`contract_pressure`: fully consistent with the "
             "glossary's documented diffusion edges (only `pressure`, from real "
             "`gpu_pressure`, and its two fallback-formula derivatives actually "
             "target `llm_inference`; the other three were never wired to it at "
@@ -519,7 +519,7 @@ CAPABILITY_CHANNEL_WEIGHTS: dict[str, float] = {
     "execution_pressure": 0.80,
     "reasoning_pressure": 0.60,
     "reliability_pressure": 1.00,
-    "transport_pressure": 0.75,
+    "stream_backlog_pressure": 0.75,
     "contract_pressure": 0.90,
     "confidence": -0.35,
     "available_capacity": -0.45,

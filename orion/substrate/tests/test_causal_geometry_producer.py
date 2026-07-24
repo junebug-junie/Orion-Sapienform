@@ -43,7 +43,7 @@ def _fixture_topology() -> Dict:
                 "target_id": "cap:orchestration",
                 "edge_type": "capability_capability",
                 "weight": 0.2,
-                "channel_map": {"transport_pressure": "orchestration"},
+                "channel_map": {"stream_backlog_pressure": "orchestration"},
             }
         ],
     }

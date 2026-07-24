@@ -405,7 +405,7 @@ def _compute_verdict(chain: dict[str, Any]) -> str:
 # IMPORTANT: These values MIRROR config/substrate-lattice/transport_lattice_policy.v1.yaml.
 # If you edit dimension_weights or watch_at in the YAML, update this dict to match.
 _TRANSPORT_CHANNELS: dict[str, dict] = {
-    "transport_pressure": {
+    "stream_backlog_pressure": {
         "dimension": "delivery_integrity",
         "dimension_weight": 0.35,
         "watch_at": 0.25,
@@ -525,10 +525,10 @@ def _compute_gates(chain: dict[str, Any]) -> list[dict[str, Any]]:
 
     # --- pressure gate ---
     channels = lattice_policy.get("channels", {})
-    transport_p = float(m3_values.get("transport_pressure") or 0.0)
+    transport_p = float(m3_values.get("stream_backlog_pressure") or 0.0)
     observer_p = float(m3_values.get("observer_failure_pressure") or 0.0)
     transport_watch_at = float(
-        (channels.get("transport_pressure") or {}).get("watch_at", 0.25)
+        (channels.get("stream_backlog_pressure") or {}).get("watch_at", 0.25)
     )
     observer_watch_at = float(
         (channels.get("observer_failure_pressure") or {}).get("watch_at", 0.25)
@@ -536,7 +536,7 @@ def _compute_gates(chain: dict[str, Any]) -> list[dict[str, Any]]:
     pressure_active = transport_p >= transport_watch_at or observer_p >= observer_watch_at
     pressure_state = "watch" if pressure_active else "quiet"
     pressure_reason = (
-        f"transport_pressure={transport_p:.2f} "
+        f"stream_backlog_pressure={transport_p:.2f} "
         f"observer_failure_pressure={observer_p:.2f} "
         f"(thresholds: transport={transport_watch_at}, observer={observer_watch_at})"
     )

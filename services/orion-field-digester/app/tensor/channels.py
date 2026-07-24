@@ -20,11 +20,11 @@ NODE_CHANNELS = [
     "turn_incompletion",
     "context_gathering_ratio",
     "conversation_load",
-    "transport_pressure",
+    "stream_backlog_pressure",
     "contract_pressure",
     "catalog_drift_pressure",
     "delivery_confidence",
-    "bus_health",
+    "stream_backlog_health",
     "observer_failure_pressure",
     "field_coherence_warning",
     "prediction_error",
@@ -36,7 +36,7 @@ CAPABILITY_CHANNELS = [
     "execution_pressure",
     "reasoning_pressure",
     "reliability_pressure",
-    "transport_pressure",
+    "stream_backlog_pressure",
     "contract_pressure",
 ]
 
@@ -46,10 +46,10 @@ DEFAULT_NODE_VECTOR["availability"] = 1.0
 # "presumed healthy until first real report" default for node:athena itself
 # the very first time it reconciles, before its own bus-observer has ever
 # reported. It's no longer reached by any other node -- see below.
-DEFAULT_NODE_VECTOR["bus_health"] = 1.0
+DEFAULT_NODE_VECTOR["stream_backlog_health"] = 1.0
 DEFAULT_NODE_VECTOR["delivery_confidence"] = 1.0
 
-# Design correction (2026-07-22): bus_health/delivery_confidence were
+# Design correction (2026-07-22): stream_backlog_health/delivery_confidence were
 # modeled as ordinary per-node NODE_CHANNELS, merged across every lattice
 # node via min() (the now-deleted orion/self_state/scoring.py's
 # HIGHER_IS_BETTER_CHANNELS handling -- worst node wins). But there is
@@ -66,7 +66,7 @@ DEFAULT_NODE_VECTOR["delivery_confidence"] = 1.0
 # value over the template default, so pre-fix-era stale 0.0 entries already
 # sitting in atlas/circe/prometheus's node_vectors from before that patch
 # deployed could never self-correct -- confirmed live 2026-07-22: athena's
-# real, fresh transport_bus_reducer report was bus_health=1.0/
+# real, fresh transport_bus_reducer report was stream_backlog_health=1.0/
 # delivery_confidence=1.0, but atlas's persisted entry was a still-0.0
 # value from before the fix with node_vector_updated_at=None (never once
 # perturbed), and the min()-merge let that meaningless stale reading
@@ -82,7 +82,7 @@ DEFAULT_NODE_VECTOR["delivery_confidence"] = 1.0
 # but their owner, and (b) actively prune them from any other node's
 # vector every reconcile tick -- self-healing, no manual data migration
 # needed. The now-deleted orion/self_state/transport.py's
-# transport_channel_hints() already read bus_health/delivery_confidence
+# transport_channel_hints() already read stream_backlog_health/delivery_confidence
 # from node:athena directly (never merged across nodes) and was unaffected
 # by this bug; this fix brings collect_field_channel_pressures()'s merge in
 # line with that same single-observer assumption instead of leaving two
@@ -100,7 +100,7 @@ DEFAULT_NODE_VECTOR["delivery_confidence"] = 1.0
 # (not introduced by this fix), flagged here since this is now the second
 # place carrying the assumption.
 SINGLE_OBSERVER_NODE_CHANNELS: dict[str, str] = {
-    "bus_health": "node:athena",
+    "stream_backlog_health": "node:athena",
     "delivery_confidence": "node:athena",
 }
 

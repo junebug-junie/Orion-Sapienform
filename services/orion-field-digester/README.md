@@ -241,7 +241,7 @@ Confirmed at full-corpus scale by `orion/mood_arc/fit_encoder.py train`
 against the complete `/mnt/telemetry/field_channels/corpus/
 field_channels.jsonl` corpus (161,795 rows spanning back to
 `2026-07-13T23:46Z`, ~76% pre-cutoff): the run's own
-`prune_correlated_fields()` log showed `availability`/`bus_health`/
+`prune_correlated_fields()` log showed `availability`/`stream_backlog_health`/
 `delivery_confidence` collapsing pairwise at `r=1.0000` — not real
 redundancy, but the "several ratcheted/saturated channels move in lockstep
 because they're all frozen or capped the same way" contamination artifact
@@ -268,7 +268,7 @@ pre-fix contamination.
 
 ## `field_channel_corpus.v1` second training-data quality cutoff (2026-07-22, PR #1248)
 
-A second, independent contamination window: `transport_pressure`/
+A second, independent contamination window: `stream_backlog_pressure`/
 `catalog_drift_pressure`/`observer_failure_pressure`/`reliability_pressure`/
 `contract_pressure` were injected into the field via the default
 `Perturbation` `mode="add"` (`app/ingest/state_deltas.py`'s `transport_bus`
@@ -288,7 +288,7 @@ of it (this one channel accounted for ~66% of the average reconstruction
 error against the trained `field_channel_anomaly.v2` encoder).
 
 Fixed by PR #1248 (`mode="replace"` for all five channels, matching
-`bus_health`/`delivery_confidence`'s existing correct handling), merged
+`stream_backlog_health`/`delivery_confidence`'s existing correct handling), merged
 2026-07-22T04:32:27Z, `orion-field-digester` restarted 2026-07-22T04:35:01Z
 (`docker inspect orion-athena-field-digester --format
 '{{.State.StartedAt}}'`). **Rows generated before `2026-07-22T04:35:01Z`
@@ -539,21 +539,39 @@ cutoff). **Do not retrain yet** — same reasoning as every prior cutoff, only m
 post-cutoff data exist as of this writing. `v3` remains the right model to keep serving until a
 `v4` retrain against this cutoff (or whichever is later) is warranted.
 
-**Heads-up for whoever renames `transport_pressure`** (a live scope-honesty issue flagged
-above and in the FCC-motor design doc's appendix, not yet fixed): it is also one of `v3`'s 15
-trained channels. A rename is a *different* failure mode than this cutoff's distribution shift
-— the encoder would find the field genuinely absent by name and silently default it to `0.0`
-rather than see a shifted distribution — but it is still cutoff-class for `v3`, not the "safe,
-no-training-impact" change it might look like. Treat it as a sixth cutoff when it ships. See
-`orion/mood_arc/README.md`'s matching fifth-cutoff entry — keep the two in sync if either is
-ever revised, same convention as the first four.
+## `field_channel_corpus.v1` sixth training-data quality cutoff (2026-07-24)
+
+The heads-up flagged above materialized: `transport_pressure`/`bus_health` renamed to
+`stream_backlog_pressure`/`stream_backlog_health` this same day (Juniper's explicit choice,
+picking `stream_backlog_*` over `world_pulse_queue_*` — the mechanism name, not the specific
+producer, so it stays accurate if a second real Stream producer is ever added). Both are 2 of
+`v3`'s 15 trained channels. Unlike the fifth cutoff's distribution-shift failure mode, a rename
+is genuinely-absent-by-name: `build_windows()` finds no field with the old name in any post-rename
+row and silently defaults it to `0.0` (per `build_windows()`'s missing-field convention), not a
+shifted-but-present distribution. Still cutoff-class for `v3` — 2 of its 15 inputs functionally
+go dark, not the "safe, no-training-impact" change a name-only edit might look like.
+
+```bash
+python orion/mood_arc/fit_encoder.py train \
+  --corpus /mnt/telemetry/field_channels/corpus/field_channels.jsonl \
+  --min-generated-at <this rename's deploy restart timestamp, `docker inspect orion-athena-field-digester --format '{{.State.StartedAt}}'`> \
+  --out <out-dir>
+```
+
+Juniper's explicit call (2026-07-24): don't block this rename on retrain timing — a `v4` retrain
+is coming soon regardless, and `v3` keeps serving on its now-mixed-name channel set (`0.0` for
+the 2 renamed fields, real values for the other 13) until then, same "not invalidated, just
+carrying degraded inputs" posture as every prior cutoff. If multiple cutoffs apply, use whichever
+is latest — as of this writing, that's this sixth cutoff, superseding the fifth's. See
+`orion/mood_arc/README.md`'s matching sixth-cutoff entry — keep the two in sync if either is ever
+revised, same convention as the first five.
 
 ## Field channel glossary
 
 This is the consolidated reference for all 35 channels in
 `field_channel_corpus.v1` (`orion.schemas.telemetry.field_channel_corpus.FieldChannelCorpusRowV1`),
 sourced from `app/tensor/channels.py`'s `NODE_CHANNELS` (29) + `CAPABILITY_CHANNELS`
-(8), overlapping on `transport_pressure`/`contract_pressure` (29+8-2=35). 29 = 23 original
+(8), overlapping on `stream_backlog_pressure`/`contract_pressure` (29+8-2=35). 29 = 23 original
 + 5 FCC-motor channels added 2026-07-23 (see the design doc referenced above) + 1
 FCC-motor channel added 2026-07-24 (`context_gathering_ratio`; `reasoning_load` also
 gained a real motor-side token magnitude the same day, see its entry below, but is not
@@ -657,7 +675,7 @@ only adds a channel to the merged output when `channel in PRESSURE_CHANNELS
 or value > 0` — `PRESSURE_CHANNELS` (scoring.py:7-27) is a 19-channel subset
 of the 29; a channel outside that set only ever appears in the corpus once
 it has received at least one genuinely nonzero perturbation, which is why
-some channels (e.g. `transport_pressure`) never appear at all while others
+some channels (e.g. `stream_backlog_pressure`) never appear at all while others
 with near-zero float noise (e.g. `observer_failure_pressure`, max observed
 value `3e-323` — a floating-point subnormal, not a real signal) do appear.
 (2) `DEFAULT_NODE_VECTOR`/`DEFAULT_CAPABILITY_VECTOR` (`channels.py:37-42`,
@@ -700,12 +718,12 @@ subset for the mood-arc windowed-autoencoder spike (see
    from `chat_turn` deltas) — a genuinely separate axis from execution: a
    conversation can be smooth while execution struggles, or vice versa.
 4. **Infrastructure / transport workload** — `catalog_drift_pressure`,
-   `transport_pressure`, `contract_pressure`, `observer_failure_pressure`.
+   `stream_backlog_pressure`, `contract_pressure`, `observer_failure_pressure`.
    The bus's own workload/health as infrastructure (sourced from
    `transport_bus` deltas), not a compute resource — a distinct axis from
    both hardware and task execution.
 5. **Sensor trust / liveness** — `availability`, `staleness`,
-   `expected_offline_suppression` at the node level; `bus_health`,
+   `expected_offline_suppression` at the node level; `stream_backlog_health`,
    `delivery_confidence` are the direct transport-layer parallel to the
    same question applied to the bus rather than a node. None of these five
    say what a node (or the bus) is *doing* — all five say whether that
@@ -1172,35 +1190,41 @@ follow-up note, and `test_execution_run_fcc_channels_ignored_off_lane` /
   → `social_pressure` (direct).
 - **Live-data verdict**: real signal, sparse but genuinely varying.
 
-#### `transport_pressure`
-- **Meaning**: bus/transport-layer backpressure/congestion (a node channel
-  and a capability channel, one of the two overlapping names between
-  `NODE_CHANNELS` and `CAPABILITY_CHANNELS`).
-- **Producer**: `transport_bus` delta, via `hints["transport_pressure"]`,
+#### `stream_backlog_pressure`
+- **Renamed from `transport_pressure` 2026-07-24** for scope honesty — see the
+  Live-data verdict below: this only ever measures one Redis Stream's depth
+  (`orion:stream:world_pulse:run:result`), not general bus/transport-layer
+  pressure. Sixth training-data cutoff, above.
+- **Meaning**: depth/backlog pressure on `world_pulse`'s one real Redis Stream
+  (a node channel and a capability channel, one of the two overlapping names
+  between `NODE_CHANNELS` and `CAPABILITY_CHANNELS`) — not general
+  bus/transport-layer backpressure across the whole mesh, since Pub/Sub (almost
+  everything else on the bus) has no backlog concept to measure.
+- **Producer**: `transport_bus` delta, via `hints["stream_backlog_pressure"]`,
   `hints["stream_depth_pressure"]`, or `hints["backpressure"]` — all
   mode=`add` (default), targeting a **node** vector. In
   `NODE_DECAY_CHANNELS` and `CAPABILITY_DECAY_CHANNELS`. As a node channel
   it is a diffusion source for `capability:orchestration` (`pressure`,
   weight `0.90`) and `capability:transport` (`pressure`, weight `0.85`), and
   for the `capability:transport → capability:orchestration` cap-cap edge
-  (`transport_pressure` → `transport_pressure`, weight `0.70`) — but that
+  (`stream_backlog_pressure` → `stream_backlog_pressure`, weight `0.70`) — but that
   cap-cap edge's own source value (`capability:transport`'s own
-  `transport_pressure` key) is only ever seeded `0.0` by
+  `stream_backlog_pressure` key) is only ever seeded `0.0` by
   `DEFAULT_CAPABILITY_VECTOR`, since the `node:athena → capability:transport`
-  edge maps `transport_pressure` → `"pressure"`, not `"transport_pressure"`
-  — no edge ever writes a channel literally named `transport_pressure`
+  edge maps `stream_backlog_pressure` → `"pressure"`, not `"stream_backlog_pressure"`
+  — no edge ever writes a channel literally named `stream_backlog_pressure`
   directly onto `capability:transport`.
 - **SelfState dimension fed**: not in `channel_dimension_map` directly
-  (removed 2026-07-12). `evidence_channel_map`: `transport_pressure` →
+  (removed 2026-07-12). `evidence_channel_map`: `stream_backlog_pressure` →
   `resource_pressure` (evidence-only).
 - **Live-data verdict, corrected 2026-07-23 (the 2026-07-16 "fully
   unproduced" verdict below is stale — do not carry it forward):**
-  `transport_pressure` is not in `PRESSURE_CHANNELS`, so
+  `stream_backlog_pressure` is not in `PRESSURE_CHANNELS`, so
   `collect_field_channel_pressures()` (`scoring.py:70,76`) only includes it
   when a real nonzero perturbation lands — same gate the 2026-07-16 check
   found nothing passing. Since then its live history has moved through three
   distinct phases, all traced to the same producer
-  (`compute_transport_pressures()`'s `transport_pressure = max(stream_depth_
+  (`compute_transport_pressures()`'s `stream_backlog_pressure = max(stream_depth_
   pressure, backpressure)`, `orion/substrate/transport_loop/extract.py:105`):
   (1) **before 2026-07-18** (`BUS_OBSERVER_STREAMS` still pointed at
   placeholder/never-wired stream names — see `services/orion-bus/README.md`)
@@ -1223,10 +1247,10 @@ follow-up note, and `test_execution_run_fcc_channels_ignored_off_lane` /
   inherit the identical structural ceiling on what they can ever measure.
   **`stream_depth_pressure` and `backpressure` are not independent corpus
   channels** — per the Producer note above, all three hint keys
-  (`transport_pressure`, `stream_depth_pressure`, `backpressure`) target the
-  same single node channel, `transport_pressure`; `stream_depth_pressure`
+  (`stream_backlog_pressure`, `stream_depth_pressure`, `backpressure`) target the
+  same single node channel, `stream_backlog_pressure`; `stream_depth_pressure`
   never appears under its own name in the corpus (confirmed `MISSING` in
-  every row checked), it is folded into `transport_pressure` at the source.
+  every row checked), it is folded into `stream_backlog_pressure` at the source.
   **This is not a documented-and-abandoned problem** — a real replacement is
   in progress, not a rename: see `services/orion-substrate-runtime/README.md`'s
   "transport domain is one queue, not the bus" note for the correction to an
@@ -1294,7 +1318,7 @@ follow-up note, and `test_execution_run_fcc_channels_ignored_off_lane` /
   forward, by construction, not by observation. Confirmed against the
   live corpus: `MISSING` in every one of the last 5,000 rows checked
   (2026-07-23) — same `PRESSURE_CHANNELS`/`value > 0` gate as
-  `transport_pressure` above, and this channel never clears it anymore.
+  `stream_backlog_pressure` above, and this channel never clears it anymore.
   Practically: a channel `v2`/`v3` were trained to expect some real signal
   from is now permanently silent under the current bus-observer config —
   worth accounting for if a future retrain's field-selection drops it or
@@ -1308,7 +1332,7 @@ follow-up note, and `test_execution_run_fcc_channels_ignored_off_lane` /
 - **Producer**: `transport_bus` delta, `hints["delivery_confidence"]`,
   mode=`replace` (fixed prior to this session — the mode=`add` one-way
   ratchet described below in the 2026-07-16 verdict no longer applies; see
-  `bus_health`/`delivery_confidence`'s existing correct handling" in the
+  `stream_backlog_health`/`delivery_confidence`'s existing correct handling" in the
   cutoff section above). **Not** in `NODE_DECAY_CHANNELS` — a "current
   reading" score with no decay story, same as `availability`. Diffuses into
   `capability:transport`'s `"confidence"` field (weight `0.85`, from
@@ -1338,9 +1362,12 @@ follow-up note, and `test_execution_run_fcc_channels_ignored_off_lane` /
   `coherence` (evidence-only) — this is the dimension the stale-mask bug
   above was corrupting.
 
-#### `bus_health`
-- **Meaning**: overall bus/transport subsystem health signal.
-- **Producer**: `transport_bus` delta, `hints["bus_health"]`, mode=`replace`
+#### `stream_backlog_health`
+- **Renamed from `bus_health` 2026-07-24** for scope honesty, same reasoning as
+  `stream_backlog_pressure` above. Sixth training-data cutoff, above.
+- **Meaning**: health of `world_pulse`'s one real Redis Stream (consumer-group
+  pending/lag, delivery health) — not overall bus/transport subsystem health.
+- **Producer**: `transport_bus` delta, `hints["stream_backlog_health"]`, mode=`replace`
   (fixed prior to this session — see `delivery_confidence` above). **Not**
   in `NODE_DECAY_CHANNELS` — same "current reading, no decay" reasoning.
   Diffuses into `capability:transport`'s `"available_capacity"` field
@@ -1351,7 +1378,7 @@ follow-up note, and `test_execution_run_fcc_channels_ignored_off_lane` /
   `SINGLE_OBSERVER_NODE_CHANNELS` covers both channels together.
 - **SelfState dimension fed**: not in `channel_dimension_map` directly (the
   capability-level `available_capacity` field it feeds is the one mapped —
-  see `available_capacity` below). `evidence_channel_map`: `bus_health` →
+  see `available_capacity` below). `evidence_channel_map`: `stream_backlog_health` →
   `coherence` (evidence-only) — this is the dimension the stale-mask bug
   above was corrupting.
 
@@ -1378,7 +1405,7 @@ follow-up note, and `test_execution_run_fcc_channels_ignored_off_lane` /
   suggesting two different reducers disagree about the node's actual
   state (rules: `execution_load`/`cpu_pressure`,
   `execution_load`/`gpu_pressure`, `failure_pressure`/`availability`,
-  `transport_pressure`/`bus_health`, `reasoning_load`/`cpu_pressure` —
+  `stream_backlog_pressure`/`stream_backlog_health`, `reasoning_load`/`cpu_pressure` —
   `orion/field_coherence.py`).
 - **Producer**: **not** one of `state_deltas.py`'s six `target_kind`
   blocks. Computed by `check_field_coherence(state)`
@@ -1460,7 +1487,7 @@ follow-up note, and `test_execution_run_fcc_channels_ignored_off_lane` /
 - **Meaning**: how much spare operating capacity a capability has right
   now.
 - **Producer**: capability-level. `capability:transport` has the only
-  direct diffusion edge into `available_capacity` (from `bus_health`,
+  direct diffusion edge into `available_capacity` (from `stream_backlog_health`,
   weight `0.85`). Every other capability falls back to
   `available_capacity = max(0.0, 1.0 - pressure)` (`diffusion.py:216-227`).
   Seeded `1.0` by `DEFAULT_CAPABILITY_VECTOR` via reconcile.

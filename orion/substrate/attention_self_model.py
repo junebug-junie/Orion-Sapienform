@@ -53,6 +53,24 @@ from orion.schemas.field_attention_frame import FieldAttentionFrameV1
 # already uses for its own staleness gates (curiosity_signals, reverie).
 DEFAULT_BROADCAST_STALE_THRESHOLD_SEC = 60.0
 
+# The real Active-Inference prediction_error domains used for the
+# UNCONDITIONAL `prediction_error_confidence` field (see
+# `_unconditional_prediction_error_confidence` below). Deliberately excludes
+# `transport` -- confirmed live 2026-07-24
+# (`docs/notes/2026-07-24-attention-reason-branch-starvation-finding.md`):
+# `transport_prediction_error` reads exactly 0.0 for 100% of a real 8h
+# window (`BUS_OBSERVER_STREAMS` only watches 2 real Redis Streams), so
+# averaging it in with the other four real, varying domains systematically
+# inflates confidence by a fixed, mechanical amount every tick -- harmless
+# while this formula fired on 0.04% of ticks, not harmless once it fires on
+# nearly all of them. Re-include `transport` here once a real, bounded,
+# prediction-error-shaped transport signal exists -- tracked as the
+# reversal condition against PR #1323's bus-synaptic-graph work, not before.
+# This constant does NOT affect the pre-existing branch-gated
+# `confidence`/`confidence_basis` fields below, which keep their original
+# (unfiltered, all-domains) formula unchanged -- additive only.
+ACTIVE_INFERENCE_DOMAINS = frozenset({"execution", "biometrics", "chat", "route"})
+
 
 def _round_or_none(value: float | None, digits: int = 4) -> float | None:
     return None if value is None else round(float(value), digits)
@@ -94,6 +112,48 @@ def _aggregate_prediction_error_confidence(
     basis = (
         f"1 - mean(prediction_error) across {len(values)} domains ({domains}) "
         "(broadcast lane stale/absent)"
+    )
+    return confidence, basis
+
+
+def _unconditional_prediction_error_confidence(
+    prediction_error_by_domain: dict[str, float] | None,
+) -> tuple[float | None, str]:
+    """Unconditional counterpart to `_aggregate_prediction_error_confidence`,
+    populating the new `prediction_error_confidence`/`prediction_error_confidence_basis`
+    fields regardless of which `attention_reason` branch wins -- mirrors
+    `predicted_shift`'s existing unconditional positioning (computed once,
+    before the elif branching, not gated on `field_salience_only` firing).
+
+    Restricted to `ACTIVE_INFERENCE_DOMAINS` (excludes the confirmed-dead
+    `transport` domain -- see that constant's docstring for the live-data
+    finding behind this exclusion). Returns `(None, "")` when no domain in
+    that set has data, matching every other "honestly absent" convention in
+    this reducer (never invents a confidence value from nothing).
+
+    Does NOT read or affect the pre-existing branch-gated
+    `confidence`/`confidence_basis` fields -- those keep computing their
+    original (unfiltered, all-domains) formula via
+    `_aggregate_prediction_error_confidence` unchanged. This function exists
+    so a real, non-diluted Active-Inference confidence signal is available
+    on (almost) every tick instead of only the ~0.04% of ticks where the
+    broadcast/GWT-dispatch lane happens to be absent or stale -- see
+    `docs/notes/2026-07-24-attention-reason-branch-starvation-finding.md`.
+    """
+    if not prediction_error_by_domain:
+        return None, ""
+    filtered = {
+        domain: value
+        for domain, value in prediction_error_by_domain.items()
+        if domain in ACTIVE_INFERENCE_DOMAINS
+    }
+    if not filtered:
+        return None, ""
+    confidence, _ = _aggregate_prediction_error_confidence(filtered)
+    domains = ", ".join(sorted(filtered))
+    basis = (
+        f"1 - mean(prediction_error) across {len(filtered)} ACTIVE_INFERENCE_DOMAINS "
+        f"({domains}) (unconditional -- computed regardless of attention_reason branch)"
     )
     return confidence, basis
 
@@ -193,6 +253,18 @@ def reduce_attention_self_model(
             model.predicted_shift_basis = (
                 "prediction_error_trend_by_domain (Active Inference, argmax by |trend|)"
             )
+
+    # --- Prediction-error confidence (unconditional, ACTIVE_INFERENCE_DOMAINS
+    # only): mirrors predicted_shift's positioning above -- computed regardless
+    # of which attention_reason branch wins below. Additive only: does not
+    # read or change the pre-existing branch-gated confidence/confidence_basis
+    # fields set inside the elif branching further down.
+    pe_confidence, pe_confidence_basis = _unconditional_prediction_error_confidence(
+        prediction_error_by_domain
+    )
+    if pe_confidence is not None:
+        model.prediction_error_confidence = _round_or_none(pe_confidence)
+        model.prediction_error_confidence_basis = pe_confidence_basis
 
     # --- Broadcast lane: what was last dispatched + cadence-mismatch state -
     broadcast_age_sec: float | None = None

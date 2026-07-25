@@ -138,6 +138,27 @@ class EquilibriumServiceTransitionV1(BaseModel):
         return v
 
 
+class ServiceLivenessV1(BaseModel):
+    """
+    Minimal, standardized `/health` liveness payload -- "is the process up,"
+    not "are its dependencies ready" (that's `BusConsumerReadinessV1`, meant
+    for a separate `/ready` route on services with a real bus-consumer loop).
+
+    Introduced because a live grep across services found 6+ distinct ad-hoc
+    `/health` shapes (some keyed "status", some "ok"; some included
+    service/version/node, most didn't) -- see
+    docs/superpowers/specs/2026-07-24-service-heartbeat-node-telemetry-design.md.
+    Piloted on 5 services before a wider rollout.
+    """
+
+    model_config = ConfigDict(extra="forbid", populate_by_name=True)
+
+    ok: bool
+    service: str
+    version: str
+    node: str
+
+
 class BusConsumerReadinessV1(BaseModel):
     """
     Structured readiness snapshot for bus-backed service consumers.

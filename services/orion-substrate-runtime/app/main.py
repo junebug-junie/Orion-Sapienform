@@ -124,12 +124,15 @@ app = FastAPI(title="orion-substrate-runtime", lifespan=lifespan)
 
 @app.get("/health")
 async def health() -> dict:
+    s = get_settings()
     snap = build_substrate_grammar_truth(worker._store)
     return {
         "status": "ok" if snap["ok"] else "degraded",
         "ok": snap["ok"],
         "degraded": snap["degraded"],
-        "service": get_settings().service_name,
+        "service": s.service_name,
+        "version": s.service_version,
+        "node": s.node_name,
     }
 
 

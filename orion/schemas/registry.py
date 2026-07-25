@@ -453,6 +453,7 @@ from orion.schemas.telemetry.system_health import (
     EquilibriumServiceTransitionV1,
     SystemHealthV1,
     BusConsumerReadinessV1,
+    ServiceLivenessV1,
 )
 from orion.schemas.telemetry.rpc_health import RpcHealthSnapshotV1
 from orion.schemas.telemetry.cognition_trace import CognitionTracePayload
@@ -753,6 +754,7 @@ _REGISTRY: Dict[str, Type[BaseModel]] = {
     "SystemHealthV1": SystemHealthV1,
     "RpcHealthSnapshotV1": RpcHealthSnapshotV1,
     "BusConsumerReadinessV1": BusConsumerReadinessV1,
+    "ServiceLivenessV1": ServiceLivenessV1,
     "EquilibriumSnapshotV1": EquilibriumSnapshotV1,
     "EquilibriumServiceTransitionV1": EquilibriumServiceTransitionV1,
     "RdfWriteRequest": RdfWriteRequest,

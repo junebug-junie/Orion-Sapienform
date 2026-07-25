@@ -79,6 +79,46 @@ Key convention:
   `disk_pressure_signal` -> field-digester's `disk_pressure` lattice channel). Do not conflate the
   two -- `collect_disk_capacity()` is intentionally a separate function/key, not an extension of
   `_collect_disk()`.
+
+### iLO/BMC hardware telemetry (`details.ilo_*`)
+
+Real out-of-band hardware telemetry (thermal, fan, power) pulled from the node's iLO/BMC
+RedFish API, piggybacked onto the same `SystemHealthV1.details` dict as disk capacity, above.
+Node-level and optional -- a node with no `ILO_HOST` configured simply omits these keys
+entirely (`IloPoller.details()` returns `{}`).
+
+Key convention:
+
+```json
+{
+  "ilo_fetched_at": 1721923200.123,
+  "ilo_thermal_c": {"01-Inlet Ambient": 24.0, "02-CPU 1": 40.0},
+  "ilo_fan_pct": {"Fan 1": 29.0, "Fan 2": 29.0},
+  "ilo_power_watts": 310.0,
+  "ilo_error": "connection timeout"
+}
+```
+
+- `ilo_thermal_c`/`ilo_fan_pct` are keyed by the sensor's own RedFish `Name` (vendor-specific
+  strings, e.g. HPE's `"01-Inlet Ambient"`) -- not normalized across vendors. Sensors reporting
+  `Status.State != "Enabled"` (e.g. `"Absent"`, an unpopulated slot) are skipped rather than
+  recorded as a fake `0`. Fans additionally require `ReadingUnits == "Percent"` -- RedFish fans
+  can report Percent or RPM depending on vendor, and only HPE/athena is verified so far; an RPM
+  reading is skipped rather than silently mislabeled as a percentage.
+- `ilo_error` appears whenever the last poll failed (bad creds, network unreachable, non-RedFish
+  BMC) or `ILO_HOST` isn't configured on this node (`"not_configured"`) -- never fatal to the
+  heartbeat itself.
+- Unlike disk capacity (a cheap local `shutil.disk_usage()` call, safe to run inline in the
+  heartbeat's bounded per-tick hook), an iLO RedFish round-trip is a real network call to a
+  comparatively weak out-of-band management processor -- not safe to run on every heartbeat tick
+  (default 10s) or inside that hook's ~3s budget. `app/ilo.py::IloPoller` runs on its own
+  `ILO_POLL_INTERVAL_SEC` cadence (default 60s) as a separate background task; the heartbeat hook
+  just reads the last cached snapshot (`ilo_fetched_at` tells you how stale it is).
+- Credentials (`ILO_HOST`/`ILO_USERNAME`/`ILO_PASSWORD`) are node-specific secrets -- set only in
+  this node's local `.env`, never in `.env_example` (which ships them empty) or committed
+  anywhere. Uses standard DMTF RedFish (`/redfish/v1/Chassis/` -> first chassis's `/Thermal/` and
+  `/Power/`), confirmed live against athena's HPE iLO; unverified so far against Circe's Gigabyte
+  BMC.
 - Cross-node: because this same `services/orion-biometrics` codebase runs independently on
   athena/atlas/circe (each with its own `NODE_NAME`), redeploying this patch on each node gives
   real disk-capacity visibility per node with no new SSH/credential surface -- the bus already

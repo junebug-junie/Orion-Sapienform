@@ -45,6 +45,12 @@ NEVER_SYNC_KEYS = frozenset(
         # accident of the prefix list, and holds even under --all-keys --force.
         "RECALL_GRAPHITI_IN_CHAT",
         "RECALL_GRAPHITI_ADAPTER_URL",
+        # Per-node BMC/iLO secret (orion-biometrics). .env_example intentionally
+        # ships these empty; --force must never flatten a real per-node
+        # credential back to that placeholder.
+        "ILO_HOST",
+        "ILO_USERNAME",
+        "ILO_PASSWORD",
     }
 )
 

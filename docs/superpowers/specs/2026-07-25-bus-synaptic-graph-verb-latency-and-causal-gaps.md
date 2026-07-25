@@ -59,29 +59,43 @@ common case — verb-step payloads don't always carry it) becomes its own valid 
 
 **Files:** `services/orion-bus-mirror/app/graph_writer.py` (`record_verb_step`), its tests, README.
 
-## Idea 2.2 — preceding-verb / model_used / concurrent-load slicing (scoped, not built)
+## Idea 2.2 — preceding-verb / model_used / concurrent-load slicing (measured, not built)
 
 **What:** three separate slicing axes on `EXECUTES_VERB`, each a real, distinct signal:
-- Preceding verb: partition by `(organ, verb, preceding_verb)` — needs the chain-shape machinery
-  Idea C just built (`organ_sequence`) extended to track *verb* sequence, not just organ sequence,
-  since "preceding verb" isn't the same as "preceding organ."
-- `model_used`: partition by whatever field in the step payload names the serving model (needs a
-  live check of whether `model_used` is actually populated in real `steps[]` payloads — unverified,
-  same class of question Idea G resolved for `causality_chain`).
-- Concurrent-load: z-score a verb's latency against how loaded the mesh was *when it ran* (ties
-  directly to the in-flight-chain-count signal Phase 2 already built) — this is structurally the
-  same mechanism the wider-net doc's Idea E scoped and found inconclusive for edge-level anomalies;
-  the same measure-first caution applies here.
+- Preceding verb: partition by `(organ, verb, preceding_verb)`.
+- `model_used`: partition by whatever field in the step payload names the serving model.
+- Concurrent-load: z-score a verb's latency against how loaded the mesh was *when it ran*.
 
-**Why not built now:** each of these needs its own live-data check before committing to a graph
-shape (matching this arc's own repeated lesson: don't build partitioning on an axis until you know
-it's actually populated/meaningful in real traffic). Real added complexity too — 2.1 alone already
-splits one edge into N; stacking more partition axes multiplies edge count fast.
+**Measured, this session.** Two things resolved before writing any slicing code:
 
-**Smallest next step if picked up:** a read-only prevalence check (same shape as Idea G) — sample
-real `steps[]` payloads, check how often `model_used` is populated and how many distinct
-preceding-verb pairs actually recur, before deciding whether either axis is worth the edge-count
-cost.
+1. **`StepExecutionResult`'s schema** (`orion/schemas/cortex/types.py`) has **no `model_used` field at
+   all** — `status`, `verb_name`, `step_name`, `order`, `result` (free-form dict), `spark_vector`,
+   `artifacts` (free-form dict), `latency_ms`, `node`, `logs`, `error`. It would have to live inside
+   `result`/`artifacts`, if anywhere.
+2. **Preceding-verb turns out cheaper than originally scoped**: `order` gives step sequence *within
+   a single envelope's `steps[]` array* directly — it does NOT need Idea C's cross-envelope
+   `organ_sequence` chain-tracking machinery at all, contrary to this doc's first draft.
+
+**Live prevalence check** (4,800 envelopes sampled from `bus_mirror.sqlite`, same stratified-checkpoint
+method as Idea G): **2 of 4,800 envelopes (0.04%) carried a `steps[]` payload at all.** Both of those 2
+did have multiple steps with a real, usable `order` sequence. Zero keys resembling `model` were found
+anywhere in any step's `result`/`artifacts` dict across the whole sample.
+
+**Verdict**:
+- `model_used` — dead end. Not just unpopulated, not even a declared field; nothing to partition by.
+- Concurrent-load — not measured this pass (same caution as Idea E: needs a real burst window, this
+  wasn't one).
+- Preceding-verb — mechanically the cheapest of the three (no new chain-tracking needed), and the two
+  sampled multi-step envelopes prove the mechanism would work when data exists. But the underlying
+  `EXECUTES_VERB` data source itself is extremely sparse (matches the graph's own tiny live edge count
+  — 11 total as of this session) — building a dedicated slicing mechanism on 0.04% coverage would
+  mostly measure noise, not signal, regardless of how cheap the mechanism is.
+
+**Not built.** Same "measure first, don't build on insufficient data" discipline Idea E already
+established for this arc — a real, honest result, not a disguised skip. If `steps[]` coverage grows
+substantially in real traffic later (more cognition-trace-shaped payloads flowing through more
+organs), preceding-verb slicing is the one axis worth revisiting first; `model_used` needs the field
+added to the schema and populated by producers before it's viable at all, a different, separate task.
 
 ## Idea 2.3 — causal-DAG empirical verification (built, this session -- diagnosed, not fixed)
 

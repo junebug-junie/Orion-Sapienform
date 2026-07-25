@@ -17,6 +17,9 @@ NODE_DECAY_CHANNELS = {
     "gpu_pressure",
     "thermal_pressure",
     "disk_pressure",
+    "power_pressure",
+    "disk_capacity_pressure",
+    "fan_pressure",
     # execution
     "cortex_exec_step_load",
     "execution_friction",

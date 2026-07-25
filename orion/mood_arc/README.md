@@ -292,9 +292,12 @@ this patch does.
 
 ## Semantic taxonomy of the channels
 
-The 29 raw channels `field_channel_corpus.v1` carries (and the 15-16 that
-typically survive selection/pruning) have a real-world-meaning grouping
-already written up in
+The raw channels `field_channel_corpus.v1` carries (38 as of 2026-07-25 --
+this count has already drifted from this doc more than once as channels were
+added; check `services/orion-field-digester/README.md`'s "Field channel
+glossary" section header for the current number rather than trusting a
+hardcoded figure here) (and the 15-16 that typically survive
+selection/pruning) have a real-world-meaning grouping already written up in
 `services/orion-field-digester/README.md`'s `### Semantic categories`
 section. That is the canonical reference — this module links to it rather
 than duplicating it, since the taxonomy applies to the corpus/channel

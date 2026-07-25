@@ -381,6 +381,18 @@ rename, not a deprecation, and not a product of this RPC-health redesign reachin
 replacing it. This redesign's own "not yet wired to replace this channel" status is unchanged; do
 not assume this redesign has already replaced it, only that the old channel's name changed.
 
+**Candidate third evidence source, proposed 2026-07-25 (not built): the bus synaptic graph
+(`orion_bus_synapse`, `services/orion-bus-mirror`).** Live-verified same day: `hub ->
+orion-harness-governor` shows a real `CAUSALLY_FOLLOWED_BY` edge (`latency_zscore=-2.10, count=5`)
+— this is real coverage of exactly the blind spot `docs/superpowers/specs/2026-07-23-transport-
+domain-rpc-health-redesign.md` names in its own "Related work" section: `orion-harness-governor`
+uses a bespoke long-poll RPC, not `OrionBusAsync.rpc_request()`, so the RPC-health signal that
+spec proposes structurally cannot see it. The bus-mirror graph is a passive wiretap on envelope
+`correlation_id`s, agnostic to which RPC mechanism produced them, so it catches this traffic
+anyway. See that spec's 2026-07-25 revision for the full proposal — not decided or built here,
+and does not change Missing Question 5's still-open "rename vs. deprecate" call for
+`stream_backlog_pressure`/`stream_backlog_health`.
+
 **Reverie semantic lift:** unresolved closures also upsert human referent rows into
 `substrate_turn_referent` via `turn_referent_store.persist_turn_referent`. Apply
 `services/orion-sql-db/manual_migration_substrate_turn_referent_v1.sql` before enabling

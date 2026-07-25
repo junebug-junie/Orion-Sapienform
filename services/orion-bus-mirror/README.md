@@ -134,6 +134,16 @@ ORDER BY abs(e.gap_zscore) DESC
 (`GET /api/bus-synaptic-graph/summary|hot-organs|hot-edges|anomalies`) — see that service's README
 "Bus synaptic graph debug routes" section.
 
+**Candidate consumer, proposed 2026-07-25 (not built): transport-domain redesign.** Live-verified
+this graph already covers `orion-harness-governor` traffic (`hub -> orion-harness-governor`,
+`latency_zscore=-2.10, count=5`) — a blind spot the RPC-health-only transport redesign
+(`docs/superpowers/specs/2026-07-23-transport-domain-rpc-health-redesign.md`) explicitly can't
+see, since that service's RPC mechanism isn't `OrionBusAsync.rpc_request()`. See that spec's
+2026-07-25 revision. Distinct from the already-built recall reasoning consumer (Idea 4,
+`docs/superpowers/specs/2026-07-24-bus-synaptic-graph-reasoning-consumer-design.md`) — this would
+feed the Sentience Striving Program's transport prediction-error/metacog-trigger gap specifically,
+not chat context.
+
 ---
 
 ## Bus synaptic graph (Phase 2)

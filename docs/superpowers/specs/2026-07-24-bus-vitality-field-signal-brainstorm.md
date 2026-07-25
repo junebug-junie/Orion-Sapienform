@@ -327,21 +327,21 @@ Lowest risk of the set — closer to a bug fix than a new capability, since it c
 Orion's field graph already trusts rather than adding a new one. Blocked on auditing
 `capability:transport`'s consumers first (see Missing Questions).
 
-**Idea 2 — `bus_channel_undeclared_pressure` as an additive signal, not a replacement.**
-Same computation as Idea 1, landed as a new channel instead of overwriting the existing one.
-**Gated.** Real tension with Idea 1: shipping both is exactly the redundancy the metric quality
-gate's independence check exists to catch — pick one, not both, once the audit above resolves it.
+**Idea 2 — `bus_channel_undeclared_pressure` as an additive signal, not a replacement. CLOSED
+2026-07-25, superseded.** Idea 1 shipped instead
+(`docs/superpowers/specs/2026-07-25-catalog-drift-pressure-mesh-wide-fix.md`) — building this would
+now be exactly the redundancy this idea's own text warned about. Not picked up.
 
-**Idea 3 — bus vitality/coverage as a real `NODE_CHANNELS` field signal** (not a Hub-only debug
-view — corrected from an earlier draft of this brainstorm that under-scoped it). `declared_silent`/
-`undeclared_active` reaching field-digester for real, following the FCC-motor wiring shape (schema
-→ merge → `state_deltas.py` → `NODE_CHANNELS` → `field_channel_glossary.v1.yaml` → README).
-**Gated** — exact mechanism (mesh-wide scalar vs. per-capability-edge vs. something else) TBD per
-design at implementation time. Single biggest open risk: raw `declared_silent` count is likely
-near-constant (~182/264 at real measured baseline) without a per-kind expected-cadence baseline —
-would fail the metric quality gate's "not degenerate" check as a raw level. `undeclared_active` (0
-at baseline, meaningful only when nonzero) does not have this problem and is the safer half to
-start from if this idea proceeds.
+**Idea 3 — bus vitality/coverage as a real `NODE_CHANNELS` field signal. CLOSED 2026-07-25, ~80%
+already achieved as a side effect of Idea 1's fix, remainder not worth pursuing.** This idea's own
+risk assessment named `undeclared_active` as "the safer half to start from" (vs. `declared_silent`,
+flagged as near-constant/likely-degenerate). That safer half is now live: Idea 1's fix wires
+`undeclared_active_count/catalog_size` directly into `catalog_drift_pressure`, which already flows
+into `NODE_CHANNELS` via `capability:transport` — confirmed live, feeding real attention-salience and
+proposal-generation output (2026-07-25 live query against
+`/api/substrate-lattice/transport/latest`). The remaining half (`declared_silent`) still has the
+exact degeneracy problem this doc named; nothing in the bus-synaptic-graph arc changes that
+calculus. Not picked up further.
 
 **Idea 4 — per-producer-service staleness attribution, reusing the existing `staleness` channel.**
 `channels.yaml` entries carry `producer_services`. For single-producer channels, attribute sustained
@@ -350,20 +350,29 @@ silence to that service's existing `staleness` node channel (`orion_field_topolo
 attempted-vs-succeeded distinction from the RPC-health arc's pattern could generalize: RPC-health's
 `RpcHealthAggregator` already proves "did this service *try* and fail" is measurable and useful for
 RPC calls specifically; whether that's worth extending to plain `publish()` calls (not just RPC
-request/reply) is a real open question this idea inherits, not a decided direction.
+request/reply) is a real open question this idea inherits, not a decided direction. Not reassessed
+in the 2026-07-25 closure pass (2/3/5/6 only) — still open, untouched.
 
-**Idea 5 — dead-channel regression detector.**
-Diff two census snapshots over time; a channel that flips from consistently-active to silent while
-its producer service otherwise looks healthy is a real regression. **Gated**, and deliberately left
-open whether this becomes a field signal or stays an ops alert outside field-digester entirely —
-that fork should be resolved before implementation, not defaulted.
+**Idea 5 — dead-channel regression detector. CLOSED 2026-07-25, superseded.** Its entire premise —
+"a channel that goes unexpectedly silent is a real regression" — is already covered, more richly,
+by the bus-synaptic-graph arc's `PUBLISHES` edges: `gap_ewma_sec`/`gap_zscore` already detect exactly
+this, live, continuously, per-channel, exposed via
+`services/orion-hub/scripts/bus_synaptic_graph_routes.py`'s `/anomalies` route
+(`publish_gap_anomalies`). Two-snapshot census diffing would be a strictly weaker version of a
+detector that already runs. The one thing the live z-score doesn't do — cross-reference "while its
+producer service otherwise looks healthy" — is a minor gap, not worth a new idea on its own. Not
+picked up.
 
-**Idea 6 — `bus_activity_zscore`, anomaly-relative mesh throughput.**
-Rolling EWMA baseline of total mesh publish rate (sum of `scan_active_channels()`'s per-channel
-rates), surfaced as deviation from baseline rather than an absolute "load score" — sidesteps the
-original Phase-1-adjacent spec's own rejection of an ungrounded aggregate load number by design.
-**Gated**, mechanism TBD, including whether it plugs into the existing `telemetry_anomaly`
-metacognitive trigger consumer or needs its own.
+**Idea 6 — `bus_activity_zscore`, anomaly-relative mesh throughput. SELECTED 2026-07-25, in
+progress.** Rolling EWMA baseline of total mesh publish rate (sum of `scan_active_channels()`'s
+per-channel rates), surfaced as deviation from baseline rather than an absolute "load score" —
+sidesteps the original Phase-1-adjacent spec's own rejection of an ungrounded aggregate load number
+by design. Unlike Ideas 2/3/5, this is a genuinely distinct aggregation tier the bus-synaptic-graph
+arc never built — everything shipped there is per-edge/per-organ/per-verb, nothing at the
+"mesh-wide, right now" level. Mechanism: computed in `orion-bus`'s existing observer tick (already
+has `scan_active_channels()` wired via `BUS_OBSERVER_CENSUS_ENABLED`, Idea 1's fix), log-only/atom-
+only first (matching this arc's own "make it observable before deciding the consumer" pattern) —
+not force-wired into `telemetry_anomaly` or `NODE_CHANNELS` in the first patch.
 
 ## Files likely to touch
 
@@ -424,3 +433,14 @@ that direction proceeds, its own natural first step (in-flight-chain tracking + 
 slicing, both flagged as priorities above) should get a real design pass — schema, write-cost
 measurement, chain-termination decision — before any code, same discipline as everything else in
 this arc, just not artificially shrunk to fit a single small patch.
+
+**Status update, 2026-07-25, after the "Big-swing direction" shipped in full:** the bus-synaptic-
+graph arc (Phase 1/2, channel normalization, the `orion-recall` reasoning-consumer path, and a full
+wider-net pass — anomaly propagation, node centrality, chain-shape clustering, cross-node imbalance,
+plus a post-arc audit) turned out to be a strictly richer answer to this doc's original question
+than the smaller Ideas 1-6 track was ever going to produce. Idea 1 shipped
+(`2026-07-25-catalog-drift-pressure-mesh-wide-fix.md`). Ideas 2, 3, and 5 are now closed as
+superseded (see their entries above) — each idea's own goal turned out to already be covered, more
+richly, by something the graph arc built for an unrelated reason. Idea 4 was not reassessed in this
+pass, still open. Idea 6 is the one exception — a genuinely distinct aggregation tier nothing else
+covers — and is picked up next.

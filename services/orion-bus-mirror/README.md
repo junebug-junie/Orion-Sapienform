@@ -179,19 +179,24 @@ with `move_to_end()` on every touch, so eviction pops only the genuinely-stale p
 instead of scanning the full (thousands-of-entries) table on every single message —
 a real, measured contributor to CPU usage at full mesh traffic volume.
 
-**Per-verb latency** (`EXECUTES_VERB` edges, `(:Organ)-[:EXECUTES_VERB {count,
-last_seen_epoch, last_node, latency_ewma_sec, latency_var, latency_zscore}]->(:Verb
+**Per-verb latency** (`EXECUTES_VERB` edges, `(:Organ)-[:EXECUTES_VERB {node,
+count, last_seen_epoch, latency_ewma_sec, latency_var, latency_zscore}]->(:Verb
 {verb_name})`): mined from any envelope whose payload has a `steps[]` array with real
 measured `latency_ms` per step (the `cognition.trace` shape) — same EWMA/z-score
-mechanism as Phase 1's edges, applied per (organ, verb) pair.
+mechanism as Phase 1's edges, applied per (organ, verb, node) triple.
 
-Real limitation, not solved here: **`last_node` is captured but does not partition
-the baseline.** If the same organ runs the same verb on more than one physical host,
-their latencies blend into one EWMA — this does not yet cleanly separate "this verb
-is slow" from "this specific machine is loaded," despite that being the original
-motivation for wanting a per-node slice. Also not built: slicing by preceding verb in
-a chain, by `model_used`, or by concurrent in-flight-chain count at the same moment —
-all named as real ideas in the design doc, none implemented.
+**Fixed 2026-07-25** (was: "`last_node` captured but does not partition the
+baseline"): `node` is now part of the relationship's identity (in both the read
+and write Cypher), not just a mutable `SET` property -- an organ running the same
+verb on two hosts now gets two independent EWMA baselines, cleanly separating
+"this verb is slow" from "this specific machine is loaded." A missing node is its
+own real `"unknown"` partition, not silently dropped or blended into whichever
+host happened to report most recently. See
+`docs/superpowers/specs/2026-07-25-bus-synaptic-graph-verb-latency-and-causal-gaps.md`.
+
+Still not built: slicing by preceding verb in a chain, by `model_used`, or by
+concurrent in-flight-chain count at the same moment — named as real ideas in the
+design doc, scoped but not implemented (same doc as above, Idea 2.2).
 
 **Fixed in review, worth knowing about**: unlike Phase 1's facts (derived only from
 trusted envelope metadata and wall-clock timestamps), `extract_verb_step_facts` reads
@@ -205,7 +210,7 @@ edge's EWMA baseline with no self-healing (verified live in review).
 ```cypher
 MATCH (o:Organ)-[e:EXECUTES_VERB]->(v:Verb)
 WHERE abs(e.latency_zscore) > 3 AND e.count > 5
-RETURN o.organ_id, v.verb_name, e.latency_ewma_sec, e.latency_zscore, e.last_node
+RETURN o.organ_id, v.verb_name, e.node, e.latency_ewma_sec, e.latency_zscore
 ORDER BY abs(e.latency_zscore) DESC
 ```
 

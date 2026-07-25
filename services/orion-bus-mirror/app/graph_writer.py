@@ -36,13 +36,14 @@ Phase 2 additions:
 - **Per-verb latency** (``EXECUTES_VERB`` edges, Organ -> Verb): mined from
   ``cognition.trace``-shaped payloads' ``steps[]`` array (real measured
   ``latency_ms`` per step, already present in the wire format -- see
-  ``extract_verb_step_facts``). Only the "which organ, which verb, what's the
-  latency baseline" slice is built here. The physical `node` a step ran on is
-  captured as an edge property for manual inspection but does NOT partition
-  the EWMA baseline (an organ running on multiple hosts would have its
-  latencies blended) -- and preceding-verb / model_used / concurrent-load
-  slicing (also named in the design doc) are not built at all. Named
-  explicitly in README "Known gaps", not silently pretended solved.
+  ``extract_verb_step_facts``). The physical ``node`` a step ran on now
+  partitions the EWMA baseline itself (fixed 2026-07-25, see
+  docs/superpowers/specs/2026-07-25-bus-synaptic-graph-verb-latency-and-
+  causal-gaps.md) -- one independent baseline per (organ, verb, node), not
+  one blended baseline per (organ, verb). Preceding-verb / model_used /
+  concurrent-load slicing (also named in the design doc) are still not
+  built -- scoped as Idea 2.2 in that same doc, not silently pretended
+  solved.
 
 Both edge kinds carry a rolling EWMA baseline plus a live z-score of the most
 recent observation against that baseline -- the "connected components get
@@ -50,8 +51,7 @@ zscored on volume/latency" mechanism from the design brainstorm.
 
 Deliberately out of scope for this module (Phase 3+, not built here):
 anomaly propagation across edges, node centrality, chain-shape clustering,
-per-node-partitioned verb latency, preceding-verb/model_used/concurrent-load
-slicing.
+preceding-verb/model_used/concurrent-load slicing.
 """
 
 from __future__ import annotations
@@ -550,12 +550,24 @@ class BusSynapticGraphWriter:
         )
 
     def record_verb_step(self, fact: VerbStepFact) -> None:
+        # Idea 2.1 of docs/superpowers/specs/2026-07-25-bus-synaptic-graph-verb-
+        # latency-and-causal-gaps.md: node is part of the relationship's identity
+        # (in both MATCH and MERGE), not just a mutable SET property -- an organ
+        # running the same verb on two hosts now gets two independent EWMA
+        # baselines instead of one blended one (the README's own named "Real
+        # limitation, not solved here" from Phase 2). A literal "unknown" string,
+        # not null, represents a missing node -- avoids relying on how a
+        # specific Cypher engine's MERGE handles a null-valued property in a
+        # pattern map (undefined/inconsistent across implementations for
+        # equality-based matching), and keeps "verb ran, host unknown" as its
+        # own real, honest partition rather than silently dropped or blended.
+        node_key = fact.node if fact.node else "unknown"
         prior_rows = self._client.graph_query(
             """
-            MATCH (:Organ {organ_id: $organ_id})-[e:EXECUTES_VERB]->(:Verb {verb_name: $verb_name})
+            MATCH (:Organ {organ_id: $organ_id})-[e:EXECUTES_VERB {node: $node}]->(:Verb {verb_name: $verb_name})
             RETURN e.latency_ewma_sec AS latency_ewma_sec, e.latency_var AS latency_var, e.count AS count
             """,
-            {"organ_id": fact.organ_id, "verb_name": fact.verb_name},
+            {"organ_id": fact.organ_id, "verb_name": fact.verb_name, "node": node_key},
         )
         row = prior_rows[0] if prior_rows else {}
         prior_ewma = float(row.get("latency_ewma_sec") or 0.0)
@@ -573,10 +585,9 @@ class BusSynapticGraphWriter:
             """
             MERGE (o:Organ {organ_id: $organ_id})
             MERGE (v:Verb {verb_name: $verb_name})
-            MERGE (o)-[e:EXECUTES_VERB]->(v)
+            MERGE (o)-[e:EXECUTES_VERB {node: $node}]->(v)
             SET e.count = $count,
                 e.last_seen_epoch = $now_epoch,
-                e.last_node = $node,
                 e.latency_ewma_sec = $latency_ewma_sec,
                 e.latency_var = $latency_var,
                 e.latency_zscore = $latency_zscore
@@ -584,9 +595,9 @@ class BusSynapticGraphWriter:
             {
                 "organ_id": fact.organ_id,
                 "verb_name": fact.verb_name,
+                "node": node_key,
                 "count": prior_count + 1,
                 "now_epoch": fact.observed_at_epoch,
-                "node": fact.node,
                 "latency_ewma_sec": update.ewma,
                 "latency_var": update.variance,
                 "latency_zscore": update.zscore,

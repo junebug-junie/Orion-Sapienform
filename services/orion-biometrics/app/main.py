@@ -216,7 +216,15 @@ async def publish_metrics(bus: OrionBusAsync) -> None:
     try:
         sample_data = collect_biometrics()
         sample = BiometricsSampleV1.model_validate(sample_data)
-        summary, induction = _pipeline.update(sample.model_dump(mode="python"))
+        # BiometricsSampleV1 has extra="ignore" -- these two keys would be silently
+        # dropped by model_validate() above, so they're merged into the pipeline's
+        # own input dict after validation, not before. They never reach the bus
+        # (raw_payload/sample below are built from `sample`, not this dict), so this
+        # doesn't change what's published on BIOMETRICS_SAMPLE_CHANNEL.
+        pipeline_input = sample.model_dump(mode="python")
+        pipeline_input["ilo"] = _ilo_poller.details()
+        pipeline_input["disk_capacity"] = collect_disk_capacity(settings.DISK_CAPACITY_MOUNTS)
+        summary, induction = _pipeline.update(pipeline_input)
 
         raw_payload = BiometricsPayload(
             timestamp=sample.timestamp.isoformat(),

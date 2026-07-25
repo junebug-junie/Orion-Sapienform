@@ -56,6 +56,17 @@ def test_new_fcc_motor_channels_are_registered_for_decay() -> None:
         assert channel in NODE_DECAY_CHANNELS
 
 
+def test_new_ilo_hardware_channels_are_registered_for_decay() -> None:
+    """Same registration gap this file's own precedent test (above) exists to
+    catch, for the 2026-07-25 power_pressure/disk_capacity_pressure/fan_pressure
+    channels (real iLO/BMC hardware telemetry) -- written through the normal
+    state_deltas.py -> apply_perturbations() path (mode="replace", same as
+    thermal_pressure/disk_pressure), so no manual node_vector_updated_at
+    stamping is needed, only the NODE_DECAY_CHANNELS registration itself."""
+    for channel in ("power_pressure", "disk_capacity_pressure", "fan_pressure"):
+        assert channel in NODE_DECAY_CHANNELS
+
+
 def test_held_flat_within_staleness_window_then_decays_once_stale() -> None:
     """A channel perturbed once, then apply_decay called repeatedly at ~2s-tick
     increments with no further perturbation: value stays exactly flat for

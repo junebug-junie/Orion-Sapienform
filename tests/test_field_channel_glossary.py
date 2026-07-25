@@ -12,14 +12,16 @@ from orion.field.channel_glossary import (
 )
 
 
-def test_load_glossary_has_35_channels_matching_field_digester_channels_py():
+def test_load_glossary_has_38_channels_matching_field_digester_channels_py():
     """23 + the 5 FCC-motor channels added 2026-07-23 (harness_step_load,
     tool_failure_streak_pressure, avg_step_chars_pressure, compliance_deficit,
     turn_incompletion -- see docs/superpowers/specs/2026-07-23-fcc-motor-field-digester-signals-design.md)
-    + context_gathering_ratio added 2026-07-24."""
+    + context_gathering_ratio added 2026-07-24
+    + power_pressure/disk_capacity_pressure/fan_pressure added 2026-07-25 (real
+    iLO/BMC hardware telemetry piggybacked onto biometrics' heartbeat)."""
     glossary = load_glossary()
     entries = glossary["entries"]
-    assert len(entries) == 35
+    assert len(entries) == 38
     names = {e.channel for e in entries}
     assert "cpu_pressure" in names
     assert "reliability_pressure" in names

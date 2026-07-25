@@ -235,6 +235,53 @@ def build_biometrics_node_grammar_events(
             source_event_id=f"{node_id}:{ts}",
             payload_ref=f"biometrics.pressure.disk:{node_id}:{ts}",
         ),
+        # power/disk_capacity/fan (2026-07-25 addition): power is now real
+        # chassis-wide wattage from iLO/BMC when configured (falls back to the
+        # prior GPU-only estimate otherwise -- see
+        # orion/telemetry/biometrics_pipeline.py::_summarize()); disk_capacity is
+        # how full a filesystem is (distinct from disk_pressure's I/O throughput);
+        # fan is BMC fan speed. All three are 0.0 (not emitted with real signal)
+        # on nodes without iLO/BMC credentials configured. Additive, same pattern
+        # as memory/thermal/disk above -- strain composite intentionally untouched.
+        "power_pressure_signal": GrammarAtomV1(
+            atom_id=atom_id("power_pressure_signal"),
+            trace_id=trace_id,
+            atom_type="signal",
+            semantic_role="power_pressure_signal",
+            layer="organ_signal",
+            dimensions=["physiology", "telemetry", "node", "resource"],
+            summary=f"{node_id} power pressure observed",
+            confidence=0.9,
+            salience=float((summary.pressures or {}).get("power", 0.0)),
+            source_event_id=f"{node_id}:{ts}",
+            payload_ref=f"biometrics.pressure.power:{node_id}:{ts}",
+        ),
+        "disk_capacity_pressure_signal": GrammarAtomV1(
+            atom_id=atom_id("disk_capacity_pressure_signal"),
+            trace_id=trace_id,
+            atom_type="signal",
+            semantic_role="disk_capacity_pressure_signal",
+            layer="organ_signal",
+            dimensions=["physiology", "telemetry", "node", "resource"],
+            summary=f"{node_id} disk capacity pressure observed",
+            confidence=0.9,
+            salience=float((summary.pressures or {}).get("disk_capacity", 0.0)),
+            source_event_id=f"{node_id}:{ts}",
+            payload_ref=f"biometrics.pressure.disk_capacity:{node_id}:{ts}",
+        ),
+        "fan_pressure_signal": GrammarAtomV1(
+            atom_id=atom_id("fan_pressure_signal"),
+            trace_id=trace_id,
+            atom_type="signal",
+            semantic_role="fan_pressure_signal",
+            layer="organ_signal",
+            dimensions=["physiology", "telemetry", "node", "resource"],
+            summary=f"{node_id} fan pressure observed",
+            confidence=0.9,
+            salience=float((summary.pressures or {}).get("fan", 0.0)),
+            source_event_id=f"{node_id}:{ts}",
+            payload_ref=f"biometrics.pressure.fan:{node_id}:{ts}",
+        ),
     }
 
     edge_specs = [
@@ -247,9 +294,15 @@ def build_biometrics_node_grammar_events(
         ("telemetry_sample", "memory_pressure_signal", "derived_from"),
         ("telemetry_sample", "thermal_pressure_signal", "derived_from"),
         ("telemetry_sample", "disk_pressure_signal", "derived_from"),
+        ("telemetry_sample", "power_pressure_signal", "derived_from"),
+        ("telemetry_sample", "disk_capacity_pressure_signal", "derived_from"),
+        ("telemetry_sample", "fan_pressure_signal", "derived_from"),
         ("memory_pressure_signal", "capability_surface", "influenced"),
         ("thermal_pressure_signal", "capability_surface", "influenced"),
         ("disk_pressure_signal", "capability_surface", "influenced"),
+        ("power_pressure_signal", "capability_surface", "influenced"),
+        ("disk_capacity_pressure_signal", "capability_surface", "influenced"),
+        ("fan_pressure_signal", "capability_surface", "influenced"),
     ]
 
     events: list[GrammarEventV1] = [root_event]

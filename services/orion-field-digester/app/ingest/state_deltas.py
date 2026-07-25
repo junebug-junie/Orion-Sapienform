@@ -184,6 +184,41 @@ def delta_to_perturbations(delta: StateDeltaV1) -> list[Perturbation]:
                     mode="replace",
                 )
             )
+        # power_pressure/disk_capacity_pressure/fan_pressure (2026-07-25 addition):
+        # same fan-out/mode="replace" reasoning as memory_pressure/thermal_pressure/
+        # disk_pressure above -- a single biometrics trace emits many deltas that
+        # each still carry these hints once first set, so "add" mode would saturate
+        # the channel on every telemetry cycle regardless of real load.
+        if "power_pressure" in hints:
+            out.append(
+                Perturbation(
+                    node_id=node_id,
+                    channel="power_pressure",
+                    intensity=float(hints["power_pressure"]),
+                    label=delta.delta_id,
+                    mode="replace",
+                )
+            )
+        if "disk_capacity_pressure" in hints:
+            out.append(
+                Perturbation(
+                    node_id=node_id,
+                    channel="disk_capacity_pressure",
+                    intensity=float(hints["disk_capacity_pressure"]),
+                    label=delta.delta_id,
+                    mode="replace",
+                )
+            )
+        if "fan_pressure" in hints:
+            out.append(
+                Perturbation(
+                    node_id=node_id,
+                    channel="fan_pressure",
+                    intensity=float(hints["fan_pressure"]),
+                    label=delta.delta_id,
+                    mode="replace",
+                )
+            )
         status = str(after.get("availability_status") or "")
         if status == "stale":
             out.append(Perturbation(node_id=node_id, channel="staleness", intensity=0.5, label=delta.delta_id))

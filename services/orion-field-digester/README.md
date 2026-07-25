@@ -600,12 +600,14 @@ ever revised, same convention as the first six.
 
 ## Field channel glossary
 
-This is the consolidated reference for all 35 channels in
+This is the consolidated reference for all 38 channels in
 `field_channel_corpus.v1` (`orion.schemas.telemetry.field_channel_corpus.FieldChannelCorpusRowV1`),
-sourced from `app/tensor/channels.py`'s `NODE_CHANNELS` (29) + `CAPABILITY_CHANNELS`
-(8), overlapping on `stream_backlog_pressure`/`contract_pressure` (29+8-2=35). 29 = 23 original
-+ 5 FCC-motor channels added 2026-07-23 (see the design doc referenced above) + 1
-FCC-motor channel added 2026-07-24 (`context_gathering_ratio`; `reasoning_load` also
+sourced from `app/tensor/channels.py`'s `NODE_CHANNELS` (32) + `CAPABILITY_CHANNELS`
+(8), overlapping on `stream_backlog_pressure`/`contract_pressure` (32+8-2=38). 32 = 29
+(23 original + 5 FCC-motor channels added 2026-07-23, see the design doc referenced
+above + 1 FCC-motor channel added 2026-07-24, `context_gathering_ratio`) + 3
+real-iLO/BMC-hardware-telemetry channels added 2026-07-25 (`power_pressure`,
+`disk_capacity_pressure`, `fan_pressure`; `reasoning_load` also
 gained a real motor-side token magnitude the same day, see its entry below, but is not
 a new channel). This
 corpus is the raw input for a future windowed autoencoder (roadmap item 2,
@@ -784,7 +786,10 @@ subset for the mood-arc windowed-autoencoder spike (see
    `orion/mood_arc/fit_encoder.py::compute_window_probes()`'s existing
    valence-correlation-probe pattern, generalized to this channel set).
 
-### Node channels (`NODE_CHANNELS`, 23)
+### Node channels (`NODE_CHANNELS`, 32 as of 2026-07-25 -- this count has drifted
+from the doc several times as channels were added; verify against
+`app/tensor/channels.py::NODE_CHANNELS` directly rather than trusting this
+number if it looks stale again)
 
 #### `availability`
 - **Meaning**: how available/reachable a compute node currently is.
@@ -897,6 +902,57 @@ subset for the mood-arc windowed-autoencoder spike (see
   `evidence_channel_map`: `disk_pressure` → `resource_pressure`
   (evidence-only).
 - **Live-data verdict**: folded-away, never produced.
+
+#### `power_pressure`
+- **Meaning**: node power-draw pressure. Prefers real chassis-wide wattage
+  (iLO/BMC RedFish `PowerConsumedWatts`) when that node has BMC credentials
+  configured; falls back to a GPU-power-only estimate (`nvidia-smi`,
+  pre-existing) otherwise.
+- **Producer**: `node_biometrics` delta (`hints["power_pressure"]`),
+  mode=`replace` (2026-07-25 addition, wired correctly from day one --
+  memory/thermal/disk-pressure above hit the mode=`add` saturation bug and
+  were fixed later; this channel didn't repeat it). Computed in
+  `orion/telemetry/biometrics_pipeline.py::_summarize()`, reusing the
+  pipeline's existing `EwmaBand` (`self.power_band`) rather than a fixed
+  wattage ceiling -- per-node draw baselines vary too much by hardware for
+  one global max. In `NODE_DECAY_CHANNELS`. Not a diffusion source/target.
+- **SelfState dimension fed**: `evidence_channel_map`:
+  `power_pressure` → `resource_pressure` (evidence-only). Also a
+  `strain_inputs` member in `biometrics_pipeline.py` (was already, as the
+  GPU-only estimate, pre-2026-07-25 -- only its accuracy improved).
+- **Live-data verdict**: real signal on nodes with iLO configured (live
+  hardware data, confirmed against athena 2026-07-25: real chassis wattage,
+  not degenerate); falls back to the pre-existing GPU-only behavior
+  elsewhere (0.0 on non-GPU nodes without iLO).
+
+#### `disk_capacity_pressure`
+- **Meaning**: how full a node's monitored filesystems are (percent used,
+  max across configured mounts) -- distinct from `disk_pressure` above,
+  which is I/O throughput, not capacity.
+- **Producer**: `node_biometrics` delta (`hints["disk_capacity_pressure"]`),
+  mode=`replace`. Computed in `biometrics_pipeline.py::_summarize()` from
+  `services/orion-biometrics/app/metrics.py::collect_disk_capacity()`. In
+  `NODE_DECAY_CHANNELS`. Not a diffusion source/target.
+- **SelfState dimension fed**: `evidence_channel_map`:
+  `disk_capacity_pressure` → `resource_pressure` (evidence-only). Not a
+  `strain_inputs` member (deliberate -- see this service's own `CLAUDE.md`
+  caution about the decay/perturbation composite's bug history).
+- **Live-data verdict**: real signal on nodes with `DISK_CAPACITY_MOUNTS`
+  configured (0.0 elsewhere).
+
+#### `fan_pressure`
+- **Meaning**: node BMC fan speed (percent of max, max across fans). A
+  response to thermal load, not an independent hazard on its own.
+- **Producer**: `node_biometrics` delta (`hints["fan_pressure"]`),
+  mode=`replace`. Computed in `biometrics_pipeline.py::_summarize()` from
+  `services/orion-biometrics/app/ilo.py`'s RedFish fan readings (only when
+  `ReadingUnits == "Percent"` -- RPM-reporting BMCs are skipped rather than
+  mislabeled). In `NODE_DECAY_CHANNELS`. Not a diffusion source/target.
+- **SelfState dimension fed**: `evidence_channel_map`:
+  `fan_pressure` → `resource_pressure` (evidence-only). Not a
+  `strain_inputs` member (same deliberate exclusion as `disk_capacity_pressure`).
+- **Live-data verdict**: real signal on nodes with iLO configured (0.0
+  elsewhere).
 
 #### `expected_offline_suppression`
 - **Meaning**: signals a node is expected to be offline (e.g. a scheduled or

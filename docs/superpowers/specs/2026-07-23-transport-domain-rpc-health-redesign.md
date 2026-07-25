@@ -233,3 +233,95 @@ implementation time, same as every other signal built this session:
   the signal this spec proposes, even after implementation. Not a reason to change approach
   (instrumenting the one shared client is still the correct thin seam for everything that
   actually uses it), but stated here plainly rather than implied as complete coverage.
+
+## Revision, 2026-07-25 -- bus synaptic graph as a candidate third evidence source
+
+Status: **proposed, design-only, not decided.** Does not resolve Missing Question 5 (old
+`transport_pressure`/`bus_health` family's fate -- now renamed `stream_backlog_pressure`/
+`stream_backlog_health`, PR #1331, a plain rename per that PR, not a product of this redesign).
+Written the same week the `transport` metacog trigger (Options A+C, RpcHealthSnapshotV1 +
+`rpc_transport_timeout` grammar) shipped -- disabled at first (`95db26ba9`,
+`EQUILIBRIUM_METACOG_TRANSPORT_TRIGGER_ENABLE=false`), then flipped on about an hour later the
+same day (`40cd21f80`, "live verification is the next step") -- confirmed live in this worktree's
+own `services/orion-equilibrium-service/.env_example`, which reads `=true`. Re-check this flag's
+live value before relying on its state in any future revision; don't assume this note stays
+current. Also the same week `orion-bus-mirror`'s bus synaptic graph (`orion_bus_synapse`,
+FalkorDB) came back online after a `distutils`/Python-3.12 crash-loop fix (`redis` bumped to
+5.2.1, commit `2e1fa7f2`).
+
+**Arsonist read.** This spec's own "Related work" section already names the blind spot: Options
+A+C both depend on a service self-reporting (`RpcHealthSnapshotV1`) or calling the one
+instrumented shared client (`OrionBusAsync.rpc_request()`). `orion-harness-governor` does neither
+-- it has its own bespoke long-poll RPC (mid-run liveness checks for long FCC motor turns), so it
+is invisible to both existing evidence sources, permanently, even after full implementation of
+this spec's Recommended-next-patch. The bus synaptic graph does not have this limitation: it is a
+passive wiretap on envelope `correlation_id` co-occurrence, agnostic to which RPC mechanism (or
+no RPC mechanism at all -- ordinary pub/sub) produced the traffic. Verified live, same day:
+
+```text
+MATCH (a:Organ)-[e:CAUSALLY_FOLLOWED_BY]->(b:Organ)
+WHERE a.organ_id CONTAINS 'harness' OR b.organ_id CONTAINS 'harness'
+RETURN a.organ_id, b.organ_id, e.count, e.latency_zscore
+```
+`hub -> orion-harness-governor`: `count=5, latency_zscore=-2.10`. `cortex-exec ->
+orion-harness-governor`: `count=34, latency_zscore=-0.25`. Real edges, real z-scores, on the exact
+organ this spec's Related-work section names as structurally unreachable by its own proposed
+signal.
+
+This is not a proposal to replace Options A/C -- `RpcHealthSnapshotV1`/`rpc_transport_timeout`
+measure something the graph cannot (an actual timeout/error outcome, not just a latency
+deviation) -- but a candidate **third** input specifically for the coverage gap those two leave
+open, using infrastructure that already exists, is already live, and required zero new
+instrumentation to produce the numbers above.
+
+**Relationship to the bus synaptic graph's own arc.** This is a narrow, transport-domain-specific
+use case, not a duplicate of work already scoped there. The graph's brainstorm doc
+(`docs/superpowers/specs/2026-07-24-bus-vitality-field-signal-brainstorm.md`) and its already-built
+Phase-3+ Ideas (labeled 1, 4, 5 in that doc's "Signal families this substrate opens up" section --
+**not** the same numbers as that doc's own earlier "Idea 1-6" list under "Proposed schema / API
+changes", which the doc itself flags as a labeling collision; catalog-drift fix, live recall/chat
+anomaly awareness, and Hub debug routes, respectively) do not include feeding the Sentience
+Striving Program's transport prediction-error/metacog-trigger gap; the closest sibling, Phase-3+
+Idea 4
+(`docs/superpowers/specs/2026-07-24-bus-synaptic-graph-reasoning-consumer-design.md`, merged), is a
+different consumer entirely -- unconditional per-chat-turn awareness fed into `orion-recall`'s
+fragment fusion, not a metacog trigger or a `FieldStateV1` node write. The Cypher this proposal
+would reuse (`anomalies` -- already live-verified and tested via
+`services/orion-hub/scripts/bus_synaptic_graph_routes.py`, the same query Idea 4's adapter reuses)
+is shared infrastructure; the consumption target (transport metacog trigger / prediction-error
+substrate) is new and out of scope for both existing Ideas.
+
+**Missing questions, additive to the ones already open above:**
+
+- Should this feed the `transport` metacog trigger (Option A/C's `trigger_kind`) as a third
+  evidence branch, or feed a new `node:substrate.bus_synaptic` `FieldStateV1` node directly (the
+  "compute signals from the graph" consumption mode the brainstorm doc names, as opposed to Idea
+  4's "reason from the graph directly" mode)? Real trade-off: the metacog-trigger route reuses an
+  already-shipped, already-enabled dispatch mechanism (live since `40cd21f80`, re-check before
+  relying on this) -- if anything this favors reusing it over building a new path; the
+  `FieldStateV1` route matches the other four domains' shape but would need its own periodic reducer (mirroring
+  `orion-substrate-runtime`'s `_*_tick()` pattern, per this spec's own "Proposed schema / API
+  changes" section above) reading a graph instead of Postgres. Not decided here.
+- What z-score/count thresholds distinguish "worth feeding a cognition-adjacent signal" from "Hub
+  debug noise"? The recall consumer design doc flags this exact question as unresolved for its own
+  use case (Hub's `zscore_threshold=3.0, min_count=5` were tuned for a human reading a table) --
+  applies here too, not re-derived.
+- Cold-start reliability: this session's own numbers above (`count=5`) sit right at the graph's
+  own documented `count < ~5` unreliable-z-score floor. Needs a longer live window before treating
+  any single edge's z-score as trustworthy, not just this one example.
+- Does `orion-harness-governor` traffic reliably produce a `CAUSALLY_FOLLOWED_BY` edge at all, or
+  did this session's example only work because `hub` also happens to route other traffic through
+  channels the graph tracks? Needs checking across more of the 37+ real RPC-adjacent services this
+  spec's Arsonist Summary names, not generalized from one organ pair.
+
+**Non-goals, additive:** not deciding Missing Question 5 (old channel's rename-vs-deprecate fate)
+here or as a side effect of this revision. Not building the metacog-trigger wiring, the
+`FieldStateV1` reducer, or any adapter in this patch -- proposal only, per CLAUDE.md §0A's
+proposal-mode requirement for changes touching this substrate, same standard the rest of this doc
+already holds itself to.
+
+**Recommended next patch (revised):** before choosing between the two consumption modes above,
+run a real-data pass over a longer window (a day or more) confirming `CAUSALLY_FOLLOWED_BY` edges
+involving RPC-health-invisible organs (`orion-harness-governor` and any others sharing its
+bespoke-RPC pattern, not yet audited) are a recurring, non-degenerate signal -- not a one-off
+artifact of this session's snapshot.

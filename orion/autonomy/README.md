@@ -9,6 +9,15 @@ D/W/A signal was measured (PR #1156) to have never fired across its deployed lif
 `capability_policy.py`'s static per-cycle budget is slated for replacement by live,
 already-existing field-attention salience (Objective 2), not further drive-taxonomy tuning.
 
+## `ActionOutcomeRefV1.surprise` is not a real signal (found 2026-07-24)
+
+Despite the name, `surprise` (`models.py`) is a binary success/fail proxy at every real call
+site (`0.0 if success else 1.0`), never a continuous epistemic-uncertainty measure — and live
+`action_outcomes` data confirms it reads exactly `0.0` for every row observed so far. Do not
+reuse it as an Active-Inference/epistemic-value term. See the field's own docstring and
+`docs/superpowers/specs/2026-07-24-efe-capability-gate-design.md` for the design this was
+ruled out of and what real signal replaces it instead.
+
 ## Origin and current gap
 
 Why any of this exists, the founding theory, and the biggest unresolved gap (self-initiation

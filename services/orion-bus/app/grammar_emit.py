@@ -300,6 +300,40 @@ class BusTransportGrammarCollector:
             ),
         )
 
+    def record_bus_activity_zscore_computed(
+        self, *, total_rate: float, ewma: float, zscore: float | None
+    ) -> None:
+        """Idea 6 (bus_activity_zscore, docs/superpowers/specs/2026-07-24-
+        bus-vitality-field-signal-brainstorm.md) -- rolling EWMA baseline of
+        total mesh publish rate (sum of every active channel's rate this
+        tick), surfaced as deviation from its own baseline, not an absolute
+        "load score" (the parent design doc explicitly rejected an ungrounded
+        aggregate load number). ``zscore`` is None on the tracker's first
+        observation -- no baseline yet to be anomalous against, same "no
+        empty-shell cognition" discipline as every EWMA signal in this arc.
+        """
+        role = "bus_activity_zscore_computed"
+        zscore_str = f"{zscore:.4f}" if zscore is not None else "null"
+        self._put_atom(
+            role,
+            GrammarAtomV1(
+                atom_id=self._atom_id(role),
+                trace_id=self.trace_id,
+                atom_type="signal",
+                semantic_role=role,
+                layer="transport",
+                dimensions=["bus", "activity", "anomaly"],
+                summary=(
+                    f"Mesh-wide bus activity zscore computed total_rate={total_rate:.4f} "
+                    f"ewma={ewma:.4f} zscore={zscore_str} sample_window_id={self.sample_window_id}"
+                ),
+                confidence=0.9 if zscore is not None else 0.5,
+                salience=0.6,
+                source_event_id=self.sample_window_id,
+                payload_ref=f"bus.transport.activity_zscore:{self.sample_window_id}",
+            ),
+        )
+
     def record_schema_mismatch(
         self,
         *,

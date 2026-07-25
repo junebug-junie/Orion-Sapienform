@@ -12,6 +12,7 @@ from pydantic import ValidationError
 from redis import asyncio as aioredis
 
 from orion.bus.census import compute_census
+from orion.bus.ewma import EwmaUpdate, compute_ewma_update
 from orion.bus.velocity import scan_active_channels
 from orion.core.bus.async_service import OrionBusAsync
 from orion.core.bus.bus_service_chassis import ChassisConfig, HeartbeatOnly
@@ -153,6 +154,11 @@ class ObserverRollup:
     # empty-shell cognition" discipline this repo applies elsewhere.
     undeclared_active_count: int | None = None
     catalog_size: int = 0
+    # Idea 6 (bus_activity_zscore) -- the raw current-tick total, not yet
+    # z-scored. Z-scoring needs cross-tick EWMA state (ActivityEwmaTracker),
+    # which this dataclass deliberately does not hold -- run_observer_tick()
+    # does that stateful step after to_collector() returns, not here.
+    total_mesh_publish_rate: float | None = None
 
     def to_collector(self, *, code_version: str | None) -> BusTransportGrammarCollector:
         c = BusTransportGrammarCollector(
@@ -246,6 +252,7 @@ def build_rollup_from_redis_snapshot(
         schema_mismatches=schema_mismatches,
         undeclared_active_count=undeclared_active_count,
         catalog_size=len(catalog_names),
+        total_mesh_publish_rate=snapshot.get("total_mesh_publish_rate"),
     )
 
 
@@ -268,7 +275,14 @@ async def _fetch_redis_snapshot(settings: Settings) -> dict[str, Any]:
         # scan_active_channels() is already fail-open internally (returns {}
         # on a SCAN/read error), but "the mesh had zero undeclared channels"
         # and "we didn't check" must never collapse into the same value.
+        # Idea 6 (bus_activity_zscore, docs/superpowers/specs/2026-07-24-bus-
+        # vitality-field-signal-brainstorm.md): total_mesh_publish_rate reuses
+        # the same active_channels scan the census diff above already pays
+        # for -- zero extra Redis cost. None (not 0.0) if the census step
+        # didn't run this tick, same "not measured != measured zero"
+        # discipline as undeclared_active_count.
         undeclared_active_count: int | None = None
+        total_mesh_publish_rate: float | None = None
         if settings.bus_observer_census_enabled:
             try:
                 active_channels = await scan_active_channels(
@@ -276,8 +290,10 @@ async def _fetch_redis_snapshot(settings: Settings) -> dict[str, Any]:
                 )
                 census = compute_census(catalog_names, active_channels)
                 undeclared_active_count = len(census.undeclared_active)
+                total_mesh_publish_rate = sum(active_channels.values())
             except Exception:
                 undeclared_active_count = None
+                total_mesh_publish_rate = None
 
         # Bounded per-stream sample (XREVRANGE ... COUNT n) for the
         # schema-mismatch check, cataloged streams only -- an uncataloged
@@ -307,12 +323,44 @@ async def _fetch_redis_snapshot(settings: Settings) -> dict[str, Any]:
             "catalog_schema_ids": catalog_schema_ids,
             "stream_samples": stream_samples,
             "undeclared_active_count": undeclared_active_count,
+            "total_mesh_publish_rate": total_mesh_publish_rate,
         }
     finally:
         await client.aclose()
 
 
-async def run_observer_tick(*, bus: Any, settings: Settings) -> None:
+class ActivityEwmaTracker:
+    """In-process EWMA state for Idea 6 (``bus_activity_zscore``) -- total
+    mesh publish rate, not per-channel. Lives for the lifetime of the
+    ``run_bus_observer_loop()`` process; there is exactly one bus-observer
+    instance per node today (same single-instance assumption
+    ``BusSynapticGraphWriter`` documents for the analogous bus-mirror case),
+    so no CAS/version check is needed here either.
+    """
+
+    def __init__(self, *, alpha: float) -> None:
+        self._alpha = alpha
+        self._ewma = 0.0
+        self._variance = 0.0
+        self._count = 0
+
+    def observe(self, total_rate: float) -> EwmaUpdate:
+        update = compute_ewma_update(
+            prev_ewma=self._ewma,
+            prev_variance=self._variance,
+            prev_count=self._count,
+            value=total_rate,
+            alpha=self._alpha,
+        )
+        self._ewma = update.ewma
+        self._variance = update.variance
+        self._count += 1
+        return update
+
+
+async def run_observer_tick(
+    *, bus: Any, settings: Settings, activity_tracker: ActivityEwmaTracker | None = None
+) -> None:
     observed_at = datetime.now(timezone.utc)
     window = _sample_window_id(observed_at)
     try:
@@ -324,6 +372,19 @@ async def run_observer_tick(*, bus: Any, settings: Settings) -> None:
             sample_window_id=window,
         )
         collector = rollup.to_collector(code_version=settings.SERVICE_VERSION)
+        # Idea 6: z-scoring needs cross-tick EWMA state, which ObserverRollup
+        # deliberately doesn't hold -- done here, imperatively, after
+        # to_collector() returns a mutable collector one more atom can still
+        # be added to before publish. activity_tracker is None in tests that
+        # call run_observer_tick() directly without one (backward compatible
+        # -- same "not measured" semantics as the flag being off).
+        if activity_tracker is not None and rollup.total_mesh_publish_rate is not None:
+            update = activity_tracker.observe(rollup.total_mesh_publish_rate)
+            collector.record_bus_activity_zscore_computed(
+                total_rate=rollup.total_mesh_publish_rate,
+                ewma=update.ewma,
+                zscore=update.zscore,
+            )
         events = build_bus_transport_grammar_events(collector)
         await publish_bus_transport_grammar_trace(
             bus,
@@ -401,9 +462,13 @@ async def run_bus_observer_loop() -> None:
         logger.warning("system_health_heartbeat_start_failed error={}", exc)
         heartbeat_chassis = None
 
+    # One tracker for the process lifetime -- Idea 6's whole point is a
+    # rolling baseline across ticks, not a fresh one each time.
+    activity_tracker = ActivityEwmaTracker(alpha=settings.bus_activity_ewma_alpha)
+
     try:
         while True:
-            await run_observer_tick(bus=bus, settings=settings)
+            await run_observer_tick(bus=bus, settings=settings, activity_tracker=activity_tracker)
             await asyncio.sleep(settings.bus_observer_poll_interval_sec)
     finally:
         if heartbeat_chassis is not None:

@@ -24,6 +24,7 @@ from orion.schemas.route_projection import (
 )
 from orion.substrate.prediction_error import (
     biometrics_prediction_error,
+    bus_synaptic_prediction_error,
     chat_prediction_error,
     execution_prediction_error,
     route_prediction_error,
@@ -493,3 +494,36 @@ def test_route_prediction_error_zero_when_prev_empty_no_fallback() -> None:
     prev = _route_projection({})
     curr = _route_projection({"r1": _route_run("r1", lane="chat")})
     assert route_prediction_error(prev, curr) == 0.0
+
+
+class TestBusSynapticPredictionError:
+    """Unlike the other five instruments, this takes a flat list of current
+    |zscore| values, not a prev/curr projection pair -- the bus synaptic
+    graph's own EWMA baseline already encodes "prev expectation" per edge."""
+
+    def test_empty_list_is_zero(self) -> None:
+        assert bus_synaptic_prediction_error([]) == 0.0
+
+    def test_zero_zscores_is_zero(self) -> None:
+        assert bus_synaptic_prediction_error([0.0, 0.0, 0.0]) == 0.0
+
+    def test_takes_absolute_value_of_negative_zscores(self) -> None:
+        """A z-score of -1.5 is just as surprising as +1.5 -- must not cancel
+        out in the mean the way a signed average would."""
+        assert bus_synaptic_prediction_error([-1.5]) == pytest.approx(
+            bus_synaptic_prediction_error([1.5])
+        )
+
+    def test_saturates_at_one_not_min_030_threshold(self) -> None:
+        """Must use the 3.0 z-score saturation, not this module's 0.30
+        pressure-hint-delta _THRESHOLD -- a mean |zscore| of 1.5 dividing by
+        0.30 would already saturate to 1.0, destroying the distinction this
+        instrument exists to make."""
+        result = bus_synaptic_prediction_error([1.5])
+        assert result == pytest.approx(0.5)  # 1.5 / 3.0, not min(1.0, 1.5/0.30)
+
+    def test_saturates_at_one_for_large_zscore(self) -> None:
+        assert bus_synaptic_prediction_error([50.0]) == 1.0
+
+    def test_averages_across_multiple_edges(self) -> None:
+        assert bus_synaptic_prediction_error([0.0, 3.0]) == pytest.approx(0.5)

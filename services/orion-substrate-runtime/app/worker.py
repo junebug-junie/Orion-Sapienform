@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import math
 import os
 from collections.abc import Callable
 from dataclasses import dataclass
@@ -40,6 +41,7 @@ from orion.substrate.transport_loop.constants import (
 )
 from orion.substrate.prediction_error import (
     biometrics_prediction_error,
+    bus_synaptic_prediction_error,
     chat_prediction_error,
     execution_prediction_error,
     route_prediction_error,
@@ -233,6 +235,7 @@ class BiometricsSubstrateWorker:
         self._tasks: list[asyncio.Task[None]] = []
         self._substrate_graph_store: Any = None
         self._sql_engine: Any = None
+        self._bus_synaptic_client: Any = None
         # Orion embodiment (C producer): latest drive state cached off the bus,
         # mapped to one involuntary intent per dynamics tick. Default-off.
         self._latest_drive_state: DriveStateV1 | None = None
@@ -269,6 +272,9 @@ class BiometricsSubstrateWorker:
             asyncio.create_task(self._health_loop(), name="substrate-health-monitor"),
             asyncio.create_task(self._dynamics_tick_loop(), name="substrate-dynamics-tick"),
             asyncio.create_task(self._episodic_tick_loop(), name="substrate-episodic-tick"),
+            asyncio.create_task(
+                self._bus_synaptic_tick_loop(), name="substrate-bus-synaptic-tick"
+            ),
             asyncio.create_task(
                 self._attention_broadcast_loop(), name="substrate-attention-broadcast"
             ),
@@ -737,6 +743,130 @@ class BiometricsSubstrateWorker:
         except Exception:
             logger.exception(log_label)
             return None
+
+    def _get_bus_synaptic_client(self):
+        """Return the cached read-only FalkorDB client for the bus synaptic graph
+        (``orion_bus_synapse``, written by ``orion-bus-mirror``), building it on
+        first use.
+
+        Deliberately a separate client from ``_get_substrate_graph_store`` --
+        that one is a ``ConceptNodeV1``-aware store bound to this service's own
+        durable substrate graph name; this is a plain read-only Cypher client
+        pointed at a *different* graph name on the same FalkorDB instance
+        (``FALKORDB_URI`` already used by ``_get_substrate_graph_store``, same
+        pattern ``orion.substrate.graphdb_store.build_substrate_store_from_env``
+        reads it -- ``os.environ`` directly, not a pydantic ``Settings`` field).
+        Fail-open: returns None on init error (caller decides whether that means
+        "skip this tick").
+        """
+        try:
+            client = self._bus_synaptic_client
+            if client is None:
+                from orion.graph.falkor_client import RedisGraphQueryClient
+
+                client = RedisGraphQueryClient(
+                    uri=os.getenv("FALKORDB_URI", "redis://localhost:6379"),
+                    graph_name=self._settings.falkordb_bus_graph,
+                )
+                self._bus_synaptic_client = client
+            return client
+        except Exception:
+            logger.exception("substrate_bus_synaptic_client_init_failed")
+            return None
+
+    _BUS_SYNAPTIC_EDGE_QUERIES = (
+        "MATCH (o:Organ)-[e:PUBLISHES]->(c:Channel) "
+        "WHERE e.gap_zscore IS NOT NULL AND e.count > $min_count "
+        "AND e.last_seen_epoch > $stale_cutoff_epoch "
+        "RETURN e.gap_zscore AS zscore",
+        "MATCH (a:Organ)-[e:CAUSALLY_FOLLOWED_BY]->(b:Organ) "
+        "WHERE e.latency_zscore IS NOT NULL AND e.count > $min_count "
+        "AND e.last_seen_epoch > $stale_cutoff_epoch "
+        "RETURN e.latency_zscore AS zscore",
+    )
+
+    def _bus_synaptic_tick(self) -> None:
+        """Periodic read of the live bus synaptic graph, feeding
+        ``bus_synaptic_prediction_error`` (mirrors the shared writer the other
+        five Active-Inference domains use). Default-off, fail-open: never raises
+        out of a tick.
+
+        No grammar-event batch, no persisted ``prev`` projection -- unlike
+        every other ``_*_tick`` in this module, this reads FalkorDB fresh each
+        call. The z-score baseline this reads is already maintained
+        continuously by ``orion-bus-mirror``'s own EWMA writer -- see
+        ``bus_synaptic_prediction_error``'s docstring for why that means no
+        prev/curr diff is needed here.
+
+        ``e.last_seen_epoch > stale_cutoff`` (review finding, 2026-07-25):
+        neither this query nor the Hub debug routes it mirrors filter on edge
+        recency -- an edge from a decommissioned organ or abandoned channel
+        keeps its frozen last-computed z-score forever once ``count`` clears
+        the cold-start floor, which would silently drag this "right now"
+        aggregate with stale history. Bounded by
+        ``bus_synaptic_max_edge_age_sec`` (default 1h) so a long-dead edge
+        ages out of the aggregate instead of contributing forever.
+        """
+        if not self._settings.enable_bus_synaptic_tick:
+            return
+
+        client = self._get_bus_synaptic_client()
+        if client is None:
+            return
+
+        try:
+            min_count = self._settings.bus_synaptic_min_edge_count
+            stale_cutoff_epoch = (
+                datetime.now(timezone.utc).timestamp()
+                - self._settings.bus_synaptic_max_edge_age_sec
+            )
+            params = {"min_count": min_count, "stale_cutoff_epoch": stale_cutoff_epoch}
+            zscores: list[float] = []
+            for cypher in self._BUS_SYNAPTIC_EDGE_QUERIES:
+                rows = client.graph_query(cypher, params)
+                for row in rows:
+                    value = row.get("zscore") if isinstance(row, dict) else None
+                    if isinstance(value, (int, float)) and math.isfinite(value):
+                        zscores.append(float(value))
+
+            error = bus_synaptic_prediction_error(zscores)
+            now = datetime.now(timezone.utc)
+            if error > 0.0:
+                self._store.save_receipt(
+                    _prediction_error_receipt(
+                        reducer_key="bus_synaptic",
+                        node_id="node:substrate.bus_synaptic",
+                        prediction_error=error,
+                        now=now,
+                    )
+                )
+                self._write_prediction_error_node(
+                    node_id="node:substrate.bus_synaptic",
+                    error=error,
+                    now=now,
+                    reducer_key="bus_synaptic",
+                )
+            logger.info(
+                "substrate_bus_synaptic_tick_completed edge_count=%d error=%.3f",
+                len(zscores),
+                error,
+            )
+        except Exception:
+            logger.exception("substrate_bus_synaptic_tick_failed")
+
+    async def _bus_synaptic_tick_loop(self) -> None:
+        interval = float(self._settings.bus_synaptic_tick_interval_sec)
+        while not self._stop.is_set():
+            try:
+                await asyncio.to_thread(self._bus_synaptic_tick)
+            except Exception:
+                logger.exception("substrate_bus_synaptic_tick_loop_failed")
+            try:
+                await asyncio.wait_for(self._stop.wait(), timeout=interval)
+            except asyncio.TimeoutError:
+                continue
+            except asyncio.CancelledError:
+                break
 
     def _get_sql_engine(self):
         """Return a cached SQLAlchemy engine for direct Postgres writes.

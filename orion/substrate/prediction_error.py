@@ -11,6 +11,12 @@ from orion.substrate.chat_loop.grammar_extract import compute_chat_pressure_hint
 
 _THRESHOLD = 0.30
 
+# Z-score saturation for bus_synaptic_prediction_error, distinct from _THRESHOLD
+# above (calibrated for 0-1-scale pressure-hint deltas, not z-score units).
+# Reuses the zscore_threshold=3.0 convention already live in
+# services/orion-hub/scripts/bus_synaptic_graph_routes.py's anomalies() route.
+_BUS_SYNAPTIC_ZSCORE_SATURATION = 3.0
+
 
 def _mean(values: list[float]) -> float:
     return sum(values) / len(values) if values else 0.0
@@ -268,3 +274,34 @@ def route_prediction_error(
         ]
         run_scores.append(_mean(field_scores))
     return _mean(run_scores) if run_scores else 0.0
+
+
+def bus_synaptic_prediction_error(edge_zscores: list[float]) -> float:
+    """0-1 surprise score: how anomalous is live bus traffic right now, aggregated
+    across the bus synaptic graph's (``orion_bus_synapse``) real-time EWMA/z-score
+    edges.
+
+    **Deliberately not a prev/curr diff, unlike the other continuous-magnitude
+    instruments in this module.** The bus synaptic graph
+    (``services/orion-bus-mirror/app/graph_writer.py::compute_ewma_update``)
+    already maintains its own rolling EWMA baseline per edge and computes each
+    edge's z-score against that baseline continuously as new traffic arrives --
+    the "prev expectation" is already baked into the z-score itself, so there is
+    no separate prev/curr snapshot for this function to diff. The caller queries
+    current ``|zscore|`` values from FalkorDB (see
+    ``services/orion-substrate-runtime/app/worker.py::_bus_synaptic_tick``) and
+    is responsible for filtering to edges above the graph's own documented
+    cold-start reliability floor (``services/orion-bus-mirror/README.md``:
+    ``count < ~5`` is unreliable) -- this function does no filtering itself, it
+    only aggregates whatever list it is given.
+
+    Saturates via ``_BUS_SYNAPTIC_ZSCORE_SATURATION`` (3.0), not this module's
+    ``_THRESHOLD`` (0.30) -- that constant is calibrated for the other domains'
+    0-1-scale pressure-hint deltas, not z-score units. 3.0 reuses the
+    ``zscore_threshold=3.0`` convention already live in
+    ``services/orion-hub/scripts/bus_synaptic_graph_routes.py``'s ``anomalies()``
+    route rather than inventing a new calibration.
+    """
+    if not edge_zscores:
+        return 0.0
+    return min(1.0, _mean([abs(z) for z in edge_zscores]) / _BUS_SYNAPTIC_ZSCORE_SATURATION)

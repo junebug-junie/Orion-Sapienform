@@ -325,3 +325,71 @@ run a real-data pass over a longer window (a day or more) confirming `CAUSALLY_F
 involving RPC-health-invisible organs (`orion-harness-governor` and any others sharing its
 bespoke-RPC pattern, not yet audited) are a recurring, non-degenerate signal -- not a one-off
 artifact of this session's snapshot.
+
+## Revision, 2026-07-25 (same day, continued) -- one of the two consumption modes built
+
+Status: **built, shadow-only, off by default.** Juniper approved both consumption-mode directions
+in principle ("1 and 2 sound good"), then asked the two open questions to collapse into one shared
+foundation rather than two bespoke builds ("what about reducers back into grammar substrate?"):
+real precedent already exists (`OrionBusAsync._emit_rpc_timeout_grammar`,
+`orion/core/bus/async_service.py:363`, emits `GrammarEventV1(semantic_role=
+"rpc_transport_timeout", ...)` -- Option C from the earlier transport-metacog-trigger patch).
+
+**What actually got built is simpler than a new grammar-event emission, on inspection.** The five
+existing domains' `prediction_error` functions all diff a `prev`/`curr` projection pair built from
+grammar events accumulated in Postgres. The bus synaptic graph doesn't need that shape at all: its
+own EWMA baseline per edge (`services/orion-bus-mirror/app/graph_writer.py::compute_ewma_update`)
+already *is* the "prev expectation," continuously maintained as new traffic arrives -- there is no
+separate prev/curr snapshot to diff. So `bus_synaptic_prediction_error()`
+(`orion/substrate/prediction_error.py`) takes a flat list of current `|zscore|` values (queried
+fresh from FalkorDB each tick, not accumulated in Postgres via a new grammar event type), and a
+new `_bus_synaptic_tick`/`_bus_synaptic_tick_loop` (`services/orion-substrate-runtime/app/
+worker.py`, mirroring `_dynamics_tick_loop`'s periodic-poll shape, not the four grammar-driven
+`_*_tick` methods) reads both `PUBLISHES.gap_zscore` and `CAUSALLY_FOLLOWED_BY.latency_zscore`
+edges (filtered to `count > SUBSTRATE_BUS_SYNAPTIC_MIN_EDGE_COUNT`, mirroring Hub's own
+`min_count=5` cold-start floor), aggregates `mean(|zscore|)`, and writes a new sixth domain node
+(`node:substrate.bus_synaptic`) via the same shared `_write_prediction_error_node()` the other
+five domains use. No new `GrammarEventV1` type, no new reducer, no new Postgres table -- this
+reuses `RedisGraphQueryClient` (`orion/graph/falkor_client.py`, already a proven dependency of
+this service via `orion.substrate.falkor_store`, already pinned to `redis==5.2.1` so it doesn't
+hit the `distutils` crash the rest of the bus-synaptic-graph arc found) pointed at a second graph
+name (`FALKORDB_BUS_GRAPH=orion_bus_synapse`) on the same FalkorDB instance
+`SUBSTRATE_STORE_BACKEND=falkor` already connects to.
+
+**This resolves as originally analyzed: the "no threshold needed" consumption mode is the one
+that's buildable now, the metacog-trigger dispatch mode is not.** Saturation uses a fixed 3.0
+z-score constant (`_BUS_SYNAPTIC_ZSCORE_SATURATION`, reusing Hub's own `zscore_threshold=3.0`
+convention) rather than a tuned "is this notable" threshold -- the continuous magnitude score
+itself is the signal, same as the other five domains' continuous `prediction_error` values. The
+genuinely open question (what z-score/count is worth *interrupting cognition* for, via the
+metacog trigger) remains untouched and explicitly tabled, per Juniper: "not sure about zscore
+thresholds, probably table without more data."
+
+**Shadow-only, off by default** (`SUBSTRATE_BUS_SYNAPTIC_TICK_ENABLED=false`) -- CLAUDE.md
+metric-quality-gate step 4 (live-data sanity check) has not yet been run against this specific
+aggregate. Real edge z-scores were confirmed live earlier this session (see this doc's prior
+revision), but `bus_synaptic_prediction_error()`'s own aggregate output (mean over both edge
+kinds, saturated) has never run against live traffic. Do not flip the flag before running that
+check.
+
+Tests: `orion/substrate/tests/test_prediction_error.py::TestBusSynapticPredictionError` (6 tests,
+pure function) and `services/orion-substrate-runtime/tests/test_worker_bus_synaptic_tick.py` (7
+tests, disabled-is-noop, fail-open on client-init/query error, aggregation-and-write wiring,
+client caching). Full suite run clean against a stashed baseline of the same worktree: same 13
+pre-existing failures present with or without this patch (unrelated -- `test_cursor_reset_auth.py`
+and `test_quarantine_truth.py` need a real operator-token fixture not available in this sandbox;
+`test_worker_independent_reducers.py::test_start_spawns_independent_reducer_poll_tasks` asserts a
+stale poll-task count of 3 against a codebase that already has 5, unrelated to this patch's new
+task which isn't even named `*-poll`).
+
+**Non-goals, additive:** not building the metacog-trigger wiring in this patch (still needs the
+threshold decision, still tabled). Not folding `node:substrate.bus_synaptic` into
+`_aggregate_prediction_error_confidence`'s existing four-domain mean (PR #1329) -- that's a
+separate call about whether a sixth domain changes that formula's semantics, not a side effect of
+writing the node. Not flipping `SUBSTRATE_BUS_SYNAPTIC_TICK_ENABLED` to `true` -- shadow-only until
+the live-data sanity check above runs.
+
+**Recommended next patch:** flip `SUBSTRATE_BUS_SYNAPTIC_TICK_ENABLED=true` on a real deployment,
+run `measure_ast_hot_reducer.py`-style replay against real `node:substrate.bus_synaptic` history
+to confirm non-degenerate variance (not flat/always-0/always-saturated), then decide the
+`_aggregate_prediction_error_confidence` integration question above with real numbers in hand.

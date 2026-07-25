@@ -1,5 +1,5 @@
 import asyncio
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Optional
 
@@ -42,6 +42,50 @@ async def _ensure_schema(conn: aiosqlite.Connection) -> None:
         """
     )
     await conn.commit()
+
+
+async def _prune_old_bus_events(
+    conn: aiosqlite.Connection, *, retention_hours: float, now: Optional[datetime] = None
+) -> int:
+    """Deletes ``bus_events`` rows older than ``retention_hours``, returns the
+    number of rows deleted. Separated from the sleep-loop wrapper below so
+    the actual prune logic is directly testable against a real (in-memory)
+    sqlite connection, without needing to drive an infinite loop.
+
+    ``timestamp`` is stored as ISO 8601 text (``datetime.isoformat()``),
+    which sorts correctly under plain string comparison -- no parsing needed
+    for the cutoff.
+
+    Does NOT reclaim on-disk file size for already-deleted rows: SQLite
+    ``DELETE`` marks pages free for reuse, it does not shrink the file on
+    disk. A one-off ``VACUUM`` is a separate, deliberately-not-automated-here
+    operator action (a multi-GB ``VACUUM`` rewrites the whole file and needs
+    roughly 2x the file's size in free disk space during the operation --
+    not something to run unattended inside this process). See README for the
+    exact command.
+    """
+    cutoff = ((now or datetime.now(timezone.utc)) - timedelta(hours=retention_hours)).isoformat()
+    cursor = await conn.execute("DELETE FROM bus_events WHERE timestamp < ?", (cutoff,))
+    await conn.commit()
+    return cursor.rowcount
+
+
+async def _run_sqlite_retention_loop(conn: aiosqlite.Connection) -> None:
+    """Bounds ``bus_events`` row growth on a ``MIRROR_SQLITE_PRUNE_INTERVAL_SEC``
+    cadence. Fixes a real, live-recurring failure -- see settings.py's
+    ``MIRROR_SQLITE_RETENTION_HOURS`` docstring for the incident history
+    (98GB once, 4.4GB and climbing again as of this patch).
+    """
+    while True:
+        await asyncio.sleep(settings.MIRROR_SQLITE_PRUNE_INTERVAL_SEC)
+        try:
+            deleted = await _prune_old_bus_events(conn, retention_hours=settings.MIRROR_SQLITE_RETENTION_HOURS)
+            if deleted:
+                logger.info("bus_mirror sqlite retention: pruned {} rows", deleted)
+        except Exception as exc:  # fail-open, matching this module's other background loops:
+            # an unhandled exception here would otherwise die silently (nothing
+            # awaits this task directly) instead of just skipping one prune cycle.
+            logger.warning("bus_mirror sqlite retention prune failed: {}", exc)
 
 
 def _build_graph_writer() -> Optional[BusSynapticGraphWriter]:
@@ -204,6 +248,7 @@ async def mirror_bus() -> None:
     if chain_tracker is not None:
         inflight_task = asyncio.create_task(_run_inflight_chain_summary_loop(chain_tracker))
 
+    retention_task: Optional[asyncio.Task] = None
     try:
         async with aiosqlite.connect(settings.MIRROR_SQLITE_PATH) as conn:
             await _ensure_schema(conn)
@@ -211,6 +256,12 @@ async def mirror_bus() -> None:
                 "Bus mirror connected: {} pattern={}",
                 settings.ORION_BUS_URL,
                 settings.MIRROR_PATTERN,
+            )
+            retention_task = asyncio.create_task(_run_sqlite_retention_loop(conn))
+            logger.info(
+                "Bus mirror sqlite retention enabled: retention_hours={} prune_interval_sec={}",
+                settings.MIRROR_SQLITE_RETENTION_HOURS,
+                settings.MIRROR_SQLITE_PRUNE_INTERVAL_SEC,
             )
 
             async with bus.subscribe(settings.MIRROR_PATTERN, patterns=True) as pubsub:
@@ -236,6 +287,8 @@ async def mirror_bus() -> None:
     finally:
         if inflight_task is not None:
             inflight_task.cancel()
+        if retention_task is not None:
+            retention_task.cancel()
         if heartbeat_chassis is not None:
             try:
                 await heartbeat_chassis.stop()

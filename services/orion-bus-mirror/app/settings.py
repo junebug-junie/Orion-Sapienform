@@ -20,6 +20,16 @@ class Settings(BaseSettings):
     MIRROR_PATTERN: str = Field(default="orion:*")
     MIRROR_SQLITE_PATH: str = Field(default="/data/bus_mirror.sqlite")
     MIRROR_PARQUET_DIR: str = Field(default="/data/parquet")
+    # Real, live-recurring failure this fixes: bus_events has no retention cap
+    # at all. README's own "Status" section documents a prior incident where
+    # this exact table grew to 98GB unattended before anyone noticed; found
+    # again live 2026-07-24 (4.4GB and climbing, ~3.49M rows) while this
+    # service was running for the bus-synaptic-graph arc -- the raw log keeps
+    # growing in parallel with the bounded graph state that was supposed to
+    # supersede it. Rows older than this are pruned on a
+    # MIRROR_SQLITE_PRUNE_INTERVAL_SEC cadence (see main.py).
+    MIRROR_SQLITE_RETENTION_HOURS: float = Field(default=24.0, gt=0.0)
+    MIRROR_SQLITE_PRUNE_INTERVAL_SEC: float = Field(default=3600.0, gt=0.0)
 
     # Bus synaptic graph (Phase 1 of docs/superpowers/specs/2026-07-24-bus-vitality-field-signal-brainstorm.md's
     # "Big-swing direction"). Bounded, aggregated FalkorDB edges instead of the

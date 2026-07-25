@@ -48,6 +48,11 @@ services:
       - NET_BW_MBPS=${NET_BW_MBPS}
       - POWER_BAND_ALPHA=${POWER_BAND_ALPHA}
       - DISK_CAPACITY_MOUNTS=${DISK_CAPACITY_MOUNTS}
+      - ILO_HOST=${ILO_HOST}
+      - ILO_USERNAME=${ILO_USERNAME}
+      - ILO_PASSWORD=${ILO_PASSWORD}
+      - ILO_POLL_INTERVAL_SEC=${ILO_POLL_INTERVAL_SEC:-60.0}
+      - ILO_REQUEST_TIMEOUT_SEC=${ILO_REQUEST_TIMEOUT_SEC:-8.0}
 
     volumes:
       - ../../config/biometrics:/app/config/biometrics:ro

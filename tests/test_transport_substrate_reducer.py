@@ -2,6 +2,8 @@ from __future__ import annotations
 
 from datetime import datetime, timezone
 
+import pytest
+
 from orion.schemas.grammar import GrammarAtomV1, GrammarEventV1, GrammarProvenanceV1
 from orion.schemas.transport_projection import TransportBusProjectionV1
 from orion.substrate.transport_loop.extract import (
@@ -172,6 +174,74 @@ def test_contract_pressure_diverges_from_catalog_drift_pressure() -> None:
     # ...while contract_pressure moves independently.
     assert pressures2["contract_pressure"] == 1.0
     assert pressures2["contract_pressure"] != pressures2["catalog_drift_pressure"]
+
+
+class TestCatalogDriftPressureMeshWideFix:
+    """docs/superpowers/specs/2026-07-25-catalog-drift-pressure-mesh-wide-fix.md:
+    catalog_drift_pressure now prefers the mesh-wide census diff
+    (undeclared_active_count/catalog_size) when available, falling back to
+    the old narrow formula (uncataloged_stream_count/streams_observed) when
+    the census step didn't run this tick (gated off, or the scan failed)."""
+
+    def _events_with_census(self, *, undeclared_active_count: int, catalog_size: int) -> list[GrammarEventV1]:
+        return [
+            _event(
+                "gev_h",
+                "bus_health_observed",
+                "redis_ping_ok=true node_id=athena sample_window_id=20260525T233010Z",
+            ),
+            _event(
+                "gev_d1",
+                "bus_stream_depth_observed",
+                "stream_key=orion:evt:gateway stream_length=0 sample_window_id=20260525T233010Z",
+            ),
+            # Old-formula inputs deliberately present and would read
+            # differently (1/1 = 1.0) -- proves the mesh-wide value wins
+            # when both are available, not silently ignored.
+            _event(
+                "gev_u1",
+                "bus_configured_stream_uncataloged",
+                "stream_key=orion:evt:gateway sample_window_id=20260525T233010Z",
+            ),
+            _event(
+                "gev_c1",
+                "bus_census_computed",
+                f"undeclared_active_count={undeclared_active_count} catalog_size={catalog_size} "
+                "sample_window_id=20260525T233010Z",
+            ),
+            _event("gev_done", "bus_observer_tick_completed", "streams_observed=1 sample_window_id=20260525T233010Z"),
+        ]
+
+    def test_mesh_wide_census_wins_over_old_formula_when_present(self) -> None:
+        events = self._events_with_census(undeclared_active_count=2, catalog_size=264)
+        state = extract_transport_bus_state_from_events(events, now=NOW)
+        pressures = compute_transport_pressures(state, stream_depth_critical=100_000)
+
+        assert state.undeclared_active_count == 2
+        assert state.catalog_size == 264
+        # Old formula would read 1.0 (1 uncataloged / 1 stream observed) --
+        # the mesh-wide value (2/264) must be what actually wins.
+        assert pressures["catalog_drift_pressure"] == pytest.approx(2 / 264)
+        assert pressures["catalog_drift_pressure"] != 1.0
+
+    def test_falls_back_to_old_formula_when_census_not_available(self) -> None:
+        # No bus_census_computed atom at all -- same fixture as
+        # test_extract_live_athena_rollup_pressures, confirming the fallback
+        # path is exactly the pre-existing behavior, not a new formula.
+        state = extract_transport_bus_state_from_events(_live_events(), now=NOW)
+        pressures = compute_transport_pressures(state, stream_depth_critical=100_000)
+
+        assert state.undeclared_active_count is None
+        assert pressures["catalog_drift_pressure"] == 1.0
+
+    def test_zero_undeclared_active_is_a_real_measured_zero_not_fallback(self) -> None:
+        events = self._events_with_census(undeclared_active_count=0, catalog_size=264)
+        state = extract_transport_bus_state_from_events(events, now=NOW)
+        pressures = compute_transport_pressures(state, stream_depth_critical=100_000)
+
+        assert state.undeclared_active_count == 0
+        # A real, honest zero -- not the old formula's 1.0.
+        assert pressures["catalog_drift_pressure"] == 0.0
 
 
 def test_reducer_emits_transport_bus_delta_with_pressure_hints() -> None:

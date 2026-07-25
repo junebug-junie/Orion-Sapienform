@@ -28,6 +28,7 @@ _ATOM_ROLES = frozenset(
         "bus_schema_validation_failed",
         "bus_observer_tick_failed",
         "bus_observer_tick_completed",
+        "bus_census_computed",
     }
 )
 
@@ -85,7 +86,24 @@ def compute_transport_pressures(
     critical = max(stream_depth_critical, 1)
     stream_depth_pressure = min(state.max_stream_depth / critical, 1.0)
     backpressure = min(state.backpressure_count / denom, 1.0)
-    catalog_drift_pressure = min(state.uncataloged_stream_count / denom, 1.0)
+    # Fixed 2026-07-25 (docs/superpowers/specs/2026-07-25-catalog-drift-
+    # pressure-mesh-wide-fix.md): was uncataloged_stream_count/denom, capped
+    # at whatever this observer's own small configured stream list covers
+    # (denom maxes at 2 in practice) -- structurally incapable of
+    # representing general bus health regardless of how correctly wired.
+    # undeclared_active_count/catalog_size is the real, mesh-wide diff
+    # (orion.bus.census.compute_census(), ~264 real declared channels) --
+    # gated behind BUS_OBSERVER_CENSUS_ENABLED, so it's None when the census
+    # step didn't run this tick (flag off, or the scan itself failed).
+    if state.undeclared_active_count is not None and state.catalog_size > 0:
+        catalog_drift_pressure = min(state.undeclared_active_count / state.catalog_size, 1.0)
+    else:
+        # No honest mesh-wide measurement available this tick -- fall back to
+        # the old, narrower formula rather than silently reporting 0.0, which
+        # would misrepresent "not measured" as "confirmed no drift" (this
+        # repo's own "no empty-shell cognition" rule). Once the census flag
+        # is the live default, this branch only fires on a real scan failure.
+        catalog_drift_pressure = min(state.uncataloged_stream_count / denom, 1.0)
     # Genuinely independent of catalog_drift_pressure: this counts cataloged
     # streams whose sampled traffic failed schema validation, not streams
     # missing from the catalog. Same "count of affected streams / denom"
@@ -144,6 +162,8 @@ def extract_transport_bus_state_from_events(
     backpressure_count = 0
     observer_failure_count = 0
     schema_mismatch_stream_count = 0
+    undeclared_active_count: int | None = None
+    catalog_size = 0
     redis_ping_ok: bool | None = None
     evidence_event_ids: list[str] = []
 
@@ -192,6 +212,13 @@ def extract_transport_bus_state_from_events(
                 streams_observed = int(kv.get("streams_observed", streams_observed) or streams_observed)
             except ValueError:
                 pass
+        elif role == "bus_census_computed":
+            try:
+                undeclared_active_count = int(kv.get("undeclared_active_count", "0") or 0)
+                catalog_size = int(kv.get("catalog_size", "0") or 0)
+            except ValueError:
+                undeclared_active_count = None
+                catalog_size = 0
 
     state = TransportBusStateV1(
         target_id=target_id,
@@ -206,6 +233,8 @@ def extract_transport_bus_state_from_events(
         backpressure_count=backpressure_count,
         observer_failure_count=observer_failure_count,
         schema_mismatch_stream_count=schema_mismatch_stream_count,
+        undeclared_active_count=undeclared_active_count,
+        catalog_size=catalog_size,
         evidence_event_ids=evidence_event_ids,
         observed_at=clock,
     )

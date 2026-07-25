@@ -271,6 +271,35 @@ class BusTransportGrammarCollector:
             ),
         )
 
+    def record_bus_census_computed(self, *, undeclared_active_count: int, catalog_size: int) -> None:
+        """Mesh-wide census diff (orion.bus.census.compute_census()) --
+        real pub/sub channel activity across the full declared catalog, not
+        just this observer's own small configured Redis Streams list. Backs
+        catalog_drift_pressure's fix (2026-07-25), replacing a formula that
+        was structurally incapable of representing general bus health.
+        Counts only, never channel names -- same "bounded rollups, never
+        per-message content" convention as every other atom in this file.
+        """
+        self._put_atom(
+            "bus_census_computed",
+            GrammarAtomV1(
+                atom_id=self._atom_id("bus_census_computed"),
+                trace_id=self.trace_id,
+                atom_type="signal",
+                semantic_role="bus_census_computed",
+                layer="transport",
+                dimensions=["bus", "catalog", "contract"],
+                summary=(
+                    f"Mesh-wide bus census computed undeclared_active_count={undeclared_active_count} "
+                    f"catalog_size={catalog_size} sample_window_id={self.sample_window_id}"
+                ),
+                confidence=0.9,
+                salience=0.6,
+                source_event_id=self.sample_window_id,
+                payload_ref=f"bus.transport.census:{self.sample_window_id}",
+            ),
+        )
+
     def record_schema_mismatch(
         self,
         *,

@@ -403,11 +403,20 @@ aggregates `mean(|zscore|)`, saturating at 3.0 (reuses Hub's own `zscore_thresho
 not this module's `_THRESHOLD=0.30` — that's calibrated for the other domains' 0-1-scale deltas, a
 different unit entirely). New periodic tick `_bus_synaptic_tick`/`_bus_synaptic_tick_loop`
 (`services/orion-substrate-runtime/app/worker.py`), mirroring `_dynamics_tick_loop`'s shape (no
-grammar-event batch, since there's no grammar event to poll for here). **Shadow-only, off by
-default** (`SUBSTRATE_BUS_SYNAPTIC_TICK_ENABLED=false`) — CLAUDE.md metric-quality-gate step 4
-(live-data sanity check) has not yet been run against this specific aggregate; do not flip true
-without running that check first. Does not change Missing Question 5's still-open "rename vs.
-deprecate" call for `stream_backlog_pressure`/`stream_backlog_health`.
+grammar-event batch, since there's no grammar event to poll for here). Does not change Missing
+Question 5's still-open "rename vs. deprecate" call for
+`stream_backlog_pressure`/`stream_backlog_health`.
+
+**Enabled 2026-07-25** (`SUBSTRATE_BUS_SYNAPTIC_TICK_ENABLED=true`, Juniper's explicit go-ahead) —
+confirmed via repo-wide grep that `node:substrate.bus_synaptic` has exactly two references
+anywhere in the codebase, both this tick's own upsert calls, so nothing consumes this node yet and
+flipping the flag can't propagate a bad signal. Enabling it is how CLAUDE.md's metric-quality-gate
+step 4 (live-data sanity check) actually gets real accumulated history to check against — it
+couldn't happen while the tick was off. Live-verified immediately post-deploy: real, varying,
+non-degenerate output (`edge_count=219`, `error=0.162` then `0.308` ~30s later), 0 container
+restarts. **Do not wire any consumer to `node:substrate.bus_synaptic`** (e.g. folding it into
+`prediction_error_confidence`, PR #1329) until the sanity-check pass has run against real
+accumulated history, not just this first live sample.
 
 **Fixed 2026-07-25 (same day, follow-up): the 5 new env keys above weren't reaching the
 container.** Same class of gotcha already documented for `SUBSTRATE_STORE_BACKEND`/`FALKORDB_URI`

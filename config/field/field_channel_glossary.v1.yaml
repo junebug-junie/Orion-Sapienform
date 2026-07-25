@@ -79,6 +79,24 @@ channels:
     meaning: "Node disk I/O pressure."
     evidence_dimension: resource_pressure
 
+  - channel: power_pressure
+    level: [node]
+    category: physical_substrate
+    meaning: "Node power-draw pressure. Real chassis-wide wattage (iLO/BMC RedFish) when that node has BMC credentials configured; falls back to a GPU-power-only estimate otherwise. 0.0 on a node with neither."
+    evidence_dimension: resource_pressure
+
+  - channel: disk_capacity_pressure
+    level: [node]
+    category: physical_substrate
+    meaning: "How full a node's monitored filesystems are (percent used, max across configured mounts). Distinct from disk_pressure, which measures I/O throughput, not capacity."
+    evidence_dimension: resource_pressure
+
+  - channel: fan_pressure
+    level: [node]
+    category: physical_substrate
+    meaning: "Node BMC fan speed (percent of max, max across fans). A response to thermal load, not an independent hazard on its own -- 0.0 on a node without iLO/BMC credentials configured."
+    evidence_dimension: resource_pressure
+
   - channel: expected_offline_suppression
     level: [node]
     category: sensor_trust_liveness

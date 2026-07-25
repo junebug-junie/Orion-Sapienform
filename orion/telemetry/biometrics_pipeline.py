@@ -124,7 +124,42 @@ class BiometricsPipeline:
             ),
         )
 
-        power_pressure = self._power_pressure(power)
+        # `power` (via `_power_pressure`) was GPU-power-only (nvidia-smi power_draw_watts)
+        # -- 0.0 on any node without an NVIDIA GPU, and even with one, blind to actual
+        # whole-system draw (PSU, CPU, disks, fans). `ilo` (present only when this node
+        # has iLO/BMC credentials configured, see app/ilo.py) carries a real chassis-level
+        # PowerConsumedWatts reading -- strictly more complete, so prefer it over the
+        # GPU-only estimate when available rather than trying to combine the two (they'd
+        # otherwise double-count GPU draw, which is already a component of chassis watts).
+        # Same adaptive EwmaBand as before, not a new fixed-max config -- per-node draw
+        # baselines vary too much by hardware for one global max to make sense.
+        ilo = sample.get("ilo") if isinstance(sample.get("ilo"), dict) else {}
+        chassis_watts = ilo.get("ilo_power_watts")
+        if isinstance(chassis_watts, (int, float)):
+            self.power_band.update(float(chassis_watts))
+            power_pressure = self.power_band.normalize(float(chassis_watts))
+        else:
+            power_pressure = self._power_pressure(power)
+
+        # `disk_capacity` (how full a filesystem is, from
+        # services/orion-biometrics/app/metrics.py::collect_disk_capacity) is
+        # deliberately distinct from `disk` above (I/O throughput). Present only when
+        # DISK_CAPACITY_MOUNTS is configured; a node with no mounts configured omits it.
+        # Direct 0-100 -> 0-1 normalization, no adaptive band needed -- "percent full" is
+        # already a bounded, meaningful scale on its own.
+        disk_capacity_data = sample.get("disk_capacity") if isinstance(sample.get("disk_capacity"), dict) else {}
+        disk_capacity_values = list((disk_capacity_data.get("disk_usage_pct") or {}).values())
+        disk_capacity_pressure = clamp01(max(disk_capacity_values) / 100.0) if disk_capacity_values else 0.0
+
+        # `fan` (RedFish fan speed, percent) -- present only when iLO is configured and
+        # reports fan units as "Percent" (see app/ilo.py's ReadingUnits guard). Elevated
+        # fan speed is the BMC's own real-time thermal-stress response, not an independent
+        # hazard signal on its own -- theory anchor: sustained high fan percent indicates
+        # the chassis is actively compensating for thermal load, a legitimate physical
+        # strain signal even though it is a *response to* (not sole cause of) that load,
+        # similar to elevated heart rate under exertion.
+        fan_values = list((ilo.get("ilo_fan_pct") or {}).values())
+        fan_pressure = clamp01(max(fan_values) / 100.0) if fan_values else 0.0
 
         pressures = {
             "cpu": cpu_pressure,
@@ -136,6 +171,8 @@ class BiometricsPipeline:
             "net": net_pressure,
             "thermal": thermal_pressure,
             "power": power_pressure,
+            "disk_capacity": disk_capacity_pressure,
+            "fan": fan_pressure,
         }
 
         headroom = {k: clamp01(1.0 - v) for k, v in pressures.items()}

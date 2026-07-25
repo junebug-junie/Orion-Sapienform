@@ -174,6 +174,69 @@ def test_old_add_mode_would_have_saturated_gpu_and_cpu_pressure() -> None:
     assert state.node_vectors["node:atlas"]["gpu_pressure"] == 1.0
 
 
+def test_node_biometrics_delta_produces_power_disk_capacity_fan_pressure() -> None:
+    delta = _make_node_biometrics_delta(
+        pressure_hints={
+            "power_pressure": 0.55,
+            "disk_capacity_pressure": 0.87,
+            "fan_pressure": 0.29,
+        }
+    )
+    perturbations = delta_to_perturbations(delta)
+    channels = {p.channel: p.intensity for p in perturbations}
+    assert channels["power_pressure"] == 0.55
+    assert channels["disk_capacity_pressure"] == 0.87
+    assert channels["fan_pressure"] == 0.29
+    assert all(p.node_id == "node:atlas" for p in perturbations)
+
+
+def test_power_disk_capacity_fan_perturbations_use_replace_mode() -> None:
+    # Same fan-out reasoning as memory/thermal/disk above -- these three
+    # channels are new (2026-07-25, real iLO/BMC telemetry) but share the
+    # exact same node_reducer.py per-trace-event fan-out mechanism, so they
+    # must use mode="replace" from day one rather than repeating the
+    # gpu/cpu-pressure bug history.
+    delta = _make_node_biometrics_delta(
+        pressure_hints={"power_pressure": 0.5, "disk_capacity_pressure": 0.5, "fan_pressure": 0.5}
+    )
+    perturbations = delta_to_perturbations(delta)
+    modes = {p.channel: p.mode for p in perturbations}
+    assert modes["power_pressure"] == "replace"
+    assert modes["disk_capacity_pressure"] == "replace"
+    assert modes["fan_pressure"] == "replace"
+
+
+def test_power_disk_capacity_fan_perturbations_do_not_saturate_across_repeated_deltas() -> None:
+    delta = _make_node_biometrics_delta(
+        pressure_hints={"power_pressure": 0.3, "disk_capacity_pressure": 0.3, "fan_pressure": 0.3}
+    )
+    perturbations = []
+    for _ in range(16):
+        perturbations.extend(delta_to_perturbations(delta))
+
+    state = FieldStateV1(
+        generated_at=datetime(2026, 7, 25, tzinfo=timezone.utc),
+        tick_id="tick_power_disk_capacity_fan_saturation_regression",
+        node_vectors={},
+        capability_vectors={},
+        edges=[],
+    )
+    apply_perturbations(state, perturbations)
+    node_vec = state.node_vectors["node:atlas"]
+    assert node_vec["power_pressure"] == 0.3
+    assert node_vec["disk_capacity_pressure"] == 0.3
+    assert node_vec["fan_pressure"] == 0.3
+
+
+def test_node_biometrics_delta_missing_power_disk_capacity_fan_hints_produces_no_perturbation() -> None:
+    delta = _make_node_biometrics_delta(pressure_hints={})
+    perturbations = delta_to_perturbations(delta)
+    channels = [p.channel for p in perturbations]
+    assert "power_pressure" not in channels
+    assert "disk_capacity_pressure" not in channels
+    assert "fan_pressure" not in channels
+
+
 def test_gpu_and_cpu_perturbations_do_not_saturate_across_repeated_deltas() -> None:
     # Same regression as memory/thermal/disk above, for the pre-existing
     # gpu/strain channels this cycle's fix also covers.

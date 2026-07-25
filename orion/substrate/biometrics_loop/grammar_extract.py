@@ -123,6 +123,12 @@ def extract_node_state_from_events(
             pressure_hints["thermal_pressure"] = float(atom.salience)
         elif atom.semantic_role == "disk_pressure_signal" and atom.salience is not None:
             pressure_hints["disk_pressure"] = float(atom.salience)
+        elif atom.semantic_role == "power_pressure_signal" and atom.salience is not None:
+            pressure_hints["power_pressure"] = float(atom.salience)
+        elif atom.semantic_role == "disk_capacity_pressure_signal" and atom.salience is not None:
+            pressure_hints["disk_capacity_pressure"] = float(atom.salience)
+        elif atom.semantic_role == "fan_pressure_signal" and atom.salience is not None:
+            pressure_hints["fan_pressure"] = float(atom.salience)
 
     availability = _compute_availability(
         profile_expected_online=profile.expected_online,

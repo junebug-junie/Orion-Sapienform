@@ -409,6 +409,18 @@ default** (`SUBSTRATE_BUS_SYNAPTIC_TICK_ENABLED=false`) — CLAUDE.md metric-qua
 without running that check first. Does not change Missing Question 5's still-open "rename vs.
 deprecate" call for `stream_backlog_pressure`/`stream_backlog_health`.
 
+**Fixed 2026-07-25 (same day, follow-up): the 5 new env keys above weren't reaching the
+container.** Same class of gotcha already documented for `SUBSTRATE_STORE_BACKEND`/`FALKORDB_URI`
+in this service's `.env_example` (not elsewhere in this README) — `docker-compose.yml` passes env vars through via an explicit
+`environment:` list, not a blanket `env_file:` load, so a key only present in `.env`/`.env_example`
+is silently invisible to the container until it's also added to that list. Confirmed live before
+the fix: `docker exec orion-athena-substrate-runtime env | grep BUS_SYNAPTIC` returned nothing,
+even though `.env` had all 5 keys. Not a behavior bug (the flag's pydantic default is already
+`false`, matching the intended shadow-off state), but it meant an operator flipping
+`SUBSTRATE_BUS_SYNAPTIC_TICK_ENABLED=true` in `.env` would have silently done nothing. Fixed by
+adding all 5 keys to `docker-compose.yml`'s `environment:` list; confirmed live post-redeploy
+(`docker exec ... env | grep BUS_SYNAPTIC` now shows all 5, container 0 restarts).
+
 **Reverie semantic lift:** unresolved closures also upsert human referent rows into
 `substrate_turn_referent` via `turn_referent_store.persist_turn_referent`. Apply
 `services/orion-sql-db/manual_migration_substrate_turn_referent_v1.sql` before enabling

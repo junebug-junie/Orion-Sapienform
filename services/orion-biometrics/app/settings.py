@@ -72,6 +72,16 @@ class Settings(BaseSettings):
         }
     )
 
+    # iLO/BMC out-of-band hardware telemetry (piggybacked onto the same heartbeat
+    # `details` dict as disk capacity, above). Node-level secret: real values live
+    # only in this node's local .env, never in .env_example. Empty ILO_HOST means
+    # iLO collection is disabled for this node -- not every node has one.
+    ILO_HOST: str = Field(default="")
+    ILO_USERNAME: str = Field(default="")
+    ILO_PASSWORD: str = Field(default="")
+    ILO_POLL_INTERVAL_SEC: float = Field(default=60.0)
+    ILO_REQUEST_TIMEOUT_SEC: float = Field(default=8.0)
+
     @field_validator("role_weights", mode="before")
     @classmethod
     def _parse_role_weights(cls, value: object) -> Dict[str, float]:

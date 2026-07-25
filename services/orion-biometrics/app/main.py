@@ -19,6 +19,7 @@ from orion.schemas.telemetry.biometrics import (
 )
 from orion.schemas.telemetry.spark_signal import SparkSignalV1
 from app.metrics import collect_biometrics, collect_disk_capacity
+from app.ilo import IloPoller
 from orion.telemetry.biometrics_pipeline import BiometricsPipeline, PipelineConfig
 from app.settings import settings
 
@@ -162,18 +163,34 @@ def _source() -> ServiceRef:
     return ServiceRef(name=settings.SERVICE_NAME, version=settings.SERVICE_VERSION, node=settings.NODE_NAME)
 
 
+_ilo_poller = IloPoller(
+    settings.ILO_HOST,
+    settings.ILO_USERNAME,
+    settings.ILO_PASSWORD,
+    interval_sec=settings.ILO_POLL_INTERVAL_SEC,
+    timeout_sec=settings.ILO_REQUEST_TIMEOUT_SEC,
+)
+
+
 def _heartbeat_details() -> Dict[str, Any]:
     """Extra data folded into every SystemHealthV1 heartbeat's `details` dict.
 
-    Real host disk-capacity telemetry, piggybacked onto the existing bus-native
-    heartbeat rather than a new channel/service (see
+    Real host disk-capacity telemetry plus (when this node has iLO/BMC
+    credentials configured) real thermal/fan/power telemetry, piggybacked onto
+    the existing bus-native heartbeat rather than a new channel/service (see
     docs/superpowers/specs/2026-07-24-service-heartbeat-node-telemetry-design.md).
     Node-level, not per-service -- once this same code is redeployed on atlas/circe
     (each already an independent orion-biometrics deployment publishing its own
     per-node heartbeat, confirmed live via `orion:system:health`), each node reports
-    its own mounts with no new SSH/credential surface.
+    its own mounts/BMC with no new SSH/credential surface. `_ilo_poller.details()`
+    reads a background-cached snapshot (see IloPoller docstring) rather than making
+    a live network call here -- this function runs inside the heartbeat's own
+    bounded per-tick budget, too tight for a real BMC round-trip.
     """
-    return collect_disk_capacity(settings.DISK_CAPACITY_MOUNTS)
+    return {
+        **collect_disk_capacity(settings.DISK_CAPACITY_MOUNTS),
+        **_ilo_poller.details(),
+    }
 
 
 _pipeline = BiometricsPipeline(
@@ -371,6 +388,8 @@ async def lifespan(app: FastAPI):
     hunter_task: Optional[asyncio.Task] = None
     hunter_stop = asyncio.Event()
 
+    await _ilo_poller.start_background()
+
     if settings.BIOMETRICS_MODE in {"agent", "both"}:
         metrics_worker = BiometricsWorker(chassis_cfg(), interval_sec=settings.TELEMETRY_INTERVAL)
         await metrics_worker.start_background()
@@ -399,6 +418,7 @@ async def lifespan(app: FastAPI):
                 await asyncio.wait_for(hunter_task, timeout=2.0)
             except Exception:
                 hunter_task.cancel()
+        await _ilo_poller.stop()
 
 
 app = FastAPI(title=settings.SERVICE_NAME, version=settings.SERVICE_VERSION, lifespan=lifespan)

@@ -239,14 +239,19 @@ first place. Full reasoning and phased detail:
    override) still needs a fresh trigger to occur post-rebuild, independent of how much
    history accumulates — "item 2 is proven" therefore still means "correct when exercised,"
    not yet "exercised against a fresh real override since the rebuild."
-   **Candidate for the excluded transport domain, proposed 2026-07-25 (not built):** PR #1329's
+   **New sixth domain for the excluded transport gap, built 2026-07-25:** PR #1329's
    `prediction_error_confidence` explicitly excludes `transport` (confirmed structurally dead —
-   `0.0` for 100% of a real 8h window). The bus synaptic graph (`orion_bus_synapse`,
-   `services/orion-bus-mirror`, live since the same-day `distutils` crash-loop fix) gives a real,
-   passively-observed, mesh-wide anomaly signal that isn't gated on that domain's dead instrument
-   — see `docs/superpowers/specs/2026-07-23-transport-domain-rpc-health-redesign.md`'s 2026-07-25
-   revision for the full proposal. Not decided or built here; does not change this item's
-   confidence formula.
+   `0.0` for 100% of a real 8h window). `bus_synaptic_prediction_error()`
+   (`orion/substrate/prediction_error.py`) reads the bus synaptic graph (`orion_bus_synapse`,
+   `services/orion-bus-mirror`) and writes a real, passively-observed, mesh-wide anomaly signal to
+   a new `node:substrate.bus_synaptic` node — see
+   `docs/superpowers/specs/2026-07-23-transport-domain-rpc-health-redesign.md`'s 2026-07-25
+   revision. **Scope, stated plainly:** this is a sibling domain node, not yet folded into
+   `_aggregate_prediction_error_confidence`'s existing four-domain mean — building that requires
+   deciding whether a sixth domain changes that formula's semantics, a separate call from writing
+   the node itself. Shadow-only, off by default
+   (`SUBSTRATE_BUS_SYNAPTIC_TICK_ENABLED=false` in `services/orion-substrate-runtime`) pending a
+   live-data sanity check; does not change this item's confidence formula.
 3. **Route existing tension producers directly onto `FieldStateV1` channels**, retiring the
    bucket-vote layer — collapses the redundant reimplementation named in §7's finding.
    Reframed as prediction-error-native (extending the already-live

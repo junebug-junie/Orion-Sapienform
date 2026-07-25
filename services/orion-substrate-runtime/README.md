@@ -381,17 +381,33 @@ rename, not a deprecation, and not a product of this RPC-health redesign reachin
 replacing it. This redesign's own "not yet wired to replace this channel" status is unchanged; do
 not assume this redesign has already replaced it, only that the old channel's name changed.
 
-**Candidate third evidence source, proposed 2026-07-25 (not built): the bus synaptic graph
-(`orion_bus_synapse`, `services/orion-bus-mirror`).** Live-verified same day: `hub ->
-orion-harness-governor` shows a real `CAUSALLY_FOLLOWED_BY` edge (`latency_zscore=-2.10, count=5`)
-— this is real coverage of exactly the blind spot `docs/superpowers/specs/2026-07-23-transport-
-domain-rpc-health-redesign.md` names in its own "Related work" section: `orion-harness-governor`
-uses a bespoke long-poll RPC, not `OrionBusAsync.rpc_request()`, so the RPC-health signal that
-spec proposes structurally cannot see it. The bus-mirror graph is a passive wiretap on envelope
-`correlation_id`s, agnostic to which RPC mechanism produced them, so it catches this traffic
-anyway. See that spec's 2026-07-25 revision for the full proposal — not decided or built here,
-and does not change Missing Question 5's still-open "rename vs. deprecate" call for
-`stream_backlog_pressure`/`stream_backlog_health`.
+**Third evidence source, built 2026-07-25: the bus synaptic graph (`orion_bus_synapse`,
+`services/orion-bus-mirror`).** Live-verified 2026-07-25: `hub -> orion-harness-governor` shows a
+real `CAUSALLY_FOLLOWED_BY` edge (`latency_zscore=-2.10, count=5`) — real coverage of exactly the
+blind spot `docs/superpowers/specs/2026-07-23-transport-domain-rpc-health-redesign.md` names in
+its own "Related work" section: `orion-harness-governor` uses a bespoke long-poll RPC, not
+`OrionBusAsync.rpc_request()`, so the RPC-health signal that spec proposes structurally cannot see
+it. The bus-mirror graph is a passive wiretap on envelope `correlation_id`s, agnostic to which RPC
+mechanism produced them, so it catches this traffic anyway.
+
+Built as the "no threshold needed" half of that spec's two consumption-mode options
+(`orion/substrate/prediction_error.py::bus_synaptic_prediction_error`, a sixth domain node
+`node:substrate.bus_synaptic`, written via the same shared `_write_prediction_error_node()` the
+other five domains use) — **not** the metacog-trigger dispatch half, which still needs a real
+threshold decision and stays explicitly tabled. Deliberately not a prev/curr diff like the other
+five instruments: the bus synaptic graph's own EWMA baseline per edge already encodes "prev
+expectation," so this reads current `|zscore|` values from FalkorDB fresh each tick (both
+`PUBLISHES.gap_zscore` and `CAUSALLY_FOLLOWED_BY.latency_zscore`, filtered to `count >
+SUBSTRATE_BUS_SYNAPTIC_MIN_EDGE_COUNT` to respect the graph's own cold-start reliability floor) and
+aggregates `mean(|zscore|)`, saturating at 3.0 (reuses Hub's own `zscore_threshold=3.0` convention,
+not this module's `_THRESHOLD=0.30` — that's calibrated for the other domains' 0-1-scale deltas, a
+different unit entirely). New periodic tick `_bus_synaptic_tick`/`_bus_synaptic_tick_loop`
+(`services/orion-substrate-runtime/app/worker.py`), mirroring `_dynamics_tick_loop`'s shape (no
+grammar-event batch, since there's no grammar event to poll for here). **Shadow-only, off by
+default** (`SUBSTRATE_BUS_SYNAPTIC_TICK_ENABLED=false`) — CLAUDE.md metric-quality-gate step 4
+(live-data sanity check) has not yet been run against this specific aggregate; do not flip true
+without running that check first. Does not change Missing Question 5's still-open "rename vs.
+deprecate" call for `stream_backlog_pressure`/`stream_backlog_health`.
 
 **Reverie semantic lift:** unresolved closures also upsert human referent rows into
 `substrate_turn_referent` via `turn_referent_store.persist_turn_referent`. Apply

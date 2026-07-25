@@ -54,6 +54,28 @@ class Settings(BaseSettings):
     dynamics_tick_interval_sec: float = Field(30.0, alias="SUBSTRATE_DYNAMICS_TICK_INTERVAL_SEC")
     enable_episodic_tick: bool = Field(False, alias="SUBSTRATE_EPISODIC_TICK_ENABLED")
     episodic_tick_interval_sec: float = Field(300.0, alias="SUBSTRATE_EPISODIC_TICK_INTERVAL_SEC")
+    # bus_synaptic_prediction_error: own explicit flag, not piggybacked on
+    # SUBSTRATE_WRITE_PREDICTION_ERROR_NODES -- new kind of signal (reads FalkorDB
+    # directly, no grammar-event batch), not a sixth instance of the existing
+    # grammar-event-driven prediction-error shape. See
+    # docs/superpowers/specs/2026-07-23-transport-domain-rpc-health-redesign.md.
+    enable_bus_synaptic_tick: bool = Field(False, alias="SUBSTRATE_BUS_SYNAPTIC_TICK_ENABLED")
+    bus_synaptic_tick_interval_sec: float = Field(
+        30.0, alias="SUBSTRATE_BUS_SYNAPTIC_TICK_INTERVAL_SEC"
+    )
+    # Cold-start reliability floor, mirrors Hub's own min_count=5
+    # (services/orion-hub/scripts/bus_synaptic_graph_routes.py::anomalies()).
+    bus_synaptic_min_edge_count: int = Field(5, alias="SUBSTRATE_BUS_SYNAPTIC_MIN_EDGE_COUNT")
+    # Staleness floor (review finding, 2026-07-25): an edge from a
+    # decommissioned organ/channel keeps its frozen z-score forever once
+    # count clears the floor above -- exclude edges not updated in this
+    # window so a long-dead edge ages out of the aggregate.
+    bus_synaptic_max_edge_age_sec: float = Field(
+        3600.0, alias="SUBSTRATE_BUS_SYNAPTIC_MAX_EDGE_AGE_SEC"
+    )
+    # Same env var name services/orion-bus-mirror and services/orion-recall
+    # already use for the same graph -- not a new name.
+    falkordb_bus_graph: str = Field("orion_bus_synapse", alias="FALKORDB_BUS_GRAPH")
     # Window + tick interval must stay under receipt retention (default 30 min),
     # or completed windows will already be pruned when consolidated.
     episodic_window_seconds: int = Field(900, alias="SUBSTRATE_EPISODIC_WINDOW_SECONDS")

@@ -429,6 +429,7 @@ def raw_recent(limit: int = Query(10, ge=1, le=100), node: Optional[str] = Query
 @app.get("/health")
 def health():
     return {
+        "ok": True,
         "status": "ok",
         "service": settings.SERVICE_NAME,
         "version": settings.SERVICE_VERSION,

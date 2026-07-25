@@ -7,6 +7,7 @@ from typing import Any
 from fastapi import FastAPI, HTTPException
 
 from orion.core.bus.bus_service_chassis import ChassisConfig, HeartbeatOnly
+from orion.schemas.telemetry.system_health import ServiceLivenessV1
 
 from app.settings import get_settings
 from app.store import ConsolidationRuntimeStore
@@ -70,8 +71,11 @@ app = FastAPI(title="orion-consolidation-runtime", lifespan=lifespan)
 
 
 @app.get("/health")
-async def health() -> dict[str, str]:
-    return {"status": "ok", "service": get_settings().service_name}
+async def health() -> dict:
+    s = get_settings()
+    return ServiceLivenessV1(
+        ok=True, service=s.service_name, version=s.service_version, node=s.node_name
+    ).model_dump(mode="json")
 
 
 @app.get("/latest")

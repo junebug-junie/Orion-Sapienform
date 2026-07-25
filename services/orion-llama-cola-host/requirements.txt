@@ -3,8 +3,17 @@ uvicorn>=0.29.0
 sse-starlette>=2.1.0
 pydantic>=2.7.0
 pydantic-settings>=2.2.0
-torch>=2.2.0
-transformers>=4.40.0
+# CUDA build pin: PyPI's default torch wheel bundles a CUDA 13.x runtime with
+# no sm_70 (Volta/V100) kernels -- "no kernel image is available for
+# execution on the device" on this fleet's V100s. cu126 is the newest
+# officially published torch index that still ships sm_70 kernels.
+--extra-index-url https://download.pytorch.org/whl/cu126
+torch==2.13.0+cu126
+# intention.py (vendored from LAMDA-RL/Llama-3.1-CoLA-10B) targets this
+# transformers version's LlamaAttention/RoPE call signature. Newer
+# transformers (5.x) reshapes q/k differently and breaks apply_rotary_pos_emb
+# with a head_dim mismatch inside intention.py's custom forward.
+transformers==4.44.2
 deepspeed>=0.14.0
 huggingface_hub>=0.23.0
 pyyaml>=6.0

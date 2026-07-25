@@ -223,3 +223,46 @@ INFO: Uvicorn running on http://0.0.0.0:8005
 ## Result
 The model now loads using the correct shard map and inference returns meaningful outputs instead of random noise.
 
+---
+
+# Troubleshooting: CUDA kernel / RoPE errors on Volta (V100) GPUs
+
+## Issue 1: `torch.AcceleratorError: CUDA error: no kernel image is available for execution on the device`
+
+**Cause:** the default PyPI `torch` wheel resolved by `pip install torch>=2.2.0` bundles
+a CUDA 13.x runtime, which ships no kernels for compute capability 7.0
+(Volta -- all V100s on this fleet). The error surfaces on the very first
+GPU op (`embed_tokens`).
+
+**Fix:** pin `torch` to a `cu126`-tagged build via `--extra-index-url
+https://download.pytorch.org/whl/cu126` in `requirements.txt` (see that
+file) -- cu126 is the newest officially published index that still ships
+sm_70 kernels.
+
+## Issue 2: `RuntimeError: The size of tensor a (32) must match the size of tensor b (128) at non-singleton dimension 3` in `apply_rotary_pos_emb`
+
+**Cause:** `intention.py` (vendored from the HF repo) was written against an
+older `transformers` `LlamaAttention`/RoPE call signature. `requirements.txt`
+only specified `transformers>=4.40.0` with no upper bound, so a fresh build
+resolves the latest release (5.x as of this writing), which reshapes
+query/key tensors differently and breaks the custom forward pass in
+`intention.py`.
+
+**Fix:** pin `transformers==4.44.2` (see `requirements.txt`) -- the version
+this repo's own tests were run against.
+
+## Issue 3: `torch.OutOfMemoryError: CUDA out of memory` on model load
+
+**Cause:** the downloaded checkpoint's `config.json` reports
+`"torch_dtype": "float32"`, and `app/main.py`'s `from_pretrained(...,
+torch_dtype="auto")` respects that -- loading the ~8B-parameter base (plus
+CoLA's action/dyna/policy heads) at fp32 takes ~31GB, which pins an entire
+32GB V100 and leaves no headroom for KV cache.
+
+**Fix:** this is model-cache data, not code -- edit the downloaded
+checkpoint's `config.json` and set `"torch_dtype": "float16"` (back up the
+original first). No code or requirements change needed; `torch_dtype="auto"`
+picks up the corrected value automatically. Verified against Circe's
+already-repaired 184-shard cache at
+`/mnt/telemetry/llm-cache/cola/LAMDA-RL--Llama-3.1-CoLA-10B/config.json`.
+

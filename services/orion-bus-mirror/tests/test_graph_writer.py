@@ -38,7 +38,10 @@ class FakeGraphClient:
         elif "CAUSALLY_FOLLOWED_BY" in cypher:
             key = ("CAUSALLY_FOLLOWED_BY", params.get("prior_organ_id"), params.get("organ_id"))
         elif "EXECUTES_VERB" in cypher:
-            key = ("EXECUTES_VERB", params.get("organ_id"), params.get("verb_name"))
+            # node is part of this edge's identity (Idea 2.1) -- include it in
+            # the fake's key so two different nodes running the same verb are
+            # tracked as genuinely independent edges, matching real behavior.
+            key = ("EXECUTES_VERB", params.get("organ_id"), params.get("verb_name"), params.get("node"))
         else:
             return []
 
@@ -678,5 +681,30 @@ class TestBusSynapticGraphWriterVerbStep:
         writer.record_verb_step(VerbStepFact(organ_id="cortex-exec", verb_name="verb_a", latency_sec=5.0, node="athena", observed_at_epoch=1000.0))
         writer.record_verb_step(VerbStepFact(organ_id="cortex-exec", verb_name="verb_b", latency_sec=5.0, node="athena", observed_at_epoch=1000.5))
 
-        assert fake_client._edges[("EXECUTES_VERB", "cortex-exec", "verb_a")]["count"] == 1
-        assert fake_client._edges[("EXECUTES_VERB", "cortex-exec", "verb_b")]["count"] == 1
+        assert fake_client._edges[("EXECUTES_VERB", "cortex-exec", "verb_a", "athena")]["count"] == 1
+        assert fake_client._edges[("EXECUTES_VERB", "cortex-exec", "verb_b", "athena")]["count"] == 1
+
+    def test_same_verb_on_different_nodes_gets_independent_baselines(self, fake_client: FakeGraphClient) -> None:
+        # Idea 2.1: the whole point of the fix -- an organ running the same
+        # verb on two hosts must not blend their latencies into one EWMA.
+        writer = BusSynapticGraphWriter(fake_client, alpha=0.2)
+        writer.record_verb_step(VerbStepFact(organ_id="cortex-exec", verb_name="draft_entry", latency_sec=1.0, node="athena", observed_at_epoch=1000.0))
+        writer.record_verb_step(VerbStepFact(organ_id="cortex-exec", verb_name="draft_entry", latency_sec=1.0, node="athena", observed_at_epoch=1001.0))
+        writer.record_verb_step(VerbStepFact(organ_id="cortex-exec", verb_name="draft_entry", latency_sec=99.0, node="atlas", observed_at_epoch=1002.0))
+
+        athena_edge = fake_client._edges[("EXECUTES_VERB", "cortex-exec", "draft_entry", "athena")]
+        atlas_edge = fake_client._edges[("EXECUTES_VERB", "cortex-exec", "draft_entry", "atlas")]
+        assert athena_edge["count"] == 2
+        # atlas's first-ever observation on this edge -- no baseline yet, not
+        # blended with athena's, and no z-score for a genuine first sighting.
+        assert atlas_edge["count"] == 1
+        assert atlas_edge["latency_zscore"] is None
+        assert atlas_edge["latency_ewma_sec"] == pytest.approx(99.0)
+
+    def test_missing_node_becomes_its_own_unknown_partition_not_null(self, fake_client: FakeGraphClient) -> None:
+        writer = BusSynapticGraphWriter(fake_client, alpha=0.2)
+        writer.record_verb_step(VerbStepFact(organ_id="cortex-exec", verb_name="draft_entry", latency_sec=5.0, node=None, observed_at_epoch=1000.0))
+
+        write_call = fake_client.calls[-1]
+        assert write_call[1]["node"] == "unknown"
+        assert fake_client._edges[("EXECUTES_VERB", "cortex-exec", "draft_entry", "unknown")]["count"] == 1

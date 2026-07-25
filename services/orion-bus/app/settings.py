@@ -78,6 +78,17 @@ class Settings(BaseSettings):
         alias="BUS_CHANNELS_CATALOG_PATH",
     )
 
+    # Mesh-wide census diff (orion.bus.census.compute_census() over
+    # orion.bus.velocity.scan_active_channels()'s SCAN of the full
+    # orion:bus:velocity:* namespace), backing catalog_drift_pressure's fix
+    # (2026-07-25). Gated: SCAN cost at real mesh scale was an explicitly
+    # named, unmeasured question in the parent design doc -- default False
+    # (code-level safe fallback) until live-verified cheap, matching this
+    # repo's convention of the real intended default living in .env_example,
+    # not here.
+    bus_observer_census_enabled: bool = Field(False, alias="BUS_OBSERVER_CENSUS_ENABLED")
+    bus_observer_census_window_minutes: int = Field(5, alias="BUS_OBSERVER_CENSUS_WINDOW_MINUTES")
+
     @property
     def observer_stream_list(self) -> list[str]:
         return [s.strip() for s in self.bus_observer_streams.split(",") if s.strip()]

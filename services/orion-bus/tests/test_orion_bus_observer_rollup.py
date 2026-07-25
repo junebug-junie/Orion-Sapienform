@@ -460,3 +460,145 @@ async def test_shipped_default_no_mismatch_for_well_formed_sample() -> None:
         sample_window_id="20260525T170000Z",
     )
     assert rollup.schema_mismatches == []
+
+
+# ── mesh-wide census (catalog_drift_pressure fix, 2026-07-25) ──────────
+
+
+def test_rollup_threads_undeclared_active_count_into_census_atom() -> None:
+    settings = Settings().model_copy(
+        update={
+            "bus_observer_node_id": "athena",
+            "bus_observer_streams": "orion:evt:gateway",
+        }
+    )
+    snapshot = {
+        "ping_ok": True,
+        "stream_lengths": {"orion:evt:gateway": 1},
+        "catalog_names": {"orion:evt:gateway", "orion:other:channel"},
+        "undeclared_active_count": 3,
+    }
+    rollup = build_rollup_from_redis_snapshot(
+        settings=settings,
+        snapshot=snapshot,
+        observed_at=datetime(2026, 5, 25, 17, 0, 0, tzinfo=timezone.utc),
+        sample_window_id="20260525T170000Z",
+    )
+    assert rollup.undeclared_active_count == 3
+    assert rollup.catalog_size == 2
+
+    collector = rollup.to_collector(code_version="0.1.0")
+    census_atoms = [a for a in collector._atoms.values() if a.semantic_role == "bus_census_computed"]
+    assert len(census_atoms) == 1
+    assert "undeclared_active_count=3" in census_atoms[0].summary
+    assert "catalog_size=2" in census_atoms[0].summary
+
+
+def test_rollup_omits_census_atom_when_not_measured() -> None:
+    # snapshot has no "undeclared_active_count" key at all -- same
+    # backward-compatibility shape as the pre-existing schema-snapshot test
+    # above, confirming a rollup without census data never emits the atom
+    # (None must stay None, not silently become 0).
+    settings = Settings().model_copy(
+        update={
+            "bus_observer_node_id": "athena",
+            "bus_observer_streams": "orion:evt:gateway",
+        }
+    )
+    snapshot = {
+        "ping_ok": True,
+        "stream_lengths": {"orion:evt:gateway": 1},
+        "catalog_names": {"orion:evt:gateway"},
+    }
+    rollup = build_rollup_from_redis_snapshot(
+        settings=settings,
+        snapshot=snapshot,
+        observed_at=datetime(2026, 5, 25, 17, 0, 0, tzinfo=timezone.utc),
+        sample_window_id="20260525T170000Z",
+    )
+    assert rollup.undeclared_active_count is None
+
+    collector = rollup.to_collector(code_version="0.1.0")
+    roles = {a.semantic_role for a in collector._atoms.values()}
+    assert "bus_census_computed" not in roles
+
+
+@pytest.mark.asyncio
+async def test_fetch_snapshot_skips_census_when_disabled() -> None:
+    settings = Settings().model_copy(
+        update={
+            "bus_observer_streams": "orion:evt:gateway",
+            "bus_observer_census_enabled": False,
+        }
+    )
+    fake_client = AsyncMock()
+    fake_client.ping = AsyncMock(return_value=True)
+    fake_client.xlen = AsyncMock(return_value=0)
+    fake_client.aclose = AsyncMock()
+
+    with (
+        patch("app.bus_observer.aioredis.from_url", return_value=fake_client),
+        patch("app.bus_observer.load_channel_catalog_names", return_value={"orion:evt:gateway"}),
+        patch("app.bus_observer.load_channel_catalog_schema_ids", return_value={}),
+        patch("app.bus_observer.scan_active_channels", new_callable=AsyncMock) as scan_mock,
+    ):
+        snapshot = await _fetch_redis_snapshot(settings)
+
+    scan_mock.assert_not_awaited()
+    assert snapshot["undeclared_active_count"] is None
+
+
+@pytest.mark.asyncio
+async def test_fetch_snapshot_computes_census_when_enabled() -> None:
+    settings = Settings().model_copy(
+        update={
+            "bus_observer_streams": "orion:evt:gateway",
+            "bus_observer_census_enabled": True,
+        }
+    )
+    fake_client = AsyncMock()
+    fake_client.ping = AsyncMock(return_value=True)
+    fake_client.xlen = AsyncMock(return_value=0)
+    fake_client.aclose = AsyncMock()
+
+    with (
+        patch("app.bus_observer.aioredis.from_url", return_value=fake_client),
+        patch("app.bus_observer.load_channel_catalog_names", return_value={"orion:declared:one"}),
+        patch("app.bus_observer.load_channel_catalog_schema_ids", return_value={}),
+        patch(
+            "app.bus_observer.scan_active_channels",
+            new_callable=AsyncMock,
+            return_value={"orion:declared:one": 1.0, "orion:undeclared:two": 1.0},
+        ),
+    ):
+        snapshot = await _fetch_redis_snapshot(settings)
+
+    # orion:undeclared:two is active but not in the declared catalog -- the
+    # one real undeclared_active entry compute_census() should find.
+    assert snapshot["undeclared_active_count"] == 1
+
+
+@pytest.mark.asyncio
+async def test_fetch_snapshot_census_scan_failure_fails_open_to_none() -> None:
+    settings = Settings().model_copy(
+        update={
+            "bus_observer_streams": "orion:evt:gateway",
+            "bus_observer_census_enabled": True,
+        }
+    )
+    fake_client = AsyncMock()
+    fake_client.ping = AsyncMock(return_value=True)
+    fake_client.xlen = AsyncMock(return_value=0)
+    fake_client.aclose = AsyncMock()
+
+    with (
+        patch("app.bus_observer.aioredis.from_url", return_value=fake_client),
+        patch("app.bus_observer.load_channel_catalog_names", return_value={"orion:declared:one"}),
+        patch("app.bus_observer.load_channel_catalog_schema_ids", return_value={}),
+        patch("app.bus_observer.scan_active_channels", side_effect=RuntimeError("redis unreachable")),
+    ):
+        snapshot = await _fetch_redis_snapshot(settings)
+
+    # Must not raise (fail-open), and must report None (not measured), never
+    # a silent 0 that would misrepresent "scan failed" as "confirmed clean."
+    assert snapshot["undeclared_active_count"] is None

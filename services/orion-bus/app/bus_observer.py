@@ -11,6 +11,8 @@ from loguru import logger
 from pydantic import ValidationError
 from redis import asyncio as aioredis
 
+from orion.bus.census import compute_census
+from orion.bus.velocity import scan_active_channels
 from orion.core.bus.async_service import OrionBusAsync
 from orion.core.bus.bus_service_chassis import ChassisConfig, HeartbeatOnly
 from orion.core.bus.codec import OrionCodec
@@ -143,6 +145,14 @@ class ObserverRollup:
     # Only streams where mismatch_count > 0 land here (same "only the
     # anomaly, not every check" convention as uncataloged_streams).
     schema_mismatches: list[tuple[str, int, int]] = field(default_factory=list)
+    # Mesh-wide census diff (orion.bus.census.compute_census()) -- see
+    # TransportBusStateV1.undeclared_active_count's docstring for why this
+    # is a genuinely different measurement than uncataloged_streams above.
+    # None (not 0) when the census step itself failed/was skipped, so the
+    # consumer can tell "measured zero" from "not measured" -- same "no
+    # empty-shell cognition" discipline this repo applies elsewhere.
+    undeclared_active_count: int | None = None
+    catalog_size: int = 0
 
     def to_collector(self, *, code_version: str | None) -> BusTransportGrammarCollector:
         c = BusTransportGrammarCollector(
@@ -169,6 +179,11 @@ class ObserverRollup:
                 stream_key=stream_key,
                 mismatch_count=mismatch_count,
                 sampled_count=sampled_count,
+            )
+        if self.undeclared_active_count is not None:
+            c.record_bus_census_computed(
+                undeclared_active_count=self.undeclared_active_count,
+                catalog_size=self.catalog_size,
             )
         c.record_tick_completed(streams_observed=len(self.stream_lengths))
         return c
@@ -215,6 +230,11 @@ def build_rollup_from_redis_snapshot(
         if mismatch_count > 0:
             schema_mismatches.append((stream_key, mismatch_count, sampled_count))
 
+    # None (not 0) when the snapshot step didn't run the census scan at all
+    # (e.g. Redis unreachable) -- see ObserverRollup.undeclared_active_count's
+    # docstring for why that distinction matters.
+    undeclared_active_count = snapshot.get("undeclared_active_count")
+
     return ObserverRollup(
         node_id=settings.bus_observer_node_id,
         sample_window_id=sample_window_id,
@@ -224,6 +244,8 @@ def build_rollup_from_redis_snapshot(
         uncataloged_streams=uncataloged,
         backpressure=backpressure,
         schema_mismatches=schema_mismatches,
+        undeclared_active_count=undeclared_active_count,
+        catalog_size=len(catalog_names),
     )
 
 
@@ -239,6 +261,23 @@ async def _fetch_redis_snapshot(settings: Settings) -> dict[str, Any]:
                 stream_lengths[stream_key] = 0
         catalog_names = load_channel_catalog_names(settings.channels_catalog_path)
         catalog_schema_ids = load_channel_catalog_schema_ids(settings.channels_catalog_path)
+
+        # Mesh-wide census diff, gated (see settings.py's
+        # bus_observer_census_enabled docstring). undeclared_active_count
+        # stays None (not 0) if disabled or if the scan itself fails --
+        # scan_active_channels() is already fail-open internally (returns {}
+        # on a SCAN/read error), but "the mesh had zero undeclared channels"
+        # and "we didn't check" must never collapse into the same value.
+        undeclared_active_count: int | None = None
+        if settings.bus_observer_census_enabled:
+            try:
+                active_channels = await scan_active_channels(
+                    client, window_minutes=settings.bus_observer_census_window_minutes
+                )
+                census = compute_census(catalog_names, active_channels)
+                undeclared_active_count = len(census.undeclared_active)
+            except Exception:
+                undeclared_active_count = None
 
         # Bounded per-stream sample (XREVRANGE ... COUNT n) for the
         # schema-mismatch check, cataloged streams only -- an uncataloged
@@ -267,6 +306,7 @@ async def _fetch_redis_snapshot(settings: Settings) -> dict[str, Any]:
             "catalog_names": catalog_names,
             "catalog_schema_ids": catalog_schema_ids,
             "stream_samples": stream_samples,
+            "undeclared_active_count": undeclared_active_count,
         }
     finally:
         await client.aclose()

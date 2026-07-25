@@ -83,20 +83,47 @@ real `steps[]` payloads, check how often `model_used` is populated and how many 
 preceding-verb pairs actually recur, before deciding whether either axis is worth the edge-count
 cost.
 
-## Idea 2.3 — causal-DAG empirical verification (scoped, not built)
+## Idea 2.3 — causal-DAG empirical verification (built, this session -- diagnosed, not fixed)
 
 **What:** compare `ORGAN_REGISTRY`'s hand-authored `causal_parent_organs` edges
 (`orion/signals/registry.py`) against the live `CAUSALLY_FOLLOWED_BY` edges — which hand-authored
 edges are confirmed by real traffic, which are missing from real traffic, which real edges exist
 that the hand-authored graph never named.
 
-**Why not built now:** explicitly "parked, eventual, not prioritized" in the parent brainstorm doc,
-and nothing in this session's audit changed that priority call — it's a real, valuable, but
-non-urgent verification pass, not blocking anything else.
+**Built**: `orion/signals/scripts/causal_dag_empirical_verification.py`, read-only, no code/schema
+change. Live organ_id is derived from each registry entry's `service` field (`"orion-cortex-exec"`
+-> `"cortex-exec"`), not the registry key itself — several registry entries (`graph_cognition`,
+`autonomy`, `cortex_exec`) model internal reasoning stages of the *same* physical service, so a
+passive wiretap can never observe an edge between them (one `organ_id` per real bus service). Those
+edges are tracked in their own `same_service_internal_edges` bucket, not counted as false negatives.
 
-**Smallest buildable version, if picked up:** a one-off read-only diff script (same shape as
-`causality_chain_prevalence_audit.py`) — load `ORGAN_REGISTRY`, load live `CAUSALLY_FOLLOWED_BY`
-edges, set-diff both directions, report. No code/schema change, pure analysis.
+**Live result** (152 real `CAUSALLY_FOLLOWED_BY` edges, 30 registry entries, run 2026-07-25):
+
+- **1 unmapped** registry entry (`journaler` — `service` field is a free-text library reference, not
+  a real bus service name).
+- **1 same-service internal edge** (`cortex-exec -> cortex-exec`, from `graph_cognition`/`autonomy`).
+- **3 confirmed**: `cortex-exec -> llm-gateway`, `cortex-exec -> recall`,
+  `vision-council -> spark-introspector`.
+- **22 missing from live**: registry claims these edges exist, no live evidence found (e.g.
+  `biometrics -> collapse-mirror`, `recall -> dream`, `social-memory -> recall`). Some of this is
+  likely an artifact of this arc's own known limitation (only *explicitly propagated*
+  `correlation_id`s ever produce a real hop — most bus envelopes carry a fresh, never-repeated one),
+  not necessarily proof the causal relationship is false; not disambiguated further in this pass.
+- **149 observed, not in registry**: real edges the hand-authored DAG never named at all, including
+  entire organs central to current real traffic that aren't represented as registry
+  causal-parent/child relationships the way they're actually wired today — `landing-pad`, `actions`,
+  `orion-harness-governor`, `sql-writer`, `orion-vector-host`.
+
+**Verdict**: `ORGAN_REGISTRY`'s own trailing comment ("first-pass structural approximations... must
+verify") is confirmed accurate and, if anything, understated — only 3 of its mappable edges have any
+live confirmation, and the real mesh has ~50x more causal structure than the registry documents.
+**Diagnosed, not fixed** — correcting/expanding `ORGAN_REGISTRY` to match real topology is a
+substantially bigger task than this verification pass (which organs to add, which edges to remove
+vs. mark unconfirmed-but-plausible, whether `journaler`'s missing bus-service mapping means it's
+dead code or just legitimately non-bus) and deserves its own scoping decision, not silent scope
+creep from "verify" into "rewrite."
+
+**Files:** `orion/signals/scripts/causal_dag_empirical_verification.py` (new), `orion/signals/tests/test_causal_dag_empirical_verification.py` (new, 7 tests).
 
 ## Idea 2.4 — content-drift signals (scoped, not built)
 

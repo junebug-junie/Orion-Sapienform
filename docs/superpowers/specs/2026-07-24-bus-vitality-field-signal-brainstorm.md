@@ -363,16 +363,32 @@ detector that already runs. The one thing the live z-score doesn't do — cross-
 producer service otherwise looks healthy" — is a minor gap, not worth a new idea on its own. Not
 picked up.
 
-**Idea 6 — `bus_activity_zscore`, anomaly-relative mesh throughput. SELECTED 2026-07-25, in
-progress.** Rolling EWMA baseline of total mesh publish rate (sum of `scan_active_channels()`'s
-per-channel rates), surfaced as deviation from baseline rather than an absolute "load score" —
-sidesteps the original Phase-1-adjacent spec's own rejection of an ungrounded aggregate load number
-by design. Unlike Ideas 2/3/5, this is a genuinely distinct aggregation tier the bus-synaptic-graph
-arc never built — everything shipped there is per-edge/per-organ/per-verb, nothing at the
-"mesh-wide, right now" level. Mechanism: computed in `orion-bus`'s existing observer tick (already
-has `scan_active_channels()` wired via `BUS_OBSERVER_CENSUS_ENABLED`, Idea 1's fix), log-only/atom-
-only first (matching this arc's own "make it observable before deciding the consumer" pattern) —
-not force-wired into `telemetry_anomaly` or `NODE_CHANNELS` in the first patch.
+**Idea 6 — `bus_activity_zscore`, anomaly-relative mesh throughput. BUILT 2026-07-25.** Rolling
+EWMA baseline of total mesh publish rate (sum of `scan_active_channels()`'s per-channel rates),
+surfaced as deviation from baseline rather than an absolute "load score" — sidesteps the original
+Phase-1-adjacent spec's own rejection of an ungrounded aggregate load number by design. Unlike Ideas
+2/3/5, this is a genuinely distinct aggregation tier the bus-synaptic-graph arc never built —
+everything shipped there is per-edge/per-organ/per-verb, nothing at the "mesh-wide, right now"
+level.
+
+**Implementation**: `orion-bus`'s observer tick already runs `scan_active_channels()` for Idea 1's
+census fix (`BUS_OBSERVER_CENSUS_ENABLED`) — `total_mesh_publish_rate` reuses that exact result
+(`sum(active_channels.values())`), zero extra Redis cost. A new in-process `ActivityEwmaTracker`
+(`services/orion-bus/app/bus_observer.py`) holds EWMA state for the process lifetime (one instance
+per `run_bus_observer_loop()`, threaded into every `run_observer_tick()` call) — this is genuinely
+different from every other EWMA in this arc, which persist state in FalkorDB edge properties across
+process restarts; here it's in-memory only and resets on observer restart, a real, named trade-off
+(acceptable for a first cut — the alternative, persisting this one scalar externally, is not
+currently justified by anything downstream consuming it yet). The EWMA math itself
+(`orion.bus.ewma.compute_ewma_update`) is a fresh copy of `orion-bus-mirror`'s own
+`compute_ewma_update`, deliberately re-homed in the shared `orion/bus/` package rather than
+cross-service-imported or touching `graph_writer.py` (which had heavy concurrent edit activity this
+session). Emits a new `bus_activity_zscore_computed` grammar atom — log/trace-only first, per this
+arc's own repeated "make it observable before deciding the consumer" pattern, not wired into
+`telemetry_anomaly` or `NODE_CHANNELS` in this patch.
+
+**Live-verified real magnitude before enabling**: ~39 msgs/sec total mesh throughput across 155
+active channels — non-degenerate.
 
 ## Files likely to touch
 

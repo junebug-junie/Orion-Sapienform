@@ -89,6 +89,13 @@ class Settings(BaseSettings):
     bus_observer_census_enabled: bool = Field(False, alias="BUS_OBSERVER_CENSUS_ENABLED")
     bus_observer_census_window_minutes: int = Field(5, alias="BUS_OBSERVER_CENSUS_WINDOW_MINUTES")
 
+    # Idea 6 (bus_activity_zscore, docs/superpowers/specs/2026-07-24-bus-
+    # vitality-field-signal-brainstorm.md) -- EWMA smoothing for the rolling
+    # total-mesh-publish-rate baseline. Rides on bus_observer_census_enabled
+    # (reuses that same scan_active_channels() call, no separate gate) --
+    # same alpha default as the bus-synaptic-graph arc's own EWMA convention.
+    bus_activity_ewma_alpha: float = Field(0.2, alias="BUS_ACTIVITY_EWMA_ALPHA", ge=0.0, le=1.0)
+
     @property
     def observer_stream_list(self) -> list[str]:
         return [s.strip() for s in self.bus_observer_streams.split(",") if s.strip()]

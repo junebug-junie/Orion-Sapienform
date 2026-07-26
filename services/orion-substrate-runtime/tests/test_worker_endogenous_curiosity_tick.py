@@ -221,3 +221,69 @@ def test_endogenous_curiosity_persist_failure_does_not_break_tick(monkeypatch):
     ) as evaluator_cls:
         evaluator_cls.return_value.evaluate.return_value = run_result
         worker._endogenous_curiosity_tick()  # must not raise
+
+
+def test_seed_sources_logged_for_visibility(monkeypatch, caplog):
+    """2026-07-26 visibility fix: which source/node won a budget slot this
+    tick must be logged. This is the generic node-iteration property that let
+    bus_synaptic join this consumer automatically (PR #1377) with zero code
+    change here -- and the same property that let the old broken transport
+    domain go unnoticed winning slots for weeks. A new signal source joining
+    silently should at least be loggable, not just silently invisible."""
+    worker = _make_worker(monkeypatch, enabled=True)
+    fake_store = MagicMock()
+    fake_store.snapshot.return_value = SimpleNamespace(
+        nodes={"node:substrate.bus_synaptic": _graph_node("node:substrate.bus_synaptic", 0.7)}
+    )
+    seed = SimpleNamespace(
+        signal_type="curiosity_candidate",
+        notes=["endogenous_seed", "source:prediction_error"],
+        focal_node_refs=["node:substrate.bus_synaptic"],
+        signal_strength=0.7,
+        confidence=0.7,
+    )
+    decision = SimpleNamespace(outcome="invoke", chosen_task_type="evidence_gap_scan")
+    run_result = SimpleNamespace(signals=[seed], decision=decision)
+
+    with patch(
+        "orion.substrate.graphdb_store.build_substrate_store_from_env",
+        return_value=fake_store,
+    ), patch(
+        "orion.substrate.endogenous_curiosity.endogenous_curiosity_candidates",
+        return_value=[seed],
+    ), patch(
+        "orion.substrate.frontier_curiosity.FrontierCuriosityEvaluator"
+    ) as evaluator_cls:
+        evaluator_cls.return_value.evaluate.return_value = run_result
+        with caplog.at_level("INFO"):
+            worker._endogenous_curiosity_tick()
+
+    assert any(
+        "substrate_endogenous_curiosity_seed_sources" in r.message
+        and "prediction_error=node:substrate.bus_synaptic" in r.message
+        for r in caplog.records
+    )
+
+
+def test_seed_source_logging_failure_does_not_break_tick(monkeypatch):
+    """A malformed/mocked signal missing focal_node_refs (as several existing
+    fixtures in this file do) must not crash the tick -- the visibility log
+    is best-effort."""
+    worker = _make_worker(monkeypatch, enabled=True)
+    fake_store = MagicMock()
+    fake_store.snapshot.return_value = SimpleNamespace(nodes={})
+    seed = SimpleNamespace(signal_type="curiosity_candidate", notes=["endogenous_seed"])
+    decision = SimpleNamespace(outcome="invoke", chosen_task_type="evidence_gap_scan")
+    run_result = SimpleNamespace(signals=[seed], decision=decision)
+
+    with patch(
+        "orion.substrate.graphdb_store.build_substrate_store_from_env",
+        return_value=fake_store,
+    ), patch(
+        "orion.substrate.endogenous_curiosity.endogenous_curiosity_candidates",
+        return_value=[seed],
+    ), patch(
+        "orion.substrate.frontier_curiosity.FrontierCuriosityEvaluator"
+    ) as evaluator_cls:
+        evaluator_cls.return_value.evaluate.return_value = run_result
+        worker._endogenous_curiosity_tick()  # must not raise

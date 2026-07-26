@@ -1821,6 +1821,28 @@ class BiometricsSubstrateWorker:
             attention_frame=attention_frame,
             config=config,
         )
+        if seeds:
+            # Visibility, 2026-07-26: which source/node actually won a budget
+            # slot this tick. _prediction_error_candidates() (orion/substrate/
+            # endogenous_curiosity.py) iterates every substrate node generically
+            # -- a new node with a `prediction_error` metadata field joins this
+            # consumer automatically, with no code change and no announcement
+            # here otherwise (this is exactly how bus_synaptic started feeding
+            # this tick the moment PR #1377 wrote to its node, and exactly how
+            # the old broken transport domain went unnoticed winning slots for
+            # weeks). Cheap, best-effort, never raises.
+            try:
+                sources = [
+                    f"{next((n.split(':', 1)[1] for n in (sig.notes or []) if n.startswith('source:')), 'unknown')}"
+                    f"={sig.focal_node_refs[0] if sig.focal_node_refs else '-'}"
+                    for sig in seeds
+                ]
+                logger.info(
+                    "substrate_endogenous_curiosity_seed_sources sources=%s",
+                    ",".join(sources)[:500],
+                )
+            except Exception:
+                logger.exception("substrate_endogenous_curiosity_seed_source_log_failed")
         if not seeds:
             try:
                 self._store.save_endogenous_curiosity_candidates([])

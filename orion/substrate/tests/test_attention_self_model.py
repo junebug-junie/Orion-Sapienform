@@ -387,6 +387,31 @@ class TestUnconditionalPredictionErrorConfidence:
         # exclusion -- confirms they are computed independently, not aliased.
         assert model.confidence != model.prediction_error_confidence
 
+    def test_bus_synaptic_included_in_domain_set(self) -> None:
+        # 2026-07-25: bus_synaptic is the reversal condition for the old
+        # transport exclusion -- a real, bounded signal now exists. When
+        # present in the caller's dict, it must be counted (5 domains, not
+        # 4), unlike transport which stays excluded even when supplied.
+        # {execution: 0.0001, biometrics: 0.0459, chat: 0.0, route: 0.0,
+        #  bus_synaptic: 0.30} -> mean = 0.0692 -> confidence = 0.9308
+        model = reduce_attention_self_model(
+            None, _field_frame(), now=NOW,
+            prediction_error_by_domain=_prediction_error_by_domain(bus_synaptic=0.30),
+        )
+        assert model.prediction_error_confidence == pytest.approx(1.0 - 0.0692, abs=1e-4)
+        assert "bus_synaptic" in model.prediction_error_confidence_basis
+        assert "5 ACTIVE_INFERENCE_DOMAINS" in model.prediction_error_confidence_basis
+        assert "transport" not in model.prediction_error_confidence_basis
+
+    def test_only_bus_synaptic_data_is_sufficient_alone(self) -> None:
+        # Unlike transport (permanently excluded even alone), bus_synaptic
+        # alone must produce a real confidence value, not honestly-absent.
+        model = reduce_attention_self_model(
+            None, _field_frame(), now=NOW,
+            prediction_error_by_domain={"bus_synaptic": 0.5},
+        )
+        assert model.prediction_error_confidence == pytest.approx(0.5, abs=1e-4)
+
 
 def test_reference_tick_defaults_to_field_frame_generated_at() -> None:
     field_frame = _field_frame(generated_at=NOW)

@@ -227,3 +227,32 @@ five instruments or into `dynamic_pressure` itself). The zombie
 independently confirmed and resolved same-day by the other thread that produced #1275/#1283
 (stopped and removed via `docker stop`/`docker rm`, confirmed via growing write-lag post-stop) —
 Recommended next patch step 1 is therefore already done, not still pending.
+
+## Revision, 2026-07-25 (`bus_synaptic` sixth domain wired into `ACTIVE_INFERENCE_DOMAINS`)
+
+Does not change the core recommendation or the theory-fit argument. Updates Item 3's status:
+one of its three named substrate-quality caveats now has a real, bounded, live-verified
+*replacement candidate* sitting alongside it — not a repair of it.
+
+A separate, concurrent session built `bus_synaptic_prediction_error()`
+(`orion/substrate/prediction_error.py`, PR #1377), aggregating live EWMA/z-score anomaly edges
+from the bus-synaptic-graph arc (`orion_bus_synapse` FalkorDB graph, written continuously by
+`services/orion-bus-mirror`). This patch (`feat/ast-hot-bus-synaptic-domain`) added
+`"bus_synaptic"` to `attention_self_model.py`'s `ACTIVE_INFERENCE_DOMAINS` frozenset (now
+`{execution, biometrics, chat, route, bus_synaptic}`, five domains) and to
+`scripts/analysis/measure_ast_hot_reducer.py`'s `PREDICTION_ERROR_DOMAIN_NODES`. Confirmed live
+before wiring (2026-07-25, 2h real window, `substrate_field_state`): 3534/3534 ticks (100%
+coverage) with real variance (min=0.17, max=1.0, mean=0.30) — not degenerate, and better coverage
+than execution/chat/route's near-0% live coverage at time of writing.
+
+**This does not resolve the transport miscalibration or route subnormal-float caveats named
+above.** The old `transport` domain (`transport_prediction_error()`, narrow 2-Redis-Streams
+scope) remains excluded from `ACTIVE_INFERENCE_DOMAINS` and unfixed. `bus_synaptic` is additive:
+a sixth instrument, five of which now feed the confidence aggregate, sitting next to (not
+replacing) the still-broken `transport` instrument. Item 3's metric-quality-gate pass still needs
+to independently clear route and the `execution_load`/`reasoning_load` substrate before being
+treated as fully gate-passable — this revision only adds a new, healthy contributor to the
+aggregate, it does not audit or fix the remaining two-and-a-half compromised domains.
+
+Also unchanged by this patch: the silent-timeout blind spot (Patch B / `harness_rpc_timeout`)
+remains open — `bus_synaptic`'s real coverage does not by itself detect a silently-hung turn.

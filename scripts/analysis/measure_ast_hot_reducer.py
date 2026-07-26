@@ -6,7 +6,7 @@ scaffolded-roadmap-design.md`. Replays the REAL, pure production reducer
 (`reduce_attention_self_model`, `orion/substrate/attention_self_model.py`)
 over real historical Postgres data for its inputs (`substrate_attention_
 frames` -> `FieldAttentionFrameV1`, `substrate_attention_broadcast_log` ->
-`AttentionBroadcastProjectionV1`, `substrate_field_state` -> the five
+`AttentionBroadcastProjectionV1`, `substrate_field_state` -> the
 Active-Inference domains' raw `prediction_error`), joined by nearest-
 preceding timestamp with the field lane's own tick cadence driving the
 replay (it is the highest-frequency real signal, per the Phase 1 design).
@@ -103,7 +103,7 @@ logger = logging.getLogger("orion.analysis.ast_hot_reducer")
 DEFAULT_WINDOW_HOURS: float = 48.0
 MAX_ROWS: int = 200_000
 
-# The five real, live Predictive-Processing domains
+# The real, live Predictive-Processing domains
 # (`orion/substrate/prediction_error.py`), keyed by their FieldStateV1 node
 # id. `node:substrate.transport` is included despite its documented
 # structurally-narrow scope (`services/orion-substrate-runtime/README.md`'s
@@ -117,6 +117,12 @@ PREDICTION_ERROR_DOMAIN_NODES: dict[str, str] = {
     "biometrics": "node:substrate.biometrics",
     "chat": "node:substrate.chat",
     "route": "node:substrate.route",
+    # Sixth domain, added 2026-07-25 (PR #1377): real EWMA/z-score anomaly
+    # signal aggregated over the live bus synaptic graph (orion_bus_synapse),
+    # written by services/orion-substrate-runtime/app/worker.py::_bus_synaptic_tick.
+    # Confirmed live before adding here: real, varying error values (not
+    # degenerate) across ~200 real edges per tick.
+    "bus_synaptic": "node:substrate.bus_synaptic",
 }
 
 # Trend window, in field_state ticks, split into two equal halves (recent vs
@@ -160,8 +166,9 @@ class ReplayTick:
 
 
 def extract_prediction_error_by_domain(field_state_payload: dict) -> dict[str, float]:
-    """Pull the current raw `prediction_error` value for each of the five
-    real domains out of one `FieldStateV1.node_vectors` payload. Only
+    """Pull the current raw `prediction_error` value for each real domain
+    (`PREDICTION_ERROR_DOMAIN_NODES`) out of one `FieldStateV1.node_vectors`
+    payload. Only
     includes a domain if its node and channel are actually present in this
     payload -- missing, not defaulted to 0.0, so a genuinely absent domain
     doesn't silently masquerade as "confirmed calm" in the aggregate.
@@ -214,13 +221,17 @@ def compute_prediction_error_trend(
     methodology and numbers:
     `docs/superpowers/specs/2026-07-23-predicted-shift-reversion-finding.md`.
 
-    **Validated on biometrics only, applied to all five domains.** No
+    **Validated on biometrics only, applied to all domains.** No
     independent data exists yet for execution/transport/chat/route --
     applying the same reversion sign to them is a reasoned extrapolation
-    (all five domains are computed the same way, as deltas between
+    (those domains are computed the same way, as deltas between
     successive states from discrete events -- turns, exec steps, tool
     calls -- so the same spike-and-settle dynamic is plausible), not an
-    independently confirmed one. In practice this mostly matters for
+    independently confirmed one. `bus_synaptic` (added 2026-07-25) is a
+    different computation shape (live EWMA/z-score edges, not a
+    successive-state delta) and is even less covered by this
+    extrapolation -- also unvalidated, not just unconfirmed by analogy. In
+    practice this mostly matters for
     biometrics anyway (it wins the cross-domain argmax the overwhelming
     majority of the time in live replay -- see the reducer script's own
     report), but a future pass should back-test the other four domains
@@ -437,7 +448,7 @@ def fetch_field_attention_rows(conn, since: datetime) -> tuple[list[tuple[dateti
 
 
 def fetch_field_state_rows(conn, since: datetime) -> tuple[list[tuple[datetime, dict]], bool]:
-    """Raw `FieldStateV1` snapshots -- the source of the five Active-
+    """Raw `FieldStateV1` snapshots -- the source of the Active-
     Inference domains' `prediction_error` (see `PREDICTION_ERROR_DOMAIN_
     NODES`/`extract_prediction_error_by_domain`). Replaces
     `fetch_self_state_rows` (removed 2026-07-23, same producer-killed reason
@@ -690,7 +701,7 @@ def render_report(
         "Read-only. No writes, no events, no flag/config changes. Replays the real "
         "`reduce_attention_self_model` production function over historical "
         "`substrate_attention_frames` (field lane, drives cadence), "
-        "`substrate_field_state` (five Active-Inference domains' `prediction_error`), "
+        "`substrate_field_state` (Active-Inference domains' `prediction_error`), "
         "and `substrate_attention_broadcast_log` rows, all joined by nearest-preceding "
         "timestamp.",
         "",

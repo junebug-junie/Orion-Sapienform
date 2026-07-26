@@ -418,6 +418,18 @@ restarts. **Do not wire any consumer to `node:substrate.bus_synaptic`** (e.g. fo
 `prediction_error_confidence`, PR #1329) until the sanity-check pass has run against real
 accumulated history, not just this first live sample.
 
+**Sanity-check pass cleared, 2026-07-25/26: first consumer wired.** A 2h real-window query
+against `substrate_field_state` (not the first-sample check above) found 3534/3534 ticks (100%
+coverage) with real, non-degenerate variance (min=0.17, max=1.0, mean=0.30) — better coverage
+than 3 of the original 5 `prediction_error` domains at time of writing. On that basis,
+`orion/substrate/attention_self_model.py`'s `ACTIVE_INFERENCE_DOMAINS` frozenset now includes
+`"bus_synaptic"` (five active domains: execution, biometrics, chat, route, bus_synaptic), feeding
+`prediction_error_confidence`. This is a different consumer than `orion-equilibrium-service`'s
+transport metacog gate (PRs #1385/#1387, wired separately, same node). The still-broken `transport`
+domain (`transport_prediction_error()`) remains excluded and unfixed — see
+`docs/superpowers/specs/2026-07-22-l6-self-model-ast-hot-active-inference-design.md`'s
+2026-07-25 revision for the full caveat.
+
 **Fixed 2026-07-25 (same day, follow-up): the 5 new env keys above weren't reaching the
 container.** Same class of gotcha already documented for `SUBSTRATE_STORE_BACKEND`/`FALKORDB_URI`
 in this service's `.env_example` (not elsewhere in this README) — `docker-compose.yml` passes env vars through via an explicit

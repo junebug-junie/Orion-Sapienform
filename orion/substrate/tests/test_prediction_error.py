@@ -5,6 +5,7 @@ vocabulary; see the Sentience Striving Program charter §9b item 3)."""
 
 from __future__ import annotations
 
+import math
 from datetime import datetime, timedelta, timezone
 
 import pytest
@@ -514,16 +515,35 @@ class TestBusSynapticPredictionError:
             bus_synaptic_prediction_error([1.5])
         )
 
+    def test_calm_floor_reads_zero_not_positive(self) -> None:
+        """2026-07-26 floor-bias fix. mean(|z|) resting at sqrt(2/pi) (the
+        expected |Z| for a calm, standard-normal-distributed edge population)
+        must read as genuine 0.0, not the ~0.27 the pre-fix formula returned
+        for this exact input. This is the regression this patch exists to
+        prevent -- without it, this domain can never report "calm" like its
+        four siblings."""
+        calm_floor = math.sqrt(2.0 / math.pi)
+        assert bus_synaptic_prediction_error([calm_floor]) == pytest.approx(0.0, abs=1e-9)
+
+    def test_below_calm_floor_still_clamps_to_zero(self) -> None:
+        """A mean |z| below the theoretical calm floor (sampling noise on a
+        small edge count) must not go negative."""
+        assert bus_synaptic_prediction_error([0.1]) == 0.0
+
     def test_saturates_at_one_not_min_030_threshold(self) -> None:
         """Must use the 3.0 z-score saturation, not this module's 0.30
         pressure-hint-delta _THRESHOLD -- a mean |zscore| of 1.5 dividing by
         0.30 would already saturate to 1.0, destroying the distinction this
-        instrument exists to make."""
+        instrument exists to make. Expected value updated 2026-07-26 for the
+        calm-floor subtraction: (1.5 - sqrt(2/pi)) / (3.0 - sqrt(2/pi)).
+        """
         result = bus_synaptic_prediction_error([1.5])
-        assert result == pytest.approx(0.5)  # 1.5 / 3.0, not min(1.0, 1.5/0.30)
+        assert result == pytest.approx(0.3188367996970756)
 
     def test_saturates_at_one_for_large_zscore(self) -> None:
         assert bus_synaptic_prediction_error([50.0]) == 1.0
 
     def test_averages_across_multiple_edges(self) -> None:
-        assert bus_synaptic_prediction_error([0.0, 3.0]) == pytest.approx(0.5)
+        """Expected value updated 2026-07-26 for the calm-floor subtraction:
+        mean([0.0, 3.0]) = 1.5, same transform as the 1.5 case above."""
+        assert bus_synaptic_prediction_error([0.0, 3.0]) == pytest.approx(0.3188367996970756)

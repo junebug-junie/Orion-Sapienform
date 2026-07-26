@@ -256,3 +256,29 @@ aggregate, it does not audit or fix the remaining two-and-a-half compromised dom
 
 Also unchanged by this patch: the silent-timeout blind spot (Patch B / `harness_rpc_timeout`)
 remains open — `bus_synaptic`'s real coverage does not by itself detect a silently-hung turn.
+
+## Revision, 2026-07-26 (`bus_synaptic` calm-floor bias found and fixed)
+
+The 2026-07-25 revision above checked `bus_synaptic`'s live-data non-degeneracy (real variance,
+100% coverage) but not its commensurability with the other four active domains -- whether its
+"calm" reading is actually comparable to their genuine-zero rest state. It wasn't:
+`bus_synaptic_prediction_error()` computed `mean(|zscore|) / 3.0`, and `mean(|Z|)` for a calm,
+~N(0,1)-distributed population has expected value `sqrt(2/pi) ≈ 0.798`, not 0. Confirmed against
+the same 2h real window this revision's numbers came from: recovered raw `mean(|z|)` values had a
+median of 0.7995 (essentially exactly this constant), and the domain never read below ~0.17
+regardless of real mesh conditions. Folded into the unweighted `prediction_error_confidence` mean,
+this silently depressed confidence whenever the mesh had any traffic at all -- in this window,
+confidence with `bus_synaptic` included (~0.927) vs. without it (~0.989) differed almost entirely
+because of this artifact, not real surprise.
+
+Fixed in `orion/substrate/prediction_error.py::bus_synaptic_prediction_error()` by subtracting the
+theoretical calm floor before saturating (same 3.0 ceiling, unchanged). Re-validated against the
+same real window under the corrected formula: median drops to 0.0 (55.8% of ticks read `<0.01`),
+real spikes up to ~0.98 preserved. `orion-equilibrium-service`'s transport metacog gate
+(PRs #1385/#1387) is unaffected -- its `error_threshold` default (`1.0`, the saturation ceiling)
+is reached under both the old and new formula only at raw `mean(|z|) >= 3.0`, an identical fire
+condition.
+
+This does not change Item 3's other caveats (transport miscalibration, route subnormal float,
+`execution_load`/`reasoning_load` substrate) -- those remain open. It is a correction to this
+same revision's own claim that the sanity-check pass had cleared `bus_synaptic`, not a new item.

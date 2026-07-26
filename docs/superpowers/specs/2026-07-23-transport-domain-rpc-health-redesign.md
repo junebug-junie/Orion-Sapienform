@@ -393,3 +393,42 @@ the live-data sanity check above runs.
 run `measure_ast_hot_reducer.py`-style replay against real `node:substrate.bus_synaptic` history
 to confirm non-degenerate variance (not flat/always-0/always-saturated), then decide the
 `_aggregate_prediction_error_confidence` integration question above with real numbers in hand.
+
+## Revision, 2026-07-26 -- both flags flipped, metacog-trigger dispatch built
+
+Everything the previous revision section left open has since moved. Read this section for the
+current live state; the sections above are historical (frozen at the time each was written), not
+current status.
+
+- **`SUBSTRATE_BUS_SYNAPTIC_TICK_ENABLED` is `true` (PR #1380, 2026-07-25).** Confirmed via
+  repo-wide grep that `node:substrate.bus_synaptic` had exactly two references anywhere in the
+  codebase at the time (both this tick's own upsert calls) -- nothing consumed it, so flipping it
+  couldn't propagate a bad signal, and was the only way to collect the real history the
+  metric-quality-gate step 4 check needs. Live-verified real, varying, non-degenerate output
+  immediately (`edge_count=219`, `error=0.162` then `0.308` across two ticks; later samples ranged
+  0.17-1.0 over hours of real traffic).
+- **The metacog-trigger dispatch mode -- the piece this doc's earlier sections called "not built,"
+  "explicitly tabled" -- is also now built and live: PR #1385/#1387, 2026-07-26.**
+  `build_transport_metacog_trigger_from_bus_synaptic()`
+  (`services/orion-equilibrium-service/app/transport_metacog_gate.py`) polls
+  `node:substrate.bus_synaptic`'s `prediction_error` directly from FalkorDB every 30s (not
+  message-driven like Options A/C -- this data lives in a graph node, not a bus channel), fires at
+  `error >= 1.0` (`EQUILIBRIUM_METACOG_TRANSPORT_BUS_SYNAPTIC_ERROR_THRESHOLD`), shares
+  `trigger_kind="transport"`'s existing cooldown lane. The "genuinely open question" the prior
+  section named (what threshold is worth interrupting cognition for) resolved cleanly, not
+  arbitrarily: `error_threshold=1.0` is `bus_synaptic_prediction_error()`'s own saturation ceiling
+  (mean `|zscore|` already at 3.0), reusing Hub's own already-established anomaly bar rather than
+  inventing a new calibration -- the thing that made this feel tabled (needing more data to pick a
+  threshold) turned out not to require new data at all, just reusing a number that already existed.
+- **`EQUILIBRIUM_METACOG_TRANSPORT_BUS_SYNAPTIC_POLL_ENABLE` is `true` (PR #1387, 2026-07-26).**
+  Needed its own separate go-ahead from the tick flag above -- unlike the tick (a pure shadow
+  write nothing consumed), this dispatches a real `MetacogTriggerV1` into `orion_metacog`, a
+  visible, consumed artifact. Live-verified: 0 container restarts, no errors, current signal reads
+  well below the fire threshold (correctly quiet -- matches this session's own "real anomalies are
+  rare" expectation from Options A/C, not evidence of breakage).
+- **Not yet true, still open:** no real fire has been observed from this evidence source yet
+  (current `node:substrate.bus_synaptic` values have stayed below `1.0`). Watch `orion_metacog` for
+  a `trigger_kind=transport`, `upstream.evidence_source=bus_synaptic_prediction_error` row before
+  fully trusting this path, same standard already applied to Options A/C when they shipped. The
+  `_aggregate_prediction_error_confidence` (PR #1329) integration question is also still
+  undecided -- this domain remains a sibling node, not folded into that formula.

@@ -139,15 +139,20 @@ ORDER BY abs(e.gap_zscore) DESC
 — a blind spot the RPC-health-only transport redesign
 (`docs/superpowers/specs/2026-07-23-transport-domain-rpc-health-redesign.md`) explicitly can't
 see, since that service's RPC mechanism isn't `OrionBusAsync.rpc_request()`. `orion-substrate-
-runtime`'s new `_bus_synaptic_tick` (shadow-only, `SUBSTRATE_BUS_SYNAPTIC_TICK_ENABLED=false`)
-reads this graph's `PUBLISHES.gap_zscore`/`CAUSALLY_FOLLOWED_BY.latency_zscore` edges directly via
+runtime`'s `_bus_synaptic_tick` (`SUBSTRATE_BUS_SYNAPTIC_TICK_ENABLED=true`, live since 2026-07-25,
+PR #1380 -- correcting a stale "shadow-only" claim this paragraph carried before) reads this
+graph's `PUBLISHES.gap_zscore`/`CAUSALLY_FOLLOWED_BY.latency_zscore` edges directly via
 `RedisGraphQueryClient` and writes `node:substrate.bus_synaptic`
 (`orion/substrate/prediction_error.py::bus_synaptic_prediction_error`). Distinct from the
 already-built recall reasoning consumer (Idea 4,
 `docs/superpowers/specs/2026-07-24-bus-synaptic-graph-reasoning-consumer-design.md`) — this feeds
 the Sentience Striving Program's transport prediction-error gap specifically, not chat context.
-The metacog-trigger dispatch half of that spec's original two options is still not built (needs a
-real threshold decision, explicitly tabled).
+The metacog-trigger dispatch half is now also built and live
+(`EQUILIBRIUM_METACOG_TRANSPORT_BUS_SYNAPTIC_POLL_ENABLE=true`, 2026-07-26, PR #1385/#1387 --
+`build_transport_metacog_trigger_from_bus_synaptic()`, `services/orion-equilibrium-service`) --
+no real fire observed yet (current signal sits below the fire threshold), so watch `orion_metacog`
+for the first real `trigger_kind=transport` row from this evidence source before fully trusting
+the path.
 
 ---
 

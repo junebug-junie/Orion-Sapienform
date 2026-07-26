@@ -264,19 +264,19 @@ def test_save_dispatch_result_inserts_expected_row(monkeypatch) -> None:
     assert params["raw_len"] == 6
 
 
-def test_count_dispatches_today_returns_row_count(monkeypatch) -> None:
+def test_sum_risk_dispatched_today_returns_real_cumulative_risk(monkeypatch) -> None:
     store = ExecutionDispatchRuntimeStore("postgresql://test:test@localhost/test")
     fake_engine = MagicMock()
     conn = MagicMock()
     fake_engine.connect.return_value.__enter__ = MagicMock(return_value=conn)
     fake_engine.connect.return_value.__exit__ = MagicMock(return_value=False)
-    conn.execute.return_value.mappings.return_value.first.return_value = {"n": 3}
+    conn.execute.return_value.mappings.return_value.first.return_value = {"total_risk": 4.4}
     monkeypatch.setattr(store, "_engine", fake_engine)
 
-    assert store.count_dispatches_today() == 3
+    assert store.sum_risk_dispatched_today() == 4.4
 
 
-def test_count_dispatches_today_zero_when_no_row(monkeypatch) -> None:
+def test_sum_risk_dispatched_today_zero_when_no_row(monkeypatch) -> None:
     store = ExecutionDispatchRuntimeStore("postgresql://test:test@localhost/test")
     fake_engine = MagicMock()
     conn = MagicMock()
@@ -285,7 +285,7 @@ def test_count_dispatches_today_zero_when_no_row(monkeypatch) -> None:
     conn.execute.return_value.mappings.return_value.first.return_value = None
     monkeypatch.setattr(store, "_engine", fake_engine)
 
-    assert store.count_dispatches_today() == 0
+    assert store.sum_risk_dispatched_today() == 0.0
 
 
 def test_recent_dispatch_result_statuses_returns_ordered_list(monkeypatch) -> None:

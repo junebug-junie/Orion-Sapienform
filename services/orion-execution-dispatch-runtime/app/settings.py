@@ -43,7 +43,26 @@ class Settings(BaseSettings):
     execution_dispatch_rpc_timeout_sec: float = Field(
         120.0, alias="EXECUTION_DISPATCH_RPC_TIMEOUT_SEC"
     )
-    orion_dispatch_max_per_day: int = Field(24, alias="ORION_DISPATCH_MAX_PER_DAY")
+    # Replaces the old ORION_DISPATCH_MAX_PER_DAY (a blind action count, never
+    # empirically derived -- confirmed 2026-07-25 the checked-in default (24)
+    # and the live drifted value (88) both trace to a hand-picked round
+    # number in docs/superpowers/specs/2026-07-13-endogenous-action-motor-
+    # nerve-spec.md's risk table, never validated against real behavior).
+    # This budget is spent against each dispatched candidate's own real,
+    # already-computed `risk_score` (ExecutionDispatchCandidateV1.risk_score,
+    # [0,1] per candidate) instead of counting actions -- five trivial
+    # inspects (risk_score ~0.05 each) no longer cost the same as five
+    # higher-risk candidates. Starting value anchored to real observed
+    # data, not another guess: the first real day this pipeline dispatched
+    # successfully (2026-07-26, post theater-tripwire fix) spent a real
+    # cumulative risk of 4.4 across 88 dispatches (all risk_score=0.05 that
+    # day). This default is ~2x that real observed total -- a margin over
+    # actually-observed behavior, not a fresh round number. Needs real
+    # re-derivation as more real history accumulates across a wider mix of
+    # dispatch_kind/risk_score, per this program's own "measure before
+    # minting" discipline -- treat this as a disclosed starting judgment
+    # call, not a settled constant.
+    orion_dispatch_max_risk_per_day: float = Field(10.0, alias="ORION_DISPATCH_MAX_RISK_PER_DAY")
     action_outcome_channel: str = Field(
         "orion:autonomy:action:outcome", alias="BUS_ACTION_OUTCOME_OUT"
     )

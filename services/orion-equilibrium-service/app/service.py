@@ -21,6 +21,7 @@ from .chat_turn_metacog_gate import (
     is_chat_turn_evidence_terminal,
 )
 from .transport_metacog_gate import (
+    build_transport_metacog_trigger_from_bus_synaptic,
     build_transport_metacog_trigger_from_grammar_atom,
     build_transport_metacog_trigger_from_snapshot,
 )
@@ -65,6 +66,7 @@ class EquilibriumService(BaseChassis):
         # (2026-07-24) got one from day one instead of repeating that bug.
         self._last_trigger_ts_by_kind: Dict[str, float] = {}
         self._last_baseline_scores: Tuple[float, float] = (-1.0, -1.0)
+        self._bus_synaptic_falkor_client: Any = None
         self._baseline_skip_count: int = 0
         self._chat_turn_correlator: ChatTurnCorrelator | None = None
         self._downtime_tracker = DowntimeTransitionTracker()
@@ -654,6 +656,81 @@ class EquilibriumService(BaseChassis):
 
             await asyncio.sleep(interval)
 
+    def _get_bus_synaptic_falkor_client(self):
+        """Cached read-only FalkorDB client for the durable substrate graph
+        (orion_substrate, written by orion-substrate-runtime's
+        _write_prediction_error_node -- a *different* graph from bus-mirror's
+        own orion_bus_synapse). Fail-open: returns None on init error."""
+        try:
+            client = self._bus_synaptic_falkor_client
+            if client is None:
+                from orion.graph.falkor_client import RedisGraphQueryClient
+
+                client = RedisGraphQueryClient(
+                    uri=settings.falkordb_uri,
+                    graph_name=settings.falkordb_substrate_graph,
+                )
+                self._bus_synaptic_falkor_client = client
+            return client
+        except Exception:
+            logger.exception("bus_synaptic_falkor_client_init_failed")
+            return None
+
+    async def _bus_synaptic_poll_loop(self) -> None:
+        """Third transport evidence source, polling node:substrate.bus_synaptic's
+        prediction_error directly from FalkorDB -- not message-driven like
+        Options A/C, so this needs its own timer, mirroring
+        _spark_heartbeat_loop's shape."""
+        if not (
+            settings.metacog_transport_trigger_enable
+            and settings.metacog_transport_bus_synaptic_poll_enable
+        ):
+            return
+
+        interval = float(settings.metacog_transport_bus_synaptic_poll_interval_sec)
+        while not self._stop.is_set():
+            try:
+                client = self._get_bus_synaptic_falkor_client()
+                if client is not None:
+                    # asyncio.to_thread: client.graph_query is a synchronous
+                    # blocking Redis call -- running it inline would block
+                    # this event loop (starving publish_loop/heartbeat/the
+                    # bus-message consumer) for the round-trip. Mirrors how
+                    # the sibling call in orion-substrate-runtime's
+                    # _bus_synaptic_tick is dispatched (worker.py's own tick
+                    # is offloaded via asyncio.to_thread at its call site).
+                    rows = await asyncio.to_thread(
+                        client.graph_query,
+                        "MATCH (n:SubstrateNode) WHERE n.node_id = $node_id "
+                        "RETURN n.prediction_error AS error",
+                        {"node_id": "node:substrate.bus_synaptic"},
+                    )
+                    error = None
+                    for row in rows:
+                        value = row.get("error") if isinstance(row, dict) else None
+                        if isinstance(value, (int, float)):
+                            error = float(value)
+                    if error is not None:
+                        distress, zen, _ = self._calculate_metrics()
+                        trigger = build_transport_metacog_trigger_from_bus_synaptic(
+                            error,
+                            zen_state="zen" if zen > 0.5 else "not_zen",
+                            pressure=distress,
+                            recall_enabled=settings.metacog_recall_enabled,
+                            error_threshold=settings.metacog_transport_bus_synaptic_error_threshold,
+                        )
+                        if trigger is not None:
+                            await self._publish_metacog_trigger(trigger)
+            except Exception:
+                logger.exception("bus_synaptic_poll_loop_failed")
+
+            try:
+                await asyncio.wait_for(self._stop.wait(), timeout=interval)
+            except asyncio.TimeoutError:
+                continue
+            except asyncio.CancelledError:
+                break
+
     async def _run(self) -> None:
         await self._load_state()
         publisher = asyncio.create_task(self._publish_loop())
@@ -662,6 +739,7 @@ class EquilibriumService(BaseChassis):
         heartbeat_task = None
         if settings.equilibrium_spark_heartbeat_enable:
             heartbeat_task = asyncio.create_task(self._spark_heartbeat_loop())
+        bus_synaptic_poll_task = asyncio.create_task(self._bus_synaptic_poll_loop())
 
         # Build list of channels to subscribe to
         channels = [settings.health_channel]
@@ -906,11 +984,13 @@ class EquilibriumService(BaseChassis):
         metacog_task.cancel()
         if heartbeat_task:
             heartbeat_task.cancel()
+        bus_synaptic_poll_task.cancel()
 
         await asyncio.gather(
             publisher,
             collapse_task,
             metacog_task,
             *( [heartbeat_task] if heartbeat_task else [] ),
+            bus_synaptic_poll_task,
             return_exceptions=True,
         )

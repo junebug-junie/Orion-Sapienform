@@ -291,12 +291,19 @@ substrate-grammar reduction itself was broken (it wasn't; the 241 turns are real
 identical `_latest_run()` fallback pattern from execution/route, applied to `prev.turns` instead
 of `prev.runs` — see `docs/superpowers/specs/2026-07-22-chat-route-prediction-error-audit.md`.
 
-`route_prediction_error()`'s live value is currently a subnormal float (~3e-322) in
-`substrate_field_state.node_vectors` — traced as far as confirming `orion/substrate/
-pressure.py::prediction_error_pressure()` does **not** explain it (that function recomputes fresh
-from `node.metadata['prediction_error']` on every call rather than persisting a decayed value), so
-the actual mechanism is still open — see the audit doc's Missing Questions. Not fixed in this
-patch.
+**Root-caused and fixed 2026-07-26.** `route_prediction_error()`'s live value was a subnormal
+float (~3e-322 at time of writing above) in `substrate_field_state.node_vectors` heading toward
+exact 0.0. The mechanism: `services/orion-field-digester/app/digestion/decay.py`'s
+`NODE_DECAY_CHANNELS` included `prediction_error`, so field-digester's generic per-tick
+staleness decay (0.92/tick after 90s with no fresh write) applied to it — despite
+`prediction_error` being designed to behave as an undecayed raw snapshot everywhere else
+(`pressure.py::prediction_error_pressure()`, which is why that function itself was correctly
+ruled out above). Confirmed via a direct Postgres history query: an exact geometric ratio of
+0.92 between every successive persisted value for 48+ hours straight, since route arbitration
+has only 9-10 real events ever and nothing refreshed it. Fixed by removing `prediction_error`
+from `NODE_DECAY_CHANNELS` — this also protects every other domain from the same silent bias
+whenever real events are sparse enough for staleness to kick in, not just route's already-visible
+case.
 
 **The "transport domain" is one queue, not the bus (found 2026-07-22, while re-verifying the "quiet
 bus" claim above against real numbers).** `bus_health`/`delivery_confidence`/`transport_pressure`

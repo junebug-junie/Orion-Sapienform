@@ -256,3 +256,26 @@ aggregate, it does not audit or fix the remaining two-and-a-half compromised dom
 
 Also unchanged by this patch: the silent-timeout blind spot (Patch B / `harness_rpc_timeout`)
 remains open — `bus_synaptic`'s real coverage does not by itself detect a silently-hung turn.
+
+## Revision, 2026-07-26 (route's subnormal-float caveat root-caused and fixed)
+
+The 2026-07-25 revision above named `route`'s subnormal float as one of three compromised
+domains, "still open." Root cause found: `prediction_error` was listed in
+`services/orion-field-digester/app/digestion/decay.py`'s `NODE_DECAY_CHANNELS`, so the generic
+per-tick staleness decay (0.92/tick after 90s with no fresh write) applied to it, despite
+`prediction_error` being designed to behave as an undecayed raw snapshot everywhere else. Route
+arbitration has only 9-10 real events ever, so once the last one went stale, nothing ever
+refreshed the value again and it decayed unopposed for 48+ hours straight — confirmed via a
+direct Postgres history query showing an exact geometric ratio of 0.92 between every successive
+persisted value. Fixed by removing `prediction_error` from `NODE_DECAY_CHANNELS`.
+
+This resolves one of the three domains Item 3's metric-quality-gate pass still needed to clear
+(transport and `execution_load`/`reasoning_load` remain open — transport is being retired
+outright per `docs/superpowers/specs/2026-07-26-transport-domain-retirement-bus-synaptic-
+successor-design.md` rather than repaired). Route's own categorical-mismatch-mean design
+(`route_prediction_error()`) was not changed by this fix and was not itself the bug -- it is
+mathematically bounded [0,1] by construction and cannot produce a subnormal float on its own; the
+decay loop was overwriting its correctly-computed output after the fact. Whether route's
+categorical-mean design is otherwise worth keeping (vs. also retiring toward a bus_synaptic-style
+signal) is a separate, not-yet-resolved question -- this revision only confirms the visible
+subnormal-float symptom had an external cause, not a defect in `route_prediction_error()` itself.

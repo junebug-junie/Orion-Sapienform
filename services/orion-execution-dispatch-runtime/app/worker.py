@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+from collections import deque
 from datetime import datetime, timezone
 from pathlib import Path
 from uuid import uuid4
@@ -57,6 +58,20 @@ class ExecutionDispatchRuntimeWorker:
         # parent spec -- a self-clearing tripwire could silently resume
         # sending on a coincidentally-good sample).
         self.theater_tripwire_active = False
+        # Per-process window for the tripwire's own judgment. Deliberately
+        # NOT sourced from substrate_dispatch_results' full history (that
+        # table persists real history for other consumers and is never
+        # pruned by this service) -- a restart must give the tripwire a
+        # genuinely clean slate. Real incident, 2026-07-25: 10 rows from a
+        # cold post-Postgres-rebuild window (all status="empty", the
+        # substrate hadn't repopulated yet) were still the newest rows in
+        # the table days later, so every restart re-evaluated the SAME
+        # stale evidence and re-tripped on the same tick, making "requires a
+        # restart to re-arm" false in this case -- not a self-clearing
+        # tripwire (still requires a real restart, still can't clear itself
+        # mid-process), just a tripwire whose restart-to-re-arm contract
+        # actually holds now.
+        self._recent_dispatch_statuses: deque[str] = deque(maxlen=THEATER_TRIPWIRE_WINDOW)
 
     async def start(self) -> None:
         asyncio.create_task(self._poll_loop(), name="execution-dispatch-runtime-poll")
@@ -199,14 +214,14 @@ class ExecutionDispatchRuntimeWorker:
             }
         )
 
-        # Re-check after this tick's real sends landed new rows -- lets the
-        # tripwire fire the same tick it actually crosses the threshold,
-        # not one tick late.
+        # Re-check after this tick's real sends appended to the in-process
+        # window -- lets the tripwire fire the same tick it actually crosses
+        # the threshold, not one tick late.
         self._check_theater_tripwire()
         return updated
 
     def _check_theater_tripwire(self) -> bool:
-        recent = self._store.recent_dispatch_result_statuses(THEATER_TRIPWIRE_WINDOW)
+        recent = list(self._recent_dispatch_statuses)
         if len(recent) < THEATER_TRIPWIRE_WINDOW:
             return self.theater_tripwire_active
         empty_count = sum(1 for s in recent if s == "empty")
@@ -248,6 +263,10 @@ class ExecutionDispatchRuntimeWorker:
                 candidate.dispatch_id,
                 existing["status"],
             )
+            # Real information about a real attempt even on replay -- counts
+            # toward this process's own tripwire window the same as a fresh
+            # send would.
+            self._recent_dispatch_statuses.append(existing["status"])
             # Re-emit on replay too: action_outcomes.action_id is the SQL
             # primary key and sql-writer's route upserts by merge(), so a
             # repeat emit for the same dispatch_id idempotently overwrites
@@ -314,6 +333,7 @@ class ExecutionDispatchRuntimeWorker:
                 result_json={"error": str(exc)[:2000], "evidence_refs": [result_id]},
                 raw_len=0,
             )
+            self._recent_dispatch_statuses.append("failed")
             await self._emit_action_outcome(
                 bus,
                 candidate=candidate,
@@ -341,6 +361,7 @@ class ExecutionDispatchRuntimeWorker:
             result_json={**observation_data, "evidence_refs": [result_id]},
             raw_len=raw_len,
         )
+        self._recent_dispatch_statuses.append(status)
         logger.info(
             "execution_dispatch_result dispatch_id=%s status=%s raw_len=%d",
             candidate.dispatch_id,

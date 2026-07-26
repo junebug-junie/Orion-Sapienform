@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import sys
+from collections import deque
 from datetime import datetime, timezone
 from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock
@@ -179,7 +180,6 @@ def _patch_bus_and_client(monkeypatch, outcomes: dict[str, object]) -> MagicMock
 @pytest.mark.asyncio
 async def test_send_prepared_candidates_promotes_on_success(monkeypatch) -> None:
     worker = _make_worker(monkeypatch)
-    worker._store.recent_dispatch_result_statuses = MagicMock(return_value=[])
     worker._store.count_dispatches_today = MagicMock(return_value=0)
     worker._store.save_dispatch_result = MagicMock()
     worker._store.load_dispatch_result_by_dispatch_id = MagicMock(return_value=None)
@@ -212,7 +212,6 @@ async def test_send_prepared_candidates_promotes_on_success(monkeypatch) -> None
 @pytest.mark.asyncio
 async def test_send_one_emits_action_outcome_on_success(monkeypatch) -> None:
     worker = _make_worker(monkeypatch)
-    worker._store.recent_dispatch_result_statuses = MagicMock(return_value=[])
     worker._store.count_dispatches_today = MagicMock(return_value=0)
     worker._store.save_dispatch_result = MagicMock()
     worker._store.load_dispatch_result_by_dispatch_id = MagicMock(return_value=None)
@@ -238,7 +237,6 @@ async def test_send_one_emits_action_outcome_on_success(monkeypatch) -> None:
 @pytest.mark.asyncio
 async def test_send_one_emits_action_outcome_on_empty_observation(monkeypatch) -> None:
     worker = _make_worker(monkeypatch)
-    worker._store.recent_dispatch_result_statuses = MagicMock(return_value=[])
     worker._store.count_dispatches_today = MagicMock(return_value=0)
     worker._store.save_dispatch_result = MagicMock()
     worker._store.load_dispatch_result_by_dispatch_id = MagicMock(return_value=None)
@@ -256,7 +254,6 @@ async def test_send_one_emits_action_outcome_on_empty_observation(monkeypatch) -
 @pytest.mark.asyncio
 async def test_send_one_emits_action_outcome_on_rpc_failure(monkeypatch) -> None:
     worker = _make_worker(monkeypatch)
-    worker._store.recent_dispatch_result_statuses = MagicMock(return_value=[])
     worker._store.count_dispatches_today = MagicMock(return_value=0)
     worker._store.save_dispatch_result = MagicMock()
     worker._store.load_dispatch_result_by_dispatch_id = MagicMock(return_value=None)
@@ -281,7 +278,6 @@ async def test_send_one_re_emits_action_outcome_on_idempotent_replay(monkeypatch
     # that emit itself failed transiently -- every later tick also hits
     # this same replay branch, so there'd be no other chance to retry it.
     worker = _make_worker(monkeypatch)
-    worker._store.recent_dispatch_result_statuses = MagicMock(return_value=[])
     worker._store.count_dispatches_today = MagicMock(return_value=0)
     worker._store.save_dispatch_result = MagicMock()
     worker._store.load_dispatch_result_by_dispatch_id = MagicMock(
@@ -308,7 +304,6 @@ async def test_send_one_re_emits_action_outcome_on_idempotent_replay(monkeypatch
 @pytest.mark.asyncio
 async def test_send_one_action_outcome_publish_failure_does_not_raise(monkeypatch) -> None:
     worker = _make_worker(monkeypatch)
-    worker._store.recent_dispatch_result_statuses = MagicMock(return_value=[])
     worker._store.count_dispatches_today = MagicMock(return_value=0)
     worker._store.save_dispatch_result = MagicMock()
     worker._store.load_dispatch_result_by_dispatch_id = MagicMock(return_value=None)
@@ -329,7 +324,6 @@ async def test_send_one_action_outcome_publish_failure_does_not_raise(monkeypatc
 @pytest.mark.asyncio
 async def test_send_one_action_outcome_summary_is_truncated(monkeypatch) -> None:
     worker = _make_worker(monkeypatch)
-    worker._store.recent_dispatch_result_statuses = MagicMock(return_value=[])
     worker._store.count_dispatches_today = MagicMock(return_value=0)
     worker._store.save_dispatch_result = MagicMock()
     worker._store.load_dispatch_result_by_dispatch_id = MagicMock(return_value=None)
@@ -349,7 +343,6 @@ async def test_send_one_action_outcome_summary_is_truncated(monkeypatch) -> None
 @pytest.mark.asyncio
 async def test_send_prepared_candidates_records_failure_on_rpc_exception(monkeypatch) -> None:
     worker = _make_worker(monkeypatch)
-    worker._store.recent_dispatch_result_statuses = MagicMock(return_value=[])
     worker._store.count_dispatches_today = MagicMock(return_value=0)
     worker._store.save_dispatch_result = MagicMock()
     worker._store.load_dispatch_result_by_dispatch_id = MagicMock(return_value=None)
@@ -369,7 +362,6 @@ async def test_send_prepared_candidates_records_failure_on_rpc_exception(monkeyp
 @pytest.mark.asyncio
 async def test_send_prepared_candidates_empty_observation_status_empty(monkeypatch) -> None:
     worker = _make_worker(monkeypatch)
-    worker._store.recent_dispatch_result_statuses = MagicMock(return_value=[])
     worker._store.count_dispatches_today = MagicMock(return_value=0)
     worker._store.save_dispatch_result = MagicMock()
     worker._store.load_dispatch_result_by_dispatch_id = MagicMock(return_value=None)
@@ -393,7 +385,6 @@ async def test_send_prepared_candidates_respects_per_tick_budget(monkeypatch) ->
     worker._policy = worker._policy.model_copy(
         update={"limits": worker._policy.limits.model_copy(update={"max_dispatches_per_tick": 1})}
     )
-    worker._store.recent_dispatch_result_statuses = MagicMock(return_value=[])
     worker._store.count_dispatches_today = MagicMock(return_value=0)
     worker._store.save_dispatch_result = MagicMock()
     worker._store.load_dispatch_result_by_dispatch_id = MagicMock(return_value=None)
@@ -421,7 +412,6 @@ async def test_send_one_replays_existing_result_without_resending(monkeypatch) -
     # process died before save_dispatch_frame persisted that), the next
     # tick must NOT fire a second real cortex-exec RPC for it.
     worker = _make_worker(monkeypatch)
-    worker._store.recent_dispatch_result_statuses = MagicMock(return_value=[])
     worker._store.count_dispatches_today = MagicMock(return_value=0)
     worker._store.save_dispatch_result = MagicMock()
     worker._store.load_dispatch_result_by_dispatch_id = MagicMock(
@@ -446,7 +436,6 @@ async def test_send_one_replays_existing_result_without_resending(monkeypatch) -
 @pytest.mark.asyncio
 async def test_send_one_replays_existing_failed_result_without_resending(monkeypatch) -> None:
     worker = _make_worker(monkeypatch)
-    worker._store.recent_dispatch_result_statuses = MagicMock(return_value=[])
     worker._store.count_dispatches_today = MagicMock(return_value=0)
     worker._store.save_dispatch_result = MagicMock()
     worker._store.load_dispatch_result_by_dispatch_id = MagicMock(
@@ -472,7 +461,6 @@ async def test_send_one_replays_existing_failed_result_without_resending(monkeyp
 @pytest.mark.asyncio
 async def test_send_prepared_candidates_skips_when_daily_cap_reached(monkeypatch) -> None:
     worker = _make_worker(monkeypatch)
-    worker._store.recent_dispatch_result_statuses = MagicMock(return_value=[])
     worker._store.count_dispatches_today = MagicMock(
         return_value=worker._settings.orion_dispatch_max_per_day
     )
@@ -490,8 +478,11 @@ async def test_send_prepared_candidates_skips_when_daily_cap_reached(monkeypatch
 @pytest.mark.asyncio
 async def test_send_prepared_candidates_skips_when_tripwire_active(monkeypatch) -> None:
     worker = _make_worker(monkeypatch)
-    worker._store.recent_dispatch_result_statuses = MagicMock(
-        return_value=["empty"] * 6 + ["success"] * 4
+    # Tripwire window is now in-process (worker.py, fixed 2026-07-25 -- a live
+    # Postgres query let stale pre-restart rows defeat "restart to re-arm";
+    # see the theater-tripwire-age-gate fix), not backed by the store.
+    worker._recent_dispatch_statuses = deque(
+        ["empty"] * 6 + ["success"] * 4, maxlen=worker_mod.THEATER_TRIPWIRE_WINDOW
     )
     worker._store.count_dispatches_today = MagicMock(return_value=0)
     worker._store.save_dispatch_result = MagicMock()
@@ -510,8 +501,8 @@ async def test_send_prepared_candidates_skips_when_tripwire_active(monkeypatch) 
 @pytest.mark.asyncio
 async def test_send_prepared_candidates_tripwire_stays_tripped_across_calls(monkeypatch) -> None:
     worker = _make_worker(monkeypatch)
-    worker._store.recent_dispatch_result_statuses = MagicMock(
-        return_value=["empty"] * 6 + ["success"] * 4
+    worker._recent_dispatch_statuses = deque(
+        ["empty"] * 6 + ["success"] * 4, maxlen=worker_mod.THEATER_TRIPWIRE_WINDOW
     )
     worker._store.count_dispatches_today = MagicMock(return_value=0)
     worker._store.save_dispatch_result = MagicMock()
@@ -529,7 +520,6 @@ async def test_send_prepared_candidates_tripwire_stays_tripped_across_calls(monk
 @pytest.mark.asyncio
 async def test_send_prepared_candidates_noop_when_nothing_prepared(monkeypatch) -> None:
     worker = _make_worker(monkeypatch)
-    worker._store.recent_dispatch_result_statuses = MagicMock(return_value=[])
     worker._store.count_dispatches_today = MagicMock(return_value=0)
     frame = _frame_with_candidates(_candidate("dispatch:1", status="blocked"))
 

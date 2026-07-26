@@ -317,6 +317,15 @@ class ExecutionDispatchRuntimeStore:
         return int(row["n"]) if row else 0
 
     def recent_dispatch_result_statuses(self, limit: int = 10) -> list[str]:
+        """Kept, not removed: no longer called by worker.py's theater tripwire
+        as of 2026-07-25 (that check moved to an in-process deque so a
+        restart gives it a genuinely clean slate -- querying this table let
+        stale pre-restart rows defeat "restart to re-arm" in a real
+        incident). Still real, still tested (test_execution_dispatch_
+        runtime_store.py), left in place as a real building block for a
+        possible future debug/inspection endpoint over actual historical
+        Postgres data, not the live tripwire's own decision.
+        """
         with self._engine.connect() as conn:
             rows = conn.execute(
                 text(

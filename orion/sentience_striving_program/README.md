@@ -249,9 +249,9 @@ first place. Full reasoning and phased detail:
    revision. **Scope, stated plainly:** this is a sibling domain node, not yet folded into
    `_aggregate_prediction_error_confidence`'s existing four-domain mean — building that requires
    deciding whether a sixth domain changes that formula's semantics, a separate call from writing
-   the node itself. Shadow-only, off by default
-   (`SUBSTRATE_BUS_SYNAPTIC_TICK_ENABLED=false` in `services/orion-substrate-runtime`) pending a
-   live-data sanity check; does not change this item's confidence formula.
+   the node itself. Live since 2026-07-25
+   (`SUBSTRATE_BUS_SYNAPTIC_TICK_ENABLED=true` in `services/orion-substrate-runtime`, PR #1380)
+   — real accumulated history is now collecting; does not change this item's confidence formula.
 3. **Route existing tension producers directly onto `FieldStateV1` channels**, retiring the
    bucket-vote layer — collapses the redundant reimplementation named in §7's finding.
    Reframed as prediction-error-native (extending the already-live

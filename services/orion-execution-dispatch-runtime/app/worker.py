@@ -31,6 +31,18 @@ logger = logging.getLogger("orion.execution_dispatch.runtime")
 
 THEATER_TRIPWIRE_WINDOW = 10
 THEATER_TRIPWIRE_EMPTY_THRESHOLD = 0.5
+# Real, disclosed gap closed defensively (review, 2026-07-26): every live
+# proposal_kind_to_cortex-routed template today has base_risk >= 0.02 (the
+# one base_risk=0.0 template, defer_due_to_low_readiness, has no cortex
+# route and never reaches a dispatch candidate) -- so risk_score=0.0 is not
+# currently reachable in production. But ExecutionDispatchCandidateV1.
+# risk_score only enforces [0,1] at the schema level, nothing prevents a
+# future template from shipping one at 0.0, and a genuinely zero-risk
+# candidate would make the cumulative risk budget below provide no ceiling
+# at all (cumulative_risk + 0.0 > remaining_risk_budget is never true once
+# remaining_risk_budget is positive). This floor is a config-independent
+# backstop, not a claim any real candidate is actually this risky.
+MINIMUM_REAL_RISK_FLOOR = 0.01
 # ActionOutcomeEmitV1.summary lands in chat-visible evidence via
 # chat_stance.py's _project_recent_dispatch_actions -- bounded here at the
 # producer so nothing downstream needs to re-truncate raw model output.
@@ -164,23 +176,41 @@ class ExecutionDispatchRuntimeWorker:
         if self._check_theater_tripwire():
             return frame  # tripped (this tick or a prior one) -- send nothing
 
-        remaining_daily_budget = (
-            self._settings.orion_dispatch_max_per_day - self._store.count_dispatches_today()
+        remaining_risk_budget = (
+            self._settings.orion_dispatch_max_risk_per_day - self._store.sum_risk_dispatched_today()
         )
-        if remaining_daily_budget <= 0:
+        if remaining_risk_budget <= 0:
             logger.info(
-                "execution_dispatch_daily_cap_reached max_per_day=%d",
-                self._settings.orion_dispatch_max_per_day,
+                "execution_dispatch_daily_risk_cap_reached max_risk_per_day=%.4f",
+                self._settings.orion_dispatch_max_risk_per_day,
             )
             return frame
 
-        budget = max(0, min(remaining_daily_budget, self._policy.limits.max_dispatches_per_tick))
-        if budget <= 0:
-            return frame
+        # Real, risk-weighted selection -- not a blind count. `frame.candidates`
+        # is already priority-sorted (build_proposal_frame), so this takes
+        # the highest-priority prepared candidates whose cumulative
+        # risk_score fits inside what's left of today's real budget,
+        # stopping at the first one that would exceed it (no skip-ahead to
+        # squeeze in a smaller one later, matching the existing simple
+        # sequential-take style this replaces). max_dispatches_per_tick
+        # stays a separate, independent per-tick burst cap.
+        to_send: list[ExecutionDispatchCandidateV1] = []
+        cumulative_risk = 0.0
+        for candidate in frame.candidates:
+            if candidate.dispatch_status != "prepared_for_dispatch":
+                continue
+            if len(to_send) >= self._policy.limits.max_dispatches_per_tick:
+                break
+            # max(..., MINIMUM_REAL_RISK_FLOOR): a real risk_score=0.0 must
+            # still cost something against the daily budget, or the budget
+            # provides no ceiling at all for that candidate (see the
+            # constant's own docstring above).
+            spend = max(candidate.risk_score, MINIMUM_REAL_RISK_FLOOR)
+            if cumulative_risk + spend > remaining_risk_budget:
+                break
+            to_send.append(candidate)
+            cumulative_risk += spend
 
-        to_send = [c for c in frame.candidates if c.dispatch_status == "prepared_for_dispatch"][
-            :budget
-        ]
         if not to_send:
             return frame
 

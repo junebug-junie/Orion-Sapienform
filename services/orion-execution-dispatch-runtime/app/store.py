@@ -295,7 +295,18 @@ class ExecutionDispatchRuntimeStore:
             "raw_len": row["raw_len"],
         }
 
-    def count_dispatches_today(self) -> int:
+    def sum_risk_dispatched_today(self) -> float:
+        """Real cumulative risk_score spent today, not a blind action count.
+
+        Replaces count_dispatches_today() (2026-07-26) -- a flat count
+        couldn't distinguish five trivial risk_score~0.05 inspects from five
+        genuinely higher-risk candidates. Reads `dispatched_candidates` off
+        `substrate_execution_dispatch_frames` directly -- each candidate
+        already carries its own real, already-computed `risk_score`
+        (ExecutionDispatchCandidateV1.risk_score); no schema migration or
+        new column needed, this is purely a smarter read of data already
+        being written.
+        """
         # Explicit UTC bound computed in Python, not date_trunc('day', now())
         # -- matches this file's own datetime.now(timezone.utc) convention
         # elsewhere and doesn't depend on the Postgres session's configured
@@ -307,14 +318,26 @@ class ExecutionDispatchRuntimeStore:
             row = conn.execute(
                 text(
                     """
-                    SELECT count(*) AS n
-                    FROM substrate_dispatch_results
-                    WHERE created_at >= :today_start
+                    SELECT COALESCE(SUM((cand.value ->> 'risk_score')::float), 0.0) AS total_risk
+                    FROM substrate_execution_dispatch_frames f
+                    CROSS JOIN LATERAL jsonb_array_elements(
+                        f.dispatch_frame_json -> 'dispatched_candidates'
+                    ) AS cand(value)
+                    WHERE f.created_at >= :today_start
+                      -- jsonb_array_elements() errors on a literal JSON null
+                      -- (as opposed to a missing key or a real [] array) --
+                      -- not reachable today (Pydantic's default_factory=list
+                      -- means normal serialization can't produce one, and
+                      -- 0 of today's real rows have this shape, confirmed
+                      -- live), but this guard means a future/legacy row of
+                      -- that shape degrades that row to zero contribution
+                      -- instead of throwing this whole query.
+                      AND jsonb_typeof(f.dispatch_frame_json -> 'dispatched_candidates') = 'array'
                     """
                 ),
                 {"today_start": today_start_utc},
             ).mappings().first()
-        return int(row["n"]) if row else 0
+        return float(row["total_risk"]) if row else 0.0
 
     def recent_dispatch_result_statuses(self, limit: int = 10) -> list[str]:
         """Kept, not removed: no longer called by worker.py's theater tripwire

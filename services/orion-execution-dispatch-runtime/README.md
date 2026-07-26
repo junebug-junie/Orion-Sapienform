@@ -30,7 +30,19 @@ promotes the candidate to a real, evidenced `dispatched` status.
 
 **Budgets**, both enforced per tick before any send happens:
 - `config/execution_dispatch/execution_dispatch_policy.v1.yaml`'s `limits.max_dispatches_per_tick`
-- `ORION_DISPATCH_MAX_PER_DAY` (rolling UTC calendar day, counted against `substrate_dispatch_results`)
+- `ORION_DISPATCH_MAX_RISK_PER_DAY` (rolling UTC calendar day) -- a real cumulative risk-score
+  budget, not a blind action count. Replaces the old `ORION_DISPATCH_MAX_PER_DAY` (2026-07-26):
+  that was a hand-picked round number (checked-in 24, live-drifted to an unexplained 88) never
+  validated against real behavior -- exactly the kind of un-measured hand-authored proxy the
+  Sentience Striving Program exists to replace. Each dispatched candidate already carries a
+  real, already-computed `risk_score` ([0,1]); the budget is spent against the sum of those
+  scores (`ExecutionDispatchRuntimeStore.sum_risk_dispatched_today()`, reading
+  `dispatched_candidates` off `substrate_execution_dispatch_frames`, not
+  `substrate_dispatch_results`), so five trivial inspects no longer cost the same as five
+  genuinely higher-risk candidates. The default (10.0) is anchored to real observed data (the
+  first day this pipeline dispatched successfully spent a real cumulative risk of 4.4 across 88
+  dispatches) rather than a fresh guess, but is still a disclosed starting judgment call --
+  expect it to need re-derivation as more real history accumulates across a wider risk_score mix.
 
 **Theater tripwire**: if more than half of the trailing 10 real results have `status="empty"`
 (a real send that produced no usable observation), the worker stops sending for the rest of

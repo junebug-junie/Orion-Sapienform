@@ -25,18 +25,27 @@ producer that no longer exists (`orion/self_state/` was deleted, PR #1266;
 `orion-athena-self-state-runtime` was confirmed stopped same-day per
 `docs/superpowers/specs/2026-07-22-l6-self-model-ast-hot-active-inference-
 design.md`'s Missing Question 1). Per that design doc's items 3/4: confidence
-is now the inverse of aggregate prediction-error volatility across the five
-real, live Predictive-Processing domains (execution/transport/biometrics/
-chat/route -- `orion/substrate/prediction_error.py`), and predicted_shift now
-names whichever domain's prediction-error is trending fastest, instead of a
-hand-tuned `SelfStateV1` dimension. Both are supplied by the caller as
-already-computed dicts (`prediction_error_by_domain`,
+is now the inverse of aggregate prediction-error volatility across the real,
+live Predictive-Processing domains (`orion/substrate/prediction_error.py`),
+and predicted_shift now names whichever domain's prediction-error is trending
+fastest, instead of a hand-tuned `SelfStateV1` dimension. Both are supplied by
+the caller as already-computed dicts (`prediction_error_by_domain`,
 `prediction_error_trend_by_domain`) -- this function stays a pure formatter/
 aggregator over them, matching its own "no I/O, no store coupling" design for
 every other input here. `self_state_present`/`self_state` are gone from both
 this signature and `AttentionSelfModelV1` -- not deprecated in place, removed
 (this repo's own "kill means kill" convention: no fallback to the thing being
 killed).
+
+**2026-07-25: sixth domain added, `bus_synaptic`.** The original five domains
+were execution/transport/biometrics/chat/route, but `transport` was excluded
+from `ACTIVE_INFERENCE_DOMAINS` (see that constant's docstring) as confirmed
+dead -- a real, bounded replacement now exists: `bus_synaptic`, built on top
+of the bus-synaptic-graph arc. `ACTIVE_INFERENCE_DOMAINS` now covers
+execution/biometrics/chat/route/bus_synaptic (five active domains, not six --
+the old broken `transport` domain remains present in
+`prediction_error_by_domain` when a caller supplies it, just still excluded
+from this filtered set).
 """
 
 from __future__ import annotations
@@ -60,16 +69,25 @@ DEFAULT_BROADCAST_STALE_THRESHOLD_SEC = 60.0
 # (`docs/notes/2026-07-24-attention-reason-branch-starvation-finding.md`):
 # `transport_prediction_error` reads exactly 0.0 for 100% of a real 8h
 # window (`BUS_OBSERVER_STREAMS` only watches 2 real Redis Streams), so
-# averaging it in with the other four real, varying domains systematically
-# inflates confidence by a fixed, mechanical amount every tick -- harmless
-# while this formula fired on 0.04% of ticks, not harmless once it fires on
-# nearly all of them. Re-include `transport` here once a real, bounded,
-# prediction-error-shaped transport signal exists -- tracked as the
-# reversal condition against PR #1323's bus-synaptic-graph work, not before.
+# averaging it in with the other domains systematically inflates confidence
+# by a fixed, mechanical amount every tick.
+#
+# **`bus_synaptic` added 2026-07-25 -- this is the reversal condition named
+# above, now satisfied.** PR #1377 built a real, bounded, prediction-error-
+# shaped transport signal on top of the bus-synaptic-graph arc (PR #1323
+# onward): `bus_synaptic_prediction_error()` aggregates live EWMA/z-score
+# edges from the `orion_bus_synapse` FalkorDB graph, written continuously by
+# `services/orion-bus-mirror`. Confirmed live before adding here (2026-07-25,
+# 2h real window, `substrate_field_state`): 3534/3534 ticks (100% coverage --
+# better than execution/chat/route's near-0% coverage) with real variance
+# (min=0.17, max=1.0, mean=0.30), not the old `transport` domain's flat 0.0.
+# The old `transport` domain itself (`transport_prediction_error()`, narrow
+# 2-Redis-Streams scope) remains excluded and unfixed -- `bus_synaptic` is an
+# additive replacement candidate sitting alongside it, not a repair of it.
 # This constant does NOT affect the pre-existing branch-gated
 # `confidence`/`confidence_basis` fields below, which keep their original
 # (unfiltered, all-domains) formula unchanged -- additive only.
-ACTIVE_INFERENCE_DOMAINS = frozenset({"execution", "biometrics", "chat", "route"})
+ACTIVE_INFERENCE_DOMAINS = frozenset({"execution", "biometrics", "chat", "route", "bus_synaptic"})
 
 
 def _round_or_none(value: float | None, digits: int = 4) -> float | None:
@@ -194,11 +212,11 @@ def reduce_attention_self_model(
     default) reproduces today's narrative byte-for-byte.
 
     `prediction_error_by_domain` is an optional, caller-supplied snapshot of
-    the current raw `prediction_error` value for each of the five real
-    Predictive-Processing domains (`{"execution": 0.0001, "transport": 0.0,
-    "biometrics": 0.0459, "chat": ..., "route": ...}` -- keys are whatever
-    the caller has data for; missing domains are simply absent, not
-    defaulted to 0.0). Drives `confidence` in the `field_salience_only`
+    the current raw `prediction_error` value for each real Predictive-
+    Processing domain (`{"execution": 0.0001, "transport": 0.0,
+    "biometrics": 0.0459, "chat": ..., "route": ..., "bus_synaptic": 0.30}` --
+    keys are whatever the caller has data for; missing domains are simply
+    absent, not defaulted to 0.0). Drives `confidence` in the `field_salience_only`
     branch (see `_aggregate_prediction_error_confidence`). Omitting this
     argument falls back to the pre-existing
     `field_attention_frame.dominant_targets[].confidence_score` mean.

@@ -290,6 +290,20 @@ avoid colliding with "Idea 1-6" below, which are a separate, earlier set of cand
   own dedicated design doc and its own metric-quality-gate pass before implementation starts, not a
   green light from brainstorm output alone.
 
+## Resolved, 2026-07-26 (separate from the Missing Questions below)
+
+`capability:transport`'s `pressure`/`confidence`/`available_capacity` (fed by
+`stream_backlog_pressure`/`delivery_confidence`/`stream_backlog_health` from the same narrow
+world_pulse census this doc already calls dead) were confirmed live degenerate — `confidence`/
+`available_capacity` pinned at exactly 0.85 with zero variance, `pressure` pinned at exactly
+0.00082, over a 2h real window. Replaced with a new `node:substrate.bus_synaptic -> capability:
+transport` edge (`prediction_error -> pressure`) in `config/field/orion_field_topology.v1.yaml`,
+relying on `apply_diffusion()`'s existing derived-fallback formula for `confidence`/
+`available_capacity` rather than fabricating a second constant. This is **separate** from the
+Missing Questions bullet below about `catalog_drift_pressure`'s consumers (Idea 1,
+already-shipped PR #1373) — that question remains genuinely open; this fix touched a different
+part of the same capability's vector.
+
 ## Missing questions
 
 Carried from the original brainstorm, still unresolved:

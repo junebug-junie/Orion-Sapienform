@@ -344,3 +344,29 @@ def test_derived_formula_still_falls_back_when_direct_edge_contributes_nothing_t
     # Fallback to the derived formula, not hard-floored at 0.0.
     assert tgt["confidence"] == max(0.0, 1.0 - 0.5 * 0.765)
     assert tgt["available_capacity"] == max(0.0, 1.0 - 0.765)
+
+
+def test_bus_synaptic_edge_drives_capability_transport_pressure() -> None:
+    """2026-07-26: node:athena's stream_backlog_pressure/delivery_confidence/
+    stream_backlog_health -> capability:transport mappings were removed
+    (confirmed live degenerate -- pinned at exactly 0.85/0.00082 with zero
+    variance over a 2h real window, fed by the narrow world_pulse census).
+    Replaced with node:substrate.bus_synaptic's real prediction_error ->
+    pressure, config/field/orion_field_topology.v1.yaml. confidence/
+    available_capacity are deliberately not mapped directly -- they must
+    come from the existing derived-fallback formula instead."""
+    edge = FieldEdgeV1(
+        source_id="node:substrate.bus_synaptic",
+        target_id="capability:transport",
+        edge_type="node_capability",
+        weight=0.85,
+        channel_map={"prediction_error": "pressure"},
+    )
+    state = _state([edge], {"node:substrate.bus_synaptic": {"prediction_error": 0.4}})
+
+    apply_diffusion(state, diffusion_rate=1.0)
+
+    tgt = state.capability_vectors["capability:transport"]
+    assert tgt["pressure"] == 0.34  # 0.4 * 0.85 * 1.0
+    assert tgt["confidence"] == max(0.0, 1.0 - 0.5 * 0.34)
+    assert tgt["available_capacity"] == max(0.0, 1.0 - 0.34)

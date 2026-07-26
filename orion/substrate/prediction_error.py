@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import math
 from typing import Any
 
 from orion.schemas.biometrics_projection import NodeBiometricsProjectionV1
@@ -16,6 +17,18 @@ _THRESHOLD = 0.30
 # Reuses the zscore_threshold=3.0 convention already live in
 # services/orion-hub/scripts/bus_synaptic_graph_routes.py's anomalies() route.
 _BUS_SYNAPTIC_ZSCORE_SATURATION = 3.0
+
+# 2026-07-26: floor-bias fix. mean(|z|) over a batch of ~N(0,1)-distributed
+# z-scores does NOT rest at 0 when traffic is genuinely calm -- E[|Z|] for a
+# standard normal is sqrt(2/pi), not 0, because averaging absolute values of a
+# zero-mean distribution can't average to zero. Confirmed live (2026-07-26,
+# 2h real window, 3527 ticks, values recovered from the *unfixed* aggregate):
+# median mean(|z|) was 0.7995, essentially exactly this constant, and the
+# aggregate NEVER read below ~0.51 raw (0.17 post-saturation) across the whole
+# window. Subtracted out below so this domain can genuinely rest near 0 like
+# its four siblings (execution/biometrics/chat/route), instead of permanently
+# reporting "moderately surprised" regardless of real mesh conditions.
+_BUS_SYNAPTIC_CALM_FLOOR = math.sqrt(2.0 / math.pi)
 
 
 def _mean(values: list[float]) -> float:
@@ -301,7 +314,21 @@ def bus_synaptic_prediction_error(edge_zscores: list[float]) -> float:
     ``zscore_threshold=3.0`` convention already live in
     ``services/orion-hub/scripts/bus_synaptic_graph_routes.py``'s ``anomalies()``
     route rather than inventing a new calibration.
+
+    **2026-07-26: subtracts ``_BUS_SYNAPTIC_CALM_FLOOR`` before saturating.**
+    ``mean(|z|)`` does not rest at 0 for genuinely calm traffic -- see that
+    constant's docstring. Without this correction the function returned
+    values with a live-confirmed floor around 0.27 no matter how quiet the
+    mesh actually was, which silently and permanently biased
+    ``prediction_error_confidence`` downward once this domain was wired into
+    ``attention_self_model.ACTIVE_INFERENCE_DOMAINS`` (caught before any live
+    consumer existed). Now returns ``max(0, mean(|z|) - floor) / (saturation -
+    floor)``, clamped to [0, 1] -- still saturates to 1.0 at zscore 3.0
+    (unchanged ceiling), but now genuinely rests near 0 like the other four
+    domains' raw deltas.
     """
     if not edge_zscores:
         return 0.0
-    return min(1.0, _mean([abs(z) for z in edge_zscores]) / _BUS_SYNAPTIC_ZSCORE_SATURATION)
+    mean_abs_z = _mean([abs(z) for z in edge_zscores])
+    excess = max(0.0, mean_abs_z - _BUS_SYNAPTIC_CALM_FLOOR)
+    return min(1.0, excess / (_BUS_SYNAPTIC_ZSCORE_SATURATION - _BUS_SYNAPTIC_CALM_FLOOR))

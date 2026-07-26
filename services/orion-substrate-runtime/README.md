@@ -437,6 +437,27 @@ domain (`transport_prediction_error()`) remains excluded and unfixed — see
 `docs/superpowers/specs/2026-07-22-l6-self-model-ast-hot-active-inference-design.md`'s
 2026-07-25 revision for the full caveat.
 
+**Corrected 2026-07-26: the sanity-check pass above was incomplete.** It checked non-degeneracy
+(step 4 of CLAUDE.md's metric-quality-gate) but skipped the theory-anchor/commensurability check
+(step 3) -- whether this domain's "calm" value is actually comparable to its four siblings'.
+It wasn't: `bus_synaptic_prediction_error()` computed `mean(|zscore|) / 3.0`, and `mean(|Z|)` for a
+calm, ~N(0,1)-distributed edge population has an expected value of `sqrt(2/pi) ≈ 0.798`, not 0 --
+averaging absolute values of a zero-mean distribution can't average to zero. Confirmed against the
+same 2h real window used above (recovering raw `mean(|z|)` from the already-stored aggregate):
+median raw `mean(|z|)` was 0.7995, essentially exactly this constant, and the reported
+`prediction_error` never read below ~0.17 across the whole window regardless of real mesh
+conditions -- a permanent floor bias silently pulling `prediction_error_confidence` down whenever
+this domain had any traffic at all, unrelated to genuine surprise. Fixed in
+`orion/substrate/prediction_error.py::bus_synaptic_prediction_error()` by subtracting this floor
+before saturating (same 3.0 ceiling, now genuinely resting near 0 when calm). Re-validated against
+the same real window under the corrected formula: median drops to 0.0 (55.8% of ticks now read
+`<0.01`), real spikes up to ~0.98 preserved -- not degenerate, matches the shape of the other four
+domains instead of permanently reporting "moderately surprised." `orion-equilibrium-service`'s
+transport metacog gate (PRs #1385/#1387) is unaffected: its `error_threshold` default is `1.0`, the
+saturation ceiling, which both the old and new formulas only reach at raw `mean(|z|) >= 3.0` --
+identical fire condition before and after this fix, confirmed by reading
+`services/orion-equilibrium-service/app/settings.py` and its `.env_example` (both `1.0`).
+
 **Fixed 2026-07-25 (same day, follow-up): the 5 new env keys above weren't reaching the
 container.** Same class of gotcha already documented for `SUBSTRATE_STORE_BACKEND`/`FALKORDB_URI`
 in this service's `.env_example` (not elsewhere in this README) — `docker-compose.yml` passes env vars through via an explicit

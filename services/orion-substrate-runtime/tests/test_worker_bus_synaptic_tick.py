@@ -97,10 +97,13 @@ def test_bus_synaptic_tick_skips_nan_and_infinite_zscores(monkeypatch):
     )
     with patch.object(worker, "_write_prediction_error_node") as write_node:
         worker._bus_synaptic_tick()
-    # Only the real 1.5 should count -- mean(1.5)/3.0 saturation = 0.5, not
-    # NaN-poisoned or maxed out by the infinite value.
+    # Only the real 1.5 should count -- not NaN-poisoned or maxed out by the
+    # infinite value. Expected value updated 2026-07-26 for the calm-floor
+    # fix (bus_synaptic_prediction_error now subtracts sqrt(2/pi) before
+    # saturating): (1.5 - sqrt(2/pi)) / (3.0 - sqrt(2/pi)), not the old
+    # mean(1.5)/3.0 = 0.5.
     write_node.assert_called_once()
-    assert write_node.call_args.kwargs["error"] == pytest.approx(0.5)
+    assert write_node.call_args.kwargs["error"] == pytest.approx(0.3188367996970756)
 
 
 def test_bus_synaptic_edge_queries_filter_stale_edges() -> None:

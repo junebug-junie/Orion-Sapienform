@@ -204,3 +204,31 @@ def test_suppression_staleness_reset_records_node_vector_updated_at() -> None:
     apply_suppression(state)
     assert state.node_vectors["node:circe"]["staleness"] == 0.0
     assert state.node_vector_updated_at["node:circe"]["staleness"] == state.generated_at
+
+
+def test_prediction_error_never_decays_even_when_stale() -> None:
+    """Regression test, 2026-07-26: `prediction_error` was removed from
+    NODE_DECAY_CHANNELS after being root-caused as the cause of
+    `node:substrate.route`'s prediction_error going subnormal (~1e-322) then
+    heading to exact 0.0 -- confirmed live via a direct Postgres history
+    query showing an exact geometric ratio of 0.92 between every successive
+    persisted value, with no real route-arbitration event in between, over a
+    48+ hour window. `prediction_error` is designed elsewhere in the
+    codebase (orion/substrate/pressure.py::prediction_error_pressure(),
+    orion/substrate/endogenous_curiosity.py) to behave as an undecayed raw
+    snapshot -- this channel must never be multiplied by decay_rate,
+    regardless of how stale it is."""
+    state = _state(node_vectors={"node:substrate.route": {"prediction_error": 0.5}})
+    assert "prediction_error" not in NODE_DECAY_CHANNELS
+
+    # Nothing ever refreshes this node again -- 100 ticks well past any
+    # staleness threshold, spanning far more than a real 48h decay window
+    # would need at 2s cadence.
+    for i in range(1, 101):
+        apply_decay(
+            state,
+            decay_rate=DECAY_RATE,
+            now=BASE + timedelta(seconds=2 * i),
+            staleness_threshold_sec=STALENESS_THRESHOLD_SEC,
+        )
+    assert state.node_vectors["node:substrate.route"]["prediction_error"] == 0.5

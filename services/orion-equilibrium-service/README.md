@@ -149,7 +149,7 @@ Full design: `docs/superpowers/specs/2026-07-24-transport-metacog-trigger-design
 
 Own cooldown lane from day one (`EQUILIBRIUM_METACOG_TRANSPORT_COOLDOWN_SEC`) -- not sharing the global lane, avoiding the exact bug `chat_turn` had to fix after the fact (see above). All three evidence sources share this one lane.
 
-`EQUILIBRIUM_METACOG_TRANSPORT_TRIGGER_ENABLE` is live (`true`) as of 2026-07-24 (flipped shortly after shipping, commit `40cd21f80` -- correcting a stale claim this paragraph carried before). Options A/C are live. **Option bus_synaptic ships disabled** (`EQUILIBRIUM_METACOG_TRANSPORT_BUS_SYNAPTIC_POLL_ENABLE=false`) -- new dispatch path, not yet live-verified to fire correctly against real traffic; needs the same live-verification standard as A/C before flipping on.
+`EQUILIBRIUM_METACOG_TRANSPORT_TRIGGER_ENABLE` is live (`true`) as of 2026-07-24 (flipped shortly after shipping, commit `40cd21f80` -- correcting a stale claim this paragraph carried before). All three evidence sources (A/C/bus_synaptic) are now live as of 2026-07-26 (`EQUILIBRIUM_METACOG_TRANSPORT_BUS_SYNAPTIC_POLL_ENABLE=true`) -- unlike `SUBSTRATE_BUS_SYNAPTIC_TICK_ENABLED` (a pure shadow write nothing consumed, so flipping it carried near-zero risk), this dispatches a real `MetacogTriggerV1` into `orion_metacog`, so it needed its own explicit go-ahead. Watch for the first real fire (`orion_metacog` row, `trigger_kind=transport`, `upstream.evidence_source=bus_synaptic_prediction_error`) before fully trusting this path the same way A/C were already trusted.
 
 | Env | Default | Purpose |
 |-----|---------|---------|
@@ -158,7 +158,7 @@ Own cooldown lane from day one (`EQUILIBRIUM_METACOG_TRANSPORT_COOLDOWN_SEC`) --
 | `EQUILIBRIUM_METACOG_TRANSPORT_LATENCY_P95_THRESHOLD_MS` | `5000` | Option A's latency-spike threshold; unvalidated starting default |
 | `CHANNEL_RPC_HEALTH_SNAPSHOT` | `orion:rpc_health:snapshot` | Option A's source channel |
 | `CHANNEL_GRAMMAR_EVENT` | `orion:grammar:event` | Option C's source channel, filtered to `semantic_role=="rpc_transport_timeout"` |
-| `EQUILIBRIUM_METACOG_TRANSPORT_BUS_SYNAPTIC_POLL_ENABLE` | `false` | Master gate for Option bus_synaptic |
+| `EQUILIBRIUM_METACOG_TRANSPORT_BUS_SYNAPTIC_POLL_ENABLE` | `true` | Master gate for Option bus_synaptic |
 | `EQUILIBRIUM_METACOG_TRANSPORT_BUS_SYNAPTIC_POLL_INTERVAL_SEC` | `30` | Poll cadence for Option bus_synaptic |
 | `EQUILIBRIUM_METACOG_TRANSPORT_BUS_SYNAPTIC_ERROR_THRESHOLD` | `1.0` | Option bus_synaptic's fire threshold (saturation ceiling) |
 | `FALKORDB_URI` / `FALKORDB_SUBSTRATE_GRAPH` | `orion_substrate` | Option bus_synaptic's read-only FalkorDB connection |

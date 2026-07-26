@@ -9,6 +9,22 @@ from datetime import datetime, timezone
 
 from orion.schemas.field_state import FieldStateV1
 
+# `prediction_error` was REMOVED from this set 2026-07-26 -- do not re-add it.
+# It is designed elsewhere in the codebase to behave as an undecayed raw
+# snapshot (see `orion/substrate/pressure.py::prediction_error_pressure()`'s
+# docstring, and `orion/substrate/endogenous_curiosity.py`'s comment quoting
+# the same intent), but this generic per-tick staleness-decay loop was
+# silently applying the 0.92/tick rate to it anyway once a node went stale
+# (no fresh write within `staleness_threshold_sec`). For a node with frequent
+# real events this was invisible (fresh writes reset the staleness clock
+# before the decay compounded far), but `node:substrate.route` (RouteArbitration
+# has only 9-10 real events ever) decayed unopposed for 48+ hours straight,
+# went subnormal, and was heading to exactly 0.0 -- root-caused via direct
+# Postgres history query confirming an exact geometric ratio of 0.92 between
+# every successive persisted value with no real event in between. Any
+# domain's `prediction_error` sitting near 0 in `substrate_field_state` prior
+# to this fix should not be assumed to mean "genuinely calm" without checking
+# whether it was actually decayed there by this bug instead.
 NODE_DECAY_CHANNELS = {
     # hardware / biometrics
     "staleness",
@@ -41,7 +57,6 @@ NODE_DECAY_CHANNELS = {
     "observer_failure_pressure",
     "reliability_pressure",
     "field_coherence_warning",
-    "prediction_error",
 }
 
 CAPABILITY_DECAY_CHANNELS = {

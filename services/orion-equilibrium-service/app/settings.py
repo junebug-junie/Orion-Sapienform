@@ -160,6 +160,32 @@ class Settings(BaseSettings):
     metacog_transport_latency_p95_threshold_ms: float = Field(
         5000.0, alias="EQUILIBRIUM_METACOG_TRANSPORT_LATENCY_P95_THRESHOLD_MS"
     )
+    # Option (bus_synaptic): third transport evidence source, reads
+    # node:substrate.bus_synaptic's prediction_error directly from FalkorDB
+    # (orion_substrate graph, written by orion-substrate-runtime's
+    # _bus_synaptic_tick -- PR #1377/#1380). Passively covers RPC-health-
+    # invisible organs (bespoke long-poll clients like orion-harness-governor)
+    # that Options A/C structurally cannot see -- see
+    # docs/superpowers/specs/2026-07-23-transport-domain-rpc-health-redesign.md's
+    # 2026-07-25 revisions. Shares trigger_kind="transport"'s existing cooldown
+    # lane -- same kind, third evidence branch, not a new one.
+    metacog_transport_bus_synaptic_poll_enable: bool = Field(
+        False, alias="EQUILIBRIUM_METACOG_TRANSPORT_BUS_SYNAPTIC_POLL_ENABLE"
+    )
+    metacog_transport_bus_synaptic_poll_interval_sec: float = Field(
+        30.0, alias="EQUILIBRIUM_METACOG_TRANSPORT_BUS_SYNAPTIC_POLL_INTERVAL_SEC"
+    )
+    # 1.0 = bus_synaptic_prediction_error's own saturation ceiling, which by
+    # construction means the aggregated edges' mean |zscore| already reached
+    # 3.0 -- reuses the same anomaly bar Hub's own debug routes use
+    # (zscore_threshold=3.0), not a new arbitrary threshold.
+    metacog_transport_bus_synaptic_error_threshold: float = Field(
+        1.0, alias="EQUILIBRIUM_METACOG_TRANSPORT_BUS_SYNAPTIC_ERROR_THRESHOLD"
+    )
+    falkordb_uri: str = Field("redis://localhost:6379", alias="FALKORDB_URI")
+    falkordb_substrate_graph: str = Field(
+        "orion_substrate", alias="FALKORDB_SUBSTRATE_GRAPH"
+    )
 
     channel_metacog_trigger: str = Field("orion:equilibrium:metacog:trigger", alias="CHANNEL_EQUILIBRIUM_METACOG_TRIGGER")
     channel_collapse_mirror_user_event: str = Field("orion:collapse:intake", alias="CHANNEL_COLLAPSE_MIRROR_USER_EVENT")

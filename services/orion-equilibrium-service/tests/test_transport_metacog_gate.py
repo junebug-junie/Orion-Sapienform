@@ -8,6 +8,7 @@ if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
 from app.transport_metacog_gate import (
+    build_transport_metacog_trigger_from_bus_synaptic,
     build_transport_metacog_trigger_from_grammar_atom,
     build_transport_metacog_trigger_from_snapshot,
 )
@@ -194,3 +195,52 @@ def test_grammar_atom_no_correlation_id_still_fires():
     )
     assert trigger is not None
     assert trigger.signal_refs == []
+
+
+class TestBusSynapticEvidence:
+    def test_below_threshold_does_not_fire(self):
+        trigger = build_transport_metacog_trigger_from_bus_synaptic(
+            0.5,
+            zen_state="zen",
+            pressure=0.1,
+            recall_enabled=True,
+            error_threshold=1.0,
+        )
+        assert trigger is None
+
+    def test_at_threshold_fires(self):
+        trigger = build_transport_metacog_trigger_from_bus_synaptic(
+            1.0,
+            zen_state="not_zen",
+            pressure=0.6,
+            recall_enabled=True,
+            error_threshold=1.0,
+            edge_count=204,
+        )
+        assert trigger is not None
+        assert trigger.trigger_kind == "transport"
+        assert trigger.upstream["evidence_source"] == "bus_synaptic_prediction_error"
+        assert trigger.upstream["error"] == 1.0
+        assert trigger.upstream["edge_count"] == 204
+        assert trigger.signal_refs == ["node:substrate.bus_synaptic"]
+        assert "bus_synaptic" in trigger.reason
+
+    def test_above_threshold_fires(self):
+        trigger = build_transport_metacog_trigger_from_bus_synaptic(
+            1.0,
+            zen_state="zen",
+            pressure=0.1,
+            recall_enabled=True,
+            error_threshold=0.8,
+        )
+        assert trigger is not None
+
+    def test_custom_threshold_respected(self):
+        trigger = build_transport_metacog_trigger_from_bus_synaptic(
+            0.6,
+            zen_state="zen",
+            pressure=0.1,
+            recall_enabled=True,
+            error_threshold=0.5,
+        )
+        assert trigger is not None

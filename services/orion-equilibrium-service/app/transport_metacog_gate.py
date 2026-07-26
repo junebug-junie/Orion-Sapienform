@@ -114,3 +114,53 @@ def build_transport_metacog_trigger_from_grammar_atom(
             "correlation_id": correlation_id,
         },
     )
+
+
+def build_transport_metacog_trigger_from_bus_synaptic(
+    error: float,
+    *,
+    zen_state: str,
+    pressure: float,
+    recall_enabled: bool,
+    error_threshold: float,
+    edge_count: int | None = None,
+) -> MetacogTriggerV1 | None:
+    """Third evidence source: node:substrate.bus_synaptic's prediction_error
+    (bus_synaptic_prediction_error(), orion/substrate/prediction_error.py --
+    PR #1377/#1380), read directly from FalkorDB, not a bus message like
+    Options A/C above.
+
+    Passively covers organs Options A/C structurally cannot see -- neither
+    self-reported RpcHealthSnapshotV1 (Option A) nor OrionBusAsync.rpc_request()
+    instrumentation (Option C) sees orion-harness-governor's bespoke long-poll
+    RPC, but the bus synaptic graph's passive wiretap does (live-verified,
+    docs/superpowers/specs/2026-07-23-transport-domain-rpc-health-redesign.md's
+    2026-07-25 revisions).
+
+    error_threshold default 1.0 is not a new arbitrary calibration -- it is
+    bus_synaptic_prediction_error's own saturation ceiling, which by
+    construction means the aggregated edges' mean |zscore| already reached
+    3.0, the same anomaly bar services/orion-hub/scripts/
+    bus_synaptic_graph_routes.py's debug routes already use for a human
+    reading a table.
+    """
+    if error < error_threshold:
+        return None
+
+    reason = f"transport:bus_synaptic:error={error:.3f}"[:500]
+
+    return MetacogTriggerV1(
+        trigger_kind="transport",
+        reason=reason,
+        zen_state=zen_state,
+        pressure=pressure,
+        recall_enabled=recall_enabled,
+        signal_refs=["node:substrate.bus_synaptic"],
+        upstream={
+            "evidence_source": "bus_synaptic_prediction_error",
+            "fired_conditions": [f"error>={error_threshold}"],
+            "error": error,
+            "error_threshold": error_threshold,
+            "edge_count": edge_count,
+        },
+    )

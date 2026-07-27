@@ -115,6 +115,17 @@ class MoodArcEncoderManifestV1(BaseModel):
     corpus: CorpusStatsV1        # reused as-is from orion.schemas.telemetry.phi_encoder
     training: TrainingStatsV1    # reused as-is
     shuffle_baseline_loss: float # held_out_loss with rows shuffled within-window (see gate)
+    # floor_ratio / floor_pass (2026-07-27, previously computed by cmd_train's
+    # two_tier_gate() and only ever printed to stdout, never persisted --
+    # found while building cmd_promote, which needs a durable, reloadable
+    # answer to "did this exact candidate pass its own gate" rather than
+    # trusting an operator's memory of a training run's console output).
+    # floor_ratio = real_held_loss / shuffle_baseline_loss; floor_pass =
+    # floor_ratio < FLOOR_MAX_RATIO, the one hard gate this project has
+    # (ceiling_ratio, above, is diagnostic only). None only for manifests
+    # written before this field existed.
+    floor_ratio: Optional[float] = None
+    floor_pass: Optional[bool] = None
     # purge_gap_windows: number of windows dropped as an embargo zone between
     # the train/held-out temporal boundary (see purged_temporal_split()) --
     # not in the original spec, added because a held-out window merely

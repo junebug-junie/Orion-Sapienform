@@ -416,6 +416,43 @@ def test_default_exclude_channels_drops_expected_offline_suppression_presence_ar
     assert fields == ("real_signal",)
 
 
+def test_default_exclude_channels_drops_world_pulse_channels_even_with_real_variance() -> None:
+    """Regression, 2026-07-27: stream_backlog_pressure/stream_backlog_health/
+    delivery_confidence must be excluded regardless of how much variance they
+    show, not merely because they happened to be flat on a past corpus pull.
+    They're still fed by the narrow world_pulse census at the node:athena
+    level (orion/substrate/transport_loop/extract.py) even after PRs
+    #1391-#1397 fixed the derived capability:transport signal these feed --
+    the raw node-level census itself was never touched. Unlike
+    expected_offline_suppression (a presence/absence artifact, no real
+    signal at all), these channels are given genuine, non-degenerate
+    variance here specifically to prove the exclusion is by name, not a
+    variance-filter side effect."""
+    from orion.mood_arc.fit_encoder import DEFAULT_EXCLUDE_CHANNELS, select_fields
+
+    rng = np.random.default_rng(3)
+    start = datetime(2026, 7, 1, tzinfo=timezone.utc)
+    rows = [
+        _make_row(
+            t=start + timedelta(seconds=i),
+            channels={
+                "real_signal": float(rng.normal(0, 1)),
+                "stream_backlog_pressure": float(rng.uniform(0, 1)),
+                "stream_backlog_health": float(rng.uniform(0, 1)),
+                "delivery_confidence": float(rng.uniform(0, 1)),
+            },
+            idx=i,
+        )
+        for i in range(200)
+    ]
+
+    fields = select_fields(rows, exclude=DEFAULT_EXCLUDE_CHANNELS, variance_eps=1e-6)
+    assert fields == ("real_signal",)
+    assert "stream_backlog_pressure" not in fields
+    assert "stream_backlog_health" not in fields
+    assert "delivery_confidence" not in fields
+
+
 def test_select_fields_respects_custom_exclude() -> None:
     from orion.mood_arc.fit_encoder import select_fields
 

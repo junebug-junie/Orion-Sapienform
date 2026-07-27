@@ -482,12 +482,35 @@ def _compute_gates(chain: dict[str, Any]) -> list[dict[str, Any]]:
     transport = chain.get("transport", {})
     m3 = transport.get("m3", {})
     m3_receipts = transport.get("m3_receipts", {})
+    m4 = transport.get("m4", {})
     m5 = transport.get("m5", {})
     l9 = transport.get("l9", {})
 
     m3_status = m3.get("status", "missing")
     m3_values = m3.get("values", {}) if m3_status != "missing" else {}
     buses = m3_values.get("buses", {})
+
+    # 2026-07-27: pressure/contract gates below read M4's capability:transport
+    # field_vector, not M3's raw projection. Found while wiring bus_synaptic in:
+    # TransportBusProjectionV1 (orion/schemas/transport_projection.py) has NO
+    # top-level stream_backlog_pressure/contract_pressure/observer_failure_pressure
+    # fields at all -- those only exist nested under buses[bus_id][...] per
+    # TransportBusStateV1. `m3_values.get("stream_backlog_pressure")` and
+    # `m3_values.get("contract_pressure")` were reading a key that never
+    # existed at that level, always silently defaulting to 0.0/"quiet" --
+    # confirmed against the real persisted JSON, not just the schema. This was
+    # a separate, pre-existing bug, independent of the world_pulse-census
+    # degeneracy PRs #1391-#1396 fixed. M4's field_vector already carries the
+    # real values (pressure/contract_pressure/reliability_pressure), fed by
+    # config/field/orion_field_topology.v1.yaml's capability:transport edges
+    # (bus_synaptic -> pressure per PR #1394; catalog_drift_pressure ->
+    # contract_pressure and observer_failure_pressure -> reliability_pressure,
+    # both still live) -- no new query needed, this data was already being
+    # fetched into the chain and simply never read from the right place.
+    m4_status = m4.get("status", "missing")
+    m4_field_vector = (
+        (m4.get("values") or {}).get("field_vector", {}) if m4_status != "missing" else {}
+    )
 
     # --- freshness gate ---
     freshness_max_age = (
@@ -525,31 +548,44 @@ def _compute_gates(chain: dict[str, Any]) -> list[dict[str, Any]]:
 
     # --- pressure gate ---
     channels = lattice_policy.get("channels", {})
-    transport_p = float(m3_values.get("stream_backlog_pressure") or 0.0)
-    observer_p = float(m3_values.get("observer_failure_pressure") or 0.0)
-    transport_watch_at = float(
-        (channels.get("stream_backlog_pressure") or {}).get("watch_at", 0.25)
-    )
-    observer_watch_at = float(
-        (channels.get("observer_failure_pressure") or {}).get("watch_at", 0.25)
-    )
-    pressure_active = transport_p >= transport_watch_at or observer_p >= observer_watch_at
-    pressure_state = "watch" if pressure_active else "quiet"
-    pressure_reason = (
-        f"stream_backlog_pressure={transport_p:.2f} "
-        f"observer_failure_pressure={observer_p:.2f} "
-        f"(thresholds: transport={transport_watch_at}, observer={observer_watch_at})"
-    )
+    if m4_status in ("stale", "missing"):
+        # Review-caught gap, 2026-07-27: the contract gate below already guards
+        # on m4_status; this one didn't, and a stale/missing M4 was silently
+        # read as "quiet" (0.0 default) or as a real reading of whatever value
+        # last happened to be cached -- the exact failure class (stale/absent
+        # data mistaken for a genuine calm reading) this patch exists to fix.
+        # M3 and M4 have independent freshness clocks in production
+        # (substrate_transport_bus_projection.updated_at vs
+        # substrate_field_state.generated_at), so M4 going stale/missing while
+        # M3 stays fresh is a real, not just theoretical, scenario.
+        pressure_state = "unknown"
+        pressure_reason = f"pressure state unknown: M4 field vector is {m4_status}"
+    else:
+        transport_p = float(m4_field_vector.get("pressure") or 0.0)
+        observer_p = float(m4_field_vector.get("reliability_pressure") or 0.0)
+        transport_watch_at = float(
+            (channels.get("bus_synaptic_pressure") or {}).get("watch_at", 0.25)
+        )
+        observer_watch_at = float(
+            (channels.get("observer_failure_pressure") or {}).get("watch_at", 0.25)
+        )
+        pressure_active = transport_p >= transport_watch_at or observer_p >= observer_watch_at
+        pressure_state = "watch" if pressure_active else "quiet"
+        pressure_reason = (
+            f"bus_synaptic_pressure={transport_p:.2f} "
+            f"observer_failure_pressure={observer_p:.2f} "
+            f"(thresholds: transport={transport_watch_at}, observer={observer_watch_at})"
+        )
 
     # --- contract gate ---
     contract_watch_at = float(
         (channels.get("contract_pressure") or {}).get("watch_at", 0.50)
     )
-    if m3_status in ("stale", "missing"):
+    if m4_status in ("stale", "missing"):
         contract_state = "unknown"
-        contract_reason = f"contract state unknown: M3 projection is {m3_status}"
+        contract_reason = f"contract state unknown: M4 field vector is {m4_status}"
     else:
-        contract_p = float(m3_values.get("contract_pressure") or 0.0)
+        contract_p = float(m4_field_vector.get("contract_pressure") or 0.0)
         if contract_p == 0.0:
             contract_state = "quiet"
         elif contract_p >= contract_watch_at:

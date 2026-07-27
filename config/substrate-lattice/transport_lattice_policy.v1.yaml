@@ -11,7 +11,20 @@ dimension_weights:
 
 # channel → dimension, thresholds, action ceiling
 channels:
-  stream_backlog_pressure:
+  # Renamed from stream_backlog_pressure 2026-07-27 (PRs #1391-#1396): that
+  # channel was fed by a narrow 2-Redis-Stream "world_pulse" census, not real
+  # bus traffic, already retired. bus_synaptic_pressure is capability:transport's
+  # real, mesh-wide successor (config/field/orion_field_topology.v1.yaml).
+  # Thresholds carried over unchanged from the old channel -- Juniper's explicit
+  # call: the old gate effectively never fired (frozen near-zero for its whole
+  # life, plus a separate dict-nesting bug in substrate_lattice_routes.py that
+  # meant it read a nonexistent key regardless), so there's no real prior
+  # behavior to preserve continuity with. bus_synaptic's real distribution
+  # saturates at 1.0 for ~14% of ticks (6h live sample, 2026-07-27) -- these
+  # thresholds will make this gate active far more often than the old one ever
+  # was; that is treated as the honest signal the old gate never gave, not a
+  # miscalibration to chase.
+  bus_synaptic_pressure:
     dimension: delivery_integrity
     watch_at: 0.25
     summarize_at: 0.50

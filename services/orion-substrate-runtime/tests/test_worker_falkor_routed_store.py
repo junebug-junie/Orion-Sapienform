@@ -169,7 +169,10 @@ def test_write_prediction_error_node_preserves_dynamics_state_on_rewrite(monkeyp
     """Regression test: _write_prediction_error_node's docstring says it "writes
     a single node under a fixed identity_key so re-writes collapse" -- i.e. the
     same node_id is upserted repeatedly (see worker.py's _execution_tick /
-    _transport_tick callers, both using a fixed node_id every cycle). Now that
+    _route_tick callers, both using a fixed node_id every cycle -- _transport_tick
+    no longer calls this helper as of 2026-07-26, see docs/superpowers/specs/
+    2026-07-26-transport-domain-retirement-bus-synaptic-successor-design.md).
+    Now that
     falkor_codec.py always includes dynamic_pressure/dormant/etc in every
     upsert's SET clause, a naive re-write that doesn't carry forward the
     dynamics engine's already-computed state would durably reset it to

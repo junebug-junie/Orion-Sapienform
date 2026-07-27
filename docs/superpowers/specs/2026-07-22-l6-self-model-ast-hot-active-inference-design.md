@@ -304,3 +304,21 @@ condition.
 This does not change Item 3's other caveats (transport miscalibration, route subnormal float,
 `execution_load`/`reasoning_load` substrate) -- those remain open. It is a correction to this
 same revision's own claim that the sanity-check pass had cleared `bus_synaptic`, not a new item.
+
+## Revision, 2026-07-26 (`transport` domain retired, not merely excluded)
+
+Item 3's transport caveat (2026-07-25 revision above: "real signal, calibrated ~1,000x off the
+system's actual operating range") is resolved differently than route's -- not repaired, retired.
+`transport_prediction_error()`'s live write was removed entirely from
+`services/orion-substrate-runtime/app/worker.py::_transport_tick()`
+(`docs/superpowers/specs/2026-07-26-transport-domain-retirement-bus-synaptic-successor-design.md`,
+implemented after Juniper's explicit go-ahead following proposal mode). It was never just an
+AST/HOT-side exclusion problem: the same dead `node:substrate.transport` node kept winning real
+curiosity-candidate budget slots in `orion/substrate/endogenous_curiosity.py`, a live,
+autonomy-adjacent rung-5 consumer that iterates every substrate node generically -- confirmed
+pinned at `signal_strength=1.0` across 1,428 candidate sets over a 24h window (2026-07-16).
+`bus_synaptic` is the real successor there too, and required no new wiring in that consumer.
+
+Item 3's metric-quality-gate pass now needs to clear two domains, not three: route (its own
+subnormal-float caveat separately fixed the same day, see the 2026-07-26 revision above) and
+`execution_load`/`reasoning_load` substrate, still open.

@@ -45,7 +45,6 @@ from orion.substrate.prediction_error import (
     chat_prediction_error,
     execution_prediction_error,
     route_prediction_error,
-    transport_prediction_error,
 )
 from orion.substrate.transport_loop.pipeline import (
     empty_transport_projection,
@@ -2110,7 +2109,10 @@ class BiometricsSubstrateWorker:
             loaded = self._store.load_transport_bus_projection(TRANSPORT_BUS_PROJECTION_ID)
             return loaded or empty_transport_projection(now=now)
 
-        prev_projection = load_projection()
+        # 2026-07-26: prev_projection removed here -- it was only ever read by
+        # the now-removed transport_prediction_error(prev_projection,
+        # curr_projection) call below. Keeping it would be a wasted Postgres
+        # read every tick for a value nobody consumes (review caught this).
 
         def process_batch(batch: list[GrammarEventV1]) -> None:
             process_transport_grammar_events(
@@ -2131,22 +2133,32 @@ class BiometricsSubstrateWorker:
         if last_id is not None:
             curr_projection = load_projection()
             _log_transport_incident_signals(curr_projection)
-            error = transport_prediction_error(prev_projection, curr_projection)
-            if error > 0.0:
-                self._store.save_receipt(
-                    _prediction_error_receipt(
-                        reducer_key="transport_bus",
-                        node_id="node:substrate.transport",
-                        prediction_error=error,
-                        now=now,
-                    )
-                )
-                self._write_prediction_error_node(
-                    node_id="node:substrate.transport",
-                    error=error,
-                    now=now,
-                    reducer_key="transport_bus",
-                    contributing_id=last_id,
-                )
+            # 2026-07-26: node:substrate.transport's prediction_error write REMOVED
+            # (docs/superpowers/specs/2026-07-26-transport-domain-retirement-bus-
+            # synaptic-successor-design.md). transport_prediction_error() itself
+            # (orion/substrate/prediction_error.py) is a narrow 2-Redis-Stream
+            # "world_pulse" census, not real bus traffic, already excluded from
+            # attention_self_model.py's ACTIVE_INFERENCE_DOMAINS -- but the write
+            # here kept running regardless, and orion/substrate/endogenous_
+            # curiosity.py's generic node iteration kept reading it, once pinned
+            # at signal_strength=1.0 for a full 24h (2026-07-16, see that module's
+            # comment) and winning real curiosity-candidate budget slots on a fake
+            # signal. bus_synaptic_prediction_error() (node:substrate.bus_synaptic)
+            # already flows into that same consumer automatically -- no new wiring
+            # needed there, killing this write is the entire change. Everything
+            # else in this reducer (event processing, projection state, incident
+            # logging above, catalog_drift_pressure/observer_failure_pressure via
+            # config/field/orion_field_topology.v1.yaml's still-live edge) is
+            # unaffected -- confirmed via _grammar_reducer_poll_loop that reducer-
+            # health/cursor tracking is driven by last_id, not by this block.
+            # transport_prediction_error() itself is kept, not deleted -- review
+            # confirmed it has zero callers anywhere in the repo now, live or
+            # offline (the two analysis scripts this comment originally claimed
+            # used it, measure_transport_bus_signal_history.py and measure_
+            # transport_biometrics_prediction_error_correlation.py, only mention
+            # its name in prose docstrings -- both read persisted values
+            # straight out of Postgres, no import). Kept anyway as the cheapest
+            # option (deleting it buys nothing and risks a future script
+            # wanting it for genuine historical replay).
 
         return last_id

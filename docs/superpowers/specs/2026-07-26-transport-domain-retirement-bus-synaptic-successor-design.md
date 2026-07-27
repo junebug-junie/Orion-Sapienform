@@ -1,6 +1,15 @@
 # Retire `transport_prediction_error()` / `node:substrate.transport` — `bus_synaptic` is the real transport signal now — design spec
 
-Status: **design mode, not implemented.** Written per CLAUDE.md's proposal-mode rule (this touches
+Status: **IMPLEMENTED, 2026-07-26.** Juniper gave explicit go-ahead after this proposal-mode doc.
+`services/orion-substrate-runtime/app/worker.py::_transport_tick()`'s prediction_error write was
+removed; `endogenous_curiosity.py`'s generic node iteration already carries `bus_synaptic` with no
+new wiring, confirming this doc's own core claim. See `services/orion-substrate-runtime/README.md`'s
+"RETIRED, 2026-07-26" section and the AST/HOT design spec's matching revision for the live writeup.
+Recommended-next-patch steps 1-4 below were all completed; `transport_prediction_error()` was kept
+(not deleted) per step 3's "cheapest" option, unused by any live caller.
+
+Original proposal-mode status, preserved below for the record: **design mode, not implemented.**
+Written per CLAUDE.md's proposal-mode rule (this touches
 `orion/substrate/endogenous_curiosity.py`, a rung-5 autonomy-adjacent cognition-loop consumer).
 Juniper explicitly asked for this doc before any code changes, after flagging that the old
 `transport` Active-Inference domain is illegitimate and `bus_synaptic` is the real signal.

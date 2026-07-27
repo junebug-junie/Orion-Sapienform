@@ -458,6 +458,29 @@ saturation ceiling, which both the old and new formulas only reach at raw `mean(
 identical fire condition before and after this fix, confirmed by reading
 `services/orion-equilibrium-service/app/settings.py` and its `.env_example` (both `1.0`).
 
+**RETIRED, 2026-07-26: `transport_prediction_error()`'s live write removed entirely.** Following
+Juniper's explicit go-ahead after proposal mode
+(`docs/superpowers/specs/2026-07-26-transport-domain-retirement-bus-synaptic-successor-design.md`),
+`_transport_tick()` (`app/worker.py`) no longer computes or writes `node:substrate.transport`'s
+`prediction_error` -- the narrow `world_pulse`-census instrument documented above was not just
+excluded from `attention_self_model.py`'s `ACTIVE_INFERENCE_DOMAINS`, it kept winning real
+curiosity-candidate budget slots in `orion/substrate/endogenous_curiosity.py` (confirmed pinned at
+`signal_strength=1.0` for 1,428 candidate sets over 24h, 2026-07-16 -- see that module's own
+comment, now updated to note resolution). `bus_synaptic_prediction_error()` is the real successor
+and required zero new wiring in that consumer: `endogenous_curiosity.py`'s node iteration is
+already fully generic, so `bus_synaptic` was already flowing into it before this patch. Checked and
+confirmed unaffected by removing this write: reducer-health/cursor tracking (`record_success`/
+`_advance_cursor`, driven by `last_id` from real event processing, not by this block),
+`_log_transport_incident_signals()` (a separate, still-running diagnostic logger),
+`catalog_drift_pressure`/`observer_failure_pressure` (fed by a different function,
+`compute_transport_pressures()`, and still live in `config/field/orion_field_topology.v1.yaml`'s
+`capability:transport` edge per PR #1394). `transport_prediction_error()` itself is kept (not
+deleted) though review confirmed it has zero callers anywhere in the repo now -- the two analysis
+scripts this doc originally credited (`measure_transport_bus_signal_history.py`,
+`measure_transport_biometrics_prediction_error_correlation.py`) only name it in prose, they read
+persisted values directly from Postgres. Review also caught one dead read: `prev_projection =
+load_projection()` was only ever consumed by the removed call, deleted alongside it.
+
 **Fixed 2026-07-25 (same day, follow-up): the 5 new env keys above weren't reaching the
 container.** Same class of gotcha already documented for `SUBSTRATE_STORE_BACKEND`/`FALKORDB_URI`
 in this service's `.env_example` (not elsewhere in this README) — `docker-compose.yml` passes env vars through via an explicit

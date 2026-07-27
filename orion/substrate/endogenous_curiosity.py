@@ -43,12 +43,22 @@ HARD_BUDGET_CEILING = 8
 
 # Prediction-error staleness ceiling. `metadata["prediction_error"]` is a raw
 # snapshot (never decays on its own; see `pressure.py::prediction_error_pressure()`'s
-# docstring) written by the transport reducer whenever `transport_prediction_error()`
-# fires. Left unguarded, a node that was surprising once is "sustained prediction
+# docstring). Left unguarded, a node that was surprising once is "sustained prediction
 # error" forever and, since candidates sort strongest-first, wins the bounded
 # per-cycle budget on every tick. Live-confirmed 2026-07-16: `node:substrate.transport`
 # held `signal_strength=1.0` identically across all 1,428 persisted candidate sets
-# over the prior 24h (path live since 2026-07-02, not dormant).
+# over the prior 24h (path live since 2026-07-02, not dormant) -- written by the
+# transport reducer whenever `transport_prediction_error()` fired.
+#
+# **Resolved 2026-07-26, not just decayed away:** `transport_prediction_error()`'s
+# write was removed entirely from `services/orion-substrate-runtime/app/worker.py
+# ::_transport_tick()` (docs/superpowers/specs/2026-07-26-transport-domain-
+# retirement-bus-synaptic-successor-design.md) -- it was a narrow, known-fake
+# "world_pulse" census, not real bus traffic, and this staleness ceiling was only
+# ever a mitigation for it, not a fix. `node:substrate.bus_synaptic` is the real
+# mesh-wide successor and already flows into this same generic node iteration
+# with zero code change here. This staleness-decay guard remains load-bearing
+# for every other node this function reads, not specifically for transport.
 #
 # Deliberately NOT switched to reading `dynamic_pressure` directly, unlike the
 # sibling fix in `attention_broadcast.py::_node_salience()` (PR #1061):

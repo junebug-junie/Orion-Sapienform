@@ -88,12 +88,18 @@ sudo mkdir -p /mnt/telemetry/orion-athena/disk-watchdog
 sudo chown "$(whoami)":"$(whoami)" /mnt/telemetry/orion-athena/disk-watchdog
 ```
 
-**Cron install** (run from repo root, venv activated so `python3` resolves
-to the venv interpreter with `orion-notify`'s dependencies installed):
+**Cron install.** Unlike `bus-core-health-watchdog` (zero non-stdlib
+imports), this script imports `orion.notify.client` -> pydantic/requests,
+which only exist in the repo venv -- and cron runs with its own minimal
+`PATH`, not an activated shell, so a bare `make disk-threshold-watchdog`
+line resolves `python3` to the system interpreter and fails with
+`ModuleNotFoundError: No module named 'pydantic'`. The `PATH=` prefix
+below (same pattern already used by the concept-relation-digest cron
+entry) is required, not optional:
 ```bash
 crontab -e
 # then paste:
-*/15 * * * * cd /mnt/scripts/Orion-Sapienform && make disk-threshold-watchdog >> /mnt/scripts/Orion-Sapienform/logs/orion-disk-threshold-watchdog.log 2>&1
+*/15 * * * * cd /mnt/scripts/Orion-Sapienform && PATH=/mnt/scripts/Orion-Sapienform/venv/bin:$PATH make disk-threshold-watchdog >> /mnt/scripts/Orion-Sapienform/logs/orion-disk-threshold-watchdog.log 2>&1
 ```
 
 ## Daily Schedule Collision Check (orion-actions cadences)

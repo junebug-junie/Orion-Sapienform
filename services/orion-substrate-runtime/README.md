@@ -602,6 +602,31 @@ Retention: `SELF_STATE_RETENTION_HOURS=72`, pruned hourly.
   to 1.0 regardless of the other six being calm -- `resource_pressure` currently measures
   "worst channel," not an aggregate, everywhere it's computed this way.
 
+## Brain Frames
+
+`SubstrateBrainFrameV1` snapshots are persistent, visual readouts of substrate state at
+5-second intervals (configurable). Frames assemble _regions_ from four independent signal
+sources:
+
+| Dimension | Source | Computation | Stored | Signal |
+|-----------|--------|-------------|--------|--------|
+| `node_kind` | graph | max activation per node category | yes | category-wise activation peaks |
+| `lane` | health | freshness + backlog over reducers | yes | lane health composite |
+| `self_state` | field digester | 13-dim projection output | yes | field-computed signal dimensions |
+| `honesty_metrics` | active inference | prediction_error_confidence (no transform) | yes | model confidence: 0.0–1.0 |
+
+**Honesty metrics: no transformation.** `prediction_error_confidence` from active inference
+(`orion/substrate/prediction_error.py`, computed unconditionally per domain) is clamped to
+[0.0, 1.0] and thresholded into state ("firing" >0.7, "steady" 0.4–0.7, "starving" ≤0.4).
+Real computation lives upstream in active inference; this layer is a direct read + display pass.
+
+Frames live in `substrate_brain_frame_log` (24-hour retention, 5s cadence) and are exposed
+read-only via orion-hub's `/api/self-brain/frames/` endpoints. Frontend renders regions as
+circles (node graph view) + sparklines (EKG view) per dimension.
+
+**Frame storage / sampling:** Full node/edge graph samples are included (best-effort
+decoration, no continuity guarantee across frames). Regions are the trackable spine.
+
 ### Downstream drive taxonomy overlap
 
 Two independently-computed drive-pressure vectors exist over the same 6-key taxonomy

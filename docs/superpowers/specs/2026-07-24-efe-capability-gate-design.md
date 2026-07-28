@@ -4,8 +4,20 @@ Status: design/proposal mode per root `CLAUDE.md` §0A. Nothing implemented. Thi
 authorize any change to `capability_policy.py`'s live gating behavior. Converged 2026-07-25
 after two rounds of independent verification (code re-tracing + literature search, both
 run by separate agents instructed to find where this design was wrong, not confirm it) and
-one arsonist pass on the resulting "big swing" proposal that found real overreach — this
-version is the corrected, right-sized result, not another option to weigh.
+one arsonist pass on the resulting "big swing" proposal that found real overreach.
+
+**Re-scoped 2026-07-28, materially, not a footnote.** The 2026-07-25 version below built
+`domain_surprise_score` from a new `NormalizationContext` call site over `prediction_error.py`'s
+four naive-delta domains. That plan is superseded: `bus_synaptic_prediction_error()` (PR #1377,
+calm-floor fixed PR #1391, now wired live into real `action_outcomes` rows via PR #1400/#1403)
+is a **better** signal than what this design set out to build — grounded in directly-measured
+bus traffic (`orion-bus-mirror`'s real per-edge EWMA/z-score, `compute_ewma_update()`), not a
+one-step-removed delta on an already-processed projection the way the four `prediction_error.py`
+domains are. It requires **zero new wiring**: already continuously computed, already durably
+published to `substrate_field_state`, already validated live (see Live-data sanity check,
+2026-07-28, below). Missing Question 1 (where does the tracker live) doesn't get answered by
+this update — it dissolves, because no new tracker is needed at all. See "Re-scope, 2026-07-28"
+for the full reasoning and what's still open.
 
 ## Arsonist summary
 
@@ -93,6 +105,73 @@ deviation-relative normalization, already written, already tested, already runni
 production for an unrelated purpose. Reusing it here is the "reuse the live pipeline, don't
 parallel it" move (§7), not a new build.
 
+## Re-scope, 2026-07-28
+
+**Why bus_synaptic instead of NormalizationContext over prediction_error.py's domains:**
+
+- `orion-bus-mirror`'s `compute_ewma_update()` (`services/orion-bus-mirror/app/graph_writer.py`)
+  is a real, live, per-edge EWMA mean/variance + z-score mechanism, continuously updated on
+  **directly observed** inter-service bus traffic as messages actually flow. `bus_synaptic_
+  prediction_error()` (`orion/substrate/prediction_error.py`) aggregates those real z-scores
+  into a bounded `[0,1]` score — the exact shape `NormalizationContext`/`EwmaBand` would have
+  produced, but measuring the real thing directly rather than diffing an already-processed
+  projection one derivation step removed from the raw event (which is what `execution`/
+  `biometrics`/`chat`/`route` all do).
+- It's already continuously computed in one canonical process (`orion-substrate-runtime`'s
+  `_bus_synaptic_tick`) and already durably published to `substrate_field_state`
+  (`node:substrate.bus_synaptic`'s `prediction_error` field) — the same pipe this session built,
+  validated, and shipped three times over (`services/orion-execution-dispatch-runtime`'s store
+  method, PR #1400; extracted to a shared `orion/substrate/bus_synaptic_surprise.py`, PR #1403;
+  `orion-spark-concept-induction`'s three emitters, also PR #1403).
+- **`NormalizationContext` itself is a plain in-memory dict with zero persistence**
+  (`services/orion-signal-gateway/app/normalization_state.py::NormalizationStateRegistry`), and
+  `evaluate_capability()` is called from at least two separate services/processes
+  (`orion-spark-concept-induction` via `orion/autonomy/policy_act.py`, and
+  `services/orion-world-pulse/app/services/curiosity.py`). Wiring `NormalizationContext` inline
+  at the callsite (one half of the original Missing Question 1) would have given each calling
+  process its own uncoordinated, silently-diverging copy of the same domain's baseline — a real
+  architectural problem the original design didn't fully surface. Reusing `bus_synaptic_
+  prediction_error()`'s existing durable-publish pattern sidesteps this entirely: any process
+  reads the same real value via a plain SQL query, the way `execution-dispatch-runtime` already
+  does.
+
+**Live-data sanity check, 2026-07-28** (the charter's metric-quality-gate step 4, done before
+committing to this re-scope, not after): pulled the full retained `substrate_field_state`
+history for `node:substrate.bus_synaptic`'s `prediction_error` field (2026-07-25 through
+2026-07-28, ~128k rows) and checked it against both known failure modes this codebase has
+actually hit before (permanent floor bias, decay-to-zero-forever):
+
+- **Real distributional spread, not degenerate at either extreme**: post-calm-floor-fix
+  (after PR #1391, 2026-07-26 21:08 UTC), 40.5% of ticks read near-zero (genuinely calm),
+  56.4% mid-range, 3.1% saturated at the ceiling — a real distribution, not stuck high or
+  stuck at zero.
+- **Genuinely event-driven, not clock-driven**: updates irregularly (roughly every 30s–3min,
+  not a fixed cadence), with real magnitude variance (0.0003 to 1.0) tracking real bus-mirror
+  edge z-scores, not a synthetic oscillation.
+- **Mean-reverting, not sticky**: one real spike to 0.90 decayed back through 0.27 → 0.06 →
+  0.0003 within 8 minutes — recovers to calm rather than pinning high, the exact failure mode
+  `node:substrate.route` had (48h of unopposed decay, a different bug, but the same class of
+  "looks alive, isn't actually responsive" risk this check exists to catch).
+- **Gap, disclosed**: could not independently corroborate any *specific* spike against an
+  external anomaly (e.g., confirm a real incident happened at a given spike's timestamp) —
+  container logs had already rotated past the checked window. This verifies the instrument's
+  statistical health, not a causal story behind any one reading. Acceptance check #1 below
+  should still be re-run against a live capability-gating call site once one exists, per its
+  original text — this check verifies the source signal, not the eventual consumer.
+
+**What's still genuinely open, not solved by this re-scope**: `journal.compose.episode` (the
+third of the four capabilities named in the original Missing Question 2) has no direct
+`bus_synaptic`-backed surprise the way `web.fetch.readonly`/`recall.query.readonly` now do
+(their own `action_outcomes` rows carry it, via PR #1403) — it isn't a fetch/recall action, so
+there's no natural per-outcome-row signal to point at. **Proposed, not yet built**: give
+`journal.compose.episode` the exact same ambient `domain_surprise_score` the other two get,
+read directly off `node:substrate.bus_synaptic` at gate-evaluation time rather than off its own
+outcome row — the signal is mesh-wide by construction, not action-specific, so there's no
+theoretical reason it needs a per-capability outcome row to attach to. This means Missing
+Question 2 (the original "which of four domains maps to which capability" judgment call)
+dissolves for all three real capabilities at once: there's only one domain now
+(`bus_synaptic`), so there's nothing left to map.
+
 ## Current architecture
 
 - **`evaluate_capability(capability_id, ctx)`** (`orion/autonomy/capability_policy.py:109-159`):
@@ -103,13 +182,14 @@ parallel it" move (§7), not a new build.
   goal-status/promotion, `required_signal_kinds` (already field-native — e.g.
   `world_coverage_gap`). This design adds one new, independent condition; it does not touch,
   replace, or reason about any existing gate, including `required_drive_origins`.
-- **The real surprise substrate this design builds on**: `orion/signals/normalization.py`'s
-  `NormalizationContext`, already live, already generic, already unrelated to drives (see
-  Arsonist summary). Not yet applied to the four real `prediction_error.py` domains
-  (execution/biometrics/chat/route — `transport` confirmed dead, per PR #1329, excluded).
-  Applying it requires only new call sites feeding it real per-domain raw values (the same
-  `pressure_hints`/projection deltas `prediction_error.py` already reads) — no new tracking
-  code.
+- **The real surprise substrate this design builds on, as of the 2026-07-28 re-scope**:
+  `bus_synaptic_prediction_error()` (`orion/substrate/prediction_error.py`), already live,
+  already generic across the whole bus mesh, already unrelated to drives, already durably
+  published to `substrate_field_state`'s `node:substrate.bus_synaptic` node by
+  `orion-substrate-runtime`'s `_bus_synaptic_tick`. No new call site, no new tracker — see
+  Re-scope, 2026-07-28. (`NormalizationContext`/`EwmaBand`, the original 2026-07-25 substrate,
+  remains real and reusable for other purposes — see the Arsonist summary's own finding on it
+  — just not needed here now that a better-grounded signal already exists live.)
 - **Pragmatic-value substrate, real, thin**: `action_outcomes` (Postgres,
   `orion/autonomy/action_outcomes.py`), `success: bool | None` per row. **Real volume is
   thin**: 12 rows total since the Postgres rebuild, 2 distinct `kind` values. Not enough
@@ -118,31 +198,25 @@ parallel it" move (§7), not a new build.
 
 ## Missing questions
 
-1. **Resolved, 2026-07-25**: does a live baseline-tracking mechanism already exist, or does
-   one need building? It already exists (`NormalizationContext`) — no new tracker needed.
-   What's still open: **where does the new call site live** — inside
-   `services/orion-substrate-runtime`'s existing per-domain tick loops (natural home, same
-   process already computing the raw `prediction_error.py` deltas), or at the
-   `capability_policy.py` callsite itself (pulls raw history and calls `NormalizationContext`
-   inline)? Real architecture decision, not resolved here — the former keeps the tracker
-   state co-located with the data it tracks and matches how `NormalizationContext` is already
-   used by `orion-signal-gateway`; the latter avoids touching `orion-substrate-runtime` at
-   all but means capability-gating owns tracker state, a genuinely different tradeoff.
-2. **Still open, and confirmed to have no literature precedent either way (Arsonist
-   summary)**: which of the four capability rules maps to which of the four real domains?
-   `web.fetch.readonly`/`recall.query.readonly`/`journal.compose.episode` don't obviously
-   correspond to `execution`/`biometrics`/`chat`/`route` the way a co-designed system's
-   actions would. **This is not solvable by more research — it's a first-party judgment
-   call that has to be made explicitly, disclosed as a judgment call, and validated
-   empirically once real data exists** (Acceptance check #3) — not guessed and left silent.
-   Empirical derivation (measure which domain's surprise moves most after each real
-   capability invocation) is the theoretically honest path per O4 ("named categories...
-   re-derivable, not a constant") but is **currently blocked on data volume** (12 rows) —
-   named as a deferred workstream, not an active one, in Recommended next patch.
-3. **Is 12 rows of `action_outcomes` enough for a `success`-rate pragmatic-value prior?** No.
-   Same "insufficient accumulated history" pattern hit repeatedly this session post-rebuild.
-   Needs real time, not a design fix.
-4. **Hard gate or soft advisory for first deployment?** Recommend soft/advisory
+1. **Resolved and dissolved, 2026-07-28.** Originally: does a live baseline-tracking
+   mechanism exist, and where does its call site live? Superseded — `bus_synaptic_
+   prediction_error()` is already computed and durably published; there is no new tracker or
+   call site to place anywhere. See Re-scope, 2026-07-28.
+2. **Mostly dissolved, 2026-07-28, one real gap remains.** Originally: which of four
+   `prediction_error.py` domains maps to which capability rule — a disclosed, no-literature-
+   precedent judgment call. With one mesh-wide domain (`bus_synaptic`) instead of four, there
+   is no mapping left to make for `web.fetch.readonly`/`recall.query.readonly` (same ambient
+   signal, already on their own `action_outcomes` rows since PR #1403). **`journal.compose.
+   episode` remains genuinely open** — proposed treatment (not yet built): same ambient
+   `domain_surprise_score`, read directly off `node:substrate.bus_synaptic` at gate-evaluation
+   time rather than off an outcome row (it has none of the fetch/recall shape to attach one
+   to). Not solved in this patch; named here as the one real remaining gap.
+3. **Is `action_outcomes` volume enough for a `success`-rate pragmatic-value prior?** Better,
+   not yet sufficient. Volume grew substantially since 2026-07-25 (12 rows → 450+ as of
+   2026-07-28, per this session's own dispatch-pipeline fixes), but still concentrated in one
+   `kind` (`inspect`) — re-check the real distinct-`kind` count before building a per-capability
+   prior, don't assume raw row count alone clears this.
+4. **Hard gate or soft advisory for first deployment?** Unchanged: soft/advisory
    (`CapabilityDecisionV1.notes`, gating nothing) — given `capability_policy.py`'s existing
    gates are all hard, adding a new hard gate before its own signal quality is validated
    would repeat the "wire it live before proving it" mistake this session's `predicted_
@@ -176,23 +250,23 @@ required_domain_surprise_below: float | None = None  # threshold on the new scor
 required_min_success_rate: float | None = None         # pragmatic-value threshold, needs history
 ```
 
-**The actual computation — no new tracking primitive, reuses `NormalizationContext` as-is:**
+**The actual computation, 2026-07-28 re-scope — no new tracking primitive, no new call site,
+reuses the already-durable `bus_synaptic_prediction_error()` publish path as-is:**
 
 ```python
-def compute_domain_surprise(
-    ctx: NormalizationContext, domain: str, raw_value: float
-) -> float:
-    """Baseline-relative surprise for one real prediction_error domain, reusing the
-    already-live, already-generic EwmaBand mechanism (orion/signals/normalization.py) --
-    not a new tracker. `domain` is a NormalizationContext organ_id/metric_key pair, e.g.
-    ("substrate", "biometrics"). Returns EwmaBand.normalize()'s [0,1] deviation-relative
-    score directly -- update() must be called by the same caller feeding it real ticks
-    over time; this function does not itself own persistence.
+def latest_domain_surprise(engine: Engine) -> float | None:
+    """Read the current mesh-wide surprise value for capability gating -- same function
+    services/orion-execution-dispatch-runtime already uses for ActionOutcomeEmitV1.surprise,
+    no new query or staleness logic to write.
     """
-    band = ctx.get_band("substrate", domain)
-    band.update(raw_value)
-    return band.normalize(raw_value)
+    from orion.substrate.bus_synaptic_surprise import latest_bus_synaptic_prediction_error
+    return latest_bus_synaptic_prediction_error(engine)
 ```
+
+The `domain_surprise_source` field below is now always `"bus_synaptic"` when the score is
+present -- kept on the schema for forward-compatibility (e.g., if `journal.compose.episode`
+or a future capability ever gets its own distinct signal), not because there is a mapping to
+disclose today.
 
 **New pure gate function**, mirroring the existing style, reading only the new context
 fields — never `ctx.goal`:
@@ -220,12 +294,13 @@ own condition, not paired with, compared against, or gated on `required_drive_or
 orion/autonomy/capability_policy.py          # new gate function, wired independently
 orion/autonomy/models.py                     # CapabilityPolicyRuleV1 new fields
 config/autonomy/capability_policy.v1.yaml    # new fields on whichever rules adopt the new gate
-orion/signals/normalization.py               # reused as-is -- no change expected
-services/orion-substrate-runtime/app/        # new call site feeding NormalizationContext
-                                              # real per-domain values (Missing Q1's open half)
+orion/substrate/bus_synaptic_surprise.py     # reused as-is -- no change expected
 scripts/analysis/                            # new shadow-measurement/replay script
 orion/autonomy/tests/test_capability_policy.py
 ```
+
+(2026-07-28: `orion/signals/normalization.py` and `services/orion-substrate-runtime/app/` no
+longer appear here -- no new tracker or call site is needed, see Re-scope above.)
 
 ## Non-goals
 
@@ -250,34 +325,42 @@ orion/autonomy/tests/test_capability_policy.py
 - **Never reading, writing, persisting, or validating against `GoalProposalV1`, `drive_
   origin`, or `required_drive_origins`, anywhere, for any reason** — including as a
   validation baseline.
-- Not using `action_outcomes.surprise` for anything — confirmed degenerate/mislabeled.
-- Not building on `DeviationGate` — its class carries no drive-specific state, but its only
-  real callers today are inside the halted system; `NormalizationContext` achieves the same
-  mechanism with zero adjacency.
-- **Not empirically deriving the capability→domain mapping in this patch** (Missing
-  Question 2) — blocked on `action_outcomes` data volume, named as deferred, not attempted
-  with a synthetic or guessed substitute.
+- Not using `action_outcomes.surprise` generically across every emitter — still a fake
+  success/fail proxy for `episode_fetch.py`/`policy_act.py`/`curiosity_reuse.py`'s *other*
+  fields (`success`, etc.); this design reads `bus_synaptic_prediction_error()` directly, not
+  through `action_outcomes` at all.
+- Not building on `DeviationGate` or `NormalizationContext`/`EwmaBand` — both real, both
+  reusable elsewhere, neither needed here now that `bus_synaptic_prediction_error()` already
+  exists live (see Re-scope, 2026-07-28).
+- **Not building `journal.compose.episode`'s wiring in this patch** — proposed (ambient
+  `domain_surprise_score`, same as the other two capabilities) but not implemented; the real
+  remaining piece of the original Missing Question 2.
 - Not calling the new field "epistemic value" — naming honesty per the literature check;
   not calling it "retrospective surprise" either, since that correspondence hasn't been
   independently verified against Sajid et al.'s actual formula.
 
 ## Acceptance checks (all required before anything here goes live; none run in this patch)
 
-1. **Live-data sanity check**: once a live `NormalizationContext` call site exists (Missing
-   Question 1), confirm `domain_surprise_score` is non-degenerate specifically at the moments
-   gated capabilities are actually evaluated — not just non-degenerate in general.
+1. **Live-data sanity check**: done at the source-signal level 2026-07-28 (see Re-scope) --
+   real spread, event-driven, mean-reverting. Still needs re-running specifically at the
+   moments a real capability gate is actually evaluated once that call site exists, not just
+   confirmed non-degenerate in general.
 2. **Outcome-grounded validation, never drives-agreement validation.** For real historical
    moments where a gated capability was actually exercised (`action_outcomes`), check whether
-   `domain_surprise_score` at that moment correlates with `success`. Report the correlation
-   and whether the gate's hypothetical allow/deny split is non-degenerate. "Compiles" and
-   "schema-valid" are not acceptance criteria, per root `CLAUDE.md`'s metric-quality-gate.
-3. **Capability→domain mapping validation, once data volume allows**: for each real
-   capability invocation, check which domain's `domain_surprise_score` moved most
-   immediately after — does the disclosed judgment-call mapping (Missing Question 2) survive
-   contact with real data, or does a different domain actually track each capability better.
-4. **Pragmatic-value prior needs real volume first**: do not build a `success`-rate gate
-   until `action_outcomes` has accumulated meaningfully more than 12 rows across enough
-   distinct capability kinds.
+   `bus_synaptic_prediction_error()`'s value at that moment correlates with `success`. Report
+   the correlation and whether the gate's hypothetical allow/deny split is non-degenerate.
+   "Compiles" and "schema-valid" are not acceptance criteria, per root `CLAUDE.md`'s
+   metric-quality-gate. No longer needs a `substrate_field_state`-to-`action_outcomes`
+   timestamp join for `web.fetch.readonly`/`recall.query.readonly` -- their own outcome rows
+   already carry the real surprise value directly (PR #1403); still needs the join for
+   `journal.compose.episode` once that capability has its own signal wired.
+3. **Capability→domain mapping validation**: dissolved for `web.fetch.readonly`/
+   `recall.query.readonly` (one shared domain, nothing to map). Still applies, narrowly, to
+   confirming `journal.compose.episode`'s proposed ambient-signal treatment actually tracks
+   its real invocations meaningfully once built.
+4. **Pragmatic-value prior needs real volume first**: `action_outcomes` volume grew
+   substantially (12 → 450+ rows) but re-check distinct-`kind` coverage before building a
+   per-capability `success`-rate gate — don't assume raw row count alone clears this.
 5. **Ship as soft/advisory first**: first real deployment surfaces the score in
    `CapabilityDecisionV1.notes` without gating anything, observed against real traffic,
    before flipping to a hard gate.
@@ -287,17 +370,19 @@ orion/autonomy/tests/test_capability_policy.py
 
 ## Recommended next patch
 
-Not implementation — the two things every acceptance check is blocked on, in order:
+Not implementation — still design/proposal mode. Two things, in order, now that the
+re-scope removes the architecture question that used to block both:
 
-1. Resolve Missing Question 1's remaining half concretely: decide where the new
-   `NormalizationContext` call site actually lives (`orion-substrate-runtime`'s existing tick
-   loops vs. an inline pull at the `capability_policy.py` callsite) — real architecture work,
-   not a brainstorm answer.
-2. Build the read-only outcome-correlation replay script (Acceptance check #2) — joins real
-   `substrate_field_state`/raw domain values (fed through `EwmaBand` offline, same math, same
-   pattern as every other replay script this session) to real `action_outcomes.success` by
-   nearest-preceding timestamp. Blocked today on `action_outcomes`' thin volume (12 rows) —
-   re-check row count before building, not a reason to skip building it once volume grows.
+1. Build the read-only outcome-correlation replay script (Acceptance check #2) for
+   `web.fetch.readonly`/`recall.query.readonly` — no longer needs a `substrate_field_state`
+   timestamp-join for these two; it's a direct `corr(action_outcomes.surprise,
+   action_outcomes.success)` query against their own rows (PR #1403's real surprise values).
+   No longer blocked on data volume the way it was at 12 rows — re-check the real distinct-row
+   count for these two `kind`s specifically before running it.
+2. Decide `journal.compose.episode`'s treatment concretely (the one real remaining gap from
+   the original Missing Question 2) — wire it the ambient way proposed above, or leave it
+   ungated for now and revisit once its own real invocation volume exists. Either is
+   acceptable; leaving it silently unaddressed is not.
 
 ## Source material
 
@@ -321,3 +406,14 @@ Not implementation — the two things every acceptance check is blocked on, in o
 - Live Postgres checks (2026-07-24/25): `action_outcomes` row count/degeneracy,
   `evaluate_capability()` call-site enumeration, `DeviationGate`/`NormalizationContext`
   real-caller enumeration.
+- `services/orion-bus-mirror/app/graph_writer.py::compute_ewma_update()` — real per-edge
+  EWMA/z-score on directly-measured bus traffic, the actual source `bus_synaptic_prediction_
+  error()` aggregates.
+- `services/orion-signal-gateway/app/normalization_state.py` — confirms `NormalizationContext`
+  is a plain in-process dict, zero persistence, one instance per process.
+- `orion/substrate/bus_synaptic_surprise.py` — the shared, already-live query+staleness
+  function this re-scope reuses directly (PR #1400/#1403).
+- Live Postgres/log checks (2026-07-28): `substrate_field_state` full-history temporal
+  analysis of `node:substrate.bus_synaptic` (distribution, event-driven update cadence,
+  mean-reversion after a real spike), `evaluate_capability()` call-site re-enumeration
+  (confirmed 2+ separate services).

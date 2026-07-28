@@ -76,7 +76,7 @@ def test_metacog_biometrics_cue_draft_compact():
             "nodes": {},
         }
     }
-    cue = executor_module._metacog_biometrics_cue(ctx, phase="draft")
+    cue = executor_module._metacog_biometrics_cue(ctx)
     assert len(cue) <= 350
     parsed = json.loads(cue)
     assert parsed["status"] == "fresh"
@@ -86,36 +86,9 @@ def test_metacog_biometrics_cue_draft_compact():
     assert parsed["freshness_s"] == 12
 
 
-def test_metacog_biometrics_cue_enrich_includes_node_lines():
-    executor_module = _load_executor_module()
-    ctx = {
-        "biometrics": {
-            "status": "fresh",
-            "constraint": "GPU_MEM",
-            "cluster": {
-                "composite": {"strain": 0.62, "homeostasis": 0.5, "stability": 0.44},
-            },
-            "nodes": {
-                "atlas": {
-                    "status": "OK",
-                    "summary": {"composites": {"strain": 0.71}, "pressures": {"gpu": 0.82}},
-                },
-                "athena": {"status": "OK", "summary": {}},
-            },
-        }
-    }
-    cue = executor_module._metacog_biometrics_cue(ctx, phase="enrich")
-    assert len(cue) <= 600
-    parsed = json.loads(cue)
-    assert "cluster" in parsed
-    assert isinstance(parsed.get("nodes"), list)
-    assert len(parsed["nodes"]) <= 4
-    assert any("atlas" in line for line in parsed["nodes"])
-
-
 def test_metacog_biometrics_cue_missing_biometrics():
     executor_module = _load_executor_module()
-    cue = executor_module._metacog_biometrics_cue({}, phase="draft")
+    cue = executor_module._metacog_biometrics_cue({})
     parsed = json.loads(cue)
     assert parsed["status"] == "missing"
 
@@ -133,55 +106,12 @@ def test_metacog_context_service_sets_biometrics_cue_from_cluster(monkeypatch):
     )
     biometrics_context["cluster"] = cluster.model_dump(mode="json")
     ctx = {"biometrics": biometrics_context}
-    ctx["metacog_biometrics_cue"] = executor_module._metacog_biometrics_cue(ctx, phase="draft")
+    ctx["metacog_biometrics_cue"] = executor_module._metacog_biometrics_cue(ctx)
 
     parsed = json.loads(ctx["metacog_biometrics_cue"])
     assert parsed["strain"] == 0.55
     assert parsed["homeostasis"] == 0.66
     assert parsed["stability"] == 0.77
-
-
-def test_metacog_format_node_cue_line_skips_bad_numeric_fields():
-    executor_module = _load_executor_module()
-    line = executor_module._metacog_format_node_cue_line(
-        "atlas",
-        {
-            "status": "OK",
-            "summary": {
-                "composites": {"strain": "not-a-number"},
-                "pressures": {"gpu": "bad"},
-            },
-        },
-    )
-    assert line == "atlas: ok"
-    assert "strain=" not in line
-    assert "gpu=" not in line
-
-
-def test_metacog_biometrics_cue_enrich_overflow_falls_back_to_cluster_only(monkeypatch):
-    executor_module = _load_executor_module()
-    monkeypatch.setattr(executor_module, "_METACOG_BIOMETRICS_CUE_ENRICH_MAX_CHARS", 120)
-    ctx = {
-        "biometrics": {
-            "status": "fresh",
-            "constraint": "GPU_MEM",
-            "cluster": {
-                "composite": {"strain": 0.62, "homeostasis": 0.5, "stability": 0.44},
-            },
-            "nodes": {
-                "atlas": {
-                    "status": "OK",
-                    "summary": {"composites": {"strain": 0.71}, "pressures": {"gpu": 0.82}},
-                },
-                "athena": {"status": "OK", "summary": {}},
-            },
-        }
-    }
-    cue = executor_module._metacog_biometrics_cue(ctx, phase="enrich")
-    parsed = json.loads(cue)
-    assert "cluster" in parsed
-    assert "nodes" not in parsed
-    assert len(cue) <= 120
 
 
 def test_metacog_biometrics_cue_draft_uses_age_ms_when_freshness_missing():
@@ -194,7 +124,7 @@ def test_metacog_biometrics_cue_draft_uses_age_ms_when_freshness_missing():
             "cluster": {"composite": {"strain": 0.42, "homeostasis": 0.71, "stability": 0.88}},
         }
     }
-    cue = executor_module._metacog_biometrics_cue(ctx, phase="draft")
+    cue = executor_module._metacog_biometrics_cue(ctx)
     parsed = json.loads(cue)
     assert parsed["freshness_s"] == 12
 
@@ -211,8 +141,7 @@ def test_metacog_draft_prompt_under_slim_budget():
                 "constraint": "NONE",
                 "cluster": {"composite": {"strain": 0.42, "homeostasis": 0.71, "stability": 0.88}},
             }
-        },
-        phase="draft",
+        }
     )
     prompt = executor_module._render_prompt(template, ctx)
     assert len(ctx["metacog_biometrics_cue"]) <= 350
@@ -238,8 +167,7 @@ def test_metacog_draft_prompt_live_anatomy_fits_worker_budget():
                 "constraint": "NONE",
                 "cluster": {"composite": {"strain": 0.42, "homeostasis": 0.71, "stability": 0.88}},
             }
-        },
-        phase="draft",
+        }
     )
     slim_prompt = executor_module._render_prompt(template, ctx)
     fat_ctx = dict(ctx)

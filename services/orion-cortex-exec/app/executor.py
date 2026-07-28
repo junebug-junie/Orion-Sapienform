@@ -694,8 +694,6 @@ def _default_biometrics_context(*, status: str, reason: str) -> Dict[str, Any]:
 
 
 _METACOG_BIOMETRICS_CUE_DRAFT_MAX_CHARS = 350
-_METACOG_BIOMETRICS_CUE_ENRICH_MAX_CHARS = 600
-_METACOG_BIOMETRICS_CUE_MAX_NODES = 4
 
 
 def _metacog_cluster_composites(biometrics: Dict[str, Any]) -> Dict[str, float]:
@@ -715,35 +713,6 @@ def _metacog_cluster_composites(biometrics: Dict[str, Any]) -> Dict[str, float]:
     return out
 
 
-def _metacog_format_node_cue_line(node_id: str, node_data: Any) -> str:
-    if not isinstance(node_data, dict):
-        return f"{node_id}: unknown"[:80]
-    status = str(node_data.get("status") or "OK")
-    summary = node_data.get("summary") if isinstance(node_data.get("summary"), dict) else {}
-    composites = summary.get("composites") if isinstance(summary.get("composites"), dict) else {}
-    pressures = summary.get("pressures") if isinstance(summary.get("pressures"), dict) else {}
-    parts = [f"{node_id}:"]
-    if status.upper() not in {"OK", "FRESH"}:
-        parts.append(f"status={status}")
-    strain = composites.get("strain")
-    if strain is not None:
-        try:
-            parts.append(f"strain={float(strain):.2f}")
-        except (TypeError, ValueError):
-            pass
-    gpu = pressures.get("gpu")
-    if gpu is None:
-        gpu = pressures.get("gpu_util")
-    if gpu is not None:
-        try:
-            parts.append(f"gpu={float(gpu):.2f}")
-        except (TypeError, ValueError):
-            pass
-    if len(parts) == 1:
-        parts.append("ok")
-    return " ".join(parts)[:80]
-
-
 def _metacog_cue_freshness_s(biometrics: Dict[str, Any]) -> int | None:
     freshness = biometrics.get("freshness_s")
     if freshness is not None:
@@ -760,7 +729,9 @@ def _metacog_cue_freshness_s(biometrics: Dict[str, Any]) -> int | None:
     return None
 
 
-def _metacog_biometrics_cue(ctx: Dict[str, Any], *, phase: str) -> str:
+def _metacog_biometrics_cue(ctx: Dict[str, Any]) -> str:
+    """Single-pass pipeline only (Draft; Enrich's richer per-node cue variant
+    removed 2026-07-28 along with the Enrich step itself)."""
     biometrics = ctx.get("biometrics")
     if not isinstance(biometrics, dict):
         payload: Dict[str, Any] = {"status": "missing", "reason": "no_biometrics_ctx"}
@@ -770,23 +741,6 @@ def _metacog_biometrics_cue(ctx: Dict[str, Any], *, phase: str) -> str:
     cluster = biometrics.get("cluster") if isinstance(biometrics.get("cluster"), dict) else {}
     constraint = str(biometrics.get("constraint") or cluster.get("constraint") or "NONE")
     composites = _metacog_cluster_composites(biometrics)
-
-    if phase == "enrich":
-        cluster_payload: Dict[str, Any] = {"constraint": constraint}
-        cluster_payload.update(composites)
-        enrich_payload: Dict[str, Any] = {"cluster": cluster_payload}
-        nodes_obj = biometrics.get("nodes") if isinstance(biometrics.get("nodes"), dict) else {}
-        node_lines: list[str] = []
-        for node_id in sorted(nodes_obj.keys())[:_METACOG_BIOMETRICS_CUE_MAX_NODES]:
-            node_lines.append(_metacog_format_node_cue_line(str(node_id), nodes_obj[node_id]))
-        if node_lines:
-            enrich_payload["nodes"] = node_lines
-        cue = json.dumps(enrich_payload, separators=(",", ":"))
-        if len(cue) > _METACOG_BIOMETRICS_CUE_ENRICH_MAX_CHARS:
-            cue = json.dumps({"cluster": cluster_payload}, separators=(",", ":"))
-        if len(cue) > _METACOG_BIOMETRICS_CUE_ENRICH_MAX_CHARS:
-            cue = json.dumps({"status": "trimmed"}, separators=(",", ":"))
-        return cue
 
     draft_payload: Dict[str, Any] = {
         "status": status,
@@ -809,17 +763,14 @@ def _metacog_messages(
     prompt: str,
     *,
     allowed_keys: set[str],
-    phase: str,
 ) -> List[Dict[str, Any]]:
     """
     Force "schema-mode": system prompt + explicit user instruction.
-    Avoids the model going into explanation/chat mode.
+    Avoids the model going into explanation/chat mode. Single-pass pipeline
+    only (Draft; Enrich removed 2026-07-28) -- no phase branching needed.
     """
     allowed_list = ", ".join(sorted(allowed_keys))
-    if phase == "draft":
-        subkeys = "summary, evidence, new_state, previous_state"
-    else:
-        subkeys = "tag_scores, change_type_scores, causal_density"
+    subkeys = "summary, evidence"
     instruction = (
         "Return ONE JSON object only. "
         f"It must contain ONLY these top-level keys: {allowed_list}. "
@@ -2905,7 +2856,6 @@ async def call_step_services(
                 messages_payload = _metacog_messages(
                     prompt,
                     allowed_keys=_METACOG_DRAFT_ALLOWED_KEYS,
-                    phase="draft",
                 )
                 #messages_payload = _build_hop_messages(prompt=prompt, ctx_messages=ctx.get("messages"))
 
@@ -3657,7 +3607,7 @@ async def call_step_services(
                 # question 5.
                 ctx["trigger_upstream_json"] = json.dumps(trigger.upstream or {}, indent=2, default=str)
                 ctx["context_summary"] = summary_text
-                ctx["metacog_biometrics_cue"] = _metacog_biometrics_cue(ctx, phase="draft")
+                ctx["metacog_biometrics_cue"] = _metacog_biometrics_cue(ctx)
                 from app.substrate_felt_state_reader import hydrate_felt_state_ctx
                 from orion.substrate.metacog_trigger_signals import (
                     build_metacog_substrate_cue,

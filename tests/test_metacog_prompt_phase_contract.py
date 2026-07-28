@@ -87,7 +87,6 @@ def test_metacog_wrapper_instruction_is_patch_only():
     messages = executor_module._metacog_messages(
         "prompt",
         allowed_keys=_allowed_keys(MetacogDraftTextPatchV1),
-        phase="draft",
     )
     instruction = messages[1]["content"]
     assert "CollapseMirrorEntryV2" not in instruction

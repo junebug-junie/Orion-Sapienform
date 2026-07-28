@@ -19,6 +19,14 @@ from .digest import (
 )
 from .settings import settings
 
+# Found live 2026-07-28: this module's own logger.info() calls (including
+# _scheduler_loop's "Next digest run scheduled at..." startup line) were silently
+# swallowed -- stdlib logging defaults to WARNING with no handler configured, and
+# nothing in this service ever called logging.basicConfig(). Real behavior (the
+# scheduler loop itself) wasn't necessarily broken by this, but it made the loop's
+# state completely unobservable from container logs.
+logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s")
+
 logger = logging.getLogger("orion-notify-digest")
 
 app = FastAPI(

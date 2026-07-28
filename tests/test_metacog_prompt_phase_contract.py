@@ -7,8 +7,6 @@ from pathlib import Path
 from orion.schemas.metacog_patches import (
     MetacogDraftTextPatchV1,
     MetacogDraftWhatChangedV1,
-    MetacogEnrichScorePatchV1,
-    MetacogNumericSistersV1,
 )
 
 
@@ -63,14 +61,25 @@ def test_draft_prompt_requires_patch_only():
     assert set(what_changed.keys()) <= _allowed_keys(MetacogDraftWhatChangedV1)
 
 
-def test_enrich_prompt_requires_patch_only():
-    text = _read_template("log_orion_metacognition_enrich.j2")
-    example = _extract_example_json(text)
-    assert "FULL CollapseMirrorEntryV2" not in text
-    example_payload = json.loads(example)
-    assert set(example_payload.keys()) <= _allowed_keys(MetacogEnrichScorePatchV1)
-    numeric_sisters = example_payload.get("numeric_sisters") or {}
-    assert set(numeric_sisters.keys()) <= _allowed_keys(MetacogNumericSistersV1)
+def test_enrich_step_and_template_removed():
+    """log_orion_metacognition_enrich.j2 and MetacogEnrichScorePatchV1 are gone
+    outright (2026-07-28 audit: zero of Enrich's 7 output fields ever survived
+    into the published MetacogEntryV1). This asserts the removal held, not that
+    Enrich still behaves some way."""
+    repo_root = Path(__file__).resolve().parents[1]
+    template_path = repo_root / "orion" / "cognition" / "prompts" / "log_orion_metacognition_enrich.j2"
+    assert not template_path.exists()
+
+    import orion.schemas.metacog_patches as metacog_patches
+
+    assert not hasattr(metacog_patches, "MetacogEnrichScorePatchV1")
+    assert not hasattr(metacog_patches, "MetacogNumericSistersV1")
+    assert not hasattr(metacog_patches, "MetacogCausalDensityV1")
+    assert not hasattr(metacog_patches, "MetacogConstraintsV1")
+
+    verb_text = (repo_root / "orion" / "cognition" / "verbs" / "log_orion_metacognition.yaml").read_text()
+    assert "enrich_entry" not in verb_text
+    assert "MetacogEnrichService" not in verb_text
 
 
 def test_metacog_wrapper_instruction_is_patch_only():
@@ -78,7 +87,6 @@ def test_metacog_wrapper_instruction_is_patch_only():
     messages = executor_module._metacog_messages(
         "prompt",
         allowed_keys=_allowed_keys(MetacogDraftTextPatchV1),
-        phase="draft",
     )
     instruction = messages[1]["content"]
     assert "CollapseMirrorEntryV2" not in instruction
@@ -100,12 +108,6 @@ def test_draft_prompt_renders_trigger_upstream_json():
     text = _read_template("log_orion_metacognition_draft.j2")
     assert "{{ trigger_upstream_json }}" in text
     assert "do NOT paste into output" in text.split("{{ trigger_upstream_json }}")[0][-200:]
-
-
-def test_enrich_prompt_renders_trigger_upstream_json():
-    text = _read_template("log_orion_metacognition_enrich.j2")
-    assert "{{ trigger_upstream_json }}" in text
-    assert "trigger_upstream_json" in text.split("ANTI-LOG CONSTRAINTS")[1].split("TASK")[0]
 
 
 def test_trigger_upstream_json_ctx_value_matches_executor_convention():
@@ -134,7 +136,7 @@ def test_trigger_upstream_json_ctx_value_matches_executor_convention():
     assert "2026-07-23" in rendered_non_native
 
 
-def test_draft_and_enrich_templates_render_trigger_upstream_json_with_jinja():
+def test_draft_template_renders_trigger_upstream_json_with_jinja():
     from jinja2 import Environment
 
     env = Environment(autoescape=False)
@@ -155,9 +157,3 @@ def test_draft_and_enrich_templates_render_trigger_upstream_json_with_jinja():
     }
     rendered = env.from_string(draft_text).render(**ctx)
     assert '"disposition=defer"' in rendered
-
-    enrich_text = _read_template("log_orion_metacognition_enrich.j2")
-    enrich_ctx = dict(ctx)
-    enrich_ctx["collapse_json"] = "{}"
-    rendered_enrich = env.from_string(enrich_text).render(**enrich_ctx)
-    assert '"disposition=defer"' in rendered_enrich

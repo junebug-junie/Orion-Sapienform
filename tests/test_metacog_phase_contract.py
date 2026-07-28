@@ -8,7 +8,7 @@ import pytest
 
 from orion.core.bus.bus_schemas import ServiceRef
 from orion.schemas.cortex.schemas import ExecutionStep
-from orion.schemas.metacog_patches import MetacogDraftTextPatchV1, MetacogEnrichScorePatchV1
+from orion.schemas.metacog_patches import MetacogDraftTextPatchV1
 
 
 def _load_executor_module():
@@ -73,11 +73,6 @@ def test_draft_patch_rejects_score_fields():
         MetacogDraftTextPatchV1.model_validate({"tag_scores": {"x": 1.0}})
 
 
-def test_enrich_patch_rejects_text_fields():
-    with pytest.raises(Exception):
-        MetacogEnrichScorePatchV1.model_validate({"summary": "nope"})
-
-
 def test_system_owned_fields_not_overwritten():
     executor_module = _load_executor_module()
     entry = _base_entry()
@@ -122,7 +117,10 @@ def test_trigger_string_and_type_present_when_patch_omits():
     assert entry.type
 
 
-def test_fail_fast_skips_enrich_when_draft_fails(monkeypatch):
+def test_fail_fast_skips_downstream_steps_when_draft_fails(monkeypatch):
+    """Draft (Step 2) raising aborts the plan before Publish (Step 3) ever runs
+    -- the single-pass pipeline's fail-fast behavior, post Enrich removal
+    (2026-07-28: Enrich deleted outright, zero surviving output fields)."""
     executor_module = _load_executor_module()
     calls: list[str | None] = []
 
@@ -146,7 +144,7 @@ def test_fail_fast_skips_enrich_when_draft_fails(monkeypatch):
         verb_name="metacog",
         step_name="metacog",
         order=0,
-        services=["MetacogDraftService", "MetacogEnrichService", "MetacogPublishService"],
+        services=["MetacogDraftService", "MetacogPublishService"],
         prompt_template="",
     )
     ctx = {"raw_user_text": "test", "trigger_kind": "heartbeat", "trigger": {"trigger_kind": "heartbeat"}}
@@ -220,25 +218,31 @@ def test_metacog_draft_keeps_fallback_summary_when_fallback():
     assert entry.what_changed_summary == "fallback_generated"
 
 
-def test_metacog_patch_sanitizer_handles_nested_keys_and_aliases():
+def test_metacog_patch_sanitizer_handles_nested_keys_and_unknown_fields():
+    """_sanitize_patch_dict is generic (nested-submodel-aware, strips unknown
+    keys) regardless of which patch schema it validates against -- exercised
+    here against Draft's own nested what_changed submodel, the only nested
+    patch schema left after Enrich's numeric_sisters/constraints removal
+    (2026-07-28)."""
     executor_module = _load_executor_module()
     raw = {
-        "numeric_ sisters": {
-            "risk_ score": 0.3,
-            "constraints": {"severity_ score": 0.1, "extra_field": "drop"},
+        "what_changed": {
+            "summary": "shift",
+            "evidence": ["cue"],
+            "new_state": "drop",
         },
-        "summary": "drop",
+        "tag_scores": "drop",
     }
     sanitized, stripped = executor_module._sanitize_patch_payload(
         raw,
-        model=MetacogEnrichScorePatchV1,
+        model=MetacogDraftTextPatchV1,
     )
-    assert "summary" in stripped
-    assert "numeric_sisters.constraints.extra_field" in stripped
-    patch = MetacogEnrichScorePatchV1.model_validate(sanitized)
-    assert patch.numeric_sisters
-    assert patch.numeric_sisters.risk_score == 0.3
-    assert patch.numeric_sisters.constraints.severity_score == 0.1
+    assert "tag_scores" in stripped
+    assert "what_changed.new_state" in stripped
+    patch = MetacogDraftTextPatchV1.model_validate(sanitized)
+    assert patch.what_changed
+    assert patch.what_changed.summary == "shift"
+    assert patch.what_changed.evidence == ["cue"]
 
 
 def test_metacog_patch_sanitizer_parses_code_fences():

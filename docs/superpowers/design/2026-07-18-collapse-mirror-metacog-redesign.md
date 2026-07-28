@@ -1220,3 +1220,32 @@ Not decided. Two shapes on the table, neither started:
 
 Whichever direction, this is a cognition-loop change (draft/enrich/publish shape) — proposal mode
 before any code, per CLAUDE.md.
+
+### Implemented (2026-07-28) — option 1, kill Enrich outright
+
+Per Juniper's direct go-ahead, built option 1 above (trim Enrich's ask to match what survives, i.e.
+nothing) rather than option 2. `orion/cognition/verbs/log_orion_metacognition.yaml` now has 3 steps
+(`MetacogContextService` -> `MetacogDraftService` -> `MetacogPublishService`), no `enrich_entry`.
+`orion/cognition/prompts/log_orion_metacognition_enrich.j2` deleted outright.
+`MetacogDraftTextPatchV1`/`MetacogDraftWhatChangedV1` (`orion/schemas/metacog_patches.py`) trimmed
+to exactly the fields the audit above found surviving to publish (`summary`, `mantra`,
+`what_changed.summary`/`.evidence`, `tags_suggested`); `MetacogEnrichScorePatchV1`/
+`MetacogNumericSistersV1`/`MetacogCausalDensityV1`/`MetacogConstraintsV1` deleted entirely. The
+Draft prompt's ORION METADEFS/PATCH CONTRACT/OUTPUT REQUIREMENT/FORBIDDEN/`example_json` sections
+rewritten to match. `services/orion-cortex-exec/app/executor.py`: removed the
+`MetacogEnrichService` dispatch block, `_apply_enrich_patch`, `_set_metacog_enrich_telemetry`, and
+the Enrich-specific scaffolding (prompt-budget/trim branches, the `metacog_biometrics_cue_enrich`
+ctx write); `MetacogPublishService` now reads `ctx["collapse_entry"]` directly (`ctx["final_entry"]`
+can no longer be set by anything -- the old `ctx.get("final_entry") or ctx.get("collapse_entry")`
+fallback chain is gone). One real bug caught in the process: `_metacog_uncertainty_probe_messages`
+referenced `patch.type`/`.emergent_entity`/`.resonance_signature` -- fields the schema trim
+removed -- which would have raised `AttributeError` on the first real Draft call with
+`CORTEX_METACOG_RETURN_LOGPROBS=true`; fixed to probe on `summary`/`mantra`/`what_changed` instead.
+`CORTEX_METACOG_ENRICH_PROMPT_MAX_CHARS`/`CORTEX_METACOG_ENRICH_WORKER_CTX_CHAR_BUDGET` removed
+(settings.py, `.env_example`, docker-compose.yml) since no phase other than `"draft"` is ever passed
+to the prompt-budget/trim helpers anymore. A downstream consumer this design doc's audit missed --
+`services/orion-cortex-exec/tests/test_firebreak.py`, also keyed on `ctx["final_entry"]` -- was
+found broken by the `final_entry`->`collapse_entry` change via a full-suite test run, not by the
+original scoped grep; fixed alongside the explicitly-scoped test files. Item 2 (`_fallback_metacog_draft`'s dead `phi_hint` read) remains open, deliberately out of scope for this
+patch per the original audit's own coupling note above -- unaffected by this patch either way.
+See PR #1427 for the full review trail and test list.

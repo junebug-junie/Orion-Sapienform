@@ -37,18 +37,17 @@ def _load_executor_module():
 def test_metacog_uncertainty_probe_messages_use_patch_fields():
     executor_module = _load_executor_module()
     patch = MetacogDraftTextPatchV1(
-        type="flow",
-        emergent_entity="Atlas",
         summary="steady focus",
-        resonance_signature="flow: Atlas | Δ:low | →maintain",
+        mantra="hold the line",
+        what_changed={"summary": "clarity up", "evidence": ["cue"]},
     )
     messages = executor_module._metacog_uncertainty_probe_messages(patch)
     assert messages[0]["role"] == "system"
-    assert "resonance_signature" in messages[0]["content"]
+    assert "summary" in messages[0]["content"]
     assert messages[1]["role"] == "user"
-    assert "type=flow" in messages[1]["content"]
-    assert "entity=Atlas" in messages[1]["content"]
-    assert "reference_signature=" in messages[1]["content"]
+    assert "summary=steady focus" in messages[1]["content"]
+    assert "mantra=hold the line" in messages[1]["content"]
+    assert "what_changed=clarity up" in messages[1]["content"]
 
 
 def test_metacog_uncertainty_probe_messages_truncate_long_fields():
@@ -83,11 +82,8 @@ from orion.schemas.cortex.schemas import ExecutionStep
 
 _VALID_DRAFT_JSON = json.dumps(
     {
-        "type": "flow",
-        "emergent_entity": "Atlas",
         "summary": "steady",
         "mantra": "breathe",
-        "resonance_signature": "flow: Atlas | Δ:low | →maintain",
     }
 )
 

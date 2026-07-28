@@ -52,7 +52,7 @@ from orion.schemas.telemetry.turn_effect_explanations import (
 from orion.schemas.state.contracts import StateGetLatestRequest, StateLatestReply
 from orion.schemas.chat_stance import ChatStanceBrief
 from orion.substrate.appraisal import REPAIR_PRESSURE_CONTRACT_METADATA_KEY
-from orion.schemas.metacog_patches import MetacogDraftTextPatchV1, MetacogEnrichScorePatchV1
+from orion.schemas.metacog_patches import MetacogDraftTextPatchV1
 from orion.schemas.metacog_entry import (
     MetacogEntryV1,
     MetacogRealState,
@@ -190,9 +190,6 @@ _METACOG_DRAFT_CTX_LEN_KEYS: tuple[str, ...] = (
     "trigger_upstream_json",
 )
 
-_METACOG_ENRICH_CTX_LEN_KEYS: tuple[str, ...] = _METACOG_DRAFT_CTX_LEN_KEYS + ("collapse_json",)
-
-
 def _filter_world_context_capsule(
     candidate: dict[str, Any] | None,
     *,
@@ -252,7 +249,6 @@ def _filter_world_context_capsule(
 _SYSTEM_ALERT_TAG_PREFIX = "metacog.alert"
 
 _METACOG_DRAFT_ALLOWED_KEYS = set(MetacogDraftTextPatchV1.model_fields.keys())
-_METACOG_ENRICH_ALLOWED_KEYS = set(MetacogEnrichScorePatchV1.model_fields.keys())
 
 
 def _merge_telemetry_system_owned(base: Any, patch: Any) -> Dict[str, Any]:
@@ -442,12 +438,12 @@ def _resolve_llm_chat_max_tokens(step: ExecutionStep, ctx: Dict[str, Any]) -> Tu
     return int(settings.llm_chat_max_tokens_default), requested, "settings.llm_chat_max_tokens_default"
 
 
-_PATCH_KEY_ALIASES = {
-    "change_ type_ scores": "change_type_scores",
-    "numeric_ sisters": "numeric_sisters",
-    "severity_ score": "severity_score",
-    "risk_ score": "risk_score",
-}
+# Irregular-spacing aliases for patch key normalization, keyed by the raw key
+# with internal spaces collapsed to single underscores (see _normalize_patch_key).
+# Currently empty: Enrich's score-patch fields (the only ones needing entries
+# here) were removed 2026-07-28 along with MetacogEnrichScorePatchV1. Kept as a
+# live mechanism, not deleted, for the next patch schema that needs it.
+_PATCH_KEY_ALIASES: Dict[str, str] = {}
 
 
 def _normalize_patch_key(key: Any) -> str:
@@ -561,36 +557,6 @@ def _set_metacog_draft_telemetry(
     entry_dict["state_snapshot"] = state_snapshot
 
 
-def _set_metacog_enrich_telemetry(
-    entry_dict: Dict[str, Any],
-    *,
-    fallback_reason: str | None = None,
-    prompt_chars: int | None = None,
-    prompt_limit_chars: int | None = None,
-    section_sizes: Dict[str, int] | None = None,
-    ctx_trim_applied: list[str] | None = None,
-    biometrics_cue_chars: int | None = None,
-) -> None:
-    state_snapshot = entry_dict.get("state_snapshot")
-    if not isinstance(state_snapshot, dict):
-        state_snapshot = {}
-    telemetry = _merge_telemetry_system_owned(state_snapshot.get("telemetry"), None)
-    if fallback_reason:
-        telemetry["metacog_enrich_fallback_reason"] = fallback_reason
-    if prompt_chars is not None:
-        telemetry["metacog_enrich_prompt_chars"] = int(prompt_chars)
-    if prompt_limit_chars is not None:
-        telemetry["metacog_enrich_prompt_limit_chars"] = int(prompt_limit_chars)
-    if section_sizes:
-        telemetry["metacog_enrich_prompt_section_sizes"] = dict(section_sizes)
-    if ctx_trim_applied:
-        telemetry["metacog_ctx_trim_applied"] = list(ctx_trim_applied)
-    if biometrics_cue_chars is not None:
-        telemetry["metacog_biometrics_cue_chars"] = int(biometrics_cue_chars)
-    state_snapshot["telemetry"] = telemetry
-    entry_dict["state_snapshot"] = state_snapshot
-
-
 def _postprocess_metacog_draft_summary(entry_dict: Dict[str, Any], *, draft_mode: str) -> None:
     if draft_mode == "fallback":
         summary_source = "fallback_generated"
@@ -617,23 +583,13 @@ def _postprocess_metacog_draft_summary(entry_dict: Dict[str, Any], *, draft_mode
 
 
 def _apply_draft_patch(entry_dict: Dict[str, Any], patch: MetacogDraftTextPatchV1) -> None:
-    entry_dict["trigger"] = _truncate_text(patch.trigger, 2000) or entry_dict.get("trigger")
-    entry_dict["type"] = _truncate_text(patch.type, 2000) or entry_dict.get("type")
     entry_dict["mantra"] = _truncate_text(patch.mantra, 2000) or entry_dict.get("mantra")
     entry_dict["summary"] = _truncate_text(patch.summary, 2000) or entry_dict.get("summary")
-    entry_dict["causal_echo"] = _truncate_text(patch.causal_echo, 2000) or entry_dict.get("causal_echo")
-    entry_dict["field_resonance"] = _truncate_text(patch.field_resonance, 2000) or entry_dict.get("field_resonance")
-    entry_dict["emergent_entity"] = _truncate_text(patch.emergent_entity, 2000) or entry_dict.get("emergent_entity")
-    entry_dict["resonance_signature"] = _truncate_text(patch.resonance_signature, 2000) or entry_dict.get(
-        "resonance_signature"
-    )
 
     if patch.what_changed:
         entry_dict["what_changed"] = {
             "summary": _truncate_text(patch.what_changed.summary, 2000),
             "evidence": _truncate_list(patch.what_changed.evidence, 12, 2000),
-            "new_state": _truncate_text(patch.what_changed.new_state, 2000),
-            "previous_state": _truncate_text(patch.what_changed.previous_state, 2000),
         }
 
     if patch.tags_suggested:
@@ -644,23 +600,6 @@ def _apply_draft_patch(entry_dict: Dict[str, Any], patch: MetacogDraftTextPatchV
         telemetry["tags_suggested"] = _truncate_list(patch.tags_suggested, 12, 2000)
         state_snapshot["telemetry"] = telemetry
         entry_dict["state_snapshot"] = state_snapshot
-
-
-def _apply_enrich_patch(entry_dict: Dict[str, Any], patch: MetacogEnrichScorePatchV1) -> None:
-    if patch.tag_scores is not None:
-        entry_dict["tag_scores"] = patch.tag_scores
-    if patch.change_type_scores is not None:
-        entry_dict["change_type_scores"] = patch.change_type_scores
-    if patch.numeric_sisters is not None:
-        entry_dict["numeric_sisters"] = patch.numeric_sisters.model_dump(mode="json")
-    if patch.causal_density is not None:
-        entry_dict["causal_density"] = patch.causal_density.model_dump(mode="json")
-    if patch.epistemic_status is not None:
-        entry_dict["epistemic_status"] = patch.epistemic_status
-    if patch.is_causally_dense is not None:
-        entry_dict["is_causally_dense"] = patch.is_causally_dense
-    if patch.snapshot_kind is not None:
-        entry_dict["snapshot_kind"] = patch.snapshot_kind
 
 
 def _metacog_trigger_lineage(ctx: Dict[str, Any]) -> Dict[str, Optional[str]]:
@@ -755,8 +694,6 @@ def _default_biometrics_context(*, status: str, reason: str) -> Dict[str, Any]:
 
 
 _METACOG_BIOMETRICS_CUE_DRAFT_MAX_CHARS = 350
-_METACOG_BIOMETRICS_CUE_ENRICH_MAX_CHARS = 600
-_METACOG_BIOMETRICS_CUE_MAX_NODES = 4
 
 
 def _metacog_cluster_composites(biometrics: Dict[str, Any]) -> Dict[str, float]:
@@ -776,35 +713,6 @@ def _metacog_cluster_composites(biometrics: Dict[str, Any]) -> Dict[str, float]:
     return out
 
 
-def _metacog_format_node_cue_line(node_id: str, node_data: Any) -> str:
-    if not isinstance(node_data, dict):
-        return f"{node_id}: unknown"[:80]
-    status = str(node_data.get("status") or "OK")
-    summary = node_data.get("summary") if isinstance(node_data.get("summary"), dict) else {}
-    composites = summary.get("composites") if isinstance(summary.get("composites"), dict) else {}
-    pressures = summary.get("pressures") if isinstance(summary.get("pressures"), dict) else {}
-    parts = [f"{node_id}:"]
-    if status.upper() not in {"OK", "FRESH"}:
-        parts.append(f"status={status}")
-    strain = composites.get("strain")
-    if strain is not None:
-        try:
-            parts.append(f"strain={float(strain):.2f}")
-        except (TypeError, ValueError):
-            pass
-    gpu = pressures.get("gpu")
-    if gpu is None:
-        gpu = pressures.get("gpu_util")
-    if gpu is not None:
-        try:
-            parts.append(f"gpu={float(gpu):.2f}")
-        except (TypeError, ValueError):
-            pass
-    if len(parts) == 1:
-        parts.append("ok")
-    return " ".join(parts)[:80]
-
-
 def _metacog_cue_freshness_s(biometrics: Dict[str, Any]) -> int | None:
     freshness = biometrics.get("freshness_s")
     if freshness is not None:
@@ -821,7 +729,9 @@ def _metacog_cue_freshness_s(biometrics: Dict[str, Any]) -> int | None:
     return None
 
 
-def _metacog_biometrics_cue(ctx: Dict[str, Any], *, phase: str) -> str:
+def _metacog_biometrics_cue(ctx: Dict[str, Any]) -> str:
+    """Single-pass pipeline only (Draft; Enrich's richer per-node cue variant
+    removed 2026-07-28 along with the Enrich step itself)."""
     biometrics = ctx.get("biometrics")
     if not isinstance(biometrics, dict):
         payload: Dict[str, Any] = {"status": "missing", "reason": "no_biometrics_ctx"}
@@ -831,23 +741,6 @@ def _metacog_biometrics_cue(ctx: Dict[str, Any], *, phase: str) -> str:
     cluster = biometrics.get("cluster") if isinstance(biometrics.get("cluster"), dict) else {}
     constraint = str(biometrics.get("constraint") or cluster.get("constraint") or "NONE")
     composites = _metacog_cluster_composites(biometrics)
-
-    if phase == "enrich":
-        cluster_payload: Dict[str, Any] = {"constraint": constraint}
-        cluster_payload.update(composites)
-        enrich_payload: Dict[str, Any] = {"cluster": cluster_payload}
-        nodes_obj = biometrics.get("nodes") if isinstance(biometrics.get("nodes"), dict) else {}
-        node_lines: list[str] = []
-        for node_id in sorted(nodes_obj.keys())[:_METACOG_BIOMETRICS_CUE_MAX_NODES]:
-            node_lines.append(_metacog_format_node_cue_line(str(node_id), nodes_obj[node_id]))
-        if node_lines:
-            enrich_payload["nodes"] = node_lines
-        cue = json.dumps(enrich_payload, separators=(",", ":"))
-        if len(cue) > _METACOG_BIOMETRICS_CUE_ENRICH_MAX_CHARS:
-            cue = json.dumps({"cluster": cluster_payload}, separators=(",", ":"))
-        if len(cue) > _METACOG_BIOMETRICS_CUE_ENRICH_MAX_CHARS:
-            cue = json.dumps({"status": "trimmed"}, separators=(",", ":"))
-        return cue
 
     draft_payload: Dict[str, Any] = {
         "status": status,
@@ -870,17 +763,14 @@ def _metacog_messages(
     prompt: str,
     *,
     allowed_keys: set[str],
-    phase: str,
 ) -> List[Dict[str, Any]]:
     """
     Force "schema-mode": system prompt + explicit user instruction.
-    Avoids the model going into explanation/chat mode.
+    Avoids the model going into explanation/chat mode. Single-pass pipeline
+    only (Draft; Enrich removed 2026-07-28) -- no phase branching needed.
     """
     allowed_list = ", ".join(sorted(allowed_keys))
-    if phase == "draft":
-        subkeys = "summary, evidence, new_state, previous_state"
-    else:
-        subkeys = "tag_scores, change_type_scores, causal_density"
+    subkeys = "summary, evidence"
     instruction = (
         "Return ONE JSON object only. "
         f"It must contain ONLY these top-level keys: {allowed_list}. "
@@ -907,19 +797,20 @@ def _truncate_metacog_probe_text(text: str, *, limit: int = _METACOG_UNCERTAINTY
 
 
 def _metacog_uncertainty_probe_messages(patch: MetacogDraftTextPatchV1) -> List[Dict[str, Any]]:
-    typ = _truncate_metacog_probe_text(patch.type or "unknown")
-    entity = _truncate_metacog_probe_text(patch.emergent_entity or "unknown")
-    summary = _truncate_metacog_probe_text(patch.summary or "")
-    sig_hint = _truncate_metacog_probe_text(patch.resonance_signature or "")
+    summary = _truncate_metacog_probe_text(patch.summary or "unknown")
+    mantra = _truncate_metacog_probe_text(patch.mantra or "unknown")
+    what_changed_summary = _truncate_metacog_probe_text(
+        (patch.what_changed.summary if patch.what_changed else None) or ""
+    )
     system = _truncate_metacog_probe_text(
         "You are a metacognition uncertainty probe. "
-        "Output exactly one line: the resonance_signature only. "
+        "Output exactly one line: a compressed restatement of the summary only. "
         "No JSON, no markdown, no preamble."
     )
-    user_parts = [f"type={typ} entity={entity} summary={summary}"]
-    if sig_hint:
-        user_parts.append(f"reference_signature={sig_hint}")
-    user_parts.append('Format: "<type>: <entity> | Δ:<delta> | →<intent>"')
+    user_parts = [f"summary={summary} mantra={mantra}"]
+    if what_changed_summary:
+        user_parts.append(f"what_changed={what_changed_summary}")
+    user_parts.append("Format: a single compressed sentence restating the summary.")
     user = _truncate_metacog_probe_text(" ".join(user_parts))
     return [
         {"role": "system", "content": system},
@@ -1232,10 +1123,9 @@ def _enforce_metacog_publish_prompt_budget(
 ) -> tuple[bool, Dict[str, int], int, int]:
     section_sizes = _metacog_ctx_section_sizes(ctx, section_keys)
     prompt_chars = len(prompt or "")
-    if phase == "draft":
-        char_limit = int(settings.cortex_metacog_draft_prompt_max_chars)
-    else:
-        char_limit = int(settings.cortex_metacog_enrich_prompt_max_chars)
+    # Single-pass pipeline (Draft only, since Enrich's removal 2026-07-28) --
+    # "draft" is the only phase any caller ever passes here now.
+    char_limit = int(settings.cortex_metacog_draft_prompt_max_chars)
     largest = _metacog_largest_sections(section_sizes)
     logger.info(
         "metacog_publish_prompt_preflight corr_id=%s service=%s phase=%s prompt_chars=%s limit_chars=%s section_sizes=%s largest_sections=%s",
@@ -1269,10 +1159,9 @@ def _maybe_trim_metacog_prompt_for_worker_ctx(
     template_str: str,
     correlation_id: str,
 ) -> tuple[str, str | None, list[str]]:
-    if phase == "draft":
-        budget = int(settings.cortex_metacog_draft_worker_ctx_char_budget)
-    else:
-        budget = int(settings.cortex_metacog_enrich_worker_ctx_char_budget)
+    # Single-pass pipeline (Draft only, since Enrich's removal 2026-07-28) --
+    # "draft" is the only phase any caller ever passes here now.
+    budget = int(settings.cortex_metacog_draft_worker_ctx_char_budget)
     trim_applied: list[str] = []
     if len(prompt or "") <= budget:
         return prompt, None, trim_applied
@@ -2872,11 +2761,8 @@ async def call_step_services(
             if step.verb_name == "chat_general" and step.step_name == "llm_chat_general":
                 if suppress_chat_general_speech_identity_priming(ctx):
                     logs.append("info <- suppressed identity kernel priming for ordinary chat_general speech turn")
-        if service == "MetacogEnrichService" and ctx.get("metacog_biometrics_cue_enrich"):
-            ctx["metacog_biometrics_cue"] = ctx["metacog_biometrics_cue_enrich"]
         prompt = _render_prompt(step.prompt_template or "", ctx) if step.prompt_template else ""
 
-        enrich_ctx_overflow: str | None = None
         draft_ctx_overflow: str | None = None
 
         shortcut = _attempt_mind_handoff_chat_stance_shortcut(
@@ -2900,16 +2786,12 @@ async def call_step_services(
         if service == "MetacogDraftService":
             metacog_phase = "draft"
             metacog_section_keys = _METACOG_DRAFT_CTX_LEN_KEYS
-        elif service == "MetacogEnrichService":
-            metacog_phase = "enrich"
-            metacog_section_keys = _METACOG_ENRICH_CTX_LEN_KEYS
 
         metacog_budget_ok = True
         metacog_section_sizes: Dict[str, int] = {}
         metacog_prompt_chars = len(prompt or "")
         metacog_prompt_limit = 0
         draft_trim_applied: list[str] = []
-        enrich_trim_applied: list[str] = []
         if metacog_phase:
             metacog_section_sizes = _log_metacog_publish_prompt_diagnostics(
                 service=service,
@@ -2937,19 +2819,7 @@ async def call_step_services(
                     template_str=step.prompt_template,
                     correlation_id=correlation_id,
                 )
-            if (
-                service == "MetacogEnrichService"
-                and metacog_budget_ok
-                and step.prompt_template
-            ):
-                prompt, enrich_ctx_overflow, enrich_trim_applied = _maybe_trim_metacog_prompt_for_worker_ctx(
-                    phase="enrich",
-                    prompt=prompt,
-                    ctx=ctx,
-                    template_str=step.prompt_template,
-                    correlation_id=correlation_id,
-                )
-            trim_applied = draft_trim_applied or enrich_trim_applied
+            trim_applied = draft_trim_applied
             if trim_applied:
                 ctx["metacog_ctx_trim_applied"] = trim_applied
                 metacog_section_sizes = _metacog_ctx_section_sizes(ctx, metacog_section_keys)
@@ -2962,15 +2832,11 @@ async def call_step_services(
                     ctx=ctx,
                     section_keys=metacog_section_keys,
                 )
-            if metacog_phase == "draft":
-                ctx["metacog_draft_prompt_chars"] = metacog_prompt_chars
-                ctx["metacog_draft_section_sizes"] = metacog_section_sizes
-            else:
-                ctx["metacog_enrich_prompt_chars"] = metacog_prompt_chars
-                ctx["metacog_enrich_section_sizes"] = metacog_section_sizes
+            ctx["metacog_draft_prompt_chars"] = metacog_prompt_chars
+            ctx["metacog_draft_section_sizes"] = metacog_section_sizes
         # ----------------------------------------------------------------
 
-        if service in {"MetacogDraftService", "MetacogEnrichService"}:
+        if service == "MetacogDraftService":
             debug_prompt = (prompt[:200] + "...") if len(prompt) > 200 else prompt
             logger.info(f"Rendered Prompt[{service}]: {debug_prompt!r}")
         _log_grounding_snapshot(
@@ -2990,7 +2856,6 @@ async def call_step_services(
                 messages_payload = _metacog_messages(
                     prompt,
                     allowed_keys=_METACOG_DRAFT_ALLOWED_KEYS,
-                    phase="draft",
                 )
                 #messages_payload = _build_hop_messages(prompt=prompt, ctx_messages=ctx.get("messages"))
 
@@ -3282,209 +3147,14 @@ async def call_step_services(
 
                 continue
 
-            if service == "MetacogEnrichService":
-                logs.append("exec -> MetacogEnrichService (LLM + Merge)")
-
-                req_model = ctx.get("model") or ctx.get("llm_model") or None
-                #messages_payload = _build_hop_messages(prompt=prompt, ctx_messages=ctx.get("messages"))
-                messages_payload = _metacog_messages(
-                    prompt,
-                    allowed_keys=_METACOG_ENRICH_ALLOWED_KEYS,
-                    phase="enrich",
-                )
-
-                _me_step = SimpleNamespace(verb_name="log_orion_metacognition", step_name="metacog_enrich")
-                _me_lane = resolve_llm_lane_for_step(step=_me_step, ctx=ctx, settings=settings)
-
-                enrich_fallback_reason: str | None = None
-                if enrich_ctx_overflow:
-                    logs.append("skip <- MetacogEnrichService LLM (prompt_context_overflow)")
-                    enrich_fallback_reason = enrich_ctx_overflow
-                    patch: Dict[str, Any] = {}
-                elif not metacog_budget_ok:
-                    logs.append("skip <- MetacogEnrichService LLM (prompt_budget_exceeded)")
-                    enrich_fallback_reason = "prompt_budget_exceeded"
-                    patch: Dict[str, Any] = {}
-                else:
-                    request_object = ChatRequestPayload(
-                        model=req_model,
-                        profile=ctx.get("profile_name") or settings.atlas_metacog_profile_name,
-                        messages=messages_payload,
-                        raw_user_text="metacog_enrich",
-                        route="metacog",
-                        options={
-                            "temperature": 0.5,
-                            "max_tokens": 1024,
-                            "stream": False,
-                            "response_format": {"type": "json_object"},
-                            **_me_lane,
-                        },
-                    )
-
-                    llm_res = await llm_client.chat(
-                        source=source,
-                        req=request_object,
-                        correlation_id=correlation_id,
-                        reply_to=reply_channel,
-                        timeout_sec=effective_timeout,
-                    )
-
-                try:
-                    if metacog_budget_ok and not enrich_ctx_overflow:
-                        raw_content = _extract_llm_text(llm_res)
-                        raw_content = _clean_raw_llm_content(raw_content)
-
-                        # 1) strict find
-                        patch = find_collapse_entry(raw_content)
-
-                        # 2) fallback loose extract
-                        if not patch:
-                            patch = _loose_json_extract(raw_content)
-
-                        if isinstance(patch, dict) and isinstance(patch.get("draft"), dict):
-                            patch = patch["draft"]
-
-                        if not patch:
-                            logger.warning(f"MetacogEnrichService: No JSON found. Raw: {raw_content!r}")
-                            enrich_fallback_reason = "json_parse_failed"
-                            patch = {}
-                        finish_reason = _extract_llm_finish_reason(llm_res)
-                        if finish_reason == "length":
-                            enrich_fallback_reason = enrich_fallback_reason or "llm_finish_reason_length"
-                        elif not str(raw_content or "").strip():
-                            enrich_fallback_reason = enrich_fallback_reason or "empty_response"
-
-                    draft_data = ctx.get("collapse_entry")
-                    if not draft_data:
-                        raise ValueError("No draft entry found in context")
-
-                    draft = CollapseMirrorEntryV2.model_validate(draft_data)
-                    final_dict = draft.model_dump(mode="json")
-
-                    filtered, stripped = _sanitize_patch_payload(patch, model=MetacogEnrichScorePatchV1)
-                    if stripped:
-                        logger.warning("Enrich patch stripped keys: %s", stripped)
-
-                    try:
-                        enrich_patch = MetacogEnrichScorePatchV1.model_validate(filtered)
-                    except Exception as exc:
-                        logger.warning("MetacogEnrichService patch rejected: %s", exc)
-                        enrich_fallback_reason = enrich_fallback_reason or "schema_validation_failed"
-                        enrich_patch = MetacogEnrichScorePatchV1()
-                    _apply_enrich_patch(final_dict, enrich_patch)
-
-                    # Coerce resonance_signature to string if LLM returned an object
-                    rs = final_dict.get("resonance_signature")
-                    if rs is not None and not isinstance(rs, str):
-                        try:
-                            final_dict["resonance_signature"] = json.dumps(rs)
-                        except Exception:
-                            final_dict["resonance_signature"] = str(rs)
-
-                    if isinstance(final_dict.get("change_type_scores"), dict) and not final_dict.get("change_type"):
-                        scores = final_dict["change_type_scores"]
-                        if scores:
-                            final_dict["change_type"] = max(scores.items(), key=lambda item: item[1])[0]
-
-                    if ctx.get("turn_effect"):
-                        turn_summary = summarize_turn_effect(ctx["turn_effect"])
-                        state_snapshot = final_dict.get("state_snapshot")
-                        if not isinstance(state_snapshot, dict):
-                            state_snapshot = {}
-                        telemetry = _merge_telemetry_system_owned(
-                            state_snapshot.get("telemetry"),
-                            None,
-                        )
-                        telemetry["turn_effect"] = ctx["turn_effect"]
-                        telemetry["turn_effect_summary"] = turn_summary
-                        if ctx.get("turn_effect_evidence"):
-                            telemetry["turn_effect_evidence"] = ctx["turn_effect_evidence"]
-                        state_snapshot["telemetry"] = telemetry
-                        final_dict["state_snapshot"] = state_snapshot
-                    policy = ctx.get("turn_effect_policy")
-                    if policy:
-                        state_snapshot = final_dict.get("state_snapshot")
-                        if not isinstance(state_snapshot, dict):
-                            state_snapshot = {}
-                        telemetry = _merge_telemetry_system_owned(
-                            state_snapshot.get("telemetry"),
-                            None,
-                        )
-                        telemetry["recommended_actions"] = policy.get("actions") if isinstance(policy, dict) else []
-                        telemetry["recommended_actions_policy"] = policy
-                        state_snapshot["telemetry"] = telemetry
-                        final_dict["state_snapshot"] = state_snapshot
-                    explanations = ctx.get("turn_effect_explanations")
-                    if explanations:
-                        state_snapshot = final_dict.get("state_snapshot")
-                        if not isinstance(state_snapshot, dict):
-                            state_snapshot = {}
-                        telemetry = _merge_telemetry_system_owned(
-                            state_snapshot.get("telemetry"),
-                            None,
-                        )
-                        telemetry["alert_explanations"] = explanations
-                        telemetry["alert_explanations_summary"] = (
-                            explanations.get("summary") if isinstance(explanations, dict) else None
-                        )
-                        state_snapshot["telemetry"] = telemetry
-                        final_dict["state_snapshot"] = state_snapshot
-                    system_alert_tags = ctx.get("system_alert_tags") or []
-                    if system_alert_tags:
-                        final_dict["tags"] = _merge_system_tags(final_dict.get("tags"), system_alert_tags)
-
-                    final_dict = _apply_metacog_system_fields(final_dict, ctx)
-                    final_dict.setdefault("source_service", "metacog")
-                    final_dict.setdefault("observer", "orion")
-                    _set_metacog_enrich_telemetry(
-                        final_dict,
-                        fallback_reason=enrich_fallback_reason,
-                        prompt_chars=metacog_prompt_chars,
-                        prompt_limit_chars=metacog_prompt_limit,
-                        section_sizes=metacog_section_sizes,
-                        ctx_trim_applied=(
-                            ctx.get("metacog_ctx_trim_applied")
-                            if isinstance(ctx.get("metacog_ctx_trim_applied"), list)
-                            else None
-                        ),
-                        biometrics_cue_chars=len(str(ctx.get("metacog_biometrics_cue") or "")),
-                    )
-
-                    final_entry = normalize_collapse_entry(final_dict)
-
-                    ctx["final_entry"] = final_entry.model_dump(mode="json")
-                    merged_result[service] = {
-                        "ok": True,
-                        "event_id": final_entry.event_id,
-                        "fallback_reason": enrich_fallback_reason,
-                        "prompt_chars": metacog_prompt_chars,
-                        "section_sizes": metacog_section_sizes,
-                    }
-                    logs.append("ok <- MetacogEnrichService")
-
-                except Exception as e:
-                    logger.error(f"MetacogEnrichService FAILED: {e}")
-                    logs.append(f"error <- MetacogEnrichService: {e}")
-                    merged_result[service] = {
-                        "ok": False,
-                        "error": str(e),
-                        "fallback_reason": "llm_exception",
-                    }
-                    by_service = ctx.get("prior_step_results_by_service")
-                    if not isinstance(by_service, dict):
-                        by_service = {}
-                        ctx["prior_step_results_by_service"] = by_service
-                    by_service[service] = merged_result[service]
-                    step_failed = True
-                    step_error = f"{service}: {e}"
-                    break
-
-                continue
-
             if service == "MetacogPublishService":
                 logs.append("exec -> MetacogPublishService")
 
-                final_data = ctx.get("final_entry") or ctx.get("collapse_entry")
+                # `entry` here is the CollapseMirrorEntryV2-shaped scratch object built by
+                # Draft alone -- Enrich (a full second LLM call) was removed 2026-07-28:
+                # zero of its 7 output fields ever survived into the published MetacogEntryV1
+                # below, so ctx["final_entry"] can no longer be set by anything.
+                final_data = ctx.get("collapse_entry")
                 if not final_data:
                     logs.append("skip <- MetacogPublishService (no entry)")
                     merged_result[service] = {"ok": False, "reason": "no_entry"}
@@ -3937,8 +3607,7 @@ async def call_step_services(
                 # question 5.
                 ctx["trigger_upstream_json"] = json.dumps(trigger.upstream or {}, indent=2, default=str)
                 ctx["context_summary"] = summary_text
-                ctx["metacog_biometrics_cue"] = _metacog_biometrics_cue(ctx, phase="draft")
-                ctx["metacog_biometrics_cue_enrich"] = _metacog_biometrics_cue(ctx, phase="enrich")
+                ctx["metacog_biometrics_cue"] = _metacog_biometrics_cue(ctx)
                 from app.substrate_felt_state_reader import hydrate_felt_state_ctx
                 from orion.substrate.metacog_trigger_signals import (
                     build_metacog_substrate_cue,

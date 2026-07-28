@@ -88,7 +88,6 @@ CONTEXT_PROVENANCE_REGISTRY: dict[str, ContextKeyProvenance] = {
         _entry("prior_stance", "derived_summary", "Previous turn's full stance."),
         _entry("collapse_entry", "derived_summary", "Collapse-mirror entry for this turn."),
         _entry("collapse_json", "derived_summary", "JSON-rendered collapse-mirror entry."),
-        _entry("final_entry", "derived_summary", "Final assembled turn entry."),
         _entry("speech_contract", "derived_summary", "Rendered per-turn speech contract."),
         _entry("world_context_capsule", "derived_summary", "Loaded world-context capsule content."),
         _entry("journal_pageindex_context", "memory_recall", "Journal page-index retrieval context."),

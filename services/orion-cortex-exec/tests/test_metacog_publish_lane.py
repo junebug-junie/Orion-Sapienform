@@ -76,7 +76,7 @@ def test_metacog_biometrics_cue_draft_compact():
             "nodes": {},
         }
     }
-    cue = executor_module._metacog_biometrics_cue(ctx, phase="draft")
+    cue = executor_module._metacog_biometrics_cue(ctx)
     assert len(cue) <= 350
     parsed = json.loads(cue)
     assert parsed["status"] == "fresh"
@@ -86,131 +86,9 @@ def test_metacog_biometrics_cue_draft_compact():
     assert parsed["freshness_s"] == 12
 
 
-def test_metacog_biometrics_cue_enrich_includes_node_lines():
-    executor_module = _load_executor_module()
-    ctx = {
-        "biometrics": {
-            "status": "fresh",
-            "constraint": "GPU_MEM",
-            "cluster": {
-                "composite": {"strain": 0.62, "homeostasis": 0.5, "stability": 0.44},
-            },
-            "nodes": {
-                "atlas": {
-                    "status": "OK",
-                    "summary": {"composites": {"strain": 0.71}, "pressures": {"gpu": 0.82}},
-                },
-                "athena": {"status": "OK", "summary": {}},
-            },
-        }
-    }
-    cue = executor_module._metacog_biometrics_cue(ctx, phase="enrich")
-    assert len(cue) <= 600
-    parsed = json.loads(cue)
-    assert "cluster" in parsed
-    assert isinstance(parsed.get("nodes"), list)
-    assert len(parsed["nodes"]) <= 4
-    assert any("atlas" in line for line in parsed["nodes"])
-
-
-def test_enrich_prompt_uses_enrich_biometrics_cue(monkeypatch):
-    executor_module = _load_executor_module()
-    captured_prompts: list[str] = []
-
-    class FakeLLMClient:
-        def __init__(self, bus):
-            self.bus = bus
-
-        async def chat(self, **kwargs):
-            req = kwargs.get("req")
-            messages = getattr(req, "messages", []) or []
-            if messages:
-                msg = messages[0]
-                content = getattr(msg, "content", None)
-                if content is None and isinstance(msg, dict):
-                    content = msg.get("content")
-                captured_prompts.append(str(content or ""))
-            return {}
-
-    monkeypatch.setattr(executor_module, "LLMGatewayClient", FakeLLMClient)
-    monkeypatch.setattr(executor_module.settings, "cortex_metacog_enrich_prompt_max_chars", 50000)
-    monkeypatch.setattr(executor_module.settings, "cortex_metacog_enrich_worker_ctx_char_budget", 50000)
-
-    biometrics = {
-        "status": "fresh",
-        "constraint": "GPU_MEM",
-        "cluster": {
-            "composite": {"strain": 0.62, "homeostasis": 0.5, "stability": 0.44},
-        },
-        "nodes": {
-            "atlas": {
-                "status": "OK",
-                "summary": {"composites": {"strain": 0.71}, "pressures": {"gpu": 0.82}},
-            },
-        },
-    }
-    ctx = _draft_ctx()
-    ctx["biometrics"] = biometrics
-    ctx["metacog_biometrics_cue"] = executor_module._metacog_biometrics_cue(
-        {"biometrics": biometrics}, phase="draft"
-    )
-    ctx["metacog_biometrics_cue_enrich"] = executor_module._metacog_biometrics_cue(
-        {"biometrics": biometrics}, phase="enrich"
-    )
-
-    draft_parsed = json.loads(ctx["metacog_biometrics_cue"])
-    enrich_parsed = json.loads(ctx["metacog_biometrics_cue_enrich"])
-    assert "nodes" not in draft_parsed
-    assert any("atlas" in line for line in enrich_parsed["nodes"])
-
-    draft_entry = CollapseMirrorEntryV2(
-        event_id="evt-enrich-cue",
-        id="evt-enrich-cue",
-        trigger="dense",
-        observer="orion",
-        observer_state=["zen"],
-        type="flow",
-        emergent_entity="Test",
-        summary="Test summary",
-        mantra="Test mantra",
-        field_resonance="Test resonance",
-        resonance_signature="Test sig",
-        source_service="metacog",
-    ).model_dump(mode="json")
-    draft_entry["state_snapshot"] = {"telemetry": {"metacog_draft_mode": "llm"}}
-    ctx["collapse_entry"] = draft_entry
-    ctx["collapse_json"] = json.dumps(draft_entry)
-
-    template = _load_template("log_orion_metacognition_enrich.j2")
-    step = ExecutionStep(
-        verb_name="log_orion_metacognition",
-        step_name="enrich_entry",
-        order=1,
-        services=["MetacogEnrichService"],
-        prompt_template=template,
-    )
-    source = ServiceRef(name="test", node="test", version="1.0")
-
-    result = asyncio.run(
-        executor_module.call_step_services(
-            bus=object(),
-            source=source,
-            step=step,
-            ctx=ctx,
-            correlation_id="corr-enrich-cue-swap",
-        )
-    )
-
-    assert result.status == "success"
-    assert captured_prompts
-    prompt = captured_prompts[0]
-    assert "atlas: strain=0.71 gpu=0.82" in prompt
-    assert '"nodes"' in prompt
-
-
 def test_metacog_biometrics_cue_missing_biometrics():
     executor_module = _load_executor_module()
-    cue = executor_module._metacog_biometrics_cue({}, phase="draft")
+    cue = executor_module._metacog_biometrics_cue({})
     parsed = json.loads(cue)
     assert parsed["status"] == "missing"
 
@@ -228,55 +106,12 @@ def test_metacog_context_service_sets_biometrics_cue_from_cluster(monkeypatch):
     )
     biometrics_context["cluster"] = cluster.model_dump(mode="json")
     ctx = {"biometrics": biometrics_context}
-    ctx["metacog_biometrics_cue"] = executor_module._metacog_biometrics_cue(ctx, phase="draft")
+    ctx["metacog_biometrics_cue"] = executor_module._metacog_biometrics_cue(ctx)
 
     parsed = json.loads(ctx["metacog_biometrics_cue"])
     assert parsed["strain"] == 0.55
     assert parsed["homeostasis"] == 0.66
     assert parsed["stability"] == 0.77
-
-
-def test_metacog_format_node_cue_line_skips_bad_numeric_fields():
-    executor_module = _load_executor_module()
-    line = executor_module._metacog_format_node_cue_line(
-        "atlas",
-        {
-            "status": "OK",
-            "summary": {
-                "composites": {"strain": "not-a-number"},
-                "pressures": {"gpu": "bad"},
-            },
-        },
-    )
-    assert line == "atlas: ok"
-    assert "strain=" not in line
-    assert "gpu=" not in line
-
-
-def test_metacog_biometrics_cue_enrich_overflow_falls_back_to_cluster_only(monkeypatch):
-    executor_module = _load_executor_module()
-    monkeypatch.setattr(executor_module, "_METACOG_BIOMETRICS_CUE_ENRICH_MAX_CHARS", 120)
-    ctx = {
-        "biometrics": {
-            "status": "fresh",
-            "constraint": "GPU_MEM",
-            "cluster": {
-                "composite": {"strain": 0.62, "homeostasis": 0.5, "stability": 0.44},
-            },
-            "nodes": {
-                "atlas": {
-                    "status": "OK",
-                    "summary": {"composites": {"strain": 0.71}, "pressures": {"gpu": 0.82}},
-                },
-                "athena": {"status": "OK", "summary": {}},
-            },
-        }
-    }
-    cue = executor_module._metacog_biometrics_cue(ctx, phase="enrich")
-    parsed = json.loads(cue)
-    assert "cluster" in parsed
-    assert "nodes" not in parsed
-    assert len(cue) <= 120
 
 
 def test_metacog_biometrics_cue_draft_uses_age_ms_when_freshness_missing():
@@ -289,7 +124,7 @@ def test_metacog_biometrics_cue_draft_uses_age_ms_when_freshness_missing():
             "cluster": {"composite": {"strain": 0.42, "homeostasis": 0.71, "stability": 0.88}},
         }
     }
-    cue = executor_module._metacog_biometrics_cue(ctx, phase="draft")
+    cue = executor_module._metacog_biometrics_cue(ctx)
     parsed = json.loads(cue)
     assert parsed["freshness_s"] == 12
 
@@ -306,8 +141,7 @@ def test_metacog_draft_prompt_under_slim_budget():
                 "constraint": "NONE",
                 "cluster": {"composite": {"strain": 0.42, "homeostasis": 0.71, "stability": 0.88}},
             }
-        },
-        phase="draft",
+        }
     )
     prompt = executor_module._render_prompt(template, ctx)
     assert len(ctx["metacog_biometrics_cue"]) <= 350
@@ -333,8 +167,7 @@ def test_metacog_draft_prompt_live_anatomy_fits_worker_budget():
                 "constraint": "NONE",
                 "cluster": {"composite": {"strain": 0.42, "homeostasis": 0.71, "stability": 0.88}},
             }
-        },
-        phase="draft",
+        }
     )
     slim_prompt = executor_module._render_prompt(template, ctx)
     fat_ctx = dict(ctx)
@@ -354,18 +187,6 @@ def test_metacog_draft_section_keys_cover_template_fields():
     assert "spark_phi_narrative" not in keys
 
     template = _load_template("log_orion_metacognition_draft.j2")
-    for key in keys:
-        assert f"{{{{ {key} }}}}" in template or f"{{{{ {key}|" in template
-
-
-def test_metacog_enrich_section_keys_cover_template_fields():
-    executor_module = _load_executor_module()
-    keys = executor_module._METACOG_ENRICH_CTX_LEN_KEYS
-    assert "biometrics_json" not in keys
-    assert "metacog_biometrics_cue" in keys
-    assert "spark_phi_narrative" not in keys
-
-    template = _load_template("log_orion_metacognition_enrich.j2")
     for key in keys:
         assert f"{{{{ {key} }}}}" in template or f"{{{{ {key}|" in template
 
@@ -416,70 +237,6 @@ def test_oversized_draft_prompt_skips_llm_with_budget_fallback(monkeypatch):
     assert telemetry["metacog_draft_mode"] == "fallback"
     assert telemetry["metacog_draft_fallback_reason"] == "prompt_budget_exceeded"
     assert telemetry["metacog_prompt_chars"] > 200
-
-
-def test_oversized_enrich_prompt_skips_llm_with_budget_fallback(monkeypatch):
-    executor_module = _load_executor_module()
-    calls: list[str] = []
-
-    class FakeLLMClient:
-        def __init__(self, bus):
-            self.bus = bus
-
-        async def chat(self, **kwargs):
-            calls.append("enrich")
-            return {}
-
-    monkeypatch.setattr(executor_module, "LLMGatewayClient", FakeLLMClient)
-    monkeypatch.setattr(executor_module.settings, "cortex_metacog_enrich_prompt_max_chars", 200)
-
-    draft_entry = CollapseMirrorEntryV2(
-        event_id="evt-1",
-        id="evt-1",
-        trigger="dense",
-        observer="orion",
-        observer_state=["zen"],
-        type="flow",
-        emergent_entity="Test",
-        summary="Test summary",
-        mantra="Test mantra",
-        field_resonance="Test resonance",
-        resonance_signature="Test sig",
-        source_service="metacog",
-    ).model_dump(mode="json")
-    draft_entry["state_snapshot"] = {"telemetry": {"metacog_draft_mode": "llm"}}
-
-    template = _load_template("log_orion_metacognition_enrich.j2")
-    ctx = _draft_ctx(spark_blob="Y" * 5000)
-    ctx["collapse_entry"] = draft_entry
-    ctx["collapse_json"] = __import__("json").dumps(draft_entry)
-
-    step = ExecutionStep(
-        verb_name="log_orion_metacognition",
-        step_name="enrich_entry",
-        order=1,
-        services=["MetacogEnrichService"],
-        prompt_template=template,
-    )
-    source = ServiceRef(name="test", node="test", version="1.0")
-
-    result = asyncio.run(
-        executor_module.call_step_services(
-            bus=object(),
-            source=source,
-            step=step,
-            ctx=ctx,
-            correlation_id="corr-enrich-budget",
-        )
-    )
-
-    assert result.status == "success"
-    assert calls == []
-    enrich_result = result.result["MetacogEnrichService"]
-    assert enrich_result["ok"] is True
-    assert enrich_result["fallback_reason"] == "prompt_budget_exceeded"
-    telemetry = ctx["final_entry"]["state_snapshot"]["telemetry"]
-    assert telemetry["metacog_enrich_fallback_reason"] == "prompt_budget_exceeded"
 
 
 def test_draft_trims_biometrics_cue_before_ctx_overflow_fallback(monkeypatch):
@@ -569,135 +326,6 @@ def test_draft_ctx_overflow_after_cue_and_spark_trim(monkeypatch):
     assert draft_result.get("fallback_reason") == "prompt_context_overflow"
 
 
-def test_enrich_trims_metacog_biometrics_cue_before_ctx_overflow_fallback(monkeypatch):
-    executor_module = _load_executor_module()
-    calls: list[str] = []
-
-    class FakeLLMClient:
-        def __init__(self, bus):
-            self.bus = bus
-
-        async def chat(self, **kwargs):
-            calls.append("enrich")
-            return {}
-
-    monkeypatch.setattr(executor_module, "LLMGatewayClient", FakeLLMClient)
-    monkeypatch.setattr(executor_module.settings, "cortex_metacog_enrich_prompt_max_chars", 50000)
-    monkeypatch.setattr(executor_module.settings, "cortex_metacog_enrich_worker_ctx_char_budget", 8000)
-
-    draft_entry = CollapseMirrorEntryV2(
-        event_id="evt-trim",
-        id="evt-trim",
-        trigger="dense",
-        observer="orion",
-        observer_state=["zen"],
-        type="flow",
-        emergent_entity="Test",
-        summary="Test summary",
-        mantra="Test mantra",
-        field_resonance="Test resonance",
-        resonance_signature="Test sig",
-        source_service="metacog",
-    ).model_dump(mode="json")
-    draft_entry["state_snapshot"] = {"telemetry": {"metacog_draft_mode": "llm"}}
-
-    template = _load_template("log_orion_metacognition_enrich.j2")
-    ctx = _draft_ctx(spark_blob="{}")
-    ctx["metacog_biometrics_cue"] = json.dumps({"status": "fresh", "blob": "x" * 5000})
-    ctx["collapse_entry"] = draft_entry
-    ctx["collapse_json"] = json.dumps(draft_entry)
-
-    step = ExecutionStep(
-        verb_name="log_orion_metacognition",
-        step_name="enrich_entry",
-        order=1,
-        services=["MetacogEnrichService"],
-        prompt_template=template,
-    )
-    source = ServiceRef(name="test", node="test", version="1.0")
-
-    result = asyncio.run(
-        executor_module.call_step_services(
-            bus=object(),
-            source=source,
-            step=step,
-            ctx=ctx,
-            correlation_id="corr-enrich-trim",
-        )
-    )
-
-    assert result.status == "success"
-    assert json.loads(ctx["metacog_biometrics_cue"])["status"] == "trimmed"
-    enrich_result = result.result["MetacogEnrichService"]
-    assert enrich_result["ok"] is True
-    assert enrich_result.get("fallback_reason") != "prompt_context_overflow"
-    assert calls == ["enrich"]
-
-
-def test_enrich_ctx_overflow_after_biometrics_trim(monkeypatch):
-    executor_module = _load_executor_module()
-    calls: list[str] = []
-
-    class FakeLLMClient:
-        def __init__(self, bus):
-            self.bus = bus
-
-        async def chat(self, **kwargs):
-            calls.append("enrich")
-            return {}
-
-    monkeypatch.setattr(executor_module, "LLMGatewayClient", FakeLLMClient)
-    monkeypatch.setattr(executor_module.settings, "cortex_metacog_enrich_prompt_max_chars", 50000)
-    monkeypatch.setattr(executor_module.settings, "cortex_metacog_enrich_worker_ctx_char_budget", 1000)
-
-    draft_entry = CollapseMirrorEntryV2(
-        event_id="evt-overflow",
-        id="evt-overflow",
-        trigger="dense",
-        observer="orion",
-        observer_state=["zen"],
-        type="flow",
-        emergent_entity="Test",
-        summary="Test summary",
-        mantra="Test mantra",
-        field_resonance="Test resonance",
-        resonance_signature="Test sig",
-        source_service="metacog",
-    ).model_dump(mode="json")
-    draft_entry["state_snapshot"] = {"telemetry": {"metacog_draft_mode": "llm"}}
-
-    template = _load_template("log_orion_metacognition_enrich.j2")
-    ctx = _draft_ctx(spark_blob="Z" * 8000)
-    ctx["metacog_biometrics_cue"] = json.dumps({"status": "fresh", "strain": 0.5})
-    ctx["collapse_entry"] = draft_entry
-    ctx["collapse_json"] = json.dumps(draft_entry)
-
-    step = ExecutionStep(
-        verb_name="log_orion_metacognition",
-        step_name="enrich_entry",
-        order=1,
-        services=["MetacogEnrichService"],
-        prompt_template=template,
-    )
-    source = ServiceRef(name="test", node="test", version="1.0")
-
-    result = asyncio.run(
-        executor_module.call_step_services(
-            bus=object(),
-            source=source,
-            step=step,
-            ctx=ctx,
-            correlation_id="corr-enrich-overflow",
-        )
-    )
-
-    assert result.status == "success"
-    assert calls == []
-    enrich_result = result.result["MetacogEnrichService"]
-    assert enrich_result["ok"] is True
-    assert enrich_result["fallback_reason"] == "prompt_context_overflow"
-
-
 def test_firebreak_skip_includes_fallback_reason_and_diagnostics():
     executor_module = _load_executor_module()
     mock_bus = MagicMock()
@@ -708,7 +336,7 @@ def test_firebreak_skip_includes_fallback_reason_and_diagnostics():
         "trigger": {"trigger_kind": "baseline"},
         "metacog_draft_prompt_chars": 9000,
         "metacog_draft_section_sizes": {"spark_state_json": 7000, "context_summary": 120},
-        "final_entry": {
+        "collapse_entry": {
             "id": "123",
             "state_snapshot": {
                 "telemetry": {
@@ -776,7 +404,7 @@ def test_manual_dense_fallback_still_publishes():
 
     ctx = {
         "trigger": {"trigger_kind": "dense"},
-        "final_entry": valid_entry,
+        "collapse_entry": valid_entry,
     }
 
     step = ExecutionStep(
@@ -836,7 +464,7 @@ def test_publish_builds_metacog_entry_from_real_artifacts_no_self_report():
         "trigger_kind": "dense",
         "substrate_eventfulness_score": 0.6,
         "substrate_eventfulness_reasons": ["execution_pressure_spike"],
-        "final_entry": valid_entry,
+        "collapse_entry": valid_entry,
     }
 
     step = ExecutionStep(
@@ -925,7 +553,7 @@ def test_publish_severity_and_touches_reflect_failures_and_repair_pressure():
                 "behavior_applied": "acknowledge_and_repair",
             }
         },
-        "final_entry": valid_entry,
+        "collapse_entry": valid_entry,
     }
 
     step = ExecutionStep(
@@ -954,6 +582,104 @@ def test_publish_severity_and_touches_reflect_failures_and_repair_pressure():
     assert payload["provenance"]["impacts"] == ["relationship_thread"]
     assert payload["state"]["repair_pressure"]["level"] == pytest.approx(0.9)
     assert payload["state"]["repair_pressure"]["evidence"][0]["evidence_kind"] == "trust_rupture"
+
+
+def test_publish_output_unaffected_by_enrich_removal_end_to_end(monkeypatch):
+    """Regression for the 2026-07-28 Enrich removal: run the real single-pass
+    Draft -> Publish pipeline (no Enrich step at all, matching the trimmed
+    verb yaml) and confirm MetacogPublishService still builds the same real
+    MetacogEntryV1 fields (severity/touches/causal_density/provenance/state),
+    sourced entirely from ctx artifacts plus Draft's leaner patch -- not from
+    anything Enrich used to produce."""
+    executor_module = _load_executor_module()
+    mock_bus = MagicMock()
+    mock_bus.publish = AsyncMock()
+
+    class FakeLLMClient:
+        def __init__(self, bus):
+            self.bus = bus
+
+        async def chat(self, **kwargs):
+            return {
+                "summary": "Steady coherence, slight clarity uptick.",
+                "mantra": "Hold the signal.",
+                "what_changed": {
+                    "summary": "clarity up",
+                    "evidence": ["spark clarity band high"],
+                },
+                "tags_suggested": ["mode:mirror"],
+            }
+
+    monkeypatch.setattr(executor_module, "LLMGatewayClient", FakeLLMClient)
+
+    template = _load_template("log_orion_metacognition_draft.j2")
+    ctx = _draft_ctx()
+    ctx["trigger"] = {"trigger_kind": "dense", "reason": "substrate_eventfulness:0.60", "pressure": 0.6, "zen_state": "not_zen"}
+    ctx["trigger_kind"] = "dense"
+    ctx["substrate_eventfulness_score"] = 0.6
+    ctx["substrate_eventfulness_reasons"] = ["execution_pressure_spike"]
+
+    source = ServiceRef(name="test", node="test", version="1.0")
+
+    draft_step = ExecutionStep(
+        verb_name="log_orion_metacognition",
+        step_name="draft_entry",
+        order=0,
+        services=["MetacogDraftService"],
+        prompt_template=template,
+    )
+    draft_result = asyncio.run(
+        executor_module.call_step_services(
+            bus=object(),
+            source=source,
+            step=draft_step,
+            ctx=ctx,
+            correlation_id=str(uuid4()),
+        )
+    )
+    assert draft_result.status == "success"
+    assert ctx["collapse_entry"]["summary"] == "Steady coherence, slight clarity uptick."
+    # Enrich no longer runs -- nothing ever sets ctx["final_entry"].
+    assert "final_entry" not in ctx
+
+    publish_step = ExecutionStep(
+        step_name="publish",
+        verb_name="log_orion_metacognition",
+        services=["MetacogPublishService"],
+        order=1,
+    )
+    publish_result = asyncio.run(
+        executor_module.call_step_services(
+            bus=mock_bus,
+            source=source,
+            step=publish_step,
+            ctx=ctx,
+            correlation_id=str(uuid4()),
+        )
+    )
+
+    assert publish_result.status == "success"
+    publish = publish_result.result["MetacogPublishService"]
+    assert publish.get("published") is True
+    mock_bus.publish.assert_called_once()
+    envelope = mock_bus.publish.call_args[0][1]
+    payload = envelope.payload
+
+    # Same real fields as the pre-Enrich-removal contract, still sourced from
+    # real ctx artifacts, not from anything an Enrich step would have produced.
+    assert payload["summary"] == "Steady coherence, slight clarity uptick."
+    assert payload["mantra"] == "Hold the signal."
+    assert "numeric_sisters" not in payload
+    assert payload["trigger_kind"] == "dense"
+    assert payload["state"]["substrate_eventfulness_score"] == 0.6
+    assert payload["causal_density"]["score"] == pytest.approx(0.6)
+    assert payload["is_causally_dense"] is True
+    assert payload["snapshot_kind"] == "confirmed_dense"
+    assert payload["touches"] == ["substrate"]
+    assert payload["severity"] == "nominal"
+    assert payload["provenance"]["source"] == "cortex_exec.metacog_pipeline.dense"
+    assert payload["provenance"]["impacts"] == ["execution_trajectory"]
+    assert isinstance(payload["what_changed"]["evidence"], list)
 
 
 def test_log_orion_metacognition_recall_disabled_by_verb_default():

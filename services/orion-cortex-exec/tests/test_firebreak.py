@@ -26,7 +26,7 @@ class TestFirebreak(unittest.TestCase):
         # Setup context
         ctx = {
             "trigger": {"trigger_kind": "baseline"},
-            "final_entry": {
+            "collapse_entry": {
                 "id": "123",
                 "state_snapshot": {
                     "telemetry": {
@@ -94,7 +94,7 @@ class TestFirebreak(unittest.TestCase):
 
         ctx = {
             "trigger": {"trigger_kind": "baseline"},
-            "final_entry": valid_entry
+            "collapse_entry": valid_entry
         }
 
         step = ExecutionStep(

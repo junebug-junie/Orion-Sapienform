@@ -81,9 +81,10 @@ wheels/
 *.manifest
 *.spec
 venv/
-venv*/ 
+venv*/
 .venv/
 .venv-*/
+.test-venv/
 env/
 env*/
 poetry.lock

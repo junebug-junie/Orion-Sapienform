@@ -6256,6 +6256,14 @@ document.addEventListener("DOMContentLoaded", () => {
     });
   }
 
+  function appendTurnTracePanel(parent, meta = {}) {
+    if (!parent || !thoughtProcessApi.mountTurnTracePanel) return;
+    thoughtProcessApi.mountTurnTracePanel(parent, {
+      meta,
+      apiBaseUrl: API_BASE_URL,
+    });
+  }
+
   function renderThoughtProcessSection(thoughtState = {}, meta = {}) {
     const state = thoughtState && typeof thoughtState === 'object' ? thoughtState : {};
     const metadata = state.metadata && typeof state.metadata === 'object' ? state.metadata : {};
@@ -6308,6 +6316,7 @@ document.addEventListener("DOMContentLoaded", () => {
     card.appendChild(body);
     root.appendChild(card);
     appendExecutionStepsPanel(root, meta);
+    appendTurnTracePanel(root, meta);
     return root;
   }
 
@@ -6885,6 +6894,7 @@ document.addEventListener("DOMContentLoaded", () => {
       const metacogPanel = createMetacogTracePanel(meta.metacogTraces || meta.metacog_traces || []);
       if (metacogPanel) div.appendChild(metacogPanel);
       appendExecutionStepsPanel(div, meta);
+      appendTurnTracePanel(div, meta);
       } catch (err) {
         console.warn('[Hub] Orion message chrome failed (body still shown)', err);
       }

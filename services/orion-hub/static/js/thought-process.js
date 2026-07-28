@@ -319,12 +319,123 @@
     return host;
   }
 
+  async function fetchTurnTrace(apiBaseUrl, correlationId) {
+    const corr = cleanText(correlationId);
+    if (!corr) return { error: 'missing_correlation_id' };
+    const base = String(apiBaseUrl || '').replace(/\/$/, '');
+    const res = await fetch(`${base}/api/chat/turn/${encodeURIComponent(corr)}/trace`);
+    if (!res.ok) return { error: `http_${res.status}` };
+    return { body: await res.json() };
+  }
+
+  function dispositionBadgeClass(disposition) {
+    const normalized = String(disposition || '').toLowerCase();
+    if (normalized === 'proceed') return 'border-emerald-500/40 bg-emerald-500/15 text-emerald-100';
+    if (normalized === 'defer') return 'border-amber-500/40 bg-amber-500/15 text-amber-100';
+    if (normalized === 'refuse') return 'border-rose-500/40 bg-rose-500/15 text-rose-100';
+    return 'border-gray-600 bg-gray-800/80 text-gray-200';
+  }
+
+  function buildTurnTracePanel({ correlationId, trace, error, loading }) {
+    const corr = cleanText(correlationId) || '--';
+    const traceObj = asObject(trace) || {};
+    const sources = asObject(traceObj.sources) || {};
+    const gaps = asList(traceObj.gaps);
+    const routeSignal = cleanText(traceObj.route_signal_inferred) || 'unknown';
+
+    let body = '';
+    if (loading) {
+      body = '<div class="text-[11px] text-gray-400">Loading turn trace…</div>';
+    } else if (error) {
+      body = `<div class="text-[11px] text-amber-200">Turn trace unavailable (${escapeHtml(error)}).</div>`;
+    } else {
+      const parts = [];
+      parts.push(`<div class="text-[10px] text-gray-500">route_signal_inferred: <span class="font-mono">${escapeHtml(routeSignal)}</span></div>`);
+
+      const thought = asObject(sources.thought_decision);
+      if (thought) {
+        const disposition = cleanText(thought.disposition) || '--';
+        const reasons = asList(thought.disposition_reasons).map((r) => cleanText(r)).filter(Boolean);
+        const boundary = thought.boundary_register ? ' · boundary_register' : '';
+        parts.push([
+          '<div class="rounded-lg border border-gray-800 bg-gray-950/50 px-2 py-2">',
+          '<div class="flex items-center justify-between gap-2">',
+          '<div class="text-[10px] uppercase tracking-wide text-gray-400">Stance decision</div>',
+          `<span class="rounded-full border px-2 py-0.5 text-[10px] ${dispositionBadgeClass(disposition)}">${escapeHtml(disposition)}${escapeHtml(boundary)}</span>`,
+          '</div>',
+          reasons.length
+            ? `<ul class="mt-1 list-disc pl-4 text-[11px] text-gray-200">${reasons.map((r) => `<li>${escapeHtml(r)}</li>`).join('')}</ul>`
+            : '<div class="mt-1 text-[11px] text-gray-500">No reasons recorded.</div>',
+          '</div>',
+        ].join(''));
+      }
+
+      const executionRun = asObject(sources.execution_run);
+      if (executionRun) {
+        const startedSteps = executionRun.started_step_count;
+        const failedSteps = executionRun.failed_step_count;
+        parts.push(
+          `<div class="text-[10px] text-gray-500">harness execution_run: ${escapeHtml(startedSteps ?? '--')} started · ${escapeHtml(failedSteps ?? '--')} failed</div>`
+        );
+      }
+
+      if (sources.cognition_trace) {
+        parts.push('<div class="text-[10px] text-gray-500">cognition_trace present -- see Execution Steps panel above.</div>');
+      }
+
+      if (gaps.length) {
+        parts.push(`<div class="text-[10px] text-gray-600">gaps: ${escapeHtml(gaps.join(', '))}</div>`);
+      }
+
+      if (!thought && !executionRun && !sources.cognition_trace) {
+        parts.push('<div class="text-[11px] text-gray-400">No trace found in any source for this turn.</div>');
+      }
+
+      body = parts.join('');
+    }
+
+    const footer = `<div class="mt-3 border-t border-gray-800 pt-2 text-[10px] text-gray-500 font-mono break-all">correlation_id: ${escapeHtml(corr)}</div>`;
+
+    return [
+      '<details class="turn-trace-panel mt-2 rounded-xl border border-fuchsia-500/30 bg-fuchsia-500/5 p-3">',
+      '<summary class="cursor-pointer text-[10px] uppercase tracking-wide text-fuchsia-200">Turn Trace</summary>',
+      `<div class="mt-2 space-y-2">${body}${footer}</div>`,
+      '</details>',
+    ].join('');
+  }
+
+  async function mountTurnTracePanel(parent, { meta, apiBaseUrl } = {}) {
+    if (!parent || typeof parent.appendChild !== 'function') return null;
+    const correlationId = resolveCorrelationId(meta);
+    if (!correlationId) return null;
+
+    const host = document.createElement('div');
+    host.className = 'turn-trace-host';
+    host.innerHTML = buildTurnTracePanel({ correlationId, trace: null, loading: true });
+    parent.appendChild(host);
+
+    try {
+      const result = await fetchTurnTrace(apiBaseUrl, correlationId);
+      host.innerHTML = buildTurnTracePanel({
+        correlationId,
+        trace: result.body || null,
+        error: result.error || null,
+      });
+    } catch (_err) {
+      host.innerHTML = buildTurnTracePanel({ correlationId, trace: null, error: 'fetch_failed' });
+    }
+    return host;
+  }
+
   const api = {
     selectThoughtProcess,
     resolveCorrelationId,
     fetchCognitionTrace,
     buildExecutionStepsPanel,
     mountExecutionStepsPanel,
+    fetchTurnTrace,
+    buildTurnTracePanel,
+    mountTurnTracePanel,
   };
   global.OrionThoughtProcess = api;
   if (typeof module !== 'undefined' && module.exports) {

@@ -15,9 +15,13 @@ REPO = Path(__file__).resolve().parents[3]  # orion/autonomy/tests → repo root
 # retired AutonomyStateV2 entry only as a documentation string) moved with the
 # rest of the burn to orion/inner_state_registry.py, outside every root below,
 # so the carve-out itself is gone too.
-_BANNED_ROOTS = [
-    REPO / "services" / "orion-spark-introspector",
-]
+#
+# 2026-07-28 (spark-introspector retirement): dropped
+# services/orion-spark-introspector -- deleted outright, nothing left under
+# that root to isolate either. No roots remain; kept as an empty list (not
+# deleted) so this file's own test still runs and stays green, ready for the
+# next real isolation need rather than silently disappearing.
+_BANNED_ROOTS: list[Path] = []
 
 
 def _python_files(root: Path) -> list[Path]:

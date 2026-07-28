@@ -18,6 +18,20 @@ per `docs/superpowers/specs/2026-07-16-falkordb-property-graph-routing-design.md
 below. Live-verified: Concept Atlas's concept graph persists in FalkorDB
 across Hub restarts, not just Hub process memory.
 
+**Update (2026-07-28):** extended to ingest topic-foundry's `mentions`-predicate typed edges
+(`app/services/kg_edges.py`, real LLM-enriched entity extractions) as `EntityNodeV1` +
+`associated_with` edges from the owning topic's concept node, resolved via a new
+`segment_topic_id_map` (segment_id → topic_id) built from the same `GET /segments` fetch this
+route already made. This retires `orion:kg:edge:ingest.v1`, the bus channel that data used to
+publish to for zero live consumers (confirmed dead as of 2026-07-17, see that channel's former
+`orion/bus/channels.yaml` comment) — the same data now reaches a real consumer via
+`GET /kg/edges` instead of a second, unconsumed bus channel. `asks_about`/`claims_about`/
+`next_step` predicates are explicitly out of scope: no `SubstrateNodeKindV1` fits their shape
+yet, and minting one wasn't part of this patch. Known gap, not fixed here: Concept Atlas's own
+Hub-tab routes (`_concept_nodes()` and friends) filter to `node_kind == "concept"`, so the new
+entity nodes are real and generically substrate-visible but don't appear in the existing UI —
+see `services/orion-hub/README.md` §5.5 for the same note.
+
 Scope decided by Juniper: replace concept-induction's NLP extractor with the
 already-built, already-unsupervised `orion-topic-foundry` clustering
 pipeline, fix the concept-identity merge bug, add a thin typed-edge layer on

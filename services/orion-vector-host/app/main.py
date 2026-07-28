@@ -1,10 +1,15 @@
 from __future__ import annotations
 
 import logging
+import random
 from contextlib import asynccontextmanager
+from datetime import datetime, timezone
 from typing import Any, Dict, Optional
+from uuid import uuid4
 
-from fastapi import FastAPI, HTTPException
+from fastapi import APIRouter, FastAPI, HTTPException, WebSocket, WebSocketDisconnect
+from fastapi.responses import FileResponse
+from fastapi.staticfiles import StaticFiles
 
 from orion.core.bus.bus_service_chassis import ChassisConfig, Hunter
 from orion.core.bus.bus_schemas import BaseEnvelope, ServiceRef
@@ -21,8 +26,10 @@ from orion.schemas.chat_gpt_log import ChatGptMessageV1
 from orion.schemas.social_chat import SocialRoomTurnStoredV1
 from orion.schemas.vector.schemas import EmbeddingGenerateV1, EmbeddingResultV1, VectorUpsertV1
 
+from .conn_manager import manager as tissue_ws_manager
 from .embedder import Embedder
 from .settings import settings
+from .tissue_feed import feed_tissue, get_phi_stats
 
 logging.basicConfig(
     level=getattr(logging, settings.LOG_LEVEL.upper(), logging.INFO),
@@ -139,6 +146,23 @@ async def _publish_semantic_upsert(
         embedding_dim,
         settings.VECTOR_HOST_EMBED_BACKEND,
     )
+
+    # OrionTissue physics feed (2026-07-28, extracted from the retired
+    # orion-spark-introspector service). Every semantic upsert this service
+    # produces fed the tissue in the old service too (embedding_kind is
+    # unconditionally "semantic" above, matching the old handle_semantic_
+    # upsert's filter) -- this is an in-process call, not a bus round trip,
+    # since this service already has the real embedding in hand. Fails open:
+    # a tissue-feed error must never break the real embedding/upsert
+    # pipeline it rides on.
+    try:
+        await feed_tissue(
+            embedding,
+            doc_id=doc_id,
+            correlation_id=str(env.correlation_id or doc_id),
+        )
+    except Exception as exc:
+        logger.warning("OrionTissue feed failed doc_id=%s error=%s", doc_id, exc)
 
 
 async def _handle_chat_history(env: BaseEnvelope) -> None:
@@ -666,6 +690,78 @@ app = FastAPI(
     version=settings.SERVICE_VERSION,
     lifespan=lifespan,
 )
+
+# --- OrionTissue read model / EKG UI ---------------------------------------
+# New home for the "Cognitive EKG" surface (2026-07-28, spark-introspector
+# retirement). Mounted under /spark to match the path convention the old
+# service used, so an operator-level reverse-proxy repoint (spark-
+# introspector's container port -> this service's port for the /spark/*
+# prefix) is the only remaining step outside this repo -- the actual
+# proxy/ingress config that resolved /spark/ui to spark-introspector's
+# container was not found anywhere in this repo (not orion-hub, not deploy/),
+# so it is operator infra this changeset cannot edit directly. See the PR
+# description for the exact repoint this requires.
+spark_router = APIRouter()
+
+
+@spark_router.get("/ui")
+async def spark_ui() -> FileResponse:
+    return FileResponse("app/static/index.html")
+
+
+@spark_router.get("/api/tissue/state")
+async def spark_tissue_state() -> Dict[str, Any]:
+    """Lightweight HTTP read model, equivalent to the WS broadcast's `stats`
+    -- all four fields come straight from OrionTissue.phi() (real tensor
+    state), never injected from self-state or any other source."""
+    phi_stats = get_phi_stats()
+    return {
+        "phi": phi_stats.get("coherence", 0.0),
+        "novelty": phi_stats.get("novelty", 0.0),
+        "valence": phi_stats.get("valence", 0.0),
+        "arousal": phi_stats.get("energy", 0.0),
+        "timestamp": datetime.now(timezone.utc).isoformat(),
+    }
+
+
+@spark_router.websocket("/ws/tissue")
+async def spark_tissue_ws(websocket: WebSocket) -> None:
+    await tissue_ws_manager.connect(websocket)
+    try:
+        while True:
+            await websocket.receive_text()
+    except WebSocketDisconnect:
+        tissue_ws_manager.disconnect(websocket)
+    except Exception as exc:
+        logger.warning("tissue websocket error: %s", exc)
+        tissue_ws_manager.disconnect(websocket)
+
+
+@spark_router.post("/api/test-pulse")
+async def spark_test_pulse() -> Dict[str, Any]:
+    """Manual WS-pipe smoke check -- broadcasts a random tissue.update frame
+    without touching real TISSUE state. Ported as-is from the old service's
+    debug endpoint (app/main.py's trigger_test_pulse); useful for verifying
+    the UI/WS wiring survived the move independent of real chat traffic."""
+    payload = {
+        "type": "tissue.update",
+        "telemetry_id": str(uuid4()),
+        "correlation_id": f"TEST-{str(uuid4())[:8]}",
+        "timestamp": datetime.now(timezone.utc).isoformat(),
+        "stats": {
+            "phi": random.random(),
+            "novelty": random.random(),
+            "valence": random.random(),
+            "arousal": random.random(),
+        },
+        "metadata": {"source": "manual_test_pulse"},
+    }
+    await tissue_ws_manager.broadcast(payload)
+    return {"status": "broadcast_sent", "payload": payload}
+
+
+app.include_router(spark_router, prefix="/spark")
+app.mount("/spark/static", StaticFiles(directory="app/static"), name="spark_static")
 
 
 @app.get("/health")

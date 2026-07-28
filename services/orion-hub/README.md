@@ -454,9 +454,38 @@ tab (`GET /concept-atlas`, backed by `GET /api/substrate/concepts/summary` and `
 | Manual topic-foundry ingestion | `POST /api/substrate/concepts/ingest-topic-foundry` (`concept_atlas_routes.py`) | operator-triggered, no flag |
 | Typed relation classification (supports/contradicts/refines) | `concept_atlas_routes.py::_classify_typed_concept_relations()`, called from the ingestion route above | runs automatically as part of ingestion, capped at `_RELATION_CLASSIFICATION_PAIR_CAP=10` pairs/call — see `services/orion-hub/scripts/concept_relation_classifier.py` for the real LLM classifier |
 | Autonomous scheduled training + ingestion | `main.py`'s `substrate_topic_foundry_scheduler_task`, calling `concept_atlas_routes.py::trigger_topic_foundry_training_run()` then the ingestion route above | `SUBSTRATE_TOPIC_FOUNDRY_SCHEDULER_ENABLED` (**`true`** — flipped on live 2026-07-17; shipped disabled by default, real compute cost), interval `SUBSTRATE_TOPIC_FOUNDRY_SCHEDULER_INTERVAL_SEC` (`86400`), window `SUBSTRATE_TOPIC_FOUNDRY_WINDOW_DAYS` (`30`) |
-| Scheduled enrichment (added 2026-07-28) | Same scheduler tick, new step: `concept_atlas_routes.py::trigger_topic_foundry_enrichment()`, calls `POST /runs/{run_id}/enrich` for whatever the latest completed run is | `SUBSTRATE_TOPIC_FOUNDRY_ENRICH_ENABLE` (own gate, real LLM compute cost per un-enriched segment -- **`true`**, flipped on live 2026-07-28 per explicit operator go-ahead, same PR), cap `SUBSTRATE_TOPIC_FOUNDRY_ENRICH_LIMIT` (`200`) |
+| Mention-edge → entity ingestion (added 2026-07-28) | Same ingestion route above, additionally calls `topic_foundry_client.py::fetch_mention_edges_for_run()` (`GET /kg/edges?predicate=mentions`) and passes the result into `map_topic_foundry_run_to_substrate`'s `mention_edges`/`segment_topic_id_map` params | no flag, runs unconditionally as part of ingestion; degrades to zero entities on fetch failure, same as the segments fetch |
+| Scheduled enrichment (added 2026-07-28) | Same scheduler tick, new step: `concept_atlas_routes.py::trigger_topic_foundry_enrichment()`, calls `POST /runs/{run_id}/enrich` for whatever the latest completed run is | `SUBSTRATE_TOPIC_FOUNDRY_ENRICH_ENABLE` (own gate, real LLM compute cost per un-enriched segment -- **`true`**, flipped on live 2026-07-28 per explicit operator go-ahead), cap `SUBSTRATE_TOPIC_FOUNDRY_ENRICH_LIMIT` (`200`) |
 
-**Why enrichment needed its own scheduler step:** confirmed live 2026-07-28, `topic_foundry_segments` had 0 of 22 rows ever enriched — nothing in this codebase had ever called `POST /runs/{run_id}/enrich`. That endpoint also triggers topic-foundry's typed KG edge generation as a same-request side effect on its side (`app/services/enrichment.py::_run_enrichment`'s trailing `_generate_edges` call) — without it, `orion-topic-foundry`'s `mentions`/`asks_about`/`claims_about`/`next_step` edges (see `services/orion-topic-foundry/README.md`'s "KG edges" section) never get produced at all, regardless of any downstream consumer. Watch `substrate_topic_foundry_scheduler_enrich_tick` log lines for `enriched_count`/`failed_count`, and the underlying `topic_foundry_segments`/`topic_foundry_edges` tables directly, before trusting this produces non-degenerate data at real volume.
+**Mention edges — real, LLM-enriched entity data that used to go nowhere (2026-07-28):**
+topic-foundry's `kg_edges.py::generate_edges_for_run()` computes real typed edges
+(`mentions`/`asks_about`/`claims_about`/`next_step`) from each segment's LLM-enriched
+`meaning` field, but used to publish them on `orion:kg:edge:ingest.v1`, a bus channel with
+zero live consumers (`orion-rdf-writer` never actually subscribed; `orion-graphdb` never
+existed as a real service — see `orion/bus/channels.yaml`'s former comment on that channel).
+That publish is now retired outright. Only the `mentions` predicate is wired into the
+substrate graph so far (as `EntityNodeV1` + `associated_with` edges from the mentioning
+topic's concept node) — `asks_about`/`claims_about`/`next_step` have no corresponding
+substrate node kind yet and are out of scope until/unless that's designed. The edges
+themselves still persist in topic-foundry's own Postgres and remain queryable via its
+`GET /edges`/`GET /kg/edges` API regardless of this wiring.
+
+**Why enrichment needed its own scheduler step, same day:** confirmed live 2026-07-28,
+`topic_foundry_segments` had 0 of 22 rows ever enriched — nothing in this codebase had ever
+called `POST /runs/{run_id}/enrich`, meaning the mention edges described above had no real
+data to work with regardless of the ingestion wiring being correct. That endpoint also
+triggers topic-foundry's typed KG edge generation as a same-request side effect on its side
+(`app/services/enrichment.py::_run_enrichment`'s trailing `_generate_edges` call). Watch
+`substrate_topic_foundry_scheduler_enrich_tick` log lines for `enriched_count`/`failed_count`,
+and the underlying `topic_foundry_segments`/`topic_foundry_edges` tables directly, before
+trusting this produces non-degenerate data at real volume.
+
+**Known limitation:** `_concept_nodes()` and the other Concept Atlas Hub-tab helpers in
+`concept_atlas_routes.py` explicitly filter to `node_kind == "concept"`. The `EntityNodeV1`
+records mention-edge ingestion writes are real and generically visible to any consumer that
+iterates the full substrate node set (e.g. `orion/substrate/endogenous_curiosity.py`), but
+they will not appear in the Concept Atlas Hub UI's network/god-node views until those routes
+are widened to include entity nodes — a separate follow-up, not done here.
 
 **Surfaced into live cognition two ways**, not as permanent context bloat — only when
 salient:

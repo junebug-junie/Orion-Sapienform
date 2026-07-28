@@ -32,6 +32,7 @@ from .topic_foundry_client import (
     create_dataset,
     create_model,
     fetch_latest_completed_run,
+    fetch_mention_edges_for_run,
     fetch_run_topics_and_keywords,
     fetch_segments_for_run,
     list_datasets,
@@ -369,6 +370,7 @@ class _CountingSubstrateStore:
         self._inner = inner
         self.concepts_written = 0
         self.evidence_nodes_written = 0
+        self.entities_written = 0
         self.edges_written = 0
 
     def __getattr__(self, name: str) -> Any:
@@ -381,6 +383,8 @@ class _CountingSubstrateStore:
             self.concepts_written += 1
         elif kind == "evidence":
             self.evidence_nodes_written += 1
+        elif kind == "entity":
+            self.entities_written += 1
 
     def upsert_edge(self, *, identity_key: str, edge: Any) -> None:
         self._inner.upsert_edge(identity_key=identity_key, edge=edge)
@@ -780,16 +784,29 @@ def concept_atlas_ingest_topic_foundry() -> dict[str, Any]:
     ``segment_topic_map`` (no ``co_occurs_with`` edges produced for this
     call) rather than aborting the route -- concept/evidence node ingestion
     below is independent of it.
+
+    ``segment_topic_id_map`` (added 2026-07-28, ``segment_id -> topic_id``)
+    is built from the same ``GET /segments`` fetch above -- no extra network
+    call. It resolves ``GET /kg/edges?predicate=mentions`` results (fetched
+    separately below) to the topic concept each mentioned entity belongs to.
+    This is topic-foundry's real, LLM-enriched entity-mention data, which
+    used to go out on the now-retired ``orion:kg:edge:ingest.v1`` bus channel
+    (zero live consumers -- see ``orion/substrate/adapters/topic_foundry.py``
+    module docstring) and now feeds ``EntityNodeV1`` construction directly
+    here instead. A mentions-fetch failure degrades to an empty list (no
+    entity nodes/edges produced for this call) rather than aborting the
+    route, same contract as the segments fetch above.
     """
     store = _get_substrate_store()
     if store is None:
-        return _unavailable("substrate_store_unavailable", concepts_written=0, edges_written=0)
+        return _unavailable("substrate_store_unavailable", concepts_written=0, entities_written=0, edges_written=0)
 
     base_url = str(getattr(settings, "TOPIC_FOUNDRY_BASE_URL", "") or "").strip()
     if not base_url:
         return _unavailable(
             "topic_foundry_base_url_not_configured",
             concepts_written=0,
+            entities_written=0,
             edges_written=0,
         )
 
@@ -801,6 +818,7 @@ def concept_atlas_ingest_topic_foundry() -> dict[str, Any]:
             "topic_foundry_fetch_failed",
             str(exc),
             concepts_written=0,
+            entities_written=0,
             edges_written=0,
         )
     except Exception as exc:  # pragma: no cover - defensive, never let a client bug 500 this route
@@ -809,6 +827,7 @@ def concept_atlas_ingest_topic_foundry() -> dict[str, Any]:
             "topic_foundry_unexpected_error",
             str(exc),
             concepts_written=0,
+            entities_written=0,
             edges_written=0,
         )
 
@@ -817,6 +836,7 @@ def concept_atlas_ingest_topic_foundry() -> dict[str, Any]:
     keywords_by_topic = fetched["keywords_by_topic"]
 
     segment_topic_map: dict[str, list[int]] = {}
+    segment_topic_id_map: dict[str, int] = {}
     segments_fetched = 0
     try:
         segments = fetch_segments_for_run(base_url, run_id)
@@ -824,6 +844,7 @@ def concept_atlas_ingest_topic_foundry() -> dict[str, Any]:
         for seg in segments:
             topic_id = seg.get("topic_id")
             start_at = seg.get("start_at")
+            segment_id = seg.get("segment_id")
             if topic_id is None or start_at is None:
                 continue
             try:
@@ -832,6 +853,8 @@ def concept_atlas_ingest_topic_foundry() -> dict[str, Any]:
                 continue
             if topic_id_int == _OUTLIER_TOPIC_ID:
                 continue
+            if segment_id is not None:
+                segment_topic_id_map[str(segment_id)] = topic_id_int
             day_bucket = _day_bucket_from_timestamp(start_at)
             if day_bucket is None:
                 continue
@@ -840,12 +863,30 @@ def concept_atlas_ingest_topic_foundry() -> dict[str, Any]:
         logger.warning(
             "concept_atlas_ingest_topic_foundry_segments_fetch_failed run_id=%s error=%s", run_id, exc
         )
-        # Degrade to empty segment_topic_map -- co_occurs_with edges just
-        # won't be produced for this ingestion call; concept/evidence node
+        # Degrade to empty segment_topic_map/segment_topic_id_map --
+        # co_occurs_with edges and mention-derived entity edges just won't
+        # be produced for this ingestion call; concept/evidence node
         # ingestion below proceeds normally regardless.
     except Exception as exc:  # pragma: no cover - defensive, never let a client bug abort the route
         logger.warning(
             "concept_atlas_ingest_topic_foundry_segments_unexpected_error run_id=%s error=%s", run_id, exc
+        )
+
+    mention_edges: list[dict[str, Any]] = []
+    mentions_fetched = 0
+    try:
+        mention_edges = fetch_mention_edges_for_run(base_url, run_id)
+        mentions_fetched = len(mention_edges)
+    except TopicFoundryClientError as exc:
+        logger.warning(
+            "concept_atlas_ingest_topic_foundry_mentions_fetch_failed run_id=%s error=%s", run_id, exc
+        )
+        # Degrade to empty mention_edges -- no entity nodes/edges produced
+        # for this call; concept/evidence/co_occurs_with ingestion above is
+        # independent of it.
+    except Exception as exc:  # pragma: no cover - defensive, never let a client bug abort the route
+        logger.warning(
+            "concept_atlas_ingest_topic_foundry_mentions_unexpected_error run_id=%s error=%s", run_id, exc
         )
 
     try:
@@ -856,6 +897,8 @@ def concept_atlas_ingest_topic_foundry() -> dict[str, Any]:
             topics=topics,
             keywords_by_topic=keywords_by_topic,
             segment_topic_map=segment_topic_map,
+            mention_edges=mention_edges,
+            segment_topic_id_map=segment_topic_id_map,
         )
     except Exception as exc:  # pragma: no cover - the adapter itself never raises, but don't trust across the boundary
         logger.warning("concept_atlas_ingest_topic_foundry_adapter_failed run_id=%s error=%s", run_id, exc)
@@ -864,6 +907,7 @@ def concept_atlas_ingest_topic_foundry() -> dict[str, Any]:
             str(exc),
             run_id=run_id,
             concepts_written=0,
+            entities_written=0,
             edges_written=0,
         )
 
@@ -873,6 +917,7 @@ def concept_atlas_ingest_topic_foundry() -> dict[str, Any]:
             run_id=run_id,
             topics_fetched=len(topics),
             concepts_written=0,
+            entities_written=0,
             edges_written=0,
         )
 
@@ -897,6 +942,7 @@ def concept_atlas_ingest_topic_foundry() -> dict[str, Any]:
             run_id=run_id,
             concepts_written=counting_store.concepts_written,
             evidence_nodes_written=counting_store.evidence_nodes_written,
+            entities_written=counting_store.entities_written,
             edges_written=counting_store.edges_written,
         )
 
@@ -923,9 +969,11 @@ def concept_atlas_ingest_topic_foundry() -> dict[str, Any]:
         "topics_fetched": len(topics),
         "concepts_written": counting_store.concepts_written,
         "evidence_nodes_written": counting_store.evidence_nodes_written,
+        "entities_written": counting_store.entities_written,
         "edges_written": counting_store.edges_written,
         "segments_fetched": segments_fetched,
         "segment_topic_map_buckets": len(segment_topic_map),
+        "mentions_fetched": mentions_fetched,
         "typed_edges_written": typed_edges_written,
     }
 

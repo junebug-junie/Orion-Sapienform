@@ -39,19 +39,33 @@ Also publishes a bus-native `SystemHealthV1` heartbeat to `orion:system:health` 
 - `GET /kg/edges?run_id=...&q=...&predicate=...&limit=...&offset=...` — list KG edges with filters.
 - `GET /events?limit=...&offset=...&kind=...` — list recent run/enrich/drift alert events.
 
+**KG edges: bus publish retired 2026-07-28, HTTP consumption is now the only live path.**
+`app/services/kg_edges.py::generate_edges_for_run()` computes real, LLM-enriched typed edges
+(`mentions`/`asks_about`/`claims_about`/`next_step`) from each run's enriched segments and
+persists them to Postgres (this is what `GET /edges`/`GET /kg/edges` above serve) — that part
+is unchanged. It used to *also* publish every batch on `orion:kg:edge:ingest.v1`
+(`KgEdgeIngestV1`), but that channel had zero live consumers going back to at least
+2026-07-17 (`orion-rdf-writer` never actually subscribed to it despite being declared as one;
+`orion-graphdb` never existed as a real service at all). The publish call, the channel
+declaration in `orion/bus/channels.yaml`, and the `KgEdgeIngestV1`/`KgEdgeIngestItemV1`
+schemas are all removed as of this date — `orion-hub`'s Concept Atlas ingestion now pulls
+`mentions`-predicate edges directly via `GET /kg/edges` instead (see
+`services/orion-hub/README.md` §5.5 and `orion/substrate/adapters/topic_foundry.py`'s module
+docstring). `asks_about`/`claims_about`/`next_step` are unaffected by any of this (they never
+had a bus consumer either, and still don't) — they remain queryable via the two GET routes
+above, just not wired into the substrate graph yet.
+
 **`POST /runs/{run_id}/enrich` is now called automatically (2026-07-28).** Confirmed live
 that day: `topic_foundry_segments` had 0 of 22 rows ever enriched — nothing in this codebase
-had ever called this endpoint; it was purely manual/operator-triggered before now.
-`orion-hub`'s scheduler (`services/orion-hub/scripts/main.py`'s
-`substrate_topic_foundry_scheduler_task`) now calls it for the latest completed run on each
-tick, gated by its own `SUBSTRATE_TOPIC_FOUNDRY_ENRICH_ENABLE` flag (**`true`**, flipped on
-live 2026-07-28 per explicit operator go-ahead — see `services/orion-hub/README.md` §5.5).
-`force=False` on every call, so repeat
-ticks only process segments with no prior enrichment (`enriched_at IS NULL`), never
-re-enriching the same segment. Enrichment also triggers this service's own typed KG edge
-generation as a same-request side effect (`app/services/enrichment.py::_run_enrichment`'s
-trailing `_generate_edges` call) — enabling the Hub flag is what makes `mentions`-predicate
-edges start existing at all, upstream of whatever consumes `GET /kg/edges`.
+had ever called this endpoint; it was purely manual/operator-triggered before now, meaning
+none of the KG edges described above (including the `mentions` edges Concept Atlas now
+consumes) had any real data to work with. `orion-hub`'s scheduler
+(`services/orion-hub/scripts/main.py`'s `substrate_topic_foundry_scheduler_task`) now calls
+it for the latest completed run on each tick, gated by its own
+`SUBSTRATE_TOPIC_FOUNDRY_ENRICH_ENABLE` flag (**`true`**, flipped on live 2026-07-28 per
+explicit operator go-ahead — see `services/orion-hub/README.md` §5.5). `force=False` on
+every call, so repeat ticks only process segments with no prior enrichment
+(`enriched_at IS NULL`), never re-enriching the same segment.
 
 ## Required env vars
 - `SERVICE_NAME`, `SERVICE_VERSION`, `NODE_NAME`, `LOG_LEVEL`

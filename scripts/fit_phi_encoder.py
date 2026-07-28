@@ -14,7 +14,6 @@ Use --legacy-corpus when reading seed-v1 rows without cognitive trajectory featu
 from __future__ import annotations
 
 import argparse
-import importlib.util
 import json
 import subprocess
 import sys
@@ -43,23 +42,30 @@ from orion.schemas.telemetry.phi_encoder import (
 )
 from orion.telemetry.corpus_rotation import resolve_rotated_corpus_files
 
-_INNER_STATE_PATH = (
-    REPO_ROOT / "services" / "orion-spark-introspector" / "app" / "inner_state.py"
-)
-_SPEC = importlib.util.spec_from_file_location("spark_inner_state_fit", _INNER_STATE_PATH)
-assert _SPEC and _SPEC.loader
-_inner_state = importlib.util.module_from_spec(_SPEC)
-_SPEC.loader.exec_module(_inner_state)
-
-# FELT_DIMENSIONS is now a LOCAL, frozen historical constant (2026-07-22,
-# SelfStateV1 burn, docs/superpowers/specs/2026-07-22-self-state-phi-endo-
-# origination-burn-spec.md) -- no longer imported from inner_state.py, which
-# correctly no longer carries it: the live service never produces
-# self-state-derived features again, but this offline tool still needs to
-# read/retrain against already-collected pre-burn seed-v1..v4 corpus rows,
-# which genuinely have these fields. This is a fixed historical fact about
-# past corpus shape, not something that should live-track the current
-# service's feature set.
+# 2026-07-28 (spark-introspector retirement, caught + corrected by code
+# review): this module used to load
+# services/orion-spark-introspector/app/inner_state.py at module scope via
+# importlib.util.spec_from_file_location + exec_module, to read
+# COGNITIVE_FEATURE_NAMES and encoder_trainable_feature_names() off it. That
+# file is deleted with the service. orion/mood_arc/fit_encoder.py does lazy
+# (function-scoped, not module-scope) `from scripts.fit_phi_encoder import
+# _pearson, _percentile` inside its own real, independent, still-live
+# prune_correlated_fields()/train_autoencoder() -- so this module must keep
+# importing cleanly even with inner_state.py gone. The first fix attempt
+# (guard the load, raise only when a caller actually needed it) missed that
+# COGNITIVE_FEATURE_NAMES itself was a module-level read of that now-missing
+# module, silently degrading to an empty tuple for every non-seed-v5 features
+# version -- a real, undetected behavior change until this review restored
+# tests/test_phi_encoder_fit_script.py and it caught the drift. Both
+# COGNITIVE_FEATURE_NAMES and the seed-v5 case in
+# input_features_for_version() are now LOCAL, frozen historical constants,
+# following the exact precedent already set by FELT_DIMENSIONS below
+# (2026-07-22, SelfStateV1 burn, docs/superpowers/specs/2026-07-22-self-
+# state-phi-endo-origination-burn-spec.md): the live service that used to
+# derive these values no longer exists, but this offline tool still needs to
+# read/retrain against already-collected historical corpus rows, which
+# genuinely have this fixed shape. These are fixed historical facts, not
+# something that should live-track a service that is now gone.
 FELT_DIMENSIONS: tuple[str, ...] = (
     "coherence",
     "field_intensity",
@@ -72,7 +78,12 @@ FELT_DIMENSIONS: tuple[str, ...] = (
     "social_pressure",
     "introspection_pressure",
 )
-COGNITIVE_FEATURE_NAMES: tuple[str, ...] = _inner_state.COGNITIVE_FEATURE_NAMES
+COGNITIVE_FEATURE_NAMES: tuple[str, ...] = (
+    "recall_gate_fired",
+    "reasoning_present",
+    "exec_step_fail_rate",
+    "execution_friction",
+)
 
 DEFAULT_FEATURES_VERSION = "seed-v3"
 ARCHITECTURE = "mlp_shallow_v1"
@@ -168,7 +179,15 @@ def input_features_for_version(features_version: str, *, legacy_corpus: bool = F
     if legacy_corpus:
         return list(FELT_DIMENSIONS) + ["overall_intensity"]
     if features_version == "seed-v5":
-        return _inner_state.encoder_trainable_feature_names(features_version)
+        # Frozen historical fact, not a live read anymore (see this module's
+        # header note): the deleted inner_state.py's
+        # encoder_trainable_feature_names() ignored its features_version
+        # argument entirely and always returned SEEDV5_TRAINABLE_FEATURE_NAMES,
+        # which was itself defined as identical to
+        # _SEEDV4_COGNITIVE_FEATURE_NAMES below -- confirmed via git history
+        # (services/orion-spark-introspector/app/inner_state.py at HEAD before
+        # deletion).
+        return list(_SEEDV4_COGNITIVE_FEATURE_NAMES)
     return _legacy_trainable_feature_names(features_version)
 
 

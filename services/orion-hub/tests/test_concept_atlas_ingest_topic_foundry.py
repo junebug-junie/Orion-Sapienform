@@ -155,6 +155,30 @@ def _segments_payload_empty(run_id: str = FAKE_RUN_ID) -> dict[str, Any]:
     return {"run_id": run_id, "items": [], "limit": 1000, "offset": 0, "total": 0}
 
 
+def _kg_edges_payload_empty(run_id: str = FAKE_RUN_ID) -> dict[str, Any]:
+    # Shaped like KgEdgeListPage (services/orion-topic-foundry/app/models.py).
+    return {"run_id": run_id, "items": [], "limit": 500, "offset": 0}
+
+
+def _kg_edges_payload_mentions(run_id: str = FAKE_RUN_ID) -> dict[str, Any]:
+    return {
+        "run_id": run_id,
+        "items": [
+            {
+                "edge_id": "44444444-4444-4444-4444-444444444444",
+                "segment_id": "seg-0a",
+                "subject": "m",
+                "predicate": "mentions",
+                "object": "Juniper Feld",
+                "confidence": 0.6,
+                "created_at": "2026-07-15T09:00:01Z",
+            }
+        ],
+        "limit": 500,
+        "offset": 0,
+    }
+
+
 def _make_fake_get(
     *,
     topics_payload: dict[str, Any],
@@ -162,6 +186,8 @@ def _make_fake_get(
     unreachable: bool = False,
     segments_payload: Optional[dict[str, Any]] = None,
     segments_unreachable: bool = False,
+    kg_edges_payload: Optional[dict[str, Any]] = None,
+    kg_edges_unreachable: bool = False,
 ):
     calls: list[tuple[str, Optional[dict[str, Any]]]] = []
 
@@ -176,6 +202,10 @@ def _make_fake_get(
         if "/topics/" in url and url.endswith("/keywords"):
             topic_id = int(url.rsplit("/", 2)[1])
             return _FakeResponse(200, _keywords_payload(topic_id))
+        if url.endswith("/kg/edges"):
+            if kg_edges_unreachable:
+                raise requests.exceptions.ConnectionError("connection refused")
+            return _FakeResponse(200, kg_edges_payload if kg_edges_payload is not None else _kg_edges_payload_empty(run_id))
         if url.endswith("/segments"):
             if segments_unreachable:
                 raise requests.exceptions.ConnectionError("connection refused")
@@ -658,6 +688,60 @@ def test_client_no_completed_run_raises_client_error(monkeypatch: pytest.MonkeyP
         tfc.fetch_run_topics_and_keywords(FAKE_BASE_URL)
 
 
+def test_client_fetch_mention_edges_filters_by_predicate_param(monkeypatch: pytest.MonkeyPatch) -> None:
+    from scripts import topic_foundry_client as tfc
+
+    seen_params: dict[str, Any] = {}
+
+    def fake_get(url: str, params=None, timeout=None):
+        assert url.endswith("/kg/edges")
+        seen_params.update(params or {})
+        return _FakeResponse(200, _kg_edges_payload_mentions())
+
+    monkeypatch.setattr(tfc.requests, "get", fake_get)
+    result = tfc.fetch_mention_edges_for_run(FAKE_BASE_URL, FAKE_RUN_ID)
+    assert seen_params["predicate"] == "mentions"
+    assert seen_params["run_id"] == FAKE_RUN_ID
+    assert len(result) == 1
+    assert result[0]["object"] == "Juniper Feld"
+
+
+def test_client_fetch_mention_edges_empty_items_is_not_an_error(monkeypatch: pytest.MonkeyPatch) -> None:
+    from scripts import topic_foundry_client as tfc
+
+    def fake_get(url: str, params=None, timeout=None):
+        return _FakeResponse(200, _kg_edges_payload_empty())
+
+    monkeypatch.setattr(tfc.requests, "get", fake_get)
+    assert tfc.fetch_mention_edges_for_run(FAKE_BASE_URL, FAKE_RUN_ID) == []
+
+
+def test_client_fetch_mention_edges_malformed_response_raises_client_error(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from scripts import topic_foundry_client as tfc
+
+    def fake_get(url: str, params=None, timeout=None):
+        return _FakeResponse(200, {"run_id": FAKE_RUN_ID})  # missing "items"
+
+    monkeypatch.setattr(tfc.requests, "get", fake_get)
+    with pytest.raises(tfc.TopicFoundryClientError):
+        tfc.fetch_mention_edges_for_run(FAKE_BASE_URL, FAKE_RUN_ID)
+
+
+def test_client_fetch_mention_edges_request_failure_raises_client_error(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from scripts import topic_foundry_client as tfc
+
+    def fake_get(url: str, params=None, timeout=None):
+        raise requests.exceptions.ConnectionError("connection refused")
+
+    monkeypatch.setattr(tfc.requests, "get", fake_get)
+    with pytest.raises(tfc.TopicFoundryClientError):
+        tfc.fetch_mention_edges_for_run(FAKE_BASE_URL, FAKE_RUN_ID)
+
+
 # --- post-ingestion typed-relation classification step -----------------------
 #
 # Covers the additive post-ingestion step added to
@@ -977,6 +1061,160 @@ def test_ingest_segments_fetch_failure_still_ingests_concepts(
     snapshot = store.snapshot()
     co_occurs_edges = [e for e in snapshot.edges.values() if e.predicate == "co_occurs_with"]
     assert co_occurs_edges == []
+
+
+# --- mention edges (GET /kg/edges) -> EntityNodeV1 / associated_with, added 2026-07-28 ---
+
+
+def test_ingest_mention_edges_produce_entity_nodes_and_associated_with_edges(
+    client: TestClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from orion.substrate.store import InMemorySubstrateGraphStore
+
+    store = InMemorySubstrateGraphStore()
+    fake_get, calls = _make_fake_get(
+        topics_payload=_topics_payload_normal(),
+        segments_payload=_segments_payload_same_day(),
+        kg_edges_payload=_kg_edges_payload_mentions(),
+    )
+    _patch_topic_foundry_client(monkeypatch, fake_get)
+    _patch_base_url(monkeypatch, FAKE_BASE_URL)
+    _patch_store(monkeypatch, store)
+
+    r = client.post("/api/substrate/concepts/ingest-topic-foundry")
+    assert r.status_code == 200
+    body = r.json()
+    assert body["available"] is True
+    assert body["mentions_fetched"] == 1
+    assert body["entities_written"] == 1
+
+    kg_edges_calls = [
+        (url, params) for url, params in calls if url.endswith("/kg/edges")
+    ]
+    assert len(kg_edges_calls) == 1
+    assert kg_edges_calls[0][1]["predicate"] == "mentions"
+
+    snapshot = store.snapshot()
+    entity_nodes = [n for n in snapshot.nodes.values() if n.node_kind == "entity"]
+    assert len(entity_nodes) == 1
+    assert entity_nodes[0].label == "Juniper Feld"
+
+    associated_edges = [e for e in snapshot.edges.values() if e.predicate == "associated_with"]
+    assert len(associated_edges) == 1
+    assert associated_edges[0].source.node_id == f"sub-concept-topicfoundry-{FAKE_RUN_ID}-0"
+    assert associated_edges[0].target.node_id == entity_nodes[0].node_id
+
+
+def test_ingest_cross_run_same_entity_label_merges_to_one_durable_entity(
+    client: TestClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Regression test for the identity-resolution gap found in review 2026-07-28:
+    orion/substrate/reconcile.py::canonical_node_key had no branch for
+    node_kind == "entity", so EntityNodeV1's own node_id (run-scoped, a hash
+    of run_id + label) meant every ingestion tick created a brand-new entity
+    node for the same real-world mentioned entity -- unbounded duplication on
+    a scheduler that runs daily by default. Mirrors
+    test_ingest_cross_run_same_label_merges_to_one_durable_concept's shape.
+    """
+    from orion.substrate.store import InMemorySubstrateGraphStore
+
+    store = InMemorySubstrateGraphStore()
+    _patch_base_url(monkeypatch, FAKE_BASE_URL)
+    _patch_store(monkeypatch, store)
+
+    run_a = "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa"
+    run_b = "bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb"
+
+    def _segments_payload(run_id: str) -> dict[str, Any]:
+        return {
+            "run_id": run_id,
+            "items": [{"segment_id": "seg-a", "topic_id": 0, "start_at": "2026-07-15T09:00:00Z"}],
+            "limit": 1000,
+            "offset": 0,
+            "total": 1,
+        }
+
+    def _kg_edges_payload(run_id: str) -> dict[str, Any]:
+        return {
+            "run_id": run_id,
+            "items": [
+                {
+                    "edge_id": "44444444-4444-4444-4444-444444444444",
+                    "segment_id": "seg-a",
+                    "subject": "m",
+                    "predicate": "mentions",
+                    # Deliberately different case/whitespace across runs --
+                    # normalization must still collapse this to one entity.
+                    "object": "Juniper Feld" if run_id == run_a else "  juniper feld ",
+                    "confidence": 0.6,
+                    "created_at": "2026-07-15T09:00:01Z",
+                }
+            ],
+            "limit": 500,
+            "offset": 0,
+        }
+
+    def _ingest_run(run_id: str) -> dict[str, Any]:
+        fake_get, _calls = _make_fake_get(
+            topics_payload=_topics_payload_normal(),
+            run_id=run_id,
+            segments_payload=_segments_payload(run_id),
+            kg_edges_payload=_kg_edges_payload(run_id),
+        )
+        _patch_topic_foundry_client(monkeypatch, fake_get)
+        r = client.post("/api/substrate/concepts/ingest-topic-foundry")
+        assert r.status_code == 200
+        body = r.json()
+        assert body["available"] is True
+        assert body["entities_written"] == 1
+        return body
+
+    _ingest_run(run_a)
+    _ingest_run(run_b)
+
+    snapshot = store.snapshot()
+    entity_nodes = [n for n in snapshot.nodes.values() if n.node_kind == "entity"]
+    assert len(entity_nodes) == 1, (
+        f"expected one durable entity after cross-run ingest, got {len(entity_nodes)}: "
+        f"{[n.node_id for n in entity_nodes]}"
+    )
+
+    associated_edges = [e for e in snapshot.edges.values() if e.predicate == "associated_with"]
+    assert len(associated_edges) == 1, (
+        f"expected one durable associated_with edge after cross-run ingest, got "
+        f"{len(associated_edges)}"
+    )
+    assert associated_edges[0].target.node_id == entity_nodes[0].node_id
+
+
+def test_ingest_mentions_fetch_failure_still_ingests_concepts(
+    client: TestClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A mentions-fetch failure must degrade to no entity nodes/edges, not
+    abort the route -- concept/evidence/co_occurs_with ingestion above is
+    independent of it (same contract as the segments-fetch failure test)."""
+    from orion.substrate.store import InMemorySubstrateGraphStore
+
+    store = InMemorySubstrateGraphStore()
+    fake_get, _calls = _make_fake_get(
+        topics_payload=_topics_payload_normal(),
+        segments_payload=_segments_payload_same_day(),
+        kg_edges_unreachable=True,
+    )
+    _patch_topic_foundry_client(monkeypatch, fake_get)
+    _patch_base_url(monkeypatch, FAKE_BASE_URL)
+    _patch_store(monkeypatch, store)
+
+    r = client.post("/api/substrate/concepts/ingest-topic-foundry")
+    assert r.status_code == 200
+    body = r.json()
+    assert body["available"] is True
+    assert body["mentions_fetched"] == 0
+    assert body["entities_written"] == 0
+    # co_occurs_with (unaffected by the mentions failure) still produced.
+    snapshot = store.snapshot()
+    co_occurs_edges = [e for e in snapshot.edges.values() if e.predicate == "co_occurs_with"]
+    assert len(co_occurs_edges) == 1
 
 
 def test_ingest_co_occurs_with_edge_clears_classification_threshold(

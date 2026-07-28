@@ -325,11 +325,13 @@ class Settings(BaseSettings):
     CHAT_HISTORY_TURN_CHANNEL: str | None = Field(default=None, alias="CHAT_HISTORY_TURN_CHANNEL")
     CHANNEL_CHAT_HISTORY_TURN: str = Field(default="orion:chat:history:turn", alias="CHANNEL_CHAT_HISTORY_TURN")
 
-    # Spark introspection candidate channel (drives spark-introspector UI)
-    CHANNEL_SPARK_INTROSPECT_CANDIDATE: str = Field(
-        default="orion:spark:introspect:candidate:log",
-        alias="CHANNEL_SPARK_INTROSPECT_CANDIDATE",
-    )
+    # CHANNEL_SPARK_INTROSPECT_CANDIDATE removed 2026-07-28 (spark-
+    # introspector retirement): drove orion-spark-introspector's Cognitive
+    # EKG only; orion-hub no longer publishes spark.candidate anywhere (see
+    # orion/hub/turn_orchestrator.py, scripts/websocket_handler.py,
+    # scripts/api_routes.py). orion-vector-host's OrionTissue physics feed
+    # (services/orion-vector-host/app/tissue_feed.py) is now fed directly
+    # from the existing chat-history/chat-turn publish, in-process.
 
     @property
     def chat_history_channel(self) -> str:

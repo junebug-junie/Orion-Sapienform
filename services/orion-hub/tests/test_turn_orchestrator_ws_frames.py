@@ -238,14 +238,11 @@ async def test_turn_orchestrator_publishes_chat_history_on_success() -> None:
     bus.enabled = True
     publish_history = AsyncMock()
     publish_turn = AsyncMock()
-    publish_spark = AsyncMock()
     patches = _hub_client_patches(thought=_thought(), harness_run=harness_run)
     with patches[0], patches[1], patches[2], patch(
         "scripts.chat_history.publish_chat_history", publish_history
     ), patch(
         "scripts.chat_history.publish_chat_turn", publish_turn
-    ), patch(
-        "scripts.spark_candidate.publish_spark_introspect_candidate", publish_spark
     ):
         frames = await execute_unified_turn(
             bus=bus,
@@ -259,7 +256,6 @@ async def test_turn_orchestrator_publishes_chat_history_on_success() -> None:
     assert frames[-1]["type"] == "final"
     publish_history.assert_awaited_once()
     publish_turn.assert_awaited_once()
-    publish_spark.assert_awaited_once()
 
 
 @pytest.mark.asyncio
@@ -312,14 +308,11 @@ async def test_turn_orchestrator_finalize_degraded_passes_through_draft() -> Non
     bus.enabled = True
     publish_history = AsyncMock()
     publish_turn = AsyncMock()
-    publish_spark = AsyncMock()
     patches = _hub_client_patches(thought=_thought(), harness_run=degraded_run)
     with patches[0], patches[1], patches[2], patch(
         "scripts.chat_history.publish_chat_history", publish_history
     ), patch(
         "scripts.chat_history.publish_chat_turn", publish_turn
-    ), patch(
-        "scripts.spark_candidate.publish_spark_introspect_candidate", publish_spark
     ):
         frames = await execute_unified_turn(
             bus=bus,

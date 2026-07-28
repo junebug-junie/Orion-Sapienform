@@ -18,7 +18,8 @@ TIER1_EXPECTED_IDS = {
     "orion-collapse-mirror",
     "orion-cortex-exec",
     "orion-recall",
-    "orion-spark-introspector",
+    # "orion-spark-introspector" removed 2026-07-28 (spark-introspector
+    # retirement): its compose_dir no longer exists.
     "orion-memory-consolidation",
 }
 

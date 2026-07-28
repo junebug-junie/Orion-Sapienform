@@ -59,7 +59,6 @@ from scripts.mutation_cognition_context import build_mutation_cognition_context
 from scripts.presence_session import inject_session_presence
 from scripts.substrate_effect_pipeline import run_substrate_effect_pipeline
 from scripts.repair_pressure_wiring import attach_repair_pressure_contract
-from scripts.spark_candidate import publish_spark_introspect_candidate
 from scripts.warm_start import mini_personality_summary
 from orion.schemas.cortex.contracts import CortexChatRequest, CortexChatResult
 from orion.schemas.metacognitive_trace import MetacognitiveTraceV1
@@ -1737,19 +1736,12 @@ async def websocket_endpoint(websocket: WebSocket):
                             ),
                             "chat.social turn",
                         )
-                    # 2. Spark Introspection Candidate (drives Cognitive EKG refresh)
-                    _schedule_publish(
-                        publish_spark_introspect_candidate(
-                            bus,
-                            trace_id=trace_id,
-                            prompt=transcript,
-                            response=orion_response_text,
-                            spark_meta=spark_meta,
-                            source="hub_ws",
-                            correlation_id=trace_id,
-                        ),
-                        "spark.candidate",
-                    )
+                    # 2026-07-28: spark.candidate publish removed (spark-
+                    # introspector retirement). This chat-history/chat-turn
+                    # publish above already feeds orion-vector-host's real
+                    # OrionTissue physics feed (app/tissue_feed.py) in-process
+                    # on every semantic upsert -- no separate candidate event
+                    # is needed to drive the Cognitive EKG anymore.
 
                 except Exception as e:
                     logger.warning(f"Failed to log/introspect chat: {e}")

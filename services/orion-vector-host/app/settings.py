@@ -110,6 +110,29 @@ class Settings(BaseSettings):
         alias="VECTOR_HOST_EMBED_READ_TIMEOUT_SEC",
     )
 
+    # OrionTissue physics feed (2026-07-28, extracted from the retired
+    # orion-spark-introspector service -- see app/tissue_feed.py's module
+    # docstring for the full formula this drives). ORION_TISSUE_SNAPSHOT_PATH
+    # is read directly from os.environ by orion.spark.orion_tissue.OrionTissue
+    # itself (its own long-standing contract, unchanged here); declared below
+    # only so .env_example documents it as part of this service's contract.
+    ORION_TISSUE_SNAPSHOT_PATH: str = Field(
+        default="/mnt/graphdb/orion/spark/tissue-brain.npy",
+        alias="ORION_TISSUE_SNAPSHOT_PATH",
+    )
+    TISSUE_STIMULUS_EMA_ALPHA: float = Field(
+        default=0.05,
+        alias="TISSUE_STIMULUS_EMA_ALPHA",
+    )
+    TISSUE_STIMULUS_STEPS: int = Field(
+        default=2,
+        alias="TISSUE_STIMULUS_STEPS",
+    )
+    TISSUE_STIMULUS_LEARNING_RATE: float = Field(
+        default=0.1,
+        alias="TISSUE_STIMULUS_LEARNING_RATE",
+    )
+
     @property
     def EMBED_ROLES(self) -> List[str]:
         val = self.VECTOR_HOST_EMBED_ROLES

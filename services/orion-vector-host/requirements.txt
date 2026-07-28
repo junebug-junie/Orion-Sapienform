@@ -8,3 +8,6 @@ transformers==4.44.2
 torch==2.4.0
 sentencepiece==0.2.0
 safetensors==0.4.4
+# OrionTissue physics feed (app/tissue_feed.py, orion/spark/orion_tissue.py)
+numpy==1.26.4
+scipy==1.13.1

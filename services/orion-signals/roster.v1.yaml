@@ -42,11 +42,12 @@ tier1:
     organ_ids: [recall]
     required: true
 
-  - id: orion-spark-introspector
-    compose_dir: orion-spark-introspector
-    compose_service: spark-introspector
-    organ_ids: [spark_introspector]
-    required: true
+  # orion-spark-introspector removed 2026-07-28 (spark-introspector
+  # retirement, docs/superpowers/specs/2026-07-28-spark-introspector-
+  # retirement-and-honest-substrate-convergence.md): compose_dir no longer
+  # exists. The spark_introspector organ_id below (orion/signals/registry.py,
+  # orion/signals/layers.py) was left registered but is now unreachable --
+  # see this PR's notes for the follow-up to retire it there too.
 
   - id: orion-memory-consolidation
     compose_dir: orion-memory-consolidation

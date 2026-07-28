@@ -449,7 +449,6 @@ Representative services:
 
 | Service | Role |
 |---|---|
-| `orion-spark-introspector` | Reviews recent signals and produces introspective / salience state. |
 | `orion-spark-concept-induction` | Consolidates experience into concept profiles and deltas. |
 | `orion-topic-foundry` | Forms and extracts topics from activity, including drift alerts. |
 | `orion-meta-tags` | Adds metadata and tags to events so memory can become more structured. |
@@ -841,7 +840,6 @@ Memory / stores / writers:
   orion-gdb-client
 
 Reflection / state / sensemaking:
-  orion-spark-introspector
   orion-spark-concept-induction
   orion-dream
   orion-state-service
@@ -1197,7 +1195,6 @@ event residue
 
 | Service | Function |
 |---|---|
-| `orion-spark-introspector` | Reviews recent activity and emits Spark/introspection state. |
 | `orion-spark-concept-induction` | Converts accumulated experience into concept profiles and deltas. |
 | `orion-topic-foundry` | Extracts and forms topics from activity, including drift alerts. |
 | `orion-meta-tags` | Enriches events with tags and metadata. |

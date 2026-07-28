@@ -191,6 +191,29 @@ def test_changed_item_set_renags_after_suppression() -> None:
     assert third, "expected a new item added to the set to re-trigger the nag"
 
 
+def test_malicious_session_id_does_not_escape_nag_state_dir() -> None:
+    """`session_id` is attacker-influenceable (arbitrary JSON on stdin, per
+    `read_session_id_from_stdin_hook_payload`'s own docstring covering
+    non-Claude-Code callers) -- a raw `../../etc/whatever` must not let the
+    marker file land outside `_nag_state_dir()`.
+    """
+    items = {
+        "item-1": {
+            "worktree_path": "/repo",
+            "status": "open",
+            "session_id": "../../../../tmp/escaped",
+        },
+    }
+    with tempfile.TemporaryDirectory() as tmp:
+        state_dir = Path(tmp)
+        _run_hook(items, session_id="../../../../tmp/escaped", nag_state_dir=state_dir)
+        written = list(state_dir.iterdir())
+    assert written, "expected a marker file to be written inside the state dir"
+    for path in written:
+        assert path.parent == state_dir, f"marker escaped the state dir: {path}"
+        assert ".." not in path.name and "/" not in path.name
+
+
 def test_different_sessions_each_get_their_own_nag() -> None:
     items = {
         "item-1": {"worktree_path": "/repo", "status": "open", "session_id": None,
@@ -216,5 +239,6 @@ if __name__ == "__main__":
     test_resolved_and_handed_off_items_do_not_nag()
     test_same_item_set_does_not_renag_within_a_session()
     test_changed_item_set_renags_after_suppression()
+    test_malicious_session_id_does_not_escape_nag_state_dir()
     test_different_sessions_each_get_their_own_nag()
     print("all tests passed")

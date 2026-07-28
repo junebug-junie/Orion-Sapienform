@@ -46,13 +46,30 @@ def _item_set_digest(item_ids: list[str]) -> str:
     return hashlib.sha256(joined.encode("utf-8")).hexdigest()
 
 
+def _marker_filename(session_id: str) -> str:
+    """Hash session_id into the filename rather than using it raw.
+
+    `session_id` comes from `read_session_id_from_stdin_hook_payload()`,
+    which parses arbitrary JSON off stdin with no format validation --
+    `resolve_current_identity()`'s own docstring already contemplates this
+    hook being invoked by "a non-Claude-Code harness whose Stop payload
+    doesn't carry one," i.e. an untrusted-source caller is an acknowledged
+    scenario, not hypothetical. A raw `session_id` containing `../` would
+    let `_nag_state_dir() / session_id` write/read outside the intended
+    directory (path/existence control, not content injection, but still a
+    real corruption/DoS primitive). Hashing removes the path-traversal
+    surface entirely at negligible cost.
+    """
+    return hashlib.sha256(session_id.encode("utf-8")).hexdigest()
+
+
 def _already_nagged_this_set(session_id: str, digest: str) -> bool:
     """True if this exact session already emitted a nag for this exact item
     set. Fails open (False, i.e. still nag) on any read error -- matches the
     module's own fail-silent-on-error contract; we'd rather nag once more
     than swallow a real reminder because of a transient disk issue.
     """
-    marker = _nag_state_dir() / session_id
+    marker = _nag_state_dir() / _marker_filename(session_id)
     try:
         return marker.read_text(encoding="utf-8").strip() == digest
     except OSError:
@@ -66,7 +83,7 @@ def _record_nagged_set(session_id: str, digest: str) -> None:
     try:
         state_dir = _nag_state_dir()
         state_dir.mkdir(parents=True, exist_ok=True, mode=0o700)
-        marker = state_dir / session_id
+        marker = state_dir / _marker_filename(session_id)
         marker.write_text(digest, encoding="utf-8")
         os.chmod(marker, 0o600)
     except OSError:

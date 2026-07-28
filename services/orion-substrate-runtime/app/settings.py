@@ -208,6 +208,11 @@ class Settings(BaseSettings):
     drives_audit_channel: str = Field(
         "orion:memory:drives:audit", alias="DRIVES_AUDIT_CHANNEL"
     )
+    # Consumed for the brain-frame honesty_metrics/field_anomaly dimensions.
+    # Producer: orion-field-digester's mood-arc reconstruction-error scorer.
+    field_channel_anomaly_score_channel: str = Field(
+        "orion:field_channel:anomaly_score", alias="FIELD_CHANNEL_ANOMALY_SCORE_CHANNEL"
+    )
     # Formerly materialized DriveEngine drive_state/drive_audit into the substrate
     # graph (snapshot_source="drive_state"). Chat stance / Mind measurement SoR is
     # Postgres drive_audits (bus → sql-writer). Default off. Enabling this only

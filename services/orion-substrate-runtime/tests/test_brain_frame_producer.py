@@ -365,4 +365,81 @@ def test_honesty_regions_included_in_frame():
     honesty = {r.region_id: r for r in frame.regions if r.dimension == "honesty_metrics"}
     assert len(honesty) == 1
     assert honesty["honesty:confidence"].intensity == 0.8
-    assert honesty["honesty:confidence"].state == "firing"
+
+
+def _field_anomaly(recon_loss, anomalous=True):
+    from types import SimpleNamespace
+
+    return SimpleNamespace(recon_loss=recon_loss, anomalous=anomalous)
+
+
+def test_field_anomaly_regions_with_none_input():
+    from datetime import datetime, timezone
+
+    from app.brain_frame_producer import _field_anomaly_regions
+
+    now = datetime(2026, 7, 7, 12, 0, 0, tzinfo=timezone.utc)
+    assert _field_anomaly_regions(None, now) == []
+
+
+def test_field_anomaly_regions_below_floor_reads_near_zero():
+    """Live-observed 2026-07-28: recon_loss=0.00012 (below the encoder's own
+    0.000895 threshold, i.e. genuinely calm) must read near 0, not pinned by
+    an off calibration."""
+    from datetime import datetime, timezone
+
+    from app.brain_frame_producer import _field_anomaly_regions
+
+    now = datetime(2026, 7, 7, 12, 0, 0, tzinfo=timezone.utc)
+    regions = _field_anomaly_regions(_field_anomaly(0.00012, anomalous=False), now)
+    assert len(regions) == 1
+    assert regions[0].intensity == 0.0
+    assert regions[0].state == "starving"
+
+
+def test_field_anomaly_regions_mid_range_has_real_spread():
+    """Live-observed 2026-07-28: recon_loss in [0.0037, 0.0139] over a real
+    2-minute window must map to genuinely different intensities, not a
+    ceiling/floor pin (the exact failure mode found and rejected for
+    node_kind max() and lane min()/max())."""
+    from datetime import datetime, timezone
+
+    from app.brain_frame_producer import _field_anomaly_regions
+
+    now = datetime(2026, 7, 7, 12, 0, 0, tzinfo=timezone.utc)
+    low = _field_anomaly_regions(_field_anomaly(0.0037), now)[0].intensity
+    high = _field_anomaly_regions(_field_anomaly(0.0139), now)[0].intensity
+    assert 0.0 < low < high < 1.0
+
+
+def test_field_anomaly_regions_anomalous_flag_drives_state():
+    from datetime import datetime, timezone
+
+    from app.brain_frame_producer import _field_anomaly_regions
+
+    now = datetime(2026, 7, 7, 12, 0, 0, tzinfo=timezone.utc)
+    regions = _field_anomaly_regions(_field_anomaly(0.015, anomalous=True), now)
+    assert regions[0].state == "firing"
+
+
+def test_field_anomaly_regions_included_in_frame():
+    from datetime import datetime, timezone
+
+    from app.brain_frame_producer import assemble_brain_frame
+
+    now = datetime(2026, 7, 7, 12, 0, 0, tzinfo=timezone.utc)
+    frame = assemble_brain_frame(
+        nodes=[_node("t1", "tension", 0.9, 0.9)],
+        edges=[],
+        lane_health={"cursor_lag_by_reducer": {}, "pending_backlog_by_reducer": {}, "quarantine_by_reducer": {}},
+        self_state=None,
+        attention=None,
+        attention_payload=None,
+        field_anomaly=_field_anomaly(0.01),
+        settings=_settings(),
+        now=now,
+        tick_seq=11,
+    )
+    fa = {r.region_id: r for r in frame.regions if r.dimension == "field_anomaly"}
+    assert len(fa) == 1
+    assert fa["field_anomaly:reconstruction"].detail["recon_loss"] == 0.01

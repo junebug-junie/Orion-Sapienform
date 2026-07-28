@@ -226,7 +226,7 @@ channels:
     # measurement, consumer owns the trigger-sensitivity knob).
     schema_id: "FieldChannelAnomalyScoreV1"
     producer_services: ["orion-field-digester"]
-    consumer_services: ["orion-equilibrium-service"]
+    consumer_services: ["orion-equilibrium-service", "orion-substrate-runtime"]
     stability: "experimental"
     since: "2026-07-21"
 

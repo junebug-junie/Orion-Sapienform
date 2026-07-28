@@ -19,6 +19,7 @@ from orion.schemas.biometrics_projection import (
 from orion.schemas.grammar import GrammarEventV1
 from orion.schemas.harness_finalize import HarnessPostTurnClosureV1
 from orion.schemas.reduction_receipt import ReductionReceiptV1
+from orion.schemas.telemetry.field_channel_anomaly_score import FieldChannelAnomalyScoreV1
 from orion.substrate.biometrics_loop.constants import (
     ACTIVE_NODE_PRESSURE_PROJECTION_ID,
     GRAMMAR_CURSOR_NAME,
@@ -86,6 +87,18 @@ _TRUTHY = {"1", "true", "yes", "on"}
 _DRIVE_STATE_MAX_AGE_SEC = 300.0
 # Fixed signal until HarnessPostTurnClosureV1 carries surprise_level_at_draft.
 _HARNESS_CLOSURE_UNRESOLVED_ERROR = 0.65
+# node_id -> domain key, matching the fixed identities _write_prediction_error_node()
+# upserts to and the domain names orion.substrate.attention_self_model expects in
+# prediction_error_by_domain. node:substrate.harness_closure is intentionally
+# excluded -- it is not one of that reducer's recognized domains.
+_PREDICTION_ERROR_DOMAIN_NODE_IDS = {
+    "node:substrate.execution": "execution",
+    "node:substrate.transport": "transport",
+    "node:substrate.biometrics": "biometrics",
+    "node:substrate.chat": "chat",
+    "node:substrate.route": "route",
+    "node:substrate.bus_synaptic": "bus_synaptic",
+}
 
 
 def _prediction_error_nodes_enabled() -> bool:
@@ -244,6 +257,12 @@ class BiometricsSubstrateWorker:
         # tension_kinds). Independent of the embodiment C producer above.
         self._latest_drive_audit: DriveAuditV1 | None = None
         self._latest_drive_audit_at: datetime | None = None
+        # FieldChannelAnomalyScoreV1 cached off the bus for the brain-frame
+        # field_anomaly dimension -- mood-arc encoder reconstruction error over
+        # live field-channel pressures, independent of the honesty_metrics
+        # (active-inference) and spotlight (coalition_stability) signals.
+        self._latest_field_anomaly: FieldChannelAnomalyScoreV1 | None = None
+        self._latest_field_anomaly_at: datetime | None = None
         self._brain_frame_seq: int = 0
 
     @property
@@ -315,6 +334,18 @@ class BiometricsSubstrateWorker:
                 asyncio.create_task(
                     self._perception_ingest_loop(),
                     name="substrate-embodiment-perception-ingest",
+                )
+            )
+        # Field-channel anomaly listener: caches the latest mood-arc encoder
+        # reconstruction-error reading for the brain-frame field_anomaly
+        # dimension. Read-only display signal, no feature flag beyond bus
+        # availability -- rides on the same s.brain_frame_enabled gate that
+        # already governs whether anything consumes the cached value.
+        if self._bus is not None:
+            self._tasks.append(
+                asyncio.create_task(
+                    self._field_channel_anomaly_listener_loop(),
+                    name="substrate-field-channel-anomaly-listener",
                 )
             )
 
@@ -1239,6 +1270,55 @@ class BiometricsSubstrateWorker:
             except Exception:
                 logger.exception("substrate_drive_state_materialize_failed")
 
+    async def _field_channel_anomaly_listener_loop(self) -> None:
+        """Subscribe to the field-channel anomaly-score channel and cache the
+        latest FieldChannelAnomalyScoreV1.
+
+        Mirrors _drive_state_listener_loop. Producer: orion-field-digester's
+        mood-arc reconstruction-error scorer (app/anomaly_scorer.py), an
+        independent third signal alongside honesty_metrics (active-inference
+        prediction error) and spotlight.coalition_stability (GWT-dispatch
+        lane) -- different model, different inputs (field-channel pressures,
+        not domain prediction-error or attention-coalition tracking).
+        """
+        channel = self._settings.field_channel_anomaly_score_channel
+        logger.info("substrate_field_channel_anomaly_listener subscribing channel=%s", channel)
+        try:
+            async with self._bus.subscribe(channel) as pubsub:
+                while not self._stop.is_set():
+                    try:
+                        msg = await asyncio.wait_for(
+                            pubsub.get_message(ignore_subscribe_messages=True, timeout=1.0),
+                            timeout=1.2,
+                        )
+                    except asyncio.TimeoutError:
+                        continue
+                    except asyncio.CancelledError:
+                        break
+                    if not msg or msg.get("type") not in ("message", "pmessage"):
+                        continue
+                    try:
+                        self._cache_field_channel_anomaly_message(msg)
+                    except Exception:
+                        logger.exception("substrate_field_channel_anomaly_handle_failed")
+        except asyncio.CancelledError:
+            raise
+        finally:
+            logger.info("substrate_field_channel_anomaly_listener stopped channel=%s", channel)
+
+    def _cache_field_channel_anomaly_message(self, raw_msg: dict[str, Any]) -> None:
+        decoded = self._bus.codec.decode(raw_msg.get("data"))
+        if not decoded.ok:
+            logger.warning("substrate_field_channel_anomaly_decode_failed: %s", decoded.error)
+            return
+        try:
+            score = FieldChannelAnomalyScoreV1.model_validate(decoded.envelope.payload or {})
+        except ValueError as exc:
+            logger.error("substrate_field_channel_anomaly_invalid err=%s", exc)
+            return
+        self._latest_field_anomaly = score
+        self._latest_field_anomaly_at = datetime.now(timezone.utc)
+
     async def _drive_audit_listener_loop(self) -> None:
         """Subscribe to the drive-audit channel and cache the latest DriveAuditV1.
 
@@ -1589,6 +1669,33 @@ class BiometricsSubstrateWorker:
             logger.exception("brain_frame_self_state_load_failed")
             return None
 
+    def _brain_frame_prediction_error_by_domain(self, nodes: Iterable[Any]) -> dict:
+        """Read each Active-Inference domain's latest prediction_error off the
+        already-fetched node snapshot -- zero extra I/O.
+
+        ``_write_prediction_error_node()`` durably upserts one fixed-identity
+        ``ConceptNodeV1`` per domain (``node:substrate.<domain>``,
+        ``metadata['prediction_error']``) every tick it fires
+        (``SUBSTRATE_WRITE_PREDICTION_ERROR_NODES=true``). Those nodes are
+        already part of the same graph snapshot ``assemble_brain_frame()``
+        uses for node_kind regions, so this just reads them back rather than
+        making a second store round-trip.
+        """
+        out: dict[str, float] = {}
+        for node in nodes:
+            node_id = str(getattr(node, "node_id", "") or "")
+            domain = _PREDICTION_ERROR_DOMAIN_NODE_IDS.get(node_id)
+            if domain is None:
+                continue
+            md = getattr(node, "metadata", None) or {}
+            value = md.get("prediction_error")
+            if value is not None:
+                try:
+                    out[domain] = float(value)
+                except (TypeError, ValueError):
+                    continue
+        return out
+
     def _brain_frame_tick(self):
         """Assemble + persist one brain frame. Returns the frame or None."""
         s = self._settings
@@ -1617,13 +1724,40 @@ class BiometricsSubstrateWorker:
                 logger.exception("brain_frame_attention_load_failed")
 
             now = datetime.now(timezone.utc)
+
+            # AttentionSelfModelV1 (carries the unconditional
+            # prediction_error_confidence field the honesty_metrics brain-frame
+            # dimension reads) has no live producer anywhere in this codebase --
+            # reduce_attention_self_model() was, until this call, only ever
+            # invoked by offline analysis scripts (scripts/analysis/
+            # measure_ast_hot_reducer.py). Compute it live here from real,
+            # already-available inputs rather than passing the narrower
+            # AttentionBroadcastProjectionV1 (`attention` above), which has no
+            # prediction_error_confidence field at all.
+            attention_self_model = None
+            try:
+                from orion.substrate.attention_self_model import (
+                    reduce_attention_self_model,
+                )
+
+                attention_self_model = reduce_attention_self_model(
+                    broadcast=attention,
+                    field_frame=None,
+                    now=now,
+                    prediction_error_by_domain=self._brain_frame_prediction_error_by_domain(nodes)
+                    or None,
+                )
+            except Exception:
+                logger.exception("brain_frame_attention_self_model_failed")
+
             frame = assemble_brain_frame(
                 nodes=nodes,
                 edges=edges,
                 lane_health=self._brain_frame_lane_health(),
                 self_state=self._brain_frame_self_state(),
                 attention=attention,
-                attention_payload=attention,
+                attention_payload=attention_self_model,
+                field_anomaly=self._latest_field_anomaly,
                 settings=s,
                 now=now,
                 tick_seq=self._brain_frame_seq,

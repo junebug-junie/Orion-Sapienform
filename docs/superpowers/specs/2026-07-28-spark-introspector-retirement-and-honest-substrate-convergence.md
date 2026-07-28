@@ -127,3 +127,66 @@ reducer had no other real input either).
 4. Retire for real (not just stop citing) in `channels.yaml`: `orion:self:inner_features`, `orion:self:phi_reward`, `orion:spark:telemetry`, `orion:spark:introspect:candidate`. `orion:spark:state:snapshot` stays.
 
 Runs independently, not gating the above: orion-heartbeat's redundant-ceiling question (3a), the vector-host cola-conditional question (3c).
+
+---
+
+## 7. Honest signal selection for the OrionTissue visualizer page (2026-07-28, same day, separate chat session)
+
+Section 6 relocated the OrionTissue page (`services/orion-vector-host/app/static/`) and PR #1421
+(merged separately) fixed its four headline stats' *labels* (embedding_similarity/novelty_zscore/
+polarity_diff/mean_abs_activation, no invented mood taxonomy). This section covers a further
+decision: those four numbers, while honestly labeled, have "no independent theory anchor
+connecting them to reasoning quality, mood, or wellbeing" by the page's own disclosed copy —
+they're real tensor summary statistics, not a good driver for a display meant to show
+substrate-wide state. Replaced as the page's four driving/displayed metrics with real,
+brain-frame-derived signals, **only after each candidate was individually live-verified against
+real running data**, not assumed:
+
+**Confirmed real, wired in:**
+- `honesty_metrics` / `prediction_error_confidence` — 0.7929–0.9935 over a real 2-minute window.
+  Required a real fix along the way: the initial wiring passed `AttentionBroadcastProjectionV1`
+  (`load_attention_broadcast()`) as the confidence source, which has no `prediction_error_confidence`
+  field at all — the region silently emitted nothing. The real object,
+  `AttentionSelfModelV1`/`reduce_attention_self_model()`, had **never been called live anywhere in
+  this codebase** (only by offline analysis scripts) — computing it live in `_brain_frame_tick()`
+  from the already-fetched node snapshot (zero extra I/O) was the actual fix, not a rename.
+- `frame.spotlight.coalition_stability` (`AttentionBroadcastProjectionV1.coalition_stability_score`)
+  — 0.3–0.9 over a real 7-minute window (`substrate_attention_broadcast_log`). Already exposed on
+  the existing self-brain frame schema; no new wiring needed.
+- `field_anomaly` / mood-arc encoder `recon_loss` (orion-field-digester's `app/anomaly_scorer.py`,
+  the real windowed sequence-autoencoder from section 2b) — confirmed a genuine anomalous→calm
+  state transition (~0.012, 4-15x the encoder's own threshold → ~0.00012, below it) across two
+  checks roughly an hour apart. New bus subscriber added in `orion-substrate-runtime`
+  (`_field_channel_anomaly_listener_loop`), consuming the already-live, already-published
+  `orion:field_channel:anomaly_score` channel (previously consumed only by
+  `orion-equilibrium-service`'s metacog gate).
+
+**Checked and rejected, with the live numbers that killed each one:**
+- `self_state` — zero producer since the 2026-07-22 SelfStateV1 burn
+  (`orion-consolidation-runtime/app/store.py` confirms `substrate_self_state` has had no writer
+  since). Would never emit a region at all.
+- `node_kind` region max — pinned 0.9687–1.0 over a live 2-minute window (only one node kind,
+  "concept," is populated right now beyond the prediction-error tracker nodes and 3 golden seed
+  concepts — the graph has too little kind-diversity for this to be a real signal today).
+- `lane` region aggregate, both directions — `max()` reads a flat constant 0.4 whenever backlog=0
+  and lag≤60s (the common case), and additionally masks a real incident: `chat_grammar` has read
+  exactly 0.0 (lag_sec≈254000, ~70 hours stale) for the entire observation window, invisible under
+  `max()`. Switching to `min()` doesn't fix this — it just relocates the pin to that same dead
+  lane's 0.0, permanently, for as long as the lane stays down. (Separately: a reducer lane being
+  dead for 70+ hours in production is a real finding, unrelated to this viz task, not yet
+  investigated further here.)
+- raw `bus_synaptic` `gap_zscore` — not independent. `bus_synaptic_prediction_error()` is already
+  built directly from these same FalkorDB edge z-scores, and `bus_synaptic` is already one of the
+  5 domains feeding `honesty_metrics`. Using both would double-count the same underlying signal
+  under two different names.
+- `substrate_attention_frames`' `overall_salience` (general field lane) — also pinned at exactly
+  `1.0` across every sample checked.
+
+Implementation: PR branch `feat/honest-ekg-honesty-metrics`. Files touched: `orion/schemas/
+brain_frame.py` (dimension Literal), `orion/bus/channels.yaml` (new consumer),
+`services/orion-substrate-runtime/app/{settings,worker,brain_frame_producer}.py`,
+`services/orion-vector-host/app/static/{index.html,tissue_viz.js}`, plus tests for both new
+region functions and the new bus listener. All three signals verified live end-to-end through
+the real Tailscale Serve routing (`/spark/ui` page → absolute-path fetch → routes to orion-hub's
+root, not vector-host — confirmed via `tailscale serve status` and a live curl through the real
+domain), not just unit tests.

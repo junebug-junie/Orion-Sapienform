@@ -41,6 +41,8 @@ def _worker():
     )
     w._store = MagicMock()
     w._brain_frame_seq = 0
+    w._latest_field_anomaly = None
+    w._latest_field_anomaly_at = None
     return w
 
 

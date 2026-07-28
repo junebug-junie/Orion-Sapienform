@@ -121,47 +121,47 @@ async def main():
         cursor = pg_conn.cursor()
         cursor.execute(
             """
-            SELECT id, trigger_kind, created_at, upstream
+            SELECT id, trigger_kind, provenance
             FROM orion_metacog
             WHERE trigger_kind = 'transport'
-            AND upstream::text LIKE '%bus_synaptic_prediction_error%'
-            ORDER BY created_at DESC
-            LIMIT 1
+            ORDER BY id DESC
+            LIMIT 5
             """
         )
-        row = cursor.fetchone()
+        rows = cursor.fetchall()
         cursor.close()
 
-        if row is None:
-            logger.error("✗ No bus_synaptic trigger found in postgres")
+        if not rows:
+            logger.error("✗ No transport triggers found in postgres")
             return False
 
-        trigger_id, kind, created_at, upstream = row
+        # Look for the bus_synaptic trigger
+        trigger_row = None
+        for row in rows:
+            trigger_id, kind, provenance = row
+            try:
+                prov = json.loads(provenance) if isinstance(provenance, str) else provenance
+                if prov and isinstance(prov, dict):
+                    upstream = prov.get('upstream', {})
+                    if isinstance(upstream, str):
+                        upstream = json.loads(upstream)
+                    if upstream.get('evidence_source') == 'bus_synaptic_prediction_error':
+                        trigger_row = (trigger_id, kind, upstream)
+                        break
+            except:
+                continue
+
+        if trigger_row is None:
+            logger.error("✗ No bus_synaptic transport trigger found in postgres")
+            logger.info(f"  Found {len(rows)} transport triggers but none with bus_synaptic source")
+            return False
+
+        trigger_id, kind, upstream = trigger_row
         logger.info(f"✓ Found transport trigger in postgres:")
         logger.info(f"  ID: {trigger_id}")
         logger.info(f"  Kind: {kind}")
-        logger.info(f"  Created: {created_at}")
-
-        # Parse and verify upstream evidence
-        try:
-            evidence = json.loads(upstream) if isinstance(upstream, str) else upstream
-            logger.info(f"  Evidence source: {evidence.get('evidence_source')}")
-            logger.info(f"  Error value: {evidence.get('error')}")
-
-            if evidence.get("evidence_source") != "bus_synaptic_prediction_error":
-                logger.error(
-                    f"✗ Wrong evidence source: {evidence.get('evidence_source')} (expected bus_synaptic_prediction_error)"
-                )
-                return False
-
-            if evidence.get("error") != 1.2:
-                logger.warning(
-                    f"⚠ Error value mismatch: {evidence.get('error')} (expected 1.2)"
-                )
-
-        except Exception as e:
-            logger.error(f"✗ Failed to parse upstream evidence: {e}")
-            return False
+        logger.info(f"  Evidence source: {upstream.get('evidence_source')}")
+        logger.info(f"  Error value: {upstream.get('error')}")
 
     except Exception as e:
         logger.error(f"✗ Failed to query postgres for trigger: {e}")

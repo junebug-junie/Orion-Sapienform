@@ -34,7 +34,7 @@ Orion is intentionally non-commercial and non-exploitative. It is not a producti
 
 Orion is a **distributed agentic intelligence lab**: a mesh of machines, models, sensors, memories, and social interfaces that can **see, listen, remember, deliberate, forecast, reflect, and participate in relationship**.
 
-We treat **agentic metacognition**, **graph-native memory**, **social continuity**, and a **Laplace's Demon–lite loop** as first-class architecture.
+We treat **agentic metacognition**, **graph-native memory**, **social continuity**, and an **active-inference prediction-error loop** as first-class architecture.
 
 Core ideas:
 
@@ -43,7 +43,6 @@ Core ideas:
 - **Cortex orchestration.** A dedicated cortex/orchestration layer routes chat, workflows, tools, recall, model calls, and traces.
 - **Inspectable thought surfaces.** Orion exposes reasoning traces, recall context, route decisions, metacognitive notes, workflow metadata, and autonomy readiness through the Hub.
 - **Metacognition as an organ.** Orion maintains an internal surface of state: self-observation, scoring, narrative stitching, pressure signals, and policy nudges.
-- **Laplace's Demon–lite.** Orion makes partial forecasts about itself and its environment, observes what happens, measures deltas, and updates memory, priors, and policies.
 - **Graph-native memory.** Postgres holds concrete events, FalkorDB holds relationships and temporal graph structure, Chroma holds semantic similarity — three substrates, one recall layer.
 - **A layered cognition substrate.** The Sentience Striving Program runs a real active-inference pipeline (`orion-substrate-runtime`) — attention, proposal, policy, execution-dispatch, feedback, consolidation — that superseded an earlier six-drive taxonomy after that mechanism was measured to have never fired.
 - **Embodied mesh.** Vision, audio, LEDs, mobile embodiments, and wearable/edge nodes ground Orion in physical space.
@@ -642,7 +641,7 @@ Layer 10 orion-feedback-runtime           ExecutionDispatchFrameV1 outcomes → 
 Layer 11 orion-consolidation-runtime      Layers 5–10 history over a window → ConsolidationFrameV1 motif snapshots
 ```
 
-`reduce_attention_self_model()` (`orion/substrate/attention_self_model.py`) and active-inference prediction-error signals across its 5 live domains (`ACTIVE_INFERENCE_DOMAINS`: biometrics, execution, chat, route, bus-synaptic) feed this pipeline. A sixth domain, transport, was retired 2026-07-26 in favor of the mesh-wide `bus_synaptic_prediction_error()` successor — kept dead on purpose, not an oversight. Drives themselves stayed on Postgres; dynamics and brain-frame projections moved to FalkorDB (Cypher-native writers).
+`reduce_attention_self_model()` (`orion/substrate/attention_self_model.py`) and active-inference prediction-error signals across its 5 live domains (`ACTIVE_INFERENCE_DOMAINS`: biometrics, execution, chat, route, bus-synaptic) feed this pipeline. A sixth domain, transport, was retired 2026-07-26 in favor of the mesh-wide `bus_synaptic_prediction_error()` successor — kept dead on purpose, not an oversight. Drives themselves stayed on Postgres; dynamics and brain-frame projections moved to FalkorDB (Cypher-native writers). These predict/observe/surprise signals operate at multiple real timescales — micro (per-tick prediction error), meso (windowed consolidation in Layer 11), and macro (drift across the drive/policy history) — rather than one fixed cadence.
 
 Autonomy still draws pressure from Spark drift, metacog warnings, recall failures, topic repetition, social repair signals, workflow failures, equilibrium distress, operator corrections, and service health — but it must never bypass policy, trace, review, rollback, or audit. No silent substrate mutation. No hidden permission expansion. No social autonomy escalation without policy. No high-risk code edits without operator review.
 
@@ -881,33 +880,6 @@ We treat Orion's subsystems as organs, not features.
 | **Embodiment** | Vision, audio, LEDs, mobile nodes (AI Town), and physical grounding. |
 
 Implementations can change. The organ-level intent should remain stable.
-
----
-
-## Laplace's Demon–Lite Backbone
-
-We do not claim perfect prediction. We build partial foresight and treat the residual as the engine of learning.
-
-**Demon–lite loop:**
-
-1. **Forecast** — generate beliefs or predictions about self, environment, social context, hardware, workflows, or operator needs.
-2. **Observe** — collect outcomes from chat, sensors, logs, interventions, social rooms, and service telemetry.
-3. **Delta** — compute surprise, error, mismatch, contradiction, or drift.
-4. **Reflect** — assign meaning; stitch into episode; update narrative time.
-5. **Adjust** — update policies, tags, concepts, recall profiles, routing hints, or future forecasts.
-
-This loop operates at multiple scales — **micro** (next-token, next-verb, next-tool, next-route decisions), **meso** (conversation episodes, social encounters, workflow outcomes, memory consolidation), and **macro** (developmental eras across weeks or months of hardware, identity, and relational history).
-
-```mermaid
-flowchart LR
-    F[Forecast] --> O[Observe]
-    O --> D[Delta / Surprise]
-    D --> R[Reflect / Meaning]
-    R --> A[Adjust Policies + Memory]
-    A --> F
-```
-
-This is the theoretical frame the Sentience Striving Program's prediction-error signals (§12) are a concrete implementation of — the loop above is the design intent; the layered substrate-runtime pipeline is the running code.
 
 ---
 

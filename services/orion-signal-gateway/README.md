@@ -138,9 +138,14 @@ Supported models:
 
 Compose / Helm comments should state which model applies. Do not advertise multi-replica HA without meeting **(B)**.
 
-### Cognition trace preflight (Runtime Trace Nexus A0)
-- `ORGAN_CHANNELS` must include `orion:cognition:*` (or `orion:cognition:trace`).
-- Staging: one `chat_general` turn → gateway logs show envelope on `orion:cognition:trace` reaching `SignalProcessor.handle_envelope`.
+### Cognition trace adapter removed (2026-07-28)
+`CognitionTraceAdapter` (`cognition_run`/`cognition_step` signals from `orion:cognition:trace`)
+and the `orion:cognition:*` entry in `ORGAN_CHANNELS` were removed. Its only real consumer was
+`orion-hub`'s debug-only `SignalsInspectCache`; `orion-substrate-runtime`'s
+`execution_trajectory` reducer (built from `GrammarEventV1`, the doctrinal substrate trace —
+see `docs/context-engineering/00_substrate_trace_doctrine.md`) already does this job for real
+and has a real consumer (`orion-spark-introspector`'s `inner_state.py`). See
+`docs/superpowers/specs/2026-07-28-cognition-trace-signal-gateway-consumer-audit.md`.
 
 ## Bus semantics (Redis)
 

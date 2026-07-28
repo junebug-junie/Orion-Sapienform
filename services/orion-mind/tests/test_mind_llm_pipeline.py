@@ -110,7 +110,6 @@ def test_evidence_pack_includes_projection_autonomy_and_recall() -> None:
                         }
                     }
                 },
-                "autonomy_compact": {"attention_items": [{"summary": "notice user energy"}]},
                 "social_compact": {"social_turn_policy": {"mode": "warm"}},
             },
         }
@@ -119,8 +118,11 @@ def test_evidence_pack_includes_projection_autonomy_and_recall() -> None:
     assert "current_turn" in kinds
     assert "recall_fragment" in kinds
     assert "cognitive_projection" in kinds
-    assert "autonomy_compact" in kinds
     assert "social_compact" in kinds
+    # Retired 2026-07-28: autonomy_compact was built from a facet
+    # (chat_autonomy_state_v2/autonomy_state) confirmed unreachable
+    # repo-wide -- _compact_autonomy was removed, not just this facet key.
+    assert "autonomy_compact" not in kinds
 
 
 def test_semantic_parser_rejects_missing_evidence_refs() -> None:

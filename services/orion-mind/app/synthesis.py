@@ -441,7 +441,6 @@ def run_semantic_synthesis(
                     "evidence_item_count": len(pack.items),
                     "projection_item_count_seen": int(pack.diagnostics.get("projection_item_count") or 0),
                     "recall_fragments_seen": int(pack.diagnostics.get("recall_fragment_count") or 0),
-                    "autonomy_fields_seen": int(pack.diagnostics.get("autonomy_fields_seen") or 0),
                     "social_fields_seen": int(pack.diagnostics.get("social_fields_seen") or 0),
                     "llm_ok": True,
                     "llm_error": None,

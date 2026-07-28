@@ -45,6 +45,67 @@ async def test_execute_readonly_fetch_failure_sets_surprise(tmp_path, monkeypatc
 
 
 @pytest.mark.asyncio
+async def test_execute_readonly_fetch_uses_real_surprise_source_when_available(
+    tmp_path, monkeypatch
+) -> None:
+    monkeypatch.setenv("ORION_ACTION_OUTCOME_STORE_PATH", str(tmp_path / "outcomes.json"))
+    backend = AsyncMock(return_value={"urls": ["https://example.com/a"], "success": True})
+    req = EpisodeFetchRequest(
+        subject="orion",
+        goal_artifact_id="goal-gap-gpu",
+        spawned_correlation_id="wp-run-gap-gpu",
+        query="hardware GPU supply chain news",
+    )
+    outcome = await execute_readonly_fetch(
+        req, fetch_backend=backend, surprise_source=lambda: 0.1675
+    )
+    # Real value used even on success, not the old redundant 0.0-on-success proxy.
+    assert outcome.surprise == 0.1675
+
+
+@pytest.mark.asyncio
+async def test_execute_readonly_fetch_falls_back_to_proxy_when_surprise_source_returns_none(
+    tmp_path, monkeypatch
+) -> None:
+    monkeypatch.setenv("ORION_ACTION_OUTCOME_STORE_PATH", str(tmp_path / "outcomes.json"))
+    backend = AsyncMock(return_value={"urls": [], "success": False, "error": "timeout"})
+    req = EpisodeFetchRequest(
+        subject="orion",
+        goal_artifact_id="goal-gap-gpu",
+        spawned_correlation_id="wp-run-gap-gpu",
+        query="hardware GPU supply chain news",
+    )
+    outcome = await execute_readonly_fetch(
+        req, fetch_backend=backend, surprise_source=lambda: None
+    )
+    assert outcome.success is False
+    assert outcome.surprise == 1.0
+
+
+@pytest.mark.asyncio
+async def test_execute_readonly_fetch_falls_back_to_proxy_when_surprise_source_raises(
+    tmp_path, monkeypatch
+) -> None:
+    monkeypatch.setenv("ORION_ACTION_OUTCOME_STORE_PATH", str(tmp_path / "outcomes.json"))
+    backend = AsyncMock(return_value={"urls": ["https://example.com/a"], "success": True})
+    req = EpisodeFetchRequest(
+        subject="orion",
+        goal_artifact_id="goal-gap-gpu",
+        spawned_correlation_id="wp-run-gap-gpu",
+        query="hardware GPU supply chain news",
+    )
+
+    def _raising_source() -> float | None:
+        raise RuntimeError("db unreachable")
+
+    outcome = await execute_readonly_fetch(
+        req, fetch_backend=backend, surprise_source=_raising_source
+    )
+    assert outcome.success is True
+    assert outcome.surprise == 0.0
+
+
+@pytest.mark.asyncio
 async def test_default_fetch_backend_raises() -> None:
     from orion.autonomy.episode_fetch import default_fetch_backend
 

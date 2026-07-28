@@ -7,7 +7,7 @@ from typing import Any, Awaitable, Callable, Sequence
 
 from orion.autonomy.action_outcomes import append_action_outcome
 from orion.autonomy.capability_policy import CapabilityEvaluationContext, evaluate_capability
-from orion.autonomy.episode_fetch import EpisodeFetchRequest, execute_readonly_fetch
+from orion.autonomy.episode_fetch import EpisodeFetchRequest, SurpriseSource, execute_readonly_fetch, resolve_surprise
 from orion.autonomy.fetch_backend_resolve import resolve_fetch_backend
 from orion.autonomy.models import ActionOutcomeRefV1, CapabilityDecisionV1, SubstrateActResultV1, SubstrateEpisodeIntentV1
 from orion.autonomy.salience import gap_terms_from_signals, iter_gap_section_labels
@@ -50,6 +50,7 @@ async def maybe_execute_readonly_fetch_after_goal(
     spawned_correlation_id: str | None,
     fetch_backend: Callable[..., Awaitable[dict]] | None = None,
     budget_used: dict[str, int] | None = None,
+    surprise_source: SurpriseSource | None = None,
 ) -> tuple[CapabilityDecisionV1, ActionOutcomeRefV1 | None]:
     """Layer C gate + Tier B readonly fetch for substrate-fed motivation bus tick."""
     if not curiosity_signals or _GAP_SIGNAL not in signal_kinds_from_curiosity(curiosity_signals):
@@ -101,7 +102,9 @@ async def maybe_execute_readonly_fetch_after_goal(
     )
     if fetch_backend is None:
         fetch_backend = resolve_fetch_backend()
-    outcome = await execute_readonly_fetch(req, fetch_backend=fetch_backend)
+    outcome = await execute_readonly_fetch(
+        req, fetch_backend=fetch_backend, surprise_source=surprise_source
+    )
     if budget_used is not None:
         budget_used[_READONLY_CAPABILITY] = budget_used.get(_READONLY_CAPABILITY, 0) + 1
     return decision, outcome
@@ -116,6 +119,7 @@ async def _execute_readonly_recall(
     recall_channel: str,
     timeout_sec: float,
     spawned_correlation_id: str,
+    surprise_source: SurpriseSource | None = None,
 ) -> ActionOutcomeRefV1:
     """Inline recall RPC (mirrors ``recall_prefetch.py:169-183``'s exact pattern).
 
@@ -147,7 +151,7 @@ async def _execute_readonly_recall(
                 kind=_RECALL_CAPABILITY,
                 summary="recall query build failed",
                 success=False,
-                surprise=1.0,
+                surprise=resolve_surprise(surprise_source, success=False),
                 observed_at=observed_at,
                 query=query,
             )
@@ -172,7 +176,7 @@ async def _execute_readonly_recall(
                     kind=_RECALL_CAPABILITY,
                     summary=f"recall decode failed: {decoded.error}",
                     success=False,
-                    surprise=1.0,
+                    surprise=resolve_surprise(surprise_source, success=False),
                     observed_at=observed_at,
                     query=query,
                 )
@@ -184,7 +188,7 @@ async def _execute_readonly_recall(
                         kind=_RECALL_CAPABILITY,
                         summary=f"recall service error: {payload.get('error')}",
                         success=False,
-                        surprise=1.0,
+                        surprise=resolve_surprise(surprise_source, success=False),
                         observed_at=observed_at,
                         query=query,
                     )
@@ -197,7 +201,7 @@ async def _execute_readonly_recall(
                         kind=_RECALL_CAPABILITY,
                         summary=f"recall found {len(items)} item(s)" if found else "recall found nothing",
                         success=found,
-                        surprise=0.0 if found else 1.0,
+                        surprise=resolve_surprise(surprise_source, success=found),
                         observed_at=observed_at,
                         query=query,
                     )
@@ -214,7 +218,7 @@ async def _execute_readonly_recall(
             kind=_RECALL_CAPABILITY,
             summary=f"recall rpc failed: {exc}",
             success=False,
-            surprise=1.0,
+            surprise=resolve_surprise(surprise_source, success=False),
             observed_at=observed_at,
             query=query,
         )
@@ -234,6 +238,7 @@ async def maybe_execute_readonly_recall_after_goal(
     recall_channel: str = _RECALL_REQUEST_CHANNEL,
     timeout_sec: float = 3.0,
     budget_used: dict[str, int] | None = None,
+    surprise_source: SurpriseSource | None = None,
 ) -> tuple[CapabilityDecisionV1, ActionOutcomeRefV1 | None]:
     """Layer C gate + recall-first check, tried before the readonly web fetch.
 
@@ -300,6 +305,7 @@ async def maybe_execute_readonly_recall_after_goal(
             recall_channel=recall_channel,
             timeout_sec=timeout_sec,
             spawned_correlation_id=spawned_correlation_id,
+            surprise_source=surprise_source,
         )
     except Exception:
         logger.warning(
@@ -489,6 +495,7 @@ async def maybe_execute_substrate_act_after_metabolism(
     recall_source: ServiceRef | None = None,
     recall_channel: str = _RECALL_REQUEST_CHANNEL,
     recall_timeout_sec: float = 3.0,
+    surprise_source: SurpriseSource | None = None,
 ) -> SubstrateActResultV1:
     run_id = spawned_correlation_id or episode_intent.spawned_correlation_id
     synthetic_goal = goal_proposal_from_episode_intent(episode_intent)
@@ -522,6 +529,7 @@ async def maybe_execute_substrate_act_after_metabolism(
                 recall_channel=recall_channel,
                 timeout_sec=recall_timeout_sec,
                 budget_used=budget_used,
+                surprise_source=surprise_source,
             )
         except Exception:
             logger.warning(
@@ -558,6 +566,7 @@ async def maybe_execute_substrate_act_after_metabolism(
                 spawned_correlation_id=run_id,
                 fetch_backend=fetch_backend,
                 budget_used=budget_used,
+                surprise_source=surprise_source,
             )
             if fetch_decision.outcome == "allowed" and fetch_outcome is not None:
                 result = result.model_copy(

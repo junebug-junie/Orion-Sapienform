@@ -97,7 +97,6 @@ class SemanticSynthesisDiagnosticsV1(BaseModel):
     evidence_item_count: int = 0
     projection_item_count_seen: int = 0
     recall_fragments_seen: int = 0
-    autonomy_fields_seen: int = 0
     social_fields_seen: int = 0
     llm_ok: bool = False
     llm_error: str | None = None

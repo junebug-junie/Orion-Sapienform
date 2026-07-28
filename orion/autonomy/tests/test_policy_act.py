@@ -484,6 +484,28 @@ async def test_recall_capability_finds_content(monkeypatch, tmp_path) -> None:
 
 
 @pytest.mark.asyncio
+async def test_recall_capability_uses_real_surprise_source_when_available(
+    monkeypatch, tmp_path
+) -> None:
+    monkeypatch.setenv("ORION_CAPABILITY_POLICY_AUTO_READONLY_ENABLED", "true")
+    monkeypatch.setenv("ORION_ACTION_OUTCOME_STORE_PATH", str(tmp_path / "outcomes.json"))
+    bus = _fake_recall_bus(_fake_recall_reply(n=2))
+    decision, outcome = await maybe_execute_readonly_recall_after_goal(
+        goal=_goal(),
+        drive_state=_drive_state(),
+        curiosity_signals=[_gap_signal()],
+        spawned_correlation_id="wp-run-gap-gpu",
+        bus=bus,
+        surprise_source=lambda: 0.1675,
+    )
+    assert decision.outcome == "allowed"
+    assert outcome is not None
+    # Real value used even on a successful recall hit, not the old redundant
+    # 0.0-on-success proxy.
+    assert outcome.surprise == 0.1675
+
+
+@pytest.mark.asyncio
 async def test_recall_capability_empty_reply_degrades(monkeypatch, tmp_path) -> None:
     monkeypatch.setenv("ORION_CAPABILITY_POLICY_AUTO_READONLY_ENABLED", "true")
     monkeypatch.setenv("ORION_ACTION_OUTCOME_STORE_PATH", str(tmp_path / "outcomes.json"))

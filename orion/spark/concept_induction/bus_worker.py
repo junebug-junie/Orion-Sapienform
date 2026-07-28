@@ -10,6 +10,7 @@ from typing import Awaitable, Callable, Dict, List, Optional, Set
 from uuid import uuid4
 
 from orion.autonomy.deviation_gate import DeviationGate
+from orion.substrate.bus_synaptic_surprise import latest_bus_synaptic_prediction_error
 from orion.autonomy.signal_drive_map import load_signal_drive_map
 from orion.autonomy.signal_tension import SignalTensionSource
 from orion.autonomy.tension_ratelimit import TensionRateLimiter
@@ -140,6 +141,12 @@ class ConceptWorker:
         self.cfg = cfg
         self._fetch_backend = fetch_backend or resolve_fetch_backend()
         self._substrate_store = substrate_store
+        # Lazily created only if ORION_ACTION_OUTCOME_DB_URL is set -- this
+        # service has no other Postgres dependency, so an unconfigured URL
+        # (the default, "") means _bus_synaptic_surprise_source() below
+        # always returns None and every emitter falls back to the old
+        # success/fail-proxy `surprise`, exactly like before 2026-07-28.
+        self._surprise_engine: object | None = None
         self.bus = OrionBusAsync(
             cfg.orion_bus_url,
             enabled=cfg.orion_bus_enabled,
@@ -235,6 +242,41 @@ class ConceptWorker:
                 block_ms=cfg.wp_run_result_block_ms,
                 autoclaim_idle_ms=cfg.wp_run_result_autoclaim_idle_ms,
             )
+
+    def _get_surprise_engine(self):
+        """Lazy, cached SQLAlchemy engine for `_bus_synaptic_surprise_source()`.
+
+        Only constructed if `ORION_ACTION_OUTCOME_DB_URL` is set -- this service
+        has no other Postgres dependency, so an unconfigured URL keeps the whole
+        surprise-source path inert (returns `None` on every call, callers fall
+        back to the old proxy).
+        """
+        if not self.cfg.action_outcome_db_url:
+            return None
+        if self._surprise_engine is None:
+            from sqlalchemy import create_engine
+
+            self._surprise_engine = create_engine(
+                self.cfg.action_outcome_db_url, pool_pre_ping=True
+            )
+        return self._surprise_engine
+
+    def _bus_synaptic_surprise_source(self) -> float | None:
+        """Real `surprise_source` callable passed into `episode_fetch.py`/
+        `policy_act.py`/`curiosity_reuse.py` -- see `orion.substrate.
+        bus_synaptic_surprise` for the full provenance/staleness rationale.
+        Fail-open: any exception here (DB down, engine unbuildable) degrades to
+        `None`, and every caller's own `resolve_surprise()` falls back to the
+        old success/fail-proxy `surprise` -- never raises into the tick.
+        """
+        engine = self._get_surprise_engine()
+        if engine is None:
+            return None
+        try:
+            return latest_bus_synaptic_prediction_error(engine)
+        except Exception:
+            logger.warning("concept_induction_bus_synaptic_surprise_fetch_failed", exc_info=True)
+            return None
 
     async def _handle_wp_stream_envelope(self, envelope: BaseEnvelope) -> None:
         """Handler for durable world-pulse run-result stream messages.
@@ -1133,7 +1175,9 @@ class ConceptWorker:
                     )
                     if reusable is not None:
                         prefetched_outcome = outcome_from_followup(
-                            reusable, run_id=spawned_correlation_id
+                            reusable,
+                            run_id=spawned_correlation_id,
+                            surprise_source=self._bus_synaptic_surprise_source,
                         )
                         logger.info(
                             "wp_curiosity_followup_reused run_id=%s section=%s action_id=%s articles=%s",
@@ -1165,6 +1209,7 @@ class ConceptWorker:
                     # identity, same as every other bus call this class makes.
                     recall_bus=self.bus,
                     recall_source=_service_ref(self.cfg),
+                    surprise_source=self._bus_synaptic_surprise_source,
                 )
                 if act_result.fetch_outcome is not None:
                     try:

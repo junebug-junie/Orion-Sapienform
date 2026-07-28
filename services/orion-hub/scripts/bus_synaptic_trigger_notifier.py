@@ -12,11 +12,29 @@ import asyncio
 import logging
 from datetime import datetime, timezone
 from typing import Any, Dict, Optional
+from uuid import uuid4
 
 from orion.core.bus.async_service import OrionBusAsync
+from orion.core.bus.bus_schemas import BaseEnvelope, ServiceRef
 from orion.schemas.notify import HubNotificationEvent
 
 logger = logging.getLogger("orion-hub.bus_synaptic_notifier")
+
+
+def _source_ref() -> ServiceRef:
+    """Build the producer identity from hub settings, with a safe fallback.
+
+    Mirrors bus_publish.py's _source_ref() -- hub settings require the full
+    operator env, so fall back to defaults for import-safety in bare test
+    processes rather than duplicating a shared helper across two unrelated
+    modules.
+    """
+    try:
+        from scripts.settings import settings
+
+        return ServiceRef(name=settings.SERVICE_NAME, version=settings.SERVICE_VERSION, node=settings.NODE_NAME)
+    except Exception:
+        return ServiceRef(name="hub", version="0.3.0", node="athena")
 
 
 class BusSynapticTriggerNotifier:
@@ -114,26 +132,29 @@ class BusSynapticTriggerNotifier:
         reason = payload.get("reason", "")
 
         notification = HubNotificationEvent(
-            kind="info",
+            notification_id=uuid4(),
+            created_at=datetime.now(timezone.utc),
+            severity="warning",
+            event_kind="bus_synaptic.transport_trigger",
+            source_service="orion-hub",
             title="Bus Anomaly Detected",
-            summary=f"Inter-service RPC prediction error: {error_value}",
-            body=(
+            body_text=(
                 f"The bus synaptic transport trigger has fired.\n"
                 f"Prediction error: {error_value}\n"
                 f"This indicates real inter-service RPC anomalies detected via FalkorDB graph analysis.\n"
                 f"Reason: {reason}\n"
                 f"Check orion-equilibrium-service logs for details."
             ),
-            timestamp=datetime.now(timezone.utc).isoformat(),
-            dismissible=True,
-            priority="normal",
+        )
+
+        envelope = BaseEnvelope(
+            kind="notify.in_app.v1",
+            source=_source_ref(),
+            payload=notification.model_dump(mode="json"),
         )
 
         try:
-            await self._bus.publish(
-                self.notify_channel,
-                notification.model_dump(mode="json"),
-            )
+            await self._bus.publish(self.notify_channel, envelope)
             logger.info(
                 "bus_synaptic_trigger_notification published: error=%s",
                 error_value,

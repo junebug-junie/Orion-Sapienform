@@ -20,9 +20,6 @@ from collections import deque
 import numpy as np
 from scipy.spatial import distance
 
-from .surface_encoding import SurfaceEncoding
-from .signal_mapper import SignalMapper
-
 logger = logging.getLogger("orion.tissue")
 
 
@@ -326,28 +323,14 @@ class OrionTissue:
                     )
                 self.T += stimulus
 
-    def inject_surface(
-        self,
-        encoding: SurfaceEncoding,
-        mapper: SignalMapper,
-        *,
-        magnitude: float = 1.0,
-        steps: int = 2,
-        learning_rate: float = 0.2,
-        channel_key: str = "chat",
-        embedding_vec: Optional[np.ndarray] = None,
-        distress: float = 0.0,
-    ) -> None:
-        """
-        Convert a SurfaceEncoding into a stimulus and integrate it.
-        """
-        S = mapper.surface_to_stimulus(encoding, magnitude=magnitude)
-
-        # Predictive coding: novelty is based on mismatch vs expectation.
-        self.calculate_novelty(S, channel_key=channel_key)
-
-        # Commit: update expectation + evolve tissue.
-        self.propagate(S, steps=steps, learning_rate=learning_rate, channel_key=channel_key, embedding=embedding_vec, distress=distress)
+    # inject_surface() removed 2026-07-28 (spark-introspector retirement):
+    # its only purpose was converting a SurfaceEncoding into a stimulus via
+    # SignalMapper.surface_to_stimulus() -- confirmed via repo-wide grep to
+    # have zero real callers (the deleted worker.py called propagate()
+    # directly, never this convenience wrapper). orion/spark/signal_mapper.py
+    # and orion/spark/surface_encoding.py are deleted in the same change;
+    # see services/orion-vector-host/app/tissue_feed.py for the real,
+    # embedding-delta-driven replacement stimulus-construction path.
 
     def phi(self) -> Dict[str, float]:
         """

@@ -1,6 +1,6 @@
 import asyncio
 import logging
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from typing import Optional
 
 from fastapi import FastAPI
@@ -53,13 +53,37 @@ def build_heartbeat_chassis() -> HeartbeatOnly:
     )
 
 
+def _log_background_task_exception(task: "asyncio.Task", *, name: str) -> None:
+    """asyncio silently discards an exception raised inside a fire-and-forget task
+    unless something retrieves it -- found live 2026-07-28: _scheduler_loop's own
+    startup log line ("Next digest run scheduled at...") never once appeared despite
+    DIGEST_ENABLED=true and no other error anywhere, and this was the only remaining
+    explanation once logging config, settings values, and the loop's own logic were
+    all independently confirmed correct. Attached as a done-callback so any exception
+    is logged immediately instead of silently disappearing (`_scheduler_loop`/
+    `_drift_alert_loop` are both infinite `while True` loops -- "done" here always
+    means "crashed" or "cancelled," never "finished normally").
+    """
+    if task.cancelled():
+        return
+    exc = task.exception()
+    if exc is not None:
+        logger.error("%s_task_failed error=%r", name, exc, exc_info=exc)
+
+
 @app.on_event("startup")
 async def on_startup() -> None:
     init_models([DigestRunDB, NotificationRequestDB, NotificationAttemptDB])
     if settings.DIGEST_ENABLED:
         app.state.scheduler_task = asyncio.create_task(_scheduler_loop())
+        app.state.scheduler_task.add_done_callback(
+            lambda t: _log_background_task_exception(t, name="scheduler")
+        )
     if settings.DRIFT_ALERTS_ENABLED:
         app.state.drift_task = asyncio.create_task(_drift_alert_loop())
+        app.state.drift_task.add_done_callback(
+            lambda t: _log_background_task_exception(t, name="drift_alert")
+        )
     try:
         app.state.heartbeat_chassis = build_heartbeat_chassis()
         await app.state.heartbeat_chassis.start_background()
@@ -211,15 +235,32 @@ def _record_digest_run(kind: str, window_start: datetime, window_end: datetime, 
 
 
 def _next_run_utc(now_utc: datetime, local_time: str) -> datetime:
+    """Returns a NAIVE datetime (tzinfo stripped), matching this file's own convention
+    of naive-but-semantically-UTC datetimes everywhere else (e.g. datetime.utcnow()
+    at every other call site). Found live 2026-07-28: this function used to return a
+    tz-AWARE datetime, which crashed _scheduler_loop's very first iteration on every
+    single startup ("can't subtract offset-naive and offset-aware datetimes") --
+    silently, because nothing retrieved the exception from the fire-and-forget
+    asyncio task that ran this loop. The scheduler had never once completed an
+    iteration since this service's inception.
+
+    Also makes the naive-input assumption explicit rather than implicit: `now_utc`
+    is expected to already represent UTC (per this file's convention) but previously
+    relied on the container's system timezone actually being UTC for
+    `now_utc.astimezone(tz)` to interpret it correctly -- now stamped with UTC
+    tzinfo before converting, so this is correct regardless of system timezone.
+    """
     from zoneinfo import ZoneInfo
 
+    if now_utc.tzinfo is None:
+        now_utc = now_utc.replace(tzinfo=timezone.utc)
     tz = ZoneInfo("America/Denver")
     local_now = now_utc.astimezone(tz)
     hour, minute = _parse_time(local_time)
     scheduled_local = local_now.replace(hour=hour, minute=minute, second=0, microsecond=0)
     if scheduled_local <= local_now:
         scheduled_local = scheduled_local + timedelta(days=1)
-    return scheduled_local.astimezone(ZoneInfo("UTC"))
+    return scheduled_local.astimezone(timezone.utc).replace(tzinfo=None)
 
 
 def _local_date(timestamp_utc: datetime) -> datetime.date:

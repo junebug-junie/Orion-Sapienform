@@ -5,6 +5,7 @@ from __future__ import annotations
 
 from datetime import datetime, timedelta, timezone
 
+from orion.bus.ewma import compute_ewma_update
 from orion.schemas.field_state import FieldStateV1
 
 from app.ingest.state_deltas import Perturbation
@@ -39,6 +40,19 @@ RECENT_PERTURBATION_WINDOW_SECONDS = 60.0
 # hold ~900 entries; this just bounds worst-case unbounded growth from a
 # runaway producer bug so the list can never grow without limit.
 RECENT_PERTURBATION_MAX_ENTRIES = 2000
+
+# Baseline-relative salience fix (2026-07-28): see field_state.py's
+# recent_perturbation_ewma* docstring for the live evidence (both consumers
+# of the raw count were permanently saturated). apply_perturbations() runs
+# once per digestion tick (RECEIPT_POLL_INTERVAL_SEC, default 2s) regardless
+# of real traffic, so this is a fixed-cadence EWMA, not per-event like
+# orion-bus-mirror's alpha=0.2 (which updates once per real edge
+# observation). alpha=0.02 targets an effective baseline window of
+# ~2/alpha-1 ~= 99 ticks ~= 3.3 minutes at the default tick cadence -- long
+# enough to smooth past a single burst without being so slow it can't track
+# a genuine multi-minute regime shift (e.g. sustained deploy/backfill
+# activity vs. quiet baseline).
+RECENT_PERTURBATION_RATE_EWMA_ALPHA = 0.02
 
 def apply_perturbations(
     state: FieldStateV1,
@@ -95,7 +109,27 @@ def apply_perturbations(
             state.recent_perturbations.append(p.label)
             state.recent_perturbation_at.append(ts)
     _prune_recent_perturbations(state, now=ts)
+    _update_recent_perturbation_baseline(state)
     return state
+
+
+def _update_recent_perturbation_baseline(state: FieldStateV1) -> None:
+    """EWMA-baseline the post-prune recent_perturbations count so consumers
+    (orion/field/pressure.py, orion/attention/field_attention/selectors.py)
+    can score deviation from *this mesh's own recent normal*, instead of an
+    absolute magic-number cap that real traffic already exceeds at steady
+    state -- see field_state.py's recent_perturbation_ewma* docstring."""
+    update = compute_ewma_update(
+        prev_ewma=state.recent_perturbation_ewma,
+        prev_variance=state.recent_perturbation_ewma_var,
+        prev_count=state.recent_perturbation_ewma_n,
+        value=float(len(state.recent_perturbations)),
+        alpha=RECENT_PERTURBATION_RATE_EWMA_ALPHA,
+    )
+    state.recent_perturbation_ewma = update.ewma
+    state.recent_perturbation_ewma_var = update.variance
+    state.recent_perturbation_zscore = update.zscore
+    state.recent_perturbation_ewma_n += 1
 
 
 def _prune_recent_perturbations(state: FieldStateV1, *, now: datetime) -> None:

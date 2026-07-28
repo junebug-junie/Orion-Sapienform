@@ -1248,4 +1248,4 @@ to the prompt-budget/trim helpers anymore. A downstream consumer this design doc
 found broken by the `final_entry`->`collapse_entry` change via a full-suite test run, not by the
 original scoped grep; fixed alongside the explicitly-scoped test files. Item 2 (`_fallback_metacog_draft`'s dead `phi_hint` read) remains open, deliberately out of scope for this
 patch per the original audit's own coupling note above -- unaffected by this patch either way.
-See PR #NNN for the full review trail and test list.
+See PR #1427 for the full review trail and test list.

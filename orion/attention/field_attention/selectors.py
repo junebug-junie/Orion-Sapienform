@@ -10,6 +10,10 @@ from orion.attention.field_attention.scoring import (
     urgency_score,
     weighted_pressure,
 )
+from orion.field.pressure import (
+    RECENT_PERTURBATION_EWMA_MIN_SAMPLES,
+    RECENT_PERTURBATION_ZSCORE_SATURATION,
+)
 from orion.schemas.field_attention_frame import FieldAttentionFrameV1, FieldAttentionTargetV1
 from orion.schemas.field_state import FieldStateV1
 
@@ -129,10 +133,29 @@ def select_system_targets(
     field: FieldStateV1,
     policy: FieldAttentionPolicyV1,
 ) -> list[FieldAttentionTargetV1]:
+    """Surfaces ``field:recent_perturbations`` as a system attention target
+    when recent perturbation activity is elevated relative to this mesh's
+    own recent baseline.
+
+    2026-07-28: was ``min(1.0, count / 10.0)`` -- live-confirmed permanently
+    saturated at 1.0 (real steady-state count is ~100-118 in the 60s window,
+    5-10x past the old cap), so this target used to report maximum salience
+    on essentially every tick regardless of whether anything was actually
+    unusual. Now scores ``field.recent_perturbation_zscore`` (EWMA baseline
+    maintained by apply_perturbations() -- see field_state.py's
+    recent_perturbation_ewma* docstring), same fix shape as
+    bus_synaptic_prediction_error's calm-floor correction: reused, not
+    reinvented. A below-baseline dip (negative zscore) is clamped to 0 --
+    "quieter than usual" isn't a reason to attend here, only "busier than
+    usual" is.
+    """
     count = len(field.recent_perturbations)
     if count == 0:
         return []
-    salience = min(1.0, count / 10.0)
+    zscore = field.recent_perturbation_zscore
+    if zscore is None or field.recent_perturbation_ewma_n < RECENT_PERTURBATION_EWMA_MIN_SAMPLES:
+        return []
+    salience = min(1.0, max(0.0, zscore) / RECENT_PERTURBATION_ZSCORE_SATURATION)
     if salience < policy.thresholds.min_salience:
         return []
     return [
@@ -145,7 +168,9 @@ def select_system_targets(
             urgency_score=0.0,
             confidence_score=0.0,
             dominant_channels={},
-            reasons=[f"recent field perturbation count is {count}"],
+            reasons=[
+                f"recent field perturbation count is {count} (z={zscore:.2f} vs baseline)"
+            ],
             evidence_refs=[f"field:{field.tick_id}"],
             suggested_observation_mode=observation_mode_for(salience, policy),
         )

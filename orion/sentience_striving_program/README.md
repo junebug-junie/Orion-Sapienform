@@ -383,6 +383,20 @@ first place. Full reasoning and phased detail:
    `select_system_targets`' formula itself needs the same delta-gating/normalization
    discipline the O1-O3 drives fixes applied to `DriveEngine` before this probe's numbers can
    be trusted as representative of the *node/capability* coalition structure specifically.
+   **2026-07-28 update: the second option above shipped in PR #1433.** Independently
+   rediscovered live (steady-state `recent_perturbations` window occupancy of ~100-118, 5-10x
+   past the old `/10.0` cap) before this write-up was found via search-before-editing —
+   `select_system_targets`' formula is no longer `min(1.0, count / 10.0)`; it now scores a
+   z-score against a per-tick EWMA baseline of the count
+   (`orion/schemas/field_state.py::recent_perturbation_zscore`,
+   `orion/bus/ewma.py::compute_ewma_update`), same methodology as
+   `bus_synaptic_prediction_error`'s `gap_zscore`. This fixes the structural "always saturates"
+   cause of the 99.98% figure above, but **that number itself is now stale, not re-verified**:
+   the fix was validated with unit tests and hand-simulation against realistic tick dynamics,
+   not by re-running this probe script against live post-deploy data. Re-running
+   `--window-hours 24 --gap-hours 12` after this ships is the honest next step before treating
+   the monoculture-differentiation item as closed — a lower dominant-target percentage is
+   expected, not guaranteed.
 6. **Revisit `capability_policy.py`'s coupling to live salience** — only after item 3 closes
    the `drive_origin` dependency and item 2's field-native attention is proven, not assumed.
    At this point the actual mechanism is a real open choice, not a given: a salience-to-

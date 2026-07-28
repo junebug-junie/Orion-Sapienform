@@ -82,6 +82,30 @@ def clamp01(x: float) -> float:
     return max(0.0, min(1.0, float(x)))
 
 
+# Shared by this module's recent_perturbation_count channel and
+# orion/attention/field_attention/selectors.py's select_system_targets --
+# both score the same field.recent_perturbation_zscore (see field_state.py's
+# recent_perturbation_ewma* docstring for why this replaced a fixed count
+# cap). Reuses the z>=3.0 "anomalous" convention already live in
+# services/orion-hub/scripts/bus_synaptic_graph_routes.py's anomalies()
+# route and orion/substrate/prediction_error.py's
+# _BUS_SYNAPTIC_ZSCORE_SATURATION, rather than inventing a new calibration.
+RECENT_PERTURBATION_ZSCORE_SATURATION = 3.0
+
+# Cold-start reliability floor for field.recent_perturbation_zscore, same
+# concept as services/orion-bus-mirror/README.md's documented "count < ~5 is
+# unreliable" floor for gap_zscore (orion/substrate/prediction_error.py's
+# bus_synaptic_prediction_error() puts that same filtering responsibility on
+# its caller, not the aggregation function -- same split here). Confirmed by
+# hand: orion.bus.ewma.compute_ewma_update's variance estimate is built from
+# a single prior sample after the first update, so a tiny early delta over a
+# near-zero variance floor produces a wildly inflated z (simulated
+# 2026-07-28: z=1000 on the *second* observation for a steady 1-unit/tick
+# ramp). Below this many samples, treat the zscore as not yet trustworthy --
+# absent/no-signal, not a fake reading.
+RECENT_PERTURBATION_EWMA_MIN_SAMPLES = 5
+
+
 def collect_field_channel_pressures(
     field: FieldStateV1,
 ) -> tuple[dict[str, float], dict[str, str]]:
@@ -124,16 +148,34 @@ def collect_field_channel_pressures(
     # a direct diff against orion/self_state/scoring.py's original), a real
     # regression since orion-field-digester's field_channel_corpus.v1 rows
     # and orion/mood_arc/fit_encoder.py's explicit by-name exclusion both
-    # depend on this key being present. Restored verbatim, including the
-    # original 2026-07-16 saturating-counter fix history: field.recent_
-    # perturbations used to be capped to the last 20 distinct labels EVER
-    # seen (saturating this to 1.0 within a few ticks and pinning it there
-    # forever); orion-field-digester's apply_perturbations now prunes it to a
-    # rolling 60s wall-clock window instead, so this count reflects genuinely
-    # recent activity and decays back down once a burst passes.
+    # depend on this key being present.
+    #
+    # 2026-07-28 correction to that restoration: the "n / 20.0" cap it
+    # restored was itself live-confirmed saturated. field.recent_perturbations
+    # is correctly pruned to a rolling 60s window (2026-07-16 fix, still
+    # correct -- verified live 2026-07-28 that nothing older than ~59s
+    # survives), but real steady-state mesh traffic fills that window to
+    # ~100-118 distinct labels, 5-10x past the old /20.0 cap -- so this
+    # channel read pinned at 1.0 under completely normal operation, not just
+    # during bursts. Now scores deviation from this mesh's own recent
+    # baseline instead of an absolute count (field.recent_perturbation_zscore,
+    # maintained by apply_perturbations() -- see field_state.py's
+    # recent_perturbation_ewma* docstring). zscore is None on the first tick
+    # after a cold start (no baseline yet) or after upgrade from a
+    # persisted-but-older FieldStateV1 -- leaving the key absent that tick is
+    # correct ("no empty-shell cognition": absent beats a fake 0.0), it
+    # populates from the next tick onward. Also gated on
+    # RECENT_PERTURBATION_EWMA_MIN_SAMPLES -- see that constant's docstring
+    # for why an early zscore isn't trustworthy yet either.
     n = len(field.recent_perturbations)
-    if n > 0:
-        out["recent_perturbation_count"] = clamp01(min(1.0, n / 20.0))
+    if (
+        n > 0
+        and field.recent_perturbation_zscore is not None
+        and field.recent_perturbation_ewma_n >= RECENT_PERTURBATION_EWMA_MIN_SAMPLES
+    ):
+        out["recent_perturbation_count"] = clamp01(
+            max(0.0, field.recent_perturbation_zscore) / RECENT_PERTURBATION_ZSCORE_SATURATION
+        )
     return out, provenance
 
 

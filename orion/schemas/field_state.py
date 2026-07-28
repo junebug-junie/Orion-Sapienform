@@ -56,6 +56,47 @@ class FieldStateV1(BaseModel):
     # list) -- an immediate, one-tick reset, not gated by window expiry --
     # and it repopulates normally from there.
     recent_perturbation_at: list[datetime] = Field(default_factory=list)
+    # Baseline-relative recent_perturbation salience (2026-07-28): fixes a
+    # live-confirmed saturation bug -- both self_state/scoring's old
+    # count/10.0 salience and this file's neighboring recent_perturbation_count
+    # channel (orion/field/pressure.py, count/20.0) turned out to be
+    # permanently pinned at their 1.0 ceiling under real live traffic (steady
+    # state observed 2026-07-28 was ~100-118 distinct labels in the 60s
+    # window above, 5-10x past both fixed caps) -- an absolute magic-number
+    # cap can't discriminate a real burst from normal mesh churn once normal
+    # churn already exceeds the cap. Same EWMA-baseline-vs-z-score
+    # methodology as bus_synaptic_prediction_error's gap_zscore (orion/bus/
+    # ewma.py::compute_ewma_update, reused not reimplemented), applied here
+    # to the recent_perturbations *count* itself rather than per-edge timing.
+    # Updated once per apply_perturbations() call (services/orion-field-
+    # digester/app/digestion/perturbation.py) using this tick's post-prune
+    # len(recent_perturbations) as the observed value. zscore is None on the
+    # very first call (recent_perturbation_ewma_n becomes 1 that same tick,
+    # with no prior baseline to compare against yet) and numeric from the
+    # second call onward -- same "no empty-shell cognition" rule
+    # compute_ewma_update already documents for its own first-observation
+    # case.
+    #
+    # Known accepted limitation (not fixed by
+    # orion/field/pressure.py::RECENT_PERTURBATION_EWMA_MIN_SAMPLES, which
+    # only guards the separate few-sample variance-noise problem): on any
+    # genuinely fresh FieldStateV1 -- first-ever deploy, or a store
+    # wipe/migration (not hypothetical here; see the 2026-07-23 Postgres
+    # disk-death incident that required a full re-feed) -- both
+    # recent_perturbations and this EWMA baseline start from empty together,
+    # so the reading stays elevated for the first several minutes of real
+    # wall-clock time regardless of whether anything is actually anomalous
+    # (hand-simulated: still >0.6 at tick 34 of a steady 3-labels/2s-tick
+    # baseline). This is a smaller, time-boxed, self-healing recurrence of
+    # the same failure shape this fix otherwise kills for the steady-state
+    # (i.e. normal, long-running-service) case, which is genuinely fixed and
+    # independently verified. Accepted rather than engineered away here to
+    # keep this patch thin -- a real follow-up would need to gate on
+    # elapsed wall-clock time since state init, not just sample count.
+    recent_perturbation_ewma: float = 0.0
+    recent_perturbation_ewma_var: float = 0.0
+    recent_perturbation_ewma_n: int = 0
+    recent_perturbation_zscore: float | None = None
     # Decay/injection-interval mismatch fix (2026-07-17): keyed node_id ->
     # channel -> the wall-clock timestamp of that channel's last real write
     # from apply_perturbations() (services/orion-field-digester/app/

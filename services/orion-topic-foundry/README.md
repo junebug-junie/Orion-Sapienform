@@ -44,8 +44,9 @@ that day: `topic_foundry_segments` had 0 of 22 rows ever enriched — nothing in
 had ever called this endpoint; it was purely manual/operator-triggered before now.
 `orion-hub`'s scheduler (`services/orion-hub/scripts/main.py`'s
 `substrate_topic_foundry_scheduler_task`) now calls it for the latest completed run on each
-tick, gated by its own `SUBSTRATE_TOPIC_FOUNDRY_ENRICH_ENABLE` flag (ships **disabled** by
-default — see `services/orion-hub/README.md` §5.5). `force=False` on every call, so repeat
+tick, gated by its own `SUBSTRATE_TOPIC_FOUNDRY_ENRICH_ENABLE` flag (**`true`**, flipped on
+live 2026-07-28 per explicit operator go-ahead — see `services/orion-hub/README.md` §5.5).
+`force=False` on every call, so repeat
 ticks only process segments with no prior enrichment (`enriched_at IS NULL`), never
 re-enriching the same segment. Enrichment also triggers this service's own typed KG edge
 generation as a same-request side effect (`app/services/enrichment.py::_run_enrichment`'s

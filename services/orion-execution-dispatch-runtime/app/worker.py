@@ -176,20 +176,36 @@ class ExecutionDispatchRuntimeWorker:
         if self._check_theater_tripwire():
             return frame  # tripped (this tick or a prior one) -- send nothing
 
-        remaining_risk_budget = (
-            self._settings.orion_dispatch_max_risk_per_day - self._store.sum_risk_dispatched_today()
-        )
-        if remaining_risk_budget <= 0:
+        spent_today = self._store.sum_risk_dispatched_today()
+        remaining_risk_budget = self._settings.orion_dispatch_max_risk_per_day - spent_today
+        advisory_only = self._settings.orion_dispatch_risk_cap_advisory_only
+        enforced = not advisory_only
+        cap_reached = remaining_risk_budget <= 0
+        if cap_reached:
             logger.info(
-                "execution_dispatch_daily_risk_cap_reached max_risk_per_day=%.4f",
+                "execution_dispatch_risk_budget_status spent_today=%.4f max_risk_per_day=%.4f "
+                "cap_reached=true advisory_only=%s enforced=%s",
+                spent_today,
                 self._settings.orion_dispatch_max_risk_per_day,
+                advisory_only,
+                enforced,
             )
-            return frame
+            if enforced:
+                return frame
+            # Advisory-only (default as of 2026-07-28, see settings.py's own
+            # comment on why): the cap number itself is still an unproven
+            # hand-picked multiplier, not derived from a real risk_score
+            # distribution -- log that it would have blocked, but don't
+            # actually withhold real dispatches on an unproven ceiling.
+            # max_dispatches_per_tick (a real, independent, already-enforced
+            # per-tick burst limit) is untouched by this and still applies.
+            remaining_risk_budget = float("inf")
 
         # Real, risk-weighted selection -- not a blind count. `frame.candidates`
         # is already priority-sorted (build_proposal_frame), so this takes
         # the highest-priority prepared candidates whose cumulative
-        # risk_score fits inside what's left of today's real budget,
+        # risk_score fits inside what's left of today's real budget (or all
+        # of them, if the cap is advisory and already reached -- see above),
         # stopping at the first one that would exceed it (no skip-ahead to
         # squeeze in a smaller one later, matching the existing simple
         # sequential-take style this replaces). max_dispatches_per_tick

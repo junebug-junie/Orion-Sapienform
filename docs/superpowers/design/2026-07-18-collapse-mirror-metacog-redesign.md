@@ -1064,3 +1064,188 @@ Acceptance checks from this spec are implemented as unit tests
 (`services/orion-equilibrium-service/tests/test_chat_turn_metacog_gate.py`, 39 tests) except the
 live-data check (`orion_metacog` rows with real, non-degenerate `upstream`), which can't run until
 the flag is enabled. See PR #1291 for the full review trail.
+
+## Orphans, dead reads, and a full Draft/Enrich survival audit (2026-07-28)
+
+Status: **situational awareness, not a proposal.** Nothing in this section has shipped except item
+1 (landing-pad's own removal, separate PR, already merged). Item 2 (phi_hint) has a drafted fix,
+uncommitted, held pending direction on item 3 since fixing it in isolation risks becoming
+throwaway work if item 3's answer is "cut the whole step this bug lives in." Per CLAUDE.md's
+cognition-loop rule, none of this gets implemented without explicit go-ahead.
+
+### Trigger
+
+Found while retiring `orion-landing-pad` (separate session, same day) and tracing its one real
+caller — `services/orion-cortex-exec/app/executor.py`'s `MetacogContextService` step (Step 1 of
+`log_orion_metacognition`). Pulling that thread surfaced a second, unrelated dead-data bug in the
+same pipeline (item 2), and asking "is any of this redundant with `orion_metacog`" led to tracing
+the full field-survival path from Draft/Enrich through to the published row (item 3), which turned
+out to be the largest finding of the three.
+
+### 1. Landing-pad RPC calls in `MetacogContextService` — removed, PR #1419 (merged)
+
+`MetacogContextService` used to RPC-call `orion-landing-pad`'s `get_latest_frame`/`get_stats`
+methods every time it ran, building three throwaway variables:
+
+- `pad_frame_result` — the pad's rolling 15s state frame (top signals, active tasks, risk flags,
+  salient event IDs) from its `get_latest_frame` RPC method.
+- `pad_stats_result` — ingest/window counters from `get_stats` (`ingested`, `dropped_total`,
+  `frames_built`, `rpc_requests`, `rpc_errors`, `queue_depth`, `last_salience`,
+  `last_frame_ts_ms`).
+- `pad_summary`/`pad_short` — a formatted string combining both, truncated to 500 chars, injected
+  as a `"Landing Pad: {pad_short}"` line in the context the Draft LLM sees. Also stashed raw as
+  `ctx["pad_frame"]`/`pad_frame_json`/`pad_stats`/`pad_stats_json`, registered as
+  `"live_runtime_projection"` in `orion/schemas/context_provenance.py`.
+
+Not fabricated data — whatever was in the pad's buffer was real — but the pad's one live input
+(`orion-spark-introspector`'s `spark.state.snapshot.v1`) died when that service was retired
+(PR #1413), so the RPC calls would have started timing out on every single metacog trigger. Fully
+removed: the RPC calls, the two formatter helpers (`_format_pad_frame_summary`/
+`_format_pad_stats_summary`), the context-provenance registry entries, the summary-string line.
+Verified no `.j2` template referenced any of it. See
+`docs/superpowers/specs/2026-07-28-landing-pad-retirement.md`.
+
+### 2. `_fallback_metacog_draft`'s dead `phi_hint` read — found, fix drafted, not shipped
+
+`spark_phi_hint`/`spark_phi_narrative` (the thing that fed the metacog prompts a
+`"φ={valence_band}-{valence_dir}, energy=..., clarity=..., overload=..."` line, sourced from
+phi's own contaminated bands) was deleted outright on 2026-07-22 per Juniper's direct instruction
+("its bullshit and must die," commit `a7eb67daf`). That commit traced the blast radius carefully
+and believed it was complete — but missed one call site: `_fallback_metacog_draft()`
+(`services/orion-cortex-exec/app/executor.py:1008`, fires when the Draft LLM returns non-JSON)
+still reads `ctx.get("phi_hint") or {}`. Since nothing has set `ctx["phi_hint"]` since 2026-07-22,
+every band (`valence_band`, `valence_dir`, `energy_band`, `coherence_band`, `novelty_band`) reads
+as the literal string `"unknown"`, permanently. That derived text fed `field_resonance`,
+`observer_state`, `type` (the type-classification heuristic itself only had three branches, all
+keyed on the now-permanently-"unknown" bands, so `type` has silently always resolved to `"idle"`
+since 2026-07-22 too), and — the part that actually reaches production — was baked into `summary`.
+
+**Confirmed live, not just latent risk**: 4 real rows in `orion_metacog.summary` as of 2026-07-28
+contain the literal string `"φ:unknown-unknown, energy:unknown, clarity:unknown, overload:unknown"`
+(`trigger_kind='telemetry_anomaly'`, real trigger data otherwise, this fake fragment stapled onto
+the end). Fix drafted (uncommitted, `/mnt/scripts/Orion-Sapienform-kill-dead-phi-hint-fallback`,
+branch `fix/kill-dead-phi-hint-fallback`): removes the dead read and the phi-band-derived
+`field_resonance`/`observer_state`/`type`/`tags`/`resonance_signature`/`what_changed.evidence`
+construction, without inventing a replacement classifier — `type` becomes the literal `"fallback"`,
+`summary` states plainly that no draft LLM output was available. No regression test added yet
+(none existed for this function before; held alongside the fix pending item 3's direction, since a
+fallback exists to support Draft — see below — and Draft's fate might change what "fallback" means
+here too).
+
+### 3. Draft/Enrich field-survival audit — the largest finding, genuinely open
+
+Prompted by "is any of this redundant with the new `orion_metacog` stuff." Traced exactly what
+`MetacogPublishService` (`executor.py:3533`) keeps from the `CollapseMirrorEntryV2`-shaped scratch
+object Draft (Step 2) and Enrich (Step 3) build, versus what it computes fresh from raw `ctx`
+artifacts (`biometrics`, `turn_effect`, `repair_pressure`, `llm_uncertainty`, `logs`) independently
+of anything either LLM step wrote. This is not inference — read the actual construction of
+`MetacogEntryV1` at `executor.py:3704-3725` field by field.
+
+**Step 2 — Draft** (`MetacogDraftTextPatchV1`, `orion/schemas/metacog_patches.py:17`, 10 output
+fields):
+
+| Field | Survives to the published `MetacogEntryV1`? |
+|---|---|
+| `summary` | yes |
+| `mantra` | yes |
+| `tags_suggested` | yes, as `tags` |
+| `what_changed.summary` / `.evidence` | partially (evidence gets `logs`-derived turn-step lines appended on top) |
+| `type` | no |
+| `trigger` | no — `trigger_kind_value` is computed fresh from `ctx["trigger"]` instead |
+| `causal_echo` | no |
+| `field_resonance` | no |
+| `emergent_entity` | no |
+| `resonance_signature` | no |
+| `what_changed.new_state` / `.previous_state` | no |
+
+**Step 3 — Enrich** (`MetacogEnrichScorePatchV1`, `orion/schemas/metacog_patches.py:58`, 7 output
+fields, all structured — no free text at all):
+
+| Field | Survives? |
+|---|---|
+| `tag_scores` | no |
+| `change_type_scores` | no |
+| `numeric_sisters` (`valence`/`arousal`/`clarity`/`overload`/`risk_score`) | no |
+| `causal_density` (`label`/`score`/`rationale`) | no — replaced outright by a fresh `compute_causal_density(state)` call at publish time, built from real `MetacogRealState` artifacts, not from anything Enrich wrote |
+| `epistemic_status` | no |
+| `is_causally_dense` | no — recomputed fresh from the real `causal_density.score` |
+| `snapshot_kind` | no — recomputed fresh from the real `is_causally_dense` |
+
+**Zero of Enrich's 7 output fields survive.** Confirmed the scratch `entry` object itself is never
+published anywhere — `MetacogPublishService` publishes only `metacog_entry.model_dump(...)`
+(the real `MetacogEntryV1`) to `orion:metacog:sql-write`; the `CollapseMirrorEntryV2`-shaped
+`entry` variable is pure internal plumbing, discarded when the function returns.
+
+This is worse than the `numeric_sisters`/phi contamination problem the 2026-07-18 root-problem
+section (top of this doc) already fixed — that was *wrong data reaching a real field*. This is a
+*complete LLM call producing nothing that reaches anywhere*: its own prompt render, its own JSON
+patch parse/validation, its own uncertainty probe, real latency and token cost, on every single
+metacog trigger firing (baseline/relational/telemetry_anomaly, and `chat_turn` once enabled) —
+for output that is unconditionally thrown away. Not contaminated theater; a no-op dressed as a
+step that matters.
+
+### Open, not answered here
+
+- Does the Enrich prompt template (`orion/cognition/prompts/log_orion_metacognition_enrich.j2`)
+  contain anything else worth keeping — e.g. does it also *revise* `summary`/`mantra` in a way
+  Draft's own output doesn't already cover, or is its text-generation purely the 7 discarded score
+  fields above? Not checked yet. If Enrich never touches summary/mantra, Step 3 is a pure
+  candidate for deletion, not just trimming.
+- If Enrich is cut, does anything downstream (the `snapshot_kind`/`is_causally_dense` recompute
+  logic, the firebreak check at `executor.py:3548` which reads `telemetry.metacog_draft_mode` off
+  the scratch object's `state_snapshot`) implicitly depend on Enrich having run first, or does the
+  scratch object from Draft alone already carry what `normalize_collapse_entry()` needs?
+- Item 2's fix and item 3's answer are coupled: if Enrich goes away, does `_fallback_metacog_draft`
+  still need to exist in its current form (fallback for Draft only), or does the whole
+  draft-parse-failure path change shape too?
+- Whether `entry.observer_state`/`field_resonance`/`type`/`emergent_entity`/`causal_echo`/
+  `pattern_candidate`/`resonance_signature`/`change_type` are read by *anything* else before
+  `MetacogPublishService` discards them (e.g. logging, a debug endpoint) — checked only as far as
+  the publish block itself, not the full step-to-step `ctx` lifecycle within Draft/Enrich.
+
+### Recommended next patch
+
+Not decided. Two shapes on the table, neither started:
+
+1. **Trim Enrich's ask to match what survives** (nothing, per this audit) — i.e. delete Step 3
+   from `orion/cognition/verbs/log_orion_metacognition.yaml`, fold anything Draft's own patch
+   schema is missing (if the open question above finds something real) into Draft directly, and
+   simplify `MetacogPublishService` accordingly. Removes a full LLM call and its cost per trigger.
+2. **Keep Enrich but redirect its output to actually feed the real computations** — e.g. let
+   `causal_density`/`severity`/`touches` optionally blend an Enrich-derived signal instead of
+   being computed by a separate, disconnected pure-function pass. Larger design surface, and per
+   this doc's own metric-quality-gate discipline (root problem 1, above) would need its own
+   independence/theory-anchor check before any Enrich output is trusted for a real field again —
+   the exact discipline that caught `numeric_sisters` failing this same gate on 2026-07-18.
+
+Whichever direction, this is a cognition-loop change (draft/enrich/publish shape) — proposal mode
+before any code, per CLAUDE.md.
+
+### Implemented (2026-07-28) — option 1, kill Enrich outright
+
+Per Juniper's direct go-ahead, built option 1 above (trim Enrich's ask to match what survives, i.e.
+nothing) rather than option 2. `orion/cognition/verbs/log_orion_metacognition.yaml` now has 3 steps
+(`MetacogContextService` -> `MetacogDraftService` -> `MetacogPublishService`), no `enrich_entry`.
+`orion/cognition/prompts/log_orion_metacognition_enrich.j2` deleted outright.
+`MetacogDraftTextPatchV1`/`MetacogDraftWhatChangedV1` (`orion/schemas/metacog_patches.py`) trimmed
+to exactly the fields the audit above found surviving to publish (`summary`, `mantra`,
+`what_changed.summary`/`.evidence`, `tags_suggested`); `MetacogEnrichScorePatchV1`/
+`MetacogNumericSistersV1`/`MetacogCausalDensityV1`/`MetacogConstraintsV1` deleted entirely. The
+Draft prompt's ORION METADEFS/PATCH CONTRACT/OUTPUT REQUIREMENT/FORBIDDEN/`example_json` sections
+rewritten to match. `services/orion-cortex-exec/app/executor.py`: removed the
+`MetacogEnrichService` dispatch block, `_apply_enrich_patch`, `_set_metacog_enrich_telemetry`, and
+the Enrich-specific scaffolding (prompt-budget/trim branches, the `metacog_biometrics_cue_enrich`
+ctx write); `MetacogPublishService` now reads `ctx["collapse_entry"]` directly (`ctx["final_entry"]`
+can no longer be set by anything -- the old `ctx.get("final_entry") or ctx.get("collapse_entry")`
+fallback chain is gone). One real bug caught in the process: `_metacog_uncertainty_probe_messages`
+referenced `patch.type`/`.emergent_entity`/`.resonance_signature` -- fields the schema trim
+removed -- which would have raised `AttributeError` on the first real Draft call with
+`CORTEX_METACOG_RETURN_LOGPROBS=true`; fixed to probe on `summary`/`mantra`/`what_changed` instead.
+`CORTEX_METACOG_ENRICH_PROMPT_MAX_CHARS`/`CORTEX_METACOG_ENRICH_WORKER_CTX_CHAR_BUDGET` removed
+(settings.py, `.env_example`, docker-compose.yml) since no phase other than `"draft"` is ever passed
+to the prompt-budget/trim helpers anymore. A downstream consumer this design doc's audit missed --
+`services/orion-cortex-exec/tests/test_firebreak.py`, also keyed on `ctx["final_entry"]` -- was
+found broken by the `final_entry`->`collapse_entry` change via a full-suite test run, not by the
+original scoped grep; fixed alongside the explicitly-scoped test files. Item 2 (`_fallback_metacog_draft`'s dead `phi_hint` read) remains open, deliberately out of scope for this
+patch per the original audit's own coupling note above -- unaffected by this patch either way.
+See PR #NNN for the full review trail and test list.

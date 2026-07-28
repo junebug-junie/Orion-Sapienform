@@ -163,6 +163,14 @@ Own cooldown lane from day one (`EQUILIBRIUM_METACOG_TRANSPORT_COOLDOWN_SEC`) --
 | `EQUILIBRIUM_METACOG_TRANSPORT_BUS_SYNAPTIC_ERROR_THRESHOLD` | `1.0` | Option bus_synaptic's fire threshold (saturation ceiling) |
 | `FALKORDB_URI` / `FALKORDB_SUBSTRATE_GRAPH` | `orion_substrate` | Option bus_synaptic's read-only FalkorDB connection |
 
+**Testing the bus_synaptic option:**
+
+See [Testing](#testing) section above for:
+- Unit tests of threshold logic (`TestBusSynapticEvidence`)
+- End-to-end eval verifying the complete FalkorDB → poll → trigger → postgres pipeline (`run_bus_synaptic_poll_e2e_eval.py`)
+
+The E2E eval proves the "first real fire" path mentioned above and provides a smoke test you can run any time to verify the poll loop is working correctly.
+
 ---
 
 ## Quick start (copy/paste)
@@ -199,6 +207,53 @@ redis-cli -u "$BUS" SUBSCRIBE "orion:event:equilibrium:snapshot"
 ### B) Baseline Collapse Mirror tick (currently embedded here)
 - Constructs `CollapseMirrorStateSnapshot` + `CollapseMirrorEntryV2`
 - Emits it as a system “self-awareness” baseline snapshot
+
+---
+
+## Testing
+
+### Unit tests: Transport metacog trigger logic
+
+```bash
+# From repo root
+python3 -m pytest services/orion-equilibrium-service/tests/test_transport_metacog_gate.py -v
+
+# Or specific test class
+python3 -m pytest services/orion-equilibrium-service/tests/test_transport_metacog_gate.py::TestBusSynapticEvidence -v
+```
+
+The `TestBusSynapticEvidence` class verifies the bus_synaptic threshold logic in isolation:
+- `test_below_threshold_does_not_fire()` — error < 1.0 → no trigger
+- `test_at_threshold_fires()` — error ≥ 1.0 → trigger fires
+- `test_above_threshold_fires()` — custom thresholds respected
+- `test_custom_threshold_respected()` — config-driven threshold gates behavior
+
+### End-to-end eval: Bus_synaptic poll trigger smoke test
+
+**This test verifies the complete pipeline end-to-end: FalkorDB → poll loop → trigger dispatch → postgres persistence.**
+
+```bash
+# Run from inside the Docker environment where all services are running:
+cd services/orion-equilibrium-service
+python3 evals/run_bus_synaptic_poll_e2e_eval.py
+```
+
+The eval will:
+1. Connect to live FalkorDB and Postgres
+2. Inject a high `prediction_error` value (1.2) into `node:substrate.bus_synaptic`
+3. Wait for the next poll cycle (default 30s)
+4. Verify a `MetacogTriggerV1` was published to `orion:equilibrium:metacog:trigger`
+5. Confirm the trigger persisted to the `orion_metacog` table with `evidence_source="bus_synaptic_prediction_error"`
+
+**Success criteria:**
+- ✓ Poll loop reads FalkorDB correctly
+- ✓ Threshold check fires when error ≥ 1.0
+- ✓ Trigger published to bus
+- ✓ Trigger persisted with correct evidence metadata
+
+**Requirements:**
+- All Orion services running (equilibrium, FalkorDB, Postgres, bus)
+- `EQUILIBRIUM_METACOG_TRANSPORT_BUS_SYNAPTIC_POLL_ENABLE=true` in `.env`
 
 ---
 

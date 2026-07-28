@@ -5,6 +5,7 @@ Fails silently (no output) on any error -- never blocks session stop.
 """
 from __future__ import annotations
 
+import hashlib
 import json
 import os
 import sys
@@ -23,6 +24,53 @@ from agent_board_lib import (  # noqa: E402
 # Ownerless items (no session_id) older than this stop nagging every session
 # that ever stops in the worktree -- see _is_stale_ownerless_item below.
 _OWNERLESS_ITEM_STALE_AFTER = timedelta(hours=24)
+
+# Where per-session "have I already nagged about exactly this item set"
+# markers live. Deliberately separate from the board's own JSONL event log
+# (~/.orion/agent-board.jsonl) -- this is Stop-hook bookkeeping, not
+# dev-coordination content, so it doesn't belong in the shared event stream
+# other tooling (agent_board.py list/checkin, other agents' reads) parses.
+# Overridable for tests via env var, same convention as ORION_AGENT_BOARD_PATH.
+_NAG_STATE_DIR_ENV = "ORION_AGENT_BOARD_NAG_STATE_DIR"
+
+
+def _nag_state_dir() -> Path:
+    raw = os.environ.get(_NAG_STATE_DIR_ENV)
+    if raw:
+        return Path(raw).expanduser()
+    return Path.home() / ".orion" / "stop_hook_nag_state"
+
+
+def _item_set_digest(item_ids: list[str]) -> str:
+    joined = "\n".join(sorted(item_ids))
+    return hashlib.sha256(joined.encode("utf-8")).hexdigest()
+
+
+def _already_nagged_this_set(session_id: str, digest: str) -> bool:
+    """True if this exact session already emitted a nag for this exact item
+    set. Fails open (False, i.e. still nag) on any read error -- matches the
+    module's own fail-silent-on-error contract; we'd rather nag once more
+    than swallow a real reminder because of a transient disk issue.
+    """
+    marker = _nag_state_dir() / session_id
+    try:
+        return marker.read_text(encoding="utf-8").strip() == digest
+    except OSError:
+        return False
+
+
+def _record_nagged_set(session_id: str, digest: str) -> None:
+    """Best-effort write; a failure here should never block emitting the nag
+    itself, so this is called after the nag is already queued for output.
+    """
+    try:
+        state_dir = _nag_state_dir()
+        state_dir.mkdir(parents=True, exist_ok=True, mode=0o700)
+        marker = state_dir / session_id
+        marker.write_text(digest, encoding="utf-8")
+        os.chmod(marker, 0o600)
+    except OSError:
+        pass
 
 
 def _is_stale_ownerless_item(item: dict) -> bool:
@@ -70,16 +118,27 @@ def main() -> None:
         # "someone else's" either -- fail open (fall back to plain worktree
         # scoping, no staleness filter) rather than silently excluding every
         # item that happens to carry a real session_id.
-        open_items = [
-            item for item in state.items.values()
+        #
+        # Status filter is "open" only, not "open" + "parked" -- confirmed
+        # live 2026-07-28: the nag's own remedy text below ("resolve/park
+        # them") implied parking was a valid way to quiet it, but the old
+        # filter kept nagging on parked items anyway. Parking an item *is*
+        # triaging it (a deliberate "not now" decision, distinct from never
+        # having looked at it) -- `agent_board.py checkin`'s own listing
+        # still surfaces parked items for context, so nothing about parked
+        # work goes invisible; it just stops being treated as an unactioned
+        # reminder on every single Stop turn.
+        open_items = {
+            item_id: item
+            for item_id, item in state.items.items()
             if item.get("worktree_path") == current
-            and item.get("status") in {"open", "parked"}
+            and item.get("status") == "open"
             and (
                 session_id is None
                 or item.get("session_id") == session_id
                 or (not item.get("session_id") and not _is_stale_ownerless_item(item))
             )
-        ]
+        }
     except Exception:
         return
     if not open_items:
@@ -87,6 +146,18 @@ def main() -> None:
         # noise, not a reminder. Stay silent, matching the fail-silent
         # pattern already used for errors above.
         return
+
+    # Per-turn dedup: confirmed live 2026-07-28 (7 straight recurrences,
+    # documented in project memory) that this hook re-emitted the identical
+    # nag on every single Stop turn even when the underlying item set never
+    # changed between turns -- no suppression at all previously. Only
+    # applies when we have a real session_id to key the marker file by;
+    # without one, fall back to the old always-nag behavior (matches the
+    # existing fail-open stance for an unresolved session_id above).
+    digest = _item_set_digest(list(open_items.keys()))
+    if session_id and _already_nagged_this_set(session_id, digest):
+        return
+
     detail = f"Agent board checkout reminder: {len(open_items)} open item(s) remain for this worktree. Run `python3 scripts/agent_board.py checkout` or resolve/park them."
     payload = {
         "hookSpecificOutput": {
@@ -95,6 +166,8 @@ def main() -> None:
         }
     }
     sys.stdout.write(json.dumps(payload, ensure_ascii=False))
+    if session_id:
+        _record_nagged_set(session_id, digest)
 
 
 if __name__ == "__main__":

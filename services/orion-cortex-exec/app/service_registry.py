@@ -17,7 +17,6 @@ SERVICE_BINDINGS = {
     # Required because log_orion_metacognition.yaml refers to them by name
     "MetacogContextService": "MetacogContextService",
     "MetacogDraftService":   "MetacogDraftService",
-    "MetacogEnrichService":  "MetacogEnrichService",
     "MetacogPublishService": "MetacogPublishService",
     "MetaTagsService":       "MetaTagsService",
 

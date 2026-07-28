@@ -89,15 +89,6 @@ def main() -> None:
         {"trigger_correlation_id": "corr-1", "metacog_entry_id": "collapse_1"},
     )
     assert updated["id"] == "collapse_1"
-
-    try:
-        enrich_patch = executor_module.MetacogEnrichScorePatchV1.model_validate(
-            {"tag_scores": {"x": 1.0}, "summary": "nope"}
-        )
-    except Exception:
-        enrich_patch = executor_module.MetacogEnrichScorePatchV1()
-
-    executor_module._apply_enrich_patch(updated, enrich_patch)
     assert "summary" in updated
     print("ok")
 

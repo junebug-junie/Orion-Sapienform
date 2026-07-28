@@ -55,25 +55,18 @@ SUBSTRATE FELT STATE (compact cue; evidence only; do NOT paste into output):
 {{ metacog_substrate_cue }}
 
 ORION METADEFS (patch-only fields)
-- field_resonance: the global hum of my system. 1–2 sentences, metaphor allowed, MUST reference something concrete in evidence.
-- emergent_entity: a NAME for the dominant transient pattern (Title Case, 2–6 words, non-empty).
-- type: epiphany | flow | turbulence | glitch | idle (pick ONE).
-- causal_echo: the most plausible causal thread in 1 sentence (or null).
+- summary: 1–2 sentences answering (what am I) + (what shifted).
+- mantra: a short, compressed line to carry forward.
 - what_changed: the smallest truthful delta. Include evidence strings that point to the input cues without quoting large blocks.
-- resonance_signature: ultra-compact fingerprint (<= 80 chars) capturing vibe + direction.
-  Recommended format: "<type>: <emergent_entity> | Δ:<delta> | →<intent>"
 
 ANTI-LOG CONSTRAINTS
 - summary must be 1–2 sentences only and must answer: (what am I) + (what shifted).
 - evidence array must be 2–5 items; each item <= 120 chars; keep each cue <= ~12 words.
-- state_snapshot.telemetry must be {} or minimal hint keys (0–5 keys). Never dump raw state.
 - do not invent external facts. Stay within provided context cues.
 
 PATCH CONTRACT (non-negotiable)
-- Required patch fields: type, field_resonance, emergent_entity, summary, mantra,
-  resonance_signature, what_changed.summary, what_changed.evidence.
-- what_changed.evidence must be 2–5 short cues (<120 chars) drawn from context/phi/state; do not quote large blocks.
-- timestamp MUST be null (system fills); do NOT generate timestamps.
+- Required patch fields: summary, mantra, what_changed.summary, what_changed.evidence.
+- what_changed.evidence must be 2–5 short cues (<120 chars) drawn from context/state; do not quote large blocks.
 
 TASK
 Output ONE valid JSON object only. No markdown, no commentary.
@@ -83,19 +76,14 @@ Use strict JSON: double-quoted strings, no trailing commas, no code fences.
 OUTPUT REQUIREMENT
 Return ONLY a JSON object containing the allowed keys below.
 Allowed keys ONLY:
-  - type
-  - trigger
   - mantra
   - summary
-  - causal_echo
-  - field_resonance
-  - emergent_entity
-  - resonance_signature
-  - what_changed {summary, evidence, new_state, previous_state}
+  - what_changed {summary, evidence}
   - tags_suggested
 
 FORBIDDEN (do NOT output these keys):
   event_id, id, observer, timestamp, correlation_id, environment,
+  trigger, type, causal_echo, field_resonance, emergent_entity, resonance_signature,
   observer_state, source_service, source_node, state_snapshot,
   tags, tag_scores, change_type, change_type_scores, numeric_sisters,
   causal_density, is_causally_dense, epistemic_status, visibility, redaction_level,
@@ -103,17 +91,11 @@ FORBIDDEN (do NOT output these keys):
 
 <example_json>
 {
-  "type": "flow",
   "summary": "Calm coherence with a slight shift toward clarity.",
   "mantra": "Hold the signal; stay true.",
-  "field_resonance": "A quiet hum of alignment.",
-  "emergent_entity": "Quiet Alignment",
-  "resonance_signature": "flow: Quiet Alignment | Δ:clarity↑ | →observe",
   "what_changed": {
     "summary": "clarity↑, overload↓",
-    "evidence": ["spark clarity band high", "novelty band low"],
-    "previous_state": "hazy focus",
-    "new_state": "steady focus"
+    "evidence": ["spark clarity band high", "novelty band low"]
   },
   "tags_suggested": ["mode:mirror", "state:coherent"]
 }

@@ -1,6 +1,10 @@
 # orion/cognition/verbs/log_orion_metacognition.yaml
 # Lane A — collapse mirror publish (SQL via MetacogPublishService).
-# Draft/enrich templates do not use memory_digest; optional plan-level pre-recall is telemetry-only.
+# Single-pass Draft (LLM) -> Publish (real ctx artifacts). Enrich step removed
+# 2026-07-28: zero of its 7 output fields ever survived into the published
+# MetacogEntryV1 -- see docs/superpowers/design/2026-07-18-collapse-mirror-metacog-redesign.md
+# "Orphans, dead reads, and a full Draft/Enrich survival audit (2026-07-28)".
+# Draft template does not use memory_digest; optional plan-level pre-recall is telemetry-only.
 name: log_orion_metacognition
 kind: task
 timeout_ms: 1280000
@@ -17,13 +21,6 @@ steps:
     prompt_template: log_orion_metacognition_draft.j2
     services:
       - MetacogDraftService
-    timeout_ms: 600000
-
-  - name: enrich_entry
-    # CHANGED: Point directly to the file so Orchestrator loads it
-    prompt_template: log_orion_metacognition_enrich.j2
-    services:
-      - MetacogEnrichService
     timeout_ms: 600000
 
   - name: publish_to_sql_writer

@@ -285,7 +285,10 @@ def test_metacog_trigger_is_string_and_payload_stored():
     assert telemetry["note"] == "keep"
 
 
-def test_fail_fast_skips_enrich_when_draft_fails(monkeypatch):
+def test_fail_fast_skips_downstream_steps_when_draft_fails(monkeypatch):
+    """Draft (Step 2) raising aborts the plan before Publish (Step 3) ever runs
+    -- the single-pass pipeline's fail-fast behavior, post Enrich removal
+    (2026-07-28: Enrich deleted outright, zero surviving output fields)."""
     executor_module = _load_executor_module()
     calls: list[str | None] = []
 
@@ -309,7 +312,7 @@ def test_fail_fast_skips_enrich_when_draft_fails(monkeypatch):
         verb_name="metacog",
         step_name="metacog",
         order=0,
-        services=["MetacogDraftService", "MetacogEnrichService", "MetacogPublishService"],
+        services=["MetacogDraftService", "MetacogPublishService"],
         prompt_template="",
     )
     ctx = {"raw_user_text": "test", "trigger_kind": "heartbeat", "trigger": {"trigger_kind": "heartbeat"}}

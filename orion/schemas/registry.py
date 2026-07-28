@@ -459,7 +459,7 @@ from orion.schemas.telemetry.cognition_trace import CognitionTracePayload
 from orion.schemas.telemetry.metacognition import MetacognitionTickV1
 from orion.schemas.telemetry.metacog_trigger import MetacogTriggerV1
 from orion.schemas.telemetry.meta_tags import MetaTagsPayload, MetaTagsRequestV1, MetaTagsResultV1
-from orion.schemas.metacog_patches import MetacogDraftTextPatchV1, MetacogEnrichScorePatchV1
+from orion.schemas.metacog_patches import MetacogDraftTextPatchV1
 from orion.schemas.metacog_entry import MetacogEntryV1, MetacogRepairPressure
 from orion.schemas.repair_pressure_appraisal import RepairPressureAppraisalV1
 from orion.schemas.telemetry.field_channel_anomaly_score import FieldChannelAnomalyScoreV1
@@ -732,7 +732,6 @@ _REGISTRY: Dict[str, Type[BaseModel]] = {
     "MetacognitiveTraceV1": MetacognitiveTraceV1,
     "MetacogTriggerV1": MetacogTriggerV1,
     "MetacogDraftTextPatchV1": MetacogDraftTextPatchV1,
-    "MetacogEnrichScorePatchV1": MetacogEnrichScorePatchV1,
     "MetacogEntryV1": MetacogEntryV1,
     "RepairPressureAppraisalV1": RepairPressureAppraisalV1,
     "FieldChannelAnomalyScoreV1": FieldChannelAnomalyScoreV1,

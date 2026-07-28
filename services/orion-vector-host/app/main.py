@@ -693,14 +693,16 @@ app = FastAPI(
 
 # --- OrionTissue read model / EKG UI ---------------------------------------
 # New home for the "Cognitive EKG" surface (2026-07-28, spark-introspector
-# retirement). Mounted under /spark to match the path convention the old
-# service used, so an operator-level reverse-proxy repoint (spark-
-# introspector's container port -> this service's port for the /spark/*
-# prefix) is the only remaining step outside this repo -- the actual
-# proxy/ingress config that resolved /spark/ui to spark-introspector's
-# container was not found anywhere in this repo (not orion-hub, not deploy/),
-# so it is operator infra this changeset cannot edit directly. See the PR
-# description for the exact repoint this requires.
+# retirement). Routes are UNPREFIXED here on purpose: the operator's
+# Tailscale Serve mount (`/spark -> http://127.0.0.1:8320`) strips the
+# `/spark` prefix before forwarding -- confirmed live via
+# `/spark/spark/ui` returning 200 and `/spark/health` (an existing
+# unprefixed route) already working. Mounting this router under its own
+# `/spark` prefix double-counted that segment and 404'd every request.
+# The frontend (tissue_viz.js, index.html) is unaffected -- it derives
+# WS/fetch URLs from the browser's visible `window.location.pathname`,
+# which still shows the full `/spark/...` path regardless of how the
+# proxy forwards internally.
 spark_router = APIRouter()
 
 
@@ -760,8 +762,8 @@ async def spark_test_pulse() -> Dict[str, Any]:
     return {"status": "broadcast_sent", "payload": payload}
 
 
-app.include_router(spark_router, prefix="/spark")
-app.mount("/spark/static", StaticFiles(directory="app/static"), name="spark_static")
+app.include_router(spark_router)
+app.mount("/static", StaticFiles(directory="app/static"), name="spark_static")
 
 
 @app.get("/health")

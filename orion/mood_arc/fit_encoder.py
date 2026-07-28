@@ -80,6 +80,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import shutil
 import subprocess
 import sys
 from datetime import datetime, timezone
@@ -139,6 +140,31 @@ DEFAULT_EXCLUDE_CHANNELS: frozenset[str] = frozenset({
     # dict, not graduated information about anything. Excluding until/unless a
     # real analog reading is ever observed.
     "expected_offline_suppression",
+    # stream_backlog_pressure/stream_backlog_health/delivery_confidence
+    # (2026-07-27, explicit exclusion, not a lucky variance-filter dodge):
+    # these are still fed by BUS_OBSERVER_STREAMS' narrow 2-Redis-Stream
+    # "world_pulse" census (orion/substrate/transport_loop/extract.py::
+    # compute_transport_pressures()) at the node:athena level -- confirmed
+    # live 2026-07-27 these are still merged into collect_field_channel_
+    # pressures()'s output via orion/field/pressure.py's HIGHER_IS_BETTER_
+    # CHANNELS/PRESSURE_CHANNELS merge, even after PRs #1391-#1397 fixed the
+    # *derived* capability:transport diffusion target these feed (real
+    # bus_synaptic data now) -- the raw node-level census itself was never
+    # touched, deliberately out of scope there. Excluded explicitly here
+    # rather than relying on the variance filter, per Juniper's direct
+    # instruction: a channel this semantically narrow (one Redis Stream's
+    # depth, not real bus/transport health -- see services/orion-substrate-
+    # runtime/README.md's "one queue, not the bus" finding) should never
+    # train a consciousness-theory-relevant encoder regardless of whatever
+    # variance it happens to show on a given corpus pull. The prior training
+    # run (2026-07-18) excluded stream_backlog_health/delivery_confidence
+    # only by accident -- they were frozen by an unrelated, since-fixed
+    # reconcile-heal bug at the time, and that memory record explicitly
+    # flagged them for re-inclusion once that bug was fixed. Do not
+    # re-include them: the bug being fixed doesn't change what they measure.
+    "stream_backlog_pressure",
+    "stream_backlog_health",
+    "delivery_confidence",
 })
 DEFAULT_VARIANCE_EPS = 1e-6
 DEFAULT_CORR_THRESHOLD = 0.9
@@ -186,6 +212,20 @@ DEFAULT_ANOMALY_THRESHOLD_MULTIPLIER = 3.0
 # Hard gate threshold, unchanged from the original spec: real held-out recon
 # loss must beat the shuffle baseline by at least 2x.
 FLOOR_MAX_RATIO = 0.5
+
+# 2026-07-27: durable promotion target. Every prior real training run's
+# artifact (manifest.json/weights.npz/probes.json) lived only under
+# write_artifacts()'s --out path, which every run so far has pointed at
+# scratch (/tmp/.../scratchpad/...) -- gone the moment the scratch dir was
+# cleaned up, confirmed live (no artifact survived from the 2026-07-18
+# production run that passed the gate). /mnt/telemetry is the same durable
+# mount the training corpus itself already lives under
+# (/mnt/telemetry/field_channels/corpus/), chosen by Juniper for the same
+# reason: real data that must survive a container/session cycling, not
+# scratch. cmd_promote (below) is the actual mechanism that writes here --
+# `train`'s own --out still defaults to wherever the caller points it,
+# promotion is a deliberate, separate, explicit step.
+DEFAULT_MODELS_ROOT = Path("/mnt/telemetry/models/mood_arc")
 
 
 def _git_sha() -> str:
@@ -1159,6 +1199,23 @@ def _parse_args(argv: list[str] | None = None) -> argparse.Namespace:
             "are flagged."
         ),
     )
+    promote_p = sub.add_parser(
+        "promote",
+        help="Copy a trained candidate to the durable models root and mark it active",
+    )
+    promote_p.add_argument(
+        "--encoder-dir",
+        type=Path,
+        required=True,
+        help="Directory written by a prior `train` run (manifest.json + weights.npz)",
+    )
+    promote_p.add_argument(
+        "--models-root",
+        type=Path,
+        default=DEFAULT_MODELS_ROOT,
+        help=f"Durable root to promote into (default: {DEFAULT_MODELS_ROOT})",
+    )
+
     return parser.parse_args(argv)
 
 
@@ -1279,6 +1336,8 @@ def cmd_train(args: argparse.Namespace) -> int:
         shuffle_baseline_loss=shuffle_baseline_loss,
         purge_gap_windows=args.purge_gap_windows,
         ar1_surrogate_loss=ar1_surrogate_loss,
+        floor_ratio=gate["floor_ratio"],
+        floor_pass=gate["floor_pass"],
         ceiling_ratio=gate["ceiling_ratio"],
         floor_ratio_ci_low=ci_low,
         floor_ratio_ci_high=ci_high,
@@ -1356,12 +1415,125 @@ def cmd_detect_anomalies(args: argparse.Namespace) -> int:
     return 0
 
 
+def promote_encoder(
+    encoder_dir: Path,
+    *,
+    models_root: Path,
+    now: datetime | None = None,
+) -> dict:
+    """Copy a trained candidate's artifacts into the durable models_root,
+    flip its manifest status candidate -> active, retire whatever was
+    previously active, and update the active.json pointer.
+
+    Fail-closed, on purpose: refuses (raises ValueError, never silently
+    proceeds) if the candidate's own manifest doesn't record floor_pass is
+    True. This is the one hard gate this project has -- a candidate with
+    floor_pass=None (written before this field existed) or floor_pass=False
+    (failed its own shuffle-baseline check) must never become the "active"
+    encoder just because someone pointed --encoder-dir at it. This is
+    deliberately not re-run here -- promote does not retrain or re-score,
+    it only trusts a manifest that already recorded a real gate result.
+    """
+    manifest, _weights = load_artifacts(encoder_dir)
+    if manifest.floor_pass is not True:
+        raise ValueError(
+            f"refusing to promote {manifest.encoder_id}: floor_pass={manifest.floor_pass!r} "
+            "(must be exactly True; a candidate with no recorded gate result or a failing "
+            "one must never be promoted)"
+        )
+
+    dest_dir = models_root / manifest.encoder_version
+    if dest_dir.exists():
+        raise ValueError(
+            f"refusing to overwrite existing promoted directory at {dest_dir} "
+            "(encoder_version must be unique per promotion; use a new --encoder-version "
+            "at train time, don't re-promote the same version)"
+        )
+
+    resolved_now = now or datetime.now(timezone.utc)
+    active_pointer_path = models_root / "active.json"
+
+    # Review-caught ordering bug (2026-07-27): the previous-active retirement
+    # and pointer flip used to happen BEFORE the new candidate's artifacts
+    # were copied. If the copy step failed partway (missing/corrupt source,
+    # disk full, permissions on /mnt/telemetry) after the old version had
+    # already been marked "retired", the system was left with active.json
+    # still pointing at that now-retired directory -- any consumer that
+    # cross-checks manifest.status == "active" against what the pointer
+    # names would see zero active encoders, not a safe rollback to the old
+    # version. Fixed by making retirement + pointer-flip the LAST two steps,
+    # only after the new candidate's own artifacts and manifest are fully
+    # durable on disk -- a failure anywhere above this point now leaves the
+    # previous active version completely untouched and still genuinely
+    # active.
+    dest_dir.mkdir(parents=True, exist_ok=False)
+    shutil.copy2(encoder_dir / "weights.npz", dest_dir / "weights.npz")
+    if (encoder_dir / "probes.json").exists():
+        shutil.copy2(encoder_dir / "probes.json", dest_dir / "probes.json")
+    promoted_manifest = manifest.model_copy(update={"status": "active", "promoted_at": resolved_now})
+    (dest_dir / "manifest.json").write_text(promoted_manifest.model_dump_json(indent=2), encoding="utf-8")
+
+    previous_active: dict | None = None
+    if active_pointer_path.exists():
+        previous_active = json.loads(active_pointer_path.read_text(encoding="utf-8"))
+        prev_manifest_path = Path(previous_active["path"]) / "manifest.json"
+        if prev_manifest_path.exists():
+            prev_manifest = MoodArcEncoderManifestV1.model_validate_json(
+                prev_manifest_path.read_text(encoding="utf-8")
+            )
+            prev_manifest = prev_manifest.model_copy(update={"status": "retired"})
+            prev_manifest_path.write_text(prev_manifest.model_dump_json(indent=2), encoding="utf-8")
+
+    # Atomic pointer write (temp file + rename, review-suggested secondary
+    # fix): a crash mid-write to active.json directly could leave a
+    # truncated/corrupt JSON; write-then-rename is atomic on the same
+    # filesystem, so a reader always sees either the old or the new pointer
+    # in full, never a partial one.
+    tmp_pointer_path = active_pointer_path.with_suffix(".json.tmp")
+    tmp_pointer_path.write_text(
+        json.dumps(
+            {
+                "encoder_id": manifest.encoder_id,
+                "encoder_version": manifest.encoder_version,
+                "promoted_at": resolved_now.isoformat(),
+                "path": str(dest_dir),
+            },
+            indent=2,
+        ),
+        encoding="utf-8",
+    )
+    tmp_pointer_path.replace(active_pointer_path)
+
+    return {
+        "promoted": str(dest_dir),
+        "encoder_id": manifest.encoder_id,
+        "encoder_version": manifest.encoder_version,
+        "previous_active": previous_active,
+    }
+
+
+def cmd_promote(args: argparse.Namespace) -> int:
+    try:
+        result = promote_encoder(args.encoder_dir, models_root=args.models_root)
+    except FileNotFoundError as exc:
+        raise SystemExit(
+            f"promote: could not load encoder artifacts from {args.encoder_dir} "
+            f"(expected manifest.json + weights.npz, written by a prior `train` run): {exc}"
+        ) from exc
+    except ValueError as exc:
+        raise SystemExit(f"promote: {exc}") from exc
+    print(json.dumps(result, indent=2))
+    return 0
+
+
 def main(argv: list[str] | None = None) -> int:
     args = _parse_args(argv)
     if args.command == "train":
         return cmd_train(args)
     if args.command == "detect-anomalies":
         return cmd_detect_anomalies(args)
+    if args.command == "promote":
+        return cmd_promote(args)
     raise SystemExit(f"unknown command: {args.command}")
 
 

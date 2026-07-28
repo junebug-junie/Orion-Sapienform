@@ -425,3 +425,172 @@ def test_trigger_topic_foundry_training_run_client_error_degrades(monkeypatch: p
     result = car.trigger_topic_foundry_training_run()
     assert result["triggered"] is False
     assert result["reason"] == "train_trigger_failed"
+
+
+# --- topic_foundry_client.py: trigger_enrichment_for_run, added 2026-07-28 --
+
+
+def test_trigger_enrichment_for_run_posts_run_enrich_payload(monkeypatch: pytest.MonkeyPatch) -> None:
+    from scripts import topic_foundry_client as tfc
+
+    posted = {}
+
+    def fake_post(url, json=None, timeout=None):
+        posted["url"] = url
+        posted["json"] = json
+        return _FakeResponse(
+            200, {"run_id": FAKE_RUN_ID, "status": "running", "enriched_count": 0, "failed_count": 0}
+        )
+
+    monkeypatch.setattr(tfc.requests, "post", fake_post)
+    result = tfc.trigger_enrichment_for_run(FAKE_BASE_URL, FAKE_RUN_ID, limit=200, force=False)
+    assert posted["url"] == f"{FAKE_BASE_URL}/runs/{FAKE_RUN_ID}/enrich"
+    assert posted["json"] == {"force": False, "limit": 200}
+    assert result["status"] == "running"
+
+
+def test_trigger_enrichment_for_run_omits_limit_when_none(monkeypatch: pytest.MonkeyPatch) -> None:
+    from scripts import topic_foundry_client as tfc
+
+    posted = {}
+
+    def fake_post(url, json=None, timeout=None):
+        posted["json"] = json
+        return _FakeResponse(200, {"run_id": FAKE_RUN_ID, "status": "running"})
+
+    monkeypatch.setattr(tfc.requests, "post", fake_post)
+    tfc.trigger_enrichment_for_run(FAKE_BASE_URL, FAKE_RUN_ID, limit=None)
+    assert posted["json"] == {"force": False}
+
+
+def test_trigger_enrichment_for_run_connection_error_raises_client_error(monkeypatch: pytest.MonkeyPatch) -> None:
+    from scripts import topic_foundry_client as tfc
+
+    def fake_post(url, json=None, timeout=None):
+        raise requests.exceptions.ConnectionError("refused")
+
+    monkeypatch.setattr(tfc.requests, "post", fake_post)
+    with pytest.raises(tfc.TopicFoundryClientError):
+        tfc.trigger_enrichment_for_run(FAKE_BASE_URL, FAKE_RUN_ID)
+
+
+# --- concept_atlas_routes.py: trigger_topic_foundry_enrichment, added 2026-07-28 --
+
+
+def test_trigger_topic_foundry_enrichment_disabled_by_default(monkeypatch: pytest.MonkeyPatch) -> None:
+    from scripts import concept_atlas_routes as car
+
+    monkeypatch.setattr(car.settings, "SUBSTRATE_TOPIC_FOUNDRY_ENRICH_ENABLE", False)
+    result = car.trigger_topic_foundry_enrichment()
+    assert result == {"triggered": False, "reason": "enrich_disabled"}
+
+
+def test_trigger_topic_foundry_enrichment_no_base_url_configured(monkeypatch: pytest.MonkeyPatch) -> None:
+    from scripts import concept_atlas_routes as car
+
+    monkeypatch.setattr(car.settings, "SUBSTRATE_TOPIC_FOUNDRY_ENRICH_ENABLE", True)
+    monkeypatch.setattr(car.settings, "TOPIC_FOUNDRY_BASE_URL", "")
+    result = car.trigger_topic_foundry_enrichment()
+    assert result == {"triggered": False, "reason": "topic_foundry_base_url_not_configured"}
+
+
+def test_trigger_topic_foundry_enrichment_no_completed_run(monkeypatch: pytest.MonkeyPatch) -> None:
+    from scripts import concept_atlas_routes as car
+    from scripts.topic_foundry_client import TopicFoundryClientError
+
+    monkeypatch.setattr(car.settings, "SUBSTRATE_TOPIC_FOUNDRY_ENRICH_ENABLE", True)
+    monkeypatch.setattr(car.settings, "TOPIC_FOUNDRY_BASE_URL", FAKE_BASE_URL)
+
+    def fake_fetch_latest_completed_run(base_url, timeout=None):
+        raise TopicFoundryClientError("no completed run")
+
+    monkeypatch.setattr(car, "fetch_latest_completed_run", fake_fetch_latest_completed_run)
+
+    result = car.trigger_topic_foundry_enrichment()
+    assert result == {"triggered": False, "reason": "no_completed_run"}
+
+
+def test_trigger_topic_foundry_enrichment_success(monkeypatch: pytest.MonkeyPatch) -> None:
+    from scripts import concept_atlas_routes as car
+
+    monkeypatch.setattr(car.settings, "SUBSTRATE_TOPIC_FOUNDRY_ENRICH_ENABLE", True)
+    monkeypatch.setattr(car.settings, "TOPIC_FOUNDRY_BASE_URL", FAKE_BASE_URL)
+    monkeypatch.setattr(car.settings, "SUBSTRATE_TOPIC_FOUNDRY_ENRICH_LIMIT", 150)
+
+    monkeypatch.setattr(
+        car, "fetch_latest_completed_run", lambda base_url, timeout=None: {"run_id": FAKE_RUN_ID}
+    )
+
+    seen_kwargs = {}
+
+    def fake_trigger_enrichment_for_run(base_url, run_id, *, limit=None, force=False, timeout=None):
+        seen_kwargs["base_url"] = base_url
+        seen_kwargs["run_id"] = run_id
+        seen_kwargs["limit"] = limit
+        seen_kwargs["force"] = force
+        return {"run_id": run_id, "status": "running", "enriched_count": 0, "failed_count": 0}
+
+    monkeypatch.setattr(car, "trigger_enrichment_for_run", fake_trigger_enrichment_for_run)
+
+    result = car.trigger_topic_foundry_enrichment()
+    assert result["triggered"] is True
+    assert result["run_id"] == FAKE_RUN_ID
+    assert seen_kwargs == {
+        "base_url": FAKE_BASE_URL,
+        "run_id": FAKE_RUN_ID,
+        "limit": 150,
+        "force": False,
+    }
+
+
+@pytest.mark.parametrize("configured_limit", [0, -5])
+def test_trigger_topic_foundry_enrichment_non_positive_limit_does_not_call_endpoint(
+    monkeypatch: pytest.MonkeyPatch, configured_limit: int
+) -> None:
+    """Review-caught 2026-07-28: the naive `int(x or 0) or None` computation
+    turned a configured limit of 0 into "no cap sent" (unlimited) --
+    backwards from what an operator setting it to 0 almost certainly means.
+    A configured limit of 0 or negative must skip calling the enrichment
+    endpoint at all, not silently fall through to unlimited.
+    """
+    from scripts import concept_atlas_routes as car
+
+    monkeypatch.setattr(car.settings, "SUBSTRATE_TOPIC_FOUNDRY_ENRICH_ENABLE", True)
+    monkeypatch.setattr(car.settings, "TOPIC_FOUNDRY_BASE_URL", FAKE_BASE_URL)
+    monkeypatch.setattr(car.settings, "SUBSTRATE_TOPIC_FOUNDRY_ENRICH_LIMIT", configured_limit)
+    monkeypatch.setattr(
+        car, "fetch_latest_completed_run", lambda base_url, timeout=None: {"run_id": FAKE_RUN_ID}
+    )
+
+    called = []
+
+    def fake_trigger_enrichment_for_run(base_url, run_id, *, limit=None, force=False, timeout=None):
+        called.append((run_id, limit))
+        return {"run_id": run_id, "status": "running", "enriched_count": 0, "failed_count": 0}
+
+    monkeypatch.setattr(car, "trigger_enrichment_for_run", fake_trigger_enrichment_for_run)
+
+    result = car.trigger_topic_foundry_enrichment()
+    assert result["triggered"] is False
+    assert result["reason"] == "enrich_limit_non_positive"
+    assert called == [], "a non-positive configured limit must never reach the endpoint"
+
+
+def test_trigger_topic_foundry_enrichment_client_error_degrades(monkeypatch: pytest.MonkeyPatch) -> None:
+    from scripts import concept_atlas_routes as car
+    from scripts.topic_foundry_client import TopicFoundryClientError
+
+    monkeypatch.setattr(car.settings, "SUBSTRATE_TOPIC_FOUNDRY_ENRICH_ENABLE", True)
+    monkeypatch.setattr(car.settings, "TOPIC_FOUNDRY_BASE_URL", FAKE_BASE_URL)
+    monkeypatch.setattr(
+        car, "fetch_latest_completed_run", lambda base_url, timeout=None: {"run_id": FAKE_RUN_ID}
+    )
+
+    def fake_trigger_enrichment_for_run(base_url, run_id, *, limit=None, force=False, timeout=None):
+        raise TopicFoundryClientError("boom")
+
+    monkeypatch.setattr(car, "trigger_enrichment_for_run", fake_trigger_enrichment_for_run)
+
+    result = car.trigger_topic_foundry_enrichment()
+    assert result["triggered"] is False
+    assert result["reason"] == "enrich_trigger_failed"

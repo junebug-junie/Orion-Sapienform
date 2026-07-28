@@ -39,6 +39,19 @@ Also publishes a bus-native `SystemHealthV1` heartbeat to `orion:system:health` 
 - `GET /kg/edges?run_id=...&q=...&predicate=...&limit=...&offset=...` — list KG edges with filters.
 - `GET /events?limit=...&offset=...&kind=...` — list recent run/enrich/drift alert events.
 
+**`POST /runs/{run_id}/enrich` is now called automatically (2026-07-28).** Confirmed live
+that day: `topic_foundry_segments` had 0 of 22 rows ever enriched — nothing in this codebase
+had ever called this endpoint; it was purely manual/operator-triggered before now.
+`orion-hub`'s scheduler (`services/orion-hub/scripts/main.py`'s
+`substrate_topic_foundry_scheduler_task`) now calls it for the latest completed run on each
+tick, gated by its own `SUBSTRATE_TOPIC_FOUNDRY_ENRICH_ENABLE` flag (ships **disabled** by
+default — see `services/orion-hub/README.md` §5.5). `force=False` on every call, so repeat
+ticks only process segments with no prior enrichment (`enriched_at IS NULL`), never
+re-enriching the same segment. Enrichment also triggers this service's own typed KG edge
+generation as a same-request side effect (`app/services/enrichment.py::_run_enrichment`'s
+trailing `_generate_edges` call) — enabling the Hub flag is what makes `mentions`-predicate
+edges start existing at all, upstream of whatever consumes `GET /kg/edges`.
+
 ## Required env vars
 - `SERVICE_NAME`, `SERVICE_VERSION`, `NODE_NAME`, `LOG_LEVEL`
 - `PORT`

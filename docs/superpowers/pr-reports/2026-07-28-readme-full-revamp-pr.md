@@ -94,6 +94,18 @@ N/A
   - Fix: removed the reference rather than carrying stale debt forward.
   - Evidence: `git ls-files | grep -i hardware.md` empty in both the main checkout and this
     worktree.
+- Finding (post-merge-review, caught by Juniper): the "Laplace's Demon–Lite Backbone"
+  section, kept over from the old README, is a keyword cathedral with zero real
+  implementation — and the revamp's own connective sentence linking it to the Sentience
+  Striving Program's prediction-error signals as "the running code" was an unverified
+  assertion, not a traced fact.
+  - Fix: removed the standalone section and its two TL;DR name-drops; folded the one real
+    idea worth keeping (micro/meso/macro timescales) into SS12's actual, code-grounded
+    prediction-error explanation.
+  - Evidence: `grep -rn -i "laplace"` across all `.py`/`.md`/`.yaml` in the repo returned
+    nothing outside the README itself (and graphify's report, which is only a derived
+    summary of the README); `grep -rn -iE "forecast|demon.lite"` in `orion/`/`services/`
+    returned one unrelated hit (a literal weather API call).
 
 Everything else the review checked passed live verification against current main: all 77
 services in the new service-inventory section diffed 1:1 against

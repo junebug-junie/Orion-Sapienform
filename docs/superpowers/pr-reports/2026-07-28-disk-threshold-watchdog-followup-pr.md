@@ -1,6 +1,6 @@
 # PR report — disk threshold watchdog follow-up: recover stranded crontab fix + expand to 8 mounts
 
-PR: (create at https://github.com/junebug-junie/Orion-Sapienform/pull/new/chore/disk-threshold-watchdog-followup)
+PR: https://github.com/junebug-junie/Orion-Sapienform/pull/1440
 Branch: `chore/disk-threshold-watchdog-followup`
 Status: **DONE**
 
@@ -199,4 +199,4 @@ primary checkout is on the merged commit).
 
 ## PR link
 
-<link>
+https://github.com/junebug-junie/Orion-Sapienform/pull/1440

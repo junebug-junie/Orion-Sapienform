@@ -208,26 +208,22 @@ SYNC_EXACT = frozenset(
         # Worker log level (stdlib->loguru bridge) — must stay in sync so traces are visible.
         "LOG_LEVEL",
         # Plan 2 phi encoder / inner-state features
-        # CHANNEL_PHI_REWARD removed 2026-07-28 (spark-introspector
-        # retirement): only spark-introspector's .env_example ever defined
-        # it, and its backing bus channel (orion:self:phi_reward) was
-        # retired in orion/bus/channels.yaml in the same change.
-        # CHANNEL_INNER_FEATURES is NOT removed -- caught by code review:
-        # orion-substrate-runtime's .env_example also defines it and its own
-        # _inner_state_tick() is a real, live, default-on second producer of
-        # orion:self:inner_features, fully independent of spark-
-        # introspector's phi pipeline.
-        "CHANNEL_INNER_FEATURES",
+        # CHANNEL_INNER_FEATURES/CHANNEL_PHI_REWARD removed 2026-07-28
+        # (spark-introspector retirement): only spark-introspector's
+        # .env_example ever defined either key (confirmed via repo-wide
+        # grep after removing a code-review false positive -- see this same
+        # date's note in orion/bus/channels.yaml's orion:self:inner_features
+        # entry for the full story), and both backing bus channels
+        # (orion:self:inner_features, orion:self:phi_reward) were retired in
+        # orion/bus/channels.yaml in the same change.
         "SUBSTRATE_RUNTIME_URL",
         # Reasoning telemetry adapter (cortex-exec -> orion-thought -> phi, default-off)
         "PUBLISH_REASONING_TELEMETRY",
         "CHANNEL_REASONING_CALL",
-        # ORION_THOUGHT_BASE_URL is NOT removed -- caught by code review:
-        # orion-substrate-runtime's .env_example also defines it and its
-        # worker.py fetches reasoning_activity with it as part of the same
-        # live _inner_state_tick() above, not just spark-introspector's now-
-        # dead seed-v4 feature set.
-        "ORION_THOUGHT_BASE_URL",
+        # ORION_THOUGHT_BASE_URL removed 2026-07-28 (spark-introspector
+        # retirement): its only consumer was spark-introspector's seed-v4
+        # feature set (orion-thought's reasoning_activity projection); zero
+        # other services reference it repo-wide after the service's deletion.
         # Voluntary attention goal-context listener (orion-substrate-runtime)
         "CHANNEL_GOAL_PROPOSAL",
         # Unified-turn harness governor RPC wait budget (hub <-> orion-harness-governor)

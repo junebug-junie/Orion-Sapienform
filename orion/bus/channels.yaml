@@ -721,22 +721,22 @@ channels:
   # a 60min window, most preceded by a fallback-default masquerading as a
   # genuine calm reading).
 
-  - name: "orion:self:inner_features"
-    kind: "telemetry"
-    schema_id: "InnerStateFeaturesV1"
-    message_kind: "self.inner_features.v1"
-    # "orion-spark-introspector" removed 2026-07-28 (spark-introspector
-    # retirement) -- NOT retired outright, caught by code review: this
-    # channel has a second, real, live, default-on producer completely
-    # independent of spark-introspector's phi pipeline --
-    # orion-substrate-runtime's own _inner_state_tick()
-    # (services/orion-substrate-runtime/app/worker.py, gated by
-    # INNER_FEATURES_ENABLED, default true), which explicitly documents
-    # itself in settings.py as "Not the phi encoder/reward pipeline."
-    producer_services: ["orion-substrate-runtime"]
-    consumer_services: ["orion-hub", "orion-sql-writer"]
-    stability: "experimental"
-    since: "2026-07-07"
+  # orion:self:inner_features (schema_id InnerStateFeaturesV1, message_kind
+  # self.inner_features.v1) removed 2026-07-28, spark-introspector
+  # retirement: sole producer (orion-spark-introspector) deleted. The
+  # InnerStateFeaturesV1 schema class itself is NOT deleted -- it is still
+  # imported by orion/telemetry/corpus_gate.py, corpus_sink.py, backfill
+  # scripts, and multiple tests unrelated to spark-introspector; only the
+  # bus channel (and its sole producer) is retired here.
+  #
+  # A code-review pass on this same patch initially found what looked like a
+  # second, independent producer (orion-substrate-runtime's own
+  # _inner_state_tick()) and this channel was widened to keep that producer
+  # -- traced back and reverted: that code existed only as uncommitted,
+  # untracked content sitting in the shared worktree this patch was authored
+  # in (confirmed via `git log --all`, zero commits anywhere in this repo's
+  # history reference it), not real code in this repo. Full retirement
+  # restored once the contamination was found and removed from this branch.
 
   # orion:self:phi_reward (schema_id PhiIntrinsicRewardV1, message_kind
   # self.phi_reward.v1) removed 2026-07-28, spark-introspector retirement:

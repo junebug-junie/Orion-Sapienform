@@ -35,9 +35,6 @@ from orion.substrate.execution_loop.constants import (
 )
 from orion.substrate.execution_loop.pipeline import process_execution_grammar_events
 from orion.substrate.execution_loop.projection import empty_execution_projection
-
-from .grammar_truth import build_substrate_grammar_truth
-from .inner_state_features import RollingRobustScaler, build_inner_state_features
 from orion.substrate.transport_loop.constants import (
     TRANSPORT_BUS_PROJECTION_ID,
     TRANSPORT_GRAMMAR_CURSOR_NAME,
@@ -248,14 +245,6 @@ class BiometricsSubstrateWorker:
         self._latest_drive_audit: DriveAuditV1 | None = None
         self._latest_drive_audit_at: datetime | None = None
         self._brain_frame_seq: int = 0
-        # Inner-state features (extracted from orion-spark-introspector 2026-07-28,
-        # see app/inner_state_features.py's module docstring). One scaler/streak
-        # per process, same lifetime as the old service's module-level globals.
-        self._inner_state_scaler = RollingRobustScaler(
-            maxlen=self._settings.inner_features_scaler_maxlen
-        )
-        self._inner_state_prev_felt: tuple[float, ...] | None = None
-        self._inner_state_degenerate_streak: int = 0
 
     @property
     def bus(self):
@@ -292,9 +281,6 @@ class BiometricsSubstrateWorker:
                 self._endogenous_curiosity_loop(), name="substrate-endogenous-curiosity"
             ),
             asyncio.create_task(self._brain_frame_loop(), name="substrate-brain-frame"),
-            asyncio.create_task(
-                self._inner_state_features_loop(), name="substrate-inner-state-features"
-            ),
         ]
         # Drive-state listener: two independent consumers share this one bus
         # subscription -- (a) the embodiment C producer (embodiment_c_tick_enabled,
@@ -381,109 +367,6 @@ class BiometricsSubstrateWorker:
                 await asyncio.wait_for(
                     self._stop.wait(),
                     timeout=float(self._settings.health_check_interval_sec),
-                )
-            except asyncio.TimeoutError:
-                continue
-            except asyncio.CancelledError:
-                break
-
-    async def _fetch_reasoning_activity(self) -> dict | None:
-        """HTTP fetch to orion-thought's reasoning_activity projection --
-        the one input to inner-state features that isn't local to this
-        service. Fail-closed: any error returns None, same contract as
-        spark-introspector's fetch_reasoning_activity() before this move."""
-        s = self._settings
-        if not s.inner_features_enabled:
-            return None
-
-        def _get() -> dict | None:
-            import requests
-
-            url = f"{s.orion_thought_base_url}/projections/reasoning_activity"
-            resp = requests.get(url, timeout=s.substrate_read_timeout_sec)
-            resp.raise_for_status()
-            data = resp.json()
-            if not isinstance(data, dict) or not data.get("ok"):
-                return None
-            projection = data.get("projection")
-            return projection if isinstance(projection, dict) else None
-
-        try:
-            return await asyncio.to_thread(_get)
-        except Exception:
-            logger.debug("substrate_inner_state_reasoning_activity_fetch_failed", exc_info=True)
-            return None
-
-    async def _inner_state_tick(self) -> None:
-        """One InnerStateFeaturesV1 assembly + publish. See
-        app/inner_state_features.py's module docstring for what this is and
-        why it lives here now rather than in orion-spark-introspector."""
-        s = self._settings
-        tick_now = datetime.now(timezone.utc)
-        gt = build_substrate_grammar_truth(self._store)
-        trajectory_model = self._store.load_execution_trajectory(EXECUTION_TRAJECTORY_PROJECTION_ID)
-        trajectory_projection = trajectory_model.model_dump(mode="json") if trajectory_model else None
-        reasoning_activity_projection = await self._fetch_reasoning_activity()
-
-        health = gt.get("reducer_health_by_name", {}).get("execution_trajectory") or {}
-        degraded_reasons = gt.get("degraded_reasons") or []
-        grammar_degraded = (
-            not gt.get("enabled_reducers", {}).get("execution_trajectory")
-            or health.get("classification") in {"dead_no_heartbeat", "blocked_on_event", "cursor_commit_failing"}
-            or any(
-                isinstance(r, str) and r.startswith(f"cursor_lag:{EXECUTION_GRAMMAR_CURSOR_NAME}")
-                for r in degraded_reasons
-            )
-        )
-
-        inner, self._inner_state_prev_felt, self._inner_state_degenerate_streak = (
-            build_inner_state_features(
-                self._inner_state_scaler,
-                features_version=s.inner_features_version,
-                grammar_degraded=grammar_degraded,
-                degraded_reasons=degraded_reasons,
-                trajectory_projection=trajectory_projection,
-                reasoning_activity_projection=reasoning_activity_projection,
-                exec_trajectory_max_age_sec=int(s.inner_features_exec_trajectory_max_age_sec),
-                now=tick_now,
-                prev_felt=self._inner_state_prev_felt,
-                degenerate_streak=self._inner_state_degenerate_streak,
-                degenerate_limit=int(s.inner_features_degenerate_streak_limit),
-            )
-        )
-
-        if self._bus is None:
-            return
-        try:
-            from orion.core.bus.bus_schemas import BaseEnvelope
-            from orion.core.bus.resilience import publish_with_reconnect
-
-            env = BaseEnvelope(
-                kind="orion.self.inner_features.v1",
-                source=self._service_ref(),
-                correlation_id=uuid4(),
-                payload=inner.model_dump(mode="json"),
-            )
-            await publish_with_reconnect(
-                self._bus,
-                s.channel_inner_features,
-                env,
-                log_label="substrate_inner_state_features",
-            )
-        except Exception:
-            logger.exception("substrate_inner_state_features_publish_failed")
-
-    async def _inner_state_features_loop(self) -> None:
-        s = self._settings
-        while not self._stop.is_set():
-            if s.inner_features_enabled:
-                try:
-                    await self._inner_state_tick()
-                except Exception:
-                    logger.exception("substrate_inner_state_tick_failed")
-            try:
-                await asyncio.wait_for(
-                    self._stop.wait(), timeout=float(s.inner_state_tick_interval_sec)
                 )
             except asyncio.TimeoutError:
                 continue

@@ -75,6 +75,7 @@ def _build_candidate(
     *,
     template_key: str,
     template: ProposalTemplateV1,
+    field: FieldStateV1,
     field_tick_id: str,
     attention: FieldAttentionFrameV1 | None,
     pressures: dict[str, float],
@@ -86,7 +87,7 @@ def _build_candidate(
         policy=policy,
     )
     urgency = proposal_urgency(field_pressures=pressures, template=template)
-    confidence = proposal_confidence(field_pressures=pressures, template=template)
+    confidence = proposal_confidence(field=field, field_pressures=pressures, template=template)
     priority = proposal_priority(
         base_priority=template.base_priority,
         match_score=match_score,
@@ -214,6 +215,7 @@ def build_proposal_frame(
             _build_candidate(
                 template_key=template_key,
                 template=template,
+                field=field,
                 field_tick_id=field.tick_id,
                 attention=attention,
                 pressures=pressures,

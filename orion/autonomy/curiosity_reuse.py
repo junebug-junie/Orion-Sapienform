@@ -3,6 +3,7 @@ from __future__ import annotations
 from datetime import datetime, timezone
 from typing import Sequence
 
+from orion.autonomy.episode_fetch import SurpriseSource, resolve_surprise
 from orion.autonomy.models import ActionOutcomeRefV1, FetchedArticleRefV1
 from orion.autonomy.salience import iter_gap_section_labels
 from orion.core.schemas.frontier_curiosity import FrontierInvocationSignalV1
@@ -32,9 +33,21 @@ def select_reusable_followup(
     return None
 
 
-def outcome_from_followup(followup: CuriosityFollowupV1, *, run_id: str) -> ActionOutcomeRefV1:
+def outcome_from_followup(
+    followup: CuriosityFollowupV1,
+    *,
+    run_id: str,
+    surprise_source: SurpriseSource | None = None,
+) -> ActionOutcomeRefV1:
     """Rebuild an ActionOutcomeRefV1 from a world-pulse curiosity followup so the
-    reactive episode-journal path can reuse it without a second fetch."""
+    reactive episode-journal path can reuse it without a second fetch.
+
+    `surprise` here is ambient mesh-wide surprise (`surprise_source`, when supplied),
+    not a signal about this specific reuse -- reusing already-fetched content is
+    always a real success with nothing "surprising" about the reuse itself, so
+    `success=True` above is unaffected. `None`/no `surprise_source` preserves the
+    old hardcoded `0.0` exactly.
+    """
     articles = [
         FetchedArticleRefV1(
             url=a.url, title=a.title, description=a.description, salience=a.salience
@@ -46,7 +59,7 @@ def outcome_from_followup(followup: CuriosityFollowupV1, *, run_id: str) -> Acti
         kind=_FETCH_KIND,
         summary=f"reused {len(articles)} article(s) from world-pulse gap fetch",
         success=True,
-        surprise=0.0,
+        surprise=resolve_surprise(surprise_source, success=True),
         observed_at=datetime.now(timezone.utc),
         query=followup.query,
         articles=articles,

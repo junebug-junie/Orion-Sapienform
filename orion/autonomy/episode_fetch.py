@@ -11,6 +11,27 @@ from orion.autonomy.salience import score_article_salience
 
 _FETCH_KIND = "web.fetch.readonly"
 
+# Real, ambient, mesh-wide surprise signal -- optional dependency injection so
+# this stays a pure function with no DB access of its own (mirrors
+# `fetch_backend`'s pattern). Caller (`orion-spark-concept-induction`'s
+# `bus_worker.py`) supplies a real callable backed by
+# `orion.substrate.bus_synaptic_surprise.latest_bus_synaptic_prediction_error()`.
+# `None` (the default) preserves the old success/fail-proxy behavior exactly --
+# see `orion/autonomy/models.py::ActionOutcomeRefV1`'s docstring for why that
+# proxy is fake and this real signal was added 2026-07-28.
+SurpriseSource = Callable[[], "float | None"]
+
+
+def resolve_surprise(surprise_source: SurpriseSource | None, *, success: bool) -> float:
+    if surprise_source is not None:
+        try:
+            real = surprise_source()
+        except Exception:
+            real = None
+        if real is not None:
+            return real
+    return 0.0 if success else 1.0
+
 
 @dataclass(frozen=True)
 class EpisodeFetchRequest:
@@ -71,11 +92,11 @@ async def execute_readonly_fetch(
     req: EpisodeFetchRequest,
     *,
     fetch_backend: Callable[..., Awaitable[dict]] = default_fetch_backend,
+    surprise_source: SurpriseSource | None = None,
 ) -> ActionOutcomeRefV1:
     action_id = f"fetch-{req.spawned_correlation_id}-{uuid.uuid4().hex[:8]}"
     observed_at = datetime.now(timezone.utc)
     success = False
-    surprise = 1.0
     summary = "fetch failed"
     articles: list[FetchedArticleRefV1] = []
     aggregate_salience = 0.0
@@ -86,7 +107,6 @@ async def execute_readonly_fetch(
             result = {}
         success = bool(result.get("success"))
         summary = _build_summary(result)
-        surprise = 0.0 if success else 1.0
         articles = _parse_articles(result, gap_terms=set(req.gap_terms))
         aggregate_salience = max((a.salience for a in articles), default=0.0)
     except Exception as exc:
@@ -94,10 +114,11 @@ async def execute_readonly_fetch(
         # success=True with a "fetch failed" summary if parsing/scoring raised
         # after success was assigned.
         success = False
-        surprise = 1.0
         articles = []
         aggregate_salience = 0.0
         summary = f"fetch failed: {exc}"
+
+    surprise = resolve_surprise(surprise_source, success=success)
 
     outcome = ActionOutcomeRefV1(
         action_id=action_id,

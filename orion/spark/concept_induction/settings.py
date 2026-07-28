@@ -23,6 +23,18 @@ class ConceptSettings(BaseSettings):
     orion_bus_enabled: bool = Field(True, alias="ORION_BUS_ENABLED")
     orion_bus_enforce_catalog: bool = Field(False, alias="ORION_BUS_ENFORCE_CATALOG")
 
+    # Real, ambient bus_synaptic surprise signal for ActionOutcomeEmitV1.surprise
+    # (episode_fetch.py/policy_act.py/curiosity_reuse.py -- see
+    # orion/substrate/bus_synaptic_surprise.py). Same env key name
+    # services/orion-cortex-exec already uses for this class of read (Postgres
+    # `conjourney`), reused here for consistency rather than a fresh key. The
+    # class-level default here is intentionally blank/opt-in (this service has
+    # no other Postgres dependency, so tests/fresh checkouts stay fully inert
+    # by construction) -- the checked-in `.env_example` ships it filled in and
+    # ON, matching cortex-exec's own convention for this exact key; blank
+    # falls back to the pre-2026-07-28 success/fail-proxy behavior.
+    action_outcome_db_url: str = Field("", alias="ORION_ACTION_OUTCOME_DB_URL")
+
     # Channels
     intake_channels: List[str] = Field(
         default_factory=lambda: [

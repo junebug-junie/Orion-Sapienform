@@ -632,7 +632,6 @@ def _attach_mind_evidence_facets(
 ) -> None:
     """Attach compact evidence inputs for Mind LLM synthesis (Orch prepares; Mind thinks)."""
     plan_ctx = plan_request.context if isinstance(plan_request.context, dict) else {}
-    metadata = plan_ctx.get("metadata") if isinstance(plan_ctx.get("metadata"), dict) else {}
 
     recall_bundle = plan_ctx.get("recall_bundle") if isinstance(plan_ctx.get("recall_bundle"), dict) else None
     if recall_bundle is not None:
@@ -642,41 +641,14 @@ def _attach_mind_evidence_facets(
             "citations": recall_bundle.get("citations") if isinstance(recall_bundle.get("citations"), list) else [],
         }
 
-    # KNOWN-DEAD as of 2026-07-16: neither `plan_ctx["chat_autonomy_state_v2"]`
-    # nor `metadata["autonomy_state"]` is ever populated anywhere in
-    # orion-cortex-orch (traced during the drive_state_compact work below --
-    # see orion/autonomy/drives_and_autonomy_retrospective.md §8), so this
-    # block is unreachable content in practice, not merely superseded. Left
-    # in place rather than deleted because retiring it is a separate,
-    # untraced decision (something upstream may be relying on the key
-    # existing even if empty); `drive_state_compact` below is the live
-    # replacement for Mind's drive/tension awareness.
-    autonomy = plan_ctx.get("chat_autonomy_state_v2")
-    if not isinstance(autonomy, dict):
-        autonomy = metadata.get("autonomy_state") if isinstance(metadata.get("autonomy_state"), dict) else None
-    if isinstance(autonomy, dict) and autonomy:
-        facets["autonomy_compact"] = {
-            key: autonomy.get(key)
-            for key in (
-                "attention_items",
-                "candidate_impulses",
-                "inhibited_impulses",
-                "last_action_outcomes",
-                "unknowns",
-                "evidence_refs",
-                "goal_headlines",
-            )
-            if autonomy.get(key) is not None
-        }
-
-    # Live replacement for the dead autonomy_compact block above: DriveEngine's
-    # `drive_state`, bounded-fetched from Postgres in
-    # prepare_plan_context_for_mind_projection() and stashed onto
-    # ctx["drive_state_compact"] before this function runs. NOTE: this only
-    # covers the orch-triggered Mind path -- orion-thought's independent
-    # "light Mind" path (services/orion-thought/app/mind_enrichment.py
-    # build_light_mind_request) has its own separate MindRunRequestV1
-    # construction and does not include this facet; known gap, not yet fixed.
+    # Retired 2026-07-28 (was KNOWN-DEAD as of 2026-07-16): the
+    # `plan_ctx["chat_autonomy_state_v2"]`/`metadata["autonomy_state"]`
+    # `autonomy_compact` facet built here was confirmed still unreachable
+    # (re-checked repo-wide: no writer anywhere assigns either key) -- kept
+    # running every turn for over two weeks producing an always-empty facet.
+    # Removed outright per the charter's "kill means kill" rule rather than
+    # left running-but-unused. `drive_state_compact` below is the real,
+    # live replacement for Mind's drive/tension awareness.
     drive_state = plan_ctx.get("drive_state_compact")
     if isinstance(drive_state, dict) and drive_state:
         facets["drive_state_compact"] = dict(drive_state)

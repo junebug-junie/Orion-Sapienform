@@ -35,10 +35,6 @@ def test_build_mind_run_request_attaches_evidence_facets() -> None:
         ),
         context={
             "recall_bundle": {"fragments": [{"snippet": "memory", "source": "journal"}]},
-            "chat_autonomy_state_v2": {
-                "attention_items": [{"summary": "notice warmth"}],
-                "candidate_impulses": [],
-            },
             "social_turn_policy": {"mode": "warm"},
             "chat_situation_summary": {"headline": "evening"},
             "orion_identity_summary": ["Orion is a cognitive presence."],
@@ -71,19 +67,23 @@ def test_build_mind_run_request_attaches_evidence_facets() -> None:
     )
     facets = (req.snapshot_inputs or {}).get("facets") or {}
     assert facets.get("recall_bundle", {}).get("fragments")
-    assert facets.get("autonomy_compact", {}).get("attention_items")
     assert facets.get("social_compact", {}).get("social_turn_policy")
     assert facets.get("situation_compact", {}).get("chat_situation_summary")
     assert facets.get("identity_background", {}).get("background_identity") is True
     assert facets.get("cognitive_projection")
+    # Retired 2026-07-28: the chat_autonomy_state_v2/autonomy_state-sourced
+    # autonomy_compact facet was confirmed unreachable repo-wide (no writer
+    # anywhere assigns either key) and removed outright, not merely excluded.
+    assert "autonomy_compact" not in facets
 
 
 # --- drive_state_compact: DriveEngine facet (Mind previously only read the dead
 # chat_autonomy_state_v2 / autonomy_state keys -- see
 # orion/autonomy/drives_and_autonomy_retrospective.md section 8). These tests cover the
 # new bounded, fail-open drive_audits Postgres read plus the sync glue that attaches it
-# as a facet, and confirm the existing (still-dead-on-purpose) autonomy_compact path is
-# completely unchanged. ---
+# as a facet. The old autonomy_compact path itself was removed 2026-07-28 -- see
+# test above and test_build_mind_run_request_attaches_drive_state_facet_and_leaves_
+# autonomy_compact_untouched below, which now asserts absence instead of "unchanged". ---
 
 
 def test_fetch_drive_state_facet_success() -> None:
@@ -298,8 +298,8 @@ def test_fetch_drive_state_facet_no_dsn_configured_degrades_gracefully() -> None
     assert diag["ok"] is False
 
 
-def test_build_mind_run_request_attaches_drive_state_facet_and_leaves_autonomy_compact_untouched() -> None:
-    """(4) new facet populated correctly; (5)/(e) autonomy_compact regression guard."""
+def test_build_mind_run_request_attaches_drive_state_facet_and_omits_autonomy_compact() -> None:
+    """(4) new facet populated correctly; (5)/(e) autonomy_compact retirement guard."""
     _orch_prep()
     from app.mind_runtime import build_mind_run_request
     from orion.schemas.cortex.contracts import CortexClientContext, CortexClientRequest, LLMMessage
@@ -311,10 +311,6 @@ def test_build_mind_run_request_attaches_drive_state_facet_and_leaves_autonomy_c
             steps=[ExecutionStep(verb_name="chat_general", step_name="noop", order=0, services=[])],
         ),
         context={
-            "chat_autonomy_state_v2": {
-                "attention_items": [{"summary": "notice warmth"}],
-                "candidate_impulses": [],
-            },
             "drive_state_compact": {
                 "dominant_drive": "coherence",
                 "active_drives": {"coherence": 0.7},
@@ -338,8 +334,8 @@ def test_build_mind_run_request_attaches_drive_state_facet_and_leaves_autonomy_c
     facets = (req.snapshot_inputs or {}).get("facets") or {}
     assert facets.get("drive_state_compact", {}).get("dominant_drive") == "coherence"
     assert facets.get("drive_state_compact", {}).get("summary") == "Coherence pressure elevated."
-    # Unchanged: still reads the (still-dead) chat_autonomy_state_v2 key, same shape as before.
-    assert facets.get("autonomy_compact", {}).get("attention_items")
+    # Retired 2026-07-28: autonomy_compact is no longer built at all.
+    assert "autonomy_compact" not in facets
 
 
 def test_build_mind_run_request_omits_drive_state_facet_when_absent() -> None:

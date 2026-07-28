@@ -83,24 +83,6 @@ def _projection_items(projection: dict[str, Any], *, limit: int) -> list[dict[st
     return out[:limit]
 
 
-def _compact_autonomy(autonomy: dict[str, Any]) -> dict[str, Any]:
-    keys = (
-        "attention_items",
-        "candidate_impulses",
-        "inhibited_impulses",
-        "last_action_outcomes",
-        "unknowns",
-        "evidence_refs",
-        "goal_headlines",
-    )
-    compact: dict[str, Any] = {}
-    for key in keys:
-        value = autonomy.get(key)
-        if value:
-            compact[key] = value
-    return compact
-
-
 def _compact_social(ctx: dict[str, Any]) -> dict[str, Any]:
     social_keys = (
         "social_inspection_snapshot",
@@ -201,20 +183,6 @@ def build_evidence_pack(
                 },
             )
 
-    autonomy = facets.get("autonomy_compact")
-    autonomy_fields = 0
-    if isinstance(autonomy, dict):
-        compact = _compact_autonomy(autonomy)
-        autonomy_fields = len(compact)
-        if compact:
-            _append_item(
-                items,
-                source_kind="autonomy_compact",
-                text=json.dumps(compact, default=str)[:1800],
-                label="autonomy state compact",
-                metadata={"background": False},
-            )
-
     social = facets.get("social_compact")
     social_fields = 0
     if isinstance(social, dict) and social:
@@ -258,7 +226,6 @@ def build_evidence_pack(
             "message_count": len(messages_tail),
             "recall_fragment_count": len(fragments),
             "projection_item_count": projection_count,
-            "autonomy_fields_seen": autonomy_fields,
             "social_fields_seen": social_fields,
             "total_chars": total_chars,
             "truncated_for_budget": total_chars >= max_total_chars,

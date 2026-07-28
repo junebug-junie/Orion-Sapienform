@@ -4,8 +4,18 @@ Offline service that federates Fuseki graph data, clusters it with Leiden commun
 
 ## Architecture
 
+`orion:rdf:enqueue` (bus, listened to by `stale_listener.py`) was retired
+2026-07-28 along with `orion-rdf-writer` -- live-verified dead weight (empty
+Redis stream, empty `stale_queue`/`compression_artifacts`/`compression_jobs`
+tables, SPARQL federator pointed at a Fuseki container that no longer
+exists). `orion:graph:compression:stale` (explicit staleness marks from other
+services) is the only remaining trigger, and as of this writing nothing in
+the repo publishes to it either -- this worker currently has no live trigger
+path. See `orion/bus/channels.yaml`'s `orion:rdf:enqueue` entry for the full
+writeup.
+
 ```
-orion:rdf:enqueue (bus)
+orion:graph:compression:stale (bus, explicit marks -- currently no producers)
         │
         ▼
 stale_listener.py   ──► stale_queue (Postgres)

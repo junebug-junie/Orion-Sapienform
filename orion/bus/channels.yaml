@@ -759,34 +759,39 @@ channels:
   - name: "orion:rdf:enqueue"
     kind: "request"
     schema_id: "RdfWriteRequest"
-    producer_services: ["orion-cortex-exec", "orion-spark-concept-induction"]
-    consumer_services: ["orion-graph-compression"]
+    # orion-rdf-writer removed 2026-07-28 (this PR): the only real consumer
+    # of RdfWriteRequest is gone. orion-graph-compression's listed consumption
+    # was itself dead weight -- live-verified: Redis stream key does not
+    # exist (zero messages ever), stale_queue/compression_artifacts/
+    # compression_jobs Postgres tables are all empty (zero compression output,
+    # ever), and its SPARQL federator points at orion-athena-fuseki, a
+    # container that no longer exists. orion-spark-concept-induction was
+    # listed as a producer but never actually published here (grep found zero
+    # call sites) -- stale entry predating this cleanup. The one real
+    # producer, orion-cortex-exec's self_concept_induce/reflect verbs, wrote
+    # to graph names ("orion:self:induced", "orion:self:reflective") that
+    # stale_listener.py's own _GRAPH_TO_SCOPE map didn't even recognize --
+    # publish calls removed from self_study.py in the same patch.
+    producer_services: []
+    consumer_services: []
     stability: "experimental"
     since: "2026-01-08"
-    # orion-vision-scribe removed as a producer 2026-07-23: its Fuseki
-    # `orion:vision` write was killed outright (live-verified pure
-    # redundancy with Postgres vision_events -- no migration, nothing to
-    # preserve). See services/orion-vision-scribe/README.md.
 
   - name: "orion:rdf:confirm"
     kind: "result"
     schema_id: "RdfWriteResult"
+    # orion-rdf-writer removed 2026-07-28 (this PR): sole producer gone.
     producer_services: []
-    consumer_services: ["orion-cortex-exec"]
+    consumer_services: []
     stability: "experimental"
-    # orion-vision-scribe removed as a consumer 2026-07-23: it never
-    # actually subscribed to this channel (no CHANNEL_RDF_CONFIRM setting
-    # ever existed in its settings.py, per git history) -- stale/aspirational
-    # entry predating this PR, cleaned up alongside the real orion:rdf:enqueue
-    # producer removal since both concern vision-scribe's now-fully-removed
-    # RDF write.
     since: "2026-01-08"
 
   - name: "orion:rdf:error"
     kind: "event"
     schema_id: "SystemErrorV1"
+    # orion-rdf-writer removed 2026-07-28 (this PR): sole producer gone.
     producer_services: []
-    consumer_services: ["*"]
+    consumer_services: []
     stability: "experimental"
     since: "2026-01-08"
 

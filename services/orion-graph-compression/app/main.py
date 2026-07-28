@@ -76,7 +76,6 @@ async def lifespan(app: FastAPI):
                 run_stale_listener(
                     bus=bus,
                     store=store,
-                    channel_rdf_enqueue=_settings.channel_rdf_enqueue,
                     channel_stale=_settings.channel_graph_compression_stale,
                 ),
                 name="gc-stale-listener",

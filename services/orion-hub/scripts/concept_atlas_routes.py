@@ -31,11 +31,13 @@ from .topic_foundry_client import (
     TopicFoundryClientError,
     create_dataset,
     create_model,
+    fetch_latest_completed_run,
     fetch_mention_edges_for_run,
     fetch_run_topics_and_keywords,
     fetch_segments_for_run,
     list_datasets,
     list_models,
+    trigger_enrichment_for_run,
     trigger_training_run,
 )
 
@@ -246,6 +248,83 @@ def trigger_topic_foundry_training_run() -> dict[str, Any]:
         return {"triggered": False, "reason": "train_trigger_failed", "error": str(exc)}
     except Exception as exc:  # pragma: no cover - defensive, never let a client bug crash the scheduler
         logger.warning("topic_foundry_train_trigger_unexpected_error error=%s", exc)
+        return {"triggered": False, "reason": "unexpected_error", "error": str(exc)}
+
+
+def trigger_topic_foundry_enrichment() -> dict[str, Any]:
+    """Scheduler entry point, added 2026-07-28: trigger enrichment for
+    whatever the latest COMPLETED run currently is.
+
+    Confirmed live 2026-07-28: 0 of 22 real `topic_foundry_segments` rows had
+    ever been enriched -- nothing in this codebase had ever called
+    `POST /runs/{run_id}/enrich`. That endpoint also generates topic-foundry's
+    typed KG edges as a same-request side effect on its side (see
+    `app/services/enrichment.py::_run_enrichment`'s trailing
+    `_generate_edges` call), which is what
+    `orion/substrate/adapters/topic_foundry.py`'s mention-edge -> EntityNodeV1
+    wiring depends on having real data to ingest.
+
+    Gated by its own flag (`SUBSTRATE_TOPIC_FOUNDRY_ENRICH_ENABLE`), separate
+    from `SUBSTRATE_TOPIC_FOUNDRY_SCHEDULER_ENABLED` -- real LLM compute cost
+    per un-enriched segment, so it gets its own explicit go-ahead rather than
+    riding on "the scheduler is already on."
+
+    Fire-and-forget, same shape as `trigger_topic_foundry_training_run()`
+    above: enrichment runs as a background task on topic-foundry's side, so
+    this returns as soon as it's queued. The run enriched here is very
+    plausibly a prior tick's completed run, not the one just triggered by
+    `trigger_topic_foundry_training_run()` in this same tick (training takes
+    real time) -- that's expected, matching the scheduler's existing
+    "may act on a previous tick's run" pattern for ingestion.
+
+    Never raises. Returns a summary dict, always including `"triggered": bool`.
+    """
+    if not bool(getattr(settings, "SUBSTRATE_TOPIC_FOUNDRY_ENRICH_ENABLE", False)):
+        return {"triggered": False, "reason": "enrich_disabled"}
+
+    base_url = str(getattr(settings, "TOPIC_FOUNDRY_BASE_URL", "") or "").strip()
+    if not base_url:
+        return {"triggered": False, "reason": "topic_foundry_base_url_not_configured"}
+
+    try:
+        run = fetch_latest_completed_run(base_url)
+    except TopicFoundryClientError as exc:
+        logger.info("topic_foundry_enrich_no_completed_run reason=%s", exc)
+        return {"triggered": False, "reason": "no_completed_run"}
+    except Exception as exc:  # pragma: no cover - defensive, never let a client bug crash the scheduler
+        logger.warning("topic_foundry_enrich_latest_run_lookup_unexpected_error error=%s", exc)
+        return {"triggered": False, "reason": "unexpected_error", "error": str(exc)}
+
+    run_id = run.get("run_id")
+    if not run_id:
+        return {"triggered": False, "reason": "no_completed_run"}
+
+    # Review-caught 2026-07-28: `int(x or 0) or None` turns a deliberately
+    # configured `SUBSTRATE_TOPIC_FOUNDRY_ENRICH_LIMIT=0` into `None` (no
+    # cap sent at all) -- exactly backwards from what an operator setting it
+    # to 0 almost certainly means ("pause without touching the enable
+    # flag"). The server can't express "cap to exactly 0" either
+    # (`_run_enrichment`'s own `if limit:` treats 0 as falsy = unlimited,
+    # same bug shape one layer down) -- so 0/negative is handled here by not
+    # calling the endpoint at all, the only way to honor "process nothing".
+    raw_limit = int(getattr(settings, "SUBSTRATE_TOPIC_FOUNDRY_ENRICH_LIMIT", 200) or 0)
+    if raw_limit <= 0:
+        return {"triggered": False, "reason": "enrich_limit_non_positive", "run_id": run_id}
+    limit = raw_limit
+    try:
+        result = trigger_enrichment_for_run(base_url, str(run_id), limit=limit, force=False)
+        return {
+            "triggered": True,
+            "run_id": run_id,
+            "status": result.get("status"),
+            "enriched_count": result.get("enriched_count"),
+            "failed_count": result.get("failed_count"),
+        }
+    except TopicFoundryClientError as exc:
+        logger.warning("topic_foundry_enrich_trigger_failed run_id=%s error=%s", run_id, exc)
+        return {"triggered": False, "reason": "enrich_trigger_failed", "error": str(exc)}
+    except Exception as exc:  # pragma: no cover - defensive, never let a client bug crash the scheduler
+        logger.warning("topic_foundry_enrich_trigger_unexpected_error run_id=%s error=%s", run_id, exc)
         return {"triggered": False, "reason": "unexpected_error", "error": str(exc)}
 
 

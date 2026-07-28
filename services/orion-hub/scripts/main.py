@@ -601,15 +601,19 @@ async def startup_event():
         )
 
         async def _run_substrate_topic_foundry_scheduler() -> None:
-            # Two independent steps per tick, not a blocking call chain: (1)
-            # trigger a training run for the current rolling window (async on
-            # topic-foundry's own side -- this returns as soon as the run is
-            # queued, or immediately if spec_hash dedup finds an identical
-            # run already exists), (2) ingest whatever the latest COMPLETED
-            # run currently is. Step 2 may ingest a run from a PREVIOUS tick
-            # (training takes real time), or find nothing new -- both are
-            # expected, not errors. See
-            # trigger_topic_foundry_training_run()'s docstring.
+            # Three independent steps per tick, not a blocking call chain:
+            # (1) trigger a training run for the current rolling window
+            # (async on topic-foundry's own side -- this returns as soon as
+            # the run is queued, or immediately if spec_hash dedup finds an
+            # identical run already exists), (2) trigger enrichment for
+            # whatever the latest COMPLETED run currently is (added
+            # 2026-07-28, own SUBSTRATE_TOPIC_FOUNDRY_ENRICH_ENABLE gate --
+            # also async on topic-foundry's side), (3) ingest whatever the
+            # latest COMPLETED run currently is. Steps 2/3 may act on a run
+            # from a PREVIOUS tick (training/enrichment both take real time),
+            # or find nothing new -- both are expected, not errors. See
+            # trigger_topic_foundry_training_run()'s and
+            # trigger_topic_foundry_enrichment()'s docstrings.
             while True:
                 await asyncio.sleep(topic_foundry_interval_sec)
                 try:
@@ -625,6 +629,23 @@ async def startup_event():
                     )
                 except Exception as exc:  # advisory runtime loop; never crash service startup
                     logger.warning("substrate_topic_foundry_scheduler_trigger_error error=%s", exc)
+
+                try:
+                    enrich_summary = await asyncio.to_thread(
+                        concept_atlas_routes_runtime.trigger_topic_foundry_enrichment
+                    )
+                    logger.info(
+                        "substrate_topic_foundry_scheduler_enrich_tick triggered=%s run_id=%s status=%s reason=%s "
+                        "enriched_count=%s failed_count=%s",
+                        enrich_summary.get("triggered"),
+                        enrich_summary.get("run_id"),
+                        enrich_summary.get("status"),
+                        enrich_summary.get("reason"),
+                        enrich_summary.get("enriched_count"),
+                        enrich_summary.get("failed_count"),
+                    )
+                except Exception as exc:  # advisory runtime loop; never crash service startup
+                    logger.warning("substrate_topic_foundry_scheduler_enrich_error error=%s", exc)
 
                 try:
                     ingest_summary = await asyncio.to_thread(

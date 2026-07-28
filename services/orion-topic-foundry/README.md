@@ -55,6 +55,18 @@ docstring). `asks_about`/`claims_about`/`next_step` are unaffected by any of thi
 had a bus consumer either, and still don't) — they remain queryable via the two GET routes
 above, just not wired into the substrate graph yet.
 
+**`POST /runs/{run_id}/enrich` is now called automatically (2026-07-28).** Confirmed live
+that day: `topic_foundry_segments` had 0 of 22 rows ever enriched — nothing in this codebase
+had ever called this endpoint; it was purely manual/operator-triggered before now, meaning
+none of the KG edges described above (including the `mentions` edges Concept Atlas now
+consumes) had any real data to work with. `orion-hub`'s scheduler
+(`services/orion-hub/scripts/main.py`'s `substrate_topic_foundry_scheduler_task`) now calls
+it for the latest completed run on each tick, gated by its own
+`SUBSTRATE_TOPIC_FOUNDRY_ENRICH_ENABLE` flag (**`true`**, flipped on live 2026-07-28 per
+explicit operator go-ahead — see `services/orion-hub/README.md` §5.5). `force=False` on
+every call, so repeat ticks only process segments with no prior enrichment
+(`enriched_at IS NULL`), never re-enriching the same segment.
+
 ## Required env vars
 - `SERVICE_NAME`, `SERVICE_VERSION`, `NODE_NAME`, `LOG_LEVEL`
 - `PORT`

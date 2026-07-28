@@ -22,7 +22,7 @@ exception escape -- callers (route handlers) should only ever need to catch
 from __future__ import annotations
 
 import logging
-from typing import Any
+from typing import Any, Optional
 
 import requests
 
@@ -254,6 +254,44 @@ def trigger_training_run(
         raise TopicFoundryClientError(f"topic_foundry_train_trigger_failed: {exc}") from exc
     except ValueError as exc:
         raise TopicFoundryClientError(f"topic_foundry_train_trigger_invalid_json: {exc}") from exc
+
+
+def trigger_enrichment_for_run(
+    base_url: str,
+    run_id: str,
+    *,
+    limit: Optional[int] = None,
+    force: bool = False,
+    timeout: float = DEFAULT_TIMEOUT_SEC,
+) -> dict[str, Any]:
+    """``POST /runs/{run_id}/enrich`` (``RunEnrichRequest`` shape) -- added
+    2026-07-28. Enrichment (and, as a same-request side effect on
+    topic-foundry's side, typed KG edge generation -- see
+    ``app/services/enrichment.py::_run_enrichment``'s trailing
+    ``_generate_edges`` call) runs as a background task on topic-foundry's
+    side; this returns as soon as it's queued, with the run's *pre-call*
+    enriched/failed counts (not the completed result -- topic-foundry's own
+    response model reflects state at request time, same as
+    ``trigger_training_run`` above).
+
+    ``force=False`` (the default) only enriches segments with no prior
+    enrichment (``enriched_at IS NULL`` server-side) -- safe to call on every
+    scheduler tick without re-processing already-enriched segments.
+
+    Raises ``TopicFoundryClientError`` on any network/HTTP/parse failure.
+    """
+    url = f"{base_url.rstrip('/')}/runs/{run_id}/enrich"
+    payload: dict[str, Any] = {"force": force}
+    if limit is not None:
+        payload["limit"] = limit
+    try:
+        resp = requests.post(url, json=payload, timeout=timeout)
+        resp.raise_for_status()
+        return resp.json()
+    except requests.RequestException as exc:
+        raise TopicFoundryClientError(f"topic_foundry_enrich_trigger_failed: {exc}") from exc
+    except ValueError as exc:
+        raise TopicFoundryClientError(f"topic_foundry_enrich_trigger_invalid_json: {exc}") from exc
 
 
 def fetch_segments_for_run(

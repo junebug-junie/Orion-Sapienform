@@ -596,6 +596,24 @@ class Settings(BaseSettings):
         default="http://orion-athena-vector-host:8320/embedding",
         alias="SUBSTRATE_TOPIC_FOUNDRY_EMBEDDING_URL",
     )
+    # Own gate, separate from SUBSTRATE_TOPIC_FOUNDRY_SCHEDULER_ENABLED above --
+    # ships disabled by default, matching this repo's established convention
+    # for a new dispatch path with a real side effect (LLM enrichment calls
+    # cost real compute, unlike the pure clustering the training step already
+    # does) -- same pattern as EQUILIBRIUM_METACOG_TRANSPORT_BUS_SYNAPTIC_POLL_ENABLE
+    # (PR #1385/#1387): riding on "the scheduler is already on" is not the same
+    # judgment as "this specific new side effect is worth its own go-ahead."
+    # Added 2026-07-28 because topic_foundry_segments had 0/22 rows enriched
+    # in production -- nothing has ever called POST /runs/{run_id}/enrich.
+    SUBSTRATE_TOPIC_FOUNDRY_ENRICH_ENABLE: bool = Field(
+        default=False, alias="SUBSTRATE_TOPIC_FOUNDRY_ENRICH_ENABLE"
+    )
+    # Bounds worst-case LLM calls per scheduler tick -- _run_enrichment only
+    # processes segments with enriched_at IS NULL (force=False), so this caps
+    # a single tick's LLM spend without needing to track state across ticks.
+    SUBSTRATE_TOPIC_FOUNDRY_ENRICH_LIMIT: int = Field(
+        default=200, alias="SUBSTRATE_TOPIC_FOUNDRY_ENRICH_LIMIT"
+    )
     SUBSTRATE_AUTONOMY_ENABLED: bool = Field(default=False, alias="SUBSTRATE_AUTONOMY_ENABLED")
     SUBSTRATE_AUTONOMY_PROPOSALS_ENABLED: bool = Field(default=True, alias="SUBSTRATE_AUTONOMY_PROPOSALS_ENABLED")
     SUBSTRATE_AUTONOMY_APPLY_ENABLED: bool = Field(default=False, alias="SUBSTRATE_AUTONOMY_APPLY_ENABLED")

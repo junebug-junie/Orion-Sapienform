@@ -19,6 +19,22 @@ from orion.core.schemas.frontier_curiosity import FrontierInvocationSignalV1
 
 logger = logging.getLogger(__name__)
 
+
+def _resolve_domain_surprise(surprise_source: SurpriseSource | None) -> float | None:
+    """Fetch the real ambient bus_synaptic value for CapabilityEvaluationContext.
+    domain_surprise_score -- reuses the same `surprise_source` callable already threaded
+    through these functions for ActionOutcomeRefV1.surprise (one real read, two consumers).
+    Unlike `resolve_surprise()`, there is no success/fail proxy to fall back to here --
+    `None` means "not available," full stop, matching `_domain_surprise_gate()`'s own
+    honest-absence handling in capability_policy.py.
+    """
+    if surprise_source is None:
+        return None
+    try:
+        return surprise_source()
+    except Exception:
+        return None
+
 _READONLY_CAPABILITY = "web.fetch.readonly"
 _EPISODE_JOURNAL_CAPABILITY = "journal.compose.episode"
 _RECALL_CAPABILITY = "recall.query.readonly"
@@ -71,12 +87,15 @@ async def maybe_execute_readonly_fetch_after_goal(
         )
         return decision, None
 
+    _domain_surprise = _resolve_domain_surprise(surprise_source)
     ctx = CapabilityEvaluationContext(
         predictive_pressure=float(drive_state.pressures.get("predictive", 0.0)),
         curiosity_strength=curiosity_strength_from_signals(curiosity_signals),
         signal_kinds=signal_kinds_from_curiosity(curiosity_signals),
         goal=goal,
         budget_used=budget_used or {},
+        domain_surprise_score=_domain_surprise,
+        domain_surprise_source="bus_synaptic" if _domain_surprise is not None else None,
     )
     decision = evaluate_capability(_READONLY_CAPABILITY, ctx)
     logger.info(
@@ -102,8 +121,12 @@ async def maybe_execute_readonly_fetch_after_goal(
     )
     if fetch_backend is None:
         fetch_backend = resolve_fetch_backend()
+    # Reuse the value already resolved above for the gate decision -- one real read, two
+    # consumers, not two reads that could observe the signal at slightly different
+    # moments (found in review: passing the raw `surprise_source` through here would
+    # call it again).
     outcome = await execute_readonly_fetch(
-        req, fetch_backend=fetch_backend, surprise_source=surprise_source
+        req, fetch_backend=fetch_backend, surprise_source=lambda: _domain_surprise
     )
     if budget_used is not None:
         budget_used[_READONLY_CAPABILITY] = budget_used.get(_READONLY_CAPABILITY, 0) + 1
@@ -267,12 +290,15 @@ async def maybe_execute_readonly_recall_after_goal(
         )
         return decision, None
 
+    _domain_surprise = _resolve_domain_surprise(surprise_source)
     ctx = CapabilityEvaluationContext(
         predictive_pressure=float(drive_state.pressures.get("predictive", 0.0)),
         curiosity_strength=curiosity_strength_from_signals(curiosity_signals),
         signal_kinds=signal_kinds_from_curiosity(curiosity_signals),
         goal=goal,
         budget_used=budget_used or {},
+        domain_surprise_score=_domain_surprise,
+        domain_surprise_source="bus_synaptic" if _domain_surprise is not None else None,
     )
     decision = evaluate_capability(_RECALL_CAPABILITY, ctx)
     logger.info(
@@ -305,7 +331,9 @@ async def maybe_execute_readonly_recall_after_goal(
             recall_channel=recall_channel,
             timeout_sec=timeout_sec,
             spawned_correlation_id=spawned_correlation_id,
-            surprise_source=surprise_source,
+            # Reuse the value already resolved above for the gate decision -- see the
+            # matching comment in maybe_execute_readonly_fetch_after_goal.
+            surprise_source=lambda: _domain_surprise,
         )
     except Exception:
         logger.warning(
@@ -386,6 +414,7 @@ async def maybe_compose_autonomy_episode_after_fetch(
     fetch_outcome: ActionOutcomeRefV1 | None,
     journal_dispatch: Callable[..., Awaitable[dict[str, Any]]] | None = None,
     budget_used: dict[str, int] | None = None,
+    surprise_source: SurpriseSource | None = None,
 ) -> tuple[CapabilityDecisionV1, dict[str, Any] | None]:
     """Layer C gate + episode journal compose after successful readonly fetch."""
     if fetch_outcome is None:
@@ -406,12 +435,15 @@ async def maybe_compose_autonomy_episode_after_fetch(
         )
         return decision, None
 
+    _domain_surprise = _resolve_domain_surprise(surprise_source)
     ctx = CapabilityEvaluationContext(
         predictive_pressure=float(drive_state.pressures.get("predictive", 0.0)),
         curiosity_strength=0.0,
         signal_kinds=[],
         goal=goal,
         budget_used=budget_used or {},
+        domain_surprise_score=_domain_surprise,
+        domain_surprise_source="bus_synaptic" if _domain_surprise is not None else None,
     )
     decision = evaluate_capability(_EPISODE_JOURNAL_CAPABILITY, ctx)
     logger.info(
@@ -592,6 +624,7 @@ async def maybe_execute_substrate_act_after_metabolism(
             fetch_outcome=fetch_outcome,
             journal_dispatch=journal_dispatch,
             budget_used=budget_used,
+            surprise_source=surprise_source,
         )
     except Exception:
         logger.warning(

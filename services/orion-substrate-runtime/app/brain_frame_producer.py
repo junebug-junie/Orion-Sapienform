@@ -175,6 +175,43 @@ def _self_state_regions(self_state, now, cadence_sec) -> list[BrainRegionV1]:
     return regions
 
 
+def _honesty_regions(attention_payload: Any | None, now: datetime) -> list[BrainRegionV1]:
+    """Create brain regions representing prediction accuracy.
+
+    Reads prediction_error_confidence from the attention payload.
+    Returns one aggregate region.
+    """
+    if attention_payload is None:
+        return []
+
+    pe_confidence = None
+    if isinstance(attention_payload, dict):
+        pe_confidence = attention_payload.get("prediction_error_confidence")
+    else:
+        pe_confidence = getattr(attention_payload, "prediction_error_confidence", None)
+
+    if pe_confidence is None:
+        return []
+
+    pe_confidence = _clamp01(float(pe_confidence) if pe_confidence else 0.0)
+
+    state_val = "firing" if pe_confidence > 0.7 else ("steady" if pe_confidence > 0.4 else "starving")
+
+    return [
+        BrainRegionV1(
+            dimension="honesty_metrics",
+            region_id="honesty:confidence",
+            label="Prediction Confidence",
+            intensity=pe_confidence,
+            state=state_val,
+            node_count=1,
+            as_of=now,
+            stale=False,
+            detail={},
+        )
+    ]
+
+
 def _spotlight(attention, now, cadence_sec) -> BrainSpotlightV1 | None:
     if attention is None:
         return None
@@ -226,6 +263,7 @@ def assemble_brain_frame(
     lane_health: Mapping[str, Any],
     self_state: Mapping[str, Any] | None,
     attention: Any | None,
+    attention_payload: Any | None,
     settings: Any,
     now: datetime,
     tick_seq: int,
@@ -238,6 +276,7 @@ def assemble_brain_frame(
         _node_kind_regions(nodes, now, firing, starving)
         + _lane_regions(lane_health or {}, now, firing, starving)
         + _self_state_regions(self_state, now, float(settings.brain_frame_self_state_cadence_sec))
+        + _honesty_regions(attention_payload, now)
     )
     node_samples, edge_samples = _samples(
         nodes, list(edges), settings.brain_frame_sample_nodes, settings.brain_frame_sample_edges

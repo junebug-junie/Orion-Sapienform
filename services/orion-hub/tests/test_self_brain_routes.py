@@ -79,3 +79,30 @@ def test_tail_degrades_to_200_when_create_engine_raises(client, monkeypatch):
     r = client.get("/api/self-brain/frames/tail")
     assert r.status_code == 200
     assert r.json()["frames"] == []
+
+
+def test_tail_includes_honesty_metrics_regions(client):
+    frame = _frame(1)
+    frame["regions"] = [
+        {
+            "dimension": "honesty_metrics",
+            "region_id": "honesty:confidence",
+            "label": "Prediction Confidence",
+            "intensity": 0.8,
+            "state": "firing",
+            "node_count": 1,
+            "as_of": "2026-07-07T12:00:00+00:00",
+            "stale": False,
+            "detail": {},
+        }
+    ]
+    rows = [{"frame_json": frame}]
+    with patch.object(self_brain_routes, "_engine", return_value=_fake_engine(rows)):
+        r = client.get("/api/self-brain/frames/tail?limit=1")
+    assert r.status_code == 200
+    body = r.json()
+    assert len(body["frames"]) == 1
+    honesty_regions = [reg for reg in body["frames"][0]["regions"] if reg["dimension"] == "honesty_metrics"]
+    assert len(honesty_regions) == 1
+    assert honesty_regions[0]["intensity"] == 0.8
+    assert honesty_regions[0]["state"] == "firing"

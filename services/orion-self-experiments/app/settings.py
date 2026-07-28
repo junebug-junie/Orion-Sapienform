@@ -26,7 +26,7 @@ class Settings(BaseSettings):
         alias="SELF_EXPERIMENTS_CONTEXT_EXEC_DISPATCH_TRANSPORT",
     )
     self_experiments_context_exec_url: str = Field(
-        "http://orion-context-exec:8096",
+        "http://context-exec:8096",
         alias="SELF_EXPERIMENTS_CONTEXT_EXEC_URL",
     )
     self_experiments_context_exec_request_channel: str = Field(

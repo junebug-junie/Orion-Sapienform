@@ -79,7 +79,7 @@ class Settings(BaseSettings):
     action_outcome_channel: str = Field(
         "orion:autonomy:action:outcome", alias="BUS_ACTION_OUTCOME_OUT"
     )
-    notify_url: str = Field("http://orion-notify:7140", alias="NOTIFY_URL")
+    notify_url: str = Field("http://notify:7140", alias="NOTIFY_URL")
     notify_api_token: str | None = Field(None, alias="NOTIFY_API_TOKEN")
     log_level: str = Field("INFO", alias="LOG_LEVEL")
 

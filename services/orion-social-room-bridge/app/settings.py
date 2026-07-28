@@ -57,6 +57,10 @@ class Settings(BaseSettings):
     social_bridge_callsyne_poll_limit: int = Field(20, alias="SOCIAL_BRIDGE_CALLSYNE_POLL_LIMIT")
     social_bridge_callsyne_poll_path: str = Field("/api/bridge/messages", alias="SOCIAL_BRIDGE_CALLSYNE_POLL_PATH")
 
+    # 2026-07-28: this default never resolves -- orion-hub runs with network_mode:
+    # host, so it has no bridge-network alias under any name. Every real deployment
+    # must override HUB_BASE_URL via .env with a host-reachable address (e.g. the
+    # Docker bridge gateway IP; see .env_example's comment).
     hub_base_url: str = Field("http://orion-hub:8080", alias="HUB_BASE_URL")
     hub_chat_path: str = Field("/api/chat", alias="HUB_CHAT_PATH")
     hub_timeout_sec: float = Field(120.0, alias="HUB_TIMEOUT_SEC")

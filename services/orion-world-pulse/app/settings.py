@@ -132,9 +132,9 @@ class Settings(BaseSettings):
         alias="WORLD_PULSE_SITUATION_CHANGE_CHANNEL",
     )
 
-    notify_url: str = Field("http://orion-notify:7140", validation_alias=AliasChoices("WORLD_PULSE_NOTIFY_URL", "NOTIFY_URL"))
+    notify_url: str = Field("http://notify:7140", validation_alias=AliasChoices("WORLD_PULSE_NOTIFY_URL", "NOTIFY_URL"))
     notify_api_token: str | None = Field(None, alias="NOTIFY_API_TOKEN")
-    actions_url: str = Field("http://orion-actions:8110", alias="ACTIONS_URL")
+    actions_url: str = Field("http://actions:8110", alias="ACTIONS_URL")
 
 
 settings = Settings()

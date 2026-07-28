@@ -1,4 +1,4 @@
-.PHONY: test test-hub test-actions bootstrap-test-envs check-inner-state-registry check-single-consumer-channels check-activation-saturation concept-relation-digest check-concept-relation-digest-liveness check-env-compose-parity check-journal-dispatch-registry check-daily-schedule-collisions check-substrate-projection-schema-drift bus-core-health-watchdog worktree-status worktree-status-summary worktree-status-stale prune-merged-worktrees
+.PHONY: test test-hub test-actions bootstrap-test-envs check-inner-state-registry check-single-consumer-channels check-activation-saturation concept-relation-digest check-concept-relation-digest-liveness check-env-compose-parity check-journal-dispatch-registry check-daily-schedule-collisions check-substrate-projection-schema-drift check-service-hostname-refs bus-core-health-watchdog worktree-status worktree-status-summary worktree-status-stale prune-merged-worktrees
 
 SERVICE ?=
 ARGS ?=
@@ -79,6 +79,17 @@ check-env-compose-parity:
 check-journal-dispatch-registry:
 	@python scripts/check_journal_dispatch_registry.py
 
+# Repo-wide gate: flags any services/*/.env_example URL that hardcodes another
+# service's services/<dirname> directory name as an HTTP hostname instead of its
+# real Docker Compose service key. Found live 2026-07-28 -- that directory-name
+# style hostname only resolves by accident (depends on container_name:
+# ${PROJECT}-<name> happening to equal orion-<name>, i.e. PROJECT having no host
+# suffix); it silently broke orion-notify-digest's daily email since inception,
+# plus 15 other references across 11 other services. The compose service key is
+# the one hostname Docker's default network guarantees regardless of PROJECT.
+check-service-hostname-refs:
+	@python scripts/check_service_hostname_refs.py
+
 # Report-only: flags orion-actions daily cadences (Daily Pulse, World Pulse, Daily
 # Metacog, and Daily Journal -- which has no env var of its own and reuses Daily
 # Pulse's hour/minute, see services/orion-actions/app/main.py's journal_should_run
@@ -119,6 +130,24 @@ bus-core-health-watchdog:
 		$(if $(UNHEALTHY_STREAK_THRESHOLD),--unhealthy-streak-threshold $(UNHEALTHY_STREAK_THRESHOLD),) \
 		$(if $(RESTART_COUNT_THRESHOLD),--restart-count-threshold $(RESTART_COUNT_THRESHOLD),) \
 		$(if $(RESTART_WINDOW_MINUTES),--restart-window-minutes $(RESTART_WINDOW_MINUTES),)
+
+# Host-level disk-usage threshold watchdog for /mnt/docker, /mnt/scripts, and
+# /mnt/telemetry (each a distinct physical mount on this host). Publishes an
+# orion-notify /attention/request (Hub Pending Attention card) the first time
+# any monitored path crosses --threshold-pct (default 90), debounced via local
+# state so it doesn't refire every tick while already confirmed-notified and
+# still breached -- but DOES retry every tick if the prior notify attempt
+# never actually confirmed success (orion-notify down/unreachable), so a
+# breach can never be silently swallowed. See scripts/disk_threshold_watchdog.py's
+# docstring for the full design and scripts/README.md for cron install
+# instructions. Requires PYTHONPATH=. (it imports orion.notify.client) and
+# orion-notify reachable at NOTIFY_BASE_URL.
+disk-threshold-watchdog:
+	@PYTHONPATH=. python3 scripts/disk_threshold_watchdog.py $(if $(PATHS),--paths $(PATHS),) \
+		$(if $(THRESHOLD_PCT),--threshold-pct $(THRESHOLD_PCT),) \
+		$(if $(PROJECT),--project $(PROJECT),) \
+		$(if $(TELEMETRY_ROOT),--telemetry-root $(TELEMETRY_ROOT),) \
+		$(if $(NOTIFY_BASE_URL),--notify-base-url $(NOTIFY_BASE_URL),)
 
 # Reconciled worktree view -- path, branch, merged-into-main status, open PR,
 # disk size -- regardless of which of this repo's several worktree location

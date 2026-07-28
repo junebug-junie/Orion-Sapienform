@@ -1,7 +1,7 @@
 #!/bin/sh
 set -e
 
-GATEWAY_URL="${FCC_LLAMACPP_BASE_URL:-http://orion-llm-gateway:8210/v1}"
+GATEWAY_URL="${FCC_LLAMACPP_BASE_URL:-http://llm-gateway:8210/v1}"
 GATEWAY_HEALTH="${GATEWAY_URL%/v1}/health"
 
 if [ -z "${FCC_SKIP_GATEWAY_WAIT:-}" ]; then

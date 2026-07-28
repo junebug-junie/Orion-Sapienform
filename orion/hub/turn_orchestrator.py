@@ -7,6 +7,7 @@ from typing import Any, Awaitable, Callable, Protocol
 
 from orion.schemas.cognition.answer_contract import AnswerContract
 from orion.hub.association import build_hub_association_bundle
+from orion.hub.chat_route import CHAT_ROUTE_UNIFIED_TURN_HARNESS
 from orion.hub.turn_request import build_orion_turn_request
 from orion.schemas.context_exec import ContextExecPermissionV1
 from orion.schemas.harness_finalize import HarnessRunRequestV1, HarnessRunV1
@@ -586,6 +587,7 @@ async def _publish_unified_turn_chat_history(
         "unified_turn": True,
         "harness_step_count": run.step_count,
         "harness_grounding_status": run.grounding_status,
+        "chat_route": CHAT_ROUTE_UNIFIED_TURN_HARNESS,
     }
 
     reasoning_trace: dict[str, Any] | None = None

@@ -400,6 +400,12 @@ class CapabilityPolicyRuleV1(BaseModel):
     required_drive_origins: list[str] = Field(default_factory=list)
     required_signal_kinds: list[str] = Field(default_factory=list)
     budget_per_cycle: int = 0
+    # Real, additive gate on CapabilityEvaluationContext.domain_surprise_score -- see
+    # docs/superpowers/specs/2026-07-24-efe-capability-gate-design.md. Unset (None) on
+    # every rule initially: ship soft/advisory first (score surfaces in
+    # CapabilityDecisionV1.notes regardless of this field), don't hard-gate until the
+    # signal's own outcome-correlation is validated against real traffic.
+    required_domain_surprise_below: float | None = None
 
 
 class CapabilityPolicyV1(BaseModel):

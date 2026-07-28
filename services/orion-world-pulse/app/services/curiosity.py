@@ -5,7 +5,7 @@ import logging
 from typing import Awaitable, Callable
 
 from orion.autonomy.capability_policy import CapabilityEvaluationContext, evaluate_capability
-from orion.autonomy.episode_fetch import EpisodeFetchRequest, execute_readonly_fetch
+from orion.autonomy.episode_fetch import EpisodeFetchRequest, SurpriseSource, execute_readonly_fetch
 from orion.autonomy.fetch_backend_resolve import resolve_fetch_backend
 from orion.autonomy.salience import tokenize_terms
 from orion.core.schemas.drives import GoalProposalV1
@@ -37,13 +37,31 @@ def _synthetic_goal(run_id: str) -> GoalProposalV1:
     )
 
 
-def _gate_open(run_id: str) -> bool:
+def _resolve_domain_surprise(surprise_source: SurpriseSource | None) -> float | None:
+    """Same real ambient bus_synaptic value orion/autonomy/policy_act.py's identically-named
+    helper reads -- this service currently has no Postgres access to supply a real
+    surprise_source (disclosed gap; see docs/superpowers/specs/2026-07-24-efe-capability-
+    gate-design.md), so this is always `None` today. Wired anyway so a future Postgres
+    connection here needs zero call-site changes -- just a real callable.
+    """
+    if surprise_source is None:
+        return None
+    try:
+        return surprise_source()
+    except Exception:
+        return None
+
+
+def _gate_open(run_id: str, *, surprise_source: SurpriseSource | None = None) -> bool:
+    _domain_surprise = _resolve_domain_surprise(surprise_source)
     ctx = CapabilityEvaluationContext(
         predictive_pressure=1.0,
         curiosity_strength=1.0,
         signal_kinds=["world_coverage_gap"],
         goal=_synthetic_goal(run_id),
         budget_used={},
+        domain_surprise_score=_domain_surprise,
+        domain_surprise_source="bus_synaptic" if _domain_surprise is not None else None,
     )
     decision = evaluate_capability(_READONLY_CAPABILITY, ctx)
     logger.info(
@@ -65,6 +83,7 @@ def build_curiosity_followups(
     max_articles_per_section: int,
     max_sections: int,
     fetch_backend: Callable[..., Awaitable[dict]] | None = None,
+    surprise_source: SurpriseSource | None = None,
 ) -> list[CuriosityFollowupV1]:
     """Inline gap-fill fetch for under-covered sections.
 
@@ -83,7 +102,7 @@ def build_curiosity_followups(
     if not under_covered:
         return []
     try:
-        if not _gate_open(run_id):
+        if not _gate_open(run_id, surprise_source=surprise_source):
             return []
     except Exception:
         # A capability-policy load/eval failure (e.g. missing policy config in a
@@ -114,7 +133,9 @@ def build_curiosity_followups(
         # The fetch AND the mapping into schema models are both guarded: any
         # failure degrades to skipping this section, never failing the run.
         try:
-            outcome = asyncio.run(execute_readonly_fetch(req, fetch_backend=backend))
+            outcome = asyncio.run(
+                execute_readonly_fetch(req, fetch_backend=backend, surprise_source=surprise_source)
+            )
             followups.append(
                 CuriosityFollowupV1(
                     section=section,

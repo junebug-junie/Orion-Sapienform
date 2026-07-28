@@ -1719,7 +1719,7 @@ channels:
   - name: "orion:notify:in_app"
     kind: "event"
     schema_id: "HubNotificationEvent"
-    producer_services: ["orion-notify"]
+    producer_services: ["orion-notify", "orion-hub"]
     consumer_services: ["orion-hub"]
     stability: "experimental"
     since: "2026-02-01"

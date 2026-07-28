@@ -1,0 +1,184 @@
+# Metacog: keep per-turn scoped, add a separate trend reducer — design spec
+
+Status: **design mode, not implemented.** Touches the metacog/collapse-mirror cognition loop, which
+CLAUDE.md §0A requires explicit proposal mode for before implementation. This document proposes; it
+does not build.
+
+## Arsonist summary
+
+Two same-day evaluation passes (2026-07-28, in conversation) on `log_orion_metacognition` found it
+achieves none of the three things a real metacognitive loop needs: temporal continuity ("this has
+been happening for 2 hours"), causal attribution ("X caused Y"), and verified narrative synthesis.
+It's a single-tick anomaly-scored write with unverified LLM prose stapled on top. PR #1427 (this
+session) already deleted the part of the prose that was pure waste — Enrich's 7 output fields and
+Draft's 6 dead fields (`type`/`trigger`/`causal_echo`/`field_resonance`/`emergent_entity`/
+`resonance_signature`) never reached the published row. That cut was correct but incomplete: it
+removed dead output, it didn't add the missing capability.
+
+Juniper's direction: don't let metacog itself grow the missing capability. Keep
+`log_orion_metacognition` scoped to exactly what it already is — a single real per-turn signal
+write. Record the signal, stop there. The temporal/causal work (trend detection, "what caused this,"
+multi-tick synthesis) belongs in a **separate reducer** that consumes the already-persisted stream
+of these per-turn signals, materializes a real windowed projection, and feeds that projection
+**forward** as input for more advanced state changes — not as work grafted onto the per-turn LLM
+draft call. This is this repo's own stated architecture order: `event -> schema -> trace -> reducer
+-> projection -> eval -> UI surface`. `MetacogEntryV1` rows already are the event. Nothing reduces
+over them yet.
+
+## Current architecture
+
+**The per-turn write (post-#1427):** `log_orion_metacognition` is 3 steps —
+`MetacogContextService` (real single-RPC state/biometrics fetch) → `MetacogDraftService` (one LLM
+call, prompt `orion/cognition/prompts/log_orion_metacognition_draft.j2`) → `MetacogPublishService`
+(`services/orion-cortex-exec/app/executor.py`, builds `MetacogEntryV1`). Every field of the
+published row traces to a real single-tick artifact: `compute_causal_density()`/
+`compute_severity()`/`compute_touches()`/`compute_provenance()` (`orion/metacog/service.py:88-200`)
+are a fixed-weight linear blend of `repair_pressure`, `substrate_eventfulness_score`, and
+`turn_effect_severity` — all read from the current tick's `ctx` only, no history. `turn_effect`
+itself (`orion/schemas/telemetry/turn_effect.py:20-34`) is the one genuine multi-tick artifact in
+the whole pipeline: a strict before/after delta on 4 scalars (`valence`/`energy`/`coherence`/
+`novelty`) between this turn and the immediately preceding one. One step of memory, no more.
+
+**The only "recent" context anywhere in the draft prompt** is `TraceCache`/`CoreEventCache`
+(`services/orion-cortex-exec/app/trace_cache.py:14`, `core_event_cache.py:72`) — process-local,
+in-memory `deque(maxlen=5-10)` singletons. Last-N-by-insertion-order, no timestamps used for
+windowing, resets on restart, not shared across replicas. Not a time window.
+
+**Nothing reads `orion_metacog` history back.** Grepped the whole `log_orion_metacognition`
+pipeline: zero hits. Orion never sees its own prior Collapse Mirror entries when writing a new one.
+
+**One real precedent for windowed queries over this data exists, and it's not a reducer.**
+`services/orion-dream/app/aggregators_sql.py::fetch_recent_sql_fragments(hours=24, ...)` does an
+hours-bounded SQL fetch — but its own comment (line 118-119) says "Orion's machine-generated metacog
+self-observation entries now live in `orion_metacog`, not `collapse_mirror`" while the query
+directly below it *still only reads `collapse_mirror`*, filtered to `observer='juniper'`. Dream's
+context-gathering has never actually seen Orion's own machine-generated metacog entries — a real,
+live, separate bug found as a side effect of this investigation, not its subject. Even fixed to read
+the right table, this function returns raw text `Fragment`s for an LLM to weave into dream
+narration — no z-score, no rate-of-change, no direction, no numeric reduction. Not the reducer
+pattern this spec wants; a different consumer with a different job.
+
+**The real reducer-pattern precedent lives elsewhere in this codebase.**
+`services/orion-substrate-runtime/app/worker.py` has a `ReducerSpec` class and
+`_grammar_reducer_poll_loop()` (lines 179, 425) computing `gap_zscore` in FalkorDB (lines 778-780)
+for bus-synaptic anomaly detection — a live, working windowed-reduction pattern, just on a different
+domain (bus health, not metacog/turn_effect). This is the shape to copy, not invent from scratch.
+
+**Today's own generative-triggers spec**
+(`docs/superpowers/specs/2026-07-28-collapse-mirror-generative-triggers-design.md`) is the right
+instinct in a different place: it wants non-error triggers (`insight`/`flow`), but even those are
+still evaluated as point-in-time gate conditions on `AttentionSelfModelV1.confidence`, itself
+unverified as live-ticking (that doc's own Missing Question 1). A trend reducer, if built, would be
+a natural real signal source for that spec's `insight` trigger too — "confidence crossed a
+threshold" is a much more honest claim once there's a real windowed baseline behind "crossed,"
+rather than an absolute point-in-time cutoff.
+
+**Grounding gap, separately confirmed, related but not solved by this spec:** no confabulation
+guard exists anywhere in this pipeline (grepped `services/orion-cortex-exec/app/executor.py` and
+`orion/` for `confabulation_guard`/`groundedness`/`verify_grounded` — zero hits).
+`summary`/`what_changed.evidence` have prompt-level "don't invent" instructions and real evidence
+available to ground against, unverified by any code. `mantra` and `tags_suggested` aren't even given
+grounding instructions in the prompt (`draft.j2` defines `summary`/`mantra`/`what_changed` only;
+`tags_suggested` isn't described anywhere in it). A trend reducer's output would give
+`what_changed`/`summary` something *real* to cite instead of today's single-tick snapshot — but
+doesn't by itself add a verification step. Noted as related, deliberately out of scope here.
+
+## Missing questions
+
+1. **Which series does the reducer actually run over?** `orion_metacog` rows themselves (one point
+   per trigger fire — sparse, irregular cadence, but directly matches "has this kept happening" and
+   is already durably persisted) vs. `turn_effect`/`repair_pressure` raw history (denser, per-turn,
+   but not yet confirmed to be durably persisted anywhere queryable outside the ephemeral spark
+   snapshot metadata `MetacogContextService` reads it from).
+2. **Does `turn_effect`/`repair_pressure` have any durable, queryable history at all**, or does this
+   reducer first require adding persistence for a signal that currently only exists as "this tick's
+   delta, forgotten after publish"? Prerequisite question, not an assumption — CLAUDE.md's
+   existing-mechanism check applies exactly here.
+3. **What does "feed forward into more advanced state changes" concretely mean as a consumer of the
+   reducer's output?** Named in the request but not yet scoped: a new evidence-cue block back into
+   `MetacogContextService` (cheapest, matches the existing `RECENT TURN-EFFECT ALERTS` pattern), a
+   real gate condition for the generative-triggers `insight` work, a reverie input, or something not
+   yet built. Picking one is the real next-patch decision — not this doc's job to force.
+4. **Live-data shape, per CLAUDE.md's metric quality gate step 4** — before any threshold or window
+   size gets picked: does whichever series gets chosen have a genuine rest state and genuine
+   discrete elevated periods in stored history, or is it either flat/degenerate, or (the sneakier
+   failure — this doc's own repo precedent, `bus_synaptic_prediction_error`'s permanent ~0.27 floor)
+   mathematically incapable of reading "calm" even though it visibly moves? Needs a measurement
+   script against real history before any reducer code is written, same discipline the
+   generative-triggers spec already applies to its own Missing Question 2.
+5. **Does the dream aggregator's stale `collapse_mirror`-only query need fixing in this same patch,
+   or is it a separate one-line fix?** Found as a side effect of this investigation. Recommend
+   splitting it out as its own trivial, independent PR rather than bundling it here.
+
+## Proposed schema / API changes
+
+- No change to `MetacogEntryV1` or the per-turn publish path. The per-turn write stays exactly as
+  scoped by PR #1427 — this is the explicit point of the "keep it turn-scoped" direction.
+- New, small typed projection — exact name/home TBD pending Missing Question 3's consumer decision.
+  Rough shape: `series_id`, `window_start`/`window_end`, `direction` (rising/falling/flat),
+  `magnitude`/`rate_of_change`, `duration_at_elevated_level`, and a `baseline_comparison` computed
+  against Orion's own recent rolling baseline — not an absolute threshold. That last field is what
+  fixes the earlier evaluation's "mild elevation on a calm day reads identical to mild elevation
+  during an already-stormy week" gap.
+- New reducer, following the `ReducerSpec`/`_grammar_reducer_poll_loop()` pattern already live in
+  `orion-substrate-runtime/app/worker.py`, rather than inventing a new poll-loop shape.
+- If `MetacogContextService` becomes the chosen consumer: one new additive evidence-cue block in the
+  draft prompt, same shape as `RECENT TURN-EFFECT ALERTS` — a real cue handed to a still-single-turn
+  draft call, with zero window/query logic added inside the draft step itself.
+
+## Files likely to touch
+
+- New: `orion/metacog/trend_reducer.py` (or under `orion/substrate/`, if it turns out to belong
+  alongside the existing `gap_zscore` pattern rather than inside `orion/metacog/` — undecided,
+  depends on Missing Question 1's answer)
+- New: a projection schema under `orion/schemas/` (exact home pending Missing Question 3)
+- `services/orion-dream/app/aggregators_sql.py` — the stale `collapse_mirror`/`orion_metacog`
+  mismatch (Missing Question 5), most likely a separate, smaller, independent PR
+- `services/orion-cortex-exec/app/executor.py`'s `MetacogContextService` block, only if that ends up
+  being the chosen consumer (Missing Question 3)
+- `orion/cognition/prompts/log_orion_metacognition_draft.j2`, only if a new evidence-cue block gets
+  added — still additive to inputs, never a new instruction asking the draft step to compute trends
+  itself
+- `scripts/analysis/measure_metacog_trend_baseline.py` (new, for Missing Question 4 — matches this
+  repo's existing `measure_*_baseline.py` convention, e.g. `measure_rpc_health_baseline.py`)
+- Whichever service ends up hosting the reducer's poll loop
+  (`docker-compose.yml`/`.env_example`/`settings.py` for that service)
+
+## Non-goals
+
+- Not adding any window/trend/history logic inside `MetacogDraftService`, Enrich (already deleted),
+  or the draft prompt's own computation. The per-turn draft call stays a single-turn read of
+  whatever evidence cues it's handed — including a new trend cue, if one gets built — never a query
+  over history itself. This is the load-bearing scoping rule from this whole spec.
+- Not resurrecting `causal_echo`/`what_changed.previous_state`/`.new_state` as free-text LLM fields.
+  If/when the reducer produces something worth citing, it should be a structured, code-computed
+  evidence cue — not a return to asking the model to narrate a causal history it was never actually
+  given, which is what made those fields unfillable in the first place.
+- Not fixing the grounding/confabulation-guard gap in this spec. Related, separately scoped, not
+  solved by adding a reducer.
+- Not merging reverie and metacog. Still a separate, larger architecture decision, out of scope here.
+- Not picking a window size, threshold, series, or specific consumer yet — all deferred to the
+  Missing Questions above.
+
+## Acceptance checks
+
+1. A measurement script against real historical data (whichever series Missing Questions 1-2
+   resolve to) shows the chosen signal has genuine discrete elevated periods and a genuine rest
+   state — not smooth noise, not a permanent floor/ceiling artifact — before any reducer ships live.
+2. The reducer's poll loop follows the existing `ReducerSpec` pattern in
+   `orion-substrate-runtime/app/worker.py` rather than a new bespoke shape.
+3. `MetacogDraftService`'s own code and prompt remain structurally unchanged by this work — at most
+   one new additive evidence-cue block, zero new query/window logic inside the draft step.
+4. The projection is independently queryable/inspectable (a real debug surface or at minimum a
+   direct DB/Falkor query) regardless of whether any consumer has wired it in yet.
+5. Ships disabled by default, flipped only after its own live-data sanity check — same precedent as
+   `bus_synaptic` (PR #1385 → #1387) and the generative-triggers spec's own Acceptance Check 2.
+
+## Recommended next patch
+
+Don't build the reducer yet. Answer Missing Questions 1-2 first: confirm which series actually has
+durable, queryable history (`orion_metacog` rows themselves are the safe fallback — sparse, but
+already persisted, no new plumbing needed to read them). Then run the Missing Question 4 measurement
+pass against real stored data before writing any reducer code. That single measurement script is the
+actual next deliverable; everything else in this doc is scoped and blocked behind its result — same
+discipline the generative-triggers spec already models for its own open questions.

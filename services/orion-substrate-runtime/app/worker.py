@@ -2098,6 +2098,13 @@ class BiometricsSubstrateWorker:
         if last_id is not None:
             curr_projection = load_projection()
             error = execution_prediction_error(prev_projection, curr_projection)
+            # execution_prediction_error mutates curr_projection's EWMA baseline
+            # fields in place (prediction_error_baseline_ewma/_var/_n) -- persist
+            # that regardless of whether error > 0.0 this tick, or the baseline
+            # never survives past this process's lifetime and every tick after a
+            # restart re-cold-starts at n=0. Cheap: save_execution_trajectory is
+            # the same upsert process_batch already calls above.
+            self._store.save_execution_trajectory(curr_projection)
             if error > 0.0:
                 self._store.save_receipt(
                     _prediction_error_receipt(

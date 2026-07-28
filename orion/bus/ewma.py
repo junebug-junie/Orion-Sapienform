@@ -35,6 +35,7 @@ def compute_ewma_update(
     prev_count: int,
     value: float,
     alpha: float,
+    min_variance: float = _MIN_VARIANCE,
 ) -> EwmaUpdate:
     """Pure incremental EWMA mean/variance update, plus a z-score of ``value``
     against the *prior* baseline (computed before the baseline absorbs it).
@@ -43,11 +44,23 @@ def compute_ewma_update(
     there is no baseline yet to be anomalous against. Returning 0.0 there
     would misrepresent "no data yet" as "measured, not anomalous" (this
     repo's own "no empty-shell cognition" rule).
+
+    ``min_variance`` defaults to this module's own ``_MIN_VARIANCE`` (1e-6,
+    calibrated for orion-bus-mirror's real-time-gap-in-seconds domain) --
+    existing callers that don't pass it keep exactly today's behavior. 2026-
+    07-28: added after live-confirming a domain-specific instance of this
+    same floor silently re-flattening execution_prediction_error's fix (see
+    that function's docstring) -- its real per-tick raw-delta variance
+    settles around 4e-11 once warmed up, five orders of magnitude below
+    1e-6, so every real z-score it ever computed was dominated by this
+    module's constant, not its own actual spread. A single shared floor
+    cannot be right for every caller's value scale; callers whose real
+    variance is nowhere near 1e-6 must pass their own.
     """
     if prev_count == 0:
         return EwmaUpdate(ewma=value, variance=0.0, zscore=None)
 
-    variance_floor = max(prev_variance, _MIN_VARIANCE)
+    variance_floor = max(prev_variance, min_variance)
     zscore = (value - prev_ewma) / math.sqrt(variance_floor)
     new_ewma = alpha * value + (1 - alpha) * prev_ewma
     deviation = value - prev_ewma

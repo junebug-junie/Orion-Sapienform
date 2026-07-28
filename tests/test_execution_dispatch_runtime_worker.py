@@ -661,8 +661,11 @@ async def test_send_one_replays_existing_failed_result_without_resending(monkeyp
 
 
 @pytest.mark.asyncio
-async def test_send_prepared_candidates_skips_when_daily_risk_cap_reached(monkeypatch) -> None:
+async def test_send_prepared_candidates_skips_when_daily_risk_cap_reached_and_enforced(
+    monkeypatch,
+) -> None:
     worker = _make_worker(monkeypatch)
+    worker._settings.orion_dispatch_risk_cap_advisory_only = False
     worker._store.sum_risk_dispatched_today = MagicMock(
         return_value=worker._settings.orion_dispatch_max_risk_per_day
     )
@@ -675,6 +678,34 @@ async def test_send_prepared_candidates_skips_when_daily_risk_cap_reached(monkey
     assert updated.candidates == [frame.candidates[0]]
     assert updated.dispatched_candidates == []
     worker._store.save_dispatch_result.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_send_prepared_candidates_dispatches_past_reached_cap_when_advisory_only(
+    monkeypatch,
+) -> None:
+    """2026-07-28 default: the cap number itself is an unproven multiplier, not
+    derived from real risk_score variance -- advisory_only=True (the default)
+    must not withhold a real dispatch just because the guessed ceiling was hit."""
+    worker = _make_worker(monkeypatch)
+    assert worker._settings.orion_dispatch_risk_cap_advisory_only is True
+    worker._store.sum_risk_dispatched_today = MagicMock(
+        return_value=worker._settings.orion_dispatch_max_risk_per_day
+    )
+    worker._store.latest_bus_synaptic_prediction_error = MagicMock(return_value=0.1675)
+    worker._store.save_dispatch_result = MagicMock()
+    worker._store.load_dispatch_result_by_dispatch_id = MagicMock(return_value=None)
+    fake_bus = _patch_bus_and_client(
+        monkeypatch,
+        {"dispatch:1": {"result": {"final_text": '{"observation": "steady"}'}}},
+    )
+    frame = _frame_with_candidates(_candidate("dispatch:1"))
+
+    updated = await worker._send_prepared_candidates(frame)
+
+    assert len(updated.dispatched_candidates) == 1
+    fake_bus.connect.assert_awaited_once()
+    worker._store.save_dispatch_result.assert_called_once()
 
 
 @pytest.mark.asyncio

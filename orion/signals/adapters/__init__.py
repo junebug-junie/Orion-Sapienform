@@ -2,7 +2,6 @@
 All signal adapters, exported from one place.
 ``ADAPTERS`` is the live registry used by the gateway.
 """
-from .cognition_trace import CognitionTraceAdapter
 from .cortex_gateway import CortexGatewayAdapter
 from .cortex_orch import CortexOrchAdapter
 from .hub import HubAdapter
@@ -31,7 +30,6 @@ from orion.signals.adapters.base import OrionSignalAdapter
 from typing import List
 
 ADAPTERS: List[OrionSignalAdapter] = [
-    CognitionTraceAdapter(),
     CortexGatewayAdapter(),
     CortexOrchAdapter(),
     HubAdapter(),
@@ -60,7 +58,6 @@ ADAPTERS: List[OrionSignalAdapter] = [
 ]
 
 __all__ = [
-    "CognitionTraceAdapter",
     "CortexGatewayAdapter",
     "CortexOrchAdapter",
     "HubAdapter",

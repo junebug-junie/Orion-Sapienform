@@ -632,7 +632,6 @@ from orion.schemas.graph_compression import (
     GraphCompressionRegionMaterializedV1,
 )
 from orion.schemas.topic_foundry import (
-    KgEdgeIngestV1,
     TopicFoundryDriftAlertV1,
     TopicFoundryEnrichCompleteV1,
     TopicFoundryRunCompleteV1,
@@ -1131,7 +1130,6 @@ _REGISTRY: Dict[str, Type[BaseModel]] = {
     "TopicFoundryRunCompleteV1": TopicFoundryRunCompleteV1,
     "TopicFoundryEnrichCompleteV1": TopicFoundryEnrichCompleteV1,
     "TopicFoundryDriftAlertV1": TopicFoundryDriftAlertV1,
-    "KgEdgeIngestV1": KgEdgeIngestV1,
     "WorkflowScheduleSpecV1": WorkflowScheduleSpecV1,
     "WorkflowExecutionPolicyV1": WorkflowExecutionPolicyV1,
     "WorkflowDispatchRequestV1": WorkflowDispatchRequestV1,

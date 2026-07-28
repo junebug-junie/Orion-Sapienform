@@ -28,7 +28,7 @@ channels:
     kind: "event"
     schema_id: "VerbEffectV1"
     producer_services: ["orion-cortex-exec"]
-    consumer_services: ["orion-rdf-writer", "orion-sql-writer", "orion-vector-writer"]
+    consumer_services: ["orion-sql-writer", "orion-vector-writer"]
     stability: "stable"
     since: "2026-01-08"
 
@@ -381,18 +381,14 @@ channels:
     stability: "experimental"
     since: "2026-01-08"
 
-  - name: "orion:kg:edge:ingest.v1"
-    kind: "event"
-    schema_id: "KgEdgeIngestV1"
-    producer_services: ["orion-topic-foundry"]
-    # orion-rdf-writer removed 2026-07-17: Fuseki is being decommissioned, and
-    # this channel was never actually consumed by it (not in settings.py's
-    # get_all_subscribe_channels()). orion-graphdb was never a real service
-    # either -- no directory under services/. No live consumer as of this
-    # change; orion-topic-foundry still publishes (kg_edges.py).
-    consumer_services: []
-    stability: "experimental"
-    since: "2026-01-08"
+  # "orion:kg:edge:ingest.v1" (KgEdgeIngestV1) removed 2026-07-28: had zero
+  # live consumers since at least 2026-07-17 (orion-rdf-writer never
+  # actually subscribed; orion-graphdb never existed as a real service --
+  # see git history for that removal). orion-topic-foundry's kg_edges.py no
+  # longer publishes it either -- the same typed edges now reach a real
+  # consumer via GET /kg/edges, pulled into the live Falkor substrate graph
+  # by orion-hub/scripts/concept_atlas_routes.py. See
+  # orion/substrate/adapters/topic_foundry.py's module docstring.
 
   - name: "orion:llm:reply*"
     kind: "result"
@@ -764,7 +760,7 @@ channels:
     kind: "request"
     schema_id: "RdfWriteRequest"
     producer_services: ["orion-cortex-exec", "orion-spark-concept-induction"]
-    consumer_services: ["orion-rdf-writer", "orion-graph-compression"]
+    consumer_services: ["orion-graph-compression"]
     stability: "experimental"
     since: "2026-01-08"
     # orion-vision-scribe removed as a producer 2026-07-23: its Fuseki
@@ -775,7 +771,7 @@ channels:
   - name: "orion:rdf:confirm"
     kind: "result"
     schema_id: "RdfWriteResult"
-    producer_services: ["orion-rdf-writer"]
+    producer_services: []
     consumer_services: ["orion-cortex-exec"]
     stability: "experimental"
     # orion-vision-scribe removed as a consumer 2026-07-23: it never
@@ -789,7 +785,7 @@ channels:
   - name: "orion:rdf:error"
     kind: "event"
     schema_id: "SystemErrorV1"
-    producer_services: ["orion-rdf-writer"]
+    producer_services: []
     consumer_services: ["*"]
     stability: "experimental"
     since: "2026-01-08"
@@ -1060,7 +1056,7 @@ channels:
     schema_id: "SocialRoomTurnStoredV1"
     message_kind: "social.turn.stored.v1"
     producer_services: ["orion-sql-writer"]
-    consumer_services: ["orion-vector-host", "orion-rdf-writer", "orion-meta-tags", "orion-spark-concept-induction", "*"]
+    consumer_services: ["orion-vector-host", "orion-meta-tags", "orion-spark-concept-induction", "*"]
     stability: "experimental"
     since: "2026-03-21"
 
@@ -1675,7 +1671,7 @@ channels:
     producer_services: ["orion-cortex-exec"]
     # "orion-spark-introspector" removed 2026-07-28, spark-introspector
     # retirement.
-    consumer_services: ["orion-landing-pad", "orion-bus-tap", "orion-sql-writer"]
+    consumer_services: ["orion-bus-tap", "orion-sql-writer"]
     stability: "experimental"
     since: "2026-01-10"
 
@@ -1821,7 +1817,7 @@ channels:
     schema_id: "DriveStateV1"
     message_kind: "memory.drives.state.v1"
     producer_services: ["orion-spark-concept-induction"]
-    consumer_services: ["orion-rdf-writer", "orion-sql-writer", "*"]
+    consumer_services: ["orion-sql-writer", "*"]
     stability: "experimental"
     since: "2026-03-14"
 
@@ -1830,7 +1826,7 @@ channels:
     schema_id: "TensionEventV1"
     message_kind: "memory.tension.event.v1"
     producer_services: ["orion-spark-concept-induction"]
-    consumer_services: ["orion-rdf-writer", "orion-sql-writer", "*"]
+    consumer_services: ["orion-sql-writer", "*"]
     stability: "experimental"
     since: "2026-03-14"
 
@@ -1910,7 +1906,7 @@ channels:
     schema_id: "TurnDossierV1"
     message_kind: "debug.turn.dossier.v1"
     producer_services: ["orion-spark-concept-induction"]
-    consumer_services: ["orion-rdf-writer", "orion-sql-writer", "*"]
+    consumer_services: ["orion-sql-writer", "*"]
     stability: "experimental"
     since: "2026-03-19"
 
@@ -2033,7 +2029,7 @@ channels:
     schema_id: "WorldLearningDeltaV1"
     message_kind: "world.pulse.learning.emit.v1"
     producer_services: ["orion-world-pulse"]
-    consumer_services: ["orion-sql-writer", "orion-rdf-writer", "*"]
+    consumer_services: ["orion-sql-writer", "*"]
     stability: "experimental"
     since: "2026-04-26"
 
@@ -2060,7 +2056,7 @@ channels:
     schema_id: "ClaimRecordV1"
     message_kind: "world.pulse.claim.emit.v1"
     producer_services: ["orion-world-pulse"]
-    consumer_services: ["orion-sql-writer", "orion-rdf-writer", "*"]
+    consumer_services: ["orion-sql-writer", "*"]
     stability: "experimental"
     since: "2026-04-26"
 
@@ -2069,7 +2065,7 @@ channels:
     schema_id: "EventRecordV1"
     message_kind: "world.pulse.event.emit.v1"
     producer_services: ["orion-world-pulse"]
-    consumer_services: ["orion-sql-writer", "orion-rdf-writer", "*"]
+    consumer_services: ["orion-sql-writer", "*"]
     stability: "experimental"
     since: "2026-04-26"
 
@@ -2078,7 +2074,7 @@ channels:
     schema_id: "EntityRecordV1"
     message_kind: "world.pulse.entity.emit.v1"
     producer_services: ["orion-world-pulse"]
-    consumer_services: ["orion-sql-writer", "orion-rdf-writer", "*"]
+    consumer_services: ["orion-sql-writer", "*"]
     stability: "experimental"
     since: "2026-04-26"
 
@@ -2087,7 +2083,7 @@ channels:
     schema_id: "TopicSituationBriefV1"
     message_kind: "world.pulse.situation.brief.upsert.v1"
     producer_services: ["orion-world-pulse"]
-    consumer_services: ["orion-sql-writer", "orion-rdf-writer", "*"]
+    consumer_services: ["orion-sql-writer", "*"]
     stability: "experimental"
     since: "2026-04-26"
 
@@ -2096,7 +2092,7 @@ channels:
     schema_id: "SituationChangeV1"
     message_kind: "world.pulse.situation.change.emit.v1"
     producer_services: ["orion-world-pulse"]
-    consumer_services: ["orion-sql-writer", "orion-rdf-writer", "*"]
+    consumer_services: ["orion-sql-writer", "*"]
     stability: "experimental"
     since: "2026-04-26"
 
@@ -2239,7 +2235,7 @@ channels:
     kind: "event"
     schema_id: "CompressionStalenessMarkV1"
     message_kind: "graph.compression.stale.v1"
-    producer_services: ["orion-rdf-writer", "orion-graph-compression"]
+    producer_services: ["orion-graph-compression"]
     consumer_services: ["orion-graph-compression"]
     stability: "experimental"
     since: "2026-06-06"

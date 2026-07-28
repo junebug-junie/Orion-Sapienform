@@ -6,9 +6,7 @@ from pathlib import Path
 from typing import Any, Dict, List
 from uuid import UUID, uuid4
 
-from app.services.bus_events import get_bus_publisher
 from app.storage.repository import fetch_model, fetch_run, fetch_segments, replace_edges_for_run, utc_now
-from orion.schemas.topic_foundry import KgEdgeIngestItemV1, KgEdgeIngestV1
 
 
 logger = logging.getLogger("topic-foundry.kg-edges")
@@ -20,7 +18,6 @@ def generate_edges_for_run(run_id: UUID, *, min_confidence: float = 0.2) -> int:
         return 0
     model_row = fetch_model(UUID(run_row["model_id"]))
     model_name = model_row["name"] if model_row else "unknown"
-    model_id = UUID(run_row["model_id"])
 
     segments = fetch_segments(run_id, has_enrichment=True)
     edges: List[Dict[str, Any]] = []
@@ -29,7 +26,16 @@ def generate_edges_for_run(run_id: UUID, *, min_confidence: float = 0.2) -> int:
 
     replace_edges_for_run(run_id=run_id, edges=edges)
     _write_edge_artifacts(run_row, edges)
-    _publish_edge_batch(edges, run_id=run_id, model_id=model_id, model_name=model_name)
+    # Bus publish (orion:kg:edge:ingest.v1) retired 2026-07-28 -- zero live
+    # consumers (orion-rdf-writer never actually subscribed; orion-graphdb
+    # never existed as a real service). These edges now reach a real
+    # consumer via GET /kg/edges, pulled by
+    # orion-hub/scripts/concept_atlas_routes.py into the live Falkor
+    # substrate graph instead (see
+    # orion/substrate/adapters/topic_foundry.py's module docstring). Rows
+    # still persist to Postgres (replace_edges_for_run above) and remain
+    # queryable via GET /edges and /kg/edges -- only the dead broadcast is
+    # gone.
     return len(edges)
 
 
@@ -141,26 +147,3 @@ def _write_edge_artifacts(run_row: Dict[str, Any], edges: List[Dict[str, Any]]) 
     with edges_path.open("w", encoding="utf-8") as handle:
         for edge in edges:
             handle.write(json.dumps(edge, default=str) + "\n")
-
-
-def _publish_edge_batch(edges: List[Dict[str, Any]], *, run_id: UUID, model_id: UUID, model_name: str) -> None:
-    if not edges:
-        return
-    payload = KgEdgeIngestV1(
-        run_id=run_id,
-        model_id=model_id,
-        model_name=model_name,
-        edges=[
-            KgEdgeIngestItemV1(
-                edge_id=edge["edge_id"],
-                segment_id=edge["segment_id"],
-                subject=edge["subject"],
-                predicate=edge["predicate"],
-                object=edge["object"],
-                confidence=edge["confidence"],
-                created_at=edge["created_at"],
-            )
-            for edge in edges
-        ],
-    )
-    get_bus_publisher().publish_kg_edges(payload)

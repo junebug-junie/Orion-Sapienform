@@ -61,30 +61,60 @@ shim that re-exports it). This prevents drift across duplicate definitions.
 
 ## 3. Consumer Behavior
 
-### SQL Writer
+**As of 2026-07-28, this section reflects live reality, not the original design intent** — see
+`docs/superpowers/specs/2026-07-28-cognition-trace-signal-gateway-consumer-audit.md` for the
+full audit. Several consumers described in earlier versions of this doc were never real or have
+since been deliberately killed.
+
+### SQL Writer — real, live, the only full-fidelity record
 *   **Table:** `cognition_traces` (via `CognitionTraceSQL` model)
 *   **Subscription:** `cognition.trace` -> `CognitionTraceSQL` mapping.
 *   **Storage:** Stores full JSON of steps/options + structured metadata columns.
+*   Live-confirmed 2026-07-28: 7393+ rows, newest seconds old at query time. This is the one
+    channel of real archival value in this whole tree — do not remove without a real replacement.
 
-### RDF Writer
-*   **Graph:** `orion:cognition`
-*   **Ontology:**
-    *   `orion:CognitionRun` (The trace)
-    *   `orion:CognitionStep` (The steps)
-    *   `orion:hasStep` / `orion:nextStep` (Sequence)
-    *   `orion:hasThought` (Step reasoning)
-    *   `orion:hasEvidenceRef` (Artifact links)
+### RDF Writer — killed 2026-07-22
+The `orion:CognitionRun`/`orion:CognitionStep` Fuseki ontology this section used to describe was
+retired as part of the Fuseki decommission campaign: live traffic was ~750 writes/6h of pure
+redundancy against SQL Writer's `cognition_traces` (61k+ rows at the time). See
+`services/orion-rdf-writer/app/settings.py`'s subscribe-list comment and
+`docs/superpowers/specs/2026-07-22-tags-enriched-fuseki-kill-spec.md`. Do not re-add without a
+real Falkor/Postgres-gap reason.
 
-### Vector Writer
-*   **Collection:** `orion_cognition`
-*   **Embedding:** `final_text` (content)
-*   **Metadata:** `correlation_id`, `verb`, `mode`.
+### Vector Writer — dead code, removed 2026-07-28
+The `cognition.trace` -> `orion_cognition` Chroma-embedding branch this section used to describe
+was never reachable: `VECTOR_WRITER_SUBSCRIBE_CHANNELS` (default and live `.env`) has never
+included `orion:cognition:trace`. No envelope of this kind ever reached the branch. Removed
+rather than wired up — if semantic search over past `final_text` is wanted, that's a fresh
+feature to scope, not a restoration.
 
-### Spark Introspector
-*   **Logic:**
+### Signal Gateway — removed 2026-07-28
+`CognitionTraceAdapter` derived `cognition_run`/`cognition_step` `OrionSignalV1` objects (spec
+§5.3) from this channel. Its only real consumer was `orion-hub`'s debug-only
+`SignalsInspectCache` (a UI inspection cache, not a live cognition/drive loop).
+`orion-substrate-runtime`'s `execution_trajectory` reducer already builds an equivalent,
+causally-linked per-turn structure from `GrammarEventV1` (the doctrinal "substrate trace",
+see `docs/context-engineering/00_substrate_trace_doctrine.md`) — and that one has a real
+consumer: `orion-spark-introspector`'s `inner_state.py` HTTP-polls
+`/projections/execution_trajectory` to build `InnerStateFeaturesV1`. Removed as a redundant
+third encoding of the same "how did this turn go" concept.
+
+### Spark Introspector — real subscription, but the derived signal is discarded before use
+*   **Logic (`handle_trace()` in `worker.py`):**
     1.  Receives `cognition.trace`.
-    2.  Derives `SurfaceEncoding` (Valence/Arousal) from trace success/fail/complexity.
-    3.  Maps to `OrionTissue` stimulus.
-    4.  Updates Tissue (Predictive Coding + Diffusion).
-    5.  Calculates `Novelty` and `Phi`.
-    6.  Publishes `spark.telemetry` (legacy `spark.introspection.log`).
+    2.  Computes a heuristic `valence`/`arousal` from trace success/fail counts ("Basic
+        heuristics" block) — **live-confirmed this result is immediately overwritten** by
+        `_get_phi_stats()`'s own internal state a few lines later, before it's ever published.
+        The step-derived signal from `cognition_trace.steps` does not actually reach phi.
+    3.  What does reach phi: `mode`/`verb` bookkeeping and whatever `spark_meta`/`turn_effect`
+        is nested in `trace.metadata`.
+    4.  Publishes `spark.telemetry` (legacy `spark.introspection.log`).
+*   Separately, a synthetic `mode="heartbeat"` variant of this same channel (published by
+    `orion-equilibrium-service`'s idle-keepalive loop, `EQUILIBRIUM_SPARK_HEARTBEAT_ENABLE`,
+    default `false`) takes a different branch in `handle_trace()` that decays existing phi state
+    rather than deriving from real trace content — unrelated to landing-pad's spark data despite
+    the shared name.
+*   This whole subscription's future is tracked separately in
+    `docs/superpowers/specs/2026-07-28-spark-introspector-retirement-and-honest-substrate-convergence.md`
+    (phi/EKG output found to be largely theater independent of this audit) — do not re-fix the
+    discarded-heuristic bug in isolation; let that retirement track decide this consumer's fate.

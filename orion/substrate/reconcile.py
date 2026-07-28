@@ -140,6 +140,20 @@ class SubstrateIdentityResolver:
             return None
         if node.node_kind == "hypothesis":
             return None
+        if node.node_kind == "entity":
+            # Added 2026-07-28 alongside topic_foundry.py's mention-edge ->
+            # EntityNodeV1 wiring: without an identity key here, every
+            # ingestion tick (the topic-foundry scheduler runs daily by
+            # default) would create a brand-new entity node for the same
+            # real-world entity, since the adapter's own node_id is
+            # deliberately run-scoped (a hash of run_id + label). Keyed by
+            # normalized label only (matching `_legacy_concept_key`'s own
+            # label-based precedent) -- not `entity_type`, since every
+            # current producer leaves that at the schema default
+            # ("unknown") and keying on it would just fragment identity for
+            # no benefit until a real typed-entity producer exists.
+            label = str(getattr(node, "label", "")).strip().lower()
+            return f"entity|{scope}|{subject}|label:{label}" if label else None
         return None
 
     def _concept_embedding_match_key(self, node: BaseSubstrateNodeV1, *, scope: str, subject: str) -> str | None:

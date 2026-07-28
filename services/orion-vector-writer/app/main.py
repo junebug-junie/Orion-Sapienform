@@ -159,32 +159,12 @@ def normalize_to_request(env: BaseEnvelope) -> Optional[VectorWriteRequest]:
             "filename": payload.get("filename", ""),
             "doc_id": payload.get("id", "")
         })
-    elif kind == "cognition.trace":
-        collection = "orion_cognition"
-        # CognitionTracePayload logic
-        # We index the final text.
-        # Payload is a dict here (already dumped) or object? Env payload is usually dict.
-
-        # We need to handle potential Pydantic model in payload if not serialized?
-        # BaseEnvelope.payload is usually dict after decoding.
-
-        # Extract fields
-        final_text = payload.get("final_text") or ""
-        verb = payload.get("verb", "unknown")
-        mode = payload.get("mode", "unknown")
-        correlation_id = payload.get("correlation_id", "")
-
-        content = final_text
-        if not content:
-             # Fallback to description of what happened
-             content = f"Cognition trace for {verb} in {mode} mode."
-
-        meta.update({
-            "correlation_id": str(correlation_id),
-            "verb": verb,
-            "mode": mode,
-            "source": "cognition.trace"
-        })
+    # kind == "cognition.trace" deliberately not handled as of 2026-07-28: this
+    # branch was dead code -- VECTOR_WRITER_SUBSCRIBE_CHANNELS has never included
+    # orion:cognition:trace (default and live .env both omit it), so no envelope
+    # with this kind has ever reached normalize_to_request. See
+    # docs/superpowers/specs/2026-07-28-cognition-trace-signal-gateway-consumer-audit.md.
+    # Do not re-add without also adding the subscription and a real reason.
     elif kind == "metacognitive.trace.v1":
         collection = settings.VECTOR_WRITER_METACOG_COLLECTION
         raw_trace = str(payload.get("content") or "").strip()

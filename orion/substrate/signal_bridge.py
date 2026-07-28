@@ -10,7 +10,14 @@ Supported inputs (MVP):
     (organ_id="cortex_exec", signal_kind="cognition_step")
     (organ_id="memory_consolidation", signal_kind="turn_change")
 
-These are the signals produced by orion.signals.adapters.cognition_trace.
+The cortex_exec/cognition_run and cortex_exec/cognition_step inputs are
+permanently unreachable as of 2026-07-28: their only producer,
+orion.signals.adapters.cognition_trace.CognitionTraceAdapter, was removed as
+redundant with orion-substrate-runtime's execution_trajectory reducer (see
+docs/superpowers/specs/2026-07-28-cognition-trace-signal-gateway-consumer-audit.md).
+Not cleaned up here because SubstrateSignalBusWorker (signal_bus_worker.py),
+the only consumer of this module, is itself never instantiated anywhere in the
+repo -- a separate, pre-existing dead-code question out of scope for that audit.
 """
 
 from __future__ import annotations

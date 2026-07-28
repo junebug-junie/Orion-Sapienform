@@ -79,7 +79,6 @@ class Settings(BaseSettings):
         "orion:state_journaler:*",
         "orion:topic:*",
         "orion:concept:*",
-        "orion:cognition:*",
         "orion:cortex:*",
         "orion:exec:*",
         "orion:chat:*",

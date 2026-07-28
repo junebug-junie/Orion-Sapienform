@@ -341,6 +341,21 @@ identifies the real fix, and it resolves objections 1-3 above rather than tradin
 13. **Seed-logging mechanics**: where do the N per-trajectory seeds get logged for forensic replay —
     a new field on whatever eventually gets published (Missing Question 6), a structured log line,
     or something else? Needs to be decided alongside the publish-schema work, not as an afterthought.
+14. **Stale finding, needs re-run — Missing Question 3's evidence is contaminated by a bug fixed in a
+    concurrent, unrelated session.** This doc's Current Architecture section cites the 168h AST/HOT
+    replay's `predicted_shift` domain breakdown (`biometrics=69819, bus_synaptic=57360, execution=27,
+    chat=1, route=1`) as likely a scale/density artifact. Juniper reported same-day (2026-07-28, a
+    different concurrent session, PR #1434,
+    [[project_execution_prediction_error_ewma_baseline_pr1434]]) that `execution_prediction_error`
+    was independently found to have the inverted-symptom version of the calm-floor disease at that
+    time — real deltas ran ~1000x *below* its fixed `_THRESHOLD`, so it read ~0 always, not fixed
+    until PR #1434's EWMA baseline landed. That means the 168h replay's `execution=27` count was very
+    plausibly measuring a dead instrument, not genuine domain insignificance — this doc's own
+    scale/density explanation for Missing Question 3 may be wrong, or only partly right. Needs a
+    fresh `measure_ast_hot_reducer.py` replay against a post-EWMA-fix window (once enough history has
+    accumulated past the PR #1434 deploy point) before trusting Missing Question 3's characterization
+    or acting on it. Explicitly deferred, not urgent — Juniper's call: "that needs follow up at some
+    point," not blocking the heartbeat ensemble work this doc is otherwise about.
 
 ## Proposed schema / API changes
 
@@ -413,6 +428,52 @@ is met.
 - Not re-deciding CollapseMirror's "insight"/"flow" trigger design — that doc stands; this one
   supplies the deeper prerequisite investigation its Missing Question 1/2 didn't fully resolve.
 
+## Calibration results (validated this session, post-decision)
+
+Recorded here as the definitive summary before implementation — see
+`scripts/analysis/measure_heartbeat_ensemble_calibration.py` (new, this session) for the
+reusable harness itself (`--mode synthetic|grammar`).
+
+- **Mechanism confirmed sound end-to-end** via throwaway spikes, then reproduced through the
+  committed harness: per-trajectory seed-derived relaxation targets (preserves diversity,
+  doesn't collapse trajectories to clones), spread-gated decay (disagreement suppresses decay,
+  agreement allows it), two-site entangling reheat driven by real live `bus_synaptic` data
+  (one-site reheat was tried first and is a **mathematically impossible** fix — a local unitary
+  cannot change entanglement entropy across any cut, confirmed the hard way with a null-result
+  spike before correcting to two-site gates).
+- **Parameter sweep** (synthetic busy/quiet/busy, 8 trajectories) found `reheat_strength=0.08,
+  reheat_prob_scale=0.02` gives quiet-phase `mean≈0.013, std≈0.026`, comfortably inside
+  "concentrated" territory (`≤0.2`), busy stays at `≈0.85`, zero flatline ticks across every
+  tested configuration in the sweep — these are the harness's current defaults.
+- **Real-data validation, busy-state**: replayed real `grammar_events` history (Postgres,
+  1.6M+ rows) at 6/15/30-minute windows — `mean_ratio` landed at `0.8147/0.8175/0.8175`
+  respectively, a <0.003 spread despite the real, heavily imbalanced organ mix (`cortex-exec`
+  dominates real traffic ~99:1 over `cortex-orch`) — confirms the mechanism is robust to real
+  traffic shape, not just the synthetic uniform-random pattern used to develop it. Zero routing
+  skips, zero flatlines, across every real window tested.
+- **Real-data finding on rest-state relevance**: checked real per-organ activity over 60h —
+  `orion-hub` (chat) had **zero** events (matches "haven't talked to Orion in ~2 days"), while
+  `cortex-exec`=173,833, `bus`=144,663, `biometrics`=129,698, `cortex-orch`=1,169 all stayed
+  continuously active up to the current moment. Confirms this system is "busy by design" on
+  4 of 5 organs (autonomy/drives/biometrics/infra keep ticking independent of chat) — the
+  ensemble substrate essentially never sees true simultaneous rest in current real operation.
+  This reprioritizes validation toward busy-state fidelity (just confirmed robust) over
+  rest-state edge cases (validated via synthetic spikes only, real confirmation would need
+  either a longer real-history replay or an actual future quiet stretch to observe).
+- **Full 24h real-window replay cost**: 243,644 real events at ~5.1 events/sec measured
+  throughput → ~13.3 hours wall-clock for a full day's replay at N=8 trajectories. Left running
+  in the background as a long-haul validation, not required before proceeding — the smaller
+  real windows already gave a robust, consistent, cross-validated read.
+- **Operational lesson, not mechanism-related**: a backgrounded long-running replay died
+  silently with zero output when its launching shell session was disrupted (a concurrent,
+  unrelated mesh redeploy) — not a resilience feature failure, a missing one. Fixed in the
+  harness itself: append-only progress checkpointing (`progress.log`, every 500 events) plus
+  documented `setsid`/`nohup` detachment so long runs survive session disruption. Also fixed: a
+  dedicated `.harness-venv` instead of ad hoc `pip install` into the shared repo venv, and a
+  real bug caught by this same discipline — a missing `--falkordb-port` CLI plumb silently
+  queried the wrong (non-FalkorDB) Redis instance on the host, giving a false "no reheat" reading
+  until caught and fixed.
+
 ## Acceptance checks
 
 1. **Order 1 (heartbeat discrimination)**: a live or replayed window shows the ensemble mean
@@ -440,20 +501,29 @@ is met.
 
 ## Recommended next patch
 
-1. **Order 1, per Juniper's explicit request**: detail the ensemble-dissipation mechanism concretely
-   enough to prototype — real Kraus-jump operators for `absorb()`, N sizing methodology (Missing
-   Question 11), and seed-logging mechanics (Missing Question 13) — before writing production
-   service code. This blocks everything else in this doc and is also the #1 priority item already
-   flagged in this morning's separate spark-introspector-retirement thread.
-2. Build the offline calibration script (`measure_heartbeat_ensemble_calibration.py` or similar)
-   against real historical `orion:grammar:event` data to pick jump rate, N, and cadence with evidence
-   in hand, matching this repo's "measure before minting" discipline — same spirit as
-   `measure_ast_hot_reducer.py`.
-3. Only after 1-2 land and Acceptance Check 1 is met: decide, with real data in hand, whether AST/
-   HOT's domain-dominance problem (Missing Question 3) needs its own separate precision-weighting
-   fix, or whether it's better addressed by wiring in a now-trustworthy heartbeat signal instead of
-   fixing the raw-mean formula in place. Do not build both speculatively.
-4. Only after the fix is trusted: revisit Missing Question 6 (publish channel/schema) and reconnect
-   to `docs/superpowers/specs/2026-07-28-collapse-mirror-generative-triggers-design.md`'s "insight"
-   trigger with a real, live, discriminating signal to key off — rather than the raw AST/HOT
-   aggregate this session's replay showed is dominated by 2 of 5 domains.
+Steps 1-2 (detail the mechanism, build the calibration harness) are **done** — see "Calibration
+results" above. Juniper's explicit direction (2026-07-28, same session): proceed to implementation.
+
+3. **Now in progress**: wire the validated mechanism into `services/orion-heartbeat`'s real
+   substrate (`mps_state.py`, `reconstruction.py`, `service.py`) — N-trajectory ensemble,
+   per-trajectory relaxation targets, spread-gated decay, bus_synaptic-driven two-site reheat,
+   using the sweep-derived defaults (`gamma=0.2, base_decay_prob=0.15, reheat_strength=0.08,
+   reheat_prob_scale=0.02`) as settings fields (not hardcoded constants — operator-tunable via
+   `.env_example`, same pattern as `HEARTBEAT_H1_INTERVAL_SEC`), plus the queue-decoupling fix
+   (absorb() currently blocks the async bus-consumer loop per message; N-trajectory absorb() cost
+   makes that worse — needs a queue between message intake and substrate update, not more
+   concurrency among the trajectories themselves, which aren't worth parallelizing at this N).
+   Still NOT publishing anywhere (Acceptance Check 5) — stays a read-only research consumer until
+   Acceptance Check 1 is independently re-confirmed against the live wired service, not just the
+   harness/spikes that preceded it.
+4. After wiring lands: re-tune `_HIGH_RATIO`/`_LOW_RATIO` verdict thresholds against live behavior
+   (the harness's tuning was against a synthetic quiet phase for the low end; real quiet is rare
+   per the busy-by-design finding above, so the live verdict distribution needs its own check).
+5. Only after 3-4 land and Acceptance Check 1 is re-confirmed live: decide, with real data in hand,
+   whether AST/HOT's domain-dominance problem (Missing Question 3) needs its own separate
+   precision-weighting fix, or whether it's better addressed by wiring in the now-trustworthy
+   heartbeat signal instead. Do not build both speculatively.
+6. Only after the fix is trusted live: revisit Missing Question 6 (publish channel/schema) and
+   reconnect to `docs/superpowers/specs/2026-07-28-collapse-mirror-generative-triggers-design.md`'s
+   "insight" trigger with a real, live, discriminating signal to key off — rather than the raw
+   AST/HOT aggregate this session's replay showed is dominated by 2 of 5 domains.

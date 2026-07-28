@@ -435,7 +435,45 @@ for what the surface means to an operator, and
 [docs/superpowers/specs/2026-07-16-hub-drives-analytics-design.md](../../docs/superpowers/specs/2026-07-16-hub-drives-analytics-design.md)
 for the full design.
 
-### 5.5 Concept Atlas: golden concepts, decay, typed relations, autonomous ingestion
+### 5.5 Self-Brain: Substrate State Visualization (`Self-Brain` tab)
+
+**What it is:** real-time visual display of substrate state at 5-second granularity, organized
+by four independent signal dimensions emitted from `orion-substrate-runtime`:
+
+| Dimension | Signal | Source | Meaning |
+|-----------|--------|--------|---------|
+| Node kinds | Activation | graph | Peak activation per node category (tension, concept, etc.) |
+| Lanes | Health | reducers | Lane freshness (lag) + backlog status |
+| Self-state | Field signals | field digester | 13-dim projection from active inference |
+| Prediction Confidence | Error confidence | active inference | Model's own certainty: 0.0–1.0, **no transform** |
+
+**Display:** Two canvas views per dimension:
+1. **Brain map** (top): regions as colored circles, size/color = intensity + state (firing/steady/starving)
+2. **EKG sparkline** (middle): intensity history over loaded window (120 frames, ~10 minutes)
+
+**Prediction Confidence dimension (new):** Displays the model's own prediction-error confidence
+from active inference, clamped to [0.0, 1.0]. Green sparkline when selected. **No transformation
+or aggregation** — this is a direct read from the active inference pipeline's unconditional output,
+not a synthetic signal.
+
+**Endpoints (read-only, degrade instead of 500):**
+
+- `GET /api/self-brain/frames/tail?limit=N` — last N frames (ascending order)
+- `GET /api/self-brain/frames/range?from=ISO&to=ISO&max=N` — frames in timestamp range
+- `GET /api/self-brain/window` — earliest/latest timestamps + frame count + server time
+
+**Data dependency:** reads Postgres `substrate_brain_frame_log` (24-hour retention, 5s cadence).
+Requires `POSTGRES_URI` from `orion-substrate-runtime` service. Degrades to empty frame list if
+Postgres unavailable.
+
+**Frontend:** `templates/self-brain.html` + `static/js/self-brain.js` (embedded in Hub shell
+via `#self-brain` tab button). Scrubber allows playback through historical window; LIVE mode
+polls every 3s.
+
+See also: `docs/superpowers/specs/2026-07-28-spark-introspector-retirement-and-honest-substrate-convergence.md`
+for signal legitimacy audit and architecture decisions.
+
+### 5.6 Concept Atlas: golden concepts, decay, typed relations, autonomous ingestion
 
 **What it is:** the concept-graph-pipeline design's live substrate. A shared FalkorDB-backed
 concept graph (`SUBSTRATE_STORE_BACKEND=falkor`, graph `orion_substrate` — same instance

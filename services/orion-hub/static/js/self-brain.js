@@ -8,6 +8,7 @@ const DIMENSIONS = [
   { key: "node_kind", label: "Node kinds" },
   { key: "lane", label: "Lanes" },
   { key: "self_state", label: "Self-state" },
+  { key: "honesty_metrics", label: "Prediction Confidence" },
   { key: "spotlight", label: "Spotlight" },
 ];
 
@@ -206,6 +207,35 @@ function drawEkg() {
     sw.textContent = "■ ";
     row.appendChild(sw);
     row.append("coalition stability");
+    legend.appendChild(row);
+    return;
+  }
+
+  if (state.dim === "honesty_metrics") {
+    // Prediction confidence sparkline over the loaded window.
+    const pts = state.frames.map((f) => {
+      const regions = regionsFor(f, "honesty_metrics");
+      return regions.length > 0 ? regions[0].intensity : null;
+    });
+    if (!pts.some((v) => v !== null)) { legend.textContent = "No prediction confidence in window."; return; }
+    const n2 = Math.max(1, pts.length - 1);
+    ctx.beginPath();
+    let started = false;
+    pts.forEach((v, xi) => {
+      if (v === null) return;
+      const x = (xi / n2) * canvas.width;
+      const y = canvas.height - v * (canvas.height - 8) - 4;
+      if (!started) { ctx.moveTo(x, y); started = true; } else ctx.lineTo(x, y);
+    });
+    ctx.strokeStyle = "#34d399";
+    ctx.lineWidth = 2;
+    ctx.stroke();
+    const row = document.createElement("div");
+    const sw = document.createElement("span");
+    sw.style.color = "#34d399";
+    sw.textContent = "■ ";
+    row.appendChild(sw);
+    row.append("Prediction Confidence");
     legend.appendChild(row);
     return;
   }

@@ -89,6 +89,7 @@ def test_producer_yields_firing_and_starving_regions_and_samples():
         lane_health=lane_health,
         self_state=None,
         attention=None,
+        attention_payload=None,
         settings=_settings(),
         now=now,
         tick_seq=7,
@@ -275,3 +276,93 @@ def test_activation_read_from_nested_signals_not_flat_attr():
     assert samples["t1"].activation == 0.9
     assert samples["c1"].activation == 0.0
     assert samples["c1"].dormant is True
+
+
+def test_honesty_regions_with_valid_confidence():
+    from datetime import datetime, timezone
+
+    from app.brain_frame_producer import _honesty_regions
+
+    now = datetime(2026, 7, 7, 12, 0, 0, tzinfo=timezone.utc)
+    payload = {"prediction_error_confidence": 0.75}
+    regions = _honesty_regions(payload, now)
+
+    assert len(regions) == 1
+    assert regions[0].dimension == "honesty_metrics"
+    assert regions[0].region_id == "honesty:confidence"
+    assert regions[0].intensity == 0.75
+    assert regions[0].state == "firing"  # confidence > 0.7
+    assert regions[0].label == "Prediction Confidence"
+
+
+def test_honesty_regions_with_steady_confidence():
+    from datetime import datetime, timezone
+
+    from app.brain_frame_producer import _honesty_regions
+
+    now = datetime(2026, 7, 7, 12, 0, 0, tzinfo=timezone.utc)
+    payload = {"prediction_error_confidence": 0.5}
+    regions = _honesty_regions(payload, now)
+
+    assert len(regions) == 1
+    assert regions[0].state == "steady"  # 0.4 < confidence <= 0.7
+
+
+def test_honesty_regions_with_low_confidence():
+    from datetime import datetime, timezone
+
+    from app.brain_frame_producer import _honesty_regions
+
+    now = datetime(2026, 7, 7, 12, 0, 0, tzinfo=timezone.utc)
+    payload = {"prediction_error_confidence": 0.2}
+    regions = _honesty_regions(payload, now)
+
+    assert len(regions) == 1
+    assert regions[0].state == "starving"  # confidence <= 0.4
+
+
+def test_honesty_regions_with_none_confidence():
+    from datetime import datetime, timezone
+
+    from app.brain_frame_producer import _honesty_regions
+
+    now = datetime(2026, 7, 7, 12, 0, 0, tzinfo=timezone.utc)
+    payload = {"prediction_error_confidence": None}
+    regions = _honesty_regions(payload, now)
+
+    assert len(regions) == 0
+
+
+def test_honesty_regions_with_empty_payload():
+    from datetime import datetime, timezone
+
+    from app.brain_frame_producer import _honesty_regions
+
+    now = datetime(2026, 7, 7, 12, 0, 0, tzinfo=timezone.utc)
+    regions = _honesty_regions(None, now)
+
+    assert len(regions) == 0
+
+
+def test_honesty_regions_included_in_frame():
+    from datetime import datetime, timezone
+
+    from app.brain_frame_producer import assemble_brain_frame
+
+    now = datetime(2026, 7, 7, 12, 0, 0, tzinfo=timezone.utc)
+    payload = {"prediction_error_confidence": 0.8}
+    frame = assemble_brain_frame(
+        nodes=[_node("t1", "tension", 0.9, 0.9)],
+        edges=[],
+        lane_health={"cursor_lag_by_reducer": {}, "pending_backlog_by_reducer": {}, "quarantine_by_reducer": {}},
+        self_state=None,
+        attention=None,
+        attention_payload=payload,
+        settings=_settings(),
+        now=now,
+        tick_seq=10,
+    )
+    honesty = {r.region_id: r for r in frame.regions if r.dimension == "honesty_metrics"}
+    assert len(honesty) == 1
+    assert honesty["honesty:confidence"].intensity == 0.8
+    assert honesty["honesty:confidence"].state == "firing"

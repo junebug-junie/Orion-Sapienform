@@ -1623,6 +1623,7 @@ class BiometricsSubstrateWorker:
                 lane_health=self._brain_frame_lane_health(),
                 self_state=self._brain_frame_self_state(),
                 attention=attention,
+                attention_payload=attention,
                 settings=s,
                 now=now,
                 tick_seq=self._brain_frame_seq,

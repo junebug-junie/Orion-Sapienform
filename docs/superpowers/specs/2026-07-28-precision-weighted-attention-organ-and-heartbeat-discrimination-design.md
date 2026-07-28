@@ -341,6 +341,21 @@ identifies the real fix, and it resolves objections 1-3 above rather than tradin
 13. **Seed-logging mechanics**: where do the N per-trajectory seeds get logged for forensic replay —
     a new field on whatever eventually gets published (Missing Question 6), a structured log line,
     or something else? Needs to be decided alongside the publish-schema work, not as an afterthought.
+14. **Stale finding, needs re-run — Missing Question 3's evidence is contaminated by a bug fixed in a
+    concurrent, unrelated session.** This doc's Current Architecture section cites the 168h AST/HOT
+    replay's `predicted_shift` domain breakdown (`biometrics=69819, bus_synaptic=57360, execution=27,
+    chat=1, route=1`) as likely a scale/density artifact. Juniper reported same-day (2026-07-28, a
+    different concurrent session, PR #1434,
+    [[project_execution_prediction_error_ewma_baseline_pr1434]]) that `execution_prediction_error`
+    was independently found to have the inverted-symptom version of the calm-floor disease at that
+    time — real deltas ran ~1000x *below* its fixed `_THRESHOLD`, so it read ~0 always, not fixed
+    until PR #1434's EWMA baseline landed. That means the 168h replay's `execution=27` count was very
+    plausibly measuring a dead instrument, not genuine domain insignificance — this doc's own
+    scale/density explanation for Missing Question 3 may be wrong, or only partly right. Needs a
+    fresh `measure_ast_hot_reducer.py` replay against a post-EWMA-fix window (once enough history has
+    accumulated past the PR #1434 deploy point) before trusting Missing Question 3's characterization
+    or acting on it. Explicitly deferred, not urgent — Juniper's call: "that needs follow up at some
+    point," not blocking the heartbeat ensemble work this doc is otherwise about.
 
 ## Proposed schema / API changes
 

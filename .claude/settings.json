@@ -57,6 +57,15 @@
             "command": "\"$CLAUDE_PROJECT_DIR/scripts/hooks/graphify_hook_guard_gate.sh\" read"
           }
         ]
+      },
+      {
+        "matcher": "Edit|Write|NotebookEdit",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "python3 \"$CLAUDE_PROJECT_DIR/scripts/hooks/shared_checkout_edit_guard.py\""
+          }
+        ]
       }
     ]
   }

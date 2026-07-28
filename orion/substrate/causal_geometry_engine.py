@@ -9,8 +9,9 @@ measurement logic the standalone report script uses, instead of duplicating it.
 See docs/superpowers/specs/2026-07-16-causal-geometry-v1-design.md for the full
 three-phase design, and `scripts/causal_geometry_report.py`'s own (still
 present) module docstring for the detailed rationale behind the fixed
-constants, the four source tables, resampling, lagged cross-correlation, the
-Bonferroni-corrected surrogate significance test, and the designed-vs-observed
+constants, the source tables, resampling, lagged cross-correlation, the
+Bonferroni-corrected-per-pair + Benjamini-Hochberg-corrected-across-pairs
+surrogate significance test, and the designed-vs-observed
 divergence matching rule (including the `#<capability_channel>` target_id
 disambiguation suffix -- see `orion/substrate/field_topology_plasticity.py`'s
 `_base_target_id()` for the corresponding join-side fix).
@@ -65,14 +66,14 @@ def fetch_channels(
     *,
     biometrics_node: str = DEFAULT_BIOMETRICS_NODE,
 ) -> Tuple[ChannelSeries, Dict[str, int]]:
-    """Pull and flatten all four organ signal tables into named channels.
+    """Pull and flatten organ signal tables into named channels.
 
     Uses psycopg2 (already a dependency of several services; no new dependency
     added when called from a service that already has it, e.g. orion-hub,
     orion-field-digester). Each row's jsonb column is flattened into one
-    channel per key (`drive:<key>`, `biometrics:<key>`, `self_state:<key>`);
-    `attention_salience_trace.salience` has no sub-keys and becomes the single
-    scalar channel `attention:salience`.
+    channel per key (`biometrics:<key>`, `self_state:<key>`,
+    `bus_synaptic:<key>`); `attention_salience_trace.salience` has no
+    sub-keys and becomes the single scalar channel `attention:salience`.
 
     Returns `(channels, table_row_counts)`. `table_row_counts` maps each source
     table name to the raw row count pulled in the window -- a table with 0 rows
@@ -96,21 +97,6 @@ def fetch_channels(
     conn = psycopg2.connect(postgres_uri)
     try:
         with conn.cursor() as cur:
-            cur.execute(
-                """
-                SELECT COALESCE(observed_at, created_at) AS ts, drive_pressures
-                FROM drive_audits
-                WHERE COALESCE(observed_at, created_at) >= %s
-                ORDER BY ts
-                """,
-                (window_start,),
-            )
-            rows = cur.fetchall()
-            table_row_counts["drive_audits"] = len(rows)
-            for ts, drive_pressures in rows:
-                for key, value in (drive_pressures or {}).items():
-                    _append(f"drive:{key}", ts, value)
-
             cur.execute(
                 """
                 SELECT created_at AS ts, salience
@@ -154,6 +140,21 @@ def fetch_channels(
             for ts, scores in rows:
                 for key, value in (scores or {}).items():
                     _append(f"self_state:{key}", ts, value)
+
+            cur.execute(
+                """
+                SELECT generated_at AS ts, field_json->'node_vectors'->'node:substrate.bus_synaptic' AS channels
+                FROM substrate_field_state
+                WHERE generated_at >= %s
+                ORDER BY ts
+                """,
+                (window_start,),
+            )
+            rows = cur.fetchall()
+            table_row_counts["substrate_field_state"] = len(rows)
+            for ts, bus_synaptic_channels in rows:
+                for key, value in (bus_synaptic_channels or {}).items():
+                    _append(f"bus_synaptic:{key}", ts, value)
     finally:
         conn.close()
 
@@ -329,17 +330,51 @@ def compute_pairwise_results(
             p_raw = circular_shift_pvalue(
                 winner.xs, winner.ys, winner.r, n_surrogates=n_surrogates, rng=rng
             )
-            # Bonferroni correction for the implicit multiple comparisons across
-            # both directions x the full lag grid (see scripts/causal_geometry_report.py's
-            # module docstring's "Significance: circular time-shift surrogates" section).
+            # Bonferroni correction for the implicit multiple comparisons within
+            # this one pair's own winner search -- both directions x the full lag
+            # grid (see scripts/causal_geometry_report.py's module docstring's
+            # "Significance: circular time-shift surrogates" section). This is
+            # deliberately still per-pair and conservative for that narrow search;
+            # it is NOT a correction across the whole channel x channel matrix --
+            # see _apply_fdr_correction below for that.
             n_comparisons = 2 * len(lag_grid_seconds)
             p_value = min(1.0, p_raw * n_comparisons)
             result.winner = winner
             result.p_value = p_value
-            result.significant = p_value < alpha
             results.append(result)
 
+    _apply_fdr_correction(results, alpha=alpha)
     return results
+
+
+def _apply_fdr_correction(results: List["PairResult"], *, alpha: float) -> None:
+    """Benjamini-Hochberg step-up FDR correction across every pair actually
+    tested this tick (i.e. every `PairResult` with a non-None `p_value` --
+    pairs skipped for insufficient data or no surrogate-eligible direction
+    never reach here and stay `significant=False`).
+
+    Family size is the number of pairs tested in this run, not a fixed
+    constant -- so it moves whenever the channel set changes (e.g. removing
+    `drive:*` channels or adding `bus_synaptic:*` shrinks/grows the pair
+    count and therefore the correction). This replaces a plain per-pair
+    `p_value < alpha` cutoff, which does not control the false discovery
+    rate across the whole matrix: with N channels there are
+    `N*(N-1)/2` pairs tested per tick, and a flat per-pair alpha lets the
+    expected number of false positives grow with that count. BH controls
+    the *expected proportion* of false discoveries among declared-significant
+    edges instead, at the same target `alpha`.
+    """
+    tested = [r for r in results if r.p_value is not None]
+    m = len(tested)
+    if m == 0:
+        return
+    tested.sort(key=lambda r: r.p_value)
+    largest_k = 0
+    for i, result in enumerate(tested, start=1):
+        if result.p_value <= (i / m) * alpha:
+            largest_k = i
+    for i, result in enumerate(tested, start=1):
+        result.significant = i <= largest_k
 
 
 def _bucket_idx_to_datetime(idx: int, bucket_seconds: int = BUCKET_SECONDS) -> datetime:

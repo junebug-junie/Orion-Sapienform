@@ -94,22 +94,37 @@ time, and computes p_raw = (count(|r_surrogate| >= |r_observed|) + 1) /
 (--n-surrogates + 1) (add-one smoothing, standard permutation-test
 convention, avoids ever reporting p=0.0 off a finite sample).
 
-Multiple-comparisons correction: p_raw alone understates the real false
-positive rate, because "winner" was already selected as the best of 2
-directions x len(LAG_GRID_SECONDS) lags -- i.e. up to 10 comparisons per
-pair before the surrogate test ever runs. Reporting p_raw as-is would be
-exactly the anti-conservative "statistical mirage" the design spec warns
-against: picking the best of 10 candidates and then testing only that one
-against a null built for a single comparison inflates the apparent
-significance. This script applies a Bonferroni correction --
-p = min(1.0, p_raw * n_comparisons) where n_comparisons = 2 *
-len(LAG_GRID_SECONDS) -- before comparing against --alpha. Bonferroni is
-conservative (some real edges near the boundary will be missed) rather than
-a full max-statistic reconstruction (redoing the lag/direction search per
-surrogate), which would be tighter but costs ~10x more surrogate
-evaluations for a report-only nightly script; conservative-but-cheap was
-chosen deliberately for v1. An edge is only emitted into `edges` if the
-corrected p < --alpha.
+Multiple-comparisons correction is two separate stages, not one:
+
+1. Within-pair (still Bonferroni): p_raw alone understates the real false
+   positive rate, because "winner" was already selected as the best of 2
+   directions x len(LAG_GRID_SECONDS) lags -- i.e. up to 10 comparisons per
+   pair before the surrogate test ever runs. Reporting p_raw as-is would be
+   exactly the anti-conservative "statistical mirage" the design spec warns
+   against: picking the best of 10 candidates and then testing only that one
+   against a null built for a single comparison inflates the apparent
+   significance. `compute_pairwise_results()` applies a Bonferroni correction
+   here -- p = min(1.0, p_raw * n_comparisons) where n_comparisons = 2 *
+   len(LAG_GRID_SECONDS). Bonferroni is conservative (some real edges near
+   the boundary will be missed) rather than a full max-statistic
+   reconstruction (redoing the lag/direction search per surrogate), which
+   would be tighter but costs ~10x more surrogate evaluations for a
+   report-only nightly script; conservative-but-cheap was chosen deliberately
+   for v1.
+
+2. Across-pairs (Benjamini-Hochberg FDR, not Bonferroni): with N channels
+   there are N*(N-1)/2 pairs tested every tick, and a flat `p < --alpha` cutoff
+   applied independently to each pair's stage-1-corrected p-value does not
+   control the false discovery rate across that whole matrix -- the expected
+   count of false positives grows with the pair count, which itself moves
+   every time the channel set changes (e.g. removing `drive:*` or adding
+   `bus_synaptic:*`). `_apply_fdr_correction()` (in the engine module, called
+   at the end of `compute_pairwise_results()`) runs a standard BH step-up
+   procedure over every pair's stage-1 p-value to control FDR at --alpha
+   instead: sort ascending, find the largest rank i where p_(i) <=
+   (i/m)*alpha (m = pairs actually tested this tick), and declare everything
+   at or before that rank significant. An edge is only emitted into `edges`
+   if it passes both stages.
 
 Designed-vs-observed divergence
 --------------------------------

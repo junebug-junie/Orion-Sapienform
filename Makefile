@@ -131,6 +131,24 @@ bus-core-health-watchdog:
 		$(if $(RESTART_COUNT_THRESHOLD),--restart-count-threshold $(RESTART_COUNT_THRESHOLD),) \
 		$(if $(RESTART_WINDOW_MINUTES),--restart-window-minutes $(RESTART_WINDOW_MINUTES),)
 
+# Host-level disk-usage threshold watchdog for /mnt/docker, /mnt/scripts, and
+# /mnt/telemetry (each a distinct physical mount on this host). Publishes an
+# orion-notify /attention/request (Hub Pending Attention card) the first time
+# any monitored path crosses --threshold-pct (default 90), debounced via local
+# state so it doesn't refire every tick while already confirmed-notified and
+# still breached -- but DOES retry every tick if the prior notify attempt
+# never actually confirmed success (orion-notify down/unreachable), so a
+# breach can never be silently swallowed. See scripts/disk_threshold_watchdog.py's
+# docstring for the full design and scripts/README.md for cron install
+# instructions. Requires PYTHONPATH=. (it imports orion.notify.client) and
+# orion-notify reachable at NOTIFY_BASE_URL.
+disk-threshold-watchdog:
+	@PYTHONPATH=. python3 scripts/disk_threshold_watchdog.py $(if $(PATHS),--paths $(PATHS),) \
+		$(if $(THRESHOLD_PCT),--threshold-pct $(THRESHOLD_PCT),) \
+		$(if $(PROJECT),--project $(PROJECT),) \
+		$(if $(TELEMETRY_ROOT),--telemetry-root $(TELEMETRY_ROOT),) \
+		$(if $(NOTIFY_BASE_URL),--notify-base-url $(NOTIFY_BASE_URL),)
+
 # Reconciled worktree view -- path, branch, merged-into-main status, open PR,
 # disk size -- regardless of which of this repo's several worktree location
 # conventions (sibling dir, .worktrees/, .claude/worktrees/agent-<id>) each

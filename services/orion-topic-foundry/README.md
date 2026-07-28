@@ -166,9 +166,9 @@ Example (truncated, representative):
   "service": "orion-topic-foundry",
   "version": "0.1.0",
   "node": "...",
-  "llm_enabled": false,
+  "llm_enabled": true,
   "llm_transport": "bus",
-  "llm_bus_route": "LLMGatewayService",
+  "llm_bus_route": "",
   "llm_intake_channel": "orion:exec:request:LLMGatewayService",
   "llm_reply_prefix": "orion:llm:reply",
   "segmentation_modes_supported": ["time_gap", "semantic", "hybrid", "llm_judge", "hybrid_llm"],
@@ -180,7 +180,7 @@ Example (truncated, representative):
     "embedding_source_url": "http://orion-vector-host:8320/embedding",
     "metric": "cosine",
     "min_cluster_size": 15,
-    "llm_bus_route": "LLMGatewayService"
+    "llm_bus_route": ""
   },
   "introspection": {
     "ok": true,
@@ -205,6 +205,29 @@ LLM path is considered usable when:
 1. `TOPIC_FOUNDRY_LLM_ENABLE=true` (feature enabled), and
 2. `TOPIC_FOUNDRY_LLM_USE_BUS=true` and `ORION_BUS_ENABLED=true` (transport resolves to bus).
 
+**`TOPIC_FOUNDRY_LLM_BUS_ROUTE` is a route *key* into `orion-llm-gateway`'s route table**
+(`LLM_GATEWAY_ROUTE_TABLE_JSON`, e.g. `chat`/`agent`/`metacog`/`quick` — check that gateway's
+own live env for the current real keys, they're operator-configured and can change). It is
+**not** the intake channel name — `TOPIC_FOUNDRY_LLM_INTAKE_CHANNEL` (set separately, below)
+is what carries the literal string `LLMGatewayService` in this repo's convention
+(`orion:exec:request:LLMGatewayService`). A prior version of this example set
+`TOPIC_FOUNDRY_LLM_BUS_ROUTE=LLMGatewayService` by mistake — that's the channel-name string
+sitting in the route-key field, which doesn't match any real route table key.
+
+**Leaving `TOPIC_FOUNDRY_LLM_BUS_ROUTE` blank (the actual shipped default) is not "no
+route" — it silently falls through to whatever `orion-llm-gateway`'s own
+`LLM_ROUTE_DEFAULT` is set to** (`llm_backend.py`: `route or settings.llm_route_default or
+"chat"`). Confirmed live 2026-07-28: the gateway's `LLM_ROUTE_DEFAULT=quick`, so every
+enrichment LLM call currently lands on whichever worker the `quick` route table entry points
+at — a lane picked by whatever else happens to be the global default, not one chosen for
+this workload. Set it explicitly if that's not what you want; the `metacog` route's own
+model-profile notes in `config/llm_profiles.yaml` describe it as tuned for exactly this
+shape of work ("optimized for episodic structured JSON (draft + enrich)"), but routing
+enrichment's background batch traffic onto the same dedicated lane other live,
+latency-sensitive metacog-trigger consumers use is a real capacity/contention trade-off,
+not just a config toggle — deliberately not changed here, flagging it for an operator
+decision instead.
+
 Recommended env example:
 
 ```env
@@ -212,7 +235,7 @@ TOPIC_FOUNDRY_LLM_ENABLE=true
 TOPIC_FOUNDRY_LLM_USE_BUS=true
 ORION_BUS_ENABLED=true
 ORION_BUS_URL=redis://<tailnet-redis-host>:6379/0
-TOPIC_FOUNDRY_LLM_BUS_ROUTE=LLMGatewayService
+TOPIC_FOUNDRY_LLM_BUS_ROUTE=
 TOPIC_FOUNDRY_LLM_INTAKE_CHANNEL=orion:exec:request:LLMGatewayService
 TOPIC_FOUNDRY_LLM_REPLY_PREFIX=orion:llm:reply
 TOPIC_FOUNDRY_LLM_TIMEOUT_SECS=60

@@ -1,22 +1,38 @@
 """Pure conversion of orion-topic-foundry run output into cognitive-substrate records.
 
 Phase 2 of docs/superpowers/specs/2026-07-15-concept-atlas-graph-pipeline-design.md.
+Mention-edge -> EntityNodeV1 mapping added 2026-07-28 (see that spec's dated
+revision note) as part of retiring topic-foundry's dead `orion:kg:edge:ingest.v1`
+bus publish (zero live consumers, orion-rdf-writer/orion-graphdb per
+`orion/bus/channels.yaml`'s own former comment) in favor of routing the same
+already-computed, LLM-enriched typed edges through this already-live Falkor
+ingestion path instead of a second, unconsumed bus channel.
 
 This module intentionally mirrors the construction patterns used by the sibling
 adapter `orion/substrate/adapters/concept_induction.py::map_concept_profile_to_substrate`
 (provenance via `_common.make_provenance`, temporal via `_common.make_temporal`,
 evidence-node + `supports`-edge pairing, `co_occurs_with` edges built from shared
 context). It does not perform any HTTP calls or bus I/O — callers are responsible
-for fetching topic-foundry's `/topics`, `/topics/{topic_id}/keywords`, and
-`segments.jsonl`-derived data and passing it in as plain Python data (dicts or
-objects with matching attributes).
+for fetching topic-foundry's `/topics`, `/topics/{topic_id}/keywords`,
+`segments.jsonl`-derived data, and (as of the mention-edge addition) `/kg/edges`
+data, and passing it in as plain Python data (dicts or objects with matching
+attributes).
 
 Wiring this adapter into a live producer/consumer/registry is explicitly out of
 scope for this phase — see the spec's Phase 6/7/8 for where that happens.
+
+Known limitation, not fixed here: `services/orion-hub/scripts/concept_atlas_routes.py`'s
+network/god-node/typed-relation-classification views all filter to
+`node_kind == "concept"` explicitly. The `EntityNodeV1` records this module now
+emits are real, written to the store, and generically visible to any consumer
+that iterates the full node set (e.g. `orion/substrate/endogenous_curiosity.py`)
+-- but they will not appear in Concept Atlas's existing Hub UI until those
+routes are widened to include entity nodes, a separate follow-up.
 """
 
 from __future__ import annotations
 
+import hashlib
 import itertools
 from collections.abc import Mapping as ABCMapping
 from datetime import datetime
@@ -24,6 +40,7 @@ from typing import Any, Iterable, Mapping, Optional, Sequence
 
 from orion.core.schemas.cognitive_substrate import (
     ConceptNodeV1,
+    EntityNodeV1,
     EvidenceNodeV1,
     NodeRefV1,
     SubstrateEdgeV1,
@@ -43,6 +60,14 @@ MAX_KEYWORDS_PER_TOPIC = 20
 MAX_SEGMENTS_FOR_COOCCURRENCE = 5000
 MAX_TOPICS_PER_SEGMENT = 20
 MAX_COOCCURRENCE_EDGES = 2000
+# Belt-and-suspenders: in practice this adapter never sees more than
+# topic_foundry_client.py's own MAX_KG_EDGES_LIMIT (500, no pagination loop)
+# mention edges per call -- that client-side cap is the real ceiling on a
+# single ingestion call, set well below this one. Kept here anyway so this
+# module's own worst-case bound doesn't silently depend on a caller-side
+# constant it can't see.
+MAX_MENTION_EDGES = 2000
+MAX_ENTITY_LABEL_LENGTH = 120
 
 # HDBSCAN's noise/outlier bucket. Never a real cluster — always excluded.
 OUTLIER_TOPIC_ID = -1
@@ -72,6 +97,8 @@ def map_topic_foundry_run_to_substrate(
     keywords_by_topic: Optional[Mapping[int, Sequence[str]]] = None,
     segment_topic_map: Optional[Mapping[Any, Iterable[int]]] = None,
     topic_embeddings: Optional[Mapping[int, Sequence[float]]] = None,
+    mention_edges: Optional[Sequence[Any]] = None,
+    segment_topic_id_map: Optional[Mapping[str, int]] = None,
     observed_at: Optional[datetime] = None,
     anchor_scope: str = "world",
     subject_ref: Optional[str] = None,
@@ -101,6 +128,26 @@ def map_topic_foundry_run_to_substrate(
             (list of floats), if the caller has one available. If absent for a
             given topic, `concept_embedding` is simply omitted from that
             node's metadata — never fabricated.
+        mention_edges: sequence of dict-or-object-like items with `segment_id`
+            (str/UUID), `object` (str, the mentioned entity's raw text), and
+            `confidence` (float) — matching `GET /kg/edges?predicate=mentions`
+            items (`KgEdgeRecord` in
+            services/orion-topic-foundry/app/models.py). Only `predicate ==
+            "mentions"` edges are meaningful here; the caller is expected to
+            have already filtered to that predicate (this function does not
+            re-filter by predicate itself, since callers may pass an
+            already-scoped list). Other kg_edges predicates
+            (`asks_about`/`claims_about`/`next_step`) have no corresponding
+            substrate node kind yet and are deliberately out of scope — see
+            module docstring.
+        segment_topic_id_map: mapping of `segment_id` (str) -> `topic_id`
+            (int), used to resolve which topic concept a mention edge's
+            source segment belongs to. Distinct from `segment_topic_map`
+            above (which is keyed by an arbitrary window/bucket, not
+            segment_id, and used only for `co_occurs_with` counting). A
+            mention whose segment_id has no entry here, or whose resolved
+            topic was filtered out (below `min_doc_count`, or the outlier
+            bucket), is silently skipped — never fabricates a topic link.
         observed_at: timestamp for the run; defaults to "now" (via
             `_common.make_temporal`) if not supplied.
         anchor_scope: defaults to "world" per the spec — organically-clustered
@@ -111,10 +158,12 @@ def map_topic_foundry_run_to_substrate(
 
     Returns:
         A `SubstrateGraphRecordV1` with one `ConceptNodeV1` (+ backing
-        `EvidenceNodeV1` and `supports` edge) per real topic, and free
+        `EvidenceNodeV1` and `supports` edge) per real topic, free
         `co_occurs_with` `SubstrateEdgeV1` records between topics that share a
-        segment/window. Never raises — malformed or empty input degrades to an
-        empty (but valid) record.
+        segment/window, and (when `mention_edges` is supplied) one
+        `EntityNodeV1` per distinct mentioned entity plus an `associated_with`
+        edge from the owning topic's concept node. Never raises — malformed or
+        empty input degrades to an empty (but valid) record.
     """
     run_id_str = str(run_id) if run_id is not None else "unknown-run"
     graph_id = f"sub-graph-topicfoundry-{run_id_str}"
@@ -138,6 +187,8 @@ def map_topic_foundry_run_to_substrate(
             keywords_by_topic=keywords_by_topic or {},
             segment_topic_map=segment_topic_map or {},
             topic_embeddings=topic_embeddings or {},
+            mention_edges=mention_edges or [],
+            segment_topic_id_map=segment_topic_id_map or {},
             observed_at=observed_at,
             anchor_scope=anchor_scope,
             subject_ref=subject_ref,
@@ -157,6 +208,15 @@ def _derive_label(label: Optional[str], keywords: Sequence[str], topic_id: int) 
     return f"topic_{topic_id}"
 
 
+def _entity_node_id(run_id_str: str, normalized_label: str) -> str:
+    # Entity labels are freeform extracted text (arbitrary unicode, length,
+    # punctuation) -- not safe to slugify directly into a node_id. A short
+    # stable hash keeps ids bounded and collision-safe within one run without
+    # needing to sanitize the label itself.
+    digest = hashlib.sha1(normalized_label.encode("utf-8")).hexdigest()[:16]
+    return f"sub-entity-topicfoundry-{run_id_str}-{digest}"
+
+
 def _build(
     *,
     run_id_str: str,
@@ -165,6 +225,8 @@ def _build(
     keywords_by_topic: Mapping[int, Sequence[str]],
     segment_topic_map: Mapping[Any, Iterable[int]],
     topic_embeddings: Mapping[int, Sequence[float]],
+    mention_edges: Sequence[Any],
+    segment_topic_id_map: Mapping[str, int],
     observed_at: Optional[datetime],
     anchor_scope: str,
     subject_ref: Optional[str],
@@ -337,6 +399,82 @@ def _build(
                     producer="topic_foundry_adapter",
                 ),
                 metadata={"co_occurrence_count": count, "run_id": run_id_str},
+            )
+        )
+
+    # Mention edges: kg_edges.py's real, LLM-enriched "mentions" triples
+    # (subject=model_name, predicate="mentions", object=entity text),
+    # resolved to the topic concept their source segment belongs to. One
+    # EntityNodeV1 per distinct normalized entity label (deduped within this
+    # run), one `associated_with` edge per (topic, entity) pair. A mention
+    # whose segment isn't in segment_topic_id_map, or whose resolved topic
+    # was filtered out above (noise/outlier), is silently skipped -- never
+    # fabricates a topic link that doesn't exist.
+    entity_node_ids: dict[str, str] = {}  # normalized label -> node_id, dedup within this run
+    mention_pairs_seen: set[tuple[int, str]] = set()  # (topic_id, normalized label), dedup edges
+    mention_items = list(mention_edges)[:MAX_MENTION_EDGES]
+    for raw_mention in mention_items:
+        segment_id = _get(raw_mention, "segment_id")
+        entity_text = _get(raw_mention, "object")
+        confidence_raw = _get(raw_mention, "confidence", 0.5)
+        if segment_id is None or not entity_text:
+            continue
+        topic_id = segment_topic_id_map.get(str(segment_id))
+        if topic_id is None or topic_id not in accepted:
+            continue
+        normalized_label = " ".join(str(entity_text).strip().split())[:MAX_ENTITY_LABEL_LENGTH]
+        if not normalized_label:
+            continue
+        try:
+            mention_confidence = min(1.0, max(0.0, float(confidence_raw)))
+        except (TypeError, ValueError):
+            mention_confidence = 0.5
+
+        entity_key = normalized_label.lower()
+        entity_node_id = entity_node_ids.get(entity_key)
+        if entity_node_id is None:
+            entity_node_id = _entity_node_id(run_id_str, entity_key)
+            entity_node_ids[entity_key] = entity_node_id
+            nodes.append(
+                EntityNodeV1(
+                    node_id=entity_node_id,
+                    anchor_scope=anchor_scope,
+                    subject_ref=subject_ref,
+                    promotion_state="proposed",
+                    temporal=temporal,
+                    provenance=make_provenance(
+                        source_kind="topic_foundry.mention",
+                        source_channel=source_channel,
+                        producer="topic_foundry_adapter",
+                    ),
+                    entity_type="unknown",
+                    label=normalized_label,
+                    signals=SubstrateSignalBundleV1(confidence=mention_confidence, salience=0.0),
+                    metadata={"run_id": run_id_str, "source": "orion-topic-foundry"},
+                )
+            )
+
+        pair_key = (topic_id, entity_key)
+        if pair_key in mention_pairs_seen:
+            continue
+        mention_pairs_seen.add(pair_key)
+        edges.append(
+            SubstrateEdgeV1(
+                source=NodeRefV1(
+                    node_id=f"sub-concept-topicfoundry-{run_id_str}-{topic_id}", node_kind="concept"
+                ),
+                target=NodeRefV1(node_id=entity_node_id, node_kind="entity"),
+                predicate="associated_with",
+                temporal=temporal,
+                confidence=mention_confidence,
+                salience=0.0,
+                provenance=make_provenance(
+                    source_kind="topic_foundry.mention",
+                    source_channel=source_channel,
+                    producer="topic_foundry_adapter",
+                    evidence_refs=[str(segment_id)],
+                ),
+                metadata={"run_id": run_id_str, "segment_id": str(segment_id)},
             )
         )
 

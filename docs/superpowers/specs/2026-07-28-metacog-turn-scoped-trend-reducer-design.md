@@ -182,3 +182,92 @@ already persisted, no new plumbing needed to read them). Then run the Missing Qu
 pass against real stored data before writing any reducer code. That single measurement script is the
 actual next deliverable; everything else in this doc is scoped and blocked behind its result — same
 discipline the generative-triggers spec already models for its own open questions.
+
+**Superseded by the 2026-07-28 update below** — see that section for the corrected priority order.
+This "Recommended next patch" is not wrong on its own terms, but it is no longer the top of the
+queue: it names the wrong prerequisite. The real blocker is not "does the metacog series have a
+genuine rest state," it's "does the arena this reducer's output would compete in even arbitrate
+fairly" — and a same-day measurement found it does not.
+
+## 2026-07-28 update — the arbitration layer, not the reducer, is the real blocker
+
+Same-day follow-up, same Juniper conversation that produced this doc. Before answering this doc's
+own Missing Questions 1-2 and building the trend reducer, the conversation traced every
+"competition/arbitration" mechanism in this codebase looking for where the reducer's output should
+"feed forward" (Missing Question 3). It found the same architectural disease in all three places
+checked: real inputs feeding a hand-picked fixed-weight linear score, never calibrated against real
+outcomes, so one channel permanently or near-permanently dominates because nothing normalizes for one
+channel being structurally noisier or more saturating than the others.
+
+**1. Old drives system (retired).** `dominant_drive=relational` monoculture: 96% of ticks pre-fix,
+~31.65% post-fix (`orion/autonomy/drives_and_autonomy_retrospective.md`).
+
+**2. Proposal/policy pipeline.** `orion/proposals/scoring.py::proposal_priority()` is
+`base_priority + 0.4*match_score + 0.2*urgency + 0.1*confidence` — fixed, uncalibrated coefficients.
+`orion/feedback/builder.py::build_feedback_frame()` genuinely records real outcomes
+(`FeedbackFrameV1`, real `outcome_status`/`outcome_score`, real field-pressure deltas) — but a
+repo-wide grep for writes to `base_priority`/`base_risk`/`dimension_weights` found only static config
+reads, never a write-back from feedback. The loop observes but never learns.
+
+**3. Layer 5 attention (the canonical, most-upstream competition layer)** —
+`orion/attention/field_attention/{scoring,selectors}.py`, live via `orion-attention-runtime`
+(`ENABLE_ATTENTION_RUNTIME=true`), explicitly named in `orion/sentience_striving_program/README.md`
+as the reason the drives system was made redundant. That charter's own §6 item 5 already ran
+`scripts/analysis/measure_emergent_clustering_probe.py` against 127,936 real
+`substrate_attention_frames` rows and found `select_system_targets`'s `field:recent_perturbations`
+target (`orion/attention/field_attention/selectors.py:128-140`,
+`salience = min(1.0, recent_perturbation_count / 10.0)`) wins top-1 in ~99.98% of ticks — the same
+"noisiest wins" shape as the drives pathology, on a different signal.
+
+**Converged direction (Juniper's own call):** don't build a new candidate producer — a metacog trend
+reducer, or anything else — into an arena that already can't arbitrate fairly. Fix the arbitration
+first, at the most canonical layer (Layer 5 attention), by normalizing each channel against its own
+real historical distribution before comparing magnitudes for top-1-winner selection. The charter's
+own §7 rule applies directly: "Measure before minting. Every new signal gets a read-only instrument
+and real historical replay before it gates anything live." So: measure whether normalization would
+actually fix the monoculture, using real data, before writing any live-scoring code.
+
+### Real measurement results (`scripts/analysis/measure_attention_salience_normalization.py`, run 2026-07-28)
+
+Read-only script, same `substrate_attention_frames` table, run fresh against 127,644 real rows
+spanning 2026-07-25T20:18Z → 2026-07-28T20:34Z (72.3h). Per CLAUDE.md's metric-quality-gate rule
+("re-run it every time, even for a metric that seems obviously fine"), the 99.98% figure above was
+**not** reused — the raw baseline was recomputed fresh in this same run:
+
+- **Raw baseline, re-verified fresh: `field:recent_perturbations` wins top-1 in 100.00% of ticks**
+  (127,644 / 127,644) — slightly *worse* than the 99.98% figure cited above, not the same number
+  restated. Its full-history stddev is `0.000000` (mean `1.0000`) — a mathematically exact
+  degenerate/saturated channel, not merely "very concentrated."
+- **Per-channel z-score normalization was computed** (each channel normalized against its own
+  full-history mean/stddev). `field:recent_perturbations` has zero variance, so it is
+  **structurally undefined under z-scoring** — division by ~0, excluded from the normalized ranking
+  entirely, not merely "loses" a fair comparison.
+- **After excluding it, the normalized top-1 winner distribution is:** `node:atlas` 55.17% (70,417
+  ticks), `node:circe` 15.84%, `capability:llm_inference` 15.24%, `node:athena` 9.86%,
+  `capability:orchestration` 2.23%, `capability:transport` 1.65%, `capability:storage` 0.01%.
+- **Classification: `NOT_MET_MONOCULTURE_SHIFTED`.** Normalization does not diversify the winner
+  distribution — it relocates the monoculture to a different single channel (`node:atlas`, 55.17%,
+  still above this measurement's 50% monoculture threshold). Two honest findings, both reported by
+  the script rather than left implicit: (a) any apparent "improvement" here is a mechanical
+  side-effect of `field:recent_perturbations` being disqualified by divide-by-~0, not evidence that
+  z-scoring is doing real calibration work on real variance; (b) the "fix" as measured just moves
+  who wins, it does not make the arena fair.
+
+**Corrected recommendation:** this doc's original "Recommended next patch" (build
+`scripts/analysis/measure_metacog_trend_baseline.py` and proceed toward the trend reducer) is now
+**sequenced behind** a higher-priority prerequisite: fixing Layer 5 attention's monoculture is the
+real blocking issue, not building a new candidate producer. Any new producer — including the trend
+reducer this doc proposes — would compete in the same broken arena and either get drowned out (if
+its signal is calmer than the saturating channels) or add another uncalibrated fixed-weight input to
+the same disease (if it's wired in as another hand-tuned score). The measurement above also shows the
+naive fix (plain per-channel z-scoring) is **not sufficient by itself** — it needs a real design pass
+(e.g. excluding degenerate channels honestly instead of accidentally, a genuine multi-way calibration
+rather than winner-take-all-on-a-different-channel, or a different normalization shape entirely) before
+it is safe to build, let alone flip live. That design pass is out of scope for this measurement run and
+requires its own explicit proposal-mode sign-off per `orion/sentience_striving_program/README.md`'s
+charter and root CLAUDE.md §0A's cognition-loop rule — not decided here.
+
+This doc's Missing Questions 1-2 and the trend-reducer build itself are not cancelled, just
+re-sequenced: they remain the right next step for metacog specifically, but only after (or in
+parallel with, if scoped as a fully separate consumer of attention output) the arbitration-layer
+question above gets its own resolution.

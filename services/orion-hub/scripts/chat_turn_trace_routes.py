@@ -2,7 +2,7 @@
 
 Ground truth (see docs/superpowers/plans/2026-07-28-unified-chat-traceability.md
 if written, or the brainstorm this implements): a single chat turn's execution
-truth is scattered across at least three independently-built, independently-
+truth is scattered across at least four independently-built, independently-
 keyed stores that were never joined behind one lookup:
 
 - ``CognitionTraceCache`` (Runtime Trace Nexus Milestone A) -- covers the
@@ -13,14 +13,21 @@ keyed stores that were never joined behind one lookup:
 - ``ExecutionTrajectoryProjectionV1.runs`` (orion-substrate-runtime) -- the
   harness motor's per-run pressure signal (step counts, failure streaks,
   compliance deficit), keyed by the *same* derived trace_id.
+- ``thought_decision`` (orion-sql-writer) -- the unified turn's stance
+  decision (proceed/defer/refuse + reasons), keyed by ``correlation_id``
+  directly. sql-writer only started persisting this table as of the same
+  patch that added this module (see orion/schemas/thought.py's
+  ThoughtDecisionRecordV1) -- ThoughtEventV1 itself was already broadcasting
+  live on orion:thought:artifact well before that, just never durably kept.
 
-This module is a pure read-side join across the three -- no new producer, no
-new schema, no new persisted store. ``route_signal_inferred`` is a best-effort
-label derived from which sources actually returned data; it is NOT the
-authoritative ``chat_route`` tag written into a turn's persisted
-``chat_turn`` envelope spark_meta (see ``orion/hub/chat_route.py``) -- wiring
-that in as a fourth, authoritative source is a natural follow-up, not done
-here, to keep this slice thin.
+This module is a pure read-side join across the four -- no new schema beyond
+the redacted ThoughtDecisionRecordV1 shape, no new persisted store beyond
+that one table. ``route_signal_inferred`` is a best-effort label derived from
+which sources actually returned data; it is NOT the authoritative
+``chat_route`` tag written into a turn's persisted ``chat_turn`` envelope
+spark_meta (see ``orion/hub/chat_route.py``) -- that stays a candidate fifth
+source for a future slice, since reading it back requires a chat_history_log
+lookup this module doesn't otherwise need.
 """
 
 from __future__ import annotations
@@ -34,6 +41,7 @@ from fastapi import APIRouter
 from sqlalchemy import create_engine, text
 
 from orion.schemas.execution_projection import ExecutionTrajectoryProjectionV1
+from orion.schemas.thought import ThoughtDecisionRecordV1
 from orion.substrate.execution_loop.constants import EXECUTION_TRAJECTORY_PROJECTION_ID
 from orion.substrate.execution_loop.ids import cortex_exec_trace_id
 
@@ -44,17 +52,22 @@ logger = logging.getLogger("orion-hub.chat_turn_trace")
 
 router = APIRouter(prefix="/api/chat/turn", tags=["chat-turn-trace"])
 
-_exec_traj_engine = None
+_engine = None
 
 
-def _exec_trajectory_engine():
-    global _exec_traj_engine
-    if _exec_traj_engine is None:
+def _postgres_engine():
+    """Shared engine for the conjourney Postgres DB -- same POSTGRES_URI
+    already used by every sibling substrate_*_routes.py read helper in this
+    package, and the same DB orion-substrate-runtime and orion-sql-writer
+    write to.
+    """
+    global _engine
+    if _engine is None:
         uri = os.getenv("POSTGRES_URI", "").strip()
         if not uri:
             return None
-        _exec_traj_engine = create_engine(uri, pool_pre_ping=True)
-    return _exec_traj_engine
+        _engine = create_engine(uri, pool_pre_ping=True)
+    return _engine
 
 
 def _load_execution_run(trace_id: str) -> dict[str, Any] | None:
@@ -63,7 +76,7 @@ def _load_execution_run(trace_id: str) -> dict[str, Any] | None:
     any DB/config/parse failure, matching every sibling substrate_*_routes.py
     read helper in this package.
     """
-    engine = _exec_trajectory_engine()
+    engine = _postgres_engine()
     if engine is None:
         return None
     try:
@@ -98,6 +111,49 @@ def _load_execution_run(trace_id: str) -> dict[str, Any] | None:
     if run is None:
         return None
     return run.model_dump(mode="json")
+
+
+def _load_thought_decision(correlation_id: str) -> dict[str, Any] | None:
+    """Look up this turn's persisted stance decision. Already redacted at
+    write time (ThoughtDecisionSQL only declares the redacted subset of
+    columns -- see services/orion-sql-writer/app/models/thought_decision.py),
+    so the row is safe to return as-is.
+    """
+    engine = _postgres_engine()
+    if engine is None:
+        return None
+    try:
+        with engine.connect() as conn:
+            row = (
+                conn.execute(
+                    text(
+                        """
+                        SELECT event_id, correlation_id, session_id, created_at,
+                               disposition, disposition_reasons, boundary_register,
+                               repair_pressure_level, trust_rupture_score,
+                               llm_profile, producer, model_id
+                        FROM thought_decision
+                        WHERE correlation_id = :correlation_id
+                        ORDER BY created_at DESC
+                        LIMIT 1
+                        """
+                    ),
+                    {"correlation_id": correlation_id},
+                )
+                .mappings()
+                .first()
+            )
+    except Exception:
+        logger.warning("chat_turn_trace thought_decision query failed", exc_info=True)
+        return None
+    if not row:
+        return None
+    try:
+        record = ThoughtDecisionRecordV1.model_validate(dict(row))
+    except Exception:
+        logger.warning("chat_turn_trace thought_decision row failed schema validation", exc_info=True)
+        return None
+    return record.model_dump(mode="json")
 
 
 async def _load_cognition_trace(correlation_id: str) -> dict[str, Any] | None:
@@ -147,8 +203,14 @@ async def get_fused_chat_turn_trace(correlation_id: str) -> dict[str, Any]:
     else:
         gaps.append("no_execution_run_pressure_signal")
 
+    thought_decision = _load_thought_decision(corr)
+    if thought_decision is not None:
+        sources["thought_decision"] = thought_decision
+    else:
+        gaps.append("no_thought_decision")
+
     has_classic = "cognition_trace" in sources
-    has_unified = "grammar_trace" in sources or "execution_run" in sources
+    has_unified = "grammar_trace" in sources or "execution_run" in sources or "thought_decision" in sources
     if has_classic and has_unified:
         route_signal = "ambiguous_both_paths_present"
     elif has_classic:
@@ -171,7 +233,7 @@ async def get_fused_chat_turn_trace(correlation_id: str) -> dict[str, Any]:
 @router.get("/{correlation_id}/trace")
 async def api_chat_turn_trace(correlation_id: str) -> dict[str, Any]:
     """Fused trace lookup: never 404s on its own -- a turn that produced no
-    trace in any of the three stores is a real, reportable fact (``gaps``),
+    trace in any of the four stores is a real, reportable fact (``gaps``),
     not an error. 404 is left to callers that need "not found" semantics.
     """
     return await get_fused_chat_turn_trace(correlation_id)

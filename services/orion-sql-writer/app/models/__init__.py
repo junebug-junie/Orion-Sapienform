@@ -25,6 +25,7 @@ from .notify_models import (
 )
 from .fallback_log import BusFallbackLog
 from .cognition_trace import CognitionTraceSQL
+from .thought_decision import ThoughtDecisionSQL
 from .metacognition_tick import MetacognitionTickSQL
 from . metacognition_enriched import MetacognitionEnrichedSQL
 from .metacog_trigger import MetacogTriggerSQL
@@ -95,6 +96,7 @@ __all__ = [
     "SparkTelemetrySQL",
     "BusFallbackLog",
     "CognitionTraceSQL",
+    "ThoughtDecisionSQL",
     "MetacognitionTickSQL",
     "MetacognitionEnrichedSQL",
     "MetacogTriggerSQL",

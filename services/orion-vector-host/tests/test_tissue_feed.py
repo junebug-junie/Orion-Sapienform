@@ -33,7 +33,7 @@ def test_feed_tissue_returns_real_phi_stats():
     stats = asyncio.run(
         tissue_feed.feed_tissue(_rand_embedding(seed=1), doc_id="doc-1", broadcast=False)
     )
-    assert set(stats.keys()) == {"valence", "energy", "coherence", "novelty"}
+    assert set(stats.keys()) == {"polarity_diff", "mean_abs_activation", "embedding_similarity", "novelty_zscore"}
     assert all(isinstance(v, float) for v in stats.values())
 
 
@@ -45,9 +45,9 @@ def test_feed_tissue_first_call_is_maximally_novel():
         tissue_feed.feed_tissue(_rand_embedding(seed=2), doc_id="doc-1", broadcast=False)
     )
     # calculate_novelty() ran (not dead/never-called, the bug this module's
-    # docstring documents fixing) -- energy/coherence/novelty must not all be
-    # the zero-initialized tensor's default.
-    assert stats["energy"] != 0.0 or stats["novelty"] != 0.0
+    # docstring documents fixing) -- mean_abs_activation/novelty_zscore must
+    # not all be the zero-initialized tensor's default.
+    assert stats["mean_abs_activation"] != 0.0 or stats["novelty_zscore"] != 0.0
 
 
 def test_feed_tissue_seeds_ema_from_persisted_tissue_expectation():
@@ -101,12 +101,12 @@ def test_feed_tissue_zero_embedding_does_not_crash():
     stats = asyncio.run(
         tissue_feed.feed_tissue(np.zeros(16, dtype=np.float32), doc_id="doc-zero", broadcast=False)
     )
-    assert set(stats.keys()) == {"valence", "energy", "coherence", "novelty"}
+    assert set(stats.keys()) == {"polarity_diff", "mean_abs_activation", "embedding_similarity", "novelty_zscore"}
 
 
 def test_feed_tissue_empty_embedding_short_circuits():
     stats = asyncio.run(tissue_feed.feed_tissue([], doc_id="doc-empty", broadcast=False))
-    assert set(stats.keys()) == {"valence", "energy", "coherence", "novelty"}
+    assert set(stats.keys()) == {"polarity_diff", "mean_abs_activation", "embedding_similarity", "novelty_zscore"}
     assert "chat" not in tissue_feed._EMBEDDING_EMA or tissue_feed._EMBEDDING_EMA.get("chat") is None
 
 

@@ -718,10 +718,10 @@ async def spark_tissue_state() -> Dict[str, Any]:
     state), never injected from self-state or any other source."""
     phi_stats = get_phi_stats()
     return {
-        "phi": phi_stats.get("coherence", 0.0),
-        "novelty": phi_stats.get("novelty", 0.0),
-        "valence": phi_stats.get("valence", 0.0),
-        "arousal": phi_stats.get("energy", 0.0),
+        "embedding_similarity": phi_stats.get("embedding_similarity", 0.0),
+        "novelty_zscore": phi_stats.get("novelty_zscore", 0.0),
+        "polarity_diff": phi_stats.get("polarity_diff", 0.0),
+        "mean_abs_activation": phi_stats.get("mean_abs_activation", 0.0),
         "timestamp": datetime.now(timezone.utc).isoformat(),
     }
 
@@ -751,10 +751,10 @@ async def spark_test_pulse() -> Dict[str, Any]:
         "correlation_id": f"TEST-{str(uuid4())[:8]}",
         "timestamp": datetime.now(timezone.utc).isoformat(),
         "stats": {
-            "phi": random.random(),
-            "novelty": random.random(),
-            "valence": random.random(),
-            "arousal": random.random(),
+            "embedding_similarity": random.random(),
+            "novelty_zscore": random.random(),
+            "polarity_diff": random.random(),
+            "mean_abs_activation": random.random(),
         },
         "metadata": {"source": "manual_test_pulse"},
     }

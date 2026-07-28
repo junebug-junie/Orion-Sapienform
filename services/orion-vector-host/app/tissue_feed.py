@@ -45,7 +45,7 @@ gate -- this is not a port, so it gets its own trace):
    spec's explicit "no SurfaceEncoding/MAPPER indirection" instruction.
 5. Split the projected grid's sign into stimulus channels 0 (positive) and 1
    (negative), scaled by `magnitude` -- matches `OrionTissue.phi()`'s own
-   valence definition (`T[...,0].mean() - T[...,1].mean()`). All other
+   polarity_diff definition (`T[...,0].mean() - T[...,1].mean()`). All other
    channels stay at 0; this module does not invent per-channel semantics
    beyond what the tissue itself already assigns meaning to.
 6. `TISSUE.calculate_novelty(stimulus, channel_key=...)` runs before
@@ -146,9 +146,10 @@ def _build_stimulus(delta: np.ndarray, magnitude: float) -> np.ndarray:
 
 
 def get_phi_stats() -> Dict[str, float]:
-    """Read-model accessor: valence/energy/coherence/novelty, all derived
-    directly from TISSUE's real internal tensor state (`OrionTissue.phi()`),
-    never injected from self-state or any other source."""
+    """Read-model accessor: polarity_diff/mean_abs_activation/
+    embedding_similarity/novelty_zscore, all derived directly from TISSUE's
+    real internal tensor state (`OrionTissue.phi()`), never injected from
+    self-state or any other source."""
     return {k: float(v) for k, v in (TISSUE.phi() or {}).items()}
 
 
@@ -223,10 +224,10 @@ async def feed_tissue(
                     "correlation_id": correlation_id or doc_id,
                     "timestamp": _now_iso(),
                     "stats": {
-                        "phi": phi_stats.get("coherence", 0.0),
-                        "novelty": phi_stats.get("novelty", 0.0),
-                        "valence": phi_stats.get("valence", 0.0),
-                        "arousal": phi_stats.get("energy", 0.0),
+                        "embedding_similarity": phi_stats.get("embedding_similarity", 0.0),
+                        "novelty_zscore": phi_stats.get("novelty_zscore", 0.0),
+                        "polarity_diff": phi_stats.get("polarity_diff", 0.0),
+                        "mean_abs_activation": phi_stats.get("mean_abs_activation", 0.0),
                     },
                     "metadata": {
                         "doc_id": doc_id,

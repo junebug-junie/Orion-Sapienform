@@ -334,34 +334,49 @@ class OrionTissue:
 
     def phi(self) -> Dict[str, float]:
         """
-        Compute a low-dimensional "self state" φ from the tissue.
+        Compute a low-dimensional read-model of the tissue's raw tensor
+        state. Deliberately named for what each number literally is, not
+        for what it might resemble -- these are summary statistics of a
+        16x16x8 tensor, not a validated measure of anything experiential.
+        See CLAUDE.md 0A's metric-quality gate: a label needs a theory
+        anchor to earn a cognition word, and none of these four have one.
 
         v2:
-          - valence: mean difference between positive/negative channels
-          - energy: mean absolute activation
-          - coherence: hybrid (embedding-aware when available)
-          - novelty: baseline-relative novelty (rolling z-score)
+          - polarity_diff: mean(channel 0) - mean(channel 1) (a sign
+            convention chosen when stimuli are built, not derived)
+          - mean_abs_activation: mean absolute activation across the tensor
+          - embedding_similarity: 1 - cosine_distance(embedding, this
+            channel's running expectation) when an embedding is available,
+            variance-based fallback otherwise
+          - novelty_zscore: rolling z-score of cosine distance between the
+            latest stimulus and this channel's expectation, sigmoid-squashed
+            to [0, 1]
         """
         if self.T.size == 0:
-            return {"valence": 0.0, "energy": 0.0, "coherence": 0.0, "novelty": 0.0}
+            return {
+                "polarity_diff": 0.0,
+                "mean_abs_activation": 0.0,
+                "embedding_similarity": 0.0,
+                "novelty_zscore": 0.0,
+            }
 
-        # Valence is defined as a difference between a "positive" channel
-        # and a "negative" channel when available (neural projection uses
-        # ch0 for +, ch1 for -). This gives us a sign.
+        # polarity_diff is a difference between a "positive" channel and a
+        # "negative" channel when available (neural projection uses ch0 for
+        # +, ch1 for -) -- a sign convention picked at stimulus-construction
+        # time, not something the tensor itself derives.
         if self.C >= 2:
-            valence = float(self.T[..., 0].mean() - self.T[..., 1].mean())
+            polarity_diff = float(self.T[..., 0].mean() - self.T[..., 1].mean())
         else:
-            valence = float(self.T[..., 0].mean())
-        energy = float(np.abs(self.T).mean())
-        variance = float(self.T.var())
-        coherence = self._coherence_from_embedding(self.last_channel)
-        novelty = float(self.last_novelty_per_channel.get(self.last_channel, 0.0))
+            polarity_diff = float(self.T[..., 0].mean())
+        mean_abs_activation = float(np.abs(self.T).mean())
+        embedding_similarity = self._coherence_from_embedding(self.last_channel)
+        novelty_zscore = float(self.last_novelty_per_channel.get(self.last_channel, 0.0))
 
         return {
-            "valence": valence,
-            "energy": energy,
-            "coherence": coherence,
-            "novelty": novelty,
+            "polarity_diff": polarity_diff,
+            "mean_abs_activation": mean_abs_activation,
+            "embedding_similarity": embedding_similarity,
+            "novelty_zscore": novelty_zscore,
         }
 
     def summarize_for(self, agent_id: str) -> Dict[str, Any]:

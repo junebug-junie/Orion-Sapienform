@@ -1,4 +1,4 @@
-.PHONY: test test-hub test-actions bootstrap-test-envs check-inner-state-registry check-single-consumer-channels check-activation-saturation concept-relation-digest check-concept-relation-digest-liveness check-env-compose-parity check-journal-dispatch-registry check-daily-schedule-collisions check-substrate-projection-schema-drift bus-core-health-watchdog disk-threshold-watchdog worktree-status worktree-status-summary worktree-status-stale prune-merged-worktrees
+.PHONY: test test-hub test-actions bootstrap-test-envs check-inner-state-registry check-single-consumer-channels check-activation-saturation concept-relation-digest check-concept-relation-digest-liveness check-env-compose-parity check-journal-dispatch-registry check-daily-schedule-collisions check-substrate-projection-schema-drift check-service-hostname-refs bus-core-health-watchdog worktree-status worktree-status-summary worktree-status-stale prune-merged-worktrees
 
 SERVICE ?=
 ARGS ?=
@@ -78,6 +78,17 @@ check-env-compose-parity:
 # fail-closed, but that gap should be loud in CI, not silent).
 check-journal-dispatch-registry:
 	@python scripts/check_journal_dispatch_registry.py
+
+# Repo-wide gate: flags any services/*/.env_example URL that hardcodes another
+# service's services/<dirname> directory name as an HTTP hostname instead of its
+# real Docker Compose service key. Found live 2026-07-28 -- that directory-name
+# style hostname only resolves by accident (depends on container_name:
+# ${PROJECT}-<name> happening to equal orion-<name>, i.e. PROJECT having no host
+# suffix); it silently broke orion-notify-digest's daily email since inception,
+# plus 15 other references across 11 other services. The compose service key is
+# the one hostname Docker's default network guarantees regardless of PROJECT.
+check-service-hostname-refs:
+	@python scripts/check_service_hostname_refs.py
 
 # Report-only: flags orion-actions daily cadences (Daily Pulse, World Pulse, Daily
 # Metacog, and Daily Journal -- which has no env var of its own and reuses Daily

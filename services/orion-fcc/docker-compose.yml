@@ -14,7 +14,7 @@ services:
       - FCC_OPEN_BROWSER=${FCC_OPEN_BROWSER:-false}
       - FCC_LOG_FILE=${FCC_LOG_FILE:-/tmp/fcc-server.log}
       # Container-only upstream override (pydantic env beats ~/.fcc/.env). Secrets stay in ~/.fcc/.env.
-      - LLAMACPP_BASE_URL=${FCC_LLAMACPP_BASE_URL:-http://orion-llm-gateway:8210/v1}
+      - LLAMACPP_BASE_URL=${FCC_LLAMACPP_BASE_URL:-http://llm-gateway:8210/v1}
       - PORT=${FCC_INTERNAL_PORT:-8082}
     volumes:
       - ${FCC_CONFIG_DIR:-${HOME}/.fcc}:/root/.fcc:ro

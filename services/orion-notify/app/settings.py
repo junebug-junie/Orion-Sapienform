@@ -21,7 +21,7 @@ class Settings(BaseSettings):
     NOTIFY_IN_APP_ENABLED: bool = Field(True, alias="NOTIFY_IN_APP_ENABLED")
     NOTIFY_IN_APP_CHANNEL: str = Field("orion:notify:in_app", alias="NOTIFY_IN_APP_CHANNEL")
 
-    SQL_WRITER_API_URL: str = Field("http://orion-sql-writer:8220", alias="SQL_WRITER_API_URL")
+    SQL_WRITER_API_URL: str = Field("http://sql-writer:8220", alias="SQL_WRITER_API_URL")
     POLICY_RULES_PATH: str = Field("/app/app/policy/rules.yaml", alias="POLICY_RULES_PATH")
 
     NOTIFY_EMAIL_SMTP_HOST: str = Field("", alias="NOTIFY_EMAIL_SMTP_HOST")

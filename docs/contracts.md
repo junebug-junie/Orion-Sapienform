@@ -72,15 +72,13 @@ This registry maps logical flows to specific channels, message kinds, and payloa
 | **Dream Log (legacy)** | `orion:dream:log` | `dream.log` | `orion.schemas.telemetry.dream.DreamRequest` (deprecated; use `dream.result.v1`) |
 | **TTS Request** | `orion:tts:intake` | `tts.synthesize.request` | `orion.schemas.tts.TTSRequestPayload` |
 
-### Landing Pad (pad.\* contracts)
+### Landing Pad (retired 2026-07-28)
 
-* **Intake:** pattern-subscribe on `PAD_INPUT_ALLOWLIST_PATTERNS` (defaults: `orion:telemetry:*`, `orion:cortex:*`) with denylist guard on `orion:pad:*`.
-* **Outputs (all Titanium envelopes):**
-  * `PAD_OUTPUT_EVENT_CHANNEL` → `orion.pad.event.v1` (`PadEventV1`)
-  * `PAD_OUTPUT_FRAME_CHANNEL` → `orion.pad.frame.v1` (`StateFrameV1`)
-  * `PAD_OUTPUT_SIGNAL_CHANNEL` → `orion.pad.signal.v1` (pulse-level signals)
-  * `PAD_OUTPUT_STATS_CHANNEL` → `orion.pad.stats.v1` (ingest/window stats)
-* **RPC:** `PAD_RPC_REQUEST_CHANNEL` uses `PadRpcRequestV1` / `PadRpcResponseV1`.
+`orion-landing-pad` and all `orion:pad:*` channels/schemas (`PadEventV1`, `StateFrameV1`,
+`PadRpcRequestV1`, `PadRpcResponseV1`) were retired -- its live data source went away with
+`orion-spark-introspector`'s retirement, and its remaining responsibilities had no real
+downstream consumer. See
+`docs/superpowers/specs/2026-07-28-landing-pad-retirement.md`.
 
 ### Equilibrium + Spark Signalization
 

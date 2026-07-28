@@ -15,7 +15,6 @@ _SEMANTIC_VERB_TO_SKILL: dict[str, str] = {
     "list_biometrics_recent_readings": "skills.biometrics.raw_recent.v1",
     "inspect_docker_container_status": "skills.docker.ps_status.v1",
     "send_operator_notification": "skills.system.notify_chat_message.v1",
-    "show_landing_pad_metrics": "skills.landing_pad.metrics_snapshot.v1",
 }
 
 

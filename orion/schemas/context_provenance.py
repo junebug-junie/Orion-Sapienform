@@ -93,10 +93,6 @@ CONTEXT_PROVENANCE_REGISTRY: dict[str, ContextKeyProvenance] = {
         _entry("world_context_capsule", "derived_summary", "Loaded world-context capsule content."),
         _entry("journal_pageindex_context", "memory_recall", "Journal page-index retrieval context."),
         # --- live runtime projection: computed this tick by a substrate/biometrics/turn-effect engine ---
-        _entry("pad_frame", "live_runtime_projection", "Live pleasure-arousal-dominance affect frame."),
-        _entry("pad_frame_json", "live_runtime_projection", "JSON-rendered PAD frame."),
-        _entry("pad_stats", "live_runtime_projection", "Live PAD statistics."),
-        _entry("pad_stats_json", "live_runtime_projection", "JSON-rendered PAD statistics."),
         _entry("biometrics", "live_runtime_projection", "Live biometrics substrate reading."),
         _entry("biometrics_json", "live_runtime_projection", "JSON-rendered biometrics reading."),
         _entry("embodiment_hint", "live_runtime_projection", "Live embodiment hint."),

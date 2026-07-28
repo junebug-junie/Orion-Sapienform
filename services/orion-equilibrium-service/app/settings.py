@@ -70,7 +70,6 @@ class Settings(BaseSettings):
     metacog_baseline_interval_sec: float = Field(3600.0, alias="EQUILIBRIUM_METACOG_BASELINE_INTERVAL_SEC")
     metacog_baseline_max_skips: int = Field(3, alias="EQUILIBRIUM_METACOG_BASELINE_MAX_SKIPS")
     metacog_cooldown_sec: float = Field(30.0, alias="EQUILIBRIUM_METACOG_COOLDOWN_SEC")
-    metacog_pad_pulse_threshold: float = Field(0.8, alias="EQUILIBRIUM_METACOG_PAD_PULSE_THRESHOLD")
     metacog_substrate_trigger_enable: bool = Field(
         True, alias="EQUILIBRIUM_METACOG_SUBSTRATE_TRIGGER_ENABLE"
     )
@@ -189,7 +188,6 @@ class Settings(BaseSettings):
 
     channel_metacog_trigger: str = Field("orion:equilibrium:metacog:trigger", alias="CHANNEL_EQUILIBRIUM_METACOG_TRIGGER")
     channel_collapse_mirror_user_event: str = Field("orion:collapse:intake", alias="CHANNEL_COLLAPSE_MIRROR_USER_EVENT")
-    channel_pad_signal: str = Field("orion:pad:signal", alias="CHANNEL_PAD_SIGNAL")
     channel_repair_pressure_appraisal: str = Field(
         "orion:repair_pressure:appraisal", alias="CHANNEL_REPAIR_PRESSURE_APPRAISAL"
     )

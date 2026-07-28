@@ -61,7 +61,7 @@ def stance_slice_brief_from_step_text(text: str) -> Dict[str, Any]:
 def _has_content(value: Any) -> bool:
     """True unless the value carries no evidence at all (None, or an empty
     dict/list/tuple/set/str). A key present in ctx only via a fallback like
-    ``ctx["pad_frame"] = pad_frame_result or {}`` degrades to an empty
+    ``ctx["biometrics"] = biometrics_result or {}`` degrades to an empty
     container when the live computation didn't run or failed -- classifying
     that as "live_runtime_projection" would be exactly the false-liveness
     claim this registry exists to prevent. Falsy scalars (0, 0.0, False) are

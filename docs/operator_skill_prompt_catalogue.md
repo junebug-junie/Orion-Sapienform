@@ -52,65 +52,48 @@
    - Intended concrete skill: `skills.biometrics.raw_recent.v1`
    - Expected result: recent biometrics rows filtered to athena
 
-## Landing pad
-
-9. Show the landing pad metrics snapshot.
-
-   - Intended concrete skill: `skills.landing_pad.metrics_snapshot.v1`
-   - Expected result: landing pad metrics snapshot
-
-10. Show the last 10 landing pad events.
-
-    - Intended concrete skill: `skills.landing_pad.last_events.v1`
-    - Expected result: recent landing pad events
-
-11. Show the last 10 landing pad events with salience above 0.7.
-
-    - Intended concrete skill: `skills.landing_pad.last_events.v1`
-    - Expected result: filtered recent landing pad events
-
 ## Mesh / storage / repo
 
-12. Which nodes are up right now?
+9. Which nodes are up right now?
 
-    - Intended concrete skill: `skills.mesh.tailscale_mesh_status.v1`
-    - Expected result: active mesh nodes
+   - Intended concrete skill: `skills.mesh.tailscale_mesh_status.v1`
+   - Expected result: active mesh nodes
 
-13. Run an active mesh probe.
+10. Run an active mesh probe.
 
     - Intended concrete skill: `skills.mesh.tailscale_mesh_status.v1`
     - Expected result: mesh status plus active probe if supported
 
-14. Check disk health across active nodes.
+11. Check disk health across active nodes.
 
     - Intended concrete skill: `skills.storage.disk_health_snapshot.v1`
     - Expected result: disk-health snapshot or precise unsupported-device reasons
 
-15. Summarize recent PR changes.
+12. Summarize recent PR changes.
 
     - Intended concrete skill: `skills.repo.github_recent_prs.v1`
     - Expected result: recent merged PR digest
 
 ## Round-up skill
 
-16. Run a mesh ops round.
+13. Run a mesh ops round.
 
     - Intended concrete skill: `skills.mesh.mesh_ops_round.v1`
     - Expected result: mesh/storage/repo operational summary
 
-17. Run a mesh ops round with PR digest and disk health.
+14. Run a mesh ops round with PR digest and disk health.
 
     - Intended concrete skill: `skills.mesh.mesh_ops_round.v1`
     - Expected result: ops round including PR and disk-health coverage
 
-18. Run a mesh ops round including docker housekeeping preview.
+15. Run a mesh ops round including docker housekeeping preview.
 
     - Intended concrete skill: `skills.mesh.mesh_ops_round.v1`
     - Expected result: ops round including docker housekeeping preview
 
 ## Notify
 
-19. Send a notification to operators saying "test alert from Orion".
+16. Send a notification to operators saying "test alert from Orion".
 
     - Intended concrete skill: `skills.system.notify_chat_message.v1`
     - Expected result: notify request dispatched or precise policy/runtime failure
@@ -119,27 +102,27 @@
 
 These prompts target the **read-only** bounded SQL skill `skills.chat.discussion_window.v1` (persisted `chat_history_log`, `created_at` window, contiguous suffix). They are **not** semantic recall and do **not** use `session_id` as the selection key. Cortex Exec must have `DATABASE_URL` or `ENDOGENOUS_RUNTIME_SQL_DATABASE_URL` configured.
 
-20. Run skills.chat.discussion_window.v1 on chat_history_log with lookback_seconds 3600 and max_turns 30 (optional filters: current user_id and hub source).
+17. Run skills.chat.discussion_window.v1 on chat_history_log with lookback_seconds 3600 and max_turns 30 (optional filters: current user_id and hub source).
 
     - Intended concrete skill: `skills.chat.discussion_window.v1`
     - Expected result: `window_start_utc` / `window_end_utc`, `turn_count`, `transcript_text`, `selection_strategy`; or empty window / DB unavailable message
 
-21. Run skills.chat.discussion_window.v1 on chat_history_log with lookback_seconds 86400 and max_turns 30 (optional filters: current user_id and hub source).
+18. Run skills.chat.discussion_window.v1 on chat_history_log with lookback_seconds 86400 and max_turns 30 (optional filters: current user_id and hub source).
 
     - Intended concrete skill: `skills.chat.discussion_window.v1`
-    - Expected result: same as (20) with a 24-hour lookback
+    - Expected result: same as (17) with a 24-hour lookback
 
 ## Mesh service scripts
 
-22. Bring up all Docker services via mesh-utilities.
+19. Bring up all Docker services via mesh-utilities.
 
     - Intended concrete skill: `skills.mesh.up_all_services.v1`
     - Expected result: `mesh-utilities/common/up_all_services.sh` output or precise policy/runtime failure; requires `SKILLS_ALLOW_MESH_SERVICE_SCRIPTS=true` on cortex-exec and repo root (`ORION_REPO_ROOT` when needed)
 
-23. Refresh service environment files via mesh-utilities.
+20. Refresh service environment files via mesh-utilities.
 
     - Intended concrete skill: `skills.mesh.refresh_service_envs.v1`
-    - Expected result: `mesh-utilities/common/refresh_service_envs.sh` output or precise policy/runtime failure; same policy flag as (22)
+    - Expected result: `mesh-utilities/common/refresh_service_envs.sh` output or precise policy/runtime failure; same policy flag as (19)
 
 ## Cognitive workflows (not deterministic skills)
 
@@ -158,7 +141,6 @@ These Hub Skill Runner entries use `data-workflow-id` and stay on the normal cha
   - Tailscale binary/socket for mesh
   - Biometrics service for biometrics
   - Notify service for notifications
-  - Landing pad RPC/service for landing pad
   - Postgres / `DATABASE_URL` (or exec `ENDOGENOUS_RUNTIME_SQL_DATABASE_URL`) for `skills.chat.discussion_window.v1`
-  - `SKILLS_ALLOW_MESH_SERVICE_SCRIPTS=true` (and mounted repo / `ORION_REPO_ROOT`) for mesh service script skills (22–23)
+  - `SKILLS_ALLOW_MESH_SERVICE_SCRIPTS=true` (and mounted repo / `ORION_REPO_ROOT`) for mesh service script skills (19–20)
 - Prefer precise failure messages over generic refusal.

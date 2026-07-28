@@ -745,7 +745,6 @@ class EquilibriumService(BaseChassis):
         channels = [settings.health_channel]
         if settings.metacog_enable:
             channels.append(settings.channel_collapse_mirror_user_event)
-            channels.append(settings.channel_pad_signal)
             if settings.metacog_relational_trigger_enable:
                 channels.append(settings.channel_repair_pressure_appraisal)
             if settings.metacog_telemetry_anomaly_trigger_enable:
@@ -793,26 +792,7 @@ class EquilibriumService(BaseChassis):
                     elif settings.metacog_enable:
                         distress, zen, _ = self._calculate_metrics()
 
-                        if channel == settings.channel_pad_signal:
-                            # Landing Pad Signal
-                            # We look for "salience" or similar in generic payload
-                            salience = 0.0
-                            if isinstance(payload_dict, dict):
-                                salience = float(payload_dict.get("salience", 0.0))
-
-                            if salience >= settings.metacog_pad_pulse_threshold:
-                                trigger = MetacogTriggerV1(
-                                    trigger_kind="pulse",
-                                    reason=f"pad_signal_high:{salience:.2f}",
-                                    zen_state="zen" if zen > 0.5 else "not_zen",
-                                    pressure=distress,
-                                    signal_refs=[str(env.correlation_id or "unknown")],
-                                    upstream=payload_dict,
-                                    recall_enabled=settings.metacog_recall_enabled,
-                                )
-                                await self._publish_metacog_trigger(trigger)
-
-                        elif channel == settings.channel_collapse_mirror_user_event:
+                        if channel == settings.channel_collapse_mirror_user_event:
                             # User manually triggered collapse
                             # This is a "dense" event
 

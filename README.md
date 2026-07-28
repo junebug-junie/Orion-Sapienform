@@ -582,38 +582,20 @@ This matters because stance depends on memory. If recall is shallow, Orion’s p
 
 ---
 
-## 8. Landing Pad and State: A Bounded Now
+## 8. State: A Bounded Now
 
 Orion needs a sense of present-moment state.
 
-`orion-landing-pad` is the working-memory ingress surface. It reduces raw bus traffic into bounded state frames.
-
-```text
-raw bus events / telemetry / sensors
-  → reducers
-  → salience scoring
-  → pad.event.v1
-  → pad.signal.v1
-  → state frame
-  → state-service / Spark / Hub / Cortex
-```
-
-Landing Pad helps answer:
-
-```text
-what is happening now?
-what is background?
-what changed?
-what is salient?
-what is urgent?
-what should become a pulse?
-```
+`orion-landing-pad` (the former working-memory ingress surface: raw bus events → reducers →
+salience scoring → state frames) was retired -- its live data source (spark-introspector's
+`spark.state.snapshot.v1`) went away with that service's own retirement, and its remaining
+3 of 4 responsibilities had no real downstream consumer. See
+`docs/superpowers/specs/2026-07-28-landing-pad-retirement.md`.
 
 Related services:
 
 | Service | Role |
 |---|---|
-| `orion-landing-pad` | Converts raw events into Pad events, pulses, and state frames. |
 | `orion-state-service` | Exposes current state. |
 | `orion-equilibrium-service` | Converts service health into distress/zen/equilibrium signals. |
 
@@ -848,7 +830,6 @@ Reflection / state / sensemaking:
   orion-topic-foundry
 
 Working memory / perception / embodiment:
-  orion-landing-pad
   orion-vision-host
   orion-whisper-tts
   orion-biometrics

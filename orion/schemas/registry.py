@@ -410,7 +410,6 @@ from orion.schemas.telemetry.dream import (
     DreamResultV1,
     DreamTriggerPayload,
 )
-from orion.schemas.pad.v1 import PadEventV1, StateFrameV1, PadRpcRequestV1, PadRpcResponseV1
 from orion.schemas.rdf import RdfBuildRequest, RdfWriteRequest, RdfWriteResult
 from orion.schemas.spark_concept_graph import SparkConceptProfileGraphMaterializationV1
 from orion.schemas.self_study import (
@@ -1079,10 +1078,6 @@ _REGISTRY: Dict[str, Type[BaseModel]] = {
     "DreamTriggerPayload": DreamTriggerPayload,
     "DreamInternalTriggerV1": DreamInternalTriggerV1,
     "DreamResultV1": DreamResultV1,
-    "PadEventV1": PadEventV1,
-    "StateFrameV1": StateFrameV1,
-    "PadRpcRequestV1": PadRpcRequestV1,
-    "PadRpcResponseV1": PadRpcResponseV1,
     "MetaTagsRequestV1": MetaTagsRequestV1,
     "MetaTagsResultV1": MetaTagsResultV1,
     "MetaTagsPayload": MetaTagsPayload,

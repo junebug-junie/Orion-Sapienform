@@ -25,7 +25,7 @@ def test_hazard_fires_when_live_runtime_key_present():
 def test_hazard_none_when_live_runtime_key_present_but_empty():
     # An empty dict from a `computed_value or {}` fallback carries no real
     # evidence of live computation -- must not be classified as live.
-    ctx = {"attention_broadcast": {}, "pad_frame": []}
+    ctx = {"attention_broadcast": {}, "biometrics": []}
     assert _project_context_provenance_hazard(ctx) is None
 
 

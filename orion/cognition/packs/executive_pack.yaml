@@ -17,7 +17,6 @@ verbs:
   - show_biometrics_snapshot
   - list_biometrics_recent_readings
   - send_operator_notification
-  - show_landing_pad_metrics
   - inspect_docker_container_status
   - assess_mesh_presence
   - assess_storage_health

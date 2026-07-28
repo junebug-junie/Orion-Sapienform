@@ -36,34 +36,9 @@ REPO_ROOT = SERVICE_DIR.parents[1]
 if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
-from orion.core.bus.bus_schemas import BaseEnvelope, ServiceRef  # noqa: E402
+from orion.core.bus.bus_schemas import ServiceRef  # noqa: E402
 from orion.core.verbs.base import VerbContext  # noqa: E402
 from orion.schemas.cortex.schemas import ExecutionPlan, PlanExecutionArgs, PlanExecutionRequest  # noqa: E402
-from orion.schemas.pad.v1 import PadRpcResponseV1  # noqa: E402
-
-
-class _Codec:
-    @staticmethod
-    def decode(data):
-        return SimpleNamespace(ok=True, error=None, envelope=BaseEnvelope.model_validate(data))
-
-
-class _FakeBus:
-    def __init__(self, result_payload: dict) -> None:
-        self.codec = _Codec()
-        self.result_payload = result_payload
-        self.calls = []
-
-    async def rpc_request(self, channel: str, envelope: BaseEnvelope, *, reply_channel: str, timeout_sec: float):
-        self.calls.append((channel, envelope, reply_channel, timeout_sec))
-        return {
-            "data": BaseEnvelope(
-                kind="PadRpcResponseV1",
-                source=ServiceRef(name="pad"),
-                correlation_id=str(envelope.correlation_id),
-                payload=self.result_payload,
-            ).model_dump(mode="json")
-        }
 
 
 def _plan_request(verb_name: str, *, skill_args: dict | None = None) -> PlanExecutionRequest:
@@ -165,22 +140,6 @@ def test_biometrics_snapshot_maps_mock_http(monkeypatch):
     assert data["status"] == "OK"
     assert data["constraint"] == "GPU_MEM"
     assert data["cluster"]["composite"]["strain"] == 0.62
-
-
-def test_landing_pad_metrics_snapshot_calls_rpc_get_stats():
-    rpc_payload = PadRpcResponseV1(request_id="req-1", ok=True, result={"stats": {"ingested": 9}}).model_dump(mode="json")
-    bus = _FakeBus(rpc_payload)
-    req = _plan_request("skills.landing_pad.metrics_snapshot.v1")
-    ctx = VerbContext(meta={"bus": bus, "source": ServiceRef(name="exec"), "correlation_id": str(uuid4())})
-
-    out, _ = asyncio.run(verb_adapters.LandingPadMetricsSnapshotVerb().execute(ctx, req))
-
-    assert bus.calls
-    channel, env, _, _ = bus.calls[0]
-    assert channel == "orion:pad:rpc:request"
-    assert env.payload["method"] == "get_stats"
-    data = json.loads(out.final_text)
-    assert data["stats"]["ingested"] == 9
 
 
 def test_tailscale_json_parsing_and_active_nodes():

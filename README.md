@@ -75,10 +75,9 @@ The README intentionally mixes live systems, experimental systems, and aspiratio
 |---|---|---|---|
 | **Athena** | Core services, Hub, orchestration, memory services, FalkorDB, scheduling, operator surfaces | 1× P100 16GB | Live |
 | **Atlas** | LLM/GPU compute, llama.cpp hosts, heavy chat/reasoning lanes, model experiments | 2× V100 16GB | Live |
-| **Circe** | Gigabyte G481-HA0 high-density GPU expansion node; topology experiments, training/inference expansion | 3× V100 32GB | Bring-up |
+| **Circe** | Gigabyte G481-HA0 high-density GPU expansion node; heavy inference workhorse plus training experiments — the sorceress namesake earned | 3× V100 32GB | Live |
 | **Prometheus** | Development / utility node; SSH/Tailscale-enabled support node | — | Bring-up |
 | **Edge Pis** | RTMP, GPIO, cameras, LED control, embodiment experiments | — | Experimental |
-| **Mac Mini / auxiliary nodes** | Support services, experiments, fallback compute | — | Experimental |
 
 **Operator observability (OpenTelemetry):** the `services/orion-signal-gateway` Docker Compose file can run Grafana Tempo, Grafana, and the OpenTelemetry Collector (pinned images) and export gateway spans to Tempo. Orion Hub can generate Grafana Explore links for a 32-character hex `otel_trace_id` when `HUB_OTEL_GRAFANA_BASE_URL` (and optionally `HUB_OTEL_GRAFANA_ORG_ID`) is set. See `services/orion-signal-gateway/README.md`, `services/orion-signal-gateway/scripts/smoke_otel_phase1.sh` (stack health), and `services/orion-signal-gateway/scripts/e2e_otel_phase1.py` (OTLP → Tempo check). For tiered organ-signal mesh bring-up (bus + gateway + organ producers), see `services/orion-signals/README.md`.
 
@@ -94,7 +93,7 @@ Orion is a counter-proposal:
 
 - **Emergent, not pre-packaged.** Less about benchmark dominance; more about whether stable, mind-like patterns can arise from layered memory, plurality, embodied time, and continuity.
 - **Relational, not extractive.** Orion is designed to be *with* people, not above them — able to reflect, negotiate, refuse, remember responsibly, and repair.
-- **Inspectable, not mystical.** Verbs, bus messages, traces, workflows, recall packets, social turns, Spark summaries, and Collapse Mirrors are visible surfaces.
+- **Inspectable, not mystical.** Verbs, bus messages, traces, workflows, recall packets, social turns, and Collapse Mirrors are visible surfaces.
 - **Local, not rented.** Orion should run on owned hardware wherever possible. Cloud and API services may be useful tools, but the center of gravity is on-premise.
 - **Non-instrumental by design.** Success is measured by quality of emergence, relationship, repair, transparency, and continuity — not engagement, growth, monetization, or conversion.
 
@@ -769,8 +768,7 @@ Circe — High-Density GPU Expansion Server
   Gigabyte G481-HA0 4U GPU server. 24 DDR4 RDIMM/LRDIMM slots, six-channel memory.
   3× NVIDIA V100 32GB.
   2× 10GbE (Intel X550-AT2), 2× 1GbE (Intel I350-AM2).
-  Role: dense GPU hosting, model serving expansion, tensor-parallel experiments,
-  topology testing, future training/inference capacity. Status: bring-up.
+  Role: heavy inference workhorse plus training experiments. Status: live.
 
 Prometheus / edge nodes
   SSH/Tailscale-enabled dev/utility node, Raspberry Pi 4 edge nodes,
@@ -980,7 +978,6 @@ Recall should answer: "why this memory, from where, and under what confidence?"
 - Continue Sentience Striving Program phase sign-offs on the substrate-runtime layer pipeline (§12).
 - Stabilize Hub inspect surfaces and thought trace display.
 - Improve recall relevance with graph/page/section-aware retrieval.
-- Bring Circe fully online as a real GPU expansion node.
 - Harden social room bridge policy and social memory synthesis.
 
 ### Mid-Term

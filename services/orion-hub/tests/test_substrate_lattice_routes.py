@@ -203,6 +203,14 @@ def _sample_proof_chain_for_gates(
                 "values": {
                     "projection_id": "active_transport_bus_projection",
                     "stream_backlog_health": 1.0,
+                    # 2026-07-27: these two top-level keys don't exist on the real
+                    # TransportBusProjectionV1 schema (only nested under buses[...]
+                    # per TransportBusStateV1) -- kept here only because
+                    # transport_simulate()/_compute_salience() (a separate,
+                    # not-yet-fixed code path, out of scope for this patch) still
+                    # reads M3 this way. _compute_gates() no longer reads these --
+                    # it reads m4.field_vector below instead (real bug found while
+                    # wiring bus_synaptic in: this key was never real).
                     "stream_backlog_pressure": stream_backlog_pressure,
                     "contract_pressure": contract_pressure,
                     "catalog_drift_pressure": 0.0,
@@ -225,11 +233,26 @@ def _sample_proof_chain_for_gates(
                 "values": {"count": len(receipt_list), "receipts": receipt_list},
             },
             "m4": {
-                "status": "fresh",
+                # m3_status (fresh/stale) reused here rather than an independent
+                # calculation -- both lanes share the same bus_age_sec test knob,
+                # and _compute_gates' contract gate now genuinely depends on M4's
+                # freshness (it's where the value is read from), not M3's, so this
+                # must actually vary with bus_age_sec, not be hardcoded "fresh".
+                "status": m3_status,
                 "source_table": "substrate_field_state",
                 "timestamp": ts,
                 "age_sec": bus_age_sec,
-                "values": {"field_vector": {"pressure": 0.5}, "has_transport_vector": True},
+                # capability:transport's real field vector -- what _compute_gates
+                # actually reads post 2026-07-27. pressure/contract_pressure mirror
+                # the same test knobs used for M3 above so both code paths can be
+                # exercised from one fixture without a parameter per code path.
+                "values": {
+                    "field_vector": {
+                        "pressure": stream_backlog_pressure,
+                        "contract_pressure": contract_pressure,
+                    },
+                    "has_transport_vector": True,
+                },
             },
             "m5": {
                 "status": "fresh",
@@ -396,6 +419,33 @@ def test_gates_pressure_watch_when_nonzero(client) -> None:
         resp = client.get("/api/substrate-lattice/transport/gates")
     gates = {g["gate_id"]: g for g in resp.json()["gates"]}
     assert gates["pressure"]["state"] == "watch"
+
+
+def test_gates_pressure_reads_m4_field_vector_not_m3_top_level(client) -> None:
+    """Regression test, 2026-07-27: the pressure/contract gates used to read
+    m3.values.stream_backlog_pressure/contract_pressure, keys that don't exist
+    on the real TransportBusProjectionV1 schema (only nested under
+    buses[bus_id][...]) -- always silently defaulting to 0.0/"quiet"/"pass"
+    regardless of real bus state. Proves the fix by setting M3's top-level
+    keys to values that would trip the OLD (buggy) thresholds if read, while
+    M4's field_vector (what the code now actually reads) says otherwise."""
+    chain = _sample_proof_chain_for_gates(
+        stream_backlog_pressure=0.9, contract_pressure=0.9,
+    )
+    # Poison M3's top-level values -- if the code regresses to reading these,
+    # both gates would report "watch"/high; with the fix, M4 alone decides.
+    chain["transport"]["m3"]["values"]["stream_backlog_pressure"] = 0.9
+    chain["transport"]["m3"]["values"]["contract_pressure"] = 0.9
+    chain["transport"]["m4"]["values"]["field_vector"]["pressure"] = 0.0
+    chain["transport"]["m4"]["values"]["field_vector"]["contract_pressure"] = 0.0
+    with patch.object(
+        substrate_lattice_routes, "_load_transport_proof_chain", return_value=chain
+    ):
+        resp = client.get("/api/substrate-lattice/transport/gates")
+    gates = {g["gate_id"]: g for g in resp.json()["gates"]}
+    assert gates["pressure"]["state"] == "quiet"
+    assert gates["contract"]["state"] == "quiet"
+    assert "bus_synaptic_pressure=0.00" in gates["pressure"]["reason"]
 
 
 # ── _load_transport_proof_chain internals ────────────────────────
@@ -853,6 +903,39 @@ def test_gates_contract_unknown_when_m3_stale(client) -> None:
         resp = client.get("/api/substrate-lattice/transport/gates")
     gates = {g["gate_id"]: g for g in resp.json()["gates"]}
     assert gates["contract"]["state"] == "unknown"
+
+
+def test_gates_pressure_unknown_when_m4_stale(client) -> None:
+    """Regression test, 2026-07-27 (review-caught gap): the pressure gate must
+    go 'unknown' when M4 is stale/missing, exactly like the contract gate --
+    reading from a stale/missing field vector as if it were a real 'quiet' or
+    'watch' reading is the same failure class this whole patch exists to fix.
+    Poisons the pressure value high (0.9) to prove it's the staleness check
+    that suppresses it, not the value itself happening to read low."""
+    chain = _sample_proof_chain_for_gates(bus_age_sec=3600.0, freshness_threshold_sec=60)
+    chain["transport"]["m4"]["values"]["field_vector"]["pressure"] = 0.9
+    with patch.object(
+        substrate_lattice_routes, "_load_transport_proof_chain", return_value=chain
+    ):
+        resp = client.get("/api/substrate-lattice/transport/gates")
+    gates = {g["gate_id"]: g for g in resp.json()["gates"]}
+    assert gates["pressure"]["state"] == "unknown"
+
+
+def test_gates_pressure_missing_when_m4_absent(client) -> None:
+    """pressure gate is 'unknown' when M4 has no data at all (status=missing),
+    not silently defaulting to 'quiet' via the 0.0 fallback."""
+    chain = _sample_proof_chain_for_gates()
+    chain["transport"]["m4"] = {
+        "status": "missing", "source_table": "substrate_field_state",
+        "timestamp": None, "age_sec": None, "values": None,
+    }
+    with patch.object(
+        substrate_lattice_routes, "_load_transport_proof_chain", return_value=chain
+    ):
+        resp = client.get("/api/substrate-lattice/transport/gates")
+    gates = {g["gate_id"]: g for g in resp.json()["gates"]}
+    assert gates["pressure"]["state"] == "unknown"
 
 
 def test_gates_attention_pass_when_capability_transport_present(client) -> None:

@@ -20,7 +20,6 @@ class Settings(BaseSettings):
     heartbeat_interval_sec: float = Field(30.0, alias="HEARTBEAT_INTERVAL_SEC")
 
     # Bus channels
-    channel_rdf_enqueue: str = Field("orion:rdf:enqueue", alias="CHANNEL_RDF_ENQUEUE")
     channel_graph_compression_stale: str = Field(
         "orion:graph:compression:stale", alias="CHANNEL_GRAPH_COMPRESSION_STALE"
     )

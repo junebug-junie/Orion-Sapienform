@@ -172,7 +172,9 @@ def test_induce_self_concepts_produces_induced_evidence_backed_concepts():
     assert all(concept.evidence for concept in concepts)
     assert all(ref.trust_tier == "authoritative" for concept in concepts for ref in concept.evidence)
     assert any(concept.concept_kind == "runtime_boundary" for concept in concepts)
-    assert any(concept.concept_kind == "graph_surface" for concept in concepts)
+    # graph_surface concept retired 2026-07-28 along with orion-rdf-writer/
+    # orion:rdf:enqueue -- there is no longer a graph write surface to induce.
+    assert not any(concept.concept_kind == "graph_surface" for concept in concepts)
 
     summary = self_study.build_self_concept_summary(concepts)
     assert summary.startswith(f"Concept induction produced {len(concepts)} induced architectural concepts")
@@ -237,10 +239,13 @@ def test_induction_ignores_journal_text_as_evidence_input():
     assert all(ref.source_path != journal.source_ref for concept in concepts for ref in concept.evidence)
 
 
-def test_publish_self_concepts_skips_unchanged_repeated_run():
+def test_publish_self_concepts_is_permanently_retired():
+    # orion:rdf:enqueue retired 2026-07-28: graph writeback is now a
+    # permanent no-op regardless of whether the bus is connected or the
+    # concepts changed between runs -- see self_study.py's
+    # publish_self_concept_artifacts.
     snapshot = self_study.build_self_snapshot(observed_at="2026-03-21T00:00:00+00:00")
     concepts = self_study.induce_self_concepts(snapshot)
-    self_study._LAST_CONCEPT_PUBLISH_KEY = None
 
     first_bus = _FakeBus()
     first = asyncio.run(
@@ -263,16 +268,16 @@ def test_publish_self_concepts_skips_unchanged_repeated_run():
         )
     )
 
-    assert first.status == "written"
+    assert first.status == "skipped"
+    assert first.detail == "channel_retired"
     assert first.graph == "orion:self:induced"
     assert second.status == "skipped"
-    assert second.detail == "unchanged_concepts"
-    assert [channel for channel, _ in first_bus.published] == ["orion:rdf:enqueue"]
+    assert second.detail == "channel_retired"
+    assert first_bus.published == []
     assert second_bus.published == []
 
 
-def test_self_concept_induce_verb_publishes_induced_graph_only():
-    self_study._LAST_CONCEPT_PUBLISH_KEY = None
+def test_self_concept_induce_verb_graph_write_is_retired():
     bus = _FakeBus()
     ctx = VerbContext(meta={"bus": bus, "source": ServiceRef(name="orion-cortex-exec"), "correlation_id": "corr-induce"})
 
@@ -281,12 +286,13 @@ def test_self_concept_induce_verb_publishes_induced_graph_only():
     assert effects == []
     data = json.loads(out.final_text)
     result = data["result"] if "result" in data else data
-    assert result["graph_write"]["status"] == "written"
+    assert result["graph_write"]["status"] == "skipped"
+    assert result["graph_write"]["detail"] == "channel_retired"
     assert result["graph_write"]["authoritative"] is False
     assert result["graph_write"]["graph"] == "orion:self:induced"
     assert result["summary"].startswith("Concept induction produced ")
     assert all(concept["trust_tier"] == "induced" for concept in result["concepts"])
-    assert [channel for channel, _ in bus.published] == ["orion:rdf:enqueue"]
+    assert bus.published == []
 
 
 def test_reflect_self_concepts_returns_reflective_findings_with_evidence_and_concept_refs():
@@ -360,8 +366,7 @@ def test_publish_reflection_gracefully_skips_without_bus():
     assert journal_entry.source_kind == "self_reflection"
 
 
-def test_self_concept_reflect_verb_writes_reflective_graph_and_journal():
-    self_study._LAST_REFLECTION_PUBLISH_KEY = None
+def test_self_concept_reflect_verb_graph_write_retired_journal_still_written():
     bus = _FakeBus()
     ctx = VerbContext(meta={"bus": bus, "source": ServiceRef(name="orion-cortex-exec"), "correlation_id": "corr-reflect-2"})
 
@@ -371,13 +376,14 @@ def test_self_concept_reflect_verb_writes_reflective_graph_and_journal():
     data = json.loads(out.final_text)
     result = data["result"] if "result" in data else data
     assert result["validated_phase2a"] is True
-    assert result["graph_write"]["status"] == "written"
+    assert result["graph_write"]["status"] == "skipped"
+    assert result["graph_write"]["detail"] == "channel_retired"
     assert result["graph_write"]["authoritative"] is False
     assert result["graph_write"]["graph"] == "orion:self:reflective"
     assert result["journal_write"]["status"] == "written"
     assert result["journal_entry"]["source_kind"] == "self_reflection"
     assert all(finding["trust_tier"] == "reflective" for finding in result["findings"])
-    assert [channel for channel, _ in bus.published] == ["orion:rdf:enqueue", "orion:journal:write"]
+    assert [channel for channel, _ in bus.published] == ["orion:journal:write"]
 
 
 def test_self_retrieve_factual_mode_returns_authoritative_records_only():
@@ -520,7 +526,7 @@ def test_publish_self_study_artifacts_gracefully_skips_without_bus():
     assert journal_entry.source_kind == "self_study"
 
 
-def test_self_repo_inspect_verb_publishes_graph_and_journal():
+def test_self_repo_inspect_verb_graph_write_retired_journal_still_written():
     bus = _FakeBus()
     ctx = VerbContext(meta={"bus": bus, "source": ServiceRef(name="orion-cortex-exec"), "correlation_id": "corr-3"})
 
@@ -529,17 +535,16 @@ def test_self_repo_inspect_verb_publishes_graph_and_journal():
     assert effects == []
     data = json.loads(out.final_text)
     assert data["snapshot"]["trust_tier"] == "authoritative"
-    assert data["graph_write"]["status"] == "written"
+    assert data["graph_write"]["status"] == "skipped"
+    assert data["graph_write"]["detail"] == "channel_retired"
     assert data["graph_write"]["authoritative"] is True
     assert data["journal_write"]["status"] == "written"
     assert data["journal_write"]["authoritative"] is False
-    assert [channel for channel, _ in bus.published] == ["orion:rdf:enqueue", "orion:journal:write"]
-    assert bus.published[0][1].kind == "rdf.write.request"
-    assert bus.published[1][1].kind == "journal.entry.write.v1"
+    assert [channel for channel, _ in bus.published] == ["orion:journal:write"]
+    assert bus.published[0][1].kind == "journal.entry.write.v1"
 
 
 def test_self_repo_inspect_reports_partial_backend_failure():
-    self_study._LAST_GRAPH_PUBLISH_KEY = None
     bus = _FakeBus(fail_channel="orion:journal:write")
     result = asyncio.run(
         self_study.run_self_repo_inspect(
@@ -549,15 +554,15 @@ def test_self_repo_inspect_reports_partial_backend_failure():
         )
     )
 
-    assert result.graph_write.status == "written"
+    assert result.graph_write.status == "skipped"
+    assert result.graph_write.detail == "channel_retired"
     assert result.journal_write.status == "failed"
     assert result.journal_write.authoritative is False
     assert "publish_failed:orion:journal:write" in (result.journal_write.detail or "")
 
 
-def test_repeat_publish_skips_unchanged_graph_but_keeps_journal_append_intent():
+def test_repeat_publish_graph_write_retired_but_keeps_journal_append_intent():
     snapshot = self_study.build_self_snapshot(observed_at="2026-03-21T00:00:00+00:00")
-    self_study._LAST_GRAPH_PUBLISH_KEY = None
 
     first_bus = _FakeBus()
     first_graph, first_journal, _ = asyncio.run(
@@ -578,10 +583,12 @@ def test_repeat_publish_skips_unchanged_graph_but_keeps_journal_append_intent():
         )
     )
 
-    assert first_graph.status == "written"
+    assert first_graph.status == "skipped"
+    assert first_graph.detail == "channel_retired"
     assert second_graph.status == "skipped"
-    assert second_graph.detail == "unchanged_snapshot"
+    assert second_graph.detail == "channel_retired"
+    assert first_journal.status == "written"
     assert second_journal.status == "written"
     assert second_journal.append_only is True
-    assert [channel for channel, _ in first_bus.published] == ["orion:rdf:enqueue", "orion:journal:write"]
+    assert [channel for channel, _ in first_bus.published] == ["orion:journal:write"]
     assert [channel for channel, _ in second_bus.published] == ["orion:journal:write"]

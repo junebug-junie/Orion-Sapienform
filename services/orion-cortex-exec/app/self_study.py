@@ -105,31 +105,23 @@ _ENV_TARGETS: tuple[tuple[str, str, tuple[str, ...]], ...] = (
         "recall",
         ("RECALL_DEFAULT_PROFILE", "RECALL_ENABLE_RDF", "RECALL_RDF_ENDPOINT_URL", "GRAPHDB_URL", "GRAPHDB_REPO"),
     ),
-    (
-        "services/orion-rdf-writer/app/settings.py",
-        "rdf_writer",
-        # CHANNEL_WORKER_RDF removed 2026-07-18: the settings field itself
-        # was deleted (dead channel, both sides). Tracking it here would
-        # fall back to the literal string as a fake "declared" name once
-        # _extract_declared_env_names() can no longer find it in the file.
-        ("GRAPHDB_URL", "GRAPHDB_REPO", "CHANNEL_RDF_ENQUEUE"),
-    ),
+    # orion-rdf-writer entry removed 2026-07-28: service deleted (orion-rdf-store/
+    # Fuseki decommissioned, FalkorDB is the canonical graph backend). Already
+    # guarded by _env_items()'s path.exists() check so this was a silent no-op,
+    # not a bug -- removed for cleanliness, matching the CHANNEL_WORKER_RDF
+    # precedent noted just above prior to this edit.
 )
 
 _TOUCHPOINTS: tuple[tuple[str, str, str], ...] = (
     ("journal", "orion/journaler/worker.py", "build_write_payload"),
     ("journal", "services/orion-actions/app/main.py", "_run_journal"),
     ("journal", "services/orion-sql-writer/app/worker.py", "handle_envelope"),
-    ("graph", "services/orion-rdf-writer/app/service.py", "_push_to_graphdb"),
-    ("graph", "services/orion-rdf-writer/app/rdf_builder.py", "build_triples_from_envelope"),
+    # graph touchpoints (orion-rdf-writer) removed 2026-07-28: service deleted.
+    # Already guarded by _touchpoint_items()'s path.exists() check.
     ("recall", "services/orion-recall/app/profiles.py", "load_profiles"),
     ("recall", "services/orion-recall/app/worker.py", "process_recall"),
     ("persistence", "services/orion-state-service/app/store.py", "StateStore"),
 )
-
-_LAST_GRAPH_PUBLISH_KEY: str | None = None
-_LAST_CONCEPT_PUBLISH_KEY: str | None = None
-_LAST_REFLECTION_PUBLISH_KEY: str | None = None
 
 
 def _iso_now() -> str:
@@ -579,29 +571,13 @@ def induce_self_concepts(snapshot: SelfSnapshotV1) -> list[SelfInducedConceptV1]
             )
         )
 
-    graph_evidence: list[SelfKnowledgeItemV1] = []
-    for key in ("orion-rdf-writer",):
-        if key in service_by_name:
-            graph_evidence.append(service_by_name[key])
-    # orion:rdf:worker removed from this evidence list 2026-07-18: confirmed
-    # dead on both sides (zero producers, zero consumers -- see
-    # orion/bus/channels.yaml). Citing it as graph-write-surface evidence
-    # would be a self-knowledge claim with no runtime backing.
-    for key in ("orion:rdf:enqueue",):
-        if key in channel_by_name:
-            graph_evidence.append(channel_by_name[key])
-    graph_evidence.extend(touchpoints_by_surface.get("graph", []))
-    if graph_evidence:
-        concepts.append(
-            _concept(
-                snapshot=snapshot,
-                concept_kind="graph_surface",
-                label="rdf graph write surface",
-                description="The self-study graph surface is anchored by rdf-writer touchpoints and the orion:rdf:* bus channels reused for structured graph writes.",
-                evidence_items=graph_evidence,
-                inferred_from=["service", "channel", "touchpoint"],
-            )
-        )
+    # "rdf graph write surface" concept removed 2026-07-28: orion-rdf-writer
+    # is deleted and orion:rdf:enqueue is retired (empty producer/consumer
+    # lists, see orion/bus/channels.yaml) -- there is no longer a graph write
+    # surface to describe. Citing either as evidence here would be exactly
+    # the "self-knowledge claim with no runtime backing" the orion:rdf:worker
+    # removal above already called out; this concept is gone rather than
+    # left with hollow evidence.
 
     journal_evidence: list[SelfKnowledgeItemV1] = []
     if "orion:journal:write" in channel_by_name:
@@ -637,25 +613,28 @@ def induce_self_concepts(snapshot: SelfSnapshotV1) -> list[SelfInducedConceptV1]
         )
 
     self_study_cluster: list[SelfKnowledgeItemV1] = []
-    for key in ("orion-cortex-exec", "orion-rdf-writer", "orion-recall"):
+    for key in ("orion-cortex-exec", "orion-recall"):
         if key in service_by_name:
             self_study_cluster.append(service_by_name[key])
-    for key in ("orion:rdf:enqueue", "orion:journal:write"):
-        if key in channel_by_name:
-            self_study_cluster.append(channel_by_name[key])
+    if "orion:journal:write" in channel_by_name:
+        self_study_cluster.append(channel_by_name["orion:journal:write"])
     if self_study_cluster:
         concepts.append(
             _concept(
                 snapshot=snapshot,
                 concept_kind="service_cluster",
                 label="self-study execution cluster",
-                description="Self-study spans cortex-exec, rdf-writer, recall configuration surfaces, and journal routing as a small cross-service cluster.",
+                description="Self-study spans cortex-exec, recall configuration surfaces, and journal routing as a small cross-service cluster.",
                 evidence_items=self_study_cluster,
                 inferred_from=["service", "channel"],
             )
         )
 
-    topology_evidence = [item for item in snapshot.channels if item.name.startswith("orion:rdf:")]
+    # topology_evidence no longer cites orion:rdf:* channels (2026-07-28):
+    # graph publication was retired, so "separating graph publication from
+    # journal publication" is no longer true -- self-study now has one write
+    # surface, not two.
+    topology_evidence = []
     if "orion:journal:write" in channel_by_name:
         topology_evidence.append(channel_by_name["orion:journal:write"])
     if topology_evidence:
@@ -664,7 +643,7 @@ def induce_self_concepts(snapshot: SelfSnapshotV1) -> list[SelfInducedConceptV1]
                 snapshot=snapshot,
                 concept_kind="bus_topology_pattern",
                 label="self-study bus write topology",
-                description="Self-study uses bus-first write surfaces, separating graph publication from journal publication while keeping both behind typed envelopes.",
+                description="Self-study uses bus-first journal publication behind a typed envelope; graph publication was retired 2026-07-28.",
                 evidence_items=topology_evidence,
                 inferred_from=["channel"],
             )
@@ -1848,58 +1827,22 @@ async def publish_self_concept_artifacts(
     concepts: Sequence[SelfInducedConceptV1],
     correlation_id: str,
 ) -> SelfWritebackStatusV1:
-    global _LAST_CONCEPT_PUBLISH_KEY
-
+    # orion:rdf:enqueue retired 2026-07-28: orion-rdf-writer (its sole real
+    # consumer) is gone, and live verification found orion-graph-compression's
+    # listed consumption was already dead weight (empty stream, empty
+    # stale_queue/artifacts tables, SPARQL federator pointed at a Fuseki
+    # container that no longer exists). Graph writeback is now a permanent
+    # no-op rather than a publish into a channel nothing acts on.
     request = build_self_concept_rdf_request(source_snapshot=snapshot, concepts=concepts, run_id=snapshot.run_id)
-    if bus is None:
-        return SelfWritebackStatusV1(
-            target="graph",
-            status="skipped",
-            authoritative=False,
-            channel=RDF_ENQUEUE_CHANNEL,
-            graph=SELF_INDUCED_GRAPH,
-            idempotency_key=request.id,
-            detail="missing_bus",
-        )
-
-    if _LAST_CONCEPT_PUBLISH_KEY == request.id:
-        return SelfWritebackStatusV1(
-            target="graph",
-            status="skipped",
-            authoritative=False,
-            channel=RDF_ENQUEUE_CHANNEL,
-            graph=SELF_INDUCED_GRAPH,
-            idempotency_key=request.id,
-            detail="unchanged_concepts",
-        )
-
-    env = BaseEnvelope(
-        kind="rdf.write.request",
-        source=source,
-        correlation_id=_as_envelope_correlation_id(correlation_id),
-        payload=request.model_dump(mode="json"),
+    return SelfWritebackStatusV1(
+        target="graph",
+        status="skipped",
+        authoritative=False,
+        channel=RDF_ENQUEUE_CHANNEL,
+        graph=SELF_INDUCED_GRAPH,
+        idempotency_key=request.id,
+        detail="channel_retired",
     )
-    try:
-        await bus.publish(RDF_ENQUEUE_CHANNEL, env)
-        _LAST_CONCEPT_PUBLISH_KEY = request.id
-        return SelfWritebackStatusV1(
-            target="graph",
-            status="written",
-            authoritative=False,
-            channel=RDF_ENQUEUE_CHANNEL,
-            graph=SELF_INDUCED_GRAPH,
-            idempotency_key=request.id,
-        )
-    except Exception as exc:
-        return SelfWritebackStatusV1(
-            target="graph",
-            status="failed",
-            authoritative=False,
-            channel=RDF_ENQUEUE_CHANNEL,
-            graph=SELF_INDUCED_GRAPH,
-            idempotency_key=request.id,
-            detail=str(exc),
-        )
 
 
 async def publish_self_reflection_artifacts(
@@ -1910,8 +1853,6 @@ async def publish_self_reflection_artifacts(
     findings: Sequence[SelfReflectiveFindingV1],
     correlation_id: str,
 ) -> tuple[SelfWritebackStatusV1, SelfWritebackStatusV1, JournalEntryWriteV1]:
-    global _LAST_REFLECTION_PUBLISH_KEY
-
     journal_entry = build_self_reflection_journal_entry(
         snapshot=snapshot,
         findings=findings,
@@ -1941,44 +1882,18 @@ async def publish_self_reflection_artifacts(
             journal_entry,
         )
 
+    # orion:rdf:enqueue retired 2026-07-28: see publish_self_concept_artifacts
+    # above for the live-verification behind this. Graph writeback is now a
+    # permanent no-op; journal writeback below is unaffected.
     graph_status = SelfWritebackStatusV1(
         target="graph",
-        status="written",
+        status="skipped",
         authoritative=False,
         channel=RDF_ENQUEUE_CHANNEL,
         graph=SELF_REFLECTIVE_GRAPH,
         idempotency_key=request.id,
+        detail="channel_retired",
     )
-    if _LAST_REFLECTION_PUBLISH_KEY == request.id:
-        graph_status = SelfWritebackStatusV1(
-            target="graph",
-            status="skipped",
-            authoritative=False,
-            channel=RDF_ENQUEUE_CHANNEL,
-            graph=SELF_REFLECTIVE_GRAPH,
-            idempotency_key=request.id,
-            detail="unchanged_reflections",
-        )
-    else:
-        rdf_env = BaseEnvelope(
-            kind="rdf.write.request",
-            source=source,
-            correlation_id=_as_envelope_correlation_id(correlation_id),
-            payload=request.model_dump(mode="json"),
-        )
-        try:
-            await bus.publish(RDF_ENQUEUE_CHANNEL, rdf_env)
-            _LAST_REFLECTION_PUBLISH_KEY = request.id
-        except Exception as exc:
-            graph_status = SelfWritebackStatusV1(
-                target="graph",
-                status="failed",
-                authoritative=False,
-                channel=RDF_ENQUEUE_CHANNEL,
-                graph=SELF_REFLECTIVE_GRAPH,
-                idempotency_key=request.id,
-                detail=str(exc),
-            )
 
     journal_status = SelfWritebackStatusV1(
         target="journal",
@@ -2018,21 +1933,26 @@ async def publish_self_study_artifacts(
     snapshot: SelfSnapshotV1,
     correlation_id: str,
 ) -> tuple[SelfWritebackStatusV1, SelfWritebackStatusV1, JournalEntryWriteV1]:
-    global _LAST_GRAPH_PUBLISH_KEY
-
+    # orion:rdf:enqueue retired 2026-07-28: see publish_self_concept_artifacts
+    # above for the live-verification behind this. This graph (orion:self)
+    # was independently confirmed by orion-graph-compression's own
+    # verification (2026-07-23, see its README) to have zero triples ever --
+    # no producer including this one had ever landed a real write. Graph
+    # writeback is now a permanent no-op; journal writeback is unaffected.
     journal_entry = build_self_study_journal_entry(snapshot, correlation_id=correlation_id)
+    graph_status = SelfWritebackStatusV1(
+        target="graph",
+        status="skipped",
+        authoritative=True,
+        channel=RDF_ENQUEUE_CHANNEL,
+        graph=SELF_GRAPH,
+        idempotency_key=snapshot.snapshot_id,
+        detail="channel_retired",
+    )
     if bus is None:
         logger.info("self_study_degraded snapshot_id=%s reason=missing_bus", snapshot.snapshot_id)
         return (
-            SelfWritebackStatusV1(
-                target="graph",
-                status="skipped",
-                authoritative=True,
-                channel=RDF_ENQUEUE_CHANNEL,
-                graph=SELF_GRAPH,
-                idempotency_key=snapshot.snapshot_id,
-                detail="missing_bus",
-            ),
+            graph_status,
             SelfWritebackStatusV1(
                 target="journal",
                 status="skipped",
@@ -2045,14 +1965,6 @@ async def publish_self_study_artifacts(
             journal_entry,
         )
 
-    graph_status = SelfWritebackStatusV1(
-        target="graph",
-        status="written",
-        authoritative=True,
-        channel=RDF_ENQUEUE_CHANNEL,
-        graph=SELF_GRAPH,
-        idempotency_key=snapshot.snapshot_id,
-    )
     journal_status = SelfWritebackStatusV1(
         target="journal",
         status="written",
@@ -2064,38 +1976,6 @@ async def publish_self_study_artifacts(
     )
 
     envelope_corr_id = _as_envelope_correlation_id(correlation_id)
-    if _LAST_GRAPH_PUBLISH_KEY == snapshot.snapshot_id:
-        graph_status = SelfWritebackStatusV1(
-            target="graph",
-            status="skipped",
-            authoritative=True,
-            channel=RDF_ENQUEUE_CHANNEL,
-            graph=SELF_GRAPH,
-            idempotency_key=snapshot.snapshot_id,
-            detail="unchanged_snapshot",
-        )
-    else:
-        rdf_request = build_self_study_rdf_request(snapshot)
-        rdf_env = BaseEnvelope(
-            kind="rdf.write.request",
-            source=source,
-            correlation_id=envelope_corr_id,
-            payload=rdf_request.model_dump(mode="json"),
-        )
-        try:
-            await bus.publish(RDF_ENQUEUE_CHANNEL, rdf_env)
-            _LAST_GRAPH_PUBLISH_KEY = snapshot.snapshot_id
-        except Exception as exc:
-            graph_status = SelfWritebackStatusV1(
-                target="graph",
-                status="failed",
-                authoritative=True,
-                channel=RDF_ENQUEUE_CHANNEL,
-                graph=SELF_GRAPH,
-                idempotency_key=snapshot.snapshot_id,
-                detail=str(exc),
-            )
-
     journal_env = BaseEnvelope(
         kind="journal.entry.write.v1",
         source=source,

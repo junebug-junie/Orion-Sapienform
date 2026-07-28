@@ -9,64 +9,27 @@ if TYPE_CHECKING:
 
 logger = logging.getLogger("orion.graph-compression.stale_listener")
 
-# Map RDF enqueue graph names to compression scopes
-_GRAPH_TO_SCOPE = {
-    "orion:chat": "episodic",
-    "orion:enrichment": "episodic",
-    # orion:collapse: EpisodicFederator no longer reads this graph (retired
-    # 2026-07-23, see episodic.py) -- this mapping is fully inert, not just
-    # wastefully conservative like orion:chat:social's, since no rdf:enqueue
-    # event naming this graph is even reachable (confirmed: orion-rdf-writer
-    # isn't subscribed to the channel that ever carries collapse.mirror.entry).
-    # Left in place rather than removed since it's harmless either way.
-    "orion:collapse": "episodic",
-    "orion:cognition": "episodic",
-    "orion:metacog": "episodic",
-    "orion:chat:social": "episodic",
-    "orion:autonomy:identity": "episodic",
-    "orion:autonomy:drives": "episodic",
-    "orion:autonomy:goals": "episodic",
-    "orion:substrate": "substrate",
-}
-# self_study scope retired 2026-07-23: its three source Fuseki graphs
-# (orion:self, orion:self:induced, orion:self:reflective) were live-verified
-# to have zero triples, ever -- no producer anywhere in the repo ever wrote
-# to them. No Falkor equivalent needed since there was nothing to migrate.
+# orion:rdf:enqueue subscription and its _GRAPH_TO_SCOPE mapping removed
+# 2026-07-28: orion-rdf-writer (the only other consumer of that channel) was
+# retired, and live verification of this listener's own consumption found it
+# was already dead weight -- the Redis stream key didn't exist (zero messages
+# ever), and the one real producer (orion-cortex-exec's self_concept_induce/
+# reflect verbs) wrote graph names this mapping didn't even recognize, so it
+# only ever hit the "mark everything stale" fallback branch, and never
+# observably did so (stale_queue was empty). See
+# orion/bus/channels.yaml's orion:rdf:enqueue entry for the full writeup.
 
 
 async def run_stale_listener(
     *,
     bus: "OrionBusAsync",
     store: "CompressionStore",
-    channel_rdf_enqueue: str,
     channel_stale: str,
 ) -> None:
     """
-    Subscribes to two channels:
-    - orion:rdf:enqueue — mark affected scope stale when a graph is written
-    - orion:graph:compression:stale — explicit staleness marks from other services
+    Subscribes to orion:graph:compression:stale — explicit staleness marks
+    from other services.
     """
-    async def _handle(envelope: Any) -> None:
-        try:
-            payload = envelope.payload or {}
-            # From orion:rdf:enqueue: look for graph_name field
-            graph_name = (
-                payload.get("graph_name")
-                or payload.get("named_graph")
-                or payload.get("graph")
-                or ""
-            )
-            scope = _GRAPH_TO_SCOPE.get(graph_name)
-            if scope:
-                store.enqueue_stale(scope=scope, reason=f"rdf_enqueue:{graph_name}")
-                logger.debug("stale_marked scope=%s graph=%s", scope, graph_name)
-            else:
-                # Mark all scopes stale on unknown graph writes
-                for s in ("episodic", "substrate"):
-                    store.enqueue_stale(scope=s, reason="rdf_enqueue:unknown_graph")
-        except Exception as exc:
-            logger.warning("stale_listener_handle_error reason=%s", exc)
-
     async def _handle_explicit(envelope: Any) -> None:
         try:
             payload = envelope.payload or {}
@@ -77,6 +40,5 @@ async def run_stale_listener(
         except Exception as exc:
             logger.warning("stale_listener_explicit_handle_error reason=%s", exc)
 
-    await bus.subscribe(channel_rdf_enqueue, _handle)
     await bus.subscribe(channel_stale, _handle_explicit)
-    logger.info("stale_listener_started channels=[%s, %s]", channel_rdf_enqueue, channel_stale)
+    logger.info("stale_listener_started channels=[%s]", channel_stale)

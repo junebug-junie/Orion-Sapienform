@@ -605,24 +605,58 @@ Retention: `SELF_STATE_RETENTION_HOURS=72`, pruned hourly.
 ## Brain Frames
 
 `SubstrateBrainFrameV1` snapshots are persistent, visual readouts of substrate state at
-5-second intervals (configurable). Frames assemble _regions_ from four independent signal
-sources:
+5-second intervals (configurable). Frames assemble _regions_ from independent signal sources,
+each individually live-verified against real running data before being wired in (2026-07-28):
 
-| Dimension | Source | Computation | Stored | Signal |
-|-----------|--------|-------------|--------|--------|
-| `node_kind` | graph | max activation per node category | yes | category-wise activation peaks |
-| `lane` | health | freshness + backlog over reducers | yes | lane health composite |
-| `self_state` | field digester | 13-dim projection output | yes | field-computed signal dimensions |
-| `honesty_metrics` | active inference | prediction_error_confidence (no transform) | yes | model confidence: 0.0–1.0 |
+| Dimension | Source | Computation | Live-verified variance |
+|-----------|--------|-------------|-------------------------|
+| `node_kind` | graph | max activation per node category | **Ceiling-pinned** (0.9687–1.0 over 2min) — display only, not a good driver |
+| `lane` | reducer health | freshness + backlog composite | **Pinned regardless of `max()`/`min()`** — a dead reducer lane (`chat_grammar`, 70h+ stale) is either masked (`max`) or becomes a permanent floor (`min`) |
+| `self_state` | Postgres `substrate_self_state` | 13-dim projection read | **Dead.** Zero producer since the 2026-07-22 SelfStateV1 burn (confirmed in `orion-consolidation-runtime/app/store.py`) — this dimension never emits a region |
+| `honesty_metrics` | Active Inference | `prediction_error_confidence`, no transform beyond clamp+threshold | **Real, live.** 0.7929–0.9935 over a real 2-minute window |
+| `field_anomaly` | mood-arc encoder (orion-field-digester) | `recon_loss`, calibrated against live-observed range | **Real, live.** Confirmed a genuine anomalous→calm state transition (~0.012 → 0.00012, both real ticks) |
 
-**Honesty metrics: no transformation.** `prediction_error_confidence` from active inference
-(`orion/substrate/prediction_error.py`, computed unconditionally per domain) is clamped to
-[0.0, 1.0] and thresholded into state ("firing" >0.7, "steady" 0.4–0.7, "starving" ≤0.4).
-Real computation lives upstream in active inference; this layer is a direct read + display pass.
+**`honesty_metrics` / `prediction_error_confidence`:** computed live in `_brain_frame_tick()`
+by calling `orion.substrate.attention_self_model.reduce_attention_self_model()` — a pure
+function that, before this wiring, was called only by offline analysis scripts
+(`scripts/analysis/measure_ast_hot_reducer.py`), never in any live service. Its
+`prediction_error_by_domain` input is built by `_brain_frame_prediction_error_by_domain()`
+from the same node snapshot the tick already fetches for `node_kind` regions (zero extra
+I/O) — reading back the `metadata['prediction_error']` that `_write_prediction_error_node()`
+durably upserts per Active-Inference domain (`node:substrate.<domain>`,
+`SUBSTRATE_WRITE_PREDICTION_ERROR_NODES=true`). An earlier version of this wiring passed
+`AttentionBroadcastProjectionV1` (`load_attention_broadcast()`) instead — a real object, but
+one with no `prediction_error_confidence` field at all, so the region silently never emitted
+until this was caught and fixed.
+
+**`field_anomaly` / mood-arc encoder:** `_field_channel_anomaly_listener_loop()` subscribes to
+`orion:field_channel:anomaly_score` (producer: `orion-field-digester`'s
+`app/anomaly_scorer.py`, a real trained sequence autoencoder — `orion/mood_arc/fit_encoder.py`
+— run against live field-channel pressures) and caches the latest `FieldChannelAnomalyScoreV1`.
+`recon_loss` has no natural [0,1] range and a ratio against the encoder's own
+threshold/`recon_error_p95` saturates near-immediately (live-checked: threshold=0.000895,
+`recon_error_p95≈0.0003`, while a real 2-minute window of `recon_loss` read
+4–15x the threshold on every tick) — `_FIELD_ANOMALY_RECON_LOSS_FLOOR`/`_CEILING` in
+`brain_frame_producer.py` are disclosed, live-observed calibration constants instead
+(floor just above the encoder's real threshold, ceiling with headroom above the observed max),
+not an invented squashing formula.
+
+**Dropped candidates, all live-checked before being rejected:** `self_state` (dead producer),
+`node_kind`/`lane` region aggregates via both `max()` and `min()` (ceiling/floor-pinned against
+real data — `max()` masks a genuinely dead lane, `min()` just relocates the pin to that same
+dead lane), raw `bus_synaptic` `gap_zscore` (not independent — it's already one of
+`honesty_metrics`' 5 input domains). Full trace, including the live numbers behind each
+rejection: `docs/superpowers/specs/2026-07-28-spark-introspector-retirement-and-honest-
+substrate-convergence.md`.
 
 Frames live in `substrate_brain_frame_log` (24-hour retention, 5s cadence) and are exposed
-read-only via orion-hub's `/api/self-brain/frames/` endpoints. Frontend renders regions as
-circles (node graph view) + sparklines (EKG view) per dimension.
+read-only via orion-hub's `/api/self-brain/frames/` endpoints. The Self-Brain tab renders all
+five dimensions above (including the pinned/dead ones, disclosed as such); `services/orion-
+vector-host`'s substrate-state page (`/spark/ui`) renders only the three live-verified signals
+(`honesty_metrics`, `field_anomaly`, plus `frame.spotlight.coalition_stability` --
+`AttentionBroadcastProjectionV1.coalition_stability_score`, confirmed 0.3–0.9 real variance
+over a 7-minute window, already exposed on the frame's existing `spotlight` field with no new
+wiring needed).
 
 **Frame storage / sampling:** Full node/edge graph samples are included (best-effort
 decoration, no continuity guarantee across frames). Regions are the trackable spine.

@@ -1,21 +1,28 @@
 <!-- Relocated 2026-07-28 from services/orion-spark-introspector/app/static/
      as part of the spark-introspector retirement (docs/superpowers/specs/
      2026-07-28-spark-introspector-retirement-and-honest-substrate-
-     convergence.md). Backing WS payload now comes from orion-vector-host's
-     app/tissue_feed.py (real OrionTissue physics, fed from real per-turn
-     embedding deltas), not the old phi_encoder/SelfState pipeline.
+     convergence.md).
 
-     2026-07-28, second pass: the relocation kept honest disclaimer copy in
-     the (collapsed, easy to miss) explanation panel but left the headline
-     labels (INNER STATE/VALENCE/AROUSAL) and tissue_viz.js's invented mood
-     taxonomy (LUCID FLOW/COLD ANALYSIS/MANIC CREATIVITY/etc., and
-     Integrated-Resourced/Stress-Conflict style "implications") completely
-     unchanged from the pre-retirement page. That's the actual content the
-     retirement was supposed to remove -- threshold-derived psychology
-     labels over four tensor summary statistics, no theory anchor. Both are
-     gone now: labels renamed to what each number literally is, and the
-     invented-category logic deleted from tissue_viz.js rather than
-     softened with another disclaimer. -->
+     2026-07-28, second pass: renamed labels to what each number literally
+     is (embedding_similarity/novelty_zscore/polarity_diff/mean_abs_activation)
+     and deleted the invented mood-taxonomy logic from tissue_viz.js.
+
+     2026-07-28, third pass: those four OrionTissue tensor-summary stats are
+     themselves real but theory-orphaned (the page's own prior copy admitted
+     "no independent theory anchor connecting them to reasoning quality,
+     mood, or wellbeing"). Replaced as the page's driving/displayed metrics
+     with four signals pulled from SubstrateBrainFrameV1 (orion-substrate-
+     runtime, persisted to substrate_brain_frame_log, read via orion-hub's
+     GET /api/self-brain/frames/tail -- see that service's README "Brain
+     Frames" section): peak node-kind activation, lane health, peak
+     self-state dimension score, and prediction_error_confidence from active
+     inference (the one field here with an explicit theory anchor and zero
+     transform beyond clamp+threshold). Polled every 5s (BRAIN_FRAME_INTERVAL_SEC
+     default), not pushed -- this page's own WS (`tissue_feed.py`) still runs
+     and still reports real per-turn OrionTissue embedding-drift ticks (id/
+     timestamp only, see conn-status), it just no longer drives the four
+     headline numbers or the visualizer. See services/orion-vector-host/
+     README.md and orion-substrate-runtime/README.md for the full account. -->
 <!DOCTYPE html>
 <html lang="en">
 <head>
@@ -75,17 +82,16 @@
 <body>
     <div id="ui-layer">
         <div id="top-header">
-            <div id="mood-label">ORIONTISSUE TENSOR STATE</div>
+            <div id="mood-label">SUBSTRATE BRAIN STATE</div>
             <div id="mood-value">WAITING FOR SIGNAL...</div>
         </div>
 
         <div id="settings-container">
             <button id="gear-btn">⚙️</button>
             <div id="settings-menu">
-                <div style="font-size:10px; color:#666; margin-bottom:5px;">SYSTEM CONTROLS</div>
-                <div class="menu-item"><button id="btn-test-signal" class="menu-btn">⚡ TRIGGER TEST PULSE</button></div>
-                <div style="font-size:10px; color:#666; margin-top:10px; border-top:1px solid #333; padding-top:5px;">
-                    CONNECTION: <span id="conn-status" style="color:#f00">OFFLINE</span>
+                <div style="font-size:10px; color:#666; margin-bottom:5px;">SYSTEM STATUS</div>
+                <div style="font-size:10px; color:#666; margin-top:5px; padding-top:5px;">
+                    BRAIN FRAME POLL: <span id="conn-status" style="color:#f00">OFFLINE</span>
                 </div>
             </div>
         </div>
@@ -94,43 +100,32 @@
 
         <div id="bottom-area">
             <div id="stats-row">
-                <div class="stat-box"><span class="stat-label" title="1 - cosine_distance(embedding, this channel's running expectation), or a variance-based fallback">EMBEDDING SIMILARITY</span><span id="val-similarity" class="stat-val" style="color: #0f0;">0.00</span></div>
-                <div class="stat-box"><span class="stat-label" title="Rolling z-score of cosine distance between the latest stimulus and expectation, sigmoid-squashed to [0,1]">NOVELTY Z-SCORE</span><span id="val-novelty" class="stat-val" style="color: #ff0;">0.00</span></div>
-                <div class="stat-box"><span class="stat-label" title="mean(tensor channel 0) - mean(tensor channel 1) -- a sign convention chosen at stimulus-construction time">POLARITY DIFF</span><span id="val-polarity" class="stat-val" style="color: #0ff;">0.00</span></div>
-                <div class="stat-box"><span class="stat-label" title="mean(abs(tensor)) across the full 16x16x8 grid">MEAN |ACTIVATION|</span><span id="val-activation" class="stat-val" style="color: #f0f;">0.00</span></div>
+                <div class="stat-box"><span class="stat-label" title="1 - mean(prediction_error) across execution/biometrics/chat/route/bus_synaptic Active-Inference domains, unconditional, no transform beyond clamp">PREDICTION CONFIDENCE</span><span id="val-confidence" class="stat-val" style="color: #0f0;">0.00</span></div>
+                <div class="stat-box"><span class="stat-label" title="AttentionBroadcastProjectionV1.coalition_stability_score -- how stable the current GWT-dispatch coalition selection is">COALITION STABILITY</span><span id="val-coalition" class="stat-val" style="color: #0ff;">0.00</span></div>
+                <div class="stat-box"><span class="stat-label" title="mood-arc encoder (orion/mood_arc/) reconstruction error over live field-channel pressures, calibrated against its own live-observed range">FIELD ANOMALY</span><span id="val-anomaly" class="stat-val" style="color: #f0f;">0.00</span></div>
             </div>
-            <div id="ekg-tagline">— Live readout of OrionTissue's decay/diffusion tensor —</div>
-            <div id="meta-row">ID: <span id="val-id">-</span> | TS: <span id="val-ts">-</span></div>
-            <div id="turn-effect-box" class="hidden" title="">
-                <div class="stat-label">LAST TURN EFFECT</div>
-                <span id="turn-effect-user" class="turn-effect-line"></span>
-                <span id="turn-effect-assistant" class="turn-effect-line"></span>
-                <span id="turn-effect-turn" class="turn-effect-line"></span>
-            </div>
+            <div id="ekg-tagline">— Live readout of three independent substrate signals —</div>
+            <div id="meta-row">FRAME: <span id="val-id">-</span> | TS: <span id="val-ts">-</span></div>
 
             <div id="info-toggle-row">▼ SYSTEM INTERNALS EXPLANATION ▼</div>
 
             <div id="explanation-panel">
                 <h3>LIVE VALUES</h3>
                 <table class="diag-table">
-                    <thead><tr><th>METRIC</th><th>VALUE</th><th>FORMULA</th></tr></thead>
+                    <thead><tr><th>METRIC</th><th>VALUE</th><th>SOURCE</th></tr></thead>
                     <tbody>
-                        <tr><td>Embedding similarity</td><td id="diag-sim-val" class="diag-val">-</td><td>1 - cosine_distance(embedding, expectation)</td></tr>
-                        <tr><td>Novelty z-score</td><td id="diag-nov-val" class="diag-val">-</td><td>sigmoid(zscore(cosine_distance))</td></tr>
-                        <tr><td>Polarity diff</td><td id="diag-pol-val" class="diag-val">-</td><td>mean(T[...,0]) - mean(T[...,1])</td></tr>
-                        <tr><td>Mean |activation|</td><td id="diag-act-val" class="diag-val">-</td><td>mean(abs(T)) across the full grid</td></tr>
+                        <tr><td>Prediction confidence</td><td id="diag-confidence-val" class="diag-val">-</td><td>1 - mean(prediction_error), 5 Active-Inference domains (orion/substrate/attention_self_model.py)</td></tr>
+                        <tr><td>Coalition stability</td><td id="diag-coalition-val" class="diag-val">-</td><td>AttentionBroadcastProjectionV1.coalition_stability_score (GWT-dispatch lane)</td></tr>
+                        <tr><td>Field anomaly</td><td id="diag-anomaly-val" class="diag-val">-</td><td>mood-arc encoder recon_loss, normalized against live-observed range (orion-field-digester)</td></tr>
                     </tbody>
                 </table>
 
                 <h3>WHAT THIS ACTUALLY IS</h3>
                 <div class="edu-text">
-                    <p>This panel visualizes <span class="edu-highlight">OrionTissue</span>, a real 16x16x8 decay+diffusion tensor (<code>orion/spark/orion_tissue.py</code>) fed by how far each turn's real text embedding drifts from a recent running average of prior embeddings. It is a live physics simulation of embedding-space drift over time, not a readout of reasoning, feelings, or "thoughts."</p>
+                    <p>This panel polls <code>GET /api/self-brain/frames/tail</code> (orion-hub, backed by <code>SubstrateBrainFrameV1</code> in <code>orion-substrate-runtime</code>, persisted every 5s) and displays three independently-sourced, independently-verified real signals -- not a fused "consciousness meter." Each has a different producer, a different model, and a different input: Active-Inference prediction error across five live domains; the GWT-dispatch attention lane's own coalition-selection stability; and a trained sequence-autoencoder's reconstruction error over live field-channel pressures.</p>
                 </div>
                 <div class="edu-text">
-                    <p>The four numbers above are computed directly from that tensor's own state (<code>OrionTissue.phi()</code>) -- real and traceable, not injected from a self-report or a hand-tuned formula. They are named for what they literally are (a channel difference, a mean absolute activation, a cosine similarity, a z-score) rather than for what they might resemble. None of the four have an independent theory anchor connecting them to reasoning quality, mood, or wellbeing -- treat them as tensor summary statistics, not a cognitive or emotional assessment.</p>
-                </div>
-                <div class="edu-text">
-                    <p>2026-07-28: this page replaced an earlier version of itself that drove these same four numbers from a SelfState-anchored formula confirmed to fall back to a fake "calm" default on the majority of ticks, while this exact page's copy described it as visualizing "how the AI is thinking" and letting you "diagnose the system's mental health." A same-day follow-up found the relocated page had kept an invented mood-label taxonomy (LUCID FLOW / COLD ANALYSIS / MANIC CREATIVITY / etc., threshold-derived from the four scalars) and STATE/IMPLICATION table columns (Integrated-Resourced / Stress-Conflict) completely unchanged -- both deleted rather than re-labeled. Kept here as a disclosed correction, not scrubbed from history.</p>
+                    <p>2026-07-28: this page previously drove its four headline numbers from OrionTissue's own decay/diffusion tensor stats (embedding_similarity/novelty_zscore/polarity_diff/mean_abs_activation) -- real, but with "no independent theory anchor connecting them to reasoning quality, mood, or wellbeing" by the prior version's own disclosed copy. Replaced with the three signals above after live-verifying each candidate individually: <code>self_state</code> (a fourth candidate) turned out to have zero producer since a 2026-07-22 burn and was dropped; <code>node_kind</code>/<code>lane</code> region aggregates (both <code>max()</code> and <code>min()</code>) turned out to be either ceiling- or floor-pinned against real live data and were dropped; raw <code>bus_synaptic</code> gap_zscore was dropped as non-independent (it's already a direct input to prediction confidence, domain #5 of 5). Full trace: <code>docs/superpowers/specs/2026-07-28-spark-introspector-retirement-and-honest-substrate-convergence.md</code>.</p>
                 </div>
             </div>
         </div>

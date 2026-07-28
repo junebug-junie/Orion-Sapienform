@@ -212,6 +212,53 @@ def _honesty_regions(attention_payload: Any | None, now: datetime) -> list[Brain
     ]
 
 
+# Calibration for _field_anomaly_regions()'s intensity normalization.
+# recon_loss (mood-arc encoder reconstruction error) has no natural [0,1]
+# range, and a ratio against the encoder's own threshold/recon_error_p95
+# saturates at the ceiling almost immediately -- live-checked 2026-07-28,
+# threshold=0.000895 (threshold_multiplier=3.0, so recon_error_p95≈0.0003),
+# while a live 2-minute window of recon_loss read [0.0037, 0.0139], i.e.
+# 4-15x the threshold on every tick. FLOOR sits just above that live
+# threshold (below-threshold reads near-calm); CEILING is set with headroom
+# above the observed live max, not tightly against it. Both are disclosed,
+# live-observed calibration constants, not an invented squashing formula --
+# revisit if live data shows this saturating in practice.
+_FIELD_ANOMALY_RECON_LOSS_FLOOR = 0.001
+_FIELD_ANOMALY_RECON_LOSS_CEILING = 0.02
+
+
+def _field_anomaly_regions(field_anomaly: Any | None, now: datetime) -> list[BrainRegionV1]:
+    """Create a brain region from the mood-arc encoder's reconstruction-error
+    anomaly score (orion-field-digester, independent of both honesty_metrics
+    and spotlight.coalition_stability -- different model, different inputs).
+    """
+    if field_anomaly is None:
+        return []
+
+    recon_loss = getattr(field_anomaly, "recon_loss", None)
+    if recon_loss is None:
+        return []
+
+    span = _FIELD_ANOMALY_RECON_LOSS_CEILING - _FIELD_ANOMALY_RECON_LOSS_FLOOR
+    intensity = _clamp01((float(recon_loss) - _FIELD_ANOMALY_RECON_LOSS_FLOOR) / span)
+    anomalous = bool(getattr(field_anomaly, "anomalous", False))
+    state_val = "firing" if anomalous else ("steady" if intensity > 0.1 else "starving")
+
+    return [
+        BrainRegionV1(
+            dimension="field_anomaly",
+            region_id="field_anomaly:reconstruction",
+            label="Field Anomaly",
+            intensity=intensity,
+            state=state_val,
+            node_count=1,
+            as_of=now,
+            stale=False,
+            detail={"recon_loss": float(recon_loss)},
+        )
+    ]
+
+
 def _spotlight(attention, now, cadence_sec) -> BrainSpotlightV1 | None:
     if attention is None:
         return None
@@ -263,7 +310,8 @@ def assemble_brain_frame(
     lane_health: Mapping[str, Any],
     self_state: Mapping[str, Any] | None,
     attention: Any | None,
-    attention_payload: Any | None,
+    attention_payload: Any | None = None,
+    field_anomaly: Any | None = None,
     settings: Any,
     now: datetime,
     tick_seq: int,
@@ -277,6 +325,7 @@ def assemble_brain_frame(
         + _lane_regions(lane_health or {}, now, firing, starving)
         + _self_state_regions(self_state, now, float(settings.brain_frame_self_state_cadence_sec))
         + _honesty_regions(attention_payload, now)
+        + _field_anomaly_regions(field_anomaly, now)
     )
     node_samples, edge_samples = _samples(
         nodes, list(edges), settings.brain_frame_sample_nodes, settings.brain_frame_sample_edges

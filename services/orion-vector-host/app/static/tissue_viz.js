@@ -2,15 +2,33 @@ import * as THREE from 'three';
 import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
 
 // --- STATE ---
-// Field names match the wire schema directly (embedding_similarity/
-// novelty_zscore/polarity_diff/mean_abs_activation) -- see
-// orion/spark/orion_tissue.py's phi() docstring for what each literally is.
+// 2026-07-28: replaced OrionTissue's own WS-pushed embedding-drift stats
+// (embedding_similarity/novelty_zscore/polarity_diff/mean_abs_activation --
+// real, but "no independent theory anchor connecting them to reasoning
+// quality, mood, or wellbeing" per this page's own prior disclosed copy)
+// with three independently-sourced, independently-verified real signals,
+// polled from orion-hub's GET /api/self-brain/frames/tail (backed by
+// SubstrateBrainFrameV1, orion-substrate-runtime, persisted every 5s):
+//   - confidence: 1 - mean(prediction_error) across 5 Active-Inference
+//     domains (honesty_metrics region, unconditional)
+//   - coalition: AttentionBroadcastProjectionV1.coalition_stability_score
+//     (frame.spotlight, GWT-dispatch lane)
+//   - anomaly: mood-arc encoder reconstruction error over live field-channel
+//     pressures, calibrated against its own live-observed range
+//     (field_anomaly region)
+// Each was live-verified individually before being wired in here -- see
+// docs/superpowers/specs/2026-07-28-spark-introspector-retirement-and-honest-
+// substrate-convergence.md for the candidates that were checked and dropped
+// (self_state: dead, zero producer; node_kind/lane max() and min(): both
+// ceiling/floor-pinned against real data; raw bus_synaptic gap_zscore:
+// not independent of confidence, already one of its 5 domains).
 const state = {
-    similarity: 0.5, novelty: 0.0, polarity: 0.5, activation: 0.0,
-    targetSimilarity: 0.5, targetNovelty: 0.0, targetPolarity: 0.5, targetActivation: 0.0,
-    lastUpdate: 0, metadata: {}, correlationId: null, timestamp: null
+    confidence: 0.5, coalition: 0.5, anomaly: 0.0,
+    targetConfidence: 0.5, targetCoalition: 0.5, targetAnomaly: 0.0,
+    lastUpdate: 0, frameId: null, timestamp: null
 };
-const INTERPOLATION_SPEED = 0.05; 
+const INTERPOLATION_SPEED = 0.05;
+const POLL_INTERVAL_MS = 5000; // matches BRAIN_FRAME_INTERVAL_SEC default
 
 // --- DOM ---
 const elMoodValue = document.getElementById('mood-value');
@@ -19,10 +37,6 @@ const elGearBtn = document.getElementById('gear-btn');
 const elSettingsMenu = document.getElementById('settings-menu');
 const elInfoToggle = document.getElementById('info-toggle-row');
 const elExplanation = document.getElementById('explanation-panel');
-const elTurnEffectBox = document.getElementById('turn-effect-box');
-const elTurnEffectUser = document.getElementById('turn-effect-user');
-const elTurnEffectAssistant = document.getElementById('turn-effect-assistant');
-const elTurnEffectTurn = document.getElementById('turn-effect-turn');
 
 // --- UI LOGIC ---
 elGearBtn.addEventListener('click', (e) => { e.stopPropagation(); elSettingsMenu.classList.toggle('visible'); });
@@ -32,109 +46,70 @@ elInfoToggle.addEventListener('click', () => {
     elInfoToggle.innerText = elExplanation.classList.contains('visible') ? "▲ HIDE INTERNALS ▲" : "▼ SYSTEM INTERNALS EXPLANATION ▼";
 });
 
-// --- WEBSOCKET ---
-class WSClient {
-    constructor() { this.ws = null; this.reconnectDelay = 1000; }
+// --- BRAIN FRAME POLL ---
+class BrainFramePoller {
+    constructor() { this.timer = null; this.consecutiveFailures = 0; }
     setConnected(isConnected) {
-        elConnStatus.innerText = isConnected ? "ONLINE" : "OFFLINE";
+        elConnStatus.innerText = isConnected ? "LIVE" : "STALE";
         elConnStatus.style.color = isConnected ? "#0f0" : "#f00";
     }
-    connect() {
-        const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
-        const host = window.location.host;
-        let path = window.location.pathname;
-        if (path.endsWith('/')) path = path.slice(0, -1);
-        if (path.endsWith('/ui')) path = path.slice(0, -3);
-        if (!path.startsWith('/')) path = '/' + path;
-        const wsUrl = `${protocol}//${host}${path}/ws/tissue`;
-        
-        this.ws = new WebSocket(wsUrl);
-        this.ws.onopen = () => { this.setConnected(true); this.reconnectDelay = 1000; };
-        this.ws.onmessage = (event) => {
-            try {
-                const data = JSON.parse(event.data);
-                if (data.type === "tissue.update") { this.handleUpdate(data); }
-            } catch (e) { console.error("Parse error:", e); }
-        };
-        this.ws.onclose = () => { this.setConnected(false); setTimeout(() => this.connect(), this.reconnectDelay); };
+    start() {
+        this.poll();
+        this.timer = setInterval(() => this.poll(), POLL_INTERVAL_MS);
     }
-    handleUpdate(data) {
-        if (!data.stats) return;
-        state.targetSimilarity = data.stats.embedding_similarity;
-        state.targetNovelty = data.stats.novelty_zscore;
-        state.targetPolarity = data.stats.polarity_diff;
-        state.targetActivation = data.stats.mean_abs_activation;
-        state.correlationId = data.correlation_id;
-        state.timestamp = data.timestamp;
-        state.metadata = data.metadata || {};
+    async poll() {
+        try {
+            const res = await fetch('/api/self-brain/frames/tail?limit=1');
+            if (!res.ok) throw new Error(`HTTP ${res.status}`);
+            const data = await res.json();
+            const frames = data.frames || [];
+            if (!frames.length) {
+                this.consecutiveFailures += 1;
+                this.setConnected(false);
+                return;
+            }
+            this.consecutiveFailures = 0;
+            this.setConnected(true);
+            this.handleFrame(frames[frames.length - 1]);
+        } catch (e) {
+            this.consecutiveFailures += 1;
+            this.setConnected(false);
+            console.error("Brain frame poll error:", e);
+        }
+    }
+    handleFrame(frame) {
+        const regions = frame.regions || [];
+        const honesty = regions.find((r) => r.dimension === 'honesty_metrics');
+        const anomaly = regions.find((r) => r.dimension === 'field_anomaly');
+        const coalitionScore = frame.spotlight ? frame.spotlight.coalition_stability : null;
+
+        if (honesty) state.targetConfidence = honesty.intensity;
+        if (anomaly) state.targetAnomaly = anomaly.intensity;
+        if (coalitionScore !== null && coalitionScore !== undefined) state.targetCoalition = coalitionScore;
+
+        state.frameId = frame.frame_id;
+        state.timestamp = frame.generated_at;
         this.updateDOM();
     }
     updateDOM() {
-        document.getElementById('val-id').innerText = (state.correlationId || "NULL").substring(0, 8) + '...';
+        document.getElementById('val-id').innerText = (state.frameId || "NULL").substring(0, 12) + '...';
         document.getElementById('val-ts').innerText = state.timestamp || "-";
-        document.getElementById('val-similarity').innerText = state.targetSimilarity.toFixed(2);
-        document.getElementById('val-novelty').innerText = state.targetNovelty.toFixed(2);
-        document.getElementById('val-polarity').innerText = state.targetPolarity.toFixed(2);
-        document.getElementById('val-activation').innerText = state.targetActivation.toFixed(2);
+        document.getElementById('val-confidence').innerText = state.targetConfidence.toFixed(2);
+        document.getElementById('val-coalition').innerText = state.targetCoalition.toFixed(2);
+        document.getElementById('val-anomaly').innerText = state.targetAnomaly.toFixed(2);
         this.updateMoodText();
         this.updateDiagnosticsTable();
-        this.updateTurnEffect();
     }
-    // 2026-07-28: this used to map the four scalars onto an invented mood
-    // taxonomy (LUCID FLOW / COLD ANALYSIS / MANIC CREATIVITY / etc.,
-    // threshold-derived, no theory anchor -- see index.html's disclosed
-    // correction). Deleted rather than relabeled: there is no honest
-    // one-word summary of four unrelated tensor statistics to substitute.
-    // The raw values in the stats row and diagnostics table are the actual
-    // signal; this just shows them literally instead of interpreting them.
     updateMoodText() {
-        const s = state.targetSimilarity, n = state.targetNovelty, p = state.targetPolarity, a = state.targetActivation;
-        elMoodValue.innerText = `sim ${s.toFixed(2)} · nov ${n.toFixed(2)} · pol ${p.toFixed(2)} · act ${a.toFixed(2)}`;
+        const c = state.targetConfidence, s = state.targetCoalition, a = state.targetAnomaly;
+        elMoodValue.innerText = `conf ${c.toFixed(2)} · coal ${s.toFixed(2)} · anom ${a.toFixed(2)}`;
         elMoodValue.style.color = "#0ff";
         elMoodValue.style.textShadow = "0 0 10px #0ff";
     }
     updateDiagnosticsTable() {
-        document.getElementById('diag-sim-val').innerText = state.targetSimilarity.toFixed(2);
-        document.getElementById('diag-nov-val').innerText = state.targetNovelty.toFixed(2);
-        document.getElementById('diag-pol-val').innerText = state.targetPolarity.toFixed(2);
-        document.getElementById('diag-act-val').innerText = state.targetActivation.toFixed(2);
-    }
-    updateTurnEffect() {
-        if (!elTurnEffectBox) return;
-        const meta = state.metadata || {};
-        const snapshotMeta = meta.spark_state_snapshot && meta.spark_state_snapshot.metadata
-            ? meta.spark_state_snapshot.metadata
-            : {};
-        const turnEffect = meta.turn_effect || snapshotMeta.turn_effect || null;
-        const summary = meta.turn_effect_summary || snapshotMeta.turn_effect_summary || null;
-        const evidence = meta.turn_effect_evidence || snapshotMeta.turn_effect_evidence || null;
-        if (!turnEffect) {
-            elTurnEffectBox.classList.add('hidden');
-            elTurnEffectUser.innerText = "";
-            elTurnEffectAssistant.innerText = "";
-            elTurnEffectTurn.innerText = "";
-            elTurnEffectBox.title = "";
-            return;
-        }
-        const fmt = (val) => (typeof val === 'number' ? val.toFixed(2) : null);
-        const fmtLine = (label, payload) => {
-            if (!payload) return "";
-            const v = fmt(payload.valence);
-            const e = fmt(payload.energy);
-            const c = fmt(payload.coherence);
-            const n = fmt(payload.novelty);
-            const parts = [];
-            if (v !== null) parts.push(`v=${v}`);
-            if (e !== null) parts.push(`e=${e}`);
-            if (c !== null) parts.push(`c=${c}`);
-            if (n !== null) parts.push(`n=${n}`);
-            return parts.length ? `${label}: ${parts.join(' ')}` : "";
-        };
-        elTurnEffectUser.innerText = fmtLine("user", turnEffect.user);
-        elTurnEffectAssistant.innerText = fmtLine("assistant", turnEffect.assistant);
-        elTurnEffectTurn.innerText = fmtLine("turn", turnEffect.turn);
-        elTurnEffectBox.title = JSON.stringify({ turn_effect: turnEffect, summary, evidence }, null, 2);
-        elTurnEffectBox.classList.remove('hidden');
+        document.getElementById('diag-confidence-val').innerText = state.targetConfidence.toFixed(2);
+        document.getElementById('diag-coalition-val').innerText = state.targetCoalition.toFixed(2);
+        document.getElementById('diag-anomaly-val').innerText = state.targetAnomaly.toFixed(2);
     }
 }
 
@@ -149,33 +124,40 @@ class SynthwaveVisualizer {
         this.plane = new THREE.Mesh(geo, mat);
         this.plane.rotation.x = -Math.PI / 2;
         this.scene.add(this.plane);
-        
+
         const sunGeo = new THREE.SphereGeometry(30, 32, 32);
         this.sunMat = new THREE.MeshBasicMaterial({ color: 0xffaa00, wireframe: true, transparent: true, opacity: 0.8, side: THREE.DoubleSide });
         this.sun = new THREE.Mesh(sunGeo, this.sunMat);
         this.sun.position.set(0, 10, -85);
         this.scene.add(this.sun);
-        
+
         const inGeo = new THREE.SphereGeometry(14, 32, 32);
         const inMat = new THREE.MeshBasicMaterial({ color: 0xff4400, transparent: true, opacity: 0.9 });
         this.innerSun = new THREE.Mesh(inGeo, inMat);
         this.sun.add(this.innerSun);
         this.vertexStore = geo.attributes.position.array.slice();
     }
+    // Mapping (2026-07-28): only 3 independent real signals exist for 4 visual
+    // channels. confidence drives both chaos and hue via different curves --
+    // this is the same real number applied twice, not a 4th invented signal.
+    //   chaos = 1 - confidence        (uncertain -> more turbulent grid)
+    //   amp   = 1 + (1-coalition)*6   (unstable attention coalition -> bigger wave amplitude)
+    //   speed = 1 + anomaly*6         (elevated field anomaly -> faster tempo)
+    //   hue   = 0.9 + confidence*0.6  (confidence -> color band)
     update(dt) {
-        const speed = 1.0 + (state.activation * 6.0);
+        const speed = 1.0 + (state.anomaly * 6.0);
         this.runTime += dt * speed;
         const pos = this.plane.geometry.attributes.position.array;
-        const chaos = Math.max(0.1, 1.0 - state.similarity);
-        const amp = 1.0 + (state.novelty * 6.0);
-        const hue = 0.9 + (state.polarity * 0.6);
-        
+        const chaos = Math.max(0.1, 1.0 - state.confidence);
+        const amp = 1.0 + ((1.0 - state.coalition) * 6.0);
+        const hue = 0.9 + (state.confidence * 0.6);
+
         for (let i = 0; i < pos.length; i += 3) {
             const ox = this.vertexStore[i], oy = this.vertexStore[i+1];
             const sy = oy - this.runTime;
             const wx = Math.sin(sy * 0.1 + this.runTime * 0.5) * 3.0 + Math.cos(sy * 0.05) * 5.0;
             pos[i] = ox + (wx * chaos);
-            
+
             let z = Math.sin(ox*0.1)*Math.cos(sy*0.1)*4.0 + Math.sin(ox*0.3+sy*0.3)*2.0 + Math.sin(ox*0.8+this.runTime)*Math.cos(sy*0.9)*(chaos*2.0);
             const dist = Math.abs(ox);
             let rf = 0.0;
@@ -187,11 +169,11 @@ class SynthwaveVisualizer {
         this.sunMat.color.setHSL((hue+0.1)%1, 1, 0.6);
         this.innerSun.material.color.setHSL(hue%1, 1, 0.5);
         this.sun.rotation.y += dt*0.1; this.sun.rotation.z -= dt*0.05;
-        this.sun.scale.setScalar(1 + Math.sin(this.runTime*2)*0.05*state.activation);
+        this.sun.scale.setScalar(1 + Math.sin(this.runTime*2)*0.05*state.anomaly);
     }
 }
 
-const ws = new WSClient(); ws.connect();
+const poller = new BrainFramePoller(); poller.start();
 const ren = new THREE.WebGLRenderer({antialias:true}); ren.setSize(window.innerWidth, window.innerHeight);
 document.body.appendChild(ren.domElement);
 const scn = new THREE.Scene();
@@ -201,19 +183,11 @@ const clk = new THREE.Clock();
 function anim() {
     requestAnimationFrame(anim);
     const dt = clk.getDelta();
-    state.similarity += (state.targetSimilarity-state.similarity)*INTERPOLATION_SPEED;
-    state.novelty += (state.targetNovelty-state.novelty)*INTERPOLATION_SPEED;
-    state.polarity += (state.targetPolarity-state.polarity)*INTERPOLATION_SPEED;
-    state.activation += (state.targetActivation-state.activation)*INTERPOLATION_SPEED;
+    state.confidence += (state.targetConfidence-state.confidence)*INTERPOLATION_SPEED;
+    state.coalition += (state.targetCoalition-state.coalition)*INTERPOLATION_SPEED;
+    state.anomaly += (state.targetAnomaly-state.anomaly)*INTERPOLATION_SPEED;
     viz.update(dt);
     ren.render(scn, cam);
 }
 window.addEventListener('resize', ()=>{ cam.aspect=window.innerWidth/window.innerHeight; cam.updateProjectionMatrix(); ren.setSize(window.innerWidth, window.innerHeight); });
 anim();
-
-// Test Pulse
-const btn = document.getElementById('btn-test-signal');
-if(btn) btn.addEventListener('click', async () => {
-    let p = window.location.pathname; if(p.endsWith('/')) p=p.slice(0,-1); if(p.endsWith('/ui')) p=p.slice(0,-3); if(!p.startsWith('/')) p='/'+p;
-    await fetch(p+'/api/test-pulse', {method:"POST"});
-});

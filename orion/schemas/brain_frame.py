@@ -13,7 +13,9 @@ class BrainRegionV1(BaseModel):
 
     model_config = ConfigDict(extra="forbid")
 
-    dimension: Literal["node_kind", "lane", "self_state", "lattice_layer", "honesty_metrics"]
+    dimension: Literal[
+        "node_kind", "lane", "self_state", "lattice_layer", "honesty_metrics", "field_anomaly"
+    ]
     region_id: str
     label: str
     intensity: float = Field(ge=0.0, le=1.0)

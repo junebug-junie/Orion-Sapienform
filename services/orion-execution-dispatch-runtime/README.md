@@ -43,6 +43,17 @@ promotes the candidate to a real, evidenced `dispatched` status.
   first day this pipeline dispatched successfully spent a real cumulative risk of 4.4 across 88
   dispatches) rather than a fresh guess, but is still a disclosed starting judgment call --
   expect it to need re-derivation as more real history accumulates across a wider risk_score mix.
+  **2026-07-28: `ORION_DISPATCH_RISK_CAP_ADVISORY_ONLY=true` (the default) means this cap does
+  not actually block sends** -- the "real anchoring" only ever produced a multiplier (2x one
+  day's total), not a derived ceiling, and every real candidate observed so far has had an
+  identical `risk_score=0.05` (no real variance yet to derive one from). Reaching the cap logs
+  `execution_dispatch_risk_budget_status ... cap_reached=true` and dispatch proceeds anyway
+  (still bounded by `max_dispatches_per_tick`); set `ORION_DISPATCH_RISK_CAP_ADVISORY_ONLY=false`
+  once enough real `risk_score` variance exists to justify actually enforcing a number.
+  **Also fixed 2026-07-28**: `docker-compose.yml` had never been updated for the 2026-07-26
+  rename -- it was still passing through the dead `ORION_DISPATCH_MAX_PER_DAY` and never passed
+  `ORION_DISPATCH_MAX_RISK_PER_DAY` at all, so the live container was silently running on the
+  Settings class default rather than anything the compose file actually wired.
 
 **Theater tripwire**: if more than half of the trailing 10 real results have `status="empty"`
 (a real send that produced no usable observation), the worker stops sending for the rest of

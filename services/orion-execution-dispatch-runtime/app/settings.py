@@ -63,6 +63,19 @@ class Settings(BaseSettings):
     # minting" discipline -- treat this as a disclosed starting judgment
     # call, not a settled constant.
     orion_dispatch_max_risk_per_day: float = Field(10.0, alias="ORION_DISPATCH_MAX_RISK_PER_DAY")
+    # 2026-07-28: the *shape* of this budget (spend real risk_score, not a blind
+    # count) is real; the *number* is not -- "~2x one day's observed total" is
+    # still a hand-picked multiplier, no different in kind from the old 24/88
+    # this replaced, just wearing better math. Confirmed live the same day:
+    # every dispatched candidate so far has had an identical risk_score=0.05,
+    # so there is still no real distribution to derive a principled ceiling
+    # from. Advisory-only by default: the cap is computed and logged every
+    # tick (execution_dispatch_risk_budget_status) but does not block sends --
+    # flip to false only once enough risk_score variance has accumulated to
+    # derive max_risk_per_day from real data instead of a guessed multiplier.
+    orion_dispatch_risk_cap_advisory_only: bool = Field(
+        True, alias="ORION_DISPATCH_RISK_CAP_ADVISORY_ONLY"
+    )
     action_outcome_channel: str = Field(
         "orion:autonomy:action:outcome", alias="BUS_ACTION_OUTCOME_OUT"
     )

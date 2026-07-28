@@ -434,7 +434,26 @@ class ExecutionDispatchRuntimeWorker:
         curiosity-fetch ones. Never lets a publish failure raise out of
         the tick -- an unreachable bus must not lose a result that's
         already durably recorded via save_dispatch_result above.
+
+        `surprise` was a hardcoded `0.0` placeholder (2026-07-13, honest,
+        disclosed, never a real signal). Now reads the real, live
+        `bus_synaptic_prediction_error()` value off `substrate_field_state`
+        (`self._store.latest_bus_synaptic_prediction_error()`) -- generic
+        across the whole bus mesh, already fixed once for a calm-floor bias
+        (PR #1391). Falls back to `0.0` if the node isn't written yet or the
+        query fails, same as before this patch -- this is a real-signal
+        upgrade, not a new hard dependency; a fetch failure here must not
+        block emitting the outcome itself.
         """
+        try:
+            surprise = self._store.latest_bus_synaptic_prediction_error()
+        except Exception:
+            logger.warning(
+                "execution_dispatch_bus_synaptic_surprise_fetch_failed dispatch_id=%s",
+                candidate.dispatch_id,
+                exc_info=True,
+            )
+            surprise = None
         try:
             emit = ActionOutcomeEmitV1(
                 subject=ACTION_OUTCOME_SUBJECT,
@@ -442,7 +461,7 @@ class ExecutionDispatchRuntimeWorker:
                 kind=candidate.dispatch_kind,
                 summary=summary[:ACTION_OUTCOME_SUMMARY_MAX_CHARS],
                 success=success,
-                surprise=0.0,
+                surprise=surprise if surprise is not None else 0.0,
                 observed_at=observed_at,
             )
             env = BaseEnvelope(

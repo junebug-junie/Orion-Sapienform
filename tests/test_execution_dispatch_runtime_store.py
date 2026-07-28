@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import importlib.util
 import sys
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from unittest.mock import MagicMock
 
@@ -286,6 +286,79 @@ def test_sum_risk_dispatched_today_zero_when_no_row(monkeypatch) -> None:
     monkeypatch.setattr(store, "_engine", fake_engine)
 
     assert store.sum_risk_dispatched_today() == 0.0
+
+
+def test_latest_bus_synaptic_prediction_error_returns_real_value(monkeypatch) -> None:
+    store = ExecutionDispatchRuntimeStore("postgresql://test:test@localhost/test")
+    fake_engine = MagicMock()
+    conn = MagicMock()
+    fake_engine.connect.return_value.__enter__ = MagicMock(return_value=conn)
+    fake_engine.connect.return_value.__exit__ = MagicMock(return_value=False)
+    conn.execute.return_value.mappings.return_value.first.return_value = {
+        "value": "0.1675",
+        "generated_at": datetime.now(timezone.utc),
+    }
+    monkeypatch.setattr(store, "_engine", fake_engine)
+
+    assert store.latest_bus_synaptic_prediction_error() == 0.1675
+
+
+def test_latest_bus_synaptic_prediction_error_none_when_no_row(monkeypatch) -> None:
+    store = ExecutionDispatchRuntimeStore("postgresql://test:test@localhost/test")
+    fake_engine = MagicMock()
+    conn = MagicMock()
+    fake_engine.connect.return_value.__enter__ = MagicMock(return_value=conn)
+    fake_engine.connect.return_value.__exit__ = MagicMock(return_value=False)
+    conn.execute.return_value.mappings.return_value.first.return_value = None
+    monkeypatch.setattr(store, "_engine", fake_engine)
+
+    assert store.latest_bus_synaptic_prediction_error() is None
+
+
+def test_latest_bus_synaptic_prediction_error_none_when_node_absent(monkeypatch) -> None:
+    store = ExecutionDispatchRuntimeStore("postgresql://test:test@localhost/test")
+    fake_engine = MagicMock()
+    conn = MagicMock()
+    fake_engine.connect.return_value.__enter__ = MagicMock(return_value=conn)
+    fake_engine.connect.return_value.__exit__ = MagicMock(return_value=False)
+    conn.execute.return_value.mappings.return_value.first.return_value = {
+        "value": None,
+        "generated_at": datetime.now(timezone.utc),
+    }
+    monkeypatch.setattr(store, "_engine", fake_engine)
+
+    assert store.latest_bus_synaptic_prediction_error() is None
+
+
+def test_latest_bus_synaptic_prediction_error_none_when_stale(monkeypatch) -> None:
+    store = ExecutionDispatchRuntimeStore("postgresql://test:test@localhost/test")
+    fake_engine = MagicMock()
+    conn = MagicMock()
+    fake_engine.connect.return_value.__enter__ = MagicMock(return_value=conn)
+    fake_engine.connect.return_value.__exit__ = MagicMock(return_value=False)
+    stale_generated_at = datetime.now(timezone.utc) - timedelta(hours=2)
+    conn.execute.return_value.mappings.return_value.first.return_value = {
+        "value": "0.1675",
+        "generated_at": stale_generated_at,
+    }
+    monkeypatch.setattr(store, "_engine", fake_engine)
+
+    assert store.latest_bus_synaptic_prediction_error() is None
+
+
+def test_latest_bus_synaptic_prediction_error_none_when_unparseable(monkeypatch) -> None:
+    store = ExecutionDispatchRuntimeStore("postgresql://test:test@localhost/test")
+    fake_engine = MagicMock()
+    conn = MagicMock()
+    fake_engine.connect.return_value.__enter__ = MagicMock(return_value=conn)
+    fake_engine.connect.return_value.__exit__ = MagicMock(return_value=False)
+    conn.execute.return_value.mappings.return_value.first.return_value = {
+        "value": "not-a-float",
+        "generated_at": datetime.now(timezone.utc),
+    }
+    monkeypatch.setattr(store, "_engine", fake_engine)
+
+    assert store.latest_bus_synaptic_prediction_error() is None
 
 
 def test_recent_dispatch_result_statuses_returns_ordered_list(monkeypatch) -> None:

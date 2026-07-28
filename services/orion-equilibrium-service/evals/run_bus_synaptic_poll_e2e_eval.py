@@ -87,15 +87,24 @@ async def main():
     logger.info(f"Injecting bus_synaptic prediction_error=1.2 into FalkorDB...")
     graph = Graph(redis_client, settings.falkordb_substrate_graph)
     try:
-        # Update or create the node
+        # Update or create the node - use direct property update
         query = """
-        MERGE (n:SubstrateNode { node_id: "node:substrate.bus_synaptic" })
+        MATCH (n:SubstrateNode {node_id: "node:substrate.bus_synaptic"})
         SET n.prediction_error = 1.2
-        SET n.last_updated = datetime()
         RETURN n.node_id, n.prediction_error
         """
         result = graph.query(query)
-        logger.info(f"✓ Node updated: {result.result_set}")
+        if result.result_set:
+            logger.info(f"✓ Node updated: {result.result_set}")
+        else:
+            # If node doesn't exist, create it
+            logger.info("Node not found, creating new SubstrateNode...")
+            create_query = """
+            CREATE (n:SubstrateNode {node_id: "node:substrate.bus_synaptic", prediction_error: 1.2})
+            RETURN n.node_id, n.prediction_error
+            """
+            create_result = graph.query(create_query)
+            logger.info(f"✓ Node created: {create_result.result_set}")
     except Exception as e:
         logger.error(f"✗ Failed to update FalkorDB node: {e}")
         return False

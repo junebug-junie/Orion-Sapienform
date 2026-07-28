@@ -9,11 +9,15 @@ publish path -- ThoughtDecisionSQL under its own route key, keyed off kind
 `thought.event.v1` (both in DEFAULT_ROUTE_MAP and the operator-facing
 .env_example), and confirms the channel is actually subscribed to.
 
-The redaction test is the load-bearing one: ThoughtEventV1 carries
-imperative/tone/strain_refs/stance_harness_slice/grounding_capsule/
-autonomy_slice, none of which ThoughtDecisionSQL declares as columns.
-_write_row()'s generic column-name filter drops any key with no matching
-column -- so those fields must never survive into the persisted row.
+The redaction test that matters is `test_real_write_row_drops_sensitive_fields`:
+it calls the REAL `worker._write_row()` (monkeypatching only its DB session,
+not its filtering logic) against a live sqlite table, so it exercises the
+actual column-name -> attribute-key mapping and generic filter production
+code uses -- not a local reimplementation of it. The other `_row_dict()`-based
+tests below are a cheaper, non-DB shape check on top of that; they mirror
+`_write_row()`'s filter but do not call it directly, so they alone would not
+catch a regression in the real filtering/column-mapping mechanism -- only in
+which columns ThoughtDecisionSQL declares.
 """
 from __future__ import annotations
 
@@ -21,8 +25,9 @@ import sys
 from datetime import datetime, timezone
 from pathlib import Path
 
+import pytest
 from sqlalchemy import create_engine, inspect
-from sqlalchemy.orm import sessionmaker
+from sqlalchemy.orm import scoped_session, sessionmaker
 
 REPO_ROOT = Path(__file__).resolve().parents[3]
 SERVICE_ROOT = Path(__file__).resolve().parents[1]
@@ -31,6 +36,7 @@ sys.path[:0] = [str(REPO_ROOT), str(SERVICE_ROOT)]
 from orion.schemas.thought import StanceHarnessSliceV1, ThoughtEventV1  # noqa: E402
 
 from app.models.thought_decision import ThoughtDecisionSQL  # noqa: E402
+from app import worker  # noqa: E402
 from app.worker import MODEL_MAP  # noqa: E402
 from app.settings import DEFAULT_ROUTE_MAP, Settings  # noqa: E402
 
@@ -73,6 +79,54 @@ def _row_dict(thought: ThoughtEventV1) -> dict:
     valid_keys = {attr.key for attr in mapper.attrs}
     row = {k: v for k, v in data.items() if k in valid_keys}
     return row
+
+
+@pytest.fixture()
+def sqlite_worker_session(monkeypatch):
+    """Redirect worker.get_session()/remove_session() to a real sqlite-backed
+    session, WITHOUT touching _write_row's own filtering/coercion logic --
+    proves the actual production write path, not a reimplementation of it.
+    """
+    engine = create_engine("sqlite://")
+    ThoughtDecisionSQL.__table__.create(bind=engine)
+    session_factory = scoped_session(sessionmaker(bind=engine))
+    monkeypatch.setattr(worker, "get_session", session_factory)
+    monkeypatch.setattr(worker, "remove_session", session_factory.remove)
+    try:
+        yield engine, session_factory
+    finally:
+        session_factory.remove()
+
+
+def test_real_write_row_drops_sensitive_fields(sqlite_worker_session) -> None:
+    """The load-bearing redaction test: calls the real worker._write_row()."""
+    _engine, session_factory = sqlite_worker_session
+    thought = _thought()
+    data = thought.model_dump()
+
+    ok = worker._write_row(ThoughtDecisionSQL, data)
+    assert ok is True
+
+    sess = session_factory()
+    # ThoughtEventV1 has no top-level "id" field (only event_id) and
+    # _write_row has no special-cased id-from-event_id fill for this model
+    # (unlike e.g. ChatMessageSQL) -- id is left to its column-level
+    # uuid4 default, so the real row is only findable by event_id, not by
+    # primary-key lookup.
+    fetched = sess.query(ThoughtDecisionSQL).filter_by(event_id=thought.event_id).first()
+    assert fetched is not None
+    assert fetched.disposition == "proceed"
+    assert fetched.correlation_id == "corr-1"
+    for sensitive_key in (
+        "imperative",
+        "tone",
+        "strain_refs",
+        "evidence_refs",
+        "stance_harness_slice",
+        "grounding_capsule",
+        "autonomy_slice",
+    ):
+        assert not hasattr(fetched, sensitive_key), f"{sensitive_key} leaked onto the real persisted row"
 
 
 def test_default_route_map_points_thought_event_at_thought_decision_sql() -> None:
@@ -131,6 +185,9 @@ def test_row_dict_constructs_thought_decision_sql_without_raising() -> None:
 
 
 def test_write_and_read_roundtrip_sqlite() -> None:
+    """ORM-construction path (not _write_row) -- id is left to its column
+    default, same as production, and looked up by correlation_id rather than
+    primary key (ThoughtDecisionSQL.id is an opaque uuid4, not event_id)."""
     engine = create_engine("sqlite://")
     ThoughtDecisionSQL.__table__.create(bind=engine)
     Session = sessionmaker(bind=engine)
@@ -140,13 +197,13 @@ def test_write_and_read_roundtrip_sqlite() -> None:
         disposition_reasons=["needs more context"],
         boundary_register=True,
     )
-    row = ThoughtDecisionSQL(**_row_dict(thought), id=thought.event_id)
+    row = ThoughtDecisionSQL(**_row_dict(thought))
 
     sess = Session()
     try:
         sess.add(row)
         sess.commit()
-        fetched = sess.get(ThoughtDecisionSQL, thought.event_id)
+        fetched = sess.query(ThoughtDecisionSQL).filter_by(correlation_id="corr-1").first()
         assert fetched is not None
         assert fetched.disposition == "defer"
         assert fetched.disposition_reasons == ["needs more context"]

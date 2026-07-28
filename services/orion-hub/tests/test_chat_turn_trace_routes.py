@@ -99,6 +99,34 @@ def test_fused_trace_derives_harness_trace_id_from_correlation_id(monkeypatch) -
     assert out["harness_trace_id"] == cortex_exec_trace_id("athena", "corr-xyz", lane="harness_motor")
 
 
+def test_load_grammar_trace_respects_grammar_atlas_enabled_gate(monkeypatch) -> None:
+    """Regression: _load_grammar_trace reuses grammar_atlas_routes' query
+    plumbing directly, bypassing _require_atlas_available() (which would
+    raise HTTPException rather than degrade), so it must independently check
+    GRAMMAR_ATLAS_ENABLED -- otherwise a disabled grammar atlas keeps being
+    queried by this fused lookup even while every real /api/substrate/atlas/*
+    route correctly refuses.
+    """
+    import app.settings as hub_app_settings
+
+    class _FakeSettings:
+        GRAMMAR_ATLAS_ENABLED = False
+
+    monkeypatch.setattr(hub_app_settings, "get_settings", lambda: _FakeSettings())
+
+    called = {"grammar_query": False}
+
+    def _fail_if_called():
+        called["grammar_query"] = True
+        raise AssertionError("should not query grammar atlas when disabled")
+
+    monkeypatch.setattr(chat_turn_trace_routes.grammar_atlas_routes, "_grammar_query", _fail_if_called)
+
+    result = asyncio.run(chat_turn_trace_routes._load_grammar_trace("trace-id-1"))
+    assert result is None
+    assert called["grammar_query"] is False
+
+
 def test_api_chat_turn_trace_route_returns_fused_body(monkeypatch) -> None:
     _patch_sources(monkeypatch, cognition={"verb": "chat_general"})
     out = asyncio.run(chat_turn_trace_routes.api_chat_turn_trace("corr-route"))

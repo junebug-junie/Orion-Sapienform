@@ -166,6 +166,21 @@ async def _load_cognition_trace(correlation_id: str) -> dict[str, Any] | None:
 
 
 async def _load_grammar_trace(trace_id: str) -> dict[str, Any] | None:
+    """Reuses grammar_atlas_routes' query plumbing, but must independently
+    respect GRAMMAR_ATLAS_ENABLED -- unlike every real /api/substrate/atlas/*
+    route, this helper never calls _require_atlas_available() (that raises
+    HTTPException on disable/misconfig, which would fail the whole fused
+    lookup rather than degrading to a gap), so the enablement check has to be
+    duplicated here rather than inherited.
+    """
+    try:
+        from app.settings import get_settings
+
+        if not get_settings().GRAMMAR_ATLAS_ENABLED:
+            return None
+    except Exception:
+        logger.debug("chat_turn_trace grammar atlas settings unavailable", exc_info=True)
+        return None
     try:
         q = grammar_atlas_routes._grammar_query()
     except Exception:

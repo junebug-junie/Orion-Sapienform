@@ -9,7 +9,7 @@ measurement logic the standalone report script uses, instead of duplicating it.
 See docs/superpowers/specs/2026-07-16-causal-geometry-v1-design.md for the full
 three-phase design, and `scripts/causal_geometry_report.py`'s own (still
 present) module docstring for the detailed rationale behind the fixed
-constants, the four source tables, resampling, lagged cross-correlation, the
+constants, the source tables, resampling, lagged cross-correlation, the
 Bonferroni-corrected surrogate significance test, and the designed-vs-observed
 divergence matching rule (including the `#<capability_channel>` target_id
 disambiguation suffix -- see `orion/substrate/field_topology_plasticity.py`'s
@@ -65,14 +65,14 @@ def fetch_channels(
     *,
     biometrics_node: str = DEFAULT_BIOMETRICS_NODE,
 ) -> Tuple[ChannelSeries, Dict[str, int]]:
-    """Pull and flatten all four organ signal tables into named channels.
+    """Pull and flatten organ signal tables into named channels.
 
     Uses psycopg2 (already a dependency of several services; no new dependency
     added when called from a service that already has it, e.g. orion-hub,
     orion-field-digester). Each row's jsonb column is flattened into one
-    channel per key (`drive:<key>`, `biometrics:<key>`, `self_state:<key>`);
-    `attention_salience_trace.salience` has no sub-keys and becomes the single
-    scalar channel `attention:salience`.
+    channel per key (`biometrics:<key>`, `self_state:<key>`,
+    `bus_synaptic:<key>`); `attention_salience_trace.salience` has no
+    sub-keys and becomes the single scalar channel `attention:salience`.
 
     Returns `(channels, table_row_counts)`. `table_row_counts` maps each source
     table name to the raw row count pulled in the window -- a table with 0 rows
@@ -96,21 +96,6 @@ def fetch_channels(
     conn = psycopg2.connect(postgres_uri)
     try:
         with conn.cursor() as cur:
-            cur.execute(
-                """
-                SELECT COALESCE(observed_at, created_at) AS ts, drive_pressures
-                FROM drive_audits
-                WHERE COALESCE(observed_at, created_at) >= %s
-                ORDER BY ts
-                """,
-                (window_start,),
-            )
-            rows = cur.fetchall()
-            table_row_counts["drive_audits"] = len(rows)
-            for ts, drive_pressures in rows:
-                for key, value in (drive_pressures or {}).items():
-                    _append(f"drive:{key}", ts, value)
-
             cur.execute(
                 """
                 SELECT created_at AS ts, salience
@@ -154,6 +139,21 @@ def fetch_channels(
             for ts, scores in rows:
                 for key, value in (scores or {}).items():
                     _append(f"self_state:{key}", ts, value)
+
+            cur.execute(
+                """
+                SELECT generated_at AS ts, field_json->'node_vectors'->'node:substrate.bus_synaptic' AS channels
+                FROM substrate_field_state
+                WHERE generated_at >= %s
+                ORDER BY ts
+                """,
+                (window_start,),
+            )
+            rows = cur.fetchall()
+            table_row_counts["substrate_field_state"] = len(rows)
+            for ts, bus_synaptic_channels in rows:
+                for key, value in (bus_synaptic_channels or {}).items():
+                    _append(f"bus_synaptic:{key}", ts, value)
     finally:
         conn.close()
 

@@ -17,6 +17,13 @@ class Settings(BaseSettings):
     orion_bus_enabled: bool = Field(True, alias="ORION_BUS_ENABLED")
     orion_bus_enforce_catalog: bool = Field(False, alias="ORION_BUS_ENFORCE_CATALOG")
     orion_bus_url: str = Field("redis://100.92.216.81:6379/0", alias="ORION_BUS_URL")
+    # Real, ambient bus_synaptic surprise signal for the curiosity readonly-fetch gate
+    # (orion/autonomy/capability_policy.py's domain_surprise_score) and its own
+    # ActionOutcomeRefV1.surprise -- see docs/superpowers/specs/2026-07-24-efe-capability-
+    # gate-design.md. Blank/opt-in at the code level (this service had zero Postgres
+    # dependency before this field); `.env_example` ships it filled in and ON, matching
+    # orion-cortex-exec/orion-spark-concept-induction's convention for the same key.
+    action_outcome_db_url: str = Field("", alias="ORION_ACTION_OUTCOME_DB_URL")
     # Bus-native SystemHealthV1 heartbeat cadence (orion:system:health). See
     # docs/superpowers/specs/2026-07-24-service-heartbeat-node-telemetry-design.md.
     heartbeat_interval_sec: float = Field(10.0, alias="HEARTBEAT_INTERVAL_SEC")

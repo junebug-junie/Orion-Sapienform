@@ -40,6 +40,7 @@ from app.models import (
     SparkTelemetrySQL,
     BusFallbackLog,
     CognitionTraceSQL,
+    ThoughtDecisionSQL,
     MetacognitionTickSQL,
     MetacogTriggerSQL,
     MetacognitiveTraceSQL,
@@ -106,6 +107,7 @@ from orion.schemas.telemetry.biometrics import BiometricsPayload, BiometricsSumm
 from orion.schemas.causal_geometry import CausalGeometrySnapshotV1
 from orion.schemas.telemetry.dream import DreamRequest, DreamResultV1
 from orion.schemas.telemetry.cognition_trace import CognitionTracePayload
+from orion.schemas.thought import ThoughtEventV1
 from orion.schemas.chat_history import ChatHistoryMessageV1
 from orion.schemas.chat_response_feedback import ChatResponseFeedbackV1
 from orion.schemas.chat_gpt_log import (
@@ -405,6 +407,7 @@ MODEL_MAP: Dict[str, Tuple[Type[Any], Optional[Type[BaseModel]]]] = {
     "BiometricsInductionSQL": (BiometricsInductionSQL, BiometricsInductionV1),
     "CausalGeometrySnapshotSQL": (CausalGeometrySnapshotSQL, CausalGeometrySnapshotV1),
     "CognitionTraceSQL": (CognitionTraceSQL, CognitionTracePayload),
+    "ThoughtDecisionSQL": (ThoughtDecisionSQL, ThoughtEventV1),
     "SparkIntrospectionLogSQL": (SparkIntrospectionLogSQL, None),
     "SparkTelemetrySQL": (SparkTelemetrySQL, SparkTelemetryPayload),
     "MetacognitionTickSQL": (MetacognitionTickSQL, MetacognitionTickV1),

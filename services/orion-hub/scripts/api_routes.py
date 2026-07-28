@@ -19,6 +19,12 @@ from fastapi.responses import HTMLResponse, JSONResponse, Response
 from pydantic import BaseModel, ConfigDict, Field
 import requests
 
+from orion.hub.chat_route import (
+    CHAT_ROUTE_AGENT_CLAUDE,
+    CHAT_ROUTE_CLASSIC_PLANRUNNER,
+    CHAT_ROUTE_CONTEXT_EXEC_AGENT,
+    CHAT_ROUTE_UNIFIED_TURN_HARNESS,
+)
 from .settings import settings
 from .grafana_tempo_link import build_grafana_tempo_trace_explore_url
 from .otel_trace_id import is_valid_otel_trace_id, normalize_otel_trace_id
@@ -165,7 +171,9 @@ from .substrate_lattice_routes import router as substrate_lattice_router
 from .self_brain_routes import router as self_brain_router
 from .field_channel_glossary_routes import router as field_channel_glossary_router
 from .bus_synaptic_graph_routes import router as bus_synaptic_graph_router
+from .chat_turn_trace_routes import router as chat_turn_trace_router
 router.include_router(grammar_atlas_router)
+router.include_router(chat_turn_trace_router)
 router.include_router(substrate_biometrics_router)
 router.include_router(substrate_field_router)
 router.include_router(substrate_attention_router)
@@ -2502,11 +2510,13 @@ async def handle_chat_request(
             or catalog.get("default_label")
             or DEFAULT_FCC_MODEL_LABEL
         )
-        return await _run_agent_claude_http(
+        agent_claude_result = await _run_agent_claude_http(
             prompt=user_prompt,
             fcc_model_label=fcc_label,
             correlation_id=corr_id,
         )
+        agent_claude_result["chat_route"] = CHAT_ROUTE_AGENT_CLAUDE
+        return agent_claude_result
 
     if str(payload.get("mode") or "").strip().lower() == "orion" and settings.ORION_UNIFIED_TURN_ENABLED:
         if not settings.ORION_HARNESS_GOVERNOR_ENABLED:
@@ -2514,6 +2524,7 @@ async def handle_chat_request(
                 "type": "turn_error",
                 "phase": "config",
                 "error": "harness_governor_disabled",
+                "chat_route": CHAT_ROUTE_UNIFIED_TURN_HARNESS,
             }
         from .main import bus, harness_step_relay, rpc_bus
         from orion.hub.turn_orchestrator import execute_unified_turn
@@ -2540,7 +2551,7 @@ async def handle_chat_request(
             # would silently vanish for this call path even though the response
             # itself is delivered correctly.
             final_frame = {**final_frame, "finalize_degraded_reason": degraded_frame.get("reason")}
-        return final_frame
+        return {**final_frame, "chat_route": CHAT_ROUTE_UNIFIED_TURN_HARNESS}
 
     # ─── Hub presence (best-effort, never blocks chat) ──────────────────
     # One timestamp per turn; mirrors a liveness snapshot for self-state.
@@ -2705,6 +2716,7 @@ async def handle_chat_request(
                 "mode": "agent",
                 "correlation_id": corr_id,
                 "routing_debug": ctx_result.get("routing_debug") or route_debug,
+                "chat_route": CHAT_ROUTE_CONTEXT_EXEC_AGENT,
             }
         text = str(ctx_result.get("llm_response") or "")
         agent_trace = ctx_result.get("agent_trace")
@@ -2725,6 +2737,7 @@ async def handle_chat_request(
             "context_exec_lane": True,
             "context_exec_run": ctx_result.get("context_exec_run"),
             "operator_summary": ctx_result.get("operator_summary"),
+            "chat_route": CHAT_ROUTE_CONTEXT_EXEC_AGENT,
         }
         if substrate_summary is not None:
             result["substrate_effect_summary"] = substrate_summary
@@ -2888,13 +2901,14 @@ async def handle_chat_request(
             "reasoning_trace": turn_ctx.get("explicit_reasoning_trace"),
             **autonomy_payload,
         }
+        result["chat_route"] = CHAT_ROUTE_CLASSIC_PLANRUNNER
         if substrate_summary is not None:
             result["substrate_effect_summary"] = substrate_summary
         return result
 
     except Exception as e:
         logger.error(f"Chat RPC failed: {e}", exc_info=True)
-        return {"error": str(e)}
+        return {"error": str(e), "chat_route": CHAT_ROUTE_CLASSIC_PLANRUNNER}
 
 
 # ======================================================================

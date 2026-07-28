@@ -109,6 +109,35 @@ class ThoughtEventV1(BaseModel):
     model_id: str | None = None
 
 
+class ThoughtDecisionRecordV1(BaseModel):
+    """Durable, privacy-redacted record of a ThoughtEventV1 stance decision.
+
+    Persisted so "did Orion choose to proceed/defer/refuse, and why" survives
+    past the turn -- today ThoughtEventV1 itself is never consumed by
+    sql-writer or rdf-writer, only flattened into a coarse grammar-event
+    scalar. Deliberately omits ``imperative``, ``tone``, ``strain_refs``,
+    ``evidence_refs``, ``stance_harness_slice``, ``grounding_capsule``, and
+    ``autonomy_slice`` -- unlike the ephemeral, TTL-bounded CognitionTraceCache
+    (Runtime Trace Nexus Milestone A), a SQL row is durable-forever by
+    default, so this record stays deliberately narrower than what that cache
+    allows even in its debug mode.
+    """
+
+    schema_version: Literal["thought.decision.record.v1"] = "thought.decision.record.v1"
+    event_id: str
+    correlation_id: str
+    session_id: str | None
+    created_at: datetime
+    disposition: Literal["proceed", "defer", "refuse"]
+    disposition_reasons: list[str] = Field(default_factory=list)
+    boundary_register: bool = False
+    repair_pressure_level: float | None = None
+    trust_rupture_score: float | None = None
+    llm_profile: str = "brain"
+    producer: str = "stance_react_v1"
+    model_id: str | None = None
+
+
 class StanceReactRequestV1(BaseModel):
     schema_version: Literal["stance.react.request.v1"] = "stance.react.request.v1"
     correlation_id: str

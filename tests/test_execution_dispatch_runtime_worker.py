@@ -183,6 +183,7 @@ def _patch_bus_and_client(monkeypatch, outcomes: dict[str, object]) -> MagicMock
 async def test_send_prepared_candidates_promotes_on_success(monkeypatch) -> None:
     worker = _make_worker(monkeypatch)
     worker._store.sum_risk_dispatched_today = MagicMock(return_value=0.0)
+    worker._store.latest_bus_synaptic_prediction_error = MagicMock(return_value=0.1675)
     worker._store.save_dispatch_result = MagicMock()
     worker._store.load_dispatch_result_by_dispatch_id = MagicMock(return_value=None)
     fake_bus = _patch_bus_and_client(
@@ -215,6 +216,7 @@ async def test_send_prepared_candidates_promotes_on_success(monkeypatch) -> None
 async def test_send_one_emits_action_outcome_on_success(monkeypatch) -> None:
     worker = _make_worker(monkeypatch)
     worker._store.sum_risk_dispatched_today = MagicMock(return_value=0.0)
+    worker._store.latest_bus_synaptic_prediction_error = MagicMock(return_value=0.1675)
     worker._store.save_dispatch_result = MagicMock()
     worker._store.load_dispatch_result_by_dispatch_id = MagicMock(return_value=None)
     fake_bus = _patch_bus_and_client(
@@ -234,12 +236,58 @@ async def test_send_one_emits_action_outcome_on_success(monkeypatch) -> None:
     assert env.payload["kind"] == "inspect"
     assert env.payload["summary"] == "steady state observed"
     assert env.payload["success"] is True
+    assert env.payload["surprise"] == 0.1675
+
+
+@pytest.mark.asyncio
+async def test_send_one_action_outcome_surprise_falls_back_to_zero_when_unavailable(
+    monkeypatch,
+) -> None:
+    worker = _make_worker(monkeypatch)
+    worker._store.sum_risk_dispatched_today = MagicMock(return_value=0.0)
+    worker._store.latest_bus_synaptic_prediction_error = MagicMock(return_value=None)
+    worker._store.save_dispatch_result = MagicMock()
+    worker._store.load_dispatch_result_by_dispatch_id = MagicMock(return_value=None)
+    fake_bus = _patch_bus_and_client(
+        monkeypatch,
+        {"dispatch:1": {"result": {"final_text": '{"observation": "steady"}'}}},
+    )
+    frame = _frame_with_candidates(_candidate("dispatch:1"))
+
+    await worker._send_prepared_candidates(frame)
+
+    _, env = fake_bus.publish.await_args.args
+    assert env.payload["surprise"] == 0.0
+
+
+@pytest.mark.asyncio
+async def test_send_one_action_outcome_surprise_falls_back_to_zero_on_fetch_error(
+    monkeypatch,
+) -> None:
+    worker = _make_worker(monkeypatch)
+    worker._store.sum_risk_dispatched_today = MagicMock(return_value=0.0)
+    worker._store.latest_bus_synaptic_prediction_error = MagicMock(
+        side_effect=RuntimeError("db unreachable")
+    )
+    worker._store.save_dispatch_result = MagicMock()
+    worker._store.load_dispatch_result_by_dispatch_id = MagicMock(return_value=None)
+    fake_bus = _patch_bus_and_client(
+        monkeypatch,
+        {"dispatch:1": {"result": {"final_text": '{"observation": "steady"}'}}},
+    )
+    frame = _frame_with_candidates(_candidate("dispatch:1"))
+
+    await worker._send_prepared_candidates(frame)
+
+    _, env = fake_bus.publish.await_args.args
+    assert env.payload["surprise"] == 0.0
 
 
 @pytest.mark.asyncio
 async def test_send_one_emits_action_outcome_on_empty_observation(monkeypatch) -> None:
     worker = _make_worker(monkeypatch)
     worker._store.sum_risk_dispatched_today = MagicMock(return_value=0.0)
+    worker._store.latest_bus_synaptic_prediction_error = MagicMock(return_value=0.1675)
     worker._store.save_dispatch_result = MagicMock()
     worker._store.load_dispatch_result_by_dispatch_id = MagicMock(return_value=None)
     fake_bus = _patch_bus_and_client(monkeypatch, {"dispatch:1": {"result": {"final_text": ""}}})
@@ -257,6 +305,7 @@ async def test_send_one_emits_action_outcome_on_empty_observation(monkeypatch) -
 async def test_send_one_emits_action_outcome_on_rpc_failure(monkeypatch) -> None:
     worker = _make_worker(monkeypatch)
     worker._store.sum_risk_dispatched_today = MagicMock(return_value=0.0)
+    worker._store.latest_bus_synaptic_prediction_error = MagicMock(return_value=0.1675)
     worker._store.save_dispatch_result = MagicMock()
     worker._store.load_dispatch_result_by_dispatch_id = MagicMock(return_value=None)
     fake_bus = _patch_bus_and_client(monkeypatch, {"dispatch:1": RuntimeError("rpc timed out")})
@@ -281,6 +330,7 @@ async def test_send_one_re_emits_action_outcome_on_idempotent_replay(monkeypatch
     # this same replay branch, so there'd be no other chance to retry it.
     worker = _make_worker(monkeypatch)
     worker._store.sum_risk_dispatched_today = MagicMock(return_value=0.0)
+    worker._store.latest_bus_synaptic_prediction_error = MagicMock(return_value=0.1675)
     worker._store.save_dispatch_result = MagicMock()
     worker._store.load_dispatch_result_by_dispatch_id = MagicMock(
         return_value={
@@ -307,6 +357,7 @@ async def test_send_one_re_emits_action_outcome_on_idempotent_replay(monkeypatch
 async def test_send_one_action_outcome_publish_failure_does_not_raise(monkeypatch) -> None:
     worker = _make_worker(monkeypatch)
     worker._store.sum_risk_dispatched_today = MagicMock(return_value=0.0)
+    worker._store.latest_bus_synaptic_prediction_error = MagicMock(return_value=0.1675)
     worker._store.save_dispatch_result = MagicMock()
     worker._store.load_dispatch_result_by_dispatch_id = MagicMock(return_value=None)
     fake_bus = _patch_bus_and_client(
@@ -327,6 +378,7 @@ async def test_send_one_action_outcome_publish_failure_does_not_raise(monkeypatc
 async def test_send_one_action_outcome_summary_is_truncated(monkeypatch) -> None:
     worker = _make_worker(monkeypatch)
     worker._store.sum_risk_dispatched_today = MagicMock(return_value=0.0)
+    worker._store.latest_bus_synaptic_prediction_error = MagicMock(return_value=0.1675)
     worker._store.save_dispatch_result = MagicMock()
     worker._store.load_dispatch_result_by_dispatch_id = MagicMock(return_value=None)
     long_observation = "x" * 5000
@@ -346,6 +398,7 @@ async def test_send_one_action_outcome_summary_is_truncated(monkeypatch) -> None
 async def test_send_prepared_candidates_records_failure_on_rpc_exception(monkeypatch) -> None:
     worker = _make_worker(monkeypatch)
     worker._store.sum_risk_dispatched_today = MagicMock(return_value=0.0)
+    worker._store.latest_bus_synaptic_prediction_error = MagicMock(return_value=0.1675)
     worker._store.save_dispatch_result = MagicMock()
     worker._store.load_dispatch_result_by_dispatch_id = MagicMock(return_value=None)
     _patch_bus_and_client(monkeypatch, {"dispatch:1": RuntimeError("rpc timed out")})
@@ -365,6 +418,7 @@ async def test_send_prepared_candidates_records_failure_on_rpc_exception(monkeyp
 async def test_send_prepared_candidates_empty_observation_status_empty(monkeypatch) -> None:
     worker = _make_worker(monkeypatch)
     worker._store.sum_risk_dispatched_today = MagicMock(return_value=0.0)
+    worker._store.latest_bus_synaptic_prediction_error = MagicMock(return_value=0.1675)
     worker._store.save_dispatch_result = MagicMock()
     worker._store.load_dispatch_result_by_dispatch_id = MagicMock(return_value=None)
     _patch_bus_and_client(monkeypatch, {"dispatch:1": {"result": {"final_text": ""}}})
@@ -388,6 +442,7 @@ async def test_send_prepared_candidates_respects_per_tick_budget(monkeypatch) ->
         update={"limits": worker._policy.limits.model_copy(update={"max_dispatches_per_tick": 1})}
     )
     worker._store.sum_risk_dispatched_today = MagicMock(return_value=0.0)
+    worker._store.latest_bus_synaptic_prediction_error = MagicMock(return_value=0.1675)
     worker._store.save_dispatch_result = MagicMock()
     worker._store.load_dispatch_result_by_dispatch_id = MagicMock(return_value=None)
     _patch_bus_and_client(
@@ -419,6 +474,7 @@ async def test_send_prepared_candidates_stops_at_first_candidate_exceeding_remai
     worker = _make_worker(monkeypatch)
     worker._settings.orion_dispatch_max_risk_per_day = 0.10
     worker._store.sum_risk_dispatched_today = MagicMock(return_value=0.0)
+    worker._store.latest_bus_synaptic_prediction_error = MagicMock(return_value=0.1675)
     worker._store.save_dispatch_result = MagicMock()
     worker._store.load_dispatch_result_by_dispatch_id = MagicMock(return_value=None)
     _patch_bus_and_client(
@@ -453,6 +509,7 @@ async def test_send_prepared_candidates_sends_all_when_cumulative_risk_fits_budg
     )
     worker._settings.orion_dispatch_max_risk_per_day = 1.0
     worker._store.sum_risk_dispatched_today = MagicMock(return_value=0.0)
+    worker._store.latest_bus_synaptic_prediction_error = MagicMock(return_value=0.1675)
     worker._store.save_dispatch_result = MagicMock()
     worker._store.load_dispatch_result_by_dispatch_id = MagicMock(return_value=None)
     _patch_bus_and_client(
@@ -492,6 +549,7 @@ async def test_send_prepared_candidates_skips_non_prepared_without_consuming_per
     )
     worker._settings.orion_dispatch_max_risk_per_day = 1.0
     worker._store.sum_risk_dispatched_today = MagicMock(return_value=0.0)
+    worker._store.latest_bus_synaptic_prediction_error = MagicMock(return_value=0.1675)
     worker._store.save_dispatch_result = MagicMock()
     worker._store.load_dispatch_result_by_dispatch_id = MagicMock(return_value=None)
     _patch_bus_and_client(
@@ -523,6 +581,7 @@ async def test_send_prepared_candidates_zero_risk_candidate_still_spends_the_flo
     )
     worker._settings.orion_dispatch_max_risk_per_day = worker_mod.MINIMUM_REAL_RISK_FLOOR
     worker._store.sum_risk_dispatched_today = MagicMock(return_value=0.0)
+    worker._store.latest_bus_synaptic_prediction_error = MagicMock(return_value=0.1675)
     worker._store.save_dispatch_result = MagicMock()
     worker._store.load_dispatch_result_by_dispatch_id = MagicMock(return_value=None)
     _patch_bus_and_client(
@@ -554,6 +613,7 @@ async def test_send_one_replays_existing_result_without_resending(monkeypatch) -
     # tick must NOT fire a second real cortex-exec RPC for it.
     worker = _make_worker(monkeypatch)
     worker._store.sum_risk_dispatched_today = MagicMock(return_value=0.0)
+    worker._store.latest_bus_synaptic_prediction_error = MagicMock(return_value=0.1675)
     worker._store.save_dispatch_result = MagicMock()
     worker._store.load_dispatch_result_by_dispatch_id = MagicMock(
         return_value={
@@ -578,6 +638,7 @@ async def test_send_one_replays_existing_result_without_resending(monkeypatch) -
 async def test_send_one_replays_existing_failed_result_without_resending(monkeypatch) -> None:
     worker = _make_worker(monkeypatch)
     worker._store.sum_risk_dispatched_today = MagicMock(return_value=0.0)
+    worker._store.latest_bus_synaptic_prediction_error = MagicMock(return_value=0.1675)
     worker._store.save_dispatch_result = MagicMock()
     worker._store.load_dispatch_result_by_dispatch_id = MagicMock(
         return_value={
@@ -626,6 +687,7 @@ async def test_send_prepared_candidates_skips_when_tripwire_active(monkeypatch) 
         ["empty"] * 6 + ["success"] * 4, maxlen=worker_mod.THEATER_TRIPWIRE_WINDOW
     )
     worker._store.sum_risk_dispatched_today = MagicMock(return_value=0.0)
+    worker._store.latest_bus_synaptic_prediction_error = MagicMock(return_value=0.1675)
     worker._store.save_dispatch_result = MagicMock()
     worker._notify.send = MagicMock()
     _patch_bus_and_client(monkeypatch, {})
@@ -646,6 +708,7 @@ async def test_send_prepared_candidates_tripwire_stays_tripped_across_calls(monk
         ["empty"] * 6 + ["success"] * 4, maxlen=worker_mod.THEATER_TRIPWIRE_WINDOW
     )
     worker._store.sum_risk_dispatched_today = MagicMock(return_value=0.0)
+    worker._store.latest_bus_synaptic_prediction_error = MagicMock(return_value=0.1675)
     worker._store.save_dispatch_result = MagicMock()
     worker._notify.send = MagicMock()
     _patch_bus_and_client(monkeypatch, {})
@@ -662,6 +725,7 @@ async def test_send_prepared_candidates_tripwire_stays_tripped_across_calls(monk
 async def test_send_prepared_candidates_noop_when_nothing_prepared(monkeypatch) -> None:
     worker = _make_worker(monkeypatch)
     worker._store.sum_risk_dispatched_today = MagicMock(return_value=0.0)
+    worker._store.latest_bus_synaptic_prediction_error = MagicMock(return_value=0.1675)
     frame = _frame_with_candidates(_candidate("dispatch:1", status="blocked"))
 
     updated = await worker._send_prepared_candidates(frame)

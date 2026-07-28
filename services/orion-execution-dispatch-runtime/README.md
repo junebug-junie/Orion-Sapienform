@@ -82,6 +82,28 @@ A publish failure here is caught and logged, never raises out of the tick —
 emit is attempted, so an unreachable bus loses only chat-visible narration,
 never the underlying record.
 
+**`surprise` is a real signal, not the honest placeholder it started as
+(2026-07-13).** Every other `ActionOutcomeEmitV1` producer in the repo
+(`orion/autonomy/episode_fetch.py`, `policy_act.py`, `curiosity_reuse.py`)
+still emits a binary success/fail proxy — see
+`orion/autonomy/models.py::ActionOutcomeRefV1`'s docstring. This service is
+the one exception: `surprise` is read live off `substrate_field_state`'s
+`node:substrate.bus_synaptic` node (`ExecutionDispatchRuntimeStore.
+latest_bus_synaptic_prediction_error()`), i.e.
+`bus_synaptic_prediction_error()` (`orion/substrate/prediction_error.py`,
+already generic across the whole bus mesh, already fixed once for a
+calm-floor bias in PR #1391). Falls back to `0.0` if the node hasn't been
+written yet, the field is older than `_BUS_SYNAPTIC_STALENESS_HORIZON_SEC`
+(reuses `PressureConfig().prediction_error_decay_horizon_seconds`, 30 min —
+`prediction_error` is a deliberately undecayed raw snapshot, see
+`services/orion-field-digester/app/digestion/decay.py`, so a frozen value
+from a stalled upstream tick must not be presented as live), or the read
+fails — fail-open, never blocks emitting the outcome itself. See
+`docs/superpowers/specs/2026-07-13-autonomy-experience-loop-p2-design.md`
+(original placeholder) and
+`docs/superpowers/specs/2026-07-26-transport-domain-retirement-bus-synaptic-successor-design.md`
+(why `bus_synaptic` is the domain to build on) for the full history.
+
 ## Status vocabulary
 
 `ExecutionDispatchCandidateV1.dispatch_status`:

@@ -22,11 +22,17 @@ here; see Non-goals).
 
 **Three real, load-bearing findings this design is built on, each independently verified:**
 
-1. `ActionOutcomeRefV1.surprise` is not usable as an epistemic-value signal — every real call
-   site computes it as a binary success/fail proxy, and live data confirms it reads exactly
-   `0.0` across all 12 real rows since the Postgres rebuild. Ruled out; flagged in the
+1. `ActionOutcomeRefV1.surprise` is not usable as an epistemic-value signal for most emitters
+   — every call site that existed at the time this finding was written computes it as a
+   binary success/fail proxy, and live data confirmed it read exactly `0.0` across all 12
+   real rows since the Postgres rebuild. Ruled out for those emitters; flagged in the
    field's own docstring (`orion/autonomy/models.py`) so nobody reuses it under the wrong
-   assumption again.
+   assumption. **Update, 2026-07-28**: `services/orion-execution-dispatch-runtime` is now a
+   real exception — its rows carry a genuine `bus_synaptic_prediction_error()` value, not
+   the proxy (see that service's README, "Experience loop" section). This does not change
+   this design's own approach (still building `domain_surprise_score` on
+   `NormalizationContext` over `prediction_error.py`'s domains, per Missing Question 1) —
+   noted here so this finding doesn't read as still-universally-true.
 2. **This design never reads, writes, persists, or validates against `GoalProposalV1`,
    `drive_origin`, or `required_drive_origins`, anywhere, for any reason.** An earlier draft
    proposed coexistence with and validation against the halted drives gate — both wrong, both

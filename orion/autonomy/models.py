@@ -165,15 +165,22 @@ class FetchedArticleRefV1(BaseModel):
 
 
 class ActionOutcomeRefV1(BaseModel):
-    """`surprise` is NOT a real epistemic-uncertainty/prediction-error signal despite the
-    name -- confirmed 2026-07-24 by tracing every real call site
-    (`orion/autonomy/episode_fetch.py`, `orion/autonomy/policy_act.py`): it is always a
-    binary success/fail proxy (`0.0 if success else 1.0`, or a hardcoded `1.0` for "found
-    vs not found"), never a continuous measure of anything. Live data confirms it: every
-    real `action_outcomes` row observed post-2026-07-23-rebuild reads exactly `0.0`.
-    Do not reuse this field as an Active-Inference/epistemic-value term in any new design
-    (see `docs/superpowers/specs/2026-07-24-efe-capability-gate-design.md` for the design
-    this was ruled out of) -- it is redundant with `success`, not an independent signal.
+    """`surprise` is a mix of one real signal and several fake ones -- check the emitter
+    before trusting a row. Confirmed 2026-07-24 by tracing every call site that existed at
+    the time (`orion/autonomy/episode_fetch.py`, `orion/autonomy/policy_act.py`,
+    `orion/autonomy/curiosity_reuse.py`): all three are a binary success/fail proxy
+    (`0.0 if success else 1.0`, or a hardcoded `1.0` for "found vs not found"), never a
+    continuous measure of anything -- do not reuse this field as an Active-
+    Inference/epistemic-value term for those emitters' rows (see
+    `docs/superpowers/specs/2026-07-24-efe-capability-gate-design.md` for the design this
+    was ruled out of there).
+
+    As of 2026-07-28, `services/orion-execution-dispatch-runtime` is a genuine exception:
+    its rows carry a real, continuous value from `bus_synaptic_prediction_error()`
+    (`orion/substrate/prediction_error.py`, live-fixed for a calm-floor bias in PR #1391),
+    not a success/fail proxy. That emitter is identifiable by `kind` values
+    `inspect`/`summarize`/`observe`/`noop` (`ExecutionDispatchCandidateV1.dispatch_kind`) --
+    everything else emitting onto this same route is still the fake proxy described above.
     """
 
     model_config = ConfigDict(extra="forbid", populate_by_name=True)

@@ -4,6 +4,8 @@
 **Status:** Implementation, this session
 **Mode:** Thin patch. Implements P2 of the motor-nerve series (P0/P1/P6 merged) — re-grounded against live code, not the original brainstorm-level P2 section, which assumed a `felt_state_reader` lane and a flag-flip that turn out to be wrong.
 
+**Superseded, 2026-07-28**: `surprise=0.0` below was an honest placeholder, not a bug — but it is no longer what this service emits. `services/orion-execution-dispatch-runtime` now reads a real value from `bus_synaptic_prediction_error()` (see `services/orion-execution-dispatch-runtime/README.md`'s Experience-loop section and `docs/superpowers/specs/2026-07-26-transport-domain-retirement-bus-synaptic-successor-design.md`). Every other `ActionOutcomeEmitV1` producer in the repo still emits the binary success/fail proxy this doc describes — kept here as the accurate historical record for those.
+
 ## Arsonist summary
 
 P1 gave Layer 9 a real send path: `orion-execution-dispatch-runtime` now dispatches real cortex-exec calls and records results in `substrate_dispatch_results`. Nothing downstream of that knows it happened. Zero references to `episode_journal`, `action_outcome`, or any journaling/memory call exist anywhere in `services/orion-execution-dispatch-runtime/`. An autonomous action today produces a database row nothing reads and nothing narrates.

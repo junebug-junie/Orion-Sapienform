@@ -305,11 +305,20 @@ ORGAN_REGISTRY: Dict[str, OrionOrganRegistryEntry] = {
         organ_id="cortex_exec",
         organ_class=OrganClass.endogenous,
         service="orion-cortex-exec",
-        signal_kinds=["cognition_run", "cognition_step"],
+        signal_kinds=[],
         canonical_dimensions=["success", "step_count", "latency_level", "recall_used", "confidence"],
         causal_parent_organs=["autonomy", "graph_cognition"],
-        bus_channels=["orion:cognition:trace"],
-        notes=["Runtime trace fusion: PlanRunner publishes CognitionTracePayload."],
+        bus_channels=[],
+        notes=[
+            "No active adapter as of 2026-07-28: CognitionTraceAdapter (cognition_run/"
+            "cognition_step from orion:cognition:trace) removed -- its only real "
+            "consumer was orion-hub's debug-only SignalsInspectCache, while "
+            "substrate-runtime's execution_trajectory reducer (from GrammarEventV1, "
+            "the doctrinal substrate trace) already does this job for real and has a "
+            "real consumer (spark-introspector's inner_state.py). See "
+            "docs/superpowers/specs/2026-07-28-cognition-trace-signal-gateway-consumer-audit.md. "
+            "Entry kept because llm_gateway still lists this as a causal_parent_organ.",
+        ],
     ),
     "llm_gateway": OrionOrganRegistryEntry(
         organ_id="llm_gateway",

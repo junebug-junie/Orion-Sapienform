@@ -1640,7 +1640,15 @@ channels:
     kind: "event"
     schema_id: "CognitionTracePayload"
     producer_services: ["orion-cortex-exec"]
-    consumer_services: ["orion-spark-introspector", "orion-landing-pad", "orion-bus-tap", "orion-sql-writer"]
+    # orion-landing-pad removed from consumer_services 2026-07-28: it was never a
+    # real consumer -- PAD_INPUT_ALLOWLIST_PATTERNS (orion:telemetry:*,orion:cortex:*,
+    # orion:spark:*) has never matched this channel, live-confirmed. orion-signal-gateway
+    # (CognitionTraceAdapter, cognition_run/cognition_step organ signals) also removed
+    # the same day -- its only consumer was orion-hub's debug-only SignalsInspectCache;
+    # substrate-runtime's execution_trajectory reducer (from GrammarEventV1) already does
+    # this job for real, with a real consumer (spark-introspector's inner_state.py). See
+    # docs/superpowers/specs/2026-07-28-cognition-trace-signal-gateway-consumer-audit.md.
+    consumer_services: ["orion-spark-introspector", "orion-bus-tap", "orion-sql-writer"]
     stability: "experimental"
     since: "2026-01-10"
 

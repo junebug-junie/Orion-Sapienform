@@ -783,16 +783,6 @@ async def _proxy_world_pulse_request(path: str, request: Request) -> Response:
             raise HTTPException(status_code=502, detail="World Pulse proxy request failed") from exc
 
 
-async def _fetch_landing_pad(path: str, params: Dict[str, Any]) -> Dict[str, Any]:
-    base_url = settings.LANDING_PAD_URL.rstrip("/")
-    url = f"{base_url}{path}"
-    timeout = aiohttp.ClientTimeout(total=settings.LANDING_PAD_TIMEOUT_SEC)
-    async with aiohttp.ClientSession(timeout=timeout) as session:
-        async with session.get(url, params=params) as response:
-            response.raise_for_status()
-            return await response.json()
-
-
 async def _fetch_social_memory(path: str, params: Dict[str, Any]) -> Dict[str, Any]:
     base_url = settings.SOCIAL_MEMORY_BASE_URL.rstrip("/")
     url = f"{base_url}{path}"
@@ -1057,7 +1047,6 @@ def api_debug_build():
         "downstream": {
             "cortex_gateway_request_channel": settings.CORTEX_GATEWAY_REQUEST_CHANNEL,
             "notify_base_url": settings.NOTIFY_BASE_URL,
-            "landing_pad_url": settings.LANDING_PAD_URL,
         },
     }
 

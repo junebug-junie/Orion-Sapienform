@@ -29,10 +29,10 @@ class _FlakyBus:
 @pytest.mark.asyncio
 async def test_publish_with_reconnect_retries_after_transport_error() -> None:
     bus = _FlakyBus()
-    await publish_with_reconnect(bus, "orion:pad:stats", {"ok": True}, log_label="test")
+    await publish_with_reconnect(bus, "orion:system:health", {"ok": True}, log_label="test")
     assert bus.reconnect_calls == 1
     assert bus.publish_calls == 2
-    assert bus.last_channel == "orion:pad:stats"
+    assert bus.last_channel == "orion:system:health"
 
 
 def test_resilience_importable_without_loguru(monkeypatch: pytest.MonkeyPatch) -> None:

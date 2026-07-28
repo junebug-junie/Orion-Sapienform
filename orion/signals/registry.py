@@ -82,7 +82,6 @@ ORGAN_REGISTRY: Dict[str, OrionOrganRegistryEntry] = {
             "orion:cognition:trace",
             "orion:equilibrium:metacog:trigger",
             "orion:collapse:intake",
-            "orion:pad:signal",
         ],
         notes=[]
     ),

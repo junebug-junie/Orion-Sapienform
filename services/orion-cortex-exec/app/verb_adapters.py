@@ -29,7 +29,6 @@ from orion.core.verbs.models import VerbEffectV1
 from orion.core.verbs.registry import verb
 from orion.schemas.collapse_mirror import CollapseMirrorEntryV2
 from orion.schemas.cortex.schemas import ExecutionPlan, PlanExecutionArgs, PlanExecutionRequest, PlanExecutionResult
-from orion.schemas.pad.v1 import PadRpcRequestV1, PadRpcResponseV1
 from orion.schemas.notify import NotificationRequest
 from orion.schemas.self_study import (
     SelfStudyConsumerContextV1,
@@ -1091,22 +1090,6 @@ def _notify_payload_from_findings(findings: List[str], *, metadata: Dict[str, An
     }
 
 
-def _pad_rpc_request(method: str, *, correlation_id: str, reply_channel: str, source: ServiceRef, args: Optional[Dict[str, Any]] = None) -> BaseEnvelope:
-    req = PadRpcRequestV1(
-        request_id=correlation_id,
-        reply_channel=reply_channel,
-        method=method,
-        args=args or {},
-    )
-    return BaseEnvelope(
-        kind="PadRpcRequestV1",
-        source=source,
-        correlation_id=correlation_id,
-        reply_to=reply_channel,
-        payload=req.model_dump(mode="json"),
-    )
-
-
 def _utc_now_iso() -> str:
     return datetime.now(timezone.utc).isoformat()
 
@@ -1500,77 +1483,6 @@ class BiometricsRawRecentVerb(BaseVerb[PlanExecutionRequest, SkillVerbOutput]):
             result = {"available": False, "reason": str(exc), "items": []}
             return _skill_result_output(skill_name="skills.biometrics.raw_recent.v1", result=result, ok=False, status="unavailable", error={"message": str(exc)}), []
         return _skill_result_output(skill_name="skills.biometrics.raw_recent.v1", result=raw), []
-
-
-@verb("skills.landing_pad.metrics_snapshot.v1")
-class LandingPadMetricsSnapshotVerb(BaseVerb[PlanExecutionRequest, SkillVerbOutput]):
-    input_model = PlanExecutionRequest
-    output_model = SkillVerbOutput
-
-    async def execute(self, ctx: VerbContext, payload: PlanExecutionRequest) -> Tuple[SkillVerbOutput, List[VerbEffectV1]]:
-        bus = ctx.meta.get("bus")
-        source = _actions_source(ctx.meta.get("source"))
-        correlation_id = str(ctx.meta.get("correlation_id") or payload.args.request_id or str(uuid4()))
-        if bus is None:
-            return _skill_result_output(skill_name="skills.landing_pad.metrics_snapshot.v1", result={"available": False, "reason": "missing_bus"}, ok=False, status="fail", error={"message": "missing_bus"}), []
-        reply_channel = f"{settings.channel_pad_rpc_reply_prefix}:{uuid4()}"
-        env = _pad_rpc_request("get_stats", correlation_id=correlation_id, reply_channel=reply_channel, source=source, args={})
-        msg = await bus.rpc_request(settings.channel_pad_rpc_request, env, reply_channel=reply_channel, timeout_sec=20.0)
-        decoded = bus.codec.decode(msg.get("data"))
-        if not decoded.ok or decoded.envelope is None:
-            return _skill_result_output(skill_name="skills.landing_pad.metrics_snapshot.v1", result={"available": False, "reason": decoded.error}, ok=False, status="fail", error={"message": str(decoded.error)}), []
-        response = PadRpcResponseV1.model_validate(decoded.envelope.payload)
-        if not response.ok:
-            return _skill_result_output(skill_name="skills.landing_pad.metrics_snapshot.v1", result={"available": False, "reason": response.error}, ok=False, status="fail", error={"message": str(response.error)}), []
-        result = response.result or {}
-        return _skill_result_output(skill_name="skills.landing_pad.metrics_snapshot.v1", result=result), []
-
-
-@verb("skills.landing_pad.last_events.v1")
-class LandingPadLastEventsVerb(BaseVerb[PlanExecutionRequest, SkillVerbOutput]):
-    input_model = PlanExecutionRequest
-    output_model = SkillVerbOutput
-
-    async def execute(self, ctx: VerbContext, payload: PlanExecutionRequest) -> Tuple[SkillVerbOutput, List[VerbEffectV1]]:
-        bus = ctx.meta.get("bus")
-        source = _actions_source(ctx.meta.get("source"))
-        correlation_id = str(ctx.meta.get("correlation_id") or payload.args.request_id or str(uuid4()))
-        skill_args = _skill_args(payload)
-        if bus is None:
-            return _skill_result_output(skill_name="skills.landing_pad.last_events.v1", result={"available": False, "reason": "missing_bus", "events": []}, ok=False, status="fail", error={"message": "missing_bus"}), []
-        limit = int(skill_args.get("limit") or 10)
-        reply_channel = f"{settings.channel_pad_rpc_reply_prefix}:{uuid4()}"
-        env = _pad_rpc_request("get_salient_events", correlation_id=correlation_id, reply_channel=reply_channel, source=source, args={"limit": limit})
-        msg = await bus.rpc_request(settings.channel_pad_rpc_request, env, reply_channel=reply_channel, timeout_sec=20.0)
-        decoded = bus.codec.decode(msg.get("data"))
-        if not decoded.ok or decoded.envelope is None:
-            return _skill_result_output(skill_name="skills.landing_pad.last_events.v1", result={"available": False, "reason": decoded.error, "events": []}, ok=False, status="fail", error={"message": str(decoded.error)}), []
-        response = PadRpcResponseV1.model_validate(decoded.envelope.payload)
-        if not response.ok:
-            return _skill_result_output(skill_name="skills.landing_pad.last_events.v1", result={"available": False, "reason": response.error, "events": []}, ok=False, status="fail", error={"message": str(response.error)}), []
-        events = response.result.get("events") if isinstance(response.result, dict) else []
-        if not isinstance(events, list):
-            events = []
-        min_salience = skill_args.get("min_salience")
-        event_type = skill_args.get("type")
-        source_service = skill_args.get("source_service")
-        filtered = []
-        for event in events:
-            if not isinstance(event, dict):
-                continue
-            if min_salience is not None:
-                try:
-                    if float(event.get("salience") or 0.0) < float(min_salience):
-                        continue
-                except Exception:
-                    continue
-            if event_type and str(event.get("type") or "") != str(event_type):
-                continue
-            if source_service and str(event.get("source_service") or "") != str(source_service):
-                continue
-            filtered.append(event)
-        result = {"available": True, "events": filtered, "count": len(filtered)}
-        return _skill_result_output(skill_name="skills.landing_pad.last_events.v1", result=result), []
 
 
 @verb("skills.mesh.tailscale_mesh_status.v1")

@@ -42,13 +42,6 @@ class Settings(BaseSettings):
     # docs/superpowers/specs/2026-07-24-service-heartbeat-node-telemetry-design.md.
     HEARTBEAT_INTERVAL_SEC: float = Field(default=10.0, alias="HEARTBEAT_INTERVAL_SEC")
 
-    # --- Landing Pad ---
-    LANDING_PAD_URL: str = Field(
-        default="http://orion-landing-pad:8370",
-        alias="LANDING_PAD_URL",
-    )
-    LANDING_PAD_TIMEOUT_SEC: float = Field(default=5.0, alias="LANDING_PAD_TIMEOUT_SEC")
-
     # --- Topic Foundry Integration ---
     TOPIC_FOUNDRY_BASE_URL: str = Field(
         default="http://orion-topic-foundry:8615",

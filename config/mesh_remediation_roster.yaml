@@ -1,17 +1,4 @@
 services:
-  - id: landing-pad
-    heartbeat_name: landing-pad
-    compose_dir: orion-landing-pad
-    compose_service: orion-landing-pad
-    include_bus_env: false
-    auto_remediate: true
-    probe:
-      mode: redis_and_http
-      intake_channels:
-        - orion:pad:rpc:request
-      ready_url: "http://${PROJECT}-landing-pad:8370/ready"
-      service_name: landing-pad
-
   - id: cortex-gateway
     heartbeat_name: cortex-gateway
     compose_dir: orion-cortex-gateway

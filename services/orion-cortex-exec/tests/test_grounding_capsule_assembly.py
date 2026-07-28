@@ -48,12 +48,12 @@ def test_context_provenance_for_ctx_omits_unregistered_keys() -> None:
 
 
 def test_context_provenance_for_ctx_excludes_empty_fallback_values() -> None:
-    # ctx["pad_frame"] = pad_frame_result or {} degrades to an empty dict when
+    # ctx["biometrics"] = biometrics_result or {} degrades to an empty dict when
     # the live computation didn't run or failed -- must not be classified as
     # "live_runtime_projection" just because the key is present.
     ctx = {
         "self_state": {"overall_condition": "steady"},
-        "pad_frame": {},
+        "biometrics": {},
         "system_alert_tags": [],
         "belief_digest": None,
         "substrate_eventfulness_score": 0.0,

@@ -457,7 +457,6 @@ def _select_canonical_operational_tool(user_text: str, tools: List[ToolDef]) -> 
                 "docker status",
             ),
         ),
-        ("show_landing_pad_metrics", ("landing pad metrics", "landing pad metric", "landing pad snapshot", "pad metrics")),
         ("assess_storage_health", ("disk", "storage")),
         ("summarize_recent_changes", ("recent pr", "recent pull request", "recent changes", "summarize recent")),
         ("housekeep_runtime", ("cleanup", "dry-run", "dry run", "stopped containers", "prune")),

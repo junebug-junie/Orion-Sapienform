@@ -269,14 +269,6 @@ channels:
     stability: "experimental"
     since: "2026-01-08"
 
-  - name: "orion:exec:result:PadRpc:*"
-    kind: "result"
-    schema_id: "PadRpcResponseV1"
-    producer_services: ["orion-landing-pad"]
-    consumer_services: ["orion-cortex-exec", "*"]
-    stability: "experimental"
-    since: "2026-03-17"
-
   - name: "orion:exec:result:StateService:*"
     kind: "result"
     schema_id: "StateLatestReply"
@@ -968,55 +960,6 @@ channels:
     stability: "experimental"
     since: "2026-01-08"
 
-  - name: "orion:pad:event"
-    kind: "event"
-    schema_id: "PadEventV1"
-    producer_services: ["orion-landing-pad"]
-    consumer_services: ["*"]
-    stability: "experimental"
-    since: "2026-01-10"
-
-  - name: "orion:pad:frame"
-    kind: "event"
-    schema_id: "StateFrameV1"
-    producer_services: ["orion-landing-pad"]
-    consumer_services: ["*"]
-    stability: "experimental"
-    since: "2026-01-10"
-
-  - name: "orion:pad:signal"
-    kind: "event"
-    schema_id: "GenericPayloadV1"
-    producer_services: ["orion-landing-pad"]
-    consumer_services: ["*"]
-    stability: "experimental"
-    since: "2026-01-10"
-
-  - name: "orion:pad:stats"
-    kind: "telemetry"
-    schema_id: "GenericPayloadV1"
-    producer_services: ["orion-landing-pad"]
-    consumer_services: ["*"]
-    stability: "experimental"
-    since: "2026-01-10"
-
-  - name: "orion:pad:rpc:request"
-    kind: "request"
-    schema_id: "PadRpcRequestV1"
-    producer_services: ["*"]
-    consumer_services: ["orion-landing-pad"]
-    single_consumer: true
-    stability: "experimental"
-    since: "2026-01-10"
-
-  - name: "orion:pad:rpc:reply:*"
-    kind: "result"
-    schema_id: "PadRpcResponseV1"
-    producer_services: ["orion-landing-pad"]
-    consumer_services: ["*"]
-    stability: "experimental"
-    since: "2026-01-10"
-
   - name: "orion:chat:history:log"
     kind: "event"
     schema_id: "ChatHistoryMessageV1"
@@ -1603,7 +1546,7 @@ channels:
     kind: "telemetry"
     schema_id: "BiometricsPayload"
     producer_services: ["orion-biometrics"]
-    consumer_services: ["orion-sql-writer", "orion-landing-pad"]
+    consumer_services: ["orion-sql-writer"]
     stability: "experimental"
     since: "2026-01-10"
 
@@ -1611,7 +1554,7 @@ channels:
     kind: "telemetry"
     schema_id: "BiometricsSampleV1"
     producer_services: ["orion-biometrics"]
-    consumer_services: ["orion-sql-writer", "orion-landing-pad"]
+    consumer_services: ["orion-sql-writer"]
     stability: "experimental"
     since: "2026-01-10"
 
@@ -1619,7 +1562,7 @@ channels:
     kind: "telemetry"
     schema_id: "BiometricsSummaryV1"
     producer_services: ["orion-biometrics", "orion-biometrics-hub"]
-    consumer_services: ["orion-state-service", "orion-sql-writer", "orion-landing-pad"]
+    consumer_services: ["orion-state-service", "orion-sql-writer"]
     stability: "experimental"
     since: "2026-01-10"
 

@@ -48,17 +48,13 @@ def _family_for_skill(skill_id: str) -> str:
         return "biometrics_recent"
     if "biometrics.snapshot" in sid or ("biometrics" in sid and "snapshot" in sid):
         return "biometrics_snapshot"
-    if "landing_pad.metrics" in sid or ("landing_pad" in sid and "metrics" in sid):
-        return "landing_pad_metrics"
-    if "landing_pad.last_events" in sid or ("landing_pad" in sid and "last_events" in sid):
-        return "landing_pad_events"
     if "notify" in sid:
         return "notification"
     if "time_now" in sid:
         return "temporal_context"
     if "discussion_window" in sid:
         return "chat_transcript"
-    if "docker" in sid or "gpu" in sid or "landing_pad" in sid:
+    if "docker" in sid or "gpu" in sid:
         return "system_inspection"
     if "biometrics" in sid:
         return "runtime_health"

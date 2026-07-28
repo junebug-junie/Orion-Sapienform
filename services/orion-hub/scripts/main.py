@@ -30,6 +30,7 @@ from scripts.websocket_handler import websocket_endpoint
 from scripts.service_logs_ws import service_logs_websocket_endpoint
 from scripts.biometrics_cache import BiometricsCache
 from scripts.notification_cache import NotificationCache
+from scripts.bus_synaptic_trigger_notifier import BusSynapticTriggerNotifier
 from scripts.agent_step_relay import AgentStepRelay
 from scripts.harness_step_relay import HarnessStepRelay
 from scripts.signals_inspect_cache import SignalsInspectCache
@@ -262,6 +263,7 @@ tts_client: Optional[TTSClient] = None
 html_content: str = "<html><body><h1>Error loading UI</h1></body></html>"
 biometrics_cache: Optional[BiometricsCache] = None
 notification_cache: Optional[NotificationCache] = None
+bus_synaptic_trigger_notifier: Optional[BusSynapticTriggerNotifier] = None
 agent_step_relay: Optional[AgentStepRelay] = None
 harness_step_relay: Optional[HarnessStepRelay] = None
 signals_inspect_cache: Optional[SignalsInspectCache] = None
@@ -363,7 +365,7 @@ async def startup_event():
     Initializes all shared services at application startup.
     OrionBus + Clients + UI template.
     """
-    global bus, rpc_bus, cortex_client, tts_client, html_content, biometrics_cache, notification_cache, agent_step_relay, harness_step_relay, signals_inspect_cache, cognition_trace_cache, embodiment_outcome_cache, presence_state, presence_context_store, substrate_autonomy_task, substrate_decay_task, substrate_topic_foundry_scheduler_task, heartbeat_chassis
+    global bus, rpc_bus, cortex_client, tts_client, html_content, biometrics_cache, notification_cache, bus_synaptic_trigger_notifier, agent_step_relay, harness_step_relay, signals_inspect_cache, cognition_trace_cache, embodiment_outcome_cache, presence_state, presence_context_store, substrate_autonomy_task, substrate_decay_task, substrate_topic_foundry_scheduler_task, heartbeat_chassis
 
     # ------------------------------------------------------------
     # Bus-native SystemHealthV1 heartbeat (pilot-5 rollout, see
@@ -420,6 +422,13 @@ async def startup_event():
             )
             if settings.NOTIFY_IN_APP_ENABLED:
                 await notification_cache.start(bus)
+
+            bus_synaptic_trigger_notifier = BusSynapticTriggerNotifier(
+                enabled=True,
+                metacog_trigger_channel="orion:equilibrium:metacog:trigger",
+                notify_channel=settings.NOTIFY_IN_APP_CHANNEL,
+            )
+            await bus_synaptic_trigger_notifier.start(bus)
 
             agent_step_relay = AgentStepRelay(channel=settings.HUB_CONTEXT_EXEC_EVENT_CHANNEL)
             await agent_step_relay.start(bus)
@@ -703,7 +712,7 @@ async def startup_event():
 
 @app.on_event("shutdown")
 async def shutdown_event() -> None:
-    global bus, rpc_bus, biometrics_cache, notification_cache, agent_step_relay, harness_step_relay, signals_inspect_cache, cognition_trace_cache, embodiment_outcome_cache, substrate_autonomy_task, substrate_decay_task, substrate_topic_foundry_scheduler_task, heartbeat_chassis
+    global bus, rpc_bus, biometrics_cache, notification_cache, bus_synaptic_trigger_notifier, agent_step_relay, harness_step_relay, signals_inspect_cache, cognition_trace_cache, embodiment_outcome_cache, substrate_autonomy_task, substrate_decay_task, substrate_topic_foundry_scheduler_task, heartbeat_chassis
     if heartbeat_chassis is not None:
         try:
             await heartbeat_chassis.stop()
@@ -743,6 +752,11 @@ async def shutdown_event() -> None:
         await biometrics_cache.stop()
     if notification_cache is not None:
         await notification_cache.stop()
+    if bus_synaptic_trigger_notifier is not None:
+        try:
+            await bus_synaptic_trigger_notifier.stop()
+        except Exception:
+            pass
     if agent_step_relay is not None:
         try:
             await agent_step_relay.stop()

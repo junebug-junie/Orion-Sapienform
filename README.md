@@ -642,7 +642,7 @@ Layer 10 orion-feedback-runtime           ExecutionDispatchFrameV1 outcomes → 
 Layer 11 orion-consolidation-runtime      Layers 5–10 history over a window → ConsolidationFrameV1 motif snapshots
 ```
 
-`reduce_attention_self_model()` (`orion/substrate/attention_self_model.py`) and active-inference prediction-error signals across 5+ domains (biometrics, execution, transport, chat, route, bus-synaptic) feed this pipeline. Drives themselves stayed on Postgres; dynamics and brain-frame projections moved to FalkorDB (Cypher-native writers).
+`reduce_attention_self_model()` (`orion/substrate/attention_self_model.py`) and active-inference prediction-error signals across its 5 live domains (`ACTIVE_INFERENCE_DOMAINS`: biometrics, execution, chat, route, bus-synaptic) feed this pipeline. A sixth domain, transport, was retired 2026-07-26 in favor of the mesh-wide `bus_synaptic_prediction_error()` successor — kept dead on purpose, not an oversight. Drives themselves stayed on Postgres; dynamics and brain-frame projections moved to FalkorDB (Cypher-native writers).
 
 Autonomy still draws pressure from Spark drift, metacog warnings, recall failures, topic repetition, social repair signals, workflow failures, equilibrium distress, operator corrections, and service health — but it must never bypass policy, trace, review, rollback, or audit. No silent substrate mutation. No hidden permission expansion. No social autonomy escalation without policy. No high-risk code edits without operator review.
 
@@ -661,7 +661,7 @@ The bus is Orion's nervous system.
 | `orion-bus` | Bus service/tooling surface. |
 | `orion-bus-mirror` | Bus mirroring, replay, and observability ("wiretap + relay" for the Titanium bus). |
 | `orion-bus-tap` | Live bus activity dashboard — the primary way to see what's happening on the bus without memorizing channels. |
-| Channel catalog (`orion/bus/channels.yaml`) | Canonical channel inventory, ~265 registered channels. |
+| Channel catalog (`orion/bus/channels.yaml`) | Canonical channel inventory, ~250 registered channels. |
 | Titanium envelopes | Global bus message wrapper. |
 | Shared schemas | Typed payload contracts. |
 | Smoke/audit scripts | Drift detection, channel audit, config lineage, wiring checks. |
@@ -778,7 +778,7 @@ Prometheus / edge nodes
   GoPro Hero8 RTMP streams, GPIO/LED experiments. Status: bring-up.
 ```
 
-Tailscale is the default overlay network for operator access and node-to-node reachability. Power and cooling constraints — UPS-backed power, dedicated lab circuits — are part of the long-term home data center plan, and are treated as part of Orion's physical substrate, not incidental infrastructure. Detailed inventory beyond this summary should live in `HARDWARE.md`.
+Tailscale is the default overlay network for operator access and node-to-node reachability. Power and cooling constraints — UPS-backed power, dedicated lab circuits — are part of the long-term home data center plan, and are treated as part of Orion's physical substrate, not incidental infrastructure.
 
 ---
 

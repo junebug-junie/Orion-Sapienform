@@ -215,7 +215,11 @@ item 3's producer-instrumentation sweep across all five named domains. `chat_pre
 error()` diffs `compute_chat_pressure_hints()` (`orion/substrate/chat_loop/
 grammar_extract.py:114` — `conversation_load`/`repair_pressure`/`topic_coherence`, computed
 transiently, not persisted on `ChatTurnStateV1`) across successive turn states, same
-fixed-key/`_THRESHOLD`-scaled shape as execution/transport. `route_prediction_error()` is
+fixed-key/`_THRESHOLD`-scaled shape execution/transport originally shared (execution moved off
+this shape 2026-07-28 -- see the EWMA-baseline entry below; `chat_prediction_error()` itself still
+uses the fixed `_THRESHOLD` scaling as of this writing, and separately has never actually written a
+`node:substrate.chat` receipt in production -- confirmed live 2026-07-28, its reducer emits zero
+receipts of any kind, a different bug from normalization, not yet root-caused). `route_prediction_error()` is
 **deliberately different in shape**: `RouteArbitrationRunStateV1`'s decision fields
 (`lane`, `lane_reason`, `output_mode`, `mind_requested`) are categorical, not continuous, so
 it scores a per-field mismatch rate (1.0 if a field differs, else 0.0, averaged across
@@ -480,6 +484,35 @@ scripts this doc originally credited (`measure_transport_bus_signal_history.py`,
 `measure_transport_biometrics_prediction_error_correlation.py`) only name it in prose, they read
 persisted values directly from Postgres. Review also caught one dead read: `prev_projection =
 load_projection()` was only ever consumed by the removed call, deleted alongside it.
+
+**Fixed 2026-07-28: `execution_prediction_error()` moved off the fixed `_THRESHOLD=0.30` divisor
+onto a self-calibrating EWMA baseline (PR #1434).** Live Postgres data (120 real
+`substrate.execution_trajectory` receipts) showed this instrument reading ~0 essentially always
+(mean 0.0001, max ever observed 0.0009) -- real cortex-exec pressure-hint deltas run about three
+orders of magnitude below `_THRESHOLD`, so it was structurally incapable of ever reading
+"surprised," the mirror-image of `bus_synaptic_prediction_error()`'s pre-2026-07-26 calm-floor bug
+above (that one couldn't read "calm"; this one couldn't read "surprised"). Same root cause both
+times: a hand-picked constant standing in for a self-calibrating baseline. Fixed the same way
+`recent_perturbations` (`orion/field/pressure.py`) was fixed the same week: track this domain's own
+EWMA mean/variance of the raw per-tick pressure-hint delta (`ExecutionTrajectoryProjectionV1.
+prediction_error_baseline_ewma`/`_var`/`_n`, persisted alongside `runs`) via `orion.bus.ewma.
+compute_ewma_update`, and score each tick's raw delta as a z-score against that live baseline
+instead of dividing by a fixed constant. `biometrics_prediction_error()` was checked against the
+same live data and found healthy (real spread 0-0.6, no floor/ceiling degeneracy) -- not touched.
+
+A second, deeper instance of the identical disease was found while verifying the fix against real
+replayed data, not assumed from code review alone: `compute_ewma_update`'s own `_MIN_VARIANCE`
+(1e-6, calibrated for this same file's own `orion-bus-mirror` real-time-gap-in-seconds domain) is
+about five orders of magnitude larger than execution's real warmed-up variance (~4e-11) --
+replaying the 120-receipt history through the "fixed" formula with the shared floor still topped
+out at error 0.015, barely moving off the original disease's ceiling. `compute_ewma_update` gained
+an optional `min_variance` parameter (default unchanged for existing callers, including
+`recent_perturbations`'); `execution_prediction_error()` passes its own calibrated floor (1e-10).
+Re-replayed against the same real history: max error 0.97, mean 0.12, no saturation -- a genuinely
+discriminating signal. Lesson for any future domain reusing `compute_ewma_update`: a borrowed,
+already-calibrated constant (variance floor, saturation threshold, alpha) has to be re-checked
+against the new domain's real value scale, not just cited as "already established elsewhere" --
+see `docs/superpowers/pr-reports/2026-07-28-execution-prediction-error-ewma-baseline-pr.md`.
 
 **Fixed 2026-07-25 (same day, follow-up): the 5 new env keys above weren't reaching the
 container.** Same class of gotcha already documented for `SUBSTRATE_STORE_BACKEND`/`FALKORDB_URI`

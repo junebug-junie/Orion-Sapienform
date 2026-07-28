@@ -2,9 +2,12 @@ import * as THREE from 'three';
 import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
 
 // --- STATE ---
+// Field names match the wire schema directly (embedding_similarity/
+// novelty_zscore/polarity_diff/mean_abs_activation) -- see
+// orion/spark/orion_tissue.py's phi() docstring for what each literally is.
 const state = {
-    phi: 0.5, novelty: 0.0, valence: 0.5, arousal: 0.0,
-    targetPhi: 0.5, targetNovelty: 0.0, targetValence: 0.5, targetArousal: 0.0,
+    similarity: 0.5, novelty: 0.0, polarity: 0.5, activation: 0.0,
+    targetSimilarity: 0.5, targetNovelty: 0.0, targetPolarity: 0.5, targetActivation: 0.0,
     lastUpdate: 0, metadata: {}, correlationId: null, timestamp: null
 };
 const INTERPOLATION_SPEED = 0.05; 
@@ -57,10 +60,10 @@ class WSClient {
     }
     handleUpdate(data) {
         if (!data.stats) return;
-        state.targetPhi = data.stats.phi;
-        state.targetNovelty = data.stats.novelty;
-        state.targetValence = data.stats.valence;
-        state.targetArousal = data.stats.arousal;
+        state.targetSimilarity = data.stats.embedding_similarity;
+        state.targetNovelty = data.stats.novelty_zscore;
+        state.targetPolarity = data.stats.polarity_diff;
+        state.targetActivation = data.stats.mean_abs_activation;
         state.correlationId = data.correlation_id;
         state.timestamp = data.timestamp;
         state.metadata = data.metadata || {};
@@ -69,56 +72,32 @@ class WSClient {
     updateDOM() {
         document.getElementById('val-id').innerText = (state.correlationId || "NULL").substring(0, 8) + '...';
         document.getElementById('val-ts').innerText = state.timestamp || "-";
-        document.getElementById('val-phi').innerText = state.targetPhi.toFixed(2);
+        document.getElementById('val-similarity').innerText = state.targetSimilarity.toFixed(2);
         document.getElementById('val-novelty').innerText = state.targetNovelty.toFixed(2);
-        document.getElementById('val-valence').innerText = state.targetValence.toFixed(2);
-        document.getElementById('val-arousal').innerText = state.targetArousal.toFixed(2);
+        document.getElementById('val-polarity').innerText = state.targetPolarity.toFixed(2);
+        document.getElementById('val-activation').innerText = state.targetActivation.toFixed(2);
         this.updateMoodText();
         this.updateDiagnosticsTable();
         this.updateTurnEffect();
     }
-    // Illustrative labels over 4 real scalars (see index.html's "WHAT THIS
-    // ACTUALLY IS" panel) -- a stylized reading of OrionTissue's physics
-    // state, not a verified or clinical cognitive/emotional assessment.
+    // 2026-07-28: this used to map the four scalars onto an invented mood
+    // taxonomy (LUCID FLOW / COLD ANALYSIS / MANIC CREATIVITY / etc.,
+    // threshold-derived, no theory anchor -- see index.html's disclosed
+    // correction). Deleted rather than relabeled: there is no honest
+    // one-word summary of four unrelated tensor statistics to substitute.
+    // The raw values in the stats row and diagnostics table are the actual
+    // signal; this just shows them literally instead of interpreting them.
     updateMoodText() {
-        const v = state.targetValence, p = state.targetPhi, a = state.targetArousal, n = state.targetNovelty;
-        let mood = "UNKNOWN", color = "#888";
-        if (n > 0.8) { mood = "EPIPHANY DETECTED"; color = "#fff"; }
-        else if (a > 0.5) {
-            if (v > 0.5 && p > 0.5) { mood = "LUCID FLOW"; color = "#0ff"; }
-            else if (v > 0.5 && p <= 0.5) { mood = "MANIC CREATIVITY"; color = "#d0f"; }
-            else if (v <= 0.5 && p > 0.5) { mood = "CRITICAL FOCUS"; color = "#f80"; }
-            else { mood = "COGNITIVE DISSONANCE"; color = "#f00"; }
-        } else {
-            if (v > 0.5 && p > 0.5) { mood = "DEEP RESONANCE"; color = "#0af"; }
-            else if (v > 0.5 && p <= 0.5) { mood = "DAYDREAMING"; color = "#fba"; }
-            else if (v <= 0.5 && p > 0.5) { mood = "COLD ANALYSIS"; color = "#88f"; }
-            else { mood = "IDLE / STATIC"; color = "#666"; }
-        }
-        elMoodValue.innerText = `[ ${mood} ]`;
-        elMoodValue.style.color = color;
-        elMoodValue.style.textShadow = `0 0 15px ${color}`;
+        const s = state.targetSimilarity, n = state.targetNovelty, p = state.targetPolarity, a = state.targetActivation;
+        elMoodValue.innerText = `sim ${s.toFixed(2)} · nov ${n.toFixed(2)} · pol ${p.toFixed(2)} · act ${a.toFixed(2)}`;
+        elMoodValue.style.color = "#0ff";
+        elMoodValue.style.textShadow = "0 0 10px #0ff";
     }
     updateDiagnosticsTable() {
-        // Helper to update cells
-        const updateRow = (id, val, highLow, imp) => {
-            document.getElementById(`diag-${id}-val`).innerText = val.toFixed(2);
-            document.getElementById(`diag-${id}-state`).innerText = highLow;
-            document.getElementById(`diag-${id}-imp`).innerText = imp;
-        };
-        
-        // Logic for diagnostics
-        const p = state.targetPhi;
-        updateRow('phi', p, p > 0.5 ? "HIGH" : "LOW", p > 0.5 ? "Integrated / Resourced" : "Loaded / Fragmented");
-        
-        const n = state.targetNovelty;
-        updateRow('nov', n, n > 0.5 ? "HIGH" : "LOW", n > 0.5 ? "Surprising / New" : "Routine / Known");
-        
-        const v = state.targetValence;
-        updateRow('val', v, v > 0.5 ? "POS" : "NEG", v > 0.5 ? "Harmony / Flow" : "Stress / Conflict");
-        
-        const a = state.targetArousal;
-        updateRow('aro', a, a > 0.5 ? "HIGH" : "LOW", a > 0.5 ? "Active / Alert" : "Passive / Idle");
+        document.getElementById('diag-sim-val').innerText = state.targetSimilarity.toFixed(2);
+        document.getElementById('diag-nov-val').innerText = state.targetNovelty.toFixed(2);
+        document.getElementById('diag-pol-val').innerText = state.targetPolarity.toFixed(2);
+        document.getElementById('diag-act-val').innerText = state.targetActivation.toFixed(2);
     }
     updateTurnEffect() {
         if (!elTurnEffectBox) return;
@@ -184,12 +163,12 @@ class SynthwaveVisualizer {
         this.vertexStore = geo.attributes.position.array.slice();
     }
     update(dt) {
-        const speed = 1.0 + (state.arousal * 6.0);
+        const speed = 1.0 + (state.activation * 6.0);
         this.runTime += dt * speed;
         const pos = this.plane.geometry.attributes.position.array;
-        const chaos = Math.max(0.1, 1.0 - state.phi);
+        const chaos = Math.max(0.1, 1.0 - state.similarity);
         const amp = 1.0 + (state.novelty * 6.0);
-        const hue = 0.9 + (state.valence * 0.6);
+        const hue = 0.9 + (state.polarity * 0.6);
         
         for (let i = 0; i < pos.length; i += 3) {
             const ox = this.vertexStore[i], oy = this.vertexStore[i+1];
@@ -208,7 +187,7 @@ class SynthwaveVisualizer {
         this.sunMat.color.setHSL((hue+0.1)%1, 1, 0.6);
         this.innerSun.material.color.setHSL(hue%1, 1, 0.5);
         this.sun.rotation.y += dt*0.1; this.sun.rotation.z -= dt*0.05;
-        this.sun.scale.setScalar(1 + Math.sin(this.runTime*2)*0.05*state.arousal);
+        this.sun.scale.setScalar(1 + Math.sin(this.runTime*2)*0.05*state.activation);
     }
 }
 
@@ -222,10 +201,10 @@ const clk = new THREE.Clock();
 function anim() {
     requestAnimationFrame(anim);
     const dt = clk.getDelta();
-    state.phi += (state.targetPhi-state.phi)*INTERPOLATION_SPEED;
+    state.similarity += (state.targetSimilarity-state.similarity)*INTERPOLATION_SPEED;
     state.novelty += (state.targetNovelty-state.novelty)*INTERPOLATION_SPEED;
-    state.valence += (state.targetValence-state.valence)*INTERPOLATION_SPEED;
-    state.arousal += (state.targetArousal-state.arousal)*INTERPOLATION_SPEED;
+    state.polarity += (state.targetPolarity-state.polarity)*INTERPOLATION_SPEED;
+    state.activation += (state.targetActivation-state.activation)*INTERPOLATION_SPEED;
     viz.update(dt);
     ren.render(scn, cam);
 }

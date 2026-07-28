@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import threading
 from typing import Awaitable, Callable
 
 from orion.autonomy.capability_policy import CapabilityEvaluationContext, evaluate_capability
@@ -14,10 +15,56 @@ from orion.schemas.world_pulse import (
     CuriosityFollowupV1,
     SectionCoverageV1,
 )
+from orion.substrate.bus_synaptic_surprise import latest_bus_synaptic_prediction_error
 
 logger = logging.getLogger("orion-world-pulse.curiosity")
 
 _READONLY_CAPABILITY = "web.fetch.readonly"
+
+# Lazy, cached Postgres engine for the real ambient bus_synaptic surprise signal -- only
+# built if ORION_ACTION_OUTCOME_DB_URL is configured (see app/settings.py). This module
+# has no other Postgres dependency, so an unconfigured URL keeps
+# _default_bus_synaptic_surprise_source() inert (always None), matching this codebase's
+# established fail-open convention (orion/spark/concept_induction/bus_worker.py's
+# ConceptWorker._get_surprise_engine()) -- but unlike that class's own per-instance
+# attribute, this is a genuine process-wide module global: FastAPI runs sync route
+# handlers in a threadpool (services/orion-world-pulse/app/routers/runs.py's
+# world_pulse_run), so concurrent requests can reach this check-then-set from different
+# threads of the same process. Guarded with a lock (found in review) so two concurrent
+# first-callers can't both build and leak a real Postgres engine.
+_surprise_engine: object | None = None
+_surprise_engine_lock = threading.Lock()
+
+
+def _get_surprise_engine():
+    from app.settings import settings
+
+    if not settings.action_outcome_db_url:
+        return None
+    global _surprise_engine
+    if _surprise_engine is None:
+        with _surprise_engine_lock:
+            if _surprise_engine is None:
+                from sqlalchemy import create_engine
+
+                _surprise_engine = create_engine(settings.action_outcome_db_url, pool_pre_ping=True)
+    return _surprise_engine
+
+
+def _default_bus_synaptic_surprise_source() -> float | None:
+    """Real `surprise_source` used automatically when a caller doesn't supply one --
+    see `build_curiosity_followups`/`_gate_open` below. Fail-open: any exception here
+    (DB down, engine unbuildable) degrades to `None`, never raises into a real
+    world-pulse run.
+    """
+    engine = _get_surprise_engine()
+    if engine is None:
+        return None
+    try:
+        return latest_bus_synaptic_prediction_error(engine)
+    except Exception:
+        logger.warning("world_pulse_bus_synaptic_surprise_fetch_failed", exc_info=True)
+        return None
 
 
 def _synthetic_goal(run_id: str) -> GoalProposalV1:
@@ -39,15 +86,15 @@ def _synthetic_goal(run_id: str) -> GoalProposalV1:
 
 def _resolve_domain_surprise(surprise_source: SurpriseSource | None) -> float | None:
     """Same real ambient bus_synaptic value orion/autonomy/policy_act.py's identically-named
-    helper reads -- this service currently has no Postgres access to supply a real
-    surprise_source (disclosed gap; see docs/superpowers/specs/2026-07-24-efe-capability-
-    gate-design.md), so this is always `None` today. Wired anyway so a future Postgres
-    connection here needs zero call-site changes -- just a real callable.
+    helper reads. `None` (the default -- no explicit surprise_source passed by the caller)
+    falls back to `_default_bus_synaptic_surprise_source`, this module's own real reader --
+    closing the disclosed gap this service had (no Postgres access at all) as of
+    2026-07-28. Still resolves to `None` in practice unless `ORION_ACTION_OUTCOME_DB_URL`
+    is configured for this service.
     """
-    if surprise_source is None:
-        return None
+    real_source = surprise_source or _default_bus_synaptic_surprise_source
     try:
-        return surprise_source()
+        return real_source()
     except Exception:
         return None
 
@@ -134,7 +181,11 @@ def build_curiosity_followups(
         # failure degrades to skipping this section, never failing the run.
         try:
             outcome = asyncio.run(
-                execute_readonly_fetch(req, fetch_backend=backend, surprise_source=surprise_source)
+                execute_readonly_fetch(
+                    req,
+                    fetch_backend=backend,
+                    surprise_source=surprise_source or _default_bus_synaptic_surprise_source,
+                )
             )
             followups.append(
                 CuriosityFollowupV1(

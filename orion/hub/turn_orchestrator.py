@@ -554,14 +554,21 @@ async def _publish_unified_turn_chat_history(
     """Orion capability: unified-turn persistence after successful handoff.
 
     Persists the finalized turn only after the governor returned final text:
-    chat-history envelopes (so sql-writer lands chat_history_log rows), a
-    chat-turn envelope, and the Spark introspection candidate, honoring
-    no_write. When earlier phases fail none of this exists — the governor's
-    run artifact is the evidence trail instead.
+    chat-history envelopes (so sql-writer lands chat_history_log rows) and a
+    chat-turn envelope, honoring no_write. When earlier phases fail none of
+    this exists — the governor's run artifact is the evidence trail instead.
 
-    Runtime evidence: chat_history_log rows, chat-turn envelopes, and the
-    spark candidate carrying unified_turn metadata. Start here when a
-    finalized answer reached the client but is missing from history or Spark.
+    Runtime evidence: chat_history_log rows and chat-turn envelopes. Start
+    here when a finalized answer reached the client but is missing from
+    history.
+
+    2026-07-28 (spark-introspector retirement): the Spark introspection
+    candidate publish this function used to also send was removed. Its sole
+    purpose was feeding orion-spark-introspector's Cognitive EKG; the
+    chat-turn envelope published just above already feeds
+    orion-vector-host's real OrionTissue physics feed
+    (services/orion-vector-host/app/tissue_feed.py) in-process, so no
+    separate candidate event is needed anymore.
     """
     if bus is None:
         return
@@ -577,7 +584,6 @@ async def _publish_unified_turn_chat_history(
         publish_chat_turn,
     )
     from scripts.settings import settings as hub_settings
-    from scripts.spark_candidate import publish_spark_introspect_candidate
 
     session = str(session_id or "anonymous")
     user_id = payload.get("user_id")
@@ -668,23 +674,6 @@ async def _publish_unified_turn_chat_history(
                 correlation_id,
                 exc_info=True,
             )
-
-    try:
-        await publish_spark_introspect_candidate(
-            bus,
-            trace_id=correlation_id,
-            prompt=user_message,
-            response=response_text,
-            spark_meta=spark_meta,
-            source=source_label,
-            correlation_id=correlation_id,
-        )
-    except Exception:
-        logger.warning(
-            "unified_turn spark candidate publish failed corr=%s",
-            correlation_id,
-            exc_info=True,
-        )
 
     logger.info(
         "unified_turn chat_history published corr=%s session=%s source=%s",

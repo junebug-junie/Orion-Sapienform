@@ -49,8 +49,23 @@ services:
       - VECTOR_HOST_EMBED_CONNECT_TIMEOUT_SEC=${VECTOR_HOST_EMBED_CONNECT_TIMEOUT_SEC:-10}
       - VECTOR_HOST_EMBED_READ_TIMEOUT_SEC=${VECTOR_HOST_EMBED_READ_TIMEOUT_SEC:-60}
 
+      # OrionTissue physics feed (2026-07-28, extracted from the retired
+      # orion-spark-introspector service). Same snapshot path spark-
+      # introspector used to write to -- reusing it means the tissue's
+      # already-persisted state (decay/diffusion tensor) survives the move
+      # instead of restarting from zero.
+      - ORION_TISSUE_SNAPSHOT_PATH=${ORION_TISSUE_SNAPSHOT_PATH:-/mnt/graphdb/orion/spark/tissue-brain.npy}
+      - TISSUE_STIMULUS_EMA_ALPHA=${TISSUE_STIMULUS_EMA_ALPHA:-0.05}
+      - TISSUE_STIMULUS_STEPS=${TISSUE_STIMULUS_STEPS:-2}
+      - TISSUE_STIMULUS_LEARNING_RATE=${TISSUE_STIMULUS_LEARNING_RATE:-0.1}
+
     ports:
       - "8320:8320"
+
+    volumes:
+      # Same tissue snapshot mount spark-introspector's docker-compose.yml
+      # used -- see ORION_TISSUE_SNAPSHOT_PATH above.
+      - ${ORION_DATA_ROOT:-/mnt/graphdb}/orion/spark:/mnt/graphdb/orion/spark
 
 networks:
   app-net:

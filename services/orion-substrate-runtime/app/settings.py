@@ -34,6 +34,31 @@ class Settings(BaseSettings):
         False,
         alias="ENABLE_TRANSPORT_BUS_REDUCER",
     )
+
+    # --- Inner-state features (extracted from orion-spark-introspector 2026-07-28,
+    # see app/inner_state_features.py's module docstring). Assembles
+    # InnerStateFeaturesV1 from this service's own execution_trajectory
+    # projection plus orion-thought's reasoning_activity, publishes to
+    # channel_inner_features. Not the phi encoder/reward pipeline -- that
+    # stayed with orion-spark-introspector's retirement track.
+    inner_features_enabled: bool = Field(True, alias="INNER_FEATURES_ENABLED")
+    inner_features_version: str = Field("seed-v5", alias="INNER_FEATURES_VERSION")
+    inner_features_scaler_maxlen: int = Field(256, alias="INNER_FEATURES_SCALER_MAXLEN")
+    channel_inner_features: str = Field("orion:self:inner_features", alias="CHANNEL_INNER_FEATURES")
+    inner_state_tick_interval_sec: float = Field(10.0, alias="INNER_STATE_TICK_INTERVAL_SEC")
+    # Named distinctly from execution_trajectory_max_age_sec above (LRU
+    # eviction of the whole projection) -- this is the per-run "still active"
+    # staleness window used when assembling one inner-state features row.
+    inner_features_exec_trajectory_max_age_sec: int = Field(
+        120, alias="INNER_FEATURES_EXEC_TRAJECTORY_MAX_AGE_SEC"
+    )
+    inner_features_degenerate_streak_limit: int = Field(
+        20, alias="INNER_FEATURES_DEGENERATE_STREAK_LIMIT"
+    )
+    orion_thought_base_url: str = Field(
+        "http://orion-athena-thought:7155", alias="ORION_THOUGHT_BASE_URL"
+    )
+    substrate_read_timeout_sec: float = Field(2.0, alias="SUBSTRATE_READ_TIMEOUT_SEC")
     enable_chat_grammar_reducer: bool = Field(True, alias="ENABLE_CHAT_GRAMMAR_REDUCER")
     chat_grammar_batch_limit: int = Field(100, alias="CHAT_GRAMMAR_BATCH_LIMIT")
     enable_route_grammar_reducer: bool = Field(True, alias="ENABLE_ROUTE_GRAMMAR_REDUCER")

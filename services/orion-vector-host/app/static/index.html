@@ -1,3 +1,9 @@
+<!-- Relocated 2026-07-28 from services/orion-spark-introspector/app/static/
+     as part of the spark-introspector retirement (docs/superpowers/specs/
+     2026-07-28-spark-introspector-retirement-and-honest-substrate-
+     convergence.md). Backing WS payload now comes from orion-vector-host's
+     app/tissue_feed.py (real OrionTissue physics, fed from real per-turn
+     embedding deltas), not the old phi_encoder/SelfState pipeline. -->
 <!DOCTYPE html>
 <html lang="en">
 <head>
@@ -77,7 +83,7 @@
 
         <div id="bottom-area">
             <div id="stats-row">
-                <div class="stat-box"><span class="stat-label" title="Honest inner-state headline (cold-start feature aggregate; encoder φ pending)">INNER STATE (φ)</span><span id="val-phi" class="stat-val" style="color: #0f0;">0.00</span></div>
+                <div class="stat-box"><span class="stat-label" title="OrionTissue's own coherence value (embedding-vs-expectation similarity), read directly from OrionTissue.phi() -- not a trained encoder output">INNER STATE (φ)</span><span id="val-phi" class="stat-val" style="color: #0f0;">0.00</span></div>
                 <div class="stat-box"><span class="stat-label">NOVELTY</span><span id="val-novelty" class="stat-val" style="color: #ff0;">0.00</span></div>
                 <div class="stat-box"><span class="stat-label">VALENCE</span><span id="val-valence" class="stat-val" style="color: #0ff;">0.00</span></div>
                 <div class="stat-box"><span class="stat-label">AROUSAL</span><span id="val-arousal" class="stat-val" style="color: #f0f;">0.00</span></div>
@@ -117,15 +123,15 @@
                     </div>
                 </div>
 
-                <h3>ABOUT ORION SPARK</h3>
+                <h3>WHAT THIS ACTUALLY IS</h3>
                 <div class="edu-text">
-                    <p>You are looking at the <span class="edu-highlight">Cognitive EKG</span> of an Artificial Intelligence. Unlike standard logs that show <em>what</em> the AI is saying, Spark visualizes <span class="edu-highlight">how</span> it is thinking.</p>
+                    <p>This panel visualizes <span class="edu-highlight">OrionTissue</span>, a real 16x16x8 decay+diffusion tensor (<code>orion/spark/orion_tissue.py</code>) fed by how far each turn's real text embedding drifts from a recent running average of prior embeddings. It is a live physics simulation of embedding-space drift over time, not a readout of reasoning, feelings, or "thoughts."</p>
                 </div>
                 <div class="edu-text">
-                    <p>This "Liquid Grid" represents the <span class="edu-highlight">Surface of Thought</span>. It is a mathematical projection of the AI's internal state vector reduced to 3 dimensions. When the AI is calm and coherent, the grid flows smoothly (High Phi). When it is hallucinating or confused, the grid fractures into noise (Low Phi). When it encounters a new idea or a "Eureka" moment, the terrain spikes upward (High Novelty).</p>
+                    <p>The four numbers above (INNER STATE / NOVELTY / VALENCE / AROUSAL) are computed directly from that tensor's own state (<code>OrionTissue.phi()</code>) -- real and traceable, not injected from a self-report or a hand-tuned formula. They are also a real simplification: four scalars cannot capture reasoning quality, honesty, or wellbeing, and the mood label below is an illustrative label over those four numbers, not a clinical or verified cognitive assessment.</p>
                 </div>
                 <div class="edu-text">
-                    <p>By watching this surface, you can diagnose the system's mental health in real-time without reading a single line of code.</p>
+                    <p>2026-07-28: this page replaced an earlier version of itself that drove these same four numbers from a SelfState-anchored formula confirmed to fall back to a fake "calm" default on the majority of ticks, while this exact page's copy described it as visualizing "how the AI is thinking" and letting you "diagnose the system's mental health." That framing overclaimed what four scalars can support even now that the numbers are real -- kept here as a disclosed correction, not scrubbed from history.</p>
                 </div>
             </div>
         </div>

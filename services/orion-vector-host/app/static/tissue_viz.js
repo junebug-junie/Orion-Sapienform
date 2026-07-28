@@ -77,6 +77,9 @@ class WSClient {
         this.updateDiagnosticsTable();
         this.updateTurnEffect();
     }
+    // Illustrative labels over 4 real scalars (see index.html's "WHAT THIS
+    // ACTUALLY IS" panel) -- a stylized reading of OrionTissue's physics
+    // state, not a verified or clinical cognitive/emotional assessment.
     updateMoodText() {
         const v = state.targetValence, p = state.targetPhi, a = state.targetArousal, n = state.targetNovelty;
         let mood = "UNKNOWN", color = "#888";

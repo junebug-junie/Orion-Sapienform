@@ -11,8 +11,10 @@ class SparkMetricsV2Tests(unittest.TestCase):
     def setUp(self) -> None:
         # OrionTissue() with no explicit snapshot_path defaults to loading
         # /mnt/graphdb/orion/spark/tissue-brain.npz -- the live production
-        # snapshot actively written by the running orion-spark-introspector
-        # service. Without this override these "fresh" tissues silently load
+        # snapshot actively written by orion-vector-host's tissue feed
+        # (services/orion-vector-host/app/tissue_feed.py; written by
+        # orion-spark-introspector before its 2026-07-28 retirement). Without
+        # this override these "fresh" tissues silently load
         # real production state (e.g. 1024-dim embedding_expectations),
         # causing shape-mismatch crashes unrelated to what each test claims
         # to exercise, and risk this test suite writing throwaway data back

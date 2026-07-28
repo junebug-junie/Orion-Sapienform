@@ -97,6 +97,41 @@ Post-deploy smoke (from repo root):
 ./scripts/grammar_production_truth.sh
 ```
 
+## Inner-state features (extracted from orion-spark-introspector, 2026-07-28)
+
+`InnerStateFeaturesV1` assembly (`app/inner_state_features.py`) moved here as part of
+orion-spark-introspector's retirement -- see
+`docs/superpowers/specs/2026-07-28-spark-introspector-retirement-and-honest-substrate-convergence.md`
+and `docs/superpowers/specs/2026-07-28-cognition-trace-signal-gateway-consumer-audit.md`'s
+"what needs to stay" section. This is the one part of that service confirmed to have real,
+live, multi-consumer value: `orion-hub` (live) and `orion-sql-writer`'s `inner_state_features`
+table (the training corpus for the golden phi encoder,
+`orion/inner_state_registry.py`'s "Golden phi. Trained MLP autoencoder over InnerStateFeaturesV1").
+
+On a plain timer (`INNER_STATE_TICK_INTERVAL_SEC`, default 10s, `_inner_state_features_loop` /
+`_inner_state_tick` in `app/worker.py`), assembles four cognitive features
+(`recall_gate_fired`, `reasoning_present`, `execution_load`, `reasoning_load`) from:
+
+- this service's own `execution_trajectory` projection, read directly from the store --
+  **no HTTP hop**, unlike when this lived in orion-spark-introspector and polled this
+  service's `/projections/execution_trajectory` remotely;
+- `orion-thought`'s `/projections/reasoning_activity`, still a real HTTP fetch (`requests`
+  via `asyncio.to_thread`, `ORION_THOUGHT_BASE_URL`) -- a different service, that hop can't
+  be removed by this move;
+- this service's own grammar-truth degraded state (`build_substrate_grammar_truth`, called
+  directly in-process instead of via the `/grammar/truth` HTTP endpoint).
+
+Publishes `InnerStateFeaturesV1` to `CHANNEL_INNER_FEATURES` (default
+`orion:self:inner_features`), same channel and schema as before the move -- no consumer-side
+change required.
+
+**Not ported**: the phi encoder/reward pipeline (`PhiIntrinsicRewardV1`, the golden-phi MLP
+override of `headline`), the mood-arc corpus collector, the Hub WS EKG broadcast, and
+`SparkStateSnapshotV1`. Those stayed with orion-spark-introspector's retirement track --
+this extraction's scope is only the one channel with a real, live, non-debug consumer.
+`headline`/`headline_source` here are honestly `0.0`/`"not_computed"`, same as this module's
+pre-existing default before any encoder ever overrode it.
+
 ### Cursor recovery (internal operator endpoint)
 
 **Not exposed via hub/Caddy.** Requires `SUBSTRATE_CURSOR_RESET_OPERATOR_TOKEN` and header `X-Orion-Operator-Token`.

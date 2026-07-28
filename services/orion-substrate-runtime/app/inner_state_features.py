@@ -1,4 +1,23 @@
-"""Honest inner-state feature assembly for spark-introspector.
+"""Honest inner-state feature assembly.
+
+Extracted from orion-spark-introspector's app/inner_state.py 2026-07-28, as part
+of that service's retirement (docs/superpowers/specs/2026-07-28-spark-introspector-
+retirement-and-honest-substrate-convergence.md). This module and its bus publish
+(InnerStateFeaturesV1 on orion:self:inner_features) are the one part of that
+service confirmed to have real, live, multi-consumer value (orion-hub + the
+sql-writer-persisted training corpus for the golden phi encoder) -- see
+docs/superpowers/specs/2026-07-28-cognition-trace-signal-gateway-consumer-audit.md
+section "What needs to stay". Moved here rather than left to die with the
+service, because orion-substrate-runtime already computes the execution_trajectory
+projection this reads -- no HTTP round-trip needed for that half of the input.
+
+Everything else that used to surround this in worker.py's run_inner_state_tick()
+(the phi encoder/reward pipeline, the mood-arc corpus, the Hub WS EKG broadcast,
+SparkStateSnapshotV1) is NOT ported here -- that machinery's fate is the spark-
+introspector retirement track's own call, not this extraction's scope. This
+module's headline stays honestly 0.0/"not_computed" (its own pre-existing
+documented default), same as it did in spark-introspector before any encoder
+override.
 
 2026-07-22 (SelfStateV1 burn, docs/superpowers/specs/2026-07-22-self-state-
 phi-endo-origination-burn-spec.md, decision 3): SelfStateV1 and its 10
@@ -8,13 +27,6 @@ survives is the 4 real cognitive features (recall_gate_fired,
 reasoning_present, execution_load, reasoning_load), sourced from
 execution_trajectory/reasoning_activity projections -- independently real,
 never self-state-derived, unaffected by the burn.
-
-honest_headline() (the old FELT_DIMENSIONS-derived vitality/load aggregate)
-is REMOVED, not replaced. No principled non-self-state formula for it exists;
-inventing one wasn't asked for and isn't attempted here (same "not designing
-a replacement" discipline as the burn spec). headline defaults to an honest
-0.0 / "not_computed" now, overridden by the encoder's real phi output when
-available (see app/worker.py) -- same override precedent as before.
 """
 from __future__ import annotations
 
@@ -98,20 +110,10 @@ SEEDV4_COGNITIVE_FEATURE_NAMES: Tuple[str, ...] = (
     "reasoning_load",
 )
 
-# 2026-07-22 (SelfStateV1 burn): the only trainable feature set the live
-# service produces going forward. Kept as its own named tuple (identical
-# contents to SEEDV4_COGNITIVE_FEATURE_NAMES today) so a future encoder
-# feature-set change doesn't have to disturb the seed-v4 historical name.
 SEEDV5_TRAINABLE_FEATURE_NAMES: Tuple[str, ...] = SEEDV4_COGNITIVE_FEATURE_NAMES
 
 
 def encoder_trainable_feature_names(features_version: str) -> list[str]:
-    """2026-07-22 (SelfStateV1 burn): seed-v1/v2/v3/v4's FELT_DIMENSIONS-based
-    branches removed -- they depended on SelfStateV1, which no longer exists.
-    Offline tooling that needs to interpret historical seed-v2/v3/v4 corpus
-    rows (written before this burn) should read those branches from git
-    history rather than expect them here; the live service only ever
-    produces seed-v5 going forward, and this function reflects that."""
     del features_version
     return list(SEEDV5_TRAINABLE_FEATURE_NAMES)
 
@@ -201,14 +203,12 @@ def cognitive_features_seed_v4(
     (reasoning_activity), execution_load (reasoning_activity token
     throughput, execution_trajectory step-count fallback when the
     reasoning_activity projection is dark). Raw only -- scaling happens
-    uniformly in build_inner_state_features, same contract as
-    cognitive_features_from_trajectory. Never raises: absent/malformed inputs
-    degrade to a truthful 0.0 with a `.none`-suffixed source, per-feature."""
+    uniformly in build_inner_state_features. Never raises: absent/malformed
+    inputs degrade to a truthful 0.0 with a `.none`-suffixed source, per-feature."""
     active = _active_trajectory_runs(
         trajectory_projection, now=now, max_age_sec=exec_trajectory_max_age_sec
     )
 
-    # recall_gate_fired
     if active:
         recall_raw = _recall_gate_fired(active)
         recall_source = "execution_trajectory.runs.*.recall_gate_fired"
@@ -225,7 +225,6 @@ def cognitive_features_seed_v4(
             call_count = 0
     ra_live = ra is not None and call_count > 0
 
-    # reasoning_present: continuous reasoning_present_rate, truthful 0.0 when dark.
     if ra_live:
         try:
             reasoning_present_raw = round(float(ra.get("reasoning_present_rate", 0.0)), 4)
@@ -236,8 +235,6 @@ def cognitive_features_seed_v4(
         reasoning_present_raw = 0.0
         reasoning_present_source = "reasoning_activity.none"
 
-    # execution_load: primary = log1p(completion_tokens_sum); fallback =
-    # log1p(summed step_count) from the same active trajectory runs; else 0.0.
     completion_tokens_sum = 0
     if ra_live:
         try:
@@ -256,9 +253,6 @@ def cognitive_features_seed_v4(
             execution_load_raw = 0.0
             execution_load_source = "execution_trajectory.none"
 
-    # reasoning_load: log1p(thinking_tokens_sum) only when a real positive int
-    # is present. thinking_tokens_sum is None whenever no call in the window had
-    # thinking_enabled -- today, always. Truthful 0.0, never a fake floor.
     thinking_tokens_sum = None
     if ra_live:
         thinking_tokens_sum = ra.get("thinking_tokens_sum")
@@ -306,23 +300,11 @@ def build_inner_state_features(
     degenerate_limit: int = 20,
 ) -> Tuple[InnerStateFeaturesV1, Tuple[float, ...], int]:
     """Assemble one InnerStateFeaturesV1 from execution_trajectory/
-    reasoning_activity projections directly.
-
-    2026-07-22 (SelfStateV1 burn): no longer takes a SelfStateV1 -- the 10
-    FELT_DIMENSIONS derived from it are gone, and `now` replaces
-    `ss.generated_at` as the tick's own generation time (see app/worker.py's
-    poll-loop trigger, which replaced the old substrate.self_state.v1 bus
-    subscription).
-
-    Returns (payload, current_feature_tuple, new_degenerate_streak). The
-    degeneracy freeze (GIGO guard) is now keyed on the 4 cognitive features'
-    raw values instead of self-state's old 10-dimension felt_tuple -- same
-    purpose (detect a feature vector that's stopped moving), real surviving
-    input.
-    """
+    reasoning_activity projections directly. Returns (payload,
+    current_feature_tuple, new_degenerate_streak)."""
     gen = now or datetime.now(timezone.utc)
 
-    if features_version == "seed-v4" or features_version == "seed-v5":
+    if features_version in ("seed-v4", "seed-v5"):
         cognitive_feats = cognitive_features_seed_v4(
             trajectory_projection,
             reasoning_activity_projection,
@@ -347,7 +329,6 @@ def build_inner_state_features(
     ]
     feature_tuple = tuple(feat.raw_value for feat in cognitive_feats)
 
-    # --- degeneracy freeze (GIGO guard) ---
     if prev_felt is not None and feature_tuple == prev_felt:
         new_streak = degenerate_streak + 1
     else:
@@ -364,23 +345,13 @@ def build_inner_state_features(
     payload = InnerStateFeaturesV1(
         features_version=features_version,
         generated_at=gen,
-        # self_state_id intentionally left None -- no self-state tick exists
-        # to identify this row against anymore.
         features=features,
         infra=[],
-        # No principled non-self-state headline formula exists (see module
-        # docstring) -- honest "not computed" rather than a fabricated
-        # aggregate. app/worker.py overrides this with the trained encoder's
-        # real phi output when the encoder tick succeeds, same as before.
         headline=0.0,
         headline_source="not_computed",
         phi_health=phi_health,
         phi_degenerate_streak=new_streak,
         grammar_truth_degraded=bool(grammar_degraded),
-        # self_state liveness is honestly False now -- no self-state feed
-        # exists. No live consumer reads this key (checked before removing
-        # it); kept present rather than dropped so a strict consumer doesn't
-        # KeyError.
         liveness={"self_state": False, "grammar_truth": not grammar_degraded},
         metadata=metadata,
     )

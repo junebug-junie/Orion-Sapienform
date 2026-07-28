@@ -546,7 +546,10 @@ channels:
     kind: "event"
     schema_id: "CollapseMirrorEntryV2"
     producer_services: ["orion-collapse-mirror", "orion-cortex-exec"]
-    consumer_services: ["orion-timeline", "orion-athena-spark-introspector"]
+    # "orion-athena-spark-introspector" (deployed-instance-name variant of
+    # orion-spark-introspector) removed 2026-07-28, spark-introspector
+    # retirement.
+    consumer_services: ["orion-timeline"]
     stability: "experimental"
     since: "2026-01-08"
 
@@ -659,26 +662,39 @@ channels:
     message_kind: "spark.candidate"
     channel_pattern: "orion:spark:introspect:candidate*"
     producer_services: ["orion-cortex-exec"]
-    consumer_services: ["orion-spark-introspector"]
+    # consumer_services was ["orion-spark-introspector"] -- the service was
+    # deleted 2026-07-28 (spark-introspector retirement, docs/superpowers/
+    # specs/2026-07-28-spark-introspector-retirement-and-honest-substrate-
+    # convergence.md). Left registered with no consumer rather than deleted
+    # outright: orion-llm-gateway (services/orion-llm-gateway/app/
+    # llm_backend.py's _maybe_publish_spark_introspect, real/tested/
+    # unrelated to this retirement) still publishes here for its own
+    # "chat-turn candidates feed spark-introspector" purpose -- deleting the
+    # channel registration would leave that producer publishing an
+    # unregistered event shape under ORION_BUS_ENFORCE_CATALOG. Flagged as a
+    # follow-up: that publish now has zero consumers and is a real candidate
+    # for its own retirement PR, out of scope here.
+    consumer_services: []
     stability: "experimental"
     since: "2026-01-08"
 
-  - name: "orion:spark:introspect:candidate:log"
-    kind: "event"
-    schema_id: "SparkCandidateV1"
-    message_kind: "spark.candidate"
-    channel_pattern: "orion:spark:introspect:candidate*"
-    producer_services: ["orion-hub"]
-    consumer_services: ["orion-spark-introspector"]
-    stability: "experimental"
-    since: "2026-01-08"
+  # orion:spark:introspect:candidate:log (schema_id SparkCandidateV1,
+  # message_kind spark.candidate, same channel_pattern as the base channel
+  # above) removed 2026-07-28, spark-introspector retirement: its sole
+  # producer (orion-hub, scripts/websocket_handler.py + scripts/
+  # api_routes.py + orion/hub/turn_orchestrator.py's unified-turn path) and
+  # sole consumer (orion-spark-introspector) both went away in the same
+  # change -- unlike the base channel above, no other producer remained, so
+  # this one is a clean full retirement. orion-hub's chat-history/chat-turn
+  # publish (unchanged) already feeds orion-vector-host's real OrionTissue
+  # physics feed in-process; no replacement event was needed.
 
   - name: "orion:spark:signal"
     kind: "telemetry"
     schema_id: "SparkSignalV1"
     message_kind: "spark.signal.v1"
     producer_services: ["*"]
-    consumer_services: ["orion-spark-introspector", "orion-state-service"]
+    consumer_services: ["orion-state-service"]
     stability: "experimental"
     since: "2026-01-08"
 
@@ -688,37 +704,52 @@ channels:
     message_kind: "spark.state.snapshot.v1"
     reply_kinds: ["spark.state.snapshot.ack.v1"]
     reply_schema_ids: ["SparkStateSnapshotAckV1"]
-    producer_services: ["orion-spark-introspector", "orion-equilibrium-service"]
+    # orion-spark-introspector removed 2026-07-28 (spark-introspector
+    # retirement) -- orion-equilibrium-service is the sole remaining
+    # producer, this channel is not retired.
+    producer_services: ["orion-equilibrium-service"]
     consumer_services: ["orion-state-service", "orion-sql-writer"]
     stability: "experimental"
     since: "2026-01-08"
 
-  - name: "orion:spark:telemetry"
-    kind: "telemetry"
-    schema_id: "SparkTelemetryPayload"
-    message_kind: "spark.telemetry"
-    producer_services: ["orion-spark-introspector"]
-    consumer_services: ["orion-sql-writer"]
-    stability: "experimental"
-    since: "2026-01-08"
+  # orion:spark:telemetry (schema_id SparkTelemetryPayload, message_kind
+  # spark.telemetry) removed 2026-07-28, spark-introspector retirement: sole
+  # producer (orion-spark-introspector) deleted; sole consumer
+  # (orion-sql-writer) has no other producer to read from. The telemetry
+  # this carried (SelfState-anchored phi/novelty) was confirmed theater --
+  # see the retirement spec's live evidence (43/70 novelty=0.000 readings in
+  # a 60min window, most preceded by a fallback-default masquerading as a
+  # genuine calm reading).
 
   - name: "orion:self:inner_features"
     kind: "telemetry"
     schema_id: "InnerStateFeaturesV1"
     message_kind: "self.inner_features.v1"
-    producer_services: ["orion-spark-introspector"]
+    # "orion-spark-introspector" removed 2026-07-28 (spark-introspector
+    # retirement) -- NOT retired outright, caught by code review: this
+    # channel has a second, real, live, default-on producer completely
+    # independent of spark-introspector's phi pipeline --
+    # orion-substrate-runtime's own _inner_state_tick()
+    # (services/orion-substrate-runtime/app/worker.py, gated by
+    # INNER_FEATURES_ENABLED, default true), which explicitly documents
+    # itself in settings.py as "Not the phi encoder/reward pipeline."
+    producer_services: ["orion-substrate-runtime"]
     consumer_services: ["orion-hub", "orion-sql-writer"]
     stability: "experimental"
     since: "2026-07-07"
 
-  - name: "orion:self:phi_reward"
-    kind: "telemetry"
-    schema_id: "PhiIntrinsicRewardV1"
-    message_kind: "self.phi_reward.v1"
-    producer_services: ["orion-spark-introspector"]
-    consumer_services: ["orion-substrate-runtime", "orion-sql-writer", "orion-hub"]
-    stability: "experimental"
-    since: "2026-07-08"
+  # orion:self:phi_reward (schema_id PhiIntrinsicRewardV1, message_kind
+  # self.phi_reward.v1) removed 2026-07-28, spark-introspector retirement:
+  # sole producer (orion-spark-introspector) deleted. orion-substrate-runtime
+  # was a registered consumer with zero actual code references (confirmed by
+  # repo-wide grep) -- a dead entry even before this change.
+  # orion-sql-writer/orion-hub had real reader code (services/orion-sql-
+  # writer/app/models/phi_reward.py, worker.py routing) but nothing they
+  # read this FOR (spark_embodiment_narrative,
+  # services/orion-cortex-exec/app/spark_narrative.py) survives the sole
+  # producer's deletion either -- not touched here, flagged as a possible
+  # follow-up cleanup, not a live bug (a route with no incoming traffic is
+  # inert, not broken).
 
   - name: "orion:cognition:reasoning_call"
     kind: "telemetry"
@@ -1516,7 +1547,9 @@ channels:
     schema_id: "ChatHistorySparkMetaPatchV1"
     message_kind: "chat.history.spark_meta.patch.v1"
     producer_services: ["orion-memory-consolidation"]
-    consumer_services: ["orion-sql-writer", "orion-spark-introspector"]
+    # "orion-spark-introspector" removed 2026-07-28, spark-introspector
+    # retirement.
+    consumer_services: ["orion-sql-writer"]
     stability: "experimental"
     since: "2026-06-16"
 
@@ -1640,17 +1673,17 @@ channels:
     kind: "event"
     schema_id: "CognitionTracePayload"
     producer_services: ["orion-cortex-exec"]
-    consumer_services: ["orion-spark-introspector", "orion-landing-pad", "orion-bus-tap", "orion-sql-writer"]
+    # "orion-spark-introspector" removed 2026-07-28, spark-introspector
+    # retirement.
+    consumer_services: ["orion-landing-pad", "orion-bus-tap", "orion-sql-writer"]
     stability: "experimental"
     since: "2026-01-10"
 
-  - name: "orion:spark:introspector:reply:*"
-    kind: "result"
-    schema_id: "GenericPayloadV1"
-    producer_services: ["orion-cortex-orch"]
-    consumer_services: ["orion-spark-introspector"]
-    stability: "experimental"
-    since: "2026-01-10"
+  # orion:spark:introspector:reply:* (schema_id GenericPayloadV1, kind
+  # result) removed 2026-07-28, spark-introspector retirement: sole producer
+  # (orion-cortex-orch, replying to spark-introspector's heavy-introspection
+  # cortex requests) and sole consumer (orion-spark-introspector) both went
+  # away with the service.
 
   - name: "orion:tts:intake"
     kind: "request"

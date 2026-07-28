@@ -51,7 +51,8 @@ DEFAULT_CONTAINERS = (
     "orion-athena-hub",
     "orion-athena-actions",
     "orion-athena-thought",
-    "orion-athena-spark-introspector",
+    # "orion-athena-spark-introspector" removed 2026-07-28: the container no
+    # longer exists (spark-introspector retirement).
     "orion-athena-chat-memory",
 )
 

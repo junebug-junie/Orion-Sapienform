@@ -171,7 +171,9 @@ from .substrate_lattice_routes import router as substrate_lattice_router
 from .self_brain_routes import router as self_brain_router
 from .field_channel_glossary_routes import router as field_channel_glossary_router
 from .bus_synaptic_graph_routes import router as bus_synaptic_graph_router
+from .chat_turn_trace_routes import router as chat_turn_trace_router
 router.include_router(grammar_atlas_router)
+router.include_router(chat_turn_trace_router)
 router.include_router(substrate_biometrics_router)
 router.include_router(substrate_field_router)
 router.include_router(substrate_attention_router)

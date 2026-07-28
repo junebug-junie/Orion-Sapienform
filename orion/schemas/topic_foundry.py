@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from datetime import datetime
-from typing import List, Optional
+from typing import Optional
 from uuid import UUID
 
 from pydantic import BaseModel, ConfigDict
@@ -50,22 +50,11 @@ class TopicFoundryDriftAlertV1(BaseModel):
     created_at: datetime
 
 
-class KgEdgeIngestItemV1(BaseModel):
-    model_config = ConfigDict(extra="ignore")
-
-    edge_id: UUID
-    segment_id: UUID
-    subject: str
-    predicate: str
-    object: str
-    confidence: float
-    created_at: datetime
-
-
-class KgEdgeIngestV1(BaseModel):
-    model_config = ConfigDict(extra="ignore")
-
-    run_id: UUID
-    model_id: UUID
-    model_name: str
-    edges: List[KgEdgeIngestItemV1]
+# KgEdgeIngestItemV1 / KgEdgeIngestV1 (bus envelope for the retired
+# orion:kg:edge:ingest.v1 channel) removed 2026-07-28 -- zero live consumers
+# ever subscribed. The same underlying data (topic-foundry's typed
+# mention/asks_about/claims_about/next_step edges) now reaches a real
+# consumer via GET /kg/edges (KgEdgeRecord in
+# services/orion-topic-foundry/app/models.py), pulled by
+# orion-hub/scripts/concept_atlas_routes.py into the live Falkor substrate
+# graph. See orion/substrate/adapters/topic_foundry.py's module docstring.

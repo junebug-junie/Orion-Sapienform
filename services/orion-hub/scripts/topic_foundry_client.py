@@ -315,6 +315,53 @@ def fetch_segments_for_run(
     return result
 
 
+# Mirrors GET /kg/edges's own API ceiling (`ge=1, le=500` on the route).
+MAX_KG_EDGES_LIMIT = 500
+
+
+def fetch_mention_edges_for_run(
+    base_url: str,
+    run_id: str,
+    *,
+    timeout: float = DEFAULT_TIMEOUT_SEC,
+    limit: int = MAX_KG_EDGES_LIMIT,
+) -> list[dict[str, Any]]:
+    """Return `KgEdgeRecord` dicts for `run_id` filtered to `predicate=mentions`
+    (`GET /kg/edges`) -- topic-foundry's real, LLM-enriched entity-mention
+    triples, added 2026-07-28 to feed `EntityNodeV1` construction in
+    `orion.substrate.adapters.topic_foundry.map_topic_foundry_run_to_substrate`
+    (see that module's docstring for why: the old `orion:kg:edge:ingest.v1`
+    bus publish this data used to go out on had zero live consumers).
+
+    Same degrade-not-abort contract as `fetch_segments_for_run`: raises
+    `TopicFoundryClientError` on network/HTTP/parse failure or a malformed
+    response; an empty `items` list (a real run with zero mentions) is not an
+    error. No pagination loop -- `limit` matches the API's own ceiling, so a
+    run with more than 500 mention edges only gets the first page (API's
+    default `sort_by=created_at, sort_dir=desc` -- no `total` field on this
+    endpoint to compare against, unlike `/segments`, so truncation here is
+    silent by construction, not just by omission).
+    """
+    url = f"{base_url.rstrip('/')}/kg/edges"
+    try:
+        resp = requests.get(
+            url,
+            params={"run_id": run_id, "predicate": "mentions", "limit": limit},
+            timeout=timeout,
+        )
+        resp.raise_for_status()
+        payload = resp.json()
+    except requests.RequestException as exc:
+        raise TopicFoundryClientError(f"topic_foundry_kg_edges_request_failed: {exc}") from exc
+    except ValueError as exc:
+        raise TopicFoundryClientError(f"topic_foundry_kg_edges_invalid_json: {exc}") from exc
+
+    items = payload.get("items") if isinstance(payload, dict) else None
+    if items is None:
+        raise TopicFoundryClientError("topic_foundry_kg_edges_malformed_response")
+    return [item for item in items if isinstance(item, dict)]
+
+
 def fetch_run_topics_and_keywords(
     base_url: str,
     *,

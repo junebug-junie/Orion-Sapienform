@@ -631,10 +631,11 @@ async def startup_event():
                         concept_atlas_routes_runtime.concept_atlas_ingest_topic_foundry
                     )
                     logger.info(
-                        "substrate_topic_foundry_scheduler_ingest_tick available=%s run_id=%s concepts_written=%s edges_written=%s typed_edges_written=%s",
+                        "substrate_topic_foundry_scheduler_ingest_tick available=%s run_id=%s concepts_written=%s entities_written=%s edges_written=%s typed_edges_written=%s",
                         ingest_summary.get("available"),
                         ingest_summary.get("run_id"),
                         ingest_summary.get("concepts_written"),
+                        ingest_summary.get("entities_written"),
                         ingest_summary.get("edges_written"),
                         ingest_summary.get("typed_edges_written"),
                     )

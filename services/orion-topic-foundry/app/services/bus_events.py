@@ -7,7 +7,6 @@ from typing import Any, Optional
 from orion.core.bus.async_service import OrionBusAsync
 from orion.core.bus.bus_schemas import BaseEnvelope, ServiceRef
 from orion.schemas.topic_foundry import (
-    KgEdgeIngestV1,
     TopicFoundryDriftAlertV1,
     TopicFoundryEnrichCompleteV1,
     TopicFoundryRunCompleteV1,
@@ -21,7 +20,8 @@ logger = logging.getLogger("topic-foundry.bus")
 RUN_COMPLETE_CHANNEL = "orion:topic:foundry:run:complete.v1"
 ENRICH_COMPLETE_CHANNEL = "orion:topic:foundry:enrich:complete.v1"
 DRIFT_ALERT_CHANNEL = "orion:topic:foundry:drift:alert.v1"
-KG_EDGE_INGEST_CHANNEL = "orion:kg:edge:ingest.v1"
+# KG_EDGE_INGEST_CHANNEL ("orion:kg:edge:ingest.v1") retired 2026-07-28 --
+# zero live consumers. See kg_edges.py::generate_edges_for_run's comment.
 
 
 def _safe_run(coro) -> None:
@@ -91,15 +91,6 @@ class TopicFoundryBusPublisher:
             self._publish(
                 DRIFT_ALERT_CHANNEL,
                 "topic.foundry.drift.alert.v1",
-                payload.model_dump(mode="json"),
-            )
-        )
-
-    def publish_kg_edges(self, payload: KgEdgeIngestV1) -> None:
-        _safe_run(
-            self._publish(
-                KG_EDGE_INGEST_CHANNEL,
-                "kg.edge.ingest.v1",
                 payload.model_dump(mode="json"),
             )
         )

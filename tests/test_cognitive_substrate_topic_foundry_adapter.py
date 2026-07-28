@@ -241,3 +241,148 @@ def test_observed_at_and_subject_ref_propagate() -> None:
     concept_nodes = [n for n in out.nodes if n.node_kind == "concept"]
     assert concept_nodes[0].subject_ref == "project:orion_sapienform"
     assert concept_nodes[0].temporal.observed_at == ts
+
+
+# --- mention_edges -> EntityNodeV1 / associated_with, added 2026-07-28 ---
+
+
+def test_mention_edge_produces_entity_node_and_associated_with_edge() -> None:
+    out = map_topic_foundry_run_to_substrate(
+        run_id="run-1",
+        topics=_topics(),
+        keywords_by_topic=_keywords_by_topic(),
+        mention_edges=[{"segment_id": "seg-a", "object": "Juniper Feld", "confidence": 0.6}],
+        segment_topic_id_map={"seg-a": 0},
+    )
+    entity_nodes = [n for n in out.nodes if n.node_kind == "entity"]
+    assert len(entity_nodes) == 1
+    assert entity_nodes[0].label == "Juniper Feld"
+
+    mention_edges = [e for e in out.edges if e.predicate == "associated_with"]
+    assert len(mention_edges) == 1
+    edge = mention_edges[0]
+    assert edge.source.node_id == "sub-concept-topicfoundry-run-1-0"
+    assert edge.target.node_id == entity_nodes[0].node_id
+    assert edge.confidence == pytest.approx(0.6)
+
+
+def test_mention_edge_deduplicates_entity_by_normalized_label() -> None:
+    out = map_topic_foundry_run_to_substrate(
+        run_id="run-1",
+        topics=_topics(),
+        keywords_by_topic=_keywords_by_topic(),
+        mention_edges=[
+            {"segment_id": "seg-a", "object": "Juniper Feld", "confidence": 0.6},
+            {"segment_id": "seg-a", "object": "  juniper feld  ", "confidence": 0.9},
+        ],
+        segment_topic_id_map={"seg-a": 0},
+    )
+    entity_nodes = [n for n in out.nodes if n.node_kind == "entity"]
+    assert len(entity_nodes) == 1, "differently-cased/whitespaced same entity must dedupe to one node"
+    mention_edges = [e for e in out.edges if e.predicate == "associated_with"]
+    assert len(mention_edges) == 1, "duplicate (topic, entity) pair must not produce a second edge"
+
+
+def test_mention_edge_for_outlier_or_below_floor_topic_is_skipped() -> None:
+    out = map_topic_foundry_run_to_substrate(
+        run_id="run-1",
+        topics=_topics(),
+        keywords_by_topic=_keywords_by_topic(),
+        mention_edges=[
+            {"segment_id": "seg-outlier", "object": "should not appear", "confidence": 0.6},
+            {"segment_id": "seg-thin", "object": "also should not appear", "confidence": 0.6},
+        ],
+        segment_topic_id_map={"seg-outlier": -1, "seg-thin": 2},  # -1 excluded, topic 2 below min_doc_count
+    )
+    assert not [n for n in out.nodes if n.node_kind == "entity"]
+    assert not [e for e in out.edges if e.predicate == "associated_with"]
+
+
+def test_mention_edge_with_unmapped_segment_is_skipped() -> None:
+    out = map_topic_foundry_run_to_substrate(
+        run_id="run-1",
+        topics=_topics(),
+        keywords_by_topic=_keywords_by_topic(),
+        mention_edges=[{"segment_id": "seg-unknown", "object": "orphan mention", "confidence": 0.6}],
+        segment_topic_id_map={},  # no entry for seg-unknown
+    )
+    assert not [n for n in out.nodes if n.node_kind == "entity"]
+    assert not [e for e in out.edges if e.predicate == "associated_with"]
+
+
+def test_no_mention_edges_is_a_no_op() -> None:
+    out = map_topic_foundry_run_to_substrate(
+        run_id="run-1",
+        topics=_topics(),
+        keywords_by_topic=_keywords_by_topic(),
+    )
+    assert not [n for n in out.nodes if n.node_kind == "entity"]
+
+
+def test_mention_edges_cap_bounds_worst_case_work() -> None:
+    from orion.substrate.adapters.topic_foundry import MAX_MENTION_EDGES
+
+    over_cap = MAX_MENTION_EDGES + 50
+    mention_edges = [
+        {"segment_id": "seg-a", "object": f"entity-{i}", "confidence": 0.5} for i in range(over_cap)
+    ]
+    out = map_topic_foundry_run_to_substrate(
+        run_id="run-1",
+        topics=_topics(),
+        keywords_by_topic=_keywords_by_topic(),
+        mention_edges=mention_edges,
+        segment_topic_id_map={"seg-a": 0},
+    )
+    entity_nodes = [n for n in out.nodes if n.node_kind == "entity"]
+    assert len(entity_nodes) == MAX_MENTION_EDGES
+
+
+def test_malformed_mention_edge_is_skipped_not_raised() -> None:
+    out = map_topic_foundry_run_to_substrate(
+        run_id="run-1",
+        topics=_topics(),
+        keywords_by_topic=_keywords_by_topic(),
+        mention_edges=[
+            {"segment_id": None, "object": "no segment id", "confidence": 0.5},
+            {"segment_id": "seg-a", "object": "", "confidence": 0.5},
+            {"segment_id": "seg-a", "object": "not a real number", "confidence": "garbage"},
+        ],
+        segment_topic_id_map={"seg-a": 0},
+    )
+    # The third item has a real entity string, just an unparseable confidence
+    # (defaults to 0.5) -- it should still produce a node/edge; the first two
+    # are genuinely unusable (no segment_id / empty object) and are skipped.
+    entity_nodes = [n for n in out.nodes if n.node_kind == "entity"]
+    assert len(entity_nodes) == 1
+    assert entity_nodes[0].label == "not a real number"
+
+
+def test_mention_edge_label_truncated_to_max_length() -> None:
+    from orion.substrate.adapters.topic_foundry import MAX_ENTITY_LABEL_LENGTH
+
+    over_length = "x" * (MAX_ENTITY_LABEL_LENGTH + 50)
+    out = map_topic_foundry_run_to_substrate(
+        run_id="run-1",
+        topics=_topics(),
+        keywords_by_topic=_keywords_by_topic(),
+        mention_edges=[{"segment_id": "seg-a", "object": over_length, "confidence": 0.5}],
+        segment_topic_id_map={"seg-a": 0},
+    )
+    entity_nodes = [n for n in out.nodes if n.node_kind == "entity"]
+    assert len(entity_nodes) == 1
+    assert len(entity_nodes[0].label) == MAX_ENTITY_LABEL_LENGTH
+
+
+def test_mention_edge_confidence_out_of_range_is_clamped() -> None:
+    out = map_topic_foundry_run_to_substrate(
+        run_id="run-1",
+        topics=_topics(),
+        keywords_by_topic=_keywords_by_topic(),
+        mention_edges=[
+            {"segment_id": "seg-a", "object": "too high", "confidence": 1.5},
+            {"segment_id": "seg-a", "object": "too low", "confidence": -3.0},
+        ],
+        segment_topic_id_map={"seg-a": 0},
+    )
+    confidences = sorted(e.confidence for e in out.edges if e.predicate == "associated_with")
+    assert confidences == [0.0, 1.0]

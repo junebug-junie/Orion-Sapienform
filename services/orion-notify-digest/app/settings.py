@@ -19,7 +19,7 @@ class Settings(BaseSettings):
 
     POSTGRES_URI: str = Field("sqlite:////data/notify.db", alias="POSTGRES_URI")
 
-    NOTIFY_SERVICE_URL: str = Field("http://orion-notify:7140", alias="NOTIFY_SERVICE_URL")
+    NOTIFY_SERVICE_URL: str = Field("http://notify:7140", alias="NOTIFY_SERVICE_URL")
     NOTIFY_API_TOKEN: Optional[str] = Field(None, alias="NOTIFY_API_TOKEN")
 
     DIGEST_ENABLED: bool = Field(True, alias="DIGEST_ENABLED")

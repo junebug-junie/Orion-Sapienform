@@ -145,7 +145,7 @@ class ThoughtSettings(BaseSettings):
     # stay >= MIND_ENRICHMENT_MIN_VIABLE_WALL_MS and the HTTP read timeout must
     # exceed the wall (so Mind's own fail-open result is returned, not aborted).
     mind_enrichment_enabled: bool = Field(False, alias="ORION_THOUGHT_MIND_ENRICHMENT_ENABLED")
-    mind_base_url: str = Field("http://orion-mind:6611", alias="ORION_MIND_BASE_URL")
+    mind_base_url: str = Field("http://mind:6611", alias="ORION_MIND_BASE_URL")
     mind_timeout_sec: float = Field(210.0, alias="ORION_THOUGHT_MIND_TIMEOUT_SEC")
     mind_wall_ms: int = Field(180_000, alias="ORION_THOUGHT_MIND_WALL_MS")
     mind_router_profile: str = Field("default", alias="ORION_THOUGHT_MIND_ROUTER_PROFILE")

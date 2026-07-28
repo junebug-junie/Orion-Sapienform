@@ -3,6 +3,7 @@ from __future__ import annotations
 import math
 from typing import Any
 
+from orion.bus.ewma import compute_ewma_update
 from orion.schemas.biometrics_projection import NodeBiometricsProjectionV1
 from orion.schemas.chat_projection import ChatSessionProjectionV1
 from orion.schemas.execution_projection import ExecutionTrajectoryProjectionV1
@@ -29,6 +30,36 @@ _BUS_SYNAPTIC_ZSCORE_SATURATION = 3.0
 # its four siblings (execution/biometrics/chat/route), instead of permanently
 # reporting "moderately surprised" regardless of real mesh conditions.
 _BUS_SYNAPTIC_CALM_FLOOR = math.sqrt(2.0 / math.pi)
+
+# 2026-07-28: execution_prediction_error's own EWMA baseline calibration. alpha=0.2
+# reuses services/orion-bus-mirror/app/graph_writer.py::compute_ewma_update's own
+# alpha (via the shared orion/bus/ewma.py copy) rather than inventing a new number --
+# both update per real observation (a real edge/a real execution-tick batch), not on
+# a fixed wall-clock cadence like orion-field-digester's alpha=0.02 (which runs once
+# per RECEIPT_POLL_INTERVAL_SEC tick regardless of traffic). Saturation reuses the
+# same z>=3.0 "anomalous" convention as _BUS_SYNAPTIC_ZSCORE_SATURATION above and
+# services/orion-hub/scripts/bus_synaptic_graph_routes.py's anomalies() route.
+_EXECUTION_PREDICTION_ERROR_EWMA_ALPHA = 0.2
+_EXECUTION_PREDICTION_ERROR_ZSCORE_SATURATION = 3.0
+
+# 2026-07-28: domain-specific variance floor for compute_ewma_update, replacing
+# that function's own default (_MIN_VARIANCE=1e-6, calibrated for orion-bus-
+# mirror's real-time-gap-in-seconds domain). Live-confirmed via
+# orion/bus/ewma.py's own unit test data reproduced here: replaying this
+# domain's real historical raw-delta sequence (120 real `substrate.execution_
+# trajectory` receipts, 2026-07-28) through the shared default floor left the
+# EWMA's real per-tick variance settling around 4.2e-11 once warmed up -- five
+# orders of magnitude below 1e-6, so the shared floor dominated every real
+# z-score computed (max ever: 0.045, saturating error at only 0.015 across the
+# full history) instead of this domain's real spread. Set one order of
+# magnitude below that smallest real warmed-up variance -- low enough that
+# genuine signal drives the z-score rather than the floor, still nonzero to
+# guard the first non-cold-start tick's div-by-zero (prev_variance exactly
+# 0.0). Replaying the same 120-receipt history through this floor instead
+# gives a healthy, non-degenerate spread (max error 0.97, mean 0.12, no
+# saturation) -- not re-tuned per this domain's future drift, so revisit if
+# execution's real delta scale ever shifts by orders of magnitude.
+_EXECUTION_PREDICTION_ERROR_MIN_VARIANCE = 1e-10
 
 
 def _mean(values: list[float]) -> float:
@@ -65,6 +96,49 @@ def execution_prediction_error(
     tick's freshest one. A run that genuinely does get revised in place still prefers its
     own exact match, so this is additive, not a behavior change for that (currently
     unobserved, but schema-legal) case.
+
+    **2026-07-28 baseline fix.** Same disease as ``recent_perturbations``' old
+    fixed ``/20.0`` cap and ``bus_synaptic_prediction_error``'s pre-2026-07-26 calm
+    floor: this used to saturate via a fixed ``_mean(deltas) / _THRESHOLD`` (0.30)
+    divisor. Live-confirmed 2026-07-28 against 118 real ``substrate.execution_
+    trajectory`` receipts: mean error 0.0001, max ever observed 0.0009 -- real
+    cortex-exec pressure-hint deltas run about three orders of magnitude below
+    ``_THRESHOLD``, so this instrument reads ~0 essentially always regardless of
+    real execution turbulence. Not a calibration nit -- it is structurally
+    incapable of ever reading "surprised," the mirror-image failure of bus_
+    synaptic's old floor bug (that one couldn't read "calm"; this one can't read
+    "surprised"). Root cause is the same in both cases: a hand-picked constant
+    standing in for a self-calibrating baseline.
+
+    Fixed the same way ``recent_perturbations`` was: track this domain's own
+    EWMA mean/variance of the raw per-tick ``_mean(deltas)`` (persisted on the
+    projection itself -- ``prediction_error_baseline_ewma``/``_var``/``_n``, see
+    ``ExecutionTrajectoryProjectionV1``'s docstring) via ``orion.bus.ewma.
+    compute_ewma_update``, then score *this* tick's raw delta as a z-score against
+    that live baseline instead of dividing by a fixed constant. Passes its own
+    ``_EXECUTION_PREDICTION_ERROR_MIN_VARIANCE`` rather than that function's
+    default -- see that constant's own comment: this domain's real variance is
+    five orders of magnitude below the shared default, which would otherwise
+    silently reintroduce a milder version of this same bug one layer down.
+    Unlike bus_
+    synaptic_prediction_error, no calm-floor subtraction is needed here: bus_
+    synaptic's floor exists because it averages ``|z|`` (already-signed z-scores
+    folded to their absolute value) across many edges every tick, and
+    ``mean(|Z|)`` for a calm, zero-mean population has a strictly positive
+    expected value (``sqrt(2/pi)``) by construction. This function instead
+    produces exactly one raw z-score per tick from ``compute_ewma_update`` --
+    a single signed value, not a mean of absolutes -- so it can genuinely rest
+    at (or below) zero when calm with no bias to correct for. A below-baseline
+    tick (execution unusually *calmer* than its own recent normal) is clamped to
+    0.0 rather than reported as negative surprise, since "surprising" here means
+    "more turbulent than usual," not "different from usual" in either direction.
+
+    Returns 0.0 (not the old raw/``_THRESHOLD`` score) on the first tick with any
+    real deltas -- ``compute_ewma_update`` returns no z-score until a baseline
+    exists (``prev_count == 0``), and reporting a value here would misrepresent
+    "no baseline yet" as "measured, not anomalous" (this repo's "no empty-shell
+    cognition" rule). The baseline absorbs that tick's value regardless, so the
+    very next tick already has one observation to compare against.
     """
     deltas: list[float] = []
     prev_fallback = _latest_run(prev.runs)
@@ -78,7 +152,24 @@ def execution_prediction_error(
             pv = prev_run.pressure_hints.get(key, 0.0)
             cv = curr_run.pressure_hints.get(key, 0.0)
             deltas.append(abs(cv - pv))
-    return min(1.0, _mean(deltas) / _THRESHOLD) if deltas else 0.0
+    if not deltas:
+        return 0.0
+
+    raw_mean_delta = _mean(deltas)
+    update = compute_ewma_update(
+        prev_ewma=prev.prediction_error_baseline_ewma,
+        prev_variance=prev.prediction_error_baseline_ewma_var,
+        prev_count=prev.prediction_error_baseline_ewma_n,
+        value=raw_mean_delta,
+        alpha=_EXECUTION_PREDICTION_ERROR_EWMA_ALPHA,
+        min_variance=_EXECUTION_PREDICTION_ERROR_MIN_VARIANCE,
+    )
+    curr.prediction_error_baseline_ewma = update.ewma
+    curr.prediction_error_baseline_ewma_var = update.variance
+    curr.prediction_error_baseline_ewma_n = prev.prediction_error_baseline_ewma_n + 1
+    if update.zscore is None:
+        return 0.0
+    return min(1.0, max(0.0, update.zscore) / _EXECUTION_PREDICTION_ERROR_ZSCORE_SATURATION)
 
 
 def transport_prediction_error(

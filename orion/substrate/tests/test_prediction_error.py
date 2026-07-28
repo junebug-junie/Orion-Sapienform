@@ -151,11 +151,20 @@ def _exec_run(
     )
 
 
-def _exec_projection(runs: dict[str, ExecutionRunStateV1]) -> ExecutionTrajectoryProjectionV1:
+def _exec_projection(
+    runs: dict[str, ExecutionRunStateV1],
+    *,
+    baseline_ewma: float = 0.0,
+    baseline_ewma_var: float = 0.0,
+    baseline_ewma_n: int = 0,
+) -> ExecutionTrajectoryProjectionV1:
     return ExecutionTrajectoryProjectionV1(
         projection_id="active_execution_trajectory",
         generated_at=_NOW,
         runs=runs,
+        prediction_error_baseline_ewma=baseline_ewma,
+        prediction_error_baseline_ewma_var=baseline_ewma_var,
+        prediction_error_baseline_ewma_n=baseline_ewma_n,
     )
 
 
@@ -165,38 +174,57 @@ def test_execution_prediction_error_zero_when_no_change() -> None:
     assert execution_prediction_error(prev, curr) == 0.0
 
 
-def test_execution_prediction_error_scales_with_delta_magnitude_on_exact_match() -> None:
+def test_execution_prediction_error_first_tick_is_cold_start_but_seeds_baseline() -> None:
+    """2026-07-28 baseline fix: live-confirmed the old fixed ``_THRESHOLD=0.30``
+    divisor made this instrument read ~0 essentially always (real deltas run ~3
+    orders of magnitude below it) -- the mirror-image of bus_synaptic's old calm-
+    floor bug. Fix tracks an EWMA baseline instead. A tick with no established
+    baseline yet (``prediction_error_baseline_ewma_n == 0``) must still return
+    0.0 (no z-score to compute against -- 'no empty-shell cognition'), but must
+    seed the baseline with this tick's real raw delta so the very next tick has
+    something real to compare against."""
     prev = _exec_projection({"r1": _exec_run("r1", pressure_hints={"cortex_exec_step_load": 0.0})})
     curr = _exec_projection({"r1": _exec_run("r1", pressure_hints={"cortex_exec_step_load": 0.3})})
+    result = execution_prediction_error(prev, curr)
+    assert result == 0.0
     # mean of one key's delta (0.3) across the other three implicit-0.0 keys:
-    # (0.3 + 0 + 0 + 0) / 4 = 0.075 -> 0.075 / 0.30 = 0.25
-    assert execution_prediction_error(prev, curr) == pytest.approx(0.25)
+    # (0.3 + 0 + 0 + 0) / 4 = 0.075
+    assert curr.prediction_error_baseline_ewma == pytest.approx(0.075)
+    assert curr.prediction_error_baseline_ewma_var == 0.0
+    assert curr.prediction_error_baseline_ewma_n == 1
 
 
 def test_execution_prediction_error_zero_when_prev_empty() -> None:
     """No prev runs at all -- no fallback reference exists either, must stay 0.0,
-    not raise."""
+    not raise, and must not touch curr's baseline fields (no real delta was ever
+    computed this tick)."""
     prev = _exec_projection({})
     curr = _exec_projection({"r1": _exec_run("r1", pressure_hints={"cortex_exec_step_load": 0.9})})
     assert execution_prediction_error(prev, curr) == 0.0
+    assert curr.prediction_error_baseline_ewma_n == 0
 
 
 def test_execution_prediction_error_falls_back_to_latest_prev_run_for_new_trace_id() -> None:
     """Regression test for the confirmed-live bug (2026-07-21): real cortex-exec runs
     are single-shot creates, a fresh trace_id every time, so an exact trace_id match
-    structurally never occurs. Before the fix, this returned 0.0 unconditionally --
+    structurally never occurs. Before that fix, this returned 0.0 unconditionally --
     permanently blind regardless of real execution volume. A brand-new trace_id in
-    curr with no prev counterpart must now diff against prev's most-recently-updated
-    run instead of contributing nothing."""
+    curr with no prev counterpart must diff against prev's most-recently-updated run
+    instead of contributing nothing.
+
+    The return value itself is 0.0 here regardless (this call has no established
+    baseline yet, a separate and legitimate reason for 0.0 -- see the cold-start
+    test above), so the regression guard is on the *baseline* the fallback-matched
+    delta seeds, not the return value: it must reflect the real 0.3 delta against
+    "prior-run", not 0.0 from an exact match that structurally never occurs."""
     prev = _exec_projection(
         {"prior-run": _exec_run("prior-run", pressure_hints={"cortex_exec_step_load": 0.0})}
     )
     curr = _exec_projection(
         {"new-run": _exec_run("new-run", pressure_hints={"cortex_exec_step_load": 0.3})}
     )
-    # Same magnitude as the exact-match case above: must not silently stay 0.0.
-    assert execution_prediction_error(prev, curr) == pytest.approx(0.25)
-    assert execution_prediction_error(prev, curr) != 0.0
+    assert execution_prediction_error(prev, curr) == 0.0
+    assert curr.prediction_error_baseline_ewma == pytest.approx(0.075)
 
 
 def test_execution_prediction_error_fallback_uses_most_recently_updated_prev_run() -> None:
@@ -217,8 +245,10 @@ def test_execution_prediction_error_fallback_uses_most_recently_updated_prev_run
     curr = _exec_projection(
         {"brand-new": _exec_run("brand-new", pressure_hints={"cortex_exec_step_load": 0.3})}
     )
-    # Must diff against "newer" (delta 0.3), not "older" (delta 0.6).
-    assert execution_prediction_error(prev, curr) == pytest.approx(0.25)
+    execution_prediction_error(prev, curr)
+    # Must have diffed against "newer" (delta 0.3 -> mean 0.075), not "older"
+    # (delta 0.6 -> mean 0.15).
+    assert curr.prediction_error_baseline_ewma == pytest.approx(0.075)
 
 
 def test_execution_prediction_error_prefers_exact_trace_id_match_over_fallback() -> None:
@@ -240,7 +270,85 @@ def test_execution_prediction_error_prefers_exact_trace_id_match_over_fallback()
         }
     )
     curr = _exec_projection({"r1": _exec_run("r1", pressure_hints={"cortex_exec_step_load": 0.25})})
+    execution_prediction_error(prev, curr)
+    # If the fallback ("unrelated-newer", delta 0.65) won instead of the exact
+    # match ("r1", delta 0.0), this would be nonzero.
+    assert curr.prediction_error_baseline_ewma == 0.0
+
+
+def test_execution_prediction_error_scores_deviation_from_established_baseline() -> None:
+    """Once a baseline exists, this tick's raw delta is scored as a z-score against
+    it (not divided by the old fixed ``_THRESHOLD``). Baseline mean/variance set
+    directly here (rather than simulated via prior calls) to keep the expected
+    z-score exactly checkable."""
+    prev = _exec_projection(
+        {"r1": _exec_run("r1", pressure_hints={"cortex_exec_step_load": 0.20})},
+        baseline_ewma=0.022,
+        baseline_ewma_var=0.00002,
+        baseline_ewma_n=2,
+    )
+    curr = _exec_projection({"r1": _exec_run("r1", pressure_hints={"cortex_exec_step_load": 0.32})})
+    # delta 0.12 across 4 keys -> raw_mean_delta = 0.03
+    # zscore = (0.03 - 0.022) / sqrt(0.00002) = 1.7888543819998317
+    # error = min(1.0, max(0.0, zscore) / 3.0)
+    expected = min(1.0, max(0.0, (0.03 - 0.022) / math.sqrt(0.00002)) / 3.0)
+    assert execution_prediction_error(prev, curr) == pytest.approx(expected)
+    assert curr.prediction_error_baseline_ewma == pytest.approx(0.2 * 0.03 + 0.8 * 0.022)
+    assert curr.prediction_error_baseline_ewma_n == 3
+
+
+def test_execution_prediction_error_clamps_below_baseline_tick_to_zero() -> None:
+    """A tick calmer than its own recent baseline (negative z-score) must clamp to
+    0.0, not go negative -- "surprising" means "more turbulent than usual," not
+    "different from usual" in either direction."""
+    prev = _exec_projection(
+        {"r1": _exec_run("r1", pressure_hints={"cortex_exec_step_load": 0.20})},
+        baseline_ewma=0.05,
+        baseline_ewma_var=0.0001,
+        baseline_ewma_n=5,
+    )
+    curr = _exec_projection({"r1": _exec_run("r1", pressure_hints={"cortex_exec_step_load": 0.20})})
+    # delta 0.0 -> raw_mean_delta 0.0; zscore = (0.0-0.05)/sqrt(0.0001) = -5.0
     assert execution_prediction_error(prev, curr) == 0.0
+
+
+def test_execution_prediction_error_uses_domain_specific_variance_floor() -> None:
+    """Regression guard for the 2026-07-28 floor fix: live-confirmed this domain's
+    real variance runs about five orders of magnitude below orion.bus.ewma's
+    shared default ``_MIN_VARIANCE`` (1e-6, calibrated for a different domain).
+    Replaying real historical execution receipts through that shared default
+    left every z-score dominated by the borrowed constant instead of this
+    domain's real spread (max error 0.015 across 120 real receipts) --
+    reintroducing a milder version of the exact bug this whole patch exists to
+    fix. This locks in that execution_prediction_error passes its own much
+    smaller floor (``_EXECUTION_PREDICTION_ERROR_MIN_VARIANCE`` = 1e-10), not
+    the shared default."""
+    prev = _exec_projection(
+        {"r1": _exec_run("r1", pressure_hints={"cortex_exec_step_load": 0.0})},
+        baseline_ewma=0.0,
+        baseline_ewma_var=1e-9,  # below the shared default (1e-6), above the domain floor (1e-10)
+        baseline_ewma_n=5,
+    )
+    curr = _exec_projection({"r1": _exec_run("r1", pressure_hints={"cortex_exec_step_load": 4e-4})})
+    # delta 4e-4 across 4 keys -> raw_mean_delta = 1e-4
+    result = execution_prediction_error(prev, curr)
+    # Domain floor (1e-10) loses to the real variance (1e-9): zscore = 1e-4 /
+    # sqrt(1e-9) ~= 3.162 -> saturates at 1.0.
+    assert result == pytest.approx(1.0)
+    # Under the shared default floor (1e-6, which would win over 1e-9 instead):
+    # zscore = 1e-4 / sqrt(1e-6) = 0.1 -> error 0.1/3.0 ~= 0.0333, nowhere near 1.0.
+    assert result != pytest.approx(0.1 / 3.0)
+
+
+def test_execution_prediction_error_saturates_at_one_for_large_zscore() -> None:
+    prev = _exec_projection(
+        {"r1": _exec_run("r1", pressure_hints={"cortex_exec_step_load": 0.0})},
+        baseline_ewma=0.0,
+        baseline_ewma_var=1e-8,
+        baseline_ewma_n=5,
+    )
+    curr = _exec_projection({"r1": _exec_run("r1", pressure_hints={"cortex_exec_step_load": 1.0})})
+    assert execution_prediction_error(prev, curr) == 1.0
 
 
 # -- chat_prediction_error ---------------------------------------------------

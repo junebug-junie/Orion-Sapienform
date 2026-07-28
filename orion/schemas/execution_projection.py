@@ -97,3 +97,15 @@ class ExecutionTrajectoryProjectionV1(BaseModel):
     projection_id: str
     generated_at: datetime
     runs: dict[str, ExecutionRunStateV1] = Field(default_factory=dict)
+    # EWMA baseline of execution_prediction_error's raw per-tick mean pressure-hint
+    # delta (orion/substrate/prediction_error.py). Domain-level state, not per-run --
+    # tracks "what does a normal tick's delta look like for this mesh" so that
+    # function can score deviation from its own live baseline instead of a fixed
+    # magic-number divisor. Defaults are the correct cold-start value for both a
+    # fresh projection and an upgrade from a persisted-but-older row that predates
+    # these fields (Pydantic fills the default when the field is absent from stored
+    # JSON) -- see execution_prediction_error's docstring for why 2026-07-28 needed
+    # this.
+    prediction_error_baseline_ewma: float = 0.0
+    prediction_error_baseline_ewma_var: float = 0.0
+    prediction_error_baseline_ewma_n: int = 0

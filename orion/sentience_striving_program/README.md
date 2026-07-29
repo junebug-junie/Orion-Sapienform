@@ -397,6 +397,21 @@ first place. Full reasoning and phased detail:
    `--window-hours 24 --gap-hours 12` after this ships is the honest next step before treating
    the monoculture-differentiation item as closed — a lower dominant-target percentage is
    expected, not guaranteed.
+   **2026-07-29 re-measurement: confirmed live, not just plausible.** ~6.3h post-deploy
+   (11,293 ticks, `orion-athena-field-digester`/`orion-athena-hub` restarted 2026-07-28T21:58Z,
+   re-measured 2026-07-29T04:22Z), a background health monitor sampling the live field/attention
+   endpoints every 5min the whole window found zero salience readings pinned at exactly 1.0 or
+   0.0 across 30 real firings (range 0.10-0.59) and only two single-sample connection blips
+   (self-recovered, consistent with a container restart, not the patch). The script's own
+   full-history item-5 number (92.17%) is **blended** across ~117k pre-fix ticks and ~11k
+   post-fix ticks and is not a clean read on the fix — isolating strictly to
+   `generated_at >= 2026-07-28T21:58:00Z` in the same run's `ticks.csv` artifact gives
+   `field:recent_perturbations` winning top-1 in **11.13%** of post-fix ticks (1,257/11,293),
+   down from the pre-fix 99.98%. `node:athena` now wins the remaining 88.87% — the monoculture
+   pathology this item named is broken, but note this trades one single-target dominance pattern
+   for another; whether `node:athena`'s 88.87% is genuine (real, warranted elevated pressure) or
+   itself an artifact worth investigating is an open question this patch didn't examine, separate
+   from the recent_perturbations fix itself.
 6. **Revisit `capability_policy.py`'s coupling to live salience** — only after item 3 closes
    the `drive_origin` dependency and item 2's field-native attention is proven, not assumed.
    At this point the actual mechanism is a real open choice, not a given: a salience-to-

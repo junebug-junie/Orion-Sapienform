@@ -1,10 +1,75 @@
 # Precision-weighted proposal scoring — design spec
 
-Status: **`dimension_confidence()` half IMPLEMENTED 2026-07-28** (this same evening, following
-this doc's own "Recommended next patch" section, Juniper's explicit "HIT IT" go-ahead). The
-`proposal_priority()`/`proposal_risk()`/`FeedbackFrameV1`-calibration-loop half remains
-**design mode, not implemented** -- explicitly out of scope for this patch, unchanged, see
-Non-goals below.
+Status: **`dimension_confidence()` half IMPLEMENTED 2026-07-28** (PR #1442). The
+`proposal_priority()`/weight-calibration half's **measurement pass ran 2026-07-29 and returned a
+real, decisive STOP** -- see "2026-07-29 calibration-measurement update" below. `proposal_risk()`
+stays untouched (Non-goals, unchanged).
+
+## 2026-07-29 calibration-measurement update
+
+Followed Missing Questions 3/4 exactly, "measure before minting": built
+`scripts/analysis/measure_proposal_feedback_correlation.py`, a read-only probe over real
+`substrate_feedback_frames` (175,688 rows, 2026-07-23T23:38 -> 2026-07-29T00:56, 121.3h real
+span), joined against `substrate_proposal_frames`/`substrate_policy_decision_frames`/
+`substrate_execution_dispatch_frames` to confirm chain completeness first (**100% -- every
+`source_proposal_frame_id`/`source_policy_frame_id`/`source_execution_dispatch_frame_id`
+reference resolves to a real row**, not assumed from the schema).
+
+**Missing Question 3 (per-template vs per-dimension) resolved empirically, not by default lean**:
+per-candidate `FeedbackFrameV1.observations[].score` is a *fixed constant per `outcome_kind`* by
+construction (`orion/feedback/builder.py::_score_for_outcome_kind`, backed by
+`FeedbackScoringV1`'s 8 hand-set constants) -- checked against all 175,688 real rows, not assumed:
+every `(template, source_kind, outcome_kind)` bucket's real score stddev is float noise (~1e-13 to
+~1e-17). The only source_kind carrying a real, non-deterministic outcome is `cortex_result`'s
+`completed`/`failed` split -- the one signal reflecting an actually-dispatched action's actual
+result rather than a deterministic function of policy-gate/dispatch-mode config. That signal is
+attributable per-template via the same real ID contract `orion/proposals/builder.py::
+stable_proposal_id()` already uses (`proposal:{template_key}:...` embedded verbatim in every
+downstream dispatch_id/result_id -- confirmed live on real rows before writing the script, not
+assumed), with no separate join needed. Per-dimension attribution was checked too (via
+`config/proposals/proposal_policy.v1.yaml`'s real per-template `dimensions` weights, not guessed)
+and found redundant with per-template here: templates map close to 1:1 onto a single dominant
+dimension, so a per-dimension analysis on this data cannot be distinguished from a per-template one
+-- moot given Step 2 didn't proceed either way (see below).
+
+**Missing Question 4 (online vs. offline) confirmed via this same measurement pass**: this offline,
+one-shot batch script *is* the "periodic offline refit, not live online update" mechanism the doc's
+own strong prior called for -- no online/incremental update was built or is proposed.
+
+**Real numbers, decisive STOP verdict**:
+
+| template | dominant dimension | n_completed | n_failed | n_total | completion_rate | usable? |
+| --- | --- | --- | --- | --- | --- | --- |
+| `inspect_node_resource_pressure` | `resource_pressure` | 15,879 | 15 | 15,894 | 99.91% | yes |
+| `inspect_transport_status` | `contract_pressure` | 60 | 2 | 62 | 96.77% | yes |
+| `inspect_execution_pressure` | `execution_pressure` | 0 | 8 | 8 | 0.00% | NO -- below n=30 floor |
+| (9 remaining templates) | various | 0 | 0 | 0 | n/a | NO -- zero real observations ever |
+
+Only 2 of 12 configured templates (`inspect_node_resource_pressure`, `inspect_transport_status`)
+have >= 30 real `cortex_result` observations to estimate a completion rate from at all. The other
+10 templates have either a statistically meaningless sample (`inspect_execution_pressure`, n=8) or
+**zero real completion observations ever** -- not because they perform badly, but because they
+never get dispatched far enough to produce a real outcome under the current dispatch-mode/policy-
+gate configuration (a separate architectural fact, out of scope to change here per this doc's own
+Non-goals on `proposal_risk()`/dispatch mode). Fitting priority weights from this data would only
+ever be informed by 17% of templates and would silently conflate "never given the chance to run"
+with "ran and failed" for the rest unless explicitly excluded -- exactly the "found a real,
+non-degenerate signal without checking whether it predicts anything real" gap this doc's own
+Acceptance Check 3 warned against.
+
+**Step 2 (the offline calibration mechanism / persisted weight artifact) was correctly NOT built.**
+Per this task's explicit scope: "a measurement-only result... is an acceptable, correct outcome."
+No new schema, table, or artifact was persisted; `proposal_priority()`'s `0.4/0.2/0.1` coefficients
+and `config/proposals/proposal_policy.v1.yaml`'s `dimension_weights`/`base_priority`/`base_risk`
+remain exactly as they were -- untouched, unfit, still hand-typed. This is not a temporary
+placeholder pending more history; it's a real finding that the current dispatch-mode gate
+structure, not sample count over time, is the actual blocker -- re-running this same script after
+more real-time elapses will not change the verdict unless the underlying dispatch-mode/policy-gate
+configuration changes first to let more templates actually complete real dispatches.
+
+Full report: `scripts/analysis/measure_proposal_feedback_correlation.py`'s own output
+(`/tmp/measure-proposal-feedback-correlation/report.md` at measurement time, plus
+`template_outcome_counts.csv` and `progress.log` in the same directory).
 
 ## 2026-07-28 implementation update
 
@@ -219,6 +284,13 @@ and explicitly out of scope here (see Non-goals).
 
 ## Non-goals
 
+- **2026-07-29 addendum**: not building the offline calibration/persisted-weight mechanism this
+  patch's own "Proposed schema / API changes" section anticipated -- the 2026-07-29
+  calibration-measurement update above found real data does not support it yet (only 2/12
+  templates have a statistically usable real completion-rate sample; the other 10 have zero or
+  single-digit real observations, gated by dispatch-mode/policy-gate config rather than by their
+  own quality). Revisit only after that gate itself changes, not merely after more wall-clock time
+  passes.
 - Not implementing full expected-free-energy action selection (the charter's larger §9a.3 ambition:
   epistemic value + pragmatic value, precision-weighted, as a formal EFE minimization). This spec is
   the thin precision-weighting step, not the full reframing — see Missing Question 6.

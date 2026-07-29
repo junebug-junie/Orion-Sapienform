@@ -404,3 +404,52 @@ def test_debug_panel_is_single_card_wrapping_all_rows_in_one_modal() -> None:
     assert "function openDebugPanelModal()" in app_js
     assert "function closeDebugPanelModal()" in app_js
     assert "debugPanelOpenModal.addEventListener('click'" in app_js
+
+
+def test_debug_panel_modal_z_index_is_below_all_per_item_modals() -> None:
+    html = INDEX_HTML.read_text(encoding="utf-8")
+    app_js = APP_JS.read_text(encoding="utf-8")
+
+    # The outer wrapping modal must sit strictly below the shared per-item
+    # modal tier (2147483646/647) so a nested modal (e.g. Memory, Agent
+    # Trace) opened from within it always paints on top, regardless of
+    # DOM-append order or click sequence.
+    assert 'id="debugPanelModalRoot"' in html
+    debug_root = html.split('id="debugPanelModalRoot"', 1)[1].split(">", 1)[0]
+    assert "z-index: 2147483640" in debug_root
+    debug_dialog = html.split('id="debugPanelModalDialog"', 1)[1].split(">", 1)[0]
+    assert "z-index: 2147483641" in debug_dialog
+    assert "debugPanelModalRoot.style.zIndex = '2147483640';" in app_js
+    assert "debugPanelModalDialog.style.zIndex = '2147483641';" in app_js
+
+    # Every per-item modal (including Agent Trace, which previously used a
+    # much lower z-50 and could never out-stack the wrapping modal) sits at
+    # or above the shared 2147483646/647 tier, strictly above the wrapper.
+    for modal_id in (
+        "memoryDebugModalDialog",
+        "autonomyDebugModalDialog",
+        "chatStanceDebugModalDialog",
+        "substrateReviewModalDialog",
+        "selfExperimentsModalDialog",
+        "autonomyReadinessModalDialog",
+        "recallCanaryModalDialog",
+        "cognitiveReviewModalDialog",
+    ):
+        section = html.split(f'id="{modal_id}"', 1)[1].split(">", 1)[0]
+        assert "z-index: 2147483647" in section, f"{modal_id} not above debug panel wrapper"
+    agent_trace_section = html.split('id="agentTraceModal"', 1)[1].split(">", 1)[0]
+    assert "z-50" not in agent_trace_section
+    assert "z-[2147483646]" in agent_trace_section
+
+
+def test_debug_panel_no_longer_shows_cognition_packs_or_verb_routing() -> None:
+    html = INDEX_HTML.read_text(encoding="utf-8")
+    modal_shell = html.split('id="debugPanelModalRoot"', 1)[1].split('id="autonomyDebugModalRoot"', 1)[0]
+    assert "Cognition Packs" not in modal_shell
+    assert "Verb Routing" not in modal_shell
+    assert 'id="packContainer"' not in modal_shell
+    assert 'id="verbSelectTrigger"' not in modal_shell
+    assert 'id="verbDropdown"' not in modal_shell
+    # Clear/Copy conversation controls (not verb/pack routing) are kept.
+    assert 'id="clearButton"' in modal_shell
+    assert 'id="copyButton"' in modal_shell

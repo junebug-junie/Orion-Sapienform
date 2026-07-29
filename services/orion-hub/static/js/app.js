@@ -3699,15 +3699,15 @@ document.addEventListener("DOMContentLoaded", () => {
     ensureDebugPanelModalRootOnBody();
     debugPanelModalRoot.style.position = 'fixed';
     debugPanelModalRoot.style.inset = '0';
-    debugPanelModalRoot.style.zIndex = '2147483646';
+    debugPanelModalRoot.style.zIndex = '2147483640';
     if (debugPanelModalBackdrop) {
       debugPanelModalBackdrop.style.position = 'fixed';
       debugPanelModalBackdrop.style.inset = '0';
-      debugPanelModalBackdrop.style.zIndex = '2147483646';
+      debugPanelModalBackdrop.style.zIndex = '2147483640';
     }
     if (debugPanelModalDialog) {
       debugPanelModalDialog.style.position = 'fixed';
-      debugPanelModalDialog.style.zIndex = '2147483647';
+      debugPanelModalDialog.style.zIndex = '2147483641';
     }
     debugPanelModalRoot.classList.remove('hidden');
     debugPanelModalRoot.setAttribute('aria-hidden', 'false');

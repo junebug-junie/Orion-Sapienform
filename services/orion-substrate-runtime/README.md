@@ -514,6 +514,21 @@ already-calibrated constant (variance floor, saturation threshold, alpha) has to
 against the new domain's real value scale, not just cited as "already established elsewhere" --
 see `docs/superpowers/pr-reports/2026-07-28-execution-prediction-error-ewma-baseline-pr.md`.
 
+**Live-verified in production, 2026-07-28 22:12 UTC -> 2026-07-29 04:21 UTC (~6h, PR #1434 merged
+and redeployed).** Confirmed the running container actually had the new code (`grep`'d
+`_EXECUTION_PREDICTION_ERROR_MIN_VARIANCE` inside the container's `prediction_error.py`, not just
+"the PR merged"). A background monitor polled every 10 minutes for container health, exceptions,
+and real `execution_prediction_error` receipt stats; 7 heartbeats over ~6h all landed in a healthy,
+non-degenerate range (mean 0.33-0.52, 8-35% saturated at 1.0, never fully pinned to 0 or 1). Zero
+exceptions/tracebacks in the logs across the whole window. The container also happened to restart
+cleanly once mid-window (03:56 UTC, `RestartCount: 0`, `ExitCode(prev): 0`, unrelated to this
+patch) — a real, unplanned test of the persistence fix this PR depends on:
+`prediction_error_baseline_ewma_n` read **5507** afterward, not reset to 0, confirming the EWMA
+baseline survives a process restart via the unconditional `save_execution_trajectory` call in
+`_execution_tick()`, exactly as designed. Cumulative post-restart stats (76 ticks, ~29 min --
+older rows already pruned by the routine `substrate_receipt_safe_prune` retention job, not data
+loss): mean 0.4378, min 0.0024, max 1.0, 18.4% saturated, 0% stuck-at-zero.
+
 **Fixed 2026-07-25 (same day, follow-up): the 5 new env keys above weren't reaching the
 container.** Same class of gotcha already documented for `SUBSTRATE_STORE_BACKEND`/`FALKORDB_URI`
 in this service's `.env_example` (not elsewhere in this README) — `docker-compose.yml` passes env vars through via an explicit

@@ -112,6 +112,10 @@ the conclusion:**
   domain's raw `prediction_error` has the largest natural numeric range or tick frequency will win
   a scale-naive mean/trend comparison by construction, exactly as the docstring already predicted
   for the confidence formula and evidently also true for `predicted_shift`'s domain-selection logic.
+  **2026-07-29 update: this interpretation is now confirmed only partly right — see Missing
+  Question 3/14's resolution below.** The 168h replay's `execution=27` and (independently)
+  `bus_synaptic`'s numbers both turned out to reflect broken instruments, not naturally quiet
+  domains — a materially different finding than "some domains just have bigger natural scale."
 
 ### The missing organ (the theory-side half of the problem)
 
@@ -290,13 +294,15 @@ identifies the real fix, and it resolves objections 1-3 above rather than tradin
    supersession** — not pursuing per-organ dense partial-trace as the primary fix. May still be worth
    revisiting later as a secondary diagnostic once the ensemble mechanism is in place and *if* the
    boundary/bulk cut alone still isn't discriminating enough — but it is no longer the next step.
-3. **Does AST/HOT's domain-dominance problem and the ensemble-dissipation fix actually share one
-   mechanism, or are they two separate problems that happen to rhyme?** Precision-weighting
-   (per-domain baseline/variance-relative scaling) is a plausible fix for AST/HOT's raw-mean
-   aggregation. Ensemble dissipation solves a different problem (giving a never-resetting substrate
-   a real rest state, plus a genuine variability/confidence signal) than precision-weighting solves
-   (stopping one domain's raw scale from swamping others in a cross-domain mean). Don't assume the
-   heartbeat fix obsoletes AST/HOT's separate aggregation work without checking each on its own terms.
+3. ~~Does AST/HOT's domain-dominance problem and the ensemble-dissipation fix actually share one
+   mechanism, or are they two separate problems that happen to rhyme?~~ **Partly answered
+   2026-07-29 (see Missing Question 14's resolution below): they're still two separate mechanisms
+   (precision-weighting vs. ensemble dissipation solve different problems, as originally reasoned
+   here), but the *evidence* that motivated asking the question in the first place — the 168h
+   replay's domain-dominance breakdown — turned out to be measuring broken instruments in at least
+   two of the five domains, not genuine domain-level insignificance.** Whether precision-weighting
+   is actually needed, once all five domains are simultaneously healthy, is still open — see the
+   "Remaining open item" note under Missing Question 14.
 4. *(Lower priority given the decision above — per-organ dense partial-trace is not the chosen
    path.)* **Once the ensemble mechanism is in place, is the single boundary/bulk cut sufficient, or
    is per-organ granularity still needed for anything** — e.g. does CollapseMirror's "insight"
@@ -341,21 +347,55 @@ identifies the real fix, and it resolves objections 1-3 above rather than tradin
 13. **Seed-logging mechanics**: where do the N per-trajectory seeds get logged for forensic replay —
     a new field on whatever eventually gets published (Missing Question 6), a structured log line,
     or something else? Needs to be decided alongside the publish-schema work, not as an afterthought.
-14. **Stale finding, needs re-run — Missing Question 3's evidence is contaminated by a bug fixed in a
-    concurrent, unrelated session.** This doc's Current Architecture section cites the 168h AST/HOT
-    replay's `predicted_shift` domain breakdown (`biometrics=69819, bus_synaptic=57360, execution=27,
-    chat=1, route=1`) as likely a scale/density artifact. Juniper reported same-day (2026-07-28, a
-    different concurrent session, PR #1434,
-    [[project_execution_prediction_error_ewma_baseline_pr1434]]) that `execution_prediction_error`
-    was independently found to have the inverted-symptom version of the calm-floor disease at that
-    time — real deltas ran ~1000x *below* its fixed `_THRESHOLD`, so it read ~0 always, not fixed
-    until PR #1434's EWMA baseline landed. That means the 168h replay's `execution=27` count was very
-    plausibly measuring a dead instrument, not genuine domain insignificance — this doc's own
-    scale/density explanation for Missing Question 3 may be wrong, or only partly right. Needs a
-    fresh `measure_ast_hot_reducer.py` replay against a post-EWMA-fix window (once enough history has
-    accumulated past the PR #1434 deploy point) before trusting Missing Question 3's characterization
-    or acting on it. Explicitly deferred, not urgent — Juniper's call: "that needs follow up at some
-    point," not blocking the heartbeat ensemble work this doc is otherwise about.
+14. ~~Stale finding, needs re-run — Missing Question 3's evidence is contaminated by a bug fixed in a
+    concurrent, unrelated session.~~ **Re-run 2026-07-29, findings below. Confirmed: the original
+    scale/density explanation undersold the problem.**
+
+    **A second, independent contaminant was found on top of the one this entry originally named.**
+    While re-running this, a live production bug was found and fixed (PR #1449,
+    `fix(substrate): stop SubstrateDynamicsEngine.tick() clobbering externally-owned metadata`):
+    `SubstrateDynamicsEngine.tick()` was durably re-persisting a stale snapshot-time copy of
+    `node:substrate.bus_synaptic`'s `prediction_error` on almost every tick (any tick where
+    activation decay alone triggered its write guard, which is nearly all of them), clobbering the
+    real writer's fresh values. Live-confirmed: the node was frozen at `prediction_error=1.0` for
+    3+ hours, independently causing real false "Bus Anomaly Detected" alerts via
+    orion-equilibrium-service polling the same frozen value. So the 168h replay's dominance
+    breakdown was contaminated in *two* of its top domains at once — `execution` (dead EWMA-less
+    instrument reading ~0, PR #1434) and `bus_synaptic` (externally-owned-metadata clobber, PR
+    #1449) — not the one originally suspected.
+
+    **Re-run results, `scripts/analysis/measure_ast_hot_reducer.py`:**
+
+    | Window | Domains | `predicted_shift` breakdown |
+    | --- | --- | --- |
+    | 168h (original, both bugs live) | all 5 | `biometrics=69819, bus_synaptic=57360, execution=27, chat=1, route=1` |
+    | 5.68h clean post-PR#1434 (execution fixed; bus_synaptic still ~100% pre-PR#1449 data) | 3 active | `execution=6143, bus_synaptic=1964, biometrics=1917` |
+    | 0.46h (27min) clean post-PR#1449 (both fixed, but bus_synaptic's window is thin) | 3 active | `bus_synaptic=386, execution=237, biometrics=175` |
+
+    `execution` went from essentially invisible (27 of ~127k ticks) to the single largest
+    contributor once its dead instrument was fixed — over 3x biometrics, in a clean 5.68h window.
+    `bus_synaptic`'s raw signal was independently verified genuinely healthy post-fix (direct
+    Postgres check of `substrate_field_state.field_json->'node_vectors'`: 44 distinct values across
+    845 ticks over 27 minutes, range 0.003-1.0, continuous ~30s-cadence variation, no repeats/no
+    plateau — ruling out a one-time freeze-to-unfreeze catch-up spike as the explanation for its
+    win in the narrow window). `chat`/`route` won zero ticks in both clean windows — consistent
+    with known chat-idle state, not a bug.
+
+    **Conclusion**: the doc's original "scale/density artifact" framing for Missing Question 3 was
+    only partly right. It correctly predicted that a scale-naive mean/trend comparison would let
+    *some* domain dominate by construction — but it was wrong about *which* domains were doing the
+    dominating and why: two of the five domains were outright broken, not naturally quieter. Fixing
+    both instruments didn't shrink the dominance pattern, it inverted it (execution: last -> first).
+
+    **Remaining open item, not resolved here**: `bus_synaptic`'s 27-minute post-fix window is too
+    thin to trust as a stable ranking — the same way `execution`'s ranking completely flipped once
+    its instrument was fixed, `bus_synaptic`'s current #1 spot in the narrow window could easily
+    reorder with more history. A comparably-sized clean window (several hours) for `bus_synaptic`
+    is needed before drawing any conclusion about the *post-fix* steady-state dominance pattern, and
+    only after that is it meaningful to ask whether precision-weighting is still needed once all
+    five domains are simultaneously healthy — i.e. Missing Question 3's underlying question (is this
+    one mechanism or two) still cannot be fully closed out yet, only its contaminated evidence base
+    has been identified and partly replaced.
 
 ## Proposed schema / API changes
 

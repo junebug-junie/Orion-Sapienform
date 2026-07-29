@@ -481,7 +481,29 @@ def _fcc_context_env(env: dict[str, str]) -> None:
     )
 
 
-def _build_subprocess_env(*, fcc_server_url: str, auth_token: str) -> Dict[str, str]:
+def _get_github_pat_from_gh() -> Optional[str]:
+    """Read GITHUB_PAT from gh auth token (fallback if not in ~/.fcc/.env)."""
+    try:
+        import subprocess
+        result = subprocess.run(
+            ["gh", "auth", "token"],
+            capture_output=True,
+            text=True,
+            timeout=5,
+        )
+        if result.returncode == 0:
+            return result.stdout.strip()
+    except Exception:
+        pass
+    return None
+
+
+def _build_subprocess_env(
+    *,
+    fcc_server_url: str,
+    auth_token: str,
+    fcc_env: Optional[Dict[str, str]] = None,
+) -> Dict[str, str]:
     env = os.environ.copy()
     env["ANTHROPIC_BASE_URL"] = str(fcc_server_url).rstrip("/")
     env["ANTHROPIC_AUTH_TOKEN"] = auth_token
@@ -496,6 +518,14 @@ def _build_subprocess_env(*, fcc_server_url: str, auth_token: str) -> Dict[str, 
     # shared checkout. See scripts/hooks/session_start_agent_board.py and
     # session_stop_agent_board.py, which no-op when this is set.
     env["ORION_FCC_SUBPROCESS"] = "1"
+    # Merge FCC env (contains MODEL_* and MCP secrets like GITHUB_PAT from ~/.fcc/.env).
+    if fcc_env:
+        env.update(fcc_env)
+    # If GITHUB_PAT is missing or empty and MCP is enabled, read it from gh auth token.
+    if not env.get("GITHUB_PAT") and _env_truthy("HARNESS_FCC_MCP_ENABLED"):
+        gh_pat = _get_github_pat_from_gh()
+        if gh_pat:
+            env["GITHUB_PAT"] = gh_pat
     _fcc_context_env(env)
     if _env_truthy("HARNESS_FCC_CONTEXT_MODE_HOOKS_ENABLED"):
         # Point the context-mode plugin's hooks + MCP server at the same
@@ -604,7 +634,7 @@ async def run_fcc_turn(
         proc = await asyncio.create_subprocess_exec(
             *argv,
             cwd=workspace,
-            env=_build_subprocess_env(fcc_server_url=fcc_server_url, auth_token=auth_token),
+            env=_build_subprocess_env(fcc_server_url=fcc_server_url, auth_token=auth_token, fcc_env=env),
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.PIPE,
             limit=stream_read_limit,

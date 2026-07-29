@@ -132,6 +132,51 @@ docker compose config
 curl -fsS http://127.0.0.1:3210/version
 ```
 
+## Maintenance: Convex data compaction
+
+The self-hosted Convex backend retains a full document-revision history
+forever (every mutation writes a new version instead of overwriting), with
+no built-in compaction. A continuously-ticking town accumulates this
+without bound: confirmed live 2026-07-29, `db.sqlite3` reached 23.5GB after
+~3 weeks even though logical/current data across every table added up to
+only ~240MB. `VACUUM` cannot reclaim this — it only recovered ~5% (23.56GB →
+22.24GB after a 14-minute run) because none of the retained revisions are
+logically deleted from Convex's point of view.
+
+`scripts/compact_convex_data.sh` fixes this by exporting current live data,
+resetting the on-disk file, and reimporting — which starts a fresh history
+from that point while preserving the game world exactly as it was (verified
+live: 23.5GB → 240MB, all 216k+ documents round-tripped intact). It also
+redeploys Convex functions and restores `npx convex env` variables, both of
+which live in the same file and get wiped by the reset alongside the data,
+and heartbeats the default world back to `running` so nobody has to reload
+the frontend tab afterward.
+
+```bash
+# Report current db.sqlite3 size only, no changes:
+bash scripts/compact_convex_data.sh --check
+
+# Compact only if over the threshold (default 5GiB):
+bash scripts/compact_convex_data.sh
+
+# Compact regardless of current size:
+bash scripts/compact_convex_data.sh --force
+```
+
+Env overrides: `AITOWN_COMPACT_THRESHOLD_BYTES` (default `5368709120` = 5GiB),
+`AITOWN_COMPACT_HEALTH_TIMEOUT_SEC` (default `180`).
+
+Each run writes a job dir under `/tmp/aitown-compact-<timestamp>/` containing
+the pre-compact export, a raw `db.sqlite3` backup, and a `report.md` with
+before/after sizes — keep these until you've confirmed the town looks right.
+
+A host crontab entry runs this daily (threshold-gated, so it's a no-op most
+days — see `crontab -l` for the exact line, installed 2026-07-29). There is
+brief real downtime for AI Town while a compaction actually runs (stop →
+reset → restart → reimport), typically well under a minute once the backend
+is healthy again, though function redeploy/reindexing can add several
+minutes on a large table set.
+
 ## Cast cards (source of truth)
 
 The full character set — the 8 NPCs plus **Juniper Feld** (human) and **Orion** (external join) — lives as authored cards in `cards/town_cards.yaml`. This is the single source of truth for identities.

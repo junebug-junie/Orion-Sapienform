@@ -1,34 +1,52 @@
 diff --git a/convex/testing.ts b/convex/testing.ts
-index 106f186..e64590e 100644
+index 106f186..34fdb65 100644
 --- a/convex/testing.ts
 +++ b/convex/testing.ts
-@@ -59,6 +59,78 @@ export const kick = internalMutation({
+@@ -4,6 +4,7 @@ import {
+   DatabaseReader,
+   internalAction,
+   internalMutation,
++  internalQuery,
+   mutation,
+   query,
+ } from './_generated/server';
+@@ -59,6 +60,96 @@ export const kick = internalMutation({
    },
  });
  
 +// Read-only diagnostic: dump the default world's conversations and the tail of
 +// the engine input queue so we can see exactly which unactioned input poisons
 +// the step (produces a `lastMessage` with no numeric `timestamp`).
++//
++// Bounded to `limit` (default 200). Also fixed 2026-07-29: this originally
++// used `.withIndex(eq engineId only).filter(gt number)`, which cannot prune
++// the index range -- it linearly scans the engine's *entire* input history
++// (not just the pending tail) applying the `number > processed` test in JS,
++// so it timed out ("too many system operations") regardless of `.take()`
++// once that history got large. Chaining `.gt('number', processed)` into the
++// same `withIndex` call (matching `engine/abstractGame.ts`'s own `loadInputs`)
++// makes this a true bounded range scan from `processed` onward.
 +export const debugEngineState = internalMutation({
-+  handler: async (ctx) => {
++  args: { limit: v.optional(v.number()) },
++  handler: async (ctx, args) => {
++    const limit = args.limit ?? 200;
 +    const { worldStatus, engine } = await getDefaultWorld(ctx.db);
 +    const world = await ctx.db.get(worldStatus.worldId);
 +    const processed = engine.processedInputNumber ?? -1;
 +    const pending = await ctx.db
 +      .query('inputs')
-+      .withIndex('byInputNumber', (q) => q.eq('engineId', engine._id))
-+      .filter((q) => q.gt(q.field('number'), processed))
-+      .collect();
++      .withIndex('byInputNumber', (q) => q.eq('engineId', engine._id).gt('number', processed))
++      .take(limit);
 +    const byName: Record<string, number> = {};
 +    for (const i of pending) byName[i.name] = (byName[i.name] ?? 0) + 1;
 +    console.log(
-+      `debugEngineState: processedInputNumber=${processed} pending=${pending.length} byName=${JSON.stringify(byName)}`,
++      `debugEngineState: processedInputNumber=${processed} sampledPending=${pending.length} (limit=${limit}) byName=${JSON.stringify(byName)}`,
 +    );
 +    console.log(
 +      `conversations=${JSON.stringify((world?.conversations ?? []).map((c: any) => ({ id: c.id, numMessages: c.numMessages, lastMessage: c.lastMessage })))}`,
 +    );
 +    console.log(`firstPending=${JSON.stringify(pending.slice(0, 5).map((i) => ({ n: i.number, name: i.name, args: i.args })))}`);
-+    return { processed, pending: pending.length, byName };
++    return { processed, sampledPending: pending.length, limitReached: pending.length === limit, byName };
 +  },
 +});
 +
@@ -41,8 +59,17 @@ index 106f186..e64590e 100644
 +// town freezes. Delete those unactioned inputs (nothing past
 +// `processedInputNumber` then remains to replay) and scrub any malformed `lastMessage` from
 +// the stored world so the step loop can resume. New (post-fix) inputs are clean.
++//
++// Batched via `limit` (default 500) and, as of 2026-07-29, fixed to use a
++// real index range (see `debugEngineState` above for why the old
++// `.filter()` form scanned the whole input history and timed out no matter
++// what `limit` was). Call repeatedly (checking `limitReached`) until the
++// backlog drains. The lastMessage scrub is a single-document patch and
++// stays unbounded/one-shot -- it isn't what blows the budget.
 +export const recoverFrozenEngine = internalMutation({
-+  handler: async (ctx) => {
++  args: { limit: v.optional(v.number()) },
++  handler: async (ctx, args) => {
++    const limit = args.limit ?? 500;
 +    const { worldStatus, engine } = await getDefaultWorld(ctx.db);
 +    const world = await ctx.db.get(worldStatus.worldId);
 +    if (!world) {
@@ -60,24 +87,103 @@ index 106f186..e64590e 100644
 +    });
 +    await ctx.db.patch(world._id, { conversations } as any);
 +
-+    // 2. Delete all unactioned inputs (the stale pre-fix backlog) so nothing bad
-+    //    replays. They are stale because the town has been frozen.
++    // 2. Delete up to `limit` unactioned inputs (the stale pre-fix backlog) so
++    //    nothing bad replays. They are stale because the town has been frozen.
 +    const processed = engine.processedInputNumber ?? -1;
 +    const pending = await ctx.db
 +      .query('inputs')
-+      .withIndex('byInputNumber', (q) => q.eq('engineId', engine._id))
-+      .filter((q) => q.gt(q.field('number'), processed))
-+      .collect();
++      .withIndex('byInputNumber', (q) => q.eq('engineId', engine._id).gt('number', processed))
++      .take(limit);
 +    for (const i of pending) {
 +      await ctx.db.delete(i._id);
 +    }
 +    console.log(
-+      `recoverFrozenEngine: scrubbed ${scrubbed} lastMessage(s), deleted ${pending.length} unactioned inputs (processedInputNumber=${processed})`,
++      `recoverFrozenEngine: scrubbed ${scrubbed} lastMessage(s), deleted ${pending.length} unactioned inputs (limit=${limit}, processedInputNumber=${processed})`,
 +    );
-+    return { scrubbed, deletedInputs: pending.length };
++    return { scrubbed, deletedInputs: pending.length, limitReached: pending.length === limit };
 +  },
 +});
 +
  export const stopAllowed = query({
    handler: async () => {
      return !process.env.STOP_NOT_ALLOWED;
+@@ -200,3 +291,79 @@ export const testConvo = internalAction({
+     return await a.readAll();
+   },
+ });
++
++// Cheap, read-only sizing helper for retention-cleanup planning (added 2026-07-29).
++// Uses the auto `by_creation_time` index with a bounded `.take()` in narrow time
++// windows near the start and end of the table's lifetime, rather than a full
++// `.collect()`, to avoid the same system-operation-budget blowup found and
++// fixed above in debugEngineState/recoverFrozenEngine. This gives a rough
++// rows/day rate and an extrapolated total -- not an exact count -- which is
++// enough to scope a retention cleanup without straining the live backend.
++export const tableGrowthSample = internalQuery({
++  args: { table: v.string(), windowMs: v.optional(v.number()), sampleCap: v.optional(v.number()) },
++  handler: async (ctx, args) => {
++    const windowMs = args.windowMs ?? 60 * 60 * 1000; // 1 hour
++    const cap = args.sampleCap ?? 5000;
++    const table = args.table as any;
++    const oldest = await ctx.db.query(table).withIndex('by_creation_time').order('asc').take(1);
++    const newest = await ctx.db.query(table).withIndex('by_creation_time').order('desc').take(1);
++    if (oldest.length === 0 || newest.length === 0) {
++      return { table, empty: true };
++    }
++    const t0 = (oldest[0] as any)._creationTime;
++    const t1 = (newest[0] as any)._creationTime;
++    const recentWindowCount = (
++      await ctx.db
++        .query(table)
++        .withIndex('by_creation_time', (q) => q.gte('_creationTime', t1 - windowMs))
++        .take(cap)
++    ).length;
++    const lifetimeMs = t1 - t0;
++    const ratePerMs = recentWindowCount / windowMs;
++    const estimatedTotal = Math.round(ratePerMs * lifetimeMs);
++    return {
++      table,
++      oldestCreationTime: t0,
++      newestCreationTime: t1,
++      lifetimeDays: Math.round((lifetimeMs / (24 * 60 * 60 * 1000)) * 10) / 10,
++      recentWindowCount,
++      windowMs,
++      recentWindowSampleCapped: recentWindowCount === cap,
++      estimatedTotal,
++    };
++  },
++});
++
++// Read-only sizing probe for the singular `world` document (added 2026-07-29,
++// investigating a 22GB self-hosted SQLite file whose logical row counts across
++// inputs/messages/memories/etc. only add up to ~100-200MB -- checking whether
++// the single per-world doc itself, which embeds players/agents/conversations
++// inline, carries an unbounded field like a movement/position history array.
++export const worldDocSizeProbe = internalQuery({
++  handler: async (ctx) => {
++    const { worldStatus } = await getDefaultWorld(ctx.db);
++    const world = await ctx.db.get(worldStatus.worldId);
++    if (!world) return { found: false };
++    const json = JSON.stringify(world);
++    const perPlayerLens = (world.players as any[]).map((p) => ({
++      id: p.id,
++      keys: Object.keys(p),
++      approxBytes: JSON.stringify(p).length,
++    }));
++    const perAgentLens = (world.agents as any[]).map((a) => ({
++      id: a.id,
++      keys: Object.keys(a),
++      approxBytes: JSON.stringify(a).length,
++    }));
++    return {
++      found: true,
++      totalApproxBytes: json.length,
++      topLevelKeys: Object.keys(world),
++      numPlayers: (world.players as any[]).length,
++      numAgents: (world.agents as any[]).length,
++      numConversations: (world.conversations as any[]).length,
++      perPlayerLens,
++      perAgentLens,
++    };
++  },
++});

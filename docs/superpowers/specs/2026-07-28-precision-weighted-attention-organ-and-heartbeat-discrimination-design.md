@@ -594,3 +594,14 @@ results" above. Juniper's explicit direction (2026-07-28, same session): proceed
    reconnect to `docs/superpowers/specs/2026-07-28-collapse-mirror-generative-triggers-design.md`'s
    "insight" trigger with a real, live, discriminating signal to key off — rather than the raw
    AST/HOT aggregate this session's replay showed is dominated by 2 of 5 domains.
+
+**2026-07-29 update**: step 6's target moved sideways rather than landing directly. Juniper asked to
+give heartbeat a real consumer; AST/HOT (not CollapseMirror directly) was chosen once
+`docs/superpowers/specs/2026-07-29-ast-hot-reducer-live-ticking-design.md` (PR #1459) confirmed AST/HOT
+now ticks live and persists durably. `docs/superpowers/specs/2026-07-29-heartbeat-into-ast-hot-design.md`
+threads heartbeat's `/h1` verdict into `AttentionSelfModelV1` as three new additive fields
+(`heartbeat_mean_ratio`/`heartbeat_verdict`/`heartbeat_basis`). This is **not** step 6 completed —
+`AttentionSelfModelV1` itself still has no bus channel and no downstream consumer, so heartbeat's
+signal still doesn't reach a live decision surface yet. It does mean that once CollapseMirror's
+`insight`/`flow` gates (still unbuilt) eventually read AST/HOT, heartbeat's signal rides along for
+free rather than needing its own separate wiring into `orion-equilibrium-service`.

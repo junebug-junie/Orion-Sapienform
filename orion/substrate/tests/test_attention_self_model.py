@@ -504,3 +504,133 @@ class TestHarnessClosureSignal:
 
         assert model.attention_reason == "bottom_up_salience"
         assert "sustained prediction-error surprise" not in model.reason_narrative
+
+
+class TestHeartbeatH1:
+    """`heartbeat_mean_ratio`/`heartbeat_verdict`/`heartbeat_basis` (2026-07-29):
+    additive, unconditional (same positioning as prediction_error_confidence),
+    caller-supplied from orion-heartbeat's own `/h1` response shape."""
+
+    def test_real_h1_payload_populates_fields(self) -> None:
+        model = reduce_attention_self_model(
+            None,
+            _field_frame(),
+            now=NOW,
+            heartbeat_h1={"mean_ratio": 0.834, "verdict": "redundant", "tick_count": 42},
+        )
+        assert model.heartbeat_mean_ratio == pytest.approx(0.834, abs=1e-4)
+        assert model.heartbeat_verdict == "redundant"
+        assert "orion-heartbeat" in model.heartbeat_basis
+        assert "42" in model.heartbeat_basis
+
+    def test_computed_even_when_top_down_override_wins(self) -> None:
+        override = _override()
+        broadcast = _broadcast(override=override)
+        model = reduce_attention_self_model(
+            broadcast,
+            _field_frame(),
+            now=NOW,
+            heartbeat_h1={"mean_ratio": 0.5, "verdict": "mixed", "tick_count": 1},
+        )
+        assert model.attention_reason == "top_down_override"
+        assert model.heartbeat_verdict == "mixed"
+
+    def test_none_input_yields_honestly_absent_not_zero(self) -> None:
+        model = reduce_attention_self_model(None, _field_frame(), now=NOW)
+        assert model.heartbeat_mean_ratio is None
+        assert model.heartbeat_verdict is None
+        assert model.heartbeat_basis == ""
+
+    def test_disabled_service_response_shape_yields_honestly_absent(self) -> None:
+        # orion-heartbeat's own /h1 returns {"ok": false, "reason": ...}
+        # before its first tick -- a caller that naively passes that whole
+        # dict through must not have this reducer misread it as valid data.
+        model = reduce_attention_self_model(
+            None,
+            _field_frame(),
+            now=NOW,
+            heartbeat_h1={"ok": False, "reason": "no_h1_computed_yet"},
+        )
+        assert model.heartbeat_mean_ratio is None
+        assert model.heartbeat_verdict is None
+
+    def test_missing_verdict_key_yields_honestly_absent(self) -> None:
+        model = reduce_attention_self_model(
+            None, _field_frame(), now=NOW, heartbeat_h1={"mean_ratio": 0.7}
+        )
+        assert model.heartbeat_mean_ratio is None
+        assert model.heartbeat_verdict is None
+
+    def test_unrecognized_verdict_string_yields_honestly_absent(self) -> None:
+        model = reduce_attention_self_model(
+            None,
+            _field_frame(),
+            now=NOW,
+            heartbeat_h1={"mean_ratio": 0.7, "verdict": "not_a_real_verdict"},
+        )
+        assert model.heartbeat_verdict is None
+
+    def test_non_dict_input_yields_honestly_absent(self) -> None:
+        model = reduce_attention_self_model(None, _field_frame(), now=NOW, heartbeat_h1="oops")
+        assert model.heartbeat_mean_ratio is None
+        assert model.heartbeat_verdict is None
+
+    def test_out_of_range_mean_ratio_is_clamped_not_passed_through(self) -> None:
+        # Review finding: real orion-heartbeat always emits mean_ratio in
+        # [0,1] (clamped at the source), but this extractor is a
+        # general-purpose one over an arbitrary caller-supplied dict --
+        # matches _aggregate_prediction_error_confidence's own clamp
+        # precedent in this same file. Pydantic v2 does not re-check
+        # Field(ge=0.0, le=1.0) on plain attribute assignment, so an
+        # unclamped out-of-range value would otherwise silently violate
+        # AttentionSelfModelV1.heartbeat_mean_ratio's own declared bound.
+        model = reduce_attention_self_model(
+            None,
+            _field_frame(),
+            now=NOW,
+            heartbeat_h1={"mean_ratio": 1.5, "verdict": "redundant"},
+        )
+        assert model.heartbeat_mean_ratio == 1.0
+
+        model_negative = reduce_attention_self_model(
+            None,
+            _field_frame(),
+            now=NOW,
+            heartbeat_h1={"mean_ratio": -0.3, "verdict": "concentrated"},
+        )
+        assert model_negative.heartbeat_mean_ratio == 0.0
+
+    def test_non_finite_mean_ratio_yields_honestly_absent(self) -> None:
+        model = reduce_attention_self_model(
+            None,
+            _field_frame(),
+            now=NOW,
+            heartbeat_h1={"mean_ratio": float("nan"), "verdict": "redundant"},
+        )
+        assert model.heartbeat_mean_ratio is None
+        assert model.heartbeat_verdict is None
+
+    def test_bool_mean_ratio_yields_honestly_absent(self) -> None:
+        # bool is a subclass of int in Python -- must not be accepted as a
+        # real mean_ratio value.
+        model = reduce_attention_self_model(
+            None,
+            _field_frame(),
+            now=NOW,
+            heartbeat_h1={"mean_ratio": True, "verdict": "redundant"},
+        )
+        assert model.heartbeat_mean_ratio is None
+        assert model.heartbeat_verdict is None
+
+    def test_does_not_affect_prediction_error_confidence(self) -> None:
+        # Regression guard: the two additive signals are independent --
+        # supplying one must not perturb the other.
+        model = reduce_attention_self_model(
+            None,
+            _field_frame(),
+            now=NOW,
+            prediction_error_by_domain=_prediction_error_by_domain(),
+            heartbeat_h1={"mean_ratio": 0.9, "verdict": "redundant", "tick_count": 5},
+        )
+        assert model.prediction_error_confidence is not None
+        assert model.heartbeat_mean_ratio == pytest.approx(0.9, abs=1e-4)

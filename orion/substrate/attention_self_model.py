@@ -50,6 +50,7 @@ from this filtered set).
 
 from __future__ import annotations
 
+import math
 from datetime import datetime, timezone
 
 from orion.schemas.attention_frame import AttentionBroadcastProjectionV1
@@ -176,6 +177,43 @@ def _unconditional_prediction_error_confidence(
     return confidence, basis
 
 
+_HEARTBEAT_VERDICTS = frozenset({"redundant", "concentrated", "mixed"})
+
+
+def _heartbeat_h1_fields(heartbeat_h1: dict | None) -> tuple[float | None, str | None, str]:
+    """Extract `(mean_ratio, verdict, basis)` from a caller-supplied
+    orion-heartbeat `/h1` payload. Fails open to `(None, None, "")` on
+    anything malformed -- missing keys, wrong types, an unrecognized verdict
+    string -- rather than raising or guessing, matching every other optional
+    input in this reducer.
+    """
+    if not isinstance(heartbeat_h1, dict):
+        return None, None, ""
+    mean_ratio = heartbeat_h1.get("mean_ratio")
+    verdict = heartbeat_h1.get("verdict")
+    if (
+        not isinstance(mean_ratio, (int, float))
+        or isinstance(mean_ratio, bool)
+        or not math.isfinite(mean_ratio)
+        or verdict not in _HEARTBEAT_VERDICTS
+    ):
+        return None, None, ""
+    # Symmetric clamp, same reasoning/precedent as _aggregate_prediction_error_confidence
+    # above: orion-heartbeat's real producer always emits mean_ratio in [0, 1]
+    # (services/orion-heartbeat/app/substrate/reconstruction.py clamps every
+    # trajectory ratio before averaging), but this is a general-purpose
+    # extractor over an arbitrary caller-supplied dict -- an out-of-range
+    # value must not silently violate AttentionSelfModelV1.heartbeat_mean_ratio's
+    # own declared [0,1] bound, which Pydantic v2 does not re-check on plain
+    # attribute assignment.
+    mean_ratio = max(0.0, min(1.0, float(mean_ratio)))
+    basis = (
+        f"orion-heartbeat /h1 ensemble mean_ratio (tick_count="
+        f"{heartbeat_h1.get('tick_count', '?')})"
+    )
+    return float(mean_ratio), verdict, basis
+
+
 def reduce_attention_self_model(
     broadcast: AttentionBroadcastProjectionV1 | None,
     field_frame: FieldAttentionFrameV1 | None,
@@ -185,6 +223,7 @@ def reduce_attention_self_model(
     harness_closure_signal: dict | None = None,
     prediction_error_by_domain: dict[str, float] | None = None,
     prediction_error_trend_by_domain: dict[str, float] | None = None,
+    heartbeat_h1: dict | None = None,
 ) -> AttentionSelfModelV1:
     """Unify the GWT-dispatch lane and the general field lane into one
     inspectable AST/HOT self-model. Never raises: any input may be `None`
@@ -232,6 +271,18 @@ def reduce_attention_self_model(
     surprises me next" -- mirroring the argmax-over-a-delta-dict shape the
     old `self_state.dimension_trajectory` branch used, just over real
     Active-Inference domains instead of a dead `SelfStateV1` dimension.
+
+    `heartbeat_h1` is an optional, caller-supplied dict shaped like
+    `orion-heartbeat`'s own `/h1` response body's `"h1"` value --
+    `{"mean_ratio": float, "verdict": "redundant"|"concentrated"|"mixed",
+    "tick_count": int, ...}` (extra keys ignored). Populates
+    `heartbeat_mean_ratio`/`heartbeat_verdict`/`heartbeat_basis`
+    unconditionally, same positioning as `prediction_error_confidence` above
+    -- a real, independently-computed signal (boundary/bulk tensor-network
+    entanglement across five organs), not a restatement of the
+    prediction-error domains. Missing or malformed input (not a dict, or
+    missing `mean_ratio`/`verdict`) leaves these fields at their honest
+    `None`/`""` defaults -- never a fabricated reading.
     """
 
     reference_ts = (
@@ -283,6 +334,12 @@ def reduce_attention_self_model(
     if pe_confidence is not None:
         model.prediction_error_confidence = _round_or_none(pe_confidence)
         model.prediction_error_confidence_basis = pe_confidence_basis
+
+    hb_mean_ratio, hb_verdict, hb_basis = _heartbeat_h1_fields(heartbeat_h1)
+    if hb_verdict is not None:
+        model.heartbeat_mean_ratio = _round_or_none(hb_mean_ratio)
+        model.heartbeat_verdict = hb_verdict
+        model.heartbeat_basis = hb_basis
 
     # --- Broadcast lane: what was last dispatched + cadence-mismatch state -
     broadcast_age_sec: float | None = None

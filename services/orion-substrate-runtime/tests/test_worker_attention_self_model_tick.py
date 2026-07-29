@@ -19,6 +19,8 @@ from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
 
+import pytest
+
 REPO_ROOT = Path(__file__).resolve().parents[3]
 SUBSTRATE_ROOT = Path(__file__).resolve().parents[1]
 if str(REPO_ROOT) not in sys.path:
@@ -267,3 +269,115 @@ def test_trend_buffer_respects_configured_maxlen(monkeypatch):
         {"route": 0.4},
         {"route": 0.5},
     ]
+
+
+def test_fetch_heartbeat_h1_disabled_by_default_returns_none(monkeypatch):
+    """SUBSTRATE_HEARTBEAT_H1_URL unset (the default) must skip the request
+    entirely, not attempt a call to an empty URL."""
+    worker = _make_worker(monkeypatch, self_model_enabled=True)
+    assert worker._settings.heartbeat_h1_url == ""
+    with patch("app.worker.requests.get") as mock_get:
+        result = worker._fetch_heartbeat_h1()
+    mock_get.assert_not_called()
+    assert result is None
+
+
+def test_fetch_heartbeat_h1_success_returns_h1_dict(monkeypatch):
+    monkeypatch.setenv("SUBSTRATE_HEARTBEAT_H1_URL", "http://orion-athena-heartbeat:7251/h1")
+    worker = _make_worker(monkeypatch, self_model_enabled=True)
+    mock_response = MagicMock()
+    mock_response.json.return_value = {
+        "ok": True,
+        "h1": {"mean_ratio": 0.83, "verdict": "redundant", "tick_count": 7},
+    }
+    with patch("app.worker.requests.get", return_value=mock_response) as mock_get:
+        result = worker._fetch_heartbeat_h1()
+
+    mock_get.assert_called_once()
+    assert mock_get.call_args.args[0] == "http://orion-athena-heartbeat:7251/h1"
+    assert mock_get.call_args.kwargs["timeout"] == worker._settings.heartbeat_h1_fetch_timeout_sec
+    mock_response.raise_for_status.assert_called_once()
+    assert result == {"mean_ratio": 0.83, "verdict": "redundant", "tick_count": 7}
+
+
+def test_fetch_heartbeat_h1_not_yet_computed_returns_none(monkeypatch):
+    monkeypatch.setenv("SUBSTRATE_HEARTBEAT_H1_URL", "http://orion-athena-heartbeat:7251/h1")
+    worker = _make_worker(monkeypatch, self_model_enabled=True)
+    mock_response = MagicMock()
+    mock_response.json.return_value = {"ok": False, "reason": "no_h1_computed_yet"}
+    with patch("app.worker.requests.get", return_value=mock_response):
+        result = worker._fetch_heartbeat_h1()
+    assert result is None
+
+
+def test_fetch_heartbeat_h1_fails_open_on_non_2xx_status(monkeypatch):
+    """orion-heartbeat container up but erroring (e.g. 500/503) -- arguably
+    the most likely real failure mode, more likely than a hard connection
+    failure."""
+    monkeypatch.setenv("SUBSTRATE_HEARTBEAT_H1_URL", "http://orion-athena-heartbeat:7251/h1")
+    worker = _make_worker(monkeypatch, self_model_enabled=True)
+    mock_response = MagicMock()
+    mock_response.raise_for_status.side_effect = Exception("503 Service Unavailable")
+    with patch("app.worker.requests.get", return_value=mock_response):
+        result = worker._fetch_heartbeat_h1()
+    assert result is None
+
+
+def test_fetch_heartbeat_h1_non_dict_json_payload_returns_none(monkeypatch):
+    monkeypatch.setenv("SUBSTRATE_HEARTBEAT_H1_URL", "http://orion-athena-heartbeat:7251/h1")
+    worker = _make_worker(monkeypatch, self_model_enabled=True)
+    mock_response = MagicMock()
+    mock_response.json.return_value = ["not", "a", "dict"]
+    with patch("app.worker.requests.get", return_value=mock_response):
+        result = worker._fetch_heartbeat_h1()
+    assert result is None
+
+
+def test_fetch_heartbeat_h1_fails_open_on_request_exception(monkeypatch):
+    """orion-heartbeat being unreachable must never raise out of this method
+    -- it's an additive, independently-owned service."""
+    monkeypatch.setenv("SUBSTRATE_HEARTBEAT_H1_URL", "http://orion-athena-heartbeat:7251/h1")
+    worker = _make_worker(monkeypatch, self_model_enabled=True)
+    with patch("app.worker.requests.get", side_effect=ConnectionError("unreachable")):
+        result = worker._fetch_heartbeat_h1()
+    assert result is None
+
+
+def test_self_model_tick_persists_with_heartbeat_fields_when_available(monkeypatch):
+    """End-to-end: a real heartbeat_h1 response reaches the persisted model's
+    heartbeat_mean_ratio/heartbeat_verdict fields."""
+    monkeypatch.setenv("SUBSTRATE_HEARTBEAT_H1_URL", "http://orion-athena-heartbeat:7251/h1")
+    worker = _make_worker(monkeypatch, self_model_enabled=True)
+    fake_store = _fake_store(_pe_node("node:substrate.biometrics", 0.1))
+    mock_response = MagicMock()
+    mock_response.json.return_value = {
+        "ok": True,
+        "h1": {"mean_ratio": 0.91, "verdict": "redundant", "tick_count": 10},
+    }
+    with patch(
+        "orion.substrate.graphdb_store.build_substrate_store_from_env",
+        return_value=fake_store,
+    ), patch("app.worker.requests.get", return_value=mock_response):
+        worker._attention_broadcast_tick()
+
+    model = worker._store.save_attention_self_model.call_args.args[0]
+    assert model.heartbeat_mean_ratio == pytest.approx(0.91, abs=1e-4)
+    assert model.heartbeat_verdict == "redundant"
+
+
+def test_self_model_tick_still_persists_when_heartbeat_unreachable(monkeypatch):
+    """orion-heartbeat being down must not block the self-model tick's own
+    persist -- heartbeat fields simply stay honestly absent."""
+    monkeypatch.setenv("SUBSTRATE_HEARTBEAT_H1_URL", "http://orion-athena-heartbeat:7251/h1")
+    worker = _make_worker(monkeypatch, self_model_enabled=True)
+    fake_store = _fake_store(_pe_node("node:substrate.biometrics", 0.1))
+    with patch(
+        "orion.substrate.graphdb_store.build_substrate_store_from_env",
+        return_value=fake_store,
+    ), patch("app.worker.requests.get", side_effect=ConnectionError("unreachable")):
+        worker._attention_broadcast_tick()  # must not raise
+
+    worker._store.save_attention_self_model.assert_called_once()
+    model = worker._store.save_attention_self_model.call_args.args[0]
+    assert model.heartbeat_mean_ratio is None
+    assert model.heartbeat_verdict is None

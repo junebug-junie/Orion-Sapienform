@@ -123,6 +123,20 @@ class Settings(BaseSettings):
     attention_self_model_log_retention_hours: float = Field(
         168.0, alias="SUBSTRATE_ATTENTION_SELF_MODEL_LOG_RETENTION_HOURS"
     )
+    # orion-heartbeat's /h1 ensemble verdict, fetched once per
+    # _attention_self_model_tick() (~30s cadence, same tick this rides) and
+    # threaded into reduce_attention_self_model()'s heartbeat_h1 param.
+    # Empty string (default) disables the fetch entirely -- this reducer
+    # already treats a missing heartbeat_h1 input as honestly absent, so
+    # there's no separate enable flag needed beyond the URL itself being
+    # set. Named SUBSTRATE_HEARTBEAT_H1_* (not HEARTBEAT_*) to avoid
+    # colliding with this file's own unrelated `heartbeat_interval_sec`
+    # above, which is this service's own bus-native SystemHealthV1
+    # heartbeat cadence -- a different concept entirely.
+    heartbeat_h1_url: str = Field("", alias="SUBSTRATE_HEARTBEAT_H1_URL")
+    heartbeat_h1_fetch_timeout_sec: float = Field(
+        2.0, alias="SUBSTRATE_HEARTBEAT_H1_FETCH_TIMEOUT_SEC"
+    )
     enable_endogenous_curiosity: bool = Field(
         False, alias="ORION_ENDOGENOUS_CURIOSITY_ENABLED"
     )

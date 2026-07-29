@@ -11,6 +11,8 @@ from datetime import datetime, timezone
 from typing import Any
 from uuid import uuid4
 
+import requests
+
 from orion.biometrics.node_catalog import NodeCatalog
 from orion.core.schemas.drives import DriveAuditV1, DriveStateV1
 from orion.schemas.biometrics_projection import (
@@ -1611,6 +1613,39 @@ class BiometricsSubstrateWorker:
         except Exception:
             logger.exception("substrate_attention_broadcast_failed")
 
+    def _fetch_heartbeat_h1(self) -> dict | None:
+        """One synchronous GET to orion-heartbeat's own `/h1` endpoint, same
+        blocking-call-inside-an-async-tick pattern this file's other synchronous
+        SQL reads already use (e.g. `_brain_frame_self_state()` above) --
+        this tick already does a cross-service Postgres read for the field
+        lane, so one more short-timeout cross-service call is not a new kind
+        of I/O for it.
+
+        Returns the `/h1` response's `"h1"` dict verbatim (already the shape
+        `reduce_attention_self_model()`'s `heartbeat_h1` param expects), or
+        `None` if disabled (`heartbeat_h1_url` unset -- the default), the
+        service hasn't computed its first tick yet (`{"ok": false, ...}`),
+        or the request fails for any reason. Fail-open: orion-heartbeat is
+        an additive, independently-owned service; its unavailability must
+        never fail or delay this tick.
+        """
+        url = self._settings.heartbeat_h1_url
+        if not url:
+            return None
+        try:
+            response = requests.get(
+                url, timeout=self._settings.heartbeat_h1_fetch_timeout_sec
+            )
+            response.raise_for_status()
+            payload = response.json()
+        except Exception:
+            logger.exception("substrate_heartbeat_h1_fetch_failed")
+            return None
+        if not isinstance(payload, dict) or not payload.get("ok"):
+            return None
+        h1 = payload.get("h1")
+        return h1 if isinstance(h1, dict) else None
+
     def _attention_self_model_tick(self, *, state: Any, broadcast: Any) -> None:
         """AST/HOT self-model live tick (docs/superpowers/specs/2026-07-29-
         ast-hot-reducer-live-ticking-design.md).
@@ -1659,6 +1694,7 @@ class BiometricsSubstrateWorker:
             list(self._attention_self_model_trend_buffer)
         )
         field_frame = self._store.get_latest_field_attention_frame()
+        heartbeat_h1 = self._fetch_heartbeat_h1()
         # now= must be passed explicitly (matching _brain_frame_tick()'s own
         # existing reduce_attention_self_model() call, worker.py's other live
         # caller -- see this method's docstring). Without it, reduce_
@@ -1677,6 +1713,7 @@ class BiometricsSubstrateWorker:
             now=datetime.now(timezone.utc),
             prediction_error_by_domain=pe_by_domain or None,
             prediction_error_trend_by_domain=pe_trend_by_domain or None,
+            heartbeat_h1=heartbeat_h1,
         )
         self._store.save_attention_self_model(
             self_model,

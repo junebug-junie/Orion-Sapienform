@@ -30,7 +30,7 @@ async def health() -> dict:
     return {
         "status": "ok",
         "service": settings.service_name,
-        **svc.stats(),
+        **(await svc.stats()),
     }
 
 

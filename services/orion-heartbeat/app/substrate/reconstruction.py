@@ -49,11 +49,13 @@ tick.
 from __future__ import annotations
 
 import math
+import statistics
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 
 from .routing import BOND_DIM, BOUNDARY_BULK_CUT, BOUNDARY_SITES, N_SITES
 from .mps_state import HeartbeatSubstrate
+from .ensemble import EnsembleH1ResultV1, EnsembleSubstrate
 
 # Confirmed via quimb 1.14.0's own source (MatrixProductState.entropy() ->
 # `-sum(S * log2(S))` over the Schmidt values at the cut): log base 2
@@ -110,4 +112,48 @@ def compute_h1(substrate: HeartbeatSubstrate) -> H1ResultV1:
         ratio=ratio,
         verdict=verdict,
         boundary_subprofile=boundary_subprofile,
+    )
+
+
+def compute_h1_ensemble(ensemble: EnsembleSubstrate) -> EnsembleH1ResultV1:
+    """Ensemble-level counterpart to compute_h1() -- mean ratio across all N
+    trajectories, classified with the SAME _HIGH_RATIO/_LOW_RATIO thresholds
+    as the single-trajectory version.
+
+    **_HIGH_RATIO/_LOW_RATIO have NOT been re-validated against live ensemble
+    behavior yet** (design doc Acceptance Check 1 / Recommended next patch
+    step 4) -- they were tuned offline (scripts/analysis/measure_heartbeat_
+    ensemble_calibration.py, synthetic + real-grammar-replay modes) and
+    transferred here as a starting point, not re-derived from this live
+    service's own traffic. Confirmed in that offline calibration: real
+    busy-state traffic reads mean_ratio~0.81-0.82 (comfortably >= _HIGH_RATIO,
+    "redundant" as expected for genuinely coupled organ activity); genuine
+    multi-organ silence is rare in this system's current real operation (60h
+    audit found 4 of 5 organs continuously active regardless of chat
+    activity), so live confirmation of the "concentrated" band specifically
+    still needs real observed quiet stretches, not just the offline
+    synthetic/replay evidence.
+    """
+    # Single ratios() call, not ratios() + std_ratio() (std_ratio() would
+    # recompute ratios() -- and hence every trajectory's entropy_profile() --
+    # a second time for the same tick; caught by review). pstdev matches
+    # ensemble.std_ratio()'s own np.std(..., default ddof=0) population
+    # convention, not sample stdev.
+    ratios = ensemble.ratios()
+    mean_ratio = float(sum(ratios) / len(ratios))
+    std_ratio = float(statistics.pstdev(ratios)) if len(ratios) > 1 else 0.0
+
+    if mean_ratio >= _HIGH_RATIO:
+        verdict = "redundant"
+    elif mean_ratio <= _LOW_RATIO:
+        verdict = "concentrated"
+    else:
+        verdict = "mixed"
+
+    return EnsembleH1ResultV1(
+        mean_ratio=mean_ratio,
+        std_ratio=std_ratio,
+        verdict=verdict,
+        tick_count=ensemble.tick_count(),
+        seeds=list(ensemble.seeds),
     )

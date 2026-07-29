@@ -262,6 +262,15 @@ Fixes NPC-human chats where agents talk over the human, narrate scene prose inst
 
 Orion's external embodiment worker already walks on `walkingOver` via `approach_player` intents in `services/orion-embodiment/app/worker.py`.
 
+### NPC cooldown tuning (`patches/orion-npc-cooldown-tuning.patch`)
+
+Load-shedding, not a gameplay change. Every NPC conversation message is an `agentGenerateMessage` call routed through `orion-llm-gateway`; when that gateway's host is under load, throttling how often those calls happen is the direct lever. Raised from `convex/constants.ts` upstream defaults (2026-07-29):
+
+- `CONVERSATION_COOLDOWN`: `15000` → `45000` (agents wait 3x longer after ending a conversation before starting another)
+- `MESSAGE_COOLDOWN`: `2000` → `8000` (4x longer between messages within an active conversation — the main per-conversation LLM-call-rate lever)
+
+Revert both to their upstream defaults if the gateway's host load profile changes and the throttling is no longer needed.
+
 ## MCP integration
 
 Gameplay MCP lives in `mcp/orion_aitown_mcp/`. Hub fcc-claude includes it when `HUB_AITOWN_ENABLED=true` and MCP is enabled.

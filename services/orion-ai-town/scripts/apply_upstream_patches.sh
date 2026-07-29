@@ -10,6 +10,7 @@ PATCHES=(
   "orion-engine-recovery.patch"
   "orion-conversation-proximity.patch"
   "orion-town-chat-turns.patch"
+  "orion-npc-cooldown-tuning.patch"
 )
 
 if [[ ! -d "${UPSTREAM}/.git" ]]; then

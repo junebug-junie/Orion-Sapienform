@@ -181,6 +181,50 @@ def test_memory_thermal_disk_pressure_signals_default_to_zero_when_absent(
     assert atoms_by_role["disk_pressure_signal"].salience == 0.0
 
 
+def test_gpu_pressure_signal_carries_real_gpu_util_not_hardcoded_capability_salience(
+    catalog: NodeCatalog,
+) -> None:
+    # Regression for the bug where node:atlas's gpu_pressure field channel read a
+    # flat 0.8 for ~42,400 consecutive real ticks: `capability_surface`'s salience
+    # is an unconditional hardcoded 0.8 (see grammar_emit.py's capability_surface
+    # atom), not a telemetry sample. The dedicated gpu_pressure_signal atom must
+    # carry the real computed `gpu_util` value from
+    # orion/telemetry/biometrics_pipeline.py's `pressures` dict instead.
+    sample, summary, induction = _fixtures("atlas", pressures={"gpu_util": 0.27})
+    profile = catalog.resolve("atlas")
+    events = build_biometrics_node_grammar_events(
+        sample=sample,
+        summary=summary,
+        induction=induction,
+        node_profile=profile,
+        source_channel="orion:biometrics:induction",
+    )
+    atoms_by_role = {
+        e.atom.semantic_role: e.atom for e in events if e.atom is not None
+    }
+    assert atoms_by_role["gpu_pressure_signal"].salience == pytest.approx(0.27)
+    # capability_surface stays fixed at its own hardcoded value -- unaffected.
+    assert atoms_by_role["capability_surface"].salience == pytest.approx(0.8)
+
+
+def test_gpu_pressure_signal_defaults_to_zero_when_absent(
+    catalog: NodeCatalog,
+) -> None:
+    sample, summary, induction = _fixtures("atlas")
+    profile = catalog.resolve("atlas")
+    events = build_biometrics_node_grammar_events(
+        sample=sample,
+        summary=summary,
+        induction=induction,
+        node_profile=profile,
+        source_channel="orion:biometrics:induction",
+    )
+    atoms_by_role = {
+        e.atom.semantic_role: e.atom for e in events if e.atom is not None
+    }
+    assert atoms_by_role["gpu_pressure_signal"].salience == 0.0
+
+
 def test_circe_node_availability_reflects_expected_offline(catalog: NodeCatalog) -> None:
     sample, summary, induction = _fixtures("circe")
     profile = catalog.resolve("circe")

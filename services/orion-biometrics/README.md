@@ -138,17 +138,32 @@ block turns into lattice `Perturbation`s:
 | Atom `semantic_role` | `pressure_hints` key | Lattice channel (`NODE_CHANNELS`) |
 | :--- | :--- | :--- |
 | `body_state` (composite `strain`) | `strain` | `cpu_pressure` |
-| `capability_surface` (gated on `local_llm_heavy`) | `gpu` | `gpu_pressure` |
+| `gpu_pressure_signal` | `gpu` | `gpu_pressure` |
 | `memory_pressure_signal` | `memory_pressure` | `memory_pressure` |
 | `thermal_pressure_signal` | `thermal_pressure` | `thermal_pressure` |
 | `disk_pressure_signal` | `disk_pressure` | `disk_pressure` |
 
-`memory_pressure_signal`/`thermal_pressure_signal`/`disk_pressure_signal` carry
-the individually-computed `mem`/`thermal`/`disk` values from
-`orion/telemetry/biometrics_pipeline.py`'s `pressures` dict (2026-07-16 fix --
-these were previously only folded into the `strain` composite and never
-reached the field lattice, so the corresponding channels stayed pinned at
-`0.0`). This is additive: `strain`/`gpu` are unchanged.
+`gpu_pressure_signal`/`memory_pressure_signal`/`thermal_pressure_signal`/
+`disk_pressure_signal` carry the individually-computed `gpu_util`/`mem`/
+`thermal`/`disk` values from `orion/telemetry/biometrics_pipeline.py`'s
+`pressures` dict. `memory_pressure_signal`/`thermal_pressure_signal`/
+`disk_pressure_signal` were wired in by the 2026-07-16 fix -- these were
+previously only folded into the `strain` composite and never reached the
+field lattice, so the corresponding channels stayed pinned at `0.0`.
+`gpu_pressure_signal` was wired in by a 2026-07-28 fix for the same class of
+bug: `pressure_hints["gpu"]` previously came from `capability_surface`'s
+`salience`, which is an **unconditional hardcoded literal (`0.8`)** in this
+file, not a telemetry sample -- it had no relationship to real GPU load and
+was gated on `local_llm_heavy` besides. `node:atlas`'s `gpu_pressure` field
+channel read a flat `0.8` for ~42,400 consecutive real ticks (24h) as a
+result. `gpu_pressure_signal` is emitted unconditionally for every node
+(same as the memory/thermal/disk siblings, no capability gate) carrying the
+real `gpu_util` value, which is `0.0` for nodes with no GPU samples --
+`pressure_hints["gpu"]` is now populated for every node's tick, not just
+`local_llm_heavy` ones. `capability_surface`'s own `salience` is unchanged
+and still used for its own confidence/summary display; it is simply no
+longer read as the source of the gpu pressure hint. This is additive to
+`strain`: unaffected.
 
 All five of these `Perturbation`s (`strain`/`gpu`/`memory_pressure`/
 `thermal_pressure`/`disk_pressure`) use `mode="replace"`, not the library

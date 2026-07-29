@@ -196,6 +196,19 @@ def build_biometrics_node_grammar_events(
         # composite "strain" salience on `body_state` above -- no downstream
         # consumer could ever see them individually. Additive: `strain` and
         # `capability_surface`'s "gpu" hint are untouched.
+        "gpu_pressure_signal": GrammarAtomV1(
+            atom_id=atom_id("gpu_pressure_signal"),
+            trace_id=trace_id,
+            atom_type="signal",
+            semantic_role="gpu_pressure_signal",
+            layer="organ_signal",
+            dimensions=["physiology", "telemetry", "node", "resource"],
+            summary=f"{node_id} GPU pressure observed",
+            confidence=0.9,
+            salience=float((summary.pressures or {}).get("gpu_util", 0.0)),
+            source_event_id=f"{node_id}:{ts}",
+            payload_ref=f"biometrics.pressure.gpu:{node_id}:{ts}",
+        ),
         "memory_pressure_signal": GrammarAtomV1(
             atom_id=atom_id("memory_pressure_signal"),
             trace_id=trace_id,
@@ -291,6 +304,7 @@ def build_biometrics_node_grammar_events(
         ("body_state", "capability_surface", "influenced"),
         ("node_availability", "capability_surface", "influenced"),
         ("node_context", "capability_surface", "supports"),
+        ("telemetry_sample", "gpu_pressure_signal", "derived_from"),
         ("telemetry_sample", "memory_pressure_signal", "derived_from"),
         ("telemetry_sample", "thermal_pressure_signal", "derived_from"),
         ("telemetry_sample", "disk_pressure_signal", "derived_from"),
@@ -303,6 +317,7 @@ def build_biometrics_node_grammar_events(
         ("power_pressure_signal", "capability_surface", "influenced"),
         ("disk_capacity_pressure_signal", "capability_surface", "influenced"),
         ("fan_pressure_signal", "capability_surface", "influenced"),
+        ("gpu_pressure_signal", "capability_surface", "influenced"),
     ]
 
     events: list[GrammarEventV1] = [root_event]

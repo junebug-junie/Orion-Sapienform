@@ -30,6 +30,26 @@ def _world_id() -> str:
     return str(os.environ.get("AITOWN_WORLD_ID") or "").strip()
 
 
+def _http_timeout_sec() -> float:
+    # Confirmed live 2026-07-29: under normal multi-NPC OCC contention this
+    # self-hosted Convex backend's mutations routinely take 15-25s (a plain
+    # `sendInput` moveTo measured at 21.6s). The old hardcoded 15s timeout
+    # made every one of Orion's actuations (movement, speech injection) fail
+    # client-side even though the mutation was still landing server-side a
+    # few seconds later -- `processedInputNumber` kept advancing while
+    # Orion's own `pathfinding`/conversation state never updated. 30s default
+    # gives real headroom over the observed worst case; override per-caller
+    # via env if the backend's contention profile changes.
+    try:
+        value = float(os.environ.get("AITOWN_HTTP_TIMEOUT_SEC") or 30.0)
+    except ValueError:
+        return 30.0
+    # A non-positive value (e.g. "0") is a string, so `or 30.0` above doesn't
+    # catch it -- treat it the same as unset/invalid rather than handing
+    # urlopen an instant/negative timeout.
+    return value if value > 0 else 30.0
+
+
 def convex_request(endpoint: str, *, path: str, args: Optional[Dict[str, Any]] = None) -> Any:
     base = _base_url()
     key = _admin_key()
@@ -46,7 +66,7 @@ def convex_request(endpoint: str, *, path: str, args: Optional[Dict[str, Any]] =
         method="POST",
     )
     try:
-        with urllib.request.urlopen(req, timeout=15) as resp:
+        with urllib.request.urlopen(req, timeout=_http_timeout_sec()) as resp:
             body = resp.read().decode("utf-8")
     except urllib.error.HTTPError as exc:
         detail = exc.read().decode("utf-8", errors="replace")[:500]

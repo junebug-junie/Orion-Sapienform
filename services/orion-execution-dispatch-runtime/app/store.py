@@ -370,7 +370,10 @@ class ExecutionDispatchRuntimeStore:
         this is the only place their risk_score is ever counted) PLUS every
         entry already in `dispatched_candidates` (already real spend, and
         every entry there already carries `dispatch_status == 'dispatched'`
-        by schema construction). Together this is real demand for the day,
+        by application-level construction -- every append site in
+        worker.py's `_send_one` sets it explicitly; nothing at the Pydantic
+        schema level itself forbids a different status from landing there).
+        Together this is real demand for the day,
         uninfluenced by whatever cap happened to be enforced that day.
         """
         with self._engine.connect() as conn:

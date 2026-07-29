@@ -1,13 +1,18 @@
 #!/usr/bin/env python3
 """Host-level disk-usage threshold watchdog for the mount points that back
-this repo's Docker images, source checkout, and telemetry corpus.
+this repo's Docker images, source checkout, databases, graph store, and
+warm/lukewarm bulk storage tiers.
 
-Context: nothing in this repo checks disk usage on `/mnt/docker`,
-`/mnt/scripts/`, or `/mnt/telemetry` and surfaces a breach anywhere an
-operator would actually see it. Each mount is a distinct physical
-filesystem on this host (confirmed via `df -h`: `/dev/sda` -> /mnt/docker,
-`/dev/sde1` -> /mnt/scripts, `/dev/sdf1` -> /mnt/telemetry), so usage on one
-says nothing about the others -- all three are checked independently.
+Context: nothing in this repo checks disk usage on `/`, `/mnt/docker`,
+`/mnt/scripts/`, `/mnt/telemetry`, `/mnt/postgres`, `/mnt/graphdb`,
+`/mnt/storage-warm`, or `/mnt/storage-lukewarm` and surfaces a breach
+anywhere an operator would actually see it. Each mount is a distinct
+physical filesystem on this host (confirmed via `df -h`: root ->
+/dev/mapper/ubuntu--vg-ubuntu--lv, `/dev/sda` -> /mnt/docker, `/dev/sde1`
+-> /mnt/scripts, `/dev/sdf1` -> /mnt/telemetry, `/dev/sdg1` ->
+/mnt/postgres, `/dev/sdg2` -> /mnt/graphdb, `/dev/sdc` ->
+/mnt/storage-warm, `/dev/sdh` -> /mnt/storage-lukewarm), so usage on one
+says nothing about the others -- all eight are checked independently.
 
 Same category as `scripts/bus_core_health_watchdog.py` (standalone,
 host-level, cron-run, not a live service loop; pure `evaluate_path()` for
@@ -102,7 +107,16 @@ if sys.path and sys.path[0] == _SCRIPT_DIR:
 
 from orion.notify.client import NotifyClient  # noqa: E402
 
-DEFAULT_PATHS = ("/mnt/docker", "/mnt/scripts", "/mnt/telemetry")
+DEFAULT_PATHS = (
+    "/",
+    "/mnt/docker",
+    "/mnt/scripts",
+    "/mnt/telemetry",
+    "/mnt/postgres",
+    "/mnt/graphdb",
+    "/mnt/storage-warm",
+    "/mnt/storage-lukewarm",
+)
 DEFAULT_THRESHOLD_PCT = 90.0
 
 

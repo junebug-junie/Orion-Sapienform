@@ -43,10 +43,18 @@ class _CountingStore(InMemorySubstrateGraphStore):
     def __init__(self) -> None:
         super().__init__()
         self.upsert_node_calls: list[str] = []
+        self.skip_metadata_keys_calls: list[frozenset[str] | None] = []
 
-    def upsert_node(self, *, identity_key: str | None, node: BaseSubstrateNodeV1) -> None:
+    def upsert_node(
+        self,
+        *,
+        identity_key: str | None,
+        node: BaseSubstrateNodeV1,
+        skip_metadata_keys: frozenset[str] | None = None,
+    ) -> None:
         self.upsert_node_calls.append(node.node_id)
-        super().upsert_node(identity_key=identity_key, node=node)
+        self.skip_metadata_keys_calls.append(skip_metadata_keys)
+        super().upsert_node(identity_key=identity_key, node=node, skip_metadata_keys=skip_metadata_keys)
 
 
 def _engine_with(store: InMemorySubstrateGraphStore, *, activations: dict[str, float], pressures: dict[str, float]) -> SubstrateDynamicsEngine:
@@ -81,6 +89,70 @@ def test_tick_rewrites_node_when_activation_changes() -> None:
 
     assert store.upsert_node_calls == [node.node_id]
     assert len(result.activation_updates) == 1
+
+
+def test_tick_passes_externally_owned_keys_to_skip_metadata_keys() -> None:
+    """Regression test for the live bug confirmed 2026-07-29: tick()'s write
+    guard fires on activation decay alone (essentially every node, every
+    tick), and must never re-persist prediction_error/contributing_turn_ids
+    -- fields it only ever READS (to seed pressure), never computes. See
+    falkor_codec.EXTERNALLY_OWNED_METADATA_KEYS's docstring for the full
+    incident (node:substrate.bus_synaptic frozen at a stale prediction_error
+    for 3+ hours, causing real false "Bus Anomaly Detected" alerts)."""
+    from orion.substrate.falkor_codec import EXTERNALLY_OWNED_METADATA_KEYS
+
+    store = _CountingStore()
+    node = _steady_node(activation=0.3, pressure=0.0)
+    store.upsert_node(identity_key="identity-1", node=node)
+    store.upsert_node_calls.clear()
+    store.skip_metadata_keys_calls.clear()
+
+    engine = _engine_with(store, activations={node.node_id: 0.5}, pressures={node.node_id: 0.0})
+    engine.tick(now=_NOW)
+
+    assert store.upsert_node_calls == [node.node_id]
+    assert store.skip_metadata_keys_calls == [EXTERNALLY_OWNED_METADATA_KEYS]
+
+
+def test_tick_does_not_clobber_externally_owned_prediction_error() -> None:
+    """The actual end-to-end regression, reproducing the real race: a node's
+    prediction_error is updated by a genuinely EXTERNAL writer (bus_synaptic's
+    own tick, in the real incident) WHILE this engine's tick() is in flight --
+    i.e. after this engine's own snapshot() was taken (top of tick()) but
+    before its own upsert_node() call runs. The external writer's fresher
+    value must survive; it must NOT be reverted to whatever stale copy was in
+    this engine's own start-of-tick snapshot. InMemorySubstrateGraphStore has
+    no caching layer (snapshot() always reflects the current store instantly),
+    so the race is simulated by injecting the "external write" as a side
+    effect of the already-test-only-stubbed _compute_activations call, which
+    real tick() invokes strictly after snapshot() and strictly before its own
+    upsert_node() call -- the exact window the real bug lived in.
+    """
+    store = _CountingStore()
+    node = _steady_node(activation=0.3, pressure=0.0)
+    node = node.model_copy(update={"metadata": {**node.metadata, "prediction_error": 0.9}})
+    store.upsert_node(identity_key="identity-1", node=node)
+    store.upsert_node_calls.clear()
+
+    engine = SubstrateDynamicsEngine(store=store)
+    engine._compute_pressures = lambda nodes, outgoing, tick_at: ({node.node_id: 0.0}, {})  # type: ignore[method-assign]
+
+    def _compute_activations_with_concurrent_external_write(updated_nodes, outgoing, pressures, tick_at):
+        fresher = store.get_node_by_id(node.node_id)
+        fresher = fresher.model_copy(update={"metadata": {**fresher.metadata, "prediction_error": 0.42}})
+        store.upsert_node(identity_key="identity-1", node=fresher)
+        return {node.node_id: 0.5}
+
+    engine._compute_activations = _compute_activations_with_concurrent_external_write  # type: ignore[method-assign]
+
+    engine.tick(now=_NOW)
+
+    assert store.upsert_node_calls == [node.node_id, node.node_id], "expected the external write plus this engine's own"
+    stored = store.get_node_by_id(node.node_id)
+    assert stored.metadata["prediction_error"] == 0.42, (
+        "tick() clobbered a fresher externally-written prediction_error with its own "
+        "stale snapshot-time copy -- this is the exact live bug this test guards against"
+    )
 
 
 def test_tick_rewrites_node_when_pressure_changes_even_if_activation_steady() -> None:

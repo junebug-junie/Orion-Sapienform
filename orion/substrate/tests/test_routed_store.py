@@ -28,7 +28,7 @@ def _concept(node_id: str = "sub-node-r1") -> ConceptNodeV1:
 
 
 class _BoomStore(InMemorySubstrateGraphStore):
-    def upsert_node(self, *, identity_key, node):
+    def upsert_node(self, *, identity_key, node, skip_metadata_keys=None):
         raise RuntimeError("shadow boom")
 
 

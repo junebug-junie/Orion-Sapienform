@@ -1407,3 +1407,95 @@ def test_resolve_falkor_snapshot_ceiling_invalid_value_falls_back_to_shared_sett
     monkeypatch.setenv("FALKOR_SNAPSHOT_FORCE_REFRESH_CEILING_SEC", "not-a-number")
     monkeypatch.delenv("SUBSTRATE_SNAPSHOT_FORCE_REFRESH_CEILING_SEC", raising=False)
     assert _resolve_falkor_snapshot_force_refresh_ceiling_sec() == 30.0  # shared default
+
+
+# --- skip_metadata_keys (2026-07-29 dynamics-clobber fix) -----------------
+# Review gap: the regression tests in orion/substrate/tests/test_dynamics.py
+# only exercise InMemorySubstrateGraphStore (no encode/translate step) --
+# the live FalkorSubstrateStore path (Cypher SET-clause exclusion + the raw
+# metadata key -> encoded Cypher property name translation) had zero direct
+# coverage. These tests close that gap using the same RecordingFalkorClient
+# harness the existing SET-clause tests above already use.
+
+def test_falkor_upsert_node_skip_metadata_keys_excludes_from_cypher_set_clause():
+    client = RecordingFalkorClient()
+    store = FalkorSubstrateStore(
+        FalkorSubstrateStoreConfig(uri="redis://localhost:6379", graph_name="orion_substrate"),
+        client=client,
+        hydrate=False,
+    )
+    node = _concept(
+        node_id="concept-skip-alpha",
+        metadata={
+            "dynamic_pressure": 0.1,
+            "prediction_error": 0.9,
+            "contributing_turn_ids": ["turn-1", "turn-2"],
+        },
+    )
+
+    from orion.substrate.falkor_codec import EXTERNALLY_OWNED_METADATA_KEYS
+
+    store.upsert_node(
+        identity_key="concept:skip-alpha", node=node, skip_metadata_keys=EXTERNALLY_OWNED_METADATA_KEYS
+    )
+
+    cypher, params = client.calls[-1]
+    assert "n.prediction_error = $prediction_error" not in cypher
+    assert "n.contributing_turn_ids_json = $contributing_turn_ids_json" not in cypher
+    # dynamic_pressure isn't in the skip set -- still a normal, unaffected write.
+    assert "n.dynamic_pressure = $dynamic_pressure" in cypher
+
+
+def test_falkor_upsert_node_skip_metadata_keys_preserves_cached_value():
+    client = RecordingFalkorClient()
+    store = FalkorSubstrateStore(
+        FalkorSubstrateStoreConfig(uri="redis://localhost:6379", graph_name="orion_substrate"),
+        client=client,
+        hydrate=False,
+    )
+    from orion.substrate.falkor_codec import EXTERNALLY_OWNED_METADATA_KEYS
+
+    fresh = _concept(node_id="concept-skip-beta", metadata={"prediction_error": 0.42})
+    store.upsert_node(identity_key="concept:skip-beta", node=fresh)  # a real writer's fresh value
+
+    stale = _concept(node_id="concept-skip-beta", metadata={"prediction_error": 0.9})
+    store.upsert_node(
+        identity_key="concept:skip-beta", node=stale, skip_metadata_keys=EXTERNALLY_OWNED_METADATA_KEYS
+    )
+
+    # The local in-process cache must not diverge from what the durable
+    # Cypher SET clause actually did -- both must keep the fresher 0.42, not
+    # this call's own (deliberately excluded) 0.9.
+    cached = store.get_node_by_id("concept-skip-beta")
+    assert cached.metadata["prediction_error"] == 0.42
+    cypher, params = client.calls[-1]
+    assert "n.prediction_error = $prediction_error" not in cypher
+
+
+def test_externally_owned_metadata_keys_translation_matches_real_encoding():
+    """Review gap: falkor_store.py's raw->encoded key translation is a single
+    hardcoded ternary (only contributing_turn_ids -> contributing_turn_ids_json
+    is special-cased). If EXTERNALLY_OWNED_METADATA_KEYS ever grows a key whose
+    encoded name diverges in some other way, that ternary silently stops
+    working and the exact incident this fix addresses reappears for the new
+    key, with nothing to catch it. This test fails loudly the moment that
+    drift happens, by encoding a real node through the actual production
+    function and checking every EXTERNALLY_OWNED_METADATA_KEYS member maps to
+    a property name this repo's translation logic already knows about."""
+    from orion.substrate.falkor_codec import (
+        EXTERNALLY_OWNED_METADATA_KEYS,
+        _dynamics_properties_from_metadata,
+    )
+
+    raw_metadata = {key: "sentinel" for key in EXTERNALLY_OWNED_METADATA_KEYS}
+    encoded = _dynamics_properties_from_metadata(raw_metadata)
+    known_translations = {"contributing_turn_ids": "contributing_turn_ids_json"}
+
+    for raw_key in EXTERNALLY_OWNED_METADATA_KEYS:
+        encoded_key = known_translations.get(raw_key, raw_key)
+        assert encoded_key in encoded, (
+            f"EXTERNALLY_OWNED_METADATA_KEYS contains {raw_key!r}, but the real encoded "
+            f"Cypher property name {encoded_key!r} isn't in _dynamics_properties_from_metadata()'s "
+            "output -- falkor_store.py's translation ternary needs updating to match, or the "
+            "skip_metadata_keys fix silently stops protecting this field."
+        )

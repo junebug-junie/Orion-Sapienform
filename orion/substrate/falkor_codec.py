@@ -152,6 +152,33 @@ DYNAMICS_ENGINE_OWNED_METADATA_KEYS: tuple[str, ...] = (
     "dormancy_updated_at",
 )
 
+# The reverse-direction ownership problem, confirmed live 2026-07-29 as a real
+# bug (not theoretical): SubstrateDynamicsEngine.tick() (orion/substrate/
+# dynamics.py) reads `prediction_error` off a node purely to SEED pressure
+# (prediction_error_pressure()) but was re-persisting the ENTIRE metadata dict
+# -- including prediction_error/contributing_turn_ids, fields it does not own
+# and never computes -- via its own upsert_node() call. Its write guard fires
+# on activation decay alone (which changes on essentially every node, every
+# tick, unconditionally), far more often than an external writer like
+# bus_synaptic's 30s tick -- so dynamics.py's frequent re-writes of whatever
+# was in its own start-of-tick snapshot functionally "won" the race almost
+# always, durably re-locking a stale prediction_error value even while the
+# real external writer kept succeeding and logging correct, fresh values.
+# Confirmed live: node:substrate.bus_synaptic frozen at prediction_error=1.0
+# for 3+ hours despite bus_synaptic_tick_completed logging real, varying,
+# non-saturated values every 30s the entire time -- and this same frozen
+# value was independently polled by orion-equilibrium-service's own
+# bus_synaptic metacog trigger, producing real false "Bus Anomaly Detected"
+# alerts. Expressed as RAW metadata dict keys (matching how a caller like
+# dynamics.py naturally thinks about node.metadata), NOT the encoded Cypher
+# property names -- `contributing_turn_ids` becomes `contributing_turn_ids_json`
+# only once encode_node_properties() runs; FalkorSubstrateStore.upsert_node()
+# is responsible for translating this raw-key set into the encoded property
+# names it actually needs to exclude from the SET clause.
+EXTERNALLY_OWNED_METADATA_KEYS: frozenset[str] = frozenset(
+    {"prediction_error", "contributing_turn_ids"}
+)
+
 
 def _safe_float(value: Any, *, default: float | None) -> float | None:
     """Tolerant numeric coercion matching the `.get(key) or default` pattern

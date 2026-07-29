@@ -508,16 +508,82 @@ class FalkorSubstrateStore:
     def get_edge_id_by_identity(self, identity_key: str) -> str | None:
         return self._cache.get_edge_id_by_identity(identity_key)
 
-    def upsert_node(self, *, identity_key: str | None, node: BaseSubstrateNodeV1) -> None:
+    def upsert_node(
+        self,
+        *,
+        identity_key: str | None,
+        node: BaseSubstrateNodeV1,
+        skip_metadata_keys: frozenset[str] | None = None,
+    ) -> None:
+        """``skip_metadata_keys`` (raw ``node.metadata`` key names, e.g.
+        ``falkor_codec.EXTERNALLY_OWNED_METADATA_KEYS``) excludes those keys
+        from BOTH the Cypher SET clause (so an existing value on the graph is
+        left untouched, not overwritten with this call's copy) AND the local
+        in-process cache update (so the cache doesn't diverge from the graph
+        by caching this call's stale copy instead of the real value already
+        there). Confirmed live 2026-07-29 as a real bug, not theoretical: a
+        caller with no reason to know the current value of a field it
+        doesn't own (SubstrateDynamicsEngine.tick() re-persisting
+        `prediction_error` purely because activation decay triggered its
+        write guard) durably clobbered a different writer's fresh values --
+        `node:substrate.bus_synaptic` frozen at `prediction_error=1.0` for
+        3+ hours despite the real writer succeeding every 30s the whole
+        time, which independently caused false "Bus Anomaly Detected"
+        alerts via orion-equilibrium-service's own poll of the same frozen
+        value. See falkor_codec.EXTERNALLY_OWNED_METADATA_KEYS's docstring
+        for the full trace.
+
+        **Known, bounded race, same shape as the cache-swap race documented
+        on ``_hydrate_from_durable()`` above**: the ``self._cache.get_node_by_id()``
+        read used to build the skip-preserving merge isn't lock-protected. A
+        second concurrent ``upsert_node()`` call landing between that read
+        and this call's own ``self._cache.upsert_node(...)`` could still
+        leave the *local cache* (not the durable Falkor graph -- the Cypher
+        SET-clause exclusion is unconditional and independent of this cache
+        read) briefly holding a stale copy of a skipped key. Self-heals the
+        same way: this write still bumps ``self._write_generation``, so the
+        next ``snapshot()`` call detects the mismatch and re-hydrates from
+        durable Falkor, which is unaffected by this narrow window.
+        """
         if getattr(node, "node_kind", None) not in ("concept", "evidence"):
             raise ValueError(
                 "FalkorSubstrateStore durable writes support concept and evidence nodes only; "
                 f"got node_kind={getattr(node, 'node_kind', None)!r}"
             )
         node = _with_sanitized_metadata(node)
+
+        cache_node = node
+        skip_encoded_keys: set[str] = set()
+        if skip_metadata_keys:
+            existing_cached = self._cache.get_node_by_id(node.node_id)
+            merged_metadata = dict(node.metadata or {})
+            existing_metadata = (existing_cached.metadata or {}) if existing_cached is not None else {}
+            for key in skip_metadata_keys:
+                if key in existing_metadata:
+                    merged_metadata[key] = existing_metadata[key]
+                else:
+                    # No cached copy to fall back on -- an honest "unknown"
+                    # (key absent) beats caching this caller's own unverified
+                    # guess for a field it doesn't own. Review finding
+                    # 2026-07-29: without this, a cache miss (e.g. mid-
+                    # rehydrate) would leave the LOCAL cache holding the
+                    # caller's copy for a field the durable Cypher write
+                    # deliberately skipped -- cache/durable divergence until
+                    # the next generation-triggered rehydrate.
+                    merged_metadata.pop(key, None)
+            cache_node = node.model_copy(update={"metadata": merged_metadata})
+            # Translate raw metadata keys into the encoded Cypher property
+            # names actually present in the SET clause -- contributing_turn_ids
+            # becomes contributing_turn_ids_json only once
+            # encode_node_properties() runs (see _dynamics_properties_from_metadata,
+            # and test_externally_owned_metadata_keys_translation_matches_real_encoding
+            # for the drift guard on this hardcoded translation).
+            for key in skip_metadata_keys:
+                skip_encoded_keys.add("contributing_turn_ids_json" if key == "contributing_turn_ids" else key)
+
         params = encode_node_properties(node, identity_key)
         label = node_label_for_kind(str(node.node_kind))
-        assignments = _set_assignments("n", params, skip={"node_id"})
+        assignments = _set_assignments("n", params, skip={"node_id"} | skip_encoded_keys)
         cypher = (
             f"MERGE (n:SubstrateNode:{label} {{node_id: $node_id}}) "
             f"SET {assignments} "
@@ -528,7 +594,7 @@ class FalkorSubstrateStore:
         except Exception as exc:
             logger.error("falkor_substrate_upsert_node_failed node_id=%s error=%s", node.node_id, exc)
             raise
-        self._cache.upsert_node(identity_key=identity_key, node=node)
+        self._cache.upsert_node(identity_key=identity_key, node=cache_node)
         self._write_generation += 1
 
     def upsert_edge(self, *, identity_key: str, edge: SubstrateEdgeV1) -> None:

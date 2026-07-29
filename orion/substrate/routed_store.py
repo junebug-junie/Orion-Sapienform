@@ -47,9 +47,17 @@ class RoutedSubstrateGraphStore:
     def get_edge_id_by_identity(self, identity_key: str) -> str | None:
         return self._primary.get_edge_id_by_identity(identity_key)
 
-    def upsert_node(self, *, identity_key: str | None, node: BaseSubstrateNodeV1) -> None:
-        self._primary.upsert_node(identity_key=identity_key, node=node)
-        self._shadow_write("upsert_node", identity_key=identity_key, node=node)
+    def upsert_node(
+        self,
+        *,
+        identity_key: str | None,
+        node: BaseSubstrateNodeV1,
+        skip_metadata_keys: frozenset[str] | None = None,
+    ) -> None:
+        self._primary.upsert_node(identity_key=identity_key, node=node, skip_metadata_keys=skip_metadata_keys)
+        self._shadow_write(
+            "upsert_node", identity_key=identity_key, node=node, skip_metadata_keys=skip_metadata_keys
+        )
 
     def upsert_edge(self, *, identity_key: str, edge: SubstrateEdgeV1) -> None:
         self._primary.upsert_edge(identity_key=identity_key, edge=edge)

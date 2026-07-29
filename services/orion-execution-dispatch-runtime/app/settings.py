@@ -43,38 +43,51 @@ class Settings(BaseSettings):
     execution_dispatch_rpc_timeout_sec: float = Field(
         120.0, alias="EXECUTION_DISPATCH_RPC_TIMEOUT_SEC"
     )
-    # Replaces the old ORION_DISPATCH_MAX_PER_DAY (a blind action count, never
-    # empirically derived -- confirmed 2026-07-25 the checked-in default (24)
-    # and the live drifted value (88) both trace to a hand-picked round
-    # number in docs/superpowers/specs/2026-07-13-endogenous-action-motor-
-    # nerve-spec.md's risk table, never validated against real behavior).
-    # This budget is spent against each dispatched candidate's own real,
-    # already-computed `risk_score` (ExecutionDispatchCandidateV1.risk_score,
-    # [0,1] per candidate) instead of counting actions -- five trivial
-    # inspects (risk_score ~0.05 each) no longer cost the same as five
-    # higher-risk candidates. Starting value anchored to real observed
-    # data, not another guess: the first real day this pipeline dispatched
-    # successfully (2026-07-26, post theater-tripwire fix) spent a real
-    # cumulative risk of 4.4 across 88 dispatches (all risk_score=0.05 that
-    # day). This default is ~2x that real observed total -- a margin over
-    # actually-observed behavior, not a fresh round number. Needs real
-    # re-derivation as more real history accumulates across a wider mix of
-    # dispatch_kind/risk_score, per this program's own "measure before
-    # minting" discipline -- treat this as a disclosed starting judgment
-    # call, not a settled constant.
+    # 2026-07-29: no longer the primary mechanism -- see
+    # orion_dispatch_risk_cap_advisory_only's comment below and
+    # app/worker.py::ExecutionDispatchRuntimeWorker._derive_daily_risk_cap
+    # for the real, self-calibrating EWMA ceiling that replaced this fixed
+    # number as of this patch. This value is now only the last-resort
+    # fallback used when the daily-risk EWMA baseline has never been seeded
+    # AND no historical closed day with real candidate data exists at all
+    # (i.e. a truly first-ever tick against an empty
+    # substrate_execution_dispatch_frames table) -- in this repo's real
+    # history that never actually triggers (2026-07-28 already has real
+    # closed-day data: 817.65), but the fallback still has to be something.
+    # Kept at its old value for continuity of what a fresh/empty deployment
+    # gets before any real data exists, not because 10.0 means anything
+    # about real risk demand -- it never did (see the old comment history in
+    # this file's git blame and services/orion-execution-dispatch-runtime/
+    # README.md for how this number's original "~2x one day's total"
+    # justification was itself later found to be ~2x a *clamped* value, not
+    # real demand).
     orion_dispatch_max_risk_per_day: float = Field(10.0, alias="ORION_DISPATCH_MAX_RISK_PER_DAY")
-    # 2026-07-28: the *shape* of this budget (spend real risk_score, not a blind
-    # count) is real; the *number* is not -- "~2x one day's observed total" is
-    # still a hand-picked multiplier, no different in kind from the old 24/88
-    # this replaced, just wearing better math. Confirmed live the same day:
-    # every dispatched candidate so far has had an identical risk_score=0.05,
-    # so there is still no real distribution to derive a principled ceiling
-    # from. Advisory-only by default: the cap is computed and logged every
-    # tick (execution_dispatch_risk_budget_status) but does not block sends --
-    # flip to false only once enough risk_score variance has accumulated to
-    # derive max_risk_per_day from real data instead of a guessed multiplier.
+    # 2026-07-29: enforcement is back ON (default flipped True -> False).
+    # Real sequence, not "we always knew this": ORION_DISPATCH_MAX_RISK_PER_DAY
+    # was a fixed 10.0 constant, ENFORCED, from 2026-07-26 through 2026-07-27
+    # -- and it worked exactly like a real ceiling, clamping dispatched-risk
+    # totals at exactly 10.00/day both days (150 candidates on the 26th, 88
+    # on the 27th), which looked like a healthy, working cap. It wasn't --
+    # advisory_only=True shipped 2026-07-28 specifically to observe what real
+    # *uncapped* demand looked like, and the answer was 817.65/day (15,099
+    # candidates) and climbing, ~80x the old enforced number. That one day of
+    # advisory-only data is exactly what
+    # app/worker.py::ExecutionDispatchRuntimeWorker._derive_daily_risk_cap
+    # now feeds into a real EWMA baseline (orion/bus/ewma.py::
+    # compute_ewma_update, same mechanism as PR #1433's recent_perturbation
+    # fix and PR #1434's execution_prediction_error fix) instead of a
+    # hand-picked multiplier -- so re-enforcing now, on a derived ceiling
+    # instead of a guessed one, closes the loop advisory-only was opened for.
+    # Real per-tick spend still reads from sum_risk_dispatched_today()
+    # (right-censored at whatever cap is in force, and correctly so -- that's
+    # what "spend" means); the EWMA baseline itself is fed from
+    # store.py::sum_uncapped_risk_for_day's *uncapped* demand instead, so the
+    # new cap can't recreate the same clamped-value-masks-true-magnitude trap
+    # one layer down. Explicit operator override: set this back to True to
+    # return to log-only behavior without touching the derived-cap machinery
+    # itself.
     orion_dispatch_risk_cap_advisory_only: bool = Field(
-        True, alias="ORION_DISPATCH_RISK_CAP_ADVISORY_ONLY"
+        False, alias="ORION_DISPATCH_RISK_CAP_ADVISORY_ONLY"
     )
     action_outcome_channel: str = Field(
         "orion:autonomy:action:outcome", alias="BUS_ACTION_OUTCOME_OUT"

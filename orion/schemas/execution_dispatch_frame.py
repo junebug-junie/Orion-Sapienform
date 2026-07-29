@@ -99,3 +99,24 @@ class ExecutionDispatchFrameV1(BaseModel):
     blocked_count: int = 0
 
     warnings: list[str] = Field(default_factory=list)
+
+    # 2026-07-29: self-calibrating daily risk ceiling (replaces the old fixed
+    # ORION_DISPATCH_MAX_RISK_PER_DAY constant). EWMA baseline over *uncapped*
+    # daily demand -- see services/orion-execution-dispatch-runtime/app/
+    # store.py::sum_uncapped_risk_for_day for why this must not be fed from
+    # sum_risk_dispatched_today() (right-censored at whatever cap was in
+    # force that day). Same naming/shape convention as
+    # ExecutionTrajectoryProjectionV1.prediction_error_baseline_ewma/_var/_n
+    # (orion/schemas/execution_projection.py), new domain. Every saved frame
+    # carries the current baseline state forward (not just the ones that
+    # update it) so the next tick's store.load_latest_daily_risk_baseline()
+    # always finds the latest state regardless of which tick it reads.
+    # Defaults are the correct cold-start value for both a fresh frame and an
+    # older persisted row that predates these fields.
+    daily_risk_baseline_ewma: float = 0.0
+    daily_risk_baseline_ewma_var: float = 0.0
+    daily_risk_baseline_ewma_n: int = 0
+    # Plain ISO date string ("2026-07-28"), not a bare `date` object -- this
+    # store's json_serializer=json.dumps (store.py) can't serialize a bare
+    # `date`.
+    daily_risk_baseline_last_day: str | None = None

@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import importlib.util
 import sys
-from datetime import datetime, timedelta, timezone
+from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
 from unittest.mock import MagicMock
 
@@ -442,3 +442,169 @@ def test_load_dispatch_result_by_dispatch_id_none_when_no_row(monkeypatch) -> No
     monkeypatch.setattr(store, "_engine", fake_engine)
 
     assert store.load_dispatch_result_by_dispatch_id("dispatch:missing") is None
+
+
+# ---------------------------------------------------------------------------
+# Self-calibrating daily risk ceiling (2026-07-29)
+# ---------------------------------------------------------------------------
+
+
+def test_sum_uncapped_risk_for_day_reads_prepared_and_dispatched_arrays(monkeypatch) -> None:
+    """Real feedstock for the EWMA baseline: prepared_for_dispatch candidates
+    left unsent (from `candidates`) PLUS everything already spent (from
+    `dispatched_candidates`) -- both arrays, not just dispatched_candidates
+    (that would be the exact right-censored-spend bug this method exists to
+    avoid)."""
+    store = ExecutionDispatchRuntimeStore("postgresql://test:test@localhost/test")
+    fake_engine = MagicMock()
+    conn = MagicMock()
+    fake_engine.connect.return_value.__enter__ = MagicMock(return_value=conn)
+    fake_engine.connect.return_value.__exit__ = MagicMock(return_value=False)
+    conn.execute.return_value.mappings.return_value.first.return_value = {"total_risk": 817.65}
+    monkeypatch.setattr(store, "_engine", fake_engine)
+
+    total = store.sum_uncapped_risk_for_day(
+        datetime(2026, 7, 28, 0, 0, tzinfo=timezone.utc),
+        datetime(2026, 7, 29, 0, 0, tzinfo=timezone.utc),
+    )
+
+    assert total == 817.65
+    sql = str(conn.execute.call_args.args[0])
+    assert "prepared_for_dispatch" in sql
+    assert "'dispatched_candidates'" in sql
+    assert "UNION ALL" in sql
+    params = conn.execute.call_args.args[1]
+    assert params["day_start"] == datetime(2026, 7, 28, 0, 0, tzinfo=timezone.utc)
+    assert params["day_end"] == datetime(2026, 7, 29, 0, 0, tzinfo=timezone.utc)
+
+
+def test_sum_uncapped_risk_for_day_zero_when_no_data(monkeypatch) -> None:
+    store = ExecutionDispatchRuntimeStore("postgresql://test:test@localhost/test")
+    fake_engine = MagicMock()
+    conn = MagicMock()
+    fake_engine.connect.return_value.__enter__ = MagicMock(return_value=conn)
+    fake_engine.connect.return_value.__exit__ = MagicMock(return_value=False)
+    conn.execute.return_value.mappings.return_value.first.return_value = {"total_risk": None}
+    monkeypatch.setattr(store, "_engine", fake_engine)
+
+    total = store.sum_uncapped_risk_for_day(
+        datetime(2026, 7, 28, 0, 0, tzinfo=timezone.utc),
+        datetime(2026, 7, 29, 0, 0, tzinfo=timezone.utc),
+    )
+
+    assert total == 0.0
+
+
+def test_load_latest_daily_risk_baseline_returns_latest_row(monkeypatch) -> None:
+    store = ExecutionDispatchRuntimeStore("postgresql://test:test@localhost/test")
+    fake_engine = MagicMock()
+    conn = MagicMock()
+    fake_engine.connect.return_value.__enter__ = MagicMock(return_value=conn)
+    fake_engine.connect.return_value.__exit__ = MagicMock(return_value=False)
+    conn.execute.return_value.mappings.return_value.first.return_value = {
+        "ewma": "140.0",
+        "var": "4000.0",
+        "n": "2",
+        "last_day": "2026-07-29",
+    }
+    monkeypatch.setattr(store, "_engine", fake_engine)
+
+    result = store.load_latest_daily_risk_baseline()
+
+    assert result == {
+        "daily_risk_baseline_ewma": 140.0,
+        "daily_risk_baseline_ewma_var": 4000.0,
+        "daily_risk_baseline_ewma_n": 2,
+        "daily_risk_baseline_last_day": "2026-07-29",
+    }
+
+
+def test_load_latest_daily_risk_baseline_none_when_no_rows(monkeypatch) -> None:
+    """Truly no dispatch frame rows at all -- distinct from a real row that
+    predates these fields (see the pre-migration test below), which must
+    NOT return None."""
+    store = ExecutionDispatchRuntimeStore("postgresql://test:test@localhost/test")
+    fake_engine = MagicMock()
+    conn = MagicMock()
+    fake_engine.connect.return_value.__enter__ = MagicMock(return_value=conn)
+    fake_engine.connect.return_value.__exit__ = MagicMock(return_value=False)
+    conn.execute.return_value.mappings.return_value.first.return_value = None
+    monkeypatch.setattr(store, "_engine", fake_engine)
+
+    assert store.load_latest_daily_risk_baseline() is None
+
+
+def test_load_latest_daily_risk_baseline_defaults_missing_fields_for_pre_migration_row(
+    monkeypatch,
+) -> None:
+    """A real row exists but predates these fields (pre-2026-07-29 dispatch
+    frame) -- all four JSON keys come back None. Must degrade to cold-start
+    defaults so the caller's own cold-start-seed path kicks in, not raise or
+    silently report None (a real row is not "no history")."""
+    store = ExecutionDispatchRuntimeStore("postgresql://test:test@localhost/test")
+    fake_engine = MagicMock()
+    conn = MagicMock()
+    fake_engine.connect.return_value.__enter__ = MagicMock(return_value=conn)
+    fake_engine.connect.return_value.__exit__ = MagicMock(return_value=False)
+    conn.execute.return_value.mappings.return_value.first.return_value = {
+        "ewma": None,
+        "var": None,
+        "n": None,
+        "last_day": None,
+    }
+    monkeypatch.setattr(store, "_engine", fake_engine)
+
+    result = store.load_latest_daily_risk_baseline()
+
+    assert result == {
+        "daily_risk_baseline_ewma": 0.0,
+        "daily_risk_baseline_ewma_var": 0.0,
+        "daily_risk_baseline_ewma_n": 0,
+        "daily_risk_baseline_last_day": None,
+    }
+
+
+def test_most_recent_closed_day_with_data_returns_day_and_real_uncapped_total(
+    monkeypatch,
+) -> None:
+    store = ExecutionDispatchRuntimeStore("postgresql://test:test@localhost/test")
+    fake_engine = MagicMock()
+    conn = MagicMock()
+    fake_engine.connect.return_value.__enter__ = MagicMock(return_value=conn)
+    fake_engine.connect.return_value.__exit__ = MagicMock(return_value=False)
+
+    def execute_side_effect(stmt, params=None):
+        sql = str(stmt)
+        result = MagicMock()
+        if "AS day" in sql:
+            result.mappings.return_value.first.return_value = {"day": date(2026, 7, 28)}
+        elif "total_risk" in sql:
+            result.mappings.return_value.first.return_value = {"total_risk": 817.65}
+        else:
+            raise AssertionError(f"unexpected SQL: {sql}")
+        return result
+
+    conn.execute.side_effect = execute_side_effect
+    monkeypatch.setattr(store, "_engine", fake_engine)
+
+    result = store.most_recent_closed_day_with_data(
+        datetime(2026, 7, 29, 0, 0, tzinfo=timezone.utc)
+    )
+
+    assert result == ("2026-07-28", 817.65)
+
+
+def test_most_recent_closed_day_with_data_none_when_no_history(monkeypatch) -> None:
+    store = ExecutionDispatchRuntimeStore("postgresql://test:test@localhost/test")
+    fake_engine = MagicMock()
+    conn = MagicMock()
+    fake_engine.connect.return_value.__enter__ = MagicMock(return_value=conn)
+    fake_engine.connect.return_value.__exit__ = MagicMock(return_value=False)
+    conn.execute.return_value.mappings.return_value.first.return_value = None
+    monkeypatch.setattr(store, "_engine", fake_engine)
+
+    result = store.most_recent_closed_day_with_data(
+        datetime(2026, 7, 29, 0, 0, tzinfo=timezone.utc)
+    )
+
+    assert result is None

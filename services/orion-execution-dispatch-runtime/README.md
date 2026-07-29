@@ -30,30 +30,52 @@ promotes the candidate to a real, evidenced `dispatched` status.
 
 **Budgets**, both enforced per tick before any send happens:
 - `config/execution_dispatch/execution_dispatch_policy.v1.yaml`'s `limits.max_dispatches_per_tick`
-- `ORION_DISPATCH_MAX_RISK_PER_DAY` (rolling UTC calendar day) -- a real cumulative risk-score
-  budget, not a blind action count. Replaces the old `ORION_DISPATCH_MAX_PER_DAY` (2026-07-26):
-  that was a hand-picked round number (checked-in 24, live-drifted to an unexplained 88) never
-  validated against real behavior -- exactly the kind of un-measured hand-authored proxy the
-  Sentience Striving Program exists to replace. Each dispatched candidate already carries a
-  real, already-computed `risk_score` ([0,1]); the budget is spent against the sum of those
-  scores (`ExecutionDispatchRuntimeStore.sum_risk_dispatched_today()`, reading
-  `dispatched_candidates` off `substrate_execution_dispatch_frames`, not
-  `substrate_dispatch_results`), so five trivial inspects no longer cost the same as five
-  genuinely higher-risk candidates. The default (10.0) is anchored to real observed data (the
-  first day this pipeline dispatched successfully spent a real cumulative risk of 4.4 across 88
-  dispatches) rather than a fresh guess, but is still a disclosed starting judgment call --
-  expect it to need re-derivation as more real history accumulates across a wider risk_score mix.
-  **2026-07-28: `ORION_DISPATCH_RISK_CAP_ADVISORY_ONLY=true` (the default) means this cap does
-  not actually block sends** -- the "real anchoring" only ever produced a multiplier (2x one
-  day's total), not a derived ceiling, and every real candidate observed so far has had an
-  identical `risk_score=0.05` (no real variance yet to derive one from). Reaching the cap logs
-  `execution_dispatch_risk_budget_status ... cap_reached=true` and dispatch proceeds anyway
-  (still bounded by `max_dispatches_per_tick`); set `ORION_DISPATCH_RISK_CAP_ADVISORY_ONLY=false`
-  once enough real `risk_score` variance exists to justify actually enforcing a number.
-  **Also fixed 2026-07-28**: `docker-compose.yml` had never been updated for the 2026-07-26
-  rename -- it was still passing through the dead `ORION_DISPATCH_MAX_PER_DAY` and never passed
-  `ORION_DISPATCH_MAX_RISK_PER_DAY` at all, so the live container was silently running on the
-  Settings class default rather than anything the compose file actually wired.
+- A **self-calibrating daily risk ceiling** (rolling UTC calendar day) -- a real cumulative
+  risk-score budget, not a blind action count and, as of 2026-07-29, not a fixed hand-picked
+  number either. Each dispatched candidate already carries a real, already-computed `risk_score`
+  ([0,1]); the budget is spent against the sum of those scores
+  (`ExecutionDispatchRuntimeStore.sum_risk_dispatched_today()`, reading `dispatched_candidates`
+  off `substrate_execution_dispatch_frames`), so five trivial inspects no longer cost the same as
+  five genuinely higher-risk candidates.
+
+  **How the ceiling itself is derived (2026-07-29,
+  `ExecutionDispatchRuntimeWorker._derive_daily_risk_cap` in `app/worker.py`)**: an EWMA baseline
+  over real *uncapped* daily demand, mirroring the same `orion/bus/ewma.py::compute_ewma_update`
+  mechanism already shipped for field-attention's `recent_perturbation` caps (PR #1433) and
+  `execution_prediction_error`'s own per-tick baseline (PR #1434) -- new domain, not a new
+  mechanism. Fed by `ExecutionDispatchRuntimeStore.sum_uncapped_risk_for_day()`, which sums
+  `risk_score` across every candidate that existed a given day regardless of whether it actually
+  got sent (`prepared_for_dispatch` candidates left unsent that tick, plus everything already in
+  `dispatched_candidates`) -- deliberately **not** `sum_risk_dispatched_today()`, which is
+  right-censored at whatever cap was enforced that day and therefore cannot report true demand
+  back into the thing that sets the cap (see that method's own docstring for the fuller
+  rationale). With `>=2` real daily samples the cap is `ewma + 3.0 * sqrt(max(var, 1.0))`; with
+  exactly 1 sample it's `ewma * 2.0` (an interim margin, same shape as the old static default's
+  own "2x one observed day" comment, now correctly anchored on real uncapped demand); with zero
+  samples anywhere in history it falls back to the static `ORION_DISPATCH_MAX_RISK_PER_DAY`
+  setting (last resort only -- never actually triggers against this repo's real history).
+
+  **Why this replaced the old fixed `ORION_DISPATCH_MAX_RISK_PER_DAY=10.0` constant, and the
+  real sequence that led here** (not "we always knew this"): that constant was ENFORCED from
+  2026-07-26 through 2026-07-27 and worked exactly like a real ceiling -- clamping real
+  dispatched-risk totals at exactly `10.00`/day both days (150 candidates on the 26th, 88 on the
+  27th). It looked like a healthy, working cap. It wasn't: `ORION_DISPATCH_RISK_CAP_ADVISORY_ONLY
+  =true` shipped 2026-07-28 specifically to observe what real *uncapped* demand looked like once
+  the clamp was lifted, and the answer was `817.65`/day (15,099 candidates) and climbing -- ~80x
+  the old enforced number, confirmed live via `substrate_execution_dispatch_frames.
+  dispatch_frame_json`. That one real day of advisory-only data is exactly what now seeds the
+  EWMA baseline above instead of a hand-picked multiplier.
+
+  **Enforcement is back ON as of 2026-07-29**: `ORION_DISPATCH_RISK_CAP_ADVISORY_ONLY` now
+  defaults `false`. Reaching the derived cap logs
+  `execution_dispatch_risk_budget_status ... cap_reached=true` and blocks further sends for the
+  rest of the day (still bounded independently by `max_dispatches_per_tick`). Set
+  `ORION_DISPATCH_RISK_CAP_ADVISORY_ONLY=true` as an explicit operator override to return to
+  log-only behavior without touching the derived-cap machinery itself.
+
+  `ORION_DISPATCH_MAX_RISK_PER_DAY` itself is no longer the primary mechanism -- it's now only
+  the fallback used when the EWMA baseline has never been seeded and no historical closed day
+  with real candidate data exists at all.
 
 **Theater tripwire**: if more than half of the trailing 10 real results have `status="empty"`
 (a real send that produced no usable observation), the worker stops sending for the rest of

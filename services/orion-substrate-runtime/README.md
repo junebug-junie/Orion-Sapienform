@@ -178,6 +178,51 @@ decay once persistence stops, since the stale stored value never moves. Fixed in
 that added the guard; if you touch this loop again, keep the dormancy decision reading fresh
 recency even though the stored copy may lag.
 
+## AST/HOT self-model tick (rung 4)
+
+`orion/substrate/attention_self_model.py::reduce_attention_self_model()` unifies the field lane
+(`FieldAttentionFrameV1`, live 2s cadence, `orion-attention-runtime`) and the GWT-dispatch/broadcast
+lane (`AttentionBroadcastProjectionV1`, this service's own 30s tick above) into one AST/HOT
+self-model. It was pure and correct, but until this tick shipped its only real caller was
+`_brain_frame_tick()` above (`SUBSTRATE_BRAIN_FRAME_ENABLED` default `true`) — a narrower
+computation (`field_frame=None`, no trend) whose result is embedded inline into one brain-frame UI
+dimension, never persisted as its own durable artifact — plus `test_attention_self_model.py` and the
+offline `scripts/analysis/measure_ast_hot_reducer.py` replay script. This tick
+(`docs/superpowers/specs/2026-07-29-ast-hot-reducer-live-ticking-design.md`) is the first to compute
+the *complete* self-model (real field lane + real trend) and the first to persist it durably. The two
+live computations are intentionally left un-unified — see `_attention_self_model_tick()`'s own
+docstring for the full reasoning.
+
+Set `SUBSTRATE_ATTENTION_SELF_MODEL_TICK_ENABLED=true` to append a live call to the tail of
+`_attention_broadcast_tick()` (no separate timer — rides that tick's own 30s cadence, the slower of
+the two real inputs). Read-only against every existing live input: reuses the same FalkorDB graph
+snapshot the broadcast tick already fetched for `prediction_error_by_domain` (zero extra store
+round-trip), does one cross-service Postgres read of the field lane's latest row, and maintains its
+own in-process rolling buffer for `prediction_error_trend_by_domain`
+(`orion/substrate/prediction_error_trend.py`, the same reversion-based formula the offline replay
+already validated). Its only write is `save_attention_self_model()`, into
+`substrate_attention_self_model` (apply `manual_migration_attention_self_model_v1.sql` first) — a
+brand-new table with exactly one writer.
+
+- `SUBSTRATE_ATTENTION_SELF_MODEL_TICK_ENABLED` (default `false`): enable the tick. Default-off like
+  every other tick above — flip only after a live-data sanity check against the new table (this
+  repo's `bus_synaptic` precedent: PR #1385 → #1387).
+- `SUBSTRATE_ATTENTION_SELF_MODEL_TREND_WINDOW_TICKS` (default `10`): in-process rolling-window size,
+  counted in attention-broadcast ticks (10 × 30s = 5min), a real-world-time-comparable starting
+  anchor to the offline replay's own `PREDICTION_ERROR_TREND_WINDOW_TICKS=30` default (sized against
+  the field lane's ~2s cadence, ~60s span). Not independently calibrated — same documented status as
+  that offline constant.
+- `SUBSTRATE_ATTENTION_SELF_MODEL_LOG_RETENTION_HOURS` (default `168.0`): append-only retention,
+  matching `ORION_ATTENTION_BROADCAST_LOG_RETENTION_HOURS`'s own 7-day default.
+
+**Why a brand-new table, not a field added to an existing row:** this repo has a documented,
+repeated failure class of a periodic tick clobbering a field/row it doesn't exclusively own —
+`execution_load`'s cross-lane stomp (PR #1338), `orion-field-digester`'s generic decay silently
+zeroing `prediction_error`, and `SubstrateDynamicsEngine.tick()`'s `bus_synaptic` clobber (PR #1449,
+same day this tick shipped). A table nothing else has ever written to makes that failure class
+structurally impossible here, not just avoided by convention — see the design doc above for the full
+reasoning behind hosting this tick in this service instead of a separate one.
+
 ## Unified turn bus listeners
 
 Besides grammar poll reducers, substrate-runtime subscribes to RPC-style harness channels:

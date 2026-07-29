@@ -4,6 +4,7 @@ import asyncio
 import logging
 import math
 import os
+from collections import deque
 from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import datetime, timezone
@@ -264,6 +265,16 @@ class BiometricsSubstrateWorker:
         self._latest_field_anomaly: FieldChannelAnomalyScoreV1 | None = None
         self._latest_field_anomaly_at: datetime | None = None
         self._brain_frame_seq: int = 0
+        # AST/HOT self-model tick's in-process trend buffer (docs/superpowers/
+        # specs/2026-07-29-ast-hot-reducer-live-ticking-design.md). Private,
+        # per-process state -- never persisted mid-computation, only the
+        # reducer's own final prediction_error_trend_by_domain output is
+        # written anywhere (to substrate_attention_self_model, this tick's
+        # sole owned table). Restart-loses-window by design (see settings.py's
+        # attention_self_model_trend_window_ticks docstring).
+        self._attention_self_model_trend_buffer: deque[dict[str, float]] = deque(
+            maxlen=max(2, int(self._settings.attention_self_model_trend_window_ticks))
+        )
 
     @property
     def bus(self):
@@ -1592,8 +1603,93 @@ class BiometricsSubstrateWorker:
                 projection.selected_open_loop_id,
                 len(frame.open_loops),
             )
+            if s.enable_attention_self_model_tick:
+                try:
+                    self._attention_self_model_tick(state=state, broadcast=projection)
+                except Exception:
+                    logger.exception("substrate_attention_self_model_tick_failed")
         except Exception:
             logger.exception("substrate_attention_broadcast_failed")
+
+    def _attention_self_model_tick(self, *, state: Any, broadcast: Any) -> None:
+        """AST/HOT self-model live tick (docs/superpowers/specs/2026-07-29-
+        ast-hot-reducer-live-ticking-design.md).
+
+        Read-only against every existing live input: `state` is the same
+        FalkorDB graph snapshot `_attention_broadcast_tick()` already fetched
+        for its own broadcast computation (no extra store round-trip),
+        `broadcast` is the projection that same tick just built, and the
+        field lane is one cross-service Postgres read
+        (`get_latest_field_attention_frame()`) -- this method never calls
+        `upsert_node`/`save_attention_broadcast`/any existing writer. Its only
+        write is `save_attention_self_model()`, into a table nothing else in
+        the repo touches. Called from a context that already wraps this in
+        its own try/except (see caller) -- this method itself does not need
+        one, but keeps its own for a clean, itself-named log line
+        (`substrate_attention_self_model_tick_failed`) distinguishable from
+        the broadcast tick's own failure log if something upstream changes.
+
+        **NOT this codebase's first live caller of `reduce_attention_self_model()`
+        -- review finding 2026-07-29, correcting this patch's own original
+        premise.** `_brain_frame_tick()` (below, `SUBSTRATE_BRAIN_FRAME_ENABLED`
+        default `True`) already calls it live, every `brain_frame_interval_sec`
+        (~5s default), with `field_frame=None` and no
+        `prediction_error_trend_by_domain` -- a narrower computation whose
+        result is embedded inline into one brain-frame UI dimension
+        (`assemble_brain_frame(attention_payload=...)`'s `honesty_metrics`),
+        never persisted as its own durable, queryable artifact. This tick is
+        the first to compute the *complete* self-model (real field lane +
+        real trend) and the first to persist it durably
+        (`substrate_attention_self_model`) for future consumers -- e.g. the
+        CollapseMirror "insight" trigger design doc this patch exists to
+        unblock. The two computations are intentionally left un-unified here
+        (different purposes, different tables, no write-path collision --
+        confirmed via code review) rather than refactored to share one call,
+        which was judged out of scope for this patch; revisit if having two
+        independently-computed self-models live at once ever causes real
+        confusion for a consumer.
+        """
+        from orion.substrate.attention_self_model import reduce_attention_self_model
+        from orion.substrate.prediction_error_trend import compute_prediction_error_trend
+
+        pe_by_domain = self._brain_frame_prediction_error_by_domain(state.nodes.values())
+        if pe_by_domain:
+            self._attention_self_model_trend_buffer.append(pe_by_domain)
+        pe_trend_by_domain = compute_prediction_error_trend(
+            list(self._attention_self_model_trend_buffer)
+        )
+        field_frame = self._store.get_latest_field_attention_frame()
+        # now= must be passed explicitly (matching _brain_frame_tick()'s own
+        # existing reduce_attention_self_model() call, worker.py's other live
+        # caller -- see this method's docstring). Without it, reduce_
+        # attention_self_model() falls back to field_frame.generated_at for
+        # this tick's own generated_at, which is an upstream, independently-
+        # owned poll-cadence timestamp, not this tick's own. Review finding
+        # 2026-07-29: save_attention_self_model()'s dedup key is derived from
+        # generated_at -- if the field lane ever stalls, every subsequent
+        # tick would silently no-op via ON CONFLICT DO NOTHING while this
+        # method's own completion log kept firing every tick looking
+        # healthy, exactly the "ticks alive, table frozen" failure shape
+        # this whole design was meant to be immune to.
+        self_model = reduce_attention_self_model(
+            broadcast=broadcast,
+            field_frame=field_frame,
+            now=datetime.now(timezone.utc),
+            prediction_error_by_domain=pe_by_domain or None,
+            prediction_error_trend_by_domain=pe_trend_by_domain or None,
+        )
+        self._store.save_attention_self_model(
+            self_model,
+            retention_hours=self._settings.attention_self_model_log_retention_hours,
+        )
+        logger.info(
+            "substrate_attention_self_model_tick_completed attention_reason=%s "
+            "confidence=%s prediction_error_confidence=%s predicted_shift=%s",
+            self_model.attention_reason,
+            self_model.confidence,
+            self_model.prediction_error_confidence,
+            self_model.predicted_shift,
+        )
 
     async def _attention_broadcast_loop(self) -> None:
         interval = float(self._settings.attention_broadcast_interval_sec)

@@ -95,6 +95,34 @@ class Settings(BaseSettings):
     attention_broadcast_log_retention_hours: float = Field(
         168.0, alias="ORION_ATTENTION_BROADCAST_LOG_RETENTION_HOURS"
     )
+    # AST/HOT self-model live tick (docs/superpowers/specs/2026-07-29-ast-hot-
+    # reducer-live-ticking-design.md). Appended to the tail of
+    # _attention_broadcast_tick() -- no separate timer, rides that tick's own
+    # ORION_ATTENTION_BROADCAST_INTERVAL_SEC cadence (broadcast is the
+    # slowest of the two real inputs, so there's no resolution to gain from a
+    # faster independent timer). Default-off, matching every other tick in
+    # this file (dynamics, bus_synaptic, episodic) -- flip only after a live-
+    # data sanity check against the new substrate_attention_self_model table.
+    enable_attention_self_model_tick: bool = Field(
+        False, alias="SUBSTRATE_ATTENTION_SELF_MODEL_TICK_ENABLED"
+    )
+    # In-process rolling-window size for prediction_error_trend_by_domain
+    # (orion/substrate/prediction_error_trend.py), appended once per
+    # attention-broadcast tick (~30s cadence by default) rather than once per
+    # ~2s field-lane tick like the offline replay script's own
+    # PREDICTION_ERROR_TREND_WINDOW_TICKS=30 default -- 10 ticks here is a
+    # real-world-time-comparable starting anchor (10 * 30s = 5min), not
+    # independently calibrated. Needs its own live-data check before being
+    # trusted, same as the offline constant's own documented status.
+    attention_self_model_trend_window_ticks: int = Field(
+        10, alias="SUBSTRATE_ATTENTION_SELF_MODEL_TREND_WINDOW_TICKS"
+    )
+    # Same 168h (7-day) default as attention_broadcast_log_retention_hours
+    # above -- covers this repo's default 48h analysis-window scripts with
+    # margin.
+    attention_self_model_log_retention_hours: float = Field(
+        168.0, alias="SUBSTRATE_ATTENTION_SELF_MODEL_LOG_RETENTION_HOURS"
+    )
     enable_endogenous_curiosity: bool = Field(
         False, alias="ORION_ENDOGENOUS_CURIOSITY_ENABLED"
     )

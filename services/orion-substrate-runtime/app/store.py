@@ -26,6 +26,8 @@ from orion.schemas.organ_emission import OrganEmissionV1
 from orion.schemas.reduction_receipt import ReductionReceiptV1
 from orion.core.schemas.substrate_episodes import EpisodeSummaryV1
 from orion.schemas.attention_frame import AttentionBroadcastProjectionV1
+from orion.schemas.attention_self_model import AttentionSelfModelV1
+from orion.schemas.field_attention_frame import FieldAttentionFrameV1
 
 from orion.substrate.biometrics_loop.constants import GRAMMAR_CURSOR_NAME
 from orion.substrate.execution_loop.constants import (
@@ -608,6 +610,83 @@ class BiometricsSubstrateStore:
                 text(
                     f"""
                     DELETE FROM substrate_attention_broadcast_log
+                    WHERE generated_at < now() - interval '{float(retention_hours)} hours'
+                    """
+                ),
+            )
+
+    def get_latest_field_attention_frame(self) -> FieldAttentionFrameV1 | None:
+        """Latest row from `substrate_attention_frames`, or None.
+
+        Cross-service read: that table is `orion-attention-runtime`'s
+        exclusively-owned live field lane (2s poll cadence) -- this store
+        never writes to it, only reads the latest snapshot for
+        `reduce_attention_self_model()`'s `field_frame` argument.
+        """
+        try:
+            with self._engine.connect() as conn:
+                row = conn.execute(
+                    text(
+                        """
+                        SELECT frame_json FROM substrate_attention_frames
+                        ORDER BY generated_at DESC LIMIT 1
+                        """
+                    )
+                ).mappings().first()
+            if not row:
+                return None
+            payload = row["frame_json"]
+            if isinstance(payload, str):
+                payload = json.loads(payload)
+            if not isinstance(payload, dict):
+                return None
+            return FieldAttentionFrameV1.model_validate(payload)
+        except Exception:
+            logger.exception("substrate_attention_self_model_field_frame_load_failed")
+            return None
+
+    def save_attention_self_model(
+        self, model: AttentionSelfModelV1, *, retention_hours: float
+    ) -> None:
+        """Append one AttentionSelfModelV1 row per attention-broadcast tick;
+        prunes rows beyond retention.
+
+        `substrate_attention_self_model` has exactly one writer in the whole
+        repo -- this method, called only from `_attention_broadcast_tick()`'s
+        self-model block. Deliberately a brand-new table rather than a field
+        added to any existing row: this repo has a documented, repeated
+        failure class of a tick clobbering a field it doesn't exclusively
+        own (execution_load cross-lane stomp PR #1338, orion-field-digester's
+        generic decay clobber, SubstrateDynamicsEngine.tick()'s bus_synaptic
+        clobber PR #1449) -- a table with a single writer and no pre-existing
+        occupant makes that failure class structurally impossible here.
+        """
+        generated_at = model.generated_at
+        digest = hashlib.sha256(generated_at.isoformat().encode("utf-8")).hexdigest()[:24]
+        now = datetime.now(timezone.utc)
+        with self._engine.begin() as conn:
+            conn.execute(
+                text(
+                    """
+                    INSERT INTO substrate_attention_self_model (
+                        model_id, generated_at, self_model_json, created_at
+                    ) VALUES (
+                        :model_id, :generated_at, :self_model_json, :created_at
+                    )
+                    ON CONFLICT (model_id) DO NOTHING
+                    """
+                ),
+                {
+                    "model_id": f"self-model-{digest}",
+                    "generated_at": generated_at,
+                    "self_model_json": Json(model.model_dump(mode="json")),
+                    "created_at": now,
+                },
+            )
+            conn.execute(
+                text(
+                    f"""
+                    DELETE FROM substrate_attention_self_model
                     WHERE generated_at < now() - interval '{float(retention_hours)} hours'
                     """
                 ),

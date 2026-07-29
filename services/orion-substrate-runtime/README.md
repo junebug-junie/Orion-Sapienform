@@ -204,9 +204,13 @@ already validated). Its only write is `save_attention_self_model()`, into
 `substrate_attention_self_model` (apply `manual_migration_attention_self_model_v1.sql` first) — a
 brand-new table with exactly one writer.
 
-- `SUBSTRATE_ATTENTION_SELF_MODEL_TICK_ENABLED` (default `false`): enable the tick. Default-off like
-  every other tick above — flip only after a live-data sanity check against the new table (this
-  repo's `bus_synaptic` precedent: PR #1385 → #1387).
+- `SUBSTRATE_ATTENTION_SELF_MODEL_TICK_ENABLED` (default `true`): enable the tick. Promoted to
+  default-on 2026-07-29 after a live-data sanity check against the new table (this repo's
+  `bus_synaptic` precedent: PR #1385 → #1387) confirmed real, non-degenerate output. Keep
+  `.env_example`'s active default in sync with whatever this deployment actually intends to run —
+  a same-day incident found a different worktree's `docker compose up` for this same service
+  (its own `.env` never having this key) silently reverted an already-flipped-on container back to
+  the stale `false` fallback, killing the tick for over an hour with no error.
 - `SUBSTRATE_ATTENTION_SELF_MODEL_TREND_WINDOW_TICKS` (default `10`): in-process rolling-window size,
   counted in attention-broadcast ticks (10 × 30s = 5min), a real-world-time-comparable starting
   anchor to the offline replay's own `PREDICTION_ERROR_TREND_WINDOW_TICKS=30` default (sized against
@@ -221,14 +225,15 @@ brand-new table with exactly one writer.
 `AttentionSelfModelV1.heartbeat_mean_ratio`/`heartbeat_verdict`/`heartbeat_basis`. This is a real,
 independently-computed signal (orion-heartbeat's tensor-network boundary/bulk entanglement ratio
 across five organs — see `services/orion-heartbeat/README.md`), not a restatement of this reducer's
-own prediction-error domains. Fails open: a disabled (`SUBSTRATE_HEARTBEAT_H1_URL` empty, the
-default), unreachable, or not-yet-computed (`{"ok": false}`) heartbeat leaves these three fields at
-their honest `None`/`""` defaults and never blocks this tick's own persist. Not yet consumed by
-anything downstream — additive-only, same status as this tick's own siblings before their consumer
-existed.
+own prediction-error domains. Fails open: a disabled (`SUBSTRATE_HEARTBEAT_H1_URL` empty),
+unreachable, or not-yet-computed (`{"ok": false}`) heartbeat leaves these three fields at their
+honest `None`/`""` defaults and never blocks this tick's own persist. Not yet consumed by anything
+downstream — additive-only, same status as this tick's own siblings before their consumer existed.
 
-- `SUBSTRATE_HEARTBEAT_H1_URL` (default empty, disabled): orion-heartbeat's `/h1` URL, e.g.
-  `http://orion-athena-heartbeat:7251/h1` (same `app-net` docker network both services already share).
+- `SUBSTRATE_HEARTBEAT_H1_URL` (default `http://orion-athena-heartbeat:7251/h1`, the real
+  container-name URL on the same `app-net` docker network both services already share): orion-
+  heartbeat's `/h1` URL. Set to empty to disable the fetch entirely on a deployment that doesn't run
+  orion-heartbeat.
 - `SUBSTRATE_HEARTBEAT_H1_FETCH_TIMEOUT_SEC` (default `2.0`): request timeout; this tick's own 30s
   cadence has ample margin.
 

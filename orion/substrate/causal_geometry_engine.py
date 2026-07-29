@@ -11,7 +11,9 @@ three-phase design, and `scripts/causal_geometry_report.py`'s own (still
 present) module docstring for the detailed rationale behind the fixed
 constants, the source tables, resampling, lagged cross-correlation, the
 Bonferroni-corrected-per-pair + Benjamini-Hochberg-corrected-across-pairs
-surrogate significance test, and the designed-vs-observed
+surrogate significance test (see that docstring's "n_surrogates floor" note
+for a 2026-07-29 fix to how those two stages interact), and the
+designed-vs-observed
 divergence matching rule (including the `#<capability_channel>` target_id
 disambiguation suffix -- see `orion/substrate/field_topology_plasticity.py`'s
 `_base_target_id()` for the corresponding join-side fix).
@@ -42,7 +44,10 @@ LAG_GRID_SECONDS: Tuple[int, ...] = (0, 300, 600, 900, 1800)
 
 DEFAULT_WINDOW_HOURS = 168.0
 DEFAULT_MIN_SAMPLES = 30
-DEFAULT_N_SURROGATES = 200
+# 200 surrogates was a live bug (see compute_pairwise_results' comment on the
+# Bonferroni floor): raised to 2000 on 2026-07-29 so the per-pair Bonferroni
+# correction and the family-wise BH-FDR correction can actually coexist.
+DEFAULT_N_SURROGATES = 2000
 DEFAULT_ALPHA = 0.05
 DEFAULT_BIOMETRICS_NODE = "athena"
 DEFAULT_SEED = 1337
@@ -332,11 +337,17 @@ def compute_pairwise_results(
             )
             # Bonferroni correction for the implicit multiple comparisons within
             # this one pair's own winner search -- both directions x the full lag
-            # grid (see scripts/causal_geometry_report.py's module docstring's
-            # "Significance: circular time-shift surrogates" section). This is
-            # deliberately still per-pair and conservative for that narrow search;
-            # it is NOT a correction across the whole channel x channel matrix --
-            # see _apply_fdr_correction below for that.
+            # grid. Deliberately still per-pair and conservative for that narrow
+            # search; it is NOT a correction across the whole channel x channel
+            # matrix -- see _apply_fdr_correction below for that.
+            #
+            # This step's own floor (`n_comparisons/(n_surrogates+1)`, from
+            # circular_shift_pvalue's add-one smoothing) must stay well below
+            # `alpha`, or _apply_fdr_correction's rank-dependent BH threshold
+            # becomes nearly impossible to clear -- see
+            # scripts/causal_geometry_report.py's module docstring's
+            # "n_surrogates floor" note for the live incident (2026-07-28/29)
+            # that this constrains DEFAULT_N_SURROGATES against.
             n_comparisons = 2 * len(lag_grid_seconds)
             p_value = min(1.0, p_raw * n_comparisons)
             result.winner = winner

@@ -96,35 +96,51 @@ convention, avoids ever reporting p=0.0 off a finite sample).
 
 Multiple-comparisons correction is two separate stages, not one:
 
-1. Within-pair (still Bonferroni): p_raw alone understates the real false
-   positive rate, because "winner" was already selected as the best of 2
-   directions x len(LAG_GRID_SECONDS) lags -- i.e. up to 10 comparisons per
-   pair before the surrogate test ever runs. Reporting p_raw as-is would be
-   exactly the anti-conservative "statistical mirage" the design spec warns
-   against: picking the best of 10 candidates and then testing only that one
-   against a null built for a single comparison inflates the apparent
-   significance. `compute_pairwise_results()` applies a Bonferroni correction
-   here -- p = min(1.0, p_raw * n_comparisons) where n_comparisons = 2 *
-   len(LAG_GRID_SECONDS). Bonferroni is conservative (some real edges near
-   the boundary will be missed) rather than a full max-statistic
-   reconstruction (redoing the lag/direction search per surrogate), which
-   would be tighter but costs ~10x more surrogate evaluations for a
-   report-only nightly script; conservative-but-cheap was chosen deliberately
-   for v1.
+1. Within-pair (Bonferroni): p_raw alone understates the real false positive
+   rate, because "winner" was already selected as the best of 2 directions x
+   len(LAG_GRID_SECONDS) lags -- i.e. up to 10 comparisons per pair before
+   the surrogate test ever runs. Reporting p_raw as-is would be exactly the
+   anti-conservative "statistical mirage" the design spec warns against:
+   picking the best of 10 candidates and then testing only that one against
+   a null built for a single comparison inflates the apparent significance.
+   `compute_pairwise_results()` applies a Bonferroni correction here -- p =
+   min(1.0, p_raw * n_comparisons) where n_comparisons = 2 *
+   len(LAG_GRID_SECONDS).
 
 2. Across-pairs (Benjamini-Hochberg FDR, not Bonferroni): with N channels
-   there are N*(N-1)/2 pairs tested every tick, and a flat `p < --alpha` cutoff
-   applied independently to each pair's stage-1-corrected p-value does not
-   control the false discovery rate across that whole matrix -- the expected
-   count of false positives grows with the pair count, which itself moves
-   every time the channel set changes (e.g. removing `drive:*` or adding
-   `bus_synaptic:*`). `_apply_fdr_correction()` (in the engine module, called
-   at the end of `compute_pairwise_results()`) runs a standard BH step-up
-   procedure over every pair's stage-1 p-value to control FDR at --alpha
-   instead: sort ascending, find the largest rank i where p_(i) <=
-   (i/m)*alpha (m = pairs actually tested this tick), and declare everything
-   at or before that rank significant. An edge is only emitted into `edges`
-   if it passes both stages.
+   there are N*(N-1)/2 pairs tested every tick, and a flat `p < --alpha`
+   cutoff applied independently to each pair's stage-1-corrected p-value
+   does not control the false discovery rate across that whole matrix -- the
+   expected count of false positives grows with the pair count, which itself
+   moves every time the channel set changes (e.g. removing `drive:*` or
+   adding `bus_synaptic:*`). `_apply_fdr_correction()` (in the engine
+   module, called at the end of `compute_pairwise_results()`) runs a
+   standard BH step-up procedure over every pair's stage-1 p-value to
+   control FDR at --alpha instead: sort ascending, find the largest rank i
+   where p_(i) <= (i/m)*alpha (m = pairs actually tested this tick), and
+   declare everything at or before that rank significant. An edge is only
+   emitted into `edges` if it passes both stages.
+
+n_surrogates floor: these two stages must stay compatible. `circular_shift_
+pvalue`'s add-one smoothing means p_raw can never go below
+`1/(--n-surrogates + 1)`, so stage 1's own floor is
+`n_comparisons/(--n-surrogates + 1)`. If that floor sits too close to
+`alpha`, stage 2's rank-dependent threshold `(i/m)*alpha` becomes nearly
+impossible to clear for a realistic family size m, silently producing 0
+edges regardless of how strong the real correlations are. Confirmed live
+2026-07-29: at the old default of 200 surrogates this floor was `10/201 ~=
+0.0497512` -- just under the old flat `alpha=0.05` (which is why a flat
+per-pair cutoff worked fine before the BH-FDR cutover on 2026-07-28), but
+every tick since then reported `insufficient_data=True`, including for
+physically-obvious correlations like `biometrics:fan`/`biometrics:thermal`
+(r=+0.69). `DEFAULT_N_SURROGATES=2000` drops the floor to `10/2001 ~=
+0.005`, giving BH real headroom (verified live: the same 75-pair family that
+found 0 edges at 200 surrogates found 19 at 2000, at ~35s wall-clock -- an
+acceptable cost since the producer runs this off the event loop on an
+hours-scale cadence, see `orion/substrate/causal_geometry_producer.py`). If
+the channel/pair count grows a lot from here, this floor may need lowering
+again -- re-run this same live check rather than assuming 2000 stays
+sufficient forever.
 
 Designed-vs-observed divergence
 --------------------------------
@@ -202,11 +218,13 @@ from orion.substrate.causal_geometry_engine import (  # noqa: E402,F401
     DEFAULT_POSTGRES_URI,
     DEFAULT_SEED,
     DEFAULT_WINDOW_HOURS,
+    LAG_GRID_SECONDS,
     _pearson,
     build_capability_channel_index,
     build_snapshot,
     bucketize,
     circular_shift_pvalue,
+    compute_pairwise_results,
     fetch_channels,
     load_field_topology,
 )

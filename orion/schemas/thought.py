@@ -110,17 +110,18 @@ class ThoughtEventV1(BaseModel):
 
 
 class ThoughtDecisionRecordV1(BaseModel):
-    """Durable, privacy-redacted record of a ThoughtEventV1 stance decision.
+    """Durable record of a ThoughtEventV1 stance decision.
 
     Persisted so "did Orion choose to proceed/defer/refuse, and why" survives
     past the turn -- today ThoughtEventV1 itself is never consumed by
     sql-writer or rdf-writer, only flattened into a coarse grammar-event
-    scalar. Deliberately omits ``imperative``, ``tone``, ``strain_refs``,
-    ``evidence_refs``, ``stance_harness_slice``, ``grounding_capsule``, and
-    ``autonomy_slice`` -- unlike the ephemeral, TTL-bounded CognitionTraceCache
-    (Runtime Trace Nexus Milestone A), a SQL row is durable-forever by
-    default, so this record stays deliberately narrower than what that cache
-    allows even in its debug mode.
+    scalar. Carries ``imperative``/``tone``/``strain_refs``/
+    ``stance_harness_slice`` unredacted -- this is the Turn Trace operator
+    debug surface (see services/orion-hub/scripts/chat_turn_trace_routes.py),
+    an explicit choice over the original narrower design (still omits
+    ``evidence_refs``, ``grounding_capsule``, ``autonomy_slice``, which carry
+    denser identity/relationship/memory-digest content than a stance
+    decision needs to be inspectable).
     """
 
     schema_version: Literal["thought.decision.record.v1"] = "thought.decision.record.v1"
@@ -128,6 +129,10 @@ class ThoughtDecisionRecordV1(BaseModel):
     correlation_id: str
     session_id: str | None
     created_at: datetime
+    imperative: str | None = None
+    tone: str | None = None
+    strain_refs: list[str] = Field(default_factory=list)
+    stance_harness_slice: StanceHarnessSliceV1 | None = None
     disposition: Literal["proceed", "defer", "refuse"]
     disposition_reasons: list[str] = Field(default_factory=list)
     boundary_register: bool = False

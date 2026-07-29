@@ -73,6 +73,7 @@ from .grammar_trace import (
     GrammarTemporalHopSQL,
     GrammarTraceSQL,
 )
+from .harness_turn_trace import HarnessTurnTraceSQL
 
 __all__ = [
     "CollapseEnrichment",
@@ -134,6 +135,7 @@ __all__ = [
     "PhiRewardSQL",
     "EquilibriumServiceTransitionSQL",
     "GrammarTraceSQL",
+    "HarnessTurnTraceSQL",
     "GrammarEventSQL",
     "GrammarAtomSQL",
     "GrammarEdgeSQL",

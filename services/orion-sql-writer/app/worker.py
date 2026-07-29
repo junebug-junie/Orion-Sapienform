@@ -80,7 +80,9 @@ from app.models import (
     PhiRewardSQL,
     GrammarEventSQL,
     EquilibriumServiceTransitionSQL,
+    HarnessTurnTraceSQL,
 )
+from app.harness_turn_trace_persist import upsert_harness_turn_trace
 from orion.autonomy.models import ActionOutcomeEmitV1
 from orion.core.schemas.drives import DriveAuditV1
 from orion.evidence_index import build_evidence_units
@@ -408,6 +410,13 @@ MODEL_MAP: Dict[str, Tuple[Type[Any], Optional[Type[BaseModel]]]] = {
     "CausalGeometrySnapshotSQL": (CausalGeometrySnapshotSQL, CausalGeometrySnapshotV1),
     "CognitionTraceSQL": (CognitionTraceSQL, CognitionTracePayload),
     "ThoughtDecisionSQL": (ThoughtDecisionSQL, ThoughtEventV1),
+    # schema_cls=None: harness-governor already validated each of the four
+    # source molecules before publishing (orion/harness/finalize.py); the
+    # column this write fills is picked from the payload's own
+    # schema_version at persist time (upsert_harness_turn_trace), not a
+    # single fixed pydantic model here -- re-validating against one schema
+    # class would reject the other three kinds that also route here.
+    "HarnessTurnTraceSQL": (HarnessTurnTraceSQL, None),
     "SparkIntrospectionLogSQL": (SparkIntrospectionLogSQL, None),
     "SparkTelemetrySQL": (SparkTelemetrySQL, SparkTelemetryPayload),
     "MetacognitionTickSQL": (MetacognitionTickSQL, MetacognitionTickV1),
@@ -1234,6 +1243,14 @@ def _write_row(sql_model_cls, data: dict) -> bool:
                 except Exception as ex:
                     logger.warning(f"Could not back-populate chat log spark_meta: {ex}")
             return True
+
+        if sql_model_cls is HarnessTurnTraceSQL:
+            # Raw write_data, not filtered_data: none of the four source
+            # molecules' fields (draft_text, reflection, final_hash, ...) are
+            # declared columns on this model -- the whole validated payload
+            # is the JSONB value for whichever column its schema_version
+            # picks (see app/harness_turn_trace_persist.py).
+            return upsert_harness_turn_trace(sess, write_data)
 
         if sql_model_cls is ChatMessageSQL:
             client_meta = data.get("client_meta")
@@ -2196,6 +2213,15 @@ async def _handle_envelope_body(env: BaseEnvelope, *, bus: Any | None = None) ->
                     correlation_id=extra_sql_fields.get("correlation_id"),
                 )
                 write_ok = await _write(sql_model, None, normalized, {}, kind=env.kind)
+            elif sql_model is HarnessTurnTraceSQL:
+                # extra_fields={}: the generic extra_sql_fields dict (node,
+                # source_message_id, envelope-level correlation_id) would
+                # otherwise get merged into the JSONB blob by _write()'s
+                # data.update(extra_fields) -- contaminating the "this is
+                # exactly the payload the harness published" guarantee the
+                # column dispatch relies on. data_to_process is already the
+                # clean env.payload copy.
+                write_ok = await _write(sql_model, None, data_to_process, {}, kind=env.kind)
             else:
                 write_ok = await _write(sql_model, schema_model, data_to_process, extra_sql_fields, kind=env.kind)
             if env.kind == JOURNAL_WRITE_KIND and write_ok:

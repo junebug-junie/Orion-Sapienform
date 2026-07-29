@@ -336,6 +336,148 @@
     return 'border-gray-600 bg-gray-800/80 text-gray-200';
   }
 
+  function alignmentBadgeClass(verdict) {
+    const normalized = String(verdict || '').toLowerCase();
+    if (normalized === 'aligned') return 'border-emerald-500/40 bg-emerald-500/15 text-emerald-100';
+    if (normalized === 'misaligned') return 'border-rose-500/40 bg-rose-500/15 text-rose-100';
+    if (normalized === 'uncertain') return 'border-amber-500/40 bg-amber-500/15 text-amber-100';
+    return 'border-gray-600 bg-gray-800/80 text-gray-200';
+  }
+
+  function _turnTraceStep(label, badgeHtml, innerHtml) {
+    return [
+      '<div class="rounded-lg border border-gray-800 bg-gray-950/50 px-2 py-2">',
+      '<div class="flex items-center justify-between gap-2">',
+      `<div class="text-[10px] uppercase tracking-wide text-gray-400">${escapeHtml(label)}</div>`,
+      badgeHtml || '',
+      '</div>',
+      innerHtml || '',
+      '</div>',
+    ].join('');
+  }
+
+  function _turnTraceBadge(text, cls) {
+    return `<span class="rounded-full border px-2 py-0.5 text-[10px] ${cls}">${escapeHtml(text)}</span>`;
+  }
+
+  function _turnTraceList(items, emptyText) {
+    const cleaned = asList(items).map((v) => cleanText(v)).filter(Boolean);
+    if (!cleaned.length) {
+      return emptyText ? `<div class="mt-1 text-[11px] text-gray-500">${escapeHtml(emptyText)}</div>` : '';
+    }
+    return `<ul class="mt-1 list-disc pl-4 text-[11px] text-gray-200">${cleaned.map((v) => `<li>${escapeHtml(v)}</li>`).join('')}</ul>`;
+  }
+
+  function _turnTraceStanceStep(thought) {
+    if (!thought) return '';
+    const disposition = cleanText(thought.disposition) || '--';
+    const boundary = thought.boundary_register ? ' · boundary_register' : '';
+    const badge = _turnTraceBadge(`${disposition}${boundary}`, dispositionBadgeClass(disposition));
+    const imperative = cleanText(thought.imperative);
+    const tone = cleanText(thought.tone);
+    const slice = asObject(thought.stance_harness_slice);
+    const inner = [
+      imperative ? `<div class="mt-1 text-[11px] text-gray-200">"${escapeHtml(imperative)}"${tone ? ` <span class="text-gray-500">(${escapeHtml(tone)})</span>` : ''}</div>` : '',
+      slice ? `<div class="mt-1 text-[10px] text-gray-500">${escapeHtml(cleanText(slice.task_mode) || '--')} · ${escapeHtml(cleanText(slice.conversation_frame) || '--')} · ${escapeHtml(cleanText(slice.answer_strategy) || '--')}</div>` : '',
+      _turnTraceList(thought.strain_refs, ''),
+      _turnTraceList(thought.disposition_reasons, 'No reasons recorded.'),
+    ].join('');
+    return _turnTraceStep('1-3 · Ingress / Association / Stance', badge, inner);
+  }
+
+  function _turnTraceHarnessWorkStep(executionRun, grammarTrace) {
+    if (!executionRun && !grammarTrace) return '';
+    const started = executionRun ? executionRun.started_step_count : null;
+    const failed = executionRun ? executionRun.failed_step_count : null;
+    const bits = [];
+    if (executionRun) bits.push(`${escapeHtml(started ?? '--')} steps started · ${escapeHtml(failed ?? '--')} failed`);
+    if (grammarTrace) bits.push('grammar atlas trace present -- see Execution Steps panel above.');
+    return _turnTraceStep('4 · Harness Work (fcc motor)', '', `<div class="mt-1 text-[11px] text-gray-300">${bits.join(' · ')}</div>`);
+  }
+
+  function _turnTraceDraftAppraisalStep(runArtifact) {
+    if (!runArtifact) return '';
+    const draft = cleanText(runArtifact.draft_text);
+    const appraisal = asObject(runArtifact.substrate_appraisal);
+    if (!draft && !appraisal) return '';
+    const badge = appraisal
+      ? _turnTraceBadge(`surprise ${appraisal.surprise_level ?? '--'}`, 'border-sky-500/40 bg-sky-500/15 text-sky-100')
+      : '';
+    const inner = [
+      draft ? `<div class="mt-1 text-[11px] text-gray-300 whitespace-pre-wrap break-words">${escapeHtml(draft)}</div>` : '',
+      appraisal ? `<div class="mt-1 text-[10px] text-gray-500">open_loop_pressure ${escapeHtml(appraisal.open_loop_pressure ?? '--')}</div>` : '',
+      appraisal ? _turnTraceList(appraisal.alignment_hints, '') : '',
+      appraisal ? _turnTraceList(appraisal.strain_shift_refs, '') : '',
+      appraisal ? _turnTraceList(appraisal.learning_refs, '') : '',
+    ].join('');
+    return _turnTraceStep('5a · Draft Molecule + Substrate Appraisal', badge, inner);
+  }
+
+  function _turnTraceReflectStep(runArtifact) {
+    if (!runArtifact) return '';
+    const reflection = asObject(runArtifact.reflection);
+    if (!reflection) return '';
+    const verdict = cleanText(reflection.alignment_verdict) || '--';
+    const badge = _turnTraceBadge(verdict, alignmentBadgeClass(verdict));
+    const quickLane = reflection.quick_lane_skipped_llm
+      ? '<div class="mt-1 text-[10px] text-gray-500">quick_lane_skipped_llm (deterministic gate, no LLM call)</div>'
+      : '';
+    const inner = [
+      reflection.imperative ? `<div class="mt-1 text-[11px] text-gray-200">"${escapeHtml(cleanText(reflection.imperative))}"${reflection.tone ? ` <span class="text-gray-500">(${escapeHtml(cleanText(reflection.tone))})</span>` : ''}</div>` : '',
+      _turnTraceList(reflection.alignment_notes, ''),
+      reflection.strain_unresolved ? '<div class="mt-1 text-[10px] text-amber-300">strain_unresolved</div>' : '',
+      quickLane,
+    ].join('');
+    return _turnTraceStep('5b · Integrative Reflect + Verdict', badge, inner);
+  }
+
+  function _turnTraceVoiceStep(runArtifact) {
+    if (!runArtifact) return '';
+    const finalText = cleanText(runArtifact.final_text);
+    const finalizeRan = Boolean(runArtifact.finalize_ran);
+    const badge = _turnTraceBadge(
+      finalizeRan ? 'finalize_ran' : 'finalize_not_ran',
+      finalizeRan ? 'border-emerald-500/40 bg-emerald-500/15 text-emerald-100' : 'border-rose-500/40 bg-rose-500/15 text-rose-100'
+    );
+    const changed = runArtifact.finalize_changed ? ' · finalize_changed' : '';
+    const inner = [
+      finalText ? `<div class="mt-1 text-[11px] text-gray-300 whitespace-pre-wrap break-words">${escapeHtml(finalText)}</div>` : '',
+      `<div class="mt-1 text-[10px] text-gray-500">${escapeHtml(cleanText(runArtifact.compliance_verdict) || '--')}${escapeHtml(changed)} · grounding: ${escapeHtml(cleanText(runArtifact.grounding_status) || '--')}</div>`,
+    ].join('');
+    return _turnTraceStep('5c · Orion Voice', badge, inner);
+  }
+
+  function _turnTraceOutcomeStep(outcome) {
+    if (!outcome) return '';
+    const verdict = cleanText(outcome.alignment_verdict) || '--';
+    const resolved = outcome.surprise_resolved;
+    const badge = _turnTraceBadge(
+      resolved === true ? 'surprise_resolved' : resolved === false ? 'surprise_unresolved' : verdict,
+      alignmentBadgeClass(verdict)
+    );
+    const failed = outcome.finalize_failed
+      ? `<div class="mt-1 text-[10px] text-rose-300">finalize_failed${outcome.failure_reason ? `: ${escapeHtml(cleanText(outcome.failure_reason))}` : ''}</div>`
+      : '';
+    const inner = [
+      `<div class="mt-1 text-[10px] text-gray-500">surprise_level_at_draft ${escapeHtml(outcome.surprise_level_at_draft ?? '--')} · final_hash ${escapeHtml((cleanText(outcome.final_hash) || '--').slice(0, 12))}</div>`,
+      failed,
+    ].join('');
+    return _turnTraceStep('6b · Outcome Molecule', badge, inner);
+  }
+
+  function _turnTraceClosureStep(closure) {
+    if (!closure) return '';
+    const unresolved = Boolean(closure.surprise_unresolved);
+    const badge = _turnTraceBadge(
+      unresolved ? 'surprise_unresolved' : 'resolved',
+      unresolved ? 'border-amber-500/40 bg-amber-500/15 text-amber-100' : 'border-emerald-500/40 bg-emerald-500/15 text-emerald-100'
+    );
+    const inner = unresolved
+      ? `<div class="mt-1 text-[11px] text-gray-300">${escapeHtml(cleanText(closure.user_message_excerpt) || '')}</div>`
+      : '<div class="mt-1 text-[11px] text-gray-500">Closed clean -- no unresolved surprise carried into next turn.</div>';
+    return _turnTraceStep('7 · Post-Turn Closure', badge, inner);
+  }
+
   function buildTurnTracePanel({ correlationId, trace, error, loading }) {
     const corr = cleanText(correlationId) || '--';
     const traceObj = asObject(trace) || {};
@@ -349,46 +491,39 @@
     } else if (error) {
       body = `<div class="text-[11px] text-amber-200">Turn trace unavailable (${escapeHtml(error)}).</div>`;
     } else {
+      const thought = asObject(sources.thought_decision);
+      const executionRun = asObject(sources.execution_run);
+      const grammarTrace = sources.grammar_trace || null;
+      const harnessTurnTrace = asObject(sources.harness_turn_trace);
+      const runArtifact = harnessTurnTrace ? asObject(harnessTurnTrace.run_artifact) : null;
+      const outcome = harnessTurnTrace ? asObject(harnessTurnTrace.outcome_molecule) : null;
+      const closure = harnessTurnTrace ? asObject(harnessTurnTrace.closure) : null;
+
+      const stepsHtml = [
+        _turnTraceStanceStep(thought),
+        _turnTraceHarnessWorkStep(executionRun, grammarTrace),
+        _turnTraceDraftAppraisalStep(runArtifact),
+        _turnTraceReflectStep(runArtifact),
+        _turnTraceVoiceStep(runArtifact),
+        _turnTraceOutcomeStep(outcome),
+        _turnTraceClosureStep(closure),
+      ].filter(Boolean);
+
       const parts = [];
       parts.push(`<div class="text-[10px] text-gray-500">route_signal_inferred: <span class="font-mono">${escapeHtml(routeSignal)}</span></div>`);
 
-      const thought = asObject(sources.thought_decision);
-      if (thought) {
-        const disposition = cleanText(thought.disposition) || '--';
-        const reasons = asList(thought.disposition_reasons).map((r) => cleanText(r)).filter(Boolean);
-        const boundary = thought.boundary_register ? ' · boundary_register' : '';
-        parts.push([
-          '<div class="rounded-lg border border-gray-800 bg-gray-950/50 px-2 py-2">',
-          '<div class="flex items-center justify-between gap-2">',
-          '<div class="text-[10px] uppercase tracking-wide text-gray-400">Stance decision</div>',
-          `<span class="rounded-full border px-2 py-0.5 text-[10px] ${dispositionBadgeClass(disposition)}">${escapeHtml(disposition)}${escapeHtml(boundary)}</span>`,
-          '</div>',
-          reasons.length
-            ? `<ul class="mt-1 list-disc pl-4 text-[11px] text-gray-200">${reasons.map((r) => `<li>${escapeHtml(r)}</li>`).join('')}</ul>`
-            : '<div class="mt-1 text-[11px] text-gray-500">No reasons recorded.</div>',
-          '</div>',
-        ].join(''));
-      }
-
-      const executionRun = asObject(sources.execution_run);
-      if (executionRun) {
-        const startedSteps = executionRun.started_step_count;
-        const failedSteps = executionRun.failed_step_count;
-        parts.push(
-          `<div class="text-[10px] text-gray-500">harness execution_run: ${escapeHtml(startedSteps ?? '--')} started · ${escapeHtml(failedSteps ?? '--')} failed</div>`
-        );
+      if (stepsHtml.length) {
+        parts.push(`<div class="space-y-2">${stepsHtml.join('')}</div>`);
+      } else {
+        parts.push('<div class="text-[11px] text-gray-400">No trace found in any source for this turn.</div>');
       }
 
       if (sources.cognition_trace) {
-        parts.push('<div class="text-[10px] text-gray-500">cognition_trace present -- see Execution Steps panel above.</div>');
+        parts.push('<div class="text-[10px] text-gray-500">cognition_trace present (classic PlanRunner path) -- see Execution Steps panel above.</div>');
       }
 
       if (gaps.length) {
         parts.push(`<div class="text-[10px] text-gray-600">gaps: ${escapeHtml(gaps.join(', '))}</div>`);
-      }
-
-      if (!thought && !executionRun && !sources.cognition_trace) {
-        parts.push('<div class="text-[11px] text-gray-400">No trace found in any source for this turn.</div>');
       }
 
       body = parts.join('');

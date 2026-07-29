@@ -12,12 +12,13 @@ _JSONB = JSON().with_variant(JSONB(), "postgresql")
 class ThoughtDecisionSQL(Base):
     """Durable record of a ThoughtEventV1 stance decision (proceed/defer/refuse).
 
-    Deliberately narrow: consumes the full ThoughtEventV1 wire payload on
-    orion:thought:artifact, but this model only declares the redacted subset
-    of columns ThoughtDecisionRecordV1 defines (orion/schemas/thought.py) --
+    Consumes the full ThoughtEventV1 wire payload on orion:thought:artifact;
     _write_row() filters the validated payload down to whatever columns
-    actually exist here, so imperative/tone/strain_refs/stance_harness_slice/
-    grounding_capsule/autonomy_slice never reach this table.
+    actually exist here. Carries imperative/tone/strain_refs/
+    stance_harness_slice unredacted (this is the Turn Trace operator debug
+    surface -- see orion/schemas/thought.py's ThoughtDecisionRecordV1
+    docstring); evidence_refs/grounding_capsule/autonomy_slice still never
+    reach this table.
     """
 
     __tablename__ = "thought_decision"
@@ -27,6 +28,11 @@ class ThoughtDecisionSQL(Base):
     correlation_id = Column(String, index=True, nullable=True)
     session_id = Column(String, index=True, nullable=True)
     created_at = Column(DateTime, default=datetime.utcnow)
+
+    imperative = Column(String, nullable=True)
+    tone = Column(String, nullable=True)
+    strain_refs = Column(_JSONB, default=list)
+    stance_harness_slice = Column(_JSONB, nullable=True)
 
     disposition = Column(String, index=True, nullable=False)
     disposition_reasons = Column(_JSONB, default=list)

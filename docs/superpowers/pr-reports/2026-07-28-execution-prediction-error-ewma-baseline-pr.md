@@ -89,6 +89,15 @@ No restart required for this branch alone -- ships as part of the next `services
 - Concern: `alpha=0.2` and `_EXECUTION_PREDICTION_ERROR_MIN_VARIANCE=1e-10` are both calibrated against ~120 real receipts from one measurement window (2026-07-28), a reasonable starting point, not a long-term-verified constant. If execution's real delta scale drifts by orders of magnitude in the future, this floor would need revisiting.
 - Mitigation: both constants are named, module-level, and commented with the exact real-data justification and numbers behind them, making a future recalibration a one-line, well-documented change.
 
+## Post-merge live verification (2026-07-28 22:12 UTC -> 2026-07-29 04:21 UTC, ~6h)
+
+- Confirmed the redeployed container actually ran the new code (`grep`'d `_EXECUTION_PREDICTION_ERROR_MIN_VARIANCE` inside the live container's `prediction_error.py`), not just "the PR merged."
+- Background monitor polled every 10 min for container health, exceptions, and real `execution_prediction_error` receipt stats. 7 heartbeats across ~6h, all healthy: mean 0.33-0.52, 8-35% saturated at 1.0, never fully pinned to 0 or 1. Zero exceptions/tracebacks the whole window.
+- The container restarted once mid-window (03:56 UTC, clean: `RestartCount: 0`, `ExitCode(prev): 0`, unrelated to this patch) -- an unplanned real-world test of the persistence fix. `prediction_error_baseline_ewma_n` read **5507** afterward (not reset to 0), confirming the baseline survives a process restart via the unconditional `save_execution_trajectory` call, exactly as designed.
+- Cumulative post-restart stats (76 ticks, ~29 min -- older rows already pruned by the routine `substrate_receipt_safe_prune` retention job, not data loss): mean 0.4378, min 0.0024, max 1.0, 18.4% saturated, 0% stuck-at-zero.
+
+Also documented in `services/orion-substrate-runtime/README.md`'s own dated entry for this fix.
+
 ## Related, deliberately out of scope
 
 - `recent_perturbations`' EWMA fix: separate, in-flight worktree at the time of this patch (`../Orion-Sapienform-recent-perturbation-baseline`, branch `fix/recent-perturbation-baseline`) -- same root-cause pattern, independent files, no collision.

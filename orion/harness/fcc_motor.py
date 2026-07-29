@@ -428,12 +428,12 @@ def _harness_aitown_env(fcc_env: Dict[str, str]) -> Dict[str, str]:
     return ae
 
 
-def _maybe_render_mcp_config(*, correlation_id: str) -> Optional[Path]:
+def _maybe_render_mcp_config(*, correlation_id: str, fcc_env: Optional[Dict[str, str]] = None) -> Optional[Path]:
     from orion.fcc.mcp_config import render_mcp_config
 
     if not _env_truthy("HARNESS_FCC_MCP_ENABLED"):
         return None
-    env = load_fcc_env(expand_env_path(os.environ.get("HARNESS_FCC_ENV_PATH", "~/.fcc/.env")))
+    env = fcc_env or load_fcc_env(expand_env_path(os.environ.get("HARNESS_FCC_ENV_PATH", "~/.fcc/.env")))
     include_aitown = _env_truthy("HARNESS_AITOWN_ENABLED")
     include_context_mode = _env_truthy("HARNESS_FCC_CONTEXT_MODE_ENABLED")
     if _env_truthy("HARNESS_FCC_CONTEXT_MODE_HOOKS_ENABLED"):
@@ -616,7 +616,7 @@ async def run_fcc_turn(
     try:
         from orion.fcc.mcp_config import McpPreflightError
 
-        mcp_config_path = _maybe_render_mcp_config(correlation_id=correlation_id)
+        mcp_config_path = _maybe_render_mcp_config(correlation_id=correlation_id, fcc_env=env)
     except McpPreflightError as exc:
         yield {"type": "error", "error": str(exc), "error_code": exc.error_code}
         return

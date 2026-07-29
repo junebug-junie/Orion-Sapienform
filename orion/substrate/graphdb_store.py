@@ -197,7 +197,32 @@ LIMIT 1
             return cached
         return self._get_canonical_id(identity_key=identity_key, identity_kind="edge")
 
-    def upsert_node(self, *, identity_key: str | None, node: BaseSubstrateNodeV1) -> None:
+    def upsert_node(
+        self,
+        *,
+        identity_key: str | None,
+        node: BaseSubstrateNodeV1,
+        skip_metadata_keys: frozenset[str] | None = None,
+    ) -> None:
+        """``skip_metadata_keys``: same contract as FalkorSubstrateStore's
+        (not the live backend -- SUBSTRATE_STORE_BACKEND=falkor in
+        production -- kept consistent for interface parity and in case this
+        backend is ever reactivated). This store's DELETE+INSERT WHERE
+        pattern replaces every property on every call, so "leave untouched"
+        isn't expressible the same way Falkor's partial Cypher SET is;
+        best-effort merge instead, reading the existing node first and
+        carrying its current value forward for any skipped key."""
+        if skip_metadata_keys:
+            existing = self.get_node_by_id(node.node_id)
+            if existing is not None:
+                merged_metadata = dict(node.metadata or {})
+                existing_metadata = existing.metadata or {}
+                for key in skip_metadata_keys:
+                    if key in existing_metadata:
+                        merged_metadata[key] = existing_metadata[key]
+                    else:
+                        merged_metadata.pop(key, None)
+                node = node.model_copy(update={"metadata": merged_metadata})
         node_iri = self._node_iri(node.node_id)
         payload_json = json.dumps(node.model_dump(mode="json"), ensure_ascii=False, sort_keys=True)
         metadata_json = json.dumps(node.metadata or {}, ensure_ascii=False, sort_keys=True)

@@ -44,7 +44,13 @@ class SubstrateGraphStore(Protocol):
     def get_node_id_by_identity(self, identity_key: str) -> str | None: ...
     def get_edge_id_by_identity(self, identity_key: str) -> str | None: ...
     def get_identity_key_by_node_id(self, node_id: str) -> str | None: ...
-    def upsert_node(self, *, identity_key: str | None, node: BaseSubstrateNodeV1) -> None: ...
+    def upsert_node(
+        self,
+        *,
+        identity_key: str | None,
+        node: BaseSubstrateNodeV1,
+        skip_metadata_keys: frozenset[str] | None = None,
+    ) -> None: ...
     def upsert_edge(self, *, identity_key: str, edge: SubstrateEdgeV1) -> None: ...
     def snapshot(self) -> MaterializedSubstrateGraphState: ...
 
@@ -92,7 +98,29 @@ class InMemorySubstrateGraphStore:
     def get_identity_key_by_node_id(self, node_id: str) -> str | None:
         return self._identity_key_by_node_id.get(node_id)
 
-    def upsert_node(self, *, identity_key: str | None, node: BaseSubstrateNodeV1) -> None:
+    def upsert_node(
+        self,
+        *,
+        identity_key: str | None,
+        node: BaseSubstrateNodeV1,
+        skip_metadata_keys: frozenset[str] | None = None,
+    ) -> None:
+        """``skip_metadata_keys``: same contract as FalkorSubstrateStore's
+        (see that implementation's docstring) -- preserve whatever's already
+        stored for these metadata keys instead of overwriting with this
+        call's copy, so a test double backed by this in-memory store
+        exercises the same "don't clobber a field you don't own" behavior."""
+        if skip_metadata_keys:
+            existing = self._nodes.get(node.node_id)
+            if existing is not None:
+                merged_metadata = dict(node.metadata or {})
+                existing_metadata = existing.metadata or {}
+                for key in skip_metadata_keys:
+                    if key in existing_metadata:
+                        merged_metadata[key] = existing_metadata[key]
+                    else:
+                        merged_metadata.pop(key, None)
+                node = node.model_copy(update={"metadata": merged_metadata})
         self._nodes[node.node_id] = node
         if identity_key:
             self._node_identity_index[identity_key] = node.node_id

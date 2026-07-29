@@ -7,6 +7,7 @@ from datetime import datetime, timezone
 from orion.core.schemas.cognitive_substrate import BaseSubstrateNodeV1, SubstrateEdgeV1
 
 from .activation import ActivationConfig, decay_activation, seed_activation
+from .falkor_codec import EXTERNALLY_OWNED_METADATA_KEYS
 from .pressure import (
     PressureConfig,
     contradiction_amplification,
@@ -170,7 +171,26 @@ class SubstrateDynamicsEngine:
                 )
                 updated_signal = node.signals.model_copy(update={"activation": activation_bundle})
                 updated_node = node.model_copy(update={"signals": updated_signal, "metadata": metadata})
-                self._store.upsert_node(identity_key=identity_by_node_id.get(node_id), node=updated_node)
+                # skip_metadata_keys: this engine reads prediction_error purely
+                # to SEED pressure (prediction_error_pressure() above) -- it
+                # never computes prediction_error/contributing_turn_ids
+                # itself and must not re-persist whatever (possibly stale)
+                # copy happened to be in this tick's start-of-loop snapshot.
+                # Confirmed live 2026-07-29: this write guard fires on
+                # activation decay alone, which changes on essentially every
+                # node every tick, far more often than an external writer
+                # like bus_synaptic's 30s cadence -- without this guard,
+                # this engine's own frequent re-writes durably clobbered a
+                # real writer's fresh values, freezing node:substrate.
+                # bus_synaptic's prediction_error at a stale 1.0 for 3+
+                # hours and causing real false "Bus Anomaly Detected"
+                # alerts downstream. See falkor_codec.
+                # EXTERNALLY_OWNED_METADATA_KEYS's docstring for the full trace.
+                self._store.upsert_node(
+                    identity_key=identity_by_node_id.get(node_id),
+                    node=updated_node,
+                    skip_metadata_keys=EXTERNALLY_OWNED_METADATA_KEYS,
+                )
 
             if activation_changed:
                 activation_updates.append(

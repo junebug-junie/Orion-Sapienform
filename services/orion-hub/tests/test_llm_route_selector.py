@@ -368,3 +368,39 @@ def test_recall_profile_auto_follows_mode() -> None:
     assert "recallProfileSelect.disabled = true;" in app_js
     assert "recallProfileSelect.disabled = false;" in app_js
     assert "recallProfileSelect.value = 'assist.light.v1';" in app_js
+
+
+def test_debug_panel_is_single_card_wrapping_all_rows_in_one_modal() -> None:
+    html = INDEX_HTML.read_text(encoding="utf-8")
+    app_js = APP_JS.read_text(encoding="utf-8")
+
+    # Main-page surface: one card, one Modal button, no inline row content.
+    panel_card = html.split('id="runtimeDebugPanel"', 1)[1].split("</div>\n        </div>", 1)[0]
+    assert 'id="debugPanelOpenModal"' in panel_card
+    assert 'id="memoryPanelToggle"' not in panel_card
+
+    # All 9 rows live inside the new modal's body, not on the main page directly.
+    modal_shell = html.split('id="debugPanelModalRoot"', 1)[1].split('id="autonomyDebugModalRoot"', 1)[0]
+    assert 'w-[75vw] h-[75vh]' in modal_shell
+    assert 'id="runtimeDebugPanelBody"' in modal_shell
+    for row_id in (
+        "memoryPanelToggle",
+        "agentTraceDebugToggle",
+        "autonomyDebugToggle",
+        "chatStanceDebugToggle",
+        "substrateReviewDebugToggle",
+        "selfExperimentsDebugToggle",
+        "autonomyReadinessToggle",
+        "recallCanaryToggle",
+        "cognitiveReviewOpenModal",
+    ):
+        assert f'id="{row_id}"' in modal_shell
+
+    # Each row still keeps its own original inline expand + its own per-item Modal button.
+    assert 'id="memoryDebugOpenModal"' in modal_shell
+    assert 'id="autonomyDebugOpenModal"' in modal_shell
+    assert "function toggleMemoryPanel()" in app_js
+    assert "memoryPanelBody.classList.toggle('hidden', nextHidden);" in app_js
+    assert "function openDebugPanelModal()" in app_js
+    assert "function closeDebugPanelModal()" in app_js
+    assert "debugPanelOpenModal.addEventListener('click'" in app_js

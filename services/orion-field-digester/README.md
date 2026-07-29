@@ -1717,3 +1717,71 @@ follow-up note, and `test_execution_run_fcc_channels_ignored_off_lane` /
   sparse-event trio with `execution_friction`/`failure_pressure`, same
   `2026-07-16T02:15:08Z` spike, genuine rare-event signal, decaying cleanly
   afterward.
+
+## `recent_perturbations`' two downstream consumers were saturated (PR #1433, 2026-07-28)
+
+`FieldStateV1.recent_perturbations` itself has been correctly pruned to a rolling 60s wall-clock
+window since the 2026-07-16 fix documented above ("Decay vs. injection-interval mismatch") — that
+part was never broken. But its two real consumers each compared the pruned list's raw `len(...)`
+against a fixed absolute cap, and both caps were live-confirmed badly miscalibrated: real steady
+state is ~100-118 items in the 60s window, 5-10x past both.
+
+- `orion/attention/field_attention/selectors.py::select_system_targets` — was `salience =
+  min(1.0, count/10.0)`.
+- `orion/field/pressure.py::collect_field_channel_pressures` — was
+  `recent_perturbation_count = clamp01(min(1.0, count/20.0))`.
+
+Both were permanently pinned at their ceiling under completely normal traffic — confirmed live via
+a fresh 72h Postgres replay of `substrate_attention_frames` showing `field:recent_perturbations`
+winning Layer 5 attention's top-1 salience slot in **100.00%** of ticks, exact `stddev=0.000000`.
+Fixed by replacing both fixed caps with a z-score against a per-tick EWMA baseline of the count
+(`orion/bus/ewma.py::compute_ewma_update`, the same methodology already proven for
+`bus_synaptic_prediction_error`'s `gap_zscore`), with a cold-start gate
+(`RECENT_PERTURBATION_EWMA_MIN_SAMPLES=5`) added after hand-verifying the shared EWMA utility
+produces unreliable z-scores on the first few samples. New EWMA state
+(`recent_perturbation_ewma`/`_var`/`_n`/`_zscore`) is additive on `FieldStateV1`, updated once per
+digestion tick in `app/digestion/perturbation.py::_update_recent_perturbation_baseline()`. Live-
+reverified post-deploy (2026-07-28, direct Postgres query, 30-minute fresh window): the channel no
+longer wins every tick — real, varying salience values, genuinely losing most ticks to whichever
+node/capability is actually busiest. See
+`orion/sentience_striving_program/README.md` for the broader arbitration-layer context this fix
+came out of (the same disease independently found in three other scoring layers the same night).
+
+## Per-dimension precision-weighted proposal confidence (PR #1442, 2026-07-28)
+
+A sibling fix to the one above, same night, same disease, different consumer:
+`orion/proposals/scoring.py::dimension_confidence()` used to be a binary data-presence flag
+(`1.0 if dimension_id in field_pressures else 0.0`) feeding `ProposalCandidateV1.confidence_score`
+— real epistemic confidence was never computed, despite the field's name implying it was. Real
+historical variance for all four `PRESSURE_DIMENSIONS` (`execution_pressure`, `resource_pressure`,
+`reasoning_pressure`, `reliability_pressure`) was measured first, not assumed
+(`scripts/analysis/measure_proposal_dimension_variance.py`, 16h/28,271-tick window against real
+`substrate_field_state`) — confirmed real, non-degenerate, and genuinely refreshed by periodic
+perturbation events for all four before any code changed.
+
+This service now EWMA-baselines each dimension's real per-tick `field_pressures()` reading once per
+digestion tick — `app/digestion/precision.py::update_dimension_precision_baseline()`, called from
+`run_digestion_tick()` after decay/perturbation/diffusion/suppression have all applied, scoring the
+tick's *final* reading (the same one `orion/proposals/builder.py::build_proposal_frame()` later
+loads). New additive `FieldStateV1` fields: `dimension_precision_ewma`/`_var`/`_n`/`_zscore` (dicts
+keyed by dimension id). A dimension absent from a given tick's `field_pressures()` is left
+untouched rather than absorbing a fabricated reading — same "absent this tick holds, doesn't fake
+zero" convention `_update_recent_perturbation_baseline` above already uses. Each dimension has its
+own hand-verified `min_variance` floor (`orion.proposals.scoring.DIMENSION_PRECISION_MIN_VARIANCE`)
+— deliberately *not* reusing `execution_prediction_error`'s calibrated floor from PR #1434 the same
+night, after that PR found a shared default five orders of magnitude wrong when borrowed across
+domains without re-verification.
+
+**Caveat carried over from code review, worth knowing if extending `PRESSURE_DIMENSIONS`**:
+`orion.field.pressure.field_pressures()` can produce up to 7 dimension keys via
+`CHANNEL_DIMENSION_MAP`, but only these 4 are EWMA-tracked. If a future `proposal_policy.v1.yaml`
+template ever scores on one of the other 3 (`continuity_pressure`/`introspection_pressure`/
+`social_pressure`), `dimension_confidence()` will permanently return `0.0` for it (stuck in the
+cold-start branch forever, since an untracked dimension's sample count never advances) — silently
+worse than the old binary flag it replaced, which would have correctly read `1.0` whenever that
+dimension was present. Extending `PRESSURE_DIMENSIONS` (and
+`DIMENSION_PRECISION_MIN_VARIANCE`, enforced in sync by a module-level assertion) is required in
+the same patch that adds a template scoring on a new dimension.
+
+See `docs/superpowers/specs/2026-07-28-precision-weighted-proposal-scoring-design.md` for the full
+design record, and the section above for the sibling fix this one's methodology was copied from.

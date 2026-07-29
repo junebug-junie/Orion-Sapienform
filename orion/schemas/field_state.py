@@ -112,6 +112,47 @@ class FieldStateV1(BaseModel):
     # freshness" until its next real perturbation -- apply_decay() treats a
     # missing entry as the safe default (decay as before today).
     node_vector_updated_at: dict[str, dict[str, datetime]] = Field(default_factory=dict)
+    # Precision-weighted proposal confidence (2026-07-28, docs/superpowers/
+    # specs/2026-07-28-precision-weighted-proposal-scoring-design.md):
+    # per-PRESSURE_DIMENSION (orion.proposals.scoring.PRESSURE_DIMENSIONS)
+    # EWMA mean/variance/z-score baseline, replacing orion/proposals/
+    # scoring.py::dimension_confidence()'s old binary presence flag
+    # (`1.0 if dimension_id in field_pressures else 0.0`). Same EWMA-
+    # baseline-vs-z-score methodology as recent_perturbation_zscore above and
+    # bus_synaptic_prediction_error's gap_zscore (orion/bus/ewma.py::
+    # compute_ewma_update, reused not reimplemented). Real historical
+    # variance was measured first, not assumed (scripts/analysis/measure_
+    # proposal_dimension_variance.py, 2026-07-28): all four PRESSURE_
+    # DIMENSIONS showed real, non-degenerate variance and real, periodically-
+    # recurring perturbation-driven refreshes over a real 16h substrate_
+    # field_state window (none are the node:substrate.route "zero real
+    # events ever" disease) -- see that script's report for the numbers.
+    #
+    # Updated once per digestion tick (services/orion-field-digester/app/
+    # digestion/precision.py::update_dimension_precision_baseline(), called
+    # from run_digestion_tick() after decay/diffusion/suppression so it
+    # scores the same final-for-this-tick orion.field.pressure.
+    # field_pressures(state) reading that orion/proposals/builder.py later
+    # consumes) using that reading as the observed value per dimension.
+    #
+    # Dict-keyed by dimension_id rather than 4 separate scalar fields (unlike
+    # recent_perturbation_ewma* above) since PRESSURE_DIMENSIONS is a real,
+    # documented-as-not-guaranteed-stable set (its own module comment notes
+    # 3 dimensions were already removed in the 2026-07-22 SelfStateV1 burn) --
+    # a dict avoids hardcoding N near-identical scalar fields and keeps this
+    # schema stable if that set changes again. A dimension absent from
+    # field_pressures() this tick is NOT updated that tick (its existing
+    # baseline holds -- "absent this tick" is a real fact, not a 0.0 to
+    # fabricate and absorb into the baseline). All 4 dicts default to `{}`
+    # for backward-compat with any FieldStateV1 persisted before this field
+    # existed -- dimension_confidence() treats a dimension missing from
+    # `dimension_precision_ewma_n` as `n=0` (cold start), so an upgraded
+    # persisted row degrades to "no confidence signal yet" rather than
+    # raising or fabricating a reading.
+    dimension_precision_ewma: dict[str, float] = Field(default_factory=dict)
+    dimension_precision_ewma_var: dict[str, float] = Field(default_factory=dict)
+    dimension_precision_ewma_n: dict[str, int] = Field(default_factory=dict)
+    dimension_precision_zscore: dict[str, float] = Field(default_factory=dict)
     topology_id: str | None = None
     topology_version: str | None = None
     topology_loaded_from: str | None = None

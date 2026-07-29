@@ -210,6 +210,7 @@ def test_binding_resolves_target_from_attention() -> None:
     candidate = _build_candidate(
         template_key="inspect_attended_target",
         template=_BINDING_TEMPLATE,
+        field=field,
         field_tick_id=field.tick_id,
         attention=_attention_with_targets(targets),
         pressures={},
@@ -225,6 +226,7 @@ def test_binding_falls_back_to_literal_when_attention_absent() -> None:
     candidate = _build_candidate(
         template_key="inspect_attended_target",
         template=_BINDING_TEMPLATE,
+        field=field,
         field_tick_id=field.tick_id,
         attention=None,
         pressures={},
@@ -253,6 +255,7 @@ def test_binding_falls_back_to_literal_when_kind_unaccepted() -> None:
     candidate = _build_candidate(
         template_key="inspect_attended_target",
         template=_BINDING_TEMPLATE,
+        field=field,
         field_tick_id=field.tick_id,
         attention=_attention_with_targets(targets),
         pressures={},
@@ -270,6 +273,7 @@ def test_binding_resolved_from_none_for_non_binding_template() -> None:
     candidate = _build_candidate(
         template_key="inspect_execution_pressure",
         template=template,
+        field=field,
         field_tick_id=field.tick_id,
         attention=None,
         pressures={},

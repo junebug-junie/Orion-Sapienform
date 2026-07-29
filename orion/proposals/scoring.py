@@ -1,12 +1,30 @@
 from __future__ import annotations
 
 from orion.proposals.policy import ProposalPolicyV1, ProposalTemplateV1
+from orion.schemas.field_state import FieldStateV1
 
 # 2026-07-22, SelfStateV1 burn: field_intensity and uncertainty removed. Both
 # were composite, hand-tuned SelfStateV1 dimensions with no principled
 # non-hand-tuned replacement (see orion/field/pressure.py's module docstring).
 # The 4 remaining categories are real, direct channel-merge reads, unaffected
 # by the burn.
+#
+# 2026-07-28 precision-weighted confidence note, flagged by code review
+# (2026-07-29): orion.field.pressure.field_pressures() can produce UP TO 7
+# dimension keys via CHANNEL_DIMENSION_MAP (this 4-entry set plus
+# continuity_pressure/introspection_pressure/social_pressure), but only
+# these 4 are measured and EWMA-tracked by dimension_confidence()'s
+# precision baseline (services/orion-field-digester/app/digestion/
+# precision.py). No current config/proposals/proposal_policy.v1.yaml
+# template scores on any of the other 3 (checked live), so this has no
+# current effect -- but if a future template ever does, dimension_
+# confidence() will PERMANENTLY return 0.0 for it (falls into the cold-
+# start/n<MIN_SAMPLES branch forever, since an untracked dimension's `n`
+# never advances), unlike the old binary presence flag this replaced, which
+# would have correctly returned 1.0 whenever that dimension was present.
+# Extending PRESSURE_DIMENSIONS (and DIMENSION_PRECISION_MIN_VARIANCE,
+# enforced in sync by the assertion below) to cover a newly-scored dimension
+# is required in the same patch that adds it to a template.
 PRESSURE_DIMENSIONS = frozenset({
     "execution_pressure",
     "resource_pressure",
@@ -23,16 +41,145 @@ def dimension_score(field_pressures: dict[str, float], dimension_id: str) -> flo
     return clamp01(field_pressures.get(dimension_id, 0.0))
 
 
-def dimension_confidence(field_pressures: dict[str, float], dimension_id: str) -> float:
-    """1.0 if this tick produced a real reading for this category, 0.0 if not.
+# 2026-07-28 precision-weighted confidence fix (docs/superpowers/specs/2026-
+# 07-28-precision-weighted-proposal-scoring-design.md's "Recommended next
+# patch"): dimension_confidence() used to be a binary presence flag (see git
+# history for the old docstring, preserved in that design doc's "Current
+# architecture" section). Real historical variance was measured first, not
+# assumed, per this repo's metric-quality-gate discipline
+# (scripts/analysis/measure_proposal_dimension_variance.py, 2026-07-28,
+# artifacts under /tmp/measure-proposal-dimension-variance/): all four
+# PRESSURE_DIMENSIONS show real, non-degenerate historical variance AND real,
+# periodically-recurring perturbation-driven refreshes over a real 16h
+# substrate_field_state window (none are the node:substrate.route "zero real
+# events ever, decaying unopposed" disease -- that script's own decay-
+# artifact + producer-liveness detectors confirmed this by hand, not by
+# eyeballing a variance number).
+#
+# alpha reuses RECENT_PERTURBATION_RATE_EWMA_ALPHA's fixed ~2s-digestion-tick
+# cadence rationale (services/orion-field-digester/app/digestion/
+# perturbation.py) -- this baseline is updated once per digestion tick
+# regardless of whether a real event landed that tick, same producer shape,
+# not execution_prediction_error's per-real-observation cadence.
+DIMENSION_PRECISION_EWMA_ALPHA = 0.02
 
-    No principled per-dimension confidence formula survives the SelfStateV1
-    burn (2026-07-22) -- self_state's old channel_dimension_confidence()
-    (count + agreement, itself touched by the reverted equal-weighting
-    reform) was not moved forward. This is an honest simplification: a
-    binary presence flag, not a fabricated continuous score.
+# Same z>=3.0 "anomalous" convention already live in bus_synaptic_prediction_
+# error, execution_prediction_error, and recent_perturbation_zscore's
+# consumers -- not a new calibration.
+DIMENSION_PRECISION_ZSCORE_SATURATION = 3.0
+
+# Hand-verified 2026-07-28 via a synthetic cold-start-from-zero replay (seed
+# baseline at 0.0, jump to a real value on the next tick, hold), swept across
+# a wide range of jump magnitudes per dimension (0.1%-100% of that
+# dimension's own real measured historical max, not just one hand-picked
+# value): the worst case found across ALL FOUR dimensions and every jump
+# magnitude tested was n=8 -- |z| first drops below
+# DIMENSION_PRECISION_ZSCORE_SATURATION and stays there by the 8th post-seed
+# observation, never later. This is NOT a claim that the transient is
+# identical across dimensions for every jump size -- a first attempt at this
+# comment claimed that, and code review (2026-07-29) reproduced the
+# simulation with a *different* jump choice (each dimension's real measured
+# MEAN rather than its max) and found reliability_pressure's small mean
+# relative to its own min_variance floor breaks the identical-trajectory
+# shape (its z never even approaches saturation at that jump size). The
+# invariance only holds when the jump is large enough that
+# alpha * jump**2 dominates that dimension's min_variance floor; for smaller
+# jumps the shape differs by domain but resolves EQUALLY FAST OR FASTER in
+# every case checked, never slower than n=8. See tests/test_proposal_
+# scoring.py::test_cold_start_min_samples_sufficient_across_jump_magnitude_
+# sweep for the swept regression test that locks this in against the real
+# shipped constants, not just a synthetic one-off assertion.
+DIMENSION_PRECISION_EWMA_MIN_SAMPLES = 8
+
+# Domain-specific EWMA variance floors -- NOT the shared orion.bus.ewma
+# default (1e-6), per the execution_prediction_error lesson that a borrowed
+# floor can silently dominate a real z-score. Each set to ~1/10th of that
+# dimension's own real measured historical population variance (scripts/
+# analysis/measure_proposal_dimension_variance.py, 16h real window,
+# 2026-07-28: execution_pressure=9.63e-4, resource_pressure=4.88e-4,
+# reasoning_pressure=2.11e-6, reliability_pressure=1.09e-2) and hand-verified
+# by replaying each dimension's own real historical series through
+# compute_ewma_update at this floor: no permanent near-zero-variance blowup
+# during long held/flat stretches (a real, live risk here specifically --
+# unlike execution_prediction_error's per-event cadence, this baseline
+# updates every digestion tick including ticks where a channel's value is
+# unchanged, which drives the EWMA's own internal variance toward zero over
+# a long-enough hold unless the floor is large enough to bound it), and no
+# permanent saturation either -- real p99 |z| in the 1.3-4.3 range across
+# all four dimensions at this floor, a genuinely discriminating spread.
+DIMENSION_PRECISION_MIN_VARIANCE: dict[str, float] = {
+    "execution_pressure": 1e-4,
+    "resource_pressure": 5e-5,
+    "reasoning_pressure": 2e-7,
+    "reliability_pressure": 1e-3,
+}
+
+# Code review (2026-07-29) flagged this as unguarded: services/orion-field-
+# digester/app/digestion/precision.py indexes this dict with a plain `[]`
+# (not `.get`) for every dim_id in PRESSURE_DIMENSIONS that has a reading --
+# if PRESSURE_DIMENSIONS ever gains an entry without a matching floor here,
+# every subsequent digestion tick that dimension appears in raises KeyError
+# (caught by that service's broad tick-level except, so it wouldn't crash
+# the service, but it would silently break the WHOLE digestion tick, not
+# just precision tracking, on every run until fixed -- an empty-shell-
+# cognition failure shape, not a clean one). This isn't hypothetical: the
+# 2026-07-22 SelfStateV1 burn already changed PRESSURE_DIMENSIONS once (see
+# that frozenset's own comment). Fails fast at import time instead.
+assert set(DIMENSION_PRECISION_MIN_VARIANCE) == PRESSURE_DIMENSIONS, (
+    "DIMENSION_PRECISION_MIN_VARIANCE's keys must exactly match PRESSURE_DIMENSIONS "
+    "-- add or remove a floor here in the same change that edits PRESSURE_DIMENSIONS"
+)
+
+
+def dimension_confidence(
+    field: FieldStateV1, field_pressures: dict[str, float], dimension_id: str
+) -> float:
+    """Precision-weighted confidence: how well this tick's real reading for
+    `dimension_id` matches its own recent EWMA baseline
+    (`field.dimension_precision_ewma`/`_var`/`_n`, updated once per digestion
+    tick by `services/orion-field-digester/app/digestion/precision.py::
+    update_dimension_precision_baseline()`), inverted from a surprise/anomaly
+    z-score into a [0, 1] confidence -- a z-score near 0 (this tick matches
+    this dimension's own recent normal) means confidence near 1.0; a z-score
+    at or beyond `DIMENSION_PRECISION_ZSCORE_SATURATION` (a real, genuine
+    surprise relative to this dimension's own recent trajectory) means
+    confidence 0.0. Same clamp/saturation shape as `execution_prediction_
+    error`'s surprise score, inverted (confidence, not surprise) -- reuses
+    the already-proven mechanism (`orion.bus.ewma.compute_ewma_update`)
+    rather than inventing a new one.
+
+    Returns 0.0 (never a fabricated mid-range guess -- this repo's "no
+    empty-shell cognition" rule) when:
+      - `dimension_id` has no reading at all this tick (absent from
+        `field_pressures` -- preserves the old binary flag's "can't be
+        confident about data you don't have this tick" semantics), or
+      - fewer than `DIMENSION_PRECISION_EWMA_MIN_SAMPLES` real observations
+        have been absorbed into this dimension's baseline yet (cold start --
+        an early, unreliable z-score must not be reported as a real
+        confidence reading; see that constant's own comment for the
+        hand-verified evidence).
+
+    NOTE (see `PRESSURE_DIMENSIONS`' own comment for the full account): if
+    `dimension_id` is a real, present `field_pressures` key that is NOT in
+    `PRESSURE_DIMENSIONS` (e.g. `continuity_pressure`), this returns 0.0
+    PERMANENTLY, every tick -- `n` never advances for a dimension the
+    producer doesn't track. Unlike the absent-this-tick and cold-start cases
+    above, this is not a transient "no data yet" state; it is a real
+    behavior difference from the old binary presence flag, which would have
+    returned 1.0 whenever such a dimension was present. Not a bug for
+    today's live templates (none score on those 3 dimensions), but a real
+    trap for a future one that does.
     """
-    return 1.0 if dimension_id in field_pressures else 0.0
+    if dimension_id not in field_pressures:
+        return 0.0
+    n = field.dimension_precision_ewma_n.get(dimension_id, 0)
+    if n < DIMENSION_PRECISION_EWMA_MIN_SAMPLES:
+        return 0.0
+    zscore = field.dimension_precision_zscore.get(dimension_id)
+    if zscore is None:
+        return 0.0
+    surprise = min(1.0, abs(zscore) / DIMENSION_PRECISION_ZSCORE_SATURATION)
+    return clamp01(1.0 - surprise)
 
 
 def template_match_score(
@@ -72,11 +219,12 @@ def proposal_urgency(
 
 def proposal_confidence(
     *,
+    field: FieldStateV1,
     field_pressures: dict[str, float],
     template: ProposalTemplateV1,
 ) -> float:
     confs = [
-        dimension_confidence(field_pressures, dim_id)
+        dimension_confidence(field, field_pressures, dim_id)
         for dim_id in template.dimensions
     ]
     if not confs:

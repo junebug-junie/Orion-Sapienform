@@ -1,6 +1,77 @@
 # Precision-weighted proposal scoring — design spec
 
-Status: **design mode, not implemented.** Touches `orion/proposals/scoring.py`, part of the
+Status: **`dimension_confidence()` half IMPLEMENTED 2026-07-28** (this same evening, following
+this doc's own "Recommended next patch" section, Juniper's explicit "HIT IT" go-ahead). The
+`proposal_priority()`/`proposal_risk()`/`FeedbackFrameV1`-calibration-loop half remains
+**design mode, not implemented** -- explicitly out of scope for this patch, unchanged, see
+Non-goals below.
+
+## 2026-07-28 implementation update
+
+Followed the "Recommended next patch" section exactly: measured first
+(`scripts/analysis/measure_proposal_dimension_variance.py`, real `substrate_field_state` replay
+via the real `orion.field.pressure.field_pressures()`, no reimplementation), then built the
+EWMA-based confidence replacement only after the real data supported it.
+
+**Missing Question 1 (real per-dimension variance) answered with real numbers**, 16h window
+(28,271 real ticks, `2026-07-28T07:44 -> 23:44 UTC`):
+
+| dimension | mean | stddev | variance | min | max | real events (upward, non-decay) |
+| --- | --- | --- | --- | --- | --- | --- |
+| `execution_pressure` | 0.238 | 0.031 | 9.63e-4 | 0.0 | 0.392 | 720 (avg gap 79s) |
+| `resource_pressure` | 0.683 | 0.022 | 4.88e-4 | 0.68 | 0.9 | 22 (avg gap 2637s) |
+| `reliability_pressure` | 0.024 | 0.104 | 1.09e-2 | ~0 | 0.9 | 35 (avg gap 1472s) |
+| `reasoning_pressure` | 0.043 | 0.0015 | 2.11e-6 | 0.0041 | 0.045 | 13 (avg gap 4138s) |
+
+All four are real, non-degenerate, and genuinely refreshed -- none are the `node:substrate.route`
+"zero real events ever, decaying unopposed" disease (that check was run explicitly, not assumed:
+the measurement script's first pass used a flat 1-hour recency cutoff and mislabeled
+`reasoning_pressure` as an abandoned producer; widening the window and checking real event *counts*
+rather than recency-since-last-event corrected this -- `reasoning_pressure`'s ~69min average event
+gap is real, sparse cadence, not abandonment).
+
+**Missing Question 2 (durable history) confirmed live**: `substrate_field_state`, 128k+ real rows,
+72.5h span, exactly the table `services/orion-proposal-runtime/app/store.py::
+ProposalRuntimeStore.load_latest_field()` already reads in production.
+
+**Missing Question 4 (online vs. offline) decided implicitly by scope**: this patch is the
+confidence-only half: EWMA state updates online, once per digestion tick, same shape as the
+already-shipped `recent_perturbation_ewma*` precedent (PR #1433) -- not the separate weight-
+calibration question Missing Question 4 was really asking about, which stays deferred (see
+Non-goals).
+
+**Domain-specific EWMA floors, hand-verified not assumed** (per the `execution_prediction_error`
+lesson that a borrowed floor silently dominates real z-scores): each dimension's `min_variance` is
+~1/10th its own real measured population variance, verified by replaying the real historical
+series through `compute_ewma_update` at that floor (no permanent near-zero-variance blowup during
+long held/flat stretches -- a real, live risk here since this baseline updates every digestion
+tick including unchanged-value ticks, unlike `execution_prediction_error`'s per-event cadence; and
+no permanent saturation either -- real p99 |z| in the 1.3-4.3 range across all four dimensions).
+Cold-start guard (`DIMENSION_PRECISION_EWMA_MIN_SAMPLES = 8`) hand-verified via a synthetic
+seed-at-zero-then-jump replay, scale-invariant across all four dimensions given a shared alpha.
+
+**What shipped**: `orion/proposals/scoring.py::dimension_confidence()` replaced with a real
+inverse-z-score confidence (1 minus a saturating surprise score, same shape as
+`execution_prediction_error`, inverted); new `dimension_precision_ewma`/`_var`/`_n`/`_zscore` dict
+fields on `FieldStateV1` (dict-keyed by dimension_id, additive/safe-default, same
+backward-compat precedent as PR #1433); producer-side update in a new
+`services/orion-field-digester/app/digestion/precision.py::update_dimension_precision_baseline()`,
+wired into `run_digestion_tick()` after decay/diffusion/suppression settle each tick;
+`proposal_confidence()` and `orion/proposals/builder.py::_build_candidate()` updated to thread
+`field: FieldStateV1` through. Full report:
+`scripts/analysis/measure_proposal_dimension_variance.py`'s own output
+(`/tmp/measure-proposal-dimension-variance/report.md` at measurement time).
+
+**What did NOT ship (explicitly out of scope, unchanged)**: `proposal_priority()`'s fixed
+`0.4/0.2/0.1` coefficients, `proposal_risk()`'s flat bumps, `config/proposals/
+proposal_policy.v1.yaml`'s `dimension_weights`/`base_priority`/`base_risk`, and the
+`FeedbackFrameV1` calibration-loop closure (Missing Questions 3/5 and the weight-calibration half
+of Missing Question 4 remain genuinely open, not answered by this patch).
+
+---
+
+Status (original, 2026-07-28 pre-implementation): **design mode, not implemented.** Touches
+`orion/proposals/scoring.py`, part of the
 proposal→policy→execution-dispatch→consolidation→feedback pipeline that ultimately governs what
 Orion is permitted to autonomously do — a cognition-loop/autonomy-adjacent surface gated by
 CLAUDE.md §0A's proposal-mode requirement. This document proposes; it does not build.

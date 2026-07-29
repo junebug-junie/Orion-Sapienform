@@ -569,6 +569,11 @@ async def run_fcc_turn(
     """
     label = str(fcc_model_label or DEFAULT_FCC_MODEL_LABEL).strip() or DEFAULT_FCC_MODEL_LABEL
     env = load_fcc_env(expand_env_path(os.environ.get("HARNESS_FCC_ENV_PATH", "~/.fcc/.env")))
+    # Inject GITHUB_PAT from gh auth token if missing and MCP is enabled.
+    if not env.get("GITHUB_PAT") and _env_truthy("HARNESS_FCC_MCP_ENABLED"):
+        gh_pat = _get_github_pat_from_gh()
+        if gh_pat:
+            env["GITHUB_PAT"] = gh_pat
     try:
         model_id = label_to_claude_model_id(label, env)
     except ValueError as exc:

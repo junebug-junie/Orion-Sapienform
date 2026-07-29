@@ -481,7 +481,55 @@ def _fcc_context_env(env: dict[str, str]) -> None:
     )
 
 
-def _build_subprocess_env(*, fcc_server_url: str, auth_token: str) -> Dict[str, str]:
+def _get_github_pat_from_gh() -> Optional[str]:
+    """Read GITHUB_PAT from gh auth (fallback if not in ~/.fcc/.env).
+
+    Tries two paths:
+    1. ~/.config/gh/hosts.yml (where gh CLI stores tokens)
+    2. subprocess call to gh auth token (if gh is available)
+    """
+    import yaml
+    from pathlib import Path
+
+    # Try reading from gh's hosts.yml config file
+    try:
+        hosts_file = Path.home() / ".config" / "gh" / "hosts.yml"
+        if hosts_file.exists():
+            with open(hosts_file) as f:
+                config = yaml.safe_load(f) or {}
+            # gh hosts.yml structure: github.com: { oauth_token: "..." }
+            if isinstance(config, dict):
+                gh_com = config.get("github.com", {})
+                if isinstance(gh_com, dict):
+                    token = gh_com.get("oauth_token")
+                    if token:
+                        return token
+    except Exception:
+        pass
+
+    # Fallback: try subprocess call to gh auth token
+    try:
+        import subprocess
+        result = subprocess.run(
+            ["gh", "auth", "token"],
+            capture_output=True,
+            text=True,
+            timeout=5,
+        )
+        if result.returncode == 0:
+            return result.stdout.strip()
+    except Exception:
+        pass
+
+    return None
+
+
+def _build_subprocess_env(
+    *,
+    fcc_server_url: str,
+    auth_token: str,
+    fcc_env: Optional[Dict[str, str]] = None,
+) -> Dict[str, str]:
     env = os.environ.copy()
     env["ANTHROPIC_BASE_URL"] = str(fcc_server_url).rstrip("/")
     env["ANTHROPIC_AUTH_TOKEN"] = auth_token
@@ -496,6 +544,14 @@ def _build_subprocess_env(*, fcc_server_url: str, auth_token: str) -> Dict[str, 
     # shared checkout. See scripts/hooks/session_start_agent_board.py and
     # session_stop_agent_board.py, which no-op when this is set.
     env["ORION_FCC_SUBPROCESS"] = "1"
+    # Merge FCC env (contains MODEL_* and MCP secrets like GITHUB_PAT from ~/.fcc/.env).
+    if fcc_env:
+        env.update(fcc_env)
+    # If GITHUB_PAT is missing or empty and MCP is enabled, read it from gh auth token.
+    if not env.get("GITHUB_PAT") and _env_truthy("HARNESS_FCC_MCP_ENABLED"):
+        gh_pat = _get_github_pat_from_gh()
+        if gh_pat:
+            env["GITHUB_PAT"] = gh_pat
     _fcc_context_env(env)
     if _env_truthy("HARNESS_FCC_CONTEXT_MODE_HOOKS_ENABLED"):
         # Point the context-mode plugin's hooks + MCP server at the same
@@ -539,6 +595,11 @@ async def run_fcc_turn(
     """
     label = str(fcc_model_label or DEFAULT_FCC_MODEL_LABEL).strip() or DEFAULT_FCC_MODEL_LABEL
     env = load_fcc_env(expand_env_path(os.environ.get("HARNESS_FCC_ENV_PATH", "~/.fcc/.env")))
+    # Inject GITHUB_PAT from gh auth token if missing and MCP is enabled.
+    if not env.get("GITHUB_PAT") and _env_truthy("HARNESS_FCC_MCP_ENABLED"):
+        gh_pat = _get_github_pat_from_gh()
+        if gh_pat:
+            env["GITHUB_PAT"] = gh_pat
     try:
         model_id = label_to_claude_model_id(label, env)
     except ValueError as exc:
@@ -604,7 +665,7 @@ async def run_fcc_turn(
         proc = await asyncio.create_subprocess_exec(
             *argv,
             cwd=workspace,
-            env=_build_subprocess_env(fcc_server_url=fcc_server_url, auth_token=auth_token),
+            env=_build_subprocess_env(fcc_server_url=fcc_server_url, auth_token=auth_token, fcc_env=env),
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.PIPE,
             limit=stream_read_limit,

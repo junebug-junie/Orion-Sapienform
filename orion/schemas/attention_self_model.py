@@ -104,3 +104,19 @@ class AttentionSelfModelV1(BaseModel):
     # salient" — never silently collapsed into the same output.
     broadcast_lane_stale: bool = True
     broadcast_lane_age_sec: float | None = None
+
+    # --- orion-heartbeat's ensemble H1 verdict, additive --------------------
+    # 2026-07-29: orion-heartbeat (docs/superpowers/specs/2026-07-24-spark-
+    # field-holographic-lattice-design.md) computes a real, independently-
+    # verified boundary/bulk entanglement ratio across five confirmed-live
+    # organs via a tensor-network ensemble -- a genuinely different signal
+    # from this reducer's own prediction-error domains above, not a
+    # restatement of them. Caller-supplied (this reducer stays no-I/O, same
+    # as every other field here) via an optional `heartbeat_h1` dict; omitted
+    # or malformed input leaves these fields at their None/"" defaults,
+    # never a fabricated reading. Not yet consumed by anything downstream --
+    # additive-only, matching this field's own siblings' history of landing
+    # before their consumer did.
+    heartbeat_mean_ratio: float | None = Field(default=None, ge=0.0, le=1.0)
+    heartbeat_verdict: Literal["redundant", "concentrated", "mixed"] | None = None
+    heartbeat_basis: str = ""

@@ -215,6 +215,23 @@ brand-new table with exactly one writer.
 - `SUBSTRATE_ATTENTION_SELF_MODEL_LOG_RETENTION_HOURS` (default `168.0`): append-only retention,
   matching `ORION_ATTENTION_BROADCAST_LOG_RETENTION_HOURS`'s own 7-day default.
 
+**2026-07-29: orion-heartbeat's H1 verdict, additive.** The tick also does one short-timeout GET to
+`orion-heartbeat`'s own `/h1` endpoint (`_fetch_heartbeat_h1()`) and threads the result into
+`reduce_attention_self_model()`'s `heartbeat_h1` param, populating
+`AttentionSelfModelV1.heartbeat_mean_ratio`/`heartbeat_verdict`/`heartbeat_basis`. This is a real,
+independently-computed signal (orion-heartbeat's tensor-network boundary/bulk entanglement ratio
+across five organs — see `services/orion-heartbeat/README.md`), not a restatement of this reducer's
+own prediction-error domains. Fails open: a disabled (`SUBSTRATE_HEARTBEAT_H1_URL` empty, the
+default), unreachable, or not-yet-computed (`{"ok": false}`) heartbeat leaves these three fields at
+their honest `None`/`""` defaults and never blocks this tick's own persist. Not yet consumed by
+anything downstream — additive-only, same status as this tick's own siblings before their consumer
+existed.
+
+- `SUBSTRATE_HEARTBEAT_H1_URL` (default empty, disabled): orion-heartbeat's `/h1` URL, e.g.
+  `http://orion-athena-heartbeat:7251/h1` (same `app-net` docker network both services already share).
+- `SUBSTRATE_HEARTBEAT_H1_FETCH_TIMEOUT_SEC` (default `2.0`): request timeout; this tick's own 30s
+  cadence has ample margin.
+
 **Why a brand-new table, not a field added to an existing row:** this repo has a documented,
 repeated failure class of a periodic tick clobbering a field/row it doesn't exclusively own —
 `execution_load`'s cross-lane stomp (PR #1338), `orion-field-digester`'s generic decay silently

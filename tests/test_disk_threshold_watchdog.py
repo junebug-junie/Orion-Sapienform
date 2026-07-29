@@ -428,8 +428,17 @@ def test_main_exits_three_on_unexpected_exception(tmp_path, monkeypatch):
     assert rc == 3
 
 
-def test_default_paths_include_docker_scripts_telemetry():
-    assert watchdog.DEFAULT_PATHS == ("/mnt/docker", "/mnt/scripts", "/mnt/telemetry")
+def test_default_paths_include_all_eight_host_mounts():
+    assert watchdog.DEFAULT_PATHS == (
+        "/",
+        "/mnt/docker",
+        "/mnt/scripts",
+        "/mnt/telemetry",
+        "/mnt/postgres",
+        "/mnt/graphdb",
+        "/mnt/storage-warm",
+        "/mnt/storage-lukewarm",
+    )
 
 
 def test_default_state_file_lives_under_telemetry_root():

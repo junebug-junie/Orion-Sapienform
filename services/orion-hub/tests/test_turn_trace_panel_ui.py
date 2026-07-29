@@ -58,18 +58,30 @@ def test_renders_stance_decision_disposition_and_reasons() -> None:
                 "disposition": "defer",
                 "disposition_reasons": ["needs more context", "ambiguous request"],
                 "boundary_register": True,
+                "imperative": "Ask a clarifying question before proceeding.",
+                "tone": "curious",
+                "strain_refs": ["strain:continuity"],
+                "stance_harness_slice": {
+                    "task_mode": "chat",
+                    "conversation_frame": "direct",
+                    "answer_strategy": "concise",
+                },
             }
         },
         "gaps": ["no_cognition_trace"],
     }
     html = _node_build_turn_trace_panel({"correlationId": "corr-1", "trace": trace})
-    assert "Stance decision" in html
+    assert "Ingress / Association / Stance" in html
     assert "defer" in html
     assert "needs more context" in html
     assert "ambiguous request" in html
     assert "boundary_register" in html
     assert "unified_turn_harness" in html
     assert "no_cognition_trace" in html
+    assert "Ask a clarifying question before proceeding." in html
+    assert "curious" in html
+    assert "strain:continuity" in html
+    assert "concise" in html
 
 
 def test_renders_execution_run_step_counts() -> None:
@@ -82,9 +94,88 @@ def test_renders_execution_run_step_counts() -> None:
         "gaps": [],
     }
     html = _node_build_turn_trace_panel({"correlationId": "corr-2", "trace": trace})
-    assert "execution_run" in html
+    assert "Harness Work" in html
     assert "5" in html
     assert "1" in html
+
+
+def test_renders_draft_molecule_and_substrate_appraisal() -> None:
+    trace = {
+        "correlation_id": "corr-5",
+        "route_signal_inferred": "unified_turn_harness",
+        "sources": {
+            "harness_turn_trace": {
+                "run_artifact": {
+                    "draft_text": "Here is my draft answer.",
+                    "substrate_appraisal": {
+                        "surprise_level": 0.15,
+                        "open_loop_pressure": 0.05,
+                        "alignment_hints": ["hint:consistent_with_prior"],
+                        "strain_shift_refs": [],
+                        "learning_refs": ["learning:1"],
+                    },
+                }
+            }
+        },
+        "gaps": [],
+    }
+    html = _node_build_turn_trace_panel({"correlationId": "corr-5", "trace": trace})
+    assert "Draft Molecule + Substrate Appraisal" in html
+    assert "Here is my draft answer." in html
+    assert "0.15" in html
+    assert "hint:consistent_with_prior" in html
+    assert "learning:1" in html
+
+
+def test_renders_reflect_verdict_and_voice_and_outcome_and_closure() -> None:
+    trace = {
+        "correlation_id": "corr-6",
+        "route_signal_inferred": "unified_turn_harness",
+        "sources": {
+            "harness_turn_trace": {
+                "run_artifact": {
+                    "reflection": {
+                        "alignment_verdict": "misaligned",
+                        "alignment_notes": ["tone drifted from draft"],
+                        "strain_unresolved": True,
+                        "imperative": "Soften the tone before sending.",
+                        "tone": "warm",
+                        "quick_lane_skipped_llm": False,
+                    },
+                    "final_text": "Here is the final reply.",
+                    "finalize_ran": True,
+                    "finalize_changed": True,
+                    "compliance_verdict": "completed",
+                    "grounding_status": "grounded",
+                },
+                "outcome_molecule": {
+                    "alignment_verdict": "misaligned",
+                    "surprise_resolved": False,
+                    "surprise_level_at_draft": 0.15,
+                    "final_hash": "abcdef0123456789",
+                    "finalize_failed": False,
+                },
+                "closure": {
+                    "surprise_unresolved": True,
+                    "user_message_excerpt": "what do you think about this plan?",
+                },
+            }
+        },
+        "gaps": [],
+    }
+    html = _node_build_turn_trace_panel({"correlationId": "corr-6", "trace": trace})
+    assert "Integrative Reflect + Verdict" in html
+    assert "misaligned" in html
+    assert "tone drifted from draft" in html
+    assert "Soften the tone before sending." in html
+    assert "Orion Voice" in html
+    assert "Here is the final reply." in html
+    assert "finalize_ran" in html
+    assert "finalize_changed" in html
+    assert "Outcome Molecule" in html
+    assert "surprise_unresolved" in html
+    assert "Post-Turn Closure" in html
+    assert "what do you think about this plan?" in html
 
 
 def test_renders_no_trace_found_when_all_sources_empty() -> None:

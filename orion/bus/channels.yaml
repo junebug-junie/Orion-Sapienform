@@ -2441,7 +2441,7 @@ channels:
     schema_id: "HarnessPostTurnClosureV1"
     message_kind: "harness.post_turn.closure.v1"
     producer_services: ["orion-harness-governor"]
-    consumer_services: ["orion-substrate-runtime"]
+    consumer_services: ["orion-substrate-runtime", "orion-sql-writer"]
     stability: "experimental"
     since: "2026-07-05"
 

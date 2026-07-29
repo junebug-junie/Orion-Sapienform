@@ -1,9 +1,11 @@
 """Fused correlation-first chat-turn trace lookup (join logic only).
 
-Each of the four underlying sources (CognitionTraceCache, Grammar Atlas,
-ExecutionTrajectoryProjectionV1, thought_decision) already has its own
-coverage elsewhere (test_cognition_trace_api.py, test_grammar_atlas_api.py,
-services/orion-sql-writer/tests/test_thought_decision_sql_shape.py). These
+Each of the five underlying sources (CognitionTraceCache, Grammar Atlas,
+ExecutionTrajectoryProjectionV1, thought_decision, harness_turn_trace)
+already has its own coverage elsewhere (test_cognition_trace_api.py,
+test_grammar_atlas_api.py,
+services/orion-sql-writer/tests/test_thought_decision_sql_shape.py,
+services/orion-sql-writer/tests/test_harness_turn_trace_sql_shape.py). These
 tests cover only the new logic this module adds: the join, the gap
 reporting, and the route_signal_inferred labeling.
 """
@@ -22,7 +24,9 @@ os.environ.setdefault("CHANNEL_COLLAPSE_TRIAGE", "orion:collapse:triage")
 import scripts.chat_turn_trace_routes as chat_turn_trace_routes
 
 
-def _patch_sources(monkeypatch, *, cognition=None, grammar=None, execution=None, thought=None):
+def _patch_sources(
+    monkeypatch, *, cognition=None, grammar=None, execution=None, thought=None, harness_turn_trace=None
+):
     async def _fake_cognition(_corr):
         return cognition
 
@@ -35,10 +39,14 @@ def _patch_sources(monkeypatch, *, cognition=None, grammar=None, execution=None,
     def _fake_thought(_corr):
         return thought
 
+    def _fake_harness_turn_trace(_corr):
+        return harness_turn_trace
+
     monkeypatch.setattr(chat_turn_trace_routes, "_load_cognition_trace", _fake_cognition)
     monkeypatch.setattr(chat_turn_trace_routes, "_load_grammar_trace", _fake_grammar)
     monkeypatch.setattr(chat_turn_trace_routes, "_load_execution_run", _fake_execution)
     monkeypatch.setattr(chat_turn_trace_routes, "_load_thought_decision", _fake_thought)
+    monkeypatch.setattr(chat_turn_trace_routes, "_load_harness_turn_trace", _fake_harness_turn_trace)
 
 
 def test_fused_trace_reports_all_gaps_when_nothing_found(monkeypatch) -> None:
@@ -52,6 +60,7 @@ def test_fused_trace_reports_all_gaps_when_nothing_found(monkeypatch) -> None:
         "no_grammar_trace",
         "no_execution_run_pressure_signal",
         "no_thought_decision",
+        "no_harness_turn_trace",
     }
     assert out["route_signal_inferred"] == "none"
 
@@ -82,6 +91,24 @@ def test_fused_trace_unified_turn_route_when_only_thought_decision_present(monke
     assert out["route_signal_inferred"] == "unified_turn_harness"
     assert "no_grammar_trace" in out["gaps"]
     assert "no_execution_run_pressure_signal" in out["gaps"]
+
+
+def test_fused_trace_unified_turn_route_when_only_harness_turn_trace_present(monkeypatch) -> None:
+    _patch_sources(
+        monkeypatch,
+        harness_turn_trace={
+            "correlation_id": "corr-htt",
+            "run_artifact": {"final_text": "hi", "finalize_ran": True},
+            "verdict_molecule": None,
+            "outcome_molecule": None,
+            "closure": None,
+        },
+    )
+    out = asyncio.run(chat_turn_trace_routes.get_fused_chat_turn_trace("corr-htt"))
+    assert out["sources"]["harness_turn_trace"]["run_artifact"]["finalize_ran"] is True
+    assert out["route_signal_inferred"] == "unified_turn_harness"
+    assert "no_harness_turn_trace" not in out["gaps"]
+    assert "no_cognition_trace" in out["gaps"]
 
 
 def test_fused_trace_ambiguous_when_both_paths_present(monkeypatch) -> None:

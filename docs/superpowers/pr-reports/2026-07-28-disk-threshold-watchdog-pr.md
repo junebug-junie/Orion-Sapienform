@@ -257,8 +257,21 @@ sudo chown "$(whoami)":"$(whoami)" /mnt/telemetry/orion-athena/disk-watchdog
 
 crontab -e
 # then paste:
-*/15 * * * * cd /mnt/scripts/Orion-Sapienform && make disk-threshold-watchdog >> /mnt/scripts/Orion-Sapienform/logs/orion-disk-threshold-watchdog.log 2>&1
+*/15 * * * * cd /mnt/scripts/Orion-Sapienform && PATH=/mnt/scripts/Orion-Sapienform/venv/bin:$PATH make disk-threshold-watchdog >> /mnt/scripts/Orion-Sapienform/logs/orion-disk-threshold-watchdog.log 2>&1
 ```
+
+**Post-push correction (2026-07-28):** the crontab line originally
+documented here omitted the `PATH=.../venv/bin:$PATH` prefix. When
+Juniper actually installed it, `make disk-threshold-watchdog` ran under
+cron's own minimal `PATH` (not an activated shell), which resolved
+`python3` to the system interpreter and crashed on
+`ModuleNotFoundError: No module named 'pydantic'` (this script imports
+`orion.notify.client`, unlike `bus_core_health_watchdog.py`, whose
+crontab line has no such requirement since it imports nothing outside the
+stdlib). Live-confirmed with `env -i PATH="/usr/bin:/bin" ... python3 -c
+"import pydantic"` failing, and the venv's `python3 -c "import pydantic"`
+succeeding. Fixed in this file and in `scripts/README.md`; the line above
+is the corrected version.
 
 ## Risks / concerns
 

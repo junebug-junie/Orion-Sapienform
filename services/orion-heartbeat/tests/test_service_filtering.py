@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import asyncio
+
 import pytest
 
 from app.service import HeartbeatService
@@ -32,11 +34,12 @@ def _atom_event(
 @pytest.mark.asyncio
 async def test_allowlisted_organ_gets_absorbed() -> None:
     svc = HeartbeatService()
-    before = svc.substrate.tick_count
+    before = svc.ensemble.tick_count()
 
     await svc._handle_grammar_message(_atom_event(source_service="orion-biometrics"))
+    await svc._drain_absorb_queue()  # no background worker running in this test
 
-    assert svc.substrate.tick_count == before + 1
+    assert svc.ensemble.tick_count() == before + 1
     assert svc.events_absorbed == 1
     assert svc.events_skipped_organ == 0
 
@@ -44,11 +47,12 @@ async def test_allowlisted_organ_gets_absorbed() -> None:
 @pytest.mark.asyncio
 async def test_non_allowlisted_organ_is_skipped_not_raised() -> None:
     svc = HeartbeatService()
-    before = svc.substrate.tick_count
+    before = svc.ensemble.tick_count()
 
     await svc._handle_grammar_message(_atom_event(source_service="orion-vision-retina"))
+    await svc._drain_absorb_queue()
 
-    assert svc.substrate.tick_count == before
+    assert svc.ensemble.tick_count() == before
     assert svc.events_absorbed == 0
     assert svc.events_skipped_organ == 1
 
@@ -56,11 +60,12 @@ async def test_non_allowlisted_organ_is_skipped_not_raised() -> None:
 @pytest.mark.asyncio
 async def test_non_atom_emitted_event_kind_is_ignored() -> None:
     svc = HeartbeatService()
-    before = svc.substrate.tick_count
+    before = svc.ensemble.tick_count()
 
     await svc._handle_grammar_message(_atom_event(event_kind="trace_started"))
+    await svc._drain_absorb_queue()
 
-    assert svc.substrate.tick_count == before
+    assert svc.ensemble.tick_count() == before
     assert svc.events_absorbed == 0
     assert svc.events_skipped_organ == 0
     assert svc.events_seen == 1
@@ -83,6 +88,7 @@ async def test_events_seen_counts_everything_absorbed_or_not() -> None:
     await svc._handle_grammar_message(_atom_event(source_service="orion-hub"))
     await svc._handle_grammar_message(_atom_event(source_service="orion-vision-retina"))
     await svc._handle_grammar_message(_atom_event(event_kind="edge_emitted"))
+    await svc._drain_absorb_queue()
 
     assert svc.events_seen == 3
     assert svc.events_absorbed == 1
@@ -91,13 +97,15 @@ async def test_events_seen_counts_everything_absorbed_or_not() -> None:
 @pytest.mark.asyncio
 async def test_stats_reports_allowlisted_organs_and_substrate_health() -> None:
     svc = HeartbeatService()
-    stats = svc.stats()
+    stats = await svc.stats()
 
     assert stats["allowlisted_organs"] == sorted(
         ["orion-hub", "orion-biometrics", "orion-cortex-exec", "orion-bus", "orion-cortex-orch"]
     )
     assert stats["max_bond"] >= 1
     assert stats["norm"] == pytest.approx(1.0, abs=1e-6)
+    assert stats["n_trajectories"] == svc.ensemble.config.n_trajectories
+    assert len(stats["seeds"]) == svc.ensemble.config.n_trajectories
 
 
 def test_latest_h1_dict_is_none_before_first_computation() -> None:
@@ -114,8 +122,9 @@ async def test_unknown_atom_type_is_skipped_through_full_handler_path() -> None:
     svc = HeartbeatService()
 
     await svc._handle_grammar_message(_atom_event(atom_type="not_a_real_atom_type"))
+    await svc._drain_absorb_queue()
 
-    assert svc.substrate.tick_count == 0
+    assert svc.ensemble.tick_count() == 0
     assert svc.events_absorbed == 0
     assert svc.events_skipped_atom_type == 1
 
@@ -125,6 +134,26 @@ async def test_malformed_numeric_fields_are_skipped_not_raised() -> None:
     svc = HeartbeatService()
 
     await svc._handle_grammar_message(_atom_event(confidence="not-a-number"))
+    await svc._drain_absorb_queue()
 
     assert svc.events_absorbed == 0
     assert svc.events_skipped_malformed == 1
+
+
+@pytest.mark.asyncio
+async def test_absorb_queue_full_drops_and_counts_instead_of_blocking() -> None:
+    # HEARTBEAT_ABSORB_QUEUE_MAXSIZE overflow -- previously untested. A full
+    # queue must degrade to a dropped-and-counted event (with a log line),
+    # never raise out of _handle_grammar_message/_handle_atom_payload.
+    svc = HeartbeatService()
+    svc._absorb_queue = asyncio.Queue(maxsize=1)  # tiny queue, easy to fill
+
+    await svc._handle_grammar_message(_atom_event(source_service="orion-hub"))
+    assert svc.events_queued == 1
+    assert svc.events_dropped_queue_full == 0
+
+    await svc._handle_grammar_message(_atom_event(source_service="orion-biometrics"))
+
+    assert svc.events_queued == 1  # second atom did NOT get queued
+    assert svc.events_dropped_queue_full == 1
+    assert svc._absorb_queue.qsize() == 1

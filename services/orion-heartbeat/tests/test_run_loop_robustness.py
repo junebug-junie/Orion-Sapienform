@@ -68,7 +68,7 @@ async def test_run_processes_valid_grammar_event_end_to_end(monkeypatch) -> None
 
     assert svc.events_seen == 1
     assert svc.events_absorbed == 1
-    assert svc.substrate.tick_count == 1
+    assert svc.ensemble.tick_count() == 1
 
 
 @pytest.mark.asyncio
@@ -112,7 +112,7 @@ async def test_run_survives_mixed_batch_good_bad_and_out_of_scope(monkeypatch) -
     assert svc.events_seen == 3  # the undecodable one never reaches events_seen
     assert svc.events_absorbed == 2
     assert svc.events_skipped_organ == 1
-    assert svc.substrate.tick_count == 2
+    assert svc.ensemble.tick_count() == 2
 
 
 @pytest.mark.asyncio

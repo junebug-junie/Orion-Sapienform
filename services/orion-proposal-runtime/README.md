@@ -1,13 +1,21 @@
 # orion-proposal-runtime
 
-Layer 7 substrate service: converts `SelfStateV1` (+ optional attention/field context) into **possible actions** (`ProposalFrameV1`), not automatic actions.
+Layer 7 substrate service: converts `FieldStateV1` (+ optional attention context) into **possible
+actions** (`ProposalFrameV1`), not automatic actions.
+
+**Correction (2026-07-28, doc drift fix — the code changed 2026-07-22, this README didn't):** this
+used to say `SelfStateV1` was the primary input. That was already wrong by the time it was
+written down here — `orion/proposals/builder.py::build_proposal_frame()`'s 2026-07-22
+"SelfStateV1 burn" made `field: FieldStateV1` load-bearing and dropped `SelfStateV1` from the
+function signature entirely (it was previously received but discarded — "reserved for continuity
+in later revisions"). `field_pressures()` computed from `FieldStateV1` is the real, direct input;
+`substrate_self_state` is not read by this service's core proposal-building path.
 
 ## Data flow
 
 ```text
-substrate_self_state
-+ substrate_attention_frames
-+ substrate_field_state
+substrate_field_state
++ substrate_attention_frames (optional)
   → orion-proposal-runtime
   → ProposalFrameV1
   → substrate_proposal_frames
@@ -30,17 +38,24 @@ bus-publish.
 
 ## Idempotency
 
-One proposal frame per `source_self_state_id`. Re-running the worker for the same self-state snapshot is a no-op. Policy/template changes do not regenerate until a new self-state row exists (v1 semantics).
+One proposal frame per `source_field_tick_id` (+ `attention_frame_id` + `policy_id`,
+`stable_proposal_frame_id()`). Re-running the worker for the same field tick is a no-op.
+**Correction (2026-07-28, same doc-drift fix as above):** this used to key on `source_self_state_id`
+— stale since the 2026-07-22 burn moved the real identity key to the field tick.
 
 ## Attention-bound proposals (P5)
 
 `ProposalTemplateV1.target_binding` lets a template point at a live field on
 the inbound context instead of a fixed target. The only binding implemented is
-`ATTENTION_FIRST_TARGET_BINDING = "self_state.dominant_attention_targets[0]"`
-(`orion/proposals/builder.py`): `_resolve_binding_target()` reads
-`SelfStateV1.dominant_attention_target_details[0]` and only resolves when its
+`ATTENTION_FIRST_TARGET_BINDING = "attention.dominant_targets[0]"`
+(`orion/proposals/builder.py`) — **renamed 2026-07-22 (SelfStateV1 burn) from
+`"self_state.dominant_attention_targets[0]"`; attention targets were always
+`FieldAttentionFrameV1.dominant_targets` underneath, `self_state` was a lossy pass-through hop,
+not the real source. `config/proposals/proposal_policy.v1.yaml`'s `target_binding` literal was
+updated to match in the same changeset — this README wasn't, until now.** `_resolve_binding_target()`
+reads `FieldAttentionFrameV1.dominant_targets[0]` and only resolves when its
 `target_kind` is one of `node`, `capability`, `field`, `system` (the exact
-intersection of `AttentionTargetSummaryV1.target_kind` and
+intersection of `FieldAttentionTargetV1.target_kind` and
 `ProposalCandidateV1.target_kind`'s allowed values). `_resolve_binding_target`
 never raises -- an empty attention list, an unbound template, or an
 unsupported `target_kind` all fall through to the template's existing static
@@ -58,6 +73,23 @@ data" gracefully if the template hasn't accumulated enough candidates yet:
 ```bash
 python orion/autonomy/evals/run_attention_bound_proposal_eval.py
 ```
+
+## Precision-weighted dimension confidence (2026-07-28, PR #1442)
+
+`orion/proposals/scoring.py::dimension_confidence()` (consumed by `proposal_confidence()`, one of
+`proposal_priority()`'s three terms) used to be a binary data-presence flag — `1.0` if a
+`field_pressures` dimension was present this tick, `0.0` otherwise, wearing a name that implied
+real epistemic confidence it didn't compute. It's now a genuine precision estimate: a per-dimension
+EWMA baseline (`orion/bus/ewma.py::compute_ewma_update`), updated once per digestion tick by
+`orion-field-digester` (`app/digestion/precision.py`, see that service's own README for the full
+account and the real historical-variance measurement that justified it), scored as deviation from
+each dimension's own recent normal instead of a flat presence check. This service's own scoring
+math (`template_match_score`/`proposal_urgency`/`proposal_priority`/`proposal_risk`) is otherwise
+unchanged by this patch — `proposal_priority()`'s fixed `0.4/0.2/0.1` weighting and every
+template's `base_priority`/`base_risk` in `config/proposals/proposal_policy.v1.yaml` are still
+static, hand-typed, and not calibrated against `FeedbackFrameV1`'s real recorded outcomes — a
+known, named, separate follow-up (`docs/superpowers/specs/2026-07-28-precision-weighted-proposal-scoring-design.md`'s
+Missing Question 4), not done in this patch.
 
 ## Run
 

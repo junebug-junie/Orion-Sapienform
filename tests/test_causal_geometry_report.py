@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import functools
 import sys
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -98,12 +99,28 @@ def _build(**overrides):
         window_start=window_start,
         window_end=window_end,
         min_samples=30,
-        n_surrogates=200,
+        # Must be >= cgr.DEFAULT_N_SURROGATES for _fixture_channels()'s
+        # noisy-but-real correlations to actually clear the family-wise BH
+        # bar -- see test_n_surrogates_floor_regression_* below for why a
+        # too-low n_surrogates silently zeroes out every edge regardless of
+        # correlation strength.
+        n_surrogates=cgr.DEFAULT_N_SURROGATES,
         alpha=0.05,
         seed=1337,
     )
     kwargs.update(overrides)
     return cgr.build_snapshot(channels, topology, **kwargs)
+
+
+@functools.lru_cache(maxsize=1)
+def _default_build():
+    """Cached zero-override `_build()` result, shared by every test below that
+    doesn't need a custom fixture -- `build_snapshot()` at `cgr.DEFAULT_N_SURROGATES`
+    takes a few real seconds (each of the 15 tested pairs draws that many
+    circular-shift surrogates), so re-running it per read-only test would make
+    this file slow for no benefit. Safe to share: nothing below mutates the
+    returned snapshot/pair_results, only reads them."""
+    return _build()
 
 
 # --- bucketize / pearson unit tests -----------------------------------------
@@ -138,7 +155,7 @@ def test_pearson_symmetric_and_handles_zero_variance():
 
 
 def test_correlated_series_produce_significant_edge_with_plausible_pvalue():
-    snapshot, pair_results = _build()
+    snapshot, pair_results = _default_build()
     assert not snapshot.insufficient_data
 
     matches = [
@@ -160,7 +177,7 @@ def test_correlated_series_produce_significant_edge_with_plausible_pvalue():
 
 
 def test_uncorrelated_series_not_reported_as_significant():
-    snapshot, _ = _build()
+    snapshot, _ = _default_build()
     matches = [
         e
         for e in snapshot.edges
@@ -169,8 +186,88 @@ def test_uncorrelated_series_not_reported_as_significant():
     assert matches == [], "independent random series must not clear the significance bar"
 
 
+def _perfectly_correlated_two_cluster_channel_buckets():
+    """4 channels as two independent perfectly-correlated pairs (chan:a1/a2,
+    chan:b1/b2) -> C(4,2) = 6 tested pairs, 2 of them real."""
+    rng = np.random.default_rng(7)
+    n = 50
+    a1 = rng.normal(size=n)
+    a2 = a1.copy()  # perfectly correlated with a1
+    b1 = rng.normal(size=n)
+    b2 = b1.copy()  # perfectly correlated with b1, independent of the a-cluster
+    channels = {
+        "chan:a1": _points_for(a1),
+        "chan:a2": _points_for(a2),
+        "chan:b1": _points_for(b1),
+        "chan:b2": _points_for(b2),
+    }
+    return {cid: cgr.bucketize(pts, cgr.BUCKET_SECONDS) for cid, pts in channels.items()}
+
+
+def test_n_surrogates_floor_regression_old_default_starved_bh_new_default_does_not():
+    """Regression test for a live bug confirmed 2026-07-29: every causal-
+    geometry tick since the BH-FDR cutover (2026-07-28 03:44 UTC) reported
+    `insufficient_data=True` with 0 edges, including obvious real
+    correlations. Root cause: `compute_pairwise_results()`'s per-pair
+    Bonferroni step (`p = min(1.0, p_raw * n_comparisons)`,
+    `n_comparisons = 2 * len(LAG_GRID_SECONDS) = 10`) has its own floor,
+    because `circular_shift_pvalue`'s add-one smoothing means p_raw can never
+    go below `1/(n_surrogates+1)`. At the old `DEFAULT_N_SURROGATES=200` that
+    floor was `10/201 ~= 0.0497512` -- just under the old flat `alpha=0.05`,
+    but far too high to ever clear `_apply_fdr_correction()`'s rank-dependent
+    BH threshold `(i/m)*alpha` for a realistic family size m. Raising
+    `DEFAULT_N_SURROGATES` to 2000 drops that floor to `10/2001 ~= 0.005`,
+    giving BH real headroom while keeping the Bonferroni within-pair
+    selection-effect correction intact (verified live against production
+    data: the fix is `DEFAULT_N_SURROGATES`, not removing Bonferroni).
+
+    This test builds two independent perfectly-correlated 2-channel clusters
+    (4 channels, 6 pairs total, m=6 tested, 2 of them real). At n_surrogates
+    =200 both real pairs hit the Bonferroni floor of 0.0497512 and neither
+    clears BH (even the most lenient rank, i=1, needs <= (1/6)*0.05 ~=
+    0.0083). At `cgr.DEFAULT_N_SURROGATES` both clear it.
+    """
+    channel_buckets = _perfectly_correlated_two_cluster_channel_buckets()
+    real_pairs = ({"chan:a1", "chan:a2"}, {"chan:b1", "chan:b2"})
+    noise_pairs = (
+        {"chan:a1", "chan:b1"},
+        {"chan:a1", "chan:b2"},
+        {"chan:a2", "chan:b1"},
+        {"chan:a2", "chan:b2"},
+    )
+
+    def _run(n_surrogates):
+        results = cgr.compute_pairwise_results(
+            channel_buckets,
+            min_samples=30,
+            n_surrogates=n_surrogates,
+            alpha=0.05,
+            lag_grid_seconds=cgr.LAG_GRID_SECONDS,
+            bucket_seconds=cgr.BUCKET_SECONDS,
+            seed=1337,
+        )
+        return {frozenset((r.channel_a, r.channel_b)): r for r in results}
+
+    by_pair_old = _run(200)
+    assert len(by_pair_old) == 6, "4 channels should produce C(4,2) = 6 pairs"
+    assert not any(by_pair_old[frozenset(p)].significant for p in real_pairs), (
+        "this reproduces the bug at the old n_surrogates=200 -- if this now fails, "
+        "the Bonferroni floor stopped starving BH some other way and this test's "
+        "premise needs re-checking, not deleting"
+    )
+
+    by_pair_new = _run(cgr.DEFAULT_N_SURROGATES)
+    for pair in real_pairs:
+        assert by_pair_new[frozenset(pair)].significant, (
+            "a perfectly-correlated pair must clear the family-wise BH bar at the "
+            "current DEFAULT_N_SURROGATES -- if this fails, the fix regressed"
+        )
+    for pair in noise_pairs:
+        assert not by_pair_new[frozenset(pair)].significant
+
+
 def test_insufficient_data_pair_never_fabricates_an_edge():
-    snapshot, pair_results = _build()
+    snapshot, pair_results = _default_build()
 
     # Every pair involving the scarce (5-point) channel must be insufficient_data,
     # never produce a fabricated edge.
@@ -201,7 +298,7 @@ def test_insufficient_data_pair_never_fabricates_an_edge():
 
 
 def test_snapshot_round_trips_through_pydantic_validation():
-    snapshot, _ = _build()
+    snapshot, _ = _default_build()
     assert isinstance(snapshot, CausalGeometrySnapshotV1)
     dumped = snapshot.model_dump(mode="json")
     revalidated = CausalGeometrySnapshotV1.model_validate(dumped)
@@ -214,7 +311,7 @@ def test_snapshot_round_trips_through_pydantic_validation():
 
 
 def test_divergence_status_categories_are_all_present_and_correct():
-    snapshot, _ = _build()
+    snapshot, _ = _default_build()
     by_status = {}
     for entry in snapshot.divergence:
         by_status.setdefault(entry.status, []).append(entry)

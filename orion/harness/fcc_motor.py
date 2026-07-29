@@ -549,7 +549,6 @@ def _build_subprocess_env(
         env.update(fcc_env)
     # If GITHUB_PAT is missing or empty and MCP is enabled, read it from gh auth token.
     if not env.get("GITHUB_PAT") and _env_truthy("HARNESS_FCC_MCP_ENABLED"):
-    logger.info("fcc_turn_checking_github_pat injection")
         gh_pat = _get_github_pat_from_gh()
         if gh_pat:
             env["GITHUB_PAT"] = gh_pat

@@ -77,15 +77,18 @@ if [[ "${CHECK_ONLY}" == "1" ]]; then
   exit 0
 fi
 
-# Resolve the actual data volume from the running container's mounts rather
+# Resolve the actual data mount from the running container's mounts rather
 # than assuming Compose's default "<project>_<volume>" naming -- a
 # COMPOSE_PROJECT_NAME override would otherwise make the backup/rename steps
 # below silently target a nonexistent (docker-auto-created, empty) volume
-# while the real data volume goes untouched.
+# while the real data volume goes untouched. Falls back to the mount's
+# .Source (host path) when it's a bind mount rather than a named volume --
+# `docker run -v <arg>:/data` accepts either a volume name or a host path
+# interchangeably, so the rest of the script is unaffected either way.
 VOLUME_NAME="$(docker inspect "$("${COMPOSE[@]}" ps -q backend)" \
-  --format '{{range .Mounts}}{{if eq .Destination "/convex/data"}}{{.Name}}{{end}}{{end}}')"
+  --format '{{range .Mounts}}{{if eq .Destination "/convex/data"}}{{if .Name}}{{.Name}}{{else}}{{.Source}}{{end}}{{end}}{{end}}')"
 if [[ -z "${VOLUME_NAME}" ]]; then
-  echo "could not resolve the /convex/data volume from the running backend container -- aborting" >&2
+  echo "could not resolve the /convex/data mount from the running backend container -- aborting" >&2
   exit 1
 fi
 

@@ -4,6 +4,14 @@ Mesh deployment wrapper for [a16z-infra/ai-town](https://github.com/a16z-infra/a
 
 **Upstream pin:** `AITOWN_UPSTREAM_REF=7b242334bfbfef02f7718bded120d431e8f307df` — the a16z SHA the tracked `patches/` were generated against. The patches carry exact context and will not apply to a moved `main`; re-pin (and regenerate patches) intentionally when bumping upstream.
 
+**Live deployment:** runs on `atlas` (`100.121.214.30`, tailscale) as of 2026-07-29 — relocated from `athena` due to host-wide CPU contention there (`orion-heartbeat`'s tensor-network substrate). See `docs/superpowers/specs/2026-07-29-aitown-atlas-migration-runbook.md` for the full migration path. The Convex data directory is a host bind mount under `${TELEMETRY_ROOT:-/mnt/telemetry}/orion-atlas/ai-town/convex-data` (not a Docker-managed named volume) — matches this repo's other `/mnt/telemetry`-backed services. Create the directory before first `docker compose up` (the `convex-backend` container runs as root, so root will otherwise auto-create it on `up`, but pre-creating it under the node's own user avoids depending on that):
+
+```bash
+mkdir -p ${TELEMETRY_ROOT:-/mnt/telemetry}/orion-atlas/ai-town/convex-data
+```
+
+The daily compaction cron (`scripts/compact_convex_data.sh`, see "Maintenance" below) must run on whichever host actually holds these containers — move the crontab entry along with the deployment, don't leave it running against a stopped remote host.
+
 ## Services
 
 | Service | Port (default) | Role |

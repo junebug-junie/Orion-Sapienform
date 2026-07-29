@@ -234,15 +234,14 @@ def default_targets() -> list[Target]:
                 log=log,
             ),
         ),
-        Target(
-            "convex",
-            lambda dest, log: capture_stopped_container_tree(
-                dest,
-                container="orion-ai-town-backend-1",
-                host_path=Path("/mnt/docker/volumes/orion-ai-town_convex-data/_data"),
-                log=log,
-            ),
-        ),
+        # "convex" (orion-ai-town-backend-1) removed 2026-07-29: ai-town moved
+        # to atlas (docs/superpowers/specs/2026-07-29-aitown-atlas-migration-runbook.md).
+        # This tool assumes every target's container lives on the same host
+        # it runs on (systemd timer on athena) -- with the backend gone from
+        # athena, the old hardcoded container name/volume path would just
+        # fail every night rather than silently backing up stale data, but
+        # either way convex backup coverage needs a follow-up on atlas, not
+        # a same-host fix here. See "Known gaps" in scripts/backup/README.md.
     ]
 
 

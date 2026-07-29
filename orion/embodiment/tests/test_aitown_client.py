@@ -98,3 +98,55 @@ def test_send_input_requires_world_id(monkeypatch):
         assert False, "expected AitownClientError"
     except aitown_client.AitownClientError:
         pass
+
+
+def test_http_timeout_defaults_to_30s(monkeypatch):
+    monkeypatch.delenv("AITOWN_HTTP_TIMEOUT_SEC", raising=False)
+    assert aitown_client._http_timeout_sec() == 30.0
+
+
+def test_http_timeout_overridable_via_env(monkeypatch):
+    monkeypatch.setenv("AITOWN_HTTP_TIMEOUT_SEC", "45")
+    assert aitown_client._http_timeout_sec() == 45.0
+
+
+def test_http_timeout_falls_back_on_bad_value(monkeypatch):
+    monkeypatch.setenv("AITOWN_HTTP_TIMEOUT_SEC", "not-a-number")
+    assert aitown_client._http_timeout_sec() == 30.0
+
+
+def test_http_timeout_rejects_zero(monkeypatch):
+    # "0" is a non-empty string, so `... or 30.0` doesn't catch it -- must be
+    # rejected explicitly or callers get an instant-timeout client.
+    monkeypatch.setenv("AITOWN_HTTP_TIMEOUT_SEC", "0")
+    assert aitown_client._http_timeout_sec() == 30.0
+
+
+def test_http_timeout_rejects_negative(monkeypatch):
+    monkeypatch.setenv("AITOWN_HTTP_TIMEOUT_SEC", "-5")
+    assert aitown_client._http_timeout_sec() == 30.0
+
+
+def test_convex_request_uses_configured_timeout(monkeypatch):
+    monkeypatch.setenv("AITOWN_CONVEX_URL", "http://example.invalid")
+    monkeypatch.setenv("AITOWN_ADMIN_KEY", "k")
+    monkeypatch.setenv("AITOWN_HTTP_TIMEOUT_SEC", "45")
+    captured = {}
+
+    class _Resp:
+        def read(self):
+            return b'{"status": "success", "value": {}}'
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *a):
+            return False
+
+    def fake_urlopen(req, timeout=None):
+        captured["timeout"] = timeout
+        return _Resp()
+
+    monkeypatch.setattr(aitown_client.urllib.request, "urlopen", fake_urlopen)
+    aitown_client.convex_query("world:worldState", {})
+    assert captured["timeout"] == 45.0

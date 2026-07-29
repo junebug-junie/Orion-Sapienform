@@ -474,12 +474,39 @@ reusable harness itself (`--mode synthetic|grammar`).
   queried the wrong (non-FalkorDB) Redis instance on the host, giving a false "no reheat" reading
   until caught and fixed.
 
+## Live threshold validation status (2026-07-29)
+
+Implementation shipped and deployed (PR #1441, merged). Pulled 19 real `heartbeat_h1_computed`
+log lines from the live container spanning `tick_count` 66-2243:
+
+- `mean_ratio` range: **0.7694-0.9239**, `verdict=redundant` **19/19 (100%)**.
+- This matches the offline calibration harness's real-`grammar_events`-replay numbers almost
+  exactly (0.8147-0.8175 across 6/15/30-min windows) — busy-state behavior is now **doubly
+  confirmed, live and offline**. `_HIGH_RATIO=0.6` needs no retuning for this band; real values
+  sit well clear of the boundary.
+- **The `concentrated` band (`<=0.2`) has never fired live, and this is not a "needs more time"
+  gap — it's structural.** Confirmed same day: `orion-hub` (chat) had zero events across the
+  prior 60h ("haven't talked to Orion in ~2 days"), while the other 4 organs
+  (`biometrics`/`cortex-exec`/`bus`/`cortex-orch`) stayed continuously active regardless — real
+  production may never produce the simultaneous 5-organ silence needed to observe this band live.
+  Waiting longer does not by itself resolve this.
+- **Juniper's call (2026-07-29): defer, don't chase.** Not worth turning on chat traffic
+  deliberately just to test this band; tracked as an open item, not blocking anything downstream.
+  The offline harness's synthetic-pattern + real-replay evidence remains the only validation this
+  band has, and that is accepted as sufficient for now. Revisit if/when real chat activity
+  resumes naturally, or if a future consumer of this signal specifically needs the concentrated
+  band trusted (re-run `measure_heartbeat_ensemble_calibration.py --mode grammar` against whatever
+  window covers that activity when it happens).
+
 ## Acceptance checks
 
 1. **Order 1 (heartbeat discrimination)**: a live or replayed window shows the ensemble mean
    `verdict` taking more than one value (not 100% `"redundant"`) under real operating conditions —
    specifically, a period of real organ silence should show the ensemble mean ratio measurably
    falling toward a lower baseline, not just fluctuating near ceiling forever.
+   **Partially met live (2026-07-29)**: busy-band behavior confirmed live and offline; the
+   `concentrated` band remains offline-only evidence, tracked above as a structural gap in
+   current real operating conditions, not treated as blocking.
 2. A measurement script (Missing Question 11) reports how the ensemble mean/variance estimate
    stabilizes as N increases against real historical data, and an explicit N is chosen with that
    reasoning recorded, not guessed.
@@ -516,13 +543,13 @@ results" above. Juniper's explicit direction (2026-07-28, same session): proceed
    Still NOT publishing anywhere (Acceptance Check 5) — stays a read-only research consumer until
    Acceptance Check 1 is independently re-confirmed against the live wired service, not just the
    harness/spikes that preceded it.
-4. After wiring lands: re-tune `_HIGH_RATIO`/`_LOW_RATIO` verdict thresholds against live behavior
-   (the harness's tuning was against a synthetic quiet phase for the low end; real quiet is rare
-   per the busy-by-design finding above, so the live verdict distribution needs its own check).
-5. Only after 3-4 land and Acceptance Check 1 is re-confirmed live: decide, with real data in hand,
-   whether AST/HOT's domain-dominance problem (Missing Question 3) needs its own separate
-   precision-weighting fix, or whether it's better addressed by wiring in the now-trustworthy
-   heartbeat signal instead. Do not build both speculatively.
+4. **Done (2026-07-29)**: re-tuned/re-checked `_HIGH_RATIO`/`_LOW_RATIO` against live behavior --
+   see "Live threshold validation status" above. Busy band confirmed correct live; concentrated
+   band deferred by explicit Juniper decision, not chased further.
+5. **Now active**: decide, with real data in hand, whether AST/HOT's domain-dominance problem
+   (Missing Question 3) needs its own separate precision-weighting fix, or whether it's better
+   addressed by wiring in the now-trustworthy heartbeat signal instead. Do not build both
+   speculatively.
 6. Only after the fix is trusted live: revisit Missing Question 6 (publish channel/schema) and
    reconnect to `docs/superpowers/specs/2026-07-28-collapse-mirror-generative-triggers-design.md`'s
    "insight" trigger with a real, live, discriminating signal to key off — rather than the raw

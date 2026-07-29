@@ -47,6 +47,8 @@ COPY services/orion-harness-governor/requirements.txt ./requirements.txt
 RUN pip3 install --no-cache-dir -r requirements.txt
 
 COPY services/orion-harness-governor/app ./app
+COPY services/orion-harness-governor/entrypoint.sh ./entrypoint.sh
+RUN chmod +x ./entrypoint.sh
 COPY orion ./orion
 
 # Orion AI Town MCP server (python3 -m orion_aitown_mcp when HARNESS_AITOWN_ENABLED)
@@ -57,4 +59,5 @@ ENV PYTHONPATH=/app:/app/services/orion-ai-town/mcp
 
 EXPOSE 7156
 
+ENTRYPOINT ["./entrypoint.sh"]
 CMD ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "7156"]

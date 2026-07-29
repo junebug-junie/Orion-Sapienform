@@ -284,11 +284,6 @@
     "ast_hash": "8ea547372cb2636d2dfe1db446256ea7",
     "semantic_hash": "8ea547372cb2636d2dfe1db446256ea7"
   },
-  "orion/autonomy/endogenous_origination.py": {
-    "mtime": 1783834645.3778684,
-    "ast_hash": "bf6ac7a814dcc62fb57e102fd82f7edb",
-    "semantic_hash": "bf6ac7a814dcc62fb57e102fd82f7edb"
-  },
   "orion/autonomy/episode_fetch.py": {
     "mtime": 1783447063.25037,
     "ast_hash": "941787c4aa6414ab2c79d6d387f43bb0",
@@ -304,25 +299,10 @@
     "ast_hash": "d41d8cd98f00b204e9800998ecf8427e",
     "semantic_hash": "d41d8cd98f00b204e9800998ecf8427e"
   },
-  "orion/autonomy/evals/run_autonomy_v2_movement_eval.py": {
-    "mtime": 1783720227.345996,
-    "ast_hash": "e569e9540cc57705cb21b09c93e69be4",
-    "semantic_hash": "e569e9540cc57705cb21b09c93e69be4"
-  },
   "orion/autonomy/evals/run_homeostatic_drives_eval.py": {
     "mtime": 1783478774.6147194,
     "ast_hash": "d53928bac13b11642659669e86f40950",
     "semantic_hash": "d53928bac13b11642659669e86f40950"
-  },
-  "orion/autonomy/evals/run_origination_eval.py": {
-    "mtime": 1783490446.2993593,
-    "ast_hash": "52d67bcf81eb13f9f1567f473b03b856",
-    "semantic_hash": "52d67bcf81eb13f9f1567f473b03b856"
-  },
-  "orion/autonomy/evidence_compiler.py": {
-    "mtime": 1783720227.345996,
-    "ast_hash": "9077153e454073d8644c6405315aa741",
-    "semantic_hash": "9077153e454073d8644c6405315aa741"
   },
   "orion/autonomy/fanout_policy.py": {
     "mtime": 1778901838.3653948,
@@ -368,11 +348,6 @@
     "mtime": 1784008374.2415006,
     "ast_hash": "2d0b48586e6fb470aef9a92f7a3cbd22",
     "semantic_hash": "2d0b48586e6fb470aef9a92f7a3cbd22"
-  },
-  "orion/autonomy/reducer.py": {
-    "mtime": 1783720227.3469958,
-    "ast_hash": "0e351f5b4cf861f73ab8a75136528e20",
-    "semantic_hash": "0e351f5b4cf861f73ab8a75136528e20"
   },
   "orion/autonomy/repository.py": {
     "mtime": 1779753471.2762897,
@@ -439,11 +414,6 @@
     "ast_hash": "f7a2206a2309d91850b9554715db4e90",
     "semantic_hash": "f7a2206a2309d91850b9554715db4e90"
   },
-  "orion/autonomy/tests/test_autonomy_reducer.py": {
-    "mtime": 1783720227.3469958,
-    "ast_hash": "8578a6f1e05fecdcb3900908737c3f20",
-    "semantic_hash": "8578a6f1e05fecdcb3900908737c3f20"
-  },
   "orion/autonomy/tests/test_autonomy_state_v2_upgrade.py": {
     "mtime": 1777761366.3693066,
     "ast_hash": "a0880c2f6db9e4a76ac53e24a4b9d311",
@@ -474,11 +444,6 @@
     "ast_hash": "d899b8bffc2c86fe4ab34f0e08140cde",
     "semantic_hash": "d899b8bffc2c86fe4ab34f0e08140cde"
   },
-  "orion/autonomy/tests/test_endogenous_origination.py": {
-    "mtime": 1783490446.2993593,
-    "ast_hash": "3c923e0d62fd42100f767b31532169c1",
-    "semantic_hash": "3c923e0d62fd42100f767b31532169c1"
-  },
   "orion/autonomy/tests/test_episode_fetch.py": {
     "mtime": 1783447063.2513702,
     "ast_hash": "3936aef2a72e373a5fd723c9d5519593",
@@ -488,11 +453,6 @@
     "mtime": 1783413759.4756405,
     "ast_hash": "667258992d408f7d7ba638d9d3318603",
     "semantic_hash": "667258992d408f7d7ba638d9d3318603"
-  },
-  "orion/autonomy/tests/test_evidence_compiler.py": {
-    "mtime": 1783720227.3469958,
-    "ast_hash": "a888ff19221ab00ca479cf43ae712cd4",
-    "semantic_hash": "a888ff19221ab00ca479cf43ae712cd4"
   },
   "orion/autonomy/tests/test_evidence_ref_schema.py": {
     "mtime": 1783720227.3469958,
@@ -2179,11 +2139,6 @@
     "ast_hash": "d41d8cd98f00b204e9800998ecf8427e",
     "semantic_hash": "d41d8cd98f00b204e9800998ecf8427e"
   },
-  "orion/identity/snapshot.py": {
-    "mtime": 1782438858.701639,
-    "ast_hash": "22e78ba51e9794fa66823a9953c72755",
-    "semantic_hash": "22e78ba51e9794fa66823a9953c72755"
-  },
   "orion/importers/__init__.py": {
     "mtime": 1769550252.5820262,
     "ast_hash": "24dc6031c70e880fd80b45d095a10a90",
@@ -2243,71 +2198,6 @@
     "mtime": 1776053297.272055,
     "ast_hash": "ebd7fea0939cf5e119a9dae93d1bbf94",
     "semantic_hash": "ebd7fea0939cf5e119a9dae93d1bbf94"
-  },
-  "orion/knowledge_forge/__init__.py": {
-    "mtime": 1779305390.1047497,
-    "ast_hash": "e4012ec243ce7e779bf4198e101f8bda",
-    "semantic_hash": "e4012ec243ce7e779bf4198e101f8bda"
-  },
-  "orion/knowledge_forge/__main__.py": {
-    "mtime": 1779305390.1047497,
-    "ast_hash": "490b46adbbd4e2d2552c6471a067d07f",
-    "semantic_hash": "490b46adbbd4e2d2552c6471a067d07f"
-  },
-  "orion/knowledge_forge/api_compile.py": {
-    "mtime": 1779306072.504066,
-    "ast_hash": "b312e6017e19e0bd8c156635d57269bb",
-    "semantic_hash": "b312e6017e19e0bd8c156635d57269bb"
-  },
-  "orion/knowledge_forge/cli.py": {
-    "mtime": 1779317383.6875997,
-    "ast_hash": "f08bcc41b911ce8d1fa4158a43e25a89",
-    "semantic_hash": "f08bcc41b911ce8d1fa4158a43e25a89"
-  },
-  "orion/knowledge_forge/compile.py": {
-    "mtime": 1779305390.1047497,
-    "ast_hash": "737e055226b5e6674dd72e38a05cb312",
-    "semantic_hash": "737e055226b5e6674dd72e38a05cb312"
-  },
-  "orion/knowledge_forge/lint.py": {
-    "mtime": 1779305390.1047497,
-    "ast_hash": "4c68b3b21db441ee09114ad2228679b4",
-    "semantic_hash": "4c68b3b21db441ee09114ad2228679b4"
-  },
-  "orion/knowledge_forge/models.py": {
-    "mtime": 1779305390.1047497,
-    "ast_hash": "83e5550461724c9f1178fac92a29c723",
-    "semantic_hash": "83e5550461724c9f1178fac92a29c723"
-  },
-  "orion/knowledge_forge/paths.py": {
-    "mtime": 1779305390.1047497,
-    "ast_hash": "836f67e27fc5edab6d349ac2db5cf16d",
-    "semantic_hash": "836f67e27fc5edab6d349ac2db5cf16d"
-  },
-  "orion/knowledge_forge/probes.py": {
-    "mtime": 1779305390.1047497,
-    "ast_hash": "d6067ec0a1ea67fbecfbbe3b9aa61b70",
-    "semantic_hash": "d6067ec0a1ea67fbecfbbe3b9aa61b70"
-  },
-  "orion/knowledge_forge/review.py": {
-    "mtime": 1779305390.1057496,
-    "ast_hash": "5b37a1b7840a68fdf7fd278a662a7be8",
-    "semantic_hash": "5b37a1b7840a68fdf7fd278a662a7be8"
-  },
-  "orion/knowledge_forge/sources.py": {
-    "mtime": 1779317383.6875997,
-    "ast_hash": "841d13fc6a6940878ad6bb39a3acae83",
-    "semantic_hash": "841d13fc6a6940878ad6bb39a3acae83"
-  },
-  "orion/knowledge_forge/store.py": {
-    "mtime": 1779305390.1057496,
-    "ast_hash": "c0dc6a08dd3f6b3418a22d5bb1fe6dc7",
-    "semantic_hash": "c0dc6a08dd3f6b3418a22d5bb1fe6dc7"
-  },
-  "orion/knowledge_forge/yaml_doc.py": {
-    "mtime": 1779305390.1057496,
-    "ast_hash": "5e2cf2b1aa713ad2f23b707a198bbcfb",
-    "semantic_hash": "5e2cf2b1aa713ad2f23b707a198bbcfb"
   },
   "orion/llm/__init__.py": {
     "mtime": 1783107031.9689016,
@@ -2564,11 +2454,6 @@
     "ast_hash": "42d02ec0fb1cb01f2eaf7e30f39d5e65",
     "semantic_hash": "42d02ec0fb1cb01f2eaf7e30f39d5e65"
   },
-  "orion/memory_graph/graphdb.py": {
-    "mtime": 1777758592.2192445,
-    "ast_hash": "8f924c5c8ce77d97c231f6f25e68196f",
-    "semantic_hash": "8f924c5c8ce77d97c231f6f25e68196f"
-  },
   "orion/memory_graph/json_extract.py": {
     "mtime": 1783807361.8307576,
     "ast_hash": "1d46128978bfdd82895a7c530d4a14da",
@@ -2583,11 +2468,6 @@
     "mtime": 1781138875.253868,
     "ast_hash": "13d478b82642935de15877dd8d33831d",
     "semantic_hash": "13d478b82642935de15877dd8d33831d"
-  },
-  "orion/memory_graph/rdf_target.py": {
-    "mtime": 1778901838.367395,
-    "ast_hash": "248989ba10798369c85988fe5aca9499",
-    "semantic_hash": "248989ba10798369c85988fe5aca9499"
   },
   "orion/memory_graph/schema_contract.py": {
     "mtime": 1779166416.993654,
@@ -3189,16 +3069,6 @@
     "ast_hash": "07517f463d0e92ddeb7062af3c5c53b2",
     "semantic_hash": "07517f463d0e92ddeb7062af3c5c53b2"
   },
-  "orion/schemas/pad/__init__.py": {
-    "mtime": 1768597909.8762298,
-    "ast_hash": "0f3a2c05ae09e2c6326262b2a7a2f8e3",
-    "semantic_hash": "0f3a2c05ae09e2c6326262b2a7a2f8e3"
-  },
-  "orion/schemas/pad/v1.py": {
-    "mtime": 1773980667.707536,
-    "ast_hash": "d7167b7a42520f20e3f3026b5db70cc9",
-    "semantic_hash": "d7167b7a42520f20e3f3026b5db70cc9"
-  },
   "orion/schemas/platform.py": {
     "mtime": 1768597909.8772297,
     "ast_hash": "50e0468a906b8059c35d01a0d235778d",
@@ -3609,46 +3479,6 @@
     "ast_hash": "b5ed038fdf7be8c6eae1aad66a213193",
     "semantic_hash": "b5ed038fdf7be8c6eae1aad66a213193"
   },
-  "orion/self_state/__init__.py": {
-    "mtime": 1779683294.759711,
-    "ast_hash": "3835429b952a13700b59c179f5de4a0c",
-    "semantic_hash": "3835429b952a13700b59c179f5de4a0c"
-  },
-  "orion/self_state/builder.py": {
-    "mtime": 1783897997.641214,
-    "ast_hash": "e6395dff6e08ecd93e6660239c7f8239",
-    "semantic_hash": "e6395dff6e08ecd93e6660239c7f8239"
-  },
-  "orion/self_state/deviation.py": {
-    "mtime": 1783841798.4905632,
-    "ast_hash": "59138ca6177ac9e31a377161a00fd35a",
-    "semantic_hash": "59138ca6177ac9e31a377161a00fd35a"
-  },
-  "orion/self_state/inner_state_registry.py": {
-    "mtime": 1783984456.988051,
-    "ast_hash": "75892305a47743e4cc2079d56a5aa78c",
-    "semantic_hash": "75892305a47743e4cc2079d56a5aa78c"
-  },
-  "orion/self_state/policy.py": {
-    "mtime": 1783841798.4905632,
-    "ast_hash": "ce3aee70624c1f2d202bb66c7212a9dc",
-    "semantic_hash": "ce3aee70624c1f2d202bb66c7212a9dc"
-  },
-  "orion/self_state/prediction.py": {
-    "mtime": 1782874038.2529726,
-    "ast_hash": "9d1bd30308d082d7e1c0f16b10098534",
-    "semantic_hash": "9d1bd30308d082d7e1c0f16b10098534"
-  },
-  "orion/self_state/scoring.py": {
-    "mtime": 1783843021.920588,
-    "ast_hash": "e9ff050ab548f601736a33ad864d0ebb",
-    "semantic_hash": "e9ff050ab548f601736a33ad864d0ebb"
-  },
-  "orion/self_state/transport.py": {
-    "mtime": 1780622613.5957644,
-    "ast_hash": "8e9d0dbf9c26e925b4e36960521404c0",
-    "semantic_hash": "8e9d0dbf9c26e925b4e36960521404c0"
-  },
   "orion/sensors/gpu_host_stats.sh": {
     "mtime": 1763232123.3988905,
     "ast_hash": "4a9db5d30d9bef0728aa6cc99bc7749d",
@@ -3678,16 +3508,6 @@
     "mtime": 1777696817.3302784,
     "ast_hash": "1173baff3c238fecce647b9eb6e2fcff",
     "semantic_hash": "1173baff3c238fecce647b9eb6e2fcff"
-  },
-  "orion/signals/adapters/chat_stance.py": {
-    "mtime": 1779332554.3238986,
-    "ast_hash": "3c84c1629997a8d3903cb8fe540533cd",
-    "semantic_hash": "3c84c1629997a8d3903cb8fe540533cd"
-  },
-  "orion/signals/adapters/cognition_trace.py": {
-    "mtime": 1783499830.193521,
-    "ast_hash": "e4a843923df24af18c08122454967728",
-    "semantic_hash": "e4a843923df24af18c08122454967728"
   },
   "orion/signals/adapters/collapse_mirror.py": {
     "mtime": 1779332554.3238986,
@@ -3789,11 +3609,6 @@
     "ast_hash": "609c0baffa7e3f1447af4f925aead561",
     "semantic_hash": "609c0baffa7e3f1447af4f925aead561"
   },
-  "orion/signals/adapters/tests/fixtures/cognition_trace_chat_general.json": {
-    "mtime": 1779332554.3248985,
-    "ast_hash": "bb93a514affe6f640816ef02e64ce705",
-    "semantic_hash": "bb93a514affe6f640816ef02e64ce705"
-  },
   "orion/signals/adapters/tests/fixtures/recall_exec_result.json": {
     "mtime": 1779332554.3258986,
     "ast_hash": "0030505e22e6368b824332b6f4afe1c2",
@@ -3823,16 +3638,6 @@
     "mtime": 1777696739.8205698,
     "ast_hash": "352746af4f75ba21a4d7cfe39b672ffb",
     "semantic_hash": "352746af4f75ba21a4d7cfe39b672ffb"
-  },
-  "orion/signals/adapters/tests/test_chat_stance_adapter.py": {
-    "mtime": 1779332554.3258986,
-    "ast_hash": "456ae805527b70ffd6fd5f6a2c29de57",
-    "semantic_hash": "456ae805527b70ffd6fd5f6a2c29de57"
-  },
-  "orion/signals/adapters/tests/test_cognition_trace_adapter.py": {
-    "mtime": 1779332554.3258986,
-    "ast_hash": "87a44d143e29e86076f9c6fed8378511",
-    "semantic_hash": "87a44d143e29e86076f9c6fed8378511"
   },
   "orion/signals/adapters/tests/test_equilibrium_adapter.py": {
     "mtime": 1779332554.3258986,
@@ -4094,11 +3899,6 @@
     "ast_hash": "60261cbc4ca9742f312872fee3b51c25",
     "semantic_hash": "60261cbc4ca9742f312872fee3b51c25"
   },
-  "orion/spark/concept_induction/tests/test_endogenous_origination_wiring.py": {
-    "mtime": 1783490446.3013592,
-    "ast_hash": "7462466aa8254e9574e96d4bfe41675a",
-    "semantic_hash": "7462466aa8254e9574e96d4bfe41675a"
-  },
   "orion/spark/concept_induction/tests/test_goal_generator.py": {
     "mtime": 1779328788.9587867,
     "ast_hash": "0e14d6c7bb809be04b4f4ec3608d27a0",
@@ -4183,16 +3983,6 @@
     "mtime": 1781142159.4001744,
     "ast_hash": "3d28dbdc885e28d571c9bf061d48c2e1",
     "semantic_hash": "3d28dbdc885e28d571c9bf061d48c2e1"
-  },
-  "orion/spark/signal_mapper.py": {
-    "mtime": 1767676515.6361067,
-    "ast_hash": "1c0351d5869383b666a856f6d90ff908",
-    "semantic_hash": "1c0351d5869383b666a856f6d90ff908"
-  },
-  "orion/spark/surface_encoding.py": {
-    "mtime": 1767676515.6361067,
-    "ast_hash": "32614a06d405ca68899c33010337dec6",
-    "semantic_hash": "32614a06d405ca68899c33010337dec6"
   },
   "orion/spark/telemetry/__init__.py": {
     "mtime": 1768597909.8802297,
@@ -4879,11 +4669,6 @@
     "ast_hash": "a53ac2164481b49fa06f98e29b412062",
     "semantic_hash": "a53ac2164481b49fa06f98e29b412062"
   },
-  "orion/substrate/mutation_self_revision.py": {
-    "mtime": 1782868429.846242,
-    "ast_hash": "15a272ded1ac99cffcaa4d5838f66d75",
-    "semantic_hash": "15a272ded1ac99cffcaa4d5838f66d75"
-  },
   "orion/substrate/mutation_trials.py": {
     "mtime": 1777146763.8002646,
     "ast_hash": "3822eccb1863d2fdf8a75f83d602628b",
@@ -4999,20 +4784,10 @@
     "ast_hash": "1ed9f71762f970a0cd1eaab7d965164b",
     "semantic_hash": "1ed9f71762f970a0cd1eaab7d965164b"
   },
-  "orion/substrate/relational/adapters/orionmem.py": {
-    "mtime": 1778901838.369395,
-    "ast_hash": "9ac423d8eaa13baa14f0de7454839fd9",
-    "semantic_hash": "9ac423d8eaa13baa14f0de7454839fd9"
-  },
   "orion/substrate/relational/adapters/recall.py": {
     "mtime": 1779070080.2452052,
     "ast_hash": "fd868e6b007acc22c93bd184dc872d52",
     "semantic_hash": "fd868e6b007acc22c93bd184dc872d52"
-  },
-  "orion/substrate/relational/adapters/self_state_ctx.py": {
-    "mtime": 1783027450.9765792,
-    "ast_hash": "d1af41a1c182073185d2ad42cced98d7",
-    "semantic_hash": "d1af41a1c182073185d2ad42cced98d7"
   },
   "orion/substrate/relational/adapters/self_study.py": {
     "mtime": 1778901838.369395,
@@ -5093,21 +4868,6 @@
     "mtime": 1783027452.0086117,
     "ast_hash": "9719fce809221ef0d453000901a2ac9f",
     "semantic_hash": "9719fce809221ef0d453000901a2ac9f"
-  },
-  "orion/substrate/relational/tests/test_self_state_adapter.py": {
-    "mtime": 1782874038.2529726,
-    "ast_hash": "f80a1c9d3977c0865e19969d8f4444cc",
-    "semantic_hash": "f80a1c9d3977c0865e19969d8f4444cc"
-  },
-  "orion/substrate/relational/tests/test_self_state_attention_schema.py": {
-    "mtime": 1783105164.3470721,
-    "ast_hash": "eb54cb9d130e8817c446087145813e1a",
-    "semantic_hash": "eb54cb9d130e8817c446087145813e1a"
-  },
-  "orion/substrate/relational/tests/test_self_state_hub_presence.py": {
-    "mtime": 1783105164.3470721,
-    "ast_hash": "5065405cd92fe7995ec21004a3ef765c",
-    "semantic_hash": "5065405cd92fe7995ec21004a3ef765c"
   },
   "orion/substrate/review_bootstrap.py": {
     "mtime": 1775790852.1692114,
@@ -5238,11 +4998,6 @@
     "mtime": 1783107031.9699016,
     "ast_hash": "d9251ee25b7b86f0acf020acf6503e64",
     "semantic_hash": "d9251ee25b7b86f0acf020acf6503e64"
-  },
-  "orion/substrate/tests/test_mutation_self_revision.py": {
-    "mtime": 1782868429.846242,
-    "ast_hash": "8add1d391bf83d0534500d0ae56754a7",
-    "semantic_hash": "8add1d391bf83d0534500d0ae56754a7"
   },
   "orion/substrate/tests/test_mutation_unpromoted_goal_regression.py": {
     "mtime": 1779328788.9587867,
@@ -5719,20 +5474,10 @@
     "ast_hash": "1046e4d494c5a21b7a1280d8ec42684b",
     "semantic_hash": "1046e4d494c5a21b7a1280d8ec42684b"
   },
-  "scripts/eval_spark_introspection_contract.sh": {
-    "mtime": 1783110541.1419032,
-    "ast_hash": "a8b408201ae1f8745cbfa37f940865c5",
-    "semantic_hash": "a8b408201ae1f8745cbfa37f940865c5"
-  },
   "scripts/export_graphdb_collapse_offline.sh": {
     "mtime": 1781143128.399986,
     "ast_hash": "1e64bab434ccf33813f1abf1cff2e56f",
     "semantic_hash": "1e64bab434ccf33813f1abf1cff2e56f"
-  },
-  "scripts/fit_mood_arc_encoder.py": {
-    "mtime": 1783967452.501406,
-    "ast_hash": "0cbc78f70ad059fc381a3a1e906b4eb6",
-    "semantic_hash": "0cbc78f70ad059fc381a3a1e906b4eb6"
   },
   "scripts/fit_phi_encoder.py": {
     "mtime": 1783918473.8063107,
@@ -5783,11 +5528,6 @@
     "mtime": 1781145188.143256,
     "ast_hash": "25934ac5b50fd6759e14f669f59d71c0",
     "semantic_hash": "25934ac5b50fd6759e14f669f59d71c0"
-  },
-  "scripts/orion-knowledge-forge.sh": {
-    "mtime": 1779305390.1057496,
-    "ast_hash": "7defd0c8e6f09a213412cb365224255d",
-    "semantic_hash": "7defd0c8e6f09a213412cb365224255d"
   },
   "scripts/orion_proposal_cli.py": {
     "mtime": 1781479799.2107632,
@@ -5843,11 +5583,6 @@
     "mtime": 1781739116.1586347,
     "ast_hash": "91e49f875906d20c0e8e8faea36fb940",
     "semantic_hash": "91e49f875906d20c0e8e8faea36fb940"
-  },
-  "scripts/recall_smoke_deep_graph.py": {
-    "mtime": 1768597909.8802297,
-    "ast_hash": "bc60ee90396ec04f633bee07aba18612",
-    "semantic_hash": "bc60ee90396ec04f633bee07aba18612"
   },
   "scripts/refit_salience_weights.py": {
     "mtime": 1783447063.2533703,
@@ -5979,11 +5714,6 @@
     "ast_hash": "206be9c8fc96ad7d92cc38a13d38b06b",
     "semantic_hash": "206be9c8fc96ad7d92cc38a13d38b06b"
   },
-  "scripts/smoke_bus_publish_pad.py": {
-    "mtime": 1768597909.8802297,
-    "ast_hash": "9c45a6318bcf685643291d8e4c58b6ab",
-    "semantic_hash": "9c45a6318bcf685643291d8e4c58b6ab"
-  },
   "scripts/smoke_change_type_dict.py": {
     "mtime": 1769550252.5840263,
     "ast_hash": "a090a37e52aac96534f91477ccce70de",
@@ -6088,11 +5818,6 @@
     "mtime": 1783807364.4288404,
     "ast_hash": "211535deaefccbd9f2bb74b596d6aadc",
     "semantic_hash": "211535deaefccbd9f2bb74b596d6aadc"
-  },
-  "scripts/smoke_heartbeat_trace.py": {
-    "mtime": 1773975149.9517863,
-    "ast_hash": "dbd6b7e82bec5e368641dc31310e0a00",
-    "semantic_hash": "dbd6b7e82bec5e368641dc31310e0a00"
   },
   "scripts/smoke_hub_serve_origin.sh": {
     "mtime": 1773975149.9517863,
@@ -6278,11 +6003,6 @@
     "mtime": 1767676515.6381066,
     "ast_hash": "229d5d1e9501168f8bddc6d571c59452",
     "semantic_hash": "229d5d1e9501168f8bddc6d571c59452"
-  },
-  "scripts/smoke_tags_to_rdf.py": {
-    "mtime": 1768784663.7507582,
-    "ast_hash": "74223134da60f7ed611efb15ef870c05",
-    "semantic_hash": "74223134da60f7ed611efb15ef870c05"
   },
   "scripts/smoke_telemetry_normalization.py": {
     "mtime": 1773975149.9527862,
@@ -7839,21 +7559,6 @@
     "ast_hash": "ba6518446919d7b4434998847afc6034",
     "semantic_hash": "ba6518446919d7b4434998847afc6034"
   },
-  "services/orion-cortex-exec/tests/test_chat_stance_autonomy_v2.py": {
-    "mtime": 1783740584.5944984,
-    "ast_hash": "5d3e510d53fc375f761d3dda00a12da5",
-    "semantic_hash": "5d3e510d53fc375f761d3dda00a12da5"
-  },
-  "services/orion-cortex-exec/tests/test_chat_stance_autonomy_v2_persistence.py": {
-    "mtime": 1783740584.5944984,
-    "ast_hash": "ed92c0f67c99285512e3e8cd52e71c10",
-    "semantic_hash": "ed92c0f67c99285512e3e8cd52e71c10"
-  },
-  "services/orion-cortex-exec/tests/test_chat_stance_autonomy_v2_pressure_probe.py": {
-    "mtime": 1783847515.5408454,
-    "ast_hash": "0a634ec461f8433a9fc83f27875c19e0",
-    "semantic_hash": "0a634ec461f8433a9fc83f27875c19e0"
-  },
   "services/orion-cortex-exec/tests/test_chat_stance_brief.py": {
     "mtime": 1783740584.5944984,
     "ast_hash": "2a5eac9f87d57bee4ced0448a0587650",
@@ -9079,16 +8784,6 @@
     "ast_hash": "e493f08be7d50b319d2f3800e7b5b8e9",
     "semantic_hash": "e493f08be7d50b319d2f3800e7b5b8e9"
   },
-  "services/orion-graph-compression/app/federators/self_study.py": {
-    "mtime": 1780972924.4332647,
-    "ast_hash": "5ef921dcbb0dee6dee166d83eca50d53",
-    "semantic_hash": "5ef921dcbb0dee6dee166d83eca50d53"
-  },
-  "services/orion-graph-compression/app/federators/substrate.py": {
-    "mtime": 1780972924.4332647,
-    "ast_hash": "3e7c820c0681eb86220340e9e9c415c9",
-    "semantic_hash": "3e7c820c0681eb86220340e9e9c415c9"
-  },
   "services/orion-graph-compression/app/main.py": {
     "mtime": 1780972924.4332647,
     "ast_hash": "1421673fccd1ba53cdf9208190d8ca1b",
@@ -9619,11 +9314,6 @@
     "ast_hash": "c98a6133baee4e4119882a90b2c128dd",
     "semantic_hash": "c98a6133baee4e4119882a90b2c128dd"
   },
-  "services/orion-hub/scripts/seed_substrate_graphdb.py": {
-    "mtime": 1775951237.9657023,
-    "ast_hash": "e569128cb4a2d41212662f54250936d0",
-    "semantic_hash": "e569128cb4a2d41212662f54250936d0"
-  },
   "services/orion-hub/scripts/self_brain_routes.py": {
     "mtime": 1783468068.6348665,
     "ast_hash": "2a9be3c06dcda48eebc57adc7018e6a9",
@@ -9668,11 +9358,6 @@
     "mtime": 1783807361.8307576,
     "ast_hash": "8c5f88cd3e4865eb2f243968c493ff65",
     "semantic_hash": "8c5f88cd3e4865eb2f243968c493ff65"
-  },
-  "services/orion-hub/scripts/spark_candidate.py": {
-    "mtime": 1781845457.8065681,
-    "ast_hash": "51b239ca838505e2d8c3b7cda1bd412f",
-    "semantic_hash": "51b239ca838505e2d8c3b7cda1bd412f"
   },
   "services/orion-hub/scripts/substrate_attention_routes.py": {
     "mtime": 1779681646.023453,
@@ -9733,11 +9418,6 @@
     "mtime": 1779687966.458823,
     "ast_hash": "fd467ca2672b24c4baad116022b100e1",
     "semantic_hash": "fd467ca2672b24c4baad116022b100e1"
-  },
-  "services/orion-hub/scripts/substrate_self_state_routes.py": {
-    "mtime": 1783847515.5408454,
-    "ast_hash": "879cc9890a8f266ac263c1c262150156",
-    "semantic_hash": "879cc9890a8f266ac263c1c262150156"
   },
   "services/orion-hub/scripts/thought_client.py": {
     "mtime": 1783614403.4952698,
@@ -10174,11 +9854,6 @@
     "ast_hash": "dcfd2674c184e3b313896e4798ba17ec",
     "semantic_hash": "dcfd2674c184e3b313896e4798ba17ec"
   },
-  "services/orion-hub/tests/test_forge_hub_tab.py": {
-    "mtime": 1779320543.2543433,
-    "ast_hash": "af7402e2bca76270f4ef93f253ea8b8a",
-    "semantic_hash": "af7402e2bca76270f4ef93f253ea8b8a"
-  },
   "services/orion-hub/tests/test_grafana_tempo_link.py": {
     "mtime": 1777790653.2240317,
     "ast_hash": "ca7f1399018e795f1421869a21a48934",
@@ -10218,11 +9893,6 @@
     "mtime": 1783225697.9833586,
     "ast_hash": "1618b1a9984ba27fd115e2ddbbcc4034",
     "semantic_hash": "1618b1a9984ba27fd115e2ddbbcc4034"
-  },
-  "services/orion-hub/tests/test_http_chat_spark_candidate.py": {
-    "mtime": 1781845457.8065681,
-    "ast_hash": "a3654983124d871c0a70f5fe5ff3c5ab",
-    "semantic_hash": "a3654983124d871c0a70f5fe5ff3c5ab"
   },
   "services/orion-hub/tests/test_http_chat_spark_meta.py": {
     "mtime": 1777093481.8371313,
@@ -10278,11 +9948,6 @@
     "mtime": 1782955656.2807064,
     "ast_hash": "c6be9a53530be4c2c42a4929db5924f4",
     "semantic_hash": "c6be9a53530be4c2c42a4929db5924f4"
-  },
-  "services/orion-hub/tests/test_knowledge_forge_proxy_routes.py": {
-    "mtime": 1779317383.6905997,
-    "ast_hash": "6683c0b09f42fcf381664a108413e5c4",
-    "semantic_hash": "6683c0b09f42fcf381664a108413e5c4"
   },
   "services/orion-hub/tests/test_llm_route_selector.py": {
     "mtime": 1783298706.2104504,
@@ -10624,11 +10289,6 @@
     "ast_hash": "d4135650ef6cf77fa071bd675d393cad",
     "semantic_hash": "d4135650ef6cf77fa071bd675d393cad"
   },
-  "services/orion-hub/tests/test_substrate_self_state_debug_api.py": {
-    "mtime": 1783847515.5408454,
-    "ast_hash": "37698f36f634c4fd4ba61f34814907a0",
-    "semantic_hash": "37698f36f634c4fd4ba61f34814907a0"
-  },
   "services/orion-hub/tests/test_substrate_standalone_page.py": {
     "mtime": 1775954038.242208,
     "ast_hash": "b03687934e9e4cf895cff523d77c6593",
@@ -10698,271 +10358,6 @@
     "mtime": 1777748523.3345993,
     "ast_hash": "6b7b39fca2fca53005d0102376b41fc7",
     "semantic_hash": "6b7b39fca2fca53005d0102376b41fc7"
-  },
-  "services/orion-knowledge-forge/app/__init__.py": {
-    "mtime": 1779306072.511066,
-    "ast_hash": "d41d8cd98f00b204e9800998ecf8427e",
-    "semantic_hash": "d41d8cd98f00b204e9800998ecf8427e"
-  },
-  "services/orion-knowledge-forge/app/api_schemas.py": {
-    "mtime": 1779317383.6905997,
-    "ast_hash": "783700dc3d73f423330a11032eb4041a",
-    "semantic_hash": "783700dc3d73f423330a11032eb4041a"
-  },
-  "services/orion-knowledge-forge/app/ideation/__init__.py": {
-    "mtime": 1779310786.0190036,
-    "ast_hash": "d41d8cd98f00b204e9800998ecf8427e",
-    "semantic_hash": "d41d8cd98f00b204e9800998ecf8427e"
-  },
-  "services/orion-knowledge-forge/app/ideation/prompts.py": {
-    "mtime": 1779310786.0190036,
-    "ast_hash": "0e5ace91f369beddacd319875b29d62d",
-    "semantic_hash": "0e5ace91f369beddacd319875b29d62d"
-  },
-  "services/orion-knowledge-forge/app/ideation/runner.py": {
-    "mtime": 1779310786.0190036,
-    "ast_hash": "0dd7ee3b46eee544c367ac0493601c46",
-    "semantic_hash": "0dd7ee3b46eee544c367ac0493601c46"
-  },
-  "services/orion-knowledge-forge/app/ideation/writer.py": {
-    "mtime": 1779310786.0200036,
-    "ast_hash": "1a9e2aa6596385599454c0b810ecd37e",
-    "semantic_hash": "1a9e2aa6596385599454c0b810ecd37e"
-  },
-  "services/orion-knowledge-forge/app/main.py": {
-    "mtime": 1779310786.0200036,
-    "ast_hash": "fe678e3cc2c7e4854f5fcb37a7197ed3",
-    "semantic_hash": "fe678e3cc2c7e4854f5fcb37a7197ed3"
-  },
-  "services/orion-knowledge-forge/app/providers/__init__.py": {
-    "mtime": 1779310786.0200036,
-    "ast_hash": "d41d8cd98f00b204e9800998ecf8427e",
-    "semantic_hash": "d41d8cd98f00b204e9800998ecf8427e"
-  },
-  "services/orion-knowledge-forge/app/providers/anthropic_provider.py": {
-    "mtime": 1779310786.0200036,
-    "ast_hash": "5fc08c2b82f45e9cbab882e7103b3e8c",
-    "semantic_hash": "5fc08c2b82f45e9cbab882e7103b3e8c"
-  },
-  "services/orion-knowledge-forge/app/providers/base.py": {
-    "mtime": 1779310786.0200036,
-    "ast_hash": "6b1820aa9a21152fcee8512ad74e7129",
-    "semantic_hash": "6b1820aa9a21152fcee8512ad74e7129"
-  },
-  "services/orion-knowledge-forge/app/providers/local_provider.py": {
-    "mtime": 1779310786.0200036,
-    "ast_hash": "8795d2bde35f48f9efa4a93a5a46cb28",
-    "semantic_hash": "8795d2bde35f48f9efa4a93a5a46cb28"
-  },
-  "services/orion-knowledge-forge/app/routers/__init__.py": {
-    "mtime": 1779306072.511066,
-    "ast_hash": "d41d8cd98f00b204e9800998ecf8427e",
-    "semantic_hash": "d41d8cd98f00b204e9800998ecf8427e"
-  },
-  "services/orion-knowledge-forge/app/routers/ideation.py": {
-    "mtime": 1779310786.0200036,
-    "ast_hash": "42de0b3ea5769c29b4f0c44faeac7c0f",
-    "semantic_hash": "42de0b3ea5769c29b4f0c44faeac7c0f"
-  },
-  "services/orion-knowledge-forge/app/routers/v1.py": {
-    "mtime": 1779317383.6905997,
-    "ast_hash": "90423486fb6b6986dcb20309cce08c17",
-    "semantic_hash": "90423486fb6b6986dcb20309cce08c17"
-  },
-  "services/orion-knowledge-forge/app/service.py": {
-    "mtime": 1779317383.6905997,
-    "ast_hash": "59ea420b86494921aff4f976d11c31ee",
-    "semantic_hash": "59ea420b86494921aff4f976d11c31ee"
-  },
-  "services/orion-knowledge-forge/app/settings.py": {
-    "mtime": 1779310786.0200036,
-    "ast_hash": "35e6793768530f03f587445609557067",
-    "semantic_hash": "35e6793768530f03f587445609557067"
-  },
-  "services/orion-knowledge-forge/tests/conftest.py": {
-    "mtime": 1779310786.0210037,
-    "ast_hash": "9838527048c9890a39fb02a89c34384b",
-    "semantic_hash": "9838527048c9890a39fb02a89c34384b"
-  },
-  "services/orion-knowledge-forge/tests/test_ideation_api.py": {
-    "mtime": 1779310786.0210037,
-    "ast_hash": "fcfb06ca96a3e28d579c0e681dee9fbf",
-    "semantic_hash": "fcfb06ca96a3e28d579c0e681dee9fbf"
-  },
-  "services/orion-knowledge-forge/tests/test_knowledge_forge_api.py": {
-    "mtime": 1779306072.511066,
-    "ast_hash": "050328ba48310ca218e686520f114297",
-    "semantic_hash": "050328ba48310ca218e686520f114297"
-  },
-  "services/orion-knowledge-forge/tests/test_source_ingest_api.py": {
-    "mtime": 1779317383.6905997,
-    "ast_hash": "3fd080cd4af9118f7240744a1bfa4e90",
-    "semantic_hash": "3fd080cd4af9118f7240744a1bfa4e90"
-  },
-  "services/orion-landing-pad/app/__init__.py": {
-    "mtime": 1768597909.8892295,
-    "ast_hash": "0ad8a52b9bda84fbee3ce934e61c0597",
-    "semantic_hash": "0ad8a52b9bda84fbee3ce934e61c0597"
-  },
-  "services/orion-landing-pad/app/bus_resilience.py": {
-    "mtime": 1781846476.494166,
-    "ast_hash": "724c99176d9746ebd6c11ebd687ebc65",
-    "semantic_hash": "724c99176d9746ebd6c11ebd687ebc65"
-  },
-  "services/orion-landing-pad/app/main.py": {
-    "mtime": 1781853619.249282,
-    "ast_hash": "cd6650312e3eebf758b9021b7eb0bd9a",
-    "semantic_hash": "cd6650312e3eebf758b9021b7eb0bd9a"
-  },
-  "services/orion-landing-pad/app/observability/__init__.py": {
-    "mtime": 1768597909.8892295,
-    "ast_hash": "68b329da9893e34099c7d8ad5cb9c940",
-    "semantic_hash": "68b329da9893e34099c7d8ad5cb9c940"
-  },
-  "services/orion-landing-pad/app/observability/stats.py": {
-    "mtime": 1768597909.8892295,
-    "ast_hash": "f71e3c2f0156fa28ddff38163abe21c4",
-    "semantic_hash": "f71e3c2f0156fa28ddff38163abe21c4"
-  },
-  "services/orion-landing-pad/app/pipeline/__init__.py": {
-    "mtime": 1768597909.8892295,
-    "ast_hash": "68b329da9893e34099c7d8ad5cb9c940",
-    "semantic_hash": "68b329da9893e34099c7d8ad5cb9c940"
-  },
-  "services/orion-landing-pad/app/pipeline/aggregate.py": {
-    "mtime": 1768597909.8892295,
-    "ast_hash": "7296786dbe0b583cb82676f3e6d57758",
-    "semantic_hash": "7296786dbe0b583cb82676f3e6d57758"
-  },
-  "services/orion-landing-pad/app/pipeline/ingest.py": {
-    "mtime": 1781845427.774676,
-    "ast_hash": "6503b61388103d57f63f0e1058252b75",
-    "semantic_hash": "6503b61388103d57f63f0e1058252b75"
-  },
-  "services/orion-landing-pad/app/pipeline/normalize.py": {
-    "mtime": 1768597909.8892295,
-    "ast_hash": "3ab2db4ca18c721bb36f13579f446119",
-    "semantic_hash": "3ab2db4ca18c721bb36f13579f446119"
-  },
-  "services/orion-landing-pad/app/reducers/__init__.py": {
-    "mtime": 1768597909.8892295,
-    "ast_hash": "68b329da9893e34099c7d8ad5cb9c940",
-    "semantic_hash": "68b329da9893e34099c7d8ad5cb9c940"
-  },
-  "services/orion-landing-pad/app/reducers/fallback.py": {
-    "mtime": 1768597909.8892295,
-    "ast_hash": "3ed7f7b8ab7cf44f4977e95c61aa4c0f",
-    "semantic_hash": "3ed7f7b8ab7cf44f4977e95c61aa4c0f"
-  },
-  "services/orion-landing-pad/app/reducers/registry.py": {
-    "mtime": 1768971372.3590236,
-    "ast_hash": "26aec5a10e7147bcbdd14e3c6c9747f3",
-    "semantic_hash": "26aec5a10e7147bcbdd14e3c6c9747f3"
-  },
-  "services/orion-landing-pad/app/reducers/stubs.py": {
-    "mtime": 1773975149.9637861,
-    "ast_hash": "4ac8d474c72b29cf576c17509f60e98f",
-    "semantic_hash": "4ac8d474c72b29cf576c17509f60e98f"
-  },
-  "services/orion-landing-pad/app/rpc/__init__.py": {
-    "mtime": 1768597909.8892295,
-    "ast_hash": "68b329da9893e34099c7d8ad5cb9c940",
-    "semantic_hash": "68b329da9893e34099c7d8ad5cb9c940"
-  },
-  "services/orion-landing-pad/app/rpc/server.py": {
-    "mtime": 1781845427.774676,
-    "ast_hash": "22d5ab512536181ba0887e889f871c66",
-    "semantic_hash": "22d5ab512536181ba0887e889f871c66"
-  },
-  "services/orion-landing-pad/app/scoring/__init__.py": {
-    "mtime": 1768597909.8892295,
-    "ast_hash": "68b329da9893e34099c7d8ad5cb9c940",
-    "semantic_hash": "68b329da9893e34099c7d8ad5cb9c940"
-  },
-  "services/orion-landing-pad/app/scoring/default.py": {
-    "mtime": 1768597909.8892295,
-    "ast_hash": "27f9750b15c259c340c40a2639cef62b",
-    "semantic_hash": "27f9750b15c259c340c40a2639cef62b"
-  },
-  "services/orion-landing-pad/app/scoring/interface.py": {
-    "mtime": 1768597909.8892295,
-    "ast_hash": "4c90ae83fe7b19c4258789006caad79f",
-    "semantic_hash": "4c90ae83fe7b19c4258789006caad79f"
-  },
-  "services/orion-landing-pad/app/service.py": {
-    "mtime": 1781845427.774676,
-    "ast_hash": "869169092e0142bf08d2157ef132779d",
-    "semantic_hash": "869169092e0142bf08d2157ef132779d"
-  },
-  "services/orion-landing-pad/app/settings.py": {
-    "mtime": 1773975149.9637861,
-    "ast_hash": "95869b941c5789a89ec246275b07383a",
-    "semantic_hash": "95869b941c5789a89ec246275b07383a"
-  },
-  "services/orion-landing-pad/app/store/__init__.py": {
-    "mtime": 1768597909.8892295,
-    "ast_hash": "68b329da9893e34099c7d8ad5cb9c940",
-    "semantic_hash": "68b329da9893e34099c7d8ad5cb9c940"
-  },
-  "services/orion-landing-pad/app/store/redis_store.py": {
-    "mtime": 1769550252.5900264,
-    "ast_hash": "c5ccd927197398dea0cd6f9632edb40e",
-    "semantic_hash": "c5ccd927197398dea0cd6f9632edb40e"
-  },
-  "services/orion-landing-pad/app/tensor/__init__.py": {
-    "mtime": 1768597909.8892295,
-    "ast_hash": "68b329da9893e34099c7d8ad5cb9c940",
-    "semantic_hash": "68b329da9893e34099c7d8ad5cb9c940"
-  },
-  "services/orion-landing-pad/app/tensor/hash_projection.py": {
-    "mtime": 1768597909.8892295,
-    "ast_hash": "095dbe9b8f30707d7c438f85547286a0",
-    "semantic_hash": "095dbe9b8f30707d7c438f85547286a0"
-  },
-  "services/orion-landing-pad/app/tensor/interface.py": {
-    "mtime": 1768597909.8892295,
-    "ast_hash": "b647761cf613e45c9982dd6b37192fb2",
-    "semantic_hash": "b647761cf613e45c9982dd6b37192fb2"
-  },
-  "services/orion-landing-pad/app/web/api.py": {
-    "mtime": 1779681646.026453,
-    "ast_hash": "754369f5984e4a85402c45be087e2dec",
-    "semantic_hash": "754369f5984e4a85402c45be087e2dec"
-  },
-  "services/orion-landing-pad/app/web/main.py": {
-    "mtime": 1769550252.5900264,
-    "ast_hash": "fe406ace98356c339050a1d26c23846b",
-    "semantic_hash": "fe406ace98356c339050a1d26c23846b"
-  },
-  "services/orion-landing-pad/scripts/pad_inventory_report.py": {
-    "mtime": 1769550252.5910263,
-    "ast_hash": "f284f1a878b760c0c65a60aef899f963",
-    "semantic_hash": "f284f1a878b760c0c65a60aef899f963"
-  },
-  "services/orion-landing-pad/scripts/publish_sample_envelopes.py": {
-    "mtime": 1768597909.8902295,
-    "ast_hash": "a4b400dbc3d46e2fe1f01fb360da05ef",
-    "semantic_hash": "a4b400dbc3d46e2fe1f01fb360da05ef"
-  },
-  "services/orion-landing-pad/scripts/rpc_smoke_test.py": {
-    "mtime": 1768597909.8902295,
-    "ast_hash": "a29d076b318d34e44595b9f5efc22b96",
-    "semantic_hash": "a29d076b318d34e44595b9f5efc22b96"
-  },
-  "services/orion-landing-pad/tests/test_bus_resilience.py": {
-    "mtime": 1781846476.494166,
-    "ast_hash": "6772e12b7b80028caf9e849ce3455b13",
-    "semantic_hash": "6772e12b7b80028caf9e849ce3455b13"
-  },
-  "services/orion-landing-pad/tests/test_ready.py": {
-    "mtime": 1781852203.1105344,
-    "ast_hash": "37ed171fa3bd2ea2ae8a6c1aad6f20f3",
-    "semantic_hash": "37ed171fa3bd2ea2ae8a6c1aad6f20f3"
-  },
-  "services/orion-landing-pad/tests/test_rpc_server.py": {
-    "mtime": 1773980667.713536,
-    "ast_hash": "07d60a65b2d10172c48455940ed97c0e",
-    "semantic_hash": "07d60a65b2d10172c48455940ed97c0e"
   },
   "services/orion-llama-cola-host/app/__init__.py": {
     "mtime": 1768597909.8912294,
@@ -11894,126 +11289,6 @@
     "ast_hash": "2473ecc32db7021474f8c29decb5f84e",
     "semantic_hash": "2473ecc32db7021474f8c29decb5f84e"
   },
-  "services/orion-rdf-store/scripts/fuseki_delete_stale_copy.sh": {
-    "mtime": 1781151669.697976,
-    "ast_hash": "eb29628c8eecab1796621cf21e8528c8",
-    "semantic_hash": "eb29628c8eecab1796621cf21e8528c8"
-  },
-  "services/orion-rdf-store/scripts/fuseki_disk_guard.sh": {
-    "mtime": 1781151568.1643114,
-    "ast_hash": "cf0f0d67ebcb584b5217fc59f750b6b0",
-    "semantic_hash": "cf0f0d67ebcb584b5217fc59f750b6b0"
-  },
-  "services/orion-rdf-store/scripts/fuseki_health_probe.sh": {
-    "mtime": 1781845427.775676,
-    "ast_hash": "10ea1a176ef508b7862fe80c65b54741",
-    "semantic_hash": "10ea1a176ef508b7862fe80c65b54741"
-  },
-  "services/orion-rdf-store/scripts/fuseki_prune_retention.sh": {
-    "mtime": 1781152122.2004871,
-    "ast_hash": "30a0995aa88780c4618d44ab3b2948cc",
-    "semantic_hash": "30a0995aa88780c4618d44ab3b2948cc"
-  },
-  "services/orion-rdf-store/scripts/fuseki_recover.sh": {
-    "mtime": 1781748329.8800387,
-    "ast_hash": "d73c1a35e259029059026725d87561ea",
-    "semantic_hash": "d73c1a35e259029059026725d87561ea"
-  },
-  "services/orion-rdf-store/scripts/fuseki_restore_active_mount.sh": {
-    "mtime": 1781151672.9339652,
-    "ast_hash": "89be25e06b3921aad6c619d437166e20",
-    "semantic_hash": "89be25e06b3921aad6c619d437166e20"
-  },
-  "services/orion-rdf-store/scripts/fuseki_storage_status.sh": {
-    "mtime": 1781151667.7639823,
-    "ast_hash": "954c6feb6e1e85766acc27c234e37f27",
-    "semantic_hash": "954c6feb6e1e85766acc27c234e37f27"
-  },
-  "services/orion-rdf-store/scripts/fuseki_tdb_compact.sh": {
-    "mtime": 1781845427.775676,
-    "ast_hash": "c4431007c6601bb6b4fbdfea6ae11bc1",
-    "semantic_hash": "c4431007c6601bb6b4fbdfea6ae11bc1"
-  },
-  "services/orion-rdf-writer/app/__init__.py": {
-    "mtime": 1774236180.453385,
-    "ast_hash": "cde92094b03be24377600423ba3c822b",
-    "semantic_hash": "cde92094b03be24377600423ba3c822b"
-  },
-  "services/orion-rdf-writer/app/autonomy.py": {
-    "mtime": 1779328788.9707866,
-    "ast_hash": "4ad5466a081f665b765387f2c3f5de09",
-    "semantic_hash": "4ad5466a081f665b765387f2c3f5de09"
-  },
-  "services/orion-rdf-writer/app/main.py": {
-    "mtime": 1781151985.219937,
-    "ast_hash": "117304320fddf4caa6e95a0ae1e41cce",
-    "semantic_hash": "117304320fddf4caa6e95a0ae1e41cce"
-  },
-  "services/orion-rdf-writer/app/provenance.py": {
-    "mtime": 1763232123.4128907,
-    "ast_hash": "cf7cb17c1d44eb1b6933eef8ae85d344",
-    "semantic_hash": "cf7cb17c1d44eb1b6933eef8ae85d344"
-  },
-  "services/orion-rdf-writer/app/rdf_builder.py": {
-    "mtime": 1782185238.9407067,
-    "ast_hash": "21530151f0c1a4f7810ffa568178d4e4",
-    "semantic_hash": "21530151f0c1a4f7810ffa568178d4e4"
-  },
-  "services/orion-rdf-writer/app/rdf_retention.py": {
-    "mtime": 1781151977.9849608,
-    "ast_hash": "6a36221db373f3b1aedbab713f45e029",
-    "semantic_hash": "6a36221db373f3b1aedbab713f45e029"
-  },
-  "services/orion-rdf-writer/app/rdf_store.py": {
-    "mtime": 1780972924.4422648,
-    "ast_hash": "a05bce689809c29674608eafd828ce9c",
-    "semantic_hash": "a05bce689809c29674608eafd828ce9c"
-  },
-  "services/orion-rdf-writer/app/router.py": {
-    "mtime": 1778901838.3883948,
-    "ast_hash": "85e190a852a198eeb8042e4ab0cb9cd5",
-    "semantic_hash": "85e190a852a198eeb8042e4ab0cb9cd5"
-  },
-  "services/orion-rdf-writer/app/service.py": {
-    "mtime": 1778901838.3883948,
-    "ast_hash": "cd0a46a91d8f411dea5df7946b7571f5",
-    "semantic_hash": "cd0a46a91d8f411dea5df7946b7571f5"
-  },
-  "services/orion-rdf-writer/app/settings.py": {
-    "mtime": 1781152352.4667318,
-    "ast_hash": "696a97948ce91a89327ded88634b7ad1",
-    "semantic_hash": "696a97948ce91a89327ded88634b7ad1"
-  },
-  "services/orion-rdf-writer/app/utils.py": {
-    "mtime": 1763232123.4138906,
-    "ast_hash": "8cf69de890b4fa11d71f0b9bf9e48b8c",
-    "semantic_hash": "8cf69de890b4fa11d71f0b9bf9e48b8c"
-  },
-  "services/orion-rdf-writer/tests/test_autonomy_materialization.py": {
-    "mtime": 1779328788.9707866,
-    "ast_hash": "c02b054066d63cf77b0e9791b710d891",
-    "semantic_hash": "c02b054066d63cf77b0e9791b710d891"
-  },
-  "services/orion-rdf-writer/tests/test_rdf_store.py": {
-    "mtime": 1778901838.3883948,
-    "ast_hash": "e59c965c8976429acfdc92498b7d06ad",
-    "semantic_hash": "e59c965c8976429acfdc92498b7d06ad"
-  },
-  "services/orion-rdf-writer/tests/test_rdf_write_queue.py": {
-    "mtime": 1778901838.3883948,
-    "ast_hash": "e6ee600100a3a44e7e18a9954a75fca3",
-    "semantic_hash": "e6ee600100a3a44e7e18a9954a75fca3"
-  },
-  "services/orion-rdf-writer/tests/test_service_rdf_store_integration.py": {
-    "mtime": 1778901838.3883948,
-    "ast_hash": "b81d6ec9cec4894d7df65ddc5b0965d1",
-    "semantic_hash": "b81d6ec9cec4894d7df65ddc5b0965d1"
-  },
-  "services/orion-rdf-writer/tests/test_world_pulse_graph_gates.py": {
-    "mtime": 1777748523.3355992,
-    "ast_hash": "f2284250ab6491cd73065ac162b58848",
-    "semantic_hash": "f2284250ab6491cd73065ac162b58848"
-  },
   "services/orion-recall/app/__init__.py": {
     "mtime": 1764369444.635212,
     "ast_hash": "2c3cee016b7abd2fcff3ffdde0647246",
@@ -12023,11 +11298,6 @@
     "mtime": 1780779151.183656,
     "ast_hash": "00144f46769bb3eb114bcbe4ffd6e324",
     "semantic_hash": "00144f46769bb3eb114bcbe4ffd6e324"
-  },
-  "services/orion-recall/app/cards_embedding.py": {
-    "mtime": 1780779151.183656,
-    "ast_hash": "c3e51e37775451cfbd9e09c676ad1f5c",
-    "semantic_hash": "c3e51e37775451cfbd9e09c676ad1f5c"
   },
   "services/orion-recall/app/collectors.py": {
     "mtime": 1780115804.9141448,
@@ -12063,11 +11333,6 @@
     "mtime": 1781584864.5185819,
     "ast_hash": "417d63930256ee01a1c08f4b76a532ee",
     "semantic_hash": "417d63930256ee01a1c08f4b76a532ee"
-  },
-  "services/orion-recall/app/memory_graph_sparql.py": {
-    "mtime": 1777758592.2242446,
-    "ast_hash": "e2d4d8f9b62ad1488a7f13b68e3c400e",
-    "semantic_hash": "e2d4d8f9b62ad1488a7f13b68e3c400e"
   },
   "services/orion-recall/app/pcr_collectors.py": {
     "mtime": 1783398623.0131567,
@@ -12223,11 +11488,6 @@
     "mtime": 1780779151.183656,
     "ast_hash": "43259f901a9cc1c7b8ae313e20a613a7",
     "semantic_hash": "43259f901a9cc1c7b8ae313e20a613a7"
-  },
-  "services/orion-recall/tests/test_cards_embedding.py": {
-    "mtime": 1780779151.183656,
-    "ast_hash": "4a4ac1766e05e45d3e93872a91acb78f",
-    "semantic_hash": "4a4ac1766e05e45d3e93872a91acb78f"
   },
   "services/orion-recall/tests/test_chat_general_recall_salience.py": {
     "mtime": 1783398623.0131567,
@@ -12469,71 +11729,6 @@
     "ast_hash": "3be8b267e17a0c10e6963daca003e2a4",
     "semantic_hash": "3be8b267e17a0c10e6963daca003e2a4"
   },
-  "services/orion-self-state-runtime/app/__init__.py": {
-    "mtime": 1779683294.7627108,
-    "ast_hash": "d41d8cd98f00b204e9800998ecf8427e",
-    "semantic_hash": "d41d8cd98f00b204e9800998ecf8427e"
-  },
-  "services/orion-self-state-runtime/app/health_monitor.py": {
-    "mtime": 1783898916.2596118,
-    "ast_hash": "2ec7fcc23784286e4fb4098ff8f3145d",
-    "semantic_hash": "2ec7fcc23784286e4fb4098ff8f3145d"
-  },
-  "services/orion-self-state-runtime/app/main.py": {
-    "mtime": 1782185238.9407067,
-    "ast_hash": "fc3191cffe40f9d382a52f5c72ea64b9",
-    "semantic_hash": "fc3191cffe40f9d382a52f5c72ea64b9"
-  },
-  "services/orion-self-state-runtime/app/settings.py": {
-    "mtime": 1783898916.2596118,
-    "ast_hash": "e21a8a763dad6dc603435008e84693a3",
-    "semantic_hash": "e21a8a763dad6dc603435008e84693a3"
-  },
-  "services/orion-self-state-runtime/app/store.py": {
-    "mtime": 1783898916.2596118,
-    "ast_hash": "f2ccb8561bcfcd01f47dd94148bbf1dd",
-    "semantic_hash": "f2ccb8561bcfcd01f47dd94148bbf1dd"
-  },
-  "services/orion-self-state-runtime/app/worker.py": {
-    "mtime": 1783898916.2596118,
-    "ast_hash": "d483249a926fe4895fcf52ace662bc9d",
-    "semantic_hash": "d483249a926fe4895fcf52ace662bc9d"
-  },
-  "services/orion-self-state-runtime/tests/conftest.py": {
-    "mtime": 1782964832.6366591,
-    "ast_hash": "52e5c2311141b14b701b174eab99a0ed",
-    "semantic_hash": "52e5c2311141b14b701b174eab99a0ed"
-  },
-  "services/orion-self-state-runtime/tests/test_embodiment_perception_input.py": {
-    "mtime": 1783450708.6487281,
-    "ast_hash": "9f30215188af1f5d036d696da60c331d",
-    "semantic_hash": "9f30215188af1f5d036d696da60c331d"
-  },
-  "services/orion-self-state-runtime/tests/test_health_monitor.py": {
-    "mtime": 1783898916.2596118,
-    "ast_hash": "e818de73f953f9470a80f705728d6d9d",
-    "semantic_hash": "e818de73f953f9470a80f705728d6d9d"
-  },
-  "services/orion-self-state-runtime/tests/test_store_observability_loaders.py": {
-    "mtime": 1783105164.3580725,
-    "ast_hash": "f782c18cd88712aa012f815d6729b774",
-    "semantic_hash": "f782c18cd88712aa012f815d6729b774"
-  },
-  "services/orion-self-state-runtime/tests/test_store_schema_drift_tolerance.py": {
-    "mtime": 1783845232.210588,
-    "ast_hash": "e0c241b8b5b51803076f9717f4a73576",
-    "semantic_hash": "e0c241b8b5b51803076f9717f4a73576"
-  },
-  "services/orion-self-state-runtime/tests/test_worker_deviation_probe.py": {
-    "mtime": 1783841798.491563,
-    "ast_hash": "18376af999e332d4c9e942ab083f8116",
-    "semantic_hash": "18376af999e332d4c9e942ab083f8116"
-  },
-  "services/orion-self-state-runtime/tests/test_worker_prune.py": {
-    "mtime": 1782964832.6366591,
-    "ast_hash": "03f939852dc80164783bcf6f5f43c136",
-    "semantic_hash": "03f939852dc80164783bcf6f5f43c136"
-  },
   "services/orion-signal-gateway/app/__init__.py": {
     "mtime": 1777696739.8845713,
     "ast_hash": "d41d8cd98f00b204e9800998ecf8427e",
@@ -12593,11 +11788,6 @@
     "mtime": 1777696739.8855712,
     "ast_hash": "e361a82770080b9ba5ca1e7ccca55b67",
     "semantic_hash": "e361a82770080b9ba5ca1e7ccca55b67"
-  },
-  "services/orion-signal-gateway/app/tests/test_cognition_channel_subscription.py": {
-    "mtime": 1779332554.3358986,
-    "ast_hash": "bdc73ae9869bd2fce671218bf1b5024d",
-    "semantic_hash": "bdc73ae9869bd2fce671218bf1b5024d"
   },
   "services/orion-signal-gateway/app/tests/test_normalization.py": {
     "mtime": 1777696739.8855712,
@@ -12798,226 +11988,6 @@
     "mtime": 1774810093.0461361,
     "ast_hash": "9c58410756dda9f23d30d9d8e45ce99f",
     "semantic_hash": "9c58410756dda9f23d30d9d8e45ce99f"
-  },
-  "services/orion-spark-introspector/app/__init__.py": {
-    "mtime": 1764302528.9928074,
-    "ast_hash": "d41d8cd98f00b204e9800998ecf8427e",
-    "semantic_hash": "d41d8cd98f00b204e9800998ecf8427e"
-  },
-  "services/orion-spark-introspector/app/conn_manager.py": {
-    "mtime": 1767676515.6701071,
-    "ast_hash": "eb89eddef8d93f5f5362ef84eb654305",
-    "semantic_hash": "eb89eddef8d93f5f5362ef84eb654305"
-  },
-  "services/orion-spark-introspector/app/inner_state.py": {
-    "mtime": 1783627091.5850115,
-    "ast_hash": "3c5bb561429adc74679041eb6dac30d7",
-    "semantic_hash": "3c5bb561429adc74679041eb6dac30d7"
-  },
-  "services/orion-spark-introspector/app/introspection_guard.py": {
-    "mtime": 1778901838.390395,
-    "ast_hash": "0a655822adc077f2c4c4abe118097c36",
-    "semantic_hash": "0a655822adc077f2c4c4abe118097c36"
-  },
-  "services/orion-spark-introspector/app/introspector.py": {
-    "mtime": 1767676515.671107,
-    "ast_hash": "55a22b8e689d76e5c02e4bdd5d2eeee8",
-    "semantic_hash": "55a22b8e689d76e5c02e4bdd5d2eeee8"
-  },
-  "services/orion-spark-introspector/app/main.py": {
-    "mtime": 1782528981.5950208,
-    "ast_hash": "c3cc7f203741aeedb1dd6e1d1472dad5",
-    "semantic_hash": "c3cc7f203741aeedb1dd6e1d1472dad5"
-  },
-  "services/orion-spark-introspector/app/phi_encoder.py": {
-    "mtime": 1783537420.3163679,
-    "ast_hash": "7836f40a1de737558981a621dd55681e",
-    "semantic_hash": "7836f40a1de737558981a621dd55681e"
-  },
-  "services/orion-spark-introspector/app/queue_jobs.py": {
-    "mtime": 1778901838.390395,
-    "ast_hash": "9c01005cb2448286bf1c519af801db5f",
-    "semantic_hash": "9c01005cb2448286bf1c519af801db5f"
-  },
-  "services/orion-spark-introspector/app/queue_worker.py": {
-    "mtime": 1778901838.390395,
-    "ast_hash": "691a6b2c5967eacdecaf53ca93fed3c6",
-    "semantic_hash": "691a6b2c5967eacdecaf53ca93fed3c6"
-  },
-  "services/orion-spark-introspector/app/settings.py": {
-    "mtime": 1783918473.8083107,
-    "ast_hash": "8ba4ecc9d92fd88a2a9090e5e0da5c84",
-    "semantic_hash": "8ba4ecc9d92fd88a2a9090e5e0da5c84"
-  },
-  "services/orion-spark-introspector/app/static/tissue_viz.js": {
-    "mtime": 1783490446.3053594,
-    "ast_hash": "532d389712e1f2909e7eea6088d2cb63",
-    "semantic_hash": "532d389712e1f2909e7eea6088d2cb63"
-  },
-  "services/orion-spark-introspector/app/substrate_reads.py": {
-    "mtime": 1783630338.4893365,
-    "ast_hash": "a0d8afdff3caaba7285c3ce640cf0823",
-    "semantic_hash": "a0d8afdff3caaba7285c3ce640cf0823"
-  },
-  "services/orion-spark-introspector/app/worker.py": {
-    "mtime": 1783984456.990051,
-    "ast_hash": "64414b115330335746d37c4709a2f5c9",
-    "semantic_hash": "64414b115330335746d37c4709a2f5c9"
-  },
-  "services/orion-spark-introspector/evals/eval_inner_state_readout.py": {
-    "mtime": 1783490446.3063595,
-    "ast_hash": "3f901f12f98b6e8381c971b24dad93e3",
-    "semantic_hash": "3f901f12f98b6e8381c971b24dad93e3"
-  },
-  "services/orion-spark-introspector/evals/eval_phi_encoder_fit.py": {
-    "mtime": 1783537420.318368,
-    "ast_hash": "923ffce3336082bdb17c0f4f15a5a36a",
-    "semantic_hash": "923ffce3336082bdb17c0f4f15a5a36a"
-  },
-  "services/orion-spark-introspector/evals/eval_phi_reward_bounded.py": {
-    "mtime": 1783537420.318368,
-    "ast_hash": "93ad7b745cac548f5acbb95dc99a570f",
-    "semantic_hash": "93ad7b745cac548f5acbb95dc99a570f"
-  },
-  "services/orion-spark-introspector/scripts/smoke_spark_vector_text.py": {
-    "mtime": 1773975149.968786,
-    "ast_hash": "87438d1ca4c2a0a2a0f449bb9f00d366",
-    "semantic_hash": "87438d1ca4c2a0a2a0f449bb9f00d366"
-  },
-  "services/orion-spark-introspector/tests/conftest.py": {
-    "mtime": 1783716548.5476468,
-    "ast_hash": "e2c55aef7afaccec6236cec957af5761",
-    "semantic_hash": "e2c55aef7afaccec6236cec957af5761"
-  },
-  "services/orion-spark-introspector/tests/test_candidate_turn_effect_quality.py": {
-    "mtime": 1781845457.807568,
-    "ast_hash": "e713c453e6cba2e188480630c5451a69",
-    "semantic_hash": "e713c453e6cba2e188480630c5451a69"
-  },
-  "services/orion-spark-introspector/tests/test_cola_novelty_signal.py": {
-    "mtime": 1783136738.0588806,
-    "ast_hash": "4752f0133509a0cad6d6b5e08fd609c9",
-    "semantic_hash": "4752f0133509a0cad6d6b5e08fd609c9"
-  },
-  "services/orion-spark-introspector/tests/test_compose_seed_v2_telemetry_mount.py": {
-    "mtime": 1783627771.3667467,
-    "ast_hash": "c71f06dc2aec9dae76d57ec776e1caf2",
-    "semantic_hash": "c71f06dc2aec9dae76d57ec776e1caf2"
-  },
-  "services/orion-spark-introspector/tests/test_handle_candidate_enqueue_policy.py": {
-    "mtime": 1783107031.9839022,
-    "ast_hash": "619e29487c38e84f2ed9a5d3f6fd8520",
-    "semantic_hash": "619e29487c38e84f2ed9a5d3f6fd8520"
-  },
-  "services/orion-spark-introspector/tests/test_handle_candidate_queue_enqueue.py": {
-    "mtime": 1778901838.3913949,
-    "ast_hash": "54a2ad1ee6ea39a20aa3b92c2bde56f9",
-    "semantic_hash": "54a2ad1ee6ea39a20aa3b92c2bde56f9"
-  },
-  "services/orion-spark-introspector/tests/test_inner_state_emit.py": {
-    "mtime": 1783834625.366221,
-    "ast_hash": "21b36ecac6dc163a31ca4ae8198136f6",
-    "semantic_hash": "21b36ecac6dc163a31ca4ae8198136f6"
-  },
-  "services/orion-spark-introspector/tests/test_inner_state_seed_v3.py": {
-    "mtime": 1783564192.737144,
-    "ast_hash": "3dbd583cf3a4a70143ac972a8859d497",
-    "semantic_hash": "3dbd583cf3a4a70143ac972a8859d497"
-  },
-  "services/orion-spark-introspector/tests/test_inner_state_seed_v4.py": {
-    "mtime": 1783627091.5860116,
-    "ast_hash": "e79a4dd99012c0a0d03e32775a416801",
-    "semantic_hash": "e79a4dd99012c0a0d03e32775a416801"
-  },
-  "services/orion-spark-introspector/tests/test_inner_state_sink_rotation.py": {
-    "mtime": 1783984456.990051,
-    "ast_hash": "8b5776e3c46d711260587219b76193c4",
-    "semantic_hash": "8b5776e3c46d711260587219b76193c4"
-  },
-  "services/orion-spark-introspector/tests/test_introspection_guard.py": {
-    "mtime": 1778901838.3913949,
-    "ast_hash": "d6c0557186684ff7103f23f1fd93f87c",
-    "semantic_hash": "d6c0557186684ff7103f23f1fd93f87c"
-  },
-  "services/orion-spark-introspector/tests/test_main_debug_queue.py": {
-    "mtime": 1778901838.3913949,
-    "ast_hash": "ce1ab8601d76c9f75afd6f09b3594369",
-    "semantic_hash": "ce1ab8601d76c9f75afd6f09b3594369"
-  },
-  "services/orion-spark-introspector/tests/test_mood_arc_corpus.py": {
-    "mtime": 1783916134.44194,
-    "ast_hash": "0dbe401ccb9f04e4557789e3743835cf",
-    "semantic_hash": "0dbe401ccb9f04e4557789e3743835cf"
-  },
-  "services/orion-spark-introspector/tests/test_phi_encoder_health_eval.py": {
-    "mtime": 1783918473.8103108,
-    "ast_hash": "87acb6daad350ed58f4fa0609b47165a",
-    "semantic_hash": "87acb6daad350ed58f4fa0609b47165a"
-  },
-  "services/orion-spark-introspector/tests/test_phi_reward_emit.py": {
-    "mtime": 1783911030.0524845,
-    "ast_hash": "8fdd68e3e6af67bdd9937c37489f89f4",
-    "semantic_hash": "8fdd68e3e6af67bdd9937c37489f89f4"
-  },
-  "services/orion-spark-introspector/tests/test_run_heavy_redis_unavailable.py": {
-    "mtime": 1778901838.3913949,
-    "ast_hash": "cabf8187d960621659648eb781d72fb5",
-    "semantic_hash": "cabf8187d960621659648eb781d72fb5"
-  },
-  "services/orion-spark-introspector/tests/test_spark_introspection_queue_jobs.py": {
-    "mtime": 1778901838.3913949,
-    "ast_hash": "30d1d94e612ac7bdd14feae06cf58ba6",
-    "semantic_hash": "30d1d94e612ac7bdd14feae06cf58ba6"
-  },
-  "services/orion-spark-introspector/tests/test_spark_introspection_queue_worker.py": {
-    "mtime": 1778901838.3913949,
-    "ast_hash": "e95b607c282dc17340f269077967e3d8",
-    "semantic_hash": "e95b607c282dc17340f269077967e3d8"
-  },
-  "services/orion-spark-introspector/tests/test_spark_llm_lane_metadata.py": {
-    "mtime": 1778901838.3913949,
-    "ast_hash": "52ed711dfd1a216350ca499010a42b85",
-    "semantic_hash": "52ed711dfd1a216350ca499010a42b85"
-  },
-  "services/orion-spark-introspector/tests/test_spark_meta_patch_heavy_enqueue.py": {
-    "mtime": 1783110541.1439033,
-    "ast_hash": "223db3528fb7352a6a8e15fe5870948e",
-    "semantic_hash": "223db3528fb7352a6a8e15fe5870948e"
-  },
-  "services/orion-spark-introspector/tests/test_spark_meta_patch_tissue_refresh.py": {
-    "mtime": 1782531013.7283664,
-    "ast_hash": "05e7cad23dda205d416b5c2ed9896e6e",
-    "semantic_hash": "05e7cad23dda205d416b5c2ed9896e6e"
-  },
-  "services/orion-spark-introspector/tests/test_spark_queue_redis_integration.py": {
-    "mtime": 1778901838.3913949,
-    "ast_hash": "d99a12f43390e51c1bf12139f98d4045",
-    "semantic_hash": "d99a12f43390e51c1bf12139f98d4045"
-  },
-  "services/orion-spark-introspector/tests/test_substrate_reads.py": {
-    "mtime": 1783630338.4913366,
-    "ast_hash": "19382f4b087e26fecb724daa1f25f2f2",
-    "semantic_hash": "19382f4b087e26fecb724daa1f25f2f2"
-  },
-  "services/orion-spark-introspector/tests/test_tissue_viz_arousal.py": {
-    "mtime": 1783838962.0010893,
-    "ast_hash": "02059832e988e262725e977556fa7f28",
-    "semantic_hash": "02059832e988e262725e977556fa7f28"
-  },
-  "services/orion-spark-introspector/tests/test_tissue_viz_novelty.py": {
-    "mtime": 1783834622.984144,
-    "ast_hash": "8ee7bf165480eb82840529ee465186d1",
-    "semantic_hash": "8ee7bf165480eb82840529ee465186d1"
-  },
-  "services/orion-spark-introspector/tests/test_worker_correlation_resolve.py": {
-    "mtime": 1778901838.3913949,
-    "ast_hash": "e421730f23536221e866539c06140bf2",
-    "semantic_hash": "e421730f23536221e866539c06140bf2"
-  },
-  "services/orion-spark-introspector/train/evals/eval_phi_encoder_health.py": {
-    "mtime": 1783918473.8113108,
-    "ast_hash": "c72aef48452014bd66908a57965aa621",
-    "semantic_hash": "c72aef48452014bd66908a57965aa621"
   },
   "services/orion-sql-db/collapse_dump.sql": {
     "mtime": 1768597909.9042292,
@@ -15369,16 +14339,6 @@
     "ast_hash": "fe3c0e2873e0eca585182792d4f06454",
     "semantic_hash": "fe3c0e2873e0eca585182792d4f06454"
   },
-  "tests/integration/conftest.py": {
-    "mtime": 1783107031.9869022,
-    "ast_hash": "eeb8e866e13a49d8cf16a5c475703b08",
-    "semantic_hash": "eeb8e866e13a49d8cf16a5c475703b08"
-  },
-  "tests/integration/test_spark_introspection_feedback_loop.py": {
-    "mtime": 1783107031.9869022,
-    "ast_hash": "508a8921c18d22043fed01912e036dd0",
-    "semantic_hash": "508a8921c18d22043fed01912e036dd0"
-  },
   "tests/scripts/test_context_exec_proposal_storage_defaults.py": {
     "mtime": 1781739116.1686344,
     "ast_hash": "68dffb2338797e3c1f7ddda22ba1a18a",
@@ -15668,11 +14628,6 @@
     "mtime": 1775613610.4184463,
     "ast_hash": "d9962be109333ae7ab7535e132dcff88",
     "semantic_hash": "d9962be109333ae7ab7535e132dcff88"
-  },
-  "tests/test_collapse_service_causal_density.py": {
-    "mtime": 1782938951.7367241,
-    "ast_hash": "36c1c3ed16ba7de838d1be0dc32be53c",
-    "semantic_hash": "36c1c3ed16ba7de838d1be0dc32be53c"
   },
   "tests/test_concept_relation_digest.py": {
     "mtime": 1783965578.734708,
@@ -15989,11 +14944,6 @@
     "ast_hash": "fa90a7dbffd364837573f7e97f759549",
     "semantic_hash": "fa90a7dbffd364837573f7e97f759549"
   },
-  "tests/test_heartbeat_trace.py": {
-    "mtime": 1773975149.9777858,
-    "ast_hash": "a7a3991ea53a324a167448f0449f9e43",
-    "semantic_hash": "a7a3991ea53a324a167448f0449f9e43"
-  },
   "tests/test_hub_js_syntax.py": {
     "mtime": 1773975149.9777858,
     "ast_hash": "20f9c08389c7664bc9c046218a475e6e",
@@ -16014,11 +14964,6 @@
     "ast_hash": "563bd3eb53ccd792371315e501b4c995",
     "semantic_hash": "563bd3eb53ccd792371315e501b4c995"
   },
-  "tests/test_inner_state_features.py": {
-    "mtime": 1783984456.990051,
-    "ast_hash": "5c21d5ca35657ca9349d09fc522821dc",
-    "semantic_hash": "5c21d5ca35657ca9349d09fc522821dc"
-  },
   "tests/test_inner_state_registry_gate.py": {
     "mtime": 1783897997.643214,
     "ast_hash": "182befaf81e0bb5f1dfaefe6a0dcb398",
@@ -16028,11 +14973,6 @@
     "mtime": 1783490446.3073595,
     "ast_hash": "eb0ec34918006e2030185d912665f919",
     "semantic_hash": "eb0ec34918006e2030185d912665f919"
-  },
-  "tests/test_inner_state_trajectory_features.py": {
-    "mtime": 1783537420.320368,
-    "ast_hash": "e2ae58b33f9448a57708d24e542102fc",
-    "semantic_hash": "e2ae58b33f9448a57708d24e542102fc"
   },
   "tests/test_introspection_metadata_continuity.py": {
     "mtime": 1774566954.7012691,
@@ -16053,51 +14993,6 @@
     "mtime": 1777748523.3465996,
     "ast_hash": "fc5e9600fd17d1cc1ef888dbec3072c4",
     "semantic_hash": "fc5e9600fd17d1cc1ef888dbec3072c4"
-  },
-  "tests/test_knowledge_forge_compile.py": {
-    "mtime": 1779305390.1067498,
-    "ast_hash": "eaadeedb41ceb0b8ad523139bcf460ed",
-    "semantic_hash": "eaadeedb41ceb0b8ad523139bcf460ed"
-  },
-  "tests/test_knowledge_forge_golden_path.py": {
-    "mtime": 1779305390.1067498,
-    "ast_hash": "a4cfa3aa28820fe8047e7a36ed29e25f",
-    "semantic_hash": "a4cfa3aa28820fe8047e7a36ed29e25f"
-  },
-  "tests/test_knowledge_forge_lint.py": {
-    "mtime": 1779305390.1067498,
-    "ast_hash": "12b6d83924b74ce45031479986c83036",
-    "semantic_hash": "12b6d83924b74ce45031479986c83036"
-  },
-  "tests/test_knowledge_forge_models.py": {
-    "mtime": 1779305390.1067498,
-    "ast_hash": "f19e624f948818c46668cacf7d53a251",
-    "semantic_hash": "f19e624f948818c46668cacf7d53a251"
-  },
-  "tests/test_knowledge_forge_probes.py": {
-    "mtime": 1779305390.1067498,
-    "ast_hash": "60bf698128c6fe4928e0d07b34580040",
-    "semantic_hash": "60bf698128c6fe4928e0d07b34580040"
-  },
-  "tests/test_knowledge_forge_review.py": {
-    "mtime": 1779305390.1067498,
-    "ast_hash": "28c364b5f6203fbab579e745f7017bd6",
-    "semantic_hash": "28c364b5f6203fbab579e745f7017bd6"
-  },
-  "tests/test_knowledge_forge_source_ingest.py": {
-    "mtime": 1779317383.6915996,
-    "ast_hash": "5e155e723d22e7589bb2d753a61ea2d6",
-    "semantic_hash": "5e155e723d22e7589bb2d753a61ea2d6"
-  },
-  "tests/test_knowledge_forge_store.py": {
-    "mtime": 1779305390.1067498,
-    "ast_hash": "13f8f1c38552e0f66a32802d39ddb9d3",
-    "semantic_hash": "13f8f1c38552e0f66a32802d39ddb9d3"
-  },
-  "tests/test_landing_pad_spark_snapshot_reducer.py": {
-    "mtime": 1773975149.9777858,
-    "ast_hash": "3073a008ea9efe2125a6960522cf8fb0",
-    "semantic_hash": "3073a008ea9efe2125a6960522cf8fb0"
   },
   "tests/test_llm_json_parser.py": {
     "mtime": 1776044955.6142368,
@@ -16184,11 +15079,6 @@
     "ast_hash": "fde5116a65e1dba73b83cca231300fa9",
     "semantic_hash": "fde5116a65e1dba73b83cca231300fa9"
   },
-  "tests/test_memory_graph_graphdb_mocked.py": {
-    "mtime": 1777758592.2252445,
-    "ast_hash": "0a7b86c935ad464bf1b8c64934194311",
-    "semantic_hash": "0a7b86c935ad464bf1b8c64934194311"
-  },
   "tests/test_memory_graph_json_extract.py": {
     "mtime": 1778901838.392395,
     "ast_hash": "e2f20dcbc1993ba9580aada2ac2e38f4",
@@ -16244,11 +15134,6 @@
     "ast_hash": "facd3ec72f32b5c976608935f1f53a46",
     "semantic_hash": "facd3ec72f32b5c976608935f1f53a46"
   },
-  "tests/test_metacog_context_summary.py": {
-    "mtime": 1783123491.839622,
-    "ast_hash": "613aed4c4855f7680493c01268e60350",
-    "semantic_hash": "613aed4c4855f7680493c01268e60350"
-  },
   "tests/test_metacog_phase_contract.py": {
     "mtime": 1773975149.9787858,
     "ast_hash": "74c2c5aff6703801e24a92cdc5a4c6f8",
@@ -16268,16 +15153,6 @@
     "mtime": 1779078270.5556717,
     "ast_hash": "c1fc539651415b42363561a8fec62d6b",
     "semantic_hash": "c1fc539651415b42363561a8fec62d6b"
-  },
-  "tests/test_mood_arc_encoder_fit_script.py": {
-    "mtime": 1783967452.5054061,
-    "ast_hash": "a838afb7d747db91da06dc5e465be8c4",
-    "semantic_hash": "a838afb7d747db91da06dc5e465be8c4"
-  },
-  "tests/test_mood_arc_encoder_schema.py": {
-    "mtime": 1783967452.5054061,
-    "ast_hash": "a14fe9d785f0bf6e53d86fc822632960",
-    "semantic_hash": "a14fe9d785f0bf6e53d86fc822632960"
   },
   "tests/test_node_biometrics_reducer.py": {
     "mtime": 1781772134.803745,
@@ -16313,11 +15188,6 @@
     "mtime": 1783918473.8113108,
     "ast_hash": "6b1f66712dcb000a2d213ccd1dc7b1ef",
     "semantic_hash": "6b1f66712dcb000a2d213ccd1dc7b1ef"
-  },
-  "tests/test_phi_encoder_mlp.py": {
-    "mtime": 1783537420.320368,
-    "ast_hash": "e90b3a90e3a4e6f81a091fc0ef49671d",
-    "semantic_hash": "e90b3a90e3a4e6f81a091fc0ef49671d"
   },
   "tests/test_phi_encoder_schema.py": {
     "mtime": 1783537420.320368,
@@ -16449,11 +15319,6 @@
     "ast_hash": "a28851ac0ec41cd499443916f60814cf",
     "semantic_hash": "a28851ac0ec41cd499443916f60814cf"
   },
-  "tests/test_recall_deep_graph.py": {
-    "mtime": 1768597909.912229,
-    "ast_hash": "84e74278d57becf35d9288a5a6d7adee",
-    "semantic_hash": "84e74278d57becf35d9288a5a6d7adee"
-  },
   "tests/test_recall_diagnostic_schema_registry.py": {
     "mtime": 1779070080.280205,
     "ast_hash": "18346bd80ddfb37911eb0e73b4a21c3f",
@@ -16554,55 +15419,10 @@
     "ast_hash": "f6d2413f692c67987f1a2a11865df3ea",
     "semantic_hash": "f6d2413f692c67987f1a2a11865df3ea"
   },
-  "tests/test_self_state_builder.py": {
-    "mtime": 1783897997.643214,
-    "ast_hash": "1df02b124323ea74b5c13cb1e6689258",
-    "semantic_hash": "1df02b124323ea74b5c13cb1e6689258"
-  },
-  "tests/test_self_state_builder_hardening.py": {
-    "mtime": 1783836411.4424524,
-    "ast_hash": "dd9162d1ed70b402547c84f1cd9475bb",
-    "semantic_hash": "dd9162d1ed70b402547c84f1cd9475bb"
-  },
-  "tests/test_self_state_deviation.py": {
-    "mtime": 1783841798.491563,
-    "ast_hash": "6359232d54b5275565678adb4a6498f6",
-    "semantic_hash": "6359232d54b5275565678adb4a6498f6"
-  },
-  "tests/test_self_state_policy_loader.py": {
-    "mtime": 1783836422.8648114,
-    "ast_hash": "915db2e7c59c05ef9a1842a2a0bd512e",
-    "semantic_hash": "915db2e7c59c05ef9a1842a2a0bd512e"
-  },
-  "tests/test_self_state_prediction.py": {
-    "mtime": 1782874038.2589726,
-    "ast_hash": "6221e254a93d702e176475ead606214e",
-    "semantic_hash": "6221e254a93d702e176475ead606214e"
-  },
-  "tests/test_self_state_reliability_decontamination.py": {
-    "mtime": 1783836429.3520155,
-    "ast_hash": "a3b9828c36e2095808a266658ade138e",
-    "semantic_hash": "a3b9828c36e2095808a266658ade138e"
-  },
-  "tests/test_self_state_runtime_store.py": {
-    "mtime": 1779683294.7627108,
-    "ast_hash": "ff5f5eafc526e37e4d9aacac12728511",
-    "semantic_hash": "ff5f5eafc526e37e4d9aacac12728511"
-  },
   "tests/test_self_state_schemas.py": {
     "mtime": 1779683294.7627108,
     "ast_hash": "9323850e5027bd76959f76076547ec79",
     "semantic_hash": "9323850e5027bd76959f76076547ec79"
-  },
-  "tests/test_self_state_scoring.py": {
-    "mtime": 1783843021.920588,
-    "ast_hash": "8a6bd54c0a964b8adec250b11d4fdf22",
-    "semantic_hash": "8a6bd54c0a964b8adec250b11d4fdf22"
-  },
-  "tests/test_self_state_transport_dimension.py": {
-    "mtime": 1783836497.883172,
-    "ast_hash": "53a7de17e292a7e88160180e1b2145eb",
-    "semantic_hash": "53a7de17e292a7e88160180e1b2145eb"
   },
   "tests/test_single_consumer_channels_gate.py": {
     "mtime": 1783957069.416255,
@@ -16643,16 +15463,6 @@
     "mtime": 1769663878.094563,
     "ast_hash": "8656e0f42203f86aaf49a3a346c0b8df",
     "semantic_hash": "8656e0f42203f86aaf49a3a346c0b8df"
-  },
-  "tests/test_spark_introspector_no_legacy.py": {
-    "mtime": 1769663878.094563,
-    "ast_hash": "582ad8fd142d2484a7d460987faa2d57",
-    "semantic_hash": "582ad8fd142d2484a7d460987faa2d57"
-  },
-  "tests/test_spark_introspector_publish_guard.py": {
-    "mtime": 1781048876.1341224,
-    "ast_hash": "33ef881fc0c48b9289438833edef121d",
-    "semantic_hash": "33ef881fc0c48b9289438833edef121d"
   },
   "tests/test_spark_metrics_v2.py": {
     "mtime": 1783716548.5476468,
@@ -16934,26 +15744,6 @@
     "ast_hash": "7fee6d25b228d4cefdd258ec0170e834",
     "semantic_hash": "7fee6d25b228d4cefdd258ec0170e834"
   },
-  ".claude/commands/forge-arsonist.md": {
-    "mtime": 1779310786.0180037,
-    "ast_hash": "a85eba675e27f9200c811f704414bf45",
-    "semantic_hash": "a85eba675e27f9200c811f704414bf45"
-  },
-  ".claude/commands/forge-context-pack.md": {
-    "mtime": 1779310786.0180037,
-    "ast_hash": "6d07465a9ef4c5802893890780e7df51",
-    "semantic_hash": "6d07465a9ef4c5802893890780e7df51"
-  },
-  ".claude/commands/forge-critique.md": {
-    "mtime": 1779310786.0180037,
-    "ast_hash": "0c9e599a4ec954789c0f7a2870dd7aba",
-    "semantic_hash": "0c9e599a4ec954789c0f7a2870dd7aba"
-  },
-  ".claude/commands/forge-spec.md": {
-    "mtime": 1779310786.0180037,
-    "ast_hash": "afa4581747b1530b59d85940513c6f21",
-    "semantic_hash": "afa4581747b1530b59d85940513c6f21"
-  },
   ".claude/commands/superpowers/brainstorming.md": {
     "mtime": 1782182699.1160815,
     "ast_hash": "1743aeea92250e34ad741b6f730267c7",
@@ -17084,11 +15874,6 @@
     "ast_hash": "232afe1cebac3f41042bcfddb10a9bff",
     "semantic_hash": "232afe1cebac3f41042bcfddb10a9bff"
   },
-  "config/self_state/self_state_policy.v1.yaml": {
-    "mtime": 1783841798.4905632,
-    "ast_hash": "0042b4dd652cc36cb0e0de6e84877ed1",
-    "semantic_hash": "0042b4dd652cc36cb0e0de6e84877ed1"
-  },
   "config/substrate-lattice/action_ceiling_policy.v1.yaml": {
     "mtime": 1780972924.4312649,
     "ast_hash": "75bf654d2867ba009e62ef6c9892d5a4",
@@ -17158,131 +15943,6 @@
     "mtime": 1777758592.2182443,
     "ast_hash": "8c79384cd22c5f8152409fd277acda33",
     "semantic_hash": "8c79384cd22c5f8152409fd277acda33"
-  },
-  "orion-knowledge/AGENTS.md": {
-    "mtime": 1779305390.1027498,
-    "ast_hash": "6980a7099899f29305713d3b1eb09ccc",
-    "semantic_hash": "6980a7099899f29305713d3b1eb09ccc"
-  },
-  "orion-knowledge/README.md": {
-    "mtime": 1779305390.1027498,
-    "ast_hash": "6386114462f83df8ed6eb8617fe5478a",
-    "semantic_hash": "6386114462f83df8ed6eb8617fe5478a"
-  },
-  "orion-knowledge/claims/accepted/claim-knowledge-forge-v1-api.yaml": {
-    "mtime": 1779315897.134747,
-    "ast_hash": "2cd1631285809eb190ac274629f8221f",
-    "semantic_hash": "2cd1631285809eb190ac274629f8221f"
-  },
-  "orion-knowledge/claims/accepted/claim-knowledge-forge-v1-corpus.yaml": {
-    "mtime": 1779315897.134747,
-    "ast_hash": "1d8b572e2fdc1e0bd7e0f03e6b39c26f",
-    "semantic_hash": "1d8b572e2fdc1e0bd7e0f03e6b39c26f"
-  },
-  "orion-knowledge/claims/accepted/claim-knowledge-forge-v1-filter.yaml": {
-    "mtime": 1779315897.134747,
-    "ast_hash": "9a03869ceb81182e4bc584d1ee8f6004",
-    "semantic_hash": "9a03869ceb81182e4bc584d1ee8f6004"
-  },
-  "orion-knowledge/claims/accepted/claim-knowledge-forge-v1-hub.yaml": {
-    "mtime": 1779315897.135747,
-    "ast_hash": "ca37f100a67d14d952597ec0af5c2619",
-    "semantic_hash": "ca37f100a67d14d952597ec0af5c2619"
-  },
-  "orion-knowledge/claims/accepted/claim-knowledge-forge-v1-non-goals.yaml": {
-    "mtime": 1779315897.135747,
-    "ast_hash": "417224e9a84255520a27e14d06d0d3e1",
-    "semantic_hash": "417224e9a84255520a27e14d06d0d3e1"
-  },
-  "orion-knowledge/claims/accepted/claim-substrate-telemetry-0001.yaml": {
-    "mtime": 1779305390.1027498,
-    "ast_hash": "a017e8f061f213d6558225b3a5710985",
-    "semantic_hash": "a017e8f061f213d6558225b3a5710985"
-  },
-  "orion-knowledge/claims/accepted/claim-substrate-telemetry-0002.yaml": {
-    "mtime": 1779305390.1027498,
-    "ast_hash": "c270639d6b79aa5caf7d54423d4300b8",
-    "semantic_hash": "c270639d6b79aa5caf7d54423d4300b8"
-  },
-  "orion-knowledge/context_packs/cursor/substrate-tier-telemetry-v1.md": {
-    "mtime": 1779305390.1037498,
-    "ast_hash": "ec3fc5d2c52527619bf9f4034e0dbb92",
-    "semantic_hash": "ec3fc5d2c52527619bf9f4034e0dbb92"
-  },
-  "orion-knowledge/context_packs/cursor/substrate-tier-telemetry-v1.yaml": {
-    "mtime": 1779305390.1037498,
-    "ast_hash": "0fc399516cf60329438218c14858a691",
-    "semantic_hash": "0fc399516cf60329438218c14858a691"
-  },
-  "orion-knowledge/evals/lint_reports/2026-05-20.txt": {
-    "mtime": 1779305390.1037498,
-    "ast_hash": "d41d8cd98f00b204e9800998ecf8427e",
-    "semantic_hash": "d41d8cd98f00b204e9800998ecf8427e"
-  },
-  "orion-knowledge/raw/sources/2026-05-14-substrate-tier-telemetry-design-ref.md": {
-    "mtime": 1779305390.1037498,
-    "ast_hash": "8de63569be8340580402171b4f4eb7fe",
-    "semantic_hash": "8de63569be8340580402171b4f4eb7fe"
-  },
-  "orion-knowledge/raw/sources/2026-05-20-knowledge-forge-v1-merge.md": {
-    "mtime": 1779315897.135747,
-    "ast_hash": "416823fc3be219522025ad2d579bb555",
-    "semantic_hash": "416823fc3be219522025ad2d579bb555"
-  },
-  "orion-knowledge/raw/sources/smoke-003.md": {
-    "mtime": 1779322225.6244369,
-    "ast_hash": "96a815837a624c693cd01515246717ee",
-    "semantic_hash": "96a815837a624c693cd01515246717ee"
-  },
-  "orion-knowledge/raw/sources/source-2026-05-14-substrate-tier-telemetry-design-ref.yaml": {
-    "mtime": 1779305390.1037498,
-    "ast_hash": "2dba2618b64cf92fd25bfa86fb492fd6",
-    "semantic_hash": "2dba2618b64cf92fd25bfa86fb492fd6"
-  },
-  "orion-knowledge/raw/sources/source-2026-05-20-knowledge-forge-v1-merge.yaml": {
-    "mtime": 1779315897.135747,
-    "ast_hash": "e049806df007e7d4240bb392a795069b",
-    "semantic_hash": "e049806df007e7d4240bb392a795069b"
-  },
-  "orion-knowledge/raw/sources/source-smoke-003.yaml": {
-    "mtime": 1779322231.1834064,
-    "ast_hash": "fdf9e7d6bfebb49c5488143234ba6cbc",
-    "semantic_hash": "fdf9e7d6bfebb49c5488143234ba6cbc"
-  },
-  "orion-knowledge/reviews/pending/source-delta-20260521T001031Z-smoke-003.md": {
-    "mtime": 1779322231.1834064,
-    "ast_hash": "146d1f466c24bf68a0ce49884d43d286",
-    "semantic_hash": "146d1f466c24bf68a0ce49884d43d286"
-  },
-  "orion-knowledge/specs/execution_ready/knowledge-forge-ideation-review-v1.md": {
-    "mtime": 1779315897.135747,
-    "ast_hash": "dd484698baa9c7731132d9e49780f344",
-    "semantic_hash": "dd484698baa9c7731132d9e49780f344"
-  },
-  "orion-knowledge/specs/execution_ready/knowledge-forge-ideation-review-v1.yaml": {
-    "mtime": 1779315897.136747,
-    "ast_hash": "3baaa6d5068db5304ff205e7f093882d",
-    "semantic_hash": "3baaa6d5068db5304ff205e7f093882d"
-  },
-  "orion-knowledge/specs/execution_ready/substrate-tier-telemetry-v1.yaml": {
-    "mtime": 1779305390.1047497,
-    "ast_hash": "f8571d7fd223f0df04093bae72735371",
-    "semantic_hash": "f8571d7fd223f0df04093bae72735371"
-  },
-  "orion-knowledge/wiki/concepts/substrate-tier-telemetry.md": {
-    "mtime": 1779305390.1047497,
-    "ast_hash": "5c1716610810bc180f6e655b78f15202",
-    "semantic_hash": "5c1716610810bc180f6e655b78f15202"
-  },
-  "orion-knowledge/wiki/index.md": {
-    "mtime": 1779305390.1047497,
-    "ast_hash": "6fd2e69c6a446d0f4c57432d662c687e",
-    "semantic_hash": "6fd2e69c6a446d0f4c57432d662c687e"
-  },
-  "orion-knowledge/wiki/log.md": {
-    "mtime": 1779305390.1047497,
-    "ast_hash": "ddabf32431fdbcf5abb5f5b032573177",
-    "semantic_hash": "ddabf32431fdbcf5abb5f5b032573177"
   },
   "orion/autonomy/README.md": {
     "mtime": 1783732746.9261913,
@@ -17393,11 +16053,6 @@
     "mtime": 1773975149.9477863,
     "ast_hash": "74e105e0d477de5b192a58db68fb4b37",
     "semantic_hash": "74e105e0d477de5b192a58db68fb4b37"
-  },
-  "orion/cognition/verbs/chat_deep_graph.yaml": {
-    "mtime": 1768597909.8752296,
-    "ast_hash": "783f256fa917da21b1ca21cd03881a49",
-    "semantic_hash": "783f256fa917da21b1ca21cd03881a49"
   },
   "orion/cognition/verbs/chat_general.yaml": {
     "mtime": 1777093481.8421311,
@@ -17684,11 +16339,6 @@
     "ast_hash": "302e97666dd1c70f216aa9e66ad5b3ad",
     "semantic_hash": "302e97666dd1c70f216aa9e66ad5b3ad"
   },
-  "orion/cognition/verbs/show_landing_pad_metrics.yaml": {
-    "mtime": 1775948546.0515118,
-    "ast_hash": "070ed7bd61c4ad3884c6c399c0138161",
-    "semantic_hash": "070ed7bd61c4ad3884c6c399c0138161"
-  },
   "orion/cognition/verbs/simulate.yaml": {
     "mtime": 1767676515.6311066,
     "ast_hash": "ef68bc3899b51f1dcb76e5051a5a71ed",
@@ -17718,16 +16368,6 @@
     "mtime": 1773980667.706536,
     "ast_hash": "14bd7f2c5ff0980fa434706e27a96684",
     "semantic_hash": "14bd7f2c5ff0980fa434706e27a96684"
-  },
-  "orion/cognition/verbs/skills.landing_pad.last_events.v1.yaml": {
-    "mtime": 1773980667.706536,
-    "ast_hash": "788838e813e7a391eaac9f55318178af",
-    "semantic_hash": "788838e813e7a391eaac9f55318178af"
-  },
-  "orion/cognition/verbs/skills.landing_pad.metrics_snapshot.v1.yaml": {
-    "mtime": 1773980667.706536,
-    "ast_hash": "172b8de9bf7cffa562ce6c720b1a6fbd",
-    "semantic_hash": "172b8de9bf7cffa562ce6c720b1a6fbd"
   },
   "orion/cognition/verbs/skills.mesh.mesh_ops_round.v1.yaml": {
     "mtime": 1775613610.4124463,
@@ -17914,11 +16554,6 @@
     "ast_hash": "dd48c05b07887948b84e25fb6957122e",
     "semantic_hash": "dd48c05b07887948b84e25fb6957122e"
   },
-  "orion/recall/profiles/deep.graph.v1.yaml": {
-    "mtime": 1780779151.178656,
-    "ast_hash": "019f03a083cbf4864291ad5562273bda",
-    "semantic_hash": "019f03a083cbf4864291ad5562273bda"
-  },
   "orion/recall/profiles/dream.v1.yaml": {
     "mtime": 1780779151.179656,
     "ast_hash": "204f09bfbb2420af760efdb0db12f06b",
@@ -17938,11 +16573,6 @@
     "mtime": 1780972924.4322648,
     "ast_hash": "aee6eb088ba267c5fc1062730447ccfe",
     "semantic_hash": "aee6eb088ba267c5fc1062730447ccfe"
-  },
-  "orion/recall/profiles/graphtri.v1.yaml": {
-    "mtime": 1780779151.179656,
-    "ast_hash": "9335f708eb3b1ac04bdd9cbcadc1a3e6",
-    "semantic_hash": "9335f708eb3b1ac04bdd9cbcadc1a3e6"
   },
   "orion/recall/profiles/journal.daily.grounded.v1.yaml": {
     "mtime": 1781735866.8317394,
@@ -17998,11 +16628,6 @@
     "mtime": 1780779151.1806562,
     "ast_hash": "079cc69eec83ab02490ca239d7ef8c3b",
     "semantic_hash": "079cc69eec83ab02490ca239d7ef8c3b"
-  },
-  "orion/self_state/README.md": {
-    "mtime": 1783984456.988051,
-    "ast_hash": "3dda68bc8ecd4b9d24f3062acad7e404",
-    "semantic_hash": "3dda68bc8ecd4b9d24f3062acad7e404"
   },
   "orion/spark/README.md": {
     "mtime": 1783716548.5466468,
@@ -18584,41 +17209,6 @@
     "ast_hash": "0c7e412c88421d33cff86c2ad83bde90",
     "semantic_hash": "0c7e412c88421d33cff86c2ad83bde90"
   },
-  "services/orion-knowledge-forge/CLAUDE.md": {
-    "mtime": 1779310786.0190036,
-    "ast_hash": "ee0357e8065a72ccb56fab14fec26d8c",
-    "semantic_hash": "ee0357e8065a72ccb56fab14fec26d8c"
-  },
-  "services/orion-knowledge-forge/docker-compose.yml": {
-    "mtime": 1779322188.0016465,
-    "ast_hash": "0dec3e6b3e24a53b489868eb1fcb6e0f",
-    "semantic_hash": "0dec3e6b3e24a53b489868eb1fcb6e0f"
-  },
-  "services/orion-knowledge-forge/requirements.txt": {
-    "mtime": 1779310786.0200036,
-    "ast_hash": "edde3ffaa36b153d0fb7df4db104dc82",
-    "semantic_hash": "edde3ffaa36b153d0fb7df4db104dc82"
-  },
-  "services/orion-landing-pad/README.md": {
-    "mtime": 1768597909.8882296,
-    "ast_hash": "5dd49e6e78f92920f670fd7f2e776fe4",
-    "semantic_hash": "5dd49e6e78f92920f670fd7f2e776fe4"
-  },
-  "services/orion-landing-pad/app/static/landing_pad/index.html": {
-    "mtime": 1769550252.5890265,
-    "ast_hash": "c51538359f4b8306dc087cb2bc4bb1a9",
-    "semantic_hash": "c51538359f4b8306dc087cb2bc4bb1a9"
-  },
-  "services/orion-landing-pad/docker-compose.yml": {
-    "mtime": 1781722043.3403635,
-    "ast_hash": "1029dba7521862f7e507048d6fb23161",
-    "semantic_hash": "1029dba7521862f7e507048d6fb23161"
-  },
-  "services/orion-landing-pad/requirements.txt": {
-    "mtime": 1773975149.9637861,
-    "ast_hash": "adca7ee64a697a55fc0a7be940c72edd",
-    "semantic_hash": "adca7ee64a697a55fc0a7be940c72edd"
-  },
   "services/orion-llama-cola-host/README.md": {
     "mtime": 1783136738.0558803,
     "ast_hash": "22559545b41e618c3a21f9b0aa927f0d",
@@ -18889,31 +17479,6 @@
     "ast_hash": "a64864eadb95adb91d2e93c881f7e0b9",
     "semantic_hash": "a64864eadb95adb91d2e93c881f7e0b9"
   },
-  "services/orion-rdf-store/README.md": {
-    "mtime": 1781748329.8800387,
-    "ast_hash": "86abe7e022139b338fca10ca2d8c4028",
-    "semantic_hash": "86abe7e022139b338fca10ca2d8c4028"
-  },
-  "services/orion-rdf-store/docker-compose.yml": {
-    "mtime": 1782182452.3592443,
-    "ast_hash": "f3d21a285a9274a8c1e2a9f9f3a9ae10",
-    "semantic_hash": "f3d21a285a9274a8c1e2a9f9f3a9ae10"
-  },
-  "services/orion-rdf-writer/README.md": {
-    "mtime": 1778901838.3883948,
-    "ast_hash": "6d4bc23d700b31502274bf50537ad22f",
-    "semantic_hash": "6d4bc23d700b31502274bf50537ad22f"
-  },
-  "services/orion-rdf-writer/docker-compose.yml": {
-    "mtime": 1781152354.0547266,
-    "ast_hash": "3e47d332c51f9de6e404db65dced3881",
-    "semantic_hash": "3e47d332c51f9de6e404db65dced3881"
-  },
-  "services/orion-rdf-writer/requirements.txt": {
-    "mtime": 1781370700.0588322,
-    "ast_hash": "3d9a90720ff3b74994c330edfe645a2b",
-    "semantic_hash": "3d9a90720ff3b74994c330edfe645a2b"
-  },
   "services/orion-recall/README.md": {
     "mtime": 1783986358.1056566,
     "ast_hash": "64cf786c8811897d4739660acce59994",
@@ -18963,21 +17528,6 @@
     "mtime": 1781739116.1686344,
     "ast_hash": "dc77ea785f6c9d669596a64ae4c80cb2",
     "semantic_hash": "dc77ea785f6c9d669596a64ae4c80cb2"
-  },
-  "services/orion-self-state-runtime/README.md": {
-    "mtime": 1783898916.2596118,
-    "ast_hash": "8117b3d5ca18842dfa502301178366c6",
-    "semantic_hash": "8117b3d5ca18842dfa502301178366c6"
-  },
-  "services/orion-self-state-runtime/docker-compose.yml": {
-    "mtime": 1783898916.2596118,
-    "ast_hash": "1afa371aeedb6ba059e3bd0f86491dd9",
-    "semantic_hash": "1afa371aeedb6ba059e3bd0f86491dd9"
-  },
-  "services/orion-self-state-runtime/requirements.txt": {
-    "mtime": 1783898916.2596118,
-    "ast_hash": "d757d44cb69e788bbf4f60285a86f786",
-    "semantic_hash": "d757d44cb69e788bbf4f60285a86f786"
   },
   "services/orion-signal-gateway/README.md": {
     "mtime": 1779332554.3348985,
@@ -19058,31 +17608,6 @@
     "mtime": 1768597909.9032292,
     "ast_hash": "ee24c17fbb174fa4667f4e1904c7c1b4",
     "semantic_hash": "ee24c17fbb174fa4667f4e1904c7c1b4"
-  },
-  "services/orion-spark-introspector/README.md": {
-    "mtime": 1783984456.989051,
-    "ast_hash": "c41043e68cd5c850f77e129970ce3778",
-    "semantic_hash": "c41043e68cd5c850f77e129970ce3778"
-  },
-  "services/orion-spark-introspector/app/static/index.html": {
-    "mtime": 1783490446.3053594,
-    "ast_hash": "7728ad5d8c059f4a07114b59eb5f3a7d",
-    "semantic_hash": "7728ad5d8c059f4a07114b59eb5f3a7d"
-  },
-  "services/orion-spark-introspector/docker-compose.yml": {
-    "mtime": 1783918473.8103108,
-    "ast_hash": "ce9f2b598ed73230ff9ce6843f5aaef6",
-    "semantic_hash": "ce9f2b598ed73230ff9ce6843f5aaef6"
-  },
-  "services/orion-spark-introspector/requirements.txt": {
-    "mtime": 1768597909.9042292,
-    "ast_hash": "c859dffd3b4cd3eaa28e7ed1c86eac66",
-    "semantic_hash": "c859dffd3b4cd3eaa28e7ed1c86eac66"
-  },
-  "services/orion-spark-introspector/train/evals/README.md": {
-    "mtime": 1783918473.8103108,
-    "ast_hash": "2758042aa57b7b468402f7340a481166",
-    "semantic_hash": "2758042aa57b7b468402f7340a481166"
   },
   "services/orion-sql-db/docker-compose.yml": {
     "mtime": 1782183480.7389724,
@@ -19404,31 +17929,6 @@
     "ast_hash": "1eebf678ad7a160887a2f294003c3fa0",
     "semantic_hash": "1eebf678ad7a160887a2f294003c3fa0"
   },
-  "tests/fixtures/knowledge_forge/claims/accepted/claim-test-0001.yaml": {
-    "mtime": 1779305390.1057496,
-    "ast_hash": "cc6ef5c2535ad0980b332a47a3645ce8",
-    "semantic_hash": "cc6ef5c2535ad0980b332a47a3645ce8"
-  },
-  "tests/fixtures/knowledge_forge/claims/disputed/claim-test-bad-ref.yaml": {
-    "mtime": 1779305390.1057496,
-    "ast_hash": "704b3ac63b5926e484bd0d60cc34aa41",
-    "semantic_hash": "704b3ac63b5926e484bd0d60cc34aa41"
-  },
-  "tests/fixtures/knowledge_forge/raw/sources/source-test-fixture.yaml": {
-    "mtime": 1779305390.1067498,
-    "ast_hash": "d7a8be6165fa88eeb88256de37f4def3",
-    "semantic_hash": "d7a8be6165fa88eeb88256de37f4def3"
-  },
-  "tests/fixtures/knowledge_forge/raw/sources/test-source.md": {
-    "mtime": 1779575629.633062,
-    "ast_hash": "31e551ff9201b563d82333da5504157d",
-    "semantic_hash": "31e551ff9201b563d82333da5504157d"
-  },
-  "tests/fixtures/knowledge_forge/specs/execution_ready/spec-test-compile.yaml": {
-    "mtime": 1779305390.1067498,
-    "ast_hash": "058ea2b2fae07a3b0171f50439424358",
-    "semantic_hash": "058ea2b2fae07a3b0171f50439424358"
-  },
   ".verify-run/hub_agent_trace_timeline.png": {
     "mtime": 1775948546.049512,
     "ast_hash": "fa8c143ac509d68a79cf3c37b00f4ed9",
@@ -19478,10 +17978,5 @@
     "mtime": 1784008374.246501,
     "ast_hash": "0c2e463317dce3ea4bc31c3550841ff1",
     "semantic_hash": "0c2e463317dce3ea4bc31c3550841ff1"
-  },
-  "reviews/pending/2026-07-14-agent-worktree-discipline-and-graphify-sync-spec.md": {
-    "mtime": 1784008006.0574543,
-    "ast_hash": "fad87289461d90a247ce68fb178e4b1e",
-    "semantic_hash": "fad87289461d90a247ce68fb178e4b1e"
   }
 }

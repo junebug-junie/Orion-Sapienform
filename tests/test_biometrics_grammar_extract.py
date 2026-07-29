@@ -160,6 +160,45 @@ def test_extract_ignores_memory_thermal_disk_signals_with_no_salience(
     assert "memory_pressure" not in state.pressure_hints
 
 
+def test_extract_sets_gpu_pressure_hint_from_dedicated_signal_atom(
+    catalog: NodeCatalog,
+) -> None:
+    # Regression: pressure_hints["gpu"] must come from the dedicated
+    # gpu_pressure_signal atom's real computed salience, not from
+    # capability_surface's hardcoded 0.8 constant.
+    trace_id = "biometrics.node:atlas:2026-05-24T12:00:00Z"
+    events = [
+        _atom_event(
+            trace_id=trace_id,
+            event_id="gev_gpu",
+            role="gpu_pressure_signal",
+            observed_at=FIXED_TS,
+            salience=0.27,
+        ),
+    ]
+    state = extract_node_state_from_events(events, catalog, stale_after_sec=180, now=FIXED_TS)
+    assert state.pressure_hints.get("gpu") == pytest.approx(0.27)
+
+
+def test_extract_capability_surface_no_longer_sources_gpu_pressure_hint(
+    catalog: NodeCatalog,
+) -> None:
+    # capability_surface's salience is a hardcoded constant (0.8), not telemetry --
+    # it must never populate pressure_hints["gpu"] even for a local_llm_heavy node.
+    trace_id = "biometrics.node:atlas:2026-05-24T12:00:00Z"
+    events = [
+        _atom_event(
+            trace_id=trace_id,
+            event_id="gev_cap",
+            role="capability_surface",
+            observed_at=FIXED_TS,
+            salience=0.8,
+        ),
+    ]
+    state = extract_node_state_from_events(events, catalog, stale_after_sec=180, now=FIXED_TS)
+    assert "gpu" not in state.pressure_hints
+
+
 def test_extract_availability_online_when_fresh(catalog: NodeCatalog) -> None:
     trace_id = "biometrics.node:atlas:2026-05-24T12:00:00Z"
     events = [

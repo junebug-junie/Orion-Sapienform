@@ -114,9 +114,8 @@ def extract_node_state_from_events(
                 pressure_hints["strain"] = float(atom.salience)
         elif atom.semantic_role == "node_availability":
             availability_summary = atom.summary
-        elif atom.semantic_role == "capability_surface" and atom.salience is not None:
-            if profile.capabilities.get("local_llm_heavy"):
-                pressure_hints["gpu"] = float(atom.salience)
+        elif atom.semantic_role == "gpu_pressure_signal" and atom.salience is not None:
+            pressure_hints["gpu"] = float(atom.salience)
         elif atom.semantic_role == "memory_pressure_signal" and atom.salience is not None:
             pressure_hints["memory_pressure"] = float(atom.salience)
         elif atom.semantic_role == "thermal_pressure_signal" and atom.salience is not None:

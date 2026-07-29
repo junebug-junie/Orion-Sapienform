@@ -38,13 +38,16 @@ were explicitly declined.
   active domains, populating `AttentionSelfModelV1.confidence` /
   `.prediction_error_confidence`/`.prediction_error_confidence_basis`. This is the single already-built
   aggregate that idea "insight" would key off — no new computation needed if it's real.
-- **`reduce_attention_self_model()` live-tick status: UNVERIFIED, not assumed live.** Grepping the
-  whole repo, this reducer is called from `orion/substrate/tests/test_attention_self_model.py` (unit
-  tests) and `scripts/analysis/measure_ast_hot_reducer.py` (an offline analysis script) only. No live
-  service (`services/orion-substrate-runtime/app/worker.py` or otherwise) was found calling it in this
-  session's grep. Project memory (`self_modeling_ladder` status) says AST/HOT rungs are merged but
-  "ignition flags off" — consistent with a built-but-not-ticking reducer. **Do not treat
-  `AttentionSelfModelV1.confidence` as a live producer until Missing Question 1 is answered.**
+- **`reduce_attention_self_model()` live-tick status: ANSWERED, now live (Missing Question 1
+  resolved).** `docs/superpowers/specs/2026-07-29-ast-hot-reducer-live-ticking-design.md` +
+  PR #1459 (merged) made `services/orion-substrate-runtime/app/worker.py`'s
+  `_attention_broadcast_tick()` call `reduce_attention_self_model()` on every ~30s broadcast tick
+  (gated `SUBSTRATE_ATTENTION_SELF_MODEL_TICK_ENABLED`, now `true` in this environment), persisting
+  each result to a new, exclusively-owned `substrate_attention_self_model` table. Review found the
+  design doc's original premise was itself wrong — `_brain_frame_tick()` already called the same
+  reducer live with a narrower input set (`field_frame=None`, no trend) — corrected in that doc; the
+  two live call sites are intentionally left un-unified. **`AttentionSelfModelV1.confidence` /
+  `.prediction_error_confidence` may now be treated as a live producer.**
 - **`pulse` precedent** (`services/orion-equilibrium-service/app/service.py:796-813`): fires
   `trigger_kind="pulse"` when a landing-pad signal's `salience >= EQUILIBRIUM_METACOG_PAD_PULSE_THRESHOLD`.
   Positive-valence, live, already dispatches through the identical pipeline this spec would reuse.
@@ -65,21 +68,30 @@ were explicitly declined.
 
 ## Missing questions
 
-1. **Is `reduce_attention_self_model()` actually invoked on a live cadence anywhere**, or does
-   `AttentionSelfModelV1` only get computed by the offline measurement script? This is the single
-   highest-leverage unknown — it determines whether "insight" is "wire a new gate onto an existing live
-   producer" (cheap) or "first make the AST/HOT reducer tick live, then build the gate" (a materially
-   bigger patch, and its own proposal-mode question). Check `services/orion-substrate-runtime/app/worker.py`
-   end to end, and check for any scheduler/cron path in `services/orion-hub` or elsewhere that might call
-   it outside the grep pattern used this session.
-2. **What is the real historical shape of confidence recovery / prediction-error drops in stored data?**
-   Does a sharp rise in `confidence` (or drop in `mean(prediction_error)`) happen as discrete, meaningful
-   events, or is it smooth/continuous with no natural crossing to trigger on? Needs a measurement script
-   (same discipline as `scripts/analysis/measure_rpc_health_baseline.py`) against whatever
-   `AttentionSelfModelV1` history already exists before any threshold gets picked — CLAUDE.md's metric
-   quality gate step 4 applies here exactly as it did to `bus_synaptic`'s calm-floor bug, just checking
-   the opposite failure mode (a metric that reads "recovered" because it's stuck, not because anything
-   resolved).
+1. **ANSWERED 2026-07-29 — yes, now live.** See the "live-tick status" update above and
+   PR #1459. Not a blocker anymore.
+2. **ANSWERED 2026-07-29, with a real-data finding that changes Acceptance Check 1's shape.**
+   `scripts/analysis/measure_attention_self_model_confidence_baseline.py` (PR #1463, merged) ran
+   against real `substrate_attention_self_model` history once it cleared its own 200-tick/2h trust
+   floor (1,524 rows / 14.4h span at run time). Findings:
+   - Both fields pass the metric-quality-gate sanity check: 100% coverage, no ceiling/floor/zero-variance
+     degeneracy. `confidence` ranged 0.30–0.90 (mean 0.886); `prediction_error_confidence` ranged
+     0.597–0.974 (mean 0.900).
+   - At the design doc's own untested anchor thresholds (low=0.5, high=0.8), **zero recovery events
+     fired** — not because the signal is smooth, but structurally: `prediction_error_confidence` never
+     once dropped to 0.5 in the observed window. The anchor thresholds don't match this metric's actual
+     observed range in this environment.
+   - Re-run at thresholds matched to the metric's real range (low=0.70, high=0.90): **3 genuine
+     recovery events fired over 13.93h**, ticks-to-cross = 1, 3, 12 (mean 5.3, median 3).
+   - **Verdict: leans smooth, not discrete.** A median 3-tick crossing (each tick ~30s, so ~90s median)
+     is not a sharp single-tick jump — recoveries unfold gradually. This means a gate keyed on a single-
+     tick threshold crossing (the pattern every existing `trigger_kind` uses) would either fire on noise
+     mid-climb or need a sustained-duration condition instead of a point crossing. **Acceptance Check 1
+     ("confidence-recovery events are discrete") does not currently hold as literally stated** — the
+     recommended next patch below adjusts for this rather than treating it as a blocker.
+   - Thresholds are still not independently calibrated beyond "matches observed range" — before any
+     gate ships, a longer window (the current run covers only the table's first ~14h of existence)
+     should be re-measured to confirm 0.70/0.90 hold up, not just this window's specific 3 events.
 3. **What field should flow-state actually key off?** Self-state fields were previously ruled out for
    phi/IIT-adjacent signal work — needs an explicit check (not an assumption) of whether the same
    objection applies to a sustained-coherence detector, or whether `AttentionSelfModelV1.confidence`
@@ -144,9 +156,11 @@ were explicitly declined.
 
 ## Acceptance checks
 
-1. A measurement script against real historical `AttentionSelfModelV1`/prediction-error data shows
-   confidence-recovery events are discrete and non-degenerate (not smooth noise, not a permanent
-   floor/ceiling artifact) before any live gate ships.
+1. **Revised 2026-07-29 per real measurement (see Missing Question 2 findings):** confidence-recovery
+   events are non-degenerate (not a permanent floor/ceiling artifact) but lean smooth, not discrete —
+   the gate condition must account for a multi-tick gradual crossing, not assume a sharp single-tick
+   jump. Original wording ("shows...events are discrete") does not hold as literally stated; superseded
+   by the sustained-transition condition in Recommended next patch item 4.
 2. Both new gates ship disabled by default, flipped only after their own live-data sanity check,
    matching the `bus_synaptic` precedent (PR #1385 → #1387).
 3. `orion_metacog` shows real `trigger_kind="insight"`/`"flow"` rows with non-empty, distinguishable
@@ -159,10 +173,16 @@ were explicitly declined.
 
 ## Recommended next patch
 
-1. Answer Missing Question 1 first — is `reduce_attention_self_model()` actually ticking anywhere live.
-   This single fact determines whether "insight" is a thin seam (new gate on an existing live producer)
-   or a bigger prerequisite patch (make AST/HOT live first, its own proposal-mode question).
-2. Run the Missing Question 2 measurement pass against whatever prediction-error/confidence history
-   already exists in Postgres/FalkorDB before writing any gate code.
-3. Once both come back real, pick "insight" or "flow" to build first based on which has cleaner
-   historical shape — not both simultaneously.
+1. ~~Answer Missing Question 1~~ — done, PR #1459. `reduce_attention_self_model()` is live.
+2. ~~Run the Missing Question 2 measurement pass~~ — done, PR #1463 + this update. Real finding:
+   confidence-recovery is smooth (median 3-tick crossing), not a sharp single-tick jump.
+3. Re-run the confidence-baseline script against a longer window (days, not the current ~14h) before
+   picking final thresholds — this update's 3 events are real but from a young table; confirm 0.70/0.90
+   holds up rather than locking in a 14h sample.
+4. Because the signal leans smooth, scope the "insight" gate's condition as a sustained low→high
+   transition over N ticks (or a rolling-window derivative), not a single-tick `>= high_threshold`
+   crossing — the existing `chat_turn`/`transport`/`relational` gates are all single-tick-crossing
+   gates and would misfire on this signal's own gradual-climb shape if copied unmodified.
+5. Missing Questions 3–6 (flow-state field choice, Sentience Striving Program signal-naming, cooldown
+   cadence, downstream draft mapping) remain open — still needs Juniper's input or further tracing
+   before "insight" or "flow" gate code gets written.

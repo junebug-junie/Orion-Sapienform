@@ -212,7 +212,7 @@ def test_template_includes_fixed_high_z_autonomy_runtime_modal() -> None:
     assert 'id="autonomyDebugModalRoot"' in template
     assert 'id="autonomyDebugModalRoot" class="hidden fixed inset-0 z-[120]' in template
     assert 'id="autonomyDebugModalBackdrop" class="fixed inset-0 z-[120]' in template
-    assert 'id="autonomyDebugModalDialog" class="fixed inset-x-4 top-8 bottom-8 z-[121]' in template
+    assert 'id="autonomyDebugModalDialog" class="fixed left-1/2 top-1/2 z-[121]' in template
     assert 'z-index: 2147483646' in template
     assert 'z-index: 2147483647' in template
     assert 'id="autonomyDebugOpenModal"' in template
@@ -234,7 +234,8 @@ def test_template_includes_autonomy_readiness_panel_card() -> None:
 
     assert 'id="autonomyReadinessPanel"' in template
     assert 'id="autonomyReadinessToggle"' in template
-    assert 'id="autonomyReadinessBody"' in template
+    assert 'id="autonomyReadinessOpenModal"' in template
+    assert 'id="autonomyReadinessModalRoot"' in template
     assert 'id="autonomyReadinessMeta"' in template
     assert 'id="autonomyReadinessOverview"' in template
     assert 'id="autonomyReadinessWarnings"' in template

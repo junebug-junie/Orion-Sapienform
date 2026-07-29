@@ -338,4 +338,33 @@ def test_thought_process_syncs_lane_from_mode_dropdown() -> None:
     assert "hubModeSelect" in src
     assert "setLane" in src
     assert "LANE_GROUNDED_SMALL" in src
-    assert "Grounded Small" in html
+    assert '<option value="orion" selected>Orion</option>' in html
+
+
+def test_mode_dropdown_only_has_surviving_options() -> None:
+    html = INDEX_HTML.read_text(encoding="utf-8")
+    mode_select = html.split('id="hubModeSelect"', 1)[1].split("</select>", 1)[0]
+    assert 'value="orion"' in mode_select
+    assert 'value="quick"' in mode_select
+    assert 'value="story"' in mode_select
+    assert 'value="agent"' in mode_select
+    for killed_value in ("auto", "grounded_small", "brain", "council", "agent_claude_opus", "agent_claude_sonnet", "agent_claude_haiku"):
+        assert f'value="{killed_value}"' not in mode_select
+
+
+def test_recall_profile_dropdown_drops_auto_and_biographical() -> None:
+    html = INDEX_HTML.read_text(encoding="utf-8")
+    recall_select = html.split('id="recallProfileSelect"', 1)[1].split("</select>", 1)[0]
+    assert 'value="assist.light.v1" selected' in recall_select
+    assert 'value="biographical.v1"' not in recall_select
+    assert 'value="auto"' not in recall_select
+
+
+def test_recall_profile_auto_follows_mode() -> None:
+    app_js = APP_JS.read_text(encoding="utf-8")
+    assert "function setRecallProfileAutoState(useAutoDefault)" in app_js
+    assert "setRecallProfileAutoState(key === 'orion');" in app_js
+    assert "recallProfileSelect.value = 'auto';" in app_js
+    assert "recallProfileSelect.disabled = true;" in app_js
+    assert "recallProfileSelect.disabled = false;" in app_js
+    assert "recallProfileSelect.value = 'assist.light.v1';" in app_js

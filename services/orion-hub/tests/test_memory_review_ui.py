@@ -24,7 +24,8 @@ def test_memory_js_exposes_metadata_editors_and_patch() -> None:
 
 def test_template_includes_cards_recall_profiles() -> None:
     template = (HUB_ROOT / "templates" / "index.html").read_text(encoding="utf-8")
-    assert 'value="biographical.v1"' in template
+    # biographical.v1 was intentionally dropped from the Recall Profile dropdown
+    # (the only place it appeared in this template); self.factual.v1 remains.
     assert 'value="self.factual.v1"' in template
     assert 'id="memorySubviewConsolidationDrafts"' in template
     assert 'id="memoryConsolidationDraftsPanel"' in template

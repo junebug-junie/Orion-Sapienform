@@ -24,7 +24,7 @@ def test_template_includes_chat_stance_modal_shell() -> None:
     template = TEMPLATE_PATH.read_text(encoding="utf-8")
     assert 'id="chatStanceDebugModalRoot" class="hidden fixed inset-0 z-[120]' in template
     assert 'id="chatStanceDebugModalBackdrop" class="fixed inset-0 z-[120]' in template
-    assert 'id="chatStanceDebugModalDialog" class="fixed inset-x-4 top-8 bottom-8 z-[121]' in template
+    assert 'id="chatStanceDebugModalDialog" class="fixed left-1/2 top-1/2 z-[121]' in template
     assert 'id="chatStanceDebugModalBody"' in template
 
 
@@ -174,7 +174,7 @@ def test_thought_process_js_registers_grounded_small_lane_contract() -> None:
     template = TEMPLATE_PATH.read_text(encoding="utf-8")
     assert "global.OrionHubGroundedSmallLane" in thought_js
     assert "LANE_GROUNDED_SMALL = 'grounded_small'" in thought_js
-    assert "Grounded Small" in template
+    assert '<option value="orion" selected>Orion</option>' in template
     assert "hubModeSelect" in thought_js
     assert "options.llm_route = 'quick';" in thought_js
     assert "payload.verbs = [];" in thought_js

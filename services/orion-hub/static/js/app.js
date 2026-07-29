@@ -180,9 +180,6 @@ document.addEventListener("DOMContentLoaded", () => {
   const presenceClearButton = document.getElementById('presenceClearButton');
   const recallModeSelect = document.getElementById('recallModeSelect');
   const recallProfileSelect = document.getElementById('recallProfileSelect');
-  const runtimeDebugPanelToggle = document.getElementById('runtimeDebugPanelToggle');
-  const runtimeDebugPanelBody = document.getElementById('runtimeDebugPanelBody');
-  const runtimeDebugPanelCaret = document.getElementById('runtimeDebugPanelCaret');
   const memoryPanelToggle = document.getElementById('memoryPanelToggle');
   const memoryPanelCaret = document.getElementById('memoryPanelCaret');
   const memoryPanelBody = document.getElementById('memoryPanelBody');
@@ -321,8 +318,11 @@ document.addEventListener("DOMContentLoaded", () => {
   const selfExperimentsModalRaw = document.getElementById('selfExperimentsModalRaw');
   const autonomyReadinessPanel = document.getElementById('autonomyReadinessPanel');
   const autonomyReadinessToggle = document.getElementById('autonomyReadinessToggle');
-  const autonomyReadinessCaret = document.getElementById('autonomyReadinessCaret');
-  const autonomyReadinessBody = document.getElementById('autonomyReadinessBody');
+  const autonomyReadinessOpenModal = document.getElementById('autonomyReadinessOpenModal');
+  const autonomyReadinessModalRoot = document.getElementById('autonomyReadinessModalRoot');
+  const autonomyReadinessModalBackdrop = document.getElementById('autonomyReadinessModalBackdrop');
+  const autonomyReadinessModalDialog = document.getElementById('autonomyReadinessModalDialog');
+  const autonomyReadinessModalClose = document.getElementById('autonomyReadinessModalClose');
   const autonomyReadinessMeta = document.getElementById('autonomyReadinessMeta');
   const autonomyReadinessOverview = document.getElementById('autonomyReadinessOverview');
   const autonomyReadinessWarnings = document.getElementById('autonomyReadinessWarnings');
@@ -3032,6 +3032,7 @@ document.addEventListener("DOMContentLoaded", () => {
       || isModalVisible(substrateReviewModalRoot)
       || isModalVisible(cognitiveReviewModalRoot)
       || isModalVisible(autonomyConstitutionModalRoot)
+      || isModalVisible(autonomyReadinessModalRoot)
       || isModalVisible(agentTraceModal);
     document.body.classList.toggle('overflow-hidden', shouldLock);
   }
@@ -3676,6 +3677,40 @@ document.addEventListener("DOMContentLoaded", () => {
     syncDebugModalScrollLock();
   }
 
+  function ensureAutonomyReadinessModalRootOnBody() {
+    if (!autonomyReadinessModalRoot || !document.body) return;
+    if (autonomyReadinessModalRoot.parentElement !== document.body) {
+      document.body.appendChild(autonomyReadinessModalRoot);
+    }
+  }
+
+  function openAutonomyReadinessModal() {
+    if (!autonomyReadinessModalRoot) return;
+    ensureAutonomyReadinessModalRootOnBody();
+    autonomyReadinessModalRoot.style.position = 'fixed';
+    autonomyReadinessModalRoot.style.inset = '0';
+    autonomyReadinessModalRoot.style.zIndex = '2147483646';
+    if (autonomyReadinessModalBackdrop) {
+      autonomyReadinessModalBackdrop.style.position = 'fixed';
+      autonomyReadinessModalBackdrop.style.inset = '0';
+      autonomyReadinessModalBackdrop.style.zIndex = '2147483646';
+    }
+    if (autonomyReadinessModalDialog) {
+      autonomyReadinessModalDialog.style.position = 'fixed';
+      autonomyReadinessModalDialog.style.zIndex = '2147483647';
+    }
+    autonomyReadinessModalRoot.classList.remove('hidden');
+    autonomyReadinessModalRoot.setAttribute('aria-hidden', 'false');
+    syncDebugModalScrollLock();
+  }
+
+  function closeAutonomyReadinessModal() {
+    if (!autonomyReadinessModalRoot) return;
+    autonomyReadinessModalRoot.classList.add('hidden');
+    autonomyReadinessModalRoot.setAttribute('aria-hidden', 'true');
+    syncDebugModalScrollLock();
+  }
+
   function clearChatStanceDebugPanel() {
     lastChatStanceDebug = null;
     if (chatStanceDebugBody) chatStanceDebugBody.classList.add('hidden');
@@ -3766,10 +3801,7 @@ document.addEventListener("DOMContentLoaded", () => {
   }
 
   function toggleChatStanceDebugPanel() {
-    if (!chatStanceDebugBody) return;
-    const nextHidden = !chatStanceDebugBody.classList.contains('hidden');
-    chatStanceDebugBody.classList.toggle('hidden', nextHidden);
-    if (chatStanceDebugCaret) chatStanceDebugCaret.textContent = nextHidden ? '▾' : '▴';
+    openChatStanceDebugModal();
   }
 
   function ensureChatStanceModalRootOnBody() {
@@ -3896,10 +3928,7 @@ document.addEventListener("DOMContentLoaded", () => {
   }
 
   function toggleSubstrateReviewDebugPanel() {
-    if (!substrateReviewDebugBody) return;
-    const nextHidden = !substrateReviewDebugBody.classList.contains('hidden');
-    substrateReviewDebugBody.classList.toggle('hidden', nextHidden);
-    if (substrateReviewDebugCaret) substrateReviewDebugCaret.textContent = nextHidden ? '▾' : '▴';
+    openSubstrateReviewModal();
   }
 
   function clearSelfExperimentsDebugPanel() {
@@ -3911,10 +3940,7 @@ document.addEventListener("DOMContentLoaded", () => {
   }
 
   function toggleSelfExperimentsDebugPanel() {
-    if (!selfExperimentsDebugBody) return;
-    const nextHidden = !selfExperimentsDebugBody.classList.contains('hidden');
-    selfExperimentsDebugBody.classList.toggle('hidden', nextHidden);
-    if (selfExperimentsDebugCaret) selfExperimentsDebugCaret.textContent = nextHidden ? '▾' : '▴';
+    openSelfExperimentsModal();
   }
 
   function updateSelfExperimentsDebugPanel(payload) {
@@ -4184,18 +4210,13 @@ document.addEventListener("DOMContentLoaded", () => {
   }
 
   function clearAutonomyReadinessPanel() {
-    if (autonomyReadinessBody) autonomyReadinessBody.classList.add('hidden');
-    if (autonomyReadinessCaret) autonomyReadinessCaret.textContent = '▾';
     if (autonomyReadinessMeta) autonomyReadinessMeta.textContent = 'No autonomy readiness snapshot loaded.';
     if (autonomyReadinessOverview) autonomyReadinessOverview.textContent = 'No data yet.';
     if (autonomyReadinessWarnings) autonomyReadinessWarnings.textContent = 'No warnings.';
   }
 
   function toggleAutonomyReadinessPanel() {
-    if (!autonomyReadinessBody) return;
-    const nextHidden = !autonomyReadinessBody.classList.contains('hidden');
-    autonomyReadinessBody.classList.toggle('hidden', nextHidden);
-    if (autonomyReadinessCaret) autonomyReadinessCaret.textContent = nextHidden ? '▾' : '▴';
+    openAutonomyReadinessModal();
   }
 
   function updateAutonomyReadinessPanel(snapshot) {
@@ -4264,10 +4285,7 @@ document.addEventListener("DOMContentLoaded", () => {
   }
 
   function toggleRecallCanaryPanel() {
-    if (!recallCanaryBody) return;
-    const nextHidden = !recallCanaryBody.classList.contains('hidden');
-    recallCanaryBody.classList.toggle('hidden', nextHidden);
-    if (recallCanaryCaret) recallCanaryCaret.textContent = nextHidden ? '▾' : '▴';
+    openRecallCanaryModal();
   }
 
   function toggleWorldPulsePanel() {
@@ -4982,31 +5000,15 @@ document.addEventListener("DOMContentLoaded", () => {
   }
 
   function toggleMemoryPanel() {
-    if (!memoryPanelBody) return;
-    const nextHidden = !memoryPanelBody.classList.contains('hidden');
-    memoryPanelBody.classList.toggle('hidden', nextHidden);
-    if (memoryPanelCaret) memoryPanelCaret.textContent = nextHidden ? '▾' : '▴';
-  }
-
-  function toggleRuntimeDebugPanel() {
-    if (!runtimeDebugPanelBody) return;
-    const nextHidden = !runtimeDebugPanelBody.classList.contains('hidden');
-    runtimeDebugPanelBody.classList.toggle('hidden', nextHidden);
-    if (runtimeDebugPanelCaret) runtimeDebugPanelCaret.textContent = nextHidden ? '▾' : '▴';
+    openMemoryDebugModal();
   }
 
   function toggleAgentTraceDebugPanel() {
-    if (!agentTraceDebugBody) return;
-    const nextHidden = !agentTraceDebugBody.classList.contains('hidden');
-    agentTraceDebugBody.classList.toggle('hidden', nextHidden);
-    if (agentTraceDebugCaret) agentTraceDebugCaret.textContent = nextHidden ? '▾' : '▴';
+    openAgentTraceModal(lastAgentTraceSummary, lastAgentTraceMeta);
   }
 
   function toggleAutonomyDebugPanel() {
-    if (!autonomyDebugBody) return;
-    const nextHidden = !autonomyDebugBody.classList.contains('hidden');
-    autonomyDebugBody.classList.toggle('hidden', nextHidden);
-    if (autonomyDebugCaret) autonomyDebugCaret.textContent = nextHidden ? '▾' : '▴';
+    openAutonomyDebugModal();
   }
 
   function isAttentionNotification(notification) {
@@ -6188,7 +6190,7 @@ document.addEventListener("DOMContentLoaded", () => {
         (typeof document !== 'undefined' && document.body && document.body.dataset.orionChatLane) ||
         'grounded_small';
       laneApi.syncRecallProfileForLane(lane);
-    } else if (!recallProfileSelect.value || recallProfileSelect.value === 'auto') {
+    } else if (currentMode !== 'orion' && (!recallProfileSelect.value || recallProfileSelect.value === 'auto')) {
       recallProfileSelect.value = 'assist.light.v1';
     }
   }
@@ -7810,9 +7812,7 @@ document.addEventListener("DOMContentLoaded", () => {
     debugButton.className = 'rounded-full border border-violet-400/40 bg-violet-500/20 px-2 py-1 text-[10px] font-semibold text-violet-100 hover:bg-violet-500/30';
     debugButton.textContent = 'Open debug';
     debugButton.addEventListener('click', () => {
-      if (autonomyDebugPanel) autonomyDebugPanel.classList.remove('hidden');
-      if (autonomyDebugBody) autonomyDebugBody.classList.remove('hidden');
-      if (autonomyDebugCaret) autonomyDebugCaret.textContent = '▴';
+      openAutonomyDebugModal();
     });
     panel.appendChild(debugButton);
     return panel;
@@ -8885,22 +8885,15 @@ document.addEventListener("DOMContentLoaded", () => {
   const hubModeSelect = document.getElementById('hubModeSelect');
   const hubComputeSelect = document.getElementById('hubComputeSelect');
   const HUB_MODE_SPECS = {
-    auto: { mode: 'auto', verb: null, lane: null, label: 'Auto' },
     orion: { mode: 'orion', fccModelLabel: 'MODEL_SONNET', verb: null, lane: 'orion', label: 'Orion' },
-    grounded_small: { mode: 'brain', verb: null, lane: 'grounded_small', label: 'Grounded Small' },
-    brain: { mode: 'brain', verb: null, lane: 'brain', label: 'Brain' },
     quick: { mode: 'brain', verb: 'chat_quick', lane: 'quick', label: 'Quick' },
     story: { mode: 'brain', verb: 'chat_kids_story', lane: null, label: 'Story' },
     agent: { mode: 'agent', verb: null, lane: null, label: 'Agent' },
-    agent_claude_opus: { mode: 'agent-claude', fccModelLabel: 'MODEL_OPUS', verb: null, lane: null, label: 'Agent Claude - Opus', skipComputeConfirm: true },
-    agent_claude_sonnet: { mode: 'agent-claude', fccModelLabel: 'MODEL_SONNET', verb: null, lane: null, label: 'Agent Claude - Sonnet', skipComputeConfirm: true },
-    agent_claude_haiku: { mode: 'agent-claude', fccModelLabel: 'MODEL_HAIKU', verb: null, lane: null, label: 'Agent Claude - Haiku', skipComputeConfirm: true },
-    council: { mode: 'council', verb: null, lane: null, label: 'Council' },
   };
 
   function hubModeSpec(modeKey) {
-    const key = String(modeKey || hubModeSelect?.value || 'grounded_small').trim().toLowerCase();
-    return HUB_MODE_SPECS[key] || HUB_MODE_SPECS.grounded_small;
+    const key = String(modeKey || hubModeSelect?.value || 'orion').trim().toLowerCase();
+    return HUB_MODE_SPECS[key] || HUB_MODE_SPECS.orion;
   }
 
   function applyAgentClaudePayloadFields(payload) {
@@ -8917,9 +8910,33 @@ document.addEventListener("DOMContentLoaded", () => {
     payload.fcc_model_label = spec.fccModelLabel || 'MODEL_SONNET';
   }
 
+  // Recall Profile auto-follows Mode: Orion leaves recall_profile unset (backend
+  // default resolution); any other mode forces the echo-safe assist.light.v1 lane.
+  // Reuses the payload builder's pre-existing 'auto' == "no override" sentinel
+  // (see recall_profile / recall_profile_explicit below) via a synthetic option,
+  // since 'auto' is no longer a user-facing Recall Profile choice.
+  function setRecallProfileAutoState(useAutoDefault) {
+    if (!recallProfileSelect) return;
+    let autoOption = recallProfileSelect.querySelector('option[value="auto"]');
+    if (useAutoDefault) {
+      if (!autoOption) {
+        autoOption = document.createElement('option');
+        autoOption.value = 'auto';
+        autoOption.textContent = '(default)';
+        recallProfileSelect.insertBefore(autoOption, recallProfileSelect.firstChild);
+      }
+      recallProfileSelect.value = 'auto';
+      recallProfileSelect.disabled = true;
+    } else {
+      if (autoOption) autoOption.remove();
+      recallProfileSelect.disabled = false;
+      recallProfileSelect.value = 'assist.light.v1';
+    }
+  }
+
   function applyHubModeSelection(modeKey, { silent = false } = {}) {
-    const key = String(modeKey || 'grounded_small').trim().toLowerCase();
-    const spec = HUB_MODE_SPECS[key] || HUB_MODE_SPECS.grounded_small;
+    const key = String(modeKey || 'orion').trim().toLowerCase();
+    const spec = HUB_MODE_SPECS[key] || HUB_MODE_SPECS.orion;
     currentMode = spec.mode;
     modeVerbOverride = spec.verb;
     if (spec.mode === 'brain' && spec.verb === 'chat_quick') {
@@ -8928,11 +8945,10 @@ document.addEventListener("DOMContentLoaded", () => {
     if (hubModeSelect && hubModeSelect.value !== key) {
       hubModeSelect.value = key;
     }
+    setRecallProfileAutoState(key === 'orion');
     const laneApi = (typeof globalThis !== 'undefined' ? globalThis : window).OrionHubGroundedSmallLane;
     if (laneApi && typeof laneApi.setLane === 'function' && spec.lane) {
       laneApi.setLane(spec.lane);
-    } else if (laneApi && typeof laneApi.setLane === 'function' && key === 'auto') {
-      laneApi.setLane('grounded_small');
     } else if (laneApi && typeof laneApi.setLane === 'function' && key === 'orion') {
       laneApi.setLane('orion');
     }
@@ -9240,9 +9256,6 @@ document.addEventListener("DOMContentLoaded", () => {
   if (memoryDebugModalDialog) {
     memoryDebugModalDialog.addEventListener('click', (event) => event.stopPropagation());
   }
-  if (runtimeDebugPanelToggle) {
-    runtimeDebugPanelToggle.addEventListener('click', toggleRuntimeDebugPanel);
-  }
   if (agentTraceDebugToggle) {
     agentTraceDebugToggle.addEventListener('click', toggleAgentTraceDebugPanel);
   }
@@ -9390,6 +9403,28 @@ document.addEventListener("DOMContentLoaded", () => {
   }
   if (autonomyReadinessToggle) {
     autonomyReadinessToggle.addEventListener('click', toggleAutonomyReadinessPanel);
+  }
+  ensureAutonomyReadinessModalRootOnBody();
+  if (autonomyReadinessOpenModal) {
+    autonomyReadinessOpenModal.addEventListener('click', (event) => {
+      event.preventDefault();
+      event.stopPropagation();
+      openAutonomyReadinessModal();
+    });
+  }
+  if (autonomyReadinessModalClose) {
+    autonomyReadinessModalClose.addEventListener('click', closeAutonomyReadinessModal);
+  }
+  if (autonomyReadinessModalBackdrop) {
+    autonomyReadinessModalBackdrop.addEventListener('click', closeAutonomyReadinessModal);
+  }
+  if (autonomyReadinessModalRoot) {
+    autonomyReadinessModalRoot.addEventListener('click', (event) => {
+      if (event.target === autonomyReadinessModalRoot) closeAutonomyReadinessModal();
+    });
+  }
+  if (autonomyReadinessModalDialog) {
+    autonomyReadinessModalDialog.addEventListener('click', (event) => event.stopPropagation());
   }
   if (recallCanaryRunButton) {
     recallCanaryRunButton.addEventListener('click', async () => {
@@ -9749,6 +9784,10 @@ document.addEventListener("DOMContentLoaded", () => {
     }
     if (event.key === 'Escape' && autonomyDebugModalRoot && !autonomyDebugModalRoot.classList.contains('hidden')) {
       closeAutonomyDebugModal();
+      return;
+    }
+    if (event.key === 'Escape' && autonomyReadinessModalRoot && !autonomyReadinessModalRoot.classList.contains('hidden')) {
+      closeAutonomyReadinessModal();
       return;
     }
     if (event.key === 'Escape' && chatStanceDebugModalRoot && !chatStanceDebugModalRoot.classList.contains('hidden')) {

@@ -180,6 +180,11 @@ document.addEventListener("DOMContentLoaded", () => {
   const presenceClearButton = document.getElementById('presenceClearButton');
   const recallModeSelect = document.getElementById('recallModeSelect');
   const recallProfileSelect = document.getElementById('recallProfileSelect');
+  const debugPanelOpenModal = document.getElementById('debugPanelOpenModal');
+  const debugPanelModalRoot = document.getElementById('debugPanelModalRoot');
+  const debugPanelModalBackdrop = document.getElementById('debugPanelModalBackdrop');
+  const debugPanelModalDialog = document.getElementById('debugPanelModalDialog');
+  const debugPanelModalClose = document.getElementById('debugPanelModalClose');
   const memoryPanelToggle = document.getElementById('memoryPanelToggle');
   const memoryPanelCaret = document.getElementById('memoryPanelCaret');
   const memoryPanelBody = document.getElementById('memoryPanelBody');
@@ -318,11 +323,15 @@ document.addEventListener("DOMContentLoaded", () => {
   const selfExperimentsModalRaw = document.getElementById('selfExperimentsModalRaw');
   const autonomyReadinessPanel = document.getElementById('autonomyReadinessPanel');
   const autonomyReadinessToggle = document.getElementById('autonomyReadinessToggle');
+  const autonomyReadinessCaret = document.getElementById('autonomyReadinessCaret');
+  const autonomyReadinessBody = document.getElementById('autonomyReadinessBody');
   const autonomyReadinessOpenModal = document.getElementById('autonomyReadinessOpenModal');
   const autonomyReadinessModalRoot = document.getElementById('autonomyReadinessModalRoot');
   const autonomyReadinessModalBackdrop = document.getElementById('autonomyReadinessModalBackdrop');
   const autonomyReadinessModalDialog = document.getElementById('autonomyReadinessModalDialog');
   const autonomyReadinessModalClose = document.getElementById('autonomyReadinessModalClose');
+  const autonomyReadinessModalMeta = document.getElementById('autonomyReadinessModalMeta');
+  const autonomyReadinessModalBody = document.getElementById('autonomyReadinessModalBody');
   const autonomyReadinessMeta = document.getElementById('autonomyReadinessMeta');
   const autonomyReadinessOverview = document.getElementById('autonomyReadinessOverview');
   const autonomyReadinessWarnings = document.getElementById('autonomyReadinessWarnings');
@@ -3033,6 +3042,7 @@ document.addEventListener("DOMContentLoaded", () => {
       || isModalVisible(cognitiveReviewModalRoot)
       || isModalVisible(autonomyConstitutionModalRoot)
       || isModalVisible(autonomyReadinessModalRoot)
+      || isModalVisible(debugPanelModalRoot)
       || isModalVisible(agentTraceModal);
     document.body.classList.toggle('overflow-hidden', shouldLock);
   }
@@ -3677,6 +3687,40 @@ document.addEventListener("DOMContentLoaded", () => {
     syncDebugModalScrollLock();
   }
 
+  function ensureDebugPanelModalRootOnBody() {
+    if (!debugPanelModalRoot || !document.body) return;
+    if (debugPanelModalRoot.parentElement !== document.body) {
+      document.body.appendChild(debugPanelModalRoot);
+    }
+  }
+
+  function openDebugPanelModal() {
+    if (!debugPanelModalRoot) return;
+    ensureDebugPanelModalRootOnBody();
+    debugPanelModalRoot.style.position = 'fixed';
+    debugPanelModalRoot.style.inset = '0';
+    debugPanelModalRoot.style.zIndex = '2147483646';
+    if (debugPanelModalBackdrop) {
+      debugPanelModalBackdrop.style.position = 'fixed';
+      debugPanelModalBackdrop.style.inset = '0';
+      debugPanelModalBackdrop.style.zIndex = '2147483646';
+    }
+    if (debugPanelModalDialog) {
+      debugPanelModalDialog.style.position = 'fixed';
+      debugPanelModalDialog.style.zIndex = '2147483647';
+    }
+    debugPanelModalRoot.classList.remove('hidden');
+    debugPanelModalRoot.setAttribute('aria-hidden', 'false');
+    syncDebugModalScrollLock();
+  }
+
+  function closeDebugPanelModal() {
+    if (!debugPanelModalRoot) return;
+    debugPanelModalRoot.classList.add('hidden');
+    debugPanelModalRoot.setAttribute('aria-hidden', 'true');
+    syncDebugModalScrollLock();
+  }
+
   function ensureAutonomyReadinessModalRootOnBody() {
     if (!autonomyReadinessModalRoot || !document.body) return;
     if (autonomyReadinessModalRoot.parentElement !== document.body) {
@@ -3699,6 +3743,8 @@ document.addEventListener("DOMContentLoaded", () => {
       autonomyReadinessModalDialog.style.position = 'fixed';
       autonomyReadinessModalDialog.style.zIndex = '2147483647';
     }
+    if (autonomyReadinessModalMeta) autonomyReadinessModalMeta.textContent = autonomyReadinessMeta ? autonomyReadinessMeta.textContent : '--';
+    if (autonomyReadinessModalBody) autonomyReadinessModalBody.innerHTML = autonomyReadinessBody ? autonomyReadinessBody.innerHTML : '--';
     autonomyReadinessModalRoot.classList.remove('hidden');
     autonomyReadinessModalRoot.setAttribute('aria-hidden', 'false');
     syncDebugModalScrollLock();
@@ -3801,7 +3847,10 @@ document.addEventListener("DOMContentLoaded", () => {
   }
 
   function toggleChatStanceDebugPanel() {
-    openChatStanceDebugModal();
+    if (!chatStanceDebugBody) return;
+    const nextHidden = !chatStanceDebugBody.classList.contains('hidden');
+    chatStanceDebugBody.classList.toggle('hidden', nextHidden);
+    if (chatStanceDebugCaret) chatStanceDebugCaret.textContent = nextHidden ? '▾' : '▴';
   }
 
   function ensureChatStanceModalRootOnBody() {
@@ -3928,7 +3977,10 @@ document.addEventListener("DOMContentLoaded", () => {
   }
 
   function toggleSubstrateReviewDebugPanel() {
-    openSubstrateReviewModal();
+    if (!substrateReviewDebugBody) return;
+    const nextHidden = !substrateReviewDebugBody.classList.contains('hidden');
+    substrateReviewDebugBody.classList.toggle('hidden', nextHidden);
+    if (substrateReviewDebugCaret) substrateReviewDebugCaret.textContent = nextHidden ? '▾' : '▴';
   }
 
   function clearSelfExperimentsDebugPanel() {
@@ -3940,7 +3992,10 @@ document.addEventListener("DOMContentLoaded", () => {
   }
 
   function toggleSelfExperimentsDebugPanel() {
-    openSelfExperimentsModal();
+    if (!selfExperimentsDebugBody) return;
+    const nextHidden = !selfExperimentsDebugBody.classList.contains('hidden');
+    selfExperimentsDebugBody.classList.toggle('hidden', nextHidden);
+    if (selfExperimentsDebugCaret) selfExperimentsDebugCaret.textContent = nextHidden ? '▾' : '▴';
   }
 
   function updateSelfExperimentsDebugPanel(payload) {
@@ -4210,13 +4265,18 @@ document.addEventListener("DOMContentLoaded", () => {
   }
 
   function clearAutonomyReadinessPanel() {
+    if (autonomyReadinessBody) autonomyReadinessBody.classList.add('hidden');
+    if (autonomyReadinessCaret) autonomyReadinessCaret.textContent = '▾';
     if (autonomyReadinessMeta) autonomyReadinessMeta.textContent = 'No autonomy readiness snapshot loaded.';
     if (autonomyReadinessOverview) autonomyReadinessOverview.textContent = 'No data yet.';
     if (autonomyReadinessWarnings) autonomyReadinessWarnings.textContent = 'No warnings.';
   }
 
   function toggleAutonomyReadinessPanel() {
-    openAutonomyReadinessModal();
+    if (!autonomyReadinessBody) return;
+    const nextHidden = !autonomyReadinessBody.classList.contains('hidden');
+    autonomyReadinessBody.classList.toggle('hidden', nextHidden);
+    if (autonomyReadinessCaret) autonomyReadinessCaret.textContent = nextHidden ? '▾' : '▴';
   }
 
   function updateAutonomyReadinessPanel(snapshot) {
@@ -4285,7 +4345,10 @@ document.addEventListener("DOMContentLoaded", () => {
   }
 
   function toggleRecallCanaryPanel() {
-    openRecallCanaryModal();
+    if (!recallCanaryBody) return;
+    const nextHidden = !recallCanaryBody.classList.contains('hidden');
+    recallCanaryBody.classList.toggle('hidden', nextHidden);
+    if (recallCanaryCaret) recallCanaryCaret.textContent = nextHidden ? '▾' : '▴';
   }
 
   function toggleWorldPulsePanel() {
@@ -5000,15 +5063,24 @@ document.addEventListener("DOMContentLoaded", () => {
   }
 
   function toggleMemoryPanel() {
-    openMemoryDebugModal();
+    if (!memoryPanelBody) return;
+    const nextHidden = !memoryPanelBody.classList.contains('hidden');
+    memoryPanelBody.classList.toggle('hidden', nextHidden);
+    if (memoryPanelCaret) memoryPanelCaret.textContent = nextHidden ? '▾' : '▴';
   }
 
   function toggleAgentTraceDebugPanel() {
-    openAgentTraceModal(lastAgentTraceSummary, lastAgentTraceMeta);
+    if (!agentTraceDebugBody) return;
+    const nextHidden = !agentTraceDebugBody.classList.contains('hidden');
+    agentTraceDebugBody.classList.toggle('hidden', nextHidden);
+    if (agentTraceDebugCaret) agentTraceDebugCaret.textContent = nextHidden ? '▾' : '▴';
   }
 
   function toggleAutonomyDebugPanel() {
-    openAutonomyDebugModal();
+    if (!autonomyDebugBody) return;
+    const nextHidden = !autonomyDebugBody.classList.contains('hidden');
+    autonomyDebugBody.classList.toggle('hidden', nextHidden);
+    if (autonomyDebugCaret) autonomyDebugCaret.textContent = nextHidden ? '▾' : '▴';
   }
 
   function isAttentionNotification(notification) {
@@ -7812,7 +7884,10 @@ document.addEventListener("DOMContentLoaded", () => {
     debugButton.className = 'rounded-full border border-violet-400/40 bg-violet-500/20 px-2 py-1 text-[10px] font-semibold text-violet-100 hover:bg-violet-500/30';
     debugButton.textContent = 'Open debug';
     debugButton.addEventListener('click', () => {
-      openAutonomyDebugModal();
+      openDebugPanelModal();
+      if (autonomyDebugPanel) autonomyDebugPanel.classList.remove('hidden');
+      if (autonomyDebugBody) autonomyDebugBody.classList.remove('hidden');
+      if (autonomyDebugCaret) autonomyDebugCaret.textContent = '▴';
     });
     panel.appendChild(debugButton);
     return panel;
@@ -9256,6 +9331,28 @@ document.addEventListener("DOMContentLoaded", () => {
   if (memoryDebugModalDialog) {
     memoryDebugModalDialog.addEventListener('click', (event) => event.stopPropagation());
   }
+  ensureDebugPanelModalRootOnBody();
+  if (debugPanelOpenModal) {
+    debugPanelOpenModal.addEventListener('click', (event) => {
+      event.preventDefault();
+      event.stopPropagation();
+      openDebugPanelModal();
+    });
+  }
+  if (debugPanelModalClose) {
+    debugPanelModalClose.addEventListener('click', closeDebugPanelModal);
+  }
+  if (debugPanelModalBackdrop) {
+    debugPanelModalBackdrop.addEventListener('click', closeDebugPanelModal);
+  }
+  if (debugPanelModalRoot) {
+    debugPanelModalRoot.addEventListener('click', (event) => {
+      if (event.target === debugPanelModalRoot) closeDebugPanelModal();
+    });
+  }
+  if (debugPanelModalDialog) {
+    debugPanelModalDialog.addEventListener('click', (event) => event.stopPropagation());
+  }
   if (agentTraceDebugToggle) {
     agentTraceDebugToggle.addEventListener('click', toggleAgentTraceDebugPanel);
   }
@@ -9788,6 +9885,10 @@ document.addEventListener("DOMContentLoaded", () => {
     }
     if (event.key === 'Escape' && autonomyReadinessModalRoot && !autonomyReadinessModalRoot.classList.contains('hidden')) {
       closeAutonomyReadinessModal();
+      return;
+    }
+    if (event.key === 'Escape' && debugPanelModalRoot && !debugPanelModalRoot.classList.contains('hidden')) {
+      closeDebugPanelModal();
       return;
     }
     if (event.key === 'Escape' && chatStanceDebugModalRoot && !chatStanceDebugModalRoot.classList.contains('hidden')) {

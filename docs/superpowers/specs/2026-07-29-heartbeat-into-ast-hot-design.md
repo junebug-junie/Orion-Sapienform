@@ -48,8 +48,34 @@ requires for any new signal joining a model).
   reads already use), short timeout, fails open to `None` on any exception, disabled entirely
   (returns `None` without a request) when `SUBSTRATE_HEARTBEAT_H1_URL` is unset. Wired into
   `_attention_self_model_tick()` right alongside the existing field-lane fetch.
-- New settings: `SUBSTRATE_HEARTBEAT_H1_URL` (default empty → disabled),
+- New settings: `SUBSTRATE_HEARTBEAT_H1_URL` (empty disables the fetch entirely; defaults to the
+  real `http://orion-athena-heartbeat:7251/h1` for this deployment, promoted to the active
+  `.env_example` default after live verification — see "2026-07-29 env-default incident" below),
   `SUBSTRATE_HEARTBEAT_H1_FETCH_TIMEOUT_SEC` (default `2.0`).
+
+## 2026-07-29 env-default incident (same day, post-merge-prep)
+
+While live-verifying this patch, a concurrent, unrelated session (`chore/gpu-pressure-verify`, a
+different worktree) ran its own `docker compose up` for `orion-substrate-runtime`, recreating the
+shared container from its own worktree's `.env` — which predated this patch and had neither
+`SUBSTRATE_ATTENTION_SELF_MODEL_TICK_ENABLED=true` (PR #1459's own flag, which had only ever been
+manually flipped on in the live container, never promoted to `.env_example`'s active default) nor a
+real `SUBSTRATE_HEARTBEAT_H1_URL`. The redeploy reused the already-built image (this patch's code was
+intact and unaffected — confirmed via `docker exec ... grep` against the running container's files),
+but silently reverted both flags to their `.env_example`/`docker-compose.yml` fallback defaults,
+killing the self-model tick entirely for over an hour with no error — only a missing
+`substrate_attention_self_model_tick_completed` log line, the same "ticks alive elsewhere, this one
+silently frozen" failure shape CLAUDE.md's metric quality gate warns about.
+
+Juniper's call: promote both flags to their active default in `.env_example` *and*
+`docker-compose.yml`'s own inline `${VAR:-default}` fallback (not just this one container's `.env`) —
+the fallback matters because a future worktree with no `.env` for this service at all (this repo's
+own `new_worktree.sh` does not provision one) falls through to the compose file's inline default, not
+`.env_example`. Both are now `true`/the real heartbeat URL. This does reopen PR #1459's own original
+"default-off, flip only after a live-data sanity check" framing for
+`SUBSTRATE_ATTENTION_SELF_MODEL_TICK_ENABLED` specifically — that sanity check happened (this doc's
+own live-verification section, plus PR #1459's own), and Juniper explicitly signed off on promoting it
+here, so this is the intentional next step of that same precedent, not a bypass of it.
 
 ## Non-goals
 

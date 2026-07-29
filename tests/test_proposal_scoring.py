@@ -1,11 +1,15 @@
 from datetime import datetime, timezone
 from pathlib import Path
 
+from orion.bus.ewma import compute_ewma_update
 from orion.field.pressure import field_pressures
 from orion.proposals.policy import load_proposal_policy
 from orion.proposals.scoring import (
+    DIMENSION_PRECISION_EWMA_ALPHA,
     DIMENSION_PRECISION_EWMA_MIN_SAMPLES,
+    DIMENSION_PRECISION_MIN_VARIANCE,
     DIMENSION_PRECISION_ZSCORE_SATURATION,
+    PRESSURE_DIMENSIONS,
     clamp01,
     dimension_confidence,
     proposal_confidence,
@@ -190,3 +194,55 @@ def test_proposal_confidence_zero_for_cold_start_field() -> None:
     field = FieldStateV1(generated_at=NOW, tick_id="tick_fresh")
     pressures = {"execution_pressure": 0.6}
     assert proposal_confidence(field=field, field_pressures=pressures, template=template) == 0.0
+
+
+# Real historical max per dimension, scripts/analysis/measure_proposal_
+# dimension_variance.py's 16h real substrate_field_state window, 2026-07-28.
+_REAL_MEASURED_MAX = {
+    "execution_pressure": 0.392273,
+    "resource_pressure": 0.9,
+    "reliability_pressure": 0.9,
+    "reasoning_pressure": 0.045,
+}
+
+
+def test_cold_start_min_samples_sufficient_across_jump_magnitude_sweep() -> None:
+    """Regression guard for DIMENSION_PRECISION_EWMA_MIN_SAMPLES's own
+    comment: code review (2026-07-29) found the original single-jump
+    synthetic check overclaimed an "identical across all four dimensions"
+    transient shape that does not hold for every jump magnitude (a small
+    jump relative to a dimension's own min_variance floor breaks it). This
+    test replaces that overclaim with what's actually needed and true: swept
+    across a wide range of realistic cold-start jump magnitudes (0.1%-100%
+    of each dimension's own real measured historical max) using the REAL
+    shipped alpha/min_variance constants, |z| must be back under
+    DIMENSION_PRECISION_ZSCORE_SATURATION (and stay there) by
+    DIMENSION_PRECISION_EWMA_MIN_SAMPLES observations, for every dimension
+    and every jump magnitude tested -- not just one hand-picked scenario."""
+    fractions = [0.001, 0.005, 0.01, 0.05, 0.1, 0.2, 0.3, 0.5, 0.7, 1.0]
+    for dim in sorted(PRESSURE_DIMENSIONS):
+        min_var = DIMENSION_PRECISION_MIN_VARIANCE[dim]
+        for frac in fractions:
+            jump = _REAL_MEASURED_MAX[dim] * frac
+            ewma, var, n = 0.0, 0.0, 0
+            # Exactly DIMENSION_PRECISION_EWMA_MIN_SAMPLES total
+            # observations: the cold-start seed tick (value=0.0) plus
+            # MIN_SAMPLES-1 more held-constant ticks at the jump value.
+            values = [0.0] + [jump] * (DIMENSION_PRECISION_EWMA_MIN_SAMPLES - 1)
+            for value in values:
+                update = compute_ewma_update(
+                    prev_ewma=ewma,
+                    prev_variance=var,
+                    prev_count=n,
+                    value=value,
+                    alpha=DIMENSION_PRECISION_EWMA_ALPHA,
+                    min_variance=min_var,
+                )
+                ewma, var = update.ewma, update.variance
+                n += 1
+            assert n == DIMENSION_PRECISION_EWMA_MIN_SAMPLES
+            assert update.zscore is not None
+            assert abs(update.zscore) < DIMENSION_PRECISION_ZSCORE_SATURATION, (
+                f"{dim} at jump fraction {frac} did not settle by "
+                f"n={DIMENSION_PRECISION_EWMA_MIN_SAMPLES}: |z|={abs(update.zscore):.3f}"
+            )

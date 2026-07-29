@@ -107,10 +107,10 @@ import logging
 import math
 import os
 import time
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
-from typing import Any, Optional
+from typing import Optional
 
 from orion.field.pressure import field_pressures
 from orion.proposals.scoring import PRESSURE_DIMENSIONS

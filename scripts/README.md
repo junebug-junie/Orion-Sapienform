@@ -67,18 +67,24 @@ bus_core_health_watchdog: OK -- no crash-loop signature.
 ```
 
 ## Disk Threshold Watchdog (Hub Pending Attention on low disk)
-Nothing previously watched host disk usage on `/mnt/docker`, `/mnt/scripts/`, and `/mnt/telemetry` (three distinct physical mounts on this host, confirmed via `df -h`) and surfaced a breach anywhere an operator would see it. This script checks `shutil.disk_usage()` on each path; the first time a path crosses `--threshold-pct` (default 90), it fires one `orion-notify` `/attention/request` (the same mechanism `orion-mesh-guardian` uses), which lands as a Hub Pending Attention card. Debounced via local state so it does not refire every tick while still breached — recovery clears the debounce silently (Pending Attention cards are ack'd by a human, not auto-resolved). A path that can't be statted at all (permission error, vanished mount) also fires, at `severity=error`. Requires `PYTHONPATH=.` (imports `orion.notify.client`) and `orion-notify` reachable at `NOTIFY_BASE_URL` (default `http://localhost:7140`, the host-reachable port — not the Docker-internal hostname).
+Nothing previously watched host disk usage on `/`, `/mnt/docker`, `/mnt/scripts/`, `/mnt/telemetry`, `/mnt/postgres`, `/mnt/graphdb`, `/mnt/storage-warm`, and `/mnt/storage-lukewarm` (eight distinct physical mounts on this host, confirmed via `df -h`) and surfaced a breach anywhere an operator would see it. This script checks `shutil.disk_usage()` on each path; the first time a path crosses `--threshold-pct` (default 90), it fires one `orion-notify` `/attention/request` (the same mechanism `orion-mesh-guardian` uses), which lands as a Hub Pending Attention card. Debounced via local state so it does not refire every tick while still breached — recovery clears the debounce silently (Pending Attention cards are ack'd by a human, not auto-resolved). A path that can't be statted at all (permission error, vanished mount) also fires, at `severity=error`. Requires `PYTHONPATH=.` (imports `orion.notify.client`) and `orion-notify` reachable at `NOTIFY_BASE_URL` (default `http://localhost:7140`, the host-reachable port — not the Docker-internal hostname).
 ```bash
 PYTHONPATH=. python scripts/disk_threshold_watchdog.py
 # or: make disk-threshold-watchdog
 ```
 Expected output when all paths are under threshold:
 ```
-disk_threshold_watchdog: /mnt/docker status=ok used=79.6%
-disk_threshold_watchdog: /mnt/scripts status=ok used=6.0%
+disk_threshold_watchdog: / status=ok used=20.1%
+disk_threshold_watchdog: /mnt/docker status=ok used=81.1%
+disk_threshold_watchdog: /mnt/scripts status=ok used=6.8%
 disk_threshold_watchdog: /mnt/telemetry status=ok used=18.6%
+disk_threshold_watchdog: /mnt/postgres status=ok used=14.8%
+disk_threshold_watchdog: /mnt/graphdb status=ok used=0.0%
+disk_threshold_watchdog: /mnt/storage-warm status=ok used=34.1%
+disk_threshold_watchdog: /mnt/storage-lukewarm status=ok used=7.4%
 disk_threshold_watchdog: OK -- all paths under threshold.
 ```
+Note `/mnt/docker` runs closest to the default 90% threshold on this host of the eight monitored mounts -- expect it to be first in line for a real Pending Attention card.
 
 **One-time prerequisite** (the default state-file directory is `root:root`
 755 on this host, same class of gotcha documented for the bus-core
@@ -88,12 +94,18 @@ sudo mkdir -p /mnt/telemetry/orion-athena/disk-watchdog
 sudo chown "$(whoami)":"$(whoami)" /mnt/telemetry/orion-athena/disk-watchdog
 ```
 
-**Cron install** (run from repo root, venv activated so `python3` resolves
-to the venv interpreter with `orion-notify`'s dependencies installed):
+**Cron install.** Unlike `bus-core-health-watchdog` (zero non-stdlib
+imports), this script imports `orion.notify.client` -> pydantic/requests,
+which only exist in the repo venv -- and cron runs with its own minimal
+`PATH`, not an activated shell, so a bare `make disk-threshold-watchdog`
+line resolves `python3` to the system interpreter and fails with
+`ModuleNotFoundError: No module named 'pydantic'`. The `PATH=` prefix
+below (same pattern already used by the concept-relation-digest cron
+entry) is required, not optional:
 ```bash
 crontab -e
 # then paste:
-*/15 * * * * cd /mnt/scripts/Orion-Sapienform && make disk-threshold-watchdog >> /mnt/scripts/Orion-Sapienform/logs/orion-disk-threshold-watchdog.log 2>&1
+*/15 * * * * cd /mnt/scripts/Orion-Sapienform && PATH=/mnt/scripts/Orion-Sapienform/venv/bin:$PATH make disk-threshold-watchdog >> /mnt/scripts/Orion-Sapienform/logs/orion-disk-threshold-watchdog.log 2>&1
 ```
 
 ## Daily Schedule Collision Check (orion-actions cadences)

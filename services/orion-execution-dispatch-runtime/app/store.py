@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import json
 import logging
-from datetime import datetime, timezone
+from datetime import date, datetime, time, timedelta, timezone
 
 from psycopg2.extras import Json
 from pydantic import ValidationError
@@ -341,6 +341,173 @@ class ExecutionDispatchRuntimeStore:
                 {"today_start": today_start_utc},
             ).mappings().first()
         return float(row["total_risk"]) if row else 0.0
+
+    def sum_uncapped_risk_for_day(self, day_start_utc: datetime, day_end_utc: datetime) -> float:
+        """Real, *uncapped* risk demand for one UTC calendar day -- the
+        self-calibrating daily risk ceiling's own feedstock, NOT the same
+        thing as sum_risk_dispatched_today() (which stays as-is, still the
+        right read for "what did we actually spend against the cap this
+        tick").
+
+        Why this has to be a separate method, not a reuse of
+        sum_risk_dispatched_today(): once the derived cap enforces a real
+        ceiling (this patch), actual dispatched risk is right-censored at
+        whatever that ceiling was that day -- it can never exceed it, so it
+        structurally cannot report true demand back into the thing that sets
+        the ceiling. Feeding a capped value into next day's baseline would
+        recreate the exact "clamped value masks true magnitude" disease this
+        whole fix exists to kill, one layer down (the fixed
+        ORION_DISPATCH_MAX_RISK_PER_DAY=10.0 constant clamping real demand at
+        exactly 10.00/day on 2026-07-26 and 2026-07-27, only visible once
+        advisory-only briefly lifted the clamp on 2026-07-28 and real demand
+        turned out to be 817.65 -- 80x the enforced number).
+
+        Sums risk_score across every candidate that existed that day
+        regardless of whether it actually got sent: `dispatch_status ==
+        'prepared_for_dispatch'` entries in `candidates` (a candidate that
+        was ready to send but didn't fit that tick's remaining budget --
+        build_execution_dispatch_frame/worker.py never retries these, so
+        this is the only place their risk_score is ever counted) PLUS every
+        entry already in `dispatched_candidates` (already real spend, and
+        every entry there already carries `dispatch_status == 'dispatched'`
+        by application-level construction -- every append site in
+        worker.py's `_send_one` sets it explicitly; nothing at the Pydantic
+        schema level itself forbids a different status from landing there).
+        Together this is real demand for the day,
+        uninfluenced by whatever cap happened to be enforced that day.
+        """
+        with self._engine.connect() as conn:
+            row = (
+                conn.execute(
+                    text(
+                        """
+                        SELECT COALESCE(SUM(total_risk), 0.0) AS total_risk
+                        FROM (
+                            SELECT (cand.value ->> 'risk_score')::float AS total_risk
+                            FROM substrate_execution_dispatch_frames f
+                            CROSS JOIN LATERAL jsonb_array_elements(
+                                f.dispatch_frame_json -> 'candidates'
+                            ) AS cand(value)
+                            WHERE f.created_at >= :day_start
+                              AND f.created_at < :day_end
+                              AND jsonb_typeof(f.dispatch_frame_json -> 'candidates') = 'array'
+                              AND cand.value ->> 'dispatch_status' = 'prepared_for_dispatch'
+
+                            UNION ALL
+
+                            SELECT (cand.value ->> 'risk_score')::float AS total_risk
+                            FROM substrate_execution_dispatch_frames f
+                            CROSS JOIN LATERAL jsonb_array_elements(
+                                f.dispatch_frame_json -> 'dispatched_candidates'
+                            ) AS cand(value)
+                            WHERE f.created_at >= :day_start
+                              AND f.created_at < :day_end
+                              AND jsonb_typeof(f.dispatch_frame_json -> 'dispatched_candidates') = 'array'
+                        ) AS combined
+                        """
+                    ),
+                    {"day_start": day_start_utc, "day_end": day_end_utc},
+                )
+                .mappings()
+                .first()
+            )
+        return float(row["total_risk"]) if row and row["total_risk"] is not None else 0.0
+
+    def load_latest_daily_risk_baseline(self) -> dict | None:
+        """Latest persisted daily-risk EWMA baseline state, read off whichever
+        dispatch frame was saved most recently (every saved frame carries the
+        current baseline state forward, per ExecutionDispatchFrameV1's own
+        docstring, so this is correct regardless of which tick's frame is
+        newest). Returns None only when there are no dispatch frame rows at
+        all (a truly first-ever tick); a real row with these fields absent
+        (a pre-migration row from before this patch) degrades to the
+        cold-start defaults (ewma/var=0.0, n=0, last_day=None), not None --
+        the caller can't tell "no history" from "history predates this
+        field" any other way, and both should behave the same: fall through
+        to the cold-start seed path.
+        """
+        with self._engine.connect() as conn:
+            row = (
+                conn.execute(
+                    text(
+                        """
+                        SELECT
+                            dispatch_frame_json ->> 'daily_risk_baseline_ewma' AS ewma,
+                            dispatch_frame_json ->> 'daily_risk_baseline_ewma_var' AS var,
+                            dispatch_frame_json ->> 'daily_risk_baseline_ewma_n' AS n,
+                            dispatch_frame_json ->> 'daily_risk_baseline_last_day' AS last_day
+                        FROM substrate_execution_dispatch_frames
+                        ORDER BY created_at DESC
+                        LIMIT 1
+                        """
+                    )
+                )
+                .mappings()
+                .first()
+            )
+        if not row:
+            return None
+        return {
+            "daily_risk_baseline_ewma": float(row["ewma"]) if row["ewma"] is not None else 0.0,
+            "daily_risk_baseline_ewma_var": float(row["var"]) if row["var"] is not None else 0.0,
+            "daily_risk_baseline_ewma_n": int(row["n"]) if row["n"] is not None else 0,
+            "daily_risk_baseline_last_day": row["last_day"],
+        }
+
+    def most_recent_closed_day_with_data(
+        self, before_day_start_utc: datetime
+    ) -> tuple[str, float] | None:
+        """One-time cold-start seed: the most recent UTC calendar day
+        strictly before `before_day_start_utc` that has any dispatch frames
+        with real candidate data, and that day's real uncapped risk total
+        (via sum_uncapped_risk_for_day). Used only when the baseline has
+        never been seeded (load_latest_daily_risk_baseline() reports n==0,
+        last_day is None) -- seeds sample #1 from real closed-day history
+        (2026-07-28's 817.65) instead of inventing a hardcoded starting
+        constant. Returns None if no historical day has any real candidate
+        data (should never actually trigger against this repo's real
+        history; the caller falls back to the static
+        ORION_DISPATCH_MAX_RISK_PER_DAY setting in that case).
+
+        `created_at AT TIME ZONE 'UTC'` (not `date_trunc`) so this is robust
+        to whatever the connecting session's own timezone is configured as
+        (confirmed Etc/UTC live, but not worth relying on) -- converts the
+        stored timestamptz to a UTC wall-clock timestamp before truncating
+        to a date, matching this file's own explicit-UTC-bounds convention
+        elsewhere.
+        """
+        with self._engine.connect() as conn:
+            row = (
+                conn.execute(
+                    text(
+                        """
+                        SELECT (created_at AT TIME ZONE 'UTC')::date AS day
+                        FROM substrate_execution_dispatch_frames
+                        WHERE created_at < :before_day_start
+                          AND (
+                            jsonb_array_length(
+                                COALESCE(dispatch_frame_json -> 'candidates', '[]'::jsonb)
+                            ) > 0
+                            OR jsonb_array_length(
+                                COALESCE(dispatch_frame_json -> 'dispatched_candidates', '[]'::jsonb)
+                            ) > 0
+                          )
+                        ORDER BY created_at DESC
+                        LIMIT 1
+                        """
+                    ),
+                    {"before_day_start": before_day_start_utc},
+                )
+                .mappings()
+                .first()
+            )
+        if not row or row["day"] is None:
+            return None
+        day: date = row["day"]
+        day_start = datetime.combine(day, time.min, tzinfo=timezone.utc)
+        day_end = day_start + timedelta(days=1)
+        total = self.sum_uncapped_risk_for_day(day_start, day_end)
+        return (day.isoformat(), total)
 
     def latest_bus_synaptic_prediction_error(self) -> float | None:
         """Real, live surprise signal for `ActionOutcomeEmitV1.surprise` -- replaces the

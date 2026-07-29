@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import math
 import sys
 from collections import deque
 from datetime import datetime, timezone
@@ -115,7 +116,16 @@ def _make_worker(monkeypatch) -> ExecutionDispatchRuntimeWorker:
     import app.settings as settings_mod
 
     settings_mod._settings = None
-    return ExecutionDispatchRuntimeWorker()
+    worker = ExecutionDispatchRuntimeWorker()
+    # Default: no baseline history anywhere and no historical closed day to
+    # seed from -- _derive_daily_risk_cap degrades to n==0's static fallback
+    # (settings.orion_dispatch_max_risk_per_day), preserving every existing
+    # risk-budget test's behavior unchanged. Tests that specifically exercise
+    # the EWMA baseline override these explicitly.
+    worker._store.load_latest_daily_risk_baseline = MagicMock(return_value=None)
+    worker._store.most_recent_closed_day_with_data = MagicMock(return_value=None)
+    worker._store.sum_uncapped_risk_for_day = MagicMock(return_value=0.0)
+    return worker
 
 
 def _candidate(
@@ -138,10 +148,12 @@ def _candidate(
     )
 
 
-def _frame_with_candidates(*candidates: ExecutionDispatchCandidateV1) -> ExecutionDispatchFrameV1:
+def _frame_with_candidates(
+    *candidates: ExecutionDispatchCandidateV1, generated_at: datetime = NOW
+) -> ExecutionDispatchFrameV1:
     return ExecutionDispatchFrameV1(
         frame_id="execution.dispatch.frame:test:execution_dispatch_policy.v1",
-        generated_at=NOW,
+        generated_at=generated_at,
         source_policy_frame_id="policy.frame:test",
         source_proposal_frame_id="proposal.frame:test",
         source_field_tick_id="field.tick:test",
@@ -684,11 +696,14 @@ async def test_send_prepared_candidates_skips_when_daily_risk_cap_reached_and_en
 async def test_send_prepared_candidates_dispatches_past_reached_cap_when_advisory_only(
     monkeypatch,
 ) -> None:
-    """2026-07-28 default: the cap number itself is an unproven multiplier, not
-    derived from real risk_score variance -- advisory_only=True (the default)
-    must not withhold a real dispatch just because the guessed ceiling was hit."""
+    """2026-07-29: advisory_only is no longer the default (enforcement is back
+    on, now against a derived EWMA ceiling instead of the old hand-picked
+    static number) -- it's an explicit operator override an operator must opt
+    into. When set, it must still behave exactly as before: log that the cap
+    was reached, but never withhold a real dispatch on it."""
     worker = _make_worker(monkeypatch)
-    assert worker._settings.orion_dispatch_risk_cap_advisory_only is True
+    assert worker._settings.orion_dispatch_risk_cap_advisory_only is False
+    worker._settings.orion_dispatch_risk_cap_advisory_only = True
     worker._store.sum_risk_dispatched_today = MagicMock(
         return_value=worker._settings.orion_dispatch_max_risk_per_day
     )
@@ -761,4 +776,224 @@ async def test_send_prepared_candidates_noop_when_nothing_prepared(monkeypatch) 
 
     updated = await worker._send_prepared_candidates(frame)
 
-    assert updated is frame
+    # No longer strict identity: every return path (including this no-op one)
+    # now stamps the current daily_risk_baseline_* fields via model_copy so
+    # the next tick's baseline lookup always finds the latest state. With no
+    # baseline history (the _make_worker default), those fields are just the
+    # cold-start defaults, so the frame is value-equal, not the same object.
+    assert updated == frame.model_copy(
+        update={
+            "daily_risk_baseline_ewma": 0.0,
+            "daily_risk_baseline_ewma_var": 0.0,
+            "daily_risk_baseline_ewma_n": 0,
+            "daily_risk_baseline_last_day": None,
+        }
+    )
+    assert updated.dispatch_attempted is False
+
+
+# ---------------------------------------------------------------------------
+# Self-calibrating daily risk ceiling (2026-07-29)
+# ---------------------------------------------------------------------------
+
+
+def test_derive_daily_risk_cap_falls_back_to_static_when_no_history_at_all(monkeypatch) -> None:
+    """Truly first-ever tick: no baseline row anywhere, and no historical
+    closed day to seed from either. Must fall back to the static
+    orion_dispatch_max_risk_per_day setting, not error or default to 0."""
+    worker = _make_worker(monkeypatch)
+    generated_at = datetime(2026, 7, 29, 3, 0, tzinfo=timezone.utc)
+
+    cap, fields = worker._derive_daily_risk_cap(generated_at)
+
+    assert fields["daily_risk_baseline_ewma_n"] == 0
+    assert fields["daily_risk_baseline_last_day"] is None
+    assert cap == worker._settings.orion_dispatch_max_risk_per_day
+
+
+def test_derive_daily_risk_cap_seeds_from_historical_closed_day(monkeypatch) -> None:
+    """Cold-start seeding: n==0, last_day=None, but a real historical closed
+    day (2026-07-28's real 817.65) exists. Sample #1 comes from that real
+    uncapped total, not a hardcoded starting constant, and the interim cap
+    (n==1, below DAILY_RISK_BASELINE_MIN_SAMPLES) is the disclosed 2x
+    margin."""
+    worker = _make_worker(monkeypatch)
+    generated_at = datetime(2026, 7, 29, 3, 0, tzinfo=timezone.utc)
+    worker._store.most_recent_closed_day_with_data = MagicMock(
+        return_value=("2026-07-28", 817.65)
+    )
+
+    cap, fields = worker._derive_daily_risk_cap(generated_at)
+
+    worker._store.most_recent_closed_day_with_data.assert_called_once_with(
+        datetime(2026, 7, 29, 0, 0, tzinfo=timezone.utc)
+    )
+    assert fields["daily_risk_baseline_ewma"] == pytest.approx(817.65)
+    assert fields["daily_risk_baseline_ewma_var"] == 0.0
+    assert fields["daily_risk_baseline_ewma_n"] == 1
+    # last_day is set to the day of THIS tick, not the seeded day -- see
+    # _derive_daily_risk_cap's own docstring on why (avoiding a real
+    # double-count on the very next tick of the same day).
+    assert fields["daily_risk_baseline_last_day"] == "2026-07-29"
+    assert cap == pytest.approx(817.65 * 2.0)
+
+
+def test_derive_daily_risk_cap_carries_forward_within_same_day(monkeypatch) -> None:
+    """Multiple ticks the same UTC day must not re-derive/re-absorb anything
+    -- sum_uncapped_risk_for_day must not even be called."""
+    worker = _make_worker(monkeypatch)
+    generated_at = datetime(2026, 7, 29, 15, 0, tzinfo=timezone.utc)
+    worker._store.load_latest_daily_risk_baseline = MagicMock(
+        return_value={
+            "daily_risk_baseline_ewma": 140.0,
+            "daily_risk_baseline_ewma_var": 4000.0,
+            "daily_risk_baseline_ewma_n": 2,
+            "daily_risk_baseline_last_day": "2026-07-29",
+        }
+    )
+
+    cap, fields = worker._derive_daily_risk_cap(generated_at)
+
+    worker._store.sum_uncapped_risk_for_day.assert_not_called()
+    assert fields["daily_risk_baseline_ewma_n"] == 2
+    assert fields["daily_risk_baseline_ewma"] == 140.0
+    assert cap == pytest.approx(140.0 + 3.0 * math.sqrt(4000.0))
+
+
+def test_derive_daily_risk_cap_rolls_over_exactly_once_per_day_boundary(monkeypatch) -> None:
+    """The real day-boundary update: absorbs the prior day's real uncapped
+    total into the EWMA exactly once, then a second call for the same
+    "today" (simulating the next tick reading back what the first tick would
+    have saved) must NOT re-absorb it a second time."""
+    worker = _make_worker(monkeypatch)
+    generated_at = datetime(2026, 7, 29, 3, 0, tzinfo=timezone.utc)
+    worker._store.load_latest_daily_risk_baseline = MagicMock(
+        return_value={
+            "daily_risk_baseline_ewma": 100.0,
+            "daily_risk_baseline_ewma_var": 0.0,
+            "daily_risk_baseline_ewma_n": 1,
+            "daily_risk_baseline_last_day": "2026-07-28",
+        }
+    )
+    worker._store.sum_uncapped_risk_for_day = MagicMock(return_value=200.0)
+
+    cap, fields = worker._derive_daily_risk_cap(generated_at)
+
+    worker._store.sum_uncapped_risk_for_day.assert_called_once_with(
+        datetime(2026, 7, 28, 0, 0, tzinfo=timezone.utc),
+        datetime(2026, 7, 29, 0, 0, tzinfo=timezone.utc),
+    )
+    assert fields["daily_risk_baseline_ewma_n"] == 2
+    assert fields["daily_risk_baseline_last_day"] == "2026-07-29"
+    assert fields["daily_risk_baseline_ewma"] == pytest.approx(140.0)  # 0.4*200 + 0.6*100
+    assert fields["daily_risk_baseline_ewma_var"] == pytest.approx(4000.0)  # 0.4*(100**2)
+    assert cap == pytest.approx(140.0 + 3.0 * math.sqrt(4000.0))
+
+    # Second tick, same "today" -- baseline now reflects what the first
+    # tick's frame would have persisted. Must be a pure carry-forward.
+    worker._store.load_latest_daily_risk_baseline = MagicMock(return_value=fields)
+    worker._store.sum_uncapped_risk_for_day.reset_mock()
+
+    cap2, fields2 = worker._derive_daily_risk_cap(generated_at)
+
+    worker._store.sum_uncapped_risk_for_day.assert_not_called()
+    assert fields2 == fields
+    assert cap2 == cap
+
+
+def test_derive_daily_risk_cap_uses_domain_variance_floor_not_shared_default(monkeypatch) -> None:
+    """A tiny real variance (e.g. two nearly-identical closed days) must be
+    floored at DAILY_RISK_BASELINE_MIN_VARIANCE (1.0), not orion/bus/
+    ewma.py's own shared default (1e-6) -- confirming the domain-specific
+    floor is actually wired through, not silently bypassed."""
+    worker = _make_worker(monkeypatch)
+    generated_at = datetime(2026, 7, 29, 3, 0, tzinfo=timezone.utc)
+    worker._store.load_latest_daily_risk_baseline = MagicMock(
+        return_value={
+            "daily_risk_baseline_ewma": 800.0,
+            "daily_risk_baseline_ewma_var": 1e-9,
+            "daily_risk_baseline_ewma_n": 2,
+            "daily_risk_baseline_last_day": "2026-07-29",
+        }
+    )
+
+    cap, _ = worker._derive_daily_risk_cap(generated_at)
+
+    assert cap == pytest.approx(
+        800.0 + 3.0 * math.sqrt(worker_mod.DAILY_RISK_BASELINE_MIN_VARIANCE)
+    )
+
+
+@pytest.mark.asyncio
+async def test_send_prepared_candidates_enforces_against_derived_cap(monkeypatch) -> None:
+    """The real, new behavior this patch adds at the integration level: with
+    the new default (advisory_only=False), a tick whose cumulative risk
+    would exceed the *derived* EWMA cap actually blocks -- mirrors
+    test_send_prepared_candidates_stops_at_first_candidate_exceeding_remaining_risk_budget
+    but sourced from a baseline instead of the static setting."""
+    worker = _make_worker(monkeypatch)
+    assert worker._settings.orion_dispatch_risk_cap_advisory_only is False
+    # n==1 -> derived cap is ewma*2.0 == 0.10, same numeric scenario as the
+    # static-setting version of this test.
+    worker._store.load_latest_daily_risk_baseline = MagicMock(
+        return_value={
+            "daily_risk_baseline_ewma": 0.05,
+            "daily_risk_baseline_ewma_var": 0.0,
+            "daily_risk_baseline_ewma_n": 1,
+            "daily_risk_baseline_last_day": NOW.date().isoformat(),
+        }
+    )
+    worker._store.sum_risk_dispatched_today = MagicMock(return_value=0.0)
+    worker._store.latest_bus_synaptic_prediction_error = MagicMock(return_value=0.1675)
+    worker._store.save_dispatch_result = MagicMock()
+    worker._store.load_dispatch_result_by_dispatch_id = MagicMock(return_value=None)
+    _patch_bus_and_client(
+        monkeypatch,
+        {
+            "dispatch:1": {"result": {"final_text": '{"observation": "a"}'}},
+            "dispatch:2": {"result": {"final_text": '{"observation": "b"}'}},
+        },
+    )
+    frame = _frame_with_candidates(
+        _candidate("dispatch:1", risk_score=0.06), _candidate("dispatch:2", risk_score=0.06)
+    )
+
+    updated = await worker._send_prepared_candidates(frame)
+
+    assert len(updated.dispatched_candidates) == 1
+    assert updated.dispatched_candidates[0].dispatch_id == "dispatch:1"
+    assert len(updated.candidates) == 1
+    assert updated.candidates[0].dispatch_id == "dispatch:2"
+    assert updated.daily_risk_baseline_ewma_n == 1
+    worker._store.save_dispatch_result.assert_called_once()
+
+
+@pytest.mark.asyncio
+async def test_send_prepared_candidates_stamps_baseline_fields_on_early_return_paths(
+    monkeypatch,
+) -> None:
+    """Every early-return path (theater tripwire here) still has to carry the
+    current baseline state forward onto the saved frame -- otherwise the
+    next tick's load_latest_daily_risk_baseline() would silently regress to
+    stale state whenever a tick happens to hit an early return."""
+    worker = _make_worker(monkeypatch)
+    worker._recent_dispatch_statuses = deque(
+        ["empty"] * 6 + ["success"] * 4, maxlen=worker_mod.THEATER_TRIPWIRE_WINDOW
+    )
+    worker._store.load_latest_daily_risk_baseline = MagicMock(
+        return_value={
+            "daily_risk_baseline_ewma": 140.0,
+            "daily_risk_baseline_ewma_var": 4000.0,
+            "daily_risk_baseline_ewma_n": 2,
+            "daily_risk_baseline_last_day": NOW.date().isoformat(),
+        }
+    )
+    worker._store.sum_risk_dispatched_today = MagicMock(return_value=0.0)
+    worker._notify.send = MagicMock()
+    _patch_bus_and_client(monkeypatch, {})
+    frame = _frame_with_candidates(_candidate("dispatch:1"))
+
+    updated = await worker._send_prepared_candidates(frame)
+
+    assert updated.daily_risk_baseline_ewma == 140.0
+    assert updated.daily_risk_baseline_ewma_n == 2

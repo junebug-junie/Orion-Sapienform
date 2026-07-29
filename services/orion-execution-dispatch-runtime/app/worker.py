@@ -2,12 +2,14 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import math
 from collections import deque
-from datetime import datetime, timezone
+from datetime import date, datetime, time, timedelta, timezone
 from pathlib import Path
 from uuid import uuid4
 
 from orion.autonomy.models import ActionOutcomeEmitV1
+from orion.bus.ewma import compute_ewma_update
 from orion.core.bus.async_service import OrionBusAsync
 from orion.core.bus.bus_schemas import BaseEnvelope, ServiceRef
 from orion.execution_dispatch.builder import (
@@ -43,6 +45,52 @@ THEATER_TRIPWIRE_EMPTY_THRESHOLD = 0.5
 # remaining_risk_budget is positive). This floor is a config-independent
 # backstop, not a claim any real candidate is actually this risky.
 MINIMUM_REAL_RISK_FLOOR = 0.01
+
+# 2026-07-29: self-calibrating daily risk ceiling. Replaces the fixed
+# ORION_DISPATCH_MAX_RISK_PER_DAY constant as the primary mechanism (that
+# setting is now only the no-history-at-all fallback, see settings.py's own
+# comment). Same EWMA-baseline shape already shipped for field-attention's
+# recent_perturbation caps (PR #1433) and execution_prediction_error's own
+# per-tick baseline (PR #1434), both on orion/bus/ewma.py::
+# compute_ewma_update -- new domain, not a new mechanism.
+#
+# alpha=0.4, not execution_prediction_error's 0.2: that baseline absorbs many
+# real samples a day (one execution-trajectory receipt batch per tick), so a
+# slower-moving average is appropriate there. This baseline gets AT MOST one
+# real sample per UTC calendar day (see _derive_daily_risk_cap) -- a much
+# sparser cadence needs faster adaptation to actually track real demand
+# instead of staying anchored to stale history for weeks.
+DAILY_RISK_BASELINE_ALPHA = 0.4
+# Do NOT reuse orion/bus/ewma.py's own default (_MIN_VARIANCE=1e-6) without
+# checking it against this domain's real scale -- that floor is calibrated
+# for orion-bus-mirror's real-time-gap-in-seconds domain and already
+# silently dominated execution_prediction_error's z-scores once before being
+# caught (see that function's own _EXECUTION_PREDICTION_ERROR_MIN_VARIANCE
+# comment in orion/substrate/prediction_error.py). Real daily uncapped risk
+# totals confirmed live in this repo's own Postgres history run O(1)-O(1000)
+# (4.4 on 2026-07-26 under the old enforced clamp, 817.65 uncapped on
+# 2026-07-28), not O(1e-11) or O(1) time-gaps-in-seconds -- a variance floor
+# of 1.0 (a minimum std-dev of 1.0 risk unit) is on the right order of
+# magnitude here: small enough that real day-to-day spread (once
+# DAILY_RISK_BASELINE_MIN_SAMPLES real samples exist) drives the z-score
+# rather than the floor, nonzero enough to guard the first non-cold-start
+# day's div-by-zero (prev_variance is exactly 0.0 straight out of a
+# single-sample seed). Revisit if real daily totals ever shift by orders of
+# magnitude from today's ~800/day.
+DAILY_RISK_BASELINE_MIN_VARIANCE = 1.0
+# Below this, don't trust the derived mean+variance yet -- a single sample
+# gives variance=0.0, so `mean + Z*sqrt(var)` collapses to just `mean`, no
+# real margin. Only one real closed day with real *uncapped* demand exists
+# as of this patch (2026-07-28: 817.65) -- 2 is the smallest value that
+# actually distinguishes "have a real spread" from "have one number".
+DAILY_RISK_BASELINE_MIN_SAMPLES = 2
+# Reuses this repo's already-established z>=3.0 "anomalous" convention, not
+# a fresh number: same constant as _BUS_SYNAPTIC_ZSCORE_SATURATION and
+# _EXECUTION_PREDICTION_ERROR_ZSCORE_SATURATION (orion/substrate/
+# prediction_error.py) and services/orion-hub/scripts/
+# bus_synaptic_graph_routes.py's anomalies() route.
+DAILY_RISK_BASELINE_Z = 3.0
+
 # ActionOutcomeEmitV1.summary lands in chat-visible evidence via
 # chat_stance.py's _project_recent_dispatch_actions -- bounded here at the
 # producer so nothing downstream needs to re-truncate raw model output.
@@ -170,33 +218,147 @@ class ExecutionDispatchRuntimeWorker:
             frame.dispatch_count,
         )
 
+    def _derive_daily_risk_cap(
+        self, frame_generated_at: datetime
+    ) -> tuple[float, dict[str, float | int | str | None]]:
+        """Real, self-calibrating daily risk ceiling. Returns (effective_cap,
+        baseline_fields) where baseline_fields is the (possibly updated)
+        daily_risk_baseline_* state to stamp onto the outgoing frame -- every
+        saved frame carries this forward (not just the ones that update it)
+        so the next call's store.load_latest_daily_risk_baseline() always
+        finds the latest state regardless of which tick's frame it reads.
+
+        Feeds on store.sum_uncapped_risk_for_day's *uncapped* real demand,
+        never on sum_risk_dispatched_today's actual spend -- see that
+        method's own docstring for why: once this cap enforces a real
+        ceiling, actual spend is right-censored at whatever the cap was that
+        day, so it cannot report true demand back into the thing that sets
+        the cap without recreating the exact "clamped value masks true
+        magnitude" bug this patch exists to kill, one layer down.
+
+        Day-rollover idempotency: `last_day` always tracks "the UTC calendar
+        day as of which this baseline was last updated" -- after ANY update
+        (cold-start seed or a real day-boundary rollover), `last_day` is set
+        to `today`, the day of the *tick that performed the update*, not the
+        day whose data was absorbed. This is deliberate, not a literal reading
+        of "set last_day to the seeded/closed day": setting it to the
+        absorbed day instead would make the very next tick (same real day,
+        ticks run every couple seconds) see `today != last_day` again and
+        re-absorb the SAME day's data a second time -- a real double-count,
+        not merely a redundant no-op. Setting `last_day = today` after every
+        update means the rollover branch only fires again once a tick's
+        `frame_generated_at` genuinely lands on a later calendar day than the
+        last update, which is the actual "did a day boundary pass" question.
+        One consequence: if this service is down across more than one full
+        UTC day boundary, only the single most-recently-closed day (the one
+        named by `last_day`) gets absorbed on the catch-up tick -- days
+        further back are skipped, never double-counted or reconstructed.
+        That is a deliberate, safe-direction trade: under-sampling a rare
+        multi-day-outage gap is far cheaper than silently corrupting the
+        baseline with a duplicated sample.
+        """
+        if frame_generated_at.tzinfo is None:
+            frame_generated_at = frame_generated_at.replace(tzinfo=timezone.utc)
+        else:
+            frame_generated_at = frame_generated_at.astimezone(timezone.utc)
+        today: date = frame_generated_at.date()
+        today_str = today.isoformat()
+        today_start = datetime.combine(today, time.min, tzinfo=timezone.utc)
+
+        baseline = self._store.load_latest_daily_risk_baseline()
+        if baseline is None:
+            ewma, variance, n, last_day = 0.0, 0.0, 0, None
+        else:
+            ewma = float(baseline.get("daily_risk_baseline_ewma") or 0.0)
+            variance = float(baseline.get("daily_risk_baseline_ewma_var") or 0.0)
+            n = int(baseline.get("daily_risk_baseline_ewma_n") or 0)
+            last_day = baseline.get("daily_risk_baseline_last_day")
+
+        if n == 0 and last_day is None:
+            seed = self._store.most_recent_closed_day_with_data(today_start)
+            if seed is not None:
+                _seed_day, seed_total = seed
+                update = compute_ewma_update(
+                    prev_ewma=0.0,
+                    prev_variance=0.0,
+                    prev_count=0,
+                    value=seed_total,
+                    alpha=DAILY_RISK_BASELINE_ALPHA,
+                    min_variance=DAILY_RISK_BASELINE_MIN_VARIANCE,
+                )
+                ewma, variance, n, last_day = update.ewma, update.variance, 1, today_str
+            # else: no historical data at all -- carry forward n==0, fall
+            # through to the static settings fallback below.
+        elif last_day is not None and last_day != today_str:
+            last_day_date = date.fromisoformat(last_day)
+            last_day_start = datetime.combine(last_day_date, time.min, tzinfo=timezone.utc)
+            last_day_end = last_day_start + timedelta(days=1)
+            closed_day_total = self._store.sum_uncapped_risk_for_day(last_day_start, last_day_end)
+            update = compute_ewma_update(
+                prev_ewma=ewma,
+                prev_variance=variance,
+                prev_count=n,
+                value=closed_day_total,
+                alpha=DAILY_RISK_BASELINE_ALPHA,
+                min_variance=DAILY_RISK_BASELINE_MIN_VARIANCE,
+            )
+            ewma, variance, n, last_day = update.ewma, update.variance, n + 1, today_str
+        # else: same UTC day as the last update (or n==0 with no seed
+        # available yet) -- carry forward unchanged.
+
+        if n >= DAILY_RISK_BASELINE_MIN_SAMPLES:
+            cap = ewma + DAILY_RISK_BASELINE_Z * math.sqrt(max(variance, DAILY_RISK_BASELINE_MIN_VARIANCE))
+        elif n >= 1:
+            # Same "2x one observed day" interim-margin convention
+            # settings.py's old comment used, now correctly anchored on a
+            # real *uncapped* day (817.65) instead of a clamped one (the old
+            # enforced cap itself, which is what the pre-2026-07-29 default
+            # was actually ~2x of).
+            cap = ewma * 2.0
+        else:
+            # n==0, no seed available -- truly no history anywhere. Should
+            # never trigger against this repo's real data (2026-07-28 already
+            # has real closed-day history); last-resort fallback only.
+            cap = self._settings.orion_dispatch_max_risk_per_day
+
+        baseline_fields: dict[str, float | int | str | None] = {
+            "daily_risk_baseline_ewma": ewma,
+            "daily_risk_baseline_ewma_var": variance,
+            "daily_risk_baseline_ewma_n": n,
+            "daily_risk_baseline_last_day": last_day,
+        }
+        return cap, baseline_fields
+
     async def _send_prepared_candidates(
         self, frame: ExecutionDispatchFrameV1
     ) -> ExecutionDispatchFrameV1:
+        derived_cap, baseline_fields = self._derive_daily_risk_cap(frame.generated_at)
+
         if self._check_theater_tripwire():
-            return frame  # tripped (this tick or a prior one) -- send nothing
+            # tripped (this tick or a prior one) -- send nothing, but still
+            # carry the current baseline state forward onto the saved frame.
+            return frame.model_copy(update=baseline_fields)
 
         spent_today = self._store.sum_risk_dispatched_today()
-        remaining_risk_budget = self._settings.orion_dispatch_max_risk_per_day - spent_today
+        remaining_risk_budget = derived_cap - spent_today
         advisory_only = self._settings.orion_dispatch_risk_cap_advisory_only
         enforced = not advisory_only
         cap_reached = remaining_risk_budget <= 0
         if cap_reached:
             logger.info(
-                "execution_dispatch_risk_budget_status spent_today=%.4f max_risk_per_day=%.4f "
-                "cap_reached=true advisory_only=%s enforced=%s",
+                "execution_dispatch_risk_budget_status spent_today=%.4f derived_max_risk_per_day=%.4f "
+                "baseline_n=%d cap_reached=true advisory_only=%s enforced=%s",
                 spent_today,
-                self._settings.orion_dispatch_max_risk_per_day,
+                derived_cap,
+                baseline_fields["daily_risk_baseline_ewma_n"],
                 advisory_only,
                 enforced,
             )
             if enforced:
-                return frame
-            # Advisory-only (default as of 2026-07-28, see settings.py's own
-            # comment on why): the cap number itself is still an unproven
-            # hand-picked multiplier, not derived from a real risk_score
-            # distribution -- log that it would have blocked, but don't
-            # actually withhold real dispatches on an unproven ceiling.
+                return frame.model_copy(update=baseline_fields)
+            # Advisory-only (operator override, no longer the default as of
+            # 2026-07-29 -- see settings.py's own comment): log that it would
+            # have blocked, but don't actually withhold real dispatches.
             # max_dispatches_per_tick (a real, independent, already-enforced
             # per-tick burst limit) is untouched by this and still applies.
             remaining_risk_budget = float("inf")
@@ -228,7 +390,7 @@ class ExecutionDispatchRuntimeWorker:
             cumulative_risk += spend
 
         if not to_send:
-            return frame
+            return frame.model_copy(update=baseline_fields)
 
         sent_ids = {c.dispatch_id for c in to_send}
         remaining_candidates = [c for c in frame.candidates if c.dispatch_id not in sent_ids]
@@ -257,6 +419,7 @@ class ExecutionDispatchRuntimeWorker:
                 "dispatched_candidates": dispatched_candidates,
                 "dispatch_count": len(dispatched_candidates),
                 "dispatch_attempted": True,
+                **baseline_fields,
             }
         )
 

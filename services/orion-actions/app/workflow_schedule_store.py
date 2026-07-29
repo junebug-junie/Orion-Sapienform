@@ -229,7 +229,10 @@ class WorkflowScheduleStore:
             health = "idle"
         elif (len(failures) >= 2 and len(success) == 0) or (is_overdue and len(success) == 0):
             health = "failing"
-        elif len(failures) >= 1 or is_overdue:
+        elif len(failures) >= 1 or is_overdue or len(success) == 0:
+            # len(success) == 0 here means every recent run is still sitting at
+            # "dispatched" (or some other non-terminal status) -- no confirmed
+            # success and no confirmed failure. That's not the same as healthy.
             health = "degraded"
         else:
             health = "healthy"

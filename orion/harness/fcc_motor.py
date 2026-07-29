@@ -552,6 +552,9 @@ def _build_subprocess_env(
         gh_pat = _get_github_pat_from_gh()
         if gh_pat:
             env["GITHUB_PAT"] = gh_pat
+            logger.info(f"fcc_turn_github_pat_injected (len={len(gh_pat)})")
+        else:
+            logger.warning("fcc_turn_github_pat_injection_returned_none")
     _fcc_context_env(env)
     if _env_truthy("HARNESS_FCC_CONTEXT_MODE_HOOKS_ENABLED"):
         # Point the context-mode plugin's hooks + MCP server at the same
@@ -600,6 +603,9 @@ async def run_fcc_turn(
         gh_pat = _get_github_pat_from_gh()
         if gh_pat:
             env["GITHUB_PAT"] = gh_pat
+            logger.info(f"fcc_turn_github_pat_injected (len={len(gh_pat)})")
+        else:
+            logger.warning("fcc_turn_github_pat_injection_returned_none")
     try:
         model_id = label_to_claude_model_id(label, env)
     except ValueError as exc:

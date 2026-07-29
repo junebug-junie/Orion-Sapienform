@@ -84,6 +84,7 @@ venv/
 venv*/
 .venv/
 .venv-*/
+.test-venv/
 .harness-venv/
 env/
 env*/

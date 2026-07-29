@@ -40,9 +40,34 @@ Update rule per absorbed atom (`absorb()`):
 Generators (the Hermitian operators exponentiated into unitaries) are fixed
 and seeded once at import time, not re-randomized per atom or per process
 restart -- this keeps `absorb()` deterministic given the same event stream,
-matching the reducer-determinism discipline already established elsewhere in
-this codebase (services/orion-substrate-runtime's reducer contract:
-"Reducers must be deterministic and side-effect-free").
+matching this service's own charter requirement
+(docs/superpowers/specs/2026-05-01-orion-heartbeat-engineering-spec.md:292,
+"Reducers must be deterministic and side-effect-free"). **Correction
+2026-07-28**: this docstring previously cited that requirement as coming
+from "services/orion-substrate-runtime's reducer contract" -- checked
+directly, that service has zero occurrences of "deterministic"/"side-effect"
+anywhere in its own code. The requirement is this service's own, not a
+cross-service convention.
+
+**2026-07-28: N-trajectory dissipation ensemble added** (see `ensemble.py`
+and docs/superpowers/specs/2026-07-28-precision-weighted-attention-organ-
+and-heartbeat-discrimination-design.md). `absorb()`'s original problem stands
+on its own and is unchanged by this addition: it's what makes bulk sites
+genuinely couple to boundary evidence. What was missing is a way back down --
+confirmed live 2026-07-28 that a single `HeartbeatSubstrate`, absorbing real
+`orion:grammar:event` traffic with never any decay, thermalizes to a
+permanent near-ceiling boundary/bulk ratio (quantum-chaotic thermalization,
+Page's-theorem territory -- not a threshold-tuning bug, a missing mechanism).
+`decay_reheat_tick()` below adds that mechanism: a deterministic relaxation
+toward this trajectory's own seed-derived initial state (not a shared target
+-- preserves inter-trajectory diversity, see `ensemble.py`), balanced against
+a small two-site entangling "reheat" driven by real live `bus_synaptic` data
+(a single-site reheat gate was tried first and is PROVABLY incapable of
+moving entanglement entropy across any cut -- confirmed the hard way with a
+null-result spike before correcting to two-site gates). Neither mechanism is
+claimed to be rigorously-derived open-quantum-system physics -- both are
+honest, disclosed heuristics, same "documented choice, not derivation" spirit
+as `_HOP_DECAY`/`_MIN_STRENGTH`/`_MAX_STRENGTH` above.
 """
 from __future__ import annotations
 
@@ -96,6 +121,18 @@ def _strength(a: float, b: float) -> float:
     return _MIN_STRENGTH + (_MAX_STRENGTH - _MIN_STRENGTH) * a * b
 
 
+def site_reduced_density_matrix(mps: qtn.MatrixProductState, site: int) -> np.ndarray:
+    """Dense single-site reduced density matrix, PHYS_DIM x PHYS_DIM. Cheap
+    (single-site, not the expensive multi-site dense partial trace
+    reconstruction.py's module docstring warns about) -- confirmed live
+    2026-07-28 via quimb 1.14.0's `make_reduced_density_matrix([site])`
+    (renamed from the deprecated `partial_trace` in this quimb version),
+    contracted and read out via `.to_dense(['k{site}'], ['b{site}'])`."""
+    rho_tn = mps.make_reduced_density_matrix([site])
+    contracted = rho_tn.contract()
+    return np.asarray(contracted.to_dense([f"k{site}"], [f"b{site}"]))
+
+
 class HeartbeatSubstrate:
     """Owns one quimb MatrixProductState and applies the v0 update rule."""
 
@@ -105,6 +142,87 @@ class HeartbeatSubstrate:
         )
         self._mps.normalize()
         self.tick_count = 0
+        self.seed = seed
+        # Own seeded RNG for decay/reheat stochastic draws -- NOT the global
+        # np.random state. Reusing the same seed as the MPS's own
+        # initialization keeps this trajectory fully, deterministically
+        # self-contained ("this seed" determines both the initial state and
+        # every stochastic jump this trajectory will ever make), which is
+        # what Acceptance Check 6 (replay with logged seeds reproduces the
+        # exact ensemble output) actually requires. Caught in review before
+        # this shipped: an earlier draft used bare `np.random.random()`,
+        # shared mutable global state whose sequence depends on call order
+        # across all N trajectories -- would have silently broken
+        # reproducibility for every trajectory after the first.
+        self._rng = np.random.default_rng(seed)
+        # Relaxation targets are NOT computed here -- __init__ must stay free
+        # of any behavior that would make test_compute_h1_on_fresh_substrate_
+        # is_not_degenerate's "zero absorptions, zero decay/reheat applied"
+        # assumption false. Call compute_relaxation_targets() explicitly once,
+        # right after construction, before any decay_reheat_tick() call.
+        self._relaxation_ops: list[np.ndarray] | None = None
+
+    def compute_relaxation_targets(self, gamma: float) -> None:
+        """Per-site relaxation operator, one per site, each damping THIS
+        trajectory's own site toward the dominant eigenvector of that site's
+        reduced density matrix AT THE MOMENT THIS IS CALLED (normally right
+        after construction, on the fresh random initial state) -- not a
+        shared fixed target across trajectories. Confirmed live 2026-07-28:
+        damping every trajectory toward the same fixed basis vector collapses
+        an ensemble's cross-trajectory diversity to near-zero within a few
+        hundred ticks of sustained quiet; per-trajectory (seed-derived)
+        targets measurably preserve diversity through the meaningful part of
+        any relaxation curve instead.
+
+        Implementation: rotate into the basis where that dominant eigenvector
+        is the first basis state, apply the standard "damp everything except
+        the surviving component" diagonal form, rotate back -- the same
+        mathematical shape as textbook amplitude-damping-toward-|0>, just
+        toward an arbitrary reference state instead of a fixed one. An
+        honest, disclosed heuristic (see module docstring), not a physically
+        rigorous open-system derivation.
+        """
+        phys_dim = PHYS_DIM
+        D = np.diag([1.0] + [1.0 - gamma] * (phys_dim - 1)).astype("complex128")
+        ops: list[np.ndarray] = []
+        for site in range(N_SITES):
+            rho0 = site_reduced_density_matrix(self._mps, site)
+            eigvals, eigvecs = np.linalg.eigh(rho0)
+            order = np.argsort(eigvals)[::-1]  # dominant eigenvector first
+            U = eigvecs[:, order].conj().T
+            ops.append(U.conj().T @ D @ U)
+        self._relaxation_ops = ops
+
+    def decay_reheat_tick(self, decay_prob: float, reheat_prob: float, reheat_strength: float) -> None:
+        """One dissipation-ensemble tick: per-site stochastic relaxation
+        toward this trajectory's own target (decay_prob per site), plus
+        per-bond stochastic two-site entangling "reheat" (reheat_prob per
+        bond) -- see module docstring for why reheat must be two-site.
+        Independent of `absorb()` and does NOT increment `tick_count`
+        (that counter tracks real organ traffic, not dissipation-ensemble
+        housekeeping -- keeps `test_compute_h1_tick_count_reflects_
+        absorptions` meaningful unchanged).
+
+        Stochastic draws come from `self._rng` (seeded from this
+        trajectory's own construction seed, see `__init__`), not the global
+        `np.random` state -- this instance is a fully self-contained,
+        deterministically-replayable unit given its seed and the sequence of
+        `absorb()`/`decay_reheat_tick()` calls it receives.
+        """
+        if self._relaxation_ops is None:
+            raise RuntimeError("compute_relaxation_targets() must be called before decay_reheat_tick()")
+
+        for site in range(N_SITES):
+            if self._rng.random() < decay_prob:
+                self._mps.gate_(self._relaxation_ops[site], site, contract=True)
+        for left in range(N_SITES - 1):
+            if self._rng.random() < reheat_prob:
+                G2 = _TWO_SITE_GENERATORS["amplitude"]
+                U2 = sla.expm(1j * reheat_strength * G2).reshape(PHYS_DIM, PHYS_DIM, PHYS_DIM, PHYS_DIM)
+                self._mps.gate_(
+                    U2, (left, left + 1), contract="swap+split", max_bond=BOND_DIM, cutoff=0.0,
+                )
+        self._mps.normalize()
 
     def absorb(self, assignment: SiteAssignment) -> None:
         """Apply one atom's absorption-and-entangle update. See module docstring.

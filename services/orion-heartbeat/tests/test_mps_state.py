@@ -101,6 +101,53 @@ def test_absorb_actually_changes_the_state() -> None:
     assert profile_after != pytest.approx(profile_before, abs=1e-9)
 
 
+def test_decay_reheat_tick_raises_before_relaxation_targets_computed() -> None:
+    # compute_relaxation_targets() must be called once before any
+    # decay_reheat_tick() -- documented guard, previously untested anywhere.
+    sub = HeartbeatSubstrate(seed=1)
+    with pytest.raises(RuntimeError, match="compute_relaxation_targets"):
+        sub.decay_reheat_tick(decay_prob=0.1, reheat_prob=0.1, reheat_strength=0.05)
+
+
+def test_decay_reheat_tick_does_not_change_tick_count() -> None:
+    sub = HeartbeatSubstrate(seed=1)
+    sub.compute_relaxation_targets(gamma=0.2)
+    sub.absorb(_sample_assignment("orion-hub"))
+    assert sub.tick_count == 1
+
+    for _ in range(10):
+        sub.decay_reheat_tick(decay_prob=0.3, reheat_prob=0.1, reheat_strength=0.05)
+
+    assert sub.tick_count == 1  # dissipation is not organ traffic
+
+
+def test_decay_reheat_tick_keeps_state_normalized() -> None:
+    sub = HeartbeatSubstrate(seed=1)
+    sub.compute_relaxation_targets(gamma=0.2)
+    sub.absorb(_sample_assignment("orion-hub"))
+
+    for _ in range(20):
+        sub.decay_reheat_tick(decay_prob=0.3, reheat_prob=0.1, reheat_strength=0.05)
+
+    assert sub.norm() == pytest.approx(1.0, abs=1e-6)
+    assert sub.max_bond() <= BOND_DIM
+
+
+def test_decay_reheat_tick_is_deterministic_given_same_seed() -> None:
+    # Same discipline as test_absorb_is_deterministic_given_same_seed_and_
+    # events -- decay_reheat_tick's own stochastic draws must come from this
+    # trajectory's own seeded RNG, not global np.random state.
+    def run() -> list[float]:
+        sub = HeartbeatSubstrate(seed=55)
+        sub.compute_relaxation_targets(gamma=0.2)
+        sub.absorb(_sample_assignment("orion-hub"))
+        for _ in range(15):
+            sub.decay_reheat_tick(decay_prob=0.3, reheat_prob=0.1, reheat_strength=0.05)
+        return sub.entropy_profile()
+
+    assert run() == pytest.approx(run(), abs=1e-10)
+
+
 def test_absorb_reaches_every_bulk_site_not_just_the_nearest_one() -> None:
     # Regression test for the critical review finding (2026-07-24): the
     # original absorb() only gated (site, site+1), one hop, which left

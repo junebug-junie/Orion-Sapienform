@@ -1697,12 +1697,15 @@ async def lifespan(app: FastAPI):
 
     async def _dispatch_scheduled_workflow(claimed: ClaimedSchedule) -> None:
         entry = claimed.schedule
+        run = claimed.run
         workflow_request = dict(entry.workflow_request or {})
         policy = dict(workflow_request.get("execution_policy") or {})
         policy["invocation_mode"] = "immediate"
         workflow_request["execution_policy"] = policy
         workflow_request["scheduled_dispatch"] = {
             "request_id": entry.request_id,
+            "schedule_id": entry.schedule_id,
+            "run_id": run.run_id,
             "source": "orion-actions",
             "scheduled_label": (entry.next_run_at.isoformat() if entry.next_run_at else "scheduled"),
         }
@@ -1723,11 +1726,23 @@ async def lifespan(app: FastAPI):
         payload["verb"] = None
         payload["route_intent"] = "none"
         payload["mode"] = "brain"
-        await dispatch_cortex_request(
-            bus=hunter.bus,
-            channel=settings.cortex_request_channel,
-            envelope=env.model_copy(update={"payload": payload}),
+        # Block on the reply (mirrors _run_journal/_dispatch_scheduled_skill) instead of
+        # firing and forgetting -- callers need the real downstream ok/error to record
+        # run status; a bare publish can't tell success from a workflow that never ran.
+        reply_channel = new_reply_channel("orion:cortex:result")
+        rpc_env = env.model_copy(update={"payload": payload, "reply_to": reply_channel})
+        msg = await _actions_rpc_bus.rpc_request(
+            settings.cortex_request_channel,
+            rpc_env,
+            reply_channel=reply_channel,
+            timeout_sec=float(settings.actions_exec_timeout_seconds),
         )
+        decoded = _actions_rpc_bus.codec.decode(msg.get("data"))
+        if not decoded.ok or decoded.envelope is None:
+            raise RuntimeError(f"cortex_orch_decode_failed:{decoded.error}")
+        orch_payload = decoded.envelope.payload if isinstance(decoded.envelope.payload, dict) else {}
+        if not orch_payload.get("ok", False):
+            raise RuntimeError(f"scheduled_workflow_failed:{orch_payload.get('error') or orch_payload.get('status')}")
 
     async def _handle_workflow_schedule(env: BaseEnvelope) -> None:
         try:
@@ -2129,21 +2144,30 @@ async def lifespan(app: FastAPI):
                     dispatch_env = BaseEnvelope(kind=WORKFLOW_TRIGGER_KIND, source=src, correlation_id=str(uuid4()), payload={})
                     try:
                         await _dispatch_scheduled_workflow(claimed)
-                        await _audit(
-                            dispatch_env,
-                            status="dispatched",
-                            event_id=claimed.schedule.request_id,
-                            action_name="workflow.dispatch.v1",
-                            extra={
-                                "schedule_id": claimed.schedule.schedule_id,
-                                "workflow_id": claimed.schedule.workflow_id,
-                                "notify_on": claimed.schedule.execution_policy.notify_on,
-                                "next_run_utc": claimed.schedule.next_run_at.isoformat() if claimed.schedule.next_run_at else None,
-                            },
-                        )
                     except Exception as exc:
                         workflow_schedule_store.mark_dispatch_failed(run_id=claimed.run.run_id, schedule_id=claimed.schedule.schedule_id, error=str(exc), now_utc=now_utc)
-                        raise
+                        logger.exception(
+                            "scheduled_workflow_dispatch_failed schedule_id=%s run_id=%s",
+                            claimed.schedule.schedule_id,
+                            claimed.run.run_id,
+                        )
+                        # Don't let one failed schedule abort the rest of this batch or
+                        # skip evaluate_attention_signals below -- each claimed slot is
+                        # independent.
+                        continue
+                    workflow_schedule_store.mark_dispatch_succeeded(run_id=claimed.run.run_id, schedule_id=claimed.schedule.schedule_id, now_utc=now_utc)
+                    await _audit(
+                        dispatch_env,
+                        status="dispatched",
+                        event_id=claimed.schedule.request_id,
+                        action_name="workflow.dispatch.v1",
+                        extra={
+                            "schedule_id": claimed.schedule.schedule_id,
+                            "workflow_id": claimed.schedule.workflow_id,
+                            "notify_on": claimed.schedule.execution_policy.notify_on,
+                            "next_run_utc": claimed.schedule.next_run_at.isoformat() if claimed.schedule.next_run_at else None,
+                        },
+                    )
                 signals = workflow_schedule_store.evaluate_attention_signals(
                     now_utc=now_utc,
                     overdue_min_seconds=settings.actions_workflow_attention_overdue_min_seconds,

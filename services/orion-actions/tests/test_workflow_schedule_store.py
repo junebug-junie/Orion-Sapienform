@@ -5,7 +5,11 @@ from pathlib import Path
 
 from app.workflow_schedule_metrics import WorkflowScheduleMetrics
 from app.workflow_schedule_store import WorkflowScheduleStore
-from orion.schemas.workflow_execution import WorkflowDispatchRequestV1, WorkflowScheduleManageRequestV1, WorkflowScheduleUpdatePatchV1
+from orion.schemas.workflow_execution import (
+    WorkflowDispatchRequestV1,
+    WorkflowScheduleManageRequestV1,
+    WorkflowScheduleUpdatePatchV1,
+)
 
 
 def test_resolve_path_whitespace_fallback_stays_tmp() -> None:
@@ -183,6 +187,48 @@ def test_attention_signals_dedupe_and_recovery(tmp_path):
     recovered = store.evaluate_attention_signals(now_utc=datetime(2026, 3, 25, 6, 5, tzinfo=timezone.utc), reminder_cooldown_seconds=9999)
     assert len(recovered) == 1
     assert recovered[0].transition == "recovered"
+
+
+def _analytics_for(store: WorkflowScheduleStore, schedule_id: str, *, now_utc: datetime):
+    listed = store.apply_management(WorkflowScheduleManageRequestV1(operation="list", request_id="m-list"), now_utc=now_utc)
+    assert listed.ok is True
+    row = next(item for item in listed.schedules if item.schedule_id == schedule_id)
+    assert row.analytics is not None
+    return row.analytics
+
+
+def test_stuck_dispatched_run_is_not_reported_healthy(tmp_path):
+    # A claimed run that never gets mark_dispatch_succeeded/mark_dispatch_failed
+    # called on it must not be reported "healthy" just because there's also no
+    # recorded failure -- "no signal yet" is not the same as "confirmed good".
+    store = WorkflowScheduleStore(str(tmp_path / "schedules.json"))
+    created = store.upsert_from_dispatch(_dispatch("r1"))
+    assert created is not None
+    claimed = store.claim_due(now_utc=datetime(2026, 3, 24, 6, 1, tzinfo=timezone.utc))
+    assert len(claimed) == 1
+
+    analytics = _analytics_for(store, created.schedule_id, now_utc=datetime(2026, 3, 24, 6, 2, tzinfo=timezone.utc))
+    assert analytics.recent_success_count == 0
+    assert analytics.recent_failure_count == 0
+    assert analytics.health != "healthy"
+
+
+def test_confirmed_success_reports_healthy(tmp_path):
+    store = WorkflowScheduleStore(str(tmp_path / "schedules.json"))
+    created = store.upsert_from_dispatch(_dispatch("r1"))
+    assert created is not None
+    claimed = store.claim_due(now_utc=datetime(2026, 3, 24, 6, 1, tzinfo=timezone.utc))
+    assert len(claimed) == 1
+    store.mark_dispatch_succeeded(
+        run_id=claimed[0].run.run_id,
+        schedule_id=claimed[0].schedule.schedule_id,
+        now_utc=datetime(2026, 3, 24, 6, 2, tzinfo=timezone.utc),
+    )
+
+    analytics = _analytics_for(store, created.schedule_id, now_utc=datetime(2026, 3, 24, 6, 3, tzinfo=timezone.utc))
+    assert analytics.recent_success_count == 1
+    assert analytics.recent_failure_count == 0
+    assert analytics.health == "healthy"
 
 
 def test_structured_error_metrics_increment(tmp_path):

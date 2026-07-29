@@ -259,15 +259,10 @@
               aria-label="Hub chat mode"
               title="Behavior lane: Orion unified turn, agent/council/brain routing. Social room ON forces brain mode and chat_social_room verb."
             >
-              <option value="auto">Auto</option>
               <option value="orion" selected>Orion</option>
-              <option value="grounded_small">Grounded Small</option>
-              <option value="brain">Brain</option>
               <option value="quick">Quick</option>
               <option value="story">Story</option>
               <option value="agent">Agent</option>
-              {{HUB_AGENT_CLAUDE_MODE_OPTIONS}}
-              <option value="council">Council</option>
             </select>
           </div>
           <div class="flex items-center gap-2 pt-1 border-t border-gray-700/80">
@@ -322,12 +317,14 @@
           </div>
           <div class="flex items-center gap-2">
             <label for="recallProfileSelect" class="text-gray-400">Recall Profile</label>
-            <select id="recallProfileSelect" class="bg-gray-800 text-gray-200 rounded border border-gray-700 px-2 py-1 text-xs">
-              <option value="auto">Auto</option>
+            <select
+              id="recallProfileSelect"
+              class="bg-gray-800 text-gray-200 rounded border border-gray-700 px-2 py-1 text-xs disabled:opacity-50 disabled:cursor-not-allowed"
+              title="Auto-set by Mode: Orion mode leaves this unset (backend default); any other mode forces assist.light.v1. Manual picks below override until Mode changes again."
+            >
               <option value="assist.light.v1" selected>assist.light.v1</option>
               <option value="recall.v1">recall.v1</option>
               <option value="chat.general.v1">chat.general.v1</option>
-              <option value="biographical.v1">biographical.v1</option>
               <option value="self.factual.v1">self.factual.v1</option>
               <option value="reflect.v1">reflect.v1</option>
               <option value="reflect.anchor.v1">reflect.anchor.v1</option>
@@ -418,15 +415,10 @@
         </div>
 
         <div id="runtimeDebugPanel" class="bg-gray-800/40 border border-gray-700 rounded-xl p-3 space-y-2">
-          <button
-            id="runtimeDebugPanelToggle"
-            class="w-full flex items-center justify-between text-xs text-gray-300 hover:text-white"
-            type="button"
-          >
+          <div class="w-full flex items-center justify-between text-xs text-gray-300">
             <span class="uppercase tracking-wide">Debug Panel</span>
-            <span id="runtimeDebugPanelCaret" class="text-gray-500">▾</span>
-          </button>
-          <div id="runtimeDebugPanelBody" class="hidden space-y-2 text-xs text-gray-300">
+          </div>
+          <div id="runtimeDebugPanelBody" class="space-y-2 text-xs text-gray-300">
             <div class="bg-gray-900/40 border border-gray-700 rounded-xl p-3 space-y-2">
               <div class="flex items-center justify-between gap-2">
                 <button
@@ -671,7 +663,13 @@
               type="button"
             >
               <span class="uppercase tracking-wide">Autonomy Readiness</span>
-              <span id="autonomyReadinessCaret" class="text-gray-500">▾</span>
+            </button>
+            <button
+              id="autonomyReadinessOpenModal"
+              class="rounded-lg border border-indigo-500/40 bg-indigo-500/10 px-2.5 py-1 text-[10px] font-semibold uppercase tracking-wide text-indigo-200 hover:bg-indigo-500/20"
+              type="button"
+            >
+              Modal
             </button>
             <button
               id="autonomyConstitutionOpenModal"
@@ -680,14 +678,6 @@
             >
               Policy Matrix
             </button>
-          </div>
-          <div id="autonomyReadinessBody" class="hidden space-y-3 text-xs text-gray-300">
-            <div id="autonomyReadinessMeta" class="text-[10px] text-gray-500">Loading autonomy readiness snapshot…</div>
-            <div id="autonomyReadinessOverview" class="rounded-xl border border-gray-700 bg-gray-900/50 p-3 text-[11px] space-y-1">No data yet.</div>
-            <div>
-              <div class="text-gray-500 mb-1">Warnings</div>
-              <div id="autonomyReadinessWarnings" class="rounded-xl border border-gray-700 bg-gray-900/50 p-3 text-[11px]">No warnings.</div>
-            </div>
           </div>
         </div>
 
@@ -2708,10 +2698,10 @@
 
   <div
     id="agentTraceModal"
-    class="hidden fixed inset-0 z-50 bg-gray-950/80 backdrop-blur-sm px-4 py-6"
+    class="hidden fixed inset-0 z-50 bg-gray-950/80 backdrop-blur-sm"
     aria-hidden="true"
   >
-    <div class="mx-auto flex h-full w-full max-w-6xl flex-col overflow-hidden rounded-2xl border border-gray-700 bg-gray-900 shadow-2xl">
+    <div class="fixed left-1/2 top-1/2 flex w-[75vw] h-[75vh] max-w-none -translate-x-1/2 -translate-y-1/2 flex-col overflow-hidden rounded-2xl border border-gray-700 bg-gray-900 shadow-2xl">
       <div class="flex items-center justify-between border-b border-gray-800 px-5 py-4">
         <div>
           <div class="text-sm font-semibold text-gray-100">Agent Trace</div>
@@ -2879,7 +2869,7 @@
 
   <div id="autonomyDebugModalRoot" class="hidden fixed inset-0 z-[120] pointer-events-auto" style="position: fixed; inset: 0; z-index: 2147483646;" aria-hidden="true">
     <div id="autonomyDebugModalBackdrop" class="fixed inset-0 z-[120] bg-black/85 backdrop-blur-sm" style="position: fixed; inset: 0; z-index: 2147483646;"></div>
-    <div id="autonomyDebugModalDialog" class="fixed inset-x-4 top-8 bottom-8 z-[121] mx-auto flex w-auto max-w-5xl flex-col overflow-hidden rounded-2xl border border-gray-700 bg-gray-950 shadow-2xl" style="position: fixed; z-index: 2147483647;">
+    <div id="autonomyDebugModalDialog" class="fixed left-1/2 top-1/2 z-[121] flex w-[75vw] h-[75vh] max-w-none -translate-x-1/2 -translate-y-1/2 flex-col overflow-hidden rounded-2xl border border-gray-700 bg-gray-950 shadow-2xl" style="position: fixed; z-index: 2147483647;">
       <div class="flex items-center justify-between border-b border-gray-800 px-5 py-4">
         <div>
           <div class="text-xs uppercase tracking-[0.24em] text-emerald-300">Autonomy runtime</div>
@@ -2899,9 +2889,35 @@
     </div>
   </div>
 
+  <div id="autonomyReadinessModalRoot" class="hidden fixed inset-0 z-[120] pointer-events-auto" style="position: fixed; inset: 0; z-index: 2147483646;" aria-hidden="true">
+    <div id="autonomyReadinessModalBackdrop" class="fixed inset-0 z-[120] bg-black/85 backdrop-blur-sm" style="position: fixed; inset: 0; z-index: 2147483646;"></div>
+    <div id="autonomyReadinessModalDialog" class="fixed left-1/2 top-1/2 z-[121] flex w-[75vw] h-[75vh] max-w-none -translate-x-1/2 -translate-y-1/2 flex-col overflow-hidden rounded-2xl border border-gray-700 bg-gray-950 shadow-2xl" style="position: fixed; z-index: 2147483647;">
+      <div class="flex items-center justify-between border-b border-gray-800 px-5 py-4">
+        <div>
+          <div class="text-xs uppercase tracking-[0.24em] text-emerald-300">Autonomy readiness</div>
+        </div>
+        <button
+          id="autonomyReadinessModalClose"
+          class="rounded-lg border border-gray-700 bg-gray-900 px-3 py-1 text-xs text-gray-200 hover:bg-gray-800"
+          type="button"
+        >
+          Close
+        </button>
+      </div>
+      <div class="min-h-0 flex-1 overflow-y-auto px-5 py-4 space-y-3 text-xs text-gray-300">
+        <div id="autonomyReadinessMeta" class="text-[10px] text-gray-500">Loading autonomy readiness snapshot…</div>
+        <div id="autonomyReadinessOverview" class="rounded-xl border border-gray-700 bg-gray-900/50 p-3 text-[11px] space-y-1">No data yet.</div>
+        <div>
+          <div class="text-gray-500 mb-1">Warnings</div>
+          <div id="autonomyReadinessWarnings" class="rounded-xl border border-gray-700 bg-gray-900/50 p-3 text-[11px]">No warnings.</div>
+        </div>
+      </div>
+    </div>
+  </div>
+
   <div id="memoryDebugModalRoot" class="hidden fixed inset-0 z-[120] pointer-events-auto" style="position: fixed; inset: 0; z-index: 2147483646;" aria-hidden="true">
     <div id="memoryDebugModalBackdrop" class="fixed inset-0 z-[120] bg-black/85 backdrop-blur-sm" style="position: fixed; inset: 0; z-index: 2147483646;"></div>
-    <div id="memoryDebugModalDialog" class="fixed inset-x-4 top-8 bottom-8 z-[121] mx-auto flex w-auto max-w-5xl flex-col overflow-hidden rounded-2xl border border-gray-700 bg-gray-950 shadow-2xl" style="position: fixed; z-index: 2147483647;">
+    <div id="memoryDebugModalDialog" class="fixed left-1/2 top-1/2 z-[121] flex w-[75vw] h-[75vh] max-w-none -translate-x-1/2 -translate-y-1/2 flex-col overflow-hidden rounded-2xl border border-gray-700 bg-gray-950 shadow-2xl" style="position: fixed; z-index: 2147483647;">
       <div class="flex items-center justify-between border-b border-gray-800 px-5 py-4">
         <div>
           <div class="text-xs uppercase tracking-[0.24em] text-indigo-300">Memory / recall debug</div>
@@ -2923,7 +2939,7 @@
 
   <div id="chatStanceDebugModalRoot" class="hidden fixed inset-0 z-[120] pointer-events-auto" style="position: fixed; inset: 0; z-index: 2147483646;" aria-hidden="true">
     <div id="chatStanceDebugModalBackdrop" class="fixed inset-0 z-[120] bg-black/85 backdrop-blur-sm" style="position: fixed; inset: 0; z-index: 2147483646;"></div>
-    <div id="chatStanceDebugModalDialog" class="fixed inset-x-4 top-8 bottom-8 z-[121] mx-auto flex w-auto max-w-5xl flex-col overflow-hidden rounded-2xl border border-gray-700 bg-gray-950 shadow-2xl" style="position: fixed; z-index: 2147483647;">
+    <div id="chatStanceDebugModalDialog" class="fixed left-1/2 top-1/2 z-[121] flex w-[75vw] h-[75vh] max-w-none -translate-x-1/2 -translate-y-1/2 flex-col overflow-hidden rounded-2xl border border-gray-700 bg-gray-950 shadow-2xl" style="position: fixed; z-index: 2147483647;">
       <div class="flex items-center justify-between border-b border-gray-800 px-5 py-4">
         <div>
           <div class="text-xs uppercase tracking-[0.24em] text-indigo-300">Chat stance debug</div>
@@ -2991,7 +3007,7 @@
 
   <div id="substrateReviewModalRoot" class="hidden fixed inset-0 z-[120] pointer-events-auto" style="position: fixed; inset: 0; z-index: 2147483646;" aria-hidden="true">
     <div id="substrateReviewModalBackdrop" class="fixed inset-0 z-[120] bg-black/85 backdrop-blur-sm" style="position: fixed; inset: 0; z-index: 2147483646;"></div>
-    <div id="substrateReviewModalDialog" class="fixed inset-x-4 top-8 bottom-8 z-[121] mx-auto flex w-auto max-w-5xl flex-col overflow-hidden rounded-2xl border border-gray-700 bg-gray-950 shadow-2xl" style="position: fixed; z-index: 2147483647;">
+    <div id="substrateReviewModalDialog" class="fixed left-1/2 top-1/2 z-[121] flex w-[75vw] h-[75vh] max-w-none -translate-x-1/2 -translate-y-1/2 flex-col overflow-hidden rounded-2xl border border-gray-700 bg-gray-950 shadow-2xl" style="position: fixed; z-index: 2147483647;">
       <div class="flex items-center justify-between border-b border-gray-800 px-5 py-4">
         <div>
           <div class="text-xs uppercase tracking-[0.24em] text-cyan-300">Substrate review runtime</div>
@@ -3035,7 +3051,7 @@
 
   <div id="selfExperimentsModalRoot" class="hidden fixed inset-0 z-[120] pointer-events-auto" style="position: fixed; inset: 0; z-index: 2147483646;" aria-hidden="true">
     <div id="selfExperimentsModalBackdrop" class="fixed inset-0 z-[120] bg-black/85 backdrop-blur-sm" style="position: fixed; inset: 0; z-index: 2147483646;"></div>
-    <div id="selfExperimentsModalDialog" class="fixed inset-x-4 top-8 bottom-8 z-[121] mx-auto flex w-auto max-w-5xl flex-col overflow-hidden rounded-2xl border border-gray-700 bg-gray-950 shadow-2xl" style="position: fixed; z-index: 2147483647;">
+    <div id="selfExperimentsModalDialog" class="fixed left-1/2 top-1/2 z-[121] flex w-[75vw] h-[75vh] max-w-none -translate-x-1/2 -translate-y-1/2 flex-col overflow-hidden rounded-2xl border border-gray-700 bg-gray-950 shadow-2xl" style="position: fixed; z-index: 2147483647;">
       <div class="flex items-center justify-between border-b border-gray-800 px-5 py-4">
         <div>
           <div class="text-xs uppercase tracking-[0.24em] text-indigo-300">Self experiments runtime</div>
@@ -3088,7 +3104,7 @@
 
   <div id="cognitiveReviewModalRoot" class="hidden fixed inset-0 z-[120] pointer-events-auto" style="position: fixed; inset: 0; z-index: 2147483646;" aria-hidden="true">
     <div id="cognitiveReviewModalBackdrop" class="fixed inset-0 z-[120] bg-black/85 backdrop-blur-sm" style="position: fixed; inset: 0; z-index: 2147483646;"></div>
-    <div id="cognitiveReviewModalDialog" class="fixed inset-x-4 top-8 bottom-8 z-[121] mx-auto flex w-auto max-w-5xl flex-col overflow-hidden rounded-2xl border border-gray-700 bg-gray-950 shadow-2xl" style="position: fixed; z-index: 2147483647;">
+    <div id="cognitiveReviewModalDialog" class="fixed left-1/2 top-1/2 z-[121] flex w-[75vw] h-[75vh] max-w-none -translate-x-1/2 -translate-y-1/2 flex-col overflow-hidden rounded-2xl border border-gray-700 bg-gray-950 shadow-2xl" style="position: fixed; z-index: 2147483647;">
       <div class="flex items-center justify-between border-b border-gray-800 px-5 py-4">
         <div>
           <div class="text-xs uppercase tracking-[0.24em] text-fuchsia-300">Cognitive proposal review</div>
@@ -3127,7 +3143,7 @@
 
   <div id="recallCanaryModalRoot" class="hidden fixed inset-0 z-[120] pointer-events-auto" style="position: fixed; inset: 0; z-index: 2147483646;" aria-hidden="true">
     <div id="recallCanaryModalBackdrop" class="fixed inset-0 z-[120] bg-black/85 backdrop-blur-sm" style="position: fixed; inset: 0; z-index: 2147483646;"></div>
-    <div id="recallCanaryModalDialog" class="fixed inset-x-4 top-8 bottom-8 z-[121] mx-auto flex w-auto max-w-5xl flex-col overflow-hidden rounded-2xl border border-gray-700 bg-gray-950 shadow-2xl" style="position: fixed; z-index: 2147483647;">
+    <div id="recallCanaryModalDialog" class="fixed left-1/2 top-1/2 z-[121] flex w-[75vw] h-[75vh] max-w-none -translate-x-1/2 -translate-y-1/2 flex-col overflow-hidden rounded-2xl border border-gray-700 bg-gray-950 shadow-2xl" style="position: fixed; z-index: 2147483647;">
       <div class="flex items-center justify-between border-b border-gray-800 px-5 py-4">
         <div>
           <div class="text-xs uppercase tracking-[0.24em] text-indigo-300">Recall canary</div>
@@ -3196,7 +3212,7 @@
 
   <div id="autonomyConstitutionModalRoot" class="hidden fixed inset-0 z-[120] pointer-events-auto" style="position: fixed; inset: 0; z-index: 2147483646;" aria-hidden="true">
     <div id="autonomyConstitutionModalBackdrop" class="fixed inset-0 z-[120] bg-black/85 backdrop-blur-sm" style="position: fixed; inset: 0; z-index: 2147483646;"></div>
-    <div id="autonomyConstitutionModalDialog" class="fixed inset-x-4 top-8 bottom-8 z-[121] mx-auto flex w-auto max-w-5xl flex-col overflow-hidden rounded-2xl border border-gray-700 bg-gray-950 shadow-2xl" style="position: fixed; z-index: 2147483647;">
+    <div id="autonomyConstitutionModalDialog" class="fixed left-1/2 top-1/2 z-[121] flex w-[75vw] h-[75vh] max-w-none -translate-x-1/2 -translate-y-1/2 flex-col overflow-hidden rounded-2xl border border-gray-700 bg-gray-950 shadow-2xl" style="position: fixed; z-index: 2147483647;">
       <div class="flex items-center justify-between border-b border-gray-800 px-5 py-4">
         <div>
           <div class="text-xs uppercase tracking-[0.24em] text-cyan-300">Autonomy constitution</div>

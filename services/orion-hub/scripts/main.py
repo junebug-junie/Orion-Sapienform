@@ -184,16 +184,6 @@ def render_hub_index_html(*, memory_pool_ok: bool | None = None) -> str:
     rendered = rendered.replace("{{HUB_AITOWN_TAB_NAV}}", aitown_nav)
     rendered = rendered.replace("{{HUB_AITOWN_PANEL}}", aitown_panel)
 
-    if bool(getattr(settings, "HUB_AGENT_CLAUDE_ENABLED", False)):
-        agent_claude_mode_options = (
-            '<option value="agent_claude_opus">Agent Claude - Opus</option>'
-            '<option value="agent_claude_sonnet">Agent Claude - Sonnet</option>'
-            '<option value="agent_claude_haiku">Agent Claude - Haiku</option>'
-        )
-    else:
-        agent_claude_mode_options = ""
-    rendered = rendered.replace("{{HUB_AGENT_CLAUDE_MODE_OPTIONS}}", agent_claude_mode_options)
-
     proposal_review_panel = ""
     proposal_review_script = ""
     if bool(getattr(settings, "HUB_PROPOSAL_REVIEW_ENABLED", False)):

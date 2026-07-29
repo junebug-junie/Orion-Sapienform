@@ -482,7 +482,32 @@ def _fcc_context_env(env: dict[str, str]) -> None:
 
 
 def _get_github_pat_from_gh() -> Optional[str]:
-    """Read GITHUB_PAT from gh auth token (fallback if not in ~/.fcc/.env)."""
+    """Read GITHUB_PAT from gh auth (fallback if not in ~/.fcc/.env).
+
+    Tries two paths:
+    1. ~/.config/gh/hosts.yml (where gh CLI stores tokens)
+    2. subprocess call to gh auth token (if gh is available)
+    """
+    import yaml
+    from pathlib import Path
+
+    # Try reading from gh's hosts.yml config file
+    try:
+        hosts_file = Path.home() / ".config" / "gh" / "hosts.yml"
+        if hosts_file.exists():
+            with open(hosts_file) as f:
+                config = yaml.safe_load(f) or {}
+            # gh hosts.yml structure: github.com: { oauth_token: "..." }
+            if isinstance(config, dict):
+                gh_com = config.get("github.com", {})
+                if isinstance(gh_com, dict):
+                    token = gh_com.get("oauth_token")
+                    if token:
+                        return token
+    except Exception:
+        pass
+
+    # Fallback: try subprocess call to gh auth token
     try:
         import subprocess
         result = subprocess.run(
@@ -495,6 +520,7 @@ def _get_github_pat_from_gh() -> Optional[str]:
             return result.stdout.strip()
     except Exception:
         pass
+
     return None
 
 

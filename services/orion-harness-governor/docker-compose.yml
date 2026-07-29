@@ -30,6 +30,8 @@ services:
       # This is NEVER the operator's own ~/.claude; ~/.claude.json stays a
       # separate read-only mount above.
       - harness-claude-config:/root/.claude
+      # GitHub CLI credentials — read-only, for GITHUB_PAT injection into FCC subprocess.
+      - ${HOME}/.config/gh:/root/.config/gh:ro
       - /var/run/docker.sock:/var/run/docker.sock
     environment:
       - SERVICE_NAME=${SERVICE_NAME:-orion-harness-governor}

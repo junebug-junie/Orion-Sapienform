@@ -30,6 +30,7 @@ def _candidate() -> ProposalCandidateV1:
         confidence_score=0.9,
         risk_score=0.05,
         reversibility_score=1.0,
+        motivating_dimensions={"resource_pressure": 0.65},
         proposed_effect="increase_observability",
         required_policy_gate="read_only",
         execution_intent={"mode": "descriptive_only"},
@@ -104,4 +105,29 @@ def test_envelope_no_field_state_or_prompts() -> None:
     assert "prompt" not in blob
     assert "llm" not in blob
     assert "field_state" not in blob
-    assert "dimensions" not in blob
+
+
+def test_envelope_includes_real_grounding_data() -> None:
+    """The substrate_inspect/summarize/observe prompts previously got only a
+    bare target_kind/target_id/allowed_scope and had no honest option but to
+    confabulate telemetry. motivating_dimensions/priority_score/risk_score
+    are already-real, already-computed values on ProposalCandidateV1 (see
+    orion/proposals/builder.py::_build_candidate()'s field_pressures()/
+    template_match_score() math) -- this asserts they actually reach the
+    envelope's context dict, since that dict is what flows unmodified through
+    ExecutionDispatchCandidateV1.request_envelope -> worker.py ->
+    ExecutionDispatchCortexClient.dispatch() -> PlanExecutionRequest.context
+    -> the Jinja render context in services/orion-cortex-exec/app/
+    executor.py::_render_prompt().
+    """
+    env = build_cortex_request_envelope(
+        candidate=_candidate(),
+        decision=_decision(),
+        route=ROUTE,
+        field_tick_id=FIELD_TICK_ID,
+        dry_run=True,
+    )
+    ctx = env["context"]
+    assert ctx["motivating_dimensions"] == {"resource_pressure": 0.65}
+    assert ctx["priority_score"] == 0.5
+    assert ctx["risk_score"] == 0.05

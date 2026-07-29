@@ -15,6 +15,17 @@ TARGET
 - target_id: {{ target_id }}
 - allowed_scope: {{ allowed_scope }}
 
+REAL TELEMETRY (the only real numbers you have for this target — a quiet check, so low values here are the expected, unremarkable case)
+- priority_score: {{ "%.3f"|format(priority_score) if priority_score is defined and priority_score is not none else "unavailable" }}
+- risk_score: {{ "%.3f"|format(risk_score) if risk_score is defined and risk_score is not none else "unavailable" }}
+- motivating dimensions on record for this glance:
+{% for dim, val in (motivating_dimensions | default({}, true)).items() %}
+  - {{ dim }}: {{ "%.3f"|format(val) }}
+{% endfor %}
+{% if not (motivating_dimensions | default({}, true)) %}
+  - (none recorded for this target)
+{% endif %}
+
 PROVENANCE (for your own grounding only — do not restate verbatim in the output)
 - proposal_id: {{ proposal_id }}
 - decision_id: {{ decision_id }}
@@ -23,7 +34,7 @@ PROVENANCE (for your own grounding only — do not restate verbatim in the outpu
 Return STRICT JSON only, with exactly this shape:
 {
   "observation": "one or two sentences, calm and unhurried — a routine glance at this target, not a diagnostic report; steady/unremarkable is a fine and common answer",
-  "salient_facts": ["short, concrete fact strings about the target, ordinary in tone — no invented telemetry values, no alarm language"],
+  "salient_facts": ["short, concrete fact strings about the target, ordinary in tone, no alarm language"],
   "confidence": 0.0
 }
 
@@ -35,7 +46,12 @@ Rules:
 - "observation" should sound like a brief, ordinary glance, not a warning.
 - "salient_facts" must still be non-empty when you have anything concrete to
   say about target_kind={{ target_kind }}, even if every fact is mundane.
+- These are the only real numbers you have for this target. Describe only
+  what they show — do not name any other specific metric, count, subsystem
+  detail, or percentage not derivable from the values above. A low or empty
+  reading is a normal, calm result worth stating plainly, not a gap to fill
+  in with an invented one.
 - confidence is a float between 0 and 1 reflecting how well-grounded this
-  glance is given only the target/kind provided — do not overclaim certainty
-  from a bare id.
+  glance is given the telemetry actually provided — do not overclaim
+  certainty beyond what the numbers above support.
 - No markdown fences. No commentary before or after the JSON.

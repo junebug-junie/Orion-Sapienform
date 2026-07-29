@@ -12,6 +12,17 @@ TARGET
 - target_id: {{ target_id }}
 - allowed_scope: {{ allowed_scope }}
 
+REAL TELEMETRY (the only real numbers you have for this target)
+- priority_score: {{ "%.3f"|format(priority_score) if priority_score is defined and priority_score is not none else "unavailable" }}
+- risk_score: {{ "%.3f"|format(risk_score) if risk_score is defined and risk_score is not none else "unavailable" }}
+- motivating dimensions (the field-pressure scores that triggered this inspection, higher = more elevated):
+{% for dim, val in (motivating_dimensions | default({}, true)).items() %}
+  - {{ dim }}: {{ "%.3f"|format(val) }}
+{% endfor %}
+{% if not (motivating_dimensions | default({}, true)) %}
+  - (none recorded for this target)
+{% endif %}
+
 PROVENANCE (for your own grounding only — do not restate verbatim in the output)
 - proposal_id: {{ proposal_id }}
 - decision_id: {{ decision_id }}
@@ -20,7 +31,7 @@ PROVENANCE (for your own grounding only — do not restate verbatim in the outpu
 Return STRICT JSON only, with exactly this shape:
 {
   "observation": "one to three sentences, direct and specific to this target — what is elevated, what it looks like, what would matter next",
-  "salient_facts": ["short, concrete fact strings grounded in the target and its kind — no invented telemetry values"],
+  "salient_facts": ["short, concrete fact strings grounded in the target and its kind"],
   "confidence": 0.0
 }
 
@@ -31,7 +42,12 @@ Rules:
   the elevated condition, not a generic status line.
 - "salient_facts" must be non-empty when you have anything specific to say
   about target_kind={{ target_kind }}; use short factual fragments, not prose.
+- These are the only real numbers you have for this target. Describe only
+  what they show — do not name any other specific metric, count, subsystem
+  detail, or percentage not derivable from the values above. If a dimension
+  you'd want to speak to is missing from REAL TELEMETRY, say plainly that you
+  don't have a reading for it rather than inventing one.
 - confidence is a float between 0 and 1 reflecting how well-grounded this
-  read is given only the target/kind provided — do not overclaim certainty
-  from a bare id.
+  read is given the telemetry actually provided — do not overclaim certainty
+  beyond what the numbers above support.
 - No markdown fences. No commentary before or after the JSON.

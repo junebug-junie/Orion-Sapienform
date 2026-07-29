@@ -27,6 +27,19 @@ def build_cortex_request_envelope(
             "target_kind": candidate.target_kind,
             "allowed_scope": route.allowed_scope,
             "origin": "endogenous.dispatch",
+            # Real, already-computed grounding data for the substrate.inspect/
+            # summarize/observe prompts (see orion/cognition/prompts/
+            # substrate_*.j2's "REAL TELEMETRY" section). motivating_dimensions
+            # is the actual field_pressures()/template_match_score() dimension
+            # scores (orion/proposals/builder.py::_build_candidate()) that
+            # caused this proposal to exist -- the only real numbers the model
+            # gets instead of a bare target_id. priority_score/risk_score are
+            # likewise already computed on the candidate; included so the
+            # model can ground "why does this matter" without inventing a
+            # justification.
+            "motivating_dimensions": dict(candidate.motivating_dimensions),
+            "priority_score": candidate.priority_score,
+            "risk_score": candidate.risk_score,
         },
         "constraints": {
             "read_only": True,

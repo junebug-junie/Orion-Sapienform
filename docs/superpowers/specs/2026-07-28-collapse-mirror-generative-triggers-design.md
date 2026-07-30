@@ -1,8 +1,9 @@
 # CollapseMirror generative triggers (insight + flow) — design spec
 
-Status: **design mode, not implemented.** Touches the metacog/collapse-mirror cognition loop, which
-CLAUDE.md §0A requires explicit proposal mode for before implementation. This document proposes; it
-does not build.
+Status: **design mode, not implemented — all 6 Missing Questions resolved 2026-07-30, awaiting Juniper's
+explicit go-ahead to implement.** Touches the metacog/collapse-mirror cognition loop, which CLAUDE.md
+§0A requires explicit proposal mode for before implementation. This document proposes; it does not
+build.
 
 ## Arsonist summary
 
@@ -110,22 +111,20 @@ were explicitly declined.
    bugs that would need its own independent live-data sanity pass (metric-quality-gate step 4) before
    use, which `prediction_error_confidence` already cleared this session. Revisit only if the rolling-
    window read on `prediction_error_confidence` turns out unsuitable in practice.
-4. **Does the Sentience Striving Program have a specific AST/HOT signal in mind for "an internal
-   tension resolved,"** beyond the generic confidence aggregate — or is confidence-recovery
-   (Missing Question 2's subject) actually the same candidate under a different name? Needs Juniper's
-   input directly; not resolved by code inspection. **Partial new evidence 2026-07-29:** `bbbcc0bc4`
-   "wire orion-heartbeat's H1 verdict into AST/HOT" added `heartbeat_mean_ratio`/`heartbeat_verdict`/
-   `heartbeat_basis` to this same schema, live-verified against the real orion-heartbeat container —
-   its own commit message frames this as a stepping stone toward CollapseMirror ("chosen... over
-   CollapseMirror directly, still missing its own insight/flow gates"), not an answer to this question.
-   Still open; still needs a direct call from Juniper on whether this is the signal.
-5. **Cooldown cadence**: should generative triggers share `trigger_kind`'s existing per-kind cooldown
-   pattern (own lane, like `chat_turn`/`transport`), or fire more freely than error triggers? Raised in
-   the original brainstorm, still open — arguably positive moments deserve finer granularity than
-   alarms, but that's a real design choice, not a default. Checked 2026-07-29: no CollapseMirror-
-   specific per-kind cooldown lane exists yet in `orion-equilibrium-service` to model this decision
-   against; the only `cooldown_key_for_trigger` in the repo belongs to the unrelated journaler trigger
-   subsystem.
+4. **ANSWERED 2026-07-30 — `prediction_error_confidence`, same candidate as Missing Question 2, no
+   separate signal.** `bbbcc0bc4`'s `heartbeat_mean_ratio`/`heartbeat_verdict`/`heartbeat_basis`
+   considered and rejected for now: verified live (repo-wide grep, 2026-07-30) that these fields have
+   **zero consumers anywhere** — they exist only in the schema (`orion/schemas/attention_self_model.py`)
+   and their producer (`orion/substrate/attention_self_model.py`); no gate, reducer, or UI reads them.
+   Real, live, gated data with no downstream decision path yet, matching that PR's own commit message
+   ("chosen... over CollapseMirror directly, still missing its own insight/flow gates" — a stepping
+   stone, not an answer). `prediction_error_confidence` is the only candidate actually doing something
+   today. Revisit heartbeat's signal only if it grows a real consumer elsewhere first.
+5. **ANSWERED 2026-07-30 — own cooldown lane per kind, not the shared global lane.** This was already
+   decided in "Proposed schema / API changes" below (`EQUILIBRIUM_METACOG_INSIGHT_COOLDOWN_SEC` /
+   `EQUILIBRIUM_METACOG_FLOW_COOLDOWN_SEC`, citing the `chat_turn` shared-cooldown bug as precedent not
+   to repeat) — this Missing Question entry was stale, restating it as still-open when the doc had
+   already resolved it. No new design input needed; aligning the text.
 6. **ANSWERED 2026-07-30 — confirmed: `trigger_kind` drives `CollapseMirrorEntryV2.type` in NO path
    today, main or fallback.** Full trace in `services/orion-cortex-exec/app/executor.py`:
    - The LLM draft prompt (`orion/cognition/prompts/log_orion_metacognition_draft.j2`) surfaces
@@ -234,6 +233,13 @@ were explicitly declined.
    `trigger_kind` drives `type` in no path today; exact fix location scoped
    (`_fallback_metacog_draft()`, `executor.py:854-859`) but not patched yet, to avoid dead branches
    with no producer.
-6. Missing Questions 4 (Sentience Striving Program signal-naming — needs Juniper's direct call) and 5
-   (cooldown cadence — no existing per-kind lane to model against) remain open. These are the last two
-   blockers before "insight" or "flow" gate code gets written.
+6. ~~Missing Question 4~~ — answered 2026-07-30: `prediction_error_confidence`, no separate signal;
+   heartbeat's H1 fields verified to have zero consumers repo-wide, not ready to be "the" signal.
+   ~~Missing Question 5~~ — answered 2026-07-30: already decided in Proposed Schema (own cooldown lane
+   per kind), Missing Questions text was just stale.
+7. **All 6 Missing Questions now resolved.** Nothing left blocking on tracing or Juniper's design input.
+   What remains before code gets written: (a) explicit go-ahead to leave design mode, per CLAUDE.md
+   §0A's proposal-mode requirement for cognition-loop changes; (b) MQ2's 0.70/0.90 thresholds are still
+   provisional pending the longer-window re-run (scheduled 2026-08-02) — this does not block writing
+   the gate code, only flipping it live, since Acceptance Check 2 already requires both gates ship
+   disabled by default regardless.

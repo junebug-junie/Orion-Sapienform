@@ -291,6 +291,33 @@ def test_reinforcement_skips_unknown_node_ids():
     assert reinforced == 0
 
 
+def test_reinforcement_protects_reducer_owned_metadata():
+    """Regression guard (2026-07-30): reinforce_matched_concepts reads a
+    node's full metadata via get_node_by_id(), mutates only
+    signals.activation, and re-persists the whole node -- without
+    skip_metadata_keys, that re-persists whatever (possibly stale, relative
+    to a concurrent reducer write) copy of reducer-owned fields like
+    prediction_error happened to be in this read. Same protection already
+    proven for SubstrateDynamicsEngine.tick() and (2026-07-30)
+    SubstrateGraphMaterializer.apply_record()'s merge branch -- see
+    falkor_codec.EXTERNALLY_OWNED_METADATA_KEYS's docstring."""
+    from unittest.mock import patch
+
+    from orion.substrate.falkor_codec import EXTERNALLY_OWNED_METADATA_KEYS
+
+    store = _seeded_store()
+    node = store.get_node_by_id("sub-concept-seed-juniper")
+    identity_key = store.get_identity_key_by_node_id("sub-concept-seed-juniper")
+    node = node.model_copy(update={"metadata": {"prediction_error": 0.42}})
+    store.upsert_node(identity_key=identity_key, node=node)
+
+    with patch.object(store, "upsert_node", wraps=store.upsert_node) as spy:
+        reinforce_matched_concepts(["sub-concept-seed-juniper"], store=store)
+
+    spy.assert_called_once()
+    assert spy.call_args.kwargs.get("skip_metadata_keys") == EXTERNALLY_OWNED_METADATA_KEYS
+
+
 def test_reinforcement_empty_ids_is_a_noop():
     store = _seeded_store()
 

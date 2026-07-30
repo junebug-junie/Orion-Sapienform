@@ -113,6 +113,41 @@ against current field state, and drops the rest instead of queuing it up as fals
 debt) — but it is a real, disclosed trade-off, not a full fix. Part 2 below specs the throughput
 side.
 
+## Part 1b: same-day follow-up — FIFO-only drain starved real-time dispatch entirely
+
+Deployed this same day, and checked against real live data within minutes (not left to "should
+work"). Found something the original patch got wrong: **zero real dispatches happened in the 6+
+minutes following deploy.** `substrate_policy_decision_frames` backlog dropped steadily
+(~46,617 → ~46,134, a consistent ~165/min drain rate, confirmed via real per-minute row counts)
+— the discard mechanism itself worked exactly as designed. But `action_outcomes` had **zero** new
+rows in that same window.
+
+**Root cause**: the original design assumed the drain would "quickly clear backlog, letting real
+dispatch resume." It doesn't work that way under strict FIFO. `_drain_stale_policy_frames` walks
+oldest-first and only *stops* (handing back a candidate to process) once it finds a frame within
+the freshness window. With a 37-hour-deep backlog and a 120-300s freshness window, essentially
+every frame in that backlog is stale by definition — so every tick spends its entire
+`MAX_STALE_DISCARDS_PER_TICK` (200) budget discarding ancient garbage and *never reaches* a frame
+recent enough to actually dispatch. At the measured ~165/min drain rate, that's **~4.6 hours of
+total dispatch silence** before the drain would naturally catch up to real time. The PR's own risk
+section undersold this ("a rolling fraction of candidates will go stale") — in practice it was
+100% stale, 0% dispatched, for hours, not a rolling fraction.
+
+**Fix**: `ExecutionDispatchRuntimeStore.load_freshest_policy_frame_without_dispatch()` (new,
+`ORDER BY generated_at DESC LIMIT 1`, same schema-validation-failure handling as the existing FIFO
+lookup) — a direct "is there something current available right now" check. `_tick()` calls this
+as a fallback whenever `_drain_stale_policy_frames` doesn't surface a candidate (empty queue, or
+the cap was hit first). If the single newest unprocessed frame is within the staleness window, it
+gets processed for real dispatch this tick regardless of how deep the old backlog behind it is.
+Old backlog still drains steadily via the unchanged FIFO path — this only ensures real-time
+dispatch is never additionally gated by backlog depth. Correctly returns nothing when even the
+newest available frame is already stale (production itself has stalled, not a backlog-depth
+artifact).
+
+**Files touched**: `services/orion-execution-dispatch-runtime/app/store.py`
+(`load_freshest_policy_frame_without_dispatch`), `app/worker.py` (extracted `_age_sec` shared
+helper, new `_check_freshest_fallback`, `_tick` wiring), README, tests.
+
 ## Part 2: throughput redesign — design mode, not implemented
 
 ### Arsonist summary

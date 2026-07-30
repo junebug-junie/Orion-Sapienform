@@ -76,6 +76,62 @@ class ExecutionDispatchRuntimeStore:
                 self._retire_incompatible_policy_frame(raw_frame_id, raw_proposal_frame_id)
             return None
 
+    def load_freshest_policy_frame_without_dispatch(self) -> PolicyDecisionFrameV1 | None:
+        """The single newest unprocessed policy frame, regardless of backlog
+        depth (2026-07-30, docs/superpowers/specs/2026-07-30-execution-
+        dispatch-staleness-discard-design.md's own follow-up finding: a real
+        deep backlog fully starved real-time dispatch under the FIFO-only
+        design, since _drain_stale_policy_frames' oldest-first walk can spend
+        its entire per-tick discard budget on old backlog without ever
+        reaching "now"). _tick() checks this as a fallback whenever the FIFO
+        drain doesn't surface a candidate to process, so a genuinely current
+        proposal is never gated behind however deep the old backlog is.
+
+        Same schema-validation-failure handling as load_latest_policy_frame_
+        without_dispatch above (retire an incompatible row via a stub
+        dispatch frame rather than re-selecting it forever) -- this query can
+        hit the exact same incompatible-row case, just approached from the
+        newest end instead of the oldest.
+        """
+        with self._engine.connect() as conn:
+            row = (
+                conn.execute(
+                    text(
+                        """
+                        SELECT p.policy_decision_frame_json
+                        FROM substrate_policy_decision_frames p
+                        LEFT JOIN substrate_execution_dispatch_frames d
+                          ON d.source_policy_frame_id = p.frame_id
+                        WHERE d.frame_id IS NULL
+                        ORDER BY p.generated_at DESC
+                        LIMIT 1
+                        """
+                    ),
+                )
+                .mappings()
+                .first()
+            )
+        if not row:
+            return None
+        payload = row["policy_decision_frame_json"]
+        if isinstance(payload, str):
+            payload = json.loads(payload)
+        try:
+            return PolicyDecisionFrameV1.model_validate(payload)
+        except ValidationError:
+            raw_frame_id = payload.get("frame_id") if isinstance(payload, dict) else None
+            raw_proposal_frame_id = (
+                payload.get("source_proposal_frame_id") if isinstance(payload, dict) else None
+            )
+            logger.warning(
+                "policy_decision_frame_incompatible_schema freshest_lookup frame_id=%s",
+                raw_frame_id,
+                exc_info=True,
+            )
+            if raw_frame_id:
+                self._retire_incompatible_policy_frame(raw_frame_id, raw_proposal_frame_id)
+            return None
+
     def _retire_incompatible_policy_frame(
         self, raw_frame_id: str, raw_proposal_frame_id: str | None
     ) -> None:

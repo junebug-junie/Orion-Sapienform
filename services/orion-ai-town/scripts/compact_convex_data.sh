@@ -170,7 +170,7 @@ fi
 # compaction. See check_llm_route_not_circe.py's docstring for the incident.
 if ! python3 "${ROOT}/scripts/check_llm_route_not_circe.py"; then
   log "WARNING: restored LLM_MODEL resolves to circe -- correcting to the safe default"
-  (cd "${UPSTREAM}" && npx convex env set LLM_MODEL "${AITOWN_LLM_CHAT_ROUTE:-quick}")
+  (cd "${UPSTREAM}" && npx convex env set LLM_MODEL "${AITOWN_LLM_CHAT_ROUTE:-quick_background}")
   if python3 "${ROOT}/scripts/check_llm_route_not_circe.py"; then
     log "corrected: LLM_MODEL is no longer on circe"
   else

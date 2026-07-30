@@ -90,6 +90,20 @@ class Settings(BaseSettings):
     # Route table (single-subscriber routing)
     llm_route_table_json: Optional[str] = Field(None, alias="LLM_GATEWAY_ROUTE_TABLE_JSON")
     llm_route_default: str = Field("chat", alias="LLM_ROUTE_DEFAULT")
+
+    # Background-priority routes (RouteTarget.priority == "background"): wait
+    # for upstream /slots slack before dispatch instead of competing evenly
+    # with foreground traffic on the same llama.cpp process. See
+    # priority_admission.py and README.md's "Background-priority routes".
+    llm_gateway_background_max_wait_sec: float = Field(
+        30.0, alias="LLM_GATEWAY_BACKGROUND_MAX_WAIT_SEC"
+    )
+    llm_gateway_background_poll_interval_sec: float = Field(
+        0.5, alias="LLM_GATEWAY_BACKGROUND_POLL_INTERVAL_SEC"
+    )
+    llm_gateway_background_concurrency: int = Field(
+        1, alias="LLM_GATEWAY_BACKGROUND_CONCURRENCY"
+    )
     llm_route_chat_url: Optional[str] = Field(None, alias="LLM_ROUTE_CHAT_URL")
     llm_route_metacog_url: Optional[str] = Field(None, alias="LLM_ROUTE_METACOG_URL")
     llm_route_latents_url: Optional[str] = Field(None, alias="LLM_ROUTE_LATENTS_URL")

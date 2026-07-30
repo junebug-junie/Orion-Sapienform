@@ -23,6 +23,7 @@ from .anthropic_passthrough import (
     normalize_anthropic_model_name,
 )
 from .llm_backend import RouteTarget, get_route_targets
+from .priority_admission import background_admission
 from .settings import settings
 
 logger = logging.getLogger("orion-llm-gateway.openai")
@@ -240,6 +241,29 @@ async def handle_chat_completions_post(request: Request) -> Response:
     if forward_body.get("model") != upstream_model:
         forward_body["model"] = upstream_model
     upstream_url = f"{target.url.rstrip('/')}/v1/chat/completions"
+
+    if target.priority == "background":
+        # See priority_admission.py's docstring: wait for upstream slot slack
+        # before dispatching so a background-tagged route (e.g. AI Town's
+        # quick_background) never competes evenly with foreground traffic
+        # sharing the same llama.cpp process. Fail-open -- always forwards
+        # eventually, never drops the request.
+        async with background_admission(
+            route_key,
+            target,
+            concurrency=settings.llm_gateway_background_concurrency,
+            poll_interval_sec=settings.llm_gateway_background_poll_interval_sec,
+            max_wait_sec=settings.llm_gateway_background_max_wait_sec,
+        ):
+            return await _proxy_upstream_json(
+                request=request,
+                upstream_url=upstream_url,
+                forward_body=forward_body,
+                route_key=route_key,
+                correlation_id=_extract_correlation_id(request),
+                log_event="openai_chat_passthrough",
+            )
+
     return await _proxy_upstream_json(
         request=request,
         upstream_url=upstream_url,

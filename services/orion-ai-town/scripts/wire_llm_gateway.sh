@@ -10,8 +10,13 @@ if [[ ! -d "${UPSTREAM}/convex" ]]; then
   exit 1
 fi
 
+# quick_background (not plain quick): AI Town shares atlas-worker-fast-1 with
+# orion-mind/orion-hub/orion-embodiment's own quick traffic, and this route
+# waits for upstream /slots slack before dispatching so AI Town's NPC
+# dialogue never makes those snappier consumers wait behind it. See
+# services/orion-llm-gateway/README.md's "Background-priority routes".
 GATEWAY_URL="${AITOWN_LLM_GATEWAY_URL:-${ORION_LLM_GATEWAY_URL:-http://127.0.0.1:8210}}"
-CHAT_ROUTE="${AITOWN_LLM_CHAT_ROUTE:-quick}"
+CHAT_ROUTE="${AITOWN_LLM_CHAT_ROUTE:-quick_background}"
 EMBED_MODEL="${AITOWN_LLM_EMBEDDING_MODEL:-orion-vector-host}"
 EMBED_DIM="${AITOWN_EMBEDDING_DIMENSION:-1024}"
 

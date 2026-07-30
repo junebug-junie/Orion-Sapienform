@@ -92,7 +92,7 @@ Defaults:
 | Convex env | Value | Meaning |
 |------------|-------|---------|
 | `LLM_API_URL` | `http://<mesh-ip>:8210` | Gateway base (no `/v1` suffix) |
-| `LLM_MODEL` | `quick` | Route key in `LLM_GATEWAY_ROUTE_TABLE_JSON` |
+| `LLM_MODEL` | `quick_background` | Route key in `LLM_GATEWAY_ROUTE_TABLE_JSON` |
 | `LLM_EMBEDDING_MODEL` | `orion-vector-host` | Label only; gateway proxies to vector-host |
 | `EMBEDDING_DIMENSION` | `1024` | Must match `VECTOR_HOST_EMBEDDING_MODEL` (bge-large-en-v1.5) |
 
@@ -108,6 +108,16 @@ Override: `AITOWN_LLM_GATEWAY_URL`, `AITOWN_LLM_CHAT_ROUTE`, `AITOWN_EMBEDDING_D
 > policy). `wire_llm_gateway.sh` now hard-fails if it would leave AI Town on
 > circe; run `python3 services/orion-ai-town/scripts/check_llm_route_not_circe.py`
 > any time to check the live state directly.
+>
+> **Why `quick_background`, not plain `quick` (2026-07-30):** `quick`
+> (`atlas-worker-fast-1`) is also the default route for `orion-mind`,
+> `orion-embodiment`'s hub-mode speech, and `orion-hub`'s memory-graph-suggest.
+> No second GPU was available to give AI Town its own dedicated model
+> (confirmed live: both V100s already host one model each). `quick_background`
+> shares the exact same upstream but waits for `/slots` slack before
+> dispatching, so AI Town's dialogue never makes those other, snappier
+> consumers wait behind it -- see
+> `services/orion-llm-gateway/README.md`'s "Background-priority routes".
 
 **Requires:** `LLM_GATEWAY_OPENAI_PASSTHROUGH_ENABLED=true` and `ORION_VECTOR_HOST_URL` on orion-llm-gateway.
 

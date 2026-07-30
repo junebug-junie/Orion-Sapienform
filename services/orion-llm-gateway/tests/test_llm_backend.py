@@ -262,6 +262,24 @@ class TestLLMBackendExecution(unittest.TestCase):
             settings.llm_route_table_json = original
             _load_route_targets.cache_clear()
 
+    def test_route_table_parses_background_priority_fields(self):
+        original = settings.llm_route_table_json
+        try:
+            settings.llm_route_table_json = (
+                '{"quick":{"url":"http://atlas:8013","served_by":"atlas-worker-fast-1","backend":"llamacpp"},'
+                '"quick_background":{"url":"http://atlas:8013","served_by":"atlas-worker-fast-1",'
+                '"backend":"llamacpp","priority":"background","reserved_free_slots":2}}'
+            )
+            _load_route_targets.cache_clear()
+            targets = _load_route_targets()
+            self.assertIsNone(targets["quick"].priority)
+            self.assertIsNone(targets["quick"].reserved_free_slots)
+            self.assertEqual(targets["quick_background"].priority, "background")
+            self.assertEqual(targets["quick_background"].reserved_free_slots, 2)
+        finally:
+            settings.llm_route_table_json = original
+            _load_route_targets.cache_clear()
+
     def test_route_table_metacog_served_by_defaults_from_atlas_service_name(self):
         original_table = settings.llm_route_table_json
         original_service = settings.atlas_metacog_service_name

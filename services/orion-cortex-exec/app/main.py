@@ -33,6 +33,7 @@ from .router import PlanRouter
 from .dream_publish import build_dream_publish_envelope
 from .chat_stance import resolve_autonomy_graphdb_config
 from .core_event_cache import get_core_event_cache
+from .world_context_capsule_cache import get_world_context_capsule_cache
 from .trace_cache import get_trace_cache
 from .verb_adapters import LegacyPlanVerb, RespondToJuniperCollapseMirrorVerb  # noqa: F401 - register verb adapter
 from .collapse_verbs import (  # noqa: F401 - register collapse verbs
@@ -783,6 +784,23 @@ async def handle_core_event(env: BaseEnvelope) -> None:
         logger.warning("Failed to cache core event: %s", e)
 
 
+async def handle_world_context_capsule(env: BaseEnvelope) -> None:
+    # orion:world_context:daily_capsule -- orion-world-pulse publishes on every
+    # run (services/orion-world-pulse/app/services/emit_sql.py). Cache the raw
+    # payload dict as-is; app/executor.py's filter_world_context_capsule expects
+    # the same shape produced by WorldContextCapsuleV1.model_dump(mode="json").
+    try:
+        raw = env.payload if isinstance(env.payload, dict) else {}
+        get_world_context_capsule_cache().set(raw)
+        logger.info(
+            "world_context_capsule_cached capsule_id=%s salient_topics=%s",
+            raw.get("capsule_id"),
+            len(raw.get("salient_topics") or []),
+        )
+    except Exception as e:
+        logger.warning("Failed to cache world context capsule: %s", e)
+
+
 async def handle_verb_request(env: BaseEnvelope) -> None:
     assert svc is not None, "Rabbit service not initialized"
     assert verb_runtime is not None, "Verb runtime not initialized"
@@ -950,6 +968,13 @@ if settings.embodiment_perception_cortex_enabled:
         handler=handle_embodiment_perception,
         patterns=[settings.embodiment_channel_perception],
     )
+world_context_capsule_listener: Hunter | None = None
+if settings.world_pulse_stance_enabled:
+    world_context_capsule_listener = Hunter(
+        _cfg(),
+        handler=handle_world_context_capsule,
+        patterns=["orion:world_context:daily_capsule"],
+    )
 
 
 async def main() -> None:
@@ -1005,6 +1030,9 @@ async def main() -> None:
                 "embodiment_perception_listener_started channel=%s",
                 settings.embodiment_channel_perception,
             )
+        if world_context_capsule_listener is not None:
+            await world_context_capsule_listener.start_background()
+            logger.info("world_context_capsule_listener_started channel=orion:world_context:daily_capsule")
         if settings.embodiment_d_background_enabled:
             asyncio.create_task(_embodiment_background_loop(), name="embodiment-background")
             logger.info(

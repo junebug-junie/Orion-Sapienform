@@ -40,8 +40,30 @@ def test_filter_world_context_capsule_filters_expired_and_low_confidence():
     assert diag["stance_world_context_items_used"] == 1
 
 
-def test_fetch_latest_world_context_capsule_fails_open_on_unreachable_host(monkeypatch):
-    world_context._CAPSULE_CACHE.clear()
+def _clear_capsule_cache():
+    world_context._cache_time = None
+    world_context._cache_value = None
+
+
+class _FakeResp:
+    def __init__(self, body: bytes, on_read=None):
+        self._body = body
+        self._on_read = on_read
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *args):
+        return False
+
+    def read(self):
+        if self._on_read is not None:
+            self._on_read()
+        return self._body
+
+
+def test_fetch_latest_world_context_capsule_fails_open_on_unreachable_host():
+    _clear_capsule_cache()
     capsule = fetch_latest_world_context_capsule(
         base_url="http://127.0.0.1:1",
         timeout_seconds=0.2,
@@ -51,19 +73,9 @@ def test_fetch_latest_world_context_capsule_fails_open_on_unreachable_host(monke
 
 
 def test_fetch_latest_world_context_capsule_returns_capsule_from_payload(monkeypatch):
-    world_context._CAPSULE_CACHE.clear()
-
-    class _FakeResp:
-        def __enter__(self):
-            return self
-
-        def __exit__(self, *args):
-            return False
-
-        def read(self):
-            return b'{"capsule": {"salient_topics": [{"topic": "x", "confidence": 0.9}]}}'
-
-    monkeypatch.setattr(world_context, "urlopen", lambda *a, **k: _FakeResp())
+    _clear_capsule_cache()
+    body = b'{"capsule": {"salient_topics": [{"topic": "x", "confidence": 0.9}]}}'
+    monkeypatch.setattr(world_context, "urlopen", lambda *a, **k: _FakeResp(body))
     capsule = fetch_latest_world_context_capsule(
         base_url="http://fake-world-pulse:8628",
         timeout_seconds=2.0,
@@ -73,21 +85,10 @@ def test_fetch_latest_world_context_capsule_returns_capsule_from_payload(monkeyp
 
 
 def test_fetch_latest_world_context_capsule_uses_cache(monkeypatch):
-    world_context._CAPSULE_CACHE.clear()
+    _clear_capsule_cache()
     calls = {"count": 0}
-
-    class _FakeResp:
-        def __enter__(self):
-            return self
-
-        def __exit__(self, *args):
-            return False
-
-        def read(self):
-            calls["count"] += 1
-            return b'{"capsule": {"salient_topics": []}}'
-
-    monkeypatch.setattr(world_context, "urlopen", lambda *a, **k: _FakeResp())
+    body = b'{"capsule": {"salient_topics": []}}'
+    monkeypatch.setattr(world_context, "urlopen", lambda *a, **k: _FakeResp(body, on_read=lambda: calls.__setitem__("count", calls["count"] + 1)))
     fetch_latest_world_context_capsule(base_url="http://fake:8628", timeout_seconds=2.0, cache_ttl_seconds=300)
     fetch_latest_world_context_capsule(base_url="http://fake:8628", timeout_seconds=2.0, cache_ttl_seconds=300)
     assert calls["count"] == 1

@@ -68,6 +68,25 @@ def test_build_perception_forwards_is_human_for_nearby_and_partner():
     assert perc.active_conversation["other"]["is_human"] is True
 
 
+def test_build_perception_computes_nearby_landmarks_sorted_by_distance():
+    players = [{"id": "orion", "position": {"x": 0.0, "y": 0.0}}]
+    locations = {
+        "waterfall": {"x": 5.0, "y": 0.0},
+        "campfire": {"x": 2.0, "y": 0.0},
+        "windmill_east": {"x": 100.0, "y": 100.0},
+    }
+    perc = build_perception(players=players, orion_player_id="orion", locations=locations, max_landmarks=2)
+    names = [lm["name"] for lm in perc.nearby_landmarks]
+    assert names == ["campfire", "waterfall"]  # nearest 2, sorted, windmill_east excluded
+    assert perc.nearby_landmarks[0]["distance"] == 2.0
+
+
+def test_build_perception_empty_landmarks_when_locations_unset():
+    players = [{"id": "orion", "position": {"x": 0.0, "y": 0.0}}]
+    perc = build_perception(players=players, orion_player_id="orion")
+    assert perc.nearby_landmarks == []
+
+
 def test_build_perception_no_conversation_when_orion_not_member():
     players = [{"id": "orion", "position": {"x": 0.0, "y": 0.0}}]
     conversations = [{"id": "c:2", "participants": [{"playerId": "zz", "status": {"kind": "invited"}}]}]

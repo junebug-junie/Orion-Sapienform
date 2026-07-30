@@ -105,13 +105,42 @@ def _active_conversation(
     return None
 
 
+def _nearby_landmarks(
+    locations: dict[str, Any], ox: float, oy: float, *, max_landmarks: int,
+) -> list[dict[str, Any]]:
+    """Named static map features near (ox, oy), nearest first.
+
+    ``locations`` is the same name -> {x, y} registry ``go_to_location``
+    already uses for movement targeting (EMBODIMENT_LOCATIONS_JSON) -- reused
+    here read-only so Orion's perception (and therefore speech) can reference
+    real places on the map, not just other players.
+    """
+    landmarks = []
+    for name, loc in (locations or {}).items():
+        if not isinstance(loc, dict):
+            continue
+        try:
+            lx, ly = float(loc["x"]), float(loc["y"])
+        except (TypeError, ValueError, KeyError):
+            continue
+        landmarks.append({
+            "name": str(name),
+            "position": {"x": lx, "y": ly},
+            "distance": round(math.hypot(lx - ox, ly - oy), 4),
+        })
+    landmarks.sort(key=lambda n: n["distance"])
+    return landmarks[:max_landmarks]
+
+
 def build_perception(
     *,
     players: list[dict[str, Any]],
     orion_player_id: str,
     conversations: Optional[list[dict[str, Any]]] = None,
     messages: Optional[list[dict[str, Any]]] = None,
+    locations: Optional[dict[str, Any]] = None,
     max_nearby: int = 8,
+    max_landmarks: int = 3,
 ) -> Optional[WorldPerceptionV1]:
     orion = next((p for p in players if str(p.get("id")) == orion_player_id), None)
     if orion is None or not isinstance(orion.get("position"), dict):
@@ -142,8 +171,10 @@ def build_perception(
         conversations or [], orion_player_id, players_by_id, messages or [],
         orion_facing=orion_facing, orion_position=orion_position,
     )
+    landmarks = _nearby_landmarks(locations or {}, ox, oy, max_landmarks=max_landmarks)
     return WorldPerceptionV1(
         player_id=orion_player_id, position=orion_position,
         facing=orion_facing, pathfinding=orion_pathfinding,
-        nearby_players=nearby[:max_nearby], active_conversation=active,
+        nearby_players=nearby[:max_nearby], nearby_landmarks=landmarks,
+        active_conversation=active,
     )

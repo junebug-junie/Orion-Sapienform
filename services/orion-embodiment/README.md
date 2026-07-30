@@ -52,6 +52,15 @@ The dispatcher tries grounded first only when unified is enabled. With `EMBODIME
 | `EMBODIMENT_CORTEX_REQUEST_CHANNEL` | `orion:cortex:exec:request:chat` | Chat exec lane intake (not legacy) |
 | `EMBODIMENT_SPEECH_HUB_LLM_ROUTE` | `chat` | LLM route when unified grounded pass is enabled |
 
+## Spatial grounding: named map landmarks
+
+`EMBODIMENT_LOCATIONS_JSON` (name -> tile `{x,y}`) is a dual-use registry:
+
+- **Movement** (pre-existing): `go_to_location` intents resolve a named destination through it (`orion/embodiment/resolver.py`).
+- **Perception/speech grounding** (new): `build_perception` (`orion/embodiment/perception.py`) computes `nearby_landmarks` (nearest 3, sorted by distance -- a hardcoded default, matching how `nearby_players`' cap is also hardcoded, not env-configurable) from the same registry against Orion's live position every tick, and `build_speech_prompt` (`orion/embodiment/speech.py`) includes a short `Nearby: <names>.` clause when non-empty. This exists because live dialogue inspection (2026-07-30) showed Orion using conversation partners' names correctly but with content entirely disconnected from the actual scene -- the prompt had no way to reference anything physically nearby since nothing in perception knew what was actually on the map. The model still chooses what to say; this only ensures the grounding material is present to draw from.
+
+`.env_example` ships this pre-populated with the real landmarks in this world's actual map file (`services/orion-ai-town/upstream/data/gentle.js`'s `animatedsprites`, pixel coords / `tiledim=32`): a campfire, 3 windmills, and a stream/waterfall feature. If the map changes, regenerate this list from the new map file the same way -- see `docs/superpowers/specs/2026-07-30-aitown-spatial-grounding-design.md`.
+
 ## Facing the conversation partner
 
 The AI Town engine (`convex/aiTown/conversation.ts` `Conversation.tick`) orients **both** participants toward each other on every tick — but **only for a participant that is NOT pathfinding** (`if (!player.pathfinding) player.facing = v`). Orion is an externally-driven "join" player with no town-AI agent, so if it reaches `participating` still carrying a lingering movement path, the engine never turns it to face the partner.

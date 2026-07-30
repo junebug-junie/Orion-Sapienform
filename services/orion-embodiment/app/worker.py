@@ -621,6 +621,7 @@ class EmbodimentWorker:
             perception = build_perception(
                 players=players or [], orion_player_id=player_id,
                 conversations=conversations, messages=messages,
+                locations=getattr(self, "_locations", {}),
             )
         except Exception:
             logger.exception("embodiment_perception_build_failed")

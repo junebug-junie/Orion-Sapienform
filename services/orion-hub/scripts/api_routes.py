@@ -127,6 +127,7 @@ from orion.core.schemas.substrate_mutation import (
 )
 from orion.core.activation_decay import decay_activation
 from orion.substrate import build_substrate_policy_store_from_env, build_substrate_store_from_env
+from orion.substrate.falkor_codec import EXTERNALLY_OWNED_METADATA_KEYS
 from orion.substrate.consolidation import GraphConsolidationEvaluator
 from orion.substrate.policy_comparison import SubstratePolicyComparisonService
 from orion.substrate.review_queue import GraphReviewQueue
@@ -371,8 +372,20 @@ def decay_concept_activations(elapsed_seconds: Optional[float] = None) -> dict[s
             updated_signals = node.signals.model_copy(update={"activation": updated_signal})
             updated_node = node.model_copy(update={"signals": updated_signals})
 
+            # skip_metadata_keys: updated_node's metadata is node.metadata,
+            # read moments earlier by SUBSTRATE_SEMANTIC_STORE.snapshot()
+            # above -- only signals.activation is actually recomputed here,
+            # but re-persisting the whole node re-writes reducer-owned
+            # metadata fields (prediction_error, contributing_turn_ids) from
+            # that stale read too. Same protection already proven for
+            # SubstrateDynamicsEngine.tick() and (2026-07-30)
+            # SubstrateGraphMaterializer.apply_record()'s merge branch and
+            # concept_induction's materialize_concept_profile_to_falkor() --
+            # see falkor_codec.EXTERNALLY_OWNED_METADATA_KEYS's docstring.
             SUBSTRATE_SEMANTIC_STORE.upsert_node(
-                identity_key=identity_by_node_id.get(node.node_id), node=updated_node
+                identity_key=identity_by_node_id.get(node.node_id),
+                node=updated_node,
+                skip_metadata_keys=EXTERNALLY_OWNED_METADATA_KEYS,
             )
             summary["decayed"] += 1
         except Exception as exc:

@@ -271,3 +271,85 @@ This doc's Missing Questions 1-2 and the trend-reducer build itself are not canc
 re-sequenced: they remain the right next step for metacog specifically, but only after (or in
 parallel with, if scoped as a fully separate consumer of attention output) the arbitration-layer
 question above gets its own resolution.
+
+## 2026-07-29/30 update — Missing Questions 1-2 resolved: `turn_effect` is dead, the real series is `orion_biometrics_induction`
+
+Same overall arc, next session. Picked back up on this doc's original Missing Questions 1-2
+("which series does the reducer run over" / "does turn_effect have durable history") after the
+arbitration-layer thread above reached its own stopping point. Real answer, not the one either
+prior version of this doc assumed.
+
+**`turn_effect`'s `valence`/`energy`/`coherence` are dead — not contaminated, structurally absent.**
+`orion/schemas/telemetry/turn_effect.py::turn_effect_from_spark_meta()`'s only path to those three
+fields is `_delta_block(phi_before, phi_after)` — a diff over the old phi self-report system. Its
+producer, `services/orion-spark-introspector`, is not flag-disabled, it is **deleted**: the
+service's own `app/` directory is empty except a stale `__pycache__`, and `docker ps -a` (including
+stopped containers) shows nothing matching "introspector" anywhere. Confirmed via `git log -S` that
+the write site (`"phi_before": phi_prev`) only exists in old, already-abandoned `.worktrees/*`
+copies, not on `main`. Two real historical `orion_metacog.state.turn_effect` rows found earlier
+(2026-07-28, all four keys populated) are almost certainly among the last ever produced this way,
+immediately before the kill — not representative of what's available going forward.
+
+**The other path, `turn_effect_from_appraisal()` (`novelty` only, via `turn_change_appraisal`), is
+real but too sparse to be the primary reducer series.** Its `novelty_score` genuinely derives from
+real per-token logprobs (`services/orion-memory-consolidation/app/boundary.py::scores_from_llm_result()`,
+reading `raw["choices"][0]["logprobs"]["content"]` directly from the LLM API response, scored via
+`binary_score_from_top_logprobs()`) — not self-report, a legitimate technique. Producer confirmed
+live (`orion-athena-memory-consolidation`, up). Durable history exists at
+`chat_history_log.spark_meta->'turn_change_appraisal'`. But real data over the last 7 days: only 40
+total `chat_history_log` rows (2026-07-24 → 2026-07-29), of which 36 read `turn_change_status="ok"`
+(90% — reliable when present) but at real chat-turn cadence, ~7/day. A "trend over the last 2 hours"
+framing would usually see 0-1 data points in that window. Real and trustworthy, wrong density for
+this job; a candidate corroborating signal, not the primary series.
+
+**Two other candidates checked and set aside, for completeness:**
+- `metacognition_ticks` (`distress_score`/`zen_score`, 51,136 rows/6 days, ~1 every 10s) — dense,
+  but a recent 8-sample check came back bit-for-bit identical across 80 real seconds, and the naming
+  ("zen_score") raised the same suspicion as `mantra`'s mythic register earlier this arc. Juniper's
+  own call: "old and shitty," don't pursue. Producer not traced further.
+- `orion_metacognitive_trace` (41,185 rows/6 days, ~6,860/day) — real, dense, confirmed live
+  (`orion-sql-writer` persists it, `orion-hub`'s websocket serves it). But it's raw LLM reasoning
+  text (`content`), not a numeric score; `token_count` is the only real number in it. A genuine
+  candidate for a *different*, heavier kind of reducer (semantic/text-based), not this one.
+
+**The real answer: `orion_biometrics_summary` / `orion_biometrics_induction`, standalone tables,
+never previously connected to this doc.** Both real, dense, durably persisted, independent of
+`orion_metacog` entirely:
+
+- `orion_biometrics_summary.composites.strain` (etc.) — 45,379 rows, 2026-07-23→2026-07-30 (6.1
+  days), three real nodes. 24h variance, re-verified fresh, not assumed: `athena` 0.098-0.521
+  (stddev 0.062), `atlas` 0.017-0.310 (stddev 0.055), `circe` 0.004-0.341 (stddev 0.044). Built
+  directly from the same real cpu/gpu/mem/disk pressures this same session's `gpu_pressure` forensics
+  (PR #1461) confirmed genuine — the identical verified-real data, not adjacent to it.
+- `orion_biometrics_induction.metrics.<channel>.{level,trend,spike_rate,volatility}` — same 45,381
+  rows, same span, same three nodes. **This is already a real trend computation** — the exact thing
+  this doc's "Proposed schema / API changes" section asked to build from scratch. `cpu.trend` 24h
+  variance, re-verified: `athena` 0.429-0.590 (stddev 0.017, real substantial movement — athena is
+  the orchestration node, genuinely busiest), `atlas` 0.4956-0.5057 (stddev 0.0008), `circe`
+  0.4925-0.5229 (stddev 0.0011). Atlas/circe's tight band around ~0.5 is consistent with `trend`
+  being scaled so 0.5 = "no directional change," not a hardcoded/stuck value — real decimal noise
+  throughout (`0.49555067940351943`, not a clean round number), unlike `gpu_pressure`'s exact `0.8`.
+  Already surfaced on a real, live Hub dashboard (`trendArrow()`, `services/orion-hub/static/js/app.js:8660`)
+  — independently trusted elsewhere, not a new, unverified claim.
+
+**This resolves Missing Questions 1 and 2 directly, with a different answer than either prior
+version of this doc considered**: the reducer's real series is neither sparse `orion_metacog` rows
+nor dead `turn_effect` history — it's `orion_biometrics_induction`, already real, already dense,
+already computing trend/volatility per node/channel, sitting completely unused by metacog. Missing
+Question 3 ("what does 'feed forward' mean") also gets a cheaper answer as a direct consequence: the
+actual next patch is wiring `MetacogContextService` to read this already-real trend data as a new
+evidence-cue block (matching the existing `RECENT TURN-EFFECT ALERTS` pattern this doc's "Proposed
+schema" section already named as the cheap option) — not building a new reducer from scratch. The
+"new reducer" this doc originally scoped may not need to exist at all; the reduction is already
+happening, just never connected.
+
+**Still open, not resolved here:**
+- Whether `orion_biometrics_induction`'s `trend`/`spike_rate`/`volatility` fields are computed the
+  same principled way across all three nodes and all channels, or whether the tight atlas/circe band
+  needs its own explicit check before trusting it as "confirms no real change" rather than "this
+  formula reads near-0.5 by construction for low-traffic nodes" — same class of question the
+  metric-quality-gate discipline applies to everything else this session.
+  `distress_score`/`zen_score`'s producer was never traced (Juniper's call: not worth it) — if
+  revisited later, don't assume it's clean just because it wasn't pursued.
+- The arbitration-layer prerequisite from the section above is still unresolved. This finding answers
+  "which series," not "is the arena this feeds into fair" — that question stands as stated.

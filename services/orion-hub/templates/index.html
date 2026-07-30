@@ -125,6 +125,13 @@
             class="px-3 py-1.5 text-xs font-semibold rounded-full bg-gray-800 text-gray-200 border border-gray-700 hover:bg-gray-700"
             role="button"
           >Collapse Mirror</a>
+          <a
+            id="attentionOrganTabButton"
+            href="#attention-organ"
+            data-hash-target="#attention-organ"
+            class="px-3 py-1.5 text-xs font-semibold rounded-full bg-gray-800 text-gray-200 border border-gray-700 hover:bg-gray-700"
+            role="button"
+          >Attention Organ</a>
           {{HUB_AITOWN_TAB_NAV}}
           <a
             id="selfObservabilityTabButton"
@@ -796,6 +803,67 @@
             <div class="text-[10px] uppercase tracking-wide text-gray-500">Selection / trace</div>
             <pre id="organSignalsDetail" class="flex-1 min-h-[12rem] text-[11px] leading-relaxed text-gray-200 bg-gray-950/50 border border-gray-800 rounded-lg p-2 overflow-auto whitespace-pre-wrap font-mono">Tap a node for JSON. If <code class="text-gray-500">otel_trace_id</code> is set, Hub trace chain loads here.</pre>
           </div>
+        </div>
+      </section>
+
+      <section id="attention-organ" data-panel="attention-organ" class="hidden w-full bg-gray-900 rounded-2xl shadow-lg p-5 flex flex-col gap-4 min-h-[56rem]">
+        <div class="flex flex-wrap items-center justify-between gap-3">
+          <div class="min-w-0">
+            <h2 class="text-xl font-bold text-white">Attention Organ — precision-weighted gain &amp; heartbeat discrimination</h2>
+            <p class="text-xs text-gray-400 max-w-4xl">
+              Live view of <code class="text-gray-500">orion-heartbeat</code>'s N-trajectory tensor-network dissipation ensemble, the
+              <code class="text-gray-500">AttentionSelfModelV1</code> (AST/HOT) row that consumes it, and each Active-Inference domain's
+              raw <code class="text-gray-500">prediction_error</code>. Served by <code class="text-gray-500">/api/attention-organ/*</code>.
+              Design spec: <code class="text-gray-500">docs/superpowers/specs/2026-07-28-precision-weighted-attention-organ-and-heartbeat-discrimination-design.md</code>.
+              Read-only — this surface consumes signals, it does not produce or publish any.
+            </p>
+          </div>
+          <div class="flex items-center gap-2 text-xs shrink-0">
+            <label class="inline-flex items-center gap-1 text-gray-400">
+              Window
+              <select id="attentionOrganWindow" class="rounded border border-gray-600 bg-gray-800 text-gray-200 px-2 py-1">
+                <option value="15">15 min</option>
+                <option value="60" selected>1 hour</option>
+                <option value="360">6 hours</option>
+                <option value="1440">24 hours</option>
+              </select>
+            </label>
+            <label class="inline-flex items-center gap-1 text-gray-400">
+              Poll
+              <select id="attentionOrganInterval" class="rounded border border-gray-600 bg-gray-800 text-gray-200 px-2 py-1">
+                <option value="2000">2s</option>
+                <option value="5000" selected>5s</option>
+                <option value="15000">15s</option>
+                <option value="30000">30s</option>
+              </select>
+            </label>
+            <label class="inline-flex items-center gap-2 text-gray-400">
+              <input id="attentionOrganLive" type="checkbox" class="rounded border border-gray-600 bg-gray-800" checked />
+              Live
+            </label>
+            <button type="button" id="attentionOrganRefreshBtn" class="px-2 py-1 rounded border border-gray-600 bg-gray-800 text-gray-200 hover:bg-gray-700">Refresh</button>
+          </div>
+        </div>
+        <div id="attentionOrganStatus" class="text-xs text-gray-400 min-h-[1.25rem]">Open this tab to start polling.</div>
+
+        <div class="grid grid-cols-1 xl:grid-cols-3 gap-4">
+          <div id="attentionOrganEnsemble" class="xl:col-span-1 rounded-xl border border-gray-800 bg-gray-950/40 p-4"></div>
+          <div id="attentionOrganDiscrimination" class="xl:col-span-2 rounded-xl border border-gray-800 bg-gray-950/40 p-4"></div>
+        </div>
+
+        <div class="grid grid-cols-1 xl:grid-cols-2 gap-4">
+          <div id="attentionOrganDomains" class="rounded-xl border border-gray-800 bg-gray-950/40 p-4"></div>
+          <div id="attentionOrganDominance" class="rounded-xl border border-gray-800 bg-gray-950/40 p-4"></div>
+        </div>
+
+        <div class="grid grid-cols-1 xl:grid-cols-3 gap-4">
+          <div id="attentionOrganSelfModel" class="xl:col-span-2 rounded-xl border border-gray-800 bg-gray-950/40 p-4"></div>
+          <div id="attentionOrganLink" class="rounded-xl border border-gray-800 bg-gray-950/40 p-4"></div>
+        </div>
+
+        <div class="grid grid-cols-1 xl:grid-cols-2 gap-4">
+          <div id="attentionOrganIntake" class="rounded-xl border border-gray-800 bg-gray-950/40 p-4"></div>
+          <div id="attentionOrganDissipation" class="rounded-xl border border-gray-800 bg-gray-950/40 p-4"></div>
         </div>
       </section>
 
@@ -3365,6 +3433,7 @@
   <script src="/static/js/substrate-effect-ui.js?v={{HUB_UI_ASSET_VERSION}}" defer></script>
   <script src="/static/js/collapse-mirror.js?v={{HUB_UI_ASSET_VERSION}}" defer></script>
   <script src="/static/js/aitown-panel.js?v={{HUB_UI_ASSET_VERSION}}" defer></script>
+  <script src="/static/js/attention-organ.js?v={{HUB_UI_ASSET_VERSION}}" defer></script>
   <script src="/static/js/self_observability.js?v={{HUB_UI_ASSET_VERSION}}" defer></script>
   <script src="/static/js/app.js?v={{HUB_UI_ASSET_VERSION}}" defer></script>
 </body>

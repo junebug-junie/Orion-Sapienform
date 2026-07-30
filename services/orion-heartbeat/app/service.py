@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import logging
 from dataclasses import asdict
+from datetime import datetime, timezone
 from typing import Any, Optional
 
 from orion.core.bus.bus_service_chassis import BaseChassis, ChassisConfig
@@ -11,7 +12,7 @@ from orion.core.bus.codec import OrionCodec
 from .settings import settings
 from .substrate.bus_synaptic import BUS_SYNAPTIC_ZSCORE_SATURATION, query_real_bus_synaptic_raw_mean_abs_z
 from .substrate.ensemble import EnsembleConfig, EnsembleH1ResultV1, EnsembleSubstrate
-from .substrate.reconstruction import compute_h1_ensemble
+from .substrate.reconstruction import compute_h1_ensemble, verdict_thresholds
 from .substrate.routing import (
     ORGAN_SITE_MAP,
     SiteAssignment,
@@ -109,6 +110,15 @@ class HeartbeatService(BaseChassis):
         self.events_skipped_atom_type = 0
         self.events_skipped_no_atom = 0
         self.events_skipped_malformed = 0
+        # Last real dissipation-tick inputs, recorded by _decay_reheat_loop
+        # (2026-07-30). These are the ACTUAL values that loop fed into
+        # decay_reheat_tick(), not a re-derivation -- a read-only surface
+        # that recomputed `reheat_prob` from its own copy of
+        # reheat_prob_scale/BUS_SYNAPTIC_ZSCORE_SATURATION would be showing
+        # a plausible number rather than the one the substrate actually used,
+        # and would drift silently the moment either constant is retuned.
+        # None until the first dissipation tick completes.
+        self.last_reheat: dict[str, Any] | None = None
 
     def latest_h1_dict(self) -> dict[str, Any] | None:
         if self.latest_h1 is None:
@@ -141,7 +151,25 @@ class HeartbeatService(BaseChassis):
             "events_skipped_malformed": self.events_skipped_malformed,
             **ensemble_stats,
             "absorb_queue_size": self._absorb_queue.qsize(),
+            "absorb_queue_maxsize": settings.absorb_queue_maxsize,
             "allowlisted_organs": sorted(ORGAN_SITE_MAP.keys()),
+            "organ_site_map": dict(ORGAN_SITE_MAP),
+            "last_reheat": self.last_reheat,
+            # The live tuning actually in force, so a read-only surface can
+            # explain the mechanism (decay rate, spread sensitivity, reheat
+            # scale, band edges) from the running service rather than from a
+            # mirrored copy of .env_example that may not match this container.
+            "config": {
+                "n_trajectories": settings.n_trajectories,
+                "gamma": settings.decay_gamma,
+                "base_decay_prob": settings.base_decay_prob,
+                "decay_spread_sensitivity": settings.decay_spread_sensitivity,
+                "reheat_strength": settings.reheat_strength,
+                "reheat_prob_scale": settings.reheat_prob_scale,
+                "decay_reheat_interval_sec": settings.decay_reheat_interval_sec,
+                "h1_interval_sec": settings.h1_interval_sec,
+                **verdict_thresholds(),
+            },
         }
 
     def _handle_atom_payload(self, atom: dict[str, Any]) -> None:
@@ -307,6 +335,16 @@ class HeartbeatService(BaseChassis):
                 reheat_prob = settings.reheat_prob_scale * real_signal
                 async with self._ensemble_lock:
                     await asyncio.to_thread(self.ensemble.decay_reheat_tick, reheat_prob)
+                # Recorded AFTER the tick actually applied -- a failed query
+                # or a failed decay_reheat_tick() must not leave a stale
+                # entry claiming the substrate was reheated when it wasn't.
+                self.last_reheat = {
+                    "raw_mean_abs_gap_zscore": raw_z,
+                    "zscore_saturation": BUS_SYNAPTIC_ZSCORE_SATURATION,
+                    "signal": real_signal,
+                    "reheat_prob": reheat_prob,
+                    "at": datetime.now(timezone.utc).isoformat(),
+                }
             except Exception as exc:  # noqa: BLE001 - must not kill the dissipation loop
                 logger.warning("heartbeat_decay_reheat_failed err=%s", exc)
 

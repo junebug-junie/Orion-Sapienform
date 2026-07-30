@@ -156,4 +156,18 @@ def compute_h1_ensemble(ensemble: EnsembleSubstrate) -> EnsembleH1ResultV1:
         verdict=verdict,
         tick_count=ensemble.tick_count(),
         seeds=list(ensemble.seeds),
+        ratios=[float(r) for r in ratios],
     )
+
+
+def verdict_thresholds() -> dict[str, float]:
+    """The live _HIGH_RATIO/_LOW_RATIO band edges, for read-only surfaces that
+    need to draw or explain the bands rather than re-declare them.
+
+    Exists so a consumer (services/orion-hub's attention-organ operator tab)
+    renders the SAME thresholds this module actually classifies with, instead
+    of mirroring two float constants that would then silently drift apart the
+    next time these are retuned -- design doc "Recommended next patch" step 4
+    explicitly anticipates retuning them against live data.
+    """
+    return {"high_ratio": _HIGH_RATIO, "low_ratio": _LOW_RATIO}

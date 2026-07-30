@@ -647,6 +647,8 @@ document.addEventListener("DOMContentLoaded", () => {
   const collapseMirrorPanel = document.getElementById("collapse-mirror");
   const aiTownTabButton = document.getElementById("aiTownTabButton");
   const aiTownPanel = document.getElementById("ai-town");
+  const attentionOrganTabButton = document.getElementById("attentionOrganTabButton");
+  const attentionOrganPanel = document.getElementById("attention-organ");
   const pressureAnalyticsFrame = document.getElementById("pressureAnalyticsFrame");
   const pressureAnalyticsRefresh = document.getElementById("pressureAnalyticsRefresh");
   const substrateLatticeTabButton = document.getElementById("substrateLatticeTabButton");
@@ -945,6 +947,9 @@ document.addEventListener("DOMContentLoaded", () => {
     if (tabKey === "ai-town" && !aiTownPanel) {
       effectiveTab = "hub";
     }
+    if (tabKey === "attention-organ" && !attentionOrganPanel) {
+      effectiveTab = "hub";
+    }
     const isHub = effectiveTab === "hub";
     const isTopicStudio = effectiveTab === "topic-studio";
     const isServiceLogs = effectiveTab === "service-logs";
@@ -961,6 +966,7 @@ document.addEventListener("DOMContentLoaded", () => {
     const isSignals = effectiveTab === "signals";
     const isCollapseMirror = effectiveTab === "collapse-mirror";
     const isAiTown = effectiveTab === "ai-town";
+    const isAttentionOrgan = effectiveTab === "attention-organ";
     hubTabPanel.classList.toggle("hidden", !isHub);
     topicStudioPanel.classList.toggle("hidden", !isTopicStudio);
     serviceLogsPanel.classList.toggle("hidden", !isServiceLogs);
@@ -1067,6 +1073,19 @@ document.addEventListener("DOMContentLoaded", () => {
         window.OrionAitownPanel.deactivate();
       }
     }
+    if (attentionOrganPanel) {
+      attentionOrganPanel.classList.toggle("hidden", !isAttentionOrgan);
+      // Polling runs only while the tab is visible; rendered DOM is left in
+      // place on deactivate so returning to the tab shows the last frame
+      // immediately rather than an empty panel.
+      if (isAttentionOrgan) {
+        if (window.OrionAttentionOrgan && typeof window.OrionAttentionOrgan.activate === "function") {
+          window.OrionAttentionOrgan.activate();
+        }
+      } else if (window.OrionAttentionOrgan && typeof window.OrionAttentionOrgan.deactivate === "function") {
+        window.OrionAttentionOrgan.deactivate();
+      }
+    }
     styleTabButton(hubTabButton, isHub);
     styleTabButton(topicStudioTabButton, isTopicStudio);
     styleTabButton(serviceLogsTabButton, isServiceLogs);
@@ -1106,6 +1125,9 @@ document.addEventListener("DOMContentLoaded", () => {
     }
     if (aiTownTabButton) {
       styleTabButton(aiTownTabButton, isAiTown);
+    }
+    if (attentionOrganTabButton) {
+      styleTabButton(attentionOrganTabButton, isAttentionOrgan);
     }
   }
 
@@ -1691,6 +1713,8 @@ document.addEventListener("DOMContentLoaded", () => {
       setActiveTab("collapse-mirror");
     } else if (h === "#ai-town" && aiTownPanel && aiTownTabButton) {
       setActiveTab("ai-town");
+    } else if (h === "#attention-organ" && attentionOrganPanel && attentionOrganTabButton) {
+      setActiveTab("attention-organ");
     } else {
       if (
         h === "#pressure"
@@ -1703,6 +1727,7 @@ document.addEventListener("DOMContentLoaded", () => {
         || h === "#concept-atlas"
         || h === "#collapse-mirror"
         || h === "#ai-town"
+        || h === "#attention-organ"
       ) {
         history.replaceState(null, "", "#hub");
       }
@@ -11490,6 +11515,13 @@ document.addEventListener("DOMContentLoaded", () => {
         event.preventDefault();
         setActiveTab("ai-town");
         history.replaceState(null, "", "#ai-town");
+      });
+    }
+    if (attentionOrganTabButton && attentionOrganPanel) {
+      attentionOrganTabButton.addEventListener("click", (event) => {
+        event.preventDefault();
+        setActiveTab("attention-organ");
+        history.replaceState(null, "", "#attention-organ");
       });
     }
     applyHashToTab();

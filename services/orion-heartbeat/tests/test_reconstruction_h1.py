@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import math
+import statistics
 
 import pytest
 
@@ -60,3 +61,45 @@ def test_boundary_subprofile_length() -> None:
     result = compute_h1(sub)
     # boundary block has 5 sites -> 4 internal cuts
     assert len(result.boundary_subprofile) == 4
+
+
+def test_compute_h1_ensemble_reports_every_trajectory_ratio() -> None:
+    """2026-07-30: the per-trajectory ratios behind mean/std are reported, not
+    discarded. At small N, mean+std alone cannot distinguish "all trajectories
+    agree" from "two clusters that average out" -- which is the entire reason
+    this substrate runs an ensemble rather than one trajectory, so the samples
+    have to be inspectable, not just their summary."""
+    from app.substrate.ensemble import EnsembleConfig, EnsembleSubstrate
+    from app.substrate.reconstruction import compute_h1_ensemble
+
+    ensemble = EnsembleSubstrate(config=EnsembleConfig(n_trajectories=4), base_seed=100)
+    result = compute_h1_ensemble(ensemble)
+
+    assert len(result.ratios) == 4
+    assert len(result.ratios) == len(result.seeds)
+    assert all(0.0 <= r <= 1.0 for r in result.ratios)
+    # The reported mean/std must actually summarize the reported samples --
+    # not be computed from a second, independently-recomputed sample set.
+    assert result.mean_ratio == pytest.approx(sum(result.ratios) / len(result.ratios))
+    assert result.std_ratio == pytest.approx(statistics.pstdev(result.ratios))
+
+
+def test_verdict_thresholds_helper_matches_live_classification() -> None:
+    """The helper a read-only surface draws its bands from must be the same
+    numbers compute_h1_ensemble actually classifies with -- the point of
+    exposing them is precisely so they cannot drift apart when retuned
+    (design doc "Recommended next patch" step 4 anticipates retuning)."""
+    from app.substrate.ensemble import EnsembleConfig, EnsembleSubstrate
+    from app.substrate.reconstruction import compute_h1_ensemble, verdict_thresholds
+
+    bands = verdict_thresholds()
+    assert bands["low_ratio"] < bands["high_ratio"]
+
+    ensemble = EnsembleSubstrate(config=EnsembleConfig(n_trajectories=3), base_seed=200)
+    result = compute_h1_ensemble(ensemble)
+    if result.mean_ratio >= bands["high_ratio"]:
+        assert result.verdict == "redundant"
+    elif result.mean_ratio <= bands["low_ratio"]:
+        assert result.verdict == "concentrated"
+    else:
+        assert result.verdict == "mixed"

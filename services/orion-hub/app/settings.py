@@ -372,6 +372,27 @@ class Settings(BaseSettings):
     # Same shared FalkorDB instance as FALKORDB_URI above; matches
     # services/orion-bus-mirror's own FALKORDB_BUS_GRAPH setting name/default.
     FALKORDB_BUS_GRAPH: str = Field(default="orion_bus_synapse", alias="FALKORDB_BUS_GRAPH")
+    # Graph name for the substrate concept graph, read by the attention-organ
+    # operator tab to surface each Active-Inference domain's live
+    # `node:substrate.<domain>` prediction_error. Same env key and default
+    # orion/substrate/falkor_store.py::build_falkor_substrate_store_from_env()
+    # already uses -- deliberately not a new name for the same graph.
+    FALKORDB_SUBSTRATE_GRAPH: str = Field(
+        default="orion_substrate", alias="FALKORDB_SUBSTRATE_GRAPH"
+    )
+
+    # --- Attention organ operator tab (read-only) ---
+    # orion-heartbeat's debug HTTP surface. Hub runs on the host network in
+    # this deployment, so the container's published port is the reachable
+    # address, NOT the compose service DNS name (verified live 2026-07-30:
+    # `orion-athena-heartbeat` does not resolve from inside the Hub
+    # container; `http://localhost:7251` does).
+    HUB_HEARTBEAT_BASE_URL: str = Field(
+        default="http://localhost:7251", alias="HUB_HEARTBEAT_BASE_URL"
+    )
+    HUB_ATTENTION_ORGAN_TIMEOUT_SEC: float = Field(
+        default=3.0, alias="HUB_ATTENTION_ORGAN_TIMEOUT_SEC"
+    )
 
     # --- Memory crystallization projections (Chroma via vector bus) ---
     CRYSTALLIZER_VECTOR_COLLECTION: str = Field(

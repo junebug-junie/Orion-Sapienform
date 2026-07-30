@@ -240,7 +240,7 @@ class Settings(BaseSettings):
     # 3.0 -- reuses the same anomaly bar Hub's own debug routes use
     # (zscore_threshold=3.0), not a new arbitrary threshold.
     metacog_transport_bus_synaptic_error_threshold: float = Field(
-        1.0, alias="EQUILIBRIUM_METACOG_TRANSPORT_BUS_SYNAPTIC_ERROR_THRESHOLD"
+        0.15, alias="EQUILIBRIUM_METACOG_TRANSPORT_BUS_SYNAPTIC_ERROR_THRESHOLD"
     )
     # Hysteresis re-arm fraction (2026-07-30). Rising-edge firing alone still
     # re-fires on every crossing, and this metric is currently bimodal, so a

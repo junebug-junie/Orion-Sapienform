@@ -612,55 +612,105 @@ def test_route_prediction_error_zero_when_prev_empty_no_fallback() -> None:
 
 
 class TestBusSynapticPredictionError:
-    """Unlike the other five instruments, this takes a flat list of current
-    |zscore| values, not a prev/curr projection pair -- the bus synaptic
-    graph's own EWMA baseline already encodes "prev expectation" per edge."""
+    """2026-07-30: this instrument counts the FRACTION of anomalous edges; it
+    is no longer a magnitude. The whole prior test class encoded the retired
+    mean-based formula (calm-floor subtraction, saturation transform) and was
+    replaced wholesale rather than patched -- keeping assertions phrased in the
+    old formula's terms would have quietly asserted the wrong contract."""
 
     def test_empty_list_is_zero(self) -> None:
         assert bus_synaptic_prediction_error([]) == 0.0
 
-    def test_zero_zscores_is_zero(self) -> None:
-        assert bus_synaptic_prediction_error([0.0, 0.0, 0.0]) == 0.0
+    def test_all_calm_edges_read_exactly_zero(self) -> None:
+        """A genuinely calm mesh must read 0.0. The retired formula could not
+        do this reliably -- its calm floor was calibrated for a standard normal
+        population the real graph does not follow."""
+        assert bus_synaptic_prediction_error([0.0, 0.5, 1.2, 2.9]) == 0.0
 
     def test_takes_absolute_value_of_negative_zscores(self) -> None:
-        """A z-score of -1.5 is just as surprising as +1.5 -- must not cancel
-        out in the mean the way a signed average would."""
-        assert bus_synaptic_prediction_error([-1.5]) == pytest.approx(
-            bus_synaptic_prediction_error([1.5])
+        """A z-score of -3.5 is just as anomalous as +3.5 and must count."""
+        assert bus_synaptic_prediction_error([-3.5]) == 1.0
+        assert bus_synaptic_prediction_error([-3.5]) == bus_synaptic_prediction_error([3.5])
+
+    def test_counts_at_the_saturation_boundary_inclusively(self) -> None:
+        """>= 3.0, not > 3.0 -- the boundary is the documented anomaly bar
+        (Hub's own zscore_threshold=3.0), so an edge sitting exactly on it is
+        anomalous."""
+        assert bus_synaptic_prediction_error([3.0]) == 1.0
+        assert bus_synaptic_prediction_error([2.999999]) == 0.0
+
+    def test_one_extreme_edge_cannot_saturate_a_calm_mesh(self) -> None:
+        """The live failure this metric change exists to fix, reproduced.
+
+        Real edge set: median |z| 0.399, p90 1.123, but ONE stale
+        cortex-orch->Channel edge carrying |z| = 7087.8 dragged the old mean to
+        29.278 and pinned the node at 1.0, driving continuous false "Bus Anomaly
+        Detected" alerts. Under a counting metric that edge is worth exactly
+        1/N, the same as any other anomalous edge -- the bug cannot recur by
+        construction, not by calibration."""
+        calm = [0.5] * 230
+        assert bus_synaptic_prediction_error(calm) == 0.0
+
+        with_outlier = calm + [7087.8]
+        assert bus_synaptic_prediction_error(with_outlier) == pytest.approx(1 / 231)
+        # Pre-fix this returned exactly 1.0.
+        assert bus_synaptic_prediction_error(with_outlier) < 0.005
+
+    def test_magnitude_beyond_the_bar_does_not_increase_the_reading(self) -> None:
+        """The defining property of a counting metric, and the reason this is
+        immune to the heavy tail: an edge at |z|=7087 and an edge at |z|=3.01
+        contribute identically."""
+        assert bus_synaptic_prediction_error([3.01] * 5 + [0.5] * 95) == pytest.approx(
+            bus_synaptic_prediction_error([7087.8] * 5 + [0.5] * 95)
         )
 
-    def test_calm_floor_reads_zero_not_positive(self) -> None:
-        """2026-07-26 floor-bias fix. mean(|z|) resting at sqrt(2/pi) (the
-        expected |Z| for a calm, standard-normal-distributed edge population)
-        must read as genuine 0.0, not the ~0.27 the pre-fix formula returned
-        for this exact input. This is the regression this patch exists to
-        prevent -- without it, this domain can never report "calm" like its
-        four siblings."""
-        calm_floor = math.sqrt(2.0 / math.pi)
-        assert bus_synaptic_prediction_error([calm_floor]) == pytest.approx(0.0, abs=1e-9)
+    def test_reads_the_live_measured_baseline_for_a_realistic_mesh(self) -> None:
+        """Live-measured rest point, 60 samples over 10 minutes of the real
+        graph: median 0.026, mean 0.027, p95 0.072, max 0.094, 24 distinct
+        values. A realistic mesh shape must land inside that band -- neither a
+        suspiciously clean 0.0 nor saturated (CLAUDE.md metric quality gate
+        step 4, which warns about BOTH directions)."""
+        realistic = [0.5] * 229 + [3.5] * 6
+        result = bus_synaptic_prediction_error(realistic)
+        assert 0.0128 <= result <= 0.0936, "outside the measured live baseline band"
+        assert result == pytest.approx(6 / 235)
 
-    def test_below_calm_floor_still_clamps_to_zero(self) -> None:
-        """A mean |z| below the theoretical calm floor (sampling noise on a
-        small edge count) must not go negative."""
-        assert bus_synaptic_prediction_error([0.1]) == 0.0
+    def test_threshold_sits_above_the_measured_baseline_ceiling(self) -> None:
+        """Ties the consumer's 0.15 threshold to real data rather than a
+        comment. The worst baseline sample observed across 10 minutes was
+        0.094; the threshold must clear it, or the false "Bus Anomaly Detected"
+        alerts this whole change exists to stop would simply return."""
+        observed_baseline_max = 0.0936
+        consumer_threshold = 0.15
+        assert consumer_threshold > observed_baseline_max
 
-    def test_saturates_at_one_not_min_030_threshold(self) -> None:
-        """Must use the 3.0 z-score saturation, not this module's 0.30
-        pressure-hint-delta _THRESHOLD -- a mean |zscore| of 1.5 dividing by
-        0.30 would already saturate to 1.0, destroying the distinction this
-        instrument exists to make. Expected value updated 2026-07-26 for the
-        calm-floor subtraction: (1.5 - sqrt(2/pi)) / (3.0 - sqrt(2/pi)).
-        """
-        result = bus_synaptic_prediction_error([1.5])
-        assert result == pytest.approx(0.3188367996970756)
+        worst_calm = [3.5] * 22 + [0.5] * 213  # ~0.094, the measured worst case
+        assert bus_synaptic_prediction_error(worst_calm) < consumer_threshold
 
-    def test_saturates_at_one_for_large_zscore(self) -> None:
-        assert bus_synaptic_prediction_error([50.0]) == 1.0
+    def test_whole_mesh_anomalous_saturates_at_one(self) -> None:
+        assert bus_synaptic_prediction_error([3.5] * 50) == 1.0
 
-    def test_averages_across_multiple_edges(self) -> None:
-        """Expected value updated 2026-07-26 for the calm-floor subtraction:
-        mean([0.0, 3.0]) = 1.5, same transform as the 1.5 case above."""
-        assert bus_synaptic_prediction_error([0.0, 3.0]) == pytest.approx(0.3188367996970756)
+    def test_scales_linearly_with_the_anomalous_fraction(self) -> None:
+        """A proportion, so the response curve is exactly the fraction -- no
+        hidden transform between the count and the reading."""
+        assert bus_synaptic_prediction_error([3.5] * 25 + [0.5] * 75) == pytest.approx(0.25)
+        assert bus_synaptic_prediction_error([3.5] * 50 + [0.5] * 50) == pytest.approx(0.50)
+
+    def test_single_organ_failure_sits_below_the_consumers_threshold(self) -> None:
+        """Documents the disclosed structural limit as an executable fact, so a
+        future patch that "fixes" single-organ blindness by lowering the
+        equilibrium threshold has to confront this test.
+
+        Live per-organ counts: the busiest organ (orion-social-memory) holds 12
+        of ~235 live edges, so its total failure reads ~0.051 -- inside the
+        measured baseline ceiling of 0.043 and well under the consumer's 0.15.
+        Three busiest organs together read ~0.136, just under it."""
+        one_organ = bus_synaptic_prediction_error([3.5] * 12 + [0.5] * 223)
+        top_three = bus_synaptic_prediction_error([3.5] * 32 + [0.5] * 203)
+        assert one_organ == pytest.approx(0.051, abs=0.001)
+        assert top_three == pytest.approx(0.136, abs=0.001)
+        assert one_organ < 0.15
+        assert top_three < 0.15
 
 
 class TestCodebaseMassBaselineSerialization:

@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import math
 from dataclasses import dataclass, field
 from typing import Any
 
@@ -23,17 +22,17 @@ _THRESHOLD = 0.30
 # services/orion-hub/scripts/bus_synaptic_graph_routes.py's anomalies() route.
 _BUS_SYNAPTIC_ZSCORE_SATURATION = 3.0
 
-# 2026-07-26: floor-bias fix. mean(|z|) over a batch of ~N(0,1)-distributed
-# z-scores does NOT rest at 0 when traffic is genuinely calm -- E[|Z|] for a
-# standard normal is sqrt(2/pi), not 0, because averaging absolute values of a
-# zero-mean distribution can't average to zero. Confirmed live (2026-07-26,
-# 2h real window, 3527 ticks, values recovered from the *unfixed* aggregate):
-# median mean(|z|) was 0.7995, essentially exactly this constant, and the
-# aggregate NEVER read below ~0.51 raw (0.17 post-saturation) across the whole
-# window. Subtracted out below so this domain can genuinely rest near 0 like
-# its four siblings (execution/biometrics/chat/route), instead of permanently
-# reporting "moderately surprised" regardless of real mesh conditions.
-_BUS_SYNAPTIC_CALM_FLOOR = math.sqrt(2.0 / math.pi)
+# _BUS_SYNAPTIC_CALM_FLOOR (= sqrt(2/pi)) was REMOVED 2026-07-30 along with the
+# mean-based formula it corrected. It was a real fix for a real bias in that
+# formula (2026-07-26: mean(|z|) over ~N(0,1) z-scores rests at E[|Z|] =
+# sqrt(2/pi), not 0, so the domain permanently reported "moderately surprised"),
+# but bus_synaptic_prediction_error no longer takes a mean, so there is no bias
+# left for it to correct -- and keeping it would have actively broken the
+# replacement (see that function's docstring, point 2: against the real
+# population, narrower than unit normal, this floor over-subtracted and pinned
+# the metric at exactly 0.0). Deleted rather than left in place unused, per
+# CLAUDE.md's "kill means kill": a retired constant that still exists is one a
+# future patch reintroduces by accident.
 
 # 2026-07-28: execution_prediction_error's own EWMA baseline calibration. alpha=0.2
 # reuses services/orion-bus-mirror/app/graph_writer.py::compute_ewma_update's own
@@ -619,45 +618,82 @@ def route_prediction_error(
 
 
 def bus_synaptic_prediction_error(edge_zscores: list[float]) -> float:
-    """0-1 surprise score: how anomalous is live bus traffic right now, aggregated
-    across the bus synaptic graph's (``orion_bus_synapse``) real-time EWMA/z-score
-    edges.
+    """0-1 score: what FRACTION of live bus-synaptic edges are currently
+    anomalous (``|zscore| >= _BUS_SYNAPTIC_ZSCORE_SATURATION``), across the
+    bus synaptic graph's (``orion_bus_synapse``) real-time EWMA/z-score edges.
 
     **Deliberately not a prev/curr diff, unlike the other continuous-magnitude
     instruments in this module.** The bus synaptic graph
     (``services/orion-bus-mirror/app/graph_writer.py::compute_ewma_update``)
     already maintains its own rolling EWMA baseline per edge and computes each
     edge's z-score against that baseline continuously as new traffic arrives --
-    the "prev expectation" is already baked into the z-score itself, so there is
-    no separate prev/curr snapshot for this function to diff. The caller queries
-    current ``|zscore|`` values from FalkorDB (see
+    the "prev expectation" is already baked into the z-score itself. The caller
+    queries current ``|zscore|`` values from FalkorDB (see
     ``services/orion-substrate-runtime/app/worker.py::_bus_synaptic_tick``) and
     is responsible for filtering to edges above the graph's own documented
-    cold-start reliability floor (``services/orion-bus-mirror/README.md``:
-    ``count < ~5`` is unreliable) -- this function does no filtering itself, it
-    only aggregates whatever list it is given.
+    cold-start reliability floor and recency window; this function does no
+    filtering itself, it only aggregates whatever list it is given.
 
-    Saturates via ``_BUS_SYNAPTIC_ZSCORE_SATURATION`` (3.0), not this module's
-    ``_THRESHOLD`` (0.30) -- that constant is calibrated for the other domains'
-    0-1-scale pressure-hint deltas, not z-score units. 3.0 reuses the
-    ``zscore_threshold=3.0`` convention already live in
-    ``services/orion-hub/scripts/bus_synaptic_graph_routes.py``'s ``anomalies()``
-    route rather than inventing a new calibration.
+    **2026-07-30: this is a COUNTING metric now, not a magnitude one.**
+    It previously computed ``max(0, mean(|z|) - CALM_FLOOR) / (SATURATION -
+    CALM_FLOOR)``. That is retired, and the calm floor is gone with it. The
+    reasoning is kept because two *different* wrong versions preceded this one:
 
-    **2026-07-26: subtracts ``_BUS_SYNAPTIC_CALM_FLOOR`` before saturating.**
-    ``mean(|z|)`` does not rest at 0 for genuinely calm traffic -- see that
-    constant's docstring. Without this correction the function returned
-    values with a live-confirmed floor around 0.27 no matter how quiet the
-    mesh actually was, which silently and permanently biased
-    ``prediction_error_confidence`` downward once this domain was wired into
-    ``attention_self_model.ACTIVE_INFERENCE_DOMAINS`` (caught before any live
-    consumer existed). Now returns ``max(0, mean(|z|) - floor) / (saturation -
-    floor)``, clamped to [0, 1] -- still saturates to 1.0 at zscore 3.0
-    (unchanged ceiling), but now genuinely rests near 0 like the other four
-    domains' raw deltas.
+    1. ``mean(|z|)`` over an unbounded, heavy-tailed population is a disguised
+       ``max()``. Live-measured on the real graph: median |z| 0.399, p90
+       1.123, but mean 29.278 -- of which 28.6 came from a SINGLE stale edge
+       carrying |z| = 7087.8. Inter-arrival gap z-scores are heavy-tailed by
+       construction, so one pathological edge dictated the whole reading. The
+       node sat pinned at 1.0, driving continuous false "Bus Anomaly Detected"
+       alerts through ``orion-equilibrium-service``'s transport gate.
+    2. Clamping each edge before averaging fixed the tail but broke the floor,
+       and was caught in review before it merged. ``_BUS_SYNAPTIC_CALM_FLOOR``
+       was ``sqrt(2/pi)``, the theoretical ``E|Z|`` for a *standard normal*
+       population. The real population is narrower than unit normal -- its
+       z-scores are computed against an EWMA variance that the same outliers
+       inflate -- so the clamped live mean was 0.5575 against a floor of
+       0.7979. Negative headroom: pinned at exactly 0.0, needing 19 of 222
+       edges at 3-sigma simultaneously just to leave zero and all 222 to reach
+       the consumer's alert threshold. A permanently-silent detector instead
+       of a permanently-firing one -- CLAUDE.md's metric quality gate step 4
+       ("a metric reading a suspiciously clean 0.0 is not automatically
+       'confirmed calm' either") verbatim.
+
+    Counting the anomalous fraction is immune to both failures *by
+    construction* rather than by calibration, which is why it was chosen over
+    a third attempt at tuning a magnitude:
+
+    - Bounded [0, 1] with no clamp needed -- it is a proportion.
+    - Robust to any tail: one edge at |z| = 7087 counts exactly the same as
+      one edge at |z| = 3.01, namely 1/N. The original bug cannot recur.
+    - Its rest point is an interpretable, theory-anchored quantity rather than
+      a fitted constant: for a genuinely calm standard-normal edge population
+      it is ``P(|Z| >= 3) = 0.0027``. Live-measured baseline on the real mesh
+      (60 samples over 10 minutes): median 0.026, mean 0.027, p95 0.072, max
+      0.094, across 24 distinct values -- roughly 10x the normal-theory value,
+      consistent with the known heavier-than-normal tail, and non-degenerate in
+      both directions (it never read 0.0 and never read 1.0).
+
+      A first 2-minute sample suggested a max of 0.043; the 10-minute sample
+      found 0.094. Recorded because the short window would have supported a
+      materially wrong threshold claim -- the same "window too thin to rank"
+      trap the precision-weighted-attention spec already hit once.
+
+    **Deliberate, disclosed scope limit**: this is a MESH-WIDE detector and
+    structurally cannot resolve a single-organ failure. Live per-organ edge
+    counts put the busiest organ (``orion-social-memory``, 12 of ~235 edges)
+    at 0.051 if every one of its edges went anomalous at once -- below the
+    observed baseline max of 0.094. Even the three busiest organs failing
+    together reads only 0.136, a mere 1.45x that baseline max, so this metric
+    cannot cleanly separate a few-organ event from noise at ANY threshold.
+    What it does resolve reliably is a broad mesh event (>=15-20% of edges,
+    several times the baseline). Single-organ detection needs a
+    per-organ signal, not a lower threshold on this one; ``services/orion-hub/
+    scripts/bus_synaptic_graph_routes.py``'s ``/propagate`` route already
+    walks per-organ blast radius and is the right place to build it. Do not
+    "fix" this by lowering the consumer's threshold into the noise band.
     """
     if not edge_zscores:
         return 0.0
-    mean_abs_z = _mean([abs(z) for z in edge_zscores])
-    excess = max(0.0, mean_abs_z - _BUS_SYNAPTIC_CALM_FLOOR)
-    return min(1.0, excess / (_BUS_SYNAPTIC_ZSCORE_SATURATION - _BUS_SYNAPTIC_CALM_FLOOR))
+    anomalous = sum(1 for z in edge_zscores if abs(z) >= _BUS_SYNAPTIC_ZSCORE_SATURATION)
+    return anomalous / len(edge_zscores)

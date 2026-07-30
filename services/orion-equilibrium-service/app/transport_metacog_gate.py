@@ -139,12 +139,38 @@ def build_transport_metacog_trigger_from_bus_synaptic(
     docs/superpowers/specs/2026-07-23-transport-domain-rpc-health-redesign.md's
     2026-07-25 revisions).
 
-    error_threshold default 1.0 is not a new arbitrary calibration -- it is
-    bus_synaptic_prediction_error's own saturation ceiling, which by
-    construction means the aggregated edges' mean |zscore| already reached
-    3.0, the same anomaly bar services/orion-hub/scripts/
-    bus_synaptic_graph_routes.py's debug routes already use for a human
-    reading a table.
+    **error_threshold default retuned 1.0 -> 0.15 on 2026-07-30**, because the
+    upstream metric changed shape. `bus_synaptic_prediction_error` used to be a
+    MAGNITUDE (mean |zscore| across edges, saturating at 1.0 once that mean hit
+    3.0); it is now the FRACTION of edges currently anomalous. Under the new
+    definition the old 1.0 default would have required every single edge in the
+    mesh to be at >= 3 sigma simultaneously -- structurally unreachable, i.e. a
+    detector that can no longer detect.
+
+    0.15 is grounded in live measurement, not reused convention:
+
+      - live baseline, 60 samples over 10 min: median 0.026, p95 0.072,
+        max 0.094
+      - 0.15 is ~1.6x that observed max, and zero of the 60 baseline samples
+        would have fired at it (nor at 0.10, 0.20, or 0.25)
+      - the whole mesh anomalous reads 1.0
+
+    **Known structural limits, do not "fix" either by lowering this.**
+
+    A single organ failing entirely reads ~0.051 (the busiest,
+    orion-social-memory, holds 12 of ~235 live edges) -- below the baseline max
+    of 0.094, i.e. inside the noise. Even the three busiest organs failing
+    together reads 0.136, only 1.45x the baseline max and BELOW this threshold:
+    that event deliberately does not fire here. The separation between "a few
+    organs died" and "a noisy Tuesday" is ~1.45x, so no threshold on a
+    mesh-wide fraction separates them cleanly. What this reliably detects is a
+    broad event (>=15-20% of edges at once).
+
+    Resolving a few-organ failure needs a per-organ signal, not a lower bar
+    here; services/orion-hub/scripts/bus_synaptic_graph_routes.py's /propagate
+    route already walks per-organ blast radius and is the right seam. Lowering
+    this into the noise band would recreate the exact false-alert problem the
+    metric change was made to fix.
     """
     # --- Why there is NO staleness guard here (2026-07-30) ----------------
     # A guard on the node's `observed_at` was written, then removed after live

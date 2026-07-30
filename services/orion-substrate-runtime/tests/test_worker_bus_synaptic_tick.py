@@ -25,6 +25,8 @@ if str(REPO_ROOT) not in sys.path:
 if str(SUBSTRATE_ROOT) not in sys.path:
     sys.path.insert(0, str(SUBSTRATE_ROOT))
 
+from orion.substrate.prediction_error import bus_synaptic_prediction_error
+
 from app.worker import BiometricsSubstrateWorker
 
 
@@ -98,12 +100,15 @@ def test_bus_synaptic_tick_skips_nan_and_infinite_zscores(monkeypatch):
     with patch.object(worker, "_write_prediction_error_node") as write_node:
         worker._bus_synaptic_tick()
     # Only the real 1.5 should count -- not NaN-poisoned or maxed out by the
-    # infinite value. Expected value updated 2026-07-26 for the calm-floor
-    # fix (bus_synaptic_prediction_error now subtracts sqrt(2/pi) before
-    # saturating): (1.5 - sqrt(2/pi)) / (3.0 - sqrt(2/pi)), not the old
-    # mean(1.5)/3.0 = 0.5.
+    # infinite value. Expected value updated 2026-07-30: the metric is now the
+    # FRACTION of edges at |z| >= 3.0, not a mean magnitude. One surviving edge
+    # at 1.5 is below the anomaly bar, so 0 of 1 -> 0.0.
     write_node.assert_called_once()
-    assert write_node.call_args.kwargs["error"] == pytest.approx(0.3188367996970756)
+    assert write_node.call_args.kwargs["error"] == 0.0
+    # The filtering is what this test is actually about, so assert it still
+    # discriminates: had the infinite value leaked through, it would have
+    # counted as anomalous and produced 1 of 2 = 0.5, not 0.0.
+    assert bus_synaptic_prediction_error([float("inf"), 1.5]) == pytest.approx(0.5)
 
 
 def test_bus_synaptic_edge_queries_filter_stale_edges() -> None:
@@ -144,11 +149,16 @@ def test_bus_synaptic_tick_aggregates_both_edge_kinds_and_writes(monkeypatch):
     with patch.object(worker, "_write_prediction_error_node") as write_node:
         worker._bus_synaptic_tick()
 
-    # mean(|1.5|, |-3.0|, |4.5|) / 3.0 saturation = mean(1.5,3.0,4.5)/3.0 = 1.0 (saturated)
+    # 2026-07-30: fraction of edges at |z| >= 3.0, across BOTH edge kinds.
+    # |1.5| is under the bar; |-3.0| is exactly on it (inclusive) and |4.5| is
+    # over -> 2 of 3. Note the old mean-based formula returned a fully
+    # saturated 1.0 here, which is precisely the over-firing this metric change
+    # fixes: two anomalous edges out of three is a real signal, but it is not
+    # "the entire mesh is anomalous".
     write_node.assert_called_once()
     _, kwargs = write_node.call_args
     assert kwargs["node_id"] == "node:substrate.bus_synaptic"
-    assert kwargs["error"] == 1.0
+    assert kwargs["error"] == pytest.approx(2 / 3)
     assert kwargs["reducer_key"] == "bus_synaptic"
     worker._store.save_receipt.assert_called_once()
 

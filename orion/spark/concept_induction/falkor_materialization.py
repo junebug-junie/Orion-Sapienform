@@ -19,13 +19,20 @@ from typing import Any, Protocol
 from orion.core.schemas.concept_induction import ConceptProfile
 from orion.core.schemas.cognitive_substrate import ConceptNodeV1, SubstrateEdgeV1
 from orion.substrate.adapters.concept_induction import map_concept_profile_to_substrate
+from orion.substrate.falkor_codec import EXTERNALLY_OWNED_METADATA_KEYS
 from orion.substrate.falkor_store import FalkorSubstrateStore, FalkorSubstrateStoreConfig
 
 logger = logging.getLogger("orion.spark.concept.falkor_materialization")
 
 
 class SubstrateWriteStore(Protocol):
-    def upsert_node(self, *, identity_key: str | None, node: Any) -> None: ...
+    def upsert_node(
+        self,
+        *,
+        identity_key: str | None,
+        node: Any,
+        skip_metadata_keys: frozenset[str] | None = None,
+    ) -> None: ...
 
     def upsert_edge(self, *, identity_key: str, edge: SubstrateEdgeV1) -> None: ...
 
@@ -80,7 +87,23 @@ def materialize_concept_profile_to_falkor(
     record = map_concept_profile_to_substrate(profile=profile, anchor_scope=anchor_scope)
     concepts, edges, skipped_nodes, skipped_edges = filter_concept_atlas_record(record)
     for node in concepts:
-        store.upsert_node(identity_key=node.node_id, node=node)
+        # skip_metadata_keys: this is a blind upsert with no existing-node read
+        # at all -- unlike SubstrateGraphMaterializer.apply_record()'s merge
+        # branch, there's no merge_node() step to even reason about here. A
+        # freshly-mapped concept's own metadata never carries prediction_error/
+        # contributing_turn_ids, so without this, falkor_codec.py's
+        # encode_node_properties() emits prediction_error=None (its documented
+        # "absent" default) and set_assignments() never filters None out of the
+        # Cypher SET clause -- meaning an unprotected write here would NULL
+        # (not just freeze) those fields on any node this induced concept's own
+        # node_id happens to collide with, worse than the freeze bug this same
+        # protection was built for in materializer.py/dynamics.py. Confirmed
+        # live 2026-07-30 as a real, currently-unpatched instance of that same
+        # bug class on this service's default backend
+        # (CONCEPT_PROFILE_GRAPH_BACKEND=falkor) -- see
+        # falkor_codec.EXTERNALLY_OWNED_METADATA_KEYS's docstring for the
+        # original incident.
+        store.upsert_node(identity_key=node.node_id, node=node, skip_metadata_keys=EXTERNALLY_OWNED_METADATA_KEYS)
     for edge in edges:
         store.upsert_edge(identity_key=edge_identity_key(edge), edge=edge)
     logger.info(

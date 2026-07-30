@@ -154,8 +154,68 @@ def test_materialize_populates_write_through_cache() -> None:
     assert store.get_node_by_id("sub-concept-concept-1").label == "coherence"
 
 
+def test_materialize_does_not_null_a_reducer_owned_field_it_collides_with() -> None:
+    """Regression guard (2026-07-30): this is a blind upsert with no
+    existing-node read at all -- unlike SubstrateGraphMaterializer's merge
+    path, there's no merge_node() step to preserve anything. Confirmed live:
+    without skip_metadata_keys, an unprotected write here NULLS (not just
+    freezes) prediction_error/contributing_turn_ids on any node this
+    induced concept's own node_id happens to collide with, because
+    falkor_codec.py's encode_node_properties() emits prediction_error=None
+    when the mapped concept's own metadata doesn't carry it (which it never
+    does), and set_assignments() never filters None out of the Cypher SET
+    clause."""
+    from orion.core.schemas.cognitive_substrate import (
+        ConceptNodeV1,
+        SubstrateProvenanceV1,
+        SubstrateSignalBundleV1,
+        SubstrateTemporalWindowV1,
+    )
+
+    client = RecordingFalkorClient()
+    store = FalkorSubstrateStore(
+        FalkorSubstrateStoreConfig(uri="redis://localhost:6379", graph_name="orion_substrate"),
+        client=client,
+        hydrate=False,
+    )
+    # Seed the node this profile will re-materialize with a reducer-owned
+    # value already present, exactly like a real reducer's own prior write.
+    seed = ConceptNodeV1(
+        node_id="sub-concept-concept-1",
+        anchor_scope="orion",
+        subject_ref="entity:orion",
+        label="coherence",
+        temporal=SubstrateTemporalWindowV1(observed_at=datetime.now(timezone.utc)),
+        provenance=SubstrateProvenanceV1(
+            authority="local_inferred",
+            source_kind="substrate_prediction_error",
+            source_channel="substrate.runtime",
+            producer="test_seed",
+        ),
+        signals=SubstrateSignalBundleV1(confidence=1.0, salience=0.5),
+        metadata={"prediction_error": 0.42},
+    )
+    store.upsert_node(identity_key=None, node=seed)
+    assert store.get_node_by_id("sub-concept-concept-1").metadata.get("prediction_error") == 0.42
+
+    calls_before = len(client.calls)
+    materialize_concept_profile_to_falkor(profile=_fixture_profile(), store=store)
+
+    assert store.get_node_by_id("sub-concept-concept-1").metadata.get("prediction_error") == 0.42
+    # Only the materializer's own calls (after the seed write above) are under
+    # test here -- the seed write itself legitimately has no skip protection.
+    node_calls = [
+        (c, p)
+        for c, p in client.calls[calls_before:]
+        if p and p.get("node_id") == "sub-concept-concept-1"
+    ]
+    assert node_calls
+    for cypher, _ in node_calls:
+        assert "n.prediction_error = $prediction_error" not in cypher
+
+
 class _ExplodingStore:
-    def upsert_node(self, *, identity_key, node):
+    def upsert_node(self, *, identity_key, node, skip_metadata_keys=None):
         raise RuntimeError("falkor_down")
 
     def upsert_edge(self, *, identity_key, edge):

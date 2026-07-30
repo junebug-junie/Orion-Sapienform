@@ -49,10 +49,28 @@ class SubstrateGraphMaterializer:
 
         for node in record.nodes:
             identity_key = self._identity_resolver.canonical_node_key(node)
-            existing_id = self._store.get_node_id_by_identity(identity_key) if identity_key else self._store.get_node_by_id(node.node_id)
+            existing_id = self._store.get_node_id_by_identity(identity_key) if identity_key else None
             existing_node = self._store.get_node_by_id(existing_id) if isinstance(existing_id, str) else None
-            if existing_node is None and identity_key is None:
-                existing_node = self._store.get_node_by_id(node.node_id)
+            matched_by_raw_node_id = False
+            if existing_node is None:
+                # Safety-net fallback, regardless of whether identity_key
+                # resolved above: Cypher's MERGE always matches on raw
+                # node_id in the durable graph, independent of this
+                # process's identity-index lookup -- so a node_id collision
+                # with an existing node indexed under a different identity
+                # (or no identity at all yet) must still be caught here.
+                # Without this, apply_record() would take the "created"
+                # branch below and do a full wholesale overwrite (no merge,
+                # no skip_metadata_keys protection) on a node that already
+                # durably exists -- worse than a metadata-only clobber.
+                # Previously this fallback only fired when identity_key was
+                # None; widened 2026-07-30 after finding the gap during
+                # review of the sibling merge-branch clobber fix (see
+                # falkor_codec.EXTERNALLY_OWNED_METADATA_KEYS's docstring).
+                fallback_node = self._store.get_node_by_id(node.node_id)
+                if fallback_node is not None:
+                    existing_node = fallback_node
+                    matched_by_raw_node_id = True
 
             if existing_node is None:
                 canonical_node = node.model_copy(update={"metadata": {**node.metadata, "materialized_from_graph_id": record.graph_id}})
@@ -84,7 +102,8 @@ class SubstrateGraphMaterializer:
                     skip_metadata_keys=EXTERNALLY_OWNED_METADATA_KEYS,
                 )
                 nodes_merged += 1
-                node_decisions.append(NodeMergeDecision(canonical_node_id=canonical_node.node_id, merged=True, reason="identity_match" if identity_key else "node_id_match", tier_conflict=tc, tier_outcome=to))
+                reason = "identity_match" if (identity_key and not matched_by_raw_node_id) else "node_id_match"
+                node_decisions.append(NodeMergeDecision(canonical_node_id=canonical_node.node_id, merged=True, reason=reason, tier_conflict=tc, tier_outcome=to))
 
             canonical_id_by_input_id[node.node_id] = canonical_node.node_id
 

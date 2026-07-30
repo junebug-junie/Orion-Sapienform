@@ -62,6 +62,18 @@ CHAT_HISTORY_TURN_CHANNEL = "orion:chat:history:turn"
 SOCIAL_TURN_CHANNEL = "orion:chat:social:turn"
 SOCIAL_TURN_KIND = "social.turn.v1"
 
+# orion-social-memory keys relationship continuity on platform:room_id:participant_id
+# (services/orion-social-memory/app/models.py). This must be a STABLE venue, not the
+# per-exchange conversation_id -- ai-town mints a brand-new conversation_id every time
+# two characters start talking, so keying on it fragmented Sofia/Nico/etc.'s
+# relationship into a new, disconnected row every single conversation instead of one
+# accumulating relationship. Mirrors services/orion-hub/scripts/social_room.py's
+# HUB_DIRECT_ROOM_ID = "hub-direct" -- a fixed constant, not world_id, so relationships
+# survive a world wipe+reseed (testing:wipeAllTables + init), a real recovery path
+# already used in this repo. Only affects the social-memory-facing room_id; chat_history_log's
+# session_id stays conversation-scoped (see _publish_conversation_memory).
+SOCIAL_MEMORY_ROOM_ID = "aitown-town"
+
 # AI Town canonical conversation inputs. The upstream convex/aiTown/inputs.ts is
 # NOT vendored in this checkout, so these follow the AI Town canonical schema.
 # TODO(embodiment): confirm names/args against upstream when it is vendored.
@@ -448,13 +460,22 @@ class EmbodimentWorker:
         participant_kind = "human" if other.get("is_human") else "npc"
         participant_name = str(other.get("name") or participant_id)
         correlation_id = str(uuid4())
-        client_meta = {
+        external_participant = {
+            "participant_id": participant_id,
+            "participant_name": participant_name,
+            "participant_kind": participant_kind,
+        }
+        # chat_history_log's room_id stays conversation-scoped -- verbatim log
+        # grouping genuinely should distinguish separate conversation instances.
+        chat_client_meta = {
             "external_room": {"platform": "aitown", "room_id": convo_id},
-            "external_participant": {
-                "participant_id": participant_id,
-                "participant_name": participant_name,
-                "participant_kind": participant_kind,
-            },
+            "external_participant": external_participant,
+        }
+        # orion-social-memory's room_id must be the stable venue constant, not
+        # convo_id -- see SOCIAL_MEMORY_ROOM_ID's docstring.
+        social_client_meta = {
+            "external_room": {"platform": "aitown", "room_id": SOCIAL_MEMORY_ROOM_ID},
+            "external_participant": external_participant,
         }
         try:
             chat_turn = ChatHistoryTurnV1(
@@ -463,7 +484,7 @@ class EmbodimentWorker:
                 prompt=prompt_text,
                 response=response_text,
                 session_id=f"aitown:{convo_id}",
-                client_meta=client_meta,
+                client_meta=chat_client_meta,
             )
             chat_env = ChatHistoryTurnEnvelope(
                 source=self._service_ref(),
@@ -484,7 +505,7 @@ class EmbodimentWorker:
                 response=response_text,
                 text=f"{participant_name}: {prompt_text}\nOrion: {response_text}".strip(),
                 tags=["aitown"],
-                client_meta=client_meta,
+                client_meta=social_client_meta,
             )
             social_env = BaseEnvelope(
                 kind=SOCIAL_TURN_KIND, source=self._service_ref(),
@@ -506,6 +527,10 @@ class EmbodimentWorker:
         Off unless conversation_memory_enabled (same flag that gates writing this
         data in the first place). Fail-open: any error/timeout/missing-row returns
         None, and the caller degrades to no continuity rather than blocking speech.
+
+        Queries the fixed SOCIAL_MEMORY_ROOM_ID, not convo_id (only used here for
+        logging context) -- must match whatever room_id _publish_conversation_memory
+        writes under, or this would always find nothing.
         """
         if not getattr(self._settings, "conversation_memory_enabled", False):
             return None
@@ -514,7 +539,7 @@ class EmbodimentWorker:
             return None
         timeout = float(getattr(self._settings, "social_memory_timeout_sec", 3.0))
         params = urllib.parse.urlencode({
-            "platform": "aitown", "room_id": convo_id, "participant_id": participant_id,
+            "platform": "aitown", "room_id": SOCIAL_MEMORY_ROOM_ID, "participant_id": participant_id,
         })
         try:
             req = urllib.request.Request(f"{base}/summary?{params}", method="GET")

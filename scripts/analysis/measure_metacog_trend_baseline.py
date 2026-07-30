@@ -99,6 +99,8 @@ DEGENERATE_VARIANCE_EPS: float = 1e-12
 MIN_TOTAL_ROWS: int = 20
 FLOOR_SHARE_THRESHOLD: float = 0.5
 MEANINGFUL_ELEVATED_SHARE: float = 0.10
+MULTI_FLOOR_MAX_DISTINCT: int = 3
+MULTI_FLOOR_TOP3_SHARE_THRESHOLD: float = 0.85
 
 OUTPUT_DIR = Path("/tmp/measure-metacog-trend-baseline")
 REPORT_PATH = OUTPUT_DIR / "report.md"
@@ -139,13 +141,35 @@ def modal_value(values: list[float], *, round_to: int = 9) -> tuple[Optional[flo
     return value, count, len(values)
 
 
+def distinct_value_stats(values: list[float], *, round_to: int = 9) -> tuple[int, float]:
+    """(n_distinct, top3_share). `n_distinct` is the count of distinct
+    rounded values; `top3_share` is the combined share of rows held by the
+    (up to) 3 most common distinct values. Real continuous data (independent
+    float readings) should have n_distinct close to n and a low top3_share;
+    a series built from a handful of repeated discrete constants -- even if
+    no single one crosses FLOOR_SHARE_THRESHOLD alone -- will have a small
+    n_distinct and/or a high top3_share. Added after code review caught that
+    a series of three exact repeated floors (e.g. [0.0]*34 + [0.5]*33 +
+    [1.0]*33, modal_share=0.34) previously passed as GENUINE_VARIATION
+    purely because no single value cleared 50% -- multi-floor clustering is
+    exactly the artifact class this script exists to catch, not a case to
+    silently wave through."""
+    if not values:
+        return 0, 0.0
+    counter = Counter(round(v, round_to) for v in values)
+    n_distinct = len(counter)
+    top3_count = sum(c for _, c in counter.most_common(3))
+    return n_distinct, top3_count / len(values)
+
+
 def classify_rest_state(
     n: int,
     mean: float,
     std: float,
     degenerate: bool,
     modal_share: float,
-    n_distinct_meaningful: int,
+    n_distinct: int,
+    top3_share: float,
 ) -> str:
     """Explicit classification bands for "does this series have a genuine
     rest state, not smooth noise, not a floor/ceiling artifact."
@@ -154,15 +178,20 @@ def classify_rest_state(
     - `DEGENERATE`: near-zero full-history variance. Not merely
       concentrated -- mathematically flat. No signal at all.
     - `FLOOR_DOMINATED`: one exact value (rounded) accounts for >=
-      FLOOR_SHARE_THRESHOLD (0.5) of all rows. Real variance may exist in
-      the remainder, but more than half the series sits at one recurring
-      point -- worth checking (see the confidence-gated table) whether
-      that point is a genuine "checked and found calm" reading or a
-      default/fallback value, before trusting it as organic rest state.
-    - `GENUINE_VARIATION`: no single value dominates (modal share below
-      threshold) AND at least `MEANINGFUL_ELEVATED_SHARE` (0.10) of rows
-      fall outside the modal cluster in a way that isn't itself another
-      single repeated value -- i.e. real, non-floor spread.
+      FLOOR_SHARE_THRESHOLD (0.5) of all rows, OR (multi-floor variant) the
+      series is dominated by a small handful of discrete repeated values
+      even though no single one crosses that threshold alone --
+      `n_distinct <= MULTI_FLOOR_MAX_DISTINCT` or the top 3 distinct values
+      together hold >= `MULTI_FLOOR_TOP3_SHARE_THRESHOLD` of all rows. Real
+      variance may exist in the remainder, but the series is not showing
+      genuine continuous spread -- worth checking (see the confidence-gated
+      table) whether the dominant point(s) are genuine "checked and found
+      calm" readings or a default/fallback value, before trusting this as
+      organic rest state.
+    - `GENUINE_VARIATION`: no single value dominates, the series is not
+      multi-floor-dominated either, AND at least `MEANINGFUL_ELEVATED_SHARE`
+      (0.10) of rows fall outside the modal cluster -- i.e. real, non-floor,
+      non-discrete-cluster spread.
     - `AMBIGUOUS`: doesn't cleanly fall in the above bands.
     """
     if n < MIN_TOTAL_ROWS:
@@ -170,6 +199,8 @@ def classify_rest_state(
     if degenerate:
         return "DEGENERATE"
     if modal_share >= FLOOR_SHARE_THRESHOLD:
+        return "FLOOR_DOMINATED"
+    if n_distinct <= MULTI_FLOOR_MAX_DISTINCT or top3_share >= MULTI_FLOOR_TOP3_SHARE_THRESHOLD:
         return "FLOOR_DOMINATED"
     if (1.0 - modal_share) >= MEANINGFUL_ELEVATED_SHARE:
         return "GENUINE_VARIATION"
@@ -380,8 +411,9 @@ def run() -> int:
     rp_mean, rp_std, rp_degenerate = channel_mean_std(rp_levels_all)
     rp_modal_val, rp_modal_count, _ = modal_value(rp_levels_all)
     rp_modal_share = (rp_modal_count / rp_n) if rp_n else 0.0
+    rp_n_distinct, rp_top3_share = distinct_value_stats(rp_levels_all)
     rp_classification = classify_rest_state(
-        rp_n, rp_mean, rp_std, rp_degenerate, rp_modal_share, 0
+        rp_n, rp_mean, rp_std, rp_degenerate, rp_modal_share, rp_n_distinct, rp_top3_share
     )
 
     # confidence split: how much of the series is confidence==0.0 (the
@@ -399,8 +431,10 @@ def run() -> int:
     rp_gated_mean, rp_gated_std, rp_gated_degenerate = channel_mean_std(rp_gated)
     rp_gated_modal_val, rp_gated_modal_count, _ = modal_value(rp_gated)
     rp_gated_modal_share = (rp_gated_modal_count / rp_gated_n) if rp_gated_n else 0.0
+    rp_gated_n_distinct, rp_gated_top3_share = distinct_value_stats(rp_gated)
     rp_gated_classification = classify_rest_state(
-        rp_gated_n, rp_gated_mean, rp_gated_std, rp_gated_degenerate, rp_gated_modal_share, 0
+        rp_gated_n, rp_gated_mean, rp_gated_std, rp_gated_degenerate, rp_gated_modal_share,
+        rp_gated_n_distinct, rp_gated_top3_share,
     )
 
     level_label_counts = Counter(r[2] for r in rp_rows)
@@ -443,8 +477,9 @@ def run() -> int:
     te_mean, te_std, te_degenerate = channel_mean_std(te_novelty)
     te_modal_val, te_modal_count, _ = modal_value(te_novelty, round_to=4)
     te_modal_share = (te_modal_count / te_n) if te_n else 0.0
+    te_n_distinct, te_top3_share = distinct_value_stats(te_novelty, round_to=4)
     te_classification = classify_rest_state(
-        te_n, te_mean, te_std, te_degenerate, te_modal_share, 0
+        te_n, te_mean, te_std, te_degenerate, te_modal_share, te_n_distinct, te_top3_share
     )
     n_near_one = sum(1 for v in te_novelty if v >= 0.99)
     n_near_zero = sum(1 for v in te_novelty if v <= 0.01)

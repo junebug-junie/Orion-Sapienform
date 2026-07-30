@@ -355,3 +355,38 @@ rows to accumulate past the 20-row floor before trusting `GENUINE_VARIATION`, or
 series is trusted enough to build a live reducer against. Full numbers, per-series breakdown, and CSV:
 `/tmp/measure-metacog-trend-baseline/report.md` (and `rows.csv`, not committed — real historical rows,
 regenerate by re-running the script).
+
+## 2026-07-30 update #3 — reducer core built and tested; deliberately not live-wired yet
+
+**Reconciling this section with update #2 immediately above, which says "not ready to build":** that
+call was, and remains, about whether either candidate series is trustworthy enough to *run a live
+reducer against* — still not yet true (12 real confidence-gated rows, `INSUFFICIENT_DATA`). What
+changed here is narrower: the reducer's own *computation logic* — the EWMA fold, cold-start guard, and
+sustained-trend check — can be built and unit-tested against synthetic data plus a real-data sanity
+check without needing the underlying series to already be certified, the same way a thermometer's
+circuitry gets tested before anyone trusts a specific room's reading from it. This section does not
+reverse update #2's "don't build a live reducer against this data yet" — it narrows to "the reducer's
+own logic, tested in isolation, is a separate, safe, buildable thing" and stops there.
+
+Built `orion/metacog/trend_reducer.py`: pure, incremental, checkpointable EWMA-trend computation
+(`apply_reading`/`replay`), reusing `orion/bus/ewma.py::compute_ewma_update` rather than inventing a
+new z-score formula (existing-mechanism check). Cold-start guarded at `min_samples=20` (matches this
+doc's own small-N finding above) — never classifies a reading `is_elevated_this_tick` on too little
+evidence. `is_sustained_trend` requires 3 consecutive elevated ticks, not one spike ("has this kept
+happening," this doc's own §-title question). 9 unit tests, all passing
+(`orion/metacog/tests/test_trend_reducer.py`), plus a real-data sanity check: replayed the 12 real
+confidence-gated `repair_pressure_appraisal_log` rows through it — correctly stayed `cold_start=True`
+for all 12 (below the 20-sample floor), never falsely claiming a trend from insufficient real evidence.
+
+**Deliberately deferred, not forgotten:** live wiring into a poll loop. The `ReducerSpec`/
+`_grammar_reducer_poll_loop` pattern in `orion-substrate-runtime/app/worker.py` — named by this doc and
+the hop-chain doc as the shape to follow — turned out, on inspection, to be a heavier mechanism than it
+looked: a bus-published "pressure grammar" event/cursor pipeline specific to that file's five existing
+reducers, not a generic periodic-reducer framework. Forcing this reducer's simple "poll two Postgres
+tables into an EWMA" shape into that cursor/grammar-event machinery would mean inventing a new
+grammar-event producer just to satisfy an ill-fitting pattern — an ornamental layer, not a thin seam.
+The live-wiring follow-up (a lightweight standalone poll loop, flag-gated off, most likely in
+`services/orion-substrate-runtime` or `services/orion-cortex-exec` since that's where
+`repair_pressure_appraisal_log`'s producer already lives) is scoped as its own smaller patch, once
+either candidate series' own genuine-rest-state question (previous update) resolves with more real
+data.

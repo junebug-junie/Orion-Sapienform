@@ -231,94 +231,152 @@ bounded by sequential `await self._send_one(...)` calls), so Part 2 remains real
 work — it's just no longer entangled with what turned out to be a separate, bigger, already-fixed
 problem.
 
-## Part 2: throughput redesign — design mode, not implemented
+## Part 2: throughput redesign — scoped, ready to implement
+
+Status change from the original draft below: every missing question that gated this has now been
+answered with real evidence (live trace + direct code reads), not assumption. This section is the
+resolved scope; the original open-questions draft is kept below it for the record.
 
 ### Arsonist summary
+
+Steady-state math, once the backlog fully clears (confirmed live, 2026-07-30, draining
+~150-165/min from a 46,617 peak): real production of policy decisions holds steady at
+**~17/min**; real dispatch throughput is capped at **~4-5/min** (one candidate at a time, each a
+synchronous ~9-13s cortex-exec RPC). That means roughly **65-70% of every real, current proposal
+will never get a dispatch attempt at all**, forever — not because they're bad candidates, but
+because a proposal that arrives between two ticks gets superseded by an even-newer one before its
+turn, ages past the staleness window, and gets swept into the discard path having never run. This
+directly undercuts the point of PR #1497 (which specifically unblocked 5 previously-permanently-
+blocked templates): unblocking a template's confidence gate doesn't cash out into real coverage if
+steady-state dispatch can only ever process ~30% of what's produced.
+
+### Missing questions from the original draft — resolved
+
+1. **Is raising throughput even the right goal?** Yes — quantified above, not assumed. This isn't
+   speculative performance polish; it's a measured, permanent coverage gap.
+2. **Is `orion-cortex-exec` itself the ceiling?** No. Traced live: the `background` lane
+   (`orion/core/bus/bus_service_chassis.py::Rabbit`, `concurrent_handlers=True` default, no
+   override for this lane in `services/orion-cortex-exec/docker-compose.yml:226-230`) spawns an
+   uncapped `asyncio.create_task` per incoming message — no semaphore, no worker-pool limit. Real
+   headroom exists downstream.
+3. **What does real concurrent risk-budget accounting look like?** Turns out to need no redesign
+   at all — re-read `_send_prepared_candidates` (`worker.py:375-390`) carefully: the `to_send`
+   list and its `cumulative_risk` are already built in a single synchronous pass, over
+   `frame.candidates`, BEFORE any RPC fires. The whole batch's budget is reserved atomically up
+   front today, regardless of how many candidates end up in `to_send`. Making the *sending* step
+   concurrent (`asyncio.gather` instead of a `for` loop of sequential `await`s) doesn't touch this
+   reservation logic at all — it already correctly handles a multi-candidate batch. Missing
+   question 2 dissolves once you notice the reservation and the sending were already two separate
+   steps.
+4. **Does the theater tripwire's `deque` need a lock?** No, and not because of luck — because of
+   what asyncio concurrency actually is. `asyncio.gather` runs coroutines cooperatively on ONE
+   thread; two tasks can only interleave at `await` points, never mid-statement. `deque.append(x)`
+   has no `await` inside it, so it is a single, non-preemptible operation regardless of how many
+   concurrent `_send_one()` calls are in flight — this is not the same hazard as real OS-thread
+   concurrency, and reaching for a lock here would be solving a problem that doesn't exist in this
+   execution model. The one real, disclosed behavior change: `_check_theater_tripwire()` currently
+   re-checks after every sequential send (`worker.py:429`, "lets the tripwire fire the same tick it
+   actually crosses the threshold"); under `asyncio.gather`, there's no clean mid-batch checkpoint,
+   so the recheck moves to once-per-batch (after `gather` returns) instead of once-per-candidate.
+   Coarser, not unsafe — the tripwire's own 10-sample window makes this a small, acceptable
+   granularity change, not a correctness regression.
+5. **Is the bus/RPC layer itself safe for concurrent use on one shared connection?** Checked, not
+   assumed: `ExecutionDispatchCortexClient.dispatch()` (`orion/execution_dispatch/cortex_client.py:
+   73-74`) generates a fresh `uuid4()` `correlation_id` and a **unique** `reply_channel =
+   f"{result_prefix}:{correlation_id}"` on every call. `OrionBusAsync.rpc_request`'s worker path
+   (`orion/core/bus/async_service.py:438-479`) demultiplexes pending RPCs by `(reply_channel,
+   corr)` key, resolving each call's own `Future` independently. Concurrent `dispatch()` calls on
+   the same client/bus instance cannot cross-talk — this is a real, already-built multiplexer, not
+   something this patch has to invent.
+6. **Is per-tick concurrency enough, or does the one-poll-thread-per-process model need to
+   change** (multiple worker replicas)? Per-tick concurrency is enough. The fan-out target
+   (cortex-exec's `background` lane) already handles unbounded concurrent requests (point 2
+   above), so there's no need to scale execution-dispatch-runtime itself to multiple processes —
+   one process firing N concurrent RPCs per tick already has real headroom to use on the other
+   end.
+
+### Proposed schema / API changes
+
+None. This is a behavior change inside `_send_prepared_candidates`/`_send_one`, not a schema or
+contract change — `ExecutionDispatchCandidateV1`/`ExecutionDispatchFrameV1` are unaffected.
+
+- `config/execution_dispatch/execution_dispatch_policy.v1.yaml`: raise `limits.max_dispatches_per_
+  tick` from `1` to an initial small number (recommend **5** — enough to meaningfully close the
+  17/min-vs-4-5/min gap without a large first-patch blast radius; revisit once real post-deploy
+  concurrent-dispatch data exists, same discipline as every other constant shipped this session).
+- `services/orion-execution-dispatch-runtime/app/worker.py::_send_prepared_candidates`: replace
+  the sequential `for candidate in to_send: newly_dispatched.append(await self._send_one(...))`
+  loop with `newly_dispatched = await asyncio.gather(*(self._send_one(client, bus, frame, c) for c
+  in to_send))`. Move the `_check_theater_tripwire()` recheck to after the `gather` (already
+  effectively true given the loop restructure).
+- No change needed to the risk-budget reservation loop (already correct, see missing question 3
+  above) or to `_recent_dispatch_statuses` (already safe, see missing question 4 above).
+
+### Files likely to touch
+
+- `services/orion-execution-dispatch-runtime/app/worker.py` (`_send_prepared_candidates` only —
+  `_send_one`, `_check_theater_tripwire`, and the risk-budget loop are unchanged)
+- `config/execution_dispatch/execution_dispatch_policy.v1.yaml` (`max_dispatches_per_tick: 1 → 5`)
+- `tests/test_execution_dispatch_runtime_worker.py` (new tests: concurrent sends actually run
+  concurrently — e.g. assert total wall time for N mocked-slow sends is closer to one send's
+  duration than N times it; theater tripwire still trips correctly when checked post-batch;
+  risk budget still correctly caps `to_send` size pre-gather)
+
+### Non-goals
+
+- Not touching staleness discard's own thresholds/constants (Parts 1/1b/1c are shipped, separate).
+- Not scaling execution-dispatch-runtime to multiple processes/replicas — per-tick concurrency
+  within the existing single process is sufficient given confirmed downstream headroom (missing
+  question 6).
+- Not redesigning the risk-budget or theater-tripwire mechanisms — both already work correctly
+  under concurrency once traced properly; this patch does not touch their logic, only the send
+  loop's control flow.
+- Not building a health-surface UI (per Part 1's closing note — a script, not a dashboard, was
+  the right-sized answer when this question came up for proposals scoring the same day).
+- Not re-verifying `orion-cortex-exec`'s concurrent capacity beyond the code-level trace already
+  done — a real live load test (N truly simultaneous dispatch RPCs) would be the honest next
+  verification step once this ships, not a blocker to shipping it.
+
+### Acceptance checks
+
+- `max_dispatches_per_tick` raised to 5, `_send_prepared_candidates` uses `asyncio.gather`.
+- New concurrency test proves sends actually overlap in wall-clock time, not just that the code
+  compiles.
+- Theater tripwire and risk-budget tests (existing + new) still pass unmodified in their
+  assertions about *what* gets blocked, only updated for *when* the recheck happens.
+- Post-deploy: real dispatch rate approaches (not necessarily hits) the ~17/min production rate
+  over a real observation window — the actual metric this patch exists to move. `staleness_
+  discard_count_ewma` should trend toward 0 once backlog is clear and concurrent dispatch is
+  keeping pace.
+
+### Recommended next patch
+
+Implement directly — every blocking question above was resolved by reading real code and live
+data, not by further scoping. Ship `max_dispatches_per_tick: 5` + the `asyncio.gather` rewrite,
+reviewed and tested the same way every other patch in this arc was, then watch `staleness_
+discard_count_ewma` and real dispatch rate post-deploy to confirm the steady-state math above
+actually closes the gap it predicts.
+
+---
+
+<details>
+<summary>Original open-questions draft (superseded by the resolved scope above, kept for the record)</summary>
 
 Even with staleness discard live, this service can only ever really dispatch ~6.8 candidates/min
 because `_send_one()` is awaited sequentially inside a loop bounded by `max_dispatches_per_tick`
 (currently 1) and the whole tick blocks on that RPC. Raising `max_dispatches_per_tick` alone does
 nothing today, because the `for candidate in to_send: newly_dispatched.append(await self._send_
-one(...))` loop (`worker.py:410-411`) still awaits each one in series. Real concurrency requires
-touching shared per-process state that assumes single-threaded-per-tick access.
+one(...))` loop still awaits each one in series. Real concurrency requires touching shared
+per-process state that assumes single-threaded-per-tick access.
 
-### Current architecture
+Missing questions as originally posed, before being resolved above: (1) is raising throughput even
+the right goal — needed real production-vs-consumption math, not assumption; (2) is
+`orion-cortex-exec` itself the ceiling — needed a live trace of its concurrency model; (3) what
+does real concurrent risk-budget accounting look like — needed a careful re-read of where
+reservation actually happens relative to sending; (4) does the theater tripwire's deque need a
+lock — needed to reason about asyncio's cooperative-scheduling model specifically, not assume
+thread-safety concerns transfer directly; (5) is per-tick concurrency enough, or does the
+one-poll-thread-per-process model need to change — needed to know whether the downstream target
+could absorb more concurrent load before proposing to scale this service's own process count.
 
-- `worker.py::_tick()` → `_send_prepared_candidates()` selects up to `max_dispatches_per_tick`
-  candidates by cumulative risk budget, then sequentially `await`s `_send_one()` for each.
-- `_send_one()` does: idempotency check (`load_dispatch_result_by_dispatch_id`), the real RPC
-  (`client.dispatch(...)`), `save_dispatch_result()`, `_recent_dispatch_statuses.append(status)`
-  (mutates `self.theater_tripwire_active`-adjacent in-process `deque`, not thread-safe), and
-  `_emit_action_outcome()` (a bus publish).
-- Risk budget accounting (`cumulative_risk`, `remaining_risk_budget`) is computed once per tick
-  from `frame.candidates`, assuming nothing else spends from the same budget concurrently.
-- Theater tripwire (`_check_theater_tripwire`) reads/writes `self._recent_dispatch_statuses`
-  (a `deque(maxlen=10)`) and `self.theater_tripwire_active`, both plain instance attributes with
-  no lock — safe today only because everything is strictly sequential.
-- `max_dispatches_per_tick=1` (`config/execution_dispatch/execution_dispatch_policy.v1.yaml`) —
-  already the real cap; the sequential-await loop is currently a distinction without a
-  difference at that setting, but becomes the actual bottleneck the moment this value is raised.
-
-### Missing questions
-
-1. **Is raising throughput even the right goal**, or is staleness discard's "dispatch what's
-   current, drop what isn't" already the intended long-run shape? Real production (16/min) may
-   keep exceeding real consumption (6.8/min) even after concurrency work, if `orion-cortex-exec`
-   itself has a real LLM-inference ceiling — concurrency inside this service doesn't help if the
-   downstream cortex-exec route is itself the bottleneck. Needs tracing `orion-cortex-exec`'s
-   own real concurrent-request capacity before assuming this service's serial loop is the only
-   constraint.
-2. **What does real concurrent risk-budget accounting look like?** `cumulative_risk` is computed
-   assuming candidates are reserved in the order they're sent; genuine concurrency means multiple
-   in-flight sends could all pass the same-tick budget check before any of them completes. Needs
-   either a pre-reservation step (claim budget before dispatching, release/adjust on failure) or
-   accepting some real over-spend risk and tightening the ceiling to compensate.
-3. **Does the theater tripwire's `deque` need a lock, or does it need to become per-batch instead
-   of per-process** (e.g., check tripwire status once per tick before firing a batch, not
-   per-candidate-in-flight)? Real answer depends on how tightly the tripwire is meant to react —
-   current behavior re-checks after every send; a batched version changes that granularity.
-4. **Is per-tick concurrency (asyncio.gather within one `_tick()`) enough, or does the underlying
-   one-poll-thread-per-process model need to change** (multiple worker processes/replicas)?
-   Concurrency within a tick only closes the gap up to whatever `orion-cortex-exec` itself can
-   sustain concurrently; if that's the real ceiling, no amount of restructuring this service's
-   loop helps further.
-
-### Proposed schema / API changes
-
-None proposed yet — blocked on missing questions 1 and 4 (whether the bottleneck is even in this
-service). If concurrency within a tick is the right direction: `_send_prepared_candidates` would
-need to reserve risk budget synchronously before firing each RPC (not after, as today), and
-`_check_theater_tripwire`'s deque would need either a lock or to move to a per-batch check.
-Neither is scoped as a patch here.
-
-### Files likely to touch (once a direction is chosen — not started)
-
-- `services/orion-execution-dispatch-runtime/app/worker.py` (`_send_prepared_candidates`,
-  `_send_one`, `_check_theater_tripwire`)
-- `config/execution_dispatch/execution_dispatch_policy.v1.yaml` (`max_dispatches_per_tick`, if
-  raised)
-- `services/orion-cortex-exec/` (tracing real concurrent-capacity, possibly touched if it's the
-  actual ceiling)
-- `tests/test_execution_dispatch_runtime_worker.py`
-
-### Non-goals
-
-- Not touching staleness discard's own thresholds/constants here (Part 1 is shipped and
-  separate).
-- Not proposing a multi-process/replica model without first tracing whether `orion-cortex-exec`
-  itself is the real ceiling (missing question 1) — no point building concurrency this service
-  can't actually benefit from.
-- Not building a health-surface UI in this doc (see Part 1's closing note — a script, not a
-  dashboard, was the right-sized answer when this question came up for proposals scoring
-  earlier the same day).
-
-### Acceptance checks
-
-N/A — no patch proposed yet.
-
-### Recommended next patch
-
-Trace `orion-cortex-exec`'s real concurrent-request capacity first (missing question 1) — cheap,
-and determines whether any of the concurrency work below is worth doing at all. Only after that:
-scope a minimal concurrent-send patch (missing questions 2-3) if the trace shows real headroom
-downstream.
+</details>

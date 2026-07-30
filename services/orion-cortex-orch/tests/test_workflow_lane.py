@@ -2648,6 +2648,18 @@ def test_chat_history_compactor_pass_completion_notify_carries_full_digest_not_t
         _fake_persist_card,
     )
 
+    sent_requests: list = []
+
+    class _FakeNotifyClient:
+        def __init__(self, base_url, api_token=None):
+            pass
+
+        def send(self, request):
+            sent_requests.append(request)
+            return SimpleNamespace(ok=True, notification_id=None, detail=None)
+
+    monkeypatch.setattr("app.workflow_runtime.NotifyClient", _FakeNotifyClient)
+
     req = _req_with_policy(
         "chat_history_compactor_pass",
         {
@@ -2670,13 +2682,99 @@ def test_chat_history_compactor_pass_completion_notify_carries_full_digest_not_t
         )
     )
 
-    notify_envelopes = [
-        env for ch, env in bus.published if ch == "orion:notify:persistence:request"
-    ]
-    assert len(notify_envelopes) == 1
-    payload = notify_envelopes[0].payload
-    assert "Notable theme discussed at length." in payload["body_text"]
-    assert len(payload["body_text"]) > 280
+    assert len(sent_requests) == 1
+    body_text = sent_requests[0].body_text
+    assert "Notable theme discussed at length." in body_text
+    assert len(body_text) > 280
+
+
+def test_completion_notify_failure_does_not_fail_an_already_successful_workflow(monkeypatch) -> None:
+    """Regression for a confirmed-live incident (2026-07-30): the completion-notify
+    call used to publish a raw NotificationRequest directly onto orion:notify:persistence:request
+    (orion-notify's OWN output channel, wrong schema), which raised a ValueError on
+    every call and, because it ran outside any try/except around the real compactor
+    work, took down github_compactor_pass/chat_history_compactor_pass's reported health
+    for 2 days straight even though the actual compactor work succeeded every time. A
+    broken notify path (here: NotifyClient.send raising) must never flip an
+    already-completed successful result into a raised/reported failure."""
+    bus = DummyBus()
+
+    async def _fake_call_verb_runtime(*args, **kwargs):
+        req = kwargs["client_request"]
+        if req.verb == "skills.chat.discussion_window.v1":
+            skill = {
+                "window_start_utc": "2026-07-09T04:00:00+00:00",
+                "window_end_utc": "2026-07-09T10:00:00+00:00",
+                "turn_count": 1,
+                "turns": [
+                    {
+                        "created_at": "2026-07-09T05:00:00+00:00",
+                        "correlation_id": "corr-a",
+                        "prompt": "hi",
+                        "response": "hello",
+                    }
+                ],
+                "transcript_text": "user: hi\norion: hello",
+                "selection_strategy": "time_bound_then_contiguous_suffix",
+            }
+            return DummyVerbResult(
+                payload={"result": {"status": "success", "final_text": json.dumps(skill), "metadata": {"skill_result": skill}}}
+            )
+        if req.verb == "chat_history_compactor_digest_v1":
+            digest = {
+                "card_summary": "Notable theme.",
+                "journal_title": "Chat digest — daily",
+                "journal_body": "Narrative body.",
+                "turn_refs": ["corr-a"],
+            }
+            return DummyVerbResult(
+                payload={"result": {"status": "success", "final_text": json.dumps(digest), "metadata": {"chat_history_compactor_digest": digest}}}
+            )
+        raise AssertionError(f"unexpected verb {req.verb}")
+
+    async def _fake_persist_card(**kwargs):
+        return uuid4()
+
+    monkeypatch.setattr(
+        "app.workflow_runtime.persist_chat_history_compactor_memory_card",
+        _fake_persist_card,
+    )
+
+    class _RaisingNotifyClient:
+        def __init__(self, base_url, api_token=None):
+            pass
+
+        def send(self, request):
+            raise ValueError(
+                "Payload validation failed for channel orion:notify:persistence:request (schema_id=NotificationRecord)"
+            )
+
+    monkeypatch.setattr("app.workflow_runtime.NotifyClient", _RaisingNotifyClient)
+
+    req = _req_with_policy(
+        "chat_history_compactor_pass",
+        {
+            "workflow_id": "chat_history_compactor_pass",
+            "invocation_mode": "immediate",
+            "notify_on": "completion",
+            "recipient_group": "juniper_primary",
+        },
+    )
+
+    # Must not raise -- this is the exact call that used to bubble the notify's
+    # ValueError all the way out and mark the run "failed" in workflow_schedules.json.
+    result = asyncio.run(
+        execute_chat_workflow(
+            bus=bus,
+            source=ServiceRef(name="cortex-orch"),
+            req=req,
+            correlation_id="00000000-0000-0000-0000-000000000303",
+            causality_chain=[],
+            trace={},
+            call_verb_runtime=_fake_call_verb_runtime,
+        )
+    )
+    assert result.ok is True
 
 
 def test_chat_history_compactor_pass_quiet_day_skips_card(monkeypatch) -> None:

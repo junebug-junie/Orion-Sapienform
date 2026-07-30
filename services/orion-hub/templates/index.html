@@ -132,6 +132,13 @@
             class="px-3 py-1.5 text-xs font-semibold rounded-full bg-gray-800 text-gray-200 border border-gray-700 hover:bg-gray-700"
             role="button"
           >Attention Organ</a>
+          <a
+            id="fieldAttentionTabButton"
+            href="#field-attention"
+            data-hash-target="#field-attention"
+            class="px-3 py-1.5 text-xs font-semibold rounded-full bg-gray-800 text-gray-200 border border-gray-700 hover:bg-gray-700"
+            role="button"
+          >Field Attention</a>
           {{HUB_AITOWN_TAB_NAV}}
           <a
             id="selfObservabilityTabButton"
@@ -865,6 +872,45 @@
           <div id="attentionOrganIntake" class="rounded-xl border border-gray-800 bg-gray-950/40 p-4"></div>
           <div id="attentionOrganDissipation" class="rounded-xl border border-gray-800 bg-gray-950/40 p-4"></div>
         </div>
+      </section>
+
+      <section id="field-attention" data-panel="field-attention" class="hidden w-full bg-gray-900 rounded-2xl shadow-lg p-5 flex flex-col gap-4 min-h-[56rem]">
+        <div class="flex flex-wrap items-center justify-between gap-3">
+          <div class="min-w-0">
+            <h2 class="text-xl font-bold text-white">Field Attention — precision-weighted &amp; novelty salience</h2>
+            <p class="text-xs text-gray-400 max-w-4xl">
+              Live view of <code class="text-gray-500">FieldAttentionFrameV1</code>
+              (<code class="text-gray-500">orion/attention/field_attention/</code>, PR #1484/#1488): Candidate A
+              precision-weighted prediction-error salience (Feldman &amp; Friston 2010) competing against Candidate B
+              Global-Workspace novelty salience for the same target slots. Served by
+              <code class="text-gray-500">GET /api/substrate/attention/latest</code>. Read-only — this surface
+              consumes a signal, it does not produce or publish any. This is a different subsystem from the
+              <code class="text-gray-500">Attention Organ</code> tab above, which visualizes
+              <code class="text-gray-500">orion-heartbeat</code>'s AST/HOT dissipation ensemble — do not confuse the two.
+            </p>
+            <p class="text-[10px] text-gray-500 max-w-4xl mt-1">
+              <span class="text-gray-400">Overall salience</span> is shown small below, not as a headline gauge:
+              <code class="text-gray-500">build_attention_frame()</code> sets it to the max of this tick's target
+              scores after they have already been min-max normalized across competitors
+              (<code class="text-gray-500">normalize_across_targets()</code>), so it mathematically reads ≈1.0 on
+              almost every tick whenever any node target competes — it is not a "how much is going on" measure.
+              <span class="text-gray-400">Confidence</span> is rendered as a grounded/cold-start badge, not a
+              gradient — live data (10,747 recent target-observations) shows it only ever takes the values 0.0 or 1.0.
+            </p>
+          </div>
+          <div class="flex items-center gap-2 text-xs shrink-0">
+            <button type="button" id="fieldAttentionRefreshBtn" class="px-2 py-1 rounded border border-gray-600 bg-gray-800 text-gray-200 hover:bg-gray-700">Refresh</button>
+          </div>
+        </div>
+        <div id="fieldAttentionStatus" class="text-xs text-gray-400 min-h-[1.25rem]">Open this tab to start polling.</div>
+
+        <div id="fieldAttentionHeader" class="rounded-xl border border-gray-800 bg-gray-950/40 p-4"></div>
+
+        <div id="fieldAttentionDominantTargets" class="rounded-xl border border-gray-800 bg-gray-950/40 p-4"></div>
+
+        <div id="fieldAttentionSuppressedTargets" class="rounded-xl border border-gray-800 bg-gray-950/40 p-4"></div>
+
+        <div id="fieldAttentionBottomStrip" class="rounded-xl border border-gray-800 bg-gray-950/40 p-4"></div>
       </section>
 
       <section id="self-observability" data-panel="self-observability" class="hidden w-full bg-gray-900 rounded-2xl shadow-lg p-5 flex flex-col gap-4 min-h-[56rem]">
@@ -3434,6 +3480,7 @@
   <script src="/static/js/collapse-mirror.js?v={{HUB_UI_ASSET_VERSION}}" defer></script>
   <script src="/static/js/aitown-panel.js?v={{HUB_UI_ASSET_VERSION}}" defer></script>
   <script src="/static/js/attention-organ.js?v={{HUB_UI_ASSET_VERSION}}" defer></script>
+  <script src="/static/js/field-attention.js?v={{HUB_UI_ASSET_VERSION}}" defer></script>
   <script src="/static/js/self_observability.js?v={{HUB_UI_ASSET_VERSION}}" defer></script>
   <script src="/static/js/app.js?v={{HUB_UI_ASSET_VERSION}}" defer></script>
 </body>

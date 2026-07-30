@@ -649,6 +649,8 @@ document.addEventListener("DOMContentLoaded", () => {
   const aiTownPanel = document.getElementById("ai-town");
   const attentionOrganTabButton = document.getElementById("attentionOrganTabButton");
   const attentionOrganPanel = document.getElementById("attention-organ");
+  const fieldAttentionTabButton = document.getElementById("fieldAttentionTabButton");
+  const fieldAttentionPanel = document.getElementById("field-attention");
   const pressureAnalyticsFrame = document.getElementById("pressureAnalyticsFrame");
   const pressureAnalyticsRefresh = document.getElementById("pressureAnalyticsRefresh");
   const substrateLatticeTabButton = document.getElementById("substrateLatticeTabButton");
@@ -950,6 +952,9 @@ document.addEventListener("DOMContentLoaded", () => {
     if (tabKey === "attention-organ" && !attentionOrganPanel) {
       effectiveTab = "hub";
     }
+    if (tabKey === "field-attention" && !fieldAttentionPanel) {
+      effectiveTab = "hub";
+    }
     const isHub = effectiveTab === "hub";
     const isTopicStudio = effectiveTab === "topic-studio";
     const isServiceLogs = effectiveTab === "service-logs";
@@ -967,6 +972,7 @@ document.addEventListener("DOMContentLoaded", () => {
     const isCollapseMirror = effectiveTab === "collapse-mirror";
     const isAiTown = effectiveTab === "ai-town";
     const isAttentionOrgan = effectiveTab === "attention-organ";
+    const isFieldAttention = effectiveTab === "field-attention";
     hubTabPanel.classList.toggle("hidden", !isHub);
     topicStudioPanel.classList.toggle("hidden", !isTopicStudio);
     serviceLogsPanel.classList.toggle("hidden", !isServiceLogs);
@@ -1086,6 +1092,18 @@ document.addEventListener("DOMContentLoaded", () => {
         window.OrionAttentionOrgan.deactivate();
       }
     }
+    if (fieldAttentionPanel) {
+      fieldAttentionPanel.classList.toggle("hidden", !isFieldAttention);
+      // Same lifecycle contract as Attention Organ, above -- a distinct
+      // subsystem (FieldAttentionFrameV1), same poll-only-while-visible rule.
+      if (isFieldAttention) {
+        if (window.OrionFieldAttention && typeof window.OrionFieldAttention.activate === "function") {
+          window.OrionFieldAttention.activate();
+        }
+      } else if (window.OrionFieldAttention && typeof window.OrionFieldAttention.deactivate === "function") {
+        window.OrionFieldAttention.deactivate();
+      }
+    }
     styleTabButton(hubTabButton, isHub);
     styleTabButton(topicStudioTabButton, isTopicStudio);
     styleTabButton(serviceLogsTabButton, isServiceLogs);
@@ -1128,6 +1146,9 @@ document.addEventListener("DOMContentLoaded", () => {
     }
     if (attentionOrganTabButton) {
       styleTabButton(attentionOrganTabButton, isAttentionOrgan);
+    }
+    if (fieldAttentionTabButton) {
+      styleTabButton(fieldAttentionTabButton, isFieldAttention);
     }
   }
 
@@ -1715,6 +1736,8 @@ document.addEventListener("DOMContentLoaded", () => {
       setActiveTab("ai-town");
     } else if (h === "#attention-organ" && attentionOrganPanel && attentionOrganTabButton) {
       setActiveTab("attention-organ");
+    } else if (h === "#field-attention" && fieldAttentionPanel && fieldAttentionTabButton) {
+      setActiveTab("field-attention");
     } else {
       if (
         h === "#pressure"
@@ -1728,6 +1751,7 @@ document.addEventListener("DOMContentLoaded", () => {
         || h === "#collapse-mirror"
         || h === "#ai-town"
         || h === "#attention-organ"
+        || h === "#field-attention"
       ) {
         history.replaceState(null, "", "#hub");
       }
@@ -11522,6 +11546,13 @@ document.addEventListener("DOMContentLoaded", () => {
         event.preventDefault();
         setActiveTab("attention-organ");
         history.replaceState(null, "", "#attention-organ");
+      });
+    }
+    if (fieldAttentionTabButton && fieldAttentionPanel) {
+      fieldAttentionTabButton.addEventListener("click", (event) => {
+        event.preventDefault();
+        setActiveTab("field-attention");
+        history.replaceState(null, "", "#field-attention");
       });
     }
     applyHashToTab();

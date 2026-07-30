@@ -100,8 +100,14 @@ def test_speak_once_publishes_to_both_channels_with_shared_correlation_id():
     assert str(chat_turn.correlation_id) == str(social_turn.correlation_id)
     assert str(chat_env.correlation_id) == str(chat_turn.correlation_id)
 
+    # chat_history_log stays conversation-scoped (distinct conversation instances
+    # should remain distinguishable in verbatim recall).
+    assert chat_turn.client_meta["external_room"] == {"platform": "aitown", "room_id": "conv1"}
+    # orion-social-memory must use the stable venue constant, not conv_id, or
+    # every new conversation with the same NPC fragments into a disconnected
+    # continuity row instead of accumulating one relationship over time.
+    assert social_turn.client_meta["external_room"] == {"platform": "aitown", "room_id": "aitown-town"}
     for turn in (chat_turn, social_turn):
-        assert turn.client_meta["external_room"] == {"platform": "aitown", "room_id": "conv1"}
         assert turn.client_meta["external_participant"] == {
             "participant_id": "p9", "participant_name": "Juniper", "participant_kind": "human",
         }
@@ -245,8 +251,25 @@ def test_fetch_participant_continuity_returns_summary_when_present():
     assert result == "Talked before, warm tone."
     called_url = urlopen.call_args.args[0].full_url
     assert "platform=aitown" in called_url
-    assert "room_id=conv1" in called_url
+    # Fixed venue constant, not conv_id -- must match _publish_conversation_memory's
+    # social-memory-facing room_id or continuity lookups always find nothing.
+    assert "room_id=aitown-town" in called_url
     assert "participant_id=p9" in called_url
+
+
+def test_fetch_participant_continuity_uses_fixed_room_id_across_different_conversations():
+    w = _worker(conversation_memory_enabled=True)
+    w._settings.social_memory_url = "http://socialmem:8765"
+    body = {"participant": {"safe_continuity_summary": "Talked before."}}
+    with patch("app.worker.urllib.request.urlopen", return_value=_fake_urlopen_response(body)) as urlopen:
+        w._fetch_participant_continuity("p9", "conv1")
+        first_url = urlopen.call_args.args[0].full_url
+    with patch("app.worker.urllib.request.urlopen", return_value=_fake_urlopen_response(body)) as urlopen:
+        w._fetch_participant_continuity("p9", "conv2-a-totally-different-conversation")
+        second_url = urlopen.call_args.args[0].full_url
+    # Same partner, two different conversation ids -> same room_id query, so
+    # both resolve to the same continuity row instead of fragmenting.
+    assert first_url == second_url
 
 
 def test_fetch_participant_continuity_none_when_no_participant_row():

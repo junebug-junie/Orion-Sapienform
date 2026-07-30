@@ -25,6 +25,11 @@
 # isn't silent; closing the gap fully would need to distinguish "this
 # sequence was started from a worktree" from "started here", which none of
 # rebase-merge/rebase-apply/MERGE_HEAD/CHERRY_PICK_HEAD record.
+#
+# This early exit also skips the orion-env-settings-gate block further down
+# (added 2026-07 for services/orion-actions) -- a commit replayed by a rebase/
+# merge/cherry-pick that touches orion-actions' settings.py/.env_example/
+# docker-compose.yml is not re-checked here, same known gap as above.
 GIT_DIR=${GIT_DIR:-$(git rev-parse --git-dir 2>/dev/null)}
 if [ -d "$GIT_DIR/rebase-merge" ] || [ -d "$GIT_DIR/rebase-apply" ] || \
    [ -f "$GIT_DIR/MERGE_HEAD" ] || [ -f "$GIT_DIR/CHERRY_PICK_HEAD" ]; then
@@ -61,17 +66,11 @@ if [ -n "$_COMMONDIR" ] && [ "$_GITDIR" = "$_COMMONDIR" ]; then
     IS_SHARED_CHECKOUT=1
 fi
 
-if [ "$IS_SHARED_CHECKOUT" = "0" ]; then
-    # We're in a linked worktree -- nothing to enforce here.
-    exit 0
-fi
-
-if [ "$ORION_ALLOW_SHARED_CHECKOUT_WRITE" = "1" ]; then
-    echo "[git-safety] shared-checkout write allowed via ORION_ALLOW_SHARED_CHECKOUT_WRITE=1" >&2
-    exit 0
-fi
-
-cat >&2 <<'EOF'
+if [ "$IS_SHARED_CHECKOUT" = "1" ]; then
+    if [ "$ORION_ALLOW_SHARED_CHECKOUT_WRITE" = "1" ]; then
+        echo "[git-safety] shared-checkout write allowed via ORION_ALLOW_SHARED_CHECKOUT_WRITE=1" >&2
+    else
+        cat >&2 <<'EOF'
 [git-safety] COMMIT BLOCKED: this is the shared/primary git checkout.
 
 This repo's policy is worktrees-only for writing, building, and running
@@ -87,5 +86,81 @@ Escape hatch (only if this commit from the primary checkout is genuinely
 intentional):
   ORION_ALLOW_SHARED_CHECKOUT_WRITE=1 git commit ...
 EOF
+        exit 1
+    fi
+fi
 
-exit 1
+# --- orion-env-settings-gate (pilot: services/orion-actions only) ----------
+# 2026-07 env/settings single-source-of-truth pilot. Runs in EVERY checkout
+# (shared or worktree) -- unlike the shared-checkout guard above, this concern
+# has nothing to do with worktree discipline, so it must not be skipped just
+# because we're in a linked worktree (the normal, expected place a commit
+# actually happens).
+#
+# Scope is deliberately narrow: only fires when a staged file matches one of
+# a hardcoded orion-actions path list below. Non-goal (see the PR that added
+# this): generalizing to all services -- extending the path map below to a
+# second service is a separate, explicit decision.
+#
+# Escape hatch: ORION_SKIP_ENV_SETTINGS_GATE=1 (set deliberately per command,
+# not habitually), matching this file's existing ORION_ALLOW_SHARED_CHECKOUT_WRITE
+# convention of an explicit, opt-in bypass rather than a silent one.
+if [ "$ORION_SKIP_ENV_SETTINGS_GATE" != "1" ]; then
+    _REPO_ROOT_FOR_GATE=$(git rev-parse --show-toplevel 2>/dev/null) || _REPO_ROOT_FOR_GATE=""
+    # check_settings_defaults.py needs pydantic/pydantic-settings importable, which a
+    # bare system `python3` usually doesn't have -- same problem and same fallback
+    # chain already used by scripts/smoke_cortex_exec_grammar.sh: prefer a working
+    # `python3 -m pytest`-capable interpreter, then this worktree's sibling .venv,
+    # then this repo's own primary-checkout .venv (hooks are shared across every
+    # worktree, so a per-worktree .venv won't always exist), then fall back to
+    # plain python3 and let the check itself report an import error (exit 2, which
+    # this gate still treats as a failure -- see the docstring for why that's the
+    # conservative/correct default).
+    _GATE_PY="python3"
+    if ! command -v "$_GATE_PY" >/dev/null 2>&1 || ! "$_GATE_PY" -c "import pydantic_settings" >/dev/null 2>&1; then
+        if [ -n "$_REPO_ROOT_FOR_GATE" ] && [ -x "$_REPO_ROOT_FOR_GATE/../.venv/bin/python3" ]; then
+            _GATE_PY="$_REPO_ROOT_FOR_GATE/../.venv/bin/python3"
+        elif [ -x "/mnt/scripts/Orion-Sapienform/.venv/bin/python3" ]; then
+            _GATE_PY="/mnt/scripts/Orion-Sapienform/.venv/bin/python3"
+        fi
+    fi
+
+    if [ -n "$_REPO_ROOT_FOR_GATE" ] && command -v "$_GATE_PY" >/dev/null 2>&1; then
+        _STAGED_FILES=$(git diff --cached --name-only --diff-filter=ACM 2>/dev/null) || _STAGED_FILES=""
+        _GATE_HIT=0
+        for _f in $_STAGED_FILES; do
+            case "$_f" in
+                services/orion-actions/app/settings.py|services/orion-actions/.env_example|services/orion-actions/docker-compose.yml)
+                    _GATE_HIT=1
+                    ;;
+            esac
+        done
+
+        if [ "$_GATE_HIT" = "1" ]; then
+            _GATE_FAILED=0
+            if [ -f "$_REPO_ROOT_FOR_GATE/scripts/check_settings_defaults.py" ]; then
+                "$_GATE_PY" "$_REPO_ROOT_FOR_GATE/scripts/check_settings_defaults.py" orion-actions || _GATE_FAILED=1
+            fi
+            if [ -f "$_REPO_ROOT_FOR_GATE/scripts/check_service_env_compose_parity.py" ]; then
+                "$_GATE_PY" "$_REPO_ROOT_FOR_GATE/scripts/check_service_env_compose_parity.py" orion-actions || _GATE_FAILED=1
+            fi
+
+            if [ "$_GATE_FAILED" = "1" ]; then
+                cat >&2 <<'EOF'
+[git-safety] COMMIT BLOCKED: orion-actions env/settings/compose gate failed
+(see output above). This commit touches services/orion-actions/app/settings.py,
+.env_example, or docker-compose.yml -- one of the two checks above found a
+real problem (a Settings field with no default, or a docker-compose.yml
+missing env_file: coverage for an .env_example key).
+
+Escape hatch (only if this is genuinely intentional, e.g. landing a partial
+migration across multiple commits):
+  ORION_SKIP_ENV_SETTINGS_GATE=1 git commit ...
+EOF
+                exit 1
+            fi
+        fi
+    fi
+fi
+
+exit 0

@@ -170,26 +170,32 @@ LLM_GATEWAY_ROUTE_TABLE_JSON='{
 
 `quick` is the FAST lane route used by user-facing quick chat and chat_general pass-1.
 
-> **Known gap (2026-07-18): circe is not wired into `LLM_GATEWAY_ROUTE_TABLE_JSON`.**
-> Every route above (`chat`/`agent`/`metacog`/`quick`) is `served_by` an
-> `atlas-worker-*` label. `config/llm_profiles.yaml` has real circe-hosted
-> profiles defined (2xV100, PIX-linked, benched 2026-07-09), but nothing in
-> the live route table points at them -- this was never deliberate, just
-> deprioritized while getting circe fully online. Consequence: `node:circe`
-> never appears as an `execution_run` producer, so `orion-field-digester`'s
-> `reasoning_load`/`cortex_exec_step_load`/etc. channels for `node:circe` read
-> permanently `0.0` -- not a code bug (see
-> `services/orion-field-digester/README.md`'s `reasoning_load` glossary
-> entry), just zero real traffic ever routing there. When circe comes
-> online: (1) add a route entry above with `"served_by": "circe-worker-N"`
-> (the live worker process's current name needs renaming to match this
-> `{node}-worker[-lane][-N]` convention -- `services/orion-cortex-exec/app/executor.py`'s
-> `_normalize_served_by_to_node()` only recognizes labels split on the
-> literal `"-worker"` substring, and only resolves to a node in
-> `_KNOWN_FIELD_NODES` if the prefix is exactly `atlas`/`athena`/`circe`/
-> `prometheus`); (2) no code changes needed beyond that -- `circe` is already
-> in `_KNOWN_FIELD_NODES` and the field topology
-> (`config/field/orion_field_topology.v1.yaml`).
+> **Update (2026-07-30): circe IS wired into `chat`/`agent` now, and that's**
+> **reserved capacity -- AI Town must never land on it.** The note that used
+> to live here (dated 2026-07-18) described circe as not-yet-wired-in and
+> deprioritized; that's stale. Circe came online, `chat`/`agent` route to it
+> (`served_by: "circe-worker-N"`, correctly labeled since `0e3cae4d`), and it
+> now appears as a real `execution_run` producer as this note originally
+> anticipated. What that old note didn't anticipate: circe is meant to be
+> **reserved for Juniper's direct deep/FCC turns**, not shared with AI Town's
+> NPC dialogue (`2026-07-10`, `cfcb3126`, "Route AI Town and default LLM
+> consumers to quick" -- deliberately pointed AI Town at the `quick` lane
+> instead). That fix only changed a *script default*; it never touched the
+> already-provisioned AI Town world's persisted Convex `LLM_MODEL`, which
+> silently stayed on `chat` (-> circe) for weeks, undetected, until circe
+> went offline and the whole town's NPC dialogue silently stalled for 10+
+> hours (confirmed live 2026-07-30). Fixed by re-pointing that world's
+> `LLM_MODEL` at `quick` and adding
+> `services/orion-ai-town/scripts/check_llm_route_not_circe.py` -- a gate
+> that reads AI Town's *live* configured model, resolves it through this
+> gateway's own `/v1/models`, and refuses to pass if the resolved worker is
+> circe-hosted. It's wired into both `wire_llm_gateway.sh` (hard-fails a
+> fresh wire-up that points at circe) and `compact_convex_data.sh` (which
+> replays whatever `LLM_MODEL` was already set, so it self-corrects instead
+> of quietly re-preserving the same drift on every future compaction). If
+> AI Town's `served_by` for its configured route ever needs to change,
+> update `AITOWN_LLM_CHAT_ROUTE` deliberately -- don't just add a route
+> entry that happens to point at circe.
 
 ### Route table example (optional split agent mode)
 ```bash

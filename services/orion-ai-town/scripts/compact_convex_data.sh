@@ -161,6 +161,23 @@ else
   log "no env vars to restore (env.backup empty)"
 fi
 
+# This restore is a straight replay of whatever was backed up in step 1b --
+# including a stale LLM_MODEL if one was already silently pointed at circe
+# before this script ever ran (confirmed live 2026-07-30: exactly this
+# happened, undetected, for weeks). Don't abort the compaction over it --
+# data reimport (step 6) still needs to happen regardless -- but self-heal
+# it here rather than silently perpetuating the same drift on every future
+# compaction. See check_llm_route_not_circe.py's docstring for the incident.
+if ! python3 "${ROOT}/scripts/check_llm_route_not_circe.py"; then
+  log "WARNING: restored LLM_MODEL resolves to circe -- correcting to the safe default"
+  (cd "${UPSTREAM}" && npx convex env set LLM_MODEL "${AITOWN_LLM_CHAT_ROUTE:-quick}")
+  if python3 "${ROOT}/scripts/check_llm_route_not_circe.py"; then
+    log "corrected: LLM_MODEL is no longer on circe"
+  else
+    log "WARNING: could not auto-correct LLM_MODEL off circe -- investigate manually before relying on NPC dialogue"
+  fi
+fi
+
 log "step 6/7: reimporting exported data (--replace-all)"
 (cd "${UPSTREAM}" && npx convex import --replace-all -y "${JOB_DIR}/export.zip")
 

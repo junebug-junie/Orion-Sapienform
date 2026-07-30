@@ -233,28 +233,35 @@ arena arbitrates well enough to build against.
 
 ## Recommended next patch
 
-**Superseded, 2026-07-30 — both named prerequisites are cleared, live-verified, not just plausible.**
+**Superseded again, 2026-07-30 (same day, later) — step 1 below was actually run, and the result is
+not clean yet.** `scripts/analysis/measure_metacog_trend_baseline.py` was built and run against real
+live data. Neither candidate series passes cleanly: `repair_pressure_appraisal_log.level` is
+`FLOOR_DOMINATED` ungated (76.9% of rows are the appraiser's own zero-confidence "no evidence" default,
+not real readings) and only `INSUFFICIENT_DATA` (n=12) once gated on `confidence > 0`; `turn_effect`
+novelty is `FLOOR_DOMINATED` at the *ceiling* (78.4% of rows >= 0.99) — a fourth instance of this whole
+investigation's recurring disease, a channel that structurally can't (or doesn't) return to genuine
+calm, just inverted. Full numbers: the metacog doc's own "2026-07-30 update #2" section and
+`/tmp/measure-metacog-trend-baseline/report.md`.
 
-Still not the hop-chain itself, but the sequencing is now: **hop 0** — the metacog trend reducer
-(already fully spec'd in `docs/superpowers/specs/2026-07-28-metacog-turn-scoped-trend-reducer-design.md`,
-whose own Missing Questions 1-2 are now resolved: real durable history confirmed for both
-`repair_pressure_appraisal_log` and `chat_history_log.spark_meta->'turn_effect'`). Concretely:
+So: still not the hop-chain, and now also not yet hop 0 itself. Revised sequencing:
 
-1. Build `scripts/analysis/measure_metacog_trend_baseline.py` against whichever series that doc's
-   acceptance check 1 prefers (likely `repair_pressure_appraisal_log` first — it's a dedicated table,
-   cleaner than a JSONB path, and already has 52 real rows) — confirm a genuine rest state, not smooth
-   noise or a floor/ceiling artifact, before anything ships live. This is the one remaining
-   measure-before-minting step neither doc has done yet.
-2. Then the reducer itself, following the `ReducerSpec` pattern in
-   `orion-substrate-runtime/app/worker.py`, registered as a flag-gated candidate producer exactly like
-   `reverie_propose_enabled` — default off, `operator_review`-gated, same shape.
+1. **Either** wait for `repair_pressure_appraisal_log`'s confidence-gated series to accumulate past
+   ~20 real rows (currently 12) and re-run the same script to see if `GENUINE_VARIATION` holds up,
+   **or** spend a short, separate measurement on `turn_effect` novelty's ceiling-saturation (is real
+   conversation this novel this often, or is the novelty formula itself another saturating instrument
+   — same shape as `field:recent_perturbations` and the old drives system, not yet diagnosed to that
+   level). Either path is small and read-only, not a build.
+2. Once one series clears its own genuine-rest-state check, then the reducer itself, following the
+   `ReducerSpec` pattern in `orion-substrate-runtime/app/worker.py`, registered as a flag-gated
+   candidate producer exactly like `reverie_propose_enabled` — default off, `operator_review`-gated,
+   same shape.
 3. Hop 1 (actual sub-investigation dispatch, `source="cognitive_hop"`, this doc's own schema/lineage
    proposal) only after hop 0 is live, flag-off, and its own acceptance checks (does it ever win a
    budget slot, does it ever get preempted, does the checkpoint mechanism survive a real preemption)
    have real data behind them — not before.
 
-The Layer 5 fix that used to block step 1 is done. The feedback write-back gap (`orion/feedback/
-builder.py` never updates `base_priority`/`base_risk`/`dimension_weights` from real outcomes) remains
-a real, separate, still-open prerequisite worth closing before a multi-hop chain's dispatch decisions
-need to be informed by whether hop-chains like it worked before — not blocking hop 0, but blocking
-hop 1 being trustworthy.
+The Layer 5 fix that used to block step 1 is done — that part held. The feedback write-back gap
+(`orion/feedback/builder.py` never updates `base_priority`/`base_risk`/`dimension_weights` from real
+outcomes) remains a real, separate, still-open prerequisite worth closing before a multi-hop chain's
+dispatch decisions need to be informed by whether hop-chains like it worked before — not blocking hop
+0, but blocking hop 1 being trustworthy.

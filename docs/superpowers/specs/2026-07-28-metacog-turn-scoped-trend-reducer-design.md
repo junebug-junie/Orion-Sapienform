@@ -320,3 +320,38 @@ The trend reducer (hop 0) can proceed — build
 `chat_history_log.spark_meta->'turn_effect'` first (this doc's original acceptance check 1: confirm a
 genuine rest state, not smooth noise or a floor/ceiling artifact, before the reducer ships live), then
 the `ReducerSpec`-pattern reducer itself.
+
+## 2026-07-30 update #2 — acceptance check 1 actually run: neither candidate series is clean yet
+
+Built and ran `scripts/analysis/measure_metacog_trend_baseline.py` (same session, same day) against
+real live data — the arbitration/history prerequisites above being clear turned out not to mean the
+acceptance check itself was already satisfied. It wasn't assumed; it was measured, and the honest
+result is **not yet green**:
+
+- **`repair_pressure_appraisal_log.level`, ungated (n=52): `FLOOR_DOMINATED`.** 76.9% of rows (40/52)
+  sit at one repeated exact value (`0.087065772...`), and **all 40** of those rows also have
+  `confidence == 0.0` — the appraiser's own explicit "no evidence, don't trust this" signal. Neither
+  live appraiser (`orion/substrate/appraisal/repair_pressure.py`,
+  `orion/substrate/appraisal/paradigms/repair_pressure_v2.py`) emits this value for its documented
+  no-evidence path (both return `level=0.0` exactly) — a short search did not find where the smoothing/
+  gating step between appraisal and persistence produces it. **Disclosed, not root-caused**: whoever
+  builds hop 0 should treat this floor's exact origin as open, not organic.
+- **Confidence-gated (`confidence > 0` only, n=12): real spread (mean 0.316, stddev 0.139, no single
+  value above 42% share), but `INSUFFICIENT_DATA` by this script's own 20-row floor.** Promising shape,
+  not yet enough rows to certify.
+- **`chat_history_log.spark_meta->'turn_effect'->'turn'->'novelty'` (30-day window, n=37):
+  `FLOOR_DOMINATED` at the *ceiling*, not the floor.** 78.4% of rows read >= 0.99 novelty. That's a
+  different flavor of the same disease this whole investigation keeps finding — a channel that rarely
+  or never reads a real calm state, just inverted (pinned high instead of pinned low). Worth its own
+  check before trusting it as hop 0's series: is real conversation genuinely this novel this often, or
+  is the novelty formula itself another saturating instrument.
+
+**Revised recommendation:** hop 0 is not ready to build against either series as-is. The path forward
+is either (a) gate `repair_pressure_appraisal_log.level` on `confidence > 0` and wait for more real
+rows to accumulate past the 20-row floor before trusting `GENUINE_VARIATION`, or (b) investigate
+`turn_effect` novelty's ceiling-saturation as its own short measurement (same shape as Layer 5's
+`field:recent_perturbations` and the old drives system's `dominant_drive` — a fourth instance of
+"structurally can't return to calm" in this codebase, not yet named as such until now) before either
+series is trusted enough to build a live reducer against. Full numbers, per-series breakdown, and CSV:
+`/tmp/measure-metacog-trend-baseline/report.md` (and `rows.csv`, not committed — real historical rows,
+regenerate by re-running the script).

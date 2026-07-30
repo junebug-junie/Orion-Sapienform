@@ -378,6 +378,103 @@ happening," this doc's own §-title question). 9 unit tests, all passing
 confidence-gated `repair_pressure_appraisal_log` rows through it — correctly stayed `cold_start=True`
 for all 12 (below the 20-sample floor), never falsely claiming a trend from insufficient real evidence.
 
+## 2026-07-30 update #4 (SUPERSEDED BELOW) — root-caused and fixed the confidence-gate bug behind the repair_pressure floor
+
+**Superseded by update #5 immediately below — the fix design here changed after code review found a
+real scope-creep risk.** Left in place for the record of how the diagnosis unfolded.
+
+Update #2/#3 above treated `confidence == 0.0` as the paradigm's own explicit "no evidence" signal and
+gated the candidate series on `confidence > 0` accordingly. That assumption was wrong, traced to its
+actual source: `orion/substrate/appraisal/paradigms/repair_pressure_v2.py::reduce_repair_level()`
+computed `level` as an unconditional weighted sum over every evidence kind's own score, but computed
+`confidence` as `min(active_confidences) if active_confidences else 0.0` where `active_confidences`
+only included kinds whose own `score > 0.5`. So several kinds each scoring weakly-but-consistently
+(e.g. 0.2-0.4 — real evidence, just not individually strong) could sum into a genuine, nonzero, highly
+repeatable `level`, while `confidence` was forced to exactly `0.0` purely because no single kind
+cleared the 0.5 cutoff — indistinguishable, to every downstream consumer, from the paradigm's true
+no-evidence path (which also returns `confidence=0.0`). This explains the 40/52-row exact-repeated-
+value floor found in update #2: not a hardcoded default (no such code path was ever found), but a
+real, deterministic weighted-sum output from consistently weak evidence, mislabeled as "no evidence"
+by a confidence formula that was all-or-nothing instead of evidence-proportional.
+
+**Fixed**, same file: `confidence` is now a weighted average of each contributing kind's own per-kind
+confidence, weighted by that kind's actual contribution to `level` (`weight * score`) — proportional to
+real evidence strength, not gated on any single kind crossing a fixed threshold. Still returns exactly
+`0.0` when `level` is genuinely 0 (true no-evidence case unchanged). 3 new regression tests in
+`tests/test_repair_pressure_v2_paradigm.py` (weak-but-consistent evidence no longer reads zero
+confidence; zero-score evidence still reads zero confidence; confidence is proportional to evidence
+strength, not all-or-nothing) plus the existing test suite, all passing (9/9). Downstream consumers'
+own tests (`apply_repair_pressure_contract`'s `level>=0.75 and confidence>=0.60` contract-mode gate,
+`repair_pressure_metacog_gate.py`'s trigger floor) verified unaffected — they read whatever
+level/confidence they're given, unchanged by this fix.
+
+**Real behavior change, disclosed:** going forward, real (but previously mislabeled) weak-evidence
+`repair_pressure` appraisals will read a real nonzero `confidence` instead of `0.0`. This means
+`apply_repair_pressure_contract()`'s `repair_concrete`/`concrete_bias` contract-mode gate and
+`repair_pressure_metacog_gate.py`'s trigger floor may now fire in some cases where they previously
+couldn't — this was a bug suppressing real signal, not a new feature, but it does change live harness
+behavior for genuinely weak-but-present repair-pressure evidence. No flag added; this is a direct fix
+to a scoring bug, not a new capability.
+
+**Effect on hop 0:** the `repair_pressure_appraisal_log.level` series measured in update #2 (77%
+floor-dominated, ungated) will look different once this fix is live and new rows accumulate — some of
+what previously read `confidence=0.0` will now read a real nonzero confidence, changing which rows the
+metacog reducer's confidence-gating would include. Re-run `scripts/analysis/measure_metacog_trend_
+baseline.py` once enough post-fix rows exist to see the corrected picture, rather than trusting the
+pre-fix percentages above.
+
+## 2026-07-30 update #5 -- full root cause confirmed against live evidence; fix redesigned after code review
+
+Update #4 above inferred the root cause from code alone ("consistent with several kinds scoring
+weakly... no hardcoded default found"). Confirmed it directly instead: pulled the persisted `evidence`
+JSONB from three real floor rows and found all 7 evidence kinds at the IDENTICAL score
+(`0.08706577244027125`) and IDENTICAL confidence (`0.65`) in every one -- not several different weak
+scores, one exact repeated fallback value across every kind. Both numbers are exactly reproducible from
+this module's own `_TEXT_FALLBACK_NO = (-2.5, -0.15)` and `_TEXT_FALLBACK_CONFIDENCE = 0.65` constants
+(verified by hand: `score_binary_logprob(logprob_yes=-2.5, logprob_no=-0.15) ==
+0.08706577244027125`) -- the text-only fallback path (`_evidence_from_parsed_text_only`, fires when
+per-token logprobs are unavailable/misaligned): when the classifier answers "NO" to all seven kinds via
+plain text, every kind gets this same fixed fallback score+confidence. That IS real evidence --
+"confidently NO, at a designed 0.65 confidence in that judgment" -- not an absence of evidence. The old
+formula's `score > 0.5` gate discarded the real 0.65 confidence entirely because a confident-NO score
+(0.087) never crosses 0.5.
+
+**Fix redesigned to be conservative, per code review.** A second-round review (orion-repo-agent
+subagent) of update #4's fix found a real problem: the unconditional "always weighted-average" version
+could substantially *raise* confidence for cases where MULTIPLE kinds already scored >0.5 with
+divergent per-kind confidence -- a live-behavior change well beyond the bug being fixed, since
+`apply_repair_pressure_contract()`'s `confidence>=0.60` gate could then fire for cases that were never
+broken. Reproduced the reviewer's counter-example by hand: two kinds both scoring 0.9, confidences 0.95
+and 0.3 -- old formula gives `confidence=0.3`; the unconditional draft gave `~0.625`. Shipped fix
+instead activates the weighted-average ONLY when the old formula's `active_confidences` list was
+already empty (no kind's score exceeds 0.5); whenever at least one kind already scores >0.5, the
+function is byte-for-byte identical to the original `min(active_confidences)` formula. Verified: the
+two-kind counter-example now gives exactly `0.3` (matches old formula); the real floor-row shape (all 7
+kinds at the fallback score/confidence) gives exactly `0.65` (recovers the real fallback confidence the
+old formula discarded).
+
+6 tests in `tests/test_repair_pressure_v2_paradigm.py` (up from 3 in the first draft): exact-value
+assertions (not loose bounds) for the weak-evidence branch, the multi-strong-kind case pinned as
+byte-identical to the old formula, and a test built directly from the real floor row's persisted shape.
+28/28 passing across this file, `repair_pressure_metacog_gate.py`'s tests, and `trend_reducer.py`'s
+tests -- confirmed by running them, not assumed unaffected.
+
+**Real behavior change, disclosed, now narrowly scoped:** a `repair_pressure` appraisal where every
+kind's score sits at or below 0.5 will read its real weighted-average confidence instead of a
+hardcoded `0.0` -- for the text-fallback all-NO case specifically, `confidence` moves from `0.0` to
+`0.65`. This can only raise `repair_pressure_metacog_gate.py`'s trigger and `apply_repair_pressure_
+contract()`'s gate for cases that were previously and wrongly reading `confidence=0.0` for genuinely
+weak evidence -- it cannot change behavior for any case where at least one kind was already scoring
+strongly. No flag added; direct fix to a scoring bug, not a new capability.
+
+**Effect on hop 0, updated again:** the 40 floor rows will read `confidence=0.65` post-fix, not `0.0`
+-- "confidence > 0" as a gating filter will now include them, substantially changing which rows the
+metacog reducer's confidence-gating selects (the floor rows were the majority of the sample, not a
+marginal addition). The 12-row variance estimate (~0.019) `orion/metacog/trend_reducer.py`'s
+`MetacogTrendStateV1` docstring cites was calibrated against the pre-fix population and should be
+re-checked, not assumed to still hold. Re-run `scripts/analysis/measure_metacog_trend_baseline.py`
+once this fix is live and enough post-fix rows exist.
+
 **Deliberately deferred, not forgotten:** live wiring into a poll loop. The `ReducerSpec`/
 `_grammar_reducer_poll_loop` pattern in `orion-substrate-runtime/app/worker.py` — named by this doc and
 the hop-chain doc as the shape to follow — turned out, on inspection, to be a heavier mechanism than it

@@ -104,6 +104,13 @@ class MetacogTrendStateV1:
     but that same doc chain classifies this 12-row sample `INSUFFICIENT_
     DATA`, so treat this as a plausible read on the right order of
     magnitude, not a certified one; re-check once more real rows land.
+    Doubly stale now: this 12-row sample was itself drawn from confidence>0
+    under `reduce_repair_level()`'s OLD, buggy confidence formula (see the
+    2026-07-30 fix in `orion/substrate/appraisal/paradigms/repair_pressure_
+    v2.py`) -- post-fix, confidence>0 selects a much larger and different
+    population (most of the previous 0.0-confidence floor rows now read a
+    real nonzero confidence), so this variance figure needs re-deriving
+    from post-fix data, not just more rows of the same pre-fix population.
 
     Caller responsibility, not enforced here: `min_samples`/`alpha`/
     `elevated_zscore`/`sustained_hits` (the config passed to `apply_reading`)

@@ -229,6 +229,38 @@ def test_decay_concept_activations_skips_malformed_activation_without_crashing(m
     assert updated_good.signals.activation.activation < 0.6
 
 
+def test_decay_concept_activations_protects_reducer_owned_metadata(monkeypatch) -> None:
+    """Regression guard (2026-07-30): the decay scheduler reads a node's full
+    metadata via snapshot(), mutates only signals.activation, and re-persists
+    the whole node -- without skip_metadata_keys, that re-persists whatever
+    (possibly stale, relative to a concurrent reducer write) copy of
+    reducer-owned fields like prediction_error happened to be in this read.
+    Same protection already proven for SubstrateDynamicsEngine.tick() and
+    (2026-07-30) SubstrateGraphMaterializer.apply_record()'s merge branch --
+    see falkor_codec.EXTERNALLY_OWNED_METADATA_KEYS's docstring."""
+    from unittest.mock import patch
+
+    from orion.substrate.falkor_codec import EXTERNALLY_OWNED_METADATA_KEYS
+
+    fresh_store = InMemorySubstrateGraphStore()
+    node = _make_concept_node(
+        node_id="concept-reducer-owned",
+        activation=0.9,
+        decay_half_life_seconds=3600,
+        decay_floor=0.0,
+        observed_at=datetime.now(timezone.utc) - timedelta(minutes=1),
+    )
+    node = node.model_copy(update={"metadata": {"prediction_error": 0.42}})
+    fresh_store.upsert_node(identity_key=node.node_id, node=node)
+    monkeypatch.setattr(api_routes, "SUBSTRATE_SEMANTIC_STORE", fresh_store)
+
+    with patch.object(fresh_store, "upsert_node", wraps=fresh_store.upsert_node) as spy:
+        api_routes.decay_concept_activations()
+
+    spy.assert_called_once()
+    assert spy.call_args.kwargs.get("skip_metadata_keys") == EXTERNALLY_OWNED_METADATA_KEYS
+
+
 def test_decay_concept_activations_snapshot_failure_never_raises(monkeypatch) -> None:
     class _BoomStore:
         def snapshot(self):

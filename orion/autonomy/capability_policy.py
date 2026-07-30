@@ -12,7 +12,7 @@ from orion.autonomy.models import (
     CapabilityPolicyRuleV1,
     CapabilityPolicyV1,
 )
-from orion.core.schemas.drives import GoalProposalV1
+from orion.schemas.field_goal import FieldGoalProvenanceV1
 
 _TRUTHY = {"1", "true", "yes", "on"}
 _GOAL_STATUS_ORDER = {"none": 0, "proposed": 1, "planned": 2, "executing": 3}
@@ -39,7 +39,11 @@ class CapabilityEvaluationContext:
     # -- see that function's docstring.
     curiosity_strength: float
     signal_kinds: list[str]
-    goal: GoalProposalV1 | None
+    # SSP §6 Objective 6 (2026-07-30): real, field-native active goal from
+    # orion.autonomy.goal_state.get_active_goal(), not the old GoalProposalV1
+    # synthetic-per-call stub. None means "no real goal currently dominant" --
+    # an honest absence (missing_goal reason code below), not a fabricated one.
+    goal: FieldGoalProvenanceV1 | None
     budget_used: dict[str, int] = field(default_factory=dict)
     # Real, ambient, mesh-wide surprise signal -- see
     # docs/superpowers/specs/2026-07-24-efe-capability-gate-design.md's 2026-07-28 re-scope.

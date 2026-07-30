@@ -270,6 +270,14 @@ class ConceptSettings(BaseSettings):
     # Heartbeat
     heartbeat_interval_sec: float = Field(10.0, alias="HEARTBEAT_INTERVAL_SEC")
 
+    # Real, field-native active-goal channel (orion-attention-runtime's producer, SSP §6
+    # Objective 6, 2026-07-30) -- this service runs its own goal_state_listener
+    # subscription (see app/main.py) so orion.autonomy.capability_policy.py's real
+    # callers here see real goal state instead of a per-call synthetic fabrication.
+    channel_goal_proposal: str = Field(
+        "orion:memory:goals:proposed", alias="CHANNEL_GOAL_PROPOSAL"
+    )
+
     # Logging
     log_level: str = Field("INFO", alias="LOG_LEVEL")
 

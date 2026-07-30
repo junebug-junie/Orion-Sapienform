@@ -43,6 +43,7 @@
     inFlight: false,
     lastSnapshotAt: 0,
     lastHistoryAt: 0,
+    historyError: null,
     intervalMs: 5000,
     windowMinutes: 60,
     live: true,
@@ -99,6 +100,11 @@
     if (seconds === null || seconds === undefined) return "—";
     var s = Number(seconds);
     if (!isFinite(s)) return "—";
+    // A slightly negative age is sub-second clock skew between the producing
+    // container and Hub (seen live: -0.4s), not information — render it as
+    // "now". A LARGE negative is a genuinely wrong clock somewhere and stays
+    // visible as a negative rather than being quietly clamped away.
+    if (s < 0) return s > -2 ? "0.0s" : s.toFixed(1) + "s";
     if (s < 90) return s.toFixed(1) + "s";
     if (s < 5400) return (s / 60).toFixed(1) + "m";
     if (s < 172800) return (s / 3600).toFixed(1) + "h";
@@ -408,6 +414,54 @@
 
   // ---------------------------------------------------------------- panels
 
+  // Normalize a series' generated_at timestamps into 0..1 x positions.
+  // Returns index-proportional spacing if the timestamps are missing or all
+  // identical, so a degenerate window still renders rather than collapsing.
+  function timePositions(points) {
+    var times = points.map(function (point) {
+      var parsed = Date.parse(point.generated_at);
+      return Number.isFinite(parsed) ? parsed : NaN;
+    });
+    var usable = times.filter(function (t) {
+      return Number.isFinite(t);
+    });
+    if (usable.length !== times.length || times.length < 2) {
+      return points.map(function (_point, index) {
+        return points.length > 1 ? index / (points.length - 1) : 0;
+      });
+    }
+    var min = Math.min.apply(null, usable);
+    var max = Math.max.apply(null, usable);
+    var span = max - min;
+    if (span <= 0) {
+      return points.map(function (_point, index) {
+        return points.length > 1 ? index / (points.length - 1) : 0;
+      });
+    }
+    return times.map(function (t) {
+      return (t - min) / span;
+    });
+  }
+
+  // Both history-backed panels render `lastHistory`, which is deliberately
+  // retained across a failed refresh so a transient error does not blank them.
+  // That retention is only honest if the panel says how old it is.
+  function historyAgeBanner(host) {
+    if (!state.historyError) return;
+    var ageSec = state.lastHistoryAt ? (Date.now() - state.lastHistoryAt) / 1000 : null;
+    host.appendChild(
+      el(
+        "div",
+        "mb-2 rounded-lg border border-amber-800 bg-amber-950/30 px-2 py-1 text-[10px] text-amber-200",
+        "History refresh failing (" +
+          state.historyError +
+          ") — showing data from " +
+          (ageSec === null ? "an earlier fetch" : age(ageSec) + " ago") +
+          ", not now."
+      )
+    );
+  }
+
   function renderEnsemble(host, snapshot) {
     var hb = snapshot.heartbeat || {};
     if (!hb.h1) {
@@ -461,7 +515,7 @@
       el(
         "div",
         "text-[10px] uppercase tracking-wide text-gray-500 mb-1",
-        "Live /h1 trace (" + state.liveTrace.length + " polls, ±spread band)"
+        "Live /h1 trace (" + state.liveTrace.length + " ensemble ticks, ±spread band)"
       )
     );
     var traceCount = state.liveTrace.length;
@@ -491,6 +545,7 @@
       note(host, "History not loaded yet.");
       return;
     }
+    historyAgeBanner(host);
 
     var histWrap = el("div", "mb-3");
     histWrap.appendChild(
@@ -510,10 +565,14 @@
     });
     renderSeries(
       histWrap,
-      series.map(function (point, index) {
+      // Positioned by real elapsed time, not row index: a window containing a
+      // substrate-runtime outage must draw as a gap, not as an unbroken
+      // evenly-spaced line that hides the outage entirely. Falls back to index
+      // spacing only if the timestamps are unusable.
+      timePositions(series).map(function (x, index) {
         return {
-          x: series.length > 1 ? index / (series.length - 1) : 0,
-          value: Number(point.heartbeat_mean_ratio),
+          x: x,
+          value: Number(series[index].heartbeat_mean_ratio),
           spread: NaN,
         };
       }),
@@ -572,9 +631,9 @@
       el(
         "div",
         "",
-        "The spec records the concentrated band (<=" +
-          (config ? config.low_ratio : "0.2") +
-          ") as a structural gap, not a waiting game: 4 of 5 organs stay continuously active regardless of chat, " +
+        "The spec records the concentrated band" +
+          (config ? " (<=" + config.low_ratio + ")" : "") +
+          " as a structural gap, not a waiting game: 4 of 5 organs stay continuously active regardless of chat, " +
           "so real operation may never produce the simultaneous silence it needs. Deferred by explicit decision (2026-07-29)."
       )
     );
@@ -665,17 +724,27 @@
     }
 
     var rec = domains.reconciliation || {};
-    var recTone =
-      rec.reconciles === null || rec.reconciles === undefined
-        ? "border-gray-700 bg-gray-900/60 text-gray-400"
-        : rec.reconciles
-        ? "border-emerald-800 bg-emerald-950/30 text-emerald-200"
-        : "border-red-800 bg-red-950/30 text-red-200";
-    var recBox = el("div", "mt-3 rounded-lg border p-2 text-[10px] leading-relaxed font-mono " + recTone);
+    var recTone;
+    if (rec.verdict === "exact" || rec.verdict === "within_drift") {
+      recTone = "border-emerald-800 bg-emerald-950/30 text-emerald-200";
+    } else if (rec.verdict === "divergent") {
+      recTone = "border-red-800 bg-red-950/30 text-red-200";
+    } else {
+      recTone = "border-gray-700 bg-gray-900/60 text-gray-400";
+    }
+    var recBox = el("div", "mt-3 rounded-lg border p-2 text-[10px] leading-relaxed " + recTone);
+    var recHead = el("div", "flex items-center justify-between gap-2 mb-1");
+    recHead.appendChild(
+      el("span", "font-semibold uppercase tracking-wide", rec.verdict || "unknown")
+    );
+    recHead.appendChild(
+      el("span", "font-mono opacity-70", "row " + age(rec.row_age_sec) + " old")
+    );
+    recBox.appendChild(recHead);
     recBox.appendChild(
       el(
         "div",
-        "",
+        "font-mono",
         "1 - mean(active domains) = " +
           num(rec.recomputed, 4) +
           "   vs persisted prediction_error_confidence = " +
@@ -687,6 +756,9 @@
           ")"
       )
     );
+    if (rec.basis) {
+      recBox.appendChild(el("div", "opacity-80 mt-1", rec.basis));
+    }
     host.appendChild(recBox);
     note(
       host,
@@ -702,6 +774,7 @@
       note(host, "History not loaded yet.");
       return;
     }
+    historyAgeBanner(host);
     host.appendChild(
       el(
         "div",
@@ -720,6 +793,14 @@
       note(
         host,
         history.null_domain_count + " row(s) had no predicted_shift at all (no trend resolved that tick)."
+      );
+    }
+    if (history.malformed_row_count) {
+      note(
+        host,
+        history.malformed_row_count +
+          " row(s) in this window could not be parsed at all — the tallies above describe the rest, not the window.",
+        "text-amber-400/80"
       );
     }
     note(
@@ -819,7 +900,15 @@
     );
 
     var rows = el("div", "mt-2");
-    rows.appendChild(kvRow("row age", age(link.self_model_age_sec)));
+    rows.appendChild(
+      kvRow(
+        "row age",
+        age(link.self_model_age_sec),
+        Number.isFinite(link.self_model_age_sec) && Number(link.self_model_age_sec) > 120
+          ? "text-amber-300"
+          : "text-gray-200"
+      )
+    );
     rows.appendChild(kvRow("row's mean_ratio", num(link.self_model_mean_ratio, 4)));
     rows.appendChild(kvRow("organ's mean_ratio now", num(link.live_mean_ratio, 4)));
     rows.appendChild(kvRow("organ tick_count now", int(link.live_tick_count)));
@@ -832,15 +921,16 @@
     var match = /tick_count=(\d+)/.exec(link.self_model_basis || "");
     if (match) basisTick = Number(match[1]);
     rows.appendChild(kvRow("row's basis tick", basisTick === null ? "—" : int(basisTick)));
-    if (basisTick !== null && isFinite(link.live_tick_count)) {
+    // Number.isFinite, NOT the global isFinite: the global coerces, so
+    // isFinite(null) is true and an offline organ (live_tick_count === null)
+    // would render a confident negative lag — a number no producer produced,
+    // shown precisely when the organ is down.
+    if (basisTick !== null && Number.isFinite(link.live_tick_count)) {
       var lag = Number(link.live_tick_count) - basisTick;
-      rows.appendChild(
-        kvRow(
-          "tick lag",
-          int(lag) + " ticks",
-          lag > 5000 ? "text-amber-300" : "text-gray-200"
-        )
-      );
+      // Reported without a health verdict attached: tick_count counts absorbed
+      // events, whose rate depends entirely on live organ traffic, so no fixed
+      // lag threshold means anything. Row age below is the real staleness read.
+      rows.appendChild(kvRow("tick lag", int(lag) + " ticks"));
     }
     host.appendChild(rows);
 
@@ -871,7 +961,14 @@
     grid.appendChild(statTile("Events seen", int(health.events_seen)));
     grid.appendChild(statTile("Queued", int(health.events_queued)));
     grid.appendChild(statTile("Absorbed", int(health.events_absorbed)));
-    grid.appendChild(statTile("Queue depth", int(health.absorb_queue_size), queueTone));
+    grid.appendChild(
+      statTile(
+        "Queue depth",
+        int(health.absorb_queue_size) +
+          (health.absorb_queue_maxsize ? " / " + int(health.absorb_queue_maxsize) : ""),
+        queueTone
+      )
+    );
     grid.appendChild(
       statTile(
         "Dropped (queue full)",
@@ -968,7 +1065,29 @@
         "  × scale  → reheat_prob " +
         num(reheat.reheat_prob, 5);
       chain.appendChild(flow);
-      chain.appendChild(el("div", "text-[10px] text-gray-500 mt-1", reheat.at || ""));
+      // service.py only overwrites last_reheat after a SUCCESSFUL tick, so a
+      // persistently failing FalkorDB query serves the last good block
+      // forever. Age it against the loop's own configured interval rather
+      // than rendering the timestamp as inert gray text.
+      var reheatAgeSec = null;
+      if (reheat.at) {
+        var parsedAt = Date.parse(reheat.at);
+        if (Number.isFinite(parsedAt)) reheatAgeSec = (Date.now() - parsedAt) / 1000;
+      }
+      var interval = config && Number(config.decay_reheat_interval_sec);
+      var reheatStale =
+        reheatAgeSec !== null && Number.isFinite(interval) && interval > 0
+          ? reheatAgeSec > interval * 5
+          : false;
+      chain.appendChild(
+        el(
+          "div",
+          "text-[10px] mt-1 " + (reheatStale ? "text-amber-300" : "text-gray-500"),
+          (reheat.at || "") +
+            (reheatAgeSec === null ? "" : "  ·  " + age(reheatAgeSec) + " ago") +
+            (reheatStale ? "  ·  STALE — dissipation loop may be failing" : "")
+        )
+      );
       host.appendChild(chain);
       if (saturated) {
         note(
@@ -1075,9 +1194,14 @@
         try {
           lastHistory = await fetchJson(HISTORY_URL + "?minutes=" + state.windowMinutes);
           state.lastHistoryAt = Date.now();
+          state.historyError = null;
         } catch (err) {
-          // A history failure must not blank the live panels next to it.
-          setStatus("History unavailable: " + (err.message || err), "text-amber-400");
+          // A history failure must not blank the live panels next to it — but
+          // the previous payload then keeps rendering with its own
+          // window/sample labels, so the failure has to survive into the
+          // status line and into both consuming panels as a real age, or a
+          // stale window reads as the current one.
+          state.historyError = String(err.message || err);
         }
       }
 
@@ -1094,6 +1218,7 @@
       if (!(snapshot.heartbeat || {}).ok) problems.push("heartbeat");
       if (!(snapshot.self_model || {}).ok) problems.push("self-model");
       if (!(snapshot.domains || {}).ok) problems.push("domains");
+      if (state.historyError) problems.push("history");
       if (problems.length) {
         setStatus(
           "Updated " +
@@ -1131,6 +1256,17 @@
     stopTimer();
     if (!state.active || !state.live) return;
     state.timer = setInterval(function () {
+      // Visibility, not just the router's activate/deactivate calls, is what
+      // actually gates polling. self_observability.js hides every
+      // section[data-panel] directly and preventDefault()s its own click, so
+      // app.js's setActiveTab -- the only caller of deactivate() -- never runs
+      // on that path, and the timer would otherwise keep firing forever into a
+      // hidden panel. Checking the DOM makes the contract hold against any
+      // future panel that does the same thing.
+      if (!els.panel || els.panel.classList.contains("hidden")) {
+        deactivate();
+        return;
+      }
       poll();
     }, state.intervalMs);
   }
@@ -1186,9 +1322,11 @@
     state.windowMinutes = Number(els.windowSelect && els.windowSelect.value) || 60;
     state.live = !els.liveToggle || !!els.liveToggle.checked;
     wireControls();
-    // If the tab was deep-linked, app.js's hash routing has already unhidden
-    // the panel by the time this runs — start immediately rather than waiting
-    // for a click that will never come.
+    // Defensive only. Both scripts are `defer` and this one is listed before
+    // app.js, so in practice app.js's DOMContentLoaded handler (which is what
+    // calls setActiveTab) has not run yet and the panel is still hidden here —
+    // setActiveTab does the real activation a moment later. This branch exists
+    // so a future load-order change cannot leave a visible panel unpolled.
     if (!els.panel.classList.contains("hidden")) {
       activate();
     }

@@ -79,6 +79,7 @@ DEFAULT_HISTORY_MINUTES: int = 60
 HISTORY_ROW_CAP: int = 4000
 
 _engine_instance: Any = None
+_graph_client_instance: Any = None
 
 
 def _engine():
@@ -92,13 +93,23 @@ def _engine():
 
 
 def _substrate_graph_client() -> RedisGraphQueryClient:
+    """Module-level cached, matching _engine() above. RedisGraphQueryClient
+    builds its own redis.Redis + ConnectionPool and exposes no close(), so a
+    per-request client meant a fresh TCP connect/teardown on every poll --
+    ~30/minute at the tab's fastest cadence, for a query returning 7 rows.
+    Not a leak (refcounting drops the sockets), but pointless churn against a
+    surface designed to be polled continuously.
+    """
+    global _graph_client_instance
     uri = (settings.FALKORDB_URI or "").strip()
     if not uri:
         raise HTTPException(status_code=503, detail="falkordb_uri_not_configured")
-    graph_name = (
-        getattr(settings, "FALKORDB_SUBSTRATE_GRAPH", "") or "orion_substrate"
-    )
-    return RedisGraphQueryClient(uri=uri, graph_name=graph_name)
+    if _graph_client_instance is None:
+        graph_name = (
+            getattr(settings, "FALKORDB_SUBSTRATE_GRAPH", "") or "orion_substrate"
+        )
+        _graph_client_instance = RedisGraphQueryClient(uri=uri, graph_name=graph_name)
+    return _graph_client_instance
 
 
 # --------------------------------------------------------------------------
@@ -152,6 +163,7 @@ def summarize_history(rows: list[dict[str, Any]]) -> dict[str, Any]:
     domain_counts: dict[str, int] = {}
     null_verdict = 0
     null_domain = 0
+    malformed = 0
 
     for row in rows:
         payload = row.get("self_model_json")
@@ -159,8 +171,10 @@ def summarize_history(rows: list[dict[str, Any]]) -> dict[str, Any]:
             try:
                 payload = json.loads(payload)
             except (TypeError, ValueError):
+                malformed += 1
                 continue
         if not isinstance(payload, dict):
+            malformed += 1
             continue
 
         verdict = payload.get("heartbeat_verdict")
@@ -186,8 +200,6 @@ def summarize_history(rows: list[dict[str, Any]]) -> dict[str, Any]:
                 "heartbeat_mean_ratio": payload.get("heartbeat_mean_ratio"),
                 "heartbeat_verdict": verdict if isinstance(verdict, str) else None,
                 "prediction_error_confidence": payload.get("prediction_error_confidence"),
-                "confidence": payload.get("confidence"),
-                "attention_reason": payload.get("attention_reason"),
                 "predicted_shift_domain": domain,
             }
         )
@@ -200,6 +212,10 @@ def summarize_history(rows: list[dict[str, Any]]) -> dict[str, Any]:
         "null_verdict_count": null_verdict,
         "domain_counts": domain_counts,
         "null_domain_count": null_domain,
+        # Same argument as the null_* counters above, applied to rows that
+        # could not be read at all: a window where every row failed to parse
+        # must not look identical to a window with no activity.
+        "malformed_row_count": malformed,
     }
 
 
@@ -290,21 +306,47 @@ def build_domain_rows(
     return out
 
 
+# How much the 5-domain mean can move if exactly ONE active domain traverses
+# its full [0, 1] range between the row's write and this module's graph read:
+# 1.0 / len(ACTIVE_INFERENCE_DOMAINS). Confirmed live 2026-07-30 that this is
+# not hypothetical -- `execution` and `bus_synaptic` both swing between ~0 and
+# a pinned 1.0 across consecutive ~30s ticks, so a delta of ~0.2 on a row a few
+# seconds old is ordinary sampling skew, not evidence of anything.
+_SINGLE_DOMAIN_SWING = 1.0 / max(1, len(ACTIVE_INFERENCE_DOMAINS))
+
+# Past this row age, the two readings are simply too far apart in time for the
+# comparison to carry information either way, and asserting a verdict would be
+# manufacturing one.
+_RECONCILE_MAX_ROW_AGE_SEC = 60.0
+
+
 def reconcile_confidence(
-    domain_rows: list[dict[str, Any]], prediction_error_confidence: float | None
+    domain_rows: list[dict[str, Any]],
+    prediction_error_confidence: float | None,
+    *,
+    row_age_sec: float | None = None,
 ) -> dict[str, Any]:
     """Check the persisted aggregate against the live per-domain values.
 
     `_unconditional_prediction_error_confidence()` is
     `1 - mean(prediction_error over ACTIVE_INFERENCE_DOMAINS)`. Recomputing
     that from the domain nodes and diffing it against what the row actually
-    stored is a live provenance check, not decoration: a large gap means the
-    two are no longer reading the same thing (the domain nodes moved after
-    the row was written, an instrument is being clobbered, or the reducer's
-    domain set drifted from this module's). Tolerance is deliberately loose
-    (0.05) because the row and the graph read happen at different instants
-    on a continuously-moving signal -- this flags structural divergence, not
-    sampling skew.
+    stored is a live provenance check: a gap too large to be explained by the
+    domains simply having moved means the two are no longer reading the same
+    thing (an instrument is being clobbered, or the reducer's domain set has
+    drifted from this module's).
+
+    **The verdict is deliberately not a fixed-tolerance boolean.** The first
+    version of this used `abs(delta) <= 0.05`, and live data immediately
+    showed why that is a bad instrument: the row is written on
+    substrate-runtime's ~30s tick while the graph read happens now, and two of
+    the five domains genuinely swing across their whole range between ticks --
+    so a flat tolerance reports "divergent" purely as a function of when the
+    operator happened to poll. A check that fires on its own sampling schedule
+    is noise, and shipping it would be the exact failure mode this tab exists
+    to expose. The verdict is therefore stated against a model of how far the
+    aggregate could legitimately have moved, and withheld entirely once the
+    row is too old to compare against at all.
     """
     values = [
         r["prediction_error"]
@@ -317,17 +359,48 @@ def reconcile_confidence(
             "persisted": prediction_error_confidence,
             "delta": None,
             "domains_used": len(values),
-            "reconciles": None,
+            "row_age_sec": row_age_sec,
+            "verdict": "unknown",
+            "basis": "no active-domain values or no persisted aggregate to compare",
         }
+
     recomputed = 1.0 - (sum(values) / len(values))
     delta = recomputed - float(prediction_error_confidence)
-    return {
+    out = {
         "recomputed": round(recomputed, 4),
         "persisted": float(prediction_error_confidence),
         "delta": round(delta, 4),
         "domains_used": len(values),
-        "reconciles": abs(delta) <= 0.05,
+        "row_age_sec": row_age_sec,
     }
+
+    # Compared at the persisted value's OWN precision, not raw float equality:
+    # the reducer rounds prediction_error_confidence to 4dp before storing it,
+    # so an exact float match is unreachable by construction and "exact" would
+    # be dead code.
+    if round(delta, 4) == 0.0:
+        out["verdict"] = "exact"
+        out["basis"] = "row was written from the same domain values read here"
+    elif row_age_sec is not None and row_age_sec > _RECONCILE_MAX_ROW_AGE_SEC:
+        out["verdict"] = "unknown"
+        out["basis"] = (
+            f"row is {row_age_sec:.0f}s old -- too far from this graph read for the "
+            "comparison to mean anything either way"
+        )
+    elif abs(delta) <= _SINGLE_DOMAIN_SWING:
+        out["verdict"] = "within_drift"
+        out["basis"] = (
+            f"delta is within {_SINGLE_DOMAIN_SWING:.2f}, the most one of "
+            f"{len(ACTIVE_INFERENCE_DOMAINS)} domains moving across its full range "
+            "can shift the mean between the row's write and this read"
+        )
+    else:
+        out["verdict"] = "divergent"
+        out["basis"] = (
+            f"delta exceeds {_SINGLE_DOMAIN_SWING:.2f} -- more than one domain would "
+            "have had to move fully, which points at a source mismatch rather than timing"
+        )
+    return out
 
 
 def normalize_history_minutes(minutes: int | None) -> int:
@@ -388,9 +461,15 @@ def _load_latest_self_model() -> tuple[dict[str, Any] | None, datetime | None]:
 
 def _load_domain_rows() -> list[dict[str, Any]]:
     client = _substrate_graph_client()
+    # Labelled (:SubstrateNode) rather than a bare MATCH (n): there is no
+    # index on node_id (checked live -- CALL db.indexes() is empty), and this
+    # is the substrate CONCEPT graph, designed to accumulate, scanned on every
+    # poll. Free today at 10 nodes; not free later. STARTS WITH is kept over
+    # an `IN $ids` form on purpose so a domain node this module does not yet
+    # know about is still discovered (see build_domain_rows' tail).
     return client.graph_query(
         """
-        MATCH (n)
+        MATCH (n:SubstrateNode)
         WHERE n.node_id STARTS WITH $prefix
         RETURN n.node_id AS node_id,
                n.prediction_error AS prediction_error,
@@ -402,10 +481,19 @@ def _load_domain_rows() -> list[dict[str, Any]]:
 
 
 @router.get("/snapshot")
-async def snapshot() -> dict[str, Any]:
+def snapshot() -> dict[str, Any]:
     """One poll = one request. Each of the three sources degrades
     independently: any one being down leaves its own block flagged and the
     others intact.
+
+    Deliberately `def`, not `async def`: this handler does blocking I/O (two
+    `requests.get` calls, a Postgres read, a FalkorDB read) and the tab
+    auto-polls it as fast as every 2s. Declared async, that would block Hub's
+    single event loop -- chat, websockets, every other route -- for the full
+    duration of every poll. FastAPI runs a sync handler in its threadpool
+    instead. Some older read-only routes here are `async def` with the same
+    blocking bodies; those are user-initiated one-shots, which is why the
+    pattern survived. It is not safe at this cadence.
     """
     now = datetime.now(timezone.utc)
 
@@ -455,7 +543,12 @@ async def snapshot() -> dict[str, Any]:
     return {
         "generated_at": now.isoformat(),
         "heartbeat": {
-            "ok": bool(h1.get("ok") and health.get("ok")),
+            # Both endpoints reachable AND an actual H1 reading present.
+            # `h1.get("ok")` is only transport-level: /h1 answers 200 with
+            # {"ok": false, "reason": "no_h1_computed_yet"} before the first
+            # ensemble tick, which is precisely a degraded state the status
+            # line must report, not a healthy one.
+            "ok": bool(h1.get("ok") and health.get("ok") and live_h1 is not None),
             "h1": live_h1,
             "h1_error": None if h1.get("ok") else h1.get("error"),
             "h1_reason": (h1.get("payload") or {}).get("reason") if h1.get("ok") else None,
@@ -476,7 +569,9 @@ async def snapshot() -> dict[str, Any]:
             "active_domains": sorted(ACTIVE_INFERENCE_DOMAINS),
             "rows": domain_rows,
             "reconciliation": reconcile_confidence(
-                domain_rows, (self_model or {}).get("prediction_error_confidence")
+                domain_rows,
+                (self_model or {}).get("prediction_error_confidence"),
+                row_age_sec=link["self_model_age_sec"],
             ),
         },
         "link": link,
@@ -484,7 +579,8 @@ async def snapshot() -> dict[str, Any]:
 
 
 @router.get("/history")
-async def history(minutes: int = Query(DEFAULT_HISTORY_MINUTES)) -> dict[str, Any]:
+def history(minutes: int = Query(DEFAULT_HISTORY_MINUTES)) -> dict[str, Any]:
+    """Sync for the same reason as snapshot() -- blocking SQLAlchemy read."""
     window_minutes = normalize_history_minutes(minutes)
     with _engine().connect() as conn:
         # DESC + reverse (not ASC + LIMIT) so a window wide enough to hit the

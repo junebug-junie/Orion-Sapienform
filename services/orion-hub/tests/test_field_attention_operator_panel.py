@@ -175,6 +175,22 @@ def test_field_attention_js_renders_recent_perturbations_and_warnings() -> None:
     assert "warnings" in FIELD_ATTENTION_JS
 
 
+def test_field_attention_js_does_not_mislabel_system_targets_as_cold_start() -> None:
+    """Review finding (2026-07-30): select_system_targets() in
+    orion/attention/field_attention/selectors.py hardcodes
+    confidence_score=0.0 for the 'field:recent_perturbations' system target
+    as a schema-required placeholder, not a real "not grounded yet" reading
+    -- no confidence concept applies to that aggregate signal at all.
+    Rendering it through the ordinary binary grounded/cold-start badge would
+    show a permanent, never-resolving "cold-start" that reads as "still
+    warming up." confidenceBadge() must special-case target_kind === "system"
+    into a distinct "n/a" badge instead."""
+    assert "function confidenceBadge(value, targetKind)" in FIELD_ATTENTION_JS
+    assert 'targetKind === "system"' in FIELD_ATTENTION_JS
+    assert '"n/a"' in FIELD_ATTENTION_JS
+    assert "confidenceBadge(target.confidence_score, target.target_kind)" in FIELD_ATTENTION_JS
+
+
 def test_field_attention_js_guards_polling_on_real_visibility() -> None:
     """Review finding from attention-organ.js's own history (M1): app.js's
     setActiveTab is not the only thing that can hide this panel --

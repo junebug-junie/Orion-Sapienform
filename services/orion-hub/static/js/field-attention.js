@@ -134,7 +134,23 @@
   // binary in real data (verified live 2026-07-30, 10,747 observations, only
   // ever exactly 0.0 or exactly 1.0), so a gradient would imply a precision
   // this signal does not have.
-  function confidenceBadge(value) {
+  //
+  // Review finding (2026-07-30): "system" targets are the one exception --
+  // select_system_targets() in orion/attention/field_attention/selectors.py
+  // hardcodes confidence_score=0.0 as a schema-required placeholder, not a
+  // real "not grounded yet" reading (no confidence concept applies to that
+  // aggregate signal at all). Rendering that as "cold-start" would read as
+  // "still warming up," which it can never stop being -- a permanent
+  // mislabel, not a transient one. targetKind lets the caller opt out of
+  // the binary badge for that one kind instead.
+  function confidenceBadge(value, targetKind) {
+    if (targetKind === "system") {
+      return badge(
+        "n/a",
+        "border-gray-700 bg-gray-900 text-gray-500",
+        "confidence_score not meaningful for system targets -- select_system_targets() hardcodes 0.0 as a placeholder"
+      );
+    }
     var v = Number(value);
     var grounded = isFinite(v) && v >= CONFIDENCE_GROUNDED_THRESHOLD;
     return badge(
@@ -249,7 +265,7 @@
       row.appendChild(el("td", "py-1.5 pr-3 font-mono text-gray-300", magnitude));
 
       var confCell = el("td", "py-1.5 pr-3");
-      confCell.appendChild(confidenceBadge(target.confidence_score));
+      confCell.appendChild(confidenceBadge(target.confidence_score, target.target_kind));
       row.appendChild(confCell);
 
       var modeCell = el("td", "py-1.5 pr-3");

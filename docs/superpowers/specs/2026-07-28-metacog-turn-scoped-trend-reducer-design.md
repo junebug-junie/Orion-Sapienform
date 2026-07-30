@@ -309,4 +309,4 @@ never a new output field or a new instruction to the draft LLM. The arbitration-
 the section above is unrelated and still unresolved; this patch does not compete for Layer 5
 attention's budget or touch `orion/proposals/`.
 
-Implemented: PR #TBD (filled in once opened).
+Implemented: [PR #1477](https://github.com/junebug-junie/Orion-Sapienform/pull/1477).

@@ -37,17 +37,15 @@ def _field_with_transport_drift() -> FieldStateV1:
     )
 
 
-def test_transport_capability_becomes_attention_item() -> None:
+def test_capability_transport_never_becomes_an_attention_item() -> None:
+    # 2026-07-30: capability attention was killed outright (no hand-weighted
+    # fallback for capability_channel_weights) -- select_capability_targets
+    # always returns []. This test now pins that reality instead of the old
+    # (now-impossible) "transport capability shows up" behavior. Real
+    # capability attention needs its own theory-grounded instrument built
+    # first, per orion/attention/field_attention/selectors.py's own
+    # docstring.
     policy = load_attention_policy(POLICY_PATH)
     frame = build_attention_frame(field=_field_with_transport_drift(), policy=policy, now=NOW)
-    transport_items = [t for t in frame.capability_targets if t.target_id == "capability:transport"]
-    assert transport_items
-    assert any("contract_pressure" in r for r in transport_items[0].reasons)
-
-
-def test_contract_pressure_contributes_to_salience() -> None:
-    policy = load_attention_policy(POLICY_PATH)
-    frame = build_attention_frame(field=_field_with_transport_drift(), policy=policy, now=NOW)
-    item = next(t for t in frame.capability_targets if t.target_id == "capability:transport")
-    assert item.salience_score >= policy.thresholds.min_salience
-    assert "contract_pressure" in item.dominant_channels
+    assert frame.capability_targets == []
+    assert not any(t.target_id == "capability:transport" for t in frame.dominant_targets)

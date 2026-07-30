@@ -12,38 +12,17 @@ thresholds:
   high_salience: 0.70
   suppress_below: 0.03
 
-weights:
-  pressure: 0.45
-  novelty: 0.20
-  urgency: 0.25
-  confidence: 0.10
-
-node_channel_weights:
-  cpu_pressure: 0.50
-  gpu_pressure: 0.60
-  memory_pressure: 0.55
-  disk_pressure: 0.45
-  thermal_pressure: 0.75
-  staleness: 0.60
-  availability: -0.40
-  cortex_exec_step_load: 0.70
-  execution_friction: 0.85
-  reasoning_load: 0.45
-  failure_pressure: 1.00
-  expected_offline_suppression: -0.70
-  stream_backlog_pressure: 0.70
-  contract_pressure: 0.85
-  stream_backlog_health: -0.30
-
-capability_channel_weights:
-  pressure: 0.70
-  execution_pressure: 0.80
-  reasoning_pressure: 0.60
-  reliability_pressure: 1.00
-  stream_backlog_pressure: 0.75
-  contract_pressure: 0.90
-  confidence: -0.35
-  available_capacity: -0.45
+# weights / node_channel_weights / capability_channel_weights removed
+# 2026-07-30: these were the hand-picked linear-blend coefficients for the
+# retired compute_salience() formula (orion/attention/field_attention/
+# scoring.py). Killed, not left as dead config, per CLAUDE.md §0A's "kill
+# means kill, no fallback to the thing being killed." Node attention is now
+# Candidate A (precision-weighted prediction-error salience,
+# orion/attention/field_attention/candidate_precision_weighted.py) for the
+# six real prediction-error-native targets; capability attention has no
+# real grounded theory yet and is retired pending one (select_capability_
+# targets always returns []). See docs/superpowers/pr-reports/ for the
+# full patch.
 
 observation_modes:
   inspect_threshold: 0.75

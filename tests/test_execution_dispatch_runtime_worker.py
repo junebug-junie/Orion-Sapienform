@@ -3,7 +3,7 @@ from __future__ import annotations
 import math
 import sys
 from collections import deque
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock
 
@@ -20,7 +20,7 @@ from orion.schemas.execution_dispatch_frame import (  # noqa: E402
     ExecutionDispatchCandidateV1,
     ExecutionDispatchFrameV1,
 )
-from orion.schemas.policy_decision_frame import PolicyDecisionFrameV1  # noqa: E402
+from orion.schemas.policy_decision_frame import PolicyDecisionFrameV1, PolicyDecisionV1  # noqa: E402
 from orion.schemas.proposal_frame import ProposalFrameV1  # noqa: E402
 
 NOW = datetime(2026, 5, 24, 12, 0, tzinfo=timezone.utc)
@@ -51,11 +51,16 @@ def _policy_frame() -> PolicyDecisionFrameV1:
 
 def test_worker_skips_when_no_policy_pending(monkeypatch) -> None:
     monkeypatch.setenv("POSTGRES_URI", "postgresql://test:test@localhost/test")
+    # 2026-07-30: staleness-discard override disabled (very large) -- this
+    # test is about "no pending policy frame at all," not about staleness
+    # behavior, same reasoning as the two tests below.
+    monkeypatch.setenv("EXECUTION_DISPATCH_STALENESS_OVERRIDE_SEC", "99999999999")
     import app.settings as settings_mod
 
     settings_mod._settings = None
     worker = ExecutionDispatchRuntimeWorker()
     worker._store.load_latest_policy_frame_without_dispatch = MagicMock(return_value=None)
+    worker._store.load_latest_staleness_discard_baseline = MagicMock(return_value=None)
     worker._store.save_dispatch_frame = MagicMock()
 
     worker._tick()
@@ -69,12 +74,21 @@ def test_worker_records_unevaluable_frame_when_proposal_missing(monkeypatch) -> 
     # behind it. The worker must record an honest "could not evaluate" frame
     # so the FIFO queue advances.
     monkeypatch.setenv("POSTGRES_URI", "postgresql://test:test@localhost/test")
+    # 2026-07-30: _policy_frame()'s generated_at is a fixed historical
+    # constant (NOW, 2026-05-24) -- real wall-clock age against that would
+    # always exceed even the widest real staleness window and get fast-
+    # discarded before this test's actual target behavior (proposal-missing
+    # handling) ever runs. This test is about that handling, not staleness,
+    # so disable the discard path here (dedicated staleness tests below
+    # exercise it directly with controlled ages).
+    monkeypatch.setenv("EXECUTION_DISPATCH_STALENESS_OVERRIDE_SEC", "99999999999")
     import app.settings as settings_mod
 
     settings_mod._settings = None
     worker = ExecutionDispatchRuntimeWorker()
     policy_frame = _policy_frame()
     worker._store.load_latest_policy_frame_without_dispatch = MagicMock(return_value=policy_frame)
+    worker._store.load_latest_staleness_discard_baseline = MagicMock(return_value=None)
     worker._store.load_proposal_frame = MagicMock(return_value=None)
     worker._store.save_dispatch_frame = MagicMock()
 
@@ -93,12 +107,16 @@ def test_worker_saves_dispatch_frame_for_pending_policy(monkeypatch) -> None:
     # field_tick_id straight off policy_frame -- no separate self-state load
     # that could fail and stall the FIFO queue.
     monkeypatch.setenv("POSTGRES_URI", "postgresql://test:test@localhost/test")
+    # 2026-07-30: see test_worker_records_unevaluable_frame_when_proposal_
+    # missing's comment above -- same fixed-historical-generated_at issue.
+    monkeypatch.setenv("EXECUTION_DISPATCH_STALENESS_OVERRIDE_SEC", "99999999999")
     import app.settings as settings_mod
 
     settings_mod._settings = None
     worker = ExecutionDispatchRuntimeWorker()
     policy_frame = _policy_frame()
     worker._store.load_latest_policy_frame_without_dispatch = MagicMock(return_value=policy_frame)
+    worker._store.load_latest_staleness_discard_baseline = MagicMock(return_value=None)
     worker._store.load_proposal_frame = MagicMock(return_value=_proposal())
     worker._store.save_dispatch_frame = MagicMock()
 
@@ -109,6 +127,198 @@ def test_worker_saves_dispatch_frame_for_pending_policy(monkeypatch) -> None:
     assert isinstance(saved, ExecutionDispatchFrameV1)
     assert saved.source_policy_frame_id == policy_frame.frame_id
     assert saved.source_field_tick_id == policy_frame.source_field_tick_id
+
+
+def _policy_frame_at(generated_at: datetime, *, frame_id: str = "policy.frame:staleness-test") -> PolicyDecisionFrameV1:
+    return PolicyDecisionFrameV1(
+        frame_id=frame_id,
+        generated_at=generated_at,
+        source_proposal_frame_id=f"proposal.frame:{frame_id}",
+        source_field_tick_id="tick:staleness-test",
+        overall_risk=0.0,
+    )
+
+
+def _staleness_worker(monkeypatch, *, override_sec: float | None = None) -> ExecutionDispatchRuntimeWorker:
+    monkeypatch.setenv("POSTGRES_URI", "postgresql://test:test@localhost/test")
+    if override_sec is not None:
+        monkeypatch.setenv("EXECUTION_DISPATCH_STALENESS_OVERRIDE_SEC", str(override_sec))
+    import app.settings as settings_mod
+
+    settings_mod._settings = None
+    worker = ExecutionDispatchRuntimeWorker()
+    worker._store.load_latest_staleness_discard_baseline = MagicMock(return_value=None)
+    worker._store.save_dispatch_frame = MagicMock()
+    worker._store.load_proposal_frame = MagicMock(return_value=_proposal())
+    return worker
+
+
+def test_staleness_threshold_respects_override(monkeypatch) -> None:
+    worker = _staleness_worker(monkeypatch, override_sec=42.0)
+    for _ in range(5):
+        assert worker._staleness_threshold_sec() == 42.0
+
+
+def test_staleness_threshold_falls_in_configured_range_without_override(monkeypatch) -> None:
+    worker = _staleness_worker(monkeypatch)
+    lo = worker._settings.execution_dispatch_staleness_min_sec
+    hi = worker._settings.execution_dispatch_staleness_max_sec
+    seen = {worker._staleness_threshold_sec() for _ in range(50)}
+    assert all(lo <= v <= hi for v in seen)
+    # 50 draws from a continuous uniform range landing on fewer than 2
+    # distinct values would indicate this isn't actually randomized.
+    assert len(seen) > 1
+
+
+def test_worker_discards_a_lone_stale_policy_frame_without_dispatching(monkeypatch) -> None:
+    worker = _staleness_worker(monkeypatch, override_sec=120.0)
+    stale_frame = _policy_frame_at(datetime.now(timezone.utc) - timedelta(hours=6))
+    worker._store.load_latest_policy_frame_without_dispatch = MagicMock(
+        side_effect=[stale_frame, None]
+    )
+
+    worker._tick()
+
+    # Saved twice: once during the drain (carrying the pre-tick baseline
+    # forward, unknown final count yet) and once more to re-stamp this
+    # tick's now-final EWMA update onto that same frame_id (idempotent
+    # upsert, not a duplicate row -- see _tick()'s own comment). The content
+    # that matters is the LAST call, same as what the next tick's
+    # load_latest_staleness_discard_baseline() would actually read back.
+    assert worker._store.save_dispatch_frame.call_count == 2
+    saved = worker._store.save_dispatch_frame.call_args[0][0]
+    assert saved.source_policy_frame_id == stale_frame.frame_id
+    assert saved.dispatch_attempted is False
+    assert any("stale_backlog_discarded" in w for w in saved.warnings)
+    worker._store.load_proposal_frame.assert_not_called()
+
+
+def test_worker_materializes_per_candidate_discard_summary(monkeypatch) -> None:
+    """The discard is not a silent drop -- each candidate's template and
+    decision are preserved in the saved frame's warnings, real forensic
+    content, not just a bare 'stale' flag."""
+    worker = _staleness_worker(monkeypatch, override_sec=120.0)
+    stale_frame = _policy_frame_at(datetime.now(timezone.utc) - timedelta(hours=6)).model_copy(
+        update={
+            "decisions": [
+                PolicyDecisionV1(
+                    decision_id="policy.decision:1",
+                    proposal_id="proposal:inspect_bus_channel_catalog:tick_x:attention.frame:tick_x:field_attention_policy.v1",
+                    decision="approved_read_only",
+                    policy_gate="read_only",
+                    risk_score=0.1,
+                    reversibility_score=1.0,
+                    confidence_score=0.8,
+                )
+            ]
+        }
+    )
+    worker._store.load_latest_policy_frame_without_dispatch = MagicMock(
+        side_effect=[stale_frame, None]
+    )
+
+    worker._tick()
+
+    saved = worker._store.save_dispatch_frame.call_args[0][0]
+    assert "stale_discard:inspect_bus_channel_catalog:approved_read_only" in saved.warnings
+
+
+def test_worker_drains_stale_frames_then_processes_a_fresh_one(monkeypatch) -> None:
+    worker = _staleness_worker(monkeypatch, override_sec=120.0)
+    stale_1 = _policy_frame_at(datetime.now(timezone.utc) - timedelta(hours=6), frame_id="policy.frame:stale-1")
+    stale_2 = _policy_frame_at(datetime.now(timezone.utc) - timedelta(hours=3), frame_id="policy.frame:stale-2")
+    fresh = _policy_frame_at(datetime.now(timezone.utc) - timedelta(seconds=1), frame_id="policy.frame:fresh")
+    worker._store.load_latest_policy_frame_without_dispatch = MagicMock(
+        side_effect=[stale_1, stale_2, fresh]
+    )
+
+    worker._tick()
+
+    assert worker._store.save_dispatch_frame.call_count == 3
+    worker._store.load_proposal_frame.assert_called_once_with(fresh.source_proposal_frame_id)
+    final_saved = worker._store.save_dispatch_frame.call_args_list[-1][0][0]
+    assert final_saved.source_policy_frame_id == fresh.frame_id
+    assert final_saved.dispatch_attempted is False or final_saved.candidates == []
+
+
+def test_max_stale_discards_per_tick_caps_the_drain(monkeypatch) -> None:
+    worker = _staleness_worker(monkeypatch, override_sec=120.0)
+    ancient = _policy_frame_at(datetime.now(timezone.utc) - timedelta(days=2))
+    # Same object every call -- an unbounded drain loop would spin forever;
+    # the cap must stop it after exactly MAX_STALE_DISCARDS_PER_TICK saves.
+    worker._store.load_latest_policy_frame_without_dispatch = MagicMock(return_value=ancient)
+
+    worker._tick()
+
+    # +1: the final re-stamp save of the last discard frame with this tick's
+    # now-final EWMA count, same reasoning as test_worker_discards_a_lone_
+    # stale_policy_frame_without_dispatching above.
+    assert worker._store.save_dispatch_frame.call_count == worker_mod.MAX_STALE_DISCARDS_PER_TICK + 1
+    worker._store.load_proposal_frame.assert_not_called()
+
+
+def test_staleness_discard_ewma_advances_and_persists(monkeypatch) -> None:
+    worker = _staleness_worker(monkeypatch, override_sec=120.0)
+    worker._store.load_latest_staleness_discard_baseline = MagicMock(
+        return_value={
+            "staleness_discard_count_ewma": 3.0,
+            "staleness_discard_count_ewma_var": 1.0,
+            "staleness_discard_count_ewma_n": 5,
+        }
+    )
+    stale_frame = _policy_frame_at(datetime.now(timezone.utc) - timedelta(hours=6))
+    worker._store.load_latest_policy_frame_without_dispatch = MagicMock(
+        side_effect=[stale_frame, None]
+    )
+
+    worker._tick()
+
+    saved = worker._store.save_dispatch_frame.call_args[0][0]
+    assert saved.staleness_discard_count_ewma_n == 6
+    # value=1.0 (one real discard this tick) pulls the ewma up from its
+    # prior 3.0 baseline toward 1.0 -- direction, not exact magnitude
+    # (compute_ewma_update's own math is tested elsewhere), is what this
+    # regression guards.
+    assert saved.staleness_discard_count_ewma < 3.0
+
+
+def test_worker_fresh_policy_frame_never_discarded(monkeypatch) -> None:
+    """A policy frame well within the staleness window is processed
+    normally, not discarded -- the staleness path must not fire on healthy,
+    real-time traffic."""
+    worker = _staleness_worker(monkeypatch, override_sec=300.0)
+    fresh = _policy_frame_at(datetime.now(timezone.utc))
+    worker._store.load_latest_policy_frame_without_dispatch = MagicMock(return_value=fresh)
+
+    worker._tick()
+
+    worker._store.save_dispatch_frame.assert_called_once()
+    saved = worker._store.save_dispatch_frame.call_args[0][0]
+    assert not any("stale_backlog_discarded" in w for w in saved.warnings)
+    worker._store.load_proposal_frame.assert_called_once()
+
+
+def test_worker_handles_naive_generated_at_without_crashing(monkeypatch) -> None:
+    """Regression guard (code review, 2026-07-30): PolicyDecisionFrameV1.
+    generated_at is a plain datetime, not enforced tz-aware. A naive value
+    subtracted from datetime.now(timezone.utc) without normalizing first
+    raises TypeError -- caught by _poll_loop's broad except, but that exact
+    policy frame would then be the permanent FIFO head forever (never
+    resolves, never gets marked processed), the same queue-blocking failure
+    shape build_unevaluable_execution_dispatch_frame exists to prevent for a
+    missing proposal. _drain_stale_policy_frames must normalize before
+    subtracting."""
+    worker = _staleness_worker(monkeypatch, override_sec=120.0)
+    naive_stale = _policy_frame_at(datetime.now() - timedelta(hours=6))
+    assert naive_stale.generated_at.tzinfo is None
+    worker._store.load_latest_policy_frame_without_dispatch = MagicMock(
+        side_effect=[naive_stale, None]
+    )
+
+    worker._tick()  # must not raise
+
+    saved = worker._store.save_dispatch_frame.call_args[0][0]
+    assert any("stale_backlog_discarded" in w for w in saved.warnings)
 
 
 def _make_worker(monkeypatch) -> ExecutionDispatchRuntimeWorker:

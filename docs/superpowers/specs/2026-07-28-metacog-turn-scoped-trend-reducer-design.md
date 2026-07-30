@@ -272,7 +272,229 @@ re-sequenced: they remain the right next step for metacog specifically, but only
 parallel with, if scoped as a fully separate consumer of attention output) the arbitration-layer
 question above gets its own resolution.
 
+## 2026-07-30 update — arbitration fixed, both blockers cleared
+
+**Layer 5 attention monoculture: fixed, shipped, and re-measured live — this section's own
+recommendation is now stale.** The 100.00%/zero-variance measurement above (run 2026-07-28) and this
+doc's "fix Layer 5 first" recommendation were both written in the same session as, and minutes before,
+two PRs that actually addressed it:
+
+- **PR #1433** (`fix(field-attention): replace saturated recent_perturbation caps with EWMA
+  baseline`, merged 2026-07-28T21:57Z) replaced `select_system_targets`'s `min(1.0, count / 10.0)` cap
+  — the literal cause of the zero-variance saturation — with a z-score against a per-tick EWMA
+  baseline (`orion/schemas/field_state.py::recent_perturbation_zscore`, `orion/bus/ewma.py`), the same
+  methodology already validated for `bus_synaptic_prediction_error`'s `gap_zscore`. This is a real fix
+  to the scoring formula itself, not the post-hoc per-channel z-scoring this doc's own measurement
+  script tried and found `NOT_MET_MONOCULTURE_SHIFTED` (those are two different things: the doc's
+  measurement normalized the *output*, PR #1433 fixed the *input formula*).
+- **PR #1454** (`docs(sentience-striving): re-measure recent_perturbations dominance post-fix`, merged
+  2026-07-29T04:36Z) reran the live probe ~6.3h post-deploy: `field:recent_perturbations` winning top-1
+  dropped from 99.98% (pre-fix) to **11.13%** (1,257/11,293 post-fix ticks), with `node:athena` (host
+  resource pressure — real signal, not the old degenerate one) taking the remaining 88.87%. That doc
+  flagged an open question: is `node:athena`'s 88.87% share genuine, or a new artifact nobody checked.
+
+**Independently re-verified this session, ~+24h further out (through 2026-07-30T00:10Z, 36h window,
+127,447-127,878 live `substrate_attention_frames` rows):** `node:athena`'s share has continued
+dropping — 60.0% (37,994/63,295), `field:recent_perturbations` 38.7%, `node:atlas` 1.3% — trending
+toward a real, converging multi-way competition rather than settling into a second monoculture. Margin
+check between #1 and #2 (48,144 ticks with ≥2 candidates): median gap 0.16, ~7% of ticks are near-ties
+(gap < 0.02), and `node:athena`'s own salience score has real variance (stddev 0.09, not pinned).
+This is not a landslide. **`node:athena`'s 88.87%-then-60.0% share answers PR #1454's open question:
+genuine, converging signal, not a new artifact — worth one more re-check in another 24-48h to confirm
+full convergence, but not worth treating as a blocker.**
+
+**`turn_effect`/`repair_pressure` durable history (this doc's own Missing Questions 1-2): also
+confirmed live, also resolved.** `repair_pressure_appraisal_log` (dedicated Postgres table, shipped
+specifically to close this exact gap — see its own test docstring in
+`services/orion-sql-writer/tests/test_repair_pressure_appraisal_log.py`) has 52 real rows spanning
+2026-07-24 through 2026-07-30. `turn_effect` is not a dedicated column but is durably persisted inside
+`chat_history_log.spark_meta` JSONB (`services/orion-sql-writer/app/worker.py::_spark_meta_minimal()`)
+— 37 of the last 41 rows (7 days) carry a real value, queryable via `spark_meta->'turn_effect'`, same
+JSONB-path pattern already used against `substrate_attention_frames.frame_json`. No new persistence
+plumbing needed for either series.
+
+**Net: both prerequisites this doc and the stream-of-consciousness hop-chain design
+(`docs/superpowers/specs/2026-07-29-stream-of-consciousness-hop-chain-design.md`) named are cleared.**
+The trend reducer (hop 0) can proceed — build
+`scripts/analysis/measure_metacog_trend_baseline.py` against `repair_pressure_appraisal_log` and/or
+`chat_history_log.spark_meta->'turn_effect'` first (this doc's original acceptance check 1: confirm a
+genuine rest state, not smooth noise or a floor/ceiling artifact, before the reducer ships live), then
+the `ReducerSpec`-pattern reducer itself.
+
+## 2026-07-30 update #2 — acceptance check 1 actually run: neither candidate series is clean yet
+
+Built and ran `scripts/analysis/measure_metacog_trend_baseline.py` (same session, same day) against
+real live data — the arbitration/history prerequisites above being clear turned out not to mean the
+acceptance check itself was already satisfied. It wasn't assumed; it was measured, and the honest
+result is **not yet green**:
+
+- **`repair_pressure_appraisal_log.level`, ungated (n=52): `FLOOR_DOMINATED`.** 76.9% of rows (40/52)
+  sit at one repeated exact value (`0.087065772...`), and **all 40** of those rows also have
+  `confidence == 0.0` — the appraiser's own explicit "no evidence, don't trust this" signal. Neither
+  live appraiser (`orion/substrate/appraisal/repair_pressure.py`,
+  `orion/substrate/appraisal/paradigms/repair_pressure_v2.py`) emits this value for its documented
+  no-evidence path (both return `level=0.0` exactly) — a short search did not find where the smoothing/
+  gating step between appraisal and persistence produces it. **Disclosed, not root-caused**: whoever
+  builds hop 0 should treat this floor's exact origin as open, not organic.
+- **Confidence-gated (`confidence > 0` only, n=12): real spread (mean 0.316, stddev 0.139, no single
+  value above 42% share), but `INSUFFICIENT_DATA` by this script's own 20-row floor.** Promising shape,
+  not yet enough rows to certify.
+- **`chat_history_log.spark_meta->'turn_effect'->'turn'->'novelty'` (30-day window, n=37):
+  `FLOOR_DOMINATED` at the *ceiling*, not the floor.** 78.4% of rows read >= 0.99 novelty. That's a
+  different flavor of the same disease this whole investigation keeps finding — a channel that rarely
+  or never reads a real calm state, just inverted (pinned high instead of pinned low). Worth its own
+  check before trusting it as hop 0's series: is real conversation genuinely this novel this often, or
+  is the novelty formula itself another saturating instrument.
+
+**Revised recommendation:** hop 0 is not ready to build against either series as-is. The path forward
+is either (a) gate `repair_pressure_appraisal_log.level` on `confidence > 0` and wait for more real
+rows to accumulate past the 20-row floor before trusting `GENUINE_VARIATION`, or (b) investigate
+`turn_effect` novelty's ceiling-saturation as its own short measurement (same shape as Layer 5's
+`field:recent_perturbations` and the old drives system's `dominant_drive` — a fourth instance of
+"structurally can't return to calm" in this codebase, not yet named as such until now) before either
+series is trusted enough to build a live reducer against. Full numbers, per-series breakdown, and CSV:
+`/tmp/measure-metacog-trend-baseline/report.md` (and `rows.csv`, not committed — real historical rows,
+regenerate by re-running the script).
+
+## 2026-07-30 update #3 — reducer core built and tested; deliberately not live-wired yet
+
+**Reconciling this section with update #2 immediately above, which says "not ready to build":** that
+call was, and remains, about whether either candidate series is trustworthy enough to *run a live
+reducer against* — still not yet true (12 real confidence-gated rows, `INSUFFICIENT_DATA`). What
+changed here is narrower: the reducer's own *computation logic* — the EWMA fold, cold-start guard, and
+sustained-trend check — can be built and unit-tested against synthetic data plus a real-data sanity
+check without needing the underlying series to already be certified, the same way a thermometer's
+circuitry gets tested before anyone trusts a specific room's reading from it. This section does not
+reverse update #2's "don't build a live reducer against this data yet" — it narrows to "the reducer's
+own logic, tested in isolation, is a separate, safe, buildable thing" and stops there.
+
+Built `orion/metacog/trend_reducer.py`: pure, incremental, checkpointable EWMA-trend computation
+(`apply_reading`/`replay`), reusing `orion/bus/ewma.py::compute_ewma_update` rather than inventing a
+new z-score formula (existing-mechanism check). Cold-start guarded at `min_samples=20` (matches this
+doc's own small-N finding above) — never classifies a reading `is_elevated_this_tick` on too little
+evidence. `is_sustained_trend` requires 3 consecutive elevated ticks, not one spike ("has this kept
+happening," this doc's own §-title question). 9 unit tests, all passing
+(`orion/metacog/tests/test_trend_reducer.py`), plus a real-data sanity check: replayed the 12 real
+confidence-gated `repair_pressure_appraisal_log` rows through it — correctly stayed `cold_start=True`
+for all 12 (below the 20-sample floor), never falsely claiming a trend from insufficient real evidence.
+
+## 2026-07-30 update #4 (SUPERSEDED BELOW) — root-caused and fixed the confidence-gate bug behind the repair_pressure floor
+
+**Superseded by update #5 immediately below — the fix design here changed after code review found a
+real scope-creep risk.** Left in place for the record of how the diagnosis unfolded.
+
+Update #2/#3 above treated `confidence == 0.0` as the paradigm's own explicit "no evidence" signal and
+gated the candidate series on `confidence > 0` accordingly. That assumption was wrong, traced to its
+actual source: `orion/substrate/appraisal/paradigms/repair_pressure_v2.py::reduce_repair_level()`
+computed `level` as an unconditional weighted sum over every evidence kind's own score, but computed
+`confidence` as `min(active_confidences) if active_confidences else 0.0` where `active_confidences`
+only included kinds whose own `score > 0.5`. So several kinds each scoring weakly-but-consistently
+(e.g. 0.2-0.4 — real evidence, just not individually strong) could sum into a genuine, nonzero, highly
+repeatable `level`, while `confidence` was forced to exactly `0.0` purely because no single kind
+cleared the 0.5 cutoff — indistinguishable, to every downstream consumer, from the paradigm's true
+no-evidence path (which also returns `confidence=0.0`). This explains the 40/52-row exact-repeated-
+value floor found in update #2: not a hardcoded default (no such code path was ever found), but a
+real, deterministic weighted-sum output from consistently weak evidence, mislabeled as "no evidence"
+by a confidence formula that was all-or-nothing instead of evidence-proportional.
+
+**Fixed**, same file: `confidence` is now a weighted average of each contributing kind's own per-kind
+confidence, weighted by that kind's actual contribution to `level` (`weight * score`) — proportional to
+real evidence strength, not gated on any single kind crossing a fixed threshold. Still returns exactly
+`0.0` when `level` is genuinely 0 (true no-evidence case unchanged). 3 new regression tests in
+`tests/test_repair_pressure_v2_paradigm.py` (weak-but-consistent evidence no longer reads zero
+confidence; zero-score evidence still reads zero confidence; confidence is proportional to evidence
+strength, not all-or-nothing) plus the existing test suite, all passing (9/9). Downstream consumers'
+own tests (`apply_repair_pressure_contract`'s `level>=0.75 and confidence>=0.60` contract-mode gate,
+`repair_pressure_metacog_gate.py`'s trigger floor) verified unaffected — they read whatever
+level/confidence they're given, unchanged by this fix.
+
+**Real behavior change, disclosed:** going forward, real (but previously mislabeled) weak-evidence
+`repair_pressure` appraisals will read a real nonzero `confidence` instead of `0.0`. This means
+`apply_repair_pressure_contract()`'s `repair_concrete`/`concrete_bias` contract-mode gate and
+`repair_pressure_metacog_gate.py`'s trigger floor may now fire in some cases where they previously
+couldn't — this was a bug suppressing real signal, not a new feature, but it does change live harness
+behavior for genuinely weak-but-present repair-pressure evidence. No flag added; this is a direct fix
+to a scoring bug, not a new capability.
+
+**Effect on hop 0:** the `repair_pressure_appraisal_log.level` series measured in update #2 (77%
+floor-dominated, ungated) will look different once this fix is live and new rows accumulate — some of
+what previously read `confidence=0.0` will now read a real nonzero confidence, changing which rows the
+metacog reducer's confidence-gating would include. Re-run `scripts/analysis/measure_metacog_trend_
+baseline.py` once enough post-fix rows exist to see the corrected picture, rather than trusting the
+pre-fix percentages above.
+
+## 2026-07-30 update #5 -- full root cause confirmed against live evidence; fix redesigned after code review
+
+Update #4 above inferred the root cause from code alone ("consistent with several kinds scoring
+weakly... no hardcoded default found"). Confirmed it directly instead: pulled the persisted `evidence`
+JSONB from three real floor rows and found all 7 evidence kinds at the IDENTICAL score
+(`0.08706577244027125`) and IDENTICAL confidence (`0.65`) in every one -- not several different weak
+scores, one exact repeated fallback value across every kind. Both numbers are exactly reproducible from
+this module's own `_TEXT_FALLBACK_NO = (-2.5, -0.15)` and `_TEXT_FALLBACK_CONFIDENCE = 0.65` constants
+(verified by hand: `score_binary_logprob(logprob_yes=-2.5, logprob_no=-0.15) ==
+0.08706577244027125`) -- the text-only fallback path (`_evidence_from_parsed_text_only`, fires when
+per-token logprobs are unavailable/misaligned): when the classifier answers "NO" to all seven kinds via
+plain text, every kind gets this same fixed fallback score+confidence. That IS real evidence --
+"confidently NO, at a designed 0.65 confidence in that judgment" -- not an absence of evidence. The old
+formula's `score > 0.5` gate discarded the real 0.65 confidence entirely because a confident-NO score
+(0.087) never crosses 0.5.
+
+**Fix redesigned to be conservative, per code review.** A second-round review (orion-repo-agent
+subagent) of update #4's fix found a real problem: the unconditional "always weighted-average" version
+could substantially *raise* confidence for cases where MULTIPLE kinds already scored >0.5 with
+divergent per-kind confidence -- a live-behavior change well beyond the bug being fixed, since
+`apply_repair_pressure_contract()`'s `confidence>=0.60` gate could then fire for cases that were never
+broken. Reproduced the reviewer's counter-example by hand: two kinds both scoring 0.9, confidences 0.95
+and 0.3 -- old formula gives `confidence=0.3`; the unconditional draft gave `~0.625`. Shipped fix
+instead activates the weighted-average ONLY when the old formula's `active_confidences` list was
+already empty (no kind's score exceeds 0.5); whenever at least one kind already scores >0.5, the
+function is byte-for-byte identical to the original `min(active_confidences)` formula. Verified: the
+two-kind counter-example now gives exactly `0.3` (matches old formula); the real floor-row shape (all 7
+kinds at the fallback score/confidence) gives exactly `0.65` (recovers the real fallback confidence the
+old formula discarded).
+
+6 tests in `tests/test_repair_pressure_v2_paradigm.py` (up from 3 in the first draft): exact-value
+assertions (not loose bounds) for the weak-evidence branch, the multi-strong-kind case pinned as
+byte-identical to the old formula, and a test built directly from the real floor row's persisted shape.
+28/28 passing across this file, `repair_pressure_metacog_gate.py`'s tests, and `trend_reducer.py`'s
+tests -- confirmed by running them, not assumed unaffected.
+
+**Real behavior change, disclosed, now narrowly scoped:** a `repair_pressure` appraisal where every
+kind's score sits at or below 0.5 will read its real weighted-average confidence instead of a
+hardcoded `0.0` -- for the text-fallback all-NO case specifically, `confidence` moves from `0.0` to
+`0.65`. This can only raise `repair_pressure_metacog_gate.py`'s trigger and `apply_repair_pressure_
+contract()`'s gate for cases that were previously and wrongly reading `confidence=0.0` for genuinely
+weak evidence -- it cannot change behavior for any case where at least one kind was already scoring
+strongly. No flag added; direct fix to a scoring bug, not a new capability.
+
+**Effect on hop 0, updated again:** the 40 floor rows will read `confidence=0.65` post-fix, not `0.0`
+-- "confidence > 0" as a gating filter will now include them, substantially changing which rows the
+metacog reducer's confidence-gating selects (the floor rows were the majority of the sample, not a
+marginal addition). The 12-row variance estimate (~0.019) `orion/metacog/trend_reducer.py`'s
+`MetacogTrendStateV1` docstring cites was calibrated against the pre-fix population and should be
+re-checked, not assumed to still hold. Re-run `scripts/analysis/measure_metacog_trend_baseline.py`
+once this fix is live and enough post-fix rows exist.
+
+**Deliberately deferred, not forgotten:** live wiring into a poll loop. The `ReducerSpec`/
+`_grammar_reducer_poll_loop` pattern in `orion-substrate-runtime/app/worker.py` — named by this doc and
+the hop-chain doc as the shape to follow — turned out, on inspection, to be a heavier mechanism than it
+looked: a bus-published "pressure grammar" event/cursor pipeline specific to that file's five existing
+reducers, not a generic periodic-reducer framework. Forcing this reducer's simple "poll two Postgres
+tables into an EWMA" shape into that cursor/grammar-event machinery would mean inventing a new
+grammar-event producer just to satisfy an ill-fitting pattern — an ornamental layer, not a thin seam.
+The live-wiring follow-up (a lightweight standalone poll loop, flag-gated off, most likely in
+`services/orion-substrate-runtime` or `services/orion-cortex-exec` since that's where
+`repair_pressure_appraisal_log`'s producer already lives) is scoped as its own smaller patch, once
+either candidate series' own genuine-rest-state question (previous update) resolves with more real
+data.
+
 ## 2026-07-29/30 update — Tier 1 shipped: MetacogContextService evidence cue
+
+**Merge note (2026-07-30):** this section shipped via a separate, concurrent session/PR (#1477),
+merged into `main` independently of the arbitration/reducer investigation in the sections above.
+Both threads touched this same doc at the same anchor point — resolved by keeping both in full,
+this section appended after the arbitration/reducer updates rather than interleaved, since it's an
+independent, already-shipped piece of work, not a continuation of the thread above it.
 
 Juniper's explicit direction, out-of-band from this doc (not itself recorded anywhere before this
 section): implement the cheapest real consumer named in Missing Question 3 directly — "do it tier

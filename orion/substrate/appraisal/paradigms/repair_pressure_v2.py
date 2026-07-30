@@ -82,6 +82,52 @@ def reduce_repair_level(
     confidences: dict[str, float],
     weights: dict[str, float],
 ) -> tuple[float, float]:
+    """`level` is a weighted sum over every kind's own P(YES)-style score, no
+    threshold, unchanged from before this fix.
+
+    `confidence` preserves the ORIGINAL formula exactly whenever at least one
+    kind's own `score > 0.5` (`min(active_confidences)`, a deliberate
+    weakest-link rule across genuinely-triggered kinds) -- this fix does not
+    touch that branch at all. It only changes what happens when NO kind
+    crosses 0.5: previously that meant `confidence = 0.0` unconditionally,
+    identical to the paradigm's true "zero evidence" signal. Now it's a
+    weighted average of every contributing kind's own confidence, weighted by
+    that kind's contribution to `level` (`weight * score`).
+
+    2026-07-30 root cause + fix (live `repair_pressure_appraisal_log` data):
+    40/52 real persisted rows sit at one exact repeated `level`
+    (`0.08706577244027125`) with `confidence=0.0` on every one. Pulled the
+    persisted `evidence` JSONB directly (not just inferred): every one of
+    these rows has all 7 evidence kinds at the IDENTICAL score
+    `0.08706577244027125` and IDENTICAL confidence `0.65` -- both exactly
+    reproducible from this module's own `_TEXT_FALLBACK_NO = (-2.5, -0.15)`
+    and `_TEXT_FALLBACK_CONFIDENCE = 0.65` constants
+    (`score_binary_logprob(logprob_yes=-2.5, logprob_no=-0.15) ==
+    0.08706577244027125`, verified by hand). This is the text-only fallback
+    path (`_evidence_from_parsed_text_only`, fires when per-token logprobs
+    are unavailable/misaligned): when the classifier answers "NO" to all
+    seven kinds via plain text, every kind gets this same fixed fallback
+    score+confidence. That IS real evidence -- "confidently NO, at a
+    designed 0.65 confidence in that judgment" -- not an absence of
+    evidence. The old formula's `score > 0.5` gate discarded the real 0.65
+    confidence entirely because a confident-NO score (0.087) never crosses
+    0.5, collapsing a real, moderate-confidence "genuinely calm" reading
+    into the exact same signal as "we have no idea." Downstream consumers
+    affected: `repair_pressure_appraisal_log` (persisted history),
+    `apply_repair_pressure_contract()`'s `level>=0.75 and confidence>=0.60`
+    gate for `repair_concrete` mode, `repair_pressure_metacog_gate.py`'s
+    trigger floor.
+
+    Deliberately conservative: because the fix only activates when the old
+    formula's `active_confidences` list was already empty, it cannot change
+    behavior for any case the old `min()` branch used to handle (multiple
+    kinds each scoring >0.5 with divergent per-kind confidence) -- caught in
+    code review as a real, demonstrated risk of a naive "always weighted-
+    average" version (it could raise confidence enough to flip
+    `apply_repair_pressure_contract()`'s live gate for cases that were never
+    the bug). This version cannot do that: it is byte-for-byte identical to
+    the old formula whenever any kind crosses 0.5.
+    """
     level = 0.0
     for kind, score in kind_scores.items():
         weight = float(weights.get(kind, 0.0))
@@ -93,7 +139,21 @@ def reduce_repair_level(
         for kind, score in kind_scores.items()
         if float(score) > 0.5 and kind in confidences
     ]
-    confidence = min(active_confidences) if active_confidences else 0.0
+    if active_confidences:
+        confidence = max(0.0, min(1.0, min(active_confidences)))
+        return level, confidence
+
+    weighted_confidence_sum = 0.0
+    contribution_sum = 0.0
+    for kind, score in kind_scores.items():
+        if kind not in confidences:
+            continue
+        contribution = float(weights.get(kind, 0.0)) * float(score)
+        if contribution <= 0.0:
+            continue
+        weighted_confidence_sum += contribution * float(confidences[kind])
+        contribution_sum += contribution
+    confidence = (weighted_confidence_sum / contribution_sum) if contribution_sum > 0.0 else 0.0
     confidence = max(0.0, min(1.0, confidence))
     return level, confidence
 

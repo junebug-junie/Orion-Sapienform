@@ -5,6 +5,7 @@ from typing import Iterable
 
 from orion.core.schemas.cognitive_substrate import BaseSubstrateNodeV1, SubstrateEdgeV1, SubstrateGraphRecordV1
 
+from .falkor_codec import EXTERNALLY_OWNED_METADATA_KEYS
 from .reconcile import EdgeMergeDecision, NodeMergeDecision, SubstrateIdentityResolver, merge_edge, merge_node, tier_rank_decision
 from .graphdb_store import build_substrate_store_from_env
 from .store import SubstrateGraphStore
@@ -61,7 +62,27 @@ class SubstrateGraphMaterializer:
             else:
                 tc, to = tier_rank_decision(existing_node, node)
                 canonical_node = merge_node(existing_node, node, source_graph_id=record.graph_id)
-                self._store.upsert_node(identity_key=identity_key, node=canonical_node)
+                # skip_metadata_keys: merge_node()'s metadata merge keeps whatever
+                # `existing.metadata` held for reducer-owned keys (prediction_error,
+                # contributing_turn_ids) -- but that's a snapshot read at the START
+                # of this call, not a live value, and this materializer has no
+                # business re-persisting it regardless. Confirmed live 2026-07-30:
+                # this exact path (invoked by orion-cortex-exec-background's
+                # concept-induction pipeline, any time a materialized concept
+                # happens to resolve to the same identity as a reducer-owned node
+                # like node:substrate.bus_synaptic) re-touches such nodes every
+                # few seconds -- far more often than the owning reducer's own
+                # tick cadence -- so it kept winning the race and durably
+                # re-locking whatever prediction_error value it last read back
+                # into itself, a self-reinforcing stale fixed point. Same
+                # protection SubstrateDynamicsEngine.tick() already uses for the
+                # same reason -- see falkor_codec.EXTERNALLY_OWNED_METADATA_KEYS's
+                # docstring for the original incident this pattern was built for.
+                self._store.upsert_node(
+                    identity_key=identity_key,
+                    node=canonical_node,
+                    skip_metadata_keys=EXTERNALLY_OWNED_METADATA_KEYS,
+                )
                 nodes_merged += 1
                 node_decisions.append(NodeMergeDecision(canonical_node_id=canonical_node.node_id, merged=True, reason="identity_match" if identity_key else "node_id_match", tier_conflict=tc, tier_outcome=to))
 

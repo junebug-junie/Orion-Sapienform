@@ -496,10 +496,16 @@ class _FailAfterNUpsertsStore:
     def __getattr__(self, name: str) -> Any:
         return getattr(self._inner, name)
 
-    def upsert_node(self, *, identity_key: str | None, node: Any) -> None:
+    def upsert_node(
+        self,
+        *,
+        identity_key: str | None,
+        node: Any,
+        skip_metadata_keys: Any = None,
+    ) -> None:
         if self._upserts >= self._fail_after:
             raise RuntimeError("simulated upsert_node failure after partial write")
-        self._inner.upsert_node(identity_key=identity_key, node=node)
+        self._inner.upsert_node(identity_key=identity_key, node=node, skip_metadata_keys=skip_metadata_keys)
         self._upserts += 1
 
     def upsert_edge(self, *, identity_key: str, edge: Any) -> None:

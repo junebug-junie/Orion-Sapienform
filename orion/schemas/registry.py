@@ -118,6 +118,7 @@ from orion.schemas.self_experiments import (
     SelfExperimentRecordV1,
     SelfExperimentSpecV1,
 )
+from orion.schemas.codebase_delta import CodebaseDeltaV1
 from orion.schemas.organ_emission import OrganEmissionV1
 from orion.schemas.reduction_receipt import ProjectionUpdateV1, ReductionReceiptV1
 from orion.schemas.state_delta import StateDeltaV1
@@ -712,6 +713,7 @@ _REGISTRY: Dict[str, Type[BaseModel]] = {
     "ExecutionTrajectoryProjectionV1": ExecutionTrajectoryProjectionV1,
     "TransportBusStateV1": TransportBusStateV1,
     "TransportBusProjectionV1": TransportBusProjectionV1,
+    "CodebaseDeltaV1": CodebaseDeltaV1,
     "CortexClientRequest": CortexClientRequest,
     "CortexClientResult": CortexClientResult,
     "AgentTraceToolStatV1": AgentTraceToolStatV1,

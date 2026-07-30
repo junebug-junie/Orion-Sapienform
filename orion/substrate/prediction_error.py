@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import math
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Any
 
 from orion.bus.ewma import compute_ewma_update
@@ -11,6 +11,8 @@ from orion.schemas.execution_projection import ExecutionTrajectoryProjectionV1
 from orion.schemas.route_projection import RouteArbitrationProjectionV1
 from orion.schemas.transport_projection import TransportBusProjectionV1
 from orion.structural_mass.git_delta import GitChurnDelta
+from orion.structural_mass.graph_delta import GraphStructuralDelta
+from orion.structural_mass.pr_lifecycle import PrLifecycleDelta
 from orion.substrate.chat_loop.grammar_extract import compute_chat_pressure_hints
 
 _THRESHOLD = 0.30
@@ -64,54 +66,92 @@ _EXECUTION_PREDICTION_ERROR_ZSCORE_SATURATION = 3.0
 _EXECUTION_PREDICTION_ERROR_MIN_VARIANCE = 1e-10
 
 
-# 2026-07-30: codebase_prediction_error's EWMA baseline calibration (Phase 1 skeleton,
-# docs/superpowers/specs/2026-07-30-codebase-mass-signal-design.md -- no bus wiring, no
-# NODE_CHANNELS registration yet, see that spec's "Recommended next patch"). alpha=0.2
-# reuses execution_prediction_error's own alpha rather than inventing a new number for
-# a domain that, like execution, updates per real observation (a real git-churn tick,
-# not a fixed wall-clock cadence). min_variance calibrated against this repo's own real,
-# if shallow-clone-limited, commit history via
-# scripts/analysis/measure_codebase_prediction_error.py -- see that constant's own
-# comment for the live numbers.
+# 2026-07-30: codebase_prediction_error's EWMA baseline calibration (Phase 1 contract
+# patch, docs/superpowers/specs/2026-07-30-codebase-mass-signal-design.md). alpha=0.2
+# reuses execution_prediction_error's own alpha for all three sub-domains rather than
+# inventing three new numbers -- each sub-domain, like execution, updates per real
+# observation (a real producer tick), not a fixed wall-clock cadence.
 _CODEBASE_PREDICTION_ERROR_EWMA_ALPHA = 0.2
 _CODEBASE_PREDICTION_ERROR_ZSCORE_SATURATION = 3.0
 
 # 2026-07-30: live-confirmed via scripts/analysis/measure_codebase_prediction_error.py
-# against this repo's own real (shallow-clone-limited to 49 ticks/50 commits locally --
-# a real limitation, not a full backfill; see the design spec's "Backfill" section for
-# why a deeper replay needs scripts/analysis/backfill_structural_mass.py, not this
-# script) recent commit history, one tick per real commit: raw per-tick line-churn
-# magnitude (lines_changed) ranged 0-15,285 (mean 2,611, stdev 4,314; only 2/48 ticks
-# were true zero-churn no-ops), and the EWMA's own accumulated variance warmed up into
-# the 1.5M-60M range within a handful of ticks -- squared-magnitude units on a
-# thousands-scale raw signal are naturally large, several orders of magnitude *above*
-# the shared orion/bus/ewma.py default (1e-6), the mirror-image relationship to
-# execution_prediction_error's real variance (which sat far *below* that default).
-# Because the EWMA's own accumulated variance dominates this floor immediately once
-# any real deviation has been folded in, this constant's only actual effect across the
-# whole replayed window was guarding the single first real z-score computation (the
-# second observed tick, where prev_variance is still exactly 0.0 from the cold-start
-# branch) against amplifying a small real deviation into a false-large z purely from
-# dividing by a near-zero floor -- every later tick's z-score was already governed by
-# the domain's own real accumulated variance regardless of this constant's exact value.
-# Set low relative to this domain's observed real variance scale (not tuned to match
-# it -- there is nothing here for it to match, it is intentionally never the binding
-# term past the first tick) while staying safely nonzero; revisit only if a much
-# larger/deeper replay (post-backfill) shows a materially different cold-start regime.
-_CODEBASE_PREDICTION_ERROR_MIN_VARIANCE = 1.0
+# against this repo's own real git history (1395 real ticks, one per commit, this
+# repo's local clone deepened past its earlier ~50-commit shallow boundary during
+# this session): warmed-up EWMA variance (n>=5) ranged 43,876.72 to
+# 1,393,837,889,266.80, mean ~1.69e10 -- several orders of magnitude above any
+# floor near 1.0, so this floor is never the binding term past the very first
+# real tick, same conclusion (different exact numbers) as the Phase-1 skeleton
+# patch's single-domain version of this same constant. Kept as its own floor, not
+# shared with _PR_MIN_VARIANCE/_GRAPH_MIN_VARIANCE below, because -- as the next
+# constant's own comment shows -- assuming "large raw magnitude implies large
+# variance too" across sub-domains is exactly the mistake this split exists to
+# avoid; each floor is set from that domain's own measured numbers, not inferred
+# from another's.
+_GIT_MIN_VARIANCE = 1.0
+
+# 2026-07-30: live-confirmed via the same replay script against this repo's real
+# GitHub PR history (1395 real ticks): warmed-up EWMA variance (n>=5) ranged
+# 0.0000 to 1.5058, mean 0.1499 -- **this is the domain the borrowed-git-floor
+# mistake would actually have broken.** The Phase-1-skeleton reasoning ("PR raw
+# magnitude is single-digit scale, several orders of magnitude below git's, so a
+# shared floor would be wrong") was correct about raw magnitude but did not
+# check *variance* specifically before this contract patch's first draft reused
+# git's 1.0 floor here anyway -- variance of small-integer counts near their own
+# mean is frequently sub-1 (confirmed: real mean 0.1499, real min exactly 0.0),
+# so a 1.0 floor would have been the *binding* term on most real PR ticks,
+# silently flattening this domain's real z-scores toward the floor's own scale
+# instead of its actual spread -- the identical failure shape
+# execution_prediction_error's own fix already exists to prevent, just
+# reintroduced one domain over by assuming a plausible-sounding number instead
+# of measuring it. Set two orders of magnitude below the real mean (0.1499) --
+# small enough to stay out of the way of real variance on almost every tick,
+# nonzero to guard the true zero-variance ticks (real min was exactly 0.0)
+# against a division by zero.
+_PR_MIN_VARIANCE = 0.001
+
+# 2026-07-30: live-confirmed via the same replay script against this repo's real,
+# sparse graphify-out/graph.json history: only 6 real diffed ticks exist at all
+# (graph is by far this composite's sparsest domain), and only 2 of those are
+# "warmed up" (n>=5, i.e. the 5th and 6th real observations) -- not a large
+# sample, an honest one. (An earlier version of this replay script's own
+# instrumentation bug inflated this to a reported "n=240" by re-appending the
+# same frozen baseline.variance on every one of the ~240 intervening non-firing
+# ticks between real graph observations -- caught and fixed by code review
+# 2026-07-30, see scripts/analysis/measure_codebase_prediction_error.py's own
+# comment at the fix site. The *values* were already correct even under the
+# bug, since duplicating real numbers doesn't change their min/max/mean -- but
+# the sample-count evidence itself was fabricated, worth naming plainly rather
+# than quietly correcting.) Those 2 real values ranged 2,616,891,929.63 to
+# 3,243,755,333.97 -- several orders of magnitude above any floor near 1.0,
+# same conclusion as git for the same underlying reason: this domain's raw
+# magnitude is itself in the hundreds-to-hundred-thousands range from the
+# 2026-07-14 destructive-update incident alone (see
+# orion/structural_mass/graph_delta.py's own docstring for that incident's
+# exact numbers), so its squared-deviation variance is naturally huge too.
+_GRAPH_MIN_VARIANCE = 1.0
+
+
+@dataclass(frozen=True)
+class _DomainEwmaBaseline:
+    ewma: float = 0.0
+    variance: float = 0.0
+    n: int = 0
 
 
 @dataclass(frozen=True)
 class CodebaseMassBaseline:
     """EWMA baseline state for ``codebase_prediction_error``, threaded explicitly by
     the caller rather than read off a persisted projection -- unlike the other five
-    domains in this module, no ``structural_mass`` projection schema or bus channel
-    exists yet (Phase 1 skeleton only; see this module's codebase_prediction_error
-    docstring)."""
+    domains in this module, no ``structural_mass`` projection schema exists to mutate
+    in place (this domain is bus-event-driven, not reducer-projection-driven; see the
+    design spec's "Dedicated service" section). One independent sub-baseline per
+    producer domain (``git``/``pr``/``graph``), since each producer runs on its own
+    interval and a given tick may carry only one domain's real delta (the other two
+    ``None`` -- see ``codebase_prediction_error``'s docstring)."""
 
-    ewma: float = 0.0
-    variance: float = 0.0
-    n: int = 0
+    git: _DomainEwmaBaseline = field(default_factory=_DomainEwmaBaseline)
+    pr: _DomainEwmaBaseline = field(default_factory=_DomainEwmaBaseline)
+    graph: _DomainEwmaBaseline = field(default_factory=_DomainEwmaBaseline)
 
 
 @dataclass(frozen=True)
@@ -120,66 +160,102 @@ class CodebasePredictionErrorResult:
     baseline: CodebaseMassBaseline
 
 
-def codebase_prediction_error(
-    delta: GitChurnDelta,
-    baseline: CodebaseMassBaseline,
-) -> CodebasePredictionErrorResult:
-    """0-1 surprise score: how much did this tick's git churn deviate from this
-    domain's own recent normal.
-
-    **Phase 1 skeleton** (docs/superpowers/specs/2026-07-30-codebase-mass-signal-
-    design.md) -- not wired into any tick, no ``NODE_CHANNELS`` registration, no bus
-    channel. Exists so the replay script
-    (``scripts/analysis/measure_codebase_prediction_error.py``) has a real function to
-    call before any of that is built, per this program's "measure before minting"
-    discipline (SSP §7) -- same order every other domain in this module has followed.
-
-    Unlike the other five domains, there is no ``prev``/``curr`` projection pair to
-    diff here -- ``GitChurnDelta`` (``orion/structural_mass/git_delta.py``) is
-    already a diff (of two git SHAs), so this function's job is scoring *that*
-    delta's magnitude against this domain's own EWMA baseline, the same shape
-    ``execution_prediction_error`` uses once it already has its raw per-tick delta
-    in hand. Raw magnitude is ``delta.lines_changed`` (net lines added + removed) --
-    the single continuous scale that best reflects "how much of the codebase moved,"
-    with commit/file counts available on ``delta`` itself for callers that want them
-    as separate descriptive fields (e.g. a future concept-classification consumer)
-    without folding them into this one scalar and reintroducing an arbitrary
-    cross-scale weighting (commits vs. files vs. lines) this function deliberately
-    avoids, the same reasoning ``route_prediction_error``'s docstring gives for not
-    hand-encoding categorical fields into one number.
-
-    No baseline state is read from or written to any persisted store -- the caller
-    owns threading ``baseline`` from one call to the next (mirrors
-    ``compute_ewma_update``'s own explicit-state-in, explicit-state-out shape,
-    rather than the other domains' "mutate the projection in place" pattern, since
-    there is no projection object to mutate here yet).
-
-    Returns ``score=0.0`` on the very first observation (``baseline.n == 0``) --
-    ``compute_ewma_update`` returns no z-score until a real baseline exists, and
-    reporting a nonzero value here would misrepresent "no baseline yet" as
-    "measured, not anomalous" (this repo's "no empty-shell cognition" rule). A
-    below-baseline tick (this commit churned *less* than usual) is clamped to 0.0,
-    not reported as negative surprise -- "surprising" here means "more churn than
-    usual," matching ``execution_prediction_error``'s same clamp for the same
-    reason.
-    """
-    raw_magnitude = float(delta.lines_changed)
+def _domain_zscore(
+    magnitude: float | None,
+    baseline: _DomainEwmaBaseline,
+    *,
+    min_variance: float,
+) -> tuple[float | None, _DomainEwmaBaseline]:
+    """One sub-domain's EWMA update: absent magnitude (this tick carried no real
+    delta for this domain) leaves the baseline untouched and contributes no
+    z-score -- not a 0.0 "calm" reading, an honest "no observation this tick"
+    (this repo's "no empty-shell cognition" rule, applied per sub-domain)."""
+    if magnitude is None:
+        return None, baseline
     update = compute_ewma_update(
         prev_ewma=baseline.ewma,
         prev_variance=baseline.variance,
         prev_count=baseline.n,
-        value=raw_magnitude,
+        value=magnitude,
         alpha=_CODEBASE_PREDICTION_ERROR_EWMA_ALPHA,
-        min_variance=_CODEBASE_PREDICTION_ERROR_MIN_VARIANCE,
+        min_variance=min_variance,
     )
-    new_baseline = CodebaseMassBaseline(
+    new_baseline = _DomainEwmaBaseline(
         ewma=update.ewma, variance=update.variance, n=baseline.n + 1
     )
     if update.zscore is None:
-        return CodebasePredictionErrorResult(score=0.0, baseline=new_baseline)
-    score = min(
-        1.0, max(0.0, update.zscore) / _CODEBASE_PREDICTION_ERROR_ZSCORE_SATURATION
+        return None, new_baseline
+    return max(0.0, update.zscore), new_baseline
+
+
+def codebase_prediction_error(
+    *,
+    git_delta: GitChurnDelta | None,
+    pr_delta: PrLifecycleDelta | None,
+    graph_delta: GraphStructuralDelta | None,
+    baseline: CodebaseMassBaseline,
+) -> CodebasePredictionErrorResult:
+    """0-1 composite surprise score across all three ``structural_mass`` producer
+    domains -- how much did this tick's git churn, GitHub PR activity, and/or
+    graphify structural change deviate from each domain's own recent normal.
+
+    **Contract patch** (docs/superpowers/specs/2026-07-30-codebase-mass-signal-
+    design.md) -- the scoring half of Phase 1's "measure first, register once MET"
+    order; bus channel/schema registration and service/consumer wiring are separate,
+    later patches (this function has no bus dependency itself, so it can be tested
+    and calibrated before either exists).
+
+    **Each of the three producers runs on its own independent interval** (design
+    spec's "Dedicated service" section -- git: cheap/frequent, PR lifecycle:
+    coarser/rate-limit-aware, graph: event-triggered off graphify updates), so a
+    given tick's inputs may populate only one, two, or all three of
+    ``git_delta``/``pr_delta``/``graph_delta``; the other(s) are ``None``, meaning
+    "that producer didn't fire this tick," not "that producer observed zero
+    change." Each populated domain is scored independently against its *own* EWMA
+    baseline (mirrors ``execution_prediction_error``'s single-domain z-score, just
+    three parallel instances instead of one) rather than folding raw magnitudes
+    from different unit scales (lines of code vs. PR counts vs. graph node/edge
+    counts) into one combined raw number first -- that would reintroduce exactly
+    the arbitrary cross-scale weighting problem the individual domains' own
+    docstrings (``git_delta.py``, ``pr_lifecycle.py``) already avoid at one level
+    down. Normalizing each domain to a z-score *before* combining means the
+    composite is a mean of already-unit-less, already-self-calibrating values, the
+    same principle ``bus_synaptic_prediction_error`` uses when it aggregates many
+    already-normalized edge z-scores into one score.
+
+    The final score is the mean of whichever sub-domain z-scores are actually
+    available this tick (at least one -- if all three are ``None``, i.e. no
+    producer fired, this returns ``score=0.0`` without touching the baseline at
+    all, a real "nothing happened," not a computed reading), saturating at
+    ``_CODEBASE_PREDICTION_ERROR_ZSCORE_SATURATION`` (3.0) same as every other
+    z-score-based domain in this module. A below-baseline sub-domain tick is
+    clamped to 0.0 before averaging (mirrors every other domain's "surprising
+    means more than usual, not merely different" clamp), so a quiet git day
+    alongside a genuinely surprising PR spike still surfaces the PR spike rather
+    than being diluted toward 0 by an unclamped negative git contribution.
+    """
+    git_magnitude = None if git_delta is None else float(git_delta.lines_changed)
+    pr_magnitude = (
+        None
+        if pr_delta is None
+        else float(pr_delta.submitted_count + pr_delta.merged_count + pr_delta.closed_without_merge_count)
     )
+    graph_magnitude = (
+        None
+        if graph_delta is None
+        else float(abs(graph_delta.node_count_delta) + abs(graph_delta.edge_count_delta))
+    )
+
+    git_zscore, new_git = _domain_zscore(git_magnitude, baseline.git, min_variance=_GIT_MIN_VARIANCE)
+    pr_zscore, new_pr = _domain_zscore(pr_magnitude, baseline.pr, min_variance=_PR_MIN_VARIANCE)
+    graph_zscore, new_graph = _domain_zscore(graph_magnitude, baseline.graph, min_variance=_GRAPH_MIN_VARIANCE)
+
+    new_baseline = CodebaseMassBaseline(git=new_git, pr=new_pr, graph=new_graph)
+    zscores = [z for z in (git_zscore, pr_zscore, graph_zscore) if z is not None]
+    if not zscores:
+        return CodebasePredictionErrorResult(score=0.0, baseline=new_baseline)
+    mean_zscore = sum(zscores) / len(zscores)
+    score = min(1.0, mean_zscore / _CODEBASE_PREDICTION_ERROR_ZSCORE_SATURATION)
     return CodebasePredictionErrorResult(score=score, baseline=new_baseline)
 
 

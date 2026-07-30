@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import math
+from dataclasses import dataclass
 from typing import Any
 
 from orion.bus.ewma import compute_ewma_update
@@ -9,6 +10,7 @@ from orion.schemas.chat_projection import ChatSessionProjectionV1
 from orion.schemas.execution_projection import ExecutionTrajectoryProjectionV1
 from orion.schemas.route_projection import RouteArbitrationProjectionV1
 from orion.schemas.transport_projection import TransportBusProjectionV1
+from orion.structural_mass.git_delta import GitChurnDelta
 from orion.substrate.chat_loop.grammar_extract import compute_chat_pressure_hints
 
 _THRESHOLD = 0.30
@@ -60,6 +62,125 @@ _EXECUTION_PREDICTION_ERROR_ZSCORE_SATURATION = 3.0
 # saturation) -- not re-tuned per this domain's future drift, so revisit if
 # execution's real delta scale ever shifts by orders of magnitude.
 _EXECUTION_PREDICTION_ERROR_MIN_VARIANCE = 1e-10
+
+
+# 2026-07-30: codebase_prediction_error's EWMA baseline calibration (Phase 1 skeleton,
+# docs/superpowers/specs/2026-07-30-codebase-mass-signal-design.md -- no bus wiring, no
+# NODE_CHANNELS registration yet, see that spec's "Recommended next patch"). alpha=0.2
+# reuses execution_prediction_error's own alpha rather than inventing a new number for
+# a domain that, like execution, updates per real observation (a real git-churn tick,
+# not a fixed wall-clock cadence). min_variance calibrated against this repo's own real,
+# if shallow-clone-limited, commit history via
+# scripts/analysis/measure_codebase_prediction_error.py -- see that constant's own
+# comment for the live numbers.
+_CODEBASE_PREDICTION_ERROR_EWMA_ALPHA = 0.2
+_CODEBASE_PREDICTION_ERROR_ZSCORE_SATURATION = 3.0
+
+# 2026-07-30: live-confirmed via scripts/analysis/measure_codebase_prediction_error.py
+# against this repo's own real (shallow-clone-limited to 49 ticks/50 commits locally --
+# a real limitation, not a full backfill; see the design spec's "Backfill" section for
+# why a deeper replay needs scripts/analysis/backfill_structural_mass.py, not this
+# script) recent commit history, one tick per real commit: raw per-tick line-churn
+# magnitude (lines_changed) ranged 0-15,285 (mean 2,611, stdev 4,314; only 2/48 ticks
+# were true zero-churn no-ops), and the EWMA's own accumulated variance warmed up into
+# the 1.5M-60M range within a handful of ticks -- squared-magnitude units on a
+# thousands-scale raw signal are naturally large, several orders of magnitude *above*
+# the shared orion/bus/ewma.py default (1e-6), the mirror-image relationship to
+# execution_prediction_error's real variance (which sat far *below* that default).
+# Because the EWMA's own accumulated variance dominates this floor immediately once
+# any real deviation has been folded in, this constant's only actual effect across the
+# whole replayed window was guarding the single first real z-score computation (the
+# second observed tick, where prev_variance is still exactly 0.0 from the cold-start
+# branch) against amplifying a small real deviation into a false-large z purely from
+# dividing by a near-zero floor -- every later tick's z-score was already governed by
+# the domain's own real accumulated variance regardless of this constant's exact value.
+# Set low relative to this domain's observed real variance scale (not tuned to match
+# it -- there is nothing here for it to match, it is intentionally never the binding
+# term past the first tick) while staying safely nonzero; revisit only if a much
+# larger/deeper replay (post-backfill) shows a materially different cold-start regime.
+_CODEBASE_PREDICTION_ERROR_MIN_VARIANCE = 1.0
+
+
+@dataclass(frozen=True)
+class CodebaseMassBaseline:
+    """EWMA baseline state for ``codebase_prediction_error``, threaded explicitly by
+    the caller rather than read off a persisted projection -- unlike the other five
+    domains in this module, no ``structural_mass`` projection schema or bus channel
+    exists yet (Phase 1 skeleton only; see this module's codebase_prediction_error
+    docstring)."""
+
+    ewma: float = 0.0
+    variance: float = 0.0
+    n: int = 0
+
+
+@dataclass(frozen=True)
+class CodebasePredictionErrorResult:
+    score: float
+    baseline: CodebaseMassBaseline
+
+
+def codebase_prediction_error(
+    delta: GitChurnDelta,
+    baseline: CodebaseMassBaseline,
+) -> CodebasePredictionErrorResult:
+    """0-1 surprise score: how much did this tick's git churn deviate from this
+    domain's own recent normal.
+
+    **Phase 1 skeleton** (docs/superpowers/specs/2026-07-30-codebase-mass-signal-
+    design.md) -- not wired into any tick, no ``NODE_CHANNELS`` registration, no bus
+    channel. Exists so the replay script
+    (``scripts/analysis/measure_codebase_prediction_error.py``) has a real function to
+    call before any of that is built, per this program's "measure before minting"
+    discipline (SSP §7) -- same order every other domain in this module has followed.
+
+    Unlike the other five domains, there is no ``prev``/``curr`` projection pair to
+    diff here -- ``GitChurnDelta`` (``orion/structural_mass/git_delta.py``) is
+    already a diff (of two git SHAs), so this function's job is scoring *that*
+    delta's magnitude against this domain's own EWMA baseline, the same shape
+    ``execution_prediction_error`` uses once it already has its raw per-tick delta
+    in hand. Raw magnitude is ``delta.lines_changed`` (net lines added + removed) --
+    the single continuous scale that best reflects "how much of the codebase moved,"
+    with commit/file counts available on ``delta`` itself for callers that want them
+    as separate descriptive fields (e.g. a future concept-classification consumer)
+    without folding them into this one scalar and reintroducing an arbitrary
+    cross-scale weighting (commits vs. files vs. lines) this function deliberately
+    avoids, the same reasoning ``route_prediction_error``'s docstring gives for not
+    hand-encoding categorical fields into one number.
+
+    No baseline state is read from or written to any persisted store -- the caller
+    owns threading ``baseline`` from one call to the next (mirrors
+    ``compute_ewma_update``'s own explicit-state-in, explicit-state-out shape,
+    rather than the other domains' "mutate the projection in place" pattern, since
+    there is no projection object to mutate here yet).
+
+    Returns ``score=0.0`` on the very first observation (``baseline.n == 0``) --
+    ``compute_ewma_update`` returns no z-score until a real baseline exists, and
+    reporting a nonzero value here would misrepresent "no baseline yet" as
+    "measured, not anomalous" (this repo's "no empty-shell cognition" rule). A
+    below-baseline tick (this commit churned *less* than usual) is clamped to 0.0,
+    not reported as negative surprise -- "surprising" here means "more churn than
+    usual," matching ``execution_prediction_error``'s same clamp for the same
+    reason.
+    """
+    raw_magnitude = float(delta.lines_changed)
+    update = compute_ewma_update(
+        prev_ewma=baseline.ewma,
+        prev_variance=baseline.variance,
+        prev_count=baseline.n,
+        value=raw_magnitude,
+        alpha=_CODEBASE_PREDICTION_ERROR_EWMA_ALPHA,
+        min_variance=_CODEBASE_PREDICTION_ERROR_MIN_VARIANCE,
+    )
+    new_baseline = CodebaseMassBaseline(
+        ewma=update.ewma, variance=update.variance, n=baseline.n + 1
+    )
+    if update.zscore is None:
+        return CodebasePredictionErrorResult(score=0.0, baseline=new_baseline)
+    score = min(
+        1.0, max(0.0, update.zscore) / _CODEBASE_PREDICTION_ERROR_ZSCORE_SATURATION
+    )
+    return CodebasePredictionErrorResult(score=score, baseline=new_baseline)
 
 
 def _mean(values: list[float]) -> float:

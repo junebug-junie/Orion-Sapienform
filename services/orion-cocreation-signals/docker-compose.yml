@@ -10,6 +10,16 @@ services:
     environment:
       SERVICE_NAME: ${SERVICE_NAME}
       SERVICE_VERSION: ${SERVICE_VERSION}
+      # Must be an explicit real value in .env (e.g. matching root .env's own
+      # NODE_NAME), not left unset -- confirmed live 2026-07-30 that
+      # app/settings.py's os.uname().nodename fallback resolves to the
+      # *container's* hostname (a random container ID Docker assigns) when
+      # this is absent, not the real physical host -- worse than unhelpful,
+      # actively misleading in bus envelopes' source.node field. An empty
+      # string here is equally wrong (silently wins over the code default
+      # instead of triggering it, since pydantic-settings only falls back to
+      # a field's default_factory when the env var is fully absent from the
+      # container's environment, not merely empty).
       COCREATION_SIGNALS_NODE_NAME: ${COCREATION_SIGNALS_NODE_NAME}
       ORION_BUS_ENABLED: ${ORION_BUS_ENABLED}
       ORION_BUS_ENFORCE_CATALOG: ${ORION_BUS_ENFORCE_CATALOG}

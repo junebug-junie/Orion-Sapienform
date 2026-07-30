@@ -13,6 +13,13 @@
 
 **Recall profile for dispatch:** `ACTIONS_RECALL_PROFILE` (default `collapse_mirror.v1`) is passed into Cortex `recall.profile` and metadata `recall_profile` for collapse-mirror response and journaling paths that use `settings.actions_recall_profile`. See `services/orion-actions/.env_example`.
 
+**Env/settings/compose contract (2026-07 single-source-of-truth pilot):** `docker-compose.yml` uses `env_file: [.env]` to pass every key in `.env` through to the container -- it does **not** also hand-duplicate `.env_example`'s ~90 keys in an `environment:` list the way it used to. That duplicate list was deleted because it was a second, competing place a default could drift from `app/settings.py`'s `Field(...)` default (several entries carried their own `${KEY:-default}` compose-level fallback). `docker-compose.yml`'s `environment:` block now only carries genuinely non-app config (Python interpreter flags), not anything modeled in `app/settings.py` or `.env_example`. Two gates protect this:
+
+- `scripts/check_settings_defaults.py orion-actions` -- fails if any `Settings` field has no default (the property that makes it safe to rely on `env_file:` alone: a host with an incomplete `.env` still boots instead of crashing on a missing required key).
+- `scripts/check_service_env_compose_parity.py orion-actions` -- reports N/A for this service specifically because `env_file:` is present (no key-by-key `environment:` scan needed).
+
+Both run automatically as a pre-commit hook (see `scripts/git_hooks/pre-commit`, `orion-env-settings-gate` block) whenever a commit touches `app/settings.py`, `.env_example`, or `docker-compose.yml` for this service. This is a scoped pilot for `orion-actions` only, not yet generalized to other services.
+
 This service sits between chat/operator intent and execution infrastructure:
 
 - **Hub** collects operator intent (chat or UI) and shows schedule state.

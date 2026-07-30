@@ -62,6 +62,14 @@ class Settings(BaseSettings):
     unified_timeout_sec: float = Field(120.0, alias="EMBODIMENT_UNIFIED_TIMEOUT_SEC")
     unified_session_prefix: str = Field("aitown", alias="EMBODIMENT_UNIFIED_SESSION_PREFIX")
     memory_enabled: bool = Field(False, alias="EMBODIMENT_MEMORY_ENABLED")
+    # Feeds Orion<->partner exchanges into two existing hub-owned bus rails so
+    # town conversations reach chat_history_log (verbatim, via
+    # orion:chat:history:turn) and orion-social-memory (relationship
+    # synthesis, via orion:chat:social:turn's re-emission). Also seeds journal
+    # entries with the real transcript instead of a template -- but that half
+    # additionally requires `memory_enabled` (journaling itself is gated
+    # there); this flag alone only gates the two bus publishes.
+    conversation_memory_enabled: bool = Field(False, alias="EMBODIMENT_CONVERSATION_MEMORY_ENABLED")
 
     # Conversation engagement: accept invites, walk to the partner to reach
     # `participating`, and opportunistically initiate with a nearby player. Orion

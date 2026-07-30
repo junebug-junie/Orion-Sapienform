@@ -1,0 +1,35 @@
+diff --git a/convex/constants.ts b/convex/constants.ts
+index 98c8d79..067b0ec 100644
+--- a/convex/constants.ts
++++ b/convex/constants.ts
+@@ -22,8 +22,14 @@ export const COLLISION_THRESHOLD = 0.75;
+ // How many human players can be in a world at once.
+ export const MAX_HUMAN_PLAYERS = 8;
+ 
+-// Don't talk to anyone for 15s after having a conversation.
+-export const CONVERSATION_COOLDOWN = 15000;
++// Don't talk to anyone for 45s after having a conversation. Raised from the
++// upstream default of 15s (2026-07-29, Orion mesh) specifically to reduce how
++// often new conversations start townwide -- each new conversation eventually
++// drives agentGenerateMessage (LLM) calls through orion-llm-gateway, and that
++// gateway's host was found under real, variable load. This is a load-shedding
++// knob, not a gameplay-feel change; revert to 15000 if that host's load
++// profile changes.
++export const CONVERSATION_COOLDOWN = 45000;
+ 
+ // Don't do another activity for 10s after doing one.
+ export const ACTIVITY_COOLDOWN = 10_000;
+@@ -58,8 +64,11 @@ export const INPUT_DELAY = 1000;
+ // This is over-fetched by 10x so we can prioritize memories by more than relevance.
+ export const NUM_MEMORIES_TO_SEARCH = 3;
+ 
+-// Wait for at least two seconds before sending another message.
+-export const MESSAGE_COOLDOWN = 2000;
++// Wait for at least 8s before sending another message (raised from 2s,
++// 2026-07-29, Orion mesh). Each message is an agentGenerateMessage LLM call
++// through orion-llm-gateway; this is the main per-conversation load lever --
++// see the CONVERSATION_COOLDOWN comment above for the same rationale.
++export const MESSAGE_COOLDOWN = 8000;
+ 
+ // Don't run a turn of the agent more than once a second.
+ export const AGENT_WAKEUP_THRESHOLD = 1000;

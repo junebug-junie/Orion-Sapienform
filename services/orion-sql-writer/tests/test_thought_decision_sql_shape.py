@@ -9,7 +9,7 @@ publish path -- ThoughtDecisionSQL under its own route key, keyed off kind
 `thought.event.v1` (both in DEFAULT_ROUTE_MAP and the operator-facing
 .env_example), and confirms the channel is actually subscribed to.
 
-The redaction test that matters is `test_real_write_row_drops_sensitive_fields`:
+The redaction test that matters is `test_real_write_row_persists_stance_content_and_drops_the_rest`:
 it calls the REAL `worker._write_row()` (monkeypatching only its DB session,
 not its filtering logic) against a live sqlite table, so it exercises the
 actual column-name -> attribute-key mapping and generic filter production
@@ -18,6 +18,14 @@ tests below are a cheaper, non-DB shape check on top of that; they mirror
 `_write_row()`'s filter but do not call it directly, so they alone would not
 catch a regression in the real filtering/column-mapping mechanism -- only in
 which columns ThoughtDecisionSQL declares.
+
+``imperative``/``tone``/``strain_refs``/``stance_harness_slice`` are
+persisted unredacted as of the Turn Trace full-implementation pass (this is
+the operator debug surface, an explicit choice -- see
+orion/schemas/thought.py's ThoughtDecisionRecordV1 docstring).
+``evidence_refs``/``grounding_capsule``/``autonomy_slice`` still never reach
+this table -- those carry denser identity/relationship/memory-digest content
+than a stance decision needs to be inspectable.
 """
 from __future__ import annotations
 
@@ -98,7 +106,7 @@ def sqlite_worker_session(monkeypatch):
         session_factory.remove()
 
 
-def test_real_write_row_drops_sensitive_fields(sqlite_worker_session) -> None:
+def test_real_write_row_persists_stance_content_and_drops_the_rest(sqlite_worker_session) -> None:
     """The load-bearing redaction test: calls the real worker._write_row()."""
     _engine, session_factory = sqlite_worker_session
     thought = _thought()
@@ -117,12 +125,12 @@ def test_real_write_row_drops_sensitive_fields(sqlite_worker_session) -> None:
     assert fetched is not None
     assert fetched.disposition == "proceed"
     assert fetched.correlation_id == "corr-1"
+    assert fetched.imperative == thought.imperative
+    assert fetched.tone == thought.tone
+    assert fetched.strain_refs == thought.strain_refs
+    assert fetched.stance_harness_slice == thought.stance_harness_slice.model_dump()
     for sensitive_key in (
-        "imperative",
-        "tone",
-        "strain_refs",
         "evidence_refs",
-        "stance_harness_slice",
         "grounding_capsule",
         "autonomy_slice",
     ):
@@ -160,16 +168,15 @@ def test_env_example_route_map_json_includes_thought_decision() -> None:
     raise AssertionError("SQL_WRITER_ROUTE_MAP_JSON not found in .env_example")
 
 
-def test_row_dict_drops_sensitive_fields_not_declared_as_columns() -> None:
-    """The redaction guarantee: imperative/tone/nested slices never reach the row."""
+def test_row_dict_persists_stance_content_and_drops_the_rest() -> None:
+    """imperative/tone/strain_refs/stance_harness_slice reach the row; the
+    denser identity/relationship fields still don't."""
     thought = _thought()
     row = _row_dict(thought)
+    for kept_key in ("imperative", "tone", "strain_refs", "stance_harness_slice"):
+        assert kept_key in row, f"{kept_key} unexpectedly dropped from ThoughtDecisionSQL row"
     for sensitive_key in (
-        "imperative",
-        "tone",
-        "strain_refs",
         "evidence_refs",
-        "stance_harness_slice",
         "grounding_capsule",
         "autonomy_slice",
     ):

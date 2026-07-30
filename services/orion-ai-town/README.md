@@ -262,6 +262,31 @@ Fixes NPC-human chats where agents talk over the human, narrate scene prose inst
 
 Orion's external embodiment worker already walks on `walkingOver` via `approach_player` intents in `services/orion-embodiment/app/worker.py`.
 
+### NPC cooldown tuning (`patches/orion-npc-cooldown-tuning.patch`)
+
+Load-shedding, not a gameplay change. Every NPC conversation message is an `agentGenerateMessage` call routed through `orion-llm-gateway`; when that gateway's host is under load, throttling how often those calls happen is the direct lever. Raised from `convex/constants.ts` upstream defaults (2026-07-29):
+
+- `CONVERSATION_COOLDOWN`: `15000` → `45000` (agents wait 3x longer after ending a conversation before starting another)
+- `MESSAGE_COOLDOWN`: `2000` → `8000` (4x longer between messages within an active conversation — the main per-conversation LLM-call-rate lever)
+
+Revert both to their upstream defaults if the gateway's host load profile changes and the throttling is no longer needed.
+
+### Input-counter contention fix (`patches/orion-input-counter-contention.patch`)
+
+Not a throttle -- a real contention fix. Investigation (2026-07-29/30) found the cooldown tuning above didn't touch the actual cause of laggy player movement: every `sendInput` call (movement, NPC actions, embodiment) allocated its `inputs.number` by reading the last input for the engine and incrementing, and separately read `worldStatus` to resolve `worldId` -> `engineId`. Both reads created wide Convex OCC conflict surfaces:
+
+- The read-last-then-increment pattern made every `sendInput` call conflict with every other concurrent `sendInput` call, and with `saveWorld` patching `returnValue` onto recently-inserted input rows in the same index range.
+- The `worldStatus` read collided with `heartbeatWorld`, which patches `lastViewed` on that same document on nearly every call.
+
+Neither is a storage-engine issue (an earlier Postgres-backend experiment for this same symptom found no improvement, consistent with the conflicts being enforced by Convex's own OCC layer, not SQLite locking).
+
+Fix: two new narrow tables that nothing else reads or writes:
+
+- `inputCounters` (one row per engine) -- `engineInsertInput` allocates `number` from this instead of scanning `inputs`.
+- `worldEngineMap` (one row per world) -- `insertInput` resolves `engineId` from this instead of reading `worldStatus`.
+
+Both are lazily backfilled on first use per engine/world (falls back to the legacy read once, then seeds the new table), so this needed no separate migration step against the live world's existing data.
+
 ## MCP integration
 
 Gameplay MCP lives in `mcp/orion_aitown_mcp/`. Hub fcc-claude includes it when `HUB_AITOWN_ENABLED=true` and MCP is enabled.

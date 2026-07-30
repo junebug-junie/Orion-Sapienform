@@ -21,3 +21,9 @@ orion-bus-tap
 # anyone running from a fresh worktree/clone. Committed for real 2026-07-24.
 orion-rdf-writer
 orion-rdf-store
+# orion-ai-town relocated athena -> atlas 2026-07-29 (host-wide CPU contention
+# from orion-heartbeat's tensor-network substrate; see
+# docs/superpowers/specs/2026-07-29-aitown-atlas-migration-runbook.md and
+# PR #1467). Excluded so athena's bring-up-all doesn't try to start a stale
+# local copy pointing at the old, now-stopped athena volume/containers.
+orion-ai-town

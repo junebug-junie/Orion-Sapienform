@@ -1014,6 +1014,23 @@ class PlanRunner:
                 )
             else:
                 await prepare_brain_reply_context(ctx)
+        elif not _is_runtime_skill_verb(plan.verb_name) and bool(
+            str((plan.metadata or {}).get("personality_file") or "").strip()
+        ):
+            # The brain-mode branch above is the only place identity gets injected today, so any
+            # verb whose plan declares personality_file (e.g. chat_quick.yaml) silently renders
+            # empty orion_identity_summary/juniper_relationship_summary/response_policy_summary
+            # whenever it's dispatched with mode != "brain" -- e.g. AI Town's embodiment worker
+            # dispatches chat_quick with mode="quick" for every one of Orion's speech turns.
+            # _inject_identity_context (called via prepare_chat_quick_reply_context) is idempotent
+            # and GraphDB-free, so it's safe to call here regardless of mode.
+            logger.info(
+                "router_identity_inject_non_brain_mode corr=%s verb=%s mode=%s",
+                correlation_id,
+                plan.verb_name,
+                mode,
+            )
+            prepare_chat_quick_reply_context(ctx)
         existing_scope = str(ctx.get("_run_scope_corr_id") or "")
         if existing_scope and existing_scope != correlation_id:
             logger.warning(

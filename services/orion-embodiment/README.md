@@ -66,6 +66,21 @@ This service guarantees the `!pathfinding` precondition for Orion:
 
 > **UNVERIFIED at runtime.** The live town is not runnable in CI, so the visual confirmation that Orion actually turns to face its partner is deferred to the operator. The logic (perception fields, `facing_partner`, the one-shot stop, and the heartbeat/log surfaces) is covered by unit tests, but "Orion visibly faces the partner in the live world" has not been observed by this change.
 
+## Memory: journal facts vs conversation content
+
+Two independent flags, both off by default:
+
+- **`EMBODIMENT_MEMORY_ENABLED`** — journals the *fact* that a salient episode happened (partner name, utterance count, or a first-sighting encounter) as a `JournalTriggerV1` (`trigger_kind="town_episode"`) to `orion-actions`'s journal pipeline. No conversation content involved.
+- **`EMBODIMENT_CONVERSATION_MEMORY_ENABLED`** — richer capture, on top of the above. Per Orion-reply exchange, publishes to two existing hub-owned bus rails (not new infrastructure):
+  - `orion:chat:history:turn` (`chat.history`) → `chat_history_log` — the table `orion-recall` reads verbatim text from. This is genuine, retrievable recall of what was actually said.
+  - `orion:chat:social:turn` (`social.turn.v1`) → a *separate* table (`social_room_turns`), whose re-emission feeds `orion-social-memory`'s rolling per-participant relationship synthesis (tone, shared topics, trust) — tagged `platform="aitown"`, keyed so it cannot collide with hub/callsyne relationships for the same participant id.
+
+  Both publishes share one correlation_id per exchange; `EMBODIMENT_MEMORY_ENABLED`'s journal entry for the conversation cross-references it via `spawned_correlation_id`, and is seeded with the real transcript (`JournalTriggerV1.prompt_seed`) instead of only the templated fact — **requires both flags on**, not `EMBODIMENT_CONVERSATION_MEMORY_ENABLED` alone.
+
+  Participants are tagged `participant_kind`: `"human"` or `"npc"` (from ai-town's own `human` player field, forwarded by `perception.py`). **Privacy caveat, stated plainly:** there is no enforced privacy mechanism anywhere in this codebase for this class of content today — `chat_history_log` has no visibility/redaction gate, and the nearest analog (`SocialRedactionScoreV1.recall_safe`/`redaction_level`) is computed elsewhere but never consumed by any reader. A human-participant town conversation gets exactly the same (lack of dedicated) protection as any other Orion-Juniper conversation already flowing through these tables — this flag does not add new protection, and does not reduce what already exists. One concrete consequence worth naming: `orion-social-memory`'s `GET /summary`/`GET /inspection` endpoints take `platform`/`room_id`/`participant_id` as unauthenticated query params — with this flag on, that already-pre-existing exposure now also covers `platform=aitown` relationship summaries derived from human-participant town conversations, same as it already does for `platform=hub`.
+
+  See `docs/superpowers/specs/2026-07-30-aitown-conversation-memory-design.md` for the full design rationale.
+
 ## Secrets (`~/.fcc/.env`)
 
 `AITOWN_CONVEX_URL`, `AITOWN_ADMIN_KEY`, `AITOWN_WORLD_ID`, `AITOWN_ORION_PLAYER_ID`, `AITOWN_ORION_AGENT_ID` are loaded from `~/.fcc/.env` (mounted read-only at `/root/.fcc/.env`), **not** from this service `.env`.

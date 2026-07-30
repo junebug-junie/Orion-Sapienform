@@ -16,7 +16,7 @@ class MetacogTriggerV1(BaseModel):
         description=(
             "baseline | dense | manual | pulse | relational | llm_surface_instability "
             "(advisory: language-surface instability from logprob summary, not factual confidence) "
-            "| telemetry_anomaly | chat_turn | transport. "
+            "| telemetry_anomaly | chat_turn | transport | insight | flow. "
             "relational = a live repair_pressure_v2 appraisal (see repair_pressure_metacog_gate.py). "
             "telemetry_anomaly = a field_channel_corpus.v1 reconstruction-loss anomaly from a trained "
             "orion/mood_arc/fit_encoder.py encoder (see telemetry_anomaly_metacog_gate.py). "
@@ -24,7 +24,17 @@ class MetacogTriggerV1(BaseModel):
             "HarnessRunV1 (or a governor/stance-react timeout GrammarEventV1) evidence trips a "
             "gate condition (see chat_turn_metacog_gate.py). "
             "transport = a real OrionBusAsync.rpc_request() timeout or degraded RpcHealthSnapshotV1 "
-            "window trips a gate condition (see transport_metacog_gate.py)."
+            "window trips a gate condition (see transport_metacog_gate.py). "
+            "insight and flow are the two generative (non-rupture) kinds -- unlike every kind above "
+            "them they fire on a positive/neutral state, not a failure. Both read one field, "
+            "AttentionSelfModelV1.prediction_error_confidence (persisted to "
+            "substrate_attention_self_model), as two different windowing functions: "
+            "insight = a sustained low->high confidence recovery, i.e. a surprise got resolved "
+            "(see insight_metacog_gate.py); flow = a sustained high-confidence, low-variance "
+            "plateau (see flow_metacog_gate.py). These two are also the only kinds that map "
+            "directly to a CollapseMirrorEntryV2.type (epiphany / flow respectively, in "
+            "orion-cortex-exec's _fallback_metacog_draft); every other kind's type is guessed "
+            "from phi bands."
         ),
     )
     reason: str

@@ -487,3 +487,48 @@ The live-wiring follow-up (a lightweight standalone poll loop, flag-gated off, m
 `repair_pressure_appraisal_log`'s producer already lives) is scoped as its own smaller patch, once
 either candidate series' own genuine-rest-state question (previous update) resolves with more real
 data.
+
+## 2026-07-29/30 update — Tier 1 shipped: MetacogContextService evidence cue
+
+**Merge note (2026-07-30):** this section shipped via a separate, concurrent session/PR (#1477),
+merged into `main` independently of the arbitration/reducer investigation in the sections above.
+Both threads touched this same doc at the same anchor point — resolved by keeping both in full,
+this section appended after the arbitration/reducer updates rather than interleaved, since it's an
+independent, already-shipped piece of work, not a continuation of the thread above it.
+
+Juniper's explicit direction, out-of-band from this doc (not itself recorded anywhere before this
+section): implement the cheapest real consumer named in Missing Question 3 directly — "do it tier
+1" — without waiting on the arbitration-layer fix above. This section exists so that authorization
+is traced to a real place instead of being implicit, per this doc's own metric-quality-gate
+discipline (root CLAUDE.md §0A: "record the findings from this gate in the same design doc").
+
+**What shipped.** `MetacogContextService` (`services/orion-cortex-exec/app/executor.py`) now reads
+two already-computed, already-persisted signal sources' *latest* value and renders them into a new,
+additive `RECENT TREND SIGNALS` prompt block in
+`orion/cognition/prompts/log_orion_metacognition_draft.j2` — exactly Missing Question 3's
+cheapest-option answer ("a new evidence-cue block back into `MetacogContextService`"), not a new
+reducer:
+
+1. **`substrate_field_state`'s `prediction_error`** for `node:substrate.execution` and
+   `node:substrate.biometrics` — live-verified this session: 24h variance execution
+   0.0002–1.0 (mean 0.346, stddev 0.270), biometrics 0–0.7471 (mean 0.052, stddev 0.059), genuine
+   calm-to-spike shape confirmed against real Postgres history, not merely "code compiles."
+2. **`orion_biometrics_induction`'s per-channel `{level, trend, spike_rate, volatility}`** — real
+   windowed stats already computed by `orion-biometrics`/`orion-field-digester`/`orion-sql-writer`;
+   live-verified this session across `athena`/`atlas`/`circe` (e.g. `athena.cpu.trend` 24h range
+   0.429–0.590, stddev 0.017 — real directional movement, not a flat 0.5 placeholder).
+
+New code: `orion/substrate/metacog_trend_signals.py` (pure read functions, generalizing
+`orion/substrate/bus_synaptic_surprise.py::latest_bus_synaptic_prediction_error`'s single-row
+`substrate_field_state` read to multiple node ids, plus a new `DISTINCT ON (node)` reader for
+`orion_biometrics_induction`) and `services/orion-cortex-exec/app/metacog_trend_reader.py`
+(bounded, fail-open async wiring, mirroring `drive_state_postgres.py`'s existing convention).
+
+**Scope discipline maintained.** No new reducer, poll loop, or persistence — both sources were
+already computed/persisted upstream; this patch only reads the latest row. `MetacogDraftService`,
+`MetacogPublishService`, and `MetacogDraftTextPatchV1` are structurally untouched — new input only,
+never a new output field or a new instruction to the draft LLM. The arbitration-layer question in
+the section above is unrelated and still unresolved; this patch does not compete for Layer 5
+attention's budget or touch `orion/proposals/`.
+
+Implemented: [PR #1477](https://github.com/junebug-junie/Orion-Sapienform/pull/1477).

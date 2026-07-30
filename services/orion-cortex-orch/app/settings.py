@@ -28,6 +28,15 @@ class Settings(BaseSettings):
     rpc_health_publish_enabled: bool = Field(False, alias="RPC_HEALTH_PUBLISH_ENABLED")
     rpc_health_publish_interval_sec: float = Field(30.0, alias="RPC_HEALTH_PUBLISH_INTERVAL_SEC")
 
+    # orion-notify HTTP client (workflow-completion notifications). Not a bus channel --
+    # orion-notify's own /notify endpoint is the only registered way to submit a
+    # NotificationRequest; orion:notify:persistence:request is orion-notify's OWN output
+    # channel (producer_services=["orion-notify"], schema_id=NotificationRecord), not an
+    # intake channel for other services to publish NotificationRequest payloads onto
+    # directly (see workflow_runtime.py::_emit_workflow_notify).
+    notify_url: str = Field("http://orion-athena-notify:7140", alias="NOTIFY_URL")
+    notify_api_token: str = Field("", alias="NOTIFY_API_TOKEN")
+
     # RPC intake channel (hub -> cortex-orch)
     channel_cortex_request: str = Field(
         "orion:cortex:request",

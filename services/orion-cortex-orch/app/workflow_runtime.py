@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
 import re
@@ -55,6 +56,7 @@ from .chat_history_compactor_memory import persist_chat_history_compactor_memory
 from .concept_profile_config import build_orch_concept_profile_settings
 from .github_compactor_memory import persist_github_compactor_memory_card
 from .settings import get_settings
+from orion.notify.client import NotifyClient
 from orion.schemas.notify import NotificationRequest
 from orion.schemas.workflow_execution import WorkflowDispatchRequestV1, WorkflowExecutionPolicyV1
 from orion.schemas.workflow_execution import WorkflowScheduleManageRequestV1, WorkflowScheduleManageResponseV1
@@ -63,7 +65,6 @@ logger = logging.getLogger("orion.cortex.orch.workflow_runtime")
 JOURNAL_WRITE_CHANNEL = "orion:journal:write"
 ACTIONS_WORKFLOW_TRIGGER_CHANNEL = "orion:actions:trigger:workflow.v1"
 ACTIONS_WORKFLOW_MANAGE_CHANNEL = "orion:actions:manage:workflow.v1"
-NOTIFY_PERSISTENCE_REQUEST_CHANNEL = "orion:notify:persistence:request"
 ConceptProfileBackendKind = Literal["local", "graph", "shadow"]
 CutoverFallbackPolicyKind = Literal["fail_open_local", "fail_closed"]
 
@@ -351,7 +352,6 @@ def _should_notify(*, notify_on: str, ok: bool) -> bool:
 
 async def _emit_workflow_notify(
     *,
-    bus: OrionBusAsync,
     source: ServiceRef,
     req: CortexClientRequest,
     workflow_id: str,
@@ -363,6 +363,23 @@ async def _emit_workflow_notify(
     recipient_group: str,
     execution_source: str,
 ) -> None:
+    """Notify on workflow completion via orion-notify's HTTP /notify endpoint.
+
+    NOT a bus publish: orion:notify:persistence:request is orion-notify's OWN output
+    channel (producer_services=["orion-notify"], schema_id=NotificationRecord, which
+    requires a `status` field NotificationRequest doesn't have) -- publishing a raw
+    NotificationRequest directly onto it, as this function used to, fails bus-side
+    payload validation on every call. Confirmed live 2026-07-30: this took down
+    github_compactor_pass and chat_history_compactor_pass's reported health for 2 days
+    straight, even though the actual compactor work (this call happens *after* it, per
+    the two call sites below) completed successfully every time -- only the trailing
+    notify step threw, and the exception wasn't caught anywhere between here and the
+    scheduler, so a fully successful run was reported as a failed workflow.
+
+    Fails open by design, same as NotifyClient.send() itself: notification delivery is
+    not the workflow's core function and must never flip an already-completed result to
+    reported-failure. A logged warning is the ceiling for any failure here, not a raise.
+    """
     if not _should_notify(notify_on=notify_on, ok=ok):
         return
     status = "completed" if ok else "failed"
@@ -370,35 +387,46 @@ async def _emit_workflow_notify(
     title = f"Workflow {workflow_name} {status}"
     body = f"{workflow_name} {status}.\n\n{final_text}".strip()
     preview = body[:280]
-    notification = NotificationRequest(
-        source_service=source.name or "orion-cortex-orch",
-        event_kind=event_kind,
-        severity="info" if ok else "warning",
-        title=title,
-        body_text=body,
-        body_md=final_text,
-        recipient_group=recipient_group or "juniper_primary",
-        session_id=req.context.session_id or "workflow",
-        correlation_id=correlation_id,
-        dedupe_key=f"workflow:{workflow_id}:{status}:{correlation_id}",
-        dedupe_window_seconds=86400,
-        tags=["workflow", workflow_id, status],
-        context={
-            "workflow_id": workflow_id,
-            "workflow_name": workflow_name,
-            "status": status,
-            "execution_source": execution_source,
-            "notify_on": notify_on,
-            "preview_text": preview,
-        },
-    )
-    env = BaseEnvelope(
-        kind="notify.notification.request.v1",
-        source=source,
-        correlation_id=correlation_id,
-        payload=notification.model_dump(mode="json"),
-    )
-    await bus.publish(NOTIFY_PERSISTENCE_REQUEST_CHANNEL, env)
+    try:
+        notification = NotificationRequest(
+            source_service=source.name or "orion-cortex-orch",
+            event_kind=event_kind,
+            severity="info" if ok else "warning",
+            title=title,
+            body_text=body,
+            body_md=final_text,
+            recipient_group=recipient_group or "juniper_primary",
+            session_id=req.context.session_id or "workflow",
+            correlation_id=correlation_id,
+            dedupe_key=f"workflow:{workflow_id}:{status}:{correlation_id}",
+            dedupe_window_seconds=86400,
+            tags=["workflow", workflow_id, status],
+            context={
+                "workflow_id": workflow_id,
+                "workflow_name": workflow_name,
+                "status": status,
+                "execution_source": execution_source,
+                "notify_on": notify_on,
+                "preview_text": preview,
+            },
+        )
+        notify_settings = get_settings()
+        client = NotifyClient(base_url=notify_settings.notify_url, api_token=notify_settings.notify_api_token or None)
+        accepted = await asyncio.to_thread(client.send, notification)
+        if not accepted.ok:
+            logger.warning(
+                "workflow_notify_failed workflow_id=%s correlation_id=%s detail=%s",
+                workflow_id,
+                correlation_id,
+                accepted.detail,
+            )
+    except Exception:
+        logger.warning(
+            "workflow_notify_failed workflow_id=%s correlation_id=%s",
+            workflow_id,
+            correlation_id,
+            exc_info=True,
+        )
 
 
 async def _schedule_workflow_dispatch(
@@ -2654,7 +2682,6 @@ async def execute_chat_workflow(
             ),
         )
         await _emit_workflow_notify(
-            bus=bus,
             source=source,
             req=req,
             workflow_id=workflow_id,
@@ -2668,7 +2695,6 @@ async def execute_chat_workflow(
         )
         raise
     await _emit_workflow_notify(
-        bus=bus,
         source=source,
         req=req,
         workflow_id=workflow_id,

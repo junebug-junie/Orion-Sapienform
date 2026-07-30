@@ -3,23 +3,6 @@ from datetime import datetime, timezone
 
 from orion.autonomy.models import ActionOutcomeRefV1, FetchedArticleRefV1, SubstrateEpisodeIntentV1
 from orion.autonomy.policy_act import maybe_execute_substrate_act_after_metabolism
-from orion.core.schemas.drives import DriveStateV1
-
-
-def _drive_state() -> DriveStateV1:
-    return DriveStateV1.model_validate(
-        {
-            "subject": "orion",
-            "model_layer": "self-model",
-            "entity_id": "self:orion",
-            "kind": "memory.drives.state.v1",
-            "ts": datetime.now(timezone.utc).isoformat(),
-            "provenance": {"intake_channel": "orion:world_pulse:run:result"},
-            "pressures": {"predictive": 0.9},
-            "activations": {},
-            "confidence": 0.7,
-        }
-    )
 
 
 def _prefetched() -> ActionOutcomeRefV1:
@@ -51,7 +34,6 @@ def test_prefetched_outcome_skips_live_fetch():
     result = asyncio.run(
         maybe_execute_substrate_act_after_metabolism(
             episode_intent=intent,
-            drive_state=_drive_state(),
             curiosity_signals=[],
             spawned_correlation_id="run-1",
             fetch_backend=_backend,

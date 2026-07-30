@@ -24,4 +24,4 @@ def test_capability_policy_v1_yaml_loads_and_validates() -> None:
     assert policy.rules[4].auto_execute is True
     assert policy.rules[4].side_effect_class == "readonly"
     assert policy.rules[4].required_signal_kinds == ["world_coverage_gap"]
-    assert policy.rules[4].required_drive_origins == ["predictive"]
+    # required_drive_origins removed 2026-07-30 (chore/delete-orion-drives Wave 2a).

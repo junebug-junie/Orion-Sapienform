@@ -129,10 +129,12 @@ async def test_policy_fetch_runs_on_world_pulse_gap(monkeypatch) -> None:
     call_kwargs = substrate_act_mock.await_args.kwargs
     assert call_kwargs["spawned_correlation_id"] == "wp-run-hook"
     assert call_kwargs["episode_journal_enabled"] is True
-    # drive_state is still passed (policy_act.py's capability-policy context
-    # requires it), but honestly empty -- nothing computes drive pressures
-    # anymore.
-    assert call_kwargs["drive_state"].pressures == {}
+    # drive_state was previously passed as an honestly-empty DriveStateV1
+    # stub (Wave 1, 2026-07-30) because policy_act.py still required the
+    # parameter. Wave 2a (same day) dropped the parameter from
+    # maybe_execute_substrate_act_after_metabolism entirely instead of
+    # perpetuating the stub -- bus_worker.py no longer passes it at all.
+    assert "drive_state" not in call_kwargs
 
 
 @pytest.mark.asyncio

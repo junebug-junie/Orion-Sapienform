@@ -25,7 +25,18 @@ _DEFAULT_POLICY_PATH = (
 
 @dataclass
 class CapabilityEvaluationContext:
-    predictive_pressure: float
+    # `predictive_pressure` (DriveStateV1.pressures["predictive"]) was removed
+    # 2026-07-30 alongside the rest of the drive-pressure system (chore/
+    # delete-orion-drives Wave 1 deleted its sole producer, DriveEngine).
+    # `curiosity_strength` below is the real, field-native replacement for
+    # "is there genuine motivation for this auto-execute" -- it is sourced
+    # from FrontierInvocationSignalV1.signal_strength on real
+    # world_coverage_gap signals, independent of drives. No new metric was
+    # minted here per CLAUDE.md's metric-quality-gate; the existing
+    # field-native signal already covers the readonly-fetch gate. The
+    # episode-journal gate (_layer_a_episode_journal_enabled) had no such
+    # substitute available and is now gated by its two feature flags alone
+    # -- see that function's docstring.
     curiosity_strength: float
     signal_kinds: list[str]
     goal: GoalProposalV1 | None
@@ -95,9 +106,6 @@ def _find_rule(policy: CapabilityPolicyV1, capability_id: str) -> CapabilityPoli
 def _layer_a_readonly_auto_enabled(ctx: CapabilityEvaluationContext) -> tuple[bool, str]:
     if not _env_bool("ORION_CAPABILITY_POLICY_AUTO_READONLY_ENABLED", default=False):
         return False, "policy_auto_disabled"
-    min_pressure = _env_float("ORION_METABOLISM_MIN_PREDICTIVE_PRESSURE", 0.55)
-    if ctx.predictive_pressure < min_pressure:
-        return False, "predictive_pressure_insufficient"
     min_curiosity = _env_float("ORION_METABOLISM_MIN_CURIOSITY_STRENGTH", 0.5)
     if ctx.curiosity_strength < min_curiosity:
         return False, "curiosity_strength_insufficient"
@@ -105,13 +113,19 @@ def _layer_a_readonly_auto_enabled(ctx: CapabilityEvaluationContext) -> tuple[bo
 
 
 def _layer_a_episode_journal_enabled(ctx: CapabilityEvaluationContext) -> tuple[bool, str]:
+    # No curiosity_strength (or other real) threshold gates this path -- the
+    # caller (maybe_compose_autonomy_episode_after_fetch) has always passed
+    # curiosity_strength=0.0 here (never a real value), and the removed
+    # predictive_pressure check was the only threshold this gate ever had.
+    # Left as two explicit feature flags, both off by default, rather than
+    # inventing a replacement threshold with no theory anchor per CLAUDE.md's
+    # metric-quality-gate. Flagged in the Wave 2a PR report as worth a
+    # follow-up decision if a real gate is wanted here.
+    del ctx  # kept for signature symmetry with _layer_a_readonly_auto_enabled
     if not _env_bool("ORION_AUTONOMY_EPISODE_JOURNAL_ENABLED", default=False):
         return False, "episode_journal_disabled"
     if not _env_bool("ORION_CAPABILITY_POLICY_AUTO_READONLY_ENABLED", default=False):
         return False, "policy_auto_disabled"
-    min_pressure = _env_float("ORION_METABOLISM_MIN_PREDICTIVE_PRESSURE", 0.55)
-    if ctx.predictive_pressure < min_pressure:
-        return False, "predictive_pressure_insufficient"
     return True, "layer_a_satisfied"
 
 
@@ -169,12 +183,6 @@ def evaluate_capability(capability_id: str, ctx: CapabilityEvaluationContext) ->
     requires_goal = _goal_status_level(rule.requires_goal_status) > 0
     if requires_goal and ctx.goal is None:
         return _decision(capability_id, outcome="denied", reason_code="missing_goal", notes=notes)
-
-    if ctx.goal is not None and rule.required_drive_origins:
-        if ctx.goal.drive_origin not in rule.required_drive_origins:
-            return _decision(
-                capability_id, outcome="denied", reason_code="drive_origin_mismatch", notes=notes
-            )
 
     if rule.required_signal_kinds:
         present = set(ctx.signal_kinds)

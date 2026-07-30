@@ -26,10 +26,8 @@ def _goal(**kwargs) -> GoalProposalV1:
 
 def test_capability_policy_allows_readonly_when_goal_proposed(monkeypatch) -> None:
     monkeypatch.setenv("ORION_CAPABILITY_POLICY_AUTO_READONLY_ENABLED", "true")
-    monkeypatch.setenv("ORION_METABOLISM_MIN_PREDICTIVE_PRESSURE", "0.55")
     monkeypatch.setenv("ORION_METABOLISM_MIN_CURIOSITY_STRENGTH", "0.5")
     ctx = CapabilityEvaluationContext(
-        predictive_pressure=0.7,
         curiosity_strength=0.65,
         signal_kinds=["world_coverage_gap"],
         goal=_goal(),
@@ -43,7 +41,6 @@ def test_capability_policy_allows_readonly_when_goal_proposed(monkeypatch) -> No
 def test_capability_policy_denies_without_goal(monkeypatch) -> None:
     monkeypatch.setenv("ORION_CAPABILITY_POLICY_AUTO_READONLY_ENABLED", "true")
     ctx = CapabilityEvaluationContext(
-        predictive_pressure=0.7,
         curiosity_strength=0.65,
         signal_kinds=["world_coverage_gap"],
         goal=None,
@@ -56,10 +53,8 @@ def test_capability_policy_denies_without_goal(monkeypatch) -> None:
 
 def test_capability_policy_denies_when_auto_readonly_disabled(monkeypatch) -> None:
     monkeypatch.setenv("ORION_CAPABILITY_POLICY_AUTO_READONLY_ENABLED", "false")
-    monkeypatch.setenv("ORION_METABOLISM_MIN_PREDICTIVE_PRESSURE", "0.55")
     monkeypatch.setenv("ORION_METABOLISM_MIN_CURIOSITY_STRENGTH", "0.5")
     ctx = CapabilityEvaluationContext(
-        predictive_pressure=0.7,
         curiosity_strength=0.65,
         signal_kinds=["world_coverage_gap"],
         goal=_goal(),
@@ -73,9 +68,7 @@ def test_capability_policy_denies_when_auto_readonly_disabled(monkeypatch) -> No
 def test_capability_policy_allows_episode_journal_at_proposed(monkeypatch) -> None:
     monkeypatch.setenv("ORION_AUTONOMY_EPISODE_JOURNAL_ENABLED", "true")
     monkeypatch.setenv("ORION_CAPABILITY_POLICY_AUTO_READONLY_ENABLED", "true")
-    monkeypatch.setenv("ORION_METABOLISM_MIN_PREDICTIVE_PRESSURE", "0.55")
     ctx = CapabilityEvaluationContext(
-        predictive_pressure=0.7,
         curiosity_strength=0.0,
         signal_kinds=[],
         goal=_goal(),
@@ -88,10 +81,8 @@ def test_capability_policy_allows_episode_journal_at_proposed(monkeypatch) -> No
 
 def test_capability_policy_allows_recall_when_goal_proposed(monkeypatch) -> None:
     monkeypatch.setenv("ORION_CAPABILITY_POLICY_AUTO_READONLY_ENABLED", "true")
-    monkeypatch.setenv("ORION_METABOLISM_MIN_PREDICTIVE_PRESSURE", "0.55")
     monkeypatch.setenv("ORION_METABOLISM_MIN_CURIOSITY_STRENGTH", "0.5")
     ctx = CapabilityEvaluationContext(
-        predictive_pressure=0.7,
         curiosity_strength=0.65,
         signal_kinds=["world_coverage_gap"],
         goal=_goal(),
@@ -105,7 +96,6 @@ def test_capability_policy_allows_recall_when_goal_proposed(monkeypatch) -> None
 def test_capability_policy_denies_recall_without_goal(monkeypatch) -> None:
     monkeypatch.setenv("ORION_CAPABILITY_POLICY_AUTO_READONLY_ENABLED", "true")
     ctx = CapabilityEvaluationContext(
-        predictive_pressure=0.7,
         curiosity_strength=0.65,
         signal_kinds=["world_coverage_gap"],
         goal=None,
@@ -118,10 +108,8 @@ def test_capability_policy_denies_recall_without_goal(monkeypatch) -> None:
 
 def test_capability_policy_denies_recall_when_auto_readonly_disabled(monkeypatch) -> None:
     monkeypatch.setenv("ORION_CAPABILITY_POLICY_AUTO_READONLY_ENABLED", "false")
-    monkeypatch.setenv("ORION_METABOLISM_MIN_PREDICTIVE_PRESSURE", "0.55")
     monkeypatch.setenv("ORION_METABOLISM_MIN_CURIOSITY_STRENGTH", "0.5")
     ctx = CapabilityEvaluationContext(
-        predictive_pressure=0.7,
         curiosity_strength=0.65,
         signal_kinds=["world_coverage_gap"],
         goal=_goal(),
@@ -136,7 +124,6 @@ def test_capability_policy_denies_episode_journal_when_disabled(monkeypatch) -> 
     monkeypatch.setenv("ORION_AUTONOMY_EPISODE_JOURNAL_ENABLED", "false")
     monkeypatch.setenv("ORION_CAPABILITY_POLICY_AUTO_READONLY_ENABLED", "true")
     ctx = CapabilityEvaluationContext(
-        predictive_pressure=0.7,
         curiosity_strength=0.0,
         signal_kinds=[],
         goal=_goal(),
@@ -155,7 +142,7 @@ def _rule(**kwargs) -> CapabilityPolicyRuleV1:
 
 def test_domain_surprise_gate_passes_when_no_threshold_set() -> None:
     ctx = CapabilityEvaluationContext(
-        predictive_pressure=0.0, curiosity_strength=0.0, signal_kinds=[], goal=None
+        curiosity_strength=0.0, signal_kinds=[], goal=None
     )
     ok, reason = _domain_surprise_gate(ctx, _rule())
     assert ok is True
@@ -166,7 +153,6 @@ def test_domain_surprise_gate_denies_honest_absence_when_threshold_set() -> None
     """A rule that DOES require a threshold but got no real signal must deny, not
     silently pass -- see the gate's own docstring."""
     ctx = CapabilityEvaluationContext(
-        predictive_pressure=0.0,
         curiosity_strength=0.0,
         signal_kinds=[],
         goal=None,
@@ -179,7 +165,6 @@ def test_domain_surprise_gate_denies_honest_absence_when_threshold_set() -> None
 
 def test_domain_surprise_gate_denies_when_score_above_threshold() -> None:
     ctx = CapabilityEvaluationContext(
-        predictive_pressure=0.0,
         curiosity_strength=0.0,
         signal_kinds=[],
         goal=None,
@@ -192,7 +177,6 @@ def test_domain_surprise_gate_denies_when_score_above_threshold() -> None:
 
 def test_domain_surprise_gate_satisfied_when_score_below_threshold() -> None:
     ctx = CapabilityEvaluationContext(
-        predictive_pressure=0.0,
         curiosity_strength=0.0,
         signal_kinds=[],
         goal=None,
@@ -208,10 +192,8 @@ def test_evaluate_capability_surfaces_domain_surprise_in_notes_advisory_only(mon
     Acceptance check #5) -- the real value must still surface in notes for observability
     even though nothing gates on it."""
     monkeypatch.setenv("ORION_CAPABILITY_POLICY_AUTO_READONLY_ENABLED", "true")
-    monkeypatch.setenv("ORION_METABOLISM_MIN_PREDICTIVE_PRESSURE", "0.55")
     monkeypatch.setenv("ORION_METABOLISM_MIN_CURIOSITY_STRENGTH", "0.5")
     ctx = CapabilityEvaluationContext(
-        predictive_pressure=0.7,
         curiosity_strength=0.65,
         signal_kinds=["world_coverage_gap"],
         goal=_goal(),
@@ -226,10 +208,8 @@ def test_evaluate_capability_surfaces_domain_surprise_in_notes_advisory_only(mon
 
 def test_evaluate_capability_no_notes_when_domain_surprise_unavailable(monkeypatch) -> None:
     monkeypatch.setenv("ORION_CAPABILITY_POLICY_AUTO_READONLY_ENABLED", "true")
-    monkeypatch.setenv("ORION_METABOLISM_MIN_PREDICTIVE_PRESSURE", "0.55")
     monkeypatch.setenv("ORION_METABOLISM_MIN_CURIOSITY_STRENGTH", "0.5")
     ctx = CapabilityEvaluationContext(
-        predictive_pressure=0.7,
         curiosity_strength=0.65,
         signal_kinds=["world_coverage_gap"],
         goal=_goal(),

@@ -51,14 +51,14 @@ class _Repo:
 async def test_chat_stance_inputs_include_autonomy_summary_when_available(monkeypatch, enable_autonomy_graphdb) -> None:
     from orion.autonomy.models import AutonomyStateV1
 
+    # dominant_drive/drive_pressures/active_drives/tension_kinds removed from
+    # AutonomyStateV1 2026-07-30 (chore/delete-orion-drives Wave 2a) -- this
+    # state is now "healthy but drive-free"; stance_hint no longer varies by
+    # dominant drive (summarize_autonomy_state always returns the default now).
     state = AutonomyStateV1(
         subject="orion",
         model_layer="self-model",
         entity_id="orion",
-        dominant_drive="coherence",
-        drive_pressures={"coherence": 0.9},
-        active_drives=["coherence"],
-        tension_kinds=["scope_sprawl"],
         source="graph",
     )
     repo = _Repo({"orion": _Lookup("orion", "available", state), "relationship": _Lookup("relationship", "empty", None)})
@@ -67,7 +67,7 @@ async def test_chat_stance_inputs_include_autonomy_summary_when_available(monkey
     ctx = {"user_message": "help me synthesize this"}
     built = await chat_stance.build_chat_stance_inputs(ctx)
 
-    assert built["autonomy"]["summary"]["stance_hint"] == "favor synthesis and reduction"
+    assert built["autonomy"]["summary"]["stance_hint"] == "maintain stable direct response"
     assert ctx["chat_autonomy_state"]["subject"] == "orion"
     assert "chat_autonomy_summary" in ctx
 
@@ -163,13 +163,15 @@ async def test_chat_stance_partial_drives_timeout_falls_back_to_relationship(mon
         ],
         source="graph",
     )
+    # dominant_drive/drive_pressures/active_drives removed from AutonomyStateV1
+    # 2026-07-30 (chore/delete-orion-drives Wave 2a). This test's real subject
+    # is the "drives" facet-timeout contextual-fallback mechanism (driven by
+    # subquery_diagnostics facet status strings, unrelated to those removed
+    # fields), which still applies unchanged.
     relationship_state = AutonomyStateV1(
         subject="relationship",
         model_layer="relationship-model",
         entity_id="relationship:orion|juniper",
-        dominant_drive="relational",
-        drive_pressures={"relational": 0.8},
-        active_drives=["relational"],
         source="graph",
     )
     repo = _Repo(
@@ -201,7 +203,7 @@ async def test_chat_stance_partial_drives_timeout_falls_back_to_relationship(mon
     summary = ctx["chat_autonomy_summary"]
     assert ctx["chat_autonomy_selected_subject"] == "relationship"
     assert summary["stance_mode"] == "fallback_contextual"
-    assert summary["dominant_drive"] == "relational"
+    assert summary["dominant_drive"] is None
     assert summary["context_note"] == "Orion drives unavailable; stance context from relationship drives (not substituted as Orion drives)"
     assert summary["proposal_headlines"] == ["Clarify autonomy boundaries without executing any new action."]
     assert ctx["chat_autonomy_debug"]["_runtime"]["contextual_fallback"] is True
@@ -231,9 +233,6 @@ async def test_merge_orion_goals_dedupes_drive_origin_after_contextual_fallback(
         subject="relationship",
         model_layer="relationship-model",
         entity_id="relationship:orion|juniper",
-        dominant_drive="predictive",
-        drive_pressures={"predictive": 0.41},
-        active_drives=["predictive"],
         goal_headlines=[
             AutonomyGoalHeadlineV1(
                 artifact_id="goal-rel-autonomy",

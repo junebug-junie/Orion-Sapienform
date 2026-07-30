@@ -54,12 +54,14 @@ def test_select_preferred_autonomy_lookup_falls_back_to_relationship_drives() ->
         identity_summary="holds course",
         source="graph",
     )
+    # dominant_drive/drive_pressures removed from AutonomyStateV1 2026-07-30
+    # (chore/delete-orion-drives Wave 2a); _drives_facet_ok now relies solely
+    # on subquery_diagnostics["drives"]["row_count"] (set on the enclosing
+    # AutonomyLookupV1 below), not on state content.
     relationship_state = AutonomyStateV1(
         subject="relationship",
         model_layer="relationship-model",
         entity_id="relationship:orion|juniper",
-        dominant_drive="relational",
-        drive_pressures={"relational": 0.8},
         source="graph",
     )
     by_subject = {
@@ -82,7 +84,7 @@ def test_select_preferred_autonomy_lookup_falls_back_to_relationship_drives() ->
     assert selected.contextual_fallback is True
     assert selected.lookup is not None
     assert selected.lookup.state is not None
-    assert selected.lookup.state.dominant_drive == "relational"
+    assert selected.lookup.state.subject == "relationship"
 
 
 def test_drives_facet_ok_with_row_count_only() -> None:
@@ -103,12 +105,14 @@ def test_select_preferred_skips_orion_when_drives_deferred() -> None:
         identity_summary="holds course",
         source="graph",
     )
+    # dominant_drive/drive_pressures removed from AutonomyStateV1 2026-07-30
+    # (chore/delete-orion-drives Wave 2a); _drives_facet_ok now relies solely
+    # on subquery_diagnostics["drives"]["row_count"] (set on the enclosing
+    # AutonomyLookupV1 below), not on state content.
     relationship_state = AutonomyStateV1(
         subject="relationship",
         model_layer="relationship-model",
         entity_id="relationship:orion|juniper",
-        dominant_drive="relational",
-        drive_pressures={"relational": 0.8},
         source="graph",
     )
     by_subject = {
@@ -140,12 +144,14 @@ def test_select_preferred_skips_orion_identity_only_when_drives_timeout() -> Non
         goal_headlines=[],
         source="graph",
     )
+    # dominant_drive/drive_pressures removed from AutonomyStateV1 2026-07-30
+    # (chore/delete-orion-drives Wave 2a); _drives_facet_ok now relies solely
+    # on subquery_diagnostics["drives"]["row_count"] (set on the enclosing
+    # AutonomyLookupV1 below), not on state content.
     relationship_state = AutonomyStateV1(
         subject="relationship",
         model_layer="relationship-model",
         entity_id="relationship:orion|juniper",
-        dominant_drive="relational",
-        drive_pressures={"relational": 0.8},
         source="graph",
     )
     by_subject = {

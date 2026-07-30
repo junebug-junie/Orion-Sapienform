@@ -14,7 +14,7 @@ from orion.core.bus.async_service import OrionBusAsync
 from orion.core.bus.bus_schemas import BaseEnvelope, ServiceRef
 from orion.core.bus.work_queue import RedisStreamWorkQueue
 from orion.core.schemas.concept_induction import ConceptProfile, ConceptProfileDelta
-from orion.core.schemas.drives import ArtifactProvenance, DriveStateV1, GraphReadyArtifact, TurnDossierV1
+from orion.core.schemas.drives import GraphReadyArtifact, TurnDossierV1
 from orion.schemas.vector.schemas import VectorWriteRequest
 
 from .dossier import build_evidence_items, build_source_event_ref, build_turn_dossier, extract_trace_id, extract_turn_id
@@ -720,25 +720,14 @@ class ConceptWorker:
                         subject=subject,
                         run_id=spawned_correlation_id,
                     ),
-                    # orion.autonomy.policy_act still requires a DriveStateV1
-                    # positional contract (predictive_pressure feeds capability
-                    # policy) -- out of this deletion's scope to change
-                    # (policy_act.py is not in this wave's file list). Pass an
-                    # honestly-empty one: pressures={} means
-                    # `drive_state.pressures.get("predictive", 0.0)` always
-                    # reads 0.0 now, a truthful "no drive pressure is computed
-                    # anymore" rather than a fabricated value. A later wave
-                    # touching policy_act.py/capability_policy.py should drop
-                    # this parameter outright instead of feeding it a stub.
-                    drive_state=DriveStateV1(
-                        subject=subject,
-                        model_layer=model_layer,
-                        entity_id=entity_id,
-                        kind="memory.drives.state.v1",
-                        provenance=ArtifactProvenance(intake_channel=intake_channel),
-                        pressures={},
-                        activations={},
-                    ),
+                    # The DriveStateV1 stub this call site fed policy_act.py
+                    # (see git history prior to 2026-07-30) is gone: Wave 2a of
+                    # chore/delete-orion-drives dropped the `drive_state`
+                    # parameter from maybe_execute_substrate_act_after_
+                    # metabolism entirely -- predictive_pressure (its only
+                    # real consumer) had no producer left after Wave 1 deleted
+                    # DriveEngine, so a permanent-zero stub was replaced with
+                    # removing the parameter, not preserved.
                     curiosity_signals=metabolism_curiosity_signals,
                     spawned_correlation_id=spawned_correlation_id,
                     fetch_backend=self._fetch_backend,

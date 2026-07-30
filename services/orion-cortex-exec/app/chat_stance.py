@@ -2366,40 +2366,21 @@ async def build_chat_stance_inputs(ctx: Dict[str, Any]) -> Dict[str, Any]:
     # test-fixture pollution, not real approved memory -- see
     # orion/memory_graph/approve.py's docstring for the full trace.
 
-    # drive_state.v1 measurement: Postgres drive_audits (same rail as Mind),
-    # fail-open. Graph snapshot_source="drive_state" is no longer SoR.
-    # Stash onto ctx so autonomy_slice can prefer it; CHAT_STANCE_DRIVE_STATE_VISIBLE
-    # only gates prompt inputs["drive_state"].
-    from app.drive_state_postgres import fetch_drive_state_for_chat_stance
-
-    correlation_id = str(
-        ctx.get("correlation_id")
-        or ctx.get("request_id")
-        or ctx.get("turn_id")
-        or "chat_stance"
-    )
-    drive_state_for_ctx, drive_state_diag = await fetch_drive_state_for_chat_stance(correlation_id)
-    ctx["chat_drive_state_diagnostics"] = drive_state_diag
-    if isinstance(drive_state_for_ctx, dict) and drive_state_for_ctx:
-        ctx["chat_drive_state"] = drive_state_for_ctx
-
-    # drive_state.v1 visibility — a sibling of `inputs["autonomy"]`, never merged
-    # into it. Off by default; flip CHAT_STANCE_DRIVE_STATE_VISIBLE=true to surface it.
-    if os.getenv("CHAT_STANCE_DRIVE_STATE_VISIBLE", "").strip().lower() == "true":
-        if drive_state_for_ctx:
-            inputs["drive_state"] = drive_state_for_ctx
+    # Postgres drive_audits read (chat_drive_state / fetch_drive_state_for_
+    # chat_stance / CHAT_STANCE_DRIVE_STATE_VISIBLE) removed 2026-07-30
+    # (chore/delete-orion-drives Wave 2a): the drive_audits table's sole
+    # producer (orion/spark/concept_induction/audit.py) was already deleted
+    # in Wave 1, so this was reading a frozen, producer-less table -- exactly
+    # the "decayed/stale data that looks live" failure CLAUDE.md's metric-
+    # quality-gate warns about, not a real live signal. The AutonomyStateV2
+    # reducer this replaced (2026-07-16) was already retired; both rails are
+    # now gone with no fallback. See git history on this file for the prior
+    # shape if the old block is ever needed for reference.
 
     # Queries load_action_outcomes(subject="orion") directly (see
     # _project_recent_dispatch_actions' docstring) rather than reading ctx.
     # Fail-open: [] on any failure.
     ctx["chat_recent_dispatch_actions"] = _project_recent_dispatch_actions(ctx)
-
-    # AutonomyStateV2 reducer retired 2026-07-16 (orion/autonomy/
-    # drives_and_autonomy_retrospective.md §9): DriveEngine's drive_state is
-    # the single live signal now (dominant_drive/pressures/summary/
-    # tension_kinds, stashed above as ctx["chat_drive_state"]). No fallback
-    # reducer call here anymore -- see git history on this file for the prior
-    # AUTONOMY_STATE_V2_REDUCER_ENABLED-gated block if you need the old shape.
 
     # Built here (ctx key "autonomy_slice", matching what stance_react.j2 reads
     # directly) so it's present BEFORE the stance_react LLM step renders its

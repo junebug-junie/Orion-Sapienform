@@ -867,12 +867,25 @@ class BiometricsSubstrateWorker:
                         now=now,
                     )
                 )
-                self._write_prediction_error_node(
-                    node_id="node:substrate.bus_synaptic",
-                    error=error,
-                    now=now,
-                    reducer_key="bus_synaptic",
-                )
+            # Write the node on every tick, not just when error > 0.0 (confirmed
+            # live 2026-07-30: gating this the same way as the receipt above left
+            # `node:substrate.bus_synaptic` frozen at a stale prediction_error=1.0
+            # for hours while this tick kept logging real, varying, non-saturated
+            # values every 30s the whole time -- orion-equilibrium-service polls
+            # this node's raw current value with no staleness check of its own
+            # (transport_metacog_gate.py), so a value that can only ever go up
+            # and never refresh back down to a genuine calm reading produces
+            # permanent false "Bus Anomaly Detected" alerts once any real spike
+            # ever occurs. The receipt above stays gated -- it's an audit trail
+            # of notable prediction-error events, not a polled "current state"
+            # read, so skipping a receipt for a calm (error == 0.0) tick is
+            # correct and not the bug.
+            self._write_prediction_error_node(
+                node_id="node:substrate.bus_synaptic",
+                error=error,
+                now=now,
+                reducer_key="bus_synaptic",
+            )
             logger.info(
                 "substrate_bus_synaptic_tick_completed edge_count=%d error=%.3f",
                 len(zscores),

@@ -529,6 +529,34 @@ saturation ceiling, which both the old and new formulas only reach at raw `mean(
 identical fire condition before and after this fix, confirmed by reading
 `services/orion-equilibrium-service/app/settings.py` and its `.env_example` (both `1.0`).
 
+**Fixed 2026-07-30: `_bus_synaptic_tick()` skipped the node write entirely on a calm (error == 0.0)
+tick, letting `node:substrate.bus_synaptic` go stale indefinitely once any nonzero error was ever
+written.** Confirmed live: the node was frozen at `prediction_error=1.0` for hours while this tick
+kept logging real, varying, non-saturated values (0.000-0.144) every 30s the whole time --
+`orion-equilibrium-service`'s `_bus_synaptic_poll_loop` (`transport_metacog_gate.py`) polls this
+node's raw current value with no staleness check of its own, so the frozen value produced recurring
+false "Bus Anomaly Detected" alerts, functionally the same downstream symptom as the
+`SubstrateDynamicsEngine.tick()` clobber bug fixed 2026-07-29 (`falkor_codec.py`'s
+`EXTERNALLY_OWNED_METADATA_KEYS`) but via a different, still-live mechanism that fix didn't touch.
+Split the gate in `_bus_synaptic_tick()`: the receipt write (an audit trail of notable events) stays
+gated on `error > 0.0`; the node write (the polled current-state value) now runs unconditionally
+every tick, including a calm tick writing `prediction_error=0.0` -- the node can finally read a
+genuine calm state again instead of only ever ratcheting up. The other four `_*_tick` methods in
+this file (biometrics, execution, chat, route) share the identical `if error > 0.0:` gate around
+both their receipt and node write and were deliberately left unfixed here -- same latent risk,
+scoped out of this patch, worth a follow-up. Separately, and not fixed by this patch: live tracing
+during this same incident found `orion/substrate/reconcile.py`'s `merge_node()` (used by
+`SubstrateGraphMaterializer`, driven by `orion-cortex-exec-background`'s concept-induction
+pipeline) unconditionally prefers `existing.metadata` over `incoming.metadata` for every key,
+including reducer-owned ones like `prediction_error`, then re-persists that through `upsert_node()`
+with no `skip_metadata_keys` protection -- confirmed live via `CLIENT LIST`/`MONITOR` on FalkorDB
+that this path re-touches `node:substrate.bus_synaptic` every few seconds, far more often than this
+tick's 30s cadence, so it wins the race and durably re-locks whatever `prediction_error` value it
+last read back into itself (a self-reinforcing fixed point). This is the real reason the false
+alerts persisted even after this fix landed, and needs its own fix in `reconcile.py`/
+`materializer.py` -- out of scope here since `merge_node()` is shared by any concept merge, not
+just this node.
+
 **RETIRED, 2026-07-26: `transport_prediction_error()`'s live write removed entirely.** Following
 Juniper's explicit go-ahead after proposal mode
 (`docs/superpowers/specs/2026-07-26-transport-domain-retirement-bus-synaptic-successor-design.md`),

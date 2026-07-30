@@ -10,15 +10,22 @@ thresholds:
   suppress_below: 0.05
   policy_required_above_risk: 0.20
 
+# 2026-07-30: uncertainty/field_intensity/agency_readiness/coherence weights
+# removed. None of those 4 dimension_ids are ever produced by
+# orion/field/pressure.py::field_pressures() (see that module's own
+# docstring -- composite, hand-tuned SelfStateV1 dimensions with no
+# principled non-hand-tuned replacement, not rebuilt in the 2026-07-22 burn).
+# No template below references them anymore either (see the same-day removal
+# of contract_pressure/field_intensity/agency_readiness/uncertainty from each
+# template's own `dimensions` map) -- keeping dead weights here was a live
+# trap: dimension_confidence() returns 0.0 PERMANENTLY for any dimension_id
+# outside orion/proposals/scoring.py::PRESSURE_DIMENSIONS, so these weights
+# multiplied a value that could only ever be 0.0.
 dimension_weights:
   execution_pressure: 0.30
   resource_pressure: 0.25
   reasoning_pressure: 0.15
   reliability_pressure: 0.35
-  uncertainty: 0.25
-  field_intensity: 0.20
-  agency_readiness: -0.15
-  coherence: -0.20
 
 proposal_templates:
   inspect_execution_pressure:
@@ -42,8 +49,12 @@ proposal_templates:
     base_priority: 0.35
     base_risk: 0.05
     reversibility: 1.0
+    # field_intensity removed 2026-07-30: never produced by field_pressures()
+    # (see dimension_weights' own comment above) -- was a dead entry that
+    # contributed 0.0 to match_score (harmless there, template_match_score()
+    # uses max()) but PERMANENTLY halved proposal_confidence() via its
+    # sum()/len() average with resource_pressure's real confidence.
     dimensions:
-      field_intensity: 0.50
       resource_pressure: 0.40
 
   watch_reliability:
@@ -67,8 +78,9 @@ proposal_templates:
     base_priority: 0.20
     base_risk: 0.30
     reversibility: 0.8
+    # agency_readiness removed 2026-07-30: never produced by field_pressures()
+    # -- see dimension_weights' own comment above.
     dimensions:
-      agency_readiness: 0.50
       execution_pressure: 0.40
 
   inspect_transport_status:
@@ -80,8 +92,10 @@ proposal_templates:
     base_priority: 0.42
     base_risk: 0.05
     reversibility: 1.0
+    # contract_pressure removed 2026-07-30: never produced by field_pressures()
+    # -- "already always 0.0 before the [2026-07-22 SelfStateV1] burn" per
+    # that module's own docstring; was never real, not a regression.
     dimensions:
-      contract_pressure: 0.55
       reliability_pressure: 0.40
 
   inspect_bus_channel_catalog:
@@ -93,8 +107,23 @@ proposal_templates:
     base_priority: 0.38
     base_risk: 0.05
     reversibility: 1.0
-    dimensions:
-      contract_pressure: 0.60
+    # contract_pressure removed 2026-07-30: never produced by field_pressures()
+    # -- was this template's ONLY dimension, so match_score/confidence were
+    # both permanently 0.0 and proposal_urgency() was ALSO permanently 0.0
+    # (contract_pressure's "_pressure" suffix let it pass proposal_urgency()'s
+    # own dimension filter while contributing nothing, which suppressed that
+    # function's real all-4-core-dimensions fallback that an empty dimensions
+    # dict now correctly triggers). No real transport/bus-health dimension
+    # exists in field_pressures() yet to replace it with -- CHANNEL_DIMENSION_MAP
+    # (orion/field/pressure.py) doesn't route any transport-domain channel to
+    # any category. Building that is real, separate follow-up work (a new
+    # CHANNEL_DIMENSION_MAP category + PRESSURE_DIMENSIONS extension +
+    # live variance verification, same discipline already applied to the
+    # existing 4 dimensions), not done here. This template now honestly
+    # scores 0.0 match/confidence and derives its urgency and priority from
+    # the real all-4-core-pressures fallback plus base_priority, not from a
+    # fabricated transport-specific signal.
+    dimensions: {}
 
   summarize_transport_contract_drift:
     kind: summarize
@@ -105,8 +134,9 @@ proposal_templates:
     base_priority: 0.36
     base_risk: 0.05
     reversibility: 1.0
-    dimensions:
-      contract_pressure: 0.65
+    # contract_pressure removed 2026-07-30 -- see inspect_bus_channel_catalog's
+    # comment above for the full account (same disease, same template shape).
+    dimensions: {}
 
   watch_transport_backpressure:
     kind: observe
@@ -117,8 +147,9 @@ proposal_templates:
     base_priority: 0.32
     base_risk: 0.02
     reversibility: 1.0
-    dimensions:
-      contract_pressure: 0.50
+    # contract_pressure removed 2026-07-30 -- see inspect_bus_channel_catalog's
+    # comment above for the full account (same disease, same template shape).
+    dimensions: {}
 
   defer_due_to_low_readiness:
     kind: defer
@@ -129,8 +160,9 @@ proposal_templates:
     base_priority: 0.25
     base_risk: 0.0
     reversibility: 1.0
+    # uncertainty removed 2026-07-30: never produced by field_pressures()
+    # -- see dimension_weights' own comment above.
     dimensions:
-      uncertainty: 0.50
       reliability_pressure: 0.50
 
   inspect_node_resource_pressure:
@@ -154,8 +186,15 @@ proposal_templates:
     base_priority: 0.33
     base_risk: 0.05
     reversibility: 1.0
-    dimensions:
-      field_intensity: 0.45
+    # field_intensity removed 2026-07-30: never produced by field_pressures()
+    # -- was this template's ONLY dimension (match_score/confidence
+    # permanently 0.0 either way it's expressed). Unlike the contract_pressure
+    # templates above, field_intensity never passed proposal_urgency()'s
+    # "_pressure"-suffix filter, so that function's real all-4-core-
+    # dimensions fallback was ALREADY triggering before this change --
+    # urgency is unaffected, this edit only makes the empty match/confidence
+    # honest in the schema instead of implying a scored (but fake) dimension.
+    dimensions: {}
 
   # P5: attention-bound proposal target. target_id/target_kind below are the
   # fallback literal, used only if target_binding fails to resolve (empty
@@ -178,5 +217,9 @@ proposal_templates:
     base_priority: 0.34   # shipped live per explicit user go-ahead ("turn on whatever you need"), not dark-shipped at 0.0 -- read-only inspect proposal under the existing policy gate, same risk class as every other already-live inspect template
     base_risk: 0.05
     reversibility: 1.0
-    dimensions:
-      field_intensity: 0.30
+    # field_intensity removed 2026-07-30 -- see inspect_field_topology_catalog's
+    # comment above for the full account (same disease, same template shape).
+    # This template's real live relevance signal is the attention binding
+    # itself (target_binding above), not a pressure dimension -- it was never
+    # this template's actual reason to exist.
+    dimensions: {}

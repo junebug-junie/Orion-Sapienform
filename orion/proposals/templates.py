@@ -48,7 +48,7 @@ _TEMPLATE_COPY: dict[str, tuple[str, str, list[str]]] = {
     ),
     "summarize_loaded_state": (
         "Summarize loaded operating condition",
-        "Self-state is loaded with elevated field/resource/execution pressure; summarize for downstream review.",
+        "Resource pressure is loaded; summarize for downstream review.",
         ["loaded_operating_condition", "downstream_review"],
     ),
     "watch_reliability": (
@@ -58,19 +58,25 @@ _TEMPLATE_COPY: dict[str, tuple[str, str, list[str]]] = {
     ),
     "request_policy_review_for_action": (
         "Prepare policy review for possible action",
-        "Agency readiness and execution pressure are sufficient to consider a policy-gated action proposal.",
+        "Execution pressure is sufficient to consider a policy-gated action proposal.",
         ["policy_gate_required", "not_approval", "not_execution"],
     ),
     "defer_due_to_low_readiness": (
         "Defer action until readiness improves",
-        "Uncertainty or reliability pressure suggests deferring possible action until policy can evaluate later.",
+        "Reliability pressure suggests deferring possible action until policy can evaluate later.",
         ["defer_stability", "low_readiness"],
     ),
     "inspect_transport_status": (
         "Inspect transport capability status",
-        "Transport contract or reliability pressure is elevated; inspect capability:transport evidence.",
+        "Reliability pressure is elevated; inspect capability:transport evidence.",
         ["transport_inspect", "read_only"],
     ),
+    # 2026-07-30: these 3 transport templates no longer score against any real
+    # dimension (contract_pressure was never produced by field_pressures() --
+    # see config/proposals/proposal_policy.v1.yaml's own comment on each).
+    # Descriptions no longer claim a "pressure signal" reasoning that doesn't
+    # exist; they surface on base_priority + the real all-4-core-dimensions
+    # urgency fallback alone, same read-only bounded action either way.
     "inspect_bus_channel_catalog": (
         "Inspect bus channel catalog alignment",
         "Configured observer streams may be uncataloged; inspect orion/bus/channels.yaml read-only.",
@@ -78,12 +84,12 @@ _TEMPLATE_COPY: dict[str, tuple[str, str, list[str]]] = {
     ),
     "summarize_transport_contract_drift": (
         "Summarize transport contract drift",
-        "Catalog drift pressure on capability:transport warrants a bounded summary for review.",
+        "Periodic bounded summary of capability:transport for review.",
         ["transport_contract_drift", "read_only"],
     ),
     "watch_transport_backpressure": (
         "Watch transport backpressure",
-        "Transport pressure signals warrant observation without bus mutation.",
+        "Periodic observation of transport signals without bus mutation.",
         ["transport_backpressure_watch", "read_only"],
     ),
 }
@@ -117,7 +123,11 @@ def template_title_description(
         template_key,
         (
             f"Proposal for {target_id}",
-            f"Template {template_key} matched current self-state dimensions.",
+            # 2026-07-30: was "...matched current self-state dimensions" --
+            # stale since the 2026-07-22 SelfStateV1 burn (builder.py now
+            # scores directly off FieldStateV1's field_pressures(), not
+            # self-state).
+            f"Template {template_key} matched current field pressure dimensions.",
             [f"template:{template_key}"],
         ),
     )

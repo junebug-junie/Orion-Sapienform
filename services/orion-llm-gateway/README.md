@@ -224,28 +224,49 @@ regular route:
 }
 ```
 
-Any request resolved to a background route waits (`priority_admission.py`)
-for the upstream's own `/slots` endpoint to report at least
-`reserved_free_slots` idle slots before dispatching -- it never competes
-evenly with foreground traffic sharing the same llama.cpp process. It's a
-fail-open gate, not a hard block: if `/slots` is unreachable, or the
-upstream is permanently busy past `LLM_GATEWAY_BACKGROUND_MAX_WAIT_SEC`
-(default 30s), the request forwards anyway with a logged warning -- a
-background caller never gets its request silently dropped. A per-route-key
-`asyncio.Semaphore` (`LLM_GATEWAY_BACKGROUND_CONCURRENCY`, default 1) also
-caps how many background-tagged requests this gateway process holds
-in flight at once, so a burst on the background lane can't itself claim
-more slots than intended even when they're nominally free.
+Any request resolved to a background route waits for the upstream's own
+`/slots` endpoint to report at least `reserved_free_slots` idle slots before
+dispatching -- it never competes evenly with foreground traffic sharing the
+same llama.cpp process. It's a fail-open gate, not a hard block: if `/slots`
+is unreachable, or the upstream is permanently busy past
+`LLM_GATEWAY_BACKGROUND_MAX_WAIT_SEC` (default 30s), the request forwards
+anyway with a logged warning -- a background caller never gets its request
+silently dropped.
 
-Plain routes (no `priority` field) are completely unaffected -- the gate is
-never invoked for them, zero added latency, zero behavior change.
+Two entry points, two implementations in `priority_admission.py` (same
+contract, different concurrency model -- see that module's docstring for
+why): `handle_chat_completions_post` (`openai_passthrough.py`, async, used by
+AI Town's native Convex `chatCompletion()` calls) awaits `wait_for_slack` via
+the `background_admission` context manager, which also caps concurrent
+background dispatches per route key with an `asyncio.Semaphore`
+(`LLM_GATEWAY_BACKGROUND_CONCURRENCY`, default 1) so a burst can't itself
+claim more slots than intended even when nominally free. `run_llm_chat`
+(`llm_backend.py`, sync -- dispatched via `asyncio.to_thread`, used by
+orion-cortex-exec's bus-native RPC path) calls `wait_for_slack_sync` directly,
+with no concurrency cap: its only caller in that context (orion-embodiment's
+speech path) is bounded to ~1, rarely 2, concurrent calls in practice (one
+`active_conversation` at a time), not a strictly serialized guarantee, but
+nowhere near the burst the async path's cap exists for.
 
-**Pilot instance (2026-07-30):** AI Town's NPC dialogue (`quick_background`
-above) shares GPU1's `atlas-worker-fast-1` process with `orion-mind`
-(`MIND_SEMANTIC_MODEL_ROUTE`/`MIND_STANCE_MODEL_ROUTE`), `orion-embodiment`
-(`EMBODIMENT_SPEECH_HUB_LLM_ROUTE`), and `orion-hub`
-(`MEMORY_GRAPH_SUGGEST_PRIMARY_ROUTE`) -- all still pointed at plain `quick`,
-all unaffected. No second GPU was available to give AI Town its own
+Plain routes (no `priority` field) are completely unaffected on both paths --
+the gate is never invoked for them, zero added latency, zero behavior change.
+
+**Pilot instance (2026-07-30):** `quick_background` above started as AI
+Town's native NPC dialogue route (via the async passthrough) and was
+extended the same day to Orion's own in-town speech (via the sync bus path,
+`EMBODIMENT_SPEECH_QUICK_LLM_ROUTE`) -- both now share GPU1's
+`atlas-worker-fast-1` process without competing evenly with `orion-mind`
+(`MIND_SEMANTIC_MODEL_ROUTE`/`MIND_STANCE_MODEL_ROUTE`) and `orion-hub`
+(`MEMORY_GRAPH_SUGGEST_PRIMARY_ROUTE`), both still pointed at plain `quick`
+and unaffected. Reaching Orion's own speech required two more fixes,
+confirmed live: orion-cortex-exec's `llm_route` override only accepted
+`{chat, quick, metacog}` (now includes `quick_background`), and
+orion-embodiment's `_request_utterance_quick` only ever passed
+`extra={"lane": ...}` to cortex-exec, never `extra={"llm_route": ...}` --
+meaning `EMBODIMENT_SPEECH_LANE`/`EMBODIMENT_SPEECH_HUB_LLM_ROUTE` had never
+actually controlled the live gateway route at all; the observed "quick"
+behavior came entirely from cortex-exec's own per-verb default mapping,
+coincidentally matching. No second GPU was available to give AI Town its own
 dedicated small model (confirmed live: both V100s already host one model
 each), so this pattern exists specifically so AI Town's dialogue can share
 the same GPU/model without ever making those other, snappier consumers wait

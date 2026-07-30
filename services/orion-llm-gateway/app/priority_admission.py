@@ -15,6 +15,24 @@ This is deliberately a fail-open gate, not a hard block: an unreachable
 `/slots` endpoint or a permanently busy upstream never silently drops a
 caller's request -- it just proceeds without the wait, same as
 orion-embodiment's existing fail-open speech path.
+
+Two implementations live here, not one: `run_llm_chat` (llm_backend.py) is
+plain `def`, not `async def` -- it's dispatched via `asyncio.to_thread` from
+main.py, so it and everything it calls (including its LLM backend execution
+helpers) is blocking/sync code, not compatible with the asyncio-based
+`wait_for_slack`/`background_admission` above. `wait_for_slack_sync` is the
+same polling logic against a blocking `httpx` call and `time.sleep`, for that
+call site (used by orion-embodiment's ai-town speech, which reaches the
+gateway through this bus-native path rather than the OpenAI-compatible HTTP
+passthrough). It deliberately skips the per-route-key concurrency cap the
+async version has: `run_llm_chat`'s only caller in that context is
+orion-embodiment's speech path, which fires speech generation via
+`asyncio.create_task` (not strictly serialized) but is bounded to ~1, rarely
+2, concurrent calls in practice (one `active_conversation` at a time, guarded
+by the `_speaking_conversations` per-conversation set) -- not a hard
+guarantee, but nowhere near the kind of burst the async path's cap exists
+for. Wrapping this large, heavily-branched function's full dispatch in a
+semaphore for that marginal case would add real risk for little benefit.
 """
 from __future__ import annotations
 
@@ -88,6 +106,50 @@ async def wait_for_slack(
             )
             return False
         await asyncio.sleep(interval)
+
+
+def _free_slot_count_sync(base_url: str, *, timeout_sec: float = 5.0) -> Optional[int]:
+    """Blocking counterpart to _free_slot_count, for run_llm_chat's sync call path."""
+    try:
+        resp = httpx.get(f"{base_url.rstrip('/')}/slots", timeout=timeout_sec)
+        resp.raise_for_status()
+        slots = resp.json()
+    except Exception as exc:  # noqa: BLE001 -- any failure here just means "can't check", not a hard error
+        logger.warning("[LLM-GW background] could not read /slots at %s: %s", base_url, exc)
+        return None
+    if not isinstance(slots, list):
+        return None
+    return sum(1 for s in slots if isinstance(s, dict) and not s.get("is_processing"))
+
+
+def wait_for_slack_sync(
+    target: RouteTarget,
+    *,
+    poll_interval_sec: float,
+    max_wait_sec: float,
+) -> bool:
+    """Blocking counterpart to wait_for_slack, for run_llm_chat's sync call path.
+
+    Same contract: returns True if slack was confirmed, False if proceeding
+    without confirmation (unreachable /slots or timed out) -- the caller
+    forwards the request regardless either way.
+    """
+    reserved = target.reserved_free_slots or _DEFAULT_RESERVED_FREE_SLOTS
+    interval = max(poll_interval_sec, _MIN_POLL_INTERVAL_SEC)
+    deadline = time.monotonic() + max(0.0, max_wait_sec)
+    while True:
+        free = _free_slot_count_sync(target.url)
+        if free is None:
+            return False
+        if free >= reserved:
+            return True
+        if time.monotonic() >= deadline:
+            logger.warning(
+                "[LLM-GW background] timed out after %.1fs waiting for %d free slot(s) on %s -- forwarding anyway",
+                max_wait_sec, reserved, target.url,
+            )
+            return False
+        time.sleep(interval)
 
 
 class background_admission:

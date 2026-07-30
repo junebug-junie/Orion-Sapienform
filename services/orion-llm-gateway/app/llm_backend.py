@@ -1290,6 +1290,17 @@ def run_llm_chat(body: ChatBody) -> Dict[str, Any]:
             "route": route,
         }
 
+    if route_target and route_target.priority == "background":
+        # Deferred import: priority_admission.py imports RouteTarget from this
+        # module, so a top-level import here would be circular.
+        from .priority_admission import wait_for_slack_sync
+
+        wait_for_slack_sync(
+            route_target,
+            poll_interval_sec=settings.llm_gateway_background_poll_interval_sec,
+            max_wait_sec=settings.llm_gateway_background_max_wait_sec,
+        )
+
     route_url: Optional[str] = None
     served_by: Optional[str] = None
     if route_target:

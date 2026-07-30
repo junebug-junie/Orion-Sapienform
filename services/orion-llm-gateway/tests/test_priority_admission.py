@@ -237,3 +237,61 @@ class TestBackgroundAdmissionReleasesOnFailure:
             # If the earlier cancellation leaked the permit, this hangs and
             # asyncio.wait_for raises TimeoutError instead of completing.
             await asyncio.wait_for(_try_acquire(), timeout=1.0)
+
+
+class TestFreeSlotCountSync:
+    def test_counts_idle_slots(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        slots = [
+            {"id": 0, "is_processing": False},
+            {"id": 1, "is_processing": True},
+            {"id": 2, "is_processing": False},
+        ]
+        mock_response = httpx.Response(
+            200, json=slots, request=httpx.Request("GET", "http://quick:8013/slots")
+        )
+        monkeypatch.setattr(httpx, "get", lambda url, **kwargs: mock_response)
+        assert priority_admission._free_slot_count_sync("http://quick:8013") == 2
+
+    def test_returns_none_when_unreachable(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        def _raise(url: str, **kwargs: Any) -> None:
+            raise httpx.ConnectError("refused", request=httpx.Request("GET", url))
+
+        monkeypatch.setattr(httpx, "get", _raise)
+        assert priority_admission._free_slot_count_sync("http://quick:8013") is None
+
+
+class TestWaitForSlackSync:
+    def test_returns_true_immediately_when_slack_already_available(self) -> None:
+        with patch.object(priority_admission, "_free_slot_count_sync", return_value=3):
+            ok = priority_admission.wait_for_slack_sync(
+                _target(reserved_free_slots=2), poll_interval_sec=0.01, max_wait_sec=1.0
+            )
+        assert ok is True
+
+    def test_polls_until_slack_frees_up(self) -> None:
+        calls = {"n": 0}
+
+        def _sequence(base_url: str, **kwargs: Any) -> Optional[int]:
+            calls["n"] += 1
+            return 0 if calls["n"] < 3 else 2
+
+        with patch.object(priority_admission, "_free_slot_count_sync", _sequence):
+            ok = priority_admission.wait_for_slack_sync(
+                _target(reserved_free_slots=2), poll_interval_sec=0.01, max_wait_sec=1.0
+            )
+        assert ok is True
+        assert calls["n"] == 3
+
+    def test_times_out_and_returns_false_when_permanently_busy(self) -> None:
+        with patch.object(priority_admission, "_free_slot_count_sync", return_value=0):
+            ok = priority_admission.wait_for_slack_sync(
+                _target(reserved_free_slots=2), poll_interval_sec=0.01, max_wait_sec=0.05
+            )
+        assert ok is False
+
+    def test_returns_false_immediately_when_slots_unreachable(self) -> None:
+        with patch.object(priority_admission, "_free_slot_count_sync", return_value=None):
+            ok = priority_admission.wait_for_slack_sync(
+                _target(reserved_free_slots=2), poll_interval_sec=0.01, max_wait_sec=5.0
+            )
+        assert ok is False

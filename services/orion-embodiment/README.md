@@ -51,6 +51,9 @@ The dispatcher tries grounded first only when unified is enabled. With `EMBODIME
 | `EMBODIMENT_SPEECH_UNIFIED_ENABLED` | `false` | Optional grounded_small `chat_general` pass before quick fallback |
 | `EMBODIMENT_CORTEX_REQUEST_CHANNEL` | `orion:cortex:exec:request:chat` | Chat exec lane intake (not legacy) |
 | `EMBODIMENT_SPEECH_HUB_LLM_ROUTE` | `chat` | LLM route when unified grounded pass is enabled |
+| `EMBODIMENT_SPEECH_QUICK_LLM_ROUTE` | `quick_background` | LLM route for the live quick-lane path (`_request_utterance_quick`, active when unified is off, the default). Separate from `EMBODIMENT_SPEECH_LANE`, which is cognition "mode" metadata only, not a gateway route -- see below. |
+
+**2026-07-30 fix:** `_request_utterance_quick` previously only set `extra={"lane": EMBODIMENT_SPEECH_LANE}` when calling orion-cortex-exec, but that service's `llm_route` override resolution reads `ctx["llm_route"]`, not `ctx["lane"]` -- so `EMBODIMENT_SPEECH_LANE` never actually changed which gateway route town speech used; the observed "quick" behavior came entirely from cortex-exec's own per-verb default mapping, coincidentally matching. `EMBODIMENT_SPEECH_QUICK_LLM_ROUTE` is now threaded through as the actual override, defaulting to `quick_background` so Orion's own ai-town dialogue shares `atlas-worker-fast-1` without competing evenly with `orion-mind`/`orion-hub`'s own `quick` traffic -- see `services/orion-llm-gateway/README.md`'s "Background-priority routes".
 
 ## Spatial grounding: named map landmarks
 

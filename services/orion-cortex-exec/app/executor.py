@@ -3825,7 +3825,11 @@ async def call_step_services(
                 )
 
                 # Keep lane selection explicit by internal flow, with optional caller override.
-                # Accepted override values: chat, quick, metacog.
+                # Accepted override values: chat, quick, metacog, quick_background.
+                # quick_background: same upstream/model as quick, gated by the gateway's
+                # background-priority admission (services/orion-llm-gateway/app/
+                # priority_admission.py) so a caller opting into it never makes other
+                # quick consumers wait behind it -- see that service's README.
                 llm_route_override_raw = (
                     ctx.get("llm_route")
                     or (
@@ -3837,7 +3841,7 @@ async def call_step_services(
                 llm_route_override = str(llm_route_override_raw or "").strip().lower()
                 if llm_route_override in {"chat_quick", "quick_chat", "chat_kids_story"}:
                     llm_route_override = "quick"
-                if llm_route_override in {"chat", "quick", "metacog"}:
+                if llm_route_override in {"chat", "quick", "metacog", "quick_background"}:
                     llm_route = llm_route_override
                 else:
                     # Default lane mapping:

@@ -17,6 +17,7 @@ def _worker() -> EmbodimentWorker:
     w._settings = SimpleNamespace(
         speech_enabled=True,
         speech_lane="quick",
+        speech_quick_llm_route="quick",
         speech_verb="chat_quick",
         speech_timeout_sec=30.0,
         cortex_request_channel="orion:cortex:exec:request",

@@ -19,8 +19,11 @@ still current):
   and `suppression.py`'s `staleness` reset both do), it must also record a
   `node_vector_updated_at` stamp or it silently falls back to the old unconditional-decay
   behavior for that one channel — this has already been missed once by review.
-- This is the mirror-image bug to `orion/spark/concept_induction`'s `DriveEngine.update()`: same
-  root cause (decay/injection-cadence mismatch), opposite symptom (this one produces a
-  sawtooth from decay being *too fast* relative to injection; the other produces a
-  clamp-collapse from decay being *too slow*). If you're debugging a saturation, oscillation, or
-  collapse symptom anywhere in the drive/field pipeline, check both `CLAUDE.md`s, not just one.
+- This was the mirror-image bug to `orion/spark/concept_induction`'s (deleted) `DriveEngine.update()`:
+  same root cause (decay/injection-cadence mismatch), opposite symptom (this one produces a
+  sawtooth from decay being *too fast* relative to injection; the other produced a
+  clamp-collapse from decay being *too slow*). `DriveEngine` itself no longer exists (deleted
+  2026-07-30, `chore/delete-orion-drives`, PR #1486, per `orion/sentience_striving_program/
+  README.md` §8) — that half of the comparison is now historical record, not a live pipeline
+  to cross-check. The decay-cadence bug *class* this describes is still real and still worth
+  checking for in any other decay mechanism you touch, drive-related or not.

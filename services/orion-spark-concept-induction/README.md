@@ -34,79 +34,31 @@ python -m scripts.test_concept_induction_publish
 
 This publishes a fake chat event and waits for a profile on `BUS_PROFILE_OUT`.
 
-## Drive-state divergence audit
+## Drive-pressure engine, goal generation, drive-audit production — DELETED 2026-07-30
 
-`drive_state.v1` (this service's `DriveEngine`, persisted to the local
-`LocalProfileStore` JSON file at `CONCEPT_STORE_PATH`) and `autonomy_state_v2`
-(`orion.autonomy.reducer`, persisted to Postgres via
-`ORION_AUTONOMY_STATE_DB_URL`) independently compute pressures over the same
-6-key drive taxonomy. `orion/self_state/inner_state_registry.py` marks both
-`DUPLICATE` of each other and defers the merge-or-keep-separate decision to a
-later phase. `scripts/drive_state_divergence_audit.py` (repo root) is a
-report-only diagnostic that loads the current value of each and prints
-per-drive pressure divergence and activation-flag agreement -- it never
-merges or picks a winner between them, and it always exits 0.
+Everything this section used to describe — `DriveEngine`, the drive-state
+divergence audit (`scripts/drive_state_divergence_audit.py`, which no longer
+exists anywhere in the repo — do not try to run the commands a prior version
+of this README had here), `DriveAuditV1` production (`audit.py`,
+`drive_attribution.py`), and drive-relief "satisfaction tensions"
+(`tensions.py`'s signed-impact handling) — was deleted outright 2026-07-30
+(`chore/delete-orion-drives`, PR #1486), following through on
+`orion/sentience_striving_program/README.md` §8's 2026-07-18 halt. Concept
+extraction/clustering/embedding/dossier/identity/profile production (the rest
+of this README, and the actual reason `ConceptWorker` exists) is untouched and
+runs unconditionally on every intake event, independent of this deletion.
 
-```bash
-python scripts/drive_state_divergence_audit.py
-python scripts/drive_state_divergence_audit.py --json
-```
-
-### This service is the producer of `DriveAuditV1` (Hub Drives Analytics)
-
-This service is the sole **producer** of `DriveAuditV1` audit artifacts (schema
-`orion/core/schemas/drives.py`, `kind="memory.drives.audit.v1"`) — including the
-`tick_attribution` (per-drive float weights) and `tension_kinds` (short list of
-contributing tension kinds) fields. `orion/spark/concept_induction/audit.py::build_drive_audit`
-builds each audit from the current `DriveStateV1` plus the tick's tensions and attribution, then
-`ConceptWorker._publish_artifact` (`bus_worker.py`) publishes it on `self.cfg.drive_audit_channel`
-(`orion/spark/concept_induction/settings.py`). `tick_attribution` itself comes from
-`compute_tick_attribution()` in `orion/spark/concept_induction/drive_attribution.py`, which also
-derives `dominant_drive` when it isn't passed explicitly.
-
-**This service does not serve the Hub UI.** The Hub **Drives** tab (`#drives`,
-`/drives-analytics`) never talks to concept-induction directly. Instead: `orion-sql-writer`
-subscribes to the audit channel and persists each audit (including, as of
-`services/orion-sql-db/manual_migration_drive_audits_v4_tick_attribution.sql`, the
-`tick_attribution`/`tension_kinds` columns — previously dropped by the sql-writer column filter) to
-the Postgres `drive_audits` table (`services/orion-sql-writer/app/models/drive_audit.py`). Hub then
-reads that Postgres history via its own `RECALL_PG_DSN`-backed pool
-(`services/orion-hub/scripts/drives_analytics_queries.py`). This service is upstream producer only —
-it has no dependency on Hub, and a Hub outage does not affect audit production.
-
-See also: [Hub Drives tab operator docs](../orion-hub/README.md) (`#drives`) and
+**What this means for the Hub Drives tab and Postgres `drive_audits`:** this
+service is no longer a producer of anything drive-shaped. `drive_audits` in
+Postgres is a frozen, finite historical table now (its retention-prune job was
+disabled specifically so this history doesn't get deleted — see
+`services/orion-sql-writer/README.md`); the Hub **Drives** tab
+(`#drives`, `/drives-analytics`) still renders it, relabeled "(historical)".
+No new rows will ever arrive. See
 [orion/autonomy/README.md § Hub Drives Analytics](../../orion/autonomy/README.md#hub-drives-analytics)
-for what the persisted audits mean to an operator.
-
-## Satisfaction tensions (drive relief)
-
-`DriveEngine.update()` supports signed drive impacts: a `TensionEventV1` with a
-negative `drive_impacts` weight *relieves* pressure instead of raising it
-(`_clamp_signed` to `[-1, 1]`, then the leaky-math formula branches on impulse
-sign so relief is bounded to `[0, base]` and growth to `[base, 1]` -- relief can
-never push a drive negative or growth push it past 1). Prior to this, negative
-weights were silently double-clamped to zero and had no effect, so drives could
-only ever accumulate pressure, never discharge it from a successful action.
-
-`orion:autonomy:action:outcome` (published by Layer-9 dispatch on every
-autonomous action, see `services/orion-execution-dispatch-runtime`) is
-subscribed here specifically to close that loop:
-`extract_tensions_from_action_outcome` (`orion/spark/concept_induction/tensions.py`)
-mints a relief tension when `outcome.success is True` for a closed set of
-dispatch kinds (`inspect` relieves `coherence`, `summarize` relieves
-`predictive`, `observe` relieves `continuity` -- unmapped kinds mint nothing).
-`bus_worker.py` filters out envelopes this service itself published
-(`source.name == self.cfg.service_name`) before parsing, since this service is
-also a downstream consumer of channels it doesn't produce here but could in a
-replay/backfill scenario.
-
-Known accepted risk: `extract_tensions_from_feedback` (fires on Postgres-polled
-failure) and `extract_tensions_from_action_outcome` (fires on bus-emitted
-success) are independently-computed classifications of the same Layer-9
-dispatch from two separate pipelines. A dispatch that the feedback path scores
-as failed/mixed while the outcome-emit reports `success=True` can fire both a
-growth and a relief tension for the same event. Not coordinated across
-pipelines in this patch -- named here as a follow-up, not fixed.
+and the PR report (`docs/superpowers/pr-reports/2026-07-30-delete-orion-drives-pr.md`)
+for the full picture, including the accepted consequence that this service no
+longer proposes goals at all.
 
 ## Readonly capabilities (recall.query.readonly, P4)
 

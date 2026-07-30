@@ -156,6 +156,14 @@ services:
       - GRAPHITI_URL=${GRAPHITI_URL:-}
       - FALKORDB_URI=${FALKORDB_URI:-}
       - FALKORDB_BUS_GRAPH=${FALKORDB_BUS_GRAPH:-orion_bus_synapse}
+      # Attention organ operator tab (read-only). Inline defaults are the real
+      # working values, not placeholders: a worktree with no Hub .env falls
+      # through to these, not to .env_example (this repo's new_worktree.sh does
+      # not provision one) -- the exact gap that silently killed the AST/HOT
+      # tick for an hour on 2026-07-29.
+      - FALKORDB_SUBSTRATE_GRAPH=${FALKORDB_SUBSTRATE_GRAPH:-orion_substrate}
+      - HUB_HEARTBEAT_BASE_URL=${HUB_HEARTBEAT_BASE_URL:-http://localhost:7251}
+      - HUB_ATTENTION_ORGAN_TIMEOUT_SEC=${HUB_ATTENTION_ORGAN_TIMEOUT_SEC:-3.0}
       - CRYSTALLIZER_VECTOR_COLLECTION=${CRYSTALLIZER_VECTOR_COLLECTION:-orion_memory_crystallizations}
       - CRYSTALLIZER_EMBED_HOST_URL=${CRYSTALLIZER_EMBED_HOST_URL:-}
       - CRYSTALLIZER_EMBED_MODE=${CRYSTALLIZER_EMBED_MODE:-http}

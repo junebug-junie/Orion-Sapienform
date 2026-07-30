@@ -78,6 +78,14 @@ class EnsembleH1ResultV1:
     verdict: str
     tick_count: int
     seeds: list[int] = field(default_factory=list)
+    # Per-trajectory ratios, index-aligned with `seeds`. 2026-07-30: added so
+    # a reader can see the actual N samples the mean/std summarize, not just
+    # the two summary statistics -- an ensemble whose trajectories have all
+    # collapsed to the same value and one whose spread genuinely averages out
+    # are indistinguishable from mean+std alone at small N. Computed anyway
+    # by compute_h1_ensemble (it already calls ensemble.ratios()), so this
+    # carries zero extra compute; it was simply being discarded.
+    ratios: list[float] = field(default_factory=list)
     generated_at: datetime = field(default_factory=lambda: datetime.now(timezone.utc))
 
 

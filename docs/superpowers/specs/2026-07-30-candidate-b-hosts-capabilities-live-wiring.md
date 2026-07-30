@@ -180,6 +180,22 @@ The `pressure_proxy` values above are no longer directionally blind (compare
 not distinguish a calm host from an overloaded one whenever a higher-is-better channel
 sat near its healthy default).
 
+### 2026-07-30 second fix (verification review on the fix above)
+
+A follow-up review of the Finding 2 fix itself found it was still incomplete: it checked
+`target_id` presence in only `previous_frame.node_targets`/`.capability_targets` -- the
+two "active" buckets -- while `prior_salience_for_target()` (what `novelty_scorer()`
+actually uses to compute the novelty diff) searches five buckets, including
+`suppressed_targets`. `build_attention_frame()` puts any target scored below
+`suppress_below` into `suppressed_targets` only, never into `node_targets`/
+`capability_targets` -- a real prior observation, just not an "active" one. The
+two-bucket check would under-report `confidence_score=0.0` for a target that was real
+but suppressed last tick, even though a real prior value was used to compute its novelty
+this tick. Fixed by extracting `target_had_real_prior_entry()` in `scoring.py`, using the
+same five-bucket search `prior_salience_for_target()` already used, so confidence and
+novelty always agree on the same real fact. New regression test:
+`test_select_host_targets_suppressed_prior_entry_still_counts_as_real`.
+
 ## Non-goals
 
 - Not the full three-scorer Candidate B (magnitude/dwell excluded, both disclosed above).

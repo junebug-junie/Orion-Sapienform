@@ -9,7 +9,7 @@ from orion.attention.field_attention.candidate_precision_weighted import (
 )
 from orion.attention.field_attention.candidate_society_of_mind import novelty_scorer
 from orion.attention.field_attention.policy import FieldAttentionPolicyV1
-from orion.attention.field_attention.scoring import clamp01
+from orion.attention.field_attention.scoring import clamp01, target_had_real_prior_entry
 from orion.field.pressure import (
     RECENT_PERTURBATION_EWMA_MIN_SAMPLES,
     RECENT_PERTURBATION_ZSCORE_SATURATION,
@@ -162,6 +162,20 @@ def _novelty_targets(
     observation backing that confidence, identical to the no-frame-at-all
     case.
 
+    2026-07-30 second fix (code review verification pass, same day): the
+    first version of this fix checked presence in only `previous_frame.
+    node_targets`/`.capability_targets` -- the two "active" buckets -- but
+    `prior_salience_for_target()` (what `novelty_scorer()` actually uses to
+    compute the novelty diff above) searches five buckets, including
+    `suppressed_targets`. A target scored below `suppress_below` last tick
+    lands ONLY in `suppressed_targets` (`build_attention_frame()`), a real
+    prior observation, not an absent one -- the two-bucket check
+    under-reported confidence=0.0 for such a target even though a real
+    prior value was actually used to compute its novelty. Now uses
+    `target_had_real_prior_entry()` (`scoring.py`), the same five-bucket
+    search `prior_salience_for_target()` uses, so confidence and novelty
+    are always answered from the same real fact.
+
     **One-time transition artifact, disclosed (2026-07-30):** `novelty_for_
     target()` diffs this tick's `_current_pressure_proxy()` value against
     whatever `salience_score` the *previous persisted frame* recorded for
@@ -185,16 +199,10 @@ def _novelty_targets(
     current_salience = {tid: _current_pressure_proxy(vectors[tid]) for tid in target_ids}
     novelty_scores = novelty_scorer(target_ids, current_salience, previous_frame)
 
-    if previous_frame is None:
-        prior_target_ids: frozenset[str] = frozenset()
-    else:
-        prior_list = previous_frame.node_targets if target_kind == "node" else previous_frame.capability_targets
-        prior_target_ids = frozenset(t.target_id for t in prior_list)
-
     targets: list[FieldAttentionTargetV1] = []
     for target_id in target_ids:
         novelty = novelty_scores.get(target_id, 0.0)
-        confidence = 1.0 if target_id in prior_target_ids else 0.0
+        confidence = 1.0 if target_had_real_prior_entry(target_id, previous_frame) else 0.0
         targets.append(
             FieldAttentionTargetV1(
                 target_id=target_id,

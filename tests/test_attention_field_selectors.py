@@ -408,6 +408,58 @@ def test_select_host_targets_new_target_absent_from_existing_prior_frame_has_zer
     assert by_id["node:circe"].confidence_score == 0.0  # no real prior entry, despite a real prior_frame existing
 
 
+def test_select_host_targets_suppressed_prior_entry_still_counts_as_real() -> None:
+    # Code-review verification-pass regression test (2026-07-30): a target
+    # scored below suppress_below last tick lands ONLY in
+    # previous_frame.suppressed_targets, never in .node_targets -- a real
+    # prior observation, not an absent one. novelty_for_target() (via
+    # prior_salience_for_target()) searches suppressed_targets too and uses
+    # that real prior value to compute novelty -- confidence_score must
+    # agree that a real prior existed, not just check the two "active"
+    # buckets.
+    suppressed_prior = FieldAttentionTargetV1(
+        target_id="node:circe",
+        target_kind="node",
+        salience_score=0.02,  # below suppress_below -- landed in suppressed_targets only
+        pressure_score=0.02,
+        novelty_score=0.0,
+        urgency_score=0.0,
+        confidence_score=1.0,
+        dominant_channels={},
+        reasons=["prior tick"],
+        evidence_refs=[],
+        suggested_observation_mode="ignore",
+    )
+    prev_frame = FieldAttentionFrameV1(
+        frame_id="f3",
+        generated_at=BASE,
+        source_field_tick_id="tick_host_prev3",
+        source_field_generated_at=BASE,
+        attention_policy_id=POLICY.policy_id,
+        overall_salience=0.0,
+        dominant_targets=[],
+        node_targets=[],  # NOT here
+        capability_targets=[],
+        system_targets=[],
+        suppressed_targets=[suppressed_prior],  # only here
+        recent_perturbations=[],
+        warnings=[],
+    )
+
+    field_now = FieldStateV1(
+        generated_at=BASE,
+        tick_id="tick_host_now3",
+        node_vectors={"node:circe": {"cpu_pressure": 0.9}},
+    )
+    targets = select_host_targets(field_now, POLICY, prev_frame)
+    assert len(targets) == 1
+    # Real novelty is computed against the real suppressed-bucket prior value.
+    assert targets[0].novelty_score > 0.5
+    # Confidence must agree a real prior existed, even though it lived in
+    # suppressed_targets, not node_targets.
+    assert targets[0].confidence_score == 1.0
+
+
 def test_select_host_targets_multi_target_real_hosts() -> None:
     # Code-review regression test (2026-07-30, Finding 4): production always
     # faces multiple real hosts simultaneously (athena/atlas/circe/

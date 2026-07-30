@@ -98,6 +98,67 @@ class Settings(BaseSettings):
         0.5, alias="EQUILIBRIUM_METACOG_RELATIONAL_LEVEL_THRESHOLD"
     )
 
+    # repair_pressure_trend metacog trigger (2026-07-30, hop 0 of the stream-of-
+    # consciousness hop-chain design -- docs/superpowers/specs/2026-07-29-stream-
+    # of-consciousness-hop-chain-design.md). Distinct from the relational trigger
+    # above: relational fires on ONE appraisal crossing an absolute floor;
+    # repair_pressure_trend folds every real (confidence-gated) appraisal into a
+    # persisted EWMA baseline (orion/metacog/trend_reducer.py) and fires only on
+    # a sustained multi-appraisal elevated run -- "has this kept happening", not
+    # one turn's reading. Default OFF: new, unverified-in-production trigger
+    # source, per this repo's "measure before minting" discipline -- flip on only
+    # after real post-deploy data shows it fires sensibly, not just that it
+    # compiles.
+    metacog_repair_pressure_trend_trigger_enable: bool = Field(
+        False, alias="EQUILIBRIUM_METACOG_REPAIR_PRESSURE_TREND_TRIGGER_ENABLE"
+    )
+    # Confidence floor for folding an appraisal into the trend baseline at all
+    # (separate from whether the resulting trend fires a trigger). Low and
+    # inclusive on purpose: post the 2026-07-30 reduce_repair_level() fix,
+    # confidence genuinely reflects evidence quality (including a real ~0.65 for
+    # the common "confidently calm" text-fallback case), so this only excludes
+    # genuine zero-evidence appraisals, not real-but-unremarkable ones.
+    metacog_repair_pressure_trend_confidence_floor: float = Field(
+        0.3, alias="EQUILIBRIUM_METACOG_REPAIR_PRESSURE_TREND_CONFIDENCE_FLOOR"
+    )
+    # Matches trend_reducer.py's own DEFAULT_MIN_SAMPLES -- overridable here
+    # since this is the live deployment's actual cold-start floor, not just the
+    # module's own fallback default.
+    metacog_repair_pressure_trend_min_samples: int = Field(
+        20, alias="EQUILIBRIUM_METACOG_REPAIR_PRESSURE_TREND_MIN_SAMPLES"
+    )
+    metacog_repair_pressure_trend_elevated_zscore: float = Field(
+        1.0, alias="EQUILIBRIUM_METACOG_REPAIR_PRESSURE_TREND_ELEVATED_ZSCORE"
+    )
+    metacog_repair_pressure_trend_sustained_hits: int = Field(
+        3, alias="EQUILIBRIUM_METACOG_REPAIR_PRESSURE_TREND_SUSTAINED_HITS"
+    )
+    # Dedicated Redis key for this gate's checkpointed MetacogTrendStateV1 --
+    # deliberately separate from redis_state_key above, which is scoped to
+    # SystemHealthV1 service-heartbeat records keyed by service@node, a
+    # different domain. A single JSON string, not a hash field, since this gate
+    # carries exactly one running baseline (repair_pressure only), not a
+    # per-key collection.
+    metacog_repair_pressure_trend_state_key: str = Field(
+        "equilibrium:metacog_trend_state:repair_pressure",
+        alias="EQUILIBRIUM_METACOG_REPAIR_PRESSURE_TREND_STATE_KEY",
+    )
+    # Own cooldown lane, from day one -- NOT the shared metacog_cooldown_sec
+    # global lane. Code review (2026-07-30) caught that this trigger is
+    # evaluated in the same branch, on the same message, as the pre-existing
+    # `relational` trigger above: any appraisal satisfying both conditions
+    # would have relational's fire silently starve this one via the shared
+    # lane, every time -- the exact `chat_turn` bug (2026-07-23, see
+    # `_PER_KIND_COOLDOWN_SETTINGS_ATTR` in service.py) recurring in a new
+    # place. Once `is_sustained_trend` goes true it typically STAYS true for
+    # many subsequent messages while the elevated run continues (same shape
+    # as `flow`'s sustained-plateau regime, not a per-turn event) -- 1800s
+    # default matches `metacog_flow_cooldown_sec`'s own reasoning exactly:
+    # re-announcing the same ongoing elevated regime every 30s would be noise.
+    metacog_repair_pressure_trend_cooldown_sec: float = Field(
+        1800.0, alias="EQUILIBRIUM_METACOG_REPAIR_PRESSURE_TREND_COOLDOWN_SEC"
+    )
+
     # Telemetry-anomaly metacog trigger (2026-07-21). Mirrors the relational
     # trigger's shape: orion-field-digester publishes the raw measurement
     # (recon_loss vs. its own train-time recon_error_p95), this service owns

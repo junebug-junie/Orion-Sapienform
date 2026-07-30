@@ -659,6 +659,40 @@ class TestBusSynapticPredictionError:
         mean([0.0, 3.0]) = 1.5, same transform as the 1.5 case above."""
         assert bus_synaptic_prediction_error([0.0, 3.0]) == pytest.approx(0.3188367996970756)
 
+    def test_one_extreme_edge_cannot_saturate_a_calm_mesh(self) -> None:
+        """2026-07-30 per-edge-saturation fix, reproducing the exact live
+        failure. Real `orion_bus_synapse` edge set (recency-filtered, 244
+        edges): median |z| 0.504, only 7 edges above 3.0 sigma, and ONE stale
+        cortex-orch->Channel edge carrying |z| = 7087.8. Averaging unbounded
+        values first gave mean 3.982 -> a permanently saturated 1.0, which
+        produced continuous false "Bus Anomaly Detected" alerts and pinned
+        this domain's contribution to AST/HOT's prediction_error_confidence.
+
+        Clamping each edge at the saturation point before averaging bounds any
+        one edge's contribution to "fully anomalous" instead of "arbitrarily
+        large", so a mesh that is genuinely calm reads calm."""
+        calm_mesh = [0.5] * 243
+        assert bus_synaptic_prediction_error(calm_mesh) == 0.0
+
+        with_one_outlier = calm_mesh + [7087.8]
+        # Pre-fix this returned exactly 1.0 (mean 29.6 >> saturation).
+        assert bus_synaptic_prediction_error(with_one_outlier) == 0.0
+
+    def test_a_genuinely_anomalous_mesh_still_saturates(self) -> None:
+        """The clamp must not make the instrument unable to report a real
+        mesh-wide anomaly -- that would trade one dead signal for another.
+        Every edge at or above saturation still reads a full 1.0."""
+        assert bus_synaptic_prediction_error([3.0] * 50) == pytest.approx(1.0)
+        assert bus_synaptic_prediction_error([500.0] * 50) == pytest.approx(1.0)
+
+    def test_clamp_scales_smoothly_with_the_anomalous_fraction(self) -> None:
+        """Between the two extremes the reading should track how much of the
+        mesh is anomalous, not which single edge is worst -- the property that
+        makes this a mesh-level aggregate rather than a disguised max()."""
+        half = bus_synaptic_prediction_error([0.0] * 50 + [3.0] * 50)
+        most = bus_synaptic_prediction_error([0.0] * 10 + [3.0] * 90)
+        assert 0.0 < half < most < 1.0
+
 
 class TestCodebasePredictionError:
     """Phase 1 skeleton (docs/superpowers/specs/2026-07-30-codebase-mass-signal-

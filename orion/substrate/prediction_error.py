@@ -557,6 +557,44 @@ def bus_synaptic_prediction_error(edge_zscores: list[float]) -> float:
     """
     if not edge_zscores:
         return 0.0
-    mean_abs_z = _mean([abs(z) for z in edge_zscores])
+    # **Saturate PER EDGE, then average -- not average, then saturate.**
+    #
+    # 2026-07-30: this function was averaging UNBOUNDED per-edge z-scores and
+    # only clamping the aggregate at the end, which let a single pathological
+    # edge dictate the whole reading. Live-confirmed against the real
+    # `orion_bus_synapse` graph, using the caller's own recency-filtered edge
+    # set (244 live edges):
+    #
+    #     median(|z|)                 0.504   <- 237 of 244 edges are calm
+    #     mean(|z|)  [old]            3.982   -> prediction_error 1.0000
+    #     mean(min(|z|, 3.0)) [new]   0.687   -> prediction_error 0.0000
+    #
+    # Only 7 of 244 edges (2.9%) exceeded 3.0 sigma, and one stale
+    # cortex-orch->Channel edge carried |z| = 7087.8 by itself. Inter-arrival
+    # gap z-scores are heavy-tailed by construction, so the arithmetic mean of
+    # unbounded values is not a robust estimator of "how anomalous is the mesh
+    # right now" -- it is closer to a max. The result was a permanently
+    # saturated 1.0 that produced real, continuous false "Bus Anomaly Detected"
+    # alerts (orion-equilibrium-service) and pinned this domain's contribution
+    # to AST/HOT's prediction_error_confidence.
+    #
+    # Clamping each edge at the saturation point first preserves the metric's
+    # meaning ("average anomaly level across the mesh") while bounding any one
+    # edge's contribution to "fully anomalous" instead of "arbitrarily large".
+    # The calm-floor calibration below is unaffected: for a genuinely calm
+    # population mean(|z|) ~= sqrt(2/pi) ~= 0.798, far under the clamp, so no
+    # calm value is altered by it.
+    #
+    # **Known, deliberate consequence**: a single catastrophically anomalous
+    # edge no longer moves this signal on its own (one edge at |z|=7087 now
+    # contributes 3.0/N, not 7087/N). That is correct for a mesh-wide average,
+    # but it means single-edge anomaly detection is NOT covered by this metric
+    # and must not be assumed from it -- if that is wanted it should be its own
+    # named signal (worst-edge / count-above-threshold), not folded back in
+    # here where it would re-create exactly this bug.
+    clamped = [
+        min(abs(z), _BUS_SYNAPTIC_ZSCORE_SATURATION) for z in edge_zscores
+    ]
+    mean_abs_z = _mean(clamped)
     excess = max(0.0, mean_abs_z - _BUS_SYNAPTIC_CALM_FLOOR)
     return min(1.0, excess / (_BUS_SYNAPTIC_ZSCORE_SATURATION - _BUS_SYNAPTIC_CALM_FLOOR))

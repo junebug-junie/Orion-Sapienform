@@ -10,66 +10,24 @@ from orion.autonomy.models import (
     AutonomyStateV2,
     AutonomyStanceMode,
     AutonomySummaryV1,
-    DriveCompetitionSummaryV1,
 )
 
 if TYPE_CHECKING:
     from orion.autonomy.repository import AutonomyLookupV1
 
-# Mirrors orion.spark.concept_induction.tensions.derive_pressure_competition_tensions spread logic
-# so the summary reflects drive disagreement even when GraphDB has not yet materialized tension rows.
-_DRIVE_KEYS_FOR_SPREAD = ("coherence", "continuity", "capability", "relational", "predictive", "autonomy")
-# Tuned so saturated-but-not-identical drive rows still surface a competition signal in the UI.
-_PRESSURE_SPREAD_THRESHOLD = 0.06
-_PRESSURE_COMPETITION_KIND = "tension.drive_competition.v1"
-
-
-def _canonical_pressures_for_spread(pressures: dict[str, float]) -> dict[str, float]:
-    """Merge legacy / alternate labels into the six canonical drive keys before spread checks."""
-    out = {k: float(pressures.get(k, 0.0)) for k in _DRIVE_KEYS_FOR_SPREAD}
-    rs = float(pressures.get("relational_stability") or 0.0)
-    if rs:
-        out["relational"] = max(out["relational"], rs)
-    return out
-
-
-def _analyze_drive_competition(pressures: dict[str, float]) -> DriveCompetitionSummaryV1 | None:
-    """Return structured top vs runner when pressure disagreement crosses the competition threshold."""
-    if not pressures:
-        return None
-    canon = _canonical_pressures_for_spread(pressures)
-    canon_vals = list(canon.values())
-    spread_c = max(canon_vals) - min(canon_vals) if len(canon_vals) >= 2 else 0.0
-    raw_nums = [float(v) for v in pressures.values() if isinstance(v, (int, float))]
-    spread_r = max(raw_nums) - min(raw_nums) if len(raw_nums) >= 2 else 0.0
-    ok_c = spread_c >= _PRESSURE_SPREAD_THRESHOLD
-    ok_r = spread_r >= _PRESSURE_SPREAD_THRESHOLD
-    if not ok_c and not ok_r:
-        return None
-    if ok_c:
-        ranked = sorted(_DRIVE_KEYS_FOR_SPREAD, key=lambda k: float(canon.get(k, 0.0)), reverse=True)
-        top_k, runner_k = ranked[0], ranked[1]
-        p_top = float(canon.get(top_k, 0.0))
-        p_run = float(canon.get(runner_k, 0.0))
-        spread = float(spread_c)
-    else:
-        items = sorted(
-            [(str(k), float(v)) for k, v in pressures.items() if isinstance(v, (int, float))],
-            key=lambda x: x[1],
-            reverse=True,
-        )
-        if len(items) < 2:
-            return None
-        top_k, p_top = items[0]
-        runner_k, p_run = items[1]
-        spread = float(spread_r)
-    return DriveCompetitionSummaryV1(
-        top_drive=top_k,
-        runner_drive=runner_k,
-        spread=min(1.0, max(0.0, spread)),
-        pressure_top=min(1.0, max(0.0, p_top)),
-        pressure_runner=min(1.0, max(0.0, p_run)),
-    )
+# Drive-pressure competition analysis (_analyze_drive_competition,
+# _canonical_pressures_for_spread, DriveCompetitionSummaryV1 usage) removed
+# 2026-07-30 (chore/delete-orion-drives Wave 2a): AutonomyStateV1/V2 no
+# longer carry drive_pressures (Wave 2a full removal, mirroring Wave 1's
+# deletion of the producer), so there is no real input left to analyze.
+# AutonomySummaryV1.drive_competition/dominant_drive/top_drives/
+# active_tensions are unconditionally empty/None below now -- their schema
+# fields were NOT removed from AutonomySummaryV1 itself in this wave (out-of-
+# scope consumers, e.g. services/orion-hub, still read that model), so this
+# is a forced, honest consequence of the state-field deletion, not a fresh
+# stub. See the Wave 2a PR report for the follow-up decision this leaves
+# open: retire these AutonomySummaryV1 fields too, or accept them as
+# permanently-empty historical vestiges.
 
 
 def _proposal_headline_for_display(raw: str) -> str:
@@ -303,26 +261,17 @@ def summarize_autonomy_state(state: AutonomyStateV1 | AutonomyStateV2 | None) ->
             stance_mode="unavailable",
         )
 
-    dominant = (state.dominant_drive or "").strip().lower()
-    stance_hint = {
-        "coherence": "favor synthesis and reduction",
-        "continuity": "preserve continuity and thread integrity",
-        "relational_stability": "protect relational steadiness",
-    }.get(dominant, "maintain stable direct response")
+    # dominant_drive/drive_pressures/active_drives/tension_kinds no longer
+    # exist on AutonomyStateV1/V2 (removed 2026-07-30, chore/delete-orion-
+    # drives Wave 2a) -- stance_hint, top_drives, active_tensions, and
+    # drive_competition are honestly empty/default below, not derived from a
+    # dead source. See the module-level comment above for the AutonomySummaryV1
+    # schema follow-up this leaves open.
+    stance_hint = "maintain stable direct response"
+    top_drives: list[str] = []
+    active_tensions: list[str] = []
+    drive_competition = None
 
-    drives_sorted = sorted(
-        state.drive_pressures.items(),
-        key=lambda item: (float(item[1]), item[0]),
-        reverse=True,
-    )
-    drive_names = [name for name, _ in drives_sorted]
-    top_drives = _bounded_unique(drive_names + list(state.active_drives), limit=3)
-
-    tension_sources = list(state.tension_kinds)
-    drive_competition = _analyze_drive_competition(state.drive_pressures)
-    if drive_competition and _PRESSURE_COMPETITION_KIND not in tension_sources:
-        tension_sources.append(_PRESSURE_COMPETITION_KIND)
-    active_tensions = _bounded_unique(tension_sources, limit=3)
     proposal_headlines = _bounded_unique(
         [
             _proposal_headline_for_display(goal.goal_statement)
@@ -330,20 +279,16 @@ def summarize_autonomy_state(state: AutonomyStateV1 | AutonomyStateV2 | None) ->
         ],
         limit=3,
     )
-    if isinstance(state, AutonomyStateV2) and not state.goal_headlines and state.attention_items:
-        proposal_headlines = _bounded_unique([a.summary for a in state.attention_items], limit=3)
+    # attention_items fallback removed 2026-07-30 (chore/delete-orion-drives
+    # Wave 2a, found in review): upgrade_autonomy_state_v1_to_v2 was the last
+    # producer of AutonomyStateV2.attention_items in the repo (it seeded them
+    # from dominant_drive/tension_kinds, both now gone) -- confirmed zero
+    # remaining non-test construction sites for AttentionItemV1 repo-wide, so
+    # this branch could never fire again. Left as dead code, it would have
+    # been exactly the "unreachable but plausible-looking" pattern CLAUDE.md
+    # warns about.
 
     hazards: list[str] = []
-    if (state.drive_pressures.get("continuity") or 0.0) >= 0.6 or dominant == "continuity":
-        hazards.append("avoid abrupt thread pivots")
-    if (state.drive_pressures.get("coherence") or 0.0) >= 0.6 or dominant == "coherence":
-        hazards.append("avoid contradictory framing")
-    relational_pressure = max(
-        float(state.drive_pressures.get("relational_stability") or 0.0),
-        float(state.drive_pressures.get("relational") or 0.0),
-    )
-    if relational_pressure >= 0.6 or dominant == "relational_stability":
-        hazards.append("avoid relational coldness")
     if state.goal_headlines:
         hazards.append("do not present proposals as commitments")
 
@@ -362,7 +307,7 @@ def summarize_autonomy_state(state: AutonomyStateV1 | AutonomyStateV2 | None) ->
     active_goals = _active_goals_from_state(state)
     return AutonomySummaryV1(
         stance_hint=stance_hint,
-        dominant_drive=(state.dominant_drive or "").strip() or None,
+        dominant_drive=None,
         top_drives=top_drives,
         active_tensions=active_tensions,
         proposal_headlines=proposal_headlines,

@@ -183,6 +183,11 @@ def test_graph_lookup_connection_failure_classified() -> None:
 
 
 def test_graph_lookup_handles_legacy_active_drive_shape_without_query_error() -> None:
+    """AutonomyStateV1.dominant_drive was removed 2026-07-30 (chore/delete-
+    orion-drives Wave 2a); this legacy SPARQL row shape must still parse
+    without raising (the internal _fetch_drive_audit/_dominant_drive_from_
+    evidence dict computation is unchanged -- see repository.py's comment on
+    why its result no longer reaches the pydantic model)."""
     repo = GraphAutonomyRepository(
         endpoint="http://graphdb.local/repositories/collapse",
         timeout_sec=2.0,
@@ -193,10 +198,11 @@ def test_graph_lookup_handles_legacy_active_drive_shape_without_query_error() ->
 
     assert result.availability == "available"
     assert result.state is not None
-    assert result.state.dominant_drive == "relational"
 
 
 def test_graph_lookup_derives_dominant_drive_from_drive_pressures() -> None:
+    """Same as above: pressure-derived dominant-drive parsing must not raise,
+    even though the computed value no longer reaches AutonomyStateV1."""
     repo = GraphAutonomyRepository(
         endpoint="http://graphdb.local/repositories/collapse",
         timeout_sec=2.0,
@@ -207,4 +213,3 @@ def test_graph_lookup_derives_dominant_drive_from_drive_pressures() -> None:
 
     assert result.availability == "available"
     assert result.state is not None
-    assert result.state.dominant_drive == "predictive"

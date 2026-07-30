@@ -57,6 +57,18 @@ class LocalProfileStore:
         return None
 
     def load_drive_state(self, subject: str) -> Dict[str, Any]:
+        """Read-only historical accessor. The producer (DriveEngine via
+        orion.spark.concept_induction.bus_worker.ConceptWorker) was deleted
+        2026-07-30 -- no code writes drive_states anymore, so this now only
+        ever returns whatever was last persisted before that date (or {} for
+        a subject that never ticked / a fresh store). Kept because real
+        external readers still depend on it: scripts/drive_state_divergence_
+        audit.py (deleted alongside its comparison target) is gone, but
+        services/orion-hub's Drives Analytics page reads this via the same
+        helper pattern. Do not resurrect `save_drive_state` without a real
+        producer -- writing fabricated pressures here would be exactly the
+        "empty-shell cognition" this deletion was meant to remove.
+        """
         data = self._load_raw()
         states = data.get("drive_states", {})
         if not isinstance(states, dict):
@@ -64,79 +76,27 @@ class LocalProfileStore:
         state = states.get(subject)
         return state if isinstance(state, dict) else {}
 
-    def save_drive_state(
-        self,
-        subject: str,
-        *,
-        pressures: Dict[str, float],
-        activations: Dict[str, bool],
-        updated_at: datetime,
-    ) -> None:
-        data = self._load_raw()
-        data.setdefault("drive_states", {})
-        data["drive_states"][subject] = {
-            "pressures": pressures,
-            "activations": activations,
-            "updated_at": updated_at.isoformat(),
-        }
-        self._save_raw(data)
-
-    def load_goal_cooldown(self, signature: str) -> Dict[str, Any]:
-        data = self._load_raw()
-        cooldowns = data.get("goal_cooldowns", {})
-        if not isinstance(cooldowns, dict):
-            return {}
-        record = cooldowns.get(signature)
-        return record if isinstance(record, dict) else {}
-
-    def save_goal_cooldown(self, signature: str, cooldown_until: datetime) -> None:
-        data = self._load_raw()
-        data.setdefault("goal_cooldowns", {})
-        data["goal_cooldowns"][signature] = {
-            "cooldown_until": cooldown_until.isoformat(),
-            "suppressed_count": int(self.load_goal_cooldown(signature).get("suppressed_count", 0)),
-        }
-        self._save_raw(data)
-
-    def record_goal_suppression(self, signature: str, ts: datetime) -> None:
-        data = self._load_raw()
-        data.setdefault("goal_cooldowns", {})
-        record = data["goal_cooldowns"].get(signature, {})
-        suppressed_count = int(record.get("suppressed_count", 0)) + 1
-        if not record.get("cooldown_until"):
-            record["cooldown_until"] = ts.isoformat()
-        record["suppressed_count"] = suppressed_count
-        record["last_suppressed_at"] = ts.isoformat()
-        data["goal_cooldowns"][signature] = record
-        self._save_raw(data)
-
     @staticmethod
     def _goal_slot_key(subject: str, drive_origin: str) -> str:
         return f"{subject}:{drive_origin}"
 
     def load_goal_slot(self, subject: str, drive_origin: str) -> Dict[str, Any]:
+        """Read-only historical accessor. The only writer (GoalProposalEngine
+        via this package's now-deleted goals.py) is gone as of 2026-07-30, so
+        this always returns {} for a fresh store and never changes again for
+        an existing one. Kept because orion.autonomy.policy_act.
+        resolve_episode_intent() still calls this for every world-pulse
+        episode intent; its own fallback (a synthetic "episode-{run_id}"
+        intent, drive_origin="predictive") already handles the always-empty
+        case cleanly. Do not resurrect `save_goal_slot` without a real
+        producer.
+        """
         data = self._load_raw()
         slots = data.get("goal_slots", {})
         if not isinstance(slots, dict):
             return {}
         record = slots.get(self._goal_slot_key(subject, drive_origin))
         return record if isinstance(record, dict) else {}
-
-    def save_goal_slot(
-        self,
-        subject: str,
-        drive_origin: str,
-        *,
-        signature: str,
-        artifact_id: str,
-    ) -> None:
-        data = self._load_raw()
-        data.setdefault("goal_slots", {})
-        data["goal_slots"][self._goal_slot_key(subject, drive_origin)] = {
-            "signature": signature,
-            "artifact_id": artifact_id,
-        }
-        self._save_raw(data)
 
     def is_episode_run_processed(self, run_id: str) -> bool:
         """True if an autonomy episode has already been composed for this world-pulse run.

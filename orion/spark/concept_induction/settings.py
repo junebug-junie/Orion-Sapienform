@@ -75,25 +75,9 @@ class ConceptSettings(BaseSettings):
         "orion:collapse:sql-write",
         alias="BUS_SQL_OUT",
     )
-    drive_state_channel: str = Field(
-        "orion:memory:drives:state",
-        alias="BUS_DRIVE_STATE_OUT",
-    )
-    tension_event_channel: str = Field(
-        "orion:memory:tension:event",
-        alias="BUS_TENSION_EVENT_OUT",
-    )
-    drive_audit_channel: str = Field(
-        "orion:memory:drives:audit",
-        alias="BUS_DRIVE_AUDIT_OUT",
-    )
     identity_snapshot_channel: str = Field(
         "orion:memory:identity:snapshot",
         alias="BUS_IDENTITY_SNAPSHOT_OUT",
-    )
-    goal_proposal_channel: str = Field(
-        "orion:memory:goals:proposed",
-        alias="BUS_GOAL_PROPOSAL_OUT",
     )
     turn_dossier_channel: str = Field(
         "orion:debug:turn:dossier",
@@ -139,52 +123,24 @@ class ConceptSettings(BaseSettings):
     store_path: str = Field(
         DEFAULT_CONCEPT_STORE_PATH, alias="CONCEPT_STORE_PATH"
     )
-    drive_decay_tau_sec: float = Field(1800.0, alias="DRIVE_DECAY_TAU_SEC")
-    drive_saturation_gain: float = Field(1.8, alias="DRIVE_SATURATION_GAIN")
-    drive_activation_on: float = Field(0.62, alias="DRIVE_ACTIVATION_ON")
-    drive_activation_off: float = Field(0.42, alias="DRIVE_ACTIVATION_OFF")
-    # Homeostatic drives (spec 2026-07-07). Leaky math replaces the soft-saturate
-    # fixed point (~0.731 pin); the source path mints deviation-triggered tensions
-    # from the signal/failure/health bus. Both default true (Juniper-authorized).
-    drive_leaky_math_enabled: bool = Field(True, alias="ORION_DRIVE_LEAKY_MATH_ENABLED")
-    homeostatic_drives_enabled: bool = Field(True, alias="ORION_HOMEOSTATIC_DRIVES_ENABLED")
-    deviation_ewma_alpha: float = Field(0.1, alias="DEVIATION_EWMA_ALPHA")
-    deviation_z_threshold: float = Field(1.5, alias="DEVIATION_Z_THRESHOLD")
-    deviation_sigma_floor: float = Field(0.02, alias="DEVIATION_SIGMA_FLOOR")
-    signal_tension_impulse_k: float = Field(0.25, alias="SIGNAL_TENSION_IMPULSE_K")
-    signal_tension_cap_per_window: int = Field(3, alias="SIGNAL_TENSION_CAP_PER_WINDOW")
-    signal_tension_window_sec: int = Field(60, alias="SIGNAL_TENSION_WINDOW_SEC")
-    # Homeostatic consumer subscription: SPECIFIC organ/failure channels only —
-    # never the orion:signals:* wildcard, so the 55/s scene_state flood is
-    # excluded at the subscription. These route to a drive-only tick that does
-    # NOT trigger concept induction.
-    homeostatic_signal_channels: List[str] = Field(
-        default_factory=lambda: [
-            "orion:signals:biometrics",
-            "orion:signals:spark",
-            "orion:signals:equilibrium",
-        ],
-        validation_alias=AliasChoices("HOMEOSTATIC_SIGNAL_CHANNELS"),
-    )
-    homeostatic_failure_channels: List[str] = Field(
-        default_factory=lambda: [
-            "orion:system:error",
-            "orion:rdf:error",
-            "orion:vision:edge:error",
-        ],
-        validation_alias=AliasChoices("HOMEOSTATIC_FAILURE_CHANNELS"),
-    )
-    homeostatic_failure_severity: float = Field(0.8, alias="HOMEOSTATIC_FAILURE_SEVERITY")
+    # Drive-pressure engine (DriveEngine/DriveMathConfig), homeostatic
+    # deviation-tension source (DeviationGate/SignalDriveMap/TensionRateLimiter),
+    # and goal-proposal engine (GoalProposalEngine) all deleted 2026-07-30
+    # (drive-pressure/goal-generation deletion sprint -- see
+    # orion/sentience_striving_program/README.md sec8 for the halt rationale).
+    # Their settings fields (DRIVE_*, ORION_DRIVE_LEAKY_MATH_ENABLED,
+    # ORION_HOMEOSTATIC_DRIVES_ENABLED, DEVIATION_*, SIGNAL_TENSION_*,
+    # HOMEOSTATIC_*, GOAL_PROPOSAL_COOLDOWN_MINUTES, GOAL_GENERATION_MODE,
+    # GOAL_DRIVE_ORIGIN_SOURCE) are removed with them -- same convention as
+    # the ORIGINATION_*/ENDOGENOUS_MAG_CAP keys removed 2026-07-22 below. If
+    # any of these are still set in a live .env, they're now inert -- no code
+    # reads them.
+    #
     # Endogenous drive origination (spec 2026-07-07, Step 1) and its 8
     # ORIGINATION_*/ENDOGENOUS_MAG_CAP settings removed 2026-07-22, SelfStateV1
     # burn (docs/superpowers/specs/2026-07-22-self-state-phi-endo-origination-
     # burn-spec.md, decision 2): orion/autonomy/endogenous_origination.py's
-    # only input was a SelfStateV1 stream, which no longer exists. If these
-    # env keys are still set in a live .env, they're now inert -- no code
-    # reads them.
-    goal_proposal_cooldown_minutes: int = Field(180, alias="GOAL_PROPOSAL_COOLDOWN_MINUTES")
-    goal_generation_mode: str = Field("evidence_rules", alias="GOAL_GENERATION_MODE")
-    goal_drive_origin_source: str = Field("tick_attribution", alias="GOAL_DRIVE_ORIGIN_SOURCE")
+    # only input was a SelfStateV1 stream, which no longer exists.
     substrate_autonomy_metabolism_enabled: bool = Field(
         False,
         alias="ORION_SUBSTRATE_AUTONOMY_METABOLISM_ENABLED",

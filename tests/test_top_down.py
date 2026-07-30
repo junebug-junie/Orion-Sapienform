@@ -40,13 +40,13 @@ def test_1_no_goal_is_pure_bottom_up():
 
 def test_2_goal_flips_low_salience_loop_to_winner():
     # loop "hi" is the bottom-up winner; loop "goal" is low bottom-up but highly
-    # relevant to a predictive goal.
+    # relevant (concept_value) to the active goal.
     loops = [
-        _loop("hi", predictive_value=0.0),
-        _loop("goal", predictive_value=1.0),
+        _loop("hi", concept_value=0.0),
+        _loop("goal", concept_value=1.0),
     ]
     bottom_up = {"hi": 0.6, "goal": 0.1}
-    goal = GoalContext(drive_origin="predictive", priority=0.9, goal_artifact_id="g1")
+    goal = GoalContext(priority=0.9, goal_artifact_id="g1")
     res = TopDownBiasCombiner(TopDownConfig(gain=0.6, effort_max=1.0)).apply(
         goal=goal, loops=loops, bottom_up=bottom_up
     )
@@ -56,16 +56,19 @@ def test_2_goal_flips_low_salience_loop_to_winner():
     assert res.override.beat_loop_id == "hi"
     assert res.override.chosen_loop_id == "goal"
     assert res.override.goal_artifact_id == "g1"
-    assert res.override.goal_drive_origin == "predictive"
+    # drive_origin was removed from GoalContext (Wave 2b) -- the schema field
+    # survives on VoluntaryOverrideV1 for other consumers but this producer no
+    # longer has a value to set it with, so it stays at its schema default.
+    assert res.override.goal_drive_origin is None
 
 
 def test_3_effort_budget_exhausted_second_loop_gets_zero():
     loops = [
-        _loop("top", predictive_value=1.0),
-        _loop("second", predictive_value=0.9),
+        _loop("top", concept_value=1.0),
+        _loop("second", concept_value=0.9),
     ]
     bottom_up = {"top": 0.3, "second": 0.3}
-    goal = GoalContext(drive_origin="predictive", priority=1.0)
+    goal = GoalContext(priority=1.0)
     res = TopDownBiasCombiner(TopDownConfig(gain=0.6, effort_max=0.2)).apply(
         goal=goal, loops=loops, bottom_up=bottom_up
     )
@@ -78,12 +81,12 @@ def test_3_effort_budget_exhausted_second_loop_gets_zero():
 
 def test_4_strong_salience_beats_weak_goal_no_override():
     loops = [
-        _loop("salient", predictive_value=0.0),
-        _loop("weak_goal", predictive_value=0.2),
+        _loop("salient", concept_value=0.0),
+        _loop("weak_goal", concept_value=0.2),
     ]
     bottom_up = {"salient": 0.95, "weak_goal": 0.1}
     # weak goal: low priority, small relevance -> small bias, cannot flip winner.
-    goal = GoalContext(drive_origin="predictive", priority=0.2)
+    goal = GoalContext(priority=0.2)
     res = TopDownBiasCombiner(TopDownConfig(gain=0.6, effort_max=1.0)).apply(
         goal=goal, loops=loops, bottom_up=bottom_up
     )
@@ -92,39 +95,41 @@ def test_4_strong_salience_beats_weak_goal_no_override():
     assert res.override is None
 
 
-def test_5_relevance_mapping_table():
-    goal_and_field = [
-        ("predictive", "predictive_value"),
-        ("relational", "relational_relevance"),
-        ("continuity", "continuity_relevance"),
-        ("autonomy", "autonomy_value"),
-        ("coherence", "concept_value"),
-        ("capability", "concept_value"),
-    ]
-    for drive_origin, field in goal_and_field:
-        loop = _loop("x", **{field: 0.8})
-        goal = GoalContext(drive_origin=drive_origin, priority=1.0)
-        assert relevance(goal, loop) > 0.0, drive_origin
-        # A loop with that field zero (and others zero) reads 0.
-        zero_loop = _loop("y")
-        assert relevance(goal, zero_loop) == 0.0, drive_origin
+def test_5_relevance_reads_concept_value_only():
+    # Wave 2b removed the drive_origin -> relevance-field mapping table
+    # (predictive_value/relational_relevance/continuity_relevance/
+    # autonomy_value/concept_value keyed by drive_origin). relevance() now
+    # always reads concept_value -- the one dimension that was already the
+    # fallback for unmapped/unknown drive origins -- and ignores the other
+    # four legacy fields entirely, even when they're populated.
+    goal = GoalContext(priority=1.0)
+    loop = _loop(
+        "x",
+        concept_value=0.8,
+        predictive_value=1.0,
+        relational_relevance=1.0,
+        continuity_relevance=1.0,
+        autonomy_value=1.0,
+    )
+    assert relevance(goal, loop) == 0.8
 
-    # Unknown drive_origin falls back to concept_value.
-    unknown_goal = GoalContext(drive_origin="banana", priority=1.0)
-    loop = _loop("z", concept_value=0.7)
-    assert relevance(unknown_goal, loop) == 0.7
-    # ...and reads 0 when concept_value is 0 even if other fields are high.
-    other_high = _loop("w", predictive_value=1.0)
-    assert relevance(unknown_goal, other_high) == 0.0
+    zero_concept_loop = _loop(
+        "y",
+        predictive_value=1.0,
+        relational_relevance=1.0,
+        continuity_relevance=1.0,
+        autonomy_value=1.0,
+    )
+    assert relevance(goal, zero_concept_loop) == 0.0
 
 
 def test_6_agency_gates_effort():
     loops = [
-        _loop("hi", predictive_value=0.0),
-        _loop("goal", predictive_value=1.0),
+        _loop("hi", concept_value=0.0),
+        _loop("goal", concept_value=1.0),
     ]
     bottom_up = {"hi": 0.6, "goal": 0.1}
-    goal = GoalContext(drive_origin="predictive", priority=0.9)
+    goal = GoalContext(priority=0.9)
     cfg = TopDownConfig(gain=0.6, effort_max=1.0, scale_by_agency=True)
 
     # agency_readiness=0 -> E=0 -> no bias applied, no override.
@@ -146,9 +151,9 @@ def test_6_agency_gates_effort():
 
 def test_7_scores_clamped_to_unit_interval():
     # s=0.9 + gain*applied could exceed 1 -> must clamp.
-    loops = [_loop("a", predictive_value=1.0), _loop("b", predictive_value=0.0)]
+    loops = [_loop("a", concept_value=1.0), _loop("b", concept_value=0.0)]
     bottom_up = {"a": 0.9, "b": 0.1}
-    goal = GoalContext(drive_origin="predictive", priority=1.0)
+    goal = GoalContext(priority=1.0)
     res = TopDownBiasCombiner(TopDownConfig(gain=0.6, effort_max=1.0)).apply(
         goal=goal, loops=loops, bottom_up=bottom_up
     )
@@ -171,11 +176,11 @@ def test_8_no_goal_combined_equals_bottom_up():
 
 def test_9_override_roundtrips_through_pydantic():
     loops = [
-        _loop("hi", predictive_value=0.0),
-        _loop("goal", predictive_value=1.0),
+        _loop("hi", concept_value=0.0),
+        _loop("goal", concept_value=1.0),
     ]
     bottom_up = {"hi": 0.6, "goal": 0.1}
-    goal = GoalContext(drive_origin="predictive", priority=0.9, goal_artifact_id="g1")
+    goal = GoalContext(priority=0.9, goal_artifact_id="g1")
     res = TopDownBiasCombiner(TopDownConfig(gain=0.6, effort_max=1.0)).apply(
         goal=goal, loops=loops, bottom_up=bottom_up
     )
@@ -187,7 +192,7 @@ def test_9_override_roundtrips_through_pydantic():
 def test_never_raises_on_bad_input():
     # bottom_up missing keys, empty loops, weird agency -> no exception.
     res = TopDownBiasCombiner().apply(
-        goal=GoalContext(drive_origin="predictive", priority=0.5),
+        goal=GoalContext(priority=0.5),
         loops=[],
         bottom_up={},
         agency_readiness=5.0,

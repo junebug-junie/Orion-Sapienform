@@ -776,13 +776,17 @@ wiring needed).
 **Frame storage / sampling:** Full node/edge graph samples are included (best-effort
 decoration, no continuity guarantee across frames). Regions are the trackable spine.
 
-### Downstream drive taxonomy overlap
+### Downstream drive taxonomy overlap — RESOLVED BY DELETION, not unification (2026-07-30)
 
-Two independently-computed drive-pressure vectors exist over the same 6-key taxonomy
-(`coherence, continuity, capability, relational, predictive, autonomy`):
-`orion/spark/concept_induction/drives.py` (`DriveEngine`, fed by L6 self-state tensions +
-biometrics/mesh/failure signals) and `orion/autonomy/reducer.py` (`AutonomyStateV2`, fed
-by chat-turn evidence only -- a test explicitly bans it from importing self_state/phi).
-Both import the shared `orion/autonomy/signal_drive_map.py` taxonomy config, but each
-still keeps its own local pressure computation -- not yet one shared store. See the
-arsonist review doc for the full merge/burn assessment.
+This section used to describe two independently-computed drive-pressure vectors
+over the same 6-key taxonomy (`coherence, continuity, capability, relational,
+predictive, autonomy`): `orion/spark/concept_induction/drives.py`'s `DriveEngine`
+and `orion/autonomy/reducer.py`'s `AutonomyStateV2`. Neither exists anymore.
+`AutonomyStateV2`'s reducer was already retired 2026-07-16 (its call site deleted
+outright, no flag); `DriveEngine` and the rest of the drive-pressure/goal-generation
+system were deleted 2026-07-30 (`chore/delete-orion-drives`, PR #1486), following
+through on `orion/sentience_striving_program/README.md` §8's halt. The "merge or
+keep separate" question this section used to pose never got answered — the whole
+question became moot once both sides were deleted instead. `orion/autonomy/
+signal_drive_map.py` (the shared taxonomy config both used to import) is also
+deleted.

@@ -1,7 +1,13 @@
 """Autonomy context adapter — graphdb_durable tier.
 
-Wraps ``build_autonomy_repository`` + ``map_autonomy_artifacts_to_substrate``
-so that the autonomy producer lane can be registered in ProducerRegistryV1.
+Wraps ``build_autonomy_repository`` and maps its result to substrate nodes
+directly via ``_map_autonomy_state_to_nodes`` below (the separate
+``orion.substrate.adapters.autonomy.map_autonomy_artifacts_to_substrate``
+this docstring used to reference was removed 2026-07-30,
+chore/delete-orion-drives Wave 2c -- it had zero production callers once
+services/orion-substrate-runtime's own drive_state materializer was deleted
+in the same sprint; this adapter never actually called it) so that the
+autonomy producer lane can be registered in ProducerRegistryV1.
 
 When ``AUTONOMY_GRAPH_BACKEND=graphdb`` or SPARQL/Fuseki endpoints resolve, the adapter resolves SPARQL endpoint
 from env, applies quick-lane bounds for fast chat verbs, and maps each available
@@ -18,13 +24,10 @@ from typing import Any
 
 from orion.autonomy.fanout_policy import autonomy_subject_fanout_from_runtime_ctx
 from orion.core.schemas.cognitive_substrate import (
-    DriveNodeV1,
     GoalNodeV1,
-    StateSnapshotNodeV1,
     SubstrateGraphRecordV1,
     SubstrateProvenanceV1,
     SubstrateSignalBundleV1,
-    TensionNodeV1,
 )
 from orion.substrate.adapters._common import make_temporal
 
@@ -59,74 +62,26 @@ def _make_prov(*, subject: str) -> SubstrateProvenanceV1:
 
 
 def _map_autonomy_state_to_nodes(state: Any, *, anchor: str) -> list[Any]:
-    """Map an AutonomyStateV1 into substrate nodes."""
+    """Map an AutonomyStateV1 into substrate nodes.
+
+    Only GoalNodeV1 remains as of 2026-07-30 (chore/delete-orion-drives Wave
+    2a follow-up): the StateSnapshotNodeV1/DriveNodeV1/TensionNodeV1
+    branches this used to build from drive_pressures/active_drives/
+    tension_kinds/dominant_drive were permanently dead code -- those fields
+    no longer exist on AutonomyStateV1 (removed in Wave 2a), so every
+    getattr(state, ..., default) here always returned its default and these
+    branches could never fire. Removed rather than left as unreachable code
+    per CLAUDE.md's no-empty-shell-cognition rule. DriveNodeV1/TensionNodeV1
+    themselves are not retired -- orion/substrate/relational/adapters/
+    recall.py and orion/substrate/adapters/spark.py still produce them from
+    real, non-drive sources.
+    """
     nodes: list[Any] = []
     now = datetime.now(timezone.utc)
     temporal = make_temporal(observed_at=now)
     prov = _make_prov(subject=anchor)
 
-    drive_pressures: dict[str, float] = dict(getattr(state, "drive_pressures", {}) or {})
-    active_drives: list[str] = list(getattr(state, "active_drives", []) or [])
-    tension_kinds: list[str] = list(getattr(state, "tension_kinds", []) or [])
     goal_headlines = list(getattr(state, "goal_headlines", []) or [])
-    dominant_drive: str | None = getattr(state, "dominant_drive", None)
-    identity_summary: str | None = getattr(state, "identity_summary", None)
-
-    # StateSnapshotNodeV1 capturing the drive pressure map
-    if drive_pressures:
-        nodes.append(
-            StateSnapshotNodeV1(
-                node_id=f"sub-autonomy-state-{anchor}",
-                anchor_scope=anchor,
-                temporal=temporal,
-                provenance=prov,
-                signals=SubstrateSignalBundleV1(
-                    confidence=0.8,
-                    salience=max(drive_pressures.values()) if drive_pressures else 0.0,
-                ),
-                snapshot_source="autonomy",
-                dimensions={k: float(v) for k, v in drive_pressures.items()},
-                metadata={
-                    "dominant_drive": dominant_drive,
-                    "identity_summary": identity_summary,
-                    "anchor_strategy": getattr(state, "anchor_strategy", None),
-                },
-            )
-        )
-
-    # DriveNodeV1 for each drive
-    all_drive_names: set[str] = set(active_drives) | set(drive_pressures.keys())
-    for drive_name in sorted(n for n in all_drive_names if n):
-        nodes.append(
-            DriveNodeV1(
-                node_id=f"sub-drive-{anchor}-{drive_name}",
-                anchor_scope=anchor,
-                drive_kind=drive_name,
-                temporal=temporal,
-                provenance=prov,
-                signals=SubstrateSignalBundleV1(
-                    confidence=0.8,
-                    salience=float(drive_pressures.get(drive_name, 0.5)),
-                ),
-                metadata={"active": drive_name in active_drives},
-            )
-        )
-
-    # TensionNodeV1 for each tension kind
-    for tension_kind in tension_kinds[:8]:
-        if not tension_kind:
-            continue
-        nodes.append(
-            TensionNodeV1(
-                anchor_scope=anchor,
-                tension_kind=tension_kind,
-                intensity=0.5,
-                temporal=temporal,
-                provenance=prov,
-                signals=SubstrateSignalBundleV1(confidence=0.7, salience=0.5),
-                metadata={"tension_kind": tension_kind},
-            )
-        )
 
     # GoalNodeV1 for each goal headline
     for gh in goal_headlines[:5]:

@@ -188,10 +188,6 @@ class TestAutonomyCtxAdapterSkip:
 # ---------------------------------------------------------------------------
 
 class TestExistingAdapterSmoke:
-    def test_autonomy_adapter_still_importable(self):
-        from orion.substrate.adapters.autonomy import map_autonomy_artifacts_to_substrate
-        assert callable(map_autonomy_artifacts_to_substrate)
-
     def test_concept_induction_adapter_still_importable(self):
         from orion.substrate.adapters.concept_induction import map_concept_profile_to_substrate
         assert callable(map_concept_profile_to_substrate)

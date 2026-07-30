@@ -78,12 +78,13 @@ def test_graph_repository_maps_latest_state_bundle() -> None:
     repo = GraphAutonomyRepository(endpoint="http://graph/repositories/collapse", timeout_sec=1.0, query_client=FakeQueryClient(rows))
     result = repo.get_latest("orion")
 
+    # latest_drive_audit_id/dominant_drive/active_drives/drive_pressures/
+    # tension_kinds removed from AutonomyStateV1 2026-07-30 (chore/delete-
+    # orion-drives Wave 2a) -- GraphAutonomyRepository still parses the
+    # "drives" SPARQL rows (kept for the fixture's not-empty/generated_at
+    # fallback checks below), but no longer constructs AutonomyStateV1 with
+    # them. See GraphAutonomyRepository._query_subject's own comment.
     assert result.availability == "available"
     assert result.state is not None
     assert result.state.latest_identity_snapshot_id == "identity-1"
-    assert result.state.latest_drive_audit_id == "audit-1"
     assert result.state.latest_goal_ids == ["goal-2"]
-    assert result.state.dominant_drive == "continuity"
-    assert result.state.active_drives == ["continuity", "coherence"]
-    assert result.state.drive_pressures["continuity"] == 0.91
-    assert "scope_sprawl" in result.state.tension_kinds

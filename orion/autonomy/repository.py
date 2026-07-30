@@ -109,17 +109,17 @@ def _drives_facet_status(lookup: AutonomyLookupV1 | None) -> str:
 
 
 def _drives_facet_ok(lookup: AutonomyLookupV1 | None) -> bool:
+    # AutonomyStateV1.dominant_drive/drive_pressures/active_drives were
+    # removed 2026-07-30 (chore/delete-orion-drives Wave 2a) -- this function
+    # crashed (AttributeError) on any lookup whose state was populated before
+    # this fix, since it unconditionally read those attributes. The real
+    # remaining signal is the "drives" subquery's own diagnostics (row_count),
+    # which this already had as a fallback path -- promoted to the only path.
     if lookup is None or lookup.availability not in {"available", "degraded"}:
         return False
     status = _drives_facet_status(lookup)
     if status != "ok":
         return False
-    if lookup.state and (
-        lookup.state.dominant_drive
-        or lookup.state.drive_pressures
-        or lookup.state.active_drives
-    ):
-        return True
     diags = (lookup.subquery_diagnostics or {}).get("drives")
     if not isinstance(diags, dict):
         return False
@@ -713,19 +713,24 @@ LIMIT {self._goals_limit * 2}
         elif audit and audit.get("created_at"):
             generated_at = audit.get("created_at")
 
+        # latest_drive_audit_id/dominant_drive/active_drives/drive_pressures/
+        # tension_kinds removed from AutonomyStateV1 2026-07-30 (chore/delete-
+        # orion-drives Wave 2a). `audit` (the GraphDB "drives" SPARQL subquery
+        # result -- _fetch_drive_audit above) still computes these internally
+        # for `not identity and not audit and not goals` / generated_at
+        # fallback purposes, but nothing constructs a pydantic field from it
+        # anymore. This SPARQL "drives" subquery is now effectively write-only
+        # from this model's perspective -- flagged in the Wave 2a PR report as
+        # a real follow-up (either retire the subquery or give it a field-
+        # native destination), not silently absorbed here.
         state = AutonomyStateV1(
             subject=subject,
             model_layer=binding.model_layer,
             entity_id=binding.entity_id,
             latest_identity_snapshot_id=(identity or {}).get("artifact_id") or None,
-            latest_drive_audit_id=(audit or {}).get("artifact_id") or None,
             latest_goal_ids=[goal.artifact_id for goal in goals],
             identity_summary=(identity or {}).get("summary") or None,
             anchor_strategy=(identity or {}).get("anchor_strategy") or None,
-            dominant_drive=(audit or {}).get("dominant_drive") if isinstance(audit, dict) else None,
-            active_drives=list((audit or {}).get("active_drives") or []),
-            drive_pressures=dict((audit or {}).get("drive_pressures") or {}),
-            tension_kinds=list((audit or {}).get("tension_kinds") or []),
             goal_headlines=goals,
             source="graph",
             generated_at=generated_at,

@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import hashlib
 from dataclasses import dataclass
 from datetime import datetime
 from typing import Literal
@@ -53,18 +52,20 @@ class AutonomyActiveGoalV1(BaseModel):
 class AutonomyStateV1(BaseModel):
     model_config = ConfigDict(extra="forbid", populate_by_name=True)
 
+    # dominant_drive, active_drives, drive_pressures, tension_kinds, and
+    # latest_drive_audit_id were removed 2026-07-30 (chore/delete-orion-drives
+    # Wave 2a) -- full removal, not a present-but-always-empty stub, per
+    # explicit direction: DriveEngine/DriveAuditV1's publisher were already
+    # deleted in Wave 1, so nothing computes these anymore. goal_headlines
+    # (and its per-goal drive_origin field) survives: GoalProposalV1 real
+    # historical/live readers still exist.
     subject: str
     model_layer: str
     entity_id: str
     latest_identity_snapshot_id: str | None = None
-    latest_drive_audit_id: str | None = None
     latest_goal_ids: list[str] = Field(default_factory=list)
     identity_summary: str | None = None
     anchor_strategy: str | None = None
-    dominant_drive: str | None = None
-    active_drives: list[str] = Field(default_factory=list)
-    drive_pressures: dict[str, float] = Field(default_factory=dict)
-    tension_kinds: list[str] = Field(default_factory=list)
     goal_headlines: list[AutonomyGoalHeadlineV1] = Field(default_factory=list)
     source: str
     generated_at: datetime | None = None
@@ -318,17 +319,8 @@ def upgrade_autonomy_state_v1_to_v2(v1: AutonomyStateV1) -> AutonomyStateV2:
                 observed_at=v1.generated_at,
             )
         )
-    if v1.latest_drive_audit_id:
-        evidence_refs.append(
-            AutonomyEvidenceRefV1(
-                evidence_id=f"drive_audit:{v1.latest_drive_audit_id}",
-                source="graph",
-                kind="drive_audit",
-                summary=None,
-                confidence=0.55,
-                observed_at=v1.generated_at,
-            )
-        )
+    # drive_audit evidence ref removed 2026-07-30 (chore/delete-orion-drives
+    # Wave 2a): v1.latest_drive_audit_id no longer exists on AutonomyStateV1.
     for gid in v1.latest_goal_ids:
         evidence_refs.append(
             AutonomyEvidenceRefV1(
@@ -344,30 +336,17 @@ def upgrade_autonomy_state_v1_to_v2(v1: AutonomyStateV1) -> AutonomyStateV2:
     unknowns: list[str] = ["no_action_outcome_history", "evidence_from_graph_only"]
     if v1.latest_identity_snapshot_id is None:
         unknowns.append("no_identity_snapshot")
-    if v1.latest_drive_audit_id is None:
-        unknowns.append("no_drive_audit")
+    # "no_drive_audit" unknown removed 2026-07-30 (chore/delete-orion-drives
+    # Wave 2a): drive_audit is no longer a producible artifact at all, so
+    # flagging its absence as an "unknown" would be misleading -- it isn't
+    # unknown, it's gone.
 
+    # attention_items seeded from dominant_drive/tension_kinds removed
+    # 2026-07-30 (chore/delete-orion-drives Wave 2a): those fields no longer
+    # exist on AutonomyStateV1. No replacement attention seed is derived here
+    # -- real attention_items now come solely from wherever else populates
+    # AutonomyStateV2.attention_items downstream of this upgrade.
     attention_items: list[AttentionItemV1] = []
-    dom = (v1.dominant_drive or "").strip()
-    if dom or v1.tension_kinds:
-        seed_kind = "attention_seed"
-        item_id = hashlib.sha256(f"{v1.subject}:{seed_kind}:{v1.dominant_drive or ''}".encode()).hexdigest()[:16]
-        parts: list[str] = []
-        if dom:
-            parts.append(f"dominant_drive={dom}")
-        if v1.tension_kinds:
-            parts.append("tensions=" + ",".join(v1.tension_kinds[:6]))
-        summary = "; ".join(parts) if parts else "attention"
-        attention_items.append(
-            AttentionItemV1(
-                item_id=item_id,
-                summary=summary,
-                source="graph_upgrade",
-                salience=0.75,
-                drive_links=[dom] if dom else [],
-                tension_links=list(v1.tension_kinds)[:6],
-            )
-        )
 
     core = v1.model_dump()
     core.update(
@@ -397,7 +376,6 @@ class CapabilityPolicyRuleV1(BaseModel):
     side_effect_class: Literal["readonly", "write", "external"]
     auto_execute: bool = False
     requires_goal_status: str = "none"
-    required_drive_origins: list[str] = Field(default_factory=list)
     required_signal_kinds: list[str] = Field(default_factory=list)
     budget_per_cycle: int = 0
     # Real, additive gate on CapabilityEvaluationContext.domain_surprise_score -- see

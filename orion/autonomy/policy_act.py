@@ -14,7 +14,7 @@ from orion.autonomy.salience import gap_terms_from_signals, iter_gap_section_lab
 from orion.cognition.recall_query import DEFAULT_RECALL_REPLY_PREFIX, build_recall_query_v1
 from orion.core.bus.bus_schemas import BaseEnvelope, ServiceRef
 from orion.core.contracts.recall import RecallReplyV1
-from orion.core.schemas.drives import DriveStateV1, GoalProposalV1
+from orion.core.schemas.drives import GoalProposalV1
 from orion.core.schemas.frontier_curiosity import FrontierInvocationSignalV1
 
 logger = logging.getLogger(__name__)
@@ -61,7 +61,6 @@ def build_readonly_fetch_query(signals: Sequence[FrontierInvocationSignalV1]) ->
 async def maybe_execute_readonly_fetch_after_goal(
     *,
     goal: GoalProposalV1,
-    drive_state: DriveStateV1,
     curiosity_signals: Sequence[FrontierInvocationSignalV1],
     spawned_correlation_id: str | None,
     fetch_backend: Callable[..., Awaitable[dict]] | None = None,
@@ -89,7 +88,6 @@ async def maybe_execute_readonly_fetch_after_goal(
 
     _domain_surprise = _resolve_domain_surprise(surprise_source)
     ctx = CapabilityEvaluationContext(
-        predictive_pressure=float(drive_state.pressures.get("predictive", 0.0)),
         curiosity_strength=curiosity_strength_from_signals(curiosity_signals),
         signal_kinds=signal_kinds_from_curiosity(curiosity_signals),
         goal=goal,
@@ -253,7 +251,6 @@ async def _execute_readonly_recall(
 async def maybe_execute_readonly_recall_after_goal(
     *,
     goal: GoalProposalV1,
-    drive_state: DriveStateV1,
     curiosity_signals: Sequence[FrontierInvocationSignalV1],
     spawned_correlation_id: str | None,
     bus: Any = None,
@@ -292,7 +289,6 @@ async def maybe_execute_readonly_recall_after_goal(
 
     _domain_surprise = _resolve_domain_surprise(surprise_source)
     ctx = CapabilityEvaluationContext(
-        predictive_pressure=float(drive_state.pressures.get("predictive", 0.0)),
         curiosity_strength=curiosity_strength_from_signals(curiosity_signals),
         signal_kinds=signal_kinds_from_curiosity(curiosity_signals),
         goal=goal,
@@ -408,7 +404,6 @@ def build_episode_narrative_seed(
 async def maybe_compose_autonomy_episode_after_fetch(
     *,
     goal: GoalProposalV1,
-    drive_state: DriveStateV1,
     curiosity_signals: Sequence[FrontierInvocationSignalV1],
     spawned_correlation_id: str | None,
     fetch_outcome: ActionOutcomeRefV1 | None,
@@ -437,7 +432,6 @@ async def maybe_compose_autonomy_episode_after_fetch(
 
     _domain_surprise = _resolve_domain_surprise(surprise_source)
     ctx = CapabilityEvaluationContext(
-        predictive_pressure=float(drive_state.pressures.get("predictive", 0.0)),
         curiosity_strength=0.0,
         signal_kinds=[],
         goal=goal,
@@ -478,6 +472,13 @@ def resolve_episode_intent(
     run_id: str,
     drive_origin: str = "predictive",
 ) -> SubstrateEpisodeIntentV1:
+    # `drive_origin` is now purely a store slot-key convention and a
+    # historical label on the synthetic goal below -- it no longer drives any
+    # capability_policy.py gating decision (that check was removed 2026-07-30,
+    # chore/delete-orion-drives Wave 2a). Left as "predictive" so
+    # store.load_goal_slot's existing key ("orion", "predictive") keeps
+    # resolving the same historical goal-slot row it always has; renaming it
+    # would just be cosmetic churn on a real storage key, not a behavior fix.
     slot = store.load_goal_slot(subject, drive_origin)
     artifact_id = slot.get("artifact_id") if isinstance(slot, dict) else None
     if isinstance(artifact_id, str) and artifact_id.strip():
@@ -496,6 +497,14 @@ def resolve_episode_intent(
 
 
 def goal_proposal_from_episode_intent(intent: SubstrateEpisodeIntentV1) -> GoalProposalV1:
+    """Still needed after the 2026-07-30 drive_origin gate removal: this
+    synthetic (never bus-published) goal is not solely a drive_origin carrier
+    -- evaluate_capability() also reads its `proposal_status` (requires_goal /
+    goal_status_insufficient checks) and its presence at all (`missing_goal`),
+    both real, non-drive gating paths that still apply. `drive_origin` itself
+    is now write-only here: a required GoalProposalV1 field carried forward
+    for schema validity, read by nothing in capability_policy.py anymore.
+    """
     return GoalProposalV1.model_validate(
         {
             "artifact_id": intent.goal_artifact_id,
@@ -515,7 +524,6 @@ def goal_proposal_from_episode_intent(intent: SubstrateEpisodeIntentV1) -> GoalP
 async def maybe_execute_substrate_act_after_metabolism(
     *,
     episode_intent: SubstrateEpisodeIntentV1,
-    drive_state: DriveStateV1,
     curiosity_signals: Sequence[FrontierInvocationSignalV1],
     spawned_correlation_id: str | None = None,
     fetch_backend: Callable[..., Awaitable[dict]] | None = None,
@@ -553,7 +561,6 @@ async def maybe_execute_substrate_act_after_metabolism(
         try:
             _, recall_outcome = await maybe_execute_readonly_recall_after_goal(
                 goal=synthetic_goal,
-                drive_state=drive_state,
                 curiosity_signals=curiosity_signals,
                 spawned_correlation_id=run_id,
                 bus=recall_bus,
@@ -593,7 +600,6 @@ async def maybe_execute_substrate_act_after_metabolism(
         else:
             fetch_decision, fetch_outcome = await maybe_execute_readonly_fetch_after_goal(
                 goal=synthetic_goal,
-                drive_state=drive_state,
                 curiosity_signals=curiosity_signals,
                 spawned_correlation_id=run_id,
                 fetch_backend=fetch_backend,
@@ -618,7 +624,6 @@ async def maybe_execute_substrate_act_after_metabolism(
     try:
         journal_decision, journal_payload = await maybe_compose_autonomy_episode_after_fetch(
             goal=synthetic_goal,
-            drive_state=drive_state,
             curiosity_signals=curiosity_signals,
             spawned_correlation_id=run_id,
             fetch_outcome=fetch_outcome,

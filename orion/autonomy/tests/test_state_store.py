@@ -32,14 +32,18 @@ def _make_db(path) -> str:
     return url
 
 
-def _make_state(subject: str = "orion", dominant_drive: str | None = "curiosity") -> AutonomyStateV2:
+def _make_state(subject: str = "orion", identity_summary: str | None = "curiosity") -> AutonomyStateV2:
+    # dominant_drive/active_drives (previously used as convenient round-trip
+    # discriminators) were removed from AutonomyStateV1/V2 2026-07-30 (chore/
+    # delete-orion-drives Wave 2a); identity_summary (still a real field)
+    # plays that role now -- this file tests state_store.py's generic
+    # model_dump/model_validate round-trip, not any drive-specific behavior.
     return AutonomyStateV2(
         subject=subject,
         model_layer="cortex",
         entity_id="orion-prime",
         source="reducer",
-        dominant_drive=dominant_drive,
-        active_drives=["curiosity", "coherence"],
+        identity_summary=identity_summary,
         unknowns=["whether juniper is asleep"],
     )
 
@@ -66,14 +70,13 @@ def test_round_trip_save_then_load(tmp_path, monkeypatch) -> None:
     url = _make_db(tmp_path / "autonomy_state.db")
     monkeypatch.setenv("ORION_AUTONOMY_STATE_DB_URL", url)
 
-    state = _make_state(subject="orion", dominant_drive="curiosity")
+    state = _make_state(subject="orion", identity_summary="curiosity")
     save_autonomy_state_v2(subject="orion", state=state)
 
     loaded = load_autonomy_state_v2(subject="orion")
     assert loaded is not None
     assert loaded.subject == "orion"
-    assert loaded.dominant_drive == "curiosity"
-    assert loaded.active_drives == ["curiosity", "coherence"]
+    assert loaded.identity_summary == "curiosity"
     assert loaded.unknowns == ["whether juniper is asleep"]
     assert loaded.schema_version == "autonomy.state.v2"
 
@@ -82,12 +85,12 @@ def test_save_upserts_existing_subject(tmp_path, monkeypatch) -> None:
     url = _make_db(tmp_path / "autonomy_state.db")
     monkeypatch.setenv("ORION_AUTONOMY_STATE_DB_URL", url)
 
-    save_autonomy_state_v2(subject="orion", state=_make_state(dominant_drive="curiosity"))
-    save_autonomy_state_v2(subject="orion", state=_make_state(dominant_drive="coherence"))
+    save_autonomy_state_v2(subject="orion", state=_make_state(identity_summary="curiosity"))
+    save_autonomy_state_v2(subject="orion", state=_make_state(identity_summary="coherence"))
 
     loaded = load_autonomy_state_v2(subject="orion")
     assert loaded is not None
-    assert loaded.dominant_drive == "coherence"
+    assert loaded.identity_summary == "coherence"
 
     engine = create_engine(url)
     with engine.connect() as conn:
@@ -100,11 +103,11 @@ def test_round_trip_is_subject_scoped(tmp_path, monkeypatch) -> None:
     url = _make_db(tmp_path / "autonomy_state.db")
     monkeypatch.setenv("ORION_AUTONOMY_STATE_DB_URL", url)
 
-    save_autonomy_state_v2(subject="orion", state=_make_state(subject="orion", dominant_drive="curiosity"))
-    save_autonomy_state_v2(subject="juniper", state=_make_state(subject="juniper", dominant_drive="coherence"))
+    save_autonomy_state_v2(subject="orion", state=_make_state(subject="orion", identity_summary="curiosity"))
+    save_autonomy_state_v2(subject="juniper", state=_make_state(subject="juniper", identity_summary="coherence"))
 
-    assert load_autonomy_state_v2(subject="orion").dominant_drive == "curiosity"
-    assert load_autonomy_state_v2(subject="juniper").dominant_drive == "coherence"
+    assert load_autonomy_state_v2(subject="orion").identity_summary == "curiosity"
+    assert load_autonomy_state_v2(subject="juniper").identity_summary == "coherence"
 
 
 def test_load_returns_none_for_missing_subject(tmp_path, monkeypatch) -> None:

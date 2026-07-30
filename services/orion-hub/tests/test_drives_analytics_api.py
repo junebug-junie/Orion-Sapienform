@@ -313,18 +313,38 @@ def test_divergence_fallback_banner_flag(monkeypatch) -> None:
 
     monkeypatch.delenv("CONCEPT_STORE_PATH", raising=False)
 
-    class _Mod:
-        @staticmethod
-        def load_drive_state_v1(store_path, subject):
-            return None, "missing"
-
-    monkeypatch.setitem(sys.modules, "_orion_drive_state_divergence_audit_for_hub", _Mod())
+    # scripts/drive_state_divergence_audit.py (formerly file-loaded by this
+    # code path) was deleted 2026-07-30; drives_analytics_queries.py now
+    # inlines the same helper directly as `_load_drive_state_v1`. Patch that
+    # instead of the old dynamic-module-load seam.
+    monkeypatch.setattr(daq, "_load_drive_state_v1", lambda store_path, subject: (None, "missing"))
     payload = daq.fetch_divergence_sync(
         subject="orion", audit_pressures={k: 0.1 for k in da_live.DRIVE_KEYS}
     )
     assert payload["store_path_is_fallback_default"] is True
     assert payload["degraded"] is True
     assert payload["autonomy_state_v2_note"]
+
+
+def test_divergence_sync_does_not_error_without_deleted_script(monkeypatch, tmp_path) -> None:
+    # Regression guard: scripts/drive_state_divergence_audit.py (formerly
+    # file-loaded by path from fetch_divergence_sync) was deleted 2026-07-30.
+    # Confirms the real, unpatched code path (no monkeypatching
+    # _load_drive_state_v1) degrades cleanly -- via LocalProfileStore.
+    # load_drive_state on a cold store, not via a FileNotFoundError for a
+    # script that no longer exists.
+    import scripts.drives_analytics as da_live
+    import scripts.drives_analytics_queries as daq
+
+    monkeypatch.setenv("CONCEPT_STORE_PATH", str(tmp_path / "state.json"))
+    payload = daq.fetch_divergence_sync(
+        subject="orion", audit_pressures={k: 0.1 for k in da_live.DRIVE_KEYS}
+    )
+    assert payload["store_path_is_fallback_default"] is False
+    # Cold store (never ticked) -> degraded with a clear reason, not a crash
+    # and not a "missing drive_state_divergence_audit.py" error.
+    assert payload["degraded"] is True
+    assert "drive_state_divergence_audit" not in str(payload.get("error") or "")
 
 
 def test_goal_alignment_sync_exposes_funnel_scope() -> None:

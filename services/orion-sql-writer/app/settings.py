@@ -211,10 +211,17 @@ class Settings(BaseSettings):
         "orion:chat:history:spark_meta:patch", alias="CHANNEL_CHAT_HISTORY_SPARK_META_PATCH"
     )
     metacog_trace_retention_days: int = Field(14, alias="METACOG_TRACE_RETENTION_DAYS")
-    # drive_audits is written on every DriveEngine tick (thousands/day, append-only);
-    # 90 days keeps long-window autonomy-gate measurement possible while bounding growth.
-    # 0 disables pruning.
-    drive_audits_retention_days: int = Field(90, alias="DRIVE_AUDITS_RETENTION_DAYS")
+    # drive_audits was written on every DriveEngine tick (thousands/day, append-only)
+    # until DriveEngine was deleted 2026-07-30 (drive-pressure/goal-generation
+    # deletion sprint) -- the table is now write-never, frozen historical data read
+    # by Hub Drives Analytics (services/orion-hub). The 90-day prune window that used
+    # to bound unbounded live growth would, left unchanged, silently delete this now-
+    # finite history out from under that reader within 90 days of the last real
+    # DriveEngine tick -- a real data-loss bug caught 2026-07-30, not a hypothetical.
+    # Defaulting to 0 (disabled) preserves the frozen history indefinitely. 0 disables
+    # pruning; a positive value re-enables it (only appropriate again if this table
+    # gets a new live producer).
+    drive_audits_retention_days: int = Field(0, alias="DRIVE_AUDITS_RETENTION_DAYS")
 
     # Guardrails: grammar lane is async-isolated; operational writes use concurrent Hunter + pool limits.
     sql_writer_concurrent_handlers: bool = Field(True, alias="SQL_WRITER_CONCURRENT_HANDLERS")

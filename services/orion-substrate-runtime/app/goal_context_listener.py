@@ -47,10 +47,9 @@ async def _handle_bus_message(
 
     set_active_goal(goal)
     logger.info(
-        "goal_context updated corr=%s artifact_id=%s drive_origin=%s priority=%.3f status=%s",
+        "goal_context updated corr=%s artifact_id=%s priority=%.3f status=%s",
         corr,
         goal.artifact_id,
-        goal.drive_origin,
         goal.priority,
         goal.proposal_status,
     )

@@ -46,11 +46,7 @@ class GoalContextStore:
                 if self._current is not None and self._current.goal_artifact_id == artifact_id:
                     self._current = None
                 return
-            drive_origin = getattr(goal, "drive_origin", None)
-            if not drive_origin:
-                return
             self._current = GoalContext(
-                drive_origin=str(drive_origin),
                 priority=max(0.0, min(1.0, float(getattr(goal, "priority", 0.0) or 0.0))),
                 goal_artifact_id=artifact_id,
             )

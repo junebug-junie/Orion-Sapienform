@@ -1,37 +1,48 @@
 version: v1
 rules:
+  # required_drive_origins removed 2026-07-30 (chore/delete-orion-drives Wave
+  # 2a). Per docs/superpowers/specs/2026-07-24-goal-provenance-replacement-
+  # scoping-brainstorm.md, this gate only ever fired on [predictive] (2 of
+  # these 3 rules also paired it with required_signal_kinds:
+  # [world_coverage_gap], which is already field-native --
+  # orion/substrate/endogenous_curiosity.py -- and un-halted). Dropped
+  # entirely rather than replaced: no shadow-measure/replay was run to prove
+  # a substitute predicate would agree with the old drive_origin decisions
+  # (that brainstorm's own Option 1/3 acceptance checks), so inventing one
+  # now would fail CLAUDE.md's metric-quality-gate (no theory anchor beyond
+  # "seems related"). world_coverage_gap alone is now the real gate on
+  # web.fetch.readonly and recall.query.readonly; journal.compose.episode
+  # (which never paired with world_coverage_gap) now has no goal-provenance
+  # condition at all beyond requires_goal_status -- flagged in the Wave 2a PR
+  # report as a real, intentional narrowing of live gating semantics, not
+  # silently absorbed.
   - capability_id: web.fetch.readonly
     side_effect_class: readonly
     auto_execute: true
     requires_goal_status: proposed
-    required_drive_origins: [predictive]
     required_signal_kinds: [world_coverage_gap]
     budget_per_cycle: 2
   - capability_id: journal.compose.episode
     side_effect_class: write
     auto_execute: true
     requires_goal_status: proposed
-    required_drive_origins: [predictive]
     required_signal_kinds: []
     budget_per_cycle: 1
   - capability_id: world_pulse.run
     side_effect_class: readonly
     auto_execute: true
     requires_goal_status: none
-    required_drive_origins: []
     required_signal_kinds: []
     budget_per_cycle: 1
   - capability_id: web.fetch.write
     side_effect_class: external
     auto_execute: false
     requires_goal_status: planned
-    required_drive_origins: []
     required_signal_kinds: []
     budget_per_cycle: 0
   - capability_id: recall.query.readonly
     side_effect_class: readonly
     auto_execute: true
     requires_goal_status: proposed
-    required_drive_origins: [predictive]
     required_signal_kinds: [world_coverage_gap]
     budget_per_cycle: 2

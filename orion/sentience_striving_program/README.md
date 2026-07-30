@@ -449,9 +449,26 @@ first place. Full reasoning and phased detail:
 
 ---
 
-## 8. Drives-system development is halted
+## 8. Drives-system development is halted — DELETED 2026-07-30, not just halted
 
-**Decision, agreed 2026-07-18**: `orion.spark.concept_induction.drives.DriveEngine`,
+**Update, 2026-07-30**: the halt below was followed through. `DriveEngine`,
+`tensions.py`'s bucket-voting logic, `signal_drive_map.yaml`, `DRIVE_KEYS`, and
+`GoalProposalEngine` were deleted outright (`chore/delete-orion-drives`, PR #1486) —
+not merely frozen in place as this section originally described. Concept induction's
+extraction/clustering/embedding/dossier/identity/profile pipeline is untouched.
+`capability_policy.py`'s `required_drive_origins` gate, `AutonomyStateV1`'s
+`dominant_drive`/`active_drives`/`drive_pressures`/`tension_kinds`/
+`latest_drive_audit_id` fields, and the voluntary-attention top-down path's
+drive→relevance mapping were removed alongside it, across a services-wide sweep
+(world-pulse, cortex-exec, hub, cortex-orch, sql-writer, substrate-runtime,
+orion-thought). **Accepted consequence:** Orion lost live goal-proposal capability
+entirely — no field-native replacement exists yet; that remains real, unstarted
+future work under Objective 3 below, not something this deletion built. Full
+report: `docs/superpowers/pr-reports/2026-07-30-delete-orion-drives-pr.md`. The
+rest of this section is the original 2026-07-18 halt decision, kept for the
+historical reasoning — read it for *why*, not as a description of what still runs.
+
+**Original decision, agreed 2026-07-18**: `orion.spark.concept_induction.drives.DriveEngine`,
 `tensions.py`'s bucket-voting logic, `signal_drive_map.yaml`, `DRIVE_KEYS`, and
 `orion.autonomy.endogenous_origination`'s bespoke composite signal receive **no further
 development**. Two-plus weeks of signal-integrity engineering (O1-O4, O2, O3) made this
@@ -460,9 +477,12 @@ pipeline already does Layers 4-9 of what this system attempted, live, better, an
 system has zero measured causal contribution to Orion's one real instance of self-initiated
 behavior.
 
-**This is a halt, not a delete-on-sight.** The code stays in place (nothing consumes it
-today that would break) until the replacement wiring in Objective 3 lands; this is a freeze
-on new investment, not an emergency removal.
+**This was a halt, not a delete-on-sight, as of 2026-07-18** — superseded by the
+2026-07-30 update above. At the time this was written, the plan was: code stays in
+place (nothing consumes it that would break) until the replacement wiring in
+Objective 3 lands; a freeze on new investment, not an emergency removal. That
+sequencing was not what actually happened — the deletion landed before Objective
+3's replacement wiring did, per Juniper's direct instruction.
 
 **Lift-and-shift — what survives, specifically, so nothing real gets lost:**
 

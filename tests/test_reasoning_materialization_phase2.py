@@ -4,11 +4,9 @@ from datetime import datetime, timezone
 
 from pydantic import ValidationError
 
-from orion.autonomy.models import AutonomyGoalHeadlineV1, AutonomyStateV1
 from orion.core.schemas.concept_induction import ConceptCluster, ConceptItem, ConceptProfile, ConceptProfileDelta
 from orion.core.schemas.reasoning import ClaimV1
 from orion.core.schemas.reasoning_io import ReasoningWriteContextV1, ReasoningWriteRequestV1
-from orion.reasoning.adapters.autonomy import map_autonomy_state_to_reasoning
 from orion.reasoning.adapters.concept_induction import map_concept_delta_to_reasoning, map_concept_profile_to_reasoning
 from orion.reasoning.materializer import ReasoningMaterializer
 from orion.reasoning.repository import InMemoryReasoningRepository
@@ -93,28 +91,3 @@ def test_concept_induction_adapter_conservative_status() -> None:
     delta_artifacts = map_concept_delta_to_reasoning(delta, subject="orion", observed_at=datetime.now(timezone.utc))
     assert delta_artifacts
     assert all(a.claim_kind == "concept_delta" for a in delta_artifacts)
-
-
-def test_autonomy_adapter_goal_headlines_stay_proposed() -> None:
-    state = AutonomyStateV1(
-        subject="relationship",
-        model_layer="relationship-model",
-        entity_id="relationship:orion|juniper",
-        identity_summary="Relationship trust is stable",
-        dominant_drive="relational",
-        source="unit",
-        generated_at=datetime.now(timezone.utc),
-        goal_headlines=[
-            AutonomyGoalHeadlineV1(
-                artifact_id="a1",
-                goal_statement="Ask a clarifying question",
-                drive_origin="relational",
-                priority=0.8,
-                proposal_signature="sig-1",
-            )
-        ],
-    )
-
-    artifacts = map_autonomy_state_to_reasoning(state)
-    assert artifacts[0].anchor_scope == "relationship"
-    assert any(a.claim_kind == "goal_proposal_headline" and a.status == "proposed" for a in artifacts)

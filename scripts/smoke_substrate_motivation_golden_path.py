@@ -118,6 +118,11 @@ def main() -> int:
     goal_id = "goal-gap-gpu"
 
     os.environ["ORION_CAPABILITY_POLICY_AUTO_READONLY_ENABLED"] = "true"
+    # ORION_METABOLISM_MIN_PREDICTIVE_PRESSURE is now vestigial: capability_policy.py's
+    # predictive_pressure threshold check (and the CapabilityEvaluationContext field it
+    # read) was removed 2026-07-30 alongside the rest of the drive-pressure system --
+    # curiosity_strength is the sole remaining Layer A threshold. Left set here (harmless,
+    # read by nothing) rather than removed, since this script does not own that gate.
     os.environ["ORION_METABOLISM_MIN_PREDICTIVE_PRESSURE"] = "0.55"
     os.environ["ORION_METABOLISM_MIN_CURIOSITY_STRENGTH"] = "0.5"
 
@@ -136,10 +141,10 @@ def main() -> int:
     assert "hardware_compute_gpu" in candidates[0].focal_node_refs[0]
 
     top_strength = max(c.signal_strength for c in candidates)
-    # Layer A uses post-metabolism drive pressure (prior baseline + delta), not delta alone.
-    predictive_pressure = min(1.0, 0.55 + metabolism.drive_deltas.get("predictive", 0.0))
+    # predictive_pressure kwarg removed 2026-07-30: CapabilityEvaluationContext no longer
+    # has that field (see ORION_METABOLISM_MIN_PREDICTIVE_PRESSURE note above) --
+    # curiosity_strength alone now gates Layer A auto-execute.
     ctx = CapabilityEvaluationContext(
-        predictive_pressure=predictive_pressure,
         curiosity_strength=top_strength,
         signal_kinds=["world_coverage_gap"],
         goal=_goal(),

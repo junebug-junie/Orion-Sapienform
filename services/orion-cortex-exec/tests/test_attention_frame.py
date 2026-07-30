@@ -2,7 +2,6 @@ from __future__ import annotations
 
 from app.attention_frame import build_attention_frame
 from orion.schemas.attention_frame import AttentionSignalV1
-from orion.substrate.attention.detectors.autonomy import AutonomySignalDetector
 
 
 class _FakeDetector:
@@ -65,19 +64,22 @@ def test_already_known_fact_suppresses_redundant_question() -> None:
     assert any(s.reason == "already_known" for s in frame.suppressions)
 
 
-def test_high_value_open_loop_selects_single_ask() -> None:
+def test_open_loop_without_autonomy_boost_defers_below_ask_threshold() -> None:
+    # Renamed from test_high_value_open_loop_selects_single_ask (2026-07-30,
+    # chore/delete-orion-drives): the old assertion relied on
+    # AutonomySignalDetector emitting a salience-boosting signal from
+    # drive-tension data to push this open loop over min_ask_score. That
+    # detector (and its only inputs, AutonomyStateV2.attention_items /
+    # AutonomySummaryV1.top_drives/active_tensions) is retired -- nothing
+    # produces autonomy-boosted salience anymore, so this open loop now
+    # genuinely scores below the ask threshold and defers instead.
     frame = build_attention_frame(
         ctx={"user_message": "I am planning next week's migration around Zephyr Bridge."},
-        inputs=_inputs(
-            autonomy={
-                "summary": {"top_drives": ["predictive", "continuity"], "active_tensions": ["tension.continuity_gap.v1"]},
-                "debug": {},
-            },
-        ),
+        inputs=_inputs(),
     )
     asks = [a for a in frame.candidate_actions if a.action_type == "ask"]
     assert frame.selected_action is not None
-    assert frame.selected_action.action_type == "ask"
+    assert frame.selected_action.action_type == "defer"
     assert len([a for a in asks if a.question_text]) <= 1
 
 
@@ -94,11 +96,6 @@ def test_concept_and_autonomy_pressure_influence_ranking() -> None:
         ctx={"user_message": "I am exploring Blue Lattice."},
         inputs=_inputs(
             concept_induction={"self": ["lattice coherence"], "relationship": [], "growth": [], "tension": ["fragmentation"]},
-            autonomy={
-                "summary": {"top_drives": ["coherence", "predictive"], "active_tensions": ["tension.coherence_break.v1"]},
-                "state_v2": {"attention_items": [{"summary": "dominant_drive=coherence"}]},
-                "debug": {},
-            },
         ),
     )
     assert high.candidate_actions[0].score >= low.candidate_actions[0].score
@@ -117,18 +114,3 @@ def test_detector_registry_accepts_fake_detector_without_regex() -> None:
     assert frame.open_loops[0].provenance["signal_source"] == "fake_detector"
 
 
-def test_autonomy_detector_emits_attention_item_signal() -> None:
-    signals = AutonomySignalDetector().detect(
-        {},
-        _inputs(
-            autonomy={
-                "summary": {"top_drives": [], "active_tensions": []},
-                "state_v2": {"attention_items": [{"summary": "dominant_drive=coherence", "salience": 0.81}]},
-                "debug": {},
-            }
-        ),
-        ["autonomy:graphdb_durable"],
-    )
-    assert signals
-    assert signals[0].source == "autonomy_attention_v1"
-    assert signals[0].target_text == "dominant_drive=coherence"

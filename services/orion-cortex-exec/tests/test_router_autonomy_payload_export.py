@@ -413,30 +413,30 @@ def test_autonomy_payload_includes_v2_preview_and_delta() -> None:
     assert md["autonomy_state_delta"]["confidence_delta"] == 0.1
 
 
-def test_autonomy_payload_includes_drive_state_preview_alongside_v2_preview() -> None:
-    # Additive, side-by-side signal (see orion/autonomy/drives_and_autonomy_retrospective.md
-    # §8): drive_state_preview must not replace or alter autonomy_state_v2_preview.
+# drive_state_preview (ctx["chat_drive_state"]) removed 2026-07-30 (chore/
+# delete-orion-drives Wave 2a, found in review): its producer, chat_stance.py's
+# Postgres drive_audits read, was removed in the same commit. The two tests
+# that used to live here (test_autonomy_payload_includes_drive_state_preview_
+# alongside_v2_preview, test_autonomy_payload_omits_drive_state_preview_when_
+# ctx_key_absent) only ever exercised this via a synthetically-injected
+# ctx["chat_drive_state"] that no real production call site sets anymore --
+# removed alongside the dead router.py block, not left asserting on
+# unreachable behavior.
+
+
+def test_autonomy_payload_v2_preview_unaffected_by_removed_drive_state_key() -> None:
+    """Regression: autonomy_state_v2_preview must still export correctly on
+    its own now that drive_state_preview is gone -- they were previously
+    proven independent (additive, side-by-side), this confirms v2 alone
+    still works after the sibling export's removal."""
     ctx = {
         "chat_autonomy_state_v2": {
             "schema_version": "autonomy.state.v2",
             "dominant_drive": "coherence",
         },
-        "chat_drive_state": {
-            "pressures": {"coherence": 0.7, "curiosity": 0.4},
-            "activations": {"coherence": True},
-            "dominant_drive": "coherence",
-            "summary": "coherence pressure elevated",
-        },
     }
     md = _autonomy_payload_from_ctx(ctx)
     assert md["autonomy_state_v2_preview"]["dominant_drive"] == "coherence"
-    assert md["drive_state_preview"]["dominant_drive"] == "coherence"
-    assert md["drive_state_preview"]["pressures"]["coherence"] == 0.7
-    assert md["drive_state_preview"]["summary"] == "coherence pressure elevated"
-
-
-def test_autonomy_payload_omits_drive_state_preview_when_ctx_key_absent() -> None:
-    md = _autonomy_payload_from_ctx({})
     assert "drive_state_preview" not in md
 
 

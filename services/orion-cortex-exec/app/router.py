@@ -656,14 +656,12 @@ def _autonomy_payload_from_ctx(ctx: Dict[str, Any]) -> Dict[str, Any]:
                 if isinstance(item, dict)
             ],
         }
-    drive_state = ctx.get("chat_drive_state")
-    if isinstance(drive_state, dict):
-        payload["drive_state_preview"] = {
-            "pressures": drive_state.get("pressures") or {},
-            "activations": drive_state.get("activations") or {},
-            "dominant_drive": drive_state.get("dominant_drive"),
-            "summary": drive_state.get("summary"),
-        }
+    # drive_state_preview (ctx["chat_drive_state"]) removed 2026-07-30 (chore/
+    # delete-orion-drives Wave 2a, found in review): chat_stance.py stopped
+    # populating this ctx key in the same commit (its source, Postgres
+    # drive_audits, lost its last producer in Wave 1) -- this block could
+    # never fire in production after that, only via tests that injected the
+    # ctx key synthetically.
     delta = ctx.get("chat_autonomy_state_delta")
     if isinstance(delta, dict):
         payload["autonomy_state_delta"] = delta

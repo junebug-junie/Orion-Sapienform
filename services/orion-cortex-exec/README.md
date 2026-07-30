@@ -161,20 +161,13 @@ pytest orion/substrate/relational/tests/test_concept_induction_ctx_adapter.py -q
 See `services/orion-hub/README.md` § 5.5 for the full concept-atlas pipeline this reads
 from (seeding, decay, typed relation classification, autonomous ingestion).
 
-### drive_state.v1 visibility on chat stance (default off)
+### drive_state.v1 visibility on chat stance -- removed 2026-07-30
 
-| Variable | Default (`.env_example`) | Description |
-| :--- | :--- | :--- |
-| `CHAT_STANCE_DRIVE_STATE_VISIBLE` | empty / not `true` | When `true`, `build_chat_stance_inputs` surfaces drive measurement as a **sibling** `inputs["drive_state"]` key. |
-| `CHAT_STANCE_DRIVE_STATE_FETCH_TIMEOUT_SEC` | `0.4` | Bounded fail-open timeout for the latest `drive_audits` row fetch. |
-| `ORION_ACTION_OUTCOME_DB_URL` | conjourney DSN | Same Postgres sql-writer writes; chat stance reads latest `drive_audits` (`subject='orion'`) here. |
-
-Measurement SoR is Postgres `drive_audits` (bus → sql-writer), not substrate graph snapshots. `ctx["chat_drive_state"]` is filled unconditionally when a meaningful row exists; the visibility flag only gates prompt `inputs["drive_state"]`.
-
-```bash
-pytest services/orion-cortex-exec/tests/test_drive_state_postgres.py -q
-pytest services/orion-cortex-exec/tests/test_chat_stance_drive_state_projection.py -q
-```
+The `chat_drive_state` / `CHAT_STANCE_DRIVE_STATE_VISIBLE` / `app/drive_state_postgres.py`
+Postgres `drive_audits` read described here was removed in `chore/delete-orion-drives`
+Wave 2a: its source table lost its last producer (`orion/spark/concept_induction/audit.py`)
+in Wave 1, so this section was reading a frozen table, not a live signal. `AutonomySliceV1.
+dominant_drive`/`active_tensions` are now always empty/`None` (see `app/autonomy_slice.py`).
 
 ### Turn effect and drive tensions (bus)
 

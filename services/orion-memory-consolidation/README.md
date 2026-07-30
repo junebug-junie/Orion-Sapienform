@@ -70,11 +70,21 @@ Use this checklist any time this service (or its cron dependency) is missing aft
 
 ## Drive-history reflection synthesis (manual/on-demand only -- NOT cron'd)
 
+**Source data is frozen as of 2026-07-30.** `DriveEngine` (the producer this
+section describes) was deleted outright (`chore/delete-orion-drives`, PR #1486),
+following through on `orion/sentience_striving_program/README.md` §8's halt.
+Postgres `drive_audits` no longer receives new rows -- its retention-prune job
+was disabled specifically so this now-finite history isn't deleted. This script
+still runs against whatever ticks accumulated before the deletion; it will never
+observe a pattern more recent than 2026-07-30, and `MIN_DISTINCT_DAYS`'s
+burst-vs-pattern distinction (below) no longer matters going forward since no new
+ticks will ever arrive to burst.
+
 `scripts/drive_history_reflection_synthesis.py` (repo root) reads Orion's own real,
 persisted drive-activation history and synthesizes ONE `reflection`-kind
 `MemoryCrystallizationV1` observing a long-horizon pattern -- e.g. "continuity has
 been the dominant drive in most audited ticks this week." Source data: `DriveAuditV1`
-(`orion/core/schemas/drives.py`) is computed on every DriveEngine tick and persisted,
+(`orion/core/schemas/drives.py`) was computed on every DriveEngine tick and persisted,
 append-only, by `services/orion-sql-writer` to the Postgres `drive_audits` table
 (the old Fuseki `drives` graph froze on 2026-06-19 and was removed as both a write
 and read path on 2026-07-15) -- unlike the "latest value only" stores this repo

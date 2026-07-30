@@ -17,7 +17,7 @@ from orion.autonomy.policy_act import (
     resolve_episode_intent,
 )
 from orion.core.contracts.recall import MemoryBundleV1, MemoryItemV1, RecallReplyV1
-from orion.core.schemas.drives import DriveStateV1, GoalProposalV1
+from orion.core.schemas.drives import GoalProposalV1
 from orion.core.schemas.frontier_curiosity import FrontierInvocationSignalV1
 
 
@@ -52,33 +52,12 @@ def _goal() -> GoalProposalV1:
     )
 
 
-def _drive_state(predictive: float = 0.7) -> DriveStateV1:
-    return DriveStateV1.model_validate(
-        {
-            "subject": "orion",
-            "model_layer": "self-model",
-            "entity_id": "self:orion",
-            "kind": "memory.drives.state.v1",
-            "updated_at": datetime.now(timezone.utc).isoformat(),
-            "provenance": {"intake_channel": "orion:world_pulse:run:result"},
-            "pressures": {
-                "coherence": 0.5,
-                "continuity": 0.5,
-                "capability": 0.5,
-                "relational": 0.5,
-                "predictive": predictive,
-                "autonomy": 0.5,
-            },
-            "activations": {
-                "coherence": False,
-                "continuity": False,
-                "capability": False,
-                "relational": False,
-                "predictive": True,
-                "autonomy": False,
-            },
-        }
-    )
+def _low_strength_gap_signal() -> FrontierInvocationSignalV1:
+    """Same shape as _gap_signal() but below ORION_METABOLISM_MIN_CURIOSITY_STRENGTH's
+    default (0.5) -- the real, still-live Layer A threshold, now that
+    predictive_pressure (removed 2026-07-30, chore/delete-orion-drives Wave 2a)
+    is gone."""
+    return _gap_signal().model_copy(update={"signal_strength": 0.2})
 
 
 def test_build_readonly_fetch_query_from_gap_section() -> None:
@@ -94,7 +73,6 @@ async def test_policy_act_executes_fetch_when_allowed(monkeypatch, tmp_path) -> 
     backend = AsyncMock(return_value={"success": True, "urls": ["https://example.com/a"]})
     decision, outcome = await maybe_execute_readonly_fetch_after_goal(
         goal=_goal(),
-        drive_state=_drive_state(),
         curiosity_signals=[_gap_signal()],
         spawned_correlation_id="wp-run-gap-gpu",
         fetch_backend=backend,
@@ -113,7 +91,6 @@ async def test_policy_act_fetch_surfaces_domain_surprise_in_notes(monkeypatch, t
     backend = AsyncMock(return_value={"success": True, "urls": ["https://example.com/a"]})
     decision, outcome = await maybe_execute_readonly_fetch_after_goal(
         goal=_goal(),
-        drive_state=_drive_state(),
         curiosity_signals=[_gap_signal()],
         spawned_correlation_id="wp-run-gap-gpu",
         fetch_backend=backend,
@@ -145,7 +122,6 @@ async def test_policy_act_fetch_reads_real_surprise_source_exactly_once(
 
     decision, outcome = await maybe_execute_readonly_fetch_after_goal(
         goal=_goal(),
-        drive_state=_drive_state(),
         curiosity_signals=[_gap_signal()],
         spawned_correlation_id="wp-run-gap-gpu",
         fetch_backend=backend,
@@ -167,7 +143,6 @@ async def test_policy_act_resolves_fetch_backend_when_omitted(monkeypatch, tmp_p
     )
     decision, outcome = await maybe_execute_readonly_fetch_after_goal(
         goal=_goal(),
-        drive_state=_drive_state(),
         curiosity_signals=[_gap_signal()],
         spawned_correlation_id="wp-run-gap-gpu",
     )
@@ -178,17 +153,20 @@ async def test_policy_act_resolves_fetch_backend_when_omitted(monkeypatch, tmp_p
 
 
 @pytest.mark.asyncio
-async def test_policy_act_denied_when_pressure_low(monkeypatch) -> None:
+async def test_policy_act_denied_when_curiosity_strength_low(monkeypatch) -> None:
+    """Regression for the 2026-07-30 (chore/delete-orion-drives Wave 2a) removal of the
+    predictive_pressure Layer A check: curiosity_strength is the one real threshold
+    left on this gate and must still deny when it's genuinely low."""
     monkeypatch.setenv("ORION_CAPABILITY_POLICY_AUTO_READONLY_ENABLED", "true")
+    monkeypatch.setenv("ORION_METABOLISM_MIN_CURIOSITY_STRENGTH", "0.5")
     decision, outcome = await maybe_execute_readonly_fetch_after_goal(
         goal=_goal(),
-        drive_state=_drive_state(predictive=0.2),
-        curiosity_signals=[_gap_signal()],
+        curiosity_signals=[_low_strength_gap_signal()],
         spawned_correlation_id="wp-run-gap-gpu",
         fetch_backend=AsyncMock(),
     )
     assert decision.outcome == "denied"
-    assert decision.reason_code == "predictive_pressure_insufficient"
+    assert decision.reason_code == "curiosity_strength_insufficient"
     assert outcome is None
 
 
@@ -214,7 +192,6 @@ async def test_policy_act_dispatches_episode_journal_after_fetch(monkeypatch) ->
     journal_dispatch = AsyncMock(return_value={"write": {"entry_id": "entry-1"}})
     decision, result = await maybe_compose_autonomy_episode_after_fetch(
         goal=_goal(),
-        drive_state=_drive_state(),
         curiosity_signals=[_gap_signal()],
         spawned_correlation_id="wp-run-gap-gpu",
         fetch_outcome=fetch_outcome,
@@ -232,7 +209,6 @@ async def test_policy_act_dispatches_episode_journal_after_fetch(monkeypatch) ->
 async def test_policy_act_episode_journal_surfaces_domain_surprise_in_notes(monkeypatch) -> None:
     monkeypatch.setenv("ORION_AUTONOMY_EPISODE_JOURNAL_ENABLED", "true")
     monkeypatch.setenv("ORION_CAPABILITY_POLICY_AUTO_READONLY_ENABLED", "true")
-    monkeypatch.setenv("ORION_METABOLISM_MIN_PREDICTIVE_PRESSURE", "0.55")
     from orion.autonomy.models import FetchedArticleRefV1
 
     fetch_outcome = ActionOutcomeRefV1(
@@ -250,7 +226,6 @@ async def test_policy_act_episode_journal_surfaces_domain_surprise_in_notes(monk
     )
     decision, _result = await maybe_compose_autonomy_episode_after_fetch(
         goal=_goal(),
-        drive_state=_drive_state(),
         curiosity_signals=[_gap_signal()],
         spawned_correlation_id="wp-run-gap-gpu",
         fetch_outcome=fetch_outcome,
@@ -266,7 +241,6 @@ async def test_policy_act_skips_episode_journal_when_fetch_missing(monkeypatch) 
     monkeypatch.setenv("ORION_AUTONOMY_EPISODE_JOURNAL_ENABLED", "true")
     decision, result = await maybe_compose_autonomy_episode_after_fetch(
         goal=_goal(),
-        drive_state=_drive_state(),
         curiosity_signals=[_gap_signal()],
         spawned_correlation_id="wp-run-gap-gpu",
         fetch_outcome=None,
@@ -291,7 +265,6 @@ async def test_policy_act_composes_episode_journal_on_fetch_failure(monkeypatch)
     journal_dispatch = AsyncMock(return_value={"write": {"entry_id": "entry-1"}})
     decision, result = await maybe_compose_autonomy_episode_after_fetch(
         goal=_goal(),
-        drive_state=_drive_state(),
         curiosity_signals=[_gap_signal()],
         spawned_correlation_id="wp-run-gap-gpu",
         fetch_outcome=fetch_outcome,
@@ -444,7 +417,6 @@ async def test_substrate_act_runs_when_goal_suppressed(monkeypatch, tmp_path) ->
     backend = AsyncMock(return_value={"success": True, "urls": ["https://example.com/a"]})
     result = await maybe_execute_substrate_act_after_metabolism(
         episode_intent=_intent(),
-        drive_state=_drive_state(),
         curiosity_signals=[_gap_signal()],
         fetch_backend=backend,
     )
@@ -461,7 +433,6 @@ async def test_substrate_act_denied_without_gap_signal(monkeypatch) -> None:
     monkeypatch.setenv("ORION_CAPABILITY_POLICY_AUTO_READONLY_ENABLED", "true")
     result = await maybe_execute_substrate_act_after_metabolism(
         episode_intent=_intent(),
-        drive_state=_drive_state(),
         curiosity_signals=[],
         fetch_backend=AsyncMock(),
     )
@@ -479,7 +450,6 @@ async def test_substrate_act_preserves_fetch_when_journal_dispatch_fails(monkeyp
     journal_dispatch = AsyncMock(side_effect=TimeoutError("cortex journal rpc timed out"))
     result = await maybe_execute_substrate_act_after_metabolism(
         episode_intent=_intent(),
-        drive_state=_drive_state(),
         curiosity_signals=[_gap_signal()],
         fetch_backend=backend,
         journal_dispatch=journal_dispatch,
@@ -537,7 +507,6 @@ async def test_recall_capability_denied_without_gap_signal(monkeypatch) -> None:
     monkeypatch.setenv("ORION_CAPABILITY_POLICY_AUTO_READONLY_ENABLED", "true")
     decision, outcome = await maybe_execute_readonly_recall_after_goal(
         goal=_goal(),
-        drive_state=_drive_state(),
         curiosity_signals=[],
         spawned_correlation_id="wp-run-gap-gpu",
         bus=_fake_recall_bus(_fake_recall_reply()),
@@ -554,7 +523,6 @@ async def test_recall_capability_finds_content(monkeypatch, tmp_path) -> None:
     bus = _fake_recall_bus(_fake_recall_reply(n=2))
     decision, outcome = await maybe_execute_readonly_recall_after_goal(
         goal=_goal(),
-        drive_state=_drive_state(),
         curiosity_signals=[_gap_signal()],
         spawned_correlation_id="wp-run-gap-gpu",
         bus=bus,
@@ -575,7 +543,6 @@ async def test_recall_capability_uses_real_surprise_source_when_available(
     bus = _fake_recall_bus(_fake_recall_reply(n=2))
     decision, outcome = await maybe_execute_readonly_recall_after_goal(
         goal=_goal(),
-        drive_state=_drive_state(),
         curiosity_signals=[_gap_signal()],
         spawned_correlation_id="wp-run-gap-gpu",
         bus=bus,
@@ -608,7 +575,6 @@ async def test_recall_capability_reads_real_surprise_source_exactly_once(
 
     decision, outcome = await maybe_execute_readonly_recall_after_goal(
         goal=_goal(),
-        drive_state=_drive_state(),
         curiosity_signals=[_gap_signal()],
         spawned_correlation_id="wp-run-gap-gpu",
         bus=bus,
@@ -626,7 +592,6 @@ async def test_recall_capability_empty_reply_degrades(monkeypatch, tmp_path) -> 
     bus = _fake_recall_bus(_fake_recall_reply(n=0))
     decision, outcome = await maybe_execute_readonly_recall_after_goal(
         goal=_goal(),
-        drive_state=_drive_state(),
         curiosity_signals=[_gap_signal()],
         spawned_correlation_id="wp-run-gap-gpu",
         bus=bus,
@@ -643,7 +608,6 @@ async def test_recall_capability_rpc_timeout_never_raises(monkeypatch, tmp_path)
     bus = _fake_recall_bus(exc=TimeoutError("rpc timeout"))
     decision, outcome = await maybe_execute_readonly_recall_after_goal(
         goal=_goal(),
-        drive_state=_drive_state(),
         curiosity_signals=[_gap_signal()],
         spawned_correlation_id="wp-run-gap-gpu",
         bus=bus,
@@ -659,7 +623,6 @@ async def test_recall_capability_no_bus_degrades_to_none(monkeypatch) -> None:
     monkeypatch.setenv("ORION_CAPABILITY_POLICY_AUTO_READONLY_ENABLED", "true")
     decision, outcome = await maybe_execute_readonly_recall_after_goal(
         goal=_goal(),
-        drive_state=_drive_state(),
         curiosity_signals=[_gap_signal()],
         spawned_correlation_id="wp-run-gap-gpu",
         bus=None,
@@ -680,7 +643,6 @@ async def test_substrate_act_recall_hit_skips_fetch_budget(monkeypatch, tmp_path
 
     result = await maybe_execute_substrate_act_after_metabolism(
         episode_intent=_intent(),
-        drive_state=_drive_state(),
         curiosity_signals=[_gap_signal()],
         spawned_correlation_id="wp-run-gap-gpu",
         fetch_backend=fetch_backend,
@@ -714,7 +676,6 @@ async def test_substrate_act_recall_miss_falls_through_to_fetch(monkeypatch, tmp
 
     result = await maybe_execute_substrate_act_after_metabolism(
         episode_intent=_intent(),
-        drive_state=_drive_state(),
         curiosity_signals=[_gap_signal()],
         spawned_correlation_id="wp-run-gap-gpu",
         fetch_backend=fetch_backend,
@@ -743,7 +704,6 @@ async def test_substrate_act_recall_rpc_failure_falls_through_to_fetch(monkeypat
 
     result = await maybe_execute_substrate_act_after_metabolism(
         episode_intent=_intent(),
-        drive_state=_drive_state(),
         curiosity_signals=[_gap_signal()],
         spawned_correlation_id="wp-run-gap-gpu",
         fetch_backend=fetch_backend,
@@ -765,7 +725,6 @@ async def test_substrate_act_no_recall_bus_falls_through_to_fetch(monkeypatch, t
 
     result = await maybe_execute_substrate_act_after_metabolism(
         episode_intent=_intent(),
-        drive_state=_drive_state(),
         curiosity_signals=[_gap_signal()],
         spawned_correlation_id="wp-run-gap-gpu",
         fetch_backend=fetch_backend,

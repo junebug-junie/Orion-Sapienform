@@ -49,19 +49,6 @@ def _env_float(name: str, default: float) -> float:
         return default
 
 
-# Deterministic map: goal drive_origin -> aligned OpenLoopV1 relevance field.
-# Unknown / unmapped drive origins fall back to "concept_value".
-_RELEVANCE_FIELD_BY_DRIVE: dict[str, str] = {
-    "predictive": "predictive_value",
-    "relational": "relational_relevance",
-    "continuity": "continuity_relevance",
-    "autonomy": "autonomy_value",
-    "coherence": "concept_value",
-    "capability": "concept_value",
-}
-_RELEVANCE_FALLBACK_FIELD = "concept_value"
-
-
 def _clamp01(value: float) -> float:
     """Clamp a value into [0, 1]. Treats non-finite/None as 0.0."""
     try:
@@ -95,7 +82,6 @@ class TopDownConfig:
 
 @dataclass
 class GoalContext:
-    drive_origin: str
     priority: float             # [0,1]
     goal_artifact_id: Optional[str] = None
 
@@ -116,16 +102,27 @@ class TopDownResult:
 
 
 def relevance(goal: GoalContext, loop: OpenLoopV1) -> float:
-    """Map the goal's drive_origin to the aligned OpenLoopV1 relevance field.
+    """Goal-alignment relevance signal for a candidate open loop.
 
-    Returns a value in [0,1]. Returns 0.0 if the field is missing/None. Unknown
-    drive origins fall back to ``concept_value`` (documented).
+    Reads ``OpenLoopV1.concept_value`` directly. Before Wave 2b (deleting the
+    drive-pressure/goal-generation system), this used to select among five
+    per-drive relevance fields (``predictive_value``, ``relational_relevance``,
+    ``continuity_relevance``, ``autonomy_value``, ``concept_value``) keyed by
+    ``goal.drive_origin`` -- ``concept_value`` was already the fallback for
+    unknown/coherence/capability drives. With drive_origin gone from
+    ``GoalContext``, there is no longer a signal to pick among those fields, so
+    this collapses to the one dimension that was already the generic
+    fallback: ``concept_value`` is a real, independently-populated field
+    (``orion/substrate/attention/scoring.py``'s conceptual-pressure score),
+    not the loop's bottom-up ``salience`` -- using ``salience`` itself here
+    would double-count bottom-up evidence as top-down bias and defeat biased
+    competition (a bias correlated with salience only entrenches the existing
+    winner, it can never flip one).
+
+    Returns a value in [0,1]. Returns 0.0 if the field is missing/None.
     """
     try:
-        field = _RELEVANCE_FIELD_BY_DRIVE.get(
-            getattr(goal, "drive_origin", None), _RELEVANCE_FALLBACK_FIELD
-        )
-        raw = getattr(loop, field, None)
+        raw = getattr(loop, "concept_value", None)
         if raw is None:
             return 0.0
         return _clamp01(raw)
@@ -239,7 +236,9 @@ class TopDownBiasCombiner:
             ):
                 override = VoluntaryOverrideV1(
                     goal_artifact_id=goal.goal_artifact_id,
-                    goal_drive_origin=goal.drive_origin,
+                    # goal_drive_origin intentionally left at its schema
+                    # default (None): Wave 2b removed drive_origin from
+                    # GoalContext, so this consumer no longer has it to set.
                     chosen_loop_id=winner_combined,
                     beat_loop_id=winner_bottom_up,
                     chosen_bottom_up=s_by_id[winner_combined],

@@ -1,13 +1,8 @@
 from __future__ import annotations
 
 from types import SimpleNamespace
-from typing import Any
 
-import pytest
-
-from app import chat_stance
 from app.chat_stance import _project_autonomy_from_beliefs
-from orion.substrate.relational.beliefs import AnchorBeliefSliceV1, UnifiedRelationalBeliefSetV1
 
 
 def _drive_node(drive_kind: str, salience: float) -> SimpleNamespace:
@@ -94,89 +89,12 @@ def test_none_beliefs_returns_none():
     assert _project_autonomy_from_beliefs(None, {}) is None
 
 
-def _real_beliefs_without_drive_state() -> UnifiedRelationalBeliefSetV1:
-    anchor_slice = AnchorBeliefSliceV1(
-        anchor="orion",
-        drives=[_drive_node("coherence", 0.8)],
-        snapshots=[
-            _snapshot_node(
-                "autonomy",
-                {"dominant_drive": "coherence"},
-            )
-        ],
-    )
-    return UnifiedRelationalBeliefSetV1(anchors={"orion": anchor_slice})
-
-
-async def _fake_postgres_drive_state(correlation_id: str) -> tuple[dict[str, Any], dict[str, Any]]:
-    return (
-        {
-            "pressures": {"coherence": 0.8},
-            "activations": {"coherence": True},
-            "dominant_drive": "coherence",
-            "summary": "orion pressure concentrates on coherence",
-            "tension_kinds": ["drive_competition.coherence_continuity"],
-        },
-        {"ok": True, "reason": "success", "source": "drive_audits", "correlation_id": correlation_id},
-    )
-
-
-@pytest.mark.asyncio
-async def test_build_chat_stance_inputs_uses_postgres_drive_state(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setattr(chat_stance, "_unified_beliefs_for_stance", lambda ctx: _real_beliefs_without_drive_state())
-    monkeypatch.setattr(
-        "app.drive_state_postgres.fetch_drive_state_for_chat_stance",
-        _fake_postgres_drive_state,
-    )
-    monkeypatch.setenv("CHAT_STANCE_DRIVE_STATE_VISIBLE", "true")
-
-    ctx = {"user_message": "hello", "correlation_id": "corr-stance-1"}
-    built = await chat_stance.build_chat_stance_inputs(ctx)
-
-    assert ctx["chat_drive_state"]["dominant_drive"] == "coherence"
-    assert ctx["chat_drive_state"]["pressures"] == {"coherence": 0.8}
-    assert ctx["chat_drive_state"]["tension_kinds"] == ["drive_competition.coherence_continuity"]
-    assert ctx["chat_drive_state_diagnostics"]["source"] == "drive_audits"
-    assert "drive_state" in built
-    assert built["drive_state"]["summary"] == "orion pressure concentrates on coherence"
-    assert "autonomy" in built
-    assert built["autonomy"].keys() >= {"state", "summary", "debug"}
-    assert "pressures" not in built["autonomy"]
-    assert "drive_state" not in built["autonomy"]
-
-
-@pytest.mark.asyncio
-async def test_build_chat_stance_inputs_omits_prompt_drive_state_when_flag_off(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    monkeypatch.setattr(chat_stance, "_unified_beliefs_for_stance", lambda ctx: _real_beliefs_without_drive_state())
-    monkeypatch.setattr(
-        "app.drive_state_postgres.fetch_drive_state_for_chat_stance",
-        _fake_postgres_drive_state,
-    )
-    monkeypatch.delenv("CHAT_STANCE_DRIVE_STATE_VISIBLE", raising=False)
-
-    ctx = {"user_message": "hello"}
-    built = await chat_stance.build_chat_stance_inputs(ctx)
-
-    assert "drive_state" not in built
-    assert "autonomy" in built
-    assert ctx["chat_drive_state"]["dominant_drive"] == "coherence"
-
-
-@pytest.mark.asyncio
-async def test_build_chat_stance_inputs_fail_open_when_postgres_empty(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    async def _empty(_correlation_id: str) -> tuple[None, dict[str, Any]]:
-        return None, {"ok": True, "reason": "no_rows", "source": "drive_audits"}
-
-    monkeypatch.setattr(chat_stance, "_unified_beliefs_for_stance", lambda ctx: _real_beliefs_without_drive_state())
-    monkeypatch.setattr("app.drive_state_postgres.fetch_drive_state_for_chat_stance", _empty)
-    monkeypatch.setenv("CHAT_STANCE_DRIVE_STATE_VISIBLE", "true")
-
-    ctx = {"user_message": "hello"}
-    built = await chat_stance.build_chat_stance_inputs(ctx)
-    assert "chat_drive_state" not in ctx
-    assert "drive_state" not in built
-    assert ctx["chat_drive_state_diagnostics"]["reason"] == "no_rows"
+# The Postgres drive_audits projection tests that used to live here
+# (test_build_chat_stance_inputs_uses_postgres_drive_state and siblings,
+# exercising app/drive_state_postgres.py's fetch_drive_state_for_chat_stance
+# via ctx["chat_drive_state"]/CHAT_STANCE_DRIVE_STATE_VISIBLE) were removed
+# 2026-07-30 (chore/delete-orion-drives Wave 2a) along with that module:
+# drive_audits' sole producer was already deleted in Wave 1, so this was
+# testing a read against a frozen, producer-less table, not live behavior.
+# The tests above this comment (_project_autonomy_from_beliefs / substrate
+# DriveNode + snapshot_source="autonomy" path) are unrelated and still real.

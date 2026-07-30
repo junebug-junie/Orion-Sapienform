@@ -19,10 +19,12 @@ def _loop(id: str, salience: float, **rel) -> OpenLoopV1:
 
 
 def _frame() -> AttentionFrameV1:
-    # loop A: high bottom-up, no goal relevance. loop B: low bottom-up, high predictive_value.
+    # loop A: high bottom-up, no goal relevance. loop B: low bottom-up, high
+    # concept_value (relevance()'s signal since Wave 2b removed the
+    # drive_origin -> per-drive relevance-field mapping).
     loops = [
-        _loop("A", 0.80, predictive_value=0.0),
-        _loop("B", 0.30, predictive_value=0.95),
+        _loop("A", 0.80, concept_value=0.0),
+        _loop("B", 0.30, concept_value=0.95),
     ]
     actions = [
         CuriosityCandidateActionV1(action_type="watch", open_loop_id="A", score=0.80),

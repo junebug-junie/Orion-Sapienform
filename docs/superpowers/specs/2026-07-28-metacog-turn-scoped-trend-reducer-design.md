@@ -271,3 +271,52 @@ This doc's Missing Questions 1-2 and the trend-reducer build itself are not canc
 re-sequenced: they remain the right next step for metacog specifically, but only after (or in
 parallel with, if scoped as a fully separate consumer of attention output) the arbitration-layer
 question above gets its own resolution.
+
+## 2026-07-30 update — arbitration fixed, both blockers cleared
+
+**Layer 5 attention monoculture: fixed, shipped, and re-measured live — this section's own
+recommendation is now stale.** The 100.00%/zero-variance measurement above (run 2026-07-28) and this
+doc's "fix Layer 5 first" recommendation were both written in the same session as, and minutes before,
+two PRs that actually addressed it:
+
+- **PR #1433** (`fix(field-attention): replace saturated recent_perturbation caps with EWMA
+  baseline`, merged 2026-07-28T21:57Z) replaced `select_system_targets`'s `min(1.0, count / 10.0)` cap
+  — the literal cause of the zero-variance saturation — with a z-score against a per-tick EWMA
+  baseline (`orion/schemas/field_state.py::recent_perturbation_zscore`, `orion/bus/ewma.py`), the same
+  methodology already validated for `bus_synaptic_prediction_error`'s `gap_zscore`. This is a real fix
+  to the scoring formula itself, not the post-hoc per-channel z-scoring this doc's own measurement
+  script tried and found `NOT_MET_MONOCULTURE_SHIFTED` (those are two different things: the doc's
+  measurement normalized the *output*, PR #1433 fixed the *input formula*).
+- **PR #1454** (`docs(sentience-striving): re-measure recent_perturbations dominance post-fix`, merged
+  2026-07-29T04:36Z) reran the live probe ~6.3h post-deploy: `field:recent_perturbations` winning top-1
+  dropped from 99.98% (pre-fix) to **11.13%** (1,257/11,293 post-fix ticks), with `node:athena` (host
+  resource pressure — real signal, not the old degenerate one) taking the remaining 88.87%. That doc
+  flagged an open question: is `node:athena`'s 88.87% share genuine, or a new artifact nobody checked.
+
+**Independently re-verified this session, ~+24h further out (through 2026-07-30T00:10Z, 36h window,
+127,447-127,878 live `substrate_attention_frames` rows):** `node:athena`'s share has continued
+dropping — 60.0% (37,994/63,295), `field:recent_perturbations` 38.7%, `node:atlas` 1.3% — trending
+toward a real, converging multi-way competition rather than settling into a second monoculture. Margin
+check between #1 and #2 (48,144 ticks with ≥2 candidates): median gap 0.16, ~7% of ticks are near-ties
+(gap < 0.02), and `node:athena`'s own salience score has real variance (stddev 0.09, not pinned).
+This is not a landslide. **`node:athena`'s 88.87%-then-60.0% share answers PR #1454's open question:
+genuine, converging signal, not a new artifact — worth one more re-check in another 24-48h to confirm
+full convergence, but not worth treating as a blocker.**
+
+**`turn_effect`/`repair_pressure` durable history (this doc's own Missing Questions 1-2): also
+confirmed live, also resolved.** `repair_pressure_appraisal_log` (dedicated Postgres table, shipped
+specifically to close this exact gap — see its own test docstring in
+`services/orion-sql-writer/tests/test_repair_pressure_appraisal_log.py`) has 52 real rows spanning
+2026-07-24 through 2026-07-30. `turn_effect` is not a dedicated column but is durably persisted inside
+`chat_history_log.spark_meta` JSONB (`services/orion-sql-writer/app/worker.py::_spark_meta_minimal()`)
+— 37 of the last 41 rows (7 days) carry a real value, queryable via `spark_meta->'turn_effect'`, same
+JSONB-path pattern already used against `substrate_attention_frames.frame_json`. No new persistence
+plumbing needed for either series.
+
+**Net: both prerequisites this doc and the stream-of-consciousness hop-chain design
+(`docs/superpowers/specs/2026-07-29-stream-of-consciousness-hop-chain-design.md`) named are cleared.**
+The trend reducer (hop 0) can proceed — build
+`scripts/analysis/measure_metacog_trend_baseline.py` against `repair_pressure_appraisal_log` and/or
+`chat_history_log.spark_meta->'turn_effect'` first (this doc's original acceptance check 1: confirm a
+genuine rest state, not smooth noise or a floor/ceiling artifact, before the reducer ships live), then
+the `ReducerSpec`-pattern reducer itself.

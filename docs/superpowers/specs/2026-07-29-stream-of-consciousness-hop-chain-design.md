@@ -19,7 +19,12 @@ cycle (`orion/proposals/`, five running services). Reverie already competes in i
 `source="reverie_thought"`. A hop-chain doesn't need a private scheduler; it needs to become another
 candidate producer in the same arena, cheap/checkpointable enough to re-enter competition every cycle.
 
-Bad news, found while writing this doc: **that arena cannot currently arbitrate fairly.** Same-day
+**Update (2026-07-30): the arbitration blocker below is resolved — see the end of this section.** The
+rest of this paragraph is preserved as written 2026-07-29, because it was true at the time and the
+correction is instructive: the same-day investigation it cites had already been overtaken by a real
+fix, minutes earlier, that a proper search-before-editing pass would have found.
+
+Bad news, as originally written: **that arena cannot currently arbitrate fairly.** Same-day
 investigation (`docs/superpowers/specs/2026-07-28-metacog-turn-scoped-trend-reducer-design.md`'s
 2026-07-28 update) measured Layer 5 attention — the actual most-upstream competition layer, the one
 the Sentience Striving charter names as the reason the old drives system was retired — against
@@ -32,11 +37,18 @@ the same disease the old drives system had (`dominant_drive=relational` at 96%, 
 partial fix) — three separate arbitration layers in this codebase, three confirmed instances of
 uncalibrated fixed-weight scoring producing a winner-take-all monoculture instead of fair competition.
 
-So: the architectural shape Juniper wants (compete for budget, get preempted, don't hard-stop) is
-correct and doesn't need inventing. But building the hop-chain into this arena today means either the
-hop-chain gets drowned out by whichever channel is currently saturating, or it becomes a fourth
-instance of the same hand-tuned-linear-score disease. This doc names that as the real current blocker,
-same conclusion the metacog doc already reached from a different angle, now confirmed independently.
+**What actually happened:** PR #1433 (merged 2026-07-28T21:57Z, essentially the same minute this doc's
+source investigation ran) replaced the saturating `min(1.0, count / 10.0)` formula at its root with an
+EWMA-baseline z-score — a real fix to the input, not the post-hoc output-normalization this doc's
+measurement tried and correctly found insufficient. PR #1454 (merged 2026-07-29T04:36Z) reran the live
+probe post-fix: `field:recent_perturbations` top-1 share dropped from 99.98%/100.00% to **11.13%**.
+Independently re-verified this session, ~30h further out: the picture keeps converging toward a real
+multi-way competition (`node:athena` 60.0%, `field:recent_perturbations` 38.7%, `node:atlas` 1.3% over
+a 36h/48k-tick window; median #1-vs-#2 margin 0.16, ~7% genuine near-ties, no channel pinned at zero
+variance). Full numbers and sourcing in the metacog doc's own 2026-07-30 update. **The architectural
+shape Juniper wants (compete for budget, get preempted, don't hard-stop) is correct and doesn't need
+inventing, and the arena it would compete in now arbitrates fairly enough to build against.** This is
+no longer the blocker; the corrected recommendation is at the end of this doc.
 
 ## Current architecture
 
@@ -88,24 +100,26 @@ turned out.
 self/relationship territory ("never the autonomy zone directly"), and it's flag-off by default. A
 narrower budget-capped competition, wrong zone for a metacog/reflective hop-chain.
 
-**The measured arbitration failure, in full.** From the metacog doc's same-day follow-up
-(`scripts/analysis/measure_attention_salience_normalization.py`, 127,644 rows, 72.3h real window):
+**The arbitration finding, and its correction (2026-07-30).** The metacog doc's same-day follow-up
+(`scripts/analysis/measure_attention_salience_normalization.py`, 127,644 rows, 72.3h window) found
 `field:recent_perturbations` (`orion/attention/field_attention/selectors.py:128-140`,
-`salience = min(1.0, recent_perturbation_count / 10.0)`) wins top-1 in 100.00% of ticks, stddev
-`0.000000`. Excluding it (forced by divide-by-~0 under z-scoring, not a deliberate design choice), the
-normalized winner distribution becomes `node:atlas` 55.17%, `node:circe` 15.84%,
-`capability:llm_inference` 15.24%, `node:athena` 9.86%, others <3% each — still a monoculture, just
-relocated. Juniper's own converged call in that doc: fix the arena before adding a new candidate
-producer into it. Nothing has changed that conclusion since.
+`salience = min(1.0, recent_perturbation_count / 10.0)`) winning top-1 in 100.00% of ticks, stddev
+`0.000000`. That measurement is real and was accurate for the code as it stood at that moment. It was
+also, unbeknownst to that write-up, already fixed: PR #1433 replaced the saturating cap with an EWMA
+z-score baseline the same minute, and PR #1454's post-fix reprobe found `field:recent_perturbations`
+down to 11.13% top-1 (~6.3h post-deploy). This session's own live re-query, ~30h further out (36h
+window, 127k+ rows, 48,144 ticks with ≥2 candidates), confirms continued convergence toward genuine
+competition: `node:athena` 60.0%, `field:recent_perturbations` 38.7%, `node:atlas` 1.3%; median #1/#2
+margin 0.16; ~7% real near-ties; no channel pinned at zero variance. **This is no longer a monoculture
+by the same standard that flagged the original one** (exact zero variance, landslide margins). The
+arena arbitrates well enough to build against.
 
 ## Missing questions
 
-1. **Does the hop-chain wait for the Layer 5 fix, or build in parallel behind a flag?** The arena
-   problem and the hop-chain design are separable in principle (hop 0 could ship flag-off, same as
-   reverie), but "does a real trend finding ever win a budget slot" (the metacog doc's own proposed
-   acceptance check) is unmeasurable and unfalsifiable while the arena is provably rigged toward one
-   saturated channel. Recommend: design in parallel, do not flip either flag live until Layer 5 has
-   its own fix and re-measurement.
+1. ~~Does the hop-chain wait for the Layer 5 fix, or build in parallel behind a flag?~~ **Resolved
+   2026-07-30: the fix shipped (PR #1433/#1454), re-verified live this session. No longer a live
+   question** — see the correction at the top of the Arsonist summary. "Does a real trend finding ever
+   win a budget slot" is now measurable against a genuinely competitive arena, not a rigged one.
 2. **What does a hop's "belief" concretely consist of?** The chain needs a prior-state read to check
    Y against A. Candidates: the most recent `FieldStateV1`/`FieldAttentionFrameV1` snapshot (cheap,
    already polled every tick), the metacog trend reducer's projection once it exists (richer, but
@@ -134,9 +148,11 @@ producer into it. Nothing has changed that conclusion since.
    "let it run," but as the actual mechanism that makes "let it run" safe to say. This needs to be
    *measured*, not asserted, once hop 0 exists: does a real chain ever actually get preempted in
    practice, or does it always win.
-7. **Does `turn_effect`/`repair_pressure` have durable queryable history at all?** Unresolved,
-   verbatim, from the metacog doc — still the correct prerequisite for hop 0's specific reducer,
-   independent of the arena question above.
+7. ~~Does `turn_effect`/`repair_pressure` have durable queryable history at all?~~ **Resolved
+   2026-07-30, confirmed live:** `repair_pressure_appraisal_log` (dedicated Postgres table) has 52 real
+   rows, 2026-07-24 through 2026-07-30. `turn_effect` is durably persisted inside
+   `chat_history_log.spark_meta` JSONB (37 of the last 41 rows over 7 days), queryable via
+   `spark_meta->'turn_effect'`. No new persistence plumbing needed for hop 0.
 
 ## Proposed schema / API changes
 
@@ -167,13 +183,13 @@ producer into it. Nothing has changed that conclusion since.
   existing `reverie_candidates` parameter.
 - `services/orion-proposal-runtime/app/worker.py` — new flag-gated hop candidate producer, mirroring
   `reverie_propose_enabled`'s pattern exactly (default off).
-- New: `orion/metacog/trend_reducer.py` (hop 0, already scoped in the 2026-07-28 doc, still blocked on
-  its own Missing Questions 1-2).
+- New: `orion/metacog/trend_reducer.py` (hop 0, already scoped in the 2026-07-28 doc; both of its
+  Missing Questions 1-2 resolved live 2026-07-30 — unblocked).
 - New: a chain-lineage schema, home TBD (`orion/schemas/` vs. a Falkor-native shape if graph
   queryability is chosen).
-- `orion/attention/field_attention/selectors.py` — **not this doc's patch, but the actual named
-  prerequisite.** Needs its own proposal-mode design doc for the monoculture fix before anything above
-  is safe to flip live.
+- `orion/attention/field_attention/selectors.py` — **already fixed (PR #1433), no longer this doc's
+  prerequisite.** Left here only as a pointer for anyone reading this doc fresh: the fix that unblocked
+  it lives there, not in anything this doc proposes.
 - `orion/feedback/builder.py` — the missing write-back (`base_priority`/`base_risk`/
   `dimension_weights` never updated from real `FeedbackFrameV1` outcomes) is a second, independent
   prerequisite: a chain that spans many hops and eventually acts is exactly the case where "the arena
@@ -182,10 +198,11 @@ producer into it. Nothing has changed that conclusion since.
 
 ## Non-goals
 
-- Not fixing Layer 5 attention's monoculture in this doc. Named as the load-bearing prerequisite,
-  requires its own explicit proposal-mode sign-off per the metacog doc's own note and
-  `orion/sentience_striving_program/README.md`'s charter.
-- Not fixing the feedback write-back gap in this doc. Named as a second prerequisite, not solved here.
+- Not fixing Layer 5 attention's monoculture in this doc — moot, it shipped independently (PR #1433,
+  re-verified 2026-07-30) before this doc's recommendation caught up to it.
+- Not fixing the feedback write-back gap in this doc. Still a real, separate prerequisite worth
+  fixing before a chain spans many hops and needs its dispatch decisions informed by past outcomes —
+  not solved here, not yet re-checked for whether anything shipped for it independently.
 - Not building hop 0, hop 1, or any hop. This doc scopes the contract; the metacog trend-reducer doc
   already owns hop 0's specific build, still blocked on its own Missing Questions.
 - Not writing real termination logic — deliberately reframed to interruption per Juniper's direction —
@@ -198,10 +215,11 @@ producer into it. Nothing has changed that conclusion since.
 
 ## Acceptance checks
 
-1. Layer 5 attention gets its own proposal-mode design doc and fix, re-measured with a script in the
-   shape of `measure_attention_salience_normalization.py`, showing no single channel above some
-   explicit monoculture threshold (that doc's own 50% convention is a reasonable starting bar) — before
-   any `source="cognitive_hop"` candidate is enabled live in the same arena.
+1. ~~Layer 5 attention gets its own proposal-mode design doc and fix...~~ **Met, 2026-07-30.** PR
+   #1433 shipped the fix; PR #1454 and this session's independent 36h re-measurement both show no
+   channel pinned at zero variance and a converging, non-landslide multi-way competition (60.0%/
+   38.7%/1.3% split, median #1/#2 margin 0.16). One more re-check in 24-48h to confirm full
+   convergence is still worthwhile, but not a gate on starting hop 0.
 2. Hop 0 (the metacog trend reducer) ships flag-off, registered as a candidate producer exactly like
    reverie, and its own live-data check answers: does it ever win a budget slot, does it ever get
    preempted, and when preempted does the checkpoint mechanism actually preserve resumable state
@@ -215,10 +233,28 @@ producer into it. Nothing has changed that conclusion since.
 
 ## Recommended next patch
 
-Not the hop-chain. The actual next patch is the Layer 5 attention monoculture fix — its own
-proposal-mode doc, sequenced ahead of both this doc's hop-chain work and the metacog trend reducer's
-already-blocked build (same prerequisite, confirmed twice now from two different investigations). Once
-that lands and re-measures clean, hop 0 (metacog trend reducer, already fully spec'd, still blocked on
-its own Missing Questions 1-2 about series/history) is the correct first real instance of this
-contract — cheap, deterministic, no branching, no dispatch — before hop 1 (actual sub-investigation
-dispatch) gets built against a still-hypothetical arena.
+**Superseded, 2026-07-30 — both named prerequisites are cleared, live-verified, not just plausible.**
+
+Still not the hop-chain itself, but the sequencing is now: **hop 0** — the metacog trend reducer
+(already fully spec'd in `docs/superpowers/specs/2026-07-28-metacog-turn-scoped-trend-reducer-design.md`,
+whose own Missing Questions 1-2 are now resolved: real durable history confirmed for both
+`repair_pressure_appraisal_log` and `chat_history_log.spark_meta->'turn_effect'`). Concretely:
+
+1. Build `scripts/analysis/measure_metacog_trend_baseline.py` against whichever series that doc's
+   acceptance check 1 prefers (likely `repair_pressure_appraisal_log` first — it's a dedicated table,
+   cleaner than a JSONB path, and already has 52 real rows) — confirm a genuine rest state, not smooth
+   noise or a floor/ceiling artifact, before anything ships live. This is the one remaining
+   measure-before-minting step neither doc has done yet.
+2. Then the reducer itself, following the `ReducerSpec` pattern in
+   `orion-substrate-runtime/app/worker.py`, registered as a flag-gated candidate producer exactly like
+   `reverie_propose_enabled` — default off, `operator_review`-gated, same shape.
+3. Hop 1 (actual sub-investigation dispatch, `source="cognitive_hop"`, this doc's own schema/lineage
+   proposal) only after hop 0 is live, flag-off, and its own acceptance checks (does it ever win a
+   budget slot, does it ever get preempted, does the checkpoint mechanism survive a real preemption)
+   have real data behind them — not before.
+
+The Layer 5 fix that used to block step 1 is done. The feedback write-back gap (`orion/feedback/
+builder.py` never updates `base_priority`/`base_risk`/`dimension_weights` from real outcomes) remains
+a real, separate, still-open prerequisite worth closing before a multi-hop chain's dispatch decisions
+need to be informed by whether hop-chains like it worked before — not blocking hop 0, but blocking
+hop 1 being trustworthy.

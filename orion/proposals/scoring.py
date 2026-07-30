@@ -200,6 +200,27 @@ def template_match_score(
     return clamp01(match), contributions
 
 
+def _pressure_dimension_ids(template: ProposalTemplateV1) -> list[str]:
+    """The dimension set proposal_urgency() and proposal_confidence() both
+    read: template.dimensions filtered to real pressure dimensions, falling
+    back to all of PRESSURE_DIMENSIONS if the template scores on none (e.g.
+    an honestly-empty `dimensions: {}` post-2026-07-30 dead-dimension fix).
+
+    Shared by both functions so they can never again drift out of sync the
+    way they did before that fix: proposal_urgency()'s own filter used to
+    let a dead dimension ending in "_pressure" (contract_pressure) pass
+    through and suppress this exact fallback, while proposal_confidence()
+    had no fallback at all and returned a bare 0.0 for the same template.
+    One shared dimension-set means one fallback behavior for both signals.
+    """
+    dims = [
+        dim_id
+        for dim_id in template.dimensions
+        if dim_id in PRESSURE_DIMENSIONS or dim_id.endswith("_pressure")
+    ]
+    return dims if dims else list(PRESSURE_DIMENSIONS)
+
+
 def proposal_urgency(
     *,
     field_pressures: dict[str, float],
@@ -207,11 +228,8 @@ def proposal_urgency(
 ) -> float:
     scores = [
         dimension_score(field_pressures, dim_id)
-        for dim_id in template.dimensions
-        if dim_id in PRESSURE_DIMENSIONS or dim_id.endswith("_pressure")
+        for dim_id in _pressure_dimension_ids(template)
     ]
-    if not scores:
-        scores = [dimension_score(field_pressures, d) for d in PRESSURE_DIMENSIONS]
     # No SelfStateV1.overall_intensity fallback survives the burn -- honest
     # 0.0 ("no pressure data this tick") rather than a fabricated rollup.
     return clamp01(max(scores) if scores else 0.0)
@@ -225,13 +243,34 @@ def proposal_confidence(
 ) -> float:
     confs = [
         dimension_confidence(field, field_pressures, dim_id)
-        for dim_id in template.dimensions
+        for dim_id in _pressure_dimension_ids(template)
     ]
     if not confs:
         return 0.0
     return clamp01(sum(confs) / len(confs))
 
 
+# 2026-07-30 (docs/superpowers/specs/2026-07-30-proposal-priority-theory-
+# anchor-design.md): replaces the original hand-picked
+# `base_priority + 0.4*match_score + 0.2*urgency + 0.1*confidence` blend --
+# three constants with no theory anchor or citation, unlike every other
+# scoring function in this module. Precision-weighting (Feldman & Friston
+# 2010 -- same anchor already shipped for dimension_confidence() above and
+# for Candidate A's attention salience, orion/attention/field_attention/
+# candidate_precision_weighted.py) says a signal should be gated by how much
+# it can be trusted, not added to it as an independent term: confidence acts
+# as a multiplicative precision weight on whichever real pressure signal is
+# stronger (match_score, the template-weighted relevance read, or urgency,
+# the raw unweighted severity read -- max() because either alone is a
+# sufficient reason to raise priority, same max()-not-sum() shape
+# template_match_score() and proposal_urgency() already use internally).
+#
+# This is NOT yet verified to fix the 98%-single-template dispatch capture
+# documented in that design doc (open question 2 there: real pressure
+# elevation vs. a scoring-floor artifact) -- it removes the arbitrary
+# constants, it does not by itself guarantee dispatch diversity. That is a
+# separate, deliberately deferred follow-up (direction (b), diversity-aware
+# dispatch), pending real post-deploy dispatch data under this formula.
 def proposal_priority(
     *,
     base_priority: float,
@@ -239,9 +278,7 @@ def proposal_priority(
     urgency: float,
     confidence: float,
 ) -> float:
-    return clamp01(
-        base_priority + 0.4 * match_score + 0.2 * urgency + 0.1 * confidence
-    )
+    return clamp01(base_priority + confidence * max(match_score, urgency))
 
 
 def proposal_risk(

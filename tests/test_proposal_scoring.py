@@ -96,6 +96,103 @@ def test_scores_clamped() -> None:
     ) == 1.0
 
 
+# 2026-07-30 precision-weighted priority (docs/superpowers/specs/2026-07-30-
+# proposal-priority-theory-anchor-design.md): replaces the hand-picked
+# 0.4/0.2/0.1 additive blend with confidence * max(match_score, urgency).
+
+
+def test_priority_zero_confidence_never_exceeds_base_priority() -> None:
+    """Precision-weighting means an untrusted signal, however strong, must
+    not raise priority above the template's own base_priority -- confidence
+    is a gate, not an independent additive term."""
+    assert proposal_priority(
+        base_priority=0.3, match_score=1.0, urgency=1.0, confidence=0.0
+    ) == 0.3
+
+
+def test_priority_scales_with_confidence_at_fixed_signal() -> None:
+    low = proposal_priority(base_priority=0.2, match_score=0.8, urgency=0.0, confidence=0.2)
+    high = proposal_priority(base_priority=0.2, match_score=0.8, urgency=0.0, confidence=0.9)
+    assert low < high
+
+
+def test_priority_uses_stronger_of_match_or_urgency() -> None:
+    """Either a strong template-weighted match or a strong raw urgency
+    reading is independently sufficient to raise priority -- max(), not
+    sum(), matching the shape template_match_score() and proposal_urgency()
+    already use internally for combining multiple dimension contributions."""
+    via_match = proposal_priority(base_priority=0.1, match_score=0.9, urgency=0.1, confidence=1.0)
+    via_urgency = proposal_priority(base_priority=0.1, match_score=0.1, urgency=0.9, confidence=1.0)
+    assert via_match == via_urgency == 1.0
+
+
+def test_priority_empty_dimension_template_still_gets_real_confidence() -> None:
+    """Regression guard: an honestly-empty `dimensions: {}` template (post
+    PR #1493's dead-dimension fix) must not collapse proposal_priority() to
+    base_priority forever just because confidence is gating the signal now.
+    _pressure_dimension_ids()'s shared fallback to PRESSURE_DIMENSIONS means
+    proposal_confidence() reads the same 4 core dimensions proposal_urgency()
+    already falls back to -- a real, non-zero confidence, not the bare 0.0
+    the old ungated proposal_confidence() returned for these templates
+    (harmless under the old additive formula's independent 0.1 term, would
+    have silently zeroed the entire signal under a naive
+    confidence * max(...) formula that didn't fix this fallback first)."""
+    template = POLICY.proposal_templates["inspect_bus_channel_catalog"]
+    assert template.dimensions == {}
+    field = FieldStateV1(
+        generated_at=NOW,
+        tick_id="tick_test",
+        dimension_precision_ewma_n={"execution_pressure": DIMENSION_PRECISION_EWMA_MIN_SAMPLES},
+        dimension_precision_zscore={"execution_pressure": 0.0},
+    )
+    pressures = {"execution_pressure": 0.9}
+    urgency = proposal_urgency(field_pressures=pressures, template=template)
+    confidence = proposal_confidence(field=field, field_pressures=pressures, template=template)
+    match, _ = template_match_score(field_pressures=pressures, template=template)
+    assert confidence > 0.0
+    priority = proposal_priority(
+        base_priority=template.base_priority,
+        match_score=match,
+        urgency=urgency,
+        confidence=confidence,
+    )
+    assert priority > template.base_priority
+
+
+def test_empty_dimension_template_confidence_can_clear_the_real_policy_review_gate() -> None:
+    """The actual mechanism behind 8/12 templates never dispatching (found
+    live via scripts/analysis/measure_proposal_feedback_correlation.py,
+    2026-07-30: several templates show dispatch_status='blocked' in 100% of
+    ~196k real rows) is NOT proposal_priority() losing a ranking race -- it's
+    orion/policy/evaluator.py::evaluate_proposal_candidate() forcing
+    decision='requires_operator_review' whenever
+    `candidate.confidence_score < require_review_below_confidence` (0.50,
+    config/policy/substrate_policy.v1.yaml), and
+    execution_dispatch_policy.v1.yaml hard-blocking that decision. Before
+    this session's `_pressure_dimension_ids()` fallback,
+    `proposal_confidence()` returned a hardcoded 0.0 for any template with no
+    PRESSURE_DIMENSIONS-matching `dimensions` (every honestly-empty template
+    from PR #1493, and every dead-dimension template before it) -- always
+    below 0.5, so these templates were mechanically forced into
+    requires_operator_review and blocked on every single tick, entirely
+    independent of priority_score. This test proves the fallback fix clears
+    that real threshold under a plausible calm/matching field reading, not
+    just that confidence is "greater than 0" (test_priority_empty_dimension_
+    template_still_gets_real_confidence above only checked the latter)."""
+    REAL_POLICY_REQUIRE_REVIEW_BELOW_CONFIDENCE = 0.50  # config/policy/substrate_policy.v1.yaml
+    template = POLICY.proposal_templates["inspect_bus_channel_catalog"]
+    assert template.dimensions == {}
+    field = FieldStateV1(
+        generated_at=NOW,
+        tick_id="tick_test",
+        dimension_precision_ewma_n={d: DIMENSION_PRECISION_EWMA_MIN_SAMPLES for d in PRESSURE_DIMENSIONS},
+        dimension_precision_zscore={d: 0.0 for d in PRESSURE_DIMENSIONS},
+    )
+    pressures = {d: 0.3 for d in PRESSURE_DIMENSIONS}
+    confidence = proposal_confidence(field=field, field_pressures=pressures, template=template)
+    assert confidence > REAL_POLICY_REQUIRE_REVIEW_BELOW_CONFIDENCE
+
+
 # 2026-07-28 precision-weighted confidence fix (docs/superpowers/specs/2026-
 # 07-28-precision-weighted-proposal-scoring-design.md). dimension_confidence()
 # used to be a binary presence flag with no state; it now reads a per-

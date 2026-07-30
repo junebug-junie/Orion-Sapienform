@@ -1,5 +1,4 @@
 from .adapters import (
-    map_autonomy_artifacts_to_substrate,
     map_concept_delta_to_substrate,
     map_concept_profile_to_substrate,
     map_spark_source_snapshot_to_substrate,
@@ -55,7 +54,6 @@ from .relational import (
 )
 
 __all__ = [
-    "map_autonomy_artifacts_to_substrate",
     "map_concept_delta_to_substrate",
     "map_concept_profile_to_substrate",
     "map_spark_source_snapshot_to_substrate",

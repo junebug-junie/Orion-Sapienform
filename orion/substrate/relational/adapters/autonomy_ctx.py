@@ -1,7 +1,13 @@
 """Autonomy context adapter — graphdb_durable tier.
 
-Wraps ``build_autonomy_repository`` + ``map_autonomy_artifacts_to_substrate``
-so that the autonomy producer lane can be registered in ProducerRegistryV1.
+Wraps ``build_autonomy_repository`` and maps its result to substrate nodes
+directly via ``_map_autonomy_state_to_nodes`` below (the separate
+``orion.substrate.adapters.autonomy.map_autonomy_artifacts_to_substrate``
+this docstring used to reference was removed 2026-07-30,
+chore/delete-orion-drives Wave 2c -- it had zero production callers once
+services/orion-substrate-runtime's own drive_state materializer was deleted
+in the same sprint; this adapter never actually called it) so that the
+autonomy producer lane can be registered in ProducerRegistryV1.
 
 When ``AUTONOMY_GRAPH_BACKEND=graphdb`` or SPARQL/Fuseki endpoints resolve, the adapter resolves SPARQL endpoint
 from env, applies quick-lane bounds for fast chat verbs, and maps each available

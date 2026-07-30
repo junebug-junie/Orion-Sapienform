@@ -39,4 +39,11 @@ npx convex env set LLM_EMBEDDING_MODEL "${EMBED_MODEL}"
 echo "Redeploying Convex functions (embedding dimension ${EMBED_DIM})..."
 npx convex dev --once
 
+# Circe is reserved for Juniper's direct deep/FCC turns -- AI Town must never
+# land on it. Verify what was JUST written, not just what we intended to
+# write: confirmed live 2026-07-30 that this exact drift (a stale LLM_MODEL
+# left pointed at circe) can silently persist for weeks with nothing
+# checking the live value. See check_llm_route_not_circe.py's docstring.
+python3 "${ROOT}/scripts/check_llm_route_not_circe.py"
+
 echo "Done. Chat → gateway ${CHAT_ROUTE} lane (llamacpp). Embeddings → gateway → orion-vector-host (${EMBED_DIM} dims)."

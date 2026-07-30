@@ -7,13 +7,17 @@ from typing import Any
 from uuid import uuid4
 
 from orion.core.bus.async_service import OrionBusAsync
-from orion.core.schemas.drives import GoalProposalV1
+from orion.schemas.field_goal import FieldGoalProvenanceV1
 
 from .settings import Settings, get_settings
 
 logger = logging.getLogger("orion.substrate.runtime.goal_context_listener")
 
-_GOAL_PROPOSAL_KIND = "memory.goals.proposed.v1"
+# Repointed 2026-07-30 alongside orion/bus/channels.yaml's schema_id/message_kind
+# change (memory.goals.proposed.v1 -> memory.field_goals.proposed.v1) -- see
+# docs/superpowers/specs/2026-07-30-goal-provenance-and-decision-lattice-
+# observability-design.md. GoalProposalV1 is no longer this channel's schema.
+_GOAL_PROPOSAL_KIND = "memory.field_goals.proposed.v1"
 
 
 async def _handle_bus_message(
@@ -35,7 +39,7 @@ async def _handle_bus_message(
         return
 
     try:
-        goal = GoalProposalV1.model_validate(env.payload or {})
+        goal = FieldGoalProvenanceV1.model_validate(env.payload or {})
     except ValueError as exc:
         logger.error("goal_context invalid payload corr=%s err=%s", corr, exc)
         return

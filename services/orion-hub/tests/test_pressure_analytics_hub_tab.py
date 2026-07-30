@@ -26,7 +26,7 @@ def test_index_has_pressure_tab_section_and_frame() -> None:
     assert 'id="pressureAnalyticsTabButton"' in index_html
     assert 'href="#pressure"' in index_html
     assert 'data-hash-target="#pressure"' in index_html
-    assert ">Pressure<" in index_html
+    assert ">Code Proposals<" in index_html
     assert '<section id="pressure" data-panel="pressure"' in index_html
     assert 'id="pressureAnalyticsFrame"' in index_html
     assert 'src="/static/pressure-analytics.html?v={{HUB_UI_ASSET_VERSION}}"' in index_html

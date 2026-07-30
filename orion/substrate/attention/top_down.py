@@ -24,7 +24,8 @@ the winner away from the pure bottom-up winner (competition, not fiat).
 from __future__ import annotations
 
 import os
-from dataclasses import dataclass
+from dataclasses import dataclass, field
+from datetime import datetime, timezone
 from typing import Optional
 
 from orion.schemas.attention_frame import OpenLoopV1, VoluntaryOverrideV1
@@ -84,6 +85,11 @@ class TopDownConfig:
 class GoalContext:
     priority: float             # [0,1]
     goal_artifact_id: Optional[str] = None
+    # When this goal was received by GoalContextStore -- staleness dead-man's-switch
+    # (goal_context.py::GoalContextStore.current()), not continuous decay. See
+    # docs/superpowers/specs/2026-07-30-goal-provenance-and-decision-lattice-
+    # observability-design.md Part B for why decay was deliberately not used here.
+    received_at: datetime = field(default_factory=lambda: datetime.now(timezone.utc))
 
 
 @dataclass

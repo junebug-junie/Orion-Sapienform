@@ -1832,22 +1832,32 @@ channels:
 
   - name: "orion:memory:goals:proposed"
     kind: "event"
-    schema_id: "GoalProposalV1"
-    message_kind: "memory.goals.proposed.v1"
-    # Producer (orion-spark-concept-induction's GoalProposalEngine, via
-    # bus_worker.py's ConceptWorker) deleted 2026-07-30 (drive-pressure/
-    # goal-generation deletion sprint -- orion/sentience_striving_program/
-    # README.md sec8). This channel is now producer-less: nothing publishes
-    # to it anymore. orion-substrate-runtime's goal_context_listener.py (the
-    # real durable consumer, see prior comment below) degrades to receiving
-    # no new events, not an error.
+    schema_id: "FieldGoalProvenanceV1"
+    message_kind: "memory.field_goals.proposed.v1"
+    # Repointed 2026-07-30 (Sentience Striving Program sec6 Objective 3):
+    # schema_id/message_kind changed from GoalProposalV1/memory.goals.proposed.v1
+    # to FieldGoalProvenanceV1/memory.field_goals.proposed.v1 -- a disclosed,
+    # intentional contract change, not a silent repoint. See
+    # docs/superpowers/specs/2026-07-30-goal-provenance-and-decision-lattice-
+    # observability-design.md for the full design.
     #
-    # The GoalProposalV1 *schema class* itself is NOT dead -- it is still
-    # constructed in-memory (never published to this channel) by
-    # orion/autonomy/policy_act.py's goal_proposal_from_episode_intent() and
+    # Prior history: producer (orion-spark-concept-induction's GoalProposalEngine,
+    # via bus_worker.py's ConceptWorker) deleted 2026-07-30 (drive-pressure/
+    # goal-generation deletion sprint -- orion/sentience_striving_program/
+    # README.md sec8), leaving this channel producer-less. New real producer:
+    # orion-attention-runtime, emitting FieldGoalProvenanceV1 when a real
+    # FieldAttentionFrameV1's dominant_targets[0] sustains competition
+    # dominance across consecutive real field ticks -- see that service's
+    # worker.py. orion-substrate-runtime's goal_context_listener.py (the real
+    # durable consumer) now receives real events again.
+    #
+    # GoalProposalV1 (orion/core/schemas/drives.py) is UNCHANGED and NOT this
+    # channel's schema anymore -- it is still constructed in-memory (never
+    # published to any channel) by orion/autonomy/policy_act.py's
+    # goal_proposal_from_episode_intent() and
     # services/orion-world-pulse/app/services/curiosity.py's _synthetic_goal()
-    # for internal capability-policy evaluation only. Do not assume "channel
-    # producer-less" means "schema unused" when auditing this class.
+    # for internal capability-policy evaluation only. This repoint does not
+    # touch, replace, or wire into that path -- see the design doc's Non-goals.
     #
     # orion-rdf-writer removed 2026-07-18 (unrelated, prior removal): live
     # Fuseki query found zero graphs matching autonomy/goals ever recorded,
@@ -1856,7 +1866,7 @@ channels:
     # zero code references to this channel name or message_kind (same
     # stale-registry-claim shape as orion:memory:identity:snapshot above). Do
     # not re-add either without a real consumer.
-    producer_services: []
+    producer_services: ["orion-attention-runtime"]
     consumer_services: ["orion-substrate-runtime", "*"]
     stability: "experimental"
     since: "2026-03-19"

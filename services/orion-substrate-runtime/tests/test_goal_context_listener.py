@@ -5,27 +5,31 @@ from uuid import uuid4
 
 import pytest
 
-from orion.core.schemas.drives import ArtifactProvenance, GoalProposalV1
+from orion.core.schemas.drives import ArtifactProvenance
+from orion.schemas.field_goal import FieldGoalProvenanceV1
 
 
-def _sample_goal_proposal(
+def _sample_field_goal(
     *,
     artifact_id: str = "goal-1",
     correlation_id: str = "c-1",
     priority: float = 0.5,
     proposal_status: str = "proposed",
-) -> GoalProposalV1:
-    return GoalProposalV1(
+    field_target_id: str = "node:substrate.biometrics",
+) -> FieldGoalProvenanceV1:
+    return FieldGoalProvenanceV1(
         artifact_id=artifact_id,
-        subject="orion",
-        model_layer="drives",
-        entity_id="orion",
-        kind="memory.goals.proposed.v1",
+        subject="attention",
+        model_layer="field_attention",
+        entity_id=field_target_id,
+        kind="memory.field_goals.proposed.v1",
         correlation_id=correlation_id,
-        provenance=ArtifactProvenance(intake_channel="orion:memory:drives:state"),
-        goal_statement="investigate the anomaly",
-        proposal_signature="sig-1",
-        drive_origin="curiosity",
+        provenance=ArtifactProvenance(intake_channel="internal.attention_runtime"),
+        field_target_id=field_target_id,
+        target_kind="node",
+        salience_score=priority,
+        source_field_tick_id="tick-1",
+        source_attention_frame_id="frame-1",
         priority=priority,
         proposal_status=proposal_status,
     )
@@ -37,18 +41,18 @@ async def test_handle_bus_message_valid_envelope_sets_active_goal(monkeypatch) -
     from app.settings import Settings
     from orion.core.bus.bus_schemas import BaseEnvelope, ServiceRef
 
-    goal = _sample_goal_proposal(correlation_id="corr-bus")
+    goal = _sample_field_goal(correlation_id="corr-bus")
     corr = str(uuid4())
     envelope = BaseEnvelope(
-        kind="memory.goals.proposed.v1",
-        source=ServiceRef(name="orion-spark-concept-induction"),
+        kind="memory.field_goals.proposed.v1",
+        source=ServiceRef(name="orion-attention-runtime"),
         correlation_id=corr,
         payload=goal.model_copy(update={"correlation_id": corr}).model_dump(mode="json"),
     )
     bus = MagicMock()
     bus.codec.decode.return_value = MagicMock(ok=True, envelope=envelope, error=None)
 
-    seen: list[GoalProposalV1] = []
+    seen: list[FieldGoalProvenanceV1] = []
     monkeypatch.setattr(
         "orion.substrate.attention.goal_context.set_active_goal",
         lambda g: seen.append(g),
@@ -62,7 +66,7 @@ async def test_handle_bus_message_valid_envelope_sets_active_goal(monkeypatch) -
 
     assert len(seen) == 1
     assert seen[0].correlation_id == corr
-    assert seen[0].drive_origin == "curiosity"
+    assert seen[0].field_target_id == "node:substrate.biometrics"
 
 
 @pytest.mark.asyncio
@@ -96,10 +100,10 @@ async def test_handle_bus_message_wrong_kind_is_noop(monkeypatch, caplog) -> Non
     from app.settings import Settings
     from orion.core.bus.bus_schemas import BaseEnvelope, ServiceRef
 
-    goal = _sample_goal_proposal()
+    goal = _sample_field_goal()
     envelope = BaseEnvelope(
         kind="some.other.kind.v1",
-        source=ServiceRef(name="orion-spark-concept-induction"),
+        source=ServiceRef(name="orion-attention-runtime"),
         correlation_id=str(uuid4()),
         payload=goal.model_dump(mode="json"),
     )
@@ -130,10 +134,10 @@ async def test_handle_bus_message_malformed_payload_is_noop(monkeypatch) -> None
     from orion.core.bus.bus_schemas import BaseEnvelope, ServiceRef
 
     envelope = BaseEnvelope(
-        kind="memory.goals.proposed.v1",
-        source=ServiceRef(name="orion-spark-concept-induction"),
+        kind="memory.field_goals.proposed.v1",
+        source=ServiceRef(name="orion-attention-runtime"),
         correlation_id=str(uuid4()),
-        payload={"not": "a valid goal proposal"},
+        payload={"not": "a valid field goal"},
     )
     bus = MagicMock()
     bus.codec.decode.return_value = MagicMock(ok=True, envelope=envelope, error=None)

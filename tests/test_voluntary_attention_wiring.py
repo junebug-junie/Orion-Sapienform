@@ -9,7 +9,7 @@ from orion.schemas.attention_frame import (
     OpenLoopV1,
     VoluntaryOverrideV1,
 )
-from orion.core.schemas.drives import GoalProposalV1
+from orion.schemas.field_goal import FieldGoalProvenanceV1
 from orion.substrate.attention_broadcast import _apply_voluntary_attention
 from orion.substrate.attention import goal_context as gc
 
@@ -33,13 +33,14 @@ def _frame() -> AttentionFrameV1:
     return AttentionFrameV1(open_loops=loops, candidate_actions=actions, selected_action=actions[0])
 
 
-def _goal(drive="predictive", priority=0.9, status="proposed") -> GoalProposalV1:
-    return GoalProposalV1(
-        artifact_id="goal-1", subject="orion", model_layer="self-model",
-        entity_id="self:orion", kind="autonomy.goal.proposed.v1",
-        goal_statement="pursue predictive", proposal_signature="sig-1",
-        drive_origin=drive, priority=priority,
-        proposal_status=status, provenance={"intake_channel": "x"},
+def _goal(field_target_id="node:substrate.execution", priority=0.9, status="proposed") -> FieldGoalProvenanceV1:
+    return FieldGoalProvenanceV1(
+        artifact_id="goal-1", subject="attention", model_layer="field_attention",
+        entity_id=field_target_id, kind="memory.field_goals.proposed.v1",
+        field_target_id=field_target_id, target_kind="node",
+        salience_score=priority, source_field_tick_id="tick-1",
+        source_attention_frame_id="frame-1", priority=priority,
+        proposal_status=status, provenance={"intake_channel": "internal.attention_runtime"},
     )
 
 
@@ -69,7 +70,7 @@ def test_flag_on_no_goal_unchanged(monkeypatch) -> None:
 def test_goal_overrides_low_salience_loop(monkeypatch) -> None:
     monkeypatch.setenv("ORION_ATTENTION_TOPDOWN_ENABLED", "true")
     monkeypatch.setenv("ORION_ATTENTION_SALIENCE_V2_ENABLED", "true")
-    gc.set_active_goal(_goal(drive="predictive", priority=0.9))
+    gc.set_active_goal(_goal(priority=0.9))
     frame = _apply_voluntary_attention(_frame())
     # b(B) = 0.9*0.95 = 0.855; combined(B) = 0.30 + 0.6*0.855 = 0.813 > 0.80 (A).
     assert frame.voluntary_override is not None
@@ -85,24 +86,24 @@ def test_salience_v2_off_no_topdown(monkeypatch) -> None:
     # top-down gated on v2 (its selection basis); v2 off -> pure bottom-up.
     monkeypatch.setenv("ORION_ATTENTION_TOPDOWN_ENABLED", "true")
     monkeypatch.setenv("ORION_ATTENTION_SALIENCE_V2_ENABLED", "false")
-    gc.set_active_goal(_goal(drive="predictive", priority=0.9))
+    gc.set_active_goal(_goal(priority=0.9))
     frame = _apply_voluntary_attention(_frame())
     assert frame.voluntary_override is None
     assert frame.selected_action.open_loop_id == "A"
 
 
 def test_terminal_goal_clears_store() -> None:
-    gc.set_active_goal(_goal(drive="predictive", priority=0.9, status="active"))
+    gc.set_active_goal(_goal(priority=0.9, status="active"))
     assert gc.get_active_goal() is not None
     # same goal (artifact_id) goes terminal -> store clears.
-    gc.set_active_goal(_goal(drive="predictive", priority=0.9, status="completed"))
+    gc.set_active_goal(_goal(priority=0.9, status="completed"))
     assert gc.get_active_goal() is None
 
 
 def test_strong_bottom_up_beats_weak_goal(monkeypatch) -> None:
     monkeypatch.setenv("ORION_ATTENTION_TOPDOWN_ENABLED", "true")
     monkeypatch.setenv("ORION_ATTENTION_SALIENCE_V2_ENABLED", "true")
-    gc.set_active_goal(_goal(drive="predictive", priority=0.2))  # weak
+    gc.set_active_goal(_goal(priority=0.2))  # weak
     frame = _apply_voluntary_attention(_frame())
     # b(B)=0.2*0.95=0.19; combined(B)=0.30+0.6*0.19=0.414 < 0.80 (A). No flip.
     assert frame.voluntary_override is None

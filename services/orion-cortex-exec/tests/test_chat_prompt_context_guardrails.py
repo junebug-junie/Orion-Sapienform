@@ -22,6 +22,7 @@ from orion.schemas.cortex.schemas import ExecutionStep
 
 REPO_ROOT = Path(__file__).resolve().parents[3]
 CHAT_QUICK_TEMPLATE = REPO_ROOT / "orion" / "cognition" / "prompts" / "chat_quick.j2"
+CHAT_GENERAL_TEMPLATE = REPO_ROOT / "orion" / "cognition" / "prompts" / "chat_general.j2"
 
 # Keep in sync with LIGHTWEIGHT IDENTITY CONTEXT in chat_quick.j2 (non-optional lines only).
 _CHAT_QUICK_REQUIRED_PLACEHOLDERS = (
@@ -71,10 +72,46 @@ def test_chat_quick_render_surfaces_transcript_not_only_user_line() -> None:
         orion_identity_summary=["stub"],
         juniper_relationship_summary=["stub"],
         response_policy_summary=["stub"],
+        metadata={},
     )
     assert "something is wrong with your recall" in rendered
     assert "bro you are stuck in a loop" in rendered
     assert "You got me—loop" in rendered
+
+
+_CHAT_QUICK_BASE_RENDER_ARGS = dict(
+    user_message="hey",
+    message_history="",
+    memory_digest="",
+    orion_identity_summary=["stub"],
+    juniper_relationship_summary=["stub"],
+    response_policy_summary=["stub"],
+)
+
+
+def test_chat_quick_frames_aitown_surface_as_currently_embodied_there() -> None:
+    tpl = Environment().from_string(CHAT_QUICK_TEMPLATE.read_text(encoding="utf-8"))
+    rendered = tpl.render(**_CHAT_QUICK_BASE_RENDER_ARGS, metadata={"surface": "aitown"})
+    assert "You are embodied in ai-town right now" in rendered
+    assert "You are not currently in ai-town" not in rendered
+
+
+def test_chat_quick_frames_non_aitown_surface_as_outside_the_game() -> None:
+    """Regression coverage (found live 2026-07-30): with no surface framing at
+    all, ai-town dialogue in memory_digest bled into a hub turn verbatim --
+    Orion answered Juniper by continuing an in-progress ai-town NPC exchange
+    ("light folding") as if still mid-scene. Confirms hub-mode (surface unset
+    or anything other than "aitown") now gets explicit instruction not to."""
+    tpl = Environment().from_string(CHAT_QUICK_TEMPLATE.read_text(encoding="utf-8"))
+    rendered = tpl.render(**_CHAT_QUICK_BASE_RENDER_ARGS, metadata={})
+    assert "You are not currently in ai-town" in rendered
+    assert "You are embodied in ai-town right now" not in rendered
+
+
+def test_chat_quick_has_anti_repetition_instruction() -> None:
+    tpl = Environment().from_string(CHAT_QUICK_TEMPLATE.read_text(encoding="utf-8"))
+    rendered = tpl.render(**_CHAT_QUICK_BASE_RENDER_ARGS, metadata={})
+    assert "Do not repeat a phrase, metaphor, or sentence structure" in rendered
 
 
 def test_plan_ctx_latest_user_text_feeds_recall_gating_when_raw_missing() -> None:
@@ -114,3 +151,13 @@ def test_router_still_wires_plan_ctx_latest_user_text_for_recall_decision() -> N
         r"user_text\s*=\s*plan_ctx_latest_user_text\s*\(\s*ctx\s*\)",
         src,
     ), "router recall decision must pass plan_ctx_latest_user_text(ctx), not raw_user_text alone"
+
+
+def test_chat_general_has_non_aitown_surface_framing_and_anti_repetition() -> None:
+    """chat_general.j2 (the optional grounded/unified path) mirrors chat_quick.j2's
+    surface-awareness and anti-repetition fixes for consistency, even though it's
+    not the live path today -- so the same ai-town-content-bleed bug can't
+    resurface if EMBODIMENT_SPEECH_UNIFIED_ENABLED is ever turned on."""
+    text = CHAT_GENERAL_TEMPLATE.read_text(encoding="utf-8")
+    assert 'metadata.get("surface") != "aitown"' in text
+    assert "Do not repeat a phrase, metaphor, or sentence structure" in text

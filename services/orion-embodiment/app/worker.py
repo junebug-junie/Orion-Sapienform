@@ -1057,7 +1057,13 @@ class EmbodimentWorker:
         from orion.schemas.cortex.schemas import PlanExecutionArgs, PlanExecutionRequest
 
         plan = build_plan_for_verb(verb, mode=lane)
-        metadata = {"correlation_id": correlation_id, "mind_enabled": True}
+        # Also set here (not just surface_context.surface below) so
+        # chat_general.j2's metadata.get("surface") check -- the same key
+        # chat_quick.j2 reads -- fires correctly if this grounded path is ever
+        # enabled (EMBODIMENT_SPEECH_UNIFIED_ENABLED); surface_context is a
+        # separate dict this producer also happens to set, not something
+        # chat_general.j2's ai-town framing block actually reads.
+        metadata = {"correlation_id": correlation_id, "mind_enabled": True, "surface": "aitown"}
         if participant_continuity:
             # Read by chat_general.j2's aitown_participant_continuity block (mirrors
             # chat_quick.j2's -- see _fetch_participant_continuity's docstring).
@@ -1110,7 +1116,11 @@ class EmbodimentWorker:
 
         try:
             plan = build_plan_for_verb(self._settings.speech_verb, mode=self._settings.speech_lane)
-            metadata = {"correlation_id": correlation_id}
+            # chat_quick.j2 reads this to know it's embodied in ai-town right now
+            # (vs. a direct hub conversation with Juniper) -- without it, ai-town
+            # dialogue and hub chat looked identical to the template, so ai-town
+            # banter bled into hub responses with no framing at all.
+            metadata = {"correlation_id": correlation_id, "surface": "aitown"}
             if participant_continuity:
                 # ctx["metadata"] is passed through to Jinja rendering verbatim
                 # (executor.py's _prompt_render_ctx does render_ctx = ctx.copy()),

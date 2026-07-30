@@ -372,6 +372,51 @@ class TestLLMBackendExecution(unittest.TestCase):
             settings.llm_route_table_json = original
             _load_route_targets.cache_clear()
 
+    @patch("app.priority_admission.wait_for_slack_sync")
+    @patch("app.llm_backend._execute_openai_chat")
+    def test_run_llm_chat_gates_background_priority_routes(self, mock_execute, mock_wait):
+        original = settings.llm_route_table_json
+        try:
+            settings.llm_route_table_json = (
+                '{"quick_background":{"url":"http://atlas:8013","served_by":"atlas-worker-fast-1",'
+                '"backend":"llamacpp","priority":"background","reserved_free_slots":2}}'
+            )
+            mock_execute.return_value = {"text": "OK", "raw": {}}
+            _load_route_targets.cache_clear()
+            run_llm_chat(
+                ChatBody(
+                    route="quick_background",
+                    messages=[ChatMessage(role="user", content="hello")],
+                )
+            )
+            mock_wait.assert_called_once()
+            called_target = mock_wait.call_args.args[0]
+            self.assertEqual(called_target.reserved_free_slots, 2)
+        finally:
+            settings.llm_route_table_json = original
+            _load_route_targets.cache_clear()
+
+    @patch("app.priority_admission.wait_for_slack_sync")
+    @patch("app.llm_backend._execute_openai_chat")
+    def test_run_llm_chat_never_gates_plain_routes(self, mock_execute, mock_wait):
+        original = settings.llm_route_table_json
+        try:
+            settings.llm_route_table_json = (
+                '{"quick":{"url":"http://atlas:8013","served_by":"atlas-worker-fast-1","backend":"llamacpp"}}'
+            )
+            mock_execute.return_value = {"text": "OK", "raw": {}}
+            _load_route_targets.cache_clear()
+            run_llm_chat(
+                ChatBody(
+                    route="quick",
+                    messages=[ChatMessage(role="user", content="hello")],
+                )
+            )
+            mock_wait.assert_not_called()
+        finally:
+            settings.llm_route_table_json = original
+            _load_route_targets.cache_clear()
+
     @patch("app.llm_backend._common_http_client")
     def test_execute_openai_chat_forwards_logprobs_when_requested(self, mock_client_factory):
         mock_client = MagicMock()

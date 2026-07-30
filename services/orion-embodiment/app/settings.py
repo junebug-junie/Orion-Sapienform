@@ -43,6 +43,16 @@ class Settings(BaseSettings):
 
     speech_enabled: bool = Field(False, alias="EMBODIMENT_SPEECH_ENABLED")
     speech_lane: str = Field("quick", alias="EMBODIMENT_SPEECH_LANE")
+    # The actual LLM gateway route override for _request_utterance_quick (the
+    # live town-speech path when speech_unified_enabled is off). Kept separate
+    # from speech_lane, which also doubles as the cognition "mode" passed to
+    # build_plan_for_verb -- conflating the two would mean changing one for
+    # gateway-routing reasons silently changes the other's unrelated meaning.
+    # Set to quick_background (not quick) so Orion's own ai-town dialogue
+    # shares atlas-worker-fast-1 without competing evenly with orion-mind/
+    # orion-hub's own quick traffic -- see services/orion-llm-gateway/README.md's
+    # "Background-priority routes".
+    speech_quick_llm_route: str = Field("quick", alias="EMBODIMENT_SPEECH_QUICK_LLM_ROUTE")
     speech_verb: str = Field("chat_quick", alias="EMBODIMENT_SPEECH_VERB")
     speech_timeout_sec: float = Field(30.0, alias="EMBODIMENT_SPEECH_TIMEOUT_SEC")
     # Town speech must stay on the chat exec lane — the legacy intake queue is

@@ -1123,7 +1123,14 @@ class EmbodimentWorker:
                 args=PlanExecutionArgs(
                     request_id=correlation_id,
                     trigger_source=self._settings.service_name,
-                    extra={"lane": self._settings.speech_lane},
+                    # "lane" is cognition-mode metadata only (build_plan_for_verb's
+                    # mode= param); "llm_route" is what orion-cortex-exec's executor
+                    # actually reads as the gateway route override -- this was
+                    # previously missing here, so EMBODIMENT_SPEECH_LANE never
+                    # actually changed which gateway route town speech used; the
+                    # live "quick" behavior came entirely from cortex-exec's own
+                    # per-verb default mapping, coincidentally matching.
+                    extra={"lane": self._settings.speech_lane, "llm_route": self._settings.speech_quick_llm_route},
                 ),
                 context={"user_message": prompt, "metadata": metadata},
             )

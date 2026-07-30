@@ -26,6 +26,7 @@ def _worker(*, conversation_memory_enabled: bool = True, memory_enabled: bool = 
     w._settings = SimpleNamespace(
         speech_enabled=True,
         speech_lane="quick",
+        speech_quick_llm_route="quick",
         speech_verb="chat_quick",
         speech_timeout_sec=30.0,
         cortex_request_channel="orion:cortex:exec:request",
@@ -334,3 +335,22 @@ def test_request_utterance_quick_omits_continuity_key_when_none():
     asyncio.run(w._request_utterance_quick("prompt text", correlation_id="11111111-1111-1111-1111-111111111111"))
     env = bus.rpc_request.call_args.args[1]
     assert "aitown_participant_continuity" not in env.payload["context"]["metadata"]
+
+
+def test_request_utterance_quick_forwards_configured_llm_route():
+    """Regression coverage: extra={"lane": ...} alone never reached cortex-exec's
+    llm_route override (it reads ctx["llm_route"], not ctx["lane"]) -- so
+    EMBODIMENT_SPEECH_QUICK_LLM_ROUTE previously had no effect on the actual
+    gateway route town speech used. Confirms it's now genuinely threaded through."""
+    w = _worker()
+    w._settings.speech_quick_llm_route = "quick_background"
+    bus = SimpleNamespace()
+    bus.rpc_request = AsyncMock(return_value={"data": b""})
+    bus.codec = SimpleNamespace(
+        decode=lambda _data: SimpleNamespace(ok=True, envelope=SimpleNamespace(payload={"result": {"text": "hi"}}))
+    )
+    w._bus = bus
+    asyncio.run(w._request_utterance_quick("prompt text", correlation_id="11111111-1111-1111-1111-111111111111"))
+    env = bus.rpc_request.call_args.args[1]
+    assert env.payload["args"]["extra"]["llm_route"] == "quick_background"
+    assert env.payload["args"]["extra"]["lane"] == "quick"

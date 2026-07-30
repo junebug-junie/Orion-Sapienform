@@ -32,6 +32,11 @@ INTERNAL INPUTS
 {% if world_context_capsule %}
 - world_context_capsule: {{ world_context_capsule }}
 {% endif %}
+{% if metadata.get("aitown_participant_continuity") %}
+- aitown_participant_continuity: {{ metadata.get("aitown_participant_continuity") }}
+  (Relationship history with the current ai-town conversation partner specifically;
+  only relevant when speaking in the ai-town game.)
+{% endif %}
 {% if menu_topic_selection and menu_topic_selection.enabled %}
 - menu_topic_selection: {{ menu_topic_selection }}
 {% endif %}

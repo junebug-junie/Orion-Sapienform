@@ -87,6 +87,52 @@ def test_build_perception_empty_landmarks_when_locations_unset():
     assert perc.nearby_landmarks == []
 
 
+def test_build_perception_line_of_sight_blocked_by_obstacle():
+    # A wall of non-walkable tiles sits directly between Orion and the target.
+    players = [{"id": "orion", "position": {"x": 0.0, "y": 0.0}}]
+    locations = {"campfire": {"x": 4.0, "y": 0.0}}
+    walkable = {(0, 0), (1, 0), (3, 0), (4, 0)}  # (2, 0) missing -> blocks the line
+    perc = build_perception(players=players, orion_player_id="orion", locations=locations, walkable=walkable)
+    assert perc.nearby_landmarks[0]["is_visible"] is False
+
+
+def test_build_perception_line_of_sight_clear_path():
+    players = [{"id": "orion", "position": {"x": 0.0, "y": 0.0}}]
+    locations = {"campfire": {"x": 4.0, "y": 0.0}}
+    walkable = {(0, 0), (1, 0), (2, 0), (3, 0), (4, 0)}
+    perc = build_perception(players=players, orion_player_id="orion", locations=locations, walkable=walkable)
+    assert perc.nearby_landmarks[0]["is_visible"] is True
+
+
+def test_build_perception_line_of_sight_fails_open_without_map_data():
+    # No walkable set provided (map load failed/unavailable) -> never hide
+    # something that's actually there just because we couldn't check.
+    players = [{"id": "orion", "position": {"x": 0.0, "y": 0.0}}]
+    locations = {"campfire": {"x": 4.0, "y": 0.0}}
+    perc = build_perception(players=players, orion_player_id="orion", locations=locations)
+    assert perc.nearby_landmarks[0]["is_visible"] is True
+
+
+def test_build_perception_line_of_sight_ignores_target_own_tile_walkability():
+    # The target tile itself (e.g. a solid windmill) may be non-walkable --
+    # that must not block seeing it; only tiles STRICTLY BETWEEN matter.
+    players = [{"id": "orion", "position": {"x": 0.0, "y": 0.0}}]
+    locations = {"windmill": {"x": 2.0, "y": 0.0}}
+    walkable = {(0, 0), (1, 0)}  # (2,0) itself absent/non-walkable
+    perc = build_perception(players=players, orion_player_id="orion", locations=locations, walkable=walkable)
+    assert perc.nearby_landmarks[0]["is_visible"] is True
+
+
+def test_build_perception_nearby_players_carry_is_visible():
+    players = [
+        {"id": "orion", "position": {"x": 0.0, "y": 0.0}},
+        {"id": "p9", "name": "Juniper", "position": {"x": 4.0, "y": 0.0}},
+    ]
+    walkable = {(0, 0), (1, 0), (3, 0), (4, 0)}  # (2,0) missing -> blocked
+    perc = build_perception(players=players, orion_player_id="orion", walkable=walkable)
+    assert perc.nearby_players[0]["is_visible"] is False
+
+
 def test_build_perception_no_conversation_when_orion_not_member():
     players = [{"id": "orion", "position": {"x": 0.0, "y": 0.0}}]
     conversations = [{"id": "c:2", "participants": [{"playerId": "zz", "status": {"kind": "invited"}}]}]

@@ -93,9 +93,15 @@ def _nearby_landmarks_clause(perception: WorldPerceptionV1) -> str:
     Landmarks come from EMBODIMENT_LOCATIONS_JSON via perception.py's
     nearby_landmarks; empty when the registry is empty/unconfigured, in which
     case this degrades to an empty string rather than an awkward mention.
+    Only visible landmarks are surfaced -- is_visible is an approximate
+    line-of-sight check (perception.py's _has_line_of_sight), so Orion isn't
+    prompted to reference something a wall/obstacle would actually be blocking.
     """
     landmarks = getattr(perception, "nearby_landmarks", None) or []
-    named = [str(lm.get("name")) for lm in landmarks if lm.get("name")]
+    named = [
+        str(lm.get("name")) for lm in landmarks
+        if lm.get("name") and lm.get("is_visible", True)
+    ]
     if not named:
         return ""
     return f"Nearby: {', '.join(named)}.\n"

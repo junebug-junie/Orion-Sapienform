@@ -36,6 +36,11 @@ def _worker(*, conversation_memory_enabled: bool = True, memory_enabled: bool = 
         unified_session_prefix="aitown",
         memory_enabled=memory_enabled,
         conversation_memory_enabled=conversation_memory_enabled,
+        # Empty by default (matches "not configured") so existing tests that
+        # don't care about continuity fetching never attempt a real network
+        # call -- tests that DO exercise it override this explicitly.
+        social_memory_url="",
+        social_memory_timeout_sec=3.0,
         service_name="orion-embodiment",
         service_version="0.1.0",
         node_name="athena",
@@ -205,3 +210,97 @@ def test_journal_spawned_correlation_id_links_to_last_exchange():
     assert len(completion_calls) == 1
     trigger = JournalTriggerV1.model_validate(completion_calls[0].args[2].payload)
     assert trigger.spawned_correlation_id == exchange_id
+
+
+def _fake_urlopen_response(body: dict):
+    import io
+    import json as _json
+
+    class _Resp:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *a):
+            return False
+
+        def read(self):
+            return _json.dumps(body).encode("utf-8")
+
+    return _Resp()
+
+
+def test_fetch_participant_continuity_returns_summary_when_present():
+    w = _worker(conversation_memory_enabled=True)
+    w._settings.social_memory_url = "http://socialmem:8765"
+    body = {"participant": {"safe_continuity_summary": "Talked before, warm tone."}}
+    with patch("app.worker.urllib.request.urlopen", return_value=_fake_urlopen_response(body)) as urlopen:
+        result = w._fetch_participant_continuity("p9", "conv1")
+    assert result == "Talked before, warm tone."
+    called_url = urlopen.call_args.args[0].full_url
+    assert "platform=aitown" in called_url
+    assert "room_id=conv1" in called_url
+    assert "participant_id=p9" in called_url
+
+
+def test_fetch_participant_continuity_none_when_no_participant_row():
+    w = _worker(conversation_memory_enabled=True)
+    w._settings.social_memory_url = "http://socialmem:8765"
+    with patch("app.worker.urllib.request.urlopen", return_value=_fake_urlopen_response({"participant": None})):
+        assert w._fetch_participant_continuity("p9", "conv1") is None
+
+
+def test_fetch_participant_continuity_none_when_disabled():
+    w = _worker(conversation_memory_enabled=False)
+    w._settings.social_memory_url = "http://socialmem:8765"
+    with patch("app.worker.urllib.request.urlopen") as urlopen:
+        assert w._fetch_participant_continuity("p9", "conv1") is None
+    urlopen.assert_not_called()
+
+
+def test_fetch_participant_continuity_fail_open_on_error():
+    w = _worker(conversation_memory_enabled=True)
+    w._settings.social_memory_url = "http://socialmem:8765"
+    with patch("app.worker.urllib.request.urlopen", side_effect=OSError("boom")):
+        assert w._fetch_participant_continuity("p9", "conv1") is None
+
+
+def test_speak_once_threads_participant_continuity_into_request_utterance():
+    w = _worker(conversation_memory_enabled=True)
+    w._settings.social_memory_url = "http://socialmem:8765"
+    req = AsyncMock(return_value="Hi Juniper!")
+    with patch.object(w, "_request_utterance", new=req), \
+         patch.object(w, "_fetch_participant_continuity", return_value="Talked before, warm tone.") as fetch, \
+         patch("app.worker.aitown_client.send_input", return_value={"ok": True}), \
+         patch("app.worker.aitown_client.convex_mutation", return_value={"ok": True}), \
+         patch("app.worker.publish_with_reconnect", new=AsyncMock()):
+        asyncio.run(w._speak_once(_perception_in_convo(other_is_human=True)))
+    fetch.assert_called_once_with("p9", "conv1")
+    assert req.await_args.kwargs["participant_continuity"] == "Talked before, warm tone."
+
+
+def test_request_utterance_quick_adds_continuity_to_metadata():
+    w = _worker()
+    bus = SimpleNamespace()
+    bus.rpc_request = AsyncMock(return_value={"data": b""})
+    bus.codec = SimpleNamespace(
+        decode=lambda _data: SimpleNamespace(ok=True, envelope=SimpleNamespace(payload={"result": {"text": "hi"}}))
+    )
+    w._bus = bus
+    asyncio.run(w._request_utterance_quick(
+        "prompt text", correlation_id="11111111-1111-1111-1111-111111111111", participant_continuity="Talked before, warm tone.",
+    ))
+    env = bus.rpc_request.call_args.args[1]
+    assert env.payload["context"]["metadata"]["aitown_participant_continuity"] == "Talked before, warm tone."
+
+
+def test_request_utterance_quick_omits_continuity_key_when_none():
+    w = _worker()
+    bus = SimpleNamespace()
+    bus.rpc_request = AsyncMock(return_value={"data": b""})
+    bus.codec = SimpleNamespace(
+        decode=lambda _data: SimpleNamespace(ok=True, envelope=SimpleNamespace(payload={"result": {"text": "hi"}}))
+    )
+    w._bus = bus
+    asyncio.run(w._request_utterance_quick("prompt text", correlation_id="11111111-1111-1111-1111-111111111111"))
+    env = bus.rpc_request.call_args.args[1]
+    assert "aitown_participant_continuity" not in env.payload["context"]["metadata"]

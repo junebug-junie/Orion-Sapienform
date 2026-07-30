@@ -14,6 +14,8 @@ def _worker() -> EmbodimentWorker:
     w._orion_player_id = "orion"
     w._world_id = "w1"
     w._bus = object()
+    w._walkable = None
+    w._walkable_loaded = True  # skip the real map-load path in tests
     return w
 
 

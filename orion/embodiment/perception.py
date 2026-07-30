@@ -105,8 +105,61 @@ def _active_conversation(
     return None
 
 
+def _bresenham_tiles(x0: int, y0: int, x1: int, y1: int) -> list[tuple[int, int]]:
+    """Integer grid tiles on the line from (x0,y0) to (x1,y1), inclusive of both ends."""
+    tiles = []
+    dx, dy = abs(x1 - x0), -abs(y1 - y0)
+    sx = 1 if x0 < x1 else -1
+    sy = 1 if y0 < y1 else -1
+    err = dx + dy
+    x, y = x0, y0
+    while True:
+        tiles.append((x, y))
+        if x == x1 and y == y1:
+            break
+        e2 = 2 * err
+        if e2 >= dy:
+            err += dy
+            x += sx
+        if e2 <= dx:
+            err += dx
+            y += sy
+    return tiles
+
+
+def _has_line_of_sight(
+    walkable: Optional[set[tuple[int, int]]], ox: float, oy: float, tx: float, ty: float,
+) -> bool:
+    """Approximate line-of-sight: true unless a non-walkable tile lies strictly
+    between Orion and the target.
+
+    ``walkable`` is AI Town's own movement-collision layer (orion/embodiment/
+    worldmap.py's walkable_tiles), reused here as a stand-in for sight-blocking
+    -- an honest approximation, not a real visibility layer: the map has no
+    distinct "blocks sight" data, so a walk-blocking-but-see-through tile (e.g.
+    a short fence) would be wrongly treated as blocking, and the reverse
+    (sight-blocking-but-walkable) can't be represented at all. Endpoint tiles
+    (Orion's own tile and the target's, which may itself be a solid,
+    non-walkable structure like a windmill) are never checked -- you can see a
+    windmill even though you can't walk onto its tile. Fail-open (returns True)
+    when no map data is available, so a missing/failed map load never hides
+    something that's actually there.
+    """
+    if not walkable:
+        return True
+    x0, y0 = round(ox), round(oy)
+    x1, y1 = round(tx), round(ty)
+    for x, y in _bresenham_tiles(x0, y0, x1, y1):
+        if (x, y) in ((x0, y0), (x1, y1)):
+            continue
+        if (x, y) not in walkable:
+            return False
+    return True
+
+
 def _nearby_landmarks(
     locations: dict[str, Any], ox: float, oy: float, *, max_landmarks: int,
+    walkable: Optional[set[tuple[int, int]]] = None,
 ) -> list[dict[str, Any]]:
     """Named static map features near (ox, oy), nearest first.
 
@@ -127,6 +180,7 @@ def _nearby_landmarks(
             "name": str(name),
             "position": {"x": lx, "y": ly},
             "distance": round(math.hypot(lx - ox, ly - oy), 4),
+            "is_visible": _has_line_of_sight(walkable, ox, oy, lx, ly),
         })
     landmarks.sort(key=lambda n: n["distance"])
     return landmarks[:max_landmarks]
@@ -139,6 +193,7 @@ def build_perception(
     conversations: Optional[list[dict[str, Any]]] = None,
     messages: Optional[list[dict[str, Any]]] = None,
     locations: Optional[dict[str, Any]] = None,
+    walkable: Optional[set[tuple[int, int]]] = None,
     max_nearby: int = 8,
     max_landmarks: int = 3,
 ) -> Optional[WorldPerceptionV1]:
@@ -164,6 +219,7 @@ def build_perception(
             "position": {"x": px, "y": py},
             "distance": round(math.hypot(px - ox, py - oy), 4),
             "is_human": bool(p.get("human")),
+            "is_visible": _has_line_of_sight(walkable, ox, oy, px, py),
         })
     nearby.sort(key=lambda n: n["distance"])
     orion_position = {"x": ox, "y": oy}
@@ -171,7 +227,7 @@ def build_perception(
         conversations or [], orion_player_id, players_by_id, messages or [],
         orion_facing=orion_facing, orion_position=orion_position,
     )
-    landmarks = _nearby_landmarks(locations or {}, ox, oy, max_landmarks=max_landmarks)
+    landmarks = _nearby_landmarks(locations or {}, ox, oy, max_landmarks=max_landmarks, walkable=walkable)
     return WorldPerceptionV1(
         player_id=orion_player_id, position=orion_position,
         facing=orion_facing, pathfinding=orion_pathfinding,

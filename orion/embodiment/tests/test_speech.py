@@ -77,6 +77,26 @@ def test_build_speech_prompt_omits_landmarks_clause_when_empty():
     assert "Nearby:" not in prompt
 
 
+def test_build_speech_prompt_excludes_blocked_landmarks():
+    p = _perception_in_convo()
+    p.nearby_landmarks = [
+        {"name": "campfire", "position": {"x": 2.0, "y": 0.0}, "distance": 2.0, "is_visible": True},
+        {"name": "waterfall", "position": {"x": 5.0, "y": 0.0}, "distance": 5.0, "is_visible": False},
+    ]
+    prompt = build_speech_prompt(p, "orion")
+    assert "Nearby: campfire.\n" in prompt
+    assert "waterfall" not in prompt
+
+
+def test_build_speech_prompt_omits_clause_when_all_landmarks_blocked():
+    p = _perception_in_convo()
+    p.nearby_landmarks = [
+        {"name": "waterfall", "position": {"x": 5.0, "y": 0.0}, "distance": 5.0, "is_visible": False},
+    ]
+    prompt = build_speech_prompt(p, "orion")
+    assert "Nearby:" not in prompt
+
+
 def test_is_injectable_rejects_empty_and_whitespace():
     assert is_injectable("hello") is True
     assert is_injectable("") is False

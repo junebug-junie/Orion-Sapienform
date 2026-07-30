@@ -209,6 +209,52 @@ def test_second_freeform_journal_of_the_day_is_not_emailed_even_with_a_different
     assert len(notify.send_calls) == 1  # still just the first email
 
 
+def _world_pulse_digest_entry(entry_id: str = "entry-world-pulse-1") -> JournalEntryWriteV1:
+    return JournalEntryWriteV1(
+        entry_id=entry_id,
+        author="orion",
+        mode="daily",
+        title="World Pulse Digest",
+        body="Today's news and current-events digest.",
+        source_kind="world_pulse",
+        source_ref="2026-07-30",
+        correlation_id="corr-world-pulse-1",
+        trigger_kind="world_pulse_digest",
+    )
+
+
+def test_world_pulse_digest_has_its_own_daily_cap_slot_independent_of_the_shared_pool() -> None:
+    """world_pulse_digest was confirmed live (2026-07-30) to be losing the shared
+    daily-cap race most/all days -- Juniper reported the daily digest email silently
+    stopping ~a week prior, with no error anywhere, because some other shared-scope
+    trigger_kind (daily_summary/metacog_digest/notify_summary/...) kept claiming the
+    single shared slot first each day. daily_cap_scope="world_pulse_digest" in
+    orion/journaler/dispatch_registry.py isolates it into its own slot: exhausting
+    the shared pool first must not block world_pulse_digest's email."""
+    notify = _FakeNotify()
+    deduper = ActionDedupe(ttl_seconds=3600)
+    same_moment = datetime(2026, 7, 30, 15, 0, tzinfo=timezone.utc)
+
+    shared_first = _dispatch_journal_notifications(
+        _daily_summary_entry(entry_id="entry-daily-1"), correlation_id="corr-1", notify=notify, deduper=deduper, now_utc=same_moment
+    )
+    assert shared_first["email_ok"] is True
+    assert len(notify.send_calls) == 1
+
+    world_pulse = _dispatch_journal_notifications(
+        _world_pulse_digest_entry(), correlation_id="corr-2", notify=notify, deduper=deduper, now_utc=same_moment
+    )
+    assert world_pulse["email_ok"] is True
+    assert len(notify.send_calls) == 2  # world-pulse's own scope -> sent despite the shared pool already being spent
+
+    # A second world_pulse_digest the same day still respects its own cap.
+    world_pulse_again = _dispatch_journal_notifications(
+        _world_pulse_digest_entry(entry_id="entry-world-pulse-2"), correlation_id="corr-3", notify=notify, deduper=deduper, now_utc=same_moment
+    )
+    assert world_pulse_again["email_ok"] is True  # not required -> True, but nothing actually sent
+    assert len(notify.send_calls) == 2  # still 2 -- world-pulse's own slot for the day is now spent too
+
+
 def test_daily_email_cap_resets_on_the_next_local_calendar_day() -> None:
     """The cap is per-day, not permanent -- a journal email on day 2 must still
     send even though day 1 already used its slot."""

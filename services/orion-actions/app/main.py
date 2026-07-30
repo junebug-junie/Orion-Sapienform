@@ -675,15 +675,20 @@ def _resolve_now_utc(now_utc: datetime | None) -> datetime:
     return now.astimezone(timezone.utc)
 
 
-def _journal_email_daily_cap_key(*, now_utc: datetime | None = None) -> str:
-    """One key per local calendar day, shared across every `trigger_kind` --
-    caps freeform journal emails (daily_summary, metacog_digest, world_pulse_digest,
-    notify_summary, autonomy_episode, collapse_response, manual) at one send/day
-    regardless of which trigger fires first. Journal entries still persist either
-    way; only the email step is gated."""
+def _journal_email_daily_cap_key(*, scope: str = "shared", now_utc: datetime | None = None) -> str:
+    """One key per local calendar day, per cap `scope` (see
+    `JournalDispatchPolicy.daily_cap_scope`). The default "shared" scope is shared
+    across every trigger_kind still using it (daily_summary, metacog_digest,
+    notify_summary, autonomy_episode, collapse_response, manual) -- one send/day
+    across all of them, regardless of which fires first. A non-"shared" scope (e.g.
+    world_pulse_digest) gets its own independent slot/day, isolated from the shared
+    pool. Journal entries always persist regardless of scope; only the email step is
+    gated."""
     now = _resolve_now_utc(now_utc)
     local_date = now.astimezone(ZoneInfo(settings.actions_daily_timezone)).date().isoformat()
-    return f"actions:journal:notify:daily_email_cap:{local_date}:{settings.node_name}"
+    if scope == "shared":
+        return f"actions:journal:notify:daily_email_cap:{local_date}:{settings.node_name}"
+    return f"actions:journal:notify:daily_email_cap:{scope}:{local_date}:{settings.node_name}"
 
 
 def _seconds_until_next_local_midnight(*, now_utc: datetime | None = None) -> float:
@@ -876,7 +881,7 @@ def _dispatch_journal_notifications(
                 return ok
 
             if policy.subject_to_daily_cap:
-                daily_cap_key = _journal_email_daily_cap_key(now_utc=now_utc)
+                daily_cap_key = _journal_email_daily_cap_key(scope=policy.daily_cap_scope, now_utc=now_utc)
                 if not deduper.try_acquire(daily_cap_key):
                     email_ok = True  # not required -> don't block dedupe completion
                     logger.info(

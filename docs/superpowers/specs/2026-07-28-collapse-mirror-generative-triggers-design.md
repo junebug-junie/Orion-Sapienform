@@ -54,12 +54,9 @@ were explicitly declined.
 - **`relational` precedent** (`repair_pressure_metacog_gate.py:21`): fires on `repair_pressure_v2`
   level/confidence — explicitly rupture-shaped ("how much repair is needed"), confirming the pattern
   Juniper is asking to break out of.
-- **Flow-state candidate signal, not yet identified.** No existing field was confirmed this session as
-  "sustained low-variance/low-distress self-state coherence." Candidates not yet distinguished from each
-  other: `self_state`-derived fields (previously ruled out for phi/IIT-adjacent work per
-  `[[feedback_field_native_not_selfstate]]` — same caution likely applies), `FieldStateV1` coherence
-  channels, or `AttentionSelfModelV1.confidence` itself read as a rolling window rather than a
-  point-in-time value. Not resolved here — see Missing Question 3.
+- **Flow-state candidate signal: ANSWERED 2026-07-30 — `AttentionSelfModelV1.prediction_error_confidence`,
+  read as a rolling window, not a point value.** See Missing Question 3 for the full trace and why
+  `FieldStateV1.recent_perturbation_*` was considered and set aside as second choice.
 - **Drive-tension resolution (original idea 3): confirmed dead ground.** No dedicated "tension
   resolved" event exists in code (grepped `orion/autonomy/`); the phenomenon was only ever observed
   as an emergent property of `orion/spark/concept_induction/bus_worker.py::_update_drive_pressures`'s
@@ -92,22 +89,70 @@ were explicitly declined.
    - Thresholds are still not independently calibrated beyond "matches observed range" — before any
      gate ships, a longer window (the current run covers only the table's first ~14h of existence)
      should be re-measured to confirm 0.70/0.90 hold up, not just this window's specific 3 events.
-3. **What field should flow-state actually key off?** Self-state fields were previously ruled out for
-   phi/IIT-adjacent signal work — needs an explicit check (not an assumption) of whether the same
-   objection applies to a sustained-coherence detector, or whether `AttentionSelfModelV1.confidence`
-   read over a rolling window is a cleaner, already-real alternative.
+3. **ANSWERED 2026-07-30 — checked, not assumed; the self-state objection does not apply.**
+   `orion/schemas/attention_self_model.py`'s own docstring confirms `AttentionSelfModelV1`'s field lane
+   had its `SelfStateV1` co-input *removed* 2026-07-23 (PR #1266), replaced with the five real
+   Active-Inference domains' `prediction_error` signal — so `[[feedback_field_native_not_selfstate]]`'s
+   objection was checked directly against this schema and does not apply; it is field-native today, not
+   an assumption carried over from the phi/IIT case.
+   **Recommendation: `AttentionSelfModelV1.prediction_error_confidence`, read as a rolling window
+   (sustained-high, low-variance over N ticks) rather than the point-in-time threshold-crossing MQ2
+   already validated for "insight."** This makes "insight" and "flow" two different windowing functions
+   over the *same* already-live, already-metric-quality-gated field and table
+   (`substrate_attention_self_model`, confirmed live PR #1459, sanity-checked PR #1463/this doc's MQ2
+   update) — no new reducer, schema, or producer needed, which is the thin-seam option.
+   Runner-up considered and set aside for now: `FieldStateV1.recent_perturbation_ewma` /
+   `_ewma_var` / `_zscore` (`orion/schemas/field_state.py`) is also field-native and a more direct
+   volatility read, but it's a distinct causal chain from `prediction_error_confidence` (raw field
+   perturbation vs. a prediction-error aggregate) and — per project memory
+   (`execution_prediction_error_ewma_baseline_pr1434`, the 2026-07-26 `bus_synaptic_prediction_error()`
+   floor-artifact incident) — this specific metric family has live-verified history of subtle rest-point
+   bugs that would need its own independent live-data sanity pass (metric-quality-gate step 4) before
+   use, which `prediction_error_confidence` already cleared this session. Revisit only if the rolling-
+   window read on `prediction_error_confidence` turns out unsuitable in practice.
 4. **Does the Sentience Striving Program have a specific AST/HOT signal in mind for "an internal
    tension resolved,"** beyond the generic confidence aggregate — or is confidence-recovery
    (Missing Question 2's subject) actually the same candidate under a different name? Needs Juniper's
-   input directly; not resolved by code inspection.
+   input directly; not resolved by code inspection. **Partial new evidence 2026-07-29:** `bbbcc0bc4`
+   "wire orion-heartbeat's H1 verdict into AST/HOT" added `heartbeat_mean_ratio`/`heartbeat_verdict`/
+   `heartbeat_basis` to this same schema, live-verified against the real orion-heartbeat container —
+   its own commit message frames this as a stepping stone toward CollapseMirror ("chosen... over
+   CollapseMirror directly, still missing its own insight/flow gates"), not an answer to this question.
+   Still open; still needs a direct call from Juniper on whether this is the signal.
 5. **Cooldown cadence**: should generative triggers share `trigger_kind`'s existing per-kind cooldown
    pattern (own lane, like `chat_turn`/`transport`), or fire more freely than error triggers? Raised in
    the original brainstorm, still open — arguably positive moments deserve finer granularity than
-   alarms, but that's a real design choice, not a default.
-6. **Downstream draft mapping**: does `orion-cortex-exec`'s `_fallback_metacog_draft`/
-   `MetacogDraftService` currently map `trigger_kind` toward a specific `CollapseMirrorEntryV2.type`,
-   or does it default toward error-shaped types (`glitch`/`turbulence`) regardless of trigger kind? Not
-   traced this session — needs checking before Acceptance Check 4 can be verified.
+   alarms, but that's a real design choice, not a default. Checked 2026-07-29: no CollapseMirror-
+   specific per-kind cooldown lane exists yet in `orion-equilibrium-service` to model this decision
+   against; the only `cooldown_key_for_trigger` in the repo belongs to the unrelated journaler trigger
+   subsystem.
+6. **ANSWERED 2026-07-30 — confirmed: `trigger_kind` drives `CollapseMirrorEntryV2.type` in NO path
+   today, main or fallback.** Full trace in `services/orion-cortex-exec/app/executor.py`:
+   - The LLM draft prompt (`orion/cognition/prompts/log_orion_metacognition_draft.j2`) surfaces
+     `trigger.trigger_kind` as context text (line 22) but its own output contract explicitly
+     **forbids** the LLM from emitting a `type` key at all (line 86 of the template) — `type` must be
+     system-filled, never LLM-chosen.
+   - The system fill comes from exactly one construction site, `_fallback_metacog_draft()`
+     (`executor.py:837-919`) — and this is not fallback-only. Line 2987 shows the *successful* LLM-draft
+     path also starts from `_fallback_metacog_draft(ctx).model_dump(mode="json")` as its `base_entry`
+     skeleton, then only overlays the LLM's allowed patch fields (summary/mantra/what_changed/
+     tags_suggested) on top via `_apply_draft_patch`, which never touches `type`. So every published
+     entry's `type`, success or fallback, traces to the same single heuristic.
+   - That heuristic (`executor.py:854-859`) is a "crude but stable type guess" keyed **only** on
+     `phi_hint` bands (`coherence_band`, `novelty_band`, `energy_band`) — it never reads `trigger_kind`
+     at all — and its only three reachable outputs are `"idle"`, `"turbulence"`, `"flow"`. `"epiphany"`
+     and `"glitch"` are dead code paths: no branch in this function can ever produce them, regardless of
+     what triggered the entry. (Note: `"flow"` can already appear today by band-coincidence, never
+     because `trigger_kind == "flow"` — that trigger_kind doesn't exist as a producer yet.)
+   - This is a stronger finding than the question as originally posed ("does it default toward
+     error-shaped types") — it neither maps trigger_kind toward the right type nor defaults toward
+     error-shaped types specifically; it ignores trigger_kind entirely and can only ever land on one of
+     three phi-band-derived values, two of the five known types are simply unreachable.
+   - **Not fixing the code in this pass.** Teaching this heuristic to branch on `trigger_kind == "insight"`/
+     `"flow"` now would add dead branches with no producer (`insight`/`flow` trigger_kinds don't exist
+     yet) — exactly what CLAUDE.md's keyword-cathedral gate rules out. This wiring is now fully scoped
+     for whenever the actual gate-build patch happens: touch `_fallback_metacog_draft()`'s type-guess
+     branch (`executor.py:854-859`) to consult `trigger_kind` first, phi bands as fallback only.
 
 ## Proposed schema / API changes
 
@@ -183,6 +228,12 @@ were explicitly declined.
    transition over N ticks (or a rolling-window derivative), not a single-tick `>= high_threshold`
    crossing — the existing `chat_turn`/`transport`/`relational` gates are all single-tick-crossing
    gates and would misfire on this signal's own gradual-climb shape if copied unmodified.
-5. Missing Questions 3–6 (flow-state field choice, Sentience Striving Program signal-naming, cooldown
-   cadence, downstream draft mapping) remain open — still needs Juniper's input or further tracing
-   before "insight" or "flow" gate code gets written.
+5. ~~Missing Question 3 (flow-state field choice)~~ — answered 2026-07-30:
+   `AttentionSelfModelV1.prediction_error_confidence`, rolling-window read, reusing the same live table
+   as "insight." ~~Missing Question 6 (downstream draft mapping)~~ — answered 2026-07-30: confirmed
+   `trigger_kind` drives `type` in no path today; exact fix location scoped
+   (`_fallback_metacog_draft()`, `executor.py:854-859`) but not patched yet, to avoid dead branches
+   with no producer.
+6. Missing Questions 4 (Sentience Striving Program signal-naming — needs Juniper's direct call) and 5
+   (cooldown cadence — no existing per-kind lane to model against) remain open. These are the last two
+   blockers before "insight" or "flow" gate code gets written.

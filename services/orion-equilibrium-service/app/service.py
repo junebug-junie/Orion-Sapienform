@@ -25,6 +25,14 @@ from .transport_metacog_gate import (
     build_transport_metacog_trigger_from_grammar_atom,
     build_transport_metacog_trigger_from_snapshot,
 )
+from .insight_metacog_gate import build_insight_metacog_trigger
+from .flow_metacog_gate import build_flow_metacog_trigger
+from .attention_self_model_reader import AttentionSelfModelReader
+from orion.substrate.metacog_trigger_signals import (
+    ConfidenceSample,
+    detect_confidence_recovery,
+    detect_flow_regime,
+)
 from .downtime_transition_tracker import DowntimeTransitionTracker
 from orion.schemas.telemetry.cognition_trace import CognitionTracePayload
 from orion.schemas.telemetry.system_health import EquilibriumServiceState, EquilibriumSnapshotV1, SystemHealthV1
@@ -70,6 +78,27 @@ class EquilibriumService(BaseChassis):
         self._baseline_skip_count: int = 0
         self._chat_turn_correlator: ChatTurnCorrelator | None = None
         self._downtime_tracker = DowntimeTransitionTracker()
+        self._attention_self_model_reader: AttentionSelfModelReader | None = None
+        # De-dupe keys for the two generative gates. These two are NOT equally
+        # strong, on purpose -- stated plainly rather than implied:
+        #
+        # insight: `high_at` is the first tick of the confirmed high run, so it
+        #   stays constant for as long as that run holds. This is genuine
+        #   event identity -- one real recovery fires exactly once, no matter
+        #   how many polls observe it or how the cooldown is tuned.
+        #
+        # flow: there is no equivalent stable anchor. `ended_at` is the newest
+        #   tick in a trailing window, so it advances every tick while the
+        #   plateau continues; this key therefore only suppresses re-processing
+        #   the *same* newest row (real, since the 30s poll and the ~30s
+        #   write tick drift against each other). Flow is treated as an ongoing
+        #   *state* re-announced no more often than its own cooldown lane
+        #   (EQUILIBRIUM_METACOG_FLOW_COOLDOWN_SEC, default 1800s), not as a
+        #   once-per-episode event. Anchoring it to the true start of the
+        #   contiguous run would require fetching further back than the
+        #   evaluation window, which is not worth the extra query today.
+        self._last_insight_high_at: str | None = None
+        self._last_flow_ended_at: str | None = None
 
     def _trace_meta(
         self,
@@ -391,9 +420,15 @@ class EquilibriumService(BaseChassis):
     # see this service's README.md "chat_turn metacog trigger" section, "Operational
     # note"). transport (2026-07-24) got its own lane from day one instead of
     # repeating that bug.
+    # insight/flow (2026-07-30) likewise get their own lanes from day one: they
+    # are the first non-rupture generative kinds, fire on slow-moving regimes
+    # rather than discrete incidents, and must not be able to starve any
+    # rupture-shaped kind's fires (or each other's).
     _PER_KIND_COOLDOWN_SETTINGS_ATTR = {
         "chat_turn": "metacog_chat_turn_cooldown_sec",
         "transport": "metacog_transport_cooldown_sec",
+        "insight": "metacog_insight_cooldown_sec",
+        "flow": "metacog_flow_cooldown_sec",
     }
 
     def _cooldown_sec_for_kind(self, trigger_kind: str) -> float:
@@ -731,6 +766,152 @@ class EquilibriumService(BaseChassis):
             except asyncio.CancelledError:
                 break
 
+    def _get_attention_self_model_reader(self) -> Any:
+        """Cached read-only Postgres reader for `substrate_attention_self_model`
+        (written by orion-substrate-runtime's _attention_self_model_tick, PR
+        #1459). Fail-open: returns None on init error, mirroring
+        _get_bus_synaptic_falkor_client's contract."""
+        try:
+            reader = self._attention_self_model_reader
+            if reader is None:
+                reader = AttentionSelfModelReader(
+                    dsn=settings.metacog_generative_postgres_uri
+                )
+                self._attention_self_model_reader = reader
+            return reader
+        except Exception:
+            logger.exception("attention_self_model_reader_init_failed")
+            return None
+
+    async def _generative_metacog_poll_loop(self) -> None:
+        """Evaluates the two generative (non-rupture) gates -- insight and flow.
+
+        One loop, one query per tick, two conditions: both read the same
+        trailing window of `prediction_error_confidence` rows, so polling the
+        same table twice would be pure waste. Not message-driven (nothing
+        publishes this table to the bus), so it needs its own timer -- same
+        shape as _bus_synaptic_poll_loop.
+
+        See docs/superpowers/specs/2026-07-28-collapse-mirror-generative-
+        triggers-design.md. Both gates ship disabled; this returns immediately
+        unless one is explicitly enabled.
+        """
+        if not settings.metacog_enable:
+            return
+        if not (
+            settings.metacog_insight_trigger_enable
+            or settings.metacog_flow_trigger_enable
+        ):
+            return
+
+        interval = float(settings.metacog_generative_poll_interval_sec)
+        window_ticks = int(settings.metacog_generative_window_ticks)
+        while not self._stop.is_set():
+            try:
+                reader = self._get_attention_self_model_reader()
+                if reader is not None:
+                    # asyncio.to_thread: psycopg2 is a synchronous blocking
+                    # driver -- running the round-trip inline would stall the
+                    # event loop (starving publish_loop/heartbeat/the bus
+                    # consumer). Same reasoning as _bus_synaptic_poll_loop's
+                    # own to_thread hop.
+                    samples = await asyncio.to_thread(
+                        reader.fetch_recent_samples, limit=window_ticks
+                    )
+                    if samples:
+                        distress, zen, _ = self._calculate_metrics()
+                        zen_state = "zen" if zen > 0.5 else "not_zen"
+
+                        if settings.metacog_insight_trigger_enable:
+                            await self._evaluate_insight_gate(
+                                samples, zen_state=zen_state, pressure=distress
+                            )
+                        if settings.metacog_flow_trigger_enable:
+                            await self._evaluate_flow_gate(
+                                samples, zen_state=zen_state, pressure=distress
+                            )
+            except Exception:
+                logger.exception("generative_metacog_poll_loop_failed")
+
+            try:
+                await asyncio.wait_for(self._stop.wait(), timeout=interval)
+            except asyncio.TimeoutError:
+                continue
+            except asyncio.CancelledError:
+                break
+
+    async def _evaluate_insight_gate(
+        self, samples: List[ConfidenceSample], *, zen_state: str, pressure: float
+    ) -> None:
+        recovery = detect_confidence_recovery(
+            samples,
+            low_threshold=settings.metacog_insight_low_threshold,
+            high_threshold=settings.metacog_insight_high_threshold,
+            max_ticks_to_cross=int(settings.metacog_insight_max_ticks_to_cross),
+            confirm_ticks=int(settings.metacog_insight_confirm_ticks),
+        )
+        if recovery is None:
+            return
+
+        # Event identity, not rate limiting: the same crossing keeps satisfying
+        # the condition for as long as the high band holds.
+        high_at = recovery.high_at.isoformat()
+        if high_at == self._last_insight_high_at:
+            return
+        self._last_insight_high_at = high_at
+
+        trigger = build_insight_metacog_trigger(
+            recovery,
+            zen_state=zen_state,
+            pressure=pressure,
+            recall_enabled=settings.metacog_recall_enabled,
+            low_threshold=settings.metacog_insight_low_threshold,
+            high_threshold=settings.metacog_insight_high_threshold,
+        )
+        if trigger is not None:
+            logger.info(
+                "insight_gate_fired low=%.3f high=%.3f ticks_to_cross=%d",
+                recovery.low_value,
+                recovery.high_value,
+                recovery.ticks_to_cross,
+            )
+            await self._publish_metacog_trigger(trigger)
+
+    async def _evaluate_flow_gate(
+        self, samples: List[ConfidenceSample], *, zen_state: str, pressure: float
+    ) -> None:
+        regime = detect_flow_regime(
+            samples,
+            floor=settings.metacog_flow_floor,
+            max_stdev=settings.metacog_flow_max_stdev,
+            min_ticks=int(settings.metacog_flow_min_ticks),
+        )
+        if regime is None:
+            return
+
+        ended_at = regime.ended_at.isoformat()
+        if ended_at == self._last_flow_ended_at:
+            return
+        self._last_flow_ended_at = ended_at
+
+        trigger = build_flow_metacog_trigger(
+            regime,
+            zen_state=zen_state,
+            pressure=pressure,
+            recall_enabled=settings.metacog_recall_enabled,
+            floor=settings.metacog_flow_floor,
+            max_stdev=settings.metacog_flow_max_stdev,
+        )
+        if trigger is not None:
+            logger.info(
+                "flow_gate_fired min=%.3f mean=%.3f stdev=%.4f ticks=%d",
+                regime.min_value,
+                regime.mean_value,
+                regime.stdev_value,
+                regime.tick_count,
+            )
+            await self._publish_metacog_trigger(trigger)
+
     async def _run(self) -> None:
         await self._load_state()
         publisher = asyncio.create_task(self._publish_loop())
@@ -740,6 +921,7 @@ class EquilibriumService(BaseChassis):
         if settings.equilibrium_spark_heartbeat_enable:
             heartbeat_task = asyncio.create_task(self._spark_heartbeat_loop())
         bus_synaptic_poll_task = asyncio.create_task(self._bus_synaptic_poll_loop())
+        generative_poll_task = asyncio.create_task(self._generative_metacog_poll_loop())
 
         # Build list of channels to subscribe to
         channels = [settings.health_channel]
@@ -965,6 +1147,7 @@ class EquilibriumService(BaseChassis):
         if heartbeat_task:
             heartbeat_task.cancel()
         bus_synaptic_poll_task.cancel()
+        generative_poll_task.cancel()
 
         await asyncio.gather(
             publisher,
@@ -972,5 +1155,12 @@ class EquilibriumService(BaseChassis):
             metacog_task,
             *( [heartbeat_task] if heartbeat_task else [] ),
             bus_synaptic_poll_task,
+            generative_poll_task,
             return_exceptions=True,
         )
+
+        # Release the Postgres connection the generative gates cached, if any --
+        # the FalkorDB client above is Redis-backed and pooled, this one holds a
+        # real long-lived psycopg2 socket.
+        if self._attention_self_model_reader is not None:
+            self._attention_self_model_reader.close()

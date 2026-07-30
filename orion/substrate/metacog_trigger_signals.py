@@ -2,8 +2,11 @@
 
 from __future__ import annotations
 
+import math
+import statistics
 from dataclasses import dataclass
-from typing import Any, Mapping
+from datetime import datetime
+from typing import Any, Mapping, Sequence
 
 from orion.schemas.context_provenance import classify
 from orion.schemas.execution_projection import ExecutionTrajectoryProjectionV1
@@ -75,6 +78,225 @@ def compute_substrate_eventfulness(
         trigger_kind = "pulse"
 
     return SubstrateEventfulness(score=score, trigger_kind=trigger_kind, reasons=tuple(reasons))
+
+
+# ===========================================================================
+# Generative (non-rupture) trigger detectors over AttentionSelfModelV1's
+# `prediction_error_confidence` history.
+#
+# Both read the same live field -- persisted every ~30s to the
+# `substrate_attention_self_model` table by orion-substrate-runtime's
+# _attention_self_model_tick() (PR #1459) -- as two different windowing
+# functions, per docs/superpowers/specs/2026-07-28-collapse-mirror-generative-
+# triggers-design.md (Missing Questions 2/3). Pure: no I/O, no settings reads.
+#
+# Thresholds are deliberately *required* keyword args rather than module
+# defaults: the live values are calibrated constants owned by
+# services/orion-equilibrium-service/app/settings.py, and duplicating them
+# here would create a second place for them to drift.
+# ===========================================================================
+
+
+@dataclass(frozen=True)
+class ConfidenceSample:
+    """One persisted `prediction_error_confidence` tick."""
+
+    generated_at: datetime
+    value: float
+
+
+@dataclass(frozen=True)
+class ConfidenceRecovery:
+    """A sustained low->high transition in `prediction_error_confidence` --
+    the "insight" (surprise-resolution) condition.
+
+    `ticks_to_cross` is how many ticks elapsed between the most recent low-band
+    tick and the first tick of the confirmed high-band run.
+    """
+
+    low_at: datetime
+    high_at: datetime
+    low_value: float
+    high_value: float
+    ticks_to_cross: int
+    confirm_ticks: int
+    window_ticks: int
+
+
+@dataclass(frozen=True)
+class FlowRegime:
+    """A sustained high-confidence, low-variance regime -- the "flow" condition."""
+
+    started_at: datetime
+    ended_at: datetime
+    tick_count: int
+    min_value: float
+    mean_value: float
+    stdev_value: float
+
+
+def _window_values(samples: Sequence[ConfidenceSample]) -> list[float] | None:
+    """Return the window's values, or None if any is non-finite.
+
+    Fails closed rather than dropping bad samples: a NaN silently compares
+    False against every threshold, so a window containing one would otherwise
+    be silently mis-evaluated instead of skipped. Dropping it instead would
+    also break the "N *consecutive* ticks" semantics both detectors rely on.
+    Same guard rationale as scripts/analysis/measure_attention_self_model_
+    confidence_baseline.py::_finite_float_or_none.
+    """
+    values: list[float] = []
+    for sample in samples:
+        value = sample.value
+        if not isinstance(value, (int, float)) or isinstance(value, bool):
+            return None
+        value = float(value)
+        if not math.isfinite(value):
+            return None
+        values.append(value)
+    return values
+
+
+def detect_confidence_recovery(
+    samples: Sequence[ConfidenceSample],
+    *,
+    low_threshold: float,
+    high_threshold: float,
+    max_ticks_to_cross: int,
+    confirm_ticks: int,
+) -> ConfidenceRecovery | None:
+    """Detect a *sustained* low->high recovery ending at the newest sample.
+
+    `samples` must be ordered oldest -> newest.
+
+    Deliberately NOT a single-tick `>= high_threshold` check, unlike every
+    other gate in orion-equilibrium-service (chat_turn/transport/relational are
+    all single-tick-crossing gates). This is the one documented exception, and
+    the reason is measured, not stylistic: PR #1463's baseline pass over real
+    `substrate_attention_self_model` history found confidence recoveries unfold
+    over a median of 3 ticks (~90s), max 12 -- a gradual climb, not a sharp
+    jump. A single-tick crossing gate would fire on noise partway up that climb.
+    See the design doc's Missing Question 2 / Acceptance Check 1.
+
+    Conditions, all required:
+      1. The most recent `confirm_ticks` samples are all >= `high_threshold`
+         (the "sustained" part -- anchors the event to now and rejects a lone
+         noisy spike mid-climb).
+      2. Somewhere before that high run, within the supplied window, a sample
+         sits at/below `low_threshold` (the "surprise" that got resolved).
+      3. The gap between that low tick and the first tick of the high run is
+         <= `max_ticks_to_cross` (so a low from hours ago isn't retroactively
+         called a recovery).
+
+    Returns None when any condition fails. Firing exactly-once per real
+    recovery is the *caller's* job (the same crossing stays true for as long as
+    the high run holds) -- see the equilibrium service's `high_at` de-dupe.
+    """
+    if confirm_ticks < 1 or max_ticks_to_cross < 0:
+        return None
+    if len(samples) < confirm_ticks:
+        return None
+
+    values = _window_values(samples)
+    if values is None:
+        return None
+
+    # (1) sustained high band through the newest sample.
+    if any(v < high_threshold for v in values[-confirm_ticks:]):
+        return None
+
+    # First tick of the trailing high-band run.
+    high_idx = len(values) - 1
+    while high_idx > 0 and values[high_idx - 1] >= high_threshold:
+        high_idx -= 1
+
+    # (2) most recent low-band tick strictly before that run.
+    low_idx: int | None = None
+    for i in range(high_idx - 1, -1, -1):
+        if values[i] <= low_threshold:
+            low_idx = i
+            break
+    if low_idx is None:
+        return None
+
+    # (3) the climb was recent enough to call it one event.
+    ticks_to_cross = high_idx - low_idx
+    if ticks_to_cross > max_ticks_to_cross:
+        return None
+
+    return ConfidenceRecovery(
+        low_at=samples[low_idx].generated_at,
+        high_at=samples[high_idx].generated_at,
+        low_value=values[low_idx],
+        high_value=values[high_idx],
+        ticks_to_cross=ticks_to_cross,
+        confirm_ticks=confirm_ticks,
+        window_ticks=len(values),
+    )
+
+
+def detect_flow_regime(
+    samples: Sequence[ConfidenceSample],
+    *,
+    floor: float,
+    max_stdev: float,
+    min_ticks: int,
+) -> FlowRegime | None:
+    """Detect a sustained high-confidence, low-variance regime ("flow").
+
+    `samples` must be ordered oldest -> newest; only the trailing `min_ticks`
+    are evaluated, so "sustained" means literally the last N consecutive ticks.
+
+    Statistic choice (two explicit conjunct conditions rather than one compound
+    score): `min(window) >= floor` AND `stdev(window) <= max_stdev`.
+
+    Why not `mean - k*stdev >= floor`: that collapses level and variance into a
+    single number, so a window containing a real dip can still pass as long as
+    the mean is high enough -- which is exactly the claim "sustained" is
+    supposed to rule out. A hard floor on the *minimum* cannot be averaged away,
+    and keeping variance as its own separate ceiling makes both halves of the
+    claim independently falsifiable, independently tunable, and separately
+    visible as their own numbers in the trigger's `upstream` evidence.
+
+    Live-data calibration note (2026-07-30, 2246 real 20-tick windows over
+    ~20.6h of `substrate_attention_self_model`): rolling 20-tick stdev ran
+    p10=0.016 / p50=0.037 / p90=0.059, and rolling 20-tick min had p50=0.791.
+    At floor=0.90 the variance ceiling is currently **non-binding** -- 71
+    windows (3.2%) qualify, and that count is identical at max_stdev 0.02, 0.03
+    and 0.05, because the field's observed ceiling (~0.977) mathematically
+    squeezes any window with min>=0.90 into a band narrower than 0.08. The
+    variance ceiling is kept anyway: it is the condition that stays meaningful
+    if the floor is ever lowered (at floor=0.85, 426 windows pass the floor
+    alone) or if the field's upper range shifts. Disclosed rather than silently
+    shipped as though it were doing work today. floor=0.92 was measured as
+    degenerate (0 qualifying windows) and must not be used.
+    """
+    if min_ticks < 2:
+        return None
+    if len(samples) < min_ticks:
+        return None
+
+    window = list(samples[-min_ticks:])
+    values = _window_values(window)
+    if values is None:
+        return None
+
+    minimum = min(values)
+    if minimum < floor:
+        return None
+
+    stdev_value = statistics.stdev(values)
+    if stdev_value > max_stdev:
+        return None
+
+    return FlowRegime(
+        started_at=window[0].generated_at,
+        ended_at=window[-1].generated_at,
+        tick_count=len(values),
+        min_value=minimum,
+        mean_value=statistics.fmean(values),
+        stdev_value=stdev_value,
+    )
 
 
 def build_metacog_substrate_cue(

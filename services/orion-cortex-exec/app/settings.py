@@ -278,6 +278,19 @@ class Settings(BaseSettings):
         "only_when_requested",
         alias="WORLD_PULSE_POLITICS_STANCE_DEFAULT",
     )
+    # Fallback fetch when the caller's own request metadata carries no capsule:
+    # pulls the latest already-built capsule from orion-world-pulse over its
+    # documented HTTP contract (GET /api/world-pulse/latest -> .capsule).
+    # Bounded timeout + short cache, fails open (None) on any error.
+    world_pulse_base_url: str = Field(
+        "http://orion-world-pulse:8628", alias="WORLD_PULSE_BASE_URL"
+    )
+    world_pulse_capsule_fetch_timeout_seconds: float = Field(
+        2.0, alias="WORLD_PULSE_CAPSULE_FETCH_TIMEOUT_SECONDS"
+    )
+    world_pulse_capsule_cache_ttl_seconds: int = Field(
+        300, alias="WORLD_PULSE_CAPSULE_CACHE_TTL_SECONDS"
+    )
     health_http_port: int = Field(8070, alias="HEALTH_HTTP_PORT")
 
     # --- Embodiment (D) background emit + perception read-model (default-off, fail-open) ---

@@ -1,7 +1,48 @@
 from __future__ import annotations
 
+import json
+import logging
+import threading
 from datetime import datetime, timezone
 from typing import Any
+from urllib.request import urlopen
+
+logger = logging.getLogger("orion.cortex.world_context")
+
+_CAPSULE_CACHE_LOCK = threading.Lock()
+_CAPSULE_CACHE: dict[str, tuple[datetime, dict[str, Any] | None]] = {}
+
+
+def fetch_latest_world_context_capsule(
+    *,
+    base_url: str,
+    timeout_seconds: float,
+    cache_ttl_seconds: int,
+) -> dict[str, Any] | None:
+    """Bounded, cached, fail-open fetch of the latest capsule orion-world-pulse already built.
+
+    Used only when the caller's own chat request metadata carries no capsule --
+    orion-world-pulse's /api/world-pulse/latest is its documented HTTP contract
+    (see services/orion-world-pulse/app/routers/runs.py), not a private internal.
+    """
+    cache_key = base_url
+    now = datetime.now(timezone.utc)
+    with _CAPSULE_CACHE_LOCK:
+        cached = _CAPSULE_CACHE.get(cache_key)
+        if cached and (now - cached[0]).total_seconds() < cache_ttl_seconds:
+            return cached[1]
+    capsule: dict[str, Any] | None = None
+    try:
+        with urlopen(f"{base_url}/api/world-pulse/latest", timeout=timeout_seconds) as resp:
+            payload = json.loads(resp.read().decode("utf-8"))
+        candidate = payload.get("capsule") if isinstance(payload, dict) else None
+        capsule = candidate if isinstance(candidate, dict) else None
+    except Exception as exc:
+        logger.info("world_context_capsule_fetch_failed base_url=%s error=%s", base_url, exc)
+        capsule = None
+    with _CAPSULE_CACHE_LOCK:
+        _CAPSULE_CACHE[cache_key] = (now, capsule)
+    return capsule
 
 
 def filter_world_context_capsule(

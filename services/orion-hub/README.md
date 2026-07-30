@@ -373,11 +373,20 @@ section degrades to `null` independently (missing table, unset
 
 ### 5.4 Drives Analytics panel (`Drives` tab)
 
-**What it is:** an operator orientation view onto the six-drive `DriveEngine` economy
-(`DRIVE_KEYS = coherence, continuity, capability, relational, predictive, autonomy` from
-`orion.spark.concept_induction.drives`) — gauges, real contributor history, a program-health KPI
-strip, dual time series, goal-alignment coloring, and a divergence/integrity check. Strictly
-read-only: no endpoint under `/api/drives-analytics/*` mounts a mutating method.
+**Historical only as of 2026-07-30.** DriveEngine (the six-drive economy this panel visualizes)
+was retired in the drive-pressure/goal-generation deletion sprint
+(`orion/sentience_striving_program/README.md` sec8). `drive_audits` is write-never from that date
+forward — every card on this page renders the last rows written before the retirement, not a live
+feed. The page and template both carry an explicit banner saying so; this is deliberately kept as
+a working historical-forensics view rather than deleted outright, per the same "kill the producer,
+not the reader" call made for the `GoalProposalV1`/`DriveStateV1`/`DriveAuditV1` schemas elsewhere
+in this sprint.
+
+**What it is:** an operator orientation view onto the (now-historical) six-drive `DriveEngine`
+economy (`DRIVE_KEYS = coherence, continuity, capability, relational, predictive, autonomy` from
+`orion.core.schemas.drives`) — gauges, contributor history, a program-health KPI strip, dual time
+series, goal-alignment coloring, and a divergence/integrity check, all over historical rows.
+Strictly read-only: no endpoint under `/api/drives-analytics/*` mounts a mutating method.
 
 **What it is NOT:** it is not the **Pressure Analytics** tab (`#pressure`). Pressure Analytics
 tracks substrate mutation pressure — a completely different signal from the `DriveEngine`

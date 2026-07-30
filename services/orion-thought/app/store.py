@@ -62,12 +62,13 @@ def _warm_pool_sync() -> None:
     Live-verified 2026-07-17: the first query against a freshly-created engine
     pays a full TCP+auth handshake to Postgres (~400ms). That's cheap for
     reverie/salience/etc.'s best-effort writes, but tripped a caller with a
-    tight 400ms budget (orion-thought's drive_state_compact facet fetch) on
-    turn one of every fresh container start. Warming here benefits every
-    caller of `_get_engine()`, not just that one, so it's unconditional at
-    startup rather than gated behind any one feature flag. Never raises — a
-    DB that isn't reachable yet at boot just means the first real caller pays
-    the cold cost as before (today's status quo for every other consumer of
+    tight 400ms budget (formerly orion-thought's drive_state_compact facet
+    fetch, removed 2026-07-30 -- see mind_enrichment.py) on turn one of every
+    fresh container start. Warming here benefits every caller of
+    `_get_engine()`, not just that one, so it's unconditional at startup
+    rather than gated behind any one feature flag. Never raises — a DB that
+    isn't reachable yet at boot just means the first real caller pays the
+    cold cost as before (today's status quo for every other consumer of
     this module), not a startup failure.
     """
     try:

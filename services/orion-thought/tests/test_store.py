@@ -2,10 +2,11 @@
 
 Live-verified 2026-07-17: the first query against a freshly-created engine
 pays a full TCP+auth handshake to Postgres (~400ms), enough to trip a caller
-with a tight 400ms budget (orion-thought's drive_state_compact facet fetch)
-on turn one of every fresh container start. `warm_pool()` fixes that by
-opening one throwaway connection at startup, unconditionally, since every
-`_get_engine()` caller in this service shares the one pool.
+with a tight 400ms budget (formerly orion-thought's drive_state_compact
+facet fetch, removed 2026-07-30) on turn one of every fresh container start.
+`warm_pool()` fixes that by opening one throwaway connection at startup,
+unconditionally, since every `_get_engine()` caller in this service shares
+the one pool.
 """
 from __future__ import annotations
 
@@ -17,7 +18,7 @@ import pytest
 def _fresh_store():
     """Reimport app.store through the module object so monkeypatch.setattr
     targets the same module object the function under test resolves its
-    globals through (same pattern as test_mind_drive_state_facet.py)."""
+    globals through."""
     import importlib
 
     import app.store as store

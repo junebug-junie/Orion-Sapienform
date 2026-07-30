@@ -146,7 +146,6 @@ REGISTRY: tuple[InnerStateSignal, ...] = (
         cognition_consumers=(
             "services.orion-cortex-exec.app.chat_stance:build_chat_stance_inputs (ctx['chat_drive_state'] via drive_state_postgres)",
             "services.orion-cortex-exec.app.autonomy_slice:build_autonomy_slice",
-            "services.orion-cortex-orch.app.mind_runtime:fetch_drive_state_facet_for_mind",
         ),
         notes=(
             "PRODUCER DELETED 2026-07-30 (drive-pressure/goal-generation "
@@ -154,15 +153,23 @@ REGISTRY: tuple[InnerStateSignal, ...] = (
             "sec8): orion/spark/concept_induction/drives.py (DriveEngine) and "
             "its bus_worker.py wiring are gone. This signal is now frozen/"
             "historical -- no code computes new drive_state.v1 rows anymore. "
-            "The 3 cognition_consumers above still read via "
-            "drive_state_postgres against Postgres drive_audits (bus -> "
-            "sql-writer, itself also producer-less as of the same date) --"
-            "they will keep returning whatever was last persisted before "
-            "2026-07-30, not fresh values. Out of this deletion's scope to "
-            "update those 3 consumers (services/orion-cortex-exec, "
-            "services/orion-cortex-orch) or retire this registry row; noted "
-            "here so this stays runtime-truthful rather than describing a "
-            "producer that no longer exists.\n"
+            "2026-07-30 follow-up (same sprint, Wave 2d): the third listed "
+            "consumer, services.orion-cortex-orch.app.mind_runtime:"
+            "fetch_drive_state_facet_for_mind, was removed outright along "
+            "with its orion-thought mirror "
+            "(fetch_drive_state_facet_for_thought) -- both only ever fed "
+            "Mind a frozen historical drive_audits row dressed up as live "
+            "self-state (CLAUDE.md Section 0A 'no empty-shell cognition'), "
+            "the same fate as the autonomy_compact facet they themselves had "
+            "replaced two weeks earlier. The remaining 2 cognition_consumers "
+            "above still read via drive_state_postgres against Postgres "
+            "drive_audits (bus -> sql-writer, itself also producer-less as "
+            "of the same date) -- they will keep returning whatever was last "
+            "persisted before 2026-07-30, not fresh values. Out of Wave 2d's "
+            "scope to touch those 2 remaining consumers (services/"
+            "orion-cortex-exec, owned by a concurrent agent) or retire this "
+            "registry row; noted here so this stays runtime-truthful rather "
+            "than describing a producer that no longer exists.\n"
             "Prior computation (historical, before 2026-07-30): computed "
             "from config/autonomy/signal_drive_map.yaml (also deleted same "
             "date), a CLOSED typed map over biometrics_state/mesh_health/"

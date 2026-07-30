@@ -22,11 +22,17 @@
 <body class="bg-black text-gray-200 min-h-screen p-6">
   <div class="max-w-6xl mx-auto space-y-4">
     <div class="flex items-center justify-between flex-wrap gap-2">
-      <h1 class="text-xl font-semibold">Drives Analytics</h1>
+      <h1 class="text-xl font-semibold">Drives Analytics <span class="text-sm font-normal text-amber-400">(historical)</span></h1>
       <div class="flex gap-2">
         <button id="drivesRefreshButton" type="button" class="px-3 py-2 text-xs rounded border border-gray-700 bg-gray-900 hover:bg-gray-800">Refresh</button>
         <a href="/" class="px-3 py-2 text-xs rounded border border-gray-700 bg-gray-900 hover:bg-gray-800">Back to Hub</a>
       </div>
+    </div>
+
+    <div class="text-xs text-amber-400 border border-amber-900/60 bg-amber-950/30 rounded px-3 py-2">
+      The drive-pressure engine (DriveEngine) was retired 2026-07-30. Every card below shows the
+      last historical <code>drive_audits</code> rows written before that date -- nothing on this
+      page is live or updating going forward. Values will not change on refresh or auto-refresh.
     </div>
 
     <div class="flex flex-wrap items-end gap-3 bg-gray-900 border border-gray-800 rounded p-3">
@@ -52,8 +58,8 @@
         </select>
       </label>
       <label class="text-xs text-gray-400 flex items-center gap-1 pb-1">
-        <input id="drivesAutoRefresh" type="checkbox" checked />
-        Auto-refresh
+        <input id="drivesAutoRefresh" type="checkbox" />
+        Auto-refresh (historical data will not change)
       </label>
       <div class="text-xs text-gray-500 pb-1">Last loaded: <span id="drivesLastLoaded">—</span></div>
     </div>

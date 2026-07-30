@@ -68,6 +68,17 @@ def _default_bus_synaptic_surprise_source() -> float | None:
 
 
 def _synthetic_goal(run_id: str) -> GoalProposalV1:
+    """Never published to the bus -- built solely to satisfy
+    `evaluate_capability`'s `requires_goal`/`proposal_status` checks (see
+    `orion/autonomy/capability_policy.py`). Still needed post-2026-07-30
+    (chore/delete-orion-drives): the gate that used to also match
+    `ctx.goal.drive_origin` against `rule.required_drive_origins` was removed
+    in that sprint's Wave 2a (drive_origin is no longer read by any gate), but
+    `ctx.goal` itself remains required for the existence/proposal_status
+    checks below it. `drive_origin` stays set below only because it is still
+    a required field on the (kept, write-never) `GoalProposalV1` schema --
+    its value is inert now, read by nothing.
+    """
     return GoalProposalV1.model_validate(
         {
             "artifact_id": f"world-pulse-gap-{run_id}",
@@ -102,7 +113,10 @@ def _resolve_domain_surprise(surprise_source: SurpriseSource | None) -> float | 
 def _gate_open(run_id: str, *, surprise_source: SurpriseSource | None = None) -> bool:
     _domain_surprise = _resolve_domain_surprise(surprise_source)
     ctx = CapabilityEvaluationContext(
-        predictive_pressure=1.0,
+        # predictive_pressure removed 2026-07-30 (chore/delete-orion-drives
+        # Wave 2a): DriveStateV1.pressures["predictive"], its source, no
+        # longer exists (DriveEngine deleted in Wave 1). curiosity_strength
+        # is capability_policy.py's real, field-native replacement gate.
         curiosity_strength=1.0,
         signal_kinds=["world_coverage_gap"],
         goal=_synthetic_goal(run_id),

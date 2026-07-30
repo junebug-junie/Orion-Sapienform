@@ -244,23 +244,20 @@ class Settings(BaseSettings):
     embodiment_channel_perception: str = Field(
         "orion:embodiment:perception", alias="EMBODIMENT_CHANNEL_PERCEPTION"
     )
+    # Still real: cached by the embodiment C producer (embodiment_c_tick_enabled)
+    # below via _drive_state_listener_loop. The optional legacy substrate-graph
+    # materialization that used to also listen on this + a drives_audit_channel
+    # (DRIVE_STATE_SUBSTRATE_MATERIALIZATION_ENABLED) was removed 2026-07-30:
+    # DriveStateV1/DriveAuditV1 are write-never now that DriveEngine (the only
+    # producer) is deleted, so that path was permanently dead weight, not a live
+    # toggle. See services/orion-substrate-runtime/app/worker.py.
     drives_state_channel: str = Field(
         "orion:memory:drives:state", alias="EMBODIMENT_DRIVES_STATE_CHANNEL"
-    )
-    drives_audit_channel: str = Field(
-        "orion:memory:drives:audit", alias="DRIVES_AUDIT_CHANNEL"
     )
     # Consumed for the brain-frame honesty_metrics/field_anomaly dimensions.
     # Producer: orion-field-digester's mood-arc reconstruction-error scorer.
     field_channel_anomaly_score_channel: str = Field(
         "orion:field_channel:anomaly_score", alias="FIELD_CHANNEL_ANOMALY_SCORE_CHANNEL"
-    )
-    # Formerly materialized DriveEngine drive_state/drive_audit into the substrate
-    # graph (snapshot_source="drive_state"). Chat stance / Mind measurement SoR is
-    # Postgres drive_audits (bus → sql-writer). Default off. Enabling this only
-    # restores graph writes — it does not restore stance reads.
-    drive_state_substrate_materialization_enabled: bool = Field(
-        False, alias="DRIVE_STATE_SUBSTRATE_MATERIALIZATION_ENABLED"
     )
 
     # Health monitor -> orion-notify attention alerts. Edge-triggered (fires only

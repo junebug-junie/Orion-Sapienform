@@ -174,6 +174,18 @@ def test_divergence_card_surfaces_fallback_banner_and_autonomy_note() -> None:
     assert "autonomy_state_v2_note" in script
 
 
+def test_template_carries_permanent_historical_data_banner() -> None:
+    """DriveEngine (drive_audits' only producer) was retired 2026-07-30 -- this page must
+    say so plainly, not just rely on the dynamic thin-history coverage banner, so an
+    operator never mistakes a frozen historical snapshot for a live feed."""
+    template = TEMPLATE_PATH.read_text(encoding="utf-8")
+    assert "(historical)" in template
+    assert "retired 2026-07-30" in template
+    assert "is live or updating going forward" in template
+    # Auto-refresh must not default to checked -- historical data never changes on poll.
+    assert '<input id="drivesAutoRefresh" type="checkbox" />' in template
+
+
 # ---------------------------------------------------------------------------
 # Hub shell tab wiring (Task 8) -- mirrors test_causal_geometry_page.py's
 # shell-level tests for the #drives tab.

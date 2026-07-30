@@ -82,12 +82,11 @@ async def lifespan(app: FastAPI):
         run_reasoning_worker(app.state.reasoning_stop_event)
     )
     # Warm store.py's shared Postgres pool so the first real caller of any
-    # kind (drive_state_compact facet fetch, reverie/salience/etc. writes)
-    # doesn't pay a cold TCP+auth handshake cost -- unconditional since every
-    # store.py consumer shares the one engine, not gated behind any single
-    # feature flag. Reference kept on app.state -- an unreferenced asyncio
-    # task can be garbage-collected mid-execution (see asyncio docs on
-    # create_task).
+    # kind (reverie/salience/etc. writes) doesn't pay a cold TCP+auth
+    # handshake cost -- unconditional since every store.py consumer shares
+    # the one engine, not gated behind any single feature flag. Reference
+    # kept on app.state -- an unreferenced asyncio task can be
+    # garbage-collected mid-execution (see asyncio docs on create_task).
     app.state.pool_warmup_task = asyncio.create_task(warm_pool())
     yield
     if heartbeat_chassis is not None:

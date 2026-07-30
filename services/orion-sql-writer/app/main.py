@@ -680,10 +680,13 @@ async def lifespan(app: FastAPI):
             conn.exec_driver_sql(
                 "CREATE INDEX IF NOT EXISTS idx_drive_audits_window ON drive_audits ((COALESCE(observed_at, created_at)) DESC);"
             )
-            # v3: Mind's drive_state_compact facet fetch (mind_runtime.py,
-            # fetch_drive_state_facet_for_mind) additionally filters WHERE subject='orion'
-            # under a tight timeout budget; leading-subject composite serves that query
-            # shape directly instead of falling back to idx_drive_audits_window above.
+            # v3: originally added for Mind's drive_state_compact facet fetch
+            # (mind_runtime.py's fetch_drive_state_facet_for_mind), which additionally
+            # filtered WHERE subject='orion' under a tight timeout budget; that facet was
+            # removed 2026-07-30 (drive-pressure/goal-generation deletion sprint), but this
+            # leading-subject composite still serves the same subject-filtered query shape
+            # used by Hub Drives Analytics (services/orion-hub/scripts/drives_analytics_queries.py),
+            # so it stays.
             conn.exec_driver_sql(
                 "CREATE INDEX IF NOT EXISTS idx_drive_audits_subject_window "
                 "ON drive_audits (subject, (COALESCE(observed_at, created_at)) DESC);"

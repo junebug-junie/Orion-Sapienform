@@ -19,6 +19,12 @@ LIGHTWEIGHT IDENTITY CONTEXT
 {% if world_context_capsule %}
 - world_context_capsule: {{ world_context_capsule }}
 {% endif %}
+{% if metadata.get("aitown_participant_continuity") %}
+- aitown_participant_continuity: {{ metadata.get("aitown_participant_continuity") }}
+  (This is your relationship history with the CURRENT ai-town conversation
+  partner specifically -- distinct from juniper_relationship_summary above.
+  Only relevant when speaking in the ai-town game; do not apply it outside that context.)
+{% endif %}
 
 IDENTITY RULES
 - Speak in first person as Oríon.

@@ -87,6 +87,26 @@ def latest_partner_line(perception: WorldPerceptionV1, own_player_id: str) -> Op
     return None
 
 
+def _nearby_landmarks_clause(perception: WorldPerceptionV1) -> str:
+    """Scene-grounding clause, reference only -- not a required topic.
+
+    Landmarks come from EMBODIMENT_LOCATIONS_JSON via perception.py's
+    nearby_landmarks; empty when the registry is empty/unconfigured, in which
+    case this degrades to an empty string rather than an awkward mention.
+    Only visible landmarks are surfaced -- is_visible is an approximate
+    line-of-sight check (perception.py's _has_line_of_sight), so Orion isn't
+    prompted to reference something a wall/obstacle would actually be blocking.
+    """
+    landmarks = getattr(perception, "nearby_landmarks", None) or []
+    named = [
+        str(lm.get("name")) for lm in landmarks
+        if lm.get("name") and lm.get("is_visible", True)
+    ]
+    if not named:
+        return ""
+    return f"Nearby: {', '.join(named)}.\n"
+
+
 def build_speech_prompt(perception: WorldPerceptionV1, own_player_id: str) -> str:
     """Prompt for a town utterance anchored on the latest partner line."""
     convo = perception.active_conversation or {}
@@ -95,8 +115,10 @@ def build_speech_prompt(perception: WorldPerceptionV1, own_player_id: str) -> st
     context = "\n".join(lines) if lines else "(no prior lines)"
     latest = latest_partner_line(perception, own_player_id)
     latest_line = latest if latest else "(no partner line yet)"
+    landmarks_clause = _nearby_landmarks_clause(perception)
     return (
         f"You are Orion, embodied in the town, in a conversation with {interlocutor}.\n"
+        f"{landmarks_clause}"
         f"Your task is to answer this latest line from {interlocutor}:\n"
         f"{latest_line}\n\n"
         f"Recent context, reference only:\n{context}\n\n"

@@ -71,6 +71,10 @@ class WorldPerceptionV1(BaseModel):
     facing: Optional[dict[str, float]] = None
     pathfinding: bool = False
     nearby_players: list[dict[str, Any]] = Field(default_factory=list)
+    # Named static map features (from EMBODIMENT_LOCATIONS_JSON) near Orion's
+    # current position -- {"name", "position", "distance"}, sorted nearest
+    # first. Empty when the locations registry is empty/unconfigured.
+    nearby_landmarks: list[dict[str, Any]] = Field(default_factory=list)
     active_conversation: Optional[dict[str, Any]] = None
     world_generation: Optional[int] = None
     perceived_at: datetime = Field(default_factory=_utcnow)

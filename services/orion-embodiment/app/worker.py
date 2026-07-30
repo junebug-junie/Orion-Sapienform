@@ -4,6 +4,9 @@ import asyncio
 import json
 import logging
 import os
+import urllib.error
+import urllib.parse
+import urllib.request
 from datetime import datetime, timedelta, timezone
 from typing import Optional
 from uuid import uuid4
@@ -494,6 +497,43 @@ class EmbodimentWorker:
             logger.exception("embodiment_social_turn_publish_failed convo=%s", convo_id)
         return correlation_id
 
+    def _fetch_participant_continuity(self, participant_id: str, convo_id: str) -> Optional[str]:
+        """Read-back half of conversation memory: the partner's already-synthesized
+        orion-social-memory relationship summary, as a short natural-language string
+        for the speech prompt's metadata (not the user_message itself -- see
+        chat_quick.j2's aitown_participant_continuity block).
+
+        Off unless conversation_memory_enabled (same flag that gates writing this
+        data in the first place). Fail-open: any error/timeout/missing-row returns
+        None, and the caller degrades to no continuity rather than blocking speech.
+        """
+        if not getattr(self._settings, "conversation_memory_enabled", False):
+            return None
+        base = str(getattr(self._settings, "social_memory_url", "") or "").rstrip("/")
+        if not base or not participant_id:
+            return None
+        timeout = float(getattr(self._settings, "social_memory_timeout_sec", 3.0))
+        params = urllib.parse.urlencode({
+            "platform": "aitown", "room_id": convo_id, "participant_id": participant_id,
+        })
+        try:
+            req = urllib.request.Request(f"{base}/summary?{params}", method="GET")
+            with urllib.request.urlopen(req, timeout=timeout) as resp:
+                data = json.loads(resp.read().decode("utf-8"))
+        except (urllib.error.URLError, urllib.error.HTTPError, TimeoutError, ValueError):
+            logger.debug("embodiment_social_memory_fetch_failed convo=%s", convo_id, exc_info=True)
+            return None
+        except Exception:
+            logger.exception("embodiment_social_memory_fetch_failed convo=%s", convo_id)
+            return None
+        participant = data.get("participant") if isinstance(data, dict) else None
+        if not isinstance(participant, dict):
+            return None
+        summary = str(participant.get("safe_continuity_summary") or "").strip()
+        if not summary:
+            return None
+        return summary
+
     @staticmethod
     def _conversation_partner_name(perception: WorldPerceptionV1, convo: dict) -> Optional[str]:
         """Best-effort human name of Orion's conversation partner.
@@ -621,6 +661,8 @@ class EmbodimentWorker:
             perception = build_perception(
                 players=players or [], orion_player_id=player_id,
                 conversations=conversations, messages=messages,
+                locations=getattr(self, "_locations", {}),
+                walkable=self._walkable_tiles(),
             )
         except Exception:
             logger.exception("embodiment_perception_build_failed")
@@ -880,13 +922,24 @@ class EmbodimentWorker:
             return None
 
         prompt = build_speech_prompt(perception, own)
+        other = convo.get("other") or {}
+        partner_id = str(other.get("player_id") or "").strip()
+        participant_continuity = None
+        if partner_id:
+            try:
+                participant_continuity = await asyncio.to_thread(
+                    self._fetch_participant_continuity, partner_id, convo_id
+                )
+            except Exception:
+                logger.debug("embodiment_participant_continuity_fetch_failed convo=%s", convo_id, exc_info=True)
         # Hold the conversation as in-flight through both the utterance request AND
         # the injection so a later perception tick cannot double-inject.
         self._speaking_conversations.add(convo_id)
         try:
             try:
                 reply = await self._request_utterance(
-                    prompt, correlation_id=str(uuid4()), convo_id=convo_id
+                    prompt, correlation_id=str(uuid4()), convo_id=convo_id,
+                    participant_continuity=participant_continuity,
                 )
             except Exception:
                 logger.exception("embodiment_speech_request_failed convo=%s", convo_id)
@@ -930,7 +983,8 @@ class EmbodimentWorker:
             self._speaking_conversations.discard(convo_id)
 
     async def _request_utterance(
-        self, prompt: str, *, correlation_id: str, convo_id: Optional[str] = None
+        self, prompt: str, *, correlation_id: str, convo_id: Optional[str] = None,
+        participant_continuity: Optional[str] = None,
     ) -> str:
         """Generate a town utterance. Dispatcher: prefer grounded_small on the chat
         cortex rail; fall back to quick on timeout/error/empty. Fail-open -> ''.
@@ -948,6 +1002,7 @@ class EmbodimentWorker:
                     lane=str(getattr(self._settings, "speech_hub_llm_route", "chat") or "chat"),
                     hub_chat_lane="grounded_small",
                     timeout_sec=float(self._settings.unified_timeout_sec),
+                    participant_continuity=participant_continuity,
                 )
                 if grounded.strip():
                     return grounded
@@ -956,7 +1011,9 @@ class EmbodimentWorker:
                     "embodiment_speech_grounded_fallback reason=%s corr=%s",
                     type(exc).__name__, correlation_id,
                 )
-        return await self._request_utterance_quick(prompt, correlation_id=correlation_id)
+        return await self._request_utterance_quick(
+            prompt, correlation_id=correlation_id, participant_continuity=participant_continuity,
+        )
 
     async def _request_utterance_cortex(
         self,
@@ -967,6 +1024,7 @@ class EmbodimentWorker:
         lane: str,
         hub_chat_lane: str,
         timeout_sec: float,
+        participant_continuity: Optional[str] = None,
     ) -> str:
         """Cortex-exec RPC for town speech with grounded_small surface context."""
         from orion.cognition.cortex_payload_extract import extract_cortex_payload_text
@@ -974,6 +1032,11 @@ class EmbodimentWorker:
         from orion.schemas.cortex.schemas import PlanExecutionArgs, PlanExecutionRequest
 
         plan = build_plan_for_verb(verb, mode=lane)
+        metadata = {"correlation_id": correlation_id, "mind_enabled": True}
+        if participant_continuity:
+            # Read by chat_general.j2's aitown_participant_continuity block (mirrors
+            # chat_quick.j2's -- see _fetch_participant_continuity's docstring).
+            metadata["aitown_participant_continuity"] = participant_continuity
         req = PlanExecutionRequest(
             plan=plan,
             args=PlanExecutionArgs(
@@ -983,7 +1046,7 @@ class EmbodimentWorker:
             ),
             context={
                 "user_message": prompt,
-                "metadata": {"correlation_id": correlation_id, "mind_enabled": True},
+                "metadata": metadata,
                 "surface_context": {
                     "hub_chat_lane": hub_chat_lane,
                     "surface": "aitown",
@@ -1012,7 +1075,9 @@ class EmbodimentWorker:
         text = extract_cortex_payload_text(result if isinstance(result, dict) else (payload or {}))
         return str(text or "")
 
-    async def _request_utterance_quick(self, prompt: str, *, correlation_id: str) -> str:
+    async def _request_utterance_quick(
+        self, prompt: str, *, correlation_id: str, participant_continuity: Optional[str] = None,
+    ) -> str:
         """Reuse the cortex exec rail to generate an utterance. Fail-open -> ''."""
         from orion.cognition.cortex_payload_extract import extract_cortex_payload_text
         from orion.cognition.plan_loader import build_plan_for_verb
@@ -1020,6 +1085,14 @@ class EmbodimentWorker:
 
         try:
             plan = build_plan_for_verb(self._settings.speech_verb, mode=self._settings.speech_lane)
+            metadata = {"correlation_id": correlation_id}
+            if participant_continuity:
+                # ctx["metadata"] is passed through to Jinja rendering verbatim
+                # (executor.py's _prompt_render_ctx does render_ctx = ctx.copy()),
+                # so chat_quick.j2 can read this as metadata.aitown_participant_continuity
+                # with zero orion-cortex-exec changes -- same pattern
+                # orion/journaler's journal_compose_prompt.j2 already uses.
+                metadata["aitown_participant_continuity"] = participant_continuity
             req = PlanExecutionRequest(
                 plan=plan,
                 args=PlanExecutionArgs(
@@ -1027,7 +1100,7 @@ class EmbodimentWorker:
                     trigger_source=self._settings.service_name,
                     extra={"lane": self._settings.speech_lane},
                 ),
-                context={"user_message": prompt, "metadata": {"correlation_id": correlation_id}},
+                context={"user_message": prompt, "metadata": metadata},
             )
             reply_channel = f"{self._settings.cortex_result_prefix}:{uuid4()}"
             env = BaseEnvelope(

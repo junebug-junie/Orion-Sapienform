@@ -148,6 +148,89 @@ artifact).
 (`load_freshest_policy_frame_without_dispatch`), `app/worker.py` (extracted `_age_sec` shared
 helper, new `_check_freshest_fallback`, `_tick` wiring), README, tests.
 
+## Part 1c: same-day follow-up #2 — the real bottleneck was a query plan, not LLM latency
+
+Deployed Part 1b, checked live again (the same discipline that found 1b's own bug in the first
+place). Real dispatch had resumed but was stuck at ~1/minute — far below the ~6.8/min ceiling Part
+2 was scoped against. Instead of assuming the cause, ran `EXPLAIN ANALYZE` on the real live
+queries.
+
+**Root cause, precise**: `load_latest_policy_frame_without_dispatch` (ASC) and
+`load_freshest_policy_frame_without_dispatch` (DESC) both used `LEFT JOIN
+substrate_execution_dispatch_frames d ON ... WHERE d.frame_id IS NULL`. Despite real indexes
+existing on both join columns, Postgres chose a `Parallel Hash Left Join` — full scans of both
+tables, ~280-300ms per call, independent of the actual answer size. The FIFO drain called this
+**up to 200 times per tick**. Real, independently-measured tick cadence (via
+`staleness_discard_count_ewma_n`'s growth over an exact 10-minute window — a real counter, not an
+inferred number): **8 ticks**, ~75s each. 1,542 frames processed across those 8 ticks (~193/tick)
+confirms the drain was hitting its 200-cap almost every single tick. ~193 × ~280ms ≈ 54s of the
+75s directly attributable to this one query pattern.
+
+**Adversarial pass before accepting the conclusion** (explicitly requested, not skipped):
+- *Stale planner statistics?* Ran `ANALYZE` on both tables live, re-ran `EXPLAIN ANALYZE`. Plan
+  and cost unchanged (~302ms). Ruled out.
+- *Was the ~75s/tick figure just arithmetic, not measured?* Re-derived independently via the
+  `staleness_discard_count_ewma_n` counter (increments exactly once per real `_tick()` call) —
+  confirmed 8 ticks in 10 real minutes, matching the inferred figure exactly.
+- *Could the INSERT side (`save_dispatch_frame`) be a second hidden bottleneck?* Checked its SQL —
+  a simple indexed single-row upsert on the primary key, not O(N) like the SELECT. A minor
+  contributor via per-call transaction round-trip overhead, not the dominant cost.
+- *Could my own diagnostic queries have inflated the live numbers?* Checked the direction of the
+  bias — ad-hoc `EXPLAIN ANALYZE` runs warm Postgres's shared buffer cache, which if anything makes
+  the measurement a *floor*, not an inflated worst case; and `EXPLAIN ANALYZE`'s reported execution
+  time is server-side processing time, independent of which client submitted the query.
+
+**Fix, two different shapes for two different access patterns** (confirmed via `EXPLAIN ANALYZE`,
+not assumed symmetric):
+- `load_freshest_policy_frame_without_dispatch` (DESC) → rewritten to `WHERE NOT EXISTS (...)`.
+  Measured: ~294ms → ~0.19ms (~1500x). Correct because almost nothing near "now" is processed yet,
+  so a nested-loop anti-join plan terminates on the first probe.
+- `load_oldest_policy_frames_without_dispatch(limit)` (ASC, renamed from the old singular
+  `load_latest_policy_frame_without_dispatch`) → same `LEFT JOIN` shape kept (a `NOT EXISTS`
+  rewrite here measured **worse**, 6+ seconds — a large prefix of already-processed ancient
+  history, predating the original backlog, means a nested loop walks hundreds of thousands of
+  already-matched rows before the first true miss), but now fetches the whole `MAX_STALE_DISCARDS_
+  PER_TICK`-sized batch in ONE query instead of calling the `LIMIT 1` version in a 200-iteration
+  while loop. The Hash Join's dominant cost (building the hash table) is paid once regardless of
+  LIMIT size (measured: `LIMIT 1` ~280ms, `LIMIT 200` ~327ms) — batching cuts real per-tick SELECT
+  cost from ~56s to ~0.3s. Confirmed live against the real table (not just mocked): 200 real frames
+  fetched, correctly ordered, in 464ms including Python/pydantic overhead.
+
+**Files touched**: `services/orion-execution-dispatch-runtime/app/store.py`
+(`load_oldest_policy_frames_without_dispatch` replacing `load_latest_policy_frame_without_
+dispatch`, `load_freshest_policy_frame_without_dispatch` rewritten to `NOT EXISTS`,
+`_validate_policy_frame_row` extracted as a shared validate-or-retire helper), `app/worker.py`
+(`_drain_stale_policy_frames` rewritten to fetch-then-iterate instead of loop-and-fetch), README,
+tests (worker + store, including two new store-level happy-path tests for the batch and `NOT
+EXISTS` query shapes, plus a mixed-batch regression test added in review -- see below).
+
+**Two real side effects of the batch rewrite, found in review, both real improvements but
+disclosed here since neither was originally intentional or tested for on the first pass**:
+- **A schema-incompatible row no longer stalls the whole tick.** The old single-row lookup
+  returned `None` the instant it hit ANY incompatible row (a pre-2026-07-22 SelfStateV1-burn-era
+  payload, say), which the old `while` loop treated identically to "queue empty" -- stopping the
+  entire tick's drain even if perfectly valid rows sat right behind it in FIFO order. The new
+  batch method (`load_oldest_policy_frames_without_dispatch`) retires the bad row (same stub-frame
+  mechanism as before) and simply excludes it from the returned list, so the other valid rows in
+  the same batch still get processed the same tick. Locked in by
+  `test_load_oldest_policy_frames_without_dispatch_skips_only_the_bad_row_in_a_mixed_batch`.
+- **The per-tick discard cap is now a SQL-only guarantee, not also enforced in Python.** The old
+  `while discarded < MAX_STALE_DISCARDS_PER_TICK` loop was a real, independent backstop against
+  ever discarding more than the cap in one tick, regardless of what the store returned. The new
+  code trusts the store's bound `:limit` parameter entirely -- if `load_oldest_policy_frames_
+  without_dispatch` ever returned more than `limit` rows (a bug, not an expected case), nothing in
+  `worker.py` would stop it. `test_max_stale_discards_per_tick_caps_the_drain`'s docstring was
+  tightened in review to say this explicitly rather than imply a worker-side cap still exists.
+
+**What this does to Part 2**: doesn't eliminate the question, but changes its urgency and framing.
+The concurrency work below was scoped against a ~9s-per-real-dispatch ceiling; with query cost no
+longer dominating, real tick cadence should approach the ~2s poll interval, and real dispatch
+throughput should approach the ~6.8/min ceiling Part 2 always assumed as the starting point — not
+exceed it. Concurrent dispatch is still the only way past that ~6.8/min number itself (still
+bounded by sequential `await self._send_one(...)` calls), so Part 2 remains real, valid future
+work — it's just no longer entangled with what turned out to be a separate, bigger, already-fixed
+problem.
+
 ## Part 2: throughput redesign — design mode, not implemented
 
 ### Arsonist summary

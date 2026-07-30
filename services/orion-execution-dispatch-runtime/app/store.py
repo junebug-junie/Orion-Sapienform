@@ -28,9 +28,78 @@ class ExecutionDispatchRuntimeStore:
             json_deserializer=json.loads,
         )
 
-    def load_latest_policy_frame_without_dispatch(self) -> PolicyDecisionFrameV1 | None:
+    def _validate_policy_frame_row(
+        self, payload: object, *, log_label: str
+    ) -> PolicyDecisionFrameV1 | None:
+        """Shared validate-or-retire logic for a single raw policy_decision_
+        frame_json payload. Returns None (and retires the row via a stub
+        dispatch frame) on schema-validation failure -- see
+        _retire_incompatible_policy_frame's own docstring for why this must
+        never just re-degrade to None without retiring: a naive skip would
+        re-select the exact same incompatible row forever."""
+        if isinstance(payload, str):
+            payload = json.loads(payload)
+        try:
+            return PolicyDecisionFrameV1.model_validate(payload)
+        except ValidationError:
+            raw_frame_id = payload.get("frame_id") if isinstance(payload, dict) else None
+            raw_proposal_frame_id = (
+                payload.get("source_proposal_frame_id") if isinstance(payload, dict) else None
+            )
+            logger.warning(
+                "policy_decision_frame_incompatible_schema %s frame_id=%s",
+                log_label,
+                raw_frame_id,
+                exc_info=True,
+            )
+            if raw_frame_id:
+                self._retire_incompatible_policy_frame(raw_frame_id, raw_proposal_frame_id)
+            return None
+
+    def load_oldest_policy_frames_without_dispatch(
+        self, limit: int
+    ) -> list[PolicyDecisionFrameV1]:
+        """Up to `limit` oldest unprocessed policy frames in ONE query
+        (2026-07-30, docs/superpowers/specs/2026-07-30-execution-dispatch-
+        staleness-discard-design.md's "Part 1c" -- a real, EXPLAIN-ANALYZE-
+        verified performance fix, not a guess). This replaces what used to
+        be a `LIMIT 1` query called up to MAX_STALE_DISCARDS_PER_TICK (200)
+        times per tick from a while loop in _drain_stale_policy_frames.
+
+        Real numbers (live, 2026-07-30): this anti-join (`LEFT JOIN ... WHERE
+        d.frame_id IS NULL`) costs ~280-300ms per call regardless of LIMIT
+        size (Postgres builds the full hash-joined result before sorting for
+        LIMIT either way -- confirmed via EXPLAIN ANALYZE, LIMIT 1 costs
+        ~280ms, LIMIT 200 costs ~327ms, not 200x more). Calling it once per
+        tick with LIMIT=200 instead of 200 times with LIMIT=1 cuts real
+        per-tick SELECT cost from ~56s to ~0.3s -- this was the actual
+        dominant cost behind the ~75s/tick cadence observed live after the
+        staleness-discard + fresh-priority-fallback patches shipped (traced
+        via EXPLAIN ANALYZE, adversarially re-tested against stale-planner-
+        statistics as an alternative explanation -- ruled out, a fresh
+        ANALYZE on both tables left the plan and cost unchanged).
+
+        Deliberately still the `LEFT JOIN` shape here, not `NOT EXISTS`: a
+        `NOT EXISTS` rewrite is dramatically cheaper for the DESC "freshest"
+        direction (load_freshest_policy_frame_without_dispatch below,
+        ~1500x) precisely because almost nothing near "now" has been
+        processed yet, so a nested-loop anti-join terminates on the first
+        probe -- but for THIS ascending direction, a huge prefix of already-
+        processed ancient history (predating the backlog that motivated this
+        whole feature) sits before the real backlog start, and a nested loop
+        would have to walk hundreds of thousands of already-matched rows
+        before finding the first true miss (confirmed live: 6+ seconds,
+        *slower* than the Hash Join it would replace). Batching the LIMIT is
+        the real fix for this direction; the query shape itself is already
+        the cheaper available plan for oldest-first access.
+
+        Each row is validated individually -- a schema-incompatible row
+        (see _validate_policy_frame_row) is retired and simply excluded from
+        the returned list rather than aborting the whole batch, so one bad
+        historical row can't block every valid one fetched alongside it.
+        """
         with self._engine.connect() as conn:
-            row = (
+            rows = (
                 conn.execute(
                     text(
                         """
@@ -40,41 +109,22 @@ class ExecutionDispatchRuntimeStore:
                           ON d.source_policy_frame_id = p.frame_id
                         WHERE d.frame_id IS NULL
                         ORDER BY p.generated_at ASC
-                        LIMIT 1
+                        LIMIT :limit
                         """
                     ),
+                    {"limit": limit},
                 )
                 .mappings()
-                .first()
+                .all()
             )
-        if not row:
-            return None
-        payload = row["policy_decision_frame_json"]
-        if isinstance(payload, str):
-            payload = json.loads(payload)
-        try:
-            return PolicyDecisionFrameV1.model_validate(payload)
-        except ValidationError:
-            # This is the FIFO "oldest undispatched policy frame" lookup --
-            # a naive None-degrade would re-select this exact row forever
-            # (it can never validate), permanently blocking every policy
-            # frame queued behind it. A schema migration (e.g. 2026-07-22's
-            # SelfStateV1 burn) can leave historical rows like this
-            # incompatible with the currently-running PolicyDecisionFrameV1.
-            # Retire it with a stub, unattempted dispatch frame so the FIFO
-            # advances past it.
-            raw_frame_id = payload.get("frame_id") if isinstance(payload, dict) else None
-            raw_proposal_frame_id = (
-                payload.get("source_proposal_frame_id") if isinstance(payload, dict) else None
+        frames: list[PolicyDecisionFrameV1] = []
+        for row in rows:
+            frame = self._validate_policy_frame_row(
+                row["policy_decision_frame_json"], log_label="oldest_batch_lookup"
             )
-            logger.warning(
-                "policy_decision_frame_incompatible_schema fifo_lookup frame_id=%s",
-                raw_frame_id,
-                exc_info=True,
-            )
-            if raw_frame_id:
-                self._retire_incompatible_policy_frame(raw_frame_id, raw_proposal_frame_id)
-            return None
+            if frame is not None:
+                frames.append(frame)
+        return frames
 
     def load_freshest_policy_frame_without_dispatch(self) -> PolicyDecisionFrameV1 | None:
         """The single newest unprocessed policy frame, regardless of backlog
@@ -87,7 +137,17 @@ class ExecutionDispatchRuntimeStore:
         drain doesn't surface a candidate to process, so a genuinely current
         proposal is never gated behind however deep the old backlog is.
 
-        Same schema-validation-failure handling as load_latest_policy_frame_
+        `NOT EXISTS`, not `LEFT JOIN ... WHERE d.frame_id IS NULL` (2026-07-30
+        "Part 1c" perf fix, same design doc as load_oldest_policy_frames_
+        without_dispatch above -- see that method's docstring for the full
+        account of why the two directions need DIFFERENT query shapes).
+        Confirmed live via EXPLAIN ANALYZE: this exact rewrite took the LEFT
+        JOIN version's ~294ms down to ~0.19ms for this specific (DESC)
+        direction -- almost nothing near "now" has been processed yet, so
+        Postgres's nested-loop anti-join plan terminates on the very first
+        probe instead of building a full hash join over both tables.
+
+        Same schema-validation-failure handling as load_oldest_policy_frames_
         without_dispatch above (retire an incompatible row via a stub
         dispatch frame rather than re-selecting it forever) -- this query can
         hit the exact same incompatible-row case, just approached from the
@@ -100,9 +160,10 @@ class ExecutionDispatchRuntimeStore:
                         """
                         SELECT p.policy_decision_frame_json
                         FROM substrate_policy_decision_frames p
-                        LEFT JOIN substrate_execution_dispatch_frames d
-                          ON d.source_policy_frame_id = p.frame_id
-                        WHERE d.frame_id IS NULL
+                        WHERE NOT EXISTS (
+                          SELECT 1 FROM substrate_execution_dispatch_frames d
+                          WHERE d.source_policy_frame_id = p.frame_id
+                        )
                         ORDER BY p.generated_at DESC
                         LIMIT 1
                         """
@@ -113,32 +174,17 @@ class ExecutionDispatchRuntimeStore:
             )
         if not row:
             return None
-        payload = row["policy_decision_frame_json"]
-        if isinstance(payload, str):
-            payload = json.loads(payload)
-        try:
-            return PolicyDecisionFrameV1.model_validate(payload)
-        except ValidationError:
-            raw_frame_id = payload.get("frame_id") if isinstance(payload, dict) else None
-            raw_proposal_frame_id = (
-                payload.get("source_proposal_frame_id") if isinstance(payload, dict) else None
-            )
-            logger.warning(
-                "policy_decision_frame_incompatible_schema freshest_lookup frame_id=%s",
-                raw_frame_id,
-                exc_info=True,
-            )
-            if raw_frame_id:
-                self._retire_incompatible_policy_frame(raw_frame_id, raw_proposal_frame_id)
-            return None
+        return self._validate_policy_frame_row(
+            row["policy_decision_frame_json"], log_label="freshest_lookup"
+        )
 
     def _retire_incompatible_policy_frame(
         self, raw_frame_id: str, raw_proposal_frame_id: str | None
     ) -> None:
         """Insert a stub, unattempted execution_dispatch_frame for a policy
-        frame that failed schema validation, so
-        load_latest_policy_frame_without_dispatch's FIFO lookup doesn't
-        re-select this exact row forever."""
+        frame that failed schema validation, so load_oldest_policy_frames_
+        without_dispatch's/load_freshest_policy_frame_without_dispatch's
+        lookups don't re-select this exact row forever."""
         stub = ExecutionDispatchFrameV1(
             frame_id=f"execution.dispatch.frame:{raw_frame_id}:schema_incompatible",
             generated_at=datetime.now(timezone.utc),

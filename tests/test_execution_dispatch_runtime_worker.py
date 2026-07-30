@@ -59,7 +59,7 @@ def test_worker_skips_when_no_policy_pending(monkeypatch) -> None:
 
     settings_mod._settings = None
     worker = ExecutionDispatchRuntimeWorker()
-    worker._store.load_latest_policy_frame_without_dispatch = MagicMock(return_value=None)
+    worker._store.load_oldest_policy_frames_without_dispatch = MagicMock(return_value=[])
     worker._store.load_freshest_policy_frame_without_dispatch = MagicMock(return_value=None)
     worker._store.load_latest_staleness_discard_baseline = MagicMock(return_value=None)
     worker._store.save_dispatch_frame = MagicMock()
@@ -88,7 +88,7 @@ def test_worker_records_unevaluable_frame_when_proposal_missing(monkeypatch) -> 
     settings_mod._settings = None
     worker = ExecutionDispatchRuntimeWorker()
     policy_frame = _policy_frame()
-    worker._store.load_latest_policy_frame_without_dispatch = MagicMock(return_value=policy_frame)
+    worker._store.load_oldest_policy_frames_without_dispatch = MagicMock(return_value=[policy_frame])
     worker._store.load_latest_staleness_discard_baseline = MagicMock(return_value=None)
     worker._store.load_proposal_frame = MagicMock(return_value=None)
     worker._store.save_dispatch_frame = MagicMock()
@@ -116,7 +116,7 @@ def test_worker_saves_dispatch_frame_for_pending_policy(monkeypatch) -> None:
     settings_mod._settings = None
     worker = ExecutionDispatchRuntimeWorker()
     policy_frame = _policy_frame()
-    worker._store.load_latest_policy_frame_without_dispatch = MagicMock(return_value=policy_frame)
+    worker._store.load_oldest_policy_frames_without_dispatch = MagicMock(return_value=[policy_frame])
     worker._store.load_latest_staleness_discard_baseline = MagicMock(return_value=None)
     worker._store.load_proposal_frame = MagicMock(return_value=_proposal())
     worker._store.save_dispatch_frame = MagicMock()
@@ -178,8 +178,8 @@ def test_staleness_threshold_falls_in_configured_range_without_override(monkeypa
 def test_worker_discards_a_lone_stale_policy_frame_without_dispatching(monkeypatch) -> None:
     worker = _staleness_worker(monkeypatch, override_sec=120.0)
     stale_frame = _policy_frame_at(datetime.now(timezone.utc) - timedelta(hours=6))
-    worker._store.load_latest_policy_frame_without_dispatch = MagicMock(
-        side_effect=[stale_frame, None]
+    worker._store.load_oldest_policy_frames_without_dispatch = MagicMock(
+        return_value=[stale_frame]
     )
 
     worker._tick()
@@ -218,8 +218,8 @@ def test_worker_materializes_per_candidate_discard_summary(monkeypatch) -> None:
             ]
         }
     )
-    worker._store.load_latest_policy_frame_without_dispatch = MagicMock(
-        side_effect=[stale_frame, None]
+    worker._store.load_oldest_policy_frames_without_dispatch = MagicMock(
+        return_value=[stale_frame]
     )
 
     worker._tick()
@@ -233,8 +233,8 @@ def test_worker_drains_stale_frames_then_processes_a_fresh_one(monkeypatch) -> N
     stale_1 = _policy_frame_at(datetime.now(timezone.utc) - timedelta(hours=6), frame_id="policy.frame:stale-1")
     stale_2 = _policy_frame_at(datetime.now(timezone.utc) - timedelta(hours=3), frame_id="policy.frame:stale-2")
     fresh = _policy_frame_at(datetime.now(timezone.utc) - timedelta(seconds=1), frame_id="policy.frame:fresh")
-    worker._store.load_latest_policy_frame_without_dispatch = MagicMock(
-        side_effect=[stale_1, stale_2, fresh]
+    worker._store.load_oldest_policy_frames_without_dispatch = MagicMock(
+        return_value=[stale_1, stale_2, fresh]
     )
 
     worker._tick()
@@ -260,7 +260,7 @@ def test_worker_falls_back_to_freshest_when_drain_finds_nothing(monkeypatch) -> 
     regardless of how deep the old backlog behind it is."""
     worker = _staleness_worker(monkeypatch, override_sec=120.0)
     ancient = _policy_frame_at(datetime.now(timezone.utc) - timedelta(days=2))
-    worker._store.load_latest_policy_frame_without_dispatch = MagicMock(return_value=ancient)
+    worker._store.load_oldest_policy_frames_without_dispatch = MagicMock(return_value=[ancient])
     fresh = _policy_frame_at(datetime.now(timezone.utc) - timedelta(seconds=1), frame_id="policy.frame:fresh")
     worker._store.load_freshest_policy_frame_without_dispatch = MagicMock(return_value=fresh)
 
@@ -278,7 +278,7 @@ def test_worker_fallback_correctly_finds_nothing_when_freshest_is_also_stale(mon
     artifact. Must not fabricate a real-dispatch attempt in that case."""
     worker = _staleness_worker(monkeypatch, override_sec=120.0)
     ancient = _policy_frame_at(datetime.now(timezone.utc) - timedelta(days=2))
-    worker._store.load_latest_policy_frame_without_dispatch = MagicMock(return_value=ancient)
+    worker._store.load_oldest_policy_frames_without_dispatch = MagicMock(return_value=[ancient])
     also_stale_but_newest = _policy_frame_at(
         datetime.now(timezone.utc) - timedelta(hours=1), frame_id="policy.frame:newest-but-stale"
     )
@@ -292,14 +292,32 @@ def test_worker_fallback_correctly_finds_nothing_when_freshest_is_also_stale(mon
 
 
 def test_max_stale_discards_per_tick_caps_the_drain(monkeypatch) -> None:
+    """2026-07-30 perf fix: the cap is now enforced by the LIMIT passed to
+    the single batch query (load_oldest_policy_frames_without_dispatch), not
+    by an application-level while loop counting single-row fetches -- there
+    is no longer any worker-side backstop against the store ever returning
+    more than the requested limit (that trust boundary moved entirely to
+    Postgres honoring the bound :limit parameter). This test verifies what's
+    actually left on the worker side: it requests exactly MAX_STALE_
+    DISCARDS_PER_TICK, and correctly processes a full-size all-stale batch
+    in full (every item discarded, none skipped) rather than stopping short.
+    It does NOT and cannot prove the cap holds if the store ever returned an
+    oversized batch -- that would need a store/SQL-level test, not this
+    one."""
     worker = _staleness_worker(monkeypatch, override_sec=120.0)
-    ancient = _policy_frame_at(datetime.now(timezone.utc) - timedelta(days=2))
-    # Same object every call -- an unbounded drain loop would spin forever;
-    # the cap must stop it after exactly MAX_STALE_DISCARDS_PER_TICK saves.
-    worker._store.load_latest_policy_frame_without_dispatch = MagicMock(return_value=ancient)
+    ancient_batch = [
+        _policy_frame_at(
+            datetime.now(timezone.utc) - timedelta(days=2), frame_id=f"policy.frame:ancient-{i}"
+        )
+        for i in range(worker_mod.MAX_STALE_DISCARDS_PER_TICK)
+    ]
+    worker._store.load_oldest_policy_frames_without_dispatch = MagicMock(return_value=ancient_batch)
 
     worker._tick()
 
+    worker._store.load_oldest_policy_frames_without_dispatch.assert_called_once_with(
+        worker_mod.MAX_STALE_DISCARDS_PER_TICK
+    )
     # +1: the final re-stamp save of the last discard frame with this tick's
     # now-final EWMA count, same reasoning as test_worker_discards_a_lone_
     # stale_policy_frame_without_dispatching above.
@@ -317,8 +335,8 @@ def test_staleness_discard_ewma_advances_and_persists(monkeypatch) -> None:
         }
     )
     stale_frame = _policy_frame_at(datetime.now(timezone.utc) - timedelta(hours=6))
-    worker._store.load_latest_policy_frame_without_dispatch = MagicMock(
-        side_effect=[stale_frame, None]
+    worker._store.load_oldest_policy_frames_without_dispatch = MagicMock(
+        return_value=[stale_frame]
     )
 
     worker._tick()
@@ -338,7 +356,7 @@ def test_worker_fresh_policy_frame_never_discarded(monkeypatch) -> None:
     real-time traffic."""
     worker = _staleness_worker(monkeypatch, override_sec=300.0)
     fresh = _policy_frame_at(datetime.now(timezone.utc))
-    worker._store.load_latest_policy_frame_without_dispatch = MagicMock(return_value=fresh)
+    worker._store.load_oldest_policy_frames_without_dispatch = MagicMock(return_value=[fresh])
 
     worker._tick()
 
@@ -361,8 +379,8 @@ def test_worker_handles_naive_generated_at_without_crashing(monkeypatch) -> None
     worker = _staleness_worker(monkeypatch, override_sec=120.0)
     naive_stale = _policy_frame_at(datetime.now() - timedelta(hours=6))
     assert naive_stale.generated_at.tzinfo is None
-    worker._store.load_latest_policy_frame_without_dispatch = MagicMock(
-        side_effect=[naive_stale, None]
+    worker._store.load_oldest_policy_frames_without_dispatch = MagicMock(
+        return_value=[naive_stale]
     )
 
     worker._tick()  # must not raise

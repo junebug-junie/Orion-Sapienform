@@ -52,91 +52,66 @@ def _world_pulse_envelope() -> BaseEnvelope:
     )
 
 
+def _mock_worker_store(worker: ConceptWorker) -> MagicMock:
+    """Common store mock: drive-pressure/goal-generation machinery was
+    deleted 2026-07-30, so the store no longer has load_drive_state/
+    save_drive_state/goal-cooldown methods to configure here -- only the
+    surviving non-drive methods (load_goal_slot for policy_act.py's episode-
+    intent fallback, and the episode-idempotency pair) matter to this path.
+    """
+    worker.store = MagicMock()
+    worker.store.load_goal_slot.return_value = {}
+    return worker.store
+
+
 @pytest.mark.asyncio
-async def test_metabolism_disabled_does_not_add_tensions(monkeypatch) -> None:
+async def test_metabolism_disabled_collects_no_curiosity_signals(monkeypatch) -> None:
     monkeypatch.setenv("ORION_SUBSTRATE_AUTONOMY_METABOLISM_ENABLED", "false")
     cfg = ConceptSettings()
     worker = ConceptWorker(cfg)
-    worker.store = MagicMock()
-    worker.store.load_drive_state.return_value = {}
-    worker.drive_engine.update = MagicMock(return_value=({}, {}))
-    worker._publish_tension_event = AsyncMock(return_value=None)
-    worker._publish_drive_state = AsyncMock(return_value=None)
+    _mock_worker_store(worker)
     worker._publish_artifact = AsyncMock(return_value=None)
     worker._publish_dossier = AsyncMock(return_value=None)
-    worker.goal_engine.propose = MagicMock(return_value=MagicMock(proposal=None, suppressed_signature=None))
+    substrate_act_mock = AsyncMock(return_value=MagicMock(fetch_attempted=False, fetch_outcome=None, recall_outcome=None))
+    monkeypatch.setattr(
+        "orion.spark.concept_induction.bus_worker.maybe_execute_substrate_act_after_metabolism",
+        substrate_act_mock,
+    )
 
     await worker.handle_envelope(_world_pulse_envelope(), "orion:world_pulse:run:result")
 
-    call_kwargs = worker.drive_engine.update.call_args.kwargs
-    assert call_kwargs["tensions"] == []
+    # Metabolism disabled -> no curiosity signals collected -> substrate-act
+    # gate (metabolism_curiosity_signals truthy) never fires.
+    substrate_act_mock.assert_not_awaited()
 
 
 @pytest.mark.asyncio
-async def test_metabolism_enabled_merges_gap_tensions(monkeypatch) -> None:
-    monkeypatch.setenv("ORION_SUBSTRATE_AUTONOMY_METABOLISM_ENABLED", "true")
-    cfg = ConceptSettings()
-    worker = ConceptWorker(cfg)
-    worker.store = MagicMock()
-    worker.store.load_drive_state.return_value = {}
-    worker.drive_engine.update = MagicMock(return_value=({"predictive": 0.2}, {"predictive": False}))
-    worker._publish_tension_event = AsyncMock(return_value=None)
-    worker._publish_drive_state = AsyncMock(return_value=None)
-    worker._publish_artifact = AsyncMock(return_value=None)
-    worker._publish_dossier = AsyncMock(return_value=None)
-    worker.goal_engine.propose = MagicMock(return_value=MagicMock(proposal=None, suppressed_signature=None))
-
-    await worker.handle_envelope(_world_pulse_envelope(), "orion:world_pulse:run:result")
-
-    tensions = worker.drive_engine.update.call_args.kwargs["tensions"]
-    assert any(getattr(t, "kind", "") == "substrate.world_coverage_gap" for t in tensions)
-
-
-@pytest.mark.asyncio
-async def test_world_pulse_run_id_lineage_when_metabolism_disabled(monkeypatch) -> None:
-    monkeypatch.setenv("ORION_SUBSTRATE_AUTONOMY_METABOLISM_ENABLED", "false")
-    cfg = ConceptSettings()
-    worker = ConceptWorker(cfg)
-    worker.store = MagicMock()
-    worker.store.load_drive_state.return_value = {}
-    worker.drive_engine.update = MagicMock(return_value=({"predictive": 0.2}, {"predictive": False}))
-    worker._publish_tension_event = AsyncMock(return_value=None)
-    worker._publish_drive_state = AsyncMock(return_value=None)
-    worker._publish_artifact = AsyncMock(return_value=None)
-    worker._publish_dossier = AsyncMock(return_value=None)
-    worker.goal_engine.propose = MagicMock(return_value=MagicMock(proposal=None, suppressed_signature=None))
-
-    await worker.handle_envelope(_world_pulse_envelope(), "orion:world_pulse:run:result")
-
-    assert worker.goal_engine.propose.call_args.kwargs["spawned_correlation_id"] == "wp-run-hook"
-
-
-@pytest.mark.asyncio
-async def test_metabolism_enriches_goal_window_summary(monkeypatch) -> None:
-    monkeypatch.setenv("ORION_SUBSTRATE_AUTONOMY_METABOLISM_ENABLED", "true")
-    cfg = ConceptSettings()
-    worker = ConceptWorker(cfg)
-    worker.store = MagicMock()
-    worker.store.load_drive_state.return_value = {}
-    worker.drive_engine.update = MagicMock(return_value=({"predictive": 0.2}, {"predictive": False}))
-    worker._publish_tension_event = AsyncMock(return_value=None)
-    worker._publish_drive_state = AsyncMock(return_value=None)
-    worker._publish_artifact = AsyncMock(return_value=None)
-    worker._publish_dossier = AsyncMock(return_value=None)
-    worker.goal_engine.propose = MagicMock(return_value=MagicMock(proposal=None, suppressed_signature=None))
-
-    await worker.handle_envelope(_world_pulse_envelope(), "orion:world_pulse:run:result")
-
-    summary = worker.goal_engine.propose.call_args.kwargs["window_summary"]
-    assert summary is not None
-    assert "hardware_compute_gpu" in summary
-
-
-@pytest.mark.asyncio
-async def test_policy_fetch_runs_after_goal_publish(monkeypatch) -> None:
+async def test_metabolism_enabled_collects_gap_curiosity_signal(monkeypatch) -> None:
     monkeypatch.setenv("ORION_SUBSTRATE_AUTONOMY_METABOLISM_ENABLED", "true")
     monkeypatch.setenv("ORION_CAPABILITY_POLICY_AUTO_READONLY_ENABLED", "true")
-    substrate_act_mock = AsyncMock(return_value=MagicMock(fetch_attempted=True))
+    cfg = ConceptSettings()
+    worker = ConceptWorker(cfg, fetch_backend=AsyncMock())
+    _mock_worker_store(worker)
+    worker._publish_artifact = AsyncMock(return_value=None)
+    worker._publish_dossier = AsyncMock(return_value=None)
+    substrate_act_mock = AsyncMock(return_value=MagicMock(fetch_attempted=True, fetch_outcome=None, recall_outcome=None))
+    monkeypatch.setattr(
+        "orion.spark.concept_induction.bus_worker.maybe_execute_substrate_act_after_metabolism",
+        substrate_act_mock,
+    )
+
+    await worker.handle_envelope(_world_pulse_envelope(), "orion:world_pulse:run:result")
+
+    substrate_act_mock.assert_awaited_once()
+    curiosity_signals = substrate_act_mock.await_args.kwargs["curiosity_signals"]
+    assert any("hardware_compute_gpu" in ref for sig in curiosity_signals for ref in sig.focal_node_refs)
+
+
+@pytest.mark.asyncio
+async def test_policy_fetch_runs_on_world_pulse_gap(monkeypatch) -> None:
+    monkeypatch.setenv("ORION_SUBSTRATE_AUTONOMY_METABOLISM_ENABLED", "true")
+    monkeypatch.setenv("ORION_CAPABILITY_POLICY_AUTO_READONLY_ENABLED", "true")
+    substrate_act_mock = AsyncMock(return_value=MagicMock(fetch_attempted=True, fetch_outcome=None, recall_outcome=None))
     monkeypatch.setattr(
         "orion.spark.concept_induction.bus_worker.maybe_execute_substrate_act_after_metabolism",
         substrate_act_mock,
@@ -144,28 +119,9 @@ async def test_policy_fetch_runs_after_goal_publish(monkeypatch) -> None:
     cfg = ConceptSettings()
     cfg.autonomy_episode_journal_enabled = True
     worker = ConceptWorker(cfg, fetch_backend=AsyncMock())
-    worker.store = MagicMock()
-    worker.store.load_drive_state.return_value = {
-        "pressures": {"predictive": 0.7, "coherence": 0.5, "continuity": 0.5, "capability": 0.5, "relational": 0.5, "autonomy": 0.5},
-        "activations": {"predictive": True},
-    }
-    worker.drive_engine.update = MagicMock(
-        return_value=(
-            {"predictive": 0.7, "coherence": 0.5, "continuity": 0.5, "capability": 0.5, "relational": 0.5, "autonomy": 0.5},
-            {"predictive": True},
-        )
-    )
-    worker._publish_tension_event = AsyncMock(return_value=None)
-    worker._publish_drive_state = AsyncMock(return_value=None)
+    _mock_worker_store(worker)
     worker._publish_artifact = AsyncMock(return_value=None)
     worker._publish_dossier = AsyncMock(return_value=None)
-
-    proposal = MagicMock()
-    proposal.artifact_id = "goal-gap-gpu"
-    proposal.subject = "orion"
-    proposal.drive_origin = "predictive"
-    proposal.proposal_status = "proposed"
-    worker.goal_engine.propose = MagicMock(return_value=MagicMock(proposal=proposal, suppressed_signature=None))
 
     await worker.handle_envelope(_world_pulse_envelope(), "orion:world_pulse:run:result")
 
@@ -173,6 +129,10 @@ async def test_policy_fetch_runs_after_goal_publish(monkeypatch) -> None:
     call_kwargs = substrate_act_mock.await_args.kwargs
     assert call_kwargs["spawned_correlation_id"] == "wp-run-hook"
     assert call_kwargs["episode_journal_enabled"] is True
+    # drive_state is still passed (policy_act.py's capability-policy context
+    # requires it), but honestly empty -- nothing computes drive pressures
+    # anymore.
+    assert call_kwargs["drive_state"].pressures == {}
 
 
 @pytest.mark.asyncio
@@ -200,25 +160,10 @@ async def test_action_outcome_emitted_after_substrate_act(monkeypatch) -> None:
     )
     cfg = ConceptSettings()
     worker = ConceptWorker(cfg, fetch_backend=AsyncMock())
-    worker.store = MagicMock()
-    worker.store.load_drive_state.return_value = {
-        "pressures": {"predictive": 0.7, "coherence": 0.5, "continuity": 0.5, "capability": 0.5, "relational": 0.5, "autonomy": 0.5},
-        "activations": {"predictive": True},
-    }
-    worker.drive_engine.update = MagicMock(
-        return_value=(
-            {"predictive": 0.7, "coherence": 0.5, "continuity": 0.5, "capability": 0.5, "relational": 0.5, "autonomy": 0.5},
-            {"predictive": True},
-        )
-    )
-    worker._publish_tension_event = AsyncMock(return_value=None)
-    worker._publish_drive_state = AsyncMock(return_value=None)
+    _mock_worker_store(worker)
     worker._publish_artifact = AsyncMock(return_value=None)
     worker._publish_dossier = AsyncMock(return_value=None)
     worker._publish_action_outcome = AsyncMock(return_value=None)
-    worker.goal_engine.propose = MagicMock(
-        return_value=MagicMock(proposal=None, suppressed_signature=None)
-    )
 
     await worker.handle_envelope(_world_pulse_envelope(), "orion:world_pulse:run:result")
 
@@ -231,48 +176,13 @@ async def test_action_outcome_emitted_after_substrate_act(monkeypatch) -> None:
 
 
 @pytest.mark.asyncio
-async def test_substrate_act_runs_when_goal_suppressed(monkeypatch) -> None:
-    monkeypatch.setenv("ORION_SUBSTRATE_AUTONOMY_METABOLISM_ENABLED", "true")
-    substrate_act_mock = AsyncMock(return_value=MagicMock(fetch_attempted=True))
-    monkeypatch.setattr(
-        "orion.spark.concept_induction.bus_worker.maybe_execute_substrate_act_after_metabolism",
-        substrate_act_mock,
-    )
-    cfg = ConceptSettings()
-    worker = ConceptWorker(cfg)
-    worker.store = MagicMock()
-    worker.store.load_drive_state.return_value = {}
-    worker.drive_engine.update = MagicMock(return_value=({"predictive": 0.2}, {"predictive": False}))
-    worker._publish_tension_event = AsyncMock(return_value=None)
-    worker._publish_drive_state = AsyncMock(return_value=None)
-    worker._publish_artifact = AsyncMock(return_value=None)
-    worker._publish_dossier = AsyncMock(return_value=None)
-    worker.goal_engine.propose = MagicMock(
-        return_value=MagicMock(proposal=None, suppressed_signature="sig-cooldown")
-    )
-
-    await worker.handle_envelope(_world_pulse_envelope(), "orion:world_pulse:run:result")
-
-    substrate_act_mock.assert_awaited_once()
-    call_kwargs = substrate_act_mock.await_args.kwargs
-    assert call_kwargs["spawned_correlation_id"] == "wp-run-hook"
-
-
-def _drive_state_ready() -> dict:
-    return {
-        "pressures": {"predictive": 0.7, "coherence": 0.5, "continuity": 0.5, "capability": 0.5, "relational": 0.5, "autonomy": 0.5},
-        "activations": {"predictive": True},
-    }
-
-
-@pytest.mark.asyncio
 async def test_episode_skipped_when_run_already_processed(monkeypatch) -> None:
     # Idempotency backstop: with the stream flag on, a run already marked processed must
     # NOT re-run the substrate act (no duplicate Firecrawl fetch / journal RPC).
     monkeypatch.setenv("ORION_SUBSTRATE_AUTONOMY_METABOLISM_ENABLED", "true")
     monkeypatch.setenv("ORION_CAPABILITY_POLICY_AUTO_READONLY_ENABLED", "true")
     monkeypatch.setenv("WP_RUN_RESULT_STREAM_ENABLED", "true")
-    substrate_act_mock = AsyncMock(return_value=MagicMock(fetch_attempted=True, fetch_outcome=None))
+    substrate_act_mock = AsyncMock(return_value=MagicMock(fetch_attempted=True, fetch_outcome=None, recall_outcome=None))
     monkeypatch.setattr(
         "orion.spark.concept_induction.bus_worker.maybe_execute_substrate_act_after_metabolism",
         substrate_act_mock,
@@ -280,20 +190,15 @@ async def test_episode_skipped_when_run_already_processed(monkeypatch) -> None:
     cfg = ConceptSettings()
     cfg.autonomy_episode_journal_enabled = True
     worker = ConceptWorker(cfg, fetch_backend=AsyncMock())
-    worker.store = MagicMock()
-    worker.store.load_drive_state.return_value = _drive_state_ready()
-    worker.store.is_episode_run_processed.return_value = True
-    worker.drive_engine.update = MagicMock(return_value=(_drive_state_ready()["pressures"], {"predictive": True}))
-    worker._publish_tension_event = AsyncMock(return_value=None)
-    worker._publish_drive_state = AsyncMock(return_value=None)
+    store = _mock_worker_store(worker)
+    store.is_episode_run_processed.return_value = True
     worker._publish_artifact = AsyncMock(return_value=None)
     worker._publish_dossier = AsyncMock(return_value=None)
-    worker.goal_engine.propose = MagicMock(return_value=MagicMock(proposal=None, suppressed_signature=None))
 
     await worker.handle_envelope(_world_pulse_envelope(), "orion:world_pulse:run:result")
 
     substrate_act_mock.assert_not_awaited()
-    worker.store.mark_episode_run_processed.assert_not_called()
+    store.mark_episode_run_processed.assert_not_called()
 
 
 @pytest.mark.asyncio
@@ -303,7 +208,7 @@ async def test_episode_marks_run_processed_when_stream_enabled(monkeypatch) -> N
     monkeypatch.setenv("ORION_SUBSTRATE_AUTONOMY_METABOLISM_ENABLED", "true")
     monkeypatch.setenv("ORION_CAPABILITY_POLICY_AUTO_READONLY_ENABLED", "true")
     monkeypatch.setenv("WP_RUN_RESULT_STREAM_ENABLED", "true")
-    substrate_act_mock = AsyncMock(return_value=MagicMock(fetch_attempted=True, fetch_outcome=None))
+    substrate_act_mock = AsyncMock(return_value=MagicMock(fetch_attempted=True, fetch_outcome=None, recall_outcome=None))
     monkeypatch.setattr(
         "orion.spark.concept_induction.bus_worker.maybe_execute_substrate_act_after_metabolism",
         substrate_act_mock,
@@ -311,21 +216,16 @@ async def test_episode_marks_run_processed_when_stream_enabled(monkeypatch) -> N
     cfg = ConceptSettings()
     cfg.autonomy_episode_journal_enabled = True
     worker = ConceptWorker(cfg, fetch_backend=AsyncMock())
-    worker.store = MagicMock()
-    worker.store.load_drive_state.return_value = _drive_state_ready()
-    worker.store.is_episode_run_processed.return_value = False
-    worker.drive_engine.update = MagicMock(return_value=(_drive_state_ready()["pressures"], {"predictive": True}))
-    worker._publish_tension_event = AsyncMock(return_value=None)
-    worker._publish_drive_state = AsyncMock(return_value=None)
+    store = _mock_worker_store(worker)
+    store.is_episode_run_processed.return_value = False
     worker._publish_artifact = AsyncMock(return_value=None)
     worker._publish_dossier = AsyncMock(return_value=None)
-    worker.goal_engine.propose = MagicMock(return_value=MagicMock(proposal=None, suppressed_signature=None))
 
     await worker.handle_envelope(_world_pulse_envelope(), "orion:world_pulse:run:result")
 
     substrate_act_mock.assert_awaited_once()
-    worker.store.mark_episode_run_processed.assert_called_once()
-    assert worker.store.mark_episode_run_processed.call_args.args[0] == "wp-run-hook"
+    store.mark_episode_run_processed.assert_called_once()
+    assert store.mark_episode_run_processed.call_args.args[0] == "wp-run-hook"
 
 
 @pytest.mark.asyncio
@@ -334,7 +234,7 @@ async def test_episode_not_marked_when_stream_disabled(monkeypatch) -> None:
     monkeypatch.setenv("ORION_SUBSTRATE_AUTONOMY_METABOLISM_ENABLED", "true")
     monkeypatch.setenv("ORION_CAPABILITY_POLICY_AUTO_READONLY_ENABLED", "true")
     monkeypatch.setenv("WP_RUN_RESULT_STREAM_ENABLED", "false")
-    substrate_act_mock = AsyncMock(return_value=MagicMock(fetch_attempted=True, fetch_outcome=None))
+    substrate_act_mock = AsyncMock(return_value=MagicMock(fetch_attempted=True, fetch_outcome=None, recall_outcome=None))
     monkeypatch.setattr(
         "orion.spark.concept_induction.bus_worker.maybe_execute_substrate_act_after_metabolism",
         substrate_act_mock,
@@ -342,20 +242,15 @@ async def test_episode_not_marked_when_stream_disabled(monkeypatch) -> None:
     cfg = ConceptSettings()
     cfg.autonomy_episode_journal_enabled = True
     worker = ConceptWorker(cfg, fetch_backend=AsyncMock())
-    worker.store = MagicMock()
-    worker.store.load_drive_state.return_value = _drive_state_ready()
-    worker.drive_engine.update = MagicMock(return_value=(_drive_state_ready()["pressures"], {"predictive": True}))
-    worker._publish_tension_event = AsyncMock(return_value=None)
-    worker._publish_drive_state = AsyncMock(return_value=None)
+    store = _mock_worker_store(worker)
     worker._publish_artifact = AsyncMock(return_value=None)
     worker._publish_dossier = AsyncMock(return_value=None)
-    worker.goal_engine.propose = MagicMock(return_value=MagicMock(proposal=None, suppressed_signature=None))
 
     await worker.handle_envelope(_world_pulse_envelope(), "orion:world_pulse:run:result")
 
     substrate_act_mock.assert_awaited_once()
-    worker.store.is_episode_run_processed.assert_not_called()
-    worker.store.mark_episode_run_processed.assert_not_called()
+    store.is_episode_run_processed.assert_not_called()
+    store.mark_episode_run_processed.assert_not_called()
 
 
 @pytest.mark.asyncio

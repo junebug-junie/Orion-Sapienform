@@ -2,10 +2,13 @@ from __future__ import annotations
 
 import hashlib
 import re
-from typing import Any, Dict, Iterable, Optional
+from datetime import timezone
+from typing import Any, Dict, Optional
 
 from orion.core.bus.bus_schemas import BaseEnvelope
-from orion.core.schemas.drives import DriveStateV1, IdentitySnapshotV1, TensionEventV1
+from orion.core.schemas.drives import ArtifactProvenance, IdentitySnapshotV1
+
+from .dossier import build_evidence_items, build_source_event_ref, extract_trace_id, extract_turn_id
 
 SELF_SUBJECT = "orion"
 USER_SUBJECT = "juniper"
@@ -126,36 +129,58 @@ def _artifact_id(subject: str, correlation_id: str | None, suffix: str) -> str:
 
 def build_identity_snapshot(
     *,
-    drive_state: DriveStateV1,
-    source_event_ref,
-    evidence_items,
-    tensions: Iterable[TensionEventV1],
+    env: BaseEnvelope,
+    intake_channel: str,
+    subject: str,
+    model_layer: str,
+    entity_id: str,
+    confidence: float = 0.72,
 ) -> IdentitySnapshotV1:
-    tension_list = list(tensions)
-    anchor_strategy = anchor_strategy_for_subject(drive_state.subject, drive_state.model_layer)
-    summary = f"{drive_state.subject} anchored as {drive_state.entity_id} in {drive_state.model_layer}"
+    """Build a subject-anchoring snapshot for this turn.
+
+    Decoupled from `DriveStateV1` 2026-07-30 (drive-pressure system deletion,
+    orion/sentience_striving_program/README.md sec8): this function's real
+    content -- subject/model_layer/entity_id anchoring via
+    `anchor_strategy_for_subject` -- never depended on drive pressures, it
+    only borrowed `DriveStateV1` as a convenient carrier for provenance/
+    correlation fields shared with the now-deleted drive-tick machinery.
+    `drive_pressures` is set to `{}`: nothing computes drive pressures
+    anymore, and fabricating a non-empty value here would be exactly the
+    empty-shell-cognition failure mode this deletion was meant to remove.
+    """
+    ts = env.created_at if env.created_at.tzinfo else env.created_at.replace(tzinfo=timezone.utc)
+    trace_id = extract_trace_id(env)
+    turn_id = extract_turn_id(env)
+    correlation_id = str(env.correlation_id) if env.correlation_id else None
+    source_event_ref = build_source_event_ref(env, intake_channel)
+    evidence_items = build_evidence_items(env, intake_channel, None)
+    anchor_strategy = anchor_strategy_for_subject(subject, model_layer)
+    summary = f"{subject} anchored as {entity_id} in {model_layer}"
     return IdentitySnapshotV1(
-        artifact_id=_artifact_id(drive_state.subject, drive_state.correlation_id, "identity-snapshot"),
-        subject=drive_state.subject,
-        model_layer=drive_state.model_layer,
-        entity_id=drive_state.entity_id,
+        artifact_id=_artifact_id(subject, correlation_id, "identity-snapshot"),
+        subject=subject,
+        model_layer=model_layer,
+        entity_id=entity_id,
         kind="memory.identity.snapshot.v1",
-        ts=drive_state.updated_at,
-        confidence=drive_state.confidence,
-        correlation_id=drive_state.correlation_id,
-        trace_id=drive_state.trace_id,
-        turn_id=drive_state.turn_id,
-        provenance=drive_state.provenance.model_copy(update={
-            "source_event_refs": [source_event_ref],
-            "evidence_items": evidence_items,
-            "tension_refs": [tension.artifact_id for tension in tension_list],
-            "evidence_summary": evidence_items[0].summary if evidence_items else drive_state.provenance.evidence_summary,
-        }),
-        related_nodes=drive_state.related_nodes + [tension.artifact_id for tension in tension_list],
+        ts=ts,
+        confidence=confidence,
+        correlation_id=correlation_id,
+        trace_id=trace_id,
+        turn_id=turn_id,
+        provenance=ArtifactProvenance(
+            intake_channel=intake_channel,
+            correlation_id=correlation_id,
+            trace_id=trace_id,
+            turn_id=turn_id,
+            evidence_summary=evidence_items[0].summary if evidence_items else None,
+            source_event_refs=[source_event_ref],
+            evidence_items=evidence_items,
+        ),
+        related_nodes=[f"subject:{subject}"],
         anchor_strategy=anchor_strategy,
         summary=summary,
         source_event_refs=[source_event_ref],
         evidence_items=evidence_items,
-        tension_kinds=[tension.kind for tension in tension_list],
-        drive_pressures=drive_state.pressures,
+        tension_kinds=[],
+        drive_pressures={},
     )

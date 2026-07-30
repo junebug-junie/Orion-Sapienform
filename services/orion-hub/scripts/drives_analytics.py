@@ -18,7 +18,7 @@ import logging
 import os
 from typing import Any, Literal
 
-from orion.spark.concept_induction.drives import DRIVE_KEYS
+from orion.core.schemas.drives import DRIVE_KEYS
 
 logger = logging.getLogger("orion.hub.drives_analytics")
 

@@ -91,13 +91,6 @@ def _world_pulse_envelope_with_followup() -> BaseEnvelope:
     )
 
 
-def _drive_state_ready() -> dict:
-    return {
-        "pressures": {"predictive": 0.7, "coherence": 0.5, "continuity": 0.5, "capability": 0.5, "relational": 0.5, "autonomy": 0.5},
-        "activations": {"predictive": True},
-    }
-
-
 @pytest.mark.asyncio
 async def test_curiosity_followup_reused_skips_live_fetch(monkeypatch) -> None:
     monkeypatch.setenv("ORION_SUBSTRATE_AUTONOMY_METABOLISM_ENABLED", "true")
@@ -113,19 +106,15 @@ async def test_curiosity_followup_reused_skips_live_fetch(monkeypatch) -> None:
     # the prefetched-outcome pass-through; journal compose is a separate seam.
     cfg.autonomy_episode_journal_enabled = False
     worker = ConceptWorker(cfg, fetch_backend=_fetch_backend)
+    # Drive-pressure/goal-generation engine deleted 2026-07-30 (drive-pressure/
+    # goal-generation deletion sprint) -- worker.drive_engine/goal_engine no
+    # longer exist; only the surviving non-drive store methods matter here
+    # (load_goal_slot for policy_act.py's episode-intent fallback).
     worker.store = MagicMock()
-    worker.store.load_drive_state.return_value = _drive_state_ready()
-    worker.drive_engine.update = MagicMock(
-        return_value=(_drive_state_ready()["pressures"], {"predictive": True})
-    )
-    worker._publish_tension_event = AsyncMock(return_value=None)
-    worker._publish_drive_state = AsyncMock(return_value=None)
+    worker.store.load_goal_slot.return_value = {}
     worker._publish_artifact = AsyncMock(return_value=None)
     worker._publish_dossier = AsyncMock(return_value=None)
     worker._publish_action_outcome = AsyncMock(return_value=None)
-    worker.goal_engine.propose = MagicMock(
-        return_value=MagicMock(proposal=None, suppressed_signature=None)
-    )
 
     await worker.handle_envelope(
         _world_pulse_envelope_with_followup(), "orion:world_pulse:run:result"

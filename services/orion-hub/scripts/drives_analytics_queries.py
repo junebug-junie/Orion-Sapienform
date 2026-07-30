@@ -5,15 +5,13 @@ I/O only — degrade never raise. Pure helpers live in ``drives_analytics``.
 
 from __future__ import annotations
 
-import importlib.util
 import json
 import logging
 import os
-import sys
 from datetime import datetime, timedelta, timezone
 from typing import Any
 
-from orion.spark.concept_induction.drives import DRIVE_KEYS
+from orion.core.schemas.drives import DRIVE_KEYS
 
 from .drives_analytics import (
     SATURATED,
@@ -28,7 +26,6 @@ from .drives_analytics import (
     normalize_hours,
     normalize_subject,
     parse_dominant_rows,
-    resolve_repo_root,
     _as_utc,
     _gate,
 )
@@ -529,6 +526,30 @@ def _resolve_concept_store_path() -> tuple[str, bool]:
     return str(DEFAULT_CONCEPT_STORE_PATH), True
 
 
+def _load_drive_state_v1(store_path: str, subject: str) -> tuple[dict[str, Any] | None, str | None]:
+    """Load the current drive_state.v1 raw dict for `subject` (fail-open).
+
+    Inlined from the now-deleted scripts/drive_state_divergence_audit.py
+    (2026-07-30) -- was always just a defensive wrapper around
+    `LocalProfileStore.load_drive_state`, which itself never raises and
+    returns `{}` for a cold/missing store or unknown subject. Wrapped
+    anyway (e.g. an unwritable parent dir in `LocalProfileStore.__init__`'s
+    mkdir) so a bad store path is reported, not a crash. A `None` return
+    means "no data available", not "zero divergence" -- callers must not
+    treat it as pressures of 0.0.
+    """
+    try:
+        from orion.spark.concept_induction.store import LocalProfileStore
+
+        store = LocalProfileStore(store_path)
+        raw = store.load_drive_state(subject)
+    except Exception as exc:  # pragma: no cover - defensive, store.py itself never raises
+        return None, f"LocalProfileStore.load_drive_state raised: {exc}"
+    if not isinstance(raw, dict) or "pressures" not in raw:
+        return None, None
+    return raw, None
+
+
 def fetch_divergence_sync(*, subject: str | None = None, audit_pressures: dict[str, float] | None = None) -> dict[str, Any]:
     """Compare drive_state.v1 concept store vs audit pressures (fail-open)."""
     subject_n = normalize_subject(subject)
@@ -541,24 +562,19 @@ def fetch_divergence_sync(*, subject: str | None = None, audit_pressures: dict[s
     degraded = False
     error: str | None = None
     try:
-        # Load via same helper as scripts/drive_state_divergence_audit.py
-        repo_root = resolve_repo_root()
-        if repo_root is None:
-            raise FileNotFoundError("Orion repo root not found for drive_state_divergence_audit")
-        audit_mod_path = repo_root / "scripts" / "drive_state_divergence_audit.py"
-        if not audit_mod_path.is_file():
-            raise FileNotFoundError(f"missing {audit_mod_path}")
-        mod_name = "_orion_drive_state_divergence_audit_for_hub"
-        existing = sys.modules.get(mod_name)
-        if existing is None:
-            spec = importlib.util.spec_from_file_location(mod_name, audit_mod_path)
-            if spec is None or spec.loader is None:
-                raise ImportError(f"cannot load {audit_mod_path}")
-            module = importlib.util.module_from_spec(spec)
-            sys.modules[mod_name] = module
-            spec.loader.exec_module(module)
-            existing = module
-        drive_raw, drive_error = existing.load_drive_state_v1(store_path, subject_n)
+        # scripts/drive_state_divergence_audit.py (formerly file-loaded here by
+        # path) was deleted 2026-07-30 -- its whole reason to exist (comparing
+        # two independently-computed drive-pressure signals) evaporated once
+        # BOTH sides were dead: autonomy_state_v2 was already retired
+        # 2026-07-16, and drive_state.v1's producer (DriveEngine) was deleted
+        # in the same 2026-07-30 sprint that removed the script. This inlines
+        # the script's own `load_drive_state_v1` helper directly -- it was
+        # always just a defensive wrapper around `LocalProfileStore.
+        # load_drive_state` (store.py itself still keeps that method
+        # read-only for exactly this caller). Historical rows already
+        # persisted before 2026-07-30 remain readable; nothing writes new
+        # ones anymore.
+        drive_raw, drive_error = _load_drive_state_v1(store_path, subject_n)
         if drive_error:
             degraded = True
             error = drive_error

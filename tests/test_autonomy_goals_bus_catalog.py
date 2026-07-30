@@ -48,10 +48,18 @@ def test_goal_proposal_schema_in_registry() -> None:
 
 
 def test_memory_goals_proposed_channel_cataloged() -> None:
+    # orion-spark-concept-induction's GoalProposalEngine (the only producer
+    # this channel ever had) was deleted 2026-07-30 (drive-pressure/
+    # goal-generation deletion sprint -- orion/sentience_striving_program/
+    # README.md sec8). The channel is intentionally producer-less now; see
+    # orion/bus/channels.yaml's comment on this entry. GoalProposalV1 the
+    # schema is still used (constructed in-memory elsewhere for internal
+    # policy evaluation, never published here) -- covered by
+    # test_goal_proposal_schema_in_registry above.
     entry = _channel_entry("orion:memory:goals:proposed")
     assert entry["schema_id"] == "GoalProposalV1"
     assert entry["message_kind"] == "memory.goals.proposed.v1"
-    assert "orion-spark-concept-induction" in (entry.get("producer_services") or [])
+    assert entry.get("producer_services") == []
 
 
 def test_autonomy_goal_planned_schema_and_channel_cataloged() -> None:

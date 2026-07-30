@@ -11,13 +11,11 @@ from contextlib import asynccontextmanager
 
 from orion.core.bus.bus_schemas import BaseEnvelope, ServiceRef
 from orion.spark.concept_induction.clusterer import ConceptClusterer
-from orion.spark.concept_induction.drives import DriveEngine
 from orion.spark.concept_induction.embedder import EmbeddingClient
 from orion.spark.concept_induction.extractor import SpacyConceptExtractor
 from orion.spark.concept_induction.inducer import ConceptInducer, WindowEvent
 from orion.spark.concept_induction.settings import ConceptSettings
 from orion.spark.concept_induction.store import LocalProfileStore
-from orion.spark.concept_induction.tensions import extract_tensions
 from orion.spark.concept_induction.bus_worker import ConceptWorker
 
 
@@ -177,70 +175,6 @@ class ConceptInductionTests(unittest.TestCase):
         self.assertEqual(ev.channel, "orion:collapse:sql-write")
         self.assertEqual(ev.trace_id, "trace-123")
 
-    def test_turn_effect_tension_mapping(self):
-        env = BaseEnvelope(
-            kind="spark.telemetry",
-            source=ServiceRef(name="test", version="0.0.0"),
-            payload={
-                "spark_meta": {
-                    "turn_effect": {
-                        "turn": {
-                            "coherence": -0.4,
-                            "valence": -0.2,
-                            "novelty": 0.7,
-                            "energy": -0.6,
-                        }
-                    }
-                }
-            },
-        )
-        events = extract_tensions(
-            envelope=env,
-            intake_channel="orion:spark:telemetry",
-            subject="orion",
-            model_layer="self-model",
-            entity_id="self:orion",
-        )
-        kinds = {e.kind for e in events}
-        self.assertEqual(kinds, {
-            "tension.contradiction.v1",
-            "tension.distress.v1",
-            "tension.identity_drift.v1",
-            "tension.cognitive_load.v1",
-        })
-        self.assertTrue(all(event.provenance.source_event_refs for event in events))
-        self.assertTrue(all(event.correlation_id for event in events))
-
-    def test_drive_update_is_deterministic_and_decays(self):
-        engine = DriveEngine()
-        tension_env = BaseEnvelope(
-            kind="spark.telemetry",
-            source=ServiceRef(name="test", version="0.0.0"),
-            payload={"turn_effect": {"turn": {"coherence": -0.5}}},
-        )
-        tensions = extract_tensions(
-            envelope=tension_env,
-            intake_channel="orion:spark:telemetry",
-            subject="orion",
-            model_layer="self-model",
-            entity_id="self:orion",
-        )
-        now = datetime.now(timezone.utc)
-        p1, a1 = engine.update(previous_pressures={}, previous_activations={}, tensions=tensions, now=now, previous_ts=None)
-        p2, a2 = engine.update(previous_pressures={}, previous_activations={}, tensions=tensions, now=now, previous_ts=None)
-        self.assertEqual(p1, p2)
-        self.assertEqual(a1, a2)
-        p3, _ = engine.update(previous_pressures=p1, previous_activations=a1, tensions=[], now=now + timedelta(hours=2), previous_ts=now)
-        self.assertLess(p3["coherence"], p1["coherence"])
-
-    def test_restart_persistence_for_drive_state(self):
-        with tempfile.TemporaryDirectory() as td:
-            store = LocalProfileStore(str(Path(td) / "store.json"))
-            now = datetime.now(timezone.utc)
-            store.save_drive_state("orion", pressures={"coherence": 0.8}, activations={"coherence": True}, updated_at=now)
-            reloaded = LocalProfileStore(str(Path(td) / "store.json")).load_drive_state("orion")
-            self.assertEqual(reloaded.get("pressures", {}).get("coherence"), 0.8)
-
     def test_world_identity_hardening_avoids_generic_world_anchor(self):
         worker = ConceptWorker(ConceptSettings(orion_bus_enabled=False))
         env = BaseEnvelope(
@@ -267,14 +201,18 @@ class ConceptInductionTests(unittest.TestCase):
         self.assertEqual(worker._model_layer("juniper", "orion:spark:telemetry"), "user-model")
         self.assertEqual(worker._model_layer("service:vector-host", "orion:system:health"), "world-model")
 
-    def test_memory_drives_state_publication_and_join_ref_hardening(self):
+    def test_memory_identity_snapshot_and_dossier_publication(self):
+        # Drive-pressure/tension/goal-proposal machinery deleted 2026-07-30
+        # (orion/sentience_striving_program/README.md sec8): handle_envelope
+        # no longer publishes memory.drives.state.v1, memory.drives.audit.v1,
+        # or memory.goals.proposed.v1. identity_snapshot and the turn dossier
+        # are real, kept concept-induction infrastructure and still publish.
         with tempfile.TemporaryDirectory() as td:
             worker = ConceptWorker(
                 ConceptSettings(
                     orion_bus_enabled=False,
                     use_cortex_orch=False,
                     store_path=str(Path(td) / "state.json"),
-                    goal_proposal_cooldown_minutes=180,
                 )
             )
             fake_bus = FakeBus()
@@ -295,68 +233,31 @@ class ConceptInductionTests(unittest.TestCase):
             asyncio.run(worker.handle_envelope(env, "orion:metacognition:tick"))
 
             by_kind = {published_env.kind: published_env.payload for _, published_env in fake_bus.published}
-            self.assertIn("memory.drives.state.v1", by_kind)
-            self.assertIn("memory.drives.audit.v1", by_kind)
+            self.assertNotIn("memory.drives.state.v1", by_kind)
+            self.assertNotIn("memory.drives.audit.v1", by_kind)
+            self.assertNotIn("memory.goals.proposed.v1", by_kind)
             self.assertIn("memory.identity.snapshot.v1", by_kind)
-            self.assertIn("memory.goals.proposed.v1", by_kind)
             self.assertIn("debug.turn.dossier.v1", by_kind)
 
-            drive_audit = by_kind["memory.drives.audit.v1"]
-            self.assertEqual(drive_audit["correlation_id"], str(corr_id))
-            self.assertEqual(drive_audit["trace_id"], "trace-xyz")
-            self.assertEqual(drive_audit["turn_id"], "turn-123")
-            self.assertTrue(drive_audit["provenance"]["source_event_refs"])
-            self.assertTrue(drive_audit["provenance"]["tension_refs"])
-            self.assertTrue(drive_audit["evidence_items"])
-
             identity_snapshot = by_kind["memory.identity.snapshot.v1"]
+            self.assertEqual(identity_snapshot["correlation_id"], str(corr_id))
+            self.assertEqual(identity_snapshot["trace_id"], "trace-xyz")
+            self.assertEqual(identity_snapshot["turn_id"], "turn-123")
             self.assertTrue(identity_snapshot["anchor_strategy"])
             self.assertTrue(identity_snapshot["provenance"]["source_event_refs"])
-            self.assertTrue(identity_snapshot["provenance"]["tension_refs"])
-
-            goal = by_kind["memory.goals.proposed.v1"]
-            self.assertEqual(goal["correlation_id"], str(corr_id))
-            self.assertTrue(goal["proposal_signature"])
-            self.assertTrue(goal["provenance"]["tension_refs"])
-            self.assertTrue(goal["source_event_refs"])
+            # No tensions are extracted anymore -- honestly empty, not fabricated.
+            self.assertEqual(identity_snapshot["provenance"]["tension_refs"], [])
+            self.assertEqual(identity_snapshot["drive_pressures"], {})
 
             dossier = by_kind["debug.turn.dossier.v1"]
             self.assertEqual(dossier["trace_id"], "trace-xyz")
             self.assertEqual(dossier["turn_id"], "turn-123")
-            self.assertTrue(dossier["drive_audit_ref"])
+            self.assertIsNone(dossier["drive_audit_ref"])
             self.assertTrue(dossier["identity_snapshot_ref"])
+            self.assertIsNone(dossier["goal_proposal_ref"])
+            self.assertEqual(dossier["suppressed_goal_signatures"], [])
 
             self.assertFalse(any("exec" in published_env.kind for _, published_env in fake_bus.published))
-
-    def test_goal_proposal_dedupe_cooldown_suppresses_repeats(self):
-        with tempfile.TemporaryDirectory() as td:
-            worker = ConceptWorker(
-                ConceptSettings(
-                    orion_bus_enabled=False,
-                    use_cortex_orch=False,
-                    store_path=str(Path(td) / "state.json"),
-                    goal_proposal_cooldown_minutes=180,
-                )
-            )
-            fake_bus = FakeBus()
-            worker.bus = fake_bus
-            payload = {
-                "subject": "orion",
-                "turn_effect": {"turn": {"coherence": -0.45}},
-                "summary": "Repeated coherence drop.",
-            }
-            env1 = BaseEnvelope(kind="metacognition.tick.v1", source=ServiceRef(name="test", version="0.0.0"), correlation_id=uuid4(), payload=payload)
-            env2 = BaseEnvelope(kind="metacognition.tick.v1", source=ServiceRef(name="test", version="0.0.0"), correlation_id=uuid4(), payload=payload)
-            asyncio.run(worker.handle_envelope(env1, "orion:metacognition:tick"))
-            first_goal_count = sum(1 for _, published_env in fake_bus.published if published_env.kind == "memory.goals.proposed.v1")
-            asyncio.run(worker.handle_envelope(env2, "orion:metacognition:tick"))
-            second_goal_count = sum(1 for _, published_env in fake_bus.published if published_env.kind == "memory.goals.proposed.v1")
-            dossier_payloads = [published_env.payload for _, published_env in fake_bus.published if published_env.kind == "debug.turn.dossier.v1"]
-            self.assertEqual(first_goal_count, 1)
-            self.assertEqual(second_goal_count, 1)
-            self.assertTrue(dossier_payloads[-1]["suppressed_goal_signatures"])
-            cooldowns = worker.store.load_goal_cooldown(dossier_payloads[-1]["suppressed_goal_signatures"][0])
-            self.assertGreaterEqual(cooldowns.get("suppressed_count", 0), 1)
 
     def test_run_for_subject_invokes_graph_materialization(self):
         with tempfile.TemporaryDirectory() as td:

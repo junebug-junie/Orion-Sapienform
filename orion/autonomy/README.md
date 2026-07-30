@@ -1,4 +1,17 @@
-## Program status (2026-07-18): drives-system development halted
+## Program status (2026-07-30 update): drives-system DELETED, not just halted
+
+The 2026-07-18 halt described below has been followed through: `orion.spark.concept_induction.
+drives.DriveEngine` and its whole call chain (tension extraction, `GoalProposalEngine`,
+drive-audit publishing) were deleted outright 2026-07-30, along with this module's
+homeostatic deviation-tension source (`signal_drive_map.py`, `signal_tension.py`,
+`tension_ratelimit.py`, `deviation_gate.py` — see the "AutonomyStateV2 evidence" section
+below for a caveat on same-named-but-unrelated prior deletions). Orion lost live
+goal-proposal capability from this path as a direct, accepted consequence; no field-native
+replacement exists yet. `orion.autonomy.endogenous_origination` was already removed earlier,
+independently (2026-07-22). The rest of this file below describes the pre-deletion halted
+state; read it for history, not as a description of what currently runs.
+
+## Program status (2026-07-18, historical): drives-system development halted
 
 This module's drive/origination system (`orion.spark.concept_induction.drives.DriveEngine`,
 `orion.autonomy.endogenous_origination`) is superseded by
@@ -115,28 +128,26 @@ the `orion-cortex-orch`-triggered Mind path now, with no fallback. See
 for the full story, including why the wiring in the first round of this fix never actually
 activated in production.
 
-The module below is left in place, unused by any live caller — full deletion is separate,
-not-yet-done cleanup.
+The table below is a historical record of a now-fully-deleted module, kept for archaeology
+only — do not treat any path in it as present on disk. `evidence_compiler.py`,
+`reducer.py`, `run_autonomy_v2_movement_eval.py`, `test_evidence_compiler.py`, and
+`test_autonomy_reducer.py` were already gone before 2026-07-30. `signal_tension.py` and
+`config/autonomy/signal_drive_map.yaml` were deleted 2026-07-30 as part of a separate,
+later sprint (drive-pressure/goal-generation deletion, `orion/sentience_striving_program/
+README.md` §8) — same filenames, unrelated deletion event, do not conflate the two.
 
 | Piece | Path | Role (historical) |
 |-------|------|------|
 | Schema | `orion/autonomy/models.py` | `AutonomyEvidenceRefV1` optional `signal_kind` / `dimension` / `value` |
-| Compiler | `orion/autonomy/evidence_compiler.py` | Omit-when-empty gates from stance locals (not `ctx["chat_social_bridge_summary"]`) |
-| Adapter | `orion/autonomy/signal_tension.py` | `chat_evidence_to_tension` — direct map lookup, no DeviationGate/EWMA |
-| Map | `config/autonomy/signal_drive_map.yaml` | `chat_social_hazard` + `chat_reasoning_quality` rows |
-| Reducer | `orion/autonomy/reducer.py` | Fold `magnitude * drive_impacts` into `drive_pressures`; return `tensions_minted` |
+| Compiler | `orion/autonomy/evidence_compiler.py` (deleted) | Omit-when-empty gates from stance locals (not `ctx["chat_social_bridge_summary"]`) |
+| Adapter | `orion/autonomy/signal_tension.py` (deleted 2026-07-30) | `chat_evidence_to_tension` — direct map lookup, no DeviationGate/EWMA |
+| Map | `config/autonomy/signal_drive_map.yaml` (deleted 2026-07-30) | `chat_social_hazard` + `chat_reasoning_quality` rows |
+| Reducer | `orion/autonomy/reducer.py` (deleted) | Fold `magnitude * drive_impacts` into `drive_pressures`; return `tensions_minted` |
 
 Operator contract (historical): [docs/autonomy_state_v2_reducer.md](../../docs/autonomy_state_v2_reducer.md)
 
-The module's own tests still pass (it's dead code, not broken code) if you need to verify it in isolation:
-```bash
-PYTHONPATH=. python orion/autonomy/evals/run_autonomy_v2_movement_eval.py
-
-pytest orion/autonomy/tests/test_evidence_compiler.py \
-  orion/autonomy/tests/test_signal_tension.py \
-  orion/autonomy/tests/test_autonomy_reducer.py \
-  orion/autonomy/tests/test_autonomy_isolation.py -q
-```
+The command block that used to verify this module in isolation is no longer runnable —
+every file it referenced except `test_autonomy_isolation.py` is deleted. Do not re-add it.
 
 ## Chat stance drives (Hub compact card)
 

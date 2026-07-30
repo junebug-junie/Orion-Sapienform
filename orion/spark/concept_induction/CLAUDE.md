@@ -1,42 +1,35 @@
-# orion/spark/concept_induction — DEVELOPMENT HALTED on drive/tension code (2026-07-18)
+# orion/spark/concept_induction — drive/tension/goal code DELETED (2026-07-30)
 
-**`DriveEngine`, `tensions.py`'s bucket-voting logic, and `signal_drive_map.yaml` receive no
-further development.** Read `orion/sentience_striving_program/README.md` §8 before changing
-anything in this file class — the six/five-drive taxonomy this directory implements was
-found to be a full, parallel, poorer reimplementation of Layers 4-9 of the already-live
-canonical pipeline (`docs/context-engineering/04_layer_1_to_11_pipeline.md`,
-`orion/attention/field_attention/`). This is a halt on new investment, not a delete-on-sight
-— the code stays until the replacement wiring lands. Do not add drives, rename drives,
-re-tune `signal_drive_map.yaml` weights, or patch `DriveEngine.update()`'s math further
-without reading the program charter's §8 lift-and-shift list first (some of this code's
-domain knowledge is meant to carry forward, the bucket-voting mechanism itself is not).
+The `DriveEngine`, `tensions.py` bucket-voting logic, `signal_drive_map.yaml`,
+and `GoalProposalEngine` this file used to describe are gone. This directory's
+2026-07-18 halt ("development halted, code stays until replacement wiring
+lands" — see `orion/sentience_striving_program/README.md` §8) has been
+followed through: the drive-pressure/goal-generation system was deleted
+outright 2026-07-30 (Wave 1 of the drive-pressure/goal-generation deletion
+sprint), not merely frozen. `drives.py`, `tensions.py`, `drive_tension.py`,
+`drive_attribution.py`, `goals.py`, `goal_generator.py`, and `audit.py` no
+longer exist in this directory. Orion lost live goal-proposal capability from
+this path as a direct, accepted consequence (Juniper-confirmed); no
+field-native replacement exists yet.
 
-This directory (`drives.py`, `tensions.py`, `bus_worker.py`) has had the **same class of bug
-found and fixed independently multiple times** because the write-up wasn't checked first. If
-you are doing sanctioned maintenance (not new development) and need to change
-`DriveEngine.update()`, `extract_tensions_from_self_state()`, or `_update_drive_pressures`:
+Concept extraction/clustering/embedding/dossier/identity/profile_repository/
+falkor_materialization/graph_mapper/graph_query/summarizer — the actual
+reason `bus_worker.py`'s `ConceptWorker` exists — are untouched and still
+run unconditionally on every intake event, independent of the deleted code.
 
-**Read `orion/autonomy/drives_and_autonomy_retrospective.md` first — §5b through §5e
-specifically.** It has the exact mechanisms, the live evidence, and what's already fixed vs.
-still open. Don't re-derive it from scratch; that's exactly what already happened three times.
+If you land here looking for the math-bug retrospective
+(`orion/autonomy/drives_and_autonomy_retrospective.md` §5b-§5e) or the
+drive-taxonomy audit, they are still real historical documents, but they
+describe code that no longer runs. Do not resurrect `DriveEngine`,
+`_update_drive_pressures`, or the `signal_drive_map.yaml` bucket-voting
+mechanism from them without first reading the deletion's rationale
+(`orion/sentience_striving_program/README.md` §8) and confirming a
+field-native replacement is actually what's being built — grafting the old
+math back in would recreate the exact "poorer reimplementation of the
+already-live canonical pipeline" problem that got this halted in the first
+place.
 
-Known, load-bearing facts as of 2026-07-17 (verify against the retrospective before assuming
-these are still current):
-
-- `DriveEngine.update()`'s live path (`leaky_math_enabled=True`) applies tension impacts
-  **sequentially per event**, not summed-then-clamped — a sum-then-clamp design let a fold batch
-  collapse multiple drives to an identical value (fixed PR #1148, §5d). If you're changing this
-  aggregation again, know why the sequential design exists before reverting to a sum.
-- `_update_drive_pressures` (`bus_worker.py`) only writes the persisted integrator once per
-  `_DRIVE_FOLD_INTERVAL_SEC=900s` (O2, PR #1126) — every bus event still gets a live decay-only
-  read. If two drives ever end up sharing an identical persisted pressure, nothing here detects
-  or breaks that tie automatically; it self-heals only when a differentiating tension happens to
-  land (§5e — this took ~10.5h once, not instant).
-- The six-drive taxonomy (`coherence, continuity, capability, relational, predictive, autonomy`)
-  has no independently-derived rationale — it came from an external design chat. See
-  `docs/superpowers/specs/2026-07-11-drive-taxonomy-conceptual-audit-design.md` before assuming
-  it's settled.
-
-This directory shares the exact same bug *class* — a decay mechanism whose injection cadence
-isn't reconciled against its own decay rate — with `services/orion-field-digester`. If you're
-debugging a saturation/oscillation/collapse symptom here, check that service's `CLAUDE.md` too.
+`services/orion-field-digester` shares the same decay-mechanism bug *class*
+this directory used to have (injection cadence not reconciled against decay
+rate) — check that service's own `CLAUDE.md` if debugging something
+structurally similar there; it is unrelated to this deletion.

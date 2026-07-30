@@ -139,7 +139,7 @@ REGISTRY: tuple[InnerStateSignal, ...] = (
     InnerStateSignal(
         signal_id="drive_state.v1",
         schema=DriveStateV1,
-        producer_service="orion.spark.concept_induction.drives",
+        producer_service="orion.spark.concept_induction.drives (DELETED 2026-07-30)",
         cadence=Cadence.EVENT_GATED,
         composition_status=CompositionStatus.DUPLICATE,
         duplicate_of="autonomy_state_v2",
@@ -149,24 +149,38 @@ REGISTRY: tuple[InnerStateSignal, ...] = (
             "services.orion-cortex-orch.app.mind_runtime:fetch_drive_state_facet_for_mind",
         ),
         notes=(
-            "Computed from config/autonomy/signal_drive_map.yaml, a CLOSED "
-            "typed map over biometrics_state/mesh_health/spark_signal/"
-            "failure_event/chat_social_hazard/chat_reasoning_quality -- NOT "
-            "from self_state.v1.dimensions. Do not build a drives<->self-state "
-            "crosswalk: traced and rejected in the design spec, they are "
-            "siblings over disjoint evidence with exactly one narrow, "
-            "event-gated overlap point (spark_signal.{coherence,valence,"
-            "novelty}, itself only published by orion-spark-introspector on a "
-            "turn_effect_alert, not continuously). Live: 363 samples/24h "
-            "confirmed 2026-07-12, real variance "
-            "(coherence~0.20, continuity~0.35, capability~0.47). Measurement "
-            "SoR is Postgres drive_audits (bus → sql-writer). Chat stance "
-            "reads via drive_state_postgres.fetch_drive_state_for_chat_stance; "
-            "Mind via fetch_drive_state_facet_for_mind. Substrate graph "
-            "snapshot_source='drive_state' materialization defaults off "
-            "(DRIVE_STATE_SUBSTRATE_MATERIALIZATION_ENABLED). "
-            "DUPLICATE/duplicate_of still marked pending an explicit registry "
-            "status for 'formerly duplicate, now sole' -- see CompositionStatus."
+            "PRODUCER DELETED 2026-07-30 (drive-pressure/goal-generation "
+            "deletion sprint, orion/sentience_striving_program/README.md "
+            "sec8): orion/spark/concept_induction/drives.py (DriveEngine) and "
+            "its bus_worker.py wiring are gone. This signal is now frozen/"
+            "historical -- no code computes new drive_state.v1 rows anymore. "
+            "The 3 cognition_consumers above still read via "
+            "drive_state_postgres against Postgres drive_audits (bus -> "
+            "sql-writer, itself also producer-less as of the same date) --"
+            "they will keep returning whatever was last persisted before "
+            "2026-07-30, not fresh values. Out of this deletion's scope to "
+            "update those 3 consumers (services/orion-cortex-exec, "
+            "services/orion-cortex-orch) or retire this registry row; noted "
+            "here so this stays runtime-truthful rather than describing a "
+            "producer that no longer exists.\n"
+            "Prior computation (historical, before 2026-07-30): computed "
+            "from config/autonomy/signal_drive_map.yaml (also deleted same "
+            "date), a CLOSED typed map over biometrics_state/mesh_health/"
+            "spark_signal/failure_event/chat_social_hazard/"
+            "chat_reasoning_quality -- NOT from self_state.v1.dimensions. Do "
+            "not build a drives<->self-state crosswalk: traced and rejected "
+            "in the design spec, they were siblings over disjoint evidence "
+            "with exactly one narrow, event-gated overlap point "
+            "(spark_signal.{coherence,valence,novelty}, itself only "
+            "published by orion-spark-introspector on a turn_effect_alert, "
+            "not continuously). Live: 363 samples/24h confirmed 2026-07-12, "
+            "real variance (coherence~0.20, continuity~0.35, "
+            "capability~0.47) -- historical evidence only now. Substrate "
+            "graph snapshot_source='drive_state' materialization defaults "
+            "off (DRIVE_STATE_SUBSTRATE_MATERIALIZATION_ENABLED). "
+            "DUPLICATE/duplicate_of still marked pending an explicit "
+            "registry status for 'formerly duplicate, now sole' -- see "
+            "CompositionStatus."
         ),
     ),
     InnerStateSignal(

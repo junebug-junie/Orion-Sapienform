@@ -9,32 +9,18 @@ from datetime import datetime, timedelta, timezone
 from typing import Awaitable, Callable, Dict, List, Optional, Set
 from uuid import uuid4
 
-from orion.autonomy.deviation_gate import DeviationGate
 from orion.substrate.bus_synaptic_surprise import latest_bus_synaptic_prediction_error
-from orion.autonomy.signal_drive_map import load_signal_drive_map
-from orion.autonomy.signal_tension import SignalTensionSource
-from orion.autonomy.tension_ratelimit import TensionRateLimiter
-from orion.signals.models import OrionSignalV1
 from orion.core.bus.async_service import OrionBusAsync
 from orion.core.bus.bus_schemas import BaseEnvelope, ServiceRef
 from orion.core.bus.work_queue import RedisStreamWorkQueue
 from orion.core.schemas.concept_induction import ConceptProfile, ConceptProfileDelta
-from orion.core.schemas.drives import ArtifactProvenance, GraphReadyArtifact, TensionEventV1, TurnDossierV1
-from orion.schemas.feedback_frame import FeedbackFrameV1
+from orion.core.schemas.drives import ArtifactProvenance, DriveStateV1, GraphReadyArtifact, TurnDossierV1
 from orion.schemas.vector.schemas import VectorWriteRequest
 
-from .audit import build_drive_audit
-from .drive_attribution import (
-    compute_tick_attribution,
-    dominant_drive_from_attribution,
-    select_lead_tension,
-)
-from .drives import DriveEngine, DriveMathConfig, drive_state_from_values
 from .dossier import build_evidence_items, build_source_event_ref, build_turn_dossier, extract_trace_id, extract_turn_id
 from orion.autonomy.curiosity_reuse import outcome_from_followup, select_reusable_followup
 from orion.autonomy.episode_journal import dispatch_autonomy_episode_journal
 from orion.autonomy.fetch_backend_resolve import resolve_fetch_backend
-from orion.autonomy.goal_archive import maybe_archive_after_goal_publish
 from orion.autonomy.models import ActionOutcomeEmitV1
 from orion.autonomy.policy_act import (
     maybe_execute_substrate_act_after_metabolism,
@@ -44,7 +30,6 @@ from orion.autonomy.substrate_metabolism import metabolize_substrate_signals, me
 from orion.core.schemas.frontier_curiosity import FrontierInvocationSignalV1
 from orion.schemas.world_pulse import WorldPulseRunResultV1
 
-from .goals import GoalProposalEngine
 from .identity import (
     build_identity_snapshot,
     entity_id_for_subject,
@@ -55,12 +40,6 @@ from .inducer import ConceptInducer, WindowEvent
 from .settings import ConceptSettings
 from .store import LocalProfileStore
 from .summarizer import Summarizer
-from .tensions import (
-    derive_pressure_competition_tensions,
-    extract_tensions,
-    extract_tensions_from_action_outcome,
-    extract_tensions_from_feedback,
-)
 from .rdf_materialization import build_concept_profile_rdf_request
 from .falkor_materialization import (
     build_falkor_substrate_store,
@@ -69,28 +48,6 @@ from .falkor_materialization import (
 from .wp_stream_consumer import WorldPulseStreamConsumer, utcnow
 
 logger = logging.getLogger("orion.spark.concept.worker")
-
-# O2 (event-rate/decay mismatch fix): DriveEngine.update() is called once per
-# raw bus event (~13/min), but decay_tau_sec=1800.0 means decay between
-# consecutive calls is negligible (~0.3%) -- repeated same-direction impulses
-# converge pressure toward 1.0 within seconds regardless of tau, reproducing
-# the cpu/gpu_pressure saturation bugs (PRs #1108-1111) from a different
-# mechanism. This throttles how often NEW impulses get folded into the
-# persisted integrator (see _update_drive_pressures) while every event still
-# gets a fresh decay-only projection for display/audit/goal-proposal. 900s is
-# a first-pass calibration (matches the SATURATED-verdict math worked out
-# during the O3 review), trivially tunable, deliberately not a new env key
-# (same convention as O3's/O4's own threshold constants).
-_DRIVE_FOLD_INTERVAL_SEC = 900.0
-
-# Cap on tensions buffered between folds, matching this repo's established
-# collection-cap convention (e.g. evidence_event_ids <= 200 in the pressure
-# reducer and execution merge). At real production rates this cap should
-# never be reached (900s of buffering, not unbounded time), but each
-# TensionEventV1 carries a full ArtifactProvenance -- bound it defensively
-# rather than trust the time window alone. Drops oldest-first on overflow
-# (same "keep most recent" convention as _prune_window's window trimming).
-_MAX_PENDING_DRIVE_TENSIONS = 500
 
 
 @dataclass
@@ -153,41 +110,12 @@ class ConceptWorker:
             enforce_catalog=cfg.orion_bus_enforce_catalog,
         )
         self.store = LocalProfileStore(cfg.store_path)
-        self.drive_engine = DriveEngine(
-            DriveMathConfig(
-                decay_tau_sec=cfg.drive_decay_tau_sec,
-                saturation_gain=cfg.drive_saturation_gain,
-                activate_threshold=cfg.drive_activation_on,
-                deactivate_threshold=cfg.drive_activation_off,
-                leaky_math_enabled=cfg.drive_leaky_math_enabled,
-            )
-        )
-        # Homeostatic tension source: deviation-gated OrionSignal/failure/health
-        # -> TensionEventV1. Gated on cfg.homeostatic_drives_enabled at the call
-        # site; constructed always so state persists across ticks.
-        #
-        # Endogenous origination (orion/autonomy/endogenous_origination.py) and
-        # its self_state.v1 consumption both removed 2026-07-22, SelfStateV1
-        # burn (docs/superpowers/specs/2026-07-22-self-state-phi-endo-
-        # origination-burn-spec.md, decision 2 + decision 5): the origination
-        # engine's only input was a SelfStateV1 stream, which no longer exists.
-        # DriveEngine/bucket-voting below is untouched -- that halt
-        # (orion/spark/concept_induction/CLAUDE.md) predates and is independent
-        # of this burn.
-        self.signal_tension_source = SignalTensionSource(
-            gate=DeviationGate(
-                alpha=cfg.deviation_ewma_alpha,
-                z_threshold=cfg.deviation_z_threshold,
-                sigma_floor=cfg.deviation_sigma_floor,
-                impulse_k=cfg.signal_tension_impulse_k,
-            ),
-            sdm=load_signal_drive_map(),
-            ratelimiter=TensionRateLimiter(
-                cap=cfg.signal_tension_cap_per_window,
-                window_sec=float(cfg.signal_tension_window_sec),
-            ),
-        )
-        self.goal_engine = GoalProposalEngine(cfg.goal_proposal_cooldown_minutes)
+        # Drive-pressure engine, homeostatic tension source, and goal-proposal
+        # engine deleted 2026-07-30 (drive-pressure/goal-generation deletion
+        # sprint, Wave 1 -- see orion/sentience_striving_program/README.md
+        # sec8 for the halt rationale). Endogenous origination
+        # (orion/autonomy/endogenous_origination.py) was already removed
+        # 2026-07-22, independently, before this sprint.
         self.last_run: Dict[str, datetime] = {}
         service_ref = _service_ref(cfg)
         self.summarizer = Summarizer(
@@ -207,12 +135,6 @@ class ConceptWorker:
             service_ref=service_ref,
         )
         self.window: Dict[str, List[WindowEvent]] = {s: [] for s in cfg.subjects}
-        # O2 drive-pressure fold buffers. Plain {} (not pre-keyed by cfg.subjects
-        # like self.window): the homeostatic rail's subject is always the
-        # hardcoded string "orion", which may or may not be pre-listed in
-        # cfg.subjects, so _update_drive_pressures uses .setdefault()/.get().
-        self._pending_drive_tensions: Dict[str, List[TensionEventV1]] = {}
-        self._last_drive_fold_at: Dict[str, datetime] = {}
         self.inflight_subjects: Set[str] = set()
         self.recent_event_seen: Dict[str, datetime] = {}
         self.trigger_decisions: List[dict] = []
@@ -296,30 +218,7 @@ class ConceptWorker:
         patterns = list(self.cfg.intake_channels)
         if self.cfg.wp_run_result_stream_enabled:
             patterns = [p for p in patterns if p != "orion:world_pulse:run:result"]
-        if self.cfg.homeostatic_drives_enabled:
-            # Specific organ/failure/health channels only (never the signals
-            # wildcard). Deduped against intake so we never subscribe twice.
-            for extra in self._homeostatic_channels():
-                if extra not in patterns:
-                    patterns.append(extra)
         return patterns
-
-    def _homeostatic_channels(self) -> List[str]:
-        return [
-            *self.cfg.homeostatic_signal_channels,
-            *self.cfg.homeostatic_failure_channels,
-        ]
-
-    def _homeostatic_source(self, intake_channel: str) -> Optional[str]:
-        """Classify a channel as a homeostatic source: 'signal' | 'failure', or
-        None if it is a normal concept-induction intake. Health degradation
-        arrives as a mesh_health OrionSignal on the 'signal' rail, so there is no
-        separate equilibrium branch."""
-        if intake_channel in self.cfg.homeostatic_signal_channels:
-            return "signal"
-        if intake_channel in self.cfg.homeostatic_failure_channels:
-            return "failure"
-        return None
 
     async def _dispatch_autonomy_episode_journal(
         self,
@@ -665,45 +564,6 @@ class ConceptWorker:
         )
         return True
 
-    def _log_drive_pressure_probe(self, subject: str, pressures: dict) -> None:
-        """Measurement-only (Phase 4, 2026-07-12; historical -- the original
-        AutonomyStateV2 comparison this was built for was retired 2026-07-16).
-        Logs `DriveEngine`'s pressure vector on every event, called from
-        `_update_drive_pressures`'s caller regardless of whether that call
-        actually folded (persisted) or just returned a decay-only projection
-        (see `_DRIVE_FOLD_INTERVAL_SEC`, O2) -- do not assume every logged
-        line here corresponds to a `save_drive_state` write; check the
-        `drive_pressure_fold folded=` log line from the same call for that.
-        Never raises: a logging failure here must not break the drive-update
-        rail, which runs on live bus traffic.
-        """
-        try:
-            logger.info(
-                "drive_engine_pressure_probe subject=%s pressures=%s",
-                subject,
-                {k: round(v, 4) for k, v in dict(pressures or {}).items()},
-            )
-        except Exception:
-            logger.warning("drive_engine_pressure_probe_failed subject=%s", subject, exc_info=True)
-
-    async def _publish_drive_state(self, payload, corr_id) -> None:
-        env = BaseEnvelope(
-            kind="memory.drives.state.v1",
-            source=_service_ref(self.cfg),
-            correlation_id=corr_id,
-            payload=payload.model_dump(mode="json"),
-        )
-        await self.bus.publish(self.cfg.drive_state_channel, env)
-
-    async def _publish_tension_event(self, event, corr_id) -> None:
-        env = BaseEnvelope(
-            kind="memory.tension.event.v1",
-            source=_service_ref(self.cfg),
-            correlation_id=corr_id,
-            payload=event.model_dump(mode="json"),
-        )
-        await self.bus.publish(self.cfg.tension_event_channel, env)
-
     async def _publish_artifact(self, artifact: GraphReadyArtifact, channel: str, corr_id) -> None:
         env = BaseEnvelope(
             kind=artifact.kind,
@@ -740,270 +600,29 @@ class ConceptWorker:
             payload = payload.model_dump()
         return payload if isinstance(payload, dict) else {}
 
-    def _tensions_from_feedback(self, env: BaseEnvelope, intake_channel: str) -> List[TensionEventV1]:
-        try:
-            frame = FeedbackFrameV1.model_validate(self._payload_dict(env))
-        except Exception:
-            logger.warning("feedback_frame_parse_failed kind=%s", env.kind)
-            return []
-        return extract_tensions_from_feedback(
-            envelope=env,
-            intake_channel=intake_channel,
-            feedback_frame=frame,
-        )
-
-    def _tensions_from_action_outcome(self, env: BaseEnvelope, intake_channel: str) -> List[TensionEventV1]:
-        # Self-publish guard: this service is itself already a producer on
-        # orion:autonomy:action:outcome (curiosity-fetch outcomes, via
-        # _publish_action_outcome below) with no self-filter anywhere in
-        # this file today. Redis pub/sub delivers to all subscribers
-        # including the publisher, so without this check a curiosity-fetch
-        # outcome would loop back through this NEW path too, on top of its
-        # own dedicated in-process handling -- double-processing the same
-        # event. Only outcomes from OTHER services (today: Layer 9 /
-        # orion-execution-dispatch-runtime) reach the extractor below.
-        source_name = getattr(getattr(env, "source", None), "name", None)
-        if source_name == self.cfg.service_name:
-            return []
-        try:
-            outcome = ActionOutcomeEmitV1.model_validate(self._payload_dict(env))
-        except Exception:
-            logger.warning("action_outcome_parse_failed kind=%s", env.kind)
-            return []
-        logger.info(
-            "action_outcome_received source=%s kind=%s action_id=%s success=%s",
-            source_name, outcome.kind, outcome.action_id, outcome.success,
-        )
-        result = extract_tensions_from_action_outcome(
-            envelope=env,
-            intake_channel=intake_channel,
-            outcome=outcome,
-        )
-        logger.info(
-            "action_outcome_tensions_extracted count=%d drive_impacts=%s",
-            len(result), [t.drive_impacts for t in result],
-        )
-        return result
-
-    def _parse_signal(self, env: BaseEnvelope) -> Optional[OrionSignalV1]:
-        try:
-            return OrionSignalV1.model_validate(self._payload_dict(env))
-        except Exception:
-            return None
-
-    def _update_drive_pressures(
-        self, subject: str, tensions: List[TensionEventV1], now: datetime,
-    ) -> tuple[Dict[str, float], Dict[str, bool], bool]:
-        """O2: apply new tension impulses to the persisted drive-pressure
-        integrator at most once per _DRIVE_FOLD_INTERVAL_SEC, folding everything
-        buffered since the last fold in one DriveEngine.update() call. Every
-        call still returns a live pressure/activation snapshot (a decay-only
-        projection on non-fold ticks, tensions=[] so no impulse is applied) so
-        every caller (goal proposal, dossier, identity snapshot, publish) keeps
-        getting a fresh drive_state every event -- only the WRITE side is
-        throttled, not the READ side. Returns (pressures, activations, folded).
-
-        See this directory's CLAUDE.md and orion/autonomy/drives_and_autonomy_
-        retrospective.md sec5b-sec5e before changing this function or DriveEngine's
-        aggregation math -- if two drives ever end up sharing an identical persisted
-        pressure, this function does not detect or break that tie; it only self-heals
-        once a differentiating tension happens to land (took ~10.5h once, see sec5e).
-
-        Note: the pressure component of goal-proposal priority scoring
-        (GoalProposalEngine._priority) can lag up to _DRIVE_FOLD_INTERVAL_SEC
-        behind a freshly-dominant drive's own tick -- accepted, documented
-        consequence of this fix (dominant_drive/tension_weight still react
-        immediately; only the persisted pressure integrator is throttled),
-        not a bug."""
-        prior = self.store.load_drive_state(subject)
-        previous_ts: Optional[datetime] = None
-        if isinstance(prior.get("updated_at"), str):
-            try:
-                previous_ts = datetime.fromisoformat(prior["updated_at"])
-                if previous_ts.tzinfo is None:
-                    previous_ts = previous_ts.replace(tzinfo=timezone.utc)
-            except ValueError:
-                previous_ts = None
-
-        pending = self._pending_drive_tensions.setdefault(subject, [])
-        pending.extend(tensions)
-        if len(pending) > _MAX_PENDING_DRIVE_TENSIONS:
-            dropped = len(pending) - _MAX_PENDING_DRIVE_TENSIONS
-            del pending[:dropped]
-            logger.warning(
-                "drive_pressure_fold_buffer_overflow subject=%s dropped=%d cap=%d",
-                subject, dropped, _MAX_PENDING_DRIVE_TENSIONS,
-            )
-
-        last_fold_at = self._last_drive_fold_at.get(subject)
-        should_fold = (
-            last_fold_at is None
-            or (now - last_fold_at).total_seconds() >= _DRIVE_FOLD_INTERVAL_SEC
-        )
-        tensions_to_apply = pending if should_fold else []
-
-        pressures, activations = self.drive_engine.update(
-            previous_pressures=prior.get("pressures"),
-            previous_activations=prior.get("activations"),
-            tensions=tensions_to_apply,
-            now=now,
-            previous_ts=previous_ts,
-        )
-
-        if should_fold:
-            self.store.save_drive_state(
-                subject, pressures=pressures, activations=activations, updated_at=now
-            )
-            self._pending_drive_tensions[subject] = []
-            self._last_drive_fold_at[subject] = now
-            logger.info(
-                "drive_pressure_fold subject=%s folded=True tensions_folded=%d",
-                subject, len(tensions_to_apply),
-            )
-        else:
-            logger.info(
-                "drive_pressure_fold subject=%s folded=False pending_buffered=%d",
-                subject, len(pending),
-            )
-        return pressures, activations, should_fold
-
-    async def _handle_signal_drive_tick(
-        self, env: BaseEnvelope, intake_channel: str, source: str
-    ) -> None:
-        """Thin drive-only rail for homeostatic sources: mint deviation tensions,
-        update + publish drive state/audit, and return. No concept induction, no
-        goals, no identity snapshot. Degrades to a no-op (never raises)."""
-        subject = "orion"
-        model_layer = model_layer_for_subject(subject)
-        entity_id = entity_id_for_subject(subject, model_layer)
-        now = datetime.now(timezone.utc)
-        now_mono = now.timestamp()
-
-        tensions: List[TensionEventV1] = []
-        try:
-            if source == "signal":
-                sig = self._parse_signal(env)
-                if sig is not None:
-                    tensions = self.signal_tension_source.from_signal(
-                        sig, now=now_mono, channel=intake_channel
-                    )
-            elif source == "failure":
-                tensions = self.signal_tension_source.from_failure(
-                    severity=self.cfg.homeostatic_failure_severity,
-                    now=now_mono,
-                    channel=intake_channel,
-                    correlation_id=str(env.correlation_id),
-                    summary=env.kind or "failure_event",
-                )
-        except Exception:
-            logger.warning(
-                "homeostatic_signal_tick_failed channel=%s source=%s",
-                intake_channel, source, exc_info=True,
-            )
-            return
-
-        if not tensions:
-            # No deviation this tick. The leaky integrator decays on wall-clock
-            # elapsed at the next update, so skipping here loses no decay.
-            return
-
-        # The whole drive-update/publish section is guarded: this rail runs at
-        # ~1/s and the bus loop re-raises, so a single bad prior state (e.g. a
-        # tz-naive updated_at) must degrade to a no-op, never tear down the worker.
-        try:
-            for tension in tensions:
-                await self._publish_tension_event(tension, env.correlation_id)
-
-            pressures, activations, _folded = self._update_drive_pressures(subject, tensions, now)
-            self._log_drive_pressure_probe(subject, pressures)
-
-            trace_id = extract_trace_id(env)
-            turn_id = extract_turn_id(env)
-            drive_state = drive_state_from_values(
-                subject=subject,
-                model_layer=model_layer,
-                entity_id=entity_id,
-                ts=now,
-                pressures=pressures,
-                activations=activations,
-                confidence=0.72,
-                correlation_id=str(env.correlation_id),
-                trace_id=trace_id,
-                turn_id=turn_id,
-                provenance=ArtifactProvenance(
-                    intake_channel=intake_channel,
-                    correlation_id=str(env.correlation_id),
-                    trace_id=trace_id,
-                    turn_id=turn_id,
-                    tension_refs=[t.artifact_id for t in tensions],
-                ),
-                related_nodes=[f"subject:{subject}"] + [t.artifact_id for t in tensions],
-            )
-            await self._publish_drive_state(drive_state, env.correlation_id)
-
-            tick_attribution = compute_tick_attribution(tensions)
-            lead_tension = select_lead_tension(tensions)
-            dominant_drive = dominant_drive_from_attribution(
-                tick_attribution, lead_tension=lead_tension
-            )
-            drive_audit = build_drive_audit(
-                env=env,
-                intake_channel=intake_channel,
-                drive_state=drive_state,
-                tensions=tensions,
-                tick_attribution=tick_attribution,
-                dominant_drive=dominant_drive,
-            )
-            await self._publish_artifact(drive_audit, self.cfg.drive_audit_channel, env.correlation_id)
-        except Exception:
-            logger.warning(
-                "homeostatic_drive_update_failed channel=%s source=%s",
-                intake_channel, source, exc_info=True,
-            )
-            return
-
     async def handle_envelope(self, env: BaseEnvelope, intake_channel: str) -> None:
-        # Homeostatic sources ride a thin drive-only rail: they update drives and
-        # return BEFORE concept induction, so a 1/s biometrics tick never triggers
-        # windowing/induction. Gated on the flag; unmapped content mints nothing.
-        if self.cfg.homeostatic_drives_enabled:
-            source = self._homeostatic_source(intake_channel)
-            if source is not None:
-                await self._handle_signal_drive_tick(env, intake_channel, source)
-                return
-
         text = self._extract_text(env)
 
         if env.kind == "feedback.frame.v1":
             subject = "orion"
             model_layer = model_layer_for_subject(subject)
             entity_id = entity_id_for_subject(subject, model_layer)
-            spark_tensions = self._tensions_from_feedback(env, intake_channel)
         elif env.kind == "action.outcome.emit.v1":
             subject = "orion"
             model_layer = model_layer_for_subject(subject)
             entity_id = entity_id_for_subject(subject, model_layer)
-            spark_tensions = self._tensions_from_action_outcome(env, intake_channel)
         else:
             subject = self._detect_subject(env, intake_channel)
             model_layer = self._model_layer(subject, intake_channel)
             entity_id = self._entity_id(subject, model_layer)
-            spark_tensions = extract_tensions(
-                envelope=env,
-                intake_channel=intake_channel,
-                subject=subject,
-                model_layer=model_layer,
-                entity_id=entity_id,
-            )
         published_artifacts: List[GraphReadyArtifact] = []
-        for tension in spark_tensions:
-            await self._publish_tension_event(tension, env.correlation_id)
-            published_artifacts.append(tension)
 
-        metabolism_tensions: List[TensionEventV1] = []
-        metabolism_drive_deltas: dict[str, float] = {}
+        # Drive-pressure/tension extraction, drive-state/drive-audit publishing, and
+        # goal proposal all deleted 2026-07-30 (drive-pressure/goal-generation
+        # deletion sprint -- see orion/sentience_striving_program/README.md sec8).
+        # Orion loses live goal-proposal capability from this path as a direct,
+        # accepted consequence; no field-native replacement exists yet.
         metabolism_curiosity_signals: List[FrontierInvocationSignalV1] = []
-        metabolism_curiosity_notes: List[str] = []
         spawned_correlation_id: str | None = None
         wp_result: WorldPulseRunResultV1 | None = None
         if env.kind == "world.pulse.run.result.v1":
@@ -1012,122 +631,30 @@ class ConceptWorker:
                 spawned_correlation_id = wp_result.run.run_id
                 if metabolism_enabled():
                     metabolism = metabolize_substrate_signals(world_pulse_result=wp_result)
-                    metabolism_tensions = list(metabolism.tensions)
-                    metabolism_drive_deltas = dict(metabolism.drive_deltas)
+                    # .tensions/.drive_deltas are no longer consumed here: the
+                    # drive-pressure engine that folded them in was deleted
+                    # 2026-07-30. Only .curiosity_signals still has a live
+                    # consumer below (the substrate-act/episode-journal path),
+                    # which is independent of drives.
                     metabolism_curiosity_signals = list(metabolism.curiosity_signals)
-                    metabolism_curiosity_notes = [
-                        str(sig.evidence_summary or "").strip()
-                        for sig in metabolism_curiosity_signals
-                        if str(sig.evidence_summary or "").strip()
-                    ]
-                    for tension in metabolism_tensions:
-                        await self._publish_tension_event(tension, env.correlation_id)
-                        published_artifacts.append(tension)
             except Exception:
                 logger.warning("substrate_metabolism_failed kind=%s", env.kind, exc_info=True)
 
-        all_spark_tensions = spark_tensions + metabolism_tensions
-
         now = datetime.now(timezone.utc)
-        pressures, activations, _folded = self._update_drive_pressures(subject, all_spark_tensions, now)
-        self._log_drive_pressure_probe(subject, pressures)
-
-        pressure_tensions = derive_pressure_competition_tensions(
-            envelope=env,
-            intake_channel=intake_channel,
-            subject=subject,
-            model_layer=model_layer,
-            entity_id=entity_id,
-            pressures=pressures,
-        )
-        for tension in pressure_tensions:
-            await self._publish_tension_event(tension, env.correlation_id)
-            published_artifacts.append(tension)
-
-        all_tensions = all_spark_tensions + pressure_tensions
-
-        trace_id = extract_trace_id(env)
-        turn_id = extract_turn_id(env)
-        source_event_ref = build_source_event_ref(env, intake_channel)
-        evidence_items = build_evidence_items(env, intake_channel, all_tensions[0].provenance.evidence_text if all_tensions else None)
-        drive_state = drive_state_from_values(
-            subject=subject,
-            model_layer=model_layer,
-            entity_id=entity_id,
-            ts=now,
-            pressures=pressures,
-            activations=activations,
-            confidence=0.72,
-            correlation_id=str(env.correlation_id),
-            trace_id=trace_id,
-            turn_id=turn_id,
-            provenance=ArtifactProvenance(
-                intake_channel=intake_channel,
-                correlation_id=str(env.correlation_id),
-                trace_id=trace_id,
-                turn_id=turn_id,
-                evidence_text=(all_tensions[0].provenance.evidence_text if all_tensions else None),
-                evidence_summary=(evidence_items[0].summary if evidence_items else None),
-                source_event_refs=[source_event_ref],
-                evidence_items=evidence_items,
-                tension_refs=[tension.artifact_id for tension in all_tensions],
-            ),
-            related_nodes=[f"subject:{subject}"] + [tension.artifact_id for tension in all_tensions],
-        )
-        await self._publish_drive_state(drive_state, env.correlation_id)
-
-        tick_attribution = compute_tick_attribution(
-            all_tensions,
-            metabolism_deltas=metabolism_drive_deltas or None,
-        )
-        lead_tension = select_lead_tension(all_tensions)
-        dominant_drive = dominant_drive_from_attribution(
-            tick_attribution,
-            lead_tension=lead_tension,
-        )
-        drive_audit = build_drive_audit(
-            env=env,
-            intake_channel=intake_channel,
-            drive_state=drive_state,
-            tensions=all_tensions,
-            tick_attribution=tick_attribution,
-            dominant_drive=dominant_drive,
-        )
-        await self._publish_artifact(drive_audit, self.cfg.drive_audit_channel, env.correlation_id)
-        published_artifacts.append(drive_audit)
 
         identity_snapshot = build_identity_snapshot(
-            drive_state=drive_state,
-            source_event_ref=source_event_ref,
-            evidence_items=evidence_items,
-            tensions=all_tensions,
+            env=env,
+            intake_channel=intake_channel,
+            subject=subject,
+            model_layer=model_layer,
+            entity_id=entity_id,
         )
         await self._publish_artifact(identity_snapshot, self.cfg.identity_snapshot_channel, env.correlation_id)
         published_artifacts.append(identity_snapshot)
 
-        window_summary = evidence_items[0].summary if evidence_items else drive_state.provenance.evidence_summary
-        if metabolism_curiosity_notes:
-            gap_summary = "; ".join(metabolism_curiosity_notes)
-            window_summary = (
-                f"{window_summary}; {gap_summary}" if window_summary else gap_summary
-            )
-        goal_decision = self.goal_engine.propose(
-            env=env,
-            intake_channel=intake_channel,
-            drive_state=drive_state,
-            tensions=all_tensions,
-            store=self.store,
-            dominant_drive=drive_audit.dominant_drive,
-            window_summary=window_summary,
-            spawned_correlation_id=spawned_correlation_id,
-        )
+        # Nothing is ever suppressed anymore (goal engine deleted) -- stays
+        # permanently empty, honestly, rather than fabricating a value.
         suppressed_signatures: List[str] = []
-        if goal_decision.proposal is not None:
-            await self._publish_artifact(goal_decision.proposal, self.cfg.goal_proposal_channel, env.correlation_id)
-            published_artifacts.append(goal_decision.proposal)
-            maybe_archive_after_goal_publish(subject=subject)
-        elif goal_decision.suppressed_signature:
-            suppressed_signatures.append(goal_decision.suppressed_signature)
 
         # Idempotency backstop for the episode path (flag-gated so the flag-off path is
         # byte-identical: nothing is ever marked, so is_episode_run_processed is always
@@ -1193,7 +720,25 @@ class ConceptWorker:
                         subject=subject,
                         run_id=spawned_correlation_id,
                     ),
-                    drive_state=drive_state,
+                    # orion.autonomy.policy_act still requires a DriveStateV1
+                    # positional contract (predictive_pressure feeds capability
+                    # policy) -- out of this deletion's scope to change
+                    # (policy_act.py is not in this wave's file list). Pass an
+                    # honestly-empty one: pressures={} means
+                    # `drive_state.pressures.get("predictive", 0.0)` always
+                    # reads 0.0 now, a truthful "no drive pressure is computed
+                    # anymore" rather than a fabricated value. A later wave
+                    # touching policy_act.py/capability_policy.py should drop
+                    # this parameter outright instead of feeding it a stub.
+                    drive_state=DriveStateV1(
+                        subject=subject,
+                        model_layer=model_layer,
+                        entity_id=entity_id,
+                        kind="memory.drives.state.v1",
+                        provenance=ArtifactProvenance(intake_channel=intake_channel),
+                        pressures={},
+                        activations={},
+                    ),
                     curiosity_signals=metabolism_curiosity_signals,
                     spawned_correlation_id=spawned_correlation_id,
                     fetch_backend=self._fetch_backend,

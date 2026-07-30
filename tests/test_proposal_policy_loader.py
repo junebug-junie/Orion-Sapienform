@@ -47,7 +47,10 @@ def test_inspect_field_topology_catalog_template_targets_field() -> None:
     assert tmpl.kind == "inspect"
     assert tmpl.target_kind == "field"
     assert tmpl.target_id == "config/field/orion_field_topology.v1.yaml"
-    assert "field_intensity" in tmpl.dimensions
+    # 2026-07-30: field_intensity removed -- never produced by
+    # field_pressures(), was this template's only (dead) dimension. Honestly
+    # empty now rather than implying a scored-but-fake dimension.
+    assert tmpl.dimensions == {}
 
 
 def test_inspect_attended_target_template_has_attention_binding() -> None:
@@ -58,7 +61,9 @@ def test_inspect_attended_target_template_has_attention_binding() -> None:
     assert tmpl.target_id == "capability:orchestration"
     assert tmpl.target_binding == "attention.dominant_targets[0]"
     assert tmpl.required_policy_gate == "read_only"
-    assert "field_intensity" in tmpl.dimensions
+    # 2026-07-30: field_intensity removed -- see
+    # test_inspect_field_topology_catalog_template_targets_field's comment.
+    assert tmpl.dimensions == {}
 
 
 def test_other_templates_have_no_target_binding() -> None:

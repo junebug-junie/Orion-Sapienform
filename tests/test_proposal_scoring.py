@@ -15,6 +15,7 @@ from orion.proposals.scoring import (
     proposal_confidence,
     proposal_priority,
     proposal_risk,
+    proposal_urgency,
     template_match_score,
 )
 from orion.schemas.field_state import FieldStateV1
@@ -48,10 +49,11 @@ def test_high_execution_pressure_raises_inspect_match() -> None:
 
 
 def test_high_resource_pressure_raises_summarize_match() -> None:
-    """field_intensity (the other dimension summarize_loaded_state scores on)
-    is a composite SelfStateV1 dimension with no post-burn replacement -- it
-    always reads 0.0 now (orion/field/pressure.py's module docstring). Only
-    resource_pressure can move this template's match score post-burn."""
+    """summarize_loaded_state used to also score on field_intensity, a
+    composite SelfStateV1 dimension with no post-burn replacement (always
+    0.0). Removed from the template's own `dimensions` 2026-07-30 (config/
+    proposals/proposal_policy.v1.yaml) -- resource_pressure is now its only,
+    real scoring dimension."""
     high = _pressures(pressure=0.9)
     low = _pressures(pressure=0.1)
     tmpl = POLICY.proposal_templates["summarize_loaded_state"]
@@ -67,9 +69,13 @@ def test_read_only_proposals_low_risk() -> None:
 
 
 def test_policy_review_higher_risk() -> None:
-    """agency_readiness (request_policy_review_for_action's other scoring
-    dimension) is composite and gone post-burn -- reliability_pressure alone
-    now drives the risk-bump comparison between these two template kinds."""
+    """request_policy_review_for_action used to also score on
+    agency_readiness, composite and gone post-burn. Removed from the
+    template's own `dimensions` 2026-07-30 -- execution_pressure is now its
+    only, real scoring dimension. `proposal_risk()` doesn't read
+    `dimensions` at all (only `reliability_pressure` directly and
+    `template.kind`/`required_policy_gate`), so this test's own risk-bump
+    comparison was never affected by that dimension either way."""
     pressures = _pressures(execution_pressure=1.0, reliability_pressure=0.8)
     review = POLICY.proposal_templates["request_policy_review_for_action"]
     inspect = POLICY.proposal_templates["inspect_execution_pressure"]
@@ -194,6 +200,49 @@ def test_proposal_confidence_zero_for_cold_start_field() -> None:
     field = FieldStateV1(generated_at=NOW, tick_id="tick_fresh")
     pressures = {"execution_pressure": 0.6}
     assert proposal_confidence(field=field, field_pressures=pressures, template=template) == 0.0
+
+
+def test_proposal_confidence_no_longer_capped_by_a_dead_dimension() -> None:
+    """Regression test (2026-07-30): summarize_loaded_state used to also
+    score on field_intensity, a composite dimension field_pressures() never
+    produces -- dimension_confidence() returns 0.0 PERMANENTLY for a
+    dimension absent from field_pressures this tick, and
+    proposal_confidence() averages across a template's dimensions, so this
+    template's real confidence was silently halved forever (capped at 0.5
+    even with a perfect real resource_pressure reading). field_intensity was
+    removed from the template's own `dimensions`
+    (config/proposals/proposal_policy.v1.yaml) -- confidence should now
+    equal resource_pressure's own real confidence directly, not half of it."""
+    template = POLICY.proposal_templates["summarize_loaded_state"]
+    assert template.dimensions == {"resource_pressure": 0.40}
+    field = FieldStateV1(
+        generated_at=NOW,
+        tick_id="tick_test",
+        dimension_precision_ewma_n={"resource_pressure": DIMENSION_PRECISION_EWMA_MIN_SAMPLES},
+        dimension_precision_zscore={"resource_pressure": 0.0},
+    )
+    pressures = {"resource_pressure": 0.6}
+    assert proposal_confidence(field=field, field_pressures=pressures, template=template) == 1.0
+
+
+def test_proposal_urgency_wakes_up_once_the_dead_only_dimension_is_removed() -> None:
+    """Regression test (2026-07-30): inspect_bus_channel_catalog used to
+    score ONLY on contract_pressure, a dimension field_pressures() never
+    produces. proposal_urgency()'s own dimension filter
+    (`dim_id in PRESSURE_DIMENSIONS or dim_id.endswith("_pressure")`) let
+    "contract_pressure" pass through on the suffix check alone, contributing
+    a permanent dimension_score() of 0.0 -- a non-empty `scores` list, so
+    proposal_urgency()'s real all-4-core-dimensions fallback (`if not
+    scores`) never triggered, and urgency was permanently 0.0 regardless of
+    real field pressure. Now that the template's `dimensions` is honestly
+    empty, the fallback correctly triggers and urgency reflects the real
+    field."""
+    template = POLICY.proposal_templates["inspect_bus_channel_catalog"]
+    assert template.dimensions == {}
+    quiet = proposal_urgency(field_pressures={"execution_pressure": 0.05}, template=template)
+    loud = proposal_urgency(field_pressures={"execution_pressure": 0.95}, template=template)
+    assert quiet < loud
+    assert loud > 0.5
 
 
 # Real historical max per dimension, scripts/analysis/measure_proposal_

@@ -256,4 +256,7 @@ EQUILIBRIUM_METACOG_FLOW_TRIGGER_ENABLE=true
 
 ## PR link
 
-<filled in on creation>
+https://github.com/junebug-junie/Orion-Sapienform/pull/1476
+
+Depends on PR #1473 (`docs/collapse-mirror-mq2-findings`, docs-only) which is merged into this
+branch — merge #1473 first, or close it as superseded by this PR.

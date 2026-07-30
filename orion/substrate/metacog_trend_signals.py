@@ -1,20 +1,25 @@
 """Latest-value readers for metacog's evidence-cue "recent trend signals" block.
 
-Tier 1 patch from `docs/superpowers/specs/2026-07-28-metacog-turn-scoped-trend-
-reducer-design.md`'s "2026-07-29/30 update" section -- the design doc's own
-Missing Question 3 answer: the cheapest real consumer for "how does trend data
-reach metacog" is a new, additive evidence-cue block in `MetacogContextService`
+Tier 1 patch, per `docs/superpowers/specs/2026-07-28-metacog-turn-scoped-trend-
+reducer-design.md`. That doc's own "Missing questions" §3 names the cheapest
+real consumer for "how does trend data reach metacog": a new, additive
+evidence-cue block in `MetacogContextService`
 (`services/orion-cortex-exec/app/executor.py`), reading two already-computed,
-already-persisted signal sources' *latest* value. This module does not compute
-a window/trend itself -- both sources below are windowed/reduced upstream by
-their own producers (`orion-substrate-runtime` and `orion-biometrics`/
-`orion-field-digester`/`orion-sql-writer` respectively). Building a new reducer,
-poll loop, or persistence layer here would violate that doc's explicit scope
-boundary.
+already-persisted signal sources' *latest* value -- not a new reducer. This
+module does not compute a window/trend itself -- both sources below are
+windowed/reduced upstream by their own producers (`orion-substrate-runtime`
+and `orion-biometrics`/`orion-field-digester`/`orion-sql-writer`
+respectively). Building a new reducer, poll loop, or persistence layer here
+would violate that doc's explicit scope boundary. Juniper's direct
+authorization to implement this exact Tier-1 slice ("do it tier 1") and this
+patch's own scope are recorded in the doc's "2026-07-29/30 update" section,
+added alongside this patch.
 
 Two Tier-1 signal sources, both independently verified real and non-degenerate
-against live Postgres data on 2026-07-28/29 (see the design doc's own
-"2026-07-28 update" section and the PR description for this patch):
+against live Postgres data on 2026-07-28/29/30 (see the design doc's "2026-07-28
+update" section for the arbitration-layer measurement discipline this reuses,
+the "2026-07-29/30 update" section for this patch's own numbers, and the PR
+description for this patch):
 
 1. `substrate_field_state`'s `prediction_error` node vectors for
    `node:substrate.execution` and `node:substrate.biometrics` -- real-time

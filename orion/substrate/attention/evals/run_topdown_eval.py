@@ -21,17 +21,18 @@ from orion.substrate.attention.top_down import (
 
 
 def _candidates(n: int) -> list[OpenLoopV1]:
-    # One dominant bottom-up loop + n aligned low-salience loops (predictive).
-    loops = [OpenLoopV1(id="dom", description="dominant", salience=0.75, predictive_value=0.0)]
+    # One dominant bottom-up loop + n aligned low-salience loops (concept_value
+    # is relevance()'s signal since Wave 2b removed per-drive field selection).
+    loops = [OpenLoopV1(id="dom", description="dominant", salience=0.75, concept_value=0.0)]
     for i in range(n):
         loops.append(OpenLoopV1(id=f"g{i}", description=f"goal-aligned {i}",
-                                salience=0.30, predictive_value=0.9))
+                                salience=0.30, concept_value=0.9))
     return loops
 
 
 def _override_rate(*, priority: float, effort_max: float, trials: int = 20) -> float:
     combiner = TopDownBiasCombiner(TopDownConfig(gain=0.6, effort_max=effort_max))
-    goal = GoalContext(drive_origin="predictive", priority=priority, goal_artifact_id="g")
+    goal = GoalContext(priority=priority, goal_artifact_id="g")
     overrides = 0
     for _ in range(trials):
         loops = _candidates(3)
@@ -49,9 +50,9 @@ def run() -> int:
 
     # (c) strong bottom-up beats weak bias
     combiner = TopDownBiasCombiner(TopDownConfig())
-    strong = [OpenLoopV1(id="dom", description="d", salience=0.98, predictive_value=0.0),
-              OpenLoopV1(id="g0", description="g", salience=0.30, predictive_value=0.9)]
-    strong_res = combiner.apply(goal=GoalContext("predictive", 0.3), loops=strong,
+    strong = [OpenLoopV1(id="dom", description="d", salience=0.98, concept_value=0.0),
+              OpenLoopV1(id="g0", description="g", salience=0.30, concept_value=0.9)]
+    strong_res = combiner.apply(goal=GoalContext(priority=0.3), loops=strong,
                                 bottom_up={"dom": 0.98, "g0": 0.30})
     # (d) no goal -> no override
     none_res = combiner.apply(goal=None, loops=strong, bottom_up={"dom": 0.98, "g0": 0.30})

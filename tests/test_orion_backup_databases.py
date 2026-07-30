@@ -9,7 +9,10 @@ from unittest.mock import MagicMock
 import pytest
 
 from scripts.backup.orion_backup_databases import (
+    DEFAULT_SUBPROCESS_TIMEOUT_SEC,
+    POSTGRES_DUMP_TIMEOUT_SEC,
     Target,
+    capture_postgres,
     capture_stopped_container_tree,
     run_backup,
     run_target_backup,
@@ -25,6 +28,28 @@ def _ok_capture(dest: Path, log: list[str]) -> None:
 
 def _failing_capture(dest: Path, log: list[str]) -> None:
     raise RuntimeError("boom")
+
+
+def test_postgres_dump_timeout_exceeds_shared_default() -> None:
+    # A live nightly dump against a 17GB+ database has already exceeded
+    # DEFAULT_SUBPROCESS_TIMEOUT_SEC (300s) and failed the whole backup run
+    # (2026-07-30). This pins capture_postgres's own timeout well above the
+    # shared default so that regression can't silently come back.
+    assert POSTGRES_DUMP_TIMEOUT_SEC > DEFAULT_SUBPROCESS_TIMEOUT_SEC
+
+
+def test_capture_postgres_uses_dedicated_timeout(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    captured_kwargs: dict = {}
+
+    def _fake_run(cmd, **kwargs):
+        captured_kwargs.update(kwargs)
+        return subprocess.CompletedProcess(cmd, 0, stdout=b"", stderr=b"")
+
+    monkeypatch.setattr(subprocess, "run", _fake_run)
+    dest = tmp_path / "postgres_snapshot"
+    capture_postgres(dest, container="orion-athena-sql-db", pg_user="postgres", log=[])
+
+    assert captured_kwargs["timeout"] == POSTGRES_DUMP_TIMEOUT_SEC
 
 
 def test_run_target_backup_success_updates_latest_and_prunes(tmp_path: Path) -> None:

@@ -38,6 +38,13 @@ from scripts.backup.orion_backup_mnt_scripts import (
 DEFAULT_STORAGE_WARM = Path("/mnt/storage-warm")
 DEFAULT_KEEP_SUCCESSFUL = 14
 DEFAULT_SUBPROCESS_TIMEOUT_SEC = 300
+# pg_dumpall duration grows with the live database's size (17GB and climbing as of
+# 2026-07-30; the last 5 nightly runs took 166s/168s/233s/266s/312s+, finally
+# exceeding DEFAULT_SUBPROCESS_TIMEOUT_SEC and failing the whole backup run on
+# 2026-07-30). A logical dump has no natural upper bound the way a fixed-size
+# snapshot does, so this gets its own generous timeout instead of sharing the
+# 300s default used for fast operations elsewhere in this script.
+POSTGRES_DUMP_TIMEOUT_SEC = 1800
 
 
 @dataclass(frozen=True)
@@ -117,7 +124,7 @@ def capture_postgres(dest_dir: Path, *, container: str, pg_user: str, log: list[
     cmd = ["docker", "exec", container, "pg_dumpall", "-U", pg_user]
     log.append("$ " + " ".join(cmd) + f" > {dest_file}")
     with dest_file.open("wb") as fh:
-        proc = subprocess.run(cmd, stdout=fh, stderr=subprocess.PIPE, timeout=DEFAULT_SUBPROCESS_TIMEOUT_SEC)
+        proc = subprocess.run(cmd, stdout=fh, stderr=subprocess.PIPE, timeout=POSTGRES_DUMP_TIMEOUT_SEC)
     if proc.returncode != 0:
         dest_file.unlink(missing_ok=True)
         raise RuntimeError(f"pg_dumpall failed ({proc.returncode}): {proc.stderr.decode(errors='replace')[:500]}")

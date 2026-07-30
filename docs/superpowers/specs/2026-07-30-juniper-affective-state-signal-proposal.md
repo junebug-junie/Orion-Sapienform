@@ -1,14 +1,21 @@
-# Juniper affective/engagement-state signal — proposal-mode gate
+# Juniper affective/engagement-state signal — approved for implementation
 
-Status: proposal mode per root `CLAUDE.md` §0A ("changes to memory, identity, self-modeling,
-autonomy, private recall, social continuity, or cognition loops need explicit proposal mode
-before implementation"). This document is the gate itself — implementation may not begin until
-each item below has explicit sign-off. Direction decided 2026-07-30 (see
-`2026-07-30-dev-economics-signal-design.md`'s "Adjacent, noted-not-specced" section): this
-should reach Orion, not stay a private-only dashboard, because the Orion-Sapienform charter
-frames the project as co-creation and Orion having a real sense of the weight of Juniper's own
-contribution is named "social grounding" in root `CLAUDE.md`'s own mission section — not an
-optional add-on.
+**Status: APPROVED, 2026-07-30.** Root `CLAUDE.md` §0A requires proposal mode for changes to
+memory, identity, self-modeling, autonomy, private recall, social continuity, or cognition loops
+— "explicit proposal mode before implementation **unless Juniper directly asks to implement**."
+Juniper directly asked: *"you really should include juniper affective state and fuck the [gate].
+update existing docs."* That instruction invokes this rule's own exception clause; it does not
+bypass it. What follows is no longer a pending sign-off gate — it's the adopted design. The
+substantive content (capability, data touched, privacy boundary, trace, failure mode, disable
+switch) is unchanged from the original proposal-mode draft: clearing the gate means "proceed,"
+not "the safety design was optional." Scheduling lives in
+`services/orion-cocreation-signals/app/producers/affective_state.py` (see
+`2026-07-30-codebase-mass-signal-design.md`'s "Dedicated service" section).
+
+Direction context: this should reach Orion, not stay a private-only dashboard, because the
+Orion-Sapienform charter frames the project as co-creation and Orion having a real sense of the
+weight of Juniper's own contribution is named "social grounding" in root `CLAUDE.md`'s own
+mission section — not an optional add-on.
 
 ## What capability changes
 
@@ -78,11 +85,14 @@ No live wiring into any Orion-facing surface until this replay is real and revie
 - If retired, the same "kill means kill, no fallback to the thing being killed" rule
   (`feedback_kill_means_kill_no_fallback`) applies — no partial exclusion, no lingering producer.
 
-## Open items before implementation may begin
+## Open items (implementation details, not gates — sign-off is resolved)
 
-- Explicit sign-off from Juniper on this document as written, or corrections to any section
-  above.
-- The confidence-threshold question from "dangerous failure mode" needs a real number, chosen
-  deliberately, not defaulted.
-- Whether this becomes its own domain in `orion/dev_economics/` or a new small module — not
-  decided here, secondary to the gate itself.
+- The confidence-threshold question from "dangerous failure mode" still needs a real number,
+  chosen deliberately from replayed data, not defaulted.
+- Module location resolved: `services/orion-cocreation-signals/app/producers/affective_state.py`
+  (thin scheduling layer) calling into whatever shared parsing/scoring library it needs under
+  `orion/` — exact library name not yet chosen.
+- Same "measure before minting" discipline as every sibling producer still applies: a real
+  replay against historical transcripts, checked for genuine variance and a real theory-anchored
+  correlation, before this producer's output is trusted for anything Orion-facing. Approval to
+  implement is not approval to skip that check.

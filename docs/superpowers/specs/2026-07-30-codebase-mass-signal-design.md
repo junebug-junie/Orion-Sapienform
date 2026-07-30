@@ -63,18 +63,15 @@ system.
 
 ## Missing questions
 
-- Does the container that will run `_tick()` for this domain (`orion-substrate-runtime`) have
-  a mounted, read-only view of the actual `Orion-Sapienform` git working tree? Needs a volume
-  check before assuming `git log`/`git rev-parse HEAD` are callable from inside it (per
-  `feedback_check_docker_compose_volumes_before_designing_isolation` — check `volumes:` lines,
-  not just `.py` files).
-- Does `gh`/GitHub API access exist in that same container, or only wherever
-  `github_compactor`'s existing fetch already runs? If the latter, PR-lifecycle counting may
-  need to happen at that call site instead, and be delivered to substrate-runtime via bus
-  event rather than a second direct fetch.
+- Should the new service (below) mint its own GH token, or reuse whatever
+  `github_compactor`'s existing fetch already has wired? Needs a real check before assuming
+  either — resolved architecture-wise (all GH access now lives in one new service, not
+  scattered), not resolved credentials-wise.
 - What should the new channel be named — `codebase_prediction_error` /
   `structural_prediction_error` / something else? Not decided here; naming happens at the
   registration patch, once Phase 1's replay is real, per "no keyword cathedrals."
+- What should the new service itself be named? Working name `orion-cocreation-signals` used
+  throughout this document, not committed.
 
 ## Proposed schema / API changes
 
@@ -100,26 +97,98 @@ New shared module: **`orion/structural_mass/`** (dedicated — not field-digeste
   full graph dumps), appended by `scripts/safe_graphify_update.sh` after each successful,
   non-reverted update. This is new state — graphify itself retains none today.
 
-New domain function in `orion/substrate/prediction_error.py`:
+New scheduling/publishing layer: **`services/orion-cocreation-signals/`** (new dedicated
+service — supersedes an earlier design-conversation draft that proposed wiring this directly
+into `orion-substrate-runtime`'s `_tick()`; see "Dedicated service" below for why). This service
+owns all git/graphify/GitHub I/O for this domain — `orion-substrate-runtime` never touches any
+of it directly.
 
-- `codebase_prediction_error()` — composite diff across the four raw feature sets above
-  (same "diff a small dict of keys" shape `chat_prediction_error` already uses), written via
-  the shared `_write_prediction_error_node()` writer to a new `node:substrate.<name>` node,
-  wired into `services/orion-substrate-runtime/app/worker.py`'s `_tick()`, gated behind the
-  **existing** `SUBSTRATE_WRITE_PREDICTION_ERROR_NODES` flag (no new flag).
-- **Trigger shape is tick-driven, not event-driven.** Each tick compares the last persisted
-  HEAD SHA to current HEAD. No change → explicit no-op (not a spurious delta, not decay). A
-  change → diff since last-seen SHA, however large. This makes missed triggers self-healing by
-  construction: a commit made on another node, via Cursor, or without the `post-commit` hook
-  firing just produces a bigger diff on the next successful tick instead of being lost.
-  **Treated as a feature — real variability in how/where development happens — not a gap
-  requiring 100% hook capture.**
-- Explicitly added to the **exclusion list**, not `NODE_DECAY_CHANNELS` — with a breadcrumb
-  comment at the exclusion site quoting the `node:substrate.route` 48h-decay-to-zero incident
-  by name, so the next person touching this doesn't have to rediscover it.
+- `app/producers/git_delta.py`, `graph_delta.py`, `pr_lifecycle.py` — thin scheduling wrappers
+  around the pure functions in `orion/structural_mass/`, each on its own interval, each with its
+  own timeout/error boundary so a GitHub API hiccup can never block another producer.
+- On computing a real delta, publishes a bus event (new channel, e.g.
+  `orion:substrate:codebase_delta`) carrying the composite diff payload.
+- `orion-substrate-runtime`'s **existing, unmodified** fast `_tick()` gains one new cheap
+  consumer: read that bus event, shape it via `codebase_prediction_error()`
+  (`orion/substrate/prediction_error.py`, same "diff a small dict of keys" shape
+  `chat_prediction_error` already uses), and write via the shared
+  `_write_prediction_error_node()` writer to a new `node:substrate.<name>` node — same writer,
+  same node-write pattern as the other five domains. `orion-substrate-runtime` still does zero
+  external I/O; it only ever reads a bus message.
+- **New, dedicated flag**: `SUBSTRATE_WRITE_CODEBASE_PREDICTION_ERROR_NODE` (correction from an
+  earlier design-conversation draft, which assumed reuse of the existing
+  `SUBSTRATE_WRITE_PREDICTION_ERROR_NODES` flag). This domain has a materially different risk
+  surface than the other five — new git mount, new GH credential, new external network
+  dependency, now isolated in its own service — and needs to be toggleable independently.
+- **Trigger shape is interval-driven inside the new service, not event-driven off git hooks.**
+  Each `git_delta` check compares the last persisted HEAD SHA to current HEAD. No change →
+  explicit no-op (not a spurious delta, not decay). A change → diff since last-seen SHA, however
+  large. This makes missed hook triggers self-healing by construction: a commit made on another
+  node, via Cursor, or without the `post-commit` hook firing just produces a bigger diff on the
+  next successful check instead of being lost. **Treated as a feature — real variability in
+  how/where development happens — not a gap requiring 100% hook capture.**
+- `node:substrate.<name>` is explicitly added to the **exclusion list**, not
+  `NODE_DECAY_CHANNELS` — with a breadcrumb comment at the exclusion site quoting the
+  `node:substrate.route` 48h-decay-to-zero incident by name, so the next person touching this
+  doesn't have to rediscover it.
 - `field-digester`'s `NODE_CHANNELS` (`app/tensor/channels.py`) gains one new entry that
   ingests this domain's scalar, same as `prediction_error` today. Field-digester remains the
-  consumer, not the owner.
+  consumer, not the owner — unchanged by the new service.
+
+### Dedicated service, not a slow task bolted onto `orion-substrate-runtime`
+
+Design conversation, 2026-07-30: this domain's git/GitHub I/O was first proposed as a slow
+`asyncio` task inside `orion-substrate-runtime`, isolated from the fast `_tick()`. That's the
+right call for *one* domain. It stops being the right call once scope expands to include
+`dev_economics`, `doc_semantic_drift`, and the Juniper affective-state signal (see sibling
+specs and `2026-07-30-juniper-affective-state-signal-proposal.md`, now approved) — seven-plus
+producers that all share the same shape (external I/O, sparse cadence, sources outside Orion's
+live cluster), a shape fundamentally unlike anything `orion-substrate-runtime` does today.
+Bolting all of them on piecemeal scatters unrelated external credentials and mounts across a
+service whose real identity is "fast in-process reducer-delta computation" — a real trust-
+boundary problem, not a style preference.
+
+**Decision: stand up `services/orion-cocreation-signals/`** (name open), one deployment unit
+owning every external-I/O-bound producer in this design-conversation arc:
+
+```text
+services/orion-cocreation-signals/
+  app/
+    producers/
+      git_delta.py            # calls orion/structural_mass/git_delta.py
+      graph_delta.py          # calls orion/structural_mass/graph_delta.py
+      pr_lifecycle.py         # calls orion/structural_mass/pr_lifecycle.py
+      dev_economics.py        # calls orion/dev_economics/claude_code_ingest.py (+ later Cursor)
+      doc_semantic_drift.py   # cheap embedding prefilter + gated graphify Part B escalation
+      affective_state.py      # Juniper affective/engagement signal — APPROVED for
+                               # implementation 2026-07-30 (Juniper directly authorized,
+                               # invoking CLAUDE.md §0A's own exception clause: "unless
+                               # Juniper directly asks to implement"). See
+                               # 2026-07-30-juniper-affective-state-signal-proposal.md for
+                               # the full design — capability/data/boundary/trace/failure-
+                               # mode/disable-switch content there is adopted, not proposed.
+    worker.py                 # each producer its own async loop/interval, no shared tick
+  .env_example
+  docker-compose.yml
+  tests/
+```
+
+Credential/mount consolidation is the real payoff at this scale: this one service gets the
+read-only git mount, the GH token, and local `~/.claude/projects` read access — not
+`orion-substrate-runtime`, not scattered across five separate future PRs each adding one more
+mount to a service that shouldn't need it. Each producer keeps its own cadence (git: cheap and
+frequent; PR lifecycle: coarser, rate-limit-aware; doc-drift: event-triggered off commit;
+dev-economics: closer to a daily rollup, reading static local files). Only `git_delta`,
+`graph_delta`, and `pr_lifecycle` publish the bus event described above — `dev_economics` and
+`doc_semantic_drift` stay local-ledger-shaped per their own specs' Phase 0 scope until
+individually proven, same "measure before minting" discipline as everywhere else in this
+program. `affective_state` writes only to its own tightly-scoped store per its spec's privacy
+boundary — never through the generic `node:substrate.*` pipeline, never a raw-text log.
+
+This is real upfront cost — new compose service, new bus channel/schema contract
+(`orion/bus/channels.yaml`, `orion/schemas/registry.py`, per CLAUDE.md §6) — more than a single
+slow task. Justified specifically by the declared scale (seven-plus producers), not by default
+for one domain.
 
 Metric quality gate (CLAUDE.md, re-run per metric, not once for the category):
 
@@ -214,7 +283,12 @@ blank.
 - `orion/structural_mass/` (new): `git_delta.py`, `graph_delta.py`, `pr_lifecycle.py`,
   `snapshot_history.py`, tests.
 - `orion/substrate/prediction_error.py`: new `codebase_prediction_error()` function.
-- `services/orion-substrate-runtime/app/worker.py`: wire into `_tick()`.
+- `services/orion-cocreation-signals/` (new service): scheduling/publishing layer for this and
+  all sibling producers — see "Dedicated service" above.
+- `orion/bus/channels.yaml`, `orion/schemas/registry.py`: new `orion:substrate:codebase_delta`
+  channel + payload schema (CLAUDE.md §6 contract change).
+- `services/orion-substrate-runtime/app/worker.py`: one new cheap bus-event consumer added to
+  the existing fast `_tick()` — no external I/O added to this service.
 - `services/orion-field-digester/app/tensor/channels.py`: one new `NODE_CHANNELS` entry.
 - `services/orion-field-digester/app/digestion/decay.py`: exclusion breadcrumb comment.
 - `scripts/safe_graphify_update.sh`: append to `snapshot_history.py`'s log post-update.

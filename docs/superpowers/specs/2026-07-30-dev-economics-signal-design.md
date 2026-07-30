@@ -51,7 +51,14 @@ what.
 
 ## Proposed schema / API changes (Phase 0 — ledger only, no coupling)
 
-New module: **`orion/dev_economics/`** (name open), independent of `orion/structural_mass/`.
+New shared library: **`orion/dev_economics/`** (name open), independent of
+`orion/structural_mass/`. Pure ingestion/parsing logic lives here, same split as
+`orion/substrate/prediction_error.py` vs. its caller — scheduling now lives in
+`services/orion-cocreation-signals/app/producers/dev_economics.py` (2026-07-30: this domain's
+scheduling moved out of any per-domain ad hoc plan into the single dedicated service proposed in
+`2026-07-30-codebase-mass-signal-design.md`'s "Dedicated service" section, alongside
+`structural_mass`, `doc_semantic_drift`, and the now-approved affective-state producer — one
+deployment unit for every external-I/O-bound producer in this design arc, not one per domain).
 
 - `claude_code_ingest.py` — parses local transcript `.jsonl` files into a normalized per-session
   record: `session_id`, `model`, `effort` (if present), token counts (input/output/cache
@@ -70,14 +77,25 @@ New module: **`orion/dev_economics/`** (name open), independent of `orion/struct
   ledger (plausibly a small SQLite file or append-only JSONL under a `.orion/` or scratch
   location) until there's enough real data to decide if/how it should surface further.
 
-## Adjacent, noted-not-specced: human behavioral/state signals
+## Human behavioral/state signals
 
 Juniper raised a further, "sky's the limit" set of ideas, 2026-07-30: swear-word frequency as a
 proxy for frustration at the assistant, typo rate as a proxy for tiredness/busyness, count of
 concurrent parallel agent sessions as a proxy for cognitive complexity, and total time engaged
-with these services against a 24h day as a time-allocation signal. These are listed here for the
-record, deliberately **not designed** in this patch. Two of the four have real existing-mechanism
-angles worth naming even without building anything yet:
+with these services against a 24h day as a time-allocation signal.
+
+**Status update, same day: the frustration/fatigue piece is no longer noted-only — it's
+approved for implementation.** Juniper directly authorized it ("include juniper affective
+state... fuck the [proposal-mode] gate"), invoking root `CLAUDE.md` §0A's own exception clause
+("unless Juniper directly asks to implement"). Full design:
+`2026-07-30-juniper-affective-state-signal-proposal.md` — its capability/data/privacy-
+boundary/trace/failure-mode/disable-switch content is now adopted design, not a pending gate.
+Scheduling lives in `services/orion-cocreation-signals/app/producers/affective_state.py`
+alongside this document's own `dev_economics.py` producer.
+
+Concurrent-session count and time-engaged-vs-24h remain **noted, not designed** — Juniper named
+them as further "sky's the limit" ideas but didn't ask for either to be built. Two real
+existing-mechanism angles worth naming even without building anything yet:
 
 - **Concurrent-session count** likely doesn't need new instrumentation — `~/.orion/agent-board.jsonl`
   (`scripts/agent_board.py`) already heartbeats active worktrees/sessions with timestamps; this

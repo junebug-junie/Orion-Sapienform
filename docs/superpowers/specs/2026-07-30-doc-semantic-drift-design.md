@@ -43,17 +43,29 @@ spent only where a real semantic shift is likely.
 
 ## Proposed schema / API changes
 
-New domain module: **`orion/concepts/domains/narrative.py`** (shared registry with the sibling
-spec's Phase 2, not a separate system).
+**Split, 2026-07-30, matching the rest of this design arc's shared-library-vs-service
+pattern:** the I/O-heavy observation work (embedding calls, graphify Part B escalation) is a
+*producer*, not a concept-domain classifier — it moves to
+`services/orion-cocreation-signals/app/producers/doc_semantic_drift.py` (see
+`2026-07-30-codebase-mass-signal-design.md`'s "Dedicated service" section), alongside
+`structural_mass`, `dev_economics`, and the affective-state producers. `orion/concepts/`'s
+`narrative.py` domain (sibling spec's Phase 2) stays a pure classification/registry library that
+consumes this producer's output — it does no I/O of its own, same relationship
+`orion/substrate/prediction_error.py` has to the `structural_mass` producers.
 
-1. **Cheap tier (always runs):** embedding-diff between before/after text for any docs/README
-   files touched in a commit/PR — non-frontier, cheap, local or gateway-routed.
-2. **Escalation tier (gated):** only files whose embedding-diff crosses a calibrated threshold
-   get a real graphify Part B semantic extraction call, scoped to just those files. Reuses the
-   existing content-hash cache, so anything already covered by a prior graphify run is never
-   re-billed.
+1. **Cheap tier (always runs, in the new service):** embedding-diff between before/after text
+   for any docs/README files touched in a commit/PR — non-frontier, cheap, local or
+   gateway-routed.
+2. **Escalation tier (gated, in the new service):** only files whose embedding-diff crosses a
+   calibrated threshold get a real graphify Part B semantic extraction call, scoped to just
+   those files. Reuses the existing content-hash cache, so anything already covered by a prior
+   graphify run is never re-billed.
 3. **Free tier (always attached):** conventional-commit-prefix classification as a weak feature,
    regardless of the above two tiers' outcome.
+4. **Classification (in `orion/concepts/domains/narrative.py`):** the producer's output —
+   embedding-diff score, any escalated concept extraction, the commit-prefix feature — becomes a
+   candidate concept instance in the shared registry, same shape the `architecture` domain
+   consumes from `structural_mass`.
 
 **Self-narrative coherence signal — the concrete answer to "how do we operationalize this
 beyond a vague sense of self-growth":** compare `structural_mass`'s code-change magnitude for a
@@ -65,8 +77,10 @@ artifact or the journal surface as an actual finding.
 
 ## Files likely to touch
 
+- `services/orion-cocreation-signals/app/producers/doc_semantic_drift.py` (new): the I/O-heavy
+  producer — embedding-diff tier, gated graphify Part B escalation tier.
 - `orion/concepts/` (new, shared with the sibling spec's Phase 2): registry + `narrative.py`
-  domain.
+  domain — pure classification, no I/O.
 - Reuses `scripts/graphify_seed_semantic_cache.py`, `graphify-out/cache/semantic/` as-is — no
   changes needed there.
 - `scripts/analysis/measure_doc_semantic_drift.py` (new): read-only replay script against real

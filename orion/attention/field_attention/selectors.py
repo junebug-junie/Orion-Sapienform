@@ -2,22 +2,45 @@ from __future__ import annotations
 
 from typing import Literal
 
-from orion.attention.field_attention.policy import FieldAttentionPolicyV1
-from orion.attention.field_attention.scoring import (
-    compute_salience,
-    confidence_from_vector,
-    novelty_for_target,
-    urgency_score,
-    weighted_pressure,
+from orion.attention.field_attention.candidate_precision_weighted import (
+    PrecisionWeightedSalienceResult,
+    normalize_across_targets,
+    precision_weighted_salience,
 )
+from orion.attention.field_attention.policy import FieldAttentionPolicyV1
+from orion.attention.field_attention.scoring import clamp01
 from orion.field.pressure import (
     RECENT_PERTURBATION_EWMA_MIN_SAMPLES,
     RECENT_PERTURBATION_ZSCORE_SATURATION,
 )
-from orion.schemas.field_attention_frame import FieldAttentionFrameV1, FieldAttentionTargetV1
+from orion.schemas.field_attention_frame import FieldAttentionTargetV1
 from orion.schemas.field_state import FieldStateV1
 
 ObservationMode = Literal["watch", "inspect", "summarize", "ignore"]
+
+# 2026-07-30: the only real theory-grounded attention targets. Maps each
+# prediction-error-native node_id (Feldman & Friston 2010 precision-weighting,
+# `candidate_precision_weighted.py`) to the reducer_key its own real historical
+# series is filed under in `substrate_reduction_receipts`. Confirmed live
+# against `services/orion-substrate-runtime/app/worker.py`'s exact
+# `_prediction_error_receipt(reducer_key=..., node_id=...)` call sites -- a
+# real, checked 1:1 correspondence, not assumed.
+PREDICTION_ERROR_NATIVE_TARGETS: dict[str, str] = {
+    "node:substrate.biometrics": "node_biometrics",
+    "node:substrate.execution": "execution_trajectory",
+    "node:substrate.chat": "chat_session",
+    "node:substrate.route": "route_arbitration",
+    "node:substrate.transport": "transport_bus",
+    "node:substrate.bus_synaptic": "bus_synaptic",
+}
+
+# Same discipline as scripts/analysis/measure_precision_weighted_salience_probe.py's
+# QUALIFYING_MIN_ROWS: below this many real samples, a variance/precision
+# estimate isn't trustworthy. Reused here as confidence_score's denominator
+# too -- confidence in a precision estimate is a real function of how much
+# data backs it (more real samples = a more trustworthy variance estimate),
+# not a hand-picked constant.
+QUALIFYING_MIN_ROWS: int = 20
 
 
 def observation_mode_for(salience: float, policy: FieldAttentionPolicyV1) -> ObservationMode:
@@ -31,102 +54,94 @@ def observation_mode_for(salience: float, policy: FieldAttentionPolicyV1) -> Obs
     return "ignore"
 
 
-def _reasons_from_dominant(dominant: dict[str, float], prefix: str) -> list[str]:
-    reasons: list[str] = []
-    for channel, contrib in sorted(dominant.items(), key=lambda kv: kv[1], reverse=True)[:3]:
-        if contrib > 0.05:
-            reasons.append(f"{prefix} {channel} is elevated")
-    return reasons or [f"{prefix} pressure present"]
-
-
-def _build_target(
-    *,
-    target_id: str,
-    target_kind: Literal["node", "capability"],
-    vector: dict[str, float],
-    channel_weights: dict[str, float],
-    policy: FieldAttentionPolicyV1,
-    previous_frame: FieldAttentionFrameV1 | None,
-    field: FieldStateV1,
-    reason_prefix: str,
-) -> FieldAttentionTargetV1 | None:
-    pressure, dominant = weighted_pressure(vector, channel_weights)
-    if pressure <= 0.0 and not any(float(v) > 0 for v in vector.values()):
-        return None
-    urg = urgency_score(vector, channel_weights)
-    conf = confidence_from_vector(vector, channel_weights)
-    pre_novelty_salience = compute_salience(
-        pressure_score=pressure,
-        novelty_score=0.0,
-        urgency_score=urg,
-        confidence_score=conf,
-        weights=policy.weights,
-    )
-    novelty = novelty_for_target(target_id, pre_novelty_salience, previous_frame)
-    salience = compute_salience(
-        pressure_score=pressure,
-        novelty_score=novelty,
-        urgency_score=urg,
-        confidence_score=conf,
-        weights=policy.weights,
-    )
-    return FieldAttentionTargetV1(
-        target_id=target_id,
-        target_kind=target_kind,
-        salience_score=salience,
-        pressure_score=pressure,
-        novelty_score=novelty,
-        urgency_score=urg,
-        confidence_score=conf,
-        dominant_channels=dominant,
-        reasons=_reasons_from_dominant(dominant, reason_prefix),
-        evidence_refs=[f"field:{field.tick_id}"],
-        suggested_observation_mode=observation_mode_for(salience, policy),
-    )
-
-
 def select_node_targets(
     field: FieldStateV1,
     policy: FieldAttentionPolicyV1,
-    previous_frame: FieldAttentionFrameV1 | None,
+    prediction_error_histories: dict[str, list[float]],
 ) -> list[FieldAttentionTargetV1]:
+    """Real, precision-weighted node targets only (Candidate A -- Feldman &
+    Friston 2010, "Attention, Uncertainty, and Free-Energy":
+    salience = precision x |prediction_error|, precision = 1/variance of the
+    target's own real historical error series).
+
+    2026-07-30: replaces the old hand-weighted pressure/novelty/urgency/
+    confidence linear blend (`compute_salience()`, deleted from
+    `scoring.py`) across ALL of `field.node_vectors` with a real theory for
+    the specific nodes that have one, and NOTHING for the rest -- no
+    fallback formula, per "kill means kill, no fallback to the thing being
+    killed" (CLAUDE.md §0A, previously applied to retiring dependencies and
+    metrics; applied here to retiring an entire scoring approach). Physical
+    host nodes (`node:athena`/`atlas`/`circe`/`prometheus`/`rpc_timeout`)
+    have no real historical prediction-error series of their own -- their
+    `prediction_error` vector entry is a hardcoded `0.0` placeholder, not a
+    tracked signal -- so they simply do not appear as attention targets
+    until something builds real grounding for them, rather than continuing
+    to report a salience score computed from hand-picked channel weights.
+    Same for all capability targets (`select_capability_targets`, below).
+
+    `prediction_error_histories`: {node_id: real ASC-by-time error history},
+    caller-fetched (`AttentionRuntimeStore.load_prediction_error_history`)
+    so this stays a pure function -- see that store method's own docstring
+    for the query shape and the ~30-minute rolling-retention caveat
+    (`substrate_reduction_receipts` only retains recent success receipts).
+    A target with zero real history (`n_samples == 0`) is excluded entirely,
+    not scored 0.0 -- "no data" and "confidently calm" are different claims.
+    """
+    results: dict[str, PrecisionWeightedSalienceResult] = {}
+    raw_scores: dict[str, float] = {}
+    for target_id, reducer_key in PREDICTION_ERROR_NATIVE_TARGETS.items():
+        history = prediction_error_histories.get(target_id, [])
+        result = precision_weighted_salience(history)
+        if result.n_samples == 0:
+            continue
+        results[target_id] = result
+        raw_scores[target_id] = result.salience
+
+    normalized = normalize_across_targets(raw_scores)
+
     targets: list[FieldAttentionTargetV1] = []
-    for node_id, vector in field.node_vectors.items():
-        t = _build_target(
-            target_id=node_id,
-            target_kind="node",
-            vector=vector,
-            channel_weights=policy.node_channel_weights,
-            policy=policy,
-            previous_frame=previous_frame,
-            field=field,
-            reason_prefix="node",
+    for target_id, result in results.items():
+        salience = normalized.get(target_id, 0.0)
+        confidence = clamp01(result.n_samples / QUALIFYING_MIN_ROWS)
+        reasons = [
+            f"precision-weighted prediction-error salience (current error "
+            f"{result.current_error:.4f}, precision {result.precision:.2f}, n={result.n_samples})"
+        ]
+        if result.variance_floored:
+            reasons.append("variance-floor instability: near-constant recent error history")
+        targets.append(
+            FieldAttentionTargetV1(
+                target_id=target_id,
+                target_kind="node",
+                salience_score=salience,
+                pressure_score=clamp01(abs(result.current_error)),
+                novelty_score=0.0,
+                urgency_score=clamp01(abs(result.current_error)),
+                confidence_score=confidence,
+                dominant_channels={"prediction_error": result.current_error},
+                reasons=reasons,
+                evidence_refs=[f"field:{field.tick_id}"],
+                suggested_observation_mode=observation_mode_for(salience, policy),
+            )
         )
-        if t is not None:
-            targets.append(t)
     return targets
 
 
 def select_capability_targets(
     field: FieldStateV1,
     policy: FieldAttentionPolicyV1,
-    previous_frame: FieldAttentionFrameV1 | None,
 ) -> list[FieldAttentionTargetV1]:
-    targets: list[FieldAttentionTargetV1] = []
-    for cap_id, vector in field.capability_vectors.items():
-        t = _build_target(
-            target_id=cap_id,
-            target_kind="capability",
-            vector=vector,
-            channel_weights=policy.capability_channel_weights,
-            policy=policy,
-            previous_frame=previous_frame,
-            field=field,
-            reason_prefix="capability",
-        )
-        if t is not None:
-            targets.append(t)
-    return targets
+    """Killed, not replaced. No capability target has a real historical
+    prediction-error series to ground a precision-weighted salience in
+    (unlike the six `node:substrate.*` targets `select_node_targets` scores)
+    -- returns `[]` rather than falling back to the deleted hand-weighted
+    blend. "Kill means kill, no fallback to the thing being killed"
+    (CLAUDE.md §0A). Real capability attention needs its own theory-grounded
+    instrument built first, not a silent revival of the disease this patch
+    removes.
+    """
+    del field, policy
+    return []
 
 
 def select_system_targets(
@@ -148,6 +163,13 @@ def select_system_targets(
     reinvented. A below-baseline dip (negative zscore) is clamped to 0 --
     "quieter than usual" isn't a reason to attend here, only "busier than
     usual" is.
+
+    Not migrated to Candidate A in this patch (2026-07-30): this is a single
+    aggregate count, not a per-target error series with its own variance to
+    compute real precision from -- a different shape of signal than the six
+    `node:substrate.*` targets above. Still has one hand-picked constant
+    (`RECENT_PERTURBATION_ZSCORE_SATURATION`), disclosed as an open gap, not
+    silently left unexamined.
     """
     count = len(field.recent_perturbations)
     if count == 0:

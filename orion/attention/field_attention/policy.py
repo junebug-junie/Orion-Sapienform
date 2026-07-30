@@ -24,15 +24,6 @@ class AttentionThresholdsV1(BaseModel):
     suppress_below: float = 0.03
 
 
-class AttentionWeightsV1(BaseModel):
-    model_config = ConfigDict(extra="forbid")
-
-    pressure: float = 0.45
-    novelty: float = 0.20
-    urgency: float = 0.25
-    confidence: float = 0.10
-
-
 class ObservationModesV1(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
@@ -49,9 +40,6 @@ class FieldAttentionPolicyV1(BaseModel):
 
     limits: AttentionLimitsV1 = Field(default_factory=AttentionLimitsV1)
     thresholds: AttentionThresholdsV1 = Field(default_factory=AttentionThresholdsV1)
-    weights: AttentionWeightsV1 = Field(default_factory=AttentionWeightsV1)
-    node_channel_weights: dict[str, float] = Field(default_factory=dict)
-    capability_channel_weights: dict[str, float] = Field(default_factory=dict)
     observation_modes: ObservationModesV1 = Field(default_factory=ObservationModesV1)
 
 

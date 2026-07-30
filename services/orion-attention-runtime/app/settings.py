@@ -30,6 +30,15 @@ class Settings(BaseSettings):
         False,
         alias="ENABLE_TRANSPORT_ATTENTION_VISIBILITY",
     )
+    # Candidate A (precision-weighted salience, 2026-07-30): how many real
+    # recent prediction-error rows to fetch per qualified node target, per
+    # tick. Same order of magnitude as scripts/analysis/measure_precision_
+    # weighted_salience_probe.py's own real replay windows (tens to ~100
+    # rows within substrate_reduction_receipts' ~30-minute retention) --
+    # not a calibration knob, a fetch-size bound.
+    prediction_error_history_limit: int = Field(
+        200, alias="ATTENTION_PREDICTION_ERROR_HISTORY_LIMIT"
+    )
     log_level: str = Field("INFO", alias="LOG_LEVEL")
 
     # Health monitor -> orion-notify attention alerts. Edge-triggered (fires only

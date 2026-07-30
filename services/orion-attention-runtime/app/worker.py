@@ -6,6 +6,7 @@ from pathlib import Path
 
 from orion.attention.field_attention.builder import build_attention_frame
 from orion.attention.field_attention.policy import load_attention_policy
+from orion.attention.field_attention.selectors import PREDICTION_ERROR_NATIVE_TARGETS
 
 from app.health_monitor import HealthMonitor
 from app.settings import get_settings
@@ -100,9 +101,20 @@ class AttentionRuntimeWorker:
             return
 
         previous = self._store.load_latest_attention_frame()
+        # Candidate A (precision-weighted salience, 2026-07-30): real
+        # historical error series, per qualified target, fetched fresh every
+        # tick -- see select_node_targets' own docstring for why this can't
+        # be pre-computed once (the pure builder has no DB access).
+        histories = {
+            node_id: self._store.load_prediction_error_history(
+                reducer_key=reducer_key, limit=self._settings.prediction_error_history_limit
+            )
+            for node_id, reducer_key in PREDICTION_ERROR_NATIVE_TARGETS.items()
+        }
         frame = build_attention_frame(
             field=field,
             policy=self._policy,
+            prediction_error_histories=histories,
             previous_frame=previous,
         )
         if not self._settings.enable_transport_attention_visibility:

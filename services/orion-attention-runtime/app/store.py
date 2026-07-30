@@ -59,6 +59,56 @@ class AttentionRuntimeStore:
             payload = json.loads(payload)
         return FieldStateV1.model_validate(payload)
 
+    def load_prediction_error_history(self, *, reducer_key: str, limit: int) -> list[float]:
+        """Real, ASC-by-time prediction-error history for one reducer, for
+        Candidate A (`orion/attention/field_attention/candidate_precision_
+        weighted.py::precision_weighted_salience`) to compute real precision
+        (1/variance) from -- same query shape as that module's own docstring
+        and `scripts/analysis/measure_precision_weighted_salience_probe.py`.
+
+        `substrate_reduction_receipts` retains success receipts for only
+        `ORION_RECEIPT_RETENTION_SUCCESS_MINUTES` (30 min live default) --
+        this is always a rolling recent window, not full history, a
+        structural property of the source table, not a bug here. Degrades to
+        `[]` on any error (missing table, bad row) -- a history-fetch failure
+        must never crash the attention tick; `precision_weighted_salience([])`
+        already handles the empty case honestly (zero salience, n_samples=0).
+        """
+        try:
+            with self._engine.connect() as conn:
+                rows = (
+                    conn.execute(
+                        text(
+                            """
+                            SELECT
+                                receipt_json -> 'state_deltas' -> 0 -> 'after'
+                                    -> 'pressure_hints' ->> 'prediction_error' AS error
+                            FROM substrate_reduction_receipts
+                            WHERE (receipt_json -> 'state_deltas' -> 0 ->> 'reducer_id')
+                                  = :reducer_id
+                            ORDER BY created_at ASC
+                            LIMIT :limit
+                            """
+                        ),
+                        {"reducer_id": f"substrate.{reducer_key}", "limit": limit},
+                    )
+                    .mappings()
+                    .all()
+                )
+        except Exception:
+            return []
+
+        out: list[float] = []
+        for row in rows:
+            value = row.get("error")
+            if value is None:
+                continue
+            try:
+                out.append(float(value))
+            except (TypeError, ValueError):
+                continue
+        return out
+
     def load_latest_attention_frame(self) -> FieldAttentionFrameV1 | None:
         with self._engine.connect() as conn:
             row = (

@@ -21,13 +21,25 @@ def build_attention_frame(
     *,
     field: FieldStateV1,
     policy: FieldAttentionPolicyV1,
+    prediction_error_histories: dict[str, list[float]] | None = None,
     previous_frame: FieldAttentionFrameV1 | None = None,
     now: datetime | None = None,
 ) -> FieldAttentionFrameV1:
+    """2026-07-30: `previous_frame` is accepted for interface stability
+    (unused by any selector now -- the old hand-weighted `compute_salience()`
+    used it for a novelty bonus, deleted along with that formula; Candidate
+    A's precision-weighting already accounts for "how surprising is this
+    relative to its own history" as its core theory, so a second, hand-tuned
+    novelty layer on top would reintroduce exactly the disease this patch
+    removes). `prediction_error_histories` is the new real input:
+    {node_id: real historical error series}, caller-fetched
+    (`AttentionRuntimeStore.load_prediction_error_history`) so this stays a
+    pure function -- see `select_node_targets`'s own docstring.
+    """
     generated_at = now or datetime.now(timezone.utc)
 
-    node_targets = select_node_targets(field, policy, previous_frame)
-    capability_targets = select_capability_targets(field, policy, previous_frame)
+    node_targets = select_node_targets(field, policy, prediction_error_histories or {})
+    capability_targets = select_capability_targets(field, policy)
     system_targets = select_system_targets(field, policy)
 
     all_targets = node_targets + capability_targets + system_targets

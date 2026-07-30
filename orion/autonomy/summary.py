@@ -279,8 +279,14 @@ def summarize_autonomy_state(state: AutonomyStateV1 | AutonomyStateV2 | None) ->
         ],
         limit=3,
     )
-    if isinstance(state, AutonomyStateV2) and not state.goal_headlines and state.attention_items:
-        proposal_headlines = _bounded_unique([a.summary for a in state.attention_items], limit=3)
+    # attention_items fallback removed 2026-07-30 (chore/delete-orion-drives
+    # Wave 2a, found in review): upgrade_autonomy_state_v1_to_v2 was the last
+    # producer of AutonomyStateV2.attention_items in the repo (it seeded them
+    # from dominant_drive/tension_kinds, both now gone) -- confirmed zero
+    # remaining non-test construction sites for AttentionItemV1 repo-wide, so
+    # this branch could never fire again. Left as dead code, it would have
+    # been exactly the "unreachable but plausible-looking" pattern CLAUDE.md
+    # warns about.
 
     hazards: list[str] = []
     if state.goal_headlines:

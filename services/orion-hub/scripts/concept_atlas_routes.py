@@ -376,8 +376,14 @@ class _CountingSubstrateStore:
     def __getattr__(self, name: str) -> Any:
         return getattr(self._inner, name)
 
-    def upsert_node(self, *, identity_key: str | None, node: Any) -> None:
-        self._inner.upsert_node(identity_key=identity_key, node=node)
+    def upsert_node(
+        self,
+        *,
+        identity_key: str | None,
+        node: Any,
+        skip_metadata_keys: Any = None,
+    ) -> None:
+        self._inner.upsert_node(identity_key=identity_key, node=node, skip_metadata_keys=skip_metadata_keys)
         kind = getattr(node, "node_kind", None)
         if kind == "concept":
             self.concepts_written += 1

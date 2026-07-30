@@ -114,12 +114,24 @@ def test_bus_synaptic_edge_queries_filter_stale_edges() -> None:
         assert "$stale_cutoff_epoch" in cypher
 
 
-def test_bus_synaptic_tick_no_edges_writes_nothing(monkeypatch):
+def test_bus_synaptic_tick_no_edges_still_writes_calm_node(monkeypatch):
+    """Regression guard (2026-07-30): the node write must happen every tick,
+    including a calm error=0.0 tick -- gating it the same way as the receipt
+    below left `node:substrate.bus_synaptic` frozen at a stale nonzero value
+    for hours (confirmed live) while orion-equilibrium-service polled that
+    frozen value with no staleness check of its own, producing permanent
+    false "Bus Anomaly Detected" alerts. The receipt stays gated on
+    error > 0.0 -- it's an audit trail of notable events, not a polled
+    current-state read, so no receipt on a calm tick is correct."""
     worker = _make_worker(monkeypatch, enabled=True)
     worker._bus_synaptic_client = _client_returning([], [])
     with patch.object(worker, "_write_prediction_error_node") as write_node:
         worker._bus_synaptic_tick()
-    write_node.assert_not_called()
+    write_node.assert_called_once()
+    _, kwargs = write_node.call_args
+    assert kwargs["node_id"] == "node:substrate.bus_synaptic"
+    assert kwargs["error"] == 0.0
+    assert kwargs["reducer_key"] == "bus_synaptic"
     worker._store.save_receipt.assert_not_called()
 
 

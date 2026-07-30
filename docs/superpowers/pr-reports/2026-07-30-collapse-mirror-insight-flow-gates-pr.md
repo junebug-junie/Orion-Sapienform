@@ -80,7 +80,7 @@ Re-run for this metric rather than inherited from the design doc:
 
 ```text
 pytest services/orion-equilibrium-service/tests tests/test_metacog_generative_trigger_signals.py -q
-  -> 2 failed, 172 passed
+  -> 2 failed, 174 passed
 
   Both failures are PRE-EXISTING and unrelated, in test_bus_synaptic_poll_e2e.py:
     - test_poll_above_threshold_triggers: feeds error=0.87 against its own
@@ -101,7 +101,7 @@ python scripts/check_service_env_compose_parity.py orion-equilibrium-service
   -> OK: all 80 .env_example keys are exposed via environment:
 ```
 
-New test coverage (69 tests): 23 pure-detector, 16 service-layer (de-dupe, cooldown-retry, staleness, fetch-limit invariant, shipped-disabled), 11 gate-builder, 6 reader-parsing, 9 cooldown-lane-independence (including a 5-lane non-starvation case and a structural guard that both kinds stay registered), 8 executor type-mapping.
+New test coverage (71 tests): 23 pure-detector, 18 service-layer (de-dupe, cooldown-retry, staleness, staleness-warning rate limiting, fetch-limit invariant, shipped-disabled), 11 gate-builder, 6 reader-parsing, 9 cooldown-lane-independence (including a 5-lane non-starvation case and a structural guard that both kinds stay registered), 8 executor type-mapping.
 
 Note on the CLAUDE.md §17 scripts: `check_env_template_parity.py`, `check_schema_registry.py` and `check_bus_channels.py` **do not exist in this repo** — the `Makefile` documents this explicitly (there is no `agent-check` target either). `check_service_env_compose_parity.py` is the real equivalent and was run. The two contract surfaces were instead verified by direct inspection, reported above.
 
@@ -193,6 +193,21 @@ Code review ran in a subagent and returned 2 must-fix, 6 should, 6 nits. Both mu
 Review also verified clean, worth recording: the detector index math survived an adversarial boundary sweep (empty/single/all-low/all-high/`confirm_ticks > len`/low-at-index-0) with no off-by-one and no recurrence of the `armed_tick_idx or i` falsy-zero bug; `asyncio.to_thread` offload and `CancelledError` handling are correct; env/settings/compose parity is exact in both directions; the `executor.py` change preserves prior behavior for every pre-existing kind; and `max_stdev` is on the same `statistics.stdev` estimator as the calibration figures, so there is no borrowed-constant scale mismatch.
 
 **N2 (nit) accepted, not fixed**: on shutdown, if cancellation lands while `asyncio.to_thread(fetch_recent_samples)` is in flight, `close()` can shut the socket under a live query in the worker thread. Shutdown-only, and the query is already wrapped in a try/except that returns `[]`, so the worst case is one suppressed warning line during shutdown (now warning-only after S6).
+
+### Independent verification pass
+
+A second subagent re-verified every fix rather than trusting the commit message, building its own repro harness — 21 checks, each paired with a **control** proving the input was genuinely condition-true pre-fix and that the new guard is what blocks it. **All 10 findings VERIFIED FIXED.** Notable confirmations beyond the fixes themselves:
+
+- M2's *root cause* independently reproduced, not just its symptom: the sliding window yields **2 distinct `high_at` but 1 distinct `low_at`**, and a genuine two-episode series still publishes exactly 2 — so the new de-dupe is neither broken nor over-strong.
+- M1's staleness guard confirmed to be *actually consulted by the poll loop* (patched fake reader, one real tick: 0 publishes stale / 1 publish fresh) — the detectors alone are age-blind by design, so this was the right thing to check.
+- S1 regression risk cleared mechanically: 9 pre-existing bare-`await` call sites discard the new `bool`, only the 2 new sites consume it, and no test asserts on it.
+- Span-bound asymmetry verified correct: `ticks_to_cross` is already an interval count (no `-1`), `min_ticks` is a row count (needs `-1`).
+- Timezone safety traced to the schema: `generated_at` is `timestamptz`, so psycopg2 always returns aware datetimes; the naive branch is defensive-only.
+- Freshness bound confirmed not too tight: the write is a direct in-tick SQLAlchemy call with no bus→sql-writer queue lag, so 120s against a 30s cadence is ~4x headroom.
+
+**One new nit found and fixed in this branch**: the staleness `logger.warning` was itself not rate-limited — the same unbounded-repeat shape S6 addressed one file over (~2880 lines/day during a writer outage). Now logs on the first stale poll and every 60th after (~30 min), with a counter that resets on recovery, so a stopped writer stays visible without burying the first real gate fire. Covered by `test_stale_window_warning_is_rate_limited` and `test_stale_counter_resets_when_the_window_recovers`.
+
+Also corrected from that pass: the README described `FLOW_MIN_TICKS=20` as "~10 minutes of calm" when `SPAN_TOLERANCE=2.0` in fact accepts a window covering up to ~19 minutes. Wording fixed to state both the nominal and the accepted bound.
 
 ## Restart required
 

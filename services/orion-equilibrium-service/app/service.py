@@ -48,6 +48,13 @@ def _utcnow() -> datetime:
     return datetime.now(timezone.utc)
 
 
+# Re-log the generative gates' stale-window warning every Nth consecutive stale
+# poll. 60 polls at the default 30s cadence is ~30 minutes -- frequent enough
+# that a stopped writer stays visible in the logs, rare enough not to bury the
+# first real gate fire.
+_STALE_WINDOW_RELOG_EVERY: int = 60
+
+
 class EquilibriumService(BaseChassis):
     def __init__(self) -> None:
         super().__init__(
@@ -111,6 +118,9 @@ class EquilibriumService(BaseChassis):
         # never retried.
         self._last_insight_low_at: str | None = None
         self._last_flow_ended_at: str | None = None
+        # Consecutive stale-window polls, for rate-limiting that warning the same
+        # way AttentionSelfModelReader._log_failure rate-limits its own.
+        self._stale_window_polls: int = 0
 
     def _trace_meta(
         self,
@@ -839,15 +849,32 @@ class EquilibriumService(BaseChassis):
             datetime.now(timezone.utc) - samples[-1].generated_at
         ).total_seconds()
         if age_sec > max_age:
-            logger.warning(
-                "generative_metacog_window_stale age_sec=%.1f max_age_sec=%.1f "
-                "newest_row=%s -- is SUBSTRATE_ATTENTION_SELF_MODEL_TICK_ENABLED "
-                "still writing?",
-                age_sec,
-                max_age,
-                samples[-1].generated_at.isoformat(),
-            )
+            # Rate-limited the same way AttentionSelfModelReader._log_failure is:
+            # at a 30s poll this would otherwise emit ~2880 identical warnings a
+            # day while the writer is down. Re-logged periodically rather than
+            # suppressed outright, because "the writer stopped" is exactly the
+            # kind of condition that should stay visible until it's fixed.
+            self._stale_window_polls += 1
+            if (
+                self._stale_window_polls == 1
+                or self._stale_window_polls % _STALE_WINDOW_RELOG_EVERY == 0
+            ):
+                logger.warning(
+                    "generative_metacog_window_stale age_sec=%.1f max_age_sec=%.1f "
+                    "newest_row=%s consecutive_stale_polls=%d -- is "
+                    "SUBSTRATE_ATTENTION_SELF_MODEL_TICK_ENABLED still writing?",
+                    age_sec,
+                    max_age,
+                    samples[-1].generated_at.isoformat(),
+                    self._stale_window_polls,
+                )
             return False
+        if self._stale_window_polls:
+            logger.info(
+                "generative_metacog_window_fresh_again after %d stale poll(s)",
+                self._stale_window_polls,
+            )
+            self._stale_window_polls = 0
         return True
 
     async def _generative_metacog_poll_loop(self) -> None:

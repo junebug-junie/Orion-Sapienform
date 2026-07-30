@@ -230,7 +230,7 @@ Both ship **disabled**, same standard as `transport`'s bus_synaptic option: they
 | `EQUILIBRIUM_METACOG_INSIGHT_CONFIRM_TICKS` | `2` | Consecutive newest ticks that must hold the high band |
 | `EQUILIBRIUM_METACOG_FLOW_FLOOR` | `0.90` | Hard floor on the window minimum (`0.92` is degenerate) |
 | `EQUILIBRIUM_METACOG_FLOW_MAX_STDEV` | `0.02` | Variance ceiling (currently non-binding at floor `0.90`) |
-| `EQUILIBRIUM_METACOG_FLOW_MIN_TICKS` | `20` | ~10 minutes of consecutive calm |
+| `EQUILIBRIUM_METACOG_FLOW_MIN_TICKS` | `20` | 20 consecutive ticks — nominally ~10 min at a 30s cadence, though `SPAN_TOLERANCE=2.0` means a window covering up to ~19 min is still accepted (the real figure is always recorded as `upstream.span_sec`) |
 
 ---
 

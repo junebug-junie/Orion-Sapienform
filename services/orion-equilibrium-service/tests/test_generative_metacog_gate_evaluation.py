@@ -223,6 +223,47 @@ def test_empty_window_is_rejected() -> None:
     assert svc._generative_samples_are_fresh([]) is False
 
 
+def test_stale_window_warning_is_rate_limited(caplog) -> None:
+    """Verification finding 2026-07-30: this warning had the same unbounded-repeat
+    shape the reader's own failure logging was fixed for -- ~2880 identical lines a
+    day while the writer is down. Rate-limited, but still re-logged periodically so
+    a stopped writer does not go silent."""
+    import logging
+
+    svc = _service()
+    old_end = datetime.now(timezone.utc) - timedelta(days=3)
+    stale = [
+        ConfidenceSample(generated_at=old_end - (19 - i) * TICK, value=0.93)
+        for i in range(20)
+    ]
+
+    with caplog.at_level(logging.WARNING, logger="orion-equilibrium"):
+        for _ in range(10):
+            assert svc._generative_samples_are_fresh(stale) is False
+
+    warnings = [r for r in caplog.records if "window_stale" in r.getMessage()]
+    assert len(warnings) == 1, f"expected 1 warning across 10 stale polls, got {len(warnings)}"
+    assert svc._stale_window_polls == 10
+
+
+def test_stale_counter_resets_when_the_window_recovers() -> None:
+    """Otherwise a single earlier outage would permanently offset the re-log
+    cadence for every later one."""
+    svc = _service()
+    old_end = datetime.now(timezone.utc) - timedelta(days=3)
+    stale = [
+        ConfidenceSample(generated_at=old_end - (19 - i) * TICK, value=0.93)
+        for i in range(20)
+    ]
+
+    for _ in range(3):
+        svc._generative_samples_are_fresh(stale)
+    assert svc._stale_window_polls == 3
+
+    assert svc._generative_samples_are_fresh(_now_series(_FLOW_VALUES)) is True
+    assert svc._stale_window_polls == 0
+
+
 def test_window_just_past_max_age_is_rejected(monkeypatch) -> None:
     monkeypatch.setattr(settings, "metacog_generative_max_age_sec", 60.0)
     svc = _service()

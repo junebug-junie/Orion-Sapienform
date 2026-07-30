@@ -2157,6 +2157,25 @@ channels:
     stability: "experimental"
     since: "2026-05-09"
 
+  # Codebase-mass domain (docs/superpowers/specs/2026-07-30-codebase-mass-
+  # signal-design.md) -- sixth prediction_error domain, sensing git/GitHub/
+  # graphify structural change. orion-cocreation-signals (not yet a live
+  # service as of this contract patch) will own all external I/O for this
+  # domain; orion-substrate-runtime's existing fast tick reads this event and
+  # writes node:substrate.codebase via codebase_prediction_error() -- no
+  # external I/O added to orion-substrate-runtime itself. Each event carries
+  # exactly one producer domain's real delta (git/pr_lifecycle/graph); see
+  # orion/schemas/codebase_delta.py's own docstring for why the other two
+  # nested fields are always None, not a fabricated zero.
+  - name: "orion:substrate:codebase_delta"
+    kind: "event"
+    schema_id: "CodebaseDeltaV1"
+    message_kind: "substrate.codebase_delta.v1"
+    producer_services: ["orion-cocreation-signals"]
+    consumer_services: ["orion-substrate-runtime"]
+    stability: "experimental"
+    since: "2026-07-30"
+
   - name: "orion:mind:artifact"
     kind: "event"
     schema_id: "MindRunArtifactV1"

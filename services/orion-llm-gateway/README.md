@@ -207,6 +207,52 @@ LLM_GATEWAY_ROUTE_TABLE_JSON='{
 }'
 ```
 
+### Background-priority routes
+
+A route entry can carry `"priority":"background"` and an optional
+`"reserved_free_slots"` (default `1` if unset) alongside the normal
+`url`/`served_by`/`backend` fields, sharing the exact same upstream as a
+regular route:
+
+```json
+"quick_background": {
+  "url": "http://100.121.214.30:8013",
+  "served_by": "atlas-worker-fast-1",
+  "backend": "llamacpp",
+  "priority": "background",
+  "reserved_free_slots": 2
+}
+```
+
+Any request resolved to a background route waits (`priority_admission.py`)
+for the upstream's own `/slots` endpoint to report at least
+`reserved_free_slots` idle slots before dispatching -- it never competes
+evenly with foreground traffic sharing the same llama.cpp process. It's a
+fail-open gate, not a hard block: if `/slots` is unreachable, or the
+upstream is permanently busy past `LLM_GATEWAY_BACKGROUND_MAX_WAIT_SEC`
+(default 30s), the request forwards anyway with a logged warning -- a
+background caller never gets its request silently dropped. A per-route-key
+`asyncio.Semaphore` (`LLM_GATEWAY_BACKGROUND_CONCURRENCY`, default 1) also
+caps how many background-tagged requests this gateway process holds
+in flight at once, so a burst on the background lane can't itself claim
+more slots than intended even when they're nominally free.
+
+Plain routes (no `priority` field) are completely unaffected -- the gate is
+never invoked for them, zero added latency, zero behavior change.
+
+**Pilot instance (2026-07-30):** AI Town's NPC dialogue (`quick_background`
+above) shares GPU1's `atlas-worker-fast-1` process with `orion-mind`
+(`MIND_SEMANTIC_MODEL_ROUTE`/`MIND_STANCE_MODEL_ROUTE`), `orion-embodiment`
+(`EMBODIMENT_SPEECH_HUB_LLM_ROUTE`), and `orion-hub`
+(`MEMORY_GRAPH_SUGGEST_PRIMARY_ROUTE`) -- all still pointed at plain `quick`,
+all unaffected. No second GPU was available to give AI Town its own
+dedicated small model (confirmed live: both V100s already host one model
+each), so this pattern exists specifically so AI Town's dialogue can share
+the same GPU/model without ever making those other, snappier consumers wait
+behind it. This is meant as a reusable seam -- any other lane can add its
+own `<lane>_background` entry pointed at an existing route's `url`/`served_by`
+to get the same behavior, no gateway code changes required.
+
 ### Smoke Test
 ```bash
 PYTHONPATH=/workspace/Orion-Sapienform python -m scripts.smoke_llm_gateway_routes \

@@ -8,7 +8,7 @@ import httpx
 import pytest
 from fastapi.testclient import TestClient
 
-from app import openai_passthrough
+from app import openai_passthrough, priority_admission
 from app.llm_backend import _load_route_targets
 from app.main import app
 from app.settings import settings
@@ -143,3 +143,85 @@ class TestOpenAIPassthroughHTTP:
         body = response.json()
         assert body["data"][0]["embedding"] == [0.1, 0.2, 0.3]
         assert body["model"] == "BAAI/bge-large-en-v1.5"
+
+
+class TestBackgroundPriorityRoute:
+    """A priority='background' route (e.g. AI Town's quick_background) must
+    wait for upstream /slots slack before dispatching; a plain foreground
+    route (e.g. quick itself) must never touch the admission gate at all."""
+
+    @pytest.fixture
+    def route_table_with_background(self) -> Dict[str, Dict[str, Any]]:
+        return {
+            "quick": {"url": "http://quick:8013", "served_by": "atlas-worker-fast-1", "backend": "llamacpp"},
+            "quick_background": {
+                "url": "http://quick:8013",
+                "served_by": "atlas-worker-fast-1",
+                "backend": "llamacpp",
+                "priority": "background",
+                "reserved_free_slots": 2,
+            },
+        }
+
+    @pytest.fixture
+    def client_with_background(
+        self, monkeypatch: pytest.MonkeyPatch, route_table_with_background: Dict[str, Dict[str, Any]]
+    ) -> TestClient:
+        monkeypatch.setattr(settings, "llm_route_table_json", json.dumps(route_table_with_background))
+        monkeypatch.setattr(settings, "llm_gateway_openai_passthrough_enabled", True)
+        _load_route_targets.cache_clear()
+        return TestClient(app)
+
+    def test_background_route_waits_for_slack_before_dispatch(
+        self, client_with_background: TestClient, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        mock_response = httpx.Response(
+            200,
+            json={"choices": [{"index": 0, "message": {"role": "assistant", "content": "hi"}}]},
+        )
+
+        async def _fake_post(self: Any, url: str, **kwargs: Any) -> httpx.Response:
+            return mock_response
+
+        monkeypatch.setattr(httpx.AsyncClient, "post", _fake_post)
+
+        with patch.object(
+            priority_admission, "_free_slot_count", AsyncMock(return_value=3)
+        ) as mocked_slots:
+            response = client_with_background.post(
+                "/v1/chat/completions",
+                json={
+                    "model": "quick_background",
+                    "messages": [{"role": "user", "content": "hi"}],
+                    "max_tokens": 8,
+                },
+            )
+        assert response.status_code == 200
+        mocked_slots.assert_awaited()
+
+    def test_foreground_route_never_touches_the_admission_gate(
+        self, client_with_background: TestClient, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        mock_response = httpx.Response(
+            200,
+            json={"choices": [{"index": 0, "message": {"role": "assistant", "content": "hi"}}]},
+        )
+
+        async def _fake_post(self: Any, url: str, **kwargs: Any) -> httpx.Response:
+            return mock_response
+
+        monkeypatch.setattr(httpx.AsyncClient, "post", _fake_post)
+
+        with patch.object(
+            priority_admission, "_free_slot_count", AsyncMock(return_value=3)
+        ) as mocked_slots:
+            response = client_with_background.post(
+                "/v1/chat/completions",
+                json={
+                    "model": "quick",
+                    "messages": [{"role": "user", "content": "hi"}],
+                    "max_tokens": 8,
+                },
+            )
+        assert response.status_code == 200
+        mocked_slots.assert_not_awaited()

@@ -55,6 +55,15 @@ class JournalDispatchPolicy:
     # needs its own uncapped or independently-capped email is a one-line registry
     # edit here, not new branching logic in the dispatch function.
     subject_to_daily_cap: bool = True
+    # 2026-07-30: which cap pool this trigger_kind's one-per-day slot is drawn from.
+    # "shared" (default) competes with every other shared-scope trigger_kind for one
+    # slot/day -- whichever fires first each day wins, and the rest get
+    # daily_cap_reached silently. A non-"shared" value gets its own independent
+    # slot/day, isolated from the shared pool. world_pulse_digest was confirmed live
+    # to be losing the shared race most/all days (Juniper reported daily-digest
+    # emails silently stopping ~a week prior); giving it its own scope guarantees it
+    # one email/day regardless of what else fires that day.
+    daily_cap_scope: str = "shared"
 
 
 JOURNAL_DISPATCH_REGISTRY: dict[str, JournalDispatchPolicy] = {
@@ -75,6 +84,7 @@ JOURNAL_DISPATCH_REGISTRY: dict[str, JournalDispatchPolicy] = {
         email_enabled=True,
         in_app_enabled=False,
         recall_profile_setting="actions_journal_world_pulse_recall_profile",
+        daily_cap_scope="world_pulse_digest",
     ),
     "notify_summary": JournalDispatchPolicy(
         "notify_summary",

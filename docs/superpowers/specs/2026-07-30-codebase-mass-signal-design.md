@@ -328,21 +328,42 @@ service's own code lives in, mounted read-only into itself, matching how
 `scripts/analysis/measure_*.py` already operate directly against a real checkout. No separate
 git-clone-inside-the-container step needed.
 
-**Open design question carried into the consumer patch, not resolved here:** `CodebaseMassBaseline`
-(the three-domain EWMA state) needs to persist across ticks, but this domain has no reducer
-projection to store it on, unlike every other domain in `orion/substrate/prediction_error.py`.
-**Proposed answer, needs verification before implementation:** persist it as a JSON blob inside
-`node:substrate.codebase`'s own `ConceptNodeV1.metadata` (the node `_write_prediction_error_node()`
-already upserts) — read the prior baseline off that node's metadata at the start of each
-consumer tick, compute the update, write the new baseline back into metadata alongside `error`.
-This is plausible but **unverified**: it depends on `_write_prediction_error_node()`'s real
-upsert semantics actually round-tripping a caller-supplied custom metadata key untouched across
-ticks (the function is documented as "carries forward dynamics-engine-owned metadata keys" for
-*some* keys — whether an arbitrary new key like `codebase_mass_baseline` survives the same way
-needs a direct read of `_write_prediction_error_node()`'s real body and, ideally, a live check
-against a real node, not an assumption from this design doc alone). This is exactly the kind of
-question the consumer patch should answer with real code/data before writing the tick logic, not
-something to build against blind.
+**Baseline persistence — resolved, 2026-07-31, by reading the real code (not building against the
+earlier proposal blind).** The originally proposed answer ("piggyback on `node:substrate.codebase`'s
+own metadata") is **wrong** — verified directly against `_write_prediction_error_node()`'s real body
+(`services/orion-substrate-runtime/app/worker.py`): it builds a **fresh** `metadata` dict on every
+call containing only `source_kind`/`prediction_error`/`reducer_key`, plus whatever's explicitly
+carried forward from `DYNAMICS_ENGINE_OWNED_METADATA_KEYS`
+(`orion/substrate/falkor_codec.py` — a narrow, semantically-specific allowlist owned by
+`SubstrateDynamicsEngine.tick()`: `dynamic_pressure`/`dynamic_pressure_reason`/`dormant`/
+`dormancy_updated_at`) and `contributing_turn_ids`. A custom `codebase_mass_baseline` key is not
+on that list — it would be **silently dropped on the very next write**, exactly the "tick clobbers
+a field it doesn't own" failure class this repo has already hit three times and documented by name
+(`execution_load` cross-lane stomp PR #1338, field-digester's generic decay clobber,
+`SubstrateDynamicsEngine.tick()`'s `bus_synaptic` clobber PR #1449 — all three cited verbatim in
+`services/orion-substrate-runtime/app/store.py::save_attention_self_model()`'s own docstring).
+
+**Real answer: a dedicated, single-writer, append-only table — the exact pattern this repo already
+uses for the same problem.** `substrate_attention_self_model`
+(`services/orion-sql-db/manual_migration_attention_self_model_v1.sql`,
+`store.py::save_attention_self_model()`) is the direct template: one `INSERT ... ON CONFLICT DO
+NOTHING` per tick (no read-modify-write, no shared row to clobber), retention-pruned, with a
+`generated_at DESC` index for reading the latest row back
+(`store.py::get_latest_field_attention_frame()` is the existing "read most recent row" precedent to
+mirror). The consumer patch should add:
+
+- `services/orion-sql-db/manual_migration_codebase_mass_baseline_v1.sql`: `create table if not
+  exists substrate_codebase_mass_baseline (baseline_id text primary key, generated_at timestamptz
+  not null, baseline_json jsonb not null, created_at timestamptz not null default now())` + a
+  `generated_at desc` index — same shape as the self-model migration, one field renamed.
+- `store.py::save_codebase_mass_baseline()` / `get_latest_codebase_mass_baseline()`: append +
+  read-latest, same shape as `save_attention_self_model()`/`get_latest_field_attention_frame()`.
+  `baseline_json` is `CodebaseMassBaseline.to_json_dict()`-shaped (needs adding a
+  `to_json_dict()`/`from_json_dict()` pair to `CodebaseMassBaseline`, matching
+  `GraphSnapshotStats`'s existing convention in `orion/structural_mass/snapshot_history.py`).
+- This table has **exactly one writer** (the new consumer tick) and **no pre-existing occupant** —
+  the same structural guarantee `save_attention_self_model()`'s docstring names explicitly, not
+  "avoided by convention."
 
 ### Phase 2 — Concept classes (separate, dedicated module, does not touch the halted system)
 
@@ -471,6 +492,8 @@ producer patch is next: scaffold `services/orion-cocreation-signals/` with exact
 producers (`git_delta`, `pr_lifecycle`, `graph_delta`), per "Producer + consumer patch design"
 above — no consumer wiring yet, so the service can be built and its own tests/docker-compose
 validated in isolation before `orion-substrate-runtime` reads anything from it. The consumer patch
-(bus-event consumption, `NODE_CHANNELS` registration, decay exclusion) should not start until the
-`CodebaseMassBaseline` persistence question is answered with real code/data, not assumed from this
-design doc — that's this arc's next real "measure before minting" checkpoint.
+(bus-event consumption, `NODE_CHANNELS` registration, decay exclusion, `substrate_codebase_mass_
+baseline` migration) can follow once the producer patch is real — the `CodebaseMassBaseline`
+persistence question that previously blocked it is now resolved (see "Producer + consumer patch
+design" above, 2026-07-31 update: dedicated single-writer append-only table, same pattern as
+`substrate_attention_self_model`).

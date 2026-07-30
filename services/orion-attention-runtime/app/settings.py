@@ -37,6 +37,26 @@ class Settings(BaseSettings):
     )
     log_level: str = Field("INFO", alias="LOG_LEVEL")
 
+    # Field-native goal-provenance producer (Sentience Striving Program sec6
+    # Objective 3, 2026-07-30) -- see docs/superpowers/specs/2026-07-30-goal-
+    # provenance-and-decision-lattice-observability-design.md. Publishes
+    # FieldGoalProvenanceV1 to orion:memory:goals:proposed (repointed from the
+    # deleted GoalProposalEngine's old contract) when the same real
+    # node:substrate.* target sustains the node-target subset's top-1 rank for
+    # goal_provenance_min_streak consecutive real field ticks. Uses this
+    # service's existing orion_bus_url/orion_bus_enabled (previously only fed
+    # the HeartbeatOnly chassis) for a second, independent bus connection.
+    enable_goal_provenance_producer: bool = Field(
+        True, alias="ORION_GOAL_PROVENANCE_PRODUCER_ENABLED"
+    )
+    # min_streak's real value is an unmeasured, disclosed placeholder debounce
+    # (see design doc Part A, Missing Question 2) -- not a calibrated
+    # threshold. Revisit once live trigger-rate data exists.
+    goal_provenance_min_streak: int = Field(3, alias="ORION_GOAL_PROVENANCE_MIN_STREAK")
+    channel_goal_proposal: str = Field(
+        "orion:memory:goals:proposed", alias="CHANNEL_GOAL_PROPOSAL"
+    )
+
     # Health monitor -> orion-notify attention alerts. Edge-triggered (fires only
     # on healthy->unhealthy transitions), not polled-and-spammed.
     attention_frame_stall_multiplier: float = Field(1.5, alias="ATTENTION_FRAME_STALL_MULTIPLIER")

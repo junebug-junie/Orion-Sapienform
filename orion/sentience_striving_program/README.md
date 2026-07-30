@@ -327,6 +327,25 @@ first place. Full reasoning and phased detail:
    supported here, without full confidence. Real next step, not started: re-examine
    `biometrics_prediction_error`'s own formula before trusting it as this domain's
    field-native replacement.
+   **Status (2026-07-30): the `goal.drive_origin` replacement named at the top of this item
+   is built and wired live.** `orion/schemas/field_goal.py::FieldGoalProvenanceV1` carries no
+   `drive_origin`/taxonomy field — only `field_target_id`, `salience_score`,
+   `source_field_tick_id`, `source_attention_frame_id` (real O4-compliant provenance: a report
+   on which field target won, not an asserted category). `orion-attention-runtime` publishes
+   one when the same real `node:substrate.*` domain sustains the node-target subset's real
+   top-1 rank for `ORION_GOAL_PROVENANCE_MIN_STREAK` (default 3, disclosed unmeasured
+   debounce) consecutive real field ticks — see
+   `orion/attention/field_attention/goal_provenance.py`. Repoints
+   `orion:memory:goals:proposed` (producer-less since the 2026-07-30 drives deletion above)
+   from the old `GoalProposalV1` contract to this schema; `goal_context.py`/`top_down.py`
+   updated to consume it, plus a new read-time staleness dead-man's-switch on
+   `GoalContextStore` (not decay — see the design doc for why). Full design:
+   `docs/superpowers/specs/2026-07-30-goal-provenance-and-decision-lattice-observability-
+   design.md`. **What this does not do**: `capability_policy.py`'s `requires_goal_status`
+   gates still run on `policy_act.py`'s separate `goal_proposal_from_episode_intent()`
+   synthetic stub, untouched by this patch (a different consumer of the old schema, not
+   `goal_context`'s) — Objective 6 remains gated on item 2's reducer being *proven*, unaffected
+   by this item shipping.
 4. **Stand up read-only measurement for the remaining consciousness-theory instruments** (§9)
    — RPT/Lamme and predictive processing are already live (items 2-3 build on them directly,
    not duplicate them); IIT continues independently via the mood-arc encoder, not gated by

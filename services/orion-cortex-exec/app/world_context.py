@@ -1,7 +1,56 @@
 from __future__ import annotations
 
+import json
+import logging
+import threading
 from datetime import datetime, timezone
 from typing import Any
+from urllib.request import urlopen
+
+logger = logging.getLogger("orion.cortex.world_context")
+
+# Guards the two scalars below. Genuinely needed: fetch_latest_world_context_capsule
+# is a last-resort fallback invoked via asyncio.to_thread (see executor.py), so
+# concurrent chat turns on different thread-pool threads can call it at once. There
+# is only ever one base_url in practice (one Settings instance per process), so a
+# dict keyed by base_url would be indirection with no real second key to hold.
+_CAPSULE_CACHE_LOCK = threading.Lock()
+_cache_time: datetime | None = None
+_cache_value: dict[str, Any] | None = None
+
+
+def fetch_latest_world_context_capsule(
+    *,
+    base_url: str,
+    timeout_seconds: float,
+    cache_ttl_seconds: int,
+) -> dict[str, Any] | None:
+    """Bounded, cached, fail-open fetch of the latest capsule orion-world-pulse already built.
+
+    Last-resort fallback: the primary path is main.py's world_context_capsule_listener
+    (a bus Hunter on orion:world_context:daily_capsule, no I/O on the read side). This
+    only runs for the window before that listener has ever received a capsule in this
+    process's lifetime -- orion-world-pulse's /api/world-pulse/latest is its documented
+    HTTP contract (see services/orion-world-pulse/app/routers/runs.py), not a private
+    internal.
+    """
+    global _cache_time, _cache_value
+    now = datetime.now(timezone.utc)
+    with _CAPSULE_CACHE_LOCK:
+        if _cache_time is not None and (now - _cache_time).total_seconds() < cache_ttl_seconds:
+            return _cache_value
+    capsule: dict[str, Any] | None = None
+    try:
+        with urlopen(f"{base_url}/api/world-pulse/latest", timeout=timeout_seconds) as resp:
+            payload = json.loads(resp.read().decode("utf-8"))
+        candidate = payload.get("capsule") if isinstance(payload, dict) else None
+        capsule = candidate if isinstance(candidate, dict) else None
+    except Exception as exc:
+        logger.info("world_context_capsule_fetch_failed base_url=%s error=%s", base_url, exc)
+        capsule = None
+    with _CAPSULE_CACHE_LOCK:
+        _cache_time, _cache_value = now, capsule
+    return capsule
 
 
 def filter_world_context_capsule(

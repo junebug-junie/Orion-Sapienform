@@ -381,7 +381,7 @@ def run_world_pulse(
             confidence=cluster_confidence,
             volatility=brief.volatility,
             source_agreement=brief.source_agreement,
-            stance_eligible=False,
+            stance_eligible=True,
             created_at=now,
         )
         items.append(item)

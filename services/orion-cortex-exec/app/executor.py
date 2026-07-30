@@ -99,6 +99,8 @@ from .chat_stance import (
     suppress_chat_general_speech_identity_priming,
 )
 from .situation import build_situation_for_ctx
+from .world_context import fetch_latest_world_context_capsule
+from .world_context_capsule_cache import get_world_context_capsule_cache
 from .llm_lane import resolve_llm_lane_for_step
 
 logger = logging.getLogger("orion.cortex.exec")
@@ -2753,6 +2755,22 @@ async def call_step_services(
             if settings.world_pulse_stance_enabled:
                 md = ctx.get("metadata") if isinstance(ctx.get("metadata"), dict) else {}
                 candidate = md.get("world_context_capsule") if isinstance(md.get("world_context_capsule"), dict) else None
+                if candidate is None:
+                    # Primary source: orion:world_context:daily_capsule bus Hunter
+                    # (main.py's world_context_capsule_listener), a plain in-process
+                    # dict read -- no I/O, never blocks.
+                    candidate = get_world_context_capsule_cache().get()
+                if candidate is None:
+                    # Last-resort fallback for the window before the bus has ever
+                    # delivered a capsule in this process's lifetime (fresh
+                    # deploy/restart): bounded HTTP fetch, offloaded to a thread so
+                    # a cache-miss can't stall the event loop.
+                    candidate = await asyncio.to_thread(
+                        fetch_latest_world_context_capsule,
+                        base_url=str(settings.world_pulse_base_url),
+                        timeout_seconds=float(settings.world_pulse_capsule_fetch_timeout_seconds),
+                        cache_ttl_seconds=int(settings.world_pulse_capsule_cache_ttl_seconds),
+                    )
                 world_capsule, capsule_diag = _filter_world_context_capsule(
                     candidate,
                     min_confidence=float(settings.world_pulse_stance_min_confidence),

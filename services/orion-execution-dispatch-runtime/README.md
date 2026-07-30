@@ -77,6 +77,48 @@ promotes the candidate to a real, evidenced `dispatched` status.
   the fallback used when the EWMA baseline has never been seeded and no historical closed day
   with real candidate data exists at all.
 
+**Staleness discard (2026-07-30)**: this service consumes `substrate_policy_decision_frames`
+strictly FIFO, oldest-undispatched-first (`ExecutionDispatchRuntimeStore.
+load_latest_policy_frame_without_dispatch()`). Because a real dispatch is a synchronous
+`cortex-exec` RPC (~7-11s measured live, one per real send, bounded by
+`EXECUTION_DISPATCH_RPC_TIMEOUT_SEC`), this single-threaded consumer cannot keep pace with real
+production of new policy decisions (~16/min produced vs ~6.8/min consumed, measured live
+2026-07-30) — the queue grows without bound if nothing intervenes. Found live 2026-07-30: 46,617
+policy frames backlogged, oldest 37h old, meaning real cortex actions were describing hours-old
+field pressure as current.
+
+Every `_tick()` now first fast-drains any policy frame older than a randomized
+`[EXECUTION_DISPATCH_STALENESS_MIN_SEC, EXECUTION_DISPATCH_STALENESS_MAX_SEC]` threshold (default
+120-300s) — no single fixed cutoff every candidate sits the same distance from — capped at
+`MAX_STALE_DISCARDS_PER_TICK` (200) discards per tick so one deep-backlog catch-up tick doesn't
+feed the discard-rate EWMA below one absurd outlier sample. Each discard is **materialized, never
+silently dropped**: `build_stale_discard_execution_dispatch_frame` saves a real
+`ExecutionDispatchFrameV1` (`dispatch_attempted=False`, `blocked_count=len(decisions)`) with a
+`stale_backlog_discarded age_sec=... threshold_sec=... candidates=N` warning plus one
+`stale_discard:{template_key}:{decision}` warning per discarded candidate — real, queryable
+forensic content in `substrate_execution_dispatch_frames.warnings`, same table every real frame
+lands in.
+
+**Backlog-pressure signal**: `ExecutionDispatchFrameV1.staleness_discard_count_ewma` (`_var`/`_n`
+alongside it, same carried-forward-on-every-frame convention as `daily_risk_baseline_*`) — an
+EWMA over how many consecutive stale frames each `_tick()` call discarded before finding one
+fresh enough to process, or running out. Near 0 in steady state (consumption keeping pace);
+rising means the backlog is growing again. Read via
+`ExecutionDispatchRuntimeStore.load_latest_staleness_discard_baseline()`, same read pattern as the
+daily risk baseline. `STALENESS_DISCARD_EWMA_ALPHA`/`_MIN_VARIANCE` (`app/worker.py`) are a
+disclosed, uncalibrated first-pass guess — no real history existed to size them against before
+this shipped; revisit once real post-deploy discard-count data exists.
+
+**Operator override**: `EXECUTION_DISPATCH_STALENESS_OVERRIDE_SEC` (unset by default) bypasses the
+randomized window entirely and uses one fixed value every tick instead — set very high if a
+deliberate deep-backlog catch-up ever becomes desirable again (e.g. Orion's own attention/dispatch
+cadence changes later) instead of reverting this patch. Same "explicit override, don't touch the
+derived machinery" shape as `ORION_DISPATCH_RISK_CAP_ADVISORY_ONLY` above.
+
+See `docs/superpowers/specs/2026-07-30-execution-dispatch-staleness-discard-design.md` for the
+full live-data investigation (real backlog depth, throughput math, root cause) and the deferred
+part-2 throughput redesign this was scoped alongside but does not itself implement.
+
 **Theater tripwire**: if more than half of the trailing 10 real results have `status="empty"`
 (a real send that produced no usable observation), the worker stops sending for the rest of
 its process lifetime — visible via `GET /latest`'s `theater_tripwire_active` field and one

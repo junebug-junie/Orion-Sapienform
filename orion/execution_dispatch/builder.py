@@ -296,3 +296,73 @@ def build_unevaluable_execution_dispatch_frame(
         blocked_count=0,
         warnings=[*policy_frame.warnings, reason],
     )
+
+
+def _decision_template_key(proposal_id: str) -> str:
+    # stable_proposal_id() (orion/proposals/builder.py) is always
+    # "proposal:{template_key}:{field_tick_id}:{attention_frame_id}" --
+    # template_key is a plain config dict key (never contains ":"), so
+    # index [1] is exact, same convention scripts/analysis/measure_proposal_
+    # feedback_correlation.py's extract_template_key() already relies on.
+    parts = proposal_id.split(":")
+    return parts[1] if len(parts) > 1 else proposal_id
+
+
+def build_stale_discard_execution_dispatch_frame(
+    *,
+    policy_frame: PolicyDecisionFrameV1,
+    policy_id: str,
+    age_sec: float,
+    staleness_threshold_sec: float,
+    now: datetime | None = None,
+) -> ExecutionDispatchFrameV1:
+    """A policy frame past its staleness window gets discarded rather than
+    dispatched -- real cortex-exec dispatches are a synchronous, ~7-11s RPC
+    (measured live 2026-07-30) each, so a single-threaded FIFO consumer
+    cannot keep pace with real production of new policy_decision_frames
+    (measured live: ~16/min produced vs. ~6.8/min consumed). Continuing to
+    process a growing backlog strictly oldest-first means eventually
+    dispatching real cortex actions that describe field pressure as "current"
+    when it is actually hours old -- a "no empty-shell cognition" violation
+    in its own right, not just a throughput problem. See docs/superpowers/
+    specs/2026-07-30-execution-dispatch-staleness-discard-design.md.
+
+    Materializes what was discarded rather than silently dropping it: one
+    `stale_discard:{template_key}:{decision}` warning entry per candidate
+    that was in the discarded policy frame, so real discard content stays
+    queryable in `substrate_execution_dispatch_frames.warnings` (no new
+    table -- this repo's existing "no keyword cathedral" bias against a new
+    schema/surface unless it earns its keep). The worker separately tracks
+    an EWMA of discard counts (`ExecutionDispatchFrameV1.staleness_discard_
+    count_ewma`) as the aggregate backlog-pressure signal; this per-frame
+    warning list is the per-decision forensic detail underneath it.
+
+    Same "record honestly, never silently drop" contract as
+    `build_unevaluable_execution_dispatch_frame` above, and the same stable
+    frame_id so a later real build (should this exact policy_frame somehow
+    still be the FIFO head, which it won't be once discarded) naturally
+    supersedes rather than duplicates.
+    """
+    summary = [
+        f"stale_discard:{_decision_template_key(d.proposal_id)}:{d.decision}"
+        for d in policy_frame.decisions
+    ]
+    reason = (
+        f"stale_backlog_discarded age_sec={age_sec:.1f} "
+        f"threshold_sec={staleness_threshold_sec:.1f} candidates={len(policy_frame.decisions)}"
+    )
+    return ExecutionDispatchFrameV1(
+        frame_id=stable_execution_dispatch_frame_id(
+            policy_frame_id=policy_frame.frame_id,
+            policy_id=policy_id,
+        ),
+        generated_at=now or datetime.now(timezone.utc),
+        source_policy_frame_id=policy_frame.frame_id,
+        source_proposal_frame_id=policy_frame.source_proposal_frame_id,
+        source_field_tick_id=policy_frame.source_field_tick_id,
+        execution_dispatch_policy_id=policy_id,
+        dispatch_attempted=False,
+        dispatch_count=0,
+        blocked_count=len(policy_frame.decisions),
+        warnings=[*policy_frame.warnings, reason, *summary],
+    )

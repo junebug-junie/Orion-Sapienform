@@ -43,6 +43,40 @@ class Settings(BaseSettings):
     execution_dispatch_rpc_timeout_sec: float = Field(
         120.0, alias="EXECUTION_DISPATCH_RPC_TIMEOUT_SEC"
     )
+    # 2026-07-30 (docs/superpowers/specs/2026-07-30-execution-dispatch-
+    # staleness-discard-design.md): a real dispatch is a synchronous
+    # cortex-exec RPC, ~7-11s measured live -- this single-threaded FIFO
+    # consumer cannot keep pace with real production of new policy_decision_
+    # frames (~16/min produced vs ~6.8/min consumed, measured live
+    # 2026-07-30), so the oldest-undispatched-first queue grows without
+    # bound (46,617 backlogged, oldest 37h old, at the time this was found).
+    # A policy frame older than a randomized [min,max] threshold gets
+    # discarded (materialized as a real, queryable "stale_discard" frame --
+    # see build_stale_discard_execution_dispatch_frame -- never silently
+    # dropped) instead of dispatched, so real cortex actions never describe
+    # hours-old field state as current. Randomized, not a single fixed
+    # constant, so there is no one sharp, predictable cliff every candidate
+    # sits at the same distance from.
+    execution_dispatch_staleness_min_sec: float = Field(
+        120.0, alias="EXECUTION_DISPATCH_STALENESS_MIN_SEC"
+    )
+    execution_dispatch_staleness_max_sec: float = Field(
+        300.0, alias="EXECUTION_DISPATCH_STALENESS_MAX_SEC"
+    )
+    # Explicit operator override shim: when set, BYPASSES the randomized
+    # [min, max] window entirely and uses this fixed value for every tick
+    # instead. Same "explicit operator override, no touching the derived
+    # machinery itself" shape as orion_dispatch_risk_cap_advisory_only above.
+    # Exists because this service's own consumption/production balance is
+    # not assumed permanent -- if Orion's attention/dispatch cadence changes
+    # later (faster real consumption, fewer but more deliberate proposals,
+    # etc.), a deliberate deep-backlog catch-up may become desirable again
+    # without a code change: set this very high (or, in the -- currently
+    # unimplemented -- limit, disable discarding outright) rather than
+    # reverting this patch. None (default) means "use the randomized window."
+    execution_dispatch_staleness_override_sec: float | None = Field(
+        None, alias="EXECUTION_DISPATCH_STALENESS_OVERRIDE_SEC"
+    )
     # 2026-07-29: no longer the primary mechanism -- see
     # orion_dispatch_risk_cap_advisory_only's comment below and
     # app/worker.py::ExecutionDispatchRuntimeWorker._derive_daily_risk_cap

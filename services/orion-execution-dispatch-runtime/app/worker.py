@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import math
+import random
 from collections import deque
 from datetime import date, datetime, time, timedelta, timezone
 from pathlib import Path
@@ -14,6 +15,7 @@ from orion.core.bus.async_service import OrionBusAsync
 from orion.core.bus.bus_schemas import BaseEnvelope, ServiceRef
 from orion.execution_dispatch.builder import (
     build_execution_dispatch_frame,
+    build_stale_discard_execution_dispatch_frame,
     build_unevaluable_execution_dispatch_frame,
 )
 from orion.execution_dispatch.cortex_client import ExecutionDispatchCortexClient
@@ -25,6 +27,7 @@ from orion.execution_dispatch.result_extraction import (
 from orion.notify.client import NotifyClient
 from orion.schemas.execution_dispatch_frame import ExecutionDispatchCandidateV1, ExecutionDispatchFrameV1
 from orion.schemas.notify import NotificationRequest
+from orion.schemas.policy_decision_frame import PolicyDecisionFrameV1
 
 from app.settings import get_settings
 from app.store import ExecutionDispatchRuntimeStore
@@ -91,6 +94,50 @@ DAILY_RISK_BASELINE_MIN_SAMPLES = 2
 # bus_synaptic_graph_routes.py's anomalies() route.
 DAILY_RISK_BASELINE_Z = 3.0
 
+# 2026-07-30 (docs/superpowers/specs/2026-07-30-execution-dispatch-
+# staleness-discard-design.md): per-tick cap on how many consecutive stale
+# policy frames a single _tick() call will fast-drain before yielding back
+# to the poll loop's sleep. Without this, the first tick after this patch
+# ships would discard the entire pre-existing backlog (46,617 rows measured
+# live 2026-07-30) in one pass -- not unsafe, but it would feed the
+# staleness-discard EWMA baseline one absurd one-time outlier sample instead
+# of several real, representative ones, and would hold the poll loop's
+# single worker thread for however long tens of thousands of real DB writes
+# take. 200 is a disclosed, uncalibrated starting batch size (no real data
+# exists yet to size this against) -- large enough to make real progress
+# against a deep backlog across a handful of ticks, small enough that a
+# single tick's real wall-clock cost stays bounded.
+MAX_STALE_DISCARDS_PER_TICK = 200
+
+# Same disclosure as MAX_STALE_DISCARDS_PER_TICK above: this is the first
+# time this metric has ever been measured, so unlike DIMENSION_PRECISION_
+# MIN_VARIANCE / DAILY_RISK_BASELINE_MIN_VARIANCE elsewhere in this repo
+# (both seeded from a real measured population before shipping), there is no
+# real historical variance to calibrate against yet. alpha=0.2 is faster
+# than field-digester's per-2s-tick DIMENSION_PRECISION_EWMA_ALPHA (0.02)
+# since this updates once per real _tick() call that finds ANY policy frame
+# to act on (irregular, can fire far more or less often than every 2s
+# depending on backlog depth) -- slower than DAILY_RISK_BASELINE_ALPHA (0.4,
+# at most one real sample a day) since this can update many times a minute.
+# NOTE (code review, 2026-07-30): a tick where the policy-decision queue is
+# fully empty from the start (no frame at all, not even a fresh one) skips
+# this update entirely rather than persisting a value=0.0 sample -- there is
+# no frame left to carry it on in that exact case. Deliberately not "fixed"
+# with a synthetic no-op frame just to carry a metric forward when nothing
+# real happened (same "no empty-shell cognition" bias against inventing
+# content for its own sake) -- this only under-samples the true-idle case,
+# never the backlog case this patch exists for, and under-sampling a rare
+# calm tick is the same safe-direction trade DAILY_RISK_BASELINE's own
+# multi-day-outage gap comment already accepts elsewhere in this file.
+# MIN_VARIANCE=1.0 treats "one
+# discard" as the natural unit of spread for a small-non-negative-integer
+# count metric. Both are a disclosed, reasonable starting guess, not a
+# calibrated value -- revisit once real post-deploy discard-count history
+# exists, per this repo's metric-quality-gate discipline (do not treat "the
+# EWMA update runs without error" as proof this floor is right).
+STALENESS_DISCARD_EWMA_ALPHA = 0.2
+STALENESS_DISCARD_EWMA_MIN_VARIANCE = 1.0
+
 # ActionOutcomeEmitV1.summary lands in chat-visible evidence via
 # chat_stance.py's _project_recent_dispatch_actions -- bounded here at the
 # producer so nothing downstream needs to re-truncate raw model output.
@@ -155,12 +202,117 @@ class ExecutionDispatchRuntimeWorker:
             except asyncio.CancelledError:
                 break
 
+    def _staleness_threshold_sec(self) -> float:
+        override = self._settings.execution_dispatch_staleness_override_sec
+        if override is not None:
+            return float(override)
+        return random.uniform(
+            self._settings.execution_dispatch_staleness_min_sec,
+            self._settings.execution_dispatch_staleness_max_sec,
+        )
+
+    def _drain_stale_policy_frames(
+        self, baseline: dict
+    ) -> tuple[PolicyDecisionFrameV1 | None, int, ExecutionDispatchFrameV1 | None]:
+        """FIFO-drains policy frames older than a randomized staleness
+        threshold, discarding (materializing, never silently dropping -- see
+        build_stale_discard_execution_dispatch_frame) each one instead of
+        dispatching a real cortex action against hours-old field state. Stops
+        at the first frame still within its threshold (returned as the real
+        candidate for this tick to process normally), an empty queue, or
+        MAX_STALE_DISCARDS_PER_TICK, whichever comes first.
+
+        Each discard frame saved here carries the CURRENT (not-yet-updated-
+        for-this-tick) baseline forward, same as every other saved frame --
+        the real update for this tick's own discard count is computed once,
+        after this method returns, and re-stamped onto whichever frame ends
+        up being the last one saved this tick (see _tick()).
+
+        Returns (fresh_policy_frame_or_none, discarded_count, last_discard_
+        frame_or_none).
+        """
+        discarded = 0
+        last_discard_frame: ExecutionDispatchFrameV1 | None = None
+        while discarded < MAX_STALE_DISCARDS_PER_TICK:
+            candidate_frame = self._store.load_latest_policy_frame_without_dispatch()
+            if candidate_frame is None:
+                return None, discarded, last_discard_frame
+            # Defensive normalize, same idiom as _derive_daily_risk_cap above:
+            # PolicyDecisionFrameV1.generated_at is typed as a plain datetime,
+            # not enforced tz-aware. A naive value here would raise on the
+            # subtraction below -- caught by _poll_loop's broad except, but
+            # this exact policy frame would then be the permanent FIFO head
+            # forever (it can never resolve), reproducing the same
+            # queue-blocking failure shape build_unevaluable_execution_
+            # dispatch_frame exists to prevent for a missing proposal.
+            frame_generated_at = candidate_frame.generated_at
+            if frame_generated_at.tzinfo is None:
+                frame_generated_at = frame_generated_at.replace(tzinfo=timezone.utc)
+            age_sec = (datetime.now(timezone.utc) - frame_generated_at).total_seconds()
+            threshold_sec = self._staleness_threshold_sec()
+            if age_sec <= threshold_sec:
+                return candidate_frame, discarded, last_discard_frame
+            discard_frame = build_stale_discard_execution_dispatch_frame(
+                policy_frame=candidate_frame,
+                policy_id=self._policy.policy_id,
+                age_sec=age_sec,
+                staleness_threshold_sec=threshold_sec,
+            ).model_copy(update=baseline)
+            self._store.save_dispatch_frame(discard_frame)
+            last_discard_frame = discard_frame
+            discarded += 1
+            logger.info(
+                "execution_dispatch_stale_discard policy_frame_id=%s age_sec=%.1f "
+                "threshold_sec=%.1f discarded_this_tick=%d",
+                candidate_frame.frame_id,
+                age_sec,
+                threshold_sec,
+                discarded,
+            )
+        return None, discarded, last_discard_frame
+
     def _tick(self) -> None:
         if not self._settings.enable_execution_dispatch_runtime:
             return
 
-        policy_frame = self._store.load_latest_policy_frame_without_dispatch()
+        baseline = self._store.load_latest_staleness_discard_baseline() or {
+            "staleness_discard_count_ewma": 0.0,
+            "staleness_discard_count_ewma_var": 0.0,
+            "staleness_discard_count_ewma_n": 0,
+        }
+        policy_frame, discarded_this_tick, last_discard_frame = self._drain_stale_policy_frames(
+            baseline
+        )
+
+        update = compute_ewma_update(
+            prev_ewma=baseline["staleness_discard_count_ewma"],
+            prev_variance=baseline["staleness_discard_count_ewma_var"],
+            prev_count=baseline["staleness_discard_count_ewma_n"],
+            value=float(discarded_this_tick),
+            alpha=STALENESS_DISCARD_EWMA_ALPHA,
+            min_variance=STALENESS_DISCARD_EWMA_MIN_VARIANCE,
+        )
+        updated_baseline = {
+            "staleness_discard_count_ewma": update.ewma,
+            "staleness_discard_count_ewma_var": update.variance,
+            "staleness_discard_count_ewma_n": baseline["staleness_discard_count_ewma_n"] + 1,
+        }
+
         if policy_frame is None:
+            # Either the queue is fully drained, or this tick hit
+            # MAX_STALE_DISCARDS_PER_TICK with real backlog still queued
+            # behind it -- the next tick's load_latest_policy_frame_without_
+            # dispatch() naturally resumes at the new FIFO head either way,
+            # since every discard above was really saved. Nothing fresh to
+            # build a real frame for this tick; if at least one discard
+            # happened, this tick's real (not-yet-final at save time)
+            # baseline update still needs a home -- re-stamp it onto that
+            # same last discard frame (save_dispatch_frame's ON CONFLICT
+            # upsert makes this idempotent, not a duplicate row).
+            if last_discard_frame is not None:
+                self._store.save_dispatch_frame(
+                    last_discard_frame.model_copy(update=updated_baseline)
+                )
             return
 
         proposal = self._store.load_proposal_frame(policy_frame.source_proposal_frame_id)
@@ -178,7 +330,7 @@ class ExecutionDispatchRuntimeWorker:
                 policy_frame=policy_frame,
                 policy_id=self._policy.policy_id,
                 reason=f"proposal_frame {policy_frame.source_proposal_frame_id} unavailable",
-            )
+            ).model_copy(update=updated_baseline)
             self._store.save_dispatch_frame(frame)
             logger.info(
                 "execution_dispatch_frame_saved_unevaluable frame_id=%s policy_frame_id=%s",
@@ -197,7 +349,7 @@ class ExecutionDispatchRuntimeWorker:
             field_tick_id=policy_frame.source_field_tick_id,
             policy=self._policy,
             override_dispatch_mode=self._settings.execution_dispatch_mode,
-        )
+        ).model_copy(update=updated_baseline)
 
         if (
             self._settings.execution_dispatch_mode == "dispatch_read_only"

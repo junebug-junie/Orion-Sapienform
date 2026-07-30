@@ -3,6 +3,7 @@ from pathlib import Path
 
 from orion.execution_dispatch.builder import (
     build_execution_dispatch_frame,
+    build_stale_discard_execution_dispatch_frame,
     stable_execution_dispatch_frame_id,
 )
 from orion.execution_dispatch.policy import load_execution_dispatch_policy
@@ -229,3 +230,32 @@ def test_stable_frame_id() -> None:
         now=NOW,
     )
     assert frame.frame_id == expected
+
+
+def test_stale_discard_frame_records_honestly_and_never_dispatches() -> None:
+    proposal = _proposal_frame()
+    policy_frame = _policy_frame(proposal)
+
+    frame = build_stale_discard_execution_dispatch_frame(
+        policy_frame=policy_frame,
+        policy_id=POLICY.policy_id,
+        age_sec=21600.0,
+        staleness_threshold_sec=180.0,
+        now=NOW,
+    )
+
+    assert frame.frame_id == stable_execution_dispatch_frame_id(
+        policy_frame_id=policy_frame.frame_id, policy_id=POLICY.policy_id
+    )
+    assert frame.dispatch_attempted is False
+    assert frame.dispatch_count == 0
+    assert frame.blocked_count == len(policy_frame.decisions)
+    assert frame.candidates == []
+    assert frame.dispatched_candidates == []
+    assert any("stale_backlog_discarded age_sec=21600.0 threshold_sec=180.0" in w for w in frame.warnings)
+    # Materialized, not silently dropped: one real per-decision entry, real
+    # template key + real decision, for every candidate that was discarded.
+    assert "stale_discard:inspect:approved_read_only" in frame.warnings
+    assert "stale_discard:summarize:approved_read_only" in frame.warnings
+    assert "stale_discard:review:requires_operator_review" in frame.warnings
+    assert "stale_discard:blocked:rejected" in frame.warnings

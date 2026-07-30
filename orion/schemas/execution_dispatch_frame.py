@@ -120,3 +120,25 @@ class ExecutionDispatchFrameV1(BaseModel):
     # store's json_serializer=json.dumps (store.py) can't serialize a bare
     # `date`.
     daily_risk_baseline_last_day: str | None = None
+
+    # 2026-07-30 (docs/superpowers/specs/2026-07-30-execution-dispatch-
+    # staleness-discard-design.md): backlog-pressure signal. EWMA over "how
+    # many consecutive stale (past their staleness window) policy frames did
+    # this tick's FIFO drain discard before finding one fresh enough to
+    # process, or running out." A real, direct measure of execution-dispatch
+    # backlog depth -- 0 in steady state (healthy: consumption keeps pace
+    # with production), rising when production of new policy_decision_frames
+    # outpaces this service's real per-tick dispatch throughput (bounded by
+    # a synchronous cortex-exec RPC per real send, ~7-11s measured live
+    # 2026-07-30). Independent of daily_risk_baseline_* above (that measures
+    # risk-budget demand; this measures queue-depth/consumption-lag) -- same
+    # carried-forward-on-every-frame convention, same EWMA mechanism
+    # (orion.bus.ewma.compute_ewma_update), new domain. NOT persisted on a
+    # tick where the policy-decision queue is fully empty from the start (no
+    # frame at all to carry a value=0.0 sample on) -- see
+    # STALENESS_DISCARD_EWMA_ALPHA's own comment in app/worker.py for why
+    # this is a disclosed, deliberate under-sample of the true-idle case
+    # rather than a synthetic no-op frame invented to close the gap.
+    staleness_discard_count_ewma: float = 0.0
+    staleness_discard_count_ewma_var: float = 0.0
+    staleness_discard_count_ewma_n: int = 0

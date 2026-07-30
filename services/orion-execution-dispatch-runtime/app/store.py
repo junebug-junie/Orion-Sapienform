@@ -454,6 +454,39 @@ class ExecutionDispatchRuntimeStore:
             "daily_risk_baseline_last_day": row["last_day"],
         }
 
+    def load_latest_staleness_discard_baseline(self) -> dict | None:
+        """Latest persisted staleness-discard-count EWMA baseline state, same
+        carried-forward-on-every-frame read pattern as
+        load_latest_daily_risk_baseline() above -- see that method's own
+        docstring for why None only means "no dispatch frame rows exist at
+        all" and a pre-migration row degrades to cold-start defaults instead.
+        """
+        with self._engine.connect() as conn:
+            row = (
+                conn.execute(
+                    text(
+                        """
+                        SELECT
+                            dispatch_frame_json ->> 'staleness_discard_count_ewma' AS ewma,
+                            dispatch_frame_json ->> 'staleness_discard_count_ewma_var' AS var,
+                            dispatch_frame_json ->> 'staleness_discard_count_ewma_n' AS n
+                        FROM substrate_execution_dispatch_frames
+                        ORDER BY created_at DESC
+                        LIMIT 1
+                        """
+                    )
+                )
+                .mappings()
+                .first()
+            )
+        if not row:
+            return None
+        return {
+            "staleness_discard_count_ewma": float(row["ewma"]) if row["ewma"] is not None else 0.0,
+            "staleness_discard_count_ewma_var": float(row["var"]) if row["var"] is not None else 0.0,
+            "staleness_discard_count_ewma_n": int(row["n"]) if row["n"] is not None else 0,
+        }
+
     def most_recent_closed_day_with_data(
         self, before_day_start_utc: datetime
     ) -> tuple[str, float] | None:

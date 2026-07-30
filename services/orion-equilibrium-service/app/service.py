@@ -27,6 +27,12 @@ from .transport_metacog_gate import (
 )
 from .insight_metacog_gate import build_insight_metacog_trigger
 from .flow_metacog_gate import build_flow_metacog_trigger
+from .repair_pressure_trend_gate import (
+    evaluate_repair_pressure_trend,
+    state_from_dict,
+    state_to_dict,
+)
+from orion.metacog.trend_reducer import MetacogTrendStateV1
 from .attention_self_model_reader import AttentionSelfModelReader
 from orion.substrate.metacog_trigger_signals import (
     ConfidenceSample,
@@ -121,6 +127,12 @@ class EquilibriumService(BaseChassis):
         # Consecutive stale-window polls, for rate-limiting that warning the same
         # way AttentionSelfModelReader._log_failure rate-limits its own.
         self._stale_window_polls: int = 0
+        # Checkpointed EWMA state for the repair_pressure_trend gate (hop 0 of
+        # the stream-of-consciousness hop-chain design). Cold state until
+        # _load_state() restores a real persisted checkpoint, if one exists --
+        # a restart legitimately re-enters cold-start rather than fabricating
+        # history, same discipline as every other persisted-state field here.
+        self._repair_pressure_trend_state: MetacogTrendStateV1 = MetacogTrendStateV1()
 
     def _trace_meta(
         self,
@@ -166,6 +178,26 @@ class EquilibriumService(BaseChassis):
             await self.bus.redis.hset(settings.redis_state_key, key, json.dumps(serializable))
         except Exception as e:
             logger.warning("Failed to persist equilibrium state for %s: %s", key, e)
+
+    async def _load_repair_pressure_trend_state(self) -> None:
+        try:
+            raw = await self.bus.redis.get(settings.metacog_repair_pressure_trend_state_key)
+            if raw is None:
+                return
+            if isinstance(raw, (bytes, bytearray)):
+                raw = raw.decode("utf-8")
+            self._repair_pressure_trend_state = state_from_dict(json.loads(raw))
+        except Exception as e:
+            logger.warning("Failed to load repair_pressure_trend state: %s", e)
+
+    async def _persist_repair_pressure_trend_state(self) -> None:
+        try:
+            await self.bus.redis.set(
+                settings.metacog_repair_pressure_trend_state_key,
+                json.dumps(state_to_dict(self._repair_pressure_trend_state)),
+            )
+        except Exception as e:
+            logger.warning("Failed to persist repair_pressure_trend state: %s", e)
 
     def _service_key(self, payload: SystemHealthV1) -> str:
         node = payload.node or "unknown"
@@ -451,6 +483,13 @@ class EquilibriumService(BaseChassis):
         "transport": "metacog_transport_cooldown_sec",
         "insight": "metacog_insight_cooldown_sec",
         "flow": "metacog_flow_cooldown_sec",
+        # Own lane from day one -- code review (2026-07-30) caught that this
+        # trigger is evaluated on the same message, same branch, as the
+        # pre-existing `relational` trigger; without its own lane, any
+        # appraisal firing both would have relational silently starve this
+        # one via the shared global lane every time. See
+        # metacog_repair_pressure_trend_cooldown_sec's own comment.
+        "repair_pressure_trend": "metacog_repair_pressure_trend_cooldown_sec",
     }
 
     def _cooldown_sec_for_kind(self, trigger_kind: str) -> float:
@@ -1030,6 +1069,7 @@ class EquilibriumService(BaseChassis):
 
     async def _run(self) -> None:
         await self._load_state()
+        await self._load_repair_pressure_trend_state()
         publisher = asyncio.create_task(self._publish_loop())
         collapse_task = asyncio.create_task(self._collapse_loop())
         metacog_task = asyncio.create_task(self._metacog_baseline_loop())
@@ -1129,6 +1169,28 @@ class EquilibriumService(BaseChassis):
                             )
                             if trigger is not None:
                                 await self._publish_metacog_trigger(trigger)
+
+                            # Hop 0 (stream-of-consciousness hop-chain design): fold this
+                            # same appraisal into a persisted EWMA trend baseline,
+                            # independent of whether the relational gate above fired.
+                            # Distinct signal, distinct question ("has this kept
+                            # happening" vs. "did this one turn cross a floor").
+                            if settings.metacog_repair_pressure_trend_trigger_enable:
+                                new_state, trend_trigger = evaluate_repair_pressure_trend(
+                                    self._repair_pressure_trend_state,
+                                    payload_dict,
+                                    zen_state="zen" if zen > 0.5 else "not_zen",
+                                    pressure=distress,
+                                    recall_enabled=settings.metacog_recall_enabled,
+                                    confidence_floor=settings.metacog_repair_pressure_trend_confidence_floor,
+                                    min_samples=settings.metacog_repair_pressure_trend_min_samples,
+                                    elevated_zscore=settings.metacog_repair_pressure_trend_elevated_zscore,
+                                    sustained_hits=settings.metacog_repair_pressure_trend_sustained_hits,
+                                )
+                                self._repair_pressure_trend_state = new_state
+                                asyncio.create_task(self._persist_repair_pressure_trend_state())
+                                if trend_trigger is not None:
+                                    await self._publish_metacog_trigger(trend_trigger)
 
                         elif (
                             channel == settings.channel_field_channel_anomaly_score

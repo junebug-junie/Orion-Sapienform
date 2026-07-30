@@ -188,6 +188,7 @@ _METACOG_DRAFT_CTX_LEN_KEYS: tuple[str, ...] = (
     "metacog_biometrics_cue",
     "metacog_substrate_cue",
     "trigger_upstream_json",
+    "recent_trend_signals_json",
 )
 
 def _filter_world_context_capsule(
@@ -3652,6 +3653,24 @@ async def call_step_services(
                 ctx["substrate_eventfulness_reasons"] = list(ev.reasons)
                 if "biometrics_json" not in ctx:
                     ctx["biometrics_json"] = json.dumps(ctx.get("biometrics") or {}, indent=2)
+
+                # Recent trend signals (Tier 1 patch, docs/superpowers/specs/
+                # 2026-07-28-metacog-turn-scoped-trend-reducer-design.md's
+                # "2026-07-29/30 update"). Reads the *latest* value from two
+                # already-computed, already-persisted signal sources -- no
+                # window/trend computation happens here, no new reducer/poll
+                # loop, additive-only evidence cue. Bounded + fail-open: never
+                # raises, never blocks this step past its own short timeout.
+                from app.metacog_trend_reader import fetch_recent_trend_signals
+
+                recent_trend_signals = await fetch_recent_trend_signals(correlation_id)
+                ctx["recent_trend_signals"] = recent_trend_signals or {}
+                ctx["recent_trend_signals_json"] = (
+                    json.dumps(recent_trend_signals, indent=2, default=str)
+                    if recent_trend_signals
+                    else "{}"
+                )
+
                 merged_result[service] = {"ok": True, "summary_len": len(summary_text)}
                 logs.append("ok <- MetacogContextService")
                 continue

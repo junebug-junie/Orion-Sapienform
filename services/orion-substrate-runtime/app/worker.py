@@ -741,13 +741,25 @@ class BiometricsSubstrateWorker:
                         now=now,
                     )
                 )
-                self._write_prediction_error_node(
-                    node_id="node:substrate.biometrics",
-                    error=error,
-                    now=now,
-                    reducer_key="node_biometrics",
-                    contributing_id=last_id,
-                )
+            # Write the node on every tick, not just when error > 0.0 -- the
+            # same fix already applied to bus_synaptic (2026-07-30), extended
+            # here after `route` was found frozen at a stale 0.00025 while its
+            # tick kept running: a categorical/quiet domain returns error == 0.0
+            # on most ticks, so gating the node write left the node holding its
+            # last NON-ZERO value indefinitely. Consumers that poll this node's
+            # raw current value (orion-equilibrium-service, AST/HOT's
+            # prediction_error_by_domain) then read a stale high-water mark as
+            # if it were a current reading -- a value that can rise but never
+            # come back down to a genuine calm 0.0. The receipt above stays
+            # gated: it is an audit trail of notable events, not a polled
+            # "current state" read, so skipping it on a calm tick is correct.
+            self._write_prediction_error_node(
+                node_id="node:substrate.biometrics",
+                error=error,
+                now=now,
+                reducer_key="node_biometrics",
+                contributing_id=last_id,
+            )
 
         return last_id, published
 
@@ -2148,13 +2160,25 @@ class BiometricsSubstrateWorker:
                         now=now,
                     )
                 )
-                self._write_prediction_error_node(
-                    node_id="node:substrate.execution",
-                    error=error,
-                    now=now,
-                    reducer_key="execution_trajectory",
-                    contributing_id=last_id,
-                )
+            # Write the node on every tick, not just when error > 0.0 -- the
+            # same fix already applied to bus_synaptic (2026-07-30), extended
+            # here after `route` was found frozen at a stale 0.00025 while its
+            # tick kept running: a categorical/quiet domain returns error == 0.0
+            # on most ticks, so gating the node write left the node holding its
+            # last NON-ZERO value indefinitely. Consumers that poll this node's
+            # raw current value (orion-equilibrium-service, AST/HOT's
+            # prediction_error_by_domain) then read a stale high-water mark as
+            # if it were a current reading -- a value that can rise but never
+            # come back down to a genuine calm 0.0. The receipt above stays
+            # gated: it is an audit trail of notable events, not a polled
+            # "current state" read, so skipping it on a calm tick is correct.
+            self._write_prediction_error_node(
+                node_id="node:substrate.execution",
+                error=error,
+                now=now,
+                reducer_key="execution_trajectory",
+                contributing_id=last_id,
+            )
 
         return last_id
 
@@ -2208,13 +2232,25 @@ class BiometricsSubstrateWorker:
                         now=now,
                     )
                 )
-                self._write_prediction_error_node(
-                    node_id="node:substrate.chat",
-                    error=error,
-                    now=now,
-                    reducer_key="chat_session",
-                    contributing_id=last_id,
-                )
+            # Write the node on every tick, not just when error > 0.0 -- the
+            # same fix already applied to bus_synaptic (2026-07-30), extended
+            # here after `route` was found frozen at a stale 0.00025 while its
+            # tick kept running: a categorical/quiet domain returns error == 0.0
+            # on most ticks, so gating the node write left the node holding its
+            # last NON-ZERO value indefinitely. Consumers that poll this node's
+            # raw current value (orion-equilibrium-service, AST/HOT's
+            # prediction_error_by_domain) then read a stale high-water mark as
+            # if it were a current reading -- a value that can rise but never
+            # come back down to a genuine calm 0.0. The receipt above stays
+            # gated: it is an audit trail of notable events, not a polled
+            # "current state" read, so skipping it on a calm tick is correct.
+            self._write_prediction_error_node(
+                node_id="node:substrate.chat",
+                error=error,
+                now=now,
+                reducer_key="chat_session",
+                contributing_id=last_id,
+            )
 
         return last_id
 
@@ -2261,13 +2297,25 @@ class BiometricsSubstrateWorker:
                         now=now,
                     )
                 )
-                self._write_prediction_error_node(
-                    node_id="node:substrate.route",
-                    error=error,
-                    now=now,
-                    reducer_key="route_arbitration",
-                    contributing_id=last_id,
-                )
+            # Write the node on every tick, not just when error > 0.0 -- the
+            # same fix already applied to bus_synaptic (2026-07-30), extended
+            # here after `route` was found frozen at a stale 0.00025 while its
+            # tick kept running: a categorical/quiet domain returns error == 0.0
+            # on most ticks, so gating the node write left the node holding its
+            # last NON-ZERO value indefinitely. Consumers that poll this node's
+            # raw current value (orion-equilibrium-service, AST/HOT's
+            # prediction_error_by_domain) then read a stale high-water mark as
+            # if it were a current reading -- a value that can rise but never
+            # come back down to a genuine calm 0.0. The receipt above stays
+            # gated: it is an audit trail of notable events, not a polled
+            # "current state" read, so skipping it on a calm tick is correct.
+            self._write_prediction_error_node(
+                node_id="node:substrate.route",
+                error=error,
+                now=now,
+                reducer_key="route_arbitration",
+                contributing_id=last_id,
+            )
 
         return last_id
 

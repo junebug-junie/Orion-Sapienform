@@ -871,9 +871,13 @@ def _fallback_metacog_draft(ctx: Dict[str, Any]) -> CollapseMirrorEntryV2:
     # Note "flow" was already reachable from the phi-band guess below by band
     # coincidence; a trigger_kind=="flow" entry now lands there for a real
     # reason instead.
-    if trigger_kind == "insight":
+    # Normalized on the comparison side: _metacog_trigger_kind returns the raw
+    # string unstripped/uncased, so " Insight" from any future producer would
+    # otherwise silently miss and fall through to the phi-band guess.
+    normalized_kind = trigger_kind.strip().lower()
+    if normalized_kind == "insight":
         typ = "epiphany"
-    elif trigger_kind == "flow":
+    elif normalized_kind == "flow":
         typ = "flow"
     else:
         # crude but stable type guess (unchanged fallback for every other kind)

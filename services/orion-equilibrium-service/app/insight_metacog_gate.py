@@ -63,6 +63,10 @@ def build_insight_metacog_trigger(
             "low_value": recovery.low_value,
             "high_value": recovery.high_value,
             "ticks_to_cross": recovery.ticks_to_cross,
+            # Recorded next to ticks_to_cross because the two diverge when rows
+            # are missing from the window -- makes a stored row self-auditing
+            # instead of forcing a reader to trust that ticks == time.
+            "cross_span_sec": recovery.cross_span_sec,
             "confirm_ticks": recovery.confirm_ticks,
             "window_ticks": recovery.window_ticks,
             "low_threshold": low_threshold,

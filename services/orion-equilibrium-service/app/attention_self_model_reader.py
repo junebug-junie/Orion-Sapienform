@@ -1,10 +1,18 @@
 """Read-only reader for `substrate_attention_self_model` tick history.
 
-First Postgres access anywhere in orion-equilibrium-service's `app/` -- this
-service was bus/Redis/FalkorDB only before the insight/flow gates. The table is
-written every ~30s by orion-substrate-runtime's `_attention_self_model_tick()`
-(PR #1459, gated `SUBSTRATE_ATTENTION_SELF_MODEL_TICK_ENABLED`); this service
-only ever reads it and must never write it.
+The table is written every ~30s by orion-substrate-runtime's
+`_attention_self_model_tick()` (PR #1459, gated
+`SUBSTRATE_ATTENTION_SELF_MODEL_TICK_ENABLED`); this service only ever reads it
+and must never write it.
+
+Not this service's first Postgres read (an earlier draft of this docstring
+claimed that; corrected by review 2026-07-30): `app/substrate_metacog_gate.py`
+already calls `hydrate_felt_state_ctx` -> `orion/substrate/felt_state_reader.py`
+on a live, default-enabled path. That reader uses SQLAlchemy rather than raw
+psycopg2, which is why this one does not simply reuse it -- but its `max_age`
+staleness convention IS reused, in the poll loop's own freshness check
+(`_generative_samples_are_fresh`), because a frozen window otherwise satisfies
+both gate conditions forever.
 
 Connection/query contract deliberately mirrors
 `scripts/analysis/measure_attention_self_model_confidence_baseline.py` (same
@@ -82,12 +90,30 @@ class AttentionSelfModelReader:
     def __init__(self, *, dsn: str) -> None:
         self._dsn = dsn
         self._conn: Any = None
+        self._consecutive_failures: int = 0
+
+    def _log_failure(self, event: str) -> None:
+        """First failure gets a full traceback; repeats get one warning line.
+
+        At a 30s poll cadence an unconditional `logger.exception` would emit
+        ~2880 stack traces a day while Postgres is down, burying the very first
+        real gate fire the README tells an operator to watch for.
+        """
+        self._consecutive_failures += 1
+        if self._consecutive_failures == 1:
+            logger.exception(event)
+        else:
+            logger.warning(
+                "%s (consecutive_failures=%d, traceback suppressed after the first)",
+                event,
+                self._consecutive_failures,
+            )
 
     def _connect(self) -> Any:
         try:
             import psycopg2
         except Exception:
-            logger.exception("attention_self_model_reader_psycopg2_unavailable")
+            self._log_failure("attention_self_model_reader_psycopg2_unavailable")
             return None
         try:
             conn = psycopg2.connect(self._dsn)
@@ -98,7 +124,7 @@ class AttentionSelfModelReader:
                 cur.execute("SET default_transaction_read_only = on;")
             return conn
         except Exception:
-            logger.exception("attention_self_model_reader_connect_failed")
+            self._log_failure("attention_self_model_reader_connect_failed")
             return None
 
     def _get_conn(self) -> Any:
@@ -148,9 +174,10 @@ class AttentionSelfModelReader:
                 )
                 rows = cur.fetchall()
         except Exception:
-            logger.exception("attention_self_model_reader_query_failed")
+            self._log_failure("attention_self_model_reader_query_failed")
             # Drop the connection so the next poll reconnects instead of
             # retrying forever against a broken session.
             self.close()
             return []
+        self._consecutive_failures = 0
         return parse_confidence_samples(list(rows))

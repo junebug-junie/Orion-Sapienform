@@ -33,6 +33,7 @@ def _recovery() -> ConfidenceRecovery:
         low_value=0.66,
         high_value=0.92,
         ticks_to_cross=4,
+        cross_span_sec=120.0,
         confirm_ticks=2,
         window_ticks=20,
     )
@@ -43,6 +44,7 @@ def _regime() -> FlowRegime:
         started_at=T0,
         ended_at=T0 + timedelta(seconds=570),
         tick_count=20,
+        span_sec=570.0,
         min_value=0.91,
         mean_value=0.935,
         stdev_value=0.008,
@@ -96,6 +98,9 @@ def test_insight_upstream_carries_real_evidence() -> None:
     assert up["low_value"] == 0.66
     assert up["high_value"] == 0.92
     assert up["ticks_to_cross"] == 4
+    # Real seconds recorded next to the tick count, so a stored row can be
+    # audited for whether those ticks really were consecutive.
+    assert up["cross_span_sec"] == 120.0
     assert up["confirm_ticks"] == 2
     assert up["window_ticks"] == 20
     # The thresholds in force are recorded alongside the values, so a stored row
@@ -140,6 +145,7 @@ def test_flow_upstream_carries_real_evidence() -> None:
     assert up["evidence_source"] == EXPECTED_EVIDENCE_SOURCE
     assert up["detector"] == "sustained_high_low_variance_regime"
     assert up["tick_count"] == 20
+    assert up["span_sec"] == 570.0
     assert up["min_value"] == 0.91
     assert up["mean_value"] == 0.935
     assert up["stdev_value"] == 0.008

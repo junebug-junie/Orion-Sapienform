@@ -82,10 +82,15 @@ class EquilibriumService(BaseChassis):
         # De-dupe keys for the two generative gates. These two are NOT equally
         # strong, on purpose -- stated plainly rather than implied:
         #
-        # insight: `high_at` is the first tick of the confirmed high run, so it
-        #   stays constant for as long as that run holds. This is genuine
-        #   event identity -- one real recovery fires exactly once, no matter
-        #   how many polls observe it or how the cooldown is tuned.
+        # insight: keyed on `low_at`, the tick that armed the recovery. That is
+        #   real episode identity: a genuinely new recovery requires a new low
+        #   crossing, so one real recovery publishes exactly once.
+        #   NOT keyed on `high_at`, which looks stable but isn't -- review
+        #   finding 2026-07-30, reproduced against the real detector: when a
+        #   high run breaks on a single sub-threshold tick and re-forms,
+        #   `high_at` re-anchors to the new run and the same recovery fired
+        #   twice, 390s apart, clearing the 300s cooldown. `low_at` was
+        #   identical across both fires.
         #
         # flow: there is no equivalent stable anchor. `ended_at` is the newest
         #   tick in a trailing window, so it advances every tick while the
@@ -97,7 +102,14 @@ class EquilibriumService(BaseChassis):
         #   once-per-episode event. Anchoring it to the true start of the
         #   contiguous run would require fetching further back than the
         #   evaluation window, which is not worth the extra query today.
-        self._last_insight_high_at: str | None = None
+        #   Measured over 21h of real history: 71 condition-true windows reduce
+        #   to 7 actual publishes once that cooldown is applied.
+        #
+        # Both keys are recorded only after an *actual* publish, never on a
+        # cooldown-suppressed one -- otherwise the event would be marked seen
+        # while never having been emitted, and (since insight's key is stable)
+        # never retried.
+        self._last_insight_low_at: str | None = None
         self._last_flow_ended_at: str | None = None
 
     def _trace_meta(
@@ -437,7 +449,15 @@ class EquilibriumService(BaseChassis):
             return getattr(settings, attr)
         return settings.metacog_cooldown_sec
 
-    async def _publish_metacog_trigger(self, trigger: MetacogTriggerV1) -> None:
+    async def _publish_metacog_trigger(self, trigger: MetacogTriggerV1) -> bool:
+        """Returns True only if the trigger was really published to the bus.
+
+        Callers that keep their own event-identity de-dupe state (the generative
+        gates) must record that state only on a True return -- recording it on a
+        cooldown-suppressed fire would mark the event as seen while never having
+        emitted it. Every pre-existing caller ignores the return value, which is
+        the unchanged behavior for them.
+        """
         now_ts = datetime.now().timestamp()
 
         cooldown_sec = self._cooldown_sec_for_kind(trigger.trigger_kind)
@@ -450,7 +470,7 @@ class EquilibriumService(BaseChassis):
 
         if (now_ts - last_ts) < cooldown_sec:
             logger.info("Metacog trigger skipped due to cooldown (%s)", trigger.trigger_kind)
-            return
+            return False
 
         if has_own_lane:
             self._last_trigger_ts_by_kind[trigger.trigger_kind] = now_ts
@@ -482,7 +502,7 @@ class EquilibriumService(BaseChassis):
             )
         except Exception as e:
             logger.error(f"Failed to publish metacog trigger: {e}")
-            return
+            return False
 
         if settings.metacog_publish_verb_request:
             # Legacy path intentionally disabled; must route through cortex-orch.
@@ -491,6 +511,8 @@ class EquilibriumService(BaseChassis):
                 "Set EQUILIBRIUM_METACOG_PUBLISH_VERB_REQUEST=false and rely on "
                 f"orion:equilibrium:metacog:trigger routing. trace_id={trace_meta['trace_id']}"
             )
+
+        return True
 
     async def _handle_chat_turn_evidence(
         self,
@@ -766,22 +788,67 @@ class EquilibriumService(BaseChassis):
             except asyncio.CancelledError:
                 break
 
-    def _get_attention_self_model_reader(self) -> Any:
+    def _get_attention_self_model_reader(self) -> AttentionSelfModelReader:
         """Cached read-only Postgres reader for `substrate_attention_self_model`
         (written by orion-substrate-runtime's _attention_self_model_tick, PR
-        #1459). Fail-open: returns None on init error, mirroring
-        _get_bus_synaptic_falkor_client's contract."""
-        try:
-            reader = self._attention_self_model_reader
-            if reader is None:
-                reader = AttentionSelfModelReader(
-                    dsn=settings.metacog_generative_postgres_uri
-                )
-                self._attention_self_model_reader = reader
-            return reader
-        except Exception:
-            logger.exception("attention_self_model_reader_init_failed")
-            return None
+        #1459).
+
+        Unlike _get_bus_synaptic_falkor_client this cannot fail here and so does
+        not return None: construction only stores a DSN, and the connection is
+        opened lazily inside the reader, which is where the real fail-open
+        (returning no samples) lives.
+        """
+        reader = self._attention_self_model_reader
+        if reader is None:
+            reader = AttentionSelfModelReader(
+                dsn=settings.metacog_generative_postgres_uri
+            )
+            self._attention_self_model_reader = reader
+        return reader
+
+    def _generative_fetch_limit(self) -> int:
+        """Rows to fetch per poll.
+
+        Deliberately not just `window_ticks`: an operator raising
+        EQUILIBRIUM_METACOG_FLOW_MIN_TICKS above it would otherwise turn the flow
+        gate into a silent permanent no-op (the detector returns None whenever
+        it receives fewer than min_ticks samples). Taking the max makes the
+        documented "must cover the widest window either detector needs"
+        invariant true by construction instead of by operator discipline.
+        """
+        return max(
+            int(settings.metacog_generative_window_ticks),
+            int(settings.metacog_flow_min_ticks),
+            int(settings.metacog_insight_max_ticks_to_cross)
+            + int(settings.metacog_insight_confirm_ticks),
+        )
+
+    def _generative_samples_are_fresh(self, samples: List[ConfidenceSample]) -> bool:
+        """Reject a window whose newest row is too old to describe the present.
+
+        The tick that writes these rows is itself flag-gated, so it can stop
+        while this loop keeps polling -- and a frozen window keeps satisfying
+        both gate conditions indefinitely (reproduced pre-fix: a window of rows
+        3 days old fired the flow gate). Without this, the gates would be the
+        "reducers alive but cursors stale" failure CLAUDE.md §0A calls out.
+        """
+        if not samples:
+            return False
+        max_age = float(settings.metacog_generative_max_age_sec)
+        age_sec = (
+            datetime.now(timezone.utc) - samples[-1].generated_at
+        ).total_seconds()
+        if age_sec > max_age:
+            logger.warning(
+                "generative_metacog_window_stale age_sec=%.1f max_age_sec=%.1f "
+                "newest_row=%s -- is SUBSTRATE_ATTENTION_SELF_MODEL_TICK_ENABLED "
+                "still writing?",
+                age_sec,
+                max_age,
+                samples[-1].generated_at.isoformat(),
+            )
+            return False
+        return True
 
     async def _generative_metacog_poll_loop(self) -> None:
         """Evaluates the two generative (non-rupture) gates -- insight and flow.
@@ -805,31 +872,29 @@ class EquilibriumService(BaseChassis):
             return
 
         interval = float(settings.metacog_generative_poll_interval_sec)
-        window_ticks = int(settings.metacog_generative_window_ticks)
+        limit = self._generative_fetch_limit()
         while not self._stop.is_set():
             try:
                 reader = self._get_attention_self_model_reader()
-                if reader is not None:
-                    # asyncio.to_thread: psycopg2 is a synchronous blocking
-                    # driver -- running the round-trip inline would stall the
-                    # event loop (starving publish_loop/heartbeat/the bus
-                    # consumer). Same reasoning as _bus_synaptic_poll_loop's
-                    # own to_thread hop.
-                    samples = await asyncio.to_thread(
-                        reader.fetch_recent_samples, limit=window_ticks
-                    )
-                    if samples:
-                        distress, zen, _ = self._calculate_metrics()
-                        zen_state = "zen" if zen > 0.5 else "not_zen"
+                # asyncio.to_thread: psycopg2 is a synchronous blocking driver --
+                # running the round-trip inline would stall the event loop
+                # (starving publish_loop/heartbeat/the bus consumer). Same
+                # reasoning as _bus_synaptic_poll_loop's own to_thread hop.
+                samples = await asyncio.to_thread(
+                    reader.fetch_recent_samples, limit=limit
+                )
+                if self._generative_samples_are_fresh(samples):
+                    distress, zen, _ = self._calculate_metrics()
+                    zen_state = "zen" if zen > 0.5 else "not_zen"
 
-                        if settings.metacog_insight_trigger_enable:
-                            await self._evaluate_insight_gate(
-                                samples, zen_state=zen_state, pressure=distress
-                            )
-                        if settings.metacog_flow_trigger_enable:
-                            await self._evaluate_flow_gate(
-                                samples, zen_state=zen_state, pressure=distress
-                            )
+                    if settings.metacog_insight_trigger_enable:
+                        await self._evaluate_insight_gate(
+                            samples, zen_state=zen_state, pressure=distress
+                        )
+                    if settings.metacog_flow_trigger_enable:
+                        await self._evaluate_flow_gate(
+                            samples, zen_state=zen_state, pressure=distress
+                        )
             except Exception:
                 logger.exception("generative_metacog_poll_loop_failed")
 
@@ -843,22 +908,29 @@ class EquilibriumService(BaseChassis):
     async def _evaluate_insight_gate(
         self, samples: List[ConfidenceSample], *, zen_state: str, pressure: float
     ) -> None:
+        max_ticks = int(settings.metacog_insight_max_ticks_to_cross)
         recovery = detect_confidence_recovery(
             samples,
             low_threshold=settings.metacog_insight_low_threshold,
             high_threshold=settings.metacog_insight_high_threshold,
-            max_ticks_to_cross=int(settings.metacog_insight_max_ticks_to_cross),
+            max_ticks_to_cross=max_ticks,
             confirm_ticks=int(settings.metacog_insight_confirm_ticks),
+            # Tick count converted to a real wall-clock bound, because dropped
+            # rows make row-distance and time-distance different things.
+            max_cross_span_sec=(
+                max_ticks
+                * float(settings.metacog_generative_expected_tick_sec)
+                * float(settings.metacog_generative_span_tolerance)
+            ),
         )
         if recovery is None:
             return
 
-        # Event identity, not rate limiting: the same crossing keeps satisfying
-        # the condition for as long as the high band holds.
-        high_at = recovery.high_at.isoformat()
-        if high_at == self._last_insight_high_at:
+        # Episode identity keyed on the arming low, not the high run -- see the
+        # note in __init__ for the double-fire this avoids.
+        low_at = recovery.low_at.isoformat()
+        if low_at == self._last_insight_low_at:
             return
-        self._last_insight_high_at = high_at
 
         trigger = build_insight_metacog_trigger(
             recovery,
@@ -868,23 +940,37 @@ class EquilibriumService(BaseChassis):
             low_threshold=settings.metacog_insight_low_threshold,
             high_threshold=settings.metacog_insight_high_threshold,
         )
-        if trigger is not None:
-            logger.info(
-                "insight_gate_fired low=%.3f high=%.3f ticks_to_cross=%d",
-                recovery.low_value,
-                recovery.high_value,
-                recovery.ticks_to_cross,
-            )
-            await self._publish_metacog_trigger(trigger)
+        if trigger is None:
+            return
+
+        logger.info(
+            "insight_gate_fired low=%.3f high=%.3f ticks_to_cross=%d span_sec=%.1f",
+            recovery.low_value,
+            recovery.high_value,
+            recovery.ticks_to_cross,
+            recovery.cross_span_sec,
+        )
+        # Only mark the episode seen once it was really emitted -- a
+        # cooldown-suppressed fire must stay retryable on the next poll.
+        if await self._publish_metacog_trigger(trigger):
+            self._last_insight_low_at = low_at
 
     async def _evaluate_flow_gate(
         self, samples: List[ConfidenceSample], *, zen_state: str, pressure: float
     ) -> None:
+        min_ticks = int(settings.metacog_flow_min_ticks)
         regime = detect_flow_regime(
             samples,
             floor=settings.metacog_flow_floor,
             max_stdev=settings.metacog_flow_max_stdev,
-            min_ticks=int(settings.metacog_flow_min_ticks),
+            min_ticks=min_ticks,
+            # A window of N rows should cover about (N-1) tick intervals; anything
+            # much longer means rows are missing and "sustained" would be a lie.
+            max_span_sec=(
+                max(min_ticks - 1, 1)
+                * float(settings.metacog_generative_expected_tick_sec)
+                * float(settings.metacog_generative_span_tolerance)
+            ),
         )
         if regime is None:
             return
@@ -892,7 +978,6 @@ class EquilibriumService(BaseChassis):
         ended_at = regime.ended_at.isoformat()
         if ended_at == self._last_flow_ended_at:
             return
-        self._last_flow_ended_at = ended_at
 
         trigger = build_flow_metacog_trigger(
             regime,
@@ -902,15 +987,19 @@ class EquilibriumService(BaseChassis):
             floor=settings.metacog_flow_floor,
             max_stdev=settings.metacog_flow_max_stdev,
         )
-        if trigger is not None:
-            logger.info(
-                "flow_gate_fired min=%.3f mean=%.3f stdev=%.4f ticks=%d",
-                regime.min_value,
-                regime.mean_value,
-                regime.stdev_value,
-                regime.tick_count,
-            )
-            await self._publish_metacog_trigger(trigger)
+        if trigger is None:
+            return
+
+        logger.info(
+            "flow_gate_fired min=%.3f mean=%.3f stdev=%.4f ticks=%d span_sec=%.1f",
+            regime.min_value,
+            regime.mean_value,
+            regime.stdev_value,
+            regime.tick_count,
+            regime.span_sec,
+        )
+        if await self._publish_metacog_trigger(trigger):
+            self._last_flow_ended_at = ended_at
 
     async def _run(self) -> None:
         await self._load_state()

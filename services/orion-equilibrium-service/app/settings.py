@@ -236,9 +236,34 @@ class Settings(BaseSettings):
         0.90, alias="EQUILIBRIUM_METACOG_INSIGHT_HIGH_THRESHOLD"
     )
     # Trailing rows fetched per poll. Must cover the widest window either
-    # detector needs (insight's max_ticks_to_cross + confirm, flow's min_ticks).
+    # detector needs (insight's max_ticks_to_cross + confirm, flow's min_ticks) --
+    # enforced in the poll loop rather than trusted, since setting this below
+    # flow's min_ticks would otherwise make flow a silent permanent no-op.
     metacog_generative_window_ticks: int = Field(
         20, alias="EQUILIBRIUM_METACOG_GENERATIVE_WINDOW_TICKS"
+    )
+    # Staleness guard. The tick that writes these rows is itself flag-gated
+    # (SUBSTRATE_ATTENTION_SELF_MODEL_TICK_ENABLED), so it can simply stop --
+    # and a frozen window still satisfies both gate conditions forever.
+    # Reproduced pre-fix: 20 rows all 3 days old fired the flow gate. Same
+    # convention as this service's existing SUBSTRATE_FELT_STATE_MAX_AGE_SEC
+    # (120s): a few multiples of the write cadence, not a tight bound.
+    metacog_generative_max_age_sec: float = Field(
+        120.0, alias="EQUILIBRIUM_METACOG_GENERATIVE_MAX_AGE_SEC"
+    )
+    # Real cadence of the writing tick, used to convert both detectors' tick
+    # windows into wall-clock bounds. Row adjacency is NOT tick adjacency: the
+    # reader drops rows with a missing/non-finite confidence, so 20 "consecutive"
+    # rows can span hours (reproduced pre-fix: a 20-row window covering 6.08h
+    # fired flow while reporting tick_count=20 as if it were 10 minutes).
+    metacog_generative_expected_tick_sec: float = Field(
+        30.0, alias="EQUILIBRIUM_METACOG_GENERATIVE_EXPECTED_TICK_SEC"
+    )
+    # Slack multiplier on those derived wall-clock bounds, absorbing normal tick
+    # jitter without letting a genuinely gappy window through. 2.0 = a window may
+    # take up to twice its nominal duration.
+    metacog_generative_span_tolerance: float = Field(
+        2.0, alias="EQUILIBRIUM_METACOG_GENERATIVE_SPAN_TOLERANCE"
     )
     # Observed ticks-to-cross were 1, 3 and 12 (PR #1463) -- 15 covers the
     # measured max with headroom while still rejecting a low from hours ago

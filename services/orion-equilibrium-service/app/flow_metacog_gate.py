@@ -58,6 +58,9 @@ def build_flow_metacog_trigger(
             "started_at": regime.started_at.isoformat(),
             "ended_at": regime.ended_at.isoformat(),
             "tick_count": regime.tick_count,
+            # Real seconds covered, so a reader can confirm tick_count ticks
+            # really were consecutive rather than 20 rows spanning hours.
+            "span_sec": regime.span_sec,
             "min_value": regime.min_value,
             "mean_value": regime.mean_value,
             "stdev_value": regime.stdev_value,

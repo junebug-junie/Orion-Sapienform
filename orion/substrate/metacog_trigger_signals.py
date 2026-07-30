@@ -119,6 +119,10 @@ class ConfidenceRecovery:
     low_value: float
     high_value: float
     ticks_to_cross: int
+    # Real wall-clock seconds from the low tick to the start of the high run.
+    # Recorded alongside `ticks_to_cross` because the two diverge whenever rows
+    # are missing from the window -- a stored row stays self-auditing.
+    cross_span_sec: float
     confirm_ticks: int
     window_ticks: int
 
@@ -130,6 +134,9 @@ class FlowRegime:
     started_at: datetime
     ended_at: datetime
     tick_count: int
+    # Real wall-clock seconds the window covers. Recorded so a stored row can be
+    # audited for whether `tick_count` ticks really were consecutive.
+    span_sec: float
     min_value: float
     mean_value: float
     stdev_value: float
@@ -164,6 +171,7 @@ def detect_confidence_recovery(
     high_threshold: float,
     max_ticks_to_cross: int,
     confirm_ticks: int,
+    max_cross_span_sec: float,
 ) -> ConfidenceRecovery | None:
     """Detect a *sustained* low->high recovery ending at the newest sample.
 
@@ -185,14 +193,23 @@ def detect_confidence_recovery(
       2. Somewhere before that high run, within the supplied window, a sample
          sits at/below `low_threshold` (the "surprise" that got resolved).
       3. The gap between that low tick and the first tick of the high run is
-         <= `max_ticks_to_cross` (so a low from hours ago isn't retroactively
-         called a recovery).
+         <= `max_ticks_to_cross` *ticks* AND <= `max_cross_span_sec` *seconds*.
+
+    Both halves of (3) are required because row-index distance is not time
+    distance. Review finding 2026-07-30, reproduced against the real detector:
+    with only the index bound, a low tick 5 hours before the high run reported
+    `ticks_to_cross=1` and fired, because the caller's reader silently drops
+    rows whose `prediction_error_confidence` is missing/non-finite -- so 20
+    "consecutive" rows can span hours. The seconds bound is what actually makes
+    this function's "not an hours-old low" claim true; the tick bound alone
+    never did.
 
     Returns None when any condition fails. Firing exactly-once per real
-    recovery is the *caller's* job (the same crossing stays true for as long as
-    the high run holds) -- see the equilibrium service's `high_at` de-dupe.
+    recovery is the *caller's* job -- see the equilibrium service's `low_at`
+    de-dupe, and note that `high_at` is NOT a safe identity key: it re-anchors
+    whenever the high run breaks on a single sub-threshold tick and re-forms.
     """
-    if confirm_ticks < 1 or max_ticks_to_cross < 0:
+    if confirm_ticks < 1 or max_ticks_to_cross < 0 or max_cross_span_sec < 0:
         return None
     if len(samples) < confirm_ticks:
         return None
@@ -219,9 +236,15 @@ def detect_confidence_recovery(
     if low_idx is None:
         return None
 
-    # (3) the climb was recent enough to call it one event.
+    # (3) the climb was recent enough to call it one event -- in ticks AND in
+    # wall-clock seconds, since dropped rows make those two different things.
     ticks_to_cross = high_idx - low_idx
     if ticks_to_cross > max_ticks_to_cross:
+        return None
+    cross_span_sec = (
+        samples[high_idx].generated_at - samples[low_idx].generated_at
+    ).total_seconds()
+    if cross_span_sec > max_cross_span_sec:
         return None
 
     return ConfidenceRecovery(
@@ -230,6 +253,7 @@ def detect_confidence_recovery(
         low_value=values[low_idx],
         high_value=values[high_idx],
         ticks_to_cross=ticks_to_cross,
+        cross_span_sec=cross_span_sec,
         confirm_ticks=confirm_ticks,
         window_ticks=len(values),
     )
@@ -241,11 +265,19 @@ def detect_flow_regime(
     floor: float,
     max_stdev: float,
     min_ticks: int,
+    max_span_sec: float,
 ) -> FlowRegime | None:
     """Detect a sustained high-confidence, low-variance regime ("flow").
 
     `samples` must be ordered oldest -> newest; only the trailing `min_ticks`
-    are evaluated, so "sustained" means literally the last N consecutive ticks.
+    are evaluated. "Sustained" means the last N *genuinely consecutive* ticks,
+    which `max_span_sec` is what actually enforces: row adjacency alone does not
+    imply tick adjacency, because the caller's reader drops rows with a
+    missing/non-finite confidence. Review finding 2026-07-30, reproduced against
+    the real detector: without this bound, 20 rows spanning 6.08 hours fired
+    while reporting `tick_count=20` as though it were 10 minutes of calm, and a
+    window of 20 rows that were all 3 days old also fired (the writing tick is
+    flag-gated, so it can simply stop).
 
     Statistic choice (two explicit conjunct conditions rather than one compound
     score): `min(window) >= floor` AND `stdev(window) <= max_stdev`.
@@ -271,7 +303,7 @@ def detect_flow_regime(
     shipped as though it were doing work today. floor=0.92 was measured as
     degenerate (0 qualifying windows) and must not be used.
     """
-    if min_ticks < 2:
+    if min_ticks < 2 or max_span_sec < 0:
         return None
     if len(samples) < min_ticks:
         return None
@@ -279,6 +311,12 @@ def detect_flow_regime(
     window = list(samples[-min_ticks:])
     values = _window_values(window)
     if values is None:
+        return None
+
+    # Contiguity first: a window that isn't really N consecutive ticks cannot
+    # support a claim about sustained calm, whatever its values look like.
+    span_sec = (window[-1].generated_at - window[0].generated_at).total_seconds()
+    if span_sec > max_span_sec:
         return None
 
     minimum = min(values)
@@ -293,6 +331,7 @@ def detect_flow_regime(
         started_at=window[0].generated_at,
         ended_at=window[-1].generated_at,
         tick_count=len(values),
+        span_sec=span_sec,
         min_value=minimum,
         mean_value=statistics.fmean(values),
         stdev_value=stdev_value,

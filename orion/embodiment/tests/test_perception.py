@@ -40,9 +40,32 @@ def test_build_perception_shapes_active_conversation():
     assert convo["conversation_id"] == "c:1"
     assert convo["status"] == "participating"
     assert set(convo["participants"]) == {"orion", "p9"}
-    assert convo["other"] == {"player_id": "p9", "name": "Juniper", "position": {"x": 1.0, "y": 0.0}}
+    assert convo["other"] == {
+        "player_id": "p9", "name": "Juniper", "position": {"x": 1.0, "y": 0.0}, "is_human": False,
+    }
     # whitespace-only message dropped; author_id preserved for turn-taking
     assert convo["messages"] == [{"author_id": "p9", "author": "Juniper", "text": "hey Orion"}]
+
+
+def test_build_perception_forwards_is_human_for_nearby_and_partner():
+    # ai-town's raw player record carries `human` (a session-token id) only for
+    # human-controlled players; NPCs driven by ai-town's own agent framework never
+    # have it. This must be forwarded, not dropped, so callers can tag
+    # conversation-memory events with the correct participant_kind.
+    players = [
+        {"id": "orion", "position": {"x": 0.0, "y": 0.0}},
+        {"id": "human1", "name": "Juniper", "position": {"x": 1.0, "y": 0.0}, "human": "tok:abc"},
+        {"id": "npc1", "name": "Mira", "position": {"x": 2.0, "y": 0.0}},
+    ]
+    conversations = [{"id": "c:1", "participants": [
+        {"playerId": "orion", "status": {"kind": "participating"}},
+        {"playerId": "human1", "status": {"kind": "participating"}},
+    ]}]
+    perc = build_perception(players=players, orion_player_id="orion", conversations=conversations)
+    nearby_by_id = {n["player_id"]: n for n in perc.nearby_players}
+    assert nearby_by_id["human1"]["is_human"] is True
+    assert nearby_by_id["npc1"]["is_human"] is False
+    assert perc.active_conversation["other"]["is_human"] is True
 
 
 def test_build_perception_no_conversation_when_orion_not_member():

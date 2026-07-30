@@ -485,7 +485,7 @@ class EmbodimentWorker:
             )
             social_env = BaseEnvelope(
                 kind=SOCIAL_TURN_KIND, source=self._service_ref(),
-                correlation_id=uuid4(), payload=social_turn.model_dump(mode="json"),
+                correlation_id=correlation_id, payload=social_turn.model_dump(mode="json"),
             )
             await publish_with_reconnect(
                 self._bus, SOCIAL_TURN_CHANNEL, social_env, log_label="embodiment_social_turn"

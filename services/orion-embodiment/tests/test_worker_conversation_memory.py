@@ -86,7 +86,14 @@ def test_speak_once_publishes_to_both_channels_with_shared_correlation_id():
     assert social_turn.response == "Hi Juniper!"
     # Both publishes for one exchange share a correlation_id, so a later
     # journal entry can cross-reference the exact chat-log/social-turn rows.
+    # Checked at BOTH the envelope level (what orion-sql-writer actually
+    # persists as each row's correlation_id column -- confirmed live: a prior
+    # version of this code set the social envelope's correlation_id to a
+    # fresh uuid4() instead of the shared one, and the payload-level check
+    # alone did not catch it) and the payload level.
+    assert str(chat_env.correlation_id) == str(social_env.correlation_id)
     assert str(chat_turn.correlation_id) == str(social_turn.correlation_id)
+    assert str(chat_env.correlation_id) == str(chat_turn.correlation_id)
 
     for turn in (chat_turn, social_turn):
         assert turn.client_meta["external_room"] == {"platform": "aitown", "room_id": "conv1"}

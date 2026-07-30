@@ -25,6 +25,14 @@ from .transport_metacog_gate import (
     build_transport_metacog_trigger_from_grammar_atom,
     build_transport_metacog_trigger_from_snapshot,
 )
+from .insight_metacog_gate import build_insight_metacog_trigger
+from .flow_metacog_gate import build_flow_metacog_trigger
+from .attention_self_model_reader import AttentionSelfModelReader
+from orion.substrate.metacog_trigger_signals import (
+    ConfidenceSample,
+    detect_confidence_recovery,
+    detect_flow_regime,
+)
 from .downtime_transition_tracker import DowntimeTransitionTracker
 from orion.schemas.telemetry.cognition_trace import CognitionTracePayload
 from orion.schemas.telemetry.system_health import EquilibriumServiceState, EquilibriumSnapshotV1, SystemHealthV1
@@ -38,6 +46,13 @@ logger = logging.getLogger("orion-equilibrium")
 
 def _utcnow() -> datetime:
     return datetime.now(timezone.utc)
+
+
+# Re-log the generative gates' stale-window warning every Nth consecutive stale
+# poll. 60 polls at the default 30s cadence is ~30 minutes -- frequent enough
+# that a stopped writer stays visible in the logs, rare enough not to bury the
+# first real gate fire.
+_STALE_WINDOW_RELOG_EVERY: int = 60
 
 
 class EquilibriumService(BaseChassis):
@@ -70,6 +85,42 @@ class EquilibriumService(BaseChassis):
         self._baseline_skip_count: int = 0
         self._chat_turn_correlator: ChatTurnCorrelator | None = None
         self._downtime_tracker = DowntimeTransitionTracker()
+        self._attention_self_model_reader: AttentionSelfModelReader | None = None
+        # De-dupe keys for the two generative gates. These two are NOT equally
+        # strong, on purpose -- stated plainly rather than implied:
+        #
+        # insight: keyed on `low_at`, the tick that armed the recovery. That is
+        #   real episode identity: a genuinely new recovery requires a new low
+        #   crossing, so one real recovery publishes exactly once.
+        #   NOT keyed on `high_at`, which looks stable but isn't -- review
+        #   finding 2026-07-30, reproduced against the real detector: when a
+        #   high run breaks on a single sub-threshold tick and re-forms,
+        #   `high_at` re-anchors to the new run and the same recovery fired
+        #   twice, 390s apart, clearing the 300s cooldown. `low_at` was
+        #   identical across both fires.
+        #
+        # flow: there is no equivalent stable anchor. `ended_at` is the newest
+        #   tick in a trailing window, so it advances every tick while the
+        #   plateau continues; this key therefore only suppresses re-processing
+        #   the *same* newest row (real, since the 30s poll and the ~30s
+        #   write tick drift against each other). Flow is treated as an ongoing
+        #   *state* re-announced no more often than its own cooldown lane
+        #   (EQUILIBRIUM_METACOG_FLOW_COOLDOWN_SEC, default 1800s), not as a
+        #   once-per-episode event. Anchoring it to the true start of the
+        #   contiguous run would require fetching further back than the
+        #   evaluation window, which is not worth the extra query today.
+        #   Measured over 21h of real history: 71 condition-true windows reduce
+        #   to 7 actual publishes once that cooldown is applied.
+        #
+        # Both keys are recorded only after an *actual* publish, never on a
+        # cooldown-suppressed one -- otherwise the event would be marked seen
+        # while never having been emitted, and (since insight's key is stable)
+        # never retried.
+        self._last_insight_low_at: str | None = None
+        self._last_flow_ended_at: str | None = None
+        # Consecutive stale-window polls, for rate-limiting that warning the same
+        # way AttentionSelfModelReader._log_failure rate-limits its own.
+        self._stale_window_polls: int = 0
 
     def _trace_meta(
         self,
@@ -391,9 +442,15 @@ class EquilibriumService(BaseChassis):
     # see this service's README.md "chat_turn metacog trigger" section, "Operational
     # note"). transport (2026-07-24) got its own lane from day one instead of
     # repeating that bug.
+    # insight/flow (2026-07-30) likewise get their own lanes from day one: they
+    # are the first non-rupture generative kinds, fire on slow-moving regimes
+    # rather than discrete incidents, and must not be able to starve any
+    # rupture-shaped kind's fires (or each other's).
     _PER_KIND_COOLDOWN_SETTINGS_ATTR = {
         "chat_turn": "metacog_chat_turn_cooldown_sec",
         "transport": "metacog_transport_cooldown_sec",
+        "insight": "metacog_insight_cooldown_sec",
+        "flow": "metacog_flow_cooldown_sec",
     }
 
     def _cooldown_sec_for_kind(self, trigger_kind: str) -> float:
@@ -402,7 +459,15 @@ class EquilibriumService(BaseChassis):
             return getattr(settings, attr)
         return settings.metacog_cooldown_sec
 
-    async def _publish_metacog_trigger(self, trigger: MetacogTriggerV1) -> None:
+    async def _publish_metacog_trigger(self, trigger: MetacogTriggerV1) -> bool:
+        """Returns True only if the trigger was really published to the bus.
+
+        Callers that keep their own event-identity de-dupe state (the generative
+        gates) must record that state only on a True return -- recording it on a
+        cooldown-suppressed fire would mark the event as seen while never having
+        emitted it. Every pre-existing caller ignores the return value, which is
+        the unchanged behavior for them.
+        """
         now_ts = datetime.now().timestamp()
 
         cooldown_sec = self._cooldown_sec_for_kind(trigger.trigger_kind)
@@ -415,7 +480,7 @@ class EquilibriumService(BaseChassis):
 
         if (now_ts - last_ts) < cooldown_sec:
             logger.info("Metacog trigger skipped due to cooldown (%s)", trigger.trigger_kind)
-            return
+            return False
 
         if has_own_lane:
             self._last_trigger_ts_by_kind[trigger.trigger_kind] = now_ts
@@ -447,7 +512,7 @@ class EquilibriumService(BaseChassis):
             )
         except Exception as e:
             logger.error(f"Failed to publish metacog trigger: {e}")
-            return
+            return False
 
         if settings.metacog_publish_verb_request:
             # Legacy path intentionally disabled; must route through cortex-orch.
@@ -456,6 +521,8 @@ class EquilibriumService(BaseChassis):
                 "Set EQUILIBRIUM_METACOG_PUBLISH_VERB_REQUEST=false and rely on "
                 f"orion:equilibrium:metacog:trigger routing. trace_id={trace_meta['trace_id']}"
             )
+
+        return True
 
     async def _handle_chat_turn_evidence(
         self,
@@ -731,6 +798,236 @@ class EquilibriumService(BaseChassis):
             except asyncio.CancelledError:
                 break
 
+    def _get_attention_self_model_reader(self) -> AttentionSelfModelReader:
+        """Cached read-only Postgres reader for `substrate_attention_self_model`
+        (written by orion-substrate-runtime's _attention_self_model_tick, PR
+        #1459).
+
+        Unlike _get_bus_synaptic_falkor_client this cannot fail here and so does
+        not return None: construction only stores a DSN, and the connection is
+        opened lazily inside the reader, which is where the real fail-open
+        (returning no samples) lives.
+        """
+        reader = self._attention_self_model_reader
+        if reader is None:
+            reader = AttentionSelfModelReader(
+                dsn=settings.metacog_generative_postgres_uri
+            )
+            self._attention_self_model_reader = reader
+        return reader
+
+    def _generative_fetch_limit(self) -> int:
+        """Rows to fetch per poll.
+
+        Deliberately not just `window_ticks`: an operator raising
+        EQUILIBRIUM_METACOG_FLOW_MIN_TICKS above it would otherwise turn the flow
+        gate into a silent permanent no-op (the detector returns None whenever
+        it receives fewer than min_ticks samples). Taking the max makes the
+        documented "must cover the widest window either detector needs"
+        invariant true by construction instead of by operator discipline.
+        """
+        return max(
+            int(settings.metacog_generative_window_ticks),
+            int(settings.metacog_flow_min_ticks),
+            int(settings.metacog_insight_max_ticks_to_cross)
+            + int(settings.metacog_insight_confirm_ticks),
+        )
+
+    def _generative_samples_are_fresh(self, samples: List[ConfidenceSample]) -> bool:
+        """Reject a window whose newest row is too old to describe the present.
+
+        The tick that writes these rows is itself flag-gated, so it can stop
+        while this loop keeps polling -- and a frozen window keeps satisfying
+        both gate conditions indefinitely (reproduced pre-fix: a window of rows
+        3 days old fired the flow gate). Without this, the gates would be the
+        "reducers alive but cursors stale" failure CLAUDE.md §0A calls out.
+        """
+        if not samples:
+            return False
+        max_age = float(settings.metacog_generative_max_age_sec)
+        age_sec = (
+            datetime.now(timezone.utc) - samples[-1].generated_at
+        ).total_seconds()
+        if age_sec > max_age:
+            # Rate-limited the same way AttentionSelfModelReader._log_failure is:
+            # at a 30s poll this would otherwise emit ~2880 identical warnings a
+            # day while the writer is down. Re-logged periodically rather than
+            # suppressed outright, because "the writer stopped" is exactly the
+            # kind of condition that should stay visible until it's fixed.
+            self._stale_window_polls += 1
+            if (
+                self._stale_window_polls == 1
+                or self._stale_window_polls % _STALE_WINDOW_RELOG_EVERY == 0
+            ):
+                logger.warning(
+                    "generative_metacog_window_stale age_sec=%.1f max_age_sec=%.1f "
+                    "newest_row=%s consecutive_stale_polls=%d -- is "
+                    "SUBSTRATE_ATTENTION_SELF_MODEL_TICK_ENABLED still writing?",
+                    age_sec,
+                    max_age,
+                    samples[-1].generated_at.isoformat(),
+                    self._stale_window_polls,
+                )
+            return False
+        if self._stale_window_polls:
+            logger.info(
+                "generative_metacog_window_fresh_again after %d stale poll(s)",
+                self._stale_window_polls,
+            )
+            self._stale_window_polls = 0
+        return True
+
+    async def _generative_metacog_poll_loop(self) -> None:
+        """Evaluates the two generative (non-rupture) gates -- insight and flow.
+
+        One loop, one query per tick, two conditions: both read the same
+        trailing window of `prediction_error_confidence` rows, so polling the
+        same table twice would be pure waste. Not message-driven (nothing
+        publishes this table to the bus), so it needs its own timer -- same
+        shape as _bus_synaptic_poll_loop.
+
+        See docs/superpowers/specs/2026-07-28-collapse-mirror-generative-
+        triggers-design.md. Both gates ship disabled; this returns immediately
+        unless one is explicitly enabled.
+        """
+        if not settings.metacog_enable:
+            return
+        if not (
+            settings.metacog_insight_trigger_enable
+            or settings.metacog_flow_trigger_enable
+        ):
+            return
+
+        interval = float(settings.metacog_generative_poll_interval_sec)
+        limit = self._generative_fetch_limit()
+        while not self._stop.is_set():
+            try:
+                reader = self._get_attention_self_model_reader()
+                # asyncio.to_thread: psycopg2 is a synchronous blocking driver --
+                # running the round-trip inline would stall the event loop
+                # (starving publish_loop/heartbeat/the bus consumer). Same
+                # reasoning as _bus_synaptic_poll_loop's own to_thread hop.
+                samples = await asyncio.to_thread(
+                    reader.fetch_recent_samples, limit=limit
+                )
+                if self._generative_samples_are_fresh(samples):
+                    distress, zen, _ = self._calculate_metrics()
+                    zen_state = "zen" if zen > 0.5 else "not_zen"
+
+                    if settings.metacog_insight_trigger_enable:
+                        await self._evaluate_insight_gate(
+                            samples, zen_state=zen_state, pressure=distress
+                        )
+                    if settings.metacog_flow_trigger_enable:
+                        await self._evaluate_flow_gate(
+                            samples, zen_state=zen_state, pressure=distress
+                        )
+            except Exception:
+                logger.exception("generative_metacog_poll_loop_failed")
+
+            try:
+                await asyncio.wait_for(self._stop.wait(), timeout=interval)
+            except asyncio.TimeoutError:
+                continue
+            except asyncio.CancelledError:
+                break
+
+    async def _evaluate_insight_gate(
+        self, samples: List[ConfidenceSample], *, zen_state: str, pressure: float
+    ) -> None:
+        max_ticks = int(settings.metacog_insight_max_ticks_to_cross)
+        recovery = detect_confidence_recovery(
+            samples,
+            low_threshold=settings.metacog_insight_low_threshold,
+            high_threshold=settings.metacog_insight_high_threshold,
+            max_ticks_to_cross=max_ticks,
+            confirm_ticks=int(settings.metacog_insight_confirm_ticks),
+            # Tick count converted to a real wall-clock bound, because dropped
+            # rows make row-distance and time-distance different things.
+            max_cross_span_sec=(
+                max_ticks
+                * float(settings.metacog_generative_expected_tick_sec)
+                * float(settings.metacog_generative_span_tolerance)
+            ),
+        )
+        if recovery is None:
+            return
+
+        # Episode identity keyed on the arming low, not the high run -- see the
+        # note in __init__ for the double-fire this avoids.
+        low_at = recovery.low_at.isoformat()
+        if low_at == self._last_insight_low_at:
+            return
+
+        trigger = build_insight_metacog_trigger(
+            recovery,
+            zen_state=zen_state,
+            pressure=pressure,
+            recall_enabled=settings.metacog_recall_enabled,
+            low_threshold=settings.metacog_insight_low_threshold,
+            high_threshold=settings.metacog_insight_high_threshold,
+        )
+        if trigger is None:
+            return
+
+        logger.info(
+            "insight_gate_fired low=%.3f high=%.3f ticks_to_cross=%d span_sec=%.1f",
+            recovery.low_value,
+            recovery.high_value,
+            recovery.ticks_to_cross,
+            recovery.cross_span_sec,
+        )
+        # Only mark the episode seen once it was really emitted -- a
+        # cooldown-suppressed fire must stay retryable on the next poll.
+        if await self._publish_metacog_trigger(trigger):
+            self._last_insight_low_at = low_at
+
+    async def _evaluate_flow_gate(
+        self, samples: List[ConfidenceSample], *, zen_state: str, pressure: float
+    ) -> None:
+        min_ticks = int(settings.metacog_flow_min_ticks)
+        regime = detect_flow_regime(
+            samples,
+            floor=settings.metacog_flow_floor,
+            max_stdev=settings.metacog_flow_max_stdev,
+            min_ticks=min_ticks,
+            # A window of N rows should cover about (N-1) tick intervals; anything
+            # much longer means rows are missing and "sustained" would be a lie.
+            max_span_sec=(
+                max(min_ticks - 1, 1)
+                * float(settings.metacog_generative_expected_tick_sec)
+                * float(settings.metacog_generative_span_tolerance)
+            ),
+        )
+        if regime is None:
+            return
+
+        ended_at = regime.ended_at.isoformat()
+        if ended_at == self._last_flow_ended_at:
+            return
+
+        trigger = build_flow_metacog_trigger(
+            regime,
+            zen_state=zen_state,
+            pressure=pressure,
+            recall_enabled=settings.metacog_recall_enabled,
+            floor=settings.metacog_flow_floor,
+            max_stdev=settings.metacog_flow_max_stdev,
+        )
+        if trigger is None:
+            return
+
+        logger.info(
+            "flow_gate_fired min=%.3f mean=%.3f stdev=%.4f ticks=%d span_sec=%.1f",
+            regime.min_value,
+            regime.mean_value,
+            regime.stdev_value,
+            regime.tick_count,
+            regime.span_sec,
+        )
+        if await self._publish_metacog_trigger(trigger):
+            self._last_flow_ended_at = ended_at
+
     async def _run(self) -> None:
         await self._load_state()
         publisher = asyncio.create_task(self._publish_loop())
@@ -740,6 +1037,7 @@ class EquilibriumService(BaseChassis):
         if settings.equilibrium_spark_heartbeat_enable:
             heartbeat_task = asyncio.create_task(self._spark_heartbeat_loop())
         bus_synaptic_poll_task = asyncio.create_task(self._bus_synaptic_poll_loop())
+        generative_poll_task = asyncio.create_task(self._generative_metacog_poll_loop())
 
         # Build list of channels to subscribe to
         channels = [settings.health_channel]
@@ -965,6 +1263,7 @@ class EquilibriumService(BaseChassis):
         if heartbeat_task:
             heartbeat_task.cancel()
         bus_synaptic_poll_task.cancel()
+        generative_poll_task.cancel()
 
         await asyncio.gather(
             publisher,
@@ -972,5 +1271,12 @@ class EquilibriumService(BaseChassis):
             metacog_task,
             *( [heartbeat_task] if heartbeat_task else [] ),
             bus_synaptic_poll_task,
+            generative_poll_task,
             return_exceptions=True,
         )
+
+        # Release the Postgres connection the generative gates cached, if any --
+        # the FalkorDB client above is Redis-backed and pooled, this one holds a
+        # real long-lived psycopg2 socket.
+        if self._attention_self_model_reader is not None:
+            self._attention_self_model_reader.close()

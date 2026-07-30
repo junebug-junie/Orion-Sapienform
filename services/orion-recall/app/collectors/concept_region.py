@@ -38,6 +38,7 @@ import logging
 from typing import Any, Iterable
 
 from orion.core.schemas.cognitive_substrate import BaseSubstrateNodeV1, SubstrateEdgeV1
+from orion.substrate.falkor_codec import EXTERNALLY_OWNED_METADATA_KEYS
 from orion.substrate.store import SubstrateGraphStore
 
 logger = logging.getLogger(__name__)
@@ -245,7 +246,22 @@ def reinforce_matched_concepts(
             updated_signal = activation_signal.model_copy(update={"activation": boosted})
             updated_signals = node.signals.model_copy(update={"activation": updated_signal})
             updated_node = node.model_copy(update={"signals": updated_signals})
-            store.upsert_node(identity_key=identity_key, node=updated_node)
+            # skip_metadata_keys: updated_node's metadata is node.metadata,
+            # read moments earlier by get_node_by_id() above -- only
+            # signals.activation is actually recomputed here, but
+            # re-persisting the whole node re-writes reducer-owned metadata
+            # fields (prediction_error, contributing_turn_ids) from that
+            # stale read too. Same protection already proven for
+            # SubstrateDynamicsEngine.tick() and (2026-07-30)
+            # SubstrateGraphMaterializer.apply_record()'s merge branch,
+            # concept_induction's materialize_concept_profile_to_falkor(),
+            # and orion-hub's concept decay scheduler -- see
+            # falkor_codec.EXTERNALLY_OWNED_METADATA_KEYS's docstring.
+            store.upsert_node(
+                identity_key=identity_key,
+                node=updated_node,
+                skip_metadata_keys=EXTERNALLY_OWNED_METADATA_KEYS,
+            )
             reinforced += 1
         except Exception as exc:  # noqa: BLE001 - one node's failure must not block the rest
             logger.debug("concept_region reinforcement: node %s failed: %s", node_id, exc)

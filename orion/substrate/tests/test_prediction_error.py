@@ -23,10 +23,13 @@ from orion.schemas.route_projection import (
     RouteArbitrationProjectionV1,
     RouteArbitrationRunStateV1,
 )
+from orion.structural_mass.git_delta import GitChurnDelta
 from orion.substrate.prediction_error import (
+    CodebaseMassBaseline,
     biometrics_prediction_error,
     bus_synaptic_prediction_error,
     chat_prediction_error,
+    codebase_prediction_error,
     execution_prediction_error,
     route_prediction_error,
 )
@@ -655,3 +658,116 @@ class TestBusSynapticPredictionError:
         """Expected value updated 2026-07-26 for the calm-floor subtraction:
         mean([0.0, 3.0]) = 1.5, same transform as the 1.5 case above."""
         assert bus_synaptic_prediction_error([0.0, 3.0]) == pytest.approx(0.3188367996970756)
+
+
+class TestCodebasePredictionError:
+    """Phase 1 skeleton (docs/superpowers/specs/2026-07-30-codebase-mass-signal-
+    design.md) -- not wired into any tick yet. Unlike the other five instruments,
+    the input is already a diff (``GitChurnDelta``, itself a diff of two git SHAs),
+    so there is no prev/curr projection pair here; state (the EWMA baseline) is
+    threaded explicitly via ``CodebaseMassBaseline`` rather than mutated on a
+    persisted projection object, since no such schema exists yet."""
+
+    def _delta(
+        self,
+        *,
+        lines_added: int = 0,
+        lines_removed: int = 0,
+        commit_count: int = 1,
+        files_added: int = 0,
+        files_deleted: int = 0,
+        files_modified: int = 0,
+    ) -> GitChurnDelta:
+        return GitChurnDelta(
+            prev_sha="a" * 40,
+            head_sha="b" * 40,
+            commit_count=commit_count,
+            files_added=files_added,
+            files_deleted=files_deleted,
+            files_modified=files_modified,
+            lines_added=lines_added,
+            lines_removed=lines_removed,
+        )
+
+    def test_no_commit_since_last_tick_is_explicit_no_op(self) -> None:
+        """A zero-magnitude delta (git_churn_delta's own prev_sha == head_sha
+        shape) must read 0.0, and -- like every other domain's cold-start
+        behavior -- must still seed the baseline rather than silently no-op the
+        state too."""
+        delta = self._delta(commit_count=0, lines_added=0, lines_removed=0)
+        baseline = CodebaseMassBaseline()
+        result = codebase_prediction_error(delta, baseline)
+        assert result.score == 0.0
+        assert result.baseline.n == 1
+        assert result.baseline.ewma == 0.0
+
+    def test_first_tick_is_cold_start_but_seeds_baseline(self) -> None:
+        """No established baseline yet (baseline.n == 0) -- must return 0.0 (no
+        z-score to compute against -- 'no empty-shell cognition'), but the
+        returned baseline must carry this tick's real raw magnitude forward so
+        the very next tick has something real to compare against."""
+        delta = self._delta(lines_added=400, lines_removed=200)
+        baseline = CodebaseMassBaseline()
+        result = codebase_prediction_error(delta, baseline)
+        assert result.score == 0.0
+        assert result.baseline.ewma == pytest.approx(600.0)
+        assert result.baseline.variance == 0.0
+        assert result.baseline.n == 1
+
+    def test_one_normal_commit_scores_against_established_baseline(self) -> None:
+        """Once a baseline is established, a tick close to that baseline's own
+        recent normal should read a low/near-zero score, not a spike -- this is
+        the 'genuine rest state' the metric-quality-gate step 4 requires (a
+        normal-sized commit must not look anomalous by construction)."""
+        baseline = CodebaseMassBaseline(ewma=500.0, variance=10_000.0, n=5)
+        delta = self._delta(lines_added=300, lines_removed=220)  # magnitude 520
+        result = codebase_prediction_error(delta, baseline)
+        # zscore = (520 - 500) / sqrt(10_000) = 0.2 -> well below saturation
+        assert result.score == pytest.approx(0.2 / 3.0)
+        assert result.baseline.n == 6
+
+    def test_saturates_exactly_at_zscore_saturation_boundary(self) -> None:
+        """No off-by-one at the saturation ceiling: a zscore of exactly 3.0 (this
+        module's _CODEBASE_PREDICTION_ERROR_ZSCORE_SATURATION) must score exactly
+        1.0, not something just short of or past it."""
+        baseline = CodebaseMassBaseline(ewma=500.0, variance=100.0, n=10)
+        delta = self._delta(lines_added=530, lines_removed=0)  # magnitude 530
+        # zscore = (530 - 500) / sqrt(100) = 3.0 exactly
+        result = codebase_prediction_error(delta, baseline)
+        assert result.score == pytest.approx(1.0)
+
+    def test_large_catch_up_diff_spanning_missed_ticks_scores_high(self) -> None:
+        """A big diff accumulated across several missed ticks (a commit made on
+        another node, via Cursor, or without the post-commit hook firing --
+        the design spec's 'self-healing by construction' shape) should read as
+        a real spike relative to the domain's own established baseline, not be
+        silently absorbed."""
+        baseline = CodebaseMassBaseline(ewma=500.0, variance=10_000.0, n=20)
+        delta = self._delta(
+            lines_added=9000, lines_removed=6000, commit_count=14, files_modified=40
+        )  # magnitude 15,000
+        result = codebase_prediction_error(delta, baseline)
+        # zscore = (15_000 - 500) / sqrt(10_000) = 145.0 -> far past saturation
+        assert result.score == pytest.approx(1.0)
+
+    def test_below_baseline_tick_clamps_to_zero_not_negative(self) -> None:
+        """A quieter-than-usual tick (negative z-score) must clamp to 0.0, not
+        go negative -- 'surprising' means 'more churn than usual,' matching
+        execution_prediction_error's identical clamp for the same reason."""
+        baseline = CodebaseMassBaseline(ewma=5000.0, variance=1_000_000.0, n=10)
+        delta = self._delta(lines_added=10, lines_removed=5)  # magnitude 15
+        result = codebase_prediction_error(delta, baseline)
+        assert result.score == 0.0
+
+    def test_baseline_state_flows_independently_of_module_globals(self) -> None:
+        """Two independent baseline threads (e.g. two different replay windows)
+        must not interfere with each other -- state is entirely caller-owned,
+        no hidden module-level mutation."""
+        delta = self._delta(lines_added=100, lines_removed=0)
+        baseline_a = CodebaseMassBaseline()
+        baseline_b = CodebaseMassBaseline(ewma=9999.0, variance=1.0, n=50)
+        result_a = codebase_prediction_error(delta, baseline_a)
+        result_b = codebase_prediction_error(delta, baseline_b)
+        assert result_a.baseline.n == 1
+        assert result_b.baseline.n == 51
+        assert result_a.baseline.ewma != result_b.baseline.ewma

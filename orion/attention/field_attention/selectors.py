@@ -25,12 +25,22 @@ ObservationMode = Literal["watch", "inspect", "summarize", "ignore"]
 # against `services/orion-substrate-runtime/app/worker.py`'s exact
 # `_prediction_error_receipt(reducer_key=..., node_id=...)` call sites -- a
 # real, checked 1:1 correspondence, not assumed.
+#
+# `node:substrate.transport` is deliberately NOT here (code review caught an
+# earlier draft claiming it was, incorrectly): its prediction_error write was
+# permanently removed 2026-07-26 (docs/superpowers/specs/2026-07-26-transport-
+# domain-retirement-bus-synaptic-successor-design.md, worker.py's own comment
+# at the old call site) because transport_prediction_error() is a narrow,
+# non-representative 2-Redis-Stream census, not real bus traffic -- the exact
+# same "fake signal winning real budget slots" disease this whole patch
+# exists to stop, already killed once at the source. Adding it back here
+# would silently resurrect a signal that was correctly retired elsewhere,
+# not fill a real gap. `bus_synaptic` is its real successor and is included.
 PREDICTION_ERROR_NATIVE_TARGETS: dict[str, str] = {
     "node:substrate.biometrics": "node_biometrics",
     "node:substrate.execution": "execution_trajectory",
     "node:substrate.chat": "chat_session",
     "node:substrate.route": "route_arbitration",
-    "node:substrate.transport": "transport_bus",
     "node:substrate.bus_synaptic": "bus_synaptic",
 }
 

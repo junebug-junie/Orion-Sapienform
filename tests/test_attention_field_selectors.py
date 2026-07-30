@@ -135,19 +135,94 @@ def test_select_node_targets_confidence_scales_with_sample_count() -> None:
     assert many.confidence_score == 1.0  # clamped at QUALIFYING_MIN_ROWS=20
 
 
-def test_select_node_targets_only_covers_the_confirmed_six_reducers() -> None:
+def test_select_node_targets_only_covers_the_confirmed_five_reducers() -> None:
     # Locks the real, live-confirmed mapping (services/orion-substrate-runtime/
     # app/worker.py's _prediction_error_receipt call sites) -- a silent
     # addition/removal here would change which real signals ground live
-    # attention without anyone noticing.
+    # attention without anyone noticing. `node:substrate.transport` is
+    # deliberately excluded (code review, 2026-07-30): its write was
+    # permanently retired 2026-07-26, superseded by bus_synaptic -- an
+    # earlier draft's inclusion of it here was a real bug this test would
+    # have caught, and now does.
     assert set(PREDICTION_ERROR_NATIVE_TARGETS.keys()) == {
         "node:substrate.biometrics",
         "node:substrate.execution",
         "node:substrate.chat",
         "node:substrate.route",
-        "node:substrate.transport",
         "node:substrate.bus_synaptic",
     }
+    assert "node:substrate.transport" not in PREDICTION_ERROR_NATIVE_TARGETS
+
+
+def test_select_node_targets_multi_target_competition_normalizes_min_to_zero_max_to_one() -> None:
+    # Code-review regression test (2026-07-30): the only rewritten test that
+    # previously exercised normalize_across_targets() with more than one real
+    # competitor -- everything else fed it a single target, which trivially
+    # normalizes to 1.0 and never exercises the real min-max path.
+    #
+    # Deliberately does NOT assert which target_id "should" win by hand-
+    # predicting precision_weighted_salience()'s output: that function
+    # includes the current reading in its own variance estimate, so a real
+    # anomaly partially self-defeats its own salience (a spike inflates the
+    # very variance that determines its precision) -- confirmed by hand this
+    # session, non-obvious, and not this test's job to re-derive. This test
+    # instead checks the actual mechanical guarantee normalize_across_targets
+    # makes: whichever of two DIFFERENT real raw scores is lower maps to
+    # exactly 0.0, the higher to exactly 1.0.
+    histories = {
+        "node:substrate.chat": [0.01, 0.01, 0.02, 0.01, 0.02],
+        "node:substrate.execution": [0.02, 0.03, 0.02, 0.03, 0.95],
+    }
+    from orion.attention.field_attention.candidate_precision_weighted import (
+        precision_weighted_salience,
+    )
+
+    raw = {k: precision_weighted_salience(v).salience for k, v in histories.items()}
+    weaker_id = min(raw, key=raw.get)
+    stronger_id = max(raw, key=raw.get)
+    assert raw[weaker_id] != raw[stronger_id]  # sanity: the fixture must be non-degenerate
+
+    targets = select_node_targets(_FIELD_FOR_NODE_TESTS, POLICY, histories)
+    by_id = {t.target_id: t for t in targets}
+    assert len(targets) == 2
+    # Min-max normalization: the weaker real competitor floors to exactly 0.0,
+    # the stronger one ceilings to exactly 1.0 -- by construction, not
+    # incidentally. Disclosed design property (code review, 2026-07-30): this
+    # means the weakest of N real competitors is *always* classified
+    # suppressed by build_attention_frame()'s suppress_below threshold,
+    # regardless of its own absolute precision-weighted magnitude -- relative
+    # rank, not absolute alarm level, decides suppression when 2+ targets are
+    # qualified this tick.
+    assert by_id[weaker_id].salience_score == 0.0
+    assert by_id[stronger_id].salience_score == 1.0
+
+
+def test_select_node_targets_min_samples_boundary_at_qualifying_min_rows() -> None:
+    just_under = select_node_targets(
+        _FIELD_FOR_NODE_TESTS, POLICY, {"node:substrate.execution": [0.1] * 19}
+    )[0]
+    exactly_at = select_node_targets(
+        _FIELD_FOR_NODE_TESTS, POLICY, {"node:substrate.execution": [0.1] * 20}
+    )[0]
+    over = select_node_targets(
+        _FIELD_FOR_NODE_TESTS, POLICY, {"node:substrate.execution": [0.1] * 25}
+    )[0]
+    assert just_under.confidence_score < 1.0
+    assert exactly_at.confidence_score == 1.0
+    assert over.confidence_score == 1.0  # clamped, does not exceed 1.0
+
+
+def test_select_node_targets_surfaces_variance_floored_in_reasons() -> None:
+    # A near-perfectly-constant real history -- precision_weighted_salience's
+    # own variance-floor instability case. Must be visible in `reasons`, not
+    # silently absorbed into a plain-looking salience number.
+    near_constant = [0.5] * 25
+    targets = select_node_targets(
+        _FIELD_FOR_NODE_TESTS, POLICY, {"node:substrate.execution": near_constant}
+    )
+    assert len(targets) == 1
+    joined_reasons = " ".join(targets[0].reasons)
+    assert "variance-floor instability" in joined_reasons
 
 
 def test_select_capability_targets_always_empty() -> None:

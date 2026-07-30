@@ -7,13 +7,14 @@ from orion.attention.field_attention.candidate_precision_weighted import (
     normalize_across_targets,
     precision_weighted_salience,
 )
+from orion.attention.field_attention.candidate_society_of_mind import novelty_scorer
 from orion.attention.field_attention.policy import FieldAttentionPolicyV1
 from orion.attention.field_attention.scoring import clamp01
 from orion.field.pressure import (
     RECENT_PERTURBATION_EWMA_MIN_SAMPLES,
     RECENT_PERTURBATION_ZSCORE_SATURATION,
 )
-from orion.schemas.field_attention_frame import FieldAttentionTargetV1
+from orion.schemas.field_attention_frame import FieldAttentionFrameV1, FieldAttentionTargetV1
 from orion.schemas.field_state import FieldStateV1
 
 ObservationMode = Literal["watch", "inspect", "summarize", "ignore"]
@@ -51,6 +52,171 @@ PREDICTION_ERROR_NATIVE_TARGETS: dict[str, str] = {
 # data backs it (more real samples = a more trustworthy variance estimate),
 # not a hand-picked constant.
 QUALIFYING_MIN_ROWS: int = 20
+
+
+# 2026-07-30 fix (code review Finding 1, CRITICAL): these are the only real
+# "higher is better" channels in the node/capability vectors -- confirmed by
+# reading services/orion-field-digester/app/tensor/channels.py directly
+# (DEFAULT_NODE_VECTOR/DEFAULT_CAPABILITY_VECTOR), not assumed from names.
+# Every other channel in NODE_CHANNELS/CAPABILITY_CHANNELS is a
+# "*_pressure"/"*_load"/deficit-style channel that rises with real distress
+# and defaults to 0.0. Without inverting these before taking max(),
+# _current_pressure_proxy() would report ~1.0 for a fully calm target just
+# because e.g. `availability` sits at its healthy default of 1.0 -- confirmed
+# by hand this session: a severely-overloaded vector and a fully-calm vector
+# produced near-identical proxy output as long as these channels stayed near
+# default, which is the normal case. This is a direction correction on the
+# existing order statistic, not a resurrection of compute_salience()'s
+# weighted blend -- no weights, no calibration, still just max().
+_HIGHER_IS_BETTER_CHANNELS: frozenset[str] = frozenset(
+    {
+        "availability",  # node
+        "delivery_confidence",  # node (node:athena only, single-observer)
+        "stream_backlog_health",  # node (node:athena only, single-observer)
+        "confidence",  # capability
+        "available_capacity",  # capability
+    }
+)
+
+
+def _current_pressure_proxy(vector: dict[str, float]) -> float:
+    """The single most-elevated real channel reading in a raw pressure
+    vector -- `max()`, an order statistic with zero free parameters, not a
+    weighted combination of the vector's channels.
+
+    2026-07-30: `novelty_scorer()` (Candidate B) needs a `current_salience`
+    value per target to diff against that target's *prior* frame -- for
+    `node:substrate.*` targets this doesn't apply (Candidate A's precision-
+    weighting already IS the theory of "how surprising is this now," a
+    second novelty layer on top would double-count); for physical host
+    nodes and capabilities, no such theory exists yet, and nothing in this
+    vector was ever the deleted `compute_salience()`'s output -- there is
+    no real "current salience" left to reuse. `max()` is offered here as
+    the honest minimum: unlike `compute_salience()`'s hand-picked 0.45/
+    0.20/0.25/0.10 blend of ALL channels, this makes no claim about which
+    channels matter more than others or how to combine them -- it only
+    reports which single real channel is most elevated right now.
+
+    `_HIGHER_IS_BETTER_CHANNELS` entries are inverted (`1 - value`) before
+    the max comparison -- a real drop in e.g. `availability` is itself real
+    pressure worth surfacing, not noise to discard, so inversion (not
+    exclusion) was chosen: a genuinely unhealthy target should still be able
+    to win the max() via one of these channels alone. Malformed/non-numeric
+    vector entries are dropped defensively, never crash a tick.
+    """
+    values: list[float] = []
+    for channel, v in vector.items():
+        try:
+            fv = float(v)
+        except (TypeError, ValueError):
+            continue
+        if fv != fv or fv in (float("inf"), float("-inf")):  # NaN/inf guard
+            continue
+        fv = clamp01(fv)
+        if channel in _HIGHER_IS_BETTER_CHANNELS:
+            fv = 1.0 - fv
+        values.append(fv)
+    return max(values) if values else 0.0
+
+
+def _novelty_targets(
+    field: FieldStateV1,
+    policy: FieldAttentionPolicyV1,
+    previous_frame: FieldAttentionFrameV1 | None,
+    *,
+    vectors: dict[str, dict[str, float]],
+    target_kind: str,
+) -> list[FieldAttentionTargetV1]:
+    """Shared implementation for host and capability targets: Candidate B's
+    `novelty_scorer()` (Global Workspace/Society-of-Mind, Baars 1988 /
+    Dehaene 2014) alone -- NOT the full three-scorer Borda aggregation.
+    `magnitude_scorer()` doesn't apply (no real prediction-error history for
+    these targets, the same reason Candidate A excludes them); `dwell_scorer()`
+    is deliberately deferred, not silently dropped -- confirmed live
+    2026-07-21 that `attended_node_ids` is the empty list in 2837/2840
+    (99.9%) of real `substrate_coalition_dwell_log` rows over a 24h window,
+    so it would almost never contribute a real vote. Building the cross-
+    service wiring for a signal that's silent 99.9% of the time is not a
+    good first cut; named as a real, disclosed follow-up, not solved here.
+
+    With exactly one real scorer, Borda rank-aggregation has nothing to
+    aggregate -- the novelty ranking IS the ranking. `novelty_for_target()`
+    already returns a real `[0,1]` value (no separate normalization needed,
+    unlike Candidate A's unbounded precision-weighted salience).
+
+    Targets with zero real prior context (`previous_frame is None`, i.e.
+    the very first tick, or a target absent from the prior frame) get
+    `novelty_score=0.0` -- correctly "no observed change," per `novelty_
+    for_target()`'s own contract -- not excluded, since "this vector exists
+    right now" is itself real evidence, unlike Candidate A's targets where
+    zero history means zero evidence at all.
+
+    2026-07-30 fix (code review Finding 2, HIGH): `confidence_score` must
+    reflect whether THIS SPECIFIC target_id had a real entry in the
+    previous frame, not just whether any previous frame existed at all.
+    `novelty_for_target()`/`prior_salience_for_target()` return the same
+    0.0 novelty for "no previous frame" and "target absent from an
+    existing previous frame" -- but claiming `confidence_score=1.0` for a
+    target that is brand-new to this tick (e.g. a capability that just
+    started reporting) would be dishonest: there is no real prior
+    observation backing that confidence, identical to the no-frame-at-all
+    case.
+
+    **One-time transition artifact, disclosed (2026-07-30):** `novelty_for_
+    target()` diffs this tick's `_current_pressure_proxy()` value against
+    whatever `salience_score` the *previous persisted frame* recorded for
+    the same target_id, regardless of what formula produced that prior
+    value. Confirmed live: the currently-deployed frame (pre-this-patch)
+    has real `compute_salience()`-blend scores for `node:athena`/`atlas`
+    (0.295/0.110) -- a different scale and formula than this patch's
+    `_current_pressure_proxy()`. The FIRST real tick after this patch
+    deploys will diff the new proxy against that old-formula value,
+    producing an artificially large "novelty" reading that reflects the
+    formula changeover, not a real event. Self-resolving after exactly one
+    tick (every subsequent frame diffs new-formula against new-formula) --
+    not fixed here, since there is no principled way to retroactively
+    reinterpret an old frame's score under a formula it was never computed
+    with; disclosed so a post-deploy operator doesn't misread tick one as a
+    real signal.
+    """
+    target_ids = sorted(vectors.keys())
+    if not target_ids:
+        return []
+    current_salience = {tid: _current_pressure_proxy(vectors[tid]) for tid in target_ids}
+    novelty_scores = novelty_scorer(target_ids, current_salience, previous_frame)
+
+    if previous_frame is None:
+        prior_target_ids: frozenset[str] = frozenset()
+    else:
+        prior_list = previous_frame.node_targets if target_kind == "node" else previous_frame.capability_targets
+        prior_target_ids = frozenset(t.target_id for t in prior_list)
+
+    targets: list[FieldAttentionTargetV1] = []
+    for target_id in target_ids:
+        novelty = novelty_scores.get(target_id, 0.0)
+        confidence = 1.0 if target_id in prior_target_ids else 0.0
+        targets.append(
+            FieldAttentionTargetV1(
+                target_id=target_id,
+                target_kind=target_kind,
+                salience_score=novelty,
+                pressure_score=current_salience[target_id],
+                novelty_score=novelty,
+                urgency_score=0.0,
+                confidence_score=confidence,
+                dominant_channels={},
+                reasons=[
+                    f"Candidate B novelty-only salience: current-tick pressure proxy "
+                    f"{current_salience[target_id]:.4f} vs. prior frame "
+                    f"(novelty={novelty:.4f}); magnitude/dwell scorers not applied "
+                    "(no real data for this target universe / near-always-empty "
+                    "coalition, respectively -- see selector docstring)"
+                ],
+                evidence_refs=[f"field:{field.tick_id}"],
+                suggested_observation_mode=observation_mode_for(novelty, policy),
+            )
+        )
+    return targets
 
 
 def observation_mode_for(salience: float, policy: FieldAttentionPolicyV1) -> ObservationMode:
@@ -137,21 +303,44 @@ def select_node_targets(
     return targets
 
 
+def select_host_targets(
+    field: FieldStateV1,
+    policy: FieldAttentionPolicyV1,
+    previous_frame: FieldAttentionFrameV1 | None,
+) -> list[FieldAttentionTargetV1]:
+    """Physical host nodes (`node:athena`/`atlas`/`circe`/`prometheus`/
+    `rpc_timeout`, or any `field.node_vectors` key not in `PREDICTION_ERROR_
+    NATIVE_TARGETS`) -- excluded by `select_node_targets` (no real
+    prediction-error history of their own), now real-theory-grounded via
+    Candidate B's `novelty_scorer()` instead. See `_novelty_targets()`'s own
+    docstring for the full scoring contract and its disclosed scope
+    (novelty only, magnitude/dwell not applied here).
+    """
+    host_vectors = {
+        tid: v for tid, v in field.node_vectors.items() if tid not in PREDICTION_ERROR_NATIVE_TARGETS
+    }
+    return _novelty_targets(
+        field, policy, previous_frame, vectors=host_vectors, target_kind="node"
+    )
+
+
 def select_capability_targets(
     field: FieldStateV1,
     policy: FieldAttentionPolicyV1,
+    previous_frame: FieldAttentionFrameV1 | None,
 ) -> list[FieldAttentionTargetV1]:
-    """Killed, not replaced. No capability target has a real historical
-    prediction-error series to ground a precision-weighted salience in
-    (unlike the six `node:substrate.*` targets `select_node_targets` scores)
-    -- returns `[]` rather than falling back to the deleted hand-weighted
-    blend. "Kill means kill, no fallback to the thing being killed"
-    (CLAUDE.md §0A). Real capability attention needs its own theory-grounded
-    instrument built first, not a silent revival of the disease this patch
-    removes.
+    """2026-07-30: was killed outright (always `[]`) when Candidate A's
+    live-wiring shipped -- no capability target had a real prediction-error
+    series to ground a precision-weighted salience in, and "kill means
+    kill" ruled out reviving the deleted hand-weighted blend as a fallback.
+    Now real-theory-grounded via Candidate B's `novelty_scorer()` instead
+    (same signal Candidate A can't offer capabilities, since there's no
+    real per-capability prediction-error history either way). See
+    `_novelty_targets()`'s own docstring for the full scoring contract.
     """
-    del field, policy
-    return []
+    return _novelty_targets(
+        field, policy, previous_frame, vectors=dict(field.capability_vectors), target_kind="capability"
+    )
 
 
 def select_system_targets(

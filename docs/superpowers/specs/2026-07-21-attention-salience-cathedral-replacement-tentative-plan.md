@@ -370,3 +370,66 @@ its own separate investigation, and got one, not assumed clear by omission.
 - Not implementing anything — proposal mode, sign-off required per `CLAUDE.md` §0A.
 - Not re-deriving the charter's own theory survey (§1 point 8) — applied here, not
   redone.
+
+## 2026-07-30 update — Candidate A wired live before this doc's own comparison ran; comparison run after the fact
+
+**This document's own "integration is decided from that data" promise was broken, then
+partially repaired.** Juniper's explicit direction that session ("kill means kill, don't
+hedge, don't keep a fallback") led to `orion/attention/field_attention/selectors.py`
+being rewired onto Candidate A alone — no live A/B replay comparison had run yet at that
+point. Code review (Finding 6, same session) caught the gap: this doc's own promised
+head-to-head never happened before the decision it was meant to inform. Named honestly
+rather than silently dropped, then closed as far as real data allows:
+
+**What became comparable, and what didn't.** Candidate B's three scorers do not share one
+target universe with each other, let alone with Candidate A — confirmed at build time
+(2026-07-21/22) and reconfirmed here: `magnitude_scorer()` shares Candidate A's exact real
+target universe (`node:substrate.*`, same `substrate_reduction_receipts` source);
+`novelty_scorer()`/`dwell_scorer()` operate over physical hosts/capabilities, a target
+universe Candidate A was never built to cover and this session's kill patch left
+ungrounded entirely (no real historical series exists for those targets either way). A
+genuine three-scorer Candidate B vs. Candidate A comparison on the *same* real targets was
+never actually possible with real live data — only the magnitude-vs-precision-weighted
+question was.
+
+**Real head-to-head run** (`scripts/analysis/measure_candidate_a_vs_b_head_to_head.py`,
+new, this update): within each qualified reducer's own real history (expanding window,
+i.e. "what would each theory have said using only data available at that point"), does
+Candidate A's precision-weighted salience ever pick a different tick as "most salient"
+than Candidate B's raw magnitude alone? 2 of 5 reducers qualified with real history at run
+time (`node_biometrics`, `execution_trajectory` — `chat_session`/`route_arbitration` had
+zero qualifying rows, `bus_synaptic` had 4, all consistent with the ~30-minute
+`substrate_reduction_receipts` retention window already documented elsewhere).
+
+**Result: 0/2 agreement — both qualified reducers show real, informative disagreement**,
+not a rounding artifact:
+
+- `node_biometrics`: Candidate A's top pick (raw value 0.1644) has real precision 524.08 —
+  a historically very quiet signal, so this moderate reading stood out sharply against its
+  own baseline. Candidate B's top pick (raw value 0.2363, the largest raw number in the
+  whole series) ignores that context entirely. Real magnitude disadvantage (0.1644 <
+  0.2363), outweighed by precision — the exact mechanism Candidate A's theory claims to
+  capture, demonstrated on real data, not asserted.
+- `execution_trajectory`: both candidates' top raw values are identically 1.0000 — a real
+  tie Candidate B's magnitude-only scorer cannot break at all (its reported "pick" is an
+  artifact of iteration order over a tie, not a preference). Candidate A *can* break it,
+  using genuine historical context (different real precision at each of the two tied
+  ticks) — a structural capability difference, not a magnitude comparison at all for this
+  case.
+
+**Honest reading, not oversold**: n=2 real qualified reducers is a small sample — this is
+suggestive, real evidence that precision-weighting changes real answers (both agreement
+and tie-breaking), not a large-sample statistical validation. Re-run once
+`chat_session`/`route_arbitration`/`bus_synaptic` accumulate qualifying history.
+
+**What "build B too" concretely means, and what it doesn't (this session).** Given
+`magnitude_scorer()` and Candidate A now measurably disagree on the same real targets, and
+Candidate A is already live for those targets, wiring Candidate B's magnitude_scorer live
+*for the same targets* would mean maintaining two competing live opinions with no
+arbitration theory between them — reintroducing exactly the "which formula do we trust"
+disease this whole program exists to resolve, just with two theories instead of 23 hand
+weights. Not done. Instead, Candidate B's `novelty_scorer`/`dwell_scorer` — the two scorers
+with a *real, non-overlapping* target universe (physical hosts/capabilities, left
+ungrounded by Candidate A) — are the genuine "fill the gap Candidate A left" opportunity.
+Live-wiring status for that: see
+`docs/superpowers/specs/2026-07-30-candidate-b-hosts-capabilities-live-wiring.md`.

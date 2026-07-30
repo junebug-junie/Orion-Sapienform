@@ -60,19 +60,37 @@ class AttentionRuntimeStore:
         return FieldStateV1.model_validate(payload)
 
     def load_prediction_error_history(self, *, reducer_key: str, limit: int) -> list[float]:
-        """Real, ASC-by-time prediction-error history for one reducer, for
-        Candidate A (`orion/attention/field_attention/candidate_precision_
-        weighted.py::precision_weighted_salience`) to compute real precision
-        (1/variance) from -- same query shape as that module's own docstring
-        and `scripts/analysis/measure_precision_weighted_salience_probe.py`.
+        """Real, ASC-by-time prediction-error history for one reducer (oldest
+        first, most recent/"current" last), for Candidate A
+        (`orion/attention/field_attention/candidate_precision_weighted.py::
+        precision_weighted_salience`) to compute real precision (1/variance)
+        from.
+
+        2026-07-30 fix (caught while reviewing a sibling script's own
+        divergence from this method): the query fetches the NEWEST `limit`
+        rows (`ORDER BY created_at DESC LIMIT`), then reverses to ASC order
+        in Python. The original version queried `ORDER BY created_at ASC
+        LIMIT` directly -- fetching the OLDEST `limit` rows within the
+        retention window instead. Harmless only as long as a reducer never
+        produces more than `limit` real rows within its own retention
+        window; the moment it does, that version would silently return
+        stale data and never see the actual latest tick at all --
+        `precision_weighted_salience()`'s `current_error` is defined as the
+        list's last element, so a real "current" reading would go
+        permanently stale for any reducer with a tick rate high enough to
+        exceed `limit` within `ORION_RECEIPT_RETENTION_SUCCESS_MINUTES`
+        (30 min live default). Not yet observed live at the row counts
+        checked during this session (well under 200), but a real, latent
+        bug, not just a hypothetical -- fixed here rather than left for a
+        future high-volume reducer to trip over silently.
 
         `substrate_reduction_receipts` retains success receipts for only
-        `ORION_RECEIPT_RETENTION_SUCCESS_MINUTES` (30 min live default) --
-        this is always a rolling recent window, not full history, a
-        structural property of the source table, not a bug here. Degrades to
-        `[]` on any error (missing table, bad row) -- a history-fetch failure
-        must never crash the attention tick; `precision_weighted_salience([])`
-        already handles the empty case honestly (zero salience, n_samples=0).
+        `ORION_RECEIPT_RETENTION_SUCCESS_MINUTES` -- this is always a
+        rolling recent window, not full history, a structural property of
+        the source table, not a bug here. Degrades to `[]` on any error
+        (missing table, bad row) -- a history-fetch failure must never
+        crash the attention tick; `precision_weighted_salience([])` already
+        handles the empty case honestly (zero salience, n_samples=0).
         """
         try:
             with self._engine.connect() as conn:
@@ -86,7 +104,7 @@ class AttentionRuntimeStore:
                             FROM substrate_reduction_receipts
                             WHERE (receipt_json -> 'state_deltas' -> 0 ->> 'reducer_id')
                                   = :reducer_id
-                            ORDER BY created_at ASC
+                            ORDER BY created_at DESC
                             LIMIT :limit
                             """
                         ),
@@ -95,6 +113,7 @@ class AttentionRuntimeStore:
                     .mappings()
                     .all()
                 )
+                rows = list(reversed(rows))  # newest-first fetch -> oldest-first (ASC) for the caller
         except Exception:
             return []
 

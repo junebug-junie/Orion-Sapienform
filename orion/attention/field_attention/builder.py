@@ -6,6 +6,7 @@ from orion.attention.field_attention.policy import FieldAttentionPolicyV1
 from orion.attention.field_attention.scoring import clamp01
 from orion.attention.field_attention.selectors import (
     select_capability_targets,
+    select_host_targets,
     select_node_targets,
     select_system_targets,
 )
@@ -25,21 +26,26 @@ def build_attention_frame(
     previous_frame: FieldAttentionFrameV1 | None = None,
     now: datetime | None = None,
 ) -> FieldAttentionFrameV1:
-    """2026-07-30: `previous_frame` is accepted for interface stability
-    (unused by any selector now -- the old hand-weighted `compute_salience()`
-    used it for a novelty bonus, deleted along with that formula; Candidate
-    A's precision-weighting already accounts for "how surprising is this
-    relative to its own history" as its core theory, so a second, hand-tuned
-    novelty layer on top would reintroduce exactly the disease this patch
-    removes). `prediction_error_histories` is the new real input:
+    """2026-07-30: `previous_frame` is used by `select_host_targets`/
+    `select_capability_targets` (Candidate B's `novelty_scorer()`, real
+    theory-grounded coverage for targets Candidate A's precision-weighting
+    can't reach -- no real prediction-error history exists for physical
+    hosts or capabilities). NOT used by `select_node_targets` (Candidate A's
+    precision-weighting already accounts for "how surprising is this
+    relative to its own history" as its core theory; a second, hand-tuned
+    novelty layer on top of it would reintroduce exactly the disease this
+    patch removes -- deliberate asymmetry, not an oversight).
+    `prediction_error_histories` is Candidate A's real input:
     {node_id: real historical error series}, caller-fetched
     (`AttentionRuntimeStore.load_prediction_error_history`) so this stays a
     pure function -- see `select_node_targets`'s own docstring.
     """
     generated_at = now or datetime.now(timezone.utc)
 
-    node_targets = select_node_targets(field, policy, prediction_error_histories or {})
-    capability_targets = select_capability_targets(field, policy)
+    node_targets = select_node_targets(
+        field, policy, prediction_error_histories or {}
+    ) + select_host_targets(field, policy, previous_frame)
+    capability_targets = select_capability_targets(field, policy, previous_frame)
     system_targets = select_system_targets(field, policy)
 
     all_targets = node_targets + capability_targets + system_targets

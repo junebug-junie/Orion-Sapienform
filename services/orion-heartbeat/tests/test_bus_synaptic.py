@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import time
 from unittest.mock import AsyncMock, patch
 
 import pytest
@@ -93,11 +94,103 @@ def test_query_is_typed_recency_filtered_and_clamped_per_edge() -> None:
 
 
 def test_stale_cutoff_matches_substrate_runtimes_own_default() -> None:
-    """Heartbeat and orion-substrate-runtime read the same graph for the same
-    purpose; a divergent recency window would make their two readings
-    inexplicably disagree. Mirrors SUBSTRATE_BUS_SYNAPTIC_MAX_EDGE_AGE_SEC's
-    1h default, kept in sync by comment cross-reference the same way
-    BUS_SYNAPTIC_ZSCORE_SATURATION already is."""
-    from app.substrate.bus_synaptic import _STALE_CUTOFF_SEC
+    """Heartbeat and orion-substrate-runtime read the same graph over the same
+    recency window (they deliberately read different EDGE SETS -- see the
+    constant's own comment -- but a divergent *window* would make the two
+    readings disagree for a reason no operator could diagnose).
 
-    assert _STALE_CUTOFF_SEC == 3600.0
+    Review finding, 2026-07-30: the first version of this test asserted
+    `_STALE_CUTOFF_SEC == 3600.0`, comparing heartbeat's constant against a
+    literal in the same file. That is tautological -- it can never detect the
+    drift it claims to guard, because it never reads substrate-runtime at all.
+    It now parses that service's real default, so changing
+    SUBSTRATE_BUS_SYNAPTIC_MAX_EDGE_AGE_SEC without updating heartbeat fails
+    here (CLAUDE.md §4: deterministic gate, not a comment cross-reference).
+
+    substrate-runtime's setting is operator-tunable and heartbeat's is a
+    compile-time constant; this asserts the DEFAULTS agree. A deployment that
+    overrides the env key still diverges, which is called out in the PR report
+    as a known, accepted asymmetry rather than silently tolerated here.
+    """
+    import re
+    from pathlib import Path
+
+    from app.substrate.bus_synaptic import _MIN_EDGE_COUNT, _STALE_CUTOFF_SEC
+
+    settings_src = (
+        Path(__file__).resolve().parents[2]
+        / "orion-substrate-runtime"
+        / "app"
+        / "settings.py"
+    ).read_text(encoding="utf-8")
+
+    age = re.search(
+        r"bus_synaptic_max_edge_age_sec:\s*float\s*=\s*Field\(\s*([0-9.]+)", settings_src
+    )
+    count = re.search(
+        r"bus_synaptic_min_edge_count:\s*int\s*=\s*Field\(\s*([0-9]+)", settings_src
+    )
+    assert age is not None, "could not parse substrate-runtime's max_edge_age default"
+    assert count is not None, "could not parse substrate-runtime's min_edge_count default"
+
+    assert _STALE_CUTOFF_SEC == float(age.group(1))
+    assert _MIN_EDGE_COUNT == int(count.group(1))
+
+
+def test_built_query_is_valid_cypher_against_a_live_falkordb() -> None:
+    """Review finding, 2026-07-30: the assertions above are substring matches
+    and were confirmed to PASS against a deliberately malformed query (missing
+    `END` and a closing paren) that FalkorDB rejects outright. That is the
+    failure mode most likely to slip through, because the broad `except` in
+    query_real_bus_synaptic_raw_mean_abs_z would swallow the parse error into a
+    warning log and leave reheat silently pinned at 0.0 forever.
+
+    Skipped rather than failed when no FalkorDB is reachable, so this stays a
+    gate on developer/CI machines that have one without becoming a hard
+    dependency for the rest of the suite.
+    """
+    import os
+
+    import pytest as _pytest
+    import redis as _redis
+
+    from app.substrate.bus_synaptic import _STALE_CUTOFF_SEC, _build_query
+
+    uri = os.getenv("FALKORDB_URI", "redis://127.0.0.1:6380")
+    graph = os.getenv("FALKORDB_BUS_GRAPH", "orion_bus_synapse")
+    try:
+        client = _redis.Redis.from_url(uri, socket_connect_timeout=2, socket_timeout=5)
+        client.ping()
+    except Exception as exc:  # noqa: BLE001
+        _pytest.skip(f"no FalkorDB at {uri}: {exc}")
+
+    result = client.execute_command(
+        "GRAPH.QUERY", graph, _build_query(time.time() - _STALE_CUTOFF_SEC)
+    )
+    # A parse error raises above; reaching here means FalkorDB accepted it.
+    raw = result[1][0][0]
+    assert raw is None or isinstance(raw, (int, float, bytes, str))
+
+
+def test_a_malformed_query_would_be_rejected_by_falkordb() -> None:
+    """Companion proving the test above actually has teeth: the same malformed
+    query that passed every substring assertion is rejected here."""
+    import os
+
+    import pytest as _pytest
+    import redis as _redis
+
+    uri = os.getenv("FALKORDB_URI", "redis://127.0.0.1:6380")
+    graph = os.getenv("FALKORDB_BUS_GRAPH", "orion_bus_synapse")
+    try:
+        client = _redis.Redis.from_url(uri, socket_connect_timeout=2, socket_timeout=5)
+        client.ping()
+    except Exception as exc:  # noqa: BLE001
+        _pytest.skip(f"no FalkorDB at {uri}: {exc}")
+
+    broken = (
+        "MATCH (:Organ)-[rel:PUBLISHES]->(:Channel) WHERE rel.gap_zscore IS NOT NULL "
+        "RETURN avg(CASE WHEN abs(rel.gap_zscore) > 3.0 THEN 3.0 ELSE abs(rel.gap_zscore)"
+    )
+    with _pytest.raises(Exception):
+        client.execute_command("GRAPH.QUERY", graph, broken)

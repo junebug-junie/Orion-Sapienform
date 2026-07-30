@@ -245,6 +245,26 @@ same day this tick shipped). A table nothing else has ever written to makes that
 structurally impossible here, not just avoided by convention — see the design doc above for the full
 reasoning behind hosting this tick in this service instead of a separate one.
 
+**Seventh domain, codebase mass, built 2026-07-30, not yet wired into this service's tick**
+(`docs/superpowers/specs/2026-07-30-codebase-mass-signal-design.md`;
+`orion/sentience_striving_program/README.md` §9b has the fuller cross-domain note). A new
+`orion:substrate:codebase_delta` bus channel and `CodebaseDeltaV1` schema exist
+(`orion/bus/channels.yaml`, `orion/schemas/codebase_delta.py`, PR #1515), and
+`codebase_prediction_error()` (`orion/substrate/prediction_error.py`) is a real, tested,
+replay-verified function that composites git/PR-lifecycle/graphify structural deltas
+(`orion/structural_mass/`) into one score. **None of this has a consumer in this service yet** —
+this tick's own fast `_tick()` does not read the new channel, there is no
+`SUBSTRATE_WRITE_CODEBASE_PREDICTION_ERROR_NODE` flag (the design spec's own name for this
+domain's dedicated flag, deliberately not reusing `SUBSTRATE_WRITE_PREDICTION_ERROR_NODES` given
+this domain's different risk surface — new external I/O, no reducer projection to persist its EWMA
+baseline on unlike the other domains above), and `node:substrate.codebase` does not exist in any
+live store. The design spec's own architecture puts all external I/O for this domain (git/GitHub/
+graphify access) in a separate, not-yet-built `orion-cocreation-signals` service specifically so
+this service keeps doing zero external I/O of its own, same "read a cheap bus event, write a node"
+shape every domain above already uses — the open design question before that consumer patch can
+land is where this domain's `CodebaseMassBaseline` EWMA state persists across ticks, since (unlike
+every domain above) there is no persisted reducer projection object to carry it on.
+
 ## Unified turn bus listeners
 
 Besides grammar poll reducers, substrate-runtime subscribes to RPC-style harness channels:

@@ -1,17 +1,22 @@
 """Regression guard (2026-07-30): SubstrateGraphMaterializer.apply_record()'s
 existing-node lookup must catch a raw node_id collision even when the
 incoming node's own identity_key fails to resolve (no identity-index entry
-yet for that key) -- not just when identity_key is None outright.
+found for that key) -- not just when identity_key is None outright.
 
 Found during review of the sibling merge-branch metadata-clobber fix (see
 falkor_codec.EXTERNALLY_OWNED_METADATA_KEYS's docstring for the original
 incident). Before this fix, a node_id collision with an existing node
-indexed under a different identity (or no identity at all, e.g. a reducer's
-own direct write via _write_prediction_error_node, which never registers a
-canonical identity_key) took the "created" branch: a full wholesale
-overwrite via node.model_copy(...), no merge_node() call, and no
+indexed under a *different* identity_key took the "created" branch: a full
+wholesale overwrite via node.model_copy(...), no merge_node() call, and no
 skip_metadata_keys protection at all -- strictly worse than a metadata-only
-clobber.
+clobber. This applies even though a reducer's own direct write (e.g.
+_write_prediction_error_node) DOES register a real, non-None identity_key
+(services/orion-substrate-runtime/app/worker.py:
+f"substrate_prediction_error|{node_id}") -- that string is never what
+SubstrateIdentityResolver.canonical_node_key() independently computes for
+an incoming concept-induction node sharing the same raw node_id, so the
+identity-index lookup still misses and the raw-node_id fallback is what
+has to catch it.
 """
 
 from __future__ import annotations
@@ -29,9 +34,13 @@ from orion.substrate import InMemorySubstrateGraphStore, SubstrateGraphMateriali
 
 def _reducer_owned_node(*, node_id: str, prediction_error: float) -> ConceptNodeV1:
     """Shaped like a real reducer's own direct write (_write_prediction_error_node):
-    fixed label/anchor_scope/subject_ref, never registered under a canonical
-    identity_key (upsert_node(identity_key=None, ...) is exactly how a reducer
-    like this calls it)."""
+    fixed label/anchor_scope/subject_ref. Registered under the reducer's own
+    identity_key convention (f"substrate_prediction_error|{node_id}"), not the
+    canonical identity_key SubstrateIdentityResolver.canonical_node_key()
+    would independently compute from anchor_scope/subject_ref/label -- these
+    two identity schemes never agree, which is exactly why a colliding
+    incoming node's identity-index lookup misses even though a real,
+    non-None identity_key is registered for the existing node."""
     return ConceptNodeV1(
         node_id=node_id,
         anchor_scope="orion",
@@ -52,8 +61,11 @@ def _reducer_owned_node(*, node_id: str, prediction_error: float) -> ConceptNode
 def _colliding_incoming_record_node(*, node_id: str) -> ConceptNodeV1:
     """A differently-shaped incoming node that happens to share node_id with
     the reducer-owned node above -- its own canonical identity_key (derived
-    from anchor_scope/subject_ref/label) won't match anything indexed,
-    because the reducer's write above never registered one."""
+    by SubstrateIdentityResolver.canonical_node_key() from this node's own
+    anchor_scope/subject_ref/label) won't match anything indexed, because it
+    is a structurally different string from the reducer's own
+    "substrate_prediction_error|..." identity_key convention -- the two
+    schemes are independent, not because nothing was registered."""
     from orion.core.schemas.cognitive_substrate import SubstrateGraphRecordV1
 
     node = ConceptNodeV1(
@@ -76,9 +88,14 @@ def _colliding_incoming_record_node(*, node_id: str) -> ConceptNodeV1:
 
 def test_node_id_collision_with_unregistered_identity_takes_merge_not_created_branch() -> None:
     store = InMemorySubstrateGraphStore()
-    # Simulate a reducer's real direct write -- identity_key=None, exactly
-    # how _write_prediction_error_node calls store.upsert_node().
-    store.upsert_node(identity_key=None, node=_reducer_owned_node(node_id="node:substrate.bus_synaptic", prediction_error=0.73))
+    # Simulate a reducer's real direct write, including its real identity_key
+    # convention -- this is a genuine, non-None identity_key (matching
+    # _write_prediction_error_node's actual call), just one the resolver
+    # below never independently reproduces.
+    store.upsert_node(
+        identity_key="substrate_prediction_error|node:substrate.bus_synaptic",
+        node=_reducer_owned_node(node_id="node:substrate.bus_synaptic", prediction_error=0.73),
+    )
 
     materializer = SubstrateGraphMaterializer(store=store)
     record = _colliding_incoming_record_node(node_id="node:substrate.bus_synaptic")

@@ -28,6 +28,8 @@ from orion.embodiment.speech import (
     should_speak,
 )
 from orion.journaler.schemas import JournalTriggerV1
+from orion.schemas.chat_history import ChatHistoryTurnEnvelope, ChatHistoryTurnV1
+from orion.schemas.social_chat import SocialRoomTurnV1
 from orion.schemas.embodiment import (
     EMBODIMENT_OUTCOME_KIND,
     EMBODIMENT_PERCEPTION_KIND,
@@ -43,6 +45,19 @@ logger = logging.getLogger("orion.embodiment.worker")
 # below — this is not operator-tunable, so it lives as a constant, not an env key.
 JOURNAL_TRIGGER_CHANNEL = "orion:actions:trigger:journal.v1"
 JOURNAL_TRIGGER_KIND = "orion.actions.trigger.journal.v1"
+
+# Existing hub-owned contracts (orion/bus/channels.yaml), reused as-is -- see
+# _publish_conversation_memory's docstring for why these are TWO separate
+# channels/tables, not one:
+# - orion:chat:history:turn (chat.history) -> ChatHistoryLogSQL -> chat_history_log,
+#   the table orion-recall actually reads verbatim text from.
+# - orion:chat:social:turn (social.turn.v1) -> a *different* table
+#   (social_room_turns), whose social.turn.stored.v1 re-emission feeds
+#   orion-social-memory's relationship synthesis.
+# Embodiment is a new producer on both existing channels, not a new pipeline.
+CHAT_HISTORY_TURN_CHANNEL = "orion:chat:history:turn"
+SOCIAL_TURN_CHANNEL = "orion:chat:social:turn"
+SOCIAL_TURN_KIND = "social.turn.v1"
 
 # AI Town canonical conversation inputs. The upstream convex/aiTown/inputs.ts is
 # NOT vendored in this checkout, so these follow the AI Town canonical schema.
@@ -358,12 +373,27 @@ class EmbodimentWorker:
             # No real who/what content -> refuse to emit an empty-shell episode.
             logger.warning("embodiment_journal_skipped_empty_summary event_type=%s", event.get("type"))
             return None
+        prompt_seed = None
+        spawned_correlation_id = None
+        if getattr(self._settings, "conversation_memory_enabled", False):
+            transcript = event.get("transcript") or []
+            lines = [
+                f"{m.get('author') or 'unknown'}: {m.get('text')}"
+                for m in transcript if str(m.get("text") or "").strip()
+            ]
+            # ai-town caps a conversation at MAX_CONVERSATION_MESSAGES (8 upstream),
+            # so this is naturally bounded -- no extra truncation needed here.
+            if lines:
+                prompt_seed = "\n".join(lines)
+            spawned_correlation_id = event.get("spawned_correlation_id")
         try:
             trigger = JournalTriggerV1(
                 trigger_kind="town_episode",
                 source_kind="embodiment",
                 summary=summary,
                 source_ref=evaluation.source_ref,
+                prompt_seed=prompt_seed,
+                spawned_correlation_id=spawned_correlation_id,
             )
             env = BaseEnvelope(
                 kind=JOURNAL_TRIGGER_KIND, source=self._service_ref(),
@@ -376,6 +406,93 @@ class EmbodimentWorker:
             logger.exception("embodiment_journal_publish_failed")
             return None
         return evaluation.source_ref or summary
+
+    async def _publish_conversation_memory(
+        self, *, convo_id: str, other: Optional[dict], prompt_text: str, response_text: str,
+    ) -> Optional[str]:
+        """Feed one Orion<->partner exchange into two EXISTING hub-owned rails.
+
+        Off unless ``conversation_memory_enabled``. Tags ``platform="aitown"`` and
+        ``participant_kind`` "human"/"npc" (from ``perception.py``'s forwarded
+        ``is_human``), using the same ``external_room``/``external_participant``
+        client_meta convention hub's own social_room already uses, so a human
+        participant here gets exactly the same (lack of dedicated) privacy
+        handling as any other Orion-Juniper conversation -- not more, not less.
+
+        Two separate, non-overlapping targets (confirmed via orion-sql-writer's
+        own kind->model routing, `app/settings.py`'s SQL_MODEL_KIND_MAP):
+          - ``orion:chat:history:turn`` (``chat.history``) -> ``ChatHistoryLogSQL``
+            -> ``chat_history_log``, the table orion-recall actually reads
+            verbatim text from. This is the genuine verbatim-recall half.
+          - ``orion:chat:social:turn`` (``social.turn.v1``) -> a *different*
+            table (``social_room_turns``, via ``SocialRoomTurnSQL``) -- NOT
+            chat_history_log -- whose re-emitted ``social.turn.stored.v1`` feeds
+            orion-social-memory's relationship synthesis. This is the synthesis
+            half, not a second verbatim copy.
+        Both publishes share one correlation_id so a later journal entry for
+        this conversation can cross-reference the exact exchange(s) via
+        ``JournalTriggerV1.spawned_correlation_id``.
+
+        Fail-open: never raises into the speech loop. Returns the shared
+        correlation_id (for that cross-reference) or None if skipped/failed.
+        """
+        if not getattr(self._settings, "conversation_memory_enabled", False):
+            return None
+        other = other or {}
+        participant_id = str(other.get("player_id") or "").strip()
+        if not participant_id:
+            return None
+        participant_kind = "human" if other.get("is_human") else "npc"
+        participant_name = str(other.get("name") or participant_id)
+        correlation_id = str(uuid4())
+        client_meta = {
+            "external_room": {"platform": "aitown", "room_id": convo_id},
+            "external_participant": {
+                "participant_id": participant_id,
+                "participant_name": participant_name,
+                "participant_kind": participant_kind,
+            },
+        }
+        try:
+            chat_turn = ChatHistoryTurnV1(
+                correlation_id=correlation_id,
+                source=self._settings.service_name,
+                prompt=prompt_text,
+                response=response_text,
+                session_id=f"aitown:{convo_id}",
+                client_meta=client_meta,
+            )
+            chat_env = ChatHistoryTurnEnvelope(
+                source=self._service_ref(),
+                correlation_id=correlation_id,
+                payload=chat_turn,
+            )
+            await publish_with_reconnect(
+                self._bus, CHAT_HISTORY_TURN_CHANNEL, chat_env, log_label="embodiment_chat_history_turn"
+            )
+        except Exception:
+            logger.exception("embodiment_chat_history_turn_publish_failed convo=%s", convo_id)
+        try:
+            social_turn = SocialRoomTurnV1(
+                correlation_id=correlation_id,
+                session_id=f"aitown:{convo_id}",
+                source=self._settings.service_name,
+                prompt=prompt_text,
+                response=response_text,
+                text=f"{participant_name}: {prompt_text}\nOrion: {response_text}".strip(),
+                tags=["aitown"],
+                client_meta=client_meta,
+            )
+            social_env = BaseEnvelope(
+                kind=SOCIAL_TURN_KIND, source=self._service_ref(),
+                correlation_id=uuid4(), payload=social_turn.model_dump(mode="json"),
+            )
+            await publish_with_reconnect(
+                self._bus, SOCIAL_TURN_CHANNEL, social_env, log_label="embodiment_social_turn"
+            )
+        except Exception:
+            logger.exception("embodiment_social_turn_publish_failed convo=%s", convo_id)
+        return correlation_id
 
     @staticmethod
     def _conversation_partner_name(perception: WorldPerceptionV1, convo: dict) -> Optional[str]:
@@ -424,13 +541,33 @@ class EmbodimentWorker:
                         "with": self._active_conversation_partner,
                         "utterances": self._active_conversation_utterances,
                         "conversation_id": prev_id,
+                        # Last-seen transcript for the conversation that just ended
+                        # (see below) -- lets the journal draft from real content
+                        # instead of only this templated event dict.
+                        "transcript": getattr(self, "_active_conversation_transcript", []),
+                        # Cross-references the journal entry to the exact
+                        # chat_history_log/social-turn row(s) for this
+                        # conversation's last exchange -- see _speak_once.
+                        "spawned_correlation_id": getattr(
+                            self, "_active_conversation_last_correlation_id", None
+                        ),
                     })
                 self._active_conversation_partner = None
                 self._active_conversation_utterances = 0
+                self._active_conversation_transcript = []
+                self._active_conversation_last_correlation_id = None
             if convo_id and convo_id != prev_id:
                 self._active_conversation_partner = self._conversation_partner_name(perception, convo)
                 self._active_conversation_utterances = 0
+                self._active_conversation_transcript = []
+                self._active_conversation_last_correlation_id = None
             self._active_conversation_id = convo_id
+            if convo_id:
+                # ai-town's `messages` list is the full running transcript for the
+                # conversation each tick, not a delta -- so overwriting here always
+                # leaves the most complete snapshot in place by the time the
+                # conversation ends and the block above reads it.
+                self._active_conversation_transcript = list(convo.get("messages") or [])
 
             for np_ in perception.nearby_players or []:
                 player_id = str(np_.get("player_id") or "").strip()
@@ -764,6 +901,21 @@ class EmbodimentWorker:
             except Exception:
                 logger.exception("embodiment_speech_inject_failed convo=%s", convo_id)
                 return None
+            # The partner's line Orion is replying to is the prior last message
+            # (turn-taking above already confirmed it isn't Orion's own); empty
+            # when Orion is opening the conversation.
+            partner_prompt_text = ""
+            if messages and str(messages[-1].get("author_id") or "") != own:
+                partner_prompt_text = str(messages[-1].get("text") or "")
+            exchange_correlation_id = await self._publish_conversation_memory(
+                convo_id=convo_id, other=convo.get("other"),
+                prompt_text=partner_prompt_text, response_text=reply,
+            )
+            if exchange_correlation_id and convo_id == getattr(self, "_active_conversation_id", None):
+                # Last exchange wins -- a single representative cross-reference
+                # for the eventual per-conversation journal entry (see
+                # _journal_from_perception/_maybe_journal_episode).
+                self._active_conversation_last_correlation_id = exchange_correlation_id
             if not messages:
                 # Opened the conversation; don't re-open on a later empty transcript.
                 self._opened_conversations.add(convo_id)

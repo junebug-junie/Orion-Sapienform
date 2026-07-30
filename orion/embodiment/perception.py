@@ -69,7 +69,16 @@ def _active_conversation(
         other = None
         if others:
             op = players_by_id.get(others[0], {})
-            other = {"player_id": others[0], "name": op.get("name"), "position": op.get("position")}
+            other = {
+                "player_id": others[0],
+                "name": op.get("name"),
+                "position": op.get("position"),
+                # ai-town's raw player record carries `human` (a session-token id)
+                # only for human-controlled players; absent for ai-town-agent NPCs.
+                # Forwarded (previously dropped here) so callers can tag
+                # conversation-memory events with the correct participant_kind.
+                "is_human": bool(op.get("human")),
+            }
         shaped_msgs = [
             {
                 "author_id": str(m.get("author")) if m.get("author") is not None else None,
@@ -125,6 +134,7 @@ def build_perception(
             "name": p.get("name"),
             "position": {"x": px, "y": py},
             "distance": round(math.hypot(px - ox, py - oy), 4),
+            "is_human": bool(p.get("human")),
         })
     nearby.sort(key=lambda n: n["distance"])
     orion_position = {"x": ox, "y": oy}

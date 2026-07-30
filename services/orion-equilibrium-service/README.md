@@ -44,6 +44,8 @@ This section exists because design decisions for this system have historically o
 | `telemetry_anomaly` | Trained autoencoder reconstruction-loss anomaly | shared | live (2026-07-21) |
 | `chat_turn` | Correlated `ThoughtEventV1` + `HarnessRunV1` (or a governor/stance-react timeout) | own (`EQUILIBRIUM_METACOG_CHAT_TURN_COOLDOWN_SEC`) | live (2026-07-23) |
 | `transport` | `RpcHealthSnapshotV1` windows (Option A) + real per-call RPC timeout grammar events (Option C) | own (`EQUILIBRIUM_METACOG_TRANSPORT_COOLDOWN_SEC`) | **ships disabled**, not yet live-verified |
+| `insight` | Sustained low→high recovery in `AttentionSelfModelV1.prediction_error_confidence` (`substrate_attention_self_model`) | own (`EQUILIBRIUM_METACOG_INSIGHT_COOLDOWN_SEC`) | **ships disabled**, not yet live-verified |
+| `flow` | Sustained high-confidence, low-variance plateau in the *same* field | own (`EQUILIBRIUM_METACOG_FLOW_COOLDOWN_SEC`) | **ships disabled**, not yet live-verified |
 
 **A separate, parallel system this table's `transport` row borrows from, not the same pipeline:** `rpc_health` (`orion/core/bus/rpc_health.py` → `orion/core/bus/rpc_health_publish.py` → `orion:rpc_health:snapshot` → `orion-signal-gateway`'s `RpcHealthAdapter` → `OrionSignalV1`) is the `orion-signal-gateway` **organ-signal** pipeline (see that service's own README), completely independent of `orion_metacog`/`MetacogTriggerV1`. `transport`'s Option A subscribes to the same `orion:rpc_health:snapshot` channel as a *second* consumer, reading the same real data into a different destination table. Don't confuse the two pipelines when reading logs — a `rpc_health` organ signal in `orion-signal-gateway` and a `transport` metacog trigger in `orion_metacog` can both exist (or not) independently of each other.
 
@@ -170,6 +172,65 @@ See [Testing](#testing) section above for:
 - End-to-end eval verifying the complete FalkorDB → poll → trigger → postgres pipeline (`run_bus_synaptic_poll_e2e_eval.py`)
 
 The E2E eval proves the "first real fire" path mentioned above and provides a smoke test you can run any time to verify the poll loop is working correctly.
+
+### insight + flow metacog triggers (generative, non-rupture)
+
+Full design: `docs/superpowers/specs/2026-07-28-collapse-mirror-generative-triggers-design.md`.
+
+These two are the **first trigger kinds in this service that fire on a positive or neutral state rather than a failure.** Every kind above them is rupture-shaped: a timeout, an anomaly, a repair need. `orion/schemas/collapse_mirror.py`'s own entry-type taxonomy was never error-only (`flow→stabilizing` and `epiphany→reorientation` have always sat alongside `turbulence→escalating`), and the live `pulse` kind already proved a positive-valence trigger works in this exact pipeline.
+
+Both read **one already-live field**, `AttentionSelfModelV1.prediction_error_confidence`, from the `substrate_attention_self_model` Postgres table (written every ~30s by `orion-substrate-runtime`'s `_attention_self_model_tick()`, PR #1459 — this service only ever *reads* that table, and enforces `default_transaction_read_only` on its own session). No new producer, reducer, schema field, or bus channel. The two kinds differ only in the windowing function applied to the same trailing row window, fetched once per poll and evaluated twice (`_generative_metacog_poll_loop()`):
+
+- **`insight`** — a *sustained low→high transition*: some tick dropped to/below `EQUILIBRIUM_METACOG_INSIGHT_LOW_THRESHOLD`, and confidence has since climbed to/above `EQUILIBRIUM_METACOG_INSIGHT_HIGH_THRESHOLD` and **held there for `EQUILIBRIUM_METACOG_INSIGHT_CONFIRM_TICKS` consecutive newest ticks**. A surprise got resolved.
+- **`flow`** — a *sustained plateau*: `min(window) >= EQUILIBRIUM_METACOG_FLOW_FLOOR` **and** `stdev(window) <= EQUILIBRIUM_METACOG_FLOW_MAX_STDEV` across the last `EQUILIBRIUM_METACOG_FLOW_MIN_TICKS` ticks.
+
+**`insight` is deliberately the one gate in this service that is *not* a single-tick threshold crossing.** Every other gate here (`chat_turn`/`transport`/`relational`) fires on a point condition. That would be wrong for this signal, and the reason is measured, not stylistic: PR #1463's baseline pass over real history found confidence recoveries unfold over a **median 3 ticks (~90s), max 12** — a gradual climb. A single-tick crossing gate would fire on noise partway up it. Hence the multi-tick confirm requirement.
+
+**Calibration (real data, not guessed).** Thresholds are **provisional pending a longer-window re-run scheduled 2026-08-02**. Measured 2026-07-30 over 2265 real ticks / ~20.6h:
+
+| Check | Result |
+|---|---|
+| `prediction_error_confidence` range | 0.597 – 0.977, mean 0.893 |
+| Ticks at/below `0.70` (insight's low band) | 14 — rare but real, so arming genuinely happens |
+| Ticks at/above `0.90` (high band) | 1544; 1229 consecutive ≥0.90 pairs, so a 2-tick confirm is reachable |
+| Rolling 20-tick stdev | p10 0.016 / p50 0.037 / p90 0.059 |
+| Flow-qualifying 20-tick windows at floor `0.90` | 71 of 2246 (3.2%) — selective, non-degenerate |
+| Flow-qualifying windows at floor `0.92` | **0 — degenerate, do not raise the floor to it** |
+
+One honest caveat from that pass: **at `floor=0.90` the variance ceiling is currently non-binding** — the qualifying-window count is identical at `max_stdev` 0.02, 0.03 and 0.05, because the field's ~0.977 observed ceiling mathematically squeezes any window with `min>=0.90` into a band narrower than 0.08. It is kept because it is the condition that stays meaningful if the floor is ever lowered (at `floor=0.85`, 426 windows pass the floor alone) or if the field's range shifts. Documented rather than shipped as though it were doing work today.
+
+**Freshness and contiguity are enforced, not assumed.** Two guards exist because row adjacency is *not* tick adjacency, and both bugs they close were reproduced against the real detectors during review:
+
+- **Staleness.** The tick writing these rows is itself flag-gated and can simply stop, and a frozen window keeps satisfying both conditions forever ("reducers alive but cursors stale", CLAUDE.md §0A). Pre-fix, a window of rows **3 days old** fired the flow gate. Now the poll loop rejects any window whose newest row is older than `EQUILIBRIUM_METACOG_GENERATIVE_MAX_AGE_SEC` and logs a warning naming the writing flag.
+- **Gaps.** The reader drops rows whose `prediction_error_confidence` is missing/non-finite, so 20 "consecutive" rows can span hours. Pre-fix, a 20-row window covering **6.08h** fired flow while reporting `tick_count=20` as though it were 10 minutes of calm, and a low **5 hours** before the high run fired insight reporting `ticks_to_cross=1`. Both detectors now also bound the window in *wall-clock seconds* (derived from `EQUILIBRIUM_METACOG_GENERATIVE_EXPECTED_TICK_SEC` × `..._SPAN_TOLERANCE`), and both record the real span (`cross_span_sec` / `span_sec`) in `upstream` so a stored row is self-auditing rather than requiring a reader to trust that ticks equal time.
+
+**De-dupe strength differs between the two, on purpose.** `insight` anchors on `low_at`, the tick that armed the recovery — real episode identity, since a genuinely new recovery requires a new low crossing. It deliberately does **not** anchor on `high_at`, which looks stable but is not: when a high run breaks on a single sub-threshold tick and re-forms, `high_at` re-anchors to the new run. Review reproduced that publishing one real recovery **twice, 390s apart** — clearing the 300s cooldown entirely. Replaying 21h of real history confirms the fix: 5 fires before, 4 after, with `low_at` identical across the collapsed pair. `flow` has no equivalent stable anchor (`ended_at` advances every tick while the plateau continues), so it is treated as an ongoing **state** re-announced no more often than its own cooldown lane, not a once-per-episode event. That's why `EQUILIBRIUM_METACOG_FLOW_COOLDOWN_SEC` defaults to a much longer 1800s — over that same 21h, 71 condition-true windows reduce to 7 actual publishes.
+
+Both de-dupe keys are recorded **only after a real publish**, never on a cooldown-suppressed one — otherwise an episode would be marked seen while never having been emitted and (since insight's key is stable) never retried.
+
+**Downstream type mapping (this is new behavior for the whole family).** Before this, `CollapseMirrorEntryV2.type` was guessed *only* from phi bands in `orion-cortex-exec`'s `_fallback_metacog_draft()` — which is not fallback-only, since the successful-LLM-draft path seeds its `base_entry` from that same function and the draft prompt forbids the LLM from choosing `type` itself. So `trigger_kind` drove `type` in **no** path at all, and `"epiphany"` was unreachable dead code. That heuristic now consults `trigger_kind` **first**: `insight → type="epiphany"` (`change_type=reorientation`), `flow → type="flow"` (`change_type=stabilizing`), everything else falls through to the unchanged phi-band guess.
+
+Both ship **disabled**, same standard as `transport`'s bus_synaptic option: they dispatch a real `MetacogTriggerV1` into `orion_metacog`, so flipping them on is a human decision made after a post-merge live-data check. Watch for the first real fire (`orion_metacog` row, `trigger_kind=insight`/`flow`, `upstream.evidence_source=attention_self_model_prediction_error_confidence`).
+
+| Env | Default | Purpose |
+|-----|---------|---------|
+| `EQUILIBRIUM_METACOG_INSIGHT_TRIGGER_ENABLE` | `false` | Master gate for the insight trigger |
+| `EQUILIBRIUM_METACOG_FLOW_TRIGGER_ENABLE` | `false` | Master gate for the flow trigger |
+| `EQUILIBRIUM_METACOG_GENERATIVE_POLL_INTERVAL_SEC` | `30` | Shared poll cadence; matches the ~30s tick that writes the rows |
+| `EQUILIBRIUM_METACOG_GENERATIVE_POSTGRES_URI` | `postgresql://postgres:postgres@orion-athena-sql-db:5432/conjourney` | Read-only connection for `substrate_attention_self_model` |
+| `EQUILIBRIUM_METACOG_GENERATIVE_WINDOW_TICKS` | `20` | Trailing rows read per poll; the service takes the max of this and what each detector needs, so setting it too low cannot silently disable a gate |
+| `EQUILIBRIUM_METACOG_GENERATIVE_MAX_AGE_SEC` | `120` | Staleness guard: reject a window whose newest row is older than this |
+| `EQUILIBRIUM_METACOG_GENERATIVE_EXPECTED_TICK_SEC` | `30` | Real cadence of the writing tick, used to derive wall-clock span bounds |
+| `EQUILIBRIUM_METACOG_GENERATIVE_SPAN_TOLERANCE` | `2.0` | Slack on those derived bounds; absorbs tick jitter without allowing a gappy window |
+| `EQUILIBRIUM_METACOG_INSIGHT_COOLDOWN_SEC` | `300` | insight's own cooldown lane |
+| `EQUILIBRIUM_METACOG_FLOW_COOLDOWN_SEC` | `1800` | flow's own cooldown lane (longer: it re-announces a state) |
+| `EQUILIBRIUM_METACOG_INSIGHT_LOW_THRESHOLD` | `0.70` | Provisional; low band that arms a recovery |
+| `EQUILIBRIUM_METACOG_INSIGHT_HIGH_THRESHOLD` | `0.90` | Provisional; high band that resolves it |
+| `EQUILIBRIUM_METACOG_INSIGHT_MAX_TICKS_TO_CROSS` | `15` | Rejects an hours-old low being called a recovery (observed max was 12) |
+| `EQUILIBRIUM_METACOG_INSIGHT_CONFIRM_TICKS` | `2` | Consecutive newest ticks that must hold the high band |
+| `EQUILIBRIUM_METACOG_FLOW_FLOOR` | `0.90` | Hard floor on the window minimum (`0.92` is degenerate) |
+| `EQUILIBRIUM_METACOG_FLOW_MAX_STDEV` | `0.02` | Variance ceiling (currently non-binding at floor `0.90`) |
+| `EQUILIBRIUM_METACOG_FLOW_MIN_TICKS` | `20` | 20 consecutive ticks — nominally ~10 min at a 30s cadence, though `SPAN_TOLERANCE=2.0` means a window covering up to ~19 min is still accepted (the real figure is always recorded as `upstream.span_sec`) |
 
 ---
 

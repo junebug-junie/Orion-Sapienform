@@ -98,6 +98,67 @@ class Settings(BaseSettings):
         0.5, alias="EQUILIBRIUM_METACOG_RELATIONAL_LEVEL_THRESHOLD"
     )
 
+    # repair_pressure_trend metacog trigger (2026-07-30, hop 0 of the stream-of-
+    # consciousness hop-chain design -- docs/superpowers/specs/2026-07-29-stream-
+    # of-consciousness-hop-chain-design.md). Distinct from the relational trigger
+    # above: relational fires on ONE appraisal crossing an absolute floor;
+    # repair_pressure_trend folds every real (confidence-gated) appraisal into a
+    # persisted EWMA baseline (orion/metacog/trend_reducer.py) and fires only on
+    # a sustained multi-appraisal elevated run -- "has this kept happening", not
+    # one turn's reading. Default OFF: new, unverified-in-production trigger
+    # source, per this repo's "measure before minting" discipline -- flip on only
+    # after real post-deploy data shows it fires sensibly, not just that it
+    # compiles.
+    metacog_repair_pressure_trend_trigger_enable: bool = Field(
+        False, alias="EQUILIBRIUM_METACOG_REPAIR_PRESSURE_TREND_TRIGGER_ENABLE"
+    )
+    # Confidence floor for folding an appraisal into the trend baseline at all
+    # (separate from whether the resulting trend fires a trigger). Low and
+    # inclusive on purpose: post the 2026-07-30 reduce_repair_level() fix,
+    # confidence genuinely reflects evidence quality (including a real ~0.65 for
+    # the common "confidently calm" text-fallback case), so this only excludes
+    # genuine zero-evidence appraisals, not real-but-unremarkable ones.
+    metacog_repair_pressure_trend_confidence_floor: float = Field(
+        0.3, alias="EQUILIBRIUM_METACOG_REPAIR_PRESSURE_TREND_CONFIDENCE_FLOOR"
+    )
+    # Matches trend_reducer.py's own DEFAULT_MIN_SAMPLES -- overridable here
+    # since this is the live deployment's actual cold-start floor, not just the
+    # module's own fallback default.
+    metacog_repair_pressure_trend_min_samples: int = Field(
+        20, alias="EQUILIBRIUM_METACOG_REPAIR_PRESSURE_TREND_MIN_SAMPLES"
+    )
+    metacog_repair_pressure_trend_elevated_zscore: float = Field(
+        1.0, alias="EQUILIBRIUM_METACOG_REPAIR_PRESSURE_TREND_ELEVATED_ZSCORE"
+    )
+    metacog_repair_pressure_trend_sustained_hits: int = Field(
+        3, alias="EQUILIBRIUM_METACOG_REPAIR_PRESSURE_TREND_SUSTAINED_HITS"
+    )
+    # Dedicated Redis key for this gate's checkpointed MetacogTrendStateV1 --
+    # deliberately separate from redis_state_key above, which is scoped to
+    # SystemHealthV1 service-heartbeat records keyed by service@node, a
+    # different domain. A single JSON string, not a hash field, since this gate
+    # carries exactly one running baseline (repair_pressure only), not a
+    # per-key collection.
+    metacog_repair_pressure_trend_state_key: str = Field(
+        "equilibrium:metacog_trend_state:repair_pressure",
+        alias="EQUILIBRIUM_METACOG_REPAIR_PRESSURE_TREND_STATE_KEY",
+    )
+    # Own cooldown lane, from day one -- NOT the shared metacog_cooldown_sec
+    # global lane. Code review (2026-07-30) caught that this trigger is
+    # evaluated in the same branch, on the same message, as the pre-existing
+    # `relational` trigger above: any appraisal satisfying both conditions
+    # would have relational's fire silently starve this one via the shared
+    # lane, every time -- the exact `chat_turn` bug (2026-07-23, see
+    # `_PER_KIND_COOLDOWN_SETTINGS_ATTR` in service.py) recurring in a new
+    # place. Once `is_sustained_trend` goes true it typically STAYS true for
+    # many subsequent messages while the elevated run continues (same shape
+    # as `flow`'s sustained-plateau regime, not a per-turn event) -- 1800s
+    # default matches `metacog_flow_cooldown_sec`'s own reasoning exactly:
+    # re-announcing the same ongoing elevated regime every 30s would be noise.
+    metacog_repair_pressure_trend_cooldown_sec: float = Field(
+        1800.0, alias="EQUILIBRIUM_METACOG_REPAIR_PRESSURE_TREND_COOLDOWN_SEC"
+    )
+
     # Telemetry-anomaly metacog trigger (2026-07-21). Mirrors the relational
     # trigger's shape: orion-field-digester publishes the raw measurement
     # (recon_loss vs. its own train-time recon_error_p95), this service owns
@@ -181,6 +242,118 @@ class Settings(BaseSettings):
     metacog_transport_bus_synaptic_error_threshold: float = Field(
         1.0, alias="EQUILIBRIUM_METACOG_TRANSPORT_BUS_SYNAPTIC_ERROR_THRESHOLD"
     )
+    # ---------------------------------------------------------------------
+    # Generative (non-rupture) metacog triggers: insight + flow.
+    # docs/superpowers/specs/2026-07-28-collapse-mirror-generative-triggers-design.md
+    #
+    # Both read one already-live field, AttentionSelfModelV1.prediction_error_
+    # confidence, from `substrate_attention_self_model` (written every ~30s by
+    # orion-substrate-runtime's _attention_self_model_tick, PR #1459) as two
+    # different windowing functions -- insight looks for a low->high transition,
+    # flow looks for a sustained plateau. No new producer, reducer or schema.
+    #
+    # Both ship DISABLED. Matching the bus_synaptic precedent (PR #1385 ->
+    # #1387): a gate that dispatches a real MetacogTriggerV1 into orion_metacog
+    # gets flipped on by a human only after its own post-merge live-data check,
+    # separately from "is the underlying signal worth reading."
+    # ---------------------------------------------------------------------
+    metacog_insight_trigger_enable: bool = Field(
+        False, alias="EQUILIBRIUM_METACOG_INSIGHT_TRIGGER_ENABLE"
+    )
+    metacog_flow_trigger_enable: bool = Field(
+        False, alias="EQUILIBRIUM_METACOG_FLOW_TRIGGER_ENABLE"
+    )
+    # One poll serves both gates -- same table, same row window, evaluated twice.
+    # Matches the ~30s cadence of the tick that writes the rows.
+    metacog_generative_poll_interval_sec: float = Field(
+        30.0, alias="EQUILIBRIUM_METACOG_GENERATIVE_POLL_INTERVAL_SEC"
+    )
+    metacog_generative_postgres_uri: str = Field(
+        "postgresql://postgres:postgres@orion-athena-sql-db:5432/conjourney",
+        alias="EQUILIBRIUM_METACOG_GENERATIVE_POSTGRES_URI",
+    )
+    # Own cooldown lanes, from day one. chat_turn shipped the shared-lane bug
+    # once already (a burst of one kind silently starved every other kind);
+    # see _PER_KIND_COOLDOWN_SETTINGS_ATTR in service.py. Generous defaults:
+    # both of these describe slow-moving regimes, not per-turn events, so
+    # re-announcing the same calm every 30s would be noise.
+    metacog_insight_cooldown_sec: float = Field(
+        300.0, alias="EQUILIBRIUM_METACOG_INSIGHT_COOLDOWN_SEC"
+    )
+    metacog_flow_cooldown_sec: float = Field(
+        1800.0, alias="EQUILIBRIUM_METACOG_FLOW_COOLDOWN_SEC"
+    )
+    # PROVISIONAL thresholds, pending the longer-window re-run scheduled
+    # 2026-08-02. Picked in PR #1463's baseline pass to match this metric's real
+    # observed range in this environment (the design doc's original 0.5/0.8
+    # anchors fired zero events because prediction_error_confidence never once
+    # dropped to 0.5 in 14h); re-measured 2026-07-30 over 20.6h/2265 ticks:
+    # range 0.597-0.977, mean 0.893, with 14 ticks at/below 0.70 and 1544
+    # at/above 0.90 -- so both bands are real and reachable, not degenerate.
+    metacog_insight_low_threshold: float = Field(
+        0.70, alias="EQUILIBRIUM_METACOG_INSIGHT_LOW_THRESHOLD"
+    )
+    metacog_insight_high_threshold: float = Field(
+        0.90, alias="EQUILIBRIUM_METACOG_INSIGHT_HIGH_THRESHOLD"
+    )
+    # Trailing rows fetched per poll. Must cover the widest window either
+    # detector needs (insight's max_ticks_to_cross + confirm, flow's min_ticks) --
+    # enforced in the poll loop rather than trusted, since setting this below
+    # flow's min_ticks would otherwise make flow a silent permanent no-op.
+    metacog_generative_window_ticks: int = Field(
+        20, alias="EQUILIBRIUM_METACOG_GENERATIVE_WINDOW_TICKS"
+    )
+    # Staleness guard. The tick that writes these rows is itself flag-gated
+    # (SUBSTRATE_ATTENTION_SELF_MODEL_TICK_ENABLED), so it can simply stop --
+    # and a frozen window still satisfies both gate conditions forever.
+    # Reproduced pre-fix: 20 rows all 3 days old fired the flow gate. Same
+    # convention as this service's existing SUBSTRATE_FELT_STATE_MAX_AGE_SEC
+    # (120s): a few multiples of the write cadence, not a tight bound.
+    metacog_generative_max_age_sec: float = Field(
+        120.0, alias="EQUILIBRIUM_METACOG_GENERATIVE_MAX_AGE_SEC"
+    )
+    # Real cadence of the writing tick, used to convert both detectors' tick
+    # windows into wall-clock bounds. Row adjacency is NOT tick adjacency: the
+    # reader drops rows with a missing/non-finite confidence, so 20 "consecutive"
+    # rows can span hours (reproduced pre-fix: a 20-row window covering 6.08h
+    # fired flow while reporting tick_count=20 as if it were 10 minutes).
+    metacog_generative_expected_tick_sec: float = Field(
+        30.0, alias="EQUILIBRIUM_METACOG_GENERATIVE_EXPECTED_TICK_SEC"
+    )
+    # Slack multiplier on those derived wall-clock bounds, absorbing normal tick
+    # jitter without letting a genuinely gappy window through. 2.0 = a window may
+    # take up to twice its nominal duration.
+    metacog_generative_span_tolerance: float = Field(
+        2.0, alias="EQUILIBRIUM_METACOG_GENERATIVE_SPAN_TOLERANCE"
+    )
+    # Observed ticks-to-cross were 1, 3 and 12 (PR #1463) -- 15 covers the
+    # measured max with headroom while still rejecting a low from hours ago
+    # being retroactively called a recovery. Provisional, same 2026-08-02 re-run.
+    metacog_insight_max_ticks_to_cross: int = Field(
+        15, alias="EQUILIBRIUM_METACOG_INSIGHT_MAX_TICKS_TO_CROSS"
+    )
+    # How many consecutive newest ticks must hold the high band before a climb
+    # counts as resolved. 2 ticks (~60s) -- recoveries are a median 3-tick
+    # gradual climb, so a single-tick check would fire partway up. 1229 real
+    # consecutive >=0.90 pairs in the 20.6h window, so this is easily reachable.
+    metacog_insight_confirm_ticks: int = Field(
+        2, alias="EQUILIBRIUM_METACOG_INSIGHT_CONFIRM_TICKS"
+    )
+    # Flow: min over the window >= floor AND stdev <= max_stdev. Calibrated
+    # 2026-07-30 against 2246 real 20-tick windows: at floor=0.90, 71 windows
+    # (3.2%) qualify -- selective but non-degenerate. floor=0.92 measured 0
+    # qualifying windows (degenerate, do not use). The variance ceiling is
+    # currently non-binding at floor=0.90 (identical 71 windows at 0.02/0.03/
+    # 0.05, since the field's ~0.977 ceiling squeezes any min>=0.90 window into
+    # a <0.08 band) and is kept for when the floor is lowered or the field's
+    # range shifts -- see detect_flow_regime's docstring. Provisional.
+    metacog_flow_floor: float = Field(0.90, alias="EQUILIBRIUM_METACOG_FLOW_FLOOR")
+    metacog_flow_max_stdev: float = Field(
+        0.02, alias="EQUILIBRIUM_METACOG_FLOW_MAX_STDEV"
+    )
+    # ~10 minutes of consecutive calm at a ~30s tick cadence.
+    metacog_flow_min_ticks: int = Field(20, alias="EQUILIBRIUM_METACOG_FLOW_MIN_TICKS")
+
     falkordb_uri: str = Field("redis://localhost:6379", alias="FALKORDB_URI")
     falkordb_substrate_graph: str = Field(
         "orion_substrate", alias="FALKORDB_SUBSTRATE_GRAPH"

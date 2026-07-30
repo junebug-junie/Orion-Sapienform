@@ -188,6 +188,7 @@ _METACOG_DRAFT_CTX_LEN_KEYS: tuple[str, ...] = (
     "metacog_biometrics_cue",
     "metacog_substrate_cue",
     "trigger_upstream_json",
+    "recent_trend_signals_json",
 )
 
 def _filter_world_context_capsule(
@@ -851,12 +852,41 @@ def _fallback_metacog_draft(ctx: Dict[str, Any]) -> CollapseMirrorEntryV2:
     cb = str(hint.get("coherence_band") or "unknown")
     nb = str(hint.get("novelty_band") or "unknown")
 
-    # crude but stable type guess
-    typ = "idle"
-    if cb == "low" or nb == "high":
-        typ = "turbulence"
-    elif eb in ("moderate", "high") and cb in ("medium", "high"):
+    # Type is system-filled, never LLM-chosen (the draft prompt
+    # orion/cognition/prompts/log_orion_metacognition_draft.j2 explicitly forbids
+    # the LLM from emitting `type`), and this is the *only* construction site for
+    # it -- the successful-draft path seeds its base_entry from this function too
+    # and only overlays summary/mantra/what_changed/tags_suggested on top. So
+    # every published entry's `type`, fallback or not, is decided right here.
+    #
+    # trigger_kind is consulted FIRST (2026-07-30, Missing Question 6 of
+    # docs/superpowers/specs/2026-07-28-collapse-mirror-generative-triggers-design.md):
+    # before this, the guess was keyed only on phi bands and ignored trigger_kind
+    # entirely, so its only reachable outputs were idle/turbulence/flow and
+    # "epiphany" was dead code no branch could produce. The two generative
+    # trigger kinds carry a far more direct claim about what the entry *is* than
+    # a phi-band coincidence does, so they win. Both target types already have
+    # real change_type mappings in DEFAULT_CHANGE_TYPE_BY_ENTRY_TYPE
+    # (orion/schemas/collapse_mirror.py) -- no schema change needed.
+    #
+    # Note "flow" was already reachable from the phi-band guess below by band
+    # coincidence; a trigger_kind=="flow" entry now lands there for a real
+    # reason instead.
+    # Normalized on the comparison side: _metacog_trigger_kind returns the raw
+    # string unstripped/uncased, so " Insight" from any future producer would
+    # otherwise silently miss and fall through to the phi-band guess.
+    normalized_kind = trigger_kind.strip().lower()
+    if normalized_kind == "insight":
+        typ = "epiphany"
+    elif normalized_kind == "flow":
         typ = "flow"
+    else:
+        # crude but stable type guess (unchanged fallback for every other kind)
+        typ = "idle"
+        if cb == "low" or nb == "high":
+            typ = "turbulence"
+        elif eb in ("moderate", "high") and cb in ("medium", "high"):
+            typ = "flow"
 
     observer_state = [
         "metacog",
@@ -3623,6 +3653,24 @@ async def call_step_services(
                 ctx["substrate_eventfulness_reasons"] = list(ev.reasons)
                 if "biometrics_json" not in ctx:
                     ctx["biometrics_json"] = json.dumps(ctx.get("biometrics") or {}, indent=2)
+
+                # Recent trend signals (Tier 1 patch, docs/superpowers/specs/
+                # 2026-07-28-metacog-turn-scoped-trend-reducer-design.md's
+                # "2026-07-29/30 update"). Reads the *latest* value from two
+                # already-computed, already-persisted signal sources -- no
+                # window/trend computation happens here, no new reducer/poll
+                # loop, additive-only evidence cue. Bounded + fail-open: never
+                # raises, never blocks this step past its own short timeout.
+                from app.metacog_trend_reader import fetch_recent_trend_signals
+
+                recent_trend_signals = await fetch_recent_trend_signals(correlation_id)
+                ctx["recent_trend_signals"] = recent_trend_signals or {}
+                ctx["recent_trend_signals_json"] = (
+                    json.dumps(recent_trend_signals, indent=2, default=str)
+                    if recent_trend_signals
+                    else "{}"
+                )
+
                 merged_result[service] = {"ok": True, "summary_len": len(summary_text)}
                 logs.append("ok <- MetacogContextService")
                 continue

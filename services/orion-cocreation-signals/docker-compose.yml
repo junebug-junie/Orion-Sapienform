@@ -1,0 +1,46 @@
+services:
+  cocreation-signals:
+    container_name: ${PROJECT}-cocreation-signals
+    build:
+      context: ../..
+      dockerfile: services/orion-cocreation-signals/Dockerfile
+    restart: unless-stopped
+    env_file:
+      - .env
+    environment:
+      SERVICE_NAME: ${SERVICE_NAME}
+      SERVICE_VERSION: ${SERVICE_VERSION}
+      COCREATION_SIGNALS_NODE_NAME: ${COCREATION_SIGNALS_NODE_NAME}
+      ORION_BUS_ENABLED: ${ORION_BUS_ENABLED}
+      ORION_BUS_ENFORCE_CATALOG: ${ORION_BUS_ENFORCE_CATALOG}
+      ORION_BUS_URL: ${ORION_BUS_URL}
+      HEARTBEAT_INTERVAL_SEC: ${HEARTBEAT_INTERVAL_SEC:-10}
+      COCREATION_SIGNALS_REPO_PATH: ${COCREATION_SIGNALS_REPO_PATH:-/repo}
+      COCREATION_SIGNALS_GITHUB_OWNER: ${COCREATION_SIGNALS_GITHUB_OWNER}
+      COCREATION_SIGNALS_GITHUB_REPO: ${COCREATION_SIGNALS_GITHUB_REPO}
+      CHANNEL_CODEBASE_DELTA: ${CHANNEL_CODEBASE_DELTA}
+      COCREATION_SIGNALS_GIT_DELTA_ENABLED: ${COCREATION_SIGNALS_GIT_DELTA_ENABLED}
+      COCREATION_SIGNALS_PR_LIFECYCLE_ENABLED: ${COCREATION_SIGNALS_PR_LIFECYCLE_ENABLED}
+      COCREATION_SIGNALS_GRAPH_DELTA_ENABLED: ${COCREATION_SIGNALS_GRAPH_DELTA_ENABLED}
+      COCREATION_SIGNALS_GIT_DELTA_POLL_INTERVAL_SEC: ${COCREATION_SIGNALS_GIT_DELTA_POLL_INTERVAL_SEC}
+      COCREATION_SIGNALS_PR_LIFECYCLE_POLL_INTERVAL_SEC: ${COCREATION_SIGNALS_PR_LIFECYCLE_POLL_INTERVAL_SEC}
+      COCREATION_SIGNALS_PR_LIFECYCLE_COLD_START_LOOKBACK_SEC: ${COCREATION_SIGNALS_PR_LIFECYCLE_COLD_START_LOOKBACK_SEC}
+      COCREATION_SIGNALS_GRAPH_DELTA_POLL_INTERVAL_SEC: ${COCREATION_SIGNALS_GRAPH_DELTA_POLL_INTERVAL_SEC}
+      COCREATION_SIGNALS_PR_FETCH_LIMIT: ${COCREATION_SIGNALS_PR_FETCH_LIMIT}
+      # gh CLI auth -- see requirements.txt/Dockerfile comment. Set in the
+      # real .env, never committed to .env_example with a real value.
+      GH_TOKEN: ${COCREATION_SIGNALS_GH_TOKEN}
+    volumes:
+      # Read-only mount of this repo's own working tree -- git_delta.py needs
+      # a real `.git` directory (not baked into the image at build time,
+      # which would freeze history), graph_delta.py needs a live
+      # graphify-out/graph.json + GRAPH_REPORT.md. Host path is operator-
+      # configured (COCREATION_SIGNALS_REPO_HOST_PATH), since it varies by
+      # deployment node.
+      - ${COCREATION_SIGNALS_REPO_HOST_PATH}:${COCREATION_SIGNALS_REPO_PATH:-/repo}:ro
+    networks:
+      - app-net
+
+networks:
+  app-net:
+    external: true

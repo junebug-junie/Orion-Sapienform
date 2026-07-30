@@ -115,6 +115,20 @@ deliberate deep-backlog catch-up ever becomes desirable again (e.g. Orion's own 
 cadence changes later) instead of reverting this patch. Same "explicit override, don't touch the
 derived machinery" shape as `ORION_DISPATCH_RISK_CAP_ADVISORY_ONLY` above.
 
+**Fresh-priority fallback (2026-07-30, same-day follow-up)**: deployed and found live, within
+minutes, that the FIFO-only drain above has a real failure mode — a deep pre-existing backlog
+(the exact 46,617-row/37h one that motivated this feature) means every tick's entire
+`MAX_STALE_DISCARDS_PER_TICK` budget goes to old garbage without ever reaching a frame recent
+enough to dispatch. Confirmed live: **zero real dispatches for the first 6+ minutes** after this
+shipped. Fixed the same day: whenever `_drain_stale_policy_frames` doesn't surface a candidate
+(empty queue, or the cap was hit first), `_tick()` now also checks
+`ExecutionDispatchRuntimeStore.load_freshest_policy_frame_without_dispatch()` — the single
+*newest* unprocessed policy frame, `ORDER BY generated_at DESC` — and processes it directly if
+it's within the staleness window. A genuinely current proposal is never gated behind however deep
+the old backlog is; old backlog still drains steadily in the background via the unchanged FIFO
+path. Returns correctly-empty only when even the newest available frame is already stale, i.e.
+production itself has stalled, not backlog depth hiding something current.
+
 See `docs/superpowers/specs/2026-07-30-execution-dispatch-staleness-discard-design.md` for the
 full live-data investigation (real backlog depth, throughput math, root cause) and the deferred
 part-2 throughput redesign this was scoped alongside but does not itself implement.

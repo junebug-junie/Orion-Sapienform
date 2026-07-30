@@ -211,6 +211,50 @@ class ExecutionDispatchRuntimeWorker:
             self._settings.execution_dispatch_staleness_max_sec,
         )
 
+    @staticmethod
+    def _age_sec(frame: PolicyDecisionFrameV1) -> float:
+        # Defensive normalize, same idiom as _derive_daily_risk_cap above:
+        # PolicyDecisionFrameV1.generated_at is typed as a plain datetime,
+        # not enforced tz-aware. A naive value here would raise on the
+        # subtraction below -- caught by _poll_loop's broad except, but
+        # this exact policy frame would then be stuck unresolved forever
+        # in whichever lookup found it, reproducing the same queue-blocking
+        # failure shape build_unevaluable_execution_dispatch_frame exists to
+        # prevent for a missing proposal. Shared by _drain_stale_policy_
+        # frames (FIFO lookup) and _check_freshest_fallback (newest-first
+        # lookup) -- both need the identical normalize-then-subtract logic.
+        frame_generated_at = frame.generated_at
+        if frame_generated_at.tzinfo is None:
+            frame_generated_at = frame_generated_at.replace(tzinfo=timezone.utc)
+        return (datetime.now(timezone.utc) - frame_generated_at).total_seconds()
+
+    def _check_freshest_fallback(self) -> PolicyDecisionFrameV1 | None:
+        """2026-07-30 follow-up (docs/superpowers/specs/2026-07-30-execution-
+        dispatch-staleness-discard-design.md's own live-verified finding):
+        the FIFO staleness drain alone can fully starve real-time dispatch
+        when the backlog is deep -- confirmed live, zero real dispatches in
+        the 6 minutes following that patch's deploy, because every tick's
+        entire MAX_STALE_DISCARDS_PER_TICK budget was spent discarding old
+        backlog without ever reaching a frame recent enough to process.
+
+        Called only when _drain_stale_policy_frames() didn't surface a
+        candidate this tick (queue exhausted, drain hit the cap, or the
+        queue was empty from the start). Checks the single NEWEST unprocessed
+        policy frame directly (store.load_freshest_policy_frame_without_
+        dispatch, ORDER BY generated_at DESC) -- if it's within a fresh
+        staleness threshold, a genuinely current proposal always gets a
+        chance to dispatch this tick regardless of how deep the old backlog
+        is. Returns None (correctly) if even the newest available frame is
+        already stale -- that means production itself has stalled, not that
+        backlog depth is hiding something current.
+        """
+        freshest = self._store.load_freshest_policy_frame_without_dispatch()
+        if freshest is None:
+            return None
+        if self._age_sec(freshest) <= self._staleness_threshold_sec():
+            return freshest
+        return None
+
     def _drain_stale_policy_frames(
         self, baseline: dict
     ) -> tuple[PolicyDecisionFrameV1 | None, int, ExecutionDispatchFrameV1 | None]:
@@ -237,18 +281,7 @@ class ExecutionDispatchRuntimeWorker:
             candidate_frame = self._store.load_latest_policy_frame_without_dispatch()
             if candidate_frame is None:
                 return None, discarded, last_discard_frame
-            # Defensive normalize, same idiom as _derive_daily_risk_cap above:
-            # PolicyDecisionFrameV1.generated_at is typed as a plain datetime,
-            # not enforced tz-aware. A naive value here would raise on the
-            # subtraction below -- caught by _poll_loop's broad except, but
-            # this exact policy frame would then be the permanent FIFO head
-            # forever (it can never resolve), reproducing the same
-            # queue-blocking failure shape build_unevaluable_execution_
-            # dispatch_frame exists to prevent for a missing proposal.
-            frame_generated_at = candidate_frame.generated_at
-            if frame_generated_at.tzinfo is None:
-                frame_generated_at = frame_generated_at.replace(tzinfo=timezone.utc)
-            age_sec = (datetime.now(timezone.utc) - frame_generated_at).total_seconds()
+            age_sec = self._age_sec(candidate_frame)
             threshold_sec = self._staleness_threshold_sec()
             if age_sec <= threshold_sec:
                 return candidate_frame, discarded, last_discard_frame
@@ -283,6 +316,16 @@ class ExecutionDispatchRuntimeWorker:
         policy_frame, discarded_this_tick, last_discard_frame = self._drain_stale_policy_frames(
             baseline
         )
+        if policy_frame is None:
+            # The FIFO drain didn't surface anything this tick (empty queue,
+            # or the cap was hit before reaching a fresh frame) -- check
+            # directly whether a genuinely current proposal exists anyway,
+            # so real dispatch is never starved by backlog depth alone. See
+            # _check_freshest_fallback's own docstring for the live incident
+            # this closes (zero real dispatches for the first 6+ minutes
+            # after the staleness-discard patch shipped, entirely consumed
+            # discarding old backlog).
+            policy_frame = self._check_freshest_fallback()
 
         update = compute_ewma_update(
             prev_ewma=baseline["staleness_discard_count_ewma"],

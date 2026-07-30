@@ -60,6 +60,7 @@ def test_worker_skips_when_no_policy_pending(monkeypatch) -> None:
     settings_mod._settings = None
     worker = ExecutionDispatchRuntimeWorker()
     worker._store.load_latest_policy_frame_without_dispatch = MagicMock(return_value=None)
+    worker._store.load_freshest_policy_frame_without_dispatch = MagicMock(return_value=None)
     worker._store.load_latest_staleness_discard_baseline = MagicMock(return_value=None)
     worker._store.save_dispatch_frame = MagicMock()
 
@@ -150,6 +151,10 @@ def _staleness_worker(monkeypatch, *, override_sec: float | None = None) -> Exec
     worker._store.load_latest_staleness_discard_baseline = MagicMock(return_value=None)
     worker._store.save_dispatch_frame = MagicMock()
     worker._store.load_proposal_frame = MagicMock(return_value=_proposal())
+    # Default: nothing fresher available either (2026-07-30 fresh-priority
+    # fallback) -- tests that specifically exercise the fallback override
+    # this explicitly.
+    worker._store.load_freshest_policy_frame_without_dispatch = MagicMock(return_value=None)
     return worker
 
 
@@ -239,6 +244,51 @@ def test_worker_drains_stale_frames_then_processes_a_fresh_one(monkeypatch) -> N
     final_saved = worker._store.save_dispatch_frame.call_args_list[-1][0][0]
     assert final_saved.source_policy_frame_id == fresh.frame_id
     assert final_saved.dispatch_attempted is False or final_saved.candidates == []
+    # The FIFO drain found a fresh frame on its own -- the newest-first
+    # fallback must never be consulted in that case.
+    worker._store.load_freshest_policy_frame_without_dispatch.assert_not_called()
+
+
+def test_worker_falls_back_to_freshest_when_drain_finds_nothing(monkeypatch) -> None:
+    """Regression guard for the live incident (2026-07-30, docs/superpowers/
+    specs/2026-07-30-execution-dispatch-staleness-discard-design.md): a deep
+    backlog made the FIFO drain spend its entire per-tick cap on ancient
+    frames without ever reaching one recent enough to process -- zero real
+    dispatches for 6+ minutes after the staleness-discard patch shipped.
+    When the drain hits its cap without finding anything fresh, _tick() must
+    still check for -- and process -- a genuinely current proposal directly,
+    regardless of how deep the old backlog behind it is."""
+    worker = _staleness_worker(monkeypatch, override_sec=120.0)
+    ancient = _policy_frame_at(datetime.now(timezone.utc) - timedelta(days=2))
+    worker._store.load_latest_policy_frame_without_dispatch = MagicMock(return_value=ancient)
+    fresh = _policy_frame_at(datetime.now(timezone.utc) - timedelta(seconds=1), frame_id="policy.frame:fresh")
+    worker._store.load_freshest_policy_frame_without_dispatch = MagicMock(return_value=fresh)
+
+    worker._tick()
+
+    worker._store.load_proposal_frame.assert_called_once_with(fresh.source_proposal_frame_id)
+    final_saved = worker._store.save_dispatch_frame.call_args_list[-1][0][0]
+    assert final_saved.source_policy_frame_id == fresh.frame_id
+
+
+def test_worker_fallback_correctly_finds_nothing_when_freshest_is_also_stale(monkeypatch) -> None:
+    """If even the single newest unprocessed policy frame is already past
+    the staleness window, production itself has stalled -- there is
+    genuinely nothing current to dispatch this tick, not a backlog-depth
+    artifact. Must not fabricate a real-dispatch attempt in that case."""
+    worker = _staleness_worker(monkeypatch, override_sec=120.0)
+    ancient = _policy_frame_at(datetime.now(timezone.utc) - timedelta(days=2))
+    worker._store.load_latest_policy_frame_without_dispatch = MagicMock(return_value=ancient)
+    also_stale_but_newest = _policy_frame_at(
+        datetime.now(timezone.utc) - timedelta(hours=1), frame_id="policy.frame:newest-but-stale"
+    )
+    worker._store.load_freshest_policy_frame_without_dispatch = MagicMock(
+        return_value=also_stale_but_newest
+    )
+
+    worker._tick()
+
+    worker._store.load_proposal_frame.assert_not_called()
 
 
 def test_max_stale_discards_per_tick_caps_the_drain(monkeypatch) -> None:

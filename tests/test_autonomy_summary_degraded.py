@@ -41,14 +41,19 @@ def test_drives_timeout_partial_state_marks_degraded() -> None:
     assert summary.facet_health["drives"] == "timeout"
 
 
-def test_healthy_state_keeps_drive_fields() -> None:
+def test_healthy_state_reports_no_dominant_drive() -> None:
+    # Renamed 2026-07-30 (chore/delete-orion-drives Wave 2a follow-up): this
+    # used to assert a healthy state echoes dominant_drive/drive_pressures/
+    # active_drives back through the summary. That behavior is gone --
+    # AutonomyStateV1 no longer carries those fields, and
+    # summarize_autonomy_state() always returns dominant_drive=None now (see
+    # orion/autonomy/summary.py's own comment). What's real and worth keeping:
+    # a healthy drives-facet diagnostic still yields state_quality="healthy"/
+    # stance_mode="normal", honestly with no drive echo.
     state = AutonomyStateV1(
         subject="orion",
         model_layer="self-model",
         entity_id="orion",
-        dominant_drive="coherence",
-        drive_pressures={"coherence": 0.9},
-        active_drives=["coherence"],
         source="graph",
     )
     summary = summarize_autonomy_lookup(
@@ -62,7 +67,7 @@ def test_healthy_state_keeps_drive_fields() -> None:
         },
     )
     assert summary.state_quality == "healthy"
-    assert summary.dominant_drive == "coherence"
+    assert summary.dominant_drive is None
     assert summary.stance_mode == "normal"
 
 
@@ -168,7 +173,6 @@ def test_healthy_state_with_proposals_uses_normal_stance_mode() -> None:
         subject="orion",
         model_layer="self-model",
         entity_id="self:orion",
-        dominant_drive="autonomy",
         goal_headlines=[
             AutonomyGoalHeadlineV1(
                 artifact_id="goal-1",

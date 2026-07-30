@@ -252,6 +252,29 @@ first place. Full reasoning and phased detail:
    the node itself. Live since 2026-07-25
    (`SUBSTRATE_BUS_SYNAPTIC_TICK_ENABLED=true` in `services/orion-substrate-runtime`, PR #1380)
    — real accumulated history is now collecting; does not change this item's confidence formula.
+   **Seventh domain, codebase mass, built 2026-07-30, not yet live**
+   (`docs/superpowers/specs/2026-07-30-codebase-mass-signal-design.md`): a new domain sensing
+   the extent of Orion's own codebase changing (git churn, GitHub PR lifecycle, graphify
+   structural deltas), the interoception/proprioception instrument named in this section's own
+   theory anchor — a system sensing change to the physical substrate doing the modeling.
+   `orion/structural_mass/{git_delta,pr_lifecycle,graph_delta}.py` (PRs #1496, #1500, #1502) are
+   real, tested pure functions, replay-verified against this repo's own real git/GitHub/graphify
+   history — the `graph_delta` replay independently reproduced the exact 2026-07-14
+   destructive-graph-update incident this repo's own graphify tooling section documents by name.
+   `codebase_prediction_error()` (`orion/substrate/prediction_error.py`, PR #1515) composites all
+   three into one 0-1 score, each sub-domain scored against its own EWMA baseline (mirrors this
+   section's own "normalize before combining" precedent, not a cross-scale raw blend) — and a new
+   bus channel/schema (`orion:substrate:codebase_delta`/`CodebaseDeltaV1`) is registered.
+   **Scope, stated as plainly as the bus_synaptic note above:** none of this is wired into a live
+   tick yet. No `orion-cocreation-signals` service exists (the design spec's scheduling/publishing
+   layer), `orion-substrate-runtime` has no consumer for the new channel, and
+   `node:substrate.codebase` is not registered in `services/orion-field-digester/app/tensor/
+   channels.py`'s `NODE_CHANNELS`, so it does not yet appear in the Attention Organ tab
+   (`services/orion-hub/scripts/attention_organ_routes.py`'s `KNOWN_PREDICTION_ERROR_DOMAINS`) or
+   any other live UI surface — deliberately not added there yet, since a node with no live
+   producer would be an empty/dead panel row, not a real reading. Same measure-before-minting
+   order every domain in this section has followed: producers and scoring measured and tested
+   first, service/consumer wiring (and any UI surfacing) a separate, later patch.
 3. **Route existing tension producers directly onto `FieldStateV1` channels**, retiring the
    bucket-vote layer — collapses the redundant reimplementation named in §7's finding.
    Reframed as prediction-error-native (extending the already-live

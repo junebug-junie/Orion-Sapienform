@@ -270,7 +270,7 @@ def build_unevaluable_execution_dispatch_frame(
     """A policy frame whose proposal could not be loaded still needs an
     execution_dispatch_frame -- otherwise it's the oldest undispatched policy
     frame forever, permanently blocking every policy frame queued behind it
-    in the FIFO `load_latest_policy_frame_without_dispatch` query. Record
+    in the FIFO `load_oldest_policy_frames_without_dispatch` query. Record
     honestly (dispatch_attempted=False, zero candidates, a warning), don't
     silently drop or silently dispatch. Uses the same
     stable_execution_dispatch_frame_id as a real build would, so this is

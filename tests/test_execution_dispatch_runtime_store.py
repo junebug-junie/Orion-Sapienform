@@ -85,13 +85,16 @@ def _legacy_self_state_policy_payload() -> dict:
     }
 
 
-def test_load_latest_policy_frame_without_dispatch_retires_incompatible_row(monkeypatch) -> None:
+def test_load_oldest_policy_frames_without_dispatch_retires_incompatible_row(monkeypatch) -> None:
     # Live incident (2026-07-22): the SelfStateV1 burn removed
     # source_self_state_id from PolicyDecisionFrameV1. This is the FIFO
-    # "oldest undispatched policy frame" lookup -- a naive raise here
-    # crash-loops the whole worker forever (confirmed live). It must
-    # degrade to None AND write a stub, unattempted dispatch frame so the
-    # FIFO advances past the bad row.
+    # "oldest undispatched policy frames" batch lookup (2026-07-30 perf fix:
+    # renamed/batched from the old single-row load_latest_policy_frame_
+    # without_dispatch -- see that method's replacement docstring) -- a
+    # naive raise here crash-loops the whole worker forever (confirmed
+    # live). An incompatible row must be excluded from the returned batch
+    # AND write a stub, unattempted dispatch frame so the FIFO advances past
+    # the bad row instead of re-selecting it forever.
     store = ExecutionDispatchRuntimeStore("postgresql://test:test@localhost/test")
     fake_engine = MagicMock()
     conn = MagicMock()
@@ -109,20 +112,140 @@ def test_load_latest_policy_frame_without_dispatch_retires_incompatible_row(monk
             insert_calls.append(params or {})
             result.rowcount = 1
         else:
-            result.mappings.return_value.first.return_value = {
-                "policy_decision_frame_json": _legacy_self_state_policy_payload(),
-            }
+            result.mappings.return_value.all.return_value = [
+                {"policy_decision_frame_json": _legacy_self_state_policy_payload()}
+            ]
         return result
 
     conn.execute.side_effect = execute_side_effect
     monkeypatch.setattr(store, "_engine", fake_engine)
 
-    result = store.load_latest_policy_frame_without_dispatch()
+    result = store.load_oldest_policy_frames_without_dispatch(limit=200)
 
-    assert result is None
+    assert result == []
     assert len(insert_calls) == 1
     assert insert_calls[0]["source_policy_frame_id"] == "policy.frame:legacy:substrate_policy.v1"
     assert insert_calls[0]["source_proposal_frame_id"] == "proposal.frame:legacy:proposal_policy.v1"
+
+
+def _valid_policy_payload(frame_id: str) -> dict:
+    return {
+        "schema_version": "policy.decision.frame.v1",
+        "frame_id": frame_id,
+        "generated_at": NOW.isoformat(),
+        "source_proposal_frame_id": f"proposal.frame:{frame_id}",
+        "decisions": [],
+        "overall_risk": 0.0,
+    }
+
+
+def test_load_oldest_policy_frames_without_dispatch_returns_valid_batch(monkeypatch) -> None:
+    """2026-07-30 perf fix (docs/superpowers/specs/2026-07-30-execution-
+    dispatch-staleness-discard-design.md's "Part 1c"): this now fetches a
+    whole batch in one query (.mappings().all(), LIMIT :limit) instead of a
+    single row (.mappings().first(), LIMIT 1) called in a loop -- confirms
+    the happy path actually builds a real list of validated frames, not just
+    the incompatible-row edge case above."""
+    store = ExecutionDispatchRuntimeStore("postgresql://test:test@localhost/test")
+    fake_engine = MagicMock()
+    conn = MagicMock()
+    fake_engine.connect.return_value.__enter__ = MagicMock(return_value=conn)
+    fake_engine.connect.return_value.__exit__ = MagicMock(return_value=False)
+    captured_params: dict = {}
+
+    def execute_side_effect(stmt, params=None):
+        captured_params.update(params or {})
+        result = MagicMock()
+        result.mappings.return_value.all.return_value = [
+            {"policy_decision_frame_json": _valid_policy_payload("policy.frame:a")},
+            {"policy_decision_frame_json": _valid_policy_payload("policy.frame:b")},
+        ]
+        return result
+
+    conn.execute.side_effect = execute_side_effect
+    monkeypatch.setattr(store, "_engine", fake_engine)
+
+    result = store.load_oldest_policy_frames_without_dispatch(limit=200)
+
+    assert [f.frame_id for f in result] == ["policy.frame:a", "policy.frame:b"]
+    assert captured_params["limit"] == 200
+
+
+def test_load_oldest_policy_frames_without_dispatch_skips_only_the_bad_row_in_a_mixed_batch(
+    monkeypatch,
+) -> None:
+    """Regression guard (code review, 2026-07-30): a schema-incompatible row
+    anywhere in the batch must be retired and excluded WITHOUT truncating or
+    dropping the other, valid rows around it -- a real behavior improvement
+    over the old single-row lookup, which returned None (and so stopped the
+    whole tick's drain) the instant it hit ANY incompatible row, even with
+    valid rows queued right behind it. Batch position of the bad row (here:
+    the middle one) is deliberate -- proves the loop doesn't just handle a
+    bad row at the start or end."""
+    store = ExecutionDispatchRuntimeStore("postgresql://test:test@localhost/test")
+    fake_engine = MagicMock()
+    conn = MagicMock()
+    fake_engine.connect.return_value.__enter__ = MagicMock(return_value=conn)
+    fake_engine.connect.return_value.__exit__ = MagicMock(return_value=False)
+    fake_engine.begin.return_value.__enter__ = MagicMock(return_value=conn)
+    fake_engine.begin.return_value.__exit__ = MagicMock(return_value=False)
+    insert_calls: list[dict] = []
+
+    def execute_side_effect(stmt, params=None):
+        sql = str(stmt)
+        result = MagicMock()
+        if "INSERT INTO substrate_execution_dispatch_frames" in sql:
+            insert_calls.append(params or {})
+            result.rowcount = 1
+        else:
+            result.mappings.return_value.all.return_value = [
+                {"policy_decision_frame_json": _valid_policy_payload("policy.frame:a")},
+                {"policy_decision_frame_json": _legacy_self_state_policy_payload()},
+                {"policy_decision_frame_json": _valid_policy_payload("policy.frame:c")},
+            ]
+        return result
+
+    conn.execute.side_effect = execute_side_effect
+    monkeypatch.setattr(store, "_engine", fake_engine)
+
+    result = store.load_oldest_policy_frames_without_dispatch(limit=200)
+
+    assert [f.frame_id for f in result] == ["policy.frame:a", "policy.frame:c"]
+    assert len(insert_calls) == 1
+    assert insert_calls[0]["source_policy_frame_id"] == "policy.frame:legacy:substrate_policy.v1"
+
+
+def test_load_freshest_policy_frame_without_dispatch_uses_not_exists(monkeypatch) -> None:
+    """2026-07-30 perf fix: this direction uses WHERE NOT EXISTS, not
+    LEFT JOIN ... WHERE d.frame_id IS NULL -- EXPLAIN ANALYZE confirmed live
+    this is ~1500x cheaper for the DESC/newest-first direction specifically
+    (0.19ms vs ~294ms), because almost nothing near "now" has been processed
+    yet, so a nested-loop anti-join terminates on the very first probe."""
+    store = ExecutionDispatchRuntimeStore("postgresql://test:test@localhost/test")
+    fake_engine = MagicMock()
+    conn = MagicMock()
+    fake_engine.connect.return_value.__enter__ = MagicMock(return_value=conn)
+    fake_engine.connect.return_value.__exit__ = MagicMock(return_value=False)
+    captured_sql: list[str] = []
+
+    def execute_side_effect(stmt, params=None):
+        captured_sql.append(str(stmt))
+        result = MagicMock()
+        result.mappings.return_value.first.return_value = {
+            "policy_decision_frame_json": _valid_policy_payload("policy.frame:freshest")
+        }
+        return result
+
+    conn.execute.side_effect = execute_side_effect
+    monkeypatch.setattr(store, "_engine", fake_engine)
+
+    result = store.load_freshest_policy_frame_without_dispatch()
+
+    assert result is not None
+    assert result.frame_id == "policy.frame:freshest"
+    assert "NOT EXISTS" in captured_sql[0]
+    assert "LEFT JOIN" not in captured_sql[0]
+    assert "DESC" in captured_sql[0]
 
 
 def test_load_by_policy_frame_id(monkeypatch) -> None:

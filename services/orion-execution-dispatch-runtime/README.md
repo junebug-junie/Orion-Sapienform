@@ -79,7 +79,7 @@ promotes the candidate to a real, evidenced `dispatched` status.
 
 **Staleness discard (2026-07-30)**: this service consumes `substrate_policy_decision_frames`
 strictly FIFO, oldest-undispatched-first (`ExecutionDispatchRuntimeStore.
-load_latest_policy_frame_without_dispatch()`). Because a real dispatch is a synchronous
+load_oldest_policy_frames_without_dispatch()`). Because a real dispatch is a synchronous
 `cortex-exec` RPC (~7-11s measured live, one per real send, bounded by
 `EXECUTION_DISPATCH_RPC_TIMEOUT_SEC`), this single-threaded consumer cannot keep pace with real
 production of new policy decisions (~16/min produced vs ~6.8/min consumed, measured live
@@ -128,6 +128,38 @@ it's within the staleness window. A genuinely current proposal is never gated be
 the old backlog is; old backlog still drains steadily in the background via the unchanged FIFO
 path. Returns correctly-empty only when even the newest available frame is already stale, i.e.
 production itself has stalled, not backlog depth hiding something current.
+
+**Query performance fix (2026-07-30, same-day follow-up to the follow-up)**: deployed the
+fresh-priority fallback above and found, live, that real dispatch had resumed but was still only
+happening ~1/minute — far below the ~6.8/min ceiling. Traced with `EXPLAIN ANALYZE` (not
+guessed): both the FIFO drain's per-row lookup and the freshest-check both used a
+`LEFT JOIN substrate_execution_dispatch_frames d ON ... WHERE d.frame_id IS NULL` anti-join.
+Postgres was **not** using the available indexes for either — a full `Parallel Hash Left Join`
+scanning both tables, ~280-300ms per call, *regardless of table size beyond a point*. The drain
+loop called this **up to 200 times per tick** (`MAX_STALE_DISCARDS_PER_TICK`) — up to ~56 seconds
+of pure query time per tick, confirmed as the real, dominant cause of the observed ~75s/tick
+cadence (independently verified via `staleness_discard_count_ewma_n` growth over a precise
+10-minute window: 8 real ticks, not an inferred number). Adversarially re-tested against stale
+planner statistics as an alternative explanation (`ANALYZE` on both tables, re-ran `EXPLAIN
+ANALYZE`) — plan and cost unchanged, ruled out.
+
+Two different fixes for two different access patterns (confirmed via `EXPLAIN ANALYZE`, not
+assumed symmetric):
+- **`load_freshest_policy_frame_without_dispatch`** (DESC, newest-first): rewritten to
+  `WHERE NOT EXISTS (SELECT 1 FROM substrate_execution_dispatch_frames d WHERE d.source_policy_
+  frame_id = p.frame_id)`. Almost nothing near "now" has been processed yet, so Postgres's
+  nested-loop anti-join plan terminates on the very first probe. Measured: ~294ms → ~0.19ms
+  (~1500x). A `NOT EXISTS` rewrite for the *other* direction is measurably **worse** (~6+ seconds
+  — a huge prefix of already-processed ancient history, predating the original backlog, means a
+  nested loop has to walk hundreds of thousands of already-matched rows before finding the first
+  true miss), so this rewrite is intentionally direction-specific, not applied everywhere.
+- **`load_oldest_policy_frames_without_dispatch(limit)`** (ASC, FIFO drain): batches the whole
+  per-tick fetch into ONE query (`LIMIT :limit`, kept as the `LEFT JOIN` shape — the cheaper
+  available plan for this direction) instead of a while loop calling a `LIMIT 1` version up to 200
+  times. The Hash Join's dominant cost is building the hash table, which happens once regardless
+  of LIMIT size (measured: `LIMIT 1` ~280ms, `LIMIT 200` ~327ms, not 200x) — batching cuts real
+  per-tick SELECT cost from ~56s to ~0.3s. Confirmed live against the real table: 200 frames in
+  464ms (includes Python/pydantic overhead beyond the raw SQL execution time).
 
 See `docs/superpowers/specs/2026-07-30-execution-dispatch-staleness-discard-design.md` for the
 full live-data investigation (real backlog depth, throughput math, root cause) and the deferred

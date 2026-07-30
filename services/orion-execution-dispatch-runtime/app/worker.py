@@ -266,6 +266,23 @@ class ExecutionDispatchRuntimeWorker:
         candidate for this tick to process normally), an empty queue, or
         MAX_STALE_DISCARDS_PER_TICK, whichever comes first.
 
+        2026-07-30 perf fix (docs/superpowers/specs/2026-07-30-execution-
+        dispatch-staleness-discard-design.md's "Part 1c", EXPLAIN-ANALYZE-
+        verified live): fetches the whole candidate batch in ONE query
+        (store.load_oldest_policy_frames_without_dispatch) instead of a while
+        loop calling a LIMIT-1 lookup up to MAX_STALE_DISCARDS_PER_TICK (200)
+        times. That old shape cost ~280-300ms PER CALL regardless of LIMIT
+        size (Postgres builds the same full hash-joined result before
+        sorting either way) -- 200 calls/tick was ~56s of pure query time,
+        confirmed live as the real, dominant cause of the ~75s/tick cadence
+        observed after this feature and the fresh-priority fallback both
+        shipped (adversarially re-tested against stale planner statistics as
+        an alternative explanation via a fresh ANALYZE; ruled out, plan and
+        cost were unchanged). Fetching the same 200-row batch in one query
+        costs ~300ms total, not 200x that -- a ~170x real reduction in
+        per-tick SELECT cost, unlocking a tick cadence close to the intended
+        ~2s poll interval instead of ~75s.
+
         Each discard frame saved here carries the CURRENT (not-yet-updated-
         for-this-tick) baseline forward, same as every other saved frame --
         the real update for this tick's own discard count is computed once,
@@ -275,12 +292,10 @@ class ExecutionDispatchRuntimeWorker:
         Returns (fresh_policy_frame_or_none, discarded_count, last_discard_
         frame_or_none).
         """
+        batch = self._store.load_oldest_policy_frames_without_dispatch(MAX_STALE_DISCARDS_PER_TICK)
         discarded = 0
         last_discard_frame: ExecutionDispatchFrameV1 | None = None
-        while discarded < MAX_STALE_DISCARDS_PER_TICK:
-            candidate_frame = self._store.load_latest_policy_frame_without_dispatch()
-            if candidate_frame is None:
-                return None, discarded, last_discard_frame
+        for candidate_frame in batch:
             age_sec = self._age_sec(candidate_frame)
             threshold_sec = self._staleness_threshold_sec()
             if age_sec <= threshold_sec:

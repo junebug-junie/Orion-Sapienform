@@ -649,6 +649,8 @@ document.addEventListener("DOMContentLoaded", () => {
   const aiTownPanel = document.getElementById("ai-town");
   const attentionOrganTabButton = document.getElementById("attentionOrganTabButton");
   const attentionOrganPanel = document.getElementById("attention-organ");
+  const cocreationSignalsTabButton = document.getElementById("cocreationSignalsTabButton");
+  const cocreationSignalsPanel = document.getElementById("cocreation-signals");
   const fieldAttentionTabButton = document.getElementById("fieldAttentionTabButton");
   const fieldAttentionPanel = document.getElementById("field-attention");
   const pressureAnalyticsFrame = document.getElementById("pressureAnalyticsFrame");
@@ -952,6 +954,9 @@ document.addEventListener("DOMContentLoaded", () => {
     if (tabKey === "attention-organ" && !attentionOrganPanel) {
       effectiveTab = "hub";
     }
+    if (tabKey === "cocreation-signals" && !cocreationSignalsPanel) {
+      effectiveTab = "hub";
+    }
     if (tabKey === "field-attention" && !fieldAttentionPanel) {
       effectiveTab = "hub";
     }
@@ -972,6 +977,7 @@ document.addEventListener("DOMContentLoaded", () => {
     const isCollapseMirror = effectiveTab === "collapse-mirror";
     const isAiTown = effectiveTab === "ai-town";
     const isAttentionOrgan = effectiveTab === "attention-organ";
+    const isCocreationSignals = effectiveTab === "cocreation-signals";
     const isFieldAttention = effectiveTab === "field-attention";
     hubTabPanel.classList.toggle("hidden", !isHub);
     topicStudioPanel.classList.toggle("hidden", !isTopicStudio);
@@ -1092,6 +1098,18 @@ document.addEventListener("DOMContentLoaded", () => {
         window.OrionAttentionOrgan.deactivate();
       }
     }
+    if (cocreationSignalsPanel) {
+      cocreationSignalsPanel.classList.toggle("hidden", !isCocreationSignals);
+      // Same lifecycle contract as Attention Organ, above -- a distinct
+      // subsystem (codebase-mass domain), same poll-only-while-visible rule.
+      if (isCocreationSignals) {
+        if (window.OrionCocreationSignals && typeof window.OrionCocreationSignals.activate === "function") {
+          window.OrionCocreationSignals.activate();
+        }
+      } else if (window.OrionCocreationSignals && typeof window.OrionCocreationSignals.deactivate === "function") {
+        window.OrionCocreationSignals.deactivate();
+      }
+    }
     if (fieldAttentionPanel) {
       fieldAttentionPanel.classList.toggle("hidden", !isFieldAttention);
       // Same lifecycle contract as Attention Organ, above -- a distinct
@@ -1146,6 +1164,9 @@ document.addEventListener("DOMContentLoaded", () => {
     }
     if (attentionOrganTabButton) {
       styleTabButton(attentionOrganTabButton, isAttentionOrgan);
+    }
+    if (cocreationSignalsTabButton) {
+      styleTabButton(cocreationSignalsTabButton, isCocreationSignals);
     }
     if (fieldAttentionTabButton) {
       styleTabButton(fieldAttentionTabButton, isFieldAttention);
@@ -1736,6 +1757,8 @@ document.addEventListener("DOMContentLoaded", () => {
       setActiveTab("ai-town");
     } else if (h === "#attention-organ" && attentionOrganPanel && attentionOrganTabButton) {
       setActiveTab("attention-organ");
+    } else if (h === "#cocreation-signals" && cocreationSignalsPanel && cocreationSignalsTabButton) {
+      setActiveTab("cocreation-signals");
     } else if (h === "#field-attention" && fieldAttentionPanel && fieldAttentionTabButton) {
       setActiveTab("field-attention");
     } else {
@@ -1751,6 +1774,7 @@ document.addEventListener("DOMContentLoaded", () => {
         || h === "#collapse-mirror"
         || h === "#ai-town"
         || h === "#attention-organ"
+        || h === "#cocreation-signals"
         || h === "#field-attention"
       ) {
         history.replaceState(null, "", "#hub");
@@ -11546,6 +11570,13 @@ document.addEventListener("DOMContentLoaded", () => {
         event.preventDefault();
         setActiveTab("attention-organ");
         history.replaceState(null, "", "#attention-organ");
+      });
+    }
+    if (cocreationSignalsTabButton && cocreationSignalsPanel) {
+      cocreationSignalsTabButton.addEventListener("click", (event) => {
+        event.preventDefault();
+        setActiveTab("cocreation-signals");
+        history.replaceState(null, "", "#cocreation-signals");
       });
     }
     if (fieldAttentionTabButton && fieldAttentionPanel) {

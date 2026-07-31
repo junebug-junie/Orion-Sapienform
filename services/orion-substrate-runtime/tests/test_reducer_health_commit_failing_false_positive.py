@@ -40,7 +40,7 @@ if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
 from app.reducer_health import (  # noqa: E402
-    DEFAULT_CURSOR_COMMIT_ERROR_GRACE_SEC,
+    CURSOR_COMMIT_ERROR_GRACE_SEC,
     ReducerHealthSnapshot,
 )
 
@@ -83,33 +83,40 @@ def _classify(snap, **kw):
 
 
 class TestInFlightCommitIsNotAFailure:
-    def test_the_exact_live_window_is_healthy(self):
-        """The real numbers off the live endpoint, 2026-07-31 20:28:5x.
+    def test_in_flight_batch_with_no_error_is_healthy(self):
+        """The state that paged: mid-batch, cursor not yet advanced, zero errors.
 
-        last_success_at   20:28:51.632147
-        last_cursor_advance_at 20:28:52.043960   -> 411ms later
-
-        Inverted for 411ms, no error recorded. This is the state that paged.
+        Review correction 2026-07-31: an earlier version of this test quoted
+        `last_success_at 20:28:51.632147 / last_cursor_advance_at 20:28:52.043960`
+        as "the exact live window". Those are 411ms apart with ADVANCE LATER, so
+        they are not inverted at all -- that is the recovered post-advance state,
+        healthy under the old predicate too. The state that actually paged is a
+        sample taken BEFORE the advance landed, where the newest advance on record
+        still belongs to the previous batch. That is what this builds.
         """
         snap = _snap(
             success_offset=0.0,
-            advance_offset=0.411 + PREVIOUS_ADVANCE_SEC,
+            advance_offset=PREVIOUS_ADVANCE_SEC,
             error_offset=None,
         )
         assert snap.last_success_at > snap.last_cursor_advance_at, "precondition: inverted"
         assert _classify(snap) == "healthy"
 
-    @pytest.mark.parametrize("window_sec", [0.021, 0.411, 1.0, 5.0])
-    def test_any_inversion_without_an_error_is_healthy(self, window_sec):
-        """Width of the window is irrelevant when nothing failed.
+    @pytest.mark.parametrize("batch_gap_sec", [4.0, 13.0, 28.1, 300.0])
+    def test_any_inversion_width_without_an_error_is_healthy(self, batch_gap_sec):
+        """How long the batch has been in flight is irrelevant when nothing failed.
 
-        21ms is the measured biometrics window, 411ms the execution one. Even a
-        multi-second commit is just a slow commit, not a failing one -- the
-        distinguishing fact is whether `record_error()` ever fired.
+        Review correction 2026-07-31: this previously varied a `window_sec` that
+        was then ADDED to `PREVIOUS_ADVANCE_SEC`, so all four cases produced a
+        ~20s inversion and tested the same thing. The predicate never inspects
+        the gap width at all, so the meaningful axis is how stale the previous
+        advance is. Values are the live-measured spread of real batch gaps
+        (4-13s typical, 28.1s the observed max on route), plus 300s as a
+        deliberately extreme case.
         """
         snap = _snap(
             success_offset=0.0,
-            advance_offset=window_sec + PREVIOUS_ADVANCE_SEC,
+            advance_offset=batch_gap_sec,
             error_offset=None,
         )
         assert snap.last_success_at > snap.last_cursor_advance_at, "precondition: inverted"
@@ -117,20 +124,44 @@ class TestInFlightCommitIsNotAFailure:
 
 
 class TestRealCommitFailureStillDetected:
-    def test_inversion_plus_recent_error_is_still_a_failure(self):
-        """The genuine case must not be silenced by this fix.
+    def test_tick_failure_between_success_and_advance_is_still_a_failure(self):
+        """The condition that genuinely reaches this branch.
 
-        `_advance_cursor()` calls `record_error()` on both of its failure paths,
-        at the 1s poll cadence, so a real stuck commit always has a fresh error.
+        Review correction 2026-07-31: this test previously justified itself with
+        `_advance_cursor()`'s own failure paths. Those pass a real `event_id` to
+        `record_error()`, which sets `blocked_event_id`, so `blocked_on_event`
+        returns first and they NEVER reach this branch (see
+        `test_advance_cursor_failure_is_blocked_on_event_not_commit_failing`).
+
+        What does reach it is the poll loops' own `record_error(event_id=None)`
+        after a tick raised BETWEEN `record_success()` and the advance -- a failed
+        `publish_accepted_events`, `save_execution_trajectory`, or
+        `_write_prediction_error_node`. `blocked_event_id` stays None there, which
+        is exactly the state built here.
         """
         snap = _snap(success_offset=0.0, advance_offset=30.0, error_offset=0.5)
+        assert snap.blocked_event_id is None, "precondition: the event_id=None path"
         assert _classify(snap) == "cursor_commit_failing"
+
+    def test_advance_cursor_failure_is_blocked_on_event_not_commit_failing(self):
+        """Pin the precedence rule, so nobody 'simplifies' the ordering.
+
+        Replaying the real sequence from `worker.py::_advance_cursor` -- which
+        passes a real event_id -- against the live module gives `blocked_on_event`,
+        both before and after this patch. A genuinely stuck cursor commit pages as
+        `reducer_blocked:<cursor>`, never `reducer_cursor_commit_failing:<cursor>`,
+        despite the latter's name. Detection is not lost; it just lives elsewhere.
+        """
+        snap = _snap(success_offset=0.0, advance_offset=30.0, error_offset=0.5)
+        snap.blocked_event_id = "gev_missing"
+        snap.blocked_failures = 1
+        assert _classify(snap) == "blocked_on_event"
 
     def test_error_just_inside_the_grace_window_still_fires(self):
         snap = _snap(
             success_offset=0.0,
             advance_offset=300.0,
-            error_offset=DEFAULT_CURSOR_COMMIT_ERROR_GRACE_SEC - 1.0,
+            error_offset=CURSOR_COMMIT_ERROR_GRACE_SEC - 1.0,
         )
         assert _classify(snap) == "cursor_commit_failing"
 
@@ -143,15 +174,25 @@ class TestRealCommitFailureStillDetected:
         snap = _snap(
             success_offset=0.0,
             advance_offset=PREVIOUS_ADVANCE_SEC,
-            error_offset=DEFAULT_CURSOR_COMMIT_ERROR_GRACE_SEC + 60.0,
+            error_offset=CURSOR_COMMIT_ERROR_GRACE_SEC + 60.0,
         )
         assert snap.last_success_at > snap.last_cursor_advance_at, "precondition: inverted"
         assert _classify(snap) == "healthy"
 
-    def test_grace_window_is_configurable(self):
-        snap = _snap(success_offset=0.0, advance_offset=30.0, error_offset=25.0)
-        assert _classify(snap, cursor_commit_error_grace_sec=10.0) == "healthy"
-        assert _classify(snap, cursor_commit_error_grace_sec=30.0) == "cursor_commit_failing"
+    def test_grace_boundary_is_inclusive(self):
+        """The predicate is `<= grace`; pin that rather than only testing near it."""
+        just_inside = _snap(
+            success_offset=0.0,
+            advance_offset=300.0,
+            error_offset=CURSOR_COMMIT_ERROR_GRACE_SEC - 0.5,
+        )
+        just_outside = _snap(
+            success_offset=0.0,
+            advance_offset=300.0,
+            error_offset=CURSOR_COMMIT_ERROR_GRACE_SEC + 0.5,
+        )
+        assert _classify(just_inside) == "cursor_commit_failing"
+        assert _classify(just_outside) == "healthy"
 
 
 class TestHigherPriorityClassificationsUnaffected:
@@ -178,18 +219,24 @@ class TestHigherPriorityClassificationsUnaffected:
         assert _classify(snap) == "reducer_disabled"
 
 
-def test_to_dict_threads_the_grace_through():
-    """The public surface must honour the parameter, not just `classify()`."""
-    snap = _snap(success_offset=0.0, advance_offset=30.0, error_offset=25.0)
-    healthy = snap.to_dict(
+def test_benign_inversion_with_stream_lag_now_reports_alive_behind():
+    """A behavior change worth pinning: it used to mask a real lag signal.
+
+    Inverted + no error + stream lag over the threshold previously returned
+    `cursor_commit_failing`, which hid the fact that the reducer was genuinely
+    behind. It now falls through to the lag branch and says so.
+    """
+    snap = _snap(success_offset=0.0, advance_offset=PREVIOUS_ADVANCE_SEC, error_offset=None)
+    snap.stream_lag_sec = STREAM_LAG_DEGRADED_SEC + 10.0
+    assert snap.last_success_at > snap.last_cursor_advance_at, "precondition: inverted"
+    assert _classify(snap) == "alive_behind"
+
+
+def test_to_dict_agrees_with_classify():
+    """`to_dict()` is the surface /grammar/truth actually reads."""
+    snap = _snap(success_offset=0.0, advance_offset=PREVIOUS_ADVANCE_SEC, error_offset=None)
+    out = snap.to_dict(
         heartbeat_stale_sec=HEARTBEAT_STALE_SEC,
         stream_lag_degraded_sec=STREAM_LAG_DEGRADED_SEC,
-        cursor_commit_error_grace_sec=10.0,
     )
-    failing = snap.to_dict(
-        heartbeat_stale_sec=HEARTBEAT_STALE_SEC,
-        stream_lag_degraded_sec=STREAM_LAG_DEGRADED_SEC,
-        cursor_commit_error_grace_sec=30.0,
-    )
-    assert healthy["classification"] == "healthy"
-    assert failing["classification"] == "cursor_commit_failing"
+    assert out["classification"] == "healthy" == _classify(snap)

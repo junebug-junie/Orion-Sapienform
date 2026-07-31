@@ -299,9 +299,16 @@ class Settings(BaseSettings):
         900.0, alias="SUBSTRATE_RUNTIME_HEALTH_CHECK_INTERVAL_SEC"
     )
     # Before paging on a fresh unhealthy transition, wait this long and recheck
-    # once -- filters out single-tick reducer-health blips (e.g. one cursor
-    # commit racing transient DB pressure, self-healing on the very next poll)
-    # without delaying a genuinely sustained incident by more than this.
+    # once -- filters out single-tick reducer-health blips without delaying a
+    # genuinely sustained incident by more than this.
+    #
+    # 2026-07-31: the example that used to be cited here ("one cursor commit
+    # racing transient DB pressure, self-healing on the very next poll") was
+    # wrong. That alert was a detector bug -- `classify()` treated the normal
+    # in-flight ordering between `record_success()` and `record_cursor_advance()`
+    # as a commit failure, ~20% of the time on a healthy system. Fixed in
+    # `app/reducer_health.py`. This debounce is still useful for genuine
+    # single-tick blips; it just was not filtering what it thought it was.
     health_recheck_delay_sec: float = Field(
         15.0, alias="SUBSTRATE_RUNTIME_HEALTH_RECHECK_DELAY_SEC"
     )

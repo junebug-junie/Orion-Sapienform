@@ -188,7 +188,7 @@ def build_proposal_frame(
     policy: ProposalPolicyV1,
     previous_frame: ProposalFrameV1 | None = None,
     now: datetime | None = None,
-    reverie_candidates: list[ProposalCandidateV1] | None = None,
+    external_candidates: list[ProposalCandidateV1] | None = None,
 ) -> ProposalFrameV1:
     """Build a ProposalFrameV1 directly from FieldStateV1 + FieldAttentionFrameV1.
 
@@ -223,10 +223,15 @@ def build_proposal_frame(
             )
         )
 
-    # Phase B: incorporate flag-gated spontaneous-thought proposals. These carry
-    # source="reverie_thought" and an operator_review gate — they compete and are
-    # policy-gated exactly like builder-native candidates, never auto-dispatched.
-    for candidate in reverie_candidates or []:
+    # Flag-gated NON-DETERMINISTIC producers competing as first-class citizens.
+    # Renamed from `reverie_candidates` 2026-07-31: reverie is no longer the only
+    # one. Each carries its own `source` (`reverie_thought`, `cognitive_hop`) and
+    # an operator_review gate -- they compete and are policy-gated exactly like
+    # builder-native candidates, and none can auto-dispatch. The arena is the
+    # arbitration mechanism for all of them; a producer never gets a private
+    # scheduler (stream-of-consciousness hop-chain design, "not a merge, a sibling
+    # producer under the same contract").
+    for candidate in external_candidates or []:
         built.append(candidate)
 
     built.sort(key=lambda c: (-c.priority_score, c.proposal_id))

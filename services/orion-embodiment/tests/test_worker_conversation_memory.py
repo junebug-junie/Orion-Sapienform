@@ -354,3 +354,22 @@ def test_request_utterance_quick_forwards_configured_llm_route():
     env = bus.rpc_request.call_args.args[1]
     assert env.payload["args"]["extra"]["llm_route"] == "quick_background"
     assert env.payload["args"]["extra"]["lane"] == "quick"
+
+
+def test_request_utterance_quick_marks_surface_as_aitown():
+    """Regression coverage: chat_quick.j2 reads metadata.surface to know it's
+    embodied in ai-town right now (vs. a direct hub conversation with Juniper).
+    Without this, ai-town dialogue and hub chat looked identical to the
+    template, and ai-town banter bled into hub responses verbatim with no
+    framing at all (found live 2026-07-30, Nico's "light folding" loop
+    surfacing in a hub turn as if Orion were still mid-scene)."""
+    w = _worker()
+    bus = SimpleNamespace()
+    bus.rpc_request = AsyncMock(return_value={"data": b""})
+    bus.codec = SimpleNamespace(
+        decode=lambda _data: SimpleNamespace(ok=True, envelope=SimpleNamespace(payload={"result": {"text": "hi"}}))
+    )
+    w._bus = bus
+    asyncio.run(w._request_utterance_quick("prompt text", correlation_id="11111111-1111-1111-1111-111111111111"))
+    env = bus.rpc_request.call_args.args[1]
+    assert env.payload["context"]["metadata"]["surface"] == "aitown"

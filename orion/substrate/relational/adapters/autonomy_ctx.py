@@ -36,20 +36,6 @@ logger = logging.getLogger("orion.substrate.relational.adapters.autonomy_ctx")
 _TIER_RANK = 2  # graphdb_durable
 
 
-def _env_float(name: str, default: float) -> float:
-    try:
-        return float(os.getenv(name) or default)
-    except (TypeError, ValueError):
-        return default
-
-
-def _env_int(name: str, default: int) -> int:
-    try:
-        return int(os.getenv(name) or default)
-    except (TypeError, ValueError):
-        return default
-
-
 def _make_prov(*, subject: str) -> SubstrateProvenanceV1:
     return SubstrateProvenanceV1(
         authority="local_inferred",
@@ -168,29 +154,13 @@ def map_autonomy_ctx_to_substrate(ctx: dict[str, Any]) -> SubstrateGraphRecordV1
         return None
 
     try:
-        backend = (os.getenv("AUTONOMY_REPOSITORY_BACKEND") or "graph").strip().lower()
-        if backend not in {"graph", "local", "shadow"}:
-            backend = "graph"
-
         subjects = list(plan.subjects)
-        if is_quick_autonomy_graph_lane(ctx):
-            subject_workers = max(1, min(_env_int("AUTONOMY_SUBJECT_MAX_WORKERS", 3), len(subjects) or 1))
-            subquery_workers = 1
-        else:
-            subject_workers = max(1, _env_int("AUTONOMY_SUBJECT_MAX_WORKERS", 3))
-            subquery_workers = max(1, min(3, _env_int("AUTONOMY_SUBQUERY_MAX_WORKERS", 1)))
-
-        repository = build_autonomy_repository(
-            backend=backend,
-            endpoint=plan.endpoint,
-            timeout_sec=max(0.25, plan.timeout_sec),
-            user=plan.user,
-            password=plan.password,
-            goals_limit=_env_int("AUTONOMY_GOALS_LIMIT", 3),
-            subject_max_workers=subject_workers,
-            subquery_max_workers=subquery_workers,
-            active_subqueries=plan.active_subqueries,
-        )
+        # Real backend is always LocalAutonomyRepository now -- the graph/shadow
+        # backends were deleted 2026-07-30 (confirmed dead: no Fuseki, no GraphDB
+        # container anywhere; this branch was already unreachable in production
+        # since plan.mode not in ("graphdb", "sparql") returns above it). See
+        # orion/autonomy/repository.py's comment for the full rationale.
+        repository = build_autonomy_repository()
     except Exception as exc:
         logger.debug("autonomy_ctx_adapter_init_failed error=%s", exc)
         return None

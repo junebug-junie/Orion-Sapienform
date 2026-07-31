@@ -1906,9 +1906,6 @@ def _load_autonomy_state(ctx: Dict[str, Any]) -> Dict[str, Any]:
 
     ag_remote = "sparql" if plan.mode == "sparql" else "graphdb"
     ep_log = strip_graph_credentials(endpoint or "") or f"{ag_remote}:unconfigured"
-    backend = (os.getenv("AUTONOMY_REPOSITORY_BACKEND") or "graph").strip().lower()
-    if backend not in {"graph", "local", "shadow"}:
-        backend = "graph"
 
     subjects = list(plan.subjects)
     if is_quick_autonomy_graph_lane(ctx):
@@ -1919,18 +1916,12 @@ def _load_autonomy_state(ctx: Dict[str, Any]) -> Dict[str, Any]:
         subquery_workers = resolve_autonomy_chat_stance_subquery_max_workers()
     timeout_used = plan.timeout_sec
 
-    repository = build_autonomy_repository(
-        backend=backend,
-        endpoint=endpoint,
-        timeout_sec=timeout_used,
-        user=plan.user,
-        password=plan.password,
-        goals_limit=_env_int("AUTONOMY_GOALS_LIMIT", 3),
-        subject_max_workers=subject_workers,
-        subquery_max_workers=subquery_workers,
-        active_subqueries=plan.active_subqueries,
-        drives_query_limit=resolve_autonomy_drives_query_limit(compact=True),
-    )
+    # Real backend is always LocalAutonomyRepository now -- the graph/shadow
+    # backends were deleted 2026-07-30 (confirmed dead: no Fuseki, no GraphDB
+    # container anywhere; this branch was already unreachable in production
+    # since AUTONOMY_GRAPH_BACKEND=disabled short-circuits above it). See
+    # orion/autonomy/repository.py's comment for the full rationale.
+    repository = build_autonomy_repository()
     observer = {
         "consumer": "chat_stance",
         "correlation_id": str(ctx.get("correlation_id") or ctx.get("trace_id") or ""),

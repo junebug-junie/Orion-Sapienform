@@ -121,10 +121,13 @@ async def maybe_execute_readonly_fetch_after_goal(
     if decision.outcome != "allowed" or not decision.auto_execute:
         return decision, None
 
-    # requires_goal_status > 0 on this capability's rule means evaluate_capability()
-    # already denied above (missing_goal) if goal were None -- reaching here means
-    # goal is real.
-    assert goal is not None
+    # requires_goal_status > 0 on this capability's rule is what makes goal real
+    # here (evaluate_capability() denies via missing_goal above if it were None) --
+    # that link lives in config/autonomy/capability_policy.v1.yaml, not in code, so
+    # a defensive check here (not a bare assert) is the honest guard against that
+    # config ever changing out from under this invariant.
+    if goal is None:
+        return decision, None
     query = build_readonly_fetch_query(curiosity_signals)
     gap_terms = gap_terms_from_signals(curiosity_signals, fallback_query=query)
     req = EpisodeFetchRequest(
@@ -327,10 +330,13 @@ async def maybe_execute_readonly_recall_after_goal(
     if decision.outcome != "allowed" or not decision.auto_execute:
         return decision, None
 
-    # requires_goal_status > 0 on this capability's rule means evaluate_capability()
-    # already denied above (missing_goal) if goal were None -- reaching here means
-    # goal is real.
-    assert goal is not None
+    # requires_goal_status > 0 on this capability's rule is what makes goal real
+    # here (evaluate_capability() denies via missing_goal above if it were None) --
+    # that link lives in config/autonomy/capability_policy.v1.yaml, not in code, so
+    # a defensive check here (not a bare assert) is the honest guard against that
+    # config ever changing out from under this invariant.
+    if goal is None:
+        return decision, None
 
     if bus is None:
         # No bus wired for this call site -- degrade gracefully rather than raise;
@@ -477,10 +483,13 @@ async def maybe_compose_autonomy_episode_after_fetch(
     if journal_dispatch is None:
         return decision, None
 
-    # requires_goal_status > 0 on this capability's rule means evaluate_capability()
-    # already denied above (missing_goal) if goal were None -- reaching here means
-    # goal is real.
-    assert goal is not None
+    # requires_goal_status > 0 on this capability's rule is what makes goal real
+    # here (evaluate_capability() denies via missing_goal above if it were None) --
+    # that link lives in config/autonomy/capability_policy.v1.yaml, not in code, so
+    # a defensive check here (not a bare assert) is the honest guard against that
+    # config ever changing out from under this invariant.
+    if goal is None:
+        return decision, None
     narrative_seed = build_episode_narrative_seed(goal, curiosity_signals, fetch_outcome)
     result = await journal_dispatch(
         goal_artifact_id=goal.artifact_id,

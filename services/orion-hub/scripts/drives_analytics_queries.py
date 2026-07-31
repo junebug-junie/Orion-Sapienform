@@ -661,7 +661,12 @@ def fetch_goal_alignment_sync(
     try:
         from orion.autonomy.repository import build_autonomy_repository
 
-        repo = build_autonomy_repository(backend="graph", timeout_sec=3.0, goals_limit=12)
+        # Real backend is always LocalAutonomyRepository now -- the graph/shadow
+        # backends were deleted 2026-07-30 (confirmed dead: no Fuseki, no GraphDB
+        # container anywhere). This call site was the one place that bypassed
+        # AUTONOMY_GRAPH_BACKEND=disabled and tried the dead endpoint directly on
+        # every Hub drives-analytics page load; now fails fast/honest instead.
+        repo = build_autonomy_repository()
         lookup = repo.get_latest(subject_n)
         state = getattr(lookup, "state", None)
         availability = str(getattr(lookup, "availability", "") or "")

@@ -114,6 +114,29 @@ def test_chat_quick_has_anti_repetition_instruction() -> None:
     assert "Do not repeat a phrase, metaphor, or sentence structure" in rendered
 
 
+def test_chat_quick_has_concrete_grounding_instruction() -> None:
+    """Regression coverage (found live 2026-07-30/31): the anti-repetition fix
+    alone stopped verbatim phrase reuse but not thematic drift into vague
+    poetic abstraction (native ai-town NPCs spiraling into "light vs shadows"
+    exchanges with no concrete referent). This instructs the model to name
+    the actual thing it means instead of extending a metaphor."""
+    tpl = Environment().from_string(CHAT_QUICK_TEMPLATE.read_text(encoding="utf-8"))
+    rendered = tpl.render(**_CHAT_QUICK_BASE_RENDER_ARGS, metadata={})
+    assert "Ground replies in something specific and concrete" in rendered
+
+
+def test_chat_quick_anti_repetition_and_concrete_grounding_both_survive_together() -> None:
+    """Both instructions target different failure modes (verbatim reuse vs.
+    thematic drift into abstraction) and must both survive a single render --
+    a future edit to one could accidentally clobber the other; separate tests
+    for each wouldn't catch an adjacency/ordering regression between them."""
+    tpl = Environment().from_string(CHAT_QUICK_TEMPLATE.read_text(encoding="utf-8"))
+    rendered = tpl.render(**_CHAT_QUICK_BASE_RENDER_ARGS, metadata={})
+    repetition_idx = rendered.index("Do not repeat a phrase, metaphor, or sentence structure")
+    grounding_idx = rendered.index("Ground replies in something specific and concrete")
+    assert repetition_idx < grounding_idx
+
+
 def test_plan_ctx_latest_user_text_feeds_recall_gating_when_raw_missing() -> None:
     """Concrete-ops guard must see the real utterance when only user_message is set."""
     ctx = {
@@ -161,3 +184,4 @@ def test_chat_general_has_non_aitown_surface_framing_and_anti_repetition() -> No
     text = CHAT_GENERAL_TEMPLATE.read_text(encoding="utf-8")
     assert 'metadata.get("surface") != "aitown"' in text
     assert "Do not repeat a phrase, metaphor, or sentence structure" in text
+    assert "Ground replies in something specific and concrete" in text

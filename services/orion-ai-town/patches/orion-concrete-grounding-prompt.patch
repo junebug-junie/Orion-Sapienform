@@ -1,0 +1,12 @@
+diff --git a/convex/agent/conversation.ts b/convex/agent/conversation.ts
+index 9660c81..5f83e57 100644
+--- a/convex/agent/conversation.ts
++++ b/convex/agent/conversation.ts
+@@ -128,6 +128,7 @@ export async function continueConversationMessage(
+     `Short in-character reply only: 1-3 sentences, under 220 characters.`,
+     `No scene description, narration, stage directions, or markdown. Do NOT greet again.`,
+     `Do not repeat a phrase, metaphor, or sentence structure that already appears earlier in this chat history -- yours or theirs. If the conversation is circling the same idea across multiple turns, say something concrete and new, change the subject, or bring the exchange to a natural close instead of restating it in different words.`,
++    `Ground your reply in something specific and concrete -- a real object, task, or event -- rather than extended metaphor or abstract imagery. If the conversation is drifting into vague poetic language (light, shadows, glow, echoes, silence, and similar) without a concrete referent, name the actual thing you mean instead of continuing the metaphor.`,
+   );
+
+   const llmMessages: LLMMessage[] = [

@@ -61,6 +61,27 @@ def _utcnow() -> datetime:
 _STALE_WINDOW_RELOG_EVERY: int = 60
 
 
+def _node_age_sec(observed_at: str | None) -> float | None:
+    """Seconds since a substrate node's `observed_at` ISO timestamp.
+
+    Returns None when absent or unparseable -- the gate treats None as "age
+    unknown" and does NOT suppress on it. Deliberate: a parsing change upstream
+    must not silently switch this evidence source off, which would be the same
+    "detector quietly stops detecting" failure this whole arc has been chasing.
+    A frozen node is the case we can actually detect, and that is the one
+    guarded.
+    """
+    if not observed_at:
+        return None
+    try:
+        parsed = datetime.fromisoformat(observed_at.replace("Z", "+00:00"))
+    except ValueError:
+        return None
+    if parsed.tzinfo is None:
+        parsed = parsed.replace(tzinfo=timezone.utc)
+    return (datetime.now(timezone.utc) - parsed).total_seconds()
+
+
 class EquilibriumService(BaseChassis):
     def __init__(self) -> None:
         super().__init__(
@@ -133,6 +154,11 @@ class EquilibriumService(BaseChassis):
         # a restart legitimately re-enters cold-start rather than fabricating
         # history, same discipline as every other persisted-state field here.
         self._repair_pressure_trend_state: MetacogTrendStateV1 = MetacogTrendStateV1()
+        # Rising-edge state for the bus_synaptic transport branch. False at boot
+        # means an anomaly already in progress at startup fires once on the
+        # first poll -- correct ("this is news to this process") and bounded,
+        # versus the pre-2026-07-30 behavior of firing every 30s forever.
+        self._bus_synaptic_above_threshold: bool = False
 
     def _trace_meta(
         self,
@@ -805,17 +831,25 @@ class EquilibriumService(BaseChassis):
                     # the sibling call in orion-substrate-runtime's
                     # _bus_synaptic_tick is dispatched (worker.py's own tick
                     # is offloaded via asyncio.to_thread at its call site).
+                    # observed_at is fetched alongside the value so the gate
+                    # can refuse a frozen node -- see its staleness guard.
                     rows = await asyncio.to_thread(
                         client.graph_query,
                         "MATCH (n:SubstrateNode) WHERE n.node_id = $node_id "
-                        "RETURN n.prediction_error AS error",
+                        "RETURN n.prediction_error AS error, n.observed_at AS observed_at",
                         {"node_id": "node:substrate.bus_synaptic"},
                     )
                     error = None
+                    observed_at = None
                     for row in rows:
-                        value = row.get("error") if isinstance(row, dict) else None
+                        if not isinstance(row, dict):
+                            continue
+                        value = row.get("error")
                         if isinstance(value, (int, float)):
                             error = float(value)
+                        raw_observed = row.get("observed_at")
+                        if isinstance(raw_observed, str) and raw_observed:
+                            observed_at = raw_observed
                     if error is not None:
                         distress, zen, _ = self._calculate_metrics()
                         trigger = build_transport_metacog_trigger_from_bus_synaptic(
@@ -824,7 +858,34 @@ class EquilibriumService(BaseChassis):
                             pressure=distress,
                             recall_enabled=settings.metacog_recall_enabled,
                             error_threshold=settings.metacog_transport_bus_synaptic_error_threshold,
+                            previously_above=self._bus_synaptic_above_threshold,
+                            node_age_sec=_node_age_sec(observed_at),
+                            max_node_age_sec=(
+                                settings.metacog_transport_bus_synaptic_max_node_age_sec
+                            ),
                         )
+                        # Edge state is updated from the RAW level, independently
+                        # of whether a trigger was built: a fire suppressed by
+                        # staleness or by the cooldown lane must still count as
+                        # "we are now above", or the next poll would read as a
+                        # fresh rising edge and re-fire forever -- reintroducing
+                        # exactly the per-tick spam this change removes.
+                        threshold = (
+                            settings.metacog_transport_bus_synaptic_error_threshold
+                        )
+                        clear_at = (
+                            threshold
+                            * settings.metacog_transport_bus_synaptic_clear_ratio
+                        )
+                        if error >= threshold:
+                            self._bus_synaptic_above_threshold = True
+                        elif error < clear_at:
+                            self._bus_synaptic_above_threshold = False
+                        # Between clear_at and threshold the previous state is
+                        # HELD -- the hysteresis band. Without it a reading
+                        # oscillating across the threshold re-arms and re-fires
+                        # on every crossing, which for a bimodal metric is most
+                        # of them.
                         if trigger is not None:
                             await self._publish_metacog_trigger(trigger)
             except Exception:

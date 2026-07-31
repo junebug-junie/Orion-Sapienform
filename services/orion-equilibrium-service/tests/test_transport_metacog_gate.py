@@ -244,3 +244,96 @@ class TestBusSynapticEvidence:
             error_threshold=0.5,
         )
         assert trigger is not None
+
+
+# ---------------------------------------------------------------------------
+# bus_synaptic branch: edge-triggering, staleness, hysteresis (2026-07-30)
+# ---------------------------------------------------------------------------
+
+
+def _bs(error, **kw):
+    kw.setdefault("zen_state", "not_zen")
+    kw.setdefault("pressure", 0.4)
+    kw.setdefault("recall_enabled", False)
+    kw.setdefault("error_threshold", 1.0)
+    return build_transport_metacog_trigger_from_bus_synaptic(error, **kw)
+
+
+def test_bus_synaptic_fires_on_the_rising_edge_only() -> None:
+    """The core fix. This branch was a pure level check evaluated every 30s, so
+    one sustained condition re-drafted an LLM reflection on every tick -- live,
+    1,812 transport rows in 24h, ~48% from this branch alone. Metacognition is
+    "something notable HAPPENED", not "something is STILL the case"."""
+    first = _bs(1.2, previously_above=False)
+    assert first is not None
+    assert first.upstream["transition"] == "below_to_above"
+    assert "rising_edge" in first.upstream["fired_conditions"]
+    assert "episode_start" in first.reason
+
+    # Same condition, still true on the next poll -> silent.
+    assert _bs(1.2, previously_above=True) is None
+    assert _bs(9.9, previously_above=True) is None
+
+
+def test_bus_synaptic_below_threshold_never_fires_regardless_of_edge_state() -> None:
+    assert _bs(0.5, previously_above=False) is None
+    assert _bs(0.5, previously_above=True) is None
+
+
+def test_bus_synaptic_refuses_a_stale_node() -> None:
+    """Confirmed live: node:substrate.bus_synaptic sat frozen at a stale 1.0 for
+    HOURS while this loop fired off it every 30s. A frozen value is not a
+    present-tense reading."""
+    assert _bs(1.2, previously_above=False, node_age_sec=3600.0, max_node_age_sec=300.0) is None
+    # Fresh node with the same value still fires.
+    fresh = _bs(1.2, previously_above=False, node_age_sec=12.0, max_node_age_sec=300.0)
+    assert fresh is not None
+    assert fresh.upstream["node_age_sec"] == 12.0
+
+
+def test_bus_synaptic_unknown_node_age_does_not_suppress() -> None:
+    """Deliberate asymmetry: a frozen node is detectable and is guarded, but an
+    unparseable/absent timestamp must NOT silently switch this evidence source
+    off -- that would be the same "detector quietly stops detecting" failure
+    this whole arc has been chasing."""
+    assert _bs(1.2, previously_above=False, node_age_sec=None, max_node_age_sec=300.0) is not None
+    assert _bs(1.2, previously_above=False, node_age_sec=99999.0, max_node_age_sec=None) is not None
+
+
+def test_edge_and_hysteresis_collapse_a_real_firing_pattern() -> None:
+    """End-to-end over a synthetic series shaped like the real bimodal metric,
+    replicating the service's own edge/hysteresis bookkeeping.
+
+    Asserts the property that actually matters: the number of entries equals the
+    number of EPISODES, not the number of polls.
+    """
+    threshold, clear_ratio = 1.0, 0.8
+    # Two genuine anomaly episodes, each sustained across several polls, with a
+    # stretch of threshold-adjacent flapping in between.
+    series = (
+        [0.1] * 5
+        + [1.0] * 10          # episode 1 (sustained)
+        + [0.1] * 5
+        + [1.0, 0.85, 1.0, 0.9, 1.0]   # flapping inside the hysteresis band
+        + [0.1] * 5
+        + [2.0] * 8           # episode 2 (sustained)
+    )
+
+    above = False
+    fires = 0
+    for value in series:
+        if _bs(value, previously_above=above) is not None:
+            fires += 1
+        if value >= threshold:
+            above = True
+        elif value < threshold * clear_ratio:
+            above = False
+
+    # 3 episodes: the two sustained ones plus the flap's first crossing. The
+    # flap's four subsequent re-crossings are absorbed by the hysteresis band.
+    assert fires == 3
+    # The pre-fix level check fired on every poll at-or-above threshold: 21 of
+    # 38 polls here, versus 3 episodes. That ~7x collapse on a 38-sample series
+    # is the same shape as the live 1,812-rows-in-24h number.
+    assert sum(1 for v in series if v >= threshold) == 21
+    assert fires < sum(1 for v in series if v >= threshold)

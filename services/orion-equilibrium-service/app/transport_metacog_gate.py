@@ -123,6 +123,9 @@ def build_transport_metacog_trigger_from_bus_synaptic(
     pressure: float,
     recall_enabled: bool,
     error_threshold: float,
+    previously_above: bool = False,
+    node_age_sec: float | None = None,
+    max_node_age_sec: float | None = None,
     edge_count: int | None = None,
 ) -> MetacogTriggerV1 | None:
     """Third evidence source: node:substrate.bus_synaptic's prediction_error
@@ -144,10 +147,44 @@ def build_transport_metacog_trigger_from_bus_synaptic(
     bus_synaptic_graph_routes.py's debug routes already use for a human
     reading a table.
     """
+    # --- Staleness guard (2026-07-30) -------------------------------------
+    # The poll reads whatever number is currently sitting on the node, with no
+    # notion of when it was written. Confirmed live: node:substrate.bus_synaptic
+    # sat frozen at a stale 1.0 for hours while this loop kept firing off it
+    # every 30s. A frozen value is not a reading -- refuse rather than report a
+    # stale high-water mark as a present-tense anomaly.
+    if (
+        max_node_age_sec is not None
+        and node_age_sec is not None
+        and node_age_sec > max_node_age_sec
+    ):
+        return None
+
     if error < error_threshold:
         return None
 
-    reason = f"transport:bus_synaptic:error={error:.3f}"[:500]
+    # --- Edge-triggered, not level-triggered (2026-07-30) ------------------
+    # THE fix for this trigger polluting orion_metacog. This was a pure level
+    # check evaluated every poll, so a single sustained condition re-drafted an
+    # LLM reflection on every tick for as long as it lasted. With a 30s poll and
+    # a 30s cooldown lane (i.e. no effective rate limit at all) that is ~2,880
+    # near-identical entries per day; live, transport wrote 1,812 rows in 24h,
+    # ~48% of them from this one branch.
+    #
+    # Metacognition is "something notable HAPPENED", not "something is STILL
+    # the case". A state that persists is one event, not one event per tick.
+    # Firing only on the rising edge -- the transition into anomaly -- is what
+    # makes this an event source instead of a sampler, and it is also what makes
+    # the error_threshold far less load-bearing: a mis-set threshold now costs
+    # one spurious entry per episode instead of one every 30 seconds.
+    #
+    # State is in-process, so a restart mid-episode re-fires once. That is an
+    # accepted, bounded cost (one entry per restart) rather than a reason to
+    # reach for durable checkpointing here.
+    if previously_above:
+        return None
+
+    reason = f"transport:bus_synaptic:episode_start:error={error:.3f}"[:500]
 
     return MetacogTriggerV1(
         trigger_kind="transport",
@@ -158,9 +195,14 @@ def build_transport_metacog_trigger_from_bus_synaptic(
         signal_refs=["node:substrate.bus_synaptic"],
         upstream={
             "evidence_source": "bus_synaptic_prediction_error",
-            "fired_conditions": [f"error>={error_threshold}"],
+            "fired_conditions": [f"error>={error_threshold}", "rising_edge"],
             "error": error,
             "error_threshold": error_threshold,
             "edge_count": edge_count,
+            # Named so a reader of the orion_metacog row can tell this is the
+            # START of an anomaly episode, not a periodic restatement of an
+            # ongoing one -- the distinction the pre-2026-07-30 rows lack.
+            "transition": "below_to_above",
+            "node_age_sec": node_age_sec,
         },
     )

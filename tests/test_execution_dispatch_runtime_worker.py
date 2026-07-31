@@ -1,7 +1,9 @@
 from __future__ import annotations
 
+import asyncio
 import math
 import sys
+import time
 from collections import deque
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -466,6 +468,39 @@ def _patch_bus_and_client(monkeypatch, outcomes: dict[str, object]) -> MagicMock
     fake_bus.publish = AsyncMock()
     monkeypatch.setattr(worker_mod, "OrionBusAsync", MagicMock(return_value=fake_bus))
     monkeypatch.setattr(worker_mod, "ExecutionDispatchCortexClient", _FakeClient)
+    return fake_bus
+
+
+# 2026-07-31 (docs/superpowers/specs/2026-07-30-execution-dispatch-
+# staleness-discard-design.md's Part 2): a real, measurable delay per call
+# -- concurrency tests need actual wall-clock overlap to prove anything,
+# not just absence-of-crash.
+_SLOW_CLIENT_DELAY_SEC = 0.15
+
+
+class _SlowFakeClient:
+    """Like _FakeClient, but dispatch() awaits a real delay first."""
+
+    def __init__(self, *_, **__) -> None:
+        pass
+
+    async def dispatch(self, *, verb, mode, context, dispatch_id, timeout_sec=None):
+        await asyncio.sleep(_SLOW_CLIENT_DELAY_SEC)
+        outcome = _FAKE_CLIENT_OUTCOMES[dispatch_id]
+        if isinstance(outcome, Exception):
+            raise outcome
+        return outcome
+
+
+def _patch_bus_and_slow_client(monkeypatch, outcomes: dict[str, object]) -> MagicMock:
+    _FAKE_CLIENT_OUTCOMES.clear()
+    _FAKE_CLIENT_OUTCOMES.update(outcomes)
+    fake_bus = MagicMock()
+    fake_bus.connect = AsyncMock()
+    fake_bus.close = AsyncMock()
+    fake_bus.publish = AsyncMock()
+    monkeypatch.setattr(worker_mod, "OrionBusAsync", MagicMock(return_value=fake_bus))
+    monkeypatch.setattr(worker_mod, "ExecutionDispatchCortexClient", _SlowFakeClient)
     return fake_bus
 
 
@@ -1275,3 +1310,137 @@ async def test_send_prepared_candidates_stamps_baseline_fields_on_early_return_p
 
     assert updated.daily_risk_baseline_ewma == 140.0
     assert updated.daily_risk_baseline_ewma_n == 2
+
+
+@pytest.mark.asyncio
+async def test_send_prepared_candidates_sends_concurrently_not_sequentially(monkeypatch) -> None:
+    """2026-07-31 Part 2 (docs/superpowers/specs/2026-07-30-execution-
+    dispatch-staleness-discard-design.md): the whole point of this patch --
+    real RPC wait time must actually overlap across candidates, not just
+    avoid raising. 3 candidates, each with a _SLOW_CLIENT_DELAY_SEC-second
+    simulated RPC: sequential would take >= 3x that; concurrent should land
+    well under 2x a single delay even with real scheduling overhead."""
+    worker = _make_worker(monkeypatch)
+    worker._store.sum_risk_dispatched_today = MagicMock(return_value=0.0)
+    worker._store.latest_bus_synaptic_prediction_error = MagicMock(return_value=0.1)
+    worker._store.save_dispatch_result = MagicMock()
+    worker._store.load_dispatch_result_by_dispatch_id = MagicMock(return_value=None)
+    _patch_bus_and_slow_client(
+        monkeypatch,
+        {
+            "dispatch:1": {"result": {"final_text": '{"observation": "a"}'}},
+            "dispatch:2": {"result": {"final_text": '{"observation": "b"}'}},
+            "dispatch:3": {"result": {"final_text": '{"observation": "c"}'}},
+        },
+    )
+    frame = _frame_with_candidates(
+        _candidate("dispatch:1", risk_score=0.01),
+        _candidate("dispatch:2", risk_score=0.01),
+        _candidate("dispatch:3", risk_score=0.01),
+    )
+
+    start = time.monotonic()
+    updated = await worker._send_prepared_candidates(frame)
+    elapsed = time.monotonic() - start
+
+    assert len(updated.dispatched_candidates) == 3
+    assert elapsed < _SLOW_CLIENT_DELAY_SEC * 2
+
+
+@pytest.mark.asyncio
+async def test_send_one_wrapper_converts_unexpected_failure_to_dispatch_error(monkeypatch) -> None:
+    """_send_one must be a total function -- an unexpected failure anywhere
+    in _send_one_inner (not just the RPC call) degrades to a dispatch_error
+    candidate, never raises. Required for asyncio.gather(return_exceptions=
+    True) to never see a raw exception object in its results list, which
+    ExecutionDispatchFrameV1.dispatched_candidates: list[
+    ExecutionDispatchCandidateV1] cannot hold."""
+    worker = _make_worker(monkeypatch)
+    candidate = _candidate("dispatch:boom")
+    frame = _frame_with_candidates(candidate)
+
+    async def _raise(*_args, **_kwargs):
+        raise RuntimeError("simulated unexpected failure")
+
+    worker._send_one_inner = _raise
+
+    result = await worker._send_one(client=None, bus=None, frame=frame, candidate=candidate)
+
+    assert result.dispatch_status == "dispatched"
+    assert result.dispatch_error is not None
+    assert "simulated unexpected failure" in result.dispatch_error
+
+
+def test_send_prepared_candidates_uses_return_exceptions_true(monkeypatch) -> None:
+    """Regression guard for the real risk found on the third adversarial
+    pass at Part 2's design: bare asyncio.gather() (no return_exceptions=
+    True) lets one candidate's failure cancel a still-in-flight sibling.
+    Confirmed live by direct test before this shipped, not assumed -- and
+    that cancellation is specifically a consequence of asyncio.run()'s own
+    shutdown path when its top-level coroutine exits via an exception, NOT
+    of gather() itself (gather()'s own documented behavior, without
+    return_exceptions, is to propagate the first exception WITHOUT
+    cancelling siblings -- they only get cancelled if whatever awaited
+    gather() then also exits, and something -- asyncio.run() here -- reacts
+    to that exit by tearing down remaining tasks). Real production code
+    hits exactly this shape: _tick() calls asyncio.run(self.
+    _send_prepared_candidates(frame)) from a background thread
+    (asyncio.to_thread). This test intentionally skips @pytest.mark.asyncio
+    and calls asyncio.run() directly for that reason -- a pytest-asyncio-
+    managed loop does not tear down the same way between test statements,
+    so it would not actually reproduce the real risk being guarded against.
+
+    Also bypasses _send_one's own hardening on purpose (mocks _send_one
+    directly, not _send_one_inner), so this test proves gather()'s own
+    return_exceptions=True usage in isolation, independent of _send_one's
+    separate defense-in-depth (tested separately, test_send_one_wrapper_
+    converts_unexpected_failure_to_dispatch_error). If a future change ever
+    "simplified" the gather(...) call back to bare gather(), this test must
+    fail."""
+    worker = _make_worker(monkeypatch)
+    worker._store.sum_risk_dispatched_today = MagicMock(return_value=0.0)
+    worker._store.latest_bus_synaptic_prediction_error = MagicMock(return_value=0.1)
+    _patch_bus_and_client(monkeypatch, {})
+
+    slow_completed = False
+
+    async def _fake_send_one(client, bus, frame, candidate):
+        nonlocal slow_completed
+        if candidate.dispatch_id == "dispatch:bad":
+            raise RuntimeError("simulated failure bypassing _send_one's own hardening")
+        await asyncio.sleep(_SLOW_CLIENT_DELAY_SEC)
+        slow_completed = True
+        return candidate.model_copy(
+            update={
+                "dispatch_status": "dispatched",
+                "dispatched_at": NOW,
+                "result_ref": "result:dispatch:good",
+            }
+        )
+
+    worker._send_one = _fake_send_one
+    frame = _frame_with_candidates(
+        _candidate("dispatch:bad", risk_score=0.01),
+        _candidate("dispatch:good", risk_score=0.01),
+    )
+
+    # Deliberately not asserting on the returned frame's content: this test
+    # bypasses _send_one's own hardening on purpose, so newly_dispatched can
+    # legitimately contain a raw RuntimeError alongside the real candidate
+    # -- that malformed-frame consequence is exactly why _send_one's
+    # hardening is required in real production code, tested separately.
+    # Swallow whatever asyncio.run() raises/returns here; only slow_
+    # completed matters to this test.
+    try:
+        asyncio.run(worker._send_prepared_candidates(frame))
+    except Exception:
+        pass
+
+    # If return_exceptions=True is ever removed, the "bad" coroutine's raw
+    # exception propagates out of gather() and out of _send_prepared_
+    # candidates, making the top-level coroutine given to asyncio.run() exit
+    # via that exception -- asyncio.run()'s own shutdown then cancels the
+    # still-sleeping "good" coroutine before it can set slow_completed. This
+    # assertion is the real, direct proof, run the same way production
+    # actually invokes this code.
+    assert slow_completed is True

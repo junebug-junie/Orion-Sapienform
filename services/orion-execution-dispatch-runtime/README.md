@@ -24,11 +24,38 @@ Real sends require **both** gates open:
 
 When both are open, the worker sends `prepared_for_dispatch` candidates to `orion-cortex-exec`
 over `orion:cortex:exec:request:background` (via `orion.execution_dispatch.cortex_client
-.ExecutionDispatchCortexClient`, one real RPC per candidate, bounded by
-`EXECUTION_DISPATCH_RPC_TIMEOUT_SEC`), persists the result to `substrate_dispatch_results`, and
-promotes the candidate to a real, evidenced `dispatched` status.
+.ExecutionDispatchCortexClient`, bounded by `EXECUTION_DISPATCH_RPC_TIMEOUT_SEC`), persists the
+result to `substrate_dispatch_results`, and promotes the candidate to a real, evidenced
+`dispatched` status.
 
-**Budgets**, both enforced per tick before any send happens:
+**Concurrent sends (2026-07-31, Part 2 of docs/superpowers/specs/2026-07-30-execution-dispatch-
+staleness-discard-design.md)**: up to `limits.max_dispatches_per_tick` (now **5**, was 1) real
+cortex-exec RPCs per tick run concurrently via `asyncio.gather(..., return_exceptions=True)` in
+`_send_prepared_candidates`, not sequentially. Fixes a real, measured steady-state gap: with
+production of new proposals holding around ~12-17/min and each real dispatch bound by a ~7-13s
+synchronous RPC, sequential (`max_dispatches_per_tick=1`) dispatch structurally could never process
+more than ~4-5/min — roughly 65-70% of every real, current proposal was going stale and getting
+discarded, forever, not as a temporary backlog artifact but as the permanent steady state (measured
+live: ~4.6/min dispatched vs ~12.6/min produced once the backlog from Part 1 fully drained).
+
+`return_exceptions=True` is load-bearing, not a style choice — verified empirically across two
+adversarial passes before shipping (see the design doc's "Part 2, missing question 7" for the full
+account with real test output): without it, one candidate's failure can cancel a still-in-flight
+sibling mid-RPC via `asyncio.run()`'s own shutdown path (real production code invokes this via
+`asyncio.run(self._send_prepared_candidates(frame))` inside `_tick()`), which could cancel a
+candidate *after* its real cortex-exec call already succeeded but *before* the result gets recorded
+— the exact double-send the idempotency guard in `_send_one` exists to prevent.
+`_send_one`/`_send_one_inner` were split so the outer `_send_one` is a total function that can
+never raise (any unexpected failure degrades to a `dispatch_error` candidate) — required
+independently of `return_exceptions=True`, since a raw exception object in the gathered results
+list would fail `ExecutionDispatchFrameV1.dispatched_candidates`'s schema validation outright.
+Real headroom downstream was confirmed, not assumed, before raising the fan-out width: `orion-
+cortex-exec`'s `background` lane already handles unbounded concurrent requests
+(`concurrent_handlers=True`, no cap).
+
+**Budgets**, both enforced per tick before any send happens (unchanged by the concurrency patch —
+the whole `to_send` batch's risk budget is reserved synchronously, before any concurrent RPCs
+fire, so making the *sending* step concurrent doesn't touch this reservation logic):
 - `config/execution_dispatch/execution_dispatch_policy.v1.yaml`'s `limits.max_dispatches_per_tick`
 - A **self-calibrating daily risk ceiling** (rolling UTC calendar day) -- a real cumulative
   risk-score budget, not a blind action count and, as of 2026-07-29, not a fixed hand-picked

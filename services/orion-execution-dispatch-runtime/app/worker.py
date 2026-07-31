@@ -615,10 +615,29 @@ class ExecutionDispatchRuntimeWorker:
             result_prefix=self._settings.cortex_exec_result_prefix,
             timeout_sec=self._settings.execution_dispatch_rpc_timeout_sec,
         )
-        newly_dispatched: list[ExecutionDispatchCandidateV1] = []
+        # 2026-07-31 (docs/superpowers/specs/2026-07-30-execution-dispatch-
+        # staleness-discard-design.md's Part 2): concurrent, not sequential.
+        # return_exceptions=True is not optional -- verified empirically,
+        # not assumed (missing question 7, two adversarial passes): bare
+        # gather() lets one candidate's failure cancel its siblings
+        # mid-flight via asyncio.run()'s own shutdown path (this is called
+        # from _tick() via asyncio.run(self._send_prepared_candidates(...))),
+        # which could cancel a candidate AFTER its real cortex-exec RPC
+        # already succeeded but BEFORE save_dispatch_result records it --
+        # the exact double-send the idempotency guard above exists to
+        # prevent. return_exceptions=True keeps every candidate running to
+        # real completion regardless of a batch-mate's failure. _send_one
+        # itself (not _send_one_inner) is also now a total function that
+        # cannot raise, so in practice no exception object should ever
+        # appear in this results list -- return_exceptions=True remains the
+        # correct belt-and-suspenders choice regardless, since it removes
+        # the cross-candidate cancellation risk structurally rather than
+        # relying solely on _send_one never having a bug.
         try:
-            for candidate in to_send:
-                newly_dispatched.append(await self._send_one(client, bus, frame, candidate))
+            newly_dispatched = await asyncio.gather(
+                *(self._send_one(client, bus, frame, candidate) for candidate in to_send),
+                return_exceptions=True,
+            )
         finally:
             await bus.close()
 
@@ -659,6 +678,50 @@ class ExecutionDispatchRuntimeWorker:
         return self.theater_tripwire_active
 
     async def _send_one(
+        self,
+        client: ExecutionDispatchCortexClient,
+        bus: OrionBusAsync,
+        frame: ExecutionDispatchFrameV1,
+        candidate: ExecutionDispatchCandidateV1,
+    ) -> ExecutionDispatchCandidateV1:
+        """Total wrapper around _send_one_inner -- must never raise.
+
+        2026-07-31 (docs/superpowers/specs/2026-07-30-execution-dispatch-
+        staleness-discard-design.md's Part 2, missing question 7, verified
+        empirically across two adversarial passes before this shipped):
+        _send_prepared_candidates now runs concurrent sends via asyncio.
+        gather(..., return_exceptions=True). That flag is the real fix for
+        the cross-candidate cancellation risk (a sibling's failure can no
+        longer cancel this candidate mid-flight, confirmed by direct test,
+        not assumed) -- but return_exceptions=True only prevents gather()
+        itself from raising; it does nothing to stop a raw exception object
+        from landing in the results list if _send_one_inner ever raises for
+        its OWN reasons (not a sibling's). ExecutionDispatchFrameV1.
+        dispatched_candidates: list[ExecutionDispatchCandidateV1] cannot
+        hold a raw exception -- Pydantic would reject the whole frame. This
+        wrapper is what keeps that guarantee: every candidate that goes in
+        comes back out as a real ExecutionDispatchCandidateV1, recording a
+        real dispatch_error if anything unexpected happened, never a bare
+        exception escaping upward.
+        """
+        try:
+            return await self._send_one_inner(client, bus, frame, candidate)
+        except Exception as exc:
+            logger.warning(
+                "execution_dispatch_send_one_unexpected_failure dispatch_id=%s error=%s",
+                candidate.dispatch_id,
+                exc,
+                exc_info=True,
+            )
+            return candidate.model_copy(
+                update={
+                    "dispatch_status": "dispatched",
+                    "dispatched_at": datetime.now(timezone.utc),
+                    "dispatch_error": f"unexpected _send_one failure: {str(exc)[:450]}",
+                }
+            )
+
+    async def _send_one_inner(
         self,
         client: ExecutionDispatchCortexClient,
         bus: OrionBusAsync,

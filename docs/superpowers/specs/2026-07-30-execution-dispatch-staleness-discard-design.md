@@ -231,7 +231,15 @@ bounded by sequential `await self._send_one(...)` calls), so Part 2 remains real
 work — it's just no longer entangled with what turned out to be a separate, bigger, already-fixed
 problem.
 
-## Part 2: throughput redesign — scoped, ready to implement
+## Part 2: throughput redesign — implemented (2026-07-31)
+
+Shipped exactly as scoped below: `max_dispatches_per_tick` 1→5,
+`asyncio.gather(..., return_exceptions=True)` in `_send_prepared_candidates`, `_send_one` split
+into a total outer wrapper (`_send_one`) and its original body (`_send_one_inner`). All three
+adversarial-pass findings below (the corrected bus-RPC-safety mechanism, and both rounds on
+`_send_one`'s exception safety) are reflected in the real diff, not just this doc. See
+`services/orion-execution-dispatch-runtime/README.md`'s "Concurrent sends" section for the
+production-facing account.
 
 Status change from the original draft below: every missing question that gated this has now been
 answered with real evidence (live trace + direct code reads), not assumption. This section is the
@@ -274,12 +282,14 @@ steady-state dispatch can only ever process ~30% of what's produced.
    has no `await` inside it, so it is a single, non-preemptible operation regardless of how many
    concurrent `_send_one()` calls are in flight — this is not the same hazard as real OS-thread
    concurrency, and reaching for a lock here would be solving a problem that doesn't exist in this
-   execution model. The one real, disclosed behavior change: `_check_theater_tripwire()` currently
-   re-checks after every sequential send (`worker.py:429`, "lets the tripwire fire the same tick it
-   actually crosses the threshold"); under `asyncio.gather`, there's no clean mid-batch checkpoint,
-   so the recheck moves to once-per-batch (after `gather` returns) instead of once-per-candidate.
-   Coarser, not unsafe — the tripwire's own 10-sample window makes this a small, acceptable
-   granularity change, not a correctness regression.
+   execution model. **Correction (implementation-time review, 2026-07-31): the "granularity
+   change" originally claimed here was wrong.** Checked the actual pre-patch code directly
+   (`git show HEAD:.../worker.py | rg "_check_theater_tripwire\(\)"`): it was already called
+   exactly once per tick, after the (then-sequential) send step — the same relative position
+   `_send_prepared_candidates` calls it from today. There was never a per-candidate recheck to
+   compare against; `worker.py:429` (this doc's original citation) pointed at a line inside
+   `_derive_daily_risk_cap`'s docstring, unrelated to the tripwire. No granularity change actually
+   occurred — this entry is corrected rather than left as a false "disclosed trade-off."
 5. **Is the bus/RPC layer itself safe for concurrent use on one shared connection?** Checked, not
    assumed — and an adversarial re-check (explicitly requested, given "bus RPC is the backbone to
    the entire mesh") **found and corrected a real error in this section's first draft**: the
@@ -377,8 +387,9 @@ contract change — `ExecutionDispatchCandidateV1`/`ExecutionDispatchFrameV1` ar
 - `services/orion-execution-dispatch-runtime/app/worker.py::_send_prepared_candidates`: replace
   the sequential `for candidate in to_send: newly_dispatched.append(await self._send_one(...))`
   loop with `newly_dispatched = await asyncio.gather(*(self._send_one(client, bus, frame, c) for c
-  in to_send))`. Move the `_check_theater_tripwire()` recheck to after the `gather` (already
-  effectively true given the loop restructure).
+  in to_send))`. `_check_theater_tripwire()`'s call site does not move — it was already called
+  once per tick, after the send step, in the pre-patch code (see the corrected missing question 4
+  above); no relocation needed.
 - `services/orion-execution-dispatch-runtime/app/worker.py::_send_one`: **required companion
   change, not optional** (missing question 7) — wrap the entire body in a broad `try/except
   Exception`, converting any failure (not just an RPC failure) into the same `dispatch_status=

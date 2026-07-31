@@ -61,9 +61,44 @@ class ProposalRuntimeWorker:
 
         previous = self._store.load_latest_proposal_frame()
 
-        # Phase B: flag-gated spontaneous-thought proposals. Default-off → None →
-        # zero change. Reverie candidates carry an operator_review gate, so even
+        # Flag-gated non-deterministic producers. Default-off → empty → zero
+        # change. Every candidate here carries an operator_review gate, so even
         # when on they cannot auto-dispatch.
+        external_candidates: list = []
+
+        # Hop 0 of the stream-of-consciousness chain: a sustained metacog trend
+        # competing as a first-class arena candidate. The design doc scopes hop 0
+        # as a reducer "registered as a candidate producer the same way reverie
+        # is -- not built as a bespoke standalone script"; this is that
+        # registration. Stateless by design: the reducer replays the (small)
+        # appraisal history each tick rather than checkpointing, because hop 0
+        # opens a chain and has nothing to resume. Checkpointed state becomes
+        # load-bearing at hop 1, where a real multi-hop chain can be preempted
+        # mid-flight -- building it here would be machinery with no chain to
+        # carry.
+        if getattr(self._settings, "metacog_hop_propose_enabled", False):
+            try:
+                from orion.metacog.proposal import trend_result_to_candidate
+                from orion.metacog.trend_reducer import replay
+
+                readings = self._store.load_repair_pressure_readings()
+                if readings:
+                    # replay() returns every tick's result; the newest one is
+                    # this tick's classification.
+                    results = replay(readings)
+                    hop = trend_result_to_candidate(
+                        results[-1] if results else None,
+                        series_name="repair_pressure",
+                        observed_at=readings[-1].at,
+                        fallback_target_id=field.tick_id,
+                    )
+                    if hop is not None:
+                        external_candidates.append(hop)
+            except Exception:
+                # A metacog read must never break proposal generation -- same
+                # fail-open discipline as the reverie branch below.
+                logger.exception("metacog_hop_candidate_failed")
+
         reverie_candidates = None
         if getattr(self._settings, "reverie_propose_enabled", False):
             thought = self._store.load_recent_reverie_thought()
@@ -79,13 +114,15 @@ class ProposalRuntimeWorker:
                 )
                 if candidate is not None:
                     reverie_candidates = [candidate]
+        if reverie_candidates:
+            external_candidates.extend(reverie_candidates)
 
         frame = build_proposal_frame(
             field=field,
             attention=attention,
             policy=self._policy,
             previous_frame=previous,
-            reverie_candidates=reverie_candidates,
+            external_candidates=external_candidates or None,
         )
         if not self._settings.enable_transport_proposals:
             filtered = [

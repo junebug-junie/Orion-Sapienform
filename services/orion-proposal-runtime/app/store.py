@@ -128,6 +128,72 @@ class ProposalRuntimeStore:
         except Exception:
             return None
 
+    def load_repair_pressure_readings(self, *, limit: int = 500):
+        """Real repair-pressure appraisals, oldest-first, for hop 0's reducer.
+
+        Returns `list[MetacogTrendReading]`. Degrades to `[]` on any error --
+        a metacog read must never break proposal generation, same discipline as
+        `load_recent_reverie_thought` above.
+
+        **No `confidence > 0` filter, deliberately.** That gate was the right
+        discriminator until 2026-07-30, when `repair_pressure_v2`'s confidence
+        fix landed: previously a confidently-calm text-fallback reading was
+        persisted with `confidence=0.0`, indistinguishable from the appraiser's
+        true "no evidence" signal, so gating on confidence separated real
+        readings from fallback ones. Post-fix every row carries the real
+        `_TEXT_FALLBACK_CONFIDENCE` (0.65), so the gate now filters nothing --
+        verified live 2026-07-31: rows on 07-24 were 5/26 confidence>0, rows on
+        07-31 are 5/5 at avg confidence 0.650.
+
+        Filtering it back out would discard exactly the readings that establish
+        the rest state (a confidently-calm 0.087 IS the calm baseline the
+        z-score needs to be anomalous against), so the reducer folds every real
+        row and lets the EWMA baseline do the discriminating.
+        """
+        from orion.metacog.trend_reducer import MetacogTrendReading
+
+        try:
+            with self._engine.connect() as conn:
+                rows = (
+                    conn.execute(
+                        text(
+                            """
+                            SELECT created_at, level, confidence
+                            FROM repair_pressure_appraisal_log
+                            ORDER BY created_at DESC
+                            LIMIT :limit
+                            """
+                        ),
+                        {"limit": int(limit)},
+                    )
+                    .mappings()
+                    .all()
+                )
+        except Exception:
+            return []
+
+        readings = []
+        for row in reversed(rows):  # oldest-first: the reducer folds forward
+            created_at = row.get("created_at")
+            if isinstance(created_at, str):
+                try:
+                    created_at = datetime.fromisoformat(created_at.replace("Z", "+00:00"))
+                except ValueError:
+                    continue
+            if not isinstance(created_at, datetime):
+                continue
+            if created_at.tzinfo is None:
+                created_at = created_at.replace(tzinfo=timezone.utc)
+            try:
+                level = float(row["level"])
+                confidence = float(row["confidence"])
+            except (TypeError, ValueError, KeyError):
+                continue
+            readings.append(
+                MetacogTrendReading(at=created_at, level=level, confidence=confidence)
+            )
+        return readings
+
     def load_attention_frame(self, frame_id: str) -> FieldAttentionFrameV1 | None:
         with self._engine.connect() as conn:
             row = (

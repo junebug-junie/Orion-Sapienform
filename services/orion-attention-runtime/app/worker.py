@@ -37,10 +37,13 @@ class AttentionRuntimeWorker:
         self._stop = asyncio.Event()
         # Field-native goal-provenance producer (SSP sec6 Objective 3) -- see
         # docs/superpowers/specs/2026-07-30-goal-provenance-and-decision-lattice-
-        # observability-design.md. In-memory only: resets to a cold streak on
-        # restart, a safe failure mode (worst case is a brief warm-up delay
-        # before the next real emission, not a wrong one).
-        self._node_streak = DominanceStreak()
+        # observability-design.md. Persisted (2026-07-31 fix): lazy-loaded from
+        # `substrate_goal_provenance_streak` on the first real tick (see
+        # `_maybe_build_goal`) rather than always starting cold -- a restart no
+        # longer truncates a genuinely-long streak back to zero. See
+        # `AttentionRuntimeStore.load_node_dominance_streak`'s docstring for why
+        # this stopped being an acceptable in-memory-only gap.
+        self._node_streak: DominanceStreak | None = None
         self._bus = None
         self._poll_task: asyncio.Task[None] | None = None
 
@@ -179,11 +182,14 @@ class AttentionRuntimeWorker:
     def _maybe_build_goal(self, frame: FieldAttentionFrameV1) -> FieldGoalProvenanceV1 | None:
         if not self._settings.enable_goal_provenance_producer or self._bus is None:
             return None
+        if self._node_streak is None:
+            self._node_streak = self._store.load_node_dominance_streak()
         winner = top_node_substrate_target(frame)
         winner_id = winner.target_id if winner is not None else None
         self._node_streak, should_emit = update_dominance_streak(
             self._node_streak, winner_id, min_streak=self._settings.goal_provenance_min_streak
         )
+        self._store.save_node_dominance_streak(self._node_streak)
         if not should_emit or winner is None:
             return None
         return FieldGoalProvenanceV1(

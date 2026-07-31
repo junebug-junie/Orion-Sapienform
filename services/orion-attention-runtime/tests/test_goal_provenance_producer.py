@@ -104,6 +104,39 @@ def test_maybe_build_goal_ignores_host_only_frame(monkeypatch):
     assert worker._maybe_build_goal(frame) is None
 
 
+def test_maybe_build_goal_lazy_loads_streak_from_store_once(monkeypatch):
+    """Regression (2026-07-31 fix): the streak used to always start cold
+    (`DominanceStreak()`), resetting real accumulated dominance to zero on
+    every restart. Now `_node_streak` starts as `None` and is lazy-loaded
+    from the store on the first real tick -- and only that first tick, not
+    every tick, since the in-memory value is authoritative once loaded."""
+    worker = _make_worker(monkeypatch, min_streak=5)
+    worker._node_streak = None
+    persisted = DominanceStreak(target_id="node:substrate.biometrics", count=2)
+    worker._store.load_node_dominance_streak.return_value = persisted
+    real_domain = "node:substrate.biometrics"
+    frame = _frame([_target(real_domain, 0.9)])
+
+    worker._maybe_build_goal(frame)  # loads persisted count=2, advances to 3
+    worker._maybe_build_goal(frame)  # advances to 4, no reload
+
+    worker._store.load_node_dominance_streak.assert_called_once()
+    assert worker._node_streak.count == 4
+
+
+def test_maybe_build_goal_persists_streak_every_tick(monkeypatch):
+    worker = _make_worker(monkeypatch, min_streak=3)
+    real_domain = "node:substrate.biometrics"
+    frame = _frame([_target(real_domain, 0.9)])
+
+    worker._maybe_build_goal(frame)
+
+    worker._store.save_node_dominance_streak.assert_called_once()
+    saved = worker._store.save_node_dominance_streak.call_args[0][0]
+    assert saved.target_id == real_domain
+    assert saved.count == 1
+
+
 @pytest.mark.asyncio
 async def test_publish_goal_calls_publish_with_reconnect(monkeypatch):
     worker = _make_worker(monkeypatch)

@@ -21,7 +21,14 @@ docker exec -i orion-athena-sql-db psql -U postgres -d conjourney \
   < services/orion-sql-db/manual_migration_attention_frame_v1.sql
 docker exec -i orion-athena-sql-db psql -U postgres -d conjourney \
   < services/orion-sql-db/manual_migration_node_prediction_error_baseline_v1.sql
+docker exec -i orion-athena-sql-db psql -U postgres -d conjourney \
+  < services/orion-sql-db/manual_migration_goal_provenance_streak_v1.sql
 ```
+
+Note: `load_node_dominance_streak`/`save_node_dominance_streak` (below) degrade silently
+on any DB error, including a missing table -- skipping this migration does not crash the
+service, it just silently keeps the node-target dominance streak cold on every restart,
+which is exactly the bug the 2026-07-31 fix below exists to remove. Apply it.
 
 Requires `orion-field-digester` (or equivalent) writing `substrate_field_state`.
 
@@ -38,6 +45,18 @@ few as 2 real samples surviving the window win a fully-confident-looking
 module docstring and `orion/sentience_striving_program/README.md` section 12 for the full
 live-incident record. `observation_count` on the persisted baseline is a real cumulative
 count of every receipt this target has ever incorporated, immune to that retention prune.
+
+## Node-target dominance streak: restart persistence (2026-07-31 fix)
+
+`orion.attention.field_attention.goal_provenance.DominanceStreak` (the consecutive-real-tick
+counter gating whether a node-target goal-provenance record gets emitted at all) is persisted
+to `substrate_goal_provenance_streak` via `AttentionRuntimeStore.load_node_dominance_streak`/
+`save_node_dominance_streak`, lazy-loaded once on the worker's first real tick instead of
+always starting cold. Previously this streak lived only in-process, resetting to count=0 on
+every restart -- an accepted gap when its only consumer was an internal emit-debounce, but
+no longer acceptable once a real, still-unimplemented downstream consumer (a design doc,
+PR #1543) proposed surfacing this exact count directly into a real LLM-facing prompt. See
+`orion/sentience_striving_program/README.md` section 14 for the full incident record.
 
 ## Run
 

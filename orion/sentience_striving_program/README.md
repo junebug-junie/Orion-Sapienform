@@ -975,3 +975,68 @@ it has run for real long enough to have a distribution to measure against, which
 that recalibration is a separate, deliberately deferred follow-up, not folded into this
 patch. (Found during this patch's own code-review pass, 2026-07-31 — disclosed rather
 than silently left unmentioned.)
+
+## 14. Node-target goal-provenance dominance streak — restart persistence fix, 2026-07-31
+
+**What was reviewed.** §12 above (PR #1529) fixed Layer 5's precision-weighted salience but
+left one gap explicitly named, not solved: `orion.attention.field_attention.goal_provenance
+.DominanceStreak`, the consecutive-real-tick counter that gates whether a node-target goal
+gets emitted at all (`update_dominance_streak`'s `min_streak` debounce), lived only in
+`AttentionRuntimeWorker._node_streak` — a plain in-process attribute, reset to a cold streak
+(count=0) on every restart of `orion-attention-runtime`. At the time, this was an accepted,
+disclosed gap: the only consumer of the streak count was the emit-gate boolean itself, so
+the worst case of a restart was a brief warm-up delay (a few extra ticks) before the next
+real goal-provenance publish, not a wrong value reaching anywhere.
+
+That calculus changed the same day. `PR #1543` (merged, docs-only design doc, not yet
+implemented) investigated `orion/substrate/relational/adapters/autonomy_ctx.py`'s dead
+GraphDB-backed `autonomy` producer and proposed regrounding it on
+`orion.autonomy.goal_state.get_active_goal()` — tracing one hop further than its own first
+draft that this producer's output reaches `stance_react.j2`, the real LLM-facing chat-stance
+prompt, via `chat_stance.py`'s `summary.proposal_headlines`. Its own adversarial review pass
+(documented inline in that doc) caught that a bare `field_target_id` (`"node:substrate.
+biometrics"`) would be honest-shaped garbage in that prompt slot — the `identity_yaml`
+failure mode with a different data source — and proposed pairing it with the *same*
+`DominanceStreak.count` this section is about, composed directly into `goal_text` itself:
+`f"{goal.field_target_id} (dominant {goal.dominance_streak_ticks} ticks)"`.
+
+That single change means a restart-truncated streak stops being an internal gating quirk
+and starts being a wrong number in the real prompt. And it is a specifically dangerous kind
+of wrong: `goal_provenance_min_streak` defaults to `3`
+(`services/orion-attention-runtime/app/settings.py`), so the earliest a record can ever
+emit is `count=3` — a target genuinely dominant for ten straight hours reads identically,
+`"... (dominant 3 ticks)"`, to one dominant for the last three ticks, immediately after any
+restart. Nothing about that label looks broken; it just silently understates real dominance
+duration until the count climbs back up. This is the same failure shape this repo's own
+Metric Quality Gate names by example (the `bus_synaptic_prediction_error` floor incident,
+CLAUDE.md section 0A) — a plausible-looking number is the dangerous kind, not an obviously
+degenerate one. It also means PR #1543's own planned validation step ("build it, let it run
+a day, read whether `goal_text` is genuinely informative") would not reliably catch this
+specific failure mode: a restart-truncated streak doesn't read as noise, it reads as an
+ordinary small integer.
+
+**What was fixed.** `DominanceStreak` (`target_id`, `count`) is now persisted to a new
+singleton-row table, `substrate_goal_provenance_streak`
+(`services/orion-sql-db/manual_migration_goal_provenance_streak_v1.sql`), via two new
+`AttentionRuntimeStore` methods: `load_node_dominance_streak()` (lazy-loaded on the worker's
+first real tick, degrades to a cold streak on any DB error or missing row — never crashes
+the tick) and `save_node_dominance_streak()` (UPSERTed every real tick, same cheap shape as
+`save_attention_frame`). `AttentionRuntimeWorker._node_streak` changed from an eagerly
+constructed `DominanceStreak()` to `DominanceStreak | None`, loaded once from the store the
+first time `_maybe_build_goal` runs rather than always starting cold. No new env keys — this
+uses the service's existing `POSTGRES_URI`.
+
+**What was not done, and why.** This patch does not implement PR #1543's own schema
+addition (`dominance_streak_ticks`/`window_start_field_tick_id` on `FieldGoalProvenanceV1`,
+or the `autonomy_ctx.py` rewrite) — that doc's own "Recommended next patch" section already
+scopes that as a separate, deliberately deferred step gated on Missing Questions 6 and 7
+(delete-vs-fix, and whether the resulting label is honestly informative). This patch is a
+precondition for that step's own validation plan to mean anything, not a substitute for it.
+`DominanceStreak` was also not extended to track the streak's first tick id
+(`window_start_field_tick_id`, named in PR #1543's "Files likely to touch") — that field has
+no consumer yet since #1543 itself is unimplemented; adding it now would be exactly the kind
+of schema-without-a-producer-or-consumer this program's "no keyword cathedrals" rule exists
+to prevent. It should land alongside #1543's own implementation, if and when that proceeds.
+
+**Sign-off.** Reviewed and directed by Juniper: "re 2 have a look at pr 1543" surfaced the
+label-update connection above; "oky take it forward" authorized this fix.

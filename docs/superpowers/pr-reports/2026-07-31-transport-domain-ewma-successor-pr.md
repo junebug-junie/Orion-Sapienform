@@ -207,10 +207,40 @@ What that rules out:
 `EXTERNALLY_OWNED_METADATA_KEYS`, excluded from the `MERGE` write, which is itself a clue about the
 writer's shape. `salience: 0.556078` does come back.
 
-**Status: `UNVERIFIED`, and materially bigger than this PR.** If a substrate concept node cannot be
-deleted, no substrate node can be retired from the graph at all — only from its readers. Chasing it
-further inside a retirement PR would be the wrong place; it needs its own investigation. No denylist
-was added either: that would paper over a writer nobody has identified yet.
+### Root cause found (FalkorDB `MONITOR`)
+
+The writer logs nothing, so the only way to see it was to watch the wire. Client `172.18.0.39` =
+**`orion-athena-cortex-exec-background`**, writing 11 distinct node_ids × 17 each in one ~0.8s burst:
+
+```text
+node:substrate.{biometrics,bus_synaptic,chat,codebase,execution,harness_closure,route,transport}
+sub-concept-seed-{orion,juniper,orion_juniper_relationship}
+
+MATCH (n) RETURN count(n)  ->  11
+```
+
+Eleven written, eleven in the graph: it round-trips the **entire substrate node set** back from a
+stale in-process snapshot — `chat_stance.py`'s process-level `_UNIFICATION_LAYER` singleton →
+`CognitiveUnificationLayer` → `SubstrateGraphMaterializer.apply_record()`. The values are frozen
+originals at full float precision (`salience=0.556077777777778`, `activation=0.166125`).
+
+Two compounding defects in `orion/substrate/materializer.py::apply_record()`:
+
+1. **Deleting a node makes the write less safe.** Present → `else` branch: `merge_node()` +
+   `skip_metadata_keys=EXTERNALLY_OWNED_METADATA_KEYS`. Absent → `if existing_node is None:` →
+   `upsert_node()`, a wholesale overwrite with no merge and no protection. The delete is what puts
+   the node on the unprotected path.
+2. **`EXTERNALLY_OWNED_METADATA_KEYS` only covers `metadata`.** `observed_at`, `recency_score`,
+   `salience`, `activation` are not metadata keys, so they are clobbered on every burst even on the
+   protected branch — the mechanism behind the previously unexplained `observed_at` oscillation on
+   live nodes.
+
+**Status: `UNVERIFIED` for the deletion, and materially bigger than this PR.** No substrate node can
+be retired from the graph while a general snapshot round-tripper rewrites all eleven, and live
+domains' temporal fields are being overwritten with stale values several times a second. The fix is
+a change to the unification layer's write scope — cognition wiring, so it needs a decision, not a
+drive-by patch inside a retirement PR. No denylist was added: that would paper over the
+round-tripper instead of scoping it.
 
 The four code changes in this PR are unaffected — they remove every *reader* of the node, which is
 the part that was actually feeding cognition.
@@ -329,10 +359,12 @@ scripts/safe_docker_build.sh orion-proposal-runtime up -d --build
   Replayed over the real 7-day `repair_pressure_appraisal_log`: 45 readings, 6 distinct values, 34 of
   them one identical constant, `0` sustained-trend ticks. The wiring is proven; the input series is
   not capable of expressing a trend. Follow-up is a better series for hop 0, not more hop plumbing.
-- **Severity: HIGH, open. A substrate concept node cannot be deleted from the live graph.**
-  Measured three ways above; unexplained. This blocks the physical half of any node retirement,
-  transport's included. Needs its own investigation patch — the first question is which process
-  replays a byte-identical frozen snapshot within 6s while logging nothing.
+- **Severity: HIGH, open. `orion-cortex-exec-background` round-trips the whole substrate node set
+  from a stale snapshot.** Root-caused above. Two consequences beyond transport: (a) no substrate
+  node can be deleted, and deleting one moves it to the materializer's *unprotected* create branch;
+  (b) `observed_at`/`recency_score`/`salience`/`activation` on live domains are overwritten with
+  stale values several times a second, because `EXTERNALLY_OWNED_METADATA_KEYS` only guards
+  `metadata`. Needs a scoping decision on the unification layer's write path.
 - **Severity: note. `node:substrate.harness_closure` is the same shape of zombie** — 7 days stale at
   a hardcoded `0.65`. It is already excluded from the domain map deliberately, so it does not
   contaminate the reducer, but its producer looks dead too. Not touched here; scope was transport.

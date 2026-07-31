@@ -667,11 +667,47 @@ while it stayed, which is exactly why a comment was not enough. Now:
   `EXTERNALLY_OWNED_METADATA_KEYS` and is excluded from the `MERGE` write — which is itself a clue
   about the shape of the writer. `salience: 0.556078` does come back.
 
-  This is broader than transport: if a substrate concept node cannot be deleted, then **no**
-  substrate node can be retired from the graph, only from its readers. That deserves its own
-  investigation and its own patch, and deliberately was not chased further inside a retirement PR.
-  No denylist was added either — a retired-id registry would paper over a writer nobody has
-  identified yet, which is the wrong order of operations.
+  **Root cause found 2026-07-31 via FalkorDB `MONITOR`** (the writer logs nothing, so the only way
+  to see it was to watch the wire). The resurrecting client is `172.18.0.39` =
+  `orion-athena-cortex-exec-background`, and it is not transport-specific:
+
+  ```text
+  distinct node_ids written in ONE ~0.8s burst, 17 writes each:
+    node:substrate.biometrics      node:substrate.bus_synaptic   node:substrate.chat
+    node:substrate.codebase        node:substrate.execution      node:substrate.harness_closure
+    node:substrate.route           node:substrate.transport
+    sub-concept-seed-orion         sub-concept-seed-juniper
+    sub-concept-seed-orion_juniper_relationship
+
+  MATCH (n) RETURN count(n)  ->  11
+  ```
+
+  Eleven written, eleven in the graph. **`orion-cortex-exec-background` round-trips the entire
+  substrate node set back into FalkorDB from a stale in-process snapshot**, via
+  `chat_stance.py`'s process-level `_UNIFICATION_LAYER` singleton →
+  `CognitiveUnificationLayer` → `SubstrateGraphMaterializer.apply_record()`. The written values are
+  the frozen originals at full float precision (`salience=0.556077777777778`,
+  `activation=0.166125`), not anything freshly computed.
+
+  Two compounding defects, both visible in `orion/substrate/materializer.py::apply_record()`:
+
+  1. **Deleting a node makes the write *less* safe, not safer.** With the node present it takes the
+     `else` branch — `merge_node()` plus `skip_metadata_keys=EXTERNALLY_OWNED_METADATA_KEYS`. With
+     the node absent it takes `if existing_node is None:` → `upsert_node(canonical_node)`, a
+     **wholesale overwrite with no merge and no clobber protection at all**. So the delete is what
+     moves the node onto the unprotected path.
+  2. **`EXTERNALLY_OWNED_METADATA_KEYS` only covers `metadata`.** `observed_at`, `recency_score`,
+     `salience`, and `activation` are not metadata keys, so this writer overwrites them on every
+     burst even on the protected merge branch — which is the mechanism behind the previously
+     unexplained `observed_at` oscillation seen on live nodes (a fresh timestamp replaced by an
+     older one, then forward again).
+
+  So this is broader than transport: **no substrate node can be retired from the graph** while a
+  general snapshot round-tripper rewrites all eleven of them, and every reducer-owned temporal field
+  on live domains is being clobbered by stale values several times a second. Fixing it is a change
+  to the cognitive unification layer's write scope, not to this retirement — flagged for a decision
+  rather than patched here. No denylist was added: a retired-id registry would paper over the
+  round-tripper instead of scoping it.
 
   Snapshot of the node as it stood: `/tmp/retire-substrate-transport-node/before_snapshot.txt`.
 

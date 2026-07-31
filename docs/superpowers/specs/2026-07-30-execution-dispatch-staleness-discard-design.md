@@ -281,13 +281,44 @@ steady-state dispatch can only ever process ~30% of what's produced.
    Coarser, not unsafe — the tripwire's own 10-sample window makes this a small, acceptable
    granularity change, not a correctness regression.
 5. **Is the bus/RPC layer itself safe for concurrent use on one shared connection?** Checked, not
-   assumed: `ExecutionDispatchCortexClient.dispatch()` (`orion/execution_dispatch/cortex_client.py:
-   73-74`) generates a fresh `uuid4()` `correlation_id` and a **unique** `reply_channel =
-   f"{result_prefix}:{correlation_id}"` on every call. `OrionBusAsync.rpc_request`'s worker path
-   (`orion/core/bus/async_service.py:438-479`) demultiplexes pending RPCs by `(reply_channel,
-   corr)` key, resolving each call's own `Future` independently. Concurrent `dispatch()` calls on
-   the same client/bus instance cannot cross-talk — this is a real, already-built multiplexer, not
-   something this patch has to invent.
+   assumed — and an adversarial re-check (explicitly requested, given "bus RPC is the backbone to
+   the entire mesh") **found and corrected a real error in this section's first draft**: the
+   original claim was that `OrionBusAsync.rpc_request`'s worker path demultiplexes pending RPCs by
+   `(reply_channel, corr)` key. That path only runs if `self._rpc_worker_task` is active — and
+   `services/orion-execution-dispatch-runtime/app/worker.py:608` constructs `OrionBusAsync` with
+   the plain constructor, never via `.fork(start_rpc_worker=True)` or any other path that starts
+   that task. This service **never uses the worker path** — the original claim described code this
+   service does not execute.
+
+   What actually makes it safe (verified by reading `OrionBusAsync.subscribe()`,
+   `async_service.py:325-336`, the path this service actually takes): the inline RPC path calls
+   `self._create_pubsub_redis()` on **every single call**, which does `aioredis.from_url(self.url,
+   ...)` — a brand-new, fully independent Redis connection, not shared or pooled with anything
+   else, subscribed only to that call's own UUID-derived `reply_channel`
+   (`ExecutionDispatchCortexClient.dispatch()`, `cortex_client.py:73-74`, still correctly generates
+   a fresh `uuid4()` correlation ID and unique reply channel per call), torn down in a `finally`
+   block when the RPC completes. This is *stronger* isolation than the multiplexed path would have
+   given — full per-call connection separation, not shared-socket demuxing — but it is a different
+   mechanism than originally claimed. Concurrent `dispatch()` calls cannot cross-talk, for the
+   corrected reason above.
+
+   Also checked while auditing this (same adversarial pass, since this genuinely is mesh-critical
+   code): the shared *command* connection used for `publish()` (`self._redis`, distinct from the
+   per-RPC pubsub connections above) is a standard `redis.asyncio.Redis` client, internally pooled
+   by redis-py for concurrent use — not custom code, a well-established library guarantee.
+   `OrionCodec.encode`/`decode` are stateless pure functions. `RpcHealthAggregator` (records
+   RPC success/timeout stats) is shared, mutable state, but its own docstring already states "no
+   lock is needed" under asyncio's cooperative scheduling — independent, pre-existing corroboration
+   of the same reasoning used for the theater tripwire's deque in point 4 above, not something
+   novel introduced by this patch. `enforcer` (`orion/core/bus/enforce.py`, channel-catalog
+   validation) is a process-wide singleton with a lazy-init catalog load, shared across every
+   `OrionBusAsync` instance in the process — real shared mutable state, but `_ensure_catalog()` has
+   no `await` inside it, so the same no-interleaving-mid-mutation guarantee holds.
+
+   **One real, newly-disclosed cost, not a correctness bug**: concurrency means N simultaneous new
+   Redis connections per tick (one TCP handshake each) instead of one connection reused
+   sequentially across N sends. Real, additional load on Redis that doesn't exist today — worth
+   monitoring post-deploy, not a blocker at `max_dispatches_per_tick=5`.
 6. **Is per-tick concurrency enough, or does the one-poll-thread-per-process model need to
    change** (multiple worker replicas)? Per-tick concurrency is enough. The fan-out target
    (cortex-exec's `background` lane) already handles unbounded concurrent requests (point 2
@@ -348,6 +379,10 @@ contract change — `ExecutionDispatchCandidateV1`/`ExecutionDispatchFrameV1` ar
   over a real observation window — the actual metric this patch exists to move. `staleness_
   discard_count_ewma` should trend toward 0 once backlog is clear and concurrent dispatch is
   keeping pace.
+- Post-deploy: watch real Redis connection count (`INFO clients`/`connected_clients`) for a
+  sustained increase attributable to this service specifically — the disclosed per-RPC connection
+  churn cost (missing question 5 above) should be small at `max_dispatches_per_tick=5`, but this is
+  the actual check, not an assumption that it's fine.
 
 ### Recommended next patch
 

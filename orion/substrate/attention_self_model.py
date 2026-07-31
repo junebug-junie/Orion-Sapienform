@@ -373,6 +373,14 @@ def reduce_attention_self_model(
     if pe_confidence is not None:
         model.prediction_error_confidence = _round_or_none(pe_confidence)
         model.prediction_error_confidence_basis = pe_confidence_basis
+        # Same ACTIVE_INFERENCE_DOMAINS filter the confidence scalar above was
+        # computed from -- exposed so the scalar can explain itself instead of
+        # being the only surviving trace of its own inputs (2026-07-31).
+        model.prediction_error_by_domain = {
+            domain: _round_or_none(value)
+            for domain, value in prediction_error_by_domain.items()
+            if domain in ACTIVE_INFERENCE_DOMAINS
+        } if prediction_error_by_domain else None
 
     hb_mean_ratio, hb_verdict, hb_basis = _heartbeat_h1_fields(heartbeat_h1)
     if hb_verdict is not None:

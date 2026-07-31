@@ -92,6 +92,18 @@ class AttentionSelfModelV1(BaseModel):
     prediction_error_confidence: float | None = Field(default=None, ge=0.0, le=1.0)
     prediction_error_confidence_basis: str = ""
 
+    # --- The per-domain breakdown that composed prediction_error_confidence,
+    # additive. 2026-07-31: this dict was already computed by the caller and
+    # passed into the reducer every tick to build the scalar above, then
+    # discarded once collapsed into a single mean -- an "exhaust" instance of
+    # the same shape found elsewhere this session (real, gated content
+    # computed and thrown away with no consumer). Restricted to the same
+    # ACTIVE_INFERENCE_DOMAINS filter as prediction_error_confidence itself
+    # (see orion/substrate/attention_self_model.py), so this field always
+    # shows exactly the inputs that composed that scalar -- never a superset
+    # that includes a domain the confidence figure didn't actually use.
+    prediction_error_by_domain: dict[str, float] | None = None
+
     # --- What's predicted to shift next (modest, honestly scoped) ----------
     predicted_shift: str | None = None
     predicted_shift_basis: str = ""

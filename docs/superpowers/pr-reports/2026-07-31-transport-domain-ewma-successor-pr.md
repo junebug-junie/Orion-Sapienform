@@ -242,6 +242,42 @@ a change to the unification layer's write scope — cognition wiring, so it need
 drive-by patch inside a retirement PR. No denylist was added: that would paper over the
 round-tripper instead of scoping it.
 
+  **Adversarial re-check, same day — three of the claims above were wrong. Corrected here rather
+  than left standing.**
+
+  1. **It is NOT a round-trip from the graph.** The wire carried
+     `salience=0.556077777777778`; the graph stores `0.556078` (confirmed with
+     `RETURN toString(n.salience)`, so this is real stored precision, not redis-cli display
+     rounding). The source has MORE precision than the graph holds, so it cannot be reading from
+     it. Confirming evidence: the resurrected node comes back with **no `prediction_error` at all**
+     (`RETURN n.prediction_error IS NULL` -> `true`), which a graph read would have carried. The
+     real source is a **long-lived in-process cache** in `orion-cortex-exec-background` — the
+     process-level `_UNIFICATION_LAYER` singleton built once via `build_substrate_store_from_env()`
+     — holding node objects as originally constructed, never re-read from Falkor. That changes the
+     fix: it is about the singleton's refresh/ownership, not about a snapshot loop.
+
+  2. **`observed_at` is NOT clobbered on the protected merge branch.**
+     `orion/substrate/reconcile.py:288` does
+     `max(existing.temporal.observed_at, incoming.temporal.observed_at)` — it cannot go backwards
+     there. The claim that this path explains the previously-seen `observed_at` oscillation is
+     **withdrawn**; that oscillation remains unexplained and should not be attributed here.
+
+  3. **This mechanism was already known.** Two commits dated 2026-07-30 document and partly fix it:
+     `79acfd871` ("protect reducer-owned metadata in materializer") and `1c444ce72` ("widen
+     materializer's existing-node fallback"). The materializer's own comment already names
+     `orion-cortex-exec-background` re-touching these nodes "every few seconds". What is genuinely
+     new here is only: the write set covers **all 11 nodes in the graph**, and a *deleted* node
+     falls through the widened fallback onto the create branch because it genuinely no longer
+     exists. The "deleting a node makes the write less safe" framing is also weaker than stated —
+     creating a node that is absent is defensible materializer behavior. The actual defect is that
+     something still emits `node:substrate.transport` into a record at all.
+
+  What survives the re-check: the resurrector is `orion-cortex-exec-background` (MONITOR + container
+  IP map); it writes all 11 node_ids 17x in a ~0.8s burst; no substrate node can be deleted while it
+  runs; and `node:substrate.transport` still carries `salience=0.556078` — the retired domain's old
+  `prediction_error` value, persisted as salience and visible to generic salience consumers.
+
+
 The four code changes in this PR are unaffected — they remove every *reader* of the node, which is
 the part that was actually feeding cognition.
 
@@ -359,12 +395,11 @@ scripts/safe_docker_build.sh orion-proposal-runtime up -d --build
   Replayed over the real 7-day `repair_pressure_appraisal_log`: 45 readings, 6 distinct values, 34 of
   them one identical constant, `0` sustained-trend ticks. The wiring is proven; the input series is
   not capable of expressing a trend. Follow-up is a better series for hop 0, not more hop plumbing.
-- **Severity: HIGH, open. `orion-cortex-exec-background` round-trips the whole substrate node set
-  from a stale snapshot.** Root-caused above. Two consequences beyond transport: (a) no substrate
-  node can be deleted, and deleting one moves it to the materializer's *unprotected* create branch;
-  (b) `observed_at`/`recency_score`/`salience`/`activation` on live domains are overwritten with
-  stale values several times a second, because `EXTERNALLY_OWNED_METADATA_KEYS` only guards
-  `metadata`. Needs a scoping decision on the unification layer's write path.
+- **Severity: HIGH, open. `orion-cortex-exec-background` rewrites all 11 substrate nodes from a
+  stale long-lived in-process cache.** Consequence: no substrate node can be deleted. The
+  broader "it also clobbers live domains' temporal fields" claim was **withdrawn on re-check** —
+  `merge_node()` takes `max(observed_at)`, so the protected branch cannot move it backwards. Needs
+  a decision on the `_UNIFICATION_LAYER` singleton's refresh/ownership, not on the materializer.
 - **Severity: note. `node:substrate.harness_closure` is the same shape of zombie** — 7 days stale at
   a hardcoded `0.65`. It is already excluded from the domain map deliberately, so it does not
   contaminate the reducer, but its producer looks dead too. Not touched here; scope was transport.

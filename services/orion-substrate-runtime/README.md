@@ -709,6 +709,42 @@ while it stayed, which is exactly why a comment was not enough. Now:
   rather than patched here. No denylist was added: a retired-id registry would paper over the
   round-tripper instead of scoping it.
 
+  **Adversarial re-check, same day — three of the claims above were wrong. Corrected here rather
+  than left standing.**
+
+  1. **It is NOT a round-trip from the graph.** The wire carried
+     `salience=0.556077777777778`; the graph stores `0.556078` (confirmed with
+     `RETURN toString(n.salience)`, so this is real stored precision, not redis-cli display
+     rounding). The source has MORE precision than the graph holds, so it cannot be reading from
+     it. Confirming evidence: the resurrected node comes back with **no `prediction_error` at all**
+     (`RETURN n.prediction_error IS NULL` -> `true`), which a graph read would have carried. The
+     real source is a **long-lived in-process cache** in `orion-cortex-exec-background` — the
+     process-level `_UNIFICATION_LAYER` singleton built once via `build_substrate_store_from_env()`
+     — holding node objects as originally constructed, never re-read from Falkor. That changes the
+     fix: it is about the singleton's refresh/ownership, not about a snapshot loop.
+
+  2. **`observed_at` is NOT clobbered on the protected merge branch.**
+     `orion/substrate/reconcile.py:288` does
+     `max(existing.temporal.observed_at, incoming.temporal.observed_at)` — it cannot go backwards
+     there. The claim that this path explains the previously-seen `observed_at` oscillation is
+     **withdrawn**; that oscillation remains unexplained and should not be attributed here.
+
+  3. **This mechanism was already known.** Two commits dated 2026-07-30 document and partly fix it:
+     `79acfd871` ("protect reducer-owned metadata in materializer") and `1c444ce72` ("widen
+     materializer's existing-node fallback"). The materializer's own comment already names
+     `orion-cortex-exec-background` re-touching these nodes "every few seconds". What is genuinely
+     new here is only: the write set covers **all 11 nodes in the graph**, and a *deleted* node
+     falls through the widened fallback onto the create branch because it genuinely no longer
+     exists. The "deleting a node makes the write less safe" framing is also weaker than stated —
+     creating a node that is absent is defensible materializer behavior. The actual defect is that
+     something still emits `node:substrate.transport` into a record at all.
+
+  What survives the re-check: the resurrector is `orion-cortex-exec-background` (MONITOR + container
+  IP map); it writes all 11 node_ids 17x in a ~0.8s burst; no substrate node can be deleted while it
+  runs; and `node:substrate.transport` still carries `salience=0.556078` — the retired domain's old
+  `prediction_error` value, persisted as salience and visible to generic salience consumers.
+
+
   Snapshot of the node as it stood: `/tmp/retire-substrate-transport-node/before_snapshot.txt`.
 
 `config/field/orion_field_topology.v1.yaml`'s `capability:transport` edge had already migrated to

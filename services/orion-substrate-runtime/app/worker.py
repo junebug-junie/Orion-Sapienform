@@ -19,10 +19,14 @@ from orion.schemas.biometrics_projection import (
     ActiveNodePressureProjectionV1,
     NodeBiometricsProjectionV1,
 )
+from orion.schemas.codebase_delta import CodebaseDeltaV1
 from orion.schemas.grammar import GrammarEventV1
 from orion.schemas.harness_finalize import HarnessPostTurnClosureV1
 from orion.schemas.reduction_receipt import ReductionReceiptV1
 from orion.schemas.telemetry.field_channel_anomaly_score import FieldChannelAnomalyScoreV1
+from orion.structural_mass.git_delta import GitChurnDelta
+from orion.structural_mass.graph_delta import GraphStructuralDelta
+from orion.structural_mass.pr_lifecycle import PrLifecycleDelta
 from orion.substrate.biometrics_loop.constants import (
     ACTIVE_NODE_PRESSURE_PROJECTION_ID,
     GRAMMAR_CURSOR_NAME,
@@ -44,9 +48,11 @@ from orion.substrate.transport_loop.constants import (
     TRANSPORT_GRAMMAR_CURSOR_NAME,
 )
 from orion.substrate.prediction_error import (
+    CodebaseMassBaseline,
     biometrics_prediction_error,
     bus_synaptic_prediction_error,
     chat_prediction_error,
+    codebase_prediction_error,
     execution_prediction_error,
     route_prediction_error,
 )
@@ -94,6 +100,15 @@ _HARNESS_CLOSURE_UNRESOLVED_ERROR = 0.65
 # upserts to and the domain names orion.substrate.attention_self_model expects in
 # prediction_error_by_domain. node:substrate.harness_closure is intentionally
 # excluded -- it is not one of that reducer's recognized domains.
+# node:substrate.codebase (codebase_prediction_error(), 2026-07-31) is ALSO
+# intentionally excluded here, for a different reason: the design spec
+# (docs/superpowers/specs/2026-07-30-codebase-mass-signal-design.md, Phase 3)
+# explicitly defers wiring any downstream consumer -- including this reducer's
+# own prediction_error_by_domain -- until Phase 1's replay reads MET. Confirmed
+# live by code review 2026-07-31: without this comment, a future "complete the
+# domain parity" pass could add this entry without realizing that decision was
+# already made deliberately, not an oversight. Revisit only alongside a real
+# Phase 3 patch, not as a drive-by fix.
 _PREDICTION_ERROR_DOMAIN_NODE_IDS = {
     "node:substrate.execution": "execution",
     "node:substrate.transport": "transport",
@@ -343,6 +358,18 @@ class BiometricsSubstrateWorker:
                 asyncio.create_task(
                     self._field_channel_anomaly_listener_loop(),
                     name="substrate-field-channel-anomaly-listener",
+                )
+            )
+        # codebase_prediction_error consumer (docs/superpowers/specs/2026-07-
+        # 30-codebase-mass-signal-design.md). Own dedicated flag, default off
+        # -- see SUBSTRATE_WRITE_CODEBASE_PREDICTION_ERROR_NODE's own comment
+        # in settings.py for why this doesn't reuse
+        # SUBSTRATE_WRITE_PREDICTION_ERROR_NODES.
+        if self._bus is not None and s.enable_codebase_prediction_error_node:
+            self._tasks.append(
+                asyncio.create_task(
+                    self._codebase_delta_listener_loop(),
+                    name="substrate-codebase-delta-listener",
                 )
             )
 
@@ -1335,6 +1362,122 @@ class BiometricsSubstrateWorker:
             return
         self._latest_field_anomaly = score
         self._latest_field_anomaly_at = datetime.now(timezone.utc)
+
+    async def _codebase_delta_listener_loop(self) -> None:
+        """Subscribe to the codebase-mass domain's bus channel and score+write
+        each real event (docs/superpowers/specs/2026-07-30-codebase-mass-
+        signal-design.md, "Producer + consumer patch design").
+
+        Mirrors `_field_channel_anomaly_listener_loop`'s subscribe shape, but
+        does real work per message rather than caching a value: reads the
+        persisted `CodebaseMassBaseline` (own dedicated table, see
+        `store.get_latest_codebase_mass_baseline()`'s own docstring for why
+        this domain can't reuse `_write_prediction_error_node()`'s node
+        metadata the way it was first proposed), reconstructs whichever one
+        of git/pr_lifecycle/graph the event carries, scores it via
+        `codebase_prediction_error()`, writes the score to
+        `node:substrate.codebase` via the same shared
+        `_write_prediction_error_node()` writer every other domain uses, and
+        persists the updated baseline for the next tick. This service still
+        does zero external I/O of its own for this domain -- all git/GitHub/
+        graphify access lives in `orion-cocreation-signals`, the producer of
+        this channel.
+        """
+        channel = self._settings.codebase_delta_channel
+        logger.info("substrate_codebase_delta_listener subscribing channel=%s", channel)
+        try:
+            async with self._bus.subscribe(channel) as pubsub:
+                while not self._stop.is_set():
+                    try:
+                        msg = await asyncio.wait_for(
+                            pubsub.get_message(ignore_subscribe_messages=True, timeout=1.0),
+                            timeout=1.2,
+                        )
+                    except asyncio.TimeoutError:
+                        continue
+                    except asyncio.CancelledError:
+                        break
+                    if not msg or msg.get("type") not in ("message", "pmessage"):
+                        continue
+                    try:
+                        await asyncio.to_thread(self._handle_codebase_delta_message, msg)
+                    except Exception:
+                        logger.exception("substrate_codebase_delta_handle_failed")
+        except asyncio.CancelledError:
+            raise
+        finally:
+            logger.info("substrate_codebase_delta_listener stopped channel=%s", channel)
+
+    def _handle_codebase_delta_message(self, raw_msg: dict[str, Any]) -> None:
+        decoded = self._bus.codec.decode(raw_msg.get("data"))
+        if not decoded.ok:
+            logger.warning("substrate_codebase_delta_decode_failed: %s", decoded.error)
+            return
+        try:
+            event = CodebaseDeltaV1.model_validate(decoded.envelope.payload or {})
+        except ValueError as exc:
+            logger.error("substrate_codebase_delta_invalid err=%s", exc)
+            return
+
+        git_delta = pr_delta = graph_delta = None
+        if event.domain == "git" and event.git is not None:
+            g = event.git
+            git_delta = GitChurnDelta(
+                prev_sha=g.prev_sha, head_sha=g.head_sha, commit_count=g.commit_count,
+                files_added=g.files_added, files_deleted=g.files_deleted,
+                files_modified=g.files_modified, lines_added=g.lines_added,
+                lines_removed=g.lines_removed,
+            )
+        elif event.domain == "pr_lifecycle" and event.pr_lifecycle is not None:
+            p = event.pr_lifecycle
+            pr_delta = PrLifecycleDelta(
+                since=p.since, until=p.until, submitted_count=p.submitted_count,
+                merged_count=p.merged_count, closed_without_merge_count=p.closed_without_merge_count,
+                submitted_numbers=tuple(p.submitted_numbers), merged_numbers=tuple(p.merged_numbers),
+                closed_without_merge_numbers=tuple(p.closed_without_merge_numbers),
+                possibly_truncated=p.possibly_truncated,
+            )
+        elif event.domain == "graph" and event.graph is not None:
+            gr = event.graph
+            graph_delta = GraphStructuralDelta(
+                node_count_delta=gr.node_count_delta, edge_count_delta=gr.edge_count_delta,
+                community_count_delta=gr.community_count_delta,
+                god_node_jaccard_similarity=gr.god_node_jaccard_similarity,
+                god_nodes_entered=tuple(gr.god_nodes_entered) if gr.god_nodes_entered is not None else None,
+                god_nodes_exited=tuple(gr.god_nodes_exited) if gr.god_nodes_exited is not None else None,
+            )
+        else:
+            # Schema-illegal given CodebaseDeltaV1's own model_validator (the
+            # producer can't construct/publish this shape), but a live
+            # consumer must not trust a wire payload just because the
+            # producer's own validator would have rejected it -- fail open,
+            # not silently proceed with three None deltas (a real
+            # codebase_prediction_error() call with nothing populated is a
+            # legitimate "no-op tick" elsewhere; here it would misrepresent a
+            # decode-time data problem as one).
+            logger.error(
+                "substrate_codebase_delta_domain_field_mismatch domain=%s", event.domain
+            )
+            return
+
+        baseline = self._store.get_latest_codebase_mass_baseline()
+        result = codebase_prediction_error(
+            git_delta=git_delta, pr_delta=pr_delta, graph_delta=graph_delta, baseline=baseline,
+        )
+        now = datetime.now(timezone.utc)
+        self._write_prediction_error_node(
+            node_id="node:substrate.codebase",
+            error=result.score,
+            now=now,
+            reducer_key="codebase",
+        )
+        self._store.save_codebase_mass_baseline(
+            result.baseline, retention_days=self._settings.codebase_mass_baseline_retention_days,
+        )
+        logger.info(
+            "substrate_codebase_delta_scored domain=%s score=%.3f",
+            event.domain, result.score,
+        )
 
     async def _perception_ingest_loop(self) -> None:
         """Subscribe to town perception and fold it into the substrate graph.

@@ -663,6 +663,38 @@ class TestBusSynapticPredictionError:
         assert bus_synaptic_prediction_error([0.0, 3.0]) == pytest.approx(0.3188367996970756)
 
 
+class TestCodebaseMassBaselineSerialization:
+    """Wire-format round-trip for the consumer patch's
+    substrate_codebase_mass_baseline table -- CodebaseMassBaseline.to_json_dict()/
+    from_json_dict()."""
+
+    def test_round_trip_preserves_all_three_sub_baselines(self) -> None:
+        baseline = CodebaseMassBaseline(
+            git=_DomainEwmaBaseline(ewma=1.5, variance=2.5, n=3),
+            pr=_DomainEwmaBaseline(ewma=4.5, variance=5.5, n=6),
+            graph=_DomainEwmaBaseline(ewma=7.5, variance=8.5, n=9),
+        )
+        restored = CodebaseMassBaseline.from_json_dict(baseline.to_json_dict())
+        assert restored == baseline
+
+    def test_round_trip_default_baseline(self) -> None:
+        baseline = CodebaseMassBaseline()
+        restored = CodebaseMassBaseline.from_json_dict(baseline.to_json_dict())
+        assert restored == baseline
+
+    def test_from_json_dict_tolerates_missing_keys(self) -> None:
+        """A row from before some future field addition, or a hand-edited
+        JSON blob missing a sub-domain entirely, must not crash -- defaults
+        to a fresh cold-start sub-baseline for whatever's missing."""
+        restored = CodebaseMassBaseline.from_json_dict({"git": {"ewma": 1.0, "variance": 2.0, "n": 3}})
+        assert restored.git == _DomainEwmaBaseline(ewma=1.0, variance=2.0, n=3)
+        assert restored.pr == _DomainEwmaBaseline()
+        assert restored.graph == _DomainEwmaBaseline()
+
+    def test_from_json_dict_empty_dict_is_fresh_baseline(self) -> None:
+        assert CodebaseMassBaseline.from_json_dict({}) == CodebaseMassBaseline()
+
+
 class TestCodebasePredictionError:
     """Contract patch (docs/superpowers/specs/2026-07-30-codebase-mass-signal-
     design.md) -- composite scoring across all three structural_mass producer

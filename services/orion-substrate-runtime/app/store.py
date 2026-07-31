@@ -24,6 +24,7 @@ from orion.schemas.transport_projection import TransportBusProjectionV1
 from orion.schemas.grammar import GrammarEventV1
 from orion.schemas.organ_emission import OrganEmissionV1
 from orion.schemas.reduction_receipt import ReductionReceiptV1
+from orion.substrate.prediction_error import CodebaseMassBaseline
 from orion.core.schemas.substrate_episodes import EpisodeSummaryV1
 from orion.schemas.attention_frame import AttentionBroadcastProjectionV1
 from orion.schemas.attention_self_model import AttentionSelfModelV1
@@ -644,6 +645,81 @@ class BiometricsSubstrateStore:
         except Exception:
             logger.exception("substrate_attention_self_model_field_frame_load_failed")
             return None
+
+    def get_latest_codebase_mass_baseline(self) -> CodebaseMassBaseline:
+        """Latest row from `substrate_codebase_mass_baseline`, or a fresh
+        cold-start baseline if none exists yet (a real, honest "no history
+        yet" state -- not an error, matches every other domain's own
+        cold-start handling in orion/substrate/prediction_error.py)."""
+        try:
+            with self._engine.connect() as conn:
+                row = conn.execute(
+                    text(
+                        """
+                        SELECT baseline_json FROM substrate_codebase_mass_baseline
+                        ORDER BY generated_at DESC LIMIT 1
+                        """
+                    )
+                ).mappings().first()
+            if not row:
+                return CodebaseMassBaseline()
+            payload = row["baseline_json"]
+            if isinstance(payload, str):
+                payload = json.loads(payload)
+            if not isinstance(payload, dict):
+                return CodebaseMassBaseline()
+            return CodebaseMassBaseline.from_json_dict(payload)
+        except Exception:
+            logger.exception("substrate_codebase_mass_baseline_load_failed")
+            return CodebaseMassBaseline()
+
+    def save_codebase_mass_baseline(
+        self, baseline: CodebaseMassBaseline, *, retention_days: float
+    ) -> None:
+        """Append one CodebaseMassBaseline row per real consumer tick; prunes
+        rows beyond retention.
+
+        `substrate_codebase_mass_baseline` has exactly one writer in the
+        whole repo -- this method, called only from
+        `_codebase_delta_listener_loop()`'s message handler. Same
+        single-writer, brand-new-table reasoning as
+        `save_attention_self_model()` above (see that method's own
+        docstring) -- confirmed necessary here specifically because the
+        originally-proposed alternative (piggyback on
+        `node:substrate.codebase`'s own metadata) was verified wrong: see
+        `manual_migration_codebase_mass_baseline_v1.sql`'s own comment.
+        """
+        generated_at = datetime.now(timezone.utc)
+        digest = hashlib.sha256(
+            f"{generated_at.isoformat()}|{json.dumps(baseline.to_json_dict(), sort_keys=True)}".encode("utf-8")
+        ).hexdigest()[:24]
+        with self._engine.begin() as conn:
+            conn.execute(
+                text(
+                    """
+                    INSERT INTO substrate_codebase_mass_baseline (
+                        baseline_id, generated_at, baseline_json, created_at
+                    ) VALUES (
+                        :baseline_id, :generated_at, :baseline_json, :created_at
+                    )
+                    ON CONFLICT (baseline_id) DO NOTHING
+                    """
+                ),
+                {
+                    "baseline_id": f"codebase-mass-baseline-{digest}",
+                    "generated_at": generated_at,
+                    "baseline_json": Json(baseline.to_json_dict()),
+                    "created_at": generated_at,
+                },
+            )
+            conn.execute(
+                text(
+                    f"""
+                    DELETE FROM substrate_codebase_mass_baseline
+                    WHERE generated_at < now() - interval '{float(retention_days)} days'
+                    """
+                ),
+            )
 
     def save_attention_self_model(
         self, model: AttentionSelfModelV1, *, retention_hours: float

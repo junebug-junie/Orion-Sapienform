@@ -153,6 +153,31 @@ class CodebaseMassBaseline:
     pr: _DomainEwmaBaseline = field(default_factory=_DomainEwmaBaseline)
     graph: _DomainEwmaBaseline = field(default_factory=_DomainEwmaBaseline)
 
+    def to_json_dict(self) -> dict:
+        """Wire format for the consumer patch's ``substrate_codebase_mass_baseline``
+        table (docs/superpowers/specs/2026-07-30-codebase-mass-signal-design.md,
+        "Producer + consumer patch design") -- same
+        ``dataclasses.dataclass`` -> ``dict`` -> ``jsonb`` convention
+        ``orion/structural_mass/snapshot_history.py::GraphSnapshotStats`` already
+        uses, not a new pattern invented here."""
+        return {
+            "git": {"ewma": self.git.ewma, "variance": self.git.variance, "n": self.git.n},
+            "pr": {"ewma": self.pr.ewma, "variance": self.pr.variance, "n": self.pr.n},
+            "graph": {"ewma": self.graph.ewma, "variance": self.graph.variance, "n": self.graph.n},
+        }
+
+    @classmethod
+    def from_json_dict(cls, data: dict) -> "CodebaseMassBaseline":
+        def _sub(key: str) -> _DomainEwmaBaseline:
+            raw = data.get(key) or {}
+            return _DomainEwmaBaseline(
+                ewma=float(raw.get("ewma", 0.0)),
+                variance=float(raw.get("variance", 0.0)),
+                n=int(raw.get("n", 0)),
+            )
+
+        return cls(git=_sub("git"), pr=_sub("pr"), graph=_sub("graph"))
+
 
 @dataclass(frozen=True)
 class CodebasePredictionErrorResult:

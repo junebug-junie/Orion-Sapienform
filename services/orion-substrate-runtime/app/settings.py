@@ -259,6 +259,30 @@ class Settings(BaseSettings):
     field_channel_anomaly_score_channel: str = Field(
         "orion:field_channel:anomaly_score", alias="FIELD_CHANNEL_ANOMALY_SCORE_CHANNEL"
     )
+    # codebase_prediction_error consumer (docs/superpowers/specs/2026-07-30-
+    # codebase-mass-signal-design.md, "Producer + consumer patch design").
+    # Own dedicated flag, not piggybacked on SUBSTRATE_WRITE_PREDICTION_ERROR_NODES
+    # -- same reasoning as SUBSTRATE_BUS_SYNAPTIC_TICK_ENABLED above: this
+    # domain has a materially different risk surface (external I/O lives in
+    # a separate service, orion-cocreation-signals, but the consumer side
+    # here adds a new Postgres table + a new bus subscription, not a
+    # reducer-projection read like the other five domains). Default-off,
+    # matching every other tick in this file -- flip only after a live-data
+    # sanity check against the new substrate_codebase_mass_baseline table.
+    enable_codebase_prediction_error_node: bool = Field(
+        False, alias="SUBSTRATE_WRITE_CODEBASE_PREDICTION_ERROR_NODE"
+    )
+    codebase_delta_channel: str = Field(
+        "orion:substrate:codebase_delta", alias="CHANNEL_CODEBASE_DELTA"
+    )
+    # Append-only substrate_codebase_mass_baseline retention -- this domain's
+    # tick cadence is far coarser than the AST self-model's (real events at
+    # minutes-to-hours granularity, not a 30s broadcast cadence), so 30 days
+    # is a real-world-comparable window, not copied verbatim from
+    # ORION_ATTENTION_BROADCAST_LOG_RETENTION_HOURS's 7-day default.
+    codebase_mass_baseline_retention_days: float = Field(
+        30.0, alias="SUBSTRATE_CODEBASE_MASS_BASELINE_RETENTION_DAYS"
+    )
 
     # Health monitor -> orion-notify attention alerts. Edge-triggered (fires only
     # on healthy->unhealthy transitions), not polled-and-spammed.

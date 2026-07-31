@@ -50,4 +50,13 @@ hard_blocks:
 
 limits:
   max_dispatch_candidates: 5
-  max_dispatches_per_tick: 1
+  # 2026-07-31 (docs/superpowers/specs/2026-07-30-execution-dispatch-
+  # staleness-discard-design.md's Part 2): raised from 1 -- sends are now
+  # concurrent (asyncio.gather(..., return_exceptions=True) in
+  # _send_prepared_candidates), so this is a real per-tick fan-out width,
+  # not just a formerly-inert loop bound. 5 is a disclosed, uncalibrated
+  # starting value (meaningfully closes the measured ~12-17/min production
+  # vs ~4-5/min sequential-dispatch gap without a large first-patch blast
+  # radius) -- revisit against real post-deploy dispatch-rate data, same
+  # discipline as every other constant shipped in this arc.
+  max_dispatches_per_tick: 5

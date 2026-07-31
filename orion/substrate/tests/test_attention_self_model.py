@@ -449,6 +449,45 @@ class TestUnconditionalPredictionErrorConfidence:
         assert model.prediction_error_confidence == pytest.approx(0.5, abs=1e-4)
 
 
+class TestPredictionErrorByDomainExposed:
+    """`prediction_error_by_domain` (2026-07-31): the per-domain inputs that
+    composed `prediction_error_confidence` were computed every tick and then
+    discarded once collapsed into that single mean -- exposing them lets the
+    scalar explain itself instead of being the only surviving trace of its
+    own inputs."""
+
+    def test_mirrors_the_domains_that_composed_the_confidence_scalar(self) -> None:
+        model = reduce_attention_self_model(
+            None, _field_frame(), now=NOW,
+            prediction_error_by_domain=_prediction_error_by_domain(),
+        )
+        assert model.prediction_error_by_domain == {
+            "execution": 0.0001,
+            "biometrics": 0.0459,
+            "chat": 0.0,
+            "route": 0.0,
+        }
+
+    def test_transport_excluded_even_when_supplied(self) -> None:
+        model = reduce_attention_self_model(
+            None, _field_frame(), now=NOW,
+            prediction_error_by_domain=_prediction_error_by_domain(),
+        )
+        assert "transport" not in model.prediction_error_by_domain
+
+    def test_none_when_confidence_is_none(self) -> None:
+        model = reduce_attention_self_model(
+            None, _field_frame(), now=NOW,
+            prediction_error_by_domain={"transport": 0.0},
+        )
+        assert model.prediction_error_confidence is None
+        assert model.prediction_error_by_domain is None
+
+    def test_none_when_no_prediction_error_data_supplied(self) -> None:
+        model = reduce_attention_self_model(None, _field_frame(), now=NOW)
+        assert model.prediction_error_by_domain is None
+
+
 def test_reference_tick_defaults_to_field_frame_generated_at() -> None:
     field_frame = _field_frame(generated_at=NOW)
     model = reduce_attention_self_model(None, field_frame)

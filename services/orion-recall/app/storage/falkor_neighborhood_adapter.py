@@ -58,6 +58,7 @@ import logging
 import re
 from typing import Any, Dict, List
 
+from ..chat_source_tagging import chat_source_tags, render_quoted_chat_text
 from ..recall_falkor_store import get_recall_falkor_client
 from ..sql_chat import _to_epoch, fetch_chat_turns_by_id
 from .falkor_entity_relatedness import fetch_turns_mentioning_entities
@@ -183,8 +184,8 @@ async def fetch_falkor_neighborhood_fragments(
             # No matching Postgres row -- nothing to quote, same drop rule
             # falkor_chat_adapter.py uses for the same reason.
             continue
-        prompt, response = text_map[turn_id]
-        text = f'ExactUserText: "{prompt}"\nOrionResponse: "{response}"'.strip()
+        prompt, response, client_meta = text_map[turn_id]
+        text = render_quoted_chat_text(prompt, response, client_meta)
         out.append(
             {
                 "id": turn_id,
@@ -193,7 +194,7 @@ async def fetch_falkor_neighborhood_fragments(
                 "uri": turn_id,
                 "text": text[:1500],
                 "ts": _to_epoch(row.get("ts")),
-                "tags": ["falkor", "neighborhood"],
+                "tags": chat_source_tags(client_meta, ["falkor", "neighborhood"]),
                 "score": 0.5,
                 "meta": {"matched_entities": matched_names},
             }

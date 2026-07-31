@@ -198,7 +198,7 @@ def test_specific_entity_clears_injection_floor_and_still_injects():
         return_value=[{"turn_id": "gpu-turn", "ts": "2026-05-01T00:00:00"}],
     ) as mock_mentioning, patch(
         "app.worker.fetch_chat_turns_by_id",
-        return_value={"gpu-turn": ("show nvidia status", "gpu ok")},
+        return_value={"gpu-turn": ("show nvidia status", "gpu ok", None)},
     ), patch(
         "app.worker.fetch_entity_matches_for_turns", return_value={"gpu-turn": ["nvidia"]}
     ):
@@ -231,7 +231,7 @@ def test_injects_entity_matched_turns_not_already_in_pool():
         return_value=[{"turn_id": "old-turn-not-in-pool", "ts": "2025-10-21T00:00:00"}],
     ), patch(
         "app.worker.fetch_chat_turns_by_id",
-        return_value={"old-turn-not-in-pool": ("what about nvidia?", "it's a GPU company")},
+        return_value={"old-turn-not-in-pool": ("what about nvidia?", "it's a GPU company", None)},
     ), patch(
         "app.worker.fetch_entity_matches_for_turns",
         return_value={"old-turn-not-in-pool": ["nvidia"]},

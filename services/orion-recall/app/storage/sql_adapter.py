@@ -7,6 +7,7 @@ from typing import List, Any, Dict, Optional
 import json
 import psycopg2
 
+from ..chat_source_tagging import chat_source_platform, chat_source_tags, render_labeled_chat_text
 from ..settings import settings
 from ..types import Fragment
 
@@ -217,13 +218,20 @@ def fetch_sql_fragments(
     # ---------------------------------------------------------
     if include_chat:
         try:
+            # client_meta is a fixed column on chat_history_log itself (not
+            # configurable like the other columns above, which support
+            # alternate table shapes) -- used to tell ai-town-sourced rows
+            # apart from real Juniper/hub conversation, which the query
+            # previously had no way to do at all. See
+            # docs/superpowers/specs/2026-07-31-recall-aitown-source-tagging-design.md.
             cur.execute(
                 f"""
                 SELECT
                     trace_id,
                     {settings.RECALL_SQL_CHAT_TEXT_COL}      AS prompt,
                     {settings.RECALL_SQL_CHAT_RESPONSE_COL}  AS response,
-                    {settings.RECALL_SQL_CHAT_CREATED_AT_COL} AS created_at
+                    {settings.RECALL_SQL_CHAT_CREATED_AT_COL} AS created_at,
+                    client_meta
                 FROM {settings.RECALL_SQL_CHAT_TABLE}
                 WHERE {settings.RECALL_SQL_CHAT_CREATED_AT_COL} >= %s
                 ORDER BY {settings.RECALL_SQL_CHAT_CREATED_AT_COL} DESC
@@ -233,13 +241,20 @@ def fetch_sql_fragments(
             )
             rows = cur.fetchall()
             for row in rows:
-                trace_id, prompt, response, created_at = row
+                trace_id, prompt, response, created_at, client_meta = row
                 prompt = (prompt or "").strip()
                 response = (response or "").strip()
                 if not (prompt or response):
                     continue
 
-                text = f"User: {prompt}\nOrion: {response}".strip()
+                platform, participant_name = chat_source_platform(client_meta)
+                text = render_labeled_chat_text(prompt, response, client_meta)
+                tags = chat_source_tags(client_meta, ["dialogue"])
+                meta: Dict[str, Any] = (
+                    {"platform": platform, "participant_name": participant_name}
+                    if platform == "aitown"
+                    else {}
+                )
 
                 frags.append(
                     Fragment(
@@ -249,8 +264,8 @@ def fetch_sql_fragments(
                         text=text,
                         ts=_epoch(created_at),
                         salience=0.0,
-                        tags=["dialogue"],
-                        meta={},
+                        tags=tags,
+                        meta=meta,
                     )
                 )
         except Exception as e:

@@ -17,6 +17,11 @@ try:
 except ImportError:  # pragma: no cover - test harness path
     from settings import settings  # type: ignore
 
+try:
+    from .chat_source_tagging import chat_source_tags, render_labeled_chat_text
+except ImportError:  # pragma: no cover - test harness path
+    from chat_source_tagging import chat_source_tags, render_labeled_chat_text  # type: ignore
+
 logger = logging.getLogger(__name__)
 
 
@@ -207,6 +212,18 @@ def _pick_spark_meta_col(cur, table: str) -> Optional[str]:
     return None
 
 
+def _pick_client_meta_col(cur, table: str) -> Optional[str]:
+    """chat_history_log's client_meta jsonb column carries
+    external_room.platform/external_participant.participant_name, used to
+    tell ai-town-sourced rows apart from real Juniper/hub conversation (see
+    chat_source_tagging.py). Dynamically detected, not assumed, since this
+    branch can in principle run against any table equal to
+    RECALL_SQL_CHAT_TABLE, which an operator could point elsewhere."""
+    if _table_has_column(cur, table, "client_meta"):
+        return "client_meta"
+    return None
+
+
 def _memory_filter_clause(cur, table: str) -> str:
     clauses: List[str] = []
     if settings.RECALL_EXCLUDE_REJECTED and _table_has_column(cur, table, "memory_status"):
@@ -259,10 +276,12 @@ async def fetch_recent_fragments(
                 id_col = _pick_id_col(cur, timeline_table)
                 session_col = _pick_session_col(cur, timeline_table)
                 spark_meta_col = _pick_spark_meta_col(cur, timeline_table)
+                client_meta_col = _pick_client_meta_col(cur, timeline_table)
                 memory_clause = _memory_filter_clause(cur, timeline_table)
                 select_row_id = f"{id_col} AS row_id," if id_col else ""
                 select_sid = f"{session_col} AS sid," if session_col else ""
                 select_spark_meta = f"{spark_meta_col} AS spark_meta," if spark_meta_col else ""
+                select_client_meta = f"{client_meta_col} AS client_meta," if client_meta_col else ""
                 params: List[Any] = [since_minutes]
                 params.append(limit)
                 cur.execute(
@@ -271,6 +290,7 @@ async def fetch_recent_fragments(
                         {select_row_id}
                         {select_sid}
                         {select_spark_meta}
+                        {select_client_meta}
                         {prompt_col} AS prompt,
                         {response_col} AS response,
                         {ts_col} AS created_at
@@ -288,13 +308,14 @@ async def fetch_recent_fragments(
                 for row in rows:
                     prompt = (row.get("prompt") or "").strip()
                     response = (row.get("response") or "").strip()
-                    text = f"User: {prompt}\nOrion: {response}".strip()
+                    client_meta = row.get("client_meta")
+                    text = render_labeled_chat_text(prompt, response, client_meta)
                     created_at = row.get("created_at")
                     sid = row.get("sid")
                     row_id = row.get("row_id")
                     spark_meta = _parse_spark_meta(row.get("spark_meta"))
                     turn_effect_delta = _extract_turn_effect_delta(spark_meta)
-                    tags = ["chat_timeline"]
+                    tags = chat_source_tags(client_meta, ["chat_timeline"])
                     if sid is not None and str(sid) != "":
                         tags.append("sid_present:true")
                         if session_col:
@@ -386,9 +407,11 @@ async def fetch_related_by_entities(
                 patterns = [f"%{e}%" for e in entities]
                 id_col = _pick_id_col(cur, timeline_table)
                 session_col = _pick_session_col(cur, timeline_table)
+                client_meta_col = _pick_client_meta_col(cur, timeline_table)
                 memory_clause = _memory_filter_clause(cur, timeline_table)
                 select_row_id = f"{id_col} AS row_id," if id_col else ""
                 select_sid = f"{session_col} AS sid," if session_col else ""
+                select_client_meta = f"{client_meta_col} AS client_meta," if client_meta_col else ""
                 params: List[Any] = [since_hours, patterns, patterns]
                 params.append(limit)
                 cur.execute(
@@ -396,6 +419,7 @@ async def fetch_related_by_entities(
                     SELECT
                         {select_row_id}
                         {select_sid}
+                        {select_client_meta}
                         {prompt_col} AS prompt,
                         {response_col} AS response,
                         {ts_col} AS created_at
@@ -417,11 +441,12 @@ async def fetch_related_by_entities(
                 for row in rows:
                     prompt = (row.get("prompt") or "").strip()
                     response = (row.get("response") or "").strip()
-                    text = f"User: {prompt}\nOrion: {response}".strip()
+                    client_meta = row.get("client_meta")
+                    text = render_labeled_chat_text(prompt, response, client_meta)
                     created_at = row.get("created_at")
                     sid = row.get("sid")
                     row_id = row.get("row_id")
-                    tags = ["chat_timeline"]
+                    tags = chat_source_tags(client_meta, ["chat_timeline"])
                     if sid is not None and str(sid) != "":
                         tags.append("sid_present:true")
                         if session_col:
@@ -507,12 +532,14 @@ async def fetch_exact_fragments(
                 if timeline_table == settings.RECALL_SQL_CHAT_TABLE:
                     id_col = _pick_id_col(cur, timeline_table)
                     session_col = _pick_session_col(cur, timeline_table)
+                    client_meta_col = _pick_client_meta_col(cur, timeline_table)
                     prompt_col = settings.RECALL_SQL_CHAT_TEXT_COL
                     response_col = settings.RECALL_SQL_CHAT_RESPONSE_COL
                     ts_col = settings.RECALL_SQL_CHAT_CREATED_AT_COL
                     memory_clause = _memory_filter_clause(cur, timeline_table)
                     select_row_id = f"{id_col} AS row_id," if id_col else ""
                     select_sid = f"{session_col} AS sid," if session_col else ""
+                    select_client_meta = f"{client_meta_col} AS client_meta," if client_meta_col else ""
                     params = []
                     term_filters = []
                     for token in tokens:
@@ -531,6 +558,7 @@ async def fetch_exact_fragments(
                         SELECT
                             {select_row_id}
                             {select_sid}
+                            {select_client_meta}
                             {prompt_col} AS prompt,
                             {response_col} AS response,
                             {ts_col} AS created_at
@@ -549,11 +577,12 @@ async def fetch_exact_fragments(
                     for row in rows:
                         prompt = (row.get("prompt") or "").strip()
                         response = (row.get("response") or "").strip()
-                        text = f"User: {prompt}\nOrion: {response}".strip()
+                        client_meta = row.get("client_meta")
+                        text = render_labeled_chat_text(prompt, response, client_meta)
                         created_at = row.get("created_at")
                         sid = row.get("sid")
                         row_id = row.get("row_id")
-                        tags = ["chat_timeline"]
+                        tags = chat_source_tags(client_meta, ["chat_timeline"])
                         if sid is not None and str(sid) != "":
                             tags.append("sid_present:true")
                             if session_col:

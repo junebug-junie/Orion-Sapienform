@@ -56,6 +56,7 @@ def test_fetch_exact_fragments_passes_since_minutes_to_query(monkeypatch) -> Non
     monkeypatch.setattr("app.sql_timeline.settings.RECALL_SQL_CHAT_TABLE", "chat_history_log")
     monkeypatch.setattr("app.sql_timeline._pick_id_col", lambda *_a, **_k: "id")
     monkeypatch.setattr("app.sql_timeline._pick_session_col", lambda *_a, **_k: None)
+    monkeypatch.setattr("app.sql_timeline._pick_client_meta_col", lambda *_a, **_k: None)
     monkeypatch.setattr("app.sql_timeline._memory_filter_clause", lambda *_a, **_k: "")
 
     asyncio.run(

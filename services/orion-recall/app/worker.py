@@ -47,6 +47,7 @@ try:
     )
     from .sql_timeline import fetch_recent_fragments, fetch_related_by_entities, fetch_exact_fragments
     from .sql_chat import fetch_chat_history_pairs, fetch_chat_messages, fetch_chat_turn_timestamps, fetch_chat_turns_by_id, _to_epoch
+    from .chat_source_tagging import chat_source_tags, render_quoted_chat_text
     from .cards_adapter import fetch_card_fragments_guarded
     try:
         from .storage.graph_compression_adapter import fetch_graph_compression_fragments
@@ -80,6 +81,7 @@ except ImportError as _e:  # pragma: no cover - fallback for runtime pathing
         )
         from app.sql_timeline import fetch_recent_fragments, fetch_related_by_entities, fetch_exact_fragments  # type: ignore
         from app.sql_chat import fetch_chat_history_pairs, fetch_chat_messages, fetch_chat_turn_timestamps, fetch_chat_turns_by_id, _to_epoch  # type: ignore
+        from app.chat_source_tagging import chat_source_tags, render_quoted_chat_text  # type: ignore
         from app.cards_adapter import fetch_card_fragments_guarded  # type: ignore
         try:
             from app.storage.graph_compression_adapter import fetch_graph_compression_fragments  # type: ignore
@@ -714,8 +716,8 @@ async def _compute_entity_relatedness_boost_map(
             for turn_id in new_turn_ids:
                 if turn_id not in text_map:
                     continue
-                prompt, response = text_map[turn_id]
-                text = f'ExactUserText: "{prompt}"\nOrionResponse: "{response}"'.strip()
+                prompt, response, client_meta = text_map[turn_id]
+                text = render_quoted_chat_text(prompt, response, client_meta)
                 injected.append(
                     {
                         "id": turn_id,
@@ -724,7 +726,9 @@ async def _compute_entity_relatedness_boost_map(
                         "uri": turn_id,
                         "text": text[:1800],
                         "ts": _to_epoch(ts_by_turn.get(turn_id)),
-                        "tags": ["falkor", "chat", "chatturn", "entity_relatedness_injected"],
+                        "tags": chat_source_tags(
+                            client_meta, ["falkor", "chat", "chatturn", "entity_relatedness_injected"]
+                        ),
                         "score": 0.50,
                         "meta": {},
                     }

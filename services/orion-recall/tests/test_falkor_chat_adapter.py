@@ -37,7 +37,7 @@ def test_fetch_falkor_chatturn_fragments_full_shape(monkeypatch) -> None:
 
     async def _fake_text_join(turn_ids):
         assert turn_ids == ["turn-1"]
-        return {"turn-1": ("hi Circe", "hello")}
+        return {"turn-1": ("hi Circe", "hello", None)}
 
     monkeypatch.setattr(falkor_chat_adapter, "fetch_chat_turns_by_id", _fake_text_join)
 
@@ -68,6 +68,44 @@ def test_fetch_falkor_chatturn_fragments_full_shape(monkeypatch) -> None:
     # of the top-N window.
     assert "source_kind: 'chat.history'" in cypher
     assert params == {"max_items": 20}
+
+
+def test_fetch_falkor_chatturn_fragments_aitown_row_gets_marker_and_tag(monkeypatch) -> None:
+    """client_meta.external_room.platform == "aitown" must flow through the
+    Postgres join into the rendered text (the "[ai-town]" marker, not
+    "ExactUserText:") and into tags (see app/chat_source_tagging.py) --
+    regression coverage for the 2026-07-31 identity-bleed fix."""
+    rows = [
+        {"turn_id": "turn-1", "ts": "2026-07-18T07:46:34+00:00", "correlation_id": "turn-1"},
+    ]
+    fake_client = _FakeFalkorClient(rows)
+    monkeypatch.setattr(falkor_chat_adapter, "get_recall_falkor_client", lambda: fake_client)
+
+    async def _fake_text_join(turn_ids):
+        assert turn_ids == ["turn-1"]
+        return {
+            "turn-1": (
+                "hi there",
+                "hello traveler",
+                {
+                    "external_room": {"platform": "aitown"},
+                    "external_participant": {"participant_name": "Sable"},
+                },
+            )
+        }
+
+    monkeypatch.setattr(falkor_chat_adapter, "fetch_chat_turns_by_id", _fake_text_join)
+
+    out = _run(
+        falkor_chat_adapter.fetch_falkor_chatturn_fragments(
+            query_text="hi", session_id="sess-1", max_items=20
+        )
+    )
+
+    assert len(out) == 1
+    frag = out[0]
+    assert frag["text"] == '[ai-town] Sable: "hi there"\nOrion (in ai-town): "hello traveler"'
+    assert frag["tags"] == ["falkor", "chat", "chatturn", "aitown"]
 
 
 def test_fetch_falkor_chatturn_fragments_drops_turns_with_no_postgres_row(monkeypatch) -> None:

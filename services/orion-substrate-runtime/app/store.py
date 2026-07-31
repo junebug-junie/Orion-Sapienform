@@ -24,6 +24,7 @@ from orion.schemas.transport_projection import TransportBusProjectionV1
 from orion.schemas.grammar import GrammarEventV1
 from orion.schemas.organ_emission import OrganEmissionV1
 from orion.schemas.reduction_receipt import ReductionReceiptV1
+from orion.schemas.codebase_delta import CodebaseDeltaV1
 from orion.substrate.prediction_error import CodebaseMassBaseline
 from orion.core.schemas.substrate_episodes import EpisodeSummaryV1
 from orion.schemas.attention_frame import AttentionBroadcastProjectionV1
@@ -717,6 +718,64 @@ class BiometricsSubstrateStore:
                     f"""
                     DELETE FROM substrate_codebase_mass_baseline
                     WHERE generated_at < now() - interval '{float(retention_days)} days'
+                    """
+                ),
+            )
+
+    def save_codebase_delta_log(
+        self, event: CodebaseDeltaV1, *, score: float, retention_days: float
+    ) -> None:
+        """Append one raw event_json row per real CodebaseDeltaV1 event
+        actually consumed; prunes rows beyond retention.
+
+        Unlike `save_receipt`'s `_prediction_error_receipt` call (gated on
+        score > 0.0 -- an audit trail of notable events) this writes
+        unconditionally, every tick -- it exists to give a future Hub
+        analytics tab a complete real history of git/pr/graph deltas, not
+        just the moments that crossed the surprise threshold. Also distinct
+        from `save_codebase_mass_baseline` above, which only ever holds the
+        running EWMA state (ewma/variance/n), not the raw per-tick payload
+        (real commit counts, line churn, PR numbers, graph deltas).
+
+        `substrate_codebase_delta_log` has exactly one writer in the whole
+        repo -- this method, called only from
+        `_codebase_delta_listener_loop()`'s message handler. Same
+        single-writer, brand-new-table reasoning as `save_attention_self_model()`
+        below.
+        """
+        observed_at = event.observed_at
+        digest = hashlib.sha256(
+            f"{observed_at.isoformat()}|{event.domain}|{json.dumps(event.model_dump(mode='json'), sort_keys=True)}".encode(
+                "utf-8"
+            )
+        ).hexdigest()[:24]
+        now = datetime.now(timezone.utc)
+        with self._engine.begin() as conn:
+            conn.execute(
+                text(
+                    """
+                    INSERT INTO substrate_codebase_delta_log (
+                        event_id, domain, observed_at, score, event_json, created_at
+                    ) VALUES (
+                        :event_id, :domain, :observed_at, :score, :event_json, :created_at
+                    )
+                    ON CONFLICT (event_id) DO NOTHING
+                    """
+                ),
+                {
+                    "event_id": f"codebase-delta-{digest}",
+                    "domain": event.domain,
+                    "observed_at": observed_at,
+                    "score": float(score),
+                    "event_json": Json(event.model_dump(mode="json")),
+                    "created_at": now,
+                },
+            )
+            conn.execute(
+                text(
+                    f"""
+                    DELETE FROM substrate_codebase_delta_log
+                    WHERE observed_at < now() - interval '{float(retention_days)} days'
                     """
                 ),
             )

@@ -1465,6 +1465,22 @@ class BiometricsSubstrateWorker:
             git_delta=git_delta, pr_delta=pr_delta, graph_delta=graph_delta, baseline=baseline,
         )
         now = datetime.now(timezone.utc)
+        # field-digester's state_deltas.py ingests ReductionReceiptV1 rows
+        # (target_kind="prediction_signal"), NOT the FalkorDB node written
+        # below -- a completely separate path every other prediction_error
+        # domain's own tick already feeds (confirmed by reading the
+        # biometrics tick in this same file). Gated on error > 0.0, same
+        # audit-trail convention as every sibling domain -- a calm tick
+        # still writes the FalkorDB node every time, just skips this.
+        if result.score > 0.0:
+            self._store.save_receipt(
+                _prediction_error_receipt(
+                    reducer_key="codebase",
+                    node_id="node:substrate.codebase",
+                    prediction_error=result.score,
+                    now=now,
+                )
+            )
         self._write_prediction_error_node(
             node_id="node:substrate.codebase",
             error=result.score,
@@ -1473,6 +1489,15 @@ class BiometricsSubstrateWorker:
         )
         self._store.save_codebase_mass_baseline(
             result.baseline, retention_days=self._settings.codebase_mass_baseline_retention_days,
+        )
+        # Unconditional raw-event history (docs/superpowers/specs/2026-07-30-
+        # codebase-mass-signal-design.md follow-on: real per-tick payload for
+        # a future Hub "cocreation signals" analytics tab). Deliberately not
+        # gated on score > 0.0 like the receipt above -- this is meant to be
+        # a complete history, not a curated audit trail.
+        self._store.save_codebase_delta_log(
+            event, score=result.score,
+            retention_days=self._settings.codebase_delta_log_retention_days,
         )
         logger.info(
             "substrate_codebase_delta_scored domain=%s score=%.3f",

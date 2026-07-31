@@ -283,6 +283,15 @@ class Settings(BaseSettings):
     codebase_mass_baseline_retention_days: float = Field(
         30.0, alias="SUBSTRATE_CODEBASE_MASS_BASELINE_RETENTION_DAYS"
     )
+    # Append-only substrate_codebase_delta_log retention. Longer than the
+    # baseline table's 30 days on purpose: this table holds the raw per-tick
+    # payload (real commit counts, PR numbers, graph deltas) that a future
+    # Hub "cocreation signals" analytics tab needs real history to plot --
+    # the baseline table only needs its latest row functionally, this one's
+    # whole point is accumulated history.
+    codebase_delta_log_retention_days: float = Field(
+        180.0, alias="SUBSTRATE_CODEBASE_DELTA_LOG_RETENTION_DAYS"
+    )
 
     # Health monitor -> orion-notify attention alerts. Edge-triggered (fires only
     # on healthy->unhealthy transitions), not polled-and-spammed.

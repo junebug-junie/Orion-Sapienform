@@ -38,7 +38,17 @@ class TestBusSynapticPollE2E(unittest.TestCase):
         self.mock_settings.metacog_transport_trigger_enable = True
         self.mock_settings.metacog_transport_bus_synaptic_poll_enable = True
         self.mock_settings.metacog_transport_bus_synaptic_poll_interval_sec = 1  # Fast for testing
-        self.mock_settings.metacog_transport_bus_synaptic_error_threshold = 1.0
+        # 2026-07-31: was 1.0, the OLD magnitude metric's saturation ceiling.
+        # bus_synaptic_prediction_error is now a fraction of anomalous edges,
+        # so 1.0 means "every edge in the mesh anomalous at once" -- and the
+        # error values below were written against the old scale.
+        #
+        # Two of these tests were RED on origin/main before this patch:
+        # test_poll_above_threshold_triggers fed 0.87 against a 1.0 threshold
+        # and asserted a trigger fires, i.e. the "above threshold" case was
+        # never actually above the threshold. Values retuned to the fraction
+        # scale below, which makes each test's name true again.
+        self.mock_settings.metacog_transport_bus_synaptic_error_threshold = 0.15
         self.mock_settings.metacog_recall_enabled = False
 
     def tearDown(self):
@@ -53,9 +63,11 @@ class TestBusSynapticPollE2E(unittest.TestCase):
             service._calculate_metrics = MagicMock(return_value=(0.2, 0.7, []))
             service._publish_metacog_trigger = AsyncMock(return_value=None)
 
-            # Mock FalkorDB client returning a low error value
+            # Mock FalkorDB client returning a low error value.
+            # 0.05 sits inside the live-measured calm band (60 samples over
+            # 10 min: median 0.026, p95 0.072, max 0.094).
             mock_client = MagicMock()
-            mock_client.graph_query = MagicMock(return_value=[{"error": 0.5}])
+            mock_client.graph_query = MagicMock(return_value=[{"error": 0.05}])
             service._bus_synaptic_falkor_client = mock_client
 
             # Run one poll cycle manually (simulating what the loop does)
@@ -96,7 +108,7 @@ class TestBusSynapticPollE2E(unittest.TestCase):
 
             # Mock FalkorDB client returning error at exactly the threshold
             mock_client = MagicMock()
-            mock_client.graph_query = MagicMock(return_value=[{"error": 1.0}])
+            mock_client.graph_query = MagicMock(return_value=[{"error": 0.15}])
             service._bus_synaptic_falkor_client = mock_client
 
             # Run one poll cycle
@@ -125,7 +137,7 @@ class TestBusSynapticPollE2E(unittest.TestCase):
             self.assertIsNotNone(trigger)
             self.assertEqual(trigger.trigger_kind, "transport")
             self.assertEqual(trigger.upstream["evidence_source"], "bus_synaptic_prediction_error")
-            self.assertEqual(trigger.upstream["error"], 1.0)
+            self.assertEqual(trigger.upstream["error"], 0.15)
             self.assertIn("node:substrate.bus_synaptic", trigger.signal_refs)
 
         asyncio.run(_run())
@@ -138,9 +150,10 @@ class TestBusSynapticPollE2E(unittest.TestCase):
             service._calculate_metrics = MagicMock(return_value=(0.5, 0.5, []))
             service._publish_metacog_trigger = AsyncMock(return_value=None)
 
-            # Mock FalkorDB client returning high error
+            # Mock FalkorDB client returning high error: 0.40 = 40% of mesh edges
+            # anomalous, well inside the broad-event band this detector resolves.
             mock_client = MagicMock()
-            mock_client.graph_query = MagicMock(return_value=[{"error": 0.87}])
+            mock_client.graph_query = MagicMock(return_value=[{"error": 0.40}])
             service._bus_synaptic_falkor_client = mock_client
 
             # Run one poll cycle
@@ -167,7 +180,7 @@ class TestBusSynapticPollE2E(unittest.TestCase):
 
             # Should fire
             self.assertIsNotNone(trigger)
-            self.assertEqual(trigger.upstream["error"], 0.87)
+            self.assertEqual(trigger.upstream["error"], 0.40)
 
         asyncio.run(_run())
 
@@ -179,9 +192,10 @@ class TestBusSynapticPollE2E(unittest.TestCase):
             service._calculate_metrics = MagicMock(return_value=(0.4, 0.6, []))
             service._publish_metacog_trigger = AsyncMock(return_value=None)
 
-            # Mock with high error
+            # Mock with high error. 1.2 was previously used here, which the fraction
+            # metric cannot produce at all -- it is bounded [0, 1] by construction.
             mock_client = MagicMock()
-            mock_client.graph_query = MagicMock(return_value=[{"error": 1.2}])
+            mock_client.graph_query = MagicMock(return_value=[{"error": 0.60}])
             service._bus_synaptic_falkor_client = mock_client
 
             rows = await asyncio.to_thread(
@@ -208,7 +222,11 @@ class TestBusSynapticPollE2E(unittest.TestCase):
             self.assertIsNotNone(trigger)
             self.assertIn("error", trigger.upstream)
             self.assertIn("evidence_source", trigger.upstream)
-            self.assertIn("reason", trigger)
+            # Was `assertIn("reason", trigger)` -- a membership test against a
+            # pydantic model, not a field check. It never ran on origin/main
+            # because the assertIsNotNone above failed first (0.87 < 1.0), so it
+            # was never observed failing. Checking the field directly.
+            self.assertTrue(trigger.reason)
             self.assertIn("bus_synaptic", trigger.reason)
 
         asyncio.run(_run())

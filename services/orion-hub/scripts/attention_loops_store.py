@@ -199,7 +199,53 @@ def suppress_loop(theme_key: str, *, cooldown_sec: float = 86400.0) -> bool:
         return False
 
 
-SURFACE_MIN_SALIENCE = 0.5
+# --- SURFACE_MIN_SALIENCE: a bootstrap instrument, not a validated quality bar ---
+#
+# Was 0.5 from 2026-07-07 (commit 6bfe87aaf, "feat(hub): operator-legible
+# PendingAttentionCardV1 builder") to 2026-07-31, with no calibration rationale
+# ever recorded. Confirmed live 2026-07-30/31 (`scripts/analysis/measure_
+# attention_surface_threshold_calibration.py`): the max score
+# `attention_salience_trace` has EVER recorded, across its entire real history
+# (332 rows, 6 distinct theme_keys, 2026-07-24 onward), is 0.490 -- structurally
+# below 0.5, every single time. `attention_loop_outcome` (the operator
+# Resolve/Dismiss verdict table) had zero rows as a direct result: no threshold
+# had ever let a single card through for a human to judge.
+#
+# Recalibrated to 0.40, chosen from that same measurement's real distribution
+# (min=0.350, p50=0.395, p85=0.484, max=0.490). A relative/percentile-based
+# rule (recomputed live from recent scores, so it can't go stale the way a
+# hardcoded 0.5 did) was measured and rejected FOR NOW, not on principle:
+#   - Pseudo-replication: the top 2 of 6 theme_keys account for 89.8% of all
+#     rows, so a row-level percentile mostly describes "how loud are the
+#     chattiest 1-2 loops," not a real population percentile across distinct
+#     concepts.
+#   - Small-n instability: the same percentile (p85), replayed day-by-day
+#     across this system's own real early history, swung from 0.385 to 0.486
+#     (a 0.101 range) as data accumulated from 16 to 332 rows -- too unstable
+#     to trust yet with only ~6 distinct loops ever recorded.
+# If theme diversity grows materially, re-run the measurement script and
+# reconsider a percentile-based rule.
+#
+# 0.40 is NOT an objectively correct "worth a human's time" cutoff -- there is
+# no ground truth to derive one from (that's the whole point: attention_loop_
+# outcome is empty). The underlying SEED_WEIGHTS/LinearSalienceCombiner formula
+# (orion/substrate/attention/salience.py) is itself an explicitly-documented,
+# never-refit seed-v1 placeholder (GitHub issue #1512 tracks whether it needs
+# the same kind of redesign Layer 5 field attention got in PR #1484/#1529;
+# NOT addressed by this patch). This constant's only job is to let SOME real
+# loops surface so human Resolve/Dismiss verdicts can start accumulating --
+# the actual prerequisite for ever learning a real threshold (or a real
+# formula) from ground truth instead of guessing again. It WILL need
+# recalibration again if SEED_WEIGHTS is ever refit or the formula's absolute
+# scale otherwise shifts -- don't treat "it works today" as "it's done."
+SURFACE_MIN_SALIENCE = 0.40
+
+# Measured 2026-07-31 (same script, section 5): every real theme_key in the
+# live table was already 3500s-600000s past this gate, i.e. it is not
+# currently excluding anything real, and it does not degenerate into
+# trivially-always-true either (a brand-new theme does start under the gate
+# and age out normally over the 5 minutes). Left unchanged -- no evidence of
+# the same staleness bug found for SURFACE_MIN_SALIENCE.
 SURFACE_MIN_AGE_SEC = 300.0
 
 
@@ -209,6 +255,12 @@ def load_pending_loops(limit: int = 50) -> list[tuple[OpenLoopV1, datetime, int,
     Surfacing policy (quiet panel): salience >= SURFACE_MIN_SALIENCE and age >=
     SURFACE_MIN_AGE_SEC, excluding themes already suppressed (resolved/dismissed).
     Reads the salience trace table; best-effort -> [] on any miss.
+
+    SURFACE_MIN_SALIENCE is a recalibrated bootstrap threshold, not a
+    validated "worth a human's time" quality bar -- see the constant's own
+    docstring comment above for the full measurement and rationale
+    (`scripts/analysis/measure_attention_surface_threshold_calibration.py`,
+    GitHub issue #1512).
     """
     try:
         from sqlalchemy import text

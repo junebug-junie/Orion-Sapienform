@@ -62,10 +62,18 @@ router = APIRouter(prefix="/api/attention-organ", tags=["attention-organ"])
 # `active=False`, precisely so a retired instrument that is still ticking is
 # visible rather than hidden -- CLAUDE.md's "a narrow, known-bad instrument
 # merely excluded from one consumer is not retired, it is hiding".
+# `codebase` added 2026-07-31 (docs/superpowers/specs/2026-07-30-codebase-
+# mass-signal-design.md) once node:substrate.codebase started ticking live
+# with real data (SUBSTRATE_WRITE_CODEBASE_PREDICTION_ERROR_NODE flipped on
+# the same day) -- deliberately still excluded from ACTIVE_INFERENCE_DOMAINS
+# below (orion/substrate/attention_self_model.py), same "sibling domain node,
+# not yet folded into the confidence aggregate" status bus_synaptic held for
+# a while before that was a separate, explicit decision.
 KNOWN_PREDICTION_ERROR_DOMAINS: tuple[str, ...] = (
     "biometrics",
     "bus_synaptic",
     "chat",
+    "codebase",
     "execution",
     "route",
     "transport",

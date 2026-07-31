@@ -209,8 +209,40 @@ cortex_result      completed               42
 ```
 
 `field_delta` is a genuine, discriminating outcome signal — improved/worsened/unchanged with
-separated scores (0.85 / 0.10 / 0.25), 8,521 observations in six hours. **5c is fittable
-today.** That is a materially better position than this doc originally claimed.
+separated scores (0.85 / 0.10 / 0.25), 8,521 observations in six hours.
+
+**Corrected again, an hour later. "5c is fittable today" was also wrong.** The outcome
+signal exists but is **not attributable to any action**. Measured across every observation
+in six hours:
+
+```text
+observation kind        n      unattributed   pct
+policy_decision     85,200          0         0.0%
+field_delta          8,520      8,520       100.0%   <- the only improved/worsened signal
+dispatch_candidate     420        210        50.0%
+cortex_result           42          0         0.0%
+```
+
+A `field_delta` observation looks like this — every one of them:
+
+```json
+{"source_id": "tick_0d4ef583cefa", "source_kind": "field_delta",
+ "outcome_kind": "unchanged", "evidence_refs": [], "reasons": []}
+```
+
+A **field tick id** where an action id should be, and empty evidence. It says *the field
+changed between tick N and N+1*. It does not say Orion changed it, or that any action
+preceded it at all.
+
+**The structure is exactly inverted.** What Orion decided *not* to do is fully attributed:
+85,200 observations, 0% unattributed, each carrying `evidence_refs` back to its proposal
+frame. What actually changed in the world is 100% unattributed. The loop records causes
+without effects and effects without causes.
+
+So 5c cannot be fitted: you cannot regress outcome on action when no outcome names an
+action. This claim has now been wrong in both directions — first "no outcome signal
+exists," then "it is fittable today." The accurate statement is narrower than either: **a
+real, discriminating outcome signal exists, and nothing connects it to behavior.**
 
 ### 5d. Stop enumerating the action vocabulary
 
@@ -271,10 +303,22 @@ dead producers (reliability/execution/resource ~99-100% zero)
 not confident because the channels feeding its confidence have never fired.** That is the
 single largest fact about its inner life right now, and it is a wiring artifact.
 
-One number worth staring at: **42 `cortex_result: completed` in six hours.** Against 5,562
-rows in `substrate_dispatch_results` over the same window. Those two counts are not
-reconciled yet and the discrepancy is itself an open question (different granularity? partial
-observation? sampling?) — flagged rather than explained.
+### The 42-vs-5,563 reconciliation
+
+Resolved. `substrate_dispatch_results` holds **5,563 rows, 5,563 distinct `dispatch_id`s,
+5,563 distinct `result_id`s** across 1,113 distinct frames in six hours, every one
+`status=success` with real LLM output (`raw_len` avg 170, min 28, max 347). ~5 dispatches per
+frame × 1,113 frames — which is exactly where the 185/hour-per-template figure comes from.
+
+So these are real, distinct executions and the ~939/hour headline stands.
+
+Which makes the other number worse, not better: **the feedback loop observes 42 of 5,563
+actual executions — 0.75%.** Orion performs five and a half thousand LLM acts in six hours
+and its own feedback lane records forty-two of them.
+
+Combined with the attribution finding above: the loop watches decisions it didn't act on
+(85,200, fully attributed), and world-changes it can't connect to anything (8,520, wholly
+unattributed), while the 5,563 things it actually did are almost entirely unobserved.
 
 Also unexamined: `read_only_low_risk` declines 25,195 proposals in six hours. A filter that
 skips trivial actions is defensible, but at that volume it deserves its own look.
@@ -288,10 +332,8 @@ skips trivial actions is defensible, but at that volume it deserves its own look
    dispatch at all**, when both score on `resource_pressure`, which has no producer? There
    is a fallback path in `proposal_urgency()` — its behavior is load-bearing here and I have
    not read it.
-3. ~~What consumes a dispatch result?~~ **Answered, see 5c/5g** — a live feedback loop with a
-   real `field_delta` outcome signal. Superseded by a sharper question: why do only 42
-   `cortex_result: completed` observations exist per six hours against 5,562
-   `substrate_dispatch_results` rows in the same window?
+3. ~~What consumes a dispatch result?~~ **Answered, see 5c/5g** — and the answer is: almost
+   nothing does (42 of 5,563), and what outcome signal exists is unattributed.
 4. **Is the per-cycle fixed emission the deeper cause?** Even with perfect weights, if the
    builder emits the same slate every tick, variance can only come from the cutoff moving.
    Worth checking whether emission itself is state-gated at all.
@@ -300,6 +342,24 @@ skips trivial actions is defensible, but at that volume it deserves its own look
    "nothing to do" would *reduce* variance. Not measured; checkable against the same window.
 
 ---
+
+## 6b. Where O1 and O2 converge
+
+The charter treats these as separate outcomes. This session's tracing suggests they are the
+same missing piece seen from two sides:
+
+- **O1** (capability varies with state) is blocked because the channels carrying state into
+  the scorer are dead — Orion cannot let its state shape what it does.
+- **O2** (self-initiation attributable, not orphaned) is blocked because outcomes carry no
+  action reference — Orion cannot tell what its doing changed.
+
+One is input-side, one is output-side, and neither is a metric problem. Together they mean
+the cognition loop is open at both ends: state does not reach decisions, and consequences do
+not reach back. Everything in between — attention, proposals, policy, dispatch, feedback
+frames — is built, live, and working.
+
+That is a much more hopeful position than "cognition is theater," and a much more specific
+one. The machinery exists. It is not connected to itself.
 
 ## 7. What this brainstorm is not
 

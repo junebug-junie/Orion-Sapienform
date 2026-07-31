@@ -831,8 +831,10 @@ class EquilibriumService(BaseChassis):
                     # the sibling call in orion-substrate-runtime's
                     # _bus_synaptic_tick is dispatched (worker.py's own tick
                     # is offloaded via asyncio.to_thread at its call site).
-                    # observed_at is fetched alongside the value so the gate
-                    # can refuse a frozen node -- see its staleness guard.
+                    # observed_at is fetched for operator visibility only --
+                    # it is REPORTED into the trigger's upstream, never gated
+                    # on. See the gate's "Why there is NO staleness guard here"
+                    # note: the field is clobbered by a racing writer.
                     rows = await asyncio.to_thread(
                         client.graph_query,
                         "MATCH (n:SubstrateNode) WHERE n.node_id = $node_id "
@@ -845,7 +847,7 @@ class EquilibriumService(BaseChassis):
                         if not isinstance(row, dict):
                             continue
                         value = row.get("error")
-                        if isinstance(value, (int, float)):
+                        if isinstance(value, (int, float)) and not isinstance(value, bool):
                             error = float(value)
                         raw_observed = row.get("observed_at")
                         if isinstance(raw_observed, str) and raw_observed:
@@ -861,12 +863,26 @@ class EquilibriumService(BaseChassis):
                             previously_above=self._bus_synaptic_above_threshold,
                             node_age_sec=_node_age_sec(observed_at),
                         )
-                        # Edge state is updated from the RAW level, independently
-                        # of whether a trigger was built: a fire suppressed by
-                        # staleness or by the cooldown lane must still count as
-                        # "we are now above", or the next poll would read as a
-                        # fresh rising edge and re-fire forever -- reintroducing
-                        # exactly the per-tick spam this change removes.
+                        # Latch the rising edge ONLY on a real publish.
+                        #
+                        # Review finding (2026-07-30): latching from the raw
+                        # level, before publishing, converts a *transient*
+                        # cooldown collision into *permanent* event loss. The
+                        # `transport` cooldown lane is shared with the
+                        # rpc_health and rpc_timeout branches, which publish
+                        # ~859 rows/day between them -- at a 30s lane that
+                        # shadows roughly a quarter of the day. An episode start
+                        # landing in a shadowed window would have been dropped
+                        # by the lane, latched anyway, and then suppressed by
+                        # the `previously_above` check on every subsequent poll:
+                        # never published, never retried. The pre-patch level
+                        # check was lossy but self-healing here; this restores
+                        # that recovery without restoring the spam, because once
+                        # the lane clears it publishes exactly once and latches.
+                        published = True
+                        if trigger is not None:
+                            published = await self._publish_metacog_trigger(trigger)
+
                         threshold = (
                             settings.metacog_transport_bus_synaptic_error_threshold
                         )
@@ -875,16 +891,14 @@ class EquilibriumService(BaseChassis):
                             * settings.metacog_transport_bus_synaptic_clear_ratio
                         )
                         if error >= threshold:
-                            self._bus_synaptic_above_threshold = True
+                            # `published` is True whenever no trigger was built
+                            # (already above, or below threshold) so an ongoing
+                            # episode stays latched and silent as intended.
+                            self._bus_synaptic_above_threshold = published
                         elif error < clear_at:
                             self._bus_synaptic_above_threshold = False
                         # Between clear_at and threshold the previous state is
-                        # HELD -- the hysteresis band. Without it a reading
-                        # oscillating across the threshold re-arms and re-fires
-                        # on every crossing, which for a bimodal metric is most
-                        # of them.
-                        if trigger is not None:
-                            await self._publish_metacog_trigger(trigger)
+                        # HELD -- the hysteresis band.
             except Exception:
                 logger.exception("bus_synaptic_poll_loop_failed")
 

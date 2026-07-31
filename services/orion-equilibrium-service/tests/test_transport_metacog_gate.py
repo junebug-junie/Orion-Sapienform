@@ -348,8 +348,12 @@ def test_edge_and_hysteresis_collapse_a_real_firing_pattern() -> None:
     # 3 episodes: the two sustained ones plus the flap's first crossing. The
     # flap's four subsequent re-crossings are absorbed by the hysteresis band.
     assert fires == 3
-    # The pre-fix level check fired on every poll at-or-above threshold: 21 of
-    # 38 polls here, versus 3 episodes. That ~7x collapse on a 38-sample series
-    # is the same shape as the live 1,812-rows-in-24h number.
-    assert sum(1 for v in series if v >= threshold) == 21
-    assert fires < sum(1 for v in series if v >= threshold)
+    # The pre-fix level check fired on every poll at-or-above threshold. Assert
+    # the RELATIONSHIP (episodes << polls-above-threshold), not the literal
+    # count of a hand-written list -- review correctly called that out as
+    # documentation wearing an assertion's clothes.
+    polls_above = sum(1 for v in series if v >= threshold)
+    assert fires * 5 < polls_above, (
+        f"expected a large collapse; got {fires} episodes from {polls_above} "
+        "polls above threshold"
+    )

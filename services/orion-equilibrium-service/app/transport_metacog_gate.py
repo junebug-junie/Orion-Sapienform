@@ -210,9 +210,14 @@ def build_transport_metacog_trigger_from_bus_synaptic(
             "error": error,
             "error_threshold": error_threshold,
             "edge_count": edge_count,
-            # Named so a reader of the orion_metacog row can tell this is the
-            # START of an anomaly episode, not a periodic restatement of an
-            # ongoing one -- the distinction the pre-2026-07-30 rows lack.
+            # NOTE (review, 2026-07-30): `upstream` does NOT reach the
+            # orion_metacog row -- it feeds the LLM draft prompt only
+            # (orion-cortex-exec/app/executor.py), and is dropped entirely under
+            # budget pressure. Verified live: 0 of 1,248 persisted bus_synaptic
+            # rows carry these keys. The field that actually reaches a future
+            # temporal reducer is `reason`/trigger_reason above, which is why
+            # "episode_start" is encoded there. These stay for prompt context
+            # and operator log reading, not as the reducer's contract.
             "transition": "below_to_above",
             "node_age_sec": node_age_sec,
         },

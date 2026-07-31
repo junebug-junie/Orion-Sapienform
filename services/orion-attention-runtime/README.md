@@ -14,14 +14,30 @@ Layer 5 substrate service: polls latest `FieldStateV1` from Postgres and builds 
 
 ## Prerequisites
 
-Apply migration:
+Apply migrations:
 
 ```bash
 docker exec -i orion-athena-sql-db psql -U postgres -d conjourney \
   < services/orion-sql-db/manual_migration_attention_frame_v1.sql
+docker exec -i orion-athena-sql-db psql -U postgres -d conjourney \
+  < services/orion-sql-db/manual_migration_node_prediction_error_baseline_v1.sql
 ```
 
 Requires `orion-field-digester` (or equivalent) writing `substrate_field_state`.
+
+## Candidate A precision-weighted salience: persisted EWMA baseline (2026-07-30 fix)
+
+Each of the five `node:substrate.*` targets in `PREDICTION_ERROR_NATIVE_TARGETS`
+(`orion/attention/field_attention/selectors.py`) gets its own persisted, incrementally-
+updated running baseline in `substrate_node_prediction_error_baseline`
+(`AttentionRuntimeStore.advance_node_prediction_error_baseline`), advanced by exactly one
+real new `substrate_reduction_receipts` row at a time. This replaced a per-tick
+recompute over that table's own ~30-minute retention window, which let a target with as
+few as 2 real samples surviving the window win a fully-confident-looking
+`salience_score=1.0` -- see `orion/attention/field_attention/candidate_precision_weighted.py`'s
+module docstring and `orion/sentience_striving_program/README.md` section 12 for the full
+live-incident record. `observation_count` on the persisted baseline is a real cumulative
+count of every receipt this target has ever incorporated, immune to that retention prune.
 
 ## Run
 

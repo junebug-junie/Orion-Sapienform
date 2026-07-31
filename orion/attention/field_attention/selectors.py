@@ -3,9 +3,11 @@ from __future__ import annotations
 from typing import Literal
 
 from orion.attention.field_attention.candidate_precision_weighted import (
+    NODE_TARGET_PREDICTION_ERROR_MIN_VARIANCE,
+    PrecisionEwmaBaseline,
     PrecisionWeightedSalienceResult,
     normalize_across_targets,
-    precision_weighted_salience,
+    precision_weighted_salience_from_baseline,
 )
 from orion.attention.field_attention.candidate_society_of_mind import novelty_scorer
 from orion.attention.field_attention.policy import FieldAttentionPolicyV1
@@ -241,7 +243,7 @@ def observation_mode_for(salience: float, policy: FieldAttentionPolicyV1) -> Obs
 def select_node_targets(
     field: FieldStateV1,
     policy: FieldAttentionPolicyV1,
-    prediction_error_histories: dict[str, list[float]],
+    prediction_error_baselines: dict[str, PrecisionEwmaBaseline],
 ) -> list[FieldAttentionTargetV1]:
     """Real, precision-weighted node targets only (Candidate A -- Feldman &
     Friston 2010, "Attention, Uncertainty, and Free-Energy":
@@ -263,19 +265,36 @@ def select_node_targets(
     to report a salience score computed from hand-picked channel weights.
     Same for all capability targets (`select_capability_targets`, below).
 
-    `prediction_error_histories`: {node_id: real ASC-by-time error history},
-    caller-fetched (`AttentionRuntimeStore.load_prediction_error_history`)
-    so this stays a pure function -- see that store method's own docstring
-    for the query shape and the ~30-minute rolling-retention caveat
-    (`substrate_reduction_receipts` only retains recent success receipts).
-    A target with zero real history (`n_samples == 0`) is excluded entirely,
-    not scored 0.0 -- "no data" and "confidently calm" are different claims.
+    2026-07-30 second fix (Sentience Striving Program officer review -- see
+    `orion/sentience_striving_program/README.md` §12): this used to take
+    `prediction_error_histories: dict[str, list[float]]`, a raw ASC-by-time
+    error history re-fetched fresh every tick from
+    `AttentionRuntimeStore.load_prediction_error_history` -- a rolling
+    ~30-minute window (`substrate_reduction_receipts`' own retention), not a
+    cumulative history. That let a target with as few as 2 real samples
+    surviving the window (live-confirmed: `node:substrate.chat`, n=2,
+    confidence_score=0.1) read a fully-confident-looking salience_score=1.0
+    once it happened to be the sole real competitor (`normalize_across_
+    targets()`'s own documented single-target edge case) -- correct given
+    that edge case's contract, but fed by an input with no real statistical
+    basis. Now takes `prediction_error_baselines`: {node_id:
+    PrecisionEwmaBaseline}, a persisted, incrementally-updated running
+    baseline per target (`AttentionRuntimeStore.
+    advance_node_prediction_error_baseline`) whose `observation_count` is a
+    true monotonic count of every real receipt ever incorporated, immune to
+    the retention pruner. A target with zero real observations ever
+    (`observation_count == 0`) is excluded entirely, not scored 0.0 -- "no
+    data" and "confidently calm" are different claims, same discipline as
+    before, just keyed off a real cumulative count instead of a
+    window-bounded one.
     """
     results: dict[str, PrecisionWeightedSalienceResult] = {}
     raw_scores: dict[str, float] = {}
-    for target_id, reducer_key in PREDICTION_ERROR_NATIVE_TARGETS.items():
-        history = prediction_error_histories.get(target_id, [])
-        result = precision_weighted_salience(history)
+    for target_id in PREDICTION_ERROR_NATIVE_TARGETS:
+        baseline = prediction_error_baselines.get(target_id, PrecisionEwmaBaseline())
+        result = precision_weighted_salience_from_baseline(
+            baseline, min_variance=NODE_TARGET_PREDICTION_ERROR_MIN_VARIANCE
+        )
         if result.n_samples == 0:
             continue
         results[target_id] = result

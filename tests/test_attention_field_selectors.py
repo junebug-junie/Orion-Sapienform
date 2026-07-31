@@ -1,6 +1,12 @@
 from datetime import datetime, timezone
 from pathlib import Path
 
+from orion.attention.field_attention.candidate_precision_weighted import (
+    NODE_TARGET_PREDICTION_ERROR_EWMA_ALPHA,
+    NODE_TARGET_PREDICTION_ERROR_MIN_VARIANCE,
+    PrecisionEwmaBaseline,
+    advance_precision_baseline,
+)
 from orion.attention.field_attention.policy import load_attention_policy
 from orion.attention.field_attention.selectors import (
     PREDICTION_ERROR_NATIVE_TARGETS,
@@ -13,6 +19,20 @@ from orion.attention.field_attention.selectors import (
 from orion.field.pressure import RECENT_PERTURBATION_EWMA_MIN_SAMPLES
 from orion.schemas.field_attention_frame import FieldAttentionFrameV1, FieldAttentionTargetV1
 from orion.schemas.field_state import FieldStateV1
+
+
+def _baseline(values: list[float]) -> PrecisionEwmaBaseline:
+    """Test helper: build a PrecisionEwmaBaseline the same way the live worker
+    does -- folding real values in one at a time via advance_precision_baseline
+    -- rather than hand-constructing baseline fields directly. Empty `values`
+    yields the cold-start zero baseline (n=0, excluded by select_node_targets)."""
+    baseline = PrecisionEwmaBaseline()
+    return advance_precision_baseline(
+        baseline,
+        values,
+        alpha=NODE_TARGET_PREDICTION_ERROR_EWMA_ALPHA,
+        min_variance=NODE_TARGET_PREDICTION_ERROR_MIN_VARIANCE,
+    )
 
 REPO = Path(__file__).resolve().parents[1]
 POLICY = load_attention_policy(REPO / "config" / "attention" / "field_attention_policy.v1.yaml")
@@ -109,8 +129,8 @@ _FIELD_FOR_NODE_TESTS = FieldStateV1(
 
 
 def test_select_node_targets_scores_only_prediction_error_native_ids() -> None:
-    histories = {"node:substrate.execution": [0.05, 0.06, 0.04, 0.05, 0.9]}
-    targets = select_node_targets(_FIELD_FOR_NODE_TESTS, POLICY, histories)
+    baselines = {"node:substrate.execution": _baseline([0.05, 0.06, 0.04, 0.05, 0.9])}
+    targets = select_node_targets(_FIELD_FOR_NODE_TESTS, POLICY, baselines)
     target_ids = {t.target_id for t in targets}
     assert target_ids == {"node:substrate.execution"}
     assert "node:athena" not in target_ids  # never scored, not zero-scored
@@ -122,20 +142,46 @@ def test_select_node_targets_excludes_targets_with_no_real_history() -> None:
 
 
 def test_select_node_targets_excludes_targets_with_empty_history_list() -> None:
-    histories = {"node:substrate.execution": []}
-    targets = select_node_targets(_FIELD_FOR_NODE_TESTS, POLICY, histories)
+    baselines = {"node:substrate.execution": _baseline([])}
+    targets = select_node_targets(_FIELD_FOR_NODE_TESTS, POLICY, baselines)
     assert targets == []
 
 
 def test_select_node_targets_confidence_scales_with_sample_count() -> None:
     few = select_node_targets(
-        _FIELD_FOR_NODE_TESTS, POLICY, {"node:substrate.execution": [0.1, 0.2]}
+        _FIELD_FOR_NODE_TESTS, POLICY, {"node:substrate.execution": _baseline([0.1, 0.2])}
     )[0]
     many = select_node_targets(
-        _FIELD_FOR_NODE_TESTS, POLICY, {"node:substrate.execution": [0.1] * 25 + [0.9]}
+        _FIELD_FOR_NODE_TESTS,
+        POLICY,
+        {"node:substrate.execution": _baseline([0.1] * 25 + [0.9])},
     )[0]
     assert few.confidence_score < many.confidence_score
     assert many.confidence_score == 1.0  # clamped at QUALIFYING_MIN_ROWS=20
+
+
+def test_select_node_targets_observation_count_survives_a_pruned_window() -> None:
+    """2026-07-30 regression test for the live incident (see orion/
+    sentience_striving_program/README.md §12): a target's real n_samples must
+    reflect its persisted baseline's cumulative observation_count, not shrink
+    just because a caller happens to construct the baseline from a small
+    per-tick fetch. Simulates two separate ticks (a real historical batch, then
+    a later small batch of only-new receipts) folding into the SAME persisted
+    baseline -- confidence must reflect the full accumulated count, not just the
+    most recent tick's fetch size."""
+    baseline = _baseline([0.1] * 19)  # tick 1: a real historical backlog
+    baseline = advance_precision_baseline(
+        baseline,
+        [0.2],  # tick 2: exactly one new real receipt
+        alpha=NODE_TARGET_PREDICTION_ERROR_EWMA_ALPHA,
+        min_variance=NODE_TARGET_PREDICTION_ERROR_MIN_VARIANCE,
+    )
+    targets = select_node_targets(
+        _FIELD_FOR_NODE_TESTS, POLICY, {"node:substrate.execution": baseline}
+    )
+    assert len(targets) == 1
+    assert targets[0].confidence_score == 1.0  # 20 real observations total, fully qualified
+    assert "n=20" in targets[0].reasons[0]
 
 
 def test_select_node_targets_only_covers_the_confirmed_five_reducers() -> None:
@@ -177,15 +223,21 @@ def test_select_node_targets_multi_target_competition_normalizes_min_to_zero_max
         "node:substrate.execution": [0.02, 0.03, 0.02, 0.03, 0.95],
     }
     from orion.attention.field_attention.candidate_precision_weighted import (
-        precision_weighted_salience,
+        precision_weighted_salience_from_baseline,
     )
 
-    raw = {k: precision_weighted_salience(v).salience for k, v in histories.items()}
+    baselines = {k: _baseline(v) for k, v in histories.items()}
+    raw = {
+        k: precision_weighted_salience_from_baseline(
+            b, min_variance=NODE_TARGET_PREDICTION_ERROR_MIN_VARIANCE
+        ).salience
+        for k, b in baselines.items()
+    }
     weaker_id = min(raw, key=raw.get)
     stronger_id = max(raw, key=raw.get)
     assert raw[weaker_id] != raw[stronger_id]  # sanity: the fixture must be non-degenerate
 
-    targets = select_node_targets(_FIELD_FOR_NODE_TESTS, POLICY, histories)
+    targets = select_node_targets(_FIELD_FOR_NODE_TESTS, POLICY, baselines)
     by_id = {t.target_id: t for t in targets}
     assert len(targets) == 2
     # Min-max normalization: the weaker real competitor floors to exactly 0.0,
@@ -202,13 +254,13 @@ def test_select_node_targets_multi_target_competition_normalizes_min_to_zero_max
 
 def test_select_node_targets_min_samples_boundary_at_qualifying_min_rows() -> None:
     just_under = select_node_targets(
-        _FIELD_FOR_NODE_TESTS, POLICY, {"node:substrate.execution": [0.1] * 19}
+        _FIELD_FOR_NODE_TESTS, POLICY, {"node:substrate.execution": _baseline([0.1] * 19)}
     )[0]
     exactly_at = select_node_targets(
-        _FIELD_FOR_NODE_TESTS, POLICY, {"node:substrate.execution": [0.1] * 20}
+        _FIELD_FOR_NODE_TESTS, POLICY, {"node:substrate.execution": _baseline([0.1] * 20)}
     )[0]
     over = select_node_targets(
-        _FIELD_FOR_NODE_TESTS, POLICY, {"node:substrate.execution": [0.1] * 25}
+        _FIELD_FOR_NODE_TESTS, POLICY, {"node:substrate.execution": _baseline([0.1] * 25)}
     )[0]
     assert just_under.confidence_score < 1.0
     assert exactly_at.confidence_score == 1.0
@@ -219,7 +271,7 @@ def test_select_node_targets_surfaces_variance_floored_in_reasons() -> None:
     # A near-perfectly-constant real history -- precision_weighted_salience's
     # own variance-floor instability case. Must be visible in `reasons`, not
     # silently absorbed into a plain-looking salience number.
-    near_constant = [0.5] * 25
+    near_constant = _baseline([0.5] * 25)
     targets = select_node_targets(
         _FIELD_FOR_NODE_TESTS, POLICY, {"node:substrate.execution": near_constant}
     )

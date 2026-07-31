@@ -9,9 +9,14 @@ from __future__ import annotations
 import pytest
 
 from orion.attention.field_attention.candidate_precision_weighted import (
+    NODE_TARGET_PREDICTION_ERROR_EWMA_ALPHA,
+    NODE_TARGET_PREDICTION_ERROR_MIN_VARIANCE,
     PRECISION_VARIANCE_FLOOR,
+    PrecisionEwmaBaseline,
+    advance_precision_baseline,
     normalize_across_targets,
     precision_weighted_salience,
+    precision_weighted_salience_from_baseline,
 )
 
 
@@ -168,3 +173,130 @@ def test_normalize_across_targets_end_to_end_with_real_precision_weighted_salien
     normalized = normalize_across_targets(raw)
     assert set(normalized) == {"quiet", "noisy"}
     assert all(0.0 <= v <= 1.0 for v in normalized.values())
+
+
+# -- advance_precision_baseline / precision_weighted_salience_from_baseline ---
+# 2026-07-30 fix (Sentience Striving Program officer review, see
+# orion/sentience_striving_program/README.md §12): the live incident this section
+# regression-tests is that the OLD path (precision_weighted_salience() fed by a
+# freshly re-queried ~30-minute rolling window every tick) let a target's real
+# "n_samples" silently reset to whatever currently survived that window instead of
+# accumulating. The persisted EWMA baseline below is what actually fixes that.
+
+
+def test_advance_precision_baseline_empty_new_values_returns_same_object() -> None:
+    """A tick with no new real receipts must be a true no-op -- the caller uses
+    object identity to decide whether a DB write is even needed."""
+    baseline = PrecisionEwmaBaseline(ewma=0.1, variance=0.01, observation_count=5, last_value=0.1)
+    result = advance_precision_baseline(baseline, [], alpha=0.2, min_variance=1e-5)
+    assert result is baseline
+
+
+def test_advance_precision_baseline_cold_start_first_observation() -> None:
+    baseline = PrecisionEwmaBaseline()
+    result = advance_precision_baseline(baseline, [0.05], alpha=0.2, min_variance=1e-5)
+    assert result.observation_count == 1
+    assert result.last_value == pytest.approx(0.05)
+    assert result.ewma == pytest.approx(0.05)  # compute_ewma_update's own first-obs contract
+    assert result.variance == 0.0  # no fluctuation observed yet
+
+
+def test_advance_precision_baseline_observation_count_is_cumulative_not_windowed() -> None:
+    """The exact property that fixes the live incident: folding N real values in,
+    one at a time across separate calls (simulating separate ticks), accumulates
+    observation_count -- it never resets just because a caller's fetch this tick
+    was small."""
+    baseline = PrecisionEwmaBaseline()
+    for value in [0.01, 0.02]:
+        baseline = advance_precision_baseline(baseline, [value], alpha=0.2, min_variance=1e-5)
+    assert baseline.observation_count == 2
+    # A later tick that fetches a large batch of new real receipts (e.g. after a
+    # backlog) keeps accumulating on top, not starting over.
+    baseline = advance_precision_baseline(
+        baseline, [0.03, 0.04, 0.05], alpha=0.2, min_variance=1e-5
+    )
+    assert baseline.observation_count == 5
+    assert baseline.last_value == pytest.approx(0.05)
+
+
+def test_advance_precision_baseline_multiple_new_values_processed_in_order() -> None:
+    baseline = PrecisionEwmaBaseline()
+    baseline = advance_precision_baseline(
+        baseline, [0.1, 0.2, 0.9], alpha=0.2, min_variance=1e-5
+    )
+    assert baseline.observation_count == 3
+    assert baseline.last_value == pytest.approx(0.9)  # the most recent, not max/mean
+
+
+def test_precision_weighted_salience_from_baseline_cold_start_is_empty() -> None:
+    result = precision_weighted_salience_from_baseline(
+        PrecisionEwmaBaseline(), min_variance=1e-5
+    )
+    assert result.n_samples == 0
+    assert result.salience == 0.0
+    assert result.precision == 0.0
+
+
+def test_precision_weighted_salience_from_baseline_uses_observation_count_as_n_samples() -> None:
+    baseline = PrecisionEwmaBaseline(ewma=0.1, variance=0.02, observation_count=37, last_value=0.3)
+    result = precision_weighted_salience_from_baseline(baseline, min_variance=1e-5)
+    assert result.n_samples == 37
+    assert result.current_error == pytest.approx(0.3)
+    assert result.precision == pytest.approx(1.0 / 0.02)
+    assert result.salience == pytest.approx((1.0 / 0.02) * 0.3)
+
+
+def test_precision_weighted_salience_from_baseline_floors_near_zero_variance() -> None:
+    baseline = PrecisionEwmaBaseline(ewma=0.03, variance=1e-9, observation_count=10, last_value=0.031)
+    result = precision_weighted_salience_from_baseline(baseline, min_variance=1e-5)
+    assert result.variance_floored is True
+    assert result.precision == pytest.approx(1.0 / 1e-5)
+    import math
+
+    assert math.isfinite(result.precision)
+
+
+def test_precision_weighted_salience_from_baseline_does_not_falsely_pin_at_low_n() -> None:
+    """This is the concrete regression for the live incident: a baseline that has
+    only accumulated 2 real observations must still honestly report n_samples=2
+    (not silently inflate it), because it is the caller's/consumer's job
+    (goal_provenance.py's confidence gate) to distinguish 'real but thin' from
+    'real and trustworthy' -- this function's job is only to report the truth of
+    what the baseline has actually seen so far."""
+    baseline = PrecisionEwmaBaseline()
+    for value in [0.0028, 0.0053]:  # the real live chat_session pair, 2026-07-30
+        baseline = advance_precision_baseline(baseline, [value], alpha=0.2, min_variance=1e-5)
+    result = precision_weighted_salience_from_baseline(baseline, min_variance=1e-5)
+    assert result.n_samples == 2  # honest, not artificially inflated or reset
+
+
+def test_advance_and_score_synthetic_regime_shift_no_permanent_floor_pinning() -> None:
+    """A synthetic series with a real regime shift (long calm period, then a real
+    sustained change) should NOT stay permanently pinned at the variance floor once
+    enough real observations have accumulated -- confirms the EWMA baseline can
+    genuinely reflect a live process's real statistics over time, not just freeze
+    at whatever its first few samples looked like."""
+    calm = [0.05] * 15
+    shifted = [0.05, 0.4, 0.05, 0.45, 0.05, 0.5, 0.05, 0.42]
+    baseline = PrecisionEwmaBaseline()
+    for value in calm:
+        baseline = advance_precision_baseline(
+            baseline, [value], alpha=NODE_TARGET_PREDICTION_ERROR_EWMA_ALPHA,
+            min_variance=NODE_TARGET_PREDICTION_ERROR_MIN_VARIANCE,
+        )
+    calm_result = precision_weighted_salience_from_baseline(
+        baseline, min_variance=NODE_TARGET_PREDICTION_ERROR_MIN_VARIANCE
+    )
+    assert calm_result.variance_floored is True  # genuinely constant so far -- real, not a bug
+
+    for value in shifted:
+        baseline = advance_precision_baseline(
+            baseline, [value], alpha=NODE_TARGET_PREDICTION_ERROR_EWMA_ALPHA,
+            min_variance=NODE_TARGET_PREDICTION_ERROR_MIN_VARIANCE,
+        )
+    shifted_result = precision_weighted_salience_from_baseline(
+        baseline, min_variance=NODE_TARGET_PREDICTION_ERROR_MIN_VARIANCE
+    )
+    assert shifted_result.variance_floored is False
+    assert shifted_result.variance > calm_result.variance
+    assert baseline.observation_count == 15 + 8  # real cumulative count, not reset

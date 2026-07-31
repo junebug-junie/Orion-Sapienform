@@ -710,3 +710,81 @@ any candidate signal as real substrate for this section.
   agent-dispatch-scoped GWT mechanism, referenced not duplicated.
 - `config/substrate-lattice/transport_lattice_policy.v1.yaml` — working precedent for
   Objective 2.
+
+## 12. Layer 5 field attention precision-weighted salience — officer review and fix, 2026-07-30
+
+**What was reviewed.** Layer 5 field attention's Candidate A (precision-weighted
+prediction-error salience, Feldman & Friston 2010 —
+`orion/attention/field_attention/candidate_precision_weighted.py`/`selectors.py`) and the
+goal-provenance dominance-streak producer built on top of it in the same-day PR #1517
+(`goal_provenance.py`, `services/orion-attention-runtime/app/worker.py`). This review was
+run at Juniper's explicit request, framed as a Sentience Striving Program officer
+evaluation of a live, currently-running pipeline, not a retrospective or archival review —
+the pathology found was actively firing at review time.
+
+**Concrete evidence found, live.** `AttentionRuntimeStore.load_prediction_error_history`
+re-queried `substrate_reduction_receipts` fresh on every 2-second tick, and that table
+retains success receipts for only `ORION_RECEIPT_RETENTION_SUCCESS_MINUTES` (30 min
+live) — a rolling window, not a cumulative history, so a target's `n_samples` could rise
+and fall independent of how much real data it had ever actually produced.
+Live-confirmed 2026-07-30 (~23:30–23:42 UTC): `node:substrate.chat` was the *only* one of
+the five `PREDICTION_ERROR_NATIVE_TARGETS` domains with any qualifying receipts inside
+that window at all (the other four sat at `n_samples=0`), with exactly `n=2` real samples,
+`precision=640000` (variance ~1.56e-6, barely above the module's `1e-6` floor — a
+near-certainty produced by two points, not evidence of real stability), and
+`confidence_score=0.1` (the system's own honest `n_samples/QUALIFYING_MIN_ROWS`
+computation). Because it was the tick's sole real competitor,
+`normalize_across_targets()`'s own documented single-target edge case (correctly, given
+that edge case's own contract — there is no real basis to differentiate a lone competitor
+from itself) pinned its `salience_score` to `1.0`. This held for a live, still-running
+280+-consecutive-tick streak, and `goal_provenance.py`'s `update_dominance_streak()`
+(3-tick `goal_provenance_min_streak`) treated that as sustained real dominance, publishing
+a real `FieldGoalProvenanceV1` to `orion:memory:goals:proposed` on every qualifying tick —
+confirmed via live `docker logs` on `orion-athena-attention-runtime` showing hundreds of
+real `field_goal_provenance_published ... field_target_id=node:substrate.chat
+salience=1.000 streak=NNN` lines. `orion-substrate-runtime`'s `goal_context_listener.py`
+consumes this and calls `set_active_goal()`
+(`orion/substrate/attention/goal_context.py`), which — because
+`ORION_ATTENTION_TOPDOWN_ENABLED=true` is live — was actively biasing real chat-level
+attention scoring off a statistically meaningless `n=2` reading at the moment this review
+ran.
+
+**What was fixed.** `PrecisionEwmaBaseline`
+(`candidate_precision_weighted.py`) replaces the per-tick rolling-window recompute with a
+persisted, incrementally-updated running baseline per target
+(`substrate_node_prediction_error_baseline`, one row per `node:substrate.*` target),
+advanced by `AttentionRuntimeStore.advance_node_prediction_error_baseline` exactly once
+per real new `substrate_reduction_receipts` row — the same explicit-baseline-threading
+shape `orion/substrate/prediction_error.py`'s `execution_prediction_error`/
+`codebase_prediction_error` already use for the identical class of problem. `observation_
+count` is now a true monotonically-increasing count that survives the retention pruner
+indefinitely, so `confidence_score` (`n_samples/QUALIFYING_MIN_ROWS`) reflects a target's
+real cumulative evidence, not whatever happened to fit in a 30-minute window at poll time.
+As defense in depth on top of that fix, `goal_provenance.py::top_node_substrate_target`
+now also requires `confidence_score >= MIN_CONFIDENCE_FOR_GOAL_PROVENANCE` (1.0, i.e. at
+least `QUALIFYING_MIN_ROWS` real observations) before a target is eligible to win a
+goal-provenance publish at all, so a future thin, sole-competitor edge case (a brand-new
+target, or a baseline cold-started after a table reset) cannot reproduce the same failure
+shape even if the baseline fix above were somehow bypassed. The domain-specific EWMA
+`min_variance` was re-measured against live data for this patch rather than inherited
+unexamined from `orion/bus/ewma.py`'s own default (see `candidate_precision_weighted.py`'s
+`NODE_TARGET_PREDICTION_ERROR_MIN_VARIANCE` for the exact live numbers and reasoning).
+
+**What was explicitly deferred, not fixed here.** Candidate B
+(`select_host_targets`/`select_capability_targets`/`candidate_society_of_mind.py`, host
+and capability targets) was checked as part of this same review and found real and clean
+— bounded `[0, 1]` novelty diff, no min-max-forced-winner pathology — and was
+deliberately left untouched. `DominanceStreak` (`goal_provenance.py`) still resets to cold
+on an `orion-attention-runtime` restart (in-memory only, not persisted) — named here as a
+real, disclosed follow-up in the same fragility class as the fix above, not solved in this
+patch, to avoid cathedral scope creep on what was scoped as a review-and-fix, not a
+redesign.
+
+**Sign-off.** Juniper reviewed these findings and signed off on treating the
+goal-provenance dominance-streak pathology as exactly the kind of theater — a
+confident-looking number (`salience_score=1.0`, a 280+-tick streak) with a real downstream
+behavioral consequence (`set_active_goal()` biasing live chat attention) and no real
+statistical backing behind it (`n=2`, `confidence_score=0.1`) — that this program's
+"measure before minting" and "kill means kill" discipline (§7) exists to catch, live and
+not just archivally. This is a review-and-fix of a real, kept instrument, not a subsystem
+kill: Candidate A's theory and Candidate B are both real and both stay.

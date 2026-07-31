@@ -108,6 +108,19 @@ def test_chat_quick_frames_non_aitown_surface_as_outside_the_game() -> None:
     assert "You are embodied in ai-town right now" not in rendered
 
 
+def test_chat_quick_tells_model_to_look_for_the_aitown_marker() -> None:
+    """Regression coverage (found live 2026-07-31): the CURRENT CONTEXT
+    instruction alone told the model to treat "ai-town dialogue" as separate,
+    but gave it no way to reliably tell which lines those were -- it had to
+    guess from content. services/orion-recall's sql_adapter.py now prefixes
+    ai-town-sourced memory_digest lines with a literal "[ai-town]" marker
+    (see docs/superpowers/specs/2026-07-31-recall-aitown-source-tagging-design.md);
+    this confirms the prompt actually tells the model to look for it."""
+    tpl = Environment().from_string(CHAT_QUICK_TEMPLATE.read_text(encoding="utf-8"))
+    rendered = tpl.render(**_CHAT_QUICK_BASE_RENDER_ARGS, metadata={})
+    assert '"[ai-town]"' in rendered
+
+
 def test_chat_quick_has_anti_repetition_instruction() -> None:
     tpl = Environment().from_string(CHAT_QUICK_TEMPLATE.read_text(encoding="utf-8"))
     rendered = tpl.render(**_CHAT_QUICK_BASE_RENDER_ARGS, metadata={})
@@ -185,3 +198,4 @@ def test_chat_general_has_non_aitown_surface_framing_and_anti_repetition() -> No
     assert 'metadata.get("surface") != "aitown"' in text
     assert "Do not repeat a phrase, metaphor, or sentence structure" in text
     assert "Ground replies in something specific and concrete" in text
+    assert '"[ai-town]"' in text

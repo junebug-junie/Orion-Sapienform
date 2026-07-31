@@ -41,7 +41,7 @@ def test_fetch_falkor_neighborhood_fragments_full_shape(monkeypatch) -> None:
 
     async def _fake_text_join(turn_ids):
         assert turn_ids == ["turn-1"]
-        return {"turn-1": ("tell me about Circe", "Circe is a node in the mesh")}
+        return {"turn-1": ("tell me about Circe", "Circe is a node in the mesh", None)}
 
     monkeypatch.setattr(neigh, "fetch_chat_turns_by_id", _fake_text_join)
 
@@ -66,6 +66,43 @@ def test_fetch_falkor_neighborhood_fragments_full_shape(monkeypatch) -> None:
     assert "MATCH (e:Entity)" in cypher
     assert "toLower(e.name) CONTAINS kw" in cypher
     assert "circe" in params["keywords"]
+
+
+def test_fetch_falkor_neighborhood_fragments_aitown_row_gets_marker_and_tag(monkeypatch) -> None:
+    """Same regression coverage as falkor_chat_adapter's aitown test -- this
+    adapter shares fetch_chat_turns_by_id/render_quoted_chat_text/
+    chat_source_tags, so an ai-town-sourced turn must render with the
+    "[ai-town]" marker and the "aitown" tag here too."""
+    fake_client = _FakeFalkorClient([{"name": "Sable"}])
+    monkeypatch.setattr(neigh, "get_recall_falkor_client", lambda: fake_client)
+
+    async def _fake_turns(*, target_names, max_results):
+        return [{"turn_id": "turn-1", "ts": "2026-07-18T07:46:34+00:00"}]
+
+    monkeypatch.setattr(neigh, "fetch_turns_mentioning_entities", _fake_turns)
+
+    async def _fake_text_join(turn_ids):
+        return {
+            "turn-1": (
+                "tell me about Sable",
+                "Sable tends the garden",
+                {
+                    "external_room": {"platform": "aitown"},
+                    "external_participant": {"participant_name": "Sable"},
+                },
+            )
+        }
+
+    monkeypatch.setattr(neigh, "fetch_chat_turns_by_id", _fake_text_join)
+
+    out = _run(
+        neigh.fetch_falkor_neighborhood_fragments(query_text="tell me about Sable", max_items=8)
+    )
+
+    assert len(out) == 1
+    frag = out[0]
+    assert frag["text"] == '[ai-town] Sable: "tell me about Sable"\nOrion (in ai-town): "Sable tends the garden"'
+    assert frag["tags"] == ["falkor", "neighborhood", "aitown"]
 
 
 def test_extract_keywords_filters_stopwords() -> None:

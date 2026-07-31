@@ -17,6 +17,11 @@ try:
 except ImportError:  # pragma: no cover - test harness path
     from settings import settings  # type: ignore
 
+try:
+    from .chat_source_tagging import render_quoted_chat_text
+except ImportError:  # pragma: no cover - test harness path
+    from chat_source_tagging import render_quoted_chat_text  # type: ignore
+
 
 @dataclass
 class ChatItem:
@@ -81,17 +86,23 @@ async def fetch_chat_turn_timestamps(
     return out
 
 
-async def fetch_chat_turns_by_id(turn_ids: List[str]) -> Dict[str, tuple[str, str]]:
-    """Resolve (prompt, response) text for chat turns by id.
+async def fetch_chat_turns_by_id(turn_ids: List[str]) -> Dict[str, tuple[str, str, Any]]:
+    """Resolve (prompt, response, client_meta) text for chat turns by id.
 
-    Used by storage/falkor_chat_adapter.py -- the Falkor ChatTurn node is
-    deliberately thin (turn_id/source_kind/session_id/ts/correlation_id, no
-    prompt/response text; Postgres owns that, see
+    Used by storage/falkor_chat_adapter.py, storage/falkor_neighborhood_adapter.py,
+    and worker.py -- the Falkor ChatTurn node is deliberately thin
+    (turn_id/source_kind/session_id/ts/correlation_id, no prompt/response
+    text; Postgres owns that, see
     services/orion-meta-tags/README.md's Falkor writer section) so a
     Falkor-backed chatturn fragment needs this join for the actual quoted
     text. Ids not present in the chat table are simply absent from the
     returned map so callers can drop them, same contract as
     fetch_chat_turn_timestamps above.
+
+    client_meta is the third tuple element (not folded into pre-rendered
+    text here) so all three callers can share render_quoted_chat_text --
+    each independently built the same unlabeled 'ExactUserText: "..."'
+    format before this, none aware of client_meta.external_room.platform.
     """
     if asyncpg is None:
         return {}
@@ -102,7 +113,8 @@ async def fetch_chat_turns_by_id(turn_ids: List[str]) -> Dict[str, tuple[str, st
     query = f"""
         SELECT {id_col} AS id,
                {settings.RECALL_SQL_CHAT_TEXT_COL} AS prompt,
-               {settings.RECALL_SQL_CHAT_RESPONSE_COL} AS response
+               {settings.RECALL_SQL_CHAT_RESPONSE_COL} AS response,
+               client_meta
         FROM {settings.RECALL_SQL_CHAT_TABLE}
         WHERE {id_col} = ANY($1::text[])
     """
@@ -115,11 +127,11 @@ async def fetch_chat_turns_by_id(turn_ids: List[str]) -> Dict[str, tuple[str, st
     except Exception:
         return {}
 
-    out: Dict[str, tuple[str, str]] = {}
+    out: Dict[str, tuple[str, str, Any]] = {}
     for row in rows:
         rid = str(row.get("id") or "").strip()
         if rid:
-            out[rid] = (str(row.get("prompt") or ""), str(row.get("response") or ""))
+            out[rid] = (str(row.get("prompt") or ""), str(row.get("response") or ""), row.get("client_meta"))
     return out
 
 
@@ -150,7 +162,8 @@ async def fetch_chat_history_pairs(
     query = f"""
         SELECT {settings.RECALL_SQL_CHAT_TEXT_COL} AS prompt,
                {settings.RECALL_SQL_CHAT_RESPONSE_COL} AS response,
-               {settings.RECALL_SQL_CHAT_CREATED_AT_COL} AS created_at
+               {settings.RECALL_SQL_CHAT_CREATED_AT_COL} AS created_at,
+               client_meta
         FROM {settings.RECALL_SQL_CHAT_TABLE}
         WHERE {settings.RECALL_SQL_CHAT_CREATED_AT_COL} >= NOW() - INTERVAL '{since_minutes} minutes'
         ORDER BY {settings.RECALL_SQL_CHAT_CREATED_AT_COL} DESC
@@ -179,7 +192,7 @@ async def fetch_chat_history_pairs(
         if _contains_active_prompt(prompt, exclude_text or ""):
             suppressed += 1
             continue
-        text = f'ExactUserText: "{prompt}"\nOrionResponse: "{response}"'
+        text = render_quoted_chat_text(prompt, response, row.get("client_meta"))
         items.append(
             ChatItem(
                 id=row_id,

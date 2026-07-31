@@ -35,11 +35,22 @@ def test_connection_failure_degrades_to_empty(monkeypatch) -> None:
     assert out == {}
 
 
-def test_returns_prompt_response_tuple_by_id(monkeypatch) -> None:
+def test_returns_prompt_response_client_meta_tuple_by_id(monkeypatch) -> None:
+    """client_meta is the third tuple element (added 2026-07-31, see
+    app/chat_source_tagging.py) so callers can tell ai-town-sourced turns
+    apart from real Juniper/hub conversation instead of quoting every row
+    identically."""
     class _FakeConn:
         async def fetch(self, query, ids):
             assert ids == ["turn-1"]
-            return [{"id": "turn-1", "prompt": "hi Circe", "response": "hello"}]
+            return [
+                {
+                    "id": "turn-1",
+                    "prompt": "hi Circe",
+                    "response": "hello",
+                    "client_meta": {"external_room": {"platform": "aitown"}},
+                }
+            ]
 
         async def close(self):
             pass
@@ -51,4 +62,4 @@ def test_returns_prompt_response_tuple_by_id(monkeypatch) -> None:
 
     monkeypatch.setattr(sql_chat, "asyncpg", _FakeAsyncpg())
     out = _run(sql_chat.fetch_chat_turns_by_id(["turn-1"]))
-    assert out == {"turn-1": ("hi Circe", "hello")}
+    assert out == {"turn-1": ("hi Circe", "hello", {"external_room": {"platform": "aitown"}})}

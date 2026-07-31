@@ -32,6 +32,7 @@ import asyncio
 import logging
 from typing import Any, Dict, List
 
+from ..chat_source_tagging import chat_source_tags, render_quoted_chat_text
 from ..recall_falkor_store import get_recall_falkor_client
 from ..sql_chat import _to_epoch, fetch_chat_turns_by_id
 
@@ -102,8 +103,8 @@ async def fetch_falkor_chatturn_fragments(
             # No matching Postgres row for this turn_id -- nothing to quote,
             # so this fragment carries no value fusion.py could rank on.
             continue
-        prompt, response = text_map[turn_id]
-        text = f'ExactUserText: "{prompt}"\nOrionResponse: "{response}"'.strip()
+        prompt, response, client_meta = text_map[turn_id]
+        text = render_quoted_chat_text(prompt, response, client_meta)
 
         out.append(
             {
@@ -113,7 +114,7 @@ async def fetch_falkor_chatturn_fragments(
                 "uri": turn_id,
                 "text": text[:1800],
                 "ts": _to_epoch(row.get("ts")),
-                "tags": ["falkor", "chat", "chatturn"],
+                "tags": chat_source_tags(client_meta, ["falkor", "chat", "chatturn"]),
                 "score": 0.50,
                 "meta": {},
             }

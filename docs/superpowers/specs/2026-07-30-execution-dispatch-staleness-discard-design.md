@@ -325,6 +325,45 @@ steady-state dispatch can only ever process ~30% of what's produced.
    above), so there's no need to scale execution-dispatch-runtime itself to multiple processes —
    one process firing N concurrent RPCs per tick already has real headroom to use on the other
    end.
+7. **Is `_send_one()` actually safe to run under `asyncio.gather`?** No — found on a second
+   adversarial pass (explicitly requested again), and this one changes the patch's scope, not just
+   its reasoning. `_send_one()` is 147 lines (`worker.py:661-807`) with exactly ONE `try/except`,
+   wrapping only the `client.dispatch()` RPC call (`worker.py:736-743`). Two other real operations
+   are completely unguarded: the idempotency check (`self._store.load_dispatch_result_by_
+   dispatch_id`, line 678) and the result save (`self._store.save_dispatch_result`, line 775) —
+   both plain synchronous DB calls, no exception handling. (`_emit_action_outcome`, called from
+   three places inside `_send_one`, was checked separately and confirmed already fully self-guarded
+   — every real operation inside it has its own try/except, catches broadly, only logs. Not a risk.)
+
+   Why this specifically matters for `asyncio.gather` and not the current sequential loop: if one
+   of those two unguarded DB calls raises for *one* candidate in a concurrent batch (a transient
+   connection drop, a query error — real, if rare, and this repo's own Postgres history includes a
+   full host-disk death, so "the DB call sometimes fails" is not a hypothetical here), `asyncio.
+   gather()`'s documented default behavior is easy to get wrong: it propagates the first exception
+   to the caller immediately, but does **not** cancel the other in-flight coroutines in the group —
+   they keep running, unawaited, detached from whatever now-exited scope was gathering them. `_tick
+   ()` would exit via that propagated exception, `_poll_loop` sleeps 2s and starts a new tick, while
+   the orphaned sends from the failed tick may still be mid-RPC or mid-DB-write. Two generations of
+   dispatch work overlapping across a tick boundary is a shape nothing in this codebase was built
+   to handle. In the current sequential code, the identical underlying exception just silently
+   truncates `to_send` for that tick — loses that tick's frame-level bookkeeping (annoying,
+   already true today, undisclosed until this pass), but nothing is ever orphaned, since nothing
+   else was in flight to begin with.
+
+   **Fix, and it belongs in this same patch, not a follow-up**: wrap `_send_one()`'s entire body
+   in a broad `try/except Exception` that converts any failure into the same `dispatch_status=
+   "dispatched", dispatch_error=str(exc)[:500]` shape the existing RPC-failure branch already
+   produces (`worker.py:763-769`) — making `_send_one()` a genuinely total function that cannot
+   raise. This is a real prerequisite for safe `asyncio.gather` usage, not an optional hardening
+   pass, and it also fixes the pre-existing sequential-code gap above as a side effect.
+
+   **Separate, smaller precision correction found while tracing this** (not a bug): the store calls
+   inside `_send_one()` are synchronous/blocking (plain SQLAlchemy `conn.execute(...)`, no
+   `await`), so `asyncio.gather` only genuinely parallelizes the ~9-13s RPC wait specifically — the
+   ~5-20ms DB calls still execute one-at-a-time on the single event-loop thread underneath. Doesn't
+   undermine the concurrency win (RPC latency dominates DB latency by roughly three orders of
+   magnitude), but "concurrent" here should be understood precisely as "concurrent RPC wait," not
+   "every operation runs in parallel."
 
 ### Proposed schema / API changes
 
@@ -340,18 +379,29 @@ contract change — `ExecutionDispatchCandidateV1`/`ExecutionDispatchFrameV1` ar
   loop with `newly_dispatched = await asyncio.gather(*(self._send_one(client, bus, frame, c) for c
   in to_send))`. Move the `_check_theater_tripwire()` recheck to after the `gather` (already
   effectively true given the loop restructure).
+- `services/orion-execution-dispatch-runtime/app/worker.py::_send_one`: **required companion
+  change, not optional** (missing question 7) — wrap the entire body in a broad `try/except
+  Exception`, converting any failure (not just an RPC failure) into the same `dispatch_status=
+  "dispatched", dispatch_error=str(exc)[:500]` shape already used for RPC failures. Makes
+  `_send_one` a total function that cannot raise, a real prerequisite for safe `asyncio.gather`
+  usage given `gather()`'s default non-cancelling behavior on a sibling exception (missing
+  question 7's full account above).
 - No change needed to the risk-budget reservation loop (already correct, see missing question 3
   above) or to `_recent_dispatch_statuses` (already safe, see missing question 4 above).
 
 ### Files likely to touch
 
-- `services/orion-execution-dispatch-runtime/app/worker.py` (`_send_prepared_candidates` only —
-  `_send_one`, `_check_theater_tripwire`, and the risk-budget loop are unchanged)
+- `services/orion-execution-dispatch-runtime/app/worker.py` (`_send_prepared_candidates` AND
+  `_send_one` — the latter added to scope by missing question 7's finding; `_check_theater_
+  tripwire` and the risk-budget loop remain unchanged)
 - `config/execution_dispatch/execution_dispatch_policy.v1.yaml` (`max_dispatches_per_tick: 1 → 5`)
 - `tests/test_execution_dispatch_runtime_worker.py` (new tests: concurrent sends actually run
   concurrently — e.g. assert total wall time for N mocked-slow sends is closer to one send's
-  duration than N times it; theater tripwire still trips correctly when checked post-batch;
-  risk budget still correctly caps `to_send` size pre-gather)
+  duration than N times it; a `_send_one` failure — e.g. mock `load_dispatch_result_by_dispatch_id`
+  to raise — degrades to a `dispatch_error` candidate instead of propagating out of `asyncio.
+  gather`, and does not prevent the OTHER concurrent candidates in the same batch from completing
+  and being reflected in the saved frame; theater tripwire still trips correctly when checked
+  post-batch; risk budget still correctly caps `to_send` size pre-gather)
 
 ### Non-goals
 
@@ -361,7 +411,8 @@ contract change — `ExecutionDispatchCandidateV1`/`ExecutionDispatchFrameV1` ar
   question 6).
 - Not redesigning the risk-budget or theater-tripwire mechanisms — both already work correctly
   under concurrency once traced properly; this patch does not touch their logic, only the send
-  loop's control flow.
+  loop's control flow. (`_send_one`'s exception-safety IS in scope — see missing question 7 — that
+  is a correctness prerequisite for `asyncio.gather`, not a mechanism redesign.)
 - Not building a health-surface UI (per Part 1's closing note — a script, not a dashboard, was
   the right-sized answer when this question came up for proposals scoring the same day).
 - Not re-verifying `orion-cortex-exec`'s concurrent capacity beyond the code-level trace already
@@ -371,8 +422,13 @@ contract change — `ExecutionDispatchCandidateV1`/`ExecutionDispatchFrameV1` ar
 ### Acceptance checks
 
 - `max_dispatches_per_tick` raised to 5, `_send_prepared_candidates` uses `asyncio.gather`.
+- `_send_one` wrapped end-to-end in exception handling — a forced failure in the idempotency check
+  or the result save degrades to a `dispatch_error` candidate, never propagates.
 - New concurrency test proves sends actually overlap in wall-clock time, not just that the code
   compiles.
+- New failure-isolation test proves one candidate's forced exception does not prevent the other
+  concurrent candidates in the same `asyncio.gather` batch from completing and being reflected in
+  the saved frame (the actual risk found in missing question 7).
 - Theater tripwire and risk-budget tests (existing + new) still pass unmodified in their
   assertions about *what* gets blocked, only updated for *when* the recheck happens.
 - Post-deploy: real dispatch rate approaches (not necessarily hits) the ~17/min production rate
@@ -387,10 +443,12 @@ contract change — `ExecutionDispatchCandidateV1`/`ExecutionDispatchFrameV1` ar
 ### Recommended next patch
 
 Implement directly — every blocking question above was resolved by reading real code and live
-data, not by further scoping. Ship `max_dispatches_per_tick: 5` + the `asyncio.gather` rewrite,
-reviewed and tested the same way every other patch in this arc was, then watch `staleness_
-discard_count_ewma` and real dispatch rate post-deploy to confirm the steady-state math above
-actually closes the gap it predicts.
+data, not by further scoping. Ship as ONE patch, not two: `max_dispatches_per_tick: 5` + the
+`asyncio.gather` rewrite + the `_send_one` exception-safety hardening (missing question 7) —
+the gather rewrite is not safe to ship without the hardening, so splitting them would mean
+shipping a real, known risk on purpose. Reviewed and tested the same way every other patch in
+this arc was, then watch `staleness_discard_count_ewma` and real dispatch rate post-deploy to
+confirm the steady-state math above actually closes the gap it predicts.
 
 ---
 

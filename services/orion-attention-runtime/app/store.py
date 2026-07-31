@@ -12,10 +12,15 @@ from orion.attention.field_attention.candidate_precision_weighted import (
     PrecisionEwmaBaseline,
     advance_precision_baseline,
 )
+from orion.attention.field_attention.goal_provenance import DominanceStreak
 from orion.schemas.field_attention_frame import FieldAttentionFrameV1
 from orion.schemas.field_state import FieldStateV1
 
 logger = logging.getLogger("orion.attention.runtime.store")
+
+# Singleton row id for the one real node-target dominance streak this service
+# tracks (see load_node_dominance_streak/save_node_dominance_streak below).
+_NODE_DOMINANCE_STREAK_ID = "node_target_dominance_streak"
 
 # Batched, guard-railed prune: never deletes the newest frame (by generated_at,
 # matching load_latest_attention_frame's ordering).
@@ -321,6 +326,82 @@ class AttentionRuntimeStore:
                 "node_prediction_error_baseline_advance_failed target_id=%s", target_id
             )
             return PrecisionEwmaBaseline()
+
+    def load_node_dominance_streak(self) -> DominanceStreak:
+        """Real, persisted node-target goal-provenance dominance streak
+        (`orion.attention.field_attention.goal_provenance.DominanceStreak`),
+        surviving a worker restart.
+
+        Previously this streak lived only in `AttentionRuntimeWorker.
+        _node_streak`, reset to `DominanceStreak()` (count=0) on every
+        process restart -- a disclosed, accepted gap when it only gated an
+        internal emit-debounce (PR #1529, worst case a brief warm-up delay).
+        That calculus changed once PR #1543's design doc (2026-07-31,
+        docs-only, not yet implemented) proposed surfacing this exact count
+        directly into `FieldGoalProvenanceV1.goal_text`, which reaches the
+        real LLM-facing chat-stance prompt: a restart-truncated streak would
+        then read as a small, plausible-looking-but-wrong number in that
+        prompt, not just an internal delay -- so this now needs to survive
+        a restart honestly.
+
+        Degrades to a cold `DominanceStreak()` on any DB error or missing
+        row (fresh deploy, or an intentionally-reset row) -- same
+        never-crash-the-tick contract as this file's other loaders.
+        """
+        try:
+            with self._engine.connect() as conn:
+                row = (
+                    conn.execute(
+                        text(
+                            """
+                            SELECT target_id, count FROM substrate_goal_provenance_streak
+                            WHERE streak_id = :streak_id
+                            """
+                        ),
+                        {"streak_id": _NODE_DOMINANCE_STREAK_ID},
+                    )
+                    .mappings()
+                    .first()
+                )
+        except Exception:
+            logger.exception("node_dominance_streak_load_failed")
+            return DominanceStreak()
+        if row is None:
+            return DominanceStreak()
+        return DominanceStreak(target_id=row["target_id"], count=int(row["count"]))
+
+    def save_node_dominance_streak(self, streak: DominanceStreak) -> None:
+        """Persist the node-target dominance streak advanced this tick. See
+        `load_node_dominance_streak` for why this needs to survive a
+        restart. UPSERTed every real tick (cheap, same shape as
+        `save_attention_frame`) -- never crashes the tick on a write
+        failure, only fails to persist this one tick's advance.
+        """
+        try:
+            with self._engine.begin() as conn:
+                conn.execute(
+                    text(
+                        """
+                        INSERT INTO substrate_goal_provenance_streak (
+                            streak_id, target_id, count, updated_at
+                        ) VALUES (
+                            :streak_id, :target_id, :count, :updated_at
+                        )
+                        ON CONFLICT (streak_id) DO UPDATE SET
+                            target_id = EXCLUDED.target_id,
+                            count = EXCLUDED.count,
+                            updated_at = EXCLUDED.updated_at
+                        """
+                    ),
+                    {
+                        "streak_id": _NODE_DOMINANCE_STREAK_ID,
+                        "target_id": streak.target_id,
+                        "count": streak.count,
+                        "updated_at": datetime.now(timezone.utc),
+                    },
+                )
+        except Exception:
+            logger.exception("node_dominance_streak_save_failed")
 
     def load_latest_attention_frame(self) -> FieldAttentionFrameV1 | None:
         with self._engine.connect() as conn:

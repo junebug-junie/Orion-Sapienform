@@ -366,3 +366,145 @@ one. The machinery exists. It is not connected to itself.
 It is not a plan. It does not pick 5a-5f. It does not estimate anything. The one thing it
 does assert is that the O1 failure has been traced to a specific, measured, wiring-level
 cause, and that the cheapest fix for the number is not the same as the fix for the problem.
+
+---
+
+## 8. Resolved: the complete mechanism (all threads closed)
+
+Traced to the end. Three independent constants produce the flat rate, and **none of them has
+anything to do with Orion's internal state.** Two of this doc's own earlier claims are
+overturned along the way.
+
+### 8a. The budget is a literal hard-coded constant
+
+`config/execution_dispatch/execution_dispatch_policy.v1.yaml`:
+
+```yaml
+limits: {max_dispatch_candidates: 5, max_dispatches_per_tick: 5}
+allowed_policy_decisions: ['approved_read_only']
+```
+
+Measured: **100.0% of frames dispatch exactly 5.** All 1,113 of them in six hours. Not 4,
+not sometimes 5 — always exactly the cap.
+
+O1's wording is *"not a flat per-cycle allowance."* It is precisely, literally, a flat
+per-cycle allowance of 5, saturated on every single tick.
+
+### 8b. Declaring what you care about scores you strictly worse
+
+`orion/proposals/scoring.py::_pressure_dimension_ids()` ends:
+
+```python
+return dims if dims else list(PRESSURE_DIMENSIONS)
+```
+
+An empty `dimensions: {}` falls back to **all** pressure dimensions, and `proposal_urgency()`
+takes `max()` over them. So a template that declares nothing is scored on the best of
+everything; a template that declares `reliability_pressure` is scored solely on a channel
+that is structurally 0.0. Live scores from one frame:
+
+```text
+template                          prio    conf     urg     dims
+inspect_bus_channel_catalog      0.8233  0.7758  0.5714    0
+summarize_transport_contract...  0.8033  0.7758  0.5714    0
+inspect_attended_target          0.7833  0.7758  0.5714    0
+inspect_field_topology_catalog   0.7733  0.7758  0.5714    0
+watch_transport_backpressure     0.7633  0.7758  0.5714    0
+summarize_loaded_state           0.6384  0.5047  0.5714    1
+inspect_node_resource_pressure   0.6284  0.5047  0.5714    1
+inspect_transport_status         0.4200  1.0000  0.0000    1   <- reliability
+inspect_execution_pressure       0.4000  0.6890  0.0000    1
+watch_reliability                0.3000  1.0000  0.0000    1   <- reliability
+```
+
+The top five are exactly the five zero-dimension templates, every tick, and
+`max_dispatches_per_tick: 5` takes exactly those five. That is the 193/193/193 lockstep.
+
+Note `inspect_transport_status`: **confidence 1.0000** — perfect precision, because a channel
+pinned at 0.0 has zero variance — multiplied against urgency 0.0. Maximum confidence in a
+dead signal contributes exactly nothing. The precision-weighting works as designed and
+produces the reverse of its intent.
+
+The fallback was added 2026-07-30 to avoid returning a bare `0.0`. It created the inversion.
+
+### 8c. The queue is slower than its own freshness rule
+
+`EXECUTION_DISPATCH_STALENESS_{MIN,MAX}_SEC = 120/300` (randomized per tick). Measured over
+three hours of real discards:
+
+```text
+avg age 270.4s   min 211.5s   max 372.5s   avg threshold 196.5s   n=2,616
+```
+
+Steady-state queue latency (~270s) exceeds the staleness budget (~196s), so the surplus is
+discarded. Confirmed by frame mode: **5,711 `dry_run` (stale discards) vs 1,114
+`dispatch_read_only` (real)** in six hours — 84% discarded.
+
+This is a *deliberate mitigation shipped 2026-07-30*, not a bug. Its own code comment:
+
+> *"a real dispatch is a synchronous cortex-exec RPC, ~7-11s measured live — this
+> single-threaded FIFO consumer cannot keep pace with real production of new
+> policy_decision_frames (~16/min produced vs ~6.8/min consumed) ... the queue grows without
+> bound (46,617 backlogged, oldest 37h old, at the time this was found)."*
+
+**So the real capability ceiling is synchronous LLM RPC latency on a single-threaded
+consumer.** Not internal pressure. Not anything cognitive.
+
+### 8d. `observer_failure_pressure` is not dead — it is a fault flag
+
+```python
+observer_failure_pressure = 1.0 if state.observer_failure_count > 0 else 0.0
+reliability_pressure = max(observer_failure_pressure, 1.0 - delivery_confidence)
+```
+
+It is a **binary alarm that has correctly never tripped**, and `delivery_confidence` is 1.0
+whenever Redis pings OK. So `reliability_pressure` is structurally 0.0 unless something is
+actually broken.
+
+The highest-weighted dimension in the proposal policy (0.35) is an outage indicator, not a
+graded pressure. That is a category error, not a dead producer — and it means §2's framing
+("dead channels") was directionally right but mechanically wrong for this one.
+
+### 8e. OVERTURNED: policy is not the bottleneck, and neither is confidence
+
+§5g claimed *"58,228 times in six hours, Orion declined to act because it was not
+confident."* **That is wrong.** It came from the feedback lane, which observes the stale
+*backlog* — a historical population — not current behavior.
+
+Authoritative, from `substrate_policy_decision_frames` over two hours:
+
+```text
+approved_read_only        19,654   avg_conf 0.857   (92.0%)
+requires_operator_review   1,125   avg_conf 0.714   candidate_requires_operator_review
+requires_operator_review     561   avg_conf 0.331   confidence_below_threshold  (2.6%)
+```
+
+**Policy approves 92% of everything.** Confidence gating touches 2.6%, not 68%. And
+`read_only_low_risk` is an *approval* reason, not a decline — §5g mislabeled it.
+
+### 8f. The one number that says it all
+
+**19,654 actions approved per 2 hours. 1,854 performed. 9.4%.**
+
+Orion decides to do something roughly twenty thousand times every two hours, is approved by
+its own policy in 92% of cases, and then performs one in eleven — the rest discarded by a
+queue whose latency exceeds its own freshness budget.
+
+Capability does not vary with state because capability is pinned by three constants:
+a hard cap of 5/tick, a scoring fallback that makes state-blind templates win, and an RPC
+latency ceiling. State never enters the calculation at any point.
+
+### 8g. Corrections this section makes to earlier sections
+
+Recorded rather than silently edited, because the pattern matters more than any one claim:
+
+1. §5c first said no outcome signal exists — wrong, `field_delta` exists.
+2. §5c then said it is fittable today — wrong, 100% of outcome observations are unattributed.
+3. §5g said confidence gating declines 68% of proposals — wrong, it is 2.6%; the number came
+   from a historical population.
+4. §5g called `read_only_low_risk` a decline reason — it is an approval reason.
+5. §2 framed `reliability_pressure`'s producer as dead — it is a working binary fault flag.
+
+Four of the five errors came from reading a derived/aggregated lane instead of the
+authoritative one. The feedback lane in particular describes the stale backlog, not the
+present.

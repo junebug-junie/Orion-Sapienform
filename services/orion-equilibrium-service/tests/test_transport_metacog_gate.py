@@ -280,24 +280,40 @@ def test_bus_synaptic_below_threshold_never_fires_regardless_of_edge_state() -> 
     assert _bs(0.5, previously_above=True) is None
 
 
-def test_bus_synaptic_refuses_a_stale_node() -> None:
-    """Confirmed live: node:substrate.bus_synaptic sat frozen at a stale 1.0 for
-    HOURS while this loop fired off it every 30s. A frozen value is not a
-    present-tense reading."""
-    assert _bs(1.2, previously_above=False, node_age_sec=3600.0, max_node_age_sec=300.0) is None
-    # Fresh node with the same value still fires.
-    fresh = _bs(1.2, previously_above=False, node_age_sec=12.0, max_node_age_sec=300.0)
+def test_bus_synaptic_does_not_gate_on_node_age_but_does_report_it() -> None:
+    """A staleness guard on the node's `observed_at` was written and then
+    REMOVED, because live sampling proved the field is clobbered: three reads
+    35s apart returned observed_at 03:43:49 -> 04:01:25 -> 03:43:49, oscillating
+    between fresh and ~18min stale (recency_score likewise 0.715 -> 0 -> 0.999).
+    Only prediction_error/contributing_turn_ids are protected by
+    EXTERNALLY_OWNED_METADATA_KEYS; observed_at is not, so a second writer keeps
+    re-persisting a stale snapshot.
+
+    Gating on that would mean firing or not firing based on which writer won the
+    last race. The frozen-node case it was meant to catch is already covered by
+    rising-edge firing (a frozen value fires once, then goes silent), so this
+    asserts the age is REPORTED for operator visibility but never suppresses."""
+    stale = _bs(1.2, previously_above=False, node_age_sec=99999.0)
+    assert stale is not None, "node age must not gate -- the field is not trustworthy"
+    assert stale.upstream["node_age_sec"] == 99999.0
+
+    fresh = _bs(1.2, previously_above=False, node_age_sec=12.0)
     assert fresh is not None
     assert fresh.upstream["node_age_sec"] == 12.0
 
 
-def test_bus_synaptic_unknown_node_age_does_not_suppress() -> None:
-    """Deliberate asymmetry: a frozen node is detectable and is guarded, but an
-    unparseable/absent timestamp must NOT silently switch this evidence source
-    off -- that would be the same "detector quietly stops detecting" failure
-    this whole arc has been chasing."""
-    assert _bs(1.2, previously_above=False, node_age_sec=None, max_node_age_sec=300.0) is not None
-    assert _bs(1.2, previously_above=False, node_age_sec=99999.0, max_node_age_sec=None) is not None
+def test_a_frozen_node_fires_once_then_goes_silent() -> None:
+    """The case the removed staleness guard existed for, shown to be handled by
+    edge-triggering alone. The live incident was node:substrate.bus_synaptic
+    stuck at 1.0 for hours while this loop fired every 30s."""
+    frozen_value = 1.0
+    above = False
+    fires = 0
+    for _ in range(120):  # an hour of 30s polls against a frozen node
+        if _bs(frozen_value, previously_above=above) is not None:
+            fires += 1
+        above = frozen_value >= 1.0
+    assert fires == 1
 
 
 def test_edge_and_hysteresis_collapse_a_real_firing_pattern() -> None:

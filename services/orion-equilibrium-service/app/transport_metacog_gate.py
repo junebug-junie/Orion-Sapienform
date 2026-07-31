@@ -125,7 +125,6 @@ def build_transport_metacog_trigger_from_bus_synaptic(
     error_threshold: float,
     previously_above: bool = False,
     node_age_sec: float | None = None,
-    max_node_age_sec: float | None = None,
     edge_count: int | None = None,
 ) -> MetacogTriggerV1 | None:
     """Third evidence source: node:substrate.bus_synaptic's prediction_error
@@ -147,19 +146,31 @@ def build_transport_metacog_trigger_from_bus_synaptic(
     bus_synaptic_graph_routes.py's debug routes already use for a human
     reading a table.
     """
-    # --- Staleness guard (2026-07-30) -------------------------------------
-    # The poll reads whatever number is currently sitting on the node, with no
-    # notion of when it was written. Confirmed live: node:substrate.bus_synaptic
-    # sat frozen at a stale 1.0 for hours while this loop kept firing off it
-    # every 30s. A frozen value is not a reading -- refuse rather than report a
-    # stale high-water mark as a present-tense anomaly.
-    if (
-        max_node_age_sec is not None
-        and node_age_sec is not None
-        and node_age_sec > max_node_age_sec
-    ):
-        return None
-
+    # --- Why there is NO staleness guard here (2026-07-30) ----------------
+    # A guard on the node's `observed_at` was written, then removed after live
+    # measurement showed the field is not trustworthy: sampling
+    # node:substrate.bus_synaptic every 35s returned observed_at
+    # 03:43:49 -> 04:01:25 -> 03:43:49, i.e. OSCILLATING between a fresh and an
+    # ~18-minutes-stale timestamp, with recency_score doing the same
+    # (0.715 -> 0 -> 0.999). Two writers race on this node and only
+    # `prediction_error`/`contributing_turn_ids` are covered by
+    # falkor_codec.EXTERNALLY_OWNED_METADATA_KEYS -- `observed_at` and
+    # `recency_score` are not, so a second writer keeps re-persisting a stale
+    # snapshot of them. Gating on that field would suppress or admit a real
+    # reading depending on which writer won the last race: non-deterministic
+    # suppression, which is worse than no guard.
+    #
+    # It is also unnecessary. The frozen-node case that motivated it (the node
+    # sat stale at 1.0 for hours while this loop fired every 30s) is already
+    # fully handled by the rising-edge check below: a frozen value fires exactly
+    # once and is then silent for as long as it stays frozen. Edge-triggering
+    # solves staleness spam as a side effect of solving level spam.
+    #
+    # node_age_sec is still accepted and carried into `upstream` for operator
+    # visibility -- reporting the age is useful, gating on it is not. The
+    # corresponding MAX_NODE_AGE_SEC setting was deleted rather than left
+    # unused: a config key with no consumer is one a future patch wires back up
+    # without rediscovering why it was abandoned.
     if error < error_threshold:
         return None
 

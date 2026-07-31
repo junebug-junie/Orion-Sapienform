@@ -860,9 +860,6 @@ class EquilibriumService(BaseChassis):
                             error_threshold=settings.metacog_transport_bus_synaptic_error_threshold,
                             previously_above=self._bus_synaptic_above_threshold,
                             node_age_sec=_node_age_sec(observed_at),
-                            max_node_age_sec=(
-                                settings.metacog_transport_bus_synaptic_max_node_age_sec
-                            ),
                         )
                         # Edge state is updated from the RAW level, independently
                         # of whether a trigger was built: a fire suppressed by

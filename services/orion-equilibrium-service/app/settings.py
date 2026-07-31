@@ -242,16 +242,6 @@ class Settings(BaseSettings):
     metacog_transport_bus_synaptic_error_threshold: float = Field(
         1.0, alias="EQUILIBRIUM_METACOG_TRANSPORT_BUS_SYNAPTIC_ERROR_THRESHOLD"
     )
-    # Staleness guard (2026-07-30). node:substrate.bus_synaptic is written by
-    # orion-substrate-runtime's _bus_synaptic_tick on its own ~30s cadence; this
-    # poll has no visibility into whether that writer is alive. Confirmed live:
-    # the node sat frozen at a stale 1.0 for HOURS while this loop kept firing
-    # off it. Anything older than this is refused rather than reported as a
-    # present-tense anomaly. Generous multiple of the writer's cadence so
-    # ordinary jitter never suppresses a real reading.
-    metacog_transport_bus_synaptic_max_node_age_sec: float = Field(
-        300.0, alias="EQUILIBRIUM_METACOG_TRANSPORT_BUS_SYNAPTIC_MAX_NODE_AGE_SEC"
-    )
     # Hysteresis re-arm fraction (2026-07-30). Rising-edge firing alone still
     # re-fires on every crossing, and this metric is currently bimodal, so a
     # value oscillating around the threshold would flap. Once fired, the branch

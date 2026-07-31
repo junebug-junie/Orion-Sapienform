@@ -35,7 +35,7 @@ def _coalition(attended=("n-1",), open_loops=("ol-1",), selected="ol-1"):
     )
 
 
-def _broadcast(attended=("n-1",), loops=(("ol-1", {"predictive_value": 0.8}),),
+def _broadcast(attended=("n-1",), loops=(("ol-1", {"salience": 0.8}),),
                selected="ol-1", stability=0.4):
     frame = AttentionFrameV1(
         open_loops=[OpenLoopV1(id=oid, description="d", **scores) for oid, scores in loops],
@@ -104,10 +104,14 @@ def test_build_coalition_snapshot_none_on_absent():
     assert reverie.build_coalition_snapshot(None) is None
 
 
-def test_derive_salience_max_of_open_loop_scores():
+def test_derive_salience_reads_precomputed_loop_salience():
     from app import reverie
 
-    # selected loop predictive_value 0.8 dominates → salience 0.8 (no invented weights)
+    # 2026-07-31: derive_salience() reads the loop's own precomputed
+    # `salience` directly (the real GWT-coalition Borda value computed
+    # upstream by orion.substrate.attention.salience) -- no more "max of
+    # seven raw constant-ladder fields" legacy fallback to invent a number
+    # from unrelated OpenLoopV1 fields.
     assert reverie.derive_salience(_broadcast()) == pytest.approx(0.8)
 
 
@@ -200,7 +204,7 @@ def test_parse_reverie_payload_marks_unanchored_hollow():
 def test_parse_reverie_payload_grounded_is_clean():
     from app import reverie
 
-    # LLM proposes salience 0.7 but code owns it deterministically: predictive_value 0.8.
+    # LLM proposes salience 0.7 but code owns it deterministically: real loop.salience 0.8.
     raw = json.dumps({"interpretation": GROUNDED_TEXT, "salience": 0.7, "evidence_refs": ["ol-1"]})
     t = reverie.parse_reverie_payload(raw, coalition=_coalition(), correlation_id="c", broadcast=_broadcast())
     assert not t.hollow

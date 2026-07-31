@@ -125,9 +125,16 @@ class ThoughtSettings(BaseSettings):
     notify_base_url: str = Field("http://orion-athena-notify:7140", alias="NOTIFY_BASE_URL")
     notify_api_token: str | None = Field(None, alias="NOTIFY_API_TOKEN")
 
-    # --- Computed salience v2 (shadow-first, default-off) ---
+    # --- Attention salience trace publish gate ---
+    # 2026-07-31: `orion.substrate.attention.salience`'s hand-picked
+    # SEED_WEIGHTS formula (this flag's original "v1 vs v2" reason for
+    # existing) was killed and replaced with GWT-coalition Borda
+    # rank-aggregation -- there is only one salience formula now. This
+    # flag's one remaining real purpose is gating whether `reverie.py`
+    # publishes/persists an `AttentionSalienceTraceV1` row at all (see
+    # `run_reverie_once`). Kept under its original name/key to avoid
+    # env-parity churn for a purely cosmetic rename.
     attention_salience_v2_enabled: bool = Field(False, alias="ORION_ATTENTION_SALIENCE_V2_ENABLED")
-    attention_habituation_enabled: bool = Field(False, alias="ORION_ATTENTION_HABITUATION_ENABLED")
     channel_attention_salience_trace: str = Field(
         "orion:attention:salience:trace",
         alias="CHANNEL_ATTENTION_SALIENCE_TRACE",

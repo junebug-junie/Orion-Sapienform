@@ -1,12 +1,16 @@
+"""Unit tests for `orion.substrate.attention.salience`'s GWT-coalition
+Borda rank-aggregation (replaces the killed `SEED_WEIGHTS` linear combiner
+-- see the module's own top docstring for the full kill/replace rationale).
+"""
+
 import pytest
 
-from orion.schemas.attention_frame import AttentionSignalV1, OpenLoopV1, SalienceFeaturesV1
+from orion.schemas.attention_frame import AttentionSignalV1, SalienceFeaturesV1
 from orion.substrate.attention.salience import (
-    SalienceHistory,
-    LinearSalienceCombiner,
-    SEED_WEIGHTS,
-    compute_salience,
-    default_combiner,
+    borda_coalition_salience,
+    compute_evidence_features,
+    evidence_breadth_for,
+    evidence_strength_for,
 )
 
 
@@ -22,118 +26,83 @@ def _signal(salience: float, confidence: float, source: str = "current_turn", re
     )
 
 
-def _loop(already_known: bool = False):
-    return OpenLoopV1(id="open-loop-x", description="thing", already_known=already_known)
-
-
-def test_score_is_bounded_and_deterministic():
-    combiner = default_combiner()
-    feats = SalienceFeaturesV1(evidence_strength=0.9, novelty_vs_known=0.8)
-    a = combiner.score(feats)
-    b = combiner.score(feats)
-    assert a == b
-    assert 0.0 <= a <= 1.0
+def test_evidence_strength_is_max_salience_times_confidence():
+    assert evidence_strength_for([_signal(0.9, 0.9)]) == pytest.approx(0.81)
+    assert evidence_strength_for([]) == 0.0
 
 
 def test_evidence_strength_is_monotonic():
-    combiner = default_combiner()
-    low = combiner.score(SalienceFeaturesV1(evidence_strength=0.2))
-    high = combiner.score(SalienceFeaturesV1(evidence_strength=0.9))
+    low = evidence_strength_for([_signal(0.2, 0.5)])
+    high = evidence_strength_for([_signal(0.9, 0.9)])
     assert high > low
 
 
-def test_habituation_strictly_lowers_salience():
-    combiner = default_combiner()
-    base = SalienceFeaturesV1(evidence_strength=0.8, novelty_vs_known=0.7)
-    habituated = base.model_copy(update={"habituation": 0.9})
-    assert combiner.score(habituated) < combiner.score(base)
-
-
-def test_compute_salience_uses_signals():
-    loop = _loop()
-    strong, feats_strong = compute_salience(
-        loop=loop, signals=[_signal(0.9, 0.9)], history=SalienceHistory(), now=None
-    )
-    weak, feats_weak = compute_salience(
-        loop=loop, signals=[_signal(0.3, 0.5)], history=SalienceHistory(), now=None
-    )
-    assert strong > weak
-    assert feats_strong.evidence_strength > feats_weak.evidence_strength
-
-
-def test_already_known_lowers_novelty():
-    _, feats_known = compute_salience(
-        loop=_loop(already_known=True), signals=[_signal(0.9, 0.9)],
-        history=SalienceHistory(), now=None,
-    )
-    _, feats_novel = compute_salience(
-        loop=_loop(already_known=False), signals=[_signal(0.9, 0.9)],
-        history=SalienceHistory(), now=None,
-    )
-    assert feats_novel.novelty_vs_known > feats_known.novelty_vs_known
-
-
-def test_breadth_rises_with_distinct_detectors():
-    _, one = compute_salience(
-        loop=_loop(), signals=[_signal(0.8, 0.8, source="current_turn", refs=["a"])],
-        history=SalienceHistory(), now=None,
-    )
-    _, many = compute_salience(
-        loop=_loop(),
-        signals=[
+def test_evidence_breadth_rises_with_distinct_sources_and_refs():
+    one = evidence_breadth_for([_signal(0.8, 0.8, source="current_turn", refs=["a"])])
+    many = evidence_breadth_for(
+        [
             _signal(0.8, 0.8, source="current_turn", refs=["a"]),
-            _signal(0.8, 0.8, source="autonomy", refs=["b"]),
-            _signal(0.8, 0.8, source="concept_induction", refs=["c"]),
-        ],
-        history=SalienceHistory(), now=None,
+        ]
+        + [_signal(0.8, 0.8, source="autonomy", refs=["b"])]
     )
-    assert many.evidence_breadth > one.evidence_breadth
+    assert many > one
 
 
-def test_default_combiner_valid_override(monkeypatch):
-    monkeypatch.setenv("ORION_ATTENTION_SALIENCE_WEIGHTS", '{"evidence_strength": 0.9}')
-    combiner = default_combiner()
-    assert combiner.weights["evidence_strength"] == 0.9
-    assert combiner.weights_version == "seed-v1+override"
+def test_compute_evidence_features_only_has_the_two_real_fields():
+    feats = compute_evidence_features([_signal(0.9, 0.9)])
+    assert isinstance(feats, SalienceFeaturesV1)
+    dumped = feats.model_dump(mode="json")
+    assert set(dumped) == {"schema_version", "evidence_strength", "evidence_breadth"}
 
 
-def test_default_combiner_malformed_override_falls_back(monkeypatch):
-    monkeypatch.setenv("ORION_ATTENTION_SALIENCE_WEIGHTS", "{not json")
-    combiner = default_combiner()
-    assert combiner.weights == SEED_WEIGHTS
-    assert combiner.weights_version == "seed-v1"
+# ---------------------------------------------------------------------------
+# borda_coalition_salience: the real rank-aggregation over a competing set
+# ---------------------------------------------------------------------------
 
 
-def test_default_combiner_nondict_override_falls_back(monkeypatch):
-    monkeypatch.setenv("ORION_ATTENTION_SALIENCE_WEIGHTS", "[1, 2, 3]")
-    combiner = default_combiner()
-    assert combiner.weights == SEED_WEIGHTS
+def test_borda_coalition_salience_empty_set():
+    assert borda_coalition_salience({}) == {}
 
 
-def test_default_combiner_bad_value_override_falls_back(monkeypatch):
-    monkeypatch.setenv("ORION_ATTENTION_SALIENCE_WEIGHTS", '{"evidence_strength": "abc"}')
-    combiner = default_combiner()
-    assert combiner.weights == SEED_WEIGHTS
+def test_borda_coalition_salience_single_candidate_uses_raw_mean():
+    """n == 1: nothing to rank against -- falls back to the loop's own raw
+    mean(evidence_strength, evidence_breadth), not a general Borda formula."""
+    feats = SalienceFeaturesV1(evidence_strength=0.8, evidence_breadth=0.4)
+    result = borda_coalition_salience({"a": feats})
+    assert result == {"a": pytest.approx(0.6)}
 
 
-def test_recency_decays_with_age():
-    from datetime import datetime, timedelta, timezone
-    from orion.substrate.attention.salience import compute_features
-    loop = _loop()
-    now = datetime(2026, 1, 1, 12, 0, tzinfo=timezone.utc)
-    hist = SalienceHistory(first_seen_at={loop.id: now - timedelta(hours=6)})
-    feats = compute_features(loop=loop, signals=[_signal(0.8, 0.8)], history=hist, now=now)
-    assert 0.45 <= feats.recency <= 0.55  # ~0.5 at one half-life
+def test_borda_coalition_salience_discriminates_strong_vs_weak():
+    strong = compute_evidence_features(
+        [
+            _signal(0.95, 0.9, source="current_turn"),
+            _signal(0.8, 0.85, source="autonomy"),
+            _signal(0.7, 0.8, source="concept_induction"),
+        ]
+    )
+    weak = compute_evidence_features([_signal(0.35, 0.5, source="current_turn")])
+    result = borda_coalition_salience({"strong": strong, "weak": weak})
+    assert result["strong"] > result["weak"]
+    # Two-candidate Borda: full-agreement winner gets both scorers' full
+    # normalized-rank share -> exactly 1.0. Loser gets exactly 0.0.
+    assert result["strong"] == pytest.approx(1.0)
+    assert result["weak"] == pytest.approx(0.0)
 
 
-def test_apply_habituation_toggle_changes_score():
-    loop = _loop()
-    hist = SalienceHistory(dwell_ticks=6, dwelling_loop_id=loop.id,
-                           recent_theme_counts={loop.id: 5},
-                           resonance_theme_keys={loop.id})
-    with_hab, _ = compute_salience(loop=loop, signals=[_signal(0.9, 0.9)],
-                                   history=hist, apply_habituation=True)
-    without_hab, feats = compute_salience(loop=loop, signals=[_signal(0.9, 0.9)],
-                                          history=hist, apply_habituation=False)
-    assert without_hab > with_hab  # penalty applied only when enabled
-    assert feats.habituation > 0.0  # returned features keep the real value
+def test_borda_coalition_salience_bounded_0_1():
+    feats = {
+        f"loop-{i}": compute_evidence_features([_signal(0.1 * i, 0.9)])
+        for i in range(1, 6)
+    }
+    result = borda_coalition_salience(feats)
+    assert set(result) == set(feats)
+    for score in result.values():
+        assert 0.0 <= score <= 1.0
+
+
+def test_borda_coalition_salience_tie_shares_points():
+    """Two candidates with identical evidence tie -- neither dominates."""
+    a = compute_evidence_features([_signal(0.7, 0.8, source="current_turn")])
+    b = compute_evidence_features([_signal(0.7, 0.8, source="autonomy")])
+    result = borda_coalition_salience({"a": a, "b": b})
+    assert result["a"] == pytest.approx(result["b"])

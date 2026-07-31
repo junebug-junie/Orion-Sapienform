@@ -5,12 +5,12 @@ from orion.schemas.registry import resolve
 def test_salience_features_defaults_are_bounded():
     f = SalienceFeaturesV1()
     assert f.evidence_strength == 0.0
-    assert f.habituation == 0.0
+    assert f.evidence_breadth == 0.0
     dumped = f.model_dump(mode="json")
-    assert set(dumped) >= {
-        "evidence_strength", "evidence_breadth", "recurrence",
-        "recency", "novelty_vs_known", "dwell", "habituation",
-    }
+    # Trimmed 2026-07-31: recurrence/recency/novelty_vs_known/dwell/
+    # habituation killed with nothing put back -- see
+    # orion.substrate.attention.salience's module docstring.
+    assert set(dumped) == {"schema_version", "evidence_strength", "evidence_breadth"}
 
 
 def test_open_loop_carries_salience_fields():

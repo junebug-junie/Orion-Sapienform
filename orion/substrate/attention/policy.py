@@ -45,6 +45,21 @@ def select_actions(
     generic_reversal: bool,
     stale_thread_active: bool,
 ) -> tuple[list[CuriosityCandidateActionV1], CuriosityCandidateActionV1, list[CuriositySuppressionV1], list[str]]:
+    # NOTE (2026-07-31, disclosed not fixed): min_ask (caller-supplied,
+    # default 0.65 -- see AttentionFrameV1/build_attention_frame) and the
+    # inline 0.48/0.35 thresholds below were tuned against the OLD
+    # SEED_WEIGHTS absolute per-loop score, not the new Borda
+    # rank-aggregated score. Borda salience is fundamentally a RELATIVE
+    # rank measure -- the same underlying evidence can score differently
+    # depending on how many other loops happen to compete in the same tick
+    # (e.g. an all-tied field always lands every loop at exactly 0.5;
+    # adjacent-rank gaps compress as ~1/(n-1)). Whether these absolute
+    # cutoffs still make sense against the new score distribution is an
+    # open, real question -- explicitly out of scope for this patch, same
+    # as `SURFACE_MIN_SALIENCE`'s deferred recalibration (see
+    # orion/sentience_striving_program/README.md's 2026-07-31 entry) --
+    # the new formula needs to run for real before there is a distribution
+    # to recalibrate against.
     actions: list[CuriosityCandidateActionV1] = []
     suppressions = list(suppressions)
     for loop in open_loops:

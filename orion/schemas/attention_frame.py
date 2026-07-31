@@ -39,11 +39,28 @@ def _utc_now() -> datetime:
 
 
 class SalienceFeaturesV1(BaseModel):
-    """Evidence-derived feature vector scored by the salience combiner.
+    """The two real, evidence-derived features Borda rank-aggregated into
+    coalition-strength salience (see `orion.substrate.attention.salience`).
 
-    Replaces the hand-tuned constant ladder. `habituation` is a penalty term
-    (higher = more habituated = lower salience) applied subtractively by the
-    combiner. All features are bounded [0,1].
+    Trimmed 2026-07-31 (kill means kill, CLAUDE.md Sec 0A) from a 7-field
+    vector: `recurrence`, `recency`, `novelty_vs_known`, `dwell`, and
+    `habituation` had no real theory anchor (recency's 6h half-life and
+    dwell/habituation's blend weights were picked, not measured;
+    novelty_vs_known collapsed to a flat 0.15 for any known loop) and were
+    killed with nothing put back rather than kept as always-zero fields
+    (that would be exactly the "empty-shell"/fake-precision pattern this
+    trim exists to avoid). `habituation` was, as far as this investigation
+    found, the only automatic repeat-suppression mechanism in this scoring
+    path -- its removal is a real, disclosed capability gap, not silently
+    absorbed. See `orion/sentience_striving_program/README.md`'s
+    2026-07-31 entry for the full rationale.
+
+    `evidence_strength` (the strongest single detector's own real
+    activation) and `evidence_breadth` (how many independent
+    detectors/evidence_refs corroborate this loop) are both real,
+    already-shipped signals -- not hand-picked -- and map onto Global
+    Workspace Theory / Society-of-Mind coalition formation (Baars 1988,
+    Dehaene 2014).
     """
 
     model_config = ConfigDict(extra="forbid", populate_by_name=True)
@@ -51,11 +68,6 @@ class SalienceFeaturesV1(BaseModel):
     schema_version: Literal["attention.salience.features.v1"] = "attention.salience.features.v1"
     evidence_strength: float = Field(default=0.0, ge=0.0, le=1.0)
     evidence_breadth: float = Field(default=0.0, ge=0.0, le=1.0)
-    recurrence: float = Field(default=0.0, ge=0.0, le=1.0)
-    recency: float = Field(default=0.0, ge=0.0, le=1.0)
-    novelty_vs_known: float = Field(default=0.0, ge=0.0, le=1.0)
-    dwell: float = Field(default=0.0, ge=0.0, le=1.0)
-    habituation: float = Field(default=0.0, ge=0.0, le=1.0)
 
 
 class OpenLoopV1(BaseModel):

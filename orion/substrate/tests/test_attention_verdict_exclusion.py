@@ -52,7 +52,6 @@ def _build(signals, verdict_lookup=None):
         generic_reversal=False,
         stale_thread_active=False,
         max_open=5,
-        now=_NOW,
         verdict_lookup=verdict_lookup,
     )
 
@@ -117,7 +116,6 @@ def test_excluded_loop_frees_its_slot_for_the_next_best_candidate():
         generic_reversal=False,
         stale_thread_active=False,
         max_open=2,
-        now=_NOW,
         verdict_lookup=lambda ids: {excluded_id},
     )
 

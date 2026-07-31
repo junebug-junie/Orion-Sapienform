@@ -25,12 +25,14 @@ logger = logging.getLogger("orion-hub.attention_loops")
 _FEATURE_LABELS = {
     "evidence_strength": "strong evidence",
     "evidence_breadth": "corroborated across detectors",
-    "recurrence": "keeps recurring",
-    "recency": "recently observed",
-    "novelty_vs_known": "novel vs known",
-    "dwell": "held attention",
-    "habituation": "over-attended (habituating)",
 }
+# 2026-07-31: recurrence/recency/novelty_vs_known/dwell/habituation removed
+# (killed with nothing put back -- see orion.substrate.attention.salience's
+# module docstring and orion/sentience_striving_program/README.md's
+# 2026-07-31 entry). A card built from an OLD, pre-kill trace row may still
+# carry those keys in its stored `features` JSON; `_top_features` below
+# simply won't find labels for them anymore and they drop out of the
+# displayed list -- not an error, just older telemetry aging out.
 
 
 def _database_url() -> str:
@@ -97,7 +99,7 @@ def build_pending_card(
         age_seconds=age,
         recurrence_count=int(recurrence_count),
         salience=float(loop.salience),
-        weights_version=str((loop.salience_features or {}).get("weights_version") or "seed-v1"),
+        weights_version=str((loop.salience_features or {}).get("weights_version") or "gwt-coalition-v1"),
         top_contributing_features=_top_features(loop.salience_features or {}),
         status="pending",
     )

@@ -35,7 +35,7 @@ class AttentionSalienceTraceV1(BaseModel):
     description: str = Field(default="", max_length=200)
     correlation_id: str | None = None
     salience: float = Field(default=0.0, ge=0.0, le=1.0)
-    weights_version: str = "seed-v1"
+    weights_version: str = "gwt-coalition-v1"
     features: dict[str, Any] = Field(default_factory=dict)
     scope: str = "reverie"  # reverie | chat | broadcast
     created_at: datetime = Field(default_factory=_utc_now)
@@ -53,7 +53,7 @@ class AttentionLoopOutcomeV1(BaseModel):
     note: str = Field(default="", max_length=500)
     salience_at_close: float = Field(default=0.0, ge=0.0, le=1.0)
     features_at_close: dict[str, Any] = Field(default_factory=dict)
-    weights_version: str = "seed-v1"
+    weights_version: str = "gwt-coalition-v1"
     created_at: datetime = Field(default_factory=_utc_now)
 
 
@@ -70,7 +70,7 @@ class PendingAttentionCardV1(BaseModel):
     age_seconds: float = Field(default=0.0, ge=0.0)
     recurrence_count: int = Field(default=0, ge=0)
     salience: float = Field(default=0.0, ge=0.0, le=1.0)
-    weights_version: str = "seed-v1"
+    weights_version: str = "gwt-coalition-v1"
     top_contributing_features: list[str] = Field(default_factory=list, max_length=MAX_FEATURE_LIST)
     source: Literal["cognitive_loop"] = "cognitive_loop"
     status: PendingCardStatusV1 = "pending"

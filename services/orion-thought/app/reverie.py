@@ -17,7 +17,6 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
-import os
 from contextlib import suppress
 from typing import Any, Callable
 from uuid import UUID, uuid4
@@ -44,17 +43,6 @@ from .settings import settings
 from .store import load_recent_loop_outcomes, persist_reverie_thought, persist_salience_trace
 
 logger = logging.getLogger("orion-thought.reverie")
-
-# Coalition score fields on OpenLoopV1 — all pre-computed 0..1, never invented here.
-_OPEN_LOOP_SCORE_FIELDS = (
-    "novelty",
-    "continuity_relevance",
-    "relational_relevance",
-    "predictive_value",
-    "concept_value",
-    "autonomy_value",
-    "emotional_charge",
-)
 
 BroadcastReader = Callable[[], AttentionBroadcastProjectionV1 | None]
 
@@ -99,20 +87,6 @@ def build_coalition_snapshot(
     )
 
 
-_TRUTHY = {"1", "true", "yes", "on"}
-
-
-def _salience_v2_enabled() -> bool:
-    """Thin-service read of the salience-v2 flag.
-
-    Deliberately does NOT import `orion.substrate.attention.salience`: importing
-    any `orion.substrate` submodule runs `orion/substrate/__init__.py`, which
-    eagerly loads the graph engine (`requests` etc.) that this thin bus service
-    does not install. Mirrors `salience_v2_enabled()` in that module.
-    """
-    return os.getenv("ORION_ATTENTION_SALIENCE_V2_ENABLED", "false").strip().lower() in _TRUTHY
-
-
 def _bounded(value: float) -> float:
     """Clamp to [0,1] — local copy of `orion.substrate.attention.common.bounded`
     to keep reverie off the `orion.substrate` import graph (no `requests`)."""
@@ -120,25 +94,49 @@ def _bounded(value: float) -> float:
 
 
 def _weights_version() -> str:
-    """Provenance string mirroring `default_combiner().weights_version` without
-    importing the combiner (thin service: no `orion.substrate` at runtime)."""
-    raw = os.getenv("ORION_ATTENTION_SALIENCE_WEIGHTS", "").strip()
-    if raw:
-        try:
-            if isinstance(json.loads(raw), dict):
-                return "seed-v1+override"
-        except (ValueError, TypeError):
-            pass
-    return "seed-v1"
+    """Provenance string mirroring `orion.substrate.attention.salience.
+    WEIGHTS_VERSION` without importing that module (thin service: no
+    `orion.substrate` at runtime).
+
+    2026-07-31: constant now, not env-conditional. `ORION_ATTENTION_
+    SALIENCE_WEIGHTS` (the old per-key JSON weight override) was killed
+    alongside `SEED_WEIGHTS`/`LinearSalienceCombiner` -- Borda
+    rank-aggregation has no cross-scorer weights left to override, so
+    there is no more "+override" variant to detect.
+    """
+    return "gwt-coalition-v1"
 
 
 def derive_salience(broadcast: AttentionBroadcastProjectionV1 | None) -> float:
-    """Salience of the selected coalition.
+    """Salience of the selected coalition: the loop's precomputed `salience`
+    (computed upstream by `orion.substrate.attention.salience.
+    borda_coalition_salience` -- one source of salience truth), or the
+    broadcast's own `coalition_stability_score` when there is no selected
+    loop or its salience is exactly 0.0.
 
-    v2 (`ORION_ATTENTION_SALIENCE_V2_ENABLED`): read the loop's precomputed
-    `salience` (computed upstream by the same combiner selection uses — one
-    source of salience truth). Legacy: max of the seven constant score fields,
-    else stability score.
+    Correction, 2026-07-31 review: "salience exactly 0.0" is NOT only a
+    "no evidence at all" case under Borda rank-aggregation -- a loop with
+    real, nonzero `evidence_strength`/`evidence_breadth` can legitimately
+    land at exactly 0.0 if it is the strict last-place item on BOTH voters
+    in a multi-loop tick (Borda scores rank, not absolute magnitude; the
+    worst-ranked candidate always gets 0 points from every scorer). This
+    `if loop.salience else fallback` falsy-check predates this patch
+    (present, unchanged, under the old SEED_WEIGHTS formula too, where a
+    strong `habituation` penalty could similarly clamp a real loop's score
+    to 0) -- kept as-is rather than changed here, since revisiting when a
+    real-but-outranked loop should still report its own score vs. the
+    coalition's stability score is a separate, real question this patch
+    does not attempt to resolve.
+
+    2026-07-31: this used to branch on `ORION_ATTENTION_SALIENCE_V2_ENABLED`
+    -- v2 on: read `loop.salience`; v2 off: max of `OpenLoopV1`'s seven raw
+    constant-ladder fields (`_OPEN_LOOP_SCORE_FIELDS`), mirroring
+    `scoring.py::score_loop()`'s now-deleted legacy fallback. That branch
+    is now unconditional: there is exactly one salience formula
+    (`loop.salience` is always the real Borda-aggregated value --
+    `build_open_loops()` computes it unconditionally, regardless of any
+    flag), so the legacy branch is dead code removed here rather than kept
+    behind a flag that no longer selects anything.
 
     Uses only thin local helpers (no `orion.substrate` import): importing that
     package drags the graph engine (`requests`), which this thin bus service must
@@ -153,10 +151,7 @@ def derive_salience(broadcast: AttentionBroadcastProjectionV1 | None) -> float:
     )
     if loop is None:
         return fallback
-    if _salience_v2_enabled():
-        return _bounded(float(loop.salience)) if loop.salience else fallback
-    scores = [float(getattr(loop, field, 0.0)) for field in _OPEN_LOOP_SCORE_FIELDS]
-    return max(scores) if scores else fallback
+    return _bounded(float(loop.salience)) if loop.salience else fallback
 
 
 def build_salience_trace(
@@ -459,6 +454,13 @@ async def run_reverie_once(
         await bus.publish(settings.channel_reverie_thought, envelope)
         # Best-effort persistence for the hub panel — never breaks the tick.
         persist_reverie_thought(thought)
+        # 2026-07-31: this flag no longer selects a salience formula (there
+        # is only one -- see orion.substrate.attention.salience). Its real,
+        # kept purpose is narrower now: whether the salience-trace pipeline
+        # (bus publish + Postgres persist below) runs at all. Left under
+        # its original env key name (ORION_ATTENTION_SALIENCE_V2_ENABLED)
+        # rather than renamed, to avoid unnecessary env-parity churn across
+        # every live .env for a purely cosmetic rename.
         if settings.attention_salience_v2_enabled:
             trace = build_salience_trace(broadcast, correlation_id=correlation_id)
             if trace is not None:

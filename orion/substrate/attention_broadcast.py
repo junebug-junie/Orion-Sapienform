@@ -42,68 +42,22 @@ DEFAULT_MAX_SIGNALS = 24
 _coalition_history: deque[frozenset[str]] = deque(maxlen=3)
 _current_active_coalition: frozenset[str] | None = None
 _dwell_ticks: int = 0
-# The open-loop id whose selection produced the currently-active coalition
-# (mirrors _current_active_coalition's own lifecycle exactly -- set/cleared
-# at the same transition points in broadcast_projection_from_frame). Lets
-# salience._loop_dwell() apply the dwell habituation signal only to the loop
-# actually dwelling, instead of the tick-count scalar being applied
-# uniformly to every competing loop (found live 2026-07-14: dwell could
-# never demote the specific stuck loop relative to its competitors, since a
-# per-tick offset shared by everyone changes nothing about who wins).
-_current_dwelling_loop_id: str | None = None
 # Transition log: last 10 activation/decay events, mirrored into
 # AttentionBroadcastProjectionV1.coalition_history (schema caps at 10).
 _transition_history: deque[dict[str, Any]] = deque(maxlen=10)
 
-# Recent selected-loop counts for habituation (inhibition-of-return). Capped.
-_recent_selected_counts: dict[str, int] = {}
-# First real-clock moment each loop_id was ever selected. Feeds
-# salience._recency()'s half-life decay -- previously never wired up here,
-# so history.first_seen_at was always an empty dict and _recency() always
-# hit its "never seen before" branch and returned 1.0 unconditionally,
-# forever, for every loop (found live 2026-07-14: a loop verdicted
-# "resolved" on 07-08 and "dismissed" on 07-10 was still winning selection
-# on 07-14 with byte-identical salience_features to the 07-10 snapshot,
-# including recency=1.0). Same in-memory-only, capped-dict lifecycle as
-# _recent_selected_counts -- resets on service restart, consistent with
-# that field's existing, already-accepted behavior; not attempting to add
-# cross-restart persistence here, out of scope for this fix.
-_first_selected_at: dict[str, datetime] = {}
-_MAX_TRACKED_THEMES = 64
-
-# A theme selected at least this many times is "resonating" (stuck) — engage
-# the resonance term of habituation so inhibition-of-return can release it.
-_RESONANCE_MIN_COUNT = 3
-
-
-def _record_selection(loop_id: str | None, *, now: datetime | None = None) -> None:
-    if not loop_id:
-        return
-    _recent_selected_counts[loop_id] = _recent_selected_counts.get(loop_id, 0) + 1
-    _first_selected_at.setdefault(loop_id, now or datetime.now(timezone.utc))
-    if len(_recent_selected_counts) > _MAX_TRACKED_THEMES:
-        drop = min(_recent_selected_counts, key=_recent_selected_counts.get)
-        _recent_selected_counts.pop(drop, None)
-        _first_selected_at.pop(drop, None)
-
-
-def _current_history(resonance_theme_keys: set[str] | None = None) -> "SalienceHistory":
-    from orion.substrate.attention.salience import SalienceHistory
-
-    # A theme selected repeatedly IS resonating (stuck): engage the full
-    # habituation penalty so inhibition-of-return can eventually release it.
-    # Callers may still pass explicit keys (e.g. tests / other producers).
-    if resonance_theme_keys is None:
-        resonance_theme_keys = {
-            k for k, v in _recent_selected_counts.items() if v >= _RESONANCE_MIN_COUNT
-        }
-    return SalienceHistory(
-        dwell_ticks=_dwell_ticks,
-        dwelling_loop_id=_current_dwelling_loop_id,
-        recent_theme_counts=dict(_recent_selected_counts),
-        resonance_theme_keys=set(resonance_theme_keys),
-        first_seen_at=dict(_first_selected_at),
-    )
+# 2026-07-31: `_current_dwelling_loop_id`, `_recent_selected_counts`,
+# `_first_selected_at`, `_record_selection()`, `_current_history()`,
+# `_MAX_TRACKED_THEMES`, and `_RESONANCE_MIN_COUNT` were deleted here
+# (kill means kill, CLAUDE.md Sec 0A). Their only real purpose was feeding
+# `orion.substrate.attention.salience.SalienceHistory`'s now-killed
+# recency/dwell/habituation/recurrence terms -- `_current_dwelling_loop_id`
+# in particular had become write-only (set here, read nowhere) the moment
+# `_current_history()` went away. `_dwell_ticks`/`_coalition_history`/
+# `_current_active_coalition`/`_transition_history` below are a SEPARATE,
+# real, kept mechanism (coalition hysteresis/stability -- feeds
+# `AttentionBroadcastProjectionV1.dwell_ticks`/`coalition_stability_score`/
+# `coalition_history`), not touched by this kill.
 
 
 def attention_broadcast_enabled() -> bool:
@@ -222,20 +176,12 @@ def build_substrate_attention_frame(
     are then demoted to ``watch``, so the selected coalition is the top loop
     without any question generation.
     """
-    from orion.substrate.attention.salience import habituation_enabled
-
     lineage = list(belief_lineage or [])
-    # Resolve once, reuse everywhere below -- previously build_open_loops()
-    # (and therefore compute_salience()/_recency()) never received `now` at
-    # all and always defaulted to real wall-clock execution time internally,
-    # decoupled from this frame's own generated_at. Harmless in production
-    # (both were "real now" anyway) but meant recency could never be tested
-    # deterministically, and masked the real bug this patch fixes (see
-    # _first_selected_at above) during development.
+    # generated_at is stamped from this same resolved value below, keeping
+    # the frame's own timestamp internally consistent.
     resolved_now = now or datetime.now(timezone.utc)
     signals = substrate_pressure_signals(nodes, min_salience=min_salience, limit=max_signals)
     merged = merge_signals(signals, limit=max_open * 3)
-    history = _current_history() if habituation_enabled() else None
     open_loops = build_open_loops(
         signals=merged,
         ctx={},
@@ -245,8 +191,6 @@ def build_substrate_attention_frame(
         generic_reversal=False,
         stale_thread_active=False,
         max_open=max_open,
-        history=history,
-        now=resolved_now,
         # Substrate broadcast is rung-3's continuous re-broadcast, the exact
         # path a resolved/dismissed loop was found live still winning
         # indefinitely (2026-07-14 investigation). Excludes those loops
@@ -306,16 +250,19 @@ def _apply_voluntary_attention(
             top_down_enabled,
         )
         from orion.substrate.attention.goal_context import get_active_goal
-        from orion.substrate.attention.salience import salience_v2_enabled
 
         if not top_down_enabled():
             return frame
-        # The bottom-up basis here is loop.salience (the v2 combined-salience
-        # output). With salience_v2 OFF, select_actions ranks by a legacy weighted
-        # sum, so our bottom-up winner could disagree with the real selection —
-        # only layer top-down when v2 is the active selection basis (spec target).
-        if not salience_v2_enabled():
-            return frame
+        # 2026-07-31: the `salience_v2_enabled()` gate that used to sit here
+        # was removed. Its stated rationale ("with salience_v2 OFF,
+        # select_actions ranks by a legacy weighted sum, so our bottom-up
+        # winner could disagree with the real selection") no longer applies
+        # -- score_loop() has exactly one formula now (loop.salience,
+        # unconditionally; see scoring.py), so select_actions' real
+        # selection basis and this function's bottom_up basis can never
+        # disagree regardless of that flag's value. Keeping a check whose
+        # own justification is gone would be exactly the kind of zombie
+        # gate this program's kill-means-kill discipline exists to remove.
         goal = get_active_goal()
         if goal is None or not frame.open_loops:
             return frame
@@ -349,7 +296,7 @@ def _apply_voluntary_attention(
 
 
 def broadcast_projection_from_frame(frame: AttentionFrameV1) -> AttentionBroadcastProjectionV1:
-    global _current_active_coalition, _dwell_ticks, _coalition_history, _current_dwelling_loop_id
+    global _current_active_coalition, _dwell_ticks, _coalition_history
 
     selected = frame.selected_action
     selected_loop = None
@@ -378,13 +325,6 @@ def broadcast_projection_from_frame(frame: AttentionFrameV1) -> AttentionBroadca
                 }
             )
         _dwell_ticks += 1
-        # Mirror attended_node_ids' own guard above: only attribute dwell to a
-        # loop id that actually resolved against frame.open_loops. A dangling
-        # selected.open_loop_id (no matching loop) must not be recorded as
-        # dwelling -- _loop_dwell would just never match it anyway, but
-        # leaving it unset here keeps dwelling_loop_id meaning "a real loop
-        # is dwelling" rather than "some id was selected, resolved or not."
-        _current_dwelling_loop_id = selected_loop.id if selected_loop is not None else None
     else:
         # Decay: active coalition has left the recent window entirely
         if _current_active_coalition is not None and all(
@@ -399,7 +339,6 @@ def broadcast_projection_from_frame(frame: AttentionFrameV1) -> AttentionBroadca
             )
             _current_active_coalition = None
             _dwell_ticks = 0
-            _current_dwelling_loop_id = None
 
     # Compute stability score from recent salience consistency
     # (simplified: high if dwell_ticks > 3, medium if transitioning, low if flickering)
@@ -409,10 +348,6 @@ def broadcast_projection_from_frame(frame: AttentionFrameV1) -> AttentionBroadca
         stability_score = 0.6
     else:
         stability_score = 0.3
-
-    _record_selection(
-        selected.open_loop_id if selected is not None else None, now=frame.generated_at
-    )
 
     return AttentionBroadcastProjectionV1(
         generated_at=frame.generated_at,

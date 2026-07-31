@@ -53,6 +53,18 @@ def test_prediction_error_beats_equal_plain_pressure() -> None:
     # a real dynamics tick would have written for node:surprise -- typing
     # comes from that, not the raw prediction_error field (also set here,
     # purely to prove it is no longer what drives typing).
+    #
+    # 2026-07-31: node:surprise also carries real `contributing_turn_ids` --
+    # corroborating evidence a genuine prediction-error event would actually
+    # have. This is required, not cosmetic, since this test predates the
+    # GWT-coalition Borda formula: neither it nor the real (always-on-in-
+    # every-live-.env) v2 combiner it replaced ever used `target_type` as a
+    # salience differentiator -- only `scoring.py::score_loop()`'s deleted
+    # legacy fallback did (via `predictive_value`), and that fallback was
+    # confirmed dead in every live .env for its entire existence. With equal
+    # `dynamic_pressure`/confidence and no other real evidence difference,
+    # "anomaly" typing alone would tie, not win -- this test now asserts a
+    # real evidence_breadth difference instead of an untyped tie.
     nodes = [
         _node("node:pressure", "steady pressure region", dynamic_pressure=0.8),
         _node(
@@ -61,6 +73,7 @@ def test_prediction_error_beats_equal_plain_pressure() -> None:
             dynamic_pressure=0.8,
             prediction_error=0.8,
             dynamic_pressure_reason="prediction_error_seed",
+            contributing_turn_ids=["turn-a", "turn-b"],
         ),
     ]
     frame = build_substrate_attention_frame(nodes=nodes, now=_NOW)

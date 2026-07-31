@@ -78,7 +78,7 @@ def test_calling_reverie_tick_helpers_does_not_load_substrate() -> None:
         " selected_open_loop_id='ol-1', coalition_stability_score=0.4)\n"
         "assert r.derive_salience(b) > 0\n"
         "t = r.build_salience_trace(b, correlation_id='c1')\n"
-        "assert t is not None and t.weights_version == 'seed-v1'\n"
+        "assert t is not None and t.weights_version == 'gwt-coalition-v1'\n"
         "sub=[m for m in sys.modules if m.startswith('orion.substrate')]\n"
         "assert not sub, sub\n"
         "assert 'requests' not in sys.modules\n"

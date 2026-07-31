@@ -69,6 +69,18 @@ router = APIRouter(prefix="/api/attention-organ", tags=["attention-organ"])
 # below (orion/substrate/attention_self_model.py), same "sibling domain node,
 # not yet folded into the confidence aggregate" status bus_synaptic held for
 # a while before that was a separate, explicit decision.
+#
+# `transport` REMOVED 2026-07-31, when the domain was fully retired (producer,
+# reducer map entry, function, and the live node). Leaving it listed puts this
+# surface in one of two wrong states and there is no third: while the stale node
+# still existed it rendered under the "still ticking, still readable elsewhere"
+# heading -- asserting a retired domain is live -- and once the node is gone it
+# renders a permanent red "no node" badge, which this module's own comment below
+# calls "a different, louder failure", for a domain nobody should be alarmed
+# about. A retired domain belongs off the list, not in a warning state forever.
+#
+# `harness_closure` deliberately STAYS: it is excluded from the aggregate but
+# has a live producer, which is exactly what that heading is for.
 KNOWN_PREDICTION_ERROR_DOMAINS: tuple[str, ...] = (
     "biometrics",
     "bus_synaptic",
@@ -76,7 +88,6 @@ KNOWN_PREDICTION_ERROR_DOMAINS: tuple[str, ...] = (
     "codebase",
     "execution",
     "route",
-    "transport",
     "harness_closure",
 )
 

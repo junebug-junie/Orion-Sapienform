@@ -546,10 +546,12 @@ than 3 of the original 5 `prediction_error` domains at time of writing. On that 
 `orion/substrate/attention_self_model.py`'s `ACTIVE_INFERENCE_DOMAINS` frozenset now includes
 `"bus_synaptic"` (five active domains: execution, biometrics, chat, route, bus_synaptic), feeding
 `prediction_error_confidence`. This is a different consumer than `orion-equilibrium-service`'s
-transport metacog gate (PRs #1385/#1387, wired separately, same node). The still-broken `transport`
-domain (`transport_prediction_error()`) remains excluded and unfixed — see
+transport metacog gate (PRs #1385/#1387, wired separately, same node). The broken `transport`
+domain (`transport_prediction_error()`) was excluded here on 2026-07-25 and **fully retired
+2026-07-31** — function deleted, reducer map entry removed, live node deleted; see the
+"COMPLETED, 2026-07-31" section below and
 `docs/superpowers/specs/2026-07-22-l6-self-model-ast-hot-active-inference-design.md`'s
-2026-07-25 revision for the full caveat.
+2026-07-25 revision for the original caveat.
 
 **Corrected 2026-07-26: the sanity-check pass above was incomplete.** It checked non-degeneracy
 (step 4 of CLAUDE.md's metric-quality-gate) but skipped the theory-anchor/commensurability check
@@ -636,8 +638,42 @@ while it stayed, which is exactly why a comment was not enough. Now:
   restricted to `ACTIVE_INFERENCE_DOMAINS`. `transport` never actually won it (0 of 7,119 persisted
   rows) -- but only because a frozen node has a flat `0.0` trend. That is a dead domain being
   invisible for as long as it stays dead, not a filter.
-- The stale node itself **deleted from live FalkorDB** (`orion_substrate`), snapshotted first to
-  `/tmp/retire-substrate-transport-node/before_snapshot.txt`.
+- The stale node itself: **NOT deleted. `UNVERIFIED` / open defect — see below.** All four changes
+  above are reader-side and stand on their own; the node is now unreferenced by any of them, but it
+  is still physically present in `orion_substrate`.
+
+  **`node:substrate.transport` cannot be deleted from the live graph.** Three attempts, each
+  reporting `Nodes deleted: 1`, each undone:
+
+  1. Plain `GRAPH.QUERY ... DELETE n` while everything ran — back within a minute, `activation`
+     ticking (`0.166125 → 0.166074 → 0.166064`, i.e. actively written).
+  2. `stop orion-substrate-runtime` → delete (verified `count(n) = 0` while stopped) → `up -d`.
+     Back anyway.
+  3. Delete again on the running system, polled every 2s: **resurrected after 6 seconds.**
+
+  What rules out the obvious explanations:
+
+  - **Not the dynamics loop.** `SUBSTRATE_DYNAMICS_TICK_INTERVAL_SEC` defaults to 30s; the
+    resurrection took 6s.
+  - **Not `FalkorSubstrateStore`'s in-process cache alone.** That cache dies with the process, and
+    attempt 2 deleted the node while the process was down.
+  - **Not a fresh write.** The restored node carries `activation: 0.166125` — the *exact*
+    pre-deletion value, not a decayed one — plus `recency_score: 0.0`,
+    `observed_at: 2026-07-24T21:55:26Z`. Something replays a frozen 7-day-old snapshot verbatim.
+  - **No log line anywhere.** Checked `substrate-runtime`, `recall`, `attention-runtime`,
+    `field-digester`, `graph-compression` over the resurrection window: nothing.
+
+  `prediction_error` is the one property that does *not* come back, because it sits in
+  `EXTERNALLY_OWNED_METADATA_KEYS` and is excluded from the `MERGE` write — which is itself a clue
+  about the shape of the writer. `salience: 0.556078` does come back.
+
+  This is broader than transport: if a substrate concept node cannot be deleted, then **no**
+  substrate node can be retired from the graph, only from its readers. That deserves its own
+  investigation and its own patch, and deliberately was not chased further inside a retirement PR.
+  No denylist was added either — a retired-id registry would paper over a writer nobody has
+  identified yet, which is the wrong order of operations.
+
+  Snapshot of the node as it stood: `/tmp/retire-substrate-transport-node/before_snapshot.txt`.
 
 `config/field/orion_field_topology.v1.yaml`'s `capability:transport` edge had already migrated to
 `node:substrate.bus_synaptic` and needed no change -- the EWMA successor was already in place there.

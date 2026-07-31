@@ -105,15 +105,20 @@ MAX_ROWS: int = 200_000
 
 # The real, live Predictive-Processing domains
 # (`orion/substrate/prediction_error.py`), keyed by their FieldStateV1 node
-# id. `node:substrate.transport` is included despite its documented
-# structurally-narrow scope (`services/orion-substrate-runtime/README.md`'s
-# "transport domain is one queue" note) -- excluding it would be an
-# undisclosed thumb on the scale, not a fix; its near-permanent 0.0 is
-# reported honestly in `_aggregate_prediction_error_confidence`'s own basis
-# string instead.
+# id.
+#
+# `node:substrate.transport` REMOVED 2026-07-31, and the rationale that kept it
+# here is retired with it. That rationale was "excluding it would be an
+# undisclosed thumb on the scale, not a fix" -- correct while the domain was
+# merely *known-narrow* but still live. It is no longer live: the producer write
+# was killed 2026-07-26 and the reducer's own map entry (worker.py's
+# `_PREDICTION_ERROR_DOMAIN_NODE_IDS`) was removed 2026-07-31. Keeping it here
+# now inverts the original intent -- this harness exists to REPRODUCE what the
+# live reducer computes, so including a domain the live reducer no longer reads
+# is itself the thumb on the scale: `_aggregate_prediction_error_confidence`
+# would average 6 values here against 5 in production, for the same tick.
 PREDICTION_ERROR_DOMAIN_NODES: dict[str, str] = {
     "execution": "node:substrate.execution",
-    "transport": "node:substrate.transport",
     "biometrics": "node:substrate.biometrics",
     "chat": "node:substrate.chat",
     "route": "node:substrate.route",
@@ -694,9 +699,12 @@ def render_report(
         "### `prediction_error_confidence` (2026-07-24, unconditional, ACTIVE_INFERENCE_DOMAINS only)",
         "",
         "Closes the branch-starvation gap above: computed regardless of attention_reason, "
-        "restricted to execution/biometrics/chat/route (transport excluded -- confirmed "
-        "live 2026-07-24 that it reads exactly 0.0 for 100% of a real window, see "
-        "docs/notes/2026-07-24-attention-reason-branch-starvation-finding.md).",
+        "restricted to ACTIVE_INFERENCE_DOMAINS: execution/biometrics/chat/route/bus_synaptic. "
+        "(This line said 'execution/biometrics/chat/route' until 2026-07-31 -- stale since "
+        "bus_synaptic was added 2026-07-25, so the harness printed a 4-domain claim next to a "
+        "5-domain number. transport was excluded 2026-07-24 after reading exactly 0.0 for 100% "
+        "of a real window, see docs/notes/2026-07-24-attention-reason-branch-starvation-finding.md, "
+        "and fully retired 2026-07-31.)",
         "",
         f"- Ticks with a non-null `prediction_error_confidence`: {n_pe_confidence} / {n} "
         f"({pct(n_pe_confidence)})",

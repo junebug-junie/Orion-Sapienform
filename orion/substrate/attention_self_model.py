@@ -52,7 +52,17 @@ from this filtered set" -- and that was true and load-bearing: the caller
 producer write was killed, off a node frozen at `0.556` since 2026-07-24, and
 `predicted_shift`'s argmax below read the dict *unfiltered*. Both ends are now
 closed: the caller's map entry is deleted and gated by a set-equality test, and
-`predicted_shift` filters to this constant like every other consumer.
+`predicted_shift` filters to this constant.
+
+One consumer in this module still does NOT filter, deliberately: the
+branch-gated `confidence`/`confidence_basis` pair, via
+`_aggregate_prediction_error_confidence`. That is its documented pre-existing
+behavior (see that function and `ACTIVE_INFERENCE_DOMAINS`' own comment) and is
+left unchanged here rather than quietly altered inside a retirement patch --
+but note it means removing a domain from the caller's map shifts that field's
+value for identical substrate state. Measured for this retirement: 25 persisted
+rows used the 6-domain basis, all before 2026-07-29T05:01:06Z; future rows in
+that branch read about 0.09 higher, because a frozen 0.556 term left the mean.
 """
 
 from __future__ import annotations

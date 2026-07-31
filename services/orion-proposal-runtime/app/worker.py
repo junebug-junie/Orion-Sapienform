@@ -86,11 +86,24 @@ class ProposalRuntimeWorker:
                     # replay() returns every tick's result; the newest one is
                     # this tick's classification.
                     results = replay(readings)
+                    latest = results[-1] if results else None
+                    # chain_id must key on when the elevated run BEGAN, not on
+                    # the newest reading -- otherwise one continuous trend mints
+                    # a new chain identity every tick (review finding). The run
+                    # spans the last `consecutive_elevated` readings.
+                    run_len = latest.state.consecutive_elevated if latest else 0
+                    run = readings[-run_len:] if run_len else []
                     hop = trend_result_to_candidate(
-                        results[-1] if results else None,
+                        latest,
                         series_name="repair_pressure",
-                        observed_at=readings[-1].at,
+                        run_started_at=run[0].at if run else readings[-1].at,
                         fallback_target_id=field.tick_id,
+                        # Point at the actual rows that justify the claim, so
+                        # the candidate is inspectable rather than asserting an
+                        # elevation with nothing behind it.
+                        evidence_refs=[
+                            f"repair_pressure:{r.at.isoformat()}" for r in run
+                        ],
                     )
                     if hop is not None:
                         external_candidates.append(hop)

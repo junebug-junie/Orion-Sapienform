@@ -128,7 +128,7 @@ class ProposalRuntimeStore:
         except Exception:
             return None
 
-    def load_repair_pressure_readings(self, *, limit: int = 500):
+    def load_repair_pressure_readings(self, *, limit: int = 500, window_days: int = 7):
         """Real repair-pressure appraisals, oldest-first, for hop 0's reducer.
 
         Returns `list[MetacogTrendReading]`. Degrades to `[]` on any error --
@@ -149,6 +149,18 @@ class ProposalRuntimeStore:
         the rest state (a confidently-calm 0.087 IS the calm baseline the
         z-score needs to be anomalous against), so the reducer folds every real
         row and lets the EWMA baseline do the discriminating.
+
+        **Explicit time window, not just a row cap** (review finding
+        2026-07-31): a bare `LIMIT 500` means that once history exceeds the cap
+        the replay's start point silently slides forward, so the EWMA restarts
+        from row N-500 instead of continuing -- neither "full history" nor a
+        defined window. `created_at` is a varchar and the table has no index on
+        it (only `id`/`correlation_id`), so the cast-and-compare is a scan
+        today; fine at ~8.7 rows/day, and an index is the right fix if this
+        table ever grows fast. Ordering casts to timestamptz rather than
+        relying on lexicographic varchar ordering -- that happens to be correct
+        for the current producer's uniform ISO format, but that is a property
+        of the producer, not a constraint.
         """
         from orion.metacog.trend_reducer import MetacogTrendReading
 
@@ -160,11 +172,13 @@ class ProposalRuntimeStore:
                             """
                             SELECT created_at, level, confidence
                             FROM repair_pressure_appraisal_log
-                            ORDER BY created_at DESC
+                            WHERE created_at::timestamptz
+                                  >= NOW() - (:window_days * INTERVAL '1 day')
+                            ORDER BY created_at::timestamptz DESC
                             LIMIT :limit
                             """
                         ),
-                        {"limit": int(limit)},
+                        {"limit": int(limit), "window_days": int(window_days)},
                     )
                     .mappings()
                     .all()

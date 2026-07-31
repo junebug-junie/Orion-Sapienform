@@ -36,7 +36,7 @@ def _result(*, sustained: bool, cold: bool = False, z: float | None = 2.0,
 def _candidate(**kw):
     return trend_result_to_candidate(
         _result(**kw), series_name="repair_pressure",
-        observed_at=NOW, fallback_target_id="tick:abc",
+        run_started_at=NOW, fallback_target_id="tick:abc",
     )
 
 
@@ -63,7 +63,7 @@ def test_cold_start_never_proposes() -> None:
 
 def test_none_result_degrades_rather_than_raising() -> None:
     assert trend_result_to_candidate(
-        None, series_name="x", observed_at=NOW, fallback_target_id="t"
+        None, series_name="x", run_started_at=NOW, fallback_target_id="t"
     ) is None
 
 
@@ -99,14 +99,19 @@ def test_priority_scales_with_run_length_not_raw_zscore() -> None:
     assert any(r.startswith("zscore:463") for r in huge_z_short_run.reasons)
 
 
-def test_confidence_tracks_baseline_size_not_excursion_size() -> None:
-    """A 3-sigma reading off 20 samples is less trustworthy than the same
-    reading off 200 -- same distinction the arena's own proposal_confidence()
-    makes for native candidates."""
-    thin = _candidate(sustained=True, z=3.0, count=20)
-    thick = _candidate(sustained=True, z=3.0, count=200)
-    assert thin.confidence_score < thick.confidence_score
-    assert thick.confidence_score == 1.0
+def test_confidence_is_inverted_from_z_and_can_fall() -> None:
+    """Matches the arena's native dimension_confidence() semantic: confidence is
+    "how well does this match its own baseline", not "how sure am I there is a
+    trend". Critically it must be able to move BOTH ways -- a monotonically
+    growing confidence is an always-saturated metric."""
+    near_baseline = _candidate(sustained=True, z=0.3)
+    far_from_baseline = _candidate(sustained=True, z=3.0)
+    assert near_baseline.confidence_score > far_from_baseline.confidence_score
+    # Must be able to FALL, and to reach both ends -- the first version used
+    # state.count/100, which only grows and pinned at 1.0 permanently after
+    # ~100 rows (~4.5 days at this series' rate).
+    assert far_from_baseline.confidence_score == 0.0
+    assert _candidate(sustained=True, z=0.0).confidence_score == 1.0
 
 
 def test_chain_lineage_is_present_and_marks_hop_zero() -> None:
@@ -118,19 +123,56 @@ def test_chain_lineage_is_present_and_marks_hop_zero() -> None:
     assert any(r.startswith("chain_id:chain:repair_pressure:") for r in c.reasons)
 
 
-def test_chain_id_is_deterministic_for_replay() -> None:
-    """The repo's replay convention reconstructs historical state from stored
-    events; a uuid4 chain id would make the same trend firing a different chain
-    on every replay."""
-    a = _candidate(sustained=True)
-    b = _candidate(sustained=True)
-    assert a.proposal_id == b.proposal_id
+def test_chain_id_is_stable_across_one_continuous_trend() -> None:
+    """The hop-chain design requires chain_id "stable across a chain's life" so
+    an eventual outcome can be attributed back to the observation that started
+    the chain. The first version keyed on the LATEST reading, so one continuous
+    escalating trend minted a new identity every tick (consec 3/4/5/6 gave 4
+    distinct ids) -- making one chain look like N unrelated proposals to
+    feedback/consolidation, and leaving hop 1 nothing stable to point
+    parent_hop_id at."""
+    ids = {
+        trend_result_to_candidate(
+            _result(sustained=True, consecutive=c), series_name="repair_pressure",
+            run_started_at=NOW, fallback_target_id="t",
+        ).proposal_id
+        for c in (3, 4, 5, 6)
+    }
+    assert len(ids) == 1, f"one trend must be one chain, got {len(ids)}"
 
-    later = trend_result_to_candidate(
+
+def test_chain_id_is_deterministic_for_replay() -> None:
+    """Still deterministic: the onset is a stored timestamp, not wall-clock, so
+    reconstructing from stored rows reproduces the same id."""
+    assert _candidate(sustained=True).proposal_id == _candidate(sustained=True).proposal_id
+
+    different_run = trend_result_to_candidate(
         _result(sustained=True), series_name="repair_pressure",
-        observed_at=NOW + timedelta(seconds=1), fallback_target_id="tick:abc",
+        run_started_at=NOW + timedelta(hours=3), fallback_target_id="tick:abc",
     )
-    assert later.proposal_id != a.proposal_id
+    assert different_run.proposal_id != _candidate(sustained=True).proposal_id
+
+
+def test_reducer_detects_escalation_not_mere_elevation() -> None:
+    """Pins the measured characterization that was previously comment-only.
+
+    A value that jumps high and HOLDS produces exactly one sustained tick,
+    because the EWMA baseline adopts the new level as normal within a few ticks.
+    A rising ramp sustains. This is the most consequential property of hop 0 --
+    it will not open a chain about a condition that has been quietly bad for an
+    hour -- so it must fail loudly if the reducer is ever re-shaped."""
+    def series(levels):
+        return [
+            MetacogTrendReading(at=NOW + timedelta(minutes=i), level=v, confidence=0.65)
+            for i, v in enumerate(levels)
+        ]
+
+    calm = [0.087] * 30
+    step_hold = replay(series(calm + [0.55] * 12))
+    ramp = replay(series(calm + [0.15, 0.25, 0.38, 0.52, 0.68]))
+
+    assert sum(1 for r in step_hold if r.is_sustained_trend) == 1, "a held step is not a trend"
+    assert sum(1 for r in ramp if r.is_sustained_trend) >= 3, "escalation must sustain"
 
 
 def test_end_to_end_from_raw_readings_through_the_reducer() -> None:
@@ -142,7 +184,7 @@ def test_end_to_end_from_raw_readings_through_the_reducer() -> None:
     ]
     assert trend_result_to_candidate(
         replay(calm)[-1], series_name="repair_pressure",
-        observed_at=calm[-1].at, fallback_target_id="t",
+        run_started_at=calm[-1].at, fallback_target_id="t",
     ) is None, "a flat calm series is not a trend"
 
     # A RISING series, not a step: measured above, a step spikes once and then
@@ -153,7 +195,7 @@ def test_end_to_end_from_raw_readings_through_the_reducer() -> None:
     ]
     c = trend_result_to_candidate(
         replay(elevated)[-1], series_name="repair_pressure",
-        observed_at=elevated[-1].at, fallback_target_id="t",
+        run_started_at=elevated[-1].at, fallback_target_id="t",
     )
     assert c is not None, "a sustained real excursion must reach the arena"
     assert c.source == COGNITIVE_HOP_PROPOSAL_SOURCE

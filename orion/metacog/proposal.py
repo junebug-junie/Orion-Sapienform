@@ -73,24 +73,35 @@ HOP_INDEX_ZERO = 0
 # trend enters at 0.5 and has to keep escalating to earn more.
 SUSTAINED_RUN_FOR_FULL_SALIENCE = 6
 
-# Kept only for the `reasons` trail, never for scoring -- see above.
-ZSCORE_REPORTING_ONLY = True
+# Confidence is inverted from |z| against this constant, matching the arena's
+# own DIMENSION_PRECISION_ZSCORE_SATURATION (orion/proposals/scoring.py) rather
+# than inventing a second calibration.
+ZSCORE_CONFIDENCE_SATURATION = 3.0
 
 
 def _clamp01(value: float) -> float:
     return max(0.0, min(1.0, float(value)))
 
 
-def _chain_id(series_name: str, observed_at: datetime) -> str:
+def _chain_id(series_name: str, run_started_at: datetime) -> str:
     """Stable, deterministic id for the chain this hop opens.
 
-    Derived from the series and the observation instant so the same trend
-    firing is the same chain across a replay -- the repo's replay convention
-    (`measure_ast_hot_reducer.py` and siblings reconstruct historical state from
-    stored events) would break against a random uuid4 here.
+    Keyed on when the elevated run BEGAN, not on the latest reading. Review
+    finding 2026-07-31: the first version hashed the newest reading's timestamp,
+    so one continuous escalating trend minted a new chain identity on every new
+    row (consec=3/4/5/6 produced 4 distinct chain_ids, reproduced). The
+    hop-chain design's Missing Question 5 requires `chain_id` "stable across a
+    chain's life" precisely so an eventual action's outcome can be attributed
+    back to the observation that started the chain -- an id that changes every
+    tick makes one chain look like N unrelated proposals to feedback and
+    consolidation, and gives hop 1 nothing stable to set `parent_hop_id` to.
+
+    Still fully deterministic under replay (the original, correct half of the
+    reasoning): the run's onset is a stored timestamp, not wall-clock, so
+    reconstructing history from stored rows reproduces the same id.
     """
     digest = hashlib.sha256(
-        f"{series_name}|{observed_at.isoformat()}".encode("utf-8")
+        f"{series_name}|{run_started_at.isoformat()}".encode("utf-8")
     ).hexdigest()[:16]
     return f"chain:{series_name}:{digest}"
 
@@ -99,8 +110,9 @@ def trend_result_to_candidate(
     result: "MetacogTrendResultV1",
     *,
     series_name: str,
-    observed_at: datetime,
+    run_started_at: datetime,
     fallback_target_id: str,
+    evidence_refs: list[str] | None = None,
 ) -> ProposalCandidateV1 | None:
     """Convert a SUSTAINED metacog trend into a review-gated candidate, or None.
 
@@ -135,7 +147,7 @@ def trend_result_to_candidate(
     zscore = float(result.latest_zscore)
     consecutive = int(result.state.consecutive_elevated)
     salience = _clamp01(consecutive / SUSTAINED_RUN_FOR_FULL_SALIENCE)
-    chain_id = _chain_id(series_name, observed_at)
+    chain_id = _chain_id(series_name, run_started_at)
 
     return ProposalCandidateV1(
         proposal_id=f"proposal:cognitive_hop:{chain_id}",
@@ -153,17 +165,28 @@ def trend_result_to_candidate(
         # spike. Urgency stays deliberately below priority so a sustained
         # background condition cannot outrank a genuine acute one in the arena.
         urgency_score=_clamp01(salience * 0.4),
-        # Confidence comes from how much baseline the reducer actually has, not
-        # from how big the excursion is. A 3-sigma reading off 20 samples is
-        # less trustworthy than the same reading off 200, and the arena's own
-        # `proposal_confidence()` makes the same distinction for its native
-        # candidates via cold-start guards.
-        confidence_score=_clamp01(result.state.count / 100.0),
+        # Precision-weighted against this series' own baseline, matching the
+        # arena's native `dimension_confidence()` semantic exactly: confidence
+        # is "how well does this reading match its own recent baseline",
+        # inverted from the z-score -- NOT "how sure am I there is a trend".
+        #
+        # Review finding 2026-07-31: the first version used
+        # `state.count / 100.0`, and `count` only ever grows (the store replays
+        # the whole window each tick), so it pinned to a permanent 1.0 after
+        # ~100 rows -- about 4.5 days at this series' ~8.7 rows/day, and never
+        # returning. An always-saturated metric is exactly what CLAUDE.md's
+        # metric quality gate step 4 forbids, and the cited precedent does not
+        # support it: `dimension_confidence()` uses sample count ONLY as a
+        # cold-start gate (already handled here by `is_cold_start`) and derives
+        # the actual value from an inverted z-score that can move both ways
+        # forever. Same 3.0 saturation convention as
+        # DIMENSION_PRECISION_ZSCORE_SATURATION.
+        confidence_score=_clamp01(1.0 - abs(zscore) / ZSCORE_CONFIDENCE_SATURATION),
         # Low risk to PROPOSE and fully reversible -- the risk lives in whatever
         # action a later hop might reach, which policy must still gate.
         risk_score=0.3,
         reversibility_score=1.0,
-        evidence_refs=[],
+        evidence_refs=list(evidence_refs or []),
         reasons=[
             "cognitive_hop",
             f"chain_id:{chain_id}",

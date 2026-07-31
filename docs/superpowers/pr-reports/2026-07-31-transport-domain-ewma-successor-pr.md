@@ -242,40 +242,62 @@ a change to the unification layer's write scope — cognition wiring, so it need
 drive-by patch inside a retirement PR. No denylist was added: that would paper over the
 round-tripper instead of scoping it.
 
-  **Adversarial re-check, same day — three of the claims above were wrong. Corrected here rather
-  than left standing.**
+  **Adversarial re-check, same day. The first re-check was ITSELF partly wrong; this is the
+  verified position after re-running the experiment properly.**
 
-  1. **It is NOT a round-trip from the graph.** The wire carried
-     `salience=0.556077777777778`; the graph stores `0.556078` (confirmed with
-     `RETURN toString(n.salience)`, so this is real stored precision, not redis-cli display
-     rounding). The source has MORE precision than the graph holds, so it cannot be reading from
-     it. Confirming evidence: the resurrected node comes back with **no `prediction_error` at all**
-     (`RETURN n.prediction_error IS NULL` -> `true`), which a graph read would have carried. The
-     real source is a **long-lived in-process cache** in `orion-cortex-exec-background` — the
-     process-level `_UNIFICATION_LAYER` singleton built once via `build_substrate_store_from_env()`
-     — holding node objects as originally constructed, never re-read from Falkor. That changes the
-     fix: it is about the singleton's refresh/ownership, not about a snapshot loop.
+  **Method error that produced bad conclusions twice:** the container IP map was captured at a
+  different time than the `MONITOR` trace, and Docker had recreated containers in between, so IPs
+  had shifted. Re-run with the IP map captured in the same instant as the trace:
 
-  2. **`observed_at` is NOT clobbered on the protected merge branch.**
-     `orion/substrate/reconcile.py:288` does
-     `max(existing.temporal.observed_at, incoming.temporal.observed_at)` — it cannot go backwards
-     there. The claim that this path explains the previously-seen `observed_at` oscillation is
-     **withdrawn**; that oscillation remains unexplained and should not be attributed here.
+  ```text
+  writers that touched node:substrate.transport after a DELETE:
+    172.18.0.43  x5  -> orion-athena-cortex-exec-background     (t = +11.6s .. +16.9s)
+    172.18.0.57  x1  -> orion-athena-substrate-runtime          (t = -1.4s, i.e. BEFORE the delete)
+  ```
 
-  3. **This mechanism was already known.** Two commits dated 2026-07-30 document and partly fix it:
-     `79acfd871` ("protect reducer-owned metadata in materializer") and `1c444ce72` ("widen
-     materializer's existing-node fallback"). The materializer's own comment already names
-     `orion-cortex-exec-background` re-touching these nodes "every few seconds". What is genuinely
-     new here is only: the write set covers **all 11 nodes in the graph**, and a *deleted* node
-     falls through the widened fallback onto the create branch because it genuinely no longer
-     exists. The "deleting a node makes the write less safe" framing is also weaker than stated —
-     creating a node that is absent is defensible materializer behavior. The actual defect is that
-     something still emits `node:substrate.transport` into a record at all.
+  The attribution to `orion-cortex-exec-background` holds. Resurrection latency varied across runs
+  (6s, then 13s), so this is event-driven, not a fixed timer.
 
-  What survives the re-check: the resurrector is `orion-cortex-exec-background` (MONITOR + container
-  IP map); it writes all 11 node_ids 17x in a ~0.8s burst; no substrate node can be deleted while it
-  runs; and `node:substrate.transport` still carries `salience=0.556078` — the retired domain's old
-  `prediction_error` value, persisted as salience and visible to generic salience consumers.
+  **Retracted, and then re-retracted — `prediction_error` is protected, and the precision argument
+  was invalid.** An intermediate version of this note claimed the writer could not be reading from
+  the graph, on two grounds. Both were wrong:
+
+  - *"The wire carries more precision than the graph stores."* It does not.
+    `RETURN n.salience * 1000000000` gives `556077777.777778` and
+    `n.salience - 0.556078` gives `-2.22e-07` — FalkorDB stores full double precision, and
+    `toString()`/`properties()` were rounding the **display**. The precision evidence distinguishes
+    nothing in either direction.
+  - *"`prediction_error` does not come back, so the source lacks it."* It does not come back because
+    **`n.prediction_error` is not in the SET clause at all** — confirmed on the wire. That is
+    `skip_metadata_keys=EXTERNALLY_OWNED_METADATA_KEYS` working exactly as the 2026-07-30 fix
+    intended, and says nothing about the source.
+
+  **What the wire actually shows.** The write carries `activation=0.165877`, decayed from the
+  `0.166125` seen earlier — and `orion-cortex-exec` runs no dynamics engine (checked: no
+  `SubstrateDynamicsEngine` anywhere in `services/orion-cortex-exec/app/`, nor in
+  `relational/layer.py` or `materializer.py`). Activation decay happens only in
+  `orion-substrate-runtime`. So the value cortex-exec writes back is one it **read from the graph**.
+  It is a genuine round-trip through a re-hydrating cache, not a frozen snapshot.
+
+  `salience=0.556077777777778` and `observed_at=2026-07-24T21:55:26Z` are frozen simply because
+  nothing updates them anymore — the domain is retired — not because the cache is stale.
+
+  **Verified position:** `orion-cortex-exec-background`, via `chat_stance.py`'s process-level
+  `_UNIFICATION_LAYER` singleton → `CognitiveUnificationLayer` → `SubstrateGraphMaterializer`,
+  re-materializes the substrate nodes it holds back into FalkorDB. Its store re-hydrates from the
+  graph, so it carries whatever the graph last had — including nodes nobody produces anymore. A node
+  deleted from the graph is re-created from that in-flight copy before the next hydrate, which is why
+  no substrate node can be deleted while this runs.
+
+  **Also withdrawn:** `observed_at` is not clobbered backwards on the protected merge branch —
+  `orion/substrate/reconcile.py:288` takes `max(existing, incoming)`. The earlier `observed_at`
+  oscillation is **not** explained by this path and remains unexplained.
+
+  **Still true, and the reason this matters:** the mechanism was already partly known
+  (`79acfd871`, `1c444ce72`, both 2026-07-30) and the materializer's own comment already names this
+  container. What is new is that the write set covers every node in the graph, so retirement of any
+  substrate node is blocked at the graph layer regardless of how cleanly its readers are removed.
+
 
 
 The four code changes in this PR are unaffected — they remove every *reader* of the node, which is
@@ -395,11 +417,18 @@ scripts/safe_docker_build.sh orion-proposal-runtime up -d --build
   Replayed over the real 7-day `repair_pressure_appraisal_log`: 45 readings, 6 distinct values, 34 of
   them one identical constant, `0` sustained-trend ticks. The wiring is proven; the input series is
   not capable of expressing a trend. Follow-up is a better series for hop 0, not more hop plumbing.
-- **Severity: HIGH, open. `orion-cortex-exec-background` rewrites all 11 substrate nodes from a
-  stale long-lived in-process cache.** Consequence: no substrate node can be deleted. The
-  broader "it also clobbers live domains' temporal fields" claim was **withdrawn on re-check** —
-  `merge_node()` takes `max(observed_at)`, so the protected branch cannot move it backwards. Needs
-  a decision on the `_UNIFICATION_LAYER` singleton's refresh/ownership, not on the materializer.
+- **Severity: HIGH, open. `orion-cortex-exec-background` re-materializes every substrate node it
+  holds back into FalkorDB**, via `chat_stance.py`'s `_UNIFICATION_LAYER` singleton →
+  `CognitiveUnificationLayer` → `SubstrateGraphMaterializer`. Its store re-hydrates from the graph,
+  so it carries nodes nobody produces anymore, and a deleted node is re-created from the in-flight
+  copy before the next hydrate. Consequence: **no substrate node can be deleted**, so any retirement
+  can only ever remove readers, never the node.
+  Two narrower claims were withdrawn on re-check and should not be acted on: `prediction_error` is
+  **not** clobbered (`n.prediction_error` is absent from the SET clause — the 2026-07-30
+  `skip_metadata_keys` fix works), and `observed_at` is **not** moved backwards
+  (`reconcile.py:288` takes `max(existing, incoming)`).
+  Fix target is the unification layer's write scope — which nodes it is entitled to re-materialize
+  — not the materializer's merge logic.
 - **Severity: note. `node:substrate.harness_closure` is the same shape of zombie** — 7 days stale at
   a hardcoded `0.65`. It is already excluded from the domain map deliberately, so it does not
   contaminate the reducer, but its producer looks dead too. Not touched here; scope was transport.

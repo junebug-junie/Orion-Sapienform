@@ -325,9 +325,11 @@ steady-state dispatch can only ever process ~30% of what's produced.
    above), so there's no need to scale execution-dispatch-runtime itself to multiple processes —
    one process firing N concurrent RPCs per tick already has real headroom to use on the other
    end.
-7. **Is `_send_one()` actually safe to run under `asyncio.gather`?** No — found on a second
-   adversarial pass (explicitly requested again), and this one changes the patch's scope, not just
-   its reasoning. `_send_one()` is 147 lines (`worker.py:661-807`) with exactly ONE `try/except`,
+7. **Is `_send_one()` actually safe to run under `asyncio.gather`?** No, on a second adversarial
+   pass — and the fix from that pass alone turned out to be incomplete, caught on a third pass
+   (both explicitly requested, both changing the patch's scope, not just its reasoning; the third
+   pass's correction is folded directly into this entry rather than kept as a separate stale
+   version). `_send_one()` is 147 lines (`worker.py:661-807`) with exactly ONE `try/except`,
    wrapping only the `client.dispatch()` RPC call (`worker.py:736-743`). Two other real operations
    are completely unguarded: the idempotency check (`self._store.load_dispatch_result_by_
    dispatch_id`, line 678) and the result save (`self._store.save_dispatch_result`, line 775) —
@@ -350,12 +352,53 @@ steady-state dispatch can only ever process ~30% of what's produced.
    already true today, undisclosed until this pass), but nothing is ever orphaned, since nothing
    else was in flight to begin with.
 
-   **Fix, and it belongs in this same patch, not a follow-up**: wrap `_send_one()`'s entire body
-   in a broad `try/except Exception` that converts any failure into the same `dispatch_status=
-   "dispatched", dispatch_error=str(exc)[:500]` shape the existing RPC-failure branch already
-   produces (`worker.py:763-769`) — making `_send_one()` a genuinely total function that cannot
-   raise. This is a real prerequisite for safe `asyncio.gather` usage, not an optional hardening
-   pass, and it also fixes the pre-existing sequential-code gap above as a side effect.
+   **Fix, revised on a third adversarial pass (explicitly requested again) — the second-pass fix
+   alone was insufficient, confirmed empirically, not just reasoned about.** The second-pass fix
+   (wrap `_send_one()` in `try/except Exception`) does not actually close this gap. Tested directly
+   (`python3 -c "..."`, not just read about): bare `asyncio.gather(a, b, c)` with one coroutine
+   raising does NOT leave the others silently running forever as originally described above — when
+   invoked via `asyncio.run()` (which is how `_tick()` calls `_send_prepared_candidates`,
+   `worker.py`'s real-send branch), `asyncio.run()`'s own shutdown path cancels every other
+   still-pending task before closing its event loop. Confirmed live: a slow sibling task logged
+   `cancelled`, not silent continuation. That's real, but it does not make the original concern
+   go away — it changes it into a different, still-real one: those siblings are cancelled
+   **mid-flight**, at whatever `await` point they happened to be suspended. If a candidate's real
+   cortex-exec RPC had *already succeeded* and that candidate's coroutine was cancelled before it
+   reached `self._store.save_dispatch_result(...)`, the real-world action already happened but
+   Orion's own durable record of it never gets written. On the next tick (if the frame-level save
+   was also lost to the same propagated exception), the identical policy frame would be
+   re-selected, the idempotency check would find nothing, and the same candidate would be
+   **dispatched a second time for real** — the exact double-send the idempotency mechanism exists
+   to prevent.
+
+   And `_send_one()`'s own `try/except Exception` (the second-pass fix) does not protect against
+   this specific failure mode, for a precise, verified reason: `asyncio.CancelledError` has been a
+   `BaseException` subclass, not an `Exception` subclass, since Python 3.8 — confirmed directly
+   against this repo's actual interpreter (`issubclass(asyncio.CancelledError, Exception)` →
+   `False`, Python 3.12.3). A bare `except Exception` inside `_send_one()` cannot catch a
+   cancellation triggered by a *sibling's* failure elsewhere in the same `gather()` call, no matter
+   how the body is wrapped.
+
+   **The actual, complete fix**: `asyncio.gather(*aws, return_exceptions=True)`, not bare
+   `asyncio.gather(*aws)`. Verified empirically, not assumed: with `return_exceptions=True`, the
+   same slow siblings that were cancelled above instead run to full, real completion regardless of
+   another candidate's failure — confirmed via the identical test with only that flag changed
+   (`slow_task` logged `complete`, not `cancelled`; the failing task's exception came back as a
+   `RuntimeError` *value* inside the results list, never raised, never triggering cancellation of
+   anything else). This eliminates the cross-candidate cancellation risk structurally, not just in
+   the cases already anticipated.
+
+   `_send_one()`'s own `try/except Exception` hardening from the second pass is **still required**,
+   but for a different, more mechanical reason than originally stated: with `return_exceptions=
+   True`, any `_send_one()` call that still raised an ordinary `Exception` (not cancelled by a
+   sibling — its own internal failure) would land in `newly_dispatched` as a raw exception object,
+   not an `ExecutionDispatchCandidateV1`. `dispatched_candidates = list(frame.dispatched_
+   candidates) + newly_dispatched` feeds directly into `frame.model_copy(update={...})`, which
+   Pydantic would reject outright (a `list[ExecutionDispatchCandidateV1]` field cannot hold a raw
+   `RuntimeError`). So both fixes ship together, and both are now load-bearing for different
+   reasons: `return_exceptions=True` prevents any candidate from being cancelled mid-flight by an
+   unrelated sibling's failure; `_send_one()`'s internal hardening keeps every item in the gathered
+   list a valid `ExecutionDispatchCandidateV1`, which the schema requires regardless of concurrency.
 
    **Separate, smaller precision correction found while tracing this** (not a bug): the store calls
    inside `_send_one()` are synchronous/blocking (plain SQLAlchemy `conn.execute(...)`, no
@@ -377,15 +420,19 @@ contract change — `ExecutionDispatchCandidateV1`/`ExecutionDispatchFrameV1` ar
 - `services/orion-execution-dispatch-runtime/app/worker.py::_send_prepared_candidates`: replace
   the sequential `for candidate in to_send: newly_dispatched.append(await self._send_one(...))`
   loop with `newly_dispatched = await asyncio.gather(*(self._send_one(client, bus, frame, c) for c
-  in to_send))`. Move the `_check_theater_tripwire()` recheck to after the `gather` (already
-  effectively true given the loop restructure).
+  in to_send), return_exceptions=True)`. **`return_exceptions=True` is not optional** — verified
+  empirically (missing question 7) that without it, one candidate's failure cancels its siblings
+  mid-flight via `asyncio.run()`'s own shutdown path, risking a real-but-unrecorded dispatch. Move
+  the `_check_theater_tripwire()` recheck to after the `gather` (already effectively true given the
+  loop restructure).
 - `services/orion-execution-dispatch-runtime/app/worker.py::_send_one`: **required companion
-  change, not optional** (missing question 7) — wrap the entire body in a broad `try/except
-  Exception`, converting any failure (not just an RPC failure) into the same `dispatch_status=
-  "dispatched", dispatch_error=str(exc)[:500]` shape already used for RPC failures. Makes
-  `_send_one` a total function that cannot raise, a real prerequisite for safe `asyncio.gather`
-  usage given `gather()`'s default non-cancelling behavior on a sibling exception (missing
-  question 7's full account above).
+  change, still needed even with `return_exceptions=True`, for a different reason** (missing
+  question 7) — wrap the entire body in a broad `try/except Exception`, converting any failure (not
+  just an RPC failure) into the same `dispatch_status="dispatched", dispatch_error=str(exc)[:500]`
+  shape already used for RPC failures. With `return_exceptions=True`, any candidate whose
+  `_send_one()` call still raised an ordinary exception would otherwise land in `newly_dispatched`
+  as a raw exception object, which `ExecutionDispatchFrameV1.dispatched_candidates: list[
+  ExecutionDispatchCandidateV1]` cannot validate — Pydantic would reject the frame outright.
 - No change needed to the risk-budget reservation loop (already correct, see missing question 3
   above) or to `_recent_dispatch_statuses` (already safe, see missing question 4 above).
 
@@ -421,14 +468,18 @@ contract change — `ExecutionDispatchCandidateV1`/`ExecutionDispatchFrameV1` ar
 
 ### Acceptance checks
 
-- `max_dispatches_per_tick` raised to 5, `_send_prepared_candidates` uses `asyncio.gather`.
+- `max_dispatches_per_tick` raised to 5, `_send_prepared_candidates` uses
+  `asyncio.gather(..., return_exceptions=True)` — bare `gather()` without that flag does not meet
+  this acceptance check, per missing question 7's empirical finding.
 - `_send_one` wrapped end-to-end in exception handling — a forced failure in the idempotency check
   or the result save degrades to a `dispatch_error` candidate, never propagates.
 - New concurrency test proves sends actually overlap in wall-clock time, not just that the code
   compiles.
-- New failure-isolation test proves one candidate's forced exception does not prevent the other
-  concurrent candidates in the same `asyncio.gather` batch from completing and being reflected in
-  the saved frame (the actual risk found in missing question 7).
+- New failure-isolation test proves one candidate's forced exception does NOT cancel or truncate a
+  concurrent sibling mid-flight — the sibling must reach real completion (its own `save_dispatch_
+  result` call actually happens), not just "the batch doesn't raise." A test that only asserts the
+  batch completes without raising would pass even with the incomplete second-pass fix and must not
+  be treated as sufficient on its own.
 - Theater tripwire and risk-budget tests (existing + new) still pass unmodified in their
   assertions about *what* gets blocked, only updated for *when* the recheck happens.
 - Post-deploy: real dispatch rate approaches (not necessarily hits) the ~17/min production rate

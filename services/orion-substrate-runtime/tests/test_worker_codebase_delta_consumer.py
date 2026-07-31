@@ -57,6 +57,7 @@ def _make_worker(*, baseline: CodebaseMassBaseline | None = None) -> tuple[Biome
     worker._store = fake_store
     worker._settings = MagicMock()
     worker._settings.codebase_mass_baseline_retention_days = 30.0
+    worker._settings.codebase_delta_log_retention_days = 180.0
     fake_write = MagicMock()
     worker._write_prediction_error_node = fake_write
     return worker, fake_store, fake_write
@@ -88,6 +89,59 @@ def test_git_domain_scores_and_persists() -> None:
     assert saved_baseline[0].git.n == 6
     assert save_kwargs["retention_days"] == 30.0
 
+    # field-digester's state_deltas.py ingests ReductionReceiptV1 rows
+    # (target_kind="prediction_signal"), NOT the FalkorDB node written above --
+    # a real gap found live 2026-07-31: this call was originally missing
+    # entirely, then landed on a commit that got pushed to the flag-flip
+    # branch AFTER that PR (#1528) had already merged with only its first two
+    # commits -- so it silently never reached main or the live container.
+    # Confirmed live 2026-07-31 by diffing the running container's actual
+    # loaded source against origin/main: neither had it.
+    fake_store.save_receipt.assert_called_once()
+    receipt = fake_store.save_receipt.call_args[0][0]
+    assert receipt.state_deltas[0].target_kind == "prediction_signal"
+    assert receipt.state_deltas[0].target_id == "node:substrate.codebase"
+    assert receipt.state_deltas[0].after["pressure_hints"]["prediction_error"] == pytest.approx(
+        0.2 / 3.0, abs=1e-4
+    )
+
+    # Raw-event history for a future Hub "cocreation signals" analytics tab
+    # (docs/superpowers/specs/2026-07-30-codebase-mass-signal-design.md
+    # follow-on) -- unconditional, unlike the receipt above.
+    fake_store.save_codebase_delta_log.assert_called_once()
+    log_args, log_kwargs = fake_store.save_codebase_delta_log.call_args
+    assert log_args[0].domain == "git"
+    assert log_kwargs["score"] == pytest.approx(0.2 / 3.0)
+    assert log_kwargs["retention_days"] == 180.0
+
+
+def test_calm_tick_writes_node_and_log_but_skips_receipt() -> None:
+    """A below-baseline (score == 0.0) tick must still write the FalkorDB
+    node and the raw-event log (a genuine calm reading, not skipped) but
+    must NOT emit a save_receipt audit entry -- that's an audit trail of
+    notable events, gated on error > 0.0, same convention every sibling
+    domain's tick already uses (e.g. the biometrics tick, same file)."""
+    worker, fake_store, fake_write = _make_worker(
+        baseline=CodebaseMassBaseline(git=_DomainEwmaBaseline(ewma=5000.0, variance=1_000_000.0, n=10))
+    )
+    event = CodebaseDeltaV1(
+        domain="git",
+        observed_at=_NOW,
+        git=GitDeltaPayloadV1(
+            prev_sha="a" * 40, head_sha="b" * 40, commit_count=1,
+            files_added=0, files_deleted=0, files_modified=1,
+            lines_added=10, lines_removed=0,  # well below baseline -> score clamps to 0.0
+        ),
+    )
+    worker._handle_codebase_delta_message(_encode(event))
+
+    fake_write.assert_called_once()
+    assert fake_write.call_args[1]["error"] == 0.0
+    fake_store.save_receipt.assert_not_called()
+    fake_store.save_codebase_mass_baseline.assert_called_once()
+    fake_store.save_codebase_delta_log.assert_called_once()
+    assert fake_store.save_codebase_delta_log.call_args[1]["score"] == 0.0
+
 
 def test_pr_lifecycle_domain_scores() -> None:
     worker, fake_store, fake_write = _make_worker()
@@ -105,6 +159,8 @@ def test_pr_lifecycle_domain_scores() -> None:
     saved_baseline = fake_store.save_codebase_mass_baseline.call_args[0][0]
     assert saved_baseline.pr.n == 1
     assert saved_baseline.git.n == 0  # untouched -- this tick only carried pr_lifecycle
+    fake_store.save_codebase_delta_log.assert_called_once()
+    assert fake_store.save_codebase_delta_log.call_args[0][0].domain == "pr_lifecycle"
 
 
 def test_graph_domain_scores_with_none_jaccard() -> None:
@@ -124,6 +180,8 @@ def test_graph_domain_scores_with_none_jaccard() -> None:
 
     fake_write.assert_called_once()
     fake_store.save_codebase_mass_baseline.assert_called_once()
+    fake_store.save_codebase_delta_log.assert_called_once()
+    assert fake_store.save_codebase_delta_log.call_args[0][0].domain == "graph"
 
 
 def test_malformed_wire_payload_rejected_by_schema_validation() -> None:
@@ -147,6 +205,7 @@ def test_malformed_wire_payload_rejected_by_schema_validation() -> None:
     fake_write.assert_not_called()
     fake_store.get_latest_codebase_mass_baseline.assert_not_called()
     fake_store.save_codebase_mass_baseline.assert_not_called()
+    fake_store.save_codebase_delta_log.assert_not_called()
 
 
 def test_decode_failure_does_not_raise() -> None:
@@ -154,3 +213,4 @@ def test_decode_failure_does_not_raise() -> None:
     worker._handle_codebase_delta_message({"type": "message", "data": b"not-valid-envelope-bytes"})
     fake_write.assert_not_called()
     fake_store.save_codebase_mass_baseline.assert_not_called()
+    fake_store.save_codebase_delta_log.assert_not_called()

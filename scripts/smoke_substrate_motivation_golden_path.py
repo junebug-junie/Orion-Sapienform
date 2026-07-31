@@ -22,10 +22,10 @@ from unittest.mock import AsyncMock
 from orion.autonomy.capability_policy import CapabilityEvaluationContext, evaluate_capability
 from orion.autonomy.episode_fetch import EpisodeFetchRequest, execute_readonly_fetch
 from orion.autonomy.substrate_metabolism import metabolize_substrate_signals
-from orion.core.schemas.drives import GoalProposalV1
 from orion.journaler.schemas import JournalEntryWriteV1
 from orion.journaler.worker import build_autonomy_episode_trigger, build_compose_request
 from orion.memory.crystallization.intake_autonomy_episode import build_crystallization_from_episode
+from orion.schemas.field_goal import FieldGoalProvenanceV1
 from orion.schemas.world_pulse import (
     DailyWorldPulseSectionsV1,
     DailyWorldPulseV1,
@@ -80,21 +80,27 @@ def _gpu_gap_result() -> WorldPulseRunResultV1:
     )
 
 
-def _goal(**kwargs) -> GoalProposalV1:
+def _goal(**kwargs) -> FieldGoalProvenanceV1:
+    # SSP §6 Objective 6 (2026-07-30): capability_policy.py's evaluate_capability()
+    # now reads real FieldGoalProvenanceV1 goal state (orion.autonomy.goal_state),
+    # not a synthetic GoalProposalV1 -- see orion/autonomy/policy_act.py.
     base = dict(
         artifact_id="goal-gap-gpu",
-        subject="orion",
-        model_layer="self-model",
-        entity_id="self:orion",
-        kind="memory.goals.proposed.v1",
-        goal_statement="Reduce predictive uncertainty for hardware_compute_gpu.",
-        proposal_signature="sig",
-        drive_origin="predictive",
+        subject="attention",
+        model_layer="field_attention",
+        entity_id="node:substrate.biometrics",
+        kind="memory.field_goals.proposed.v1",
+        field_target_id="node:substrate.biometrics",
+        target_kind="node",
+        salience_score=0.8,
+        source_field_tick_id="tick-1",
+        source_attention_frame_id="frame-1",
+        priority=0.8,
         proposal_status="proposed",
-        provenance={"intake_channel": "orion:world_pulse:run:result"},
+        provenance={"intake_channel": "internal.attention_runtime"},
     )
     base.update(kwargs)
-    return GoalProposalV1.model_validate(base)
+    return FieldGoalProvenanceV1.model_validate(base)
 
 
 async def _run_fetch(store_path: str) -> None:

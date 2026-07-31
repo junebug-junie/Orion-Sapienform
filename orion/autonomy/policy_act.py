@@ -9,13 +9,14 @@ from orion.autonomy.action_outcomes import append_action_outcome
 from orion.autonomy.capability_policy import CapabilityEvaluationContext, evaluate_capability
 from orion.autonomy.episode_fetch import EpisodeFetchRequest, SurpriseSource, execute_readonly_fetch, resolve_surprise
 from orion.autonomy.fetch_backend_resolve import resolve_fetch_backend
+from orion.autonomy.goal_state import get_active_goal
 from orion.autonomy.models import ActionOutcomeRefV1, CapabilityDecisionV1, SubstrateActResultV1, SubstrateEpisodeIntentV1
 from orion.autonomy.salience import gap_terms_from_signals, iter_gap_section_labels
 from orion.cognition.recall_query import DEFAULT_RECALL_REPLY_PREFIX, build_recall_query_v1
 from orion.core.bus.bus_schemas import BaseEnvelope, ServiceRef
 from orion.core.contracts.recall import RecallReplyV1
-from orion.core.schemas.drives import GoalProposalV1
 from orion.core.schemas.frontier_curiosity import FrontierInvocationSignalV1
+from orion.schemas.field_goal import FieldGoalProvenanceV1
 
 logger = logging.getLogger(__name__)
 
@@ -60,14 +61,26 @@ def build_readonly_fetch_query(signals: Sequence[FrontierInvocationSignalV1]) ->
 
 async def maybe_execute_readonly_fetch_after_goal(
     *,
-    goal: GoalProposalV1,
+    goal: FieldGoalProvenanceV1 | None,
+    subject: str,
     curiosity_signals: Sequence[FrontierInvocationSignalV1],
     spawned_correlation_id: str | None,
     fetch_backend: Callable[..., Awaitable[dict]] | None = None,
     budget_used: dict[str, int] | None = None,
     surprise_source: SurpriseSource | None = None,
 ) -> tuple[CapabilityDecisionV1, ActionOutcomeRefV1 | None]:
-    """Layer C gate + Tier B readonly fetch for substrate-fed motivation bus tick."""
+    """Layer C gate + Tier B readonly fetch for substrate-fed motivation bus tick.
+
+    ``goal`` is the real, field-native active goal from
+    ``orion.autonomy.goal_state.get_active_goal()`` (SSP §6 Objective 6, 2026-07-30) --
+    None means honestly "no real goal currently dominant," which
+    ``evaluate_capability()`` denies via ``missing_goal`` for any capability that
+    ``requires_goal_status``. ``subject`` is passed separately (not read off
+    ``goal.subject``): a real ``FieldGoalProvenanceV1``'s ``subject`` is always
+    ``"attention"`` (its producer, per ``orion-attention-runtime``'s worker), not the
+    episode's acting subject -- using it here would silently mislabel every fetch
+    request.
+    """
     if not curiosity_signals or _GAP_SIGNAL not in signal_kinds_from_curiosity(curiosity_signals):
         decision = CapabilityDecisionV1(
             capability_id=_READONLY_CAPABILITY,
@@ -102,16 +115,23 @@ async def maybe_execute_readonly_fetch_after_goal(
         decision.outcome,
         decision.reason_code,
         decision.auto_execute,
-        goal.artifact_id,
+        goal.artifact_id if goal is not None else None,
         spawned_correlation_id,
     )
     if decision.outcome != "allowed" or not decision.auto_execute:
         return decision, None
 
+    # requires_goal_status > 0 on this capability's rule is what makes goal real
+    # here (evaluate_capability() denies via missing_goal above if it were None) --
+    # that link lives in config/autonomy/capability_policy.v1.yaml, not in code, so
+    # a defensive check here (not a bare assert) is the honest guard against that
+    # config ever changing out from under this invariant.
+    if goal is None:
+        return decision, None
     query = build_readonly_fetch_query(curiosity_signals)
     gap_terms = gap_terms_from_signals(curiosity_signals, fallback_query=query)
     req = EpisodeFetchRequest(
-        subject=goal.subject,
+        subject=subject,
         goal_artifact_id=goal.artifact_id,
         spawned_correlation_id=spawned_correlation_id,
         query=query,
@@ -250,7 +270,8 @@ async def _execute_readonly_recall(
 
 async def maybe_execute_readonly_recall_after_goal(
     *,
-    goal: GoalProposalV1,
+    goal: FieldGoalProvenanceV1 | None,
+    subject: str,
     curiosity_signals: Sequence[FrontierInvocationSignalV1],
     spawned_correlation_id: str | None,
     bus: Any = None,
@@ -303,10 +324,18 @@ async def maybe_execute_readonly_recall_after_goal(
         decision.outcome,
         decision.reason_code,
         decision.auto_execute,
-        goal.artifact_id,
+        goal.artifact_id if goal is not None else None,
         spawned_correlation_id,
     )
     if decision.outcome != "allowed" or not decision.auto_execute:
+        return decision, None
+
+    # requires_goal_status > 0 on this capability's rule is what makes goal real
+    # here (evaluate_capability() denies via missing_goal above if it were None) --
+    # that link lives in config/autonomy/capability_policy.v1.yaml, not in code, so
+    # a defensive check here (not a bare assert) is the honest guard against that
+    # config ever changing out from under this invariant.
+    if goal is None:
         return decision, None
 
     if bus is None:
@@ -320,7 +349,7 @@ async def maybe_execute_readonly_recall_after_goal(
     query = build_readonly_fetch_query(curiosity_signals)
     try:
         outcome = await _execute_readonly_recall(
-            subject=goal.subject,
+            subject=subject,
             query=query,
             bus=bus,
             source=source,
@@ -350,7 +379,7 @@ def _gap_section_label(signals: Sequence[FrontierInvocationSignalV1]) -> str:
 
 
 def build_episode_narrative_seed(
-    goal: GoalProposalV1,
+    goal: FieldGoalProvenanceV1,
     curiosity_signals: Sequence[FrontierInvocationSignalV1],
     fetch_outcome: ActionOutcomeRefV1,
 ) -> str:
@@ -403,7 +432,7 @@ def build_episode_narrative_seed(
 
 async def maybe_compose_autonomy_episode_after_fetch(
     *,
-    goal: GoalProposalV1,
+    goal: FieldGoalProvenanceV1 | None,
     curiosity_signals: Sequence[FrontierInvocationSignalV1],
     spawned_correlation_id: str | None,
     fetch_outcome: ActionOutcomeRefV1 | None,
@@ -446,7 +475,7 @@ async def maybe_compose_autonomy_episode_after_fetch(
         decision.outcome,
         decision.reason_code,
         decision.auto_execute,
-        goal.artifact_id,
+        goal.artifact_id if goal is not None else None,
         spawned_correlation_id,
     )
     if decision.outcome != "allowed" or not decision.auto_execute:
@@ -454,6 +483,13 @@ async def maybe_compose_autonomy_episode_after_fetch(
     if journal_dispatch is None:
         return decision, None
 
+    # requires_goal_status > 0 on this capability's rule is what makes goal real
+    # here (evaluate_capability() denies via missing_goal above if it were None) --
+    # that link lives in config/autonomy/capability_policy.v1.yaml, not in code, so
+    # a defensive check here (not a bare assert) is the honest guard against that
+    # config ever changing out from under this invariant.
+    if goal is None:
+        return decision, None
     narrative_seed = build_episode_narrative_seed(goal, curiosity_signals, fetch_outcome)
     result = await journal_dispatch(
         goal_artifact_id=goal.artifact_id,
@@ -496,31 +532,6 @@ def resolve_episode_intent(
     )
 
 
-def goal_proposal_from_episode_intent(intent: SubstrateEpisodeIntentV1) -> GoalProposalV1:
-    """Still needed after the 2026-07-30 drive_origin gate removal: this
-    synthetic (never bus-published) goal is not solely a drive_origin carrier
-    -- evaluate_capability() also reads its `proposal_status` (requires_goal /
-    goal_status_insufficient checks) and its presence at all (`missing_goal`),
-    both real, non-drive gating paths that still apply. `drive_origin` itself
-    is now write-only here: a required GoalProposalV1 field carried forward
-    for schema validity, read by nothing in capability_policy.py anymore.
-    """
-    return GoalProposalV1.model_validate(
-        {
-            "artifact_id": intent.goal_artifact_id,
-            "subject": intent.subject,
-            "model_layer": "self-model",
-            "entity_id": f"self:{intent.subject}",
-            "kind": "memory.goals.proposed.v1",
-            "goal_statement": "Substrate episode intent (synthetic goal for policy).",
-            "proposal_signature": f"episode-{intent.spawned_correlation_id}",
-            "drive_origin": intent.drive_origin,
-            "proposal_status": "proposed",
-            "provenance": {"intake_channel": "orion:world_pulse:run:result"},
-        }
-    )
-
-
 async def maybe_execute_substrate_act_after_metabolism(
     *,
     episode_intent: SubstrateEpisodeIntentV1,
@@ -538,7 +549,11 @@ async def maybe_execute_substrate_act_after_metabolism(
     surprise_source: SurpriseSource | None = None,
 ) -> SubstrateActResultV1:
     run_id = spawned_correlation_id or episode_intent.spawned_correlation_id
-    synthetic_goal = goal_proposal_from_episode_intent(episode_intent)
+    # SSP §6 Objective 6 (2026-07-30): real, field-native active goal, not a
+    # per-call synthetic fabrication -- see orion.autonomy.goal_state's module
+    # docstring. None is an honest "no real goal currently dominant," which
+    # every capability rule below already denies correctly via missing_goal.
+    goal = get_active_goal()
     result = SubstrateActResultV1()
 
     if prefetched_outcome is not None:
@@ -560,7 +575,8 @@ async def maybe_execute_substrate_act_after_metabolism(
         # and falls straight through to the existing fetch path below.
         try:
             _, recall_outcome = await maybe_execute_readonly_recall_after_goal(
-                goal=synthetic_goal,
+                goal=goal,
+                subject=episode_intent.subject,
                 curiosity_signals=curiosity_signals,
                 spawned_correlation_id=run_id,
                 bus=recall_bus,
@@ -573,7 +589,7 @@ async def maybe_execute_substrate_act_after_metabolism(
         except Exception:
             logger.warning(
                 "substrate_recall_check_failed goal=%s spawned=%s",
-                synthetic_goal.artifact_id,
+                goal.artifact_id if goal is not None else None,
                 run_id,
                 exc_info=True,
             )
@@ -599,7 +615,8 @@ async def maybe_execute_substrate_act_after_metabolism(
             fetch_outcome = None
         else:
             fetch_decision, fetch_outcome = await maybe_execute_readonly_fetch_after_goal(
-                goal=synthetic_goal,
+                goal=goal,
+                subject=episode_intent.subject,
                 curiosity_signals=curiosity_signals,
                 spawned_correlation_id=run_id,
                 fetch_backend=fetch_backend,
@@ -623,7 +640,7 @@ async def maybe_execute_substrate_act_after_metabolism(
     # caller still receives `result` (with fetch_outcome) and can persist the fetch.
     try:
         journal_decision, journal_payload = await maybe_compose_autonomy_episode_after_fetch(
-            goal=synthetic_goal,
+            goal=goal,
             curiosity_signals=curiosity_signals,
             spawned_correlation_id=run_id,
             fetch_outcome=fetch_outcome,
@@ -634,7 +651,7 @@ async def maybe_execute_substrate_act_after_metabolism(
     except Exception:
         logger.warning(
             "substrate_episode_journal_failed goal=%s spawned=%s",
-            synthetic_goal.artifact_id,
+            goal.artifact_id if goal is not None else None,
             run_id,
             exc_info=True,
         )

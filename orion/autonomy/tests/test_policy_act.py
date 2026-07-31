@@ -17,8 +17,8 @@ from orion.autonomy.policy_act import (
     resolve_episode_intent,
 )
 from orion.core.contracts.recall import MemoryBundleV1, MemoryItemV1, RecallReplyV1
-from orion.core.schemas.drives import GoalProposalV1
 from orion.core.schemas.frontier_curiosity import FrontierInvocationSignalV1
+from orion.schemas.field_goal import FieldGoalProvenanceV1
 
 
 def _gap_signal() -> FrontierInvocationSignalV1:
@@ -35,21 +35,35 @@ def _gap_signal() -> FrontierInvocationSignalV1:
     )
 
 
-def _goal() -> GoalProposalV1:
-    return GoalProposalV1.model_validate(
+def _goal() -> FieldGoalProvenanceV1:
+    return FieldGoalProvenanceV1.model_validate(
         {
             "artifact_id": "goal-gap-gpu",
-            "subject": "orion",
-            "model_layer": "self-model",
-            "entity_id": "self:orion",
-            "kind": "memory.goals.proposed.v1",
-            "goal_statement": "Reduce predictive uncertainty for hardware_compute_gpu.",
-            "proposal_signature": "sig",
-            "drive_origin": "predictive",
+            "subject": "attention",
+            "model_layer": "field_attention",
+            "entity_id": "node:substrate.biometrics",
+            "kind": "memory.field_goals.proposed.v1",
+            "field_target_id": "node:substrate.biometrics",
+            "target_kind": "node",
+            "salience_score": 0.8,
+            "source_field_tick_id": "tick-1",
+            "source_attention_frame_id": "frame-1",
+            "priority": 0.8,
             "proposal_status": "proposed",
-            "provenance": {"intake_channel": "orion:world_pulse:run:result"},
+            "provenance": {"intake_channel": "internal.attention_runtime"},
         }
     )
+
+
+@pytest.fixture(autouse=True)
+def _default_active_goal(monkeypatch):
+    """SSP §6 Objective 6 (2026-07-30): maybe_execute_substrate_act_after_metabolism now
+    reads orion.autonomy.goal_state.get_active_goal() instead of fabricating a synthetic
+    goal per call. Default every test in this module to a real, active goal (matching
+    the old synthetic stub's always-present behavior) so existing tests don't need to
+    know about this plumbing; tests that specifically want a missing/stale goal override
+    this explicitly."""
+    monkeypatch.setattr("orion.autonomy.policy_act.get_active_goal", lambda: _goal())
 
 
 def _low_strength_gap_signal() -> FrontierInvocationSignalV1:
@@ -73,6 +87,7 @@ async def test_policy_act_executes_fetch_when_allowed(monkeypatch, tmp_path) -> 
     backend = AsyncMock(return_value={"success": True, "urls": ["https://example.com/a"]})
     decision, outcome = await maybe_execute_readonly_fetch_after_goal(
         goal=_goal(),
+        subject="orion",
         curiosity_signals=[_gap_signal()],
         spawned_correlation_id="wp-run-gap-gpu",
         fetch_backend=backend,
@@ -91,6 +106,7 @@ async def test_policy_act_fetch_surfaces_domain_surprise_in_notes(monkeypatch, t
     backend = AsyncMock(return_value={"success": True, "urls": ["https://example.com/a"]})
     decision, outcome = await maybe_execute_readonly_fetch_after_goal(
         goal=_goal(),
+        subject="orion",
         curiosity_signals=[_gap_signal()],
         spawned_correlation_id="wp-run-gap-gpu",
         fetch_backend=backend,
@@ -122,6 +138,7 @@ async def test_policy_act_fetch_reads_real_surprise_source_exactly_once(
 
     decision, outcome = await maybe_execute_readonly_fetch_after_goal(
         goal=_goal(),
+        subject="orion",
         curiosity_signals=[_gap_signal()],
         spawned_correlation_id="wp-run-gap-gpu",
         fetch_backend=backend,
@@ -143,6 +160,7 @@ async def test_policy_act_resolves_fetch_backend_when_omitted(monkeypatch, tmp_p
     )
     decision, outcome = await maybe_execute_readonly_fetch_after_goal(
         goal=_goal(),
+        subject="orion",
         curiosity_signals=[_gap_signal()],
         spawned_correlation_id="wp-run-gap-gpu",
     )
@@ -161,6 +179,7 @@ async def test_policy_act_denied_when_curiosity_strength_low(monkeypatch) -> Non
     monkeypatch.setenv("ORION_METABOLISM_MIN_CURIOSITY_STRENGTH", "0.5")
     decision, outcome = await maybe_execute_readonly_fetch_after_goal(
         goal=_goal(),
+        subject="orion",
         curiosity_signals=[_low_strength_gap_signal()],
         spawned_correlation_id="wp-run-gap-gpu",
         fetch_backend=AsyncMock(),
@@ -507,6 +526,7 @@ async def test_recall_capability_denied_without_gap_signal(monkeypatch) -> None:
     monkeypatch.setenv("ORION_CAPABILITY_POLICY_AUTO_READONLY_ENABLED", "true")
     decision, outcome = await maybe_execute_readonly_recall_after_goal(
         goal=_goal(),
+        subject="orion",
         curiosity_signals=[],
         spawned_correlation_id="wp-run-gap-gpu",
         bus=_fake_recall_bus(_fake_recall_reply()),
@@ -523,6 +543,7 @@ async def test_recall_capability_finds_content(monkeypatch, tmp_path) -> None:
     bus = _fake_recall_bus(_fake_recall_reply(n=2))
     decision, outcome = await maybe_execute_readonly_recall_after_goal(
         goal=_goal(),
+        subject="orion",
         curiosity_signals=[_gap_signal()],
         spawned_correlation_id="wp-run-gap-gpu",
         bus=bus,
@@ -543,6 +564,7 @@ async def test_recall_capability_uses_real_surprise_source_when_available(
     bus = _fake_recall_bus(_fake_recall_reply(n=2))
     decision, outcome = await maybe_execute_readonly_recall_after_goal(
         goal=_goal(),
+        subject="orion",
         curiosity_signals=[_gap_signal()],
         spawned_correlation_id="wp-run-gap-gpu",
         bus=bus,
@@ -575,6 +597,7 @@ async def test_recall_capability_reads_real_surprise_source_exactly_once(
 
     decision, outcome = await maybe_execute_readonly_recall_after_goal(
         goal=_goal(),
+        subject="orion",
         curiosity_signals=[_gap_signal()],
         spawned_correlation_id="wp-run-gap-gpu",
         bus=bus,
@@ -592,6 +615,7 @@ async def test_recall_capability_empty_reply_degrades(monkeypatch, tmp_path) -> 
     bus = _fake_recall_bus(_fake_recall_reply(n=0))
     decision, outcome = await maybe_execute_readonly_recall_after_goal(
         goal=_goal(),
+        subject="orion",
         curiosity_signals=[_gap_signal()],
         spawned_correlation_id="wp-run-gap-gpu",
         bus=bus,
@@ -608,6 +632,7 @@ async def test_recall_capability_rpc_timeout_never_raises(monkeypatch, tmp_path)
     bus = _fake_recall_bus(exc=TimeoutError("rpc timeout"))
     decision, outcome = await maybe_execute_readonly_recall_after_goal(
         goal=_goal(),
+        subject="orion",
         curiosity_signals=[_gap_signal()],
         spawned_correlation_id="wp-run-gap-gpu",
         bus=bus,
@@ -623,6 +648,7 @@ async def test_recall_capability_no_bus_degrades_to_none(monkeypatch) -> None:
     monkeypatch.setenv("ORION_CAPABILITY_POLICY_AUTO_READONLY_ENABLED", "true")
     decision, outcome = await maybe_execute_readonly_recall_after_goal(
         goal=_goal(),
+        subject="orion",
         curiosity_signals=[_gap_signal()],
         spawned_correlation_id="wp-run-gap-gpu",
         bus=None,
@@ -732,3 +758,61 @@ async def test_substrate_act_no_recall_bus_falls_through_to_fetch(monkeypatch, t
 
     fetch_backend.assert_awaited_once()
     assert result.fetch_attempted is True
+
+
+@pytest.mark.asyncio
+async def test_substrate_act_denied_when_no_real_active_goal(monkeypatch, tmp_path) -> None:
+    """SSP §6 Objective 6 regression: with no real FieldGoalProvenanceV1 currently
+    active (the honest common case -- orion.autonomy.goal_state.get_active_goal()
+    returns None), every capability requiring a goal must deny via missing_goal, not
+    silently fabricate one the way the old synthetic stub did."""
+    monkeypatch.setattr("orion.autonomy.policy_act.get_active_goal", lambda: None)
+    monkeypatch.setenv("ORION_CAPABILITY_POLICY_AUTO_READONLY_ENABLED", "true")
+    monkeypatch.setenv("ORION_ACTION_OUTCOME_STORE_PATH", str(tmp_path / "outcomes.json"))
+    fetch_backend = AsyncMock(return_value={"success": True, "urls": ["https://example.com/a"]})
+
+    result = await maybe_execute_substrate_act_after_metabolism(
+        episode_intent=_intent(),
+        curiosity_signals=[_gap_signal()],
+        fetch_backend=fetch_backend,
+    )
+
+    fetch_backend.assert_not_awaited()
+    assert result.fetch_attempted is False
+    assert result.fetch_outcome is None
+
+
+@pytest.mark.asyncio
+async def test_substrate_act_fetch_subject_comes_from_episode_intent_not_goal(
+    monkeypatch, tmp_path
+) -> None:
+    """Regression: a real FieldGoalProvenanceV1's own `subject` is always "attention"
+    (its producer, orion-attention-runtime), not the episode's acting subject -- using
+    goal.subject here would silently mislabel every fetch request. Must come from
+    episode_intent.subject instead."""
+    monkeypatch.setenv("ORION_CAPABILITY_POLICY_AUTO_READONLY_ENABLED", "true")
+    monkeypatch.setenv("ORION_ACTION_OUTCOME_STORE_PATH", str(tmp_path / "outcomes.json"))
+    assert _goal().subject == "attention"
+
+    captured: dict[str, Any] = {}
+
+    async def _backend(query: str, *, max_articles: int) -> dict:
+        return {"success": True, "urls": ["https://example.com/a"]}
+
+    async def _capturing_fetch(req, **kwargs):
+        from orion.autonomy.episode_fetch import execute_readonly_fetch
+
+        captured["subject"] = req.subject
+        return await execute_readonly_fetch(req, **kwargs)
+
+    monkeypatch.setattr("orion.autonomy.policy_act.execute_readonly_fetch", _capturing_fetch)
+
+    result = await maybe_execute_substrate_act_after_metabolism(
+        episode_intent=_intent(),
+        curiosity_signals=[_gap_signal()],
+        fetch_backend=_backend,
+    )
+
+    assert result.fetch_attempted is True
+    assert captured["subject"] == "orion"
+    assert captured["subject"] != _goal().subject

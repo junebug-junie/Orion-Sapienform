@@ -459,6 +459,36 @@ first place. Full reasoning and phased detail:
    At this point the actual mechanism is a real open choice, not a given: a salience-to-
    ceiling formula, or something closer to the selectionist-internal-ecology blue-sky
    extension (§9a item 6) — decide with items 2-5's real data in hand.
+   **Status (2026-07-31): built and wired live.** `evaluate_capability()`'s
+   `CapabilityEvaluationContext.goal` now reads the real, field-native active goal
+   (`orion.autonomy.goal_state.get_active_goal()`, a bus-subscribed local cache of
+   `FieldGoalProvenanceV1`) instead of a per-call synthetic `GoalProposalV1`
+   fabrication (`policy_act.py::goal_proposal_from_episode_intent()`,
+   `orion-world-pulse`'s own `_synthetic_goal()` — both deleted). Real callers
+   (`orion-spark-concept-induction`, `orion-world-pulse`) each run their own
+   `orion.autonomy.goal_state_listener` subscription, mirroring
+   `goal_context_listener.py`'s pattern, since the field-native goal state was
+   previously only visible in-process to `orion-substrate-runtime`. Real bug
+   caught and fixed in the same patch: a `FieldGoalProvenanceV1`'s own `subject`
+   is always `"attention"` (its producer), not the acting episode's subject —
+   fetch/recall requests now take `subject` as an explicit parameter rather than
+   reading it off the goal. Same-day follow-up: the `GraphAutonomyRepository`/
+   `ShadowAutonomyRepository` SPARQL/GraphDB backend behind `chat_stance.py`'s
+   separate autonomy-state narration was found fully dead in the same
+   investigation (confirmed live: no Fuseki container, no GraphDB container
+   anywhere; `AUTONOMY_GRAPH_BACKEND=disabled` already the checked-in default,
+   already routing every real call to an honest, hazard-labeled identity_yaml
+   fallback) and deleted (~615 lines) — a `Local`-only `build_autonomy_repository()`
+   remains. Full design and findings:
+   `docs/superpowers/specs/2026-07-30-goal-system-remaining-gaps-design.md`.
+   **Not done by this patch**: `drive_origin` itself (Part F of that doc) is
+   still a write-only field in several places (`autonomy_goal_execute.py`,
+   `supervisor.py`, `resolve_episode_intent`'s store-slot-key convention);
+   retiring it needs a decision on `orion.autonomy.summary`'s still-live (if
+   degenerate) `dedupe_goal_headlines_by_drive_origin` consumer first. Also not
+   done: calibrating `ORION_GOAL_PROVENANCE_MIN_STREAK` against real accumulated
+   data, and generalizing Hub's Substrate Lattice UI to show real goal-provenance
+   ticks (Part H).
 7. **Re-evaluate integration** only after 4 and 5 produce real, comparable data — not before.
 
 ## 7. Processes — how this program actually operates

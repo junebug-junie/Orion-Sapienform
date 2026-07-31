@@ -4,24 +4,27 @@ from orion.autonomy.capability_policy import (
     evaluate_capability,
 )
 from orion.autonomy.models import CapabilityPolicyRuleV1
-from orion.core.schemas.drives import GoalProposalV1
+from orion.schemas.field_goal import FieldGoalProvenanceV1
 
 
-def _goal(**kwargs) -> GoalProposalV1:
+def _goal(**kwargs) -> FieldGoalProvenanceV1:
     base = dict(
         artifact_id="goal-test",
-        subject="orion",
-        model_layer="self-model",
-        entity_id="self:orion",
-        kind="memory.goals.proposed.v1",
-        goal_statement="Reduce predictive uncertainty for hardware_compute_gpu.",
-        proposal_signature="sig",
-        drive_origin="predictive",
+        subject="attention",
+        model_layer="field_attention",
+        entity_id="node:substrate.biometrics",
+        kind="memory.field_goals.proposed.v1",
+        field_target_id="node:substrate.biometrics",
+        target_kind="node",
+        salience_score=0.8,
+        source_field_tick_id="tick-1",
+        source_attention_frame_id="frame-1",
+        priority=0.8,
         proposal_status="proposed",
-        provenance={"intake_channel": "orion:world_pulse:run:result"},
+        provenance={"intake_channel": "internal.attention_runtime"},
     )
     base.update(kwargs)
-    return GoalProposalV1.model_validate(base)
+    return FieldGoalProvenanceV1.model_validate(base)
 
 
 def test_capability_policy_allows_readonly_when_goal_proposed(monkeypatch) -> None:

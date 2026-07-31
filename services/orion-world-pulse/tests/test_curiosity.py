@@ -1,5 +1,36 @@
+import pytest
+
 import app.services.curiosity as curiosity
+from orion.schemas.field_goal import FieldGoalProvenanceV1
 from orion.schemas.world_pulse import SectionCoverageV1
+
+
+def _goal() -> FieldGoalProvenanceV1:
+    return FieldGoalProvenanceV1(
+        artifact_id="goal-1",
+        subject="attention",
+        model_layer="field_attention",
+        entity_id="node:substrate.biometrics",
+        kind="memory.field_goals.proposed.v1",
+        field_target_id="node:substrate.biometrics",
+        target_kind="node",
+        salience_score=0.8,
+        source_field_tick_id="tick-1",
+        source_attention_frame_id="frame-1",
+        priority=0.8,
+        proposal_status="proposed",
+        provenance={"intake_channel": "internal.attention_runtime"},
+    )
+
+
+@pytest.fixture(autouse=True)
+def _default_active_goal(monkeypatch):
+    """SSP §6 Objective 6 (2026-07-30): _gate_open now reads
+    orion.autonomy.goal_state.get_active_goal() instead of fabricating a synthetic
+    goal per call. Default to a real, active goal (matching the old synthetic stub's
+    always-present behavior) so existing tests don't need to know about this
+    plumbing."""
+    monkeypatch.setattr(curiosity, "get_active_goal", lambda: _goal())
 
 
 def _coverage(**status_by_section) -> dict[str, SectionCoverageV1]:
@@ -172,6 +203,24 @@ def test_mapping_error_degrades_to_skip(monkeypatch):
         fetch_backend=_fake_backend,
     )
     # A schema-mapping failure must be caught per-section and never fail the run.
+    assert result == []
+
+
+def test_no_real_active_goal_denies_via_missing_goal(monkeypatch):
+    """SSP §6 Objective 6 regression: with no real FieldGoalProvenanceV1 currently
+    active (get_active_goal() returns None), the gate must deny via missing_goal,
+    not silently fabricate one the way the old _synthetic_goal() stub did."""
+    monkeypatch.setattr(curiosity, "get_active_goal", lambda: None)
+    monkeypatch.setenv("ORION_CAPABILITY_POLICY_AUTO_READONLY_ENABLED", "true")
+    result = curiosity.build_curiosity_followups(
+        run_id="r1",
+        section_coverage=_coverage(hardware_compute_gpu="missing"),
+        enabled=True,
+        dry_run=False,
+        max_articles_per_section=5,
+        max_sections=9,
+        fetch_backend=_fake_backend,
+    )
     assert result == []
 
 

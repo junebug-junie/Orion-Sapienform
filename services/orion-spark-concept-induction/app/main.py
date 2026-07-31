@@ -7,6 +7,8 @@ from contextlib import asynccontextmanager
 from fastapi import FastAPI
 from loguru import logger
 
+from orion.autonomy.goal_state_listener import start_goal_state_listener, stop_goal_state_listener
+from orion.core.bus.async_service import OrionBusAsync
 from orion.core.bus.bus_service_chassis import ChassisConfig, HeartbeatOnly
 from orion.spark.concept_induction.bus_worker import ConceptWorker
 from .settings import settings
@@ -47,6 +49,9 @@ def _install_stdlib_logging_bridge(level: str = "INFO") -> None:
 
 
 heartbeat_chassis: HeartbeatOnly | None = None
+_goal_state_bus: OrionBusAsync | None = None
+_goal_state_task: asyncio.Task[None] | None = None
+_goal_state_stop: asyncio.Event | None = None
 
 
 def build_heartbeat_chassis() -> HeartbeatOnly:
@@ -69,7 +74,7 @@ def build_heartbeat_chassis() -> HeartbeatOnly:
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    global heartbeat_chassis
+    global heartbeat_chassis, _goal_state_bus, _goal_state_task, _goal_state_stop
     _install_stdlib_logging_bridge(settings.log_level)
     worker = ConceptWorker(settings)
     app.state.worker = worker
@@ -97,6 +102,23 @@ async def lifespan(app: FastAPI):
     except Exception as exc:
         logger.warning("system_health_heartbeat_start_failed error={}", exc)
         heartbeat_chassis = None
+    if settings.orion_bus_enabled:
+        # Own, independent bus connection (mirrors build_heartbeat_chassis' rationale)
+        # keeping this process's orion.autonomy.goal_state cache current -- SSP §6
+        # Objective 6 (2026-07-30). Real callers: policy_act.py's evaluate_capability()
+        # sites, reached via ConceptWorker's own bus_worker.py call chain.
+        try:
+            _goal_state_bus = OrionBusAsync(url=settings.orion_bus_url)
+            await _goal_state_bus.connect()
+            _goal_state_stop = asyncio.Event()
+            _goal_state_task = await start_goal_state_listener(
+                _goal_state_bus, _goal_state_stop, channel=settings.channel_goal_proposal
+            )
+            logger.info("goal_state_listener_started channel={}", settings.channel_goal_proposal)
+        except Exception as exc:
+            logger.warning("goal_state_listener_start_failed error={}", exc)
+            _goal_state_bus = None
+            _goal_state_task = None
     yield
     if heartbeat_chassis is not None:
         try:
@@ -104,6 +126,17 @@ async def lifespan(app: FastAPI):
         except Exception as exc:
             logger.warning("system_health_heartbeat_stop_error error={}", exc)
         heartbeat_chassis = None
+    if _goal_state_stop is not None:
+        _goal_state_stop.set()
+    if _goal_state_task is not None:
+        await stop_goal_state_listener(_goal_state_task)
+        _goal_state_task = None
+    if _goal_state_bus is not None:
+        try:
+            await _goal_state_bus.close()
+        except Exception as exc:
+            logger.warning("goal_state_listener_bus_close_error error={}", exc)
+        _goal_state_bus = None
     task.cancel()
     try:
         await task

@@ -8,8 +8,8 @@ from typing import Awaitable, Callable
 from orion.autonomy.capability_policy import CapabilityEvaluationContext, evaluate_capability
 from orion.autonomy.episode_fetch import EpisodeFetchRequest, SurpriseSource, execute_readonly_fetch
 from orion.autonomy.fetch_backend_resolve import resolve_fetch_backend
+from orion.autonomy.goal_state import get_active_goal
 from orion.autonomy.salience import tokenize_terms
-from orion.core.schemas.drives import GoalProposalV1
 from orion.schemas.world_pulse import (
     CuriosityFindingV1,
     CuriosityFollowupV1,
@@ -67,34 +67,6 @@ def _default_bus_synaptic_surprise_source() -> float | None:
         return None
 
 
-def _synthetic_goal(run_id: str) -> GoalProposalV1:
-    """Never published to the bus -- built solely to satisfy
-    `evaluate_capability`'s `requires_goal`/`proposal_status` checks (see
-    `orion/autonomy/capability_policy.py`). Still needed post-2026-07-30
-    (chore/delete-orion-drives): the gate that used to also match
-    `ctx.goal.drive_origin` against `rule.required_drive_origins` was removed
-    in that sprint's Wave 2a (drive_origin is no longer read by any gate), but
-    `ctx.goal` itself remains required for the existence/proposal_status
-    checks below it. `drive_origin` stays set below only because it is still
-    a required field on the (kept, write-never) `GoalProposalV1` schema --
-    its value is inert now, read by nothing.
-    """
-    return GoalProposalV1.model_validate(
-        {
-            "artifact_id": f"world-pulse-gap-{run_id}",
-            "subject": "orion",
-            "model_layer": "self-model",
-            "entity_id": "self:orion",
-            "kind": "memory.goals.proposed.v1",
-            "goal_statement": "World-pulse coverage-gap fetch (synthetic goal for capability policy).",
-            "proposal_signature": f"world-pulse-gap-{run_id}",
-            "drive_origin": "predictive",
-            "proposal_status": "proposed",
-            "provenance": {"intake_channel": "orion:world_pulse:run:result"},
-        }
-    )
-
-
 def _resolve_domain_surprise(surprise_source: SurpriseSource | None) -> float | None:
     """Same real ambient bus_synaptic value orion/autonomy/policy_act.py's identically-named
     helper reads. `None` (the default -- no explicit surprise_source passed by the caller)
@@ -119,7 +91,12 @@ def _gate_open(run_id: str, *, surprise_source: SurpriseSource | None = None) ->
         # is capability_policy.py's real, field-native replacement gate.
         curiosity_strength=1.0,
         signal_kinds=["world_coverage_gap"],
-        goal=_synthetic_goal(run_id),
+        # SSP §6 Objective 6 (2026-07-30): real, field-native active goal from
+        # this process's own goal_state_listener subscription (wired in
+        # app/main.py), not a per-call synthetic fabrication. None is an honest
+        # "no real goal currently dominant" -- evaluate_capability() denies via
+        # missing_goal, same as before, just for a real reason now.
+        goal=get_active_goal(),
         budget_used={},
         domain_surprise_score=_domain_surprise,
         domain_surprise_source="bus_synaptic" if _domain_surprise is not None else None,

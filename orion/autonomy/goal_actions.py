@@ -7,8 +7,8 @@ from dataclasses import dataclass
 from datetime import datetime, timezone
 from typing import Literal
 
+from orion.autonomy.constants import AUTONOMY_GOALS_GRAPH
 from orion.autonomy.models import AutonomyGoalHeadlineV1
-from orion.autonomy.repository import AUTONOMY_GOALS_GRAPH, _escape_sparql, _literal
 from orion.core.schemas.reasoning import ClaimV1, ReasoningProvenanceV1
 from orion.core.schemas.reasoning_io import ReasoningWriteContextV1, ReasoningWriteRequestV1
 from orion.core.schemas.reasoning_policy import PromotionEvaluationRequestV1, PromotionEvaluationResultV1
@@ -19,6 +19,17 @@ from orion.spark.concept_induction.graph_query import GraphQueryClient, GraphQue
 logger = logging.getLogger("orion.autonomy.goal_actions")
 
 GoalActionKind = Literal["promote", "dismiss", "complete"]
+
+
+def _escape_sparql(value: str) -> str:
+    return value.replace("\\", "\\\\").replace('"', '\\"')
+
+
+def _literal(binding: dict[str, dict[str, str]], key: str) -> str | None:
+    val = binding.get(key, {}).get("value")
+    if isinstance(val, str) and val.strip():
+        return val.strip()
+    return None
 
 
 class GoalActionError(Exception):

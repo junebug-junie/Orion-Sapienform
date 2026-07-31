@@ -27,6 +27,13 @@ class Settings(BaseSettings):
     # Bus-native SystemHealthV1 heartbeat cadence (orion:system:health). See
     # docs/superpowers/specs/2026-07-24-service-heartbeat-node-telemetry-design.md.
     heartbeat_interval_sec: float = Field(10.0, alias="HEARTBEAT_INTERVAL_SEC")
+    # Real, field-native active-goal channel (orion-attention-runtime's producer, SSP §6
+    # Objective 6, 2026-07-30) -- this service runs its own goal_state_listener
+    # subscription (see app/main.py) so orion.autonomy.capability_policy.py's real
+    # callers here see real goal state instead of a per-call synthetic fabrication.
+    channel_goal_proposal: str = Field(
+        "orion:memory:goals:proposed", alias="CHANNEL_GOAL_PROPOSAL"
+    )
 
     world_pulse_enabled: bool = Field(False, alias="WORLD_PULSE_ENABLED")
     world_pulse_dry_run: bool = Field(True, alias="WORLD_PULSE_DRY_RUN")

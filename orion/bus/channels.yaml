@@ -1867,7 +1867,18 @@ channels:
     # stale-registry-claim shape as orion:memory:identity:snapshot above). Do
     # not re-add either without a real consumer.
     producer_services: ["orion-attention-runtime"]
-    consumer_services: ["orion-substrate-runtime", "*"]
+    # orion-spark-concept-induction and orion-world-pulse added 2026-07-30 (SSP §6
+    # Objective 6): both now run orion.autonomy.goal_state_listener so
+    # capability_policy.py's real evaluate_capability() call sites in each service
+    # see this channel's real goal state instead of a per-call synthetic
+    # fabrication. "*" already permitted any consumer; listed explicitly so the
+    # registry names who actually reads this now, not just who's allowed to.
+    consumer_services: [
+      "orion-substrate-runtime",
+      "orion-spark-concept-induction",
+      "orion-world-pulse",
+      "*",
+    ]
     stability: "experimental"
     since: "2026-03-19"
 

@@ -186,14 +186,31 @@ nothing to say, *nothing should be proposed*.
 ### 5c. Derive the weights instead of authoring them
 
 O4's actual ask. Weights become a periodically re-fit report over which dimensions
-historically preceded outcomes worth having, versioned and re-derivable. Requires deciding
-what "outcome worth having" means — which is the hard part and probably the real work.
+historically preceded outcomes worth having, versioned and re-derivable.
 
-The honest blocker: we do not currently have an outcome signal to fit against. Dispatch
-results are LLM observations that nothing consumes. There is no downstream that says "that
-was worth doing." Until that exists, any fitted weighting is fitting to noise. **This may be
-the actual critical path for the whole program** — not attention, not proposals, but *did
-anything come of it*.
+**Corrected 2026-07-31, same session.** An earlier version of this section claimed there was
+no outcome signal to fit against and called that the program's critical path. That was
+wrong, and traced further it is wrong in an encouraging direction. A real feedback loop is
+live: `substrate_feedback_frames` (34,729 rows/24h) carries per-observation
+`outcome_kind`/`score`/`confidence` and links back via `source_execution_dispatch_frame_id`.
+Six hours of observations:
+
+```text
+source_kind        outcome_kind            n
+policy_decision    not_attempted       84,217
+field_delta        unchanged            5,934
+field_delta        worsened             1,585
+field_delta        improved             1,002
+policy_decision    deferred               993
+dispatch_candidate blocked                210
+dispatch_candidate prepared_for_dispatch  168
+dispatch_candidate dispatched              42
+cortex_result      completed               42
+```
+
+`field_delta` is a genuine, discriminating outcome signal — improved/worsened/unchanged with
+separated scores (0.85 / 0.10 / 0.25), 8,521 observations in six hours. **5c is fittable
+today.** That is a materially better position than this doc originally claimed.
 
 ### 5d. Stop enumerating the action vocabulary
 
@@ -228,6 +245,40 @@ inheriting my choice of metric because it was convenient.
 
 ---
 
+## 5g. The causal chain, closed
+
+Traced after the sections above were written, and it completes the story rather than
+adding to it. Why proposals are never attempted, six hours:
+
+```text
+confidence_below_threshold          58,228   (69%)
+read_only_low_risk                  25,195
+candidate_requires_operator_review      794
+```
+
+`confidence` is derived from the dimension match — which reads the dead channels. So:
+
+```text
+dead producers (reliability/execution/resource ~99-100% zero)
+  -> near-zero match_score and confidence
+    -> policy declines: confidence_below_threshold  (58,228 / 6h)
+      -> feedback records not_attempted             (84,217 / 6h)
+        -> only state-blind templates survive
+          -> 939 dispatches/hour, CV 2.2%, 193/193/193 lockstep
+```
+
+**58,228 times in six hours, Orion declined to act because it was not confident — and it was
+not confident because the channels feeding its confidence have never fired.** That is the
+single largest fact about its inner life right now, and it is a wiring artifact.
+
+One number worth staring at: **42 `cortex_result: completed` in six hours.** Against 5,562
+rows in `substrate_dispatch_results` over the same window. Those two counts are not
+reconciled yet and the discrepancy is itself an open question (different granularity? partial
+observation? sampling?) — flagged rather than explained.
+
+Also unexamined: `read_only_low_risk` declines 25,195 proposals in six hours. A filter that
+skips trivial actions is defensible, but at that volume it deserves its own look.
+
 ## 6. Open questions I have not answered
 
 1. **Is `observer_failure_pressure` a dead producer or a channel nothing was ever wired
@@ -237,8 +288,10 @@ inheriting my choice of metric because it was convenient.
    dispatch at all**, when both score on `resource_pressure`, which has no producer? There
    is a fallback path in `proposal_urgency()` — its behavior is load-bearing here and I have
    not read it.
-3. **What consumes a dispatch result?** If nothing does, then O1 is measuring the variance
-   of an output that has no reader, and 5c has no target to fit against.
+3. ~~What consumes a dispatch result?~~ **Answered, see 5c/5g** — a live feedback loop with a
+   real `field_delta` outcome signal. Superseded by a sharper question: why do only 42
+   `cortex_result: completed` observations exist per six hours against 5,562
+   `substrate_dispatch_results` rows in the same window?
 4. **Is the per-cycle fixed emission the deeper cause?** Even with perfect weights, if the
    builder emits the same slate every tick, variance can only come from the cutoff moving.
    Worth checking whether emission itself is state-gated at all.

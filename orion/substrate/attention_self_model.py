@@ -42,10 +42,27 @@ were execution/transport/biometrics/chat/route, but `transport` was excluded
 from `ACTIVE_INFERENCE_DOMAINS` (see that constant's docstring) as confirmed
 dead -- a real, bounded replacement now exists: `bus_synaptic`, built on top
 of the bus-synaptic-graph arc. `ACTIVE_INFERENCE_DOMAINS` now covers
-execution/biometrics/chat/route/bus_synaptic (five active domains, not six --
-the old broken `transport` domain remains present in
+execution/biometrics/chat/route/bus_synaptic (five active domains, not six).
+
+**2026-07-31: `transport` is fully gone, not merely excluded.** This docstring
+previously ended "the old broken `transport` domain remains present in
 `prediction_error_by_domain` when a caller supplies it, just still excluded
-from this filtered set).
+from this filtered set" -- and that was true and load-bearing: the caller
+(`orion-substrate-runtime`) went on supplying it for five days after its
+producer write was killed, off a node frozen at `0.556` since 2026-07-24, and
+`predicted_shift`'s argmax below read the dict *unfiltered*. Both ends are now
+closed: the caller's map entry is deleted and gated by a set-equality test, and
+`predicted_shift` filters to this constant.
+
+One consumer in this module still does NOT filter, deliberately: the
+branch-gated `confidence`/`confidence_basis` pair, via
+`_aggregate_prediction_error_confidence`. That is its documented pre-existing
+behavior (see that function and `ACTIVE_INFERENCE_DOMAINS`' own comment) and is
+left unchanged here rather than quietly altered inside a retirement patch --
+but note it means removing a domain from the caller's map shifts that field's
+value for identical substrate state. Measured for this retirement: 25 persisted
+rows used the 6-domain basis, all before 2026-07-29T05:01:06Z; future rows in
+that branch read about 0.09 higher, because a frozen 0.556 term left the mean.
 """
 
 from __future__ import annotations
@@ -82,12 +99,16 @@ DEFAULT_BROADCAST_STALE_THRESHOLD_SEC = 60.0
 # 2h real window, `substrate_field_state`): 3534/3534 ticks (100% coverage --
 # better than execution/chat/route's near-0% coverage) with real variance
 # (min=0.17, max=1.0, mean=0.30), not the old `transport` domain's flat 0.0.
-# The old `transport` domain itself (`transport_prediction_error()`, narrow
-# 2-Redis-Streams scope) remains excluded and unfixed -- `bus_synaptic` is an
-# additive replacement candidate sitting alongside it, not a repair of it.
+# The old `transport` domain (`transport_prediction_error()`, narrow
+# 2-Redis-Streams scope) was excluded here as of 2026-07-25 and fully deleted
+# 2026-07-31 -- function, caller map entry, and the live node. `bus_synaptic`
+# started as an additive replacement candidate sitting alongside it and is now
+# simply the transport instrument.
+#
 # This constant does NOT affect the pre-existing branch-gated
 # `confidence`/`confidence_basis` fields below, which keep their original
-# (unfiltered, all-domains) formula unchanged -- additive only.
+# (unfiltered, all-domains) formula unchanged -- additive only. It DOES now
+# gate `predicted_shift` (2026-07-31), which was previously unfiltered.
 ACTIVE_INFERENCE_DOMAINS = frozenset({"execution", "biometrics", "chat", "route", "bus_synaptic"})
 
 
@@ -307,10 +328,28 @@ def reduce_attention_self_model(
     # self_state.dimension_trajectory fallback. Computed unconditionally
     # (not gated on which attention_reason branch fires below), matching the
     # old self_state block's own positioning.
+    #
+    # Restricted to ACTIVE_INFERENCE_DOMAINS 2026-07-31. This argmax was
+    # previously unfiltered, so ANY key a caller put in the dict could win and
+    # become Orion's stated "what is about to shift" -- including a retired
+    # domain. That was live: `orion-substrate-runtime`'s
+    # `_PREDICTION_ERROR_DOMAIN_NODE_IDS` still listed `node:substrate.transport`
+    # five days after its producer write was killed, so `transport` was in this
+    # dict every tick, reading a frozen 0.556.
+    #
+    # It never actually won (checked all 7,119 persisted rows carrying a
+    # predicted_shift: execution 4,597 / biometrics 1,490 / bus_synaptic 1,031 /
+    # route 1, transport 0) -- precisely BECAUSE it was frozen, so its trend was
+    # a flat 0.0 and `abs(trend) > abs(top_trend_val)` could never fire for it.
+    # A dead domain was invisible here only for as long as it stayed dead. The
+    # filter is the seam; removing that map entry alone would fix this instance
+    # and leave the next retired domain free to repeat it.
     if prediction_error_trend_by_domain:
         top_domain: str | None = None
         top_trend_val = 0.0
         for domain, trend in prediction_error_trend_by_domain.items():
+            if domain not in ACTIVE_INFERENCE_DOMAINS:
+                continue
             if abs(trend) > abs(top_trend_val):
                 top_domain, top_trend_val = domain, trend
         if top_domain is not None and top_trend_val != 0.0:

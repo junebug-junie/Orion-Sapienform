@@ -546,10 +546,12 @@ than 3 of the original 5 `prediction_error` domains at time of writing. On that 
 `orion/substrate/attention_self_model.py`'s `ACTIVE_INFERENCE_DOMAINS` frozenset now includes
 `"bus_synaptic"` (five active domains: execution, biometrics, chat, route, bus_synaptic), feeding
 `prediction_error_confidence`. This is a different consumer than `orion-equilibrium-service`'s
-transport metacog gate (PRs #1385/#1387, wired separately, same node). The still-broken `transport`
-domain (`transport_prediction_error()`) remains excluded and unfixed — see
+transport metacog gate (PRs #1385/#1387, wired separately, same node). The broken `transport`
+domain (`transport_prediction_error()`) was excluded here on 2026-07-25 and **fully retired
+2026-07-31** — function deleted, reducer map entry removed, live node deleted; see the
+"COMPLETED, 2026-07-31" section below and
 `docs/superpowers/specs/2026-07-22-l6-self-model-ast-hot-active-inference-design.md`'s
-2026-07-25 revision for the full caveat.
+2026-07-25 revision for the original caveat.
 
 **Corrected 2026-07-26: the sanity-check pass above was incomplete.** It checked non-degeneracy
 (step 4 of CLAUDE.md's metric-quality-gate) but skipped the theory-anchor/commensurability check
@@ -616,12 +618,101 @@ confirmed unaffected by removing this write: reducer-health/cursor tracking (`re
 `_log_transport_incident_signals()` (a separate, still-running diagnostic logger),
 `catalog_drift_pressure`/`observer_failure_pressure` (fed by a different function,
 `compute_transport_pressures()`, and still live in `config/field/orion_field_topology.v1.yaml`'s
-`capability:transport` edge per PR #1394). `transport_prediction_error()` itself is kept (not
-deleted) though review confirmed it has zero callers anywhere in the repo now -- the two analysis
-scripts this doc originally credited (`measure_transport_bus_signal_history.py`,
-`measure_transport_biometrics_prediction_error_correlation.py`) only name it in prose, they read
-persisted values directly from Postgres. Review also caught one dead read: `prev_projection =
+`capability:transport` edge per PR #1394). Review also caught one dead read: `prev_projection =
 load_projection()` was only ever consumed by the removed call, deleted alongside it.
+
+**COMPLETED, 2026-07-31: the rest of the retirement.** The 2026-07-26 pass killed the *write* and
+deliberately kept everything else -- `transport_prediction_error()` "kept (not deleted) as the
+cheapest option", and `app/worker.py`'s `_PREDICTION_ERROR_DOMAIN_NODE_IDS` still mapping
+`node:substrate.transport -> transport`. The cost of that showed up five days later: the brain-frame
+reducer had gone on reading that node every tick and handing `transport` to
+`reduce_attention_self_model()`, off a node that stopped moving on 2026-07-24
+(`prediction_error=0.556`, `observed_at=2026-07-24T21:55:26Z`, zero relationships). Nothing failed
+while it stayed, which is exactly why a comment was not enough. Now:
+
+- `transport_prediction_error()` **deleted** from `orion/substrate/prediction_error.py`.
+- The `node:substrate.transport` map entry **removed**, gated by a set-equality test against
+  `ACTIVE_INFERENCE_DOMAINS` (`tests/test_prediction_error_domain_map.py`) so the two cannot drift
+  apart again in either direction.
+- `reduce_attention_self_model()`'s `predicted_shift` argmax, previously **unfiltered**, now
+  restricted to `ACTIVE_INFERENCE_DOMAINS`. `transport` never actually won it (0 of 7,119 persisted
+  rows) -- but only because a frozen node has a flat `0.0` trend. That is a dead domain being
+  invisible for as long as it stays dead, not a filter.
+- The stale node itself: **NOT deleted. `UNVERIFIED` / open defect — see below.** All four changes
+  above are reader-side and stand on their own; the node is now unreferenced by any of them, but it
+  is still physically present in `orion_substrate`.
+
+  **`node:substrate.transport` cannot be deleted from the live graph.** Three attempts, each
+  reporting `Nodes deleted: 1`, each undone:
+
+  1. Plain `GRAPH.QUERY ... DELETE n` while everything ran — back within a minute, `activation`
+     ticking (`0.166125 → 0.166074 → 0.166064`, i.e. actively written).
+  2. `stop orion-substrate-runtime` → delete (verified `count(n) = 0` while stopped) → `up -d`.
+     Back anyway.
+  3. Delete again on the running system, polled every 2s: **resurrected after 6 seconds.**
+
+  What rules out the obvious explanations:
+
+  - **Not the dynamics loop.** `SUBSTRATE_DYNAMICS_TICK_INTERVAL_SEC` defaults to 30s; the
+    resurrection took 6s.
+  - **Not `FalkorSubstrateStore`'s in-process cache alone.** That cache dies with the process, and
+    attempt 2 deleted the node while the process was down.
+  - **Not a fresh write.** The restored node carries `activation: 0.166125` — the *exact*
+    pre-deletion value, not a decayed one — plus `recency_score: 0.0`,
+    `observed_at: 2026-07-24T21:55:26Z`. Something replays a frozen 7-day-old snapshot verbatim.
+  - **No log line anywhere.** Checked `substrate-runtime`, `recall`, `attention-runtime`,
+    `field-digester`, `graph-compression` over the resurrection window: nothing.
+
+  `prediction_error` is the one property that does *not* come back, because it sits in
+  `EXTERNALLY_OWNED_METADATA_KEYS` and is excluded from the `MERGE` write — which is itself a clue
+  about the shape of the writer. `salience: 0.556078` does come back.
+
+  **Root cause found 2026-07-31 via FalkorDB `MONITOR`** (the writer logs nothing, so the only way
+  to see it was to watch the wire). The resurrecting client is `172.18.0.39` =
+  `orion-athena-cortex-exec-background`, and it is not transport-specific:
+
+  ```text
+  distinct node_ids written in ONE ~0.8s burst, 17 writes each:
+    node:substrate.biometrics      node:substrate.bus_synaptic   node:substrate.chat
+    node:substrate.codebase        node:substrate.execution      node:substrate.harness_closure
+    node:substrate.route           node:substrate.transport
+    sub-concept-seed-orion         sub-concept-seed-juniper
+    sub-concept-seed-orion_juniper_relationship
+
+  MATCH (n) RETURN count(n)  ->  11
+  ```
+
+  Eleven written, eleven in the graph. **`orion-cortex-exec-background` round-trips the entire
+  substrate node set back into FalkorDB from a stale in-process snapshot**, via
+  `chat_stance.py`'s process-level `_UNIFICATION_LAYER` singleton →
+  `CognitiveUnificationLayer` → `SubstrateGraphMaterializer.apply_record()`. The written values are
+  the frozen originals at full float precision (`salience=0.556077777777778`,
+  `activation=0.166125`), not anything freshly computed.
+
+  Two compounding defects, both visible in `orion/substrate/materializer.py::apply_record()`:
+
+  1. **Deleting a node makes the write *less* safe, not safer.** With the node present it takes the
+     `else` branch — `merge_node()` plus `skip_metadata_keys=EXTERNALLY_OWNED_METADATA_KEYS`. With
+     the node absent it takes `if existing_node is None:` → `upsert_node(canonical_node)`, a
+     **wholesale overwrite with no merge and no clobber protection at all**. So the delete is what
+     moves the node onto the unprotected path.
+  2. **`EXTERNALLY_OWNED_METADATA_KEYS` only covers `metadata`.** `observed_at`, `recency_score`,
+     `salience`, and `activation` are not metadata keys, so this writer overwrites them on every
+     burst even on the protected merge branch — which is the mechanism behind the previously
+     unexplained `observed_at` oscillation seen on live nodes (a fresh timestamp replaced by an
+     older one, then forward again).
+
+  So this is broader than transport: **no substrate node can be retired from the graph** while a
+  general snapshot round-tripper rewrites all eleven of them, and every reducer-owned temporal field
+  on live domains is being clobbered by stale values several times a second. Fixing it is a change
+  to the cognitive unification layer's write scope, not to this retirement — flagged for a decision
+  rather than patched here. No denylist was added: a retired-id registry would paper over the
+  round-tripper instead of scoping it.
+
+  Snapshot of the node as it stood: `/tmp/retire-substrate-transport-node/before_snapshot.txt`.
+
+`config/field/orion_field_topology.v1.yaml`'s `capability:transport` edge had already migrated to
+`node:substrate.bus_synaptic` and needed no change -- the EWMA successor was already in place there.
 
 **Fixed 2026-07-28: `execution_prediction_error()` moved off the fixed `_THRESHOLD=0.30` divisor
 onto a self-calibrating EWMA baseline (PR #1434).** Live Postgres data (120 real

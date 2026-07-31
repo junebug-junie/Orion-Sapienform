@@ -280,16 +280,6 @@ def resolve_autonomy_subquery_max_workers() -> int:
     return max(1, min(3, _env_int("AUTONOMY_SUBQUERY_MAX_WORKERS", 1)))
 
 
-def resolve_autonomy_drives_query_limit(*, compact: bool = False) -> int:
-    """Row cap for drive audit SPARQL; chat stance uses AUTONOMY_CHAT_STANCE_DRIVES_QUERY_LIMIT."""
-    if compact:
-        return max(12, min(_env_int("AUTONOMY_CHAT_STANCE_DRIVES_QUERY_LIMIT", 20), 80))
-    raw = os.getenv("AUTONOMY_DRIVES_QUERY_LIMIT")
-    if raw is None or not str(raw).strip():
-        return 80
-    return max(12, min(_env_int("AUTONOMY_DRIVES_QUERY_LIMIT", 80), 80))
-
-
 def resolve_autonomy_chat_stance_subquery_max_workers() -> int:
     """Parallel SPARQL facets for chat stance; defaults to 3 unless overridden."""
     explicit = os.getenv("AUTONOMY_CHAT_STANCE_SUBQUERY_MAX_WORKERS")

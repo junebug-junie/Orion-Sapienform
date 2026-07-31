@@ -18,7 +18,6 @@ returns ``None`` without calling the graph endpoint.
 from __future__ import annotations
 
 import logging
-import os
 from datetime import datetime, timezone
 from typing import Any
 
@@ -118,7 +117,6 @@ def map_autonomy_ctx_to_substrate(ctx: dict[str, Any]) -> SubstrateGraphRecordV1
 
     try:
         from orion.autonomy.graph_gate import (
-            is_quick_autonomy_graph_lane,
             log_autonomy_graph_backend_decision,
             resolve_autonomy_graph_read_plan,
         )

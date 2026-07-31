@@ -16,6 +16,16 @@ ReducerHealthClass = Literal[
     "reducer_disabled",
 ]
 
+# How recently `record_error()` must have fired for a success/advance timestamp
+# inversion to count as a real commit failure. See `classify()` for the measured
+# false-positive rate this exists to remove.
+#
+# 60s is deliberately generous relative to the 1s poll cadence: a genuinely stuck
+# commit re-records an error every second, so it clears this bar by ~60x, while a
+# benign in-flight commit (sub-second, no error at all) can never reach it. Sized
+# for the failure mode, not tuned to a measurement.
+DEFAULT_CURSOR_COMMIT_ERROR_GRACE_SEC = 60.0
+
 _LOCK = threading.Lock()
 _SNAPSHOTS: dict[str, "ReducerHealthSnapshot"] = {}
 
@@ -49,6 +59,7 @@ class ReducerHealthSnapshot:
         *,
         heartbeat_stale_sec: float,
         stream_lag_degraded_sec: float,
+        cursor_commit_error_grace_sec: float = DEFAULT_CURSOR_COMMIT_ERROR_GRACE_SEC,
     ) -> ReducerHealthClass:
         if not self.enabled:
             return "reducer_disabled"
@@ -60,10 +71,50 @@ class ReducerHealthSnapshot:
             return "dead_no_heartbeat"
         if self.blocked_event_id and self.blocked_failures >= 1:
             return "blocked_on_event"
+        # `last_success_at > last_cursor_advance_at` on its own is NOT a failure
+        # signal -- it is true by construction on every healthy batch, for as
+        # long as the cursor commit takes.
+        #
+        # `_process_events_with_poison_isolation()` calls `record_success()` the
+        # moment `process_batch()` returns, and only then does the caller run
+        # `_advance_cursor()` -- on a worker thread, doing a Postgres SELECT
+        # (`grammar_event_created_at`) plus the cursor UPDATE. Between those two
+        # calls the timestamps are legitimately inverted.
+        #
+        # Measured live 2026-07-31 against a fully healthy substrate-runtime
+        # (`last_error_at=None`, `blocked_failures=0` for every reducer), polling
+        # /grammar/truth every 200ms for 90s:
+        #
+        #     execution_trajectory   inverted in 13/40 samples (32.5%)
+        #     biometrics             inverted in  9/40 samples (22.5%)
+        #     route_grammar          inverted in  4/40 samples (10.0%)
+        #
+        # every one of them classified `cursor_commit_failing`. A one-in-three
+        # false positive on the healthiest possible state. That is the whole
+        # explanation for a CRITICAL page that has now fired three times
+        # (2026-07-13 twice on biometrics_grammar_consumer, 2026-07-31 on
+        # execution_grammar_reducer), each time "self-resolving within minutes
+        # with no reproducing evidence" -- because there was never anything to
+        # reproduce. The 15s recheck debounce added for the second fire
+        # (SUBSTRATE_RUNTIME_HEALTH_RECHECK_DELAY_SEC) reduced the odds but
+        # could not fix a predicate that is wrong ~30% of the time.
+        #
+        # The real signal is an actual recorded error. `_advance_cursor()` calls
+        # `record_error()` on BOTH of its failure paths (missing
+        # grammar_events.created_at, and a raising advance_fn), and the poll
+        # loops call it on tick failure -- so a genuinely stuck commit records an
+        # error every poll (1s cadence) and stays recorded. A benign in-flight
+        # commit records none.
+        #
+        # Note we deliberately do NOT gate on `now - last_success_at` instead:
+        # under a real stuck commit the reducer keeps processing batches, so
+        # `last_success_at` keeps refreshing and never looks stale.
         if (
             self.last_success_at
             and self.last_cursor_advance_at
             and self.last_success_at > self.last_cursor_advance_at
+            and self.last_error_at is not None
+            and (now - self.last_error_at).total_seconds() <= cursor_commit_error_grace_sec
         ):
             return "cursor_commit_failing"
         stream_lag = self.stream_lag_sec
@@ -76,10 +127,12 @@ class ReducerHealthSnapshot:
         *,
         heartbeat_stale_sec: float,
         stream_lag_degraded_sec: float,
+        cursor_commit_error_grace_sec: float = DEFAULT_CURSOR_COMMIT_ERROR_GRACE_SEC,
     ) -> dict[str, Any]:
         classification = self.classify(
             heartbeat_stale_sec=heartbeat_stale_sec,
             stream_lag_degraded_sec=stream_lag_degraded_sec,
+            cursor_commit_error_grace_sec=cursor_commit_error_grace_sec,
         )
         return {
             "reducer_key": self.reducer_key,

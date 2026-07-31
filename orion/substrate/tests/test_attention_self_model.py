@@ -300,6 +300,42 @@ class TestPredictedShift:
 
         assert model.predicted_shift is None
 
+    def test_retired_domain_cannot_win_the_argmax(self) -> None:
+        """A domain outside ACTIVE_INFERENCE_DOMAINS is not eligible, however loud.
+
+        2026-07-31: this argmax was unfiltered, so any key a caller supplied
+        could become Orion's stated "what is about to shift". `transport` was
+        in that dict on every live tick for five days after its producer write
+        was killed. It never actually won -- only because a frozen node has a
+        flat 0.0 trend. The moment such a node moved at all (a backfill, a
+        one-off write, a replay) it would have outranked every real domain here.
+        """
+        model = reduce_attention_self_model(
+            None, None, now=NOW,
+            prediction_error_trend_by_domain={
+                "transport": 0.9,      # retired: loudest, must be ignored
+                "execution": 0.02,     # live: quiet, must still win
+            },
+        )
+
+        assert model.predicted_shift is not None
+        assert "execution" in model.predicted_shift
+        assert "transport" not in model.predicted_shift
+
+    def test_only_retired_domains_yields_no_prediction(self) -> None:
+        """Filtered down to nothing is honestly absent, not a fallback.
+
+        Same convention as `test_no_trend_data_yields_no_prediction` -- this
+        reducer never invents a value when its inputs are all ineligible.
+        """
+        model = reduce_attention_self_model(
+            None, None, now=NOW,
+            prediction_error_trend_by_domain={"transport": 0.9, "harness_closure": -0.4},
+        )
+
+        assert model.predicted_shift is None
+        assert model.predicted_shift_basis == ""
+
     def test_predicted_shift_computed_independent_of_attention_reason_branch(self) -> None:
         """The old self_state-driven predicted_shift was computed
         unconditionally, before the attention_reason branching -- the new

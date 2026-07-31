@@ -109,9 +109,24 @@ _HARNESS_CLOSURE_UNRESOLVED_ERROR = 0.65
 # domain parity" pass could add this entry without realizing that decision was
 # already made deliberately, not an oversight. Revisit only alongside a real
 # Phase 3 patch, not as a drive-by fix.
+#
+# node:substrate.transport REMOVED 2026-07-31 -- the last live read of the
+# retired transport domain. Its producer write was killed 2026-07-26
+# (docs/superpowers/specs/2026-07-26-transport-domain-retirement-bus-synaptic-
+# successor-design.md) but this entry stayed, so the reducer kept reading a node
+# that had stopped moving: live at removal time it held prediction_error=0.556
+# with observed_at=2026-07-24, five days after its last write and seven days
+# stale. node:substrate.bus_synaptic (already below) is the real EWMA successor
+# and already occupies this domain's role in every consumer -- including
+# config/field/orion_field_topology.v1.yaml's capability:transport edge, which
+# migrated to it. This entry was the leftover.
+#
+# Kept as a set-equality test (tests/test_prediction_error_domain_map.py)
+# against ACTIVE_INFERENCE_DOMAINS rather than a comment, because "the write is
+# dead but a reader still lists it" is exactly the partial retirement CLAUDE.md
+# §0A forbids, and a comment does not stop the next patch re-adding it.
 _PREDICTION_ERROR_DOMAIN_NODE_IDS = {
     "node:substrate.execution": "execution",
-    "node:substrate.transport": "transport",
     "node:substrate.biometrics": "biometrics",
     "node:substrate.chat": "chat",
     "node:substrate.route": "route",
@@ -2543,14 +2558,14 @@ class BiometricsSubstrateWorker:
             # config/field/orion_field_topology.v1.yaml's still-live edge) is
             # unaffected -- confirmed via _grammar_reducer_poll_loop that reducer-
             # health/cursor tracking is driven by last_id, not by this block.
-            # transport_prediction_error() itself is kept, not deleted -- review
-            # confirmed it has zero callers anywhere in the repo now, live or
-            # offline (the two analysis scripts this comment originally claimed
-            # used it, measure_transport_bus_signal_history.py and measure_
-            # transport_biometrics_prediction_error_correlation.py, only mention
-            # its name in prose docstrings -- both read persisted values
-            # straight out of Postgres, no import). Kept anyway as the cheapest
-            # option (deleting it buys nothing and risks a future script
-            # wanting it for genuine historical replay).
+            # 2026-07-31: transport_prediction_error() is now DELETED outright,
+            # and so is _PREDICTION_ERROR_DOMAIN_NODE_IDS' node:substrate.transport
+            # entry above. The 2026-07-26 pass kept both "as the cheapest option
+            # (deleting it buys nothing)" -- and the cost showed up: that reader
+            # entry went on feeding a node that had stopped moving for another
+            # five days (live at removal: prediction_error=0.556,
+            # observed_at=2026-07-24), because nothing failed while it stayed.
+            # Killing the write is NOT the entire change when a reader still
+            # lists the dead identity.
 
         return last_id

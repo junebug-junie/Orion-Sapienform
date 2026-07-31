@@ -394,39 +394,27 @@ def execution_prediction_error(
     return min(1.0, max(0.0, update.zscore) / _EXECUTION_PREDICTION_ERROR_ZSCORE_SATURATION)
 
 
-def transport_prediction_error(
-    prev: TransportBusProjectionV1,
-    curr: TransportBusProjectionV1,
-) -> float:
-    """0-1 surprise score: how much did transport bus health change this batch?
-
-    **Retired from live use 2026-07-26** (docs/superpowers/specs/2026-07-26-
-    transport-domain-retirement-bus-synaptic-successor-design.md). This diffs
-    stream_backlog_health/delivery_confidence/stream_backlog_pressure -- fields
-    fed by BUS_OBSERVER_STREAMS' narrow 2-Redis-Stream "world_pulse" census, not
-    real inter-service bus traffic. Already excluded from attention_self_model
-    .py's ACTIVE_INFERENCE_DOMAINS as known-dead; `services/orion-substrate-
-    runtime/app/worker.py::_transport_tick()` no longer calls this function
-    live -- bus_synaptic_prediction_error() (below) is the real, mesh-wide
-    successor, already flowing into every consumer this fed. Kept here (not
-    deleted) though it now has zero callers anywhere in the repo, live or
-    offline -- checked: measure_transport_bus_signal_history.py and measure_
-    transport_biometrics_prediction_error_correlation.py only mention this
-    function's name in prose docstrings, they read persisted values directly
-    from Postgres, no import. Do not wire this back into a live tick.
-    """
-    deltas: list[float] = []
-    for bus_id, curr_bus in curr.buses.items():
-        prev_bus = prev.buses.get(bus_id)
-        if prev_bus is None:
-            continue
-        for field in ("stream_backlog_health", "delivery_confidence", "stream_backlog_pressure"):
-            pv = getattr(prev_bus, field, 0.0)
-            cv = getattr(curr_bus, field, 0.0)
-            deltas.append(abs(cv - pv))
-    return min(1.0, _mean(deltas) / _THRESHOLD) if deltas else 0.0
-
-
+# transport_prediction_error() DELETED 2026-07-31.
+#
+# Retired from live use 2026-07-26 (docs/superpowers/specs/2026-07-26-transport-
+# domain-retirement-bus-synaptic-successor-design.md) but kept in the file on
+# the reasoning that "deleting it buys nothing and risks a future script wanting
+# it for genuine historical replay." That reasoning was wrong twice over:
+#
+#   1. It buys the thing CLAUDE.md section 0A actually asks for. A retired instrument
+#      that still exists is one a future patch wires back in -- and the entry
+#      that kept it alive downstream (orion-substrate-runtime's
+#      _PREDICTION_ERROR_DOMAIN_NODE_IDS) survived FIVE DAYS past the write being
+#      killed for exactly that reason: nothing failed when it stayed.
+#   2. The replay case is not lost. It diffed TransportBusProjectionV1's
+#      stream_backlog_health / delivery_confidence / stream_backlog_pressure --
+#      fields still persisted, still readable, and recoverable in ~10 lines by
+#      any script that genuinely needs them. Keeping a live-importable symbol is
+#      not the cheap way to preserve that; git history is.
+#
+# The successor is bus_synaptic_prediction_error() above: mesh-wide real
+# inter-service publish traffic via orion_bus_synapse's per-edge EWMA z-scores,
+# rather than a 2-Redis-Stream "world_pulse" census that was never bus health.
 def biometrics_prediction_error(
     prev: NodeBiometricsProjectionV1,
     curr: NodeBiometricsProjectionV1,

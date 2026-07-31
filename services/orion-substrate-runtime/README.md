@@ -616,12 +616,31 @@ confirmed unaffected by removing this write: reducer-health/cursor tracking (`re
 `_log_transport_incident_signals()` (a separate, still-running diagnostic logger),
 `catalog_drift_pressure`/`observer_failure_pressure` (fed by a different function,
 `compute_transport_pressures()`, and still live in `config/field/orion_field_topology.v1.yaml`'s
-`capability:transport` edge per PR #1394). `transport_prediction_error()` itself is kept (not
-deleted) though review confirmed it has zero callers anywhere in the repo now -- the two analysis
-scripts this doc originally credited (`measure_transport_bus_signal_history.py`,
-`measure_transport_biometrics_prediction_error_correlation.py`) only name it in prose, they read
-persisted values directly from Postgres. Review also caught one dead read: `prev_projection =
+`capability:transport` edge per PR #1394). Review also caught one dead read: `prev_projection =
 load_projection()` was only ever consumed by the removed call, deleted alongside it.
+
+**COMPLETED, 2026-07-31: the rest of the retirement.** The 2026-07-26 pass killed the *write* and
+deliberately kept everything else -- `transport_prediction_error()` "kept (not deleted) as the
+cheapest option", and `app/worker.py`'s `_PREDICTION_ERROR_DOMAIN_NODE_IDS` still mapping
+`node:substrate.transport -> transport`. The cost of that showed up five days later: the brain-frame
+reducer had gone on reading that node every tick and handing `transport` to
+`reduce_attention_self_model()`, off a node that stopped moving on 2026-07-24
+(`prediction_error=0.556`, `observed_at=2026-07-24T21:55:26Z`, zero relationships). Nothing failed
+while it stayed, which is exactly why a comment was not enough. Now:
+
+- `transport_prediction_error()` **deleted** from `orion/substrate/prediction_error.py`.
+- The `node:substrate.transport` map entry **removed**, gated by a set-equality test against
+  `ACTIVE_INFERENCE_DOMAINS` (`tests/test_prediction_error_domain_map.py`) so the two cannot drift
+  apart again in either direction.
+- `reduce_attention_self_model()`'s `predicted_shift` argmax, previously **unfiltered**, now
+  restricted to `ACTIVE_INFERENCE_DOMAINS`. `transport` never actually won it (0 of 7,119 persisted
+  rows) -- but only because a frozen node has a flat `0.0` trend. That is a dead domain being
+  invisible for as long as it stays dead, not a filter.
+- The stale node itself **deleted from live FalkorDB** (`orion_substrate`), snapshotted first to
+  `/tmp/retire-substrate-transport-node/before_snapshot.txt`.
+
+`config/field/orion_field_topology.v1.yaml`'s `capability:transport` edge had already migrated to
+`node:substrate.bus_synaptic` and needed no change -- the EWMA successor was already in place there.
 
 **Fixed 2026-07-28: `execution_prediction_error()` moved off the fixed `_THRESHOLD=0.30` divisor
 onto a self-calibrating EWMA baseline (PR #1434).** Live Postgres data (120 real

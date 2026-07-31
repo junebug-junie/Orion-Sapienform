@@ -242,6 +242,33 @@ class Settings(BaseSettings):
     metacog_transport_bus_synaptic_error_threshold: float = Field(
         1.0, alias="EQUILIBRIUM_METACOG_TRANSPORT_BUS_SYNAPTIC_ERROR_THRESHOLD"
     )
+    # Hysteresis re-arm fraction (2026-07-30). Rising-edge firing alone still
+    # re-fires on every crossing, and this metric is currently bimodal, so a
+    # value oscillating around the threshold would flap. Once fired, the branch
+    # only re-arms after the reading falls below
+    # `error_threshold * this` -- a Schmitt-trigger band, not a second
+    # threshold to calibrate.
+    #
+    # Deliberately NOT solved by raising EQUILIBRIUM_METACOG_TRANSPORT_COOLDOWN_SEC:
+    # that lane is shared by all three transport evidence branches, and the
+    # other two (rpc_health windows, rpc_timeout grammar) are genuinely
+    # event-driven and are NOT low-volume: measured live over 7 days,
+    # cortex-exec 810 + cortex-orch 523 + rpc_timeout 118 = 1,451 rows/week,
+    # and over the last 24h rpc_health alone (820) out-published this branch
+    # (466). An earlier draft of this comment said "~180 rows/week combined",
+    # which was wrong by ~8x and was load-bearing for this decision -- corrected
+    # after live measurement. The conclusion is unchanged but now better
+    # supported: throttling the shared lane would suppress a LOT of real sibling
+    # events, the same "one kind starves the others" bug the per-kind lanes were
+    # introduced to fix. That same volume is also why the rising edge must latch
+    # on publish success rather than on the raw level (see service.py).
+    # Bounded (0, 1]: a value <= 0 makes clear_at <= 0, so `error < clear_at` is
+    # never true, the branch latches True after its first fire and NEVER
+    # re-arms for the process lifetime -- the exact "detector quietly stops
+    # detecting" failure this patch exists to prevent, reachable by a typo.
+    metacog_transport_bus_synaptic_clear_ratio: float = Field(
+        0.8, gt=0.0, le=1.0, alias="EQUILIBRIUM_METACOG_TRANSPORT_BUS_SYNAPTIC_CLEAR_RATIO"
+    )
     # ---------------------------------------------------------------------
     # Generative (non-rupture) metacog triggers: insight + flow.
     # docs/superpowers/specs/2026-07-28-collapse-mirror-generative-triggers-design.md

@@ -244,3 +244,116 @@ class TestBusSynapticEvidence:
             error_threshold=0.5,
         )
         assert trigger is not None
+
+
+# ---------------------------------------------------------------------------
+# bus_synaptic branch: edge-triggering, staleness, hysteresis (2026-07-30)
+# ---------------------------------------------------------------------------
+
+
+def _bs(error, **kw):
+    kw.setdefault("zen_state", "not_zen")
+    kw.setdefault("pressure", 0.4)
+    kw.setdefault("recall_enabled", False)
+    kw.setdefault("error_threshold", 1.0)
+    return build_transport_metacog_trigger_from_bus_synaptic(error, **kw)
+
+
+def test_bus_synaptic_fires_on_the_rising_edge_only() -> None:
+    """The core fix. This branch was a pure level check evaluated every 30s, so
+    one sustained condition re-drafted an LLM reflection on every tick -- live,
+    1,812 transport rows in 24h, ~48% from this branch alone. Metacognition is
+    "something notable HAPPENED", not "something is STILL the case"."""
+    first = _bs(1.2, previously_above=False)
+    assert first is not None
+    assert first.upstream["transition"] == "below_to_above"
+    assert "rising_edge" in first.upstream["fired_conditions"]
+    assert "episode_start" in first.reason
+
+    # Same condition, still true on the next poll -> silent.
+    assert _bs(1.2, previously_above=True) is None
+    assert _bs(9.9, previously_above=True) is None
+
+
+def test_bus_synaptic_below_threshold_never_fires_regardless_of_edge_state() -> None:
+    assert _bs(0.5, previously_above=False) is None
+    assert _bs(0.5, previously_above=True) is None
+
+
+def test_bus_synaptic_does_not_gate_on_node_age_but_does_report_it() -> None:
+    """A staleness guard on the node's `observed_at` was written and then
+    REMOVED, because live sampling proved the field is clobbered: three reads
+    35s apart returned observed_at 03:43:49 -> 04:01:25 -> 03:43:49, oscillating
+    between fresh and ~18min stale (recency_score likewise 0.715 -> 0 -> 0.999).
+    Only prediction_error/contributing_turn_ids are protected by
+    EXTERNALLY_OWNED_METADATA_KEYS; observed_at is not, so a second writer keeps
+    re-persisting a stale snapshot.
+
+    Gating on that would mean firing or not firing based on which writer won the
+    last race. The frozen-node case it was meant to catch is already covered by
+    rising-edge firing (a frozen value fires once, then goes silent), so this
+    asserts the age is REPORTED for operator visibility but never suppresses."""
+    stale = _bs(1.2, previously_above=False, node_age_sec=99999.0)
+    assert stale is not None, "node age must not gate -- the field is not trustworthy"
+    assert stale.upstream["node_age_sec"] == 99999.0
+
+    fresh = _bs(1.2, previously_above=False, node_age_sec=12.0)
+    assert fresh is not None
+    assert fresh.upstream["node_age_sec"] == 12.0
+
+
+def test_a_frozen_node_fires_once_then_goes_silent() -> None:
+    """The case the removed staleness guard existed for, shown to be handled by
+    edge-triggering alone. The live incident was node:substrate.bus_synaptic
+    stuck at 1.0 for hours while this loop fired every 30s."""
+    frozen_value = 1.0
+    above = False
+    fires = 0
+    for _ in range(120):  # an hour of 30s polls against a frozen node
+        if _bs(frozen_value, previously_above=above) is not None:
+            fires += 1
+        above = frozen_value >= 1.0
+    assert fires == 1
+
+
+def test_edge_and_hysteresis_collapse_a_real_firing_pattern() -> None:
+    """End-to-end over a synthetic series shaped like the real bimodal metric,
+    replicating the service's own edge/hysteresis bookkeeping.
+
+    Asserts the property that actually matters: the number of entries equals the
+    number of EPISODES, not the number of polls.
+    """
+    threshold, clear_ratio = 1.0, 0.8
+    # Two genuine anomaly episodes, each sustained across several polls, with a
+    # stretch of threshold-adjacent flapping in between.
+    series = (
+        [0.1] * 5
+        + [1.0] * 10          # episode 1 (sustained)
+        + [0.1] * 5
+        + [1.0, 0.85, 1.0, 0.9, 1.0]   # flapping inside the hysteresis band
+        + [0.1] * 5
+        + [2.0] * 8           # episode 2 (sustained)
+    )
+
+    above = False
+    fires = 0
+    for value in series:
+        if _bs(value, previously_above=above) is not None:
+            fires += 1
+        if value >= threshold:
+            above = True
+        elif value < threshold * clear_ratio:
+            above = False
+
+    # 3 episodes: the two sustained ones plus the flap's first crossing. The
+    # flap's four subsequent re-crossings are absorbed by the hysteresis band.
+    assert fires == 3
+    # The pre-fix level check fired on every poll at-or-above threshold. Assert
+    # the RELATIONSHIP (episodes << polls-above-threshold), not the literal
+    # count of a hand-written list -- review correctly called that out as
+    # documentation wearing an assertion's clothes.
+    polls_above = sum(1 for v in series if v >= threshold)
+    assert fires * 5 < polls_above, (
+        f"expected a large collapse; got {fires} episodes from {polls_above} "
+        "polls above threshold"
+    )

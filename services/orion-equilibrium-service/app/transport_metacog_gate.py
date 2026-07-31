@@ -123,6 +123,8 @@ def build_transport_metacog_trigger_from_bus_synaptic(
     pressure: float,
     recall_enabled: bool,
     error_threshold: float,
+    previously_above: bool = False,
+    node_age_sec: float | None = None,
     edge_count: int | None = None,
 ) -> MetacogTriggerV1 | None:
     """Third evidence source: node:substrate.bus_synaptic's prediction_error
@@ -144,10 +146,56 @@ def build_transport_metacog_trigger_from_bus_synaptic(
     bus_synaptic_graph_routes.py's debug routes already use for a human
     reading a table.
     """
+    # --- Why there is NO staleness guard here (2026-07-30) ----------------
+    # A guard on the node's `observed_at` was written, then removed after live
+    # measurement showed the field is not trustworthy: sampling
+    # node:substrate.bus_synaptic every 35s returned observed_at
+    # 03:43:49 -> 04:01:25 -> 03:43:49, i.e. OSCILLATING between a fresh and an
+    # ~18-minutes-stale timestamp, with recency_score doing the same
+    # (0.715 -> 0 -> 0.999). Two writers race on this node and only
+    # `prediction_error`/`contributing_turn_ids` are covered by
+    # falkor_codec.EXTERNALLY_OWNED_METADATA_KEYS -- `observed_at` and
+    # `recency_score` are not, so a second writer keeps re-persisting a stale
+    # snapshot of them. Gating on that field would suppress or admit a real
+    # reading depending on which writer won the last race: non-deterministic
+    # suppression, which is worse than no guard.
+    #
+    # It is also unnecessary. The frozen-node case that motivated it (the node
+    # sat stale at 1.0 for hours while this loop fired every 30s) is already
+    # fully handled by the rising-edge check below: a frozen value fires exactly
+    # once and is then silent for as long as it stays frozen. Edge-triggering
+    # solves staleness spam as a side effect of solving level spam.
+    #
+    # node_age_sec is still accepted and carried into `upstream` for operator
+    # visibility -- reporting the age is useful, gating on it is not. The
+    # corresponding MAX_NODE_AGE_SEC setting was deleted rather than left
+    # unused: a config key with no consumer is one a future patch wires back up
+    # without rediscovering why it was abandoned.
     if error < error_threshold:
         return None
 
-    reason = f"transport:bus_synaptic:error={error:.3f}"[:500]
+    # --- Edge-triggered, not level-triggered (2026-07-30) ------------------
+    # THE fix for this trigger polluting orion_metacog. This was a pure level
+    # check evaluated every poll, so a single sustained condition re-drafted an
+    # LLM reflection on every tick for as long as it lasted. With a 30s poll and
+    # a 30s cooldown lane (i.e. no effective rate limit at all) that is ~2,880
+    # near-identical entries per day; live, transport wrote 1,812 rows in 24h,
+    # ~48% of them from this one branch.
+    #
+    # Metacognition is "something notable HAPPENED", not "something is STILL
+    # the case". A state that persists is one event, not one event per tick.
+    # Firing only on the rising edge -- the transition into anomaly -- is what
+    # makes this an event source instead of a sampler, and it is also what makes
+    # the error_threshold far less load-bearing: a mis-set threshold now costs
+    # one spurious entry per episode instead of one every 30 seconds.
+    #
+    # State is in-process, so a restart mid-episode re-fires once. That is an
+    # accepted, bounded cost (one entry per restart) rather than a reason to
+    # reach for durable checkpointing here.
+    if previously_above:
+        return None
+
+    reason = f"transport:bus_synaptic:episode_start:error={error:.3f}"[:500]
 
     return MetacogTriggerV1(
         trigger_kind="transport",
@@ -158,9 +206,19 @@ def build_transport_metacog_trigger_from_bus_synaptic(
         signal_refs=["node:substrate.bus_synaptic"],
         upstream={
             "evidence_source": "bus_synaptic_prediction_error",
-            "fired_conditions": [f"error>={error_threshold}"],
+            "fired_conditions": [f"error>={error_threshold}", "rising_edge"],
             "error": error,
             "error_threshold": error_threshold,
             "edge_count": edge_count,
+            # NOTE (review, 2026-07-30): `upstream` does NOT reach the
+            # orion_metacog row -- it feeds the LLM draft prompt only
+            # (orion-cortex-exec/app/executor.py), and is dropped entirely under
+            # budget pressure. Verified live: 0 of 1,248 persisted bus_synaptic
+            # rows carry these keys. The field that actually reaches a future
+            # temporal reducer is `reason`/trigger_reason above, which is why
+            # "episode_start" is encoded there. These stay for prompt context
+            # and operator log reading, not as the reducer's contract.
+            "transition": "below_to_above",
+            "node_age_sec": node_age_sec,
         },
     )

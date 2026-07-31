@@ -88,6 +88,46 @@ def test_git_domain_scores_and_persists() -> None:
     assert saved_baseline[0].git.n == 6
     assert save_kwargs["retention_days"] == 30.0
 
+    # Regression guard: this call was originally missing entirely (found live
+    # 2026-07-31) -- without it, field-digester's state_deltas.py ingestion
+    # (which reads ReductionReceiptV1's target_kind="prediction_signal", not
+    # the FalkorDB node directly) would never see this domain's
+    # prediction_error at all, despite the node existing.
+    fake_store.save_receipt.assert_called_once()
+    receipt = fake_store.save_receipt.call_args[0][0]
+    assert receipt.state_deltas[0].target_kind == "prediction_signal"
+    assert receipt.state_deltas[0].target_id == "node:substrate.codebase"
+    assert receipt.state_deltas[0].after["pressure_hints"]["prediction_error"] == pytest.approx(
+        0.2 / 3.0, abs=1e-4
+    )
+
+
+def test_calm_tick_writes_node_but_skips_receipt() -> None:
+    """A below-baseline (score == 0.0) tick must still write the FalkorDB
+    node (a genuine calm reading, not skipped -- matches every other
+    domain's 'write every tick' fix) but must NOT emit a save_receipt audit
+    entry -- that's an audit trail of notable events, gated on error > 0.0,
+    same convention every sibling domain's tick already uses (e.g. the
+    biometrics tick, same file)."""
+    worker, fake_store, fake_write = _make_worker(
+        baseline=CodebaseMassBaseline(git=_DomainEwmaBaseline(ewma=5000.0, variance=1_000_000.0, n=10))
+    )
+    event = CodebaseDeltaV1(
+        domain="git",
+        observed_at=_NOW,
+        git=GitDeltaPayloadV1(
+            prev_sha="a" * 40, head_sha="b" * 40, commit_count=1,
+            files_added=0, files_deleted=0, files_modified=1,
+            lines_added=10, lines_removed=0,  # well below baseline -> score clamps to 0.0
+        ),
+    )
+    worker._handle_codebase_delta_message(_encode(event))
+
+    fake_write.assert_called_once()
+    assert fake_write.call_args[1]["error"] == 0.0
+    fake_store.save_receipt.assert_not_called()
+    fake_store.save_codebase_mass_baseline.assert_called_once()
+
 
 def test_pr_lifecycle_domain_scores() -> None:
     worker, fake_store, fake_write = _make_worker()

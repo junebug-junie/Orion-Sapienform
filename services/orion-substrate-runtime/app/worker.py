@@ -1465,6 +1465,34 @@ class BiometricsSubstrateWorker:
             git_delta=git_delta, pr_delta=pr_delta, graph_delta=graph_delta, baseline=baseline,
         )
         now = datetime.now(timezone.utc)
+        # Real gap found live 2026-07-31: this call was originally missing
+        # entirely. _write_prediction_error_node() (below) only writes the
+        # FalkorDB ConceptNode -- the *current-state* read every other
+        # prediction_error domain's own tick also feeds a second, separate
+        # path: a gated save_receipt(_prediction_error_receipt(...)) audit
+        # trail, which is what services/orion-field-digester/app/ingest/
+        # state_deltas.py actually ingests (via ReductionReceiptV1's
+        # target_kind="prediction_signal") to build field_channel_corpus.v1's
+        # generic, domain-agnostic "prediction_error" channel. Without this
+        # call, the FalkorDB node existing was not sufficient -- codebase's
+        # prediction_error would never have reached field-digester at all,
+        # confirmed by tracing every other domain's identical two-call
+        # pattern (e.g. the biometrics tick, same file) rather than assuming
+        # the shared writer alone was enough.
+        if result.score > 0.0:
+            self._store.save_receipt(
+                _prediction_error_receipt(
+                    reducer_key="codebase",
+                    node_id="node:substrate.codebase",
+                    prediction_error=result.score,
+                    now=now,
+                )
+            )
+        # Node written on every tick regardless of error > 0.0 -- same fix
+        # already applied to bus_synaptic/biometrics/route (2026-07-30): a
+        # gated node write would leave this node holding its last non-zero
+        # value indefinitely on a calm tick, a stale high-water mark rather
+        # than a genuine current reading.
         self._write_prediction_error_node(
             node_id="node:substrate.codebase",
             error=result.score,

@@ -2,12 +2,11 @@ from __future__ import annotations
 
 import logging
 import re
-from datetime import datetime
 from typing import Any, Callable
 
-from orion.schemas.attention_frame import AttentionSignalV1, OpenLoopV1
+from orion.schemas.attention_frame import AttentionSignalV1, OpenLoopV1, SalienceFeaturesV1
 from orion.substrate.attention.common import bounded, compact, stable_id
-from orion.substrate.attention.salience import SalienceHistory, compute_salience
+from orion.substrate.attention.salience import borda_coalition_salience, compute_evidence_features
 
 logger = logging.getLogger("orion.substrate.attention.scoring")
 
@@ -81,8 +80,6 @@ def build_open_loops(
     generic_reversal: bool,
     stale_thread_active: bool,
     max_open: int,
-    history: "SalienceHistory | None" = None,
-    now: datetime | None = None,
     verdict_lookup: "Callable[[list[str]], set[str]] | None" = None,
 ) -> list[OpenLoopV1]:
     """Build the competing open loops for one tick.
@@ -130,7 +127,8 @@ def build_open_loops(
 
     candidates = [pair for pair in id_signal_pairs if pair[0] not in excluded_loop_ids][:max_open]
 
-    loops: list[OpenLoopV1] = []
+    built: list[tuple[str, OpenLoopV1]] = []
+    features_by_loop_id: dict[str, SalienceFeaturesV1] = {}
     for loop_id, signal in candidates:
         phrase = compact(signal.target_text, 120)
         already_known = phrase.lower() in known
@@ -171,31 +169,44 @@ def build_open_loops(
                 **dict(signal.provenance or {}),
             },
         )
-        # Always compute + attach the evidence-derived salience features so shadow
-        # traces are real even when the v2 flag is off. score_loop decides whether
-        # to consume this value or the legacy weighted sum.
-        loop_history = history or SalienceHistory()
-        sal, feats = compute_salience(loop=loop, signals=[signal], history=loop_history, now=now)
-        loop = loop.model_copy(update={"salience": sal, "salience_features": feats.model_dump(mode="json")})
-        loops.append(loop)
+        built.append((loop_id, loop))
+        features_by_loop_id[loop_id] = compute_evidence_features(signals=[signal])
+
+    # Salience is a property of the competing SET, not any one loop in
+    # isolation -- Borda rank-aggregate evidence_strength/evidence_breadth
+    # across every candidate built this tick (see
+    # orion.substrate.attention.salience.borda_coalition_salience), then
+    # stamp each loop with its own resulting score. Two passes are required:
+    # the aggregation needs every candidate's features before it can rank
+    # any one of them.
+    salience_by_loop_id = borda_coalition_salience(features_by_loop_id)
+    loops: list[OpenLoopV1] = []
+    for loop_id, loop in built:
+        feats = features_by_loop_id[loop_id]
+        loops.append(
+            loop.model_copy(
+                update={
+                    "salience": salience_by_loop_id.get(loop_id, 0.0),
+                    "salience_features": feats.model_dump(mode="json"),
+                }
+            )
+        )
     return loops
 
 
 def score_loop(loop: OpenLoopV1) -> float:
-    from orion.substrate.attention.salience import salience_v2_enabled
+    """The loop's own precomputed coalition salience -- see
+    `orion.substrate.attention.salience.borda_coalition_salience`, stamped
+    onto `loop.salience` by `build_open_loops()`. There is exactly one
+    salience formula now; no legacy fallback.
 
-    if salience_v2_enabled():
-        return bounded(float(loop.salience))
-    raw = (
-        loop.novelty * 0.2
-        + loop.continuity_relevance * 0.13
-        + loop.relational_relevance * 0.12
-        + loop.predictive_value * 0.13
-        + loop.concept_value * 0.14
-        + loop.autonomy_value * 0.16
-        + loop.emotional_charge * 0.07
-        + loop.askability * 0.05
-    )
-    if loop.already_known:
-        raw *= 0.25
-    return bounded(raw * 1.22)
+    Deleted 2026-07-31 (CLAUDE.md Sec 0A, "kill means kill"): the
+    pre-v2 hand-tuned constant-ladder fallback (`loop.novelty*0.2 + ...`)
+    that ran only when `salience_v2_enabled()` was False -- confirmed dead
+    in every live `.env` (`ORION_ATTENTION_SALIENCE_V2_ENABLED=true`
+    everywhere: root, `services/orion-thought/.env`,
+    `services/orion-substrate-runtime/.env`) for this branch's entire
+    lifetime. See `orion/sentience_striving_program/README.md`'s
+    2026-07-31 entry for the full kill/replace rationale.
+    """
+    return bounded(float(loop.salience))

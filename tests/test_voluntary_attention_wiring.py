@@ -82,14 +82,25 @@ def test_goal_overrides_low_salience_loop(monkeypatch) -> None:
     assert 0.0 <= b_loop.combined_salience <= 1.0 and b_loop.top_down_bias > 0.0
 
 
-def test_salience_v2_off_no_topdown(monkeypatch) -> None:
-    # top-down gated on v2 (its selection basis); v2 off -> pure bottom-up.
+def test_topdown_applies_regardless_of_stale_salience_v2_flag(monkeypatch) -> None:
+    """2026-07-31: `_apply_voluntary_attention` used to also gate on
+    `ORION_ATTENTION_SALIENCE_V2_ENABLED` ("only layer top-down when v2 is
+    the active selection basis") because `select_actions` could otherwise
+    rank by a different, legacy weighted-sum formula. That legacy formula
+    is deleted (`scoring.py::score_loop()` has exactly one formula now,
+    unconditionally), so the two bases can never disagree regardless of
+    this flag -- the gate itself was removed as a zombie check whose
+    rationale no longer applies. Top-down layering is now gated ONLY by
+    `ORION_ATTENTION_TOPDOWN_ENABLED`; this flag's value must have no
+    effect on it (formerly the exact opposite of this assertion)."""
     monkeypatch.setenv("ORION_ATTENTION_TOPDOWN_ENABLED", "true")
     monkeypatch.setenv("ORION_ATTENTION_SALIENCE_V2_ENABLED", "false")
     gc.set_active_goal(_goal(priority=0.9))
     frame = _apply_voluntary_attention(_frame())
-    assert frame.voluntary_override is None
-    assert frame.selected_action.open_loop_id == "A"
+    # b(B) = 0.9*0.95 = 0.855; combined(B) = 0.30 + 0.6*0.855 = 0.813 > 0.80 (A).
+    assert frame.voluntary_override is not None
+    assert frame.voluntary_override.chosen_loop_id == "B"
+    assert frame.selected_action.open_loop_id == "B"
 
 
 def test_terminal_goal_clears_store() -> None:

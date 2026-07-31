@@ -97,6 +97,20 @@ step -- closing the outcome-logging gap (e.g. wiring the operator Resolve/
 Dismiss UI's real usage, or an automatic ground-truth proxy) -- is a
 design/proposal-mode decision for Juniper, not something this patch does.
 
+**Superseded 2026-07-31, disclosed rather than silently left stale**: point
+4 above ("which hand-weighted formula is actually live") described a
+real state that no longer exists. `orion/substrate/attention/salience.py`'s
+`SEED_WEIGHTS` blend and `scoring.py::score_loop()`'s legacy inline formula
+were both killed outright (CLAUDE.md Sec 0A, "kill means kill") and
+replaced with GWT-coalition Borda rank-aggregation of
+`evidence_strength`/`evidence_breadth` -- there is exactly one salience
+formula now, not two. `SALIENCE_V2_FLAG`/`_TRUTHY` (imported below) are
+kept defined in `salience.py` specifically so this script keeps importing
+and running unchanged; they no longer select between formulas in
+production. See `orion/sentience_striving_program/README.md`'s 2026-07-31
+entry for the full kill/replace rationale -- this script's own findings
+(points 1-3) are unaffected and still accurate.
+
 Run:
     python scripts/analysis/measure_chat_attention_ground_truth_gap.py --window-hours 168
 """

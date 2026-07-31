@@ -841,3 +841,137 @@ statistical backing behind it (`n=2`, `confidence_score=0.1`) — that this prog
 "measure before minting" and "kill means kill" discipline (§7) exists to catch, live and
 not just archivally. This is a review-and-fix of a real, kept instrument, not a subsystem
 kill: Candidate A's theory and Candidate B are both real and both stay.
+
+---
+
+## 13. Chat-level/open-loop attention salience — killed and replaced with GWT-coalition Borda rank-aggregation, 2026-07-31
+
+**What this is.** `orion/substrate/attention/salience.py`'s `SEED_WEIGHTS` hand-picked
+7-term linear blend (`evidence_strength 0.30, novelty_vs_known 0.20, recency 0.13,
+recurrence 0.15, evidence_breadth 0.12, dwell 0.10, habituation -0.35`) and
+`scoring.py::score_loop()`'s separate legacy inline formula (the fallback that ran when
+`ORION_ATTENTION_SALIENCE_V2_ENABLED` was False) were both killed outright — no shadow
+build, no parallel-measurement phase. Same disease §12 above and the officer review that
+produced PR #1484 (`feat(attention)!: kill hand-weighted salience, ground Layer 5 in
+Candidate A`) found and fixed for Layer 5 field attention: an un-calibrated weight blend
+standing in for theory, `WEIGHTS_VERSION="seed-v1"` never bumped because the intended
+`scripts/refit_salience_weights.py` learning pass never ran (that script is deleted
+alongside this kill — it existed only to refit weights this patch removes). Different
+subsystem this time — chat-level/open-loop attention (`orion/substrate/attention/`,
+`orion/substrate/attention_broadcast.py`), not Layer 5.
+
+**Juniper's explicit direction, disclosed per this program's own honesty discipline.**
+This was directed as a straight kill-outright-and-replace-in-one-changeset, no
+shadow/measurement phase — the same posture as §8's `DriveEngine` deletion, not §12's
+review-and-fix-in-place posture. Juniper had already rejected an interim option (a
+threshold patch layered on top of the old formula, to buy time before a real replacement)
+as "shit arch seams" — a load-bearing config value calibrated against a formula that was
+itself about to be deleted would have been exactly the kind of throwaway seam this
+program's §0 prime directive (thin seams, not cathedrals) exists to prevent. `PR #1536`
+(`fix(hub): recalibrate unreachable attention SURFACE_MIN_SALIENCE...`) was closed as
+superseded for the same reason — recalibrating a threshold against a formula scheduled
+for deletion is wasted work.
+
+**What replaced it — real theory, not invention.** Two of the seven killed terms were
+already real, not hand-picked: `evidence_strength` (`max(signal.salience * signal.
+confidence)` — the strongest single detector's own real activation) and
+`evidence_breadth` (how many independent detectors/evidence_refs corroborate this loop).
+Both map directly onto Global Workspace Theory / Society-of-Mind coalition formation
+(Baars 1988, Dehaene 2014's "ignition" model) — the exact theory anchor already proven
+live for Layer 5's Candidate B (`orion.attention.field_attention.
+candidate_society_of_mind`, PR #1484/#1488). Per that module's own precedent ("with
+exactly one real scorer, Borda rank-aggregation has nothing to aggregate -- the novelty
+ranking IS the ranking"), the correct move with *two* real scorers is genuine Borda
+rank-aggregation (de Borda 1770) across the real competing set of loops scored together
+in one tick (`scoring.py::build_open_loops()`), not an arithmetic average (which would
+just be a new 0.5/0.5 hand-picked weight in a trench coat). The Borda machinery itself
+(`BordaResult`, `aggregate_borda`, `scorer_top1`, `_borda_points_for_scorer`) was
+extracted from `candidate_society_of_mind.py` into a new shared, dependency-free module,
+`orion/attention/rank_aggregation.py`, so this second real consumer reuses the exact
+same, already-tested code rather than reimplementing it — `candidate_society_of_mind.py`
+now imports from that module and re-exports the same public names; its own Layer 5
+shadow-candidate status is unchanged.
+
+New `borda_coalition_salience()` normalizes each of the two voters' Borda points to a
+per-scorer "normalized rank" in `[0,1]` (dividing by `n-1`) and averages them — the
+0.5/0.5 split here is a structural symmetry of having exactly two equally-weighted
+voters (Borda gives every voter's ballot equal say by construction), not a hand-picked
+cross-scorer exchange rate. A named, disclosed edge case: with only one loop competing
+in a tick (`n == 1`, nothing to rank against), the formula falls back to the raw
+`mean(evidence_strength, evidence_breadth)` for that lone candidate — the same "nothing
+to aggregate" logic Candidate B's own docstring uses for a single real *scorer*, applied
+here to a single real *candidate*.
+
+**What was explicitly NOT replaced, and why.** `recency`, `recurrence`, `dwell`,
+`novelty_vs_known`, and `habituation` had no comparable real theory anchor: recency's 6h
+half-life was picked, not measured; dwell/habituation's blend weights (0.5/0.3/0.2, then
+-0.35 in the outer combiner) were picked, not measured; `novelty_vs_known` literally
+collapsed to a flat `0.15` for any already-known loop, the crudest term of all. Per the
+Metric Quality Gate's step 3 ("if there is no real theory, do not build a detector for it
+yet — say so and stop"), these five were killed with nothing put back — not reinvented,
+not kept as always-zero schema fields (that would be exactly the empty-shell/fake-
+precision pattern this whole exercise exists to avoid). `SalienceFeaturesV1`
+(`orion/schemas/attention_frame.py`) was trimmed from 7 fields to the 2 real ones for the
+same reason.
+
+**Named, disclosed gap — not silently filled.** `habituation` was, as far as this
+investigation found, the only automatic repeat-suppression mechanism in the live scoring
+path. `substrate_reverie_refractory` (the Resolve/Dismiss flow in
+`services/orion-hub/scripts/attention_loops_store.py`) only suppresses a loop *after* a
+human explicitly acts on it via the pending-cards UI — it does not run automatically.
+Killing `habituation` with no replacement means a loop that keeps generating strong
+`evidence_strength`/`evidence_breadth` from real detectors, but that nobody has ever
+explicitly resolved/dismissed, can now re-win coalition attention indefinitely with
+nothing damping it. This is a real, accepted capability reduction, disclosed here rather
+than papered over — no new hand-picked penalty was invented to fill it. (`test_
+rumination_replay.py`, deleted alongside this kill, was the regression test that
+previously proved the now-removed lock-breaking behavior; there is no replacement test
+because there is no replacement mechanism.)
+
+**Flags retired vs. kept, and why.** `ORION_ATTENTION_HABITUATION_ENABLED` and
+`ORION_ATTENTION_SALIENCE_WEIGHTS` (the old per-key JSON combiner-weight override) were
+removed outright — env key, `.env_example` (root, `orion-thought`,
+`orion-substrate-runtime`), live `.env` (all three), Python plumbing, and
+`docker-compose.yml` passthrough. Nothing left to gate: there is no habituation term and
+no combiner weights to override. `ORION_ATTENTION_SALIENCE_V2_ENABLED` was **kept**,
+narrowed to one real remaining purpose: it no longer selects between two salience
+formulas (there is only one), but `services/orion-thought/app/reverie.py`'s
+`run_reverie_once` still uses it to gate whether an `AttentionSalienceTraceV1` row gets
+published/persisted at all — a real, separate, still-live dependent, so removing the flag
+entirely was rejected. `orion/substrate/attention_broadcast.py::_apply_voluntary_
+attention()`'s own `salience_v2_enabled()` check was removed as a zombie gate: its stated
+rationale ("only layer top-down when v2 is the active selection basis, since select_
+actions could otherwise rank by a legacy weighted sum") no longer applies once
+`score_loop()` has exactly one formula — the two bases can never disagree regardless of
+that flag's value anymore, so keeping the check would have been exactly the kind of dead
+plumbing this program's discipline exists to remove. `WEIGHTS_VERSION` was bumped from
+`"seed-v1"` to `"gwt-coalition-v1"` everywhere it was written (salience trace/outcome/
+pending-card schema defaults, `reverie.py::_weights_version()`, the operator card
+builder's fallback) — no consumer is left reading or filtering on the old string in
+production.
+
+**Continuity with this section's own arc.** §12 above (PR #1529, merged) fixed Layer 5's
+Candidate A precision-weighted salience in place — a review-and-fix of a real, kept
+instrument. This section kills a different, adjacent formula outright rather than fixing
+it in place, because unlike Candidate A's EWMA-baseline bug, chat-level salience's
+`SEED_WEIGHTS` blend had no real theory underneath any of its five now-dead terms to
+repair — there was nothing sound to fix back to. `PR #1536` (closed, superseded) and this
+patch's own `scripts/analysis/measure_chat_attention_ground_truth_gap.py` (merged as
+`PR #1518`, docstring addendum added here) are the immediately preceding investigative
+steps in the same arc: that script found chat-level attention has zero ground-truth
+outcome-label rows ever recorded, a real, still-open gap this patch does not attempt to
+close (out of scope, same as the `SURFACE_MIN_SALIENCE` recalibration named below).
+
+**Explicitly out of scope for this patch.** `services/orion-hub/scripts/
+attention_loops_store.py`'s `SURFACE_MIN_SALIENCE=0.5` threshold, and
+`orion/substrate/attention/policy.py::select_actions()`'s `min_ask` (default 0.65) plus
+its inline `0.48`/`0.35` cutoffs, were all calibrated against the *old* formula's score
+distribution. Borda salience is a relative-rank measure, not an absolute magnitude —
+score gaps between adjacent-ranked loops compress as `~1/(n-1)` and shift with how many
+loops happen to compete in a given tick, so these absolute thresholds' continued fitness
+is a real, open question, not something this patch verifies. All are left unchanged here
+and will need recalibration against the new formula's real output range — but only once
+it has run for real long enough to have a distribution to measure against, which is why
+that recalibration is a separate, deliberately deferred follow-up, not folded into this
+patch. (Found during this patch's own code-review pass, 2026-07-31 — disclosed rather
+than silently left unmentioned.)

@@ -76,15 +76,31 @@ samples — i.e. the loop is actually getting worse right now, not just echoing 
 Reuses `NOTIFY_BASE_URL`/`NOTIFY_API_TOKEN` (same values as the other three services'
 health monitors) — no new settings beyond those two.
 
-## Computed salience v2 (shadow-first)
+## Attention salience (GWT-coalition Borda rank-aggregation)
 
-Flags (default-off): `ORION_ATTENTION_SALIENCE_V2_ENABLED`,
-`ORION_ATTENTION_HABITUATION_ENABLED`, `ORION_ATTENTION_SALIENCE_WEIGHTS` (JSON override).
+`orion/substrate/attention/salience.py` computes chat-level/open-loop salience by
+Borda rank-aggregating two real, evidence-derived signals (`evidence_strength`,
+`evidence_breadth`) across the loops competing in one tick -- Global Workspace
+Theory / Society-of-Mind coalition formation (Baars 1988, Dehaene 2014), the
+same theory anchor already live for Layer 5's Candidate B. `score_loop()`/
+`derive_salience()` always read this precomputed `loop.salience` -- there is
+exactly one formula, no flag selects between formulas anymore.
 
-Shared module: `orion/substrate/attention/salience.py`. When `SALIENCE_V2` is on,
-`score_loop`/`derive_salience` read the combiner salience and the reverie tick
-emits `AttentionSalienceTraceV1` on `orion:attention:salience:trace` (persisted to
-`attention_salience_trace`).
+2026-07-31 (kill means kill, see `orion/sentience_striving_program/README.md`'s
+2026-07-31 entry): the prior hand-picked `SEED_WEIGHTS` linear blend
+(`recency`/`recurrence`/`dwell`/`novelty_vs_known`/`habituation`, none with a
+real theory anchor) was killed with nothing put back. `ORION_ATTENTION_
+HABITUATION_ENABLED` and `ORION_ATTENTION_SALIENCE_WEIGHTS` (JSON weight
+override) were removed entirely -- no habituation term or combiner weights
+exist to gate/override anymore. **Named, disclosed gap**: habituation was the
+only automatic repeat-suppression mechanism in this scoring path; a loop with
+strong evidence that nobody has explicitly resolved/dismissed can now re-win
+coalition attention indefinitely.
+
+`ORION_ATTENTION_SALIENCE_V2_ENABLED` (default-off) is the one remaining flag
+here, narrowed to a single purpose: whether the reverie tick emits
+`AttentionSalienceTraceV1` on `orion:attention:salience:trace` (persisted to
+`attention_salience_trace`) at all. It no longer selects a salience formula.
 
 Migrations (apply before enabling):
 `psql "$POSTGRES_URI" -f services/orion-sql-db/manual_migration_attention_salience_trace.sql`

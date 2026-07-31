@@ -6,6 +6,7 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT / "scripts"))
 
+import sync_local_env_from_example as sync_mod  # noqa: E402
 from sync_local_env_from_example import (  # noqa: E402
     NEVER_SYNC_KEYS,
     example_value_is_host_placeholder,
@@ -140,3 +141,59 @@ def test_sync_file_missing_key_auto_added_default_and_force(tmp_path: Path) -> N
         assert "CRYSTALLIZER_NEW_KEY=example_value" in text
         assert any("CRYSTALLIZER_NEW_KEY" in c for c in result.updated)
         assert not result.diverged
+
+
+# --- worktree resolution (2026-07-31) -------------------------------------
+#
+# `.env` is gitignored, so it exists only in the primary checkout. CLAUDE.md
+# mandates all work happen in a linked worktree, so running this script the way
+# the contract instructs made it a silent no-op: 24 services reported
+# `skip <name>: no .env` and it exited 0. A real divergence
+# (EQUILIBRIUM_METACOG_TRANSPORT_BUS_SYNAPTIC_ERROR_THRESHOLD left at the retired
+# metric's 1.0 after PR #1542 moved the template to 0.15) went unreported, and a
+# detector that could not fire shipped with the parity gate reporting clean.
+
+
+def test_main_worktree_root_resolves_primary_checkout_from_a_linked_worktree(tmp_path):
+    """A linked worktree must resolve `.env` back to the primary checkout."""
+    import subprocess as sp
+
+    primary = tmp_path / "primary"
+    (primary / "services").mkdir(parents=True)
+    sp.run(["git", "init", "-q", str(primary)], check=True)
+    sp.run(["git", "-C", str(primary), "config", "user.email", "t@t"], check=True)
+    sp.run(["git", "-C", str(primary), "config", "user.name", "t"], check=True)
+    (primary / "README.md").write_text("x\n")
+    sp.run(["git", "-C", str(primary), "add", "-A"], check=True)
+    sp.run(["git", "-C", str(primary), "commit", "-qm", "init"], check=True)
+
+    linked = tmp_path / "linked"
+    sp.run(
+        ["git", "-C", str(primary), "worktree", "add", "-q", "-b", "wt", str(linked)],
+        check=True,
+    )
+
+    assert sync_mod.main_worktree_root(linked).resolve() == primary.resolve()
+    # Idempotent from the primary checkout itself.
+    assert sync_mod.main_worktree_root(primary).resolve() == primary.resolve()
+
+
+def test_main_worktree_root_falls_back_outside_a_git_repo(tmp_path):
+    """No git, no repo, no surprises -- behave exactly as before."""
+    plain = tmp_path / "plain"
+    plain.mkdir()
+    assert sync_mod.main_worktree_root(plain) == plain
+
+
+def test_main_worktree_root_falls_back_when_services_dir_is_absent(tmp_path):
+    """Guard against resolving to something that is not this repo.
+
+    A bare/odd git layout must not silently redirect `.env` writes somewhere
+    unrelated -- the `services/` probe is what makes the redirect safe.
+    """
+    import subprocess as sp
+
+    repo = tmp_path / "norepo"
+    repo.mkdir()
+    sp.run(["git", "init", "-q", str(repo)], check=True)
+    assert sync_mod.main_worktree_root(repo) == repo

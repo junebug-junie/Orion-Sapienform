@@ -7,6 +7,10 @@ from pathlib import Path
 from uuid import uuid4
 
 from orion.attention.field_attention.builder import build_attention_frame
+from orion.attention.field_attention.candidate_precision_weighted import (
+    NODE_TARGET_PREDICTION_ERROR_EWMA_ALPHA,
+    NODE_TARGET_PREDICTION_ERROR_MIN_VARIANCE,
+)
 from orion.attention.field_attention.goal_provenance import (
     DominanceStreak,
     top_node_substrate_target,
@@ -137,20 +141,30 @@ class AttentionRuntimeWorker:
             return None
 
         previous = self._store.load_latest_attention_frame()
-        # Candidate A (precision-weighted salience, 2026-07-30): real
-        # historical error series, per qualified target, fetched fresh every
-        # tick -- see select_node_targets' own docstring for why this can't
-        # be pre-computed once (the pure builder has no DB access).
-        histories = {
-            node_id: self._store.load_prediction_error_history(
-                reducer_key=reducer_key, limit=self._settings.prediction_error_history_limit
+        # Candidate A (precision-weighted salience): real, persisted,
+        # incrementally-updated EWMA baseline per qualified target, advanced by
+        # whatever real new substrate_reduction_receipts rows landed since the
+        # last tick (2026-07-30 fix -- see candidate_precision_weighted.py's
+        # module docstring and orion/sentience_striving_program/README.md §12
+        # for the live incident this replaces: the old per-tick raw-window
+        # recompute let a target with as few as 2 real samples surviving the
+        # ~30-minute retention window win a fully-confident-looking
+        # salience_score=1.0). `observation_count` on the returned baseline is
+        # a real cumulative count, immune to that retention pruner.
+        baselines = {
+            node_id: self._store.advance_node_prediction_error_baseline(
+                target_id=node_id,
+                reducer_key=reducer_key,
+                alpha=NODE_TARGET_PREDICTION_ERROR_EWMA_ALPHA,
+                min_variance=NODE_TARGET_PREDICTION_ERROR_MIN_VARIANCE,
+                fetch_limit=self._settings.prediction_error_history_limit,
             )
             for node_id, reducer_key in PREDICTION_ERROR_NATIVE_TARGETS.items()
         }
         frame = build_attention_frame(
             field=field,
             policy=self._policy,
-            prediction_error_histories=histories,
+            prediction_error_baselines=baselines,
             previous_frame=previous,
         )
         self._store.save_attention_frame(frame)

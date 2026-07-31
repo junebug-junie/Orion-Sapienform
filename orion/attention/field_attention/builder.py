@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from datetime import datetime, timezone
 
+from orion.attention.field_attention.candidate_precision_weighted import PrecisionEwmaBaseline
 from orion.attention.field_attention.policy import FieldAttentionPolicyV1
 from orion.attention.field_attention.scoring import clamp01
 from orion.attention.field_attention.selectors import (
@@ -22,7 +23,7 @@ def build_attention_frame(
     *,
     field: FieldStateV1,
     policy: FieldAttentionPolicyV1,
-    prediction_error_histories: dict[str, list[float]] | None = None,
+    prediction_error_baselines: dict[str, PrecisionEwmaBaseline] | None = None,
     previous_frame: FieldAttentionFrameV1 | None = None,
     now: datetime | None = None,
 ) -> FieldAttentionFrameV1:
@@ -35,15 +36,23 @@ def build_attention_frame(
     relative to its own history" as its core theory; a second, hand-tuned
     novelty layer on top of it would reintroduce exactly the disease this
     patch removes -- deliberate asymmetry, not an oversight).
-    `prediction_error_histories` is Candidate A's real input:
-    {node_id: real historical error series}, caller-fetched
-    (`AttentionRuntimeStore.load_prediction_error_history`) so this stays a
-    pure function -- see `select_node_targets`'s own docstring.
+
+    `prediction_error_baselines` is Candidate A's real input: {node_id:
+    PrecisionEwmaBaseline}, a persisted, incrementally-updated running
+    baseline per target, caller-fetched/advanced
+    (`AttentionRuntimeStore.advance_node_prediction_error_baseline`) so this
+    stays a pure function -- see `select_node_targets`'s own docstring.
+    2026-07-30 fix (Sentience Striving Program officer review, `orion/
+    sentience_striving_program/README.md` §12): was `prediction_error_
+    histories: dict[str, list[float]]`, a raw ASC-by-time error history
+    re-fetched fresh from a ~30-minute rolling retention window every tick
+    -- replaced with a persisted baseline whose observation count survives
+    that window's own pruning, per that section's full incident record.
     """
     generated_at = now or datetime.now(timezone.utc)
 
     node_targets = select_node_targets(
-        field, policy, prediction_error_histories or {}
+        field, policy, prediction_error_baselines or {}
     ) + select_host_targets(field, policy, previous_frame)
     capability_targets = select_capability_targets(field, policy, previous_frame)
     system_targets = select_system_targets(field, policy)

@@ -93,18 +93,128 @@ history to compute a meaningful variance from at build time. If/when a future li
 one of those four lanes produces enough qualifying receipts, the replay script
 (`scripts/analysis/measure_precision_weighted_salience_probe.py`) will report that
 honestly rather than silently including a reducer this module was never checked against.
+
+## 2026-07-30 update: live-wired, and the rolling-window recompute was the live bug
+
+Both paragraphs above are historical (2026-07-21 build-time) record, kept as-is rather
+than rewritten -- but two of their claims are no longer accurate as of 2026-07-30 and a
+reader relying on them would be misled:
+
+- **No longer "shadow, read-only."** `selectors.py::select_node_targets` imports and
+  calls `precision_weighted_salience()`/`normalize_across_targets()` live, on every real
+  `orion-attention-runtime` tick (see that module's own 2026-07-30 docstring section).
+  Do not treat this module as inert.
+- **No longer scoped to `node_biometrics` only.** All five `PREDICTION_ERROR_NATIVE_TARGETS`
+  (`selectors.py`) are live-scored, `bus_synaptic` included (its own retirement of
+  `transport` as predecessor is documented there).
+
+**The live incident this update fixes** (found in a same-day Sentience Striving Program
+officer review, 2026-07-30 -- see `orion/sentience_striving_program/README.md` §12 for
+the full record): `precision_weighted_salience()` itself is fine and unchanged below --
+the bug was upstream, in what fed it. The original live wiring called this function with
+a freshly re-queried window from `substrate_reduction_receipts` on *every single tick*
+(`AttentionRuntimeStore.load_prediction_error_history`), and that table only retains
+success receipts for `ORION_RECEIPT_RETENTION_SUCCESS_MINUTES` (30 min live) -- a rolling
+window, not a cumulative history. Live-confirmed 2026-07-30 (~23:30-23:42 UTC):
+`node:substrate.chat` was the *only* one of the five domains with any qualifying receipts
+in that window at all (the other four sat at `n_samples=0`), with exactly `n=2` real
+samples, `variance` barely above `PRECISION_VARIANCE_FLOOR` (~1.56e-6),
+`precision=640000`, and `confidence_score=0.1` (`n_samples / QUALIFYING_MIN_ROWS`, an
+honest, correctly-computed low number). Because it was the sole real competitor,
+`normalize_across_targets()`'s own documented single-target edge case (below) correctly
+and unavoidably pinned its `salience_score` to `1.0` -- mathematically correct given the
+edge case's own contract, but the *input* feeding it (`n_samples=2`, i.e. two receipts
+that happened to survive a 30-minute prune window) was not a real basis for that
+confidence. This held for a 280+-tick live streak and repeatedly won real
+`FieldGoalProvenanceV1` publishes via `goal_provenance.py`'s dominance-streak producer,
+each one biasing real chat-level attention scoring through
+`orion/substrate/attention/goal_context.py::set_active_goal()`.
+
+**Fix**: `n_samples`/`variance` are no longer recomputed from a pruning-window-bounded
+raw list on every tick. `PrecisionEwmaBaseline` (below) is a small, persisted,
+incrementally-updated running baseline -- one row per target, advanced by exactly one
+real new `substrate_reduction_receipts` row at a time via `orion.bus.ewma.
+compute_ewma_update` (`AttentionRuntimeStore.advance_node_prediction_error_baseline`,
+`services/orion-attention-runtime/app/store.py`) -- so `observation_count` is a true,
+monotonically-increasing count of every real receipt this target has *ever* incorporated,
+never reset by the retention pruner. `precision_weighted_salience_from_baseline()` scores
+against that persisted baseline instead of a freshly recomputed population variance.
+`precision_weighted_salience(error_history: list[float])` (below) is kept exactly as it
+was -- it remains the right tool for offline/replay analysis over a full historical
+export where a persisted incremental baseline doesn't apply
+(`scripts/analysis/measure_precision_weighted_salience_probe.py`,
+`measure_candidate_a_vs_b_head_to_head.py`) -- it is simply no longer what the live tick
+path calls. As defense in depth beyond this fix, `goal_provenance.py::
+top_node_substrate_target` also now requires a minimum `confidence_score` before a target
+is eligible to win a goal-provenance publish at all, so a future single-competitor edge
+case (from a new target, or a cold-started baseline after a service/table reset) cannot
+reproduce the same failure shape even if this specific baseline fix were somehow bypassed.
 """
 
 from __future__ import annotations
 
 from dataclasses import dataclass
 
+from orion.bus.ewma import compute_ewma_update
+
 # Precision = 1 / variance diverges as variance -> 0 (a target whose recent error has
 # been almost perfectly constant). This is the "variance-near-zero instability risk"
 # named in the tentative-plan doc's Candidate A section. Floored here at a concrete
 # epsilon so precision saturates at a finite ceiling (1 / PRECISION_VARIANCE_FLOOR)
 # instead of diverging to +inf or raising a ZeroDivisionError.
+#
+# Only used by `precision_weighted_salience()` (the raw-list, offline/replay path) --
+# the live EWMA-baseline path below uses `NODE_TARGET_PREDICTION_ERROR_MIN_VARIANCE`
+# instead (see that constant's own comment for why it is not simply reused here).
 PRECISION_VARIANCE_FLOOR: float = 1e-6
+
+# 2026-07-30 EWMA-baseline fix (see module docstring's "live-wired" update above).
+# `alpha` reuses `execution_prediction_error`/`codebase_prediction_error`'s own 0.2
+# (`orion/substrate/prediction_error.py`) rather than inventing a new number: like
+# those domains, this baseline advances once per real observation (one real
+# `substrate_reduction_receipts` row), not on a fixed wall-clock cadence, so the same
+# per-observation smoothing constant applies for the same reason.
+NODE_TARGET_PREDICTION_ERROR_EWMA_ALPHA: float = 0.2
+
+# Domain-specific `min_variance` for `compute_ewma_update`, replacing that function's
+# own default (`_MIN_VARIANCE=1e-6`, calibrated for orion-bus-mirror's real-time-gap-
+# in-seconds domain) -- reused blindly once already in this exact codebase
+# (`execution_prediction_error`'s first draft) and caught only after live data showed
+# the borrowed constant was five orders of magnitude off that domain's real scale.
+# Checked live here too rather than assumed clean by analogy (2026-07-30, `psql`
+# against real `substrate_reduction_receipts`, all five `PREDICTION_ERROR_NATIVE_
+# TARGETS` reducers):
+#
+#   reducer                        n    min     max   mean      variance
+#   substrate.route_arbitration    2    0.0004  0.0004 0.0004   0.0 (exact tie)
+#   substrate.chat_session         2    0.0028  0.0053 0.00405  3.12e-06
+#   substrate.node_biometrics    129    0.0003  0.2618 0.04967  2.50e-03
+#   substrate.bus_synaptic        45    0.0003  1.0    0.09944  2.92e-02
+#   substrate.execution_trajectory 91   0.0041  1.0    0.31321  1.05e-01
+#
+# Unlike `codebase_prediction_error`'s git/pr/graph sub-domains (raw magnitudes on
+# wildly different unit scales -- lines changed vs. PR counts vs. graph node/edge
+# deltas -- each needing its own floor), all five targets here are the *output* of
+# `orion/substrate/prediction_error.py`'s own instruments, which already saturate
+# every one of them to the same normalized `[0, 1]` "surprise score" scale. A single
+# shared floor is therefore the right shape (not five separate ones), but the module's
+# existing `PRECISION_VARIANCE_FLOOR` (1e-6) was never itself checked against this
+# specific value family before being reused live -- checking it now: the smallest real
+# non-degenerate variance measured (chat, 3.12e-06) sits only ~5x above 1e-6, meaning
+# that floor was providing almost no real headroom against exactly the kind of
+# coincidentally-tiny difference between two low-volume samples this whole incident is
+# about (chat's real n=2 pair differed by only ~0.0025). Raised one order of magnitude
+# to 1e-5: still four-plus orders of magnitude below every domain's real non-degenerate
+# variance observed above (biometrics 2.50e-03 is the next-smallest), so it never binds
+# for a domain with genuine spread, while giving a low-n near-tied reading a slightly
+# less extreme precision ceiling (1e5 instead of 1e6). This is a minor, disclosed
+# tightening, not the load-bearing fix -- the load-bearing fix is
+# `observation_count` becoming a real cumulative count (via `PrecisionEwmaBaseline`
+# below) plus `goal_provenance.py`'s confidence-gated selection; a target can still
+# legitimately reach `variance_floored=True` here once it has genuinely accumulated
+# many real observations that happen to be near-constant, which is real information
+# (Feldman & Friston 2010's "high precision" case), not a bug.
+NODE_TARGET_PREDICTION_ERROR_MIN_VARIANCE: float = 1e-5
 
 
 @dataclass(frozen=True)
@@ -243,3 +353,129 @@ def normalize_across_targets(raw_scores: dict[str, float]) -> dict[str, float]:
         return {target_id: 1.0 for target_id in raw_scores}
     span = hi - lo
     return {target_id: (v - lo) / span for target_id, v in raw_scores.items()}
+
+
+# -- Persisted EWMA baseline (2026-07-30 fix) ----------------------------------
+# See module docstring's "live-wired" update section for the incident this section
+# exists to fix. `precision_weighted_salience()`/`normalize_across_targets()` above
+# are UNCHANGED -- this is a new, parallel input path for the live tick, not a
+# rewrite of the existing pure functions.
+
+
+@dataclass(frozen=True)
+class PrecisionEwmaBaseline:
+    """One `node:substrate.*` target's persisted, incrementally-updated running
+    prediction-error baseline -- the live-tick replacement for re-querying a raw
+    history list from `substrate_reduction_receipts` every tick (see module
+    docstring). Threaded explicitly by the caller and read from / written back to a
+    real persisted row (`AttentionRuntimeStore.advance_node_prediction_error_baseline`,
+    `substrate_node_prediction_error_baseline` table) -- the same explicit-baseline-
+    threading shape `orion/substrate/prediction_error.py`'s `_DomainEwmaBaseline`/
+    `CodebaseMassBaseline` use, applied here to a Postgres-row-backed target instead
+    of a projection-field-backed one (no `FieldStateV1`-adjacent projection schema
+    exists for this data; a small dedicated table was the minimal seam, see the
+    manual-migration file this table lives in for the exact DDL).
+
+    `observation_count` is the field that actually fixes the live incident: unlike
+    the old `n_samples = len(raw_history_list)`, this is a true monotonically
+    increasing count of every real receipt this target has EVER incorporated,
+    surviving `substrate_reduction_receipts`' ~30-minute retention prune indefinitely
+    (the prune only ever deletes the raw receipt row after this baseline has already
+    absorbed its value -- deleting the source data does not undo an update already
+    folded into `ewma`/`variance`/`observation_count`).
+
+    `last_value` is the most recently incorporated real observation -- what
+    `precision_weighted_salience_from_baseline()` treats as "the current error being
+    weighted," the same role `error_history[-1]` played in the raw-list path. `None`
+    only for the true cold-start case (`observation_count == 0`, no real receipt has
+    ever been incorporated for this target)."""
+
+    ewma: float = 0.0
+    variance: float = 0.0
+    observation_count: int = 0
+    last_value: float | None = None
+
+
+def advance_precision_baseline(
+    baseline: PrecisionEwmaBaseline,
+    new_values: list[float],
+    *,
+    alpha: float,
+    min_variance: float,
+) -> PrecisionEwmaBaseline:
+    """Fold zero or more real NEW observations (oldest-first -- e.g. every real
+    `substrate_reduction_receipts` row that landed since this baseline was last
+    advanced) into a persisted EWMA baseline, one at a time, via
+    `orion.bus.ewma.compute_ewma_update`. Pure function, no I/O -- the caller
+    (`AttentionRuntimeStore.advance_node_prediction_error_baseline`) is responsible
+    for fetching `new_values` and persisting the returned baseline.
+
+    Returns ``baseline`` unchanged (the identical object, not merely an equal one)
+    when ``new_values`` is empty -- "nothing new landed at this exact poll instant"
+    must never be treated as "this target has no real history," which is the exact
+    failure this whole fix exists to correct. A caller can safely skip persisting
+    when the return value ``is`` the input (no real advance happened this tick).
+    """
+    if not new_values:
+        return baseline
+    result = baseline
+    for value in new_values:
+        update = compute_ewma_update(
+            prev_ewma=result.ewma,
+            prev_variance=result.variance,
+            prev_count=result.observation_count,
+            value=value,
+            alpha=alpha,
+            min_variance=min_variance,
+        )
+        result = PrecisionEwmaBaseline(
+            ewma=update.ewma,
+            variance=update.variance,
+            observation_count=result.observation_count + 1,
+            last_value=value,
+        )
+    return result
+
+
+def precision_weighted_salience_from_baseline(
+    baseline: PrecisionEwmaBaseline,
+    *,
+    min_variance: float,
+) -> PrecisionWeightedSalienceResult:
+    """Candidate A salience computed from a persisted, incrementally-updated EWMA
+    baseline (`advance_precision_baseline`, above) instead of a freshly recomputed
+    population variance over a rolling-window history list
+    (`precision_weighted_salience`, above -- kept for offline/replay analysis, see
+    module docstring). This is the function the live tick path
+    (`selectors.py::select_node_targets`) actually calls as of 2026-07-30.
+
+    ``variance``/``precision``/``salience`` in the returned result use the EWMA's own
+    running variance estimate, not a population variance recomputed from scratch.
+    ``n_samples`` is ``baseline.observation_count`` -- a real cumulative count that
+    survives `substrate_reduction_receipts` retention pruning indefinitely, unlike the
+    raw-list path's ``len(error_history)`` (bounded to whatever currently fits inside
+    the ~30-minute retention window). ``current_error`` is ``baseline.last_value``.
+
+    Edge case: ``observation_count == 0`` (no real receipt has ever been incorporated
+    for this target -- true cold start, not merely "nothing new this tick") returns
+    the same zero-everything result as ``precision_weighted_salience([])`` -- "no
+    data" and "confidently calm" remain different claims, per that function's own
+    documented contract.
+    """
+    if baseline.observation_count == 0 or baseline.last_value is None:
+        return _EMPTY_RESULT
+
+    variance_floored = baseline.variance < min_variance
+    effective_variance = max(baseline.variance, min_variance)
+    precision = 1.0 / effective_variance
+    current_error = baseline.last_value
+    salience = precision * abs(current_error)
+
+    return PrecisionWeightedSalienceResult(
+        salience=salience,
+        precision=precision,
+        variance=baseline.variance,
+        current_error=current_error,
+        n_samples=baseline.observation_count,
+        variance_floored=variance_floored,
+    )

@@ -1,14 +1,21 @@
 from __future__ import annotations
 
 import json
+import logging
 from datetime import datetime, timedelta, timezone
 
 from psycopg2.extras import Json
 from sqlalchemy import create_engine, text
 from sqlalchemy.engine import Engine
 
+from orion.attention.field_attention.candidate_precision_weighted import (
+    PrecisionEwmaBaseline,
+    advance_precision_baseline,
+)
 from orion.schemas.field_attention_frame import FieldAttentionFrameV1
 from orion.schemas.field_state import FieldStateV1
+
+logger = logging.getLogger("orion.attention.runtime.store")
 
 # Batched, guard-railed prune: never deletes the newest frame (by generated_at,
 # matching load_latest_attention_frame's ordering).
@@ -65,6 +72,19 @@ class AttentionRuntimeStore:
         (`orion/attention/field_attention/candidate_precision_weighted.py::
         precision_weighted_salience`) to compute real precision (1/variance)
         from.
+
+        **No longer called by the live tick as of 2026-07-30** (Sentience Striving
+        Program officer review -- see `orion/sentience_striving_program/README.md`
+        §12): this method's own ~30-minute rolling-window recompute was the root
+        cause of a live incident (a target with as few as 2 real samples surviving
+        the window could win a fully-confident-looking `salience_score=1.0`). The
+        live tick now calls `advance_node_prediction_error_baseline` (below)
+        instead, which persists a cumulative baseline immune to this window. This
+        method is kept, unchanged, for offline/replay analysis over a full
+        historical export where a persisted incremental baseline doesn't apply
+        (`scripts/analysis/measure_precision_weighted_salience_probe.py`,
+        `measure_candidate_a_vs_b_head_to_head.py`) -- do not wire it back into the
+        live worker tick.
 
         2026-07-30 fix (caught while reviewing a sibling script's own
         divergence from this method): the query fetches the NEWEST `limit`
@@ -127,6 +147,180 @@ class AttentionRuntimeStore:
             except (TypeError, ValueError):
                 continue
         return out
+
+    def advance_node_prediction_error_baseline(
+        self,
+        *,
+        target_id: str,
+        reducer_key: str,
+        alpha: float,
+        min_variance: float,
+        fetch_limit: int,
+    ) -> PrecisionEwmaBaseline:
+        """Real EWMA-baseline sibling of `load_prediction_error_history` (above)
+        for Candidate A's live tick (2026-07-30 fix; see that method's own
+        docstring and `orion/sentience_striving_program/README.md` §12 for the
+        incident this replaces).
+
+        Reads this target's persisted baseline row from
+        `substrate_node_prediction_error_baseline` (or a cold-start zero baseline
+        if none exists yet), fetches only real `substrate_reduction_receipts` rows
+        strictly NEWER than the persisted cursor (`last_receipt_created_at`; no
+        cursor yet -> all real rows up to `fetch_limit`, oldest-first), folds them
+        into the baseline one at a time via
+        `candidate_precision_weighted.advance_precision_baseline`, persists the
+        advanced baseline plus the new cursor, and returns it.
+
+        A tick with no new real receipts is a true no-op: the persisted row is
+        read but never rewritten, and the unchanged baseline is returned as-is --
+        "nothing new landed at this exact 2-second poll instant" must never look
+        like "this target has no real history," which is exactly what the old
+        every-tick rolling-window recompute conflated. `observation_count` on the
+        returned baseline is therefore a real cumulative count across this
+        target's entire real receipt history, immune to
+        `substrate_reduction_receipts`' ~30-minute retention prune (the prune only
+        ever deletes a raw receipt row after this method has already folded its
+        value into the persisted baseline).
+
+        A row whose `prediction_error` value fails to parse (missing/malformed)
+        is skipped for the fold but its `created_at` still advances the cursor --
+        otherwise a single permanently-malformed row would wedge this target on
+        the same cursor position forever, re-fetching (and re-skipping) it every
+        tick. Degrades to a cold-start zero baseline (`observation_count=0`,
+        excluded by `select_node_targets` the same as any target with no real
+        data) on any DB error -- never touches the persisted row in that case, so
+        a transient failure cannot corrupt real accumulated state, only delay this
+        one tick's read of it; the very next successful tick reads the real
+        persisted baseline again. A baseline-advance failure must never crash the
+        attention tick, same contract as `load_prediction_error_history`'s `[]`
+        degrade.
+        """
+        try:
+            with self._engine.begin() as conn:
+                existing = (
+                    conn.execute(
+                        text(
+                            """
+                            SELECT ewma, variance, observation_count, last_value,
+                                   last_receipt_created_at
+                            FROM substrate_node_prediction_error_baseline
+                            WHERE target_id = :target_id
+                            """
+                        ),
+                        {"target_id": target_id},
+                    )
+                    .mappings()
+                    .first()
+                )
+                if existing is None:
+                    baseline = PrecisionEwmaBaseline()
+                    cursor = None
+                else:
+                    baseline = PrecisionEwmaBaseline(
+                        ewma=float(existing["ewma"]),
+                        variance=float(existing["variance"]),
+                        observation_count=int(existing["observation_count"]),
+                        last_value=(
+                            float(existing["last_value"])
+                            if existing["last_value"] is not None
+                            else None
+                        ),
+                    )
+                    cursor = existing["last_receipt_created_at"]
+
+                # Strict `>` cursor comparison (code review, 2026-07-30): if two real
+                # receipts for the same reducer ever land with an exactly identical
+                # `created_at` (same microsecond) and only one is captured before
+                # `fetch_limit` truncates a batch, the other would never be fetched
+                # again once the cursor advances past its own timestamp. Not
+                # observed live (each receipt is its own INSERT via a real reducer
+                # tick) and not worth a compound (created_at, receipt_id) cursor for
+                # a theoretical tie -- disclosed here rather than silently assumed
+                # impossible.
+                new_rows = (
+                    conn.execute(
+                        text(
+                            """
+                            SELECT
+                                receipt_json -> 'state_deltas' -> 0 -> 'after'
+                                    -> 'pressure_hints' ->> 'prediction_error' AS error,
+                                created_at
+                            FROM substrate_reduction_receipts
+                            WHERE (receipt_json -> 'state_deltas' -> 0 ->> 'reducer_id')
+                                  = :reducer_id
+                              AND (:cursor IS NULL OR created_at > :cursor)
+                            ORDER BY created_at ASC
+                            LIMIT :limit
+                            """
+                        ),
+                        {
+                            "reducer_id": f"substrate.{reducer_key}",
+                            "cursor": cursor,
+                            "limit": fetch_limit,
+                        },
+                    )
+                    .mappings()
+                    .all()
+                )
+
+                if not new_rows:
+                    return baseline
+
+                new_values: list[float] = []
+                newest_created_at = cursor
+                for row in new_rows:
+                    newest_created_at = row["created_at"]
+                    raw = row.get("error")
+                    if raw is None:
+                        continue
+                    try:
+                        new_values.append(float(raw))
+                    except (TypeError, ValueError):
+                        continue
+
+                advanced = advance_precision_baseline(
+                    baseline, new_values, alpha=alpha, min_variance=min_variance
+                )
+
+                conn.execute(
+                    text(
+                        """
+                        INSERT INTO substrate_node_prediction_error_baseline (
+                            target_id, reducer_key, ewma, variance,
+                            observation_count, last_value, last_receipt_created_at,
+                            updated_at
+                        ) VALUES (
+                            :target_id, :reducer_key, :ewma, :variance,
+                            :observation_count, :last_value, :last_receipt_created_at,
+                            :updated_at
+                        )
+                        ON CONFLICT (target_id) DO UPDATE SET
+                            reducer_key = EXCLUDED.reducer_key,
+                            ewma = EXCLUDED.ewma,
+                            variance = EXCLUDED.variance,
+                            observation_count = EXCLUDED.observation_count,
+                            last_value = EXCLUDED.last_value,
+                            last_receipt_created_at = EXCLUDED.last_receipt_created_at,
+                            updated_at = EXCLUDED.updated_at
+                        """
+                    ),
+                    {
+                        "target_id": target_id,
+                        "reducer_key": reducer_key,
+                        "ewma": advanced.ewma,
+                        "variance": advanced.variance,
+                        "observation_count": advanced.observation_count,
+                        "last_value": advanced.last_value,
+                        "last_receipt_created_at": newest_created_at,
+                        "updated_at": datetime.now(timezone.utc),
+                    },
+                )
+                return advanced
+        except Exception:
+            logger.exception(
+                "node_prediction_error_baseline_advance_failed target_id=%s", target_id
+            )
+            return PrecisionEwmaBaseline()
 
     def load_latest_attention_frame(self) -> FieldAttentionFrameV1 | None:
         with self._engine.connect() as conn:

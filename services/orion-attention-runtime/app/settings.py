@@ -26,12 +26,18 @@ class Settings(BaseSettings):
     enable_attention_runtime: bool = Field(True, alias="ENABLE_ATTENTION_RUNTIME")
     attention_frame_retention_hours: float = Field(72.0, alias="ATTENTION_FRAME_RETENTION_HOURS")
     attention_frame_prune_interval_sec: float = Field(3600.0, alias="ATTENTION_FRAME_PRUNE_INTERVAL_SEC")
-    # Candidate A (precision-weighted salience, 2026-07-30): how many real
-    # recent prediction-error rows to fetch per qualified node target, per
-    # tick. Same order of magnitude as scripts/analysis/measure_precision_
-    # weighted_salience_probe.py's own real replay windows (tens to ~100
-    # rows within substrate_reduction_receipts' ~30-minute retention) --
-    # not a calibration knob, a fetch-size bound.
+    # Candidate A (precision-weighted salience). 2026-07-30 EWMA-baseline fix
+    # (see AttentionRuntimeStore.advance_node_prediction_error_baseline and
+    # orion/sentience_striving_program/README.md §12): this now bounds how many
+    # real NEW substrate_reduction_receipts rows (since the persisted baseline's
+    # own cursor) are folded into a node target's baseline per tick, not the size
+    # of a raw window recomputed from scratch every tick -- a fetch-size cap on a
+    # real backlog (e.g. after a restart), not a calibration knob. Kept at the
+    # same value used when this was still a per-tick rolling-window fetch size
+    # (tens to ~100 real rows within substrate_reduction_receipts' ~30-minute
+    # retention, per scripts/analysis/measure_precision_weighted_salience_probe.py's
+    # own real replay windows) -- still comfortably above any real per-tick
+    # receipt volume observed live.
     prediction_error_history_limit: int = Field(
         200, alias="ATTENTION_PREDICTION_ERROR_HISTORY_LIMIT"
     )

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import subprocess
 import sys
 from pathlib import Path
 
@@ -7,6 +8,7 @@ REPO_ROOT = Path(__file__).resolve().parents[3]
 if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
+import scripts.analysis.measure_doc_semantic_drift as msd  # noqa: E402
 from scripts.analysis.measure_doc_semantic_drift import (  # noqa: E402
     DriftSample,
     _cosine_similarity,
@@ -78,3 +80,104 @@ def test_sample_truncated_true_if_either_side_is_truncated() -> None:
     assert sample_truncated(False, True) is True
     assert sample_truncated(True, True) is True
     assert sample_truncated(False, False) is False
+
+
+def _run_git(args: list[str], cwd: Path) -> None:
+    subprocess.run(["git", *args], cwd=cwd, check=True, capture_output=True)
+
+
+def test_git_diff_hunks_extracts_only_changed_lines_from_a_real_commit(
+    tmp_path: Path, monkeypatch
+) -> None:
+    """Real git repo, real commits -- not a mocked diff. Confirms
+    _git_diff_hunks extracts exactly the removed/added content lines, not
+    file headers or hunk markers, and not unchanged surrounding lines."""
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    _run_git(["init", "-q"], repo)
+    _run_git(["config", "user.email", "test@test.local"], repo)
+    _run_git(["config", "user.name", "Test"], repo)
+
+    doc = repo / "README.md"
+    doc.write_text("line one\nline two\nline three\n", encoding="utf-8")
+    _run_git(["add", "README.md"], repo)
+    _run_git(["commit", "-q", "-m", "initial"], repo)
+
+    doc.write_text("line one\nline two CHANGED\nline three\nline four NEW\n", encoding="utf-8")
+    _run_git(["add", "README.md"], repo)
+    _run_git(["commit", "-q", "-m", "docs: real edit"], repo)
+
+    sha = subprocess.run(
+        ["git", "rev-parse", "HEAD"], cwd=repo, capture_output=True, text=True, check=True
+    ).stdout.strip()
+
+    monkeypatch.setattr(msd, "REPO_ROOT", repo)
+    removed, added = msd._git_diff_hunks(sha, "README.md")
+
+    assert removed == "line two"
+    assert "line two CHANGED" in added
+    assert "line four NEW" in added
+    # Unchanged context lines must not leak into either side.
+    assert "line one" not in removed and "line one" not in added
+    assert "line three" not in removed and "line three" not in added
+
+
+def test_git_diff_hunks_pure_addition_has_empty_removed_text(
+    tmp_path: Path, monkeypatch
+) -> None:
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    _run_git(["init", "-q"], repo)
+    _run_git(["config", "user.email", "test@test.local"], repo)
+    _run_git(["config", "user.name", "Test"], repo)
+
+    doc = repo / "README.md"
+    doc.write_text("existing content\n", encoding="utf-8")
+    _run_git(["add", "README.md"], repo)
+    _run_git(["commit", "-q", "-m", "initial"], repo)
+
+    doc.write_text("existing content\nbrand new paragraph appended\n", encoding="utf-8")
+    _run_git(["add", "README.md"], repo)
+    _run_git(["commit", "-q", "-m", "docs: append"], repo)
+
+    sha = subprocess.run(
+        ["git", "rev-parse", "HEAD"], cwd=repo, capture_output=True, text=True, check=True
+    ).stdout.strip()
+
+    monkeypatch.setattr(msd, "REPO_ROOT", repo)
+    removed, added = msd._git_diff_hunks(sha, "README.md")
+
+    assert removed == ""
+    assert added == "brand new paragraph appended"
+
+
+def test_git_diff_hunks_pure_deletion_has_empty_added_text(
+    tmp_path: Path, monkeypatch
+) -> None:
+    """Symmetric case to the pure-addition test above -- a line removed
+    with nothing added back must yield an empty added_text, not a crash or
+    leftover content."""
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    _run_git(["init", "-q"], repo)
+    _run_git(["config", "user.email", "test@test.local"], repo)
+    _run_git(["config", "user.name", "Test"], repo)
+
+    doc = repo / "README.md"
+    doc.write_text("existing content\nstale paragraph to remove\n", encoding="utf-8")
+    _run_git(["add", "README.md"], repo)
+    _run_git(["commit", "-q", "-m", "initial"], repo)
+
+    doc.write_text("existing content\n", encoding="utf-8")
+    _run_git(["add", "README.md"], repo)
+    _run_git(["commit", "-q", "-m", "docs: remove stale paragraph"], repo)
+
+    sha = subprocess.run(
+        ["git", "rev-parse", "HEAD"], cwd=repo, capture_output=True, text=True, check=True
+    ).stdout.strip()
+
+    monkeypatch.setattr(msd, "REPO_ROOT", repo)
+    removed, added = msd._git_diff_hunks(sha, "README.md")
+
+    assert removed == "stale paragraph to remove"
+    assert added == ""

@@ -92,6 +92,54 @@ def _git_show(rev: str, path: str) -> str:
     return result.stdout
 
 
+def _git_diff_hunks(sha: str, path: str) -> tuple[str, str]:
+    """(removed_text, added_text) -- just the changed lines from the real
+    unified diff for this commit/file, not the whole before/after document.
+    Real fix for the whole-document-embedding truncation defect this script
+    itself found and reported (see module docstring, "Diff-scoped
+    embedding, the real fix"): a real doc edit is almost always far smaller
+    than the whole document, so hunk text reliably fits inside the model's
+    real 512-token limit even when the surrounding document doesn't.
+
+    File-header lines (`--- a/...`, `+++ b/...`) and hunk markers (`@@ ...
+    @@`) are excluded -- only real content lines. A pure addition yields an
+    empty ``removed_text``; a pure deletion yields an empty ``added_text``
+    -- both real, meaningful states (``main()`` embeds them via the same
+    ``text or " "`` fallback every other text in this script uses), not
+    errors.
+
+    Known, currently-unhit limitation: a renamed file (no ``-M`` passed to
+    ``git diff``) shows as a full delete-at-old-path + full-add-at-new-path,
+    so ``removed``/``added`` would be the *entire* file content for that
+    case -- degenerating back into the whole-document truncation problem
+    this function exists to avoid. Not a live bug (``REAL_SAMPLE`` only
+    touches files edited in place, never renamed), but a real gap to close
+    with an explicit guard before extending the sample set to renamed
+    files. Likewise a binary-file diff produces no ``+``/``-`` lines at all
+    (`Binary files ... differ`), silently yielding two empty strings rather
+    than an error -- also currently moot for this script's real,
+    hand-picked, text-only sample."""
+    result = subprocess.run(
+        ["git", "diff", "--no-color", "--unified=0", f"{sha}~1", sha, "--", path],
+        cwd=REPO_ROOT,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    removed: list[str] = []
+    added: list[str] = []
+    for line in result.stdout.splitlines():
+        if line.startswith("+++") or line.startswith("---"):
+            continue
+        if line.startswith("+"):
+            added.append(line[1:])
+        elif line.startswith("-"):
+            removed.append(line[1:])
+        # everything else (hunk headers, context lines under --unified=0
+        # there shouldn't be any, diff metadata) is skipped
+    return "\n".join(removed), "\n".join(added)
+
+
 def _commit_subject(sha: str) -> str:
     result = subprocess.run(
         ["git", "log", "-1", "--pretty=%s", sha],
@@ -149,6 +197,13 @@ class DriftSample:
     # live measurement wasn't taken (e.g. a code path that only has char
     # counts available, such as a test fixture).
     likely_truncated: bool | None = None
+    # Diff-scoped embedding-diff -- embeds only the changed hunk lines (see
+    # _git_diff_hunks), not the whole before/after document. The real fix
+    # this script's own whole-document finding calls for.
+    diff_scoped_embedding_diff: float | None = None
+    diff_scoped_truncated: bool | None = None
+    hunk_removed_len_chars: int = 0
+    hunk_added_len_chars: int = 0
 
 
 def _load_sample(entry: dict) -> tuple[str, str, str, str, dict]:
@@ -251,19 +306,29 @@ def main() -> int:
     out_dir.mkdir(parents=True, exist_ok=True)
 
     loaded = [_load_sample(entry) for entry in REAL_SAMPLE]
+    hunks = [_git_diff_hunks(entry["sha"], entry["path"]) for entry in REAL_SAMPLE]
 
-    # Embed every before/after text in one batch call.
+    # One batch call embeds everything -- whole-document before/after AND
+    # diff-scoped hunk before/after -- 4 texts per sample, in a fixed order
+    # so indices below line up.
     all_texts = []
-    for before, after, _subject, _prefix, _entry in loaded:
+    for (before, after, _subject, _prefix, _entry), (hunk_removed, hunk_added) in zip(loaded, hunks):
         all_texts.append(before)
         all_texts.append(after)
+        all_texts.append(hunk_removed)
+        all_texts.append(hunk_added)
     embeddings, truncated_flags = _embed_batch_via_vector_host(all_texts, container=args.container)
 
     samples: list[DriftSample] = []
-    for i, (before, after, subject, prefix, entry) in enumerate(loaded):
-        before_vec = embeddings[i * 2]
-        after_vec = embeddings[i * 2 + 1]
+    for i, ((before, after, subject, prefix, entry), (hunk_removed, hunk_added)) in enumerate(
+        zip(loaded, hunks)
+    ):
+        base = i * 4
+        before_vec, after_vec, hunk_removed_vec, hunk_added_vec = (
+            embeddings[base], embeddings[base + 1], embeddings[base + 2], embeddings[base + 3]
+        )
         similarity = _cosine_similarity(before_vec, after_vec)
+        hunk_similarity = _cosine_similarity(hunk_removed_vec, hunk_added_vec)
         samples.append(
             DriftSample(
                 sha=entry["sha"],
@@ -278,8 +343,14 @@ def main() -> int:
                 # Real per-side truncation, measured by the container's own
                 # tokenizer.
                 likely_truncated=sample_truncated(
-                    truncated_flags[i * 2], truncated_flags[i * 2 + 1]
+                    truncated_flags[base], truncated_flags[base + 1]
                 ),
+                diff_scoped_embedding_diff=1.0 - hunk_similarity,
+                diff_scoped_truncated=sample_truncated(
+                    truncated_flags[base + 2], truncated_flags[base + 3]
+                ),
+                hunk_removed_len_chars=len(hunk_removed),
+                hunk_added_len_chars=len(hunk_added),
             )
         )
 
@@ -355,6 +426,71 @@ def main() -> int:
         lines.append(
             f"\nOn the {len(clean)} sample(s) short enough to avoid truncation risk: no clean "
             f"separation either. Sample too small to draw a conclusion either way."
+        )
+
+    # -- Diff-scoped embedding: the real fix --------------------------------
+    diff_truncated = [s for s in samples if s.diff_scoped_truncated]
+    diff_clean = [s for s in samples if not s.diff_scoped_truncated]
+    diff_trivial_scores = [s.diff_scoped_embedding_diff for s in diff_clean if s.expected == "trivial"]
+    diff_real_scores = [s.diff_scoped_embedding_diff for s in diff_clean if s.expected == "real"]
+    diff_separates = (
+        bool(diff_trivial_scores)
+        and bool(diff_real_scores)
+        and max(diff_trivial_scores) < min(diff_real_scores)
+    )
+    diff_proposed_threshold = (
+        (max(diff_trivial_scores) + min(diff_real_scores)) / 2 if diff_separates else None
+    )
+
+    lines += [
+        "",
+        "## Diff-scoped embedding (the real fix): embed only the changed hunk lines",
+        "",
+        "| sha | hunk removed/added chars | diff_scoped_embedding_diff | expected | truncated |",
+        "|---|---|---|---|---|",
+    ]
+    for s in sorted(samples, key=lambda s: s.diff_scoped_embedding_diff):
+        lines.append(
+            f"| {s.sha[:8]} | {s.hunk_removed_len_chars}/{s.hunk_added_len_chars} | "
+            f"{s.diff_scoped_embedding_diff:.4f} | {s.expected} | "
+            f"{'YES' if s.diff_scoped_truncated else 'no'} |"
+        )
+
+    lines += [""]
+    if diff_truncated:
+        lines.append(
+            f"{len(diff_truncated)} of {len(samples)} hunk-scoped samples still flagged truncated "
+            f"(a single commit touching hundreds of lines in one hunk can still exceed 512 tokens) "
+            f"-- excluded from the separation check below, same discipline as the whole-document "
+            f"section above."
+        )
+    if diff_separates:
+        enough = (
+            len(diff_trivial_scores) >= MIN_SAMPLES_PER_SIDE_FOR_REAL_THRESHOLD
+            and len(diff_real_scores) >= MIN_SAMPLES_PER_SIDE_FOR_REAL_THRESHOLD
+        )
+        diff_confidence = (
+            "a real, trustworthy calibrated cutoff"
+            if enough
+            else f"only a midpoint -- {len(diff_trivial_scores)} trivial / {len(diff_real_scores)} "
+            f"real non-truncated samples is fewer than {MIN_SAMPLES_PER_SIDE_FOR_REAL_THRESHOLD} "
+            f"per side"
+        )
+        lines.append(
+            f"\n**Real separation found on diff-scoped embedding.** All `trivial` samples score "
+            f"below all `real` samples (max trivial={max(diff_trivial_scores):.4f}, "
+            f"min real={min(diff_real_scores):.4f}). Proposed threshold "
+            f"**{diff_proposed_threshold:.4f}** is {diff_confidence}. This confirms the diagnosis "
+            f"above: the embedding-diff *signal* works; whole-document embedding was the broken "
+            f"part, not the technique."
+        )
+    else:
+        lines.append(
+            "\n**No clean separation on diff-scoped embedding either**, on this same 5-sample set. "
+            "Given the whole-document approach is confirmed structurally broken, this would mean "
+            "either the sample is too small (5 is genuinely small for calibrating a threshold) or "
+            "embedding-diff needs further tuning (e.g. weighting hunk size) even once truncation "
+            "is fixed -- not that diff-scoping failed to fix the truncation defect it targets."
         )
 
     report_path = out_dir / "report.md"

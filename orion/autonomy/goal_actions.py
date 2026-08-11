@@ -139,15 +139,21 @@ def build_goal_graph_query_client() -> GraphQueryClient | None:
 
 def fetch_goal_by_artifact_id(client: GraphQueryClient, artifact_id: str) -> tuple[AutonomyGoalHeadlineV1, str] | None:
     safe_id = _escape_sparql(artifact_id.strip())
+    # drive_origin dropped from SELECT and from the mandatory triple pattern below
+    # 2026-08-11 (fix/goal-drive-origin-retirement, review fix): AutonomyGoalHeadlineV1
+    # no longer has this field, so nothing read the binding -- but a *mandatory*
+    # (non-OPTIONAL) orion:driveOrigin triple here meant any ProposedGoal artifact
+    # missing that triple (e.g. one written by a future goal-writer that, following
+    # this same patch's direction, stops emitting it) would silently fail to match
+    # this query at all, not just come back with an empty field.
     sparql = f"""
 PREFIX orion: <http://conjourney.net/orion#>
-SELECT ?artifact_id ?goal_statement ?drive_origin ?priority ?cooldown_until ?proposal_signature ?created_at ?proposal_status ?planned_task_id ?completed_at ?subject_key
+SELECT ?artifact_id ?goal_statement ?priority ?cooldown_until ?proposal_signature ?created_at ?proposal_status ?planned_task_id ?completed_at ?subject_key
 WHERE {{
   GRAPH <{AUTONOMY_GOALS_GRAPH}> {{
     ?artifact a orion:ProposedGoal ;
       orion:artifactId ?artifact_id ;
       orion:goalStatement ?goal_statement ;
-      orion:driveOrigin ?drive_origin ;
       orion:proposalPriority ?priority ;
       orion:proposalSignature ?proposal_signature .
     OPTIONAL {{ ?artifact orion:cooldownUntil ?cooldown_until . }}

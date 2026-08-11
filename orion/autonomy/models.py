@@ -57,10 +57,15 @@ class AutonomyStateV1(BaseModel):
     # deleted in Wave 1, so nothing computes these anymore. goal_headlines
     # survives (real historical/live readers still exist), but its per-goal
     # drive_origin field was deleted 2026-08-11 (fix/goal-drive-origin-
-    # retirement): confirmed the field's sole live consumer,
-    # dedupe_goal_headlines_by_drive_origin, was unreachable in production
-    # (see orion/autonomy/summary.py's comment on
-    # _top_goal_headlines_by_priority for the full trace).
+    # retirement): its two live-code readers --
+    # orion.autonomy.summary.dedupe_goal_headlines_by_drive_origin (see
+    # orion/autonomy/summary.py's comment on _top_goal_headlines_by_priority
+    # for the full trace) and services/orion-hub/scripts/
+    # drives_analytics_queries.py's per-drive goal-alignment coloring (see
+    # fetch_goal_alignment_sync's comment) -- were both confirmed unreachable
+    # in production for the same root cause: LocalAutonomyRepository.get_latest()
+    # has unconditionally returned state=None since Part G (PR #1530), so
+    # goal_headlines itself is always [] regardless of this field.
     subject: str
     model_layer: str
     entity_id: str

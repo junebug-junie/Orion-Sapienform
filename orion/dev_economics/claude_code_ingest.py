@@ -1,13 +1,19 @@
 """Read-only parser for local Claude Code session transcripts (``~/.claude/projects/**/*.jsonl``).
 
-Extracts *only* Juniper's own typed words -- not tool results, not hook output,
-not slash-command scaffolding, not Orion's/the assistant's turns. This is the
-shared parsing pass named (but not yet built) in
-``docs/superpowers/specs/2026-07-30-dev-economics-signal-design.md`` and reused
-by ``docs/superpowers/specs/2026-07-30-juniper-affective-state-signal-proposal.md``
-("no new data source, no new collection surface" -- Juniper's message text is
-already something Orion receives every turn; this just re-reads the same
-transcript files Claude Code already writes to local disk).
+Two extraction passes over the same real, already-existing local data, per
+``docs/superpowers/specs/2026-07-30-dev-economics-signal-design.md``'s framing
+("no new data source, no new collection surface"):
+
+- ``parse_transcript_file``/``iter_all_human_messages`` -- Juniper's own typed
+  words only (not tool results, not hook output, not slash-command
+  scaffolding, not Orion's/the assistant's turns). Built first, for the
+  Juniper affective-state signal
+  (``docs/superpowers/specs/2026-07-30-juniper-affective-state-signal-proposal.md``).
+- ``parse_session_usage_record``/``iter_all_session_usage_records`` -- one
+  normalized ledger record per transcript file: real token counts, model,
+  effort tier, wall-clock duration, and word counts for *both* assistant and
+  human turns (the dev-economics spec's own "Recommended next patch" --
+  offline, no pricing, no bus, no service, per that doc's explicit phasing).
 
 Filtering rules, in order:
 
@@ -151,29 +157,16 @@ def parse_transcript_file(path: Path | str) -> Iterator[HumanMessage]:
             cleaned = _strip_wrapper_tags(raw_text)
             if cleaned is None:
                 continue
-            timestamp_raw = obj.get("timestamp")
-            timestamp = None
-            if isinstance(timestamp_raw, str) and timestamp_raw:
-                try:
-                    timestamp = datetime.fromisoformat(timestamp_raw.replace("Z", "+00:00"))
-                except ValueError:
-                    timestamp = None
-                else:
-                    if timestamp.tzinfo is None:
-                        # Every real timestamp observed so far has a "Z"/
-                        # offset suffix (naive-then-comparison-crash confirmed
-                        # only as a hypothetical by code review 2026-08-11,
-                        # not seen live) -- guard anyway so a genuinely naive
-                        # ISO string doesn't make this function's contract
-                        # depend on the caller separately checking tzinfo
-                        # before comparing timestamps (affective_state.py's
-                        # window filter does exactly that comparison).
-                        timestamp = timestamp.replace(tzinfo=timezone.utc)
+            # _parse_timestamp always returns a timezone-aware datetime or
+            # None -- covers both an unparseable string and a non-string
+            # timestamp field (e.g. a raw epoch int); either way this drops
+            # just this one message, never raises, matching this function's
+            # own "single corrupt line must not abort the whole file"
+            # guarantee. Naive-then-comparison-crash (a genuinely naive ISO
+            # string) confirmed only as a hypothetical by code review
+            # 2026-08-11, not seen live -- guarded anyway.
+            timestamp = _parse_timestamp(obj.get("timestamp"))
             if timestamp is None:
-                # Also covers a non-string timestamp field (e.g. a raw epoch
-                # int) -- a corrupt/unexpected line drops just this message,
-                # never raises, matching this function's own "single corrupt
-                # line must not abort the whole file" guarantee.
                 continue
             session_id = obj.get("sessionId") or file_path.stem
             yield HumanMessage(
@@ -217,3 +210,285 @@ def iter_all_human_messages(root: Path | str = DEFAULT_PROJECTS_ROOT) -> Iterato
                 "claude_code_ingest_transcript_vanished_during_walk path=%s", transcript_path
             )
             continue
+
+
+# ---------------------------------------------------------------------------
+# Session usage ledger (dev-economics spec's "Recommended next patch")
+# ---------------------------------------------------------------------------
+
+
+def _parse_timestamp(raw: object) -> datetime | None:
+    """Shared with parse_transcript_file's inline logic -- both need the same
+    "string, ISO-8601, always end up timezone-aware" contract."""
+    if not isinstance(raw, str) or not raw:
+        return None
+    try:
+        timestamp = datetime.fromisoformat(raw.replace("Z", "+00:00"))
+    except ValueError:
+        return None
+    if timestamp.tzinfo is None:
+        timestamp = timestamp.replace(tzinfo=timezone.utc)
+    return timestamp
+
+
+def _assistant_visible_word_count(content: object) -> int:
+    """Word count of only the *visible* text an assistant turn produced --
+    ``type == "text"`` content blocks. Deliberately excludes ``thinking``
+    blocks (never shown to Juniper) and ``tool_use``/``tool_result`` blocks
+    (structured data, not prose) -- this is meant as a "how much do I have
+    to read" proxy (Juniper's own framing, 2026-07-30), not a raw token
+    count of everything the model produced internally."""
+    if isinstance(content, str):
+        return len(content.split())
+    if not isinstance(content, list):
+        return 0
+    total = 0
+    for block in content:
+        if isinstance(block, dict) and block.get("type") == "text":
+            text = block.get("text")
+            if isinstance(text, str):
+                total += len(text.split())
+    return total
+
+
+@dataclass(frozen=True)
+class SessionUsageRecord:
+    """One normalized ledger record per transcript file. Deliberately one
+    record per *file*, not per logical "session" in the human sense -- a
+    subagent's transcript (``<session>/subagents/agent-*.jsonl``) gets its
+    own record rather than being folded into its parent's, because it
+    represents its own real, separately-billed API usage. Folding subagent
+    token/cost usage into "not really part of the ledger" would make the
+    ledger's own stated purpose (real $ cost accounting) systematically
+    undercount -- a single review/build session in this repo can dispatch
+    many subagents whose combined token usage is a large fraction of the
+    real total. ``is_subagent`` distinguishes the two for callers that want
+    to report them separately or re-attribute later.
+    """
+
+    session_id: str
+    transcript_path: Path
+    is_subagent: bool
+    models: tuple[str, ...]
+    effort_tiers: tuple[str, ...]
+    input_tokens: int
+    output_tokens: int
+    cache_creation_input_tokens: int
+    cache_read_input_tokens: int
+    assistant_turn_count: int
+    assistant_word_count: int
+    human_turn_count: int
+    human_word_count: int
+    started_at: datetime | None
+    ended_at: datetime | None
+
+    @property
+    def duration_sec(self) -> float | None:
+        if self.started_at is None or self.ended_at is None:
+            return None
+        return (self.ended_at - self.started_at).total_seconds()
+
+    @property
+    def total_tokens(self) -> int:
+        return (
+            self.input_tokens
+            + self.output_tokens
+            + self.cache_creation_input_tokens
+            + self.cache_read_input_tokens
+        )
+
+
+def parse_session_usage_record(path: Path | str) -> SessionUsageRecord | None:
+    """One pass over ``path``, building a normalized usage record. Returns
+    ``None`` for a transcript with zero assistant turns and zero real human
+    turns -- e.g. a metadata-only or empty file -- rather than a record full
+    of zeros that would misreport "checked, found nothing" the same as a
+    real all-zero session.
+
+    Malformed JSON lines are skipped, same "single corrupt line must not
+    abort the whole file" guarantee as ``parse_transcript_file``."""
+    file_path = Path(path)
+    is_subagent = file_path.parent.name == "subagents"
+
+    session_id: str | None = None
+    models: list[str] = []
+    effort_tiers: list[str] = []
+    input_tokens = output_tokens = 0
+    cache_creation_input_tokens = cache_read_input_tokens = 0
+    assistant_turn_count = assistant_word_count = 0
+    human_turn_count = human_word_count = 0
+    started_at: datetime | None = None
+    ended_at: datetime | None = None
+    # A single logical assistant turn (thinking -> text -> N tool_use blocks)
+    # is logged as multiple separate JSONL lines sharing one `message.id`,
+    # each repeating the identical, final, cumulative `usage` for that turn.
+    # Confirmed live 2026-08-11 by code review: summing per-*line* (the first
+    # cut of this function) overcounted real tokens by 1.8x-2.7x and turn
+    # count by ~2x across the full real corpus -- one message.id counted
+    # once, first occurrence, is the real per-turn number. A missing/
+    # non-string `id` (older transcript format, never observed live but not
+    # ruled out) is never deduped -- every such line counts independently,
+    # same as this function's original behavior, rather than silently
+    # dropping data it can't safely recognize as a duplicate.
+    seen_assistant_message_ids: set[str] = set()
+
+    def _observe(timestamp: datetime | None) -> None:
+        nonlocal started_at, ended_at
+        if timestamp is None:
+            return
+        if started_at is None or timestamp < started_at:
+            started_at = timestamp
+        if ended_at is None or timestamp > ended_at:
+            ended_at = timestamp
+
+    with file_path.open("r", encoding="utf-8", errors="replace") as fh:
+        for line in fh:
+            line = line.strip()
+            if not line:
+                continue
+            try:
+                obj = json.loads(line)
+            except json.JSONDecodeError:
+                continue
+            if not isinstance(obj, dict):
+                continue
+
+            obj_session_id = obj.get("sessionId")
+            if session_id is None and isinstance(obj_session_id, str):
+                session_id = obj_session_id
+
+            obj_type = obj.get("type")
+            if obj_type in ("user", "assistant"):
+                # Real transcripts carry timestamps on many other line types
+                # too (attachment, pr-link, queue-operation, ...) -- a
+                # session ID can get reused long after real chat activity
+                # ended just to record something unrelated (confirmed live
+                # 2026-08-11: a `pr-link` line appended 11.7 days after a
+                # session's real last chat turn skewed duration_sec to
+                # ~11.9 days for that one file). Restricting to actual
+                # conversational turns keeps duration_sec meaning "real
+                # elapsed engaged time", not "how long ago this file was
+                # last touched for any reason."
+                _observe(_parse_timestamp(obj.get("timestamp")))
+
+            message = obj.get("message")
+            if (
+                obj_type == "assistant"
+                and isinstance(message, dict)
+                and message.get("model") != "<synthetic>"
+            ):
+                # model == "<synthetic>" is a harness-injected placeholder
+                # turn, not a real model response -- excluded entirely, not
+                # just from token counting. Confirmed live 2026-08-11: 111
+                # occurrences carry isApiErrorMessage=True ("API Error:
+                # Server error mid-response"), but a further 25 do not (a
+                # broader class of synthetic/interrupt turn, same
+                # model="<synthetic>" marker) -- checking the model field
+                # directly catches both, where checking isApiErrorMessage
+                # alone only caught the first. All-zero usage either way, so
+                # harmless to token totals, but counting it in
+                # `models`/`assistant_turn_count` would misreport a harness
+                # placeholder as if a real model had answered.
+                # Word count is accumulated for *every* line unconditionally,
+                # not gated by the dedup check below -- confirmed live
+                # 2026-08-11 (self-caught regression while fixing the token
+                # overcount): the real "text" content block for a multi-line
+                # turn does not reliably land on the first line of the
+                # group (thinking/tool_use-only lines commonly come first),
+                # so gating word-count behind "first occurrence of this
+                # message.id" silently dropped ~66% of real assistant word
+                # count in this same patch's first attempt. Safe to sum
+                # across every line of a duplicate group regardless: at most
+                # one line per real turn ever carries a `text`-type block
+                # (verified against the real corpus), so this never
+                # double-counts, it just correctly finds the text wherever
+                # it actually landed.
+                assistant_word_count += _assistant_visible_word_count(message.get("content"))
+
+                message_id = message.get("id")
+                # `and message_id` excludes an empty string too, not just
+                # non-string/missing -- an empty id is falsy-but-a-str, so a
+                # bare isinstance check would treat it as a real dedup key
+                # and collide across unrelated turns that all happened to
+                # have id=="". Zero real occurrences found in this repo's
+                # corpus (verified live 2026-08-11), but the code should
+                # match its own "missing/non-string id is never deduped"
+                # contract exactly, not just in the common case.
+                if isinstance(message_id, str) and message_id:
+                    if message_id in seen_assistant_message_ids:
+                        continue
+                    seen_assistant_message_ids.add(message_id)
+                assistant_turn_count += 1
+                model = message.get("model")
+                if isinstance(model, str) and model not in models:
+                    models.append(model)
+                effort = obj.get("effort")
+                if isinstance(effort, str) and effort not in effort_tiers:
+                    effort_tiers.append(effort)
+                usage = message.get("usage")
+                if isinstance(usage, dict):
+                    input_tokens += usage.get("input_tokens") or 0
+                    output_tokens += usage.get("output_tokens") or 0
+                    cache_creation_input_tokens += usage.get("cache_creation_input_tokens") or 0
+                    cache_read_input_tokens += usage.get("cache_read_input_tokens") or 0
+            elif (
+                obj_type == "user"
+                and not is_subagent
+                and _is_real_typed_human_turn(obj)
+            ):
+                # is_subagent transcripts' first "user" line is the
+                # orchestrator's own Task-tool dispatch prompt -- a plain
+                # string with promptSource/origin genuinely absent (not
+                # because it's old data) and isSidechain=true. Confirmed
+                # live 2026-08-11: essentially every real subagent
+                # transcript's dispatch line otherwise passes this filter
+                # and gets miscounted as something Juniper typed. Gating on
+                # is_subagent is simpler and more robust than adding an
+                # isSidechain check to the shared filter (which top-level
+                # transcripts' own real human turns never carry either way).
+                raw_text = obj["message"]["content"]
+                cleaned = _strip_wrapper_tags(raw_text)
+                if cleaned is not None:
+                    human_turn_count += 1
+                    human_word_count += len(cleaned.split())
+
+    if assistant_turn_count == 0 and human_turn_count == 0:
+        return None
+
+    return SessionUsageRecord(
+        session_id=session_id or file_path.stem,
+        transcript_path=file_path,
+        is_subagent=is_subagent,
+        models=tuple(models),
+        effort_tiers=tuple(effort_tiers),
+        input_tokens=input_tokens,
+        output_tokens=output_tokens,
+        cache_creation_input_tokens=cache_creation_input_tokens,
+        cache_read_input_tokens=cache_read_input_tokens,
+        assistant_turn_count=assistant_turn_count,
+        assistant_word_count=assistant_word_count,
+        human_turn_count=human_turn_count,
+        human_word_count=human_word_count,
+        started_at=started_at,
+        ended_at=ended_at,
+    )
+
+
+def iter_all_session_usage_records(
+    root: Path | str = DEFAULT_PROJECTS_ROOT,
+) -> Iterator[SessionUsageRecord]:
+    """Convenience: one ``SessionUsageRecord`` per transcript file under
+    ``root`` (skipping files that yield ``None`` -- nothing real to report).
+    Same per-file ``OSError`` resilience as ``iter_all_human_messages`` --
+    see that function's docstring for why (broken absolute symlinks, not a
+    transient race, confirmed live 2026-08-11)."""
+    for transcript_path in iter_transcript_files(root):
+        try:
+            record = parse_session_usage_record(transcript_path)
+        except OSError:
+            logger.warning(
+                "claude_code_ingest_transcript_vanished_during_walk path=%s", transcript_path
+            )
+            continue
+        if record is not None:
+            yield record

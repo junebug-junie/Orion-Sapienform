@@ -6,7 +6,9 @@ from pathlib import Path
 from orion.dev_economics import claude_code_ingest
 from orion.dev_economics.claude_code_ingest import (
     iter_all_human_messages,
+    iter_all_session_usage_records,
     iter_transcript_files,
+    parse_session_usage_record,
     parse_transcript_file,
 )
 
@@ -310,3 +312,432 @@ def test_iter_all_human_messages_walks_every_file_under_root(tmp_path: Path) -> 
     )
     messages = list(iter_all_human_messages(tmp_path))
     assert {m.text for m in messages} == {"from proj a", "from proj b"}
+
+
+# --------------------------------------------------------------------------
+# parse_session_usage_record / iter_all_session_usage_records
+# --------------------------------------------------------------------------
+
+
+def _assistant_line(
+    *, ts: str, model: str = "claude-sonnet-5", effort: str = "high",
+    input_tokens: int = 10, output_tokens: int = 20,
+    cache_creation_input_tokens: int = 0, cache_read_input_tokens: int = 0,
+    text: str | None = "here is my real visible answer with several words",
+    session_id: str = "sess-1", message_id: str | None = None,
+) -> dict:
+    """``text=None`` builds a thinking/tool_use-only line with no ``text``
+    content block -- the real shape of most lines in a multi-line turn
+    group (see ``_assistant_visible_word_count`` -- only a ``text``-type
+    block contributes to word count)."""
+    content = [
+        {"type": "thinking", "thinking": "internal reasoning, never counted"},
+        {"type": "tool_use", "name": "Bash", "input": {}},
+    ]
+    if text is not None:
+        content.insert(1, {"type": "text", "text": text})
+    return {
+        "type": "assistant",
+        "timestamp": ts,
+        "sessionId": session_id,
+        "effort": effort,
+        "message": {
+            "id": message_id,
+            "model": model,
+            "role": "assistant",
+            "content": content,
+            "usage": {
+                "input_tokens": input_tokens,
+                "output_tokens": output_tokens,
+                "cache_creation_input_tokens": cache_creation_input_tokens,
+                "cache_read_input_tokens": cache_read_input_tokens,
+            },
+        },
+    }
+
+
+def _human_line(*, ts: str, text: str, session_id: str = "sess-1") -> dict:
+    return {
+        "type": "user",
+        "timestamp": ts,
+        "sessionId": session_id,
+        "promptSource": "typed",
+        "origin": {"kind": "human"},
+        "message": {"role": "user", "content": text},
+    }
+
+
+def test_parse_session_usage_record_sums_real_token_and_word_counts(tmp_path: Path) -> None:
+    transcript = tmp_path / "sess-1.jsonl"
+    _write_jsonl(
+        transcript,
+        [
+            _human_line(ts="2026-08-11T00:00:00.000Z", text="please fix this bug"),
+            _assistant_line(
+                ts="2026-08-11T00:00:05.000Z",
+                input_tokens=10, output_tokens=20,
+                cache_creation_input_tokens=100, cache_read_input_tokens=5,
+                text="fixed it, five words here",
+            ),
+            _assistant_line(
+                ts="2026-08-11T00:10:00.000Z",
+                input_tokens=5, output_tokens=15,
+                text="one more short reply now",
+            ),
+        ],
+    )
+    record = parse_session_usage_record(transcript)
+    assert record is not None
+    assert record.session_id == "sess-1"
+    assert record.is_subagent is False
+    assert record.models == ("claude-sonnet-5",)
+    assert record.effort_tiers == ("high",)
+    assert record.input_tokens == 15
+    assert record.output_tokens == 35
+    assert record.cache_creation_input_tokens == 100
+    assert record.cache_read_input_tokens == 5
+    assert record.assistant_turn_count == 2
+    assert record.assistant_word_count == 5 + 5  # "fixed it, five words here" / "one more short reply now"
+    assert record.human_turn_count == 1
+    assert record.human_word_count == 4  # "please fix this bug"
+    assert record.duration_sec == 600.0  # 00:00:00 -> 00:10:00
+    assert record.total_tokens == 15 + 35 + 100 + 5
+
+
+def test_parse_session_usage_record_thinking_and_tool_blocks_not_counted_as_words(
+    tmp_path: Path,
+) -> None:
+    transcript = tmp_path / "sess-2.jsonl"
+    _write_jsonl(
+        transcript,
+        [
+            _assistant_line(
+                ts="2026-08-11T00:00:00.000Z",
+                text="three word reply",
+            )
+        ],
+    )
+    record = parse_session_usage_record(transcript)
+    assert record is not None
+    assert record.assistant_word_count == 3  # not the internal thinking text length
+
+
+def test_parse_session_usage_record_excludes_synthetic_api_error_turns(tmp_path: Path) -> None:
+    """Confirmed live 2026-08-11: a harness-injected "API Error: Server error
+    mid-response" placeholder has model="<synthetic>", isApiErrorMessage=True,
+    and all-zero usage -- must not appear in `models` or count as a real
+    assistant turn, or the model-mix report misreports a harness error as a
+    real model response."""
+    transcript = tmp_path / "sess-err.jsonl"
+    real_turn = _assistant_line(ts="2026-08-11T00:00:00.000Z", text="a real answer here")
+    error_turn = {
+        "type": "assistant",
+        "timestamp": "2026-08-11T00:00:05.000Z",
+        "sessionId": "sess-1",
+        "isApiErrorMessage": True,
+        "error": "server_error",
+        "message": {
+            "model": "<synthetic>",
+            "role": "assistant",
+            "content": [{"type": "text", "text": "API Error: Server error mid-response."}],
+            "usage": {
+                "input_tokens": 0, "output_tokens": 0,
+                "cache_creation_input_tokens": 0, "cache_read_input_tokens": 0,
+            },
+        },
+    }
+    _write_jsonl(transcript, [real_turn, error_turn])
+    record = parse_session_usage_record(transcript)
+    assert record is not None
+    assert record.models == ("claude-sonnet-5",)
+    assert record.assistant_turn_count == 1
+
+
+def test_parse_session_usage_record_excludes_synthetic_turns_without_error_flag(
+    tmp_path: Path,
+) -> None:
+    """Confirmed live 2026-08-11: a further 25 real occurrences of
+    model="<synthetic>" in this repo's own corpus lack isApiErrorMessage
+    entirely (a broader class of synthetic/interrupt turn) -- the exclusion
+    must key off the model field directly, not just that one flag."""
+    transcript = tmp_path / "sess-synth.jsonl"
+    real_turn = _assistant_line(ts="2026-08-11T00:00:00.000Z", text="a real answer here")
+    synthetic_turn = {
+        "type": "assistant",
+        "timestamp": "2026-08-11T00:00:05.000Z",
+        "sessionId": "sess-1",
+        "message": {
+            "model": "<synthetic>",
+            "role": "assistant",
+            "content": [{"type": "text", "text": "some synthetic placeholder text"}],
+            "usage": {
+                "input_tokens": 0, "output_tokens": 0,
+                "cache_creation_input_tokens": 0, "cache_read_input_tokens": 0,
+            },
+        },
+    }
+    _write_jsonl(transcript, [real_turn, synthetic_turn])
+    record = parse_session_usage_record(transcript)
+    assert record is not None
+    assert record.models == ("claude-sonnet-5",)
+    assert record.assistant_turn_count == 1
+
+
+def test_parse_session_usage_record_returns_none_for_empty_transcript(tmp_path: Path) -> None:
+    transcript = tmp_path / "empty.jsonl"
+    _write_jsonl(transcript, [{"type": "mode", "mode": "normal"}])
+    assert parse_session_usage_record(transcript) is None
+
+
+def test_parse_session_usage_record_marks_subagent_transcripts(tmp_path: Path) -> None:
+    (tmp_path / "sess-1" / "subagents").mkdir(parents=True)
+    transcript = tmp_path / "sess-1" / "subagents" / "agent-abc.jsonl"
+    _write_jsonl(transcript, [_assistant_line(ts="2026-08-11T00:00:00.000Z")])
+    record = parse_session_usage_record(transcript)
+    assert record is not None
+    assert record.is_subagent is True
+
+
+def test_parse_session_usage_record_skips_malformed_lines_without_aborting(
+    tmp_path: Path,
+) -> None:
+    transcript = tmp_path / "sess-3.jsonl"
+    transcript.write_text(
+        "not json\n" + json.dumps(_assistant_line(ts="2026-08-11T00:00:00.000Z", text="ok reply")),
+        encoding="utf-8",
+    )
+    record = parse_session_usage_record(transcript)
+    assert record is not None
+    assert record.assistant_turn_count == 1
+
+
+def test_iter_all_session_usage_records_walks_every_file_and_skips_empty(
+    tmp_path: Path,
+) -> None:
+    (tmp_path / "proj").mkdir()
+    _write_jsonl(
+        tmp_path / "proj" / "a.jsonl",
+        [_assistant_line(ts="2026-08-11T00:00:00.000Z", session_id="a")],
+    )
+    _write_jsonl(tmp_path / "proj" / "b-empty.jsonl", [{"type": "mode", "mode": "normal"}])
+    records = list(iter_all_session_usage_records(tmp_path))
+    assert len(records) == 1
+    assert records[0].session_id == "a"
+
+
+def test_parse_session_usage_record_dedupes_multi_line_turns_by_message_id(
+    tmp_path: Path,
+) -> None:
+    """Confirmed live 2026-08-11 by code review: a single logical assistant
+    turn (thinking -> text -> N tool_use blocks) is logged as multiple real
+    JSONL lines sharing one message.id, each repeating the identical,
+    cumulative usage for that turn. Summing per-*line* overcounted real
+    tokens 1.8x-2.7x and turn count ~2x across the full real corpus."""
+    transcript = tmp_path / "sess-multiline.jsonl"
+    shared = dict(
+        ts="2026-08-11T00:00:00.000Z", message_id="msg_same_turn",
+        input_tokens=10, output_tokens=20,
+        cache_creation_input_tokens=100, cache_read_input_tokens=50,
+    )
+    _write_jsonl(
+        transcript,
+        [
+            # Matches the real-corpus shape: only one line in the group
+            # carries the actual `text` block (a thinking-only line first,
+            # then the text line, then a tool_use-only line) -- not three
+            # identical text-bearing lines, which would never happen live.
+            _assistant_line(**shared, text=None),
+            _assistant_line(**shared, text="four real words here"),  # same message.id
+            _assistant_line(**shared, text=None),  # same message.id
+            _assistant_line(
+                ts="2026-08-11T00:01:00.000Z", message_id="msg_next_turn",
+                input_tokens=5, output_tokens=15,
+                text="a genuinely different turn",
+            ),
+        ],
+    )
+    record = parse_session_usage_record(transcript)
+    assert record is not None
+    assert record.assistant_turn_count == 2  # not 4
+    assert record.input_tokens == 15  # 10 + 5, not 10*3 + 5
+    assert record.output_tokens == 35  # 20 + 15, not 20*3 + 15
+    assert record.cache_creation_input_tokens == 100  # not 300
+    assert record.cache_read_input_tokens == 50  # not 150
+    # Word count is intentionally NOT deduped -- additive per line is safe
+    # because only one line per real group ever carries a text block (see
+    # test_parse_session_usage_record_word_count_not_lost_when_text_lands_on_a_later_duplicate_line
+    # for the case that would break if this were gated by dedup instead).
+    assert record.assistant_word_count == 4 + 4  # "four real words here" + "a genuinely different turn"
+
+
+def test_parse_session_usage_record_word_count_not_lost_when_text_lands_on_a_later_duplicate_line(
+    tmp_path: Path,
+) -> None:
+    """Regression guard for a bug caught in this same patch, before it ever
+    shipped: real multi-line turns commonly emit a thinking/tool_use-only
+    line *before* the line that actually carries the visible `text` block.
+    Gating word-count accumulation behind "first occurrence of this
+    message.id" (the same gate that's correct for token/turn-count dedup)
+    silently dropped ~66% of real assistant word count in this patch's
+    first attempt, caught only by comparing the real replay's word-count
+    total before and after the token-dedup fix landed."""
+    transcript = tmp_path / "sess-text-later.jsonl"
+    _write_jsonl(
+        transcript,
+        [
+            {
+                "type": "assistant",
+                "timestamp": "2026-08-11T00:00:00.000Z",
+                "sessionId": "sess-1",
+                "message": {
+                    "id": "msg_real_turn",
+                    "model": "claude-sonnet-5",
+                    "content": [{"type": "thinking", "thinking": "no text here yet"}],
+                    "usage": {
+                        "input_tokens": 10, "output_tokens": 5,
+                        "cache_creation_input_tokens": 0, "cache_read_input_tokens": 0,
+                    },
+                },
+            },
+            {
+                # Same message.id -- the dedup-relevant line for tokens/turn
+                # count, but the *only* line that actually has the real
+                # visible text.
+                "type": "assistant",
+                "timestamp": "2026-08-11T00:00:01.000Z",
+                "sessionId": "sess-1",
+                "message": {
+                    "id": "msg_real_turn",
+                    "model": "claude-sonnet-5",
+                    "content": [{"type": "text", "text": "here is the real four word answer"}],
+                    "usage": {
+                        "input_tokens": 10, "output_tokens": 5,
+                        "cache_creation_input_tokens": 0, "cache_read_input_tokens": 0,
+                    },
+                },
+            },
+        ],
+    )
+    record = parse_session_usage_record(transcript)
+    assert record is not None
+    assert record.assistant_turn_count == 1
+    assert record.assistant_word_count == 7  # "here is the real four word answer"
+
+
+def test_parse_session_usage_record_dedup_falls_back_to_no_dedup_without_message_id(
+    tmp_path: Path,
+) -> None:
+    """A missing/non-string message.id (older transcript format, never
+    observed live but not ruled out) must count every such line
+    independently, same as before dedup existed -- not silently drop data
+    it can't safely recognize as a duplicate."""
+    transcript = tmp_path / "sess-no-id.jsonl"
+    _write_jsonl(
+        transcript,
+        [
+            _assistant_line(ts="2026-08-11T00:00:00.000Z", input_tokens=10),
+            _assistant_line(ts="2026-08-11T00:00:01.000Z", input_tokens=10),
+        ],
+    )
+    record = parse_session_usage_record(transcript)
+    assert record is not None
+    assert record.assistant_turn_count == 2
+    assert record.input_tokens == 20
+
+
+def test_parse_session_usage_record_dedup_treats_empty_string_id_as_no_id(
+    tmp_path: Path,
+) -> None:
+    """An empty string is falsy-but-a-str -- a bare isinstance(x, str) check
+    would treat "" as a real dedup key and wrongly collide two unrelated
+    turns that both happened to have id=="". Zero real occurrences found in
+    this repo's corpus (verified live 2026-08-11), but the code should
+    match its own "missing/non-string id is never deduped" contract
+    exactly."""
+    transcript = tmp_path / "sess-empty-id.jsonl"
+    _write_jsonl(
+        transcript,
+        [
+            _assistant_line(ts="2026-08-11T00:00:00.000Z", message_id="", input_tokens=10),
+            _assistant_line(ts="2026-08-11T00:00:01.000Z", message_id="", input_tokens=10),
+        ],
+    )
+    record = parse_session_usage_record(transcript)
+    assert record is not None
+    assert record.assistant_turn_count == 2
+    assert record.input_tokens == 20
+
+
+def test_parse_session_usage_record_duration_ignores_non_conversational_line_types(
+    tmp_path: Path,
+) -> None:
+    """Confirmed live 2026-08-11: a real session's ID got reused 11.7 days
+    after its actual last chat turn just to record an unrelated pr-link
+    line, skewing duration_sec to ~11.9 days for that one file. Only
+    user/assistant timestamps should define the real engaged window."""
+    transcript = tmp_path / "sess-skew.jsonl"
+    _write_jsonl(
+        transcript,
+        [
+            _human_line(ts="2026-08-11T00:00:00.000Z", text="start"),
+            _assistant_line(ts="2026-08-11T00:05:00.000Z", text="real reply"),
+            {
+                "type": "pr-link",
+                "timestamp": "2026-08-22T12:00:00.000Z",  # 11+ days later
+                "sessionId": "sess-1",
+            },
+        ],
+    )
+    record = parse_session_usage_record(transcript)
+    assert record is not None
+    assert record.duration_sec == 300.0  # 5 minutes, not 11+ days
+
+
+def test_parse_session_usage_record_excludes_subagent_dispatch_prompt_from_human_turns(
+    tmp_path: Path,
+) -> None:
+    """Confirmed live 2026-08-11: a subagent transcript's first "user" line
+    is the orchestrator's own Task-tool dispatch prompt -- a plain string
+    with promptSource/origin genuinely absent, which otherwise passes
+    _is_real_typed_human_turn's "old transcript, be conservative" rule and
+    gets miscounted as something Juniper typed."""
+    (tmp_path / "sess-1" / "subagents").mkdir(parents=True)
+    transcript = tmp_path / "sess-1" / "subagents" / "agent-xyz.jsonl"
+    _write_jsonl(
+        transcript,
+        [
+            {
+                "type": "user",
+                "timestamp": "2026-08-11T00:00:00.000Z",
+                "sessionId": "sess-1",
+                "isSidechain": True,
+                "message": {"role": "user", "content": "Review the uncommitted diff and report findings."},
+            },
+            _assistant_line(ts="2026-08-11T00:00:05.000Z", text="here is my review"),
+        ],
+    )
+    record = parse_session_usage_record(transcript)
+    assert record is not None
+    assert record.is_subagent is True
+    assert record.human_turn_count == 0
+    assert record.human_word_count == 0
+
+
+def test_parse_session_usage_record_top_level_human_turns_still_counted(
+    tmp_path: Path,
+) -> None:
+    """Regression guard: the is_subagent gate must not accidentally suppress
+    real human turns in ordinary top-level (non-subagent) transcripts."""
+    transcript = tmp_path / "sess-top.jsonl"
+    _write_jsonl(
+        transcript,
+        [
+            _human_line(ts="2026-08-11T00:00:00.000Z", text="a real question"),
+            _assistant_line(ts="2026-08-11T00:00:05.000Z", text="a real answer"),
+        ],
+    )
+    record = parse_session_usage_record(transcript)
+    assert record is not None
+    assert record.is_subagent is False
+    assert record.human_turn_count == 1
+    assert record.human_word_count == 3

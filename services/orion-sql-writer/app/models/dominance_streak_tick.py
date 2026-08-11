@@ -17,8 +17,9 @@ class DominanceStreakTickSQL(Base):
     pattern.
 
     Meant to be temporary, high-volume debug telemetry (~1 row per real field tick, matching
-    `substrate_attention_frames`' cadence) -- no retention/pruning is wired up in this patch;
-    a disclosed follow-up once calibration is done, not solved here.
+    `substrate_attention_frames`' cadence) -- bounded by
+    `settings.goal_provenance_streak_ticks_retention_days` (default 14, applied at boot in
+    `main.py`, matching `drive_audits_retention_days`' existing pattern).
     """
 
     __tablename__ = "goal_provenance_streak_ticks"

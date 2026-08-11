@@ -74,8 +74,9 @@ class DominanceStreakTickV1(BaseModel):
     GraphReadyArtifact's confidence/provenance/join_keys ceremony onto it would misrepresent
     what it is. Meant to be temporary: collect a few days, run
     scripts/analysis/measure_goal_provenance_streak_distribution.py, decide on
-    ORION_GOAL_PROVENANCE_MIN_STREAK, then this table's growth is a disclosed, known
-    follow-up (retire the channel/table, or add real retention) -- not solved in this patch.
+    ORION_GOAL_PROVENANCE_MIN_STREAK, then retire the channel/table -- a real, disclosed
+    follow-up. Growth in the meantime is bounded (not unbounded-by-accident): sql-writer
+    applies goal_provenance_streak_ticks_retention_days (default 14) at boot.
     """
 
     model_config = ConfigDict(extra="forbid", populate_by_name=True)
@@ -93,8 +94,16 @@ class DominanceStreakTickV1(BaseModel):
     # per row since the setting could change across the observation window this telemetry is
     # meant to span.
     min_streak_at_tick: int = Field(ge=1)
-    # Whether this tick's streak_count >= min_streak_at_tick -- i.e. whether this exact tick
-    # is the one that would have triggered (or did trigger) a FieldGoalProvenanceV1 emission.
+    # Mirrors update_dominance_streak's own `should_emit` return value -- i.e. whether this
+    # exact tick is the one that would have triggered (or did trigger) a
+    # FieldGoalProvenanceV1 emission. NOT simply `streak_count >= min_streak_at_tick`
+    # recomputed independently: update_dominance_streak unconditionally returns
+    # qualified=False on the tick a streak resets to a new target (streak_count=1), even at
+    # min_streak_at_tick=1 where 1 >= 1 would otherwise read as qualifying (see that
+    # function's own reset branch). Real analysis should reconstruct qualification from
+    # completed-run max_count vs. a candidate min_streak directly, not trust this raw
+    # per-row field at face value -- see measure_goal_provenance_streak_distribution.py's
+    # qualification_rate_at, which does exactly that instead of reading this column.
     qualified: bool
     source_field_tick_id: str
     source_attention_frame_id: str

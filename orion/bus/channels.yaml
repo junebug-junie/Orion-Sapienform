@@ -1894,7 +1894,8 @@ channels:
     # -- that channel alone is a censored sample (only ever shows streaks that already
     # survived), this one is the raw signal underneath it. Meant to be temporary: collect a
     # few days, run scripts/analysis/measure_goal_provenance_streak_distribution.py, decide,
-    # then this channel/table's continued growth is a disclosed follow-up, not solved here.
+    # then retire this channel -- a real follow-up, but growth until then is bounded (sql-
+    # writer applies GOAL_PROVENANCE_STREAK_TICKS_RETENTION_DAYS, default 14, at boot).
     producer_services: ["orion-attention-runtime"]
     consumer_services: ["orion-sql-writer"]
     stability: "experimental"

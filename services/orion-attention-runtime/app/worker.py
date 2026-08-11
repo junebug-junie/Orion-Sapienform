@@ -223,29 +223,64 @@ class AttentionRuntimeWorker:
         )
         return goal, streak_tick
 
-    async def _publish_goal(self, goal: FieldGoalProvenanceV1) -> None:
+    async def _publish_envelope(
+        self,
+        *,
+        kind: str,
+        channel: str,
+        payload: dict,
+        log_label: str,
+        failure_event: str,
+        loud_on_failure: bool,
+    ) -> bool:
+        """Shared envelope-build-and-publish scaffolding for _publish_goal and
+        _publish_streak_tick (factored 2026-08-11, review fix: the two had already drifted
+        once -- goal_provenance's success line vs. streak_tick's silence -- exactly the risk
+        of hand-duplicating this). Returns True on a successful publish, False otherwise;
+        never raises. `loud_on_failure` controls severity only, not whether this is caught:
+        both callers are equally never allowed to propagate a bus failure into the tick loop.
+        """
         if self._bus is None:
-            return
+            return False
         try:
             from orion.core.bus.bus_schemas import BaseEnvelope, ServiceRef
             from orion.core.bus.resilience import publish_with_reconnect
 
             env = BaseEnvelope(
-                kind=goal.kind,
+                kind=kind,
                 source=ServiceRef(
                     name=self._settings.service_name,
                     version=self._settings.service_version,
                     node=self._settings.node_name,
                 ),
                 correlation_id=uuid4(),
-                payload=goal.model_dump(mode="json"),
+                payload=payload,
             )
-            await publish_with_reconnect(
-                self._bus,
-                self._settings.channel_goal_proposal,
-                env,
-                log_label="attention_runtime_goal_provenance",
-            )
+            await publish_with_reconnect(self._bus, channel, env, log_label=log_label)
+            return True
+        except Exception:
+            if loud_on_failure:
+                logger.exception(failure_event)
+            else:
+                # Debug telemetry: warning, not exception -- visible in normal log
+                # aggregation (unlike a bare .debug(), which would make a fully-broken
+                # publish path for this whole patch's purpose indistinguishable from
+                # "insufficient data yet" in the analysis script's own report), but
+                # deliberately quieter than field_goal_provenance_publish_failed, which
+                # stays the one real incident-worthy failure on this path.
+                logger.warning(failure_event, exc_info=True)
+            return False
+
+    async def _publish_goal(self, goal: FieldGoalProvenanceV1) -> None:
+        published = await self._publish_envelope(
+            kind=goal.kind,
+            channel=self._settings.channel_goal_proposal,
+            payload=goal.model_dump(mode="json"),
+            log_label="attention_runtime_goal_provenance",
+            failure_event="field_goal_provenance_publish_failed",
+            loud_on_failure=True,
+        )
+        if published:
             logger.info(
                 "field_goal_provenance_published artifact_id=%s field_target_id=%s "
                 "salience=%.3f streak=%d",
@@ -254,33 +289,13 @@ class AttentionRuntimeWorker:
                 goal.salience_score,
                 self._node_streak.count,
             )
-        except Exception:
-            logger.exception("field_goal_provenance_publish_failed")
 
     async def _publish_streak_tick(self, streak_tick: DominanceStreakTickV1) -> None:
-        if self._bus is None:
-            return
-        try:
-            from orion.core.bus.bus_schemas import BaseEnvelope, ServiceRef
-            from orion.core.bus.resilience import publish_with_reconnect
-
-            env = BaseEnvelope(
-                kind="debug.attention.streak_tick.v1",
-                source=ServiceRef(
-                    name=self._settings.service_name,
-                    version=self._settings.service_version,
-                    node=self._settings.node_name,
-                ),
-                correlation_id=uuid4(),
-                payload=streak_tick.model_dump(mode="json"),
-            )
-            await publish_with_reconnect(
-                self._bus,
-                self._settings.channel_goal_provenance_streak_tick,
-                env,
-                log_label="attention_runtime_streak_tick",
-            )
-        except Exception:
-            # Debug telemetry: never let a publish failure here look like a real incident --
-            # field_goal_provenance_publish_failed above stays the loud one.
-            logger.debug("goal_provenance_streak_tick_publish_failed", exc_info=True)
+        await self._publish_envelope(
+            kind="debug.attention.streak_tick.v1",
+            channel=self._settings.channel_goal_provenance_streak_tick,
+            payload=streak_tick.model_dump(mode="json"),
+            log_label="attention_runtime_streak_tick",
+            failure_event="goal_provenance_streak_tick_publish_failed",
+            loud_on_failure=False,
+        )

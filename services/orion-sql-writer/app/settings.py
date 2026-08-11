@@ -225,6 +225,21 @@ class Settings(BaseSettings):
     # gets a new live producer).
     drive_audits_retention_days: int = Field(0, alias="DRIVE_AUDITS_RETENTION_DAYS")
 
+    # goal_provenance_streak_ticks (2026-08-11, Part H debug telemetry, review fix): unlike
+    # drive_audits above, this table has a real, currently-live producer and no natural
+    # ceiling -- ~1 row per real orion-attention-runtime field tick, matching
+    # substrate_attention_frames' cadence (~43k rows/day per that table's own retention
+    # comment). Defaults ON (unlike drive_audits' 0/disabled default) precisely because this
+    # is meant to be temporary, collect-then-decide instrumentation: CLAUDE.md's own
+    # transport_prediction_error incident is the exact "known temporary but nobody removed
+    # it" failure mode this default exists to avoid. 14 days comfortably spans the "collect a
+    # few days, then run measure_goal_provenance_streak_distribution.py and decide" window
+    # this instrumentation exists for, with room to spare if that decision takes longer than
+    # planned. 0 disables pruning.
+    goal_provenance_streak_ticks_retention_days: int = Field(
+        14, alias="GOAL_PROVENANCE_STREAK_TICKS_RETENTION_DAYS"
+    )
+
     # Guardrails: grammar lane is async-isolated; operational writes use concurrent Hunter + pool limits.
     sql_writer_concurrent_handlers: bool = Field(True, alias="SQL_WRITER_CONCURRENT_HANDLERS")
     sql_writer_max_inflight: int = Field(12, alias="SQL_WRITER_MAX_INFLIGHT")

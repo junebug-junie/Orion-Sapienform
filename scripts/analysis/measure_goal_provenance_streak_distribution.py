@@ -27,11 +27,18 @@ from __future__ import annotations
 import argparse
 import logging
 import os
+import sys
 from collections import Counter
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Optional
+
+# Explicit path insert (not a plain relative import) so this module loads the same way
+# whether run directly (`python scripts/analysis/measure_goal_provenance_streak_distribution.py`)
+# or loaded by file path via importlib, as this module's own test file does.
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+from _pg_readonly import open_readonly_connection  # noqa: E402
 
 logger = logging.getLogger("orion.analysis.goal_provenance_streak_distribution")
 
@@ -72,12 +79,17 @@ class StreakRun:
     # length is unknown (right-censored), not a real completed measurement. Excluded
     # from the distribution by default; see `reconstruct_streak_runs`'s docstring.
     ongoing: bool
+    # True only for the FIRST run when the caller knows older history existed beyond
+    # what was fetched (left-censored: this run may have started before the fetched
+    # window, so its true start/full length is unknown, same rationale as `ongoing`
+    # for the last run). Always False when the full real history was fetched.
+    left_censored: bool
     # True if this run ever crossed its own min_streak_at_tick while it was live --
     # i.e. it would have (or did) trigger a real FieldGoalProvenanceV1 emission.
     qualified: bool
 
 
-def reconstruct_streak_runs(rows: list[StreakTickRow]) -> list[StreakRun]:
+def reconstruct_streak_runs(rows: list[StreakTickRow], *, first_run_left_censored: bool = False) -> list[StreakRun]:
     """Group a time-ordered sequence of per-tick rows into maximal runs of
     consecutive ticks sharing the same non-null `target_id`.
 
@@ -86,9 +98,12 @@ def reconstruct_streak_runs(rows: list[StreakTickRow]) -> list[StreakRun]:
     case -- rows with `target_id=None` are dropped entirely, they are not a run
     of length zero). The LAST run in the input is marked `ongoing=True` and its
     `max_count` is a lower bound, not its true final length -- the streak may
-    keep growing on ticks that haven't happened yet. Rows must already be sorted
-    ascending by `observed_at`; this function does not sort (the caller's SQL
-    query is the single source of ordering truth).
+    keep growing on ticks that haven't happened yet. If `first_run_left_censored`
+    is True (the caller fetched a bounded window and knows older history exists
+    before it), the FIRST run is marked `left_censored=True` for the same reason
+    in reverse: it may have started before the fetched window. Rows must already
+    be sorted ascending by `observed_at`; this function does not sort (the
+    caller's SQL query is the single source of ordering truth).
     """
     runs: list[StreakRun] = []
     current: Optional[dict[str, Any]] = None
@@ -104,6 +119,7 @@ def reconstruct_streak_runs(rows: list[StreakTickRow]) -> list[StreakRun]:
                         start_ts=current["start_ts"],
                         end_ts=current["end_ts"],
                         ongoing=False,
+                        left_censored=False,
                         qualified=current["qualified"],
                     )
                 )
@@ -119,6 +135,7 @@ def reconstruct_streak_runs(rows: list[StreakTickRow]) -> list[StreakRun]:
                         start_ts=current["start_ts"],
                         end_ts=current["end_ts"],
                         ongoing=False,
+                        left_censored=False,
                         qualified=current["qualified"],
                     )
                 )
@@ -145,17 +162,30 @@ def reconstruct_streak_runs(rows: list[StreakTickRow]) -> list[StreakRun]:
                 start_ts=current["start_ts"],
                 end_ts=current["end_ts"],
                 ongoing=True,
+                left_censored=False,
                 qualified=current["qualified"],
             )
         )
+
+    if first_run_left_censored and runs:
+        import dataclasses
+
+        runs[0] = dataclasses.replace(runs[0], left_censored=True)
     return runs
 
 
+def _is_completed(run: StreakRun) -> bool:
+    """A run is a real, fully-measured completed run only if it is neither
+    right-censored (`ongoing` -- may still be growing) nor left-censored
+    (`left_censored` -- may have started before a truncated fetch window)."""
+    return not run.ongoing and not run.left_censored
+
+
 def length_distribution(runs: list[StreakRun]) -> Counter:
-    """Histogram of completed runs' `max_count`. `ongoing` runs are excluded --
-    their true final length is unknown, and including a lower-bound value would
-    understate the real distribution's tail."""
-    return Counter(r.max_count for r in runs if not r.ongoing)
+    """Histogram of completed runs' `max_count`. Censored runs (either end) are
+    excluded -- their true final length is unknown, and including a lower-bound
+    value would understate the real distribution's tail."""
+    return Counter(r.max_count for r in runs if _is_completed(r))
 
 
 def qualification_rate_at(runs: list[StreakRun], min_streak: int) -> Optional[float]:
@@ -163,7 +193,7 @@ def qualification_rate_at(runs: list[StreakRun], min_streak: int) -> Optional[fl
     share of real dominance runs would clear this candidate debounce. `None` if
     there are no completed runs to measure (not zero -- zero would falsely read
     as 'nothing ever qualifies')."""
-    completed = [r for r in runs if not r.ongoing]
+    completed = [r for r in runs if _is_completed(r)]
     if not completed:
         return None
     return sum(1 for r in completed if r.max_count >= min_streak) / len(completed)
@@ -172,58 +202,44 @@ def qualification_rate_at(runs: list[StreakRun], min_streak: int) -> Optional[fl
 def target_id_distribution(runs: list[StreakRun]) -> Counter:
     """Which target_ids actually won real dominance runs, and how often --
     completed runs only, same censoring rationale as `length_distribution`."""
-    return Counter(r.target_id for r in runs if not r.ongoing)
+    return Counter(r.target_id for r in runs if _is_completed(r))
 
 
 # ===========================================================================
-# I/O layer -- psycopg2 read-only. Connection contract mirrors
-# measure_emergent_clustering_probe.py exactly (refuses a non-read-only
-# session).
+# I/O layer -- psycopg2 read-only. open_readonly_connection is shared (see
+# _pg_readonly.py); its connection contract still mirrors
+# measure_emergent_clustering_probe.py's own (pre-existing, un-migrated) copy
+# exactly (refuses a non-read-only session).
 # ===========================================================================
 
 
-def open_readonly_connection(dsn: str):
-    try:
-        import psycopg2
-    except Exception:  # pragma: no cover
-        logger.error("psycopg2 unavailable; cannot open DB session")
-        return None
-    try:
-        conn = psycopg2.connect(dsn)
-    except Exception:
-        logger.error("failed to connect to postgres", exc_info=True)
-        return None
-    try:
-        conn.autocommit = True
-        with conn.cursor() as cur:
-            cur.execute("SET default_transaction_read_only = on;")
-            cur.execute("SHOW default_transaction_read_only;")
-            value = cur.fetchone()
-        if not value or str(value[0]).lower() != "on":
-            logger.error("refusing to run: session is not read-only (got %r)", value)
-            conn.close()
-            return None
-    except Exception:
-        logger.error("failed to enforce read-only session", exc_info=True)
-        try:
-            conn.close()
-        except Exception:
-            pass
-        return None
-    return conn
+def fetch_streak_tick_rows(conn, max_rows: int = MAX_ROWS) -> tuple[list[StreakTickRow], bool, bool]:
+    """The NEWEST `max_rows` real rows, returned in ASC order (oldest-first) for
+    `reconstruct_streak_runs`.
 
+    Fetches DESC (most recent first) then reverses in Python -- deliberately the
+    newest slice, not the oldest (review fix, 2026-08-11): fetching the oldest
+    `max_rows` via `ORDER BY ... ASC LIMIT` would mean every run past
+    MAX_ROWS accumulated silently re-analyzes the identical stale slice forever
+    and never sees new data once the table outgrows the limit. The newest slice
+    is also the one that actually matters for a "should we change the live
+    default now" calibration question.
 
-def fetch_streak_tick_rows(conn, max_rows: int = MAX_ROWS) -> tuple[list[StreakTickRow], bool]:
-    """All real rows, ASC by observed_at (falls back to created_at for ties/nulls)."""
+    Returns `(rows, truncated, ok)`: `ok=False` means the query itself failed
+    (bad connection, missing table, schema drift) -- distinct from `rows=[]`
+    with `ok=True`, which means the query succeeded and the table is genuinely
+    (near-)empty. Conflating these two would report "insufficient data, re-run
+    later" for a broken query that will never self-heal by waiting.
+    """
     if conn is None:
-        return [], False
+        return [], False, False
     try:
         with conn.cursor() as cur:
             cur.execute(
                 """
                 SELECT observed_at, target_id, streak_count, min_streak_at_tick, qualified
                 FROM goal_provenance_streak_ticks
-                ORDER BY observed_at ASC, created_at ASC
+                ORDER BY observed_at DESC, created_at DESC
                 LIMIT %s
                 """,
                 (max_rows,),
@@ -231,7 +247,7 @@ def fetch_streak_tick_rows(conn, max_rows: int = MAX_ROWS) -> tuple[list[StreakT
             rows = cur.fetchall()
     except Exception:
         logger.error("failed to fetch goal_provenance_streak_ticks rows", exc_info=True)
-        return [], False
+        return [], False, False
     out: list[StreakTickRow] = []
     for observed_at, target_id, streak_count, min_streak_at_tick, qualified in rows:
         if observed_at is None:
@@ -247,7 +263,8 @@ def fetch_streak_tick_rows(conn, max_rows: int = MAX_ROWS) -> tuple[list[StreakT
                 qualified=bool(qualified),
             )
         )
-    return out, len(rows) >= max_rows
+    out.reverse()  # DESC fetch -> ASC order for reconstruction
+    return out, len(rows) >= max_rows, True
 
 
 # ===========================================================================
@@ -261,10 +278,21 @@ def write_runs_csv(path: Path, runs: list[StreakRun]) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     with path.open("w", newline="", encoding="utf-8") as fh:
         writer = csv.writer(fh)
-        writer.writerow(["target_id", "max_count", "n_ticks", "start_ts", "end_ts", "ongoing", "qualified"])
+        writer.writerow(
+            ["target_id", "max_count", "n_ticks", "start_ts", "end_ts", "ongoing", "left_censored", "qualified"]
+        )
         for r in runs:
             writer.writerow(
-                [r.target_id, r.max_count, r.n_ticks, r.start_ts.isoformat(), r.end_ts.isoformat(), r.ongoing, r.qualified]
+                [
+                    r.target_id,
+                    r.max_count,
+                    r.n_ticks,
+                    r.start_ts.isoformat(),
+                    r.end_ts.isoformat(),
+                    r.ongoing,
+                    r.left_censored,
+                    r.qualified,
+                ]
             )
 
 
@@ -275,7 +303,7 @@ def render_report(
     current_min_streak: Optional[int],
     caveats: list[str],
 ) -> str:
-    completed = [r for r in runs if not r.ongoing]
+    completed = [r for r in runs if _is_completed(r)]
     dist = length_distribution(runs)
     targets = target_id_distribution(runs)
 
@@ -289,7 +317,9 @@ def render_report(
         "",
         f"- Total per-tick rows: {total_rows}",
         f"- Reconstructed runs: {len(runs)} ({len(completed)} completed, "
-        f"{len(runs) - len(completed)} still ongoing as of the last observed row)",
+        f"{sum(1 for r in runs if r.ongoing)} still ongoing as of the last observed row, "
+        f"{sum(1 for r in runs if r.left_censored)} left-censored -- may have started before "
+        f"the fetched window)",
         "",
     ]
 
@@ -373,13 +403,28 @@ def run() -> int:
         print(report)
         return 2
 
-    rows, truncated = fetch_streak_tick_rows(conn)
+    rows, truncated, query_ok = fetch_streak_tick_rows(conn)
     try:
         conn.close()
     except Exception:
         pass
+    if not query_ok:
+        caveats.append(
+            "the goal_provenance_streak_ticks query itself failed (missing table, broken "
+            "query, permission error) -- this is NOT 'insufficient data, wait and re-run': "
+            "see the logged exception for the real cause"
+        )
+        report = render_report(total_rows=0, runs=[], current_min_streak=None, caveats=caveats)
+        REPORT_PATH.write_text(report, encoding="utf-8")
+        print(report)
+        return 2
     if truncated:
-        caveats.append(f"rows truncated at MAX_ROWS={MAX_ROWS} -- ORDER BY observed_at ASC, so the newest rows were dropped")
+        caveats.append(
+            f"rows truncated at MAX_ROWS={MAX_ROWS} -- fetched the newest {MAX_ROWS} rows "
+            "(ORDER BY observed_at DESC), so older history beyond that was dropped; the "
+            "first reconstructed run is marked left_censored (see report) since it may have "
+            "started before this fetch window"
+        )
 
     total_rows = len(rows)
     if total_rows < MIN_TOTAL_ROWS:
@@ -393,7 +438,7 @@ def run() -> int:
         return 2
 
     current_min_streak = rows[-1].min_streak_at_tick
-    runs = reconstruct_streak_runs(rows)
+    runs = reconstruct_streak_runs(rows, first_run_left_censored=truncated)
     write_runs_csv(CSV_PATH, runs)
     report = render_report(total_rows=total_rows, runs=runs, current_min_streak=current_min_streak, caveats=caveats)
     REPORT_PATH.write_text(report, encoding="utf-8")

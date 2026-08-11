@@ -133,6 +133,31 @@ def test_qualification_rate_at_returns_none_with_no_completed_runs() -> None:
     assert mod.qualification_rate_at(runs, 3) is None
 
 
+def test_reconstruct_streak_runs_marks_first_run_left_censored_when_requested() -> None:
+    rows = [
+        _row(0, "node:a", 5),  # would be mid-stream in real data if fetched from a truncated window
+        _row(1, "node:b", 1),  # a's run ends; b is ongoing
+    ]
+    runs = mod.reconstruct_streak_runs(rows, first_run_left_censored=True)
+    assert runs[0].target_id == "node:a"
+    assert runs[0].left_censored is True
+    assert runs[1].left_censored is False  # only the first run gets marked, not every run
+
+
+def test_reconstruct_streak_runs_left_censored_default_false() -> None:
+    rows = [_row(0, "node:a", 1), _row(1, "node:b", 1)]
+    runs = mod.reconstruct_streak_runs(rows)
+    assert all(r.left_censored is False for r in runs)
+
+
+def test_length_distribution_excludes_left_censored_run() -> None:
+    rows = [_row(0, "node:a", 3), _row(1, "node:b", 1), _row(2, "node:b", 2)]
+    runs = mod.reconstruct_streak_runs(rows, first_run_left_censored=True)
+    # a is left-censored (excluded), b is ongoing (excluded) -- nothing left to measure.
+    assert mod.length_distribution(runs) == {}
+    assert mod.qualification_rate_at(runs, 1) is None
+
+
 def test_target_id_distribution_counts_completed_runs_only() -> None:
     rows = [
         _row(0, "node:a", 1),

@@ -1489,7 +1489,10 @@ def test_externally_owned_metadata_keys_translation_matches_real_encoding():
 
     raw_metadata = {key: "sentinel" for key in EXTERNALLY_OWNED_METADATA_KEYS}
     encoded = _dynamics_properties_from_metadata(raw_metadata)
-    known_translations = {"contributing_turn_ids": "contributing_turn_ids_json"}
+    known_translations = {
+        "contributing_turn_ids": "contributing_turn_ids_json",
+        "prediction_error_evidence_event_ids": "prediction_error_evidence_event_ids_json",
+    }
 
     for raw_key in EXTERNALLY_OWNED_METADATA_KEYS:
         encoded_key = known_translations.get(raw_key, raw_key)

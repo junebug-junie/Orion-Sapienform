@@ -338,3 +338,149 @@ Still open, still deferred (unchanged from this doc's original scope): fixing
 extending `causal_helpers.py` to the grammar-atom layer, and any new
 daydream/reverie consumer. This patch closes one small, real evidence gap; it
 does not build a general causal-inference engine.
+
+## Third patch, separate PR: durable evidence on the self-model row itself
+
+An adversarial pass on the second patch above found the fix was
+incomplete: `caused_by_event_ids` reaches `substrate_reduction_receipts`,
+which prunes on `ORION_RECEIPT_RETENTION_SUCCESS_MINUTES` -- **30 minutes
+by default, live-confirmed 2026-08-11** (`SELECT min(created_at) FROM
+substrate_reduction_receipts WHERE ...` returned a row exactly 31 minutes
+old, no older). Meanwhile `substrate_attention_self_model` -- the row that
+already carries `prediction_error_by_domain` from the first patch above --
+lives for `attention_self_model_log_retention_hours` (7 days by default).
+Any consumer triggered on a reflective/batch cadence rather than watching
+the bus in real time would find the evidence already gone almost every
+time it looked. There was also no join key at all: `AttentionSelfModelV1`
+had no `receipt_id`/`delta_id` field, so even a real-time consumer had to
+correlate by timestamp + domain name across two independently-ticking
+loops, not a real foreign key.
+
+Fix: stamp the same evidence onto the durable FalkorDB node the scalar
+itself already lives on (`node:substrate.<domain>`), then read it back
+into the self-model row alongside `prediction_error_by_domain`. No new
+storage, no new retention window to manage, no join required -- the scalar
+and its evidence now live on the same object.
+
+- `services/orion-substrate-runtime/app/worker.py`:
+  - `_write_prediction_error_node()` gained an `evidence_event_ids:
+    Sequence[str] = ()` param, written to
+    `metadata['prediction_error_evidence_event_ids']`. Unlike
+    `contributing_turn_ids` (accumulate + cap across writes), this fully
+    REPLACES on every write -- it names the events behind *this* write's
+    own `prediction_error` value, so it must move in lockstep with that
+    value, never lag it the way an accumulated list would.
+  - The four grammar-event-driven tick methods (biometrics/execution/chat/
+    route) now compute their evidence list once per tick and pass it to
+    *both* `_prediction_error_receipt()` (unchanged, still the 30-minute
+    copy) and `_write_prediction_error_node()` (the new durable copy) --
+    same evidence, two destinations with very different lifespans.
+  - New `_brain_frame_prediction_error_evidence_by_domain()`, a direct
+    companion to the existing `_brain_frame_prediction_error_by_domain()`
+    -- same node snapshot, zero extra I/O, reads
+    `metadata['prediction_error_evidence_event_ids']` instead of
+    `metadata['prediction_error']`. Wired into both live callers of
+    `reduce_attention_self_model()` (`_attention_self_model_tick()` and
+    `_brain_frame_tick()`).
+- `orion/schemas/attention_self_model.py`: added
+  `prediction_error_evidence_by_domain: dict[str, list[str]] | None`,
+  additive, no `extra="forbid"` conflict.
+- `orion/substrate/attention_self_model.py::reduce_attention_self_model()`:
+  new `prediction_error_evidence_by_domain` param, populated filtered
+  against `model.prediction_error_by_domain`'s own keys (not just
+  `ACTIVE_INFERENCE_DOMAINS` directly) -- a domain's evidence can never
+  appear without its own scalar also appearing, closing a gap a first pass
+  of this filter missed (caught by the reducer's own unit tests, not
+  review).
+- 12 new tests across three files: 5 on the pure reducer
+  (`test_attention_self_model.py`), 4 on `_write_prediction_error_node()`'s
+  new param (including a replace-not-accumulate regression test and a cap
+  test), 6 on the new `_brain_frame_prediction_error_evidence_by_domain()`
+  helper (malformed-input tolerance, unknown node_ids, empty list).
+
+Tests: `orion/substrate/tests/test_attention_self_model.py` (57 passed),
+`services/orion-substrate-runtime/tests/
+test_worker_prediction_error_node.py` + `test_worker_prediction_error_
+evidence_by_domain.py` + `test_worker_prediction_error_receipt_evidence.py`
+(29 passed), `test_worker_attention_self_model_tick.py` (16 passed).
+Broader regression: `pytest tests/ -k "worker or prediction_error or
+brain_frame"` (139 passed / same 3 pre-existing unrelated failures as the
+second patch above).
+
+### Review found the patch didn't actually work against the real backend
+
+The first review pass found this shipped a no-op against live FalkorDB:
+`prediction_error_evidence_event_ids` was never added to
+`orion/substrate/falkor_codec.py`'s closed `DYNAMICS_METADATA_KEYS`
+allowlist, so `encode_node_properties()`/`decode_concept_node()` silently
+dropped it from every real Cypher write and read. It only *appeared* to
+work because `FalkorSubstrateStore`'s in-process cache retains the full
+Python object within the same long-lived process, and this patch's own
+tests all used hand-rolled fake stores that record the raw node object
+without round-tripping through the real codec -- so the gap was invisible
+to the test suite that shipped with it. Directly contradicted the patch's
+stated goal.
+
+Fixed by adding the key to `DYNAMICS_METADATA_KEYS`,
+`_dynamics_properties_from_metadata()` (encode), and
+`_dynamics_metadata_from_row()` (decode) -- same "omit when absent/empty"
+convention `contributing_turn_ids` already established. Also fixed a
+second, previously-undiscovered instance of the *exact same class of bug*
+one file over: `orion/substrate/falkor_store.py`'s raw-key -> encoded-key
+translation for `EXTERNALLY_OWNED_METADATA_KEYS` was a hardcoded ternary
+that only knew about `contributing_turn_ids`'s `_json` suffix -- adding
+the new key to `EXTERNALLY_OWNED_METADATA_KEYS` without updating that
+ternary would have let `SubstrateDynamicsEngine.tick()`'s own periodic
+node re-writes silently clobber fresh evidence back to stale/absent
+shortly after `_write_prediction_error_node()` wrote it, the same
+"frozen field" incident already documented (and fixed) for
+`prediction_error`/`contributing_turn_ids` on 2026-07-29. Caught by this
+repo's own pre-existing drift-guard test
+(`test_externally_owned_metadata_keys_translation_matches_real_encoding`,
+`orion/substrate/tests/test_falkor_store.py`) failing immediately once the
+new key was added to the allowlist -- confirmed live before the fix, not
+assumed. Fixed by moving the raw->encoded suffix mapping into a real
+constant (`JSON_SUFFIXED_EXTERNALLY_OWNED_METADATA_KEYS`,
+`falkor_codec.py`) that `falkor_store.py` imports, instead of a
+hand-maintained ternary -- the next key added to
+`EXTERNALLY_OWNED_METADATA_KEYS` can't silently repeat this.
+
+Also fixed (lower severity, both from the same review pass):
+- `_write_prediction_error_node()`/`_brain_frame_prediction_error_evidence_by_domain()`
+  only surface a domain's evidence when it's genuinely non-empty -- a
+  calm domain's `0.0` scalar reading has no matching `[]` evidence entry.
+  This is a real, intentional asymmetry (not a bug): the Falkor codec's
+  own established convention already omits empty lists on decode, so
+  chasing full key-parity with `prediction_error_by_domain` would fight
+  that convention for no functional gain (every current consumer treats
+  "key absent" and "key present as `[]`" identically). Docstrings/tests
+  corrected to state this honestly rather than overclaim a mirror
+  guarantee that doesn't hold end-to-end.
+- `_brain_frame_prediction_error_by_domain()` and
+  `_brain_frame_prediction_error_evidence_by_domain()` were being called
+  back-to-back over the identical node snapshot at both live call sites,
+  walking it twice for no reason. Both call sites now use a new
+  `_brain_frame_prediction_error_and_evidence_by_domain()` single-pass
+  helper; the two individually-named methods still exist (they have their
+  own direct unit tests) but now delegate to it.
+
+Additional tests from this fix-up pass: 8 in
+`test_falkor_codec.py`/`test_falkor_store.py` (encode/decode round-trip,
+3 fail-open/omit cases, the corrected drift-guard mapping), 2 in
+`test_worker_prediction_error_evidence_by_domain.py` (the combined helper
+matches its two individual siblings). Full regression re-run after this
+fix-up: `pytest orion/substrate/tests/` (508 passed),
+`pytest services/orion-substrate-runtime/tests/ -k "worker or
+prediction_error or brain_frame"` (139 passed, same 3 pre-existing
+unrelated failures) -- plus a `git stash` comparison confirming a fuller,
+unfiltered `services/orion-substrate-runtime/tests/` run's additional
+failures (`test_quarantine_truth.py`, `test_reducer_health.py`,
+`test_cursor_reset_auth.py` -- auth-token/env-dependent, not this patch)
+pre-exist on the branch baseline too, equal or worse.
+
+This closes the retention and join-key gaps the adversarial pass found.
+Still not done: the "co-occurrence, not per-event causation" language
+constraint (documented on the new schema field itself, not enforced in
+code -- there is no consumer yet to enforce it against), and any actual
+narrator/consumer that reads this field. Both remain future,
+proposal-mode-scoped work.

@@ -38,6 +38,7 @@ from orion.graph.falkor_client import (
 )
 from orion.graph.property_guard import sanitize_metadata
 from orion.substrate.falkor_codec import (
+    JSON_SUFFIXED_EXTERNALLY_OWNED_METADATA_KEYS,
     decode_edge,
     decode_node,
     encode_edge_properties,
@@ -577,9 +578,22 @@ class FalkorSubstrateStore:
             # becomes contributing_turn_ids_json only once
             # encode_node_properties() runs (see _dynamics_properties_from_metadata,
             # and test_externally_owned_metadata_keys_translation_matches_real_encoding
-            # for the drift guard on this hardcoded translation).
+            # for the drift guard on this translation). List-typed keys get a
+            # _json suffix (JSON_SUFFIXED_EXTERNALLY_OWNED_METADATA_KEYS,
+            # falkor_codec.py -- the single source of truth, not duplicated
+            # here as a hardcoded ternary, after that exact drift already
+            # happened once: 2026-08-11, adding prediction_error_evidence_
+            # event_ids to EXTERNALLY_OWNED_METADATA_KEYS without updating a
+            # then-hardcoded ternary here reproduced the stale-clobber bug
+            # this whole mechanism exists to prevent, caught only by the
+            # drift-guard test below, not by inspection). Scalar-typed keys
+            # (e.g. prediction_error) keep their raw name.
             for key in skip_metadata_keys:
-                skip_encoded_keys.add("contributing_turn_ids_json" if key == "contributing_turn_ids" else key)
+                skip_encoded_keys.add(
+                    f"{key}_json"
+                    if key in JSON_SUFFIXED_EXTERNALLY_OWNED_METADATA_KEYS
+                    else key
+                )
 
         params = encode_node_properties(node, identity_key)
         label = node_label_for_kind(str(node.node_kind))

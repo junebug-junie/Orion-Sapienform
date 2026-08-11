@@ -104,6 +104,33 @@ class AttentionSelfModelV1(BaseModel):
     # that includes a domain the confidence figure didn't actually use.
     prediction_error_by_domain: dict[str, float] | None = None
 
+    # --- The real grammar event_ids behind each domain's prediction_error,
+    # additive. 2026-08-11: closes the retention gap PR #1547/#1551 shipped
+    # with. #1551 added `caused_by_event_ids` to the prediction-error
+    # receipt (`ReductionReceiptV1`/`substrate_reduction_receipts`), but
+    # that table prunes in 30 minutes (`ORION_RECEIPT_RETENTION_SUCCESS_
+    # MINUTES`) -- live-confirmed 2026-08-11: the oldest surviving row was
+    # already 31 minutes old. This self-model row already lives for
+    # `attention_self_model_log_retention_hours` (7 days by default) and
+    # already carries `prediction_error_by_domain` above -- stamping the
+    # evidence here too means the scalar, its per-domain breakdown, and the
+    # real events behind it all live on the same durable object, with no
+    # separate join or 30-minute race against the receipt's own pruning.
+    # Same ACTIVE_INFERENCE_DOMAINS restriction as prediction_error_by_domain,
+    # so a domain never appears here without also appearing there -- the
+    # reverse is not guaranteed: a calm tick with nothing to show for a
+    # domain simply omits that key here while prediction_error_by_domain
+    # still carries its honest 0.0. This is a subset, not a full mirror.
+    #
+    # These are the events *processed in the tick* whose projection diff
+    # produced that domain's reading -- honest co-occurrence provenance, not
+    # per-event causal attribution (the diff is a single before/after score
+    # over the whole batch, not attributable to any one event in it). Any
+    # future consumer narrating this field must say "around the same time
+    # as" / "the events processed alongside," never "caused by X
+    # specifically."
+    prediction_error_evidence_by_domain: dict[str, list[str]] | None = None
+
     # --- What's predicted to shift next (modest, honestly scoped) ----------
     predicted_shift: str | None = None
     predicted_shift_basis: str = ""

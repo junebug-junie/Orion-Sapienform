@@ -132,6 +132,7 @@ def test_encode_concept_node_properties_are_native_scalars_without_payload_json(
         "dormancy_updated_at": None,
         "prediction_error": None,
         "contributing_turn_ids_json": "[]",
+        "prediction_error_evidence_event_ids_json": "[]",
     }
 
 
@@ -291,6 +292,7 @@ def _concept_with_dynamics_metadata() -> ConceptNodeV1:
                 "dormancy_updated_at": "2026-07-17T00:00:00+00:00",
                 "prediction_error": 0.8,
                 "contributing_turn_ids": ["turn-1", "turn-2"],
+                "prediction_error_evidence_event_ids": ["gev_1", "gev_2"],
             }
         }
     )
@@ -307,6 +309,7 @@ def test_encode_promotes_dynamics_metadata_keys_to_native_scalars():
     assert props["dormancy_updated_at"] == "2026-07-17T00:00:00+00:00"
     assert props["prediction_error"] == 0.8
     assert props["contributing_turn_ids_json"] == '["turn-1", "turn-2"]'
+    assert props["prediction_error_evidence_event_ids_json"] == '["gev_1", "gev_2"]'
 
 
 def test_decode_reconstructs_dynamics_metadata_from_row():
@@ -321,9 +324,14 @@ def test_decode_reconstructs_dynamics_metadata_from_row():
     assert node.metadata.get("dormancy_updated_at") == "2026-07-17T00:00:00+00:00"
     assert node.metadata.get("prediction_error") == 0.8
     assert node.metadata.get("contributing_turn_ids") == ["turn-1", "turn-2"]
+    assert node.metadata.get("prediction_error_evidence_event_ids") == ["gev_1", "gev_2"]
 
 
 def test_dynamics_metadata_round_trips_through_encode_decode():
+    """Review finding, 2026-08-11: this exact test existed before
+    `prediction_error_evidence_event_ids` shipped and would have caught its
+    encode/decode gap immediately -- it just wasn't in the field list below
+    yet. Now included."""
     original = _concept_with_dynamics_metadata()
 
     decoded = decode_concept_node(encode_node_properties(original, identity_key="concept:alpha"))
@@ -336,6 +344,7 @@ def test_dynamics_metadata_round_trips_through_encode_decode():
         "dormancy_updated_at",
         "prediction_error",
         "contributing_turn_ids",
+        "prediction_error_evidence_event_ids",
     ):
         assert decoded.metadata.get(key) == original.metadata.get(key)
 
@@ -394,6 +403,50 @@ def test_contributing_turn_ids_wrong_json_shape_decodes_fail_open_not_raise():
     node = decode_concept_node(row)
     assert node is not None
     assert "contributing_turn_ids" not in node.metadata
+
+
+def test_prediction_error_evidence_event_ids_empty_list_is_omitted_on_decode():
+    """Same omit-when-absent convention as contributing_turn_ids -- the
+    common case (a concept node _write_prediction_error_node never touched)
+    must not decode to a fabricated empty list sitting in metadata."""
+    row = encode_node_properties(_concept(), identity_key="concept:alpha")
+    assert row["prediction_error_evidence_event_ids_json"] == "[]"
+
+    node = decode_concept_node(row)
+    assert node is not None
+    assert "prediction_error_evidence_event_ids" not in node.metadata
+
+
+def test_prediction_error_evidence_event_ids_missing_json_key_decodes_without_raising():
+    """A row written before this field shipped (no
+    prediction_error_evidence_event_ids_json column value at all) must
+    decode fail-open, not raise."""
+    row = encode_node_properties(_concept(), identity_key="concept:alpha")
+    del row["prediction_error_evidence_event_ids_json"]
+
+    node = decode_concept_node(row)
+    assert node is not None
+    assert "prediction_error_evidence_event_ids" not in node.metadata
+
+
+def test_prediction_error_evidence_event_ids_malformed_json_decodes_fail_open_not_raise():
+    """Best-effort evidence, same tolerance as contributing_turn_ids -- a
+    corrupted value must not abort decoding the whole node."""
+    row = encode_node_properties(_concept(), identity_key="concept:alpha")
+    row["prediction_error_evidence_event_ids_json"] = "{not-json"
+
+    node = decode_concept_node(row)
+    assert node is not None
+    assert "prediction_error_evidence_event_ids" not in node.metadata
+
+
+def test_prediction_error_evidence_event_ids_wrong_json_shape_decodes_fail_open_not_raise():
+    row = encode_node_properties(_concept(), identity_key="concept:alpha")
+    row["prediction_error_evidence_event_ids_json"] = '{"not": "a list"}'
+
+    node = decode_concept_node(row)
+    assert node is not None
+    assert "prediction_error_evidence_event_ids" not in node.metadata
 
 
 def test_concept_with_no_dynamics_metadata_encodes_and_decodes_with_sane_defaults():

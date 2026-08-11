@@ -8,3 +8,6 @@ jinja2
 # Memory-graph / SHACL validation tests (`tests/test_memory_graph_*`, `orion.memory_graph.validate`)
 rdflib==7.0.0
 pyshacl>=0.26.0,<1.0.0
+# orion.cocreation.affective_signals typo_rate scoring + its tests/replay script
+# (docs/superpowers/specs/2026-07-30-juniper-affective-state-signal-proposal.md)
+pyspellchecker==0.9.0

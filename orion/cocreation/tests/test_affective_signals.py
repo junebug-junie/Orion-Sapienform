@@ -89,6 +89,17 @@ def test_aggregate_scores_sums_counts_not_averages_rates() -> None:
     assert combined.typo_rate == 0.0
 
 
+def test_score_message_compute_typos_false_skips_spellcheck_entirely() -> None:
+    """affective_state.py's producer never reads typo_rate -- must not pay
+    for the spellcheck pass at all when it says so."""
+    scores = score_message("I definately think this is teh right approach", compute_typos=False)
+    assert scores.checked_word_count == 0
+    assert scores.unknown_word_count == 0
+    assert scores.typo_rate is None
+    # swear_frequency (what this caller actually wants) is unaffected.
+    assert scores.swear_frequency == 0.0
+
+
 def test_aggregate_scores_of_empty_list_is_all_none_rates() -> None:
     combined = aggregate_scores([])
     assert combined.word_count == 0

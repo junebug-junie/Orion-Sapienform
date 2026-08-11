@@ -40,6 +40,11 @@ services:
       # gh CLI auth -- see requirements.txt/Dockerfile comment. Set in the
       # real .env, never committed to .env_example with a real value.
       GH_TOKEN: ${COCREATION_SIGNALS_GH_TOKEN}
+      COCREATION_SIGNALS_CLAUDE_PROJECTS_PATH: ${COCREATION_SIGNALS_CLAUDE_PROJECTS_PATH:-/claude-projects}
+      CHANNEL_JUNIPER_AFFECTIVE_STATE: ${CHANNEL_JUNIPER_AFFECTIVE_STATE}
+      COCREATION_SIGNALS_AFFECTIVE_STATE_ENABLED: ${COCREATION_SIGNALS_AFFECTIVE_STATE_ENABLED:-false}
+      COCREATION_SIGNALS_AFFECTIVE_STATE_POLL_INTERVAL_SEC: ${COCREATION_SIGNALS_AFFECTIVE_STATE_POLL_INTERVAL_SEC}
+      COCREATION_SIGNALS_AFFECTIVE_STATE_COLD_START_LOOKBACK_SEC: ${COCREATION_SIGNALS_AFFECTIVE_STATE_COLD_START_LOOKBACK_SEC}
     volumes:
       # Read-only mount of this repo's own working tree -- git_delta.py needs
       # a real `.git` directory (not baked into the image at build time,
@@ -48,6 +53,29 @@ services:
       # configured (COCREATION_SIGNALS_REPO_HOST_PATH), since it varies by
       # deployment node.
       - ${COCREATION_SIGNALS_REPO_HOST_PATH}:${COCREATION_SIGNALS_REPO_PATH:-/repo}:ro
+      # Read-only mount of Juniper's real local ~/.claude/projects tree for
+      # affective_state.py -- deliberately the whole tree (Juniper's explicit
+      # call, 2026-08-11), not scoped to this repo's own transcripts. Only
+      # ever read to compute an in-memory aggregate score (see
+      # orion/cocreation/affective_signals.py) -- raw transcript content
+      # never leaves this container. Host path is operator-configured
+      # (COCREATION_SIGNALS_CLAUDE_PROJECTS_HOST_PATH), since it's per-user.
+      #
+      # COCREATION_SIGNALS_CLAUDE_PROJECTS_PATH MUST be set to the exact same
+      # value as COCREATION_SIGNALS_CLAUDE_PROJECTS_HOST_PATH, not remapped to
+      # a different in-container path -- confirmed live 2026-08-11 against
+      # this real mount: Claude Code represents a cross-project subagent
+      # transcript as an *absolute-path symlink* (e.g. a file under one
+      # session's `subagents/` dir pointing at
+      # `/home/athena/.claude/projects/<other-project>/.../agent-*.jsonl`).
+      # An absolute symlink resolves against the container's own root
+      # filesystem, not the mount's -- remap the mount point and every such
+      # symlink silently breaks (FileNotFoundError, gracefully skipped by
+      # claude_code_ingest.py's OSError handling, but real messages behind
+      # those symlinks are then never scored). Mounting at the identical
+      # path makes every absolute symlink resolve exactly like it does on
+      # the host.
+      - ${COCREATION_SIGNALS_CLAUDE_PROJECTS_HOST_PATH}:${COCREATION_SIGNALS_CLAUDE_PROJECTS_PATH}:ro
     networks:
       - app-net
 

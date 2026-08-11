@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
+from orion.dev_economics import claude_code_ingest
 from orion.dev_economics.claude_code_ingest import (
     iter_all_human_messages,
     iter_transcript_files,
@@ -179,8 +180,103 @@ def test_parse_transcript_file_drops_non_string_timestamp_without_crashing(
     assert messages[0].text == "good timestamp"
 
 
+def test_iter_transcript_files_survives_a_subdirectory_vanishing_mid_walk(
+    tmp_path: Path, monkeypatch
+) -> None:
+    """Code review 2026-08-11: the original glob-based walk was not covered
+    by iter_all_human_messages()'s per-file vanished-file handling if a
+    whole subdirectory (not just one file) disappeared mid-walk -- switched
+    to os.walk(onerror=...) specifically so a vanished subtree is skipped,
+    not fatal, at the directory level too."""
+    import os
+
+    (tmp_path / "good").mkdir()
+    (tmp_path / "good" / "a.jsonl").write_text("{}", encoding="utf-8")
+    (tmp_path / "vanishing").mkdir()
+    (tmp_path / "vanishing" / "b.jsonl").write_text("{}", encoding="utf-8")
+
+    real_walk = os.walk
+
+    def _walk_and_remove_second_dir(top, *args, **kwargs):
+        for dirpath, dirnames, filenames in real_walk(top, *args, **kwargs):
+            if dirpath == str(tmp_path / "vanishing"):
+                continue  # simulate: this subtree is gone by the time we'd scan it
+            yield dirpath, dirnames, filenames
+
+    monkeypatch.setattr(
+        claude_code_ingest.os, "walk", _walk_and_remove_second_dir
+    )
+
+    files = list(iter_transcript_files(tmp_path))
+    assert files == [tmp_path / "good" / "a.jsonl"]
+
+
+def test_parse_transcript_file_normalizes_naive_timestamp_to_utc(tmp_path: Path) -> None:
+    transcript = tmp_path / "session.jsonl"
+    _write_jsonl(
+        transcript,
+        [
+            {
+                "type": "user",
+                "message": {"role": "user", "content": "no offset in this timestamp"},
+                "timestamp": "2026-08-11T00:00:00.000",  # no "Z", no offset
+                "sessionId": "sess-naive",
+                "promptSource": "typed",
+                "origin": {"kind": "human"},
+            }
+        ],
+    )
+    messages = list(parse_transcript_file(transcript))
+    assert len(messages) == 1
+    assert messages[0].timestamp.tzinfo is not None
+
+
 def test_iter_transcript_files_returns_empty_for_missing_root(tmp_path: Path) -> None:
     assert list(iter_transcript_files(tmp_path / "does-not-exist")) == []
+
+
+def test_iter_all_human_messages_survives_a_file_vanishing_mid_walk(
+    tmp_path: Path, monkeypatch
+) -> None:
+    """Confirmed live 2026-08-11 against a real container reading Juniper's
+    real, actively-being-written ~/.claude/projects: a subagent transcript
+    file present in the directory listing was deleted (harness cleanup)
+    before it got opened, raising FileNotFoundError and aborting the whole
+    walk. One vanished file must not lose every other real file's messages."""
+    (tmp_path / "proj").mkdir()
+    good_before = tmp_path / "proj" / "a-before.jsonl"
+    vanishing = tmp_path / "proj" / "b-vanishes.jsonl"
+    good_after = tmp_path / "proj" / "c-after.jsonl"
+    for path, text in (
+        (good_before, "before"),
+        (vanishing, "vanishing"),
+        (good_after, "after"),
+    ):
+        _write_jsonl(
+            path,
+            [
+                {
+                    "type": "user",
+                    "message": {"role": "user", "content": text},
+                    "timestamp": "2026-08-01T00:00:00.000Z",
+                    "sessionId": path.stem,
+                    "promptSource": "typed",
+                    "origin": {"kind": "human"},
+                }
+            ],
+        )
+
+    real_parse = claude_code_ingest.parse_transcript_file
+
+    def _parse_or_vanish(path):
+        if path == vanishing:
+            path.unlink()
+        yield from real_parse(path)
+
+    monkeypatch.setattr(claude_code_ingest, "parse_transcript_file", _parse_or_vanish)
+
+    messages = list(iter_all_human_messages(tmp_path))
+    assert {m.text for m in messages} == {"before", "after"}
 
 
 def test_iter_all_human_messages_walks_every_file_under_root(tmp_path: Path) -> None:

@@ -1,11 +1,16 @@
-# Juniper affective-state signal: scoring library + replay findings
+# Juniper affective-state signal: scoring library, real replay, live producer
 
-Status: **DONE_WITH_CONCERNS**. Implements the measure-before-minting replay required by
-`docs/superpowers/specs/2026-07-30-juniper-affective-state-signal-proposal.md`'s "What trace
-proves it worked" section, and the underlying scoring library. Does **not** wire a live producer
--- the replay surfaced a real architectural/privacy mismatch (see "Why no live producer yet"
-below) that the original proposal doc didn't fully account for, and that needs an explicit steer
-from Juniper before it's built.
+Status: **DONE**. Phase 1 (this doc, originally) implemented the measure-before-minting replay
+required by `docs/superpowers/specs/2026-07-30-juniper-affective-state-signal-proposal.md`'s
+"What trace proves it worked" section, plus the underlying scoring library, and stopped short of
+a live producer pending a steer on mount scope (see "Why no live producer yet [Phase 1]" below).
+Juniper's answer, 2026-08-11: *"cocreation signals should touch the broader claude projects"* --
+the whole `~/.claude/projects` tree, not scoped to just this repo. Phase 2 (same day, same PR)
+builds and deploys the real producer on that basis: `orion/schemas/affective_state.py`
+(`JuniperAffectiveStateV1`), the `orion:substrate:juniper_affective_state` bus channel, and
+`services/orion-cocreation-signals/app/producers/affective_state.py`. **Live, deployed, and
+independently verified end-to-end** -- see "Phase 2: live producer" below, including a real bug
+(broken absolute symlinks) found and fixed via the actual deployment, not just review.
 
 ## What shipped
 
@@ -21,9 +26,13 @@ from Juniper before it's built.
   parses every real local transcript, scores each session, and reports whether each signal is
   non-degenerate and reaches a genuine rest state (same two checks as root `CLAUDE.md`'s
   metric-quality-gate section).
-- 20 tests across both new modules (`orion/dev_economics/tests/test_claude_code_ingest.py`,
-  `orion/cocreation/tests/test_affective_signals.py`), all passing.
-- `pyspellchecker==0.9.0` added to `requirements-dev.txt` (pure-Python, bundled dictionary, no
+- `orion/schemas/affective_state.py`, the `orion:substrate:juniper_affective_state` bus channel,
+  and `services/orion-cocreation-signals/app/producers/affective_state.py` -- the live producer
+  (Phase 2, below).
+- 54 tests total across `orion/dev_economics/tests/`, `orion/cocreation/tests/`, and
+  `services/orion-cocreation-signals/tests/`, all passing.
+- `pyspellchecker==0.9.0` added to `requirements-dev.txt` and
+  `services/orion-cocreation-signals/requirements.txt` (pure-Python, bundled dictionary, no
   network at runtime).
 
 ## Real replay results (113 real local sessions, ~930k spellcheck candidates)
@@ -65,7 +74,7 @@ corpus-trained/expanding dictionary (not a hand-maintained allowlist -- real, on
 cost) or a different fatigue instrument entirely (transcripts don't carry keystroke-level
 correction signal, only the final typed text).
 
-## Why no live producer yet (the real finding this replay surfaced)
+## Why no live producer yet [Phase 1 -- resolved in Phase 2 below]
 
 The proposal doc names `services/orion-cocreation-signals/app/producers/affective_state.py` as
 the eventual thin scheduling layer, mirroring `git_delta.py`. Checking that service's
@@ -98,30 +107,120 @@ Two credible fixes, neither of which I picked unilaterally:
   Slightly more operational surface (one more thing running outside Docker) but strictly
   narrower exposure, and doesn't touch the `orion-harness-governor` precedent.
 
+## Phase 2: live producer (2026-08-11, same day, resolved by Juniper's steer)
+
+Juniper: *"cocreation signals should touch the broader claude projects"* -- picks the whole-tree
+mount over the scoped alternative above. Built on that basis:
+
+- `orion/schemas/affective_state.py` -- `JuniperAffectiveStateV1`. Deliberately narrower than the
+  scoring library: only `swear_frequency` is on the wire. `typo_rate` failed the replay's
+  live-data check (see above) and is not exposed here at all, not even as a known-unreliable
+  field -- per the metric quality gate, a failing metric does not get wired in.
+- `orion/bus/channels.yaml` + `orion/schemas/registry.py` -- new channel
+  `orion:substrate:juniper_affective_state`, `consumer_services: []` (pure shadow write, same
+  precedent as `bus_synaptic_prediction_error`'s own rollout -- publish real data first, let a
+  live-data sanity pass on the live stream itself, not just the offline replay, justify a
+  consumer later).
+- `services/orion-cocreation-signals/app/producers/affective_state.py` -- new producer loop,
+  structurally mirrors `pr_lifecycle_loop` (half-open window tiling, publish-every-tick since an
+  all-zero window is a real observation, same restart-loss gap and same reasoning for accepting
+  it). `settings.py`/`main.py`/`docker-compose.yml`/`.env_example` wired to match.
+- Default **enabled** after live verification (below) -- `COCREATION_SIGNALS_AFFECTIVE_STATE_ENABLED=true`
+  in the real deployed `.env`. Still a pure shadow write (no consumer), so this is "publish real
+  data" risk only, not "change Orion-facing behavior" risk.
+
+### Real bugs found via actual deployment, not just review
+
+Deployed to the real `orion-athena-cocreation-signals` container against Juniper's real
+`~/.claude/projects` mount (not a staging environment) and watched it fail, twice, before it
+worked -- exactly the "runtime truth beats config truth" discipline root `CLAUDE.md` names.
+
+1. **Real crash, first deploy**: `FileNotFoundError` inside `_score_window`, killing the whole
+   tick. Root cause: `iter_transcript_files()`'s glob-based walk and `parse_transcript_file()`'s
+   open were not resilient to a file becoming unreachable between listing and opening. Fixed
+   `iter_all_human_messages()` to catch `OSError` per file and skip, not abort the whole walk.
+2. **Root cause of #1, found by inspecting the actual failing path, not assumed**: initially
+   misdiagnosed as a delete-mid-walk race (transcript cleanup). Actually structural and 100%
+   reproducible, not intermittent: Claude Code represents a cross-project subagent transcript as
+   an **absolute-path symlink** (a file under one session's `subagents/` dir pointing at
+   `/home/athena/.claude/projects/<other-project>/.../agent-*.jsonl`). The container's mount
+   landed at `/claude-projects`, a different path than the host's real
+   `/home/athena/.claude/projects` -- every such symlink resolved against the container's own
+   (empty) root filesystem instead, permanently, every tick. Confirmed by `readlink -f` on the
+   host and `docker exec ... ls -la` on the same path inside the container, side by side. Real
+   fix: mount at the *identical* path (`COCREATION_SIGNALS_CLAUDE_PROJECTS_PATH` now required to
+   equal `COCREATION_SIGNALS_CLAUDE_PROJECTS_HOST_PATH`), not a container-convenient rename. The
+   defensive per-file `OSError` catch from #1 stays in place regardless (a real transient race is
+   still plausible and would look identical) -- second fix corrects the actual root cause; first
+   fix keeps the system fail-open around whatever's left.
+3. **Second code review pass (post-fix, pre-final-deploy)** caught 3 more real issues, all fixed:
+   `iter_transcript_files()`'s glob (not just the per-file open) could itself abort the walk if a
+   whole subdirectory vanished mid-scan -- switched to `os.walk(onerror=...)`, which skips a
+   failing subtree instead of raising; a genuinely timezone-naive timestamp would raise
+   `TypeError` when compared against the window's aware datetimes -- now normalized to UTC on
+   parse; and the producer was running a full spellcheck pass over every message every tick
+   (~31k words on the real corpus) purely to compute `typo_rate`, a value this schema never
+   exposes -- added `score_message(text, compute_typos=False)` and switched the producer to it.
+
+### Live verification (real evidence, not a claim)
+
+After both fixes, a clean real tick against the real mount:
+
+```text
+cocreation_affective_state_published message_count=70 word_count=31819 swear_count=23 \
+  swear_frequency=0.0007228385555799994
+```
+
+Zero `transcript_vanished_during_walk` warnings on this run (113 real sessions' worth were logged
+and gracefully handled on the two runs before the symlink fix landed). Independently confirmed
+the event actually crossed the real bus, not just logged locally -- a real `redis-cli subscribe`
+against `orion:substrate:juniper_affective_state` on the real bus host received the correctly
+-shaped envelope in real time on container restart:
+
+```json
+{"schema":"orion.envelope","schema_version":"2.0.0","kind":"juniper.affective_state.v1",
+ "source":{"name":"cocreation-signals","node":"athena","version":"0.1.0"},
+ "payload":{"schema_version":"juniper_affective_state.v1","message_count":70,
+            "word_count":31819,"swear_count":23,"swear_frequency":0.000722...}}
+```
+
+No raw message text anywhere in that payload, matching the privacy boundary.
+
 ## Tests run
 
 ```text
-venv/bin/python3 -m pytest orion/dev_economics/tests/test_claude_code_ingest.py \
-  orion/cocreation/tests/test_affective_signals.py -q
-20 passed
+venv/bin/python3 -m pytest orion/dev_economics/tests orion/cocreation/tests \
+  services/orion-cocreation-signals/tests -q
+54 passed
 ```
 
 ## Evals run
 
-The replay script itself *is* the eval this signal needed before any live wiring -- see results
-above. Per-session scores were intentionally not committed to the repo (aggregate distribution
-stats only, in this report) -- the same privacy boundary the proposal doc names applies to
-replay artifacts, not just production storage.
+The replay script *is* the offline eval Phase 1 needed. Phase 2 added a real *live* eval on top
+-- the actual deployed container against the actual production transcript mount, watched fail
+and recover twice (see "Real bugs found via actual deployment" above), which is stronger
+evidence than the offline replay alone. Per-session scores were intentionally not committed to
+the repo (aggregate distribution stats only, in this report) -- the same privacy boundary the
+proposal doc names applies to replay artifacts, not just production storage.
 
 ## Docker/build/smoke checks
 
-None -- no service/container/compose changes in this patch (see "Why no live producer yet").
+```text
+scripts/safe_docker_build.sh orion-cocreation-signals build   # 3 builds across the fix cycle
+scripts/safe_docker_build.sh orion-cocreation-signals up -d   # 3 redeploys
+docker logs orion-athena-cocreation-signals --tail 40          # confirmed each fix, then a clean tick
+redis-cli -h <bus-host> -p 6379 -n 0 subscribe orion:substrate:juniper_affective_state
+  # independently confirmed a real envelope crossing the real bus
+```
 
 ## Review findings fixed
 
-Ran `orion-repo-agent` in a subagent against the pre-fix diff (`ReportFindings` tool wasn't
-available to it, so it reported inline; findings verified by direct reproduction, not just
-static reading). 9 findings total; material ones fixed below, two documented as accepted gaps.
+Two `orion-repo-agent` subagent review passes (`ReportFindings` tool wasn't available to it, so
+it reported inline; findings verified by direct reproduction, not just static reading): one
+against the Phase 1 scoring/parsing library, one against the Phase 2 producer/schema/bus/settings
+wiring. 9 + 6 findings total; material ones fixed below, three documented as accepted gaps.
+
+### Phase 1 (scoring library, transcript parser)
 
 - Finding: `_typo_candidates()` stripped apostrophes before the contraction check, splitting
   common contractions into bogus unknown-word fragments and inflating `typo_rate` on correctly
@@ -176,23 +275,84 @@ static reading). 9 findings total; material ones fixed below, two documented as 
   well-formed machine output); left as a known limitation rather than adding untested
   malformed-input handling.
 
+### Phase 2 (producer/schema/bus/settings/compose wiring)
+
+- Finding (subagent, high confidence, real cost confirmed on the live corpus): the producer
+  called `score_message()` in its full mode, running a real spellcheck pass over every message
+  every tick purely to compute `typo_rate` -- a value this schema never exposes (~31k words
+  spellchecked for nothing on the real corpus, every 15 minutes, forever).
+  - Fix: `score_message(text, compute_typos=False)` fast path; producer switched to it.
+  - Evidence: `test_score_message_compute_typos_false_skips_spellcheck_entirely` (new).
+- Finding (subagent, medium confidence): the file-vanish fix (Phase 2's bug #1 above) only
+  wrapped the per-file open, not `iter_transcript_files()`'s glob-based directory walk itself --
+  a whole subdirectory disappearing mid-walk (not just one file) would still abort the tick,
+  narrower protection than the module's own docstring claimed.
+  - Fix: switched to `os.walk(root, onerror=lambda _exc: None)`, which skips a failing subtree
+    instead of raising, at the directory level not just the file level.
+  - Evidence: `test_iter_transcript_files_survives_a_subdirectory_vanishing_mid_walk` (new).
+- Finding (subagent, low confidence, speculative): a genuinely timezone-naive parsed timestamp
+  (no `Z`/offset in the source string) would raise `TypeError` when compared against the
+  window's timezone-aware `since`/`until` -- no evidence this occurs in the real corpus, but
+  cheap to close outright rather than rely on the per-tick exception handler silently dropping
+  that tick.
+  - Fix: naive timestamps normalized to UTC on parse in `parse_transcript_file`.
+  - Evidence: `test_parse_transcript_file_normalizes_naive_timestamp_to_utc` (new).
+- Confirmed non-issues (explicitly checked, not just assumed): no raw transcript text logged or
+  persisted anywhere in the new wiring (traced every log/exception call site); window-tiling and
+  cold-start logic match `pr_lifecycle_loop`'s pattern exactly, no undocumented divergence;
+  `docker-compose.yml`/`settings.py`/`.env_example` three-way key parity verified, no orphans;
+  `JuniperAffectiveStateV1`'s registration in `registry.py`'s `_REGISTRY` (not the separate
+  `SCHEMA_REGISTRY` dict) matches `CodebaseDeltaV1`'s own existing, correct precedent -- not a
+  partial registration; no resource leak or unbounded growth beyond the already-accepted
+  full-tree-rescan-per-tick cost `pr_lifecycle_loop` already has.
+
+### The symlink bug itself (found live, not by review)
+
+Not a review finding -- found by watching the real deployed container fail twice and
+root-causing it against the real filesystem (see "Real bugs found via actual deployment" above).
+Included here for completeness since it's the most consequential fix in this patch: mounting
+`~/.claude/projects` at a different in-container path silently broke every cross-project
+subagent-transcript symlink, permanently and every tick, until the mount was made to match the
+host path exactly.
+
 ## Restart required
 
-No restart required -- no running service changed.
+Already done live during this patch (not deferred to the operator):
+
+```bash
+scripts/safe_docker_build.sh orion-cocreation-signals build
+scripts/safe_docker_build.sh orion-cocreation-signals up -d
+```
+
+`orion-athena-cocreation-signals` is running the final code as of this report, with
+`COCREATION_SIGNALS_AFFECTIVE_STATE_ENABLED=true` in the real deployed `.env`. No further restart
+needed unless this PR's code changes further after this report.
 
 ## Risks / concerns
 
-- Severity: should-fix before wiring a live producer.
-  - Concern: the transcript-mount scope question above is unresolved.
-  - Mitigation: needs Juniper's explicit steer (scoped mount vs. host-side-only scoring) before
-    `services/orion-cocreation-signals/app/producers/affective_state.py` gets built.
 - Severity: note, not blocking.
   - Concern: `typo_rate`'s jargon allowlist is hand-maintained and will drift as this repo's own
     vocabulary grows -- a real, ongoing cost, not a one-time fix.
   - Mitigation: re-run `scripts/replay_juniper_affective_state.py` periodically and fold new
     high-frequency unknown words back into the allowlist, the same way this patch's own
     allowlist was derived from a real corpus run rather than guessed.
+- Severity: note, not blocking.
+  - Concern: the correlation check named in the proposal doc's "What trace proves it worked"
+    section (does `swear_frequency` actually separate independently-identifiable frustrating
+    sessions from calm ones?) is still not done -- no ground-truth label set exists yet.
+  - Mitigation: hand-label a small set of sessions Juniper independently remembers as
+    frustrating/calm as a follow-up, then check separation.
+- Severity: note, not blocking.
+  - Concern: `services/orion-cocreation-signals/.env` did not exist anywhere in the shared
+    checkout before this patch (the worktree it was originally deployed from,
+    `Orion-Sapienform-cocreation-signals-service`, was pruned after merge, taking its gitignored
+    `.env` with it, even though the container it built kept running). Reconstructed from the live
+    container's actual env (`docker inspect`) plus this patch's new keys -- real values, not
+    guesses, but worth a sanity check by Juniper since it includes a live GitHub token recovered
+    from the running container rather than freshly issued.
+  - Mitigation: none needed unless the recovered token should be rotated; flagging for
+    awareness only.
 
 ## PR link
 
-(added after push)
+https://github.com/junebug-junie/Orion-Sapienform/pull/1552

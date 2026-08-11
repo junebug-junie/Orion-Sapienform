@@ -259,11 +259,25 @@ class AffectiveWordScores:
         return self.unknown_word_count / self.checked_word_count
 
 
-def score_message(text: str) -> AffectiveWordScores:
+def score_message(text: str, *, compute_typos: bool = True) -> AffectiveWordScores:
+    """``compute_typos=False`` skips ``_typo_candidates``/the spellcheck pass
+    entirely -- for a caller that only wants ``swear_frequency`` (e.g.
+    ``affective_state.py``'s producer, which never reads ``typo_rate`` since
+    it's not on the wire schema; see that schema's own docstring for why),
+    running a real dictionary lookup over every eligible word in every
+    message is pure waste. Confirmed live 2026-08-11: a real production tick
+    tokenized/spellchecked ~31k words purely to compute a value nothing
+    downstream ever read. ``checked_word_count``/``unknown_word_count`` (and
+    therefore ``typo_rate``) are ``0``/``None`` in this mode -- indistinguishable
+    from "nothing was spellcheckable in this text", which is an accepted,
+    documented ambiguity since no caller needs to tell the two apart today."""
     tokens = tokenize(text)
     swear_count = count_swear_words(tokens)
-    candidates = _typo_candidates(text)
-    unknown = _spellchecker().unknown(candidates) if candidates else set()
+    if compute_typos:
+        candidates = _typo_candidates(text)
+        unknown = _spellchecker().unknown(candidates) if candidates else set()
+    else:
+        candidates, unknown = [], set()
     return AffectiveWordScores(
         word_count=len(tokens),
         swear_count=swear_count,

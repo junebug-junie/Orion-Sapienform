@@ -50,11 +50,15 @@ a derived score, per the privacy boundary in the affective-state proposal doc.
 from __future__ import annotations
 
 import json
+import logging
+import os
 import re
 from dataclasses import dataclass
-from datetime import datetime
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Iterator
+
+logger = logging.getLogger("orion.dev_economics.claude_code_ingest")
 
 DEFAULT_PROJECTS_ROOT = Path.home() / ".claude" / "projects"
 
@@ -76,12 +80,29 @@ class HumanMessage:
 
 
 def iter_transcript_files(root: Path | str = DEFAULT_PROJECTS_ROOT) -> Iterator[Path]:
-    """Every ``*.jsonl`` transcript under ``root``, recursively. Read-only glob --
-    does not open or validate the files, just enumerates candidates."""
+    """Every ``*.jsonl`` transcript under ``root``, recursively. Read-only walk --
+    does not open or validate the files, just enumerates candidates.
+
+    Uses ``os.walk(..., onerror=...)`` rather than ``Path.glob("**/*.jsonl")``
+    deliberately: code review 2026-08-11 correctly flagged that a plain glob
+    walk is not covered by ``iter_all_human_messages()``'s per-file
+    vanished-file handling -- if an entire subdirectory (not just one file)
+    disappears mid-walk (the same kind of harness cleanup that caused the
+    confirmed live single-file race this module's own docstring documents),
+    ``glob``'s internal ``os.scandir`` raises and aborts the whole walk
+    before a single file is ever yielded. ``onerror`` makes that failure
+    mode a silent "skip this subtree" instead, matching this module's "one
+    vanished thing must not abort the whole walk" principle at the directory
+    level too, not just the file level."""
     root_path = Path(root)
     if not root_path.exists():
         return
-    yield from sorted(root_path.glob("**/*.jsonl"))
+    collected: list[Path] = []
+    for dirpath, _dirnames, filenames in os.walk(root_path, onerror=lambda _exc: None):
+        for name in filenames:
+            if name.endswith(".jsonl"):
+                collected.append(Path(dirpath) / name)
+    yield from sorted(collected)
 
 
 def _strip_wrapper_tags(raw: str) -> str | None:
@@ -137,6 +158,17 @@ def parse_transcript_file(path: Path | str) -> Iterator[HumanMessage]:
                     timestamp = datetime.fromisoformat(timestamp_raw.replace("Z", "+00:00"))
                 except ValueError:
                     timestamp = None
+                else:
+                    if timestamp.tzinfo is None:
+                        # Every real timestamp observed so far has a "Z"/
+                        # offset suffix (naive-then-comparison-crash confirmed
+                        # only as a hypothetical by code review 2026-08-11,
+                        # not seen live) -- guard anyway so a genuinely naive
+                        # ISO string doesn't make this function's contract
+                        # depend on the caller separately checking tzinfo
+                        # before comparing timestamps (affective_state.py's
+                        # window filter does exactly that comparison).
+                        timestamp = timestamp.replace(tzinfo=timezone.utc)
             if timestamp is None:
                 # Also covers a non-string timestamp field (e.g. a raw epoch
                 # int) -- a corrupt/unexpected line drops just this message,
@@ -155,6 +187,33 @@ def parse_transcript_file(path: Path | str) -> Iterator[HumanMessage]:
 def iter_all_human_messages(root: Path | str = DEFAULT_PROJECTS_ROOT) -> Iterator[HumanMessage]:
     """Convenience: every real typed human turn across every transcript under
     ``root``, in file-then-line order (not globally time-sorted -- callers
-    that need chronological order across sessions should sort the result)."""
+    that need chronological order across sessions should sort the result).
+
+    A file present in ``iter_transcript_files()``'s listing can still fail to
+    open by the time ``parse_transcript_file()`` reaches it. First diagnosed
+    live 2026-08-11 as a suspected delete-mid-walk race; root-caused the same
+    day to something more specific and permanent, not a race at all: Claude
+    Code represents a cross-project subagent transcript as an *absolute-path
+    symlink* (a file under one session's ``subagents/`` dir pointing at
+    ``/home/athena/.claude/projects/<other-project>/.../agent-*.jsonl``).
+    Mounting this tree at a different in-container path than its real host
+    path (a deployment/config choice, not a Claude Code bug) makes every such
+    symlink unresolvable, raising ``FileNotFoundError`` for that file every
+    single time, not intermittently. The real fix is deployment-side --
+    mount at the identical path (see ``services/orion-cocreation-signals/
+    docker-compose.yml``'s comment on its transcript mount) -- but this
+    module still catches the failure defensively, both because a real
+    transient race (deletion mid-walk) is also plausible and would look
+    identical, and because a misconfigured mount should degrade to "skip the
+    unreachable messages" rather than "the whole tick silently never
+    publishes." Same "a single corrupt/unreachable file must not abort the
+    whole walk" principle ``parse_transcript_file()`` already applies at the
+    line level, extended here to the file level."""
     for transcript_path in iter_transcript_files(root):
-        yield from parse_transcript_file(transcript_path)
+        try:
+            yield from parse_transcript_file(transcript_path)
+        except OSError:
+            logger.warning(
+                "claude_code_ingest_transcript_vanished_during_walk path=%s", transcript_path
+            )
+            continue

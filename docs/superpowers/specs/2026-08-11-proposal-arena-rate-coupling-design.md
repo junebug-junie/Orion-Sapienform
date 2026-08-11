@@ -237,26 +237,75 @@ temperature. The raw `thermal_pressure` channel is untouched everywhere else —
 `state_deltas`, decay, tensor channels, and the `strain` composite
 (`biometrics_pipeline.py:180`) all read it directly and are unaffected.
 
-**Must ship in the same patch,** or it becomes theater:
+**Status: IMPLEMENTED** on `fix/thermal-pressure-dimension-unmap`. Implementing it corrected three
+claims this section made in its own draft. All three are recorded below rather than silently edited,
+because two of them were the *reassuring* direction — the kind that survives review by being pleasant.
 
-- **Re-derive `DIMENSION_PRECISION_MIN_VARIANCE["resource_pressure"]`** (`scoring.py:112`, currently
-  `5e-5`). That constant is measured on *weighted* values, so it should be compared as
-  `raw_variance × weight²`: today `0.00702 × 0.25² = 4.39e-4` against the recorded `4.88e-4` — it
-  reconciles, it is not stale. Post-patch it needs ≈`1.15e-4`, a 2.3x adjustment. Re-derive by
-  running `scripts/analysis/measure_proposal_dimension_variance.py`, and **fix that script to read
-  raw pressures rather than `motivating_dimensions`**, since it inherits the same misread this
-  document did.
-- **Re-run `scripts/analysis/measure_autonomy_gate.py`.** Its `RESOURCE_PRESSURE_LEVEL = 0.3` /
-  `RESOURCE_PRESSURE_MIN_FRAC = 0.05` currently pass trivially (min is 0.2571, so nearly every row
-  exceeds 0.3) and would still pass after (≈45% of rows). It is not going to flip — the finding is
-  that **it is set so low it cannot fail**, and is therefore not testing anything. Re-derive or
-  retire it.
+**Measured effect,** through the real production path
+(`scripts/analysis/measure_proposal_dimension_variance.py`, which parses each historical row into a
+real `FieldStateV1` and runs the unmodified `field_pressures()`; 6h / 10,562 ticks, before vs after
+on the same window):
 
-Blast radius audited: five consumers of the `resource_pressure` dimension —
-`orion/proposals/scoring.py`, the precision floor above, `measure_autonomy_gate.py`,
-`config/feedback/feedback_policy.v1.yaml:27,34`, and `scripts/fit_phi_encoder.py:75,151`. All see a
-value in the same units that goes down and starts varying. Any fitted phi-encoder artifact trained
-on the current distribution is invalidated; check for a live artifact before shipping.
+| | before | after |
+| --- | --- | --- |
+| variance | 0.0037973 | **0.0174205** (4.6x) |
+| mean | 0.538208 | 0.32551 |
+| min | 0.314286 | 0.144535 |
+| distinct values (24h window) | 128 | **1,895** (15x) |
+| real upward transitions | 270 | **431** (+60%) |
+| classification | `NON_DEGENERATE_USABLE` | `NON_DEGENERATE_USABLE`, no decay artifact |
+
+**Correction 1 — the precision floor was stale, and so are the other three.** This draft claimed the
+constant is measured on weighted values and therefore "reconciles, it is not stale," reasoning from
+`raw_variance × weight²`. That was wrong twice over:
+`measure_proposal_dimension_variance.py` **reads raw `field_pressures()` output, not
+`motivating_dimensions`** — it never had the misread this document attributed to it — and the
+apparent reconciliation was arithmetic coincidence. Measured on *unpatched* code, same 6h window,
+against the values recorded in `scoring.py`'s own comment from 2026-07-28:
+
+| dimension | recorded 2026-07-28 | measured 2026-08-11 | ratio | floor is |
+| --- | --- | --- | --- | --- |
+| `execution_pressure` | 9.63e-4 | 1.987e-2 | 20.6x | **20x too low** |
+| `resource_pressure` | 4.88e-4 | 3.797e-3 | 7.8x | 8x too low |
+| `reasoning_pressure` | 2.11e-6 | 3.494e-7 | 0.17x | **6x too high** |
+| `reliability_pressure` | 1.09e-2 | 5.520e-3 | 0.51x | 2x too high |
+
+All four have drifted, in both directions, independently of this change. Only
+`resource_pressure` is re-derived in Patch A (`5e-5` → `2e-3`, ~1/10th of the new post-patch
+variance, hand-verified by replaying the real series through `compute_ewma_update`: p99 |z| 3.116,
+inside the 1.3–4.3 band the originals were checked against; tail bounded from max |z| 17.195 to
+10.023). **The other three are deliberately left stale** so this patch's post-deploy effect stays
+attributable to the one map entry it removes. Re-deriving all four at once would make the resulting
+data unreadable. Follow-up work, tracked here.
+
+This is the *fifth* live instance of "a constant calibrated once, never re-derived" in this arc, and
+the first where the drift was found by re-running the measurement script that produced it rather than
+by an incident. **Recommendation: the script should be a scheduled check that fails on drift beyond a
+stated ratio, not a script someone remembers to run.** That is the same "ship the check that fails,
+not the comment that asks" finding as broader recommendation 5, applied to the one instrument that
+already exists and works.
+
+**Correction 2 — `measure_autonomy_gate.py` is not a trivially-passing gate; it is a dead one.** This
+draft predicted it would "pass trivially (≈45% of rows)." Run live, it reports **`UNMEASURABLE`** for
+both of its verdicts: `resource_pressure rows: 0`, `self_state loaded rows=0/0`. It reads
+`self_state`, which the 2026-07-22 SelfStateV1 burn emptied. It has been reporting nothing for three
+weeks. It therefore cannot be broken by Patch A — but it is a §0A "hiding, not retired" instrument
+and should be fixed or killed.
+
+**Correction 3 — the phi-encoder risk is discharged, not outstanding.** This draft said any fitted
+artifact "is invalidated; check for a live artifact before shipping." Checked: the active encoder is
+`/mnt/telemetry/models/phi/encoders/active` → `v20260712-seedv4-postfix`, and its `input_features`
+are `agency_readiness, execution_pressure, reasoning_pressure, overall_intensity, recall_gate_fired,
+reasoning_present, execution_load, reasoning_load`. **`resource_pressure` is not among them.** No
+invalidation. (Noted in passing, out of scope: that active encoder trains on `agency_readiness` and
+probes `field_intensity` — two dimensions this repo declared never-produced on 2026-07-30 — and on
+`execution_load`, renamed in PR #1338. The live phi encoder is fit on dead features. Its own finding.)
+
+Blast radius audited, five consumers of the `resource_pressure` dimension: `orion/proposals/scoring.py`
+(the intended target), the precision floor (re-derived), `config/feedback/feedback_policy.v1.yaml:27,34`
+(same units and direction — it stops crediting actions for a CPU cooling off),
+`measure_autonomy_gate.py` (dead, correction 2), `scripts/fit_phi_encoder.py:75,151` (unaffected,
+correction 3).
 
 **This patch does not move O1 on its own** (0.00% calm before and after, table above). It is
 justified by the 15x resolution recovery and by removing a decay-ambiguous input from a gate, not by
@@ -571,9 +620,15 @@ None blocks this; all are real and independently shippable.
 
 ## Recommended next patch
 
-**Patch A**, with its two mandatory re-derivations and the fix to
-`measure_proposal_dimension_variance.py`'s own misread. It is one line, its blast radius is audited
-to five consumers, and it recovers 15x of signal resolution.
+~~**Patch A**~~ — **done**, on `fix/thermal-pressure-dimension-unmap`. One map entry, blast radius
+audited to five consumers, 4.6x variance and 15x distinct-value recovery measured through the
+production path. It corrected three of this document's own claims; see the Patch A section.
+
+**Next: the four precision floors.** Correction 1 found all four drifted from their single 2026-07-28
+derivation, in both directions, by up to 20.6x — found by re-running the measurement script, not by
+an incident. Patch A re-derived only `resource_pressure`, to keep its own effect attributable. The
+other three, plus turning that script into a check that fails on drift, is the immediate follow-up
+and is independent of everything below.
 
 Then **Patch B**, which is the one that can actually move O1, gated on answering missing question 2.
 Then broader recommendation 1 (real perception), which is the largest remaining defect and the gate

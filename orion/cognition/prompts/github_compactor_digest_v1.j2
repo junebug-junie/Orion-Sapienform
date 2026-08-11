@@ -9,7 +9,12 @@ GROUNDED PAYLOAD (authoritative)
 Input JSON is in metadata key `github_compactor_input`. It contains:
 - repo: string
 - lookback_days: integer
-- items: list of merged PR objects (number, title, body, touched_paths, inferred_services, merged_at, url)
+- items: list of merged PR objects (number, title, body, touched_paths, inferred_services, merged_at, url, truncated?)
+- item_content_truncated: true if any PR body was cut for length
+
+A PR with `truncated: true` has a body that ends mid-sentence (marked with
+"…"). Summarize only what is clearly stated in the part you have — do not
+guess or invent how a truncated body ends.
 
 {{ metadata.get("github_compactor_input", {}) | tojson(indent=2) }}
 
@@ -32,5 +37,10 @@ RESPONSE SHAPE (example)
 
 RULES
 - Use PR descriptions when present; fall back to title + touched paths when body is empty.
+- Reference every merged PR in the payload at least once (by number), even
+  briefly — do not silently drop a PR from `card_summary` because another PR
+  is easier to describe. The 800-char `card_summary` limit is hard; if full
+  detail for every PR would not fit, cover all of them briefly rather than
+  fewer of them at length.
 - Prefer themes ("hub UI polish", "substrate wiring") over file lists.
 - Never fabricate PRs, services, or changes not present in the payload.

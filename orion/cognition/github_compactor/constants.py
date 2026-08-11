@@ -12,4 +12,11 @@ DEFAULT_LOOKBACK_DAYS = 1
 # Cap PR rows passed to the digest LLM (bodies are already truncated per-PR at fetch).
 MAX_DIGEST_INPUT_PRS = 8
 # Digest prompt uses a tighter body cap than fetch to keep LLM context bounded.
-DIGEST_INPUT_BODY_MAX_CHARS = 600
+# Raised alongside the chat compactor's equivalent caps (see
+# chat_history_compactor/constants.py): real PR bodies in this repo commonly
+# run 1500-4000+ chars (markdown headers, bullet lists, code fences), and the
+# old 600-char cap combined with a blind char slice (fixed to word-boundary
+# truncation in the same patch) discarded most of a typical PR body before
+# the digest LLM ever saw it. 8 items * 1500 chars stays well within any
+# reasonable LLM context budget.
+DIGEST_INPUT_BODY_MAX_CHARS = 1500

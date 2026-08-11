@@ -7,6 +7,7 @@ from pydantic import ValidationError
 
 from orion.cognition.github_compactor.constants import (
     CARD_SUMMARY_MAX_CHARS,
+    DIGEST_INPUT_BODY_MAX_CHARS,
     JOURNAL_BODY_MAX_CHARS,
     JOURNAL_TITLE_MAX_CHARS,
 )
@@ -84,14 +85,26 @@ def test_trim_github_compactor_input_caps_items_for_digest() -> None:
         "repo": "acme/widgets",
         "merged_pr_count": 20,
         "items": [
-            {"number": i, "title": f"PR {i}", "body": "x" * 900, "touched_paths": ["a"] * 50}
+            {"number": i, "title": f"PR {i}", "body": "x" * (DIGEST_INPUT_BODY_MAX_CHARS + 300), "touched_paths": ["a"] * 50}
             for i in range(20)
         ],
     }
     trimmed = trim_github_compactor_input(payload, max_items=12)
     assert len(trimmed["items"]) == 12
-    assert trimmed["items"][0]["body"] == "x" * 600 + "…"
+    assert trimmed["items"][0]["body"] == "x" * DIGEST_INPUT_BODY_MAX_CHARS + "…"
+    assert trimmed["items"][0]["truncated"] is True
+    assert trimmed["item_content_truncated"] is True
     assert "grouped_summary" not in trimmed
     assert trimmed["items_truncated_for_digest"] is True
     assert trimmed["items_total"] == 20
     assert trimmed["merged_pr_count"] == 20
+
+
+def test_trim_github_compactor_input_preserves_short_bodies_untruncated() -> None:
+    payload = {
+        "repo": "acme/widgets",
+        "items": [{"number": 1, "title": "Short PR", "body": "A short body, well within budget."}],
+    }
+    trimmed = trim_github_compactor_input(payload)
+    assert "truncated" not in trimmed["items"][0]
+    assert "item_content_truncated" not in trimmed

@@ -432,7 +432,10 @@ def test_github_recent_prs_includes_truncated_body(monkeypatch):
     data = json.loads(out.final_text)
     assert data["available"] is True
     assert len(data["items"]) == 1
-    assert data["items"][0]["body"] == ("x" * 2000)
+    # Word-boundary truncation: an unbroken run of "x" has no whitespace to
+    # break on, so it hard-cuts at the cap and appends the truncation marker
+    # (rather than silently returning a body that looks complete).
+    assert data["items"][0]["body"] == ("x" * 2000) + "…"
 
 
 def test_mesh_ops_round_partial_failure_without_journal():

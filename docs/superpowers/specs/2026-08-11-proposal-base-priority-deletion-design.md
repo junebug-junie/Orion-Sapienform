@@ -168,6 +168,59 @@ is calm.
 
 **Delete `base_priority` from all 12 templates and from `ProposalTemplateV1`.**
 
+### The precedent: this exact operation already shipped one layer up
+
+`config/attention/field_attention_policy.v1.yaml` held the same shape — 23 hand-picked weights
+(`pressure*0.45 + novelty*0.20 + urgency*0.25 + confidence*0.10`, plus ~25 per-channel weights).
+`docs/superpowers/specs/2026-07-21-attention-salience-cathedral-replacement-tentative-plan.md`
+indicted it in terms that describe this file verbatim:
+
+> three independent instances of the same shape — hand-typed linear-weighted-sum, zero citation,
+> zero calibration, never outcome-validated
+
+**What shipped (PR #1484/#1488): the weights were deleted from the YAML outright.** That file now
+retains only `limits`, `thresholds`, and `observation_modes`. The generalized finding from the
+survey of 49 specs: *what survived the kills was thresholds and limits, not weights.* Thresholds
+carry a legible operator meaning ("below this, don't bother") and are cheap to reverse; weights
+encode a causal claim about relative importance that nothing was ever going to validate.
+
+`proposal_policy.v1.yaml` already has `limits` and `thresholds` blocks. They are defensible as they
+stand. `base_priority` is the disease.
+
+**Two requirements inherited from that precedent:**
+
+1. **An in-file tombstone where the key was.** Dated, naming what was removed, why, and what
+   replaced it. The census found tombstones are the mechanism that makes kills stick — they stop a
+   later patch from "restoring" a key that looks missing. Model the wording on
+   `field_attention_policy.v1.yaml`'s own: *"Killed, not left as dead config, per CLAUDE.md §0A's
+   'kill means kill, no fallback to the thing being killed.'"*
+2. **Audit the removal once per consumer function, not once globally.** A key's blast radius depends
+   entirely on the aggregation operator downstream. This file already has all three failure modes on
+   record from the 2026-07-30 dead-dimension purge: `max()` tolerated a dead entry
+   (`template_match_score`), `mean()` was destroyed by it (`proposal_confidence` was *permanently
+   halved*), and a string-suffix filter let it pass a gate while contributing nothing
+   (`proposal_urgency`'s `_pressure` check suppressed the real fallback). `base_priority` is read by
+   `proposal_priority()` only, but that must be confirmed by grep in the patch, not assumed.
+
+### What is already healthy here, and does not need touching
+
+The census of all 22 config YAMLs found `proposal_policy.v1.yaml` is structurally in the healthy
+group: one Pydantic model with `extra="forbid"` and `model_validate` (`orion/proposals/policy.py:55`),
+exactly one runtime loader (`services/orion-proposal-runtime/app/worker.py:21`), dated in-file
+deletion comments, and — critically — **no Python mirror of its values anywhere.**
+
+That last property is the one that matters. The census's headline finding:
+
+> Duplication, not hand-authorship, is what kills these files.
+
+Every hand-authored list that went stale (`action_ceiling_policy.v1.yaml`,
+`grammar_producer_registry.v1.yaml`, `biometrics_lattice.yaml`, `orion_field_topology.v1.yaml`'s
+`node_channels`) either has a duplicate elsewhere in Python or has no consumer at all. Every list
+that stayed honest has exactly one loader and a live cross-check.
+
+**So this is a values patch, not a structural one.** The plumbing is fine. Do not redesign the file's
+shape while fixing its numbers.
+
 ```python
 # orion/proposals/scoring.py
 def proposal_priority(*, match_score: float, urgency: float, confidence: float) -> float:
@@ -238,6 +291,18 @@ load-bearing role.
    if the dispatch rate's coefficient of variation drops below a floor derived from the replay
    itself. Per the survey finding that "revisit later" never happens across three live instances —
    **ship the check that fails, not the comment that asks.**
+6. **The eval must actually be collectable.** Not a formality: `tests/test_field_topology_config.py`
+   is a correct guard on a real invariant that has been silently failing (canonical lattice has 10
+   edges, its alias 7, against an assertion that they are equal) because its
+   `from app.graph.lattice import load_lattice` cannot resolve from repo root — the guard exists,
+   is right, and never runs. Verify the new eval is collected by the command the repo actually
+   invokes, not just that the file exists.
+
+**Process discipline, stated in advance because the precedent broke it.** The attention-salience
+replacement wired Candidate A live *before* its own head-to-head comparison ran, and this was caught
+by code review rather than self-reported (that doc's own section header: *"Candidate A wired live
+before this doc's own comparison ran"*). Checks 1–3 here run before the deletion is deployed to a
+live runtime, not after.
 
 ## Non-goals
 
@@ -378,11 +443,33 @@ Two findings make this actionable rather than aspirational:
   `ORION_GOAL_PROVENANCE_MIN_STREAK=3` — all still sit exactly as shipped. The only constant that
   ever got re-derived was forced by a live incident.
 
+**Disclosure is not one of the protective states.** The survey is blunt about this and it corrects an
+earlier draft of this document: *"self-disclosure of uncalibratedness does not protect config; it
+just documents the debt."* `LinearSalienceCombiner`'s `WEIGHTS_VERSION = "seed-v1"` explicitly
+self-labeled as a placeholder awaiting a v2, and was killed anyway. Across 22 config YAMLs, **11
+carry a `.v1.` and not one has ever produced a `v2`** — versioning here is decoration, not a lived
+migration convention. A disclosed guess buys honesty, not correction.
+
 **Recommendation:** `orion/proposals/policy.py` already uses `extra="forbid"`. Extend it to require a
 `provenance` block naming a runnable check, and fail boot without one. Do **not** paste measured
 values into the YAML — a `measured_zero_pct: 93.0` in a config file is a hand-typed snapshot of
 runtime truth that goes stale in a day, which is the fifth state wearing a lab coat. Provenance
 points at the check; the check computes the number.
+
+The repo has already written this rule down, in the one hand-authored entity list that has stayed
+honest — `config/field/field_channel_glossary.v1.yaml:25-30`:
+
+> Deliberately does NOT include a "verdict" field: liveness verdicts are computed LIVE from
+> `substrate_field_state` by `orion.field.channel_glossary.classify_channel_series()`, not
+> hand-maintained here — a static verdict column is exactly what already went stale once
+
+**Hold only the part a human must author; compute the part that can rot.** That is the whole recipe,
+and it is also the argument for this patch: `base_priority` is an authored value that rots, sitting
+in front of a pressure reading that is computed fresh every tick. Delete the one that rots.
+
+That file also carries its own counter-proof, worth internalizing: its machine-readable body
+correctly holds 38 channels while the hand-written prose header beside it still says 35. The
+structured data stayed right; the sentence next to it did not.
 
 ## 6. Structural elimination beats recalibration
 
@@ -394,6 +481,31 @@ The two clean wins in the surveyed window both **deleted** constants rather than
 Every attempt to *fit* a constant in the same window either returned STOP
 (`2026-07-28-precision-weighted-proposal-scoring-design.md`) or is still uncalibrated. This patch is
 in the first category, which is the reason to have confidence in it.
+
+## 7. Unrelated defects surfaced by the config census
+
+Found while grounding this design; none blocks it, all are real and independently shippable.
+
+- **`tests/test_field_topology_config.py` is a guard that never runs.** `config/field/orion_field_topology.v1.yaml`
+  declares 10 edges; its `config/field/biometrics_lattice.yaml` alias declares 7. The test asserts
+  they are equal, and cannot be collected from repo root (`from app.graph.lattice import ...`).
+  Missing from the alias: the entire `node:substrate.bus_synaptic → capability:transport` wiring,
+  plus `capability:transport → capability:orchestration` and
+  `capability:llm_inference → capability:orchestration`. `services/orion-field-digester/README.md:134`
+  still advertises the alias as operator-selectable via `LATTICE_PATH`. Either resync it or delete
+  it; either way upgrade the assertion from length equality to edge-set equality.
+- **Two fully dead config files.** `config/substrate-lattice/action_ceiling_policy.v1.yaml` (42
+  lines, zero loaders — its 7 labels are duplicated as `_CEILING_RANK` in
+  `services/orion-hub/scripts/substrate_lattice_routes.py:434-437`, which holds 8) and
+  `config/substrate-lattice/grammar_producer_registry.v1.yaml` (no loader; contradicts its own Python
+  duplicate `_LANES` on `orion-cortex-exec`'s status).
+- **`transport_lattice_policy.v1.yaml`'s Python mirror has drifted and won.**
+  `substrate_lattice_routes.py:405-407` says "these values MIRROR the YAML — update this dict to
+  match," and its first key is `stream_backlog_pressure`, the name the YAML retired on 2026-07-27 in
+  favor of `bus_synaptic_pressure`. Roughly 40% of the best-documented config file in the repo is
+  inert as a result. Delete the mirror; the route already loads the YAML two lines later.
+- **A stale doc reference to a deleted directory.** `services/orion-field-digester/README.md:670`
+  points at `config/self_state/self_state_policy.v1.yaml`, removed in the SelfStateV1 burn.
 
 ## Recommended next patch
 

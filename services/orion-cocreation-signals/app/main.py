@@ -10,6 +10,7 @@ from orion.core.bus.bus_schemas import ServiceRef
 from orion.core.bus.bus_service_chassis import ChassisConfig, HeartbeatOnly
 from orion.core.bus.codec import OrionCodec
 
+from .producers.affective_state import affective_state_loop
 from .producers.git_delta import git_delta_loop
 from .producers.graph_delta import graph_delta_loop
 from .producers.pr_lifecycle import pr_lifecycle_loop
@@ -116,6 +117,24 @@ async def run_producers(settings, bus: OrionBusAsync, stop: asyncio.Event) -> No
         )
     else:
         logger.info("cocreation_graph_delta_disabled")
+
+    if settings.COCREATION_SIGNALS_AFFECTIVE_STATE_ENABLED:
+        tasks.append(
+            asyncio.create_task(
+                affective_state_loop(
+                    bus=bus,
+                    channel=settings.CHANNEL_JUNIPER_AFFECTIVE_STATE,
+                    source=source,
+                    claude_projects_path=settings.COCREATION_SIGNALS_CLAUDE_PROJECTS_PATH,
+                    poll_interval_sec=settings.COCREATION_SIGNALS_AFFECTIVE_STATE_POLL_INTERVAL_SEC,
+                    cold_start_lookback_sec=settings.COCREATION_SIGNALS_AFFECTIVE_STATE_COLD_START_LOOKBACK_SEC,
+                    stop=stop,
+                ),
+                name="affective_state_loop",
+            )
+        )
+    else:
+        logger.info("cocreation_affective_state_disabled")
 
     if not tasks:
         logger.warning("cocreation_signals_no_producers_enabled")

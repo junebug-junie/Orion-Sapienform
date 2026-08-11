@@ -259,3 +259,82 @@ Tests: `orion/substrate/tests/test_attention_self_model.py` (52 passed,
 including the 4 new), `services/orion-substrate-runtime/tests/
 test_worker_attention_self_model_tick.py` (16 passed) -- both run via the
 main checkout's `.venv` from inside this task's worktree.
+
+## Second patch, shipped in this same branch: real evidence on prediction-error receipts
+
+Juniper asked to implement "the 1547 proposal." Of the four deferred threads
+this doc names (accepted-pressure's zero-consumer status, Causal Geometry
+Phase B, extending `causal_helpers.py` to grammar atoms, or a new daydream
+consumer), none turned out to be the cheapest real next step once traced
+further. Following `_aggregate_prediction_error_confidence()`'s inputs
+upstream (the same digging that produced the first patch above) found a
+closer, already-real seam: **`_prediction_error_receipt()`**
+(`services/orion-substrate-runtime/app/worker.py`) builds a
+`ReductionReceiptV1`/`StateDeltaV1` every time a domain's prediction-error
+rises above zero -- the exact receipt trail behind
+`prediction_error_confidence`/`prediction_error_by_domain` -- and it was the
+**sole holdout in the entire reducer family** hardcoding
+`caused_by_event_ids=[]`. Every sibling reducer (`orion/substrate/
+chat_loop/reducer.py`, `execution_loop/reducer.py`, `route_loop/reducer.py`,
+`transport_loop/reducer.py`) already threads its batch's real `event_id`s
+into this same `StateDeltaV1` field. And it isn't a dead field:
+`orion/substrate/receipts/retention.py::primary_event_id()` and
+`services/orion-hub/scripts/substrate_biometrics_routes.py`'s
+`/biometrics-node/{node_id}/latest` route both already read
+`caused_by_event_ids` off every other receipt -- prediction-error receipts
+were the one blind spot in an existing, live, already-consumed evidence
+mechanism, not a place needing a new one invented.
+
+This is the concrete first slice of "why do I feel this way": for the four
+grammar-event-driven domains, a receipt now names the actual grammar event
+IDs processed in the tick whose projection diff produced that error reading
+-- inspectable today via the same hub route above once
+`node_id=node:substrate.<domain>` is queried, no new UI work required.
+
+- `services/orion-substrate-runtime/app/worker.py`:
+  - `_prediction_error_receipt()` gained a `caused_by_event_ids: Sequence[str]
+    = ()` param, threaded into `StateDeltaV1.caused_by_event_ids`, capped by
+    a new `_PREDICTION_ERROR_EVIDENCE_CAP = 50` module constant -- same
+    convention as `chat_loop/reducer.py`'s existing `_EVIDENCE_CAP`, guarding
+    against the same unbounded-list-if-batch-limit-is-raised shape already
+    fixed elsewhere in this repo (`evidence_event_ids` in the pressure and
+    execution-merge reducers).
+  - The four grammar-event-driven tick methods (`_tick` / biometrics,
+    `_execution_tick`, `_chat_tick`, `_route_tick`) now pass
+    `[e.event_id for e in events if e.atom]` -- the real batch each tick
+    already fetched and processed -- matching the exact filter the sibling
+    reducers already use.
+  - `bus_synaptic` (`_bus_synaptic_tick`) and `codebase`
+    (`_handle_codebase_mass_delta` and friends) call sites are **left
+    unchanged, on purpose**: `bus_synaptic` has no `GrammarEventV1` batch in
+    scope at all (it reads FalkorDB edge z-scores fresh each call), so there
+    is nothing real to name -- a comment now says so explicitly rather than
+    leaving the gap to look like an oversight. `codebase` already has an
+    explicit, dated Phase-3-deferral comment in the same file explaining why
+    it stays excluded from downstream wiring; extending evidence-population
+    there is a drive-by fix on top of a deliberate prior scoping decision,
+    not this patch's job.
+- `services/orion-substrate-runtime/tests/
+  test_worker_prediction_error_receipt_evidence.py` (new): 4 tests against
+  the pure `_prediction_error_receipt()` helper -- default stays `[]`
+  (backward compatible with the two untouched call sites), real IDs thread
+  through, the cap actually caps, and a non-list `Sequence` input works.
+
+Tests: `services/orion-substrate-runtime/tests/
+test_worker_prediction_error_receipt_evidence.py` (4 passed, new).
+Broader regression: `pytest tests/ -k "worker or prediction_error"`
+(102 passed / 3 pre-existing failures unrelated to this patch, confirmed via
+`git stash` on the same baseline -- `test_worker_falkor_routed_store.py::
+test_write_prediction_error_node_preserves_dynamics_state_on_rewrite`,
+`test_worker_independent_reducers.py::
+test_start_spawns_independent_reducer_poll_tasks`,
+`test_worker_reducer.py::
+test_advance_cursor_records_commit_failure_when_created_at_missing`; the
+`test_grammar_consumer_integration.py` collection error is a live-Postgres
+dependency unavailable in this environment, also pre-existing).
+
+Still open, still deferred (unchanged from this doc's original scope): fixing
+`accepted-pressure`'s zero-consumer status, reviving Causal Geometry Phase B,
+extending `causal_helpers.py` to the grammar-atom layer, and any new
+daydream/reverie consumer. This patch closes one small, real evidence gap; it
+does not build a general causal-inference engine.

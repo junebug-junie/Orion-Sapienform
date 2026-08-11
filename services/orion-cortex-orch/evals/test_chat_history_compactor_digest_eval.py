@@ -29,9 +29,13 @@ from orion.cognition.chat_history_compactor.digest import (
 )
 from orion.schemas.discussion_window import DiscussionWindowResultV1, DiscussionWindowTurnV1
 
-# 30 turns x (400 + 600) chars plus JSON/field overhead; the digest prompt
-# payload must never grow past this regardless of raw window size.
-DIGEST_INPUT_MAX_SERIALIZED_CHARS = 45_000
+# DEFAULT_MAX_TURNS x (per-turn prompt + response caps) plus JSON/field
+# overhead; the digest prompt payload must never grow past this regardless
+# of raw window size. Derived from the live constants (not hardcoded) so
+# this eval tracks future budget changes instead of silently under-testing.
+DIGEST_INPUT_MAX_SERIALIZED_CHARS = DEFAULT_MAX_TURNS * (
+    DIGEST_TURN_PROMPT_MAX_CHARS + DIGEST_TURN_RESPONSE_MAX_CHARS + 250
+)
 
 
 def _window(turns: list[DiscussionWindowTurnV1]) -> DiscussionWindowResultV1:

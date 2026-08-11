@@ -29,13 +29,13 @@ def trim_chat_history_compactor_input(
     # Keep newest suffix (discussion window already contiguous-suffix oriented)
     selected = turns[-max_turns:] if max_turns > 0 else []
     compact_turns = []
+    any_turn_truncated = False
     for turn in selected:
         prompt = str(turn.prompt or "")
         response = str(turn.response or "")
-        if len(prompt) > DIGEST_TURN_PROMPT_MAX_CHARS:
-            prompt = prompt[:DIGEST_TURN_PROMPT_MAX_CHARS].rstrip() + "…"
-        if len(response) > DIGEST_TURN_RESPONSE_MAX_CHARS:
-            response = response[:DIGEST_TURN_RESPONSE_MAX_CHARS].rstrip() + "…"
+        prompt, prompt_truncated = _truncate_at_word_boundary(prompt, DIGEST_TURN_PROMPT_MAX_CHARS)
+        response, response_truncated = _truncate_at_word_boundary(response, DIGEST_TURN_RESPONSE_MAX_CHARS)
+        any_turn_truncated = any_turn_truncated or prompt_truncated or response_truncated
         compact_turns.append(
             {
                 "created_at": turn.created_at.isoformat() if turn.created_at else None,
@@ -44,6 +44,7 @@ def trim_chat_history_compactor_input(
                 "source": turn.source,
                 "prompt": prompt,
                 "response": response,
+                **({"truncated": True} if (prompt_truncated or response_truncated) else {}),
             }
         )
     payload: dict[str, Any] = {
@@ -56,7 +57,25 @@ def trim_chat_history_compactor_input(
     if total > len(selected):
         payload["turns_truncated_for_digest"] = True
         payload["turns_total"] = total
+    if any_turn_truncated:
+        payload["turn_content_truncated"] = True
     return payload
+
+
+def _truncate_at_word_boundary(text: str, max_chars: int) -> tuple[str, bool]:
+    """Trim `text` to at most `max_chars`, breaking on the last whitespace
+    before the cutoff instead of slicing mid-word/mid-sentence, so a long
+    turn degrades to a coherent prefix instead of a fragment the digest LLM
+    has to guess the rest of. Falls back to a hard cut only if no whitespace
+    exists in range (e.g. one long unbroken token)."""
+    if len(text) <= max_chars:
+        return text, False
+    window = text[:max_chars]
+    boundary = window.rfind(" ")
+    # Don't collapse to a near-empty prefix if the first "word" is huge.
+    if boundary > max_chars * 0.5:
+        window = window[:boundary]
+    return window.rstrip() + "…", True
 
 
 def assert_chat_compactor_digest_within_budget(digest: ChatHistoryCompactorDigestV1) -> None:

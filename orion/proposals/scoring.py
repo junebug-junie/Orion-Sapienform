@@ -108,8 +108,10 @@ DIMENSION_PRECISION_EWMA_MIN_SAMPLES = 8
 # permanent saturation either -- real p99 |z| in the 1.3-4.3 range across
 # all four dimensions at this floor, a genuinely discriminating spread.
 #
-# 2026-08-11 (Patch A, docs/superpowers/specs/2026-08-11-proposal-arena-rate-
-# coupling-design.md): `resource_pressure` re-derived from 5e-5 to 2e-3.
+# 2026-08-11 (Patch A; design doc in PR #1554, not merged as of this commit --
+# see orion/field/pressure.py's CHANNEL_DIMENSION_MAP tombstone for why this
+# cites a PR number rather than a path): `resource_pressure` re-derived from
+# 5e-5 to 2e-3.
 # Mandatory, not opportunistic -- removing `thermal_pressure` from
 # orion/field/pressure.py's CHANNEL_DIMENSION_MAP changes this dimension's
 # distribution, so a floor calibrated against the old one would silently
@@ -139,7 +141,16 @@ DIMENSION_PRECISION_EWMA_MIN_SAMPLES = 8
 #     reliability_pressure  1.09e-2 -> 5.520e-3   (0.51x, floor 2x too high)
 # Left alone here so this patch's effect stays attributable to the one map
 # entry it removes; re-deriving all four at once would make the post-deploy
-# data impossible to read. Tracked as follow-up work in the design doc.
+# data impossible to read.
+#
+# This is a real, live mis-scaling and it is NOT tracked only in an unmerged
+# doc -- the numbers above are the tracking. execution_pressure matters most:
+# it carries the highest dimension_weight (0.30) AND is one of the four
+# PRESSURE_DIMENSIONS that _pressure_dimension_ids() falls back to for every
+# template declaring `dimensions: {}`, so a 20x-too-low floor inflates its
+# z-scores across most of the arena. Re-derive all three by re-running
+# scripts/analysis/measure_proposal_dimension_variance.py; that script needs
+# no new instrument and produced every figure above.
 DIMENSION_PRECISION_MIN_VARIANCE: dict[str, float] = {
     "execution_pressure": 1e-4,
     "resource_pressure": 2e-3,

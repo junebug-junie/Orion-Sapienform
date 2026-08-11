@@ -110,3 +110,42 @@ def test_clean_verdicts_excludes_broken_categories():
     assert "dead" not in CLEAN_VERDICTS
     assert "ratchet_suspect" not in CLEAN_VERDICTS
     assert "never_produced" not in CLEAN_VERDICTS
+
+
+def test_self_state_dimension_matches_channel_dimension_map_exactly():
+    """Fail-closed parity gate between the glossary's `self_state_dimension` and
+    `orion/field/pressure.py::CHANNEL_DIMENSION_MAP`, added 2026-08-11.
+
+    The glossary is not a comment. `orion/field/channel_glossary.py:141` loads
+    this field and `services/orion-hub/scripts/field_channel_glossary_routes.py:128`
+    renders it verbatim in Hub's Field Channel Glossary panel, so a stale entry
+    tells an operator that a channel feeds a dimension it does not feed, and
+    invites attributing a real movement to a channel contributing nothing.
+
+    Nothing asserted this before, and it had already drifted twice over:
+
+    - Six entries (`availability`, `available_capacity`, `confidence`,
+      `expected_offline_suppression`, `field_coherence_warning` -> `coherence`;
+      `prediction_error` -> `uncertainty`) documented routes deliberately NOT
+      reproduced in the 2026-07-22 SelfStateV1 burn. `orion/field/pressure.py`'s
+      own module docstring says so explicitly: those old policy routes "produced
+      values nothing ever read". The glossary kept advertising them for three
+      weeks.
+    - `thermal_pressure` -> `resource_pressure` was made false by Patch A on
+      2026-08-11 (see the tombstone at CHANNEL_DIMENSION_MAP).
+
+    All seven were removed in that patch. This test is why they cannot come
+    back silently: per CLAUDE.md 0A, the fix for config drift is a failing gate,
+    not a louder comment. Deliberately exact equality, not a subset check --
+    a channel that routes to a dimension but is undocumented here is the same
+    defect in the other direction.
+    """
+    from orion.field.pressure import CHANNEL_DIMENSION_MAP
+
+    glossary = load_glossary()
+    documented = {
+        e.channel: e.self_state_dimension
+        for e in glossary["entries"]
+        if e.self_state_dimension
+    }
+    assert documented == dict(CHANNEL_DIMENSION_MAP)

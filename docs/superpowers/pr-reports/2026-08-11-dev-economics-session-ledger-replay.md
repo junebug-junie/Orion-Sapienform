@@ -1,11 +1,13 @@
 # Dev-economics session ledger: real token/cost/duration parser + replay
 
 Status: **DONE**. Implements `docs/superpowers/specs/2026-07-30-dev-economics-signal-design.md`'s
-own "Recommended next patch": `claude_code_ingest.py` extended to produce normalized per-session
-usage records (real token counts, model, effort tier, wall-clock duration, assistant + human
-word counts), run against this machine's real transcript history, per that doc's own acceptance
-check. Offline only -- no pricing table, no bus wiring, no service -- per that doc's explicit
-phasing ("before pricing, before Cursor, before any coupling decision").
+own "Recommended next patch" (`claude_code_ingest.py` extended to produce normalized per-session
+usage records -- real token counts, model, effort tier, wall-clock duration, assistant + human
+word counts), run against this machine's real transcript history per that doc's own acceptance
+check. **Also includes `pricing.py`** -- the doc's explicitly-named next step after the ledger
+lands, brought forward into this same patch since real, sourced Anthropic rates were already at
+hand (the `claude-api` skill's own cached pricing reference). Still offline only -- no bus
+wiring, no service -- per the doc's explicit phasing on those two.
 
 This is the largest single cluster (~10 of the ~25 originally-brainstormed ideas from PR #1491)
 of the "other 20 ideas" backlog. `doc-semantic-drift` and the remaining noted-only ideas
@@ -88,6 +90,30 @@ before the formal review pass, via direct inspection of the real corpus.
 Per-session records intentionally not committed to the repo (aggregate distribution stats only,
 in this report) -- same privacy discipline as the affective-state replay.
 
+## Real $ cost estimate (`orion/dev_economics/pricing.py`)
+
+Rates sourced from the `claude-api` skill's own cached pricing reference (cached 2026-06-24,
+real Anthropic first-party API rates) -- not guessed. Deliberately narrow: only the models this
+repo's real usage actually pays for have a rate entry; an unpriced model returns `None` from
+`estimate_session_cost_usd`, never a fabricated `$0.00`.
+
+- **Estimated total: $7,540.08** across the real corpus, 1,265 of 1,277 records priced.
+- Unpriced (no rate entry, cost honestly excluded, not zeroed): `chat`, `moonshotai/kimi-k2.5`,
+  `moonshotai/kimi-k2.6`, `z-ai/glm-5.2`, `z-ai/glm4.7` -- 5 non-Anthropic/unrecognized models.
+- Real, live effective-date-range case: `claude-sonnet-5` has two real rate windows --
+  introductory ($2/$10 per MTok) through 2026-08-31, standard ($3/$15) after. Today (2026-08-11)
+  is inside the intro window, so this isn't a hypothetical the design doc raised and this patch
+  ignored -- it's live and currently being priced correctly.
+- Code review caught a real design gap: `find_rate()`'s first draft relied on `PRICING_TABLE`'s
+  literal ordering to pick the newest covering window, but the table itself lists
+  `claude-sonnet-5`'s two windows oldest-first -- harmless only because they're non-overlapping
+  today. Fixed so `find_rate()` explicitly picks the covering entry with the latest
+  `effective_from` itself, with a test that constructs a deliberately overlapping pair in the
+  order that would give the wrong answer under the old logic.
+- Not attempted: splitting cost within a record that touches more than one model (rare -- a
+  mid-session model switch). `_record_cost_usd()` prices against the record's first-seen model
+  only; disclosed in that function's own docstring as an accepted simplification, not silent.
+
 ## Cursor investigation (design doc's acceptance check)
 
 Doc requires "a plain yes/no answer (does comparable local data exist) before any Cursor
@@ -101,7 +127,7 @@ against an assumed schema.
 
 ```text
 venv/bin/python3 -m pytest orion/dev_economics/tests -q
-26 passed
+36 passed
 ```
 
 ## Evals run
@@ -125,6 +151,13 @@ string (`isinstance(message_id, str) and message_id`), and the dedup test's fixt
 to match the real corpus's actual line shape (thinking-only/tool_use-only lines around the one
 line that carries real text) with an explicit `assistant_word_count` assertion, rather than an
 unrealistic all-lines-have-text fixture that couldn't have caught the word-count regression.
+
+A third review pass covered `pricing.py` specifically: confirmed the sourced dollar rates,
+date-window logic, and cache multipliers all check out (ran a real 1,275-record replay as part
+of the review), but found `find_rate()` relied on `PRICING_TABLE`'s literal ordering to pick the
+newest covering rate rather than enforcing it in code -- fixed as described in "Real $ cost
+estimate" above, with a new test locking in the fix using a deliberately overlapping pair of
+windows.
 
 ## Restart required
 

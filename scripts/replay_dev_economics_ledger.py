@@ -30,6 +30,27 @@ from orion.dev_economics.claude_code_ingest import (  # noqa: E402
     DEFAULT_PROJECTS_ROOT,
     iter_all_session_usage_records,
 )
+from orion.dev_economics.pricing import estimate_session_cost_usd  # noqa: E402
+
+
+def _record_cost_usd(record):
+    """One record's estimated cost, or None if unpriceable (unknown model,
+    or a date this table's known windows don't reach). A record touching
+    more than one distinct model (rare -- e.g. a mid-session model switch)
+    is priced against its first-seen model only; the real total then
+    slightly under- or over-states cost for that one record. Accepted
+    simplification -- splitting cost within a record would need re-parsing
+    per line, out of scope for this replay."""
+    if not record.models or record.started_at is None:
+        return None
+    return estimate_session_cost_usd(
+        model=record.models[0],
+        observed_at=record.started_at,
+        input_tokens=record.input_tokens,
+        output_tokens=record.output_tokens,
+        cache_creation_input_tokens=record.cache_creation_input_tokens,
+        cache_read_input_tokens=record.cache_read_input_tokens,
+    )
 
 
 def main() -> int:
@@ -77,6 +98,9 @@ def main() -> int:
         summary["top_level_session_duration_sec_median"] = statistics.median(top_level_durations)
         summary["top_level_session_duration_sec_max"] = max(top_level_durations)
 
+    costed = [(r, _record_cost_usd(r)) for r in records]
+    cost_by_id = {id(r): c for r, c in costed}
+
     per_session = [
         {
             "session_id": r.session_id,
@@ -88,6 +112,9 @@ def main() -> int:
             "cache_creation_input_tokens": r.cache_creation_input_tokens,
             "cache_read_input_tokens": r.cache_read_input_tokens,
             "total_tokens": r.total_tokens,
+            "estimated_cost_usd": (
+                round(cost_by_id[id(r)].total_usd, 4) if cost_by_id.get(id(r)) else None
+            ),
             "assistant_turn_count": r.assistant_turn_count,
             "assistant_word_count": r.assistant_word_count,
             "human_turn_count": r.human_turn_count,
@@ -103,6 +130,12 @@ def main() -> int:
     (out_dir / "session_records.json").write_text(json.dumps(per_session, indent=2), encoding="utf-8")
 
     top_by_tokens = sorted(records, key=lambda r: r.total_tokens, reverse=True)[:10]
+
+    total_cost_usd = sum(c.total_usd for _, c in costed if c is not None)
+    priced_count = sum(1 for _, c in costed if c is not None)
+    unpriced_models = sorted(
+        {r.models[0] for r, c in costed if c is None and r.models}
+    )
 
     lines = [
         "# Dev-economics ledger replay",
@@ -128,6 +161,17 @@ def main() -> int:
     ]
     for model, count in summary["model_mix"].items():
         lines.append(f"- {model}: {count}")
+
+    lines += [
+        "",
+        "## Real $ cost estimate (orion/dev_economics/pricing.py, real sourced rates)",
+        "",
+        f"- estimated total: ${total_cost_usd:,.2f}",
+        f"- records priced: {priced_count} / {len(records)}",
+    ]
+    if unpriced_models:
+        lines.append(f"- unpriced models (no rate entry, cost excluded): {', '.join(unpriced_models)}")
+
     lines += ["", "## Effort mix", ""]
     for effort, count in summary["effort_mix"].items():
         lines.append(f"- {effort}: {count}")
@@ -143,12 +187,17 @@ def main() -> int:
         ]
 
     lines += ["", "## Top 10 transcripts by total_tokens", ""]
-    lines += ["| session_id | subagent | model | total_tokens | duration |", "|---|---|---|---|---|"]
+    lines += [
+        "| session_id | subagent | model | total_tokens | est. cost | duration |",
+        "|---|---|---|---|---|---|",
+    ]
     for r in top_by_tokens:
         dur = f"{r.duration_sec/60:.1f}min" if r.duration_sec else "n/a"
+        cost = cost_by_id.get(id(r))
+        cost_str = f"${cost.total_usd:,.2f}" if cost else "n/a"
         lines.append(
             f"| {r.session_id[:8]} | {r.is_subagent} | {','.join(r.models) or '?'} | "
-            f"{r.total_tokens:,} | {dur} |"
+            f"{r.total_tokens:,} | {cost_str} | {dur} |"
         )
 
     report_path = out_dir / "report.md"

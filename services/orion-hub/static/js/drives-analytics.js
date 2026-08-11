@@ -39,7 +39,7 @@
       reading: 'Large deltas mean the concept store and the live audit rail disagree about drive state -- investigate before trusting either signal. autonomy_state_v2 is frozen/historical, never a live second signal; this card states that verbatim rather than implying a second live comparison exists.',
     },
     goals: {
-      definition: 'Read-only list of active goals (artifact_id, drive_origin, proposal_status, goal_statement) plus funnel counts across the proposal pipeline.',
+      definition: 'Read-only list of active goals (artifact_id, proposal_status, goal_statement) plus funnel counts across the proposal pipeline.',
       design: 'This tab is orientation, not a mutation console -- unlike causal-geometry\'s adopt/reject buttons, this card has no action buttons of any kind. Goal-alignment coloring elsewhere on the page reads from this same data.',
       reading: 'If goals_available is false, the goal store could not be reached this refresh -- that shows as "goals unavailable" plainly, never as an invented empty list. A drive with sustained pressure and no matching goal here is the signal this whole page exists to surface.',
     },
@@ -512,18 +512,17 @@
   // Card 6: Goals (strictly read-only)
   // -------------------------------------------------------------------------
 
-  // Coloring model for goal cards (spec: "KPI strip / goals card" column): align mode
-  // borders each goal by its drive_origin's per-drive alignment color (shared with the
+  // Coloring model for goal cards (spec: "KPI strip / goals card" column): align mode used
+  // to border each goal by its drive_origin's per-drive alignment color (shared with the
   // gauges via alignColorForKey); funnel/combined instead border by this goal's own
   // proposal_status -- i.e. its individual position in the funnel/pipeline -- since that
-  // column is funnel/gate-ruled in both those modes.
+  // column is funnel/gate-ruled in both those modes. drive_origin was deleted from
+  // AutonomyGoalHeadlineV1 2026-08-11 (fix/goal-drive-origin-retirement, review fix) --
+  // the backend no longer sends it, so align mode has no per-goal key to look up anymore
+  // and always falls to the neutral border, same as it already did in practice (the
+  // backend's matching_origins set was always empty before the field was deleted too).
   function goalBorderClass(goal, { colorMode, goalAlignmentPayload }) {
     if (colorMode === 'align') {
-      const key = String(goal.drive_origin || '').trim().toLowerCase();
-      const color = alignColorForKey(key, goalAlignmentPayload);
-      if (color === 'red') return 'border-red-700';
-      if (color === 'yellow') return 'border-amber-700';
-      if (color === 'green') return 'border-emerald-700';
       return 'border-gray-800';
     }
     const status = String(goal.proposal_status || '').trim().toLowerCase();
@@ -555,7 +554,7 @@
           el(
             'div',
             'text-[11px] text-gray-400',
-            `artifact_id=${goal.artifact_id || '—'} | drive_origin=${goal.drive_origin || '—'} | proposal_status=${goal.proposal_status || '—'}`,
+            `artifact_id=${goal.artifact_id || '—'} | proposal_status=${goal.proposal_status || '—'}`,
           ),
         );
         container.appendChild(card);

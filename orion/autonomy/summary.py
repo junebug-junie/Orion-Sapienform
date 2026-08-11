@@ -145,35 +145,40 @@ def _derive_context_note(
     return None
 
 
-def dedupe_goal_headlines_by_drive_origin(
+def _top_goal_headlines_by_priority(
     goals: list[AutonomyGoalHeadlineV1],
     *,
     limit: int = 3,
 ) -> list[AutonomyGoalHeadlineV1]:
-    """Keep highest-priority goal per drive_origin (matches repository active-goal read path)."""
+    """Highest-priority goal headlines, capped at limit.
+
+    Replaces dedupe_goal_headlines_by_drive_origin (deleted 2026-08-11,
+    fix/goal-drive-origin-retirement, alongside AutonomyGoalHeadlineV1's
+    drive_origin field). That function deduped by drive_origin, but its only
+    call site into this ranking was confirmed unreachable in production:
+    chat_stance.py::_load_autonomy_state only ever calls
+    _merge_orion_goals_into_state (this function's other caller, also
+    deleted in the same patch) from the graphdb/sparql branch, which every
+    real turn skips via the early return to _load_autonomy_state_fallback_local
+    (AUTONOMY_GRAPH_BACKEND=disabled is the live default). Even had it run,
+    LocalAutonomyRepository.get_latest() -- the only real backend since Part
+    G (PR #1530) -- unconditionally returns state=None, so goal_headlines was
+    always []. No replacement dedup key is substituted: AutonomyGoalHeadlineV1
+    has no other natural per-goal identity to dedupe on, and duplicate
+    artifact_ids were never the problem the old function solved.
+    """
     ranked = sorted(goals, key=lambda goal: (-float(goal.priority), goal.artifact_id))
-    seen_origins: set[str] = set()
-    out: list[AutonomyGoalHeadlineV1] = []
-    for goal in ranked:
-        origin = str(goal.drive_origin or "").strip().lower()
-        if not origin or origin in seen_origins:
-            continue
-        seen_origins.add(origin)
-        out.append(goal)
-        if len(out) >= limit:
-            break
-    return out
+    return ranked[:limit]
 
 
 def _active_goals_from_state(state: AutonomyStateV1 | AutonomyStateV2) -> list[AutonomyActiveGoalV1]:
     out: list[AutonomyActiveGoalV1] = []
-    for goal in dedupe_goal_headlines_by_drive_origin(state.goal_headlines, limit=3):
+    for goal in _top_goal_headlines_by_priority(state.goal_headlines, limit=3):
         headline = _proposal_headline_for_display(goal.goal_statement)
         if not headline:
             continue
         out.append(
             AutonomyActiveGoalV1(
-                drive_origin=goal.drive_origin,
                 headline=headline,
                 priority=goal.priority,
                 artifact_id=goal.artifact_id,
@@ -275,7 +280,7 @@ def summarize_autonomy_state(state: AutonomyStateV1 | AutonomyStateV2 | None) ->
     proposal_headlines = _bounded_unique(
         [
             _proposal_headline_for_display(goal.goal_statement)
-            for goal in dedupe_goal_headlines_by_drive_origin(state.goal_headlines, limit=3)
+            for goal in _top_goal_headlines_by_priority(state.goal_headlines, limit=3)
         ],
         limit=3,
     )

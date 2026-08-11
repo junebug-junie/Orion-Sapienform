@@ -1079,10 +1079,15 @@ class Supervisor:
             (g for g in goals if str(g.get("artifact_id") or "").strip() == artifact_id),
             goals[0] if goals else {},
         )
+        # drive_origin no longer read from goal_row 2026-08-11 (fix/goal-drive-origin-
+        # retirement, review fix): goal_row comes from chat_autonomy_summary["active_goals"]
+        # (AutonomyActiveGoalV1, serialized), which lost this field in the same patch --
+        # goal_row.get("drive_origin") would now always miss and silently fall to the
+        # "supervisor" default anyway, so let AutonomyGoalExecuteInputV1's own default
+        # apply directly instead of faking a per-goal read that no longer has a source.
         payload = AutonomyGoalExecuteInputV1(
             goal_artifact_id=artifact_id,
             goal_statement=str(goal_row.get("headline") or goal_row.get("goal_statement") or ""),
-            drive_origin=str(goal_row.get("drive_origin") or "supervisor"),
         )
         try:
             out = await execute_autonomy_goal_v1(payload, bus=self.bus, correlation_id=correlation_id)

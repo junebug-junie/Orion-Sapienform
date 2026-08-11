@@ -1672,30 +1672,6 @@ def _reflective_summary(ctx: Dict[str, Any]) -> dict[str, list[str]]:
     }
 
 
-def _merge_orion_goals_into_state(
-    preferred_state: Any,
-    orion_state: Any,
-) -> Any:
-    """Keep Orion goal proposals visible when relationship drives supply stance context."""
-    from orion.autonomy.models import AutonomyStateV1
-
-    if not isinstance(preferred_state, AutonomyStateV1) or not isinstance(orion_state, AutonomyStateV1):
-        return preferred_state
-    seen = {goal.artifact_id for goal in preferred_state.goal_headlines}
-    merged_goals = list(preferred_state.goal_headlines)
-    for goal in orion_state.goal_headlines:
-        if goal.artifact_id not in seen:
-            merged_goals.append(goal)
-            seen.add(goal.artifact_id)
-    if len(merged_goals) == len(preferred_state.goal_headlines):
-        return preferred_state
-    from orion.autonomy.summary import dedupe_goal_headlines_by_drive_origin
-
-    return preferred_state.model_copy(
-        update={"goal_headlines": dedupe_goal_headlines_by_drive_origin(merged_goals, limit=3)}
-    )
-
-
 def _load_autonomy_state_fallback_local(
     ctx: Dict[str, Any],
     plan: AutonomyGraphReadPlan,
@@ -1927,10 +1903,16 @@ def _load_autonomy_state(ctx: Dict[str, Any]) -> Dict[str, Any]:
     preferred = selection.lookup
     selected_subject = selection.selected_subject
     contextual_fallback = selection.contextual_fallback
-    orion_lookup = selection.orion_lookup
     state_for_summary = preferred.state if preferred and preferred.state is not None else None
-    if state_for_summary and contextual_fallback and orion_lookup and orion_lookup.state is not None:
-        state_for_summary = _merge_orion_goals_into_state(state_for_summary, orion_lookup.state)
+    # _merge_orion_goals_into_state (which folded selection.orion_lookup's
+    # goal headlines into state_for_summary when relationship drives were the
+    # contextual fallback) was deleted 2026-08-11 (fix/goal-drive-origin-
+    # retirement): it was unreachable in production -- this whole function
+    # only runs when plan.mode is "graphdb"/"sparql", a branch every real
+    # turn skips via _load_autonomy_state's early return to
+    # _load_autonomy_state_fallback_local (AUTONOMY_GRAPH_BACKEND=disabled is
+    # the live default) -- and its only purpose was invoking
+    # dedupe_goal_headlines_by_drive_origin, deleted in the same patch.
     partial_used = bool(
         preferred
         and (

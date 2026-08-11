@@ -687,7 +687,6 @@ def fetch_goal_alignment_sync(
                 active_goals.append(
                     {
                         "artifact_id": getattr(goal, "artifact_id", None),
-                        "drive_origin": getattr(goal, "drive_origin", None),
                         "proposal_status": getattr(goal, "proposal_status", None) or "proposed",
                         "goal_statement": getattr(goal, "goal_statement", None),
                     }
@@ -702,14 +701,18 @@ def fetch_goal_alignment_sync(
         notes.append(str(exc) or exc.__class__.__name__)
         logger.warning("drives_analytics_goal_alignment_failed error=%s", exc)
 
-    matching_origins = {
-        str(g.get("drive_origin") or "").strip().lower()
-        for g in active_goals
-        if g.get("drive_origin")
-    }
+    # Per-drive origin matching retired 2026-08-11 (fix/goal-drive-origin-retirement,
+    # review fix): AutonomyGoalHeadlineV1.drive_origin -- the only field this matched
+    # against -- was deleted. This was already permanently unreachable before that
+    # deletion too (goals_available is only True when the autonomy repository returns
+    # non-empty state, which LocalAutonomyRepository.get_latest() has never done since
+    # Part G, PR #1530), so has_matching_goal below was already always False in
+    # production; left as a hardcoded False now instead of a lookup against a field
+    # that no longer exists, per CLAUDE.md's no-empty-shell-cognition rule -- a signal
+    # that can never structurally return anything but false should say so plainly.
     per_drive: dict[str, Any] = {}
     for key in DRIVE_KEYS:
-        has_match = key in matching_origins
+        has_match = False
         # Without goals, elevated pressure falls to yellow/neutral — never invent green.
         color = align_color_for_drive(
             pressure=pressure_map[key],

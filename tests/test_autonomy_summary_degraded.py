@@ -15,7 +15,6 @@ def test_drives_timeout_partial_state_marks_degraded() -> None:
             AutonomyGoalHeadlineV1(
                 artifact_id="goal-1",
                 goal_statement="Clarify autonomy boundaries without executing any new action.",
-                drive_origin="autonomy",
                 priority=0.8,
                 cooldown_until=None,
                 proposal_signature="sig-1",
@@ -144,7 +143,6 @@ def test_deferred_drives_degraded_reason_says_deferred_not_failed() -> None:
             AutonomyGoalHeadlineV1(
                 artifact_id="goal-1",
                 goal_statement="Clarify autonomy boundaries without executing any new action.",
-                drive_origin="autonomy",
                 priority=0.8,
                 cooldown_until=None,
                 proposal_signature="sig-1",
@@ -177,7 +175,6 @@ def test_healthy_state_with_proposals_uses_normal_stance_mode() -> None:
             AutonomyGoalHeadlineV1(
                 artifact_id="goal-1",
                 goal_statement="Clarify autonomy boundaries without executing any new action.",
-                drive_origin="autonomy",
                 priority=0.8,
                 cooldown_until=None,
                 proposal_signature="sig-1",

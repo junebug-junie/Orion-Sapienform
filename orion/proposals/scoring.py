@@ -107,9 +107,42 @@ DIMENSION_PRECISION_EWMA_MIN_SAMPLES = 8
 # a long-enough hold unless the floor is large enough to bound it), and no
 # permanent saturation either -- real p99 |z| in the 1.3-4.3 range across
 # all four dimensions at this floor, a genuinely discriminating spread.
+#
+# 2026-08-11 (Patch A, docs/superpowers/specs/2026-08-11-proposal-arena-rate-
+# coupling-design.md): `resource_pressure` re-derived from 5e-5 to 2e-3.
+# Mandatory, not opportunistic -- removing `thermal_pressure` from
+# orion/field/pressure.py's CHANNEL_DIMENSION_MAP changes this dimension's
+# distribution, so a floor calibrated against the old one would silently
+# mis-scale every confidence it produces. Re-measured through the real
+# production path (the same measure_proposal_dimension_variance.py cited
+# above, 6h / 10,562 real ticks, run on the patched code):
+#
+#     resource_pressure   variance 0.0037973 -> 0.0174205  (4.6x)
+#                         mean     0.538208  -> 0.32551
+#                         min      0.314286  -> 0.144535
+#                         real upward transitions 270 -> 431 (+60%)
+#                         classification NON_DEGENERATE_USABLE, unchanged
+#
+# 2e-3 is ~1/10th of the new variance, same rule as the four originals.
+# Hand-verified by the same replay method: at this floor real p99 |z| is
+# 3.116 (inside the 1.3-4.3 discriminating band the originals were checked
+# against), median |z| 0.741, 1.13% of ticks at |z| >= 3, and the tail is
+# bounded from max |z| 17.195 (at the old 5e-5) down to 10.023. The raw
+# unfloored EWMA variance does reach ~0 during flat holds in this series, so
+# the floor is load-bearing here, not decorative.
+#
+# KNOWN STALE, deliberately NOT fixed in this patch: the other three floors
+# have drifted from their 2026-07-28 derivation independently of this change
+# (measured on UNPATCHED code, same 6h window) --
+#     execution_pressure    9.63e-4 -> 1.987e-2   (20.6x, floor 20x too low)
+#     reasoning_pressure    2.11e-6 -> 3.494e-7   (0.17x, floor 6x too high)
+#     reliability_pressure  1.09e-2 -> 5.520e-3   (0.51x, floor 2x too high)
+# Left alone here so this patch's effect stays attributable to the one map
+# entry it removes; re-deriving all four at once would make the post-deploy
+# data impossible to read. Tracked as follow-up work in the design doc.
 DIMENSION_PRECISION_MIN_VARIANCE: dict[str, float] = {
     "execution_pressure": 1e-4,
-    "resource_pressure": 5e-5,
+    "resource_pressure": 2e-3,
     "reasoning_pressure": 2e-7,
     "reliability_pressure": 1e-3,
 }

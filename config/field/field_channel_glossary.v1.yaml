@@ -41,7 +41,6 @@ channels:
     level: [node]
     category: sensor_trust_liveness
     meaning: "How available/reachable a compute node currently is."
-    self_state_dimension: coherence
 
   - channel: staleness
     level: [node]
@@ -71,7 +70,6 @@ channels:
     level: [node]
     category: physical_substrate
     meaning: "Node thermal/temperature pressure."
-    self_state_dimension: resource_pressure
 
   - channel: disk_pressure
     level: [node]
@@ -101,7 +99,6 @@ channels:
     level: [node]
     category: sensor_trust_liveness
     meaning: "Signals a node is expected to be offline, so its absence shouldn't be read as a failure."
-    self_state_dimension: coherence
 
   - channel: cortex_exec_step_load
     level: [node]
@@ -244,13 +241,11 @@ channels:
     level: [node]
     category: self_monitoring
     meaning: "Per-node incoherence score -- fires when two reducers that should agree about a node's state disagree."
-    self_state_dimension: coherence
 
   - channel: prediction_error
     level: [node]
     category: self_monitoring
     meaning: "How much a recent prediction (from the prediction/surprise subsystem) missed reality."
-    self_state_dimension: uncertainty
 
   - channel: pressure
     level: [capability]
@@ -262,13 +257,11 @@ channels:
     level: [capability]
     category: synthesized_rollup
     meaning: "How confident the system is that a given capability is currently reliable/available."
-    self_state_dimension: coherence
 
   - channel: available_capacity
     level: [capability]
     category: synthesized_rollup
     meaning: "How much spare operating capacity a capability has right now."
-    self_state_dimension: coherence
 
   - channel: execution_pressure
     level: [capability]

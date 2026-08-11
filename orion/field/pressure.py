@@ -65,8 +65,56 @@ HIGHER_IS_BETTER_CHANNELS = frozenset({
 # reliability_pressure, continuity_pressure, introspection_pressure,
 # social_pressure). No entries here route to "coherence" or "uncertainty" --
 # those composite dimensions never read from this map even before the burn.
+# 2026-08-11: `"thermal_pressure": "resource_pressure"` removed. Patch A of
+# the arena rate-coupling design. NOTE: that spec lives in PR #1554
+# (branch docs/proposal-base-priority-deletion) and is NOT merged as of this
+# commit, so the path
+# docs/superpowers/specs/2026-08-11-proposal-arena-rate-coupling-design.md
+# does not resolve on main yet. Cited by PR number deliberately -- a code
+# comment pointing at a file that does not exist is how a "tracked follow-up"
+# becomes tracked nowhere. Every number this patch depends on is restated
+# inline here and in orion/proposals/scoring.py, so neither comment requires
+# the doc to be readable.
+#
+# `resource_pressure` is max(thermal_pressure, pressure) via the merge below.
+# Measured over 28,735 real ticks (24h, substrate_field_state), thermal WON
+# that max on 91.76% of ticks -- a 39-distinct-value quantized reading of one
+# CPU's hottest core ((T-50)/(85-50), orion/telemetry/biometrics_pipeline.py
+# ::normalize_thermal) overwriting a 1,895-distinct-value composite of five
+# independent live capability channels, nine ticks out of ten. Removing it
+# takes resource_pressure from 128 distinct values to 1,895: a 15x resolution
+# recovery, same units, same direction, same downstream interpretation.
+#
+# RETRACTED JUSTIFICATION, kept visible on purpose. The first version of this
+# comment also argued thermal_pressure was disqualified because it sits in
+# services/orion-field-digester/app/digestion/decay.py's NODE_DECAY_CHANNELS,
+# making a calm reading indistinguishable from the biometrics producer dying.
+# Code review falsified that: it does not distinguish the removed input from
+# the kept one. Capability `pressure` is produced by apply_diffusion from
+# cpu_pressure/memory_pressure/gpu_pressure/disk_pressure/stream_backlog_
+# pressure/prediction_error (config/field/orion_field_topology.v1.yaml), and
+# every one of those is ALSO in NODE_DECAY_CHANNELS -- and `pressure` itself is
+# in CAPABILITY_DECAY_CHANNELS. Removing thermal does not remove the ambiguity.
+#
+# So this patch is justified by the measured resolution recovery ALONE, which
+# is real and is the only claim above this line. The decay ambiguity is a
+# genuine, still-open defect for the whole dimension:
+# services/orion-biometrics going quiet decays every remaining input toward 0,
+# resource_pressure reads calm, and because config/feedback/feedback_policy
+# .v1.yaml lists `resource_pressure: decrease` under positive_delta_channels,
+# the in-flight action is credited with a positive outcome for a producer
+# outage. That needs a liveness/staleness guard on the dimension, not a
+# different choice of input channel. Tracked as follow-up in PR #1554's design
+# doc; NOT fixed here.
+#
+# Killed here, not zeroed or left behind a flag, per CLAUDE.md 0A's "kill
+# means kill, no fallback to the thing being killed". The raw
+# `thermal_pressure` CHANNEL is deliberately untouched and still live
+# everywhere it is read directly -- the `strain` composite
+# (orion/telemetry/biometrics_pipeline.py:180), grammar emit/extract,
+# services/orion-field-digester's state_deltas/decay/tensor channels, and the
+# field channel corpus. This removes one routing entry, not a signal.
 CHANNEL_DIMENSION_MAP: dict[str, str] = {
-    "thermal_pressure": "resource_pressure",
     "staleness": "continuity_pressure",
     "pressure": "resource_pressure",
     "execution_pressure": "execution_pressure",

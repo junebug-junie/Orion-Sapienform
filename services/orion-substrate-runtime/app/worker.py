@@ -849,6 +849,9 @@ class BiometricsSubstrateWorker:
         if last_id is not None:
             curr_projection = load_node_bio()
             error = biometrics_prediction_error(prev_projection, curr_projection)
+            evidence_event_ids = _prediction_error_evidence_event_ids(
+                events, quarantined_event_ids=quarantined
+            )
             if error > 0.0:
                 self._store.save_receipt(
                     _prediction_error_receipt(
@@ -856,9 +859,7 @@ class BiometricsSubstrateWorker:
                         node_id="node:substrate.biometrics",
                         prediction_error=error,
                         now=now,
-                        caused_by_event_ids=_prediction_error_evidence_event_ids(
-                            events, quarantined_event_ids=quarantined
-                        ),
+                        caused_by_event_ids=evidence_event_ids,
                     )
                 )
             # Write the node on every tick, not just when error > 0.0 -- the
@@ -873,12 +874,17 @@ class BiometricsSubstrateWorker:
             # come back down to a genuine calm 0.0. The receipt above stays
             # gated: it is an audit trail of notable events, not a polled
             # "current state" read, so skipping it on a calm tick is correct.
+            # evidence_event_ids passed unconditionally too (2026-08-11) --
+            # same reasoning: this is the durable copy of the receipt's
+            # evidence, so it must not lag the node's own prediction_error
+            # value by skipping calm ticks.
             self._write_prediction_error_node(
                 node_id="node:substrate.biometrics",
                 error=error,
                 now=now,
                 reducer_key="node_biometrics",
                 contributing_id=last_id,
+                evidence_event_ids=evidence_event_ids,
             )
 
         return last_id, published
@@ -1081,6 +1087,7 @@ class BiometricsSubstrateWorker:
         now: datetime,
         reducer_key: str = "",
         contributing_id: str | None = None,
+        evidence_event_ids: Sequence[str] = (),
     ) -> None:
         """Upsert a durable substrate node carrying the surprise (Rung 1 bridge).
 
@@ -1108,6 +1115,23 @@ class BiometricsSubstrateWorker:
         and capped to the most recent ``_CONTRIBUTING_ID_CAP`` entries. This
         method must stay fail-open, so any malformed carried-forward value is
         tolerated rather than raised.
+
+        ``evidence_event_ids`` (optional, 2026-08-11 -- durable evidence
+        follow-up to PR #1547/#1551) is written to
+        ``metadata['prediction_error_evidence_event_ids']`` as a full
+        REPLACE on every call, not carried forward/accumulated like
+        ``contributing_turn_ids`` above -- it names the real grammar events
+        behind *this* write's own ``prediction_error`` value, so it must
+        change in lockstep with that value, never lag behind it the way an
+        accumulated list would. This is what closes the gap PR #1551 shipped
+        with: that patch's ``caused_by_event_ids`` only ever reached
+        ``substrate_reduction_receipts``, which prunes in 30 minutes
+        (``ORION_RECEIPT_RETENTION_SUCCESS_MINUTES``); this FalkorDB node has
+        no such retention window, and ``reduce_attention_self_model()``
+        already reads this same node's ``prediction_error`` for
+        ``prediction_error_by_domain`` -- so stamping the evidence here too
+        means it survives on the same object as the domain breakdown it
+        explains, with nothing further to join.
         """
         if not _prediction_error_nodes_enabled():
             return
@@ -1138,6 +1162,10 @@ class BiometricsSubstrateWorker:
                 "prediction_error": round(salience, 6),
                 "reducer_key": reducer_key,
             }
+            if evidence_event_ids:
+                metadata["prediction_error_evidence_event_ids"] = list(
+                    evidence_event_ids[:_PREDICTION_ERROR_EVIDENCE_CAP]
+                )
             # Best-effort: not every injected store double implements
             # get_node_by_id (e.g. unit-test fakes that only cover
             # upsert_node), and a lookup failure must not block the write
@@ -1879,7 +1907,9 @@ class BiometricsSubstrateWorker:
         from orion.substrate.attention_self_model import reduce_attention_self_model
         from orion.substrate.prediction_error_trend import compute_prediction_error_trend
 
-        pe_by_domain = self._brain_frame_prediction_error_by_domain(state.nodes.values())
+        pe_by_domain, pe_evidence_by_domain = (
+            self._brain_frame_prediction_error_and_evidence_by_domain(state.nodes.values())
+        )
         if pe_by_domain:
             self._attention_self_model_trend_buffer.append(pe_by_domain)
         pe_trend_by_domain = compute_prediction_error_trend(
@@ -1904,6 +1934,7 @@ class BiometricsSubstrateWorker:
             field_frame=field_frame,
             now=datetime.now(timezone.utc),
             prediction_error_by_domain=pe_by_domain or None,
+            prediction_error_evidence_by_domain=pe_evidence_by_domain or None,
             prediction_error_trend_by_domain=pe_trend_by_domain or None,
             heartbeat_h1=heartbeat_h1,
         )
@@ -2005,8 +2036,61 @@ class BiometricsSubstrateWorker:
         already part of the same graph snapshot ``assemble_brain_frame()``
         uses for node_kind regions, so this just reads them back rather than
         making a second store round-trip.
+
+        Kept as its own directly-callable/testable method (same reasoning as
+        its evidence sibling below -- see that method's docstring); the two
+        live per-tick call sites use `_brain_frame_prediction_error_and_
+        evidence_by_domain()` instead of calling this and its sibling
+        back-to-back over the same node snapshot (review finding, 2026-08-11).
         """
-        out: dict[str, float] = {}
+        pe_by_domain, _ = self._brain_frame_prediction_error_and_evidence_by_domain(nodes)
+        return pe_by_domain
+
+    def _brain_frame_prediction_error_evidence_by_domain(
+        self, nodes: Iterable[Any]
+    ) -> dict:
+        """Companion to `_brain_frame_prediction_error_by_domain()` above --
+        same node snapshot, same zero-extra-I/O shape, reading
+        `metadata['prediction_error_evidence_event_ids']` (2026-08-11,
+        `_write_prediction_error_node()`'s `evidence_event_ids` param)
+        instead of `metadata['prediction_error']`.
+
+        This is the durable-evidence follow-up to PR #1547/#1551:
+        `caused_by_event_ids` on `substrate_reduction_receipts` explains a
+        domain's error reading but is pruned in 30 minutes
+        (`ORION_RECEIPT_RETENTION_SUCCESS_MINUTES`). This FalkorDB node has
+        no such window, and it's the exact node the sibling method above
+        already reads for the scalar -- stamping evidence here means the
+        scalar and its explanation live on the same durable object, with no
+        separate join required.
+
+        Kept as its own directly-callable/testable method (review finding,
+        2026-08-11: don't remove a name with its own direct unit tests --
+        `test_worker_prediction_error_evidence_by_domain.py`), but the two
+        live per-tick call sites use `_brain_frame_prediction_error_and_
+        evidence_by_domain()` below instead of calling this and its sibling
+        back-to-back, which walked the same node snapshot twice for no
+        reason.
+        """
+        _, evidence_by_domain = self._brain_frame_prediction_error_and_evidence_by_domain(
+            nodes
+        )
+        return evidence_by_domain
+
+    def _brain_frame_prediction_error_and_evidence_by_domain(
+        self, nodes: Iterable[Any]
+    ) -> tuple[dict, dict]:
+        """Single-pass combination of `_brain_frame_prediction_error_by_domain()`
+        and `_brain_frame_prediction_error_evidence_by_domain()` above --
+        same node snapshot, same per-node lookup, computed together instead
+        of via two separate full walks. Both live callers
+        (`_attention_broadcast_tick()`, `_brain_frame_tick()`) always want
+        both dicts together, so this is what they actually call; the two
+        individual methods above stay real for direct unit testing and any
+        future caller that only wants one.
+        """
+        pe_by_domain: dict[str, float] = {}
+        evidence_by_domain: dict[str, list[str]] = {}
         for node in nodes:
             node_id = str(getattr(node, "node_id", "") or "")
             domain = _PREDICTION_ERROR_DOMAIN_NODE_IDS.get(node_id)
@@ -2016,10 +2100,13 @@ class BiometricsSubstrateWorker:
             value = md.get("prediction_error")
             if value is not None:
                 try:
-                    out[domain] = float(value)
+                    pe_by_domain[domain] = float(value)
                 except (TypeError, ValueError):
-                    continue
-        return out
+                    pass
+            evidence = md.get("prediction_error_evidence_event_ids")
+            if isinstance(evidence, list) and evidence:
+                evidence_by_domain[domain] = [str(item) for item in evidence]
+        return pe_by_domain, evidence_by_domain
 
     def _brain_frame_tick(self):
         """Assemble + persist one brain frame. Returns the frame or None."""
@@ -2065,12 +2152,15 @@ class BiometricsSubstrateWorker:
                     reduce_attention_self_model,
                 )
 
+                pe_by_domain, pe_evidence_by_domain = (
+                    self._brain_frame_prediction_error_and_evidence_by_domain(nodes)
+                )
                 attention_self_model = reduce_attention_self_model(
                     broadcast=attention,
                     field_frame=None,
                     now=now,
-                    prediction_error_by_domain=self._brain_frame_prediction_error_by_domain(nodes)
-                    or None,
+                    prediction_error_by_domain=pe_by_domain or None,
+                    prediction_error_evidence_by_domain=pe_evidence_by_domain or None,
                 )
             except Exception:
                 logger.exception("brain_frame_attention_self_model_failed")
@@ -2432,6 +2522,9 @@ class BiometricsSubstrateWorker:
             # restart re-cold-starts at n=0. Cheap: save_execution_trajectory is
             # the same upsert process_batch already calls above.
             self._store.save_execution_trajectory(curr_projection)
+            evidence_event_ids = _prediction_error_evidence_event_ids(
+                events, quarantined_event_ids=quarantined
+            )
             if error > 0.0:
                 self._store.save_receipt(
                     _prediction_error_receipt(
@@ -2439,9 +2532,7 @@ class BiometricsSubstrateWorker:
                         node_id="node:substrate.execution",
                         prediction_error=error,
                         now=now,
-                        caused_by_event_ids=_prediction_error_evidence_event_ids(
-                            events, quarantined_event_ids=quarantined
-                        ),
+                        caused_by_event_ids=evidence_event_ids,
                     )
                 )
             # Write the node on every tick, not just when error > 0.0 -- the
@@ -2462,6 +2553,7 @@ class BiometricsSubstrateWorker:
                 now=now,
                 reducer_key="execution_trajectory",
                 contributing_id=last_id,
+                evidence_event_ids=evidence_event_ids,
             )
 
         return last_id
@@ -2509,6 +2601,9 @@ class BiometricsSubstrateWorker:
         if last_id is not None:
             curr_projection = _load_chat_projection()
             error = chat_prediction_error(prev_projection, curr_projection)
+            evidence_event_ids = _prediction_error_evidence_event_ids(
+                events, quarantined_event_ids=quarantined
+            )
             if error > 0.0:
                 self._store.save_receipt(
                     _prediction_error_receipt(
@@ -2516,9 +2611,7 @@ class BiometricsSubstrateWorker:
                         node_id="node:substrate.chat",
                         prediction_error=error,
                         now=now,
-                        caused_by_event_ids=_prediction_error_evidence_event_ids(
-                            events, quarantined_event_ids=quarantined
-                        ),
+                        caused_by_event_ids=evidence_event_ids,
                     )
                 )
             # Write the node on every tick, not just when error > 0.0 -- the
@@ -2539,6 +2632,7 @@ class BiometricsSubstrateWorker:
                 now=now,
                 reducer_key="chat_session",
                 contributing_id=last_id,
+                evidence_event_ids=evidence_event_ids,
             )
 
         return last_id
@@ -2579,6 +2673,9 @@ class BiometricsSubstrateWorker:
         if last_id is not None:
             curr_projection = load_projection()
             error = route_prediction_error(prev_projection, curr_projection)
+            evidence_event_ids = _prediction_error_evidence_event_ids(
+                events, quarantined_event_ids=quarantined
+            )
             if error > 0.0:
                 self._store.save_receipt(
                     _prediction_error_receipt(
@@ -2586,9 +2683,7 @@ class BiometricsSubstrateWorker:
                         node_id="node:substrate.route",
                         prediction_error=error,
                         now=now,
-                        caused_by_event_ids=_prediction_error_evidence_event_ids(
-                            events, quarantined_event_ids=quarantined
-                        ),
+                        caused_by_event_ids=evidence_event_ids,
                     )
                 )
             # Write the node on every tick, not just when error > 0.0 -- the
@@ -2609,6 +2704,7 @@ class BiometricsSubstrateWorker:
                 now=now,
                 reducer_key="route_arbitration",
                 contributing_id=last_id,
+                evidence_event_ids=evidence_event_ids,
             )
 
         return last_id

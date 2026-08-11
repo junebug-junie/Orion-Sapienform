@@ -243,6 +243,7 @@ def reduce_attention_self_model(
     broadcast_stale_threshold_sec: float = DEFAULT_BROADCAST_STALE_THRESHOLD_SEC,
     harness_closure_signal: dict | None = None,
     prediction_error_by_domain: dict[str, float] | None = None,
+    prediction_error_evidence_by_domain: dict[str, list[str]] | None = None,
     prediction_error_trend_by_domain: dict[str, float] | None = None,
     heartbeat_h1: dict | None = None,
 ) -> AttentionSelfModelV1:
@@ -280,6 +281,18 @@ def reduce_attention_self_model(
     branch (see `_aggregate_prediction_error_confidence`). Omitting this
     argument falls back to the pre-existing
     `field_attention_frame.dominant_targets[].confidence_score` mean.
+
+    `prediction_error_evidence_by_domain` is an optional, caller-supplied
+    dict of the real grammar `event_id`s behind each domain's current
+    `prediction_error_by_domain` reading (2026-08-11) --
+    `{"biometrics": ["gev_...", "gev_..."], ...}`. Populates
+    `AttentionSelfModelV1.prediction_error_evidence_by_domain`, filtered to
+    `ACTIVE_INFERENCE_DOMAINS` and gated on `prediction_error_confidence`
+    being populated at all (same condition `prediction_error_by_domain`
+    itself is gated on) -- a domain's evidence never appears without its
+    own scalar also appearing. See that field's own docstring in
+    `orion/schemas/attention_self_model.py` for the retention rationale
+    (closes the 30-minute `substrate_reduction_receipts` pruning gap).
 
     `prediction_error_trend_by_domain` is an optional, caller-supplied dict
     of each domain's recent prediction-error *trend* (already computed
@@ -381,6 +394,17 @@ def reduce_attention_self_model(
             for domain, value in prediction_error_by_domain.items()
             if domain in ACTIVE_INFERENCE_DOMAINS
         } if prediction_error_by_domain else None
+        # Filtered against model.prediction_error_by_domain's own keys, not
+        # just ACTIVE_INFERENCE_DOMAINS directly (2026-08-11 review fix): a
+        # domain can be a member of ACTIVE_INFERENCE_DOMAINS while still
+        # being absent from this tick's actual prediction_error_by_domain
+        # (e.g. no reading supplied this tick) -- evidence for a domain with
+        # no scalar would explain nothing and must not appear.
+        model.prediction_error_evidence_by_domain = {
+            domain: list(ids)
+            for domain, ids in prediction_error_evidence_by_domain.items()
+            if domain in model.prediction_error_by_domain
+        } or None if prediction_error_evidence_by_domain else None
 
     hb_mean_ratio, hb_verdict, hb_basis = _heartbeat_h1_fields(heartbeat_h1)
     if hb_verdict is not None:

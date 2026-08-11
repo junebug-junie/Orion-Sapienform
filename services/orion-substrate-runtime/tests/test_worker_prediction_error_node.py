@@ -342,3 +342,90 @@ def test_no_contributing_turn_ids_key_when_contributing_id_never_provided(monkey
 
     node = store.nodes["node:substrate.execution"]
     assert "contributing_turn_ids" not in node.metadata
+
+
+def test_evidence_event_ids_written_to_metadata(monkeypatch) -> None:
+    """2026-08-11: `evidence_event_ids` closes the retention gap PR #1547/
+    #1551 shipped with -- writes the same evidence the (30-minute-lived)
+    receipt carries onto this durable node instead."""
+    monkeypatch.setenv(_PREDICTION_ERROR_NODE_FLAG, "true")
+    store = _RecordingStore()
+    worker = _make_worker(store)
+    now = datetime(2026, 8, 11, 12, 0, 0, tzinfo=timezone.utc)
+
+    worker._write_prediction_error_node(
+        node_id="node:substrate.biometrics",
+        error=0.4,
+        now=now,
+        reducer_key="node_biometrics",
+        evidence_event_ids=["gev_1", "gev_2"],
+    )
+
+    node = store.nodes["node:substrate.biometrics"]
+    assert node.metadata["prediction_error_evidence_event_ids"] == ["gev_1", "gev_2"]
+
+
+def test_no_evidence_key_when_evidence_event_ids_never_provided(monkeypatch) -> None:
+    monkeypatch.setenv(_PREDICTION_ERROR_NODE_FLAG, "true")
+    store = _RecordingStore()
+    worker = _make_worker(store)
+    now = datetime(2026, 8, 11, 12, 0, 0, tzinfo=timezone.utc)
+
+    worker._write_prediction_error_node(
+        node_id="node:substrate.bus_synaptic",
+        error=0.4,
+        now=now,
+        reducer_key="bus_synaptic",
+    )
+
+    node = store.nodes["node:substrate.bus_synaptic"]
+    assert "prediction_error_evidence_event_ids" not in node.metadata
+
+
+def test_evidence_event_ids_replaced_not_accumulated_across_writes(monkeypatch) -> None:
+    """Unlike contributing_turn_ids (accumulate + cap), evidence must fully
+    REPLACE on every write -- it names the events behind *this* write's own
+    prediction_error value, so it must never lag that value the way an
+    accumulated list would."""
+    monkeypatch.setenv(_PREDICTION_ERROR_NODE_FLAG, "true")
+    store = _RecordingStore()
+    worker = _make_worker(store)
+    now = datetime(2026, 8, 11, 12, 0, 0, tzinfo=timezone.utc)
+
+    worker._write_prediction_error_node(
+        node_id="node:substrate.route",
+        error=0.4,
+        now=now,
+        reducer_key="route_arbitration",
+        evidence_event_ids=["gev_old_1", "gev_old_2"],
+    )
+    worker._write_prediction_error_node(
+        node_id="node:substrate.route",
+        error=0.1,
+        now=now,
+        reducer_key="route_arbitration",
+        evidence_event_ids=["gev_new_1"],
+    )
+
+    node = store.nodes["node:substrate.route"]
+    assert node.metadata["prediction_error_evidence_event_ids"] == ["gev_new_1"]
+
+
+def test_evidence_event_ids_capped(monkeypatch) -> None:
+    monkeypatch.setenv(_PREDICTION_ERROR_NODE_FLAG, "true")
+    store = _RecordingStore()
+    worker = _make_worker(store)
+    now = datetime(2026, 8, 11, 12, 0, 0, tzinfo=timezone.utc)
+    many_ids = [f"gev_{i}" for i in range(75)]
+
+    worker._write_prediction_error_node(
+        node_id="node:substrate.chat",
+        error=0.4,
+        now=now,
+        reducer_key="chat_session",
+        evidence_event_ids=many_ids,
+    )
+
+    node = store.nodes["node:substrate.chat"]
+    assert len(node.metadata["prediction_error_evidence_event_ids"]) == 50
+    assert node.metadata["prediction_error_evidence_event_ids"] == many_ids[:50]

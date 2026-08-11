@@ -488,6 +488,90 @@ class TestPredictionErrorByDomainExposed:
         assert model.prediction_error_by_domain is None
 
 
+class TestPredictionErrorEvidenceByDomainExposed:
+    """`prediction_error_evidence_by_domain` (2026-08-11): closes the
+    retention gap PR #1547/#1551 shipped with -- `caused_by_event_ids` on
+    the prediction-error receipt is real but prunes in 30 minutes
+    (`ORION_RECEIPT_RETENTION_SUCCESS_MINUTES`). This field stamps the same
+    evidence onto the self-model row instead, which already lives for days
+    and already carries `prediction_error_by_domain`."""
+
+    def test_mirrors_the_domains_that_composed_the_confidence_scalar(self) -> None:
+        """This reducer is pure and no-I/O: whatever a caller supplies for a
+        domain (including an explicit `[]`) is preserved verbatim, filtered
+        only by domain membership in `prediction_error_by_domain`. Review
+        finding, 2026-08-11: the real production caller
+        (`services/orion-substrate-runtime/app/worker.py`) does NOT
+        currently supply `[]` for a calm domain -- `_write_prediction_error_
+        node()` omits the metadata key entirely when its own tick's
+        evidence list is empty, so `prediction_error_evidence_by_domain`'s
+        real key set is a SUBSET of `prediction_error_by_domain`'s (evidence
+        only where there's something non-empty to show), not a full mirror.
+        This test exercises the reducer's own handling of an explicit `[]`
+        input as a defensive correctness case, not a claim about what the
+        live caller actually produces today."""
+        model = reduce_attention_self_model(
+            None, _field_frame(), now=NOW,
+            prediction_error_by_domain=_prediction_error_by_domain(),
+            prediction_error_evidence_by_domain={
+                "execution": ["gev_exec_1"],
+                "transport": ["gev_transport_1"],
+                "biometrics": ["gev_bio_1", "gev_bio_2"],
+                "chat": [],
+                "route": [],
+            },
+        )
+        assert model.prediction_error_evidence_by_domain == {
+            "execution": ["gev_exec_1"],
+            "biometrics": ["gev_bio_1", "gev_bio_2"],
+            "chat": [],
+            "route": [],
+        }
+
+    def test_transport_excluded_even_when_supplied(self) -> None:
+        model = reduce_attention_self_model(
+            None, _field_frame(), now=NOW,
+            prediction_error_by_domain=_prediction_error_by_domain(),
+            prediction_error_evidence_by_domain={"transport": ["gev_transport_1"]},
+        )
+        assert model.prediction_error_evidence_by_domain is None or (
+            "transport" not in model.prediction_error_evidence_by_domain
+        )
+
+    def test_none_when_confidence_is_none(self) -> None:
+        model = reduce_attention_self_model(
+            None, _field_frame(), now=NOW,
+            prediction_error_by_domain={"transport": 0.0},
+            prediction_error_evidence_by_domain={"biometrics": ["gev_bio_1"]},
+        )
+        assert model.prediction_error_confidence is None
+        assert model.prediction_error_evidence_by_domain is None
+
+    def test_none_when_no_evidence_data_supplied(self) -> None:
+        model = reduce_attention_self_model(
+            None, _field_frame(), now=NOW,
+            prediction_error_by_domain=_prediction_error_by_domain(),
+        )
+        assert model.prediction_error_confidence is not None
+        assert model.prediction_error_evidence_by_domain is None
+
+    def test_a_domain_never_appears_in_evidence_without_also_appearing_in_the_scalar_dict(
+        self,
+    ) -> None:
+        """A domain present in the evidence dict but absent from
+        prediction_error_by_domain must not leak into the output -- the
+        evidence must never claim to explain a scalar that isn't there."""
+        model = reduce_attention_self_model(
+            None, _field_frame(), now=NOW,
+            prediction_error_by_domain=_prediction_error_by_domain(chat=0.02),
+            prediction_error_evidence_by_domain={
+                "chat": ["gev_chat_1"],
+                "bus_synaptic": ["gev_bus_1"],
+            },
+        )
+        assert model.prediction_error_evidence_by_domain == {"chat": ["gev_chat_1"]}
+
+
 def test_reference_tick_defaults_to_field_frame_generated_at() -> None:
     field_frame = _field_frame(generated_at=NOW)
     model = reduce_attention_self_model(None, field_frame)

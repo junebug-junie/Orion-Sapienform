@@ -129,6 +129,23 @@ def encode_node_properties(node: BaseSubstrateNodeV1, identity_key: str | None) 
 # consumer" escape hatch. `contributing_turn_ids` was added under this same
 # rule once a second real consumer existed (see the two consumers named
 # above). Do NOT add a generic metadata-dump path here.
+#
+# `prediction_error_evidence_event_ids` added 2026-08-11 (review finding on
+# PR "durable evidence on the self-model row"): `_write_prediction_error_node()`
+# (services/orion-substrate-runtime/app/worker.py) was already setting this
+# key on the in-Python ConceptNodeV1 metadata dict, but this codec's closed
+# allowlist silently dropped it from the Cypher SET clause -- the field
+# only appeared to persist because `FalkorSubstrateStore`'s in-process cache
+# retained the full Python object within the same long-lived process, never
+# actually round-tripping through this encode/decode pair. Real consumer:
+# `_brain_frame_prediction_error_evidence_by_domain()` (same file), which
+# reads this key back off the durable node to populate
+# `AttentionSelfModelV1.prediction_error_evidence_by_domain` -- the whole
+# point of stamping it here instead of only on the 30-minute-lived
+# `substrate_reduction_receipts` receipt. Same
+# `_json_list`/`_parse_json_list` encoding as `contributing_turn_ids`
+# immediately below (a list of strings, Cypher has no native list-of-string
+# scalar type this codec promotes).
 DYNAMICS_METADATA_KEYS: tuple[str, ...] = (
     "dynamic_pressure",
     "dynamic_pressure_reason",
@@ -136,6 +153,7 @@ DYNAMICS_METADATA_KEYS: tuple[str, ...] = (
     "dormancy_updated_at",
     "prediction_error",
     "contributing_turn_ids",
+    "prediction_error_evidence_event_ids",
 )
 
 # Subset of DYNAMICS_METADATA_KEYS owned by SubstrateDynamicsEngine.tick()
@@ -176,7 +194,22 @@ DYNAMICS_ENGINE_OWNED_METADATA_KEYS: tuple[str, ...] = (
 # is responsible for translating this raw-key set into the encoded property
 # names it actually needs to exclude from the SET clause.
 EXTERNALLY_OWNED_METADATA_KEYS: frozenset[str] = frozenset(
-    {"prediction_error", "contributing_turn_ids"}
+    {"prediction_error", "contributing_turn_ids", "prediction_error_evidence_event_ids"}
+)
+
+# Subset of EXTERNALLY_OWNED_METADATA_KEYS whose encoded Cypher property name
+# has a `_json` suffix (list-typed, encoded via `_json_list()` in
+# `_dynamics_properties_from_metadata()` above) -- `prediction_error` is
+# scalar-typed and keeps its raw name unchanged. Single source of truth for
+# `falkor_store.py`'s raw-key -> encoded-key translation
+# (`FalkorSubstrateStore.upsert_node()`'s `skip_metadata_keys` handling) so
+# that translation can't silently drift from the real encoding the way a
+# hand-maintained ternary in a second file already did once (2026-08-11,
+# caught only by `test_externally_owned_metadata_keys_translation_matches_
+# real_encoding` in `orion/substrate/tests/test_falkor_store.py`, not by
+# inspection).
+JSON_SUFFIXED_EXTERNALLY_OWNED_METADATA_KEYS: frozenset[str] = frozenset(
+    {"contributing_turn_ids", "prediction_error_evidence_event_ids"}
 )
 
 
@@ -204,6 +237,9 @@ def _dynamics_properties_from_metadata(metadata: Mapping[str, Any] | None) -> di
         "dormancy_updated_at": meta.get("dormancy_updated_at"),
         "prediction_error": _safe_float(meta.get("prediction_error"), default=None),
         "contributing_turn_ids_json": _json_list(meta.get("contributing_turn_ids")),
+        "prediction_error_evidence_event_ids_json": _json_list(
+            meta.get("prediction_error_evidence_event_ids")
+        ),
     }
 
 
@@ -317,6 +353,22 @@ def _dynamics_metadata_from_row(row: Mapping[str, Any]) -> dict[str, Any]:
         contributing_turn_ids = []
     if contributing_turn_ids:
         metadata["contributing_turn_ids"] = contributing_turn_ids
+    # prediction_error_evidence_event_ids (2026-08-11): same "best-effort,
+    # omit on corruption rather than raise" tolerance as contributing_turn_ids
+    # immediately above -- this is evidence for a self-model narrator to
+    # explain a reading, not load-bearing identity data.
+    try:
+        prediction_error_evidence_event_ids = [
+            str(item)
+            for item in _parse_json_list(
+                row.get("prediction_error_evidence_event_ids_json"),
+                field="prediction_error_evidence_event_ids_json",
+            )
+        ]
+    except ValueError:
+        prediction_error_evidence_event_ids = []
+    if prediction_error_evidence_event_ids:
+        metadata["prediction_error_evidence_event_ids"] = prediction_error_evidence_event_ids
     return metadata
 
 

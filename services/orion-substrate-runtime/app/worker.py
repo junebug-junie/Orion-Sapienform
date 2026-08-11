@@ -8,7 +8,7 @@ from collections import deque
 from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import datetime, timezone
-from typing import Any
+from typing import Any, Sequence
 from uuid import uuid4
 
 import requests
@@ -187,12 +187,66 @@ def _log_transport_incident_signals(projection: Any) -> None:
         logger.warning("failed to check transport incident signals", exc_info=True)
 
 
+# 2026-07-31 (PR #1547 proposal): the grammar-event-batch-driven domains
+# below (biometrics/execution/chat/route) always have the real batch of
+# GrammarEventV1 events that this tick fetched sitting in scope right where
+# this receipt gets built -- every sibling reducer in this codebase
+# (orion/substrate/chat_loop/reducer.py, execution_loop/reducer.py,
+# route_loop/reducer.py, transport_loop/reducer.py) already threads that
+# same batch's event_ids into its own StateDeltaV1.caused_by_event_ids.
+# These four call sites were the sole holdouts among the batch-driven ticks
+# hardcoding `[]` -- meaning the receipts backing
+# prediction_error_confidence/prediction_error_by_domain (orion/substrate/
+# attention_self_model.py), the exact composite "mood" signal Juniper was
+# asking to explain causally, carried no evidence trail at all, even though
+# services/orion-hub/scripts/substrate_biometrics_routes.py's
+# /biometrics-node/{node_id}/latest route and orion/substrate/receipts/
+# retention.py::primary_event_id() both already read this field on every
+# OTHER receipt. `bus_synaptic` and `codebase` are separate, deliberate
+# exclusions -- see the comments at their own call sites, not oversights
+# this comment is claiming to have closed.
+#
+# Same `_EVIDENCE_CAP` convention as chat_loop/reducer.py -- an unbounded
+# list here would grow with EXECUTION_GRAMMAR_BATCH_LIMIT etc. exactly the
+# way `evidence_event_ids` did in the pressure and execution-merge reducers
+# before those got capped. Kept as its own local constant rather than a
+# shared cross-module constant (review finding, 2026-07-31): chat_loop/
+# reducer.py and chat_loop/grammar_extract.py already each define their own
+# `=50` independently, so a new shared constant here would fix the
+# duplication for one of four existing copies, not all of them -- a real
+# consolidation is a separate, dedicated patch, not a rider on this one.
+_PREDICTION_ERROR_EVIDENCE_CAP = 50
+
+
+def _prediction_error_evidence_event_ids(
+    events: Sequence[GrammarEventV1], *, quarantined_event_ids: Sequence[str] = ()
+) -> list[str]:
+    """Real, atom-backed event_ids from a tick's fetched batch, minus any this
+    same tick quarantined as poison.
+
+    Review finding, 2026-07-31: `_process_events_with_poison_isolation` can
+    return a quarantined event's id as its own `last_id`/cursor-advance
+    value (a poison event still needs the cursor to move past it), which is
+    a different, cursor-advancement concern from this function's job. But
+    that same quarantined event is *also* recorded with
+    `rejected_event_ids=[event.event_id]` in its own quarantine receipt
+    (`_quarantine_poison_event`) -- it never actually contributed to the
+    projection diff that produced this tick's prediction_error. Naming it as
+    `caused_by_event_ids` evidence here would contradict that quarantine
+    receipt's own "rejected" verdict, so it is excluded explicitly rather
+    than left to slip through a bare `events` scan.
+    """
+    quarantined = set(quarantined_event_ids)
+    return [e.event_id for e in events if e.atom and e.event_id not in quarantined]
+
+
 def _prediction_error_receipt(
     *,
     reducer_key: str,
     node_id: str,
     prediction_error: float,
     now: datetime,
+    caused_by_event_ids: Sequence[str] = (),
 ) -> Any:
     from orion.schemas.reduction_receipt import ReductionReceiptV1
     from orion.schemas.state_delta import StateDeltaV1
@@ -213,7 +267,9 @@ def _prediction_error_receipt(
                     "node_id": node_id,
                     "pressure_hints": {"prediction_error": round(prediction_error, 4)},
                 },
-                caused_by_event_ids=[],
+                caused_by_event_ids=list(
+                    caused_by_event_ids[:_PREDICTION_ERROR_EVIDENCE_CAP]
+                ),
                 reducer_id=f"substrate.{reducer_key}",
             )
         ],
@@ -598,7 +654,19 @@ class BiometricsSubstrateWorker:
         spec: ReducerSpec,
         events: list[GrammarEventV1],
         process_batch: Callable[[list[GrammarEventV1]], None],
+        quarantined_out: list[str] | None = None,
     ) -> str | None:
+        """`quarantined_out` (review finding, 2026-07-31): optional side-channel
+        list a caller can pass to learn which event_ids this call quarantined
+        as poison. Additive-only -- every existing caller that doesn't pass it
+        behaves exactly as before. Needed because a quarantined event's id can
+        become this function's own `last_id`/cursor-advance return value (the
+        cursor still needs to move past a poison event) while simultaneously
+        being recorded as `rejected_event_ids=[event.event_id]` in its own
+        quarantine receipt -- callers that build evidence trails from `events`
+        need a way to exclude it without re-deriving quarantine state
+        themselves.
+        """
         if not events:
             return None
 
@@ -615,11 +683,14 @@ class BiometricsSubstrateWorker:
             if len(events) == 1:
                 event = events[0]
                 if self._should_quarantine_poison(spec, event.event_id):
-                    return self._quarantine_poison_event(
+                    result = self._quarantine_poison_event(
                         spec=spec,
                         event=event,
                         reason=str(batch_exc),
                     )
+                    if quarantined_out is not None:
+                        quarantined_out.append(event.event_id)
+                    return result
                 record_error(
                     spec.reducer_key,
                     cursor_name=spec.cursor_name,
@@ -649,6 +720,8 @@ class BiometricsSubstrateWorker:
                             event=event,
                             reason=str(exc),
                         )
+                        if quarantined_out is not None:
+                            quarantined_out.append(event.event_id)
                     else:
                         record_error(
                             spec.reducer_key,
@@ -765,10 +838,12 @@ class BiometricsSubstrateWorker:
                 now=now,
             )
 
+        quarantined: list[str] = []
         last_id = self._process_events_with_poison_isolation(
             spec=spec,
             events=events,
             process_batch=process_batch,
+            quarantined_out=quarantined,
         )
 
         if last_id is not None:
@@ -781,6 +856,9 @@ class BiometricsSubstrateWorker:
                         node_id="node:substrate.biometrics",
                         prediction_error=error,
                         now=now,
+                        caused_by_event_ids=_prediction_error_evidence_event_ids(
+                            events, quarantined_event_ids=quarantined
+                        ),
                     )
                 )
             # Write the node on every tick, not just when error > 0.0 -- the
@@ -913,6 +991,14 @@ class BiometricsSubstrateWorker:
             error = bus_synaptic_prediction_error(zscores)
             now = datetime.now(timezone.utc)
             if error > 0.0:
+                # caused_by_event_ids intentionally left at its default `()`
+                # (2026-07-31, PR #1547 proposal) -- unlike the four grammar-
+                # event-driven domains above, this tick has no GrammarEventV1
+                # batch in scope at all; it reads FalkorDB edge z-scores
+                # fresh each call (see this method's own docstring). There is
+                # no real per-tick event to name here, and fabricating one
+                # would violate CLAUDE.md's "if you cannot trace it, do not
+                # invent it."
                 self._store.save_receipt(
                     _prediction_error_receipt(
                         reducer_key="bus_synaptic",
@@ -1488,6 +1574,16 @@ class BiometricsSubstrateWorker:
         # audit-trail convention as every sibling domain -- a calm tick
         # still writes the FalkorDB node every time, just skips this.
         if result.score > 0.0:
+            # caused_by_event_ids intentionally left at its default `()`
+            # (review finding, 2026-07-31, PR #1547 proposal) -- unlike
+            # biometrics/execution/chat/route above, this domain has its own
+            # explicit, dated Phase-3-deferral comment already on file
+            # (docs/superpowers/specs/2026-07-30-codebase-mass-signal-design.md,
+            # cited near _PREDICTION_ERROR_DOMAIN_NODE_IDS above) explaining
+            # why downstream consumer-wiring for `codebase` stays deferred
+            # until Phase 1's replay reads MET. Populating evidence here
+            # would be a drive-by fix on top of that deliberate scoping
+            # decision, not a completion of it.
             self._store.save_receipt(
                 _prediction_error_receipt(
                     reducer_key="codebase",
@@ -2318,10 +2414,12 @@ class BiometricsSubstrateWorker:
                 max_age_sec=self._settings.execution_trajectory_max_age_sec,
             )
 
+        quarantined: list[str] = []
         last_id = self._process_events_with_poison_isolation(
             spec=spec,
             events=events,
             process_batch=process_batch,
+            quarantined_out=quarantined,
         )
 
         if last_id is not None:
@@ -2341,6 +2439,9 @@ class BiometricsSubstrateWorker:
                         node_id="node:substrate.execution",
                         prediction_error=error,
                         now=now,
+                        caused_by_event_ids=_prediction_error_evidence_event_ids(
+                            events, quarantined_event_ids=quarantined
+                        ),
                     )
                 )
             # Write the node on every tick, not just when error > 0.0 -- the
@@ -2397,10 +2498,12 @@ class BiometricsSubstrateWorker:
                 now=now,
             )
 
+        quarantined: list[str] = []
         last_id = self._process_events_with_poison_isolation(
             spec=spec,
             events=events,
             process_batch=process_batch,
+            quarantined_out=quarantined,
         )
 
         if last_id is not None:
@@ -2413,6 +2516,9 @@ class BiometricsSubstrateWorker:
                         node_id="node:substrate.chat",
                         prediction_error=error,
                         now=now,
+                        caused_by_event_ids=_prediction_error_evidence_event_ids(
+                            events, quarantined_event_ids=quarantined
+                        ),
                     )
                 )
             # Write the node on every tick, not just when error > 0.0 -- the
@@ -2462,10 +2568,12 @@ class BiometricsSubstrateWorker:
                 now=now,
             )
 
+        quarantined: list[str] = []
         last_id = self._process_events_with_poison_isolation(
             spec=spec,
             events=events,
             process_batch=process_batch,
+            quarantined_out=quarantined,
         )
 
         if last_id is not None:
@@ -2478,6 +2586,9 @@ class BiometricsSubstrateWorker:
                         node_id="node:substrate.route",
                         prediction_error=error,
                         now=now,
+                        caused_by_event_ids=_prediction_error_evidence_event_ids(
+                            events, quarantined_event_ids=quarantined
+                        ),
                     )
                 )
             # Write the node on every tick, not just when error > 0.0 -- the

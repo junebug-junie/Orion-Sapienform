@@ -24,12 +24,57 @@ from __future__ import annotations
 
 import argparse
 import re
+import subprocess
 import sys
 from dataclasses import dataclass, field
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
 KEY_LINE = re.compile(r"^([A-Za-z_][A-Za-z0-9_]*)=(.*)$")
+
+
+def main_worktree_root(start: Path | None = None) -> Path:
+    """Where the live `.env` files actually live.
+
+    `.env` is gitignored, so it exists ONLY in the primary checkout -- never in a
+    linked worktree. But CLAUDE.md mandates that all work happen in a worktree,
+    so running this script the way the contract tells you to made it a silent
+    no-op: every service reported `skip <name>: no .env` and it exited 0.
+
+    Confirmed live 2026-07-31: run from a linked worktree it printed 24
+    `no .env` skips and returned success, so a genuine divergence went
+    unreported. That is exactly how
+    `EQUILIBRIUM_METACOG_TRANSPORT_BUS_SYNAPTIC_ERROR_THRESHOLD` stayed at the
+    retired metric's `1.0` after PR #1542 changed the template to `0.15` --
+    shipping a detector that was structurally unable to fire, with the
+    "env parity is non-negotiable" gate reporting clean the whole time.
+
+    `.env_example` is still read from the CURRENT worktree (it is the branch's
+    template, and the whole point is to compare the change you just made against
+    the live file). Only `.env` resolves here.
+
+    Falls back to the current root when git is unavailable or this is already the
+    primary checkout, so behavior is unchanged outside a linked worktree.
+    """
+    base = start or ROOT
+    try:
+        common = subprocess.run(
+            ["git", "rev-parse", "--path-format=absolute", "--git-common-dir"],
+            cwd=base,
+            capture_output=True,
+            text=True,
+            timeout=10,
+            check=True,
+        ).stdout.strip()
+    except (subprocess.SubprocessError, OSError):
+        return base
+    if not common:
+        return base
+    # In the primary checkout the common dir is `<root>/.git`; in a linked
+    # worktree it is still the PRIMARY checkout's `.git`, which is what makes
+    # this resolvable at all.
+    candidate = Path(common).resolve().parent
+    return candidate if (candidate / "services").is_dir() else base
 
 # Host .env may legitimately differ from docker-oriented .env_example.
 NEVER_SYNC_KEYS = frozenset(
@@ -400,23 +445,46 @@ def main() -> int:
     args = parser.parse_args()
 
     services_dir = ROOT / "services"
+    # `.env_example` comes from THIS worktree (the branch's template); `.env`
+    # comes from the primary checkout, which is the only place it exists.
+    env_root = main_worktree_root()
+    env_services_dir = env_root / "services"
+    if env_root != ROOT:
+        print(f"reading live .env from primary checkout: {env_root}")
     names = args.services or list(DEFAULT_SERVICES)
     all_updated: list[str] = []
     all_diverged: list[str] = []
+    skipped_missing_env = 0
     for name in names:
         svc = services_dir / name
         if not svc.is_dir():
             print(f"unknown service: {name}", file=sys.stderr)
             return 1
         result = sync_file(
-            svc / ".env",
+            env_services_dir / name / ".env",
             svc / ".env_example",
             dry_run=args.dry_run,
             all_keys=args.all_keys,
             force=args.force,
         )
+        if any(u.endswith(": no .env") for u in result.updated):
+            skipped_missing_env += 1
         all_updated.extend(result.updated)
         all_diverged.extend(result.diverged)
+
+    # A run where EVERY service lacked a .env is not a clean run -- it is the
+    # silent no-op this script used to perform from a linked worktree. Fail
+    # loudly rather than reporting success, so the "env parity is
+    # non-negotiable" gate cannot pass by having checked nothing.
+    if names and skipped_missing_env == len(names):
+        print(
+            f"ERROR: no .env found for any of the {len(names)} services under "
+            f"{env_services_dir}. Nothing was checked, so this is NOT a pass. "
+            "If this is a fresh host, create the .env files first; otherwise the "
+            "primary-checkout path resolved wrongly.",
+            file=sys.stderr,
+        )
+        return 1
 
     if not all_updated and not all_diverged:
         print("No changes needed (feature keys already match .env_example).")

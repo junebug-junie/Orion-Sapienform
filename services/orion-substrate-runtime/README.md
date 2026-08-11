@@ -49,7 +49,9 @@ Set `ENABLE_TRANSPORT_BUS_REDUCER=true` after orion-bus transport traces are pub
 
 `GET /grammar/truth`'s `degraded`/`degraded_reasons` used to be manual-curl-only. `app/health_monitor.py::HealthMonitor` (mirrors `orion-self-state-runtime`'s pattern) polls it every `SUBSTRATE_RUNTIME_HEALTH_CHECK_INTERVAL_SEC` (default `900.0`) and fires an `orion-notify` attention request -- which surfaces as a card in orion-hub's pending-attention UI -- on a healthy->unhealthy transition only (not every tick), plus a recovery note on the way back. Requires `NOTIFY_BASE_URL` (default `http://orion-athena-notify:7140`) to actually reach `orion-notify`; fails open (logs and retries next tick) if unreachable.
 
-On a *fresh* unhealthy transition (no orion-notify alert already open for it), the monitor waits `SUBSTRATE_RUNTIME_HEALTH_RECHECK_DELAY_SEC` (default `15.0`) and rechecks once before paging. This exists because a single degraded `/grammar/truth` observation can be a self-healing blip -- e.g. `reducer_cursor_commit_failing:biometrics_grammar_consumer` can be set by one cursor-advance write losing a race with transient Postgres load and then clear itself on the very next 1s poll tick, long before the next 900s health-check tick would have seen it recover. The recheck confirms the condition is still true before escalating; a genuinely sustained incident is still unhealthy 15s later and pages exactly as before.
+On a *fresh* unhealthy transition (no orion-notify alert already open for it), the monitor waits `SUBSTRATE_RUNTIME_HEALTH_RECHECK_DELAY_SEC` (default `15.0`) and rechecks once before paging. This exists because a single degraded `/grammar/truth` observation can be a self-healing blip. The recheck confirms the condition is still true before escalating; a genuinely sustained incident is still unhealthy 15s later and pages exactly as before.
+
+**Corrected 2026-07-31.** This paragraph used to explain the motivating incident as `reducer_cursor_commit_failing:biometrics_grammar_consumer` being "set by one cursor-advance write losing a race with transient Postgres load". That story was wrong, and it survived two investigations because it sounded plausible. Nothing lost a race: `classify()` returned `cursor_commit_failing` for **any** `last_success_at > last_cursor_advance_at`, which is true on every healthy batch for as long as the tick's post-success writes take. Measured live on a fully healthy runtime (`last_error_at=None` on every sample): execution_trajectory and transport_bus ~22%, biometrics ~17%, route ~9% of observations. The alert fired three times (2026-07-13 twice, 2026-07-31 once) and "self-resolved with no reproducing evidence" each time because there was nothing to reproduce. The predicate now additionally requires a recorded error inside `CURSOR_COMMIT_ERROR_GRACE_SEC`; see `app/reducer_health.py::classify`. The recheck debounce is still worth having, but it was mitigating a broken detector, not a flaky database.
 
 ## Run
 
@@ -708,6 +710,64 @@ while it stayed, which is exactly why a comment was not enough. Now:
   to the cognitive unification layer's write scope, not to this retirement — flagged for a decision
   rather than patched here. No denylist was added: a retired-id registry would paper over the
   round-tripper instead of scoping it.
+
+  **Adversarial re-check, same day. The first re-check was ITSELF partly wrong; this is the
+  verified position after re-running the experiment properly.**
+
+  **Method error that produced bad conclusions twice:** the container IP map was captured at a
+  different time than the `MONITOR` trace, and Docker had recreated containers in between, so IPs
+  had shifted. Re-run with the IP map captured in the same instant as the trace:
+
+  ```text
+  writers that touched node:substrate.transport after a DELETE:
+    172.18.0.43  x5  -> orion-athena-cortex-exec-background     (t = +11.6s .. +16.9s)
+    172.18.0.57  x1  -> orion-athena-substrate-runtime          (t = -1.4s, i.e. BEFORE the delete)
+  ```
+
+  The attribution to `orion-cortex-exec-background` holds. Resurrection latency varied across runs
+  (6s, then 13s), so this is event-driven, not a fixed timer.
+
+  **Retracted, and then re-retracted — `prediction_error` is protected, and the precision argument
+  was invalid.** An intermediate version of this note claimed the writer could not be reading from
+  the graph, on two grounds. Both were wrong:
+
+  - *"The wire carries more precision than the graph stores."* It does not.
+    `RETURN n.salience * 1000000000` gives `556077777.777778` and
+    `n.salience - 0.556078` gives `-2.22e-07` — FalkorDB stores full double precision, and
+    `toString()`/`properties()` were rounding the **display**. The precision evidence distinguishes
+    nothing in either direction.
+  - *"`prediction_error` does not come back, so the source lacks it."* It does not come back because
+    **`n.prediction_error` is not in the SET clause at all** — confirmed on the wire. That is
+    `skip_metadata_keys=EXTERNALLY_OWNED_METADATA_KEYS` working exactly as the 2026-07-30 fix
+    intended, and says nothing about the source.
+
+  **What the wire actually shows.** The write carries `activation=0.165877`, decayed from the
+  `0.166125` seen earlier — and `orion-cortex-exec` runs no dynamics engine (checked: no
+  `SubstrateDynamicsEngine` anywhere in `services/orion-cortex-exec/app/`, nor in
+  `relational/layer.py` or `materializer.py`). Activation decay happens only in
+  `orion-substrate-runtime`. So the value cortex-exec writes back is one it **read from the graph**.
+  It is a genuine round-trip through a re-hydrating cache, not a frozen snapshot.
+
+  `salience=0.556077777777778` and `observed_at=2026-07-24T21:55:26Z` are frozen simply because
+  nothing updates them anymore — the domain is retired — not because the cache is stale.
+
+  **Verified position:** `orion-cortex-exec-background`, via `chat_stance.py`'s process-level
+  `_UNIFICATION_LAYER` singleton → `CognitiveUnificationLayer` → `SubstrateGraphMaterializer`,
+  re-materializes the substrate nodes it holds back into FalkorDB. Its store re-hydrates from the
+  graph, so it carries whatever the graph last had — including nodes nobody produces anymore. A node
+  deleted from the graph is re-created from that in-flight copy before the next hydrate, which is why
+  no substrate node can be deleted while this runs.
+
+  **Also withdrawn:** `observed_at` is not clobbered backwards on the protected merge branch —
+  `orion/substrate/reconcile.py:288` takes `max(existing, incoming)`. The earlier `observed_at`
+  oscillation is **not** explained by this path and remains unexplained.
+
+  **Still true, and the reason this matters:** the mechanism was already partly known
+  (`79acfd871`, `1c444ce72`, both 2026-07-30) and the materializer's own comment already names this
+  container. What is new is that the write set covers every node in the graph, so retirement of any
+  substrate node is blocked at the graph layer regardless of how cleanly its readers are removed.
+
+
 
   Snapshot of the node as it stood: `/tmp/retire-substrate-transport-node/before_snapshot.txt`.
 

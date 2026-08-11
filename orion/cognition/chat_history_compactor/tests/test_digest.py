@@ -5,8 +5,13 @@ from datetime import datetime, timezone
 import pytest
 from pydantic import ValidationError
 
-from orion.cognition.chat_history_compactor.constants import CARD_SUMMARY_MAX_CHARS
+from orion.cognition.chat_history_compactor.constants import (
+    CARD_SUMMARY_MAX_CHARS,
+    DIGEST_TURN_PROMPT_MAX_CHARS,
+    DIGEST_TURN_RESPONSE_MAX_CHARS,
+)
 from orion.cognition.chat_history_compactor.digest import (
+    _truncate_at_word_boundary,
     assert_chat_compactor_digest_within_budget,
     build_quiet_day_chat_digest,
     parse_chat_history_compactor_digest_json,
@@ -84,4 +89,49 @@ def test_trim_chat_history_compactor_input_bounds_turns() -> None:
     assert len(trimmed["turns"]) == 3
     assert trimmed["turn_count"] == 5
     assert trimmed["turns_truncated_for_digest"] is True
-    assert len(trimmed["turns"][0]["prompt"]) <= 401
+    assert len(trimmed["turns"][0]["prompt"]) <= DIGEST_TURN_PROMPT_MAX_CHARS + 1
+    assert trimmed["turns"][0]["truncated"] is True
+    assert trimmed["turn_content_truncated"] is True
+
+
+def test_trim_chat_history_compactor_input_preserves_short_turns_untruncated() -> None:
+    turns = [
+        DiscussionWindowTurnV1(
+            created_at=datetime(2026, 7, 8, 12, 0, tzinfo=timezone.utc),
+            correlation_id="c1",
+            prompt="Short prompt, well within budget.",
+            response="Short response, well within budget.",
+        )
+    ]
+    window = DiscussionWindowResultV1(
+        window_start_utc=datetime(2026, 7, 8, 0, 0, tzinfo=timezone.utc),
+        window_end_utc=datetime(2026, 7, 8, 23, 59, tzinfo=timezone.utc),
+        turn_count=1,
+        turns=turns,
+        transcript_text="ignored",
+    )
+    trimmed = trim_chat_history_compactor_input(window)
+    assert "truncated" not in trimmed["turns"][0]
+    assert "turn_content_truncated" not in trimmed
+
+
+def test_truncate_at_word_boundary_breaks_on_whitespace_not_mid_word() -> None:
+    text = "one two three four five " + ("x" * 50)
+    result, was_truncated = _truncate_at_word_boundary(text, max_chars=20)
+    assert was_truncated is True
+    assert result.endswith("…")
+    assert result == "one two three four…"
+
+
+def test_truncate_at_word_boundary_hard_cuts_single_unbroken_token() -> None:
+    text = "x" * (DIGEST_TURN_RESPONSE_MAX_CHARS + 500)
+    result, was_truncated = _truncate_at_word_boundary(text, max_chars=DIGEST_TURN_RESPONSE_MAX_CHARS)
+    assert was_truncated is True
+    assert len(result) == DIGEST_TURN_RESPONSE_MAX_CHARS + 1
+
+
+def test_truncate_at_word_boundary_noop_when_within_budget() -> None:
+    text = "well within budget"
+    result, was_truncated = _truncate_at_word_boundary(text, max_chars=100)
+    assert was_truncated is False
+    assert result == text

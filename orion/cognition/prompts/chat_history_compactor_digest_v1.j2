@@ -9,7 +9,12 @@ GROUNDED PAYLOAD (authoritative)
 Input JSON is in metadata key `chat_history_compactor_input`. It contains:
 - window_start_utc / window_end_utc
 - turn_count
-- turns: list of {created_at, correlation_id, prompt, response, user_id?, source?}
+- turns: list of {created_at, correlation_id, prompt, response, user_id?, source?, truncated?}
+- turn_content_truncated: true if any turn's prompt/response was cut for length
+
+A turn with `truncated: true` ends mid-sentence (marked with "…"). Summarize
+only what is clearly stated in the part you have — do not guess or invent
+how a truncated turn ends.
 
 {{ metadata.get("chat_history_compactor_input", {}) | tojson(indent=2) }}
 
@@ -30,6 +35,14 @@ RESPONSE SHAPE (example)
 {"card_summary":"<compact summary>","journal_title":"<title>","journal_body":"<narrative>","turn_refs":["corr-1"]}
 
 RULES
+- Cover every distinct topic/decision in the window, not just the most recent
+  or most prominent one. If the turns span N separate subjects, `card_summary`
+  must name all N, even briefly — do not collapse a multi-topic window down
+  to a single thread just because one thread is easiest to describe.
+- The 1600-char `card_summary` limit is hard and non-negotiable — going over
+  it fails the whole digest with no retry. If covering every topic in full
+  detail would not fit, cover ALL of them briefly (a short clause each)
+  rather than covering fewer topics at length. Breadth over depth.
 - Prefer themes and decisions over quoting every turn.
 - Never fabricate topics or correlation_ids not present in the payload.
 - Global house digest: do not invent per-user privacy labels.

@@ -9,6 +9,7 @@ LLM-in-the-loop eval; that gap is tracked in the PR report.
 from __future__ import annotations
 
 import json
+import uuid
 from datetime import datetime, timedelta, timezone
 
 import pytest
@@ -29,9 +30,16 @@ from orion.cognition.chat_history_compactor.digest import (
 )
 from orion.schemas.discussion_window import DiscussionWindowResultV1, DiscussionWindowTurnV1
 
-# 30 turns x (400 + 600) chars plus JSON/field overhead; the digest prompt
-# payload must never grow past this regardless of raw window size.
-DIGEST_INPUT_MAX_SERIALIZED_CHARS = 45_000
+# Fixed, independent of DIGEST_TURN_*_MAX_CHARS on purpose: the point of this
+# ceiling is to catch a *future* widening of those per-turn caps pushing the
+# real digest payload past what's safe for the downstream `chat`/`quick` LLM
+# route's context window -- deriving it from the same constants it's meant
+# to guard would make it tautological (it could never fail no matter how
+# large the caps grew). ~150k chars is comfortable headroom under any
+# reasonable 32k+ token context window for DEFAULT_MAX_TURNS turns plus
+# realistic id/metadata overhead; revisit only with a real gateway context
+# limit in hand, not to make an over-budget test pass.
+DIGEST_INPUT_MAX_SERIALIZED_CHARS = 150_000
 
 
 def _window(turns: list[DiscussionWindowTurnV1]) -> DiscussionWindowResultV1:
@@ -47,10 +55,17 @@ def _window(turns: list[DiscussionWindowTurnV1]) -> DiscussionWindowResultV1:
 
 
 def test_eval_adversarial_window_trims_to_bounded_digest_input() -> None:
+    # Realistic-length ids/metadata (real UUID4s, a user_id, a source label)
+    # rather than short synthetic strings like "corr-0" -- a fixture with
+    # trivially short ids under-counts the real serialized payload size and
+    # can pass this budget check while production windows (real UUIDs on
+    # every turn) blow past it.
     turns = [
         DiscussionWindowTurnV1(
             created_at=datetime(2026, 7, 9, 4, 0, tzinfo=timezone.utc) + timedelta(seconds=i),
-            correlation_id=f"corr-{i}",
+            correlation_id=str(uuid.uuid4()),
+            user_id=str(uuid.uuid4()),
+            source="hub_ws",
             prompt="p" * 10_000,
             response="r" * 10_000,
         )
@@ -65,7 +80,7 @@ def test_eval_adversarial_window_trims_to_bounded_digest_input() -> None:
         assert len(turn["prompt"]) <= DIGEST_TURN_PROMPT_MAX_CHARS + 1  # +ellipsis
         assert len(turn["response"]) <= DIGEST_TURN_RESPONSE_MAX_CHARS + 1
     # Newest suffix wins: the last raw turn must survive the trim.
-    assert payload["turns"][-1]["correlation_id"] == "corr-499"
+    assert payload["turns"][-1]["correlation_id"] == turns[-1].correlation_id
     assert len(json.dumps(payload)) <= DIGEST_INPUT_MAX_SERIALIZED_CHARS
 
 

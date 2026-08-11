@@ -8,7 +8,7 @@ import pytest
 from app.worker import AttentionRuntimeWorker
 from orion.attention.field_attention.goal_provenance import DominanceStreak
 from orion.schemas.field_attention_frame import FieldAttentionFrameV1, FieldAttentionTargetV1
-from orion.schemas.field_goal import FieldGoalProvenanceV1
+from orion.schemas.field_goal import DominanceStreakTickV1, FieldGoalProvenanceV1
 
 
 def _target(target_id: str, salience: float, kind: str = "node") -> FieldAttentionTargetV1:
@@ -35,10 +35,19 @@ def _frame(node_targets: list[FieldAttentionTargetV1]) -> FieldAttentionFrameV1:
     )
 
 
-def _make_worker(monkeypatch, *, producer_enabled: bool = True, min_streak: int = 3) -> AttentionRuntimeWorker:
+def _make_worker(
+    monkeypatch,
+    *,
+    producer_enabled: bool = True,
+    min_streak: int = 3,
+    streak_tick_telemetry_enabled: bool = True,
+) -> AttentionRuntimeWorker:
     monkeypatch.setenv("POSTGRES_URI", "postgresql://unused/unused")
     monkeypatch.setenv("ORION_GOAL_PROVENANCE_PRODUCER_ENABLED", str(producer_enabled))
     monkeypatch.setenv("ORION_GOAL_PROVENANCE_MIN_STREAK", str(min_streak))
+    monkeypatch.setenv(
+        "ORION_GOAL_PROVENANCE_STREAK_TICK_TELEMETRY_ENABLED", str(streak_tick_telemetry_enabled)
+    )
     import app.settings as settings_mod
 
     settings_mod._settings = None
@@ -56,7 +65,10 @@ def test_maybe_build_goal_returns_none_when_producer_disabled(monkeypatch):
     real_domain = "node:substrate.biometrics"
     frame = _frame([_target(real_domain, 0.9)])
 
-    assert worker._maybe_build_goal(frame) is None
+    goal, streak_tick = worker._maybe_build_goal(frame)
+    assert goal is None
+    # Producer disabled short-circuits before any streak advance -- no telemetry either.
+    assert streak_tick is None
 
 
 def test_maybe_build_goal_returns_none_when_bus_absent(monkeypatch):
@@ -65,7 +77,9 @@ def test_maybe_build_goal_returns_none_when_bus_absent(monkeypatch):
     real_domain = "node:substrate.biometrics"
     frame = _frame([_target(real_domain, 0.9)])
 
-    assert worker._maybe_build_goal(frame) is None
+    goal, streak_tick = worker._maybe_build_goal(frame)
+    assert goal is None
+    assert streak_tick is None
 
 
 def test_maybe_build_goal_returns_none_before_streak_threshold(monkeypatch):
@@ -73,8 +87,20 @@ def test_maybe_build_goal_returns_none_before_streak_threshold(monkeypatch):
     real_domain = "node:substrate.biometrics"
     frame = _frame([_target(real_domain, 0.9)])
 
-    assert worker._maybe_build_goal(frame) is None  # streak=1
-    assert worker._maybe_build_goal(frame) is None  # streak=2
+    goal, streak_tick = worker._maybe_build_goal(frame)  # streak=1
+    assert goal is None
+    assert isinstance(streak_tick, DominanceStreakTickV1)
+    assert streak_tick.target_id == real_domain
+    assert streak_tick.streak_count == 1
+    assert streak_tick.min_streak_at_tick == 3
+    assert streak_tick.qualified is False
+    assert streak_tick.source_field_tick_id == "tick-1"
+    assert streak_tick.source_attention_frame_id == "frame-1"
+
+    goal, streak_tick = worker._maybe_build_goal(frame)  # streak=2
+    assert goal is None
+    assert streak_tick.streak_count == 2
+    assert streak_tick.qualified is False
 
 
 def test_maybe_build_goal_returns_real_goal_at_streak_threshold(monkeypatch):
@@ -84,7 +110,7 @@ def test_maybe_build_goal_returns_real_goal_at_streak_threshold(monkeypatch):
 
     worker._maybe_build_goal(frame)  # streak=1
     worker._maybe_build_goal(frame)  # streak=2
-    goal = worker._maybe_build_goal(frame)  # streak=3
+    goal, streak_tick = worker._maybe_build_goal(frame)  # streak=3
 
     assert isinstance(goal, FieldGoalProvenanceV1)
     assert goal.field_target_id == real_domain
@@ -95,13 +121,36 @@ def test_maybe_build_goal_returns_real_goal_at_streak_threshold(monkeypatch):
     assert goal.source_attention_frame_id == "frame-1"
     assert goal.proposal_status == "proposed"
 
+    # The qualifying tick's own telemetry row says so too -- it's the same real event,
+    # not a second, independent computation.
+    assert streak_tick.target_id == real_domain
+    assert streak_tick.streak_count == 3
+    assert streak_tick.min_streak_at_tick == 3
+    assert streak_tick.qualified is True
+
 
 def test_maybe_build_goal_ignores_host_only_frame(monkeypatch):
     # Candidate B host target only -- no real node:substrate.* domain present.
     worker = _make_worker(monkeypatch, min_streak=1)
     frame = _frame([_target("node:athena", 0.95)])
 
-    assert worker._maybe_build_goal(frame) is None
+    goal, streak_tick = worker._maybe_build_goal(frame)
+    assert goal is None
+    # No node:substrate.* winner -> update_dominance_streak's None-target_id reset case.
+    # Still real, uncensored telemetry: this tick genuinely had no winner, not a gap.
+    assert streak_tick.target_id is None
+    assert streak_tick.streak_count == 0
+    assert streak_tick.qualified is False
+
+
+def test_maybe_build_goal_streak_tick_telemetry_disabled_by_flag(monkeypatch):
+    worker = _make_worker(monkeypatch, min_streak=3, streak_tick_telemetry_enabled=False)
+    real_domain = "node:substrate.biometrics"
+    frame = _frame([_target(real_domain, 0.9)])
+
+    goal, streak_tick = worker._maybe_build_goal(frame)
+    assert goal is None
+    assert streak_tick is None
 
 
 def test_maybe_build_goal_lazy_loads_streak_from_store_once(monkeypatch):
@@ -190,6 +239,71 @@ async def test_publish_goal_noop_when_bus_absent(monkeypatch):
     await worker._publish_goal(goal)
 
     mock_publish.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_publish_streak_tick_calls_publish_with_reconnect(monkeypatch):
+    worker = _make_worker(monkeypatch)
+    streak_tick = DominanceStreakTickV1(
+        target_id="node:substrate.biometrics",
+        streak_count=2,
+        min_streak_at_tick=3,
+        qualified=False,
+        source_field_tick_id="tick-1",
+        source_attention_frame_id="frame-1",
+    )
+
+    mock_publish = AsyncMock()
+    monkeypatch.setattr("orion.core.bus.resilience.publish_with_reconnect", mock_publish)
+
+    await worker._publish_streak_tick(streak_tick)
+
+    mock_publish.assert_called_once()
+    args, kwargs = mock_publish.call_args
+    assert args[0] is worker._bus
+    assert args[1] == "orion:debug:attention:streak_tick"
+    assert kwargs.get("log_label") == "attention_runtime_streak_tick"
+
+
+@pytest.mark.asyncio
+async def test_publish_streak_tick_noop_when_bus_absent(monkeypatch):
+    worker = _make_worker(monkeypatch)
+    worker._bus = None
+    streak_tick = DominanceStreakTickV1(
+        target_id="node:substrate.biometrics",
+        streak_count=2,
+        min_streak_at_tick=3,
+        qualified=False,
+        source_field_tick_id="tick-1",
+        source_attention_frame_id="frame-1",
+    )
+
+    mock_publish = AsyncMock()
+    monkeypatch.setattr("orion.core.bus.resilience.publish_with_reconnect", mock_publish)
+
+    await worker._publish_streak_tick(streak_tick)
+
+    mock_publish.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_publish_streak_tick_never_raises_on_publish_failure(monkeypatch):
+    """Debug telemetry must never surface as attention_runtime_tick_failed -- a publish
+    failure here is swallowed (logged at debug), unlike _publish_goal's real emission."""
+    worker = _make_worker(monkeypatch)
+    streak_tick = DominanceStreakTickV1(
+        target_id="node:substrate.biometrics",
+        streak_count=2,
+        min_streak_at_tick=3,
+        qualified=False,
+        source_field_tick_id="tick-1",
+        source_attention_frame_id="frame-1",
+    )
+
+    mock_publish = AsyncMock(side_effect=RuntimeError("bus down"))
+    monkeypatch.setattr("orion.core.bus.resilience.publish_with_reconnect", mock_publish)
+
+    await worker._publish_streak_tick(streak_tick)  # must not raise
 
 
 @pytest.mark.asyncio

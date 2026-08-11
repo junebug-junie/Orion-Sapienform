@@ -80,6 +80,7 @@ DEFAULT_ROUTE_MAP: dict[str, str] = {
     "chat.history.spark_meta.patch.v1": "__patch_chat_history__",
     "vision.event.v1": "VisionEventSQL",
     "action.outcome.emit.v1": "ActionOutcomeSQL",
+    "debug.attention.streak_tick.v1": "DominanceStreakTickSQL",
     "memory.drives.audit.v1": "DriveAuditSQL",
     "self.phi_reward.v1": "PhiRewardSQL",
     "equilibrium.service.transition.v1": "EquilibriumServiceTransitionSQL",
@@ -177,6 +178,7 @@ class Settings(BaseSettings):
             "orion:memory:drives:audit",
             "orion:self:phi_reward",
             "orion:causal_geometry:snapshot",
+            "orion:debug:attention:streak_tick",
         ],
         alias="SQL_WRITER_SUBSCRIBE_CHANNELS"
     )

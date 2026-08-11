@@ -640,6 +640,29 @@ async def lifespan(app: FastAPI):
             conn.exec_driver_sql(
                 "CREATE INDEX IF NOT EXISTS idx_action_outcomes_correlation_id ON action_outcomes (correlation_id);"
             )
+            # goal_provenance_streak_ticks: debug-tier telemetry (2026-08-11) -- see
+            # services/orion-sql-writer/app/models/dominance_streak_tick.py's docstring and
+            # docs/superpowers/specs/2026-07-30-goal-system-remaining-gaps-design.md Part H.
+            # Meant to be temporary, high-volume (~1 row per real field tick); no retention
+            # wired up here, a disclosed follow-up once calibration is done.
+            conn.exec_driver_sql(
+                """
+                CREATE TABLE IF NOT EXISTS goal_provenance_streak_ticks (
+                    tick_telemetry_id TEXT PRIMARY KEY,
+                    target_id TEXT NULL,
+                    streak_count INTEGER NOT NULL,
+                    min_streak_at_tick INTEGER NOT NULL,
+                    qualified BOOLEAN NOT NULL,
+                    source_field_tick_id TEXT NOT NULL,
+                    source_attention_frame_id TEXT NOT NULL,
+                    observed_at TIMESTAMPTZ NOT NULL,
+                    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+                );
+                """
+            )
+            conn.exec_driver_sql(
+                "CREATE INDEX IF NOT EXISTS idx_goal_provenance_streak_ticks_observed_at ON goal_provenance_streak_ticks (observed_at DESC);"
+            )
             conn.exec_driver_sql(
                 """
                 CREATE TABLE IF NOT EXISTS drive_audits (

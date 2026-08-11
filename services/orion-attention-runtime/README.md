@@ -58,6 +58,21 @@ no longer acceptable once a real, still-unimplemented downstream consumer (a des
 PR #1543) proposed surfacing this exact count directly into a real LLM-facing prompt. See
 `orion/sentience_striving_program/README.md` section 14 for the full incident record.
 
+## Streak-tick telemetry: min_streak calibration (2026-08-11, Part H)
+
+`ORION_GOAL_PROVENANCE_MIN_STREAK`'s value (default `3`) is an unmeasured, disclosed
+placeholder debounce. To calibrate it against the true streak-length distribution --
+`orion:memory:goals:proposed` alone is a censored sample that only ever shows streaks that
+already survived the debounce -- this worker also publishes `DominanceStreakTickV1` on
+`orion:debug:attention:streak_tick` on EVERY real tick (not just qualifying emissions),
+gated by `ORION_GOAL_PROVENANCE_STREAK_TICK_TELEMETRY_ENABLED` (default `true`,
+independent of the main producer). `orion-sql-writer` persists these to
+`goal_provenance_streak_ticks` (bounded by `GOAL_PROVENANCE_STREAK_TICKS_RETENTION_DAYS`,
+default 14 days, applied at that service's boot). Once a few days of real data have
+accumulated, run `python scripts/analysis/measure_goal_provenance_streak_distribution.py`
+from repo root to see the real streak-length distribution and candidate `min_streak`
+qualification rates. Meant to be temporary: once calibration is done, retire the channel.
+
 ## Run
 
 ```bash
@@ -91,3 +106,5 @@ Mirrors the identical pattern in `orion-field-digester` (`app/health_monitor.py`
 | `ATTENTION_FRAME_STALL_MULTIPLIER` | `1.5` | Alert if `substrate_attention_frames`'s oldest row exceeds this x retention hours |
 | `NOTIFY_BASE_URL` | `http://orion-athena-notify:7140` | `orion-notify` base URL for health-monitor attention alerts |
 | `NOTIFY_API_TOKEN` | (empty) | `orion-notify` auth token, if configured |
+| `ORION_GOAL_PROVENANCE_STREAK_TICK_TELEMETRY_ENABLED` | `true` | Publish `DominanceStreakTickV1` on every real tick (see above) |
+| `CHANNEL_GOAL_PROVENANCE_STREAK_TICK` | `orion:debug:attention:streak_tick` | Streak-tick telemetry channel |

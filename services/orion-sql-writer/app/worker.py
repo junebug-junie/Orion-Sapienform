@@ -76,6 +76,7 @@ from app.models import (
     MindRunSQL,
     VisionEventSQL,
     ActionOutcomeSQL,
+    DominanceStreakTickSQL,
     DriveAuditSQL,
     PhiRewardSQL,
     GrammarEventSQL,
@@ -99,6 +100,7 @@ from orion.journaler import (
     build_journal_entry_index_payload,
 )
 from orion.schemas.chat_stance import ChatStanceBrief
+from orion.schemas.field_goal import DominanceStreakTickV1
 
 # Shared schemas
 from orion.schemas.collapse_mirror import CollapseMirrorEntry, CollapseMirrorStoredV1
@@ -455,6 +457,7 @@ MODEL_MAP: Dict[str, Tuple[Type[Any], Optional[Type[BaseModel]]]] = {
     "GrammarEventSQL": (GrammarEventSQL, GrammarEventV1),
     "VisionEventSQL": (VisionEventSQL, VisionEventBundleItem),
     "ActionOutcomeSQL": (ActionOutcomeSQL, ActionOutcomeEmitV1),
+    "DominanceStreakTickSQL": (DominanceStreakTickSQL, DominanceStreakTickV1),
     "DriveAuditSQL": (DriveAuditSQL, DriveAuditV1),
     "PhiRewardSQL": (PhiRewardSQL, PhiIntrinsicRewardV1),
     "EquilibriumServiceTransitionSQL": (EquilibriumServiceTransitionSQL, EquilibriumServiceTransitionV1),

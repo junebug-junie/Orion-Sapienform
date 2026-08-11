@@ -1882,6 +1882,25 @@ channels:
     stability: "experimental"
     since: "2026-03-19"
 
+  - name: "orion:debug:attention:streak_tick"
+    kind: "event"
+    schema_id: "DominanceStreakTickV1"
+    message_kind: "debug.attention.streak_tick.v1"
+    # Debug-tier telemetry (2026-08-11, Part H of docs/superpowers/specs/2026-07-30-goal-
+    # system-remaining-gaps-design.md): the real per-tick DominanceStreak state, published
+    # on every real tick orion-attention-runtime's goal-provenance producer runs, not just
+    # qualifying FieldGoalProvenanceV1 emissions on orion:memory:goals:proposed above. Exists
+    # to answer Missing Question 5 (is ORION_GOAL_PROVENANCE_MIN_STREAK=3 the right debounce)
+    # -- that channel alone is a censored sample (only ever shows streaks that already
+    # survived), this one is the raw signal underneath it. Meant to be temporary: collect a
+    # few days, run scripts/analysis/measure_goal_provenance_streak_distribution.py, decide,
+    # then retire this channel -- a real follow-up, but growth until then is bounded (sql-
+    # writer applies GOAL_PROVENANCE_STREAK_TICKS_RETENTION_DAYS, default 14, at boot).
+    producer_services: ["orion-attention-runtime"]
+    consumer_services: ["orion-sql-writer"]
+    stability: "experimental"
+    since: "2026-08-11"
+
   - name: "orion:autonomy:goal:planned"
     kind: "event"
     schema_id: "AutonomyGoalPlannedV1"

@@ -58,9 +58,29 @@ class Settings(BaseSettings):
     # min_streak's real value is an unmeasured, disclosed placeholder debounce
     # (see design doc Part A, Missing Question 2) -- not a calibrated
     # threshold. Revisit once live trigger-rate data exists.
-    goal_provenance_min_streak: int = Field(3, alias="ORION_GOAL_PROVENANCE_MIN_STREAK")
+    # ge=1 (2026-08-11, review fix): DominanceStreakTickV1.min_streak_at_tick requires
+    # ge=1 -- an operator-set 0/negative value here used to be silently harmless (a plain
+    # int comparison in update_dominance_streak), but would now raise inside
+    # _maybe_build_goal on every tick, killing real FieldGoalProvenanceV1 emission too
+    # (not just the debug telemetry), since the ValidationError isn't caught locally and
+    # propagates to _poll_loop's blanket exception handler. Failing fast at settings load
+    # is clearer than failing deep in the tick loop.
+    goal_provenance_min_streak: int = Field(3, ge=1, alias="ORION_GOAL_PROVENANCE_MIN_STREAK")
     channel_goal_proposal: str = Field(
         "orion:memory:goals:proposed", alias="CHANNEL_GOAL_PROPOSAL"
+    )
+    # Debug-tier per-tick streak telemetry (2026-08-11, Part H of docs/superpowers/specs/
+    # 2026-07-30-goal-system-remaining-gaps-design.md) -- publishes DominanceStreakTickV1 on
+    # EVERY real tick, not just qualifying emissions, so ORION_GOAL_PROVENANCE_MIN_STREAK can
+    # eventually be calibrated against the true streak-length distribution instead of a
+    # censored sample. Independently toggleable from the main producer (default on whenever
+    # the producer is) since it's meant to be temporary -- turn it off once enough calibration
+    # data has been collected without touching the goal-provenance producer itself.
+    enable_goal_provenance_streak_tick_telemetry: bool = Field(
+        True, alias="ORION_GOAL_PROVENANCE_STREAK_TICK_TELEMETRY_ENABLED"
+    )
+    channel_goal_provenance_streak_tick: str = Field(
+        "orion:debug:attention:streak_tick", alias="CHANNEL_GOAL_PROVENANCE_STREAK_TICK"
     )
 
     # Health monitor -> orion-notify attention alerts. Edge-triggered (fires only

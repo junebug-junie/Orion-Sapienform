@@ -590,7 +590,7 @@ from orion.schemas.situation import (
     WeatherPracticalFlagsV1,
 )
 from orion.schemas.field_attention_frame import FieldAttentionFrameV1, FieldAttentionTargetV1
-from orion.schemas.field_goal import FieldGoalProvenanceV1
+from orion.schemas.field_goal import DominanceStreakTickV1, FieldGoalProvenanceV1
 from orion.schemas.field_state import FieldEdgeV1, FieldStateV1
 from orion.schemas.causal_geometry import (
     CausalGeometryDivergenceEntryV1,
@@ -1148,6 +1148,7 @@ _REGISTRY: Dict[str, Type[BaseModel]] = {
     "FieldAttentionTargetV1": FieldAttentionTargetV1,
     "FieldAttentionFrameV1": FieldAttentionFrameV1,
     "FieldGoalProvenanceV1": FieldGoalProvenanceV1,
+    "DominanceStreakTickV1": DominanceStreakTickV1,
     "SelfStateDimensionV1": SelfStateDimensionV1,
     "SelfStateV1": SelfStateV1,
     "PolicyDecisionV1": PolicyDecisionV1,

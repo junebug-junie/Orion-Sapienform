@@ -23,7 +23,10 @@ real winning history, derived later from these records, not asserted here.
 """
 from __future__ import annotations
 
-from pydantic import Field
+from datetime import datetime, timezone
+from uuid import uuid4
+
+from pydantic import BaseModel, ConfigDict, Field
 
 from orion.core.schemas.drives import GraphReadyArtifact, ProposalStatus
 
@@ -49,3 +52,59 @@ class FieldGoalProvenanceV1(GraphReadyArtifact):
     # Reuses goal_context.py's existing _ACTIVE_STATES vocabulary unchanged -- no new status
     # vocabulary for this producer.
     proposal_status: ProposalStatus = "proposed"
+
+
+class DominanceStreakTickV1(BaseModel):
+    """Debug-tier telemetry: the real DominanceStreak state after every real tick the
+    goal-provenance producer runs -- not just qualifying emissions.
+
+    Part H's "measure before minting" calibration step (docs/superpowers/specs/
+    2026-07-30-goal-system-remaining-gaps-design.md, Missing Question 5) needs the true
+    empirical streak-length distribution to judge whether ORION_GOAL_PROVENANCE_MIN_STREAK's
+    placeholder value of 3 is right. FieldGoalProvenanceV1 alone cannot answer that: it only
+    exists once a streak has *already* survived min_streak ticks -- a censored sample that
+    can show a survival rate, never a rejection rate, since every 1-tick and 2-tick streak
+    that got discarded left no trace anywhere (confirmed live 2026-08-11: no
+    FieldAttentionFrameV1 history and no other durable per-tick record exists to replay
+    after the fact). This schema is the raw, uncensored signal underneath it.
+
+    Deliberately does NOT subclass GraphReadyArtifact: this is raw per-tick telemetry
+    (~1 row per real field tick, matching substrate_attention_frames' volume), not a
+    cognitive artifact meant for substrate/reasoning-graph materialization -- forcing
+    GraphReadyArtifact's confidence/provenance/join_keys ceremony onto it would misrepresent
+    what it is. Meant to be temporary: collect a few days, run
+    scripts/analysis/measure_goal_provenance_streak_distribution.py, decide on
+    ORION_GOAL_PROVENANCE_MIN_STREAK, then retire the channel/table -- a real, disclosed
+    follow-up. Growth in the meantime is bounded (not unbounded-by-accident): sql-writer
+    applies goal_provenance_streak_ticks_retention_days (default 14) at boot.
+    """
+
+    model_config = ConfigDict(extra="forbid", populate_by_name=True)
+
+    tick_telemetry_id: str = Field(default_factory=lambda: f"streak-tick-{uuid4()}")
+    # The real node-target winner this tick (FieldAttentionTargetV1.target_id), or None when
+    # no target won (update_dominance_streak's own None-target_id reset case).
+    target_id: str | None = None
+    # DominanceStreak.count after this tick's update -- 0 when target_id is None, 1 on a
+    # fresh streak start (target changed from the previous tick), incrementing otherwise. A
+    # row's own count therefore always says whether it started a new streak (count <= 1) or
+    # continued one, with no separate boolean needed.
+    streak_count: int = Field(ge=0)
+    # ORION_GOAL_PROVENANCE_MIN_STREAK's value at the moment this tick ran -- self-describing
+    # per row since the setting could change across the observation window this telemetry is
+    # meant to span.
+    min_streak_at_tick: int = Field(ge=1)
+    # Mirrors update_dominance_streak's own `should_emit` return value -- i.e. whether this
+    # exact tick is the one that would have triggered (or did trigger) a
+    # FieldGoalProvenanceV1 emission. NOT simply `streak_count >= min_streak_at_tick`
+    # recomputed independently: update_dominance_streak unconditionally returns
+    # qualified=False on the tick a streak resets to a new target (streak_count=1), even at
+    # min_streak_at_tick=1 where 1 >= 1 would otherwise read as qualifying (see that
+    # function's own reset branch). Real analysis should reconstruct qualification from
+    # completed-run max_count vs. a candidate min_streak directly, not trust this raw
+    # per-row field at face value -- see measure_goal_provenance_streak_distribution.py's
+    # qualification_rate_at, which does exactly that instead of reading this column.
+    qualified: bool
+    source_field_tick_id: str
+    source_attention_frame_id: str
+    observed_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))

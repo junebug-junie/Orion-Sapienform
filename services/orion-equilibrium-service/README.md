@@ -77,6 +77,8 @@ Fires `trigger_kind=manual` (`reason="user_collapse_event"`) whenever a real use
 
 When `EQUILIBRIUM_METACOG_ENABLE=true`, the baseline loop can emit **substrate-aware** triggers before falling back to scheduled baseline ticks. Equilibrium reads fresh Postgres projections (`substrate_self_state`, `substrate_execution_trajectory_projection`) via the shared felt-state reader and scores eventfulness.
 
+**Dead since the 2026-07-22 SelfStateV1 removal — confirmed live 2026-08-11, not fixed here.** `compute_substrate_eventfulness()`'s only surviving scoring term (`execution_failures`) maxes out at `0.25`. Both thresholds below sit above that ceiling (`pulse` needs `>= 0.30`, `dense` needs `>= 0.55`), so neither `trigger_kind` can ever fire regardless of what happens in the world — this is not "rare," it's structurally unreachable. The code's own docstring already flags `dense` as broken; it doesn't note `pulse` is broken too. Reviving this needs either lower thresholds or a real replacement scoring term (SelfStateV1's own replacement never arrived) — deliberately left as-is in this patch; noted here so it isn't mistaken for a live signal.
+
 | Env | Default | Purpose |
 |-----|---------|---------|
 | `EQUILIBRIUM_METACOG_SUBSTRATE_TRIGGER_ENABLE` | `true` | Master gate for substrate dense/pulse triggers |
@@ -94,12 +96,30 @@ When `EQUILIBRIUM_METACOG_RELATIONAL_TRIGGER_ENABLE=true`, equilibrium subscribe
 
 As of 2026-07-18 this replaced the previous source, `orion/memory/turn_change_classify.py`'s SHIFT appraisal (NONE/TOPIC/STANCE/REPAIR) consumed off `orion:chat:history:spark_meta:patch` — see `docs/superpowers/design/2026-07-18-collapse-mirror-metacog-redesign.md` for the swap rationale. `trigger_kind=relational` is kept: same conceptual trigger category, different evidence source.
 
+**Confidence threshold lowered 0.7 → 0.65 on 2026-08-11.** This trigger had never fired even once, and not because it's rare: live rows pulled from `repair_pressure_appraisal_log` (from before an 11-day mesh outage, so genuinely representative of real traffic) show `confidence` pinned at exactly `0.65` on essentially every real appraisal — the "confidently calm" text-fallback constant `reduce_repair_level()` documents, not a value this gate could ever clear at the old `0.7` floor. `0.65` makes the fallback case itself reachable; still excludes genuine zero-evidence reads below it.
+
 | Env | Default | Purpose |
 |-----|---------|---------|
 | `EQUILIBRIUM_METACOG_RELATIONAL_TRIGGER_ENABLE` | `true` | Master gate for the relational trigger |
-| `EQUILIBRIUM_METACOG_RELATIONAL_CONFIDENCE_THRESHOLD` | `0.7` | Minimum appraisal confidence to fire |
+| `EQUILIBRIUM_METACOG_RELATIONAL_CONFIDENCE_THRESHOLD` | `0.65` | Minimum appraisal confidence to fire |
 | `EQUILIBRIUM_METACOG_RELATIONAL_LEVEL_THRESHOLD` | `0.5` | Minimum repair_pressure level to fire |
 | `CHANNEL_REPAIR_PRESSURE_APPRAISAL` | `orion:repair_pressure:appraisal` | Source channel (single consumer: this service) |
+
+### repair_pressure_trend metacog trigger
+
+Shipped 2026-07-30 (hop 0 of the stream-of-consciousness hop-chain design) but undocumented here until now. Folds every real, confidence-gated `repair_pressure_v2` appraisal into a persisted EWMA baseline (`orion/metacog/trend_reducer.py`) and fires `trigger_kind=repair_pressure_trend` only on a *sustained* multi-appraisal elevated run — distinct from the single-appraisal `relational` trigger above, which reacts to one reading. State checkpoints to Redis under `EQUILIBRIUM_METACOG_REPAIR_PRESSURE_TREND_STATE_KEY`.
+
+**Flipped on 2026-08-11**, alongside `insight`/`flow` below, after the same 11-day mesh outage left no live window to judge it against since it shipped. Watch for the first real fire before trusting it.
+
+| Env | Default | Purpose |
+|-----|---------|---------|
+| `EQUILIBRIUM_METACOG_REPAIR_PRESSURE_TREND_TRIGGER_ENABLE` | `true` | Master gate |
+| `EQUILIBRIUM_METACOG_REPAIR_PRESSURE_TREND_CONFIDENCE_FLOOR` | `0.3` | Minimum appraisal confidence to fold into the EWMA at all (separate from whether the resulting trend fires) |
+| `EQUILIBRIUM_METACOG_REPAIR_PRESSURE_TREND_MIN_SAMPLES` | `20` | Cold-start floor before a z-score is trusted |
+| `EQUILIBRIUM_METACOG_REPAIR_PRESSURE_TREND_ELEVATED_ZSCORE` | `1.0` | Z-score above which a reading counts as elevated |
+| `EQUILIBRIUM_METACOG_REPAIR_PRESSURE_TREND_SUSTAINED_HITS` | `3` | Consecutive elevated readings required to fire |
+| `EQUILIBRIUM_METACOG_REPAIR_PRESSURE_TREND_STATE_KEY` | `equilibrium:metacog_trend_state:repair_pressure` | Redis key for the checkpointed EWMA state |
+| `EQUILIBRIUM_METACOG_REPAIR_PRESSURE_TREND_COOLDOWN_SEC` | `1800` | Own cooldown lane |
 
 ### Telemetry-anomaly metacog trigger
 
@@ -210,12 +230,12 @@ Both de-dupe keys are recorded **only after a real publish**, never on a cooldow
 
 **Downstream type mapping (this is new behavior for the whole family).** Before this, `CollapseMirrorEntryV2.type` was guessed *only* from phi bands in `orion-cortex-exec`'s `_fallback_metacog_draft()` — which is not fallback-only, since the successful-LLM-draft path seeds its `base_entry` from that same function and the draft prompt forbids the LLM from choosing `type` itself. So `trigger_kind` drove `type` in **no** path at all, and `"epiphany"` was unreachable dead code. That heuristic now consults `trigger_kind` **first**: `insight → type="epiphany"` (`change_type=reorientation`), `flow → type="flow"` (`change_type=stabilizing`), everything else falls through to the unchanged phi-band guess.
 
-Both ship **disabled**, same standard as `transport`'s bus_synaptic option: they dispatch a real `MetacogTriggerV1` into `orion_metacog`, so flipping them on is a human decision made after a post-merge live-data check. Watch for the first real fire (`orion_metacog` row, `trigger_kind=insight`/`flow`, `upstream.evidence_source=attention_self_model_prediction_error_confidence`).
+Shipped **disabled**, same standard as `transport`'s bus_synaptic option: they dispatch a real `MetacogTriggerV1` into `orion_metacog`, so flipping them on is a human decision made after a post-merge live-data check. That check never happened — this service's mesh dependency went down for 11 days right after these shipped, so there was no live window to watch. **Flipped on 2026-08-11**, now that the mesh is back. Watch for the first real fire (`orion_metacog` row, `trigger_kind=insight`/`flow`, `upstream.evidence_source=attention_self_model_prediction_error_confidence`) the same way you would for a fresh flip.
 
 | Env | Default | Purpose |
 |-----|---------|---------|
-| `EQUILIBRIUM_METACOG_INSIGHT_TRIGGER_ENABLE` | `false` | Master gate for the insight trigger |
-| `EQUILIBRIUM_METACOG_FLOW_TRIGGER_ENABLE` | `false` | Master gate for the flow trigger |
+| `EQUILIBRIUM_METACOG_INSIGHT_TRIGGER_ENABLE` | `true` | Master gate for the insight trigger |
+| `EQUILIBRIUM_METACOG_FLOW_TRIGGER_ENABLE` | `true` | Master gate for the flow trigger |
 | `EQUILIBRIUM_METACOG_GENERATIVE_POLL_INTERVAL_SEC` | `30` | Shared poll cadence; matches the ~30s tick that writes the rows |
 | `EQUILIBRIUM_METACOG_GENERATIVE_POSTGRES_URI` | `postgresql://postgres:postgres@orion-athena-sql-db:5432/conjourney` | Read-only connection for `substrate_attention_self_model` |
 | `EQUILIBRIUM_METACOG_GENERATIVE_WINDOW_TICKS` | `20` | Trailing rows read per poll; the service takes the max of this and what each detector needs, so setting it too low cannot silently disable a gate |

@@ -4,7 +4,9 @@ FastAPI service exposing `run_mind()` (`orion.mind.v1.MindRunRequestV1` -> `Mind
 
 ## `llm_surface_instability` metacog trigger
 
-`app/uncertainty_metacog.py`'s `maybe_publish_llm_surface_instability_trigger()` fires an *advisory* `trigger_kind=llm_surface_instability` metacog trigger when an LLM response's own logprob telemetry looks unstable -- not a factual-confidence signal, a language-surface-instability one. Gated by `MIND_LLM_UNCERTAINTY_METACOG_ENABLED` (default `false`).
+`app/uncertainty_metacog.py`'s `maybe_publish_llm_surface_instability_trigger()` fires an *advisory* `trigger_kind=llm_surface_instability` metacog trigger when an LLM response's own logprob telemetry looks unstable -- not a factual-confidence signal, a language-surface-instability one. Gated by `MIND_LLM_UNCERTAINTY_METACOG_ENABLED`.
+
+**Flipped on 2026-08-11**, same call as `EQUILIBRIUM_METACOG_INSIGHT_TRIGGER_ENABLE`/`FLOW_TRIGGER_ENABLE` in `services/orion-equilibrium-service/README.md` -- see that file for the full context (an 11-day mesh outage meant no live window existed to judge any of these advisory triggers until now).
 
 Fires (`should_emit_llm_surface_instability()`) when, off the response's `llm_uncertainty` telemetry dict:
 - `unstable_span_count >= 1` (reason: `unstable_span`), or
@@ -17,7 +19,7 @@ Never fires if `llm_uncertainty.available` is falsy or `token_count_observed <= 
 
 | Env | Default | Purpose |
 |-----|---------|---------|
-| `MIND_LLM_UNCERTAINTY_METACOG_ENABLED` | `false` | Master gate |
+| `MIND_LLM_UNCERTAINTY_METACOG_ENABLED` | `true` | Master gate |
 | `MIND_METACOG_TRIGGER_CHANNEL` | `orion:equilibrium:metacog:trigger` | Publish channel -- shared with equilibrium-service's own triggers, not a dedicated inbound channel |
 | `ORION_BUS_URL` | `redis://100.92.216.81:6379/0` | Bus connection (fresh `OrionBusAsync` per publish, one-shot connect/publish/close). Was stale (`redis://redis:6379/0`) in this table and in `settings.py`'s code-level default before the service-heartbeat rollout fixed it -- the checked-in `.env_example` already had the correct value. |
 

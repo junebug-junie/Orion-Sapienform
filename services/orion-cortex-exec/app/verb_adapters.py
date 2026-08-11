@@ -35,6 +35,7 @@ from orion.schemas.self_study import (
     SelfStudyRetrieveRequestV1,
 )
 from orion.notify.client import NotifyClient
+from orion.cognition.compactor.truncate import truncate_at_word_boundary
 from orion.cognition.github_compactor.constants import PR_BODY_MAX_CHARS
 
 from .router import PlanRouter
@@ -1279,7 +1280,8 @@ def _truncate_pr_body(body: object, *, max_chars: int = PR_BODY_MAX_CHARS) -> st
     text = str(body or "").strip()
     if not text:
         return None
-    return text[:max_chars]
+    trimmed, _truncated = truncate_at_word_boundary(text, max_chars)
+    return trimmed
 
 
 def _infer_services_from_paths(paths: List[str]) -> List[str]:

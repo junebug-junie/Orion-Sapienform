@@ -4,6 +4,7 @@ from uuid import NAMESPACE_URL, uuid5
 
 from orion.cognition.compactor.budget import assert_fields_within_budget
 from orion.cognition.compactor.digest import parse_compactor_digest_json
+from orion.cognition.compactor.truncate import truncate_at_word_boundary
 from orion.cognition.github_compactor.constants import (
     CARD_SUMMARY_MAX_CHARS,
     DIGEST_INPUT_BODY_MAX_CHARS,
@@ -24,12 +25,13 @@ def trim_github_compactor_input(fetch_payload: dict, *, max_items: int = MAX_DIG
     items = list(fetch_payload.get("items") or [])
     total = len(items)
     compact_items = []
+    any_item_truncated = False
     for item in items[:max_items]:
         if not isinstance(item, dict):
             continue
         body = str(item.get("body") or "").strip()
-        if len(body) > DIGEST_INPUT_BODY_MAX_CHARS:
-            body = body[:DIGEST_INPUT_BODY_MAX_CHARS].rstrip() + "…"
+        body, body_truncated = truncate_at_word_boundary(body, DIGEST_INPUT_BODY_MAX_CHARS)
+        any_item_truncated = any_item_truncated or body_truncated
         compact_items.append(
             {
                 "number": item.get("number"),
@@ -37,12 +39,15 @@ def trim_github_compactor_input(fetch_payload: dict, *, max_items: int = MAX_DIG
                 "body": body,
                 "merged_at": item.get("merged_at"),
                 "url": item.get("url"),
+                **({"truncated": True} if body_truncated else {}),
             }
         )
     trimmed["items"] = compact_items
     if total > max_items:
         trimmed["items_truncated_for_digest"] = True
         trimmed["items_total"] = total
+    if any_item_truncated:
+        trimmed["item_content_truncated"] = True
     trimmed.pop("grouped_summary", None)
     return trimmed
 

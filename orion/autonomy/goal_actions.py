@@ -169,7 +169,6 @@ LIMIT 1
         goal = AutonomyGoalHeadlineV1(
             artifact_id=_literal(row, "artifact_id") or artifact_id,
             goal_statement=_literal(row, "goal_statement") or "",
-            drive_origin=_literal(row, "drive_origin") or "",
             priority=float(_literal(row, "priority") or 0.0),
             cooldown_until=_literal(row, "cooldown_until"),
             proposal_signature=_literal(row, "proposal_signature") or "",
@@ -205,7 +204,6 @@ def _goal_to_reasoning_claim(*, goal: AutonomyGoalHeadlineV1, subject: str, obse
         claim_text=goal.goal_statement,
         claim_kind="goal_proposal_headline",
         qualifiers={
-            "drive_origin": goal.drive_origin,
             "priority": goal.priority,
             "proposal_status": goal.proposal_status,
             "planned_task_id": goal.planned_task_id,
@@ -339,7 +337,6 @@ def promote_goal(
     planned_goal = AutonomyGoalHeadlineV1(
         artifact_id=goal.artifact_id,
         goal_statement=goal.goal_statement,
-        drive_origin=goal.drive_origin,
         priority=goal.priority,
         cooldown_until=goal.cooldown_until,
         proposal_signature=goal.proposal_signature,

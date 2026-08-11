@@ -155,7 +155,6 @@ async def test_chat_stance_partial_drives_timeout_falls_back_to_relationship(mon
             AutonomyGoalHeadlineV1(
                 artifact_id="goal-1",
                 goal_statement="Clarify autonomy boundaries without executing any new action.",
-                drive_origin="autonomy",
                 priority=0.8,
                 cooldown_until=None,
                 proposal_signature="sig-1",
@@ -205,83 +204,17 @@ async def test_chat_stance_partial_drives_timeout_falls_back_to_relationship(mon
     assert summary["stance_mode"] == "fallback_contextual"
     assert summary["dominant_drive"] is None
     assert summary["context_note"] == "Orion drives unavailable; stance context from relationship drives (not substituted as Orion drives)"
-    assert summary["proposal_headlines"] == ["Clarify autonomy boundaries without executing any new action."]
+    # proposal_headlines comes from relationship_state (the selected subject during
+    # contextual fallback), which has no goal_headlines here -- orion_state's stale goal is
+    # NOT folded in. _merge_orion_goals_into_state (which used to do that folding) was
+    # deleted 2026-08-11 (fix/goal-drive-origin-retirement): confirmed unreachable in real
+    # deployments even with AUTONOMY_GRAPH_BACKEND=graphdb (this test's own
+    # enable_autonomy_graphdb fixture), since build_autonomy_repository() has
+    # unconditionally returned the empty-stub LocalAutonomyRepository since Part G
+    # (PR #1530) regardless of that setting -- this test only sees non-empty state at all
+    # because it monkeypatches build_autonomy_repository directly with a fake repo.
+    assert summary["proposal_headlines"] == []
     assert ctx["chat_autonomy_debug"]["_runtime"]["contextual_fallback"] is True
-
-
-@pytest.mark.asyncio
-async def test_merge_orion_goals_dedupes_drive_origin_after_contextual_fallback(monkeypatch, enable_autonomy_graphdb) -> None:
-    from orion.autonomy.models import AutonomyGoalHeadlineV1, AutonomyStateV1
-
-    orion_state = AutonomyStateV1(
-        subject="orion",
-        model_layer="self-model",
-        entity_id="orion",
-        goal_headlines=[
-            AutonomyGoalHeadlineV1(
-                artifact_id="goal-orion-stale",
-                goal_statement="Clarify autonomy boundaries without executing any new action.",
-                drive_origin="autonomy",
-                priority=0.0,
-                cooldown_until=None,
-                proposal_signature="sig-stale",
-            )
-        ],
-        source="graph",
-    )
-    relationship_state = AutonomyStateV1(
-        subject="relationship",
-        model_layer="relationship-model",
-        entity_id="relationship:orion|juniper",
-        goal_headlines=[
-            AutonomyGoalHeadlineV1(
-                artifact_id="goal-rel-autonomy",
-                goal_statement="Clarify autonomy boundaries. Primary tension: tension.identity_drift.v1.",
-                drive_origin="autonomy",
-                priority=0.88,
-                cooldown_until=None,
-                proposal_signature="sig-rel",
-            ),
-            AutonomyGoalHeadlineV1(
-                artifact_id="goal-rel-continuity",
-                goal_statement="Preserve continuity across recent identity and relation shifts.",
-                drive_origin="continuity",
-                priority=0.83,
-                cooldown_until=None,
-                proposal_signature="sig-cont",
-            ),
-        ],
-        source="graph",
-    )
-    repo = _Repo(
-        {
-            "orion": _Lookup(
-                "orion",
-                "degraded",
-                orion_state,
-                unavailable_reason="timeout",
-                subquery_diagnostics={
-                    "drives": {"status": "timeout", "row_count": 0, "error_type": "timeout"},
-                },
-            ),
-            "relationship": _Lookup(
-                "relationship",
-                "available",
-                relationship_state,
-                subquery_diagnostics={"drives": {"status": "ok", "row_count": 6}},
-            ),
-        }
-    )
-    monkeypatch.setattr(chat_stance, "build_autonomy_repository", lambda **_: repo)
-
-    ctx = {"user_message": "hello", "verb": "chat_general", "mode": "brain"}
-    await chat_stance.build_chat_stance_inputs(ctx)
-
-    active = ctx["chat_autonomy_summary"]["active_goals"]
-    origins = [g["drive_origin"] for g in active]
-    assert origins.count("autonomy") == 1
-    assert "continuity" in origins
-    assert active[0]["artifact_id"] == "goal-rel-autonomy"
 
 
 @pytest.mark.asyncio
@@ -297,7 +230,6 @@ async def test_chat_stance_partial_drives_timeout_exports_degraded_summary(monke
             AutonomyGoalHeadlineV1(
                 artifact_id="goal-1",
                 goal_statement="Clarify autonomy boundaries without executing any new action.",
-                drive_origin="autonomy",
                 priority=0.8,
                 cooldown_until=None,
                 proposal_signature="sig-1",

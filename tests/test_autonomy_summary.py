@@ -32,7 +32,6 @@ def test_proposal_headlines_strip_chat_and_trace_suffix() -> None:
                     "Clarify autonomy boundaries without executing any new action. · trace=abcd1234 · "
                     "eh, just testing user chat should not dominate the card"
                 ),
-                drive_origin="autonomy",
                 priority=0.8,
                 cooldown_until=None,
                 proposal_signature="sig-1",

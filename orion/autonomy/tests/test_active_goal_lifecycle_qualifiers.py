@@ -17,7 +17,6 @@ def test_active_goals_expose_planned_and_executing_qualifiers() -> None:
             AutonomyGoalHeadlineV1(
                 artifact_id="goal-planned",
                 goal_statement="Plan the coherence review.",
-                drive_origin="coherence",
                 priority=0.85,
                 proposal_signature="sig-planned",
                 proposal_status="planned",
@@ -26,7 +25,6 @@ def test_active_goals_expose_planned_and_executing_qualifiers() -> None:
             AutonomyGoalHeadlineV1(
                 artifact_id="goal-executing",
                 goal_statement="Execute the coherence review.",
-                drive_origin="predictive",
                 priority=0.8,
                 proposal_signature="sig-executing",
                 proposal_status="executing",

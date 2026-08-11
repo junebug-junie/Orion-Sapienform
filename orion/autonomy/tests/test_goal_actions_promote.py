@@ -43,7 +43,6 @@ def test_plan_promoted_goal_persists_task_id_with_planned_status(monkeypatch) ->
     goal = AutonomyGoalHeadlineV1(
         artifact_id="goal-abc",
         goal_statement="Stabilize coherence",
-        drive_origin="coherence",
         priority=0.72,
         proposal_signature="deadbeef01",
         proposal_status="planned",
@@ -97,7 +96,6 @@ def test_plan_promoted_goal_requires_planned_status(monkeypatch) -> None:
     goal = AutonomyGoalHeadlineV1(
         artifact_id="goal-abc",
         goal_statement="Stabilize coherence",
-        drive_origin="coherence",
         priority=0.72,
         proposal_signature="deadbeef01",
         proposal_status="active",

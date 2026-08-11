@@ -27,7 +27,6 @@ class AutonomyGoalHeadlineV1(BaseModel):
 
     artifact_id: str
     goal_statement: str
-    drive_origin: str
     priority: float = Field(default=0.0, ge=0.0, le=1.0)
     cooldown_until: datetime | None = None
     proposal_signature: str
@@ -40,7 +39,6 @@ class AutonomyGoalHeadlineV1(BaseModel):
 class AutonomyActiveGoalV1(BaseModel):
     model_config = ConfigDict(extra="forbid", populate_by_name=True)
 
-    drive_origin: str
     headline: str
     priority: float = Field(default=0.0, ge=0.0, le=1.0)
     artifact_id: str
@@ -57,8 +55,12 @@ class AutonomyStateV1(BaseModel):
     # Wave 2a) -- full removal, not a present-but-always-empty stub, per
     # explicit direction: DriveEngine/DriveAuditV1's publisher were already
     # deleted in Wave 1, so nothing computes these anymore. goal_headlines
-    # (and its per-goal drive_origin field) survives: GoalProposalV1 real
-    # historical/live readers still exist.
+    # survives (real historical/live readers still exist), but its per-goal
+    # drive_origin field was deleted 2026-08-11 (fix/goal-drive-origin-
+    # retirement): confirmed the field's sole live consumer,
+    # dedupe_goal_headlines_by_drive_origin, was unreachable in production
+    # (see orion/autonomy/summary.py's comment on
+    # _top_goal_headlines_by_priority for the full trace).
     subject: str
     model_layer: str
     entity_id: str

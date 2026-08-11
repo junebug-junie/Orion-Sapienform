@@ -151,7 +151,6 @@ def test_operator_goal_reasoning_promotion_applies_hitl_gate() -> None:
     goal = AutonomyGoalHeadlineV1(
         artifact_id="goal-abc",
         goal_statement="Stabilize coherence without auto execution.",
-        drive_origin="coherence",
         priority=0.72,
         proposal_signature="deadbeef01",
         proposal_status="active",

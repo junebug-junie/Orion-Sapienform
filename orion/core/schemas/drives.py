@@ -154,10 +154,14 @@ SemanticSource = Literal["template", "evidence_rules", "llm"]
 
 
 class GoalProposalV1(GraphReadyArtifact):
+    """drive_origin was deleted 2026-08-11 (fix/goal-drive-origin-retirement): confirmed
+    zero live constructors of this model anywhere outside tests before the deletion (the
+    drives-era autonomy pipeline that built these was already fully retired by earlier
+    chore/delete-orion-drives waves), so the field had no live reader or writer left."""
+
     goal_statement: str
     goal_statement_base: str | None = None
     proposal_signature: str
-    drive_origin: str
     priority: float = Field(default=0.0, ge=0.0, le=1.0)
     cooldown_until: Optional[datetime] = None
     proposal_status: ProposalStatus = "proposed"

@@ -108,6 +108,51 @@ class Settings(BaseSettings):
     # orion/structural_mass/pr_lifecycle.py's own possibly_truncated docs).
     COCREATION_SIGNALS_PR_FETCH_LIMIT: int = Field(default=200)
 
+    # ── doc-semantic-drift (docs/superpowers/specs/2026-07-30-doc-semantic-
+    # drift-design.md) ──────────────────────────────────────────────────
+    # Default OFF -- pure shadow write, no consumer yet (orion/bus/
+    # channels.yaml), same convention as affective_state's own rollout.
+    # Real replay (docs/superpowers/pr-reports/2026-08-11-doc-semantic-
+    # drift-diff-scoped-embedding.md) confirmed the diff-scoped embedding
+    # signal separates trivial from real doc edits, but on only 3 real
+    # non-truncated samples -- flip on deliberately once the live stream
+    # has had its own sanity pass, not just the offline replay.
+    COCREATION_SIGNALS_DOC_SEMANTIC_DRIFT_ENABLED: bool = Field(default=False)
+    # Doc edits are far less frequent than git commits in general -- same
+    # cadence as graph_delta, no responsiveness need for git_delta's 60s.
+    COCREATION_SIGNALS_DOC_SEMANTIC_DRIFT_POLL_INTERVAL_SEC: float = Field(default=300.0)
+    CHANNEL_DOC_SEMANTIC_DRIFT: str = Field(default="orion:substrate:doc_semantic_drift")
+    # Real, already-registered channel (orion/bus/channels.yaml) this
+    # producer requests embeddings from -- orion-vector-host, the same
+    # live, non-frontier model (BAAI/bge-large-en-v1.5) the calibration
+    # replay used. No new channel needed; producer_services already
+    # includes "*".
+    CHANNEL_EMBEDDING_GENERATE: str = Field(default="orion:embedding:generate")
+    # Scoped collection so these hunk-diff embeddings (real, already-
+    # committed doc/code text -- not chat, not personal data) land in their
+    # own vector-store collection, not commingled with chat/social memory.
+    # Decided explicitly with Juniper 2026-08-11 rather than defaulted:
+    # orion-vector-host's real embedding-request contract persists every
+    # embedded text as a vector-store document unconditionally (confirmed
+    # live, no opt-out exists) -- every other real caller of that contract
+    # already accepts this, so this producer following the same
+    # established pattern, scoped to its own collection, is consistent
+    # with existing architecture rather than a new precedent.
+    COCREATION_SIGNALS_DOC_SEMANTIC_DRIFT_EMBED_COLLECTION: str = Field(
+        default="doc_semantic_drift"
+    )
+    COCREATION_SIGNALS_DOC_SEMANTIC_DRIFT_EMBED_TIMEOUT_SEC: float = Field(default=30.0)
+    # Best-effort char-length proxy for `possibly_truncated` -- the real
+    # bus embedding-request contract doesn't expose a live token count the
+    # way the offline calibration script's direct container access did
+    # (see orion/schemas/doc_semantic_drift.py's own docstring). ~512
+    # tokens * ~4 chars/token, the same conservative estimate the
+    # calibration script's first draft used before code review replaced it
+    # with a real measurement there -- kept here only because the real
+    # measurement isn't available over the live bus contract, not because
+    # it's preferred.
+    COCREATION_SIGNALS_DOC_SEMANTIC_DRIFT_TRUNCATION_CHAR_THRESHOLD: int = Field(default=2048)
+
     @field_validator(
         "COCREATION_SIGNALS_GIT_DELTA_POLL_INTERVAL_SEC",
         "COCREATION_SIGNALS_PR_LIFECYCLE_POLL_INTERVAL_SEC",
@@ -115,6 +160,8 @@ class Settings(BaseSettings):
         "COCREATION_SIGNALS_PR_LIFECYCLE_COLD_START_LOOKBACK_SEC",
         "COCREATION_SIGNALS_AFFECTIVE_STATE_POLL_INTERVAL_SEC",
         "COCREATION_SIGNALS_AFFECTIVE_STATE_COLD_START_LOOKBACK_SEC",
+        "COCREATION_SIGNALS_DOC_SEMANTIC_DRIFT_POLL_INTERVAL_SEC",
+        "COCREATION_SIGNALS_DOC_SEMANTIC_DRIFT_EMBED_TIMEOUT_SEC",
     )
     @classmethod
     def _ensure_positive(cls, v: float) -> float:

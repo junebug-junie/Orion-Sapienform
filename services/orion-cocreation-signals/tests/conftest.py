@@ -17,9 +17,17 @@ class FakeBus:
 
     enabled: bool = True
     published: list[tuple[str, BaseEnvelope]] = field(default_factory=list)
+    closed: bool = False
 
     async def publish(self, channel: str, envelope: BaseEnvelope) -> None:
         self.published.append((channel, envelope))
+
+    async def close(self) -> None:
+        # Mirrors OrionBusAsync.close() -- lets producers that fork a
+        # dedicated RPC client (e.g. doc_semantic_drift_loop) exercise their
+        # real teardown path in tests instead of hitting an AttributeError
+        # that only happens to get swallowed by a broad except Exception.
+        self.closed = True
 
 
 @pytest.fixture

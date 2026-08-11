@@ -11,6 +11,7 @@ from orion.core.bus.bus_service_chassis import ChassisConfig, HeartbeatOnly
 from orion.core.bus.codec import OrionCodec
 
 from .producers.affective_state import affective_state_loop
+from .producers.doc_semantic_drift import doc_semantic_drift_loop
 from .producers.git_delta import git_delta_loop
 from .producers.graph_delta import graph_delta_loop
 from .producers.pr_lifecycle import pr_lifecycle_loop
@@ -135,6 +136,27 @@ async def run_producers(settings, bus: OrionBusAsync, stop: asyncio.Event) -> No
         )
     else:
         logger.info("cocreation_affective_state_disabled")
+
+    if settings.COCREATION_SIGNALS_DOC_SEMANTIC_DRIFT_ENABLED:
+        tasks.append(
+            asyncio.create_task(
+                doc_semantic_drift_loop(
+                    bus=bus,
+                    channel=settings.CHANNEL_DOC_SEMANTIC_DRIFT,
+                    source=source,
+                    repo_path=settings.COCREATION_SIGNALS_REPO_PATH,
+                    embed_request_channel=settings.CHANNEL_EMBEDDING_GENERATE,
+                    embed_collection=settings.COCREATION_SIGNALS_DOC_SEMANTIC_DRIFT_EMBED_COLLECTION,
+                    embed_timeout_sec=settings.COCREATION_SIGNALS_DOC_SEMANTIC_DRIFT_EMBED_TIMEOUT_SEC,
+                    truncation_char_threshold=settings.COCREATION_SIGNALS_DOC_SEMANTIC_DRIFT_TRUNCATION_CHAR_THRESHOLD,
+                    poll_interval_sec=settings.COCREATION_SIGNALS_DOC_SEMANTIC_DRIFT_POLL_INTERVAL_SEC,
+                    stop=stop,
+                ),
+                name="doc_semantic_drift_loop",
+            )
+        )
+    else:
+        logger.info("cocreation_doc_semantic_drift_disabled")
 
     if not tasks:
         logger.warning("cocreation_signals_no_producers_enabled")

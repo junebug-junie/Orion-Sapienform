@@ -175,6 +175,26 @@ def main() -> int:
     if not qualifying:
         return 0
 
+    # This script is invoked by the git hook as `python3 <this file's path>`
+    # (see scripts/git_hooks/post-commit), not `python3 -c ...` or `-m` --
+    # under that invocation form Python puts the SCRIPT's own directory
+    # (scripts/) on sys.path[0], not the repo root and not the caller's cwd
+    # (even though the hook does `cd "$REPO_ROOT"` first). `orion` lives at
+    # the repo root, so the import below silently raised ModuleNotFoundError
+    # on every real invocation, caught by __main__'s outer `except Exception`
+    # and printed as a "non-fatal error" -- functionally invisible, since the
+    # hook already always exits 0. Confirmed live 2026-08-12: zero enrichment
+    # requests were ever published despite the hook fragment being installed
+    # and the qualifying-path/rate-limit logic above all working correctly.
+    # No existing test caught this because none exercised main() as a real
+    # subprocess the way the git hook does (see test_main_real_subprocess_
+    # invocation_imports_correctly in the test file). repo_root (computed
+    # above via `git rev-parse --show-toplevel`) is the correct fix target
+    # regardless of where this script physically lives -- worktree, primary
+    # checkout, or a future relocation.
+    if str(repo_root) not in sys.path:
+        sys.path.insert(0, str(repo_root))
+
     # Compute the delta BEFORE consuming a rate-limit slot: git_churn_delta
     # can raise (corrupted/shallow clone, prev_sha no longer reachable after
     # a rebase/force-push, etc.), and _rate_limit_ok() has an observable

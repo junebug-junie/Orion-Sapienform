@@ -114,6 +114,43 @@ docker exec ... python -c "socket.gethostbyname('notify')"       -> 172.18.0.28
 - Finding: `envelopes.py` asserted `no_external_side_effects`/`no_file_writes` on a verb that deletes host files.
   - Fix: derived from scope; comment corrected to say these are metadata, not gates (the worker forwards only `context`).
 
+## Timeout ladder (added after the first review pass)
+
+The flagged risk was the 120s dispatch RPC timeout. Tracing it end to end found
+a more immediate problem beneath it.
+
+**The binding constraint was 12 seconds.** The prune verb built its
+`SafeCommandRunner` with `settings.skills_mesh_ops_timeout_sec`, which is `12`
+live. A real `docker builder prune` over 142.5 GB / 15,506 entries would have
+been SIGKILLed roughly twelve seconds in, **partway through deleting**, on every
+attempt — the 120s RPC timeout would never even have been reached.
+
+Three nested budgets have to clear a real prune. Staggered so the innermost
+fires first, making a genuine overrun attributable to the docker command rather
+than an opaque outer timeout:
+
+| layer | key | budget |
+| --- | --- | --- |
+| docker subprocess | `BUILDER_PRUNE_TIMEOUT_SEC` (new) | 600s (10 min) |
+| cortex-exec step | verb yaml `timeout_ms` | 660s |
+| dispatch RPC | `route.rpc_timeout_sec` (new) | 720s |
+
+Each needed its own key rather than raising a shared one:
+
+- `BUILDER_PRUNE_TIMEOUT_SEC` is new because every other skill on
+  `skills_mesh_ops_timeout_sec` (ping, smartctl, nvidia-smi, mesh HTTP probes)
+  genuinely is a seconds-scale command and must keep the short budget.
+- `CortexRouteTemplateV1.rpc_timeout_sec` is **per-route** (`None` = use the
+  global) because the dispatch consumer is single-threaded: a global ceiling
+  large enough for the prune would let one hung inspect stall all dispatch for
+  twelve minutes. Only `maintain` carries one, asserted by a test.
+
+Env parity: `BUILDER_PRUNE_TIMEOUT_SEC` added to `.env_example` **and** to the
+live `services/orion-cortex-exec/.env` by hand — `sync_local_env_from_example.py`
+skips the key (prefix filter), so the template alone would have left the running
+container on the pydantic default. cortex-exec uses `env_file`, so no compose
+change is needed.
+
 ## Restart required
 
 ```bash
@@ -127,7 +164,7 @@ All four: policy-runtime and proposal-runtime carry the schema/evaluator change,
 
 ## Risks / concerns
 
-- **Severity: HIGH.** `EXECUTION_DISPATCH_RPC_TIMEOUT_SEC` is a single global 120s and the verb's `timeout_ms` is 120000. A real prune of 142.5 GB has never been timed. If it exceeds 120s, Docker still deletes but the RPC records a failure — reintroducing the "acted with no attributable outcome" hole this arc exists to close. Raising the global value is wrong: the consumer is single-threaded, so a 15-minute ceiling lets one hung inspect stall dispatch for 15 minutes. **Mitigation: a per-route timeout — `ExecutionDispatchCortexClient.send()` already takes a per-call `timeout_sec`. Deliberately not in this PR.**
+- ~~**Severity: HIGH.** the 120s RPC timeout.~~ **FIXED in this PR** — and tracing it found something worse underneath, see "Timeout ladder" below.
 - **Severity: MEDIUM.** No cooldown. `prune_build_cache` is rebuilt every tick whenever `resource_pressure >= 0.2`, and `stable_dispatch_id` embeds `field_tick_id` so cross-tick dedup does not apply. The `pruned_nothing` branch now stops the *zero-outcome* loop from reading as success, but does not rate-limit attempts. Mitigation: a per-template cooldown keyed on last successful prune.
 - **Severity: MEDIUM.** The skill measures `/hostfs/docker` but mutates through the docker socket. If the mount is not the daemon's data-root, `used_pct` describes one filesystem while the prune destroys cache on another. The `:ro` flag bounds nothing about the deletion.
 - **Severity: MEDIUM.** Fresh-deploy widening: copying `.env_example` now yields `dispatch_read_only` + flag on, so a new node is armed on first boot. The skill's host-measured gate is the only remaining barrier.

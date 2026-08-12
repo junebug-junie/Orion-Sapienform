@@ -75,13 +75,29 @@ fi
     # so the script's own `import redis` silently failed on every real
     # commit -- swallowed by main()'s outer except, same invisible-failure
     # shape as the sys.path/orion import bug fixed in the same patch.
-    # Probe likely dev-venv locations first (each checked for a REAL
-    # working `import redis`, not just existence), falling back to
-    # whatever's on PATH so this still works on a host where system
-    # python3 happens to have redis installed globally.
+    #
+    # Probe both REPO_ROOT (this commit's checkout) AND the shared/primary
+    # checkout derived from --git-common-dir. This repo's own convention
+    # (AGENTS.md sec 2) is committing from a LINKED WORKTREE, not the
+    # primary checkout -- confirmed live that a REPO_ROOT-only probe finds
+    # NOTHING there: .venv/orion_dev are untracked/gitignored, so a linked
+    # worktree only has the tracked files, never its own copy of either
+    # venv. Without the shared-root fallback this "fix" would silently
+    # keep failing for the dominant real case (worktree commits) while
+    # only working for the rare primary-checkout commit. Mirrors graphify's
+    # own post-commit fragment's linked-worktree detection (_GFY_COMMONDIR
+    # above) for how to resolve the shared root from any worktree.
+    _SSEH_COMMON_DIR=$(git rev-parse --git-common-dir 2>/dev/null)
+    _SSEH_SHARED_ROOT=""
+    if [ -n "$_SSEH_COMMON_DIR" ]; then
+        _SSEH_SHARED_ROOT=$(cd "$(dirname "$_SSEH_COMMON_DIR")" 2>/dev/null && pwd)
+    fi
+
     _SSEH_PYTHON=""
-    for _sseh_cand in "$REPO_ROOT/.venv/bin/python3" "$REPO_ROOT/orion_dev/bin/python3"; do
-        if [ -x "$_sseh_cand" ] && "$_sseh_cand" -c "import redis" >/dev/null 2>&1; then
+    for _sseh_cand in \
+        "$REPO_ROOT/.venv/bin/python3" "$REPO_ROOT/orion_dev/bin/python3" \
+        "$_SSEH_SHARED_ROOT/.venv/bin/python3" "$_SSEH_SHARED_ROOT/orion_dev/bin/python3"; do
+        if [ -n "$_sseh_cand" ] && [ -x "$_sseh_cand" ] && "$_sseh_cand" -c "import redis" >/dev/null 2>&1; then
             _SSEH_PYTHON="$_sseh_cand"
             break
         fi

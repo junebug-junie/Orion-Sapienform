@@ -117,6 +117,69 @@ def test_read_bus_url_from_env_file_missing_key_returns_empty(tmp_path):
     assert hook._read_bus_url_from_env_file(tmp_path) == ""
 
 
+def test_read_bus_url_from_env_file_falls_back_to_shared_checkout_root(tmp_path):
+    # Regression test for a second instance of the same bug class as the
+    # .venv/orion_dev interpreter probe: `.env` is untracked, so a linked
+    # worktree's OWN root essentially never has one -- this repo's real,
+    # enforced convention (AGENTS.md sec 2) is committing from exactly such
+    # a worktree, so the fallback must check the shared/primary checkout,
+    # not just repo_root.
+    primary = _init_repo(tmp_path)
+    _commit(primary, "README.md", "hello")
+    (primary / ".env").write_text("ORION_BUS_URL=redis://shared-root:6379/0\n")
+
+    worktree = tmp_path / "linked-worktree"
+    subprocess.run(
+        ["git", "worktree", "add", "-b", "wt-branch-bus-url", str(worktree)],
+        cwd=primary,
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+
+    # The worktree's own root has no .env at all.
+    assert not (worktree / ".env").exists()
+    assert hook._read_bus_url_from_env_file(worktree) == "redis://shared-root:6379/0"
+
+
+def test_read_bus_url_from_env_file_prefers_repo_roots_own_env_over_shared(tmp_path):
+    primary = _init_repo(tmp_path)
+    _commit(primary, "README.md", "hello")
+    (primary / ".env").write_text("ORION_BUS_URL=redis://shared-root:6379/0\n")
+
+    worktree = tmp_path / "linked-worktree"
+    subprocess.run(
+        ["git", "worktree", "add", "-b", "wt-branch-bus-url-2", str(worktree)],
+        cwd=primary,
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+    (worktree / ".env").write_text("ORION_BUS_URL=redis://worktree-own:6379/0\n")
+
+    assert hook._read_bus_url_from_env_file(worktree) == "redis://worktree-own:6379/0"
+
+
+def test_common_checkout_root_resolves_linked_worktree_to_primary(tmp_path):
+    primary = _init_repo(tmp_path)
+    _commit(primary, "README.md", "hello")
+
+    worktree = tmp_path / "linked-worktree"
+    subprocess.run(
+        ["git", "worktree", "add", "-b", "wt-branch-common-root", str(worktree)],
+        cwd=primary,
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+
+    assert hook._common_checkout_root(worktree) == primary.resolve()
+
+
+def test_common_checkout_root_returns_none_for_non_git_directory(tmp_path):
+    assert hook._common_checkout_root(tmp_path) is None
+
+
 def test_main_subprocess_invocation_imports_orion_without_pythonpath(tmp_path):
     """Regression test for a real bug found live 2026-08-12: main()'s local
     `from orion.structural_mass.git_delta import git_churn_delta` import

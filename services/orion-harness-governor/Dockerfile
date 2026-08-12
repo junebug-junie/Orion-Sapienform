@@ -1,5 +1,16 @@
 FROM python:3.12-slim
 
+# LadybugDB FTS extension version/platform -- the on-disk path DuckDB LOADs
+# from is decoupled from the gitnexus/@ladybugdb npm package's own semver
+# (confirmed live: gitnexus@1.6.9 resolves @ladybugdb/core@0.18.3 but still
+# expects the extension at the 0.18.1 path). Defaults match
+# scripts/seed_lbdb_fts_extension_cache.sh's own LBDB_EXT_VERSION/
+# LBDB_EXT_PLATFORM defaults and docker-compose.yml's build.args -- bump the
+# env var in services/orion-harness-governor/.env, not this file, when the
+# extension version changes.
+ARG LBDB_EXT_VERSION=0.18.1
+ARG LBDB_EXT_PLATFORM=linux_amd64
+
 WORKDIR /app
 
 # MCP toolchain: docker CLI (GitHub MCP), node/npx (Firecrawl MCP), git
@@ -41,8 +52,16 @@ RUN node -e "const [maj,min]=process.versions.node.split('.').map(Number); if (m
 # extension the MCP degrades to "FTS indexes missing" and keyword search over
 # an FTS-built index returns nothing. --verify-only proves a fresh process can
 # LOAD it so a HOME mismatch fails the build instead of silently degrading.
-RUN node /usr/lib/node_modules/gitnexus/scripts/install-duckdb-extension.mjs fts 4294967296 \
-    && node /usr/lib/node_modules/gitnexus/scripts/install-duckdb-extension.mjs fts 4294967296 --verify-only
+#
+# Copied from a host-local cache (see scripts/seed_lbdb_fts_extension_cache.sh
+# and the `lbdb_ext` additional_contexts entry in docker-compose.yml) instead
+# of running install-duckdb-extension.mjs's own network install step -- that
+# hits extension.ladybugdb.com directly, which has had real sustained outages
+# (Cloudflare 522, observed 2026-08-12) that blocked this build entirely.
+# Exact target path/version confirmed live by running the installer in an
+# unmodified python:3.12-slim container and inspecting where it wrote.
+COPY --from=lbdb_ext libfts.lbug_extension /root/.lbdb/extension/${LBDB_EXT_VERSION}/${LBDB_EXT_PLATFORM}/fts/libfts.lbug_extension
+RUN node /usr/lib/node_modules/gitnexus/scripts/install-duckdb-extension.mjs fts 4294967296 --verify-only
 
 RUN pip3 install --no-cache-dir --upgrade pip
 

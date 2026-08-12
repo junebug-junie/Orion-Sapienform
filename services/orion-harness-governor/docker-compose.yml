@@ -3,6 +3,17 @@ services:
     build:
       context: ../..
       dockerfile: services/orion-harness-governor/Dockerfile
+      # Host-local cache for the LadybugDB FTS extension (see
+      # scripts/seed_lbdb_fts_extension_cache.sh) -- the Dockerfile COPYs
+      # from this named context instead of downloading it at build time.
+      additional_contexts:
+        - lbdb_ext=${HARNESS_LBDB_EXT_CACHE_DIR:-/mnt/telemetry/duckdb-extensions/staging}
+      # Must match scripts/seed_lbdb_fts_extension_cache.sh's own
+      # LBDB_EXT_VERSION/LBDB_EXT_PLATFORM (same env var names, read the same
+      # way) so a version bump only needs the env var changed once.
+      args:
+        LBDB_EXT_VERSION: ${LBDB_EXT_VERSION:-0.18.1}
+        LBDB_EXT_PLATFORM: ${LBDB_EXT_PLATFORM:-linux_amd64}
     container_name: ${PROJECT}-harness-governor
     restart: unless-stopped
     env_file:

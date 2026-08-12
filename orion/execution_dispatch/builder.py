@@ -162,27 +162,42 @@ def _admit_candidates(
     fewer things." Nothing is held back here.
     """
     capacity = max(0, limits.max_dispatch_candidates)
-    # Ties broken on proposal_id so the same inputs always produce the same
-    # frame -- this builder is re-run on retries and the frame_id is stable.
+    # Ties broken on proposal_id so a given set of eligible candidates always
+    # produces the same admitted set regardless of the order they arrived in.
     ranked = sorted(eligible, key=lambda e: (-e.effective_priority, e.decision.proposal_id))
 
-    admitted_ids: set[str] = set()
+    # 2026-08-12: identity is the _Eligible object, not decision_id. An
+    # earlier version enforced capacity on a set of decision_id and then
+    # filtered a list by membership -- so two entries sharing a decision_id
+    # both rode in and the returned list could exceed capacity. Unreachable
+    # with today's producer (decision_id embeds proposal_id, which embeds a
+    # per-frame-unique template key), but the invariant was expressed on the
+    # wrong quantity, and "unreachable today" is how latent bugs are
+    # described right up until a producer changes.
+    admitted_items: list[_Eligible] = []
+    admitted_ids: set[int] = set()
+
+    def _admit(item: _Eligible) -> None:
+        admitted_items.append(item)
+        admitted_ids.add(id(item))
+
     for scope, reserved in sorted(limits.reserved_slots_by_scope.items()):
         taken = 0
         for item in ranked:
-            if taken >= reserved or len(admitted_ids) >= capacity:
+            if taken >= reserved or len(admitted_items) >= capacity:
                 break
-            if item.route.allowed_scope == scope and item.decision.decision_id not in admitted_ids:
-                admitted_ids.add(item.decision.decision_id)
+            if item.route.allowed_scope == scope and id(item) not in admitted_ids:
+                _admit(item)
                 taken += 1
 
     for item in ranked:
-        if len(admitted_ids) >= capacity:
+        if len(admitted_items) >= capacity:
             break
-        admitted_ids.add(item.decision.decision_id)
+        if id(item) not in admitted_ids:
+            _admit(item)
 
-    admitted = [e for e in ranked if e.decision.decision_id in admitted_ids]
-    starved = [e for e in ranked if e.decision.decision_id not in admitted_ids]
+    admitted = [e for e in ranked if id(e) in admitted_ids]
+    starved = [e for e in ranked if id(e) not in admitted_ids]
     return admitted, starved
 
 
@@ -379,6 +394,24 @@ def build_execution_dispatch_frame(
         starvation_counts[starvation_key(item.candidate)] = item.starved_ticks + 1
     # Applied second on purpose: if two eligible candidates collapse to the
     # same starvation key and one of them got in, the pair is not starving.
+    #
+    # NOTE, deliberate: this clears on ADMISSION, not on a confirmed send. A
+    # candidate can be admitted here and still never go out --
+    # worker._send_prepared_candidates can stop early on the theater
+    # tripwire, on the daily risk cap, or on the first candidate exceeding
+    # the remaining risk budget. Admission is the right unit because it is
+    # what THIS layer arbitrates and the frame is the arbitration record;
+    # sends fail for reasons that are not starvation and would otherwise
+    # inflate a starvation signal into a general failure signal.
+    #
+    # That is only safe while `max_dispatches_per_tick >= max_dispatch_
+    # candidates`, or the lowest-ranked admitted candidate (after this patch,
+    # the aged one -- exactly the one this mechanism exists for) gets dropped
+    # by the send loop with its counter already zeroed. The two values are
+    # equal today (5/5) and measured live at 0 of 2,738 frames leaving a
+    # prepared candidate unsent. Changing one without the other fails
+    # test_the_send_budget_cannot_silently_drop_an_admitted_candidate rather
+    # than silently degrading this accounting.
     for item in admitted:
         starvation_counts.pop(starvation_key(item.candidate), None)
 
@@ -543,13 +576,10 @@ def build_unevaluable_execution_dispatch_frame(
 
 
 def _decision_template_key(proposal_id: str) -> str:
-    # stable_proposal_id() (orion/proposals/builder.py) is always
-    # "proposal:{template_key}:{field_tick_id}:{attention_frame_id}" --
-    # template_key is a plain config dict key (never contains ":"), so
-    # index [1] is exact, same convention scripts/analysis/measure_proposal_
-    # feedback_correlation.py's extract_template_key() already relies on.
-    parts = proposal_id.split(":")
-    return parts[1] if len(parts) > 1 else proposal_id
+    # 2026-08-12: was a second, independent copy of this parse with slightly
+    # different validation, 400 lines from proposal_template_key. One parser,
+    # one place to fix when the id shape moves.
+    return proposal_template_key(proposal_id) or proposal_id
 
 
 def build_stale_discard_execution_dispatch_frame(

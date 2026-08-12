@@ -105,6 +105,47 @@ def test_worker_records_unevaluable_frame_when_proposal_missing(monkeypatch) -> 
     assert any("proposal_frame" in w for w in saved_frame.warnings)
 
 
+def test_unevaluable_frame_carries_starvation_counters_forward(monkeypatch) -> None:
+    """2026-08-12, found by review. This path builds a frame that computes no
+    starvation counters of its own, and it used to be stamped with a baseline
+    dict that omits them -- so it saved `{}`, became the newest row, and the
+    next tick's load erased every accumulated counter.
+
+    Silent, and in the direction that keeps starved things starved: a
+    candidate 90 ticks into a ~100-tick climb would restart at 0 because one
+    unrelated proposal frame failed to load. Same class as the stale-discard
+    hole already patched one screen above it in _tick.
+    """
+    monkeypatch.setenv("POSTGRES_URI", "postgresql://test:test@localhost/test")
+    monkeypatch.setenv("EXECUTION_DISPATCH_STALENESS_OVERRIDE_SEC", "99999999999")
+    import app.settings as settings_mod
+
+    settings_mod._settings = None
+    worker = ExecutionDispatchRuntimeWorker()
+    carried = {"prune_build_cache:host:docker_build_cache": 91}
+    worker._store.load_oldest_policy_frames_without_dispatch = MagicMock(
+        return_value=[_policy_frame()]
+    )
+    worker._store.load_latest_staleness_discard_baseline = MagicMock(
+        return_value={
+            "staleness_discard_count_ewma": 0.0,
+            "staleness_discard_count_ewma_var": 0.0,
+            "staleness_discard_count_ewma_n": 3,
+            "starvation_counts": dict(carried),
+        }
+    )
+    worker._store.load_proposal_frame = MagicMock(return_value=None)
+    worker._store.save_dispatch_frame = MagicMock()
+
+    worker._tick()
+
+    saved_frame = worker._store.save_dispatch_frame.call_args[0][0]
+    assert saved_frame.starvation_counts == carried, (
+        "an unevaluable frame must carry starvation counters forward -- saving "
+        "{} here makes it the newest row and wipes every counter next tick"
+    )
+
+
 def test_worker_saves_dispatch_frame_for_pending_policy(monkeypatch) -> None:
     # 2026-07-22 (SelfStateV1 burn): build_execution_dispatch_frame now takes
     # field_tick_id straight off policy_frame -- no separate self-state load

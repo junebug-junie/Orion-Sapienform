@@ -365,13 +365,105 @@ def test_persisted_counters_survive_the_shapes_real_rows_actually_have():
     assert coerce_starvation_counts({"a": "4", "b": None, "c": 2}) == {"a": 4, "c": 2}
 
 
-def test_admission_is_deterministic_for_identical_input():
-    """This builder is re-run on retries under a stable frame_id -- two runs
-    disagreeing about who got in would produce two different frames under one
-    id."""
+def test_admission_does_not_depend_on_the_order_candidates_arrive_in():
+    """Determinism that is worth asserting. Calling the builder twice with the
+    same list in the same process can only fail if the sort key is actively
+    random -- the real risk is input-order sensitivity, so permute the input.
+    """
     cands = [_candidate(f"tied_{i}", priority=0.5) for i in range(9)]
-    first = _build(cands)
-    second = _build(cands)
-    assert [c.source_proposal_id for c in first.candidates] == [
-        c.source_proposal_id for c in second.candidates
-    ]
+    baseline = [c.source_proposal_id for c in _build(cands).candidates]
+    assert baseline
+    for shift in range(1, len(cands)):
+        rotated = cands[shift:] + cands[:shift]
+        assert [c.source_proposal_id for c in _build(rotated).candidates] == baseline
+
+
+def test_the_send_budget_cannot_silently_drop_an_admitted_candidate():
+    """Guards the coupling that makes clearing counters on ADMISSION safe.
+
+    _admit_candidates clears a candidate's starvation counter the moment it
+    wins a slot, but worker._send_prepared_candidates takes candidates in
+    order and can stop early. If the per-tick send budget were smaller than
+    the admission budget, the LOWEST-ranked admitted candidate -- after
+    aging, exactly the starved one this whole mechanism exists for -- would
+    be dropped with its counter already zeroed, and would restart its climb
+    forever while the frame recorded it as admitted.
+
+    Equal today (5/5). This fails rather than letting them drift apart.
+    """
+    limits = load_execution_dispatch_policy(POLICY_PATH).limits
+    assert limits.max_dispatches_per_tick >= limits.max_dispatch_candidates, (
+        "lowering max_dispatches_per_tick below max_dispatch_candidates makes "
+        "starvation accounting silently wrong -- move the counter reset to a "
+        "confirmed send first (see the NOTE at builder.py's admitted .pop())"
+    )
+
+
+def test_a_full_multi_tick_loop_lets_a_persistent_loser_break_through():
+    """Closed loop: every tick is fed the PREVIOUS tick's own
+    starvation_counts, exactly as the worker does.
+
+    This is the test that was missing when the collision bug shipped. Every
+    other aging test hand-injects prev_counts, so none of them can catch a
+    break in the counter LIFECYCLE -- only in the bonus arithmetic. Here the
+    frame's real output is the next tick's real input, so a counter that
+    fails to accumulate (collision, reset-by-sibling, dropped carry) shows up
+    as the loser simply never getting in.
+    """
+    # No reservation: this must be AGING doing the work, not the lane. The
+    # gap has to be inside the bonus cap for aging to be able to close it at
+    # all -- 0.85 vs 0.70 is 0.15 against a 0.25 cap, so ~75 ticks.
+    policy = load_execution_dispatch_policy(POLICY_PATH)
+    policy.limits.reserved_slots_by_scope = {}
+    gap = 0.15
+    assert gap < policy.limits.starvation_aging_bonus_cap
+
+    crowd = [_candidate(f"inspect_leader_{i}", priority=0.85) for i in range(5)]
+    loser = _candidate(
+        "prune_build_cache", kind="maintain", priority=0.85 - gap, target="host:cache"
+    )
+
+    counts: dict[str, int] = {}
+    breakthrough = None
+    streaks = []
+    for tick in range(400):
+        frame = _build(crowd + [loser], prev_counts=counts, policy=policy)
+        counts = dict(frame.starvation_counts)
+        streaks.append(counts.get(starvation_key(loser), 0))
+        if loser.proposal_id in {c.source_proposal_id for c in frame.candidates}:
+            breakthrough = tick
+            break
+
+    assert breakthrough is not None, (
+        f"400 closed-loop ticks and the loser never got in; streak reached "
+        f"{max(streaks)} -- a counter that stops accumulating is the failure mode "
+        f"this test exists for"
+    )
+    assert streaks[:5] == [1, 2, 3, 4, 5], f"counters must accumulate, got {streaks[:8]}"
+    expected = gap / policy.limits.starvation_aging_bonus_per_tick
+    assert abs(breakthrough - expected) <= 2, (
+        f"broke through at tick {breakthrough}, expected ~{expected:.0f} from "
+        f"gap {gap} / {policy.limits.starvation_aging_bonus_per_tick} per tick"
+    )
+
+
+def test_aging_alone_cannot_close_a_gap_larger_than_its_cap():
+    """The other half of the loop test: a bounded bonus must stay bounded
+    under real iteration, not just in the arithmetic helper. A candidate more
+    than `cap` below the cut line must starve forever -- if it ever breaks
+    through, the bonus is being applied more than once or is not capped."""
+    policy = load_execution_dispatch_policy(POLICY_PATH)
+    policy.limits.reserved_slots_by_scope = {}
+    cap = policy.limits.starvation_aging_bonus_cap
+
+    crowd = [_candidate(f"inspect_leader_{i}", priority=0.95) for i in range(5)]
+    hopeless = _candidate("hopeless", priority=0.95 - cap - 0.05)
+
+    counts: dict[str, int] = {}
+    for _ in range(500):
+        frame = _build(crowd + [hopeless], prev_counts=counts, policy=policy)
+        counts = dict(frame.starvation_counts)
+        assert hopeless.proposal_id not in {c.source_proposal_id for c in frame.candidates}, (
+            "aging must not be able to invert a gap wider than its own cap"
+        )
+    assert counts[starvation_key(hopeless)] == 500

@@ -95,7 +95,10 @@ prune_build_cache    DISPATCHED                                  0
 The same five read-only templates held all five slots on essentially every tick. The cause is
 structural, not tuning: a single scalar ranking conflates **urgency** (a spike) with **importance**
 (a persistent level), and a steady-state-high signal like disk fullness is maximally penalised by
-that — high *and* boring, so it loses forever. This is the same failure the drives program hit.
+that — high *and* boring, so it loses forever. Juniper named the pattern from the drives program:
+"disparate things that never get attention because one is noisier or one is steadystate at load."
+That resemblance is an observation about shape, not a claim that the two share a root cause — no
+comparison of the two arbitration paths has been done.
 
 Three corrections, in `orion/execution_dispatch/builder.py` and `limits` in the policy yaml:
 
@@ -163,7 +166,11 @@ SELECT b ->> 'dispatch_kind'                    AS kind,
        max((b ->> 'starvation_ticks')::int)     AS worst_streak,
        count(*)                                 AS times_blocked
 FROM substrate_execution_dispatch_frames f,
-     LATERAL jsonb_array_elements(f.dispatch_frame_json -> 'blocked_candidates') b
+     LATERAL jsonb_array_elements(
+       CASE WHEN jsonb_typeof(f.dispatch_frame_json -> 'blocked_candidates') = 'array'
+            THEN f.dispatch_frame_json -> 'blocked_candidates'
+            ELSE '[]'::jsonb END) b   -- jsonb_array_elements errors on a literal
+                                      -- JSON null; same guard store.py already carries
 WHERE f.generated_at > now() - interval '3 hours'
   AND b -> 'reasons' ->> 0 = 'max_dispatch_candidates_exceeded'
 GROUP BY 1, 2

@@ -118,24 +118,37 @@ def test_single_chunk_per_side_reduces_to_plain_cosine_distance() -> None:
     assert mod._max_pair_drift([[1.0, 0.0]], [[1.0, 0.0]]) == pytest.approx(0.0)
 
 
-def test_drift_is_length_invariant_unlike_mean_pooling() -> None:
-    """The finding that killed mean-pooling: measured against the real model,
-    pooling diluted an identical unrelated-section rewrite from 0.2392 in a
-    1-chunk doc to 0.0044 in an 8-chunk doc (54x). Max-pair must report the
-    same drift regardless of how many unchanged chunks surround it."""
-    # Mutually orthogonal, so the surrounding chunks are genuinely unrelated
-    # to the changed one -- see the test below for what happens when they
-    # are not.
-    removed_changed, added_changed, unchanged = [1.0, 0.0, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, 1.0]
+def test_extra_chunks_bias_the_score_high_not_low() -> None:
+    """Max-pair is NOT length-invariant, and an earlier version of this test
+    wrongly asserted that it was -- using padding chunks that were byte
+    identical on both sides, so every padding term was exactly 1 - 1.0 = 0
+    and could not affect the max by construction. Real embeddings are never
+    identical across a diff's two sides, and under --unified=0 a hunk
+    contains no unchanged chunks at all, so that fixture matched no real
+    input shape.
 
-    short = mod._max_pair_drift([removed_changed], [added_changed])
-    # Same real edit, now buried among identical-on-both-sides chunks.
-    long = mod._max_pair_drift(
-        [removed_changed] + [unchanged] * 7,
-        [added_changed] + [unchanged] * 7,
-    )
-    assert short == pytest.approx(long)
-    assert short == pytest.approx(1.0)
+    The real behavior: the score is a max over 2*(N+M) non-negative terms,
+    so more chunks means more draws means a higher expected maximum.
+    Measured over 30 real hunk pairs: median 0.1684 at N=1, 0.2237 at
+    N=2-3, 0.2861 at N=4+.
+
+    This test pins the *mechanism* -- an added chunk contributes its own
+    term to the max and can raise the score with no change to the original
+    pair. It deliberately does NOT assert that extra chunks always raise
+    the score: they don't, and
+    ``test_partially_matching_neighbours_do_lower_the_score`` below is the
+    counter-case. The net effect on any single event is content-dependent;
+    only the aggregate tendency across real hunks is upward."""
+    matched_a, matched_b = [1.0, 0.0, 0.0], [1.0, 0.0, 0.0]
+    # A second changed section with no counterpart on the other side.
+    unmatched = [0.0, 1.0, 0.0]
+
+    alone = mod._max_pair_drift([matched_a], [matched_b])
+    with_extra = mod._max_pair_drift([matched_a, unmatched], [matched_b])
+
+    assert alone == pytest.approx(0.0)
+    assert with_extra == pytest.approx(1.0)
+    assert with_extra > alone
 
 
 def test_partially_matching_neighbours_do_lower_the_score() -> None:
@@ -292,17 +305,17 @@ async def test_each_chunk_gets_a_distinct_doc_id(source, monkeypatch) -> None:
 
 
 @pytest.mark.asyncio
-async def test_score_reflects_pooled_content_of_all_chunks_not_just_the_first(
+async def test_score_reflects_content_of_all_chunks_not_just_the_first(
     source, monkeypatch
 ) -> None:
     """Two diffs sharing an identical first window but differing in their
     tails must score differently -- the exact case that was indistinguishable
     before chunking."""
     head = "same head line"
-    # Distinct per-chunk vectors so the pooled direction actually depends on
-    # the tail, not only the shared head. Deliberately NOT mirror-symmetric
-    # about the removed side's vector: [0,1] and [0,-1] would pool to the
-    # same *angle* from [1,0] and score identically, hiding the very
+    # Distinct per-chunk vectors so the score actually depends on the tail,
+    # not only the shared head. Deliberately NOT mirror-symmetric
+    # about the removed side's vector: [0,1] and [0,-1] sit at the same
+    # *angle* from [1,0] and would score identically, hiding the very
     # difference this test exists to catch.
     by_text = {
         head: [1.0, 0.0],
@@ -323,8 +336,8 @@ async def test_score_reflects_pooled_content_of_all_chunks_not_just_the_first(
 
 @pytest.mark.asyncio
 async def test_one_failed_chunk_yields_none_not_a_partial_measurement(source, monkeypatch) -> None:
-    """A dropped chunk must not silently shrink the pooled vector into a
-    partial score presented as a whole one -- that's a fabricated
+    """A dropped chunk must not silently vanish from the comparison and
+    leave a partial score presented as a whole one -- that's a fabricated
     measurement, worse than an honest None."""
     text = "alpha\nbeta"
     _stub_embeddings(monkeypatch, fail_texts={"beta"})
@@ -476,3 +489,30 @@ async def test_one_failed_chunk_nulls_the_side_rather_than_scoring_the_survivors
 
     assert event.chunk_count_removed == 3
     assert event.diff_scoped_embedding_diff is None
+
+
+@pytest.mark.asyncio
+async def test_embedding_requests_are_capped_in_flight(source, monkeypatch) -> None:
+    """The embedding host consumes requests serially on CPU (~0.6s each) and
+    is shared with live chat memory. An unbounded gather over a large doc's
+    chunks starves that shared service AND guarantees the queued-behind
+    chunks blow their own 30s timeout -- so the biggest docs would fail to
+    score while doing the most damage."""
+    in_flight = 0
+    peak = 0
+
+    async def _fake_request_embedding(rpc_bus, *, doc_id, text, **kwargs):
+        nonlocal in_flight, peak
+        in_flight += 1
+        peak = max(peak, in_flight)
+        await asyncio.sleep(0.01)
+        in_flight -= 1
+        return _FakeEmbeddingResult([1.0, 0.0])
+
+    monkeypatch.setattr(mod, "_request_embedding", _fake_request_embedding)
+    long_text = "\n".join(f"line {i}" for i in range(200))
+    await _score(_change(long_text, long_text), source, chunk_char_size=20)
+
+    assert peak <= mod._EMBED_CONCURRENCY
+    # Guard against the cap passing trivially because nothing overlapped.
+    assert peak > 1

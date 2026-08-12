@@ -206,3 +206,24 @@ def test_renamed_doc_reads_as_added_matching_its_hunk_shape(tmp_path: Path) -> N
 
     entries = dict((path, kind) for kind, path in changed_doc_files_with_status(prev, head, repo))
     assert entries == {"new_name.md": "added"}
+
+
+def test_generated_graphify_output_is_not_scored_as_doc_drift(tmp_path: Path) -> None:
+    """graphify-out/ is machine-regenerated on a post-commit hook. Scoring
+    it would measure a tool's output churn rather than co-creation, and
+    GRAPH_REPORT.md alone produces ~180 chunks per side -- minutes of serial
+    work on the shared embedding host for a file that could never finish
+    inside its own 30s per-request timeout."""
+    repo = tmp_path / "repo"
+    _init_repo(repo)
+    (repo / "real_doc.md").write_text("authored prose\n")
+    (repo / "graphify-out").mkdir()
+    (repo / "graphify-out" / "GRAPH_REPORT.md").write_text("generated\n")
+    prev = _commit(repo, "docs: seed")
+
+    (repo / "real_doc.md").write_text("edited prose\n")
+    (repo / "graphify-out" / "GRAPH_REPORT.md").write_text("regenerated\n")
+    head = _commit(repo, "docs: edit both")
+
+    paths = [path for _kind, path in changed_doc_files_with_status(prev, head, repo)]
+    assert paths == ["real_doc.md"]

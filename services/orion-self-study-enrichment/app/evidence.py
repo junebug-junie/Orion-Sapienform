@@ -71,7 +71,18 @@ def load_graph_nodes_for_clusters(
     """Read graphify-out/graph.json directly and pull nodes whose id/path/
     label mentions one of the affected clusters. Fails soft (empty tuple)
     if the graph file is missing or unparseable -- this evidence source is
-    optional, not load-bearing for the run to proceed."""
+    optional, not load-bearing for the run to proceed.
+
+    Matching is path-segment-boundary aware, not raw substring containment:
+    a node field must equal a cluster, or contain it bounded by `/` (or at
+    the very start/end of the field) on both sides. Plain `cluster in
+    haystack` (an earlier version of this function) matched
+    "services/orion-hub" against an unrelated node like
+    "services/orion-hub-analytics/..." or any node whose free-text label
+    field happened to contain that substring anywhere -- pulling unrelated
+    evidence into a prompt whose whole design point is that every claim
+    must trace to a *specific* evidence item (see README's "Evidence-only
+    prompting" section)."""
     path = Path(graph_json_path)
     if not path.exists() or not clusters:
         return ()
@@ -86,14 +97,31 @@ def load_graph_nodes_for_clusters(
     for node in nodes:
         if not isinstance(node, dict):
             continue
-        haystack = " ".join(
-            str(node.get(key, "")) for key in ("id", "path", "label", "name", "file")
-        )
-        if any(cluster in haystack for cluster in clusters):
+        fields = [str(node.get(key, "")) for key in ("id", "path", "label", "name", "file")]
+        if any(_cluster_matches_field(cluster, field) for cluster in clusters for field in fields if field):
             matched.append(node)
         if len(matched) >= max_nodes:
             break
     return tuple(matched)
+
+
+def _cluster_matches_field(cluster: str, field: str) -> bool:
+    """True if `field` names something inside (or exactly) `cluster`, with
+    `/` (or field-start/end) as the boundary on both sides -- e.g. cluster
+    "services/orion-hub" matches "services/orion-hub/app/main.py" and
+    "services/orion-hub" itself, but not "services/orion-hub-analytics"."""
+    if field == cluster:
+        return True
+    prefix = f"{cluster}/"
+    if field.startswith(prefix):
+        return True
+    # Cluster may also appear as a bounded segment further into the field
+    # (e.g. a label like "concept: services/orion-hub/worker") -- require
+    # a non-alphanumeric boundary (or string start) immediately before it.
+    idx = field.find(prefix)
+    if idx > 0 and not (field[idx - 1].isalnum() or field[idx - 1] in "-_"):
+        return True
+    return False
 
 
 def load_nearby_docs(repo_root: str | Path, clusters: tuple[str, ...], *, max_chars_per_doc: int = 4000) -> tuple[dict[str, str], ...]:

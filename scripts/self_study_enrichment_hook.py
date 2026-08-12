@@ -175,13 +175,23 @@ def main() -> int:
     if not qualifying:
         return 0
 
-    if not _rate_limit_ok(repo_root):
-        print("self_study_enrichment_hook: daily publish ceiling reached, skipping", file=sys.stderr)
-        return 0
-
+    # Compute the delta BEFORE consuming a rate-limit slot: git_churn_delta
+    # can raise (corrupted/shallow clone, prev_sha no longer reachable after
+    # a rebase/force-push, etc.), and _rate_limit_ok() has an observable
+    # side effect (it persists the incremented daily counter to disk). If
+    # the ceiling check ran first and this raised, main()'s outer
+    # try/except would swallow it and exit 0 having already spent a slot on
+    # nothing -- repeated failures would silently exhaust the day's publish
+    # ceiling with zero actual events ever published. Doing the
+    # (fallible, no-side-effect) delta computation first means a slot is
+    # only ever consumed once we know there is a real payload to publish.
     from orion.structural_mass.git_delta import git_churn_delta
 
     delta = git_churn_delta(prev_sha, head_sha, repo_path=repo_root)
+
+    if not _rate_limit_ok(repo_root):
+        print("self_study_enrichment_hook: daily publish ceiling reached, skipping", file=sys.stderr)
+        return 0
 
     payload = {
         "schema": "SelfStudyEnrichmentRequestV1",

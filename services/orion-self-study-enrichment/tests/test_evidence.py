@@ -45,6 +45,22 @@ def test_load_graph_nodes_for_clusters_missing_file_fails_soft(tmp_path):
     assert load_graph_nodes_for_clusters(tmp_path / "nope.json", ("x",)) == ()
 
 
+def test_load_graph_nodes_for_clusters_does_not_match_similarly_prefixed_cluster(tmp_path):
+    # Regression: "services/orion-hub" must NOT match
+    # "services/orion-hub-analytics/..." -- plain substring containment did.
+    graph = {
+        "nodes": [
+            {"id": "services/orion-hub/app/main.py", "label": "main"},
+            {"id": "services/orion-hub-analytics/app/main.py", "label": "main"},
+        ]
+    }
+    graph_path = tmp_path / "graph.json"
+    graph_path.write_text(json.dumps(graph))
+    nodes = load_graph_nodes_for_clusters(graph_path, ("services/orion-hub",))
+    assert len(nodes) == 1
+    assert nodes[0]["id"] == "services/orion-hub/app/main.py"
+
+
 def test_load_nearby_docs_reads_readme(tmp_path):
     cluster_dir = tmp_path / "services" / "orion-foo"
     cluster_dir.mkdir(parents=True)

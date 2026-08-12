@@ -13,7 +13,12 @@ interruptible: true
 can_interrupt_others: false
 requires_gpu: false
 requires_memory: false
-timeout_ms: 120000
+# 2026-08-12: 120000 -> 660000 (11 min). executor.py uses this as the step
+# timeout, so it must sit ABOVE the prune subprocess's own 600s budget
+# (BUILDER_PRUNE_TIMEOUT_SEC) and BELOW the maintenance route's 720s
+# rpc_timeout_sec -- innermost budget fires first, so a real overrun is
+# attributable to the docker command rather than to an opaque outer timeout.
+timeout_ms: 660000
 max_recursion_depth: 0
 services: []
 plan:

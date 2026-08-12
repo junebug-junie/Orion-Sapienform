@@ -331,12 +331,21 @@ REGISTRY: tuple[InnerStateSignal, ...] = (
         cognition_consumers=(),
         notes=(
             "Five schemas (ProposalFrameV1 -> ConsolidationV1), tracked as one "
-            "row. Confirmed rehearsal: docs/notes/2026-07-12-phase5-research-"
-            "findings.md -- EXECUTION_DISPATCH_MODE=dry_run live, every reader "
-            "outside the ladder is a self-labeled Hub debug route, the one "
-            "non-Hub reader (orion-thought reverie grounding) only appends an "
-            "inert ID tag to an already-generated thought. Out of scope for "
-            "resolution here."
+            "row. 2026-08-12: the historical rehearsal justification below is "
+            "NO LONGER TRUE and this classification is under review. "
+            "EXECUTION_DISPATCH_MODE is dispatch_read_only live (verified "
+            "inside the running container), and the ladder now carries a real "
+            "mutating route (`maintain` -> skills.runtime.builder_prune.v1) "
+            "whose terminal effect is deleting host data. A ladder that can "
+            "change the world is not rehearsing. Left as REHEARSAL pending a "
+            "measured re-classification rather than flipped on assertion -- "
+            "the honest state is 'stale label, known stale', not a new label "
+            "picked without evidence. Prior (now-false) justification: "
+            "docs/notes/2026-07-12-phase5-research-findings.md -- "
+            "EXECUTION_DISPATCH_MODE=dry_run live, every reader outside the "
+            "ladder a self-labeled Hub debug route, the one non-Hub reader "
+            "(orion-thought reverie grounding) only appending an inert ID tag "
+            "to an already-generated thought."
         ),
     ),
     InnerStateSignal(

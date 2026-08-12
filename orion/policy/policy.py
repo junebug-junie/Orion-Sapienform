@@ -32,6 +32,14 @@ class ProposalKindRuleV1(BaseModel):
     allowed_scope: str
     default_decision: str
     max_autonomy_tier: str
+    # 2026-08-12: whether candidates of this kind change the world. Declared
+    # per kind in config rather than inferred, because inference is exactly
+    # what went wrong: is_read_only_candidate() used to read `proposed_effect`
+    # (what the action is FOR) as a proxy for read-only-ness (what the action
+    # DOES), so a prune whose effect is `preserve_stability` -- a perfectly
+    # reasonable goal for a mutating action -- classified as read-only.
+    # Defaults False so every existing kind keeps its current meaning.
+    mutating: bool = False
 
 
 class SubstratePolicyV1(BaseModel):

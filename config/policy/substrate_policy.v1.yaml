@@ -30,6 +30,34 @@ proposal_kind_rules:
     default_decision: approved_read_only
     max_autonomy_tier: read_only
 
+  # 2026-08-12: the first MUTATING kind. Without a rule here `kind_rule()`
+  # returns None and the evaluator defaults to `deferred`, so this had to exist
+  # for the route to be reachable at all -- found by a gating test, not by
+  # reading the config.
+  #
+  # This first shipped as `default_decision: approved_read_only`, with a comment
+  # here explaining that the name "is about which DISPATCH LANE the decision
+  # takes, not a claim that the action reads nothing." That comment was a
+  # documented lie: the persisted decision record for deleting ~142 GB said
+  # `approved_read_only` with reason `read_only_low_risk`, and
+  # orion/consolidation/motif.py counts exactly that value to detect a
+  # "read_only_policy_loop". A note explaining that a stored value is false does
+  # not make it true. `approved_maintenance` is now its own decision literal.
+  #
+  # `mutating: true` is what stops orion/policy/rules.py's
+  # is_read_only_candidate() from classifying this kind by its `proposed_effect`
+  # (`preserve_stability`, which IS in read_only_effects below).
+  #
+  # What keeps the action from firing is unchanged and lives elsewhere:
+  # mode.allow_mutating_dispatch, the maintenance_bounded scope gate in
+  # orion/execution_dispatch/builder.py, and the skill's own measured
+  # disk/reclaimable check.
+  maintain:
+    allowed_scope: maintenance_bounded
+    default_decision: approved_maintenance
+    max_autonomy_tier: maintenance_bounded
+    mutating: true
+
   stabilize:
     allowed_scope: prepare_only
     default_decision: requires_operator_review

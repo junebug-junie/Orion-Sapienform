@@ -24,9 +24,19 @@ def test_allow_dispatch_read_only_true() -> None:
     assert policy.mode.allow_dispatch_read_only is True
 
 
-def test_allow_mutating_dispatch_false() -> None:
+def test_allow_mutating_dispatch_true_and_the_loader_carries_it() -> None:
+    """Was `..._false`. Flipped 2026-08-12 by explicit operator decision, so
+    this asserts the new intended position rather than being deleted.
+
+    What the loader guarantees is only that the flag round-trips; what keeps
+    the flag narrow lives in `tests/test_maintenance_dispatch_gating.py`
+    (exactly one `maintenance_bounded` route) and in the policy's own
+    `default_dispatch_mode: dry_run`, which still means an env-unset
+    deployment cannot mutate.
+    """
     policy = load_execution_dispatch_policy(POLICY_PATH)
-    assert policy.mode.allow_mutating_dispatch is False
+    assert policy.mode.allow_mutating_dispatch is True
+    assert policy.mode.default_dispatch_mode == "dry_run"
 
 
 def test_routes_for_inspect_summarize_observe() -> None:

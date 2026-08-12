@@ -171,7 +171,20 @@ def test_default_dispatch_mode_and_no_attempt() -> None:
     assert frame.dispatch_count == 0
 
 
-def test_no_mutating_scope_in_envelopes() -> None:
+def test_read_only_routes_keep_read_only_envelopes() -> None:
+    """Renamed 2026-08-12 from `test_no_mutating_scope_in_envelopes`.
+
+    That name asserted a repo-wide invariant -- "no envelope anywhere carries a
+    mutating scope" -- which became false when the `maintain` route shipped.
+    The test kept passing only because `_proposal_frame()` happens to contain
+    no `maintain` candidate, so it was an accident of the fixture, not a check.
+    A reader looking for "can any envelope mutate?" would have trusted it.
+
+    Narrowed to what it really covers: the read-only routes in this fixture are
+    unaffected by the mutating route existing. The repo-wide claim now lives in
+    tests/test_maintenance_dispatch_gating.py, where it is asserted against the
+    real policy's full route table.
+    """
     proposal = _proposal_frame()
     policy_frame = _policy_frame(proposal)
     frame = build_execution_dispatch_frame(

@@ -173,6 +173,20 @@ class Settings(BaseSettings):
     # service's docker-compose.yml). Where skills.runtime.builder_prune.v1
     # measures real filesystem usage.
     builder_prune_mount_path: str = Field("/hostfs/docker", alias="BUILDER_PRUNE_MOUNT_PATH")
+    # 2026-08-12: the prune's own subprocess budget, 10 minutes.
+    #
+    # This verb previously used skills_mesh_ops_timeout_sec, which is 12
+    # SECONDS live -- so a real `docker builder prune` over 142 GB / 15,506
+    # cache entries would have been killed roughly 12 seconds in, partway
+    # through deleting, on every single attempt. Every other skill sharing
+    # that setting (ping, smartctl, nvidia-smi, mesh HTTP probes) genuinely
+    # is a seconds-scale command and must keep the short budget, so this
+    # needs its own key rather than a raise of the shared one.
+    #
+    # Must stay BELOW the verb's own timeout_ms (660s) and the maintenance
+    # route's rpc_timeout_sec (720s), so a real overrun is attributed to the
+    # docker command rather than surfacing as an opaque RPC timeout.
+    builder_prune_timeout_sec: float = Field(600.0, alias="BUILDER_PRUNE_TIMEOUT_SEC")
     docker_sock_path: str = Field("/var/run/docker.sock", alias="DOCKER_SOCK_PATH")
     tailscale_path: str = Field("tailscale", alias="ORION_ACTIONS_TAILSCALE_PATH")
     # Optional absolute path to nvidia-smi (host bind-mount or image-installed). When unset, skill resolves PATH.

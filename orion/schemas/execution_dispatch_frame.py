@@ -34,6 +34,10 @@ class ExecutionDispatchCandidateV1(BaseModel):
         "summarize",
         "observe",
         "noop",
+        # 2026-08-12: the first MUTATING dispatch kind. Every member above is
+        # read-only by construction. Kept a closed Literal so adding another
+        # mutating kind stays a deliberate schema change, not a config typo.
+        "maintain",
     ]
 
     target_id: str

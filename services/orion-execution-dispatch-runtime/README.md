@@ -2,11 +2,16 @@
 
 Layer 9 of the Orion cognition substrate: converts `PolicyDecisionFrameV1` + `ProposalFrameV1` into `ExecutionDispatchFrameV1` envelopes. `field_tick_id` is carried straight off `PolicyDecisionFrameV1.source_field_tick_id` -- 2026-07-22 (SelfStateV1 burn), no separate `SelfStateV1` dependency.
 
-## Safety (v1: build, no send)
+## Safety
 
-- Default mode: `EXECUTION_DISPATCH_MODE=dry_run`
-- No bus publish and no cortex-exec calls in the default worker path
-- Mutating dispatch is disabled in policy config (`allow_mutating_dispatch: false`)
+- Policy default mode: `mode.default_dispatch_mode: dry_run`. A deployment that never sets
+  `EXECUTION_DISPATCH_MODE` builds frames and sends nothing.
+- `.env_example` ships `EXECUTION_DISPATCH_MODE=dispatch_read_only`, which is the value this host
+  actually runs (corrected 2026-08-12 — the template had drifted to `dry_run` while live ran
+  `dispatch_read_only`, so the operator contract was stating something untrue).
+- **Mutating dispatch is ENABLED as of 2026-08-12** (`allow_mutating_dispatch: true`), by explicit
+  operator decision after a live preview of the only route that can use it. It is not a default that
+  drifted open, and it is narrow: see "Mutating dispatch" below.
 
 Separately from dispatch traffic, this service always publishes a bus-native `SystemHealthV1`
 heartbeat to `orion:system:health` every `HEARTBEAT_INTERVAL_SEC` (default 10s), on its own
@@ -27,6 +32,35 @@ over `orion:cortex:exec:request:background` (via `orion.execution_dispatch.corte
 .ExecutionDispatchCortexClient`, bounded by `EXECUTION_DISPATCH_RPC_TIMEOUT_SEC`), persists the
 result to `substrate_dispatch_results`, and promotes the candidate to a real, evidenced
 `dispatched` status.
+
+## Mutating dispatch (2026-08-12)
+
+Everything above concerns **read-only** sends. A *mutating* send — one that changes the world rather
+than describing it — needs a **third** gate on top of the two above:
+
+3. `config/execution_dispatch/execution_dispatch_policy.v1.yaml`: `mode.allow_mutating_dispatch: true`
+
+Exactly one route can use it: `maintain` → `skills.runtime.builder_prune.v1`, the only route with
+`allowed_scope: maintenance_bounded`. `orion/execution_dispatch/builder.py` rejects any other scope
+outright, and `tests/test_maintenance_dispatch_gating.py` asserts that `maintain` stays the only one —
+adding a second mutating route has to be its own reviewed decision, not something that inherits an
+already-open flag.
+
+For a mutating route the envelope's `constraints.read_only` is `false` (derived from the route's own
+scope, not hardcoded), and `context.skill_args.mode` carries the dispatch runtime's own mode through
+to the skill as `execute` or `preview`. The eight `no_*` constraints still all hold.
+
+A fourth gate lives in the skill itself: it prunes only when it really measures `disk >= 75%` **and**
+`>= 40 GB` reclaimable, and declines-with-escalation when it cannot measure either — an unreadable
+cache is never treated as an empty one.
+
+**Kill switch** is unchanged and still one container: set `EXECUTION_DISPATCH_MODE=dry_run` and
+restart. Every candidate, mutating or not, then goes out as a preview.
+
+**Known gap:** `EXECUTION_DISPATCH_RPC_TIMEOUT_SEC` is a single global (120s) and a large prune has
+not been timed. If one exceeds it, the prune still happens but is recorded as an RPC failure. A
+per-route timeout is the fix; `ExecutionDispatchCortexClient.send()` already accepts a per-call
+`timeout_sec`.
 
 **Concurrent sends (2026-07-31, Part 2 of docs/superpowers/specs/2026-07-30-execution-dispatch-
 staleness-discard-design.md)**: up to `limits.max_dispatches_per_tick` (now **5**, was 1) real

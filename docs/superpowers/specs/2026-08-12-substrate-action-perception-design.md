@@ -1,8 +1,46 @@
 # Giving Orion's substrate action something to perceive
 
 Date: 2026-08-12
-Status: **prune action next (no bus service required). B(2) contract merged, deferred.** Cognition-loop-adjacent per `CLAUDE.md` §0A; Juniper gave
-explicit go-ahead, so this proceeds to implementation rather than sitting in proposal mode.
+Status: **the prune action is wired and LIVE-ARMED as of 2026-08-12.** B(2) contract merged, deferred.
+Cognition-loop-adjacent per `CLAUDE.md` §0A; Juniper gave explicit go-ahead, so this proceeded to
+implementation rather than sitting in proposal mode.
+
+> **Revision 2 (2026-08-12, later the same day) — the flag is on.**
+>
+> The skill (`skills.runtime.builder_prune.v1`, PRs #1587/#1589) and the dispatch wiring (PR #1594)
+> both shipped, the latter deliberately with `allow_mutating_dispatch: false` so that arming it stayed
+> a separate, explicit decision. Juniper made that decision and the flag is now `true`, alongside
+> `.env_example`'s `EXECUTION_DISPATCH_MODE` being corrected from a drifted `dry_run` to the real live
+> value `dispatch_read_only`.
+>
+> Orion can now take a real, mutating, world-changing action on its own initiative. Three independent
+> gates remain in front of every one of them, and they are the reason this is a bounded arming rather
+> than an open door:
+>
+> 1. **Scope.** `orion/execution_dispatch/builder.py` admits a mutating route only when
+>    `route.allowed_scope == "maintenance_bounded"`, and `maintain` is the only route in the policy
+>    with that scope. A second mutating route is its own reviewed decision, asserted by
+>    `tests/test_maintenance_dispatch_gating.py`.
+> 2. **Runtime mode.** `EXECUTION_DISPATCH_MODE` must be `dispatch_read_only`, or `dry_run` stays true
+>    and the skill receives `mode=preview`. `policy.mode.default_dispatch_mode` remains `dry_run`, so
+>    a deployment that never sets the env key cannot mutate regardless of the flag. This is also the
+>    single-container kill switch.
+> 3. **The skill's own measured gate.** It prunes only on a real reading of `disk >= 75%` **and**
+>    `>= 40 GB` genuinely reclaimable, and declines-with-escalation when it cannot measure either —
+>    unreadable is never treated as zero.
+>
+> Blast radius when all three open: Docker build cache, which regenerates by definition. The cost of a
+> wrong call is one slow rebuild, which is the property that made this the right first action.
+>
+> **Known gap, not yet closed.** `EXECUTION_DISPATCH_RPC_TIMEOUT_SEC` is 120s globally and the verb's
+> own `timeout_ms` is 120000. A real prune of the current 142.5 GB / 15,506 entries has never been
+> timed, and if it exceeds 120s the RPC times out *after* Docker has already begun deleting — the
+> prune happens but its outcome is recorded as a failure. That would silently reintroduce the exact
+> "acted with no attributable outcome" hole this whole arc exists to close. The global timeout cannot
+> simply be raised: this consumer is single-threaded and a 15-minute ceiling would let one hung inspect
+> stall dispatch for 15 minutes. The fix is a per-route timeout — `cortex_client.send()` already takes
+> a `timeout_sec` override per call, so this is a small patch, not a subsystem. See "Recommended next
+> patch".
 
 Two options are specified here — **B** (the verb acquires) and **C** (the dispatcher pre-fetches) —
 because they are genuinely different capabilities with an order-of-magnitude difference in cost.
@@ -331,9 +369,20 @@ routing table.
   proposed in this arc and correctly rejected.
 - **Not routing at `orion-actions`.** A separate autonomous-action lane with its own dispatch; feeding
   the arena into it would create two competing motors.
-- **Not touching `envelopes.py`'s hardcoded `read_only: True` or the 8 `no_*` constraints.** Both
-  options stay entirely inside `approved_read_only`.
-- **Not changing `orion/execution_dispatch/builder.py:167`'s scope gate or `allow_mutating_dispatch`.**
+- ~~**Not touching `envelopes.py`'s hardcoded `read_only: True` or the 8 `no_*` constraints.**~~
+  ~~Both options stay entirely inside `approved_read_only`.~~
+- ~~**Not changing `orion/execution_dispatch/builder.py:167`'s scope gate or
+  `allow_mutating_dispatch`.**~~
+
+  **Both struck 2026-08-12 by PR #1594 and the arming that followed** — kept visible rather than
+  deleted, because they were real non-goals for the read-only options B/C and reversing them was a
+  deliberate decision, not drift. `read_only` is no longer hardcoded: it is derived as
+  `route.allowed_scope != MAINTENANCE_SCOPE`, so read-only routes are unchanged and only the one
+  mutating route reports itself honestly. The 8 `no_*` constraints all still hold — a build-cache
+  prune touches none of them (no external side effect, no file write, no service restart, no operator
+  notification, no stream replay/purge, no catalog write). The scope gate was not removed but
+  narrowed: it now admits exactly `maintenance_bounded`, and only when `allow_mutating_dispatch` is
+  open.
 
 ## Acceptance checks
 
@@ -354,9 +403,15 @@ Whichever is built:
 
 ## What is next, in one line
 
-**Build the prune action: a `skills.*` verb + local adapter in `orion-cortex-exec`, a route entry, and
-a proposal template gated on `disk_used_pct >= 75% AND stale_cache >= 40GB`.** Nothing else is
-blocking, and it is the first action in this arc with a real per-action outcome.
+~~**Build the prune action: a `skills.*` verb + local adapter in `orion-cortex-exec`, a route entry,
+and a proposal template gated on `disk_used_pct >= 75% AND stale_cache >= 40GB`.**~~ **Done — PRs
+#1587/#1589 (the skill, live-previewed `would_act`) and #1594 (the route, the template, the arming).**
+
+**Now next: a per-route RPC timeout, before the first real prune fires.** `EXECUTION_DISPATCH_RPC_
+TIMEOUT_SEC` is a single global 120s and an untimed 142.5 GB prune may exceed it, which would record a
+real prune as a failed one. `ExecutionDispatchCortexClient.send()` already accepts a per-call
+`timeout_sec`, so the patch is a route-level value threaded through `_send_one` — deliberately not
+folded into the arming PR, which is a config flip and should stay reviewable as one.
 
 Everything below is prior reasoning, retained.
 

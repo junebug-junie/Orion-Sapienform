@@ -11,6 +11,7 @@ from orion.core.bus.bus_service_chassis import ChassisConfig, HeartbeatOnly
 from orion.core.bus.codec import OrionCodec
 
 from .producers.affective_state import affective_state_loop
+from .producers.dev_economics import dev_economics_loop
 from .producers.doc_semantic_drift import doc_semantic_drift_loop
 from .producers.git_delta import git_delta_loop
 from .producers.graph_delta import graph_delta_loop
@@ -157,6 +158,23 @@ async def run_producers(settings, bus: OrionBusAsync, stop: asyncio.Event) -> No
         )
     else:
         logger.info("cocreation_doc_semantic_drift_disabled")
+
+    if settings.COCREATION_SIGNALS_DEV_ECONOMICS_ENABLED:
+        tasks.append(
+            asyncio.create_task(
+                dev_economics_loop(
+                    bus=bus,
+                    channel=settings.CHANNEL_DEV_ECONOMICS_LEDGER,
+                    source=source,
+                    claude_projects_path=settings.COCREATION_SIGNALS_CLAUDE_PROJECTS_PATH,
+                    poll_interval_sec=settings.COCREATION_SIGNALS_DEV_ECONOMICS_POLL_INTERVAL_SEC,
+                    stop=stop,
+                ),
+                name="dev_economics_loop",
+            )
+        )
+    else:
+        logger.info("cocreation_dev_economics_disabled")
 
     if not tasks:
         logger.warning("cocreation_signals_no_producers_enabled")

@@ -30,12 +30,15 @@ class Settings(BaseSettings):
     # image-baked copy.
     SELF_STUDY_ENRICHMENT_REPO_PATH: str = Field(default="/repo")
 
-    # ── Claude subprocess (real Anthropic credentials -- NOT Orion's FCC
-    # gateway; see README.md's Credential isolation section) ────────────
-    # Empty by default -- CLAUDE.md sec 7: never put secrets in .env_example,
-    # this is the only surface in the repo that should hold a real key for
-    # this capability.
-    ANTHROPIC_API_KEY: str = Field(default="")
+    # ── Claude subprocess (authenticates as the host's already-logged-in
+    # `claude` CLI session -- NOT a separate ANTHROPIC_API_KEY billing path.
+    # See README.md's "Credential isolation" section. `CLAUDE_CONFIG_DIR` is
+    # Claude Code's own env var for relocating where it looks for
+    # `.credentials.json` (default `~/.claude`) -- this points it at a
+    # container-local directory that only ever contains a read-only bind
+    # mount of the host's real `.credentials.json`, nothing else from
+    # `~/.claude`.) ──────────────────────────────────────────────────────
+    SELF_STUDY_ENRICHMENT_CLAUDE_CONFIG_DIR: str = Field(default="/root/.claude")
     SELF_STUDY_ENRICHMENT_CLAUDE_BIN: str = Field(default="claude")
     SELF_STUDY_ENRICHMENT_MODEL: str = Field(default="claude-sonnet-5")
     SELF_STUDY_ENRICHMENT_EFFORT: str = Field(default="medium")

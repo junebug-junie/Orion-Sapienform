@@ -88,9 +88,15 @@ def handle_request_payload(settings: Settings, payload: dict) -> None:
             logger.warning("self_study_enrichment_rate_limit_hit skip_key=%s", key)
             return
 
+        # Authenticate `claude -p` as the host's already-logged-in Claude
+        # Code session, never via a separate ANTHROPIC_API_KEY billing path.
+        # `env.pop` is a defensive regression guard, not just belt-and-
+        # suspenders: `dict(os.environ)` copies whatever the *container's*
+        # own process env happens to hold, and this service must never pass
+        # an API key through even if one leaked in via that env by accident.
         env = dict(os.environ)
-        if settings.ANTHROPIC_API_KEY:
-            env["ANTHROPIC_API_KEY"] = settings.ANTHROPIC_API_KEY
+        env.pop("ANTHROPIC_API_KEY", None)
+        env["CLAUDE_CONFIG_DIR"] = settings.SELF_STUDY_ENRICHMENT_CLAUDE_CONFIG_DIR
 
         result = run_claude_once(
             prompt,

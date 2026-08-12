@@ -18,6 +18,10 @@ from orion.core.bus.bus_schemas import (
     RecallResultPayload,
 )
 from orion.core.contracts.memory_cards import MemoryCardV1
+from orion.core.contracts.substrate_read import (
+    SubstrateReadQueryV1,
+    SubstrateReadReplyV1,
+)
 from orion.core.contracts.recall import (
     RecallAdapterDiagnosticsV1,
     RecallDebugV1,
@@ -700,6 +704,13 @@ _REGISTRY: Dict[str, Type[BaseModel]] = {
     "RecallDecisionV1": RecallDecisionV1,
     "RecallReplyV1": RecallReplyV1,
     "RecallQueryV1": RecallQueryV1,
+    # SubstrateReadService (2026-08-12, design doc
+    # 2026-08-12-substrate-action-perception-design.md option B(2)): lets a
+    # verb ask the substrate about the real host it runs on. Registered as a
+    # pair -- an unregistered event shape must never be published
+    # (CLAUDE.md section 6).
+    "SubstrateReadQueryV1": SubstrateReadQueryV1,
+    "SubstrateReadReplyV1": SubstrateReadReplyV1,
     "RecallDebugV1": RecallDebugV1,
     "RecallVectorPolicyV1": RecallVectorPolicyV1,
     "RecallVectorPolicyPathV1": RecallVectorPolicyPathV1,
@@ -1286,6 +1297,18 @@ _REGISTRY: Dict[str, Type[BaseModel]] = {
 
 # Incremental kind lookup for new schemas; runtime validation still uses resolve() / _REGISTRY.
 SCHEMA_REGISTRY: Dict[str, SchemaRegistration] = {
+    # SubstrateReadService (2026-08-12, design doc
+    # 2026-08-12-substrate-action-perception-design.md option B(2)). Registered
+    # in BOTH this dict and `_REGISTRY` above -- they are separate maps and a
+    # schema present in only one is half-registered.
+    "SubstrateReadQueryV1": SchemaRegistration(
+        model=SubstrateReadQueryV1,
+        kind="substrate_read.query.v1",
+    ),
+    "SubstrateReadReplyV1": SchemaRegistration(
+        model=SubstrateReadReplyV1,
+        kind="substrate_read.reply.v1",
+    ),
     "InnerStateFeaturesV1": SchemaRegistration(
         model=InnerStateFeaturesV1,
         kind="self.inner_features.v1",

@@ -4,7 +4,6 @@ import hashlib
 import json
 import time
 from pathlib import Path
-from types import SimpleNamespace
 from typing import Any, Dict, List
 
 import numpy as np
@@ -19,19 +18,11 @@ from .model_manager import ModelManager
 from .models import VisionResult, VisionTask
 from .profiles import PipelineDef, ProfileDef, VisionProfiles
 from .settings import Settings
+from .when_guard import safe_when
 
 settings = Settings()
 
-def _safe_when(expr: str, request: Dict[str, Any]) -> bool:
-    if not expr:
-        return True
-    expr = expr.replace("true", "True").replace("false", "False")
-    ns = SimpleNamespace(**request)
-    try:
-        return bool(eval(expr, {"__builtins__": {}}, {"request": ns}))
-    except Exception as e:
-        logger.warning(f"[PIPE] when eval failed expr={expr} err={e}")
-        return False
+_safe_when = safe_when
 
 
 def _load_image_from_request(request: Dict[str, Any]) -> Image.Image:

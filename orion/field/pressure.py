@@ -123,6 +123,24 @@ CHANNEL_DIMENSION_MAP: dict[str, str] = {
     "repair_pressure": "social_pressure",
     "conversation_load": "social_pressure",
     "egress_confidence_deficit": "introspection_pressure",
+    # 2026-08-12: a NEW dimension, deliberately not folded into
+    # resource_pressure.
+    #
+    # `disk_capacity_pressure` was a live node channel that NOTHING read at the
+    # dimension layer -- no entry here, so `field_pressures()` never surfaced
+    # it. Meanwhile `skills.runtime.builder_prune.v1` (the action that exists
+    # to reclaim disk) was triggered off `resource_pressure`, which the
+    # capability `pressure` edge derives from cpu_pressure/
+    # stream_backlog_pressure. Measured live on this host: real disk 84% full,
+    # `disk_capacity_pressure` 0.7953 -- and `resource_pressure` 0.0521, giving
+    # the prune a priority of 0.0972 against a 0.10 floor. The action was
+    # gated on throughput while needing fullness.
+    #
+    # Mapping it onto `resource_pressure` instead would be the Patch A mistake
+    # again: that merge is max(), so a channel sitting near 0.80 would pin
+    # resource_pressure high permanently for every consumer of it. A separate
+    # dimension is additive and leaves the existing four untouched.
+    "disk_capacity_pressure": "capacity_pressure",
 }
 
 

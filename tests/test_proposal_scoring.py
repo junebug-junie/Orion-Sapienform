@@ -349,6 +349,12 @@ _REAL_MEASURED_MAX = {
     "resource_pressure": 0.9,
     "reliability_pressure": 0.9,
     "reasoning_pressure": 0.045,
+    # 2026-08-12: measured, not assumed -- real max over the widest available
+    # window (73,962 substrate_field_state ticks of node:athena's
+    # disk_capacity_pressure; full range 0.1413-0.8199, mean 0.8044,
+    # stddev 0.018270). The sweep below is what actually validates the
+    # 3.34e-5 floor chosen for this dimension against cold start.
+    "capacity_pressure": 0.8199,
 }
 
 

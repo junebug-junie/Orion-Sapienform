@@ -278,5 +278,28 @@ proposal_templates:
     required_policy_gate: read_only
     base_risk: 0.12
     reversibility: 1.0
+    # 2026-08-12: was unset, so it defaulted to 0.00 while every one of the
+    # twelve sibling templates carries 0.20-0.42. That is an omission from the
+    # template's original patch, not a deliberate ranking -- combined with the
+    # wrong trigger dimension it is the other half of why this action could
+    # never win a slot.
+    #
+    # 0.30 matches `watch_reliability`, the closest analogue (watch for a
+    # condition, act when it is real). Deliberately NOT above the inspect
+    # leaders at 0.38-0.42: this action should compete on the strength of its
+    # own trigger being lit, not outrank everything by fiat.
+    base_priority: 0.30
     dimensions:
-      resource_pressure: 0.50
+      # 2026-08-12: was `resource_pressure: 0.50`, which measured the wrong
+      # thing. Verified live after the arming deploy: real disk 84% full, and
+      # this candidate was being built every tick, correctly evaluated as
+      # `maintain`, and then SUPPRESSED at priority 0.0972 against
+      # min_priority 0.10 -- because resource_pressure read 0.0521. That
+      # dimension derives from cpu/stream-backlog load, so a quiet-but-full
+      # host looks calm to it. `capacity_pressure` is fullness itself
+      # (0.7953 at the same instant). See orion/field/pressure.py.
+      capacity_pressure: 0.60
+      # Kept, weighted low: a full disk on an already-loaded host is a worse
+      # moment to add I/O than a full disk on an idle one, and the prune is
+      # itself I/O-heavy. This is a tiebreak, not the trigger.
+      resource_pressure: 0.15

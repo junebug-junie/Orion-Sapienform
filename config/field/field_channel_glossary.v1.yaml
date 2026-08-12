@@ -88,6 +88,13 @@ channels:
     category: physical_substrate
     meaning: "How full a node's monitored filesystems are (percent used, max across configured mounts). Distinct from disk_pressure, which measures I/O throughput, not capacity."
     evidence_dimension: resource_pressure
+    # 2026-08-12: this channel had NO self_state_dimension, so despite the
+    # meaning above stating the distinction plainly, nothing at the dimension
+    # layer ever read it -- `skills.runtime.builder_prune.v1` was triggered off
+    # resource_pressure (i.e. off disk_pressure, throughput) while needing
+    # exactly the capacity reading described here. Its own dimension now, not
+    # folded into resource_pressure: see orion/field/pressure.py.
+    self_state_dimension: capacity_pressure
 
   - channel: fan_pressure
     level: [node]

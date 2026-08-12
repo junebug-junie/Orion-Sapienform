@@ -32,6 +32,14 @@ class ProposalKindRuleV1(BaseModel):
     allowed_scope: str
     default_decision: str
     max_autonomy_tier: str
+    # 2026-08-12: whether a low confidence_score should bounce this kind to a
+    # human. True (the default) preserves every existing kind's behaviour
+    # exactly. False opts a kind out of the CONFIDENCE branch only -- every
+    # other review trigger (risk, reversibility, prepare_action, an explicit
+    # operator_review gate) still applies. Only set False for a kind that has
+    # its own measured gate downstream; see evaluator.py's comment for the
+    # measured reason `maintain` has it.
+    confidence_gates_review: bool = True
     # 2026-08-12: whether candidates of this kind change the world. Declared
     # per kind in config rather than inferred, because inference is exactly
     # what went wrong: is_read_only_candidate() used to read `proposed_effect`

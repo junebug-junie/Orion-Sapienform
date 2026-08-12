@@ -148,7 +148,32 @@ def evaluate_proposal_candidate(
     elif candidate.reversibility_score < policy.thresholds.require_review_below_reversibility:
         decision = "requires_operator_review"
         reasons.append("reversibility_below_threshold")
-    elif candidate.confidence_score < policy.thresholds.require_review_below_confidence:
+    elif (
+        candidate.confidence_score < policy.thresholds.require_review_below_confidence
+        and not (rule is not None and rule.confidence_gates_review is False)
+    ):
+        # 2026-08-12: per-kind opt-out, and ONLY the confidence branch. Every
+        # gate above it (reject/defer on risk, prepare_action, an explicit
+        # operator_review gate, risk-above-review, reversibility-below) still
+        # applies unconditionally to every kind including this one.
+        #
+        # Why confidence specifically is the wrong instrument for `maintain`:
+        # it measures how sure the field is about the SIGNAL (disk pressure),
+        # and it swings 0.416-0.999 tick to tick on the same host state --
+        # measured live over 25 real prune proposals. So the same action was
+        # auto-approved or bounced to a human depending on which tick it
+        # landed on, which is a coin flip, not a safety judgement.
+        #
+        # What actually makes this action safe is not confidence: it is
+        # reversibility 1.0 (build cache rebuilds), risk 0.12, and the skill's
+        # OWN measured gate -- it re-reads the real host and refuses unless
+        # disk >= 75% AND >= 40 GB is genuinely reclaimable, escalating rather
+        # than guessing when it cannot measure. A low-confidence signal that
+        # reaches that gate is simply re-checked against reality there.
+        #
+        # Set by Juniper's explicit direction, for the one kind that has a
+        # real measured gate of its own downstream. Do NOT copy this onto a
+        # kind that lacks one.
         decision = "requires_operator_review"
         reasons.append("confidence_below_threshold")
     elif candidate.required_policy_gate in ("autonomy_policy", "execution_policy"):

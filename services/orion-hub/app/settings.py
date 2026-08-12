@@ -115,7 +115,7 @@ class Settings(BaseSettings):
         alias="HUB_AGENT_CLAUDE_BIN",
     )
     HUB_AGENT_CLAUDE_WORKSPACE: str = Field(
-        default="/mnt/scripts/Orion-Sapienform",
+        default="/mnt/orion-fcc/repo",
         alias="HUB_AGENT_CLAUDE_WORKSPACE",
     )
     HUB_AGENT_CLAUDE_CONFIG_DIR: str = Field(

@@ -25,40 +25,38 @@ from orion.schemas.field_state import FieldStateV1
 # Extending PRESSURE_DIMENSIONS (and DIMENSION_PRECISION_MIN_VARIANCE,
 # enforced in sync by the assertion below) to cover a newly-scored dimension
 # is required in the same patch that adds it to a template.
+# DO NOT add a dimension here just because a template scores on it.
+#
+# 2026-08-12, measured not assumed: this set feeds orion/field/action_warrant.py,
+# whose statistic is Fisher's combined tail against chi^2(2N). Adding a FIFTH
+# dimension was measured over 400 real ticks with a warmed baseline:
+#
+#     N=4  gate opens on 41.8% of ticks
+#     N=5  gate opens on 36.8% of ticks     (-5.0pp, ~12% relative)
+#
+# That is Orion's entire action rate, every action type, not just the one whose
+# template motivated the new dimension. The mechanism: a CALM dimension
+# contributes u~0.5, adding -2*ln(0.5)=1.386 to X, while the null's degrees of
+# freedom go chi^2(8)->chi^2(10). The df increase outweighs the added X, so any
+# calm sensor systematically SUPPRESSES the warrant. (Note this is the opposite
+# direction from the extreme-value-stacking intuition.)
+#
+# It is also a DELAYED failure: `_is_live()` excludes a dimension until its EWMA
+# baseline warms, so a naive 400-tick check right after deploy shows a 0.0pp
+# shift and the real -5.0pp lands days later, looking like unrelated drift.
+#
+# `capacity_pressure` (added 2026-08-12 for the build-cache prune) is
+# deliberately NOT here for exactly this reason. A template scores on a
+# dimension via `dimension_score()`, which reads `field_pressures` directly and
+# needs no membership in this set -- verified: the prune's priority is 0.6818
+# either way. Membership buys precision-weighted confidence and costs a
+# system-wide gate shift; that trade was not worth it for one template.
+#
 PRESSURE_DIMENSIONS = frozenset({
     "execution_pressure",
     "resource_pressure",
     "reasoning_pressure",
     "reliability_pressure",
-    # 2026-08-12: fullness, as distinct from throughput. See
-    # orion/field/pressure.py's CHANNEL_DIMENSION_MAP entry for why this is
-    # its own dimension rather than more input to resource_pressure.
-    #
-    # Metric quality gate (CLAUDE.md §0A), run on real data before wiring:
-    #  1. Provenance: orion-biometrics/app/grammar_emit.py emits the hint;
-    #     orion-field-digester/app/ingest/state_deltas.py:202 turns it into a
-    #     Perturbation(channel="disk_capacity_pressure", mode="replace").
-    #  2. Independence: capability `pressure` (which is what feeds
-    #     resource_pressure) diffuses from cpu_pressure/stream_backlog_pressure,
-    #     NOT from this channel. Different sensor, different quantity --
-    #     fullness does not track load, which is exactly the observed failure
-    #     (84% full while resource_pressure read 0.0521).
-    #  3. Theory anchor: not "seems related". The action reclaims bytes; this
-    #     is the fraction-of-bytes-used the action directly changes. It is the
-    #     definitional quantity, and bytes_reclaimed is measured against it.
-    #  4. Live sanity, widest window (73,962 real ticks, not a few hundred):
-    #     min 0.1413, max 0.8199, mean 0.8044, stddev 0.018270, 223 distinct
-    #     values. It moves, and it has genuinely RESTED low (0.1413), so it is
-    #     not a structurally-pinned reading. The small stddev is correct
-    #     physics for a slowly-filling disk, not a flat/degenerate channel --
-    #     checked against the bus_synaptic_prediction_error (permanent floor)
-    #     and node:substrate.route (decayed-to-zero) failure modes explicitly.
-    #  5. Existing mechanism: none. The channel had no CHANNEL_DIMENSION_MAP
-    #     entry, so no dimension carried it and nothing consumed it.
-    #  6. Reversibility: cheap. Three entries (this set, the floor below, the
-    #     map) plus the template's `dimensions:` key. Nothing is baked into a
-    #     schema, migration, or training default.
-    "capacity_pressure",
 })
 
 
@@ -185,14 +183,6 @@ DIMENSION_PRECISION_MIN_VARIANCE: dict[str, float] = {
     "resource_pressure": 2e-3,
     "reasoning_pressure": 2e-7,
     "reliability_pressure": 1e-3,
-    # 2026-08-12, derived the same way as the four above (~1/10th of this
-    # dimension's own real measured population variance) rather than borrowed
-    # from a sibling -- per the standing lesson that a borrowed floor can
-    # silently dominate a real z-score, and that constants do not transfer
-    # across domains even when the convention does. Measured over the widest
-    # available window, 73,962 real ticks: stddev 0.018270 -> variance
-    # 3.338e-4 -> floor 3.34e-5.
-    "capacity_pressure": 3.34e-5,
 }
 
 # Code review (2026-07-29) flagged this as unguarded: services/orion-field-

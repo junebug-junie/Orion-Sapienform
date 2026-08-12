@@ -349,12 +349,6 @@ _REAL_MEASURED_MAX = {
     "resource_pressure": 0.9,
     "reliability_pressure": 0.9,
     "reasoning_pressure": 0.045,
-    # 2026-08-12: measured, not assumed -- real max over the widest available
-    # window (73,962 substrate_field_state ticks of node:athena's
-    # disk_capacity_pressure; full range 0.1413-0.8199, mean 0.8044,
-    # stddev 0.018270). The sweep below is what actually validates the
-    # 3.34e-5 floor chosen for this dimension against cold start.
-    "capacity_pressure": 0.8199,
 }
 
 
@@ -398,3 +392,45 @@ def test_cold_start_min_samples_sufficient_across_jump_magnitude_sweep() -> None
                 f"{dim} at jump fraction {frac} did not settle by "
                 f"n={DIMENSION_PRECISION_EWMA_MIN_SAMPLES}: |z|={abs(update.zscore):.3f}"
             )
+
+
+def test_capacity_pressure_stays_out_of_pressure_dimensions() -> None:
+    """Guards a measured, system-wide, DELAYED regression.
+
+    `PRESSURE_DIMENSIONS` feeds orion/field/action_warrant.py, whose statistic
+    is Fisher's combined tail against chi^2(2N). Adding `capacity_pressure` as
+    a fifth dimension was measured over 400 real ticks with a warmed baseline:
+    the gate opened on 36.8% of ticks instead of 41.8% -- a 5.0pp / ~12%
+    relative cut to Orion's ENTIRE action rate, every action type.
+
+    A calm dimension contributes u~0.5 (adding 1.386 to X) while the null's df
+    go chi^2(8)->chi^2(10); the df increase wins, so any calm sensor suppresses
+    the warrant.
+
+    The trap this locks out: `_is_live()` excludes a dimension until its EWMA
+    baseline warms, so measuring right after deploy shows a 0.0pp shift and the
+    real regression lands days later looking like unrelated drift. A future
+    edit that "just adds the dimension the template scores on" -- which this
+    module's own older comment above literally instructs -- would reintroduce
+    it silently.
+
+    A template does NOT need membership here to score on a dimension:
+    `dimension_score()` reads `field_pressures` directly. Verified live: the
+    prune's priority is 0.6818 either way.
+    """
+    assert "capacity_pressure" not in PRESSURE_DIMENSIONS
+    assert "capacity_pressure" not in DIMENSION_PRECISION_MIN_VARIANCE
+
+    from orion.field.pressure import CHANNEL_DIMENSION_MAP
+
+    assert CHANNEL_DIMENSION_MAP["disk_capacity_pressure"] == "capacity_pressure", (
+        "the dimension must still exist and be produced -- it is only kept out "
+        "of the action_warrant statistic, not out of the field"
+    )
+    tmpl = POLICY.proposal_templates["prune_build_cache"]
+    assert "capacity_pressure" in tmpl.dimensions
+    assert set(tmpl.dimensions) & PRESSURE_DIMENSIONS, (
+        "the template must retain at least one PRESSURE_DIMENSIONS-tracked "
+        "dimension, or dimension_confidence() is permanently 0.0 for all of its "
+        "dimensions and the confidence signal is stranded"
+    )

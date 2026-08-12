@@ -1485,3 +1485,194 @@ def test_send_prepared_candidates_uses_return_exceptions_true(monkeypatch) -> No
     # assertion is the real, direct proof, run the same way production
     # actually invokes this code.
     assert slow_completed is True
+
+
+# ---------------------------------------------------------------------------
+# Structured skill results (2026-08-13).
+#
+# Lifecycle tests, not arithmetic tests: they drive the real
+# `_send_prepared_candidates` path so they cover the parse AND the status
+# decision AND the emit AND the replay branch together. The unit tests in
+# tests/test_execution_dispatch_result_extraction.py already cover the parse
+# function alone -- which is exactly the coverage shape that let the live bug
+# ship, since every one of those passed while all four real builder_prune
+# dispatches were being stored as `empty`.
+# ---------------------------------------------------------------------------
+
+# A real builder_prune payload shape, as
+# verb_adapters.py::_skill_result_output actually emits it: the skill's own
+# result dict, json-dumped into final_text, with no `observation` key anywhere.
+_SKILL_PRUNE_FINAL_TEXT = (
+    '{"acted": true, "decision": "pruned", "bytes_reclaimed": 150999998464, '
+    '"node_name": "athena", "run_mode": "execute"}'
+)
+
+
+@pytest.mark.asyncio
+async def test_skill_result_is_stored_as_success_not_empty(monkeypatch) -> None:
+    """The live gate-4 regression: a skill verb result must not be stored empty.
+
+    Before this fix, `status` was `"success" if len(observation) > 0`, and a
+    skill payload has no `observation` key -- so Orion's only mutating action
+    stored `status=empty raw_len=0` on all four of its real dispatches while
+    cortex-exec had logged `raw_len=739` for the same correlation ids.
+    """
+    worker = _make_worker(monkeypatch)
+    worker._store.sum_risk_dispatched_today = MagicMock(return_value=0.0)
+    worker._store.latest_bus_synaptic_prediction_error = MagicMock(return_value=0.1675)
+    worker._store.save_dispatch_result = MagicMock()
+    worker._store.load_dispatch_result_by_dispatch_id = MagicMock(return_value=None)
+    _patch_bus_and_client(
+        monkeypatch, {"dispatch:1": {"result": {"final_text": _SKILL_PRUNE_FINAL_TEXT}}}
+    )
+    frame = _frame_with_candidates(_candidate("dispatch:1"))
+
+    await worker._send_prepared_candidates(frame)
+
+    kwargs = worker._store.save_dispatch_result.call_args.kwargs
+    assert kwargs["status"] == "success"
+    assert kwargs["result_json"]["result_kind"] == "structured"
+
+
+@pytest.mark.asyncio
+async def test_skill_result_outcome_number_reaches_the_stored_row(monkeypatch) -> None:
+    """`bytes_reclaimed` must be queryable from substrate_dispatch_results.
+
+    This is the arc's acceptance check: a real outcome that is not another
+    biometric. Before this fix the number was discarded at the parse boundary.
+    """
+    worker = _make_worker(monkeypatch)
+    worker._store.sum_risk_dispatched_today = MagicMock(return_value=0.0)
+    worker._store.latest_bus_synaptic_prediction_error = MagicMock(return_value=0.1675)
+    worker._store.save_dispatch_result = MagicMock()
+    worker._store.load_dispatch_result_by_dispatch_id = MagicMock(return_value=None)
+    _patch_bus_and_client(
+        monkeypatch, {"dispatch:1": {"result": {"final_text": _SKILL_PRUNE_FINAL_TEXT}}}
+    )
+    frame = _frame_with_candidates(_candidate("dispatch:1"))
+
+    await worker._send_prepared_candidates(frame)
+
+    stored = worker._store.save_dispatch_result.call_args.kwargs["result_json"]
+    assert stored["structured_result"]["bytes_reclaimed"] == 150999998464
+    assert stored["structured_result"]["decision"] == "pruned"
+
+
+@pytest.mark.asyncio
+async def test_skill_result_emits_a_successful_action_outcome(monkeypatch) -> None:
+    """The emitted outcome must say the action succeeded and why.
+
+    A skill that acted and reported it must not publish `success=False` with
+    "returned no observation" -- that is what fed the rest of the system a
+    false failure signal for every maintenance dispatch.
+    """
+    worker = _make_worker(monkeypatch)
+    worker._store.sum_risk_dispatched_today = MagicMock(return_value=0.0)
+    worker._store.latest_bus_synaptic_prediction_error = MagicMock(return_value=0.1675)
+    worker._store.save_dispatch_result = MagicMock()
+    worker._store.load_dispatch_result_by_dispatch_id = MagicMock(return_value=None)
+    fake_bus = _patch_bus_and_client(
+        monkeypatch, {"dispatch:1": {"result": {"final_text": _SKILL_PRUNE_FINAL_TEXT}}}
+    )
+    frame = _frame_with_candidates(_candidate("dispatch:1"))
+
+    await worker._send_prepared_candidates(frame)
+
+    _, env = fake_bus.publish.await_args.args
+    assert env.payload["success"] is True
+    # Hand-derived from STRUCTURED_SUMMARY_FIELDS order (decision, status,
+    # summary, reason): only `decision` is present, so the summary is "pruned".
+    assert env.payload["summary"] == "pruned"
+
+
+@pytest.mark.asyncio
+async def test_skill_decline_is_a_real_result_not_a_failure(monkeypatch) -> None:
+    """A skill that measured the host and declined to act SUCCEEDED at deciding.
+
+    `declined_no_pressure` is a real, correct verdict. Recording it as `empty`
+    made it indistinguishable from a dead executor, which is what hid the
+    entire defect for as long as it did.
+    """
+    worker = _make_worker(monkeypatch)
+    worker._store.sum_risk_dispatched_today = MagicMock(return_value=0.0)
+    worker._store.latest_bus_synaptic_prediction_error = MagicMock(return_value=0.1675)
+    worker._store.save_dispatch_result = MagicMock()
+    worker._store.load_dispatch_result_by_dispatch_id = MagicMock(return_value=None)
+    fake_bus = _patch_bus_and_client(
+        monkeypatch,
+        {
+            "dispatch:1": {
+                "result": {
+                    "final_text": (
+                        '{"acted": false, "decision": "declined_no_pressure", '
+                        '"reason": "used_pct 70.2 < 75.0"}'
+                    )
+                }
+            }
+        },
+    )
+    frame = _frame_with_candidates(_candidate("dispatch:1"))
+
+    await worker._send_prepared_candidates(frame)
+
+    assert worker._store.save_dispatch_result.call_args.kwargs["status"] == "success"
+    _, env = fake_bus.publish.await_args.args
+    assert env.payload["success"] is True
+    assert env.payload["summary"] == "declined_no_pressure: used_pct 70.2 < 75.0"
+
+
+@pytest.mark.asyncio
+async def test_genuinely_empty_result_is_still_empty(monkeypatch) -> None:
+    """The inverse. Without this, a fix that called everything success passes.
+
+    An executor that returns nothing must still be recorded as `empty` --
+    the empty-shell-cognition rule stays in force where it is actually true.
+    """
+    worker = _make_worker(monkeypatch)
+    worker._store.sum_risk_dispatched_today = MagicMock(return_value=0.0)
+    worker._store.latest_bus_synaptic_prediction_error = MagicMock(return_value=0.1675)
+    worker._store.save_dispatch_result = MagicMock()
+    worker._store.load_dispatch_result_by_dispatch_id = MagicMock(return_value=None)
+    fake_bus = _patch_bus_and_client(monkeypatch, {"dispatch:1": {"result": {"final_text": "{}"}}})
+    frame = _frame_with_candidates(_candidate("dispatch:1"))
+
+    await worker._send_prepared_candidates(frame)
+
+    assert worker._store.save_dispatch_result.call_args.kwargs["status"] == "empty"
+    _, env = fake_bus.publish.await_args.args
+    assert env.payload["success"] is False
+
+
+@pytest.mark.asyncio
+async def test_replayed_structured_result_is_not_re_emitted_as_a_failure(monkeypatch) -> None:
+    """The replay branch must agree with the live branch.
+
+    It re-derived success from `bool(observation)`, so a stored structured
+    result with no self-summary would have replayed as a failure forever even
+    after the live path started recording it correctly -- the same
+    two-paths-one-patched divergence this arc has already shipped twice.
+    """
+    worker = _make_worker(monkeypatch)
+    worker._store.sum_risk_dispatched_today = MagicMock(return_value=0.0)
+    worker._store.latest_bus_synaptic_prediction_error = MagicMock(return_value=0.1675)
+    worker._store.save_dispatch_result = MagicMock()
+    worker._store.load_dispatch_result_by_dispatch_id = MagicMock(
+        return_value={
+            "result_id": "result:dispatch:1",
+            "status": "success",
+            "raw_len": 0,
+            "result_json": {
+                "observation": "",
+                "result_kind": "structured",
+                "structured_result": {"bytes_reclaimed": 12345},
+            },
+        }
+    )
+    fake_bus = _patch_bus_and_client(monkeypatch, {})
+    frame = _frame_with_candidates(_candidate("dispatch:1"))
+
+    await worker._send_prepared_candidates(frame)
+
+    _, env = fake_bus.publish.await_args.args
+    assert env.payload["success"] is True
+    assert "structured result" in env.payload["summary"]

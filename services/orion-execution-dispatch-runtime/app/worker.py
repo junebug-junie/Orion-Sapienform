@@ -21,6 +21,8 @@ from orion.execution_dispatch.builder import (
 from orion.execution_dispatch.cortex_client import ExecutionDispatchCortexClient
 from orion.execution_dispatch.policy import load_execution_dispatch_policy
 from orion.execution_dispatch.result_extraction import (
+    RESULT_KIND_EMPTY,
+    RESULT_KIND_STRUCTURED,
     extract_final_text,
     parse_structured_observation,
 )
@@ -808,15 +810,25 @@ class ExecutionDispatchRuntimeWorker:
                     }
                 )
             existing_observation = existing["result_json"].get("observation") or ""
+            # Same rule as the fresh-result path above: success is the stored
+            # `status`, not the presence of observation prose. Re-deriving it
+            # from `bool(observation)` here would have replayed every
+            # structured skill result as a failure even after the live path
+            # started recording it correctly -- the two-paths-one-patched
+            # divergence this arc has already shipped twice.
+            existing_kind = existing["result_json"].get("result_kind")
             await self._emit_action_outcome(
                 bus,
                 candidate=candidate,
                 summary=(
                     existing_observation
-                    if existing_observation
-                    else f"{candidate.dispatch_kind} on {candidate.target_id} returned no observation"
+                    or (
+                        f"{candidate.dispatch_kind} on {candidate.target_id} returned a structured result"
+                        if existing_kind == RESULT_KIND_STRUCTURED
+                        else f"{candidate.dispatch_kind} on {candidate.target_id} returned no observation"
+                    )
                 ),
-                success=bool(existing_observation),
+                success=existing["status"] == "success",
                 observed_at=now,
             )
             return candidate.model_copy(
@@ -878,7 +890,22 @@ class ExecutionDispatchRuntimeWorker:
         final_text = extract_final_text(payload)
         observation_data = parse_structured_observation(final_text)
         raw_len = len(observation_data["observation"])
-        status = "success" if raw_len > 0 else "empty"
+        # Success is decided by `result_kind`, NOT by `len(observation)`.
+        #
+        # A `skills.runtime.*` verb returns its own structured result dict with
+        # no `observation` key at all, so the old length test recorded every
+        # one of them as `empty` -- the same state a dead executor produces.
+        # Live, that meant all four builder_prune dispatches (Orion's only
+        # mutating action) were stored as empty while cortex-exec had logged
+        # `raw_len=739` for the very same correlation ids. A skill that
+        # honestly declined to act produced a REAL result and must be
+        # recorded as one.
+        #
+        # `raw_len` deliberately still measures the observation string, so the
+        # existing column keeps its existing meaning for existing queries; the
+        # structured payload is carried alongside it instead of through it.
+        result_kind = observation_data.get("result_kind", RESULT_KIND_EMPTY)
+        status = "empty" if result_kind == RESULT_KIND_EMPTY else "success"
         self._store.save_dispatch_result(
             result_id=result_id,
             dispatch_id=candidate.dispatch_id,
@@ -889,9 +916,10 @@ class ExecutionDispatchRuntimeWorker:
         )
         self._recent_dispatch_statuses.append(status)
         logger.info(
-            "execution_dispatch_result dispatch_id=%s status=%s raw_len=%d",
+            "execution_dispatch_result dispatch_id=%s status=%s kind=%s raw_len=%d",
             candidate.dispatch_id,
             status,
+            result_kind,
             raw_len,
         )
         await self._emit_action_outcome(
@@ -899,10 +927,16 @@ class ExecutionDispatchRuntimeWorker:
             candidate=candidate,
             summary=(
                 observation_data["observation"]
-                if raw_len > 0
-                else f"{candidate.dispatch_kind} on {candidate.target_id} returned no observation"
+                or (
+                    # A structured result with no self-summary is still a real
+                    # result; say so factually rather than claiming it returned
+                    # nothing, which is what the old wording did.
+                    f"{candidate.dispatch_kind} on {candidate.target_id} returned a structured result"
+                    if result_kind == RESULT_KIND_STRUCTURED
+                    else f"{candidate.dispatch_kind} on {candidate.target_id} returned no observation"
+                )
             ),
-            success=raw_len > 0,
+            success=status == "success",
             observed_at=now,
         )
         return candidate.model_copy(

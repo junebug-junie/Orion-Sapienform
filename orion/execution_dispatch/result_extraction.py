@@ -3,6 +3,25 @@ from __future__ import annotations
 import json
 from typing import Any
 
+# Ordered, explicit allowlist of fields a structured (non-observation) verb
+# result may be summarised from. Deliberately short and generic: every entry is
+# a field a verb author writes to say what it decided, and the observation is
+# built by JOINING the ones actually present -- never by inventing prose for a
+# payload that carries none. A payload with none of these keeps an empty
+# `observation` and is still reported as a real result via `result_kind`, which
+# is the point of separating the two.
+STRUCTURED_SUMMARY_FIELDS = ("decision", "status", "summary", "reason")
+
+# Cap on the synthesised observation so a verbose skill payload cannot blow up
+# the stored row. Matches nothing else in particular -- it exists only to bound
+# a string that is a convenience rendering, not the record. The record is
+# `structured_result`, stored in full.
+MAX_SYNTHESISED_OBSERVATION_CHARS = 1000
+
+RESULT_KIND_OBSERVATION = "observation"
+RESULT_KIND_STRUCTURED = "structured"
+RESULT_KIND_EMPTY = "empty"
+
 
 def extract_final_text(result_payload: dict[str, Any]) -> str:
     """Pull the plan's final_text out of a decoded CortexExecResultPayload.
@@ -35,34 +54,130 @@ def extract_final_text(result_payload: dict[str, Any]) -> str:
     return ""
 
 
-def parse_structured_observation(final_text: str) -> dict[str, Any]:
-    """Parse a substrate.* verb's structured JSON output.
+def _empty_result() -> dict[str, Any]:
+    return {
+        "observation": "",
+        "salient_facts": [],
+        "confidence": 0.0,
+        "result_kind": RESULT_KIND_EMPTY,
+        "structured_result": None,
+    }
 
-    Expected shape: {"observation": str, "salient_facts": list[str], "confidence": float}.
-    Never raises -- an unparseable or non-conforming payload degrades to an
-    empty observation, which the caller treats as status="empty" (never
-    fabricated as success). This is the empty-shell-cognition rule applied
-    at the dispatch-result boundary.
+
+def _synthesise_observation(data: dict[str, Any]) -> str:
+    """A truthful one-line rendering of a structured verb result.
+
+    Built only from `STRUCTURED_SUMMARY_FIELDS` that are actually present and
+    are actually strings. Returns "" when the payload carries none of them --
+    an empty string here means "this verb did not summarise itself", NOT "this
+    verb returned nothing", and the two are kept distinguishable by
+    `result_kind`.
+    """
+    parts: list[str] = []
+    for field in STRUCTURED_SUMMARY_FIELDS:
+        value = data.get(field)
+        if isinstance(value, str) and value.strip():
+            parts.append(value.strip())
+    if not parts:
+        return ""
+    return ": ".join(parts)[:MAX_SYNTHESISED_OBSERVATION_CHARS]
+
+
+def parse_structured_observation(final_text: str) -> dict[str, Any]:
+    """Parse a dispatched verb's structured JSON output.
+
+    Two producer families reach this function, and until 2026-08-13 only one of
+    them was readable:
+
+    1. **Observation verbs** (`substrate.inspect`, `substrate.summarize`,
+       `substrate.observe`) emit `{"observation": str, "salient_facts": list,
+       "confidence": float}`. Unchanged.
+
+    2. **Skill verbs** (`skills.runtime.*`) emit their own result dict via
+       `services/orion-cortex-exec/app/verb_adapters.py::_skill_result_output`,
+       which sets `final_text = json.dumps(result)`. That dict has no
+       `observation` key at all.
+
+    Family 2 used to fall into the `observation = ""` branch, which the caller
+    read as `raw_len == 0` and therefore `status="empty"`. Confirmed live: all
+    four `skills.runtime.builder_prune.v1` dispatches on 2026-08-12 stored
+    `status=empty, raw_len=0, observation=""` while the cortex-exec log for the
+    same correlation ids recorded `raw_len=739 final_len=739` -- the skill ran,
+    measured the disk, made a real decision, and the entire result was
+    discarded at this boundary. Orion's only mutating action was structurally
+    incapable of reporting an outcome.
+
+    Worse than losing the bytes: the verb's own carefully separated verdicts
+    (`declined_no_pressure`, `declined_nothing_to_reclaim`, `would_act`,
+    `pruned` with a real `bytes_reclaimed`) all collapsed into the single
+    indistinguishable state `empty` -- the same state a dead executor produces.
+
+    Returns, in addition to the three original keys:
+
+      `result_kind`        one of `observation` / `structured` / `empty`.
+                           This, not `len(observation)`, is what the caller
+                           should use to decide whether a real result came
+                           back. A skill that honestly declined to act
+                           returned a REAL result and must not be recorded as
+                           empty.
+      `structured_result`  the verb's own payload, verbatim, when it is not an
+                           observation. This is where a real outcome such as
+                           `bytes_reclaimed` survives to the stored row and
+                           becomes queryable.
+
+    Never raises. An unparseable payload, a non-object payload, or a
+    JSON object with no keys still degrades to `empty` -- the empty-shell-
+    cognition rule stays in force for the cases where it is actually true.
+
+    KNOWN UNCHANGED, deliberately out of scope: a verb returning non-JSON plain
+    text still degrades to `empty`. That family does not occur in live data
+    (24h window, 2026-08-12: 12,782 `success` results, all valid observation
+    JSON; the 30 `failed` rows are send failures that never reach this
+    function), so changing it here would be an unmeasured second mechanism in
+    a patch that already carries one.
     """
     if not final_text.strip():
-        return {"observation": "", "salient_facts": [], "confidence": 0.0}
+        return _empty_result()
     try:
         data = json.loads(final_text)
     except (json.JSONDecodeError, ValueError):
-        return {"observation": "", "salient_facts": [], "confidence": 0.0}
-    if not isinstance(data, dict):
-        return {"observation": "", "salient_facts": [], "confidence": 0.0}
-    observation = data.get("observation")
-    if not isinstance(observation, str):
-        observation = ""
-    salient_facts = data.get("salient_facts")
-    if not isinstance(salient_facts, list):
-        salient_facts = []
-    confidence = data.get("confidence")
-    if not isinstance(confidence, (int, float)):
-        confidence = 0.0
+        return _empty_result()
+    if not isinstance(data, dict) or not data:
+        return _empty_result()
+
+    if "observation" in data:
+        observation = data.get("observation")
+        if not isinstance(observation, str):
+            observation = ""
+        salient_facts = data.get("salient_facts")
+        if not isinstance(salient_facts, list):
+            salient_facts = []
+        confidence = data.get("confidence")
+        if not isinstance(confidence, (int, float)) or isinstance(confidence, bool):
+            confidence = 0.0
+        stripped = observation.strip()
+        return {
+            "observation": stripped,
+            "salient_facts": [str(f) for f in salient_facts],
+            "confidence": float(confidence),
+            # An observation verb that returned an `observation` key holding an
+            # empty string genuinely returned nothing -- that is the original
+            # empty-shell case and it stays `empty`.
+            "result_kind": RESULT_KIND_OBSERVATION if stripped else RESULT_KIND_EMPTY,
+            "structured_result": None,
+        }
+
+    # Family 2: a real structured result from a skill verb.
+    #
+    # `confidence` stays 0.0 rather than being invented. A skill verb does not
+    # report an epistemic confidence, and fabricating a mid-range number here
+    # would be exactly the "schema-valid payload with meaningless content"
+    # failure this repo bans. Consumers that care can read `result_kind` to see
+    # that 0.0 means "not applicable", not "measured as zero".
     return {
-        "observation": observation.strip(),
-        "salient_facts": [str(f) for f in salient_facts],
-        "confidence": float(confidence),
+        "observation": _synthesise_observation(data),
+        "salient_facts": [],
+        "confidence": 0.0,
+        "result_kind": RESULT_KIND_STRUCTURED,
+        "structured_result": data,
     }

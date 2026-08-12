@@ -307,6 +307,34 @@ channels:
     stability: "experimental"
     since: "2026-01-08"
 
+  # SubstrateReadService (2026-08-12): a verb asking the substrate about the
+  # real host it runs on. Design doc
+  # docs/superpowers/specs/2026-08-12-substrate-action-perception-design.md,
+  # option B(2). Modelled on RecallService above -- same request/result pair,
+  # same single_consumer discipline.
+  #
+  # Consumer is orion-biometrics rather than a new service: it already owns
+  # host hardware state, already reads disk (disk_pressure/
+  # disk_capacity_pressure are its channels), and already runs the bus
+  # chassis. Adding a container to a host that is 80% full to answer questions
+  # about how full the host is would be its own joke.
+  - name: "orion:exec:request:SubstrateReadService"
+    kind: "request"
+    schema_id: "SubstrateReadQueryV1"
+    producer_services: ["orion-cortex-exec"]
+    consumer_services: ["orion-biometrics"]
+    single_consumer: true
+    stability: "experimental"
+    since: "2026-08-12"
+
+  - name: "orion:exec:result:SubstrateReadService:*"
+    kind: "result"
+    schema_id: "SubstrateReadReplyV1"
+    producer_services: ["orion-biometrics"]
+    consumer_services: ["orion-cortex-exec"]
+    stability: "experimental"
+    since: "2026-08-12"
+
   - name: "orion:exec:request:ContextExecService"
     kind: "request"
     schema_id: "ContextExecRequestV1"

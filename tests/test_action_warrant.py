@@ -263,3 +263,38 @@ def test_bursty_dimension_with_collapsed_variance_stays_live():
     w = action_warrant(f)
     assert SCORED[0] in w.contributing
     assert "pinned" not in w.excluded.values()
+
+
+def test_module_imports_standalone_without_a_circular_import():
+    """Regression guard for the cycle PR #1571 introduced and shipped to main.
+
+    `orion/field/action_warrant.py` imported `orion.proposals.scoring` at module
+    level. That triggers `orion/proposals/__init__.py`, which imports
+    `orion.proposals.builder`, which imports this module back -- partially
+    initialized, ImportError.
+
+    It never broke production: `orion-proposal-runtime` imports `orion.proposals`
+    first, so it is already in `sys.modules` before the cycle closes. It broke
+    exactly the callers most likely to be checking this signal -- its own eval
+    and its own tests -- which is the worse failure mode, because it is silent
+    everywhere anyone would notice and loud only where someone is verifying.
+
+    Must run in a FRESH interpreter: once pytest has imported the other test
+    modules, `orion.proposals` is already loaded and the cycle cannot reproduce
+    in-process. An in-process `import` here would pass against the broken code.
+    """
+    import subprocess
+    import sys
+    from pathlib import Path
+
+    repo = Path(__file__).resolve().parents[1]
+    proc = subprocess.run(
+        [sys.executable, "-c", "from orion.field.action_warrant import action_warrant"],
+        cwd=repo,
+        capture_output=True,
+        text=True,
+        env={"PYTHONPATH": str(repo), "PATH": "/usr/bin:/bin"},
+    )
+    assert proc.returncode == 0, (
+        "importing orion.field.action_warrant standalone failed:\n" + proc.stderr
+    )

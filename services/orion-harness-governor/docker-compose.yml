@@ -32,6 +32,20 @@ services:
       - harness-claude-config:/root/.claude
       # GitHub CLI credentials — read-only, for GITHUB_PAT injection into FCC subprocess.
       - ${HOME}/.config/gh:/root/.config/gh:ro
+      # Orion's disposable FCC sandbox checkout (see orion/fcc/sandbox_sync.py and
+      # services/orion-hub/docker-compose.yml's identical mount). Same host directory
+      # as orion-hub's sandbox mount -- one clone, refreshed once per browser session
+      # by orion-hub's WS connect handler, read/written here by this container's
+      # per-turn `claude -p` spawns (fcc_motor.py). Not a worktree: standalone git
+      # clone, no shared .git object store with the primary checkout at
+      # /mnt/scripts/Orion-Sapienform. The only path back to the real repo is git
+      # push to a non-main branch, gated by GitHub branch protection.
+      - ${HARNESS_ORION_FCC_SANDBOX_HOST:-/mnt/orion-fcc}:/mnt/orion-fcc
+      # `git push` to the SSH remote (git@github.com:...) needs the operator's
+      # existing host SSH key/known_hosts -- read-only, same identity this host's
+      # own git operations already use, nothing stored in this repo.
+      - ${HOME}/.ssh:/root/.ssh:ro
+      - ${HOME}/.gitconfig:/root/.gitconfig:ro
       - /var/run/docker.sock:/var/run/docker.sock
     environment:
       - SERVICE_NAME=${SERVICE_NAME:-orion-harness-governor}
@@ -63,7 +77,7 @@ services:
       - HARNESS_FCC_ENV_PATH=/root/.fcc/.env
       - HARNESS_FCC_SERVER_URL=${HARNESS_FCC_SERVER_URL:-http://host.docker.internal:8082}
       - HARNESS_FCC_AUTH_TOKEN=${HARNESS_FCC_AUTH_TOKEN:-}
-      - HARNESS_FCC_WORKSPACE=${HARNESS_FCC_WORKSPACE:-/mnt/scripts/Orion-Sapienform}
+      - HARNESS_FCC_WORKSPACE=${HARNESS_FCC_WORKSPACE:-/mnt/orion-fcc/repo}
       - HARNESS_FCC_CLAUDE_BIN=${HARNESS_FCC_CLAUDE_BIN:-claude}
       - HARNESS_FCC_MCP_ENABLED=${HARNESS_FCC_MCP_ENABLED:-false}
       - HARNESS_FCC_SKIP_PERMISSIONS=${HARNESS_FCC_SKIP_PERMISSIONS:-true}

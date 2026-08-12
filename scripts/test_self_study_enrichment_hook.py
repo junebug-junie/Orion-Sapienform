@@ -92,6 +92,31 @@ def test_rate_limit_disabled_when_zero(tmp_path, monkeypatch):
     assert hook._rate_limit_ok(tmp_path) is False
 
 
+def test_read_bus_url_from_env_file_missing_file_returns_empty(tmp_path):
+    assert hook._read_bus_url_from_env_file(tmp_path) == ""
+
+
+def test_read_bus_url_from_env_file_parses_real_shape(tmp_path):
+    (tmp_path / ".env").write_text(
+        "# comment\n"
+        "\n"
+        "SOME_OTHER_KEY=ignored\n"
+        "ORION_BUS_URL=redis://100.92.216.81:6379/0\n"
+        "LATER_KEY=also_ignored\n"
+    )
+    assert hook._read_bus_url_from_env_file(tmp_path) == "redis://100.92.216.81:6379/0"
+
+
+def test_read_bus_url_from_env_file_strips_quotes(tmp_path):
+    (tmp_path / ".env").write_text('ORION_BUS_URL="redis://example:6379/0"\n')
+    assert hook._read_bus_url_from_env_file(tmp_path) == "redis://example:6379/0"
+
+
+def test_read_bus_url_from_env_file_missing_key_returns_empty(tmp_path):
+    (tmp_path / ".env").write_text("SOME_OTHER_KEY=value\n")
+    assert hook._read_bus_url_from_env_file(tmp_path) == ""
+
+
 def test_main_subprocess_invocation_imports_orion_without_pythonpath(tmp_path):
     """Regression test for a real bug found live 2026-08-12: main()'s local
     `from orion.structural_mass.git_delta import git_churn_delta` import

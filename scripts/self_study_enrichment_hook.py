@@ -142,6 +142,40 @@ def _rate_limit_ok(repo_root: Path) -> bool:
     return True
 
 
+def _read_bus_url_from_env_file(repo_root: Path) -> str:
+    """Fallback ORION_BUS_URL lookup for when this hook runs from a shell
+    context that never exported it -- confirmed live 2026-08-12: a normal
+    git-commit shell (interactive or a coding agent's Bash tool) has NO
+    ORION_BUS_URL in its process environment on this host, because the
+    canonical value lives only in `.env` at repo root, which is a
+    docker-compose `--env-file` input, not something shells source. Without
+    this fallback the hook always hit "ORION_BUS_URL unset, skipping
+    publish" -- reached correctly, not a crash, but a silent no-op on every
+    real commit regardless of whether the qualifying-path/rate-limit/import
+    logic upstream was working (it was, once fixed).
+
+    Deterministic KEY=VALUE parse of `.env` -- no new dependency (CLAUDE.md
+    sec 10: vanilla libraries first for a trivial parse like this). Returns
+    "" (not raising) on a missing file, unreadable file, or missing key, so
+    callers keep their existing "unset -> skip" behavior unchanged when
+    `.env` genuinely has no value either."""
+    env_path = repo_root / ".env"
+    if not env_path.exists():
+        return ""
+    try:
+        text = env_path.read_text(encoding="utf-8")
+    except OSError:
+        return ""
+    for line in text.splitlines():
+        line = line.strip()
+        if not line or line.startswith("#") or "=" not in line:
+            continue
+        key, _, value = line.partition("=")
+        if key.strip() == "ORION_BUS_URL":
+            return value.strip().strip('"').strip("'")
+    return ""
+
+
 def publish_enrichment_request(payload: dict, *, bus_url: str, channel: str) -> None:
     import redis  # local import: only needed on the publish path
 
@@ -226,7 +260,7 @@ def main() -> int:
         "requested_at": datetime.now(timezone.utc).isoformat(),
     }
 
-    bus_url = os.environ.get("ORION_BUS_URL", "")
+    bus_url = os.environ.get("ORION_BUS_URL", "") or _read_bus_url_from_env_file(repo_root)
     channel = os.environ.get(
         "CHANNEL_SELF_STUDY_ENRICHMENT_REQUESTED", "orion:self_study:enrichment:requested"
     )

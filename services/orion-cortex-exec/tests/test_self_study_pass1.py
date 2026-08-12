@@ -3,6 +3,7 @@ import importlib.util
 import json
 import sys
 import types
+from collections import OrderedDict
 from pathlib import Path
 from uuid import uuid4
 
@@ -215,8 +216,21 @@ def test_graphify_derived_concepts_skip_already_covered_items():
     assert concepts == []
 
 
-def test_structural_delta_concepts_cold_start_produces_nothing(monkeypatch):
+def _reset_structural_delta_state(monkeypatch):
+    # snapshot_id is stable across build_self_snapshot() calls with the same
+    # observed_at (confirmed by test_repeated_snapshot_keeps_stable_
+    # snapshot_and_item_ids above), so every test in this file that uses the
+    # standard fixture timestamp shares one cache key. Tests that care about
+    # cold-start/idempotency semantics specifically must reset both the
+    # "last observed" global AND the per-snapshot-id result cache, or an
+    # earlier test's induce_self_concepts() call leaves a stale cached
+    # result behind for later tests to (wrongly) hit.
     monkeypatch.setattr(self_study, "_LAST_GRAPH_SNAPSHOT_STATS_FOR_STRUCTURAL_DELTA", None)
+    monkeypatch.setattr(self_study, "_STRUCTURAL_DELTA_RESULT_CACHE", OrderedDict())
+
+
+def test_structural_delta_concepts_cold_start_produces_nothing(monkeypatch):
+    _reset_structural_delta_state(monkeypatch)
     snapshot = self_study.build_self_snapshot(observed_at="2026-03-21T00:00:00+00:00")
 
     first = self_study._structural_delta_concepts(snapshot)
@@ -228,15 +242,40 @@ def test_structural_delta_concepts_cold_start_produces_nothing(monkeypatch):
 
 
 def test_structural_delta_concepts_unchanged_snapshot_stays_empty(monkeypatch):
-    monkeypatch.setattr(self_study, "_LAST_GRAPH_SNAPSHOT_STATS_FOR_STRUCTURAL_DELTA", None)
+    _reset_structural_delta_state(monkeypatch)
     snapshot = self_study.build_self_snapshot(observed_at="2026-03-21T00:00:00+00:00")
 
     self_study._structural_delta_concepts(snapshot)  # cold start, primes state
+    # Same snapshot_id -> memoized cache hit, NOT a fresh disk re-observation
+    # (review fix): confirms repeat calls against one snapshot are pure.
     second = self_study._structural_delta_concepts(snapshot)
 
-    # Nothing changed on disk between the two calls in this test -- no
-    # fabricated delta, matching CodebaseDeltaV1's "no fabricated zero" rule.
     assert second == []
+
+
+def test_structural_delta_concepts_repeat_call_is_memoized_not_reobserved(monkeypatch):
+    # Direct regression test for the review-caught crash: without
+    # memoization, a second call against the same snapshot would treat its
+    # own first call's "last seen" write as no-op and silently return a
+    # different (empty) result than the first call, breaking Phase 2A's
+    # idempotency invariant whenever a real delta exists on the first call.
+    _reset_structural_delta_state(monkeypatch)
+    snapshot = self_study.build_self_snapshot(observed_at="2026-03-21T00:00:00+00:00")
+    sentinel = [
+        self_study._concept(
+            snapshot=snapshot,
+            concept_kind="structural_mass",
+            label="repo-wide structural mass delta",
+            description="sentinel delta for memoization test",
+            evidence_items=[next(item for item in snapshot.modules if item.name == "orion.structural_mass")],
+            inferred_from=["structural_mass_delta"],
+        )
+    ]
+    self_study._STRUCTURAL_DELTA_RESULT_CACHE[snapshot.snapshot_id] = sentinel
+
+    result = self_study._structural_delta_concepts(snapshot)
+
+    assert result is sentinel
 
 
 def test_semantic_enrichment_concepts_missing_cache_dir_returns_empty(monkeypatch, tmp_path):
@@ -288,10 +327,41 @@ def test_semantic_enrichment_concepts_skips_malformed_entries(monkeypatch, tmp_p
     assert concepts == []
 
 
+def test_reflect_self_concepts_does_not_crash_on_a_real_structural_delta(monkeypatch):
+    # End-to-end regression test for the exact review-caught crash: prime a
+    # fake-but-plausible "prior" GraphSnapshotStats (different from the real
+    # on-disk graph.json) so the REAL _structural_delta_concepts() code path
+    # computes a genuine non-trivial delta against the real current stats --
+    # not a mocked function. Before the memoization fix, reflect_self_
+    # concepts()'s internal validate_phase2a_induction() re-induction call
+    # would silently drop that same concept on its second pass and raise
+    # concept_idempotency_mismatch.
+    _reset_structural_delta_state(monkeypatch)
+    fake_prior = self_study.GraphSnapshotStats(
+        node_count=1,
+        edge_count=1,
+        community_count=1,
+        god_nodes=(),
+        commit_sha="0000000000000000000000000000000000000000",
+        backfilled=True,
+    )
+    monkeypatch.setattr(self_study, "_LAST_GRAPH_SNAPSHOT_STATS_FOR_STRUCTURAL_DELTA", fake_prior)
+    snapshot = self_study.build_self_snapshot(observed_at="2026-03-21T00:00:00+00:00")
+
+    concepts = self_study.induce_self_concepts(snapshot)
+    assert any(c.concept_kind == "structural_mass" for c in concepts), (
+        "fixture prior stats should differ enough from the real on-disk graph to produce a real delta"
+    )
+
+    # This must not raise concept_idempotency_mismatch.
+    findings = self_study.reflect_self_concepts(snapshot, concepts)
+    assert findings
+
+
 def test_induce_self_concepts_still_idempotent_with_layer2_sources_wired(monkeypatch):
     # The core Phase 2A invariant (same snapshot in -> same concept ids out)
     # must survive the three additive Layer 2 sources above.
-    monkeypatch.setattr(self_study, "_LAST_GRAPH_SNAPSHOT_STATS_FOR_STRUCTURAL_DELTA", None)
+    _reset_structural_delta_state(monkeypatch)
     snapshot = self_study.build_self_snapshot(observed_at="2026-03-21T00:00:00+00:00")
 
     first = self_study.induce_self_concepts(snapshot)

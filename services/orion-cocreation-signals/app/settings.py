@@ -60,6 +60,7 @@ class Settings(BaseSettings):
     CHANNEL_JUNIPER_AFFECTIVE_STATE: str = Field(
         default="orion:substrate:juniper_affective_state"
     )
+    CHANNEL_DEV_ECONOMICS_LEDGER: str = Field(default="orion:substrate:dev_economics_ledger")
 
     # ── Producer enable flags (each independently toggleable -- a GitHub
     # API/rate-limit problem for pr_lifecycle must never block git_delta or
@@ -74,6 +75,9 @@ class Settings(BaseSettings):
     # deliberately once the live stream itself has had a sanity pass, not
     # just the offline replay.
     COCREATION_SIGNALS_AFFECTIVE_STATE_ENABLED: bool = Field(default=False)
+    # Default OFF, same reasoning as affective_state above -- pure shadow
+    # write, flip on deliberately once the live stream has had a sanity pass.
+    COCREATION_SIGNALS_DEV_ECONOMICS_ENABLED: bool = Field(default=False)
 
     # ── Producer intervals, one per real cadence (see spec's "Producer
     # scheduling" section) ──────────────────────────────────────────────
@@ -85,6 +89,9 @@ class Settings(BaseSettings):
     # tree every tick (see affective_state.py's module docstring) is real
     # work worth spacing out.
     COCREATION_SIGNALS_AFFECTIVE_STATE_POLL_INTERVAL_SEC: float = Field(default=900.0)
+    # Same cadence and reasoning as affective_state above -- both scan the
+    # same real transcript tree, just extracting different signals from it.
+    COCREATION_SIGNALS_DEV_ECONOMICS_POLL_INTERVAL_SEC: float = Field(default=900.0)
 
     # Real, acknowledged gap (code review 2026-07-30): unlike git_delta/
     # graph_delta (diff-based, self-healing across a restart -- a missed
@@ -162,6 +169,7 @@ class Settings(BaseSettings):
         "COCREATION_SIGNALS_AFFECTIVE_STATE_COLD_START_LOOKBACK_SEC",
         "COCREATION_SIGNALS_DOC_SEMANTIC_DRIFT_POLL_INTERVAL_SEC",
         "COCREATION_SIGNALS_DOC_SEMANTIC_DRIFT_EMBED_TIMEOUT_SEC",
+        "COCREATION_SIGNALS_DEV_ECONOMICS_POLL_INTERVAL_SEC",
     )
     @classmethod
     def _ensure_positive(cls, v: float) -> float:

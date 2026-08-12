@@ -17,6 +17,21 @@ class ProposalThresholdsV1(BaseModel):
     suppress_below: float = 0.05
     policy_required_above_risk: float = 0.20
 
+    # 2026-08-12: the tick-level gate, see orion/field/action_warrant.py.
+    #
+    # 0.5 is NOT a tuned value. It is the definitional midpoint of the
+    # statistic: `action_warrant` is a combined tail probability, so 0.5 means
+    # "exactly a median normal day for this machine" by construction. The
+    # threshold reads as "act when the state is busier than a median day",
+    # which is a decision about tolerance rather than a guess about scale.
+    #
+    # That distinction is the whole point. `min_priority: 0.10` was chosen
+    # against an absolute pressure whose measured floor turned out to be
+    # 0.3035, so it could never bind and never did -- 100.00% of ticks cleared
+    # it across the arena's entire recorded history. A threshold is only
+    # meaningful on a scale whose rest point is defined.
+    action_warrant_min: float = 0.50
+
 
 class ProposalTemplateV1(BaseModel):
     model_config = ConfigDict(extra="forbid")

@@ -10,6 +10,16 @@ thresholds:
   suppress_below: 0.05
   policy_required_above_risk: 0.20
 
+  # PROVENANCE (2026-08-12): definitional, not tuned. See
+  # orion/field/action_warrant.py and orion/proposals/policy.py's own comment.
+  # `action_warrant` is a combined tail probability, so 0.50 is by
+  # construction "exactly a median normal day for this machine" -- the
+  # threshold reads as "act when the state is busier than a median day".
+  # Measured live over 10,548 real ticks: 62.9% of ticks fall below it (quiet)
+  # and 1.7% exceed 0.95 (clearly elevated), so the gate can both rest and
+  # fire. Re-derive with orion/field/evals/run_action_warrant_eval.py.
+  action_warrant_min: 0.50
+
 # 2026-07-30: uncertainty/field_intensity/agency_readiness/coherence weights
 # removed. None of those 4 dimension_ids are ever produced by
 # orion/field/pressure.py::field_pressures() (see that module's own

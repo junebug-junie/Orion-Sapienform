@@ -630,7 +630,64 @@ an incident. Patch A re-derived only `resource_pressure`, to keep its own effect
 other three, plus turning that script into a check that fails on drift, is the immediate follow-up
 and is independent of everything below.
 
-Then **Patch B**, which is the one that can actually move O1, gated on answering missing question 2.
-Then broader recommendation 1 (real perception), which is the largest remaining defect and the gate
-on everything in Layer 10. **Patch C last, and not until the reverie/metacog scale collision is
-resolved.**
+~~Then **Patch B**, which is the one that can actually move O1~~ — **RETRACTED 2026-08-12. Patch B
+is a no-op, and Patch C is its prerequisite, not its follow-up.** Both claims in the sentence above
+were wrong, and replaying real history is what showed it. 5,276 ticks through the live scoring
+functions:
+
+| variant | % ticks proposing | avg candidates | avg dispatched |
+| --- | --- | --- | --- |
+| current | 100.00% | 12.00 | 5.00 |
+| **B only** | **100.00%** | **12.00** | **5.00** |
+| C only | 100.00% | 7.83 | 5.00 |
+| B + C | 98.92% | 2.83 | 2.83 |
+
+`base_priority` is 0.20–0.42 and `min_priority` is 0.10, so an empty-dimension template with urgency
+**0.0** and confidence **0.0** still clears the gate on its floor alone. Removing the
+`_pressure_dimension_ids()` fallback changes what the formula computes and changes nothing about what
+gets dispatched. This document had the dependency inverted.
+
+Worse, B+C together would have re-created the monoculture they were meant to remove: the two
+`resource_pressure` templates capture 96.6% of ticks, because that dimension has the highest floor of
+the four. That would be **the third inversion of the same monoculture** — July was dimension-declaring
+templates at 93%, August was `dimensions: {}` at 85%.
+
+**What actually moved O1 was a new signal, not a deletion.** Five candidate statistics were measured
+against real history and killed first — raw max, max|z|, mean|z| and signed-max all measured
+**0.00%** of ticks able to read calm; a Mahalanobis p-value reached rest but was unstable in N and
+faked calm on a dead dimension. The shared defect is the extreme-value operator: P(all N sources
+simultaneously at or below normal) shrinks geometrically in N, so **adding a healthy sensor makes the
+system look busier.** Standardising the units does not fix it.
+
+`orion/field/action_warrant.py` combines each dimension's one-sided tail probability by Fisher's
+method, whose null is chi-square with 2N degrees of freedom — the dimension count enters the null
+rather than biasing the result. Independence was verified rather than assumed (max pairwise
+|r| = 0.151, participation ratio 3.95 of 4, n = 17,642). The result is a [0,1] score where **0.5 is a
+median normal day for this machine**, which is what makes a threshold a decision about tolerance
+instead of a guess about scale.
+
+Wired as a **tick-level gate** in `orion/proposals/builder.py`: the warrant decides WHETHER this
+tick's state justifies acting, and the existing per-template scoring still decides WHICH. Applied
+after `external_candidates` merge, so it is producer-agnostic — which also dissolves the reverie /
+metacog scale collision for gating purposes, since a tick that does not warrant acting suppresses
+every producer equally. Measured over 10,542 real ticks through the real builder:
+
+| | before | after |
+| --- | --- | --- |
+| dispatched per tick | exactly 5, always | mean 1.841, range 0–5 |
+| coefficient of variation | 0.022 | **1.310** |
+| ticks with zero dispatch | 0.00% | **63.19%** |
+| ticks at the ceiling | 100.00% | 36.81%, bounded by `max_dispatches_per_tick` |
+
+That is O1 in its own words: the budget rises and falls with real internal pressure, is not a flat
+per-cycle allowance, and has a demonstrated verified ceiling.
+
+**Known limit, disclosed:** the distribution is bimodal — 0 or 5, nothing between — because the gate
+is binary and a warranted tick still clears the full slate. "Rises and falls" is satisfied; a
+graduated budget would be better, and is the natural next patch.
+
+Remaining, in order: the three stale precision floors above; a graduated rather than binary budget;
+broader recommendation 1 (real perception), still the largest defect and the gate on everything in
+Layer 10. **Patch C (deleting `base_priority`) is now cosmetic rather than load-bearing** — the tick
+gate no longer depends on per-candidate priority clearing a threshold — but it remains worth doing,
+and still not until the reverie/metacog scale collision is resolved for RANKING.

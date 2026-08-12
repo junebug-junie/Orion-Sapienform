@@ -57,6 +57,15 @@ proposal_kind_rules:
     default_decision: approved_maintenance
     max_autonomy_tier: maintenance_bounded
     mutating: true
+    # 2026-08-12, Juniper's explicit direction after measuring the live
+    # behaviour: confidence_score on this kind swings 0.416-0.999 tick to
+    # tick on the same host state (25 real prune proposals over 3h), so the
+    # 0.50 review threshold was flipping the same action between
+    # auto-approved and human-review at random -- a coin flip, not a safety
+    # judgement. Every other review trigger still applies to this kind.
+    # Safety here comes from reversibility 1.0, risk 0.12, and the skill's
+    # own measured disk >= 75% AND >= 40 GB re-check against the real host.
+    confidence_gates_review: false
 
   stabilize:
     allowed_scope: prepare_only

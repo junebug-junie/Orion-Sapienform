@@ -392,3 +392,41 @@ def test_cold_start_min_samples_sufficient_across_jump_magnitude_sweep() -> None
                 f"{dim} at jump fraction {frac} did not settle by "
                 f"n={DIMENSION_PRECISION_EWMA_MIN_SAMPLES}: |z|={abs(update.zscore):.3f}"
             )
+
+
+def test_every_template_sets_an_explicit_base_priority():
+    """2026-08-12. prune_build_cache was the ONLY template in the arena
+    without a base_priority, so it silently defaulted to 0.0 while every
+    competitor carried 0.20-0.42 -- priority is
+    clamp01(base_priority + confidence * max(match, urgency)), so that is a
+    flat handicap against the whole field, not a scoring opinion. It averaged
+    rank 9.5 of a 10-slot slate and then stopped being proposed entirely.
+
+    An omitted key that silently becomes 0.0 is indistinguishable from a
+    deliberate 0.0, which is exactly why this is a gate and not a comment.
+    """
+    import yaml as _yaml
+
+    raw = _yaml.safe_load(
+        (
+            Path(__file__).resolve().parents[1]
+            / "config"
+            / "proposals"
+            / "proposal_policy.v1.yaml"
+        ).read_text(encoding="utf-8")
+    )
+    templates = raw.get("proposal_templates") or {}
+    # This assertion is not decoration. The first version of this test read
+    # raw["templates"], which does not exist -- it iterated nothing and passed
+    # trivially while prune_build_cache still had no base_priority at all.
+    assert len(templates) > 5, (
+        f"expected the real proposal_templates map; got {len(templates)} entries "
+        f"(top-level keys: {sorted(raw)}) -- a renamed key would make this test vacuous"
+    )
+    missing = [
+        name for name, tmpl in templates.items() if "base_priority" not in tmpl
+    ]
+    assert not missing, (
+        f"templates with no explicit base_priority (silently 0.0, a flat "
+        f"handicap against every other template): {missing}"
+    )

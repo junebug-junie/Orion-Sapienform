@@ -1,11 +1,13 @@
 from __future__ import annotations
 
+from dataclasses import dataclass
 from datetime import datetime, timezone
 
 from orion.execution_dispatch.envelopes import build_cortex_request_envelope
 from orion.execution_dispatch.policy import (
     MAINTENANCE_SCOPE,
     CortexRouteTemplateV1,
+    DispatchLimitsV1,
     ExecutionDispatchPolicyV1,
 )
 from orion.schemas.execution_dispatch_frame import ExecutionDispatchCandidateV1, ExecutionDispatchFrameV1
@@ -23,6 +25,77 @@ def stable_dispatch_id(*, proposal_id: str, policy_id: str) -> str:
 
 def _proposal_by_id(proposal_frame: ProposalFrameV1) -> dict[str, ProposalCandidateV1]:
     return {c.proposal_id: c for c in proposal_frame.candidates}
+
+
+def proposal_template_key(proposal_id: str) -> str | None:
+    """The template that produced a proposal, recovered from its id.
+
+    `orion/proposals/builder.py::stable_proposal_id` builds
+    `proposal:{template_key}:{field_tick_id}:{attention_frame_id}`. Splitting
+    from the LEFT is what makes index 1 safe -- attention_frame_id itself
+    contains colons ("attention.frame:tick_...") so counting from the right
+    would not work. Returns None on anything that does not match, and every
+    caller must have a real fallback: an id-format change must degrade this
+    to a coarser key, never crash dispatch.
+    """
+    parts = proposal_id.split(":")
+    if len(parts) >= 3 and parts[0] == "proposal" and parts[1]:
+        return parts[1]
+    return None
+
+
+def starvation_key(candidate: ProposalCandidateV1) -> str:
+    """Cross-tick identity for a repeatedly-proposed candidate.
+
+    NOT proposal_id: that embeds the field_tick_id, so it is unique every
+    tick and cannot answer "has this same thing been losing for an hour?" --
+    which is the only question starvation counters exist to answer.
+
+    The template key is load-bearing, and leaving it out was a live no-op bug
+    (found 2026-08-12, minutes after deploy, in the frames this patch itself
+    added). The first version keyed on `{proposal_kind}:{target_id}` alone --
+    but distinct templates genuinely share a kind and target:
+
+        inspect_execution_pressure  inspect  capability:orchestration
+        inspect_attended_target     inspect  capability:orchestration
+
+    `inspect_attended_target` averages rank 3.0 and is admitted nearly every
+    tick; `inspect_execution_pressure` averages 7.5 and starves. Sharing one
+    key meant the winner's reset popped the loser's counter every tick, so
+    the candidate that most needed aging could never accrue any -- an aging
+    mechanism that reported success while changing nothing, for precisely
+    the population it existed to serve.
+
+    target_id stays in the key on purpose: `inspect_attended_target` binds to
+    whatever attention is on (node:substrate.chat, node:substrate.bus_synaptic,
+    ...), and inspecting a different target really is a different piece of
+    work, not a continuation of the same starved one.
+    """
+    template = proposal_template_key(candidate.proposal_id)
+    if template is None:
+        # Coarser, collision-prone, and better than crashing: a proposal_id
+        # format change degrades aging, it does not stop dispatch.
+        return f"kind:{candidate.proposal_kind}:{candidate.target_id}"
+    return f"{template}:{candidate.target_id}"
+
+
+def effective_priority(
+    *,
+    priority_score: float,
+    starved_ticks: int,
+    limits: DispatchLimitsV1,
+) -> float:
+    """Admission-ordering score: real priority plus a bounded aging bonus.
+
+    The bonus is applied HERE and nowhere else -- the candidate's stored
+    priority_score is never rewritten, so the proposal arena's own scoring
+    stays auditable and this correction stays attributable to this layer.
+    """
+    bonus = min(
+        limits.starvation_aging_bonus_cap,
+        max(0, starved_ticks) * limits.starvation_aging_bonus_per_tick,
+    )
+    return priority_score + bonus
 
 
 def _is_hard_blocked(candidate: ProposalCandidateV1, policy: ExecutionDispatchPolicyV1) -> list[str]:
@@ -43,6 +116,89 @@ def _is_hard_blocked(candidate: ProposalCandidateV1, policy: ExecutionDispatchPo
     if candidate.required_policy_gate in ("execution_policy", "autonomy_policy"):
         hits.append(f"policy_gate:{candidate.required_policy_gate}")
     return hits
+
+
+# How many consecutive losses stop being noise and start being a fault worth
+# saying out loud in the frame. Uncalibrated starting value, disclosed as
+# such: at the live ~90 active frames/hour measured 2026-08-12 this is a bit
+# over 6 minutes of continuous losing.
+STARVATION_WARN_TICKS = 10
+
+
+def _starved_kind_counts(starved: list["_Eligible"]) -> dict[str, int]:
+    counts: dict[str, int] = {}
+    for item in starved:
+        counts[item.route.dispatch_kind] = counts.get(item.route.dispatch_kind, 0) + 1
+    return counts
+
+
+@dataclass(frozen=True)
+class _Eligible:
+    """A decision that cleared every gate and is now only competing for a slot."""
+
+    decision: PolicyDecisionV1
+    candidate: ProposalCandidateV1
+    route: CortexRouteTemplateV1
+    starved_ticks: int
+    effective_priority: float
+
+
+def _admit_candidates(
+    eligible: list[_Eligible],
+    limits: DispatchLimitsV1,
+) -> tuple[list[_Eligible], list[_Eligible]]:
+    """Split cleared candidates into (admitted, starved), highest first.
+
+    Two passes, and the order matters:
+
+      1. RESERVED -- each scope with a reservation takes up to that many
+         slots from its own highest-priority candidates.
+      2. GENERAL  -- everything still unadmitted competes for the remaining
+         capacity, INCLUDING any reserved slot nobody claimed in pass 1.
+
+    Pass 2 is what makes a reservation free: holding a slot for a scope that
+    proposes nothing this tick would otherwise cost real throughput on every
+    idle tick, which is how "reserve a lane" usually degrades into "dispatch
+    fewer things." Nothing is held back here.
+    """
+    capacity = max(0, limits.max_dispatch_candidates)
+    # Ties broken on proposal_id so a given set of eligible candidates always
+    # produces the same admitted set regardless of the order they arrived in.
+    ranked = sorted(eligible, key=lambda e: (-e.effective_priority, e.decision.proposal_id))
+
+    # 2026-08-12: identity is the _Eligible object, not decision_id. An
+    # earlier version enforced capacity on a set of decision_id and then
+    # filtered a list by membership -- so two entries sharing a decision_id
+    # both rode in and the returned list could exceed capacity. Unreachable
+    # with today's producer (decision_id embeds proposal_id, which embeds a
+    # per-frame-unique template key), but the invariant was expressed on the
+    # wrong quantity, and "unreachable today" is how latent bugs are
+    # described right up until a producer changes.
+    admitted_items: list[_Eligible] = []
+    admitted_ids: set[int] = set()
+
+    def _admit(item: _Eligible) -> None:
+        admitted_items.append(item)
+        admitted_ids.add(id(item))
+
+    for scope, reserved in sorted(limits.reserved_slots_by_scope.items()):
+        taken = 0
+        for item in ranked:
+            if taken >= reserved or len(admitted_items) >= capacity:
+                break
+            if item.route.allowed_scope == scope and id(item) not in admitted_ids:
+                _admit(item)
+                taken += 1
+
+    for item in ranked:
+        if len(admitted_items) >= capacity:
+            break
+        if id(item) not in admitted_ids:
+            _admit(item)
+
+    admitted = [e for e in ranked if id(e) in admitted_ids]
+    starved = [e for e in ranked if id(e) not in admitted_ids]
+    return admitted, starved
 
 
 def _resolve_dispatch_mode(
@@ -71,6 +227,7 @@ def build_execution_dispatch_frame(
     policy: ExecutionDispatchPolicyV1,
     now: datetime | None = None,
     override_dispatch_mode: str | None = None,
+    prev_starvation_counts: dict[str, int] | None = None,
 ) -> ExecutionDispatchFrameV1:
     generated_at = now or datetime.now(timezone.utc)
     dispatch_mode = _resolve_dispatch_mode(policy=policy, override_dispatch_mode=override_dispatch_mode)
@@ -91,7 +248,8 @@ def build_execution_dispatch_frame(
         warnings.append("mutating_dispatch_disabled_by_policy")
 
     dispatch_status_default, dispatch_mode_candidate = _candidate_status_for_mode(dispatch_mode)
-    max_candidates = policy.limits.max_dispatch_candidates
+    prev_counts = dict(prev_starvation_counts or {})
+    eligible: list[_Eligible] = []
 
     def make_blocked(
         decision: PolicyDecisionV1,
@@ -99,6 +257,8 @@ def build_execution_dispatch_frame(
         *,
         reasons: list[str],
         blocked_by: list[str],
+        dispatch_kind: str = "noop",
+        starvation_ticks: int = 0,
     ) -> ExecutionDispatchCandidateV1:
         return ExecutionDispatchCandidateV1(
             dispatch_id=stable_dispatch_id(proposal_id=decision.proposal_id, policy_id=policy.policy_id),
@@ -106,13 +266,23 @@ def build_execution_dispatch_frame(
             source_proposal_id=decision.proposal_id,
             dispatch_status="blocked",
             dispatch_mode=dispatch_mode_candidate,
-            dispatch_kind="noop",
+            # 2026-08-12: was the hardcoded literal "noop" on EVERY blocked
+            # record. That is what made starvation invisible: the stored row
+            # for a starved MUTATING action was byte-identical in kind to a
+            # starved inspect, so no query could ever surface "a maintenance
+            # action has been losing for hours." Found by having to
+            # reconstruct the kind from the proposal_id string to answer that
+            # exact question. Only genuinely kind-less blocks (a decision
+            # whose proposal or route could not be resolved at all) keep
+            # "noop", and now they mean it.
+            dispatch_kind=dispatch_kind,  # type: ignore[arg-type]
             target_id=candidate.target_id if candidate else "unknown",
             target_kind=candidate.target_kind if candidate else "system",
             reasons=reasons,
             blocked_by=blocked_by,
             risk_score=decision.risk_score,
             confidence_score=decision.confidence_score,
+            starvation_ticks=starvation_ticks,
         )
 
     for decision in policy_frame.decisions:
@@ -194,17 +364,90 @@ def build_execution_dispatch_frame(
             )
             continue
 
-        if len(candidates) >= max_candidates:
-            blocked.append(
-                make_blocked(
-                    decision,
-                    candidate,
-                    reasons=["max_dispatch_candidates_exceeded"],
-                    blocked_by=["limit"],
-                )
+        # Everything above is a real gate: pass it and the only thing left
+        # between this candidate and a send is capacity. Capacity is decided
+        # once, after the whole frame is known, in _admit_candidates -- not
+        # first-come-first-served inside this loop, which is what let five
+        # read-only templates hold all five slots indefinitely.
+        starved_ticks = prev_counts.get(starvation_key(candidate), 0)
+        eligible.append(
+            _Eligible(
+                decision=decision,
+                candidate=candidate,
+                route=route,
+                starved_ticks=starved_ticks,
+                effective_priority=effective_priority(
+                    priority_score=candidate.priority_score,
+                    starved_ticks=starved_ticks,
+                    limits=policy.limits,
+                ),
             )
-            continue
+        )
 
+    admitted, starved = _admit_candidates(eligible, policy.limits)
+
+    # Only non-zero counts are carried: a key absent from the map reads as 0
+    # via .get(), so this stays proportional to what is actually starving
+    # rather than to everything ever proposed.
+    starvation_counts: dict[str, int] = {}
+    for item in starved:
+        starvation_counts[starvation_key(item.candidate)] = item.starved_ticks + 1
+    # Applied second on purpose: if two eligible candidates collapse to the
+    # same starvation key and one of them got in, the pair is not starving.
+    #
+    # NOTE, deliberate: this clears on ADMISSION, not on a confirmed send. A
+    # candidate can be admitted here and still never go out --
+    # worker._send_prepared_candidates can stop early on the theater
+    # tripwire, on the daily risk cap, or on the first candidate exceeding
+    # the remaining risk budget. Admission is the right unit because it is
+    # what THIS layer arbitrates and the frame is the arbitration record;
+    # sends fail for reasons that are not starvation and would otherwise
+    # inflate a starvation signal into a general failure signal.
+    #
+    # That is only safe while `max_dispatches_per_tick >= max_dispatch_
+    # candidates`, or the lowest-ranked admitted candidate (after this patch,
+    # the aged one -- exactly the one this mechanism exists for) gets dropped
+    # by the send loop with its counter already zeroed. The two values are
+    # equal today (5/5) and measured live at 0 of 2,738 frames leaving a
+    # prepared candidate unsent. Changing one without the other fails
+    # test_the_send_budget_cannot_silently_drop_an_admitted_candidate rather
+    # than silently degrading this accounting.
+    for item in admitted:
+        starvation_counts.pop(starvation_key(item.candidate), None)
+
+    for item in starved:
+        next_ticks = item.starved_ticks + 1
+        blocked.append(
+            make_blocked(
+                item.decision,
+                item.candidate,
+                # reasons[0] is unchanged so existing queries and dashboards
+                # built on this string keep working; the detail rides behind it.
+                reasons=[
+                    "max_dispatch_candidates_exceeded",
+                    f"starved_consecutive_ticks:{next_ticks}",
+                    f"effective_priority:{item.effective_priority:.4f}",
+                ],
+                blocked_by=[f"max_dispatch_candidates:{policy.limits.max_dispatch_candidates}"],
+                dispatch_kind=item.route.dispatch_kind,
+                starvation_ticks=next_ticks,
+            )
+        )
+
+    # A frame-level, greppable record of what lost. CLAUDE.md 0A: a cap that
+    # silently truncates reads as "covered everything" -- this arena did that
+    # for its entire life and the omission was only findable by querying for
+    # an absence.
+    for kind, count in sorted(_starved_kind_counts(starved).items()):
+        warnings.append(f"dispatch_starved kind={kind} candidates={count}")
+    worst = max((e.starved_ticks + 1 for e in starved), default=0)
+    if worst >= STARVATION_WARN_TICKS:
+        warnings.append(f"dispatch_starvation_persistent max_consecutive_ticks={worst}")
+
+    for eligible_item in admitted:
+        decision = eligible_item.decision
+        candidate = eligible_item.candidate
+        route = eligible_item.route
         dry_run = dispatch_mode != "dispatch_read_only"
         envelope = build_cortex_request_envelope(
             candidate=candidate,
@@ -246,6 +489,11 @@ def build_execution_dispatch_frame(
             evidence_refs=list(decision.evidence_refs),
             risk_score=decision.risk_score,
             confidence_score=decision.confidence_score,
+            # Kept on the ADMITTED record too, not just the blocked one: "this
+            # finally got in after losing 200 ticks" is exactly the evidence
+            # that says whether aging is working, and it is unrecoverable
+            # after the fact if only the blocked side carries it.
+            starvation_ticks=eligible_item.starved_ticks,
         )
         # Unreachable from this builder as of the prepared_for_dispatch fix above --
         # nothing here sets dispatch_status="dispatched" anymore, so max_dispatches_per_tick
@@ -285,6 +533,7 @@ def build_execution_dispatch_frame(
         dispatch_count=len(dispatched),
         blocked_count=len(blocked),
         warnings=warnings,
+        starvation_counts=starvation_counts,
     )
 
 
@@ -327,13 +576,10 @@ def build_unevaluable_execution_dispatch_frame(
 
 
 def _decision_template_key(proposal_id: str) -> str:
-    # stable_proposal_id() (orion/proposals/builder.py) is always
-    # "proposal:{template_key}:{field_tick_id}:{attention_frame_id}" --
-    # template_key is a plain config dict key (never contains ":"), so
-    # index [1] is exact, same convention scripts/analysis/measure_proposal_
-    # feedback_correlation.py's extract_template_key() already relies on.
-    parts = proposal_id.split(":")
-    return parts[1] if len(parts) > 1 else proposal_id
+    # 2026-08-12: was a second, independent copy of this parse with slightly
+    # different validation, 400 lines from proposal_template_key. One parser,
+    # one place to fix when the id shape moves.
+    return proposal_template_key(proposal_id) or proposal_id
 
 
 def build_stale_discard_execution_dispatch_frame(

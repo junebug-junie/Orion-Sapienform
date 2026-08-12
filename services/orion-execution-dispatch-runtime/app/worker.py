@@ -327,7 +327,15 @@ class ExecutionDispatchRuntimeWorker:
             "staleness_discard_count_ewma": 0.0,
             "staleness_discard_count_ewma_var": 0.0,
             "staleness_discard_count_ewma_n": 0,
+            "starvation_counts": {},
         }
+        # 2026-08-12: starvation counters ride in the SAME carried-forward
+        # dict as the EWMA baselines (loaded off the same row -- see
+        # store.load_latest_staleness_discard_baseline), which is what puts
+        # them on stale-discard frames too. .get() rather than [] because a
+        # baseline persisted before this field existed is a real state here,
+        # not a bug.
+        prev_starvation_counts = baseline.get("starvation_counts") or {}
         policy_frame, discarded_this_tick, last_discard_frame = self._drain_stale_policy_frames(
             baseline
         )
@@ -355,6 +363,22 @@ class ExecutionDispatchRuntimeWorker:
             "staleness_discard_count_ewma_var": update.variance,
             "staleness_discard_count_ewma_n": baseline["staleness_discard_count_ewma_n"] + 1,
         }
+        # 2026-08-12: the stamp for frames that DO NOT compute their own
+        # starvation counters -- the stale-discard and unevaluable paths.
+        # Only the real frame built by build_execution_dispatch_frame() gets
+        # `updated_baseline` alone, because it produces a fresh map and
+        # stamping the previous tick's map over it would freeze every counter.
+        #
+        # This distinction is the whole mechanism, and getting it wrong is
+        # silent in the direction that keeps starved things starved: any saved
+        # frame that lands with {} becomes the newest row, and the next tick's
+        # load reads {} and erases every accumulated counter. Found by review
+        # on exactly the unevaluable path below, which had been missed when
+        # the sibling discard path one screen up was handled.
+        carry_forward_baseline = {
+            **updated_baseline,
+            "starvation_counts": prev_starvation_counts,
+        }
 
         if policy_frame is None:
             # Either the queue is fully drained, or this tick hit
@@ -369,7 +393,7 @@ class ExecutionDispatchRuntimeWorker:
             # upsert makes this idempotent, not a duplicate row).
             if last_discard_frame is not None:
                 self._store.save_dispatch_frame(
-                    last_discard_frame.model_copy(update=updated_baseline)
+                    last_discard_frame.model_copy(update=carry_forward_baseline)
                 )
             return
 
@@ -388,7 +412,7 @@ class ExecutionDispatchRuntimeWorker:
                 policy_frame=policy_frame,
                 policy_id=self._policy.policy_id,
                 reason=f"proposal_frame {policy_frame.source_proposal_frame_id} unavailable",
-            ).model_copy(update=updated_baseline)
+            ).model_copy(update=carry_forward_baseline)
             self._store.save_dispatch_frame(frame)
             logger.info(
                 "execution_dispatch_frame_saved_unevaluable frame_id=%s policy_frame_id=%s",
@@ -407,6 +431,11 @@ class ExecutionDispatchRuntimeWorker:
             field_tick_id=policy_frame.source_field_tick_id,
             policy=self._policy,
             override_dispatch_mode=self._settings.execution_dispatch_mode,
+            prev_starvation_counts=prev_starvation_counts,
+            # NOTE: updated_baseline deliberately does NOT carry
+            # starvation_counts -- this frame computes its own fresh map and
+            # model_copy would otherwise stamp the previous tick's map back
+            # over it, freezing every counter at its first value.
         ).model_copy(update=updated_baseline)
 
         if (
@@ -574,7 +603,11 @@ class ExecutionDispatchRuntimeWorker:
             remaining_risk_budget = float("inf")
 
         # Real, risk-weighted selection -- not a blind count. `frame.candidates`
-        # is already priority-sorted (build_proposal_frame), so this takes
+        # arrives ordered by builder._admit_candidates' EFFECTIVE priority
+        # (2026-08-12: real priority plus the starvation aging bonus), not by
+        # build_proposal_frame's raw priority order as this comment used to
+        # say -- aging can reorder it, and the sequential take below depends
+        # on that order being meaningful. So this takes
         # the highest-priority prepared candidates whose cumulative
         # risk_score fits inside what's left of today's real budget (or all
         # of them, if the cap is advisory and already reached -- see above),

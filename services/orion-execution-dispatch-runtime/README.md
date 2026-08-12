@@ -57,10 +57,125 @@ cache is never treated as an empty one.
 **Kill switch** is unchanged and still one container: set `EXECUTION_DISPATCH_MODE=dry_run` and
 restart. Every candidate, mutating or not, then goes out as a preview.
 
-**Known gap:** `EXECUTION_DISPATCH_RPC_TIMEOUT_SEC` is a single global (120s) and a large prune has
-not been timed. If one exceeds it, the prune still happens but is recorded as an RPC failure. A
-per-route timeout is the fix; `ExecutionDispatchCortexClient.send()` already accepts a per-call
-`timeout_sec`.
+**Timeouts (closed 2026-08-12, PR #1594).** This section used to record a known gap here — a single
+global 120s `EXECUTION_DISPATCH_RPC_TIMEOUT_SEC` with a large prune untimed. Tracing it found the
+binding constraint was somewhere else entirely: the prune's subprocess inherited
+`SKILLS_MESH_OPS_TIMEOUT_SEC`, **12 seconds** live, so a 142 GB prune would have been SIGKILLed
+~12s in, mid-delete, every time. Three nested budgets now clear it, staggered so a timeout is
+attributable to the layer that caused it — innermost fires first:
+
+| layer | key | budget |
+| --- | --- | --- |
+| docker subprocess | `BUILDER_PRUNE_TIMEOUT_SEC` | 600s |
+| cortex-exec step | verb yaml `timeout_ms` | 660s |
+| dispatch RPC | route `rpc_timeout_sec` | 720s |
+
+`rpc_timeout_sec` is per-route (`CortexRouteTemplateV1`), not global, because the two needs are
+genuinely opposed: this consumer is single-threaded, so a global ceiling large enough for the prune
+would let one hung inspect stall all dispatch for that long. Only routes that need a longer budget
+get one.
+
+### Slot arbitration and starvation (2026-08-12)
+
+Clearing every gate above still does not get a candidate sent — it then has to win a slot, and for
+this arena's whole life it could lose that indefinitely and silently. Measured over three live
+hours:
+
+```
+inspect_bus_channel_catalog            DISPATCHED  267
+inspect_attended_target                DISPATCHED  267
+summarize_transport_contract_drift     DISPATCHED  267
+inspect_field_topology_catalog         DISPATCHED  243
+watch_transport_backpressure           DISPATCHED  209
+...
+prune_build_cache    BLOCKED:max_dispatch_candidates_exceeded    4
+prune_build_cache    DISPATCHED                                  0
+```
+
+The same five read-only templates held all five slots on essentially every tick. The cause is
+structural, not tuning: a single scalar ranking conflates **urgency** (a spike) with **importance**
+(a persistent level), and a steady-state-high signal like disk fullness is maximally penalised by
+that — high *and* boring, so it loses forever. Juniper named the pattern from the drives program:
+"disparate things that never get attention because one is noisier or one is steadystate at load."
+That resemblance is an observation about shape, not a claim that the two share a root cause — no
+comparison of the two arbitration paths has been done.
+
+Three corrections, in `orion/execution_dispatch/builder.py` and `limits` in the policy yaml:
+
+1. **The loss is visible.** `make_blocked` used to hardcode `dispatch_kind="noop"` on every blocked
+   record, so a starved mutating action and a starved inspect were byte-identical in the one column
+   that distinguishes them — producing the table above required reconstructing the kind from a
+   `proposal_id` string. Blocked records now carry their real `dispatch_kind`, their
+   `starvation_ticks`, and their effective priority; the frame carries a greppable
+   `dispatch_starved kind=… candidates=…` warning per kind and escalates to
+   `dispatch_starvation_persistent` at `STARVATION_WARN_TICKS` (10) consecutive losses.
+   `reasons[0]` deliberately keeps the old `max_dispatch_candidates_exceeded` string so existing
+   queries and dashboards survive; the detail rides behind it.
+2. **A reserved lane.** Capacity is decided once, after the whole frame is known
+   (`_admit_candidates`), not first-come-first-served inside the build loop.
+   `limits.reserved_slots_by_scope` holds 1 of 5 slots for `maintenance_bounded`. This is free on
+   ticks nothing claims it — pass 2 of `_admit_candidates` reclaims any unclaimed reservation in
+   the same tick, so read-only throughput is unchanged except on ticks a maintenance action
+   actually exists. A reservation that cost throughput on every idle tick would just be
+   "dispatch fewer things" wearing a different name.
+3. **Aging.** `limits.starvation_aging_bonus_per_tick` (0.002) and `…_cap` (0.25) give a candidate
+   a bounded bonus per consecutive loss, applied to admission ordering **only** — the stored
+   `priority_score` is never rewritten, so the proposal arena's own scoring stays auditable and
+   this correction stays attributable to this layer. This is the general fix: anything else quietly
+   losing this race gets the same relief without having to be named. At the live ~90 active
+   frames/hour, a candidate 0.20 below the cut reaches parity in ~100 ticks (~1.1h) and can never
+   gain more than 0.25, so aging cannot invert a genuinely large priority gap.
+
+**None of this widens what may fire.** `maintenance_bounded` still has to clear
+`mode.allow_mutating_dispatch`, the runtime's `EXECUTION_DISPATCH_MODE`, and the skill's own
+measured gate. It removes a capacity race, not a safety gate — asserted directly by
+`tests/test_dispatch_starvation.py::test_the_reservation_does_not_widen_what_may_fire`.
+
+Counters live in `ExecutionDispatchFrameV1.starvation_counts`, keyed
+`"<template_key>:<target_id>"` (**not** `proposal_id`, which embeds the `field_tick_id` and so is
+unique per tick — keying on it would make every tick a first offence). The template key is
+recovered from the proposal id by `proposal_template_key`, and it is load-bearing: the first
+version of this patch keyed on `"<proposal_kind>:<target_id>"` alone and was caught as a live no-op
+within minutes of deploy, in the frames this patch itself added. Distinct templates genuinely share
+a kind and target —
+
+```
+inspect_execution_pressure   inspect  capability:orchestration   avg rank 7.5  (starves)
+inspect_attended_target      inspect  capability:orchestration   avg rank 3.0  (admitted ~always)
+```
+
+— so the winner's reset popped the loser's counter every tick, and the candidate that most needed
+aging could never accrue any. An aging mechanism reporting success while changing nothing, for
+precisely the population it existed to serve. `target_id` stays in the key on purpose:
+`inspect_attended_target` binds to whatever attention is on, and inspecting a different target
+really is different work, not a continuation of the same starved job.
+
+They are carried forward on
+stale-discard frames too, via the same dict the EWMA baselines ride in; without that carry a single
+discard tick would zero every counter silently, in exactly the direction that keeps the starved
+thing starved. Only non-zero entries are kept, so the map stays proportional to what is actually
+starving rather than to everything ever proposed.
+
+Both constants are **uncalibrated starting values, disclosed as such** — same discipline as
+`max_dispatches_per_tick`. `starvation_counts` is persisted on every frame precisely so the data
+needed to calibrate them exists. To see what is currently starving:
+
+```sql
+SELECT b ->> 'dispatch_kind'                    AS kind,
+       split_part(b ->> 'source_proposal_id', ':', 2) AS template,
+       max((b ->> 'starvation_ticks')::int)     AS worst_streak,
+       count(*)                                 AS times_blocked
+FROM substrate_execution_dispatch_frames f,
+     LATERAL jsonb_array_elements(
+       CASE WHEN jsonb_typeof(f.dispatch_frame_json -> 'blocked_candidates') = 'array'
+            THEN f.dispatch_frame_json -> 'blocked_candidates'
+            ELSE '[]'::jsonb END) b   -- jsonb_array_elements errors on a literal
+                                      -- JSON null; same guard store.py already carries
+WHERE f.generated_at > now() - interval '3 hours'
+  AND b -> 'reasons' ->> 0 = 'max_dispatch_candidates_exceeded'
+GROUP BY 1, 2
+ORDER BY worst_streak DESC;
+```
 
 **Concurrent sends (2026-07-31, Part 2 of docs/superpowers/specs/2026-07-30-execution-dispatch-
 staleness-discard-design.md)**: up to `limits.max_dispatches_per_tick` (now **5**, was 1) real
@@ -290,7 +405,11 @@ fails — fail-open, never blocks emitting the outcome itself. See
 
 `ExecutionDispatchCandidateV1.dispatch_status`:
 
-- `prepared`, `dry_run`, `blocked`, `skipped` — no send involved.
+- `prepared`, `dry_run`, `blocked`, `skipped` — no send involved. A `blocked` record now always
+  says what it actually was: `dispatch_kind` is the real route kind and `starvation_ticks` is how
+  many consecutive ticks it had already lost the capacity race. `dispatch_kind="noop"` is reserved
+  for the genuinely kind-less cases (a decision whose proposal or route could not be resolved at
+  all) and now means it.
 - `prepared_for_dispatch` — cleared every gate for `dispatch_read_only` mode; the request
   envelope is built. Terminal state whenever real sending is off, or once per-tick/daily
   budgets are exhausted for this tick.

@@ -574,3 +574,58 @@ def test_read_only_routes_do_not_get_a_long_rpc_budget():
         name for name, r in policy.proposal_kind_to_cortex.items() if r.rpc_timeout_sec is not None
     }
     assert with_budget == {"maintain"}
+
+
+def test_low_confidence_no_longer_bounces_a_maintain_candidate_to_a_human():
+    """2026-08-12, Juniper's direction. confidence_score on this kind swings
+    0.416-0.999 tick to tick on the same host state (25 real prune proposals
+    measured over 3h), so a 0.50 review threshold flipped the same action
+    between auto-approved and human-review at random.
+
+    Goes through the REAL evaluator, not a hand-built decision -- the whole
+    point of the preceding PR's blocker.
+    """
+    policy = load_substrate_policy(REPO / "config" / "policy" / "substrate_policy.v1.yaml")
+    candidate = _template_faithful_candidate().model_copy(update={"confidence_score": 0.42})
+    _, proposal_frame = _frames(candidate)
+    decision = evaluate_proposal_candidate(
+        candidate=candidate, proposal_frame=proposal_frame, policy=policy
+    )
+    assert decision.decision == "approved_maintenance"
+    assert "confidence_below_threshold" not in decision.reasons
+
+
+def test_the_confidence_opt_out_is_narrow_and_does_not_leak_to_other_kinds():
+    """Every other review trigger must still fire for `maintain`, and no
+    other kind may inherit the opt-out."""
+    policy = load_substrate_policy(REPO / "config" / "policy" / "substrate_policy.v1.yaml")
+
+    def _decide(candidate):
+        _, proposal_frame = _frames(candidate)
+        return evaluate_proposal_candidate(
+            candidate=candidate, proposal_frame=proposal_frame, policy=policy
+        )
+
+    for kind in ("inspect", "summarize", "observe"):
+        # required_policy_gate is forced to read_only here because _candidate()
+        # defaults it to operator_review, which short-circuits an EARLIER
+        # branch -- the test would then pass without the confidence gate
+        # existing at all.
+        low_conf = _candidate(kind).model_copy(
+            update={
+                "confidence_score": 0.42,
+                "risk_score": 0.05,
+                "required_policy_gate": "read_only",
+            }
+        )
+        d = _decide(low_conf)
+        assert d.decision == "requires_operator_review", f"{kind} lost its confidence gate"
+        assert "confidence_below_threshold" in d.reasons
+
+    base = _template_faithful_candidate()
+    risky = base.model_copy(update={"confidence_score": 0.42, "risk_score": 0.30})
+    assert _decide(risky).decision == "requires_operator_review"
+    irreversible = base.model_copy(
+        update={"confidence_score": 0.42, "reversibility_score": 0.10}
+    )
+    assert _decide(irreversible).decision == "requires_operator_review"

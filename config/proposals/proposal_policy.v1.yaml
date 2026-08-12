@@ -287,10 +287,14 @@ proposal_templates:
     # while the arena kept producing 1,262 proposal frames/hour: it was not
     # losing on merit, it was starting from zero.
     #
-    # 0.34 is deliberately mid-pack, not top: it puts the measured live
-    # priority at ~0.76 (0.4163 avg observed with base 0.0), which reliably
-    # clears the 10-slot proposal slate but still sits BELOW the 0.79-0.83
-    # read-only leaders. That division of labour is intended -- base_priority
+    # 0.34 is deliberately mid-pack, not top. MEASURED AFTER DEPLOY, and the
+    # pre-deploy prediction in this comment was wrong: predicted ~0.76 by
+    # adding 0.34 to the 0.4163 observed average, but priority is
+    # base_priority + confidence * max(match, urgency) and confidence is not
+    # constant, so the real result is 0.5475 avg -- rank 7.8 of 10, not
+    # mid-pack. That is still enough to clear the 10-slot slate reliably
+    # (65 proposals in the first 8 minutes vs 0 in the preceding hour), which
+    # is what this value is for. That division of labour is intended -- base_priority
     # gets it PROPOSED, the reserved maintenance slot in
     # config/execution_dispatch/execution_dispatch_policy.v1.yaml gets it
     # DISPATCHED. It is not meant to out-rank inspection head-on.

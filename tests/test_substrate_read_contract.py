@@ -20,7 +20,6 @@ import pytest
 import yaml
 
 from orion.core.contracts.substrate_read import (
-    DockerCacheReadV1,
     HostStorageReadV1,
     SubstrateReadQueryV1,
     SubstrateReadReplyV1,
@@ -138,55 +137,30 @@ def test_unavailable_read_is_distinguishable_from_an_empty_one():
     assert broken.available != empty.available
 
 
-def test_docker_accounting_is_optional_and_absent_is_not_zero():
-    """Docker being unqueryable is NOT "no cache". The prune trigger requires
-    BOTH high disk usage AND real reclaimable cache, so a caller that cannot
-    read the cache must not infer zero and conclude "nothing to do" -- nor
-    infer plenty and act."""
-    reply = SubstrateReadReplyV1(
-        read_kind="host_storage",
-        observed_at=NOW,
-        available=True,
-        payload=HostStorageReadV1(
-            mount_path="/mnt/docker",
-            total_bytes=503_000_000_000,
-            used_bytes=382_000_000_000,
-            free_bytes=95_000_000_000,
-            used_pct=80.0,
-        ),
-    )
-    assert reply.payload is not None
-    assert reply.payload.docker is None
+def test_contract_carries_no_docker_payload():
+    """Scope boundary, asserted so it is not quietly re-added.
 
+    The first version of this contract carried Docker build-cache accounting,
+    because the motivating consumer is autonomous cache pruning. But
+    `orion-biometrics` -- the only registered consumer -- has no
+    `/var/run/docker.sock` mount and could never have populated it. A contract
+    promising a payload its responder cannot produce is worse than one that
+    omits it: the omission is visible, the promise is not.
 
-def test_full_host_storage_read_round_trips():
-    """Real shape, real numbers -- measured on this host 2026-08-12."""
-    reply = SubstrateReadReplyV1(
-        read_kind="host_storage",
-        request_id="req-1",
-        observed_at=NOW,
-        available=True,
-        payload=HostStorageReadV1(
-            mount_path="/mnt/docker",
-            total_bytes=503_000_000_000,
-            used_bytes=382_000_000_000,
-            free_bytes=95_000_000_000,
-            used_pct=80.0,
-            docker=DockerCacheReadV1(
-                build_cache_total_bytes=271_300_000_000,
-                build_cache_reclaimable_bytes=140_400_000_000,
-                build_cache_stale_bytes=140_000_000_000,
-                build_cache_entries=15_037,
-                build_cache_stale_entries=8_550,
-                stale_after_hours=336,
-            ),
-        ),
-    )
-    again = SubstrateReadReplyV1.model_validate(reply.model_dump(mode="json"))
-    assert again == reply
-    assert again.payload is not None and again.payload.docker is not None
-    assert again.payload.docker.build_cache_stale_entries == 8_550
-    assert again.request_id == "req-1"
+    `orion-cortex-exec` has the socket (which is why the docker skills already
+    work there as local adapters), and `CortexRouteTemplateV1.cortex_verb` is
+    an unconstrained str, so a dispatch route can name a `skills.*` verb
+    directly. The prune action needs no bus service at all.
+    """
+    fields = set(HostStorageReadV1.model_fields)
+    assert "docker" not in fields
+    assert fields == {
+        "mount_path",
+        "total_bytes",
+        "used_bytes",
+        "free_bytes",
+        "used_pct",
+    }
 
 
 def test_percentages_and_sizes_are_bounded():
@@ -197,13 +171,4 @@ def test_percentages_and_sizes_are_bounded():
     with pytest.raises(Exception):
         HostStorageReadV1(
             mount_path="/x", total_bytes=1, used_bytes=-1, free_bytes=0, used_pct=0.0
-        )
-    with pytest.raises(Exception):
-        DockerCacheReadV1(
-            build_cache_total_bytes=0,
-            build_cache_reclaimable_bytes=0,
-            build_cache_stale_bytes=0,
-            build_cache_entries=0,
-            build_cache_stale_entries=0,
-            stale_after_hours=0,  # must be > 0: "stale after 0 hours" is meaningless
         )

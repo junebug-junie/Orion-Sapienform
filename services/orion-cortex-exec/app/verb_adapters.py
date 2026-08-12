@@ -1783,7 +1783,7 @@ class DockerPruneStoppedContainersVerb(BaseVerb[PlanExecutionRequest, SkillVerbO
             raw_id = str(c.get("id") or "").strip()
             if not raw_id:
                 continue
-            full_key = next((k for k in inspect_map if k == raw_id or k.startswith(raw_id) or (len(raw_id) >= 12 and k.startswith(raw_id[:12]))), None)
+            full_key = _resolve_container_state_key(inspect_map, raw_id)
             meta = inspect_map.get(full_key or "", {"created": "", "size_root_fs": 0, "labels": {}})
             if cutoff is not None and not _docker_created_before(str(meta.get("created") or ""), cutoff):
                 continue
@@ -2178,8 +2178,35 @@ def _discover_compose_services(repo_root: Path) -> Dict[str, Path]:
     return out
 
 
+def _resolve_container_state_key(states: Dict[str, Dict[str, Any]], raw_id: str) -> str | None:
+    """Match a container id against a dict keyed by the full 64-char ``Id`` ``docker container
+    inspect`` always returns, regardless of what id form the caller has on hand.
+
+    `docker compose ps --format json` (and plain `docker ps`) report a 12-char short id; `docker
+    container inspect` always returns the full id. Docker guarantees the short id is a prefix of the
+    full one, so prefix matching bridges the two forms. Shared by both consumers of an inspect-result
+    dict in this module (skills.runtime.docker_prune_stopped_containers.v1's prunable-container scan,
+    and skills.docker.compose_service_bringup.v1's health poll) instead of each reimplementing its own
+    reconciliation -- a first attempt at fixing the poll-loop side of this (2026-08-12) instead wrote a
+    second, independent write-time dual-keying scheme, catching the same bug two structurally different
+    ways in one file; consolidated onto this single read-time lookup used by both call sites.
+    """
+    if not raw_id:
+        return None
+    if raw_id in states:
+        return raw_id
+    return next(
+        (k for k in states if k.startswith(raw_id) or (len(raw_id) >= 12 and k.startswith(raw_id[:12]))),
+        None,
+    )
+
+
 def _docker_inspect_container_states(runner: SafeCommandRunner, container_ids: List[str]) -> Dict[str, Dict[str, Any]]:
-    """Map full container id -> {status, health_status, has_healthcheck}."""
+    """Map full container id -> {status, health_status, has_healthcheck}.
+
+    Keyed only by the full 64-char ``Id`` docker inspect returns -- callers with a short id (e.g. from
+    `docker compose ps`) must resolve it first via `_resolve_container_state_key`.
+    """
     out: Dict[str, Dict[str, Any]] = {}
     if not container_ids:
         return out
@@ -2414,16 +2441,20 @@ async def _run_docker_compose_service_bringup(
             states = await asyncio.to_thread(_docker_inspect_container_states, poll_runner, [row["id"] for row in rows])
         except Exception:
             rows, states = [], {}
-        return [
-            {
-                "name": row["name"],
-                "id": row["id"],
-                "state": states.get(row["id"], {}).get("status", "unknown"),
-                "health": states.get(row["id"], {}).get("health_status"),
-                "has_healthcheck": bool(states.get(row["id"], {}).get("has_healthcheck")),
-            }
-            for row in rows
-        ]
+        snapshot: List[Dict[str, Any]] = []
+        for row in rows:
+            state_key = _resolve_container_state_key(states, row["id"])
+            entry = states.get(state_key, {}) if state_key else {}
+            snapshot.append(
+                {
+                    "name": row["name"],
+                    "id": row["id"],
+                    "state": entry.get("status", "unknown"),
+                    "health": entry.get("health_status"),
+                    "has_healthcheck": bool(entry.get("has_healthcheck")),
+                }
+            )
+        return snapshot
 
     def _is_settled(snapshot: List[Dict[str, Any]]) -> bool:
         return bool(snapshot) and all(

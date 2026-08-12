@@ -186,6 +186,73 @@ def test_running_no_healthcheck_classification(fake_repo, monkeypatch):
     assert data["containers"][0]["has_healthcheck"] is False
 
 
+def test_healthy_classification_with_realistic_short_vs_full_container_ids(fake_repo, monkeypatch):
+    """Real docker output shape, not the same-string-both-places shortcut the other classification
+    tests use: `docker compose ps --format json` reports a 12-char short id; `docker container
+    inspect` always returns the full 64-char Id regardless of what id form it was invoked with.
+    Confirmed live 2026-08-12: keying inspect results only by the full id made every poll-loop
+    lookup by the short id miss, silently defaulting every container to state="unknown" for the
+    entire poll window even though it had built, started, and was actually running -- misclassified
+    as unhealthy. This must resolve to healthy just like the same-id-everywhere test above.
+    (Fixed via `_resolve_container_state_key`'s read-time prefix match -- the same mechanism
+    skills.runtime.docker_prune_stopped_containers.v1 already used for this identical id-form
+    mismatch, not a second bespoke fix.)
+    """
+    short_id = "23292279c2e4"
+    full_id = (short_id + "d676c39adb044c785861e2b4abef94fd3e8707e4e3202e9bc6c" * 2)[:64]
+    assert len(full_id) == 64
+    ps_stdout = _container_row(short_id, "orion-widget-1") + "\n"
+    inspect_body = [
+        {
+            "Id": full_id,
+            "State": {"Status": "running", "Health": {"Status": "healthy"}},
+            "Config": {"Healthcheck": {"Test": ["CMD", "curl", "-f", "http://localhost/health"]}},
+        }
+    ]
+    monkeypatch.setattr(verb_adapters, "SafeCommandRunner", _runner_factory(ps_stdout=ps_stdout, inspect_body=inspect_body))
+    data, out = _run(_plan_request(skill_args={"service": "orion-widget"}))
+    assert data["status"] == "healthy"
+    assert out.ok is True
+    assert data["containers"][0]["state"] == "running"
+    assert data["containers"][0]["has_healthcheck"] is True
+    assert data["containers"][0]["health"] == "healthy"
+
+
+def test_healthy_classification_with_multiple_containers_distinct_short_ids(fake_repo, monkeypatch):
+    """Review finding 2026-08-12: every other classification test (including the short-vs-full-id
+    one above) inspects exactly one container, so per-container attribution when 2+ containers are
+    inspected in a single call was entirely unexercised. Two containers with distinct short/full ids
+    must each resolve to their own state, not bleed into each other."""
+    short_id_a = "23292279c2e4"
+    full_id_a = (short_id_a + "d676c39adb044c785861e2b4abef94fd3e8707e4e3202e9bc6c" * 2)[:64]
+    short_id_b = "af0011223344"
+    full_id_b = (short_id_b + "e787c39adb044c785861e2b4abef94fd3e8707e4e3202e9bc6d" * 2)[:64]
+    assert len({full_id_a, full_id_b}) == 2
+    ps_stdout = "\n".join(
+        [_container_row(short_id_a, "orion-widget-1"), _container_row(short_id_b, "orion-widget-2")]
+    )
+    inspect_body = [
+        {
+            "Id": full_id_a,
+            "State": {"Status": "running", "Health": {"Status": "healthy"}},
+            "Config": {"Healthcheck": {"Test": ["CMD", "true"]}},
+        },
+        {
+            "Id": full_id_b,
+            "State": {"Status": "running"},
+            "Config": {},
+        },
+    ]
+    monkeypatch.setattr(verb_adapters, "SafeCommandRunner", _runner_factory(ps_stdout=ps_stdout, inspect_body=inspect_body))
+    data, out = _run(_plan_request(skill_args={"service": "orion-widget"}))
+    assert out.ok is True
+    by_name = {c["name"]: c for c in data["containers"]}
+    assert by_name["orion-widget-1"]["has_healthcheck"] is True
+    assert by_name["orion-widget-1"]["health"] == "healthy"
+    assert by_name["orion-widget-2"]["has_healthcheck"] is False
+    assert by_name["orion-widget-2"]["health"] is None
+
+
 def test_unhealthy_classification(fake_repo, monkeypatch):
     ps_stdout = _container_row("abc123", "orion-widget-1") + "\n"
     inspect_body = [

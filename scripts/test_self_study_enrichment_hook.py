@@ -234,3 +234,78 @@ def test_main_subprocess_invocation_imports_orion_without_pythonpath(tmp_path):
     # git_churn_delta + the rate-limit check both ran) is only possible if
     # the import actually succeeded.
     assert "ORION_BUS_URL unset, skipping publish" in result.stderr
+
+
+def test_import_redis_self_heals_from_poisoned_platform_module(monkeypatch):
+    """Regression test for the actual hardest bug in this chain (review
+    finding, 2026-08-12: the two subprocess tests above never reach
+    publish_enrichment_request()/_import_redis() -- the orion-import test
+    stops at the qualifying-check return, and the other one deliberately
+    pops ORION_BUS_URL to stop right after). This test exercises
+    _import_redis() directly and in isolation: simulates the exact failure
+    shape confirmed live -- scripts/platform/ (a real, tracked, unrelated
+    package in this repo) shadowing stdlib `platform`, leaving
+    sys.modules['platform'] present but missing `system` -- and confirms
+    the self-heal (drop the poisoned platform/uuid/redis entries, retry
+    once) actually recovers instead of propagating the AttributeError."""
+    import types
+
+    fake_platform = types.ModuleType("platform")  # deliberately missing `system`
+    monkeypatch.setitem(sys.modules, "platform", fake_platform)
+    for name in list(sys.modules):
+        if name == "uuid" or name == "redis" or name.startswith("redis."):
+            monkeypatch.delitem(sys.modules, name, raising=False)
+
+    redis_module = hook._import_redis()
+
+    assert redis_module.__name__ == "redis"
+    # The self-heal's retry re-imported a REAL platform module, replacing
+    # the poisoned stand-in -- not just returning redis while leaving the
+    # poisoned module in place for the next caller to trip over.
+    assert hasattr(sys.modules["platform"], "system")
+
+
+def test_main_subprocess_invocation_reaches_real_redis_import(tmp_path):
+    """Regression test for the actual root-cause bug this branch spent an
+    extended investigation chasing (see the module docstring at the top of
+    self_study_enrichment_hook.py): scripts/platform/ shadows stdlib
+    `platform` whenever scripts/ lands on sys.path, which happens
+    automatically for this exact invocation shape (`python3
+    scripts/<name>.py`, real script-file execution -- not `-c`, not `-m`,
+    not stdin, none of which reproduce it). Unlike
+    test_main_subprocess_invocation_imports_orion_without_pythonpath
+    (which deliberately pops ORION_BUS_URL to stop short of the redis
+    import entirely), this test supplies a real-shaped but unreachable
+    ORION_BUS_URL so execution actually reaches
+    publish_enrichment_request() -> _import_redis() -> `import redis`,
+    proving the fix holds for the real subprocess invocation path, not
+    just the isolated unit test above."""
+    real_repo_root = Path(__file__).resolve().parents[1]
+    repo = _init_repo(tmp_path)
+    (repo / "orion").symlink_to(real_repo_root / "orion")
+    _commit(repo, "README.md", "hello")
+    _commit(repo, "services/orion-foo/app/main.py", "print(1)")  # qualifying path
+
+    env = {k: v for k, v in os.environ.items() if k != "PYTHONPATH"}
+    env["SELF_STUDY_ENRICHMENT_STATE_PATH"] = str(tmp_path / "state.json")
+    # Real shape, deliberately unreachable (port 1 is never a real redis
+    # port) -- forces a real connection-refused/timeout failure downstream
+    # of a successful `import redis`, not an import-time crash.
+    env["ORION_BUS_URL"] = "redis://127.0.0.1:1/0"
+
+    result = subprocess.run(
+        [sys.executable, str(real_repo_root / "scripts" / "self_study_enrichment_hook.py")],
+        cwd=str(repo),
+        env=env,
+        capture_output=True,
+        text=True,
+        timeout=10,
+    )
+
+    assert result.returncode == 0  # never blocks the commit, even on a real connection failure
+    assert "AttributeError" not in result.stderr
+    assert "platform" not in result.stderr
+    # The failure that DOES surface must be the real, expected downstream
+    # one (connection failure), proving execution reached the actual
+    # network call -- not silently short-circuiting somewhere earlier.
+    assert "non-fatal error" in result.stderr

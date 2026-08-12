@@ -93,11 +93,20 @@ fi
         _SSEH_SHARED_ROOT=$(cd "$(dirname "$_SSEH_COMMON_DIR")" 2>/dev/null && pwd)
     fi
 
+    _SSEH_CANDIDATES="$REPO_ROOT/.venv/bin/python3 $REPO_ROOT/orion_dev/bin/python3"
+    if [ -n "$_SSEH_SHARED_ROOT" ]; then
+        # Guarded (review nit, 2026-08-12): without this, an empty
+        # _SSEH_SHARED_ROOT would still build "/.venv/bin/python3" (a
+        # filesystem-root-level path) -- harmless in practice since that
+        # never exists, but inconsistent with the Python-side
+        # _common_checkout_root(), which explicitly returns None here and
+        # lets callers skip the extra candidates outright.
+        _SSEH_CANDIDATES="$_SSEH_CANDIDATES $_SSEH_SHARED_ROOT/.venv/bin/python3 $_SSEH_SHARED_ROOT/orion_dev/bin/python3"
+    fi
+
     _SSEH_PYTHON=""
-    for _sseh_cand in \
-        "$REPO_ROOT/.venv/bin/python3" "$REPO_ROOT/orion_dev/bin/python3" \
-        "$_SSEH_SHARED_ROOT/.venv/bin/python3" "$_SSEH_SHARED_ROOT/orion_dev/bin/python3"; do
-        if [ -n "$_sseh_cand" ] && [ -x "$_sseh_cand" ] && "$_sseh_cand" -c "import redis" >/dev/null 2>&1; then
+    for _sseh_cand in $_SSEH_CANDIDATES; do
+        if [ -x "$_sseh_cand" ] && "$_sseh_cand" -c "import redis" >/dev/null 2>&1; then
             _SSEH_PYTHON="$_sseh_cand"
             break
         fi

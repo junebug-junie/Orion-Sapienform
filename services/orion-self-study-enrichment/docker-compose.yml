@@ -1,0 +1,54 @@
+services:
+  self-study-enrichment:
+    build:
+      context: ../..
+      dockerfile: services/orion-self-study-enrichment/Dockerfile
+    container_name: ${PROJECT}-self-study-enrichment
+    restart: unless-stopped
+    networks:
+      - app-net
+    environment:
+      - SERVICE_NAME=${SERVICE_NAME}
+      - SERVICE_VERSION=${SERVICE_VERSION}
+      - NODE_NAME=${NODE_NAME}
+      - INSTANCE_ID=${INSTANCE_ID}
+
+      - ORION_BUS_URL=${ORION_BUS_URL}
+      - ORION_BUS_ENFORCE_CATALOG=${ORION_BUS_ENFORCE_CATALOG}
+      - ORION_BUS_ENABLED=${ORION_BUS_ENABLED}
+      - HEARTBEAT_INTERVAL_SEC=${HEARTBEAT_INTERVAL_SEC}
+
+      - SELF_STUDY_ENRICHMENT_NODE_NAME=${SELF_STUDY_ENRICHMENT_NODE_NAME}
+      - CHANNEL_SELF_STUDY_ENRICHMENT_REQUESTED=${CHANNEL_SELF_STUDY_ENRICHMENT_REQUESTED:-orion:self_study:enrichment:requested}
+
+      - SELF_STUDY_ENRICHMENT_REPO_PATH=${SELF_STUDY_ENRICHMENT_REPO_PATH:-/repo}
+      - SELF_STUDY_ENRICHMENT_GRAPH_JSON_PATH=${SELF_STUDY_ENRICHMENT_GRAPH_JSON_PATH:-/repo/graphify-out/graph.json}
+
+      # Real Anthropic credentials -- isolated to this service (see README).
+      - ANTHROPIC_API_KEY=${ANTHROPIC_API_KEY}
+      - SELF_STUDY_ENRICHMENT_CLAUDE_BIN=${SELF_STUDY_ENRICHMENT_CLAUDE_BIN:-claude}
+      - SELF_STUDY_ENRICHMENT_MODEL=${SELF_STUDY_ENRICHMENT_MODEL:-claude-sonnet-5}
+      - SELF_STUDY_ENRICHMENT_EFFORT=${SELF_STUDY_ENRICHMENT_EFFORT:-medium}
+      - SELF_STUDY_ENRICHMENT_TIMEOUT_SEC=${SELF_STUDY_ENRICHMENT_TIMEOUT_SEC:-120}
+      - SELF_STUDY_ENRICHMENT_SETTING_SOURCES=${SELF_STUDY_ENRICHMENT_SETTING_SOURCES:-user,local}
+
+      - SELF_STUDY_ENRICHMENT_CACHE_DIR=${SELF_STUDY_ENRICHMENT_CACHE_DIR:-/data/cache/self_study_enrichment}
+      - SELF_STUDY_ENRICHMENT_MAX_PER_DAY=${SELF_STUDY_ENRICHMENT_MAX_PER_DAY:-8}
+      - SELF_STUDY_ENRICHMENT_RATE_LIMIT_STATE_PATH=${SELF_STUDY_ENRICHMENT_RATE_LIMIT_STATE_PATH:-/data/state/self_study_enrichment_service_rate_limit.json}
+    volumes:
+      # Read-only mount of this repo's own real working tree -- same
+      # ownership-mismatch note as orion-cocreation-signals' Dockerfile
+      # (`git config --system --add safe.directory '*'` covers it).
+      - ${SELF_STUDY_ENRICHMENT_REPO_HOST_PATH}:${SELF_STUDY_ENRICHMENT_REPO_PATH:-/repo}:ro
+      # Writable volume for the enrichment cache + rate-limit state --
+      # deliberately NOT inside the read-only repo mount above.
+      - self_study_enrichment_data:/data
+
+networks:
+  app-net:
+    name: ${NET}
+    external: true
+
+volumes:
+  self_study_enrichment_data:
+    name: ${PROJECT}-self-study-enrichment-data

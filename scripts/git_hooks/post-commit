@@ -45,3 +45,27 @@ if [ -n "${CLAUDE_CODE_SESSION_ID:-}" ]; then
 else
     python3 "$REPO_ROOT/scripts/agent_board.py" heartbeat --summary "$SUBJECT" >/dev/null 2>&1 || true
 fi
+
+# orion-self-study-enrichment trigger (advisory-only, ships ON by default)
+#
+# After a real commit, check whether anything self-study-relevant
+# structurally changed (services/, orion/bus/channels.yaml, orion/schemas/,
+# orion/cognition/verbs/) and, if so, publish a
+# orion:self_study:enrichment:requested event so
+# services/orion-self-study-enrichment can run a real evidence-grounded
+# `claude -p` enrichment pass. All the actual logic (qualifying-change
+# check, delta computation, rate-limit belt-check, one-shot publish) lives
+# in scripts/self_study_enrichment_hook.py -- kept out of this POSIX-sh
+# hook body per this repo's own "no regex swamp" / deterministic-script
+# convention, and so it's independently unit-testable.
+#
+# Own subshell + `|| true` so this fragment can never be killed by an
+# `exit` in an earlier or later fragment in this same concatenated hook
+# file (see graphify's own post-commit fragment, which calls `exit 0` for
+# commits made from a linked worktree -- a bare `exit` here would otherwise
+# terminate the whole file), and can never fail or block the commit itself.
+(
+    [ -f "$REPO_ROOT/scripts/self_study_enrichment_hook.py" ] || exit 0
+    command -v python3 >/dev/null 2>&1 || exit 0
+    cd "$REPO_ROOT" && python3 "$REPO_ROOT/scripts/self_study_enrichment_hook.py" >/dev/null 2>&1
+) || true

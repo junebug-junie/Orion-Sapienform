@@ -399,13 +399,16 @@ def test_capacity_pressure_stays_out_of_pressure_dimensions() -> None:
 
     `PRESSURE_DIMENSIONS` feeds orion/field/action_warrant.py, whose statistic
     is Fisher's combined tail against chi^2(2N). Adding `capacity_pressure` as
-    a fifth dimension was measured over 400 real ticks with a warmed baseline:
-    the gate opened on 36.8% of ticks instead of 41.8% -- a 5.0pp / ~12%
+    a fifth dimension, replayed over 74,317 real ticks with warmed baselines:
+    the gate opened on 30.45% of ticks instead of 37.35% -- a 6.89pp / 18.5%
     relative cut to Orion's ENTIRE action rate, every action type.
 
-    A calm dimension contributes u~0.5 (adding 1.386 to X) while the null's df
-    go chi^2(8)->chi^2(10); the df increase wins, so any calm sensor suppresses
-    the warrant.
+    A DEGENERATE dimension (u_i piling up at 0.5 rather than Uniform) is what
+    suppresses; a well-calibrated one measures +1.27pp, i.e. the df correction
+    works as designed. capacity_pressure is 97.6% of the way to fully-pinned.
+    The stronger reason it is excluded is that its z-score is not a usable
+    instrument at all: p99 |z| = 0.39 against the 1.3-4.3 band the four real
+    dimensions occupy, with the variance floor binding on 99.15% of ticks.
 
     The trap this locks out: `_is_live()` excludes a dimension until its EWMA
     baseline warms, so measuring right after deploy shows a 0.0pp shift and the
@@ -415,8 +418,12 @@ def test_capacity_pressure_stays_out_of_pressure_dimensions() -> None:
     it silently.
 
     A template does NOT need membership here to score on a dimension:
-    `dimension_score()` reads `field_pressures` directly. Verified live: the
-    prune's priority is 0.6818 either way.
+    `dimension_score()` reads `field_pressures` directly. Exclusion is not
+    free, though -- measured over 74,317 ticks, mean prune priority is 0.6004
+    out vs 0.9707 in, because dimension_confidence() is a permanent 0.0 for an
+    untracked dimension. An earlier version of this docstring claimed "0.6818
+    either way"; that reading was taken before the EWMA baseline warmed, when
+    confidence is 0.0 in both arms.
     """
     assert "capacity_pressure" not in PRESSURE_DIMENSIONS
     assert "capacity_pressure" not in DIMENSION_PRECISION_MIN_VARIANCE

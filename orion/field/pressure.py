@@ -140,6 +140,63 @@ CHANNEL_DIMENSION_MAP: dict[str, str] = {
     # again: that merge is max(), so a channel sitting near 0.80 would pin
     # resource_pressure high permanently for every consumer of it. A separate
     # dimension is additive and leaves the existing four untouched.
+    #
+    # ---- METRIC QUALITY GATE (CLAUDE.md 0A), RE-RUN 2026-08-12 ----
+    #
+    # The first recording of this gate was deleted when this dimension was
+    # pulled out of PRESSURE_DIMENSIONS, leaving a metric that fires
+    # `docker builder prune` with NO gate record. Worse, review found its
+    # item 4 had been RECITED, NOT RUN. Re-recorded here, honestly.
+    #
+    # 1. Provenance: PASS. orion/telemetry/biometrics_pipeline.py computes it;
+    #    orion-biometrics/app/grammar_emit.py emits the hint;
+    #    orion-field-digester/app/ingest/state_deltas.py:202 turns it into a
+    #    Perturbation(channel="disk_capacity_pressure", mode="replace").
+    #
+    # 2. Independence: PASS. Capability `pressure` (which feeds
+    #    resource_pressure) diffuses from cpu/memory/gpu/disk/stream_backlog/
+    #    prediction_error, not from this channel. Live proof, one tick:
+    #    resource_pressure 0.0521 while capacity_pressure 0.7953.
+    #
+    # 3. Theory anchor: PASS. The action reclaims bytes; this is the
+    #    fraction-of-bytes-used the action directly changes.
+    #
+    # 4. Live sanity: **FAIL as an anomaly signal. PASS as a level.**
+    #    The original note claimed "it has genuinely RESTED low (0.1413)" and
+    #    claimed to have checked the node:substrate.route decayed-to-zero
+    #    failure mode explicitly. Both false. The ENTIRE low tail is 16 ticks
+    #    inside a 56-second window (2026-08-11 01:04:51 -> 01:05:47) with an
+    #    exact ratio of 0.920000 between successive values -- `decay_rate`
+    #    from orion-field-digester/app/digestion/decay.py, whose
+    #    NODE_DECAY_CHANNELS contains this channel. A biometrics producer
+    #    outage decaying unopposed, i.e. byte-for-byte the artifact CLAUDE.md
+    #    documents in the paragraph directly above the gate steps.
+    #
+    #    Honest statistics (74,607 ticks; artifact window excluded):
+    #        min 0.5364   max 0.8199   variance 2.71e-4
+    #    It has NEVER rested low. Its real range is ~0.06 wide at ~80%
+    #    saturation, and its z-score is not a usable instrument: replayed
+    #    through compute_ewma_update, p99 |z| = 0.39 against the 1.3-4.3
+    #    "discriminating band" the four real dimensions occupy, with the
+    #    variance floor binding on 99.15% of ticks.
+    #
+    #    THIS IS WHY IT IS NOT IN PRESSURE_DIMENSIONS, and it is a stronger
+    #    reason than the -6.89pp gate shift recorded there. All the z-score
+    #    machinery (dimension_confidence, action_warrant) would be reading a
+    #    constant wearing a z-score. `dimension_score()` reads the RAW LEVEL,
+    #    and as a level -- "how full is the disk" -- it is exactly right and
+    #    is what the prune template consumes.
+    #
+    #    Two sibling instances of the same disease are live and unfixed:
+    #    node:circe bottoms at 3e-323 (subnormal, same signature) and
+    #    node:prometheus reads exactly 0.0 on all 74,264 ticks (dead
+    #    producer). Neither is repaired here.
+    #
+    # 5. Existing mechanism: PASS. No CHANNEL_DIMENSION_MAP entry existed, so
+    #    nothing consumed it at the dimension layer.
+    #
+    # 6. Reversibility: PASS. This entry plus the template's dimension key.
+    #    Nothing baked into a schema, migration, or training default.
     "disk_capacity_pressure": "capacity_pressure",
 }
 

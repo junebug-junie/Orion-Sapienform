@@ -22,35 +22,68 @@ from orion.schemas.field_state import FieldStateV1
 # start/n<MIN_SAMPLES branch forever, since an untracked dimension's `n`
 # never advances), unlike the old binary presence flag this replaced, which
 # would have correctly returned 1.0 whenever that dimension was present.
-# Extending PRESSURE_DIMENSIONS (and DIMENSION_PRECISION_MIN_VARIANCE,
-# enforced in sync by the assertion below) to cover a newly-scored dimension
-# is required in the same patch that adds it to a template.
+# 2026-08-12, SUPERSEDED: the original text here read "Extending
+# PRESSURE_DIMENSIONS ... is required in the same patch that adds it to a
+# template." That is now known to be wrong and actively dangerous -- see the
+# measured block below. Membership is a real, system-wide cost. The accurate
+# rule: a template scoring on an untracked dimension gets a PERMANENT 0.0
+# confidence for THAT dimension, so it must retain at least one tracked
+# dimension for its confidence signal to survive -- which is a much smaller
+# obligation than joining this set.
+#
 # DO NOT add a dimension here just because a template scores on it.
 #
-# 2026-08-12, measured not assumed: this set feeds orion/field/action_warrant.py,
-# whose statistic is Fisher's combined tail against chi^2(2N). Adding a FIFTH
-# dimension was measured over 400 real ticks with a warmed baseline:
+# 2026-08-12, measured: this set feeds orion/field/action_warrant.py, whose
+# statistic is Fisher's combined tail against chi^2(2N). Adding a FIFTH
+# dimension, replayed over 74,317 real ticks with warmed baselines:
 #
-#     N=4  gate opens on 41.8% of ticks
-#     N=5  gate opens on 36.8% of ticks     (-5.0pp, ~12% relative)
+#     N=4  gate opens on 37.35% of ticks
+#     N=5  gate opens on 30.45% of ticks    (-6.89pp, -18.5% relative)
 #
 # That is Orion's entire action rate, every action type, not just the one whose
-# template motivated the new dimension. The mechanism: a CALM dimension
-# contributes u~0.5, adding -2*ln(0.5)=1.386 to X, while the null's degrees of
-# freedom go chi^2(8)->chi^2(10). The df increase outweighs the added X, so any
-# calm sensor systematically SUPPRESSES the warrant. (Note this is the opposite
-# direction from the extreme-value-stacking intuition.)
+# template motivated the new dimension.
+#
+# FIRST NUMBERS HERE WERE WRONG, twice over, and both errors are instructive:
+#   - "-5.0pp / ~12%" came from a 400-tick sample (~13 minutes of a 2s tick).
+#     Understated the real effect by ~38%. This repo's own "short-window
+#     distribution stats are artifacts" lesson applies to validating a FIX, not
+#     only to the thing being fixed.
+#   - The mechanism was stated as "any CALM sensor suppresses the warrant."
+#     False. Controls over the same ticks:
+#         calibrated 5th dim, z ~ N(0,1):  +1.27pp   (df correction works)
+#         fully pinned, z == 0.0 exactly:  -7.06pp
+#         capacity_pressure as measured:   -6.89pp
+#     A well-calibrated dimension is neutral-to-slightly-POSITIVE. It is
+#     specifically a DEGENERATE dimension -- one whose u_i piles up at 0.5
+#     instead of being Uniform -- that suppresses. capacity_pressure is 97.6%
+#     of the way to fully-pinned. Stated as "calm", this comment would have
+#     discouraged ever adding a good dimension, which the data does not say.
 #
 # It is also a DELAYED failure: `_is_live()` excludes a dimension until its EWMA
 # baseline warms, so a naive 400-tick check right after deploy shows a 0.0pp
 # shift and the real -5.0pp lands days later, looking like unrelated drift.
 #
 # `capacity_pressure` (added 2026-08-12 for the build-cache prune) is
-# deliberately NOT here for exactly this reason. A template scores on a
-# dimension via `dimension_score()`, which reads `field_pressures` directly and
-# needs no membership in this set -- verified: the prune's priority is 0.6818
-# either way. Membership buys precision-weighted confidence and costs a
-# system-wide gate shift; that trade was not worth it for one template.
+# deliberately NOT here. A template scores on a dimension via
+# `dimension_score()`, which reads `field_pressures` directly and needs no
+# membership in this set.
+#
+# The cost of staying out is REAL and was first recorded here as "the prune's
+# priority is 0.6818 either way." That was false -- measured over 74,317 ticks:
+#
+#     capacity IN  PRESSURE_DIMENSIONS: mean priority 0.9707
+#     capacity OUT (shipped)          : mean priority 0.6004
+#
+# a 0.37 gap, because dimension_confidence() returns a PERMANENT 0.0 for an
+# untracked dimension, capping proposal_confidence at 0.5 forever. The 0.6818
+# figure was taken before the EWMA baseline warmed past MIN_SAMPLES, when
+# confidence is 0.0 in BOTH arms -- i.e. the exact delayed-measurement trap
+# this same comment block warns about two paragraphs up. Same trap, other
+# claim, same patch.
+#
+# Staying out is still the right trade: halving one template's confidence
+# beats a -6.89pp system-wide cut to every action. But it is a real cost paid
+# knowingly, not a free move.
 #
 PRESSURE_DIMENSIONS = frozenset({
     "execution_pressure",

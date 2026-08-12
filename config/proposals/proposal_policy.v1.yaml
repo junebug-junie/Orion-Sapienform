@@ -32,6 +32,13 @@ thresholds:
 # outside orion/proposals/scoring.py::PRESSURE_DIMENSIONS, so these weights
 # multiplied a value that could only ever be 0.0.
 dimension_weights:
+  # 2026-08-12: capacity_pressure added. Without an entry here,
+  # scoring.py's `.get(dim_id, 1.0)` silently gives a new dimension a policy
+  # weight of 1.0 against every sibling's 0.15-0.35 -- a 3-6x effective
+  # multiplier nobody chose. Inert today only because template_match_score is
+  # dead (see prune_build_cache's own note); left set correctly so it is not a
+  # trap for the next template.
+  capacity_pressure: 0.25
   execution_pressure: 0.30
   resource_pressure: 0.25
   reasoning_pressure: 0.15
@@ -298,6 +305,17 @@ proposal_templates:
       # dimension derives from cpu/stream-backlog load, so a quiet-but-full
       # host looks calm to it. `capacity_pressure` is fullness itself
       # (0.7953 at the same instant). See orion/field/pressure.py.
+      # THESE TWO WEIGHT VALUES ARE INERT. Recorded honestly rather than
+      # deleted, because the keys matter and the numbers do not.
+      # `proposal_priority` uses max(match_score, urgency); with both keys
+      # ending in `_pressure`, urgency = max(cap, res), while match =
+      # max(0.60*cap, 0.15*0.25*res). Since 0.60*cap <= cap <= max(cap,res),
+      # match <= urgency ALWAYS, so max() never picks match and neither weight
+      # reaches the output. (This generalizes: every one of the 13 templates
+      # has weight x dimension_weight <= 0.21, so template_match_score is dead
+      # arena-wide. Pre-existing defect, not introduced here, not fixed here.)
+      # What actually moves this template's priority is base_priority and the
+      # mere PRESENCE of these keys in the urgency/confidence id set.
       capacity_pressure: 0.60
       # Kept, weighted low, for TWO reasons. (1) A full disk on an already-
       # loaded host is a worse moment to add I/O than a full disk on an idle

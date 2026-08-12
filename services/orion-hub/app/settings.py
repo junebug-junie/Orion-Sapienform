@@ -292,6 +292,14 @@ class Settings(BaseSettings):
         alias="CORTEX_GATEWAY_RESULT_PREFIX",
     )
 
+    # --- Container bring-up (skills.docker.compose_service_bringup.v1 direct dispatch) ---
+    # Keep >= cortex-exec's SKILLS_DOCKER_COMPOSE_BRINGUP_TIMEOUT_SEC + SKILLS_DOCKER_COMPOSE_BRINGUP_HEALTH_POLL_SEC
+    # (900 + 60 = 960 by default) so the Hub RPC does not time out before the skill itself finishes.
+    HUB_CONTAINER_BRINGUP_RPC_TIMEOUT_SEC: float = Field(
+        default=960.0,
+        alias="HUB_CONTAINER_BRINGUP_RPC_TIMEOUT_SEC",
+    )
+
     # --- TTS / STT Integration (Titanium) ---
     TTS_REQUEST_CHANNEL: str = Field(default="orion:tts:intake", alias="TTS_REQUEST_CHANNEL")
     TTS_RESULT_PREFIX: str = Field(default="orion:tts:result", alias="TTS_RESULT_PREFIX")

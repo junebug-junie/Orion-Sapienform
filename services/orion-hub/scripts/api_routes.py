@@ -1117,6 +1117,62 @@ def api_debug_skill_runner_deterministic(prompt: str = Query(default="", descrip
     }
 
 
+class ContainerBringupRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    service: str
+
+
+@router.post("/api/debug/container-bringup")
+async def api_debug_container_bringup(req: ContainerBringupRequest) -> Dict[str, Any]:
+    """Operator-triggered `docker compose build` + `up -d` for one services/<name> dir.
+
+    Dispatches directly to cortex-exec's ``skills.docker.compose_service_bringup.v1`` verb via the
+    Cortex Gateway (same ``cortex_client.chat`` RPC path other direct-dispatch debug routes use, e.g.
+    ``_execute_workflow_schedule_management`` above) -- not the chat/Skill Runner catalogue pipeline,
+    since that pipeline only maps an exact prompt string to a no-args verb and has no skill_args
+    pass-through today. Service list for the caller's dropdown should come from the existing
+    ``GET /api/service-logs/services`` endpoint (``collect_service_inventory`` -- same live discovery
+    the skill itself uses server-side), not a hand-maintained list.
+    """
+    from .main import cortex_client
+
+    if cortex_client is None:
+        raise HTTPException(status_code=503, detail="Cortex client unavailable")
+
+    service = str(req.service or "").strip()
+    if not service:
+        raise HTTPException(status_code=422, detail="service is required")
+
+    corr_id = str(uuid4())
+    chat_req = CortexChatRequest(
+        prompt=f"operator container bring-up: {service}",
+        mode="brain",
+        route_intent="none",
+        verb="skills.docker.compose_service_bringup.v1",
+        options={"policy_dispatch_only": True},
+        recall={"enabled": False, "required": False},
+        trace_id=corr_id,
+        metadata={"skill_args": {"service": service}},
+    )
+    resp: CortexChatResult = await cortex_client.chat(
+        chat_req,
+        correlation_id=corr_id,
+        rpc_timeout_sec=float(settings.HUB_CONTAINER_BRINGUP_RPC_TIMEOUT_SEC),
+    )
+    cr = resp.cortex_result
+    metadata = cr.metadata if isinstance(cr.metadata, dict) else {}
+    skill_result = metadata.get("skill_result") if isinstance(metadata.get("skill_result"), dict) else None
+    return {
+        "ok": bool(getattr(cr, "ok", False)),
+        "status": str(getattr(cr, "status", "") or ""),
+        "correlation_id": corr_id,
+        "service": service,
+        "skill_result": skill_result,
+        "final_text": resp.final_text,
+    }
+
+
 @router.get("/api/debug/self-experiments/status")
 def api_debug_self_experiments_status(
     limit: int = Query(default=25, ge=1, le=100),

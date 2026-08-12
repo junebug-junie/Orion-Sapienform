@@ -124,6 +124,46 @@ These prompts target the **read-only** bounded SQL skill `skills.chat.discussion
     - Intended concrete skill: `skills.mesh.refresh_service_envs.v1`
     - Expected result: `mesh-utilities/common/refresh_service_envs.sh` output or precise policy/runtime failure; same policy flag as (19)
 
+## Container bring-up
+
+Not part of the numbered catalogue above and not dispatched through the Skill Runner `<select>` / exact-prompt
+match at all. `skills.docker.compose_service_bringup.v1` takes a per-service argument (`skill_args.service`), and
+`resolve_skill_runner_catalogue_verb()` only maps an exact prompt string to a no-args verb -- there is no
+skill_args pass-through on that dispatch path. Instead, the Hub UI's "Container bring-up" panel (bottom of the
+operator controls) POSTs directly to a small dedicated endpoint, `POST /api/debug/container-bringup`
+(`services/orion-hub/scripts/api_routes.py`), which dispatches straight to cortex-exec via
+`CortexChatRequest(verb=..., metadata={"skill_args": {...}})` -- bypassing the catalogue/chat pipeline entirely,
+the same direct-dispatch shape `_execute_workflow_schedule_management` already uses for another metadata-carrying
+skill in this file.
+
+- Intended concrete skill: `skills.docker.compose_service_bringup.v1`
+- Skill args: `{"service": "<services/ subdirectory name>"}`
+- Runs, in order, inside cortex-exec: `docker compose --env-file .env --env-file services/<service>/.env -f services/<service>/docker-compose.yml build` then `... up -d`, then polls container health for up to `SKILLS_DOCKER_COMPOSE_BRINGUP_HEALTH_POLL_SEC` (default 60s, ~3s interval).
+- **The service list is discovered live**, not a fixed numbered list like the rest of this document: both the
+  skill (server-side, `_discover_compose_services()`) and the Hub dropdown (client-side, populated from the
+  existing `GET /api/service-logs/services` endpoint) walk `services/*/docker-compose.yml` on every call. A new
+  service directory with a compose file becomes selectable without any catalogue/doc edit.
+- Requires `SKILLS_ALLOW_DOCKER_COMPOSE_BRINGUP=true` on cortex-exec (default `false` -- bigger blast radius than
+  the two mesh-utilities scripts above: arbitrary per-service build/up, not a fixed allow-listed script).
+- Requires the read-only host repo bind-mount (`ORION_HOST_REPO_ROOT` in `services/orion-cortex-exec/docker-compose.yml` /
+  `.env_example`) to be live. Without it, `docker compose build` run from inside the container would build from the
+  image's stale, build-time-baked repo snapshot instead of the current host code. This mount is **read-only** by
+  design -- cortex-exec never gets write access to the repo through this skill.
+- Result includes explicit path-accessibility diagnostics (`repo_root`, `repo_root_exists`, `services_dir_exists`,
+  `compose_file_exists`) so a missing/stale mount fails loudly instead of a generic error.
+- Per-container health is reported with `has_healthcheck` alongside `state`/`health` -- a container with no
+  Dockerfile `HEALTHCHECK` reports `running_no_healthcheck` rather than being treated as unhealthy for lacking a
+  status that will never arrive. A container that looks settled on one poll is re-confirmed once more after a
+  short delay before being trusted, so a crash-loop caught mid-`running` window is not misreported as healthy.
+- `orion-cortex-exec` and `orion-hub` are hard-denylisted server-side (`_DOCKER_COMPOSE_BRINGUP_DENYLIST` in
+  `verb_adapters.py`) -- rebuilding the service serving this very request, or the Hub in front of it, is not
+  allowed through this skill regardless of the policy flag. `POST /api/debug/container-bringup` has no per-caller
+  auth (matching every other `/api/debug/*` route in this file today), so the Hub UI also asks for an explicit
+  confirmation before firing.
+- Build/up stdout+stderr tails are scrubbed for common secret-shaped substrings (GitHub tokens, Slack tokens,
+  `Bearer ...` headers, AWS access key IDs) before being returned in the result -- best-effort, not a substitute
+  for not leaking secrets into build output in the first place.
+
 ## Cognitive workflows (not deterministic skills)
 
 These Hub Skill Runner entries use `data-workflow-id` and stay on the normal chat/workflow path. They are **not** in `SKILL_RUNNER_CATALOGUE_VERBS` (skills-only map).
@@ -143,4 +183,5 @@ These Hub Skill Runner entries use `data-workflow-id` and stay on the normal cha
   - Notify service for notifications
   - Postgres / `DATABASE_URL` (or exec `ENDOGENOUS_RUNTIME_SQL_DATABASE_URL`) for `skills.chat.discussion_window.v1`
   - `SKILLS_ALLOW_MESH_SERVICE_SCRIPTS=true` (and mounted repo / `ORION_REPO_ROOT`) for mesh service script skills (19–20)
+  - `SKILLS_ALLOW_DOCKER_COMPOSE_BRINGUP=true` (and the read-only `ORION_HOST_REPO_ROOT` mount) for the Container bring-up skill above
 - Prefer precise failure messages over generic refusal.

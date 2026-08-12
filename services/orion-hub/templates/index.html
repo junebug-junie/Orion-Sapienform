@@ -435,6 +435,31 @@
           </button>
         </div>
 
+        <div
+          id="containerBringupPanel"
+          class="bg-gray-800/40 border border-gray-700 rounded-xl p-2 flex flex-wrap items-end gap-2 text-xs"
+        >
+          <div class="flex flex-col gap-1 min-w-[10rem] flex-1 max-w-xl">
+            <label for="containerBringupSelect" class="text-[10px] uppercase tracking-wide text-gray-400">Container bring-up</label>
+            <select
+              id="containerBringupSelect"
+              class="bg-gray-800 text-gray-200 rounded border border-gray-700 px-2 py-1.5 text-xs w-full"
+              aria-label="Container bring-up service selector"
+            >
+              <option value="">— Loading services… —</option>
+            </select>
+          </div>
+          <button
+            type="button"
+            id="containerBringupRunBtn"
+            class="rounded-lg border border-indigo-500/50 bg-indigo-600/80 px-2.5 py-1.5 text-[11px] font-semibold text-white hover:bg-indigo-500"
+          >
+            Bring up
+          </button>
+          <div id="containerBringupStatus" class="basis-full text-[11px] text-gray-400"></div>
+          <pre id="containerBringupResult" class="basis-full hidden max-h-64 overflow-auto rounded-lg border border-gray-700 bg-gray-950/60 p-2 text-[10px] text-gray-300 whitespace-pre-wrap"></pre>
+        </div>
+
         <div id="runtimeDebugPanel" class="bg-gray-800/40 border border-gray-700 rounded-xl p-3 space-y-2">
           <div class="w-full flex items-center justify-between text-xs text-gray-300">
             <span class="uppercase tracking-wide">Debug Panel</span>

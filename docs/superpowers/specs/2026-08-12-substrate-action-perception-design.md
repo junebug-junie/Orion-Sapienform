@@ -1,17 +1,93 @@
 # Giving Orion's substrate action something to perceive
 
 Date: 2026-08-12
-Status: **design mode, awaiting sign-off.** Nothing implemented. Cognition-loop-adjacent per
-`CLAUDE.md` §0A ("Proposal mode before invasive cognition changes").
+Status: **B(2) selected and being built.** Cognition-loop-adjacent per `CLAUDE.md` §0A; Juniper gave
+explicit go-ahead, so this proceeds to implementation rather than sitting in proposal mode.
 
 Two options are specified here — **B** (the verb acquires) and **C** (the dispatcher pre-fetches) —
-because they are genuinely different capabilities with an order-of-magnitude difference in cost, and
-the choice between them is Juniper's, not mine.
+because they are genuinely different capabilities with an order-of-magnitude difference in cost.
 
-**Both are recommended AGAINST as the next patch.** The traces below say the binding constraint is
-downstream of both. That conclusion is the most useful thing in this document; the specs exist so the
-decision is made against real numbers rather than a hunch, and so the work is ready when the
-constraint moves.
+> **Revision (2026-08-12, same day).** This document originally recommended **against both**, on the
+> grounds that the chain terminates — a better observation lands in a frame nothing consumes and is
+> scored by a constant, so perception is not the binding constraint. That analysis still holds and is
+> retained below in full.
+>
+> What changed is not the analysis but the available action. An operational thread in the same session
+> surfaced a candidate action that **breaks the terminating chain**: autonomous Docker build-cache
+> pruning. It has the one property every existing substrate action lacks — a real, continuous,
+> per-action, externally-verifiable outcome. See "The decision" below. B(2) is selected because that
+> action needs a real read, and the read is the same seam `substrate.inspect` needs.
+
+## The decision (2026-08-12)
+
+The deadlock this document described was: perception is pointless because outcomes are dead, and
+outcomes are dead because the action has no consequence. Both halves are true, and neither can be
+fixed from the other end while the only available action is a read-only LLM call.
+
+**The way out is an action with a real consequence.** Autonomous build-cache pruning qualifies, and
+it is the first candidate in this arc that does:
+
+| property | substrate.inspect | build-cache prune |
+| --- | --- | --- |
+| real trigger | field pressure (real) | `disk_pressure` / `disk_capacity_pressure` — already live field channels |
+| consequence in the world | **none** | disk usage changes |
+| per-action outcome | none — 5 concurrent actions share one field delta | disk % before/after, unambiguous |
+| outcome magnitude | quantized to 3 constants | continuous GB reclaimed |
+| reversible | n/a | yes — cache regenerates by definition |
+| cost of a wrong call | n/a | one slow rebuild |
+
+That is a genuine `(action → outcome)` pair with a real magnitude — the thing the retroactive
+attribution analysis went looking for at the start of this session and could not find, because every
+existing action was a read-only LLM call with no consequence.
+
+Juniper's own framing, which is the reason this is the right first mutating action rather than a
+risky one: *"this is low stakes as i can rebuild any mistakes that orion deletes."*
+
+### Measured basis for the trigger
+
+Real numbers from the host, 2026-08-12:
+
+```
+/mnt/docker total      469G
+used                   356G  (80%, after reclaiming a 25G orphaned volume)
+build cache            271GB total, 15,037 entries, 0 active
+  unused > 2 weeks     8,550 entries (57%)  ~= the 140.4GB Docker reports reclaimable
+one prune reclaims     ~140GB  =  ~30 percentage points
+observed growth        271GB over ~4 weeks  ~=  2pp/day
+disk_threshold_watchdog alerts at 90% and never acts
+```
+
+**Trigger:**
+
+```
+act when   disk_used_pct >= 75%   AND   reclaimable_stale_cache >= 40GB
+```
+
+Both conditions, deliberately. 75% gives ~7 days of lead time at the observed 2pp/day before the
+existing 90% watchdog alert — enough that a failed prune is noticed by a human rather than becoming an
+incident — and pruning from 75% lands around 45%, a wide margin.
+
+The **`AND` is the load-bearing part**, and it is the same lesson as `action_warrant`: do not gate on
+an absolute level whose rest point is undefined. At 80% *with* 140GB of stale cache, pruning is highly
+effective. At 80% with *zero* stale cache, pruning accomplishes nothing and the real condition is a
+capacity problem needing a human. An autonomous action that fires and changes nothing is precisely the
+theater this repo keeps deleting; the second condition makes the trigger actionable-only, and its
+failure is itself the signal to escalate rather than act.
+
+Note this is a backstop, not the primary mechanism. The primary fix is a BuildKit GC policy in
+`/etc/docker/daemon.json` (`builder.gc`, `keepStorage: 60GB`), absent today — which is why the cache
+grew unbounded to 271GB in the first place. With that in place this trigger should rarely fire.
+
+### Why this selects B(2) rather than C
+
+The prune action needs to *read real host state* (disk usage, reclaimable cache) before deciding, and
+that read is a bus request/reply from a verb — exactly B(2). C cannot serve it: C is the dispatcher
+pre-fetching a fixed payload into a prompt, which cannot answer "how much is reclaimable right now"
+for an action that then acts on the answer.
+
+So B(2) is built once and serves both consumers: the prune action (which needs it) and
+`substrate.inspect` (which has wanted it all along). C stays specified and unbuilt; its own analysis
+below — that its predecessor moved zero outcome signals — is unchanged and still argues against it.
 
 ## Arsonist summary
 
@@ -255,7 +331,18 @@ Whichever is built:
 
 ## Recommended next patch
 
-**Neither B nor C. Close the loop first.**
+**Superseded 2026-08-12 — see "The decision" at the top.** B(2) is being built, with the build-cache
+prune as its first consumer, because that action supplies the real per-action outcome whose absence
+the reasoning below correctly identified as the blocker. The ordering argument was right; what it
+lacked was an action worth attributing.
+
+The loop-closure work stays queued and stays necessary — a real outcome still has to reach the field
+for anything to *learn* from it. It is no longer a prerequisite for having a measurable outcome at
+all, which is what the prune action changes.
+
+The original reasoning, retained because its analysis is unchanged:
+
+**~~Neither B nor C. Close the loop first.~~**
 
 `docs/superpowers/specs/2026-07-17-field-native-motivational-substrate-design.md:189-192`, carried
 into the Sentience Striving charter's §8 and still unbuilt:

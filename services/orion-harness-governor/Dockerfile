@@ -22,7 +22,9 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     && apt-get install -y --no-install-recommends nodejs \
     && rm -rf /var/lib/apt/lists/* \
     && git config --global --add safe.directory /mnt/scripts/Orion-Sapienform \
-    && git config --global --add safe.directory '*'
+    && git config --global --add safe.directory '*' \
+    && git config --global user.name "Orion FCC" \
+    && git config --global user.email "orion-fcc@orion-sapienform.local"
 
 # Self-indexing MCP toolchain: GitNexus (code graph) + Context Mode (context
 # virtualization). Pinned exact versions — both are third-party executables

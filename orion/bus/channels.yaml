@@ -2618,3 +2618,15 @@ channels:
     consumer_services: ["orion-substrate-runtime", "orion-cortex-exec"]
     stability: "experimental"
     since: "2026-07-07"
+
+  # --- Self-study semantic enrichment (dev-tooling-adjacent, not yet a live
+  # consumer-facing cognition capability) ---
+  - name: "orion:self_study:enrichment:requested"
+    kind: "request"
+    schema_id: "SelfStudyEnrichmentRequestV1"
+    message_kind: "self_study.enrichment.request.v1"
+    producer_services: ["orion-git-hooks"]
+    consumer_services: ["orion-self-study-enrichment"]
+    single_consumer: true
+    stability: "experimental"
+    since: "2026-08-12"

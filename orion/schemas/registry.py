@@ -684,6 +684,7 @@ from orion.schemas.embodiment import (
     OrionTownPersonaV1,
     WorldPerceptionV1,
 )
+from orion.schemas.self_study_enrichment import SelfStudyEnrichmentRequestV1
 
 _REGISTRY: Dict[str, Type[BaseModel]] = {
     "GenericPayloadV1": GenericPayloadV1,
@@ -1475,6 +1476,10 @@ SCHEMA_REGISTRY: Dict[str, SchemaRegistration] = {
     "AttentionSelfModelV1": SchemaRegistration(
         model=AttentionSelfModelV1,
         kind="attention.self_model.v1",
+    ),
+    "SelfStudyEnrichmentRequestV1": SchemaRegistration(
+        model=SelfStudyEnrichmentRequestV1,
+        kind="self_study.enrichment.request.v1",
     ),
 }
 

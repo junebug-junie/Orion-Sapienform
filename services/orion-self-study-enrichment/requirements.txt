@@ -1,0 +1,6 @@
+pydantic>=2.9.2
+pydantic-settings>=2.4.0
+# Pinned to 5.2.1 (not >=5.0.7): redis-py <5.1.0's redis.commands.graph module
+# imports distutils, removed from Python 3.12's stdlib. Same pin used across
+# this repo's other bus-consuming services.
+redis==5.2.1

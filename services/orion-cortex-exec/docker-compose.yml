@@ -21,6 +21,14 @@ services:
       # Host Docker engine + CLI for skills.runtime.docker_prune_stopped_containers.v1 (and other docker skills).
       - ${DOCKER_SOCK_PATH:-/var/run/docker.sock}:/var/run/docker.sock
       - ${ORION_HOST_DOCKER_CLI:-/usr/bin/docker}:/usr/bin/docker:ro
+      # Host Docker data-root, READ-ONLY, for skills.runtime.builder_prune.v1's disk
+      # measurement (2026-08-12). The socket above gives build-cache totals but NOT
+      # filesystem capacity -- shutil.disk_usage() needs a real path on the target
+      # filesystem, and the host's /mnt/docker is not otherwise visible in here.
+      # Caught by the first live preview run, which failed with FileNotFoundError.
+      # Adds no meaningful privilege: the docker socket two lines up is already
+      # root-equivalent.
+      - ${ORION_HOST_DOCKER_DATA_ROOT:-/mnt/docker}:/hostfs/docker:ro
       # NVIDIA: slim image omits nvidia-smi; bind-mount host binary. Needs NVIDIA Container Toolkit + `gpus`
       # below. On hosts without a GPU stack, comment this line and `gpus`, or point ORION_HOST_NVIDIA_SMI at a
       # valid host path.

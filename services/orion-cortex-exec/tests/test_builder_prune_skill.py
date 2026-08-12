@@ -229,6 +229,35 @@ def test_thresholds_are_reported_so_a_decision_is_auditable(prune, monkeypatch):
     assert r["reason"]
 
 
+def test_default_mount_is_the_container_path_not_the_host_path(prune, monkeypatch):
+    """The host's /mnt/docker is NOT visible inside this container -- it has the
+    docker socket, not the host filesystem. The first live preview run failed
+    with FileNotFoundError on exactly that assumption, which is why the compose
+    file now bind-mounts the data-root read-only and the default points at the
+    container-side path."""
+    from app.settings import settings
+
+    assert settings.builder_prune_mount_path == "/hostfs/docker"
+
+    seen = {}
+    monkeypatch.setattr(
+        va,
+        "_builder_prune_disk_usage",
+        lambda path: seen.setdefault("path", path)
+        and None
+        or {
+            "mount_path": path,
+            "total_bytes": 100,
+            "used_bytes": 50,
+            "free_bytes": 50,
+            "used_pct": 50.0,
+        },
+    )
+    _set_cache(monkeypatch, available=True, reclaimable_bytes=1, total_bytes=1, entries=1, active=0)
+    _run(prune, _payload())
+    assert seen["path"] == "/hostfs/docker"
+
+
 def test_verb_is_registered_under_its_skill_name():
     """`executor.py`'s local-adapter branch resolves by this exact name; a
     mismatch is a silent no-op at dispatch time."""

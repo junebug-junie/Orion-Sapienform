@@ -169,6 +169,10 @@ class Settings(BaseSettings):
     orion_presence_persist_allowed: bool = Field(False, alias="ORION_PRESENCE_PERSIST_ALLOWED")
     skills_command_timeout_sec: float = Field(8.0, alias="SKILLS_COMMAND_TIMEOUT_SEC")
     skills_mesh_ops_timeout_sec: float = Field(12.0, alias="SKILLS_MESH_OPS_TIMEOUT_SEC")
+    # Container-side path of the host Docker data-root bind mount (see this
+    # service's docker-compose.yml). Where skills.runtime.builder_prune.v1
+    # measures real filesystem usage.
+    builder_prune_mount_path: str = Field("/hostfs/docker", alias="BUILDER_PRUNE_MOUNT_PATH")
     docker_sock_path: str = Field("/var/run/docker.sock", alias="DOCKER_SOCK_PATH")
     tailscale_path: str = Field("tailscale", alias="ORION_ACTIONS_TAILSCALE_PATH")
     # Optional absolute path to nvidia-smi (host bind-mount or image-installed). When unset, skill resolves PATH.

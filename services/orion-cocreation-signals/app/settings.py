@@ -149,16 +149,22 @@ class Settings(BaseSettings):
         default="doc_semantic_drift"
     )
     COCREATION_SIGNALS_DOC_SEMANTIC_DRIFT_EMBED_TIMEOUT_SEC: float = Field(default=30.0)
-    # Best-effort char-length proxy for `possibly_truncated` -- the real
-    # bus embedding-request contract doesn't expose a live token count the
-    # way the offline calibration script's direct container access did
-    # (see orion/schemas/doc_semantic_drift.py's own docstring). ~512
-    # tokens * ~4 chars/token, the same conservative estimate the
-    # calibration script's first draft used before code review replaced it
-    # with a real measurement there -- kept here only because the real
-    # measurement isn't available over the live bus contract, not because
-    # it's preferred.
-    COCREATION_SIGNALS_DOC_SEMANTIC_DRIFT_TRUNCATION_CHAR_THRESHOLD: int = Field(default=2048)
+    # Chunk window each hunk side is split into before embedding. Same
+    # 2048 value as the `..._TRUNCATION_CHAR_THRESHOLD` key this replaces,
+    # but a different job: it used to only *flag* an over-long hunk (and
+    # fired True on every real event, making it useless as a signal), and
+    # now it bounds a window the producer actually chunks and mean-pools
+    # over so nothing gets silently clipped.
+    #
+    # ~512 tokens * ~4 chars/token. The 512 is real and verified, not an
+    # estimate: read 2026-08-12 from the running orion-vector-host
+    # container's own model files (`model_max_length` in
+    # tokenizer_config.json, `max_position_embeddings` in config.json for
+    # BAAI/bge-large-en-v1.5). The chars-per-token ratio is still an
+    # estimate -- the live bus embedding contract exposes no token count --
+    # so this stays deliberately conservative: under-filling a window costs
+    # an extra chunk, over-filling it silently drops text inside the model.
+    COCREATION_SIGNALS_DOC_SEMANTIC_DRIFT_CHUNK_CHAR_SIZE: int = Field(default=2048)
 
     # Real Redis key doc_semantic_drift_loop's baseline last_sha is persisted
     # to, so a redeploy resumes from where it left off instead of re-seeding

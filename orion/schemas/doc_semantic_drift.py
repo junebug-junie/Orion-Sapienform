@@ -35,22 +35,42 @@ class DocSemanticDriftV1(BaseModel):
     sha: str
     path: str
     commit_prefix: str | None = None
+    # Real git diff status for this file in the scored range ("added" /
+    # "modified"), read from `git diff --name-status` rather than inferred
+    # from an empty hunk. Exists because `diff_scoped_embedding_diff=None`
+    # had two structurally different causes that no consumer could tell
+    # apart (confirmed live 2026-08-12 on real events): a newly-added file
+    # has no "before" text, so its removed-side embedding is a zero vector
+    # and cosine is genuinely undefined -- correct-by-definition, not a
+    # failure -- whereas the same None on a *modified* file means a real
+    # embedding request failed. `None` + "added" is expected; `None` +
+    # "modified" is an alarm.
+    #
+    # "deleted" is declared here but never produced today: the producer's
+    # `changed_doc_files_with_status()` filters to --diff-filter=ACMR, deliberately
+    # excluding deletions (a deleted doc has no "after" state to score
+    # drift against). Declared so a consumer's match is exhaustive if that
+    # filter is ever widened.
+    change_kind: Literal["added", "modified", "deleted"] | None = None
     # None when either side's embedding request failed (e.g. the bus/
-    # embedding host was unavailable this tick) -- a real "couldn't measure
-    # this one" fact, not a fabricated 0.0.
+    # embedding host was unavailable this tick), or -- expected, not a
+    # failure -- when one side has no text at all (see `change_kind`).
+    # A real "couldn't measure this one" fact, not a fabricated 0.0.
     diff_scoped_embedding_diff: float | None = None
-    # Real replay found 2 of 5 real hunks still exceed the embedding
-    # model's token limit even scoped to just the diff (a single large
-    # hunk can itself be long) -- named `possibly_truncated`, matching
-    # `PrLifecycleDeltaPayloadV1.possibly_truncated`'s existing naming
-    # convention in this same codebase for "real, disclosed, not a
-    # guaranteed fact" rather than inventing new vocabulary for the same
-    # shape of uncertainty. Best-effort (character-length heuristic against
-    # this repo's real corpus, not a live token count from the embedding
-    # host -- that introspection isn't available over the real bus
-    # contract, only via the offline calibration script's direct container
-    # access) -- may under- or over-flag relative to the model's real
-    # tokenizer.
-    possibly_truncated: bool = False
+    # How many <=CHUNK_CHAR_SIZE windows each side's hunk was split into
+    # before embedding. Replaces the former `possibly_truncated` bool,
+    # which was accurate but had become uninformative: confirmed live
+    # 2026-08-12 that the embedding model (BAAI/bge-large-en-v1.5, read
+    # from the running orion-vector-host container's own
+    # tokenizer_config.json / config.json) has a hard 512-token ceiling,
+    # so it fired True on *every* real event this repo produced -- a
+    # constant is not a signal. The producer now chunks and mean-pools
+    # instead of letting the model silently clip, so nothing is truncated;
+    # what a consumer actually needs to know is how much aggregation stands
+    # between the raw text and the score. 1 = the hunk fit in a single
+    # embedding window (directly comparable to the pre-chunking scores);
+    # >1 = a mean-pooled score over that many windows.
+    chunk_count_removed: int = 0
+    chunk_count_added: int = 0
     hunk_removed_len_chars: int = 0
     hunk_added_len_chars: int = 0

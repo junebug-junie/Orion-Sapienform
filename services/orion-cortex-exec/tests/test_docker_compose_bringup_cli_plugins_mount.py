@@ -54,3 +54,24 @@ def test_docker_cli_plugins_mount_is_read_only():
     assert plugin_line.strip().endswith(":ro"), (
         f"docker CLI plugins mount must stay read-only, got: {plugin_line!r}"
     )
+
+
+def test_docker_cli_plugins_mount_container_side_is_fixed_not_overridable():
+    # docker's plugin search list (~/.docker/cli-plugins, /usr/local/lib(exec)/docker/cli-plugins,
+    # /usr/lib/docker/cli-plugins, /usr/libexec/docker/cli-plugins) is hardcoded in the CLI itself, not
+    # env-configurable. If the container-side target followed ORION_HOST_DOCKER_CLI_PLUGINS_DIR too (like
+    # the host side does), an operator override to a nonstandard host path would relocate the container
+    # mount target right along with it -- and the containerized CLI would never look there, silently
+    # reproducing the "unknown command: docker compose" incident this mount exists to fix. Mirrors
+    # ORION_HOST_DOCKER_CLI just above it, whose container side is hardcoded to /usr/bin/docker.
+    volumes = _cortex_exec_volumes()
+    plugin_line = next((v for v in volumes if "ORION_HOST_DOCKER_CLI_PLUGINS_DIR" in v), None)
+    assert plugin_line is not None
+    target = plugin_line.split(":")[-2]
+    assert target == "/usr/libexec/docker/cli-plugins", (
+        f"container-side plugin mount target must stay fixed to a path docker's CLI actually scans, "
+        f"got: {target!r} (source line: {plugin_line!r})"
+    )
+    assert "${ORION_HOST_DOCKER_CLI_PLUGINS_DIR" not in target, (
+        "container-side target must not be driven by the host-side override var"
+    )

@@ -1,7 +1,7 @@
 # Giving Orion's substrate action something to perceive
 
 Date: 2026-08-12
-Status: **B(2) selected and being built.** Cognition-loop-adjacent per `CLAUDE.md` §0A; Juniper gave
+Status: **prune action next (no bus service required). B(2) contract merged, deferred.** Cognition-loop-adjacent per `CLAUDE.md` §0A; Juniper gave
 explicit go-ahead, so this proceeds to implementation rather than sitting in proposal mode.
 
 Two options are specified here — **B** (the verb acquires) and **C** (the dispatcher pre-fetches) —
@@ -78,16 +78,39 @@ Note this is a backstop, not the primary mechanism. The primary fix is a BuildKi
 `/etc/docker/daemon.json` (`builder.gc`, `keepStorage: 60GB`), absent today — which is why the cache
 grew unbounded to 271GB in the first place. With that in place this trigger should rarely fire.
 
-### Why this selects B(2) rather than C
+### The prune action needs no bus service — corrected 2026-08-12
 
-The prune action needs to *read real host state* (disk usage, reclaimable cache) before deciding, and
-that read is a bus request/reply from a verb — exactly B(2). C cannot serve it: C is the dispatcher
-pre-fetching a fixed payload into a prompt, which cannot answer "how much is reclaimable right now"
-for an action that then acts on the answer.
+> **This section previously claimed the prune action requires B(2).** That was wrong, and the trace
+> that disproves it came after the contract had already been written and merged (#1582, narrowed in
+> #1584). Recorded rather than rewritten, because the error is the useful part: a capability was
+> specced before checking which service already had it.
 
-So B(2) is built once and serves both consumers: the prune action (which needs it) and
-`substrate.inspect` (which has wanted it all along). C stays specified and unbuilt; its own analysis
-below — that its predecessor moved zero outcome signals — is unchanged and still argues against it.
+Two facts, traced:
+
+- **`orion-cortex-exec` already has `/var/run/docker.sock`.** That is precisely why
+  `skills.docker.ps_status.v1` and `skills.runtime.docker_prune_stopped_containers.v1` already work
+  there as *local* verb adapters. `orion-biometrics` — which the contract had named as the read
+  service — has no socket and could never have answered a Docker question.
+- **`CortexRouteTemplateV1.cortex_verb` is an unconstrained `str`**
+  (`orion/execution_dispatch/policy.py:20`). A dispatch route can name a `skills.*` verb directly,
+  which makes `executor.py:2639`'s local-adapter branch fire — the same branch that
+  `planner.py:194` prevents from ever firing for a step *inside* a non-skill verb.
+
+**So the prune action is: a skill YAML + a local adapter + a route entry + a proposal template.** No
+new bus contract, no new service, no new privilege. It runs in the one service that already holds the
+capability.
+
+This also avoids a real privilege expansion. Giving a hardware-telemetry service root-equivalent
+Docker socket access, to answer a question a service that already has it can answer locally, would
+have been cost with no benefit.
+
+**B(2) is therefore no longer on the critical path.** It keeps its own justification —
+`substrate.inspect` is a non-skill verb and genuinely cannot reach a skill, so perception for the
+substrate probes still needs a service — but that is a separate, later, and now unblocked-by-nothing
+piece of work. The contract is merged and narrowed to host filesystem usage, which is what
+`orion-biometrics` genuinely owns.
+
+C is unchanged and still argued against below: its predecessor moved zero outcome signals.
 
 ## Arsonist summary
 
@@ -328,6 +351,14 @@ Whichever is built:
    finding about the template list and must be written down, not retried with a different payload.
 5. **No regression in the three substrate prompts.** `test_substrate_probe_prompt_grounding.py`'s
    existing degrade-gracefully cases must still pass unchanged.
+
+## What is next, in one line
+
+**Build the prune action: a `skills.*` verb + local adapter in `orion-cortex-exec`, a route entry, and
+a proposal template gated on `disk_used_pct >= 75% AND stale_cache >= 40GB`.** Nothing else is
+blocking, and it is the first action in this arc with a real per-action outcome.
+
+Everything below is prior reasoning, retained.
 
 ## Recommended next patch
 

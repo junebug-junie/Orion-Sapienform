@@ -2887,7 +2887,12 @@ class BuilderPruneVerb(BaseVerb[PlanExecutionRequest, SkillVerbOutput]):
         # preview flag.
         run_mode, mode_resolution = _resolve_docker_prune_run_mode(skill_args)
 
-        data_root = str(skill_args.get("mount_path") or "/mnt/docker").strip() or "/mnt/docker"
+        # Container-side path of the host data-root bind mount, NOT the host
+        # path. The host's /mnt/docker is not visible in this container; the
+        # first live preview run failed with FileNotFoundError on exactly that
+        # assumption. See this service's docker-compose.yml.
+        default_mount = str(settings.builder_prune_mount_path or "/hostfs/docker")
+        data_root = str(skill_args.get("mount_path") or default_mount).strip() or default_mount
         until_hours = int(skill_args.get("until_hours") or BUILDER_PRUNE_DEFAULT_UNTIL_HOURS)
         runner = SafeCommandRunner(
             allowed_commands={"docker"}, timeout_sec=float(settings.skills_mesh_ops_timeout_sec)

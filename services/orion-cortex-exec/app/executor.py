@@ -2352,6 +2352,17 @@ def _plan_request_from_step_ctx(
     if isinstance(ctx.get("skill_args"), dict):
         skill_args.update(ctx["skill_args"])
     md_top = ctx.get("metadata") if isinstance(ctx.get("metadata"), dict) else {}
+    # Plain ctx["metadata"]["skill_args"] is what a direct chat-dispatch caller sets (e.g.
+    # CortexChatRequest(metadata={"skill_args": {...}}) from services/orion-hub/scripts/api_routes.py's
+    # /api/debug/container-bringup) -- it survives Hub -> Gateway -> Orch -> here verbatim
+    # (orion-cortex-orch/app/orchestrator.py:_build_context sets ctx["metadata"] = req.context.metadata).
+    # Without this, that skill_args silently never reached the verb: confirmed live 2026-08-12,
+    # skills.docker.compose_service_bringup.v1 always saw service=None despite the caller setting it.
+    top_level_sa = md_top.get("skill_args")
+    if isinstance(top_level_sa, dict):
+        skill_args.update(top_level_sa)
+    # capability_bridge_skill_args stays a distinct, narrower key for nested capability-bridge calls and
+    # is applied last so it can still override a direct dispatch's skill_args in that specific scenario.
     bridge_sa = md_top.get("capability_bridge_skill_args")
     if isinstance(bridge_sa, dict):
         skill_args.update(bridge_sa)

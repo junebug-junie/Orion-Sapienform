@@ -32,3 +32,28 @@ async def test_reflect_llm_failure_uses_degraded_reflection_when_quick_lane_bloc
     assert quick_skipped is False
     assert reflection.reflection_source == "degraded_llm_failure_fallback"
     assert reflection.alignment_verdict == "misaligned"
+
+
+@pytest.mark.asyncio
+async def test_reflect_llm_malformed_payload_uses_degraded_reflection() -> None:
+    """When the LLM returns a reflection payload that fails Pydantic validation,
+    the error must fall through to the degraded reflection path instead of crashing.
+    This catches malformed JSON or missing required fields from the model."""
+    thought = make_thought(repair_pressure_level=0.9)
+    appraisal = make_appraisal(surprise_level=0.5)
+
+    async def _malformed(_req: object) -> dict[str, object]:
+        return {"reflection": "not valid JSON at all", "trace_id": "test-trace"}
+
+    reflection, quick_skipped, _trace = await run_finalize_reflection(
+        correlation_id="c-malformed",
+        draft_text="partial draft",
+        thought=thought,
+        substrate_appraisal=appraisal,
+        repair_overlay=make_repair_overlay(),
+        cortex_client=_malformed,
+    )
+
+    assert quick_skipped is False
+    assert reflection.reflection_source == "degraded_llm_failure_fallback"
+    assert reflection.alignment_verdict == "misaligned"

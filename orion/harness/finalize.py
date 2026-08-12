@@ -359,6 +359,12 @@ async def run_finalize_reflection(
     try:
         exec_result = await cortex_client(plan_request)
         raw_payload = extract_finalize_reflection_payload(exec_result)
+        if isinstance(raw_payload, dict):
+            raw_payload.setdefault("correlation_id", correlation_id)
+            raw_payload.setdefault("thought_event_id", thought.event_id)
+            raw_payload.setdefault("substrate_appraisal_id", substrate_appraisal.molecule_id)
+            raw_payload.setdefault("draft_hash", substrate_appraisal.draft_hash)
+        reflection = parse_finalize_reflection_payload(raw_payload)
     except Exception as exc:
         degraded = maybe_quick_lane_verdict(
             correlation_id=correlation_id,
@@ -397,12 +403,6 @@ async def run_finalize_reflection(
             False,
             None,
         )
-    if isinstance(raw_payload, dict):
-        raw_payload.setdefault("correlation_id", correlation_id)
-        raw_payload.setdefault("thought_event_id", thought.event_id)
-        raw_payload.setdefault("substrate_appraisal_id", substrate_appraisal.molecule_id)
-        raw_payload.setdefault("draft_hash", substrate_appraisal.draft_hash)
-    reflection = parse_finalize_reflection_payload(raw_payload)
     cortex_trace_id = exec_result.get("trace_id") or exec_result.get("cortex_trace_id")
     if isinstance(cortex_trace_id, str):
         return reflection, False, cortex_trace_id
